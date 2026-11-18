@@ -1117,6 +1117,26 @@ void test_a_refused_allocation_in_a_read_answers_nothing_and_loses_nothing() {
   nimbus::orch::setWorkingAllocators(nullptr, nullptr);
 }
 
+// ---- what the engine hook records -------------------------------------------------------------
+void test_every_kind_is_classed_for_the_hook() {
+  using nimbus::orch::FxKind;
+  for (int k = 0; k < (int)FxKind::kCount; ++k) {
+    const FxKind kind = (FxKind)k;
+    const bool lookup = kind == FxKind::Read || kind == FxKind::SubSourced || kind == FxKind::SubUnsourced ||
+                        kind == FxKind::MemPinNoop;
+    TEST_ASSERT_EQUAL_MESSAGE(!lookup, fx::recordsAsEffect(kind), nimbus::orch::fxSlug(kind));
+    nimbus::orch::Effect e;
+    e.kind = kind;
+    e.ok = k % 2 == 0;
+    std::snprintf(e.ref, sizeof e.ref, "m1a2b3c4");
+    nimbus::orch::TurnEffects one;
+    one.add(e.kind, e.ok, e.ref, e.count, e.flags);
+    TEST_ASSERT_EQUAL_STRING(one.summary().c_str(), fx::effectReceipt(e).c_str());
+    TEST_ASSERT_FALSE(fx::effectReceipt(e).empty());
+  }
+  TEST_ASSERT_FALSE(fx::recordsAsEffect(nimbus::orch::FxKind::kCount));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_fifty_per_chat_oldest_dropped_at_every_count);
@@ -1152,5 +1172,6 @@ int main() {
   RUN_TEST(test_the_least_recently_used_chat_is_evicted);
   RUN_TEST(test_a_refused_allocation_at_every_site_is_a_designed_state);
   RUN_TEST(test_a_refused_allocation_in_a_read_answers_nothing_and_loses_nothing);
+  RUN_TEST(test_every_kind_is_classed_for_the_hook);
   return UNITY_END();
 }

@@ -228,6 +228,17 @@ bool decodeLine(const char* p, size_t n, RingEntry& out) {
   return true;
 }
 
+bool recordsAsEffect(FxKind k) {
+  return k != FxKind::Read && k != FxKind::SubSourced && k != FxKind::SubUnsourced && k != FxKind::MemPinNoop &&
+         k != FxKind::kCount;
+}
+
+std::string effectReceipt(const Effect& e) {
+  TurnEffects one;
+  one.add(e.kind, e.ok, e.ref, e.count, e.flags);
+  return one.summary();
+}
+
 // ---- the ring ---------------------------------------------------------------------------------
 
 struct EffectRing::Slot {

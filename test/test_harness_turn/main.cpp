@@ -6,6 +6,7 @@
 #include "nimbus/orch/router_route.h"   // headRunsToolLoop
 
 #include "nimbus/orch/connector_grant.h"   // CUM-828: the grant a turn's requests carry
+#include "nimbus/orch/effect_ring.h"       // lane RB-FX: recordsAsEffect, effectReceipt
 
 #include <cstdio>
 #include <cstdlib>
@@ -107,6 +108,13 @@ struct Rig {
   // is covered in test_orch_head_loop; this asserts the engine wires the hook).
   std::vector<std::string> proseChecks;
   std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant: (chat, text)
+  std::vector<std::array<std::string, 3>> effects;   // lane RB-FX: Hooks::onEffect (chat, tool, receipt)
+  void wireCallAndEffectHooks(TurnEngine::Deps& d) {
+    d.hooks.onToolCall = [this](const orch::HeadToolCall& c) { hookToolCalls.push_back(c); };
+    d.hooks.onEffect = [this](const std::string& chat, const std::string& tool, const std::string& receipt) {
+      effects.push_back({chat, tool, receipt});
+    };
+  }
   std::vector<std::string> assistantRowTags;   // lane I: each captured row's engine tags
   std::function<void()> onProviderCall;   // in-turn hook (stuck-turn reaper test)
 
@@ -307,7 +315,7 @@ struct Rig {
     };
     d.hooks.onTurnStart = [this](const agent::TurnStartEv& ev) { hookStarts.push_back(ev); };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { hookEnds.push_back(ev); };
-    d.hooks.onToolCall = [this](const orch::HeadToolCall& c) { hookToolCalls.push_back(c); };
+    wireCallAndEffectHooks(d);
     d.hooks.onToolResult = [this](const orch::HeadToolResult& tr) {
       hookToolResults.push_back(tr);
     };
@@ -5883,9 +5891,49 @@ static void test_the_turn_state_holds_the_effect_ledger() {
   }
 }
 
+// RB-FX: every effect of a turn reaches the chat's effect ring through Hooks::onEffect, once:
+// a head tool call whose kind changes something (with its result), and each outcome apply
+// records (with the ledger's own summary of it); a lookup never does.
+static void test_every_effect_reaches_the_effect_hook_once() {
+  for (const char* tool : {"memory_search", "files_append"}) {
+    Rig r;
+    r.specs.push_back(orch::ToolRegistry::Spec{"memory.search", "search facts", "{}"});
+    r.specs.push_back(orch::ToolRegistry::Spec{"files.append", "append to a file", "{}"});
+    Rig::Script sc;
+    sc.dispatchTools = 1;
+    sc.toolName = tool;
+    sc.toolArgs = "{\"project\":\"p\",\"name\":\"log.csv\",\"text\":\"x\"}";
+    r.scripts["anthropic"] = {sc};
+    r.eng->handleMessage("do it", "", "1001");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.toolResults.size(), tool);
+    const bool write = std::string(tool) == "files_append";
+    TEST_ASSERT_EQUAL_MESSAGE(write ? 1 : 0, (int)r.effects.size(), tool);
+    if (write) {
+      TEST_ASSERT_EQUAL_STRING("1001", r.effects[0][0].c_str());
+      TEST_ASSERT_EQUAL_STRING("files.append", r.effects[0][1].c_str());
+      TEST_ASSERT_EQUAL_STRING(r.toolResults[0].output.c_str(), r.effects[0][2].c_str());
+    }
+  }
+  // An outcome apply records (a device action of the final turn): one hook call per entry.
+  Rig r;
+  Rig::Script s;
+  s.outJson = "{\"reply\":\"restarting\",\"ask\":\"\",\"memory\":\"\",\"device\":[{\"type\":\"reboot\"}],"
+              "\"mem_write\":[],\"mem_query\":[],\"session_ops\":[]}";
+  r.scripts["anthropic"] = {s};
+  r.eng->handleMessage("restart please", "", "1001");
+  const orch::TurnEffects& fx = r.eng->turnEffects();
+  size_t want = 0;
+  for (size_t i = 0; i < fx.size(); ++i) want += orch::fx::recordsAsEffect(fx.at(i).kind) ? 1 : 0;
+  TEST_ASSERT_TRUE(want >= 1);
+  TEST_ASSERT_EQUAL((int)want, (int)r.effects.size());
+  TEST_ASSERT_EQUAL_STRING("1001", r.effects[0][0].c_str());
+  TEST_ASSERT_EQUAL_STRING(orch::fx::effectReceipt(fx.at(0)).c_str(), r.effects[0][2].c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_turn_state_holds_the_effect_ledger);
+  RUN_TEST(test_every_effect_reaches_the_effect_hook_once);
   RUN_TEST(test_filler_class);
   RUN_TEST(test_real_replies_are_not_filler);
   RUN_TEST(test_final_check_reads_the_field);

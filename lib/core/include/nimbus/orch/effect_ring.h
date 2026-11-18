@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "nimbus/orch/tx/log.h"   // tx::TxFiles: the storage seam (an interface only, no engine-2 code)
+#include "nimbus/orch/turn_effects.h"   // FxKind, Effect: what the engine hook records
 
 // effect_ring.h - each chat's recent effects, stored (PRD section 8, rail 8 "Truth check";
 // lane RB-FX). What the device actually did, one entry per effect: the time, the tool and a
@@ -141,6 +142,13 @@ bool ringPath(const std::string& chatId, std::string& path);
 // and answers false for any line not in the stored form (a torn tail, a bad crc).
 std::string encodeLine(const RingEntry& e);
 bool decodeLine(const char* p, size_t n, RingEntry& out);
+
+// The engine's hook (Hooks::onEffect) records a kind only when it changes something: not a
+// lookup (Read), a sub-agent result (SubSourced, SubUnsourced) or a pin that changed nothing.
+bool recordsAsEffect(FxKind k);
+// The receipt of an outcome apply recorded (no tool result of its own): the per-turn ledger's
+// own plain summary of that one entry ("memory writes: 1 stored (m1a2b3c4)").
+std::string effectReceipt(const Effect& e);
 
 class EffectRing {
  public:

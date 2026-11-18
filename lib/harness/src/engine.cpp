@@ -8,6 +8,7 @@
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - the wire budget's refusal
 #include "nimbus/orch/budget.h"    // headContextBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
+#include "nimbus/orch/effect_ring.h"   // fx::recordsAsEffect, fx::effectReceipt (lane RB-FX)
 #include "nimbus/orch/action_rules.h"  // actionRuleRow - a tool's plain-words description
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
@@ -1101,6 +1102,16 @@ struct RunTurnLocals {
   std::string requestedModel;     // ... and its model
   std::string headModel;          // the head model the context budget is derived from
 };
+
+// Lane RB-FX: the outcomes apply recorded this turn (entries from `mark` on) go to the chat's
+// effect ring, each with the ledger's own summary of it. Out of line: runTurn's frame.
+__attribute__((noinline)) void reportApplyEffects(const Hooks& hooks, const orch::TurnEffects& fx,
+                                                  const std::string& chatId, size_t mark) {
+  if (!hooks.onEffect) return;
+  for (size_t i = mark; i < fx.size(); ++i)
+    if (orch::fx::recordsAsEffect(fx.at(i).kind))
+      hooks.onEffect(chatId, orch::fxSlug(fx.at(i).kind), orch::fx::effectReceipt(fx.at(i)));
+}
 }  // namespace
 
 bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
@@ -1591,12 +1602,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // effect (the shared tool table) and its own result text.
     {
       auto inner = std::move(headTools.dispatch);
-      headTools.dispatch = [this, inner, nameMap](const orch::HeadToolCall& call) -> orch::HeadToolResult {
+      headTools.dispatch = [this, inner, nameMap, chatId](const orch::HeadToolCall& call) -> orch::HeadToolResult {
         orch::HeadToolResult r = inner(call);
         auto it = nameMap->find(call.name);
         const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
         const uint16_t flags = toolCallFlags(regName, call.argsJson);
-        orch::recordToolEffect(turnFx_, fxKindForTool(regName), r.isError, r.output, flags);
+        const orch::FxKind kind = fxKindForTool(regName);
+        orch::recordToolEffect(turnFx_, kind, r.isError, r.output, flags);
+        // Lane RB-FX: the chat's effect ring keeps it across turns (the truth check reads it).
+        if (d_.hooks.onEffect && orch::fx::recordsAsEffect(kind)) d_.hooks.onEffect(chatId, regName, r.output);
         return r;
       };
     }
@@ -2476,6 +2490,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     if (d_.jobs) d_.jobs->noteSpawnIntentRefused(chatId, name, task, reason);
   };
   st.effects             = &turnFx_;
+  const size_t fxMark = turnFx_.size();   // lane RB-FX: what apply records after this
   bool spawned = false;
   if (memoryOnly) {
     const int dropped = dream::restrictTurn(turn);
@@ -2541,6 +2556,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
     if (innerDeliver) d_.apply.deliver = std::move(innerDeliver);
   }
+  reportApplyEffects(d_.hooks, turnFx_, chatId, fxMark);
   parkMemResults(chatId);
   // Lane POL2: the open-question list observes the completed turn (a reply that
   // mentions an item marks it raised; the owner's message re-opens or withdraws
