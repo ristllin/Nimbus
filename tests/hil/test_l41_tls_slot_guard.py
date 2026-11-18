@@ -99,7 +99,8 @@ _HELD_BY_CALLER = {
     ("agent/provider_verify.cpp", "fetchAnthropicPage"): ["fetchModelList", "runOne"],
     ("agent/adapters/provider_file_fetch.cpp", "httpsGetToSink"): ["captureProviderFile"],
     ("agent/adapters/audio_tts.cpp", "connectTts"): ["synthesizeToFile"],
-    ("sys/ota_update.cpp", "httpsGetOnce"): ["httpsGetUrl", "fetchManifest", "checkRun"],
+    # RB-OTA1: fetchOne fetches each manifest (stable, and candidate through fetchCandidate).
+    ("sys/ota_update.cpp", "httpsGetOnce"): ["httpsGetUrl", "fetchOne", "fetchManifest", "checkRun"],
     # Lane SNI: the MCP dial takes the TLS client by its type (so it names the host); both
     # callers, exchange and httpDo, hold the slot with the scope guard.
     ("agent/connectors.cpp", "mcpConnect"): ["exchange"],

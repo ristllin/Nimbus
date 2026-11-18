@@ -1,6 +1,6 @@
 {
   "lane": "RB-OTA1",
   "allowance_bytes": 3584,
-  "envs": {"test": 4608, "test-cyd": 4608},
-  "why": "No PRD flash-ledger row for RB-OTA1 (PRD section 10 lists the v5.2.0 lanes only). Map delta measured on the lane's builds against a30b12fb: esp32s3-cyd +3,378 B (holdHeads parse and match, the hold line, the channel file, the candidate fetch and pick, the download verdict), test-cyd +4,368 B (the same plus the OTACHAN console command and the OTA? fields); rounded up to the next 512 B. Docs pack unchanged."
+  "envs": {"esp32s3-cyd": 4096, "test": 4608, "test-cyd": 4608},
+  "why": "No PRD flash-ledger row for RB-OTA1 (PRD section 10 lists the v5.2.0 lanes only), so the figure is the map delta measured on the lane's tip against a30b12fb, rounded up to the next 256 or 512 B: esp32s3 +3,440 B, esp32s3-cyd +3,952 B (holdHeads parse and match, the one hold line, the channel file, the candidate fetch and pick, the download verdict), test +4,400 B and test-cyd +4,368 B (the same plus the OTACHAN console command and the OTA? fields). Docs pack unchanged."
 }
