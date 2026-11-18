@@ -336,6 +336,13 @@ static void test_writer_pieces_and_splices() {
   TEST_ASSERT_TRUE(parsesAs(agent::materializeBody(req), doc));
   TEST_ASSERT_EQUAL_STRING("pre:iVBORwECAwQF:post", doc["data"] | "");
   TEST_ASSERT_EQUAL_STRING("[Tue 17 Nov 2026 13:02] hi\n", doc["stamp"] | "");
+  // invalid UTF-8 in the pieces is repaired, around a splice too
+  agent::HttpRequest torn;
+  body::BodyWriter t(torn.body, &torn.splices);
+  t.beginArray().beginStr().part("a\xC3").splice(png, 3).part("\xE2\x82").endStr().beginStr(body::Over::Clip).part("\xFF").endStr().endArray();
+  expectOk(t.status());
+  TEST_ASSERT_TRUE(nimbus::utf8Valid(torn.body));
+  TEST_ASSERT_EQUAL(3, (int)t.stats().repaired);
   // a splice outside a string, or without a splice list, is refused
   std::string out;
   body::BodyWriter none(out);
@@ -452,12 +459,14 @@ static void test_retryable_classes_retry_twice_then_one_line() {
                         {sp::httpError(502), ExchangeErr::Server},     {sp::httpError(503), ExchangeErr::Server},
                         {sp::httpError(529), ExchangeErr::Server},     {sp::httpError(429), ExchangeErr::RateLimited}};
   for (const Case& c : cases) {
-    for (int fails = 0; fails <= 3; ++fails) {
+    for (int fails = 0; fails <= 4; ++fails) {
       Rig rig;
       for (int i = 0; i < fails; ++i) rig.model.push(c.fault);
       if (fails < 3) rig.model.push(sp::say("done"));
+      if (fails == 4) rig.model.push(sp::say("never asked"));
       expectOk(rig.run());
       const int sent = fails < 3 ? fails + 1 : 3;
+      TEST_ASSERT_EQUAL_MESSAGE((int)(fails == 4 ? 2 : 0), (int)rig.model.remaining(), "more than two retries");
       TEST_ASSERT_EQUAL_MESSAGE(sent, (int)rig.model.requests().size(), plain::exchangeErrSlug(c.err));
       TEST_ASSERT_EQUAL(sent, rig.out.requests);
       TEST_ASSERT_EQUAL(sent - 1, rig.out.retries);
@@ -475,7 +484,7 @@ static void test_retryable_classes_retry_twice_then_one_line() {
         expectOnePlainLine(rig.out);
       }
       std::string why;
-      TEST_ASSERT_TRUE_MESSAGE(rig.model.verify(why), why.c_str());
+      if (fails < 4) TEST_ASSERT_TRUE_MESSAGE(rig.model.verify(why), why.c_str());
     }
   }
 }

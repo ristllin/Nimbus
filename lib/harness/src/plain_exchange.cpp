@@ -290,8 +290,11 @@ class Exchange {
   }
 
   bool retrySameHost() {
-    if (sameHost_ >= kMaxSameHostRetries || !fits(kRetryWaitMs[sameHost_])) return false;
-    return wait(kRetryWaitMs[sameHost_++]);
+    constexpr size_t kLastWait = sizeof(kRetryWaitMs) / sizeof(kRetryWaitMs[0]) - 1;
+    const uint32_t ms = kRetryWaitMs[sameHost_ < kLastWait ? sameHost_ : kLastWait];
+    if (sameHost_ >= kMaxSameHostRetries || !fits(ms)) return false;
+    ++sameHost_;
+    return wait(ms);
   }
 
   bool retryRouter() {
@@ -337,7 +340,6 @@ class Exchange {
     out_.cutRetried = cutRetried_;
     out_.ms = elapsed();
     out_.parkHost = verdict_.err == ExchangeErr::KeyRefused;   // a park holds even when a cut is delivered
-    if (err != ExchangeErr::None && err != ExchangeErr::Cut) step_ = ParsedStep{};
     step_.usage = usage_;
     out_.step = std::move(step_);
     if (err == ExchangeErr::None) return Status::success();
