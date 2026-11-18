@@ -1466,6 +1466,25 @@ static void test_upload_dead_for_memory_is_resent_once_at_the_floor() {
   }
 }
 
+// Candidate 4, F4: the floor resend respects the memory verdict. When the heap stayed low for
+// the whole wait after the upload died (StayedLow), there is no floor resend: the turn ends
+// with the memory reply, as in v5.1.1 (CUM-404/CUM-477), never a new body and TLS connect on a
+// heap the wait just showed is starved.
+static void test_no_floor_resend_when_the_heap_stayed_low() {
+  BudgetScope scope(nullptr, 250000);
+  SonnetRig r(false);
+  r.d.http.script.push_back(harness_test::transportCut(10, kDmaWriteFailed));
+  r.d.http.script.push_back({"", "", 200, finalResponse("anthropic")});
+  // Healthy at the round's start; after the upload died the total stays starved.
+  r.pd.freeHeap = [&r] { return r.d.http.seen.empty() ? (uint32_t)100000 : (uint32_t)10000; };
+  LogCapture::install();
+  std::string err;
+  TEST_ASSERT_FALSE(r.run(err));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)r.d.http.seen.size(), "no floor resend on a starved heap");
+  TEST_ASSERT_FALSE(LogCapture::contains("upload failed for memory"));
+  TEST_ASSERT_TRUE_MESSAGE(err.find("low memory") != std::string::npos, err.c_str());
+}
+
 // Lane B's caps send at least 1 token and leave it to the wire to refuse a round whose fit
 // cannot carry the host's minimum final. A text round over v5.1.1's 85,000 B that is too big
 // for its host's read window (a budget larger than the window allows) is refused with the
@@ -1624,6 +1643,7 @@ int main(int, char**) {
   RUN_TEST(test_fragmented_pool_sends_at_the_v5_1_1_floor_on_every_wire);
   RUN_TEST(test_fragmented_pool_turn_gives_up_history_with_its_note);
   RUN_TEST(test_upload_dead_for_memory_is_resent_once_at_the_floor);
+  RUN_TEST(test_no_floor_resend_when_the_heap_stayed_low);
   RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);

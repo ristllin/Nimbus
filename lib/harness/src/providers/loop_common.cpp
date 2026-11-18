@@ -502,10 +502,14 @@ class RoundRecovery {
   // turn's requests go at v5.1.1's budget from here on (holdSendFloor, cleared when the loop
   // ends), the step is rebuilt on it, and the round runs once more (the wire refuses the
   // big body before a byte leaves, so the controller gives up what does not fit with its
-  // note). Once a turn: a second death at the floor fails the round as before.
+  // note). Once a turn: a second death at the floor fails the round as before. Never when
+  // the heap stayed low for the whole wait: that is the memory reply.
   __attribute__((noinline)) bool sendFloorRetry(const std::string& host, const orch::HeadStep& sr) {
     const wire::LastExchange& x = wire::lastExchange();
     if (sr.ok || floorTried_ || !x.unsent || !x.lowMem || orch::sendFloorHeld()) return false;
+    // The memory verdict stands (candidate 4, F4): when the heap stayed low through the wait
+    // (resendUnsentOnce named it LowMemory) the turn ends with the memory reply, as in v5.1.1.
+    if (sr.error == kUnsentLowMem) return false;
     if (orch::budgetLink() != orch::BudgetLink::Device) return false;
     if (wire::lastRound().load.bodyBytes <= orch::kLegacyWireBodyBytes) return false;   // the floor changes nothing
     floorTried_ = true;
