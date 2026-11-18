@@ -277,8 +277,28 @@ std::string describe(const Case& c, const char* host, Path p, const std::string&
   return m;
 }
 
+// What the owner got and what was sent, against the seam's contract: "" when it held.
+std::string contractBroken(const Rig& r, const Case& c, const std::string& chat, size_t rounds, Path p,
+                           const std::string& where) {
+  // Exactly one message, to the chat that asked, byte for byte the model's reply.
+  if (r.delivered.size() != 1) return "delivered " + std::to_string(r.delivered.size()) + " messages: " + where;
+  if (r.delivered[0].first != chat) return "delivered to another chat: " + where;
+  if (r.delivered[0].second != c.reply) return "the reply changed: " + where;
+  // The rounds the model asked for, and no correction round.
+  if (r.requests() != rounds) return std::to_string(r.requests()) + " requests: " + where;
+  if (p == Path::AfterToolError &&
+      (r.dispatched != 1 || r.wire.http.seen.back().body.find("the search index is unavailable") == std::string::npos))
+    return "the tool error did not reach the model: " + where;
+  for (const auto& req : r.wire.http.seen)
+    if (req.body.find("CLAIM CHECK") != std::string::npos || req.body.find("TURN CHECK") != std::string::npos)
+      return "a check text in a request: " + where;
+  // History holds what the owner got: one assistant row, the reply as delivered.
+  if (r.captured.size() != 1 || r.captured[0].second != c.reply) return "the history row differs: " + where;
+  return std::string();
+}
+
 // One turn of one class on one wire and one path: "" when the seam kept its contract,
-// else what broke it.
+// else what broke it. (A harness line changes the reply, so "the reply changed" covers it.)
 std::string runCase(const Case& c, const char* host, Path p) {
   Rig r(host);
   const std::string chat = chatOf(p);
@@ -297,27 +317,9 @@ std::string runCase(const Case& c, const char* host, Path p) {
     r.eng->injectScheduledTurn(chat, c.owner, "check");
   else
     r.eng->handleMessage(c.owner, "Roy", chat);
-
   std::string all;
   for (const auto& d : r.delivered) all += d.second + "\n---\n";
-  const std::string where = describe(c, host, p, all);
-  // Exactly one message, to the chat that asked, byte for byte the model's reply.
-  if (r.delivered.size() != 1) return "delivered " + std::to_string(r.delivered.size()) + " messages: " + where;
-  if (r.delivered[0].first != chat) return "delivered to another chat: " + where;
-  if (r.delivered[0].second != c.reply) return "the reply changed: " + where;
-  if (all.find("(Correction") != std::string::npos || all.find("(Note") != std::string::npos)
-    return "a harness line: " + where;
-  // The rounds the model asked for, and no correction round.
-  if (r.requests() != rounds) return std::to_string(r.requests()) + " requests: " + where;
-  if (p == Path::AfterToolError &&
-      (r.dispatched != 1 || r.wire.http.seen.back().body.find("the search index is unavailable") == std::string::npos))
-    return "the tool error did not reach the model: " + where;
-  for (const auto& req : r.wire.http.seen)
-    if (req.body.find("CLAIM CHECK") != std::string::npos || req.body.find("TURN CHECK") != std::string::npos)
-      return "a check text in a request: " + where;
-  // History holds what the owner got: one assistant row, the reply as delivered.
-  if (r.captured.size() != 1 || r.captured[0].second != c.reply) return "the history row differs: " + where;
-  return std::string();
+  return contractBroken(r, c, chat, rounds, p, describe(c, host, p, all));
 }
 
 }  // namespace

@@ -6,15 +6,11 @@ The last test reads the REAL tree's built images when they exist (the battery bu
 envs before the citools leg); in CI's gate-logic job there are none and it skips with a reason.
 """
 
-import os
-
 import pytest
 
 import check_no_harness_lines as gate
 
-ALLOWED = (
-    {"text": "(Note: the device kept ", "owner": "device", "why": "a device record"},
-)
+ALLOWED = ({"text": "(Note: the device kept ", "owner": "device", "why": "a device record"},)
 
 
 def _image(*texts: str) -> bytes:

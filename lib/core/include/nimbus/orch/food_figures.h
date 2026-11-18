@@ -57,11 +57,9 @@ struct FoodGap {
   bool implied = false;  // UnsourcedTarget: a "left" figure implied it
 };
 
-// The numbers in a source text, normalized and space-separated ("20 3 1,500" -> "20 3 1500"),
-// each once, at most `cap` bytes: all the figure check reads of a source.
-std::string figureNumbers(const std::string& text, size_t cap = 4096);
-
-// `sourceNumbers`: the normalized numbers (figureNumbers) of what a target may come from.
+// `sourceNumbers`: the normalized numbers of what a target may come from, space-separated
+// ("20 3 1500"); the claim scanner's figureNumbers built them until v5.2.0 (test_food_figures
+// keeps a copy).
 std::vector<FoodGap> foodFigureGaps(const std::string& reply, const FoodFacts& facts,
                                     const std::string& sourceNumbers);
 // The targets alone, with no ledger: a memory about to be written, a targets row.

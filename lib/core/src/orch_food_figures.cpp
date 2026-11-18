@@ -1140,36 +1140,4 @@ std::string foodGapTail(const std::vector<FoodGap>& gaps, const FoodFacts& facts
   return out;
 }
 
-// The numbers in a source text, normalized ("1,500" -> "1500", "20g" -> "20") and
-// space-separated, each once, at most `cap` bytes. Moved byte for byte from orch_claims.cpp
-// (figureNumbers, groundingNumbers, normNumber) when lane RB-Q1b deleted the claim scanner.
-std::string figureNumbers(const std::string& text, size_t cap) {
-  constexpr size_t kSourceScanMax = 32768;
-  const std::string g = text.size() > kSourceScanMax ? text.substr(text.size() - kSourceScanMax) : text;
-  std::string out;
-  size_t p = 0;
-  while (p < g.size()) {
-    if (!isDigit(g[p])) { p++; continue; }
-    size_t e = p;
-    while (e < g.size() &&
-           (isDigit(g[e]) || ((g[e] == '.' || g[e] == ',' || g[e] == ':') && e + 1 < g.size() && isDigit(g[e + 1]))))
-      e++;
-    std::string n;   // normNumber: thousands commas dropped, a unit suffix cut
-    for (size_t q = p; q < e; q++) {
-      const char c = g[q];
-      if (isDigit(c) || c == '.' || c == ':') n += c;
-      else if (c != ',') break;
-    }
-    while (!n.empty() && (n.back() == '.' || n.back() == ':')) n.pop_back();
-    p = e;
-    if (n.empty()) continue;
-    const std::string padded = " " + out + " ";
-    if (padded.find(" " + n + " ") != std::string::npos) continue;
-    if (out.size() + n.size() + 1 > cap) break;
-    if (!out.empty()) out += ' ';
-    out += n;
-  }
-  return out;
-}
-
 }  // namespace nimbus::orch

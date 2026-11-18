@@ -13,6 +13,45 @@ using namespace nimbus::orch;
 void setUp() {}
 void tearDown() {}
 
+// The numbers of a source text, normalized ("1,500" -> "1500", "20g" -> "20"), each once,
+// space-separated, at most `cap` bytes: the form foodFigureGaps reads. A copy of the claim
+// scanner's figureNumbers, which lane RB-Q1b deleted with orch_claims.cpp (v5.2.0); the
+// device no longer calls foodFigureGaps, and lane RB-L1d deletes this suite with it.
+static bool isDigitChar(char c) { return c >= '0' && c <= '9'; }
+
+static size_t numberEnd(const std::string& g, size_t p) {
+  while (p < g.size() &&
+         (isDigitChar(g[p]) || ((g[p] == '.' || g[p] == ',' || g[p] == ':') && p + 1 < g.size() && isDigitChar(g[p + 1]))))
+    p++;
+  return p;
+}
+
+static std::string normNumber(const std::string& g, size_t b, size_t e) {
+  std::string n;
+  for (size_t q = b; q < e && (isDigitChar(g[q]) || g[q] == '.' || g[q] == ':' || g[q] == ','); q++)
+    if (g[q] != ',') n += g[q];
+  while (!n.empty() && (n.back() == '.' || n.back() == ':')) n.pop_back();
+  return n;
+}
+
+static std::string figureNumbers(const std::string& text, size_t cap = 4096) {
+  const std::string g = text.size() > 32768 ? text.substr(text.size() - 32768) : text;
+  std::string out;
+  for (size_t p = 0; p < g.size();) {
+    if (!isDigitChar(g[p])) {
+      p++;
+      continue;
+    }
+    const size_t e = numberEnd(g, p);
+    const std::string n = normNumber(g, p, e);
+    p = e;
+    if (n.empty() || (" " + out + " ").find(" " + n + " ") != std::string::npos) continue;
+    if (out.size() + n.size() + 1 > cap) break;
+    out += (out.empty() ? "" : " ") + n;
+  }
+  return out;
+}
+
 static FoodFacts ledger(double kcal, double protein, int unknown = 0) {
   FoodFacts f;
   f.have = true;
