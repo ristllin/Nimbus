@@ -1,0 +1,380 @@
+{
+ "days": [
+  "2026-10-30"
+ ],
+ "first_local": "2026-10-30 08:15:00",
+ "turns": [
+  {
+   "at_s": 0,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 50,
+   "tools": [
+    [
+     "files_read",
+     384
+    ]
+   ],
+   "reply_bytes": 207,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 33293,
+    "out": 344,
+    "cr": 16512,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 1800,
+   "exact": false,
+   "msgs": 1,
+   "photos": 2,
+   "text_bytes": 54,
+   "tools": [
+    [
+     "files_append",
+     335
+    ]
+   ],
+   "reply_bytes": 446,
+   "device_model": "mistral-small",
+   "device_tokens": {
+    "in": 33483,
+    "out": 629,
+    "cr": 16256,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 18000,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 184,
+   "tools": [
+    [
+     "image_look",
+     285
+    ],
+    [
+     "image_look",
+     249
+    ],
+    [
+     "files_read",
+     475
+    ],
+    [
+     "image_look",
+     328
+    ],
+    [
+     "image_look",
+     298
+    ]
+   ],
+   "reply_bytes": 197,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 52688,
+    "out": 546,
+    "cr": 0,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 19800,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 55,
+   "tools": [
+    [
+     "files_append",
+     309
+    ],
+    [
+     "files_read",
+     202
+    ],
+    [
+     "files_append",
+     321
+    ],
+    [
+     "files_read",
+     584
+    ],
+    [
+     "files_append",
+     325
+    ]
+   ],
+   "reply_bytes": 393,
+   "device_model": "mistral-small",
+   "device_tokens": {
+    "in": 100183,
+    "out": 1197,
+    "cr": 96128,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 38925,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 16,
+   "tools": [
+    [
+     "files_read",
+     792
+    ]
+   ],
+   "reply_bytes": 264,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 32568,
+    "out": 265,
+    "cr": 16000,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 39375,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 117,
+   "tools": [
+    [
+     "files_read",
+     792
+    ],
+    [
+     "files_append",
+     196
+    ],
+    [
+     "files_append",
+     216
+    ],
+    [
+     "files_read",
+     190
+    ],
+    [
+     "files_append",
+     311
+    ],
+    [
+     "files_append",
+     214
+    ],
+    [
+     "device_log",
+     443
+    ],
+    [
+     "files_read",
+     761
+    ]
+   ],
+   "reply_bytes": 495,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 136393,
+    "out": 828,
+    "cr": 67712,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 39825,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 127,
+   "tools": [
+    [
+     "files_read",
+     792
+    ],
+    [
+     "skill_get",
+     1082
+    ],
+    [
+     "skill_get",
+     1082
+    ],
+    [
+     "files_append",
+     216
+    ],
+    [
+     "files_read",
+     190
+    ],
+    [
+     "files_append",
+     335
+    ],
+    [
+     "files_append",
+     194
+    ],
+    [
+     "files_read",
+     1043
+    ]
+   ],
+   "reply_bytes": 773,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 161177,
+    "out": 1605,
+    "cr": 149760,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 40275,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 77,
+   "tools": [
+    [
+     "files_read",
+     1089
+    ],
+    [
+     "skill_get",
+     1082
+    ],
+    [
+     "session_ops",
+     525
+    ]
+   ],
+   "reply_bytes": 237,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 53679,
+    "out": 618,
+    "cr": 48896,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 40725,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 34,
+   "tools": [
+    [
+     "files_append",
+     321
+    ],
+    [
+     "files_read",
+     807
+    ],
+    [
+     "files_append",
+     336
+    ],
+    [
+     "files_append",
+     196
+    ],
+    [
+     "files_append",
+     197
+    ]
+   ],
+   "reply_bytes": 505,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 108001,
+    "out": 1462,
+    "cr": 88704,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 41175,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 102,
+   "tools": [
+    [
+     "files_append",
+     170
+    ]
+   ],
+   "reply_bytes": 417,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 52716,
+    "out": 879,
+    "cr": 49664,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 41625,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 268,
+   "tools": [
+    [
+     "files_append",
+     336
+    ]
+   ],
+   "reply_bytes": 625,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 35161,
+    "out": 826,
+    "cr": 17408,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 42075,
+   "exact": false,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 49,
+   "tools": [
+    [
+     "files_append",
+     254
+    ],
+    [
+     "files_read",
+     537
+    ],
+    [
+     "files_append",
+     257
+    ]
+   ],
+   "reply_bytes": 214,
+   "device_model": "mistral-large",
+   "device_tokens": {
+    "in": 51371,
+    "out": 701,
+    "cr": 33920,
+    "cw": 0
+   }
+  }
+ ]
+}

@@ -332,6 +332,301 @@ def serve(conv: Conversation, provider, tools, inbox: queue.Queue, deliver, on_t
             return
 
 
+# ------------------------------------------------- engine-2 transcript (emulated)
+# PRD section 2, as a renderer over a neutral item list, for measuring what the design costs
+# before it exists in firmware (tests/evals/replay). The constants are the PRD's.
+PROFILES = {  # name -> (H, L, digest block bytes)
+    "tight": (24_000, 12_000, 2_048),
+    "lean": (40_000, 20_000, 4_096),
+    "standard": (60_000, 30_000, 6_144),
+    "wide": (100_000, 50_000, 6_144),
+}
+COLD_OPEN_S = 270  # a turn opening this long after the last request moves the stub pointer
+RECEIPT_MAX = 2_048  # internal results up to this stay whole until compacted (tier 1)
+LEDGER_RECEIPT_MAX = 4_096
+LEDGER_TOOLS = ("ledger_write", "ledger_day", "ledger_add", "ledger_update", "ledger_remove", "ledger_target")
+OUTSIDE_TOOLS = ("web_search", "fetch_url")
+WARM_BULK_MAX = 24_576  # whole internal bulk above the pointer that moves it on a warm open
+PHOTO_TURNS, PHOTO_MAX, PHOTO_IDLE_S = 2, 4, 3_600  # file-reference heads
+DIGEST_MAX = 768
+KEEP_NEWEST_TURNS = 6  # compaction never takes the newest owner turns
+LEDGER_DAY_START_H = 4
+
+
+def _one_line(text: str, n: int) -> str:
+    return " ".join(text.split())[:n]
+
+
+class E2Transcript:
+    """One chat's engine-2 transcript: append-only items, rendered per request by pure rules.
+
+    Items: u (owner message: stamped text, photos), a (assistant content as served), r (tool
+    results). Rendering applies the stub pointer, the photo retention rule, closed-turn thinking
+    (dropped unless replay_thinking) and the digests through thru. Every rule that changes the
+    rendered prefix is counted in self.changes so a run can report its cache change points.
+    """
+
+    def __init__(self, profile: str = "standard", replay_thinking: bool = False, tz: str = "Europe/London"):
+        self.H, self.L, self.digest_cap = PROFILES[profile]
+        self.profile, self.replay_thinking, self.tz = profile, replay_thinking, ZoneInfo(tz)
+        self.items, self.q, self.turn = [], 0, 0
+        self.pointer = 0  # results at or below this q render as stubs (when bulk)
+        self.thru = 0  # items at or below this q are covered by digests
+        self.digests, self.archived = [], []  # [(day, text)]
+        self.visible_photos = set()
+        self.last_req_end = None  # virtual epoch seconds
+        self.changes = {}
+
+    # ------------------------------------------------------------ appending
+    def _add(self, kind: str, **kw) -> dict:
+        self.q += 1
+        item = {"q": self.q, "turn": self.turn, "k": kind, **kw}
+        self.items.append(item)
+        return item
+
+    def _change(self, what: str):
+        self.changes[what] = self.changes.get(what, 0) + 1
+
+    def open_turn(self, now: float, text: str, photos=()) -> dict:
+        """A new owner turn at virtual time now. photos: [(media type, base64, ref)]."""
+        gap = None if self.last_req_end is None else now - self.last_req_end
+        cold = gap is None or gap > COLD_OPEN_S
+        closed_top = self.q
+        moved = False
+        if cold and self.pointer < closed_top:
+            moved = self._move_pointer(closed_top)
+        elif not cold and self._whole_bulk_above_pointer() > WARM_BULK_MAX:
+            moved = self._move_pointer(closed_top)
+        if moved:
+            self._change("pointer")
+        self.turn += 1
+        self._add("u", text=text, photos=list(photos), t=now)
+        self._retain_photos(gap)
+        return {"cold": cold, "gap_s": gap, "pointer_moved": moved}
+
+    def _move_pointer(self, to_q: int) -> bool:
+        before = self._stubbed_ids()
+        self.pointer = max(self.pointer, to_q)
+        return self._stubbed_ids() != before
+
+    def add_assistant(self, content: list):
+        self._add("a", content=content)
+
+    def add_results(self, results: list, now: float):
+        """results: [(call id, tool name, args, text or content list, is_error)]."""
+        for cid, name, args, out, err in results:
+            text = out if isinstance(out, str) else json.dumps(out)
+            self._add("r", id=cid, n=name, args=args, out=out, err=bool(err), t=now, size=len(text.encode()))
+
+    def mark_request(self, end: float):
+        self.last_req_end = end
+
+    def seed(self, history: list, digests: list):
+        """Aged state: closed text-only turns [(t, owner text, reply text)] and digests [(day, text)],
+        as if earlier days had been compacted into the block and recent ones kept verbatim."""
+        for t, owner, reply in history:
+            self.turn += 1
+            self._add("u", text=owner, photos=[], t=t)
+            self._add("a", content=[{"type": "text", "text": reply}])
+            self.last_req_end = t + 10
+        self.pointer = self.q
+        self.digests = list(digests)
+        while self.digests and len(self.digest_block().encode()) > self.digest_cap:
+            self.archived.append(self.digests.pop(0))
+
+    # ------------------------------------------------------------ rules
+    def _is_bulk(self, r: dict) -> bool:
+        limit = LEDGER_RECEIPT_MAX if r["n"] in LEDGER_TOOLS else RECEIPT_MAX
+        return r["n"] in OUTSIDE_TOOLS or r["size"] > limit or not isinstance(r["out"], str)
+
+    def _stubbed(self, r: dict) -> bool:
+        if r["n"] in OUTSIDE_TOOLS and r["turn"] < self.turn:
+            return True  # outside results are stubs from the close of their own turn
+        return self._is_bulk(r) and r["q"] <= self.pointer
+
+    def _stubbed_ids(self) -> set:
+        return {r["q"] for r in self.items if r["k"] == "r" and self._stubbed(r)}
+
+    def _whole_bulk_above_pointer(self) -> int:
+        return sum(
+            r["size"]
+            for r in self.items
+            if r["k"] == "r" and r["q"] > self.pointer and r["n"] not in OUTSIDE_TOOLS and self._is_bulk(r)
+        )
+
+    def stub_text(self, r: dict) -> str:
+        hhmm = datetime.fromtimestamp(r["t"], self.tz).strftime("%H:%M")
+        if r["n"] in OUTSIDE_TOOLS:
+            args = _one_line(json.dumps(r["args"], ensure_ascii=False), 120)
+            return f"[stub {r['n']}({args}) r{r['q']} {r['size']}B outside content, not shown: view id=r{r['q']}]"
+        text = r["out"] if isinstance(r["out"], str) else "(image)"
+        lines = text.count("\n") + 1
+        head = _one_line(text, 200)
+        return f"[stub {r['n']} r{r['q']} {r['size']}B {lines}L {hhmm}] {head} ... (full: view id=r{r['q']})"
+
+    def _retain_photos(self, gap):
+        """Photos of the last two photo-carrying owner turns, at most 4, for the next two owner
+        turns; none after 60 minutes idle. Monotonic: a photo that left view never returns."""
+        photo_turns = [u for u in self.items if u["k"] == "u" and u["photos"]][-PHOTO_TURNS:]
+        keep = []
+        for u in reversed(photo_turns):
+            if self.turn - u["turn"] > PHOTO_TURNS:
+                continue
+            if u["turn"] != self.turn and gap is not None and gap > PHOTO_IDLE_S:
+                continue
+            keep += [ref for _, _, ref in reversed(u["photos"])]
+        keep = set(keep[:PHOTO_MAX])
+        current = {ref for _, _, ref in self.items[-1]["photos"]}
+        new_visible = {ref for ref in keep if ref in current or ref in self.visible_photos}
+        if self.visible_photos - new_visible:
+            self._change("photo_left")
+        self.visible_photos = new_visible
+
+    # ------------------------------------------------------------ rendering (Anthropic Messages)
+    def _photo_stub(self, u: dict, ref: str) -> str:
+        when = datetime.fromtimestamp(u["t"], self.tz).strftime("%d %b %Y %H:%M")
+        return f"[photo p{ref} {when} not shown: view id=p{ref}]"
+
+    def render_anthropic(self) -> list:
+        msgs = []
+
+        def push(role, blocks):
+            if msgs and msgs[-1]["role"] == role:
+                msgs[-1]["content"].extend(blocks)
+            else:
+                msgs.append({"role": role, "content": list(blocks)})
+
+        last_prev = None  # index of the last message of the previous turn
+        for it in self.items:
+            if it["q"] <= self.thru:
+                continue
+            if it["k"] == "u":
+                last_prev = len(msgs) - 1 if msgs else None
+                blocks = []
+                for mt, b64, ref in it["photos"]:
+                    if ref in self.visible_photos:
+                        blocks.append({"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}})
+                    else:
+                        blocks.append({"type": "text", "text": self._photo_stub(it, ref)})
+                push("user", blocks + [{"type": "text", "text": it["text"]}])
+            elif it["k"] == "a":
+                content = it["content"]
+                if it["turn"] < self.turn and not self.replay_thinking:
+                    content = [b for b in content if b.get("type") not in ("thinking", "redacted_thinking")]
+                push("assistant", content or [{"type": "text", "text": "(no text)"}])
+            else:
+                body = self.stub_text(it) if self._stubbed(it) else it["out"]
+                push("user", [{"type": "tool_result", "tool_use_id": it["id"], "content": body, "is_error": it["err"]}])
+        if last_prev is not None and last_prev >= 0:  # cache point: the last block of the previous turn
+            blk = dict(msgs[last_prev]["content"][-1])
+            if blk.get("type") not in ("thinking", "redacted_thinking"):
+                blk["cache_control"] = {"type": "ephemeral"}
+                msgs[last_prev]["content"][-1] = blk
+        return msgs
+
+    def view(self, ident: str):
+        """(content, is_error) for view id=r<q> (the stored result) or p<ref> (the photo)."""
+        ident = str(ident).strip()
+        for it in self.items:
+            if it["k"] == "r" and ident == f"r{it['q']}":
+                return it["out"], False
+            if it["k"] == "u":
+                for mt, b64, ref in it["photos"]:
+                    if ident == f"p{ref}":
+                        return [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}}], False
+        return f"error: no stored result or photo {ident}", True
+
+    # ------------------------------------------------------------ resident bound and digests
+    def item_bytes(self, it: dict) -> int:
+        if it["k"] == "u":
+            return len(it["text"].encode()) + sum(len(self._photo_stub(it, r).encode()) for _, _, r in it["photos"])
+        if it["k"] == "a":
+            return sum(
+                len((b.get("text") or json.dumps(b.get("input", ""))).encode())
+                for b in it["content"]
+                if b.get("type") in ("text", "tool_use")
+            )
+        return len(self.stub_text(it).encode()) if (self._stubbed(it) or self._is_bulk(it)) else it["size"]
+
+    def resident(self) -> int:
+        """Tier 1 plus stubs since thru (bulk counts as its stub: it leaves view at the next cold open)."""
+        return sum(self.item_bytes(it) for it in self.items if it["q"] > self.thru)
+
+    def digest_block(self) -> str:
+        if not self.digests:
+            return ""
+        return "Earlier days (digests):\n" + "\n".join(f"{day}: {text}" for day, text in self.digests)
+
+    def _ledger_day(self, t: float) -> str:
+        return (datetime.fromtimestamp(t, self.tz) - timedelta(hours=LEDGER_DAY_START_H)).strftime("%Y-%m-%d")
+
+    def compaction_slice(self, now: float) -> list:
+        """Whole turns from thru forward until the rest is at or under L, none of the newest six owner
+        turns and none of the current ledger day's turns (unless that day alone is over H: then its
+        oldest half). [] when resident is at or under H."""
+        if self.resident() <= self.H:
+            return []
+        turns = sorted({it["turn"] for it in self.items if it["q"] > self.thru})
+        protected = set(turns[-KEEP_NEWEST_TURNS:])
+        today = self._ledger_day(now)
+        day_turns = [t for t in turns if self._ledger_day(self._turn_time(t)) == today]
+        if sum(self._turn_bytes(t) for t in day_turns) > self.H:
+            day_turns = day_turns[len(day_turns) // 2 :]
+        protected |= set(day_turns)
+        rest, picked = self.resident(), []
+        for t in turns:
+            if rest <= self.L or t in protected:
+                break
+            picked.append(t)
+            rest -= self._turn_bytes(t)
+        return picked
+
+    def _turn_time(self, turn: int) -> float:
+        return next(it["t"] for it in self.items if it["turn"] == turn and it["k"] == "u")
+
+    def _turn_bytes(self, turn: int) -> int:
+        return sum(self.item_bytes(it) for it in self.items if it["turn"] == turn and it["q"] > self.thru)
+
+    def slice_text(self, turns: list) -> dict:
+        """{local day: text} of the given turns for the summarizer: owner and assistant text verbatim,
+        receipts as one line each; ledger numbers, file contents and outside text never reach it."""
+        out = {}
+        for it in self.items:
+            if it["turn"] not in turns:
+                continue
+            day = datetime.fromtimestamp(self._turn_time(it["turn"]), self.tz).strftime("%a %d %b %Y")
+            if it["k"] == "u":
+                line = it["text"] + "".join(f" [photo p{r}]" for _, _, r in it["photos"])
+            elif it["k"] == "a":
+                line = " ".join(b["text"] for b in it["content"] if b.get("type") == "text" and b.get("text"))
+                line = f"assistant: {line}" if line else ""
+            elif it["n"] in LEDGER_TOOLS:
+                line = "[ledger change]" if it["n"] != "ledger_day" else "[ledger view]"
+            elif it["n"] in OUTSIDE_TOOLS:
+                line = "[outside content read]"
+            elif "file" in it["n"]:
+                line = "[file work]"
+            else:
+                line = f"[{it['n']}]"
+            if line:
+                out.setdefault(day, []).append(line)
+        return {d: "\n".join(lines) for d, lines in out.items()}
+
+    def apply_digests(self, turns: list, digests: list):
+        """Append one digest per day (cut at a sentence end under DIGEST_MAX), move thru past the
+        turns, and keep the block under its profile cap (the oldest leave it, still searchable)."""
+        for day, text in digests:
+            text = " ".join(text.split())
+            if len(text.encode()) > DIGEST_MAX:
+                cut = text.encode()[:DIGEST_MAX].decode(errors="ignore")
+                text = cut[: cut.rfind(". ") + 1] or cut
+            self.digests.append((day, text))
+        self.thru = max(it["q"] for it in self.items if it["turn"] in turns)
+        while self.digests and len(self.digest_block().encode()) > self.digest_cap:
+            self.archived.append(self.digests.pop(0))
+        self._change("compaction")
+
+
 # -------------------------------------------------------------------------- cli
 def main():
     ap = argparse.ArgumentParser(description="Chat with the reference loop over a running nimbusd's tools.")

@@ -1,0 +1,932 @@
+{
+ "days": [
+  "2026-11-15",
+  "2026-11-16",
+  "2026-11-17"
+ ],
+ "first_local": "2026-11-15 13:04:39",
+ "turns": [
+  {
+   "at_s": 0,
+   "exact": true,
+   "msgs": 1,
+   "photos": 1,
+   "text_bytes": 95,
+   "tools": [
+    [
+     "image_note",
+     239
+    ],
+    [
+     "files_append",
+     656
+    ]
+   ],
+   "reply_bytes": 333,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 88375,
+    "out": 2871,
+    "cr": 43520,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 10221,
+   "exact": true,
+   "msgs": 1,
+   "photos": 1,
+   "text_bytes": 142,
+   "tools": [
+    [
+     "skill_get",
+     1082
+    ],
+    [
+     "image_look",
+     468
+    ],
+    [
+     "image_look",
+     571
+    ],
+    [
+     "image_note",
+     257
+    ]
+   ],
+   "reply_bytes": 959,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 81643,
+    "out": 1561,
+    "cr": 39936,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 10313,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 200,
+   "tools": [
+    [
+     "image_note",
+     281
+    ],
+    [
+     "files_append",
+     333
+    ],
+    [
+     "mem_write",
+     422
+    ],
+    [
+     "files_append",
+     360
+    ],
+    [
+     "memory_write",
+     301
+    ],
+    [
+     "files_read",
+     976
+    ]
+   ],
+   "reply_bytes": 379,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 81582,
+    "out": 2874,
+    "cr": 60416,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 10435,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 41,
+   "tools": [],
+   "reply_bytes": 253,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 38438,
+    "out": 645,
+    "cr": 35072,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 10556,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 161,
+   "tools": [
+    [
+     "memory_write",
+     254
+    ]
+   ],
+   "reply_bytes": 613,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 39078,
+    "out": 753,
+    "cr": 19200,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 24206,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 48,
+   "tools": [
+    [
+     "files_append",
+     448
+    ]
+   ],
+   "reply_bytes": 493,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 43031,
+    "out": 1238,
+    "cr": 0,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 24595,
+   "exact": true,
+   "msgs": 1,
+   "photos": 1,
+   "text_bytes": 88,
+   "tools": [
+    [
+     "memory_search",
+     1142
+    ],
+    [
+     "memory_search",
+     1132
+    ],
+    [
+     "files_read",
+     1110
+    ],
+    [
+     "files_read",
+     1124
+    ],
+    [
+     "memory_search",
+     1128
+    ],
+    [
+     "memory_search",
+     1132
+    ],
+    [
+     "memory_search",
+     1144
+    ],
+    [
+     "files_read",
+     1110
+    ],
+    [
+     "memory_search",
+     1136
+    ],
+    [
+     "memory_search",
+     1143
+    ],
+    [
+     "memory_search",
+     1149
+    ]
+   ],
+   "reply_bytes": 627,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 140605,
+    "out": 1682,
+    "cr": 18432,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 67923,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 32,
+   "tools": [
+    [
+     "image_note",
+     281
+    ],
+    [
+     "files_append",
+     398
+    ]
+   ],
+   "reply_bytes": 105,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 64891,
+    "out": 1641,
+    "cr": 21248,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 68265,
+   "exact": true,
+   "msgs": 1,
+   "photos": 2,
+   "text_bytes": 13,
+   "tools": [
+    [
+     "files_append",
+     392
+    ]
+   ],
+   "reply_bytes": 216,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 42457,
+    "out": 700,
+    "cr": 0,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 90877,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 136,
+   "tools": [
+    [
+     "image_note",
+     204
+    ],
+    [
+     "image_note",
+     230
+    ],
+    [
+     "web_search",
+     1132
+    ],
+    [
+     "skill_get",
+     1081
+    ],
+    [
+     "skill_get",
+     1071
+    ],
+    [
+     "web_search",
+     1114
+    ],
+    [
+     "files_append",
+     440
+    ]
+   ],
+   "reply_bytes": 509,
+   "device_model": "gpt-5.6-sol",
+   "device_tokens": {
+    "in": 86661,
+    "out": 1226,
+    "cr": 55631,
+    "cw": 30327
+   }
+  },
+  {
+   "at_s": 97531,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 28,
+   "tools": [],
+   "reply_bytes": 202,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 19837,
+    "out": 151,
+    "cr": 0,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 97650,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 57,
+   "tools": [
+    [
+     "prefs_edit",
+     241
+    ]
+   ],
+   "reply_bytes": 102,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 40238,
+    "out": 194,
+    "cr": 19968,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 108354,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 20,
+   "tools": [],
+   "reply_bytes": 92,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 19591,
+    "out": 127,
+    "cr": 0,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 108404,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 20,
+   "tools": [],
+   "reply_bytes": 414,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 19596,
+    "out": 261,
+    "cr": 0,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 126304,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 264,
+   "tools": [
+    [
+     "files_append",
+     435
+    ],
+    [
+     "files_read",
+     1128
+    ]
+   ],
+   "reply_bytes": 346,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 108181,
+    "out": 5136,
+    "cr": 85504,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 126428,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 586,
+   "tools": [
+    [
+     "files_append",
+     367
+    ],
+    [
+     "files_append",
+     442
+    ]
+   ],
+   "reply_bytes": 260,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 64733,
+    "out": 593,
+    "cr": 21504,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 126474,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 100,
+   "tools": [
+    [
+     "files_append",
+     442
+    ]
+   ],
+   "reply_bytes": 384,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 41519,
+    "out": 1402,
+    "cr": 20480,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 154338,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 131,
+   "tools": [
+    [
+     "files_read",
+     1110
+    ],
+    [
+     "files_append",
+     594
+    ],
+    [
+     "files_append",
+     708
+    ],
+    [
+     "files_read",
+     1110
+    ],
+    [
+     "files_append",
+     952
+    ],
+    [
+     "files_read",
+     1110
+    ],
+    [
+     "files_edit",
+     384
+    ],
+    [
+     "files_edit",
+     487
+    ],
+    [
+     "files_edit",
+     460
+    ],
+    [
+     "files_edit",
+     520
+    ],
+    [
+     "files_edit",
+     504
+    ],
+    [
+     "files_edit",
+     527
+    ],
+    [
+     "files_edit",
+     650
+    ],
+    [
+     "files_read",
+     1052
+    ]
+   ],
+   "reply_bytes": 573,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 181148,
+    "out": 2454,
+    "cr": 102400,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 154437,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 34,
+   "tools": [
+    [
+     "files_append",
+     597
+    ]
+   ],
+   "reply_bytes": 242,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 42909,
+    "out": 415,
+    "cr": 21248,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 170772,
+   "exact": true,
+   "msgs": 1,
+   "photos": 2,
+   "text_bytes": 42,
+   "tools": [
+    [
+     "files_read",
+     1147
+    ],
+    [
+     "files_read",
+     1135
+    ],
+    [
+     "files_read",
+     1135
+    ],
+    [
+     "files_search",
+     496
+    ],
+    [
+     "files_read",
+     1151
+    ],
+    [
+     "files_read",
+     1135
+    ],
+    [
+     "files_read",
+     1063
+    ],
+    [
+     "files_read",
+     1135
+    ],
+    [
+     "files_search",
+     467
+    ]
+   ],
+   "reply_bytes": 413,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 183288,
+    "out": 1846,
+    "cr": 79872,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 170880,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 174,
+   "tools": [
+    [
+     "image_note",
+     210
+    ],
+    [
+     "image_note",
+     167
+    ],
+    [
+     "files_append",
+     681
+    ],
+    [
+     "files_append",
+     940
+    ]
+   ],
+   "reply_bytes": 526,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 114371,
+    "out": 3813,
+    "cr": 60928,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 172958,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 53,
+   "tools": [
+    [
+     "files_read",
+     1135
+    ],
+    [
+     "files_read",
+     1146
+    ],
+    [
+     "files_read",
+     1135
+    ],
+    [
+     "files_read",
+     590
+    ]
+   ],
+   "reply_bytes": 969,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 123515,
+    "out": 1661,
+    "cr": 58880,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 173780,
+   "exact": true,
+   "msgs": 1,
+   "photos": 3,
+   "text_bytes": 106,
+   "tools": [
+    [
+     "files_read",
+     1110
+    ],
+    [
+     "files_append",
+     1001
+    ],
+    [
+     "files_append",
+     367
+    ],
+    [
+     "files_read",
+     1147
+    ],
+    [
+     "files_read",
+     1109
+    ],
+    [
+     "files_search",
+     489
+    ],
+    [
+     "files_read",
+     725
+    ]
+   ],
+   "reply_bytes": 628,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 123351,
+    "out": 1888,
+    "cr": 58880,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 199967,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 169,
+   "tools": [
+    [
+     "image_note",
+     281
+    ],
+    [
+     "image_note",
+     281
+    ],
+    [
+     "image_note",
+     248
+    ],
+    [
+     "files_append",
+     843
+    ]
+   ],
+   "reply_bytes": 751,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 92813,
+    "out": 3001,
+    "cr": 23296,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 200294,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 3,
+   "tools": [
+    [
+     "files_read",
+     1110
+    ]
+   ],
+   "reply_bytes": 468,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 65961,
+    "out": 667,
+    "cr": 21504,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 200336,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 85,
+   "tools": [
+    [
+     "files_read",
+     1147
+    ],
+    [
+     "files_read",
+     1135
+    ],
+    [
+     "files_read",
+     1147
+    ]
+   ],
+   "reply_bytes": 480,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 84295,
+    "out": 1152,
+    "cr": 53760,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 200475,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 207,
+   "tools": [
+    [
+     "files_read",
+     1147
+    ]
+   ],
+   "reply_bytes": 354,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 43648,
+    "out": 824,
+    "cr": 37376,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 201235,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 201,
+   "tools": [
+    [
+     "files_append",
+     1162
+    ],
+    [
+     "files_append",
+     715
+    ],
+    [
+     "files_read",
+     1110
+    ],
+    [
+     "files_read",
+     1109
+    ],
+    [
+     "files_append",
+     316
+    ],
+    [
+     "files_append",
+     316
+    ],
+    [
+     "files_append",
+     1062
+    ],
+    [
+     "files_append",
+     656
+    ],
+    [
+     "files_read",
+     1123
+    ],
+    [
+     "files_append",
+     488
+    ]
+   ],
+   "reply_bytes": 734,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 177361,
+    "out": 3578,
+    "cr": 99840,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 202009,
+   "exact": true,
+   "msgs": 1,
+   "photos": 1,
+   "text_bytes": 66,
+   "tools": [
+    [
+     "files_read",
+     1125
+    ]
+   ],
+   "reply_bytes": 405,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 44182,
+    "out": 679,
+    "cr": 21504,
+    "cw": 0
+   }
+  },
+  {
+   "at_s": 203560,
+   "exact": true,
+   "msgs": 1,
+   "photos": 0,
+   "text_bytes": 67,
+   "tools": [
+    [
+     "image_look",
+     494
+    ],
+    [
+     "web_search",
+     1153
+    ],
+    [
+     "image_note",
+     250
+    ],
+    [
+     "files_append",
+     848
+    ]
+   ],
+   "reply_bytes": 328,
+   "device_model": "mistral-large-4-0",
+   "device_tokens": {
+    "in": 89806,
+    "out": 1575,
+    "cr": 44288,
+    "cw": 0
+   }
+  }
+ ]
+}
