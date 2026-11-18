@@ -4,6 +4,7 @@
 // facts: the same facts give the same bytes (test_plain_request).
 #include "nimbus/harness/plain/request.h"
 
+#include <cstring>
 #include <set>
 
 #include "nimbus/orch/tool_groups.h"
@@ -30,27 +31,51 @@ std::string clipUtf8(const std::string& s, size_t max) {
   return s.substr(0, n);
 }
 
-// A device-supplied value shown inside a line (a time zone, a model id): one line,
-// clipped, so it can never open a paragraph of its own.
+// A device-supplied value shown inside a line (a time zone, a model id, one note): one
+// line, clipped, so it can never open a line or paragraph of its own. Control bytes
+// (CR, DEL included) and the Unicode line breaks (NEL, U+2028, U+2029) become spaces.
 std::string oneLine(const std::string& s, size_t max) {
-  std::string out = clipUtf8(s, max);
-  for (char& c : out)
-    if (static_cast<unsigned char>(c) < 0x20) c = ' ';
+  std::string in = clipUtf8(s, max), out;
+  for (size_t i = 0; i < in.size(); i++) {
+    const unsigned char c = static_cast<unsigned char>(in[i]);
+    if (c == 0xC2 && i + 1 < in.size() && static_cast<unsigned char>(in[i + 1]) == 0x85) {
+      out += ' ';
+      i += 1;
+    } else if (c == 0xE2 && i + 2 < in.size() && static_cast<unsigned char>(in[i + 1]) == 0x80 &&
+               (static_cast<unsigned char>(in[i + 2]) | 1) == 0xA9) {
+      out += ' ';
+      i += 2;
+    } else {
+      out += (c < 0x20 || c == 0x7F) ? ' ' : in[i];
+    }
+  }
   return out;
 }
 
-// The non-empty lines of a block, control characters inside a line made spaces.
+bool blank(const std::string& s) { return s.find_first_not_of(' ') == std::string::npos; }
+
+// The lines of a block that hold something, each made one line (oneLine).
 std::vector<std::string> linesOf(const std::string& block) {
   std::vector<std::string> out;
   size_t at = 0;
-  while (at <= block.size()) {
+  while (at < block.size()) {
     size_t end = block.find('\n', at);
     if (end == std::string::npos) end = block.size();
-    std::string line = block.substr(at, end - at);
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (!line.empty()) out.push_back(oneLine(line, line.size()));
+    size_t stop = end;
+    if (stop > at && block[stop - 1] == '\r') stop--;
+    const std::string line = oneLine(block.substr(at, stop - at), stop - at);
+    if (!blank(line)) out.push_back(line);
     at = end + 1;
   }
+  return out;
+}
+
+// A device-built block shown whole (digests, recent files): its lines joined again, so a
+// stray control byte or blank line cannot open structure of its own. Its size is its
+// builder's (tx::digestBlock, tx::recentFilesList).
+std::string blockOf(const std::string& block) {
+  std::string out;
+  for (const std::string& l : linesOf(block)) out += (out.empty() ? "" : "\n") + l;
   return out;
 }
 
@@ -72,15 +97,23 @@ bool reachable(const ToolRegistry& reg, const std::string& name, const Principal
 
 // `more` is a router: it is offered when registered and not refused by policy or gate.
 bool offered(const ToolRegistry& reg, const std::string& name, const Principal& who) {
-  if (reg.has(name) && reg.isRouter(name)) return reg.gateOpen(name) && reg.policyFor(name).kind == ToolRegistry::Verdict::Allow;
+  if (reg.has(name) && reg.isRouter(name))
+    return reg.gateOpen(name) && reg.policyFor(name).kind == ToolRegistry::Verdict::Allow;
   return reachable(reg, name, who);
 }
 
-bool inPack(const char* name, bool food) {
+// In this pack's array: the food pair only with food; the other pair only without it and
+// only once applyToolPack declared it always on (otherwise the tools index lists it and it
+// stays behind more, so no tool is shown twice).
+bool inPack(const ToolRegistry& reg, const char* name, bool food) {
   const std::string n = name;
   if (n == "ledger_write" || n == "ledger_day") return food;
-  if (n == "agent_start" || n == "delete_file") return !food;
+  if (n == "agent_start" || n == "delete_file") return !food && reg.classOf(n).alwaysOn();
   return true;
+}
+
+bool moreOffered(const std::vector<ToolSpec>& tools) {
+  return !tools.empty() && tools.back().name == nimbus::orch::kMoreTool;
 }
 
 // Sentences joined into one paragraph; a sentence naming a tool this caller cannot call
@@ -103,7 +136,7 @@ std::string coreText(const RequestFacts& f, const std::vector<ToolSpec>& tools) 
     for (const std::string& s : sentences) p.add(s);
     addPara(out, p.text);
   };
-  para({f.admin ? core::kIdentityOwner : core::kIdentityMember, core::kReplyForm});
+  para({f.admin && f.turn->who->owner ? core::kIdentityOwner : core::kIdentityMember, core::kReplyForm});
   std::string tz;
   if (!f.timeZone.empty()) tz = core::kTimeZone + oneLine(f.timeZone, kTimeZoneMax) + ".";
   para({tz, core::kStamped});
@@ -113,7 +146,7 @@ std::string coreText(const RequestFacts& f, const std::vector<ToolSpec>& tools) 
   para({core::kRecall});
   if (f.food) para({core::kFood});
   if (!f.turn->model.empty()) para({core::kModel + oneLine(f.turn->model, kModelNameMax) + "."});
-  const std::string idx = nimbus::orch::toolsIndex(*f.reg, *f.turn->who);
+  const std::string idx = moreOffered(tools) ? nimbus::orch::toolsIndex(*f.reg, *f.turn->who) : "";
   if (!idx.empty()) addPara(out, std::string(core::kToolsIndex) + kLine + idx);
   return out;
 }
@@ -142,7 +175,7 @@ std::string skillsSection(const std::string& index, const RequestFacts& f, const
 std::string notesSection(const std::string& notes, size_t budget) {
   std::string body;
   for (const std::string& l : linesOf(notes)) {
-    if (body.size() + (body.empty() ? 0 : 1) + l.size() > budget) break;
+    if (body.size() + (body.empty() ? 0 : 1) + l.size() > budget) continue;   // too long here: the rest still fit
     body += (body.empty() ? "" : kLine) + l;
   }
   return body.empty() ? body : std::string(core::kNotes) + kLine + body;
@@ -191,16 +224,18 @@ Status composeSystem(const RequestFacts& facts, SystemBlocks& out) {
   const std::string skills = skillsSection(facts.skillsIndex, facts, tools);
   // What is left of the system ceiling for the notes' lines, after the core, the skills
   // index, the notes header and the joins between them.
-  size_t used = coreBlock.size() + skills.size() + std::string(core::kNotes).size() + 1;
-  if (!skills.empty()) used += 2;
+  // A wire that joins the blocks puts kPara between them: counted.
+  size_t used = coreBlock.size() + std::strlen(kPara) + skills.size() + std::strlen(core::kNotes) + 1;
+  if (!skills.empty()) used += std::strlen(kPara);
   const size_t room = used < kSystemBytesCeiling ? kSystemBytesCeiling - used : 0;
   const std::string notes = notesSection(facts.pinnedNotes, room < kPinnedNotesCeiling ? room : kPinnedNotesCeiling);
 
   out.core = coreBlock;
   addPara(out.notes, skills);
   addPara(out.notes, notes);
-  if (!facts.digestBlock.empty()) addPara(out.digests, std::string(core::kDigests) + kLine + facts.digestBlock);
-  if (!facts.recentFiles.empty()) addPara(out.digests, std::string(core::kRecentFiles) + kLine + facts.recentFiles);
+  const std::string digests = blockOf(facts.digestBlock), files = blockOf(facts.recentFiles);
+  if (!digests.empty()) addPara(out.digests, std::string(core::kDigests) + kLine + digests);
+  if (!files.empty()) addPara(out.digests, std::string(core::kRecentFiles) + kLine + files);
   return Status::success();
 }
 
@@ -208,7 +243,7 @@ Status toolManifest(const RequestFacts& facts, std::vector<ToolSpec>& out) {
   out.clear();
   if (!validFacts(facts)) return Status::fail(Err::InvalidArgument, "plain::toolManifest");
   for (const td::ToolDecl& d : td::kTools) {
-    if (!inPack(d.name, facts.food) || !offered(*facts.reg, d.name, *facts.turn->who)) continue;
+    if (!inPack(*facts.reg, d.name, facts.food) || !offered(*facts.reg, d.name, *facts.turn->who)) continue;
     out.push_back(ToolSpec{d.name, d.description, declSchema(d, facts.shortHost)});
   }
   if (out.size() > kMaxAlwaysOnTools || toolsBytes(out) > kToolsBytesCeiling) {
@@ -296,7 +331,7 @@ std::vector<std::string> uncallableNames(const std::string& text, const std::vec
   for (size_t at = 0; nextWord(text, at, word, call);) {
     if (!lowerName(word) || (!call && !known.count(word)) || callable.count(word)) continue;
     const std::string regName = reg.resolveName(word);
-    if (!reg.classOf(regName).alwaysOn() && reachable(reg, regName, who)) continue;
+    if (moreOffered(tools) && !reg.classOf(regName).alwaysOn() && reachable(reg, regName, who)) continue;
     if (bad.insert(word).second) out.push_back(word);
   }
   return out;

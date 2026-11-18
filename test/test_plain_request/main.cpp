@@ -198,6 +198,21 @@ std::unique_ptr<State> lumiState(const Rig& rig, Who w, const std::string& model
   return s;
 }
 
+// Blocks 1 and 2 as a wire that joins them carries them (a paragraph break between).
+size_t systemBytes(const plain::SystemBlocks& b) { return b.core.size() + (b.notes.empty() ? 0 : 2) + b.notes.size(); }
+
+bool validUtf8(const std::string& s) {
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    const size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
+    if (!n || i + n > s.size()) return false;
+    for (size_t k = 1; k < n; k++)
+      if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) return false;
+    i += n;
+  }
+  return true;
+}
+
 struct Composed {
   plain::SystemBlocks sys;
   std::vector<plain::ToolSpec> tools;
@@ -247,7 +262,7 @@ static void test_every_role_pack_and_host_fits_the_ceilings() {
       const std::string idx = toolsIndex(rig.reg, s->who);
       TEST_ASSERT_TRUE_MESSAGE(idx.size() <= kToolsIndexMax, at.c_str());
       TEST_ASSERT_TRUE_MESSAGE(c.sys.core.size() <= plain::kCoreCeiling, at.c_str());
-      TEST_ASSERT_TRUE_MESSAGE(c.sys.core.size() + c.sys.notes.size() <= plain::kSystemBytesCeiling, at.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(systemBytes(c.sys) <= plain::kSystemBytesCeiling, at.c_str());
       TEST_ASSERT_TRUE_MESSAGE(c.tools.size() <= plain::kMaxAlwaysOnTools, at.c_str());
       TEST_ASSERT_TRUE_MESSAGE(plain::toolsBytes(c.tools) <= plain::kToolsBytesCeiling, at.c_str());
       TEST_ASSERT_TRUE_MESSAGE(!c.tools.empty() && c.tools.back().name == "more", at.c_str());
@@ -416,7 +431,7 @@ static void test_notes_and_skills_clip_at_whole_lines() {
   auto s = lumiState(rig, Who::Owner);
   s->facts.pinnedNotes = notesAtCap(9000, 7);
   const Composed c = compose(s->facts);
-  TEST_ASSERT_TRUE(c.sys.core.size() + c.sys.notes.size() <= plain::kSystemBytesCeiling);
+  TEST_ASSERT_TRUE(systemBytes(c.sys) <= plain::kSystemBytesCeiling);
   // Every shown note line is one whole line of the input.
   const std::string head = std::string(agent::plain::texts::core::kNotes) + "\n";
   const size_t from = c.sys.notes.find(head);
@@ -470,6 +485,96 @@ static void test_tools_bytes_is_the_rendered_array() {
     o["input_schema"] = schema;
   }
   TEST_ASSERT_EQUAL((int)measureJson(doc), (int)plain::toolsBytes(c.tools));
+}
+
+// Policy, gates and the pack's declaration decide the array exactly as dispatch does; a
+// refused `more` takes the tools index and every sentence that names it along.
+static void test_policy_gates_and_pack_decide_the_array() {
+  Rig rig(true, false);
+  rig.reg.setPolicy("send", ToolRegistry::Verdict::deny("off"));
+  rig.reg.setGate("web_search", [] { return false; }, "no key");
+  auto s = lumiState(rig, Who::Owner);
+  Composed c = compose(s->facts);
+  for (const plain::ToolSpec& t : c.tools) {
+    TEST_ASSERT_TRUE(t.name != "send");
+    TEST_ASSERT_TRUE(t.name != "web_search");
+  }
+  TEST_ASSERT_EQUAL(12, (int)c.tools.size());
+  rig.reg.setGate("more", [] { return false; }, "off");
+  c = compose(s->facts);
+  TEST_ASSERT_TRUE(c.tools.back().name != "more");
+  TEST_ASSERT_FALSE(hasWord(c.sys.core, "more"));
+  TEST_ASSERT_FALSE(hasWord(c.sys.notes, "more"));
+  TEST_ASSERT_TRUE(c.sys.notes.find("\n+") != std::string::npos);   // the count stays, without the hint
+  std::string all = c.sys.core + "\n" + c.sys.notes;
+  TEST_ASSERT_EQUAL(0, (int)plain::uncallableNames(all, c.tools, rig.reg, s->who).size());
+  TEST_ASSERT_EQUAL_STRING("agent_list", plain::uncallableNames("agent_list", c.tools, rig.reg, s->who).at(0).c_str());
+  // A registry whose pack was not declared for this capability: the pair stays behind
+  // more, listed once in the index, never in the array as well.
+  Rig food(true, false);
+  auto n = lumiState(food, Who::Owner);
+  n->facts.food = false;
+  const Composed d = compose(n->facts);
+  TEST_ASSERT_EQUAL(12, (int)d.tools.size());
+  for (const plain::ToolSpec& t : d.tools) TEST_ASSERT_TRUE(t.name != "agent_start" && t.name != "delete_file");
+  TEST_ASSERT_TRUE(hasWord(d.sys.core, "agent_start"));
+  // The owner's identity needs the owner's Principal, whatever the flag says.
+  Rig r(true, false);
+  auto m = lumiState(r, Who::Member);
+  m->facts.admin = true;
+  TEST_ASSERT_TRUE(compose(m->facts).sys.core.rfind(agent::plain::texts::core::kIdentityMember, 0) == 0);
+}
+
+// Device-supplied text is normalised: whole UTF-8 characters, no blank or whitespace-only
+// lines, no CR or Unicode line break, one oversized note skipped and the rest kept.
+static void test_device_text_is_normalised() {
+  Rig rig(true, false);
+  auto s = lumiState(rig, Who::Owner);
+  std::string tz;
+  while (tz.size() < plain::kTimeZoneMax + 10) tz += "\xC3\xBC";   // u-umlaut, 2 bytes each
+  s->facts.timeZone = "A" + tz;                                     // the clip falls mid-character
+  s->turn.model = std::string(plain::kModelNameMax - 1, 'm') + "\xE2\x82\xAC";   // the euro sign, cut
+  s->facts.pinnedNotes = "a: one\r\n   \n\t\nb: " + std::string(5000, 'x') + "\nc: three\xE2\x80\xA8" "d: four\n";
+  s->facts.skillsIndex = "skills/a.md: a\r\n \n";
+  s->facts.digestBlock = "2026-11-16: one\r\n\n\n\x01" "2026-11-17: two\xC2\x85x\n";
+  s->facts.recentFiles = "\n\nnotes/a.md 2026-11-17 13:02\r\n";
+  const Composed c = compose(s->facts);
+  for (const std::string* b : {&c.sys.core, &c.sys.notes, &c.sys.digests}) {
+    TEST_ASSERT_TRUE(validUtf8(*b));
+    TEST_ASSERT_TRUE(b->find('\r') == std::string::npos);
+    TEST_ASSERT_TRUE(b->find("\xE2\x80\xA8") == std::string::npos);
+    TEST_ASSERT_TRUE(b->find("\xC2\x85") == std::string::npos);
+    TEST_ASSERT_TRUE(b->find("\n \n") == std::string::npos);
+  }
+  TEST_ASSERT_TRUE(c.sys.notes.find("a: one\nc: three d: four") != std::string::npos);
+  TEST_ASSERT_TRUE(c.sys.notes.find("xxxxx") == std::string::npos);
+  TEST_ASSERT_TRUE(c.sys.digests.find("2026-11-16: one\n 2026-11-17: two x") != std::string::npos);
+  TEST_ASSERT_TRUE(c.sys.digests.find("\n\n\n") == std::string::npos);
+  TEST_ASSERT_TRUE(c.sys.digests.find(std::string(agent::plain::texts::core::kRecentFiles) + "\nnotes/a.md") != std::string::npos);
+}
+
+// Each fact moves only its own block (the provider's cache prefix: tools, core, notes,
+// digests): a digests change leaves tools, core and notes; a notes or skills change
+// leaves tools, core and digests.
+static void test_each_fact_moves_only_its_block() {
+  Rig rig(true, false);
+  auto a = lumiState(rig, Who::Owner), b = lumiState(rig, Who::Owner), c = lumiState(rig, Who::Owner);
+  b->facts.digestBlock += "2026-11-18: one more day\n";
+  b->facts.recentFiles += "notes/new.md 2026-11-18 09:00\n";
+  c->facts.pinnedNotes = "new-fact: a value\n" + c->facts.pinnedNotes.substr(0, 3000);
+  c->facts.skillsIndex = "skills/new.md: new\n" + c->facts.skillsIndex;
+  const Composed x = compose(a->facts), y = compose(b->facts), z = compose(c->facts);
+  auto sameTools = [](const Composed& p, const Composed& q) {
+    if (p.tools.size() != q.tools.size()) return false;
+    for (size_t i = 0; i < p.tools.size(); i++)
+      if (p.tools[i].name != q.tools[i].name || p.tools[i].description != q.tools[i].description ||
+          p.tools[i].schemaJson != q.tools[i].schemaJson)
+        return false;
+    return true;
+  };
+  TEST_ASSERT_TRUE(sameTools(x, y) && sameTools(x, z));
+  TEST_ASSERT_TRUE(x.sys.core == y.sys.core && x.sys.notes == y.sys.notes && x.sys.digests != y.sys.digests);
+  TEST_ASSERT_TRUE(x.sys.core == z.sys.core && x.sys.digests == z.sys.digests && x.sys.notes != z.sys.notes);
 }
 
 // ---- byte stability --------------------------------------------------------------------
@@ -586,7 +691,7 @@ static void test_golden_records_every_role_pack_and_host() {
                   "measure role=%s pack=%s host=%s core=%zu index=%zu notes=%zu system=%zu digests=%zu tools=%zu "
                   "tools_bytes=%zu longest_description=%zu\n",
                   whoSlug(w), rig.food ? "food" : "nofood", rig.shortHost ? "60s" : "120s", c.sys.core.size(),
-                  toolsIndex(rig.reg, s->who).size(), c.sys.notes.size(), c.sys.core.size() + c.sys.notes.size(),
+                  toolsIndex(rig.reg, s->who).size(), c.sys.notes.size(), systemBytes(c.sys),
                   c.sys.digests.size(), c.tools.size(), plain::toolsBytes(c.tools), longest);
     g += line;
   });
@@ -655,6 +760,9 @@ int main(int, char**) {
   RUN_TEST(test_registry_and_manifest_agree);
   RUN_TEST(test_fixed_order_and_packs);
   RUN_TEST(test_notes_and_skills_clip_at_whole_lines);
+  RUN_TEST(test_policy_gates_and_pack_decide_the_array);
+  RUN_TEST(test_device_text_is_normalised);
+  RUN_TEST(test_each_fact_moves_only_its_block);
   RUN_TEST(test_empty_facts_are_refused);
   RUN_TEST(test_tools_bytes_is_the_rendered_array);
   RUN_TEST(test_same_facts_same_bytes);

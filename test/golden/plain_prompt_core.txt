@@ -1,18 +1,18 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner pack=food host=120s core=1928 index=437 notes=5075 system=7003 digests=6702 tools=14 tools_bytes=5928 longest_description=162
-measure role=owner pack=food host=60s core=1928 index=437 notes=5075 system=7003 digests=6702 tools=14 tools_bytes=5927 longest_description=162
-measure role=owner pack=nofood host=120s core=1500 index=354 notes=5075 system=6575 digests=6702 tools=14 tools_bytes=4547 longest_description=162
-measure role=owner pack=nofood host=60s core=1500 index=354 notes=5075 system=6575 digests=6702 tools=14 tools_bytes=4546 longest_description=162
-measure role=member pack=food host=120s core=1797 index=279 notes=1038 system=2835 digests=6702 tools=14 tools_bytes=5928 longest_description=162
-measure role=member pack=food host=60s core=1797 index=279 notes=1038 system=2835 digests=6702 tools=14 tools_bytes=5927 longest_description=162
-measure role=member pack=nofood host=120s core=1369 index=196 notes=1038 system=2407 digests=6702 tools=14 tools_bytes=4547 longest_description=162
-measure role=member pack=nofood host=60s core=1369 index=196 notes=1038 system=2407 digests=6702 tools=14 tools_bytes=4546 longest_description=162
-measure role=guest pack=food host=120s core=1218 index=87 notes=1038 system=2256 digests=6702 tools=7 tools_bytes=1847 longest_description=148
-measure role=guest pack=food host=60s core=1218 index=87 notes=1038 system=2256 digests=6702 tools=7 tools_bytes=1847 longest_description=148
-measure role=guest pack=nofood host=120s core=1196 index=65 notes=1038 system=2234 digests=6702 tools=6 tools_bytes=1584 longest_description=148
-measure role=guest pack=nofood host=60s core=1196 index=65 notes=1038 system=2234 digests=6702 tools=6 tools_bytes=1584 longest_description=148
+measure role=owner pack=food host=120s core=1928 index=437 notes=5075 system=7005 digests=6700 tools=14 tools_bytes=5928 longest_description=162
+measure role=owner pack=food host=60s core=1928 index=437 notes=5075 system=7005 digests=6700 tools=14 tools_bytes=5927 longest_description=162
+measure role=owner pack=nofood host=120s core=1500 index=354 notes=5075 system=6577 digests=6700 tools=14 tools_bytes=4547 longest_description=162
+measure role=owner pack=nofood host=60s core=1500 index=354 notes=5075 system=6577 digests=6700 tools=14 tools_bytes=4546 longest_description=162
+measure role=member pack=food host=120s core=1797 index=279 notes=1038 system=2837 digests=6700 tools=14 tools_bytes=5928 longest_description=162
+measure role=member pack=food host=60s core=1797 index=279 notes=1038 system=2837 digests=6700 tools=14 tools_bytes=5927 longest_description=162
+measure role=member pack=nofood host=120s core=1369 index=196 notes=1038 system=2409 digests=6700 tools=14 tools_bytes=4547 longest_description=162
+measure role=member pack=nofood host=60s core=1369 index=196 notes=1038 system=2409 digests=6700 tools=14 tools_bytes=4546 longest_description=162
+measure role=guest pack=food host=120s core=1218 index=87 notes=1038 system=2258 digests=6700 tools=7 tools_bytes=1847 longest_description=148
+measure role=guest pack=food host=60s core=1218 index=87 notes=1038 system=2258 digests=6700 tools=7 tools_bytes=1847 longest_description=148
+measure role=guest pack=nofood host=120s core=1196 index=65 notes=1038 system=2236 digests=6700 tools=6 tools_bytes=1584 longest_description=148
+measure role=guest pack=nofood host=60s core=1196 index=65 notes=1038 system=2236 digests=6700 tools=6 tools_bytes=1584 longest_description=148
 == core (owner, food, 120s, claude-sonnet-5-5, Europe/London)
 You are Nimbus, a personal assistant on a small device, working for one person, the owner, who reaches you over Telegram. Replies are Telegram messages: short and plain.
 
