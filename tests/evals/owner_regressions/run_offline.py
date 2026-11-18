@@ -203,7 +203,9 @@ def cmd_blob(args) -> int:
     if not blob:
         print(f"{args.record}: no fold-store file in the record (blob_after_hex)")
         return 1
-    Path(args.out).write_bytes(blob)
+    # One trailing newline, as lane F's fixture has it: the store reads a record up to its 0x1E,
+    # and pre-commit's end-of-file fixer would add the newline to a committed file anyway.
+    Path(args.out).write_bytes(blob if blob.endswith(b"\n") else blob + b"\n")
     print(f"{args.out}: {len(blob)} B from {rec.get('scenario')}")
     return 0
 
