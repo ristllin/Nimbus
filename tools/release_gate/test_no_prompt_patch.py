@@ -1,0 +1,525 @@
+"""Host tests for the no-prompt-patch gate (check_no_prompt_patch.py, PRD section 11).
+
+Run: python3 -m pytest tools/release_gate
+
+Each counter-test copies the catalog's sources, goldens, ledger, register and scenarios
+into a temp git repo, plants a change and asserts the gate turns red on it: a 300 B
+growth in every class of both engines, a byte-neutral swap without its red scenario and
+rates, a remove that hides added text, an edited merged entry, a tool file outside the
+catalog, a register row without a red scenario. The first test runs the gate on the real tree.
+"""
+
+import os
+import re
+import shutil
+import subprocess
+
+import pytest
+
+import check_no_prompt_patch as gate
+import gen_model_text_catalog as cat
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+PAD = " and this sentence was planted by a test to grow the class by exactly the planted bytes"
+
+
+def _git(root, *args):
+    subprocess.run(["git", "-C", root, *args], check=True, capture_output=True,
+                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                        "GIT_COMMITTER_EMAIL": "t@t"})
+
+
+def make_tree(dst):
+    """A copy of everything the gates read, committed as the base of a temp git repo."""
+    rels = {p for _, p, _ in cat.e1_sources()}
+    rels |= {cat.CATALOGS["e1"]["golden"], gate.CHANGES, gate.REGISTER}
+    for rel in sorted(rels):
+        src = os.path.join(REPO, rel)
+        if os.path.isfile(src):
+            os.makedirs(os.path.dirname(os.path.join(dst, rel)), exist_ok=True)
+            shutil.copy(src, os.path.join(dst, rel))
+    for d in ("tests/evals/owner_regressions/scenarios", "tests/evals/refloop/scenarios"):
+        shutil.copytree(os.path.join(REPO, d), os.path.join(dst, d))
+    _git(dst, "init", "-q", "-b", "main")
+    _git(dst, "add", "-A")
+    _git(dst, "commit", "-q", "-m", "base")
+    _git(dst, "checkout", "-q", "-b", "lane")
+    return dst
+
+
+@pytest.fixture(scope="session")
+def template(tmp_path_factory):
+    return make_tree(str(tmp_path_factory.mktemp("template") / "t"))
+
+
+@pytest.fixture
+def tree(tmp_path, template):
+    """A fresh copy of the template repo, on branch lane; main is its merge base."""
+    dst = str(tmp_path / "t")
+    shutil.copytree(template, dst, symlinks=True)
+    return dst
+
+
+def merge(root):
+    """Commit the lane's work and make it the base, as a merge into the integration branch does."""
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "merged")
+    _git(root, "branch", "-f", "main", "HEAD")
+
+
+def base_of(root):
+    return gate.resolve_base(root, "main")
+
+
+def errors(root, use_base=True):
+    return gate.run(root, base_of(root) if use_base else None, use_base=use_base, quiet=True)
+
+
+def regen(root):
+    assert cat.main(["--root", root, "--write"]) == 0
+
+
+def read(root, rel):
+    with open(os.path.join(root, rel), encoding="utf-8") as f:
+        return f.read()
+
+
+def write(root, rel, text):
+    os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+    with open(os.path.join(root, rel), "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def plain_literal(root, cls, catalog="e1"):
+    """(path, text) of a catalog entry of the class that is one plain literal in its source."""
+    for e in cat.parse(read(root, cat.CATALOGS[catalog]["golden"]))["entries"]:
+        if e.cls != cls or len(e.text) < 30 or not re.fullmatch(r"[A-Za-z0-9 ,.;:()'/_-]+", e.text):
+            continue
+        src = read(root, e.path)
+        if src.count('"' + e.text + '"') == 1:
+            return e.path, e.text
+    raise AssertionError(f"no plain literal in class {cls}")
+
+
+def edit_literal(root, path, old, new):
+    src = read(root, path)
+    write(root, path, src.replace('"' + old + '"', '"' + new + '"', 1))
+
+
+def stats(root, catalog="e1"):
+    return cat.class_stats(catalog, cat.BUILDERS[catalog](root))
+
+
+def append_entry(root, **fields):
+    """Add an entry under ## Changes (replacing the 'None yet.' line)."""
+    text = read(root, gate.CHANGES).replace("\nNone yet.\n", "\n")
+    n = len(re.findall(r"^### PC-\d{4}", text, re.M)) + 1
+    title = fields.pop("title", "a test change")
+    lines = [f"### PC-{n:04d}: {title}"] + [f"- {k}: {v}" for k, v in fields.items()]
+    write(root, gate.CHANGES, text.rstrip("\n") + "\n\n" + "\n".join(lines) + "\n")
+
+
+def entry_for(root, catalog, cls, before, kind, **extra):
+    now = stats(root, catalog)[cls]
+    fields = {"catalog": catalog, "class": cls, "kind": kind, "bytes": f"{before['bytes']} -> {now['bytes']}",
+              "sha8": f"{before['sha8']} -> {now['sha8']}", "lane": "RB-TEST", "why": "a test"}
+    fields.update(extra)
+    return fields
+
+
+SWAP_PROOF = {"scenario": "lc-day-total", "red_at": "1a2b3c4d", "rates": "before=0.60 after=0.98 (test)"}
+
+
+# ---------------------------------------------------------------------------
+# The real tree
+# ---------------------------------------------------------------------------
+
+
+def test_real_tree_is_green():
+    base = gate.resolve_base(REPO, None)
+    errs = gate.run(REPO, base, use_base=base is not None, quiet=True)
+    assert errs == [], errs
+
+
+def test_real_ledger_baseline_matches_the_engine1_ceilings():
+    changes = gate.parse_changes(read(REPO, gate.CHANGES))
+    for cls in cat.E1_CLASSES:
+        assert changes["baseline"][("e1", cls)][0] == cat.E1_CEILINGS[cls]
+
+
+def test_copied_tree_is_green(tree):
+    assert errors(tree) == []
+
+
+# ---------------------------------------------------------------------------
+# Growth: a seeded 300 B addition fails in every class
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cls", cat.E1_CLASSES)
+def test_a_seeded_300_byte_addition_fails_in_every_e1_class(tree, cls):
+    path, text = plain_literal(tree, cls)
+    pad = (PAD * 5)[:300]
+    edit_literal(tree, path, text, text + pad)
+    regen(tree)
+    errs = errors(tree)
+    assert any(f"e1 {cls}: model-facing text changed" in e for e in errs), errs
+    assert any("over its ceiling" in e for e in errs), errs
+
+
+@pytest.mark.parametrize("cls", ("tool_results", "system"))
+def test_growth_fails_even_with_an_entry(tree, cls):
+    before = stats(tree)[cls]
+    path, text = plain_literal(tree, cls)
+    edit_literal(tree, path, text, text + PAD)
+    regen(tree)
+    append_entry(tree, **entry_for(tree, "e1", cls, before, "swap", **SWAP_PROOF))
+    errs = errors(tree)
+    assert any("grows" in e for e in errs), errs
+
+
+def test_a_stale_golden_fails(tree):
+    path, text = plain_literal(tree, "tool_results")
+    edit_literal(tree, path, text, text + PAD)
+    errs = errors(tree)
+    assert any("is stale" in e for e in errs), errs
+
+
+def test_a_new_literal_in_a_new_line_counts(tree):
+    path, text = plain_literal(tree, "device_notes")
+    src = read(tree, path)
+    write(tree, path, src + '\nstatic const char kPlanted[] = "Remember to always answer in full sentences.";\n')
+    regen(tree)
+    assert any("e1 device_notes: model-facing text changed" in e for e in errors(tree))
+
+
+def test_text_moved_between_files_of_one_class_is_neutral(tree):
+    path, text = plain_literal(tree, "tool_results")
+    edit_literal(tree, path, text, "x")
+    other = next(p for p in cat.E1_SOURCES["tool_results"] if p != path)
+    write(tree, other, read(tree, other) + f'\nstatic const char kMoved[] = "{text}";\n')
+    regen(tree)
+    assert errors(tree) == []
+
+
+def test_a_new_tool_file_outside_the_catalog_fails(tree):
+    write(tree, "src/agent/new_tool.cpp",
+          '#include "x.h"\nToolResult f() { return ToolResult::ok("done; now tell the owner"); }\n')
+    errs = errors(tree)
+    assert any("in no catalog class" in e and "src/agent/new_tool.cpp" in e for e in errs), errs
+
+
+# ---------------------------------------------------------------------------
+# Byte-neutral swap: needs the red scenario, its commit and the rates
+# ---------------------------------------------------------------------------
+
+
+def _swap(tree, cls="tool_results", tail=" never mind."):
+    before = stats(tree)[cls]
+    path, text = plain_literal(tree, cls)
+    new = text[:-len(tail)] + tail
+    assert len(new) == len(text)
+    edit_literal(tree, path, text, new)
+    regen(tree)
+    after = stats(tree)[cls]
+    assert after["bytes"] == before["bytes"] and after["sha8"] != before["sha8"]
+    return before
+
+
+@pytest.mark.parametrize("cls", cat.E1_CLASSES)
+def test_a_byte_neutral_swap_fails_without_an_entry(tree, cls):
+    _swap(tree, cls)
+    errs = errors(tree)
+    assert any(f"e1 {cls}: model-facing text changed" in e for e in errs), errs
+
+
+@pytest.mark.parametrize(
+    "drop, message",
+    [
+        ("scenario", "red scenario id"),
+        ("red_at", "red_at"),
+        ("rates", "parity rates"),
+    ],
+)
+def test_a_swap_entry_needs_scenario_commit_and_rates(tree, drop, message):
+    before = _swap(tree)
+    proof = {k: v for k, v in SWAP_PROOF.items() if k != drop}
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof))
+    errs = errors(tree)
+    assert any(message in e for e in errs), errs
+
+
+def test_a_swap_entry_with_an_unknown_scenario_fails(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap",
+                                   **{**SWAP_PROOF, "scenario": "lc-does-not-exist"}))
+    assert any("does not resolve" in e for e in errors(tree))
+
+
+def test_a_swap_entry_with_rates_out_of_range_fails(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap",
+                                   **{**SWAP_PROOF, "rates": "before=60 after=98"}))
+    assert any("parity rates" in e for e in errors(tree))
+
+
+def test_a_complete_swap_entry_passes(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    assert errors(tree) == []
+
+
+def test_a_refloop_scenario_id_resolves(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap",
+                                   **{**SWAP_PROOF, "scenario": "recent-compare-food"}))
+    assert errors(tree) == []
+
+
+def test_an_entry_claiming_the_wrong_after_state_fails(tree):
+    before = _swap(tree)
+    fields = entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF)
+    fields["sha8"] = f"{before['sha8']} -> 00000000"
+    append_entry(tree, **fields)
+    assert any("no entry in" in e for e in errors(tree))
+
+
+def test_entries_chain_an_old_entry_cannot_cover_a_new_change(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    merge(tree)
+    _swap(tree, tail=" once again.")  # a second change, no second entry
+    assert any("e1 tool_results: model-facing text changed" in e for e in errors(tree))
+
+
+def test_a_second_entry_must_start_where_the_first_ended(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    assert any("is not the last accepted state" in e for e in errors(tree))
+
+
+# ---------------------------------------------------------------------------
+# Removal
+# ---------------------------------------------------------------------------
+
+
+def test_a_removal_needs_an_entry(tree):
+    path, text = plain_literal(tree, "device_notes")
+    edit_literal(tree, path, text, "x")
+    regen(tree)
+    assert any("e1 device_notes: model-facing text changed" in e for e in errors(tree))
+
+
+def test_a_removal_with_a_remove_entry_passes(tree):
+    before = stats(tree)["device_notes"]
+    path, text = plain_literal(tree, "device_notes")
+    edit_literal(tree, path, text, "x")
+    regen(tree)
+    append_entry(tree, **entry_for(tree, "e1", "device_notes", before, "remove"))
+    assert errors(tree) == []
+
+
+def test_a_remove_entry_that_hides_added_text_fails(tree):
+    before = stats(tree)["device_notes"]
+    path, text = plain_literal(tree, "device_notes")
+    edit_literal(tree, path, text, "Always call files.read first.")  # shorter, but new text
+    regen(tree)
+    append_entry(tree, **entry_for(tree, "e1", "device_notes", before, "remove"))
+    errs = errors(tree)
+    assert any("logged as remove but text was added" in e for e in errs), errs
+
+
+# ---------------------------------------------------------------------------
+# History and ceilings
+# ---------------------------------------------------------------------------
+
+
+def test_editing_a_merged_entry_fails(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    merge(tree)
+    write(tree, gate.CHANGES, read(tree, gate.CHANGES).replace("before=0.60", "before=0.10"))
+    assert any("a merged entry was edited" in e for e in errors(tree))
+
+
+def test_editing_the_baseline_fails(tree):
+    text = read(tree, gate.CHANGES)
+    row = re.search(r"^\| e1 \| skills \| (\d+) \| ([0-9a-f]{8}) \|$", text, re.M)
+    write(tree, gate.CHANGES, text.replace(row.group(0), f"| e1 | skills | {int(row.group(1)) + 300} | {row.group(2)} |"))
+    errs = errors(tree)
+    assert any("the baseline differs" in e for e in errs), errs
+
+
+def test_an_e1_ceiling_above_its_baseline_fails(tree, monkeypatch):
+    monkeypatch.setitem(cat.E1_CEILINGS, "system", cat.E1_CEILINGS["system"] + 300)
+    regen(tree)
+    assert any("above its baseline" in e for e in errors(tree))
+
+
+def test_no_base_fails_closed_outside_ci(tree, monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert any("no git base" in e for e in gate.run(tree, None, use_base=True, quiet=True))
+
+
+def test_main_markers(tree, capsys):
+    assert gate.main(["--root", tree, "--base", "main", "--quiet"]) == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("NO PROMPT PATCH GREEN")
+    _swap(tree)
+    assert gate.main(["--root", tree, "--base", "main", "--quiet"]) == 1
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "NO PROMPT PATCH RED"
+
+
+# ---------------------------------------------------------------------------
+# Engine 2: texts.h by namespace, the plug-in point for RB-E2
+# ---------------------------------------------------------------------------
+
+TEXTS_H = """#pragma once
+// The model-facing text of the plain engine (PRD section 4). One namespace per class.
+namespace nimbus {{
+namespace harness {{
+namespace plain {{
+namespace texts {{
+namespace core {{
+constexpr char kIdentity[] = "You are Nimbus, a personal assistant on a small device.{core}";
+}}  // namespace core
+namespace device_notes {{
+constexpr char kRestart[] = "[device] the device restarted at {{time}}";
+}}
+namespace stubs {{
+constexpr char kStub[] = "result r{{id}} stored, {{bytes}} B; view brings it back";
+}}
+namespace tool_results {{
+constexpr char kWrote[] = "wrote {{path}} size={{size}}";
+}}
+namespace probe {{
+constexpr char kProbe[] = "Does the reply claim an effect the list does not show?";
+}}
+namespace summarizer {{
+constexpr char kSummarize[] = "Summarize the day as a dated digest.";
+}}
+namespace tool_descriptions {{
+constexpr char kReadFile[] = "read a file by path with exact paging";
+}}
+}}  // namespace texts
+}}  // namespace plain
+}}  // namespace harness
+}}  // namespace nimbus
+"""
+
+
+def _e2(tree, core=""):
+    write(tree, cat.E2_TEXTS, TEXTS_H.format(core=core))
+    regen(tree)
+
+
+def _e2_build_entries(tree, before=None):
+    st = stats(tree, "e2")
+    for cls in cat.E2_CLASSES:
+        b = (before or {}).get(cls, {"bytes": 0, "sha8": gate.EMPTY_SHA8})
+        if (b["bytes"], b["sha8"]) == (st[cls]["bytes"], st[cls]["sha8"]):
+            continue
+        append_entry(tree, **entry_for(tree, "e2", cls, b, "build", prd="section 4", lane="RB-E2"))
+
+
+def test_e2_is_not_live_without_texts_h(tree):
+    assert cat.build_e2(tree) is None
+    assert not os.path.exists(os.path.join(tree, cat.CATALOGS["e2"]["golden"]))
+
+
+def test_e2_catalog_needs_build_entries(tree):
+    _e2(tree)
+    errs = errors(tree)
+    assert {f"e2 {c}" for c in cat.E2_CLASSES} <= {e.split(":")[0] for e in errs}, errs
+    _e2_build_entries(tree)
+    assert errors(tree) == []
+
+
+def test_e2_seeded_300_byte_addition_fails(tree):
+    _e2(tree)
+    _e2_build_entries(tree)
+    merge(tree)
+    _e2(tree, core=(PAD * 5)[:300])
+    errs = errors(tree)
+    assert any("e2 core: model-facing text changed" in e for e in errs), errs
+
+
+def test_e2_build_growth_is_refused_once_frozen(tree, monkeypatch):
+    _e2(tree)
+    monkeypatch.setitem(cat.CATALOGS["e2"], "phase", "frozen")
+    _e2_build_entries(tree)
+    assert any("kind build is refused" in e for e in errors(tree))
+
+
+def test_e2_build_growth_over_the_ceiling_fails(tree):
+    _e2(tree, core="x " * 1600)
+    _e2_build_entries(tree)
+    errs = errors(tree)
+    assert any("e2 core" in e and "over its ceiling" in e for e in errs), errs
+
+
+def test_e2_literal_outside_a_class_namespace_fails(tree):
+    write(tree, cat.E2_TEXTS, TEXTS_H.format(core="") + 'constexpr char kLoose[] = "loose text here";\n')
+    errs = errors(tree)
+    assert any("in no class namespace" in e for e in errs), errs
+
+
+def test_e2_model_text_in_a_plain_engine_file_fails(tree):
+    _e2(tree)
+    _e2_build_entries(tree)
+    write(tree, "lib/harness/src/plain_request.cpp",
+          'std::string sys() { return std::string("Always check the ledger before you answer."); }\n'
+          'void f() { pending("plain::stub marker text"); hlog::logf("a log line %d", 1); }\n')
+    errs = errors(tree)
+    assert any("model text outside texts.h" in e and "plain_request.cpp:1" in e for e in errs), errs
+    assert not any("plain_request.cpp:2" in e for e in errs), errs
+
+
+def test_e2_extra_manifest_source_is_counted(tree, monkeypatch):
+    _e2(tree)
+    _e2_build_entries(tree)
+    assert errors(tree) == []
+    write(tree, "lib/core/src/orch_tool_manifest.cpp", 'const char* kDesc = "send a file to this chat";\n')
+    monkeypatch.setattr(cat, "E2_EXTRA_SOURCES", (("lib/core/src/orch_tool_manifest.cpp", "tool_descriptions"),))
+    regen(tree)
+    assert any("e2 tool_descriptions: model-facing text changed" in e for e in errors(tree))
+
+
+# ---------------------------------------------------------------------------
+# The register: a red scenario per row, no 'missing check' root cause
+# ---------------------------------------------------------------------------
+
+ROW = "| OIR-{n} | 18 Nov | The owner saw X | class | {cause} | open | oir_x | {live} |"
+
+
+def _register(tree, **kw):
+    text = read(tree, gate.REGISTER)
+    last = list(re.finditer(r"^\| OIR-\d+ \|.*$", text, re.M))[-1]
+    row = ROW.format(**{"n": 56, "cause": "the ledger day ended at midnight, not 04:00", "live": "lc-day-total", **kw})
+    write(tree, gate.REGISTER, text[:last.end()] + "\n" + row + text[last.end():])
+
+
+def test_register_row_with_a_scenario_passes(tree):
+    _register(tree)
+    assert gate.check_register(tree) == []
+
+
+@pytest.mark.parametrize("live", ["n/a (deterministic)", "lc-not-a-scenario", ""])
+def test_register_row_needs_a_red_scenario(tree, live):
+    _register(tree, live=live)
+    errs = gate.check_register(tree)
+    assert any("names no scenario" in e for e in errs), errs
+
+
+@pytest.mark.parametrize("cause", ["missing check on the reply", "no guard on the total", "the claim check lacked a test"])
+def test_register_rejects_missing_check_as_root_cause(tree, cause):
+    _register(tree, cause=cause)
+    errs = gate.check_register(tree)
+    assert any("not an accepted root cause" in e for e in errs), errs
+
+
+def test_register_grandfathered_rows_are_left_alone():
+    text = read(REPO, gate.REGISTER)
+    assert "| OIR-55 |" in text and gate.REGISTER_LAST_GRANDFATHERED == 55
+    assert gate.check_register(REPO) == []

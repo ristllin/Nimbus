@@ -40,7 +40,7 @@ ORDER_VERBS = (
     "retry", "return", "run", "save", "say", "search", "send", "set", "show", "split", "start", "state",
     "stop", "switch", "tell", "try", "use", "verify", "wait", "write",
 )
-_START = r"(?:^|[.!?;:]\s+|\n\s*|\(\s*|-\s+|\]\s*)"
+_START = r"(?:^|[.!?;:]\s+|\n\s*|\(\s*|-\s+|\]\s*)(?:(?:now|then|first|just|also|so|instead)\s+)?"
 # The verb must be followed by a word, a quote or a bracket ("read 120 B" states a fact), and
 # not by a status word ("write failed", "list not supported" name what happened).
 _STATUS = r"(?:failed|fails|not|is|was|were|refused|error|errors|ok|done|skipped|succeeded|ran|timed)\b"
