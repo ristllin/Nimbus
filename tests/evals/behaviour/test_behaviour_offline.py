@@ -159,7 +159,7 @@ class Ledger(unittest.TestCase):
 
 class FollowUpArms(unittest.TestCase):
     def test_strict_ops_refuse_the_other_id_field_and_uniform_ops_take_it(self):
-        for variant, refused in (("L1", True), ("L1u", False)):
+        for variant, refused in (("L1", True), ("L1u", False), ("L1uy", False)):
             w = World(now=NOW, variant=variant)
             w.call("ledger_write", {"ops": [add_op(), add_op("banana", 107)]})
             a, b = (r.id for r in w.rows)
@@ -179,6 +179,8 @@ class FollowUpArms(unittest.TestCase):
 
         self.assertEqual(stamp(NOW, "L1"), "[Tue 17 Nov 13:02] ")
         self.assertEqual(stamp(NOW, "L1y"), "[Tue 17 Nov 2026 13:02] ")
+        self.assertEqual(stamp(NOW, "L1uy"), "[Tue 17 Nov 2026 13:02] ")
+        self.assertEqual(stamp(NOW, "L1u"), "[Tue 17 Nov 13:02] ")
 
 
 class Faults(unittest.TestCase):
@@ -382,6 +384,17 @@ class Report(unittest.TestCase):
         r = report.rates(rows, lambda r: True)
         self.assertEqual(r["turns"], 0)
         self.assertEqual(r["unjudged"], 1)
+
+
+class Audit(unittest.TestCase):
+    def test_every_override_is_a_judge_field_with_a_reason(self):
+        from judge import QUESTIONS
+
+        for o in json.loads(report.AUDIT.read_text())["overrides"]:
+            self.assertIn(o["label"], QUESTIONS)
+            self.assertIn(o["head"], providers.HEADS)
+            self.assertGreater(len(o["why"]), 40)
+            self.assertEqual(len(o["key"].split("|")), 3)
 
 
 class Plan(unittest.TestCase):

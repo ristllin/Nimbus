@@ -33,8 +33,8 @@ _lock = threading.Lock()
 
 
 def stamp(t, variant: str = "") -> str:
-    """The send time on every owner message; arm L1y adds the year."""
-    return t.strftime("[%a %d %b %Y %H:%M] " if variant == "L1y" else "[%a %d %b %H:%M] ")
+    """The send time on every owner message; arms L1y and L1uy add the year."""
+    return t.strftime("[%a %d %b %Y %H:%M] " if variant in ("L1y", "L1uy") else "[%a %d %b %H:%M] ")
 
 
 # ------------------------------------------------------------------ seeding
@@ -246,7 +246,9 @@ def main():
     ap.add_argument("--only", default="", help="comma list of kinds")
     ap.add_argument("--parallel", type=int, default=6)
     ap.add_argument("--scale", default="", help="n_ledger,n_dispatch,n_other,n_warn,n_recall")
-    ap.add_argument("--follow-up", default="", help="comma list of follow-up arms (L1u, L1y): ledger episodes only")
+    ap.add_argument(
+        "--follow-up", default="", help="comma list of follow-up arms (L1u, L1y, L1uy): ledger episodes only"
+    )
     args = ap.parse_args()
     providers.load_env(args.env_file)
     ev = Path(args.evidence)

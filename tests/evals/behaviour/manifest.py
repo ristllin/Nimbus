@@ -251,8 +251,9 @@ L3_ORDER = [
 VARIANTS = ("L1", "L3", "P")
 # Follow-up arms on the ledger episodes, same tools and system text as L1 byte for byte:
 #   L1u  ledger_write ops read row ids from id or ids, and an add reads day, time and meal beside row;
-#   L1y  every owner message stamp carries the year ('[Tue 17 Nov 2026 13:02]').
-FOLLOW_UP = ("L1u", "L1y")
+#   L1y  every owner message stamp carries the year ('[Tue 17 Nov 2026 13:02]');
+#   L1uy both.
+FOLLOW_UP = ("L1u", "L1y", "L1uy")
 
 
 def groups_for(variant: str) -> dict:

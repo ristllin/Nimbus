@@ -28,12 +28,14 @@ LEDGER_WRITES = {
     "L3": {"ledger_add", "ledger_update", "ledger_remove"},
     "L1u": {"ledger_write"},
     "L1y": {"ledger_write"},
+    "L1uy": {"ledger_write"},
 }
 LEDGER_ARMS = {
     "one_tool_L1": "L1",
     "three_tools_L3": "L3",
     "one_tool_uniform_ops_L1u": "L1u",
     "one_tool_year_stamp_L1y": "L1y",
+    "one_tool_uniform_ops_and_year_L1uy": "L1uy",
 }
 EFFECT_KINDS = {"ledger", "dispatch", "other", "warning"}
 FAMILY_OF_TOOL = {
@@ -46,7 +48,16 @@ FAMILY_OF_TOOL = {
 }
 
 
-def load(ev: Path, head: str):
+AUDIT = Path(__file__).resolve().parent / "audit.json"
+
+
+def audit_overrides(head: str) -> list:
+    if not AUDIT.exists():
+        return []
+    return [o for o in json.loads(AUDIT.read_text())["overrides"] if o["head"] == head]
+
+
+def load(ev: Path, head: str, audited: bool = True):
     recs = [json.loads(x) for x in (ev / head / "records.jsonl").read_text().splitlines() if x.strip()]
     labels = {}
     lp = ev / head / "labels.jsonl"
@@ -55,6 +66,10 @@ def load(ev: Path, head: str):
             if x.strip():
                 j = json.loads(x)
                 labels[j["key"]] = j["labels"]
+    if audited:
+        for o in audit_overrides(head):
+            if o["key"] in labels:
+                labels[o["key"]] = {**labels[o["key"]], o["label"]: o["value"]}
     return recs, labels
 
 
@@ -158,6 +173,11 @@ def rates(rows, pred):
     return out
 
 
+def quoted(text: str, n: int) -> str:
+    """Model text quoted into this repo: em dashes become ' - ' (project rule), cut to n characters."""
+    return text.replace("\u2014", " - ")[:n]
+
+
 def examples(rows, name, limit=6):
     out = []
     for r, t, lab, d in rows:
@@ -166,10 +186,10 @@ def examples(rows, name, limit=6):
                 {
                     "episode": r["episode"],
                     "variant": r["variant"],
-                    "owner": t["owner"][:160],
+                    "owner": quoted(t["owner"], 160),
                     "calls": [f"{c['name']}{'!' if c['err'] else ''}" for c in t["calls"]],
-                    "reply": t["reply"][:300],
-                    "reason": (lab or {}).get("reason", "")[:300],
+                    "reply": quoted(t["reply"], 300),
+                    "reason": quoted((lab or {}).get("reason", ""), 300),
                 }
             )
     return out[:limit]
@@ -242,6 +262,7 @@ def wrong_year(recs):
 def summarize_head(ev, head):
     recs, labels = load(ev, head)
     rows = behaviour(recs, labels)
+    raw = behaviour(*load(ev, head, audited=False))
     turns = [t for r in recs for t in r["turns"]]
     usd = sum(t["usd"] for t in turns)
     return {
@@ -251,6 +272,8 @@ def summarize_head(ev, head):
         "usd_per_turn": round(usd / max(len(turns), 1), 5),
         "requests_per_turn": round(sum(t["steps"] for t in turns) / max(len(turns), 1), 2),
         "round_guard_trips": sum(t["stop"] == "round_guard" for t in turns),
+        "judge_raw_all_variants": {k: rates(raw, lambda r: True)[k] for k in ("false_claim", "interim_stop")},
+        "audit_overrides": len(audit_overrides(head)),
         "behaviour": {
             "all_variants": rates(rows, lambda r: True),
             "default_L1": rates(rows, lambda r: r["variant"] == "L1"),
@@ -283,7 +306,7 @@ def pct(r, key=None):
 def verdicts(heads: dict) -> dict:
     v = {}
     for h, s in heads.items():
-        b = s["behaviour"]["default_L1"]
+        b = s["behaviour"]["all_variants"]  # every arm's turns are effect-shaped turns on the engine-2 shapes
         fc_up = b["false_claim"]["upper95"]
         fc = {arm: (d["first_call"]["rate"] or 0) for arm, d in s["ledger"].items()}
         l1, l3 = fc.get("one_tool_L1", 0), fc.get("three_tools_L3", 0)

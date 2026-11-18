@@ -259,11 +259,11 @@ class World:
             raise ToolError(f"op {n}: no row {rid}; ledger_day shows the ids")
         return r
 
-    # Arm L1u: the same one ledger_write, every op reading its row ids from id or ids, and an add reading
+    # Arms L1u and L1uy: the same one ledger_write, every op reading its row ids from id or ids, and an add reading
     # day, time and meal beside row. The strict arms take exactly the PRD's per-op fields.
     @property
     def uniform_ops(self) -> bool:
-        return self.variant == "L1u"
+        return self.variant in ("L1u", "L1uy")
 
     def _op_ids(self, n, op, extra) -> list:
         if not self.uniform_ops:

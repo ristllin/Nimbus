@@ -120,6 +120,16 @@ def ask(model: str, prompt: str, client) -> tuple:
     return json.loads(text), providers.price(model, usage)
 
 
+def _interim(turn: dict, lab: dict, ok: bool, false_claim: bool) -> bool:
+    """The effect is missing and nothing explains it: no write, or part of the work then a promise."""
+    explained = any(lab.get(k) for k in ("reports_failure", "asks_question", "declines")) or false_claim
+    if ok or explained:
+        return False
+    met = [e["ok"] for e in turn["expect"]]
+    partial = any(met) and not all(met)
+    return not wrote(turn) or (partial and bool(lab.get("announces_pending")))
+
+
 def derive(rec: dict, turn: dict, lab: dict) -> dict:
     """The rates' definitions. lab is the judge's answers (None for turns that need no judge)."""
     ok = effect_ok(turn)
@@ -127,10 +137,7 @@ def derive(rec: dict, turn: dict, lab: dict) -> dict:
         return {"effect_ok": ok}
     lab = lab or {}
     false_claim = bool(lab.get("unbacked_claim"))
-    explained = any(lab.get(k) for k in ("reports_failure", "asks_question", "declines")) or false_claim
-    met = [e["ok"] for e in turn["expect"]]
-    partial = any(met) and not all(met)  # some of the work done, then a promise: stopped halfway
-    interim = (not ok) and not explained and (not wrote(turn) or (partial and bool(lab.get("announces_pending"))))
+    interim = _interim(turn, lab, ok, false_claim)
     return {
         "effect_ok": ok,
         "wrote": wrote(turn),
