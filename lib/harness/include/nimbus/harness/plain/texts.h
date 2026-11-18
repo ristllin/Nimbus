@@ -151,8 +151,33 @@ inline constexpr ToolDecl kTools[] = {
 inline constexpr size_t kToolCount = sizeof(kTools) / sizeof(kTools[0]);
 }  // namespace tool_descriptions
 
+// ---- device notes (PRD section 8.9: the closed list of harness-written lines) ------------
+namespace device_notes {
+// One exchange's status line per error class (lane RB-EX, plain_exchange.cpp exchangeLine):
+// what happened, then the one next step. A provider's own words never ride in it.
+inline constexpr char kNoReply[] = "No reply: ";
+inline constexpr char kUnreachable[] = " could not be reached. Send the message again.";
+inline constexpr char kServerError[] = " had a server error";
+inline constexpr char kLimiting[] = " is limiting requests";
+inline constexpr char kTryLater[] = ". Try again in a minute.";
+inline constexpr char kTooLarge[] = "the conversation is too large for this model. Try a shorter message.";
+inline constexpr char kKeyRefused[] = " refused the key or the account has no credit";
+inline constexpr char kCheckKey[] = ". Check the key and credit.";
+inline constexpr char kUnreadable[] = " sent an answer the device could not read. Try again.";
+inline constexpr char kRefused[] = " refused the request";
+inline constexpr char kHttp[] = " (HTTP ";
+inline constexpr char kCut[] = "The reply above was cut at the length limit.";
+inline constexpr char kBlocked[] = "The reply was blocked by moderation.";
+// Who answered, by the qualification table's provider slug.
+inline constexpr char kAnthropic[] = "Anthropic";
+inline constexpr char kOpenAI[] = "OpenAI";
+inline constexpr char kMistral[] = "Mistral";
+inline constexpr char kZai[] = "Z.ai";
+inline constexpr char kRouter[] = "The Cumulo router";
+inline constexpr char kProvider[] = "The model's provider";
+}  // namespace device_notes
+
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).
-namespace device_notes {}
 namespace stubs {}
 namespace tool_results {}
 namespace probe {}

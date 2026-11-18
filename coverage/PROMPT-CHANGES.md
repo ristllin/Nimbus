@@ -308,3 +308,13 @@ deleted. Engine 2 has no baseline.
 - lane: RB-C1
 - prd: section 3 (Shape: one digest per local day with a device-written day header; the device's own recent-files list, path and last write)
 - why: the separator after a digest's day header ("Tue 17 Nov 2026: ...") and the brackets around a recent file's last write ("notes/boat.md (Tue 17 Nov 2026 13:02)"), in lib/core/include/nimbus/orch/tx/digest.h, listed in E2_EXTRA_SOURCES; the dates are tx::photoWhen's (Ruling 11)
+
+### PC-0008: one exchange's status lines (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 0 -> 483
+- sha8: e3b0c442 -> 88087555
+- lane: RB-EX
+- prd: section 7 (provider errors, cut answers) and section 8.9 (one status line per failure)
+- why: the one plain line an exchange gives the owner per error class (no reply from the provider, its server error, rate limit, a conversation too large, a refused key or credit, an unreadable answer, a refused request, a cut answer, a moderation block) and the provider names in it, composed by plain_exchange.cpp exchangeLine; no provider text rides in a line

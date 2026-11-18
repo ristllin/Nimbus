@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1685 ceiling=3072 entries=24 sha8=6e260cff
-# class device_notes bytes=0 ceiling=2048 entries=0 sha8=e3b0c442
+# class device_notes bytes=483 ceiling=2048 entries=19 sha8=88087555
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
 # class tool_results bytes=1982 ceiling=6144 entries=146 sha8=57e32b33
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
@@ -32,6 +32,25 @@ core	lib/harness/include/nimbus/harness/plain/texts.h	e9984488	30	" more: skill_
 core	lib/harness/include/nimbus/harness/plain/texts.h	808d4eb8	13	"Pinned notes:"
 core	lib/harness/include/nimbus/harness/plain/texts.h	74c267af	13	"Earlier days:"
 core	lib/harness/include/nimbus/harness/plain/texts.h	210916c2	13	"Recent files:"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	c6ce8486	10	"No reply: "
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	29769472	46	" could not be reached. Send the message again."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	efc69d8c	19	" had a server error"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	791b499a	21	" is limiting requests"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	b2d98554	24	". Try again in a minute."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	135d49c4	68	"the conversation is too large for this model. Try a shorter message."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	ebc26ddb	45	" refused the key or the account has no credit"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	7771854d	27	". Check the key and credit."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	a86142b5	53	" sent an answer the device could not read. Try again."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	c633c8a7	20	" refused the request"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	a53978b8	7	" (HTTP "
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	39a6d6a7	44	"The reply above was cut at the length limit."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	9a603645	36	"The reply was blocked by moderation."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	744205e4	9	"Anthropic"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	8b7d1a31	6	"OpenAI"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	0cb39762	7	"Mistral"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	39e22747	4	"Z.ai"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	edb2a0a1	17	"The Cumulo router"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	c5d2d33b	20	"The model's provider"
 tool_results	lib/core/src/orch_file_tools.cpp	c80f5999	25	"{} takes {}; not read: {}"
 tool_results	lib/core/src/orch_file_tools.cpp	6b9e2b71	26	"{} is missing; {} takes {}"
 tool_results	lib/core/src/orch_file_tools.cpp	f87e66c7	18	"{} is not a string"

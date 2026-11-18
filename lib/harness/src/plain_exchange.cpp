@@ -10,7 +10,9 @@
 
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/billing_refusal.h"
+#include "nimbus/orch/compact.h"   // isContextOverflowError: each provider's words for a size refusal
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/router_refusals.h"
 #include "nimbus/orch/router_route.h"
@@ -34,20 +36,6 @@ std::string lower(const std::string& s) {
   std::string o = s;
   for (char& c : o) c = (char)std::tolower((unsigned char)c);
   return o;
-}
-
-// Each provider's words for "the prompt is too large", recorded 1 Nov 2026 (lane OVF, the
-// same markers as the old engine's isContextOverflowError, which engine 2 does not link).
-bool namesContext(const std::string& body) {
-  const std::string e = lower(body.substr(0, 4096));
-  static const char* const kMarkers[] = {
-      "context_length_exceeded", "maximum context length", "prompt is too long", "too many total text bytes",
-      "prompt exceeds max length", "prompt_too_long", "context window", "exceed context limit",
-      "too large for model",
-  };
-  for (const char* m : kMarkers)
-    if (e.find(m) != std::string::npos) return true;
-  return false;
 }
 
 // What one answer means for the policy.
@@ -84,7 +72,7 @@ bool routerVerdict(const std::string& body, Verdict& v) {
 ExchangeErr statusErr(int status, const std::string& body) {
   if (status == 401 || status == 402 || status == 403 || orch::isBillingRefusal(status, body))
     return ExchangeErr::KeyRefused;
-  if (status == 413 || ((status == 400 || status == 422) && namesContext(body))) return ExchangeErr::ContextRefused;
+  if (status == 413 || ((status == 400 || status == 422) && orch::isContextOverflowError(body.substr(0, 4096)))) return ExchangeErr::ContextRefused;
   if (status == 429) return ExchangeErr::RateLimited;
   if (status == 408) return ExchangeErr::Transport;
   return status >= 500 ? ExchangeErr::Server : ExchangeErr::Other;
@@ -105,12 +93,13 @@ Verdict classify(int status, const std::string& body, bool routed) {
 }
 
 const char* providerName(const std::string& slug) {
-  if (slug == "anthropic") return "Anthropic";
-  if (slug == "openai") return "OpenAI";
-  if (slug == "mistral") return "Mistral";
-  if (slug == "zai") return "Z.ai";
-  if (slug == "cumulo") return "The Cumulo router";
-  return "The model's provider";
+  namespace n = texts::device_notes;
+  if (slug == "anthropic") return n::kAnthropic;
+  if (slug == "openai") return n::kOpenAI;
+  if (slug == "mistral") return n::kMistral;
+  if (slug == "zai") return n::kZai;
+  if (slug == "cumulo") return n::kRouter;
+  return n::kProvider;
 }
 
 uint32_t minU(uint32_t a, uint32_t b) { return a < b ? a : b; }
@@ -232,7 +221,7 @@ class Exchange {
       ++out_.climbs;
     }
     if (!body::detail::stringsWithinGuard(http_.body, orch::kJsonStrGuard) || !nimbus::utf8Valid(http_.body))
-      return Status::fail(Err::InvalidArgument, "plain::runExchange body check");
+      return Status::fail(Err::InvalidArgument, "plain::runExchange.bodyCheck");
     sendable = true;
     return Status::success();
   }
@@ -398,25 +387,25 @@ std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) {
   return head.routed ? "cumulo" : "custom";
 }
 
-// The owner's line for a failed exchange. Plain words, the next step, no provider text
-// (a provider's message is outside content and stays in the log).
+// The owner's line for a failed exchange (texts.h device_notes): what happened, then the
+// one next step; no provider text (a provider's message is outside content and stays in the log).
 std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatus) {
-  const std::string who = providerName(slug);
-  const std::string code = httpStatus > 0 ? " (HTTP " + std::to_string(httpStatus) + ")" : "";
+  namespace n = texts::device_notes;
+  const std::string who = std::string(n::kNoReply) + providerName(slug);
+  const std::string code = httpStatus > 0 ? n::kHttp + std::to_string(httpStatus) + ")" : "";
   switch (err) {
     case ExchangeErr::None: return "";
-    case ExchangeErr::Transport: return "No reply: the connection to " + who + " failed. Send the message again to retry.";
-    case ExchangeErr::Server: return "No reply: " + who + " had a server error" + code + ". Try again in a minute.";
-    case ExchangeErr::RateLimited: return "No reply: " + who + " is limiting requests" + code + ". Try again in a minute.";
-    case ExchangeErr::ContextRefused: return "No reply: the conversation is too large for this model. Send it again shorter.";
-    case ExchangeErr::KeyRefused:
-      return "No reply: " + who + " refused the key or the account has no credit" + code + ". Check the key and credit.";
-    case ExchangeErr::Cut: return "The reply above was cut at the length limit.";
-    case ExchangeErr::Malformed: return "No reply: " + who + " sent an answer the device could not read. Try again.";
-    case ExchangeErr::Blocked: return "The reply was blocked by moderation.";
+    case ExchangeErr::Transport: return who + n::kUnreachable;
+    case ExchangeErr::Server: return who + n::kServerError + code + n::kTryLater;
+    case ExchangeErr::RateLimited: return who + n::kLimiting + code + n::kTryLater;
+    case ExchangeErr::ContextRefused: return std::string(n::kNoReply) + n::kTooLarge;
+    case ExchangeErr::KeyRefused: return who + n::kKeyRefused + code + n::kCheckKey;
+    case ExchangeErr::Cut: return n::kCut;
+    case ExchangeErr::Malformed: return who + n::kUnreadable;
+    case ExchangeErr::Blocked: return n::kBlocked;
     case ExchangeErr::Other: break;
   }
-  return "No reply: " + who + " refused the request" + code + ".";
+  return who + n::kRefused + code + ".";
 }
 
 bool targetQualified(const HeadTarget& t, hq::Line line) {

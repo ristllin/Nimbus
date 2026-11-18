@@ -157,10 +157,10 @@ class BodyWriter {
   // An object key: a literal of printable ASCII without '"' or '\\' (the renderers' own
   // field names; never data).
   BodyWriter& key(const char* k) {
-    if (!ready() || !inObject() || afterKey_) return fail(Err::InvalidArgument, "plain::body key");
-    if (!k || !*k) return fail(Err::InvalidArgument, "plain::body key");
+    if (!ready() || !inObject() || afterKey_) return fail(Err::InvalidArgument, "plain::body.key");
+    if (!k || !*k) return fail(Err::InvalidArgument, "plain::body.key");
     for (const char* p = k; *p; ++p)
-      if (*p < 0x20 || *p > 0x7E || *p == '"' || *p == '\\') return fail(Err::InvalidArgument, "plain::body key");
+      if (*p < 0x20 || *p > 0x7E || *p == '"' || *p == '\\') return fail(Err::InvalidArgument, "plain::body.key");
     if (count_[depth_ - 1]++) out_ += ',';
     out_ += '"';
     out_ += k;
@@ -172,7 +172,7 @@ class BodyWriter {
   BodyWriter& str(const std::string& s, Over over = Over::Refuse) { return str(s.data(), s.size(), over); }
   BodyWriter& str(const char* s, size_t n, Over over = Over::Refuse) {
     if (!value()) return *this;
-    if (!s && n) return fail(Err::InvalidArgument, "plain::body str");
+    if (!s && n) return fail(Err::InvalidArgument, "plain::body.str");
     if (n <= guard_ && nimbus::utf8Valid(s, n)) {   // the common case: no copy
       out_ += '"';
       detail::escapeInto(out_, s, n);
@@ -236,13 +236,13 @@ class BodyWriter {
   }
   BodyWriter& part(const std::string& s) { return part(s.data(), s.size()); }
   BodyWriter& part(const char* s, size_t n) {
-    if (!ok() || !inStr_) return fail(Err::InvalidArgument, "plain::body part");
-    if (!s && n) return fail(Err::InvalidArgument, "plain::body part");
+    if (!ok() || !inStr_) return fail(Err::InvalidArgument, "plain::body.part");
+    if (!s && n) return fail(Err::InvalidArgument, "plain::body.part");
     pending_.append(s, n);
     return *this;
   }
   BodyWriter& splice(const uint8_t* bytes, size_t len, bool base64 = true) {
-    if (!ok() || !inStr_ || !splices_ || !bytes || !len) return fail(Err::InvalidArgument, "plain::body splice");
+    if (!ok() || !inStr_ || !splices_ || !bytes || !len) return fail(Err::InvalidArgument, "plain::body.splice");
     if (!flushSegment(Over::Refuse)) return *this;
     BodySplice sp;
     sp.at = out_.size();
@@ -254,7 +254,7 @@ class BodyWriter {
     return *this;
   }
   BodyWriter& endStr() {
-    if (!ok() || !inStr_) return fail(Err::InvalidArgument, "plain::body endStr");
+    if (!ok() || !inStr_) return fail(Err::InvalidArgument, "plain::body.endStr");
     if (!flushSegment(pendingSplices_ ? Over::Refuse : strOver_)) return *this;
     out_ += '"';
     inStr_ = false;
@@ -266,7 +266,7 @@ class BodyWriter {
   bool ok() const { return st_.ok(); }
   Status status() const {
     if (!st_.ok()) return st_;
-    if (depth_ || inStr_ || afterKey_ || !top_) return Status::fail(Err::InvalidArgument, "plain::body unfinished");
+    if (depth_ || inStr_ || afterKey_ || !top_) return Status::fail(Err::InvalidArgument, "plain::body.unfinished");
     return Status::success();
   }
   const BodyStats& stats() const { return stats_; }
@@ -283,12 +283,12 @@ class BodyWriter {
   // Before any value: the comma, the key rule, one top-level value.
   bool value() {
     if (!ready()) {
-      fail(Err::InvalidArgument, "plain::body value");
+      fail(Err::InvalidArgument, "plain::body.value");
       return false;
     }
     if (!depth_) {
       if (top_) {
-        fail(Err::InvalidArgument, "plain::body second top-level value");
+        fail(Err::InvalidArgument, "plain::body.secondTop-levelValue");
         return false;
       }
       top_ = true;
@@ -296,7 +296,7 @@ class BodyWriter {
     }
     if (obj_[depth_ - 1]) {
       if (!afterKey_) {
-        fail(Err::InvalidArgument, "plain::body value without key");
+        fail(Err::InvalidArgument, "plain::body.valueWithoutKey");
         return false;
       }
       afterKey_ = false;
@@ -307,7 +307,7 @@ class BodyWriter {
   }
 
   BodyWriter& open(char c, bool object) {
-    if (depth_ >= kMaxDepth) return fail(Err::TooLarge, "plain::body depth");
+    if (depth_ >= kMaxDepth) return fail(Err::TooLarge, "plain::body.depth");
     if (!value()) return *this;
     out_ += c;
     obj_[depth_] = object;
@@ -317,7 +317,7 @@ class BodyWriter {
   }
   BodyWriter& close(char c, bool object) {
     if (!ready() || !depth_ || obj_[depth_ - 1] != object || afterKey_)
-      return fail(Err::InvalidArgument, "plain::body close");
+      return fail(Err::InvalidArgument, "plain::body.close");
     out_ += c;
     --depth_;
     return *this;
@@ -335,7 +335,7 @@ class BodyWriter {
     const bool repaired = nimbus::utf8Repair(s) > 0;
     bool clipped = false;
     if (s.size() > guard_) {
-      if (over == Over::Refuse) return fail(Err::TooLarge, "plain::body string over the guard");
+      if (over == Over::Refuse) return fail(Err::TooLarge, "plain::body.stringOverTheGuard");
       clipped = nimbus::utf8ClipNoted(s, guard_);
     }
     out_ += '"';
@@ -352,7 +352,7 @@ class BodyWriter {
     stats_.repaired += repaired;
     if (strText_ + pending_.size() > guard_) {
       if (over == Over::Refuse) {
-        fail(Err::TooLarge, "plain::body string over the guard");
+        fail(Err::TooLarge, "plain::body.stringOverTheGuard");
         return false;
       }
       nimbus::utf8ClipNoted(pending_, guard_ - strText_);
@@ -469,7 +469,7 @@ class BodyWriter {
         ++text;
       }
       if (text > guard_) {
-        fail(Err::TooLarge, "plain::body raw string over the guard");
+        fail(Err::TooLarge, "plain::body.rawStringOverTheGuard");
         return false;
       }
     }
@@ -524,7 +524,7 @@ class BodyWriter {
     bool ok = (rawAt(c, '{') || rawAt(c, '[')) && rawValue(c);
     rawSpace(c);
     ok = ok && c.i == j.size();
-    if (!ok) fail(Err::InvalidArgument, "plain::body raw not one JSON object or array");
+    if (!ok) fail(Err::InvalidArgument, "plain::body.rawNotOneJSONObjectOrArray");
     return ok && st_.ok();
   }
 
