@@ -89,11 +89,15 @@ inline constexpr BuiltinPrice kBuiltinPrices[] = {
     {"mistral", "mistral-embed", 100000, 0, 0},        // lane DEF: memory embeddings
     {"mistral", "mistral-moderation", 100000, 0, 0},   // lane DEF: the message classifier
     {"mistral", "*", 2000000, 6000000, 0},
-    // Cached input $0.26 (the 15 Nov z100_repeat leg: $0.028 against $0.139 cold).
+    // Cached input $0.26 (the 15 Nov z100_repeat leg: $0.028 against $0.139 cold). Z.ai's
+    // cached tokens leave the input count for every model (usage_ledger.cpp, Included), so
+    // every Z.ai row carries a cache-read rate: glm-5.3's measured share (0.186x) until a
+    // model's own is confirmed, rounded up (fail-closed money: never the 0.1x default, which
+    // reads 46 percent low on glm-5.3; test_orch_usage_ledger pins it).
     {"zai", "glm-5.3", 1400000, 4400000, 0, 260000},
-    {"zai", "glm-5.2", 1400000, 4400000, 0},
-    {"zai", "glm-5.3-flash", 150000, 500000, 0},
-    {"zai", "*", 1400000, 4400000, 0},
+    {"zai", "glm-5.2", 1400000, 4400000, 0, 260000},
+    {"zai", "glm-5.3-flash", 150000, 500000, 0, 27860},
+    {"zai", "*", 1400000, 4400000, 0, 260000},
     {"tavily", "*", 0, 0, 8000000},
 };
 inline constexpr size_t kBuiltinPriceCount = sizeof(kBuiltinPrices) / sizeof(kBuiltinPrices[0]);
@@ -206,14 +210,40 @@ inline void builtinHighestPrice(const char* prov, uint32_t& microIn, uint32_t& m
 // per field, the highest built-in price of the slot it is priced from - a Cumulo key
 // "<upstream>/<bare>" reads its upstream's rows, any other Cumulo key (and a paid custom
 // endpoint) every slot. 0 for a local custom endpoint.
+// The slot an unpriced model is priced from: a Cumulo key's upstream, else `prov` itself.
+// Copied into `out` (kModelKeyCap bytes); nullptr when there is none.
+inline const char* builtinUnknownSlot(const char* prov, const char* key, char* out) {
+  const char* bare;
+  const char* slot = builtinSlotFor(prov, key, &bare, out);
+  const bool upstreamKnown = slot && prov && std::strcmp(prov, "cumulo") == 0 &&
+                             key && std::strchr(key, '/') && builtinSlotDefault(slot);
+  return upstreamKnown ? slot : prov;
+}
 inline void builtinUnknownPrice(const char* prov, const char* key, uint32_t& microIn,
                                 uint32_t& microOut) {
   char up[kModelKeyCap];
-  const char* bare;
-  const char* slot = builtinSlotFor(prov, key, &bare, up);
-  const bool upstreamKnown = slot && prov && std::strcmp(prov, "cumulo") == 0 &&
-                             key && std::strchr(key, '/') && builtinSlotDefault(slot);
-  builtinHighestPrice(upstreamKnown ? slot : prov, microIn, microOut);
+  builtinHighestPrice(builtinUnknownSlot(prov, key, up), microIn, microOut);
+}
+
+// The cache-read rate of a model with NO row of its own, at the input rate `microIn` its
+// estimate takes (fail-closed money, release review v5.1.2): the highest cached share any
+// row of the same slot (builtinUnknownPrice's choice) bills, rounded up; 0 when no row
+// bills more than the 0.1x default. On a host whose cached tokens leave the input count
+// (Z.ai: glm-5.3 bills 0.186x) the 0.1x default would read cheaper than the bill.
+inline uint32_t builtinUnknownCacheR(const char* prov, const char* key, uint32_t microIn) {
+  char up[kModelKeyCap];
+  const char* from = builtinUnknownSlot(prov, key, up);
+  if (!from || (isCustomSlot(from) && !customEndpointPaid())) return 0;
+  const bool anySlot = std::strcmp(from, "cumulo") == 0 || isCustomSlot(from);
+  uint64_t bestR = 1, bestIn = 10;   // the 0.1x default
+  for (const BuiltinPrice& p : kBuiltinPrices) {
+    const bool known = p.microCacheR && p.microIn && (anySlot || std::strcmp(p.slot, from) == 0);
+    if (known && (uint64_t)p.microCacheR * bestIn > bestR * p.microIn) {
+      bestR = p.microCacheR;
+      bestIn = p.microIn;
+    }
+  }
+  return bestIn == 10 ? 0 : (uint32_t)(((uint64_t)microIn * bestR + bestIn - 1) / bestIn);
 }
 
 // The row a request-size tier files under: "<key>:long" when `key`'s built-in row has

@@ -3201,6 +3201,43 @@ static void test_b_price_rows() {
   TEST_ASSERT_EQUAL_UINT64(6000000, l4.out);
 }
 
+// Release review v5.1.2 (Z.ai cached input): on every host whose usage includes its cached
+// tokens and is split (ledgerDelta), no built-in row estimates a cached token cheaper than the
+// highest cached share a row of that host is known to bill (fail-closed money: an estimate never
+// reads cheaper than the bill). Before the fix glm-5.2, glm-5.3-flash and Z.ai's "*" row fell to
+// the 0.1x default while glm-5.3 bills 0.186x.
+// The built-in row of `host` with the highest known cached share, nullptr when none has one.
+static const nimbus::orch::BuiltinPrice* highestCacheShareRow(const char* host) {
+  const nimbus::orch::BuiltinPrice* known = nullptr;
+  for (size_t i = 0; i < nimbus::orch::kBuiltinPriceCount; i++) {
+    const nimbus::orch::BuiltinPrice& r = nimbus::orch::kBuiltinPrices[i];
+    if (std::strcmp(r.slot, host) != 0 || !r.microCacheR || !r.microIn) continue;
+    if (!known || (uint64_t)r.microCacheR * known->microIn > (uint64_t)known->microCacheR * r.microIn) known = &r;
+  }
+  return known;
+}
+static void test_b_no_included_row_estimates_cache_under_the_known_share() {
+  using nimbus::orch::BuiltinPrice;
+  int checked = 0;
+  for (const char* host : {"openai", "mistral", "zai", "custom", "tavily"}) {   // anthropic: Excluded, per row
+    if (ledgerDelta(slotOf(host, 100000, 0, 90000, 0)).cacheR == 0) continue;   // not split: billed whole
+    const BuiltinPrice* known = highestCacheShareRow(host);
+    if (!known) continue;   // no share known for the host: the 0.1x default (owner ruling R4)
+    for (size_t i = 0; i < nimbus::orch::kBuiltinPriceCount; i++) {
+      const BuiltinPrice& r = nimbus::orch::kBuiltinPrices[i];
+      if (std::strcmp(r.slot, host) != 0 || !r.microIn) continue;
+      const std::string model = std::strcmp(r.family, "*") == 0 ? std::string("an-unlisted-model") : r.family;
+      const EffRate e = UsageLedger().effectiveRate(host, model.c_str());
+      const uint64_t cached = e.cacheR ? e.cacheR : e.in / 10;
+      const std::string what = std::string(host) + "/" + r.family;
+      // Within 0.1 percent: a share carried to another row's rate is rounded to whole micro-USD.
+      TEST_ASSERT_TRUE_MESSAGE(cached * known->microIn * 1000 >= (uint64_t)known->microCacheR * e.in * 999, what.c_str());
+      checked++;
+    }
+  }
+  TEST_ASSERT_TRUE(checked >= 4);   // every Z.ai row at least
+}
+
 // The NVS blob keeps Mistral's and Z.ai's input in its native, cache-included form with the
 // cache fields 0, as v5.1.1 wrote them (a rollback reads the same blob), and a restart puts
 // the split back from the per-model rows.
@@ -3319,6 +3356,7 @@ int main() {
   RUN_TEST(test_b_every_openai_shaped_slot_splits_its_cached_tokens);
   RUN_TEST(test_b_mistral_cached_reads_bill_at_the_cache_rate);
   RUN_TEST(test_b_price_rows);
+  RUN_TEST(test_b_no_included_row_estimates_cache_under_the_known_share);
   RUN_TEST(test_b_mistral_and_zai_cache_folded_in_nvs_and_reloaded);
   RUN_TEST(test_b_cumulo_split_waits_for_the_lift);
   RUN_TEST(test_r4_resplit_fails_closed_without_rows);

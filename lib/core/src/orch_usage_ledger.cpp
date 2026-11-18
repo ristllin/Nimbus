@@ -480,6 +480,8 @@ EffRate UsageLedger::effectiveRate(const std::string& prov, const char* model) c
     builtinUnknownPrice(p, model, hiIn, hiOut);
     pickField(r.in, r.srcIn, hiIn, RateSrc::BuiltinProv);
     pickField(r.out, r.srcOut, hiOut, RateSrc::BuiltinProv);
+    // ... and its cached reads at the slot's highest known share, never under it.
+    if (r.srcIn == RateSrc::BuiltinProv && r.in == hiIn) r.cacheR = builtinUnknownCacheR(p, model, hiIn);
   }
   if (const BuiltinPrice* b = builtinDefaultPrice(p, model)) {
     pickField(r.in, r.srcIn, b->microIn, RateSrc::BuiltinProv);
