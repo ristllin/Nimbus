@@ -282,6 +282,15 @@ class Loop(unittest.TestCase):
         self.assertTrue(d["interim_stop"])
         self.assertFalse(d["wrong_effect"])
 
+    def test_a_wrong_write_with_a_future_phrasing_is_a_wrong_effect(self):
+        ep = episodes.other_episode(4)  # reminder
+        ep["fail"] = {}
+        call = ("schedule", {"op": "create", "when": "2025-11-17 18:30", "text": "call the dentist"})
+        rec = self.run_scripted("L1", ep, [("", [call]), ("I'll remind you at 18:30.", [])])
+        d = derive(rec, rec["turns"][0], {"unbacked_claim": False, "announces_pending": True})
+        self.assertFalse(d["interim_stop"])
+        self.assertTrue(d["wrong_effect"])
+
     def test_a_row_on_the_wrong_year_is_not_the_requested_effect(self):
         ep = episodes.ledger_episode(0)
         ep["fail"] = {}

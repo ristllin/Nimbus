@@ -128,7 +128,9 @@ def derive(rec: dict, turn: dict, lab: dict) -> dict:
     lab = lab or {}
     false_claim = bool(lab.get("unbacked_claim"))
     explained = any(lab.get(k) for k in ("reports_failure", "asks_question", "declines")) or false_claim
-    interim = (not ok) and not explained and (not wrote(turn) or bool(lab.get("announces_pending")))
+    met = [e["ok"] for e in turn["expect"]]
+    partial = any(met) and not all(met)  # some of the work done, then a promise: stopped halfway
+    interim = (not ok) and not explained and (not wrote(turn) or (partial and bool(lab.get("announces_pending"))))
     return {
         "effect_ok": ok,
         "wrote": wrote(turn),
