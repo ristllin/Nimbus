@@ -54,7 +54,9 @@ HISTORY_ROWS = 40  # distinct rows of about 900 B: 36 KB of live history on a he
 # v5.1.2 a head's body budget is its own (Mistral Large 4: 360,000 B), so the rows pin it
 # through the test console (BUDGET, lane W) and A07b runs the same turn at the head's own.
 BUDGET_PIN = 85000
-CONTEXT_RE = re.compile(r"context: sent (\d+)/(\d+) live rows \(today \d+/\d+\), cut (\d+) \((\d+) B\)")
+CONTEXT_RE = re.compile(
+    r"context: sent (\d+)/(\d+) live rows \(today \d+/\d+\), cut (\d+) \((\d+) B\).*?round0 \d+ B / budget (\d+) B"
+)
 REFUSED_RE = re.compile(r"headloop: round \d+ body \d+ B over the (\d+) B budget")
 LIGHTS_WORDINGS = (
     "Turn the ring lights off.",
@@ -231,9 +233,9 @@ def row_a07b(b: Bench) -> Grade:
     if not contexts:
         raise Blocked("no context line in the log: this image is older than v5.1.2")
     budgets = sorted({int(m.group(1)) for m in map(REFUSED_RE.search, lines) if m})
-    if BUDGET_PIN in budgets:
-        raise Blocked(f"the head sits on the {BUDGET_PIN} B floor (a routed or custom head): no room to show")
-    sent, live, cut_rows, cut_bytes = (int(x) for x in contexts[-1].groups())
+    sent, live, cut_rows, cut_bytes, budget = (int(x) for x in contexts[-1].groups())
+    if budget <= BUDGET_PIN or BUDGET_PIN in budgets:
+        raise Blocked(f"the head sits on the {BUDGET_PIN} B floor (a routed, custom or slow head): no room to show")
     if any("turn fit: left out" in line for line in lines):
         fails.append("a turn fit left something out at the head's own budget")
     if budgets:

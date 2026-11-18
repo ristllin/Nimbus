@@ -157,5 +157,19 @@ def test_a07b_is_blocked_on_an_older_image_and_on_a_floor_head(tmp_path):
             assert why in str(e)
 
 
+def test_a07b_is_blocked_on_a_floor_head_whose_window_cut_before_any_refusal(tmp_path):
+    # A head at the floor keeps v5.1.1's history window: the day cap cuts the fill and the request never
+    # reaches 85,000 B, so no refusal names the budget. The context line's own budget figure says floor.
+    floor = [
+        "12 120 - context: sent 16/40 live rows (today 16/40), cut 24 (21600 B), summary age -, round0 78102 B / budget 85000 B, hist 9 ms 0 card reads lock 4 ms",
+        "13 130 - turn end: ok host=mistral tokens in=24000 out=300 tools=1 reply=420B src=web",
+    ]
+    try:
+        br.row_a07b(bench(tmp_path, floor, row="A07b"))
+        raise AssertionError("not blocked")
+    except br.Blocked as e:
+        assert "floor" in str(e)
+
+
 def test_the_new_row_is_listed():
     assert br.ROWS["A07b"] == (br.row_a07b, True) and "A07" in br.ROWS and "A08" in br.ROWS
