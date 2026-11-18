@@ -418,7 +418,7 @@ inline bool overheadWithin(const OverheadInput& in, long& overhead, std::string&
 // omission line), at most a time label of kTimeLabelBytes per owner text is left. A sentence,
 // a reminder or a memory block written around messages is caught however much framing slack
 // the byte bound has.
-inline constexpr size_t kTimeLabelBytes = 24;   // '[Tue 17 Nov 13:02] ' and its spacing
+inline constexpr size_t kTimeLabelBytes = 24;   // '[Tue 17 Nov 2026 13:02] ' (Ruling 11: the year), spaces not counted
 
 namespace detail {
 inline size_t visibleBytes(const std::string& s) {

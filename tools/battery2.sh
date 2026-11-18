@@ -119,7 +119,8 @@ fi
 if needs tools/release_gate/check_plain_ceilings.py RB-E2 plain-ceilings; then
   gate plain-ceilings "$LOGDIR/plain-ceilings.log" python3 tools/release_gate/check_plain_ceilings.py
 fi
-needs tools/release_gate/check_elf_symbols.py RB-I0 e1-symbols-in-e2-image || true
+# The ELF scan exists; its engine-1 symbol list for e2 images arrives with RB-I0.
+needs tools/engine/e1_symbols.txt RB-I0 e1-symbols-in-e2-image || true
 
 if [ -n "$FAILED" ]; then
   say "BATTERY2 FREE RED $SHA:$FAILED"

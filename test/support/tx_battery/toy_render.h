@@ -49,7 +49,7 @@ inline void toyItem(sp::RequestView& v, const tx::Item& it, const CoverInput& in
   switch (it.kind) {
     case tx::ItemKind::User: {
       sp::Message& u = lastOf(v, "user");
-      u.blocks.push_back(sp::detail::textBlock("[Tue 17 Nov 13:02] " + it.x));
+      u.blocks.push_back(sp::detail::textBlock("[Tue 17 Nov 2026 13:02] " + it.x));
       for (const tx::Part& p : it.parts) {
         sp::Block img;
         img.kind = sp::BlockKind::Image;
