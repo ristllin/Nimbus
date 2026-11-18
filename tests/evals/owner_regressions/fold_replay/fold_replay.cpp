@@ -18,13 +18,14 @@
 //                reply); requests past the list get an empty reply
 // The result names every request a pump pass made (pass, host, model, path), the summary
 // before and after, every message the instance sent the owner, and the fold-store file it
-// left (blob_after). Grading is run_offline.py's.
+// left (blob_after_hex). Grading is run_offline.py's.
 #include <unistd.h>
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -48,6 +49,17 @@ std::string readFile(const std::string& path) {
   std::ostringstream ss;
   ss << f.rdbuf();
   return ss.str();
+}
+
+std::string hex(const std::string& bytes) {
+  static const char* const kDigits = "0123456789abcdef";
+  std::string o;
+  o.reserve(bytes.size() * 2);
+  for (unsigned char c : bytes) {
+    o += kDigits[c >> 4];
+    o += kDigits[c & 15];
+  }
+  return o;
 }
 
 std::string esc(const std::string& s) {
@@ -167,8 +179,9 @@ int main(int argc, char** argv) {
   opt.toolLoop = false;
   const JsonObjectConst plant = sc["plant"].as<JsonObjectConst>();
   if (!plant.isNull()) {
-    std::string cmd = "mkdir -p '" + opt.dataDir + "/mem'";
-    if (std::system(cmd.c_str()) != 0) return 2;
+    std::error_code ec;
+    std::filesystem::create_directories(opt.dataDir + "/mem", ec);   // no shell: the path is never quoted
+    if (ec) return 2;
     std::ofstream(opt.dataDir + "/mem/chatsum.txt", std::ios::binary) << plantedRecord(plant);
   }
 
@@ -194,8 +207,9 @@ int main(int argc, char** argv) {
     rig.setDeliver(nullptr);
   }
   // The fold-store file the instance left (the release's own blob encoding): the sample
-  // check_fold_health.py reads under the v5.1.1 parser for the rollback round trip.
-  rp.out["blob_after"] = readFile(opt.dataDir + "/mem/chatsum.txt");
+  // check_fold_health.py reads under the v5.1.1 parser for the rollback round trip. In hex:
+  // the blob's 0x1F and 0x1E separators are control bytes a strict JSON reader refuses.
+  rp.out["blob_after_hex"] = hex(readFile(opt.dataDir + "/mem/chatsum.txt"));
   JsonArray msgs = rp.out["messages"].to<JsonArray>();
   for (const auto& m : sent) msgs.add(m);
   rp.out["scenario"] = sc["id"].as<std::string>();

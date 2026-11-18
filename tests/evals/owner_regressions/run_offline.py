@@ -11,10 +11,13 @@ quiet bound in real time, about two minutes a scenario.
   run_offline.py list
   run_offline.py validate
   run_offline.py run [--scenarios a,b] [--no-build] [--out DIR]
+  run_offline.py blob --record FILE --out FILE
 
 Each run writes <out>/<scenario>.json (the replay's record plus the assertion outcomes)
 and prints PASS or FAIL per scenario; the exit code is 1 when any scenario fails.
-Records default to runs/offline/<git sha>/.
+Records default to runs/offline/<git sha>/. `blob` writes the fold-store file a replay left
+(the record's blob_after_hex, the release's own encoding) as bytes: the candidate fixture
+tools/release_gate/check_fold_health.py reads under the v5.1.1 parser.
 """
 
 from __future__ import annotations
@@ -194,17 +197,31 @@ def cmd_run(args) -> int:
     return 1 if failed else 0
 
 
+def cmd_blob(args) -> int:
+    rec = json.loads(Path(args.record).read_text())
+    blob = bytes.fromhex(rec.get("blob_after_hex") or "")
+    if not blob:
+        print(f"{args.record}: no fold-store file in the record (blob_after_hex)")
+        return 1
+    Path(args.out).write_bytes(blob)
+    print(f"{args.out}: {len(blob)} B from {rec.get('scenario')}")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     sub.add_parser("validate")
+    b = sub.add_parser("blob")
+    b.add_argument("--record", required=True)
+    b.add_argument("--out", required=True)
     r = sub.add_parser("run")
     r.add_argument("--scenarios", default=None)
     r.add_argument("--no-build", action="store_true")
     r.add_argument("--out", default=None)
     args = p.parse_args(argv)
-    return {"list": cmd_list, "validate": cmd_validate, "run": cmd_run}[args.cmd](args)
+    return {"list": cmd_list, "validate": cmd_validate, "run": cmd_run, "blob": cmd_blob}[args.cmd](args)
 
 
 if __name__ == "__main__":

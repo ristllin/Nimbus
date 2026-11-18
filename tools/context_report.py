@@ -19,15 +19,18 @@ figures per provider and per turn, for the history and summary fix of v5.1.2
   turn fit 'turn fit: left out' lines and what each dropped
   capped   'fabric-loop: ... cap=<reason>' final rounds by reason
   x-turn   round-0 cross-turn cache hits on Mistral (cR - in x (n-1)/n > 5,000 tokens)
-           by idle time since the previous request
+           by idle time since the previous request; per host, the round-0 read share of
+           a turn that follows another inside 300 s (a share over 100% of the in-turn
+           ceiling in the cache table means the same thing: round 0 read a warm cache)
   fold     successful folds and the last one, old and new failure lines (rung i/n,
-           cycle failed), fold paid calls per local day, blob save time
+           cycle failed), paid fold requests per day, the blob's size and save time
   upload   transport heaptrace bodies (largest, over 85,000 B, af and fail counts),
            and from v5.1.2 wms/pms per KB and the 'transport: up' lines
 
 Log line shape: '<seq> <millis> <kind> <text>', kind '-' or 'boot'. Wall time is the
 boot line's t= plus (millis - boot millis) / 1000; lines before the first boot line have
-none. A turn is every event since the previous turn end (or boot) up to its
+none. A serial console capture ('<UTC stamp> [agent] <text>', the bench drivers'
+console.log) is read too, on the host's stamps. A turn is every event since the previous turn end (or boot) up to its
 'turn end: <status> host=... src=<source>' line: the budget and history lines come
 before 'orchestrator: turn host=', so the turn owns them. A boot closes a turn that
 never ended (counted as unfinished, never as an owner turn).
@@ -93,7 +96,9 @@ PUBLISHED = {
 }
 
 LINE = re.compile(r"^(\d+) (\d+) (\S+) (.*)$")
-BOOT = re.compile(r"boot: n=(\d+) fw=(\S+)")
+# A serial console capture (the bench drivers' console.log): '<UTC stamp> [agent] <text>'.
+CONSOLE_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) \[agent\] (.*)$")
+BOOT = re.compile(r"boot: n=(\S+) fw=(\S+)")
 BOOT_T = re.compile(r"\bt=(\d+)")
 SLOT = re.compile(r"([\w.-]+)/(\S+?) in=(\d+) out=(\d+) cR=(\d+) cW=(\d+) n=(\d+)(?: id=(\S+))?")
 TURN_SPEND = re.compile(r"^turn spend: (\S+) (\S+) \|")
@@ -118,9 +123,10 @@ FOLD_OLD_FAIL = re.compile(r"^fold\(([^)]*)\): (\S+) failed")
 FOLD_NO_SUMMARY = re.compile(r"^fold\(([^)]*)\): no summary in reply")
 FOLD_CYCLE_FAIL = re.compile(r"^fold\(([^)]*)\): cycle failed")
 FOLD_ANY = re.compile(r"^fold\(")
-# The fold blob save time (lane F logs it; B05 times it). Read leniently until the
-# line's final wording lands: 'fold: blob save <B> B in <ms> ms' or 'saved'.
-FOLD_BLOB = re.compile(r"^fold\S*: blob sav(?:e|ed) (\d+) B in (\d+) ms")
+# The fold blob save time (lane F, orch_persist.cpp; bench row B05 times it):
+# 'fold: chatsum.txt <B> B saved in <ms> ms' ('NOT saved' when the write failed).
+FOLD_BLOB = re.compile(r"^fold: chatsum\.txt (\d+) B (saved|NOT saved) in (\d+) ms")
+FOLD_RUNG_SKIP = re.compile(r"^fold\(([^)]*)\): rung (\d+)/(\d+) (\S+) passed over")
 # v5.1.2 lines (lane H): the per-turn context line and the budget line.
 CONTEXT = re.compile(
     r"^context: sent (\d+)/(\d+) live rows \(today (\d+)/(\d+)\), cut (\d+) \((\d+) (?:B|bytes)\), "
@@ -150,14 +156,28 @@ def rotation_files(folder: str) -> list[str]:
     return [os.path.join(folder, n) for n in sorted(names, key=age, reverse=True)]
 
 
+def console_line(line: str):
+    """(millis, kind, text, wall) of a console capture line, or None."""
+    c = CONSOLE_LINE.match(line)
+    if not c:
+        return None
+    at = dt.datetime.strptime(c.group(1), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    return 0, "boot" if c.group(2).startswith("boot: n=") else "-", c.group(2), at.timestamp()
+
+
 def read_lines(paths: list[str]):
-    """Yield (millis, kind, text) for every well-formed log line, file by file."""
+    """Yield (millis, kind, text, wall) for every well-formed log line, file by file.
+
+    wall is None for a device log line (its time comes from the boot line) and the host's
+    stamp for a console capture line, which has no millis."""
     for path in paths:
         with open(path, encoding="utf-8", errors="replace") as f:
             for raw in f:
-                m = LINE.match(raw.rstrip("\n"))
-                if m:
-                    yield int(m.group(2)), m.group(3), m.group(4)
+                line = raw.rstrip("\n")
+                m = LINE.match(line)
+                rec = (int(m.group(2)), m.group(3), m.group(4), None) if m else console_line(line)
+                if rec:
+                    yield rec
 
 
 def slots_of(text: str) -> list[dict]:
@@ -225,17 +245,19 @@ class Log:
         return self._boot["fw"] if self._boot else None
 
     # -- events --
-    def feed(self, ms: int, kind: str, text: str) -> None:
+    def feed(self, ms: int, kind: str, text: str, wall: float | None = None) -> None:
         self.lines += 1
         if kind == "boot" and text.startswith("boot: n="):
             self.on_boot(ms, text)
             return
-        w = self.wall(ms)
+        w = wall if wall is not None else self.wall(ms)
         if w is not None:
             self.first_wall = w if self.first_wall is None else self.first_wall
             self.last_wall = w
             self.days.add(day_of(w))
-        if FOLD_ANY.match(text) or FOLD_BLOB.match(text):
+        if FOLD_BLOB.match(text):  # rewritten every turn: not a fold, so not the "last fold line"
+            self.on_fold(text, w)
+        elif FOLD_ANY.match(text):
             self.on_fold(text, w)
             self.last_fold_line = self.lines
         self.on_turn_line(text, w)
@@ -245,7 +267,7 @@ class Log:
         m = BOOT.search(text)
         mt = BOOT_T.search(text)
         t = int(mt.group(1)) if mt and int(mt.group(1)) > 1_600_000_000 else None
-        self._boot = dict(n=int(m.group(1)), fw=m.group(2), t=t, ms=ms)
+        self._boot = dict(n=m.group(1), fw=m.group(2), t=t, ms=ms)
         self.boots.append(dict(self._boot))
         if m.group(2) not in self.fw_first:
             self.fw_first[m.group(2)] = t
@@ -346,14 +368,19 @@ class Log:
             self.on_fabric_spend(text, w)
 
     def on_fabric_spend(self, text: str, w: float | None) -> None:
-        """A cross-turn round-0 sample: the turn's largest Mistral slot, idle since the last request."""
+        """A cross-turn round-0 sample: the turn's largest Mistral slot (the 15 Nov baseline's
+        rule), else its largest slot on any host; idle since the last request of any model."""
         slots = slots_of(text)
         mistral = [s for s in slots if s["host"] == "mistral"]
-        if mistral and self._xstart is not None:
-            s = max(mistral, key=lambda s: s["inp"])
+        pool = mistral or slots
+        if pool and self._xstart is not None:
+            s = max(pool, key=lambda s: s["inp"])
+            prompt = prompt_tokens(s["host"], s["model"], s["inp"], s["cr"], s["cw"])
             h0 = s["cr"] - ideal_read(s)
-            idle = (self._xstart - self._xlast) if (self._xlast is not None and self._xstart is not None) else None
-            self.xturn.append(dict(wall=self._xstart, model=s["model"], n=s["n"], h0=h0, idle=idle))
+            idle = (self._xstart - self._xlast) if self._xlast is not None else None
+            self.xturn.append(
+                dict(wall=self._xstart, host=s["host"], model=s["model"], n=s["n"], h0=h0, idle=idle, prompt=prompt)
+            )
         if w is not None:
             self._xlast = w
         self._xstart = None
@@ -361,7 +388,7 @@ class Log:
     def on_fold(self, text: str, w: float | None) -> None:
         m = FOLD_BLOB.match(text)
         if m:
-            self.fold_blob.append(dict(bytes=int(m.group(1)), ms=int(m.group(2)), wall=w))
+            self.fold_blob.append(dict(bytes=int(m.group(1)), ok=m.group(2) == "saved", ms=int(m.group(3)), wall=w))
             return
         ev = None
         if FOLD_OK.match(text):
@@ -369,6 +396,8 @@ class Log:
         elif FOLD_RUNG_FAIL.match(text):
             m = FOLD_RUNG_FAIL.match(text)
             ev = dict(kind="rung_failed", rung=int(m.group(2)), of=int(m.group(3)), host=m.group(4), why=m.group(5))
+        elif FOLD_RUNG_SKIP.match(text):
+            ev = dict(kind="rung_passed_over")
         elif FOLD_CYCLE_FAIL.match(text):
             ev = dict(kind="cycle_failed")
         elif FOLD_NO_SUMMARY.match(text):
@@ -429,8 +458,8 @@ def context_fields(m: re.Match) -> dict:
 
 def parse(paths: list[str]) -> Log:
     log = Log()
-    for ms, kind, text in read_lines(paths):
-        log.feed(ms, kind, text)
+    for ms, kind, text, wall in read_lines(paths):
+        log.feed(ms, kind, text, wall)
     log.finish()
     return log
 
@@ -710,8 +739,35 @@ def cap_figures(log: Log) -> dict:
     return {"capped_finals": len(log.caps), "by_reason": tally(log.caps)}
 
 
+NEXT_TURN_TTL_S = 300  # the shortest provider cache lifetime (Anthropic's 5 minute write)
+
+
+def round0_share(x: dict) -> float:
+    """The share of a turn's first request read from the cache left by the turn before:
+    the read beyond the in-turn ideal, over one request's prompt (the turn's prompt / n)."""
+    one = x["prompt"] / x["n"] if x["n"] else 0
+    return round(100.0 * max(0.0, x["h0"]) / one, 1) if one else 0.0
+
+
+def next_turn_by_host(samples: list) -> dict:
+    """Per host: turns that follow another request, those inside the cache lifetime, and the
+    round-0 read share of those (the plan's 'next turn inside the TTL reads at least 90%')."""
+    out = {}
+    for host in sorted({x["host"] for x in samples}):
+        mine = [x for x in samples if x["host"] == host]
+        warm = [round0_share(x) for x in mine if x["idle"] < NEXT_TURN_TTL_S]
+        out[host] = {
+            "turns": len(mine),
+            "inside_ttl": len(warm),
+            "round0_read_pct": spread(warm),
+            "at_least_90_pct": count(warm, lambda v: v >= 90.0),
+        }
+    return out
+
+
 def xturn_figures(log: Log) -> dict:
-    samples = [x for x in log.xturn if x["idle"] is not None]
+    after_a_request = [x for x in log.xturn if x["idle"] is not None]
+    samples = [x for x in after_a_request if x["host"] == "mistral"]
     hits = [x for x in samples if x["h0"] > XTURN_HIT_TOKENS]
     buckets = []
     for lo, hi in XTURN_BUCKETS:
@@ -726,13 +782,23 @@ def xturn_figures(log: Log) -> dict:
     return {
         "hits": len(hits),
         "turns": len(samples),
-        "mistral_turns": len(log.xturn),
+        "mistral_turns": count(log.xturn, lambda x: x["host"] == "mistral"),
         "hit_tokens": spread([round(x["h0"]) for x in hits]),
         "by_idle": buckets,
+        "next_turn_by_host": next_turn_by_host(after_a_request),
     }
 
 
-PAID_FOLD_KINDS = ("ok", "rung_failed", "failed", "no_summary")  # a request that reached a provider
+# A fold request the daily cap counts (fold_ladder.h paidRequests): a 2xx answer (a summary, an
+# empty or thin one, a cut one) and a timeout after the upload; a refusal or a transport
+# failure is not paid. The v5.1.1 lines carry no kind: every attempt is counted.
+PAID_RUNG_KINDS = ("empty", "thin", "cut", "timeout")
+
+
+def fold_paid(f: dict) -> bool:
+    if f["kind"] == "rung_failed":
+        return f["why"] in PAID_RUNG_KINDS
+    return f["kind"] in ("ok", "failed", "no_summary")
 
 
 def tally(keys) -> dict:
@@ -744,7 +810,7 @@ def tally(keys) -> dict:
 
 def fold_figures(log: Log) -> dict:
     oks = [f["wall"] for f in log.folds if f["kind"] == "ok"]
-    paid = tally(day_of(f["wall"]) for f in log.folds if f["wall"] and f["kind"] in PAID_FOLD_KINDS)
+    paid = tally(day_of(f["wall"]) for f in log.folds if f["wall"] and fold_paid(f))
     return {
         "ok": len(oks),
         "last_ok": stamp(max((w for w in oks if w), default=None)),
@@ -752,6 +818,8 @@ def fold_figures(log: Log) -> dict:
         "lines_after_last_fold_line": (log.lines - log.last_fold_line) if log.last_fold_line else None,
         "attempts_per_day_max": max(paid.values(), default=0),
         "blob_save_ms": spread([b["ms"] for b in log.fold_blob]),
+        "blob_bytes_max": max((b["bytes"] for b in log.fold_blob), default=None),
+        "blob_not_saved": count(log.fold_blob, lambda b: not b["ok"]),
     }
 
 
@@ -882,8 +950,9 @@ def text_report(r: dict) -> str:
         f"(body change {tf['recall_only_body_change']} B)",
         f"capped final rounds: {cp['capped_finals']} {cp['by_reason']}",
         f"cross-turn round-0 hits (Mistral): {x['hits']} of {x['turns']}; by idle {x['by_idle']}",
+        f"next turn inside {NEXT_TURN_TTL_S} s, round-0 read share by host: {x['next_turn_by_host']}",
         f"fold: ok {f['ok']}, last ok {f['last_ok']}, failures {f['failures']}, lines after the last fold line "
-        f"{f['lines_after_last_fold_line']}, most attempts in a day {f['attempts_per_day_max']}, blob save ms "
+        f"{f['lines_after_last_fold_line']}, most paid requests in a day {f['attempts_per_day_max']}, blob {f['blob_bytes_max']} B max, save ms "
         f"{f['blob_save_ms']}",
         f"upload: {u['requests']} requests, largest body {u['largest_body']} (ok {u['largest_body_ok']}), over 85,000 B "
         f"{u['over_85000']}, af>0 {u['af_nonzero']}, failed {u['failed']}, wms/KB {u['wms_per_kb']}, pms {u['pms']}, "
