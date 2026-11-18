@@ -765,10 +765,8 @@ def next_turn_by_host(samples: list) -> dict:
     return out
 
 
-def xturn_figures(log: Log) -> dict:
-    after_a_request = [x for x in log.xturn if x["idle"] is not None]
-    samples = [x for x in after_a_request if x["host"] == "mistral"]
-    hits = [x for x in samples if x["h0"] > XTURN_HIT_TOKENS]
+def xturn_buckets(samples: list) -> list:
+    """Cross-turn cache hits by the idle time before the turn (XTURN_BUCKETS)."""
     buckets = []
     for lo, hi in XTURN_BUCKETS:
         inb = [x for x in samples if x["idle"] >= lo and (hi is None or x["idle"] < hi)]
@@ -779,6 +777,14 @@ def xturn_figures(log: Log) -> dict:
                 "turns": len(inb),
             }
         )
+    return buckets
+
+
+def xturn_figures(log: Log) -> dict:
+    after_a_request = [x for x in log.xturn if x["idle"] is not None]
+    samples = [x for x in after_a_request if x["host"] == "mistral"]
+    hits = [x for x in samples if x["h0"] > XTURN_HIT_TOKENS]
+    buckets = xturn_buckets(samples)
     return {
         "hits": len(hits),
         "turns": len(samples),

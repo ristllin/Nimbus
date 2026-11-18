@@ -755,9 +755,11 @@ namespace {
 constexpr uint32_t kOirDay = 1794787200u;   // 2026-11-16 00:00 UTC (Mon)
 
 // The window a head's turn reads (TurnEngine::historyBudgetOf, engine_history.cpp): the derived
-// marks on a head with room, v5.1.1's window with its day floor on a head at the floor.
+// marks on a head with room, v5.1.1's window with its day floor on a head at the floor. The tool
+// loop is on (the default, Lumi's setting); with it off a one-string wire keeps v5.1.1's window
+// by lane CTXL's rule, checked by check_budget_table's loop-off table.
 agent::HistoryBudget oirWindow(const std::string& host, const std::string& model, uint32_t dayStart) {
-  const ContextBudget cb = headContextBudget(host, model, {});
+  const ContextBudget cb = headContextBudget(host, model, /*loopOn=*/true, {});
   agent::HistoryBudget b;
   b.highBytes = cb.recentConvBytes;
   b.messageCap = cb.historyMessageCap;
@@ -926,7 +928,7 @@ void test_oir_51_own_estimate_stays_in_the_request() {
   for (const char* host : {"mistral", "openai", "anthropic", "zai"}) {
     for (const std::string& model : choiceItems(staticModelChoices(host))) {
       const std::string name = std::string(host) + "/" + model;
-      if (headContextBudget(host, model, {}).floorBranch) {
+      if (headContextBudget(host, model, /*loopOn=*/true, {}).floorBranch) {
         floorHeads += name + " ";
         continue;
       }
