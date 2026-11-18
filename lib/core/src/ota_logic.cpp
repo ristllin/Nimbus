@@ -5,6 +5,8 @@
 
 #include <ArduinoJson.h>
 
+#include "nimbus/orch/head_qual.h"   // patternMatch: the one model-pattern rule
+
 namespace nimbus {
 namespace ota {
 
@@ -122,6 +124,151 @@ static bool fail(const char** errOut, const char* why) {
   return false;
 }
 
+// --- holdHeads ----------------------------------------------------------------
+
+// One entry: ['!'] host '/' model. host is "*" or [a-z0-9_-]+; model is printable
+// ASCII without space, quote, backslash or '/', with '*' only as its last char.
+static bool holdHostOk(const char* h, size_t n) {
+  if (n == 1 && h[0] == '*') return true;
+  if (n == 0) return false;
+  for (size_t i = 0; i < n; i++) {
+    const char c = h[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
+  }
+  return true;
+}
+
+static bool holdModelOk(const char* m) {
+  if (!*m) return false;
+  for (const char* p = m; *p; p++) {
+    const char c = *p;
+    if (c <= ' ' || c > '~' || c == '"' || c == '\\' || c == '/') return false;
+    if (c == '*' && p[1] != '\0') return false;
+  }
+  return true;
+}
+
+static bool holdEntryOk(const char* e) {
+  if (!e) return false;
+  const size_t len = strlen(e);
+  if (len == 0 || len > kHoldEntryMax) return false;
+  if (*e == '!') e++;
+  const char* slash = strchr(e, '/');
+  return slash && holdHostOk(e, (size_t)(slash - e)) && holdModelOk(slash + 1);
+}
+
+// Copies a validated holdHeads array into out. False on anything malformed.
+static bool parseHoldHeads(JsonVariantConst v, ManifestInfo& out) {
+  out.holdCount = 0;
+  out.holdHeads[0] = '\0';
+  if (v.isNull()) return true;                  // no field: nothing held
+  JsonArrayConst a = v.as<JsonArrayConst>();
+  if (a.isNull() || a.size() > kMaxHoldHeads) return false;
+  size_t used = 0;
+  for (JsonVariantConst e : a) {
+    const char* s = e.as<const char*>();
+    if (!e.is<const char*>() || !holdEntryOk(s)) return false;
+    const size_t n = strlen(s);
+    if (used + n + 1 >= sizeof(out.holdHeads)) return false;
+    if (used) out.holdHeads[used++] = '\n';
+    memcpy(out.holdHeads + used, s, n);
+    used += n;
+    out.holdHeads[used] = '\0';
+    out.holdCount++;
+  }
+  return true;
+}
+
+static bool hostMatches(const char* pat, size_t n, const char* host) {
+  if (n == 1 && pat[0] == '*') return true;
+  return strlen(host) == n && strncmp(pat, host, n) == 0;
+}
+
+bool headHeld(const ManifestInfo& m, const char* host, const char* model) {
+  if (m.holdCount == 0) return false;
+  if (!host || !*host || !model || !*model) return true;   // unknown head: held
+  bool held = false;
+  char entry[kHoldEntryMax + 1];
+  for (const char* p = m.holdHeads; *p;) {
+    const char* end = strchr(p, '\n');
+    const size_t n = end ? (size_t)(end - p) : strlen(p);
+    if (n <= kHoldEntryMax) {
+      memcpy(entry, p, n);
+      entry[n] = '\0';
+      const bool except = entry[0] == '!';
+      const char* e = except ? entry + 1 : entry;
+      const char* slash = strchr(e, '/');
+      if (slash && hostMatches(e, (size_t)(slash - e), host) &&
+          nimbus::orch::headqual::patternMatch(slash + 1, model))
+        held = !except;
+    }
+    if (!end) break;
+    p = end + 1;
+  }
+  return held;
+}
+
+size_t holdNotice(char* buf, size_t cap, const char* version, const char* host,
+                  const char* model) {
+  const bool known = host && *host && model && *model;
+  const int n = snprintf(
+      buf, cap,
+      "Firmware %s is available. It does not install by itself, because this device's "
+      "model (%s%s%s) is not qualified for it yet. Reply /update to install it anyway, "
+      "or open Settings \xE2\x86\x92 Software update on the device's web page.",
+      version ? version : "", known ? host : "unknown", known ? " " : "", known ? model : "");
+  if (n < 0 || (size_t)n >= cap) {
+    if (cap) buf[0] = '\0';
+    return 0;
+  }
+  return (size_t)n;
+}
+
+// --- update channel -------------------------------------------------------------
+
+Channel parseChannel(const char* text, size_t len) {
+  if (!text) return Channel::Stable;
+  size_t b = 0, e = len;
+  while (b < e && (text[b] == ' ' || text[b] == '\t' || text[b] == '\r' || text[b] == '\n')) b++;
+  while (e > b && (text[e - 1] == ' ' || text[e - 1] == '\t' || text[e - 1] == '\r' ||
+                   text[e - 1] == '\n'))
+    e--;
+  static const char kWord[] = "candidate";
+  const size_t wl = sizeof(kWord) - 1;
+  return (e - b == wl && memcmp(text + b, kWord, wl) == 0) ? Channel::Candidate
+                                                           : Channel::Stable;
+}
+
+const char* channelSlug(Channel c) { return c == Channel::Candidate ? "candidate" : "stable"; }
+
+bool candidateUrl(const char* stableUrl, char* buf, size_t cap) {
+  if (cap) buf[0] = '\0';
+  if (!stableUrl || strncmp(stableUrl, "https://", 8) != 0) return false;
+  const char* slash = strrchr(stableUrl + 8, '/');
+  if (!slash) return false;                      // no path: nothing to sit beside
+  const size_t keep = (size_t)(slash - stableUrl) + 1;
+  const size_t need = keep + sizeof(kCandidateManifestName);
+  if (need > cap) return false;
+  memcpy(buf, stableUrl, keep);
+  memcpy(buf + keep, kCandidateManifestName, sizeof(kCandidateManifestName));
+  return true;
+}
+
+Pick pickManifest(bool stableOk, const char* stableVersion, bool candOk,
+                  const char* candVersion) {
+  if (candOk && (!stableOk || compareVersions(candVersion, stableVersion) > 0))
+    return Pick::Candidate;
+  return stableOk ? Pick::Stable : Pick::None;
+}
+
+const char* downloadVerdict(const DownloadOutcome& d) {
+  if (!d.slotOpened) return "slot";
+  if (d.writeFailed) return "flash-write";
+  if (d.httpCode != 200 || d.expected == 0 || d.bytes != d.expected) return "download";
+  if (!d.shaMatches) return "sha-fail";
+  return nullptr;
+}
+
 bool parseManifest(const char* json, size_t len, const char* variant,
                    ManifestInfo& out, const char** errOut) {
   if (errOut) *errOut = nullptr;
@@ -135,6 +282,7 @@ bool parseManifest(const char* json, size_t len, const char* variant,
   filter["build"] = true;
   filter["notes"] = true;
   filter["minVersion"] = true;
+  filter["holdHeads"] = true;
   JsonObject fv = filter["variants"][variant].to<JsonObject>();
   fv["url"] = true;
   fv["size"] = true;
@@ -156,6 +304,8 @@ bool parseManifest(const char* json, size_t len, const char* variant,
   const char* minV = doc["minVersion"] | "";
   if (*minV && !parseVersion(minV, mj, mi, pa)) return fail(errOut, "version");
   copyStr(out.minVersion, sizeof(out.minVersion), minV);
+
+  if (!parseHoldHeads(doc["holdHeads"], out)) return fail(errOut, "holdHeads");
 
   JsonObject v = doc["variants"][variant];
   if (v.isNull()) return fail(errOut, "variant");

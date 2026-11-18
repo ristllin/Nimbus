@@ -36,23 +36,91 @@ struct VariantInfo {
   uint8_t  sigLen     = 0;
 };
 
+// holdHeads (RB-OTA1): the heads a release must not install itself on. An array of
+// "host/model" entries, where model is an exact id, a prefix ending in '*', or "*",
+// host is a provider slug or "*", and a leading '!' excepts instead of holding; for
+// each head the LAST matching entry decides. Rendered from the head qualification
+// table (nimbus/orch/head_qual.h) by tools/make_manifest.py --hold-line.
+// It is an AVAILABILITY control, not a security one: it sits outside the signed
+// message (buildSigMessage is unchanged, so v5.1.1 and v5.1.2 devices still verify
+// these manifests, and their parser filters the field out unread). Whoever can alter
+// the manifest in transit can add a hold (the device then waits for a manual
+// install) or drop one (the device then auto-installs an image the owner's key
+// signed, which it would accept anyway). The signature still binds every image.
+inline constexpr uint8_t kMaxHoldHeads   = 24;
+inline constexpr size_t  kHoldEntryMax   = 63;    // bytes per entry, '!' included
+inline constexpr size_t  kHoldHeadsCap   = 512;   // the entries, '\n'-separated
+
 struct ManifestInfo {
   char version[24]    = {0};      // e.g. "v2.11.0"
   char build[40]      = {0};
   char notes[96]      = {0};      // human line for web UI / Telegram
   char minVersion[24] = {0};      // "" = no floor; gates AUTO install only
   VariantInfo v;                  // the requested variant only
+  uint8_t holdCount   = 0;        // entries in holdHeads (0 = no hold)
+  char holdHeads[kHoldHeadsCap] = {0};   // validated entries, '\n'-separated
 };
 
 // Parse + validate manifest JSON for one variant. On failure returns false and
 // (if errOut) points errOut at a static reason string ("schema", "version",
-// "variant", "url", "size", "sha256", "sig"). Accepts only schema==2 (typed
+// "variant", "url", "size", "sha256", "sig", "holdHeads"). A holdHeads that is not
+// an array of valid entries, or holds more than kMaxHoldHeads, rejects the whole
+// manifest: no update rather than a guessed hold. Accepts only schema==2 (typed
 // manifests; see the device-type slugs below), an https URL, size in
 // [kMinFwBytes, kMaxFwBytes], 64-hex sha256, base64 DER sig. The "variant"
 // argument is the device TYPE (e.g. "nimbus-tft", "freenove-28"); an untyped
 // device passes "" and never matches, which the glue reports as "no update".
 bool parseManifest(const char* json, size_t len, const char* variant,
                    ManifestInfo& out, const char** errOut = nullptr);
+
+// --- head hold (RB-OTA1) -------------------------------------------------------
+// True when the manifest holds the head (host, model) back from the AUTOMATIC
+// install. A manifest with no holdHeads entry holds nothing. With entries, an
+// unknown head (empty host or model) is held: fail closed. A manual install (web
+// page, /update, the device menu) never consults this.
+bool headHeld(const ManifestInfo& m, const char* host, const char* model);
+// The one owner line a held release sends instead of the "available" notice.
+// `host`/`model` name the held head ("" reads as unknown). Returns the length, or 0
+// when buf is too small.
+size_t holdNotice(char* buf, size_t cap, const char* version, const char* host,
+                  const char* model);
+
+// --- update channel (RB-OTA1) ---------------------------------------------------
+// /data/ota_channel.txt holding "candidate" puts the device on the candidate
+// channel: it also reads manifest-candidate.json beside the stable manifest and
+// treats it as any signed manifest. Missing, unreadable or any other text is the
+// stable channel. Firmware before RB-OTA1 reads neither file.
+enum class Channel : uint8_t { Stable = 0, Candidate = 1 };
+inline constexpr char kChannelPath[] = "/data/ota_channel.txt";
+inline constexpr char kCandidateManifestName[] = "manifest-candidate.json";
+Channel parseChannel(const char* text, size_t len);
+const char* channelSlug(Channel c);   // "stable" / "candidate"
+
+// The candidate manifest's URL: the stable URL with its last path segment replaced
+// by kCandidateManifestName. False (buf "") unless the stable URL is https with a
+// path and the result fits.
+bool candidateUrl(const char* stableUrl, char* buf, size_t cap);
+
+// Which fetched manifest a check uses. The candidate is used only when it parsed
+// and verified AND the stable one did not, or it is strictly newer; a candidate
+// that failed in any way contributes nothing.
+enum class Pick : uint8_t { None = 0, Stable, Candidate };
+Pick pickManifest(bool stableOk, const char* stableVersion, bool candOk,
+                  const char* candVersion);
+
+// --- download verdict -------------------------------------------------------------
+// What the streamed install saw, before the signature re-check. nullptr = the
+// bytes are the signed image; else the failure ("slot", "flash-write", "download",
+// "sha-fail"). A short or overlong body is "download": nothing is flipped.
+struct DownloadOutcome {
+  bool     slotOpened  = false;
+  bool     writeFailed = false;
+  int      httpCode    = 0;
+  uint32_t bytes       = 0;
+  uint32_t expected    = 0;
+  bool     shaMatches  = false;
+};
+const char* downloadVerdict(const DownloadOutcome& d);
 
 // --- device type ------------------------------------------------------------
 // The four frozen OTA device-type slugs the typed manifest keys on. Every real
@@ -131,6 +199,9 @@ Eligibility eligibility(const char* currentVersion, const ManifestInfo& m);
 // True when the AUTO path may install this manifest (strictly newer AND the
 // minVersion floor, if any, is satisfied). Manual installs consult force.
 bool autoEligible(Eligibility e);
+// The automatic path's one verdict: strictly newer, the minVersion floor met, and
+// no hold on any head the device may answer with (headHeld).
+inline bool autoMayInstall(Eligibility e, bool held) { return autoEligible(e) && !held; }
 
 // --- boot-health / rollback policy ------------------------------------------
 inline constexpr uint8_t kOtaMaxBootAttempts = 3;

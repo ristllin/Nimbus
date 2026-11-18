@@ -1464,13 +1464,22 @@ void dispatch(String line) {
   if (line == "OTA?") {
     // OTA state one-liner: machine state, progress, latest release seen by the
     // last check, and the persisted last outcome (ok/rollback/sha-fail/...).
-    Serial.printf("OTA state=%s err=%s pct=%d latest=%s notes=%s lastOta=%s pend=%d boots=%d prev=%s slot=%s\n",
+    Serial.printf("OTA state=%s err=%s pct=%d latest=%s notes=%s lastOta=%s pend=%d boots=%d prev=%s slot=%s held=%d chan=%s\n",
                   otaupd::statusStr(), otaupd::lastError()[0] ? otaupd::lastError() : "-",
                   otaupd::progressPct(),
                   otaupd::latestSeen().c_str(), otaupd::latestNotes().c_str(),
                   otaupd::lastResult().c_str(), agent::store::otaPending(),
                   agent::store::otaBootCount(), agent::store::otaPrevSlot().c_str(),
-                  esp_ota_get_running_partition()->label);
+                  esp_ota_get_running_partition()->label, otaupd::held() ? 1 : 0,
+                  nimbus::ota::channelSlug(otaupd::channel()));
+    return;
+  }
+  if (line == "OTACHAN candidate" || line == "OTACHAN stable") {
+    // The update channel file (/data/ota_channel.txt) for the bench OTA leg.
+    const auto c = line.endsWith("candidate") ? nimbus::ota::Channel::Candidate
+                                              : nimbus::ota::Channel::Stable;
+    const bool ok = otaupd::setChannel(c);
+    Serial.printf("OTACHAN %s %s\n", nimbus::ota::channelSlug(otaupd::channel()), ok ? "ok" : "failed");
     return;
   }
   if (line == "OTACHECK") {

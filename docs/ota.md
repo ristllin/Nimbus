@@ -49,6 +49,11 @@ flowchart TD
   *genuinely signed* release; auto-install moves strictly forward in version,
   so the worst case is pinning a device at its current version. Manual
   downgrade needs the authenticated web UI + `force`.
+- **holdHeads is an availability control, not a security one.** It sits outside
+  the signed message, so whoever can alter a manifest in transit can add a hold
+  (the device waits for a manual install) or drop one (the device auto-installs an
+  image the release key signed, which it would accept anyway). The signature still
+  binds every image. See [Held back by model](#held-back-by-model).
 - The `test` variant additionally trusts a COMMITTED test key
   (`test/ota_test_key.pem`, `#ifdef NIMBUS_TEST` only) so the HIL suite can
   sign fixtures. Never flash `env:test` on a production unit.
@@ -242,6 +247,43 @@ release, and no release moves running Virtual Nimbus instances by itself.
   no turn or voice in flight, battery at or above 50% or on external power, and
   heap headroom.
 
+## Held back by model
+
+A release can be held back from the devices whose model it was not measured on.
+The manifest then carries `holdHeads`, an array of `host/model` entries: `model`
+is an exact id, a prefix ending in `*`, or `*`; `host` is a provider slug or `*`;
+a leading `!` excepts instead of holding; for each model the last matching entry
+decides. For example `["*/*","!anthropic/claude-sonnet-5-5*"]` holds every model
+except Sonnet 5.5.
+
+- **Which models count**: the one the device answers with, and the model of
+  every other provider that holds a key (a provider with a key can answer a turn
+  when the first one fails). An unknown model is held.
+- **What a hold changes**: only the automatic install. The check still shows the
+  release, the owner gets one line naming the model in place of the usual
+  "available" message, and the web page's **Install Update** button, `/update`
+  and the device menu install it as before. The automatic install also re-checks
+  the hold just before it downloads, so a hold published (or a model switched)
+  after the check still stops it.
+- **Where it comes from**: `tools/make_manifest.py --hold-line e1|e2` renders it
+  from the head qualification table (`lib/core/src/orch_head_qual.cpp`). A
+  manifest with a malformed `holdHeads` is refused whole: no update, the current
+  image keeps running.
+- **Older firmware**: devices before this change never read the field and the
+  signed message is unchanged, so they verify and install such a manifest as
+  before.
+
+## The candidate channel
+
+A device whose `/data/ota_channel.txt` holds `candidate` also reads
+`manifest-candidate.json` beside the stable manifest (the same release folder) and
+treats it as any signed manifest: same signature check, same install. It uses the
+candidate only when it is newer than the stable release, or the stable manifest
+could not be read; a candidate that is missing, malformed or fails its signature
+is ignored and the stable manifest decides. A missing or unreadable channel file,
+or any other text in it, means the stable channel. Firmware before this change
+reads neither file, so only devices switched on take a candidate.
+
 ## On a busy device: the update runs between messages
 
 The check and the install each run on one short-lived worker whose stack needs
@@ -379,6 +421,17 @@ easy to read amid ordinary log output.
   definitive. Set `NIMBUS_OTA_MANIFEST_URL` to point the check at a test manifest of your own
   (else it runs against the real feed). The tunnel property follows from the fast
   LAN answer.
+- Host (hold and candidate): `pio test -e native -f test_ota_logic -f test_head_qual`
+  (holdHeads parsing, the last-match rule, an unknown model held, a malformed
+  field refusing the manifest, the channel file, the candidate URL and pick, the
+  truncated-download verdict, and the table's rendered hold against its own
+  lookup) and `python3 tools/test_make_manifest.py` (the same holdHeads golden).
+- Bench (hold and candidate): `python3 tests/hil/ota_rehearsal.py --leg
+  hold-candidate --serve <test build firmware.bin> ...` on a unit running the test
+  build: a held stable release, the candidate on the candidate channel with a dry
+  install, a malformed and a missing candidate falling back, a truncated candidate
+  download failing, and no slot flip. Console: `OTACHAN candidate|stable`, and
+  `OTA?` reports `held=` and `chan=`.
 - Rollback drill (console, `env:test`, both slots flashed): `OTASIM arm app0`
   (label from `OTA?` `slot=`) + `OTASIM crash` + `REBOOT` → three synthetic
   crash-boots → device returns on the previous slot with `lastOta=rollback`.

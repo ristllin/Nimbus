@@ -27,6 +27,9 @@ enum Event : int {
   EvInstallFail,       // a=reason, b=version
   EvRebooting,         // a=version - commit done, restart in ~3.5 s
   EvValidated,         // a=running version - post-update boot marked valid
+  EvHeld,              // a="version", b=the one owner line (nimbus::ota::holdNotice) - a
+                       // newer release the manifest's holdHeads holds for one of this
+                       // device's heads; sent INSTEAD of EvAvailable, once per version
 };
 using EventHook = void (*)(int ev, const char* a, const char* b);
 void setEventHook(EventHook h);
@@ -143,6 +146,15 @@ String lastResult();
 const char* lastError();
 // The running app slot label ("app0"/"app1") - proves an install flipped slots.
 const char* runningSlot();
+
+// RB-OTA1. held(): the last check found a newer release the manifest holds for one of
+// this device's heads (the resolved head or any keyed provider): the automatic
+// install skips it, every manual install still works. channel(): the update channel
+// as last read from /data/ota_channel.txt (each check re-reads it). setChannel():
+// write ("candidate") or remove (stable) that file; true when it reads back as `c`.
+bool held();
+nimbus::ota::Channel channel();
+bool setChannel(nimbus::ota::Channel c);
 
 #ifdef NIMBUS_TEST
 // HIL seams. simArm(prevLabel): arm the pend/boots/prev guard as if an update

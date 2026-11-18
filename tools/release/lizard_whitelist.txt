@@ -137,7 +137,6 @@ src/sys/ota_update.cpp:otaupd::tick
 lib/core/src/nsn_proto.cpp:nimbus::nsn::decodePacket
 src/agent/files_subsystem.cpp:agent::files::saveBytes
 src/sfx/sound_fx.cpp:sfx::rescan
-src/sys/ota_update.cpp:otaupd::requestInstall
 src/agent/adapters/b64_stream.h:agent::b64decodeToFile
 src/agent/adapters/provider_file_fetch.cpp:agent::safeName
 src/agent/orchestrator.cpp:agent::orchestrator::sendToChat

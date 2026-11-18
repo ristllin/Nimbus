@@ -3359,6 +3359,14 @@ static void otaEventHook(int ev, const char* a, const char* b) {
       }
       break;
     }
+    case otaupd::EvHeld:   // once per version, in place of EvAvailable (RB-OTA1)
+      agent::memory::captureEvent("ota", String("Firmware ") + a + " available, held for this device's model");
+      if (!g_orchMode) break;
+      {
+        String owner = agent::orchestrator::firstAllowedChat();
+        if (owner.length()) agent::telegram::send(owner, String(b), /*block=*/false);
+      }
+      break;
     case otaupd::EvInstallStart:
       // Intentionally DON'T touch the Telegram poll task here. The earlier
       // "stop the poller to free heap for the download" hook crash-rebooted the

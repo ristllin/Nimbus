@@ -1,5 +1,6 @@
 #include "ota_update.h"
 
+#include <LittleFS.h>
 #include <Update.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
@@ -12,6 +13,7 @@
 
 #include <atomic>
 #include <memory>
+#include <new>
 #include <solide/memory.h>
 
 #include "../agent/agent_config.h"
@@ -110,6 +112,12 @@ static void setLastError(const char* e) {
 // it moved.
 static nimbus::ota::ManifestInfo& g_manifest = ::nimbus::psramObject<nimbus::ota::ManifestInfo>();
 static bool   g_haveManifest = false;
+// RB-OTA1: the last check found the release held for one of this device's heads
+// (g_manifest.holdHeads). Blocks only the automatic install; every manual path
+// (web page, /update, the menu, the console) installs as before.
+static bool   g_held = false;
+static bool   g_installAuto = false;      // the running install was started by tick()
+static nimbus::ota::Channel g_channel = nimbus::ota::Channel::Stable;   // as last read
 
 static EventHook g_hook = nullptr;
 static IdleProvider g_idleProvider = nullptr;
@@ -612,14 +620,25 @@ static const size_t kManifestCap = 8 * 1024;
 
 static bool verifySignature(const nimbus::ota::ManifestInfo& m);  // fwd
 
-// Fetch + parse + AUTHENTICATE into g_manifest. Returns nullptr on success, else
-// a static reason ("fetch"/"schema"/"variant"/"sig-fail"/...). Caller holds the
-// arbiter slot. The ECDSA check runs HERE (over the manifest's signed version+
-// variant+sha) so an unauthentic manifest can never drive "available"/the owner
-// notification/auto-install - not just the final install (closes the spoofed-
-// notification + downgrade-arming gap). The download's actual sha is separately
-// checked against this signed sha at install time.
-static const char* fetchManifest() {
+// A ManifestInfo (about 1.1 KB) lives in PSRAM, never on the stack: a check can run
+// inline on the Telegram poll task, whose margin is a few hundred bytes.
+struct ManifestFree {
+  void operator()(nimbus::ota::ManifestInfo* p) const {
+    p->~ManifestInfo();
+    heap_caps_free(p);
+  }
+};
+using ManifestPtr = std::unique_ptr<nimbus::ota::ManifestInfo, ManifestFree>;
+static ManifestPtr newManifest() {
+  void* p = heap_caps_malloc(sizeof(nimbus::ota::ManifestInfo), MALLOC_CAP_SPIRAM);
+  if (!p) p = heap_caps_malloc(sizeof(nimbus::ota::ManifestInfo), MALLOC_CAP_8BIT);
+  return ManifestPtr(p ? new (p) nimbus::ota::ManifestInfo() : nullptr);
+}
+
+// Fetch + parse + AUTHENTICATE one manifest into out. Returns nullptr on success,
+// else a static reason ("fetch"/"no-release"/"schema"/"variant"/"holdHeads"/
+// "sig-fail"/...). *reached = any HTTP status came back.
+static const char* fetchOne(const char* url, nimbus::ota::ManifestInfo& out, bool* reached) {
   PsBuf b;
   b.p = (char*)heap_caps_malloc(kManifestCap, MALLOC_CAP_SPIRAM);
   if (!b.p) b.p = (char*)malloc(kManifestCap);
@@ -627,8 +646,8 @@ static const char* fetchManifest() {
   b.cap = kManifestCap;
   std::unique_ptr<char, decltype(&free)> guard(b.p, &free);
 
-  int code = httpsGetUrl(manifestUrl(), psSink, &b, 30000);
-  g_lastCheckReached = (code > 0);   // any HTTP status back == server reached
+  const int code = httpsGetUrl(url, psSink, &b, 30000);
+  *reached = (code > 0);   // any HTTP status back == server reached
   // 404 = no release / no manifest asset published yet - NOT an error, just
   // "nothing to update" (the common state before the first release exists). A
   // real transport failure (0) or 5xx stays an error worth retrying/surfacing.
@@ -636,13 +655,92 @@ static const char* fetchManifest() {
   if (code != 200 || b.len == 0) return "fetch";
 
   const char* err = nullptr;
-  nimbus::ota::ManifestInfo m;
-  if (!nimbus::ota::parseManifest(b.p, b.len, otaVariant(), m, &err))
+  if (!nimbus::ota::parseManifest(b.p, b.len, otaVariant(), out, &err))
     return err ? err : "schema";
-  if (!verifySignature(m)) return "sig-fail";
-  g_manifest = m;
+  if (!verifySignature(out)) return "sig-fail";
+  return nullptr;
+}
+
+// The channel file (/data/ota_channel.txt). Missing, unmounted, unreadable, too long
+// or any text but "candidate": the stable channel.
+static nimbus::ota::Channel readChannel() {
+  if (!LittleFS.exists(nimbus::ota::kChannelPath)) return nimbus::ota::Channel::Stable;
+  File f = LittleFS.open(nimbus::ota::kChannelPath, "r");
+  if (!f) return nimbus::ota::Channel::Stable;
+  char t[32];
+  const size_t size = f.size();
+  const size_t n = size <= sizeof t ? f.read((uint8_t*)t, sizeof t) : 0;
+  f.close();
+  return n == size ? nimbus::ota::parseChannel(t, n) : nimbus::ota::Channel::Stable;
+}
+
+// On the candidate channel: the candidate manifest beside the stable one, or a reason
+// it is not used (logged; it never blocks the stable manifest).
+static const char* fetchCandidate(nimbus::ota::ManifestInfo& out) {
+  std::unique_ptr<char[]> url(new (std::nothrow) char[256]);
+  if (!url) return "alloc";
+  if (!nimbus::ota::candidateUrl(manifestUrl(), url.get(), 256)) return "url";
+  bool reached = false;
+  const char* err = fetchOne(url.get(), out, &reached);
+  g_lastCheckReached = g_lastCheckReached || reached;
+  return err;
+}
+
+// Fetch the stable manifest (and on the candidate channel the candidate one) and keep
+// the one pickManifest chooses in g_manifest. Returns nullptr on success, else the
+// stable manifest's reason. Caller holds the arbiter slot. The ECDSA check runs on
+// each manifest HERE (over its signed version+variant+sha) so an unauthentic manifest
+// can never drive "available"/the owner notification/auto-install - not just the
+// final install (closes the spoofed-notification + downgrade-arming gap). The
+// download's actual sha is separately checked against this signed sha at install.
+static const char* fetchManifest() {
+  ManifestPtr st = newManifest();
+  if (!st) return "alloc";
+  const char* err = fetchOne(manifestUrl(), *st, &g_lastCheckReached);
+
+  g_channel = readChannel();
+  ManifestPtr cand;
+  const char* candErr = "stable channel";
+  if (g_channel == nimbus::ota::Channel::Candidate) {
+    cand = newManifest();
+    candErr = cand ? fetchCandidate(*cand) : "alloc";
+    if (candErr) agent::alogf("ota: candidate manifest not used (%s)", candErr);
+  }
+  const nimbus::ota::Pick pick = nimbus::ota::pickManifest(
+      err == nullptr, st->version, candErr == nullptr, cand ? cand->version : "");
+  if (pick == nimbus::ota::Pick::None) return err;
+  g_manifest = (pick == nimbus::ota::Pick::Candidate) ? *cand : *st;
   g_haveManifest = true;
   return nullptr;
+}
+
+// ---- head hold (RB-OTA1) ----------------------------------------------------
+// The heads this device may answer a turn with: the resolved head, then every
+// provider holding a key (a superset of the failover order, the priority list and
+// the router fallback), each with the model it runs. True, with the first held
+// (host, model), when g_manifest holds any of them. An unresolved head is held.
+static bool heldNow(String& host, String& model) {
+  if (!g_manifest.holdCount) return false;
+  static const char* const kHosts[] = {"anthropic", "openai", "mistral", "zai", "cumulo", "custom"};
+  host = agent::store::resolvedOrchHost();
+  model = host.length() ? agent::store::orchModel(host) : String();
+  if (nimbus::ota::headHeld(g_manifest, host.c_str(), model.c_str())) return true;
+  for (const char* h : kHosts) {
+    if (!agent::store::providerHasKey(h)) continue;
+    host = h;
+    model = agent::store::orchModel(host);
+    if (nimbus::ota::headHeld(g_manifest, host.c_str(), model.c_str())) return true;
+  }
+  host = model = String();
+  return false;
+}
+
+// One owner line for a held release (nimbus::ota::holdNotice), on the heap.
+static void fireHeld(const String& host, const String& model) {
+  std::unique_ptr<char[]> line(new (std::nothrow) char[384]);
+  if (!line) return;
+  if (nimbus::ota::holdNotice(line.get(), 384, g_manifest.version, host.c_str(), model.c_str()))
+    fireEvent(EvHeld, g_manifest.version, line.get());
 }
 
 // ---- check task -------------------------------------------------------------
@@ -652,8 +750,15 @@ static void finishCheck() {
   Eligibility e = nimbus::ota::eligibility(NIMBUS_FW_VERSION, g_manifest);
   g_latestVersion = g_manifest.version;
   g_latestNotes = g_manifest.notes;
+  g_held = false;
   if (e == Eligibility::Newer || e == Eligibility::BlockedMinVersion) {
     g_state = State::Available;
+    String heldHost, heldModel;
+    g_held = heldNow(heldHost, heldModel);
+    if (g_held)
+      agent::alogf("ota: %s held for %s %s: no automatic install", g_manifest.version,
+                   heldHost.length() ? heldHost.c_str() : "?",
+                   heldModel.length() ? heldModel.c_str() : "?");
     // Owner notify (Telegram in Orch mode), once per version: the stored marker, and a
     // per-boot latch so a marker write the settings storage refused cannot re-send the
     // notice at every check (write_pacing.h).
@@ -661,7 +766,9 @@ static void finishCheck() {
     const std::string latest(g_latestVersion.c_str());
     if (s_notified.claim(latest, std::string(agent::store::otaNotifiedVersion().c_str()))) {
       (void)agent::store::setOtaNotifiedVersion(g_latestVersion);   // the latch covers a refusal
-      fireEvent(EvAvailable, g_manifest.version, g_manifest.notes);
+      // A held release sends its one hold line in place of the "available" notice.
+      if (g_held) fireHeld(heldHost, heldModel);
+      else fireEvent(EvAvailable, g_manifest.version, g_manifest.notes);
     }
   } else {
     g_state = State::UpToDate;
@@ -866,6 +973,21 @@ static void installRun() {
     failInstall("not-newer");
     return;
   }
+  // The automatic install re-checks the hold on the RE-FETCHED manifest and the heads
+  // as they are now: a hold published, or a head switched, since the check stops it
+  // here. Nothing is written; the current image keeps running and stays Available.
+  if (g_installAuto) {
+    String heldHost, heldModel;
+    if (heldNow(heldHost, heldModel)) {
+      agent::arbiter::releaseWork();
+      g_held = true;
+      g_state = State::Available;
+      agent::alogf("ota: automatic install of %s held for %s %s", g_manifest.version,
+                   heldHost.length() ? heldHost.c_str() : "?",
+                   heldModel.length() ? heldModel.c_str() : "?");
+      return;
+    }
+  }
 
   g_state = State::Downloading;
   g_progressPct = 0;
@@ -887,16 +1009,18 @@ static void installRun() {
   mbedtls_sha256_finish(&ctx.sha, digest);
   mbedtls_sha256_free(&ctx.sha);
 
-  if (!ok) { failInstall("slot"); return; }
-  if (ctx.writeFail) { failInstall("flash-write"); return; }
-  if (code != 200 || ctx.bytes != g_manifest.v.size) {
-    failInstall("download");
-    return;
-  }
-
+  // A missing slot, a flash fault, a short (truncated) or overlong body, or a sha
+  // mismatch each fail here, before the flip: the current image keeps running.
   g_state = State::Verifying;
-  if (memcmp(digest, g_manifest.v.sha256, 32) != 0) {
-    failInstall("sha-fail");
+  nimbus::ota::DownloadOutcome dl;
+  dl.slotOpened  = ok;
+  dl.writeFailed = ctx.writeFail;
+  dl.httpCode    = code;
+  dl.bytes       = (uint32_t)ctx.bytes;
+  dl.expected    = g_manifest.v.size;
+  dl.shaMatches  = memcmp(digest, g_manifest.v.sha256, 32) == 0;
+  if (const char* why = nimbus::ota::downloadVerdict(dl)) {
+    failInstall(why);
     return;
   }
   if (!verifySignature(g_manifest)) {
@@ -940,7 +1064,31 @@ static void installTask(void*) {
   vTaskDelete(nullptr);
 }
 
-bool requestInstall(bool dryRun, bool force, const char** whyOut) {
+// The refusals force skips: not strictly newer (or below minVersion), and the battery
+// gate (manual path): an interrupted write on a dying pack can brick a slot. force
+// bypasses it - that is the "Install anyway, I am charging" escape hatch the UI
+// offers, since the board has no VBUS sense. The health ESTIMATE never blocks
+// (healthAdvisory() only adds a note to the answer). nullptr = no refusal.
+static const char* unforcedRefusal(bool force) {
+  if (force) return nullptr;
+  if (g_haveManifest) {
+    using nimbus::ota::Eligibility;
+    const Eligibility e = nimbus::ota::eligibility(NIMBUS_FW_VERSION, g_manifest);
+    if (e != Eligibility::Newer)
+      return (e == Eligibility::BlockedMinVersion) ? "min-version" : "not-newer";
+  }
+  nimbus::ota::IdleSnapshot snap;
+  if (!g_idleProvider || !g_idleProvider(snap)) return nullptr;
+  nimbus::ota::InstallGateInput gi;
+  gi.battMonEnabled  = snap.battMonEnabled;
+  gi.onExternalPower = snap.onExternalPower;
+  gi.battPct         = snap.battPct;
+  gi.healthPct       = snap.healthPct;
+  const nimbus::ota::InstallGate g = nimbus::ota::installGate(gi);
+  return g != nimbus::ota::InstallGate::Allowed ? nimbus::ota::installGateStr(g) : nullptr;  // need-power
+}
+
+static bool requestInstallImpl(bool dryRun, bool force, bool autoPath, const char** whyOut) {
   // Atomic single-flight claim FIRST, so a web-UI install and the main-loop
   // auto-install can't both pass the gates and both write the OTA slot. Release
   // it on every refusal path below.
@@ -959,31 +1107,12 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
           (g_state == State::UpToDate || g_state == State::Available)))
       return refuse("not-available");
   }
-  if (g_haveManifest && !force) {
-    using nimbus::ota::Eligibility;
-    Eligibility e = nimbus::ota::eligibility(NIMBUS_FW_VERSION, g_manifest);
-    if (e != Eligibility::Newer)
-      return refuse((e == Eligibility::BlockedMinVersion) ? "min-version" : "not-newer");
-  }
-  // Battery gate (manual path): an interrupted write on a dying pack can brick a
-  // slot. force bypasses it - that is the "Install anyway, I am charging" escape
-  // hatch the UI offers, since the board has no VBUS sense. The health ESTIMATE
-  // never blocks (healthAdvisory() only adds a note to the answer).
-  if (!force && g_idleProvider) {
-    nimbus::ota::IdleSnapshot snap;
-    if (g_idleProvider(snap)) {
-      nimbus::ota::InstallGateInput gi;
-      gi.battMonEnabled  = snap.battMonEnabled;
-      gi.onExternalPower = snap.onExternalPower;
-      gi.battPct         = snap.battPct;
-      gi.healthPct       = snap.healthPct;
-      nimbus::ota::InstallGate g = nimbus::ota::installGate(gi);
-      if (g != nimbus::ota::InstallGate::Allowed)
-        return refuse(nimbus::ota::installGateStr(g));  // need-power
-    }
-  }
+  if (const char* why = unforcedRefusal(force)) return refuse(why);
+  // The automatic path never starts a held release (installRun re-checks it).
+  if (autoPath && g_held) return refuse("held");
   g_installDry = dryRun;
   g_installForce = force;
+  g_installAuto = autoPath;
   // The heap leg last: nothing is handed to the poll task for an install refused
   // above. The install shows as under way BEFORE it is handed over (the run
   // re-affirms it), so the page offers no second Install while a staged one waits,
@@ -998,6 +1127,10 @@ bool requestInstall(bool dryRun, bool force, const char** whyOut) {
   }
   if (whyOut) *whyOut = "";
   return true;
+}
+
+bool requestInstall(bool dryRun, bool force, const char** whyOut) {
+  return requestInstallImpl(dryRun, force, /*autoPath=*/false, whyOut);
 }
 
 // ---- the job staged for the Telegram poll task ------------------------------
@@ -1264,9 +1397,9 @@ void tick() {
     nimbus::ota::IdleSnapshot snap;
     if (g_idleProvider && g_idleProvider(snap) &&
         nimbus::ota::autoInstallAllowed(snap) && g_haveManifest &&
-        nimbus::ota::autoEligible(
-            nimbus::ota::eligibility(NIMBUS_FW_VERSION, g_manifest))) {
-      requestInstall(false, false, nullptr);
+        nimbus::ota::autoMayInstall(
+            nimbus::ota::eligibility(NIMBUS_FW_VERSION, g_manifest), g_held)) {
+      requestInstallImpl(false, false, /*autoPath=*/true, nullptr);
     }
   }
 #endif  // NIMBUS_TEST
@@ -1313,6 +1446,21 @@ String lastResult() {
   return r;
 }
 const char* runningSlot() { return runningLabel(); }  // "app0"/"app1" - flip observability
+bool held() { return g_held; }
+nimbus::ota::Channel channel() { return g_channel; }
+
+bool setChannel(nimbus::ota::Channel c) {
+  bool ok;
+  if (c == nimbus::ota::Channel::Candidate) {
+    File f = LittleFS.open(nimbus::ota::kChannelPath, "w");
+    ok = f && f.print("candidate\n") == 10;
+    if (f) f.close();
+  } else {
+    ok = !LittleFS.exists(nimbus::ota::kChannelPath) || LittleFS.remove(nimbus::ota::kChannelPath);
+  }
+  g_channel = readChannel();   // what the next check will read
+  return ok && g_channel == c;
+}
 
 // ---- HIL seams --------------------------------------------------------------
 

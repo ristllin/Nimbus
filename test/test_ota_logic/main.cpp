@@ -5,6 +5,7 @@
 #include <string>
 
 #include "nimbus/ota/ota_logic.h"
+#include "nimbus/orch/head_qual.h"
 
 using namespace nimbus::ota;
 
@@ -780,6 +781,238 @@ static void test_is_sim_result() {
   TEST_ASSERT_FALSE(isSimResult(nullptr));
 }
 
+// --- RB-OTA1: holdHeads, the candidate channel, fail-closed paths -----------
+
+// A typed manifest for nimbus-tft carrying `holdField` verbatim after "version"
+// ("" = no holdHeads field at all).
+static void makeHeldJson(char* buf, size_t cap, const char* version, const char* holdField) {
+  snprintf(buf, cap,
+           "{\"schema\":2,\"version\":\"%s\"%s%s,\"variants\":{"
+           "\"nimbus-tft\":{\"url\":\"https://x/fw.bin\",\"size\":3014656,"
+           "\"sha256\":\"%s\",\"sig\":\"TWFuTWFuTWFu\"}}}",
+           version, holdField[0] ? "," : "", holdField, kSha64);
+}
+
+static bool parseHeld(const char* holdField, ManifestInfo& m, const char** err = nullptr) {
+  char json[2048];
+  makeHeldJson(json, sizeof json, "v5.2.0", holdField);
+  return parseManifest(json, strlen(json), "nimbus-tft", m, err);
+}
+
+// Older firmware ignores holdHeads: every field the signed message and the install
+// use parses the same with and without it, and the signed message is unchanged.
+static void test_hold_heads_leave_signed_fields_untouched() {
+  ManifestInfo plain, held;
+  TEST_ASSERT_TRUE(parseHeld("", plain));
+  TEST_ASSERT_TRUE(parseHeld("\"holdHeads\":[\"*/*\",\"!anthropic/claude-sonnet-5-5*\"]", held));
+  TEST_ASSERT_EQUAL_STRING(plain.version, held.version);
+  TEST_ASSERT_EQUAL_STRING(plain.v.url, held.v.url);
+  TEST_ASSERT_EQUAL_UINT32(plain.v.size, held.v.size);
+  TEST_ASSERT_EQUAL_STRING(plain.v.shaHex, held.v.shaHex);
+  TEST_ASSERT_EQUAL_UINT8(plain.v.sigLen, held.v.sigLen);
+  char a[192], b[192];
+  TEST_ASSERT_EQUAL_UINT(buildSigMessage(a, sizeof a, plain.version, "nimbus-tft", plain.v.shaHex),
+                         buildSigMessage(b, sizeof b, held.version, "nimbus-tft", held.v.shaHex));
+  TEST_ASSERT_EQUAL_STRING(a, b);
+  TEST_ASSERT_EQUAL_UINT8(0, plain.holdCount);
+  TEST_ASSERT_EQUAL_UINT8(2, held.holdCount);
+}
+
+static void test_hold_names_head_or_fallback() {
+  ManifestInfo m;
+  TEST_ASSERT_TRUE(parseHeld("\"holdHeads\":[\"mistral/*\",\"openai/gpt-5.6*\"]", m));
+  TEST_ASSERT_TRUE(headHeld(m, "mistral", "mistral-large-4-0"));
+  TEST_ASSERT_TRUE(headHeld(m, "openai", "gpt-5.6"));
+  TEST_ASSERT_TRUE(headHeld(m, "openai", "gpt-5.6-luna"));
+  TEST_ASSERT_FALSE(headHeld(m, "openai", "gpt-5.5"));
+  TEST_ASSERT_FALSE(headHeld(m, "anthropic", "claude-sonnet-5-5"));
+  TEST_ASSERT_FALSE(headHeld(m, "mistralx", "mistral-large-4-0"));   // host is exact
+  // Later entries win: hold everyone, except Sonnet, but hold one dated Sonnet again.
+  TEST_ASSERT_TRUE(parseHeld("\"holdHeads\":[\"*/*\",\"!anthropic/claude-sonnet-5-5*\","
+                             "\"anthropic/claude-sonnet-5-5-old\"]", m));
+  TEST_ASSERT_FALSE(headHeld(m, "anthropic", "claude-sonnet-5-5"));
+  TEST_ASSERT_TRUE(headHeld(m, "anthropic", "claude-sonnet-5-5-old"));
+  TEST_ASSERT_TRUE(headHeld(m, "anthropic", "claude-haiku-5-5"));
+  TEST_ASSERT_TRUE(headHeld(m, "google", "gemini-9"));   // a host nobody listed
+}
+
+// Fail closed: an unknown head (no host or no model) is held by any non-empty hold.
+static void test_hold_unknown_head_is_held() {
+  ManifestInfo m;
+  TEST_ASSERT_TRUE(parseHeld("\"holdHeads\":[\"mistral/*\"]", m));
+  TEST_ASSERT_TRUE(headHeld(m, "", "claude-sonnet-5-5"));
+  TEST_ASSERT_TRUE(headHeld(m, "anthropic", ""));
+  TEST_ASSERT_TRUE(headHeld(m, nullptr, nullptr));
+  // No hold at all (or an empty array) holds nothing, unknown heads included.
+  TEST_ASSERT_TRUE(parseHeld("", m));
+  TEST_ASSERT_FALSE(headHeld(m, "", ""));
+  TEST_ASSERT_TRUE(parseHeld("\"holdHeads\":[]", m));
+  TEST_ASSERT_FALSE(headHeld(m, "", ""));
+}
+
+// Fail closed: a malformed holdHeads rejects the whole manifest (no update), never a
+// guessed or partial hold. Every malformed shape, one per row.
+static void test_hold_malformed_rejects_manifest() {
+  const char* bad[] = {
+      "\"holdHeads\":\"mistral/*\"",                 // not an array
+      "\"holdHeads\":{\"mistral\":\"*\"}",           // an object
+      "\"holdHeads\":[3]",                           // not a string
+      "\"holdHeads\":[\"mistral\"]",                 // no slash
+      "\"holdHeads\":[\"/x\"]",                      // empty host
+      "\"holdHeads\":[\"mistral/\"]",                // empty model
+      "\"holdHeads\":[\"Mistral/*\"]",               // host not a slug
+      "\"holdHeads\":[\"mi*/*\"]",                   // host glob other than "*"
+      "\"holdHeads\":[\"mistral/a*b\"]",             // '*' not last
+      "\"holdHeads\":[\"mistral/a b\"]",             // space
+      "\"holdHeads\":[\"mistral/a/b\"]",             // second slash
+      "\"holdHeads\":[\"!\"]",                       // bare exception
+      "\"holdHeads\":[\"\"]",                        // empty entry
+      "\"holdHeads\":[\"mistral/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]",  // over 63 B
+  };
+  for (const char* f : bad) {
+    ManifestInfo m;
+    const char* err = nullptr;
+    TEST_ASSERT_FALSE_MESSAGE(parseHeld(f, m, &err), f);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("holdHeads", err, f);
+  }
+  // Too many entries.
+  std::string many = "\"holdHeads\":[";
+  for (int i = 0; i <= kMaxHoldHeads; i++) many += std::string(i ? "," : "") + "\"h" + std::to_string(i) + "/*\"";
+  many += "]";
+  ManifestInfo m;
+  TEST_ASSERT_FALSE(parseHeld(many.c_str(), m));
+  // Exactly the maximum parses.
+  many = "\"holdHeads\":[";
+  for (int i = 0; i < kMaxHoldHeads; i++) many += std::string(i ? "," : "") + "\"h" + std::to_string(i) + "/*\"";
+  many += "]";
+  TEST_ASSERT_TRUE(parseHeld(many.c_str(), m));
+  TEST_ASSERT_EQUAL_UINT8(kMaxHoldHeads, m.holdCount);
+  // A truncated manifest (cut inside holdHeads) is no update either.
+  char json[600];
+  makeHeldJson(json, sizeof json, "v5.2.0", "\"holdHeads\":[\"*/*\"]");
+  TEST_ASSERT_FALSE(parseManifest(json, strlen(json) / 2, "nimbus-tft", m));
+}
+
+// The automatic path needs eligibility AND no hold; the hold never changes the
+// manual eligibility (the web install stays).
+static void test_auto_may_install_needs_no_hold() {
+  const Eligibility all[] = {Eligibility::Newer, Eligibility::Same, Eligibility::Older,
+                             Eligibility::BlockedMinVersion};
+  for (Eligibility e : all) {
+    TEST_ASSERT_FALSE(autoMayInstall(e, true));
+    TEST_ASSERT_EQUAL(autoEligible(e), autoMayInstall(e, false));
+  }
+  ManifestInfo m;
+  TEST_ASSERT_TRUE(parseHeld("\"holdHeads\":[\"*/*\"]", m));
+  TEST_ASSERT_EQUAL_INT((int)Eligibility::Newer, (int)eligibility("v5.1.2", m));
+}
+
+static void test_hold_notice_is_one_line() {
+  char buf[400];
+  TEST_ASSERT_TRUE(holdNotice(buf, sizeof buf, "v5.2.0", "mistral", "mistral-large-4-0") > 0);
+  TEST_ASSERT_NOT_NULL(strstr(buf, "v5.2.0"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "(mistral mistral-large-4-0)"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "web page"));
+  TEST_ASSERT_NULL(strchr(buf, '\n'));
+  TEST_ASSERT_NULL(strstr(buf, "\xE2\x80\x94"));     // no em dash
+  TEST_ASSERT_TRUE(holdNotice(buf, sizeof buf, "v5.2.0", "", "") > 0);
+  TEST_ASSERT_NOT_NULL(strstr(buf, "(unknown)"));
+  TEST_ASSERT_EQUAL_UINT(0, holdNotice(buf, 20, "v5.2.0", "mistral", "x"));
+  TEST_ASSERT_EQUAL_STRING("", buf);
+}
+
+static void test_channel_parse() {
+  TEST_ASSERT_EQUAL_INT((int)Channel::Candidate, (int)parseChannel("candidate", 9));
+  TEST_ASSERT_EQUAL_INT((int)Channel::Candidate, (int)parseChannel(" candidate\r\n", 12));
+  // Missing file (nullptr), empty, and anything else: stable (fail closed).
+  const char* stable[] = {"", "stable", "Candidate", "candidates", "candidate x", "cand"};
+  for (const char* t : stable)
+    TEST_ASSERT_EQUAL_INT_MESSAGE((int)Channel::Stable, (int)parseChannel(t, strlen(t)), t);
+  TEST_ASSERT_EQUAL_INT((int)Channel::Stable, (int)parseChannel(nullptr, 0));
+  TEST_ASSERT_EQUAL_INT((int)Channel::Stable, (int)parseChannel("candidate", 4));   // a short read
+  TEST_ASSERT_EQUAL_STRING("candidate", channelSlug(Channel::Candidate));
+  TEST_ASSERT_EQUAL_STRING("stable", channelSlug(Channel::Stable));
+}
+
+static void test_candidate_url_beside_stable() {
+  char b[256];
+  TEST_ASSERT_TRUE(candidateUrl(
+      "https://github.com/ristllin/nimbus-fw-releases/releases/latest/download/manifest.json", b, sizeof b));
+  TEST_ASSERT_EQUAL_STRING(
+      "https://github.com/ristllin/nimbus-fw-releases/releases/latest/download/manifest-candidate.json", b);
+  TEST_ASSERT_TRUE(candidateUrl("https://10.0.0.2:8443/manifest.json", b, sizeof b));
+  TEST_ASSERT_EQUAL_STRING("https://10.0.0.2:8443/manifest-candidate.json", b);
+  TEST_ASSERT_FALSE(candidateUrl("http://x/manifest.json", b, sizeof b));   // not https
+  TEST_ASSERT_EQUAL_STRING("", b);
+  TEST_ASSERT_FALSE(candidateUrl("https://host-only", b, sizeof b));       // no path
+  TEST_ASSERT_FALSE(candidateUrl(nullptr, b, sizeof b));
+  TEST_ASSERT_FALSE(candidateUrl("https://x/manifest.json", b, 20));       // does not fit
+}
+
+// Missing (404), malformed or unverified candidate manifests contribute nothing; a
+// valid one is used only when strictly newer than stable (or stable failed).
+static void test_pick_manifest() {
+  TEST_ASSERT_EQUAL_INT((int)Pick::Stable, (int)pickManifest(true, "v5.2.0", false, ""));
+  TEST_ASSERT_EQUAL_INT((int)Pick::Candidate, (int)pickManifest(true, "v5.2.0", true, "v5.9.0"));
+  TEST_ASSERT_EQUAL_INT((int)Pick::Stable, (int)pickManifest(true, "v5.9.0", true, "v5.9.0"));
+  TEST_ASSERT_EQUAL_INT((int)Pick::Stable, (int)pickManifest(true, "v6.0.0", true, "v5.9.0"));
+  TEST_ASSERT_EQUAL_INT((int)Pick::Candidate, (int)pickManifest(false, "", true, "v5.9.0"));
+  TEST_ASSERT_EQUAL_INT((int)Pick::None, (int)pickManifest(false, "", false, "v9.9.9"));
+  // The suffix is ignored by the compare, so v6.0.0-rc is not newer than v6.0.0.
+  TEST_ASSERT_EQUAL_INT((int)Pick::Stable, (int)pickManifest(true, "v6.0.0", true, "v6.0.0-rc1"));
+}
+
+// Fail closed: every download that is not exactly the signed bytes names a failure,
+// so the install aborts before the flip and the current image keeps running.
+static void test_download_verdict_fails_closed() {
+  DownloadOutcome ok;
+  ok.slotOpened = true; ok.httpCode = 200; ok.bytes = ok.expected = 3014656; ok.shaMatches = true;
+  TEST_ASSERT_NULL(downloadVerdict(ok));
+  DownloadOutcome d = ok; d.bytes = 3014655;                     // truncated by one byte
+  TEST_ASSERT_EQUAL_STRING("download", downloadVerdict(d));
+  d = ok; d.bytes = 1024 * 1024;                                  // cut mid-stream
+  TEST_ASSERT_EQUAL_STRING("download", downloadVerdict(d));
+  d = ok; d.bytes = 0;                                            // nothing arrived
+  TEST_ASSERT_EQUAL_STRING("download", downloadVerdict(d));
+  d = ok; d.httpCode = 206;
+  TEST_ASSERT_EQUAL_STRING("download", downloadVerdict(d));
+  d = ok; d.httpCode = 0;                                         // transport cut
+  TEST_ASSERT_EQUAL_STRING("download", downloadVerdict(d));
+  d = ok; d.expected = 0; d.bytes = 0;
+  TEST_ASSERT_EQUAL_STRING("download", downloadVerdict(d));
+  d = ok; d.shaMatches = false;
+  TEST_ASSERT_EQUAL_STRING("sha-fail", downloadVerdict(d));
+  d = ok; d.writeFailed = true;
+  TEST_ASSERT_EQUAL_STRING("flash-write", downloadVerdict(d));
+  d = ok; d.slotOpened = false;
+  TEST_ASSERT_EQUAL_STRING("slot", downloadVerdict(d));
+}
+
+// The table's rendering is a hold the device reads the table's way: for every row,
+// a head in that row is held exactly when the row is not qualified on the line, and
+// an unknown host is held. Class test over every row and both lines.
+static void test_rendered_table_holds_what_the_table_holds() {
+  namespace hq = nimbus::orch::headqual;
+  size_t n = 0;
+  const hq::Row* rows = hq::rows(n);
+  for (hq::Line line : {hq::Line::E1, hq::Line::E2}) {
+    const std::string arr = hq::renderHoldHeads(line);
+    ManifestInfo m;
+    const std::string field = "\"holdHeads\":" + arr;
+    TEST_ASSERT_TRUE_MESSAGE(parseHeld(field.c_str(), m), arr.c_str());
+    for (size_t i = 0; i < n; i++) {
+      // A model id the row matches: the family itself, its '*' made concrete.
+      std::string model = rows[i].family;
+      if (!model.empty() && model.back() == '*') model.back() = 'x';
+      if (model == "x") model = "some-unlisted-model";
+      const hq::Verdict v = hq::lookup(rows[i].host, model.c_str(), line);
+      TEST_ASSERT_EQUAL_MESSAGE(hq::holds(v.state), headHeld(m, rows[i].host, model.c_str()),
+                                (std::string(rows[i].host) + "/" + model).c_str());
+    }
+    TEST_ASSERT_TRUE(headHeld(m, "google", "gemini-9"));
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_version);
@@ -811,5 +1044,16 @@ int main(int, char**) {
   RUN_TEST(test_check_refusal_copy);
   RUN_TEST(test_last_result_stale);
   RUN_TEST(test_is_sim_result);
+  RUN_TEST(test_hold_heads_leave_signed_fields_untouched);
+  RUN_TEST(test_hold_names_head_or_fallback);
+  RUN_TEST(test_hold_unknown_head_is_held);
+  RUN_TEST(test_hold_malformed_rejects_manifest);
+  RUN_TEST(test_auto_may_install_needs_no_hold);
+  RUN_TEST(test_hold_notice_is_one_line);
+  RUN_TEST(test_channel_parse);
+  RUN_TEST(test_candidate_url_beside_stable);
+  RUN_TEST(test_pick_manifest);
+  RUN_TEST(test_download_verdict_fails_closed);
+  RUN_TEST(test_rendered_table_holds_what_the_table_holds);
   return UNITY_END();
 }

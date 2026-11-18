@@ -405,6 +405,7 @@ its own (no track list, play, or remove).
 | `OTACHECK` | Poll the release feed now. |
 | `OTAAPPLY [dry] [force]` | Apply the pending update (`dry` verifies without installing). |
 | `OTAURL <url>` | Point the updater at a different manifest URL. |
+| `OTACHAN candidate\|stable` | Set the update channel. |
 | `OTASIM arm <ver>` | Drill: simulate an available update to exercise the whole approval-and-install flow. |
 
 For the full OTA story, see [ota.md](ota.md); the operations runbook is

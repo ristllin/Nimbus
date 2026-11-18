@@ -10,6 +10,15 @@ It starts only from --start-version (default v4.6.4) on slot app0, fills the set
 session for the install, because OTAURL lives in RAM and a console open can reset the board. After the flip it polls
 over HTTP, grades, and only then reopens the console for the restores. The server and manifest are staged beforehand
 as in the plan (--serve does it for you). Prints no token; evidence is state-*.json, soak.tsv, ota-result.json.
+
+The hold-and-candidate leg (RB-OTA1), on a unit running the lane's test build:
+
+    ota_rehearsal.py --leg hold-candidate --ip IP --token-file F --port P --mac MAC --out DIR --serve FIRMWARE_BIN
+
+serves a stable manifest whose holdHeads holds every head and a candidate manifest beside it, and checks over one
+console session: the stable release shows held; with the channel on candidate the candidate shows, not held, and a dry
+install downloads and verifies it; a malformed or missing candidate falls back to the stable release; a truncated
+candidate download fails as "download"; nothing ever flips the slot. Evidence: hold-candidate.json.
 """
 
 from __future__ import annotations
@@ -332,6 +341,112 @@ def serve(image: str, version: str, key: str, device_ip: str, srv_dir: str, port
     return f"{base}/manifest.json"
 
 
+# ---- the hold-and-candidate leg (RB-OTA1) -------------------------------------------------------
+
+STABLE_V, CANDIDATE_V = "v9.1.0", "v9.2.0"
+
+
+def sign_manifest(srv: Path, out: str, version: str, base: str, image: Path, hold_line: str = "") -> Dict[str, Any]:
+    argv = manifest_argv(
+        version,
+        str(REPO / "test" / "ota_test_key.pem"),
+        str(srv / out),
+        base,
+        {"test-cyd": str(image), "freenove-28": str(image)},
+    )
+    if hold_line:
+        argv[-2:-2] = ["--hold-line", hold_line]
+    subprocess.run(argv, check=True, capture_output=True)
+    return json.loads((srv / out).read_text())
+
+
+class HoldCandidateLeg:
+    def __init__(self, args, api: bd.Api, ev: bd.Evidence, console, base: str):
+        self.a, self.api, self.ev, self.c, self.base = args, api, ev, console, base
+        self.srv = Path(ev.path("srv"))
+        self.res: Dict[str, Any] = {"at": bd.utc_iso(), "steps": {}}
+
+    def check(self, tag: str) -> str:
+        self.c.cmd("OTACHECK", "OTACHECK", 8.0)
+        seen = ""
+        for _ in range(40):
+            time.sleep(self.a.wait_s)
+            seen = self.c.cmd("OTA?", "OTA state=", 6.0)
+            if "state=checking" not in seen and "state=idle" not in seen:
+                break
+        self.res["steps"][tag] = seen
+        return seen
+
+    def dry_install(self, tag: str) -> str:
+        self.res["steps"][tag + "-apply"] = self.c.cmd("OTAAPPLY dry", "OTAAPPLY", 10.0)
+        seen = ""
+        for _ in range(int(self.a.install_timeout / max(self.a.wait_s, 1.0))):
+            time.sleep(self.a.wait_s)
+            seen = self.c.cmd("OTA?", "OTA state=", 6.0)
+            if "state=available" in seen or "state=error" in seen:
+                break
+        self.res["steps"][tag] = seen
+        return seen
+
+    def run(self) -> Dict[str, Any]:
+        image = self.srv / "firmware.bin"
+        sign_manifest(self.srv, "manifest.json", STABLE_V, self.base, image, hold_line="e2")
+        cand = sign_manifest(self.srv, "manifest-candidate.json", CANDIDATE_V, self.base, image)
+        cpath = self.srv / "manifest-candidate.json"
+        slot0 = self.c.cmd("OTA?", "OTA state=", 6.0)
+        self.api.post_form("/api/orch", {"tlsVerify": "0"})
+        self.c.cmd(f"OTAURL {self.base}/manifest.json", "OTAURL", 8.0)
+        ck = {}
+        self.c.cmd("OTACHAN stable", "OTACHAN", 8.0)
+        s = self.check("stable")
+        ck["stableHeld"] = f"latest={STABLE_V}" in s and "held=1" in s and "state=available" in s
+        ck["candidateUnseenOnStable"] = CANDIDATE_V not in s
+        ck["channelSet"] = "candidate ok" in self.c.cmd("OTACHAN candidate", "OTACHAN", 8.0)
+        s = self.check("candidate")
+        ck["candidateSeen"] = f"latest={CANDIDATE_V}" in s and "held=0" in s and "chan=candidate" in s
+        s = self.dry_install("candidate-dry")
+        ck["candidateVerifies"] = f"lastOta=dryrun ok {CANDIDATE_V}" in s
+        bad = dict(cand, holdHeads=["Not A Slug"])
+        cpath.write_text(json.dumps(bad))
+        s = self.check("candidate-malformed")
+        ck["malformedFallsBack"] = f"latest={STABLE_V}" in s and "held=1" in s
+        cpath.unlink()
+        s = self.check("candidate-missing")
+        ck["missingFallsBack"] = f"latest={STABLE_V}" in s and "held=1" in s
+        (self.srv / "truncated.bin").write_bytes(image.read_bytes()[: len(image.read_bytes()) // 2])
+        for v in cand["variants"].values():
+            v["url"] = f"{self.base}/truncated.bin"
+        cpath.write_text(json.dumps(cand))
+        self.check("candidate-truncated-check")
+        s = self.dry_install("candidate-truncated")
+        ck["truncatedFails"] = "state=error" in s and "err=download" in s
+        end = self.c.cmd("OTA?", "OTA state=", 6.0)
+        ck["neverFlipped"] = slot0.split("slot=")[-1].split()[0] == end.split("slot=")[-1].split()[0]
+        self.res["checks"] = ck
+        self.res["grade"] = "PASS" if all(ck.values()) else "FAIL"
+        return self.res
+
+    def restore(self) -> None:
+        self.ev.note(f"restore: {self.c.cmd('OTACHAN stable', 'OTACHAN', 8.0)}")
+        self.ev.note(f"restore: {self.c.cmd('OTAURL clear', 'OTAURL', 8.0)}")
+        self.api.post_form("/api/orch", {"tlsVerify": "1"})
+
+
+def run_hold_candidate(args, api: bd.Api, ev: bd.Evidence) -> Dict[str, Any]:
+    url = serve(args.serve, STABLE_V, str(REPO / "test" / "ota_test_key.pem"), args.ip, ev.path("srv"))
+    console = bd.Console(args.port, ev.path("console.log"), "ota_rehearsal")
+    leg = HoldCandidateLeg(args, api, ev, console, url.rsplit("/", 1)[0])
+    try:
+        for _ in range(40):
+            if console.cmd("PING", "PONG", 3.0):
+                break
+        return leg.run()
+    finally:
+        leg.restore()
+        console.close()
+        ev.write("hold-candidate.json", leg.res)
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ip", required=True)
@@ -343,8 +458,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--serve", metavar="FIRMWARE_BIN", help="sign and serve this image from here with the test key")
     ap.add_argument("--want-version", default="v5.0.0", help="the version the manifest offers")
     ap.add_argument(
-        "--want-build", required=True, help="the candidate's git describe; /api/state .build must start with it"
+        "--want-build", default="", help="the candidate's git describe; /api/state .build must start with it"
     )
+    ap.add_argument("--leg", choices=("update", "hold-candidate"), default="update")
     ap.add_argument("--start-version", default="v4.6.4", help="the version the unit must be on before the update")
     ap.add_argument("--target-free", type=int, default=3936)
     ap.add_argument("--soak-s", type=float, default=900.0)
@@ -354,8 +470,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--validate-timeout", type=float, default=420.0)
     ap.add_argument("--list-provider", default="anthropic", help="whose model list must be restamped after the update")
     args = ap.parse_args(argv)
+    if args.leg == "hold-candidate":
+        if not args.serve:
+            ap.error("--leg hold-candidate needs --serve FIRMWARE_BIN")
+        return args
     if not (args.url or args.serve):
         ap.error("pass --url or --serve")
+    if not args.want_build:
+        ap.error("--want-build is required for the update leg")
     return args
 
 
@@ -372,6 +494,10 @@ def main(argv=None) -> int:
         return port_guard.REFUSED_EXIT
     api = bd.Api(args.ip, bd.read_token(args.token_file))
     ev = bd.Evidence(args.out, api.scrub)
+    if args.leg == "hold-candidate":
+        result = run_hold_candidate(args, api, ev)
+        print(json.dumps({"grade": result.get("grade"), "checks": result.get("checks")}))
+        return 0 if result.get("grade") == "PASS" else 1
     if args.serve:
         key = str(REPO / "test" / "ota_test_key.pem")
         args.url = serve(args.serve, args.want_version, key, args.ip, ev.path("srv"))
