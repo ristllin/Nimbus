@@ -189,8 +189,11 @@ def test_copied_tree_is_green(tree):
 def test_a_seeded_300_byte_addition_fails_in_every_e1_class(tree, cls):
     path, text = plain_literal(tree, cls)
     # A class a remove entry shrank (RB-Q1b: device_notes) sits below its ceiling; the seed
-    # still grows it past the ceiling, by at least 300 B.
-    over = max(300, cat.E1_CEILINGS[cls] - stats(tree)[cls]["bytes"] + 1)
+    # still grows it past the ceiling, by at least 300 B. The ceiling is the one the gate
+    # applies: a spec entry raises it by its growth (RB-G0's PC-0008 on device_notes).
+    changes = gate.parse_changes(read(tree, gate.CHANGES))
+    ceiling = cat.E1_CEILINGS[cls] + gate.spec_allowance(tree, changes).get(("e1", cls), 0)
+    over = max(300, ceiling - stats(tree)[cls]["bytes"] + 1)
     pad = (PAD * (over // len(PAD) + 1))[:over]
     edit_literal(tree, path, text, text + pad)
     regen(tree)
