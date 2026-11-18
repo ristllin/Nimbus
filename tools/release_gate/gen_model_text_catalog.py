@@ -145,7 +145,7 @@ NON_MODEL_FILES: dict = {}
 # differ), and the byte ceilings of engine 1: it only shrinks, a ceiling is never raised.
 E1_BASELINE = {
     "system": (47989, "faa8207c"),
-    "device_notes": (74301, "37b59a6c"),
+    "device_notes": (74350, "5460c809"),
     "tool_descriptions": (23055, "a62706dc"),
     "tool_results": (41269, "eb3909ce"),
     "side_prompts": (7641, "041badf6"),

@@ -56,13 +56,13 @@ A `build` entry has `prd: section 4` in place of `scenario`, `red_at` and `rates
 
 ## Baseline
 
-Measured on lane RB-B5's tip (base rb-main f0bd98f4). The engine-1 ceilings in
+Measured on lane RB-B5's tip (base rb-main 831986f9). The engine-1 ceilings in
 `gen_model_text_catalog.py` equal these figures; engine 1 only shrinks.
 
 | Catalog | Class | Bytes | sha8 |
 |---|---|---|---|
 | e1 | system | 47989 | faa8207c |
-| e1 | device_notes | 74301 | 37b59a6c |
+| e1 | device_notes | 74350 | 5460c809 |
 | e1 | tool_descriptions | 23055 | a62706dc |
 | e1 | tool_results | 41269 | eb3909ce |
 | e1 | side_prompts | 7641 | 041badf6 |

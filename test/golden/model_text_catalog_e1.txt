@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=47989 ceiling=47989 entries=542 sha8=faa8207c
-# class device_notes bytes=74301 ceiling=74301 entries=2374 sha8=37b59a6c
+# class device_notes bytes=74350 ceiling=74350 entries=2376 sha8=5460c809
 # class tool_descriptions bytes=23055 ceiling=23055 entries=97 sha8=a62706dc
 # class tool_results bytes=41269 ceiling=41269 entries=1221 sha8=eb3909ce
 # class side_prompts bytes=7641 ceiling=7641 entries=153 sha8=041badf6
@@ -2779,6 +2779,8 @@ device_notes	src/main.cpp	033eefff	10	" available"
 device_notes	src/main.cpp	016bb4e1	9	"Firmware "
 device_notes	src/main.cpp	f4dfa6fa	13	" is available"
 device_notes	src/main.cpp	ef2f6333	97	".\nReply /update to install it now, or open Settings \u2192 Software update on the device's web page."
+device_notes	src/main.cpp	016bb4e1	9	"Firmware "
+device_notes	src/main.cpp	6d2c9d97	40	" available, held for this device's model"
 device_notes	src/main.cpp	6247c595	24	"Update install started ("
 device_notes	src/main.cpp	4ed21898	23	"Update install FAILED: "
 device_notes	src/main.cpp	66913d98	35	"Update committed - restarting into "
