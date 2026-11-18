@@ -87,10 +87,11 @@ def test_wrong_method_or_value_changes_nothing(owner):
     # A GET never sets, whatever it carries.
     r = s.get(f"http://{ip}{ROUTE}", params={"channel": "candidate"}, timeout=10)
     assert r.status_code == 200 and r.json()["channel"] == "stable", r.text
-    # Only GET and POST are bound: anything else meets the catch-all.
+    # Only GET and POST are bound: anything else meets the catch-all, which redirects a
+    # LAN peer to the bare page.
     for method in ("PUT", "DELETE", "PATCH"):
         r = s.request(method, f"http://{ip}{ROUTE}", data={"channel": "candidate"}, timeout=10, allow_redirects=False)
-        assert r.status_code != 200, f"{method}: {r.status_code}"
+        assert r.status_code == 302 and r.headers.get("Location") == "/", f"{method}: {r.status_code}"
     # The value comes from the POST body only.
     r = s.post(f"http://{ip}{ROUTE}", params={"channel": "candidate"}, timeout=10)
     assert r.status_code == 400 and r.json()["ok"] is False, r.text

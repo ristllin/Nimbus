@@ -25,7 +25,7 @@ void handleChannel(AsyncWebServerRequest* r) {
   const AsyncWebParameter* p = post ? r->getParam("channel", /*post=*/true) : nullptr;
   char body[nimbus::ota::kRouteBodyCap];
   const int status = nimbus::ota::channelRoute(webAuthOk(r), post, p ? p->value().c_str() : nullptr,
-                                               otaupd::channelOps(), body, sizeof body);
+                                               p ? p->value().length() : 0, otaupd::channelOps(), body, sizeof body);
   // The 401 every owner route sends (the literal is shared with them at link time).
   r->send(status, "application/json",
           status == 401 ? "{\"error\":\"Access token required. Scan the Sign-in QR on the device.\"}" : body);

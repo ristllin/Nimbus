@@ -3,7 +3,6 @@
 
 #include <cctype>
 #include <cstdio>
-#include <cstring>
 #include <strings.h>
 
 namespace nimbus {
@@ -13,8 +12,8 @@ namespace {
 
 constexpr char kStableLine[] = "Update channel: stable (regular releases only).";
 constexpr char kCandidateLine[] = "Update channel: candidate (test releases first).";
-// A failed switch: stable is in force (applyChannel fails closed), until the next
-// successful switch or, when even the file could not be cleared, the next restart.
+// A failed switch: stable is in force (applyChannel fails closed); when even the file
+// could not be cleared, the RAM latch holds it until a successful switch or a restart.
 constexpr char kFailedLine[] = "Couldn't save the update channel: stable for now.";
 // Never reached through applyChannel; keeps the line true for any state a caller reports.
 constexpr char kFailedCandidateLine[] = "Couldn't save the update channel: candidate for now.";
@@ -75,10 +74,11 @@ const char* channelCommandReply(const char* args, size_t len, const ChannelOps& 
   return line;
 }
 
-int channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops, char* body, size_t cap) {
+int channelRoute(bool authed, bool post, const char* value, size_t valueLen, const ChannelOps& ops, char* body,
+                 size_t cap) {
   if (cap) body[0] = '\0';
   if (!authed) return 401;
-  const ChannelAsk a = post && value ? parseChannelAsk(value, std::strlen(value)) : ChannelAsk::Show;
+  const ChannelAsk a = post && value ? parseChannelAsk(value, valueLen) : ChannelAsk::Show;
   int status = 200;
   const char* line;
   if (a == ChannelAsk::Stable || a == ChannelAsk::Candidate) {

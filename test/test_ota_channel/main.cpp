@@ -78,7 +78,7 @@ static void test_parse_ask() {
   TEST_ASSERT_TRUE(ChannelAsk::Stable == ask("STABLE"));
   for (const char* bad : {"cand", "candidates", "beta", "stable now", "candidate x", "on", "1"})
     TEST_ASSERT_TRUE_MESSAGE(ChannelAsk::Unknown == ask(bad), bad);
-  // An embedded NUL is not the word (the route hands the body's bytes with their length).
+  // An embedded NUL is not the word (the route passes the field's length, not strlen).
   TEST_ASSERT_TRUE(ChannelAsk::Unknown == parseChannelAsk("candidate\0x", 11));
   TEST_ASSERT_TRUE(ChannelAsk::Unknown == parseChannelAsk("stable\0", 7));
 }
@@ -268,7 +268,7 @@ struct RouteReply {
 static RouteReply channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops) {
   char body[kRouteBodyCap];
   std::memset(body, 'x', sizeof body);
-  const int st = nimbus::ota::channelRoute(authed, post, value, ops, body, sizeof body);
+  const int st = nimbus::ota::channelRoute(authed, post, value, value ? std::strlen(value) : 0, ops, body, sizeof body);
   TEST_ASSERT_TRUE(std::memchr(body, '\0', sizeof body) != nullptr);
   const std::string b = body;
   // Never cut: every answer fits kRouteBodyCap with room to spare.
@@ -338,6 +338,60 @@ static void test_route_sets_only_on_owner_post() {
   }
 }
 
+// An embedded NUL is part of the posted value: "candidate\0x" is not the word.
+static void test_route_value_keeps_its_length() {
+  dev::reset();
+  char body[kRouteBodyCap];
+  TEST_ASSERT_EQUAL_INT(400, nimbus::ota::channelRoute(true, true, "candidate\0x", 11, dev::kOps, body, sizeof body));
+  TEST_ASSERT_EQUAL_INT(0, dev::sets);
+  TEST_ASSERT_EQUAL_INT(200, nimbus::ota::channelRoute(true, true, "candidate", 9, dev::kOps, body, sizeof body));
+  TEST_ASSERT_TRUE(dev::ch == Channel::Candidate);
+}
+
+// The device's composition (otaupd::setChannel and channel): applyChannel and
+// channelInForce over the file with the latch kept between calls, driven through the
+// route. For every fault mask: a 500 always reports and leaves stable in force, and a
+// later GET shows the same channel the next update check would read.
+namespace composed {
+bool latch = false;
+bool set(Channel c) {
+  bool l = latch;
+  const bool ok = applyChannel(fake::kFile, c, l);
+  latch = l;
+  return ok && channelInForce(fake::kFile, latch) == c;
+}
+Channel get() { return channelInForce(fake::kFile, latch); }
+const ChannelOps kOps{&set, &get};
+}  // namespace composed
+
+static void test_composed_switch_fails_closed_through_the_route() {
+  int fails = 0;
+  for (unsigned mask = 0; mask < fake::kAllFaults; mask++) {
+    for (const char* start : {(const char*)nullptr, "candidate\n"}) {
+      for (const char* want : {"candidate", "stable"}) {
+        fake::reset(start);
+        composed::latch = false;
+        fake::faults = mask;
+        const RouteReply r = channelRoute(true, true, want, composed::kOps);
+        char msg[80];
+        std::snprintf(msg, sizeof msg, "mask=%u start=%s want=%s", mask, start ? "candidate" : "(none)", want);
+        if (r.status == 500) {
+          fails++;
+          TEST_ASSERT_TRUE_MESSAGE(r.body.find("\"channel\":\"stable\"") != std::string::npos, msg);
+          TEST_ASSERT_TRUE_MESSAGE(composed::get() == Channel::Stable, msg);
+        } else {
+          TEST_ASSERT_EQUAL_INT_MESSAGE(200, r.status, msg);
+          TEST_ASSERT_TRUE_MESSAGE(r.body.find(std::string("\"channel\":\"") + want) != std::string::npos, msg);
+        }
+        const RouteReply g = channelRoute(true, false, nullptr, composed::kOps);
+        TEST_ASSERT_TRUE_MESSAGE(g.body.find(std::string("\"channel\":\"") + channelSlug(composed::get())) !=
+                                     std::string::npos, msg);
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(fails > 20);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_ask);
@@ -350,5 +404,7 @@ int main(int, char**) {
   RUN_TEST(test_command_is_owner_only);
   RUN_TEST(test_route_answers);
   RUN_TEST(test_route_sets_only_on_owner_post);
+  RUN_TEST(test_route_value_keeps_its_length);
+  RUN_TEST(test_composed_switch_fails_closed_through_the_route);
   return UNITY_END();
 }

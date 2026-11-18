@@ -55,8 +55,8 @@ const char* channelCommandReply(const char* args, size_t len, const ChannelOps& 
 
 // The route GET/POST /api/ota/channel. `authed`: the request carried the device
 // sign-in code (nimbus::net::webAuthOk). `post`: POST, else GET (the device binds no
-// other method). `value`: the POST body's `channel` field, nullptr when absent.
-// Returns the HTTP status and writes the JSON answer into `body`:
+// other method). `value`/`valueLen`: the POST body's `channel` field and its length
+// (an embedded NUL is part of the value), nullptr when absent. Returns the HTTP status and writes the JSON answer into `body`:
 //   401: neither set nor get runs, `body` is "" (the device sends the 401 every owner
 //        route sends);
 //   GET 200: {"ok":true,"channel":"...","line":"..."}, the channel in force;
@@ -64,7 +64,8 @@ const char* channelCommandReply(const char* args, size_t len, const ChannelOps& 
 //         200 when set, 500 when the switch failed (the channel in force is then stable).
 // `cap` of kRouteBodyCap always fits.
 inline constexpr size_t kRouteBodyCap = 192;
-int channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops, char* body, size_t cap);
+int channelRoute(bool authed, bool post, const char* value, size_t valueLen, const ChannelOps& ops, char* body,
+                 size_t cap);
 
 }  // namespace ota
 }  // namespace nimbus

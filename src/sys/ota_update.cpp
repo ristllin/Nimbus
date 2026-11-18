@@ -118,7 +118,6 @@ static bool   g_haveManifest = false;
 // (web page, /update, the menu, the console) installs as before.
 static bool   g_held = false;
 static bool   g_installAuto = false;      // the running install was started by tick()
-static nimbus::ota::Channel g_channel = nimbus::ota::Channel::Stable;   // as last read
 
 static EventHook g_hook = nullptr;
 static IdleProvider g_idleProvider = nullptr;
@@ -716,10 +715,9 @@ static const char* fetchManifest() {
   if (!st) return "alloc";
   const char* err = fetchOne(manifestUrl(), *st, &g_lastCheckReached);
 
-  g_channel = readChannel();
   ManifestPtr cand;
   const char* candErr = "stable channel";
-  if (g_channel == nimbus::ota::Channel::Candidate) {
+  if (readChannel() == nimbus::ota::Channel::Candidate) {
     cand = newManifest();
     candErr = cand ? fetchCandidate(*cand) : "alloc";
     if (candErr) agent::alogf("ota: candidate manifest not used (%s)", candErr);
@@ -1486,8 +1484,7 @@ bool setChannel(nimbus::ota::Channel c) {
   bool latch = g_stableLatch.load();
   const bool ok = nimbus::ota::applyChannel(kChannelFile, c, latch);
   g_stableLatch.store(latch);
-  g_channel = readChannel();   // what the next check will read
-  return ok && g_channel == c;
+  return ok && readChannel() == c;   // what the next check will read
 }
 
 const nimbus::ota::ChannelOps& channelOps() {

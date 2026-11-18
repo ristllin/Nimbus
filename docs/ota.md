@@ -303,9 +303,10 @@ Both answer with one plain line: the channel now in force and what it means.
 Every failure leaves the device on the stable channel. A switch to candidate that
 cannot be written and read back clears the file again. A switch to stable that
 cannot clear the file (remove, then overwrite it with `stable`) holds the stable
-channel in memory until the next successful switch or restart. Either way the
-answer says the channel could not be saved and that stable is in force for now. The web page has no
-switch: it is unchanged until v6.1.0.
+channel in memory until the next successful switch. Either way the answer says the
+channel could not be saved and that stable is in force for now. That last case
+needs a file system that can neither delete nor write; after a restart such a
+device reads whatever the file still says. The web page has no switch.
 
 ## On a busy device: the update runs between messages
 
