@@ -100,6 +100,7 @@
       "RB-M0b"
     ],
     "platformio.ini": [
+      "RB-I0a",
       "RB-I0",
       "RB-FLIP"
     ],
@@ -131,6 +132,25 @@
     ]
   },
   "lanes": {
+    "RB-I0a": {
+      "stage": "S0",
+      "files": [
+        "tools/engine/engine2_only.txt",
+        "tools/engine_filter.py",
+        "tools/test_engine_filter.py",
+        "platformio.ini",
+        "lib/core/library.json",
+        "lib/harness/library.json",
+        "tools/release_gate/check_engine_filter.py",
+        "tools/release_gate/test_engine_filter.py"
+      ],
+      "notes": [
+        "platformio.ini is the filter hook only",
+        "the library.json files only if a library-level source filter is the mechanism",
+        "'with its test' read as tools/release_gate/test_engine_filter.py"
+      ],
+      "plan_text": "tools/engine/engine2_only.txt, tools/engine_filter.py, tools/test_engine_filter.py, platformio.ini (the filter hook only; RB-I0 adds the e2 envs later), lib/core/library.json and lib/harness/library.json if a library-level source filter is the mechanism, tools/release_gate/check_engine_filter.py with its test"
+    },
     "RB-OTA1": {
       "stage": "S0",
       "files": [
