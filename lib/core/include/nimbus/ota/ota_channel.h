@@ -62,10 +62,10 @@ const char* channelCommandReply(const char* args, size_t len, const ChannelOps& 
 //   GET 200: {"ok":true,"channel":"...","line":"..."}, the channel in force;
 //   POST: 400 for a missing or unknown value (nothing changes; "line" is the channel in force),
 //         200 when set, 500 when the switch failed (the channel in force is then stable).
-// `cap` of kRouteBodyCap always fits.
+// Every answer fits kRouteBodyCap.
 inline constexpr size_t kRouteBodyCap = 192;
-int channelRoute(bool authed, bool post, const char* value, size_t valueLen, const ChannelOps& ops, char* body,
-                 size_t cap);
+int channelRoute(bool authed, bool post, const char* value, size_t valueLen, const ChannelOps& ops,
+                 char (&body)[kRouteBodyCap]);
 
 }  // namespace ota
 }  // namespace nimbus

@@ -268,7 +268,7 @@ struct RouteReply {
 static RouteReply channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops) {
   char body[kRouteBodyCap];
   std::memset(body, 'x', sizeof body);
-  const int st = nimbus::ota::channelRoute(authed, post, value, value ? std::strlen(value) : 0, ops, body, sizeof body);
+  const int st = nimbus::ota::channelRoute(authed, post, value, value ? std::strlen(value) : 0, ops, body);
   TEST_ASSERT_TRUE(std::memchr(body, '\0', sizeof body) != nullptr);
   const std::string b = body;
   // Never cut: every answer fits kRouteBodyCap with room to spare.
@@ -342,9 +342,9 @@ static void test_route_sets_only_on_owner_post() {
 static void test_route_value_keeps_its_length() {
   dev::reset();
   char body[kRouteBodyCap];
-  TEST_ASSERT_EQUAL_INT(400, nimbus::ota::channelRoute(true, true, "candidate\0x", 11, dev::kOps, body, sizeof body));
+  TEST_ASSERT_EQUAL_INT(400, nimbus::ota::channelRoute(true, true, "candidate\0x", 11, dev::kOps, body));
   TEST_ASSERT_EQUAL_INT(0, dev::sets);
-  TEST_ASSERT_EQUAL_INT(200, nimbus::ota::channelRoute(true, true, "candidate", 9, dev::kOps, body, sizeof body));
+  TEST_ASSERT_EQUAL_INT(200, nimbus::ota::channelRoute(true, true, "candidate", 9, dev::kOps, body));
   TEST_ASSERT_TRUE(dev::ch == Channel::Candidate);
 }
 

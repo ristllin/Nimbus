@@ -74,9 +74,9 @@ const char* channelCommandReply(const char* args, size_t len, const ChannelOps& 
   return line;
 }
 
-int channelRoute(bool authed, bool post, const char* value, size_t valueLen, const ChannelOps& ops, char* body,
-                 size_t cap) {
-  if (cap) body[0] = '\0';
+int channelRoute(bool authed, bool post, const char* value, size_t valueLen, const ChannelOps& ops,
+                 char (&body)[kRouteBodyCap]) {
+  body[0] = '\0';
   if (!authed) return 401;
   const ChannelAsk a = post && value ? parseChannelAsk(value, valueLen) : ChannelAsk::Show;
   int status = 200;
@@ -87,7 +87,7 @@ int channelRoute(bool authed, bool post, const char* value, size_t valueLen, con
     if (post) status = 400;   // a missing, empty or unknown value changes nothing
     line = channelLine(ChannelAsk::Show, true, ops.get());
   }
-  std::snprintf(body, cap, "{\"ok\":%s,\"channel\":\"%s\",\"line\":\"%s\"}", status == 200 ? "true" : "false",
+  std::snprintf(body, sizeof body, "{\"ok\":%s,\"channel\":\"%s\",\"line\":\"%s\"}", status == 200 ? "true" : "false",
                 channelSlug(ops.get()), line);
   return status;
 }
