@@ -8,6 +8,8 @@
 
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
+#include "../support/recorded_models.h"
+#include "nimbus/orch/model_catalog.h"
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/harness/providers.h"
@@ -1073,6 +1075,93 @@ static void test_photo_rounds_never_exceed_the_fit_on_short_windows() {
   TEST_ASSERT_TRUE(transcribed > 0);   // and really crosses the fit
 }
 
+// ---- the photo fit's v5.1.1 floor (release review v5.1.2, finding 2) -----------------------
+namespace {
+struct PhotoHead {
+  std::string wireHost;   // the adapter the request goes out on
+  std::string model;      // the model it names there
+  bool routed;
+};
+providers::imageparts::Dialect dialectOf(const std::string& host) {
+  if (host == "anthropic") return providers::imageparts::Dialect::Anthropic;
+  if (host == "openai") return providers::imageparts::Dialect::OpenAIResponses;
+  return providers::imageparts::Dialect::MistralChat;
+}
+// Every vision-capable model of the recorded lists, direct and through the router, and the
+// Mistral vision ids the lists do not name (Pixtral).
+std::vector<PhotoHead> visionHeads() {
+  std::vector<PhotoHead> out;
+  for (const recorded::Model& m : recorded::models()) {
+    if (m.provider == "zai") continue;   // GLM on Z.ai is blind: its photos always go as text
+    if (!(nimbus::orch::classifyModel(m.provider, m.id).caps & nimbus::orch::CapVision)) continue;
+    out.push_back({m.provider, m.id, false});
+    out.push_back({m.provider, m.id, true});
+  }
+  for (const char* id : {"pixtral-large-latest", "pixtral-12b-latest", "mistral-large-2512"})
+    for (bool routed : {false, true}) out.push_back({"mistral", id, routed});
+  return out;
+}
+}  // namespace
+
+// The class: on every vision-capable head, one real device photo (100 to 250 KB, 1280 x 960)
+// beside a real head request's 60 KB of system and tools goes natively on a healthy heap, as
+// v5.1.1 sent it. A photo is refused only when it is what breaks the fit: a round whose text
+// alone cannot carry the minimum final either goes as v5.1.1 sent it (the fitted cap), and a
+// host that sends no output cap (OpenAI) is judged on its upload terms, not a notional decode
+// floor. Before the fix every Mistral id outside the measured classes (mistral-large-2512,
+// Pixtral) refused every photo and gave up its history first.
+static void test_one_photo_goes_natively_on_every_vision_head() {
+  int checked = 0;
+  for (const PhotoHead& h : visionHeads())
+    for (size_t len : {100000u, 150000u, 250000u}) {
+      const std::vector<uint8_t> jpg = jpegOf(1280, 960, len);
+      nimbus::orch::TurnImage it;
+      it.mime = "image/jpeg";
+      it.bytes = jpg.data();
+      it.len = jpg.size();
+      const uint32_t tokens = providers::imageparts::photoTokens(it, dialectOf(h.wireHost));
+      const providers::wire::RoundBudget rb =
+          providers::wire::roundBudget(providers::ProviderDeps(), h.wireHost, h.model, h.routed);
+      const providers::RoundLoad load = providers::wire::roundLoad(rb, 60000, (len + 2) / 3 * 4, tokens);
+      std::string err;
+      char what[192];
+      std::snprintf(what, sizeof what, "%s %s%s, %u B photo", h.wireHost.c_str(), h.model.c_str(),
+                    h.routed ? " routed" : "", (unsigned)len);
+      TEST_ASSERT_FALSE_MESSAGE(providers::wire::photosOverFit(rb, 0, load, tokens, err), (std::string(what) + ": " + err).c_str());
+      ++checked;
+    }
+  TEST_ASSERT_TRUE(checked > 60);
+}
+
+// The same through the wire: a mistral-large-2512 or Pixtral head shows its photo as an image
+// part, and no history is given up for it.
+static void test_slow_floor_mistral_heads_show_their_photo() {
+  for (const char* model : {"mistral-large-2512", "pixtral-large-latest"}) {
+    Album album(1, 65000, 800, 600);
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+    providers::ProviderDeps pd = d.contract();
+    const std::string m = model;
+    pd.orchModel = [m](const char*) { return m; };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    int gives = 0;
+    rig.ht.fitPrompt = [&gives](size_t, nimbus::orch::FitScope, std::string&, std::string&) {
+      ++gives;
+      return (size_t)0;
+    };
+    const nimbus::orch::ActiveTurnImages active(&album.set);
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "SYS " + std::string(55000, 's'), album.text, out,
+                                                        err, &rig.ht, nullptr),
+                             err.c_str());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)d.http.seen.size(), model);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)d.http.spliced[0].size(), model);   // the photo as an image part
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, album.transcribed, model);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, gives, model);   // nothing given up for it
+  }
+}
+
 // Lane B's caps send at least 1 token and leave it to the wire to refuse a round whose fit
 // cannot carry the host's minimum final. A text round over v5.1.1's 85,000 B that is too big
 // for its host's read window (a budget larger than the window allows) is refused with the
@@ -1223,6 +1312,8 @@ int main(int, char**) {
   RUN_TEST(test_the_wire_reads_the_budget_not_the_constant);
   RUN_TEST(test_large4_to_medium_refuses_the_oversize_round_locally);
   RUN_TEST(test_large4_step_down_holds_through_the_refit);
+  RUN_TEST(test_one_photo_goes_natively_on_every_vision_head);
+  RUN_TEST(test_slow_floor_mistral_heads_show_their_photo);
   RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);

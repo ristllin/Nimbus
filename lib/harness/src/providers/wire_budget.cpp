@@ -108,9 +108,10 @@ uint32_t roundFitTokens(const RoundBudget& rb, uint32_t roundMs, const RoundLoad
 
 uint32_t minFinalTokens(const RoundBudget& rb) { return nimbus::orch::minFinalTokensFor(rb.host, rb.model); }
 
-size_t photoFitShedBytes(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load) {
+namespace {
+// The text bytes to give up for the round's fit to carry `want` tokens again.
+size_t shedBytesFor(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load, uint32_t want) {
   const uint32_t fit = roundFitTokens(rb, roundMs, load);
-  const uint32_t want = minFinalTokens(rb);
   if (fit >= want) return 0;
   const uint32_t decode = nimbus::orch::decodeFloorTokPerS(rb.host, rb.model, load.promptTokens);
   const uint32_t prefill = nimbus::orch::prefillFloorTokPerS(rb.host, rb.model);
@@ -123,6 +124,27 @@ size_t photoFitShedBytes(const RoundBudget& rb, uint32_t roundMs, const RoundLoa
       (load.fragmented ? 1000000ull * nimbus::orch::kBudgetPaceSliceMs / nimbus::orch::kBudgetPaceSliceBytes : 0) +
       1000000000ull * 100 / r / (prefill ? prefill : 1);
   return (size_t)(shortMs * 1000000ull / (perByteNs ? perByteNs : 1)) + 1024;
+}
+
+// The answer a photo round must leave room for: the host's minimum final when it sends an
+// output cap; a host that sends none (OpenAI, the custom endpoint) only needs its upload and
+// prefill to fit the window (no notional decode floor decides its photos).
+uint32_t photoWantTokens(const RoundBudget& rb) {
+  return tableCap(rb.host, rb.model, RoundKind::FinalRound).maxTokens ? minFinalTokens(rb) : 1;
+}
+
+// The same round without its photos.
+RoundLoad textOnly(const RoundLoad& load, uint32_t photoTokens) {
+  RoundLoad t = load;
+  t.bodyBytes = load.bodyBytes > load.imageBytes ? load.bodyBytes - load.imageBytes : 0;
+  t.imageBytes = 0;
+  t.promptTokens = load.promptTokens > photoTokens ? load.promptTokens - photoTokens : 0;
+  return t;
+}
+}  // namespace
+
+size_t photoFitShedBytes(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load) {
+  return shedBytesFor(rb, roundMs, load, minFinalTokens(rb));
 }
 
 std::string photoFitError(const std::string& host, uint32_t fit, uint32_t minFinal, size_t overBytes) {
@@ -146,9 +168,15 @@ bool photosOverFit(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& loa
                    std::string& err) {
   if (photoTokens == 0 && load.imageBytes == 0) return false;
   const uint32_t fit = roundFitTokens(rb, roundMs, load);
-  const uint32_t want = minFinalTokens(rb);
+  const uint32_t want = photoWantTokens(rb);
   if (fit >= want) return false;
-  err = photoFitError(rb.host, fit, want, photoFitShedBytes(rb, roundMs, load));
+  // The v5.1.1 floor: when the round's text alone cannot carry it either, the photos are
+  // not what breaks the fit. The text takes the text round's rule (a body inside v5.1.1's
+  // budget goes as v5.1.1 sent it, with the photos and the fitted cap), and no history or
+  // photo is given up for a shortfall the photos did not cause.
+  const RoundLoad text = textOnly(load, photoTokens);
+  if (roundFitTokens(rb, roundMs, text) < want) return textOverFit(rb, text, err);
+  err = photoFitError(rb.host, fit, want, shedBytesFor(rb, roundMs, load, want));
   hlog::logf("wire: %s", err.c_str());
   return true;
 }
