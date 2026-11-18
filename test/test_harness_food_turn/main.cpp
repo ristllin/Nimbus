@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -55,6 +56,7 @@ struct Rig {
   std::vector<std::string> refusals;   // lane H: the host refuses these calls for size first, in order
   std::string turnTag;
   agent::HistoryMarks marks;
+  std::string role = "admin";   // the speaker's role the device closure names
   std::unique_ptr<TurnEngine> eng;
 
   std::string add(uint32_t hour, const std::string& role, const std::string& text, const std::string& tags) {
@@ -97,9 +99,10 @@ struct Rig {
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.deliver = [this](const std::string&, const std::string& t) { delivered.push_back(t); };
-    d.composeInputs = [](const std::string&) {
+    d.composeInputs = [this](const std::string&) {
       agent::ComposeInputs in;
       in.devName = "Lumi";
+      in.speakerRole = role;
       return in;
     };
     d.skillBody = [this](const std::string& id) {
@@ -163,6 +166,51 @@ struct Rig {
 };
 
 bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
+
+// RB-Q3a: the goldens' contract (test_harness_compose): GOLDEN_UPDATE=1 blesses, a missing
+// golden fails, drift is written to test/golden/out for the diff.
+bool readFile(const std::string& path, std::string& out) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return false;
+  char buf[4096];
+  size_t n;
+  out.clear();
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return true;
+}
+void writeFile(const std::string& path, const std::string& text) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, path.c_str());
+  std::fwrite(text.data(), 1, text.size(), f);
+  std::fclose(f);
+}
+void checkTextGolden(const char* name, const std::string& current) {
+  const std::string path = std::string("test/golden/") + name;
+  const char* bless = std::getenv("GOLDEN_UPDATE");
+  if (bless && std::string(bless) == "1") {
+    writeFile(path, current);
+    return;
+  }
+  std::string blessed;
+  const bool found = readFile(path, blessed);
+  if (found && blessed == current) return;
+  writeFile(std::string("test/golden/out/") + name, current);
+  TEST_FAIL_MESSAGE((std::string(found ? "prompt drift vs " : "missing golden ") + path).c_str());
+}
+
+// The per-turn block cut at its bracketed headers ("[NAME ..." at a line start), so a
+// measurement names each block with its bytes.
+void printBlocks(const char* label, const std::string& text) {
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t next = text.find("\n[", start + 1);
+    next = next == std::string::npos ? text.size() : next + 1;
+    const std::string block = text.substr(start, next - start);
+    std::printf("RBQ3A-MEASURE %s %6zu B  %s\n", label, block.size(), block.substr(0, block.find('\n')).substr(0, 72).c_str());
+    start = next;
+  }
+}
 
 }  // namespace
 
@@ -406,6 +454,39 @@ static void test_memory_routing_hint_rides_only_a_real_owner_message() {
   TEST_ASSERT_FALSE_MESSAGE(has(s.last().dyn, "[MEMORY ROUTING]"), s.last().dyn.c_str());
 }
 
+// RB-Q3a: the owner's food turn as the head receives it (the owner's role, the tool loop on,
+// rows today, the owner's own food skill stored), pinned byte for byte, with the bytes of
+// every block printed for the lane's measurement.
+static void test_owner_food_turn_prompt_golden() {
+  Rig r;
+  r.cfg.toolLoop = true;
+  r.skillText = "Blinded estimate first, then the label.";
+  r.eng->handleMessage("Lunch was a chicken salad, about 150 g chicken", "Roy", "1001");
+  TEST_ASSERT_EQUAL_INT(1, (int)r.instructions.size());
+  const std::string& ins = r.instructions.back();
+  const agent::layout::PromptParts p = r.last();
+  std::printf("RBQ3A-MEASURE total-instructions %zu B; static %zu, shelf %zu, history %zu msgs, per-turn %zu; input %zu\n",
+              ins.size(), p.stat.size(), p.shelf.size(), p.history.size(), p.dyn.size(), r.inputs.back().size());
+  printBlocks("per-turn", p.dyn);
+  checkTextGolden("orch_prompt_owner_food_turn.txt", agent::layout::display(ins));
+  // The other food shapes, measured only: a question (the coach's shape) and a short
+  // follow-up to a food exchange (both playbooks' shape).
+  const struct {
+    const char* label;
+    const char* text;
+  } shapes[] = {{"question", "how many calories are left for today?"}, {"follow-up", "brine"}};
+  for (const auto& sh : shapes) {
+    Rig q;
+    q.cfg.toolLoop = true;
+    q.skillText = r.skillText;
+    q.turn((uint32_t)(kNow / 3600) - 1, "tuna 80 g", "Logged. Was the tuna in brine or oil?");
+    q.eng->handleMessage(sh.text, "Roy", "1001");
+    std::printf("RBQ3A-MEASURE %s: per-turn %zu B, instructions %zu B\n", sh.label, q.last().dyn.size(),
+                q.instructions.back().size());
+    printBlocks(sh.label, q.last().dyn);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_ledger_rides_every_turn_with_rows_today);
@@ -422,5 +503,6 @@ int main(int, char**) {
   RUN_TEST(test_history_leaves_only_after_a_real_refusal);
   RUN_TEST(test_device_scale_loop_turn_keeps_the_mornings_estimate);
   RUN_TEST(test_memory_routing_hint_rides_only_a_real_owner_message);
+  RUN_TEST(test_owner_food_turn_prompt_golden);
   return UNITY_END();
 }
