@@ -551,6 +551,29 @@ static void test_the_unread_clock_survives_waits_and_restarts() {
   TEST_ASSERT_TRUE(d.ctlText.find("unreadSince=c:") != std::string::npos);
 }
 
+// Candidate 4, F1: the "due, not started" line comes at most once an hour for each chat and
+// cause, however many chats are held in the same pass (one key in total let two held chats
+// write a durable line each on every pass).
+static void test_due_not_started_lines_are_bounded_per_chat_and_cause() {
+  Device d;
+  d.failing = false;
+  d.guests = {"g1", "g2"};
+  d.boot();
+  d.backlog("g1", 40);
+  d.backlog("g2", 40, 0x400);
+  d.ctlText = "";
+  // The guests' share of the day is spent.
+  orch::FoldCtl c;
+  c.notePaid(orch::foldLocalDay(kT0, 0), 6, true);
+  d.ctlText = c.encode();
+  d.reboot();
+  LogCapture::lines().clear();
+  for (uint32_t s = 0; s < 2u * 3600u; s += 20) d.tick(kT0 + s);   // two hours, a pass every 20 s
+  int lines = 0;
+  for (const auto& l : LogCapture::lines()) lines += l.find("due, not started") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(lines >= 2 && lines <= 6, std::to_string(lines).c_str());
+}
+
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
 static void test_fresh_device_is_idle_and_quiet() {
   Device d;
@@ -754,6 +777,7 @@ int main(int, char**) {
   RUN_TEST(test_a_huge_kept_tail_does_not_skip_every_pass);
   RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
   RUN_TEST(test_the_unread_clock_survives_waits_and_restarts);
+  RUN_TEST(test_due_not_started_lines_are_bounded_per_chat_and_cause);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);

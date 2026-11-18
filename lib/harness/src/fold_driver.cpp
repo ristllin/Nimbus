@@ -261,12 +261,21 @@ bool FoldDriver::wantsFold(const std::string& chat) const {
 }
 
 // A chat with a reason to fold that this pass does not start, and why (bench B11, candidate 2:
-// the bench saw silence). One line when the reason changes, else at most once a minute.
+// the bench saw silence). At most one line per chat and cause per hour (candidate 4, F1): the
+// line is durable, and one key in total let two held chats write a line each on every pass.
 void FoldDriver::noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs) {
   const std::string key = chat + "|" + why;
-  if (key == notStartedKey_ && nowMs - notStartedMs_ < 60000u) return;
-  notStartedKey_ = key;
-  notStartedMs_ = nowMs;
+  NotStartedLine* slot = &notStarted_[0];
+  for (NotStartedLine& l : notStarted_) {
+    if (l.key == key) {
+      if (nowMs - l.ms < kNotStartedEveryMs) return;
+      slot = &l;
+      break;
+    }
+    if (!slot->key.empty() && (l.key.empty() || l.ms - slot->ms > 0x80000000u)) slot = &l;   // empty, else oldest
+  }
+  slot->key = key;
+  slot->ms = nowMs;
   hlog::logf("fold(%s): due, not started - %s", chat.c_str(), why);
 }
 

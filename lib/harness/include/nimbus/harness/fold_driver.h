@@ -192,8 +192,15 @@ class FoldDriver {
   const char* waitOf(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const;
   void noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs);
   void noteGatesClosed(uint32_t nowMs);
-  std::string notStartedKey_;
-  uint32_t notStartedMs_ = 0;
+  // "due, not started" lines: one per chat and cause per hour (candidate 4, F1). Bounded: the
+  // oldest entry gives way when a ninth key turns up.
+  struct NotStartedLine {
+    std::string key;
+    uint32_t ms = 0;
+  };
+  static constexpr size_t kNotStartedLines = 8;
+  static constexpr uint32_t kNotStartedEveryMs = 3600000u;
+  NotStartedLine notStarted_[kNotStartedLines];
   std::vector<FoldRung> orderedRungs() const;
   bool capReached(uint32_t nowEpoch, const std::string& chat = std::string());
   bool isOwnerChat(const std::string& chat) const { return !hooks_.ownerChat || hooks_.ownerChat(chat); }
