@@ -18,7 +18,6 @@
 #include "../../lib/harness/src/providers/loop_common.h"   // cutRetryNote (RB-Q1a: moved out of reply_guard)
 #include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/budget.h"
-#include "nimbus/orch/claims.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/connectors_wire.h"
 #include "nimbus/orch/embed_pick.h"
@@ -40,11 +39,9 @@
 #define OIR_HAVE_OPENQ 1
 #endif
 #include "nimbus/orch/owner_prefs.h"
-#include "nimbus/orch/owner_voice.h"
 #include "nimbus/orch/provider_park.h"
 #include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/request_budget.h"
-#include "nimbus/orch/spawn_claim.h"
 #include "nimbus/orch/sub_provenance.h"
 #include "nimbus/orch/turn_effects.h"
 
@@ -87,12 +84,6 @@ struct FoldIO : FoldStoreIO {
   void save(const std::string& b) override { blob = b; }
 };
 
-bool anyClaimGap(const std::string& reply, const TurnEffects* fx) {
-  ClaimEvidence ev;
-  ev.fx = fx;
-  return !claimGaps(reply, scanClaims(reply), ev).empty();
-}
-
 bool hasGapKind(const std::vector<FoodGap>& gaps, FoodGapKind k) {
   for (const auto& g : gaps)
     if (g.kind == k) return true;
@@ -123,14 +114,6 @@ void test_oir_01_routine_fire_request_carries_prompt() {
   Delivery d = resolveDelivery(l.chatId, w, true);
   LoopFireRequest fr = buildFireRequest(l, d, 1762000000);
   TEST_ASSERT_EQUAL_STRING(l.prompt.c_str(), fr.prompt.c_str());
-}
-
-// OIR-02: "Stored on the device" with no save effect this turn is a claim gap.
-void test_oir_02_contradictory_save_status() {
-  TurnEffects fx;
-  TEST_ASSERT_TRUE(anyClaimGap("Stored on the device.", &fx));
-  TEST_ASSERT_TRUE(anyClaimGap("Saved to the device's meal log.", &fx));
-  TEST_ASSERT_FALSE(anyClaimGap("Here is the answer.", &fx));
 }
 
 // OIR-04: a reply total that disagrees with the owner's own figures is flagged.
@@ -332,12 +315,6 @@ void test_oir_19_silent_replace_fixed() {
   TEST_ASSERT_EQUAL_INT(902, (int)up.todayTotal);
 }
 
-// OIR-20: "now correctly keyed" with no such effect this turn is a claim gap.
-void test_oir_20_false_claim_keyed() {
-  TurnEffects fx;
-  TEST_ASSERT_TRUE(anyClaimGap("I updated the meal log.", &fx));
-}
-
 // OIR-22: "38.3 g protein left" implies a 250 g target no source holds.
 void test_oir_22_unsourced_protein_target() {
   FoodFacts f = facts(1890, 118.1);
@@ -417,13 +394,6 @@ void test_oir_31_cross_day_recall() {
   const std::string recall = renderFoodRecall(file, "2026-11-01", "another boba tea, no milk");
   TEST_ASSERT_FALSE(recall.empty());
   TEST_ASSERT_NOT_NULL(strstr(recall.c_str(), "225"));
-}
-
-// OIR-32: a reply claiming a spawn says so, and the not-started line exists for the
-// case where none started.
-void test_oir_32_spawn_claim() {
-  TEST_ASSERT_TRUE(replyClaimsSpawn("I started a sub-agent to look that up."));
-  TEST_ASSERT_FALSE(std::string(kSpawnNotStartedLine).empty());
 }
 
 // OIR-33: a raw findings dump is capped at the budget, never delivered whole.
@@ -538,12 +508,6 @@ void test_oir_43_store_count_cap_fixed() {
   TEST_ASSERT_TRUE(ok);
 }
 
-// OIR-44: "Both rows are in today's ledger" with no write effect is a claim gap.
-void test_oir_44_write_drop_claim() {
-  TurnEffects fx;
-  TEST_ASSERT_TRUE(anyClaimGap("Both rows are stored in today's ledger.", &fx));
-}
-
 // OIR-46: a parked embedding key is never picked.
 void test_oir_46_embed_parked_not_used() {
   TEST_ASSERT_FALSE(embedKeyServes(true, 1, "", true, "openai"));
@@ -575,176 +539,6 @@ void test_oir_49_migration_reports_dropped() {
   TEST_ASSERT_TRUE(m.ok);
   TEST_ASSERT_TRUE(m.dropped >= 2);
   TEST_ASSERT_FALSE(m.sourceFullyFolded());
-}
-
-// OIR-50: "you told me" with no backing owner message is an owner-action gap.
-void test_oir_50_defended_hallucination() {
-  ClaimGap gap;
-  TEST_ASSERT_TRUE(ownerActionGap("You told me about the 4 fries and the pack you photographed.",
-                                  "4 frives", &gap));
-  TEST_ASSERT_FALSE(ownerActionGap("You told me about the 4 frives.", "4 frives", &gap));
-}
-
-// OIR-50, lane MLQ: challenged ("I never said that"), mistral-large-4-0 took the claim back
-// by quoting its own line, 'I was wrong to say "as you told me."', which repeats the words
-// the owner disputes. A disputed turn gets the [DISPUTED CLAIM] line, and on it a quoted
-// owner-action phrase is checked unless the quote is the owner's own words.
-void test_oir_50_disputed_quote_is_checked() {
-  const std::string owner = "I never said that. Show me where I supposedly said it.";
-  TEST_ASSERT_TRUE(disputesAttribution(owner));
-  TEST_ASSERT_TRUE(disputesAttribution("I didn\xE2\x80\x99t say that"));   // the phone's apostrophe
-  // Fix pass: the plain "Where did I tell you I ate a burger?" reads as a recall question
-  // too ("Where did I tell you I parked?"), so the dispute form is the "ever" one.
-  TEST_ASSERT_TRUE(disputesAttribution("Where did I ever tell you I ate a burger?"));
-  TEST_ASSERT_FALSE(disputesAttribution("Where did I tell you I parked?"));
-  TEST_ASSERT_FALSE(disputesAttribution("What did I have for dinner yesterday?"));
-  // Not disputes: news the owner had not shared, a request to be shown something.
-  TEST_ASSERT_FALSE(disputesAttribution("I didn't tell you, but I got the job!"));
-  TEST_ASSERT_FALSE(disputesAttribution("Show me where the file is."));
-  TEST_ASSERT_TRUE(renderDisputedClaimHint(owner).rfind("[DISPUTED CLAIM]", 0) == 0);
-  TEST_ASSERT_EQUAL_STRING("", renderDisputedClaimHint("Log my lunch").c_str());   // the base's input, byte for byte
-  const std::string words = normalizedWords(owner);
-  const char* quoted = "I was wrong to say \"as you told me.\"";
-  ClaimGap gap;
-  TEST_ASSERT_TRUE(ownerActionGap(quoted, words, &gap, /*disputed=*/true));
-  TEST_ASSERT_TRUE(claimCorrection({gap}, TurnEffects()).find("leave the phrase out") != std::string::npos);
-  TEST_ASSERT_FALSE(ownerActionGap(quoted, words, nullptr, /*disputed=*/false));   // as before
-  // The owner quoted back is still theirs.
-  const std::string mine = normalizedWords("you told me the shop opens at nine");
-  TEST_ASSERT_FALSE(ownerActionGap("You wrote \"you told me the shop opens at nine\" earlier.", mine, nullptr, true));
-}
-
-// OIR-06, lane MLQ: an earlier owner message that got no reply ("I love tech trivia, ask me
-// sometime.") was answered inside a food reply. Every human turn carries [REPLY SCOPE]; the
-// reply-scope check finds the sentence that takes the earlier message up, unless this
-// message brings it up itself.
-void test_oir_06_unanswered_message_not_taken_up() {
-  TEST_ASSERT_TRUE(renderReplyScopeHint().rfind("[REPLY SCOPE]", 0) == 0);
-  const std::vector<std::string> earlier = {"(Sun 8 Nov) I love tech trivia, ask me sometime."};
-  const std::string now = "Log my lunch: a chicken bowl, 620 kcal.";
-  const std::string reply = "Logged: lunch, chicken bowl, 620 kcal. I'll quiz you on tech trivia sometime!";
-  size_t b = 0, e = 0;
-  TEST_ASSERT_EQUAL(0, unansweredTopicSpan(reply, now, earlier, &b, &e));
-  TEST_ASSERT_EQUAL_STRING(" I'll quiz you on tech trivia sometime!", reply.substr(b, e - b).c_str());
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged: lunch, chicken bowl, 620 kcal.", now, earlier));
-  // This message brings it up: a shared topic word, or a pointer back.
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan(reply, "One trivia question, then log my lunch.", earlier));
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan(reply, "Also add what I mentioned earlier.", earlier));
-  // The OIR-16 shape: the owner points back at the unanswered message, so the reply may take it up.
-  const std::vector<std::string> bb = {"I also had some bb with my lunch earlier, I will tell you about it later."};
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the chicken, the blueberries and the bb.",
-                                            "Log 450 g of chicken. And please also add the bb I mentioned earlier.", bb));
-  // Common words never count as a topic.
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Thanks, that is logged for today.", now, {"thanks for today"}));
-}
-
-// OIR-50, lane MLQ fix pass (review of 77473103): a dispute is a denial of something the
-// head said they said, never a recall question or someone else's words. Each case below
-// read as a dispute in the first version, which then told the head it was wrong and banned
-// "you mentioned" from a reply that could answer the question from the record.
-void test_oir_50_recall_questions_are_not_disputes() {
-  const char* const recall[] = {
-      "When did I tell you about my dentist appointment?",
-      "Where did I say the meeting was?",
-      "Where did I tell you my sister's name?",
-      "When did I tell you that I was moving?",
-      "My boss never said that, she said Friday.",
-      "I never sent you the invoice, can you remind me tomorrow?",
-      "Is that not what I said yesterday about the gym?",
-      "I never photographed the receipt, remind me tonight.",
-  };
-  for (const char* m : recall) TEST_ASSERT_FALSE_MESSAGE(disputesAttribution(m), m);
-  const char* const disputes[] = {
-      "I never said that. Show me where I supposedly said it.",
-      "Where did I say that?",
-      "When did I say that?!",
-      "where did i tell you that",
-      "When did I ever tell you I ate a burger?",
-      "I didn't say that",
-      "That's not what I said.",
-      "I never sent you that photo.",
-      "I never said I had fries.",
-  };
-  for (const char* m : disputes) TEST_ASSERT_TRUE_MESSAGE(disputesAttribution(m), m);
-}
-
-// OIR-50, lane MLQ fix pass: the owner-action correction named only the phrase it found, so
-// the rewrite swapped "you told me" for "something you said" and the claim check fired again;
-// the device's own tail then said "something you said" too. The correction names every
-// attribution phrase, and the tail passes the very check that appends it.
-void test_oir_50_owner_action_tail_keeps_its_own_rule() {
-  const std::string words = normalizedWords("I never said that. Show me where I supposedly said it.");
-  ClaimGap gap;
-  TEST_ASSERT_TRUE(ownerActionGap("I was wrong to present it as something you said, sorry about the burger.", words,
-                                  &gap, /*disputed=*/true));
-  const std::string fix = claimCorrection({gap}, TurnEffects());
-  for (const char* p : {"\"you told me\"", "\"you said\"", "\"you mentioned\"", "\"you photographed\""})
-    TEST_ASSERT_TRUE_MESSAGE(fix.find(p) != std::string::npos, fix.c_str());
-  const std::string tail = claimTailLine(gap);
-  TEST_ASSERT_FALSE_MESSAGE(ownerActionGap(tail, words, nullptr, /*disputed=*/true), tail.c_str());
-  for (const char* p : {"you said", "you told me", "you mentioned"})
-    TEST_ASSERT_TRUE_MESSAGE(tail.find(p) == std::string::npos, tail.c_str());
-}
-
-// OIR-06, lane MLQ fix pass: the check holds back a remark the owner made in passing; it
-// never holds back what they are owed. Each negative is a case the first version flagged
-// (generic word overlap with any unanswered message), each positive a reply that took the
-// remark up on a live leg.
-void test_oir_06_owed_answers_and_reported_facts_are_in_scope() {
-  // The per-turn line says so too: an earlier question or request shown with [no reply] is owed.
-  TEST_ASSERT_TRUE(renderReplyScopeHint().find("question or request of theirs shown with [no reply] is still owed") !=
-                   std::string::npos);
-  // An earlier question that got no reply is owed its answer, pinged or not.
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Yes, I am here. Your protein target is 150 g.", "Hello? Are you there?",
-                                            {"What is my protein target?"}));
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta. And your protein target? I'll check: 150 g.",
-                                            "Log my dinner: pasta 700 kcal", {"What is my protein target?"}));
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta. I'll set the reminder for the dentist too.",
-                                            "Log my dinner: pasta 700 kcal", {"Please remind me about the dentist at 5."}));
-  // A ping asks after the earlier message, whatever it was.
-  const std::vector<std::string> salad = {"I had a chicken salad for lunch."};
-  for (const char* ping : {"Hello?", "Are you there?", "Did you get my last message", "??", "Any update?"})
-    TEST_ASSERT_EQUAL_MESSAGE(-1, unansweredTopicSpan("Sorry, I'm here. I'll log the chicken salad now.", ping, salad),
-                              ping);
-  // A recap asks about a span that holds it.
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("You have had chicken salad and a latte so far, 870 kcal. I'll keep adding.",
-                                            "How many calories have I had today?", salad));
-  // A sentence that reports a fact does not take the remark up.
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("You have had chicken salad and a latte, 870 kcal.",
-                                            "What is my total now?", salad));
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta, 700 kcal. With the chicken salad you are at 1,240 kcal.",
-                                            "Log my dinner: pasta 700 kcal", salad));
-  // A sentiment word is not a topic.
-  const std::vector<std::string> trivia = {"I love tech trivia, ask me sometime."};
-  const std::string dinner = "Log my dinner: pasta 700 kcal";
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged your dinner: pasta, 700 kcal. Love the choice!", dinner, trivia));
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged your dinner. Would you love a dessert idea?", dinner, trivia));
-  // One shared noun is chance (the stress corpus, lanes/MLQ/evidence/scope-corpus2): a
-  // sentence echoes a remark with two of its topic words, or its only one.
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("If you tell me the bagel's weight, I'll replace the row.",
-                                            "Here is a photo of my lunch.", {"My weight was down a kilo this morning."}));
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("If you tell me the protein in grams, I'll work it out.",
-                                            "Log my dinner.", {"That protein shake tasted awful."}));
-  TEST_ASSERT_EQUAL(0, unansweredTopicSpan("Logged. Want a new protein shake idea?", "Log my dinner.",
-                                           {"That protein shake tasted awful."}));
-  // An earlier request is owed too: the head may still do it.
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged the pasta. I'll log the salmon plate from earlier too?",
-                                            dinner, {"Save this into my meal log: a salmon plate, 620 kcal."}));
-  TEST_ASSERT_EQUAL(-1, unansweredTopicSpan("Logged. Want me to stop the language app check-ins for good?", dinner,
-                                            {"To be clear: forget the daily language app check-in."}));
-  // The class still holds: a promise, an acknowledgement, an offer, a question, an aside.
-  const char* const taken[] = {
-      "Logged. I'll remember you love tech trivia.",
-      "Logged. Noted on tech trivia.",
-      "Logged. Want me to ask you a tech trivia question now?",
-      "Logged. Good tech trivia offer, I will take you up on that sometime!",
-      "Logged. And since you love tech trivia, here's one: what was the first computer virus called?",
-      "Logged. By the way, tech trivia sounds like fun.",
-  };
-  for (const char* r : taken) TEST_ASSERT_EQUAL_MESSAGE(0, unansweredTopicSpan(r, dinner, trivia), r);
-  // A request deferred to "sometime" is a remark too, even as a question.
-  TEST_ASSERT_EQUAL(0, unansweredTopicSpan("Logged. I'll quiz you on trivia sometime!", dinner,
-                                           {"Could you quiz me on trivia sometime?"}));
 }
 
 }  // namespace
@@ -1090,12 +884,9 @@ int main(int argc, char** argv) {
   (void)argv;
   UNITY_BEGIN();
   RUN_TEST(test_oir_01_routine_fire_request_carries_prompt);
-  RUN_TEST(test_oir_02_contradictory_save_status);
   RUN_TEST(test_oir_03_second_read_disagreement_surfaced);
   RUN_TEST(test_oir_04_owner_figures_win);
   RUN_TEST(test_oir_05_day_total_receipt);
-  RUN_TEST(test_oir_06_unanswered_message_not_taken_up);
-  RUN_TEST(test_oir_06_owed_answers_and_reported_facts_are_in_scope);
   RUN_TEST(test_oir_07_unconfirmed_finalised);
 #ifdef OIR_HAVE_OPENQ
   RUN_TEST(test_oir_08_open_question_raise_once_and_drop);
@@ -1110,7 +901,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_17_subagent_invented_items);
   RUN_TEST(test_oir_18_receipt_vs_reply_rows);
   RUN_TEST(test_oir_19_silent_replace_fixed);
-  RUN_TEST(test_oir_20_false_claim_keyed);
   RUN_TEST(test_oir_22_unsourced_protein_target);
   RUN_TEST(test_oir_23_cut_retry_note);
   RUN_TEST(test_oir_24_compact_thrash_pause);
@@ -1119,7 +909,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_28_stale_status);
   RUN_TEST(test_oir_30_protein_unknown);
   RUN_TEST(test_oir_31_cross_day_recall);
-  RUN_TEST(test_oir_32_spawn_claim);
   RUN_TEST(test_oir_33_raw_dump_capped);
   RUN_TEST(test_oir_36_rules_full_makes_room);
   RUN_TEST(test_oir_37_plumbing);
@@ -1128,15 +917,10 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_41_mistral_connector_scope);
   RUN_TEST(test_oir_42_upsert_total_fixed);
   RUN_TEST(test_oir_43_store_count_cap_fixed);
-  RUN_TEST(test_oir_44_write_drop_claim);
   RUN_TEST(test_oir_46_embed_parked_not_used);
   RUN_TEST(test_oir_47_park_402_billing);
   RUN_TEST(test_oir_48_second_ledger_refused);
   RUN_TEST(test_oir_49_migration_reports_dropped);
-  RUN_TEST(test_oir_50_defended_hallucination);
-  RUN_TEST(test_oir_50_disputed_quote_is_checked);
-  RUN_TEST(test_oir_50_recall_questions_are_not_disputes);
-  RUN_TEST(test_oir_50_owner_action_tail_keeps_its_own_rule);
   RUN_TEST(test_oir_51_own_estimate_stays_in_the_request);
   RUN_TEST(test_oir_52_no_summary_pause_survives);
   RUN_TEST(test_oir_53_no_phantom_recall_note);

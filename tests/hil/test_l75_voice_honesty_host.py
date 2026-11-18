@@ -20,6 +20,7 @@ from test_l75_voice_honesty import (
     DEVICE_TTS_RE,
     SHORTENED_RE,
     SPOKEN_LINE,
+    UNSPOKEN_LEAD,
     TG_FALLBACK_RE,
     VOLUME_ZERO,
     names_line_model,
@@ -117,7 +118,10 @@ def test_the_expected_words_are_the_ones_the_firmware_produces():
     assert "the speaker volume is 0, so speech would play as silence" in apply_cpp
     assert VOLUME_ZERO == "tts(not-spoken: the speaker volume is 0, so speech would play as silence)"
     assert SPOKEN_LINE == "(Correction: that was not spoken aloud.)"
-    assert SPOKEN_LINE in _src("lib/core/src/orch_claims.cpp")
+    # The claim check that wrote it is gone (lane RB-Q1b): no source may write it again.
+    for src in ("lib/harness/src/apply.cpp", "lib/harness/src/engine.cpp", "lib/core/src/orch_voice_notes.cpp"):
+        assert SPOKEN_LINE not in _src(src), src
+    assert UNSPOKEN_LEAD == "\n\n(Note: that could not be spoken aloud: "
     notes = _src("lib/core/src/orch_voice_notes.cpp")
     assert "(Note: the spoken version was shortened to the first " in notes
     m = SHORTENED_RE.search("(Note: the spoken version was shortened to the first 380 of its 895 characters.)")
@@ -151,7 +155,7 @@ def test_the_mock_turns_are_the_shapes_the_legs_need():
         assert turn["device"] == [{"type": "tts", "text": turn["device"][0]["text"]}]
     assert CLAIM_TURNS["mock-claim-spoken"]["reply"] == "I read it aloud for you."
     assert CLAIM_TURNS["mock-tts-only"]["reply"] == ""
-    # T6's replies carry no claim cue (they would then get the claim line, not the plain note).
+    # T6's replies carry no claim cue (before v5.2.0 they would have got the claim line).
     assert CLAIM_TURNS["mock-tts-reworded"]["reply"] == "Playing it now."
     assert not CLAIM_TURNS["mock-tts-french"]["reply"].isascii()
     long_text = CLAIM_TURNS["mock-tts-long"]["device"][0]["text"]

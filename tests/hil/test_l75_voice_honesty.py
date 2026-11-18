@@ -14,11 +14,13 @@ Legs (the head is the LAN mock unless noted, so the replies are fixed and cost n
 
   T1  volume 0: a reply that says it read the text aloud, with a ``tts`` action behind it. The
       speaker would play silence, so nothing is synthesized, the log says ``tts(not-spoken: ...)``
-      and the delivered reply carries "(Correction: that was not spoken aloud.)".
+      and the delivered reply carries the device's note "(Note: that could not be spoken aloud: ...)"
+      with the reason (since v5.2.0, lane RB-Q1b, no claim line is appended: the note is the
+      device's record of its own action, not a reading of the reply).
   T2  a turn whose only output is that ``tts`` delivers the text with the reason, not silence.
   T6  the same at volume 0 with a reply no claim cue knows (reworded English, French): the failed
       speech still reaches the owner as a plain note on the reply, with the reason, in the same turn.
-  T3  voice replies switched off: the same reply is corrected, nothing is delivered for a
+  T3  voice replies switched off: the same reply gets the note with that reason, nothing is delivered for a
       tts-only turn is NOT asserted here (the owner's ruling: a silent no-op, host-tested).
   T4  the speaker cannot play (``FAULT speaker``), so the action falls back to Telegram: a text of
       about 1,000 characters whose 400-byte bound falls inside a 2-byte letter, in a long word with
@@ -27,7 +29,7 @@ Legs (the head is the LAN mock unless noted, so the replies are fixed and cost n
       exists, and the reply says the spoken version was shortened (and is NOT corrected: a voice
       message with a receipt backs "read it aloud").
   T5  the same fallback to a chat Telegram does not know: ``tts(not-spoken: ...)`` with the
-      refusal, and the reply is corrected.
+      refusal, and the reply gets the note with that reason.
   I1  "What model are you running?" with the pinned host lacking a key: the turn's per-turn line
       names the host it really ran on, and the answer names that model (the concrete id the line
       carries, or the alias it was asked for), never the pin's.
@@ -57,14 +59,17 @@ import pytest
 
 from mock_llm import CLAIM_TURNS, mock_llm  # noqa: F401  (mock_llm is a fixture)
 from tg_archive_bench import BenchBot
-from test_claim_check_bench import SETTLE_S, _replies, _tailed, assistant_replies, mock_head, new_replies  # noqa: F401
-from test_claim_check_bench import _turn as mock_turn
+from test_mock_head_bench import SETTLE_S, _replies, _tailed, assistant_replies, mock_head, new_replies  # noqa: F401
+from test_mock_head_bench import _turn as mock_turn
 from test_l12_mock_llm import _opost, custom_backend  # noqa: F401  (fixture + helper)
 from test_l67_voice_delivery import _probe
 
 pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
 
+# The claim check's line before v5.2.0; it must never be appended now (lane RB-Q1b).
 SPOKEN_LINE = "(Correction: that was not spoken aloud.)"
+# The device's own note on a reply whose tts was not voiced (apply.cpp noteUnspoken).
+UNSPOKEN_LEAD = "\n\n(Note: that could not be spoken aloud: "
 VOLUME_ZERO = "tts(not-spoken: the speaker volume is 0, so speech would play as silence)"
 BAD_CHAT = "1"  # a chat id Telegram does not know: the upload is refused for real
 LIVE_TURN_TIMEOUT_S = 180.0
@@ -285,17 +290,19 @@ def voice_settings(mock_head):  # noqa: F811 (the imported fixture)
 # ---- T1-T3: the speaker would play silence ---------------------------------------------------
 
 
-def test_t1_a_spoken_claim_at_volume_zero_is_corrected(voice_settings):
+def test_t1_a_spoken_claim_at_volume_zero_carries_the_device_note(voice_settings):
     be = voice_settings
-    before, t0 = _log(be), _tailed(be)
+    before = _log(be)
     reply = mock_turn(be, "mock-claim-spoken", "say the bench line out loud")
     log = new_lines(before, _log(be))
     assert any(VOLUME_ZERO in ln for ln in log), (
         f"no refusal line; device[...] lines: {[ln for ln in log if 'device[' in ln]}"
     )
     assert not [ln for ln in log if re.search(r"tts: (mistral|openai) wrote", ln)], "text was synthesized at volume 0"
-    assert reply == "I read it aloud for you.\n\n" + SPOKEN_LINE, reply
-    assert _tailed(be) == t0 + 1
+    assert reply == (
+        "I read it aloud for you." + UNSPOKEN_LEAD + "the speaker volume is 0, so speech would play as silence.)"
+    ), reply
+    assert SPOKEN_LINE not in reply and _tailed(be) == 0, reply
     print(f"[T1] PASS {reply!r}")
 
 
@@ -327,15 +334,16 @@ def test_t6_a_failed_tts_is_reported_whatever_the_reply_says(voice_settings, tur
         reply
         == f"{spoken}\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)"
     ), reply
-    assert SPOKEN_LINE not in reply, f"a claim line where the claim check had no claim: {reply!r}"
+    assert SPOKEN_LINE not in reply, f"a claim line since v5.2.0: {reply!r}"
     print(f"[T6] PASS {turn}: {reply!r}")
 
 
-def test_t3_voice_replies_off_still_corrects_a_spoken_claim(voice_settings):
+def test_t3_voice_replies_off_still_tells_the_owner(voice_settings):
     be = voice_settings
     _post(be, ttsOn=0)
     reply = mock_turn(be, "mock-claim-spoken", "say the bench line out loud")
-    assert reply == "I read it aloud for you.\n\n" + SPOKEN_LINE, reply
+    assert reply.startswith("I read it aloud for you." + UNSPOKEN_LEAD), reply
+    assert SPOKEN_LINE not in reply, reply
     print(f"[T3] PASS {reply!r}")
 
 
@@ -442,11 +450,11 @@ def test_t4_the_fallback_delivers_a_cut_text_with_a_receipt(telegram_fallback):
     spoken, total = int(note.group(1)), int(note.group(2))
     assert 0 < spoken < total and total == len(whole), (spoken, total, len(whole))
     assert SPOKEN_LINE not in reply, f"a delivered voice message must back 'read it aloud': {reply!r}"
-    assert _tailed(be) == t0, "the claim check corrected a reply the receipt backs"
+    assert _tailed(be) == 0, "claimsTailed is kept at 0 since v5.2.0"
     print(f"[T4] PASS message_id {mid} confirmed by Telegram; {spoken} of {total} characters voiced; reply {reply!r}")
 
 
-def test_t5_a_refused_fallback_is_reported_and_the_claim_corrected(telegram_fallback):
+def test_t5_a_refused_fallback_is_reported_on_the_reply(telegram_fallback):
     be, bench = telegram_fallback
     chat = str(bench.chat)
     with refused_owner_chat(be, chat):  # the fallback goes to the owner chat, which Telegram refuses
@@ -457,7 +465,8 @@ def test_t5_a_refused_fallback_is_reported_and_the_claim_corrected(telegram_fall
     assert tts_lines and tts_lines[-1].startswith("tts(not-spoken: "), f"{tts_lines}"
     assert "the Telegram voice message did not arrive" in tts_lines[-1], tts_lines[-1]
     assert any("telegram: sendAudio FAIL" in ln for ln in log), "no refused upload in the log"
-    assert reply == "I read it aloud for you.\n\n" + SPOKEN_LINE, reply
+    assert reply.startswith("I read it aloud for you." + UNSPOKEN_LEAD), reply
+    assert SPOKEN_LINE not in reply, reply
     print(f"[T5] PASS {tts_lines[-1][:140]!r}")
 
 

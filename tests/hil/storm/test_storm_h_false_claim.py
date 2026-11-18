@@ -8,9 +8,11 @@ Drive: the head runs on the LAN mock with a scripted reply, "Saved it to memory.
 a turn that wrote nothing; then one fresh message on the plain mock reply. Same drive on
 both images (no spend). Unit A.
 
-Bounds on the release candidate: one turn and at most two head requests, exactly one
-correction in the owner's reply (the claim is never passed on as true), no log line
-repeated more than 5 times, the fresh message answered within 120 s.
+Bounds on the release candidate: one turn and at most two head requests, no log line
+repeated more than 5 times, the fresh message answered within 120 s. Since v5.2.0 (lane
+RB-Q1b) the device appends no correction to a reply: the claim check that wrote one is
+gone, so the leg's notice bound is zero. RB-G0's truth check (a receipt that names the
+refused write) sets the bound for this leg again when it lands.
 
 Run: NIMBUS_STORM_UNIT=A python3 -m pytest tests/hil/storm/test_storm_h_false_claim.py --allow-hardware -s
 """
@@ -29,7 +31,7 @@ pytestmark = [pytest.mark.hil, pytest.mark.net]
 LEG = "h_false_claim"
 SCENARIO = "mock-claim-nothing"
 CORRECTION_RE = re.compile(r"correction|has not been saved|not saved|wasn.t saved|was not saved", re.I)
-BOUNDS = g.Bounds(max_paid_turns=2, max_provider_requests=2, max_identical=5, notices=(1, 1), usable_within_s=120.0)
+BOUNDS = g.Bounds(max_paid_turns=2, max_provider_requests=2, max_identical=5, notices=(0, 0), usable_within_s=120.0)
 
 
 def test_storm_h_false_claim(storm):
@@ -56,8 +58,8 @@ def test_storm_h_false_claim(storm):
         usable_s=probe["usable_s"],
     )
     m.extra.update({"replies": claims[:4], "claimsTailed": [tailed0, tailed1], "probeReply": probe["reply"][:200]})
-    if claims and not corrected:
-        m.notes.append(f"the false claim reached the owner as true: {claims[0][:80]!r}")
+    if corrected:
+        m.notes.append(f"a correction line was appended (none since v5.2.0): {corrected[0][:80]!r}")
     if not claims:
         m.notes.append("no reply reached the owner chat for the claim turn")
         m.notices = 0

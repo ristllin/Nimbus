@@ -217,11 +217,6 @@ struct ApplyState {
 // memory.write tool, so both paths say the same thing.
 extern const char kUnverifiedMemoryRefusal[];
 
-// The owner's line when none, or only some, of a turn's sub-agent intents reached the
-// job engine (apply.cpp). It rides the reply and the captured row.
-extern const char kSpawnNotStartedLine[];
-extern const char kSpawnSomeNotStartedLine[];
-
 // One memory.write result, classified by its outcome code. Unknown or missing
 // codes on a failure read as Refused, so a new code can never be counted as saved.
 enum class MemWriteOutcome { Stored, Duplicate, Queued, Refused };

@@ -11,7 +11,6 @@
 
 #include "../support/fake_platform.h"
 #include "nimbus/harness/apply.h"
-#include "nimbus/harness/claim_check.h"   // the claim check apply's tail reads (RB-Q1b deletes it)
 #include "nimbus/orch/tool_taint.h"         // toolTaintTable: every registered tool's effect
 #include "nimbus/orch/model_catalog.h"     // lane F: the model store
 #include "nimbus/orch/model_choices.h"
@@ -152,6 +151,15 @@ static Turn turnWithDevice(const char* json) {
   t.device.push_back(da);
   return t;
 }
+
+// The turn's effect ledger as a test holds it (the claim check that used to own a copy is
+// gone, lane RB-Q1b): apply records into it, nothing reads the reply against it.
+struct Ledger {
+  nimbus::orch::TurnEffects fx;
+  nimbus::orch::TurnEffects& effects() { return fx; }
+  const nimbus::orch::TurnEffects& effects() const { return fx; }
+  void beginTurn() { fx.reset(); }
+};
 
 void setUp() { LogCapture::install(); }
 void tearDown() { agent::hlog::setSink(nullptr); }
@@ -820,11 +828,10 @@ static void test_a_lookup_alone_is_not_an_action() {
   Rec r;
   ApplyDeps d = makeDeps(r);
   ApplyState st = makeState(r);
-  agent::ClaimCheck claims;
+  Ledger claims;
   claims.effects().add(nimbus::orch::FxKind::Read, true);
   claims.effects().add(nimbus::orch::FxKind::Scratch, true);
   st.effects = &claims.effects();
-  st.claims = &claims;
   bool spawned = false;
   agent::applyTurn(Turn{}, "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
@@ -1054,13 +1061,19 @@ static Turn replyTurn(const char* reply) {
   return t;
 }
 
-// Apply with a claim check attached; returns the one delivered text.
-static std::string applyChecked(Rec& r, ApplyDeps& d, const Turn& t, agent::ClaimCheck& cc,
+// The device's own note on a reply whose tts was not voiced (apply.cpp noteUnspoken). Since
+// RB-Q1b it is the only line about speech: the claim check's "(Correction: that was not
+// spoken aloud.)" is gone.
+static const char kUnspokenLead[] = "\n\n(Note: that could not be spoken aloud: ";
+
+static bool startsWith(const std::string& s, const std::string& p) { return s.rfind(p, 0) == 0; }
+
+// Apply with the turn's ledger attached; returns the one delivered text.
+static std::string applyChecked(Rec& r, ApplyDeps& d, const Turn& t, Ledger& cc,
                                 bool unverified = false, bool* spawnedOut = nullptr) {
   ApplyState st = makeState(r);
   st.unverifiedConnector = unverified;
   st.effects = &cc.effects();
-  st.claims = &cc;
   bool spawned = false;
   agent::applyTurn(t, "1001", d, st, spawned);
   if (spawnedOut) *spawnedOut = spawned;
@@ -1069,7 +1082,10 @@ static std::string applyChecked(Rec& r, ApplyDeps& d, const Turn& t, agent::Clai
   return r.delivered[0].second;
 }
 
-static void test_claims_failed_memory_write_gets_the_correction_line() {
+// Since RB-Q1b (v5.2.0) a reply is never given a line made from its words: a write that
+// did not land is recorded in the ledger (and fed back to the head), and the reply goes out
+// as written, once.
+static void test_claims_failed_memory_write_is_recorded_not_appended() {
   for (int unverified = 0; unverified < 2; unverified++) {
     Rec r;
     r.memSuccess = unverified != 0;   // case 0: the store failed; case 1: refused (CUM-536)
@@ -1078,10 +1094,11 @@ static void test_claims_failed_memory_write_gets_the_correction_line() {
     nimbus::orch::MemWrite w;
     w.content = "ran 5 km";
     t.mem_write.push_back(w);
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc, unverified != 0);
-    TEST_ASSERT_EQUAL_STRING("Logged your run.\n\n(Correction: that has not been saved.)", out.c_str());
+    TEST_ASSERT_EQUAL_STRING("Logged your run.", out.c_str());
+    TEST_ASSERT_EQUAL(1, cc.effects().countFailed(nimbus::orch::FxKind::MemWrite));
     // The history keeps what the owner saw.
     TEST_ASSERT_EQUAL_STRING(out.c_str(), r.captured[0].c_str());
   }
@@ -1090,14 +1107,13 @@ static void test_claims_failed_memory_write_gets_the_correction_line() {
   ApplyDeps d = makeDeps(r);
   Turn t = replyTurn("Logged your run.");
   t.mem_write.push_back(nimbus::orch::MemWrite{"ran 5 km", 0.5, false, ""});
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   TEST_ASSERT_EQUAL_STRING("Logged your run.", applyChecked(r, d, t, cc).c_str());
 }
 
-// Lane P meets lane S: a queued write is NOT a stored one, so a "saved" claim
-// over it gets the correction line - the owner is told the fact is only waiting
-// in the embedding-outage queue, not remembered.
+// Lane P meets lane S: a queued write is NOT a stored one. The ledger records it as not
+// landed and the head hears it next turn; the reply is delivered as written (RB-Q1b).
 static void test_claims_queued_write_backs_no_save_claim() {
   Rec r;
   r.memCode = nimbus::orch::kMemOutcomeQueued;
@@ -1107,11 +1123,11 @@ static void test_claims_queued_write_backs_no_save_claim() {
   nimbus::orch::MemWrite w;
   w.content = "my pool locker code is 4417";
   t.mem_write.push_back(w);
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   const std::string out = applyChecked(r, d, t, cc);
-  TEST_ASSERT_EQUAL_STRING("Saved your pool locker code.\n\n(Correction: that has not been saved.)",
-                           out.c_str());
+  TEST_ASSERT_EQUAL_STRING("Saved your pool locker code.", out.c_str());
+  TEST_ASSERT_FALSE(cc.effects().anyOk(nimbus::orch::FxKind::MemWrite));
   TEST_ASSERT_TRUE(r.pendingMem.find("[MEMORY] mem_write \"my pool locker code is 4417\" -> ") !=
                    std::string::npos);
 }
@@ -1126,12 +1142,12 @@ static void test_claims_refused_enqueue_is_not_a_spawn() {
     op.op = "spawn";
     op.task = "find car seat reviews";
     t.session_ops.push_back(op);
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     bool spawned = true;
     const std::string out = applyChecked(r, d, t, cc, false, &spawned);
     TEST_ASSERT_EQUAL(accept != 0, spawned);   // spawnedOut counts accepted spawns only
-    TEST_ASSERT_EQUAL(!accept, out.find("did not start") != std::string::npos);
+    TEST_ASSERT_EQUAL_STRING("I have started a research sub-agent on it.", out.c_str());   // nothing appended
     TEST_ASSERT_EQUAL(accept ? 1 : 0, cc.effects().countOk(nimbus::orch::FxKind::Spawn));
     TEST_ASSERT_EQUAL(accept ? 0 : 1, cc.effects().countFailed(nimbus::orch::FxKind::SpawnRefused));
   }
@@ -1152,27 +1168,28 @@ static void test_claims_ram_only_scratchpad_against_a_durability_claim() {
     t.scratchpad.present = true;
     t.scratchpad.hasLong = true;
     t.scratchpad.longItems = {"no em dashes"};
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc);
-    TEST_ASSERT_EQUAL_MESSAGE(ramOnly != 0, out.find("until the next restart") != std::string::npos,
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(reply, out.c_str(), ramOnly ? "full NVS" : "fresh device");
+    TEST_ASSERT_EQUAL_MESSAGE(ramOnly != 0, cc.effects().anyOk(nimbus::orch::FxKind::ScratchRamOnly),
                               ramOnly ? "full NVS" : "fresh device");
   }
 }
 
-// A device action that did not run backs nothing (review finding): voice
-// replies off, so a tts action is a no-op and "read it aloud" gets its line.
+// A device action that did not run (voice replies off: a tts is a no-op) is recorded as not
+// spoken; the reply gets no claim line (RB-Q1b), only the device's own note on the failed tts.
 static void test_claims_noop_device_action_backs_nothing() {
   for (int voice = 0; voice < 2; voice++) {
     Rec r;
     ApplyDeps d = makeDeps(r, /*tts=*/voice != 0);
     Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
     t.reply = "I read it aloud for you.";
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc);
-    TEST_ASSERT_EQUAL_MESSAGE(!voice, out.find("(Correction: that was not spoken aloud.)") != std::string::npos,
-                              voice ? "voice on" : "voice off");
+    TEST_ASSERT_TRUE_MESSAGE(out.find("(Correction") == std::string::npos, voice ? "voice on" : "voice off");
+    TEST_ASSERT_EQUAL_MESSAGE(voice != 0, cc.effects().anyOk(nimbus::orch::FxKind::Speak), voice ? "voice on" : "voice off");
   }
 }
 
@@ -1184,7 +1201,7 @@ static void test_tts_spoken_on_the_speaker_is_recorded() {
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
   t.reply = "I read it aloud for you.";
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   TEST_ASSERT_EQUAL_STRING("I read it aloud for you.", applyChecked(r, d, t, cc).c_str());
   TEST_ASSERT_TRUE(LogCapture::contains("device[tts ]"));
@@ -1194,20 +1211,22 @@ static void test_tts_spoken_on_the_speaker_is_recorded() {
 }
 
 // Volume 0: the speaker would play silence, so the action is NOT spoken: the sink is
-// never asked, nothing is captured as said, a "read it aloud" reply gets its correction
-// and the head learns why on its next turn.
+// never asked, nothing is captured as said, a "read it aloud" reply gets the device's note
+// with the reason and the head learns why on its next turn.
 static void test_tts_at_volume_zero_is_not_spoken() {
   Rec r;
   r.volume = 0;
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
   t.reply = "I read it aloud for you.";
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   const std::string out = applyChecked(r, d, t, cc);
   TEST_ASSERT_EQUAL(0, (int)r.spoken.size());
   TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: the speaker volume is 0, so speech would play as silence)"));
-  TEST_ASSERT_EQUAL_STRING("I read it aloud for you.\n\n(Correction: that was not spoken aloud.)", out.c_str());
+  TEST_ASSERT_EQUAL_STRING((std::string("I read it aloud for you.") + kUnspokenLead +
+                            "the speaker volume is 0, so speech would play as silence.)").c_str(),
+                           out.c_str());
   TEST_ASSERT_EQUAL(0, cc.effects().countOk(nimbus::orch::FxKind::Speak));
   TEST_ASSERT_EQUAL(1, cc.effects().countFailed(nimbus::orch::FxKind::Speak));
   TEST_ASSERT_EQUAL(1, (int)r.captured.size());   // the reply row only: nothing was said aloud
@@ -1241,11 +1260,13 @@ static void test_tts_sink_failure_is_not_spoken() {
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
   t.reply = "Spoken.";
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   const std::string out = applyChecked(r, d, t, cc);
   TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
-  TEST_ASSERT_EQUAL_STRING("Spoken.\n\n(Correction: that was not spoken aloud.)", out.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      (std::string("Spoken.") + kUnspokenLead + "text-to-speech failed: the voice provider is paused.)").c_str(),
+      out.c_str());
   TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: text-to-speech failed: the voice provider is paused)"));
   TEST_ASSERT_EQUAL(1, (int)r.captured.size());
   // A sink that gives no reason, and one that gives a long multi-line one, stay bounded
@@ -1277,7 +1298,7 @@ static void test_tts_delivered_to_telegram_carries_the_receipt() {
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
     t.reply = reply;
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     TEST_ASSERT_EQUAL_STRING_MESSAGE(reply, applyChecked(r, d, t, cc).c_str(), reply);
     TEST_ASSERT_TRUE(LogCapture::contains("tts(telegram message_id 41)"));
@@ -1291,25 +1312,26 @@ static void test_tts_delivered_to_telegram_carries_the_receipt() {
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
   t.reply = "I sent you a voice message.";
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   const std::string out = applyChecked(r, d, t, cc);
-  TEST_ASSERT_TRUE(out.find("(Correction: no voice message was delivered.)") != std::string::npos);
+  TEST_ASSERT_TRUE(out.find("(Correction") == std::string::npos);
+  TEST_ASSERT_FALSE(nimbus::orch::voiceDelivered(cc.effects()));
   TEST_ASSERT_EQUAL(1, (int)r.captured.size());
 }
 
-// Each claim is held against what happened. Speech on the speaker backs "read it aloud" but
-// not "I sent you a voice message" (no receipt); a Telegram voice message with its receipt
-// backs both; nothing delivered backs neither.
+// The reply's words are never held against what happened (RB-Q1b): whatever it says, a tts
+// that played (speaker or a receipted voice message) adds nothing, and one that did not adds
+// the device's note with its reason.
 static void test_tts_voice_claims_are_checked_against_what_happened() {
   struct Row { const char* reply; bool spoken; bool telegram; const char* line; };
   const Row rows[] = {
-      {"I sent you a voice message.", true, false, "(Correction: no voice message was delivered.)"},
+      {"I sent you a voice message.", true, false, ""},
       {"I read it aloud.", true, false, ""},
       {"I read it aloud.", false, true, ""},
       {"I sent you a voice message.", false, true, ""},
-      {"I read it aloud.", false, false, "(Correction: that was not spoken aloud.)"},
-      {"I sent you a voice message.", false, false, "(Correction: no voice message was delivered.)"},
+      {"I read it aloud.", false, false, "the speaker is marked faulty.)"},
+      {"I sent you a voice message.", false, false, "the speaker is marked faulty.)"},
   };
   for (const Row& row : rows) {
     Rec r;
@@ -1319,17 +1341,17 @@ static void test_tts_voice_claims_are_checked_against_what_happened() {
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
     t.reply = row.reply;
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc);
-    const std::string want = std::string(row.reply) + (row.line[0] ? std::string("\n\n") + row.line : "");
+    const std::string want = std::string(row.reply) + (row.line[0] ? std::string(kUnspokenLead) + row.line : "");
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), out.c_str(), row.reply);
   }
 }
 
 // The fallback went out but Telegram never confirmed it (HTTP 0, an unreadable answer): the
-// voice message may have arrived, so the spoken claim gets the "not confirmed" line, not "was
-// not spoken", and a claim that a voice message was sent gets the same line.
+// voice message may have arrived, so the device's note says so ("may not have arrived"), and a
+// refused upload's note says it did not arrive. No claim line either way (RB-Q1b).
 static void test_tts_fallback_that_telegram_did_not_confirm_may_have_arrived() {
   const char* replies[] = {"I read it aloud for you.", "I sent you a voice message."};
   for (const char* reply : replies) {
@@ -1339,13 +1361,12 @@ static void test_tts_fallback_that_telegram_did_not_confirm_may_have_arrived() {
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
     t.reply = reply;
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc);
-    TEST_ASSERT_EQUAL_STRING_MESSAGE(
-        (std::string(reply) + "\n\n(Note: Telegram did not confirm the voice message, so it may not have arrived.)")
-            .c_str(),
-        out.c_str(), reply);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(out, std::string(reply) + kUnspokenLead), out.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("may not have arrived") != std::string::npos, out.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.find("(Correction") == std::string::npos, out.c_str());
   }
   // A refused upload says it did not arrive: "was not spoken".
   Rec r;
@@ -1355,10 +1376,12 @@ static void test_tts_fallback_that_telegram_did_not_confirm_may_have_arrived() {
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
   t.reply = "I read it aloud for you.";
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
-  TEST_ASSERT_EQUAL_STRING("I read it aloud for you.\n\n(Correction: that was not spoken aloud.)",
-                           applyChecked(r, d, t, cc).c_str());
+  const std::string refused = applyChecked(r, d, t, cc);
+  TEST_ASSERT_TRUE_MESSAGE(startsWith(refused, std::string("I read it aloud for you.") + kUnspokenLead), refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("did not arrive") != std::string::npos, refused.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(refused.find("(Correction") == std::string::npos, refused.c_str());
 }
 
 // The unconfirmed state rides a flag and the summary leads with a fixed phrase: a long speaker
@@ -1373,11 +1396,11 @@ static void test_tts_unconfirmed_survives_a_long_reason() {
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
   t.reply = "I read it aloud for you.";
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   const std::string out = applyChecked(r, d, t, cc);
-  TEST_ASSERT_TRUE(out.find("(Note: Telegram did not confirm the voice message, so it may not have arrived.)") !=
-                   std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(startsWith(out, std::string("I read it aloud for you.") + kUnspokenLead), out.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(out.find("may not have arrived") != std::string::npos, out.c_str());
   TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: the Telegram voice message may not have arrived; "));
 }
 
@@ -1467,31 +1490,27 @@ static void test_tts_only_turn_that_was_not_spoken_delivers_the_text() {
   TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, off.delivered[0].second.c_str());
 }
 
-// Independent review: the text of a failed tts-only turn goes out as the turn's message, so it is
-// checked like a reply. The same words in t.reply get the same correction.
+// Independent review: the text of a failed tts-only turn goes out as the turn's message, with
+// the device's note (or the caller rule's line) and nothing made from its words (RB-Q1b).
 static void test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check() {
   const std::string note = "\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)";
   const std::string rule = "\nOnly the device's owner can speak aloud on the device.";
-  const std::string unsaved = "\n\n(Correction: that has not been saved.)";
-  const std::string unspoken = "\n\n(Correction: that was not spoken aloud.)";
   struct Row { const char* chat; const char* text; std::string want; };
   const Row rows[] = {
-      {"1001", "Done, I saved that to your memory.", "Done, I saved that to your memory." + note + unsaved},
-      {"2002", "Done, I saved that to your memory.", "Done, I saved that to your memory." + rule + unsaved},
+      {"1001", "Done, I saved that to your memory.", "Done, I saved that to your memory." + note},
+      {"2002", "Done, I saved that to your memory.", "Done, I saved that to your memory." + rule},
       {"1001", "The kettle is ready.", "The kettle is ready." + note},
-      // The claim line already says it was not spoken: no second note, as beside a reply.
-      {"1001", "I read it aloud for you.", "I read it aloud for you." + unspoken},
+      {"1001", "I read it aloud for you.", "I read it aloud for you." + note},
   };
   for (const Row& row : rows) {
     Rec r;
     r.volume = 0;
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     const std::string json = std::string("{\"type\":\"tts\",\"text\":\"") + row.text + "\"}";
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     ApplyState st = makeState(r);
     st.effects = &cc.effects();
-    st.claims = &cc;
     bool spawned = false;
     agent::applyTurn(turnWithDevice(json.c_str()), row.chat, d, st, spawned);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), row.text);
@@ -1499,14 +1518,12 @@ static void test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check() {
     // History holds what arrived, the riders of the turn's message included.
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.captured.size(), row.text);
     TEST_ASSERT_TRUE_MESSAGE(r.captured[0].find(row.text) == 0, row.text);
-    TEST_ASSERT_EQUAL_MESSAGE(row.want.find("Correction") != std::string::npos,
-                              r.captured[0].find("Correction") != std::string::npos, row.text);
+    TEST_ASSERT_TRUE_MESSAGE(r.captured[0].find("(Correction") == std::string::npos, row.text);
   }
 }
 
 // Merge review: a failed tts beside a reply reaches the owner in the same turn whatever the reply
-// says or which language it is in (the claim check only knows a few English phrasings). The note
-// is plain; the reason is for the owner's chats. A claim line that already says it is not repeated.
+// says or which language it is in. The note is plain; the reason is for the owner's chats.
 static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
   const char* replies[] = {
       "Playing it now.",                            // no cue at all
@@ -1521,7 +1538,7 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"The kettle is ready.\"}");
     t.reply = reply;
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc);
     const std::string want = std::string(reply) + "\n\n(Note: that could not be spoken aloud: the speaker "
@@ -1529,8 +1546,7 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), out.c_str(), reply);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(out.c_str(), r.captured[0].c_str(), reply);   // history = what was delivered
   }
-  // A reply that does claim it (in any of the claim check's wordings) gets the claim check's own
-  // line, and not a second note.
+  // A reply that claims it was spoken gets the same note, and no claim line (RB-Q1b).
   for (const char* claim : {"I read it aloud for you.", "Done, I said it out loud for you.",
                             "I played it on the speaker."}) {
     Rec r;
@@ -1538,9 +1554,10 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     Turn t = turnWithDevice("{\"type\":\"tts\",\"text\":\"hello\"}");
     t.reply = claim;
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
-    TEST_ASSERT_EQUAL_STRING_MESSAGE((std::string(claim) + "\n\n(Correction: that was not spoken aloud.)").c_str(),
+    TEST_ASSERT_EQUAL_STRING_MESSAGE((std::string(claim) + kUnspokenLead +
+                                      "the speaker volume is 0, so speech would play as silence.)").c_str(),
                                      applyChecked(r, d, t, cc).c_str(), claim);
   }
   // A question alone carries it too; a routine says nothing (it was silent before).
@@ -1573,9 +1590,8 @@ static void test_the_shortened_note_never_goes_out_alone() {
     Rec r;
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     ApplyState st = makeState(r, scheduled != 0);
-    agent::ClaimCheck cc;   // the landed speak is recorded in the effects, so the turn counts as acted
+    Ledger cc;   // the landed speak is recorded in the effects, so the turn counts as acted
     st.effects = &cc.effects();
-    st.claims = &cc;
     bool spawned = false;
     agent::applyTurn(turnWithDevice(json.c_str()), "1001", d, st, spawned);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.spoken.size(), scheduled ? "scheduled" : "reply-less");
@@ -1627,16 +1643,16 @@ static void test_a_failed_tts_does_not_resend_what_reply_telegram_sent() {
   }
 }
 
-// The ask rides the same message: a claim there is checked too.
+// The ask rides the same message, and like the reply it goes out as written (RB-Q1b).
 static void test_claims_ask_is_checked_with_the_reply() {
   Rec r;
   ApplyDeps d = makeDeps(r);
   Turn t;
   t.ask = "Logged. Want the weekly total too?";
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   const std::string out = applyChecked(r, d, t, cc);
-  TEST_ASSERT_TRUE(out.find("(Correction: that has not been saved.)") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("Logged. Want the weekly total too?", out.c_str());
   TEST_ASSERT_EQUAL_STRING(out.c_str(), r.captured[0].c_str());
 }
 
@@ -1980,20 +1996,16 @@ static void test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused() {
   TEST_ASSERT_EQUAL(1, (int)r.hostModelSet.size());
 }
 
-// L19-11 (CUM-664): a mem_write that records an unbacked cause as a fact is
-// refused at apply time (19 Oct: "Roy's Telegram client had a stuck outbox" was
-// stopped only by the embedding outage). The write never reaches the store, the
-// reason is fed back for the next turn, and the ledger's failed-write effect
-// still corrects a "saved" reply. Counter-test: with the cause on record this
-// turn, the same write stores.
-static void test_mem_write_of_an_unbacked_cause_is_refused() {
+// L19-11 (CUM-664) refused a mem_write whose content stated a cause this turn's records did
+// not show; that word scan went with the claim check (lane RB-Q1b, v5.2.0). The write is
+// stored like any other, and the ledger records it.
+static void test_mem_write_of_a_cause_is_stored_like_any_write() {
   Rec r;
   ApplyDeps d = makeDeps(r);
-  agent::ClaimCheck cc;
-  cc.beginTurn();   // no records this turn: no cause evidence at all
+  Ledger cc;
+  cc.beginTurn();
   ApplyState st = makeState(r);
   st.effects = &cc.effects();
-  st.claims = &cc;
   bool spawned = false;
   Turn t;
   nimbus::orch::MemWrite w;
@@ -2001,31 +2013,15 @@ static void test_mem_write_of_an_unbacked_cause_is_refused() {
   t.mem_write.push_back(w);
   t.reply = "Noted.";
   agent::applyTurn(t, "web", d, st, spawned);
-  TEST_ASSERT_EQUAL(0, (int)r.memCalls.size());   // the write never reached the store
-  TEST_ASSERT_EQUAL(0, r.persists);
-  TEST_ASSERT_TRUE(r.pendingMem.find(
-                       "NOT stored: it states a cause this turn's records do not show") !=
-                   std::string::npos);
-  TEST_ASSERT_TRUE(LogCapture::contains("unbacked cause"));
-  // A "saved" reply is still corrected: the refusal left a failed write effect.
-  TEST_ASSERT_TRUE(cc.tailAfterApply("Saved.").find("(Correction: that has not been saved.)") !=
-                   std::string::npos);
-  // Counter-test: with the cause on record this turn, the same write stores.
-  Rec r2;
-  ApplyDeps d2 = makeDeps(r2);
-  agent::ClaimCheck cc2;
-  cc2.beginTurn();
-  cc2.setSources("[tg] client error: the owner's Telegram client rejected the upload\n"
-                 "the photos arrived corrupt (partial upload)\n", "");
-  ApplyState st2 = makeState(r2);
-  st2.effects = &cc2.effects();
-  st2.claims = &cc2;
-  agent::applyTurn(t, "web", d2, st2, spawned);
-  TEST_ASSERT_EQUAL(1, (int)r2.memCalls.size());
-  TEST_ASSERT_TRUE(r2.memCalls[0].find("memory.write:") == 0);
-  TEST_ASSERT_EQUAL(1, r2.persists);
+  TEST_ASSERT_EQUAL(1, (int)r.memCalls.size());
+  TEST_ASSERT_TRUE(r.memCalls[0].find("memory.write:") == 0);
+  TEST_ASSERT_EQUAL(1, r.persists);
+  TEST_ASSERT_TRUE(r.pendingMem.find("NOT stored") == std::string::npos);
+  TEST_ASSERT_FALSE(LogCapture::contains("unbacked cause"));
+  TEST_ASSERT_TRUE(cc.effects().anyOk(nimbus::orch::FxKind::MemWrite));
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING("Noted.", r.delivered[0].second.c_str());
 }
-
 
 // 23 Oct (lane H follow-up 02, CUM-652): a config action that changed nothing is
 // never "done". The summary reports "cfg(no change)", the ledger records a
@@ -2036,17 +2032,18 @@ static void test_a_no_change_config_action_backs_no_switched_reply() {
   Rec r;
   r.configChanges = false;
   ApplyDeps d = makeDeps(r);
-  agent::ClaimCheck cc;
+  Ledger cc;
   cc.beginTurn();
   Turn t = turnWithDevice("{\"config\":{\"ledBrightness\":40}}");
   t.reply = "I've switched the brightness to 40 for you.";
   const std::string out = applyChecked(r, d, t, cc);
   TEST_ASSERT_TRUE(LogCapture::contains("cfg(no change)"));
-  TEST_ASSERT_TRUE(out.find("(Correction: nothing was changed this turn.)") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("I've switched the brightness to 40 for you.", out.c_str());   // nothing appended
+  TEST_ASSERT_FALSE(cc.effects().anyOk(nimbus::orch::FxKind::Config));   // the ledger records the no-op
   // A stored value that really changed backs the same reply.
   Rec r2;
   ApplyDeps d2 = makeDeps(r2);
-  agent::ClaimCheck cc2;
+  Ledger cc2;
   cc2.beginTurn();
   const std::string out2 = applyChecked(r2, d2, t, cc2);
   TEST_ASSERT_EQUAL(0, (int)out2.find("I've switched the brightness to 40 for you."));
@@ -2187,10 +2184,9 @@ static void test_rbac_orch_model_only_the_owner_writing_now() {
     ApplyState st = makeState(r);
     Turn t = turnWithDevice(sw);
     t.reply = "Done, I switched to Claude.";
-    agent::ClaimCheck cc;
+    Ledger cc;
     cc.beginTurn();
     st.effects = &cc.effects();
-    st.claims = &cc;
     bool spawned = false;
     agent::applyTurn(t, chat, d, st, spawned);
     TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.hostModelSet.size(), chat);
@@ -2382,10 +2378,9 @@ static void test_rbac_a_refused_action_backs_no_claim() {
       Rec r2;
       ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
       ApplyState st = makeState(r2, cl.unattended);
-      agent::ClaimCheck cc;
+      Ledger cc;
       cc.beginTurn();
       st.effects = &cc.effects();
-      st.claims = &cc;
       bool spawned = false;
       agent::applyTurn(turnWithDevice(json), cl.chat, d2, st, spawned);
       for (nimbus::orch::FxKind fx : {nimbus::orch::FxKind::Config, nimbus::orch::FxKind::Speak})
@@ -2505,7 +2500,6 @@ static void test_apply_records_the_turn_ledger_with_no_claim_check() {
   nimbus::orch::TurnEffects fx;
   ApplyState st = makeState(r);
   st.effects = &fx;
-  TEST_ASSERT_NULL(st.claims);
   bool spawned = false;
   agent::applyTurn(t, "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(1, fx.countOk(FxKind::MemWrite));
@@ -2644,7 +2638,7 @@ int main(int, char**) {
   RUN_TEST(test_mem_write_and_query_dispatch_under_lock);
   RUN_TEST(test_unverified_connector_turn_refuses_mem_write);
   RUN_TEST(test_mem_query_only_does_not_persist);
-  RUN_TEST(test_claims_failed_memory_write_gets_the_correction_line);
+  RUN_TEST(test_claims_failed_memory_write_is_recorded_not_appended);
   RUN_TEST(test_claims_queued_write_backs_no_save_claim);
   RUN_TEST(test_claims_refused_enqueue_is_not_a_spawn);
   RUN_TEST(test_claims_ram_only_scratchpad_against_a_durability_claim);
@@ -2660,7 +2654,7 @@ int main(int, char**) {
   RUN_TEST(test_orch_model_every_provider_slot_applies_and_nothing_else);
   RUN_TEST(test_orch_model_misses_answer_and_queue_one_refresh_per_provider_an_hour);
   RUN_TEST(test_l19_39_orch_model_router_id_on_a_direct_provider_is_refused);
-  RUN_TEST(test_mem_write_of_an_unbacked_cause_is_refused);
+  RUN_TEST(test_mem_write_of_a_cause_is_stored_like_any_write);
   RUN_TEST(test_a_no_change_config_action_backs_no_switched_reply);
   RUN_TEST(test_rbac_every_device_action_by_caller_class);
   RUN_TEST(test_rbac_every_config_knob_by_caller_class);

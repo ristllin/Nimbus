@@ -19,6 +19,9 @@
 
 using namespace nimbus::orch;
 
+// A Telegram voice message send, as the voice tools record it.
+static const uint8_t kVoiceSend = (uint8_t)(kFxTelegram | kFxVoice);
+
 void setUp() {}
 void tearDown() {}
 

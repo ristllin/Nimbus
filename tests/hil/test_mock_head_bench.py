@@ -1,36 +1,31 @@
-"""Lane S bench legs: the claim check on a real device (the fill unit).
+"""Bench legs on the LAN mock head (the fill unit): what the device delivers, once.
 
 The head runs on the LAN mock (the custom endpoint, single-shot structured
-turn), so every reply is fixed and the legs cost nothing. The device must hold
-each reply's claim against what the turn really did:
+turn), so every reply is fixed and the legs cost nothing. Since v5.2.0 (lane
+RB-Q1b) the device no longer checks a reply's words against what the turn did:
+the claim check that appended "(Correction: ...)" and "(Note: ...)" lines is
+gone. These legs hold the seam to that on a real device:
 
   C1  a memory write that does not land (``FAULT embed_fail on``: the embedding
-      outage queues it, so it is not saved yet) under a reply that says "Saved
-      it to memory." -> the turn delivers exactly one reply, carrying
-      "(Correction: that has not been saved yet; it is waiting on the device to be
-      stored.)", and ``claimsTailed`` goes up.
-      The mock writes one fixed fact and the store is content-addressed: once a
-      run's queued copy drains (``FAULT embed_fail off``), the same write is a
-      duplicate, which IS saved, so the reply is true and gets no line (unit L,
-      22 Oct 2026, after the 21 Oct runs). The leg forgets that fact before the
-      turn and after the queue drains, so it repeats on the same unit;
+      outage queues it) under a reply that says "Saved it to memory." -> the
+      turn delivers exactly one reply, the model's words with nothing appended,
+      and /api/state's ``claimsTailed`` stays 0 (the key is kept for old readers).
+      The mock writes one fixed fact; the leg forgets it before the turn and after
+      the queue drains, so it repeats on the same unit;
   C2  the scratchpad route: the scratchpad lives in a flash file (v4.5.14), so a
       full NVS partition (``NVSFILL``) still saves and the result carries no
       note; a failed flash write (``FAULT scratch_fail on``) answers 507 with
       the result "... kept until restart only (saving failed)"; once the fault
       ends the notes land and the note is gone;
-  C3  a durability claim ("so it will survive a restart"), the scenario set
-      while NVS has room (a config save at a full NVS answers 507): at a full
-      NVS the scratchpad still saves to flash, so no line and ``claimsTailed``
-      unchanged; with the flash write failing too (``FAULT scratch_fail on``)
-      the RAM-only note rides the reply and ``claimsTailed`` goes up; C4 the
-      same turn with room -> no line and ``claimsTailed`` unchanged.
+  C3  a durability reply ("so it will survive a restart") at a full NVS, then with
+      the flash write failing too, then (C4) with room: one reply each, the
+      model's words with nothing appended.
 
 C1 needs lane P's ``FAULT embed_fail`` binding and C2/C3 ``FAULT scratch_fail``; on
 a build without one the leg is skipped with that reason (never passed). Unit:
 the fill unit (unit L).
 
-Run: python3 -m pytest tests/hil/test_claim_check_bench.py -m "hil and net" --allow-hardware
+Run: python3 -m pytest tests/hil/test_mock_head_bench.py -m "hil and net" --allow-hardware
 """
 
 from __future__ import annotations
@@ -46,13 +41,8 @@ from test_l12_mock_llm import _opost, custom_backend  # noqa: F401  (fixture + h
 
 pytestmark = [pytest.mark.hil, pytest.mark.net]
 
-# The plain not-saved line (a hard refusal), pinned byte for byte against the C++
-# mock's kNotSavedLine by the host twin.
-SAVED_LINE = "(Correction: that has not been saved.)"
-# 22 Oct (queued wording): a queued write's line says it is waiting, so the owner is
-# not told a save failed when it is only held for the store (C1's shape).
-QUEUED_LINE = "(Correction: that has not been saved yet; it is waiting on the device to be stored.)"
-RAM_LINE = "(Note: this is kept only until the next restart; saving it permanently failed.)"
+# A line the device appended before v5.2.0 starts with one of these; none may appear now.
+HARNESS_LINE_LEADS = ("(Correction", "(Note")
 RAM_TOOL = "kept until restart only (saving failed)"
 FILL_CHUNK = int(os.environ.get("NIMBUS_S_FILL_CHUNK", "400"))
 # The chat a serial TURN runs in (main.cpp: injectMessage("serial", ...)).
@@ -216,19 +206,22 @@ def mock_head(custom_backend):  # noqa: F811
         _opost(be.net, be.ip, be.tok, {"orchHost": prior, "convReset": "1"})
 
 
-def test_c1_refused_memory_write_gets_the_correction_line(mock_head):
+def _plain(reply: str) -> bool:
+    return not any(lead in reply for lead in HARNESS_LINE_LEADS)
+
+
+def test_c1_a_queued_memory_write_delivers_the_reply_as_written(mock_head):
     be = mock_head
     out = be.device.cmd("FAULT embed_fail on", expect="FAULT", timeout=6.0)
     if "not wired" in out:
         pytest.skip("FAULT embed_fail is not bound in this build (lane P binds it)")
     passed = False
     try:
-        _forget_fact(be)  # a copy an earlier run stored makes the write a duplicate: saved, no line
-        t0 = _tailed(be)
+        _forget_fact(be)
         reply = _turn(be, "mock-claim-saved", "remember the bench note")
-        assert reply.startswith("Saved it to memory."), reply
-        assert QUEUED_LINE in reply, f"no correction line on a queued write: {reply!r}"
-        assert _tailed(be) == t0 + 1
+        assert reply == CLAIM_TURNS["mock-claim-saved"]["reply"], f"the reply was changed: {reply!r}"
+        assert _plain(reply), reply
+        assert _tailed(be) == 0, "claimsTailed is kept at 0 since v5.2.0"
         passed = True
     finally:
         be.device.cmd("FAULT embed_fail off", expect="FAULT", timeout=6.0)
@@ -260,38 +253,31 @@ def test_c2_scratchpad_note_follows_the_flash_file(mock_head):
     _scratch(be, "clear", tier="short")
 
 
-def test_c3_c4_durability_claim_follows_the_flash_save(mock_head):
+def test_c3_c4_a_durability_reply_is_delivered_as_written(mock_head):
     be = mock_head
     _scratch_fault(be.device, False)  # skips on a build without the verb
     model, ask = "mock-claim-durable", "put the bench note in your notes"
+    want = CLAIM_TURNS[model]["reply"]
     be.set_model(model)  # a config save: before the fill (at a full NVS it answers 507)
     _scratch(be, "clear", tier="short")
     _fill_nvs(be.device)
     try:
-        # C3a: the scratchpad saves to flash, so at a full NVS the claim is true.
-        t0 = _tailed(be)
-        reply = _turn(be, model, ask, switch=False)
-        assert RAM_LINE not in reply and SAVED_LINE not in reply, f"at a full NVS the flash save lands: {reply!r}"
-        assert _tailed(be) == t0
-        # C3b: the flash write fails too -> the RAM-only note rides the reply.
+        reply = _turn(be, model, ask, switch=False)  # C3a: a full NVS, the flash save lands
+        assert reply == want and _plain(reply), reply
         code, _ = _scratch(be, "clear", tier="short")
         assert code == 200, f"the clear must save to flash at a full NVS ({code})"
         _scratch_fault(be.device, True)
         try:
-            t1 = _tailed(be)
-            reply = _turn(be, model, ask, switch=False)
-            assert RAM_LINE in reply, f"no RAM-only note on a durability claim the flash did not take: {reply!r}"
-            assert _tailed(be) == t1 + 1
+            reply = _turn(be, model, ask, switch=False)  # C3b: the flash write fails too
+            assert reply == want and _plain(reply), f"nothing is appended since v5.2.0: {reply!r}"
         finally:
             _scratch_fault(be.device, False)
     finally:
         _free_nvs(be.device)
-    # C4, the counter-test: room and a working flash, the same claim costs nothing.
-    _scratch(be, "clear", tier="short")
-    t2 = _tailed(be)
+    _scratch(be, "clear", tier="short")  # C4: room and a working flash
     reply = _turn(be, model, ask, switch=False)
-    assert RAM_LINE not in reply and SAVED_LINE not in reply, reply
-    assert _tailed(be) == t2
+    assert reply == want and _plain(reply), reply
+    assert _tailed(be) == 0
     _scratch(be, "clear", tier="short")
 
 
@@ -306,7 +292,7 @@ LOST_SIDECAR = "full text not kept: low memory"
 
 def _astool(be, tool: str, args: dict) -> dict:
     """Dispatch one registry tool over the test-only /api/test/astool route
-    (MCP tools/call). Not a turn: no trace rows, no claim check - the seam for
+    (MCP tools/call). Not a turn: no trace rows - the seam for
     cost and state measurements. The route takes the chat and the JSON-RPC body
     as FORM FIELDS (like every other suite's astool call: chat + body); a JSON
     body with ?chat= in the URL is a 400 "need chat + body" (item 1, B2)."""

@@ -29,12 +29,6 @@ using nimbus::orch::ToolResult;
 using nimbus::orch::Turn;
 using nimbus::orch::ValidatedAction;
 
-// The owner's line when a turn's sub-agent intents did not reach the job engine (the
-// device's own record: an item with no task, a full queue, a list it could not read).
-// The head hears each one as a [SPAWN REFUSED] line on its next turn.
-const char kSpawnNotStartedLine[] = "The sub-agents did not start. Ask me again and I will retry.";
-const char kSpawnSomeNotStartedLine[] = "Some of the sub-agents did not start. Ask me again and I will retry them.";
-
 // ---- the turn's effect ledger: the readings every recorder shares ----------------------
 
 // From the one shared tool table (orch::toolEffect, lane L), so the ledger and
@@ -601,8 +595,8 @@ static bool alreadySent(const ApplyState& st, const std::string& text) {
 
 // A tts that was not voiced. The sender must hear of it in the same turn whatever the reply says
 // or which language it is in (22 Oct family: a confident "I read it aloud" and silence), so on an
-// attended turn that carries a reply or ask a short note rides it (unless the claim check's own
-// line already says so: applyTurn decides), and a turn that has nothing else to send delivers the
+// attended turn that carries a reply or ask a short note rides it, and a turn that has nothing
+// else to send delivers the
 // text instead, with the reason. A routine tells nobody (it was silent before); the head always
 // hears of it next turn, in words that say what the sender got. `noted`: the caller rule's own
 // line is already on the reply (riskNote), so no second note is added. Only the owner's chats
@@ -922,9 +916,10 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   }
   if (spawnedOut && d.noteSpawned) d.noteSpawned();
 
-  // Report what did not start: one head note per intent, one owner line per turn.
-  // The line states the device's own record (an intent that did not reach the job
-  // engine); the reply's words are never read for it (RB-Q1b, v5.2.0).
+  // Report what did not start: one head note per intent ([SPAWN REFUSED] on the chat's
+  // next turn). The owner's "(Correction: the sub-agents did not start)" line is gone
+  // (RB-Q1b, v5.2.0): nothing is appended to the reply; only an unapproved chat is told
+  // why, as a plain device line.
   std::string spawnLine;
   for (const auto& dr : drops) {
     hlog::logf("orchestrator: spawn not started ('%s') - %s",
@@ -934,8 +929,6 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   if (spawnRefusedForChat) {
     // An unapproved chat is told why, never "ask me again" (it would not help).
     spawnLine = "Sub-agents are off for this chat: the owner has not approved it.";
-  } else if (!drops.empty()) {
-    spawnLine = st.spawnsEnqueued > 0 ? kSpawnSomeNotStartedLine : kSpawnNotStartedLine;
   }
 
   // One countable line per turn that meant to start sub-agents: spawned (handed

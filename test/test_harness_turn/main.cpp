@@ -31,16 +31,13 @@
 #include "../support/mock_claim_turns.h"   // the LAN mock's claim-check turns
 #include "../support/zai_replies.h"   // CUM-495: the captured Z.ai prose reply
 #include "nimbus/harness/dream.h"      // CUM-485: buildConversationWindow
-#include "nimbus/harness/claim_check.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/providers.h"   // lane K's host park (hostParked / noteHostFailed)
 #include "nimbus/harness/turn_contract.h"
-#include "nimbus/orch/hosted_runs.h"   // CUM-835: a head adapter's server-side runs
 #include "nimbus/orch/model_defaults.h"
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/billing_refusal.h"   // the one-notice-per-episode latch
 #include "nimbus/orch/provider_park.h"     // the pause the owner's provider limits set
-#include "nimbus/orch/spawn_claim.h"
 #include "nimbus/harness/turn_anatomy.h"    // the /api/lastturn head
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
@@ -930,10 +927,9 @@ static void test_owner_mechanics_dropped_at_the_delivery_seam() {
         "To undo, re-send the row with 0 kcal. Nothing else needed from you.\",\"memory\":\"\",\"ask\":\"\"}";
     r.scripts["anthropic"] = {sc};
     r.eng->handleMessage("Ofc log as eaten...", "Roy", "1001");
-    // The mechanics sentence is dropped; the claim check's honest note (the reply
-    // says "Logged" with no write behind it) still rides at the end.
+    // The mechanics sentence is dropped; nothing is appended (the claim check is gone, RB-Q1b).
     TEST_ASSERT_EQUAL_STRING("Logged as eaten: snack-1723 at 563 kcal. Today now stands at 2,385 kcal. "
-                             "Nothing else needed from you.\n\n(Correction: that has not been saved.)",
+                             "Nothing else needed from you.",
                              r.lastText().c_str());
     TEST_ASSERT_EQUAL(0, r.countDelivered("re-send the row"));
     TEST_ASSERT_EQUAL(0, r.countDelivered("0 kcal"));
@@ -979,14 +975,12 @@ static void test_echo_envelope_message_delivers_only_the_envelope_reply() {
   sc.outJson = harness_test::kEchoEnvelopeMessage;
   r.scripts["anthropic"] = {sc};
   r.eng->handleMessage("Ofc log as eaten...", "Roy", "1001");
-  // The envelope's reply is delivered, plus the claim check's honest note that the
-  // envelope's mem_write was dropped and so the "Logged" claim is not backed.
+  // The envelope's reply is delivered with nothing appended (the claim check is gone, RB-Q1b).
   // Lane ECHO fix pass (11 Nov finding): the envelope reply's own mechanics sentence
   // ("Undo by re-sending the row with 0 kcal.") is dropped too - the owner did not ask
   // how the system works - so the delivered text is the guarded envelope reply.
   const std::string want =
-      nimbus::orch::dropOwnerMechanics(harness_test::kEchoEnvelopeReply, "Ofc log as eaten...") +
-      "\n\n(Correction: that has not been saved.)";
+      nimbus::orch::dropOwnerMechanics(harness_test::kEchoEnvelopeReply, "Ofc log as eaten...");
   TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
   for (const char* leak : {"```", "orch_turn", "mem_write", "session_ops", "Sorry", "formatting slip",
                            "Delivering the turn properly", "must include all fields", "empty strings",
@@ -4088,17 +4082,18 @@ static void test_lane_l_an_empty_task_spawn_is_reported_not_skipped() {
   s.outJson = "{\"reply\":\"Starting a research agent now.\",\"session_ops\":[{\"op\":\"spawn\",\"name\":\"lineup\"}]}";
   r.scripts["anthropic"] = {s};
   r.eng->handleMessage("go", "Roy", "1001");
-  const std::string want = std::string("Starting a research agent now.\n\n") + orch::kSpawnNotStartedLine;
-  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
+  // The owner gets the reply as written (no line is appended since RB-Q1b); the head hears why.
+  TEST_ASSERT_EQUAL_STRING("Starting a research agent now.", r.lastText().c_str());
   TEST_ASSERT_EQUAL(0, r.jobs->pendingCount());
   r.eng->handleMessage("and?", "Roy", "1001");
   TEST_ASSERT_TRUE(r.attempts.back().inputs.find("'lineup' did not start: it was sent without a task") !=
                    std::string::npos);
 }
 
-// The promise-without-spawn class: a reply that says sub-agents started while
-// the turn started none gets the correction line and a head note.
-static void test_lane_l_a_promise_without_a_spawn_is_corrected() {
+// The promise-without-spawn class is no longer read from the reply's words (RB-Q1b,
+// v5.2.0; the truth check of RB-G0 replaces it): the reply is delivered as written and
+// the head gets no note made from its words.
+static void test_lane_l_a_promise_without_a_spawn_is_delivered_as_written() {
   Rig r(true);
   r.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
   r.cfg.toolLoop = false;
@@ -4106,10 +4101,11 @@ static void test_lane_l_a_promise_without_a_spawn_is_corrected() {
   s.outJson = "{\"reply\":\"I've started three sub-agents on the comparison.\"}";
   r.scripts["anthropic"] = {s};
   r.eng->handleMessage("go", "Roy", "1001");
-  TEST_ASSERT_TRUE(r.lastText().find(orch::kSpawnNotStartedLine) != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("I've started three sub-agents on the comparison.", r.lastText().c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
   r.eng->handleMessage("and?", "Roy", "1001");
-  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("your reply said sub-agents were started") != std::string::npos);
-  // Counter-test: a TRUE claim (the spawn is in the turn) gets no correction.
+  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("your reply said sub-agents were started") == std::string::npos);
+  // A TRUE claim (the spawn is in the turn) starts it, delivered as written.
   Rig t(true);
   t.adminChats = true;   // the owner's turn: an approved chat starts sub-agents
   t.cfg.toolLoop = false;
@@ -4121,17 +4117,17 @@ static void test_lane_l_a_promise_without_a_spawn_is_corrected() {
 }
 
 // The class behind the 19 Oct bench row ("Starting three research sub-agents
-// ..." with nothing started): every delivered text that claims sub-agents either
-// has them started or carries the correction line, on every delivery path. A
-// cut or unreadable answer runs nothing, so a claim in its salvaged text is
-// always false; a prose answer carries no spawn item, so its claim is too.
+// ..." with nothing started): a cut or unreadable answer runs nothing, and a prose
+// answer carries no spawn item. Since RB-Q1b the device no longer appends a line made
+// from the reply's words on any of these paths: the cut marker (the device's own
+// record of the cut) stays, the salvaged text is delivered once as written.
 static const char kClaimReply[] =
     "Starting three research sub-agents on anthropic: how sourdough starters work, proofing "
     "temperatures, and why bread goes stale. I'll send one combined answer.";
 
-static void test_lane_l_a_cut_answer_that_claims_spawns_is_marked_and_corrected() {
+static void test_lane_l_a_cut_answer_that_claims_spawns_is_marked() {
   // Provider-reported cut (the adapter kept the partial turn), then an
-  // unreported one (the JSON itself is cut): the marker AND the correction.
+  // unreported one (the JSON itself is cut): the marker, and no line from the words.
   for (int reported = 0; reported < 2; reported++) {
     Rig r(true);
     r.cfg.toolLoop = false;
@@ -4148,31 +4144,28 @@ static void test_lane_l_a_cut_answer_that_claims_spawns_is_marked_and_corrected(
     const std::string got = r.lastText();
     TEST_ASSERT_TRUE_MESSAGE(got.rfind(kClaimReply, 0) == 0, got.c_str());
     TEST_ASSERT_TRUE_MESSAGE(got.find(orch::kSalvageCutMarker) != std::string::npos, got.c_str());
-    TEST_ASSERT_TRUE_MESSAGE(got.find(orch::kSpawnNotStartedLine) != std::string::npos, got.c_str());
+    TEST_ASSERT_EQUAL_STRING(std::string(kClaimReply + std::string("\n\n") + orch::kSalvageCutMarker).c_str(),
+                             got.c_str());
+    TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
     TEST_ASSERT_EQUAL(0, r.jobs->pendingCount());
-    TEST_ASSERT_TRUE(LogCapture::contains("spawn ledger spawned=0 claimed=1"));
     TEST_ASSERT_TRUE(r.hookEnds.back().error.rfind("cut: ", 0) == 0);
     TEST_ASSERT_EQUAL_STRING(got.c_str(), r.assistantRows.back().second.c_str());   // what the owner saw
-    r.eng->handleMessage("and?", "Roy", "1001");   // the head hears it too
-    TEST_ASSERT_TRUE(r.attempts.back().inputs.find("your reply said sub-agents were started, but that "
-                                                   "answer was cut off or unreadable") != std::string::npos);
   }
-  // An unreadable (not cut) answer: no cut marker, still the correction.
+  // An unreadable (not cut) answer: no cut marker, the salvaged reply as written.
   Rig u(true);
   u.cfg.toolLoop = false;
   Rig::Script s;
   s.outJson = std::string("{\"reply\":\"") + kClaimReply + "\"} and then some chatter";
   u.scripts["anthropic"] = {s};
   u.eng->handleMessage("research it", "Roy", "1001");
-  const std::string want = std::string(kClaimReply) + "\n\n" + orch::kSpawnNotStartedLine;
-  TEST_ASSERT_EQUAL_STRING(want.c_str(), u.lastText().c_str());
+  TEST_ASSERT_EQUAL_STRING(kClaimReply, u.lastText().c_str());
   TEST_ASSERT_TRUE(u.hookEnds.back().error.rfind("parse: ", 0) == 0);
 }
 
 // Over every byte cut of a turn whose reply claims three sub-agents and carries
-// them: no prefix starts one, and any delivered text holding the claim carries
-// the correction; only the whole turn starts all three, with no correction.
-static void test_lane_l_no_cut_ever_delivers_a_bare_spawn_claim() {
+// them: no prefix starts one, every prefix delivers exactly one message with no
+// correction line, and only the whole turn starts all three.
+static void test_lane_l_no_cut_ever_starts_a_spawn_or_appends_a_line() {
   const std::string full = std::string("{\"reply\":\"") + kClaimReply +
                            "\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"sourdough\"},"
                            "{\"op\":\"spawn\",\"task\":\"proofing\"},{\"op\":\"spawn\",\"task\":\"stale\"}]}";
@@ -4195,29 +4188,29 @@ static void test_lane_l_no_cut_ever_delivers_a_bare_spawn_claim() {
       continue;
     }
     TEST_ASSERT_EQUAL_MESSAGE(0, r.jobs->pendingCount(), msg);
-    if (!orch::replyClaimsSpawn(got)) continue;
-    claims++;
-    TEST_ASSERT_TRUE_MESSAGE(got.find(orch::kSpawnNotStartedLine) != std::string::npos, msg);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), msg);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("(Correction"), msg);
+    if (got.find("Starting three research sub-agents") != std::string::npos) claims++;
   }
   TEST_ASSERT_TRUE(claims > 100);   // the claim is whole well before the spawn list
-  printf("property: %u cut prefixes, %d delivered a spawn claim, each with the correction\n",
+  printf("property: %u cut prefixes, %d delivered the claim's words, none with a line appended\n",
          (unsigned)full.size() - 1, claims);
 }
 
 // A prose answer (no orch_turn, as a head can give on its last round) that
-// claims sub-agents: delivered with the correction and counted in the ledger.
-static void test_lane_l_a_prose_answer_that_claims_spawns_is_corrected() {
+// claims sub-agents: delivered as written; it carried no spawn intent, so the
+// spawn ledger line does not count one.
+static void test_lane_l_a_prose_answer_that_claims_spawns_is_delivered_as_written() {
   Rig r(true);
   r.cfg.toolLoop = false;
   Rig::Script s;
   s.outJson = kClaimReply;
   r.scripts["anthropic"] = {s};
   r.eng->handleMessage("research it", "Roy", "1001");
-  const std::string want = std::string(kClaimReply) + "\n\n" + orch::kSpawnNotStartedLine;
-  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
+  TEST_ASSERT_EQUAL_STRING(kClaimReply, r.lastText().c_str());
   TEST_ASSERT_EQUAL(0, r.jobs->pendingCount());
   TEST_ASSERT_TRUE(LogCapture::contains("head reply was prose"));
-  TEST_ASSERT_TRUE(LogCapture::contains("spawn ledger spawned=0 claimed=1"));
+  TEST_ASSERT_FALSE(LogCapture::contains("spawn ledger spawned=0 claimed=1"));
   // Counter-test: prose that claims nothing is delivered as it is.
   Rig c(true);
   c.cfg.toolLoop = false;
@@ -4266,7 +4259,7 @@ static void test_lane_l_an_empty_pseudo_tool_call_is_reported() {
   r.scripts["anthropic"] = {s};
   r.eng->handleMessage("go", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)r.mcpRequests.size());   // the registry's recovery text answered
-  TEST_ASSERT_TRUE(r.lastText().find(orch::kSpawnNotStartedLine) != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("Here is where things stand.", r.lastText().c_str());   // nothing appended
   r.eng->handleMessage("and?", "Roy", "1001");
   TEST_ASSERT_TRUE(r.attempts.back().inputs.find("the call carried no spawn item") != std::string::npos);
 }
@@ -4341,7 +4334,7 @@ static void test_lane_l_a_gated_recovered_spawn_is_reported() {
     const char* msg = external ? "after a web search" : "clean owner turn";
     TEST_ASSERT_EQUAL_MESSAGE(external ? 0 : 1, r.jobs->pendingCount(), msg);
     TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("parameter"), msg);
-    TEST_ASSERT_EQUAL_MESSAGE(external, r.anyDelivered(orch::kSpawnNotStartedLine), msg);
+    TEST_ASSERT_FALSE_MESSAGE(r.anyDelivered("did not start"), msg);   // the head is told, not the owner
     TEST_ASSERT_EQUAL_MESSAGE(external, LogCapture::contains("spawn ledger spawned=0 claimed=1"), msg);
     r.eng->handleMessage("and?", "Roy", "1001");
     TEST_ASSERT_EQUAL_MESSAGE(external,
@@ -4368,12 +4361,11 @@ static void test_lane_l_the_final_check_rides_every_loop_turn() {
   TEST_ASSERT_EQUAL_STRING("", r.finalChecks[1].c_str());   // a good turn costs no round
 }
 
-// Lane S: the claim check shares the final-answer check's one round. An unbacked
-// claim gets "[CLAIM CHECK]" (and claimsCorrected moves); when the round could
-// not fix it (here the scripted answer is applied as is), the delivered reply
-// carries the owner line. A spawn promise is the shape check's alone, and a
-// consistent reply costs no round.
-static void test_lane_s_the_claim_check_joins_the_final_check() {
+// Lane S's claim check no longer shares the final-answer round (RB-Q1b, v5.2.0): a reply
+// whose words name an effect the turn did not record costs no round and is delivered as
+// written; the turn-shape check still takes its round for a field the device cannot use,
+// and a good turn costs none.
+static void test_lane_s_no_claim_round_in_the_final_check() {
   Rig r;
   Rig::Script unbacked;
   unbacked.checkFinal = true;
@@ -4383,64 +4375,23 @@ static void test_lane_s_the_claim_check_joins_the_final_check() {
   Rig::Script good = unbacked;
   good.outJson = "{\"reply\":\"Plain answer.\"}";
   r.scripts["anthropic"] = {unbacked, spawn, good};
-  const uint32_t before = agent::ClaimCheck::correctedCount();
   r.eng->handleMessage("save my packing list", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("The packing list is saved to your files as packing.md.", r.lastText().c_str());
   r.eng->handleMessage("start two", "Roy", "1001");
   r.eng->handleMessage("again", "Roy", "1001");
   TEST_ASSERT_EQUAL(3, (int)r.finalChecks.size());
-  TEST_ASSERT_TRUE(r.finalChecks[0].find("[CLAIM CHECK]") != std::string::npos);
-  TEST_ASSERT_TRUE(r.finalChecks[0].find("packing.md") != std::string::npos);
-  TEST_ASSERT_EQUAL(before + 1, agent::ClaimCheck::correctedCount());
-  TEST_ASSERT_TRUE(r.anyDelivered("(Correction: nothing has been written for that yet.)"));
+  TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+  TEST_ASSERT_FALSE(r.anyDelivered("(Correction"));
   TEST_ASSERT_TRUE(r.finalChecks[1].rfind("[TURN CHECK]", 0) == 0);
-  TEST_ASSERT_TRUE(r.finalChecks[1].find("[CLAIM CHECK]") == std::string::npos);
+  TEST_ASSERT_TRUE(r.finalChecks[1].find("sub-agents were started") == std::string::npos);
   TEST_ASSERT_EQUAL_STRING("", r.finalChecks[2].c_str());
 }
 
-// CUM-835 (Lumi has a connector enabled, so every turn read as hosted): the hosted
-// exemption follows what ran this turn. A head response that ran a connector
-// server-side (the adapter notes it) may back "I sent the email"; the next turn, with
-// nothing run, gets the owner line. On a synthesis turn, a sub-agent result whose
-// provider record names a connector run backs it; one whose connector sat idle does not.
-static void test_cum835_the_hosted_exemption_follows_what_ran_this_turn() {
-  Rig::Script s;
-  s.outJson = "{\"reply\":\"I sent the email to Sam.\"}";
-  Rig r;
-  r.cfg.toolLoop = false;
-  r.scripts["anthropic"] = {s};
-  r.onProviderCall = [] { nimbus::orch::noteHostedRun("gmail"); };
-  r.eng->handleMessage("email Sam the plan", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("I sent the email to Sam.", r.lastText().c_str());
-  r.onProviderCall = nullptr;
-  r.eng->handleMessage("and Kim too", "Roy", "1001");
-  TEST_ASSERT_TRUE_MESSAGE(r.lastText().find("(Correction:") != std::string::npos, r.lastText().c_str());
-  for (int ran = 0; ran < 2; ran++) {
-    Rig y(true);
-    y.cfg.toolLoop = false;
-    y.scripts["anthropic"] = {s};
-    y.subAdapter.toolRuns = (uint16_t)ran;
-    y.subAdapter.toolNames = ran ? "gmail x1" : "gmail x0";
-    orch::Spawn sp;
-    sp.task = "Email Sam the plan";
-    sp.provider = "anthropic";
-    sp.name = "mailer";
-    y.jobs->enqueueSpawn(sp, "1001");
-    y.jobs->pump();
-    y.plat.ms = 2500;
-    y.jobs->pump();
-    y.plat.ms = 17500;
-    y.jobs->pump();
-    TEST_ASSERT_TRUE(y.jobs->hasFreshResults());
-    y.eng->maybeConsolidate("1001");
-    TEST_ASSERT_EQUAL_MESSAGE(ran == 0, y.lastText().find("(Correction:") != std::string::npos, y.lastText().c_str());
-  }
-}
-
 // Bench C1 on the host: the custom head (the LAN mock) answers the mock's exact
-// "mock-claim-saved" turn on the serial chat, and the memory write does not land
-// (FAULT embed_fail queues it; a full queue refuses it). The turn delivers exactly
-// one reply, ending with the correction, and the history row is that reply. A
-// stored write gives the same single reply with no line (counter-test).
+// "mock-claim-saved" turn on the serial chat, and the memory write lands, is queued
+// (FAULT embed_fail) or is refused (a full queue). Every case delivers exactly one
+// reply, the model's own words with nothing appended (RB-Q1b), and the history row is
+// that reply; the write's outcome reaches the head as its next turn's memory result.
 static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
   const struct {
     const char* code;
@@ -4461,31 +4412,25 @@ static void test_pg5_custom_head_saved_claim_delivers_one_reply() {
     r.scripts["custom"] = {s};
     r.memResult = c.success ? orch::ToolResult::ok(c.text) : orch::ToolResult::fail(c.text);
     r.memResult.code = c.code;
-    const uint32_t tailed = agent::ClaimCheck::tailedCount();
     r.eng->handleMessage("remember the bench note", "", "serial");
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.attempts.size(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("custom", r.attempts[0].host.c_str(), c.code);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.memCalls.size(), c.code);
-    const std::string want =
-        c.lands ? std::string("Saved it to memory.")
-                : std::string("Saved it to memory.\n\n") +
-                      (std::strcmp(c.code, orch::kMemOutcomeQueued) == 0
-                           ? "(Correction: that has not been saved yet; it is waiting on the device to be stored.)"
-                           : harness_test::kNotSavedLine);
+    (void)c.lands;
+    const std::string want = "Saved it to memory.";
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE("serial", r.delivered[0].first.c_str(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.delivered[0].second.c_str(), c.code);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.assistantRows.size(), c.code);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), r.assistantRows[0].second.c_str(), c.code);
-    TEST_ASSERT_EQUAL_MESSAGE(tailed + (c.lands ? 0 : 1), agent::ClaimCheck::tailedCount(), c.code);
   }
 }
 
 // Bench C3/C4 on the host: the mock's "mock-claim-durable" turn ("so it will
 // survive a restart" with a scratchpad item) on the custom head. The scratchpad
-// saves to a flash file, so on a full NVS the save lands (Applied) and the claim
-// is true; only a failed flash write (AppliedRamOnly) gets the RAM-only note; an
-// update that changes nothing (Skipped) adds no line either. Exactly one reply each.
+// saves to a flash file (Applied), its flash write fails (AppliedRamOnly) or it changes
+// nothing (Skipped). Exactly one reply each, the model's words with no line appended
+// (RB-Q1b: the RAM-only note came from the claim check).
 static void test_pg5_custom_head_durability_claim_follows_the_flash_save() {
   const char* ramLine = harness_test::kRamOnlyLine;
   const struct {
@@ -4506,15 +4451,15 @@ static void test_pg5_custom_head_durability_claim_follows_the_flash_save() {
     s.outJson = harness_test::kMockClaimDurableTurn;
     r.scripts["custom"] = {s};
     r.scratchOutcome = c.outcome;
-    const uint32_t tailed = agent::ClaimCheck::tailedCount();
     r.eng->handleMessage("put the bench note in your notes", "", "serial");
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.scratchApplied.size(), c.what);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), c.what);
     const std::string& got = r.delivered[0].second;
     TEST_ASSERT_EQUAL_MESSAGE(0, (int)got.find("Put it in my notes, so it will survive a restart."), c.what);
-    TEST_ASSERT_EQUAL_MESSAGE(c.line, got.find(ramLine) != std::string::npos, c.what);
+    (void)c.line;
+    TEST_ASSERT_TRUE_MESSAGE(got.find(ramLine) == std::string::npos, c.what);
     TEST_ASSERT_TRUE_MESSAGE(got.find("(Correction:") == std::string::npos, c.what);
-    TEST_ASSERT_EQUAL_MESSAGE(tailed + (c.line ? 1 : 0), agent::ClaimCheck::tailedCount(), c.what);
+    TEST_ASSERT_TRUE_MESSAGE(got.find("(Note") == std::string::npos, c.what);
   }
 }
 
@@ -5644,18 +5589,17 @@ static void runFirstHalf() {
   RUN_TEST(test_lane_l_a_reported_cut_salvages_the_partial_turn);
   RUN_TEST(test_lane_l_a_stringified_spawn_list_starts_its_sub);
   RUN_TEST(test_lane_l_an_empty_task_spawn_is_reported_not_skipped);
-  RUN_TEST(test_lane_l_a_promise_without_a_spawn_is_corrected);
-  RUN_TEST(test_lane_l_a_cut_answer_that_claims_spawns_is_marked_and_corrected);
-  RUN_TEST(test_lane_l_no_cut_ever_delivers_a_bare_spawn_claim);
-  RUN_TEST(test_lane_l_a_prose_answer_that_claims_spawns_is_corrected);
+  RUN_TEST(test_lane_l_a_promise_without_a_spawn_is_delivered_as_written);
+  RUN_TEST(test_lane_l_a_cut_answer_that_claims_spawns_is_marked);
+  RUN_TEST(test_lane_l_no_cut_ever_starts_a_spawn_or_appends_a_line);
+  RUN_TEST(test_lane_l_a_prose_answer_that_claims_spawns_is_delivered_as_written);
   RUN_TEST(test_lane_l_pseudo_tool_spawns_join_the_turn_exactly_once);
   RUN_TEST(test_lane_l_an_empty_pseudo_tool_call_is_reported);
   RUN_TEST(test_lane_l_recovered_actions_apply_only_on_clean_owner_turns);
   RUN_TEST(test_lane_l_a_gated_recovered_spawn_is_reported);
   RUN_TEST(test_lane_l_the_final_check_rides_every_loop_turn);
   RUN_TEST(test_turn_rig_attach_and_prefix_stability);
-  RUN_TEST(test_lane_s_the_claim_check_joins_the_final_check);
-  RUN_TEST(test_cum835_the_hosted_exemption_follows_what_ran_this_turn);
+  RUN_TEST(test_lane_s_no_claim_round_in_the_final_check);
   RUN_TEST(test_pg5_custom_head_saved_claim_delivers_one_reply);
   RUN_TEST(test_pg5_custom_head_durability_claim_follows_the_flash_save);
   RUN_TEST(test_lane_l_markup_never_reaches_the_owner);
@@ -5959,9 +5903,8 @@ static void test_final_check_reads_the_field() {
   TEST_ASSERT_EQUAL_STRING("", reply.c_str());
 }
 
-// RB-Q1a: the turn's effect ledger is the turn state's, not the claim check's. The
-// engine records each head tool call into it itself, and the claim check only reads
-// the same ledger, so deleting the check (RB-Q1b) keeps every record.
+// RB-Q1a: the turn's effect ledger is the turn state's. The engine records each head
+// tool call into it itself, so deleting the claim check (RB-Q1b) kept every record.
 static void test_the_turn_state_holds_the_effect_ledger() {
   for (const char* tool : {"memory_search", "files_append"}) {
     Rig r;
@@ -5975,7 +5918,6 @@ static void test_the_turn_state_holds_the_effect_ledger() {
     r.eng->handleMessage("look it up", "", "1001");
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.toolResults.size(), tool);
     const orch::TurnEffects& fx = r.eng->turnEffects();
-    TEST_ASSERT_TRUE_MESSAGE(&fx == &r.eng->claimCheck().effects(), tool);   // one ledger, read by the check
     const orch::FxKind k = agent::fxKindForTool(std::string(tool) == "memory_search" ? "memory.search" : "files.append");
     TEST_ASSERT_EQUAL_MESSAGE(1, fx.countOk(k) + fx.countFailed(k), tool);    // the call, recorded by the engine
   }
