@@ -2839,7 +2839,7 @@ class NimbusdRig {
   void wireTurnHooks(agent::TurnEngine::Deps& d) {
     // Lane RB-FX: every effect of a turn joins its chat's ring (<data>/mem/fx).
     d.hooks.onEffect = [this](const std::string& chat, const std::string& tool, const std::string& receipt) {
-      effects().record(chat, (int64_t)std::time(nullptr), tool, receipt);
+      effects().record(chat, (int64_t)vclock::epoch(), tool, receipt);   // the instance clock
     };
     d.hooks.onTurnStart = [this](const agent::TurnStartEv&) {
       // The turn's identity is its user row's id (the chat view joins a bubble to its
