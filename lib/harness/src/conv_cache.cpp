@@ -181,13 +181,14 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
 // the card would not give back, or a failing card whose RAM ring does not reach thru
 // (olderExists: lane CTXR1, a fill once completed on the ring's rows alone) leaves rows unread.
 namespace {
-// A probe cursor the store's state moved under (its index completed, or it read from the start
-// and gave back rows at or before thru): a byte cursor with an empty page and nothing more.
+// A probe cursor the store's state moved under: the store names it stale (its index completed),
+// or it read from the start and gave back rows at or before thru. An empty page the store does
+// not name stale is the real end.
 bool staleProbe(const std::string& probeAt, const std::string& thru, const std::vector<EpisodicMessage>& first,
                 const nimbus::orch::EpiQueryInfo& info) {
   if (probeAt.empty()) return false;
-  if (first.empty()) return !info.newerExists && !info.olderExists;
-  return !thru.empty() && !rowIdAfter(first.front().id, thru);
+  if (info.cursorStale) return true;
+  return !first.empty() && !thru.empty() && !rowIdAfter(first.front().id, thru);
 }
 }  // namespace
 

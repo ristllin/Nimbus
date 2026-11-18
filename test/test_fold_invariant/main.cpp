@@ -143,7 +143,10 @@ struct FaultStore {
     // The real store (orch_episodic_log.cpp queryAfter): a byte cursor on a store whose index is
     // complete is answered with an empty page and nothing more; while the index is still
     // truncated, the walk past the cold region reads the index from its start.
-    if (byteCur && indexFloor == 0 && !failing) return out;
+    if (byteCur && indexFloor == 0 && !failing) {
+      info.cursorStale = true;
+      return out;
+    }
     if (failing && ringFloor() > from + 1) {
       info.olderExists = true;   // the card is failing and the ring does not reach the cursor
       return out;
@@ -279,6 +282,7 @@ struct Device {
     h.triggerBytes = [this] { return trigger(); };
     h.foldCycleBytes = [this] { return orch::foldCycleBytes(headCtx()); };
     h.folded = [this](const agent::FoldDone& done) { onLanded(done); };
+    h.tell = [this](const std::string& c, const std::string& text) { told.push_back({c, text}); };
     h.firmware = "5.1.2";
     orch::FoldCtlIO io;
     io.load = [this] { return ctl; };
@@ -303,6 +307,7 @@ struct Device {
     for (const std::string& t : tokensIn(text.substr(0, 16))) tokenRow[t] = id;
   }
   std::map<std::string, std::string> thruSeen;   // chat -> thru after the last step
+  std::vector<std::pair<std::string, std::string>> told;   // (chat, owner notice)
   void onLanded(const agent::FoldDone& done) {
     landed++;
     const uint32_t mark = clearMark[done.chat];
@@ -464,11 +469,17 @@ struct Totals {
 void runSequence(Device& d, uint32_t seed, int steps, Totals& t) {
   Lcg r(seed);
   for (int step = 0; step < steps && d.violations.empty(); step++) randomStep(d, r);
-  // Heal and drain: the card comes back, the backfill finishes, the chat folds forward.
+  // Heal and drain: the card comes back and the chat folds forward. Half the seeds leave the
+  // backfill stalled for good (a capped or stalled index): liveness must not need it.
   d.store.failing = false;
   d.store.unreadable = {0, 0};
   d.quiet = true;
+  if (seed % 2) d.backfillRows = 0;
   d.pump(400, 900);
+  // Liveness (fix review, candidate 2): with a readable store, the rows a shift hid are folded
+  // and a manual request has ended within those passes.
+  if (d.violations.empty() && d.hiddenRows(kMain) > 0) d.violations.push_back("hidden rows still unfolded after the drain");
+  if (d.violations.empty() && !d.drv->ctl().manualPendingChat.empty()) d.violations.push_back("a manual request never ended");
   if (!d.violations.empty()) {
     std::printf("seed %u: %s\n", (unsigned)seed, d.violations.front().c_str());
     const auto& L = LogCapture::lines();
@@ -710,6 +721,44 @@ static void test_a_backfill_completing_between_passes_never_ends_the_read() {
   }
 }
 
+// Fix review, candidate 2: on a truncated index whose backfill never completes, the real end of
+// a read reached through a byte cursor is the end, not a stale cursor. A Summarize now on a chat
+// whose rows all lie in the cold region, far before its end (the web chat of an owner who uses
+// Telegram), is answered and the slice lands or reaches Nothing; and an automatic fold of
+// another chat runs meanwhile. For a chat with an anchor and for a no-anchor /clear scan.
+static void test_a_manual_read_on_cold_rows_ends_and_never_starves_the_others() {
+  for (int shape = 0; shape < 2; shape++) {
+    Device d("anthropic", "claude-sonnet-5-5");
+    d.quiet = false;
+    const std::string web = "5005";
+    for (int i = 0; i < 12; i++) d.turn(web);
+    if (shape == 0) {   // an anchor at its fourth exchange (the summary took those rows)
+      const std::vector<const orch::EpisodicMessage*> rows = d.live(web);
+      for (size_t i = 0; i <= 7; i++)
+        for (const std::string& t : tokensIn(rows[i]->text.substr(0, 16))) d.covered[web].insert(t);
+      d.folds.applyFold(web, "1. Decisions & preferences\n- web notes.\n", kT0, rows[7]->id);
+    }
+    otherChatRows(d, 600);                     // more than two day files of the cold walk: none of web's
+    for (int i = 0; i < 60; i++) d.turn(kMain);   // the main chat, rows hidden by a shift
+    TEST_ASSERT_TRUE(d.hiddenRows(kMain) > 0);
+    d.bootIndexRows = 200;   // the main chat's rows indexed, web's cold
+    d.backfillRows = 0;      // the backfill stalls for good
+    d.store.coldBudget = 30;
+    d.restart();
+    d.quiet = true;
+    d.drv->requestManual(web);
+    const int landed0 = d.landed;
+    d.pump(200, 60);
+    TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+    TEST_ASSERT_TRUE_MESSAGE(d.drv->ctl().manualPendingChat.empty(), "the manual request ended");
+    bool answered = false;
+    for (const auto& t : d.told) answered = answered || t.first == web;
+    TEST_ASSERT_TRUE_MESSAGE(answered, "and was answered");
+    TEST_ASSERT_TRUE_MESSAGE(d.landed > landed0, "the automatic folds ran");
+    TEST_ASSERT_EQUAL_MESSAGE(0, d.hiddenRows(kMain), "the main chat's hidden rows are folded");
+  }
+}
+
 // ---- the production device's shape on the real SD log store ----------------------------
 namespace {
 struct FakeFs : orch::EpiFs {
@@ -891,6 +940,7 @@ int main(int, char**) {
   RUN_TEST(test_one_summarize_now_reaches_the_newest_row);
   RUN_TEST(test_no_anchor_on_a_failing_card_backs_off_and_answers);
   RUN_TEST(test_a_backfill_completing_between_passes_never_ends_the_read);
+  RUN_TEST(test_a_manual_read_on_cold_rows_ends_and_never_starves_the_others);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);

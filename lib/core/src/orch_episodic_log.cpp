@@ -816,7 +816,10 @@ void AppendLogEpisodicStore::queryAfter(const MsgQuery& q, std::vector<EpisodicM
   // row and must never anchor past rows it did not read), under the cold budget.
   const bool belowIndex = hydrateTruncated_ && (byteCur || (uint64_t)afterSfx + 1 < indexFloorSfx());
   if (belowIndex && !queryAfterCold(q, f, afterSfx, out, info)) return;
-  if (byteCur && !belowIndex) return;   // a cold cursor on a store whose index has no gap left
+  if (byteCur && !belowIndex) {   // a cold cursor on a store whose index has no gap left
+    info.cursorStale = true;
+    return;
+  }
   // Past the cold region every indexed row is newer than the cursor.
   const uint32_t from = belowIndex ? 0 : afterSfx;
   const EpiAfterFilter rest(q, from);

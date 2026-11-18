@@ -119,6 +119,10 @@ class FoldDriver {
   // A slice that could not read its rows looks again 1 minute out, doubling to 1 hour.
   static constexpr uint32_t kReadWaitFirstMs = 60000;
   static constexpr uint32_t kReadWaitMaxMs = 3600000;
+  // A manual read that goes on (a scan, a read budget) yields this long between its passes, and
+  // is answered after this many of them.
+  static constexpr uint32_t kManualPassMs = 1000;
+  static constexpr uint32_t kManualWaitPasses = 64;
   static uint32_t readWaitMs(uint32_t waits);
 
   FoldDriver(TurnEngine& eng, nimbus::orch::FoldStore& folds, nimbus::orch::FoldCtlIO ctlIO, FoldDriverHooks hooks);
@@ -171,7 +175,9 @@ class FoldDriver {
   bool pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::string& chat);
   FoldTick sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch, const FoldSlice& s);
   void noteUnread(const std::string& chat, uint32_t nowEpoch, bool unread);
-  std::map<std::string, uint32_t> unreadSince_;   // chat -> epoch its slice first met rows it could not read
+  void endManualWait(const std::string& chat, uint32_t nowMs, SliceState state, bool tooLong);
+  uint32_t manualWaitPasses_ = 0;   // passes the running manual request's read went on without landing
+  uint32_t manualPassUntilMs_ = 0;  // the next pass of that read (the automatic folds go meanwhile)
   FoldTick runRung(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick landed(const FoldRungReport& rep, const std::string& summary, uint32_t nowMs, uint32_t nowEpoch);
   FoldTick cycleFailed(uint32_t nowMs, uint32_t nowEpoch);
@@ -203,11 +209,7 @@ class FoldDriver {
   // A chat whose slice could not read its rows (SliceState Wait/Unread): looks in a row that
   // read nothing new, and the monotonic ms of the next look.
   std::map<std::string, uint32_t> readWaitCount_, readWaitUntilMs_;
-  void clearReadWait(const std::string& chat) {
-    readWaitCount_.erase(chat);
-    readWaitUntilMs_.erase(chat);
-    unreadSince_.erase(chat);
-  }
+  void clearReadWait(const std::string& chat);
   std::map<std::string, std::string> thruDate_;   // chat -> the local date its summary reaches
   // The manual catch-up in progress: what its landed cycles covered so far.
   struct CatchUp {

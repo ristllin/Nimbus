@@ -494,10 +494,10 @@ struct TurnEngine::FoldReadPass {
     return false;
   }
   // A cursor the store's state moved under (lane CTXR1, v5.1.2 fix review): a byte cursor
-  // ("day:off") from an earlier pass that the store, its index now complete, answers with an
-  // empty page and nothing more, or that brings back rows at or before the anchor (the index
+  // ("day:off") from an earlier pass that the store, its index now complete, names stale
+  // (EpiQueryInfo::cursorStale), or that brings back rows at or before the anchor (the index
   // read from the start). Never the end: the stored cursor is dropped and the next pass reads
-  // again from the anchor.
+  // again from the anchor. An empty page the store does not name stale is the real end.
   bool staleCursor() {
     hlog::logf("fold(%s): the read cursor %s no longer fits the store - the read starts again from %s",
                chat.c_str(), cursor.c_str(), start.c_str());
@@ -521,7 +521,7 @@ struct TurnEngine::FoldReadPass {
                  cursor.c_str());
       return stop(FoldRead::End::Wait);
     }
-    if (!info.newerExists && cursor.find(':') != std::string::npos) return staleCursor();
+    if (info.cursorStale) return staleCursor();   // the store says so: never inferred from the shape
     if (!info.newerExists || info.nextAfter.empty()) return stop(FoldRead::End::Last);
     cursor = info.nextAfter;   // the store's read budget stopped first: go on from where it did
     note();

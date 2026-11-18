@@ -141,10 +141,16 @@ struct Device {
   }
 
   uint32_t nothingKept = 0;
-  bool unreadAlways = false;   // every slice meets rows the store will not give back   // > 0: every slice reads to its bound and finds nothing, this much kept
+  bool unreadAlways = false;   // every slice meets rows the store will not give back
+  std::vector<agent::SliceState> stateScript;   // when set: each slice's outcome, in turn
+  size_t stateAt = 0;   // > 0: every slice reads to its bound and finds nothing, this much kept
   FoldSlice slice(const std::string& chat, size_t cap, bool manual) {
     sliced.push_back({chat, manual});
     FoldSlice s;
+    if (!stateScript.empty()) {   // a scripted outcome per slice, in turn
+      s.state = stateScript[stateAt++ % stateScript.size()];
+      return s;
+    }
     if (unreadAlways) {
       s.state = agent::SliceState::Unread;
       return s;
@@ -526,6 +532,25 @@ static void test_rows_unread_for_a_day_alert_the_owner_once_a_day() {
   TEST_ASSERT_EQUAL(0, minutes);
 }
 
+// Fix review, candidate 2: the unread clock survives a Wait pass and a restart (it is kept in the
+// fold control file), so on a flaky card that also gives Wait passes and restarts, the alert
+// still comes once a day has passed, and once.
+static void test_the_unread_clock_survives_waits_and_restarts() {
+  Device d;
+  d.boot();
+  d.backlog("c", 40);
+  d.stateScript = {agent::SliceState::Unread, agent::SliceState::Wait, agent::SliceState::Unread};
+  for (uint32_t m = 0; m <= 25u * 60u; m += 10) {
+    if (m == 8u * 60u || m == 16u * 60u) d.reboot();
+    d.plat.ms += 600000;
+    d.drv->tick(d.plat.ms, kT0 + m * 60);
+  }
+  int alerts = 0;
+  for (const auto& t : d.told) alerts += t.second.find("can't move past them") != std::string::npos;
+  TEST_ASSERT_EQUAL_MESSAGE(1, alerts, "one alert after a day of unread rows");
+  TEST_ASSERT_TRUE(d.ctlText.find("unreadSince=c:") != std::string::npos);
+}
+
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
 static void test_fresh_device_is_idle_and_quiet() {
   Device d;
@@ -728,6 +753,7 @@ int main(int, char**) {
   RUN_TEST(test_a_busy_guest_chat_leaves_the_owner_room);
   RUN_TEST(test_a_huge_kept_tail_does_not_skip_every_pass);
   RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
+  RUN_TEST(test_the_unread_clock_survives_waits_and_restarts);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);

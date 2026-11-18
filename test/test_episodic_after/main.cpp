@@ -347,6 +347,42 @@ static void test_a_cold_no_clock_stream_does_not_block_newer_cursors() {
   TEST_ASSERT_TRUE(older.unreadable.compare(0, 2, "0:") == 0);
 }
 
+// Fix review, candidate 2: the store says when a byte cursor is stale (its index completed, so
+// the position the cursor names is gone), and only then. The real end of a cold walk reached
+// through a byte cursor, while the index is still truncated, is an empty page with no flag.
+static void test_the_store_names_a_stale_byte_cursor_and_only_that() {
+  FakeFs fs;
+  {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 512);
+    for (uint32_t i = 1; i <= 400; i++) {   // c1's rows first, then other chats' rows on later days
+      EpisodicMessage m = chatRow(i, (kDay0 + (i - 1) / 50) * 24 + 1, 600);
+      if (i > 20) m.sessionId = "other";
+      w.addMessage(m);
+    }
+  }
+  AppendLogEpisodicStore s(fs, "/mem/episodic", 16);
+  s.hydrate(30, 0);   // a truncated boot scan: c1 is all cold
+  TEST_ASSERT_TRUE(s.hydrateTruncated());
+  std::string cursor = idOf(20);   // after c1's last row: cold bytes with none of its rows
+  bool sawByte = false;
+  for (int call = 0; call < 50; call++) {
+    EpiQueryInfo info;
+    const auto rows = s.query(chatAfter(cursor, 24), &info);
+    TEST_ASSERT_TRUE(rows.empty());
+    TEST_ASSERT_FALSE_MESSAGE(info.cursorStale, "the real end is never named stale");
+    if (!info.newerExists) break;   // the real end
+    cursor = info.nextAfter;
+    sawByte = sawByte || cursor.find(':') != std::string::npos;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(sawByte, "the walk went on by byte cursor");
+  while (s.backfillStep()) {
+  }
+  TEST_ASSERT_FALSE(s.hydrateTruncated());
+  EpiQueryInfo stale;
+  TEST_ASSERT_TRUE(s.query(chatAfter(cursor.find(':') != std::string::npos ? cursor : "3:0", 24), &stale).empty());
+  TEST_ASSERT_TRUE_MESSAGE(stale.cursorStale, "a byte cursor on a complete index is named stale");
+}
+
 // A no-clock stream that is wholly indexed (it began this session) does not move where the
 // cold walk starts: the walk still begins at the cursor's own dated day, so a page the cold
 // budget cuts short continues by byte cursor past the cursor row, never from the first day
@@ -438,6 +474,7 @@ int main(int, char**) {
   RUN_TEST(test_after_reads_follow_ids_when_the_index_does_not);
   RUN_TEST(test_a_cold_no_clock_stream_is_named_not_misordered);
   RUN_TEST(test_a_cold_no_clock_stream_does_not_block_newer_cursors);
+  RUN_TEST(test_the_store_names_a_stale_byte_cursor_and_only_that);
   RUN_TEST(test_a_no_clock_stream_does_not_move_the_cold_start);
   RUN_TEST(test_an_unreadable_span_is_reported);
   RUN_TEST(test_the_overlay_patches_after_reads);

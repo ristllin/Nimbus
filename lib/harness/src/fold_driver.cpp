@@ -241,6 +241,9 @@ bool FoldDriver::capReached(uint32_t nowEpoch, const std::string& chat) {
 bool FoldDriver::pickManual(uint32_t nowMs, std::string& chat) const {
   if (ctl_.manualPendingChat.empty()) return false;
   if (manualEnded_ && nowMs - lastManualEndMs_ < kManualCooldownMs) return false;   // one at a time, 2 min apart
+  // Its read waits (fix review, candidate 2): between two passes of a manual read that goes
+  // on, the other chats' automatic folds get their turn.
+  if (manualWaitPasses_ && (int32_t)(manualPassUntilMs_ - nowMs) > 0) return false;
   chat = ctl_.manualPendingChat.front();
   return true;
 }
@@ -346,13 +349,23 @@ uint32_t FoldDriver::readWaitMs(uint32_t waits) {
 // what it covered, else the owner is told the rows could not be read.
 // Rows the store keeps refusing (Unread) stay unread, fail-closed: the anchor never passes them.
 // After a day of it the owner hears once a local day, through the alert (fix review E).
+// A read got past the chat's rows (Ready, Nothing, a landed fold) or the chat was cleared: its
+// read waits end, and so does its unread clock (persisted, fold_ctl.txt).
+void FoldDriver::clearReadWait(const std::string& chat) {
+  readWaitCount_.erase(chat);
+  readWaitUntilMs_.erase(chat);
+  if (ctl_.dropUnreadSince(chat)) saveCtl();
+}
+
+// The unread clock survives a Wait pass and a restart (fix review, candidate 2): only a read
+// that gets past the rows ends it. A clock that stepped back before it restarts it.
 void FoldDriver::noteUnread(const std::string& chat, uint32_t nowEpoch, bool unread) {
-  if (!unread) {
-    unreadSince_.erase(chat);
-    return;
+  if (!unread || !nowEpoch) return;   // no clock: no day to count, no alert (as for failed cycles)
+  uint32_t since = ctl_.unreadSinceOf(chat);
+  if (!since || nowEpoch < since) {
+    since = nowEpoch;
+    if (ctl_.setUnreadSince(chat, since)) saveCtl();
   }
-  if (!nowEpoch) return;   // no clock: no day to count, no alert (as for failed cycles)
-  const uint32_t since = unreadSince_.emplace(chat, nowEpoch).first->second;
   if (nowEpoch - since < orch::kFoldAlertAfterS || ctl_.lastAlertDay == today(nowEpoch)) return;
   const std::string text = unreadNotice();
   bool told = false;
@@ -366,28 +379,47 @@ void FoldDriver::noteUnread(const std::string& chat, uint32_t nowEpoch, bool unr
   saveCtl();
 }
 
+namespace {
+// What a manual request that cannot read its rows is told: the truth for each case (rows the
+// store refuses are not a matter of minutes).
+const char* manualWaitAnswer(SliceState state, bool tooLong) {
+  if (state == SliceState::Unread)
+    return "\xE2\x9A\xA0 Some older messages in this chat can't be read from storage right now, so the summary "
+           "can't include them yet. It keeps trying by itself; if this lasts, restart the device.";
+  if (tooLong)
+    return "\xE2\x9A\xA0 Reading this chat's older messages is taking too long right now, so the summary isn't "
+           "finished. Try again later.";
+  return "\xE2\x9A\xA0 Couldn't read this chat's older messages just now. Try again in a few minutes.";
+}
+}  // namespace
+
+// The answer and the end of a manual request whose read stopped.
+void FoldDriver::endManualWait(const std::string& chat, uint32_t nowMs, SliceState state, bool tooLong) {
+  const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
+  if (hooks_.tell) hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span) : manualWaitAnswer(state, tooLong));
+  catchUp_ = CatchUp();
+  endManual(chat, nowMs);
+}
+
 FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch,
                                 const FoldSlice& s) {
   noteUnread(chat, nowEpoch, s.state == SliceState::Unread);
   uint32_t& waits = readWaitCount_[chat];
   if (!s.progressed) waits++;
-  const uint32_t waitMs = readWaitMs(s.progressed ? 0 : waits);
+  // A manual read that goes on yields one pass to the automatic folds, and is answered after
+  // kManualWaitPasses of them instead of being left pending for good.
+  const bool manualGoesOn = manual && s.progressed && s.state != SliceState::Unread;
+  if (manualGoesOn) {
+    manualWaitPasses_++;
+    manualPassUntilMs_ = nowMs + kManualPassMs;
+  }
+  const uint32_t waitMs = manualGoesOn ? kManualPassMs : readWaitMs(s.progressed ? 0 : waits);
   readWaitUntilMs_[chat] = nowMs + waitMs;
   hlog::logf("fold(%s): the slice %s (%s), the anchor stays - next look in %u s", chat.c_str(),
              s.state == SliceState::Unread ? "meets rows the card will not give back" : "waits for its rows",
              s.progressed ? "progress" : std::to_string((unsigned)waits).c_str(), (unsigned)(waitMs / 1000));
-  if (manual && (!s.progressed || s.state == SliceState::Unread)) {
-    const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
-    // The truth for each: rows the store refuses are not a matter of minutes.
-    const char* const why = s.state == SliceState::Unread
-                                ? "\xE2\x9A\xA0 Some older messages in this chat can't be read from storage right now, so "
-                                  "the summary can't include them yet. It keeps trying by itself; if this lasts, restart "
-                                  "the device."
-                                : "\xE2\x9A\xA0 Couldn't read this chat's older messages just now. Try again in a few minutes.";
-    if (hooks_.tell) hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span) : why);
-    catchUp_ = CatchUp();
-    endManual(chat, nowMs);
-  }
+  const bool tooLong = manualGoesOn && manualWaitPasses_ >= kManualWaitPasses;
+  if (manual && (!manualGoesOn || tooLong)) endManualWait(chat, nowMs, s.state, tooLong);
   changed(chat);
   return FoldTick::Deferred;
 }
@@ -557,6 +589,7 @@ void FoldDriver::maybeAlert(const std::string& chat, const orch::ChatFold* f, ui
 }
 
 void FoldDriver::endManual(const std::string& chat, uint32_t nowMs) {
+  manualWaitPasses_ = 0;
   ctl_.dropManual(chat);
   saveCtl();
   lastManualEndMs_ = nowMs;
