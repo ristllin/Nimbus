@@ -104,6 +104,16 @@ class Score(unittest.TestCase):
         next(c for c in read["columns"] if c["basis_kind"] == basis)[field] = "123"
         self.assertEqual(score(blind, read)["extras"], 0)
 
+    def test_an_invented_column_counts_as_extras(self):
+        lab = next(x for x in LABELS if "serving" not in x["columns"])
+        read = perfect(lab)
+        read["columns"].append({"basis_kind": "serving", "fat": "1.0", "protein": "2.0", "sodium_mg": "5"})
+        self.assertEqual(score(lab, read)["extras"], 2)
+
+    def test_malformed_columns_do_not_crash(self):
+        s = score(LABELS[0], {"columns": ["junk", 3, {"basis_kind": "nope"}]})
+        self.assertFalse(any(f["ok"] for f in s["fields"]))
+
     def test_first_column_of_a_basis_wins(self):
         lab = LABELS[0]
         read = perfect(lab)
@@ -199,7 +209,7 @@ class Wire(unittest.TestCase):
 
 
 def cell(k: int, n: int = 1000) -> dict:
-    return {"field_accuracy": {"k": k, "n": n, "rate": k / n}}
+    return {"labels": 40, "field_accuracy": {"k": k, "n": n, "rate": k / n}}
 
 
 def heads(s: dict, h: dict) -> dict:
@@ -209,28 +219,98 @@ def heads(s: dict, h: dict) -> dict:
     }
 
 
+class Pipeline(unittest.TestCase):
+    """read_labels' plan and resume, and label_report end to end over a fixture evidence dir."""
+
+    def test_plan_covers_every_label_and_arm_or_both_transcriptions(self):
+        labs = LABELS[:3]
+        self.assertEqual(len(run.plan(labs, ["P800", "T1280"], False)), 6)
+        self.assertEqual({j for _, j in run.plan(labs, ["P800"], True)}, {"T", "D"})
+
+    def test_a_cut_line_is_skipped(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "reads.jsonl"
+            f.write_text('{"a": 1}\n{"a": 2, "cut')
+            self.assertEqual(run.load_jsonl(f), [{"a": 1}])
+            self.assertEqual(report.jsonl(f), [{"a": 1}])
+
+    def test_report_end_to_end(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            ev = Path(d)
+            for head in report.DECIDING_HEADS:
+                (ev / head).mkdir()
+                rows = []
+                for lab in LABELS:
+                    for arm in report.DECISION_ARMS:
+                        read = perfect(lab)
+                        if arm == "P800" and head == "claude-haiku-5-5":
+                            read["columns"][0]["protein"] = "999"  # one misread per label at 800 px
+                        rows.append(
+                            {
+                                "id": lab["id"],
+                                "head": head,
+                                "arm": arm,
+                                "ok": True,
+                                "read": read,
+                                "usd": 0.001,
+                                "usage": {"prompt": 100},
+                                "jpeg_bytes": 1,
+                                "seconds": 1.0,
+                            }
+                        )
+                (ev / head / "reads.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            out, md = ev / "labels.json", ev / "RESULTS.md"
+            argv = sys.argv
+            sys.argv = ["label_report.py", "--evidence", str(ev), "--out", str(out), "--md", str(md)]
+            try:
+                import contextlib
+
+                with contextlib.redirect_stdout(io.StringIO()):
+                    report.main()
+            finally:
+                sys.argv = argv
+            doc = json.loads(out.read_text())
+            h = doc["heads"]["claude-haiku-5-5"]
+            n = doc["scored_fields"]
+            self.assertEqual(h["P1280"]["field_accuracy"]["k"], n)
+            self.assertEqual(
+                h["P800"]["protein_misreads"]["k"], sum(1 for x in LABELS if "protein" in x["columns"]["per100"])
+            )
+            self.assertEqual(doc["decision"]["rendition_px"], 1280)  # Haiku gains over a point at 1,280
+            self.assertFalse(doc["decision"]["keep_transcription"])  # perfect alone at 1,280 on both heads
+            self.assertIn("| claude-haiku-5-5 | P800 |", md.read_text())
+
+
 class Decide(unittest.TestCase):
     SAME = {"P800": 960, "P1280": 960, "T800": 960, "T1280": 960}
 
-    def test_800_unless_1280_gains_a_point_on_a_claude_head(self):
-        self.assertEqual(report.decide(heads(self.SAME, self.SAME))["rendition_px"], 800)
-        small = dict(self.SAME, P1280=965, T1280=965)  # +0.5 points
-        self.assertEqual(report.decide(heads(small, self.SAME))["rendition_px"], 800)
-        big = dict(self.SAME, P1280=975, T1280=975)  # +1.5 points on Haiku only
-        self.assertEqual(report.decide(heads(self.SAME, big))["rendition_px"], 1280)
+    def test_800_unless_1280_pixels_alone_gain_a_point_on_a_claude_head(self):
+        self.assertEqual(report.decide(heads(self.SAME, self.SAME), 40)["rendition_px"], 800)
+        small = dict(self.SAME, P1280=965)  # +0.5 points
+        self.assertEqual(report.decide(heads(small, self.SAME), 40)["rendition_px"], 800)
+        big = dict(self.SAME, P1280=975)  # +1.5 points on Haiku only
+        self.assertEqual(report.decide(heads(self.SAME, big), 40)["rendition_px"], 1280)
+        t_only = dict(self.SAME, T1280=990)  # the T arms do not move the rendition
+        self.assertEqual(report.decide(heads(t_only, t_only), 40)["rendition_px"], 800)
 
     def test_transcription_kept_unless_alone_is_as_good_and_at_95(self):
-        d = report.decide(heads(self.SAME, self.SAME))
+        d = report.decide(heads(self.SAME, self.SAME), 40)
         self.assertFalse(d["keep_transcription"])  # 96% alone, equal with transcription: dropped
         better = dict(self.SAME, T800=970)
-        self.assertTrue(report.decide(heads(self.SAME, better))["keep_transcription"])  # helps Haiku
+        self.assertTrue(report.decide(heads(self.SAME, better), 40)["keep_transcription"])  # helps Haiku
         low = {a: 940 for a in self.SAME}
-        self.assertTrue(report.decide(heads(low, low))["keep_transcription"])  # 94% alone: under the floor
+        self.assertTrue(report.decide(heads(low, low), 40)["keep_transcription"])  # 94% alone: under the floor
 
-    def test_a_missing_arm_refuses_to_decide(self):
+    def test_a_missing_or_partial_arm_refuses_to_decide(self):
         partial = {"P800": 960, "P1280": 960, "T800": 960}
         with self.assertRaises(SystemExit):
-            report.decide(heads(self.SAME, partial))
+            report.decide(heads(self.SAME, partial), 40)
+        with self.assertRaises(SystemExit):
+            report.decide(heads(self.SAME, self.SAME), 41)  # one label unread in every arm
 
 
 if __name__ == "__main__":

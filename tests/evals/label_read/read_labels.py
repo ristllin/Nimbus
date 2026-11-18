@@ -29,6 +29,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "behaviour"))
 import providers  # noqa: E402  (PRICES, price, load_env from the RB-M0a eval)
 
+sys.path.insert(0, str(HERE))
+from score import FIELDS  # noqa: E402
+
 TRANSCRIBER = "claude-haiku-5-5"
 TRANSCRIBE_PX = 1280
 # lib/harness/src/vision_caption.cpp kFallbackPrompt, verbatim.
@@ -54,19 +57,6 @@ SYSTEM = (
 OWNER_TEXT = "What does this label say? Copy its nutrition table."
 
 _FIG = {"anyOf": [{"type": "string"}, {"type": "null"}]}
-FIELDS = (
-    "energy_kj",
-    "energy_kcal",
-    "fat",
-    "saturates",
-    "carbohydrate",
-    "sugars",
-    "polyols",
-    "fibre",
-    "protein",
-    "salt",
-    "sodium_mg",
-)
 SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -219,9 +209,17 @@ def parse(raw: str) -> dict | None:
 
 
 def load_jsonl(path: Path) -> list[dict]:
+    """Stored rows; a line cut by a killed append is skipped (its read is simply redone)."""
     if not path.exists():
         return []
-    return [json.loads(x) for x in path.read_text().splitlines() if x.strip()]
+    out = []
+    for x in path.read_text().splitlines():
+        try:
+            out.append(json.loads(x))
+        except ValueError:
+            if x.strip():
+                print(f"skipping an unreadable line in {path}", file=sys.stderr)
+    return out
 
 
 def spent(evidence: Path, transcripts: list[Path]) -> float:
@@ -271,10 +269,8 @@ def parse_args():
     )
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--manifest", default=str(HERE / "labels.json"))
-    ap.add_argument("--transcripts", help="shared full transcription cache (default <evidence>/transcripts.jsonl)")
-    ap.add_argument(
-        "--device-transcripts", help="shared device-capped cache (default <evidence>/transcripts-device900.jsonl)"
-    )
+    ap.add_argument("--transcripts", required=True, help="the shared full transcription cache (jsonl)")
+    ap.add_argument("--device-transcripts", required=True, help="the shared device-capped cache (jsonl)")
     ap.add_argument("--transcribe-only", action="store_true", help="fill both transcription caches and stop")
     return ap.parse_args()
 
@@ -287,8 +283,8 @@ class Run:
         self.ev = Path(args.evidence)
         self.ev.mkdir(parents=True, exist_ok=True)
         self.caches = {
-            "T": (Path(args.transcripts or self.ev / "transcripts.jsonl"), FULL_CAPTION_MAX_TOKENS),
-            "D": (Path(args.device_transcripts or self.ev / "transcripts-device900.jsonl"), DEVICE_CAPTION_MAX_TOKENS),
+            "T": (Path(args.transcripts), FULL_CAPTION_MAX_TOKENS),
+            "D": (Path(args.device_transcripts), DEVICE_CAPTION_MAX_TOKENS),
         }
         self.loaded = {k: {r["id"]: r for r in load_jsonl(p)} for k, (p, _) in self.caches.items()}
         self.done = {(r["id"], r["head"], r["arm"]) for r in load_jsonl(self.ev / "reads.jsonl") if r.get("ok")}
@@ -317,7 +313,7 @@ class Run:
             read, raw, usage, stop = fn(self.hc, self.head, jpeg, text)
             err = ""
         except Exception as e:  # noqa: BLE001 - a failed read is recorded, not fatal
-            read, raw, usage, stop, err = None, "", {}, "", providers.redact(f"{type(e).__name__}: {str(e)[:300]}")
+            read, raw, usage, stop, err = None, "", {}, "", providers.redact(f"{type(e).__name__}: {e}")[:300]
         rec = {
             "id": lab["id"],
             "head": self.head,

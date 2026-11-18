@@ -52,8 +52,12 @@ the label does not print, sodium aside). Rates carry an exact one-sided 95% boun
 
 ## Decisions (`label_report.py`)
 
-- Rendition: 800 px, unless 1,280 px reads at least one percentage point more fields right on
-  claude-sonnet-5-5 or claude-haiku-5-5, pooled over the P and T arms.
+- Rendition: 800 px, unless the head alone at 1,280 px (P1280) reads at least one percentage point
+  more fields right than at 800 px (P800) on claude-sonnet-5-5 or claude-haiku-5-5. The T arms are
+  left out of this rule: both carry the same transcription, made from the 1,280 px photo the device
+  downloads (it takes the largest legible Telegram size), so only the pixels sent to the head differ.
+- Both rules refuse to decide unless both Claude heads read all 40 labels in all four P and T arms;
+  a failed read counts as wrong.
 - Transcription (PRD section 5): kept unless the head alone is at least as accurate as pixels plus
   transcription and at or above 95% field accuracy, at the chosen rendition. One intake path serves
   every head, so it is kept if the rule keeps it on either Claude head.
@@ -74,5 +78,6 @@ python tests/evals/label_read/read_labels.py --head claude-sonnet-5-5 --arms P80
 python tests/evals/label_read/label_report.py --evidence <dir> --out tests/evals/measured/labels.json --md <dir>/RESULTS.md
 ```
 
-The live run is never part of CI. Keys are read from the env file inside the process and never
+The spend cap is checked before each step, and one step can make two paid calls (a transcription
+and a read), so a run can pass its cap by one call. The live run is never part of CI. Keys are read from the env file inside the process and never
 printed; error text is redacted before it is stored.

@@ -4,8 +4,9 @@
   label_report.py --evidence <dir with one subdir per head> --out tests/evals/measured/labels.json --md <dir>/RESULTS.md
 
 Decision rules (PRD section 5 and this lane's DECISION lines):
-- Rendition: 800 px, unless 1,280 px reads at least one percentage point more fields correctly on
-  claude-sonnet-5-5 or claude-haiku-5-5, pooled over the pixels-only and pixels-plus-transcription arms.
+- Rendition: 800 px, unless the head alone at 1,280 px (P1280) reads at least one percentage point
+  more fields right than at 800 px (P800) on claude-sonnet-5-5 or claude-haiku-5-5. The T arms are
+  left out: both carry the same transcription, made from the 1,280 px photo the device downloads.
 - Transcription, per head at the chosen rendition: kept unless the head alone (P) is at least as
   accurate as pixels plus transcription (T) and at or above 95% field accuracy. The design keeps it
   if the rule keeps it on either Claude head (one intake path serves every head).
@@ -36,7 +37,14 @@ HARD_TAGS = ("glare", "blur", "wide", "curved", "polyols", "low_light", "row_off
 
 
 def jsonl(f: Path) -> list:
-    return [json.loads(x) for x in f.read_text().splitlines() if x.strip()] if f.exists() else []
+    """Stored rows; a line cut by a killed append is skipped."""
+    out = []
+    for x in f.read_text().splitlines() if f.exists() else []:
+        try:
+            out.append(json.loads(x))
+        except ValueError:
+            continue
+    return out
 
 
 def load(evidence: Path):
@@ -122,19 +130,15 @@ def acc(cell: dict) -> float:
     return cell["field_accuracy"]["rate"] or 0.0
 
 
-def pooled(h: dict, arms: tuple) -> float:
-    k = sum(h[a]["field_accuracy"]["k"] for a in arms if a in h)
-    n = sum(h[a]["field_accuracy"]["n"] for a in arms if a in h)
-    return k / n if n else 0.0
-
-
-def decide(heads: dict) -> dict:
+def decide(heads: dict, n_labels: int) -> dict:
+    """The two design decisions; refuses unless both Claude heads read every label in all four arms."""
     gains = {}
     for head in DECIDING_HEADS:
         h = heads.get(head, {})
-        if not all(a in h for a in DECISION_ARMS):
-            raise SystemExit(f"{head} lacks an arm; the decision needs all four on both Claude heads")
-        gains[head] = round(pooled(h, ("P1280", "T1280")) - pooled(h, ("P800", "T800")), 4)
+        short = [a for a in DECISION_ARMS if h.get(a, {}).get("labels", 0) < n_labels]
+        if short:
+            raise SystemExit(f"{head} has not read all {n_labels} labels in {', '.join(short)}; no decision")
+        gains[head] = round(acc(h["P1280"]) - acc(h["P800"]), 4)
     px = 1280 if any(g >= RENDITION_MARGIN for g in gains.values()) else 800
     per_head = {}
     for head, h in heads.items():
@@ -146,7 +150,7 @@ def decide(heads: dict) -> dict:
     keep = any(per_head[h]["keep_transcription"] for h in DECIDING_HEADS)
     return {
         "rendition_px": px,
-        "rendition_rule": f"800 px unless 1,280 px gains >= {RENDITION_MARGIN:.0%} pooled field accuracy (P and T arms) on Sonnet or Haiku",
+        "rendition_rule": f"800 px unless 1,280 px pixels alone read >= {100 * RENDITION_MARGIN:.0f} point more fields right on Sonnet or Haiku",
         "rendition_gain_1280_minus_800": gains,
         "transcription_rule": "kept unless the head alone is at least as accurate and at or above 95% field accuracy (PRD section 5)",
         "transcription_per_head": per_head,
@@ -186,7 +190,7 @@ def main() -> int:
             if a in pf and b in pf:
                 pr[f"{a}_vs_{b}"] = discordant(pf[a], pf[b])
         pairs[head] = pr
-    decision = decide(heads)
+    decision = decide(heads, len(labels))
     tusd = sum(t["usd"] for rows in transcripts.values() for t in rows)
     spend = round(sum(r["usd"] for r in reads) + tusd, 4)
     doc = {

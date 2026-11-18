@@ -48,13 +48,16 @@ def norm(v):
 
 
 def same(a, b) -> bool:
-    return norm(a) is not None and norm(a) == norm(b)
+    na = norm(a)
+    return na is not None and na == norm(b)
 
 
 def columns(read: dict) -> dict:
     """The read's columns keyed by basis; the first column of each basis wins."""
     out = {}
     for c in (read or {}).get("columns") or []:
+        if not isinstance(c, dict):
+            continue
         b = c.get("basis_kind")
         if b in BASES and b not in out:
             out[b] = c
@@ -65,7 +68,8 @@ def score(truth: dict, read: dict) -> dict:
     """Per-field results for one label: every printed field of every truth column.
 
     extras counts figures the read gives for a row the label does not print (sodium aside: a label
-    that prints sodium in g has no scored sodium row), in a column the label does print.
+    that prints sodium in g has no scored sodium row), and every figure of a column the label does not
+    print at all.
     """
     got = columns(read)
     unscored = set(truth.get("unscored") or [])
@@ -86,6 +90,9 @@ def score(truth: dict, read: dict) -> dict:
                 protein += 1
         if kj_kcal_confused(tcol, rcol):
             kj_kcal += 1
+    for basis, rcol in got.items():
+        if basis not in truth["columns"]:
+            extras += sum(1 for f in FIELDS if f != "sodium_mg" and norm(rcol.get(f)) is not None)
     return {"fields": fields, "kj_kcal_confusions": kj_kcal, "protein_misreads": protein, "extras": extras}
 
 
