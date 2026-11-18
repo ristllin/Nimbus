@@ -1,0 +1,173 @@
+#pragma once
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <vector>
+
+#include "nimbus/harness/http.h"
+#include "request_view.h"
+#include "script.h"
+#include "wire_answers.h"
+
+// ScriptedProvider - a scripted model at the HttpTransport seam, for engine-2 host tests
+// (layer L1 of the battery) and anything else that talks to a provider through the
+// transport: the old adapters, the plain engine's wires, nimbusd.
+//
+// It answers each request with the next Step of its script, rendered as the response
+// body of the request's dialect (Anthropic Messages, OpenAI Responses, chat completions;
+// decided from the path, or fixed at construction). Every request is recorded with its
+// materialized body and read back into a RequestView, so a test asserts properties
+// (prefix, pairing, tool choice, cache markers) on what was really sent.
+//
+// It stands in for the model the way the reference loop's scripted provider does
+// (tests/evals/refloop/test_refloop_offline.py): a step is (tool calls, text), the loop
+// runs until a step has no call. The same JSON script also drives the reference loop
+// through scripted_provider.py, so one script can run both arms offline.
+//
+// Script exhaustion is a LOUD transport failure, never a lenient answer: a test that
+// makes more requests than it scripted is wrong and goes red (as FakeHttpTransport).
+//
+//   harness_test::scripted::ScriptedProvider model;            // dialect from the path
+//   model.push(scripted::call("read_file", R"({"path":"notes/a.md"})"));
+//   model.push(scripted::say("It says hello."));
+//   deps.transport = &model;  ...run the turn...
+//   TEST_ASSERT_EQUAL(2, model.requests().size());
+//   TEST_ASSERT_TRUE(model.allPrefixStable(why));
+namespace harness_test {
+namespace scripted {
+
+struct Recorded {
+  agent::HttpRequest req;   // as sent, splices cleared
+  std::string body;         // the materialized body (splices encoded in place)
+  Dialect dialect = Dialect::Anthropic;
+  RequestView view;
+  size_t step = 0;          // the request's index: call ids are derived from it
+};
+
+class ScriptedProvider : public agent::HttpTransport {
+ public:
+  using Responder = std::function<Step(const Recorded& req, size_t index)>;
+  using Expect = std::function<bool(const Recorded& req, std::string& why)>;
+
+  ScriptedProvider() = default;
+  explicit ScriptedProvider(Dialect fixed) : fixed_(true), dialect_(fixed) {}
+
+  ScriptedProvider& push(Step s) {
+    script_.push_back(std::move(s));
+    return *this;
+  }
+  // Load a JSON script (script.h); a dialect it names fixes the dialect.
+  bool load(const std::string& json, std::string& err) {
+    std::vector<Step> steps;
+    Dialect d = dialect_;
+    bool named = false;
+    if (!loadScript(json, d, steps, err, &named)) return false;
+    if (named) {
+      fixed_ = true;
+      dialect_ = d;
+    }
+    for (Step& s : steps) script_.push_back(std::move(s));
+    return true;
+  }
+  // Answers computed from the request, used once the pushed steps run out.
+  void respondWith(Responder r) { responder_ = std::move(r); }
+  // A check run on every request before it is answered; failures collect in failures().
+  void expectEach(Expect e) { expect_ = std::move(e); }
+
+  bool exec(const agent::HttpRequest& req, agent::HttpResponse& out, std::string& err) override {
+    Recorded rec = record(req);
+    if (expect_) {
+      std::string why;
+      if (!expect_(rec, why)) failures_.push_back("request " + std::to_string(seen_.size()) + ": " + why);
+    }
+    Step s;
+    if (!nextStep(rec, s)) {
+      seen_.push_back(std::move(rec));
+      out.status = 0;
+      err = "ScriptedProvider: script exhausted (unexpected request " + std::to_string(seen_.size()) + " to " +
+            req.host + req.path + ")";
+      failures_.push_back(err);
+      return false;
+    }
+    seen_.push_back(std::move(rec));
+    if (clock) *clock += s.takesMs;
+    return answer(seen_.back(), s, out, err);
+  }
+
+  const std::vector<Recorded>& requests() const { return seen_; }
+  const Recorded& last() const { return seen_.back(); }
+  size_t remaining() const { return script_.size() - next_; }
+  bool allUsed() const { return next_ == script_.size(); }
+  const std::vector<std::string>& failures() const { return failures_; }
+
+  // Every request after the first keeps the one before it as a prefix (one turn's rounds).
+  bool allPrefixStable(std::string& why) const {
+    for (size_t i = 1; i < seen_.size(); ++i)
+      if (!isPrefix(seen_[i - 1].view, seen_[i].view, why)) {
+        why = "request " + std::to_string(i) + ": " + why;
+        return false;
+      }
+    return true;
+  }
+  // Every request pairs its calls and results.
+  bool allPaired(std::string& why) const {
+    for (size_t i = 0; i < seen_.size(); ++i)
+      if (!callsPaired(seen_[i].view, why)) {
+        why = "request " + std::to_string(i) + ": " + why;
+        return false;
+      }
+    return true;
+  }
+
+  uint32_t* clock = nullptr;   // advanced by each step's takesMs
+
+ private:
+  Recorded record(const agent::HttpRequest& req) const {
+    Recorded rec;
+    rec.req = req;
+    rec.body = agent::materializeBody(req);
+    rec.req.body = rec.body;
+    rec.req.splices.clear();
+    rec.dialect = dialect_;
+    if (!fixed_) dialectOfPath(req.path, rec.dialect);
+    rec.step = seen_.size();
+    parseRequest(rec.dialect, rec.body, rec.view);
+    return rec;
+  }
+
+  bool nextStep(const Recorded& rec, Step& out) {
+    if (next_ < script_.size()) {
+      out = script_[next_++];
+      return true;
+    }
+    if (!responder_) return false;
+    out = responder_(rec, seen_.size());
+    return true;
+  }
+
+  static bool answer(const Recorded& rec, const Step& s, agent::HttpResponse& out, std::string& err) {
+    if (s.transportCut) {
+      out.status = 0;
+      err = s.transportErr;
+      return false;
+    }
+    out.status = s.status;
+    out.headers = s.headers;
+    if (!s.rawBody.empty()) out.body = s.rawBody;
+    else if (s.status < 200 || s.status >= 300) out.body = s.errorBody.empty() ? renderError(rec.dialect, s.status) : s.errorBody;
+    else out.body = renderAnswer(rec.dialect, s, rec.step);
+    return true;
+  }
+
+  bool fixed_ = false;
+  Dialect dialect_ = Dialect::Anthropic;
+  std::vector<Step> script_;
+  size_t next_ = 0;
+  Responder responder_;
+  Expect expect_;
+  std::vector<Recorded> seen_;
+  std::vector<std::string> failures_;
+};
+
+}  // namespace scripted
+}  // namespace harness_test

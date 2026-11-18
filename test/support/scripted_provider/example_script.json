@@ -1,0 +1,8 @@
+{
+  "dialect": "anthropic",
+  "steps": [
+    {"text": "Let me look.", "calls": [{"name": "read_file", "args": {"path": "notes/boat.md"}}],
+     "usage": {"input": 1200, "output": 40, "cache_read": 900, "cache_write": 300}},
+    {"text": "Your boat is the Nereid II.", "usage": {"input": 60, "output": 12, "cache_read": 2100}}
+  ]
+}
