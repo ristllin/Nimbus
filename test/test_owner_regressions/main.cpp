@@ -865,7 +865,7 @@ struct OirFoldDevice {
     folds.begin(&blobIO);
     agent::FoldDriverHooks h;
     h.triggerBytes = [] { return 48u * 1024u; };
-    h.foldStepBytes = [] { return (size_t)53900; };
+    h.foldCycleBytes = [] { return (size_t)53900; };
     h.slice = [this](const std::string& chat, size_t cap, bool) {
       agent::FoldSlice s;
       const std::string thru = folds.get(chat).thru;
@@ -880,7 +880,10 @@ struct OirFoldDevice {
       return s;
     };
     h.tell = [this](const std::string&, const std::string& text) { told.push_back(text); };
-    h.alert = [this](const std::string&, const std::string& text) { told.push_back(text); };
+    h.alert = [this](const std::string&, const std::string& text) {
+      told.push_back(text);
+      return true;   // delivered (lane CTXR1: the day's alert is stamped only then)
+    };
     h.firmware = "5.1.2";
     FoldCtlIO io;
     io.load = [this] { return ctlText; };
