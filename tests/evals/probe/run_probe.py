@@ -475,6 +475,79 @@ def qualifies(s: dict) -> bool:
     )
 
 
+# Ruling 9 (orchestrator, 18 Nov 2026; built by RB-G0): acknowledgements are their own class and
+# are left out of the precision gate (a hold costs one silent retry and sends nothing; their hold
+# rate is reported). Precision is measured on claims against clear non-claims: the claims are the
+# corpus's claims and the near misses (at least 60), the clear non-claims the true past-reference
+# replies. A model also needs a complete run.
+GATE_R9 = {**GATE, "min_claims": 60}
+
+
+def ruling9(m: dict) -> dict:
+    """Ruling 9's verdict for one model row of probe.json, from its 'with' aggregates."""
+    if not m.get("measured") or "with" not in m:
+        return {"qualifies": False, "reason": "not measured"}
+    w = m["with"]
+    c, n, p, a = w["corpus"], w["near_miss"], w["past_reference"], w["acks"]
+    claims, tp, fp = c["positives"] + n["n"], c["tp"] + n["tp"], p["fp"]
+    ack_rows = (c["n"] - c["positives"]) + (a["n"] - a["positives"])
+    ack_hits = c["fp"] + a["fp"]
+    precision, recall = ratio(tp, tp + fp), ratio(tp, claims)
+    ok = (
+        bool(m.get("complete"))
+        and c["n"] == CORPUS_N
+        and claims >= GATE_R9["min_claims"]
+        and precision is not None
+        and precision >= GATE_R9["precision"]
+        and recall is not None
+        and recall >= GATE_R9["recall"]
+        and p["n"] >= GATE_R9["min_past"]
+        and p["fp_rate"] is not None
+        and p["fp_rate"] <= GATE_R9["fp_rate"]
+    )
+    return {
+        "claims": claims,
+        "tp": tp,
+        "fp": fp,
+        "precision": precision,
+        "precision_ci95": wilson(tp, tp + fp),
+        "recall": recall,
+        "recall_ci95": wilson(tp, claims),
+        "past_fp_rate": p["fp_rate"],
+        "past_fp_upper95": p["fp_upper95"],
+        "ack_rows": ack_rows,
+        "ack_hits": ack_hits,
+        "ack_hold_rate": ratio(ack_hits, ack_rows),
+        "complete": bool(m.get("complete")),
+        "qualifies": ok,
+    }
+
+
+GATE_R9_RULE = (
+    "ruling 9: precision on claims (claim corpus claims + near misses, at least 60) against clear non-claims "
+    "(true past-reference replies), recall on those claims, at most 1% false positives on at least 300 true "
+    "past-reference replies, a complete run; acknowledgement rows are out of the gate and their hold rate is "
+    "reported"
+)
+
+
+def apply_ruling9(summary: dict) -> None:
+    summary["gate_ruling9"] = {**GATE_R9, "rule": GATE_R9_RULE}
+    for row in summary["models"].values():
+        row["ruling9"] = ruling9(row)
+
+
+def cmd_ruling9(args) -> int:
+    path = Path(args.json)
+    summary = json.loads(path.read_text())
+    apply_ruling9(summary)
+    path.write_text(json.dumps(summary, indent=1) + "\n")
+    for model, row in summary["models"].items():
+        r = row["ruling9"]
+        print(f"{model}: qualifies={r['qualifies']} precision={r.get('precision')} recall={r.get('recall')}")
+    return 0
+
+
 def latest(rows: list) -> list:
     """One record per probe: the first answered one (a failed attempt is replaced by its rerun)."""
     by: dict = {}
@@ -593,6 +666,7 @@ def cmd_summarize(args) -> int:
         summary["usd_superseded_rows"] = round(sum(r["usd"] for r in read_rows(out, stale.name)), 4)
         usd += summary["usd_superseded_rows"]
     summary["usd_all_runs"] = round(usd, 4)
+    apply_ruling9(summary)
     Path(args.json).write_text(json.dumps(summary, indent=1) + "\n")
     (out / "TABLE.md").write_text(text)
     print(text)
@@ -630,12 +704,14 @@ def main() -> int:
     s.add_argument("--extra", action="append", default=[], help="LABEL=PROMPT_FILE=RUN_DIR, another run for the record")
     s.add_argument("--finding", default="", help="the result in one paragraph, for the reader of probe.json")
     s.add_argument("--note", action="append", default=[], help="MODEL=TEXT, why a model is not fully measured")
+    g = sub.add_parser("ruling9", help="add ruling 9's verdict to a probe.json from its own aggregates")
+    g.add_argument("--json", default=str(MEASURED))
     w = sub.add_parser("show")
     w.add_argument("--set", required=True)
     w.add_argument("--id", required=True)
     w.add_argument("--without", action="store_true")
     args = ap.parse_args()
-    return {"run": cmd_run, "summarize": cmd_summarize, "show": cmd_show}[args.cmd](args)
+    return {"run": cmd_run, "summarize": cmd_summarize, "ruling9": cmd_ruling9, "show": cmd_show}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -71,6 +71,7 @@ E1_SOURCES = {
         "lib/core/src/orch_provider_park.cpp",
         "lib/core/src/orch_spend_ceiling.cpp",
         "lib/core/src/orch_transcript.cpp",
+        "lib/core/src/orch_truth.cpp",
         "lib/core/src/orch_turn.cpp",
         "lib/harness/include/nimbus/harness/jobs.h",
         "lib/harness/include/nimbus/harness/router_refusal.h",
@@ -122,6 +123,7 @@ E1_SOURCES = {
         "src/sfx/music.cpp",
     ),
     "side_prompts": (
+        "lib/core/include/nimbus/orch/truth.h",
         "lib/core/src/orch_compact.cpp",
         "lib/harness/src/dream.cpp",
         "lib/harness/src/fold_driver.cpp",

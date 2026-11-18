@@ -351,3 +351,32 @@ deleted. Engine 2 has no baseline.
   no-harness-lines gate runs with an empty allowlist. The same rewording of the shortened-speech
   note ("Note: the spoken version was shortened to the first N of its M characters.",
   orch_voice_notes.cpp) is outside the catalog's sources and changes no class.
+
+### PC-0011: the truth probe's system text (RB-M0c's measured prompt v1)
+- catalog: e1
+- class: side_prompts
+- kind: spec
+- bytes: 8078 -> 9374
+- sha8: 14424ae7 -> 897e5bc2
+- lane: RB-G0
+- prd: section 8 (rail 8, the truth check: the probe prompt is in the model-text catalog)
+- why: the truth check that replaces the deleted claim scanner asks one small-model probe question
+  after the head loop. Its system text is tests/evals/probe/prompt.txt byte for byte (1,296 B,
+  measured by RB-M0c and qualified under ruling 9), held in lib/core/include/nimbus/orch/truth.h;
+  test_truth fails if the two differ. Planned work (ruling 18), not a fix.
+
+### PC-0012: the truth check's facts item, probe frame and receipt line
+- catalog: e1
+- class: device_notes
+- kind: spec
+- bytes: 53828 -> 54170
+- sha8: ab262df9 -> aed45072
+- lane: RB-G0
+- prd: section 8 (rail 8: the facts-only device item of a hold, the failed-write receipt line) and
+  section 9 (the receipt is one of the listed harness-written messages)
+- why: lib/core/src/orch_truth.cpp: the frame of the facts-only item a held reply gets ("[device]
+  effects this turn: ... Recent: ...", what the device did and nothing else), the four section tags
+  of the probe's user message (RB-M0c's render) and the words of the failed-write receipt line
+  ("Note: the ledger change in this reply did not go through (...)"); and in
+  lib/harness/src/engine.cpp, when linked, the words of the probe's view of an answer's own fields
+  and of apply's outcome ("with this reply: ", "spawn ", "not stored"). Planned work (ruling 18), not a fix.

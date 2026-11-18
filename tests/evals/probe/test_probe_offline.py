@@ -284,6 +284,69 @@ class Scoring(unittest.TestCase):
         self.assertEqual(run_probe.latest([b, a]), [b])
 
 
+class Ruling9(unittest.TestCase):
+    def row(self, **kw):
+        """A probe.json model row; kw overrides the 'with' aggregates."""
+        c = {
+            "c_pos": 16,
+            "c_tp": 16,
+            "c_n": 34,
+            "c_fp": 4,
+            "nm_n": 80,
+            "nm_tp": 80,
+            "past_n": 350,
+            "past_fp": 0,
+            "acks_n": 48,
+            "acks_pos": 24,
+            "acks_fp": 1,
+            "complete": True,
+            **kw,
+        }
+        past_rate = run_probe.ratio(c["past_fp"], c["past_n"])
+        return {
+            "measured": True,
+            "complete": c["complete"],
+            "with": {
+                "corpus": {"n": c["c_n"], "positives": c["c_pos"], "tp": c["c_tp"], "fp": c["c_fp"]},
+                "near_miss": {"n": c["nm_n"], "tp": c["nm_tp"]},
+                "past_reference": {
+                    "n": c["past_n"],
+                    "fp": c["past_fp"],
+                    "fp_rate": past_rate,
+                    "fp_upper95": run_probe.upper95(c["past_fp"], c["past_n"]),
+                },
+                "acks": {"n": c["acks_n"], "positives": c["acks_pos"], "fp": c["acks_fp"]},
+            },
+        }
+
+    def test_acknowledgements_are_out_of_the_gate_and_reported(self):
+        r = run_probe.ruling9(self.row())
+        self.assertTrue(r["qualifies"])
+        self.assertEqual(r["claims"], 96)
+        self.assertEqual(r["precision"], 1.0)
+        self.assertEqual((r["ack_rows"], r["ack_hits"]), (18 + 24, 5))
+        # Under the old gate the same row fails on the four acknowledgement hits.
+        self.assertLess(16 / 20, run_probe.GATE["precision"])
+
+    def test_each_threshold_flips_it(self):
+        q = lambda **kw: run_probe.ruling9(self.row(**kw))["qualifies"]  # noqa: E731
+        self.assertFalse(q(complete=False))
+        self.assertFalse(q(nm_n=43, nm_tp=43))  # 59 claims: too few for the bound
+        self.assertTrue(q(nm_n=44, nm_tp=44))
+        self.assertFalse(q(nm_tp=60))  # recall 76/96 = 0.79
+        self.assertFalse(q(past_fp=4))  # 4/350: precision 96/100 passes, fp rate 1.14% fails
+        self.assertTrue(q(past_fp=3))
+        self.assertFalse(q(past_n=299, past_fp=0))
+        self.assertFalse(q(c_n=33))  # a corpus row went unanswered
+        self.assertFalse(run_probe.ruling9({"measured": False})["qualifies"])
+
+    def test_precision_counts_past_reference_hits(self):
+        r = run_probe.ruling9(self.row(nm_n=44, nm_tp=44, past_n=1000, past_fp=4))
+        self.assertEqual(r["fp"], 4)
+        self.assertEqual(r["precision"], run_probe.ratio(60, 64))
+        self.assertFalse(r["qualifies"])  # 0.9375
+
+
 class Measured(unittest.TestCase):
     def test_committed_measurement_is_consistent(self):
         if not run_probe.MEASURED.exists():
@@ -297,6 +360,12 @@ class Measured(unittest.TestCase):
             self.assertEqual(row["qualifies_without_recent"], run_probe.qualifies(row["without"]), name)
             self.assertGreaterEqual(row["with"]["past_reference"]["n"], 300, name)
             self.assertEqual(row["with"]["corpus"]["n"], 34, name)
+            self.assertEqual(row["ruling9"], run_probe.ruling9(row), name)
+        self.assertIn("gate_ruling9", m)
+        # Ruling 9: haiku qualifies; the partial runs do not.
+        self.assertTrue(m["models"]["claude-haiku-5-5"]["ruling9"]["qualifies"])
+        for name in ("gpt-5.6-luna", "glm-5.3-flash", "mistral-small-latest"):
+            self.assertFalse(m["models"][name]["ruling9"]["qualifies"], name)
 
 
 if __name__ == "__main__":

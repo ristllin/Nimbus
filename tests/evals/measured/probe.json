@@ -316,6 +316,28 @@
     "malformed": 0,
     "lenient": 1,
     "usd": 0.0424
+   },
+   "ruling9": {
+    "claims": 96,
+    "tp": 96,
+    "fp": 0,
+    "precision": 1.0,
+    "precision_ci95": [
+     0.9615,
+     1.0
+    ],
+    "recall": 1.0,
+    "recall_ci95": [
+     0.9615,
+     1.0
+    ],
+    "past_fp_rate": 0.0,
+    "past_fp_upper95": 0.0085,
+    "ack_rows": 42,
+    "ack_hits": 4,
+    "ack_hold_rate": 0.0952,
+    "complete": true,
+    "qualifies": true
    }
   },
   "gpt-5.6-luna": {
@@ -611,7 +633,29 @@
     "lenient": 0,
     "usd": 0.0472
    },
-   "note": "OpenAI credit ran out at 05:50 UTC: answered 898 of 1,024 probes on the shipped prompt (the 15 regenerated past-reference rows, the acks and the stress sets are unanswered)"
+   "note": "OpenAI credit ran out at 05:50 UTC: answered 898 of 1,024 probes on the shipped prompt (the 15 regenerated past-reference rows, the acks and the stress sets are unanswered)",
+   "ruling9": {
+    "claims": 96,
+    "tp": 96,
+    "fp": 1,
+    "precision": 0.9897,
+    "precision_ci95": [
+     0.9439,
+     0.9982
+    ],
+    "recall": 1.0,
+    "recall_ci95": [
+     0.9615,
+     1.0
+    ],
+    "past_fp_rate": 0.003,
+    "past_fp_upper95": 0.0141,
+    "ack_rows": 18,
+    "ack_hits": 6,
+    "ack_hold_rate": 0.3333,
+    "complete": false,
+    "qualifies": false
+   }
   },
   "glm-5.3-flash": {
    "measured": true,
@@ -754,12 +798,38 @@
     "lenient": 0,
     "usd": 0.0
    },
-   "note": "Z.ai balance ran out at about 05:38 UTC: answered 367 probes (with recent effects only: corpus 34, past-reference 333); the without condition, near misses, acks and stress are unmeasured"
+   "note": "Z.ai balance ran out at about 05:38 UTC: answered 367 probes (with recent effects only: corpus 34, past-reference 333); the without condition, near misses, acks and stress are unmeasured",
+   "ruling9": {
+    "claims": 16,
+    "tp": 16,
+    "fp": 2,
+    "precision": 0.8889,
+    "precision_ci95": [
+     0.672,
+     0.969
+    ],
+    "recall": 1.0,
+    "recall_ci95": [
+     0.8064,
+     1.0
+    ],
+    "past_fp_rate": 0.006,
+    "past_fp_upper95": 0.0188,
+    "ack_rows": 18,
+    "ack_hits": 3,
+    "ack_hold_rate": 0.1667,
+    "complete": false,
+    "qualifies": false
+   }
   },
   "mistral-small-latest": {
    "measured": false,
    "qualifies": false,
-   "reason": "not measured: Mistral keys are exhausted (orchestrator rulings, item 7); Mistral heads stay receipt-only until a funded run (RB-MQ)"
+   "reason": "not measured: Mistral keys are exhausted (orchestrator rulings, item 7); Mistral heads stay receipt-only until a funded run (RB-MQ)",
+   "ruling9": {
+    "qualifies": false,
+    "reason": "not measured"
+   }
   }
  },
  "seconds_p50_all": 0.81,
@@ -1480,5 +1550,13 @@
   }
  },
  "usd_superseded_rows": 0.0089,
- "usd_all_runs": 0.4373
+ "usd_all_runs": 0.4373,
+ "gate_ruling9": {
+  "precision": 0.95,
+  "recall": 0.8,
+  "fp_rate": 0.01,
+  "min_past": 300,
+  "min_claims": 60,
+  "rule": "ruling 9: precision on claims (claim corpus claims + near misses, at least 60) against clear non-claims (true past-reference replies), recall on those claims, at most 1% false positives on at least 300 true past-reference replies, a complete run; acknowledgement rows are out of the gate and their hold rate is reported"
+ }
 }
