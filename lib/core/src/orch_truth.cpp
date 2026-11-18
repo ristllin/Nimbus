@@ -627,6 +627,16 @@ std::string TurnCheck::atFinal(const std::string& reply, bool canHold) {
   return factsItem(t_.now, recentLines(t_.recent, t_.nowEpoch, t_.utcOffsetSec));
 }
 
+void TurnCheck::finishHeld(Outcome& o, bool roundReplied, bool failed) {
+  o.retried = roundReplied && !blank(o.reply);
+  ++(o.retried ? c_->retryReplies : c_->retryFailed);
+  if (!o.retried) o.reply = firstReply_;
+  if (!failed) return;
+  // The receipt question about the reply that is delivered: the round's, else the first
+  // (which the probe already said reports success).
+  receiptAfter(o.retried ? ask(t_, t_.now, o.reply, probe_, *c_, o) : Verdict::Yes, t_.now, *c_, o);
+}
+
 Outcome TurnCheck::finish(const std::string& reply, bool roundReplied) {
   if (c_ && !asked_) atFinal(reply, false);   // the loop never asked (a single shot, a used round)
   Outcome o = o_;
@@ -640,12 +650,7 @@ Outcome TurnCheck::finish(const std::string& reply, bool roundReplied) {
     if (failed) receiptAfter(ask(t_, t_.now, reply, probe_, *c_, o), t_.now, *c_, o);
     else o.shadowDue = true;
   } else if (o.held) {
-    o.retried = roundReplied && !blank(reply);
-    ++(o.retried ? c_->retryReplies : c_->retryFailed);
-    if (!o.retried) o.reply = firstReply_;
-    // The receipt question about the reply that is delivered: the round's, else the first
-    // (which the probe already said reports success).
-    if (failed) receiptAfter(o.retried ? ask(t_, t_.now, o.reply, probe_, *c_, o) : Verdict::Yes, t_.now, *c_, o);
+    finishHeld(o, roundReplied, failed);
   } else if (failed) {
     receiptAfter(first_, t_.now, *c_, o);
   }

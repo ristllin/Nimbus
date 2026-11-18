@@ -313,6 +313,7 @@ class TurnCheck {
   Truth mode() const;   // the turn's effective mode (receipt-only when tainted or ring unknown)
 
  private:
+  void finishHeld(Outcome& o, bool roundReplied, bool failed);
   Binding* binding_ = nullptr;
   std::string chatId_, host_, firstReply_;
   Turn t_;
