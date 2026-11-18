@@ -59,6 +59,31 @@ python3 tools/release_gate/check_lane_files.py [--declared PR_BODY.md]   # lane 
 - Lane files: the branch changes only files of its entry in `tools/engine/owners.json`.
   `--overlaps` lists paths two lanes own; `--check-plan PLAN.json` checks the table covers the plan.
 
+## The no-prompt-patch rule (RB-B5)
+
+A fix may not add prompt text, a guard, or an instruction inside a tool result (PRD section 11).
+Two host checks enforce it over every model-facing string; both run in `run_gate.py`'s host checks
+and, through their tests, in `pytest tools/release_gate`.
+
+```
+python3 tools/release_gate/gen_model_text_catalog.py [--write | --summary]   # MODEL TEXT CATALOG GREEN|RED
+python3 tools/release_gate/check_no_prompt_patch.py [--base REF]             # NO PROMPT PATCH GREEN|RED
+python3 tools/release_gate/check_tool_result_imperatives.py [--base REF]     # TOOL RESULT IMPERATIVES GREEN|RED
+```
+
+- The generator extracts the text into `test/golden/model_text_catalog_e1.txt` (engine 1: the prose
+  literals of the files it lists, by class) and, once `plain/texts.h` exists,
+  `test/golden/model_text_catalog.txt` (engine 2: by namespace), each class with a byte ceiling.
+  A file that builds a tool result or registers a tool must be listed.
+- The gate fails a stale golden, a class over its ceiling, and any change to a class's text without
+  its entry in `coverage/PROMPT-CHANGES.md` (the ledger: growth fails, a byte-neutral swap needs a
+  red scenario id, the commit where it was red and the parity rates). With a git base (the merge
+  base with rb-main or main, or `--base`) it also fails an edited merged entry and a remove entry
+  that hides added text. In a checkout with no history (GitHub's shallow clone) those history checks
+  are skipped; elsewhere a missing base fails.
+- The lint fails a tool result or error template that gives the model an order; engine 1's existing
+  ones are listed in the ledger's imperative baseline, which only shrinks.
+
 ## Running it
 
 The tg_poll stack budget, on a built image (needs the PlatformIO Xtensa toolchain and ROM ELF,

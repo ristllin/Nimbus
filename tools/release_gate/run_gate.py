@@ -30,6 +30,7 @@ import check_elf_symbols
 import check_engine_filter
 import check_image_size
 import check_lwip_core_lock
+import check_no_prompt_patch
 import check_ota_preserves_nvs
 import check_owner_regressions
 import check_release_notes
@@ -39,6 +40,7 @@ import check_storm_evidence
 import check_test_console_guard
 import check_tls_sni
 import check_tg_poll_stack
+import check_tool_result_imperatives
 import model_id_lint
 
 HARDWARE_BATTERY = """\
@@ -158,6 +160,8 @@ def run_host_checks() -> bool:
         ("tls names the host (SNI)", check_tls_sni.main),
         ("release notes line (D5)", check_release_notes.main),
         ("owner regressions (p18-REGR)", check_owner_regressions.main),
+        ("no prompt patch: model-text catalog, ceilings, ledger (RB-B5)", check_no_prompt_patch.main),
+        ("tool results state facts, not orders (RB-B5)", check_tool_result_imperatives.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))

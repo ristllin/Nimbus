@@ -19,6 +19,14 @@ another lane: its test existed then and was marked EXPECTED-FAIL, and the train 
 that lane landed (TASK.md item 2a). No row carries it now: UPSERT (0cefb9d3), FSCAP (fd75210d)
 and PROG (a305cbfc) all landed before this lane did.
 
+Row format from OIR-56 on (the no-prompt-patch rule, PRD section 11, checked by
+tools/release_gate/check_no_prompt_patch.py): every owner-visible failure gets a red multi-turn
+scenario before its fix, so the live case column names a scenario id that resolves under
+tests/evals/**/scenarios (an `lc-*` case or a parity scenario), and "n/a" is not accepted. The
+root cause says why the product did the wrong thing; a missing check, guard or test is not a
+root cause. A fix that changes model-facing text also logs its entry in coverage/PROMPT-CHANGES.md.
+Rows OIR-01 to OIR-55 predate the rule and keep their columns.
+
 | ID | Date(s) | Owner-visible failure (paraphrased) | Class | Root cause | Fix | Deterministic guard | Live case |
 |---|---|---|---|---|---|---|---|
 | OIR-01 | 28-30 Oct | Commute brief arrived late and carried food/quiz text the routine prompt never asked for | routine content | routine prompt not followed; sub-agent output unverifiable | live-met on bf40a3ed (REGR-RUN-2: 5/5 on claude-haiku-5-5 and glm-5.3; no single owning commit); xfail flipped to required | oir_01 (loop_delivery), test_orch_loops, test_loop_delivery | lc-routine-content |

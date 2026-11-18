@@ -1,0 +1,41 @@
+# Review owners (PRD section 11, the rule that stops prompt-patching). A change to any path
+# below needs the owner's review: the text a model reads, the gate that bounds it, and the
+# battery's property tests that decide whether the plain engine keeps the conversation.
+
+# Model-facing text and its gate
+/lib/harness/include/nimbus/harness/plain/texts.h      @ristllin
+/lib/harness/src/plain_request.cpp                      @ristllin
+/lib/core/src/orch_tool_groups.cpp                      @ristllin
+/test/golden/model_text_catalog.txt                     @ristllin
+/test/golden/model_text_catalog_e1.txt                  @ristllin
+/test/golden/plain_prompt_core.txt                      @ristllin
+/coverage/PROMPT-CHANGES.md                             @ristllin
+/coverage/OWNER-ISSUES-REGISTER.md                      @ristllin
+/lib/harness/src/builtin_skills.cpp                     @ristllin
+/tools/release_gate/gen_model_text_catalog.py           @ristllin
+/tools/release_gate/check_no_prompt_patch.py            @ristllin
+/tools/release_gate/check_tool_result_imperatives.py    @ristllin
+/tools/release_gate/check_plain_ceilings.py             @ristllin
+
+# The battery's property tests and the reference-loop parity suite
+/test/test_tx_*/                                        @ristllin
+/test/test_plain_*/                                     @ristllin
+/test/test_seen_index/                                  @ristllin
+/test/test_tg_peek/                                     @ristllin
+/test/test_ledger*/                                     @ristllin
+/test/test_file_tools/                                  @ristllin
+/test/test_path_rules/                                  @ristllin
+/test/test_notes/                                       @ristllin
+/test/test_view_search/                                 @ristllin
+/test/test_tool_groups/                                 @ristllin
+/test/test_unattended_policy/                           @ristllin
+/test/test_truth/                                       @ristllin
+/test/test_effect_ring/                                 @ristllin
+/test/test_delivery_bytes/                              @ristllin
+/test/test_head_qual/                                   @ristllin
+/test/test_budget_governor/                             @ristllin
+/test/test_spend_guard/                                 @ristllin
+/test/pending_roster.txt                                @ristllin
+/tests/evals/refloop/                                   @ristllin
+/tests/evals/owner_regressions/                         @ristllin
+/tools/refloop/                                         @ristllin

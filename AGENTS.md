@@ -406,6 +406,20 @@ It is done when it is verified, clean, documented, and reviewed.
    it as a blocking issue, not a line buried in a PR comment. A deferred head-host key
    gap noted as an aside (CUM-201) shipped and re-surfaced as a dead end for the
    flagship one-key path (CUM-242).
+9. **A fix never adds model-facing text (the no-prompt-patch rule, PRD section 11).**
+   Months of fixes each added prompt text or a guard, and each pushed more of the
+   conversation out of the request. A fix changes a tool, the transcript, or the model and
+   profile; it does not add prompt text, a guard, or an instruction inside a tool result.
+   Every owner-visible failure gets a red multi-turn scenario before its fix, and "missing
+   check" is not a root cause. `tools/release_gate/gen_model_text_catalog.py` extracts every
+   model-facing string (system text, device notes, tool descriptions, tool result and error
+   templates, side prompts, built-in skills; engine 2 from `plain/texts.h`) into the generated
+   goldens `test/golden/model_text_catalog_e1.txt` and `model_text_catalog.txt`, with a byte
+   ceiling per class. `check_no_prompt_patch.py` fails growth in any class, and any change to
+   a class's text that has no entry in `coverage/PROMPT-CHANGES.md`; a byte-neutral swap needs
+   the red scenario id, the commit where it was red, and the parity rates before and after.
+   `check_tool_result_imperatives.py` fails a tool result that gives an order. Touched a
+   string a model reads? Run `gen_model_text_catalog.py --write`, read the diff, and log it.
 
 Licensing, the Developer Certificate of Origin, and first-contribution ideas are in
 [CONTRIBUTING.md](CONTRIBUTING.md). Security issues go through
