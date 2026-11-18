@@ -331,6 +331,7 @@ void AppendLogEpisodicStore::addMessage(const EpisodicMessage& m) {
   IdxRec r = recordOf(m);
   r.offset = (uint32_t)off;
   r.len = (uint32_t)line.size();
+  growForLiveRow();
   index_.push_back(r);
   maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
   recent_.push_back(cacheOf(m));
@@ -350,12 +351,44 @@ int AppendLogEpisodicStore::flushHeld(int maxRows) {
     IdxRec r = std::move(h.rec);
     r.offset = (uint32_t)off;
     r.len = (uint32_t)h.line.size();
+    growForLiveRow();
     index_.push_back(std::move(r));
     held_.erase(held_.begin());
     if (unpersisted_ > 0) unpersisted_--;
     written++;
   }
   return written;
+}
+
+// ---- index growth (candidate 6, revised) ------------------------------------
+void AppendLogEpisodicStore::topUpIndex() {
+  if (index_.capacity() - index_.size() >= (size_t)kIndexFreeSlots) return;
+  try {
+    index_.reserve(index_.size() + kIndexGrowRows);   // strong guarantee: refused, nothing changed
+  } catch (const std::bad_alloc&) {
+  }
+}
+
+void AppendLogEpisodicStore::growForLiveRow() {
+  topUpIndex();
+  if (index_.size() == index_.capacity()) index_.reserve(index_.size() + kIndexGrowRows);
+}
+
+bool AppendLogEpisodicStore::backfillRoom(int sliceRows) {
+  const int room = std::min(sliceRows, indexCap_ - (int)index_.size());
+  if (room <= 0 || index_.capacity() - index_.size() >= (size_t)room) return true;
+  try {
+    index_.reserve(index_.size() + kIndexGrowRows);   // strong guarantee: refused, nothing changed
+  } catch (const std::bad_alloc&) {
+    return false;
+  }
+  return true;
+}
+
+bool AppendLogEpisodicStore::backfillRefused() {
+  if (++bfMemRefusals_ < kBackfillMaxReadErrors) return true;   // no progress this step; later
+  bfStats_.stalled = true;   // the existing stop: incomplete for this boot, the device logs it once
+  return false;
 }
 
 bool AppendLogEpisodicStore::indexRowPasses(const MsgQuery& q, const IdxRec& r,
@@ -1331,6 +1364,7 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
 
 // ---- index backfill ---------------------------------------------------------
 void AppendLogEpisodicStore::resetBackfill() {
+  bfMemRefusals_ = 0;
   bfInit_ = false;
   bfDays_.clear();
   bfPos_ = 0;
@@ -1341,10 +1375,16 @@ void AppendLogEpisodicStore::resetBackfill() {
 }
 
 bool AppendLogEpisodicStore::backfillStep(size_t sliceBytes, int sliceRows) {
+  topUpIndex();   // free slots for live appends, also once the backfill is done
   if (!hydrateTruncated_) { bfStats_.complete = true; return false; }
   if (bfStats_.capped || bfStats_.stalled) return false;
   if (sliceBytes == 0) sliceBytes = kBackfillSliceBytes;
   if (sliceRows <= 0) sliceRows = kBackfillSliceRows;
+  // The slice's room first, before anything is read, decoded or moved (the bench crash was
+  // this insert doubling the index under ballast). A refused reserve leaves the vector as it
+  // was: no progress this step, tried again on a later one.
+  if (!backfillRoom(sliceRows)) return backfillRefused();
+  bfMemRefusals_ = 0;
   if (!bfInit_) {
     // Captured once: the walk only ever moves to OLDER days, and days older than
     // the cursor can only disappear (retention), never appear. A day that
