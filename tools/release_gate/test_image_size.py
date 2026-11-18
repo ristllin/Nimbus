@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import struct
+import subprocess
 
 import pytest
 
@@ -278,9 +279,9 @@ def allowance_root(tmp_path, budgets=None, base_image=6_000_000, base_docs=DOCS)
     return root, baseline, budget_dir
 
 
-def allowance(root, baseline, budget_dir, lane, ancestor=True):
+def allowance(root, baseline, budget_dir, lane, build_id=None):
     build_dir = os.path.join(root, ".pio", "build")
-    return gate.check_allowance(build_dir, lane, baseline, budget_dir, is_ancestor=lambda sha: ancestor)
+    return gate.check_allowance(build_dir, lane, baseline, budget_dir, build_id=build_id)
 
 
 def budget(lane, n, why="measured from the map delta", **envs):
@@ -385,11 +386,64 @@ def test_counter_malformed_budget_file_fails(tmp_path, row):
     assert any("RB-X.json" in f for f in fails)
 
 
-def test_counter_baseline_from_another_line_fails(tmp_path):
+def test_counter_image_from_another_build_fails(tmp_path):
+    # A stale .pio directory: the bin does not carry this commit's build id.
     root, baseline, bdir = allowance_root(tmp_path)
-    ok, _, fails = allowance(root, baseline, bdir, "RB-Y", ancestor=False)
+    ok, _, fails = allowance(root, baseline, bdir, "RB-Y", build_id="v5.1.1-99-gabcdef12")
     assert not ok
-    assert any("not an ancestor" in f for f in fails)
+    assert any("not this commit's build" in f for f in fails)
+
+
+def git_out(root, *args):
+    return subprocess.run(["git", "-C", root, *args], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def commit_file(root, rel, text):
+    p = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(text)
+    git_out(root, "add", "-A")
+    git_out(root, "commit", "-q", "-m", rel)
+    return git_out(root, "rev-parse", "HEAD")
+
+
+def baseline_repo(tmp_path):
+    """rb-main with a recorded baseline commit; returns (root, recorded sha)."""
+    root = str(tmp_path / "g")
+    os.makedirs(root)
+    git_out(root, "init", "-q", "-b", "rb-main")
+    git_out(root, "config", "user.email", "t@example.invalid")
+    git_out(root, "config", "user.name", "t")
+    sha = commit_file(root, "src/main.cpp", "int main() {}\n")
+    commit_file(root, "tools/release_gate/image_baseline.json", "{}\n")  # the record commit
+    return root, sha
+
+
+def test_fresh_baseline_has_no_problems(tmp_path):
+    root, sha = baseline_repo(tmp_path)
+    commit_file(root, "docs/a.md", "docs\n")  # docs only: the baseline stays current
+    git_out(root, "checkout", "-q", "-b", "lane/RB-X")
+    commit_file(root, "src/main.cpp", "int main() { return 1; }\n")  # the lane's own change
+    assert gate.git_baseline_problems(root, "rb-main")(sha) == []
+
+
+def test_counter_baseline_not_re_recorded_after_a_merge_fails(tmp_path):
+    # Another lane merged firmware code after the record: its bytes would count for this lane.
+    root, sha = baseline_repo(tmp_path)
+    commit_file(root, "lib/core/src/orch_x.cpp", "int x;\n")
+    git_out(root, "checkout", "-q", "-b", "lane/RB-X")
+    problems = gate.git_baseline_problems(root, "rb-main")(sha)
+    assert problems and "stale" in problems[0] and "lib/core/src/orch_x.cpp" in problems[0]
+
+
+def test_counter_baseline_from_another_line_fails(tmp_path):
+    root, _ = baseline_repo(tmp_path)
+    git_out(root, "checkout", "-q", "--orphan", "other")
+    other = commit_file(root, "src/main.cpp", "other\n")
+    git_out(root, "checkout", "-q", "rb-main")
+    problems = gate.git_baseline_problems(root, "rb-main")(other)
+    assert problems and "not an ancestor" in problems[0]
 
 
 def test_counter_nothing_built_fails(tmp_path):

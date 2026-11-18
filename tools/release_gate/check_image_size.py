@@ -42,6 +42,7 @@ import argparse
 import configparser
 import glob
 import json
+import mmap
 import os
 import struct
 import subprocess
@@ -268,8 +269,8 @@ def measure(env_dir: str, tables: "list[dict]") -> "dict[str, int]":
     elf = os.path.join(env_dir, "firmware.elf")
     if not os.path.isfile(elf):
         raise ValueError(f"{elf} is missing: the docs pack is measured from the ELF beside firmware.bin")
-    with open(elf, "rb") as fh:
-        docs, _ = docs_pack_bytes(fh.read(), tables)
+    with open(elf, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as blob:
+        docs, _ = docs_pack_bytes(blob, tables)  # type: ignore[arg-type]
     return {"image_bytes": image, "docs_pack_bytes": docs, "code_bytes": image - docs}
 
 
@@ -326,15 +327,31 @@ def judge_env(env: str, now: "dict[str, int]", base: "dict[str, int]", allow: in
     return line, f"{env}: code grew {delta:+d} B against the baseline, {delta - allow} B over the allowance {allow} B"
 
 
-def check_allowance(build_dir: str, lane: str, baseline_path: str, budget_dir: str, is_ancestor=None):
-    """(ok, report lines, failures) for one lane's images against the recorded baseline."""
+def built_from(env_dir: str, build_id: "str | None") -> "str | None":
+    """A problem when firmware.bin does not carry this commit's build id (a stale .pio)."""
+    if not build_id:
+        return None
+    with open(os.path.join(env_dir, "firmware.bin"), "rb") as fh:
+        if build_id.encode() in fh.read():
+            return None
+    return f"firmware.bin is not this commit's build (no {build_id} inside): build it first"
+
+
+def check_allowance(
+    build_dir: str, lane: str, baseline_path: str, budget_dir: str, baseline_problems=None, build_id=None
+):
+    """(ok, report lines, failures) for one lane's images against the recorded baseline.
+
+    baseline_problems(sha) -> list of problems with the recorded baseline (git: ancestry, staleness);
+    build_id, when given, must be inside every measured firmware.bin.
+    """
     with open(baseline_path, encoding="utf-8") as fh:
         baseline = json.load(fh)
     budget, fails = load_budget(budget_dir, lane)
     usable = None if fails else budget  # a malformed file grants nothing
     lines = [f"{lane}: " + ("no budget file: allowance 0 B" if budget is None else f"budget {lane}.json")]
-    if is_ancestor is not None and not is_ancestor(baseline["sha"]):
-        fails.append(f"baseline {baseline['sha'][:12]} is not an ancestor of HEAD: record it on this line")
+    if baseline_problems is not None:
+        fails += baseline_problems(baseline["sha"])
     checked = 0
     for env, base in sorted(baseline["envs"].items()):
         env_dir = os.path.join(build_dir, env)
@@ -342,6 +359,9 @@ def check_allowance(build_dir: str, lane: str, baseline_path: str, budget_dir: s
             continue
         checked += 1
         try:
+            stale = built_from(env_dir, build_id)
+            if stale:
+                raise ValueError(stale)
             now = measure(env_dir, baseline["docs_pack_tables"])
         except (OSError, ValueError) as e:
             fails.append(f"{env}: {e}")
@@ -355,18 +375,53 @@ def check_allowance(build_dir: str, lane: str, baseline_path: str, budget_dir: s
     return not fails, lines, fails
 
 
-def git_is_ancestor(root: str):
-    def check(sha: str) -> bool:
-        r = subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", sha, "HEAD"], capture_output=True)
-        return r.returncode == 0
+# Paths whose change moves code bytes. The generated docs packs only move docs bytes.
+FIRMWARE_PATHS = ("src/", "lib/", "include/", "platformio.ini", "partitions")
+DOCS_PACK_HEADERS = ("lib/core/include/nimbus/docs_pack_data.h", "lib/core/include/nimbus/docs_pack_e2_data.h")
 
-    return check
+
+def git(root: str, *args: str) -> "tuple[int, str]":
+    r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    return r.returncode, (r.stdout if r.returncode == 0 else r.stderr).strip()
+
+
+def default_base_ref(root: str) -> str:
+    return "rb-main" if git(root, "rev-parse", "--verify", "-q", "rb-main^{commit}")[0] == 0 else "main"
+
+
+def git_baseline_problems(root: str, base_ref: str):
+    """The baseline must be on this line and current at the lane's merge base: no firmware
+    source may change between the recorded sha and merge-base(HEAD, base_ref)."""
+
+    def problems(sha: str) -> "list[str]":
+        if git(root, "merge-base", "--is-ancestor", sha, "HEAD")[0] != 0:
+            return [f"baseline {sha[:12]} is not an ancestor of HEAD: record it on this line"]
+        rc, mb = git(root, "merge-base", "HEAD", base_ref)
+        if rc != 0:
+            return [f"cannot find the merge base of HEAD and '{base_ref}': {mb}"]
+        rc, out = git(root, "diff", "--name-only", sha, mb)
+        moved = [f for f in out.splitlines() if f.startswith(FIRMWARE_PATHS) and f not in DOCS_PACK_HEADERS]
+        if moved:
+            return [
+                f"baseline {sha[:12]} is stale: {len(moved)} firmware file(s) changed before this lane's merge base "
+                f"(first {moved[0]}); re-record it on {base_ref} with --record-baseline"
+            ]
+        return []
+
+    return problems
+
+
+def git_build_id(root: str) -> "str | None":
+    """The id tools/git_version.py writes into the image (git describe, no -dirty)."""
+    rc, out = git(root, "describe", "--tags", "--always", "--match", "v[0-9]*")
+    return out if rc == 0 and out else None
 
 
 def run_allowance(args, root: str, build_dir: str) -> int:
-    ancestry = None if args.no_ancestry else git_is_ancestor(root)
+    probe = None if args.no_ancestry else git_baseline_problems(root, args.base_ref or default_base_ref(root))
+    want = None if args.no_ancestry else git_build_id(root)
     try:
-        ok, lines, fails = check_allowance(build_dir, args.lane, args.baseline, args.budget_dir, ancestry)
+        ok, lines, fails = check_allowance(build_dir, args.lane, args.baseline, args.budget_dir, probe, want)
     except (OSError, ValueError, KeyError) as e:
         ok, lines, fails = False, [], [f"cannot read {args.baseline}: {e}"]
     for line in lines:
@@ -378,10 +433,23 @@ def run_allowance(args, root: str, build_dir: str) -> int:
 
 
 def run_record(args, root: str, build_dir: str) -> int:
-    sha = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    with open(args.baseline, encoding="utf-8") as fh:
-        old = json.load(fh)
-    row = record_baseline(build_dir, sha, args.baseline, old["docs_pack_tables"], old.get("about", ""))
+    rc, sha = git(root, "rev-parse", "HEAD")
+    want = git_build_id(root)
+    try:
+        with open(args.baseline, encoding="utf-8") as fh:
+            old = json.load(fh)
+        stale = [
+            env for env in sorted(os.listdir(build_dir)) if os.path.isfile(os.path.join(build_dir, env, "firmware.bin"))
+        ]
+        stale = [env for env in stale if built_from(os.path.join(build_dir, env), want)]
+        if rc != 0 or not want or stale:
+            raise ValueError(
+                f"not every built image is this commit's ({', '.join(stale) or 'no git id'}): build them first"
+            )
+        row = record_baseline(build_dir, sha, args.baseline, old["docs_pack_tables"], old.get("about", ""))
+    except (OSError, ValueError, KeyError) as e:
+        print(f"{ATAG} FAIL: cannot record the baseline: {e}")
+        return 1
     for env, e in row["envs"].items():
         print(f"{ATAG} recorded {env}: {e} at {sha[:12]}")
     return 0 if row["envs"] else 1
@@ -403,6 +471,9 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--baseline", default=BASELINE, help="recorded baseline (default: image_baseline.json)")
     ap.add_argument("--budget-dir", default=BUDGET_DIR, help="lane budget files (default: image_budget.d)")
     ap.add_argument("--record-baseline", action="store_true", help="re-record the baseline from the built images")
+    ap.add_argument(
+        "--base-ref", help="integration branch for the baseline freshness check (default rb-main, else main)"
+    )
     ap.add_argument("--no-ancestry", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 

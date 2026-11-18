@@ -39,6 +39,25 @@ fails at the merge instead of on the release tag. A required image that is missi
 commit built (the build id inside it says which), fails. Run it after the device builds, in the
 same tree. Its last line is `STATIC DRAM GREEN` or `STATIC DRAM RED`.
 
+## Rebuild merge gates
+
+Three standalone checks for the harness rebuild's merges (PRD section 10). Each ends in a
+GREEN or RED marker line and exits 0 or 1; each has counter-tests in its `test_*.py`.
+
+```
+python3 tools/release_gate/check_image_size.py --lane RB-X          # image allowance: IMAGE ALLOWANCE GREEN|RED
+python3 tools/release_gate/check_pending_roster.py --native-log LOG  # pending roster: PENDING ROSTER GREEN|RED
+python3 tools/release_gate/check_lane_files.py [--declared PR_BODY.md]   # lane files: LANE FILES GREEN|RED
+```
+
+- Image allowance: the lane's code-byte growth against `image_baseline.json` stays inside
+  `image_budget.d/<lane>.json` (see its README); the docs pack is measured from the ELF and
+  counted apart. After each merge, `--record-baseline` on the merged build.
+- Pending roster: the tests a native run ignores are exactly `test/pending_roster.txt`, each
+  reporting `PENDING RB-<lane>`, and the roster only shrinks against the merge base.
+- Lane files: the branch changes only files of its entry in `tools/engine/owners.json`.
+  `--overlaps` lists paths two lanes own; `--check-plan PLAN.json` checks the table covers the plan.
+
 ## Running it
 
 The tg_poll stack budget, on a built image (needs the PlatformIO Xtensa toolchain and ROM ELF,
