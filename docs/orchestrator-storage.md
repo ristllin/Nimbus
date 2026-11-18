@@ -365,17 +365,23 @@ keep that partial index honest:
   16,384 rows the doubling asked for one 2.4 MB block while the old 1.2 MB one was held,
   under a turn's PSRAM and 20 KB of internal ballast, and the uncaught `std::bad_alloc`
   restarted the device). Every growth adds at most `kIndexGrowRows` (2,048 rows, about
-  147 KB), so at the cap the largest block asked for is about 1.44 MB. The backfill asks for its slice's
+  147 KB). At the cap the backfill asks for at most the cap plus the free-slot target
+  ((20,000 + 1,024) x 72 B = 1,513,728 B), and a live append past it asks for its size plus
+  one step (22,048 rows, 1,587,456 B, at 20,000 rows; more as live appends grow the index
+  past the cap over a long uptime, as in v5.1.1). The backfill asks for its slice's
   room before it reads, decodes or moves anything; a refused reserve leaves the index as it
   was ("no progress this step"), and after `kBackfillMaxReadErrors` (8) refusals in a row
   the backfill stops in its existing stalled state (incomplete for this boot; the log line
   `memory: episodic index incomplete (N rows; memory for its growth was refused 8 times in
   a row) ...`; the next boot tries again). Each backfill step also tops the index up to at
   least `kIndexFreeSlots` (1,024) free slots, and so does a live append; a refused top-up
-  changes nothing and is tried again only after 256 more live appends. The step is
+  changes nothing and is tried again only after 256 more live appends. The top-up fires only
+  once the free slots fall under half that target, so a new device's first 2,048 messages
+  reallocate the index a few dozen times, not once each. The step is
   min(2,048, the index's size) rows, so a small index never asks for more than v5.1.1's
   doubling did, and the free-slot target is min(1,024, the size); the backfill only skips its
-  reserve when its slice and those free slots are both already there. A live append whose
+  reserve when its slice and those free slots are both already there, and keeps them at the
+  cap too, so it never ends with the index full. A live append whose
   top-up has failed and whose own step is refused still throws, as in v5.1.1: the device
   restarts and the boot scan rebuilds the index from the card, where every row already is.
 - **Abort sites that remain** (a refused block still throws out of the store; for the

@@ -362,7 +362,9 @@ int AppendLogEpisodicStore::flushHeld(int maxRows) {
 
 // ---- index growth (candidate 6, revised) ------------------------------------
 void AppendLogEpisodicStore::topUpIndex() {
-  if (index_.capacity() - index_.size() >= freeTarget() || topUpBackoff_ > 0) return;
+  // T1: hysteresis, so a small index is not reallocated on every message: the top-up fires
+  // only once the free slots fall under half its target.
+  if (index_.capacity() - index_.size() >= std::max<size_t>(1, freeTarget() / 2) || topUpBackoff_ > 0) return;
   try {
     index_.reserve(index_.size() + indexStep());   // strong guarantee: refused, nothing changed
   } catch (const std::bad_alloc&) {
@@ -383,8 +385,9 @@ bool AppendLogEpisodicStore::backfillRoom(int sliceRows) {
   if (room <= 0) return true;
   const size_t size = index_.size(), need = (size_t)room + freeTarget();
   if (index_.capacity() - size >= need) return true;
-  const size_t want = std::min(size + std::max(indexStep(), need), std::max((size_t)indexCap_, size + (size_t)room));
-  if (want <= index_.capacity()) return true;   // the slice fits; the cap allows no more
+  // T2: the cap clamp keeps the free-slot term, so at the cap the backfill never ends with the
+  // index full (the first message after it would need the unguarded step).
+  const size_t want = std::max(size + need, std::min(size + std::max(indexStep(), need), (size_t)indexCap_ + freeTarget()));
   try {
     index_.reserve(want);   // strong guarantee: refused, nothing changed
   } catch (const std::bad_alloc&) {

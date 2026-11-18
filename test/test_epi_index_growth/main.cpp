@@ -31,7 +31,9 @@ struct FakeFs : EpiFs {
     auto it = files.find(p);
     return it == files.end() ? 0 : (long)it->second.size();
   }
+  bool failing = false;   // the card refuses writes (rows are held)
   long append(const std::string& p, const std::string& b) override {
+    if (failing) return -1;
     std::string& f = files[p];
     const long off = (long)f.size();
     f += b;
@@ -140,6 +142,7 @@ Shot shot(const AppendLogEpisodicStore& st) {
 size_t capacity(const AppendLogEpisodicStore& st) { return st.indexFreeSlots() + (size_t)st.messageCount(); }
 // v5.1.1's doubling or 2,048 rows, whichever is less (S1).
 size_t step(size_t size) { return std::min<size_t>(kIndexGrowRows, std::max<size_t>(1, size)); }
+size_t target(size_t size) { return std::min<size_t>(kIndexFreeSlots, std::max<size_t>(1, size)); }
 
 // A store whose boot scan indexed `boot` rows; then, with every block over 64 KB refused (the
 // index's next step), the backfill runs on the slots it already has until its first refused
@@ -166,7 +169,7 @@ void tearDown() {
   setWorkingAllocators(nullptr, nullptr);
 }
 
-// S1: every growth, backfill or live, from an empty or a 100-row index to past the cap, adds
+// S1: every growth, backfill or live, from an empty or a 100-row index to 12,000 rows, adds
 // at most min(2,048, size) rows (plus the slice's own room at a backfill step): never more
 // than v5.1.1's doubling, never more than 2,048 rows. Checked on the index's capacity.
 static void test_every_growth_is_at_most_its_size_or_2048_rows() {
@@ -302,6 +305,83 @@ static void test_a_small_heap_takes_appends_to_small_stores() {
   assertEveryRowFound(st, 400, "the 300-row store's rows");
 }
 
+// T1: the top-up has hysteresis: from an empty index, 2,048 live appends reallocate the index
+// at most 40 times (v5.1.1's doubling did it 12 times), not once per message.
+static void test_live_appends_reallocate_a_bounded_number_of_times() {
+  FakeFs fs;
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.hydrate(0, 0);
+  int reallocs = 0;
+  for (uint32_t n = 0; n < 2048; n++) {
+    const size_t cap = capacity(st);
+    st.addMessage(row(n));
+    reallocs += capacity(st) != cap;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(reallocs <= 40, std::to_string(reallocs).c_str());
+  assertEveryRowFound(st, 2048, "every row");
+}
+
+// T2: at a low cap (5,000 rows over a 9,000-row card) the backfill keeps the free-slot target:
+// every growth is at most max(cap + target, size + step + a slice), it ends at the cap with
+// capped set and free slots left, so the first message after it needs no unguarded step.
+static void test_at_the_cap_the_backfill_keeps_free_slots() {
+  FakeFs fs;
+  writeRows(fs, 0, 9000);
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.setIndexCap(5000);
+  st.hydrate(100, 0);
+  for (int i = 0; i < 2000; i++) {
+    const size_t size = (size_t)st.messageCount(), cap = capacity(st);
+    const bool more = st.backfillStep();
+    if (capacity(st) > cap)
+      TEST_ASSERT_TRUE_MESSAGE(capacity(st) <= std::max(5000 + target(size), size + step(size) + (size_t)kBackfillSliceRows),
+                               (std::to_string(size) + " -> " + std::to_string(capacity(st))).c_str());
+    if (!more) break;
+  }
+  TEST_ASSERT_EQUAL_INT(5000, st.messageCount());
+  TEST_ASSERT_TRUE(st.backfillStats().capped);
+  TEST_ASSERT_TRUE_MESSAGE(st.indexFreeSlots() > 0, "free slots remain at the cap");
+  assertEveryRowFound(st, 9000, "every row at the cap");
+}
+
+// T2: the same in the narrow memory band where a block up to the cap is given but a larger one
+// (the top-up past the cap) is refused: the backfill stops for memory with free slots kept, or
+// caps with them; it never ends with the index full.
+static void test_a_refused_reserve_near_the_cap_stalls_with_slots_kept() {
+  FakeFs fs;
+  writeRows(fs, 0, 9000);
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.setIndexCap(5000);
+  st.hydrate(100, 0);
+  g_refuseOver = (5000 + 512) * AppendLogEpisodicStore::indexRowBytes();
+  for (int i = 0; i < 2000 && st.backfillStep(); i++) {
+  }
+  TEST_ASSERT_TRUE_MESSAGE(g_refused > 0, "a reserve was refused");
+  TEST_ASSERT_TRUE_MESSAGE(st.indexFreeSlots() > 0, "the index never ends full");
+  TEST_ASSERT_TRUE(st.stalledForMemory() || st.backfillStats().capped);
+  g_refuseOver = 0;
+  assertEveryRowFound(st, 9000, "every row");
+}
+
+// T4: the held-row flush, the third growth site, under the same bound.
+static void test_the_held_row_flush_grows_by_the_step() {
+  FakeFs fs;
+  writeRows(fs, 0, 3000);
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.hydrate(0, 0);   // 3,000 rows, no free slot
+  fs.failing = true;
+  for (uint32_t n = 3000; n < 3050; n++) st.addMessage(row(n));
+  TEST_ASSERT_EQUAL_INT(50, st.unpersistedCount());
+  fs.failing = false;
+  while (st.unpersistedCount() > 0) {
+    const size_t size = (size_t)st.messageCount() - (size_t)st.unpersistedCount(), cap = capacity(st) - (size_t)st.unpersistedCount();
+    TEST_ASSERT_TRUE(st.flushHeld(1) == 1);
+    const size_t capAfter = capacity(st) - (size_t)st.unpersistedCount();
+    if (capAfter > cap) TEST_ASSERT_TRUE_MESSAGE(capAfter <= size + step(size), std::to_string(capAfter).c_str());
+  }
+  assertEveryRowFound(st, 3050, "every flushed row");
+}
+
 // R2: refusals short of the limit are forgiven once memory returns, and the index completes.
 static void test_a_later_step_with_memory_completes_the_index() {
   FakeFs fs;
@@ -325,5 +405,9 @@ int main(int, char**) {
   RUN_TEST(test_a_refused_top_up_backs_off);
   RUN_TEST(test_a_small_heap_takes_appends_to_small_stores);
   RUN_TEST(test_a_later_step_with_memory_completes_the_index);
+  RUN_TEST(test_live_appends_reallocate_a_bounded_number_of_times);
+  RUN_TEST(test_at_the_cap_the_backfill_keeps_free_slots);
+  RUN_TEST(test_a_refused_reserve_near_the_cap_stalls_with_slots_kept);
+  RUN_TEST(test_the_held_row_flush_grows_by_the_step);
   return UNITY_END();
 }
