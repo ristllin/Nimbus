@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <new>
 #include <set>
 
 #include "nimbus/mem_cap.h"
@@ -362,6 +363,25 @@ std::string mirrorRecord(const MirrorFacts& f, const std::string& text) {
   return rec + "\x1F" "0\x1F" "0\x1F" "0\x1F" + text + "\x1E";
 }
 
+// Ruling 30: a refused allocation is never an abort. A body that runs out of memory
+// answers TooLarge with its outputs cleared; nothing already stored changes (the only
+// storage writes are whole appends, made after every allocation they need).
+template <class Body, class Clear>
+Status guarded(const char* where, Body&& body, Clear&& clear) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+  try {
+    return body();
+  } catch (const std::bad_alloc&) {
+    clear();
+    return Status::fail(Err::TooLarge, where);
+  }
+#else
+  (void)where;
+  (void)clear;
+  return body();
+#endif
+}
+
 }  // namespace
 
 // ---- public -------------------------------------------------------------------------------
@@ -423,7 +443,7 @@ Status digestOf(const Item& s, DigestEntry& out) {
   return Status::success();
 }
 
-Status digestBlock(const std::vector<DigestEntry>& digests, Profile profile, std::string& block,
+static Status digestBlockBody(const std::vector<DigestEntry>& digests, Profile profile, std::string& block,
                    std::vector<DigestEntry>& archive) {
   block.clear();
   archive.clear();
@@ -435,7 +455,7 @@ Status digestBlock(const std::vector<DigestEntry>& digests, Profile profile, std
   return Status::success();
 }
 
-Status archiveDigest(TxFiles& files, const std::string& chatKey, const DigestEntry& digest) {
+static Status archiveDigestBody(TxFiles& files, const std::string& chatKey, const DigestEntry& digest) {
   std::string path;
   if (!validDigest(digest) || !digestArchivePath(chatKey, digest.day.substr(0, 7), path).ok())
     return Status::fail(Err::InvalidArgument, "tx::archiveDigest");
@@ -454,7 +474,7 @@ Status archiveDigest(TxFiles& files, const std::string& chatKey, const DigestEnt
   return Status::success();
 }
 
-Status loadDigests(TxFiles& files, const std::string& chatKey, const HeadState& head, std::vector<DigestEntry>& live,
+static Status loadDigestsBody(TxFiles& files, const std::string& chatKey, const HeadState& head, std::vector<DigestEntry>& live,
                    DigestScan* scanOut) {
   live.clear();
   DigestScan scan;
@@ -470,7 +490,7 @@ Status loadDigests(TxFiles& files, const std::string& chatKey, const HeadState& 
   return st;
 }
 
-Status settleDigests(TxFiles& files, const std::string& chatKey, Profile profile, std::vector<DigestEntry>& live,
+static Status settleDigestsBody(TxFiles& files, const std::string& chatKey, Profile profile, std::vector<DigestEntry>& live,
                      std::string& block, SettleReport& report) {
   report = SettleReport{};
   std::vector<DigestEntry> over;
@@ -478,7 +498,7 @@ Status settleDigests(TxFiles& files, const std::string& chatKey, Profile profile
   if (!st.ok()) return Status::fail(st.err, "tx::settleDigests");
   for (const DigestEntry& d : over) {
     st = archiveDigest(files, chatKey, d);
-    if (st.err == Err::Io) break;
+    if (st.err == Err::Io || st.err == Err::TooLarge) break;   // a refusal: it moves next time
     if (!st.ok()) return Status::fail(st.err, "tx::settleDigests");
     ++report.moved;
   }
@@ -487,7 +507,7 @@ Status settleDigests(TxFiles& files, const std::string& chatKey, Profile profile
   return Status::success();
 }
 
-Status recentFilesList(const std::vector<RecentFile>& files, int16_t tzMinutes, std::string& out) {
+static Status recentFilesListBody(const std::vector<RecentFile>& files, int16_t tzMinutes, std::string& out) {
   out.clear();
   std::map<std::string, uint64_t> newest;
   for (const RecentFile& f : files) {
@@ -532,7 +552,7 @@ Status RecentFilesBlock::rebuild(const Source& source, int16_t tzMinutes) {
   return recentFilesList(files, tzMinutes, text_);
 }
 
-Status chatsumMirror(const std::vector<DigestEntry>& digests, uint64_t thru, std::string& out) {
+static Status chatsumMirrorBody(const std::vector<DigestEntry>& digests, uint64_t thru, std::string& out) {
   out.clear();
   if (!validRun(digests)) return Status::fail(Err::InvalidArgument, "tx::chatsumMirror");
   size_t n = 0;
@@ -542,7 +562,7 @@ Status chatsumMirror(const std::vector<DigestEntry>& digests, uint64_t thru, std
   return Status::success();
 }
 
-Status mirrorChatsum(const std::string& blob, const MirrorFacts& facts, const std::vector<DigestEntry>& digests,
+static Status mirrorChatsumBody(const std::string& blob, const MirrorFacts& facts, const std::vector<DigestEntry>& digests,
                      std::string& out) {
   out.clear();
   if (!validChatId(facts.chatId)) return Status::fail(Err::InvalidArgument, "tx::mirrorChatsum");
@@ -571,6 +591,56 @@ Status mirrorChatsum(const std::string& blob, const MirrorFacts& facts, const st
   for (size_t i = drop; i < others.size(); ++i) out += others[i];
   out += mine;
   return Status::success();
+}
+
+// ---- the public entry points: bodies above, under the allocation guard -------------------
+
+Status digestBlock(const std::vector<DigestEntry>& digests, Profile profile, std::string& block,
+                   std::vector<DigestEntry>& archive) {
+  return guarded(
+      "tx::digestBlock: memory", [&] { return digestBlockBody(digests, profile, block, archive); },
+      [&] {
+        block.clear();
+        archive.clear();
+      });
+}
+
+Status archiveDigest(TxFiles& files, const std::string& chatKey, const DigestEntry& digest) {
+  return guarded(
+      "tx::archiveDigest: memory", [&] { return archiveDigestBody(files, chatKey, digest); }, [] {});
+}
+
+Status loadDigests(TxFiles& files, const std::string& chatKey, const HeadState& head, std::vector<DigestEntry>& live,
+                   DigestScan* scan) {
+  return guarded(
+      "tx::loadDigests: memory", [&] { return loadDigestsBody(files, chatKey, head, live, scan); },
+      [&] { live.clear(); });
+}
+
+Status settleDigests(TxFiles& files, const std::string& chatKey, Profile profile, std::vector<DigestEntry>& live,
+                     std::string& block, SettleReport& report) {
+  // live keeps every digest not archived: the erase of the archived ones allocates nothing.
+  return guarded(
+      "tx::settleDigests: memory", [&] { return settleDigestsBody(files, chatKey, profile, live, block, report); },
+      [&] { block.clear(); });
+}
+
+Status recentFilesList(const std::vector<RecentFile>& files, int16_t tzMinutes, std::string& out) {
+  return guarded(
+      "tx::recentFilesList: memory", [&] { return recentFilesListBody(files, tzMinutes, out); },
+      [&] { out.clear(); });
+}
+
+Status chatsumMirror(const std::vector<DigestEntry>& digests, uint64_t thru, std::string& out) {
+  return guarded(
+      "tx::chatsumMirror: memory", [&] { return chatsumMirrorBody(digests, thru, out); }, [&] { out.clear(); });
+}
+
+Status mirrorChatsum(const std::string& blob, const MirrorFacts& facts, const std::vector<DigestEntry>& digests,
+                     std::string& out) {
+  return guarded(
+      "tx::mirrorChatsum: memory", [&] { return mirrorChatsumBody(blob, facts, digests, out); },
+      [&] { out.clear(); });
 }
 
 uint64_t rowThru(const std::vector<Item>& items, uint64_t thru) {

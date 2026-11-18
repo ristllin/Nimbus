@@ -15,6 +15,8 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <cstdlib>
+#include <new>
 #include <cstdio>
 #include <map>
 #include <random>
@@ -34,6 +36,22 @@ namespace orch = nimbus::orch;
 
 void setUp() {}
 void tearDown() {}
+
+// Ruling 30: the test binary's operator new refuses once `gAllow` allocations have been
+// made (-1 = never), as a PSRAM-first scope refuses on the device.
+namespace {
+long gAllow = -1;
+long gCount = 0;   // allocations made
+}
+void* operator new(std::size_t n) {
+  ++gCount;
+  if (gAllow == 0) throw std::bad_alloc();
+  if (gAllow > 0) --gAllow;
+  if (void* p = std::malloc(n ? n : 1)) return p;
+  throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
@@ -881,6 +899,108 @@ void test_row_thru() {
   TEST_ASSERT_EQUAL_UINT64(0, tx::rowThru(items, 0));
 }
 
+// Ruling 30: a refused allocation at any point of digestBlock, archiveDigest, loadDigests,
+// settleDigests and mirrorChatsum is a TooLarge status with the outputs cleared, never an
+// exception, and nothing stored is lost: the same call without the refusal gives the same
+// result, and a chat settled under refusals keeps every digest in the block or the archive.
+template <class Call, class Check>
+void refusedAtEveryAllocation(const char* what, Call call, Check check) {
+  bool done = false;
+  for (long n = 0; n < 200000 && !done; ++n) {
+    gAllow = n;
+    tx::Status st;
+    try {
+      st = call();
+    } catch (const std::bad_alloc&) {
+      gAllow = -1;
+      TEST_FAIL_MESSAGE(what);
+    }
+    gAllow = -1;
+    if (!st.ok()) TEST_ASSERT_TRUE_MESSAGE(st.err == tx::Err::TooLarge, what);
+    check(st.ok());
+    done = st.ok();
+  }
+  TEST_ASSERT_TRUE_MESSAGE(done, what);
+}
+
+void test_a_refused_allocation_is_a_status_and_loses_nothing() {
+  // digestBlock
+  std::vector<tx::DigestEntry> all = digestRun(30, 400);
+  std::string ref, block;
+  std::vector<tx::DigestEntry> refArch, arch;
+  TXB_OK(tx::digestBlock(all, tx::Profile::Lean, ref, refArch));
+  refusedAtEveryAllocation(
+      "digestBlock", [&] { return tx::digestBlock(all, tx::Profile::Lean, block, arch); },
+      [&](bool ok) {
+        TEST_ASSERT_TRUE(ok ? block == ref && arch.size() == refArch.size() : block.empty() && arch.empty());
+      });
+  // mirrorChatsum
+  const std::string blob = std::string("2002\x1F") + "0\x1F" "0\x1F" "0\x1F" "0\x1F" "0\x1F" "0\x1F" "theirs\x1E";
+  tx::MirrorFacts f{"1001", all.back().thru, 0x99, 1};
+  std::string refBlob, out;
+  TXB_OK(tx::mirrorChatsum(blob, f, all, refBlob));
+  refusedAtEveryAllocation(
+      "mirrorChatsum", [&] { return tx::mirrorChatsum(blob, f, all, out); },
+      [&](bool ok) { TEST_ASSERT_TRUE(ok ? out == refBlob : out.empty()); });
+  // archiveDigest: the month file is unchanged by a refusal, one whole line more after.
+  txb::MemFiles files;
+  TXB_OK(tx::archiveDigest(files, kChat, all[0]));
+  const std::string path = "/mem/tx/1001/digests-2026-10.md";
+  const std::string before = files.files[path];
+  refusedAtEveryAllocation(
+      "archiveDigest", [&] { return tx::archiveDigest(files, kChat, all[1]); },
+      [&](bool ok) { TEST_ASSERT_TRUE(files.files[path] == (ok ? before + all[1].text + "\n" : before)); });
+  // loadDigests and settleDigests over a chat with an archive.
+  Chat c;
+  std::vector<tx::DigestEntry> live;
+  tx::HeadState head;
+  {
+    tx::TxLog log(c.files, kChat);
+    TXB_OK(log.open(head));
+    tx::SettleReport rep;
+    for (int n = 0; n < 24; ++n) {
+      appendDay(c, log, n, sizeOf(n), live);
+      // A refusal somewhere inside each settle; the digests it did not move stay live.
+      gAllow = (long)(n * 37) % 300;
+      tx::Status st = tx::settleDigests(c.files, kChat, tx::Profile::Tight, live, block, rep);
+      gAllow = -1;
+      TEST_ASSERT_TRUE(st.ok() || st.err == tx::Err::TooLarge);
+    }
+    TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Tight, live, block, rep));
+    checkNothingLost(c, block, "settled under refusals");
+    // A refusal inside the archive move (after the block's own allocations) is a refused
+    // move: settle answers ok, the digest stays live and pending.
+    for (int n = 24; n < 30; ++n) {
+      appendDay(c, log, n, 700, live);
+      std::string b;
+      std::vector<tx::DigestEntry> a;
+      const long before = gCount;
+      TXB_OK(tx::digestBlock(live, tx::Profile::Tight, b, a));
+      gAllow = gCount - before + 1;
+      tx::Status st = tx::settleDigests(c.files, kChat, tx::Profile::Tight, live, block, rep);
+      gAllow = -1;
+      TXB_OK(st);
+      TEST_ASSERT_TRUE(rep.pending > 0);
+      TEST_ASSERT_TRUE(block == b);
+    }
+    TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Tight, live, block, rep));
+    checkNothingLost(c, block, "after refused moves");
+    head.thru = c.nextQ - 2;
+    head.nextQ = c.nextQ;
+    TXB_OK(log.writeHead(head));
+  }
+  tx::TxLog log(c.files, kChat);
+  TXB_OK(log.open(head));
+  std::vector<tx::DigestEntry> refLive, got = {all[0]};
+  TXB_OK(tx::loadDigests(c.files, kChat, head, refLive));
+  refusedAtEveryAllocation(
+      "loadDigests", [&] { return tx::loadDigests(c.files, kChat, head, got); },
+      [&](bool ok) {
+        TEST_ASSERT_EQUAL(ok ? refLive.size() : 0u, got.size());
+        for (size_t i = 0; ok && i < got.size(); ++i) TEST_ASSERT_TRUE(got[i].text == refLive[i].text);
+      });
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -906,5 +1026,6 @@ int main(int, char**) {
   RUN_TEST(test_mirror_pointer_only_moves_forward);
   RUN_TEST(test_mirror_limits_and_refusals);
   RUN_TEST(test_row_thru);
+  RUN_TEST(test_a_refused_allocation_is_a_status_and_loses_nothing);
   return UNITY_END();
 }

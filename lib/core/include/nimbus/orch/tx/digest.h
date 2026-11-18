@@ -41,6 +41,10 @@
 // at a cold turn open and at the close of a turn that moved or deleted a file, and keeps
 // it byte-identical otherwise (a cache change point only there, PRD section 2).
 //
+// Memory (Ruling 30): every function that allocates answers Err::TooLarge with its outputs
+// cleared when an allocation is refused, never throws; settleDigests treats a refused
+// archive move like a refused write (the digest stays live). Nothing stored changes.
+//
 // The chatsum mirror: /data/chatsum.txt in the v5.1.1 FoldStore format, so a rollback to
 // v5.1.1 still has a summary. chatsumMirror is the summary text (the newest digests
 // through thru that fit kChatsumMirrorMaxBytes); mirrorChatsum puts it into an existing

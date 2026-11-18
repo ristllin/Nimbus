@@ -45,7 +45,6 @@ def make_tree(dst):
     rels = {p for _, p in cat.e1_sources()} | {p for p, _ in cat.E2_EXTRA_SOURCES}
     rels |= {cat.CATALOGS["e1"]["golden"], gate.CHANGES, gate.REGISTER, "tools/release_gate/gen_model_text_catalog.py"}
     rels.add(gate.OWNERS)
-    rels |= {p for p, _ in cat.E2_EXTRA_SOURCES}  # the e2 catalog reads them once texts.h exists
     for rel in sorted(rels):
         src = os.path.join(REPO, rel)
         if os.path.isfile(src):
