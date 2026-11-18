@@ -248,7 +248,9 @@ serves:
   floor makes the chat's fold due, and that fold keeps v5.1.1's tail (half of v5.1.1's
   window on that head) instead of the head's large one, so on a pool that stays fragmented
   every row is in the next request or in the summary; the window itself is never held to
-  the floor. The fold's own request (summary, digest and prompt, under 60,000 B of input)
+  the floor. When that fold's slice could not reach the tail (a history built at the head's
+  size before the pool fragmented), the chat folds again on the next pass, up to four times
+  in a row, instead of waiting out the thrash turns. The fold's own request (summary, digest and prompt, under 60,000 B of input)
   fits the floor. The state JSON's `mem` block carries `rounds` and `floorRounds` (every
   round since boot, and those at the floor), and each turn that took the floor and left rows
   out logs one `history(<chat>): rows left out at the send floor` line. Every adapter reads completeness - Anthropic

@@ -866,6 +866,16 @@ class TurnEngine {
     bool scanned = false;  // the scan reached the read's bound: the start is known
   };
   size_t foldKeepBytes(const HistoryBudget& b, const std::string& chatId) const;
+
+ public:
+  // The chat's last turn left history out at the send floor (candidate 4, F5).
+  bool floorTrimmed(const std::string& chatId) const {
+    for (const std::string& c : floorTrimChats_)
+      if (c == chatId) return true;
+    return false;
+  }
+
+ private:
   // Candidate 4, F5: chats whose last turn left history out while its rounds went at the send
   // floor (a fragmented pool). Their next fold keeps v5.1.1's tail, so the window after it fits
   // the floor; a turn that leaves nothing out takes the chat off. A few chats, RAM only.

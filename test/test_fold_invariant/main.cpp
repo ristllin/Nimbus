@@ -580,6 +580,34 @@ static void test_after_a_floor_turn_the_fold_leaves_no_row_unreachable() {
                            std::to_string(d.foldRequestMax).c_str());
 }
 
+// Candidate 5, G6: the pool fragments after a healthy head built its derived-size history (the
+// Lumi case). The first floor turn's fold cannot reach v5.1.1's tail in one slice; the chat
+// stays due until it does, so the next turns hold every row in the request or the summary.
+static void test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutive_folds() {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.promptPad = 52000;   // a device's system prompt and tool schemas: about 20 KB of history fits the floor
+  d.boot();
+  for (int i = 0; i < 120; i++) {   // healthy: the history grows to the derived marks, folds keep the large tail
+    d.turn(kMain);
+    d.pump(1, 60);
+  }
+  d.floorPool = true;
+  int floorTurns = 0;
+  for (int i = 0; i < 40 && !d.lastTrimmed; i++) d.turn(kMain);
+  TEST_ASSERT_TRUE_MESSAGE(d.lastTrimmed, "a turn is cut at the floor");
+  for (int p = 0; p < 12; p++) d.pump(1, 60);   // the folds that follow
+  for (int t = 0; t < 3; t++) {
+    const size_t before = d.store.rows.size();
+    d.turn(kMain);
+    floorTurns += d.lastTrimmed;
+    assertRowsInRequest(d, kMain, before);
+    d.pump(1, 60);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(0, floorTurns, "no later turn is cut");
+  TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("folding again"), "the floor tail is chased");
+  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+}
+
 // The property on a head with room (lane H's derived marks: Sonnet 5.5, 118 KB window).
 static void test_invariant_holds_on_a_head_with_room() { runProperty("anthropic", "claude-sonnet-5-5", 6000, false); }
 
@@ -1148,5 +1176,6 @@ int main(int, char**) {
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);
   RUN_TEST(test_after_a_floor_turn_the_fold_leaves_no_row_unreachable);
+  RUN_TEST(test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutive_folds);
   return UNITY_END();
 }

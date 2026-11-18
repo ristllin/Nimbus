@@ -188,7 +188,10 @@ confirmation names the whole span. A manual request never waits behind an automa
 one that is between rungs when a manual request is ready ends uncounted, its failed
 rungs going last. An automatic cycle that started in a manual read's yield is never cut by
 the read: it finishes its ladder (lands or fails as any cycle does) and the manual starts on
-the pass after, so no paid answer is thrown away and none lands early. Every manual request is answered: the confirmation,
+the pass after, so no paid answer is thrown away and none lands early. After a turn cut at
+the send floor, an automatic fold keeps v5.1.1's tail; when its slice stops short of that
+tail, the chat is due again on the next pass (an overflow fold, up to four in a row, logged
+`fold(<chat>): rows before v5.1.1's tail remain after a send-floor cut - folding again`). Every manual request is answered: the confirmation,
 a failure with the next try time, or "Nothing to compact yet."
 
 ## Status

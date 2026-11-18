@@ -596,6 +596,7 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
   done.model = rep.model;
   done.elapsedMs = nowMs - c.startedMs;
   if (hooks_.folded) hooks_.folded(done);   // then the chain reset and the boundary row
+  chaseFloorTail(c.chat, c.manual, c.slice);
   if (c.manual && !catchUpContinues(c.chat, c.slice)) {
     if (hooks_.tell) hooks_.tell(c.chat, confirmation(catchUp_.span));
     catchUp_ = CatchUp();
@@ -603,6 +604,17 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
   }
   changed(c.chat);
   return FoldTick::Ok;
+}
+
+void FoldDriver::chaseFloorTail(const std::string& chat, bool manual, const FoldSlice& landed) {
+  if (manual || !landed.more || !eng_->floorTrimmed(chat) || floorChase_ >= kFloorChaseFolds) {
+    floorChase_ = 0;
+    return;
+  }
+  floorChase_++;
+  folds_.markOverflow(chat);   // due on the next pass, an overflow fold (no quiet wait)
+  hlog::logf("fold(%s): rows before v5.1.1's tail remain after a send-floor cut - folding again (%u/%u)",
+             chat.c_str(), (unsigned)floorChase_, (unsigned)kFloorChaseFolds);
 }
 
 bool FoldDriver::catchUpContinues(const std::string& chat, const FoldSlice& landed) {
