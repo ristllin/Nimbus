@@ -38,7 +38,7 @@ void ConvCache::reset(Entry& e, const std::string& thru) {
   e.newestId.clear();
   e.fillBefore.clear();
   e.complete = false;
-  e.started = false;
+  e.probeAt.clear();
   e.bytes = 0;
   e.span = ConvSpan();
   e.stalls = 0;
@@ -76,6 +76,7 @@ void ConvCache::syncThru(Entry& e, const std::string& thru) {
   e.rows.erase(e.rows.begin(), e.rows.begin() + (long)drop);
   e.bytes = less(e.bytes, freed);
   e.thru = thru;
+  e.probeAt.clear();     // the probe's cold walk was from the old anchor
   e.span = ConvSpan();   // the whole span is at or before the new anchor
   if (drop) e.complete = true;   // the rows reached the new anchor
 }
@@ -131,10 +132,12 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
   if (e.complete) return false;
   std::vector<EpisodicMessage> got = read(HistoryQuery(kPageRows, e.fillBefore));
   if (!got.empty()) {   // the cursors, before the rows move
-    if (!e.started) e.newestId = got.front().id;   // the delta reads after it
+    // The delta reads after the newest row held. Set by the first page that read a row, not
+    // the first page (lane CTXR1: an empty first page left it unset for good, so the delta read
+    // never ran and every later exchange stayed out of the request).
+    if (e.newestId.empty()) e.newestId = got.front().id;
     e.fillBefore = got.back().id;
   }
-  e.started = true;
   std::vector<EpisodicMessage> older;   // newest first
   // Only an empty page can be the chat's start: a store under its per-call read budget answers
   // a short page with more below it (the next page continues from its oldest row). And an
@@ -168,18 +171,46 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
   return true;
 }
 
-// One forward read of the row right after thru (the after cursor walks the rows the store's
+// A forward read of the row right after thru (the after cursor walks the rows the store's
 // index does not hold yet): true when it is older than the oldest row held, i.e. rows after
-// thru exist that the backward fill has not reached. An empty answer means none only when
-// the store read to the end: a cold walk its read budget stopped (newerExists) or a span
-// the card would not give back leaves rows unread.
-bool ConvCache::gapAfterThru(const Entry& e, const ReadFn& read) {
+// thru exist that the backward fill has not reached. A cold walk its read budget cut short
+// goes on from where the store stopped, a few reads a call and from the same place next call
+// (lane CTXR1: it restarted at thru every call, so on an index that never reaches thru the
+// fill never completed and every turn paid the same walk). An empty answer means none only when
+// the store read to the end: a cold walk its read budget stopped (newerExists), a span
+// the card would not give back, or a failing card whose RAM ring does not reach thru
+// (olderExists: lane CTXR1, a fill once completed on the ring's rows alone) leaves rows unread.
+namespace {
+// A probe cursor the store's state moved under (its index completed, or it read from the start
+// and gave back rows at or before thru): a byte cursor with an empty page and nothing more.
+bool staleProbe(const std::string& probeAt, const std::string& thru, const std::vector<EpisodicMessage>& first,
+                const nimbus::orch::EpiQueryInfo& info) {
+  if (probeAt.empty()) return false;
+  if (first.empty()) return !info.newerExists && !info.olderExists;
+  return !thru.empty() && !rowIdAfter(first.front().id, thru);
+}
+}  // namespace
+
+bool ConvCache::gapAfterThru(Entry& e, const ReadFn& read) {
   nimbus::orch::EpiQueryInfo info;
-  HistoryQuery q(1, std::string(), e.thru.empty() ? std::string(kBeforeFirstRow) : e.thru);
+  const std::string from = !e.probeAt.empty() ? e.probeAt : e.thru.empty() ? std::string(kBeforeFirstRow) : e.thru;
+  HistoryQuery q(1, std::string(), from);
   q.info = &info;
   const std::vector<EpisodicMessage> first = read(q);
-  if (first.empty()) return info.newerExists || !info.unreadable.empty();
-  return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
+  // A span the card would not give back is a gap even when rows after it came back: the
+  // store skips it and reads on (lane CTXR1: the fill completed past unread rows).
+  if (!info.unreadable.empty()) return true;
+  if (staleProbe(e.probeAt, e.thru, first, info)) {   // dropped: the probe starts again at thru
+    e.probeAt.clear();
+    return true;
+  }
+  if (!first.empty()) return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
+  if (info.olderExists) return true;   // a failing card: the RAM ring does not reach thru
+  if (!info.newerExists || info.nextAfter.empty()) return false;   // read to the end: no gap
+  // None of the chat's rows before it: the next call goes on there. One read a call (fix review
+  // D): a turn keeps to its one card page, and the idle pump to its time bound.
+  e.probeAt = info.nextAfter;
+  return true;   // not known yet: the rows below stay named as unread
 }
 
 // The bound: the oldest rows go, counted in the span (the rows after thru the cache does

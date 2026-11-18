@@ -18,10 +18,13 @@
 #include <vector>
 
 #include "../support/recorded_models.h"
+#include "nimbus/orch/compact.h"   // kChatSummaryMax
 #include "nimbus/harness/conversation.h"   // historyDayBytes - the day floor of v5.1.1's window
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"   // flatPromptBudget - the wires' flat cap
 #include "nimbus/orch/budget.h"
+#include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/model_family.h"
 #include "nimbus/orch/model_window.h"
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/wire_limits.h"
@@ -294,8 +297,13 @@ static void assertNoShrink(const ContextBudget& c, JsonObjectConst old, const st
                          c.briefBytes, c.foldSliceBytes, c.historyMaxBytes, c.historySoftBytes,
                          c.historyKeepBytes, c.historyRows, c.replayBytes, c.perTurnFloorBytes,
                          c.historyMessageCap, c.recallBytes};
-  for (size_t i = 0; i < sizeof(have) / sizeof(have[0]); i++)
-    TEST_ASSERT_TRUE_MESSAGE(have[i] >= (size_t)(old[kFields[i]] | 0u), (what + " " + kFields[i]).c_str());
+  for (size_t i = 0; i < sizeof(have) / sizeof(have[0]); i++) {
+    size_t floor = (size_t)(old[kFields[i]] | 0u);
+    // The summary: what a summary could actually be, v5.1.1's figure within what the fold store
+    // keeps (v5.1.1's store kept 4,096 B; a gpt-6 row's 8,192 B was never stored). Lane CTXR1.
+    if (i == 0) floor = std::min(floor, kChatSummaryMax);
+    TEST_ASSERT_TRUE_MESSAGE(have[i] >= floor, (what + " " + kFields[i]).c_str());
+  }
 }
 
 // No field shrinks (RULINGS-v3 item 8), field by field against budgets_v5_1_1.json, for
@@ -326,6 +334,8 @@ static void test_history_room_or_the_floor_branch_for_every_head() {
     TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(c, kCompactAtKbDefault) >= kFoldTriggerMinBytes, what.c_str());
     TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= c.historySoftBytes && c.historySoftBytes <= c.historyMaxBytes,
                              what.c_str());
+    // Lane CTXR1: the summary a fold is told and capped at is never more than the fold store keeps.
+    TEST_ASSERT_TRUE_MESSAGE(c.chatSummaryBytes <= kChatSummaryMax, what.c_str());
     if (!c.floorBranch) {
       TEST_ASSERT_TRUE_MESSAGE(c.foldStepBytes <= foldDigestCap(c.chatSummaryBytes), what.c_str());
       continue;
@@ -356,6 +366,35 @@ static void test_a_week_at_the_floor_stays_under_the_daily_fold_cap() {
         pending = c.historyKeepBytes < pending ? c.historyKeepBytes : 0;
       }
       TEST_ASSERT_TRUE_MESSAGE(folds <= 12, nameOf(h).c_str());
+    }
+  }
+}
+
+// A simulated fortnight on EVERY head (lane CTXR1): a household's 45 exchanges of 3 KB a day,
+// the fold driver's rules (due at the trigger, counted on the bytes after thru; one cycle takes
+// whole exchanges up to the kept tail and at most foldCycleBytes; 12 paid folds a local day on
+// the device). The backlog never grows: at the end of every day what lies after thru is within
+// one cycle of the trigger. With a cycle bounded by the steady-state step (soft - keep, 11.7 KB
+// on Mistral Medium) a busy day at the cap left rows hidden that no later day caught up.
+static void test_a_fortnight_on_every_head_works_off_its_backlog() {
+  constexpr size_t kExchange = 3 * 1024;
+  for (const Head& h : allHeads()) {
+    const ContextBudget c = deriveRequestContext(requestBudgetFor(h.host, h.model, h.routed), {});
+    const size_t trigger = foldTriggerBytes(c, kCompactAtKbDefault);
+    const size_t keep = std::min(c.historyKeepBytes, trigger > kExchange ? trigger - kExchange : 0);
+    const size_t cycle = foldCycleBytes(c);
+    size_t after = 0;   // conversation bytes after thru
+    for (int day = 0; day < 14; day++) {
+      int paid = 0;
+      for (int turn = 0; turn < 45; turn++) {
+        after += kExchange;
+        if (after < trigger || paid >= 12) continue;
+        const size_t take = std::min(cycle, after - keep) / kExchange * kExchange;   // whole exchanges
+        if (!take) continue;
+        after -= take;
+        paid++;
+      }
+      TEST_ASSERT_TRUE_MESSAGE(after <= trigger + cycle, (nameOf(h) + " day " + std::to_string(day)).c_str());
     }
   }
 }
@@ -410,6 +449,90 @@ static void test_owner_settings() {
   TEST_ASSERT_EQUAL_INT(20000, o.systemPromptBytes);
   TEST_ASSERT_EQUAL_UINT32(2048, o.toolResultBytes);
   TEST_ASSERT_EQUAL_UINT32(4096, o.toolTotalBytes);
+}
+
+// ---- every id that means Large 4 (release review v5.1.2, finding 3) --------------------------
+
+// One recorded Mistral id and whether its row is Large 4. The newest recorded list decides an
+// id both lists name (Mistral moved mistral-large-latest from mistral-large-2512 to Large 4
+// between the 2026-10 and the 14 Nov 2026 lists).
+struct MistralId {
+  std::string id;
+  bool large4 = false;
+  bool reasoning = false;
+};
+static std::vector<MistralId> recordedMistralIds() {
+  std::vector<MistralId> out;
+  std::map<std::string, bool> seen;
+  for (const char* list : {"models_2026-11", "models_2026-10"}) {
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, recorded::readFixture(std::string("test/support/fixtures/") + list +
+                                                                 "/mistral.json")));
+    for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
+      std::vector<std::string> ids{m["id"] | ""};
+      for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>()) ids.push_back(a | "");
+      bool large4 = std::string(m["name"] | "").rfind("mistral-large-4", 0) == 0;
+      for (const std::string& id : ids) large4 = large4 || id.rfind("mistral-large-4", 0) == 0;
+      const bool reasoning = m["capabilities"]["reasoning"] | false;
+      for (const std::string& id : ids) {
+        if (id.empty() || seen[id]) continue;
+        seen[id] = true;
+        out.push_back({id, large4, reasoning});
+      }
+    }
+  }
+  return out;
+}
+
+static bool sameRates(const RequestBudget& a, const RequestBudget& b) {
+  return a.wireBodyBytes == b.wireBodyBytes && a.bound == b.bound && a.rNomX100 == b.rNomX100 &&
+         a.prefillTokPerS == b.prefillTokPerS && a.decodeTokPerS == b.decodeTokPerS &&
+         a.minFinalTokens == b.minFinalTokens && a.windowTokens == b.windowTokens;
+}
+
+// The class: every id a recorded list gives Large 4 (the row itself and each of its aliases)
+// gets Large 4's budget, rates, effort and step-down, direct and as a router pick, and no
+// other id does. Before the fix mistral-large-latest, the id the November list stores for
+// Large 4, read as "any other Mistral id": 85,000 B at the floor.
+static void test_every_id_that_means_large_4_gets_its_row() {
+  const RequestBudget l4 = requestBudgetFor("mistral", "mistral-large-4-0", false);
+  const RequestBudget l4Lift = requestBudgetFor("mistral", "mistral-large-4-0", true, BudgetLink::Device, true);
+  int large4 = 0, others = 0;
+  for (const MistralId& r : recordedMistralIds()) {
+    const std::string what = r.id + (r.large4 ? " (Large 4)" : "");
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4, isMistralLarge4(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4, isMistralLarge4("mistral/" + r.id), what.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4, modelRefusesBuiltinConnectors(r.id), what.c_str());   // the 3004 refusal
+    const bool glm = r.id.rfind("glm-", 0) == 0 || r.id.rfind("zai-glm", 0) == 0;
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4 || glm, mistralForcedReasoner(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4 || glm, mistralForcedReasoner("mistral/" + r.id), what.c_str());
+    if (!r.large4) {
+      if (r.reasoning)   // a model that reasons takes "low" exactly when it is forced to
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(glm ? "low" : "none", providers::mistralHeadEffort(r.id), what.c_str());
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", providers::sameHostNonReasoningModel("mistral", r.id), what.c_str());
+      others++;
+      continue;
+    }
+    large4++;
+    TEST_ASSERT_TRUE_MESSAGE(sameRates(l4, requestBudgetFor("mistral", r.id, false)), what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(sameRates(l4, requestBudgetFor("mistral", "mistral/" + r.id, false)), what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(
+        sameRates(l4Lift, requestBudgetFor("cumulo", "mistral/" + r.id, true, BudgetLink::Device, true)), what.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("low", providers::mistralHeadEffort(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("low", providers::mistralHeadEffort("mistral/" + r.id), what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(providers::mistralTakesEffort(r.id), what.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("mistral-medium-latest", providers::sameHostNonReasoningModel("mistral", r.id),
+                                     what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(providers::slowestTokensPerSecond("mistral", "mistral-large-4-0"),
+                                     providers::slowestTokensPerSecond("mistral", r.id), what.c_str());
+    const providers::OutputCap a = providers::outputCapFor("mistral", "mistral-large-4-0", providers::RoundKind::FinalRound, 65000);
+    const providers::OutputCap c = providers::outputCapFor("mistral", r.id, providers::RoundKind::FinalRound, 65000);
+    TEST_ASSERT_TRUE_MESSAGE(a.maxTokens == c.maxTokens && a.retryTokens == c.retryTokens, what.c_str());
+  }
+  TEST_ASSERT_TRUE(large4 >= 3);   // mistral-large-4, -4-0, -latest
+  TEST_ASSERT_TRUE(others > 20);
+  TEST_ASSERT_TRUE(isMistralLarge4("mistral-large-latest"));
+  TEST_ASSERT_FALSE(isMistralLarge4("mistral-large-2512"));
 }
 
 // ---- the turn's form (lane L): a flat turn is sized from the flat prompt budget --------------
@@ -670,6 +793,7 @@ int main(int, char**) {
   RUN_TEST(test_no_field_below_v5_1_1_for_every_recorded_model);
   RUN_TEST(test_history_room_or_the_floor_branch_for_every_head);
   RUN_TEST(test_a_week_at_the_floor_stays_under_the_daily_fold_cap);
+  RUN_TEST(test_a_fortnight_on_every_head_works_off_its_backlog);
   RUN_TEST(test_the_derived_fields_for_the_main_heads);
   RUN_TEST(test_owner_settings);
   RUN_TEST(test_the_form_of_every_head_turn);
@@ -677,6 +801,7 @@ int main(int, char**) {
   RUN_TEST(test_a_flat_turn_is_sized_as_v5_1_1_sized_it);
   RUN_TEST(test_a_loop_on_turn_is_the_request_budget_unchanged);
   RUN_TEST(test_the_loop_off_figures_for_the_main_heads);
+  RUN_TEST(test_every_id_that_means_large_4_gets_its_row);
   RUN_TEST(test_the_generated_table_is_current);
   return UNITY_END();
 }

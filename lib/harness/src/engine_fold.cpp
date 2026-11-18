@@ -10,12 +10,13 @@
 #include "nimbus/harness/output_caps.h"   // mistralHeadEffort - which heads are forced reasoners
 #include "nimbus/harness/providers.h"   // ScopedModelOverride - a rung on its own model
 #include "nimbus/orch/budget.h"            // deriveRequestContext - the head's summary cap (lane B)
-#include "nimbus/orch/compact.h"           // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary
+#include "nimbus/orch/compact.h"
+#include "nimbus/orch/provider_slots.h"   // kProviderSlots - is any direct provider key set
+#include "nimbus/orch/model_family.h"    // mistralForcedReasoner - the fold's step-down           // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary
 #include "nimbus/orch/request_budget.h"    // requestBudgetFor
 #include "nimbus/orch/connector_grant.h"   // whose connectors a fold's request carries (CUM-828)
 #include "nimbus/orch/head_loop.h"         // classifyStepError - a rung's failure kind
 #include "nimbus/orch/provider_error.h"    // oneLineText - the rung line's detail
-#include "nimbus/orch/provider_slots.h"    // kProviderSlots - keyed providers the priority leaves out
 #include "nimbus/orch/reply_markup.h"      // cleanReplyMarkup - the summary passes the reply seam
 #include "nimbus/orch/spend_ceiling.h"     // paidCallAllowed - the fold waits at the spend ceiling
 #include "nimbus/orch/turn.h"              // parseHeadReply - the lenient summary read
@@ -100,10 +101,10 @@ std::string foldModelForHead(const std::string& host, const std::string& model) 
   // upstream and the same thinking).
   const bool routed = host == "cumulo" && model.rfind("mistral/", 0) == 0;
   if ((host != "mistral" && !routed) || model.empty()) return std::string();
-  // A forced reasoner is a model that refuses effort "none" (mistralHeadEffort answers
-  // "low": Large 4, the hosted GLM). Small folds at "none", well inside the 60 s gateway
-  // at a 53.9 KB step.
-  if (std::string(providers::mistralHeadEffort(model)) != "low") return std::string();
+  // A forced reasoner is a model that refuses effort "none" (Large 4 under every id Mistral
+  // serves it as, mistral-large-latest included, and the hosted GLM): the one predicate
+  // (model_family.h). Small folds at "none", well inside the 60 s gateway at a 53.9 KB step.
+  if (!orch::mistralForcedReasoner(model)) return std::string();
   const std::string small = "mistral-small-latest";
   return routed ? "mistral/" + small : small;
 }
@@ -341,6 +342,13 @@ struct LadderBuild {
     if (head.empty() || head != router) return false;
     return !(d.cfg.provider.hasKey && d.cfg.provider.hasKey(head));
   }
+  // Any provider key on the device besides the router's own (Cumulo's never counts).
+  bool anyDirectKey(const std::string& router) const {
+    if (!d.cfg.provider.hasKey) return true;
+    for (const orch::ProviderSlot& slot : orch::kProviderSlots)
+      if (slot.slug != router && std::string(slot.slug) != "cumulo" && d.cfg.provider.hasKey(slot.slug)) return true;
+    return router != "custom" && d.cfg.provider.hasKey("custom");
+  }
   void addRouter(const std::string& router) {
     if (!router.empty() && d.hosts.has(router) && inBudget(router)) add(router, std::string(), FoldRungKind::RouterFallback);
   }
@@ -357,8 +365,9 @@ struct LadderBuild {
   }
 };
 
-// The owner's order of providers: the pinned head, the priority list, then every
-// provider the list leaves out (the registry's order, then the custom endpoint).
+// The owner's order of providers: the pinned head, then the priority list, and nothing else
+// (privacy ruling, lane CTXR1): a keyed provider or a custom endpoint the owner left out of
+// the list (a key kept for voice, embeddings or sub-agents) never receives the digest.
 std::vector<std::string> ownerOrder(const ProviderConfig& p) {
   std::vector<std::string> order;
   if (p.orchHost) order.push_back(p.orchHost());
@@ -369,8 +378,6 @@ std::vector<std::string> ownerOrder(const ProviderConfig& p) {
     if (comma == std::string::npos) break;
     at = comma + 1;
   }
-  for (const orch::ProviderSlot& slot : orch::kProviderSlots) order.push_back(slot.slug);
-  order.push_back("custom");
   for (std::string& h : order) trimInPlace(h);
   return order;
 }
@@ -387,12 +394,14 @@ std::vector<FoldRung> TurnEngine::foldRungs() const {
   //    gated by its own key check, not by hasKey.
   const bool headIsRouter = b.isRouterHead(head, router);
   b.addHead(head, headIsRouter);
-  // 2. Every other keyed provider in the owner's order (ruling 2: the digest goes to
-  //    every keyed provider; Cumulo only with a Cumulo key).
+  // 2. Every other keyed provider in the owner's priority list, in its order (the owner's
+  //    consent: "every provider in your priority list"; Cumulo only with a Cumulo key).
   for (const std::string& h : ownerOrder(p))
     if (h != head && b.keyed(h)) b.add(h, std::string(), FoldRungKind::OtherHost);
-  // 3. The router fallback when no provider key is set and the head is not it already.
-  if (b.rungs.empty()) b.addRouter(router);
+  // 3. The router fallback only on a router-only device: no direct provider key at all
+  //    (CUM-288). Cumulo the owner put in the priority list is a rung of step 2 already; one
+  //    left out of it never receives the digest (privacy ruling, v5.1.2 fix review F).
+  if (!b.anyDirectKey(router)) b.addRouter(router);
   // 4. The head host on its Sub model, last (a direct host only: the pin needs one).
   if (!headIsRouter) b.addSub(head);
   return b.rungs;

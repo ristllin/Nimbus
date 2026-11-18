@@ -130,7 +130,8 @@ static void test_effort_table_matches_the_recording() {
                       {"mistral-medium-latest", "none"}, {"mistral-small-latest", "none"},
                       {"magistral-medium-latest", "none"}, {"mistral-vibe-cli-latest", "none"},
                       {"zai-glm-5-3", "low"},            {"zai-glm-5-3-flash", "low"},
-                      {"mistral-large-latest", ""}};
+                      {"mistral-large-latest", "low"},   // Large 4's alias since the 14 Nov list
+                      {"mistral-large-2512", ""}};
   for (const Row& r : rows) {
     TEST_ASSERT_EQUAL_STRING_MESSAGE(r.accepts, providers::mistralHeadEffort(r.model), r.model);
     for (const providers::RoundKind k : {providers::RoundKind::ToolRound, providers::RoundKind::FinalRound,
@@ -155,7 +156,8 @@ static void test_the_same_host_step_down_table() {
       {"mistral", "mistral/mistral-large-4-0", "mistral-medium-latest"},   // a router pick
       {"mistral", "mistral-medium-latest", ""},   // already runs at effort "none"
       {"mistral", "mistral-small-latest", ""},
-      {"mistral", "mistral-large-latest", ""},
+      {"mistral", "mistral-large-latest", "mistral-medium-latest"},   // Large 4's alias (14 Nov list)
+      {"mistral", "mistral-large-2512", ""},
       {"zai", "glm-5.3", ""},                    // both GLM models reason
       {"zai", "glm-5.3-flash", ""},
       {"anthropic", "claude-opus-5", ""},         // every Claude line takes effort
@@ -183,22 +185,32 @@ static void test_mistral_rounds_fit_the_gateway() {
 
 // (from test/test_harness_wire_mistral/main.cpp)
 // The class: the table agrees with the recorded /v1/models capabilities.reasoning
-// bit for EVERY chat model Mistral lists (a new model with no table row fails here).
+// bit for EVERY chat model Mistral lists, under its id and each of its aliases (a new
+// model with no table row fails here). The newest recorded list decides an id both
+// name: Mistral moved mistral-large-latest from mistral-large-2512 to Large 4 by 14 Nov.
 static void test_cum616_effort_table_matches_the_recorded_model_list() {
-  std::ifstream f("test/support/fixtures/models_2026-10/mistral.json");
-  TEST_ASSERT_TRUE(f.good());
-  const std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  JsonDocument doc;
-  TEST_ASSERT_FALSE(deserializeJson(doc, raw));
+  std::map<std::string, bool> seen;
   int checked = 0;
-  for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
-    JsonObjectConst cap = m["capabilities"];
-    if (!(cap["completion_chat"] | false) || !(cap["function_calling"] | false)) continue;
-    const char* id = m["id"] | "";
-    TEST_ASSERT_EQUAL_MESSAGE((bool)(cap["reasoning"] | false), providers::mistralTakesEffort(id), id);
-    TEST_ASSERT_EQUAL_MESSAGE(providers::mistralTakesEffort(std::string("mistral/") + id),
-                              providers::mistralTakesEffort(id), id);
-    checked++;
+  for (const char* list : {"models_2026-11", "models_2026-10"}) {
+    std::ifstream f(std::string("test/support/fixtures/") + list + "/mistral.json");
+    TEST_ASSERT_TRUE(f.good());
+    const std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    JsonDocument doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, raw));
+    for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
+      JsonObjectConst cap = m["capabilities"];
+      if (!(cap["completion_chat"] | false) || !(cap["function_calling"] | false)) continue;
+      std::vector<std::string> ids{m["id"] | ""};
+      for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>()) ids.push_back(a | "");
+      for (const std::string& id : ids) {
+        if (id.empty() || seen[id]) continue;
+        seen[id] = true;
+        TEST_ASSERT_EQUAL_MESSAGE((bool)(cap["reasoning"] | false), providers::mistralTakesEffort(id), id.c_str());
+        TEST_ASSERT_EQUAL_MESSAGE(providers::mistralTakesEffort("mistral/" + id), providers::mistralTakesEffort(id),
+                                  id.c_str());
+        checked++;
+      }
+    }
   }
   TEST_ASSERT_TRUE(checked > 10);
 }

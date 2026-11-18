@@ -313,6 +313,16 @@ HistoryWindow fitHistory(const std::vector<HistTurn>& turns, const std::string& 
 // collapses to one row and never folds). A manual /compact folds every turn,
 // whatever its size.
 constexpr size_t kFoldMinNewBytes = 1024;
+// What a slice with no digest means (lane CTXR1). Only Nothing may give rows up: a slice
+// that waits for rows it cannot read yet, or meets rows the card will not give back, is
+// tried again and leaves the anchor where it is.
+enum class SliceState : uint8_t {
+  Ready = 0,   // a digest to summarize
+  Nothing,     // the read reached the kept tail or the end: nothing worth a summary
+  Wait,        // the rows are not readable yet (the cache not filled, a read budget, a failing card)
+  Unread,      // the store named a span after the anchor it would not give back
+};
+const char* sliceStateName(SliceState s);
 struct FoldSlice {
   std::string digest;
   std::string thru;
@@ -321,6 +331,20 @@ struct FoldSlice {
   // the local dates of its first and last turn (YYYY-MM-DD, "" with no clock).
   size_t rows = 0;
   std::string firstDate, lastDate;
+  std::string firstId;   // the first row the digest holds (lane CTXR1: the fold log names the range)
+  SliceState state = SliceState::Nothing;   // Ready whenever `digest` is set
+  // Nothing: the newest row the read examined ("" = none). Rows a shift hid up to here
+  // held nothing to summarize, so the anchor may move to them, never past.
+  std::string readTo;
+  // Wait: this attempt moved the read forward (a scan or a read budget resumes from there).
+  bool progressed = false;
+  // Ready: the read stopped short of its bound (the cap, the page bound, a span it could not
+  // read): rows after `thru` remain for the next fold (a manual catch-up goes on).
+  bool more = false;
+  // A head with room (lane H's derived marks): the conversation bytes left after the new
+  // anchor (Ready: after `thru`; Nothing: after the old one). The fold trigger counts on
+  // from there, so it reads "bytes after thru" (budget.h). 0 on the floor branch.
+  uint32_t keptBytes = 0;
 };
 // How many of the newest turns a fold keeps verbatim: while they fit keepBytes, the
 // newest one always.

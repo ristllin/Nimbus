@@ -82,6 +82,8 @@ struct Device {
   std::vector<std::pair<std::string, bool>> sliced;        // (chat, manual) per slice read
   bool quiet = true;
   bool online = true;
+  std::set<std::string> guests;   // chats that are not the owner's (empty: every chat is)
+  bool ownerAlerts = false;       // the binding's alert: the owner's chats only, says if it told
   std::string firmware = "5.1.2";
 
   Device() {
@@ -111,11 +113,18 @@ struct Device {
     h.online = [this] { return online; };
     h.quiet = [this](bool) { return quiet; };
     h.triggerBytes = [] { return 48u * 1024u; };
-    h.foldStepBytes = [] { return (size_t)53900; };
+    h.foldCycleBytes = [] { return (size_t)53900; };
     h.slice = [this](const std::string& chat, size_t cap, bool manual) { return slice(chat, cap, manual); };
     h.tell = [this](const std::string& chat, const std::string& text) { told.push_back({chat, text}); };
     h.folded = [this](const agent::FoldDone& d) { done.push_back(d); };
     h.changed = [this](const std::string& chat) { changedChats.push_back(chat); };
+    if (!guests.empty()) h.ownerChat = [this](const std::string& chat) { return !guests.count(chat); };
+    if (ownerAlerts)
+      h.alert = [this](const std::string& chat, const std::string& text) {
+        if (guests.count(chat)) return false;   // only logged
+        told.push_back({chat, text});
+        return true;
+      };
     h.firmware = firmware;
     orch::FoldCtlIO io;
     io.load = [this] { return ctlText; };
@@ -131,9 +140,20 @@ struct Device {
     boot();
   }
 
+  uint32_t nothingKept = 0;
+  bool unreadAlways = false;   // every slice meets rows the store will not give back   // > 0: every slice reads to its bound and finds nothing, this much kept
   FoldSlice slice(const std::string& chat, size_t cap, bool manual) {
     sliced.push_back({chat, manual});
     FoldSlice s;
+    if (unreadAlways) {
+      s.state = agent::SliceState::Unread;
+      return s;
+    }
+    if (nothingKept) {
+      s.state = agent::SliceState::Nothing;
+      s.keptBytes = nothingKept;
+      return s;
+    }
     const std::string thru = folds.get(chat).thru;
     const std::vector<std::string>& r = rows[chat];
     const size_t keep = manual ? 0 : 2;
@@ -388,6 +408,124 @@ static void test_no_clock_uses_ram_backoff() {
   TEST_ASSERT_EQUAL(0, d.alerts());
 }
 
+// Lane CTXR1 (low items). No clock for a whole uptime: the RAM count restarts 24 h after its
+// first paid request, so automatic summaries never stop for good waiting for a "next local
+// day" that never comes.
+static void test_no_clock_cap_rolls_over_after_a_day() {
+  Device d;
+  d.boot();
+  d.backlog("c", 400);
+  int firstDay = -1;
+  for (int m = 0; m < 30 * 60; m++) {   // 30 hours, a pass a minute, no clock
+    d.plat.ms += 60000;
+    d.drv->tick(d.plat.ms, 0);
+    if (m == 23 * 60) firstDay = d.asked;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(firstDay <= 12, "the cap holds inside the first day");
+  TEST_ASSERT_TRUE_MESSAGE(d.asked > firstDay, "the count rolls over: summaries go on");
+  TEST_ASSERT_TRUE(LogCapture::contains("daily count restarts"));
+}
+
+// No clock at boot: a chat with a persisted wait (a 12 h backoff from before the restart) is
+// not retried at once; it waits a few minutes for the clock, then goes.
+static void test_no_clock_boot_holds_a_persisted_wait() {
+  Device d;
+  d.boot();
+  d.backlog("c", 40);
+  d.folds.noteCycleFailed("c", kT0);
+  d.reboot();
+  TEST_ASSERT_TRUE(d.folds.get("c").nextTry != 0);
+  for (int i = 0; i < 60; i++) d.tick(0);   // a minute after boot
+  TEST_ASSERT_EQUAL(0, d.asked);
+  d.plat.ms += FoldDriverHooks::kNoClockGraceMs;
+  d.tick(0);
+  TEST_ASSERT_TRUE(d.asked > 0);
+}
+
+// Two chats failing for over a day, a guest's first: the day's one alert still reaches the
+// owner (it used to be spent on the guest's chat, where it was only logged).
+static void test_the_daily_alert_is_spent_only_when_it_reaches_the_owner() {
+  Device d;
+  d.guests = {"guest"};
+  d.ownerAlerts = true;
+  d.thinText = "";   // every rung answers empty
+  d.boot();
+  d.backlog("guest", 40);
+  d.backlog("owner", 40, 0x400);
+  // Both have been failing for 30 hours; the guest is due now, the owner an hour later.
+  d.folds.noteCycleFailed("guest", kT0 - 30 * 3600);
+  d.folds.noteCycleFailed("owner", kT0 - 30 * 3600);
+  d.folds.noteCycleFailed("owner", kT0 - 60);
+  for (uint32_t m = 0; m < 3 * 60; m++) d.tick(kT0 + m * 60);
+  int ownerAlerts = 0;
+  for (const auto& t : d.told) ownerAlerts += t.first == "owner" && t.second.find("hasn't updated since") != std::string::npos;
+  TEST_ASSERT_TRUE(LogCapture::contains("fold(guest): cycle failed"));
+  TEST_ASSERT_EQUAL_MESSAGE(1, ownerAlerts, "the owner hears about the failing summary the same day");
+  for (const auto& t : d.told) TEST_ASSERT_TRUE(t.first != "guest");
+}
+
+// A guest chat that refills all day spends at most half the daily cap: the owner's chat,
+// due late in the day, still gets its automatic summary.
+static void test_a_busy_guest_chat_leaves_the_owner_room() {
+  Device d;
+  d.failing = false;
+  d.guests = {"g"};
+  d.boot();
+  d.backlog("g", 3000, 0x1000);
+  for (uint32_t m = 0; m < 20u * 60u; m += 10) {   // 20 hours of the guest folding
+    d.tick(kT0 + m * 60);
+    if (!d.folds.get("g").softStart.empty()) continue;
+    d.backlog("g", 20, 0x1000 + (int)d.rows["g"].size());   // it refills
+  }
+  int guestFolds = 0;
+  for (const auto& done : d.done) guestFolds += done.chat == "g";
+  TEST_ASSERT_TRUE_MESSAGE(guestFolds <= (int)orch::kFoldGuestPaidPerDay, "the guest's share of the cap");
+  d.backlog("owner", 40, 0x100);
+  for (uint32_t m = 20u * 60u; m < 21u * 60u; m++) d.tick(kT0 + m * 60);
+  bool ownerFolded = false;
+  for (const auto& done : d.done) ownerFolded = ownerFolded || done.chat == "owner";
+  TEST_ASSERT_TRUE_MESSAGE(ownerFolded, "the owner's chat folds the same day");
+}
+
+// Review (lane CTXR1): a slice that reads to its bound and keeps a tail at or over the trigger
+// (one huge turn) restarts the count under the trigger: the chat is not due again on every
+// pass with nothing to fold.
+static void test_a_huge_kept_tail_does_not_skip_every_pass() {
+  Device d;
+  d.boot();
+  d.folds.noteMessage("c", 60 * 1024);
+  d.folds.noteTurn("c");
+  d.nothingKept = 200 * 1024;
+  TEST_ASSERT_TRUE(d.tick(kT0) == FoldTick::Skipped);
+  for (int i = 1; i < 20; i++) TEST_ASSERT_TRUE(d.tick(kT0 + (uint32_t)i * 60) == FoldTick::Idle);
+  TEST_ASSERT_TRUE(orch::bytesAfterThru(d.folds.get("c")) < 48u * 1024u);
+}
+
+// v5.1.2 fix review E: rows the store keeps refusing stay unread (fail-closed: the anchor never
+// passes them), but not silently. After a day of it the owner hears once a local day, and a
+// Summarize now says the truth, not "try again in a few minutes".
+static void test_rows_unread_for_a_day_alert_the_owner_once_a_day() {
+  Device d;
+  d.boot();
+  d.backlog("c", 40);
+  d.unreadAlways = true;
+  for (uint32_t m = 0; m < 3u * 24u * 60u; m += 5) d.tick(kT0 + m * 60);
+  int alerts = 0;
+  for (const auto& t : d.told) alerts += t.second.find("can't move past them") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(alerts >= 1 && alerts <= 3, std::to_string(alerts).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.folds.get("c").thru.empty(), "the anchor never passes rows it could not read");
+  d.told.clear();
+  d.drv->requestManual("c");
+  for (int i = 0; i < 3; i++) d.tick(kT0 + 4u * 86400u + (uint32_t)i);
+  int answers = 0, minutes = 0;
+  for (const auto& t : d.told) {
+    answers += t.second.find("can't be read from storage right now") != std::string::npos;
+    minutes += t.second.find("Try again in a few minutes") != std::string::npos;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, answers, "the manual request is answered with the truth");
+  TEST_ASSERT_EQUAL(0, minutes);
+}
+
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
 static void test_fresh_device_is_idle_and_quiet() {
   Device d;
@@ -584,6 +722,12 @@ int main(int, char**) {
   RUN_TEST(test_daily_cap_is_device_wide_across_five_chats);
   RUN_TEST(test_a_failing_week_on_five_chats_stays_bounded);
   RUN_TEST(test_no_clock_uses_ram_backoff);
+  RUN_TEST(test_no_clock_cap_rolls_over_after_a_day);
+  RUN_TEST(test_no_clock_boot_holds_a_persisted_wait);
+  RUN_TEST(test_the_daily_alert_is_spent_only_when_it_reaches_the_owner);
+  RUN_TEST(test_a_busy_guest_chat_leaves_the_owner_room);
+  RUN_TEST(test_a_huge_kept_tail_does_not_skip_every_pass);
+  RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);

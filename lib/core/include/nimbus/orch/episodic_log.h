@@ -479,7 +479,8 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // no-clock stream that still has some (true: named in `info`).
   long coldEndOf(uint32_t day, const std::map<uint32_t, uint32_t>& floorOfDay) const;
   bool noClockColdSpan(const EpiPsVec<uint32_t>& days, const std::map<uint32_t, uint32_t>& floorOfDay,
-                       EpiQueryInfo& info) const;
+                       const MsgQuery& q, uint32_t afterSfx, EpiQueryInfo& info) const;
+  uint32_t newestColdSfx(uint32_t day, long end) const;
   // The cold walk's parts: where it starts (a byte cursor, or coldAfterStart), one forward
   // window of whole records (false: the card would not give it back), and one day's cold
   // bytes (false: the walk stopped, its cursor set).

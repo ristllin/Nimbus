@@ -1469,7 +1469,7 @@ static void test_cum616_effort_none_only_on_models_that_reason() {
     TEST_ASSERT_TRUE_MESSAGE(runMistralHead(d, m, err), err.c_str());
     TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 0, "\"reasoning_effort\":\"none\""), m);
   }
-  for (const char* m : {"mistral-large-latest", "ministral-8b-latest", "codestral-latest"}) {
+  for (const char* m : {"mistral-large-2512", "ministral-8b-latest", "codestral-latest"}) {
     FakeProviderDeps d;
     d.http.script.push_back({"api.mistral.ai", "/v1/chat/completions", 200, chatFinalBody()});
     std::string err;
@@ -1944,7 +1944,8 @@ static void test_mistral_caps_are_the_documented_numbers() {
       {"mistral-medium-latest", 6000, 12000},
       {"mistral-small-latest", 6000, 12000},
       {"magistral-medium-latest", 6000, 12000},
-      {"mistral-large-latest", 4096, 6144},
+      {"mistral-large-latest", 6000, 12000},   // Large 4's alias (14 Nov list)
+      {"mistral-large-2512", 4096, 6144},
   };
   for (const auto& r : rows) {
     const providers::OutputCap c = providers::tableCap("mistral", r.model, providers::RoundKind::ToolRound);

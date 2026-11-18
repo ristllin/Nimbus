@@ -176,8 +176,9 @@ static void test_orchestrator_sizes_off_one_head_budget() {
   TEST_ASSERT_TRUE(fn.find("headContextBudget(") != std::string::npos);
   for (const char* use : {"headBudget().briefBytes", "headBudget().recentConvBytes"})
     TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, use), use);
-  // Lane F switched the fold to lane B's request context: one fold's step and the trigger.
-  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headRequestContext().foldStepBytes"), "the fold step");
+  // Lane F switched the fold to lane B's request context: one cycle's bound (lane CTXR1: what
+  // one fold input can carry, foldCycleBytes) and the trigger.
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "foldCycleBytes(headRequestContext())"), "the fold cycle");
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "foldTriggerBytes(headRequestContext()"), "the fold trigger");
 }
 

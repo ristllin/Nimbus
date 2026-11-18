@@ -14,13 +14,12 @@
     {"id": "gpt-4o", "file": "lib/core/src/orch_model_window.cpp", "why": "context-window family prefix"},
     {"id": "mistral-large-4", "file": "lib/core/src/orch_model_window.cpp", "why": "head-window family prefix (the corrected window table); compared, never sent"},
     {"id": "ministral-3b", "file": "lib/core/src/orch_model_window.cpp", "why": "head-window family prefix (the corrected window table); compared, never sent"},
-    {"id": "mistral-large-4", "file": "lib/core/src/orch_request_budget.cpp", "why": "rate family prefix (the request budget's floors); compared, never sent"},
+    {"id": "mistral-large-4", "file": "lib/core/src/orch_model_family.cpp", "why": "Large 4's family prefix in the one alias table (request budget, caps, connector refusal); compared, never sent"},
     {"id": "gpt-4o", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
     {"id": "gpt-4.1", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
     {"id": "o4-mini", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
     {"id": "claude-haiku-5-5:long", "file": "lib/core/include/nimbus/orch/model_price_defaults.h", "why": "ledger key of the over-100K price tier; never sent"},
     {"id": "mistral-large-4", "file": "lib/harness/src/providers/output_caps.cpp", "why": "family prefix of the models that take reasoning_effort; compared, never sent"},
-    {"id": "mistral-large-4", "file": "lib/core/src/orch_connectors_wire.cpp", "why": "family prefix of the head models that refuse built-in connectors; compared, never sent"},
     {"id": "mistral-small-26", "file": "lib/harness/src/providers/output_caps.cpp", "why": "family prefix of the models that take reasoning_effort; compared, never sent"}
   ]
 }

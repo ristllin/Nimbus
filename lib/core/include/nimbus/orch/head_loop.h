@@ -261,7 +261,12 @@ extern const char kFinalCheckCallId[];
 //   Ladder        the whole order until the bytes asked for
 //   Context       the next of the rungs that go before the newest unread results (recall,
 //                 skills, history): the loop clips the newest round only after them
-enum class FitScope : uint8_t { OlderHistory, NextRung, Ladder, Context };
+//   NewestMessage only what the turn's newest message holds (recall, skills, the results
+//                 blocks, the input's middle) until the bytes asked for: a seed over its
+//                 string budget never gives up history, tools or the shelf for it
+//   GiveBackHistory  put back the history OlderHistory gave up (the photos it was given up
+//                 for went as text after all); returns the bytes put back, `want` unused
+enum class FitScope : uint8_t { OlderHistory, NextRung, Ladder, Context, NewestMessage, GiveBackHistory };
 
 // Forward decl: transcript.h includes THIS header (it uses HeadToolCall/Result),
 // so the dependency runs one way only - hooks hold a pointer, never a value.

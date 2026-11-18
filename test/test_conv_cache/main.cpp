@@ -384,6 +384,137 @@ static void test_an_empty_probe_the_store_cut_short_is_not_the_end() {
   TEST_ASSERT_EQUAL(4, (int)v.rows.size());   // turns 3 and 4
 }
 
+// Lane CTXR1: the fill's first page came back empty (a chat with no row yet, on a store whose
+// cold probe is cut by its budget, so the entry stays incomplete). The rows written after it
+// must reach every later access: the delta read needs a newest id, and an empty first page
+// used to leave it unset for good (turns 3, 4, 5 saw only exchange 1).
+static void test_an_empty_first_page_still_reads_every_newer_row() {
+  Store s;
+  for (int i = 0; i < 30; i++) s.turn("c9", i);   // another chat's rows
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn cut = [&full](const HistoryQuery& q) {
+    if (!q.after.empty() && q.limit == 1 && q.info) {   // the gap probe: a cold walk out of budget
+      q.info->newerExists = true;
+      q.info->nextAfter = q.after;
+      return std::vector<EpisodicMessage>();
+    }
+    return full(q);
+  };
+  ConvCache cache;
+  const ConvCache::View first = cache.access("c1", "", kWide, 1, cut);
+  TEST_ASSERT_TRUE(first.rows.empty());
+  TEST_ASSERT_FALSE(first.complete);
+  for (int t = 1; t <= 5; t++) {
+    const std::string newest = s.turn("c1", t);
+    const ConvCache::View v = cache.access("c1", "", kWide, 1, cut);
+    TEST_ASSERT_FALSE_MESSAGE(v.rows.empty(), "the chat's rows reach the cache");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(newest.c_str(), v.rows.back().id.c_str(), "every later exchange reaches the view");
+    assertIds(s.truth("c1", ""), ids(v));
+  }
+}
+
+// Lane CTXR1: a store whose index never reaches thru (an index capped at its row cap, or a
+// hosted instance that never backfilled): the gap probe's cold walk goes on from where the
+// store's read budget stopped, so the fill completes, and once complete a turn reads no card
+// row (it used to restart the walk at thru on every call: 17 card reads a turn, for good, and
+// a request that said the rows were still being read).
+static void test_a_capped_index_still_completes_the_fill() {
+  Store s;
+  for (int i = 0; i < 400; i++) s.turn("c9", i, 400);   // 2,400 rows of another chat on the card
+  s.turn("c1", 0);
+  s.turn("c1", 1);
+  s.log.hydrate(300, 0);   // the boot scan, then the backfill until the index cap stops it
+  s.log.setIndexCap(600);
+  for (int i = 0; i < 1000 && s.log.backfillStep(); i++) {
+  }
+  TEST_ASSERT_TRUE_MESSAGE(s.log.hydrateTruncated(), "the index stays short of the chat's start");
+  ConvCache cache;
+  ConvCache::View v;
+  int calls = 0;
+  for (; calls < 20 && !v.complete; calls++) v = cache.access("c1", "", kWide, 1, s.reader("c1"));
+  TEST_ASSERT_TRUE_MESSAGE(v.complete, "the fill completes");
+  TEST_ASSERT_TRUE(v.span.empty());
+  assertIds(s.truth("c1", ""), ids(v));
+  for (int t = 2; t < 6; t++) {
+    s.turn("c1", t);
+    s.fs.readRanges = 0;
+    v = cache.access("c1", "", kWide, 1, s.reader("c1"));
+    TEST_ASSERT_TRUE(v.complete);
+    TEST_ASSERT_EQUAL_MESSAGE(0, s.fs.readRanges, "a turn after the fill reads no card row");
+  }
+}
+
+// v5.1.2 fix review A: the gap probe kept a byte cursor from a cold walk cut by its budget;
+// then the store's backfill completed, and the store answers that cursor with an empty page and
+// nothing more. That is not "no gap": the probe starts again at thru and finds the rows below
+// the oldest held (they used to be neither held nor named).
+static void test_a_stale_probe_cursor_is_not_the_end() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  std::string floorId;
+  for (int i = 1; i <= 4; i++) {
+    const std::string last = s.turn("c1", i);
+    if (i == 2) floorId = last;   // the index reaches only the rows after it
+  }
+  bool indexComplete = false;
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn store = [&](const HistoryQuery& q) {
+    const bool byteCur = q.after.find(':') != std::string::npos;
+    if (byteCur) return std::vector<EpisodicMessage>();   // stale or not: none of the chat's rows there
+    if (!q.after.empty() && !indexComplete) {   // the cold walk out of budget
+      if (q.info) {
+        q.info->newerExists = true;
+        q.info->nextAfter = "20591:131072";
+      }
+      return std::vector<EpisodicMessage>();
+    }
+    std::vector<EpisodicMessage> rows = full(q);
+    if (!indexComplete)
+      rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                [&](const EpisodicMessage& m) { return !agent::rowIdAfter(m.id, floorId); }),
+                 rows.end());
+    return rows;
+  };
+  ConvCache cache;
+  ConvCache::View v = cache.access("c1", thru, kWide, 2, store);   // the probe keeps a byte cursor
+  TEST_ASSERT_FALSE(v.complete);
+  indexComplete = true;   // the backfill completes: the stored cursor now reads empty, no info
+  v = cache.access("c1", thru, kWide, 2, store);
+  TEST_ASSERT_TRUE_MESSAGE(v.complete ? v.rows.size() == s.truth("c1", thru).size() : true,
+                           "complete only with every row after thru");
+  for (int i = 0; i < 6 && !v.complete; i++) v = cache.access("c1", thru, kWide, 2, store);
+  TEST_ASSERT_TRUE(v.complete);
+  assertIds(s.truth("c1", thru), ids(v));
+}
+
+// v5.1.2 fix review D: the gap probe makes one store read a call, so a turn keeps to its one
+// card page and an idle pass to its time bound (it made up to four cold walks in one page).
+static void test_the_gap_probe_reads_once_a_call() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  for (int i = 1; i <= 4; i++) s.turn("c1", i);
+  int probes = 0, n = 0;
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn cut = [&](const HistoryQuery& q) {
+    if (!q.after.empty() && q.limit == 1) {   // a probe: the cold walk out of budget every time
+      probes++;
+      if (q.info) {
+        q.info->newerExists = true;
+        q.info->nextAfter = "20591:" + std::to_string(++n * 131072);
+      }
+      return std::vector<EpisodicMessage>();
+    }
+    return q.after.empty() ? std::vector<EpisodicMessage>() : full(q);   // the index holds none of the chat
+  };
+  ConvCache cache;
+  for (int call = 0; call < 5; call++) {
+    probes = 0;
+    cache.access("c1", thru, kWide, 1, cut);
+    TEST_ASSERT_TRUE_MESSAGE(probes <= 1, std::to_string(probes).c_str());
+  }
+  TEST_ASSERT_TRUE(n >= 3);   // and the walk still goes forward, a read a call
+}
+
 // A device boot replays the photo records it kept: no cache holds a row yet, so the replay
 // does not fill the patch journal (it would push out records a running cache still needs).
 static void test_a_boot_replay_is_not_journaled() {
@@ -553,10 +684,97 @@ static uint32_t firstTurnCardReads(bool namedSource) {
   TEST_ASSERT_TRUE(r.instructions.back().find("answer 200 ") != std::string::npos);
   return r.eng->historyRead().cardReads;
 }
+// Lane CTXR1 (H7): a Telegram update served again after a manual compaction (thru at the
+// newest row: the cache holds nothing) or after /clear (it holds only the boundary row) is
+// still found and dropped, never answered twice: the duplicate check reads the chat's newest
+// rows from the store when the cache holds fewer.
+static void test_a_replayed_update_is_dropped_after_a_compaction_or_a_clear() {
+  for (int shape = 0; shape < 2; shape++) {
+    Store s;
+    s.turn("c1", 0);
+    EngineRig r(s.fs, s.seq, "");
+    const auto deliver = [&r]() {
+      agent::history::Inbound in;
+      in.chatId = "c1";
+      in.src = "tg:1:5000x1";
+      agent::history::noteInbound(in, "log my lunch");
+      r.eng->handleMessage("log my lunch", "Roy", "c1");
+    };
+    deliver();
+    TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+    if (shape == 0) {
+      char id[16];
+      std::snprintf(id, sizeof(id), "m%08x", (unsigned)r.seq);   // a manual fold up to the newest row
+      r.marks.thru = id;
+    } else {
+      EpisodicMessage m;
+      char id[16];
+      std::snprintf(id, sizeof(id), "m%08x", (unsigned)(++r.seq));
+      m.id = id;
+      m.sessionId = "c1";
+      m.role = "system";
+      m.text = agent::kClearBoundaryText;
+      m.tags = agent::kClearBoundaryTag;
+      m.tsHours = kHour0 + r.seq / 8;
+      r.overlay.addMessage(m);
+      r.marks.thru = id;   // /clear anchors at its boundary row
+    }
+    deliver();   // the same update, served again
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.instructions.size(), shape ? "after /clear" : "after a manual compaction");
+  }
+}
+
+// v5.1.2 fix review G: right after a restart the cache entry is still filling (one page of the
+// newest rows), and that is exactly when Telegram re-serves an update. An update older than that
+// page is still found in the store's newest rows and dropped, never answered twice.
+static void test_a_replayed_update_is_dropped_while_the_cache_fills() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  uint32_t seq;
+  {
+    EngineRig r(s.fs, s.seq, thru);
+    agent::history::Inbound in;
+    in.chatId = "c1";
+    in.src = "tg:1:6000x1";
+    agent::history::noteInbound(in, "log my dinner");
+    r.eng->handleMessage("log my dinner", "Roy", "c1");
+    TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+    seq = r.seq;
+  }
+  s.seq = seq;
+  for (int i = 1; i <= 15; i++) s.turn("c1", i);   // 30 newer conversation rows: past the fill's first page
+  EngineRig again(s.fs, s.seq, thru);                 // the restart: the boot scan, an empty cache
+  agent::history::Inbound in;
+  in.chatId = "c1";
+  in.src = "tg:1:6000x1";
+  agent::history::noteInbound(in, "log my dinner");
+  again.eng->handleMessage("log my dinner", "Roy", "c1");
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)again.instructions.size(), "the re-served update is dropped");
+}
+
+// The card reads of one read of the chat's newest 48 rows on the same store after a restart:
+// what the duplicate check costs while the cache fills (fix review G).
+static uint32_t newestRowsCardReads() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  for (int i = 1; i <= 200; i++) s.turn("c1", i, 500);
+  EngineRig r(s.fs, s.seq, thru);
+  const uint32_t before = epiCardReads();
+  MsgQuery q;
+  q.sessionId = "c1";
+  q.haveKind = true;
+  q.kind = MsgKind::Message;
+  q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
+  q.limit = 48;
+  r.overlay.query(q, nullptr);
+  return epiCardReads() - before;
+}
 static void test_one_card_page_with_the_duplicate_check() {
   const uint32_t plain = firstTurnCardReads(false);
   TEST_ASSERT_TRUE(plain > 0);
-  TEST_ASSERT_EQUAL_UINT32(plain, firstTurnCardReads(true));
+  // The window's read takes no second page; the duplicate check adds only its own read of the
+  // newest rows, and only while the cache does not hold them yet (fix review G).
+  TEST_ASSERT_TRUE(firstTurnCardReads(true) <= plain + newestRowsCardReads());
 }
 
 // The same restart on a head with room (Claude Sonnet: 118 KB of history since the
@@ -596,7 +814,13 @@ int main(int, char**) {
   RUN_TEST(test_the_first_turn_after_a_restart_carries_the_newest_exchanges);
   RUN_TEST(test_an_empty_probe_the_store_cut_short_is_not_the_end);
   RUN_TEST(test_a_boot_replay_is_not_journaled);
+  RUN_TEST(test_a_stale_probe_cursor_is_not_the_end);
+  RUN_TEST(test_the_gap_probe_reads_once_a_call);
+  RUN_TEST(test_an_empty_first_page_still_reads_every_newer_row);
+  RUN_TEST(test_a_capped_index_still_completes_the_fill);
   RUN_TEST(test_one_card_page_with_the_duplicate_check);
+  RUN_TEST(test_a_replayed_update_is_dropped_after_a_compaction_or_a_clear);
+  RUN_TEST(test_a_replayed_update_is_dropped_while_the_cache_fills);
   RUN_TEST(test_after_the_fill_the_whole_backlog_rides_the_request);
   return UNITY_END();
 }

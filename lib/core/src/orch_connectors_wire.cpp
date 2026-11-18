@@ -1,4 +1,5 @@
 #include "nimbus/orch/connectors_wire.h"
+#include "nimbus/orch/model_family.h"   // isMistralLarge4 - the Large 4 alias table
 #include "nimbus/orch/connector_grant.h"   // attachBuiltinsOnly - whose request it is (CUM-828)
 #include "nimbus/orch/provider_slots.h"   // kProviderSlots - the keyed walk past the priority list
 
@@ -1916,7 +1917,7 @@ static bool providerKeyed(const std::string& prov, const ProviderState& ps) {
 
 // ---- lane CONN: the head model's connector refusal ----------------------------
 bool modelRefusesBuiltinConnectors(const std::string& model) {
-  return model.rfind("mistral-large-4", 0) == 0;
+  return isMistralLarge4(model);   // under every id that means it (model_family.h)
 }
 
 CapScope connectorScope(const ConnectorInfo& c, const ProviderState& ps) {

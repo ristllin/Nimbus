@@ -107,13 +107,16 @@ bool anthropicTakesEffort(const std::string& model);
 // Whether a Mistral model accepts reasoning_effort (CUM-616): the models whose
 // /v1/models entry says capabilities.reasoning (recorded 2026-10: Mistral Small
 // 2603+, Medium, Magistral, Large 4, the Vibe CLI aliases, Leanstral, the hosted
-// GLM). Any other model answers 400 code 3051 "reasoning_effort is not enabled for
-// this model" (mistral-large-latest, ministral-*; recorded 22 Oct). A router pick
-// carries a "mistral/" prefix.
+// GLM), under every alias the newest recorded list gives them (mistral-large-latest is
+// Large 4's since 14 Nov: nimbus/orch/model_family.h). Any other model answers 400 code
+// 3051 "reasoning_effort is not enabled for this model" (mistral-large-2512, then also
+// named mistral-large-latest, and ministral-*; recorded 22 Oct). A router pick carries a
+// "mistral/" prefix.
 bool mistralTakesEffort(const std::string& model);
 
 // The reasoning_effort a head round sends on this Mistral model ("" = none): the lowest
-// value the model takes. Large 4 and the hosted GLM refuse "none"; Small, Medium,
+// value the model takes. The forced reasoners (nimbus::orch::mistralForcedReasoner:
+// Large 4 under every alias, the hosted GLM) refuse "none"; Small, Medium,
 // Magistral and the Vibe aliases refuse "low" (recorded 1 Nov).
 const char* mistralHeadEffort(const std::string& model);
 

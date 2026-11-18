@@ -619,6 +619,42 @@
       "through": [
         "doSendMessage"
       ]
+    },
+    {
+      "name": "fold pump pass (FoldDriver::tick)",
+      "through": [
+        "^agent::FoldDriver::tick\\("
+      ],
+      "_why": "compactTick calls it once per pump pass: the start of a cycle (the slice read) and at most one rung (lane F of the history fix, v5.1.2: the fold driver runs on tg_poll, compactTick at the end of pollJobs, one rung of the ladder per pump pass)"
+    },
+    {
+      "name": "fold rung (one request of the ladder)",
+      "through": [
+        "^agent::TurnEngine::runFoldRung\\(",
+        "^agent::TurnEngine::runFoldOn\\("
+      ],
+      "_why": "the request itself, under the model pin, on whichever wire the rung names (lane F of the history fix, v5.1.2: the fold driver runs on tg_poll, compactTick at the end of pollJobs, one rung of the ladder per pump pass)"
+    },
+    {
+      "name": "turn history read (TurnEngine::historyWindow)",
+      "through": [
+        "^agent::TurnEngine::historyWindow\\("
+      ],
+      "_why": "every turn: the cache's delta after the newest row held, or one newest-first page after a restart (lane H of the history fix, v5.1.2: a turn reads its history from the conversation cache, the idle pump fills it after a restart, the fold slice reads forward from thru)"
+    },
+    {
+      "name": "idle cache fill (TurnEngine::historyIdleStep)",
+      "through": [
+        "^agent::TurnEngine::historyIdleStep\\("
+      ],
+      "_why": "pollJobs calls it once per pump pass: one before-cursor page of the store (ring, index or card) (lane H of the history fix, v5.1.2: a turn reads its history from the conversation cache, the idle pump fills it after a restart, the fold slice reads forward from thru)"
+    },
+    {
+      "name": "fold slice forward read (TurnEngine::historyFoldSlice)",
+      "through": [
+        "^agent::TurnEngine::historyFoldSlice\\("
+      ],
+      "_why": "a fold cycle's start: after-cursor pages from thru, the cold region included (lane H of the history fix, v5.1.2: a turn reads its history from the conversation cache, the idle pump fills it after a restart, the fold slice reads forward from thru)"
     }
   ],
   "hierarchies": [

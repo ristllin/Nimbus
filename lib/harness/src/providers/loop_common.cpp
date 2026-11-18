@@ -465,9 +465,10 @@ class RoundRecovery {
 
   // A photo round whose fit cannot carry the host's minimum final answer (wire_budget.h
   // photosOverFit): nothing was sent. Photos come before older history: the older
-  // history goes first (the give-up order's own rung, with its LEFT OUT note), and only
-  // when none is left are the photos read as text on this host for the rest of the turn
-  // ("transcribed: did not fit the <host> time window"). True when the round runs again.
+  // history goes first (the give-up order's own rung, with its LEFT OUT note), down to
+  // its keep floor, and only then are the photos read as text on this host for the rest
+  // of the turn ("transcribed: did not fit the <host> time window"); the history given up
+  // for them comes back, since the text round has room for it. True when the round runs again.
   __attribute__((noinline)) bool photoFit(const std::string& host, const orch::HeadStep& sr) {
     size_t over = 0;
     if (sr.ok || !wire::parsePhotoFitError(sr.error, over)) return false;
@@ -475,17 +476,22 @@ class RoundRecovery {
       hlog::logf("fabric: %s photo round over its time fit - gave up older history, running it again", host.c_str());
       return true;
     }
-    return imageparts::transcribeForTime(tr_.images(), host) > 0;
+    if (imageparts::transcribeForTime(tr_.images(), host) == 0) return false;
+    if (fitPrompt(0, orch::FitScope::GiveBackHistory) > 0)
+      hlog::logf("fabric: %s photos went as text - the history given up for them is back", host.c_str());
+    return true;
   }
 
   // A head turn's newest message over its string budget (wire_budget.h seedWithinBudget):
-  // nothing was sent. What that message holds goes, a rung of the turn's ladder at a time
-  // (recall, then the input's middle), never the tool rounds or the older history first.
-  // True when the round runs again.
+  // nothing was sent. Only what that message holds goes (recall, the skills, the results
+  // blocks, then the input's middle: FitScope::NewestMessage), never the tool rounds, the
+  // history or the shelf, and in a bounded number of passes. True when the round runs again.
   __attribute__((noinline)) bool seedFit(const std::string& host, const orch::HeadStep& sr) {
     size_t over = 0;
     if (sr.ok || !wire::parseSeedBudgetError(sr.error, over)) return false;
-    if (fitPrompt(over + 512, orch::FitScope::NextRung) == 0) return false;
+    if (seedFits_ >= kSeedFitPasses) return false;
+    ++seedFits_;
+    if (fitPrompt(over + 512, orch::FitScope::NewestMessage) == 0) return false;
     hlog::logf("fabric: %s newest message over its budget - gave up part of it, running the round again",
                host.c_str());
     return true;
@@ -510,12 +516,16 @@ class RoundRecovery {
   const orch::HeadStep& failure(const orch::HeadStep& last) const { return savedCut_ ? *savedCut_ : last; }
 
   // A round moved to another host: that host gets its own trim and its own rerun.
-  void newHost() { overflowTried_ = cutRerun_ = false; }
+  void newHost() {
+    overflowTried_ = cutRerun_ = false;
+    seedFits_ = 0;
+  }
 
   // The round is served. What was recovered is over: a later round's failure is about
   // itself, it may have its own trim and rerun, and it is not told about this cut.
   __attribute__((noinline)) void served() {
     overflowTried_ = cutRerun_ = false;
+    seedFits_ = 0;   // the pass bound is per round: a later round's seed gets its own
     savedCut_.reset();
     heldHost_.clear();
     heldCause_.clear();
@@ -549,6 +559,11 @@ class RoundRecovery {
   std::string fitInstructions_, fitInputs_;
   bool fitted_ = false;
   bool overflowTried_ = false, cutRerun_ = false;
+  // A seed refit measures the rendered prompt, not the seed alone: a pass that freed bytes
+  // elsewhere (the playbook) is tried again, a few times at most per round (one per rung
+  // of NewestMessage, and one for a partial clip).
+  static constexpr int kSeedFitPasses = 5;
+  int seedFits_ = 0;
   std::unique_ptr<orch::HeadStep> savedCut_;
   std::string cutNote_;
   std::string heldHost_, heldCause_;
@@ -566,6 +581,20 @@ void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadToo
   hooks.spill    = ht.spill;         // clamped-result spill -> results ring
   hooks.transcript = &tr;            // the controller records; step() renders
   if (ht.fitPrompt) hooks.fitPrompt = rec.fitHook();
+}
+
+// The Mistral step on `model` (the same-host step-down) instead of the configured head:
+// every other host's model is the configured one. noinline: the deps copy lives in this
+// frame only while the step is built (the step keeps its own copy, as every step does).
+__attribute__((noinline)) orch::HeadStepFn misStepOn(const ProviderDeps& pd, const std::string& model,
+                                                     const std::string& ins, const HeadTools& ht,
+                                                     orch::TokenUsage* use, orch::Transcript& tr) {
+  ProviderDeps alt = pd;
+  auto orig = pd.orchModel;
+  alt.orchModel = [orig, model](const char* h) {
+    return std::string(h) == "mistral" ? model : (orig ? orig(h) : std::string());
+  };
+  return misLoopStep(alt, ins, ht, use, tr);
 }
 }  // namespace
 
@@ -668,12 +697,22 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // On the heap, as in runHostLoop (lane STACK).
   const std::unique_ptr<RoundRecovery> recovery(new RoundRecovery(tr, ht, instructions, inputs));
   RoundRecovery& rec = *recovery;
+  // The same-host step-down model once a cut forced it ("" = none). It holds for the rest of
+  // the turn: every later build of the Mistral step (a refit's rebuild included) is on it.
+  std::string stepDownModel;
+  // The model host `i`'s requests name now: the step-down's once it holds, else the configured one.
+  auto modelOf = [&](size_t i) -> std::string {
+    if (hostList[i] == "mistral" && !stepDownModel.empty()) return stepDownModel;
+    return pd.orchModel ? pd.orchModel(hostList[i].c_str()) : std::string();
+  };
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
     const std::string& ins = rec.instructions();
     orch::TokenUsage* use = &hostUse[i];
     if (h == "anthropic") return wrap(i, antLoopStep(pd, ins, ht, use, tr), "orchTurn(ant-loop)");
     if (h == "openai")    return wrap(i, oaiLoopStep(pd, ins, ht, use, tr), "orchTurn(oai-loop)");
+    if (h == "mistral" && !stepDownModel.empty())
+      return wrap(i, misStepOn(pd, stepDownModel, ins, ht, use, tr), "orchTurn(mistral-loop)");
     if (h == "mistral")   return wrap(i, misLoopStep(pd, ins, ht, use, tr), "orchTurn(mistral-loop)");
     if (h == "zai" && pd.zaiHead) {
       ProviderDeps zai = pd;   // the step keeps its own copy, as every step does
@@ -722,7 +761,6 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   const imageparts::LoopImages photos(tr);   // R1: the turn's photos ride the seeded message
   int    switches = 0;
   const int kMaxSwitches = 2;
-  bool   steppedDown = false;   // the one same-host non-reasoning step after a cut
   cur = makeStep(hostIdx);
   if (!cur) { err = "unknown host " + hostList[hostIdx]; return false; }
   if (hostIdx > 0) {
@@ -783,9 +821,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // its next request (wire::exchange) instead of running to the turn's end.
       const orch::TokenUsage before = hostUse[hostIdx];
       orch::HeadStep sr = cur(allowTools, prior, budgetMs, capReason);
-      orch::notePendingUsage(hostList[hostIdx].c_str(),
-                             pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
-                             before, hostUse[hostIdx]);
+      orch::notePendingUsage(hostList[hostIdx].c_str(), modelOf(hostIdx).c_str(), before, hostUse[hostIdx]);
       if (sr.ok) {
         unparkHost(hostList[hostIdx]);
         rec.served();
@@ -832,9 +868,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         hostUse[hostIdx].servedModel.clear();
         const orch::TokenUsage beforeRetry = hostUse[hostIdx];
         sr2 = cur(allowTools, prior, budgetMs, capReason);
-        orch::notePendingUsage(hostList[hostIdx].c_str(),
-                               pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
-                               beforeRetry, hostUse[hostIdx]);
+        orch::notePendingUsage(hostList[hostIdx].c_str(), modelOf(hostIdx).c_str(), beforeRetry, hostUse[hostIdx]);
         if (sr2.ok) {
           unparkHost(hostList[hostIdx]);
           rec.served();
@@ -858,25 +892,23 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // the rest of the turn: the configured head already spiralled once.
       // The mistral host check is structural, not redundant: the step below
       // speaks the Mistral wire (misLoopStep), so a future table entry for
-      // another host needs its own loop step here, never this one.
-      if (sr2.kind == orch::StepErr::Cut && !steppedDown && hostList[hostIdx] == "mistral") {
+      // another host needs its own loop step here, never this one. makeStep
+      // builds every later Mistral step on stepDownModel (its own budget), so a
+      // refit's rebuild never puts the round back on the configured head.
+      if (sr2.kind == orch::StepErr::Cut && stepDownModel.empty() && hostList[hostIdx] == "mistral") {
         const std::string headModel =
             pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()) : std::string();
         const char* alt = providers::sameHostNonReasoningModel(hostList[hostIdx], headModel);
         if (alt && *alt && headModel != alt) {
-          steppedDown = true;
+          // What the configured head billed is filed under it; the step's rounds file under
+          // the step-down model (its own price: Medium's output costs more than Large 4's).
+          if (spend) spend->add(hostList[hostIdx].c_str(), headModel.c_str(), hostUse[hostIdx]);
+          hostUse[hostIdx] = orch::TokenUsage();
+          stepDownModel = alt;
           hlog::logf("fabric: %s (%s) cut at its output cap - one same-host step on %s "
                      "before another provider",
                      hostList[hostIdx].c_str(), headModel.c_str(), alt);
-          ProviderDeps altPd = pd;   // the step keeps its own copy, as every step does
-          const std::string altModel = alt;
-          auto origModel = pd.orchModel;
-          altPd.orchModel = [origModel, altModel](const char* h) {
-            return std::string(h) == "mistral" ? altModel
-                                              : (origModel ? origModel(h) : std::string());
-          };
-          cur = wrap(hostIdx, misLoopStep(altPd, rec.instructions(), ht, &hostUse[hostIdx], tr),
-                     "orchTurn(mistral-loop)");
+          cur = makeStep(hostIdx);
           continue;   // the SAME round re-runs on the stepped-down model
         }
       }
@@ -924,8 +956,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // Every exit files what each host billed, once (nothing bills before the loop).
   auto fileSpend = [&] {
     for (size_t i = 0; i < hostCount; ++i)
-      spend->add(hostList[i].c_str(), pd.orchModel ? pd.orchModel(hostList[i].c_str()).c_str() : "",
-                 hostUse[i]);
+      spend->add(hostList[i].c_str(), modelOf(i).c_str(), hostUse[i]);
   };
   const std::unique_ptr<orch::HeadOutcome> outcome(new orch::HeadOutcome());
   orch::HeadOutcome& res = *outcome;

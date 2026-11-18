@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/providers.h"
 #include "nimbus/orch/router_route.h"
+#include "../../lib/harness/src/providers/wire_budget.h"   // the wire's own round load and cap
 
 // The adapter a head's requests go out on, and the model it sends there.
 struct Wire {
@@ -27,15 +29,17 @@ static std::string ratio(uint16_t x100) {
   return b;
 }
 
-// "first / retry" of a final round at the budget's own load, "none" for an uncapped host.
+// "first / retry" of a final round at the budget's own load, "none" for an uncapped host: what
+// the wire sends (its round load: a routed round counts two uploads; its fitted cap: never a
+// first attempt under the host's minimum final).
 static std::string capsCell(const Head& h, const RequestBudget& b, bool fragmented) {
   const Wire w = wireOf(h);
-  providers::RoundLoad load;
-  load.bodyBytes = b.wireBodyBytes;
-  load.promptTokens = b.targetTokens;
-  load.routed = b.routed;
-  load.fragmented = fragmented;
-  const providers::OutputCap c = providers::outputCapFor(w.host, w.model, providers::RoundKind::FinalRound, b.roundMs, load);
+  providers::ProviderDeps pd;
+  if (fragmented) pd.dmaLargestBlock = [] { return (uint32_t)4000; };   // under kDmaChunkFloor
+  const providers::wire::RoundBudget rb = providers::wire::roundBudget(pd, w.host, w.model, b.routed);
+  providers::RoundLoad load = providers::wire::roundLoad(rb, b.wireBodyBytes, 0, 0);
+  load.promptTokens = b.targetTokens;   // the budget's own target (the lift table's rNom is the same)
+  const providers::OutputCap c = providers::wire::fittedCap(rb, providers::RoundKind::FinalRound, b.roundMs, load);
   if (!c.maxTokens) return "none";
   return num(c.maxTokens) + " / " + (c.retryTokens ? num(c.retryTokens) : std::string("-"));
 }
@@ -149,7 +153,9 @@ static std::string budgetTableDoc() {
       "Read window is in seconds, prefill and decode in tokens per second (decode at the target's context),\n"
       "and every other figure in bytes. No figure is below the head's v5.1.1 value. A head at the floor keeps\n"
       "the v5.1.1 history window and its 48 KB fold trigger. Caps are the first attempt and the retry of a\n"
-      "final round at the budget, on a healthy and on a fragmented heap (none: the host sends no output cap).\n\n"
+      "final round at the budget as the wire sends them (a routed round counts its second upload, and a first\n"
+      "attempt never goes under the host's minimum final), on a healthy and on a fragmented heap (none: the\n"
+      "host sends no output cap).\n\n"
       "## Every recorded model\n\n"
       "One row per model the recorded provider lists name (`test/support/fixtures/models_2026-10` and\n"
       "`models_2026-11`), with the windows those lists give.\n\n";

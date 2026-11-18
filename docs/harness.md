@@ -189,11 +189,19 @@ a quiet background turn; the next owner turn says it).
 
 ## Lifecycle 4 - the self-driving layers
 
-- **Compaction (the fold)** (see [memory.md](memory.md)): per-chat
-  byte/message counters trigger a background summarization on the tg_poll pump
-  (~48 KB default, `/compact` on demand) - anchored summary → provider-thread
-  reset → the `## CONVERSATION SUMMARY` prompt section; deferrals never burn
-  the breaker; state is rollback-safe on LittleFS.
+- **Compaction (the fold)** (see [compaction.md](compaction.md) and
+  [architecture/fold-ladder.md](architecture/fold-ladder.md)): one shared fold
+  driver on the tg_poll pump (the engine thread on the VN) summarizes a chat when the
+  history after its anchor reaches the head's soft mark (the 48 KB default follows the
+  model; on the 85 KB floor it is v5.1.1's 48 KB), after 200 messages, or when a shift
+  hid rows; `/compact` and Summarize Now on demand. One rung a pass down the ladder
+  (the head, the owner's priority list, the router only on a router-only device, the Sub
+  model); a
+  failed cycle retries 15 min, 1 h, 4 h, then every 12 h and never pauses for good;
+  12 paid automatic requests a local day. A slice whose rows cannot be read yet waits
+  and the anchor never moves past a row no summary took. Anchored summary, then the
+  provider-thread reset, then the `## CONVERSATION SUMMARY` prompt section; state is
+  rollback-safe on LittleFS.
 - **Sub-agents** (see [sub-sessions.md](sub-sessions.md)): fire-and-forget
   background workers on provider fabrics; ≤6 tracked / 4 in-flight; polled
   ~15 s; once every sub has finished, one unattended synthesis turn reports

@@ -136,7 +136,11 @@ std::string photoFitError(const std::string& host, uint32_t fit, uint32_t minFin
 bool parsePhotoFitError(const std::string& err, size_t& overBytes);
 
 // True (with `err` set) when a round that shows photos cannot carry the host's minimum
-// final inside its window: the step fails it before the send, as a refused request.
+// final inside its window (a host that sends no output cap: when its upload and prefill
+// alone outlast the window) and the same round without its photos could: the step fails it
+// before the send, as a refused request. When the text alone cannot carry it either, the
+// photos are not the cause: the round takes textOverFit's rule on its text (inside v5.1.1's
+// 85,000 B it goes as v5.1.1 sent it, photos included).
 bool photosOverFit(const RoundBudget& rb, uint32_t roundMs, const RoundLoad& load, uint32_t photoTokens,
                    std::string& err);
 

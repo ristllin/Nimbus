@@ -92,23 +92,34 @@ struct FoldDriverHooks {
   std::function<bool(bool overflow)> quiet;            // an automatic rung may run now (unset = yes)
   std::function<void()> notDue;                        // nothing was due this pass
   std::function<uint32_t()> triggerBytes;              // the automatic trigger, 0 = off
-  std::function<size_t()> foldStepBytes;               // the head's fold step
+  std::function<size_t()> foldCycleBytes;              // what one cycle may take (orch::foldCycleBytes)
   // The slice of a chat (default: the engine's historyFoldSlice).
   std::function<FoldSlice(const std::string& chat, size_t capBytes, bool manual)> slice;
   std::function<int32_t(uint32_t epoch)> utcOffsetMin;   // the owner's zone (unset = UTC)
   std::function<void(const FoldDone&)> folded;         // a summary landed (after the store)
   std::function<void(const std::string& chat, const std::string& text)> tell;   // an owner notice
-  // The daily alert (unset = tell): the binding sends it to the owner's chats only.
-  std::function<void(const std::string& chat, const std::string& text)> alert;
+  // The daily alert (unset = tell): the binding sends it to the owner's chats only and says
+  // whether it did (lane CTXR1: the day's one alert is spent only when it reached the owner).
+  std::function<bool(const std::string& chat, const std::string& text)> alert;
+  // Whether `chat` is the owner's (unset = every chat is): the owner's due chats fold first,
+  // and the others share at most kFoldGuestPaidPerDay of the daily cap.
+  std::function<bool(const std::string& chat)> ownerChat;
   std::function<void(const std::string& chat)> changed;   // the status moved ("" = no one chat)
   std::function<void(bool)> asking;                    // true just before a rung's request, false after
   std::string firmware;                                // this image's version
+  // No clock at boot: a chat that carries a persisted wait is held this long for the clock
+  // to sync before it counts as due (a boot must not retry every chat in a 12 h backoff).
+  static constexpr uint32_t kNoClockGraceMs = 10u * 60u * 1000u;
 };
 
 class FoldDriver {
  public:
   static constexpr uint32_t kManualCooldownMs = 120000;
   static constexpr uint32_t kCatchUpCycles = 64;   // one manual catch-up: about 3.4 MB at a 53.9 KB step
+  // A slice that could not read its rows looks again 1 minute out, doubling to 1 hour.
+  static constexpr uint32_t kReadWaitFirstMs = 60000;
+  static constexpr uint32_t kReadWaitMaxMs = 3600000;
+  static uint32_t readWaitMs(uint32_t waits);
 
   FoldDriver(TurnEngine& eng, nimbus::orch::FoldStore& folds, nimbus::orch::FoldCtlIO ctlIO, FoldDriverHooks hooks);
 
@@ -138,6 +149,7 @@ class FoldDriver {
   static std::string confirmation(const FoldSlice& s);
   static std::string failureNotice(uint32_t nextTry, uint32_t waitS, int32_t utcOffsetMin);
   static std::string alertNotice(uint32_t sinceEpoch, int32_t utcOffsetMin);
+  static std::string unreadNotice();   // rows the store refuses for a day: the daily alert
 
  private:
   struct Cycle {
@@ -155,7 +167,11 @@ class FoldDriver {
 
   FoldTick startCycle(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& chat, bool& manual, bool& overflow);
-  FoldTick nothingToFold(const std::string& chat, bool manual, uint32_t nowMs);
+  FoldTick nothingToFold(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s);
+  bool pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::string& chat);
+  FoldTick sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch, const FoldSlice& s);
+  void noteUnread(const std::string& chat, uint32_t nowEpoch, bool unread);
+  std::map<std::string, uint32_t> unreadSince_;   // chat -> epoch its slice first met rows it could not read
   FoldTick runRung(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick landed(const FoldRungReport& rep, const std::string& summary, uint32_t nowMs, uint32_t nowEpoch);
   FoldTick cycleFailed(uint32_t nowMs, uint32_t nowEpoch);
@@ -167,7 +183,8 @@ class FoldDriver {
   bool pickAutomatic(uint32_t nowMs, uint32_t nowEpoch, std::string& chat);
   bool dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch);
   std::vector<FoldRung> orderedRungs() const;
-  bool capReached(uint32_t nowEpoch);
+  bool capReached(uint32_t nowEpoch, const std::string& chat = std::string());
+  bool isOwnerChat(const std::string& chat) const { return !hooks_.ownerChat || hooks_.ownerChat(chat); }
   void endManual(const std::string& chat, uint32_t nowMs);
   void saveCtl();
   void changed(const std::string& chat = std::string()) const;
@@ -183,6 +200,14 @@ class FoldDriver {
   std::string lastTurnChat_;
   std::set<std::string> degraded_;             // "host/model" that answered empty or thin
   std::map<std::string, uint32_t> ramWaitMs_;  // no clock: chat -> monotonic ms of its next try
+  // A chat whose slice could not read its rows (SliceState Wait/Unread): looks in a row that
+  // read nothing new, and the monotonic ms of the next look.
+  std::map<std::string, uint32_t> readWaitCount_, readWaitUntilMs_;
+  void clearReadWait(const std::string& chat) {
+    readWaitCount_.erase(chat);
+    readWaitUntilMs_.erase(chat);
+    unreadSince_.erase(chat);
+  }
   std::map<std::string, std::string> thruDate_;   // chat -> the local date its summary reaches
   // The manual catch-up in progress: what its landed cycles covered so far.
   struct CatchUp {
@@ -196,10 +221,15 @@ class FoldDriver {
   bool manualEnded_ = false;
   uint32_t capLoggedDay_ = 0xFFFFFFFFu;
   // Paid requests made with no clock: counted here, never under a real day's persisted
-  // count (a boot before the clock syncs must not reset day D's cap).
-  uint32_t clocklessPaid_ = 0;
-  void notePaid(uint32_t nowEpoch, uint32_t n);
+  // count (a boot before the clock syncs must not reset day D's cap). The count rolls over
+  // 24 h (monotonic) after its first request: with no clock the day never ends otherwise.
+  uint32_t clocklessPaid_ = 0, clocklessGuest_ = 0;
+  uint32_t clocklessSinceMs_ = 0;
+  uint32_t lastTickMs_ = 0, firstTickMs_ = 0;
+  bool ticked_ = false;
+  void notePaid(uint32_t nowEpoch, uint32_t n, const std::string& chat);
   uint32_t paidToday(uint32_t nowEpoch) const;
+  uint32_t guestPaidToday(uint32_t nowEpoch) const;
   bool endAutomaticForManual();
 };
 

@@ -1833,6 +1833,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   seed = coverageSeed(chatId, !ci.chatSummary.empty(), inputs);
   locals->fit.reset(newTurnFit(ci, seed, headToolsPtr ? &headTools : nullptr));
   TurnFit& fit = *locals->fit;
+  fit.setHistoryKeepFloor(budget.historyKeepBytes);   // a photo round's history cut stops there
   std::function<std::string()> requestInputs;   // the input as the running attempt sends it
   auto takeFit = [&]() {
     instructions = fit.instructions();

@@ -32,6 +32,8 @@ looking at the glass are all in scope.
 | New engine code costs bytes in every device image before it runs there: lib/core and lib/harness objects are loaded by the device link, and `--gc-sections` keeps the unwind tables (`.eh_frame`) of an unreferenced object (RB-B0a's first tip was 280 B larger for two stub objects) | every device env runs `tools/engine_filter.py`, which drops each file in `tools/engine/engine2_only.txt` from an engine-1 build; the gate fails on a lib/core `orch_tx_*`, lib/harness `plain_*` or `providers/plain_wire_*` source that is not on the list, a stale entry, an env without the hook, or a built device `firmware.map` that names an object of the other engine (engine-2 envs are checked against `engine1_only.txt` once RB-I0 adds them) | `check_engine_filter.py`, `test_check_engine_filter.py`, `tools/test_engine_filter.py` |
 | A test build's crash switch ships in a release image | the ELF scan for the test console's crash switches runs on all four release images (even with `--identity-only`), behind the source guard that keeps every use inside `#ifdef NIMBUS_TEST` | `check_elf_symbols.py`, `test_panic_guard.py`, `test_release_gate.py` (workflow wiring) |
 | An owner-visible failure from the 28 Oct - 4 Nov window ships again (v5.0.0 launch gate, LAUNCH-5.0.0 ruling 4 Nov 20:20Z) | the owner-issues register (`coverage/OWNER-ISSUES-REGISTER.md`) must name only guards that exist (every `oir_*` id a RUN_TEST in `test/test_owner_regressions`, every suite id a real suite, the EXPECTED-FAIL roster equal to the suite's skipping tests), and a full live run of `tests/evals/owner_regressions` on the exact candidate sha must exist on disk with every hard row at its threshold on the gate models and no row regressed vs the previous candidate; a stale EXPECTED-FAIL (an xfail row that passed, or a skip in the candidate's native log) blocks too | `check_owner_regressions.py`, `test_owner_regressions.py`, `test/test_owner_regressions`, `tests/evals/owner_regressions` |
+| The conversation summary switches itself off and stays off (Lumi, 2 to 15 Nov 2026: three failed folds paused it for 13 days) | the fold sources never set a pause, never return a thrash pause and carry no "summaries are paused" copy; the daily cap, the alert day and the queued manual requests live in one device-wide file (`/data/fold_ctl.txt`, the hosted sibling) with `paidDay`, `paidCount`, `lastAlertDay`, `manualPendingChat`, `fwAtLastFail`; every fold-blob fixture reads under the v5.1.1 parser with pause and failures 0 for a candidate blob (a rollback never starts paused) and fits 64 KB. The candidate blobs include the files the offline fold replays left (`tests/evals/owner_regressions/run_offline.py blob`) | `check_fold_health.py`, `test_fold_health.py`, `test/support/fixtures/fold_blob_*.txt` |
+| A head's request budget leaves its bounds, a round or an output cap no longer fits its read window, or a budget field drops under v5.1.1 (the 15 Nov 2026 history fix raised every budget from one formula) | every table of the generated `docs/reference/request-budgets.md` against `test/support/fixtures/budgets_v5_1_1.json`: coverage of every recorded model, the 100,000 token clamp, the window and floor bounds, the worst round and each cap's round inside the read window (no upload or pacing on a Virtual Nimbus; the cap columns are the wire's fittedCap, and a floor head's cap raised to minFinal is v5.1.1's and exempt), no field below v5.1.1, the protocol's derived fields, the fold trigger (never under 24 KB), every routed head on the 85,000 B floor while `kRoutedBudgetLift` is false, and every head with the tool loop off (one prompt string: Mistral, Z.ai, custom, routed Mistral or Z.ai) sized from `kFlatPromptBytes` with v5.1.1's history window, fold slice, rows and 48 KB trigger exactly and the Bytes of its row above. A table under an unknown heading or a renamed column fails | `check_budget_table.py`, `test_budget_table.py` |
 
 ## At merge time
 
@@ -141,6 +143,16 @@ python3 tools/release_gate/check_owner_regressions.py --candidate <sha> [--previ
 
 The static half (register/suite/gate-wiring consistency) runs with the host checks and in
 `pytest tools/release_gate` on every push.
+
+The owner-regression rows a live model cannot replay (the summary's own behavior: a planted
+pause, a provider answering empty) run offline on a hosted instance with scripted answers, no
+network and no keys; each waits the two-minute quiet bound in real time:
+
+```
+python3 tests/evals/owner_regressions/run_offline.py run          # PASS or FAIL per row, records under runs/offline/<sha>/
+python3 tools/release_gate/check_fold_health.py                   # the fold health step alone
+python3 tools/release_gate/check_budget_table.py                  # the budget table step alone
+```
 
 Full battery (prints the exact hardware and cloud commands to run and paste):
 

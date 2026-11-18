@@ -23,11 +23,13 @@ import sys
 # model_id_lint lives one level up in tools/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import check_budget_table
 import check_config_mapping
 import check_critical_sections
 import check_driver_pin
 import check_elf_symbols
 import check_engine_filter
+import check_fold_health
 import check_image_size
 import check_lwip_core_lock
 import check_no_prompt_patch
@@ -162,6 +164,8 @@ def run_host_checks() -> bool:
         ("owner regressions (p18-REGR)", check_owner_regressions.main),
         ("no prompt patch: model-text catalog, ceilings, ledger (RB-B5)", check_no_prompt_patch.main),
         ("tool results state facts, not orders (RB-B5)", check_tool_result_imperatives.main),
+        ("fold health: the summary never pauses for good (v5.1.2)", check_fold_health.main),
+        ("request budget table: bounds, rounds, no field below v5.1.1 (v5.1.2)", check_budget_table.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))

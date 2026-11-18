@@ -319,6 +319,10 @@ class TurnEngine {
     // shift's advance (persisted with the turn).
     std::function<HistoryMarks(const std::string& chatId)> historyMarks;
     std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
+    // Lane CTXR1, a head with room: the rendered bytes of the window a turn just built (the
+    // conversation after thru the request carries), so the fold trigger compares the soft
+    // mark with the history after thru as the window measures it (FoldStore::noteHistoryBytes).
+    std::function<void(const std::string& chatId, size_t bytes)> noteHistoryBytes;
     // The automatic fold's byte trigger, as the fold driver reads it (its triggerBytes hook:
     // the owner's Compact threshold over the head's budget). An owner's trigger below the
     // head's soft mark makes the fold slice keep a tail in proportion; unwired or 0 = the
@@ -832,14 +836,61 @@ class TurnEngine {
   // one page of card reads (a turn's reads), none when false (the fold's look at the tail).
   ConvCache::ReadFn cacheReader(const std::string& chatId);
   ConvCache::View cachedRows(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b, bool fill);
-  // The fold slice's parts: the kept tail's size and first row, and the forward read from thru.
+  // The fold slice's parts (lane CTXR1: every step says Ready, Nothing, Wait or Unread, and
+  // only a read that reached its bound may say Nothing). The kept tail's size; where the
+  // forward read stops (the tail's first row, or the soft start while the tail is unknown)
+  // and the conversation bytes the cache holds after thru; the read's start (thru, else
+  // after the chat's newest /clear); and the forward read itself.
+  struct FoldBounds {
+    std::string keepFrom;   // the read stops before this row ("" = no tail)
+    std::string stopAt;     // the read stops after this row ("" = no bound)
+    // Conversation rows the cache holds after thru: id suffix and text bytes (derived heads).
+    std::vector<std::pair<uint32_t, uint32_t>> held;
+  };
+  struct FoldRead {
+    enum class End : uint8_t { Tail, Last, Full, Wait, Unread };
+    End end = End::Last;
+    std::string lastSeen;     // the newest row the read examined, kept or not
+    std::string clearAt;      // the newest /clear it met ("" = none)
+    bool progressed = false;  // the read moved past rows a later attempt need not read again
+  };
+  // Per chat, where the fold's forward read goes on from between passes (RAM): a read budget
+  // that found none of the chat's rows, and the scan for the newest /clear of a chat with no
+  // anchor. Keyed by the anchor it was made for: a fold that moves thru starts it over.
+  struct FoldCursor {
+    std::string chat;
+    std::string anchor;    // marks.thru when this was recorded
+    std::string resume;    // the read starts here instead of at its start ("" = the start)
+    std::string scanAt;    // no anchor: the scan for the newest /clear goes on after this
+    std::string clearAt;   // the newest /clear the scan met ("" = none)
+    bool scanned = false;  // the scan reached the read's bound: the start is known
+  };
   size_t foldKeepBytes(const HistoryBudget& b) const;
-  bool foldKeepFrom(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
-                    const HistoryOptions& o, bool hidden, std::string& keepFrom);
-  bool readFoldRows(const std::string& chatId, const std::string& thru, const std::string& keepFrom, size_t capBytes,
-                    std::vector<nimbus::orch::EpisodicMessage>& fwd);
-  // The chat's newest `rows` rows, newest first, from the cache (H7's duplicate check).
-  std::vector<nimbus::orch::EpisodicMessage> recentRows(const std::string& chatId, size_t rows);
+  SliceState foldBounds(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
+                        const HistoryOptions& o, bool hidden, FoldBounds& out);
+  // What a slice knows before it reads (planFold): the budget, the marks, the bounds, the
+  // read's start (`known` false: no anchor, and only a read to its bound may be folded).
+  struct FoldPlan {
+    HistoryBudget b;
+    HistoryMarks marks;
+    HistoryOptions o;
+    bool hidden = false;
+    FoldBounds bounds;
+    std::string from;
+    bool known = true;
+    FoldSlice s;   // state, keptBytes and progressed so far
+  };
+  struct FoldReadPass;
+  void planFold(const std::string& chatId, bool manual, FoldPlan& p);
+  SliceState foldStart(const std::string& chatId, FoldPlan& p);
+  FoldSlice sliceWithoutDigest(const std::string& chatId, FoldPlan& p, const FoldRead& r, bool nothingToSummarize);
+  static void noteHeld(const ConvCache::View& view, const HistoryBudget& b, FoldBounds& out);
+  FoldRead readFoldRows(const std::string& chatId, const std::string& from, const FoldBounds& bounds, size_t capBytes,
+                        std::vector<nimbus::orch::EpisodicMessage>* fwd);
+  FoldCursor& foldCursor(const std::string& chatId, const std::string& anchor);
+  std::vector<FoldCursor> foldCursors_;   // a few chats, oldest first
+  // H7's duplicate check: `src` is among the chat's newest rows (the cache's, else the store's).
+  bool sourceInHistory(const std::string& chatId, const std::string& src);
   ConvCache convCache_;
   HistoryReadStats histRead_;
   HistoryWindow lastWindow_;

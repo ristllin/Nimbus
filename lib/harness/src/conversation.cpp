@@ -18,6 +18,16 @@ using nimbus::orch::MsgKind;
 const char kClearBoundaryTag[] = "ev:clear";
 const char kClearBoundaryText[] = "Conversation cleared.";
 
+const char* sliceStateName(SliceState s) {
+  switch (s) {
+    case SliceState::Ready: return "ready";
+    case SliceState::Nothing: return "nothing";
+    case SliceState::Wait: return "wait";
+    case SliceState::Unread: return "unread";
+  }
+  return "unknown";
+}
+
 bool isClearBoundary(const nimbus::orch::EpisodicMessage& m) {
   // Tags are a comma list: match the whole item, never a prefix of another tag.
   // (A sender cannot forge it - user rows carry only a sanitized "from:" tag.)

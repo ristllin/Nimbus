@@ -93,7 +93,9 @@ NEW = """\
 31 260000 - fold(1000000001): rung 2/3 anthropic/claude-haiku-5-5 failed -> http4xx (400)
 32 320000 - fold(1000000001): cycle failed, next try 2026-11-18 10:15
 33 1300000 - fold(1000000001): ok on openai (7000 in / 3000 out)
-34 1300100 - fold: blob save 41234 B in 85 ms
+34 1300100 - fold: chatsum.txt 41234 B saved in 85 ms
+35 1300200 - fold(1000000001): rung 1/3 mistral/mistral-small-latest passed over - not usable now
+36 1300300 - fold(1000000001): rung 2/3 openai/gpt-5.6-luna failed -> 4xx (HTTP 400)
 """
 
 
@@ -195,8 +197,11 @@ def test_new_lines_upload_and_cross_turn_hit(new):
 def test_fold_rung_cycle_and_blob_lines(new):
     f = new["fold"]
     assert f["ok"] == 1
-    assert f["failures"] == {"cycle_failed": 1, "rung_failed": 2}
-    assert f["blob_save_ms"]["max"] == 85
+    assert f["failures"] == {"cycle_failed": 1, "rung_failed": 3, "rung_passed_over": 1}
+    assert f["blob_save_ms"]["max"] == 85 and f["blob_bytes_max"] == 41234 and f["blob_not_saved"] == 0
+    # paid: the empty answer and the summary; the two refusals (4xx) and the passed-over rung are not
+    assert f["attempts_per_day_max"] == 2
+    assert f["lines_after_last_fold_line"] == 0  # the blob save line is not a fold line
 
 
 # ---- turn boundaries and the counter-tests ------------------------------------------------
@@ -319,6 +324,50 @@ def test_a_refit_that_also_folded_tool_rounds_is_not_measurable(tmp_path):
     text = PHANTOM.replace("folded 4236 B of the prompt", "folded 6738 B of the replayed tool rounds then the prompt")
     tf = cr.report(cr.parse([write(tmp_path, "q.log", text)]))["turn_fit"]
     assert tf["recall_only_measurable"] == 0
+
+
+CONSOLE = """\
+2026-11-18T00:11:33Z >> SFXVOL 0
+2026-11-18T00:11:34Z [agent] boot: n=? fw=v5.1.1 build=v5.1.1-75-gdd9b85a3 reason=usb(0x15) wake=none mode=orch t=1794960694 prev=n68/10s/idle/h27948
+2026-11-18T00:11:46Z [agent] budget: mistral/mistral-large-4-0 window 1048K target 100K tok (360 KB) hist 201/161/108 KB (auto)
+2026-11-18T00:11:46Z [agent] orchestrator: turn host=mistral (conv=0 heap=36424)
+2026-11-18T00:11:52Z [agent] transport: heaptrace api.openai.com/v1/responses body=66787 pre=36424/14324 conn=36200/14324 wrote=36200/14324 done=36268/14324 fail=none af=0 min=29348 at=12588 ms=4961 wms=328 pms=0
+2026-11-18T00:12:00Z [agent] fabric-loop: rounds=1 cap= ok=1 host=openai switches=1 heap=36268
+2026-11-18T00:12:00Z [agent] fabric-spend: openai/gpt-5.6-luna in=27573 out=212 cR=13578 cW=13751 n=2 id=gpt-5.6-luna
+2026-11-18T00:12:02Z [agent] turn spend: ok owner | openai/gpt-5.6-luna in=27573 out=212 cR=13578 cW=13751 n=2 id=gpt-5.6-luna
+2026-11-18T00:12:02Z [agent] context: sent 1/1 live rows (today 0/0), cut 0 (0 B), summary age 44.0h, round0 57521 B / budget 360000 B, hist 7 ms 0 card reads lock 5 ms
+2026-11-18T00:12:02Z [agent] turn end: ok host=openai tokens in=27573 out=212 tools=1 reply=2B src=owner
+2026-11-18T00:12:02Z [agent] fold: chatsum.txt 4169 B saved in 280 ms
+2026-11-18T00:12:07Z [agent] orchestrator: turn host=mistral (conv=0 heap=36420)
+2026-11-18T00:12:13Z [agent] fabric-loop: rounds=0 cap= ok=1 host=openai switches=1 heap=36372
+2026-11-18T00:12:13Z [agent] fabric-spend: openai/gpt-5.6-luna in=13796 out=105 cR=12028 cW=1646 n=1 id=gpt-5.6-luna
+2026-11-18T00:12:15Z [agent] turn spend: ok owner | openai/gpt-5.6-luna in=13796 out=105 cR=12028 cW=1646 n=1 id=gpt-5.6-luna
+2026-11-18T00:12:15Z [agent] context: sent 4/4 live rows (today 3/3), cut 0 (0 B), summary age 44.0h, round0 57826 B / budget 360000 B, hist 8 ms 0 card reads lock 3 ms
+2026-11-18T00:12:15Z [agent] turn end: ok host=openai tokens in=13796 out=105 tools=0 reply=2B src=owner
+"""
+
+
+def test_a_console_capture_is_read_on_its_own_stamps(tmp_path):
+    # Lines from lane H's A10b bench console (unit F1, 18 Nov 2026): the real v5.1.2 context,
+    # budget, heaptrace and blob lines, in the bench drivers' '<stamp> [agent] <text>' shape.
+    r = cr.report(cr.parse([write(tmp_path, "console.log", CONSOLE)]))
+    assert r["window"]["first"] == "2026-11-18 00:11:46 UTC" and r["window"]["firmware"] == ["v5.1.1"]
+    assert r["window"]["turns_by_source"] == {"owner": 2}
+    c = r["history"]["context_lines"]
+    assert (c["turns"], c["today_complete_pct"], c["turns_with_cut"]) == (2, 100.0, 0)
+    assert c["card_reads"]["max"] == 0 and c["lock_ms"]["max"] == 5 and c["summary_age_h"]["max"] == 44.0
+    assert r["upload"]["wms_per_kb"]["max"] == 5.0 and r["upload"]["af_nonzero"] == 0  # 328 ms / 65.2 KB
+    assert r["fold"]["blob_bytes_max"] == 4169 and r["fold"]["blob_save_ms"]["max"] == 280
+
+
+def test_next_turn_round0_share_per_host(tmp_path):
+    # The second turn started 7 s after the first one's last request and read 12,028 of its
+    # 13,796 prompt tokens in its only request: 87.2% of round 0 came from the warm cache.
+    x = cr.report(cr.parse([write(tmp_path, "console.log", CONSOLE)]))["xturn"]
+    host = x["next_turn_by_host"]["openai"]
+    assert (host["turns"], host["inside_ttl"], host["at_least_90_pct"]) == (1, 1, 0)
+    assert host["round0_read_pct"]["max"] == 87.2
+    assert (x["hits"], x["turns"]) == (0, 0)  # the Mistral baseline counts Mistral slots only
 
 
 def test_repo_price_rows_come_from_the_header():

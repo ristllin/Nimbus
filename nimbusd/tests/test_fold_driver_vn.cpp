@@ -152,6 +152,8 @@ void testAutomaticCycleMatchesTheDevice(ndtest::Ctx& c) {
   FakeHttpTransport tx;
   Config cfg;
   NimbusdRig rig(cfg, opts("fold-vn-a"), &tx);
+  // The owner's priority list names both: the ladder uses only providers in it (fix review F).
+  rig.updateSettings([](HostedSettings& s) { s.provPrio = "openai,cumulo"; });
   std::vector<std::string> notices;
   rig.setDeliver([&notices](const std::string&, const std::string& text) {
     if (!has(text, "noted")) notices.push_back(text);
@@ -238,6 +240,9 @@ void testRoutedForcedReasonerFoldsOnSmall(ndtest::Ctx& c) {
   c.ok(has(folded, "\"model\":\"mistral-small-latest\""), "the fold asked the router for Mistral Small");
   c.ok(!has(folded, "large-4"), "and never for Large 4");
   c.ok(rig.cumuloModel() == "mistral/mistral-large-4-0", "the head's own pick is unchanged");
+  // Lane CTXR1 (device parity): the pinned fold leaves the last good selector alone.
+  c.ok(rig.lastGoodCumuloSelector() != "mistral/mistral-small-latest",
+       "the pinned fold is not the head's last good model");
   clearEnv();
 }
 
@@ -307,6 +312,29 @@ void testSummarizeNowRoutes(ndtest::Ctx& c) {
   clearEnv();
 }
 
+// Lane CTXR1: the hosted owner is found by role, not by position. A hosted instance approves
+// chats as User, so the first allow-listed chat is often a guest: Summarize now's default
+// chat and the daily alert go to the first Admin chat, else the web chat.
+void testTheHostedOwnerIsTheAdminChat(ndtest::Ctx& c) {
+  std::printf("  -- (c) the owner's chat is the Admin one, not the first approved --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_FOLDVN", 1);
+  setenv("TELEGRAM_BOT_TOKEN", "123456:test-token-not-real", 1);
+  FakeHttpTransport tx;
+  Config cfg;
+  NimbusdRig rig(cfg, opts("fold-vn-d"), &tx);
+  std::string err;
+  c.ok(rig.telegramAccess().approve("111111", "Guest", err), "a guest is approved first (User)");
+  c.ok(rig.telegramAccess().approve("222222", "Owner", err), "then the owner's own chat");
+  std::string out;
+  c.ok(rig.foldStatusJson("", out) && has(out, std::string("\"chat\":\"") + kWebChatId + "\""),
+       "with no Admin chat: the web chat, not the first approved guest");
+  c.ok(rig.telegramAccess().setRole("222222", orch::Role::Admin, err), "the owner's chat is made Admin");
+  c.ok(rig.foldStatusJson("", out) && has(out, "\"chat\":\"222222\""), "Summarize now defaults to the Admin chat");
+  c.ok(!has(out, "\"chat\":\"111111\""), "never the first approved guest");
+  clearEnv();
+}
+
 }  // namespace
 
 int main() {
@@ -315,6 +343,7 @@ int main() {
   testAutomaticCycleMatchesTheDevice(c);
   testSummarizeNowRoutes(c);
   testRoutedForcedReasonerFoldsOnSmall(c);
+  testTheHostedOwnerIsTheAdminChat(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf(c.failures == 0 ? "PASSED\n" : "FAILED\n");
   return c.failures == 0 ? 0 : 1;

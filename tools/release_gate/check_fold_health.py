@@ -16,10 +16,13 @@ readable by a v5.1.1 image on rollback. This gate checks the sources and the blo
   3. blob round trip: every fold-blob fixture under test/support/fixtures (fold_blob_*.txt)
      reads under the v5.1.1 parser (FoldStore::begin at 591245f4: records split by 0x1E, eight
      fields split by 0x1F, numbers read up to the first non-digit, so a ';' suffix is skipped):
-     every record keeps its chat id and summary, no number field is unreadable, the pause field
-     is 0 for a candidate blob (a rollback must not start paused), and the blob fits the
-     candidate's 64 KB. At least one v5.1.1 blob (fold_blob_v5_1_1*.txt) and one candidate blob
-     (fold_blob_v5_1_2*.txt) must exist.
+     every record keeps its chat id and summary, no number field is unreadable, the pause and
+     failures fields read 0 for a candidate blob (a rollback must not start paused or one
+     failure from the pause: the candidate keeps its schedule behind a ';', 0;n;first;next),
+     and the blob fits the candidate's 64 KB. At least one v5.1.1 blob (fold_blob_v5_1_1*.txt)
+     and one candidate blob (fold_blob_v5_1_2*.txt) must exist. The candidate blobs are lane
+     F's fixture (test_orch_compact) and the fold-store files the offline replays left on the
+     candidate (run_offline.py blob: a healed chat, and a chat whose cycle just failed).
 
 Usage:
     python3 tools/release_gate/check_fold_health.py [--root DIR]
@@ -153,6 +156,12 @@ def blob_problems(path: str, candidate: bool) -> "list[str]":
             errs.append(f"{where}: pause field {f[6][:10]!r} is not 0, 1 or 2")
         elif candidate and paused != 0:
             errs.append(f"{where}: a candidate blob stores pause {paused}; a rollback would start paused")
+        fails = to_u32(f[5])
+        if candidate and fails:
+            # v5.1.1 pauses at 3: the candidate keeps its own count behind a ';' (0;n;first;next)
+            errs.append(
+                f"{where}: the failures field reads {fails} on v5.1.1; a rollback would start {fails} failure(s) from its pause"
+            )
         summary = "\x1f".join(f[7:])
         if len(summary.encode()) > SUMMARY_MAX:
             errs.append(f"{where}: summary {len(summary.encode())} B, over {SUMMARY_MAX} B")

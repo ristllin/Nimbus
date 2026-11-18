@@ -319,6 +319,34 @@ static void test_a_cold_no_clock_stream_is_named_not_misordered() {
   assertSame(want, pageAll(s, idOf(5), 24, false));
 }
 
+// v5.1.2 fix review E: a cold no-clock stream blocks only the cursors it could hold rows after.
+// A cursor newer than every row of the stream (the fold of a chat whose anchor is past the
+// boot with no clock) reads on, in id order, while the stream is still cold.
+static void test_a_cold_no_clock_stream_does_not_block_newer_cursors() {
+  FakeFs fs;
+  std::vector<std::string> want;
+  const uint32_t kAfter = 200;
+  {
+    AppendLogEpisodicStore w(fs, "/mem/episodic", 512);
+    for (uint32_t i = 1; i <= 300; i++) {
+      // Rows 41-120 arrive during a restart with no clock (boot hours 0-7: day 0).
+      const uint32_t hours = (i > 40 && i <= 120) ? (i - 41) / 10 : (kDay0 + (i <= 40 ? 0u : 1u + (i - 121) / 60)) * 24 + 1;
+      w.addMessage(chatRow(i, hours, 200));
+      if (i > kAfter) want.push_back(idOf(i));
+    }
+  }
+  AppendLogEpisodicStore s(fs, "/mem/episodic", 16);
+  s.hydrate(40, 0);   // the newest rows only: the no-clock stream stays cold
+  TEST_ASSERT_TRUE(s.hydrateTruncated());
+  EpiQueryInfo info;
+  s.query(chatAfter(idOf(kAfter), 24), &info);
+  TEST_ASSERT_TRUE_MESSAGE(info.unreadable.empty(), info.unreadable.c_str());
+  assertSame(want, pageAll(s, idOf(kAfter), 24, false));
+  EpiQueryInfo older;   // a cursor the stream could hold rows after is still blocked
+  TEST_ASSERT_TRUE(s.query(chatAfter(idOf(50), 24), &older).empty());
+  TEST_ASSERT_TRUE(older.unreadable.compare(0, 2, "0:") == 0);
+}
+
 // A no-clock stream that is wholly indexed (it began this session) does not move where the
 // cold walk starts: the walk still begins at the cursor's own dated day, so a page the cold
 // budget cuts short continues by byte cursor past the cursor row, never from the first day
@@ -409,6 +437,7 @@ int main(int, char**) {
   RUN_TEST(test_cold_after_reads_forward_then_joins_the_index);
   RUN_TEST(test_after_reads_follow_ids_when_the_index_does_not);
   RUN_TEST(test_a_cold_no_clock_stream_is_named_not_misordered);
+  RUN_TEST(test_a_cold_no_clock_stream_does_not_block_newer_cursors);
   RUN_TEST(test_a_no_clock_stream_does_not_move_the_cold_start);
   RUN_TEST(test_an_unreadable_span_is_reported);
   RUN_TEST(test_the_overlay_patches_after_reads);

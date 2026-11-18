@@ -27,6 +27,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fold_ladder.h"
 #include "nimbus/harness/hooks.h"
+#include "nimbus/harness/jobs.h"
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"
@@ -376,30 +377,77 @@ static void test_the_fold_read_goes_on_past_a_page_the_store_cut_short() {
 
 // A span the card would not give back stops the fold's read before it: the fold anchors on
 // the rows it read, so the rows past the span are folded once the card reads them, never
-// skipped by an anchor moved past them.
+// skipped by an anchor moved past them. With nothing read before the span the slice says
+// Unread (lane CTXR1): the driver keeps the anchor and tries again later.
 static void test_the_fold_read_stops_before_rows_the_card_will_not_give_back() {
   Rig r;
   r.addTurns(30);
-  r.unreadableAfter = "m0048";
+  r.marks.thru = "m0002";
+  r.unreadableAfter = "m0050";   // the second page
   const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, true);
   // The read stopped short of the end, so the slice holds whole turns only (its last turn
-  // waits for the next fold too): rows m0001..m0046, never past the span.
-  TEST_ASSERT_EQUAL_STRING("m0046", slice.thru.c_str());
+  // waits for the next fold too): rows m0003..m0048, never past the span.
+  TEST_ASSERT_EQUAL_STRING("m0048", slice.thru.c_str());
   TEST_ASSERT_EQUAL(23, (int)slice.turns);
+  TEST_ASSERT_TRUE(slice.state == agent::SliceState::Ready);
+  r.marks.thru = "m0047";
+  r.unreadableAfter = "m0047";
+  const agent::FoldSlice none = r.eng->historyFoldSlice("1001", 65536, true);
+  TEST_ASSERT_TRUE(none.digest.empty());
+  TEST_ASSERT_TRUE_MESSAGE(none.state == agent::SliceState::Unread, agent::sliceStateName(none.state));
+}
+
+// v5.1.2 fix review B: only a read that reached its bound may say Nothing. Rows after thru
+// that are none of the conversation (job deliveries), then a span the card will not give
+// back: the slice is Unread, not Nothing (which skipped the read-wait backoff and re-read the
+// span every pass), and the next read starts after the rows it already passed.
+static void test_a_read_that_stopped_short_is_never_nothing() {
+  Rig r;
+  r.addTurns(3);   // m0001..m0006
+  for (int i = 0; i < 5; i++) {
+    orch::EpisodicMessage m;
+    char id[16];
+    std::snprintf(id, sizeof(id), "m%04d", (int)r.rows.size() + 1);
+    m.id = id;
+    m.sessionId = "1001";
+    m.role = "assistant";
+    m.text = "job result " + std::to_string(i);
+    m.tags = agent::kJobDeliveryTag;
+    r.rows.push_back(m);   // m0007..m0011
+  }
+  r.marks.thru = "m0006";
+  r.unreadableAfter = "m0011";
+  const agent::FoldSlice s = r.eng->historyFoldSlice("1001", 65536, true);
+  TEST_ASSERT_TRUE(s.digest.empty());
+  TEST_ASSERT_TRUE_MESSAGE(s.state == agent::SliceState::Unread, agent::sliceStateName(s.state));
+  r.reads.clear();
+  r.eng->historyFoldSlice("1001", 65536, true);
+  TEST_ASSERT_FALSE(r.reads.empty());
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("m0011", r.reads.front().after.c_str(), "the next read goes on after the rows passed");
 }
 
 // After a restart a shift's hidden rows make an automatic fold due before the conversation
-// cache has read anything: the turns the fold must keep verbatim are not known yet, so the
-// slice waits for the fill rather than fold the newest exchange into the summary.
+// cache has read anything. The turns the fold keeps verbatim are not known yet, but a shift
+// never hides one of them: the slice takes the hidden rows alone (lane CTXR1; it used to come
+// back empty, which the driver took for "nothing to fold" and moved the anchor past them).
+// Once the fill holds the newest rows the tail is known and the slice reaches it.
 static void test_an_automatic_fold_waits_for_the_tail_after_a_restart() {
   Rig r;
   r.addTurns(30);
   r.marks.softStart = "m0020";   // a shift hid rows m0001..m0020 before the restart
-  TEST_ASSERT_TRUE(r.eng->historyFoldSlice("1001", 65536, false).digest.empty());
+  const agent::FoldSlice hiddenOnly = r.eng->historyFoldSlice("1001", 65536, false);
+  TEST_ASSERT_TRUE(hiddenOnly.state == agent::SliceState::Ready);
+  TEST_ASSERT_EQUAL_STRING("m0020", hiddenOnly.thru.c_str());   // the hidden rows, never past them
   TEST_ASSERT_TRUE(r.eng->historyIdleStep());   // the fill's first page: the newest rows
   const agent::FoldSlice slice = r.eng->historyFoldSlice("1001", 65536, false);
   TEST_ASSERT_FALSE(slice.digest.empty());
   TEST_ASSERT_TRUE_MESSAGE(slice.thru != "m0060", slice.thru.c_str());   // the newest exchange stays
+  // With no rows hidden and nothing held yet, the tail is unknown: the slice waits.
+  Rig w;
+  w.addTurns(30);
+  const agent::FoldSlice waits = w.eng->historyFoldSlice("1001", 65536, false);
+  TEST_ASSERT_TRUE(waits.digest.empty());
+  TEST_ASSERT_TRUE_MESSAGE(waits.state == agent::SliceState::Wait, agent::sliceStateName(waits.state));
 }
 
 // An owner's own Compact threshold below the head's keep mark (24 KB on a Sonnet head, which
@@ -757,10 +805,60 @@ static void test_budgets_v5_1_1_fixture_holds_every_recorded_model() {
 
 // v5.1.1's frozen window table and caps still derive budgets_v5_1_1.json row for row: the
 // no-shrink baseline a request budget is held to (lane H re-pinned it to legacyCtxTokens at
-// its switch-over; the fixture itself never changes).
+// its switch-over; the fixture itself never changes). One kind of row may differ, in its caps
+// only: an alias Mistral moved to another model since the fixture was written. Its v5.1.1 caps
+// were the old model's; today it gets the caps of the model it names (release review v5.1.2:
+// mistral-large-latest was mistral-large-2512's alias on the 2026-10 list and is Large 4's on
+// the 14 Nov list, nimbus/orch/model_family.h), which never ask for fewer tokens.
 static void test_todays_table_is_v5_1_1() {
-  const std::string have = readFixture(kBudgetsFixture);
-  TEST_ASSERT_TRUE_MESSAGE(have == budgetsFixtureText(), "v5.1.1's budgets or caps differ from budgets_v5_1_1.json");
+  struct Moved { const char* id; const char* now; };
+  static const Moved kMoved[] = {{"mistral-large-latest", "mistral-large-4-0"}};
+  auto lines = [](const std::string& t) {
+    std::vector<std::string> out;
+    size_t at = 0;
+    for (size_t nl; (nl = t.find('\n', at)) != std::string::npos; at = nl + 1) out.push_back(t.substr(at, nl - at));
+    return out;
+  };
+  auto rowOf = [](std::string line, JsonDocument& doc) {
+    if (!line.empty() && line.back() == ',') line.pop_back();
+    return !deserializeJson(doc, line);
+  };
+  const std::vector<std::string> have = lines(readFixture(kBudgetsFixture));
+  const std::vector<std::string> want = lines(budgetsFixtureText());
+  TEST_ASSERT_EQUAL_MESSAGE((int)have.size(), (int)want.size(), "v5.1.1's budgets differ from budgets_v5_1_1.json");
+  std::map<std::string, std::string> capsNow;
+  for (const std::string& l : want) {
+    JsonDocument d;
+    if (rowOf(l, d)) {
+      std::string caps;
+      serializeJson(d["caps"], caps);
+      capsNow[std::string(d["provider"] | "") + "/" + (d["id"] | "")] = caps;
+    }
+  }
+  int moved = 0;
+  for (size_t i = 0; i < have.size(); i++) {
+    if (have[i] == want[i]) continue;
+    JsonDocument h, w;
+    TEST_ASSERT_TRUE_MESSAGE(rowOf(have[i], h) && rowOf(want[i], w), want[i].c_str());
+    const std::string id = h["id"] | "";
+    const Moved* m = nullptr;
+    for (const Moved& x : kMoved)
+      if (id == x.id && std::string(h["provider"] | "") == "mistral") m = &x;
+    TEST_ASSERT_NOT_NULL_MESSAGE(m, ("v5.1.1's budgets or caps differ from budgets_v5_1_1.json: " + want[i]).c_str());
+    std::string wantCaps;
+    serializeJson(w["caps"], wantCaps);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(capsNow[std::string("mistral/") + m->now].c_str(), wantCaps.c_str(), id.c_str());
+    h.remove("caps");
+    w.remove("caps");
+    std::string hb, wb;
+    serializeJson(h, hb);
+    serializeJson(w, wb);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(hb.c_str(), wb.c_str(), id.c_str());   // only the caps moved
+    for (const char* kind : {"tool", "final", "single", "fold"})
+      TEST_ASSERT_TRUE_MESSAGE((w["caps"][kind][0] | 0u) >= (h["caps"][kind][0] | 0u), id.c_str());
+    moved++;
+  }
+  TEST_ASSERT_EQUAL_INT((int)(sizeof(kMoved) / sizeof(kMoved[0])), moved);
 }
 
 int main(int, char**) {
@@ -774,6 +872,7 @@ int main(int, char**) {
   RUN_TEST(test_the_fold_read_goes_on_past_a_page_the_store_cut_short);
   RUN_TEST(test_the_fold_read_stops_before_rows_the_card_will_not_give_back);
   RUN_TEST(test_an_automatic_fold_waits_for_the_tail_after_a_restart);
+  RUN_TEST(test_a_read_that_stopped_short_is_never_nothing);
   RUN_TEST(test_an_owner_trigger_below_the_keep_mark_still_folds);
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);
