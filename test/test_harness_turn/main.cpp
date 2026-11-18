@@ -119,6 +119,7 @@ struct Rig {
     // RB-Q3a: the scripted head derives its call's arguments from the prompt it was handed
     // (its instructions); empty = toolArgs.
     std::function<std::string(const std::string& instructions)> argsFrom;
+    std::string callArgs(const std::string& ins) const { return argsFrom ? argsFrom(ins) : toolArgs; }
   };
   std::map<std::string, std::vector<Script>> scripts;
   std::map<std::string, int> scriptIdx;
@@ -610,7 +611,7 @@ struct Rig {
           orch::HeadToolCall c;
           c.id = "t1";
           c.name = s.toolName;
-          c.argsJson = s.argsFrom ? s.argsFrom(ins) : s.toolArgs;
+          c.argsJson = s.callArgs(ins);
           toolResults.push_back(tools->dispatch(c));
         }
       }
