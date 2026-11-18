@@ -118,16 +118,15 @@ static void testClockFollowsTheOwnersZone(ndtest::Ctx& c) {
 // page's turn (POST /api/chat) names the web UI, as the device's page does, and a
 // real Telegram message from an approved chat still says Telegram.
 
-// Lane CTX (CUM-840): the hosted turn reads today's food ledger from the VN's own
-// files store - the same scan the device runs. A ledger row seeded under the
-// reserved owner name rides the turn's per-turn block; with no ledger file the
-// block is absent (a fresh VN is never told about a phantom day).
+// Lane CTX (CUM-840), RB-Q3a: the hosted turn reads today's food ledger from the VN's own
+// files store (the figure check's source and the fold's day), but since v5.2.0 the ledger
+// never rides the prompt, and no food playbook does either: a seeded owner ledger and a
+// food message give a turn with neither. With no ledger file there is nothing either.
 static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
-  std::printf("  -- the VN turn reads today's food ledger --\n");
+  std::printf("  -- the VN turn carries no food ledger block and no playbook --\n");
   const std::string where =
       std::string(nimbus::orch::kFoodLedgerProject) + "/" + nimbus::orch::kFoodLedgerOwnerName;
   const std::string row = "date,time,food,amount_unit,kcal,note\n";
-  // With a ledger: the block names the file and carries the row.
   {
     clearEnv();
     setenv("CUMULO_API_KEY", "cumulo_sk_test_FOOD", 1);
@@ -138,12 +137,9 @@ static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
     rig.files().seed(where, row);
     rig.say("owner", "I ate lunch, log it please");
     c.ok(!tx.seen.empty(), "the ledger turn dispatched");
-    c.ok(has(tx.seen[0].body, "[TODAY'S FOOD LEDGER - "),
-         "the ledger data block rides the VN turn");
-    c.ok(has(tx.seen[0].body, nimbus::orch::kFoodLedgerProject) &&
-             has(tx.seen[0].body, nimbus::orch::kFoodLedgerOwnerName),
-         "the block names the owner's ledger file");
-    c.ok(has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"), "the header row rides");
+    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER"), "no ledger block rides the VN turn");
+    c.ok(!has(tx.seen[0].body, "[FOOD PLAYBOOK"), "no food playbook rides the VN turn");
+    c.ok(!has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"), "no ledger row rides");
     clearEnv();
   }
   // Without one: no block, no phantom day.
