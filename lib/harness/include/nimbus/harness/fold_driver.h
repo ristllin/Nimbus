@@ -165,6 +165,8 @@ class FoldDriver {
     uint32_t bytesAtStart = 0, msgsAtStart = 0;
     std::vector<FoldRung> rungs;
     size_t idx = 0;
+    uint32_t paid = 0;      // paid requests this cycle made
+    bool inYield = false;   // started in a manual read's yield (the read comes back for it)
     uint32_t startedMs = 0;
     FoldRungReport bestThin;   // the longest answer that only named too few sections
   };
@@ -245,7 +247,7 @@ class FoldDriver {
   void notePaid(uint32_t nowEpoch, uint32_t n, const std::string& chat);
   uint32_t paidToday(uint32_t nowEpoch) const;
   uint32_t guestPaidToday(uint32_t nowEpoch) const;
-  bool endAutomaticForManual();
+  void endAutomaticForManual(uint32_t nowMs, uint32_t nowEpoch);
 };
 
 }  // namespace agent

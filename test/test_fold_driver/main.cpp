@@ -143,10 +143,16 @@ struct Device {
   uint32_t nothingKept = 0;
   bool unreadAlways = false;   // every slice meets rows the store will not give back
   std::vector<agent::SliceState> stateScript;   // when set: each slice's outcome, in turn
-  size_t stateAt = 0;   // > 0: every slice reads to its bound and finds nothing, this much kept
+  size_t stateAt = 0;
+  std::set<std::string> waitChats;   // chats whose every slice read goes on (Wait)   // > 0: every slice reads to its bound and finds nothing, this much kept
   FoldSlice slice(const std::string& chat, size_t cap, bool manual) {
     sliced.push_back({chat, manual});
     FoldSlice s;
+    if (waitChats.count(chat)) {   // this chat's read goes on (a cold walk)
+      s.state = agent::SliceState::Wait;
+      s.progressed = true;
+      return s;
+    }
     if (!stateScript.empty()) {   // a scripted outcome per slice, in turn
       s.state = stateScript[stateAt++ % stateScript.size()];
       return s;
@@ -574,6 +580,26 @@ static void test_due_not_started_lines_are_bounded_per_chat_and_cause() {
   TEST_ASSERT_TRUE_MESSAGE(lines >= 2 && lines <= 6, std::to_string(lines).c_str());
 }
 
+// Candidate 4, F3: an automatic cycle that starts in a manual read's yield and is ended when
+// the read's next pass comes has paid for its rungs. It counts as a failed cycle (backoff, the
+// alert clock): it is never discarded uncounted to start again on the next yield.
+static void test_an_automatic_cycle_ended_for_a_manual_read_counts_as_failed() {
+  Device d;
+  d.waitChats = {"a"};
+  d.boot();
+  d.backlog("a", 40);
+  d.backlog("b", 40, 0x400);
+  d.drv->requestManual("a");
+  for (int i = 0; i < 160; i++) {   // half-second passes: the manual read's yields between
+    d.plat.ms += 500;
+    d.drv->tick(d.plat.ms, kT0 + (uint32_t)i / 2);
+  }
+  const uint32_t failed = d.folds.get("b").failedCycles;
+  TEST_ASSERT_TRUE_MESSAGE(failed >= 1, "the ended cycle counts as failed");
+  TEST_ASSERT_TRUE_MESSAGE(d.asked <= 4, std::to_string(d.asked).c_str());   // then the backoff holds
+  TEST_ASSERT_TRUE(LogCapture::contains("fold(b): cycle failed, next try"));
+}
+
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
 static void test_fresh_device_is_idle_and_quiet() {
   Device d;
@@ -778,6 +804,7 @@ int main(int, char**) {
   RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
   RUN_TEST(test_the_unread_clock_survives_waits_and_restarts);
   RUN_TEST(test_due_not_started_lines_are_bounded_per_chat_and_cause);
+  RUN_TEST(test_an_automatic_cycle_ended_for_a_manual_read_counts_as_failed);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);
