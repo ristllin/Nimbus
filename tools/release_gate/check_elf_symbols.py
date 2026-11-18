@@ -60,6 +60,9 @@ TEST_ONLY_MARKERS = (
     # The console's CLOCK skew (src/test_console.cpp): a shipped image that linked it could
     # have its wall clock moved over serial. Every clockSkew* function carries the marker.
     "clockSkew",
+    # Lane RB-M2's bench timing (src/sys/link_time.h, the console's LINKX, CARDTIME and LOGMS):
+    # test builds only. Every symbol it defines carries the marker.
+    "linkTime",
 )
 
 # ESP-IDF app image layout (esp_image_format.h / esp_app_desc.h): a 24-byte image

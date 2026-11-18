@@ -10,6 +10,7 @@
 #include "nimbus/log_sinks.h"   // core::emitRedacted (portable, host-tested two-sink seam)
 #include "errlog.h"             // nimbus::errlog::Level + persistsDurably (durable routing, CUM-409)
 #include "errlog_fs.h"          // durable SD/flash sink (CUM-401) - fed the SAME redacted line
+#include "link_time.h"           // lane RB-M2: LOGMS serial stamps (test builds only)
 
 // agent_log - the device-side logging seam for the Orchestrator subsystem.
 //
@@ -95,6 +96,12 @@ inline String agentLogTail() {
 // CUM-401) can only ever store the identical masked line - there is no second, un-redacted
 // path into it.
 inline void logSerial(const std::string& red) {
+#if defined(NIMBUS_TEST)
+  // Lane RB-M2 (test builds only): LOGMS on stamps each serial line with the device's
+  // uptime, so the bench reads device-side times off these lines ("[agent @<ms>] ...").
+  if (nimbus::linkTime::linkTimeLogMs) Serial.printf("[agent @%lu] ", (unsigned long)millis());
+  else
+#endif
   Serial.print("[agent] ");
   Serial.println(red.c_str());
 }

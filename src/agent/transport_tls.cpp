@@ -6,6 +6,7 @@
 
 #include "../sys/agent_log.h"
 #include "../sys/heap_watch.h"   // failed-allocation count, local-minimum monitor
+#include "../sys/link_time.h"    // lane RB-M2: per-phase bench marks (test builds only; empty otherwise)
 #ifdef NIMBUS_TEST
 #include "../sys/crash_report.h"   // testPanicPoint (L39 crash-forensics legs)
 #endif
@@ -173,6 +174,11 @@ struct TlsIo {
   // type: through `client` (a Client*) it reached the overload that cannot carry the host,
   // and every provider handshake went out with no SNI (lane SNI).
   bool connect() {
+    const bool ok = connectTries();
+    LINKTIME_MARK(conn);
+    return ok;
+  }
+  bool connectTries() {
     for (int a = 0; a < 3 && !expired(); a++) {
       nimbus::pollwatch::beat("provider connect");
       const int ok = req.tls ? connectHost(tls, req.host.c_str(), req.port)
@@ -193,7 +199,9 @@ struct TlsIo {
     for (const auto& h : req.headers)
       head += String(h.first.c_str()) + ": " + h.second.c_str() + "\r\n";
     head += "Content-Length: " + String((unsigned)bodyLength(req)) + "\r\nConnection: close\r\n\r\n";
-    return client->print(head) == head.length();
+    const bool ok = client->print(head) == head.length();
+    LINKTIME_MARK(head);
+    return ok;
   }
 
   // One body slice (the sequencer passes 4,096 B: the record size the TLS client
@@ -239,6 +247,7 @@ struct TlsIo {
       else if (!client->connected() && !client->available()) break;
       else { nimbus::pollwatch::beat("provider read"); delay(2); }
     }
+    LINKTIME_MARK(status);
     int code = 0;
     int sp = status.indexOf(' ');
     if (sp > 0 && (int)status.length() >= sp + 4) code = status.substring(sp + 1, sp + 4).toInt();
@@ -254,7 +263,7 @@ struct TlsIo {
       if (client->available()) {
         char c = client->read();
         if (c == '\n') {
-          if (line.length() == 0) return true;
+          if (line.length() == 0) { LINKTIME_MARK(hdrs); return true; }
           keepErrHeader(req, code, line);
           // Lane QW4 round 3: the server's date stands in for a clock that never set (no
           // NTP), so the monthly spend ceiling still rolls its month.
@@ -385,6 +394,7 @@ class TlsTransport : public HttpTransport {
     trace.body = (uint32_t)bodyLength(req);
     trace.pre = sampleHeap();
     trace.atMs = millis();
+    LINKTIME_BEGIN(trace.atMs);
     const uint32_t afStart = nimbus::heapwatch::allocFails();
     const bool monitored = nimbus::heapwatch::monitorStart();
     nimbus::heapwatch::tlsIoBegin("transport");
@@ -441,6 +451,10 @@ class TlsTransport : public HttpTransport {
       // predicts (the heaptrace line's last fields; the durable line for a large body).
       t.wms = io.bodyEndMs - io.bodyStartMs;
       t.pms = io.pacedMs;
+      LINKTIME_SET(body0, io.bodyStartMs);
+      LINKTIME_SET(body1, io.bodyEndMs);
+      LINKTIME_SET(paced, io.pacedMs);
+      LINKTIME_SET(done, t.atMs + t.durMs);
       // Forensic window (heap F1.5): a healthy exchange's trace stays in the RAM ring and
       // serial; a failed one, one with a failed allocation, or one that took internal
       // memory near its floor is durable evidence.

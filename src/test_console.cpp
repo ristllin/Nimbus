@@ -78,6 +78,17 @@
 #include "agent/model_refresh.h"   // MODELS? / MODELS passive - the model list refresh (R5)
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/provider_park.h"   // PARK? / PARK clear - the one per-provider park (L19-8)
+#include "agent/transport_tls.h"          // LINKX - the device's one provider transport (lane RB-M2)
+#include "agent/files_subsystem.h"       // CARDTIME replace - the file store's whole-file replace
+#include "sys/link_time.h"               // LINKX phase marks, LOGMS serial stamps (lane RB-M2)
+#include <ArduinoJson.h>
+
+// Lane RB-M2's timing state (declared in sys/link_time.h): test builds only, and every name
+// carries the linkTime marker the release ELF gate refuses.
+namespace nimbus::linkTime {
+LinkTimePhases linkTimeLast;
+volatile bool linkTimeLogMs = false;
+}  // namespace nimbus::linkTime
 
 namespace nimbus::tc {
 namespace {
@@ -779,6 +790,365 @@ void modelsTest(const String& arg) {
                   agent::model_refresh::stampFw(slot.slug).c_str(), (int)agent::model_refresh::pending(slot.slug));
   }
   Serial.printf("MODELS? fw=%s build=%s\n", NIMBUS_FW_VERSION, NIMBUS_FW_BUILD);
+  Serial.flush();
+}
+
+// ---- Lane RB-M2: bench link, card and log timing (LINKX, CARDTIME, LOGMS) ----------
+// The rebuild PRD's latency model and storage gates read these figures from the bench
+// (coverage/LINK-2026-11.md; the host side is tests/hil/test_link_budget.py and
+// test_store_timing.py). Every exchange runs through the device's one provider transport
+// (agent::deviceTransport(), the same TLS slot, 4 KB slices and pacing as a turn); its
+// phase marks come from sys/link_time.h. The commands run on the console's loop task, so
+// the watchdog lets go of the loop for the one call, as VISIONCHECK does.
+
+constexpr const char* kLinkTimeHost = "api.anthropic.com";
+constexpr const char* kLinkTimeModel = "claude-haiku-5-5";
+constexpr uint32_t kLinkTimeReadWindowMs = 120000;   // Anthropic's read window (PRD section 7)
+constexpr size_t kLinkTimeMaxBody = 512u * 1024u;
+constexpr size_t kLinkTimeMaxPhotos = 4;
+constexpr size_t kLinkTimeMaxPhotoBytes = 400u * 1024u;
+constexpr const char* kLinkTimeDir = "/mem/rbm2";
+
+// A filler that tokenizes like prose (about 4 B a token), never one repeated byte, and
+// holds no character JSON would escape.
+void linkTimeFiller(std::string& out, size_t n, uint32_t seed) {
+  static const char* const kWords[] = {"the",     "owner",  "logged", "a",       "meal",    "with",   "rice",
+                                       "and",     "beans",  "at",     "noon",    "then",    "asked",  "for",
+                                       "day",     "total",  "of",     "protein", "grams",   "walked", "morning",
+                                       "coffee",  "label",  "photo",  "remind",  "garden",  "rain",   "kitchen",
+                                       "tuesday", "budget", "file",   "notes",   "evening", "sleep",  "steps"};
+  constexpr uint32_t kCount = sizeof(kWords) / sizeof(kWords[0]);
+  uint32_t x = seed | 1u;
+  out.reserve(out.size() + n + 16);
+  const size_t end = out.size() + n;
+  while (out.size() < end) {
+    x = x * 1664525u + 1013904223u;
+    out += kWords[(x >> 16) % kCount];
+    out += ' ';
+  }
+  out.resize(end);
+}
+
+agent::HttpRequest linkTimeAntRequest(const char* method, const std::string& path) {
+  agent::HttpRequest r;
+  r.method = method;
+  r.host = kLinkTimeHost;
+  r.path = path;
+  r.timeoutMs = kLinkTimeReadWindowMs;
+  r.headers = {{"x-api-key", agent::deviceProviderDeps().key("anthropic")}, {"anthropic-version", "2023-06-01"}};
+  return r;
+}
+
+size_t linkTimeBodyBytes(const agent::HttpRequest& r) {
+  size_t n = r.body.size();
+  for (const auto& sp : r.splices) n += sp.base64 ? ((sp.len + 2) / 3) * 4 : sp.len;
+  return n;
+}
+
+// One exchange through the device transport; the answer's body lands in `resp`.
+int linkTimeExchange(const agent::HttpRequest& req, std::string& resp, std::string& err) {
+  agent::HttpResponse out;
+  esp_task_wdt_delete(nullptr);
+  const bool ok = agent::deviceTransport().exec(req, out, err);
+  esp_task_wdt_add(nullptr);
+  resp = out.body;
+  return ok ? out.status : 0;
+}
+
+long linkTimeSpan(uint32_t from, uint32_t to) { return (from && to) ? (long)(to - from) : -1; }
+
+// "LINKX <kind> code= body= conn= head= up= paced= wait= hdrs= read= total= err=": ms per
+// phase of the exchange that just ran (-1 = the phase was not reached). wait is the
+// provider's time from the last byte out to the status line.
+void linkTimeReport(const char* kind, int code, size_t body, const std::string& err) {
+  const nimbus::linkTime::LinkTimePhases& p = nimbus::linkTime::linkTimeLast;
+  const uint32_t sent = p.body1 ? p.body1 : p.head;
+  Serial.printf("LINKX %s code=%d body=%u conn=%ld head=%ld up=%ld paced=%u wait=%ld hdrs=%ld read=%ld total=%ld "
+                "err=%s\n",
+                kind, code, (unsigned)body, linkTimeSpan(p.start, p.conn), linkTimeSpan(p.conn, p.head),
+                linkTimeSpan(p.body0, p.body1), (unsigned)p.paced, linkTimeSpan(sent, p.status),
+                linkTimeSpan(p.status, p.hdrs), linkTimeSpan(p.hdrs, p.done), linkTimeSpan(p.start, p.done),
+                err.empty() ? "-" : err.c_str());
+  Serial.flush();
+}
+
+// The opening of a one-message request whose content follows; max_tokens 8 keeps the
+// decode out of the figure.
+std::string linkTimeMessagesHead() {
+  return std::string("{\"model\":\"") + kLinkTimeModel + "\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",";
+}
+
+// LINKX pad <body bytes>: one text request of exactly that many body bytes.
+void linkTimePad(size_t want, uint32_t seed) {
+  agent::HttpRequest req = linkTimeAntRequest("POST", "/v1/messages");
+  req.headers.push_back({"content-type", "application/json"});
+  req.body = linkTimeMessagesHead() + "\"content\":\"Reply with the word ok. ";
+  const std::string tail = "\"}]}";
+  if (want > kLinkTimeMaxBody || want < req.body.size() + tail.size() + 16) {
+    reply("LINKX ERR pad bytes out of range");
+    return;
+  }
+  linkTimeFiller(req.body, want - req.body.size() - tail.size(), seed);
+  req.body += tail;
+  std::string resp, err;
+  const int code = linkTimeExchange(req, resp, err);
+  linkTimeReport("pad", code, linkTimeBodyBytes(req), code == 200 ? err : err + resp.substr(0, 120));
+}
+
+// A whole card file in PSRAM (photos for LINKX img and file); nullptr when it cannot be read.
+uint8_t* linkTimeLoad(const String& path, size_t& len) {
+  len = 0;
+  agent::memory::LoopLock g(5000);
+  if (!g) return nullptr;
+  File f = solide::storage::activeFs().open(path.c_str(), FILE_READ);
+  if (!f) return nullptr;
+  const size_t n = f.size();
+  uint8_t* buf = (n && n <= kLinkTimeMaxPhotoBytes) ? (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM) : nullptr;
+  if (buf && f.read(buf, n) == n) len = n;
+  f.close();
+  if (!len && buf) { heap_caps_free(buf); buf = nullptr; }
+  return buf;
+}
+
+struct LinkTimePhotos {
+  uint8_t* bytes[kLinkTimeMaxPhotos] = {};
+  size_t len[kLinkTimeMaxPhotos] = {};
+  size_t n = 0;
+  ~LinkTimePhotos() {
+    for (size_t i = 0; i < n; i++) heap_caps_free(bytes[i]);
+  }
+  bool load(String paths) {
+    paths.trim();
+    while (paths.length() && n < kLinkTimeMaxPhotos) {
+      int sp = paths.indexOf(' ');
+      const String p = sp < 0 ? paths : paths.substring(0, sp);
+      paths = sp < 0 ? String() : paths.substring(sp + 1);
+      paths.trim();
+      bytes[n] = linkTimeLoad(p, len[n]);
+      if (!bytes[n]) return false;
+      n++;
+    }
+    return n > 0;
+  }
+};
+
+// LINKX img <pad bytes> <photo path>...: the inline photo request (each photo spliced
+// as base64 at send time, as a turn's photos go) with a text block of pad bytes beside
+// them: the album follow-up on a head with no file references.
+void linkTimeImg(size_t pad, const String& paths, uint32_t seed) {
+  LinkTimePhotos ph;
+  if (pad > kLinkTimeMaxBody || !ph.load(paths)) {
+    reply("LINKX ERR img: pad out of range or a photo could not be read (at most 4, 400 KB each)");
+    return;
+  }
+  agent::HttpRequest req = linkTimeAntRequest("POST", "/v1/messages");
+  req.headers.push_back({"content-type", "application/json"});
+  req.body = linkTimeMessagesHead() + "\"content\":[";
+  for (size_t i = 0; i < ph.n; i++) {
+    req.body += "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/jpeg\",\"data\":\"";
+    req.splices.push_back(agent::BodySplice{req.body.size(), ph.bytes[i], ph.len[i], true});
+    req.body += "\"}},";
+  }
+  req.body += "{\"type\":\"text\",\"text\":\"Reply with the word ok. ";
+  linkTimeFiller(req.body, pad, seed);
+  req.body += "\"}]}]}";
+  std::string resp, err;
+  const int code = linkTimeExchange(req, resp, err);
+  linkTimeReport("img", code, linkTimeBodyBytes(req), code == 200 ? err : err + resp.substr(0, 120));
+}
+
+// The value of a top-level "id" in a small JSON answer ("" when absent).
+std::string linkTimeJsonId(const std::string& resp) {
+  JsonDocument doc;
+  if (deserializeJson(doc, resp)) return std::string();
+  return std::string(doc["id"] | "");
+}
+
+// LINKX file <photo path>: one Files API upload (the multipart body the upload-once path
+// builds), then its deletion, each reported.
+void linkTimeFile(const String& path) {
+  LinkTimePhotos ph;
+  if (!ph.load(path)) { reply("LINKX ERR file: the photo could not be read"); return; }
+  const std::string boundary = "rbm2linkx" + std::to_string((unsigned)esp_random());
+  agent::HttpRequest req = linkTimeAntRequest("POST", "/v1/files");
+  req.headers.push_back({"anthropic-beta", "files-api-2025-04-14"});
+  req.headers.push_back({"content-type", "multipart/form-data; boundary=" + boundary});
+  req.body = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"rbm2.jpg\"\r\n" +
+             "Content-Type: image/jpeg\r\n\r\n";
+  req.splices.push_back(agent::BodySplice{req.body.size(), ph.bytes[0], ph.len[0], false});
+  req.body += "\r\n--" + boundary + "--\r\n";
+  std::string resp, err;
+  int code = linkTimeExchange(req, resp, err);
+  linkTimeReport("file", code, linkTimeBodyBytes(req), code == 200 ? err : err + resp.substr(0, 120));
+  const std::string id = code == 200 ? linkTimeJsonId(resp) : std::string();
+  if (id.empty()) return;
+  agent::HttpRequest del = linkTimeAntRequest("DELETE", "/v1/files/" + id);
+  del.headers.push_back({"anthropic-beta", "files-api-2025-04-14"});
+  code = linkTimeExchange(del, resp, err);
+  linkTimeReport("fdel", code, 0, err);
+}
+
+// LINKX get <host> <path>: a bodiless GET (the handshake to a host, e.g. Telegram's).
+void linkTimeGet(const String& host, const String& path) {
+  agent::HttpRequest req;
+  req.method = "GET";
+  req.host = host.c_str();
+  req.path = path.c_str();
+  req.timeoutMs = 20000;
+  std::string resp, err;
+  const int code = linkTimeExchange(req, resp, err);
+  linkTimeReport("get", code, 0, err);
+}
+
+void linkTimeCmd(String arg) {
+  arg.trim();
+  const int sp = arg.indexOf(' ');
+  const String verb = sp < 0 ? arg : arg.substring(0, sp);
+  String rest = sp < 0 ? String() : arg.substring(sp + 1);
+  rest.trim();
+  const uint32_t seed = esp_random();
+  if (verb == "pad") { linkTimePad((size_t)rest.toInt(), seed); return; }
+  if (verb == "img") {
+    const int s2 = rest.indexOf(' ');
+    if (s2 > 0) { linkTimeImg((size_t)rest.substring(0, s2).toInt(), rest.substring(s2 + 1), seed); return; }
+  }
+  if (verb == "file" && rest.length()) { linkTimeFile(rest); return; }
+  if (verb == "get") {
+    const int s2 = rest.indexOf(' ');
+    if (s2 > 0) { linkTimeGet(rest.substring(0, s2), rest.substring(s2 + 1)); return; }
+  }
+  reply("LINKX usage: LINKX pad <bytes> | img <pad bytes> <path>... | file <path> | get <host> <path>");
+}
+
+// CARDTIME append <bytes> | read <bytes> <slice> | replace <bytes> | rawreplace <bytes>:
+// one card operation under the card lock, as the transcript, the ledger and the legacy
+// mirror will do it. wait = ms to take the lock; hold = ms the lock was held.
+uint8_t* cardTimeBuffer(size_t n, char fill) {
+  uint8_t* b = (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+  if (!b) return nullptr;
+  for (size_t i = 0; i < n; i++) b[i] = (uint8_t)((i % 97 == 96) ? '\n' : fill + (char)(i % 23));
+  return b;
+}
+
+void cardTimeAppend(size_t n) {
+  uint8_t* b = cardTimeBuffer(n, 'a');
+  if (!b) { reply("CARDTIME ERR no PSRAM"); return; }
+  const uint32_t t0 = millis();
+  size_t wrote = 0;
+  uint32_t t1 = 0, t2 = 0;
+  {
+    agent::memory::LoopLock g(5000);
+    t1 = millis();
+    if (g) {
+      fs::FS& fs = agent::memory::dataFs();
+      fs.mkdir(kLinkTimeDir);
+      File f = fs.open("/mem/rbm2/append.jsonl", FILE_APPEND);
+      if (f) { wrote = f.write(b, n); f.close(); }
+    }
+    t2 = millis();
+  }
+  heap_caps_free(b);
+  Serial.printf("CARDTIME append bytes=%u wrote=%u wait=%lu hold=%lu\n", (unsigned)n, (unsigned)wrote,
+                (unsigned long)(t1 - t0), (unsigned long)(t2 - t1));
+}
+
+// The read file is written once (untimed) at the asked size, then read front to back in
+// slices, each slice under its own hold, as the restart fill reads the transcript.
+bool cardTimeEnsure(const char* path, size_t n) {
+  agent::memory::LoopLock g(5000);
+  if (!g) return false;
+  fs::FS& fs = agent::memory::dataFs();
+  File f = fs.open(path, FILE_READ);
+  const bool same = f && f.size() == n;
+  if (f) f.close();
+  if (same) return true;
+  uint8_t* b = cardTimeBuffer(n, 'r');
+  if (!b) return false;
+  fs.mkdir(kLinkTimeDir);
+  File w = fs.open(path, FILE_WRITE);
+  const bool ok = w && w.write(b, n) == n;
+  if (w) w.close();
+  heap_caps_free(b);
+  return ok;
+}
+
+void cardTimeRead(size_t n, size_t slice) {
+  const char* path = "/mem/rbm2/read.bin";
+  if (!slice || slice > 65536 || !cardTimeEnsure(path, n)) { reply("CARDTIME ERR read setup"); return; }
+  uint8_t* b = (uint8_t*)heap_caps_malloc(slice, MALLOC_CAP_SPIRAM);
+  if (!b) { reply("CARDTIME ERR no PSRAM"); return; }
+  size_t got = 0, slices = 0;
+  uint32_t holdMax = 0, holdSum = 0;
+  const uint32_t t0 = millis();
+  while (got < n) {
+    agent::memory::LoopLock g(5000);
+    if (!g) break;
+    const uint32_t h0 = millis();
+    File f = agent::memory::dataFs().open(path, FILE_READ);
+    if (!f || !f.seek(got)) break;
+    const size_t r = f.read(b, slice);
+    f.close();
+    const uint32_t h = millis() - h0;
+    holdSum += h;
+    if (h > holdMax) holdMax = h;
+    if (!r) break;
+    got += r;
+    slices++;
+  }
+  const uint32_t total = millis() - t0;
+  heap_caps_free(b);
+  Serial.printf("CARDTIME read bytes=%u got=%u slice=%u slices=%u total=%lu holdSum=%lu holdMax=%lu\n",
+                (unsigned)n, (unsigned)got, (unsigned)slice, (unsigned)slices, (unsigned long)total,
+                (unsigned long)holdSum, (unsigned long)holdMax);
+}
+
+// replace: the file store's whole-file replace (part file, rename, index rewrite) through
+// agent::files::saveText. rawreplace: the same bytes as part file plus rename only, so
+// replace minus rawreplace is the index write.
+void cardTimeReplace(size_t n, bool raw) {
+  uint8_t* b = cardTimeBuffer(n, 'p');
+  if (!b) { reply("CARDTIME ERR no PSRAM"); return; }
+  const std::string text((const char*)b, n);
+  heap_caps_free(b);
+  std::string err;
+  bool ok = false;
+  const uint32_t t0 = millis();
+  uint32_t t1 = 0, t2 = 0;
+  {
+    agent::memory::LoopLock g(5000);
+    t1 = millis();
+    if (g && raw) {
+      fs::FS& fs = agent::memory::dataFs();
+      fs.mkdir(kLinkTimeDir);
+      File f = fs.open("/mem/rbm2/replace.part", FILE_WRITE);
+      ok = f && f.write((const uint8_t*)text.data(), n) == n;
+      if (f) f.close();
+      fs.remove("/mem/rbm2/replace.md");
+      ok = ok && fs.rename("/mem/rbm2/replace.part", "/mem/rbm2/replace.md");
+    } else if (g) {
+      ok = agent::files::saveText("rbm2", "replace.md", text, err);
+    }
+    t2 = millis();
+  }
+  Serial.printf("CARDTIME %s bytes=%u ok=%d wait=%lu hold=%lu err=%s\n", raw ? "rawreplace" : "replace", (unsigned)n,
+                (int)ok, (unsigned long)(t1 - t0), (unsigned long)(t2 - t1), err.empty() ? "-" : err.c_str());
+}
+
+void cardTimeCmd(String arg) {
+  arg.trim();
+  const int sp = arg.indexOf(' ');
+  const String verb = sp < 0 ? arg : arg.substring(0, sp);
+  String rest = sp < 0 ? String() : arg.substring(sp + 1);
+  rest.trim();
+  const size_t n = (size_t)rest.toInt();
+  esp_task_wdt_delete(nullptr);
+  if (n == 0 || n > 262144) reply("CARDTIME usage: CARDTIME append|replace|rawreplace <bytes> | read <bytes> <slice>");
+  else if (verb == "append") cardTimeAppend(n);
+  else if (verb == "read") cardTimeRead(n, (size_t)rest.substring(rest.indexOf(' ') + 1).toInt());
+  else if (verb == "replace") cardTimeReplace(n, false);
+  else if (verb == "rawreplace") cardTimeReplace(n, true);
+  else reply("CARDTIME usage: CARDTIME append|replace|rawreplace <bytes> | read <bytes> <slice>");
+  esp_task_wdt_add(nullptr);
   Serial.flush();
 }
 
@@ -2269,6 +2639,13 @@ void dispatch(String line) {
     const nimbus::orch::RetentionStatus st = agent::memory::pruneRetention(days, &rep);
     Serial.printf("EPIPRUNE days=%d %s\n", days, nimbus::orch::retentionSummary(st, rep).c_str());
     Serial.flush();
+    return;
+  }
+  if (line.startsWith("LINKX ")) { linkTimeCmd(line.substring(6)); return; }
+  if (line.startsWith("CARDTIME ")) { cardTimeCmd(line.substring(9)); return; }
+  if (line == "LOGMS on" || line == "LOGMS off") {
+    nimbus::linkTime::linkTimeLogMs = (line == "LOGMS on");
+    Serial.printf("LOGMS %s now=%lu\n", nimbus::linkTime::linkTimeLogMs ? "on" : "off", (unsigned long)millis());
     return;
   }
   if (line == "CLOCK?" || line.startsWith("CLOCK ")) {
