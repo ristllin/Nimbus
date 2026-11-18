@@ -116,7 +116,7 @@ static void test_one_archive_hook_path() {
   // sends, drainMedia before the upload, and the voice reply's upload (sendMediaNow)
   // only once Telegram named the delivered message.
   const std::string snd = bodyOf(code(), "bool send(const String& chatId, const String& text, bool block) {");
-  TEST_ASSERT_TRUE(snd.find("agent::tgarchive::onOutboundText(") < snd.find("TG_CHUNK"));
+  TEST_ASSERT_TRUE(snd.find("agent::tgarchive::onOutboundText(") < snd.find("nimbus::orch::telegramParts("));
   const std::string now = bodyOf(code(), "static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {");
   TEST_ASSERT_TRUE(now.find("agent::tgarchive::onOutboundText(") < now.find("doSendMessageImpl("));
   const std::string media = bodyOf(code(), "static void drainMedia() {");

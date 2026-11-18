@@ -139,6 +139,10 @@ NON_MODEL_FILES: dict = {
     "owner's chat or a web client as device copy, never to a model",
     "src/net/ota_channel_routes.cpp": "RB-OTA2: the route's 401 body for a web client (the same literal every owner "
     "route sends), never sent to a model",
+    # RB-Q1c: the send seam. Its one literal is the owner-facing overflow line of a reply over
+    # kTelegramMaxParts parts (moved byte for byte from src/agent/telegram.cpp send()); it goes
+    # to the chat, never into a request (history keeps the engine's reply, not the parts).
+    "lib/core/src/orch_deliver_text.cpp": "owner-facing send seam: the overflow line only, never sent to a model",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the

@@ -602,11 +602,14 @@ static void test_markup_telegram_would_refuse_is_made_safe() {
 static void test_a_long_reply_is_split_without_a_byte_lost_or_added() {
   std::string lines;
   for (int i = 0; i < 400; ++i) lines += "Line " + std::to_string(i) + ": the boat is the Nereid II.\n";
+  // No space to cut at, and the 4,000th byte falls inside a character (3- and 4-byte ones).
   std::string accents;
-  for (int i = 0; i < 3000; ++i) accents += i % 3 ? "\xC3\xA9" : "\xE2\x82\xAC";   // no space to cut at
+  for (int i = 0; i < 3000; ++i) accents += "\xE2\x82\xAC";
+  std::string bowls = "x";
+  for (int i = 0; i < 2000; ++i) bowls += "\xF0\x9F\x8D\xB2";
   std::string paras;
   for (int i = 0; i < 60; ++i) paras += "Paragraph " + std::to_string(i) + std::string(120, 'x') + ".\n\n";
-  for (const std::string* t : {&lines, &accents, &paras}) {
+  for (const std::string* t : {&lines, &accents, &bowls, &paras}) {
     const std::vector<std::string> parts = orch::splitDeliverable(*t);
     TEST_ASSERT_TRUE(parts.size() > 1);
     std::string joined;
@@ -638,6 +641,52 @@ static void test_a_long_reply_is_split_without_a_byte_lost_or_added() {
   }
   TEST_ASSERT_EQUAL('a', gapText.front());
   TEST_ASSERT_EQUAL('b', gapText.back());
+}
+
+// A code block is not cut where a cut can go outside it: a part never ends inside a ``` block
+// that opened in it, so tgHtml never reads code as markdown (or prose as code). Each part's
+// HTML is accepted, and the parts are still the text byte for byte.
+static void test_a_split_keeps_a_code_block_whole() {
+  std::string code = "```python\n";
+  for (int i = 0; i < 60; ++i) code += "# step " + std::to_string(i) + "\n- x = a < b and c > d\n\n";
+  code += "```\n";
+  const std::string text = std::string(2500, 'p') + "\n" + code + "Done. Next block:\n```\nx\n```\n";
+  TEST_ASSERT_TRUE(code.size() > 1600 && code.size() < 3900);
+  const std::vector<std::string> parts = orch::splitDeliverable(text);
+  TEST_ASSERT_EQUAL(2, (int)parts.size());
+  TEST_ASSERT_TRUE_MESSAGE(parts[0] + parts[1] == text, "the parts are not the text");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE((std::string(2500, 'p') + "\n").c_str(), parts[0].c_str(), "cut before the block");
+  for (const orch::TelegramPart& p : orch::deliverText(text)) {
+    const std::string why = htmlRefusal(p.html);
+    TEST_ASSERT_TRUE_MESSAGE(why.empty(), why.c_str());
+  }
+  TEST_ASSERT_TRUE(orch::deliverText(text)[1].html.find("<pre># step 0") != std::string::npos);
+  // A block longer than a part is cut inside it (nothing else fits), still byte for byte.
+  std::string huge = "```\n";
+  for (int i = 0; i < 400; ++i) huge += "line " + std::to_string(i) + " of the log\n";
+  huge += "```\n";
+  std::string joined;
+  for (const std::string& p : orch::splitDeliverable(huge)) joined += p;
+  TEST_ASSERT_TRUE(joined == huge);
+}
+
+// One reply is at most kTelegramMaxParts parts; a longer one says so on its last part,
+// never a silent cut (the device's reply queue bound, now the same on nimbusd).
+static void test_a_reply_over_the_part_bound_says_so() {
+  std::string longText;
+  for (int i = 0; i < 1200; ++i) longText += "Row " + std::to_string(i) + ": the boat is the Nereid II.\n";
+  TEST_ASSERT_TRUE(longText.size() > orch::kTelegramPartBytes * orch::kTelegramMaxParts);
+  const std::vector<std::string> parts = orch::telegramParts(longText);
+  TEST_ASSERT_EQUAL((int)orch::kTelegramMaxParts, (int)parts.size());
+  const std::string note = orch::kTelegramOverflowNote;
+  TEST_ASSERT_TRUE(parts.back().size() > note.size() &&
+                   parts.back().compare(parts.back().size() - note.size(), note.size(), note) == 0);
+  for (size_t i = 0; i + 1 < parts.size(); i++) TEST_ASSERT_TRUE(parts[i].find(note) == std::string::npos);
+  for (const std::string& p : parts) TEST_ASSERT_TRUE(p.size() < 4096);
+  TEST_ASSERT_EQUAL((int)orch::kTelegramMaxParts, (int)orch::deliverText(longText).size());
+  // Within the bound nothing is added.
+  for (const std::string& p : orch::telegramParts(longText.substr(0, 20000)))
+    TEST_ASSERT_TRUE(p.find(note) == std::string::npos);
 }
 
 // A part is sent as it is, not sanitised again: a word the whole text kept (a literal
@@ -677,14 +726,22 @@ static void test_the_device_and_the_daemon_send_through_the_deliver_function() {
   const std::string dev = slurp("src/agent/telegram.cpp");
   TEST_ASSERT_FALSE_MESSAGE(dev.empty(), "src/agent/telegram.cpp not readable");
   const std::string send = bodyOf(dev, "bool send(const String& chatId, const String& text, bool block)");
-  TEST_ASSERT_TRUE_MESSAGE(send.find("nimbus::orch::splitDeliverable(nimbus::orch::deliverableText(") !=
-                               std::string::npos,
+  TEST_ASSERT_TRUE_MESSAGE(send.find("nimbus::orch::telegramParts(") != std::string::npos,
                            "send() must queue the deliver function's parts");
+  const std::string now = bodyOf(dev, "static bool sendNow(");
+  TEST_ASSERT_TRUE_MESSAGE(now.find("nimbus::orch::telegramParts(") != std::string::npos,
+                           "sendNow must send the deliver function's parts");
   const std::string impl = bodyOf(dev, "static bool doSendMessageImpl(");
   TEST_ASSERT_TRUE_MESSAGE(impl.find("nimbus::orch::telegramPart(") != std::string::npos,
                            "the drain must send the deliver function's part");
   TEST_ASSERT_TRUE_MESSAGE(impl.find("tgHtml(") == std::string::npos && impl.find("cleanReplyMarkup(") == std::string::npos,
                            "the send seam converts only through the deliver function");
+  // A part that failed is retried before the parts after it (they carry no number).
+  const std::string poll = bodyOf(dev, "void pollTask(void*) {");
+  TEST_ASSERT_TRUE_MESSAGE(poll.find("xQueueSendToFront(g_replyQ, reply, 0)") != std::string::npos,
+                           "the drain must put a failed part back at the front of the reply queue");
+  TEST_ASSERT_TRUE_MESSAGE(poll.find("xQueueSend(g_replyQ, reply, 0)") == std::string::npos,
+                           "a failed part sent to the back would arrive after the parts it precedes");
   const std::string hosted = slurp("nimbusd/src/telegram.h");
   TEST_ASSERT_FALSE_MESSAGE(hosted.empty(), "nimbusd/src/telegram.h not readable");
   TEST_ASSERT_TRUE_MESSAGE(hosted.find("nimbus::orch::deliverText(") != std::string::npos,
@@ -710,6 +767,8 @@ int main(int, char**) {
   RUN_TEST(test_the_send_seam_sends_every_sentence);
   RUN_TEST(test_markup_telegram_would_refuse_is_made_safe);
   RUN_TEST(test_a_long_reply_is_split_without_a_byte_lost_or_added);
+  RUN_TEST(test_a_split_keeps_a_code_block_whole);
+  RUN_TEST(test_a_reply_over_the_part_bound_says_so);
   RUN_TEST(test_a_part_is_not_sanitised_again);
   RUN_TEST(test_the_device_and_the_daemon_send_through_the_deliver_function);
   return UNITY_END();

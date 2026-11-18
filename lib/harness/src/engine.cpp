@@ -179,10 +179,9 @@ std::string afterFailure(int activeJobs, const std::string& advice) {
 // L19-14: what a failed turn had already done, from its transcript brief (one
 // "[result] <tool> ..." line per tool that ran): "Already done this turn:
 // memory_write, web_search (2)." so the owner keeps the work, not just the failure.
-// Lane ECHO fix pass: the reply seam drops any sentence that names a tool, so the
-// line renders each tool as its action table's plain description ("store a memory"),
-// never the wire name - the live check caught the wire name reaching the owner in a
-// delivered failure notice.
+// The line renders each tool as its action table's plain description ("store a memory"),
+// never the wire name: the owner reads what was done, not the tool's name (the live check
+// caught the wire name reaching the owner in a delivered failure notice).
 std::string plainToolName(const std::string& name) {
   std::string dotted = name;
   for (char& c : dotted)

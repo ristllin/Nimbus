@@ -167,7 +167,7 @@ static portMUX_TYPE g_mediaMux = portMUX_INITIALIZER_UNLOCKED;
 // optional failover notice (runTurn), plus pollJobs' dispatch note + finished-job
 // results in the same iteration. Depth 2 dropped the 3rd+ (send() blocked 100ms then
 // returned false, and deliver() ignores that) - size it to hold a full turn's burst.
-// A single long reply now ALSO fans out into up to TG_MAX_PARTS entries (see send()),
+// A single long reply now ALSO fans out into up to kTelegramMaxParts entries (see send()),
 // so the depth must hold that plus the turn burst; sized to 16.
 static constexpr int  REPLY_QUEUE_DEPTH    = 16;
 // Was 2 with a zero-timeout send: a third rapid message while a turn ran was
@@ -179,10 +179,9 @@ static constexpr int  INBOUND_QUEUE_DEPTH   = 8;
 static constexpr int  MAX_LINE             = 512;
 static constexpr int  MAX_RESP             = 4096;
 // Long-reply splitting (Telegram caps one message at 4096 chars): send() queues the parts the
-// deliver function cuts (nimbus::orch::splitDeliverable, at most kTelegramPartBytes each, the
-// text byte for byte). TG_MAX_PARTS bounds one logical reply (~32 KB) so a runaway output
-// can't flood the queue - the overflow is flagged in-message, never silently cut.
-static constexpr int  TG_MAX_PARTS         = 8;
+// deliver function cuts (nimbus::orch::telegramParts: at most kTelegramPartBytes each, the text
+// byte for byte, at most kTelegramMaxParts per reply so a runaway output can't flood the
+// queue - the overflow is flagged in-message, never silently cut).
 static constexpr uint32_t CONNECT_TIMEOUT  = 10000;  // ms
 
 String          g_token;
@@ -1292,15 +1291,17 @@ static bool doSendMessageImpl(const char* chatId, const char* part, int64_t repl
 }
 
 // Delivery only: the reply-queue drain calls this for parts send() already made.
-static bool doSendMessage(const char* chatId, const char* part) { return doSendMessageImpl(chatId, part, 0); }
+bool doSendMessage(const char* chatId, const char* text) { return doSendMessageImpl(chatId, text, 0); }
 
-// A short notice the poll task sends at once, bypassing the reply queue (the voice
-// note path). Archived like every outbound send, and made deliverable like every reply
-// (the device writes these notices short: one part).
+// A notice the poll task sends at once, bypassing the reply queue (the voice note path).
+// Archived like every outbound send, and delivered as every reply is: the deliver
+// function's parts, in order (a long voice transcript is several messages, not one that
+// Telegram refuses). Stops at the first part that fails both ways.
 static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {
   agent::tgarchive::onOutboundText(String(chatId), String(text ? text : ""), "direct");   // archive hook
-  const std::string clean = nimbus::orch::deliverableText(text ? text : "");
-  return doSendMessageImpl(chatId, clean.c_str(), replyTo);
+  for (const std::string& part : nimbus::orch::telegramParts(text ? text : ""))
+    if (!doSendMessageImpl(chatId, part.c_str(), replyTo)) return false;
+  return true;
 }
 
 // ---- voice notes (LIVE-GATED + BENCH-BROKEN) --------------------------------
@@ -2697,7 +2698,9 @@ void pollTask(void*) {
       if (!haveToken) continue;
       if (!doSendMessage(reply->chatId, reply->text) && ++reply->tries < 6) {
         alogf("telegram: send retry %u for %s", reply->tries, reply->chatId);
-        xQueueSend(g_replyQ, reply, 0);
+        // To the FRONT: the parts of a long reply carry no number, so a part that failed is
+        // retried before the parts after it, never sent after them (lane RB-Q1c).
+        xQueueSendToFront(g_replyQ, reply, 0);
         break;   // don't hot-loop; let WiFi settle (heap recovers as TIME_WAIT drains)
       }
     }
@@ -3127,24 +3130,19 @@ bool send(const String& chatId, const String& text, bool block) {
   // queue. block=false: never wait - best-effort for the main render loop.
   const TickType_t wait = block ? pdMS_TO_TICKS(100) : 0;
 
-  // The deliver function (lane RB-Q1c): the text made safe to display, cut into parts of
-  // at most kTelegramPartBytes that are the text byte for byte (nimbusd sends the same
-  // parts). Nothing to send is no message.
-  const std::vector<std::string> parts =
-      nimbus::orch::splitDeliverable(nimbus::orch::deliverableText(text.c_str()));
+  // The deliver function (lane RB-Q1c): the text made safe to display, cut into at most
+  // kTelegramMaxParts parts of at most kTelegramPartBytes that are the text byte for byte
+  // (the last one says so when the reply needed more); nimbusd sends the same parts.
+  // Nothing to send is no message.
+  const std::vector<std::string> parts = nimbus::orch::telegramParts(text.c_str());
   PsramItem<PendingReply> item;   // the queue copies it; PSRAM, not this (often deep) stack
   if (!item.p) return false;
   PendingReply& r = *item.p;
-  // Bounded by TG_MAX_PARTS; if the output would need more, the last part sent carries a
-  // visible "(truncated)" marker rather than a silent cut.
-  const bool overflow = parts.size() > (size_t)TG_MAX_PARTS;
-  const size_t n = overflow ? (size_t)TG_MAX_PARTS : parts.size();
-  static const char kOverflow[] = "\n…(truncated - ask for the rest, or have it sent as a file)";
-  for (size_t k = 0; k < n; k++) {
+  for (const std::string& part : parts) {
     memset(&r, 0, sizeof(r));   // not `r = PendingReply{}`: that temporary would sit on the stack
     chatId.toCharArray(r.chatId, sizeof(r.chatId));
-    // A part is at most kTelegramPartBytes (4,000 B) and the marker 66 B: both fit the slot.
-    snprintf(r.text, sizeof(r.text), "%s%s", parts[k].c_str(), overflow && k == n - 1 ? kOverflow : "");
+    // A part is at most kTelegramPartBytes (4,000 B) plus the overflow note: it fits the slot.
+    snprintf(r.text, sizeof(r.text), "%s", part.c_str());
     if (xQueueSend(g_replyQ, &r, wait) != pdTRUE) return false;
   }
   return true;

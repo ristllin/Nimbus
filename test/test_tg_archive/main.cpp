@@ -1339,8 +1339,8 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   const std::string code = src::stripComments(src::readFile("src/agent/telegram.cpp"));
   TEST_ASSERT_TRUE_MESSAGE(code.size() > 10000, "telegram.cpp not found (run from the repo root)");
   const auto raw = src::bodyOf(code, "static bool doSendMessageRaw(");
-  // Lane ECHO fix pass: the reply seam moved into doSendMessageImpl (it also takes
-  // the reply_to id); doSendMessage stays a thin delivery-only wrapper over it.
+  // The send seam is doSendMessageImpl (one part of the deliver function, with the
+  // reply_to id); doSendMessage stays a thin delivery-only wrapper over it.
   const auto deliver = src::bodyOf(code, "static bool doSendMessageImpl(");
   const auto wrap = src::bodyOf(code, "bool doSendMessage(const char* chatId, const char* text) {");
   const auto direct = src::bodyOf(code, "static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {");
