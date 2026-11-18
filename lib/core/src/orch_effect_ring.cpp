@@ -311,8 +311,7 @@ void EffectRing::loadInto(Slot& s, const std::string& path) {
   // Entries already in RAM never reached storage (no write runs before the load), so they are
   // newer than every line of the file: they stay, after it.
   WorkingVector<RingEntry> extra;
-  for (size_t i = 0; i < s.count; ++i)
-    if (!s.at(i).stored) extra.push_back(s.at(i));
+  for (size_t i = 0; i < s.count; ++i) extra.push_back(s.at(i));
   s.head = s.count = 0;
   for (const RingEntry& e : got) s.push(e);
   for (const RingEntry& e : extra) s.push(e);

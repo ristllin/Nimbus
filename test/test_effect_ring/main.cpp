@@ -51,6 +51,7 @@ class FxFiles : public txb::MemFiles {
   bool refuseWhole = false;   // a whole write lands half its bytes and answers false
   bool refuseList = false;    // list answers false (the rest answers)
   long landThenRefuse = -1;   // the append with this index lands whole, then answers false
+  size_t refuseReadsFrom = SIZE_MAX;   // a read at or past this offset answers false
   std::vector<std::string> appended;   // the bytes of every append that ran
   size_t wholeCalls = 0;
 
@@ -92,7 +93,7 @@ class FxFiles : public txb::MemFiles {
   }
   bool readAt(const std::string& path, size_t offset, char* buf, size_t want, size_t& got) override {
     got = 0;
-    if (noCard) return false;
+    if (noCard || offset >= refuseReadsFrom) return false;
     return txb::MemFiles::readAt(path, offset, buf, want, got);
   }
   bool size(const std::string& path, size_t& out) override {
@@ -881,6 +882,78 @@ void test_a_refused_append_that_landed_is_not_doubled() {
   TEST_ASSERT_EQUAL_UINT32(got.size(), uniq.size());
 }
 
+// ---- mutation survivors (first pass), each closed by a case ----------------------------------
+void test_a_line_of_another_format_is_refused() {
+  // A crc-valid line whose tag is not f1 (a newer firmware's form, after a rollback).
+  const std::string body = "f2\t1\tt\tx";
+  fx::RingEntry e;
+  std::snprintf(e.tool, sizeof e.tool, "t");
+  std::snprintf(e.receipt, sizeof e.receipt, "x");
+  e.epoch = 1;
+  const std::string good = fx::encodeLine(e);
+  // The f2 line carries its own good crc, so only the tag can refuse it.
+  uint32_t c = 0xFFFFFFFFu;
+  for (char ch : body) {
+    c ^= (uint8_t)ch;
+    for (int k = 0; k < 8; ++k) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+  }
+  char hex[16];
+  std::snprintf(hex, sizeof hex, "%08x", (unsigned)~c);
+  const std::string other = body + "\t" + hex;
+  fx::RingEntry d;
+  TEST_ASSERT_TRUE(fx::decodeLine(good.data(), good.size() - 1, d));
+  TEST_ASSERT_FALSE(fx::decodeLine(other.data(), other.size(), d));
+}
+
+void test_a_rewrite_marks_ram_only_entries_stored() {
+  FxFiles f;
+  fx::EffectRing r(&f);
+  for (int i = 0; i < 70; ++i) r.append("26", i, "t", receiptOf("26", i));   // 70 lines, no rewrite yet
+  f.refuseAppend = (long)f.appends;
+  r.append("26", 70, "t", receiptOf("26", 70));
+  int i = 71;
+  while (r.stats().rewrites == 0 && i < 200) r.append("26", i, "t", receiptOf("26", i)), ++i;
+  TEST_ASSERT_EQUAL_UINT32(1, r.stats().rewrites);
+  TEST_ASSERT_TRUE(i - 70 < (int)fx::kRingEntries);   // the RAM-only entry is still in the window
+  r.visit("26", fx::kRingEntries, [](const fx::RingEntry& e) { TEST_ASSERT_TRUE(e.stored); });
+  fx::EffectRing r2(&f);
+  TEST_ASSERT_TRUE(receipts(r2, "26") == expected("26", 0, i));   // and it is on storage now
+}
+
+void test_a_load_cut_short_by_a_refused_read_trusts_nothing() {
+  FxFiles f;
+  {
+    fx::EffectRing r(&f);
+    for (int i = 0; i < 90; ++i) r.append("27", i, "t", std::string(120, 'p') + std::to_string(i));
+  }
+  const std::string before = f.files["/mem/fx/27.ring"];
+  TEST_ASSERT_TRUE(before.size() > fx::kReadSlice);
+  f.refuseReadsFrom = fx::kReadSlice;   // the first slice reads, the second is refused
+  fx::EffectRing r(&f);
+  TEST_ASSERT_EQUAL(int(fx::Backing::RamOnly), int(r.backing("27")));
+  for (int i = 90; i < 200; ++i) TEST_ASSERT_EQUAL(int(fx::AppendResult::RamOnly), int(r.append("27", i, "t", "new")));
+  TEST_ASSERT_TRUE(before == f.files["/mem/fx/27.ring"]);   // nothing written over a part read
+  f.refuseReadsFrom = SIZE_MAX;
+  fx::EffectRing r2(&f);
+  TEST_ASSERT_EQUAL_UINT32(fx::kRingEntries, receipts(r2, "27").size());
+  TEST_ASSERT_EQUAL_STRING((std::string(120, 'p') + "89").c_str(), receipts(r2, "27").back().c_str());
+}
+
+void test_the_least_recently_used_chat_is_evicted() {
+  FxFiles f;
+  fx::EffectRing r(&f);
+  for (size_t c = 0; c < fx::kMaxChats; ++c) r.append(std::to_string(c), 1, "t", "x");
+  const uint32_t loads = r.stats().loads;
+  r.append("0", 2, "t", "y");                  // chat 0 is now the newest use
+  r.append("99", 1, "t", "x");                 // evicts chat 1, the oldest use
+  TEST_ASSERT_EQUAL_UINT32(loads + 1, r.stats().loads);
+  r.append("0", 3, "t", "z");                  // still resident: no load
+  TEST_ASSERT_EQUAL_UINT32(loads + 1, r.stats().loads);
+  r.append("1", 2, "t", "y");                  // was evicted: loaded again, entries back
+  TEST_ASSERT_EQUAL_UINT32(loads + 2, r.stats().loads);
+  TEST_ASSERT_TRUE((std::vector<std::string>{"x", "y"}) == receipts(r, "1"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_fifty_per_chat_oldest_dropped_at_every_count);
@@ -910,5 +983,9 @@ int main() {
   RUN_TEST(test_a_lone_temp_is_never_shadowed_by_a_new_file);
   RUN_TEST(test_order_is_kept_through_refusals);
   RUN_TEST(test_a_refused_append_that_landed_is_not_doubled);
+  RUN_TEST(test_a_line_of_another_format_is_refused);
+  RUN_TEST(test_a_rewrite_marks_ram_only_entries_stored);
+  RUN_TEST(test_a_load_cut_short_by_a_refused_read_trusts_nothing);
+  RUN_TEST(test_the_least_recently_used_chat_is_evicted);
   return UNITY_END();
 }
