@@ -638,6 +638,40 @@ proves the ceilings for every role, pack and host on a synthetic Lumi-shaped sta
 writes the measured figures to `test/golden/plain_prompt_core.txt`, which
 `tools/release_gate/check_plain_ceilings.py` gates.
 
+### Plain file tools and reserved paths
+
+`read_file`, `write_file`, `append_file`, `edit_file` and `list_files` are a library
+(`lib/core/include/nimbus/orch/file_tools.h`, `path_rules.h`); a binding supplies the card
+through `FileToolsIo` and registers the tools with the manifest's descriptions and schemas.
+Each does what its name says:
+
+- `read_file(path, offset, limit)` returns `<path> size=<B> lines=<n> sha8=<8 hex> bytes <a>-<b>`,
+  a line break, exactly bytes `a` to `b`, and `next_offset=<b>` on its own line when more
+  remains. Following `next_offset` rebuilds the file byte for byte at every read cap; a cut
+  falls after a line end when one sits in the page's second half, else on a UTF-8 boundary.
+- `write_file(path, content, if_exists)` creates a file; an existing one is replaced only with
+  `if_exists=replace`. `append_file(path, text)` only appends. `edit_file(path, old, new, all)`
+  replaces exact text; zero matches, or several without `all=true`, are errors. Every write
+  states what changed (size, `sha8`, the bytes replaced or added).
+- `list_files(prefix, after)` lists newest first, 40 at a time, and ends with `more: N`.
+- An argument the tool does not take is an error naming the ones it does; nothing is written.
+
+A path is exactly the store's two segments, `project/name`. A leading `/`, an empty segment,
+`.`, `..` or a third segment is an error; inside a segment each character the store or FAT
+refuses is replaced one for one (a Latin-1 letter folds to ASCII), and an over-long name
+keeps its extension and gains an 8-hex hash. Results state the stored path. Reserved paths
+(matched without letter case): `skills/<id>.md` reads the approved skill and `skill_save`
+writes it; `food/food-log*.csv` is written by `ledger_write`; `food-pre-v2/*` and
+`export-pre-v2/*` are read-only archives; `inbox/*` and `agents/*` are written by the device
+and agent jobs. A write there names the tool that owns it. Ownership, shared files and the
+per-person byte quota hold for every tool (`test/test_file_tools`).
+
+Card time: every raw card op runs inside one `FileToolsIo::locked()` hold, holding at most
+one op: reads take 8 KB per hold, part-file writes 4 KB, an append one op of at most the
+content cap (12,000 B), the swap shares the commit hold with the index entry update, and
+the index rewrite has a hold of its own. No hold carries the room check, the write, the
+rename and the index rewrite together, which is what took `files::saveText` to 162 ms.
+
 ## Extension points
 
 - **New provider backend**: subclass `ManagedAgentAdapter` + one

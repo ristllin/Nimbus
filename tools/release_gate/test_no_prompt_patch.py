@@ -42,7 +42,7 @@ def _git(root, *args):
 
 def make_tree(dst):
     """A copy of everything the gates read, committed as the base of a temp git repo."""
-    rels = {p for _, p in cat.e1_sources()}
+    rels = {p for _, p in cat.e1_sources()} | {p for p, _ in cat.E2_EXTRA_SOURCES}
     rels |= {cat.CATALOGS["e1"]["golden"], gate.CHANGES, gate.REGISTER, "tools/release_gate/gen_model_text_catalog.py"}
     rels.add(gate.OWNERS)
     for rel in sorted(rels):
@@ -600,7 +600,9 @@ def test_e2_extra_manifest_source_is_counted(tree, monkeypatch):
     _e2_build_entries(tree)
     assert errors(tree) == []
     write(tree, "lib/core/src/orch_tool_manifest.cpp", 'const char* kDesc = "send a file to this chat";\n')
-    monkeypatch.setattr(cat, "E2_EXTRA_SOURCES", (("lib/core/src/orch_tool_manifest.cpp", "tool_descriptions"),))
+    monkeypatch.setattr(
+        cat, "E2_EXTRA_SOURCES", cat.E2_EXTRA_SOURCES + (("lib/core/src/orch_tool_manifest.cpp", "tool_descriptions"),)
+    )
     regen(tree)
     assert any("e2 tool_descriptions: model-facing text changed" in e for e in errors(tree))
 

@@ -171,7 +171,10 @@ E2_CEILINGS = {
 }
 # RB-E2: a manifest file outside texts.h whose literals are model text, as
 # (path, class); every literal of it counts (not only prose), like texts.h.
-E2_EXTRA_SOURCES: tuple = ()
+E2_EXTRA_SOURCES: tuple = (
+    # RB-N2a: the plain file tools keep their texts in one block until texts.h exists; RB-E2 moves them.
+    ("lib/core/src/orch_file_tools.cpp", "tool_results"),
+)
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")
 # Calls in engine-2 files whose literals are not model text (stub markers).
