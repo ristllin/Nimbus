@@ -2879,18 +2879,28 @@ bool foldStatusJsonFor(const std::string& chatArg, std::string& out) {
 
 // The fold's owner notices. A Telegram chat gets a message; the web chat a history row
 // (its reply slot belongs to the turn being polled, live-caught: an async notice there
-// displaced every later web reply); serial and voice only the log.
-static void foldTell(const std::string& chat, const std::string& text) {
-  if (chat == "web") {
-    memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(text.c_str()), "",
-                           "ev:foldnote");
-    return;
-  }
+// displaced every later web reply); serial and voice only the log. True when it reached a
+// chat a person reads.
+static bool foldSay(const std::string& chat, const std::string& text) {
+  if (chat == "web")
+    return memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(text.c_str()), "",
+                                  "ev:foldnote").length() > 0;
   if (chat == "serial" || chat == "voice") {
     alogf("fold(%s): %s", chat.c_str(), text.c_str());
-    return;
+    return false;
   }
-  deliver(String(chat.c_str()), String(text.c_str()), /*system=*/true);
+  return deliver(String(chat.c_str()), String(text.c_str()), /*system=*/true);
+}
+static void foldTell(const std::string& chat, const std::string& text) { foldSay(chat, text); }
+
+// The owner's Telegram chat the daily alert of the serial console or the screen goes to
+// ("" with no bot token or no owner): the owner-default rule the routines use.
+static std::string foldOwnerTelegram() {
+  const nimbus::orch::DeliveryWorld w =
+      nimbus::orch::deliveryWorld(std::string(store::telegramToken().c_str()),
+                                  std::string(store::telegramAllowlist().c_str()),
+                                  std::string(store::telegramOwners().c_str()));
+  return w.botToken ? w.ownerTelegram : std::string();
 }
 
 // A summary landed (the store is written): the chain reset, then the boundary row.
@@ -2958,16 +2968,11 @@ static agent::FoldDriverHooks foldHooks() {
   h.utcOffsetMin = [](uint32_t epoch) -> int32_t { return agent::utcOffsetAtUnix(epoch); };
   h.folded = foldLanded;
   h.tell = foldTell;
-  // The daily alert is the owner's: their Telegram chat or the web chat; a guest chat's
-  // failing summary is only logged.
-  h.alert = [](const std::string& chat, const std::string& text) {
-    if (foldOwnerChat(chat)) {
-      foldTell(chat, text);
-      return true;
-    }
-    alogf("fold(%s): not the owner's chat - the daily alert is logged only", chat.c_str());
-    return false;
-  };
+  // The daily alert reaches a chat a person reads, or the day's alert is not spent
+  // (candidate 4, F2): an owner's Telegram chat or the web chat directly; the serial
+  // console's and the screen's through the owner's Telegram chat, else the web chat; a
+  // guest chat's is only logged (agent::foldAlertRoute, host-tested).
+  h.alert = agent::foldAlertHook(foldOwnerChat, foldOwnerTelegram, "web", foldSay);
   h.ownerChat = foldOwnerChat;   // the owner's chats fold first; guests share half the cap
   h.changed = [](const std::string& chat) {
     if (!chat.empty()) publishFoldStatus(chat);   // the CTX echo, then the web copy

@@ -84,6 +84,7 @@ struct Device {
   bool online = true;
   std::set<std::string> guests;   // chats that are not the owner's (empty: every chat is)
   bool ownerAlerts = false;       // the binding's alert: the owner's chats only, says if it told
+  std::function<bool(const std::string&, const std::string&)> alertHook;   // set: the alert hook
   std::string firmware = "5.1.2";
 
   Device() {
@@ -125,6 +126,7 @@ struct Device {
         told.push_back({chat, text});
         return true;
       };
+    if (alertHook) h.alert = alertHook;
     h.firmware = firmware;
     orch::FoldCtlIO io;
     io.load = [this] { return ctlText; };
@@ -476,6 +478,57 @@ static void test_the_daily_alert_is_spent_only_when_it_reaches_the_owner() {
   for (const auto& t : d.told) TEST_ASSERT_TRUE(t.first != "guest");
 }
 
+// Candidate 4, F2 (replaces the source grep the review called hollow): the device's alert
+// hook, built by agent::foldAlertHook as the firmware builds it, driven through the driver.
+// The serial console's (or the screen's) alert goes to the owner's Telegram chat, else the
+// web chat, and names where the summary failed; with neither, or when the send fails, it is
+// logged and the day's alert is not spent. A guest's is logged only.
+namespace {
+struct AlertCase {
+  std::string ownerTelegram, webChat;
+  bool sendOk;
+  std::string expectTarget;   // "" = none delivered, the day not spent
+};
+}  // namespace
+static void test_the_device_alert_hook_routes_to_a_chat_a_person_reads() {
+  const AlertCase cases[] = {
+      {"111", "web", true, "111"}, {"", "web", true, "web"}, {"", "", true, ""}, {"111", "web", false, ""}};
+  for (const AlertCase& k : cases) {
+    Device d;
+    d.guests = {"guest"};
+    d.thinText = "";
+    std::vector<std::pair<std::string, std::string>> sent;
+    std::set<std::string> owners = {"web", "serial", "voice", "111"};
+    d.alertHook = agent::foldAlertHook([owners](const std::string& c) { return owners.count(c) > 0; },
+                                       [k] { return k.ownerTelegram; }, k.webChat,
+                                       [&sent, k](const std::string& to, const std::string& text) {
+                                         if (k.sendOk) sent.push_back({to, text});
+                                         return k.sendOk;
+                                       });
+    d.boot();
+    d.backlog("serial", 40);
+    d.folds.noteCycleFailed("serial", kT0 - 30 * 3600);
+    for (uint32_t m = 0; m < 60; m++) d.tick(kT0 + m * 60);
+    TEST_ASSERT_TRUE(LogCapture::contains("fold(serial): cycle failed"));
+    const bool spent = d.drv->ctl().lastAlertDay == orch::foldLocalDay(kT0, 0);
+    if (k.expectTarget.empty()) {
+      TEST_ASSERT_EQUAL(0, (int)sent.size());
+      TEST_ASSERT_FALSE_MESSAGE(spent, "the day's alert is not spent on a log line");
+      TEST_ASSERT_TRUE(LogCapture::contains("fold(serial): the daily alert is logged only"));
+      continue;
+    }
+    TEST_ASSERT_EQUAL(1, (int)sent.size());
+    TEST_ASSERT_EQUAL_STRING(k.expectTarget.c_str(), sent[0].first.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(sent[0].second.find("serial console") != std::string::npos, sent[0].second.c_str());
+    TEST_ASSERT_TRUE(spent);
+  }
+  // The route itself: an owner's Telegram chat or the web chat is told directly; a guest's never.
+  TEST_ASSERT_EQUAL_STRING("222", agent::foldAlertRoute("222", true, "111", "web", "x").target.c_str());
+  TEST_ASSERT_EQUAL_STRING("x", agent::foldAlertRoute("web", true, "111", "web", "x").text.c_str());
+  TEST_ASSERT_EQUAL_STRING("", agent::foldAlertRoute("guest", false, "111", "web", "x").target.c_str());
+  TEST_ASSERT_EQUAL_STRING("111", agent::foldAlertRoute("voice", true, "111", "web", "x").target.c_str());
+}
+
 // A guest chat that refills all day spends at most half the daily cap: the owner's chat,
 // due late in the day, still gets its automatic summary.
 static void test_a_busy_guest_chat_leaves_the_owner_room() {
@@ -805,6 +858,7 @@ int main(int, char**) {
   RUN_TEST(test_the_unread_clock_survives_waits_and_restarts);
   RUN_TEST(test_due_not_started_lines_are_bounded_per_chat_and_cause);
   RUN_TEST(test_an_automatic_cycle_ended_for_a_manual_read_counts_as_failed);
+  RUN_TEST(test_the_device_alert_hook_routes_to_a_chat_a_person_reads);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);

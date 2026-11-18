@@ -250,4 +250,20 @@ class FoldDriver {
   void endAutomaticForManual(uint32_t nowMs, uint32_t nowEpoch);
 };
 
+// Where the daily fold alert goes (candidate 4, F2): only to a chat a person reads. An owner's
+// Telegram chat or the web chat is told directly. The serial console's and the screen's
+// alert goes to the owner's Telegram chat (`ownerTelegram`, "" when none is reachable), else
+// the web chat (`webChat`, "" when none), and names where the summary failed. A guest's chat,
+// or no reachable chat, gives target "" (logged only, the day's alert not spent).
+struct FoldAlertRoute {
+  std::string target;
+  std::string text;
+};
+FoldAlertRoute foldAlertRoute(const std::string& chat, bool chatIsOwners, const std::string& ownerTelegram,
+                              const std::string& webChat, const std::string& text);
+// The binding's alert hook over that route: true only when `send` delivered it.
+std::function<bool(const std::string& chat, const std::string& text)> foldAlertHook(
+    std::function<bool(const std::string& chat)> ownerChat, std::function<std::string()> ownerTelegram,
+    std::string webChat, std::function<bool(const std::string& target, const std::string& text)> send);
+
 }  // namespace agent

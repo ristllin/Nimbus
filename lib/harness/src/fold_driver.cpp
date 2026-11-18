@@ -9,6 +9,7 @@
 
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/log.h"
+#include "nimbus/orch/loop_delivery.h" // deliveryChannelOf - where the daily alert can go
 #include "nimbus/orch/loops.h"         // civilFromDays - the owner's local dates
 #include "nimbus/orch/wire_limits.h"   // foldDigestCap - the slice beside the summary
 
@@ -762,6 +763,40 @@ std::string FoldDriver::unreadNotice() {
 std::string FoldDriver::alertNotice(uint32_t sinceEpoch, int32_t utcOffsetMin) {
   return "\xE2\x9A\xA0 This chat's summary hasn't updated since " + localDate(sinceEpoch, utcOffsetMin) +
          ". It keeps retrying on its own; send /compact to try now.";
+}
+
+FoldAlertRoute foldAlertRoute(const std::string& chat, bool chatIsOwners, const std::string& ownerTelegram,
+                              const std::string& webChat, const std::string& text) {
+  FoldAlertRoute r;
+  if (!chatIsOwners) return r;
+  const orch::DeliveryChannel ch = orch::deliveryChannelOf(chat);
+  if (ch != orch::DeliveryChannel::Serial && ch != orch::DeliveryChannel::Voice) {
+    r.target = chat;   // the owner's Telegram chat, or the web chat
+    r.text = text;
+    return r;
+  }
+  r.target = !ownerTelegram.empty() ? ownerTelegram : webChat;
+  if (!r.target.empty()) r.text = std::string("About ") + orch::deliveryChannelLabel(ch) + ": " + text;
+  return r;
+}
+
+std::function<bool(const std::string&, const std::string&)> foldAlertHook(
+    std::function<bool(const std::string&)> ownerChat, std::function<std::string()> ownerTelegram,
+    std::string webChat, std::function<bool(const std::string&, const std::string&)> send) {
+  return [ownerChat, ownerTelegram, webChat, send](const std::string& chat, const std::string& text) {
+    const bool owners = !ownerChat || ownerChat(chat);
+    const FoldAlertRoute r =
+        foldAlertRoute(chat, owners, ownerTelegram ? ownerTelegram() : std::string(), webChat, text);
+    if (r.target.empty()) {
+      hlog::logf("fold(%s): the daily alert is logged only (%s), the day's alert not spent", chat.c_str(),
+                 owners ? "no chat a person reads" : "not the owner's chat");
+      return false;
+    }
+    if (send && send(r.target, r.text)) return true;
+    hlog::logf("fold(%s): the daily alert to %s was not delivered, the day's alert not spent", chat.c_str(),
+               r.target.c_str());
+    return false;
+  };
 }
 
 }  // namespace agent
