@@ -209,6 +209,28 @@ static void randomConfig(Rig& r, const std::function<uint32_t(uint32_t)>& rnd) {
   }
 }
 
+// The ladder holds every keyed provider of the owner's list, and (privacy ruling, lane CTXR1)
+// no provider outside it: the head, the list, then the router fallback only on a router-only
+// device (fix review F).
+static void assertLadderKeepsToTheList(Rig& r, const std::vector<FoldRung>& rungs) {
+  const std::string listed = "," + r.cfg.priority + "," + r.cfg.orchHost + ",";
+  for (const std::string& k : r.cfg.keyed) {
+    if (listed.find("," + k + ",") == std::string::npos) continue;
+    bool there = false;
+    for (const FoldRung& g : rungs) there = there || g.host == k;
+    TEST_ASSERT_TRUE_MESSAGE(there, ("a listed keyed provider is missing from the ladder: " + k).c_str());
+  }
+  const std::string head = r.eng->headHost();
+  bool directKey = false;   // fix review F: the router rung only on a router-only device
+  for (const char* h : {"openai", "anthropic", "mistral", "zai", "custom"})
+    directKey = directKey || (h != r.cfg.routerHost && r.cfg.keyed.count(h));
+  for (const FoldRung& g : rungs) {
+    if (g.host == head || listed.find("," + g.host + ",") != std::string::npos) continue;
+    const bool router = g.kind == FoldRungKind::RouterFallback && g.host == r.cfg.routerHost && !directKey;
+    TEST_ASSERT_TRUE_MESSAGE(router, ("the digest goes to a provider outside the owner's list: " + g.host).c_str());
+  }
+}
+
 static void test_no_host_model_is_asked_twice_per_cycle() {
   uint32_t seed = 99;
   const std::function<uint32_t(uint32_t)> rnd = [&seed](uint32_t m) {
@@ -227,22 +249,7 @@ static void test_no_host_model_is_asked_twice_per_cycle() {
       TEST_ASSERT_TRUE_MESSAGE(seen.insert(a.first + "/" + a.second).second, "a (host, model) was asked twice");
     TEST_ASSERT_TRUE(rungs.empty() ? res == FoldResult::Deferred : res == FoldResult::Failed);
     TEST_ASSERT_EQUAL((int)rungs.size(), (int)r.asked.size());
-    const std::string listed = "," + r.cfg.priority + "," + r.cfg.orchHost + ",";
-    for (const std::string& k : r.cfg.keyed) {
-      if (listed.find("," + k + ",") == std::string::npos) continue;
-      bool there = false;
-      for (const FoldRung& g : rungs) there = there || g.host == k;
-      TEST_ASSERT_TRUE_MESSAGE(there, ("a listed keyed provider is missing from the ladder: " + k).c_str());
-    }
-    const std::string head = r.eng->headHost();
-    bool directKey = false;   // fix review F: the router rung only on a router-only device
-    for (const char* h : {"openai", "anthropic", "mistral", "zai", "custom"})
-      directKey = directKey || (h != r.cfg.routerHost && r.cfg.keyed.count(h));
-    for (const FoldRung& g : rungs) {
-      if (g.host == head || listed.find("," + g.host + ",") != std::string::npos) continue;
-      const bool router = g.kind == FoldRungKind::RouterFallback && g.host == r.cfg.routerHost && !directKey;
-      TEST_ASSERT_TRUE_MESSAGE(router, ("the digest goes to a provider outside the owner's list: " + g.host).c_str());
-    }
+    assertLadderKeepsToTheList(r, rungs);
   }
 }
 
