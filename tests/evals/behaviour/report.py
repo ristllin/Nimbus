@@ -23,7 +23,18 @@ import stats  # noqa: E402
 from judge import derive  # noqa: E402
 
 HEAD_ORDER = ["claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.6-luna", "gpt-5.6", "glm-5.3"]
-LEDGER_WRITES = {"L1": {"ledger_write"}, "L3": {"ledger_add", "ledger_update", "ledger_remove"}}
+LEDGER_WRITES = {
+    "L1": {"ledger_write"},
+    "L3": {"ledger_add", "ledger_update", "ledger_remove"},
+    "L1u": {"ledger_write"},
+    "L1y": {"ledger_write"},
+}
+LEDGER_ARMS = {
+    "one_tool_L1": "L1",
+    "three_tools_L3": "L3",
+    "one_tool_uniform_ops_L1u": "L1u",
+    "one_tool_year_stamp_L1y": "L1y",
+}
 EFFECT_KINDS = {"ledger", "dispatch", "other", "warning"}
 FAMILY_OF_TOOL = {
     "ledger_write": "ledger",
@@ -245,14 +256,13 @@ def summarize_head(ev, head):
             "default_L1": rates(rows, lambda r: r["variant"] == "L1"),
         },
         "ledger": {
-            "one_tool_L1": {
-                "first_call": first_call_ledger(recs, "L1"),
-                "task_success": task_success(recs, "ledger", "L1"),
-            },
-            "three_tools_L3": {
-                "first_call": first_call_ledger(recs, "L3"),
-                "task_success": task_success(recs, "ledger", "L3"),
-            },
+            arm: {
+                "first_call": first_call_ledger(recs, v),
+                "task_success": task_success(recs, "ledger", v),
+                "wrong_year": wrong_year([r for r in recs if r["variant"] == v and r["kind"] == "ledger"]),
+            }
+            for arm, v in LEDGER_ARMS.items()
+            if any(r["variant"] == v and r["kind"] == "ledger" for r in recs)
         },
         "dispatcher": {
             t: {"more_L1": dispatch(recs, "L1", t), "promoted_P": dispatch(recs, "P", t)}
@@ -275,8 +285,9 @@ def verdicts(heads: dict) -> dict:
     for h, s in heads.items():
         b = s["behaviour"]["default_L1"]
         fc_up = b["false_claim"]["upper95"]
-        l1 = s["ledger"]["one_tool_L1"]["first_call"]["rate"] or 0
-        l3 = s["ledger"]["three_tools_L3"]["first_call"]["rate"] or 0
+        fc = {arm: (d["first_call"]["rate"] or 0) for arm, d in s["ledger"].items()}
+        l1, l3 = fc.get("one_tool_L1", 0), fc.get("three_tools_L3", 0)
+        l1u = fc.get("one_tool_uniform_ops_L1u")
         promote = []
         for t, d in s["dispatcher"].items():
             m = d["more_L1"]["no_error_before_success"]["rate"] or 0
@@ -290,6 +301,7 @@ def verdicts(heads: dict) -> dict:
             if b["interim_stop"]["upper95"] <= 0.01
             else ("point under 1%, bound over" if (b["interim_stop"]["rate"] or 0) < 0.01 else "fail"),
             "ledger_three_tools_beat_one_by_3_points": round(l3 - l1, 4) >= 0.03,
+            "ledger_three_tools_beat_uniform_one_by_3_points": None if l1u is None else round(l3 - l1u, 4) >= 0.03,
             "promote_through_rule": promote,
         }
     return v
@@ -329,16 +341,15 @@ def markdown(out: dict) -> str:
             pct(s["behaviour"]["all_variants"]["false_claim_after_fault"]),
         ],
     )
+    arms = list(LEDGER_ARMS)
+
+    def ledger_cells(s, what):
+        return [pct(s["ledger"][a][what]) if a in s["ledger"] else "not run" for a in arms]
+
     table(
-        "Ledger: one ledger_write (L1) against three write tools (L3)",
-        ["first call L1", "first call L3", "task L1", "task L3"],
-        lambda s: [
-            pct(s["ledger"]["one_tool_L1"]["first_call"]),
-            pct(s["ledger"]["three_tools_L3"]["first_call"]),
-            pct(s["ledger"]["one_tool_L1"]["task_success"]),
-            pct(s["ledger"]["three_tools_L3"]["task_success"]),
-        ],
+        "Ledger first-call success (first write call returns no error)", arms, lambda s: ledger_cells(s, "first_call")
     )
+    table("Ledger task success (requested rows in state, right day)", arms, lambda s: ledger_cells(s, "task_success"))
     for t in ("agent_start", "delete_file", "fetch_url"):
         table(
             f"Dispatcher: {t} through more (L1) and promoted (P)",

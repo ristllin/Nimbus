@@ -32,8 +32,9 @@ MAX_ROUNDS = 16  # PRD section 1: the engine's round guard
 _lock = threading.Lock()
 
 
-def stamp(t) -> str:
-    return t.strftime("[%a %d %b %H:%M] ")
+def stamp(t, variant: str = "") -> str:
+    """The send time on every owner message; arm L1y adds the year."""
+    return t.strftime("[%a %d %b %Y %H:%M] " if variant == "L1y" else "[%a %d %b %H:%M] ")
 
 
 # ------------------------------------------------------------------ seeding
@@ -64,7 +65,7 @@ def render_prior(ep: dict, variant: str, w: World) -> list:
         if it["t"] == "user":
             w.now = it["at"]
             w.history.append((it["at"], "owner", it["text"]))
-            items.append({"t": "user", "text": stamp(it["at"]) + it["text"]})
+            items.append({"t": "user", "text": stamp(it["at"], variant) + it["text"]})
         elif it["t"] == "ledger_add":
             name, args = ledger_call(variant, it["rows"])
             n += 1
@@ -201,7 +202,7 @@ def run_episode(head: str, variant: str, ep: dict, recall_line: bool, prov=None)
     for turn in ep["turns"]:
         w.now = turn["at"]
         w.history.append((turn["at"], "owner", turn["text"]))
-        messages += prov.user(stamp(turn["at"]) + turn["text"])
+        messages += prov.user(stamp(turn["at"], variant) + turn["text"])
         t0 = time.time()
         out = run_turn(prov, system, tools, messages, w, f"rbm0a-{variant}-{int(recall_line)}")
         out["seconds"] = round(time.time() - t0, 2)
@@ -245,6 +246,7 @@ def main():
     ap.add_argument("--only", default="", help="comma list of kinds")
     ap.add_argument("--parallel", type=int, default=6)
     ap.add_argument("--scale", default="", help="n_ledger,n_dispatch,n_other,n_warn,n_recall")
+    ap.add_argument("--follow-up", default="", help="comma list of follow-up arms (L1u, L1y): ledger episodes only")
     args = ap.parse_args()
     providers.load_env(args.env_file)
     ev = Path(args.evidence)
@@ -258,7 +260,11 @@ def main():
             done.add(f"{r['variant']}|{r['episode']}|{int(r['recall_line'])}")
     ledger = Ledger(ev / "spend.jsonl")
     scale = [int(x) for x in args.scale.split(",")] if args.scale else []
-    todo = [b for b in episodes.plan(*scale) if key(*b) not in done]
+    if args.follow_up:
+        blocks = episodes.plan_follow_up(arms=tuple(args.follow_up.split(",")))
+    else:
+        blocks = episodes.plan(*scale)
+    todo = [b for b in blocks if key(*b) not in done]
     if args.only:
         kinds = set(args.only.split(","))
         todo = [b for b in todo if b[1]["kind"] in kinds]

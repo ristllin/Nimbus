@@ -157,6 +157,30 @@ class Ledger(unittest.TestCase):
         self.assertIn("warning", out)
 
 
+class FollowUpArms(unittest.TestCase):
+    def test_strict_ops_refuse_the_other_id_field_and_uniform_ops_take_it(self):
+        for variant, refused in (("L1", True), ("L1u", False)):
+            w = World(now=NOW, variant=variant)
+            w.call("ledger_write", {"ops": [add_op(), add_op("banana", 107)]})
+            a, b = (r.id for r in w.rows)
+            self.assertEqual(w.call("ledger_write", {"ops": [{"op": "remove", "ids": [a]}]})[1], refused, variant)
+            self.assertEqual(w.call("ledger_write", {"ops": [{"op": "move", "id": b, "day": "yesterday"}]})[1], refused)
+            dated = {"op": "add", "day": "2026-11-16", "row": add_op("kefir", 60)["row"]}
+            self.assertEqual(w.call("ledger_write", {"ops": [dated]})[1], refused)
+        self.assertEqual(sorted(r.day for r in w.rows), ["2026-11-16", "2026-11-16"])
+
+    def test_follow_up_arms_show_the_model_the_same_bytes(self):
+        for arm in manifest.FOLLOW_UP:
+            self.assertEqual(manifest.tools_for(arm), manifest.tools_for("L1"))
+            self.assertEqual(manifest.system_text(arm, "m"), manifest.system_text("L1", "m"))
+
+    def test_year_stamp_only_on_L1y(self):
+        from run import stamp
+
+        self.assertEqual(stamp(NOW, "L1"), "[Tue 17 Nov 13:02] ")
+        self.assertEqual(stamp(NOW, "L1y"), "[Tue 17 Nov 2026 13:02] ")
+
+
 class Faults(unittest.TestCase):
     def test_once_then_success(self):
         w = World(now=NOW, fail={"note": ("once", "busy")})

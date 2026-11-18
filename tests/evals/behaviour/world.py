@@ -259,26 +259,47 @@ class World:
             raise ToolError(f"op {n}: no row {rid}; ledger_day shows the ids")
         return r
 
+    # Arm L1u: the same one ledger_write, every op reading its row ids from id or ids, and an add reading
+    # day, time and meal beside row. The strict arms take exactly the PRD's per-op fields.
+    @property
+    def uniform_ops(self) -> bool:
+        return self.variant == "L1u"
+
+    def _op_ids(self, n, op, extra) -> list:
+        if not self.uniform_ops:
+            key = "ids" if op.get("op") == "move" else "id"
+            _accept(op, {"op", key, *extra}, (key, *extra), where=f"op {n} fields")
+            return op[key] if key == "ids" else [op["id"]]
+        _accept(op, {"op", "id", "ids", *extra}, extra, where=f"op {n} fields")
+        ids = op.get("ids") or ([op["id"]] if op.get("id") else [])
+        if not ids:
+            raise ToolError(f"op {n}: missing id or ids")
+        return ids if isinstance(ids, list) else [ids]
+
     def _op_add(self, n, op, staged, updates, removed):
-        _accept(op, {"op", "row"}, ("row",), where=f"op {n} fields")
-        staged.append(self._add(op["row"]))
+        side = {"day", "time", "meal"} if self.uniform_ops else set()
+        _accept(op, {"op", "row", *side}, ("row",), where=f"op {n} fields")
+        row = op["row"]
+        if side and isinstance(row, dict):
+            row = {**{k: op[k] for k in side if k in op}, **row}
+        staged.append(self._add(row))
 
     def _op_update(self, n, op, staged, updates, removed):
-        _accept(op, {"op", "id", "set"}, ("id", "set"), where=f"op {n} fields")
-        r = self._existing(n, op["id"])
+        ids = self._op_ids(n, op, ("set",))
         self._check_row(op["set"], need_core=False)
-        updates.append((r, op["set"]))
+        for rid in ids:
+            updates.append((self._existing(n, rid), op["set"]))
 
     def _op_remove(self, n, op, staged, updates, removed):
-        _accept(op, {"op", "id"}, ("id",), where=f"op {n} fields")
-        self._existing(n, op["id"])
-        if op["id"] not in removed:
-            removed.append(op["id"])
+        for rid in self._op_ids(n, op, ()):
+            self._existing(n, rid)
+            if rid not in removed:
+                removed.append(rid)
 
     def _op_move(self, n, op, staged, updates, removed):
-        _accept(op, {"op", "ids", "day"}, ("ids", "day"), where=f"op {n} fields")
+        ids = self._op_ids(n, op, ("day",))
         day = self._day(op["day"])
-        for rid in op["ids"]:
+        for rid in ids:
             updates.append((self._existing(n, rid), {"day": day}))
 
     def _commit(self, staged, updates, removed):

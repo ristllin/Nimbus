@@ -539,3 +539,8 @@ def plan(n_ledger=100, n_dispatch=60, n_other=40, n_warn=20, n_recall=N_RECALL) 
         if i < n_recall:
             blocks += [("L1", recall_episode(i, True), True), ("L1", recall_episode(i, False), False)]
     return blocks
+
+
+def plan_follow_up(n_ledger=100, arms=("L1u", "L1y")) -> list:
+    """The ledger episodes again on the follow-up arms (see manifest.FOLLOW_UP)."""
+    return [(arm, ledger_episode(i), True) for i in range(n_ledger) for arm in arms]
