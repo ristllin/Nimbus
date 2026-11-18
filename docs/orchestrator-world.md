@@ -102,13 +102,20 @@ Meals live in one ledger file per person, never in memory: `food/food-log.csv`
 for the owner (`food/food-log-<chat id>.csv` for a member, who cannot write the
 owner's file), one row per eating occasion (`date,meal,items,kcal,protein_g`),
 written with `files.append` keyed by date and meal, so a correction replaces its
-row. The device reads today's rows (the local day) and their totals into the
-per-turn part of every turn that has rows today, and on a food turn attaches the
-`food-log` playbook (meals only to the ledger, a row the moment a meal eaten has
-an estimate, totals read from the ledger) or, when the owner asks for an amount
-or a plan, `food-coach` (answer first, only the foods the owner has, amounts from
-the `food.portions` calculator). The model never rebuilds a day's total from
-memory or the conversation; the fold summary copies the ledger's dated totals.
+row. Since v5.2.0 the ledger does not ride the prompt and no food playbook is
+attached by keyword: the model reads the ledger with a tool when a turn needs it,
+and the owner's own food skill from the `[SKILLS]` index. What rides every turn is
+the chat's recent actions (below). The fold summary copies the ledger's dated
+totals.
+
+**Recent actions.** The per-turn block carries `[RECENT ACTIONS ...]`: the newest 12
+effect receipts of this chat from its effects ring (`effect_ring.h`), oldest first,
+one line each (`Tue 17 Nov 2026 13:02 ledger_write: added L3K9QZ; day 2026-11-17: 7
+rows, 1,612 kcal`), at most 2,048 B (the oldest lines go whole when they do not fit),
+as data. A correction can name a row id from it without a read. Another chat's
+receipts never appear, an empty ring gives no block, and the block sits after the
+cache point, byte for byte the same while nothing changed (`compose.h`
+`renderRecentActions`).
 
 The food log is one file: a write to another CSV whose name says both food and log
 (or only "log" in a food project) is refused with the call to use instead; a weight
@@ -139,14 +146,11 @@ truth check only asks whether a reply claims a stored change that no effect back
 [turn anatomy](turn-anatomy.md#the-truth-check)).
 
 Daily targets live in `food/food-targets.csv` (`date,metric,target,source`), a row
-per metric with where it came from. With targets stored the block shows what is left,
-worked out by the device; with none, a food turn is told to read them first and which
-plan files it could read. Since v5.2.0 (lane RB-Q1b) neither a write to the targets file
+per metric with where it came from. Since v5.2.0 (lane RB-Q1b) neither a write to the targets file
 nor the reply's figures are checked against the turn's sources: the refusal of a sourceless
-target and the reply's food figure check went with the claim check. On a food turn the earlier rows of the foods the message names
-ride along, and a keyed write says when an earlier day's row of the same food holds a
-figure off by more than a quarter, so the same food keeps the same estimate. An
-approved stored skill about food rides a logged meal.
+target and the reply's food figure check went with the claim check. A keyed write says when an
+earlier day's row of the same food holds a figure off by more than a quarter, so the same food
+keeps the same estimate.
 
 ### 1.2 Scratchpad - model-owned working goals
 A set of goal tiers (short-term / mid-term / long-term goals plus an

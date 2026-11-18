@@ -31,7 +31,6 @@ ComposeInputs baseInputs() {
   ci.skillsShelf = "SHELF " + std::string(2000, 's');
   ci.standingPrefs = "PREFS " + std::string(500, 'p');
   ci.recalled = {"[90%] RECALLED " + std::string(1500, 'm')};
-  ci.foodPlaybook = "PLAYBOOK " + std::string(1500, 'f');
   ci.history.push_back({true, std::string(agent::kSummaryUserHead) + "SUMMARY"});
   ci.history.push_back({false, agent::kSummaryAck});
   for (int i = 0; i < 7; i++) {
@@ -123,7 +122,7 @@ static void test_every_rung_strictly_shrinks_or_gives_nothing() {
   }
 }
 
-// The order: recall, the skills (playbook and [ACTIVE SKILLS]), history before today, today's
+// The order: recall, the skills ([ACTIVE SKILLS]), history before today, today's
 // beyond the newest exchange, the newest results, the input's middle, the tools, the shelf.
 static void test_the_give_up_order() {
   ComposeInputs ci = baseInputs();
@@ -133,10 +132,9 @@ static void test_the_give_up_order() {
   TurnFit fit(ci, inputWithResults(), &tools, today());
   TEST_ASSERT_TRUE(fit.shrink(100, FitScope::NextRung) > 0);
   TEST_ASSERT_TRUE(ci.recalled.empty());
-  TEST_ASSERT_FALSE(ci.foodPlaybook.empty());
+  TEST_ASSERT_TRUE(fit.inputs().find("SKILLBODY") != std::string::npos);
   TEST_ASSERT_TRUE(fit.shrink(100, FitScope::NextRung) > 0);
-  TEST_ASSERT_TRUE(ci.foodPlaybook.empty());
-  TEST_ASSERT_TRUE(fit.inputs().find("SKILLBODY") == std::string::npos);   // the attached skills went too
+  TEST_ASSERT_TRUE(fit.inputs().find("SKILLBODY") == std::string::npos);   // the attached skills went
   TEST_ASSERT_TRUE(hasQ(ci, 0));
   TEST_ASSERT_TRUE(fit.shrink(100000, FitScope::NextRung) > 0);   // all of yesterday, no more
   TEST_ASSERT_FALSE(hasQ(ci, 2));
@@ -189,7 +187,6 @@ static void test_older_history_scope_is_history_only() {
   TEST_ASSERT_TRUE(hasQ(ci, 6));
   TEST_ASSERT_FALSE(hasQ(ci, 5));
   TEST_ASSERT_FALSE(ci.recalled.empty());
-  TEST_ASSERT_FALSE(ci.foodPlaybook.empty());
   TEST_ASSERT_TRUE(fit.inputs().find("RESULTTAIL") != std::string::npos);
   TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)fit.shrink(1000, FitScope::OlderHistory));
 }
@@ -248,7 +245,6 @@ static void test_the_owner_line() {
 static void test_clips_stay_valid_utf8() {
   ComposeInputs ci = baseInputs();
   ci.recalled.clear();
-  ci.foodPlaybook.clear();
   ci.history.clear();
   ci.speakerPresent = true;
   std::string input = "[FRESH RESULTS]\n";

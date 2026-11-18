@@ -174,7 +174,7 @@ serves:
   every reader of the head's caps and history marks derives from it, never from the body
   budget (`headContextBudget`, `test_orch_budget`). The one formula then leaves a flat turn
   no room for derived history, so it keeps the v5.1.1 history window and the 48 KB summary
-  trigger, and recalled memories and the food playbook ride the request as in v5.1.1; the
+  trigger, and recalled memories ride the request as in v5.1.1; the
   body budget of its wire does not change. `loopOn` is the owner's Tool use setting. A
   single turn that the memory gate sends as a single shot (entry heap under the loop's
   floor), or a bounded background turn on a fallback head, keeps the head's standing marks:
@@ -341,7 +341,7 @@ order:
 3. the turn's photos as images, for a window refusal only (photos sit outside the byte
    budget): that host reads their transcriptions;
 4. the newest tool results, clipped;
-5. recalled memories, then the attached food playbook (a tool can read both again);
+5. recalled memories, then the attached skills (a tool can read both again);
 6. the `[FRESH RESULTS]` and `[MEMORY RESULTS]` blocks, clipped, both ends kept;
 7. the newest past turns as whole pairs, then the summary. On a turn with nobody's message
    in it (a synthesis, a routine) 7 comes before 6, since the results are what it is for;

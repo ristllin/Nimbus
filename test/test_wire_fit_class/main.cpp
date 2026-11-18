@@ -613,10 +613,10 @@ static void test_a_loop_off_turn_is_never_refused_at_round_0_at_its_own_budget()
 // ---- v5.1.1 parity with the tool loop off (lane L) ----------------------------------------
 // The regression's three heads, the tool loop off, a history well past what one prompt string
 // carries (200 exchanges on the days before, 40 today: about 230 KB), ten recalled memories and
-// a food message, which attaches the food playbook. v5.1.1 sent that turn whole: its window
-// (the newest 5 KB of history, the owner's day up to its cap), the ten memories and the
-// playbook. Sized from the body budget the turn was refused at round 0 and gave up recall and
-// the playbook before any history.
+// a food message, which attached the food playbook until v5.2.0 (RB-Q3a: no playbook rides any
+// turn now). v5.1.1 sent that turn whole: its window (the newest 5 KB of history, the owner's
+// day up to its cap) and the ten memories. Sized from the body budget the turn was refused at
+// round 0 and gave up recall and the playbook before any history.
 namespace {
 const Head kLoopOffHeads[] = {
     {"mistral/large-4", "mistral", "mistral-large-4-0", "mistral"},
@@ -654,7 +654,7 @@ void loopOffParityOn(const Head& h) {
          h.name, body.size(), refused, memories, playbook, w.bytes, w.kept.size(), window);
   TEST_ASSERT_FALSE_MESSAGE(refused, h.name);   // round 0 went out as composed: no refusal, no refit
   TEST_ASSERT_EQUAL_MESSAGE(10, memories, h.name);
-  TEST_ASSERT_TRUE_MESSAGE(playbook, h.name);
+  TEST_ASSERT_FALSE_MESSAGE(playbook, h.name);   // RB-Q3a
   TEST_ASSERT_TRUE_MESSAGE(body.find("LEFT OUT TO FIT THIS REQUEST") == std::string::npos, h.name);
   // The history is v5.1.1's window (the newest turn in it), in the flat form, and the rest is
   // named: the shift's hidden rows by the coverage line.
@@ -666,9 +666,9 @@ void loopOffParityOn(const Head& h) {
 }
 }  // namespace
 
-static void test_a_loop_off_large_4_head_keeps_recall_and_the_playbook_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[0]); }
-static void test_a_loop_off_medium_head_keeps_recall_and_the_playbook_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[1]); }
-static void test_a_loop_off_glm_head_keeps_recall_and_the_playbook_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[2]); }
+static void test_a_loop_off_large_4_head_keeps_recall_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[0]); }
+static void test_a_loop_off_medium_head_keeps_recall_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[1]); }
+static void test_a_loop_off_glm_head_keeps_recall_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[2]); }
 
 // The loop state the budget reads is the owner's setting, never one turn's heap gate. A turn
 // the gate sends as a single shot (entry heap in the 2 KB between the turn's floor and the
@@ -706,9 +706,9 @@ int main(int, char**) {
   RUN_TEST(test_every_live_row_is_sent_or_named_on_every_head_wire);
   RUN_TEST(test_a_loop_off_turn_is_never_refused_at_round_0_at_its_own_budget);
   RUN_TEST(test_the_15_nov_complaint_keeps_the_estimate_and_the_comparison);
-  RUN_TEST(test_a_loop_off_large_4_head_keeps_recall_and_the_playbook_as_v5_1_1_did);
-  RUN_TEST(test_a_loop_off_medium_head_keeps_recall_and_the_playbook_as_v5_1_1_did);
-  RUN_TEST(test_a_loop_off_glm_head_keeps_recall_and_the_playbook_as_v5_1_1_did);
+  RUN_TEST(test_a_loop_off_large_4_head_keeps_recall_as_v5_1_1_did);
+  RUN_TEST(test_a_loop_off_medium_head_keeps_recall_as_v5_1_1_did);
+  RUN_TEST(test_a_loop_off_glm_head_keeps_recall_as_v5_1_1_did);
   RUN_TEST(test_a_heap_gated_single_shot_keeps_the_head_s_standing_marks);
   return UNITY_END();
 }

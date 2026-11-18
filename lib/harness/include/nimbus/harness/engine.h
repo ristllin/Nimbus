@@ -348,17 +348,23 @@ class TurnEngine {
 
     // Lane CTX: today's food ledger for this chat's person (nimbus/orch/food_ledger.h;
     // device: the canonical file streamed through FoodLedgerScan under the turn's
-    // read boundary). It rides the per-turn block and the fold. Nullable => none.
+    // read boundary). The figure check's sources and the fold's day; since RB-Q3a it
+    // never rides the per-turn block. Nullable => none.
     std::function<nimbus::orch::FoodLedger(const std::string& chatId)> foodLedger;
     // The person's earlier ledger rows of the foods a message names (renderFoodRecall /
-    // FoodRecallScan), asked on a food turn: the same food gets the same figures across days.
+    // FoodRecallScan). Unread since RB-Q3a (no keyword food block); its wiring in
+    // orchestrator.cpp, nimbusd/src/rig.h and the lab goes with RB-Q3a's phase 2.
     std::function<std::string(const std::string& chatId, const std::string& message)> foodRecall;
-    // The approved stored skills about food (foodSkillId, by id): the one that guides a logged
-    // meal rides that turn, so the owner's own method is consulted, not just listed.
+    // The approved stored skills about food (foodSkillId, by id). Unread since RB-Q3a: the
+    // owner's food skill is read on demand from the [SKILLS] shelf; wiring as foodRecall.
     std::function<std::vector<std::string>()> foodSkills;
     // RB-G0: the truth check's binding (the probe, the chat's ring, the stored modes). Null:
     // no check (host tests, a build without it).
     nimbus::orch::truth::Binding* truth = nullptr;
+    // RB-Q3a: the chat's effects ring (RB-FX) behind the recent-actions source; its newest
+    // receipts ride every turn's per-turn block (compose.h renderRecentActions). nullptr =
+    // no block. Must outlive the engine.
+    RecentActionsSource* recentActions = nullptr;
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the
@@ -648,11 +654,10 @@ class TurnEngine {
   void noteUnappliedSpawns(const std::string& chatId, const std::string& rawAnswer);
   std::string buildDynamicContext(const std::string& chatId);
   // Lane CTX (day_context.cpp): load this chat's food ledger for the turn into
-  // ledger_; then, once the history is known, fill the per-turn ledger and (a food
-  // turn) the playbooks.
+  // ledger_ (the fold's day and the round budget read it). RB-Q3a: the ledger and the
+  // food playbooks no longer ride the prompt; applyFoodContext fills only the chat's
+  // recent actions (Deps::recentActions).
   void loadFoodLedger(const std::string& chatId);
-  std::string ownerFoodSkillBlock(bool asks) const;
-  std::string foodRecallBlock(const std::string& userText) const;
   void applyFoodContext(ComposeInputs& ci, const std::string& userText) const;
   // The fold's day: [TODAY] and the ledger's view for this chat ("" = no clock).
   std::string foldDayContext(const std::string& chatId) const;

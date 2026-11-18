@@ -191,8 +191,8 @@ Notes:
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; store in
 `src/agent/skills.cpp`, built-in text in `lib/harness/src/builtin_skills.cpp`).
-On-device markdown playbooks: eight built-ins (`architecture`, `deep-research`,
-`hardware`, `tools-guide`, `deliver-pdf`, `log-rows`, `food-log`, `food-coach`) plus owner- or agent-authored capsules
+On-device markdown playbooks: six built-ins (`architecture`, `deep-research`,
+`hardware`, `tools-guide`, `deliver-pdf`, `log-rows`) plus owner- or agent-authored capsules
 on the SD card. A built-in names `reply.telegram` or `files.send` only on a turn
 that was offered both; on any other turn it points at the Files list on the
 device web page.
@@ -232,11 +232,9 @@ Notes:
   `desc:`; the assistant's history rows carry a `skills:` tag saying which
   skills a reply used.
 
-The two food playbooks are also attached without a read: on a turn about food the
-device adds `food-log` when the owner reports food eaten, `food-coach` when they ask
-for an amount or a plan, and both when the words say neither (see
-[turn-anatomy.md](../turn-anatomy.md)). An approved stored skill whose id says it is about
-food (meal, food, nutrition, diet, calorie) rides a logged meal the same way.
+Nothing is attached by keyword: since v5.2.0 the food playbooks (`food-log`, `food-coach`)
+are gone, and an approved stored skill about food is read from the `[SKILLS]` index like
+any other.
 
 ## `food.*` - the portion calculator
 

@@ -392,3 +392,26 @@ deleted. Engine 2 has no baseline.
   ("Note: the ledger change in this reply did not go through (...)"); and in
   lib/harness/src/engine.cpp, when linked, the words of the probe's view of an answer's own fields
   and of apply's outcome ("with this reply: ", "spawn ", "not stored"). Planned work (ruling 18), not a fix.
+
+### PC-0013: the recent-actions block replaces the food playbook framing and the keyword skill attachment
+- catalog: e1
+- class: system
+- kind: spec
+- bytes: 47989 -> 47942
+- sha8: faa8207c -> 032b80e5
+- lane: RB-Q3a
+- prd: section 8 (rail 8: the newest 12 receipts shown to the old engine as a 'recent actions' data block of at most 2,048 B) and section 1 (item 9: keyword playbooks and the per-turn ledger block off in v5.2.0)
+- why: planned work (ruling 18). Removed: the [FOOD PLAYBOOK] frame in compose.cpp (92 B) and the
+  keyword attachment of the owner's food skill in day_context.cpp (86 B). Added: the [RECENT ACTIONS]
+  header (119 B) and the "time unknown" stamp (12 B) in compose.cpp. The class shrinks by 47 B.
+
+### PC-0014: the keyword food playbooks leave the built-in skills
+- catalog: e1
+- class: skills
+- kind: remove
+- bytes: 23264 -> 12663
+- sha8: cef6121d -> c2e15d81
+- lane: RB-Q3a
+- why: food-log (7,117 B) and food-coach (3,160 B) and their two index lines (324 B) were attached by
+  keyword to food turns (PRD section 1, item 9: off in v5.2.0); on the owner's 26 Oct shape they were
+  7,415 B of a 9,055 B per-turn block. Nothing replaces them in the prompt.

@@ -101,7 +101,7 @@ entry (owner msg | sub-agents finished | loop fired | post-OTA)   [tg_poll]
     / byte budgets; each round's socket timeout clamped to the REMAINING budget;
     a round whose request would outgrow its body budget gives up, in one order
     (turn_fit.h), the arguments of calls that already ran and the older tool
-    rounds, then recall, the food playbook and attached skills, history before
+    rounds, then recall and the attached skills, history before
     today and today's beyond the newest exchange - each named in the request's
     [LEFT OUT] note - and only then the newest round's results, the ones the
     model has not seen yet; nothing goes before a real refusal, and the summary

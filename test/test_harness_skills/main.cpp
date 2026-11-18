@@ -12,7 +12,6 @@
 #include "../support/fake_fabric.h"
 #include "../support/fake_platform.h"
 #include "nimbus/harness/builtin_skills.h"
-#include "nimbus/orch/food_ledger.h"   // renderFoodIntentHint
 #include "nimbus/harness/jobs.h"
 #include "nimbus/harness/skill_md.h"
 #include "nimbus/orch/journal.h"
@@ -435,7 +434,7 @@ static const char* const kTelegramOnlyNames[] = {"files.send", "reply.telegram",
 // with no Telegram, names neither Telegram-only tool. The Telegram side keeps the
 // delivery steps (the variant is a different recipe, not deleted text).
 static void test_cum523_builtin_capsules_follow_the_turn() {
-  TEST_ASSERT_EQUAL(8, (int)agent::builtinSkillCount());
+  TEST_ASSERT_EQUAL(6, (int)agent::builtinSkillCount());   // RB-Q3a: food-log and food-coach left
   for (size_t i = 0; i < agent::builtinSkillCount(); ++i) {
     const agent::BuiltinSkill& b = agent::builtinSkill(i);
     TEST_ASSERT_TRUE_MESSAGE(agent::isBuiltinSkill(b.id), b.id);
@@ -479,92 +478,18 @@ static void test_cum523_builtin_capsules_follow_the_turn() {
   TEST_ASSERT_FALSE(agent::isBuiltinSkill("no-such-skill"));
 }
 
-// Lane CTX: the food playbooks. food-log states the ledger's rules (meals only to the
-// ledger, a row the moment a meal eaten has an estimate, totals from the ledger, the
-// keyed call); food-coach states the coaching rules (answer first, only stated foods,
-// the plan's lines and total, a question when no food is named) and repeats the
-// ledger's two rules in short, with no logging procedure. Both are attached by id.
-static void test_food_playbooks_state_their_rules() {
-  TEST_ASSERT_TRUE(agent::isBuiltinSkill(agent::kFoodLogSkillId));
-  TEST_ASSERT_TRUE(agent::isBuiltinSkill(agent::kFoodCoachSkillId));
-  const std::string f = agent::builtinSkillBody(agent::kFoodLogSkillId, true);
-  for (const char* must : {"A meal is logged only when the owner says it was eaten",
-                           "A question, a request for a plan or\n   for amounts", "Meals go ONLY to the ledger file it names",
-                           "never to mem_write", "Write the row as soon as the meal has an estimate",
-                           "Totals come from [TODAY'S FOOD LEDGER] or the files.append reply",
-                           "Never add up\n   a day from the conversation",
-                           "{project, name, text, key: \"meal\", sum: \"kcal\"}",
-                           "Never a second row for one meal", "A photo nobody could read: say so in the reply",
-                           "a field never holds a bare comma"})
-    TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
-  for (const char* must : {"its published\n   nutrition (look it up before estimating", "The same food gets the same figures",
-                           "stays an empty cell, never 0"})
-    TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
-  // Lane QFIX (REGR-RUN-2): the whole-pack default, stated so a head cannot read
-  // "per-serving" as the figure to log, and holding even when the photo itself did
-  // not come through (lc-photo-default 0/5 on claude-haiku-5-5).
-  // Fix pass F4: the worked example uses numbers no fixture uses (190 x 3 = 570, not the
-  // lc-photo-default pack), so a green row cannot be the model copying its own prompt.
-  // A servings label is the case the first wording missed: a "pouch" with "4 servings" read as one serving eaten
-  // (held-out lc-photo-default-servings, 3/10 on claude-haiku-5-5), so the rule says a serving is the label's
-  // unit, never the amount eaten.
-  for (const char* must : {"photo means eaten WHOLE", "whole pack, pouch, box or bottle",
-                           "x servings in it, e.g. 190 x 3 = 570 kcal", "serving is the label's unit, never the amount eaten",
-                           "not even when the photo\n   did not come through", "and ask nothing\n   else",
-                           "A pack photo with no question is not a\n   missing amount (rule 1)",
-                           "A rule the\n   owner asks you to remember is not a meal and not a memory note: save it as\n   a standing rule with prefs.edit"})
-    TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
-  // Lane QFIX: a named restaurant/chain/deli/product is looked up before any
-  // estimate, and an inconclusive lookup still logs the meal (lc-restaurant-lookup,
-  // lc-photo-estimate); a challenge to the log re-reads the file first
-  // (lc-false-claim); the owner's word wins and an unbacked "you told me" is never
-  // repeated, not even inside quotes (lc-defended-hallucination).
-  for (const char* must : {"Always\n   web_search a named restaurant, chain, deli or packaged product",
-                           "never hold the row back for a question",
-                           "files_read the ledger first\n   and answer from the file as it stands now",
-                           "never confirm an earlier\n   claim of yours without that read",
-                           "withdraw the claim", "naming the withdrawn line while you retract it is fine"})
-    TEST_ASSERT_TRUE_MESSAGE(f.find(must) != std::string::npos, must);
-  // Fix pass F4: the prompt states the class (no claim that the owner said, sent or showed something
-  // without a message of theirs), not the fixture's own forbid list, and it no longer forbids an
-  // honest retraction from naming the line it withdraws.
-  for (const char* mustNot : {"never repeat \"you told me\"", "not inside quotes", "never quote the line", "220 kcal per bar"})
-    TEST_ASSERT_TRUE_MESSAGE(f.find(mustNot) == std::string::npos, mustNot);
-  const std::string c = agent::builtinSkillBody(agent::kFoodCoachSkillId, true);
-  for (const char* must : {"a target you cannot point to is not stated", "your own earlier replies are not a source",
-                           "Totals come from [TODAY'S FOOD LEDGER]", "list the ledger's rows",
-                           "Only meals the owner says they ate go in the ledger", "never\n   memory",
-                           "write no\n   row", "Answer what was asked, first", "not a heading, a list, an apology\n   or an agreement (the one exception is the [THIS MESSAGE] line's own)",
-                           "one entry per food the owner says\n   they have",
-                           "the ledger lists what was eaten, not what is in the\n   kitchen",
-                           "Amounts and plans come from food.portions", "fixed_g for every amount the owner fixed", "add nothing on top", "the fixed foods still go in the call as fixed_g",
-                           "its Total line",
-                           "ask one short question\n   about what they have: no plan, no amounts and no food.portions call yet"})
-    TEST_ASSERT_TRUE_MESSAGE(c.find(must) != std::string::npos, must);
-  // Lane QFIX (REGR-RUN-2): a stored target is named by the [FOOD TARGETS] line
-  // (lc-target-source); an unknown protein gives no grams-left figure at all
-  // (lc-protein-unknown); a challenge to the log re-reads the file first and the
-  // owner's word wins without repeating an unbacked "you told me" (lc-false-claim,
-  // lc-defended-hallucination).
-  for (const char* must : {"A stored target is named by the [FOOD TARGETS] line with\n   its source",
-                           "give NO grams-left figure at all", "not \"N g of protein\n   left\"",
-                           "unknown until that row's figure is known",
-                           "files_read the\n   ledger first and answer from the file as it stands now",
-                           "withdraw it", "naming the withdrawn line while you retract it\n   is fine"})
-    TEST_ASSERT_TRUE_MESSAGE(c.find(must) != std::string::npos, must);
-  for (const char* mustNot : {"never repeat \"you told me\"", "not inside quotes", "without quoting it",
-                              "I can't find\n   any message from you saying that - I was wrong"})
-    TEST_ASSERT_TRUE_MESSAGE(c.find(mustNot) == std::string::npos, mustNot);
-  // The coach carries no logging procedure (a weak head logged the plan it was asked for).
-  TEST_ASSERT_TRUE(c.find("files.append {") == std::string::npos);
-  TEST_ASSERT_TRUE(c.find("key: \"meal\"") == std::string::npos);
-  // Owning a mistake rides the complaint hint only: in the playbook a stronger head
-  // opened a plain request with "Fair point" or "Sorry" (qty-pressed, 27 Oct).
-  TEST_ASSERT_TRUE(c.find("own it") == std::string::npos && c.find("owning") == std::string::npos);
-  TEST_ASSERT_TRUE(nimbus::orch::renderFoodIntentHint(nimbus::orch::FoodIntent::Complaint).find("[THIS MESSAGE] says something you gave was wrong") == 0);
-  // The same text on a turn with no Telegram (neither names a Telegram-only tool).
-  TEST_ASSERT_EQUAL_STRING(f.c_str(), agent::builtinSkillBody(agent::kFoodLogSkillId, false).c_str());
-  TEST_ASSERT_EQUAL_STRING(c.c_str(), agent::builtinSkillBody(agent::kFoodCoachSkillId, false).c_str());
+// RB-Q3a: the keyword food playbooks (food-log, food-coach) are gone from the built-ins, so
+// nothing can attach or serve them, and no built-in body or index line says a block is
+// "attached automatically".
+static void test_no_food_playbook_is_a_builtin() {
+  TEST_ASSERT_FALSE(agent::isBuiltinSkill("food-log"));
+  TEST_ASSERT_FALSE(agent::isBuiltinSkill("food-coach"));
+  TEST_ASSERT_EQUAL_STRING("", agent::builtinSkillBody("food-log", true).c_str());
+  for (size_t i = 0; i < agent::builtinSkillCount(); i++) {
+    const agent::BuiltinSkill& b = agent::builtinSkill(i);
+    TEST_ASSERT_TRUE_MESSAGE(std::string(b.desc).find("attached automatically") == std::string::npos, b.id);
+    TEST_ASSERT_TRUE_MESSAGE(agent::builtinSkillBody(b.id, true).find("[FOOD PLAYBOOK") == std::string::npos, b.id);
+  }
 }
 
 // The class, over the device's tool registrations: a tool description is static
@@ -729,7 +654,7 @@ int main(int, char**) {
   RUN_TEST(test_skills_index_bounds_and_names_the_overflow);
   RUN_TEST(test_cjk_desc_cap_is_utf8_safe);
   RUN_TEST(test_cum523_builtin_capsules_follow_the_turn);
-  RUN_TEST(test_food_playbooks_state_their_rules);
+  RUN_TEST(test_no_food_playbook_is_a_builtin);
   RUN_TEST(test_cum523_no_tool_description_names_a_telegram_tool);
   return UNITY_END();
 }

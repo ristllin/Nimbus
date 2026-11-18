@@ -25,7 +25,7 @@
 //      fold the older rounds the model has read
 //   2. recalled     the memories recall put in the prompt (a tool can search them again),
 //                   only when its rendered bytes are in the body
-//   3. skills       the food playbook and the auto-attached skills ([ACTIVE SKILLS])
+//   3. skills       the auto-attached skills ([ACTIVE SKILLS])
 //   4. results already read: the protocol's own step, which rung 1 has already taken (the
 //      transcript's older rounds); no rung of its own here
 //   5. older days   live history before today, oldest whole turns first
@@ -138,7 +138,6 @@ class TurnFit {
     int resultBlocksClipped = 0;
     size_t resultBytesCut = 0;
     size_t inputBytesCut = 0;
-    bool playbookDropped = false;
     bool skillsDropped = false;
     bool shelfDropped = false;
     bool toolsDropped = false;

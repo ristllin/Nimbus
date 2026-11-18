@@ -66,8 +66,6 @@ void TurnFit::dropRecalled() {
 }
 
 void TurnFit::dropSkills() {
-  if (!ci_.foodPlaybook.empty()) cut_.playbookDropped = true;
-  ci_.foodPlaybook.clear();
   const size_t at = input_.find(kSkillsHeader);
   if (at == std::string::npos) return;
   const size_t end = nextBlockAt(input_, at + 1);
@@ -168,9 +166,9 @@ std::function<void()> TurnFit::applyRung(int rung, size_t want) {
       return [this, was] { ci_.recalled = std::move(*was); };
     }
     case kSkills: {
-      auto was = std::make_shared<std::pair<std::string, std::string>>(ci_.foodPlaybook, input_);
+      auto was = std::make_shared<std::string>(input_);
       dropSkills();
-      return [this, was] { ci_.foodPlaybook = std::move(was->first); input_ = std::move(was->second); };
+      return [this, was] { input_ = std::move(*was); };
     }
     case kOlderDays:
     case kToday: {
@@ -322,7 +320,6 @@ std::string TurnFit::note() const {
   if (!history.empty()) addPart(s, history);
   if (cut_.resultBlocksClipped) addPart(s, std::to_string((unsigned)cut_.resultBytesCut) + " B of the results below");
   if (cut_.recalledDropped) addPart(s, std::to_string(cut_.recalledDropped) + " recalled memory item(s)");
-  if (cut_.playbookDropped) addPart(s, "the attached food playbook");
   if (cut_.skillsDropped) addPart(s, "the attached skills (skill_get reads them)");
   if (cut_.shelfDropped) addPart(s, "the skills list and standing preferences");
   if (cut_.inputBytesCut) addPart(s, std::to_string((unsigned)cut_.inputBytesCut) + " B of this turn's input");
