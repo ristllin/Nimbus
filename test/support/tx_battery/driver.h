@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -71,6 +72,8 @@ class Battery {
   tx::HeadState head;
   uint32_t turnNo = 0;
   size_t sends = 0;
+  size_t tornCuts = 0;                 // torn cuts so far: each may leave one undecodable line
+  plain::TurnInput lastInput;          // the owner message in flight (redelivered after a cut)
 
   void advance(uint32_t seconds) {
     epoch += seconds;
@@ -97,19 +100,19 @@ class Battery {
       tx::Status st = boot();
       if (!st.ok()) return st;
     }
-    plain::TurnInput in;
-    in.ctx = turnCtx(++turnNo, plain::Trigger::Owner);
-    in.text = text;
-    in.parts = std::move(parts);
-    in.src = {9000u + turnNo};
-    const size_t before = model.requests().size();
-    tx::Status st = guarded([&] { return engine->runTurn(in, out); });
-    for (size_t i = before; i < model.requests().size(); ++i) requestTurn.push_back(in.ctx.turn);
-    return st;
+    lastInput = plain::TurnInput{};
+    lastInput.ctx = turnCtx(++turnNo, plain::Trigger::Owner);
+    lastInput.text = text;
+    lastInput.parts = std::move(parts);
+    lastInput.src = {9000u + turnNo};
+    return deliverInput(lastInput, out);
   }
 
-  // A power cut, then the boot that follows it: the resume seam runs there.
+  // A power cut, then the boot that follows it: the resume seam runs there. Telegram then
+  // redelivers the update the cut left unconfirmed (the offset lives in RAM); when its u item
+  // was stored the seen index drops it, so the battery redelivers only an unstored message.
   tx::Status restartAfterCut() {
+    tornCuts += files.tornKill && killed;
     engine.reset();
     hooks.reset();
     log.reset();
@@ -119,7 +122,11 @@ class Battery {
     const size_t before = model.requests().size();
     tx::Status st = boot(true);
     for (size_t i = before; i < model.requests().size(); ++i) requestTurn.push_back(turnNo);
-    return st;
+    if (!st.ok() || lastInput.src.empty()) return st;
+    bool seen = false;
+    if (!(st = ownerStored(lastInput.src.front(), seen)).ok() || seen) return st;
+    plain::TurnOutcome out;
+    return deliverInput(lastInput, out);
   }
 
   tx::Status idle(plain::IdleOutcome& out, uint32_t quietForS = 600) {
@@ -141,10 +148,40 @@ class Battery {
     std::string dir;
     tx::Status st = tx::txDir(chatKey, dir);
     if (!st.ok()) return st;
+    size_t bad = 0;
     for (const std::string& seg : const_cast<MemFiles&>(files).segments(dir))
-      if (!(st = decodeAll(files.files.at(seg), out)).ok()) return st;
+      if (!(st = decodeAll(files.files.at(seg), out, bad)).ok()) return st;
+    if (bad > tornCuts)   // only a torn cut may leave a line that does not decode
+      return tx::Status::fail(tx::Err::Torn, "txb::Battery::stored: a stored line does not decode");
     std::sort(out.begin(), out.end(), [](const tx::Item& a, const tx::Item& b) { return a.q < b.q; });
     return tx::Status::success();
+  }
+
+  // The stored items the last request was rendered from: the last turn's final text and
+  // what follows it are stored after that request.
+  tx::Status storedBeforeLastFinal(std::vector<tx::Item>& out) const {
+    tx::Status st = stored(out);
+    for (size_t i = 0; st.ok() && i < out.size(); ++i)
+      if (out[i].turn == turnNo && out[i].kind == tx::ItemKind::Assistant && out[i].fin) {
+        out.resize(i);
+        break;
+      }
+    return st;
+  }
+
+  // What the coverage and overhead properties read for `items`: the newest stored pointer,
+  // the open turn, bulk payloads read back through a TxLog over the same storage.
+  CoverInput coverOf(const std::vector<tx::Item>& items) {
+    CoverInput in;
+    in.items = &items;
+    in.openTurn = turnNo;
+    for (const tx::Item& it : items)
+      if (it.kind == tx::ItemKind::PointerMove) in.pointer = std::max(in.pointer, it.stub);
+    in.readBulk = [this](const tx::Item& r, std::string& o) {
+      tx::TxLog reader(files, chatKey);
+      return reader.readBulk(r.handle, 0, r.bytes, o).ok();
+    };
+    return in;
   }
 
   // The e items' events, by turn.
@@ -227,7 +264,7 @@ class Battery {
     }
   }
 
-  static tx::Status decodeAll(const std::string& seg, std::vector<tx::Item>& out) {
+  static tx::Status decodeAll(const std::string& seg, std::vector<tx::Item>& out, size_t& bad) {
     size_t at = 0;
     while (at < seg.size()) {
       const size_t nl = seg.find('\n', at);
@@ -236,9 +273,27 @@ class Battery {
       tx::Status st = tx::decodeLine(seg.data() + at, nl - at, it);
       if (st.notImplemented()) return st;
       if (st.ok()) out.push_back(it);
+      else ++bad;
       at = nl + 1;
     }
     return tx::Status::success();
+  }
+
+  tx::Status deliverInput(const plain::TurnInput& in, plain::TurnOutcome& out) {
+    const size_t before = model.requests().size();
+    tx::Status st = guarded([&] { return engine->runTurn(in, out); });
+    for (size_t i = before; i < model.requests().size(); ++i) requestTurn.push_back(in.ctx.turn);
+    return st;
+  }
+
+  tx::Status ownerStored(uint64_t src, bool& seen) const {
+    std::vector<tx::Item> items;
+    tx::Status st = stored(items);
+    seen = false;
+    for (const tx::Item& it : items)
+      if (it.kind == tx::ItemKind::User)
+        for (uint64_t s2 : it.src) seen |= s2 == src;
+    return st;
   }
 };
 

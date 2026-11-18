@@ -173,15 +173,15 @@ void test_guard_last_round_anthropic() {
   guardLastRound(plain::Dialect::AnthropicMessages);
 }
 void test_guard_last_round_responses() {
-  TXB_WAITS_FOR("PENDING RB-W2", "RB-E1b");
+  TXB_WAITS_FOR("PENDING RB-W2", "RB-E1a", "RB-E1b");
   guardLastRound(plain::Dialect::OpenAIResponses);
 }
 void test_guard_last_round_chat() {
-  TXB_WAITS_FOR("PENDING RB-W3", "RB-E1b");
+  TXB_WAITS_FOR("PENDING RB-W3", "RB-E1a", "RB-E1b");
   guardLastRound(plain::Dialect::ChatCompletions);
 }
 void test_guard_last_round_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1b");
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a", "RB-E1b");
   guardLastRound(plain::Dialect::Flat);
 }
 

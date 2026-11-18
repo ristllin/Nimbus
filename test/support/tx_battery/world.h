@@ -21,16 +21,19 @@ class World {
  public:
   std::map<std::string, std::string> files;      // path -> text (read_file, write_file)
   std::map<std::string, int> effectRuns;         // "<tool> <args>" -> times run
-  std::map<std::string, int> callRuns;           // call id -> times dispatched
   std::vector<std::string> dispatched;           // tool names, in order
 
   static bool isEffect(const std::string& n) {
     return n == "write_file" || n == "ledger_write" || n == "device_control" || n == "append_file";
   }
-  static bool isOutside(const std::string& n) { return n == "web_search" || n == "fetch_url"; }
+  // Times an effect tool ran, summed over its arguments (0 when it never ran).
+  int runsOf(const std::string& tool) const {
+    int n = 0;
+    for (const auto& kv : effectRuns) n += kv.first.rfind(tool + " ", 0) == 0 ? kv.second : 0;
+    return n;
+  }
 
   plain::ToolOutput dispatch(const plain::ToolCall& c, const plain::TurnCtx&) {
-    ++callRuns[c.id];
     dispatched.push_back(c.name);
     JsonDocument a;
     deserializeJson(a, c.argsJson);

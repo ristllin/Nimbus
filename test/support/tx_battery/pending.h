@@ -76,6 +76,17 @@ inline tx::Status probeParse() {
   return w->parse(resp, step);
 }
 
+// RB-T1 writes three things the battery needs: encode, decode and the arena.
+inline tx::Status probeCodec() {
+  std::string s;
+  tx::Status st = tx::encodeLine(tx::Item{}, s);
+  if (st.notImplemented()) return st;
+  tx::Item it;
+  if ((st = tx::decodeLine("{}", 2, it)).notImplemented()) return st;
+  tx::TxArena arena;
+  return arena.init(64, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); });
+}
+
 inline tx::Status probeEngine() {
   plain::PlainEngine engine{plain::EngineDeps{}};
   plain::TurnOutcome out;
@@ -112,7 +123,7 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
     std::function<tx::Status()> probe;
   };
   static const Row rows[] = {
-      {"RB-T1", [] { std::string s; return tx::encodeLine(tx::Item{}, s); }},
+      {"RB-T1", probeCodec},
       {"RB-T2", probeLog},
       {"RB-T3", [] { std::string s; return tx::omissionLine(1, "17 Nov", s); }},
       {"RB-T4", [] { tx::ProfileMarks m; return tx::profileMarks(tx::Profile::Standard, m); }},
@@ -174,31 +185,40 @@ inline bool forcePending() {
 
 }  // namespace txb
 
+namespace txb {
+// 0 = run the test, 1 = ignore it (still pending), 2 = the gate itself is wrong (see
+// lastWaitError). No string outlives the call, so the ignore's longjmp leaks nothing.
+inline std::string& lastWaitError() {
+  static std::string e;
+  return e;
+}
+inline int waitDecision(const char* message, std::initializer_list<const char*> deps) {
+  std::string err;
+  const std::string missing = firstUnbuilt(message, deps, err);
+  lastWaitError() = err;
+  if (!err.empty()) return 2;
+  return !missing.empty() && !forcePending() ? 1 : 0;
+}
+// The failure text of TXB_OK, kept outside the test's frame (Unity's failure longjmps).
+inline const char* okFailure(const char* expr, const nimbus::orch::tx::Status& st) {
+  static std::string m;
+  m = std::string(expr) + " -> " + nimbus::orch::tx::errSlug(st.err) + " at " + st.where;
+  return m.c_str();
+}
+}  // namespace txb
+
 // Ignore the running test with `message` (a literal "PENDING RB-<lane>") while the named
 // lane or a listed dependency still answers NotImplemented.
-#define TXB_WAITS_FOR(message, ...)                                                       \
-  do {                                                                                    \
-    std::string txb_err_;                                                                 \
-    const std::string txb_missing_ = txb::firstUnbuilt(message, {__VA_ARGS__}, txb_err_); \
-    if (!txb_err_.empty()) TEST_FAIL_MESSAGE(txb_err_.c_str());                           \
-    if (!txb_missing_.empty() && !txb::forcePending()) TEST_IGNORE_MESSAGE(message);      \
+#define TXB_WAITS_FOR(message, ...)                                   \
+  do {                                                                \
+    const int txb_d_ = txb::waitDecision(message, {__VA_ARGS__});     \
+    if (txb_d_ == 2) TEST_FAIL_MESSAGE(txb::lastWaitError().c_str()); \
+    if (txb_d_ == 1) TEST_IGNORE_MESSAGE(message);                    \
   } while (0)
 
 // A typed outcome that must be ok; a stub fails with its own name (the documented reason).
-#define TXB_OK(expr)                                                                                        \
-  do {                                                                                                      \
-    const nimbus::orch::tx::Status txb_st_ = (expr);                                                        \
-    if (!txb_st_.ok()) {                                                                                    \
-      const std::string txb_m_ = std::string(#expr) + " -> " + nimbus::orch::tx::errSlug(txb_st_.err) + " at " + \
-                                 txb_st_.where;                                                             \
-      TEST_FAIL_MESSAGE(txb_m_.c_str());                                                                    \
-    }                                                                                                       \
-  } while (0)
-
-// A property checker's verdict: true, or fail with its reason.
-#define TXB_HOLDS(expr)                       \
-  do {                                        \
-    std::string why;                          \
-    const bool txb_ok_ = (expr);              \
-    TEST_ASSERT_TRUE_MESSAGE(txb_ok_, why.c_str()); \
+#define TXB_OK(expr)                                                                      \
+  do {                                                                                    \
+    const nimbus::orch::tx::Status txb_st_ = (expr);                                      \
+    if (!txb_st_.ok()) TEST_FAIL_MESSAGE(txb::okFailure(#expr, txb_st_));                 \
   } while (0)

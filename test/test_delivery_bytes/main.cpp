@@ -9,6 +9,7 @@
 // Owner: the battery (code-owner review to edit). Lanes may add tests.
 #include <unity.h>
 
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,12 @@ void test_the_reply_is_the_model_text_whatever_it_claims() {
     TEST_ASSERT_TRUE(out.status == plain::StatusLine::None);
     TEST_ASSERT_EQUAL_STRING(r.c_str(), out.text.c_str());
     expectExact(b, out, r, from);
+    // Independent of the deliver function: text with no markup or entity characters
+    // arrives as one message, byte for byte (a deliver function that edits claims fails).
+    if (r.find_first_of("*_`<>&") == std::string::npos) {
+      TEST_ASSERT_EQUAL(from + 1, b.sent.size());
+      TEST_ASSERT_EQUAL_STRING(r.c_str(), b.sent.back().text.c_str());
+    }
   }
 }
 
@@ -101,6 +108,16 @@ void test_a_long_reply_is_split_without_loss() {
   TXB_OK(b.owner("tell me everything", out));
   TEST_ASSERT_TRUE_MESSAGE(b.sent.size() > 1, "12 KB went out as one Telegram message");
   expectExact(b, out, longText, 0);
+  // Independent of the deliver function: the chunks hold every visible byte, in order.
+  std::string joined;
+  for (const auto& m : b.sent) joined += m.text;
+  auto visible = [](const std::string& t) {
+    std::string v;
+    for (char c : t)
+      if (!std::isspace((unsigned char)c)) v += c;
+    return v;
+  };
+  TEST_ASSERT_TRUE_MESSAGE(visible(joined) == visible(longText), "a split lost or added bytes");
 }
 
 // A guard trip: the last round's text, then at most one status line, as its own message.
@@ -113,10 +130,13 @@ void test_a_status_line_is_separate_and_alone() {
   b.model.push(sp::say("I read it sixteen times; it says alpha."));
   plain::TurnOutcome out;
   TXB_OK(b.owner("keep reading", out));
-  bool listed = out.status == plain::StatusLine::None;
-  for (plain::StatusLine s : plain::kAllStatusLines) listed |= s == out.status;
-  TEST_ASSERT_TRUE_MESSAGE(listed, "a status line outside the closed list");
+  TEST_ASSERT_TRUE_MESSAGE(out.status == plain::StatusLine::LimitReached, plain::statusLineSlug(out.status));
   expectExact(b, out, "I read it sixteen times; it says alpha.", 0);
+  std::vector<std::string> chunks;
+  TXB_OK(txb::expectedChunks("I read it sixteen times; it says alpha.", chunks));
+  TEST_ASSERT_EQUAL_MESSAGE(chunks.size() + 1, b.sent.size(), "the limit-reached line is one message of its own");
+  TEST_ASSERT_TRUE_MESSAGE(b.sent.back().text.find("sixteen times") == std::string::npos,
+                           "the status line carries the model's text");
 }
 
 // A provider that keeps failing (one try and the two same-host retries): no model text, so

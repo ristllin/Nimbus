@@ -13,6 +13,7 @@
 // Owner: the battery (code-owner review to edit). Lanes may add tests.
 #include <unity.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -58,7 +59,7 @@ void test_checker_accepts_extension_and_rejects_a_silent_rewrite() {
   TEST_ASSERT_EQUAL(0, (int)rep.breaks);
   why.clear();
   TEST_ASSERT_FALSE(txb::prefixHolds({{&r1, 1}, {&rw, 2}}, {}, rep, why));
-  TEST_ASSERT_TRUE(why.find("no change point") != std::string::npos);
+  TEST_ASSERT_TRUE(why.find("no unspent change point") != std::string::npos);
   // A system edit, a dropped earlier message and a tools change are rewrites too.
   const sp::RequestView sys = view({msg("user", "hi"), msg("user", "and?")}, "core v2");
   const sp::RequestView dropped = view({msg("user", "and?")});
@@ -87,9 +88,16 @@ void test_checker_counts_named_change_points() {
   // A slug outside the closed list is refused, and breaks never outnumber the points.
   why.clear();
   TEST_ASSERT_FALSE(txb::prefixHolds({{&r1, 1}, {&r2, 2}}, {{2, {"change:because"}}}, rep, why));
+  // One logged point excuses one break: two boundary breaks around turn 2 need two points.
   const sp::RequestView r3 = view({msg("user", "hi!"), msg("user", "x")});
   why.clear();
-  TEST_ASSERT_FALSE(txb::prefixHolds({{&r1, 1}, {&r2, 2}, {&r3, 2}, {&r1, 3}}, {{2, {"change:pointer"}}}, rep, why));
+  TEST_ASSERT_FALSE(txb::prefixHolds({{&r1, 1}, {&r2, 2}, {&r3, 3}}, {{2, {"change:pointer"}}}, rep, why));
+  TEST_ASSERT_TRUE(why.find("no unspent change point") != std::string::npos);
+  why.clear();
+  TEST_ASSERT_TRUE_MESSAGE(
+      txb::prefixHolds({{&r1, 1}, {&r2, 2}, {&r3, 3}}, {{2, {"change:pointer", "change:outside"}}}, rep, why),
+      why.c_str());
+  TEST_ASSERT_EQUAL(2, (int)rep.breaks);
 }
 
 // ---- wire level ---------------------------------------------------------------------
@@ -216,7 +224,8 @@ void test_warm_turns_extend() {
 void test_a_cold_open_breaks_only_at_a_named_point() {
   TXB_WAITS_FOR("PENDING RB-E1a");
   txb::Battery b;
-  TXB_OK(txb::runTurns(b, {txb::withTool(30, "big read", "big_read", R"({"tag":"a","bytes":30000})", "done"),
+  // 20,000 B of bulk stays under the warm threshold (24,576 B): only the cold rule moves.
+  TXB_OK(txb::runTurns(b, {txb::withTool(30, "big read", "big_read", R"({"tag":"a","bytes":20000})", "done"),
                            txb::chat(60, "next", "ok"), txb::chat(600, "after a pause", "still here"),
                            txb::chat(60, "and now", "yes")}));
   expectPrefix(b, 1);
@@ -240,12 +249,13 @@ void test_outside_content_leaves_at_a_named_point() {
 void test_a_superseded_read_leaves_at_a_named_point() {
   TXB_WAITS_FOR("PENDING RB-E1a");
   txb::Battery b;
-  b.world.files["notes/plan.md"] = "PLAN-V1 " + std::string(1500, 'p');
+  // The tail sits past the stub's 200 B preview: only a whole read shows it.
+  b.world.files["notes/plan.md"] = "PLAN-V1 " + std::string(1500, 'p') + " PLAN-V1-TAIL";
   TXB_OK(txb::runTurns(b, {txb::withTool(30, "read my plan", "read_file", R"({"path":"notes/plan.md"})", "read"),
                            txb::withTool(60, "replace it", "write_file", R"({"path":"notes/plan.md","text":"V2"})", "done"),
                            txb::chat(60, "what now?", "V2")}));
   expectPrefix(b, 1);
-  TEST_ASSERT_TRUE_MESSAGE(b.model.last().body.find("PLAN-V1 ppp") == std::string::npos,
+  TEST_ASSERT_TRUE_MESSAGE(b.model.last().body.find("PLAN-V1-TAIL") == std::string::npos,
                            "the superseded read is still shown whole");
 }
 
@@ -266,7 +276,7 @@ void test_a_mixed_day_breaks_only_at_named_points() {
     }
   }
   TXB_OK(txb::runTurns(b, turns));
-  expectPrefix(b, 20);
+  expectPrefix(b, SIZE_MAX);   // every break spends one logged change point
 }
 
 }  // namespace

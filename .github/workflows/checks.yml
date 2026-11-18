@@ -98,8 +98,13 @@ jobs:
       # PENDING RB-<lane>), and the roster only shrinks against the base branch. Lane RB-B0b.
       - name: Pending-test roster equals the ignored set
         working-directory: Nimbus
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          BASE="origin/${GITHUB_BASE_REF:-main}"
+          # A pull request compares against its base branch; a push against the commit before it.
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then BASE="origin/$GITHUB_BASE_REF"
+          elif [ -n "${PUSH_BEFORE:-}" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then BASE="$PUSH_BEFORE"
+          else BASE="HEAD~1"; fi
           python3 tools/release_gate/check_pending_roster.py --native-log native.log --base-ref "$BASE"
 
   # The release-gate + HIL-harness LOGIC must itself be tested (it is the thing

@@ -24,6 +24,10 @@ BASE_REF="rb-main"
 DECLARED=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --tier|--log|--base-ref|--declared)
+      [ $# -ge 2 ] || { echo "battery2: $1 needs a value" >&2; exit 2; } ;;
+  esac
+  case "$1" in
     --tier) TIER=${2:-}; shift 2 ;;
     --log) LOGDIR=${2:-}; shift 2 ;;
     --base-ref) BASE_REF=${2:-}; shift 2 ;;

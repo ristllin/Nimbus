@@ -1,11 +1,13 @@
 // test_tx_overhead - text added around messages cannot pass unseen (PRD section 2 and
-// section 11, rule 3 against prompt-patching; layer L1; lane RB-B0b writes it). The
-// rendered body minus the stored item bytes minus the system text minus the tools is at
-// most 96 B per owner message plus 64 B per photo label, plus one fixed 512 B envelope
+// section 11, rule 3 against prompt-patching; layer L1; lane RB-B0b writes it). Two
+// properties. Bytes: the rendered body minus the stored text it shows minus the system text
+// minus the tools is at most 96 B per owner message and 64 B per photo label, plus a fixed
+// framing allowance per tool call, result and extra text block and one 512 B envelope
 // (model, max_tokens, thinking, tool_choice, cache marks) that does not grow with the
-// conversation. A renderer that injects a block per message (a RUNNING MEMORY, a ledger
-// block, a reminder line) fails here. Wire level per dialect (RB-W1a, RB-W2, RB-W3,
-// RB-W4); a real conversation through the engine (RB-E1a). Counter-tested first.
+// conversation. Text: every text block is stored text, so a RUNNING MEMORY, a ledger block
+// or a reminder written around messages fails however much framing slack is left. Wire
+// level per dialect (RB-W1a, RB-W2, RB-W3, RB-W4); real turns through the engine (RB-E1a).
+// Both checkers are counter-tested first.
 //
 // Owner: the battery (code-owner review to edit). Lanes may add tests.
 #include <unity.h>
@@ -17,6 +19,7 @@
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/props.h"
 #include "../support/tx_battery/render.h"
+#include "../support/tx_battery/toy_render.h"
 
 namespace tx = nimbus::orch::tx;
 namespace plain = agent::plain;
@@ -28,40 +31,42 @@ void tearDown() {}
 namespace {
 
 // ---- counter-tests ---------------------------------------------------------------------
-void test_checker_allows_framing_and_rejects_an_injected_block() {
+txb::OverheadInput day(size_t owners, size_t tools) {
   txb::OverheadInput in;
   in.itemBytes = 40000;
   in.systemBytes = 7000;
   in.toolsBytes = 9000;
-  in.ownerMessages = 20;
-  in.photoLabels = 2;
+  in.ownerMessages = owners;
+  in.calls = in.results = owners * tools;
+  in.textBlocks = owners;
+  return in;
+}
+
+void test_checker_allows_framing_and_rejects_an_injected_block() {
+  txb::OverheadInput in = day(20, 2);
   long over = 0;
   std::string why;
-  // 20 x 96 + 2 x 64 + 512 = 2,560 B of framing allowed.
-  in.bodyBytes = 40000 + 7000 + 9000 + 2560;
+  const long bound = txb::overheadBound(in);
+  TEST_ASSERT_EQUAL(20 * 96 + 40 * 96 + 40 * 80 + 20 * 48 + 512, (int)bound);
+  in.bodyBytes = 40000 + 7000 + 9000 + (size_t)bound;
   TEST_ASSERT_TRUE_MESSAGE(txb::overheadWithin(in, over, why), why.c_str());
-  TEST_ASSERT_EQUAL(2560, (int)over);
   in.bodyBytes += 1;
   TEST_ASSERT_FALSE(txb::overheadWithin(in, over, why));
-  // A 300 B block injected around each owner message is caught from two messages on (the
-  // fixed envelope can hide at most 512 B once, never a per-message block).
+  // Text added around every owner message, beyond each block's framing, is caught.
   for (size_t owners : {2, 6, 30, 150}) {
-    in.ownerMessages = owners;
-    in.photoLabels = 0;
-    in.bodyBytes = in.itemBytes + in.systemBytes + in.toolsBytes + owners * (60 + 300);
+    in = day(owners, 1);
+    in.bodyBytes = in.itemBytes + in.systemBytes + in.toolsBytes + (size_t)txb::overheadBound(in) - 512 + owners * 300;
     why.clear();
     TEST_ASSERT_FALSE_MESSAGE(txb::overheadWithin(in, over, why), "a 300 B block per message passed");
   }
-  in.ownerMessages = 1;
-  in.bodyBytes = in.itemBytes + in.systemBytes + in.toolsBytes + 96 + 512 + 1;
-  why.clear();
-  TEST_ASSERT_FALSE_MESSAGE(txb::overheadWithin(in, over, why), "one byte over the envelope passed");
   // Photos earn their 64 B label, not more.
-  in.ownerMessages = 1;
+  in = day(1, 0);
   in.photoLabels = 4;
-  in.bodyBytes = in.itemBytes + in.systemBytes + in.toolsBytes + 96 + 4 * 64 + 512;
+  in.bodyBytes = in.itemBytes + in.systemBytes + in.toolsBytes + 96 + 48 + 4 * 64 + 512;
   why.clear();
   TEST_ASSERT_TRUE_MESSAGE(txb::overheadWithin(in, over, why), why.c_str());
+  in.bodyBytes += 1;
+  TEST_ASSERT_FALSE(txb::overheadWithin(in, over, why));
 }
 
 void test_json_string_bytes_count_escapes() {
@@ -69,6 +74,34 @@ void test_json_string_bytes_count_escapes() {
   TEST_ASSERT_EQUAL(7, (int)txb::jsonStringBytes("hello"));
   TEST_ASSERT_EQUAL(6, (int)txb::jsonStringBytes("a\nb"));
   TEST_ASSERT_EQUAL(6, (int)txb::jsonStringBytes("a\"b"));
+}
+
+// Text written around messages that no stored item holds is caught, whatever the slack.
+void test_checker_finds_text_no_item_holds() {
+  txb::Convo c;
+  for (int i = 0; i < 3; ++i) c.ownerTurn("question " + std::to_string(i), "answer " + std::to_string(i));
+  c.openTurn();
+  c.owner("photo time", {"pab12cd34"});
+  txb::CoverInput in;
+  in.items = &c.items;
+  in.bulk = &c.bulk;
+  in.openTurn = c.turn;
+  sp::RequestView v = txb::toyRender(in, txb::Mutation::None, 1);
+  v.messages.back().blocks.push_back(sp::detail::textBlock("[photo pab12cd34 Tue 17 Nov 13:02 not shown: view id=pab12cd34]"));
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(v, c.items, why), why.c_str());
+  const char* injected[] = {"RUNNING MEMORY: the owner likes skyr.", "Remember to log every meal.",
+                            "[device] recent actions: L00A3 skyr"};
+  for (const char* text : injected) {
+    sp::RequestView bad = v;
+    bad.messages.back().blocks.back().text += std::string(" ") + text;
+    why.clear();
+    TEST_ASSERT_FALSE_MESSAGE(txb::noUnstoredText(bad, c.items, why), text);
+    bad = v;
+    bad.messages.front().blocks.push_back(sp::detail::textBlock(text));
+    why.clear();
+    TEST_ASSERT_FALSE_MESSAGE(txb::noUnstoredText(bad, c.items, why), text);
+  }
 }
 
 // ---- wire level ------------------------------------------------------------------------
@@ -85,20 +118,16 @@ void wireOverhead(plain::Dialect d) {
     cov.bulk = &s.c.bulk;
     cov.openTurn = s.openTurn;
     txb::OverheadInput in;
-    TXB_OK(txb::renderedItemBytes(s.c, cov, in.itemBytes));
-    const size_t images = txb::detail::countImages(r.view);
+    txb::renderedText(s.c, cov, in);
     // A file reference carries no pixels in the body; an inline photo carries its base64.
-    if (r.body.find("file_pab12cd34") == std::string::npos) in.itemBytes += images * photo;
+    if (r.body.find("file_pab12cd34") == std::string::npos) in.itemBytes += txb::detail::countImages(r.view) * photo;
     in.bodyBytes = r.body.size();
     in.systemBytes = txb::systemJsonBytes(r.view);
     in.toolsBytes = txb::toolsJsonBytes(r.view);
-    for (const tx::Item& it : s.c.items) {
-      in.ownerMessages += it.kind == tx::ItemKind::User;
-      for (const tx::Part& p : it.parts) in.photoLabels += p.kind == tx::PartKind::Image;
-    }
     long over = 0;
     std::string why;
     TEST_ASSERT_TRUE_MESSAGE(txb::overheadWithin(in, over, why), (s.name + ": " + why).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(r.view, s.c.items, why), (s.name + ": " + why).c_str());
   }
 }
 
@@ -120,7 +149,8 @@ void test_wire_overhead_flat() {
 }
 
 // ---- engine level ----------------------------------------------------------------------
-// Twelve real turns (tools, outside content, gaps): the last request's framing is bounded.
+// Twelve real turns (tools, outside content, gaps): the last request's framing is bounded
+// and every text in it is stored text.
 void test_engine_requests_stay_within_the_framing() {
   TXB_WAITS_FOR("PENDING RB-E1a");
   txb::Battery b;
@@ -134,29 +164,19 @@ void test_engine_requests_stay_within_the_framing() {
   }
   turns.push_back(txb::chat(60, "last one", "bye"));
   TXB_OK(txb::runTurns(b, turns));
-  std::vector<tx::Item> all;
-  TXB_OK(b.stored(all));
-  // The last request was rendered before the last turn's final text was stored.
   txb::Convo c;
-  for (const tx::Item& it : all) {
-    if (it.turn == b.turnNo && it.kind == tx::ItemKind::Assistant && it.fin) break;
-    c.items.push_back(it);
-  }
-  txb::CoverInput cov;
-  cov.items = &c.items;
-  cov.openTurn = b.turnNo;
-  for (const tx::Item& it : c.items)
-    if (it.kind == tx::ItemKind::PointerMove) cov.pointer = std::max(cov.pointer, it.stub);
+  TXB_OK(b.storedBeforeLastFinal(c.items));
+  const txb::CoverInput cov = b.coverOf(c.items);
   txb::OverheadInput in;
-  TXB_OK(txb::renderedItemBytes(c, cov, in.itemBytes));
+  txb::renderedText(c, cov, in);
   const sp::Recorded& last = b.model.last();
   in.bodyBytes = last.body.size();
   in.systemBytes = txb::systemJsonBytes(last.view);
   in.toolsBytes = txb::toolsJsonBytes(last.view);
-  for (const tx::Item& it : c.items) in.ownerMessages += it.kind == tx::ItemKind::User;
   long over = 0;
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(txb::overheadWithin(in, over, why), why.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(last.view, c.items, why), why.c_str());
 }
 
 }  // namespace
@@ -165,6 +185,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_checker_allows_framing_and_rejects_an_injected_block);
   RUN_TEST(test_json_string_bytes_count_escapes);
+  RUN_TEST(test_checker_finds_text_no_item_holds);
   RUN_TEST(test_wire_overhead_anthropic);
   RUN_TEST(test_wire_overhead_responses);
   RUN_TEST(test_wire_overhead_chat);

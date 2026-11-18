@@ -106,25 +106,41 @@ inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t 
   return tx::Status::success();
 }
 
-// The stored bytes of the items a request renders (u a c r h; k of the open turn), plus
-// the whole bulk payloads it shows, as JSON string bytes (RB-T1's encoder).
-inline tx::Status renderedItemBytes(const Convo& c, const CoverInput& in, size_t& out) {
-  out = 0;
+// The stored text a request shows (u a c r h; k of the open turn) as JSON string bytes,
+// and the blocks it shows them in, for the overhead property.
+inline void renderedText(const Convo& c, const CoverInput& in, OverheadInput& out) {
   const std::set<uint64_t> sup = detail::supersededSet(c.items);
   for (const tx::Item& it : c.items) {
-    const bool shown = it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant ||
-                       it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Result ||
-                       it.kind == tx::ItemKind::DeviceNote ||
-                       (it.kind == tx::ItemKind::RoundMeta && it.turn == in.openTurn);
-    if (!shown || it.q <= in.thru) continue;
-    std::string line;
-    tx::Status st = tx::encodeLine(it, line);
-    if (!st.ok()) return st;
-    out += line.size();
-    if (it.kind == tx::ItemKind::Result && !it.handle.empty() && expectedShow(it, in, sup) == Shown::Whole)
-      out += jsonStringBytes(detail::resultWhole(it, in));
+    if (it.q <= in.thru) continue;
+    switch (it.kind) {
+      case tx::ItemKind::User:
+        ++out.ownerMessages;
+        out.itemBytes += jsonStringBytes(it.x);
+        for (const tx::Part& p : it.parts) out.photoLabels += p.kind == tx::PartKind::Image;
+        break;
+      case tx::ItemKind::Assistant:
+      case tx::ItemKind::DeviceNote:
+        ++out.textBlocks;
+        out.itemBytes += jsonStringBytes(it.x);
+        break;
+      case tx::ItemKind::RoundMeta:
+        if (it.turn != in.openTurn) break;
+        ++out.textBlocks;
+        out.itemBytes += jsonStringBytes(it.x);
+        break;
+      case tx::ItemKind::Call:
+        ++out.calls;
+        out.itemBytes += jsonStringBytes(it.id) + jsonStringBytes(it.n) + jsonStringBytes(it.args);
+        break;
+      case tx::ItemKind::Result:
+        ++out.results;
+        out.itemBytes += jsonStringBytes(it.id) +
+                         jsonStringBytes(expectedShow(it, in, sup) == Shown::Stub ? it.st : detail::resultWhole(it, in));
+        break;
+      default:
+        break;
+    }
   }
-  return tx::Status::success();
 }
 
 }  // namespace txb

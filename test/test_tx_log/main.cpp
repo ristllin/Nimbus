@@ -77,6 +77,15 @@ std::vector<std::string> allLines(txb::MemFiles& files) {
   return lines;
 }
 
+// Every byte in the chat's segments, whole lines or not.
+size_t segmentBytes(txb::MemFiles& files) {
+  std::string dir;
+  TXB_OK(tx::txDir(kChat, dir));
+  size_t n = 0;
+  for (const std::string& seg : files.segments(dir)) n += files.files[seg].size();
+  return n;
+}
+
 tx::Status fillArena(tx::TxLog& log, const tx::HeadState& head, tx::TxArena& arena) {
   tx::Status st = arena.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); });
   return st.ok() ? log.fill(head, arena) : st;
@@ -222,7 +231,7 @@ void test_refused_append_is_not_stored() {
   TEST_ASSERT_TRUE(state == tx::StoreState::NotStored);
   TEST_ASSERT_TRUE_MESSAGE(st.err == tx::Err::NotStored, tx::errSlug(st.err));
   files.refuseAll = false;
-  TEST_ASSERT_EQUAL(0, (int)allLines(files).size());
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)segmentBytes(files), "a refused append left bytes behind");
 }
 
 // One append per item, nothing rewritten while appending (PRD: one append per persist point).
@@ -260,7 +269,7 @@ void test_segments_roll_at_one_megabyte_without_splitting_a_line() {
     TEST_ASSERT_TRUE_MESSAGE(s.size() <= tx::kSegmentRollBytes, seg.c_str());
     TEST_ASSERT_TRUE_MESSAGE(!s.empty() && s.back() == '\n', seg.c_str());
   }
-  TEST_ASSERT_EQUAL(50, (int)allLines(files).size());
+  TEST_ASSERT_EQUAL((int)c.items.size(), (int)allLines(files).size());
 }
 
 // Bulk payloads come back exactly, whole and by page.
@@ -299,7 +308,7 @@ void test_a_line_over_the_ceiling_is_refused_whole() {
   tx::StoreState state;
   const tx::Status st = log.append(big, state);
   TEST_ASSERT_TRUE_MESSAGE(st.err == tx::Err::TooLarge, tx::errSlug(st.err));
-  TEST_ASSERT_EQUAL(0, (int)allLines(files).size());
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)segmentBytes(files), "part of a refused line was written");
 }
 
 // Every path is under /mem/tx/<chatKey>/; an unsafe chat key has no path at all.

@@ -348,6 +348,7 @@ void expectVisible(const tx::PhotoFacts& f, size_t want, const char* msg) {
 // first), until 60 minutes idle or a restart.
 void test_file_reference_photos_follow_the_table() {
   TXB_WAITS_FOR("PENDING RB-T3");
+  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 0, 0), 3, "the arrival turn");
   expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 1, 60), 3, "next owner turn");
   expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 2, 600), 3, "second owner turn");
   expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 3, 60), 0, "third owner turn");
@@ -361,6 +362,7 @@ void test_file_reference_photos_follow_the_table() {
 // Inline heads (routed included): the next owner turn only, inside 270 s, newest 2.
 void test_inline_photos_follow_the_table() {
   TXB_WAITS_FOR("PENDING RB-T3");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 2, 0, 0), 2, "the arrival turn");
   expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 1, 270), 1, "next turn inside 270 s");
   expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 1, 271), 0, "next turn after 270 s");
   expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 2, 30), 0, "second owner turn");

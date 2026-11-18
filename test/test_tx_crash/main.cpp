@@ -62,17 +62,8 @@ void runCut(txb::Battery& b, const std::vector<txb::TurnScript>& turns) {
   if (st.notImplemented()) TXB_OK(st);
 }
 
-bool answered(const sp::Recorded& r) {
-  return r.body.find("tool_result") != std::string::npos || r.body.find("function_call_output") != std::string::npos ||
-         r.body.find("\"role\":\"tool\"") != std::string::npos;
-}
-
-// A sane model: it makes the effect call until it sees a result (or 'outcome unknown'),
-// then says it is done. Any second effect is therefore the harness's doing.
 void sanity(txb::Battery& b, const std::string& tool, const std::string& args, const std::string& reply) {
-  b.model.respondWith([tool, args, reply](const sp::Recorded& r, size_t) {
-    return answered(r) ? sp::say(reply) : sp::call(tool, args);
-  });
+  txb::callUntilAnswered(b, tool, args, reply);
 }
 
 size_t replies(const txb::Battery& b, const std::string& reply) {
@@ -165,14 +156,14 @@ void test_an_intent_without_result_is_shown_as_outcome_unknown_and_never_rerun()
   b.files.killWhen = [](const char* d, size_t n) { return lineIs(d, n, tx::ItemKind::Result, "ledger_write"); };
   runCut(b, {txb::TurnScript{30, "log it", {}}});
   TEST_ASSERT_TRUE_MESSAGE(b.killed, "no result line of ledger_write was ever appended");
-  TEST_ASSERT_EQUAL(1, b.world.effectRuns.begin()->second);
+  TEST_ASSERT_EQUAL(1, b.world.runsOf("ledger_write"));
   const size_t before = b.model.requests().size();
   TXB_OK(b.restartAfterCut());
   bool told = false;
   for (size_t i = before; i < b.model.requests().size(); ++i)
     told |= b.model.requests()[i].body.find("outcome unknown") != std::string::npos;
   TEST_ASSERT_TRUE_MESSAGE(told, "the resumed request never said 'outcome unknown'");
-  TEST_ASSERT_EQUAL_MESSAGE(1, b.world.effectRuns.begin()->second, "the effect was re-run after the restart");
+  TEST_ASSERT_EQUAL_MESSAGE(1, b.world.runsOf("ledger_write"), "the effect was re-run after the restart");
   TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
 }
 
@@ -223,7 +214,7 @@ void test_a_stored_reply_never_sent_is_sent_without_a_model_call() {
   TXB_OK(b.restartAfterCut());
   TEST_ASSERT_EQUAL_MESSAGE(requests, b.model.requests().size(), "a stored reply cost a model call");
   TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
-  TEST_ASSERT_EQUAL(1, b.world.effectRuns.begin()->second);
+  TEST_ASSERT_EQUAL(1, b.world.runsOf("ledger_write"));
 }
 
 // Restart and install run after the reply is sent and are excluded from resume: a cut

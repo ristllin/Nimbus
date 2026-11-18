@@ -188,9 +188,7 @@ void test_compaction_moves_a_call_with_its_result() {
     turns.push_back(txb::withTool(i % 8 == 0 ? 86400 : 60, "turn " + std::to_string(i) + std::string(3000, 'p'),
                                   "ledger_day", R"({"day":"2026-11-17"})", "ok " + std::to_string(i)));
   TXB_OK(txb::runTurns(b, turns));
-  b.model.respondWith([](const sp::Recorded&, size_t) {
-    return sp::say("Digest: ledger checks every turn, nothing pending, the owner keeps a food log daily.");
-  });
+  b.model.respondWith([](const sp::Recorded&, size_t) { return sp::say(txb::kDigest); });
   plain::IdleOutcome out;
   TXB_OK(b.idle(out));
   b.model.respondWith(nullptr);
@@ -215,12 +213,7 @@ void test_compaction_moves_a_call_with_its_result() {
 void test_pairs_survive_a_cut_at_every_append() {
   TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
   auto script = [](txb::Battery& b) {
-    b.model.respondWith([](const sp::Recorded& r, size_t) {
-      return r.body.find("tool_result") != std::string::npos || r.body.find("function_call_output") != std::string::npos ||
-                     r.body.find("\"role\":\"tool\"") != std::string::npos
-                 ? sp::say("Logged.")
-                 : sp::call("ledger_write", R"({"day":"2026-11-17","add":[{"food":"skyr","g":150}]})");
-    });
+    txb::callUntilAnswered(b, "ledger_write", R"({"day":"2026-11-17","add":[{"food":"skyr","g":150}]})", "Logged.");
   };
   txb::Battery dry;
   script(dry);

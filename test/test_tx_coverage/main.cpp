@@ -143,41 +143,22 @@ void test_wire_coverage_flat() {
 }
 
 // ---- engine level ----------------------------------------------------------------------
-// The stored items the last request was rendered from: the last turn's final text and
-// what follows it are stored after that request.
-std::vector<tx::Item> beforeFinalText(std::vector<tx::Item> items, uint32_t turn) {
-  for (size_t i = 0; i < items.size(); ++i)
-    if (items[i].turn == turn && items[i].kind == tx::ItemKind::Assistant && items[i].fin) {
-      items.resize(i);
-      break;
-    }
-  return items;
-}
-
-txb::CoverInput storedCover(const std::vector<tx::Item>& items, uint32_t openTurn) {
-  txb::CoverInput in;
-  in.items = &items;
-  in.openTurn = openTurn;
-  for (const tx::Item& it : items)
-    if (it.kind == tx::ItemKind::PointerMove) in.pointer = std::max(in.pointer, it.stub);
-  return in;
-}
-
 void expectLastRequestCovers(txb::Battery& b) {
-  std::vector<tx::Item> all;
-  TXB_OK(b.stored(all));
-  const std::vector<tx::Item> items = beforeFinalText(all, b.turnNo);
+  std::vector<tx::Item> items;
+  TXB_OK(b.storedBeforeLastFinal(items));
   std::string why;
-  TEST_ASSERT_TRUE_MESSAGE(txb::compactedCovers(b.model.last().view, storedCover(items, b.turnNo), why), why.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(txb::compactedCovers(b.model.last().view, b.coverOf(items), why), why.c_str());
   TEST_ASSERT_TRUE_MESSAGE(b.model.verify(why), why.c_str());
 }
 
+// Bulk reads stay at 8,000 B: under the whole-result cap of every head (10,625 B on an
+// 85,000 B head), so the expected rendering never depends on paging.
 std::vector<txb::TurnScript> longChat(size_t n, size_t askBytes) {
   const uint32_t gaps[] = {30, 60, 400, 45, 3600, 60, 120, 30, 90000, 60};
   std::vector<txb::TurnScript> turns;
   for (size_t i = 0; i < n; ++i) {
     const std::string k = std::to_string(i), ask = "turn " + k + " " + std::string(askBytes, 'q');
-    if (i % 3 == 0) turns.push_back(txb::withTool(gaps[i % 10], ask, "big_read", "{\"tag\":\"t" + k + "\",\"bytes\":12000}", "read " + k));
+    if (i % 3 == 0) turns.push_back(txb::withTool(gaps[i % 10], ask, "big_read", "{\"tag\":\"t" + k + "\",\"bytes\":8000}", "read " + k));
     else if (i % 3 == 1) turns.push_back(txb::withTool(gaps[i % 10], ask, "web_search", "{\"q\":\"w" + k + "\"}", "found " + k));
     else turns.push_back(txb::chat(gaps[i % 10], ask, "reply " + k));
   }
@@ -219,10 +200,6 @@ void test_a_floor_head_names_what_the_ladder_omits() {
 }
 
 // ---- compaction ------------------------------------------------------------------------
-const char* kDigest =
-    "Day digest: the owner asked about the boat, read files and searched the web; nothing is pending. "
-    "He prefers short answers. Facts: Nereid II, 9.5 m.";
-
 void answerSummariesWith(txb::Battery& b, std::function<sp::Step()> step) {
   b.model.respondWith([step](const sp::Recorded&, size_t) { return step(); });
 }
@@ -245,7 +222,7 @@ void test_compaction_covers_every_row() {
   txb::Battery b;
   b.world.files["notes/boat.md"] = "Nereid II";
   TXB_OK(txb::runTurns(b, threeDays()));
-  answerSummariesWith(b, [] { return sp::say(kDigest); });
+  answerSummariesWith(b, [] { return sp::say(txb::kDigest); });
   plain::IdleOutcome out;
   TXB_OK(b.idle(out));
   TEST_ASSERT_TRUE_MESSAGE(out.worked, "90 KB resident above H=60,000 B and no compaction ran");
@@ -273,12 +250,15 @@ void test_a_failed_compaction_leaves_every_row_covered() {
     if (mode == 1) answerSummariesWith(b, [] { return sp::say("Talked."); });
     if (mode == 2) answerSummariesWith(b, [] { return sp::httpError(400); });
     if (mode == 3) {
-      answerSummariesWith(b, [] { return sp::say(kDigest); });
+      answerSummariesWith(b, [] { return sp::say(txb::kDigest); });
       b.files.killAtRename = (long)b.files.renames;
     }
+    const size_t asked = b.model.requests().size();
     plain::IdleOutcome out;
     const tx::Status st = b.idle(out);
     if (st.notImplemented()) TXB_OK(st);
+    TEST_ASSERT_TRUE_MESSAGE(b.model.requests().size() > asked, "no compaction was attempted");
+    if (mode == 3) TEST_ASSERT_TRUE_MESSAGE(b.killed, "the compaction never renamed head.json (temp and rename)");
     if (b.killed) TXB_OK(b.restartAfterCut());
     b.model.respondWith(nullptr);
     TXB_OK(txb::runTurns(b, {txb::chat(60, "still there?", "yes")}));

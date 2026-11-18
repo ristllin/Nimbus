@@ -94,6 +94,23 @@ inline tx::Status runTurns(Battery& b, const std::vector<TurnScript>& turns) {
   return tx::Status::success();
 }
 
+// A sane model for effect turns: it calls `tool` until a result (or 'outcome unknown') is in
+// the request, then says `reply`. A second effect is then the harness's doing, never the model's.
+inline bool carriesAResult(const sp::Recorded& r) {
+  return r.body.find("tool_result") != std::string::npos || r.body.find("function_call_output") != std::string::npos ||
+         r.body.find("\"role\":\"tool\"") != std::string::npos || r.body.find("outcome unknown") != std::string::npos;
+}
+inline void callUntilAnswered(Battery& b, const std::string& tool, const std::string& args, const std::string& reply) {
+  b.model.respondWith([tool, args, reply](const sp::Recorded& r, size_t) {
+    return carriesAResult(r) ? sp::say(reply) : sp::call(tool, args);
+  });
+}
+
+// A digest the summarizer may return: over the 120 B a slice of 2 KB or more needs, under 768 B.
+inline constexpr const char* kDigest =
+    "Day digest: the owner asked about the boat, read files and searched the web; nothing is pending. "
+    "He prefers short answers. Facts: Nereid II, 9.5 m.";
+
 inline TurnScript chat(uint32_t gap, const std::string& ask, const std::string& answer) {
   return TurnScript{gap, ask, {sp::say(answer)}};
 }
