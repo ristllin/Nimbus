@@ -1,0 +1,2231 @@
+{
+ "about": "Real photos of nutrition labels from Open Food Facts (images CC BY-SA 3.0, attribution: Open Food Facts contributors and the product page). Each photo is the contributor's selected nutrition crop, downscaled to a long edge of at most 1,600 px. Every figure under columns was read by eye from the photo (lane RB-M1, 18 Nov 2026); a figure that could not be read is listed under unscored and left out. The OFF structured record was a cross-check only: it disagreed with the photo on several labels (older recipes) and the photo wins.",
+ "fields": [
+  "energy_kj",
+  "energy_kcal",
+  "fat",
+  "saturates",
+  "carbohydrate",
+  "sugars",
+  "polyols",
+  "fibre",
+  "protein",
+  "salt",
+  "sodium_mg"
+ ],
+ "labels": [
+  {
+   "id": "protein_bars_8410076610744",
+   "file": "protein_bars_8410076610744.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "glare"
+   ],
+   "product": "",
+   "brands": "Nature Valley",
+   "product_url": "https://world.openfoodfacts.org/product/8410076610744",
+   "image_url": "https://images.openfoodfacts.org/images/products/841/007/661/0744/nutrition_fr.58.full.jpg",
+   "source_px": [
+    1462,
+    901
+   ],
+   "stored_px": [
+    1462,
+    901
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/8410076610744",
+   "serving": "40 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2104",
+     "energy_kcal": "506",
+     "fat": "30.4",
+     "saturates": "7.3",
+     "carbohydrate": "25.1",
+     "sugars": "14.5",
+     "fibre": "13.8",
+     "protein": "26.0",
+     "salt": "1.05"
+    },
+    "serving": {
+     "energy_kj": "842",
+     "energy_kcal": "202",
+     "fat": "12.2",
+     "saturates": "2.9",
+     "carbohydrate": "10.0",
+     "sugars": "5.8",
+     "fibre": "5.5",
+     "protein": "10.4",
+     "salt": "0.42"
+    }
+   },
+   "unscored": [],
+   "note": "OFF record differs (older recipe)"
+  },
+  {
+   "id": "protein_bars_5013803991982",
+   "file": "protein_bars_5013803991982.jpg",
+   "languages": [
+    "en"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ingredients_context"
+   ],
+   "product": "Crunchy Nut Bars with Peanuts & Chocolate",
+   "brands": "Eat Natural",
+   "product_url": "https://world.openfoodfacts.org/product/5013803991982",
+   "image_url": "https://images.openfoodfacts.org/images/products/501/380/399/1982/nutrition_en.29.full.jpg",
+   "source_px": [
+    3024,
+    4032
+   ],
+   "stored_px": [
+    1200,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5013803991982",
+   "serving": "45 g bar",
+   "columns": {
+    "per100": {
+     "energy_kj": "2126",
+     "energy_kcal": "510",
+     "fat": "30.5",
+     "saturates": "9.1",
+     "carbohydrate": "32.4",
+     "sugars": "18.8",
+     "fibre": "7.3",
+     "protein": "22.8",
+     "salt": "0.32"
+    },
+    "serving": {
+     "energy_kj": "957",
+     "energy_kcal": "229",
+     "fat": "13.7",
+     "saturates": "4.1",
+     "carbohydrate": "14.6",
+     "sugars": "8.4",
+     "fibre": "3.3",
+     "protein": "10.2",
+     "salt": "0.14"
+    }
+   },
+   "unscored": [],
+   "note": "label within a full back panel"
+  },
+  {
+   "id": "protein_bars_5053827189927",
+   "file": "protein_bars_5053827189927.jpg",
+   "languages": [
+    "fr",
+    "nl",
+    "de"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "angle",
+    "ri_column"
+   ],
+   "product": "Special K High Protein",
+   "brands": "Kellogg's",
+   "product_url": "https://world.openfoodfacts.org/product/5053827189927",
+   "image_url": "https://images.openfoodfacts.org/images/products/505/382/718/9927/nutrition_fr.67.full.jpg",
+   "source_px": [
+    4608,
+    2128
+   ],
+   "stored_px": [
+    1600,
+    739
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5053827189927",
+   "serving": "28 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1776",
+     "energy_kcal": "423",
+     "fat": "16",
+     "saturates": "5.1",
+     "carbohydrate": "44",
+     "sugars": "16",
+     "fibre": "5.6",
+     "protein": "23",
+     "salt": "0.61"
+    },
+    "serving": {
+     "energy_kj": "497",
+     "energy_kcal": "118",
+     "fat": "4.5",
+     "saturates": "1.4",
+     "carbohydrate": "12",
+     "sugars": "4.5",
+     "fibre": "1.6",
+     "protein": "6.4",
+     "salt": "0.17"
+    }
+   },
+   "unscored": [],
+   "note": "%RI digits sit beside serving values"
+  },
+  {
+   "id": "protein_bars_20955427",
+   "file": "protein_bars_20955427.jpg",
+   "languages": [
+    "de"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "polyols",
+    "glare",
+    "wrinkled"
+   ],
+   "product": "Tvarohová tyčinka Protein",
+   "brands": "Müller",
+   "product_url": "https://world.openfoodfacts.org/product/20955427",
+   "image_url": "https://images.openfoodfacts.org/images/products/20955427/nutrition_de.15.full.jpg",
+   "source_px": [
+    2176,
+    1440
+   ],
+   "stored_px": [
+    1600,
+    1059
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/20955427",
+   "serving": "40 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1293",
+     "energy_kcal": "310",
+     "fat": "19.0",
+     "saturates": "14.1",
+     "carbohydrate": "16.0",
+     "sugars": "7.0",
+     "polyols": "8.0",
+     "protein": "22.0",
+     "salt": "0.10"
+    },
+    "serving": {
+     "energy_kj": "517",
+     "energy_kcal": "124",
+     "fat": "7.6",
+     "saturates": "5.6",
+     "carbohydrate": "6.4",
+     "sugars": "2.8",
+     "polyols": "3.2",
+     "protein": "8.8",
+     "salt": "0.04"
+    }
+   },
+   "unscored": [],
+   "note": "OFF record differs (1296/323)"
+  },
+  {
+   "id": "barebells_7340001800999",
+   "file": "barebells_7340001800999.jpg",
+   "languages": [
+    "de",
+    "fr",
+    "nl"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "low_contrast",
+    "wide"
+   ],
+   "product": "Protein Bar Salty Peanut",
+   "brands": "Barebells",
+   "product_url": "https://world.openfoodfacts.org/product/7340001800999",
+   "image_url": "https://images.openfoodfacts.org/images/products/734/000/180/0999/nutrition_de.24.full.jpg",
+   "source_px": [
+    2046,
+    678
+   ],
+   "stored_px": [
+    1600,
+    530
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/7340001800999",
+   "serving": "55 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1551",
+     "energy_kcal": "371",
+     "fat": "15",
+     "saturates": "6.5",
+     "carbohydrate": "29",
+     "sugars": "2.3",
+     "fibre": "7.2",
+     "protein": "36",
+     "salt": "0.48"
+    },
+    "serving": {
+     "energy_kj": "853",
+     "energy_kcal": "204",
+     "fat": "8.4",
+     "saturates": "3.6",
+     "carbohydrate": "16",
+     "sugars": "1.3",
+     "fibre": "4.0",
+     "protein": "20",
+     "salt": "0.26"
+    }
+   },
+   "unscored": [],
+   "note": "gold on black foil"
+  },
+  {
+   "id": "barebells_7340001801101",
+   "file": "barebells_7340001801101.jpg",
+   "languages": [
+    "de",
+    "fr",
+    "nl"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "blur",
+    "curved",
+    "wide"
+   ],
+   "product": "White Chocolate Almond - Protein Bar",
+   "brands": "Barebells",
+   "product_url": "https://world.openfoodfacts.org/product/7340001801101",
+   "image_url": "https://images.openfoodfacts.org/images/products/734/000/180/1101/nutrition_de.18.full.jpg",
+   "source_px": [
+    5162,
+    1835
+   ],
+   "stored_px": [
+    1600,
+    569
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/7340001801101",
+   "serving": "55 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1542",
+     "energy_kcal": "369",
+     "fat": "16",
+     "saturates": "7.9",
+     "carbohydrate": "28",
+     "sugars": "2.9",
+     "fibre": "6.9",
+     "protein": "36",
+     "salt": "0.46"
+    },
+    "serving": {
+     "energy_kj": "848",
+     "energy_kcal": "203",
+     "fat": "8.7",
+     "saturates": "4.3",
+     "carbohydrate": "15",
+     "sugars": "1.6",
+     "fibre": "3.8",
+     "protein": "20",
+     "salt": "0.25"
+    }
+   },
+   "unscored": [],
+   "note": "serving column soft focus; OFF record differs"
+  },
+  {
+   "id": "barebells_7340001801972",
+   "file": "barebells_7340001801972.jpg",
+   "languages": [
+    "de",
+    "fr",
+    "nl"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "blur",
+    "low_light",
+    "wide"
+   ],
+   "product": "Protein Bar Hazelnut & Nougat",
+   "brands": "Barebells",
+   "product_url": "https://world.openfoodfacts.org/product/7340001801972",
+   "image_url": "https://images.openfoodfacts.org/images/products/734/000/180/1972/nutrition_de.12.full.jpg",
+   "source_px": [
+    4405,
+    1550
+   ],
+   "stored_px": [
+    1600,
+    563
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/7340001801972",
+   "serving": "55 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1557",
+     "energy_kcal": "373",
+     "fat": "17",
+     "saturates": "7.4",
+     "carbohydrate": "26",
+     "sugars": "3.5",
+     "fibre": "7.7",
+     "protein": "36",
+     "salt": "0.19"
+    },
+    "serving": {
+     "fat": "9.4",
+     "saturates": "4.1",
+     "carbohydrate": "14",
+     "sugars": "1.9",
+     "fibre": "4.2",
+     "protein": "20",
+     "salt": "0.10"
+    }
+   },
+   "unscored": [
+    "serving.energy_kj",
+    "serving.energy_kcal"
+   ],
+   "note": "serving energy too blurred to verify by eye (reads 856/205, arithmetic agrees) so it is not scored"
+  },
+  {
+   "id": "grenade_5060221206860",
+   "file": "grenade_5060221206860.jpg",
+   "languages": [
+    "en",
+    "nl",
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "polyols",
+    "fibre",
+    "glare",
+    "in_hand",
+    "small_in_frame"
+   ],
+   "product": "Salted Caramel",
+   "brands": "Grenade",
+   "product_url": "https://world.openfoodfacts.org/product/5060221206860",
+   "image_url": "https://images.openfoodfacts.org/images/products/506/022/120/6860/nutrition_en.48.full.jpg",
+   "source_px": [
+    1848,
+    4000
+   ],
+   "stored_px": [
+    739,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5060221206860",
+   "serving": "60 g bar",
+   "columns": {
+    "per100": {
+     "fat": "16",
+     "saturates": "9.2",
+     "carbohydrate": "34",
+     "sugars": "2.5",
+     "polyols": "30",
+     "fibre": "4.1",
+     "protein": "33",
+     "salt": "0.48"
+    },
+    "serving": {
+     "fat": "9.5",
+     "saturates": "5.5",
+     "carbohydrate": "20",
+     "sugars": "1.4",
+     "polyols": "18",
+     "fibre": "2.5",
+     "protein": "20",
+     "salt": "0.29"
+    }
+   },
+   "unscored": [
+    "per100.energy_kj",
+    "per100.energy_kcal",
+    "serving.energy_kj",
+    "serving.energy_kcal"
+   ],
+   "note": "glare hides all four energy figures (not scored)"
+  },
+  {
+   "id": "grenade_5060811383254",
+   "file": "grenade_5060811383254.jpg",
+   "languages": [
+    "en",
+    "nl",
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "polyols",
+    "fibre",
+    "angle",
+    "shadow",
+    "row_offset"
+   ],
+   "product": "Grenade High Protein, Low Sugar",
+   "brands": "Grenade",
+   "product_url": "https://world.openfoodfacts.org/product/5060811383254",
+   "image_url": "https://images.openfoodfacts.org/images/products/506/081/138/3254/nutrition_en.39.full.jpg",
+   "source_px": [
+    1700,
+    982
+   ],
+   "stored_px": [
+    1600,
+    924
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5060811383254",
+   "serving": "60 g bar",
+   "columns": {
+    "per100": {
+     "energy_kj": "1624",
+     "energy_kcal": "389",
+     "fat": "17",
+     "saturates": "9.3",
+     "carbohydrate": "34",
+     "sugars": "1.7",
+     "polyols": "28",
+     "fibre": "2.0",
+     "protein": "35",
+     "salt": "0.59"
+    },
+    "serving": {
+     "energy_kj": "974",
+     "energy_kcal": "233",
+     "fat": "10",
+     "saturates": "5.6",
+     "carbohydrate": "20",
+     "sugars": "1.0",
+     "polyols": "17",
+     "fibre": "1.2",
+     "protein": "21",
+     "salt": "0.35"
+    }
+   },
+   "unscored": [],
+   "note": "figures sit half a row above their labels"
+  },
+  {
+   "id": "grenade_5060221203784",
+   "file": "grenade_5060221203784.jpg",
+   "languages": [
+    "en",
+    "nl",
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "polyols",
+    "fibre",
+    "blur",
+    "glare",
+    "low_contrast"
+   ],
+   "product": "Jaffa Cake",
+   "brands": "Grenade",
+   "product_url": "https://world.openfoodfacts.org/product/5060221203784",
+   "image_url": "https://images.openfoodfacts.org/images/products/506/022/120/3784/nutrition_en.33.full.jpg",
+   "source_px": [
+    1341,
+    1183
+   ],
+   "stored_px": [
+    1341,
+    1183
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5060221203784",
+   "serving": "60 g bar",
+   "columns": {
+    "per100": {
+     "energy_kj": "1501",
+     "energy_kcal": "359",
+     "fat": "13.2",
+     "saturates": "6.5",
+     "carbohydrate": "26.9",
+     "sugars": "3.4",
+     "polyols": "22.0",
+     "fibre": "11.3",
+     "protein": "36.4",
+     "salt": "0.48"
+    },
+    "serving": {
+     "energy_kj": "901",
+     "energy_kcal": "215",
+     "fat": "7.9",
+     "saturates": "3.9",
+     "carbohydrate": "16.2",
+     "sugars": "2.0",
+     "polyols": "13.2",
+     "fibre": "6.8",
+     "protein": "21.8",
+     "salt": "0.29"
+    }
+   },
+   "unscored": [],
+   "note": "blurred; each figure read by eye and consistent with 60 g arithmetic; OFF record differs"
+  },
+  {
+   "id": "gum_3175680011480",
+   "file": "gum_3175680011480.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "split_table",
+    "ri_column",
+    "wide"
+   ],
+   "product": "Sésame",
+   "brands": "Gerblé",
+   "product_url": "https://world.openfoodfacts.org/product/3175680011480",
+   "image_url": "https://images.openfoodfacts.org/images/products/317/568/001/1480/nutrition_fr.248.full.jpg",
+   "source_px": [
+    2925,
+    836
+   ],
+   "stored_px": [
+    1600,
+    457
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3175680011480",
+   "serving": "1 biscuit 11.5 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1961",
+     "energy_kcal": "467",
+     "fat": "18",
+     "saturates": "2.0",
+     "carbohydrate": "64",
+     "sugars": "17",
+     "fibre": "4.6",
+     "protein": "10",
+     "salt": "0.38"
+    },
+    "serving": {
+     "energy_kj": "228",
+     "energy_kcal": "54",
+     "fat": "2.1",
+     "saturates": "0.2",
+     "carbohydrate": "7.4",
+     "sugars": "2.0",
+     "fibre": "0.5",
+     "protein": "1.2",
+     "salt": "0.05"
+    }
+   },
+   "unscored": [],
+   "note": "table split in two halves, salt in the right half; OFF serving 10 g differs"
+  },
+  {
+   "id": "gum_3017620422003",
+   "file": "gum_3017620422003.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "ri_column",
+    "easy"
+   ],
+   "product": "Nutella",
+   "brands": "Ferrero, Nutella",
+   "product_url": "https://world.openfoodfacts.org/product/3017620422003",
+   "image_url": "https://images.openfoodfacts.org/images/products/301/762/042/2003/nutrition_fr.651.full.jpg",
+   "source_px": [
+    1776,
+    1675
+   ],
+   "stored_px": [
+    1600,
+    1509
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3017620422003",
+   "serving": "15 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2252",
+     "energy_kcal": "539",
+     "fat": "30.9",
+     "saturates": "10.6",
+     "carbohydrate": "57.5",
+     "sugars": "56.3",
+     "protein": "6.3",
+     "salt": "0.107"
+    },
+    "serving": {
+     "energy_kj": "336",
+     "energy_kcal": "80",
+     "fat": "4.6",
+     "saturates": "1.6",
+     "carbohydrate": "8.6",
+     "sugars": "8.4",
+     "protein": "0.9",
+     "salt": "0.016"
+    }
+   },
+   "unscored": [],
+   "note": "no fibre row; units in a separate column"
+  },
+  {
+   "id": "gum_54491472",
+   "file": "gum_54491472.jpg",
+   "languages": [
+    "ro"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "curved",
+    "low_light",
+    "per_ml"
+   ],
+   "product": "Cola",
+   "brands": "Coca-Cola",
+   "product_url": "https://world.openfoodfacts.org/product/54491472",
+   "image_url": "https://images.openfoodfacts.org/images/products/54491472/nutrition_ro.243.full.jpg",
+   "source_px": [
+    2480,
+    3096
+   ],
+   "stored_px": [
+    1282,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/54491472",
+   "serving": "250 ml",
+   "columns": {
+    "per100": {
+     "energy_kj": "180",
+     "energy_kcal": "42",
+     "fat": "0",
+     "saturates": "0",
+     "carbohydrate": "10.6",
+     "sugars": "10.6",
+     "protein": "0",
+     "salt": "0"
+    },
+    "serving": {
+     "energy_kj": "450",
+     "energy_kcal": "105",
+     "fat": "0",
+     "saturates": "0",
+     "carbohydrate": "27",
+     "sugars": "27",
+     "protein": "0",
+     "salt": "0"
+    }
+   },
+   "unscored": [],
+   "note": "Romanian bottle label, serving column wraps round the curve"
+  },
+  {
+   "id": "ricola_7610700015445",
+   "file": "ricola_7610700015445.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "polyols",
+    "easy"
+   ],
+   "product": "50G RICOLA CITRON MELISSE",
+   "brands": "Ricola",
+   "product_url": "https://world.openfoodfacts.org/product/7610700015445",
+   "image_url": "https://images.openfoodfacts.org/images/products/761/070/001/5445/nutrition_fr.30.full.jpg",
+   "source_px": [
+    1681,
+    986
+   ],
+   "stored_px": [
+    1600,
+    938
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/7610700015445",
+   "serving": null,
+   "columns": {
+    "per100": {
+     "energy_kj": "991",
+     "energy_kcal": "238",
+     "fat": "0",
+     "saturates": "0",
+     "carbohydrate": "97",
+     "sugars": "0",
+     "polyols": "97",
+     "protein": "0",
+     "salt": "0"
+    }
+   },
+   "unscored": [],
+   "note": "per 100 g only"
+  },
+  {
+   "id": "ricola_7610700601396",
+   "file": "ricola_7610700601396.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "polyols",
+    "distractor_mg"
+   ],
+   "product": "ricola aux plantes des alpes suisses",
+   "brands": "Ricola",
+   "product_url": "https://world.openfoodfacts.org/product/7610700601396",
+   "image_url": "https://images.openfoodfacts.org/images/products/761/070/060/1396/nutrition_fr.81.full.jpg",
+   "source_px": [
+    3024,
+    4032
+   ],
+   "stored_px": [
+    1200,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/7610700601396",
+   "serving": null,
+   "columns": {
+    "per100": {
+     "energy_kj": "986",
+     "energy_kcal": "237",
+     "fat": "0",
+     "saturates": "0",
+     "carbohydrate": "98",
+     "sugars": "0",
+     "polyols": "98",
+     "protein": "0",
+     "salt": "0"
+    }
+   },
+   "unscored": [],
+   "note": "menthol 188 mg line below the table; OFF record differs (987/97)"
+  },
+  {
+   "id": "fulfil_3046920022651",
+   "file": "fulfil_3046920022651.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "easy"
+   ],
+   "product": "Noir Intense",
+   "brands": "Lindt",
+   "product_url": "https://world.openfoodfacts.org/product/3046920022651",
+   "image_url": "https://images.openfoodfacts.org/images/products/304/692/002/2651/nutrition_fr.171.full.jpg",
+   "source_px": [
+    1595,
+    1253
+   ],
+   "stored_px": [
+    1595,
+    1253
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3046920022651",
+   "serving": null,
+   "columns": {
+    "per100": {
+     "energy_kj": "2350",
+     "energy_kcal": "566",
+     "fat": "41",
+     "saturates": "24",
+     "carbohydrate": "34",
+     "sugars": "30",
+     "protein": "9.5",
+     "salt": "0.10"
+    }
+   },
+   "unscored": [],
+   "note": "flat print, per 100 g only"
+  },
+  {
+   "id": "quest_80052760",
+   "file": "quest_80052760.jpg",
+   "languages": [
+    "en"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "ri_column",
+    "combined_energy"
+   ],
+   "product": "Kinder bueno",
+   "brands": "Kinder",
+   "product_url": "https://world.openfoodfacts.org/product/80052760",
+   "image_url": "https://images.openfoodfacts.org/images/products/80052760/nutrition_en.42.full.jpg",
+   "source_px": [
+    3623,
+    1552
+   ],
+   "stored_px": [
+    1600,
+    685
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/80052760",
+   "serving": "21.5 g bar",
+   "columns": {
+    "per100": {
+     "energy_kj": "2384",
+     "energy_kcal": "572",
+     "fat": "37.3",
+     "saturates": "17.3",
+     "carbohydrate": "49.5",
+     "sugars": "41.2",
+     "protein": "8.6",
+     "salt": "0.272"
+    },
+    "serving": {
+     "energy_kj": "510",
+     "energy_kcal": "122",
+     "fat": "8",
+     "saturates": "3.7",
+     "carbohydrate": "10.6",
+     "sugars": "8.9",
+     "protein": "1.8",
+     "salt": "0.058"
+    }
+   },
+   "unscored": [],
+   "note": "energy printed as kJ/kcal pair without units"
+  },
+  {
+   "id": "sf_choc_7622210449283",
+   "file": "sf_choc_7622210449283.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ri_column",
+    "row_offset",
+    "curved"
+   ],
+   "product": "Prince",
+   "brands": "LU, Prince",
+   "product_url": "https://world.openfoodfacts.org/product/7622210449283",
+   "image_url": "https://images.openfoodfacts.org/images/products/762/221/044/9283/nutrition_fr.568.full.jpg",
+   "source_px": [
+    1892,
+    1412
+   ],
+   "stored_px": [
+    1600,
+    1194
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/7622210449283",
+   "serving": "1 biscuit 20 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1962",
+     "energy_kcal": "467",
+     "fat": "17",
+     "saturates": "5.6",
+     "carbohydrate": "69",
+     "sugars": "32",
+     "fibre": "4.0",
+     "protein": "6.3",
+     "salt": "0.49"
+    },
+    "serving": {
+     "energy_kj": "392",
+     "energy_kcal": "93",
+     "fat": "3.5",
+     "saturates": "1.1",
+     "carbohydrate": "14",
+     "sugars": "6.3",
+     "fibre": "0.8",
+     "protein": "1.3",
+     "salt": "0.10"
+    }
+   },
+   "unscored": [],
+   "note": "figures sit half a row below their labels"
+  },
+  {
+   "id": "sf_choc_80135463",
+   "file": "sf_choc_80135463.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "ri_column",
+    "angle",
+    "small_in_frame",
+    "curved"
+   ],
+   "product": "",
+   "brands": "Ferrero",
+   "product_url": "https://world.openfoodfacts.org/product/80135463",
+   "image_url": "https://images.openfoodfacts.org/images/products/80135463/nutrition_fr.282.full.jpg",
+   "source_px": [
+    3024,
+    4032
+   ],
+   "stored_px": [
+    1200,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/80135463",
+   "serving": "15 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2252",
+     "energy_kcal": "539",
+     "fat": "30.9",
+     "saturates": "10.6",
+     "carbohydrate": "57.5",
+     "sugars": "56.3",
+     "protein": "6.3",
+     "salt": "0.107"
+    },
+    "serving": {
+     "energy_kj": "336",
+     "energy_kcal": "80",
+     "fat": "4.6",
+     "saturates": "1.6",
+     "carbohydrate": "8.6",
+     "sugars": "8.4",
+     "protein": "0.9",
+     "salt": "0.016"
+    }
+   },
+   "unscored": [],
+   "note": "same product as gum_3017620422003, a separate photo of a jar"
+  },
+  {
+   "id": "weider_20267605",
+   "file": "weider_20267605.jpg",
+   "languages": [
+    "en"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ri_column",
+    "polyunsaturates_trap",
+    "row_offset"
+   ],
+   "product": "Cashews",
+   "brands": "Alesto",
+   "product_url": "https://world.openfoodfacts.org/product/20267605",
+   "image_url": "https://images.openfoodfacts.org/images/products/20267605/nutrition_en.321.full.jpg",
+   "source_px": [
+    2050,
+    2387
+   ],
+   "stored_px": [
+    1374,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/20267605",
+   "serving": "30 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2488",
+     "energy_kcal": "600",
+     "fat": "47.6",
+     "saturates": "9.0",
+     "carbohydrate": "19.8",
+     "sugars": "6.5",
+     "fibre": "5.2",
+     "protein": "20.5",
+     "salt": "0.02"
+    },
+    "serving": {
+     "energy_kj": "746",
+     "energy_kcal": "180",
+     "fat": "14.3",
+     "saturates": "2.7",
+     "carbohydrate": "5.9",
+     "sugars": "2.0",
+     "fibre": "1.6",
+     "protein": "6.2",
+     "salt": "0.01"
+    }
+   },
+   "unscored": [],
+   "note": "mono- and polyunsaturates rows (not polyols); serving column drifts down"
+  },
+  {
+   "id": "weider_3175680015228",
+   "file": "weider_3175680015228.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "split_table",
+    "ri_column",
+    "wide",
+    "protein_high"
+   ],
+   "product": "Levure de bière",
+   "brands": "Gerblé",
+   "product_url": "https://world.openfoodfacts.org/product/3175680015228",
+   "image_url": "https://images.openfoodfacts.org/images/products/317/568/001/5228/nutrition_fr.257.full.jpg",
+   "source_px": [
+    2740,
+    1182
+   ],
+   "stored_px": [
+    1600,
+    690
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3175680015228",
+   "serving": "1 tablespoon 5 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1356",
+     "energy_kcal": "323",
+     "fat": "4.6",
+     "saturates": "0.8",
+     "carbohydrate": "12",
+     "sugars": "1.2",
+     "fibre": "25",
+     "protein": "46",
+     "salt": "0.32"
+    },
+    "serving": {
+     "energy_kj": "68",
+     "energy_kcal": "16",
+     "fat": "0.23",
+     "saturates": "0.04",
+     "carbohydrate": "0.6",
+     "sugars": "0.06",
+     "fibre": "1.3",
+     "protein": "2.3",
+     "salt": "0.02"
+    }
+   },
+   "unscored": [],
+   "note": "brewer yeast; salt in the right half; protein 46 g beside 92% RI"
+  },
+  {
+   "id": "cereals_uk_3168930010265",
+   "file": "cereals_uk_3168930010265.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ri_inline",
+    "white_on_orange"
+   ],
+   "product": "cruesly mélange de noix",
+   "brands": "Quaker, Cruesli",
+   "product_url": "https://world.openfoodfacts.org/product/3168930010265",
+   "image_url": "https://images.openfoodfacts.org/images/products/316/893/001/0265/nutrition_fr.280.full.jpg",
+   "source_px": [
+    1547,
+    2203
+   ],
+   "stored_px": [
+    1124,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3168930010265",
+   "serving": "45 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1913",
+     "energy_kcal": "462",
+     "fat": "19",
+     "saturates": "2.0",
+     "carbohydrate": "57",
+     "sugars": "12",
+     "fibre": "10",
+     "protein": "8.5",
+     "salt": "0"
+    },
+    "serving": {
+     "energy_kj": "861",
+     "energy_kcal": "208",
+     "fat": "8.6",
+     "saturates": "0.9",
+     "carbohydrate": "26",
+     "sugars": "5.4",
+     "fibre": "4.5",
+     "protein": "3.8",
+     "salt": "0"
+    }
+   },
+   "unscored": [],
+   "note": "RI percentages inline in brackets"
+  },
+  {
+   "id": "cereals_uk_5010029000016",
+   "file": "cereals_uk_5010029000016.jpg",
+   "languages": [
+    "en"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "low_light",
+    "noise"
+   ],
+   "product": "Weetabix",
+   "brands": "Weetabix",
+   "product_url": "https://world.openfoodfacts.org/product/5010029000016",
+   "image_url": "https://images.openfoodfacts.org/images/products/501/002/900/0016/nutrition_en.8.full.jpg",
+   "source_px": [
+    1335,
+    515
+   ],
+   "stored_px": [
+    1335,
+    515
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5010029000016",
+   "serving": "2 biscuits",
+   "columns": {
+    "per100": {
+     "energy_kj": "1531",
+     "energy_kcal": "362",
+     "fat": "2.0",
+     "saturates": "0.6",
+     "carbohydrate": "69",
+     "sugars": "4.4",
+     "fibre": "10",
+     "protein": "12",
+     "salt": "0.28"
+    },
+    "serving": {
+     "energy_kj": "574",
+     "energy_kcal": "136",
+     "fat": "0.8",
+     "saturates": "0.2",
+     "carbohydrate": "26",
+     "sugars": "1.7",
+     "fibre": "3.8",
+     "protein": "4.5",
+     "salt": "0.10"
+    }
+   },
+   "unscored": [],
+   "note": "noisy low-light photo; vitamin table beside"
+  },
+  {
+   "id": "cereals_uk_3159470000120",
+   "file": "cereals_uk_3159470000120.jpg",
+   "languages": [
+    "fr",
+    "nl"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ri_column",
+    "tall"
+   ],
+   "product": "CORN FLAKES",
+   "brands": "KELLOGG S PRODUITS ALIMENT SAS",
+   "product_url": "https://world.openfoodfacts.org/product/3159470000120",
+   "image_url": "https://images.openfoodfacts.org/images/products/315/947/000/0120/nutrition_en.119.full.jpg",
+   "source_px": [
+    2767,
+    4000
+   ],
+   "stored_px": [
+    1107,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3159470000120",
+   "serving": "30 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1604",
+     "energy_kcal": "378",
+     "fat": "0.9",
+     "saturates": "0.2",
+     "carbohydrate": "84",
+     "sugars": "8",
+     "fibre": "3",
+     "protein": "7",
+     "salt": "1.13"
+    },
+    "serving": {
+     "energy_kj": "481",
+     "energy_kcal": "113",
+     "fat": "0.3",
+     "saturates": "0.1",
+     "carbohydrate": "25",
+     "sugars": "2.4",
+     "fibre": "0.9",
+     "protein": "2.1",
+     "salt": "0.34"
+    }
+   },
+   "unscored": [],
+   "note": "long vitamin table below"
+  },
+  {
+   "id": "cereals_uk_5010029000801",
+   "file": "cereals_uk_5010029000801.jpg",
+   "languages": [
+    "es",
+    "pt",
+    "en"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "small_text",
+    "wide",
+    "bracketed"
+   ],
+   "product": "Weetabix",
+   "brands": "Weetabix Limited",
+   "product_url": "https://world.openfoodfacts.org/product/5010029000801",
+   "image_url": "https://images.openfoodfacts.org/images/products/501/002/900/0801/nutrition_en.50.full.jpg",
+   "source_px": [
+    2695,
+    1300
+   ],
+   "stored_px": [
+    1600,
+    772
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5010029000801",
+   "serving": "37.5 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1531",
+     "energy_kcal": "362",
+     "fat": "2.0",
+     "saturates": "0.6",
+     "carbohydrate": "69",
+     "sugars": "4.2",
+     "fibre": "10",
+     "protein": "12",
+     "salt": "0.28"
+    },
+    "serving": {
+     "energy_kj": "574",
+     "energy_kcal": "136",
+     "fat": "0.8",
+     "saturates": "0.2",
+     "carbohydrate": "26",
+     "sugars": "1.6",
+     "fibre": "3.8",
+     "protein": "4.5",
+     "salt": "0.10"
+    }
+   },
+   "unscored": [],
+   "note": "sub-rows in brackets; text small at 800 px"
+  },
+  {
+   "id": "biscuits_de_8000500310427",
+   "file": "biscuits_de_8000500310427.jpg",
+   "languages": [
+    "it",
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "ri_column"
+   ],
+   "product": "Biscuits NUTELLA Biscuits Noisettes et Cacao x22 - 304g",
+   "brands": "Ferrero Technical Services Srl, Nutella biscuits",
+   "product_url": "https://world.openfoodfacts.org/product/8000500310427",
+   "image_url": "https://images.openfoodfacts.org/images/products/800/050/031/0427/nutrition_fr.352.full.jpg",
+   "source_px": [
+    2160,
+    1182
+   ],
+   "stored_px": [
+    1600,
+    876
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/8000500310427",
+   "serving": "1 piece 13.8 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2158",
+     "energy_kcal": "515",
+     "fat": "24.8",
+     "saturates": "11.5",
+     "carbohydrate": "64",
+     "sugars": "35.8",
+     "protein": "7.9",
+     "salt": "0.559"
+    },
+    "serving": {
+     "energy_kj": "297",
+     "energy_kcal": "71",
+     "fat": "3.4",
+     "saturates": "1.6",
+     "carbohydrate": "8.8",
+     "sugars": "4.9",
+     "protein": "1.1",
+     "salt": "0.077"
+    }
+   },
+   "unscored": [],
+   "note": "Italian and French"
+  },
+  {
+   "id": "biscuits_de_20081232",
+   "file": "biscuits_de_20081232.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "curved",
+    "skewed_rows",
+    "ri_column"
+   ],
+   "product": "Captain Rondo Cacao",
+   "brands": "Lidl, Sondey",
+   "product_url": "https://world.openfoodfacts.org/product/20081232",
+   "image_url": "https://images.openfoodfacts.org/images/products/20081232/nutrition_fr.182.full.jpg",
+   "source_px": [
+    2048,
+    1692
+   ],
+   "stored_px": [
+    1600,
+    1322
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/20081232",
+   "serving": "28 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1963",
+     "energy_kcal": "468",
+     "fat": "19.0",
+     "saturates": "10.0",
+     "carbohydrate": "66.0",
+     "sugars": "30.0",
+     "fibre": "3.8",
+     "protein": "6.3",
+     "salt": "0.33"
+    },
+    "serving": {
+     "energy_kj": "550",
+     "energy_kcal": "131",
+     "fat": "5.3",
+     "saturates": "2.8",
+     "carbohydrate": "18.5",
+     "sugars": "8.4",
+     "fibre": "1.1",
+     "protein": "1.8",
+     "salt": "0.09"
+    }
+   },
+   "unscored": [],
+   "note": "strong cylinder curve: labels and figures do not line up"
+  },
+  {
+   "id": "yogurt_fr_3033490004743",
+   "file": "yogurt_fr_3033490004743.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "ri_column",
+    "halftone",
+    "protein_high"
+   ],
+   "product": "Skyr",
+   "brands": "Danone",
+   "product_url": "https://world.openfoodfacts.org/product/3033490004743",
+   "image_url": "https://images.openfoodfacts.org/images/products/303/349/000/4743/nutrition_fr.65.full.jpg",
+   "source_px": [
+    2208,
+    1583
+   ],
+   "stored_px": [
+    1600,
+    1147
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3033490004743",
+   "serving": "1 pot 140 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "244",
+     "energy_kcal": "57",
+     "fat": "0.2",
+     "saturates": "0.1",
+     "carbohydrate": "3.9",
+     "sugars": "3.9",
+     "protein": "10.0",
+     "salt": "0.09"
+    },
+    "serving": {
+     "energy_kj": "343",
+     "energy_kcal": "81",
+     "fat": "0.3",
+     "saturates": "0.1",
+     "carbohydrate": "5.5",
+     "sugars": "5.5",
+     "protein": "14.0",
+     "salt": "0.13"
+    }
+   },
+   "unscored": [],
+   "note": "serving column on a halftone screen"
+  },
+  {
+   "id": "es_5410041001204",
+   "file": "es_5410041001204.jpg",
+   "languages": [
+    "fr",
+    "nl",
+    "pt",
+    "el",
+    "de"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ri_column",
+    "wide",
+    "small_text"
+   ],
+   "product": "Tuc Original",
+   "brands": "Mondelēz",
+   "product_url": "https://world.openfoodfacts.org/product/5410041001204",
+   "image_url": "https://images.openfoodfacts.org/images/products/541/004/100/1204/nutrition_fr.408.full.jpg",
+   "source_px": [
+    3561,
+    826
+   ],
+   "stored_px": [
+    1600,
+    371
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5410041001204",
+   "serving": "30 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2021",
+     "energy_kcal": "482",
+     "fat": "19",
+     "saturates": "9.0",
+     "carbohydrate": "67",
+     "sugars": "7.1",
+     "fibre": "2.4",
+     "protein": "8.3",
+     "salt": "1.7"
+    },
+    "serving": {
+     "energy_kj": "606",
+     "energy_kcal": "144",
+     "fat": "5.8",
+     "saturates": "2.7",
+     "carbohydrate": "20",
+     "sugars": "2.1",
+     "fibre": "0.7",
+     "protein": "2.5",
+     "salt": "0.52"
+    }
+   },
+   "unscored": [],
+   "note": "five languages including Greek; very wide strip"
+  },
+  {
+   "id": "es_7300400481595",
+   "file": "es_7300400481595.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "less_than",
+    "row_labels_cut",
+    "crumpled"
+   ],
+   "product": "AUTHENTIQUE",
+   "brands": "wasa, Barilla Sverige AB",
+   "product_url": "https://world.openfoodfacts.org/product/7300400481595",
+   "image_url": "https://images.openfoodfacts.org/images/products/730/040/048/1595/nutrition_fr.191.full.jpg",
+   "source_px": [
+    2252,
+    4000
+   ],
+   "stored_px": [
+    901,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/7300400481595",
+   "serving": "about 11.4 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1415",
+     "energy_kcal": "336",
+     "fat": "1.5",
+     "saturates": "0.4",
+     "carbohydrate": "62",
+     "sugars": "1.0",
+     "fibre": "19",
+     "protein": "9.0",
+     "salt": "1.0"
+    },
+    "serving": {
+     "energy_kj": "161",
+     "energy_kcal": "38",
+     "fat": "<0.5",
+     "saturates": "<0.1",
+     "carbohydrate": "7.1",
+     "sugars": "<0.5",
+     "fibre": "2.2",
+     "protein": "1.0",
+     "salt": "0.11"
+    }
+   },
+   "unscored": [],
+   "note": "row names cut off the left edge: figures read by eye, row mapping cross-checked against the OFF record"
+  },
+  {
+   "id": "es_20995553",
+   "file": "es_20995553.jpg",
+   "languages": [
+    "en"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "less_than",
+    "ri_column",
+    "easy"
+   ],
+   "product": "Шоколад 85% какаова маса",
+   "brands": "J.D: Gross",
+   "product_url": "https://world.openfoodfacts.org/product/20995553",
+   "image_url": "https://images.openfoodfacts.org/images/products/20995553/nutrition_en.172.full.jpg",
+   "source_px": [
+    1817,
+    1282
+   ],
+   "stored_px": [
+    1600,
+    1129
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/20995553",
+   "serving": "1 square 12.5 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2395",
+     "energy_kcal": "579",
+     "fat": "46.8",
+     "saturates": "28.2",
+     "carbohydrate": "21.4",
+     "sugars": "12.9",
+     "fibre": "14.5",
+     "protein": "10.8",
+     "salt": "0.03"
+    },
+    "serving": {
+     "energy_kj": "302",
+     "energy_kcal": "73",
+     "fat": "5.9",
+     "saturates": "3.5",
+     "carbohydrate": "2.7",
+     "sugars": "1.6",
+     "fibre": "1.8",
+     "protein": "1.4",
+     "salt": "<0.01"
+    }
+   },
+   "unscored": [],
+   "note": ""
+  },
+  {
+   "id": "it_8076802085981",
+   "file": "it_8076802085981.jpg",
+   "languages": [
+    "fr",
+    "de",
+    "sv",
+    "fi"
+   ],
+   "tags": [
+    "kj_kcal",
+    "kcal_first",
+    "per100",
+    "serving",
+    "fibre",
+    "low_contrast",
+    "wide"
+   ],
+   "product": "Nudeln Fusilli",
+   "brands": "Barilla",
+   "product_url": "https://world.openfoodfacts.org/product/8076802085981",
+   "image_url": "https://images.openfoodfacts.org/images/products/807/680/208/5981/nutrition.10.full.jpg",
+   "source_px": [
+    1990,
+    545
+   ],
+   "stored_px": [
+    1600,
+    438
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/8076802085981",
+   "serving": "85 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1511",
+     "energy_kcal": "356",
+     "fat": "1.5",
+     "saturates": "0.3",
+     "carbohydrate": "72.2",
+     "sugars": "3.5",
+     "fibre": "3.0",
+     "protein": "12.0"
+    },
+    "serving": {
+     "energy_kj": "1284",
+     "energy_kcal": "303",
+     "fat": "1.3",
+     "saturates": "0.3",
+     "carbohydrate": "61.4",
+     "sugars": "3.0",
+     "fibre": "2.6",
+     "protein": "10.2"
+    }
+   },
+   "unscored": [],
+   "note": "kcal row printed above kJ; sodium printed in g (0.002), not salt, not scored"
+  },
+  {
+   "id": "nl_8008698007389",
+   "file": "nl_8008698007389.jpg",
+   "languages": [
+    "fr",
+    "de",
+    "cs",
+    "sk",
+    "pl"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ri_column"
+   ],
+   "product": "MAESTRO CEREALE - Pain aux céréales tranché",
+   "brands": "Schär",
+   "product_url": "https://world.openfoodfacts.org/product/8008698007389",
+   "image_url": "https://images.openfoodfacts.org/images/products/800/869/800/7389/nutrition_fr.112.full.jpg",
+   "source_px": [
+    1823,
+    1394
+   ],
+   "stored_px": [
+    1600,
+    1223
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/8008698007389",
+   "serving": "1 slice 25 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1078",
+     "energy_kcal": "256",
+     "fat": "6.2",
+     "saturates": "0.8",
+     "carbohydrate": "41",
+     "sugars": "5.8",
+     "fibre": "8.7",
+     "protein": "4.4",
+     "salt": "0.91"
+    },
+    "serving": {
+     "energy_kj": "269",
+     "energy_kcal": "64",
+     "fat": "1.6",
+     "saturates": "0.2",
+     "carbohydrate": "10",
+     "sugars": "1.5",
+     "fibre": "2.2",
+     "protein": "1.1",
+     "salt": "0.23"
+    }
+   },
+   "unscored": [],
+   "note": "Czech, Slovak and Polish rows"
+  },
+  {
+   "id": "pl_4056489406679",
+   "file": "pl_4056489406679.jpg",
+   "languages": [
+    "nl",
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "per_ml",
+    "blur",
+    "ri_column",
+    "protein_high"
+   ],
+   "product": "Boisson lactée saveur chocolat",
+   "brands": "Envia",
+   "product_url": "https://world.openfoodfacts.org/product/4056489406679",
+   "image_url": "https://images.openfoodfacts.org/images/products/405/648/940/6679/nutrition_en.152.full.jpg",
+   "source_px": [
+    1763,
+    1400
+   ],
+   "stored_px": [
+    1600,
+    1271
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/4056489406679",
+   "serving": "166 ml",
+   "columns": {
+    "per100": {
+     "energy_kj": "285",
+     "energy_kcal": "67",
+     "fat": "0.3",
+     "saturates": "0.2",
+     "carbohydrate": "5.3",
+     "sugars": "5.1",
+     "fibre": "0.4",
+     "protein": "10.6",
+     "salt": "0.15"
+    },
+    "serving": {
+     "energy_kj": "473",
+     "energy_kcal": "112",
+     "fat": "0.5",
+     "saturates": "0.3",
+     "carbohydrate": "8.8",
+     "sugars": "8.5",
+     "fibre": "0.7",
+     "protein": "17.6",
+     "salt": "0.25"
+    }
+   },
+   "unscored": [],
+   "note": "lower rows blurred; read by eye, consistent with 1.66 x per 100 ml"
+  },
+  {
+   "id": "pl_5902057001748",
+   "file": "pl_5902057001748.jpg",
+   "languages": [
+    "pl",
+    "en"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "kcal_bracketed",
+    "curved"
+   ],
+   "product": "kefir",
+   "brands": "Krasnystaw",
+   "product_url": "https://world.openfoodfacts.org/product/5902057001748",
+   "image_url": "https://images.openfoodfacts.org/images/products/590/205/700/1748/nutrition_en.5.full.jpg",
+   "source_px": [
+    1741,
+    1200
+   ],
+   "stored_px": [
+    1600,
+    1103
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5902057001748",
+   "serving": null,
+   "columns": {
+    "per100": {
+     "energy_kj": "212",
+     "energy_kcal": "50",
+     "fat": "2.0",
+     "saturates": "1.2",
+     "carbohydrate": "4.7",
+     "sugars": "4.2",
+     "protein": "3.4",
+     "salt": "0.08"
+    }
+   },
+   "unscored": [],
+   "note": "kefir; kcal in brackets after kJ"
+  },
+  {
+   "id": "beer_3080216049632",
+   "file": "beer_3080216049632.jpg",
+   "languages": [
+    "fr"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "per_ml",
+    "less_than",
+    "badge_layout",
+    "beer"
+   ],
+   "product": "Grimbergen Blonde",
+   "brands": "Grimbergen, Grimbergen, Grimbergen Blonde",
+   "product_url": "https://world.openfoodfacts.org/product/3080216049632",
+   "image_url": "https://images.openfoodfacts.org/images/products/308/021/604/9632/nutrition_fr.128.full.jpg",
+   "source_px": [
+    849,
+    2214
+   ],
+   "stored_px": [
+    614,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/3080216049632",
+   "serving": null,
+   "columns": {
+    "per100": {
+     "energy_kj": "227",
+     "energy_kcal": "54",
+     "fat": "0.1",
+     "saturates": "0",
+     "carbohydrate": "3.7",
+     "sugars": "0.2",
+     "protein": "0.6",
+     "salt": "<0.01"
+    }
+   },
+   "unscored": [],
+   "note": "beer, figures in badges rather than a table"
+  },
+  {
+   "id": "crisps_uk_5053990107339",
+   "file": "crisps_uk_5053990107339.jpg",
+   "languages": [
+    "en",
+    "fr",
+    "nl"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "ri_column",
+    "curved"
+   ],
+   "product": "Pringles Original",
+   "brands": "Pringles",
+   "product_url": "https://world.openfoodfacts.org/product/5053990107339",
+   "image_url": "https://images.openfoodfacts.org/images/products/505/399/010/7339/nutrition_fr.84.full.jpg",
+   "source_px": [
+    1788,
+    2011
+   ],
+   "stored_px": [
+    1423,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5053990107339",
+   "serving": "40 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "2227",
+     "energy_kcal": "534",
+     "fat": "31",
+     "saturates": "6.6",
+     "carbohydrate": "56",
+     "sugars": "1.4",
+     "fibre": "3.5",
+     "protein": "5.9",
+     "salt": "1.1"
+    },
+    "serving": {
+     "energy_kj": "891",
+     "energy_kcal": "214",
+     "fat": "12",
+     "saturates": "2.6",
+     "carbohydrate": "22",
+     "sugars": "0.6",
+     "fibre": "1.4",
+     "protein": "2.4",
+     "salt": "0.44"
+    }
+   },
+   "unscored": [],
+   "note": ""
+  },
+  {
+   "id": "crisps_uk_5060042641406",
+   "file": "crisps_uk_5060042641406.jpg",
+   "languages": [
+    "en",
+    "fr",
+    "de",
+    "nl",
+    "es",
+    "pt",
+    "it",
+    "da"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "serving",
+    "fibre",
+    "many_languages"
+   ],
+   "product": "Sea salt & cider vinegar",
+   "brands": "Tyrell’s",
+   "product_url": "https://world.openfoodfacts.org/product/5060042641406",
+   "image_url": "https://images.openfoodfacts.org/images/products/506/004/264/1406/nutrition_fr.181.full.jpg",
+   "source_px": [
+    2032,
+    3487
+   ],
+   "stored_px": [
+    932,
+    1600
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/5060042641406",
+   "serving": "30 g",
+   "columns": {
+    "per100": {
+     "energy_kj": "1924",
+     "energy_kcal": "461",
+     "fat": "25",
+     "saturates": "2.2",
+     "carbohydrate": "50",
+     "sugars": "1.8",
+     "fibre": "5.2",
+     "protein": "5.7",
+     "salt": "2.0"
+    },
+    "serving": {
+     "energy_kj": "577",
+     "energy_kcal": "138",
+     "fat": "7.4",
+     "saturates": "0.65",
+     "carbohydrate": "15",
+     "sugars": "0.54",
+     "fibre": "1.6",
+     "protein": "1.7",
+     "salt": "0.59"
+    }
+   },
+   "unscored": [],
+   "note": "eight languages"
+  },
+  {
+   "id": "hollywood_50173822",
+   "file": "hollywood_50173822.jpg",
+   "languages": [
+    "bg",
+    "ro"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "polyols",
+    "running_text",
+    "cyrillic",
+    "wide"
+   ],
+   "product": "",
+   "brands": "ORBIT",
+   "product_url": "https://world.openfoodfacts.org/product/50173822",
+   "image_url": "https://images.openfoodfacts.org/images/products/50173822/nutrition_pl.45.full.jpg",
+   "source_px": [
+    1727,
+    492
+   ],
+   "stored_px": [
+    1600,
+    456
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/50173822",
+   "serving": null,
+   "columns": {
+    "per100": {
+     "energy_kj": "621",
+     "energy_kcal": "149",
+     "fat": "0",
+     "saturates": "0",
+     "carbohydrate": "62",
+     "sugars": "0",
+     "polyols": "62",
+     "protein": "0",
+     "salt": "0"
+    }
+   },
+   "unscored": [],
+   "note": "sugar-free gum; values in running text, not a table"
+  },
+  {
+   "id": "hollywood_4009900412117",
+   "file": "hollywood_4009900412117.jpg",
+   "languages": [
+    "cs",
+    "sk"
+   ],
+   "tags": [
+    "kj_kcal",
+    "per100",
+    "polyols",
+    "running_text",
+    "curved",
+    "wide"
+   ],
+   "product": "Orbit Spearmint",
+   "brands": "Wrigley's",
+   "product_url": "https://world.openfoodfacts.org/product/4009900412117",
+   "image_url": "https://images.openfoodfacts.org/images/products/400/990/041/2117/nutrition_cs.29.full.jpg",
+   "source_px": [
+    1655,
+    637
+   ],
+   "stored_px": [
+    1600,
+    616
+   ],
+   "license": "CC BY-SA 3.0",
+   "attribution": "Open Food Facts contributors, https://world.openfoodfacts.org/product/4009900412117",
+   "serving": null,
+   "columns": {
+    "per100": {
+     "energy_kj": "621",
+     "energy_kcal": "149",
+     "fat": "0",
+     "saturates": "0",
+     "carbohydrate": "62",
+     "sugars": "0",
+     "polyols": "62",
+     "protein": "0",
+     "salt": "0"
+    }
+   },
+   "unscored": [],
+   "note": "sugar-free gum; running text on a curved tub"
+  }
+ ],
+ "dropped": [
+  {
+   "id": "gum_5449000214911",
+   "product_url": "https://world.openfoodfacts.org/product/5449000214911",
+   "why": "no nutrition table in the selected image"
+  },
+  {
+   "id": "beer_3080216052885",
+   "product_url": "https://world.openfoodfacts.org/product/3080216052885",
+   "why": "energy line partly cut off at the edge; not verifiable"
+  }
+ ]
+}
