@@ -501,6 +501,60 @@ static void test_clear_bounds_the_fold() {
   }
 }
 
+// A forward read that cannot reach the rows never gives them up and never stops the chat
+// folding for good (finding: an unreadable span, a read budget, a failing card). With rows a
+// shift hid and the anchor right before them:
+//  - a span the card will not give back: the pass is Deferred, thru stays, the next look waits
+//    1 minute, then 2, 4 ... (no card read in between), and once the card gives the rows back
+//    the fold takes them from the row after thru;
+//  - a failing card (the RAM ring does not reach thru): the same, never "nothing to fold";
+//  - a cold walk cut every two rows with the backfill stalled: the read goes on from where
+//    the store stopped, and the fold lands.
+static void test_a_read_that_cannot_reach_the_rows_waits_and_retries() {
+  for (int shape = 0; shape < 3; shape++) {
+    Device d("anthropic", "claude-sonnet-5-5");
+    for (int i = 0; i < 60; i++) d.turn(kMain);
+    d.pump(20, 300);   // the first folds: thru set
+    for (int i = 0; i < 40; i++) d.turn(kMain);
+    const orch::ChatFold f0 = d.folds.get(kMain);
+    TEST_ASSERT_FALSE(f0.thru.empty());
+    TEST_ASSERT_TRUE_MESSAGE(d.hiddenRows(kMain) > 0, "rows hidden after thru");
+    const uint32_t from = orch::epiIdSuffix(f0.thru) + 1;
+    d.bootIndexRows = 8;
+    d.restart();
+    if (shape == 0) d.store.unreadable = {from, from + 6};
+    if (shape == 1) d.store.failing = true;
+    if (shape == 2) {   // a cold walk cut every two rows, the backfill stalled
+      d.store.coldBudget = 2;
+      d.backfillRows = 0;
+    }
+    const int landed0 = d.landed;
+    int deferred = 0;
+    for (int pass = 0; pass < 6; pass++) {
+      d.plat.ms += 20000;
+      d.plat.epoch += 20;
+      const FoldTick t = d.drv->tick(d.plat.ms, (uint32_t)d.plat.epoch);
+      if (t == FoldTick::Deferred) deferred++;
+      TEST_ASSERT_TRUE_MESSAGE(t != FoldTick::Skipped, "never nothing to fold");
+      d.checkCovered();
+      if (shape == 2 && d.landed > landed0) break;   // the walk got there: a landed fold moved it
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(f0.thru.c_str(), d.folds.get(kMain).thru.c_str(),
+                                       ("the anchor stays, shape " + std::to_string(shape)).c_str());
+    }
+    if (shape < 2) {
+      TEST_ASSERT_EQUAL_MESSAGE(landed0, d.landed, "no fold while the rows cannot be read");
+      TEST_ASSERT_TRUE(deferred > 0);
+      TEST_ASSERT_TRUE(LogCapture::contains("next look in 60 s"));
+      d.store.unreadable = {0, 0};
+      d.store.failing = false;
+    }
+    d.pump(40, 300);
+    TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+    TEST_ASSERT_TRUE_MESSAGE(d.landed > landed0, "the rows fold once they can be read");
+    TEST_ASSERT_EQUAL(0, d.hiddenRows(kMain));
+  }
+}
+
 // ---- the production device's shape on the real SD log store ----------------------------
 namespace {
 struct FakeFs : orch::EpiFs {
@@ -657,6 +711,7 @@ int main(int, char**) {
   RUN_TEST(test_a_restart_with_hidden_rows_folds_them_first);
   RUN_TEST(test_production_device_shape_folds_forward_with_no_gap);
   RUN_TEST(test_clear_bounds_the_fold);
+  RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);
   return UNITY_END();

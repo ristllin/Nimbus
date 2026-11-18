@@ -179,8 +179,12 @@ static void testHistoryAndFold(ndtest::Ctx& c) {
     tx.script.push_back(headTurn("after restart"));
     rig.say("owner", "and now?");
     c.ok(has(tx.seen.back().body, "SUMMARY-OF-EARLIER"), "and rides the first turn after it");
+    const std::string before = rig.foldState("owner").thru;
     rig.say("owner", "/clear yes");
     c.ok(rig.foldState("owner").summary.empty(), "/clear drops the summary");
+    // Lane CTXR1: the anchor is the boundary row, so no later fold reads a cleared row.
+    c.ok(!rig.foldState("owner").thru.empty() && rig.foldState("owner").thru > before,
+         "/clear anchors the fold at its boundary row");
     tx.script.push_back(headTurn("clean"));
     rig.say("owner", "fresh start");
     c.ok(!has(tx.seen.back().body, "SUMMARY-OF-EARLIER"), "and the next turn starts clean");

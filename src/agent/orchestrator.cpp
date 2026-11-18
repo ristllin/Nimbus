@@ -3167,16 +3167,17 @@ void requestConvReset() { g_convResetReq = true; }
 // searchable by memory.episodic, a recall path like vector memory). tg_poll only.
 static void clearConversation(const String& chatId) {
   const std::string cid(chatId.c_str());
-  memory::captureMessage(chatId.c_str(), "system", orch::MsgKind::Message,
-                         String(agent::kClearBoundaryText), "",
-                         String(agent::kClearBoundaryTag));
+  const String boundary = memory::captureMessage(chatId.c_str(), "system", orch::MsgKind::Message,
+                                                 String(agent::kClearBoundaryText), "",
+                                                 String(agent::kClearBoundaryTag));
   if (g_engine) g_engine->clearChatConv(cid);   // this chat's provider-side thread only
   skills::dropChat(cid);   // lane I: /clear drops this chat's sticky skill attachments too
   g_mem.setModel(cid, std::string());            // this chat's running notes
   syncMemEcho();
   // A clear is not a fold: empty summary, zeroed counters, epoch 0 (never folded,
   // so the thrash guard cannot mistake the reset for a fold that failed to shrink).
-  g_folds.applyFold(cid, std::string(), 0);
+  // The anchor is the boundary row (lane CTXR1): no later fold reads a row before it.
+  g_folds.applyFold(cid, std::string(), 0, std::string(boundary.c_str()));
   if (g_foldDriver) g_foldDriver->noteCleared(cid);   // a cycle's slice is gone with it
   publishFoldAll(cid);
   {

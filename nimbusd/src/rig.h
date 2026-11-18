@@ -795,6 +795,11 @@ class NimbusdRig {
     // The conversation cache's idle fill (device historyCacheTick): a page a pass after a
     // restart, between turns.
     eng_->historyIdleStep();
+    // The store's background indexing (device memory_subsystem's backfill), a slice a pass
+    // until the index holds every row (lane CTXR1): the boot scan reads the newest rows only,
+    // and an index that never reaches a chat's anchor left its fold and its cache fill
+    // walking the cold region on every read.
+    if (epi_ && epi_->hydrateTruncated()) epi_->backfillStep();
     return t;
   }
   void noteFoldPumpEnd() { ownerFirst_.notePumpEnd(); }
@@ -1204,12 +1209,13 @@ class NimbusdRig {
   // and running notes dropped, and the scratchpad's active task cleared. Long-term
   // memory, files and the history itself are kept. Engine thread.
   void clearConversation(const std::string& chat) {
-    capture(chat, "system", agent::kClearBoundaryText, agent::kClearBoundaryTag);
+    const std::string boundary = capture(chat, "system", agent::kClearBoundaryText, agent::kClearBoundaryTag);
     if (eng_) eng_->clearChatConv(chat);
     memory_.erase(chat);
     scratch_.setActiveTask("");
-    // A clear is not a fold: empty summary, zeroed counters, epoch 0 (device parity).
-    folds_.applyFold(chat, std::string(), 0);
+    // A clear is not a fold: empty summary, zeroed counters, epoch 0 (device parity). The
+    // anchor is the boundary row (lane CTXR1): no later fold reads a row before it.
+    folds_.applyFold(chat, std::string(), 0, boundary);
     if (foldDriver_) foldDriver_->noteCleared(chat);   // a cycle's slice is gone with it
     if (skills_) skills_->dropChat(chat);
     flush();
