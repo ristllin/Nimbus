@@ -475,6 +475,7 @@ struct TurnEngine::FoldReadPass {
   FoldCursor& fc;
   FoldRead r;
   std::string cursor;
+  std::string start;   // the read's anchor cursor (thru, a /clear row, or before the first row)
   size_t bytes = 0;
 
   bool scan() const { return fwd == nullptr; }
@@ -489,6 +490,27 @@ struct TurnEngine::FoldReadPass {
     r.end = e;
     return false;
   }
+  // A cursor the store's state moved under (lane CTXR1, v5.1.2 fix review): a byte cursor
+  // ("day:off") from an earlier pass that the store, its index now complete, answers with an
+  // empty page and nothing more, or that brings back rows at or before the anchor (the index
+  // read from the start). Never the end: the stored cursor is dropped and the next pass reads
+  // again from the anchor.
+  bool staleCursor() {
+    hlog::logf("fold(%s): the read cursor %s no longer fits the store - the read starts again from %s",
+               chat.c_str(), cursor.c_str(), start.c_str());
+    if (scan()) {
+      fc.scanAt.clear();
+      fc.clearAt.clear();
+    } else {
+      fc.resume.clear();
+    }
+    if (fwd) fwd->clear();
+    r.progressed = true;
+    return stop(FoldRead::End::Wait);
+  }
+  bool beforeAnchor(const nimbus::orch::EpisodicMessage& m) const {
+    return start != ConvCache::kBeforeFirstRow && !rowIdAfter(m.id, start);
+  }
   // An empty page: the end, a failing card, or a read budget to go on past.
   bool emptyPage(const nimbus::orch::EpiQueryInfo& info) {
     if (info.olderExists && !info.newerExists) {   // a failing card: the RAM ring does not reach here
@@ -496,6 +518,7 @@ struct TurnEngine::FoldReadPass {
                  cursor.c_str());
       return stop(FoldRead::End::Wait);
     }
+    if (!info.newerExists && cursor.find(':') != std::string::npos) return staleCursor();
     if (!info.newerExists || info.nextAfter.empty()) return stop(FoldRead::End::Last);
     cursor = info.nextAfter;   // the store's read budget stopped first: go on from where it did
     note();
@@ -515,6 +538,7 @@ struct TurnEngine::FoldReadPass {
   // The page's rows, oldest first: false once a bound ends the read.
   bool takeRows(std::vector<nimbus::orch::EpisodicMessage>& got) {
     for (auto& m : got) {
+      if (beforeAnchor(m)) return staleCursor();
       if (pastBound(m)) return stop(FoldRead::End::Tail);
       cursor = m.id;   // every row seen, kept or not (a /clear included)
       r.lastSeen = m.id;
@@ -558,10 +582,10 @@ TurnEngine::FoldRead TurnEngine::readFoldRows(const std::string& chatId, const s
                                               const FoldBounds& bounds, size_t capBytes,
                                               std::vector<nimbus::orch::EpisodicMessage>* fwd) {
   FoldCursor& fc = foldCursor(chatId, d_.historyMarks ? d_.historyMarks(chatId).thru : std::string());
-  FoldReadPass pass{*this, chatId, bounds, capBytes, fwd, fc, FoldRead(), std::string()};
-  const std::string start = from.empty() ? std::string(ConvCache::kBeforeFirstRow) : from;
+  FoldReadPass pass{*this, chatId, bounds, capBytes, fwd, fc, FoldRead(), std::string(), std::string()};
+  pass.start = from.empty() ? std::string(ConvCache::kBeforeFirstRow) : from;
   const std::string& resume = fwd ? fc.resume : fc.scanAt;
-  pass.cursor = resume.empty() ? start : resume;
+  pass.cursor = resume.empty() ? pass.start : resume;
   for (int page = 0; page < kFoldMaxPages; page++)
     if (!pass.page()) return pass.r;
   pass.r.end = pass.holdsNone() ? FoldRead::End::Wait : FoldRead::End::Full;   // the page bound

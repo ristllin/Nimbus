@@ -190,6 +190,14 @@ bool ConvCache::gapAfterThru(Entry& e, const ReadFn& read) {
     // A span the card would not give back is a gap even when rows after it came back: the
     // store skips it and reads on (lane CTXR1: the fill completed past unread rows).
     if (!info.unreadable.empty()) return true;
+    // A byte cursor the store's state moved under (its index completed, or read from the start
+    // and gave back rows at or before thru): dropped, the probe starts again at thru (lane CTXR1).
+    const bool stale = !e.probeAt.empty() && ((first.empty() && !info.newerExists && !info.olderExists) ||
+                                              (!first.empty() && !e.thru.empty() && !rowIdAfter(first.front().id, e.thru)));
+    if (stale) {
+      e.probeAt.clear();
+      return true;
+    }
     if (!first.empty()) return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
     if (info.olderExists) return true;   // a failing card: the RAM ring does not reach thru
     if (!info.newerExists || info.nextAfter.empty()) return false;   // read to the end: no gap

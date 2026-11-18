@@ -139,8 +139,13 @@ struct FaultStore {
     orch::EpiQueryInfo scratch;
     orch::EpiQueryInfo& info = q.info ? *q.info : scratch;
     const size_t colon = q.after.find(':');
-    const uint32_t from = colon != std::string::npos ? (uint32_t)std::strtoul(q.after.c_str() + colon + 1, nullptr, 16)
-                                                     : orch::epiIdSuffix(q.after);
+    const bool byteCur = colon != std::string::npos;
+    const uint32_t from = byteCur ? (uint32_t)std::strtoul(q.after.c_str() + colon + 1, nullptr, 16)
+                                  : orch::epiIdSuffix(q.after);
+    // The real store (orch_episodic_log.cpp queryAfter): a byte cursor on a store whose index is
+    // complete is answered with an empty page and nothing more; while the index is still
+    // truncated, the walk past the cold region reads the index from its start.
+    if (byteCur && indexFloor == 0 && !failing) return out;
     if (failing && ringFloor() > from + 1) {
       info.olderExists = true;   // the card is failing and the ring does not reach the cursor
       return out;
@@ -149,7 +154,7 @@ struct FaultStore {
     uint32_t last = from;
     for (const auto& m : rows) {
       const uint32_t sfx = orch::epiIdSuffix(m.id);
-      if (sfx <= from) continue;
+      if (sfx <= from && !(byteCur && sfx >= indexFloor)) continue;
       if (sfx < indexFloor && !failing) {   // the cold region: the walk's budget
         if (++walked > coldBudget) {
           info.newerExists = true;
@@ -286,9 +291,14 @@ struct Device {
   void noteTokens(const std::string& text, const std::string& id) {
     for (const std::string& t : tokensIn(text.substr(0, 16))) tokenRow[t] = id;
   }
+  std::map<std::string, std::string> thruSeen;   // chat -> thru after the last step
   void onLanded(const agent::FoldDone& done) {
     landed++;
     const uint32_t mark = clearMark[done.chat];
+    const auto seen = thruSeen.find(done.chat);
+    if (seen != thruSeen.end() && !seen->second.empty() && !done.slice.firstId.empty() &&
+        !agent::rowIdAfter(done.slice.firstId, seen->second))
+      violations.push_back("a summary starts at " + done.slice.firstId + ", at or before the anchor " + seen->second);
     for (const std::string& t : tokensIn(done.slice.digest)) {
       const auto r = tokenRow.find(t);
       if (r == tokenRow.end()) continue;
@@ -347,6 +357,7 @@ struct Device {
   void checkCovered() {
     for (const std::string& chat : folds.chatIds()) {
       const orch::ChatFold f = folds.get(chat);
+      thruSeen[chat] = f.thru;
       if (f.thru.empty()) continue;
       for (const auto* m : live(chat)) {
         if (agent::rowIdAfter(m->id, f.thru)) break;
@@ -412,7 +423,11 @@ void randomStep(Device& d, Lcg& r) {
   if (p < 42) return d.turn(kMain);
   if (p < 52) return d.turn(others[r.next(3)]);
   if (p < 78) return d.pump(1 + r.next(4), 30 + r.next(600));
-  if (p < 83) return d.restart();
+  if (p < 82) return d.restart();
+  if (p < 83) {   // the backfill completes between two passes
+    d.store.indexFloor = 0;
+    return;
+  }
   if (p < 87) {
     d.store.failing = !d.store.failing;
     return;
@@ -639,6 +654,51 @@ static void test_no_anchor_on_a_failing_card_backs_off_and_answers() {
   TEST_ASSERT_TRUE(d.violations.empty());
 }
 
+// v5.1.2 fix review A: a byte cursor ("day:off") a cold walk handed back outlives the store
+// state it was issued under. Between two passes the backfill completes; the store then answers
+// the stored cursor with an empty page and nothing more. That is never the end of the read:
+// the hidden rows behind the anchor are folded, not given up, and no row before a /clear (for
+// a chat with no anchor, whose /clear scan held such a cursor) reaches a summary.
+namespace {
+void otherChatRows(Device& d, int n) {
+  for (int i = 0; i < n; i++) d.store.add("9999", i % 2 ? "assistant" : "user", "other chat " + std::to_string(i));
+}
+}  // namespace
+
+static void test_a_backfill_completing_between_passes_never_ends_the_read() {
+  for (int shape = 0; shape < 2; shape++) {   // 0: hidden rows behind an anchor; 1: no anchor, an old /clear
+    Device d("anthropic", "claude-sonnet-5-5");
+    d.quiet = false;
+    for (int i = 0; i < 20; i++) d.turn(kMain);
+    if (shape == 0) {
+      d.quiet = true;
+      d.drv->requestManual(kMain);
+      d.pump(10, 300);   // a first fold: an anchor
+      d.quiet = false;
+      TEST_ASSERT_FALSE(d.folds.get(kMain).thru.empty());
+    } else {
+      d.clear(kMain, false);   // the v5.1.1 way: no anchor
+    }
+    otherChatRows(d, 700);   // a cold region with none of this chat's rows
+    for (int i = 0; i < 60; i++) d.turn(kMain);
+    TEST_ASSERT_TRUE_MESSAGE(shape == 1 || d.hiddenRows(kMain) > 0, "rows hidden after thru");
+    d.bootIndexRows = 30;
+    d.backfillRows = 0;   // the backfill stalls, then completes at once below
+    d.store.coldBudget = 10;
+    d.restart();
+    d.quiet = true;
+    d.drv->requestManual(kMain);
+    d.pump(1, 60);   // a pass that walks cold rows of the other chat only: a byte cursor is kept
+    const bool cursorKept = LogCapture::contains("waits for its rows (progress)");
+    d.store.indexFloor = 0;   // the backfill completes
+    d.pump(80, 300);
+    TEST_ASSERT_TRUE_MESSAGE(cursorKept, "the first pass kept a byte cursor");
+    TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+    TEST_ASSERT_TRUE_MESSAGE(d.landed > 0, "the chat folds once the cursor is dropped");
+    TEST_ASSERT_EQUAL(0, d.hiddenRows(kMain));
+  }
+}
+
 // ---- the production device's shape on the real SD log store ----------------------------
 namespace {
 struct FakeFs : orch::EpiFs {
@@ -819,6 +879,7 @@ int main(int, char**) {
   RUN_TEST(test_steady_state_folds_come_before_any_shift);
   RUN_TEST(test_one_summarize_now_reaches_the_newest_row);
   RUN_TEST(test_no_anchor_on_a_failing_card_backs_off_and_answers);
+  RUN_TEST(test_a_backfill_completing_between_passes_never_ends_the_read);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);

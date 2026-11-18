@@ -444,6 +444,49 @@ static void test_a_capped_index_still_completes_the_fill() {
   }
 }
 
+// v5.1.2 fix review A: the gap probe kept a byte cursor from a cold walk cut by its budget;
+// then the store's backfill completed, and the store answers that cursor with an empty page and
+// nothing more. That is not "no gap": the probe starts again at thru and finds the rows below
+// the oldest held (they used to be neither held nor named).
+static void test_a_stale_probe_cursor_is_not_the_end() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  std::string floorId;
+  for (int i = 1; i <= 4; i++) {
+    const std::string last = s.turn("c1", i);
+    if (i == 2) floorId = last;   // the index reaches only the rows after it
+  }
+  bool indexComplete = false;
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn store = [&](const HistoryQuery& q) {
+    const bool byteCur = q.after.find(':') != std::string::npos;
+    if (byteCur) return std::vector<EpisodicMessage>();   // stale or not: none of the chat's rows there
+    if (!q.after.empty() && !indexComplete) {   // the cold walk out of budget
+      if (q.info) {
+        q.info->newerExists = true;
+        q.info->nextAfter = "20591:131072";
+      }
+      return std::vector<EpisodicMessage>();
+    }
+    std::vector<EpisodicMessage> rows = full(q);
+    if (!indexComplete)
+      rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                [&](const EpisodicMessage& m) { return !agent::rowIdAfter(m.id, floorId); }),
+                 rows.end());
+    return rows;
+  };
+  ConvCache cache;
+  ConvCache::View v = cache.access("c1", thru, kWide, 2, store);   // the probe keeps a byte cursor
+  TEST_ASSERT_FALSE(v.complete);
+  indexComplete = true;   // the backfill completes: the stored cursor now reads empty, no info
+  v = cache.access("c1", thru, kWide, 2, store);
+  TEST_ASSERT_TRUE_MESSAGE(v.complete ? v.rows.size() == s.truth("c1", thru).size() : true,
+                           "complete only with every row after thru");
+  for (int i = 0; i < 6 && !v.complete; i++) v = cache.access("c1", thru, kWide, 2, store);
+  TEST_ASSERT_TRUE(v.complete);
+  assertIds(s.truth("c1", thru), ids(v));
+}
+
 // A device boot replays the photo records it kept: no cache holds a row yet, so the replay
 // does not fill the patch journal (it would push out records a running cache still needs).
 static void test_a_boot_replay_is_not_journaled() {
@@ -696,6 +739,7 @@ int main(int, char**) {
   RUN_TEST(test_the_first_turn_after_a_restart_carries_the_newest_exchanges);
   RUN_TEST(test_an_empty_probe_the_store_cut_short_is_not_the_end);
   RUN_TEST(test_a_boot_replay_is_not_journaled);
+  RUN_TEST(test_a_stale_probe_cursor_is_not_the_end);
   RUN_TEST(test_an_empty_first_page_still_reads_every_newer_row);
   RUN_TEST(test_a_capped_index_still_completes_the_fill);
   RUN_TEST(test_one_card_page_with_the_duplicate_check);
