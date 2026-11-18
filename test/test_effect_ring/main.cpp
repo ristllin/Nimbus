@@ -49,6 +49,8 @@ class FxFiles : public txb::MemFiles {
   long cutRename = -1;        // the rename with this index is cut (after the remove, if any)
   bool renameRemovesFirst = false;
   bool refuseWhole = false;   // a whole write lands half its bytes and answers false
+  bool refuseList = false;    // list answers false (the rest answers)
+  long landThenRefuse = -1;   // the append with this index lands whole, then answers false
   std::vector<std::string> appended;   // the bytes of every append that ran
   size_t wholeCalls = 0;
 
@@ -56,6 +58,10 @@ class FxFiles : public txb::MemFiles {
     if (noCard) return false;
     const long idx = (long)appended.size();
     appended.emplace_back(data, len);
+    if (idx == landThenRefuse) {
+      files[path].append(data, len);
+      return false;
+    }
     if (idx == cutAppend) {
       files[path].append(data, std::min(cutBytes, len));
       throw txb::Killed{"append"};
@@ -95,7 +101,7 @@ class FxFiles : public txb::MemFiles {
   bool remove(const std::string& path) override { return !noCard && txb::MemFiles::remove(path); }
   bool list(const std::string& dir, std::vector<std::string>& names) override {
     names.clear();
-    return !noCard && txb::MemFiles::list(dir, names);
+    return !noCard && !refuseList && txb::MemFiles::list(dir, names);
   }
   void clearCuts() {
     cutAppend = cutWhole = cutRename = -1;
@@ -776,6 +782,105 @@ void test_a_refused_rewrite_leaves_no_temp_and_retries() {
   TEST_ASSERT_TRUE(receipts(r2, "21") == expected("21", 0, (int)fx::kCompactLines + 6));
 }
 
+// ---- review findings (fresh-context review, lens: lost or cross-chat effects, torn files) ------
+// A rename refused on a binding that removes its target first leaves the temp as the only copy:
+// it is kept, nothing is written beside it, and it becomes the file once storage answers.
+void test_a_refused_rename_keeps_the_only_copy() {
+  for (int restartAt = 0; restartAt < 2; ++restartAt) {
+    FxFiles f;
+    f.renameRemovesFirst = true;
+    fx::EffectRing r(&f);
+    const int n = (int)fx::kCompactLines;
+    for (int i = 0; i < n - 1; ++i) r.append("22", i, "t", receiptOf("22", i));
+    f.refuseRename = true;
+    TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(r.append("22", n - 1, "t", receiptOf("22", n - 1))));
+    TEST_ASSERT_EQUAL_UINT32(0, f.files.count("/mem/fx/22.ring"));
+    TEST_ASSERT_EQUAL_UINT32(1, f.files.count("/mem/fx/22.ring.tmp"));
+    TEST_ASSERT_EQUAL(int(fx::Backing::RamOnly), int(r.backing("22")));
+    if (restartAt == 0) {
+      f.refuseRename = false;
+      fx::EffectRing r2(&f);
+      TEST_ASSERT_TRUE(receipts(r2, "22") == expected("22", 0, n));
+      continue;
+    }
+    // Still refused: the next effect stays in RAM and no second file appears.
+    TEST_ASSERT_EQUAL(int(fx::AppendResult::RamOnly), int(r.append("22", n, "t", receiptOf("22", n))));
+    TEST_ASSERT_EQUAL_UINT32(0, f.files.count("/mem/fx/22.ring"));
+    f.refuseRename = false;
+    TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(r.append("22", n + 1, "t", receiptOf("22", n + 1))));
+    TEST_ASSERT_EQUAL_UINT32(0, f.files.count("/mem/fx/22.ring.tmp"));
+    TEST_ASSERT_EQUAL(int(fx::Backing::Storage), int(r.backing("22")));
+    TEST_ASSERT_TRUE(receipts(r, "22") == expected("22", 0, n + 2));
+    // The file still counts past the rewrite bound, so that append rewrote it from RAM: the
+    // RAM-only entry rode along (the contract), and every stored entry is there.
+    fx::EffectRing r2(&f);
+    TEST_ASSERT_TRUE(receipts(r2, "22") == expected("22", 0, n + 2));
+  }
+}
+
+// A lone temp whose rename is refused at load: nothing is written until it is the file.
+void test_a_lone_temp_is_never_shadowed_by_a_new_file() {
+  FxFiles f;
+  {
+    fx::EffectRing r(&f);
+    for (int i = 0; i < 10; ++i) r.append("23", i, "t", receiptOf("23", i));
+  }
+  f.files["/mem/fx/23.ring.tmp"] = f.files["/mem/fx/23.ring"];
+  f.files.erase("/mem/fx/23.ring");
+  f.refuseRename = true;
+  {
+    fx::EffectRing r(&f);
+    TEST_ASSERT_EQUAL(int(fx::AppendResult::RamOnly), int(r.append("23", 10, "t", receiptOf("23", 10))));
+    TEST_ASSERT_EQUAL_UINT32(0, f.files.count("/mem/fx/23.ring"));
+    TEST_ASSERT_EQUAL(int(fx::Backing::RamOnly), int(r.backing("23")));
+  }
+  f.refuseRename = false;
+  fx::EffectRing r(&f);
+  TEST_ASSERT_TRUE(receipts(r, "23") == expected("23", 0, 10));
+  r.append("23", 11, "t", receiptOf("23", 11));
+  fx::EffectRing r2(&f);
+  auto want = expected("23", 0, 10);
+  want.push_back(receiptOf("23", 11));
+  TEST_ASSERT_TRUE(receipts(r2, "23") == want);
+}
+
+// A refused append, then a list refusal with appends accepted: order is kept in RAM and on
+// storage, and nothing comes back twice.
+void test_order_is_kept_through_refusals() {
+  FxFiles f;
+  fx::EffectRing r(&f);
+  r.append("24", 0, "t", "A");
+  f.refuseAppend = (long)f.appends;
+  r.append("24", 1, "t", "B");
+  f.refuseList = true;
+  TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(r.append("24", 2, "t", "C")));
+  f.refuseList = false;
+  TEST_ASSERT_TRUE((std::vector<std::string>{"A", "B", "C"}) == receipts(r, "24"));
+  for (int i = 3; i < (int)fx::kCompactLines + 2; ++i) r.append("24", i, "t", "x" + std::to_string(i));
+  std::vector<std::string> ram = receipts(r, "24");
+  fx::EffectRing r2(&f);
+  TEST_ASSERT_TRUE(ram == receipts(r2, "24"));   // the rewrite carried RAM's order
+}
+
+// A refused append whose bytes all landed: read back once, in this run and after a restart.
+void test_a_refused_append_that_landed_is_not_doubled() {
+  FxFiles f;
+  fx::EffectRing r(&f);
+  r.append("25", 0, "t", "A");
+  f.landThenRefuse = (long)f.appended.size();
+  TEST_ASSERT_EQUAL(int(fx::AppendResult::RamOnly), int(r.append("25", 1, "t", "B")));
+  r.append("25", 2, "t", "C");
+  TEST_ASSERT_TRUE((std::vector<std::string>{"A", "B", "C"}) == receipts(r, "25"));
+  fx::EffectRing r2(&f);
+  TEST_ASSERT_TRUE((std::vector<std::string>{"A", "B", "C"}) == receipts(r2, "25"));
+  for (int i = 3; i < (int)fx::kCompactLines + 2; ++i) r.append("25", i, "t", "x" + std::to_string(i));
+  fx::EffectRing r3(&f);
+  auto got = receipts(r3, "25");
+  TEST_ASSERT_TRUE(got == receipts(r, "25"));
+  std::set<std::string> uniq(got.begin(), got.end());
+  TEST_ASSERT_EQUAL_UINT32(got.size(), uniq.size());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_fifty_per_chat_oldest_dropped_at_every_count);
@@ -801,5 +906,9 @@ int main() {
   RUN_TEST(test_ram_rings_live_in_the_working_allocator);
   RUN_TEST(test_the_stored_form_is_fixed);
   RUN_TEST(test_a_refused_rewrite_leaves_no_temp_and_retries);
+  RUN_TEST(test_a_refused_rename_keeps_the_only_copy);
+  RUN_TEST(test_a_lone_temp_is_never_shadowed_by_a_new_file);
+  RUN_TEST(test_order_is_kept_through_refusals);
+  RUN_TEST(test_a_refused_append_that_landed_is_not_doubled);
   return UNITY_END();
 }

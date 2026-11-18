@@ -31,15 +31,20 @@
 // - Crash safety: a cut at any point of an append loses at most that entry. A line counts
 //   only with its '\n' and a good crc; a torn tail is dropped at load, and the next append
 //   after a torn tail starts with "~\n" inside the same append, so the torn bytes stay a line
-//   of their own and are never completed or glued onto the next entry. A cut during the
-//   rewrite leaves the old file whole (the temp is deleted at load), or, on a binding whose
-//   rename removes the target first, only the whole temp, which load takes as the file.
+//   of their own and are never completed or glued onto the next entry. A cut or refusal
+//   during the rewrite leaves the old file whole (the temp is deleted at the next use), or, on
+//   a binding whose rename removes the target first, only the whole temp, which becomes the
+//   file at the next use; until it has, nothing is written beside it.
+// - Nothing is written for a chat before its file was read (and any temp settled): an entry
+//   kept meanwhile is RamOnly. So RAM is the order of record: a refused append that landed
+//   anyway, or a refusal followed by a stored append, never reorders or doubles an entry.
 // - Survives a restart: a chat's ring is loaded from its file at its first use (append or
 //   read) after boot, in kReadSlice pieces (one bounded card read each).
 // - No card: when storage refuses (TxFiles::list answers false, an append is refused) or
 //   there is no storage at all (files == nullptr), the ring runs from RAM: the append still
 //   lands in RAM and answers AppendResult::RamOnly, the entry reads back with stored=false,
-//   and backing() answers Backing::RamOnly, so a reader can say so. A RAM-only entry is never
+//   and backing() answers Backing::RamOnly (until the chat's next write lands), so a reader
+//   can say so. A RAM-only entry is never
 //   written later by itself; the next rewrite of the chat's file (once storage is back and
 //   the file was loaded) carries the whole RAM ring, RAM-only entries included.
 // - Chats never see each other's entries: every read and write names one chat id; each chat
@@ -159,7 +164,7 @@ class EffectRing {
 
  private:
   struct Slot;
-  Slot* slotFor(const std::string& chatId, const std::string& key);   // load or evict
+  Slot* slotFor(const std::string& chatId, const std::string& key);   // load, settle or evict
   void loadInto(Slot& s, const std::string& path);
   bool rewrite(Slot& s, const std::string& path);
 

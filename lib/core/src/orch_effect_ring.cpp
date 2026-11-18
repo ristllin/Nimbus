@@ -211,7 +211,9 @@ bool decodeLine(const char* p, size_t n, RingEntry& out) {
 struct EffectRing::Slot {
   char key[kKeyMax + 1];
   bool used;
-  bool loaded;      // the file was read (or confirmed absent) and every write since landed
+  bool loaded;      // the file was read (or confirmed absent): RAM holds what it holds
+  bool unsettled;   // a rewrite's rename was refused: the temp may be the only whole copy
+  bool writeFailed; // the last write of this chat was refused (backing() says RamOnly)
   bool tornTail;    // the file may end in a part line: the next append starts with "~\n"
   uint32_t lines;   // lines in the file (dropped ones included), for the rewrite bound
   uint32_t lastUse;
@@ -276,10 +278,12 @@ EffectRing::Slot* EffectRing::slotFor(const std::string& chatId, const std::stri
     copyField(pick->key, sizeof pick->key, key);
   }
   pick->lastUse = ++tick_;
-  if (!pick->loaded && files_) loadInto(*pick, path);
+  if (files_ && (!pick->loaded || pick->unsettled)) loadInto(*pick, path);
   return pick;
 }
 
+// Settle the chat's files (a temp left by a cut or refused rewrite), then, the first time,
+// read the file into RAM. A loaded slot keeps RAM as the truth: settling never re-reads it.
 void EffectRing::loadInto(Slot& s, const std::string& path) {
   std::vector<std::string> names;
   if (!files_->list(kFxRoot, names)) return;   // no card: stay in RAM
@@ -290,20 +294,22 @@ void EffectRing::loadInto(Slot& s, const std::string& path) {
     hasMain = hasMain || n == base;
     hasTmp = hasTmp || n == base + ".tmp";
   }
-  std::string from = path;
   if (hasTmp && hasMain) {
-    files_->remove(tmp);   // a rewrite cut before its rename: the file is whole
-  } else if (hasTmp) {     // a rename that removed its target first was cut: the temp is whole
-    if (!files_->rename(tmp, path)) from = tmp;
+    files_->remove(tmp);   // a rewrite cut or refused before its rename: the file is whole
+  } else if (hasTmp) {     // a rename that removed its target first: the temp is the only copy
+    if (!files_->rename(tmp, path)) return;   // keep it; no write may make a second file
     hasMain = true;
   }
+  s.unsettled = false;
+  if (s.loaded) return;
   ++stats_.loads;
   // The file's entries, newest kRingEntries kept; RAM is touched only once the read is whole.
   WorkingVector<RingEntry> got;
   uint32_t lines = 0, dropped = 0;
   bool torn = false;
-  if (hasMain && !readFile(*files_, from, got, lines, dropped, torn)) return;   // unreadable now: RAM as it was
-  // Entries already in RAM that never reached storage stay, after the stored ones.
+  if (hasMain && !readFile(*files_, path, got, lines, dropped, torn)) return;   // unreadable now: RAM as it was
+  // Entries already in RAM never reached storage (no write runs before the load), so they are
+  // newer than every line of the file: they stay, after it.
   WorkingVector<RingEntry> extra;
   for (size_t i = 0; i < s.count; ++i)
     if (!s.at(i).stored) extra.push_back(s.at(i));
@@ -322,8 +328,12 @@ bool EffectRing::rewrite(Slot& s, const std::string& path) {
   all.reserve(s.count * kLineMax);
   for (size_t i = 0; i < s.count; ++i) all += encodeLine(s.at(i));
   const std::string tmp = path + ".tmp";
-  if (!files_->writeWhole(tmp, all) || !files_->rename(tmp, path)) {
-    files_->remove(tmp);
+  if (!files_->writeWhole(tmp, all)) {
+    files_->remove(tmp);   // the file is whole; a part temp would be taken for a cut rename
+    return false;
+  }
+  if (!files_->rename(tmp, path)) {
+    s.unsettled = true;   // the temp may be the only whole copy: settled before the next write
     return false;
   }
   for (size_t i = 0; i < s.count; ++i) s.at(i).stored = true;
@@ -352,18 +362,15 @@ AppendResult EffectRing::append(const std::string& chatId, int64_t epoch, const 
   copyField(e.receipt, sizeof e.receipt, cleanText(receipt, kReceiptMax));
   bool ok = false;
   const std::string path = std::string(kFxRoot) + "/" + key + ".ring";
-  if (files_) {
-    // An unread file may end in anything: the separator costs two bytes.
-    const bool sep = s->tornTail || !s->loaded;
+  // Nothing is written before the file was read and settled: a line written beside an unread
+  // file or a lone temp could be lost or put out of order at the next load.
+  if (files_ && s->loaded && !s->unsettled) {
+    const bool sep = s->tornTail;
     const std::string line = (sep ? std::string("~\n") : std::string()) + encodeLine(e);
     ok = files_->append(path, line.data(), line.size());
-    if (ok) {
-      s->lines += sep ? 2 : 1;
-      s->tornTail = false;
-    } else {
-      s->tornTail = true;   // a refusal may leave part of the line behind
-      s->loaded = false;    // read the file again (and merge) when storage answers
-    }
+    s->lines += ok ? (sep ? 2 : 1) : 0;
+    s->tornTail = !ok;      // a refusal may leave part of the line (or all of it) behind
+    s->writeFailed = !ok;
   }
   e.stored = ok;
   s->push(e);
@@ -397,7 +404,7 @@ Backing EffectRing::backing(const std::string& chatId) {
   std::string key;
   if (!files_ || !ringKey(chatId, key)) return Backing::RamOnly;
   Slot* s = slotFor(chatId, key);
-  return s && s->loaded ? Backing::Storage : Backing::RamOnly;
+  return s && s->loaded && !s->unsettled && !s->writeFailed ? Backing::Storage : Backing::RamOnly;
 }
 
 RingStats EffectRing::stats() const {
