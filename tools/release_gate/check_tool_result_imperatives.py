@@ -101,8 +101,12 @@ ORDER_VERBS = (
 )
 _START = r"(?:^|[.!?;:]\s+|\n\s*|\(\s*|-\s+|\]\s*)(?:(?:now|then|first|just|also|so|instead)\s+)?"
 # The verb must be followed by a word, a quote or a bracket ("read 120 B" states a fact), and
-# not by a status word ("write failed", "list not supported" name what happened).
-_STATUS = r"(?:failed|fails|not|is|was|were|refused|error|errors|ok|done|skipped|succeeded|ran|timed)\b"
+# not by a word that makes it a noun or a report: a status or past participle ("write failed",
+# "Report saved", "Reply sent"), "of" ("List of files"), or a noun ("Search results", "Start time").
+_STATUS = (
+    r"(?:\w+ed|not|is|was|were|are|has|had|sent|done|made|kept|set|run|ran|read|written|found|held|left|built|"
+    r"put|ok|of|results?|time|code|count|size|bytes|status|mode|id|ids|errors?|limit|list|text|line|rows?)\b"
+)
 ORDER_START = re.compile(
     _START + r"(" + "|".join(re.escape(v) for v in ORDER_VERBS) + r")\s+"
     r"(?!" + _STATUS + r")(?=[A-Za-z_'\"`(\[])",

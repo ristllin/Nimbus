@@ -45,8 +45,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 E1_CLASSES = ("system", "device_notes", "tool_descriptions", "tool_results", "side_prompts", "skills")
 
-# Every prose literal of these files is in the class. In a tool_results file the
-# description and schema of a registered tool go to tool_descriptions instead.
+# Every prose literal of these files is in the class, except in any file: the description
+# and schema of a registered tool go to tool_descriptions, and the text of a ToolResult::ok
+# or fail call goes to tool_results.
 E1_SOURCES = {
     "system": (
         "lib/core/include/nimbus/orch/orch_schema.h",
@@ -90,6 +91,9 @@ E1_SOURCES = {
         "lib/harness/src/providers/openai.cpp",
         "lib/harness/src/turn_contract.cpp",
         "lib/harness/src/turn_memory.cpp",
+        "nimbusd/src/rig.h",
+        "src/agent/orchestrator.cpp",
+        "src/main.cpp",
     ),
     "tool_results": (
         "lib/core/include/nimbus/orch/result_envelope.h",
@@ -131,25 +135,23 @@ E1_SOURCES = {
     "skills": ("lib/harness/src/builtin_skills.cpp",),
 }
 
-# Large mixed files (wiring, web pages, the test rig): only the text of a tool result
-# (ToolResult::ok / fail) and of a registered tool is model-facing there.
-E1_RESULT_ONLY = (
-    "nimbusd/src/rig.h",
-    "src/agent/orchestrator.cpp",
-    "src/main.cpp",
-)
+# Files a new file's prose may sit in without being model text, each with its reason. A file
+# added under SCAN_DIRS with prose literals outside a log call must be in a catalog or here
+# (check_no_prompt_patch.py, with a git base).
+NON_MODEL_FILES: dict = {}
 
-# Byte ceilings of engine 1: the bytes measured when the gate was introduced. Engine 1
-# only shrinks; a ceiling is never raised (the ledger's baseline in PROMPT-CHANGES.md
-# holds the same figures and check_no_prompt_patch.py fails a ceiling above them).
-E1_CEILINGS = {
-    "system": 47995,
-    "device_notes": 58395,
-    "tool_descriptions": 22951,
-    "tool_results": 41178,
-    "side_prompts": 7570,
-    "skills": 23264,
+# The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the
+# baseline table of coverage/PROMPT-CHANGES.md too (check_no_prompt_patch.py fails when they
+# differ), and the byte ceilings of engine 1: it only shrinks, a ceiling is never raised.
+E1_BASELINE = {
+    "system": (47989, "faa8207c"),
+    "device_notes": (74301, "37b59a6c"),
+    "tool_descriptions": (23055, "a62706dc"),
+    "tool_results": (41269, "eb3909ce"),
+    "side_prompts": (7641, "041badf6"),
+    "skills": (23264, "cef6121d"),
 }
+E1_CEILINGS = {cls: size for cls, (size, _sha) in E1_BASELINE.items()}
 
 # ---------------------------------------------------------------------------
 # Engine 2: texts.h by namespace (PRD section 4 ceilings).
@@ -207,7 +209,7 @@ LOG_CALLS = frozenset(
         "static_assert",
     }
 )
-RESULT_CALLS = frozenset({"ok", "fail"})
+RESULT_CALLS = frozenset({"ok", "fail"})  # ToolResult::ok / ToolResult::fail
 ADD_CALLS = frozenset({"add", "addOwnerOnly"})  # tool registration: (reg,) name, description, handler, schema
 TOOL_FILE = re.compile(
     r'\bToolResult::(?:ok|fail)\s*\(|(?<!struct )\bToolResult\s*\{|registry\(\)\s*\.add\s*\(|'
@@ -258,7 +260,9 @@ def _unescape(body: str) -> str:
             i += 1
             continue
         n = body[i + 1] if i + 1 < len(body) else ""
-        if n == "x":
+        if n in "\r\n" and n:  # a backslash-newline inside a literal: the compiler drops both
+            i += 2 + (body[i + 1 : i + 3] == "\r\n")
+        elif n == "x":
             m = re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2 :])
             out.append(int(m.group(0), 16) if m else ord("x"))
             i += 2 + (len(m.group(0)) if m else 0)
@@ -385,6 +389,12 @@ class _Lexer:
     def _char_literal(self) -> bool:
         if self.src[self.i] != "'":
             return False
+        k = self.i
+        while k > 0 and (self.src[k - 1].isalnum() or self.src[k - 1] == "_"):
+            k -= 1
+        if k < self.i and self.src[k].isdigit():  # a digit separator (1'000, 0xFF'FF), not a char literal
+            self.i += 1
+            return True
         j = self.i + 1
         while j < self.n and self.src[j] != "'":
             j += 2 if self.src[j] == "\\" else 1
@@ -450,11 +460,12 @@ def extract_literals(src: str) -> list:
 
 
 _PROSE = re.compile(r"[A-Za-z]{2,}")
+_SPACE = re.compile(r"\s")
 
 
 def is_prose(text: str) -> bool:
-    """A literal a model could read as words: letters and at least one space."""
-    return " " in text and _PROSE.search(text) is not None
+    """A literal a model could read as words: letters and any whitespace (a newline or NBSP counts)."""
+    return _SPACE.search(text) is not None and _PROSE.search(text) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -498,12 +509,13 @@ def _read(root: str, rel: str) -> "str | None":
         return f.read()
 
 
-_DESC_NAME = re.compile(r"desc|schema", re.I)
+# A declared name that says it holds a description: kAppendDesc, desc, kListSchema, description.
+_DESC_NAME = re.compile(r"^(k\w*(Desc|Description|Schema)\w*|\w*_?(desc|description|schema))$", re.I)
 
 
 def _is_tool_description(lit: Literal) -> bool:
     """The description or schema of a tool: an add() argument, a JSON schema, or a named description."""
-    return lit.in_add or _is_schema(lit.text) or any(_DESC_NAME.search(n) for n in lit.names)
+    return lit.in_add or _is_schema(lit.text) or any(_DESC_NAME.match(n) for n in lit.names)
 
 
 def _is_schema(text: str) -> bool:
@@ -511,30 +523,35 @@ def _is_schema(text: str) -> bool:
     return t.startswith("{") and '"type"' in t
 
 
-def _e1_file_entries(cls: str, rel: str, src: str, result_only: bool) -> list:
-    out = []
-    for lit in extract_literals(src):
-        if lit.logged or not is_prose(lit.text):
-            continue
-        desc = _is_tool_description(lit)
-        if result_only:
-            if desc:
-                out.append(Entry("tool_descriptions", rel, lit.text))
-            elif RESULT_CALLS.intersection(lit.calls):
-                out.append(Entry("tool_results", rel, lit.text))
-            continue
-        if cls == "tool_results" and desc:
-            out.append(Entry("tool_descriptions", rel, lit.text))
-        else:
-            out.append(Entry(cls, rel, lit.text))
-    return out
+def literal_class(lit: Literal, file_cls: str) -> str:
+    """A tool result's text is a tool result, a registration's text a description, the rest the file's class."""
+    if RESULT_CALLS.intersection(lit.calls):
+        return "tool_results"
+    if _is_tool_description(lit):
+        return "tool_descriptions"
+    return file_cls
+
+
+def model_literals(rel: str, src: str) -> list:
+    """The prose literals of a source that are not written by a log call."""
+    try:
+        lits = extract_literals(src)
+    except (ValueError, IndexError) as e:  # an unterminated literal: fail with the gate's marker, not a trace
+        raise CatalogError(f"{rel}: its string literals cannot be read ({e})") from e
+    return [lit for lit in lits if not lit.logged and is_prose(lit.text)]
+
+
+def _e1_file_entries(cls: str, rel: str, src: str) -> list:
+    return [Entry(literal_class(lit, cls), rel, lit.text) for lit in model_literals(rel, src)]
 
 
 def e1_sources() -> list:
-    """(class, path, result_only) for every engine-1 source."""
-    rows = [(cls, p, False) for cls, paths in E1_SOURCES.items() for p in paths]
-    rows += [("tool_results", p, True) for p in E1_RESULT_ONLY]
-    return rows
+    """(class, path) for every engine-1 source."""
+    return [(cls, p) for cls, paths in E1_SOURCES.items() for p in paths]
+
+
+def catalogued_paths() -> set:
+    return {p for _, p in e1_sources()} | {p for p, _ in E2_EXTRA_SOURCES} | {E2_TEXTS}
 
 
 def _scan_files(root: str):
@@ -552,7 +569,7 @@ def _is_e2_engine_file(rel: str) -> bool:
 
 def uncatalogued_tool_files(root: str) -> list:
     """Files that build a tool result or register a tool but are in no catalog."""
-    listed = {p for _, p, _ in e1_sources()} | {p for p, _ in E2_EXTRA_SOURCES} | {E2_TEXTS}
+    listed = catalogued_paths()
     out = []
     for rel in _scan_files(root):
         if rel in listed or rel in SCAN_SKIP or _is_e2_engine_file(rel):
@@ -564,28 +581,35 @@ def uncatalogued_tool_files(root: str) -> list:
 
 
 def build_e1(root: str) -> list:
-    entries = []
-    missing = 0
-    for cls, rel, result_only in e1_sources():
+    entries, missing = [], []
+    for cls, rel in e1_sources():
         src = _read(root, rel)
-        if src is None:  # engine-1 files are deleted on the way to v6.1.0; their text leaves with them
-            missing += 1
+        if src is None:
+            missing.append(rel)
             continue
-        entries += _e1_file_entries(cls, rel, src, result_only)
-    if missing == len(e1_sources()):
-        raise CatalogError("no engine-1 source found: wrong --root?")
+        entries += _e1_file_entries(cls, rel, src)
+    if missing:
+        # A deleted or moved engine-1 file leaves the list in the same change, so a rename cannot
+        # drop its text from the catalog unseen.
+        raise CatalogError(
+            "E1_SOURCES names a file that does not exist (remove or rename it there): " + ", ".join(missing)
+        )
     stray = uncatalogued_tool_files(root)
     if stray:
         raise CatalogError(
             "a file builds a tool result or registers a tool but is in no catalog class "
-            "(add it to E1_SOURCES or E1_RESULT_ONLY): " + ", ".join(stray)
+            "(add it to E1_SOURCES): " + ", ".join(stray)
         )
     return entries
 
 
 def _e2_literal_entries(rel: str, src: str, default_cls: "str | None") -> list:
     out, bad = [], []
-    for lit in extract_literals(src):
+    try:
+        lits = extract_literals(src)
+    except (ValueError, IndexError) as e:
+        raise CatalogError(f"{rel}: its string literals cannot be read ({e})") from e
+    for lit in lits:
         cls = next((n for n in reversed(lit.namespaces) if n in E2_CLASSES), default_cls)
         if cls is None:
             bad.append(f"{rel}:{lit.line}")
@@ -604,8 +628,8 @@ def e2_stray_literals(root: str) -> list:
     for rel in _scan_files(root):
         if not _is_e2_engine_file(rel):
             continue
-        for lit in extract_literals(_read(root, rel) or ""):
-            if lit.logged or E2_NON_MODEL_CALLS.intersection(lit.calls) or not is_prose(lit.text):
+        for lit in model_literals(rel, _read(root, rel) or ""):
+            if E2_NON_MODEL_CALLS.intersection(lit.calls):
                 continue
             out.append(f"{rel}:{lit.line} {lit.text[:60]!r}")
     return out

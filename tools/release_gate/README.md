@@ -74,12 +74,16 @@ python3 tools/release_gate/check_tool_result_imperatives.py [--base REF]     # T
 - The generator extracts the text into `test/golden/model_text_catalog_e1.txt` (engine 1: the prose
   literals of the files it lists, by class) and, once `plain/texts.h` exists,
   `test/golden/model_text_catalog.txt` (engine 2: by namespace), each class with a byte ceiling.
-  A file that builds a tool result or registers a tool must be listed.
+  A literal inside a `ToolResult::ok`/`fail` call is a tool result and a registration's
+  description or schema a tool description, in any listed file. A file that builds a tool result
+  or registers a tool must be listed, and a listed file that is gone fails until the list drops it.
 - The gate fails a stale golden, a class over its ceiling, and any change to a class's text without
   its entry in `coverage/PROMPT-CHANGES.md` (the ledger: growth fails, a byte-neutral swap needs a
   red scenario id, the commit where it was red and the parity rates). With a git base (the merge
-  base with rb-main or main, or `--base`) it also fails an edited merged entry and a remove entry
-  that hides added text. In a checkout with no history (GitHub's shallow clone) those history checks
+  base with rb-main or main, or `--base`) it also fails an edited merged entry, a remove entry
+  that hides added text, a swap whose `red_at` is not a commit, a file dropped from the list while
+  it exists, and a new file under `lib/`, `src/` or `nimbusd/src/` with prose literals that is in
+  no catalog (or in `NON_MODEL_FILES` with its reason). In a checkout with no history (GitHub's shallow clone) those history checks
   are skipped; elsewhere a missing base fails.
 - The lint fails a tool result or error template that gives the model an order; engine 1's existing
   ones are listed in the ledger's imperative baseline, which only shrinks.

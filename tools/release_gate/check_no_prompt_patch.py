@@ -30,6 +30,7 @@ Exit 0 with NO PROMPT PATCH GREEN as the last line; exit 1 with NO PROMPT PATCH 
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -48,6 +49,11 @@ EMPTY_SHA8 = cat.class_sha8([])
 KINDS = ("swap", "remove", "build")
 # Rows up to this id predate the rule (18 Nov 2026); every later row needs a red scenario.
 REGISTER_LAST_GRANDFATHERED = 55
+MISSING_CHECK_PASSIVE = re.compile(
+    r"\b(check|guard|test|assertion|validation|gate)s?\s+(was|were|is|are)\s+"
+    r"(missing|absent|lacking)\b",
+    re.I,
+)
 MISSING_CHECK = re.compile(
     r"\b(missing|no|lacked?|lacking|without( an?)?|absent)\s+(\w+\s+)?"
     r"(check|guard|test|assertion|validation|gate)s?\b",
@@ -108,19 +114,22 @@ def parse_changes(text: str) -> dict:
     return {"baseline": baseline, "entries": entries, "errors": errors}
 
 
+SCENARIO_EXT = (".json", ".yaml", ".yml")
+
+
 def scenario_exists(root: str, sid: str) -> bool:
-    """A scenario id resolves when a file under tests/evals/**/scenarios is named for it or declares it."""
+    """A scenario id resolves when a .json or .yaml file in a scenarios folder under tests/evals declares it."""
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{1,80}", sid):
         return False
-    decl = re.compile(r"^\s*\"?id\"?\s*:\s*\"?" + re.escape(sid) + r"\"?\s*,?\s*$", re.M)
-    for dirpath, dirnames, files in os.walk(os.path.join(root, SCENARIO_ROOT)):
+    decl = re.compile(r'(?:^|[{,])\s*"?id"?\s*:\s*"?' + re.escape(sid) + r'"?\s*(?:,|\}|$)', re.M)
+    top = os.path.join(root, SCENARIO_ROOT)
+    for dirpath, dirnames, files in os.walk(top):
         dirnames.sort()
-        if "scenarios" not in dirpath.replace(os.sep, "/").split("/"):
+        if "scenarios" not in os.path.relpath(dirpath, top).replace(os.sep, "/").split("/"):
             continue
         for f in files:
-            stem = os.path.splitext(f)[0]
-            if stem == sid or stem.split("-", 1)[-1] == sid and stem.split("-", 1)[0].isdigit():
-                return True
+            if not f.endswith(SCENARIO_EXT):
+                continue
             try:
                 with open(os.path.join(dirpath, f), encoding="utf-8", errors="replace") as fh:
                     if decl.search(fh.read(4096)):
@@ -247,10 +256,16 @@ def check_ceilings(current: dict, baseline: dict) -> "list[str]":
                 errs.append(f"{catalog} {cls}: no byte ceiling")
             elif st["bytes"] > ceil[cls]:
                 errs.append(f"{catalog} {cls}: {st['bytes']} B is over its ceiling {ceil[cls]} B")
-    for (catalog, cls), (b, _s) in baseline.items():
-        if catalog == "e1" and cat.ceilings("e1").get(cls, 0) > b:
+    e1_rows = {cls: row for (catalog, cls), row in baseline.items() if catalog == "e1"}
+    if e1_rows != cat.E1_BASELINE:
+        errs.append(
+            f"{CHANGES}: the e1 baseline table differs from E1_BASELINE in gen_model_text_catalog.py; "
+            "both are written once"
+        )
+    for cls, (size, _sha) in cat.E1_BASELINE.items():
+        if cat.ceilings("e1").get(cls, 0) > size:
             errs.append(
-                f"e1 {cls}: ceiling {cat.ceilings('e1')[cls]} B is above its baseline {b} B (engine 1 only shrinks)"
+                f"e1 {cls}: ceiling {cat.ceilings('e1')[cls]} B is above its baseline {size} B (engine 1 only shrinks)"
             )
     return errs
 
@@ -281,7 +296,7 @@ def check_register(root: str, text: "str | None" = None) -> "list[str]":
                 f"{rid}: the live case column names no scenario that resolves under {SCENARIO_ROOT}/**/"
                 "scenarios; every owner-visible failure gets a red multi-turn scenario before its fix"
             )
-        if MISSING_CHECK.search(cells[4]):
+        if MISSING_CHECK.search(cells[4]) or MISSING_CHECK_PASSIVE.search(cells[4]):
             errs.append(
                 f"{rid}: 'missing check' is not an accepted root cause (say why the product did the "
                 f"wrong thing): {cells[4][:80]!r}"
@@ -341,12 +356,59 @@ def _added_texts(root: str, base: str, catalog: str, cls: str) -> Counter:
     return now - was
 
 
+def _base_e1_sources(root: str, base: str) -> "set[str] | None":
+    """The E1_SOURCES paths of the base commit's generator, read without running it."""
+    src = show(root, base, "tools/release_gate/gen_model_text_catalog.py")
+    if src is None:
+        return None
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "E1_SOURCES" for t in node.targets):
+            return {p for paths in ast.literal_eval(node.value).values() for p in paths}
+    return None
+
+
+def check_sources_history(root: str, base: str) -> "list[str]":
+    """No engine-1 source leaves the list while it exists; a new file's prose is catalogued or declared."""
+    errs = []
+    was = _base_e1_sources(root, base)
+    now = cat.catalogued_paths()
+    for rel in sorted((was or set()) - now):
+        if os.path.isfile(os.path.join(root, rel)):
+            errs.append(
+                f"{rel}: dropped from E1_SOURCES while it still exists; its text would leave the catalog unseen"
+            )
+    added = (git(root, "diff", "--name-only", "--diff-filter=A", base, "--", *cat.SCAN_DIRS) or "").split()
+    added += (git(root, "ls-files", "--others", "--exclude-standard", "--", *cat.SCAN_DIRS) or "").split()
+    for rel in sorted(set(added)):
+        if not rel.endswith((".cpp", ".h", ".hpp", ".cc")) or rel in now or rel in cat.NON_MODEL_FILES:
+            continue
+        if cat._is_e2_engine_file(rel) or not os.path.isfile(os.path.join(root, rel)):
+            continue
+        lits = cat.model_literals(rel, cat._read(root, rel) or "")
+        if lits:
+            errs.append(
+                f"{rel}: a new file with prose literals outside a log call ({lits[0].text[:50]!r}); list it in "
+                "E1_SOURCES, move the text to texts.h, or name it in NON_MODEL_FILES with the reason"
+            )
+    return errs
+
+
+def _red_at_errors(root: str, entries: list) -> "list[str]":
+    errs = []
+    for e in entries:
+        sha = _first_word(e.get("red_at", ""))
+        if e.get("kind") == "swap" and _COMMIT.match(sha) and git(root, "cat-file", "-e", sha + "^{commit}") is None:
+            errs.append(f"{e['id']}: red_at {sha} is not a commit in this repository")
+    return errs
+
+
 def check_history(root: str, base: str, changes: dict) -> "list[str]":
     """Merged entries and the baseline are unchanged; a remove entry hides no added text."""
     old_text = show(root, base, CHANGES)
     old = parse_changes(old_text) if old_text is not None else {"baseline": changes["baseline"], "entries": []}
-    errs = _merged_entry_errors(changes, old)
+    errs = _merged_entry_errors(changes, old) + check_sources_history(root, base)
     old_ids = {e["id"] for e in old["entries"]}
+    errs += _red_at_errors(root, [e for e in changes["entries"] if e["id"] not in old_ids])
     kinds: dict = {}
     for e in changes["entries"]:
         if e["id"] not in old_ids:

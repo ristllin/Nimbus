@@ -58,6 +58,14 @@ def test_orders_are_flagged(text):
         "day 2026-11-17: 7 rows, 1,612 kcal, P 118.3 g; target 2,300 -> left 688 kcal",
         "the owner's rule list is full (12 of 12); the rule was stored unpinned",
         "sent message_id=81 bytes=2048 sha:0a1b2c3d",
+        "Search results for coffee: 3",
+        "List of files under notes/",
+        "Report saved as r.pdf",
+        "Reply sent to the owner",
+        "Note added",
+        "Start time: 09:00",
+        "Return code 3",
+        "Edit applied",
     ],
 )
 def test_facts_are_not_flagged(text):

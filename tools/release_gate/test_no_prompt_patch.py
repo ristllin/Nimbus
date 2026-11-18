@@ -41,8 +41,8 @@ def _git(root, *args):
 
 def make_tree(dst):
     """A copy of everything the gates read, committed as the base of a temp git repo."""
-    rels = {p for _, p, _ in cat.e1_sources()}
-    rels |= {cat.CATALOGS["e1"]["golden"], gate.CHANGES, gate.REGISTER}
+    rels = {p for _, p in cat.e1_sources()}
+    rels |= {cat.CATALOGS["e1"]["golden"], gate.CHANGES, gate.REGISTER, "tools/release_gate/gen_model_text_catalog.py"}
     for rel in sorted(rels):
         src = os.path.join(REPO, rel)
         if os.path.isfile(src):
@@ -148,7 +148,13 @@ def entry_for(root, catalog, cls, before, kind, **extra):
     return fields
 
 
-SWAP_PROOF = {"scenario": "lc-day-total", "red_at": "1a2b3c4d", "rates": "before=0.60 after=0.98 (test)"}
+# red_at names the template's base commit (main), which exists in every copied tree.
+SWAP_PROOF = {"scenario": "lc-day-total", "red_at": "main-commit", "rates": "before=0.60 after=0.98 (test)"}
+
+
+def proof(root, **over):
+    sha = subprocess.run(["git", "-C", root, "rev-parse", "main"], capture_output=True, text=True).stdout.strip()
+    return {**SWAP_PROOF, "red_at": sha, **over}
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +200,7 @@ def test_growth_fails_even_with_an_entry(tree, cls):
     path, text = plain_literal(tree, cls)
     edit_literal(tree, path, text, text + PAD)
     regen(tree)
-    append_entry(tree, **entry_for(tree, "e1", cls, before, "swap", **SWAP_PROOF))
+    append_entry(tree, **entry_for(tree, "e1", cls, before, "swap", **proof(tree)))
     errs = errors(tree)
     assert any("grows" in e for e in errs), errs
 
@@ -221,6 +227,46 @@ def test_text_moved_between_files_of_one_class_is_neutral(tree):
     write(tree, other, read(tree, other) + f'\nstatic const char kMoved[] = "{text}";\n')
     regen(tree)
     assert errors(tree) == []
+
+
+def test_a_listed_source_that_is_gone_fails(tree):
+    path = cat.E1_SOURCES["device_notes"][0]
+    os.remove(os.path.join(tree, path))
+    errs = errors(tree)
+    assert any("names a file that does not exist" in e and path in e for e in errs), errs
+
+
+def test_dropping_an_existing_file_from_the_list_fails(tree, monkeypatch):
+    path, text = plain_literal(tree, "device_notes")
+    kept = tuple(p for p in cat.E1_SOURCES["device_notes"] if p != path)
+    monkeypatch.setitem(cat.E1_SOURCES, "device_notes", kept)
+    regen(tree)
+    before = gate.parse_changes(read(tree, gate.CHANGES))["baseline"][("e1", "device_notes")]
+    append_entry(tree, **entry_for(tree, "e1", "device_notes", {"bytes": before[0], "sha8": before[1]}, "remove"))
+    errs = errors(tree)
+    assert any("dropped from E1_SOURCES while it still exists" in e for e in errs), errs
+
+
+def test_a_new_file_with_prose_outside_the_catalog_fails(tree, monkeypatch):
+    rel = "lib/core/include/nimbus/orch/extra_texts.h"
+    write(tree, rel, 'constexpr char kHint[] = "You must call files.read first and never retry.";\n')
+    errs = errors(tree)
+    assert any(rel in e and "a new file with prose literals" in e for e in errs), errs
+    monkeypatch.setitem(cat.NON_MODEL_FILES, rel, "a test: declared as not model text")
+    assert errors(tree) == []
+
+
+def test_text_moved_behind_a_variable_in_a_wiring_file_is_counted(tree):
+    before = stats(tree)["device_notes"]
+    path = "src/agent/orchestrator.cpp"
+    src = read(tree, path)
+    lit = next(x for x in cat.model_literals(path, src) if len(x.text) > 60 and '"' + x.text + '"' in src)
+    hidden = 'std::string m = "missing action. You must call device.state first."'
+    write(tree, path, src.replace('"' + lit.text + '"', '"x"', 1) + "\nvoid planted() { " + hidden + "; }\n")
+    regen(tree)
+    append_entry(tree, **entry_for(tree, "e1", "device_notes", before, "remove"))
+    errs = errors(tree)
+    assert any("logged as remove but text was added" in e for e in errs), errs
 
 
 def test_a_new_tool_file_outside_the_catalog_fails(tree):
@@ -267,8 +313,8 @@ def test_a_byte_neutral_swap_fails_without_an_entry(tree, cls):
 )
 def test_a_swap_entry_needs_scenario_commit_and_rates(tree, drop, message):
     before = _swap(tree)
-    proof = {k: v for k, v in SWAP_PROOF.items() if k != drop}
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof))
+    kept = {k: v for k, v in proof(tree).items() if k != drop}
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **kept))
     errs = errors(tree)
     assert any(message in e for e in errs), errs
 
@@ -276,7 +322,7 @@ def test_a_swap_entry_needs_scenario_commit_and_rates(tree, drop, message):
 def test_a_swap_entry_with_an_unknown_scenario_fails(tree):
     before = _swap(tree)
     append_entry(
-        tree, **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "scenario": "lc-does-not-exist"})
+        tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree, scenario="lc-does-not-exist"))
     )
     assert any("does not resolve" in e for e in errors(tree))
 
@@ -284,7 +330,7 @@ def test_a_swap_entry_with_an_unknown_scenario_fails(tree):
 def test_a_swap_entry_with_rates_out_of_range_fails(tree):
     before = _swap(tree)
     append_entry(
-        tree, **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "rates": "before=60 after=98"})
+        tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree, rates="before=60 after=98"))
     )
     assert any("parity rates" in e for e in errors(tree))
 
@@ -293,7 +339,7 @@ def test_a_swap_that_lowers_the_parity_rate_fails(tree):
     before = _swap(tree)
     append_entry(
         tree,
-        **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "rates": "before=0.98 after=0.90"}),
+        **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree, rates="before=0.98 after=0.90")),
     )
     assert any("parity rate fell" in e for e in errors(tree))
 
@@ -304,15 +350,29 @@ def test_a_base_ref_that_looks_like_an_option_is_refused(tree):
 
 def test_a_complete_swap_entry_passes(tree):
     before = _swap(tree)
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree)))
     assert errors(tree) == []
+
+
+def test_a_swap_whose_red_commit_does_not_exist_fails(tree):
+    before = _swap(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree, red_at="deadbeef")))
+    assert any("red_at deadbeef is not a commit" in e for e in errors(tree))
+
+
+def test_an_empty_file_named_for_the_scenario_does_not_resolve(tree):
+    write(tree, "tests/evals/x/scenarios/lc-made-up.txt", "")
+    write(tree, "tests/evals/x/scenarios/lc-made-up.json", "{}")
+    assert not gate.scenario_exists(tree, "lc-made-up")
+    write(tree, "tests/evals/x/scenarios/lc-made-up.json", '{"id": "lc-made-up"}')
+    assert gate.scenario_exists(tree, "lc-made-up")
 
 
 def test_a_refloop_scenario_id_resolves(tree):
     before = _swap(tree)
     append_entry(
         tree,
-        **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "scenario": "recent-compare-food"}),
+        **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree, scenario="recent-compare-food")),
     )
     assert errors(tree) == []
 
@@ -327,7 +387,7 @@ def test_an_entry_claiming_the_wrong_after_state_fails(tree):
 
 def test_entries_chain_an_old_entry_cannot_cover_a_new_change(tree):
     before = _swap(tree)
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree)))
     merge(tree)
     _swap(tree, tail=" once again.")  # a second change, no second entry
     assert any("e1 tool_results: model-facing text changed" in e for e in errors(tree))
@@ -335,8 +395,8 @@ def test_entries_chain_an_old_entry_cannot_cover_a_new_change(tree):
 
 def test_a_second_entry_must_start_where_the_first_ended(tree):
     before = _swap(tree)
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree)))
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree)))
     assert any("is not the last accepted state" in e for e in errors(tree))
 
 
@@ -378,20 +438,22 @@ def test_a_remove_entry_that_hides_added_text_fails(tree):
 
 def test_editing_a_merged_entry_fails(tree):
     before = _swap(tree)
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **SWAP_PROOF))
+    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap", **proof(tree)))
     merge(tree)
     write(tree, gate.CHANGES, read(tree, gate.CHANGES).replace("before=0.60", "before=0.10"))
     assert any("a merged entry was edited" in e for e in errors(tree))
 
 
-def test_editing_the_baseline_fails(tree):
+@pytest.mark.parametrize("use_base", [True, False])
+def test_editing_the_baseline_fails_with_or_without_a_base(tree, use_base):
+    before = _swap(tree)  # a swap, then the baseline row rewritten to match it
+    now = stats(tree)["tool_results"]
     text = read(tree, gate.CHANGES)
-    row = re.search(r"^\| e1 \| skills \| (\d+) \| ([0-9a-f]{8}) \|$", text, re.M)
-    write(
-        tree, gate.CHANGES, text.replace(row.group(0), f"| e1 | skills | {int(row.group(1)) + 300} | {row.group(2)} |")
-    )
-    errs = errors(tree)
-    assert any("the baseline differs" in e for e in errs), errs
+    row = f"| e1 | tool_results | {before['bytes']} | {before['sha8']} |"
+    assert row in text
+    write(tree, gate.CHANGES, text.replace(row, f"| e1 | tool_results | {now['bytes']} | {now['sha8']} |"))
+    errs = errors(tree, use_base=use_base)
+    assert any("baseline" in e and "differs" in e for e in errs), errs
 
 
 def test_an_e1_ceiling_above_its_baseline_fails(tree, monkeypatch):

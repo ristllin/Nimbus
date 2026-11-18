@@ -78,34 +78,43 @@ def test_namespaces_are_recorded():
         (" B", False),
         ("a b", False),
         ("ok go", True),
+        ("Never\nretry", True),
+        ("Never\u00a0retry", True),
+        ("%s\n", False),
     ],
 )
 def test_prose(text, prose):
     assert cat.is_prose(text) is prose
 
 
-def test_e1_file_classes_split_descriptions_from_results():
+def test_each_literal_is_classed_by_what_it_is_part_of():
     src = (
         'void reg(R& r) { r.add("x.y", "Describe the tool here", [](A a) {\n'
-        '  hlog::logf("x.y called %d", 1);\n  return ToolResult::fail("the file is missing"); }); }\n'
+        '  hlog::logf("x.y called %d", 1);\n  return ToolResult::fail(describe("the file is missing")); }); }\n'
+        'const char* page = "a page for the owner";\n'
+        'constexpr char kListDesc[] = "List the things";\n'
     )
-    out = cat._e1_file_entries("tool_results", "f.cpp", src, False)
+    out = cat._e1_file_entries("device_notes", "f.cpp", src)
     assert [(e.cls, e.text) for e in out] == [
         ("tool_descriptions", "Describe the tool here"),
         ("tool_results", "the file is missing"),
+        ("device_notes", "a page for the owner"),
+        ("tool_descriptions", "List the things"),
     ]
 
 
-def test_result_only_files_keep_only_results_and_registrations():
-    src = (
-        'const char* page = "<html> a big web page </html>";\nvoid f() { return ToolResult::ok("saved it now"); }\n'
-        'void g() { reg.add("d.s", "Device state, live", h); }\n'
-    )
-    out = cat._e1_file_entries("tool_results", "main.cpp", src, True)
-    assert [(e.cls, e.text) for e in out] == [
-        ("tool_results", "saved it now"),
-        ("tool_descriptions", "Device state, live"),
-    ]
+def test_digit_separators_and_prefixed_chars_do_not_hide_literals():
+    src = "int n = 1'000; f(\"you must retry now\"); int m = 0xFF'FF; char c = L'\"'; auto s = \"after it\";"
+    assert lits(src) == ["you must retry now", "after it"]
+
+
+def test_a_backslash_newline_inside_a_literal_is_dropped():
+    assert lits('auto s = "abc\\\ndef";') == ["abcdef"]
+
+
+def test_an_unterminated_literal_fails_with_the_marker():
+    with pytest.raises(cat.CatalogError):
+        cat.model_literals("x.cpp", 'auto s = "never closed;')
 
 
 def test_render_parse_round_trip():
@@ -124,7 +133,7 @@ def test_class_identity_ignores_the_file_a_text_sits_in():
 
 
 def test_every_listed_e1_source_exists_and_is_listed_once():
-    rows = [p for _, p, _ in cat.e1_sources()]
+    rows = [p for _, p in cat.e1_sources()]
     assert len(rows) == len(set(rows))
     missing = [p for p in rows if not os.path.isfile(os.path.join(REPO, p))]
     assert missing == [], "an engine-1 source moved: update E1_SOURCES (" + ", ".join(missing) + ")"

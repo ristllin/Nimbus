@@ -12,7 +12,7 @@ in coverage/OWNER-ISSUES-REGISTER.md are a record of that pattern.
 for the plain engine once its `texts.h` exists). This file is the gate's ledger:
 
 - The **Baseline** holds each class's bytes and sha8 when the gate was introduced. It is
-  written once.
+  written once, and equals `E1_BASELINE` in the generator (the engine-1 ceilings).
 - Every later change to a class's text needs one entry under **Changes**, in merge order. Its
   `bytes` and `sha8` go from the class's last accepted state (the baseline or the previous
   entry for that class) to the class as the regenerated golden shows it. Entries chain, so an
@@ -61,11 +61,11 @@ Measured on lane RB-B5's tip (base rb-main f0bd98f4). The engine-1 ceilings in
 
 | Catalog | Class | Bytes | sha8 |
 |---|---|---|---|
-| e1 | system | 47995 | 3b63d501 |
-| e1 | device_notes | 58395 | bdc173e1 |
-| e1 | tool_descriptions | 22951 | 9620cfea |
-| e1 | tool_results | 41178 | 165fc9f4 |
-| e1 | side_prompts | 7570 | 7cf61122 |
+| e1 | system | 47989 | faa8207c |
+| e1 | device_notes | 74301 | 37b59a6c |
+| e1 | tool_descriptions | 23055 | a62706dc |
+| e1 | tool_results | 41269 | eb3909ce |
+| e1 | side_prompts | 7641 | 041badf6 |
 | e1 | skills | 23264 | cef6121d |
 
 ## Imperative baseline
@@ -141,6 +141,7 @@ deleted. Engine 2 has no baseline.
 | lib/core/src/orch_tool_registry.cpp | a7874baf | put your | put your question for the owner there |
 | lib/core/src/orch_tool_registry.cpp | bc19cac4 | set active/short/mid/long | set active/short/mid/long to update your plan |
 | lib/core/src/orch_tool_registry.cpp | f148d4d3 | add the | add the device action there to apply it after this turn |
+| lib/core/src/orch_turn.cpp | 74572a52 | reply must | reply must be a string |
 | lib/harness/src/skill_store.cpp | 86a555f7 | do not |  - WAITING FOR THE OWNER'S APPROVAL - not active: do not fol |
 | lib/harness/src/skill_store.cpp | b01cefab | pick a | ' is a built-in skill - pick a different id |
 | lib/harness/src/skill_store.cpp | ed79a1ff | put the | '); put the description in desc: instead |
