@@ -581,8 +581,7 @@ unknown name gets back the callable names, at most 640 B. The before-dispatch se
 Every model-facing string of engine 2 lives in `lib/harness/include/nimbus/harness/plain/texts.h`,
 in one namespace per class (core, device notes, stubs, tool results, probe, summarizer, tool
 descriptions). `tools/release_gate/gen_model_text_catalog.py` extracts them into
-`test/golden/model_text_catalog.txt` with a byte ceiling per class (PRD section 4), together
-with the prose of `orch_tool_groups.cpp` (the `more` results and the tools index), and the
+`test/golden/model_text_catalog.txt` with a byte ceiling per class (PRD section 4), and the
 no-prompt-patch gate fails any change to a class without a ledger entry. A plain engine file
 holds no prose of its own.
 
