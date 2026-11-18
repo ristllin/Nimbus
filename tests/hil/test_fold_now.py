@@ -6,12 +6,15 @@ device sign-in code plus the web-task owner check; it stages a manual catch-up a
 success, failed cycles, the next try, paid fold calls today and the daily cap, and the
 active rung i/n), registered through the deferred route registry; /api/state is unchanged.
 
-The leg seeds the web chat with three turns, asks for a summary through the route, and
-waits for it the way the owner does: the status moves (a new last success, the summary
-fresh) and the web chat gets exactly one confirmation that starts with the existing
-"✓ Compacted." and names what it covered ("Summary updated: covered N messages from D1
-to D2"). A route without the device sign-in code is refused. Up to v5.1.1 there is no
-route (404): the leg fails there, as it must.
+The leg seeds the web chat with three turns, asks for a summary of the web chat through the
+route (chat=web: with no chat the route folds the owner's Telegram chat when one is set),
+and waits for it the way the owner does: the status moves (a new lastOk, state "fresh") and
+the web chat gets exactly one confirmation, an assistant row tagged ev:foldnote that starts
+with the existing "✓ Compacted." and names what it covered ("Summary updated: covered N
+messages from D1 to D2."). A request without the device sign-in code is refused (401) and a
+chat the device does not know is 404. Up to v5.1.1 there is no route: the leg fails there,
+as it must. A second manual request inside the two-minute cooldown waits for it, so the
+/compact leg's confirmation can take the cooldown plus the fold.
 
 Markers: hil, net, agent. Needs --allow-hardware, NIMBUS_TEST_IP and NIMBUS_TEST_TOKEN on
 an Orchestrator-mode board with a provider key. Four paid turns plus one fold (a few cents).
@@ -33,33 +36,21 @@ RUN = f"FN{int(time.time()) % 100000}"
 # (Mistral) or 120 s (Anthropic, OpenAI).
 FOLD_WAIT_S = 600
 CONFIRM = "✓ Compacted."
-# The status fields the plan names (plan v3 protocols, "Summarize now and staleness"), each
-# with the spellings accepted until lane F's route lands (bind exactly in lane E phase 2).
-STATUS_FIELDS = {
-    "summary age": ("summaryAgeH", "summaryAge", "ageH", "age"),
-    "thru": ("thru", "thruId"),
-    "last success": ("lastOk", "lastSuccess", "lastFold"),
-    "failed cycles": ("failedCycles",),
-    "next try": ("nextTry", "nextTryEpoch"),
-    "paid today": ("paidToday", "paidCount", "paid"),
-    "daily cap": ("cap", "dailyCap", "paidCap"),
-    "rung": ("rung", "activeRung"),
-}
+CHAT = "web"
+# GET /api/fold/status as lane F shipped it (src/net/fold_routes.cpp; never null).
+STATUS_FIELDS = (
+    "summaryAgeH", "lastOk", "lastOkDate", "thru", "thruDate", "uncovered", "failedCycles", "firstFail", "nextTry",
+    "nextTryInS", "paidToday", "cap", "running", "manual", "manualBusy", "rung", "queued", "cooldownS", "state",
+    "canRun", "why",
+)  # fmt: skip
 
 _S = None
 
 
 def _status(ip: str) -> dict:
-    r = _S.get(f"http://{ip}/api/fold/status", timeout=10)
+    r = _S.get(f"http://{ip}/api/fold/status", params={"chat": CHAT}, timeout=10)
     assert r.status_code == 200, f"GET /api/fold/status: HTTP {r.status_code} (no Summarize now on this image)"
     return r.json()
-
-
-def _field(st: dict, concept: str):
-    for name in STATUS_FIELDS[concept]:
-        if name in st:
-            return st[name]
-    return None
 
 
 def _confirmations(ip: str, since_id: str) -> list:
@@ -67,7 +58,10 @@ def _confirmations(ip: str, since_id: str) -> list:
     return [
         m.get("text", "")
         for m in rows.get("messages", [])
-        if m.get("role") == "assistant" and m.get("id", "") > since_id and m.get("text", "").startswith(CONFIRM)
+        if m.get("role") == "assistant"
+        and m.get("id", "") > since_id
+        and m.get("text", "").startswith(CONFIRM)
+        and "ev:foldnote" in m.get("tags", "")
     ]
 
 
@@ -92,15 +86,19 @@ def test_summarize_now_runs_reports_and_confirms_once(board):
     ):
         assert chat_turn(_S, ip, text, timeout_s=150), f"seed turn {i + 1} got no reply"
     before = _status(ip)
-    missing = [c for c in STATUS_FIELDS if _field(before, c) is None]
+    missing = [f for f in STATUS_FIELDS if before.get(f) is None]
     assert not missing, f"/api/fold/status lacks {missing}: {sorted(before)}"
     since = _newest_id(ip)
 
     import requests
 
-    refused = requests.post(f"http://{ip}/api/fold/run", timeout=10)
-    assert refused.status_code in (401, 403), f"an unauthenticated Summarize now was not refused: {refused.status_code}"
-    r = _S.post(f"http://{ip}/api/fold/run", timeout=10)
+    for path in ("/api/fold/run", "/api/fold/status"):
+        send = requests.post if path.endswith("run") else requests.get
+        refused = send(f"http://{ip}{path}", timeout=10)
+        assert refused.status_code == 401, f"{path} without the sign-in code: HTTP {refused.status_code}"
+    unknown = _S.post(f"http://{ip}/api/fold/run", data={"chat": f"nobody-{RUN}"}, timeout=10)
+    assert unknown.status_code == 404, f"a chat the device does not know: HTTP {unknown.status_code}"
+    r = _S.post(f"http://{ip}/api/fold/run", data={"chat": CHAT}, timeout=10)
     assert r.status_code == 202, f"POST /api/fold/run: HTTP {r.status_code}"
 
     deadline = time.time() + FOLD_WAIT_S
@@ -108,13 +106,13 @@ def test_summarize_now_runs_reports_and_confirms_once(board):
     while time.time() < deadline:
         time.sleep(10)
         after = _status(ip)
-        if _field(after, "last success") != _field(before, "last success"):
+        if after["lastOk"] != before["lastOk"]:
             break
-    assert _field(after, "last success") != _field(before, "last success"), (
-        f"no new fold success within {FOLD_WAIT_S} s: {after}"
+    assert after["lastOk"] != before["lastOk"], f"no new fold success within {FOLD_WAIT_S} s: {after}"
+    assert after["state"] == "fresh" and 0 <= float(after["summaryAgeH"]) < 24, (
+        f"the summary is not fresh after Summarize now: state {after['state']}, age {after['summaryAgeH']} h"
     )
-    age = _field(after, "summary age")
-    assert age is not None and float(age) < 24, f"the summary is not fresh after Summarize now: {age}"
+    assert int(after["failedCycles"]) == 0 and after["thru"], f"a landed fold left {after}"
     time.sleep(10)  # a second confirmation would land in this window
     confirms = _confirmations(ip, since)
     assert len(confirms) == 1, f"expected one confirmation, got {confirms}"

@@ -16,11 +16,16 @@ Legs (each runnable alone, graded from the device log and the owner chat):
      by Mistral (mistral-small) with the 200K-derived prompt budget, a long page-by-page
      read; when a request reaches the 85 KB body budget the loop folds older rounds and
      the owner gets an answer (no "request body over" failure, no body over the budget
-     sent). BLOCKED, not FAIL, on a unit whose base request is too small to reach the
-     budget (a bench unit with fewer tools: 55 KB against Lumi's 70 KB).
+     sent). The leg is calibrated to 85,000 B: from v5.1.2 each head has its own, larger
+     body budget, so the leg pins it through the test console (BUDGET 85000, lane W) and
+     gives it back after; every refit must name the pinned figure. BLOCKED, not FAIL, on
+     a unit whose base request is too small to reach the budget (a bench unit with fewer
+     tools: 55 KB against Lumi's 70 KB).
   c  with compactKB at its floor (8), ten ordinary turns make a fold due; it runs
      within six turns or after two quiet minutes, three more turns follow, and no
-     compaction-paused notice reaches the owner.
+     notice that summaries stopped reaches the owner: v5.1.1's two pause notices, and
+     from v5.1.2 (lane F: no pause, a schedule) a failed cycle in the log or the daily
+     "hasn't updated since" alert.
 
 Run (candidate test-cyd build, one unit, its lock held):
   NIMBUS_PORT=... NIMBUS_TEST_IP=... NIMBUS_TEST_TOKEN=... NIMBUS_STORM_UNIT=<A|L> \\
@@ -47,13 +52,13 @@ OWNER_END_RE = re.compile(r"turn end: \w+ .*src=owner")
 BOUNDED_RE = re.compile(r"tool-loop ON \(\d+ tools, 2 rounds/|tool-loop OFF - a bounded turn")
 SYSTEM_END_RE = re.compile(r"turn end: |stayed silent")
 FOLD_RE = re.compile(r"fold\([^)]*\): ok")
-REFIT_RE = re.compile(r"headloop: round \d+ body \d+ B over the 85000 B budget - folded (\d+) B")
+REFIT_RE = re.compile(r"headloop: round \d+ body \d+ B over the (\d+) B budget - folded (\d+) B")
 OVER_FAIL_RE = re.compile(r"turn failed \(request body over")
 BODY_RE = re.compile(r"heaptrace \S+ body=(\d+)")
-PAUSED_RE = re.compile(r"summaries are paused|compaction paused|kept refilling", re.I)
+PAUSED_RE = re.compile(r"summaries are paused|compaction paused|kept refilling|cycle failed|hasn't updated since", re.I)
 KEEP_RE = re.compile(r"turn end|tool-loop|fold\(|Updated to|stayed silent|OTA|headloop|heaptrace|fabric")
 MISTRAL_SMALL = "mistral-small-latest"
-BUDGET = 85000
+BUDGET = 85000  # leg b's calibration: pinned on the unit for the leg (console BUDGET, test builds from v5.1.2)
 
 
 def _write(tag: str, rec: dict) -> None:
@@ -200,14 +205,28 @@ def _uploaded(storm, project, name, data):
         storm.net.post("/api/files/rm", {"project": project, "name": name, "t": tok})
 
 
+@contextlib.contextmanager
+def _pinned_budget(storm):
+    """Every wire's request body budget at the leg's 85,000 B, and the head's own given back
+    however the leg ends. An image with no BUDGET verb (v5.1.1 and before) fails here: its
+    budget is a fixed 85,000 B, so run its control with the v5.1.1 copy of this leg."""
+    storm.verb(f"BUDGET {BUDGET}", f"BUDGET {BUDGET}", timeout=6.0)
+    try:
+        yield
+    finally:
+        storm.verb("BUDGET 0", "BUDGET off", timeout=6.0)
+
+
 def _grade_b(replies, lines, seconds):
     bodies = [int(m.group(1)) for m in map(BODY_RE.search, lines) if m]
-    refits = [int(m.group(1)) for m in map(REFIT_RE.search, lines) if m]
+    named = [(int(m.group(1)), int(m.group(2))) for m in map(REFIT_RE.search, lines) if m]
+    refits = [freed for _, freed in named]
     failed = [ln for ln in lines if OVER_FAIL_RE.search(ln)]
     checks = {
         "owner answered": bool(replies),
         "no over-budget failure": not failed,
         "no body over the budget sent": all(b <= BUDGET for b in bodies),
+        "every refit names the pinned budget": all(budget == BUDGET for budget, _ in named),
     }
     grade = "PASS" if all(checks.values()) and refits else ("BLOCKED" if all(checks.values()) else "FAIL")
     return {
@@ -236,7 +255,7 @@ def test_l78b_long_loop_reaching_the_budget_answers(storm):
         storm.owner_chat(),
         storm.spend_room("mistral"),
     ):
-        with _lumi_fallback_head(storm):
+        with _lumi_fallback_head(storm), _pinned_budget(storm):
             before = set(storm.chat_rows(80))
             storm.tap.arm()
             t0 = time.time()

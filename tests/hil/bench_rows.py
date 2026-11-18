@@ -13,6 +13,7 @@ B01 ota_rehearsal.py. V05 stays BLOCKED: the code has no seam for a short write 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -22,7 +23,7 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,6 +49,13 @@ EMPTY_402 = (
     'to continue.","balanceCredits":0,"charged":false,"retryable":false}'
 )
 HISTORY_LINE = "bench history line " + "x" * 880
+HISTORY_ROWS = 40  # distinct rows of about 900 B: 36 KB of live history on a head with room
+# A07 and A08 are calibrated to the 85,000 B request body every head had up to v5.1.1. From
+# v5.1.2 a head's body budget is its own (Mistral Large 4: 360,000 B), so the rows pin it
+# through the test console (BUDGET, lane W) and A07b runs the same turn at the head's own.
+BUDGET_PIN = 85000
+CONTEXT_RE = re.compile(r"context: sent (\d+)/(\d+) live rows \(today \d+/\d+\), cut (\d+) \((\d+) B\)")
+REFUSED_RE = re.compile(r"headloop: round \d+ body \d+ B over the (\d+) B budget")
 LIGHTS_WORDINGS = (
     "Turn the ring lights off.",
     "Please switch the lights off now.",
@@ -154,34 +162,87 @@ def _verdict(fails: List[str], good: str) -> Grade:
     return ("FAIL", "; ".join(fails)) if fails else ("PASS", good)
 
 
-# ---- A07, A08: a turn that overflows, trimmed ----------------------------------------------------------
+# ---- A07, A07b, A08: a turn that overflows, trimmed; the same turn with room -------------------------------
 
 
-def row_a07(b: Bench) -> Grade:
-    """A long history and a helper result waiting: the turn must answer on the same turn, trimmed and honest."""
+def _history_fill(b: Bench, rows: int = HISTORY_ROWS) -> None:
+    """Distinct owner rows in the web chat (identical rows collapse into one with a repeat count)."""
+    for i in range(rows):
+        if not b.con(f"HISTADD web 1 row {i:02d} {HISTORY_LINE}", "HISTADD chat=", 10.0):
+            raise Blocked("HISTADD did not answer")
+
+
+@contextlib.contextmanager
+def _budget_pin(b: Bench, body_bytes: int) -> Iterator[bool]:
+    """Every wire's request body budget pinned for the row, and given back however it ends.
+
+    Yields False on an image whose console has no BUDGET verb (v5.1.1 and before, where the
+    budget is a fixed 85,000 B anyway): the row runs unpinned and says so."""
+    pinned = bool(b.con(f"BUDGET {body_bytes}", f"BUDGET {body_bytes}", 10.0))
+    b.ev.append("budget.txt", f"BUDGET {body_bytes}: {'pinned' if pinned else 'no such verb on this image'}")
+    try:
+        yield pinned
+    finally:
+        if pinned and not b.con("BUDGET 0", "BUDGET off", 10.0):
+            b.ev.append("budget.txt", "BUDGET 0 did not answer: the pin may still hold; restart the unit")
+
+
+def _overflow_turn(b: Bench) -> Tuple[bd.TurnResult, List[str], List[str]]:
+    """A long history and a helper result waiting, then the question; (result, new log lines, restart faults)."""
     before = b.snap("state-before")
     seen = b.mark()
-    for _ in range(20):
-        if not b.con(f"HISTADD web 50 {HISTORY_LINE}", "HISTADD chat=", 10.0):
-            raise Blocked("HISTADD did not answer")
+    _history_fill(b)
     b.con("TURN Ask a helper for three facts about Lisbon, then answer me", "TURN <-", 10.0)
     result = b.turn("Now tell me the three facts about Lisbon you found.")
     b.ev.write("reply.txt", result.reply)
     lines = b.new_lines(seen)
     b.ev.write("errlog.txt", "\n".join(lines))
-    after = b.snap("state-after")
-    fails = _no_restart(before, after)
+    fails = _no_restart(before, b.snap("state-after"))
     if not result.ok:
         fails.append(f"the turn was not answered: {result.error}")
     if "didn't finish" in result.reply or "That didn't finish" in "\n".join(lines):
         fails.append("the owner got 'That didn't finish'")
+    return result, lines, fails
+
+
+def row_a07(b: Bench) -> Grade:
+    """A long history and a helper result waiting, the body budget pinned at 85,000 B: the turn must answer on
+    the same turn, trimmed and honest."""
+    with _budget_pin(b, BUDGET_PIN) as pinned:
+        _, lines, fails = _overflow_turn(b)
+    wrong = sorted({int(m.group(1)) for m in map(REFUSED_RE.search, lines) if m} - {BUDGET_PIN})
+    if pinned and wrong:
+        fails.append(f"a refusal named a budget other than the pinned {BUDGET_PIN} B: {wrong}")
     if not any("turn fit: left out" in line for line in lines):
         return (
             ("BLOCKED", "the turn answered but nothing was trimmed, so this did not reach the overflow")
             if not fails
             else _verdict(fails, "")
         )
-    return _verdict(fails, "answered on the same turn with the body trimmed")
+    return _verdict(fails, f"answered on the same turn with the body trimmed ({'pinned' if pinned else 'unpinned'})")
+
+
+def row_a07b(b: Bench) -> Grade:
+    """The same turn at the head's own budget (v5.1.2): it answers with nothing left out, the context line reads
+    cut 0 and every live row is sent. BLOCKED on an image with no context line, or on a head at the floor."""
+    b.con("BUDGET 0", "BUDGET off", 10.0)  # no pin left over from another row
+    _, lines, fails = _overflow_turn(b)
+    contexts = [m for m in map(CONTEXT_RE.search, lines) if m]
+    if not contexts:
+        raise Blocked("no context line in the log: this image is older than v5.1.2")
+    budgets = sorted({int(m.group(1)) for m in map(REFUSED_RE.search, lines) if m})
+    if BUDGET_PIN in budgets:
+        raise Blocked(f"the head sits on the {BUDGET_PIN} B floor (a routed or custom head): no room to show")
+    sent, live, cut_rows, cut_bytes = (int(x) for x in contexts[-1].groups())
+    if any("turn fit: left out" in line for line in lines):
+        fails.append("a turn fit left something out at the head's own budget")
+    if budgets:
+        fails.append(f"a request was refused over its budget: {budgets}")
+    if cut_rows or cut_bytes:
+        fails.append(f"the context line reads cut {cut_rows} ({cut_bytes} B)")
+    if sent != live:
+        fails.append(f"{sent} of {live} live rows were sent")
+    return _verdict(fails, f"answered with nothing left out: {sent}/{live} live rows sent, cut 0")
 
 
 def _stack_guard(before: Dict[str, Any], after: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -653,6 +714,7 @@ def row_v05(b: Bench) -> Grade:
 ROWS: Dict[str, Tuple[Callable[[Bench], Grade], bool]] = {
     # row: (function, needs the console)
     "A07": (row_a07, True),
+    "A07b": (row_a07b, True),
     "A08": (row_a08, False),
     "B03": (row_b03, True),
     "C05": (row_c05, False),
