@@ -165,8 +165,9 @@ owner's spend at most 6; the owner's due chats fold first; 2xx answers and timeo
 the upload count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of
 failing, spent only when it reached a chat a person reads: an owner's Telegram chat or the
 web chat directly; the serial console's and the screen's alert goes to the owner's Telegram
-chat, else the web chat, and names where the summary failed; with neither, or when the send
-fails, it is logged and the day is not spent; by role on the VN: the first Admin chat; a
+chat, else the web chat, and names where the summary failed; with neither, or when the
+reply queue did not take the message (no sink, or the queue full), it is logged and the day
+is not spent; by role on the VN: the first Admin chat; a
 guest chat's failure is only logged and does not use up the day),
 `manualPendingChat` (up to 4 queued manual requests), `fwAtLastFail` and `unreadSince` (per chat, when its fold first met rows the store would not give back; a few chats). Because this
 lives outside the per-chat blob, evicting a chat's record (the blob keeps the 16 most

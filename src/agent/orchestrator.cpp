@@ -465,7 +465,10 @@ static uint32_t foldTriggerNow() {
 // message queued nothing. The engine asks it right after a delivery returned
 // (deliveryNeedsRow): the fire then spoke only once that row is written. Turn task.
 static bool s_lastDeliveryNeedsRow = false;
-static bool deliver(const String& chatId, const String& text, bool system = false) {
+// `queuedOut` (optional): whether the reply sink took the message (candidate 5, G4: the daily
+// fold alert is spent only then).
+static bool deliver(const String& chatId, const String& text, bool system = false, bool* queuedOut = nullptr) {
+  if (queuedOut) *queuedOut = false;
   s_lastDeliveryNeedsRow = true;   // until the sink took the content
   // Lane J (D-3): the owner's standing rules can switch on device-enforced
   // output filters. "Never use em dashes" is exactly the kind of rule a model
@@ -498,6 +501,7 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // page re-renders its history, where captureAssistant records it), never into the
   // legacy single slot or any turn's reply (agent::deliverToWebChat).
   const bool queued = g_sinks.send && g_sinks.send(chatId, body);
+  if (queuedOut) *queuedOut = queued;
   if (g_sinks.send && !queued)
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)body.length(), chatId.c_str());
@@ -2889,7 +2893,8 @@ static bool foldSay(const std::string& chat, const std::string& text) {
     alogf("fold(%s): %s", chat.c_str(), text.c_str());
     return false;
   }
-  return deliver(String(chat.c_str()), String(text.c_str()), /*system=*/true);
+  bool queued = false;   // delivered only when the reply sink took it (a null sink or a full queue is not)
+  return deliver(String(chat.c_str()), String(text.c_str()), /*system=*/true, &queued) && queued;
 }
 static void foldTell(const std::string& chat, const std::string& text) { foldSay(chat, text); }
 

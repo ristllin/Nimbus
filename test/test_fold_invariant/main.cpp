@@ -1095,6 +1095,42 @@ static void test_a_capped_index_still_folds_the_serial_backlog() {
   }
 }
 
+// The body of the function in src/agent/orchestrator.cpp that starts with `head`.
+static std::string deviceFunctionBody(const char* head) {
+  std::ifstream f("src/agent/orchestrator.cpp");
+  std::stringstream ss;
+  ss << f.rdbuf();
+  const std::string src = ss.str();
+  const size_t at = src.find(head);
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, head);
+  return src.substr(at, src.find("\n}\n", at) - at);
+}
+
+// The device binding counts its own surfaces and every Admin chat as the owner's, by role: no
+// list of chat names that can leave the serial console or voice out (bench B11, candidate 2).
+// Candidate 5, G5: 47d6c0a4's guard restored (roleOfChat reads the tenant table under its lock
+// and NVS, so it is not host-reachable without a larger extraction): the fold's owner predicate
+// is roleOfChat == Admin, and roleOfChat gives web, serial and voice Admin before any row.
+static void test_the_device_owner_predicate_is_by_role() {
+  const std::string body = deviceFunctionBody("static bool foldOwnerChat(const std::string& chat) {");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("roleOfChat(") != std::string::npos && body.find("Role::Admin") != std::string::npos,
+                           "the owner's chats are the Admin ones");
+  const std::string role = deviceFunctionBody("nimbus::orch::Role roleOfChat(const String& chatId) {");
+  TEST_ASSERT_TRUE_MESSAGE(role.find("chatId == \"web\" || chatId == \"serial\" || chatId == \"voice\") return Role::Admin") !=
+                               std::string::npos,
+                           "the device's own surfaces are Admin");
+}
+
+// Candidate 5, G4: the device's alert send reports delivered only when the reply sink took the
+// message (queued); a null sink or a full queue leaves the day unspent. foldSay is device glue
+// over the sink, so the guard reads its source; foldAlertSend's own rule is host-tested in
+// test_fold_driver.
+static void test_the_device_alert_send_counts_only_a_queued_message() {
+  const std::string body = deviceFunctionBody("static bool foldSay(const std::string& chat, const std::string& text) {");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("&queued") != std::string::npos && body.find("&& queued") != std::string::npos,
+                           "a Telegram alert counts only when the reply sink queued it");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_restart_with_hidden_rows_folds_them_first);
@@ -1107,6 +1143,8 @@ int main(int, char**) {
   RUN_TEST(test_a_manual_read_on_cold_rows_ends_and_never_starves_the_others);
   RUN_TEST(test_a_capped_index_still_folds_the_serial_backlog);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
+  RUN_TEST(test_the_device_owner_predicate_is_by_role);
+  RUN_TEST(test_the_device_alert_send_counts_only_a_queued_message);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);
   RUN_TEST(test_after_a_floor_turn_the_fold_leaves_no_row_unreachable);
