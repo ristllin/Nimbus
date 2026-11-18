@@ -99,9 +99,47 @@ inline void escapeInto(std::string& out, const char* p, size_t n) {
   out.append(p + n - run, run);
 }
 
-// The text bytes a JSON string escape stands for, at most: a \uXXXX is at most 3 bytes of
-// UTF-8 (a surrogate pair is two escapes and 4 bytes), any other escape one byte.
-inline size_t escapeTextBytes(char after) { return after == 'u' ? 3 : 1; }
+// The value of four hex digits at p (n bytes available), or -1.
+inline long hex4(const char* p, size_t n) {
+  if (n < 4) return -1;
+  long v = 0;
+  for (size_t k = 0; k < 4; ++k) {
+    const char c = p[k];
+    const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+    if (d < 0) return -1;
+    v = v * 16 + d;
+  }
+  return v;
+}
+
+// The UTF-8 bytes a \uXXXX escape decodes to (a surrogate half counts 2, a pair 4).
+inline size_t uTextBytes(long code) { return code < 0x80 ? 1 : code < 0x800 ? 2 : code >= 0xD800 && code <= 0xDFFF ? 2 : 3; }
+
+// True when every string of the JSON text `b` decodes to at most `guard` bytes (what a
+// parser such as ArduinoJson stores). The exchange's body check and raw() count the same.
+inline bool stringsWithinGuard(const std::string& b, size_t guard) {
+  bool in = false;
+  size_t text = 0;
+  for (size_t i = 0; i < b.size(); ++i) {
+    const char c = b[i];
+    if (!in || c == '"') {
+      if (c == '"') in = !in;
+      text = 0;
+      continue;
+    }
+    if (c != '\\' || i + 1 >= b.size()) {
+      ++text;
+    } else if (b[++i] != 'u') {
+      ++text;
+    } else {
+      const long code = hex4(b.data() + i + 1, b.size() - i - 1);
+      text += uTextBytes(code < 0 ? 0xFFFF : code);
+      if (code >= 0) i += 4;
+    }
+    if (text > guard) return false;
+  }
+  return true;
+}
 
 }  // namespace detail
 
@@ -326,74 +364,168 @@ class BodyWriter {
     return true;
   }
 
-  // Where a raw fragment's walk is.
-  struct RawWalk {
-    uint8_t depth = 0;
-    bool inString = false, closed = false, bad = false;
-    size_t strBytes = 0;   // the current string's text bytes, at most
+  // A raw fragment, read by a strict JSON grammar and written compact. Each reader returns
+  // false on a fragment that is not JSON (the error is set once, by rawInto) or on a string
+  // over the guard (TooLarge, set where it is found).
+  struct RawCursor {
+    const std::string& j;
+    size_t i;
+    uint8_t depth;
   };
 
-  // One byte inside a fragment's string (an escape takes the byte after it too).
-  bool rawStringByte(const std::string& j, size_t& i, RawWalk& w) {
-    const char c = j[i];
-    if (c == '\\') {
-      if (i + 1 >= j.size()) {
-        w.bad = true;
-        return true;
-      }
-      out_ += c;
-      out_ += j[++i];
-      w.strBytes += detail::escapeTextBytes(j[i]);
-    } else if (c == '"') {
-      out_ += c;
-      w.inString = false;
-      count(w.strBytes, false, false);
-    } else {
-      detail::escapeInto(out_, &c, 1);
-      ++w.strBytes;
-    }
-    if (w.strBytes <= guard_) return true;
-    fail(Err::TooLarge, "plain::body raw string over the guard");
-    return false;
+  static void rawSpace(RawCursor& c) {
+    while (c.i < c.j.size() && (c.j[c.i] == ' ' || c.j[c.i] == '\n' || c.j[c.i] == '\r' || c.j[c.i] == '\t')) ++c.i;
+  }
+  static bool rawAt(const RawCursor& c, char want) { return c.i < c.j.size() && c.j[c.i] == want; }
+
+  bool rawValue(RawCursor& c) {
+    rawSpace(c);
+    if (c.i >= c.j.size()) return false;
+    const char ch = c.j[c.i];
+    if (ch == '{') return rawObject(c);
+    if (ch == '[') return rawArray(c);
+    if (ch == '"') return rawString(c);
+    if (ch == '-' || (ch >= '0' && ch <= '9')) return rawNumber(c);
+    return rawLiteral(c, "true") || rawLiteral(c, "false") || rawLiteral(c, "null");
   }
 
-  static bool isJsonSpace(char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; }
+  bool rawObject(RawCursor& c) {
+    if (++c.depth > kMaxDepth) return false;
+    out_ += '{';
+    ++c.i;
+    rawSpace(c);
+    for (bool first = true; !rawAt(c, '}'); first = false) {
+      if (!first) {
+        if (!rawAt(c, ',')) return false;
+        out_ += ',';
+        ++c.i;
+        rawSpace(c);
+      }
+      if (!rawAt(c, '"') || !rawString(c)) return false;
+      rawSpace(c);
+      if (!rawAt(c, ':')) return false;
+      out_ += ':';
+      ++c.i;
+      if (!rawValue(c)) return false;
+      rawSpace(c);
+    }
+    out_ += '}';
+    ++c.i;
+    --c.depth;
+    return true;
+  }
 
-  // One byte between a fragment's strings.
-  bool rawStructByte(char c, RawWalk& w) {
-    if (isJsonSpace(c)) return true;
-    if (w.closed || static_cast<unsigned char>(c) < 0x20 || (!w.depth && c != '{' && c != '[')) {
-      w.bad = true;   // a second value, a raw control byte, or not an object or array
+  bool rawArray(RawCursor& c) {
+    if (++c.depth > kMaxDepth) return false;
+    out_ += '[';
+    ++c.i;
+    rawSpace(c);
+    for (bool first = true; !rawAt(c, ']'); first = false) {
+      if (!first) {
+        if (!rawAt(c, ',')) return false;
+        out_ += ',';
+        ++c.i;
+      }
+      if (!rawValue(c)) return false;
+      rawSpace(c);
+    }
+    out_ += ']';
+    ++c.i;
+    --c.depth;
+    return true;
+  }
+
+  // One escape after its backslash: the JSON set, or \u with four hex digits.
+  bool rawEscape(RawCursor& c, size_t& text) {
+    if (c.i >= c.j.size()) return false;
+    const char e = c.j[c.i];
+    if (e == 'u') {
+      const long code = detail::hex4(c.j.data() + c.i + 1, c.j.size() - c.i - 1);
+      if (code < 0) return false;
+      out_.append(c.j, c.i - 1, 6);
+      c.i += 5;
+      text += detail::uTextBytes(code);
       return true;
     }
-    if (c == '"') {
-      w.inString = true;
-      w.strBytes = 0;
-    } else if (c == '{' || c == '[') {
-      if (++w.depth > kMaxDepth) {
-        fail(Err::TooLarge, "plain::body raw depth");
-        return false;
-      }
-    } else if (c == '}' || c == ']') {
-      w.closed = --w.depth == 0;
-    }
-    out_ += c;
+    if (!e || !std::strchr("\"\\/bfnrt", e)) return false;
+    out_ += '\\';
+    out_ += e;
+    ++c.i;
+    ++text;
     return true;
   }
 
-  // A JSON object or array, compacted and escaped into out_. False (with the error kept)
-  // when it is not one balanced value or holds a string over the guard.
-  bool rawInto(const std::string& j) {
-    RawWalk w;
-    for (size_t i = 0; i < j.size() && !w.bad; ++i) {
-      const bool ok = w.inString ? rawStringByte(j, i, w) : rawStructByte(j[i], w);
-      if (!ok) return false;
+  bool rawString(RawCursor& c) {
+    out_ += '"';
+    ++c.i;
+    size_t text = 0;
+    while (c.i < c.j.size() && c.j[c.i] != '"') {
+      if (c.j[c.i] == '\\') {
+        ++c.i;
+        if (!rawEscape(c, text)) return false;
+      } else {
+        detail::escapeInto(out_, &c.j[c.i], 1);   // a raw control byte is escaped
+        ++c.i;
+        ++text;
+      }
+      if (text > guard_) {
+        fail(Err::TooLarge, "plain::body raw string over the guard");
+        return false;
+      }
     }
-    if (w.bad || w.inString || w.depth || !w.closed) {
-      fail(Err::InvalidArgument, "plain::body raw not one balanced JSON value");
-      return false;
-    }
+    if (c.i >= c.j.size()) return false;
+    out_ += '"';
+    ++c.i;
+    count(text, false, false);
     return true;
+  }
+
+  static bool rawDigits(RawCursor& c) {
+    const size_t d = c.i;
+    while (c.i < c.j.size() && c.j[c.i] >= '0' && c.j[c.i] <= '9') ++c.i;
+    return c.i > d;
+  }
+
+  // A number's fraction and exponent, each optional.
+  static bool rawNumberTail(RawCursor& c) {
+    if (rawAt(c, '.')) {
+      ++c.i;
+      if (!rawDigits(c)) return false;
+    }
+    if (!rawAt(c, 'e') && !rawAt(c, 'E')) return true;
+    ++c.i;
+    if (rawAt(c, '+') || rawAt(c, '-')) ++c.i;
+    return rawDigits(c);
+  }
+
+  bool rawNumber(RawCursor& c) {
+    const size_t from = c.i;
+    if (rawAt(c, '-')) ++c.i;
+    const size_t intAt = c.i;
+    if (!rawDigits(c)) return false;
+    if (c.j[intAt] == '0' && c.i - intAt > 1) return false;   // no leading zero
+    if (!rawNumberTail(c)) return false;
+    out_.append(c.j, from, c.i - from);
+    return true;
+  }
+
+  bool rawLiteral(RawCursor& c, const char* word) {
+    const size_t n = std::strlen(word);
+    if (c.j.compare(c.i, n, word) != 0) return false;
+    out_ += word;
+    c.i += n;
+    return true;
+  }
+
+  // One JSON object or array and nothing after it but whitespace.
+  bool rawInto(const std::string& j) {
+    RawCursor c{j, 0, 0};
+    rawSpace(c);
+    bool ok = (rawAt(c, '{') || rawAt(c, '[')) && rawValue(c);
+    rawSpace(c);
+    ok = ok && c.i == j.size();
+    if (!ok) fail(Err::InvalidArgument, "plain::body raw not one JSON object or array");
+    return ok && st_.ok();
   }
 
   std::string& out_;

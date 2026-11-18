@@ -17,6 +17,7 @@
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/utf8.h"
+#include "providers/plain_body.h"   // the body check counts strings as the writer does
 
 namespace agent {
 namespace plain {
@@ -97,7 +98,9 @@ Verdict classify(int status, const std::string& body, bool routed) {
     return v;
   }
   if (routed && routerVerdict(body, v)) return v;
-  v.err = statusErr(status, body);
+  // The contract parks the router only by its reason: a routed 401, 402 or 403 that names
+  // none (a proxy, a balancer) is a per-call failure.
+  v.err = routed && status >= 401 && status <= 403 ? ExchangeErr::Other : statusErr(status, body);
   return v;
 }
 
@@ -108,31 +111,6 @@ const char* providerName(const std::string& slug) {
   if (slug == "zai") return "Z.ai";
   if (slug == "cumulo") return "The Cumulo router";
   return "The model's provider";
-}
-
-// Every JSON string of the body (splices excluded) holds at most the guard's text: a
-// two-byte escape is one byte of text, a \uXXXX at most three.
-bool stringsWithinGuard(const std::string& b) {
-  bool in = false;
-  size_t text = 0;
-  for (size_t i = 0; i < b.size(); ++i) {
-    const char c = b[i];
-    if (!in) {
-      if (c == '"') {
-        in = true;
-        text = 0;
-      }
-      continue;
-    }
-    if (c == '"') {
-      in = false;
-      continue;
-    }
-    if (c == '\\' && i + 1 < b.size()) text += b[++i] == 'u' ? 3 : 1;
-    else ++text;
-    if (text > orch::kJsonStrGuard) return false;
-  }
-  return true;
 }
 
 uint32_t minU(uint32_t a, uint32_t b) { return a < b ? a : b; }
@@ -149,7 +127,12 @@ class Exchange {
     for (;;) {
       bool sendable = false;
       st = prepare(sendable);
-      if (!st.ok()) return st;
+      if (!st.ok() && out_.requests == 0) return st;
+      if (!st.ok()) {   // a render that fails after a request: the answer in hand still goes
+        verdict_ = Verdict{};
+        verdict_.err = ExchangeErr::Other;
+        return finish();
+      }
       if (!sendable) return finish();
       send();
       if (!again()) return finish();
@@ -164,7 +147,10 @@ class Exchange {
     return e >= req_.deadlineMs ? 0 : req_.deadlineMs - e;
   }
   // A wait of `ms` and then a request still fit the wall clock.
-  bool fits(uint32_t ms) const { return remaining() >= ms + kMinRequestMs; }
+  bool fits(uint32_t ms) const {
+    const uint32_t left = remaining();
+    return ms <= left && left - ms >= kMinRequestMs;
+  }
 
   Status setUp() {
     const RenderInput* in = req_.render;
@@ -213,9 +199,14 @@ class Exchange {
     load.routed = routed_;
     load.fragmented = deps_.platform->largestFreeBlock && providers::heapFragmented(deps_.platform->largestFreeBlock());
     cap_ = providers::outputCapFor(capHost_, model_, kind(), minU(window_, remaining()), load);
-    uint32_t tokens = cutRetried_ ? cutTokens_ : cap_.maxTokens;
+    // the cut retry takes the retry cap of this request's own fit (the time left now)
+    uint32_t tokens = cutRetried_ ? cap_.retryTokens : cap_.maxTokens;
     if (routerCap_ && (!tokens || routerCap_ < tokens)) tokens = routerCap_;
-    return tokens == in_.maxTokens ? st : renderAt(tokens);
+    // a retry that would send what the cut request sent is not taken: it would be cut again
+    noRoom_ = cutRetried_ && tokens <= cutSentTokens_ && head_.effort == cutSentEffort_;
+    if (tokens != in_.maxTokens) st = renderAt(tokens);
+    http_.cappedResend = routerCap_ != 0 && tokens == routerCap_;
+    return st;
   }
 
   // Render until the body fits its cap (the ladder climbs a rung each time), then check it.
@@ -224,6 +215,12 @@ class Exchange {
     for (;;) {
       Status st = renderFitted();
       if (!st.ok()) return st;
+      if (noRoom_) return Status::success();   // the cut answer in hand is delivered
+      if (remaining() == 0) {                   // no time left to send anything
+        verdict_ = Verdict{};
+        verdict_.err = ExchangeErr::Transport;
+        return Status::success();
+      }
       if (bodyLength(http_) <= bodyCap_) break;
       if (!req_.climb || capClimbs_ >= kMaxCapClimbs || !req_.climb(Climb::OverCap)) {
         verdict_ = Verdict{};
@@ -234,7 +231,7 @@ class Exchange {
       ++capClimbs_;
       ++out_.climbs;
     }
-    if (!stringsWithinGuard(http_.body) || !nimbus::utf8Valid(http_.body))
+    if (!body::detail::stringsWithinGuard(http_.body, orch::kJsonStrGuard) || !nimbus::utf8Valid(http_.body))
       return Status::fail(Err::InvalidArgument, "plain::runExchange body check");
     sendable = true;
     return Status::success();
@@ -283,10 +280,9 @@ class Exchange {
     }
   }
 
-  bool wait(uint32_t ms) {
+  void wait(uint32_t ms) {
     deps_.platform->delayMs(ms);
     out_.waitedMs += ms;
-    return true;
   }
 
   bool retrySameHost() {
@@ -294,7 +290,8 @@ class Exchange {
     const uint32_t ms = kRetryWaitMs[sameHost_ < kLastWait ? sameHost_ : kLastWait];
     if (sameHost_ >= kMaxSameHostRetries || !fits(ms)) return false;
     ++sameHost_;
-    return wait(ms);
+    wait(ms);
+    return true;
   }
 
   bool retryRouter() {
@@ -302,21 +299,26 @@ class Exchange {
       out_.failOver = true;
       return false;
     }
-    if (routerResent_ || !fits(verdict_.retryAfterMs)) return false;
-    routerResent_ = true;
+    if (routerResent_) return false;
     if (verdict_.action == orch::RouterAction::RetryCapped && verdict_.capTokens >= orch::kRouterCapFloorTokens) {
+      if (!fits(0)) return false;
+      routerResent_ = true;
       routerCap_ = (uint32_t)std::min<int64_t>(verdict_.capTokens, UINT32_MAX);
       return true;
     }
-    if (verdict_.retryAfterMs == 0 || verdict_.retryAfterMs > orch::kRouterInlineRetryMaxMs) return false;
-    return wait(verdict_.retryAfterMs);
+    const uint32_t ms = verdict_.retryAfterMs;
+    if (ms == 0 || ms > orch::kRouterInlineRetryMaxMs || !fits(ms)) return false;
+    routerResent_ = true;
+    wait(ms);
+    return true;
   }
 
   // The one retry of a cut answer, at the retry cap of the cut request's own fit.
   bool retryCut() {
     if (cutRetried_ || !cap_.retryTokens || !fits(0)) return false;
     cutRetried_ = true;
-    cutTokens_ = cap_.retryTokens;
+    cutSentTokens_ = in_.maxTokens;
+    cutSentEffort_ = head_.effort;
     cutEffort_ = cap_.retryEffort;
     return true;
   }
@@ -343,7 +345,9 @@ class Exchange {
     step_.usage = usage_;
     out_.step = std::move(step_);
     if (err == ExchangeErr::None) return Status::success();
-    out_.status = err == ExchangeErr::Cut ? StatusLine::CutAnswer : StatusLine::ProviderError;
+    out_.status = err == ExchangeErr::Cut       ? StatusLine::CutAnswer
+                  : err == ExchangeErr::Blocked ? StatusLine::ModerationBlock
+                                                : StatusLine::ProviderError;
     out_.errorLine = exchangeLine(err, slug_, httpStatus_);
     return Status::success();
   }
@@ -366,8 +370,10 @@ class Exchange {
   uint8_t sameHost_ = 0, capClimbs_ = 0;
   bool cutRetried_ = false, refusedClimbed_ = false, routerResent_ = false;
   uint32_t routerCap_ = 0;
-  uint32_t cutTokens_ = 0;
+  uint32_t cutSentTokens_ = 0;
+  std::string cutSentEffort_;
   const char* cutEffort_ = "";
+  bool noRoom_ = false;
 };
 
 }  // namespace

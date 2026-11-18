@@ -46,9 +46,12 @@ struct TestWire : plain::WireCodec {
   const LadderState* ladder = nullptr;
   std::string forcedBody;   // non-empty: rendered as is (a wire that breaks the rules)
   int copies = 1;           // the owner text sent as this many messages
+  mutable int renders = 0;
+  int failFromRender = 0;   // > 0: that render and every later one fails
   plain::Dialect dialect() const override { return plain::Dialect::AnthropicMessages; }
 
   plain::Status render(const plain::RenderInput& in, agent::HttpRequest& out) const override {
+    if (failFromRender && ++renders >= failFromRender) return plain::Status::fail(plain::Err::TooLarge, "test render");
     out.method = "POST";
     out.host = in.head->host;
     out.path = "/v1/messages";
@@ -299,12 +302,35 @@ static void test_writer_raw_fragments() {
     expectOk(w.status());
     TEST_ASSERT_EQUAL_STRING(R"({"s":{"a":[1,2],"b":"x\ty"}})", out.c_str());
   }
-  const char* bad[] = {"{", "{\"a\":1}}", "{\"a\":1} {}", "\"str\"", "12", "", "{\"a\":\"open}", "[1]x"};
+  const char* bad[] = {"{", "{\"a\":1}}", "{\"a\":1} {}", "\"str\"", "12", "", "{\"a\":\"open}", "[1]x",
+                       "{\"a\":\"\\\n\"}", "{\"a\":\"\\q\"}", "{\"a\":\"\\u12\"}", "{]", "[}", "{abc , : }", "[1,]",
+                       "{\"a\" 1}", "[01]", "[-]", "[1.]", "[1e]", "[tru]", "{\"a\":1,}", "[,1]", "{1:2}"};
   for (const char* b : bad) {
     std::string out;
     body::BodyWriter w(out);
     w.beginArray().raw(b);
     TEST_ASSERT_FALSE_MESSAGE(w.ok(), b);
+  }
+  {
+    std::string out;
+    body::BodyWriter w(out);
+    w.beginArray().raw(" {\"a\" : [true, false, null, -1.5e+3, 0, \"\\u00e9\\n\\/\"], \"b\":{}} ").endArray();
+    expectOk(w.status());
+    TEST_ASSERT_EQUAL_STRING(R"([{"a":[true,false,null,-1.5e+3,0,"\u00e9\n\/"],"b":{}}])", out.c_str());
+  }
+  {   // a \uXXXX counts the bytes it decodes to: 9,000 of them are 9,000 bytes, not 63,000
+    std::string esc = "{\"t\":\"";
+    for (int i = 0; i < 9000; ++i) esc += "\\u0041";
+    std::string out;
+    body::BodyWriter w(out);
+    w.beginArray().raw(esc + "\"}").endArray();
+    expectOk(w.status());
+    TEST_ASSERT_TRUE(body::detail::stringsWithinGuard(out, nimbus::orch::kJsonStrGuard));
+    std::string atGuard = "\"";
+    for (size_t i = 0; i < nimbus::orch::kJsonStrGuard; ++i) atGuard += "\\u0041";
+    TEST_ASSERT_TRUE(body::detail::stringsWithinGuard(atGuard + "\"", nimbus::orch::kJsonStrGuard));
+    TEST_ASSERT_FALSE(body::detail::stringsWithinGuard(atGuard + "a\"", nimbus::orch::kJsonStrGuard));
+    TEST_ASSERT_FALSE(body::detail::stringsWithinGuard(atGuard + "\\u00e9\"", nimbus::orch::kJsonStrGuard + 1));
   }
   {
     std::string big = "{\"t\":\"" + std::string(nimbus::orch::kJsonStrGuard + 1, 'x') + "\"}";
@@ -757,6 +783,15 @@ static void test_a_routed_head_follows_the_refusal_contract() {
     expectOk(rig.run());
     TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::None);
     TEST_ASSERT_EQUAL(1000, (int)rig.sentMaxTokens(1));
+    TEST_ASSERT_FALSE(rig.model.requests()[0].req.cappedResend);
+    TEST_ASSERT_TRUE(rig.model.requests()[1].req.cappedResend);
+  }
+  for (int st : {401, 402, 403}) {   // no reason: a proxy's answer, never a park of the router
+    Rig rig("cumulo", "anthropic/claude-sonnet-5-5");
+    rig.model.push(sp::httpError(st, R"({"message":"forbidden"})"));
+    expectOk(rig.run());
+    TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::Other);
+    TEST_ASSERT_FALSE(rig.out.parkHost);
   }
   {
     Rig rig("cumulo", "anthropic/claude-sonnet-5-5");
@@ -883,6 +918,74 @@ static void test_a_fallback_the_table_does_not_qualify_is_skipped() {
   TEST_ASSERT_FALSE(plain::targetQualified({"nowhere", "x", hq::Wire::Any, false}, hq::Line::E1));
 }
 
+// A body of control bytes the writer escapes six-fold is still inside the guard: the check
+// counts what each escape stands for.
+static void test_an_escaped_body_passes_the_check() {
+  Rig rig;
+  rig.wire.text = std::string(9000, '\x01');
+  rig.model.push(sp::say("ok"));
+  expectOk(rig.run());
+  TEST_ASSERT_EQUAL(1, (int)rig.model.requests().size());
+}
+
+// A cut retry is sent only with more room than the cut request had (or a lower effort): late
+// in a turn the retry's fit is the time left now, and an equal request is never sent.
+static void test_a_cut_retry_always_has_more_room() {
+  for (uint32_t took = 0; took <= 40000; took += 2500) {
+    Rig rig;
+    rig.req.deadlineMs = 60000;
+    rig.model.push(slow(sp::cut("half"), took));
+    rig.model.respondWith([](const sp::Recorded&, size_t) { return sp::say("whole"); });
+    expectOk(rig.run());
+    if (rig.model.requests().size() == 2) {
+      const bool more = rig.sentMaxTokens(1) > rig.sentMaxTokens(0);
+      const bool lower = rig.model.requests()[1].body.find("\"effort\":\"low\"") != std::string::npos;
+      TEST_ASSERT_TRUE_MESSAGE(more || lower, "a cut retry sent no more room");
+    } else {
+      TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::Cut);
+    }
+    TEST_ASSERT_TRUE(gClock - 1000 <= 60000);
+  }
+}
+
+// On a host whose retry keeps its effort (Z.ai), a late cut whose retry would have no more
+// room is delivered at once, never asked again with an equal request.
+static void test_a_late_cut_with_no_room_is_not_asked_again() {
+  int delivered = 0, retried = 0;
+  for (uint32_t took = 0; took <= 44000; took += 2000) {
+    Rig rig("zai", "glm-5.3");
+    rig.head.effort = "low";   // the effort Z.ai's row sends on both attempts
+    rig.req.timeoutMs = 50000;
+    rig.req.deadlineMs = 52000;
+    rig.model.push(slow(sp::cut("half"), took));
+    rig.model.respondWith([](const sp::Recorded&, size_t) { return sp::say("whole"); });
+    expectOk(rig.run());
+    if (rig.model.requests().size() == 2) {
+      ++retried;
+      TEST_ASSERT_TRUE_MESSAGE(rig.sentMaxTokens(1) > rig.sentMaxTokens(0), "an equal cut retry was sent");
+    } else {
+      ++delivered;
+      TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::Cut);
+    }
+  }
+  TEST_ASSERT_TRUE(retried > 0);
+  TEST_ASSERT_TRUE(delivered > 0);
+}
+
+// A render that fails after a cut answer still delivers the cut text with its line.
+static void test_a_failed_render_after_a_cut_delivers_the_cut() {
+  Rig rig;
+  rig.wire.failFromRender = 3;   // the cut request renders twice (measure, fit); the retry fails
+  rig.model.push(sp::cut("Part one"));
+  expectOk(rig.run());
+  TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::Cut);
+  TEST_ASSERT_EQUAL_STRING("Part one", rig.out.step.text.c_str());
+  Rig first;
+  first.wire.failFromRender = 1;
+  TEST_ASSERT_TRUE(first.run().err == plain::Err::TooLarge);   // nothing sent: the render's status
+  TEST_ASSERT_EQUAL(0, (int)first.model.requests().size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_writer_escapes_every_control_byte);
@@ -910,5 +1013,9 @@ int main(int, char**) {
   RUN_TEST(test_every_error_class_has_one_plain_line);
   RUN_TEST(test_provider_slug_of_a_head);
   RUN_TEST(test_a_fallback_the_table_does_not_qualify_is_skipped);
+  RUN_TEST(test_an_escaped_body_passes_the_check);
+  RUN_TEST(test_a_cut_retry_always_has_more_room);
+  RUN_TEST(test_a_late_cut_with_no_room_is_not_asked_again);
+  RUN_TEST(test_a_failed_render_after_a_cut_delivers_the_cut);
   return UNITY_END();
 }
