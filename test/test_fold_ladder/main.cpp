@@ -235,9 +235,12 @@ static void test_no_host_model_is_asked_twice_per_cycle() {
       TEST_ASSERT_TRUE_MESSAGE(there, ("a listed keyed provider is missing from the ladder: " + k).c_str());
     }
     const std::string head = r.eng->headHost();
+    bool directKey = false;   // fix review F: the router rung only on a router-only device
+    for (const char* h : {"openai", "anthropic", "mistral", "zai", "custom"})
+      directKey = directKey || (h != r.cfg.routerHost && r.cfg.keyed.count(h));
     for (const FoldRung& g : rungs) {
       if (g.host == head || listed.find("," + g.host + ",") != std::string::npos) continue;
-      const bool router = g.kind == FoldRungKind::RouterFallback && g.host == r.cfg.routerHost;
+      const bool router = g.kind == FoldRungKind::RouterFallback && g.host == r.cfg.routerHost && !directKey;
       TEST_ASSERT_TRUE_MESSAGE(router, ("the digest goes to a provider outside the owner's list: " + g.host).c_str());
     }
   }
@@ -280,6 +283,16 @@ static void test_rung_order_and_kinds() {
   // A parked or capped provider is not a rung; with no key the router is the only rung.
   r.cfg.overBudgetHosts.insert("anthropic");
   for (const FoldRung& g : r.eng->foldRungs()) TEST_ASSERT_TRUE(g.host != "anthropic");
+  // A Cumulo key with Cumulo left out of the list (fix review F): no Cumulo rung; listed, one.
+  Rig ck;
+  ck.cfg.keyed = {"anthropic", "cumulo"};
+  ck.cfg.priority = "anthropic";
+  ck.cfg.routerHost = "cumulo";
+  for (const FoldRung& g : ck.eng->foldRungs()) TEST_ASSERT_TRUE_MESSAGE(g.host != "cumulo", "Cumulo outside the list");
+  ck.cfg.priority = "anthropic,cumulo";
+  bool cumulo = false;
+  for (const FoldRung& g : ck.eng->foldRungs()) cumulo = cumulo || g.host == "cumulo";
+  TEST_ASSERT_TRUE(cumulo);
   Rig router;
   router.cfg.keyed.clear();
   router.cfg.routerHost = "zai";

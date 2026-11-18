@@ -11,6 +11,7 @@
 #include "nimbus/harness/providers.h"   // ScopedModelOverride - a rung on its own model
 #include "nimbus/orch/budget.h"            // deriveRequestContext - the head's summary cap (lane B)
 #include "nimbus/orch/compact.h"
+#include "nimbus/orch/provider_slots.h"   // kProviderSlots - is any direct provider key set
 #include "nimbus/orch/model_family.h"    // mistralForcedReasoner - the fold's step-down           // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary
 #include "nimbus/orch/request_budget.h"    // requestBudgetFor
 #include "nimbus/orch/connector_grant.h"   // whose connectors a fold's request carries (CUM-828)
@@ -341,6 +342,13 @@ struct LadderBuild {
     if (head.empty() || head != router) return false;
     return !(d.cfg.provider.hasKey && d.cfg.provider.hasKey(head));
   }
+  // Any provider key on the device besides the router's own (Cumulo's never counts).
+  bool anyDirectKey(const std::string& router) const {
+    if (!d.cfg.provider.hasKey) return true;
+    for (const orch::ProviderSlot& slot : orch::kProviderSlots)
+      if (slot.slug != router && std::string(slot.slug) != "cumulo" && d.cfg.provider.hasKey(slot.slug)) return true;
+    return router != "custom" && d.cfg.provider.hasKey("custom");
+  }
   void addRouter(const std::string& router) {
     if (!router.empty() && d.hosts.has(router) && inBudget(router)) add(router, std::string(), FoldRungKind::RouterFallback);
   }
@@ -390,9 +398,10 @@ std::vector<FoldRung> TurnEngine::foldRungs() const {
   //    consent: "every provider in your priority list"; Cumulo only with a Cumulo key).
   for (const std::string& h : ownerOrder(p))
     if (h != head && b.keyed(h)) b.add(h, std::string(), FoldRungKind::OtherHost);
-  // 3. The router fallback: when no provider key is set (CUM-288), or when the router is
-  //    Cumulo and the device holds a Cumulo key (RULINGS-v3 item 15).
-  if (b.rungs.empty() || (router == "cumulo" && b.keyed(router))) b.addRouter(router);
+  // 3. The router fallback only on a router-only device: no direct provider key at all
+  //    (CUM-288). Cumulo the owner put in the priority list is a rung of step 2 already; one
+  //    left out of it never receives the digest (privacy ruling, v5.1.2 fix review F).
+  if (!b.anyDirectKey(router)) b.addRouter(router);
   // 4. The head host on its Sub model, last (a direct host only: the pin needs one).
   if (!headIsRouter) b.addSub(head);
   return b.rungs;

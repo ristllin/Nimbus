@@ -152,6 +152,8 @@ void testAutomaticCycleMatchesTheDevice(ndtest::Ctx& c) {
   FakeHttpTransport tx;
   Config cfg;
   NimbusdRig rig(cfg, opts("fold-vn-a"), &tx);
+  // The owner's priority list names both: the ladder uses only providers in it (fix review F).
+  rig.updateSettings([](HostedSettings& s) { s.provPrio = "openai,cumulo"; });
   std::vector<std::string> notices;
   rig.setDeliver([&notices](const std::string&, const std::string& text) {
     if (!has(text, "noted")) notices.push_back(text);
