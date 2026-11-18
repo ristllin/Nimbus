@@ -939,9 +939,12 @@ void test_oir_51_own_estimate_stays_in_the_request() {
     }
   }
   TEST_ASSERT_TRUE(heads >= 15);
-  // The one cold-start choice without room: its family's measured rates put the latency bound
-  // under the 85,000 B floor (docs/reference/request-budgets.md, bound "floor").
-  TEST_ASSERT_EQUAL_STRING("mistral/mistral-large-latest ", floorHeads.c_str());
+  // The one cold-start choice without room on d0dea039: its family's measured rates put the
+  // latency bound under the 85,000 B floor (docs/reference/request-budgets.md, bound "floor").
+  // The release review (finding: Large 4 under the id mistral-large-latest) gives it Large 4's
+  // budget in lane CTXR2; then no head is at the floor. Any other floor head fails here.
+  const bool known = floorHeads.empty() || floorHeads == "mistral/mistral-large-latest ";
+  TEST_ASSERT_TRUE_MESSAGE(known, floorHeads.c_str());
   // v5.1.1 (Lumi's head): gone the same evening, and gone just after midnight.
   for (const uint32_t dayStart : {kOirDay, kOirDay + 86400u}) {
     const agent::HistoryWindow old =
