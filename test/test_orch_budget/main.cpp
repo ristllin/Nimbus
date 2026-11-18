@@ -206,28 +206,66 @@ static int deriveCallsOutsideTheSeam(std::string& where) {
   }
   return n;
 }
+// Lane L: a context derived straight from requestBudgetFor (a single request's body budget,
+// always the loop's form) sizes a loop-off Mistral or Z.ai head at its body budget while its
+// turn is one 55.9 KB string. The class: no consumer does it. Every deriveRequestContext call
+// outside the seam's file takes the head's turn budget (turnBudgetFor) or a wire's own round
+// budget (wire_budget.cpp: a loop round's replay), never requestBudgetFor.
+static int contextsDerivedAroundTheTurnBudget(std::string& where) {
+  int n = 0;
+  for (const char* dir : {"src", "lib/harness/src", "lib/core/src", "nimbusd/src", "tools/harness-lab/src"}) {
+    for (const auto& e : std::filesystem::recursive_directory_iterator(dir)) {
+      const std::string path = e.path().string();
+      if (!e.is_regular_file() || !sourceFile(path) || path == "lib/core/src/orch_budget.cpp") continue;
+      const std::string src = stripLineComments(readFile(path.c_str()));
+      for (size_t p = src.find("deriveRequestContext("); p != std::string::npos; p = src.find("deriveRequestContext(", p + 1)) {
+        const size_t end = src.find(';', p);
+        if (src.substr(p, end - p).find("requestBudgetFor(") == std::string::npos) continue;
+        where += path + " ";
+        n++;
+      }
+    }
+  }
+  return n;
+}
 static void test_every_budget_consumer_reads_the_one_seam() {
   std::string where;
   TEST_ASSERT_EQUAL_MESSAGE(0, deriveCallsOutsideTheSeam(where), where.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(0, contextsDerivedAroundTheTurnBudget(where), where.c_str());
   // The legacy consumers each read the seam. The VN's only one was its fold slice, which
   // lane F switched to lane B's request context (deriveRequestContext), as on the device.
   for (const char* f : {"src/agent/store.cpp", "src/net/webui.cpp", "src/agent/orchestrator.cpp",
-                        "lib/harness/src/engine.cpp", "lib/harness/src/engine_history.cpp"})
+                        "lib/harness/src/engine.cpp", "lib/harness/src/engine_history.cpp",
+                        "lib/harness/src/engine_fold.cpp"})
     TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile(f)), "headContextBudget(") >= 1, f);
   TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile("nimbusd/src/rig.h")), "deriveRequestContext(") >= 1,
                            "the VN fold reads the request context");
+  // Lane L: each consumer names the form with the owner's tool-loop setting (the store's on
+  // the device, the hosted settings' on a Virtual Nimbus, the engine's config closure).
+  struct Reads { const char* file; const char* setting; int atLeast; };
+  for (const Reads& r : {Reads{"src/agent/store.cpp", "orchToolLoop(), ov)", 1},
+                         Reads{"src/net/webui.cpp", "agent::store::orchToolLoop(), bov)", 1},
+                         Reads{"src/agent/orchestrator.cpp", "store::orchToolLoop()", 2},
+                         Reads{"nimbusd/src/rig.h", "modelFor(host), settings_.get().toolLoop)", 1},
+                         Reads{"lib/harness/src/engine.cpp", "detail::toolLoopSetting(d_), bov)", 1},
+                         Reads{"lib/harness/src/engine_history.cpp", "detail::toolLoopSetting(d_), {})", 1},
+                         Reads{"lib/harness/src/engine_fold.cpp", "detail::toolLoopSetting(d), {})", 1}})
+    TEST_ASSERT_TRUE_MESSAGE(countOf(stripLineComments(readFile(r.file)), r.setting) >= r.atLeast, r.file);
   // Lane H's switch-over: the seam is the request budget's derivation (a Cumulo selector is
-  // budgeted as its upstream, routed).
+  // budgeted as its upstream, routed). Lane L: the head's turn budget, in both forms.
   for (const char* host : {"anthropic", "openai", "mistral", "zai", "cumulo", "custom"})
-    for (const char* model : {"", "claude-sonnet-5-5", "gpt-5.6", "mistral-large-4-0", "glm-5.3", "openai/gpt-5.6"}) {
-      BudgetOverrides ov;
-      ov.toolResultCap = 4000;
-      const ContextBudget a = headContextBudget(host, model, ov);
-      const ContextBudget b = deriveRequestContext(requestBudgetFor(host, model, false), ov);
-      TEST_ASSERT_EQUAL_UINT32(b.ctxTokens, a.ctxTokens);
-      TEST_ASSERT_EQUAL_UINT32(b.toolResultBytes, a.toolResultBytes);
-      TEST_ASSERT_EQUAL_UINT32(b.recentConvBytes, a.recentConvBytes);
-    }
+    for (const char* model : {"", "claude-sonnet-5-5", "gpt-5.6", "mistral-large-4-0", "glm-5.3", "openai/gpt-5.6"})
+      for (const bool loopOn : {true, false}) {
+        BudgetOverrides ov;
+        ov.toolResultCap = 4000;
+        const ContextBudget a = headContextBudget(host, model, loopOn, ov);
+        const ContextBudget b = deriveRequestContext(turnBudgetFor(host, model, loopOn), ov);
+        TEST_ASSERT_EQUAL_UINT32(b.ctxTokens, a.ctxTokens);
+        TEST_ASSERT_EQUAL_UINT32(b.toolResultBytes, a.toolResultBytes);
+        TEST_ASSERT_EQUAL_UINT32(b.recentConvBytes, a.recentConvBytes);
+        TEST_ASSERT_EQUAL_UINT32(b.foldTriggerBytes, a.foldTriggerBytes);
+        TEST_ASSERT_EQUAL(b.floorBranch, a.floorBranch);
+      }
 }
 
 // The history fix's fields hold today's figures, so nothing reads a value the device
@@ -413,29 +451,34 @@ static void test_nvs_budget_model_keeps_the_reserve() {
 // (store.cpp effectiveToolResultCap), the engine clamps each tool result from the same seam
 // with the turn's overrides (engine.cpp). One seam, one figure: a view never asks for more than
 // the clamp kept, whatever the window, the owner's prompt budget or the tool total.
+// One head, one loop setting (the store and the engine read the same one, lane L): the checks made.
+static int viewCapChecks(const recorded::Model& m, bool loopOn) {
+  int checked = 0;
+  for (int resultCap : {0, 4096, 12000}) {
+    BudgetOverrides store;   // effectiveToolResultCap: the owner's result cap alone
+    store.toolResultCap = resultCap;
+    const size_t view = headContextBudget(m.provider, m.id, loopOn, store).toolResultBytes;
+    for (int prompt : {0, 20000, 56000})
+      for (int total : {0, 24576}) {
+        BudgetOverrides turn;   // the engine: the prompt budget and the tool total ride too
+        turn.maxContextBytes = prompt;
+        turn.toolResultCap = resultCap;
+        turn.toolTotalCap = total;
+        const size_t clamp = headContextBudget(m.provider, m.id, loopOn, turn).toolResultBytes;
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)view, (uint32_t)clamp, (m.provider + "/" + m.id).c_str());
+        checked++;
+      }
+  }
+  return checked;
+}
 static void test_view_cap_is_the_engine_clamp_for_every_head() {
   std::vector<recorded::Model> heads = recorded::models();
   for (const char* sel : {"openai/gpt-5.6", "anthropic/claude-sonnet-5-5", "mistral/mistral-large-4-0", "zai/glm-5.3"})
     heads.push_back({"cumulo", sel});
   heads.push_back({"custom", "gpt-5.6-luna"});
   int checked = 0;
-  for (const auto& m : heads)
-    for (int resultCap : {0, 4096, 12000}) {
-      BudgetOverrides store;   // effectiveToolResultCap: the owner's result cap alone
-      store.toolResultCap = resultCap;
-      const size_t view = headContextBudget(m.provider, m.id, store).toolResultBytes;
-      for (int prompt : {0, 20000, 56000})
-        for (int total : {0, 24576}) {
-          BudgetOverrides turn;   // the engine: the prompt budget and the tool total ride too
-          turn.maxContextBytes = prompt;
-          turn.toolResultCap = resultCap;
-          turn.toolTotalCap = total;
-          const size_t clamp = headContextBudget(m.provider, m.id, turn).toolResultBytes;
-          TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)view, (uint32_t)clamp, (m.provider + "/" + m.id).c_str());
-          checked++;
-        }
-    }
-  TEST_ASSERT_TRUE(checked > 500);
+  for (const auto& m : heads) checked += viewCapChecks(m, true) + viewCapChecks(m, false);
+  TEST_ASSERT_TRUE(checked > 1000);
   // ... and through a turn: the clamp the engine hands the head loop is the view cap.
   for (const char* host : {"anthropic", "openai", "mistral"})
     for (const char* model : {"claude-sonnet-5-5", "gpt-5.6-luna", "mistral-large-4-0", ""}) {
@@ -459,7 +502,7 @@ static void test_view_cap_is_the_engine_clamp_for_every_head() {
       agent::TurnEngine eng(std::move(d));
       eng.handleMessage("hello", "Roy", "1001");
       BudgetOverrides store;
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)headContextBudget(host, model, store).toolResultBytes, (uint32_t)clamp,
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)headContextBudget(host, model, true, store).toolResultBytes, (uint32_t)clamp,
                                        (std::string(host) + "/" + model).c_str());
     }
 }

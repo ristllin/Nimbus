@@ -1382,7 +1382,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   bov.toolTotalCap = d_.cfg.loop.totalCap ? d_.cfg.loop.totalCap() : 0;
   const std::string headModel =
       d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
-  const orch::ContextBudget budget = orch::headContextBudget(host, headModel, bov);
+  const orch::ContextBudget budget = orch::headContextBudget(host, headModel, detail::toolLoopSetting(d_), bov);
   ci.budgetBytes = budget.systemPromptBytes;
   ci.perTurnFloorBytes = (int)budget.perTurnFloorBytes;   // lane H: recall always has room
   ci.recallBytes = (int)budget.recallBytes;               // ... and a bound of its own

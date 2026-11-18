@@ -163,6 +163,23 @@ serves:
   string ceiling. A head turn's newest message (its per-turn block and the input) is held
   under the same figure with its own wording, and the loop gives up what that message holds
   (recalled memories first, then the middle of the input) before anything else.
+- **A turn is sized for the form it goes out in**: the body budget above is filled only by
+  a split prompt, where the history rides as messages: every Anthropic and OpenAI turn
+  (their single shot is split too), and a Mistral or Z.ai turn that runs the tool loop. With
+  the tool loop off, a Mistral head (the Conversations single shot) and a Z.ai head (the
+  chat-completions single shot) send one prompt string, as a custom endpoint and a router
+  upstream with no tool loop always do. The head's turn budget names that form
+  (`turnBudgetFor(host, model, loopOn)` in `request_budget.h`: `flatTurn`, and
+  `contextBytes()`, the flat prompt budget of 55,904 B instead of the body budget), and
+  every reader of the head's caps and history marks derives from it, never from the body
+  budget (`headContextBudget`, `test_orch_budget`). The one formula then leaves a flat turn
+  no room for derived history, so it keeps the v5.1.1 history window and the 48 KB summary
+  trigger, and recalled memories and the food playbook ride the request as in v5.1.1; the
+  body budget of its wire does not change. `loopOn` is the owner's Tool use setting. A
+  single turn that the memory gate sends as a single shot (entry heap under the loop's
+  floor), or a bounded background turn on a fallback head, keeps the head's standing marks:
+  when its history is over the string it is refused locally and fitted by the give-up
+  order, with the note that names what was left out.
 - **Photos inside the budget and the time fit**: each photo's window cost comes from
   its pixel size (read from its own header: JPEG, PNG, WebP, GIF), by the host's rule
   (Anthropic about width x height / 750 after its resize, OpenAI's 512 px tiles at

@@ -609,9 +609,10 @@ summary cap, verbatim-tail cap, per-tool-result clamp, cumulative tool budget,
 sub-agent brief size and fold-slice size - each a ratio with a floor and a cap.
 Every reader of those sizes (the turn, the history window, the fold slice, the
 `results.get` view cap, the web console's auto values, the hosted daemon's fold)
-asks one seam, `nimbus::orch::headContextBudget(host, model, overrides)`, which
+asks one seam, `nimbus::orch::headContextBudget(host, model, loopOn, overrides)`, which
 derives over the head's window; `test_orch_budget` fails on a size derived
-around it. The window comes from the `modelCtxTokens()` table (`model_window.h`). A Cumulo router
+around it. With the tool loop off a Mistral or Z.ai head sends one prompt string, so
+the seam sizes it from that string's budget: v5.1.1's history window and summary trigger. The window comes from the `modelCtxTokens()` table (`model_window.h`). A Cumulo router
 pick is stored as `<upstream>/<model>` (the model picker saves `openai/gpt-5.6`
 for the default); the table splits it with the same router rule the head uses
 and reads the upstream model's window, so a prefixed pick gets the same budget

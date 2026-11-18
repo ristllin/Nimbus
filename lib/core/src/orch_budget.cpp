@@ -76,10 +76,12 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov) {
   return b;
 }
 
-ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov) {
+ContextBudget headContextBudget(const std::string& host, const std::string& model, bool loopOn,
+                                const BudgetOverrides& ov) {
   // Lane H's switch-over: every consumer reads the head's request budget (a Cumulo head is
-  // budgeted as its upstream, routed: requestBudgetFor reads the selector).
-  return deriveRequestContext(requestBudgetFor(host, model, false), ov);
+  // budgeted as its upstream, routed: the budget reads the selector). Lane L: in the form
+  // the head's turn goes out in.
+  return deriveRequestContext(turnBudgetFor(host, model, loopOn), ov);
 }
 
 namespace {
@@ -120,8 +122,10 @@ ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverride
   const ContextBudget old = deriveBudget(rb.v511CtxTokens, ov);   // v5.1.1, owner overrides applied
   ContextBudget b = old;
   b.ctxTokens = rb.windowTokens;
-  const uint64_t body = rb.wireBodyBytes;
-  const bool large = rb.targetTokens >= kLargeTargetTokens;
+  // Lane L: a flat turn is sized from the flat prompt budget, which leaves the formula no
+  // room for history (the floor branch below: v5.1.1's window) and is never a large target.
+  const uint64_t body = rb.contextBytes();
+  const bool large = !rb.flatTurn && rb.targetTokens >= kLargeTargetTokens;
   b.chatSummaryBytes = std::max<size_t>(old.chatSummaryBytes, large ? 6144 : 4096);
   if (ov.maxContextBytes <= 0)
     b.systemPromptBytes = std::max(old.systemPromptBytes, (int)pct(body, 12, 32768, 56000));

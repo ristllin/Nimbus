@@ -114,6 +114,26 @@ static std::vector<Head> routedAndCustomHeads() {
   return out;
 }
 
+// Lane L: the heads whose turn is one flat prompt string with the tool loop off, sized from
+// that string's budget (turnBudgetFor): the main heads and the routed ones.
+static std::string loopOffTable() {
+  std::string t = "| Provider | Model | Bytes | Sized from | System cap | Recall | Summary | Message cap | Hist max "
+                  "| Hist soft | Hist keep | Fold slice | Rows | Trigger |\n" +
+                  separator(14);
+  std::vector<Head> heads = mainHeads();
+  heads.insert(heads.end(), std::begin(kRouted), std::end(kRouted));
+  for (const Head& h : heads) {
+    const RequestBudget b = turnBudgetFor(h.host, h.model, false, BudgetLink::Device, kRoutedBudgetLift);
+    if (!b.flatTurn) continue;
+    const ContextBudget c = deriveRequestContext(b, {});
+    t += cells({h.host, h.model, num(b.wireBodyBytes), num(b.contextBytes()), num((uint32_t)c.systemPromptBytes),
+                num(c.recallBytes), num(c.chatSummaryBytes), num(c.historyMessageCap), num(c.historyMaxBytes),
+                num(c.historySoftBytes), num(c.historyKeepBytes), num(c.foldSliceBytes), num(c.historyRows),
+                num(c.foldTriggerBytes)});
+  }
+  return t;
+}
+
 static std::string budgetTableDoc() {
   std::string md =
       "# Request budgets\n\n"
@@ -145,5 +165,15 @@ static std::string budgetTableDoc() {
   md += "\n## Virtual Nimbus\n\n"
         "A Virtual Nimbus sends from a server: no upload rate and no heap pacing enter its fits.\n\n";
   md += tableOf(mainHeads(), BudgetLink::Server);
+  md += "\n## With the tool loop off\n\n"
+        "Every table above is a head whose turn runs the tool loop. With the tool loop off a turn is a single\n"
+        "shot. On Anthropic and OpenAI that is still a split prompt (the history as messages) under the same\n"
+        "body budget, so their rows do not change. On Mistral and Z.ai it is one prompt string, as on a custom\n"
+        "endpoint, and that string is held under 55,904 B whatever the body budget. Such a turn is sized from\n"
+        "that figure by the same formula, which leaves it no room for history: the head keeps the v5.1.1\n"
+        "history window and its 48 KB fold trigger, with recall and the playbook in the request as in v5.1.1.\n"
+        "Bytes is still the body a request may carry; Sized from is what the turn's caps and history marks\n"
+        "derive from.\n\n";
+  md += loopOffTable();
   return md;
 }

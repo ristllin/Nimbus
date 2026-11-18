@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "nimbus/orch/wire_limits.h"   // kJsonStrGuard - the flat prompt budget
+
 // request_budget - what one request to a head may carry: its model's window, the prompt
 // it aims at, the bytes per token that turn tokens into body bytes, the body budget it
 // is refused over, the round's deadline and the rates its time fits at. Declared by lane
@@ -27,6 +29,15 @@
 //   target   bytes / rNom.
 // A tighten-only memo of observed bytes per token (noteObservedRatio) can only lower the
 // window and tier bounds.
+//
+// The turn's form (lane L of the history fix, 18 Nov 2026). The bytes above are a request BODY's budget, and
+// a head turn fills them only where its prompt goes out split (the history as messages):
+// every Anthropic and OpenAI turn, and a Mistral or Z.ai turn that runs the tool loop. With
+// the tool loop off a Mistral head (the Conversations single shot) and a Z.ai head (the
+// chat-completions single shot) send ONE prompt string, as a custom endpoint and a router
+// upstream with no tool loop always do, and that string is held under kFlatPromptBytes
+// whatever the body budget. turnBudgetFor names the form (flatTurn) and the bytes the
+// turn's context is sized from (contextBytes()), so a flat turn is sized as v5.1.1 sized it.
 namespace nimbus {
 namespace orch {
 
@@ -41,6 +52,12 @@ inline constexpr bool kRoutedBudgetLift = false;
 
 // Ruling 1: no target above 100k tokens.
 inline constexpr uint32_t kBudgetTargetClampTokens = 100000;
+
+// The one prompt string of a flat single shot: the provider string guard less 4 KB for the
+// turn's input and the envelope, so the history fitted into it is announced, never cut by
+// the guard (the wires refuse a longer string with the size wording; providers.h
+// flatPromptBudget() is this figure).
+inline constexpr uint32_t kFlatPromptBytes = (uint32_t)kJsonStrGuard - 4096;
 
 // The device link the fits assume (plan v3 protocols; A10 measures it on the bench).
 inline constexpr uint32_t kBudgetConnectMs = 1500;         // connect and TLS
@@ -88,6 +105,16 @@ struct RequestBudget {
   BudgetLink link = BudgetLink::Device;
   uint32_t v511CtxTokens = 0;    // v5.1.1's window for the head (legacyCtxTokens): the no-shrink baseline
   uint32_t v511ReplayBytes = 0;  // the sending wire's v5.1.1 replay cap (Anthropic 16,384, else 24,576)
+  // Lane L: the form the head's turn goes out in (see the header): one prompt string under
+  // kFlatPromptBytes, not a split prompt under wireBodyBytes. (`flat` above is the wire: a
+  // custom endpoint has no other form and sits on the floor; a Mistral or Z.ai head's turn is
+  // flat only while the tool loop is off, and its wire keeps its body budget.)
+  bool flatTurn = false;
+  // The bytes the turn's context is sized from (deriveRequestContext): the body budget, or
+  // on a flat turn the flat prompt budget, never more than the body budget.
+  uint32_t contextBytes() const {
+    return flatTurn && wireBodyBytes > kFlatPromptBytes ? kFlatPromptBytes : wireBodyBytes;
+  }
 };
 
 // The budget of a request `host` sends on `model` (`routed`: through the router; host
@@ -100,6 +127,17 @@ RequestBudget requestBudgetFor(const std::string& host, const std::string& model
 // flips (tests and the generated table; every consumer uses the forms above).
 RequestBudget requestBudgetFor(const std::string& host, const std::string& model, bool routed,
                                BudgetLink link, bool routedLift);
+
+// The budget of the head's TURN on `host` and `model` (host "cumulo" reads its selector's
+// upstream, routed): requestBudgetFor's, with the form the turn goes out in. `loopOn` is
+// the owner's tool-loop setting. Every consumer of the head's context (the turn's caps and
+// history marks, the fold's trigger, step and summary cap, the console's values) derives
+// from this one, never from requestBudgetFor, which is a single request's body budget (the
+// wires read it per round) and always answers for a turn with the loop on.
+RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn);
+// The same on an explicit link and routed lift (tests and the generated table).
+RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn, BudgetLink link,
+                            bool routedLift);
 
 // ---- the rates and the round's time (shared with output_caps' load-aware fit) --------
 // Each takes the sending host and model; a router selector or an upstream-prefixed id

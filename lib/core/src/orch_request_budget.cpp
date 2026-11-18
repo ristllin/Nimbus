@@ -311,8 +311,21 @@ RequestBudget requestBudgetFor(const std::string& host, const std::string& model
   return requestBudgetFor(host, model, routed, link, kRoutedBudgetLift);
 }
 
-RequestBudget requestBudgetFor(const std::string& host, const std::string& model, bool routed, BudgetLink link,
-                               bool routedLift) {
+namespace {
+
+// The form a head turn takes on its wire (the header's last paragraph). Anthropic and OpenAI
+// send a split prompt on a single shot too. Mistral's Conversations single shot and Z.ai's
+// chat-completions single shot are one flat string: the form of a turn with the tool loop
+// off. A custom endpoint, and a router upstream the native wires do not drive (the compat
+// single shot), have no other form (router_route.h headRunsToolLoop is the same split).
+bool flatTurnOn(const WireKey& k, bool loopOn) {
+  if (k.host == "mistral" || k.host == "zai") return !loopOn;
+  if (k.host == "custom") return true;
+  return k.cumulo && k.host != "anthropic" && k.host != "openai";
+}
+
+RequestBudget budgetOf(const std::string& host, const std::string& model, bool routed, BudgetLink link, bool routedLift,
+                       bool loopOn) {
   const WireKey k = wireKey(host, model);
   routed = routed || k.cumulo;
   RequestBudget b = rates(host, model, k, routed, link);
@@ -327,7 +340,24 @@ RequestBudget requestBudgetFor(const std::string& host, const std::string& model
   }
   b.targetTokens = (uint32_t)((uint64_t)b.wireBodyBytes * 100 / b.rNomX100);
   b.decodeTokPerS = decodeFor(k, b.targetTokens);
+  b.flatTurn = flatTurnOn(k, loopOn);
   return b;
+}
+
+}  // namespace
+
+RequestBudget requestBudgetFor(const std::string& host, const std::string& model, bool routed, BudgetLink link,
+                               bool routedLift) {
+  return budgetOf(host, model, routed, link, routedLift, true);
+}
+
+RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn) {
+  return turnBudgetFor(host, model, loopOn, budgetLink(), kRoutedBudgetLift);
+}
+
+RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn, BudgetLink link,
+                            bool routedLift) {
+  return budgetOf(host, model, false, link, routedLift, loopOn);
 }
 
 void noteObservedRatio(const std::string& host, const std::string& model, size_t textBytes, uint32_t promptTokens) {

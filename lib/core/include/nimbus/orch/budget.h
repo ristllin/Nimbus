@@ -23,9 +23,13 @@
 // ONE SEAM (lane P0 of the history fix, 16 Nov 2026): every consumer of the head's
 // budget - the turn's caps, the history window, the fold slice, the results.get view
 // cap, the web console's auto values, the device's brief and the VN's fold slice -
-// reads headContextBudget(host, model, overrides), never deriveBudget directly
-// (test_orch_budget pins it). Since lane H's switch-over its body is
-// deriveRequestContext(requestBudgetFor(host, model)): every consumer moved at once.
+// reads headContextBudget(host, model, loopOn, overrides), never deriveBudget directly
+// (test_orch_budget pins it). Since lane H's switch-over its body is the request budget's
+// derivation, and since lane L of the history fix (18 Nov 2026) it is the head's TURN budget,
+// deriveRequestContext(turnBudgetFor(host, model, loopOn)): a turn that goes out as one
+// flat prompt string (request_budget.h) is sized from that string's budget, so a Mistral
+// or Z.ai head with the tool loop off keeps v5.1.1's window, recall and playbook. No
+// consumer derives a context from requestBudgetFor (a single request's body budget).
 
 #include <cstddef>
 #include <cstdint>
@@ -80,10 +84,12 @@ struct BudgetOverrides {
 // shrinks an allocation (floors/caps preserve that).
 ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov);
 
-// The budget of a request the head `host` sends on `model`: the one seam above,
-// deriveRequestContext(requestBudgetFor(host, model, false), ov) (host "cumulo" is always
-// routed there: requestBudgetFor reads its selector's upstream).
-ContextBudget headContextBudget(const std::string& host, const std::string& model, const BudgetOverrides& ov);
+// The budget of the turn the head `host` sends on `model`: the one seam above,
+// deriveRequestContext(turnBudgetFor(host, model, loopOn), ov) (host "cumulo" is always
+// routed there: the budget reads its selector's upstream). `loopOn` is the owner's
+// tool-loop setting, with no default: every consumer says which form it sizes.
+ContextBudget headContextBudget(const std::string& host, const std::string& model, bool loopOn,
+                                const BudgetOverrides& ov);
 
 // ---- lane B: every field from the one request budget (plan v3 protocols) -------------
 // The stored compactAtKB default (store.cpp): it means "derived".
@@ -91,10 +97,13 @@ inline constexpr uint32_t kCompactAtKbDefault = 48;
 // No automatic fold trigger goes under this (RULINGS-v3 item 3).
 inline constexpr size_t kFoldTriggerMinBytes = 24 * 1024;
 
-// Every ContextBudget field derived from `rb` (requestBudgetFor), each at least its v5.1.1
+// Every ContextBudget field derived from `rb` (turnBudgetFor), each at least its v5.1.1
 // value for the same head (deriveBudget over rb.v511CtxTokens; budgets_v5_1_1.json), owner
-// overrides verbatim as deriveBudget applies them:
-//   system cap   max(32,768, 12% of the body bytes B), at most 56,000;
+// overrides verbatim as deriveBudget applies them. B is rb.contextBytes(): the body bytes,
+// or on a flat turn the flat prompt budget (the same formula; it then leaves no room for
+// history, so a flat turn takes the floor branch, and its summary and message cap are the
+// small ones):
+//   system cap   max(32,768, 12% of B), at most 56,000;
 //   summary      6,144 at a 60k-token target and above, else 4,096;
 //   tool result  max(8,192, 3% of B), at most 16,384;
 //   recall       3% of B in 4,096-12,288;

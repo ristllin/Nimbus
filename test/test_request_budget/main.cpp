@@ -9,6 +9,7 @@
 
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -18,6 +19,7 @@
 
 #include "../support/recorded_models.h"
 #include "nimbus/harness/output_caps.h"
+#include "nimbus/harness/providers.h"   // flatPromptBudget - the wires' flat cap
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/model_window.h"
 #include "nimbus/orch/request_budget.h"
@@ -409,9 +411,208 @@ static void test_owner_settings() {
   TEST_ASSERT_EQUAL_UINT32(4096, o.toolTotalBytes);
 }
 
-// ---- the generated table ---------------------------------------------------------------------
+// ---- the turn's form (lane L): a flat turn is sized from the flat prompt budget --------------
 
-#include "table_doc.h"
+#include "table_doc.h"   // wireOf (a Cumulo head's upstream); the table it writes is checked last
+
+// A router upstream the native wires do not drive: the compat single shot, flat always.
+static const Head kCompat[] = {{"cumulo", "groq/llama-3-70b", true}};
+
+static std::vector<Head> headsOfEveryForm() {
+  std::vector<Head> out = allHeads();
+  out.insert(out.end(), std::begin(kCompat), std::end(kCompat));
+  return out;
+}
+
+// What a request carries besides the history, as the one formula counts it (budget.h): the
+// tools array, the static system block, the summary, the per-turn block, the slack, the
+// replay and 5% of the budget.
+static uint64_t overheadOf(const ContextBudget& c, uint64_t budget) {
+  return (34 + 24 + 8 + 8) * 1024ull + c.chatSummaryBytes + c.replayBytes + budget / 20;
+}
+
+static void assertSameContext(const ContextBudget& a, const ContextBudget& b, const std::string& what) {
+  const size_t as[] = {a.ctxTokens, (size_t)a.systemPromptBytes, a.chatSummaryBytes, a.recentConvBytes, a.toolResultBytes,
+                       a.toolTotalBytes, a.briefBytes, a.foldSliceBytes, a.historyMaxBytes, a.historySoftBytes,
+                       a.historyKeepBytes, a.historyRows, a.replayBytes, a.foldStepBytes, a.perTurnFloorBytes,
+                       a.historyMessageCap, a.recallBytes, a.foldTriggerBytes, (size_t)a.floorBranch};
+  const size_t bs[] = {b.ctxTokens, (size_t)b.systemPromptBytes, b.chatSummaryBytes, b.recentConvBytes, b.toolResultBytes,
+                       b.toolTotalBytes, b.briefBytes, b.foldSliceBytes, b.historyMaxBytes, b.historySoftBytes,
+                       b.historyKeepBytes, b.historyRows, b.replayBytes, b.foldStepBytes, b.perTurnFloorBytes,
+                       b.historyMessageCap, b.recallBytes, b.foldTriggerBytes, (size_t)b.floorBranch};
+  for (size_t i = 0; i < sizeof(as) / sizeof(as[0]); i++)
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)bs[i], (uint32_t)as[i], (what + " field " + std::to_string(i)).c_str());
+}
+
+// The form a head turn takes on its wire, as the wires send it (the oracle the budget's own
+// flag is held to; test_wire_fit_class checks the same on real requests): Anthropic and OpenAI
+// send a split prompt on a single shot too (anthropic.cpp, openai.cpp); Mistral's Conversations
+// single shot and Z.ai's chat-completions single shot are one flat string, the form of a turn
+// with the tool loop off (mistral.cpp, custom.cpp); a custom endpoint and a router upstream
+// with no tool loop have no other form. A Cumulo head is its upstream.
+static bool flatOnTheWire(const Head& h, bool loopOn) {
+  const std::string wire = wireOf(h).host;
+  if (wire == "mistral" || wire == "zai") return !loopOn;
+  return wire != "anthropic" && wire != "openai";
+}
+
+static void test_the_form_of_every_head_turn() {
+  size_t flatOff = 0;
+  for (const Head& h : headsOfEveryForm())
+    for (const bool loopOn : {true, false}) {
+      const bool want = flatOnTheWire(h, loopOn);
+      const RequestBudget b = turnBudgetFor(h.host, h.model, loopOn);
+      TEST_ASSERT_EQUAL_MESSAGE(want, b.flatTurn, (nameOf(h) + (loopOn ? " loop on" : " loop off")).c_str());
+      // The body budget is the wire's own in either form: only the turn's context follows the form.
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(requestBudgetFor(h.host, h.model, h.routed).wireBodyBytes, b.wireBodyBytes,
+                                       nameOf(h).c_str());
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(want ? std::min(b.wireBodyBytes, kFlatPromptBytes) : b.wireBodyBytes,
+                                       b.contextBytes(), nameOf(h).c_str());
+      flatOff += !loopOn && b.flatTurn;
+    }
+  TEST_ASSERT_TRUE(flatOff > 60);   // every Mistral and Z.ai model, custom, the routed Mistral and Z.ai heads
+  TEST_ASSERT_EQUAL_UINT32(kJsonStrGuard - 4096, kFlatPromptBytes);
+  TEST_ASSERT_EQUAL_UINT32(providers::flatPromptBudget(), kFlatPromptBytes);   // the wires refuse over the same figure
+}
+
+// How far over the real cap of its form one head's turn budget puts the history (0: it fits).
+// The cap is the wire's: the body budget for a split prompt, the flat prompt budget for one
+// string. Beside the history the formula counts overheadOf.
+static uint64_t historyOverTheCap(const Head& h, bool loopOn, BudgetLink link, bool lift) {
+  const RequestBudget rb = turnBudgetFor(h.host, h.model, loopOn, link, lift);
+  const ContextBudget c = deriveRequestContext(rb, {});
+  const uint64_t cap = flatOnTheWire(h, loopOn) ? kFlatPromptBytes : rb.wireBodyBytes;
+  if (c.floorBranch) return rb.contextBytes() > cap ? rb.contextBytes() - cap : 0;   // v5.1.1's window: sized under it
+  const uint64_t need = c.historyMaxBytes + overheadOf(c, cap);
+  return need > cap ? need - cap : 0;
+}
+
+// The class (lane L): over every recorded model, the routed heads, the custom endpoint and a
+// compat upstream, with the tool loop on and off, on a device and a Virtual Nimbus, before and
+// after the routed lift: the history the budget admits, plus what the formula counts beside
+// it, never exceeds the real cap of the form the turn goes out in. On main a loop-off Large 4
+// head got 206,080 B of history for a 55,904 B string.
+static void test_the_derived_history_fits_the_form_of_the_turn() {
+  size_t cases = 0, over = 0;
+  uint64_t worstBy = 0;
+  std::string worst;
+  for (const BudgetLink link : {BudgetLink::Device, BudgetLink::Server})
+    for (const bool lift : {false, true})
+      for (const bool loopOn : {false, true})
+        for (const Head& h : headsOfEveryForm()) {
+          const uint64_t by = historyOverTheCap(h, loopOn, link, lift);
+          cases++;
+          over += by ? 1 : 0;
+          if (by <= worstBy) continue;
+          worstBy = by;
+          worst = nameOf(h) + (loopOn ? " loop on" : " loop off") + (link == BudgetLink::Server ? " (server link)" : "");
+        }
+  const std::string what = std::to_string(over) + " of " + std::to_string(cases) + " head forms put the history over " +
+                           "the cap of their form; the worst, " + worst + ", by " + std::to_string(worstBy) + " B";
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)over, what.c_str());
+  TEST_ASSERT_TRUE(cases > 1500);
+}
+
+// A flat turn is sized as v5.1.1 sized it (RULINGS-v3 item 3, the floor branch): v5.1.1's
+// history exactly, its 48 KB trigger, the small summary and message cap, and that window fits
+// the string beside the system block and the summary.
+static void assertSizedAsV511(const Head& h, bool loopOn, BudgetLink link, bool lift) {
+  const RequestBudget rb = turnBudgetFor(h.host, h.model, loopOn, link, lift);
+  const ContextBudget c = deriveRequestContext(rb, {});
+  const ContextBudget old = deriveBudget(rb.v511CtxTokens, {});
+  const std::string what = nameOf(h) + (loopOn ? " loop on" : " loop off");
+  TEST_ASSERT_TRUE_MESSAGE(c.floorBranch, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(old.recentConvBytes, c.historyMaxBytes, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(old.recentConvBytes, c.recentConvBytes, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(old.historySoftBytes, c.historySoftBytes, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(old.historyKeepBytes, c.historyKeepBytes, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(old.historyRows, c.historyRows, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(48 * 1024, c.foldTriggerBytes, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(48 * 1024, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(std::max<size_t>(old.chatSummaryBytes, 4096), c.chatSummaryBytes, what.c_str());
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(old.historyMessageCap, c.historyMessageCap, what.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes + 24 * 1024 + c.chatSummaryBytes <= kFlatPromptBytes, what.c_str());
+}
+static void test_a_flat_turn_is_sized_as_v5_1_1_sized_it() {
+  size_t flat = 0;
+  for (const BudgetLink link : {BudgetLink::Device, BudgetLink::Server})
+    for (const bool lift : {false, true})
+      for (const bool loopOn : {false, true})
+        for (const Head& h : headsOfEveryForm()) {
+          if (!flatOnTheWire(h, loopOn)) continue;
+          assertSizedAsV511(h, loopOn, link, lift);
+          flat++;
+        }
+  TEST_ASSERT_TRUE(flat > 280);   // every Mistral and Z.ai model with the loop off, custom and compat in both
+}
+
+// With the tool loop on, the head's turn budget IS the request budget, field by field, and
+// the context derived from it is the one main derived: for a split prompt the context bytes
+// are the body bytes, and for the two flat-only wires (custom, a compat upstream, both at the
+// 85,000 B floor) the flat prompt budget gives every field the value the floor gave.
+static void test_a_loop_on_turn_is_the_request_budget_unchanged() {
+  for (const BudgetLink link : {BudgetLink::Device, BudgetLink::Server})
+    for (const Head& h : headsOfEveryForm()) {
+      const RequestBudget a = requestBudgetFor(h.host, h.model, h.routed, link);
+      const RequestBudget t = turnBudgetFor(h.host, h.model, true, link, kRoutedBudgetLift);
+      const std::string what = nameOf(h);
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(a.wireBodyBytes, t.wireBodyBytes, what.c_str());
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(a.targetTokens, t.targetTokens, what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE((int)a.bound, (int)t.bound, what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(a.flatTurn, t.flatTurn, what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(a.routed, t.routed, what.c_str());
+      RequestBudget body = a;   // main's derivation: sized from the body bytes, whatever the form
+      body.flatTurn = false;
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(a.wireBodyBytes, body.contextBytes(), what.c_str());
+      for (const int prompt : {0, 20000}) {
+        BudgetOverrides ov;
+        ov.maxContextBytes = prompt;
+        assertSameContext(deriveRequestContext(t, ov), deriveRequestContext(body, ov), what);
+      }
+      // Anthropic and OpenAI: the loop setting changes nothing (a single shot is a split prompt).
+      const std::string wire = wireOf(h).host;
+      if (wire == "anthropic" || wire == "openai")
+        assertSameContext(deriveRequestContext(turnBudgetFor(h.host, h.model, false, link, kRoutedBudgetLift), {}),
+                          deriveRequestContext(body, {}), what + " loop off");
+    }
+}
+
+// The figures of the three heads that regressed (v5.1.1's window and trigger again), and the
+// body budget their wires keep.
+static void test_the_loop_off_figures_for_the_main_heads() {
+  struct Row { const char* host; const char* model; uint32_t body; size_t histMax; size_t onMax; };
+  for (const Row& r : {Row{"mistral", "mistral-large-4-0", 360000, 5242, 206080},
+                       Row{"mistral", "mistral-medium-latest", 151000, 5242, 39002},
+                       Row{"zai", "glm-5.3", 188000, 4096, 70528}}) {
+    const RequestBudget rb = turnBudgetFor(r.host, r.model, false);
+    const ContextBudget off = deriveRequestContext(rb, {});
+    TEST_ASSERT_TRUE_MESSAGE(rb.flatTurn, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.body, rb.wireBodyBytes, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(55904, rb.contextBytes(), r.model);
+    TEST_ASSERT_TRUE_MESSAGE(off.floorBranch, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.histMax, off.historyMaxBytes, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.histMax / 2, off.historyKeepBytes, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(48 * 1024, off.foldTriggerBytes, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(4096, off.chatSummaryBytes, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(6144, off.historyMessageCap, r.model);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(32768, off.systemPromptBytes, r.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(8192, off.perTurnFloorBytes, r.model);   // recall always has room (lane H)
+    const ContextBudget on = headContextBudget(r.host, r.model, true, {});
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(r.onMax, on.historyMaxBytes, r.model);
+    TEST_ASSERT_FALSE_MESSAGE(on.floorBranch, r.model);
+    assertSameContext(headContextBudget(r.host, r.model, false, {}), off, r.model);
+  }
+  // The routed Mistral and Z.ai heads follow the same rule (at the floor in v5.1.2 either way).
+  TEST_ASSERT_TRUE(turnBudgetFor("cumulo", "mistral/mistral-large-4-0", false).flatTurn);
+  TEST_ASSERT_TRUE(turnBudgetFor("cumulo", "zai/glm-5.3", false).flatTurn);
+  TEST_ASSERT_FALSE(turnBudgetFor("cumulo", "mistral/mistral-large-4-0", true).flatTurn);
+  TEST_ASSERT_FALSE(turnBudgetFor("cumulo", "anthropic/claude-sonnet-5-5", false).flatTurn);
+  // After the routed lift a loop-off routed Large 4 would have the room on its body, not in its string.
+  const RequestBudget lifted = turnBudgetFor("cumulo", "mistral/mistral-large-4-0", false, BudgetLink::Device, true);
+  TEST_ASSERT_TRUE(lifted.wireBodyBytes > kLegacyWireBodyBytes && deriveRequestContext(lifted, {}).floorBranch);
+}
+
+// ---- the generated table (table_doc.h, included above) ---------------------------------------
 
 static void test_the_generated_table_is_current() {
   const std::string want = budgetTableDoc();
@@ -443,6 +644,11 @@ int main(int, char**) {
   RUN_TEST(test_a_week_at_the_floor_stays_under_the_daily_fold_cap);
   RUN_TEST(test_the_derived_fields_for_the_main_heads);
   RUN_TEST(test_owner_settings);
+  RUN_TEST(test_the_form_of_every_head_turn);
+  RUN_TEST(test_the_derived_history_fits_the_form_of_the_turn);
+  RUN_TEST(test_a_flat_turn_is_sized_as_v5_1_1_sized_it);
+  RUN_TEST(test_a_loop_on_turn_is_the_request_budget_unchanged);
+  RUN_TEST(test_the_loop_off_figures_for_the_main_heads);
   RUN_TEST(test_the_generated_table_is_current);
   return UNITY_END();
 }

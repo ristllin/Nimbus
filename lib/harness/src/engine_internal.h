@@ -46,6 +46,11 @@ inline std::string headModelOf(const TurnEngine::Deps& d, const std::string& hos
   return d.cfg.provider.orchModel ? d.cfg.provider.orchModel(host) : std::string();
 }
 
+// The owner's tool-loop setting (off when unwired): the form the head's turn budget is read
+// in (lane L, request_budget.h turnBudgetFor). The setting, never a turn's heap gate: a turn
+// the gate sends as a single shot keeps the head's standing marks.
+inline bool toolLoopSetting(const TurnEngine::Deps& d) { return d.cfg.loop.toolLoopOn && d.cfg.loop.toolLoopOn(); }
+
 // The head the next turn runs on, as a context window in tokens.
 inline uint32_t headCtxTokens(const TurnEngine::Deps& d) {
   const std::string host = resolveTurnHost(d);

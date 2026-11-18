@@ -429,16 +429,17 @@ static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const St
 // test_orch_budget pins that this is the only headContextBudget call in this file.
 static nimbus::orch::ContextBudget headBudget() {
   const String h = g_engine ? String(g_engine->headHost().c_str()) : store::resolvedOrchHost();
-  return nimbus::orch::headContextBudget(h.c_str(), store::orchModel(h).c_str(), {});
+  return nimbus::orch::headContextBudget(h.c_str(), store::orchModel(h).c_str(), store::orchToolLoop(), {});
 }
 
-// The head's request context (lane B: deriveRequestContext over requestBudgetFor), which
-// the fold reads directly (lane F): its trigger, one fold's step. On the floor branch it
-// is v5.1.1's (the 48 KB compactAtKB trigger, the v5.1.1 slice).
+// The head's request context (lane B: deriveRequestContext over the head's turn budget,
+// lane L), which the fold reads directly (lane F): its trigger, one fold's step. On the
+// floor branch (a head with no room, or one whose turn goes out flat: the tool loop off on
+// Mistral or Z.ai) it is v5.1.1's (the 48 KB compactAtKB trigger, the v5.1.1 slice).
 static nimbus::orch::ContextBudget headRequestContext() {
   const String h = g_engine ? String(g_engine->headHost().c_str()) : String();   // the fold runs with an engine
   return nimbus::orch::deriveRequestContext(
-      nimbus::orch::requestBudgetFor(h.c_str(), store::orchModel(h).c_str(), h == "cumulo"), {});
+      nimbus::orch::turnBudgetFor(h.c_str(), store::orchModel(h).c_str(), store::orchToolLoop()), {});
 }
 // The automatic fold's trigger: the owner's Compact threshold over the head's budget. One
 // figure for the fold driver (when a chat is due) and the engine's fold slice (the tail it

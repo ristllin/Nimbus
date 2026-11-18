@@ -388,7 +388,8 @@ std::string foldModelFor(const Leg& leg) {
 
 // The fold: one plain-text request on a digest of the host's fold step.
 size_t foldStepFor(const Leg& leg) {
-  const size_t step = nimbus::orch::headContextBudget(leg.host, leg.model, nimbus::orch::BudgetOverrides()).foldStepBytes;
+  const size_t step =   // the budget legs run the tool loop
+      nimbus::orch::headContextBudget(leg.host, leg.model, true, nimbus::orch::BudgetOverrides()).foldStepBytes;
   return std::min(step, nimbus::orch::foldDigestCap(0) - 4096);
 }
 int sectionsNamed(const std::string& summary) {

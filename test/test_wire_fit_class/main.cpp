@@ -2,6 +2,7 @@
 #include <unity.h>
 
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -13,8 +14,11 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/providers.h"
+#include "nimbus/orch/budget.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/history_rows.h"
+#include "nimbus/orch/model_window.h"
+#include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/router_route.h"
 
 // The history's invariant, as a class (lane H of the history fix, plan v3): on every head
@@ -27,7 +31,13 @@
 //      coverage line); rows at or before thru are the summary's;
 //   2. no live row leaves the request by the give-up order unless the real body was refused
 //      for its size first (v5.1.1's wire guard cut on 121 of 123 owner turns from an
-//      estimate, day_context.cpp:140-167 at v5.1.1, and said nothing).
+//      estimate, day_context.cpp:140-167 at v5.1.1, and said nothing);
+//   3. the request goes out in the form its budget was read in (lane L): one flat prompt
+//      string, or a split prompt with the history as messages (request_budget.h
+//      turnBudgetFor), and at its head's own budget a turn with the tool loop off is never
+//      refused at round 0 on a direct head: its history is sized for the form it goes out in
+//      (on main a loop-off Large 4, Medium or glm-5.3 head got its body budget's history for
+//      one 55,904 B string: 15 of these shapes were refused, recall and the playbook first).
 // Requests go through the device's own provider code to a scripted transport, each wire at
 // its head's own request budget (the wire reads the head's model; the Z.ai head is pointed
 // as the device points it), and again with every wire at the 85,000 B floor, the budget of
@@ -324,8 +334,19 @@ std::vector<std::string> namedBefores(const std::string& body) {
 
 struct Verdict {
   int cases = 0, refusals = 0, named = 0, violations = 0;
+  int loopOff = 0, loopOffRefusals = 0;   // the shapes with the tool loop off, and those refused at round 0
+  uint64_t loopOnDigest = 1469598103934665603ull;   // FNV-1a over every request a loop-on shape sent
   std::string first;
 };
+
+// The flat form's own history header (prompt_layout.cpp historyText): a split prompt carries
+// the history as messages and never this line.
+const char kFlatHistoryHeader[] = "## RECENT CONVERSATION (this chat, oldest first)";
+
+void digest(uint64_t& h, const std::string& s) {
+  for (unsigned char c : s) h = (h ^ c) * 1099511628211ull;
+  h = (h ^ 0xffu) * 1099511628211ull;   // a boundary between requests
+}
 
 void violation(Verdict& v, const std::string& what) {
   v.violations++;
@@ -365,8 +386,16 @@ void check(const Head& h, const Shape& s, Verdict& v) {
   const bool refused = LogCapture::contains(" B budget") || LogCapture::contains("refused the request for its size");
   const bool leftOut = body.find("LEFT OUT TO FIT THIS REQUEST") != std::string::npos;
   v.refusals += refused ? 1 : 0;
+  v.loopOff += s.loop ? 0 : 1;
+  v.loopOffRefusals += !s.loop && refused ? 1 : 0;
+  if (s.loop)
+    for (const auto& sent : r.wire.http.seen) digest(v.loopOnDigest, sent.body);
   // 2. a cut by the give-up order follows a real refusal.
   if (leftOut && !refused) violation(v, std::string(what) + ": history left out with no refusal");
+  // 3. the form the budget was read in is the form on the wire (a request with history shows it).
+  const bool flatSent = body.find(kFlatHistoryHeader) != std::string::npos;
+  if (s.before + s.today > 0 && flatSent != orch::turnBudgetFor(h.host, h.model, s.loop).flatTurn)
+    violation(v, std::string(what) + (flatSent ? ": sent flat, budgeted split" : ": sent split, budgeted flat"));
   checkRows(r, s, body, what, v);
 }
 
@@ -517,25 +546,40 @@ static void test_the_15_nov_complaint_keeps_the_estimate_and_the_comparison() {
 void setUp() { LogCapture::install(); }
 void tearDown() { agent::hlog::setSink(nullptr); }
 
-// Every head over every shape; one line per head.
-static Verdict everyHead(const char* budget) {
+// Every head over every shape; one line per head, and each head's own verdict in `perHead`.
+static Verdict everyHead(const char* budget, std::map<std::string, Verdict>* perHead = nullptr) {
   Verdict all;
   for (const Head& h : kHeads) {
     Verdict one;
     for (const Shape& s : shapes()) check(h, s, one);
     printf("wire fit class, %s budget, %s: %d cases, %d refused at round 0, %d rows named, %d violations\n", budget,
            h.name, one.cases, one.refusals, one.named, one.violations);
+    printf("wire fit class, %s budget, %s: loop off %d of %d refused at round 0; loop on %d cases, requests %016llx\n",
+           budget, h.name, one.loopOffRefusals, one.loopOff, one.cases - one.loopOff, (unsigned long long)one.loopOnDigest);
     all.cases += one.cases;
     all.refusals += one.refusals;
     all.named += one.named;
     all.violations += one.violations;
+    all.loopOff += one.loopOff;
+    all.loopOffRefusals += one.loopOffRefusals;
     if (all.first.empty()) all.first = one.first;
+    if (perHead) (*perHead)[h.name] = one;
   }
   return all;
 }
 
+// The pass at each head's own budget, run once for the tests that read it.
+static std::map<std::string, Verdict>& ownPerHead() {
+  static std::map<std::string, Verdict> per;
+  return per;
+}
+static const Verdict& ownBudgets() {
+  static const Verdict own = everyHead("its own", &ownPerHead());
+  return own;
+}
+
 static void test_every_live_row_is_sent_or_named_on_every_head_wire() {
-  const Verdict own = everyHead("its own");
+  const Verdict own = ownBudgets();
   providers::setTestBudgetOverride(85000);
   const Verdict floor = everyHead("the 85,000 B");
   providers::setTestBudgetOverride(0);
@@ -549,9 +593,110 @@ static void test_every_live_row_is_sent_or_named_on_every_head_wire() {
   TEST_ASSERT_TRUE_MESSAGE(floor.refusals > own.refusals && floor.refusals * 2 > floor.cases, "the floor refuses most shapes");
 }
 
+// Lane L, the class's third rule at each head's own budget: with the tool loop off no direct
+// head's turn is refused at round 0, whatever the history (a routed head's own budget is the
+// 85,000 B floor, where a split prompt with a long history is refused: the floor pass's case).
+static void test_a_loop_off_turn_is_never_refused_at_round_0_at_its_own_budget() {
+  ownBudgets();
+  int loopOff = 0;
+  for (const Head& h : kHeads) {
+    if (std::string(h.host) == "cumulo") continue;
+    const Verdict& v = ownPerHead().at(h.name);
+    TEST_ASSERT_TRUE_MESSAGE(v.loopOff >= 5, h.name);   // the spread holds loop-off shapes for every head
+    TEST_ASSERT_EQUAL_MESSAGE(0, v.loopOffRefusals, h.name);
+    loopOff += v.loopOff;
+  }
+  TEST_ASSERT_TRUE(loopOff >= 35);
+}
+
+// ---- v5.1.1 parity with the tool loop off (lane L) ----------------------------------------
+// The regression's three heads, the tool loop off, a history well past what one prompt string
+// carries (200 exchanges on the days before, 40 today: about 230 KB), ten recalled memories and
+// a food message, which attaches the food playbook. v5.1.1 sent that turn whole: its window
+// (the newest 5 KB of history, the owner's day up to its cap), the ten memories and the
+// playbook. Main refused it at round 0 and gave up recall and the playbook before any history.
+namespace {
+const Head kLoopOffHeads[] = {
+    {"mistral/large-4", "mistral", "mistral-large-4-0", "mistral"},
+    {"mistral/medium", "mistral", "mistral-medium-latest", "mistral"},
+    {"zai/glm-5.3", "zai", "glm-5.3", "custom"},
+};
+
+int countOf(const std::string& hay, const std::string& needle) {
+  int n = 0;
+  for (size_t p = hay.find(needle); p != std::string::npos; p = hay.find(needle, p + 1)) n++;
+  return n;
+}
+
+void loopOffParityOn(const Head& h) {
+  LogCapture::install();
+  Shape s;
+  s.before = 200;
+  s.today = 40;
+  s.recalled = 10;
+  s.loop = false;
+  Rig r(h, s);
+  r.eng->handleMessage("Lunch was 200 g of chicken breast with rice and a salad. Log it.", "Roy", "1001");
+  TEST_ASSERT_FALSE_MESSAGE(r.wire.http.seen.empty(), h.name);
+  const std::string& body = r.wire.http.seen[0].body;
+  const bool refused = LogCapture::contains(" B budget") || LogCapture::contains("refused the request for its size");
+  const int memories = countOf(body, "a remembered fact");
+  const bool playbook = body.find("[FOOD PLAYBOOK") != std::string::npos;
+  // v5.1.1's window for this head: its high water, and the owner's day up to its cap.
+  const uint32_t v511Ctx = orch::legacyCtxTokens(h.host, h.model);
+  const size_t high = orch::deriveBudget(v511Ctx, {}).recentConvBytes;
+  const size_t window = std::max(high, agent::historyDayBytes(v511Ctx));
+  const agent::HistoryWindow& w = r.eng->lastHistoryWindow();
+  printf("loop-off parity %s: round 0 body %zu B, refused %d, memories %d of 10, playbook %d, history %zu B in %zu "
+         "turns (v5.1.1's window %zu B)\n",
+         h.name, body.size(), refused, memories, playbook, w.bytes, w.kept.size(), window);
+  TEST_ASSERT_FALSE_MESSAGE(refused, h.name);   // round 0 went out as composed: no refusal, no refit
+  TEST_ASSERT_EQUAL_MESSAGE(10, memories, h.name);
+  TEST_ASSERT_TRUE_MESSAGE(playbook, h.name);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("LEFT OUT TO FIT THIS REQUEST") == std::string::npos, h.name);
+  // The history is v5.1.1's window (the newest turn in it), in the flat form, and the rest is
+  // named: the shift's hidden rows by the coverage line.
+  TEST_ASSERT_TRUE_MESSAGE(w.bytes > 0 && w.bytes <= window, h.name);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("tok" + r.rows[r.rows.size() - 2].id.substr(1)) != std::string::npos, h.name);
+  TEST_ASSERT_TRUE_MESSAGE(body.find(kFlatHistoryHeader) != std::string::npos, h.name);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("CONVERSATION COVERAGE") != std::string::npos, h.name);
+  TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains(" hist 5/2/2 KB") || LogCapture::contains(" hist 4/2/2 KB"), h.name);
+}
+}  // namespace
+
+static void test_a_loop_off_large_4_head_keeps_recall_and_the_playbook_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[0]); }
+static void test_a_loop_off_medium_head_keeps_recall_and_the_playbook_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[1]); }
+static void test_a_loop_off_glm_head_keeps_recall_and_the_playbook_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[2]); }
+
+// The loop state the budget reads is the owner's setting, never one turn's heap gate. A turn
+// the gate sends as a single shot (entry heap under the loop's floor) on a head with the
+// setting on keeps the head's standing marks: nothing shifts, so the turns after it carry the
+// conversation as before, and what this one request cannot carry it names.
+static void test_a_heap_gated_single_shot_keeps_the_head_s_standing_marks() {
+  LogCapture::install();
+  Shape s;
+  s.before = 60;
+  s.today = 12;
+  s.recalled = 10;
+  Rig r(kLoopOffHeads[0], s);   // Large 4, the tool loop on
+  r.plat.heap = 13000;          // over the turn floor (12,000), under the loop's (14,000)
+  r.eng->handleMessage("about my day", "Roy", "1001");
+  TEST_ASSERT_FALSE(r.wire.http.seen.empty());
+  TEST_ASSERT_TRUE(LogCapture::contains("tool-loop DEFERRED"));
+  TEST_ASSERT_TRUE(LogCapture::contains(" hist 201/161/108 KB"));    // the head's derived marks
+  TEST_ASSERT_FALSE(LogCapture::contains("overflow shift"));
+  TEST_ASSERT_TRUE(r.marks.softStart.empty());
+  TEST_ASSERT_TRUE(r.wire.http.seen[0].body.find(kFlatHistoryHeader) != std::string::npos);   // it did go out flat
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_live_row_is_sent_or_named_on_every_head_wire);
+  RUN_TEST(test_a_loop_off_turn_is_never_refused_at_round_0_at_its_own_budget);
   RUN_TEST(test_the_15_nov_complaint_keeps_the_estimate_and_the_comparison);
+  RUN_TEST(test_a_loop_off_large_4_head_keeps_recall_and_the_playbook_as_v5_1_1_did);
+  RUN_TEST(test_a_loop_off_medium_head_keeps_recall_and_the_playbook_as_v5_1_1_did);
+  RUN_TEST(test_a_loop_off_glm_head_keeps_recall_and_the_playbook_as_v5_1_1_did);
+  RUN_TEST(test_a_heap_gated_single_shot_keeps_the_head_s_standing_marks);
   return UNITY_END();
 }

@@ -48,7 +48,6 @@
 #include "nimbus/docs_pack.h"      // CUM-62: global search over the embedded docs pack
 #include "nimbus/orch/budget.h"    // headContextBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
-#include "nimbus/orch/request_budget.h"   // requestBudgetFor - the fold trigger in effect (lane F)
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
 #include "nimbus/power/power_policy.h"        // battSettingsLive - CUM-15 class predicate for batt.settingsLive
@@ -1384,14 +1383,14 @@ static void buildOrchState(String& out) {
     bov.toolResultCap = agent::store::orchLoopResultCap();
     bov.toolTotalCap = agent::store::orchLoopTotalCap();
     const String h = agent::store::resolvedOrchHost();
-    const auto b = nimbus::orch::headContextBudget(h.c_str(), agent::store::orchModel(h).c_str(), bov);
+    const auto b = nimbus::orch::headContextBudget(h.c_str(), agent::store::orchModel(h).c_str(),
+                                                   agent::store::orchToolLoop(), bov);
     d["loopRescapEff"] = (int)b.toolResultBytes;
     d["loopTotcapEff"] = (int)b.toolTotalBytes;
     d["ctxTokens"] = b.ctxTokens;
-    // Lane F: the automatic summary's trigger in effect (48, the default, follows the model).
-    const auto rc = nimbus::orch::deriveRequestContext(
-        nimbus::orch::requestBudgetFor(h.c_str(), agent::store::orchModel(h).c_str(), h == "cumulo"), bov);
-    d["compactEffKB"] = (unsigned)(nimbus::orch::foldTriggerBytes(rc, agent::store::compactAtKB()) / 1024u);
+    // Lane F: the automatic summary's trigger in effect (48, the default, follows the model
+    // and the form its turn goes out in: the same budget).
+    d["compactEffKB"] = (unsigned)(nimbus::orch::foldTriggerBytes(b, agent::store::compactAtKB()) / 1024u);
   }
   d["compactKB"]    = agent::store::compactAtKB();
   d["tlsSlots"]     = agent::store::tlsSlots();

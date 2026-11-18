@@ -280,3 +280,23 @@ A Virtual Nimbus sends from a server: no upload rate and no heap pacing enter it
 | anthropic | claude-opus-5-5 | 1000000 | listed | clamp | 100000 | 250000 | 2.5 | 2.0 | 120 | 30000 | 50 | 3000 | 32768 | 8192 | 32768 | 37500 | 6144 | 12288 | 118080 | 94464 | 59040 | 35424 | 65536 | 615 | 94464 | 4318 / 5758 | 4318 / 5758 |
 | zai | glm-5.3 | 917504 | table | clamp | 100000 | 330000 | 3.3 | 2.5 | 50 | 9000 | 48 | 1600 | 39600 | 9900 | 16384 | 49500 | 6144 | 12288 | 182080 | 145664 | 91872 | 53792 | 53792 | 948 | 145664 | 1600 / - | 1600 / - |
 | custom | gpt-5.6-luna | 272000 | table | floor | 28333 | 85000 | 3.0 | 2.5 | 120 | 1000 | 50 | 3000 | 44564 | 11141 | 44564 | 24576 | 5570 | 6144 | 11141 | 5570 | 5570 | 89128 | 89128 | 64 | 49152 | none | none |
+
+## With the tool loop off
+
+Every table above is a head whose turn runs the tool loop. With the tool loop off a turn is a single
+shot. On Anthropic and OpenAI that is still a split prompt (the history as messages) under the same
+body budget, so their rows do not change. On Mistral and Z.ai it is one prompt string, as on a custom
+endpoint, and that string is held under 55,904 B whatever the body budget. Such a turn is sized from
+that figure by the same formula, which leaves it no room for history: the head keeps the v5.1.1
+history window and its 48 KB fold trigger, with recall and the playbook in the request as in v5.1.1.
+Bytes is still the body a request may carry; Sized from is what the turn's caps and history marks
+derive from.
+
+| Provider | Model | Bytes | Sized from | System cap | Recall | Summary | Message cap | Hist max | Hist soft | Hist keep | Fold slice | Rows | Trigger |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mistral | mistral-large-4-0 | 360000 | 55904 | 32768 | 20971 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 64 | 49152 |
+| mistral | mistral-medium-latest | 151000 | 55904 | 32768 | 20971 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 64 | 49152 |
+| zai | glm-5.3 | 188000 | 55904 | 32768 | 16384 | 4096 | 6144 | 4096 | 2048 | 2048 | 32768 | 64 | 49152 |
+| custom | gpt-5.6-luna | 85000 | 55904 | 44564 | 44564 | 5570 | 6144 | 11141 | 5570 | 5570 | 89128 | 64 | 49152 |
+| cumulo | mistral/mistral-large-4-0 | 85000 | 55904 | 32768 | 20971 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 64 | 49152 |
+| cumulo | zai/glm-5.3 | 85000 | 55904 | 32768 | 16384 | 4096 | 6144 | 4096 | 2048 | 2048 | 32768 | 64 | 49152 |

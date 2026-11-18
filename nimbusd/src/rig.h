@@ -3557,10 +3557,11 @@ class NimbusdRig {
     if (opt_.foldTriggerBytes) return opt_.foldTriggerBytes;
     return (uint32_t)orch::foldTriggerBytes(headRequestContext(), kHostedCompactKb);
   }
-  // The head's request context (lane B, on the Server link: no upload or pacing terms).
+  // The head's request context (lane B, on the Server link: no upload or pacing terms), in
+  // the form its turn goes out in (lane L: the Tool use setting).
   orch::ContextBudget headRequestContext() {
     const std::string host = eng_->headHost();
-    return orch::deriveRequestContext(orch::requestBudgetFor(host, modelFor(host), host == kCumuloSlug), {});
+    return orch::deriveRequestContext(orch::turnBudgetFor(host, modelFor(host), settings_.get().toolLoop), {});
   }
   // A summary landed (the store is written): the chain reset, then the boundary row.
   void foldLanded(const agent::FoldDone& d) {

@@ -43,11 +43,11 @@ std::string ownModel(const TurnEngine::Deps& d, const std::string& h) {
   return d.cfg.provider.orchModel ? d.cfg.provider.orchModel(h) : std::string();
 }
 
-// The head's request context (lane B, deriveRequestContext over requestBudgetFor): the
-// summary cap the fold writes for, the same the turn's prompt carries it at.
+// The head's request context (the one seam, budget.h): the summary cap the fold writes
+// for, the same the turn's prompt carries it at.
 orch::ContextBudget headFoldContext(const TurnEngine::Deps& d) {
   const std::string host = detail::resolveTurnHost(d);
-  return orch::deriveRequestContext(orch::requestBudgetFor(host, detail::headModelOf(d, host), host == "cumulo"), {});
+  return orch::headContextBudget(host, detail::headModelOf(d, host), detail::toolLoopSetting(d), {});
 }
 
 // A direct host: its requests read orchModel, so a rung there can run another model.

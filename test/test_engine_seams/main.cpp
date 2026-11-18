@@ -650,13 +650,14 @@ static std::vector<Recorded> recordedModels() {
 }
 
 // Lane H's switch-over: the seam's body is the request budget's derivation for every
-// recorded model (deriveRequestContext over requestBudgetFor), every field of it.
+// recorded model (deriveRequestContext over requestBudgetFor), every field of it. Lane L:
+// that is the seam with the tool loop on (the form requestBudgetFor answers for).
 static void test_head_budget_is_the_request_budget_for_every_recorded_model() {
   const std::vector<Recorded> models = recordedModels();
   TEST_ASSERT_TRUE(models.size() > 200);
   for (const Recorded& m : models) {
     orch::BudgetOverrides ov;
-    const orch::ContextBudget a = orch::headContextBudget(m.provider, m.id, ov);
+    const orch::ContextBudget a = orch::headContextBudget(m.provider, m.id, true, ov);
     const orch::ContextBudget b = orch::deriveRequestContext(orch::requestBudgetFor(m.provider, m.id, false), ov);
     const std::string what = m.provider + "/" + m.id;
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.ctxTokens, a.ctxTokens, what.c_str());

@@ -229,7 +229,7 @@ HistoryBudget TurnEngine::historyBudgetOf(const nimbus::orch::ContextBudget& cb,
 HistoryBudget TurnEngine::headHistoryBudget() const {
   const std::string host = resolveTurnHost(d_);
   const std::string model = detail::headModelOf(d_, host);
-  return historyBudgetOf(orch::headContextBudget(host, model, {}), host, model);
+  return historyBudgetOf(orch::headContextBudget(host, model, detail::toolLoopSetting(d_), {}), host, model);
 }
 
 // Twice the row budget: enough to see past high water and shift once; after the
