@@ -638,24 +638,55 @@ static void test_due_not_started_lines_are_bounded_per_chat_and_cause() {
   TEST_ASSERT_TRUE_MESSAGE(lines >= 2 && lines <= 6, std::to_string(lines).c_str());
 }
 
-// Candidate 4, F3: an automatic cycle that starts in a manual read's yield and is ended when
-// the read's next pass comes has paid for its rungs. It counts as a failed cycle (backoff, the
-// alert clock): it is never discarded uncounted to start again on the next yield.
-static void test_an_automatic_cycle_ended_for_a_manual_read_counts_as_failed() {
-  Device d;
+// Candidate 5, G2 (replaces candidate 4's F3, which counted the cycle as failed): an automatic
+// cycle that starts in a manual read's yield is never cut by the read's next pass. It finishes
+// its ladder (lands or fails as any cycle does) and the manual starts on the pass after.
+// (a) a thin first-rung answer of kFoldThinFloor bytes or more does not land after one rung:
+// the ladder goes on; (b) a transient first-rung failure folds on rung 2 with no failed cycle;
+// the manual request still completes; the paid count is exact.
+namespace {
+// Chat "a" has a manual request whose read goes on (Wait, progress) until `readEnds` slices;
+// chat "b" is due. Half-second passes so the yields come between the read's passes.
+void runYield(Device& d, int passes, size_t readEnds) {
   d.waitChats = {"a"};
   d.boot();
   d.backlog("a", 40);
   d.backlog("b", 40, 0x400);
   d.drv->requestManual("a");
-  for (int i = 0; i < 160; i++) {   // half-second passes: the manual read's yields between
+  for (int i = 0; i < passes; i++) {
+    if (d.sliced.size() >= readEnds) d.waitChats.clear();
     d.plat.ms += 500;
     d.drv->tick(d.plat.ms, kT0 + (uint32_t)i / 2);
   }
-  const uint32_t failed = d.folds.get("b").failedCycles;
-  TEST_ASSERT_TRUE_MESSAGE(failed >= 1, "the ended cycle counts as failed");
-  TEST_ASSERT_TRUE_MESSAGE(d.asked <= 4, std::to_string(d.asked).c_str());   // then the backoff holds
-  TEST_ASSERT_TRUE(LogCapture::contains("fold(b): cycle failed, next try"));
+}
+int doneFor(const Device& d, const std::string& chat) {
+  int n = 0;
+  for (const auto& x : d.done) n += x.chat == chat;
+  return n;
+}
+}  // namespace
+static void test_an_automatic_cycle_in_a_manual_yield_finishes_its_ladder() {
+  for (int shape = 0; shape < 2; shape++) {
+    Device d;
+    const std::vector<agent::FoldRung> rungs = d.eng->foldRungs();
+    d.answering.insert(rungs[1].host + "/" + rungs[1].model);   // rung 2 answers with the sections
+    if (shape == 0) {   // rung 1 answers long but thin (another language)
+      d.thinText = "Resume de la conversation.\n";
+      while (d.thinText.size() < agent::kFoldThinFloor + 200) d.thinText += "- Le proprietaire note ses repas.\n";
+    }
+    runYield(d, 400, 12);
+    TEST_ASSERT_EQUAL_MESSAGE(1, doneFor(d, "b"), "b's cycle lands once");
+    TEST_ASSERT_TRUE_MESSAGE(d.folds.get("b").summary.find(rungs[1].host) != std::string::npos,
+                             "on rung 2, not the thin rung-1 answer");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, d.folds.get("b").failedCycles, "no failed cycle counted");
+    TEST_ASSERT_FALSE(LogCapture::contains("fold(b): cycle failed"));
+    TEST_ASSERT_TRUE_MESSAGE(d.drv->ctl().manualPendingChat.empty(), "the manual request completed");
+    bool answered = false;
+    for (const auto& t : d.told) answered = answered || t.first == "a";
+    TEST_ASSERT_TRUE_MESSAGE(answered, "and was answered");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)d.asked, d.drv->ctl().paidOn(orch::foldLocalDay(kT0, 0)),
+                                     "every paid request is counted, once");
+  }
 }
 
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
@@ -862,7 +893,7 @@ int main(int, char**) {
   RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
   RUN_TEST(test_the_unread_clock_survives_waits_and_restarts);
   RUN_TEST(test_due_not_started_lines_are_bounded_per_chat_and_cause);
-  RUN_TEST(test_an_automatic_cycle_ended_for_a_manual_read_counts_as_failed);
+  RUN_TEST(test_an_automatic_cycle_in_a_manual_yield_finishes_its_ladder);
   RUN_TEST(test_the_device_alert_hook_routes_to_a_chat_a_person_reads);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);

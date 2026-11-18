@@ -198,7 +198,7 @@ FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
     return cycleActive() || !ctl_.manualPendingChat.empty() ? FoldTick::Deferred : FoldTick::Idle;
   }
   std::string ready;
-  if (pickManual(nowMs, ready)) endAutomaticForManual(nowMs, nowEpoch);
+  if (pickManual(nowMs, ready)) endAutomaticForManual();
   if (!cycleActive()) {
     const FoldTick started = startCycle(nowMs, nowEpoch);
     if (!cycleActive()) return started;
@@ -546,7 +546,6 @@ FoldTick FoldDriver::runRung(uint32_t nowMs, uint32_t nowEpoch) {
   const FoldResult r = eng_->runFoldRung(cycle_.chat, cycle_.prevSummary, cycle_.slice.digest, rung, summary, &rep);
   if (hooks_.asking) hooks_.asking(false);
   if (rep.paidRequests) notePaid(nowEpoch, rep.paidRequests, cycle_.chat);
-  cycle_.paid += rep.paidRequests;
   if (r == FoldResult::Deferred) return FoldTick::Deferred;   // a gate closed: the rung waits
   if (r == FoldResult::Ok) return landed(rep, summary, nowMs, nowEpoch);
   hlog::log(foldRungFailLine(cycle_.chat, cycle_.idx, n, rep).c_str());
@@ -683,18 +682,12 @@ FoldDriver::Manual FoldDriver::requestManual(const std::string& chat) {
 }
 
 // A manual request waits for no automatic cycle (fold_driver.h): one that is between
-// rungs when a request is ready to start ends. One that started in a manual read's yield
-// and paid for a rung counts as a failed cycle (candidate 4, F3: backoff and the alert
-// clock), so the read's yields cannot start and discard paid cycles without end. Any other
-// ends uncounted (the owner's request preempted it once), its failed rungs going last.
-void FoldDriver::endAutomaticForManual(uint32_t nowMs, uint32_t nowEpoch) {
-  if (!cycleActive() || cycle_.manual || ctl_.manualPendingChat.empty()) return;
-  if (cycle_.inYield && cycle_.paid) {
-    hlog::logf("fold(%s): the automatic cycle yields to a manual request at rung %u/%u after %u paid requests",
-               cycle_.chat.c_str(), (unsigned)(cycle_.idx + 1), (unsigned)cycle_.rungs.size(), (unsigned)cycle_.paid);
-    cycleFailed(nowMs, nowEpoch);
-    return;
-  }
+// rungs when a request is ready to start ends uncounted, its failed rungs going last. One
+// that started in a manual read's yield is the read's own gift of time: it finishes its
+// ladder (lands or fails as any cycle does) and the manual starts on the pass after
+// (candidate 5, G2), so no paid answer is thrown away and none lands early.
+void FoldDriver::endAutomaticForManual() {
+  if (!cycleActive() || cycle_.manual || cycle_.inYield || ctl_.manualPendingChat.empty()) return;
   for (size_t i = 0; i < cycle_.idx && i < cycle_.rungs.size(); i++)
     degraded_.insert(rungKey(cycle_.rungs[i].host, cycle_.rungs[i].model));
   hlog::logf("fold(%s): the automatic cycle yields to a manual request at rung %u/%u, uncounted",

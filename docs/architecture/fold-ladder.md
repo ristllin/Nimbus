@@ -183,9 +183,9 @@ the history hides behind the anchor, or its last slice stopped short of the newe
 its cycles chain oldest first (at most 64) and one
 confirmation names the whole span. A manual request never waits behind an automatic cycle:
 one that is between rungs when a manual request is ready ends uncounted, its failed
-rungs going last; an automatic cycle that started in a manual read's yield and has paid for
-a rung counts as a failed cycle when the read's next pass ends it (backoff and the alert
-clock), so the yields cannot start and discard paid cycles without end. Every manual request is answered: the confirmation,
+rungs going last. An automatic cycle that started in a manual read's yield is never cut by
+the read: it finishes its ladder (lands or fails as any cycle does) and the manual starts on
+the pass after, so no paid answer is thrown away and none lands early. Every manual request is answered: the confirmation,
 a failure with the next try time, or "Nothing to compact yet."
 
 ## Status
@@ -212,7 +212,7 @@ end.
 | `test_orch_compact` | backoff, thrash wait, legacy lift, firmware reset, rollback round trip (the v5.1.1 parser), no reachable state stays off past 12 h, FoldCtl codec, trigger math, proportional cap |
 | `test_fold_backlog` | a long chat's catch-up, a refill that only waits, a failure that schedules a retry |
 | `test_fold_ladder` | every failure kind at every rung is answered by the next; no (host, model) twice; Large 4 on Small at effort none on the real wire; the matcher fixtures |
-| `test_fold_driver` | Pending per rung, one CycleFailed, the never-lost manual request, keep 0, the device-wide cap, a failing week on five chats, no clock, fresh device, the Lumi blob folding forward with no id gap, the hourly "due, not started" line, a cycle ended by a manual read's pass counted as failed, the device alert hook's routing |
+| `test_fold_driver` | Pending per rung, one CycleFailed, the never-lost manual request, keep 0, the device-wide cap, a failing week on five chats, no clock, fresh device, the Lumi blob folding forward with no id gap, the hourly "due, not started" line, a cycle started in a manual read's yield finishing its ladder, the device alert hook's routing |
 | `test_fold_invariant` | no row is lost to a fold under the store's failure shapes; after a turn cut at the send floor, the fold leaves every row in the next request or the summary |
 | `nimbusd/tests/test_fold_driver_vn` | the VN reaches the same outcomes as the device; the routes |
 | `tools/release_gate/check_fold_health.py` | no reachable pause, fold control present, the blobs round-trip |
