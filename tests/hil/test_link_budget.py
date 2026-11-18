@@ -70,6 +70,10 @@ class Exchange:
 
     @property
     def ok(self) -> bool:
+        """A 2xx with no transport error. A bodiless GET (kind get) times the handshake to a
+        host whose root answers a redirect or a 404, so any HTTP status counts for it."""
+        if self.kind == "get":
+            return self.code > 0 and self.err == "-"
         return 200 <= self.code < 300 and self.err == "-"
 
     @property
@@ -160,6 +164,13 @@ def fit_link(xs: Sequence[Exchange]) -> Dict[str, float]:
 # ---- the turn itemization ---------------------------------------------------------------
 
 ARRIVAL = "tg archive:"
+# An injected settle page (the bench) is archived when the hold releases it, not when it
+# comes in; its arrival is the hold's first line, where a polled page is archived.
+INJECTED_ARRIVAL = "telegram: settle hold (injected, re-poll 0)"
+
+
+def is_arrival(text: str) -> bool:
+    return text.startswith(INJECTED_ARRIVAL) or (text.startswith(ARRIVAL) and "new update" in text)
 TURN_START = "orchestrator: turn host="
 TURN_END = "turn end:"
 SEND_OK = "telegram: send ok"
@@ -177,6 +188,7 @@ class Segment:
 @dataclass
 class TurnTiming:
     arrival_ms: Optional[int] = None
+    dispatch_ms: Optional[int] = None    # the settle hold released the page
     start_ms: Optional[int] = None
     result_ms: Optional[int] = None      # the head's last exchange ended (its at= + ms=)
     end_ms: Optional[int] = None
@@ -190,8 +202,18 @@ class TurnTiming:
         return None if self.arrival_ms is None or self.start_ms is None else self.start_ms - self.arrival_ms
 
     @property
+    def dispatch_to_start(self) -> Optional[int]:
+        """The arrival overhead over the hold: from the hold's release to the turn's start."""
+        return None if self.dispatch_ms is None or self.start_ms is None else self.start_ms - self.dispatch_ms
+
+    @property
     def result_to_send(self) -> Optional[int]:
         return None if self.result_ms is None or self.send_ms is None else self.send_ms - self.result_ms
+
+
+# Lines another task or a periodic sampler prints whenever it runs: they say nothing about
+# the turn's own step, so they never end a gap (the time stays in the gap they fall in).
+AMBIENT = ("[sram]", "tg_poll stack:", "degraded:")
 
 
 def _segments(lines: Sequence[Stamped], t0: int, t1: int) -> List[Segment]:
@@ -199,7 +221,7 @@ def _segments(lines: Sequence[Stamped], t0: int, t1: int) -> List[Segment]:
     ends on; they sum to t1 - t0."""
     segs, prev = [], t0
     for ln in lines:
-        if t0 < ln.ms <= t1:
+        if t0 < ln.ms <= t1 and not ln.text.startswith(AMBIENT):
             segs.append(Segment(ln.ms - prev, short(ln.text)))
             prev = ln.ms
     if prev < t1:
@@ -207,9 +229,12 @@ def _segments(lines: Sequence[Stamped], t0: int, t1: int) -> List[Segment]:
     return segs
 
 
-def short(text: str, n: int = 72) -> str:
-    text = re.sub(r"\d{6,}", "<n>", text)   # chat ids, update ids, uptimes: not part of the name
-    return text[:n]
+def short(text: str, words: int = 3) -> str:
+    """A gap's name: the first words of the line it ends on, numbers folded (chat ids,
+    sizes, uptimes and the reply's own words are not part of the name)."""
+    text = re.sub(r"\d+", "N", text.replace("[redacted]", "N"))
+    text = re.sub(r"(?<=\S)\s*[{(\[].*$", "", text).strip()
+    return " ".join(text.split()[:words])
 
 
 def itemize_turn(lines: Sequence[Stamped], head_host: str = "api.anthropic.com") -> TurnTiming:
@@ -217,8 +242,10 @@ def itemize_turn(lines: Sequence[Stamped], head_host: str = "api.anthropic.com")
     the archive line that brought it in to the first send ok after its turn end)."""
     t = TurnTiming()
     for ln in lines:
-        if t.arrival_ms is None and ln.text.startswith(ARRIVAL) and "new update" in ln.text:
+        if t.arrival_ms is None and is_arrival(ln.text):
             t.arrival_ms = ln.ms
+        elif t.dispatch_ms is None and t.start_ms is None and ln.text.startswith("telegram: settle dispatch"):
+            t.dispatch_ms = ln.ms
         elif t.start_ms is None and ln.text.startswith(TURN_START):
             t.start_ms = ln.ms
         elif t.start_ms is not None and t.end_ms is None and ln.text.startswith(TURN_END):
@@ -237,9 +264,12 @@ def itemize_turn(lines: Sequence[Stamped], head_host: str = "api.anthropic.com")
 
 
 def split_turns(lines: Sequence[Stamped]) -> List[List[Stamped]]:
-    """Cut a run's stamped lines into turns: each turn opens at an archive line that saved
-    new updates and runs to the line before the next one."""
-    starts = [i for i, ln in enumerate(lines) if ln.text.startswith(ARRIVAL) and "new update" in ln.text]
+    """Cut a run's stamped lines into turns: each turn opens at its arrival (the injected
+    hold's first line on the bench, else the archive line that saved new updates) and runs
+    to the line before the next one."""
+    injected = any(ln.text.startswith(INJECTED_ARRIVAL) for ln in lines)
+    starts = [i for i, ln in enumerate(lines)
+              if (ln.text.startswith(INJECTED_ARRIVAL) if injected else is_arrival(ln.text))]
     return [list(lines[a:b]) for a, b in zip(starts, starts[1:] + [len(lines)])]
 
 
@@ -283,6 +313,13 @@ def test_linkx_failure_is_not_ok_and_is_counted():
     assert s["total_ms"]["n"] == 1
 
 
+def test_get_counts_any_status_but_not_a_failure():
+    ok = parse_linkx("LINKX get code=302 body=0 conn=400 head=1 up=-1 paced=0 wait=30 hdrs=2 read=3 total=440 err=-")
+    bad = parse_linkx("LINKX get code=0 body=0 conn=-1 head=-1 up=-1 paced=0 wait=-1 hdrs=-1 read=-1 total=12000 "
+                      "err=connect failed")
+    assert ok.ok and not bad.ok
+
+
 def test_malformed_linkx_line_is_refused():
     assert parse_linkx("LINKX pad code=200 body=1") is None
     assert parse_linkx("LINKX usage: LINKX pad <bytes>") is None
@@ -323,7 +360,20 @@ def test_itemize_turn_splits_arrival_and_send_path():
     assert sum(s.ms for s in t.arrival_segments) == 8600
     assert sum(s.ms for s in t.send_segments) == 4500
     assert [s.ms for s in t.send_segments] == [200, 1800, 2500]
-    assert t.send_segments[-1].ends_at.startswith("telegram: send ok to <n>")
+    assert t.send_segments[-1].ends_at == "telegram: send ok"
+
+
+def test_injected_page_arrives_at_its_hold_not_its_archive_line():
+    lines = parse_stamped([
+        "[agent @15275] telegram: settle hold (injected, re-poll 0)",
+        "[agent @21500] tg archive: 1 new update(s) saved, 0 already saved",
+        "[agent @21515] telegram: settle dispatch (injected) n=1 after 6053 ms (quiet)",
+        "[agent @24849] orchestrator: turn host=anthropic (conv=0 heap=35780)",
+        "[agent @30000] telegram: settle hold (injected, re-poll 0)",
+    ])
+    turns = split_turns(lines)
+    t = itemize_turn(turns[0])
+    assert len(turns) == 2 and t.arrival_to_start == 24849 - 15275 and t.dispatch_to_start == 24849 - 21515
 
 
 def test_itemize_turn_ignores_unstamped_and_other_hosts():
@@ -335,6 +385,27 @@ def test_itemize_turn_ignores_unstamped_and_other_hosts():
     ] + TURN_FIXTURE[4:8])
     t = itemize_turn(lines)
     assert t.result_ms == 17000 and t.head_exchanges == 1
+
+
+def test_photo_lines_group_by_kind_and_body(tmp_path):
+    log = tmp_path / "serial.log"
+    log.write_text("\n".join([
+        "08:44:01 LINKX file code=200 body=76738 conn=1 head=1 up=3 paced=0 wait=5 hdrs=1 read=1 total=9 err=-",
+        "08:44:02 LINKX fdel code=200 body=0 conn=1 head=1 up=-1 paced=0 wait=5 hdrs=1 read=1 total=9 err=-",
+        "08:44:25 LINKX img code=200 body=264662 conn=1 head=1 up=3 paced=0 wait=5 hdrs=1 read=1 total=9 err=-",
+        "08:44:48 LINKX img code=200 body=468714 conn=1 head=1 up=3 paced=0 wait=5 hdrs=1 read=1 total=9 err=-",
+        "08:44:49 LINKX pad code=200 body=60000 conn=1 head=1 up=3 paced=0 wait=5 hdrs=1 read=1 total=9 err=-",
+    ]) + "\n")
+    got = photo_lines(str(log))
+    assert sorted(got) == ["file_upload", "file_upload_delete", "inline_body_264662", "inline_body_468714"]
+
+
+def test_ambient_lines_never_end_a_gap():
+    # Counter-test: a sampler line inside a silent gap keeps the gap whole.
+    lines = parse_stamped(TURN_FIXTURE[:5] + ["[agent @18000] [sram] steady-orch intFree=1"] + TURN_FIXTURE[6:8])
+    t = itemize_turn(lines)
+    assert [s.ends_at for s in t.send_segments] == ["turn end: ok", "telegram: send ok"]
+    assert [s.ms for s in t.send_segments] == [2000, 2500]
 
 
 def test_aggregate_segments_medians_per_named_gap():
@@ -483,6 +554,49 @@ class Bench:
         self.say(f"SOUND {label}: console={line!r} readback={picked} {'PASS' if ok else 'FAIL'}")
         return ok
 
+    def unstick(self) -> bool:
+        """The console answers PING. A console left in an FSPUT transfer (it waits for the
+        announced bytes) is fed filler until the transfer ends; if it still says nothing,
+        the board is bus-reset by its full MAC (then sound 0 is the first action again)."""
+        if self.verb("PING", "PONG", 4):
+            return True
+        self.say("UNSTICK: no PONG; feeding filler to end a pending FSPUT")
+        for i in range(0, 160000, 4096):
+            self.s.write(b"A" * 4096)
+            time.sleep(0.02)
+        self.s.write(b"\n")
+        time.sleep(3)
+        if self.verb("PING", "PONG", 4):
+            return True
+        import subprocess  # noqa: PLC0415
+
+        self.say("UNSTICK: still silent; bus reset by MAC")
+        subprocess.run(["/Users/roydarnell/miniconda3/bin/python3",
+                        "/Users/roydarnell/Projects/nimbus-project/nimbus/tools/usb_reset.py",
+                        "--serial", "14:C1:9F:D2:2A:D0"], capture_output=True, timeout=30)
+        time.sleep(25)
+        return bool(self.verb("SFXVOL 0", "SFXVOL ->", 6))   # after a reset, sound 0 comes first
+
+    def upload(self, project: str, name: str, data: bytes) -> bool:
+        """A file into the file store over the device's own upload route (/mem/files/<project>/<name>)."""
+        import urllib.error  # noqa: PLC0415
+        import urllib.parse  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+
+        boundary = "----rbm2bench"
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
+                "Content-Type: application/octet-stream\r\n\r\n").encode() + data + f"\r\n--{boundary}--\r\n".encode()
+        q = urllib.parse.urlencode({"project": project, "name": name})
+        req = urllib.request.Request(f"http://{self.ip}/api/files/upload?{q}", data=body, method="POST",
+                                     headers={"X-Nimbus-Token": self.tok,
+                                              "Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with self.opener.open(req, timeout=60) as r:
+                return 200 <= r.status < 300
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            self.say(f"UPLOAD {name} failed: {e}")
+            return False
+
     def fsput(self, local: str, path: str) -> bool:
         import base64  # noqa: PLC0415
         import hashlib  # noqa: PLC0415
@@ -514,8 +628,17 @@ def run_linkx(b: Bench, cmd: str, n: int, timeout: float = 150.0, pause: float =
         if b.time_left() < timeout + 30:
             b.say(f"STOP {cmd}: the hold ends in {int(b.time_left())} s, {i} of {n} run")
             break
+        m = b.mark()
         ln = b.verb(f"LINKX {cmd}", "LINKX ", timeout)
         b.say(f"> LINKX {cmd} [{i + 1}/{n}] -> {ln or '(no answer)'}")
+        x = parse_linkx(ln or "")
+        if x and x.kind == "file" and x.ok:
+            # An upload is followed by its deletion's line: wait for it, so the next
+            # command's answer is never the previous command's second line.
+            dl = b.wait_line(m, lambda s: s.startswith("LINKX fdel "), timeout)
+            b.say(f"  delete -> {dl or '(no answer)'}")
+            if dl:
+                lines.append(dl)
         lines.append(ln or f"LINKX none code=0 body=0 conn=-1 head=-1 up=-1 paced=0 wait=-1 hdrs=-1 read=-1 "
                            f"total=-1 err=no console answer in {int(timeout)} s")
         time.sleep(pause)
@@ -630,9 +753,11 @@ def plan_photos(b: Bench, reps: int, out: str) -> None:
     b.say(f"PHOTOS made: {sizes} B")
     card = []
     for i, p in enumerate(local):
-        dst = f"/mem/rbm2/p{i + 1}.jpg"
-        ok = b.fsput(p, dst)
-        b.say(f"FSPUT {dst} {'ok' if ok else 'FAILED'}")
+        # The device's upload route, not FSPUT: the console's FSPUT stalled on this board
+        # (hold1: READY, then no FSACK; the console waited for the bytes until fed).
+        ok = b.upload("rbm2", f"p{i + 1}.jpg", open(p, "rb").read())
+        dst = f"/mem/files/rbm2/p{i + 1}.jpg"
+        b.say(f"UPLOAD {dst} {'ok' if ok else 'FAILED'}")
         if ok:
             card.append(dst)
     res: Dict[str, object] = {"photo_bytes": sizes}
@@ -643,6 +768,15 @@ def plan_photos(b: Bench, reps: int, out: str) -> None:
     if len(card) >= 4:
         res["album4_pad60000"] = run_linkx(b, f"img 60000 {' '.join(card[:4])}", reps)
     with open(os.path.join(out, "photos.raw.json"), "a") as f:
+        f.write(json.dumps(res) + "\n")
+
+
+def plan_hosts(b: Bench, reps: int, out: str) -> None:
+    """The handshake to the hosts a turn reaches besides the head: the recall embedding
+    (OpenAI embeddings on the bench board) and Telegram."""
+    res = {"get_openai": run_linkx(b, "get api.openai.com /", reps, 30),
+           "get_telegram": run_linkx(b, "get api.telegram.org /", reps, 30)}
+    with open(os.path.join(out, "link.raw.json"), "a") as f:
         f.write(json.dumps(res) + "\n")
 
 
@@ -661,6 +795,9 @@ def bench_main(argv: Sequence[str]) -> int:
     b = Bench(out, time.time() + minutes * 60)
     rc = 0
     try:
+        if not b.unstick():
+            b.say("CONSOLE silent after unstick: plans not run")
+            return 3
         if not b.sound_off("hold start"):
             rc = 2
         ms = b.verb("LOGMS on", "LOGMS ", 5)
@@ -673,6 +810,11 @@ def bench_main(argv: Sequence[str]) -> int:
                 plan_link(b, 6, out)
             elif plan == "photos":
                 plan_photos(b, 6, out)
+            elif plan == "hosts":
+                plan_hosts(b, 6, out)
+            elif plan == "cleanup":
+                st, _ = b.http("POST", "/api/files/rmproject?project=rbm2&confirm=DELETE", {"project": "rbm2", "confirm": "DELETE"})
+                b.say(f"CLEANUP file store project rbm2 -> HTTP {st}")
             elif plan == "hundred":
                 plan_hundred(b, 100, out)
             elif plan == "store":
@@ -688,7 +830,153 @@ def bench_main(argv: Sequence[str]) -> int:
     return rc
 
 
+def _raw_json(path: str) -> Dict[str, object]:
+    """Every record of a raw file (one JSON object per line), later lines adding to earlier."""
+    out: Dict[str, object] = {}
+    if os.path.exists(path):
+        for line in open(path):
+            if line.strip():
+                for k, v in json.loads(line).items():
+                    out[k] = (out.get(k) or []) + v if isinstance(v, list) and k != "photo_bytes" else v
+    return out
+
+
+def photo_lines(serial_log: str) -> Dict[str, List[str]]:
+    """The photo exchanges of a hold, read off the device's own answers in serial order
+    (never paired with the driver's commands: an upload answers with two lines). Uploads
+    and deletions by kind; inline requests by their body size (one size per album)."""
+    out: Dict[str, List[str]] = {}
+    if not os.path.exists(serial_log):
+        return out
+    for raw in open(serial_log):
+        line = raw.split(" ", 1)[1].strip() if raw[:2].isdigit() else raw.strip()
+        x = parse_linkx(line)
+        if not x or x.kind not in ("file", "fdel", "img"):
+            continue
+        key = {"file": "file_upload", "fdel": "file_upload_delete"}.get(x.kind, f"inline_body_{x.body}")
+        out.setdefault(key, []).append(line)
+    return out
+
+
+def analyze(holds: Sequence[str]) -> Dict[str, object]:
+    """link.json from the raw files of one or more hold directories."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_store_timing as st  # noqa: PLC0415
+
+    link: Dict[str, object] = {}
+    photos: Dict[str, object] = {}
+    hundred: List[str] = []
+    store: Dict[str, object] = {}
+    turns: List[TurnTiming] = []
+    for h in holds:
+        for k, v in _raw_json(os.path.join(h, "link.raw.json")).items():
+            link[k] = (link.get(k) or []) + v
+        pr = _raw_json(os.path.join(h, "photos.raw.json"))
+        if "photo_bytes" in pr:
+            photos["photo_bytes"] = pr["photo_bytes"]
+        for k, v in photo_lines(os.path.join(h, "serial.log")).items():
+            photos[k] = (photos.get(k) or []) + v
+        hundred += _raw_json(os.path.join(h, "hundred.raw.json")).get("pad_120000_x", [])
+        for k, v in _raw_json(os.path.join(h, "store.raw.json")).items():
+            store[k] = (store.get(k) or []) + v
+        tl = os.path.join(h, "turns.raw.log")
+        if os.path.exists(tl):
+            turns += [itemize_turn(t) for t in split_turns(parse_stamped(open(tl)))]
+    res: Dict[str, object] = {"exchanges": {}, "photos": {}, "store": {}, "turns": {}}
+    pads: List[Exchange] = []
+    for k, lines in link.items():
+        xs = [x for x in (parse_linkx(ln) for ln in lines) if x]
+        res["exchanges"][k] = summarize_exchanges(xs)
+        if k.startswith("pad_"):
+            pads += xs
+    hx = [x for x in (parse_linkx(ln) for ln in hundred) if x]
+    if hx:
+        res["exchanges"]["pad_120000_x100"] = summarize_exchanges(hx)
+        res["exchanges"]["pad_120000_x100"]["timeouts"] = sum(1 for x in hx if not x.ok)
+        pads += hx
+    res["upload_fit"] = fit_link(pads)
+    for k, lines in photos.items():
+        if k == "photo_bytes":
+            res["photos"][k] = lines
+            continue
+        res["photos"][k] = summarize_exchanges([x for x in (parse_linkx(ln) for ln in lines) if x])
+    for k, lines in store.items():
+        rows = [r for r in (st.parse_card(ln) for ln in lines if ln) if r]
+        key = "total" if k.startswith("read") else "hold"
+        res["store"][k] = st.summarize_card(rows, key)
+        if k.startswith("read"):
+            res["store"][k]["holdMax"] = summary([r["holdMax"] for r in rows if st.card_ok(r)])
+            res["store"][k]["holdSum"] = summary([r["holdSum"] for r in rows if st.card_ok(r)])
+    full = [t for t in turns if t.send_segments and t.arrival_segments]
+    res["turns"] = {
+        "count": len(turns),
+        "complete": len(full),
+        "arrival_to_start_ms": summary([t.arrival_to_start for t in full]),
+        "hold_release_to_start_ms": summary([t.dispatch_to_start for t in full if t.dispatch_to_start is not None]),
+        "result_to_send_ms": summary([t.result_to_send for t in full]),
+        "head_exchanges": summary([t.head_exchanges for t in full]),
+        "arrival_segments": aggregate_segments(full, "arrival_segments"),
+        "send_segments": aggregate_segments(full, "send_segments"),
+        "per_turn": [{"arrival_to_start": t.arrival_to_start, "result_to_send": t.result_to_send,
+                      "release_to_start": t.dispatch_to_start,
+                      "arrival": [s.as_dict() for s in t.arrival_segments],
+                      "send": [s.as_dict() for s in t.send_segments]} for t in full],
+    }
+    res["derived"] = derive(res)
+    return res
+
+
+READ_WINDOW_MS = {"anthropic": 120000, "routed": 90000}   # PRD section 7
+PRD_CONNECT_MS, PRD_UPLOAD_BPS = 1500, 70000             # PRD section 2's constants before this lane
+
+
+def derive(res: Dict[str, object]) -> Dict[str, object]:
+    """The constants the latency model and the storage gates read, from the measured rows."""
+    ex, ph, st, tu = res["exchanges"], res["photos"], res["store"], res["turns"]
+    pads = [v for k, v in ex.items() if k.startswith("pad_") and v["ok"]]
+    conn = [v["conn_ms"]["median"] for v in pads if v["conn_ms"].get("n")]
+    fit = res.get("upload_fit") or {}
+    d: Dict[str, object] = {
+        "connect_ms_anthropic": statistics.median(conn) if conn else None,
+        "upload_Bps": round(fit["Bps_marginal"]) if fit.get("Bps_marginal") else None,
+        "prd_constants": {"connect_ms": PRD_CONNECT_MS, "upload_Bps": PRD_UPLOAD_BPS},
+        "link_ms_at": {},
+        "read_window_ms": READ_WINDOW_MS,
+    }
+    for k, v in ex.items():
+        if k.startswith("pad_") and v["ok"]:
+            body = v["body_B"]["median"]
+            d["link_ms_at"][k] = {
+                "measured_conn_plus_up": v["conn_ms"]["median"] + v["up_ms"]["median"],
+                "prd_model": round(PRD_CONNECT_MS + body * 1000 / PRD_UPLOAD_BPS),
+                "measured_total_haiku": v["total_ms"]["median"],
+            }
+    for k, v in ph.items():
+        if k.startswith("inline_body_") and v.get("ok"):
+            d.setdefault("inline_album", {})[k] = {
+                "total_ms_median": v["total_ms"]["median"], "total_ms_max": v["total_ms"]["max"],
+                "share_of_anthropic_window": round(v["total_ms"]["max"] / READ_WINDOW_MS["anthropic"], 4),
+                "share_of_routed_window": round(v["total_ms"]["max"] / READ_WINDOW_MS["routed"], 4),
+            }
+    if ph.get("file_upload", {}).get("ok"):
+        d["files_upload_ms"] = ph["file_upload"]["total_ms"]["median"]
+    holds = [v["hold"]["max"] for k, v in st.items() if "hold" in v and v["hold"].get("n")]
+    if holds:
+        d["card_longest_hold_ms"] = max(holds)
+        d["card_hold_gate_ms"] = 150
+    if st.get("read_130k_8k"):
+        d["restart_fill_130k_ms"] = st["read_130k_8k"]["total"]["max"]
+        d["restart_fill_gate_ms"] = 3000
+    if tu.get("complete"):
+        d["arrival_over_hold_ms"] = tu["hold_release_to_start_ms"]["median"]
+        d["result_to_send_ms"] = tu["result_to_send_ms"]["median"]
+    return d
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 4 and sys.argv[1] == "analyze":
+        json.dump(analyze(sys.argv[3:]), open(sys.argv[2], "w"), indent=1)
+        sys.exit(0)
     if len(sys.argv) >= 4 and sys.argv[1] == "bench":
         sys.exit(bench_main(sys.argv[2:]))
     print(__doc__)

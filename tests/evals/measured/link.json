@@ -1,0 +1,2654 @@
+{
+ "exchanges": {
+  "get_telegram": {
+   "runs": 12,
+   "ok": 12,
+   "failed": [],
+   "conn_ms": {
+    "n": 12,
+    "median": 399.0,
+    "min": 362.0,
+    "max": 439.0,
+    "p90": 435.0,
+    "spread": 77.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 12,
+    "median": 2.0,
+    "min": 1.0,
+    "max": 3.0,
+    "p90": 3.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 0,
+    "enough": false
+   },
+   "wait_ms": {
+    "n": 12,
+    "median": 34.0,
+    "min": 30.0,
+    "max": 41.0,
+    "p90": 39.0,
+    "spread": 11.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 12,
+    "median": 2.0,
+    "min": 2.0,
+    "max": 3.0,
+    "p90": 3.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 12,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 5.0,
+    "p90": 5.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 12,
+    "median": 440.5,
+    "min": 403.0,
+    "max": 489.0,
+    "p90": 482.0,
+    "spread": 86.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 12,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 0,
+    "enough": false
+   },
+   "body_B": {
+    "n": 12,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "get_anthropic": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1523.0,
+    "min": 1282.0,
+    "max": 1531.0,
+    "p90": 1531.0,
+    "spread": 249.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 2.0,
+    "min": 1.0,
+    "max": 3.0,
+    "p90": 2.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 0,
+    "enough": false
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 136.0,
+    "min": 115.0,
+    "max": 150.0,
+    "p90": 145.0,
+    "spread": 35.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 1.5,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 4.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 1655.0,
+    "min": 1410.0,
+    "max": 1683.0,
+    "p90": 1678.0,
+    "spread": 273.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 0,
+    "enough": false
+   },
+   "body_B": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "pad_60000": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1228.5,
+    "min": 1224.0,
+    "max": 1232.0,
+    "p90": 1231.0,
+    "spread": 8.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.5,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 251.0,
+    "min": 242.0,
+    "max": 269.0,
+    "p90": 268.0,
+    "spread": 27.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 372.5,
+    "min": 324.0,
+    "max": 1113.0,
+    "p90": 441.0,
+    "spread": 789.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 6.0,
+    "min": 6.0,
+    "max": 6.0,
+    "p90": 6.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 4.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 1869.5,
+    "min": 1804.0,
+    "max": 2592.0,
+    "p90": 1943.0,
+    "spread": 788.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 239229.88943957302,
+    "min": 223048.32713754647,
+    "max": 247933.88429752065,
+    "p90": 247933.88429752065,
+    "spread": 24885.55715997418,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 60000.0,
+    "min": 60000.0,
+    "max": 60000.0,
+    "p90": 60000.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "pad_85000": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1224.5,
+    "min": 1218.0,
+    "max": 1239.0,
+    "p90": 1238.0,
+    "spread": 21.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.5,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 342.5,
+    "min": 316.0,
+    "max": 357.0,
+    "p90": 350.0,
+    "spread": 41.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 427.5,
+    "min": 359.0,
+    "max": 1129.0,
+    "p90": 457.0,
+    "spread": 770.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 6.0,
+    "min": 5.0,
+    "max": 7.0,
+    "p90": 6.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 3.5,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 4.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 2016.0,
+    "min": 1931.0,
+    "max": 2674.0,
+    "p90": 2024.0,
+    "spread": 743.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 248179.942712951,
+    "min": 238095.2380952381,
+    "max": 268987.3417721519,
+    "p90": 263975.1552795031,
+    "spread": 30892.10367691377,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 85000.0,
+    "min": 85000.0,
+    "max": 85000.0,
+    "p90": 85000.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "pad_120000": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1226.5,
+    "min": 1216.0,
+    "max": 1414.0,
+    "p90": 1229.0,
+    "spread": 198.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 494.0,
+    "min": 474.0,
+    "max": 531.0,
+    "p90": 500.0,
+    "spread": 57.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 416.0,
+    "min": 385.0,
+    "max": 439.0,
+    "p90": 436.0,
+    "spread": 54.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 6.0,
+    "min": 6.0,
+    "max": 8.0,
+    "p90": 6.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 4.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 2162.0,
+    "min": 2114.0,
+    "max": 2297.0,
+    "p90": 2172.0,
+    "spread": 183.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 242918.96144767897,
+    "min": 225988.70056497175,
+    "max": 253164.55696202532,
+    "p90": 246406.57084188913,
+    "spread": 27175.856397053576,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 120000.0,
+    "min": 120000.0,
+    "max": 120000.0,
+    "p90": 120000.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "pad_180000": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1228.0,
+    "min": 1224.0,
+    "max": 1235.0,
+    "p90": 1234.0,
+    "spread": 11.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 747.0,
+    "min": 685.0,
+    "max": 779.0,
+    "p90": 771.0,
+    "spread": 94.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 1333.0,
+    "min": 394.0,
+    "max": 1388.0,
+    "p90": 1371.0,
+    "spread": 994.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 6.0,
+    "min": 5.0,
+    "max": 7.0,
+    "p90": 6.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 4.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 3291.0,
+    "min": 2408.0,
+    "max": 3359.0,
+    "p90": 3336.0,
+    "spread": 951.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 241173.0415676427,
+    "min": 231065.46854942234,
+    "max": 262773.7226277372,
+    "p90": 252100.84033613445,
+    "spread": 31708.254078314872,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 180000.0,
+    "min": 180000.0,
+    "max": 180000.0,
+    "p90": 180000.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "pad_250000": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1229.5,
+    "min": 1222.0,
+    "max": 1237.0,
+    "p90": 1232.0,
+    "spread": 15.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 1.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 1032.0,
+    "min": 1003.0,
+    "max": 1106.0,
+    "p90": 1105.0,
+    "spread": 103.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 468.0,
+    "min": 373.0,
+    "max": 1378.0,
+    "p90": 484.0,
+    "spread": 1005.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 6.0,
+    "min": 6.0,
+    "max": 6.0,
+    "p90": 6.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 4.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 2730.5,
+    "min": 2712.0,
+    "max": 3663.0,
+    "p90": 2757.0,
+    "spread": 951.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 242330.20213908062,
+    "min": 226039.7830018083,
+    "max": 249252.24327018944,
+    "p90": 248508.94632206758,
+    "spread": 23212.46026838114,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 250000.0,
+    "min": 250000.0,
+    "max": 250000.0,
+    "p90": 250000.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "get_openai": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1241.5,
+    "min": 1231.0,
+    "max": 1438.0,
+    "p90": 1248.0,
+    "spread": 207.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 1.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 0,
+    "enough": false
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 26.0,
+    "min": 24.0,
+    "max": 28.0,
+    "p90": 26.0,
+    "spread": 4.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 5.0,
+    "min": 4.0,
+    "max": 5.0,
+    "p90": 5.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 3.5,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 4.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 1277.0,
+    "min": 1266.0,
+    "max": 1474.0,
+    "p90": 1283.0,
+    "spread": 208.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 0,
+    "enough": false
+   },
+   "body_B": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "pad_120000_x100": {
+   "runs": 100,
+   "ok": 100,
+   "failed": [],
+   "conn_ms": {
+    "n": 100,
+    "median": 1228.0,
+    "min": 1217.0,
+    "max": 1539.0,
+    "p90": 1243.0,
+    "spread": 322.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 100,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 3.0,
+    "p90": 2.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 100,
+    "median": 492.5,
+    "min": 434.0,
+    "max": 607.0,
+    "p90": 547.0,
+    "spread": 173.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 100,
+    "median": 433.5,
+    "min": 323.0,
+    "max": 2209.0,
+    "p90": 1196.0,
+    "spread": 1886.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 100,
+    "median": 6.0,
+    "min": 5.0,
+    "max": 9.0,
+    "p90": 7.0,
+    "spread": 4.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 100,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 7.0,
+    "p90": 5.0,
+    "spread": 4.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 100,
+    "median": 2192.0,
+    "min": 2018.0,
+    "max": 3976.0,
+    "p90": 2954.0,
+    "spread": 1958.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 100,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 100,
+    "median": 243655.07346757036,
+    "min": 197693.57495881384,
+    "max": 276497.69585253455,
+    "p90": 263157.8947368421,
+    "spread": 78804.12089372071,
+    "enough": true
+   },
+   "body_B": {
+    "n": 100,
+    "median": 120000.0,
+    "min": 120000.0,
+    "max": 120000.0,
+    "p90": 120000.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "timeouts": 0
+  }
+ },
+ "photos": {
+  "photo_bytes": [
+   76598,
+   76676,
+   76457,
+   76460
+  ],
+  "file_upload": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1228.5,
+    "min": 1223.0,
+    "max": 1240.0,
+    "p90": 1233.0,
+    "spread": 17.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 2.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 319.0,
+    "min": 299.0,
+    "max": 357.0,
+    "p90": 327.0,
+    "spread": 58.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 473.0,
+    "min": 418.0,
+    "max": 756.0,
+    "p90": 514.0,
+    "spread": 338.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 3.0,
+    "min": 3.0,
+    "max": 3.0,
+    "p90": 3.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 3.0,
+    "min": 2.0,
+    "max": 3.0,
+    "p90": 3.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 2005.5,
+    "min": 2004.0,
+    "max": 2312.0,
+    "p90": 2084.0,
+    "spread": 308.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 240585.60028304113,
+    "min": 214963.58543417367,
+    "max": 256662.20735785953,
+    "p90": 254956.81063122922,
+    "spread": 41698.62192368586,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 76742.0,
+    "min": 76738.0,
+    "max": 76742.0,
+    "p90": 76742.0,
+    "spread": 4.0,
+    "enough": true
+   }
+  },
+  "file_upload_delete": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1229.0,
+    "min": 1225.0,
+    "max": 1238.0,
+    "p90": 1233.0,
+    "spread": 13.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 1.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 0,
+    "enough": false
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 501.5,
+    "min": 397.0,
+    "max": 1111.0,
+    "p90": 506.0,
+    "spread": 714.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 3.0,
+    "min": 2.0,
+    "max": 3.0,
+    "p90": 3.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 3.0,
+    "min": 3.0,
+    "max": 4.0,
+    "p90": 3.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 1737.0,
+    "min": 1635.0,
+    "max": 2351.0,
+    "p90": 1737.0,
+    "spread": 716.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 0,
+    "enough": false
+   },
+   "body_B": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "inline_body_264662": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1224.0,
+    "min": 1219.0,
+    "max": 1239.0,
+    "p90": 1230.0,
+    "spread": 20.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 1078.5,
+    "min": 1054.0,
+    "max": 1155.0,
+    "p90": 1090.0,
+    "spread": 101.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 1045.5,
+    "min": 512.0,
+    "max": 1296.0,
+    "p90": 1178.0,
+    "spread": 784.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 6.0,
+    "min": 6.0,
+    "max": 7.0,
+    "p90": 6.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 5.0,
+    "p90": 4.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 3342.0,
+    "min": 2821.0,
+    "max": 3701.0,
+    "p90": 3493.0,
+    "spread": 880.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 245399.5568952058,
+    "min": 229144.58874458875,
+    "max": 251102.4667931689,
+    "p90": 247810.86142322098,
+    "spread": 21957.87804858014,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 264662.0,
+    "min": 264662.0,
+    "max": 264662.0,
+    "p90": 264662.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  },
+  "inline_body_468714": {
+   "runs": 6,
+   "ok": 6,
+   "failed": [],
+   "conn_ms": {
+    "n": 6,
+    "median": 1527.5,
+    "min": 1521.0,
+    "max": 1539.0,
+    "p90": 1530.0,
+    "spread": 18.0,
+    "enough": true
+   },
+   "head_ms": {
+    "n": 6,
+    "median": 2.5,
+    "min": 2.0,
+    "max": 3.0,
+    "p90": 3.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "up_ms": {
+    "n": 6,
+    "median": 2006.0,
+    "min": 1854.0,
+    "max": 2135.0,
+    "p90": 2078.0,
+    "spread": 281.0,
+    "enough": true
+   },
+   "wait_ms": {
+    "n": 6,
+    "median": 1218.0,
+    "min": 998.0,
+    "max": 1365.0,
+    "p90": 1283.0,
+    "spread": 367.0,
+    "enough": true
+   },
+   "hdrs_ms": {
+    "n": 6,
+    "median": 7.0,
+    "min": 7.0,
+    "max": 8.0,
+    "p90": 7.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   "read_ms": {
+    "n": 6,
+    "median": 5.0,
+    "min": 4.0,
+    "max": 6.0,
+    "p90": 5.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "total_ms": {
+    "n": 6,
+    "median": 4711.5,
+    "min": 4518.0,
+    "max": 4951.0,
+    "p90": 4829.0,
+    "spread": 433.0,
+    "enough": true
+   },
+   "paced_ms": {
+    "n": 6,
+    "median": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "p90": 0.0,
+    "spread": 0.0,
+    "enough": true
+   },
+   "upload_Bps": {
+    "n": 6,
+    "median": 233698.36902826457,
+    "min": 219538.17330210772,
+    "max": 252812.29773462782,
+    "p90": 246302.67997898057,
+    "spread": 33274.1244325201,
+    "enough": true
+   },
+   "body_B": {
+    "n": 6,
+    "median": 468714.0,
+    "min": 468714.0,
+    "max": 468714.0,
+    "p90": 468714.0,
+    "spread": 0.0,
+    "enough": true
+   }
+  }
+ },
+ "store": {
+  "append_1024": {
+   "runs": 8,
+   "ok": 8,
+   "hold": {
+    "n": 8,
+    "median": 6.0,
+    "min": 6.0,
+    "max": 58.0,
+    "p90": 6.0,
+    "spread": 52.0,
+    "enough": true
+   }
+  },
+  "append_4096": {
+   "runs": 8,
+   "ok": 8,
+   "hold": {
+    "n": 8,
+    "median": 10.0,
+    "min": 9.0,
+    "max": 12.0,
+    "p90": 10.0,
+    "spread": 3.0,
+    "enough": true
+   }
+  },
+  "append_16384": {
+   "runs": 8,
+   "ok": 8,
+   "hold": {
+    "n": 8,
+    "median": 27.5,
+    "min": 26.0,
+    "max": 39.0,
+    "p90": 37.0,
+    "spread": 13.0,
+    "enough": true
+   }
+  },
+  "read_130k_8k": {
+   "runs": 8,
+   "ok": 8,
+   "total": {
+    "n": 8,
+    "median": 82.5,
+    "min": 82.0,
+    "max": 89.0,
+    "p90": 88.0,
+    "spread": 7.0,
+    "enough": true
+   },
+   "holdMax": {
+    "n": 8,
+    "median": 6.0,
+    "min": 5.0,
+    "max": 7.0,
+    "p90": 6.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   "holdSum": {
+    "n": 8,
+    "median": 82.5,
+    "min": 81.0,
+    "max": 87.0,
+    "p90": 87.0,
+    "spread": 6.0,
+    "enough": true
+   }
+  },
+  "replace_20k": {
+   "runs": 8,
+   "ok": 8,
+   "hold": {
+    "n": 8,
+    "median": 131.0,
+    "min": 126.0,
+    "max": 162.0,
+    "p90": 155.0,
+    "spread": 36.0,
+    "enough": true
+   }
+  },
+  "rawreplace_20k": {
+   "runs": 8,
+   "ok": 8,
+   "hold": {
+    "n": 8,
+    "median": 42.0,
+    "min": 39.0,
+    "max": 52.0,
+    "p90": 51.0,
+    "spread": 13.0,
+    "enough": true
+   }
+  }
+ },
+ "turns": {
+  "count": 11,
+  "complete": 11,
+  "arrival_to_start_ms": {
+   "n": 11,
+   "median": 8772.0,
+   "min": 8604.0,
+   "max": 9574.0,
+   "p90": 9197.0,
+   "spread": 970.0,
+   "enough": true
+  },
+  "hold_release_to_start_ms": {
+   "n": 11,
+   "median": 2624.0,
+   "min": 2494.0,
+   "max": 3334.0,
+   "p90": 2823.0,
+   "spread": 840.0,
+   "enough": true
+  },
+  "result_to_send_ms": {
+   "n": 11,
+   "median": 2527.0,
+   "min": 1880.0,
+   "max": 4265.0,
+   "p90": 3374.0,
+   "spread": 2385.0,
+   "enough": true
+  },
+  "head_exchanges": {
+   "n": 11,
+   "median": 1.0,
+   "min": 1.0,
+   "max": 2.0,
+   "p90": 1.0,
+   "spread": 1.0,
+   "enough": true
+  },
+  "arrival_segments": [
+   {
+    "ends_at": "telegram: poll ok",
+    "n": 2,
+    "median": 1727.0,
+    "min": 1570.0,
+    "max": 1884.0,
+    "p90": 1884.0,
+    "spread": 314.0,
+    "enough": false
+   },
+   {
+    "ends_at": "telegram: settle hold",
+    "n": 11,
+    "median": 1550.0,
+    "min": 5.0,
+    "max": 1882.0,
+    "p90": 1580.0,
+    "spread": 1877.0,
+    "enough": true
+   },
+   {
+    "ends_at": "telegram: typing shown",
+    "n": 9,
+    "median": 4199.0,
+    "min": 4169.0,
+    "max": 4497.0,
+    "p90": 4244.0,
+    "spread": 328.0,
+    "enough": true
+   },
+   {
+    "ends_at": "tg archive: N",
+    "n": 11,
+    "median": 372.0,
+    "min": 212.0,
+    "max": 4488.0,
+    "p90": 4266.0,
+    "spread": 4276.0,
+    "enough": true
+   },
+   {
+    "ends_at": "telegram: settle dispatch",
+    "n": 11,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 15.0,
+    "p90": 8.0,
+    "spread": 12.0,
+    "enough": true
+   },
+   {
+    "ends_at": "telegram: msg from",
+    "n": 11,
+    "median": 5.0,
+    "min": 3.0,
+    "max": 9.0,
+    "p90": 9.0,
+    "spread": 6.0,
+    "enough": true
+   },
+   {
+    "ends_at": "budget: anthropic/claude-sonnet-N window",
+    "n": 11,
+    "median": 2505.0,
+    "min": 2380.0,
+    "max": 3230.0,
+    "p90": 2659.0,
+    "spread": 850.0,
+    "enough": true
+   },
+   {
+    "ends_at": "orchestrator: plain conversational",
+    "n": 11,
+    "median": 4.0,
+    "min": 3.0,
+    "max": 6.0,
+    "p90": 5.0,
+    "spread": 3.0,
+    "enough": true
+   },
+   {
+    "ends_at": "orchestrator: tool-loop ON",
+    "n": 11,
+    "median": 95.0,
+    "min": 87.0,
+    "max": 149.0,
+    "p90": 148.0,
+    "spread": 62.0,
+    "enough": true
+   },
+   {
+    "ends_at": "orchestrator: turn host=anthropic",
+    "n": 11,
+    "median": 9.0,
+    "min": 8.0,
+    "max": 11.0,
+    "p90": 11.0,
+    "spread": 3.0,
+    "enough": true
+   }
+  ],
+  "send_segments": [
+   {
+    "ends_at": "transport: heaptrace api.anthropic.com/vN/messages",
+    "n": 11,
+    "median": 1.0,
+    "min": 1.0,
+    "max": 2.0,
+    "p90": 2.0,
+    "spread": 1.0,
+    "enough": true
+   },
+   {
+    "ends_at": "claims: ok n=N",
+    "n": 10,
+    "median": 12.0,
+    "min": 9.0,
+    "max": 14.0,
+    "p90": 13.0,
+    "spread": 5.0,
+    "enough": true
+   },
+   {
+    "ends_at": "fabric-loop: rounds=N cap=",
+    "n": 10,
+    "median": 6.0,
+    "min": 5.0,
+    "max": 7.0,
+    "p90": 6.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   {
+    "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N",
+    "n": 11,
+    "median": 7.0,
+    "min": 6.0,
+    "max": 10.0,
+    "p90": 8.0,
+    "spread": 4.0,
+    "enough": true
+   },
+   {
+    "ends_at": "orchestrator: turn ->",
+    "n": 11,
+    "median": 133.0,
+    "min": 120.0,
+    "max": 156.0,
+    "p90": 142.0,
+    "spread": 36.0,
+    "enough": true
+   },
+   {
+    "ends_at": "turn spend: ok",
+    "n": 11,
+    "median": 1403.0,
+    "min": 855.0,
+    "max": 1819.0,
+    "p90": 1763.0,
+    "spread": 964.0,
+    "enough": true
+   },
+   {
+    "ends_at": "context: sent N/N",
+    "n": 11,
+    "median": 5.0,
+    "min": 5.0,
+    "max": 7.0,
+    "p90": 6.0,
+    "spread": 2.0,
+    "enough": true
+   },
+   {
+    "ends_at": "turn end: ok",
+    "n": 11,
+    "median": 34.0,
+    "min": 29.0,
+    "max": 141.0,
+    "p90": 138.0,
+    "spread": 112.0,
+    "enough": true
+   },
+   {
+    "ends_at": "fold: chatsum.txt N",
+    "n": 11,
+    "median": 280.0,
+    "min": 179.0,
+    "max": 1679.0,
+    "p90": 1489.0,
+    "spread": 1500.0,
+    "enough": true
+   },
+   {
+    "ends_at": "telegram: settled page",
+    "n": 11,
+    "median": 11.0,
+    "min": 9.0,
+    "max": 16.0,
+    "p90": 13.0,
+    "spread": 7.0,
+    "enough": true
+   },
+   {
+    "ends_at": "telegram: send ok",
+    "n": 11,
+    "median": 612.0,
+    "min": 580.0,
+    "max": 958.0,
+    "p90": 651.0,
+    "spread": 378.0,
+    "enough": true
+   },
+   {
+    "ends_at": "fabric-loop: rounds=N cap=stalled",
+    "n": 1,
+    "median": 5.0,
+    "min": 5.0,
+    "max": 5.0,
+    "p90": 5.0,
+    "spread": 0.0,
+    "enough": false
+   }
+  ],
+  "per_turn": [
+   {
+    "arrival_to_start": 9574,
+    "result_to_send": 3374,
+    "release_to_start": 3334,
+    "arrival": [
+     {
+      "ms": 1570,
+      "ends_at": "telegram: poll ok"
+     },
+     {
+      "ms": 7,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4224,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 1,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 423,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 15,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 5,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 3230,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 4,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 87,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 8,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 1,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 11,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 5,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 8,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 120,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1819,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 7,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 34,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 402,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 9,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 958,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 9197,
+    "result_to_send": 3223,
+    "release_to_start": 2823,
+    "arrival": [
+     {
+      "ms": 1882,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4488,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 4,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 3,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2659,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 4,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 149,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 8,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 1,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 14,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 141,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 935,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 34,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 1489,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 9,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 583,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8832,
+    "result_to_send": 2527,
+    "release_to_start": 2533,
+    "arrival": [
+     {
+      "ms": 1579,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4169,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 1,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 547,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 3,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 4,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2423,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 4,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 91,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 11,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 1,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 12,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 7,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 7,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 138,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1483,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 37,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 193,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 9,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 635,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8720,
+    "result_to_send": 2036,
+    "release_to_start": 2615,
+    "arrival": [
+     {
+      "ms": 1557,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4171,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 0,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 374,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 3,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 4,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2505,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 5,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 91,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 10,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 2,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 13,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 7,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 128,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 855,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 138,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 234,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 10,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 638,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8735,
+    "result_to_send": 2677,
+    "release_to_start": 2624,
+    "arrival": [
+     {
+      "ms": 1552,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4199,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 1,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 355,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 4,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 4,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2511,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 3,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 96,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 10,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 2,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 12,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 7,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 123,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1576,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 29,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 280,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 11,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 626,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8604,
+    "result_to_send": 2435,
+    "release_to_start": 2494,
+    "arrival": [
+     {
+      "ms": 1547,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4192,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 0,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 363,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 8,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 9,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2380,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 6,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 91,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 8,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 2,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 9,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 5,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 7,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 133,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1259,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 30,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 322,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 12,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 651,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8790,
+    "result_to_send": 4265,
+    "release_to_start": 2632,
+    "arrival": [
+     {
+      "ms": 1884,
+      "ends_at": "telegram: poll ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4266,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 3,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 3,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2466,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 4,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 148,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 11,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 1,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 12,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 7,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 142,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1763,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 6,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 30,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 1679,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 16,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 603,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 9005,
+    "result_to_send": 2155,
+    "release_to_start": 2751,
+    "arrival": [
+     {
+      "ms": 1541,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4497,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 0,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 212,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 4,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 9,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2582,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 4,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 148,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 8,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 2,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 10,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 8,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 156,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1164,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 34,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 179,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 11,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 580,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8675,
+    "result_to_send": 1880,
+    "release_to_start": 2563,
+    "arrival": [
+     {
+      "ms": 1549,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4212,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 1,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 346,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 4,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 5,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2453,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 4,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 91,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 10,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 1,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 5,
+      "ends_at": "fabric-loop: rounds=N cap=stalled"
+     },
+     {
+      "ms": 10,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 122,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 869,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 34,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 226,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 12,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 596,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8694,
+    "result_to_send": 2466,
+    "release_to_start": 2574,
+    "arrival": [
+     {
+      "ms": 1542,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4244,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 1,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 325,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 8,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 9,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2456,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 5,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 95,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 9,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 2,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 12,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 5,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 126,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1403,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 33,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 271,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 11,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 592,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   },
+   {
+    "arrival_to_start": 8772,
+    "result_to_send": 2823,
+    "release_to_start": 2635,
+    "arrival": [
+     {
+      "ms": 1561,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 4196,
+      "ends_at": "telegram: typing shown"
+     },
+     {
+      "ms": 0,
+      "ends_at": "telegram: settle hold"
+     },
+     {
+      "ms": 372,
+      "ends_at": "tg archive: N"
+     },
+     {
+      "ms": 8,
+      "ends_at": "telegram: settle dispatch"
+     },
+     {
+      "ms": 9,
+      "ends_at": "telegram: msg from"
+     },
+     {
+      "ms": 2517,
+      "ends_at": "budget: anthropic/claude-sonnet-N window"
+     },
+     {
+      "ms": 4,
+      "ends_at": "orchestrator: plain conversational"
+     },
+     {
+      "ms": 97,
+      "ends_at": "orchestrator: tool-loop ON"
+     },
+     {
+      "ms": 8,
+      "ends_at": "orchestrator: turn host=anthropic"
+     }
+    ],
+    "send": [
+     {
+      "ms": 1,
+      "ends_at": "transport: heaptrace api.anthropic.com/vN/messages"
+     },
+     {
+      "ms": 9,
+      "ends_at": "claims: ok n=N"
+     },
+     {
+      "ms": 5,
+      "ends_at": "fabric-loop: rounds=N cap="
+     },
+     {
+      "ms": 6,
+      "ends_at": "fabric-spend: anthropic/claude-sonnet-N in=N"
+     },
+     {
+      "ms": 142,
+      "ends_at": "orchestrator: turn ->"
+     },
+     {
+      "ms": 1573,
+      "ends_at": "turn spend: ok"
+     },
+     {
+      "ms": 5,
+      "ends_at": "context: sent N/N"
+     },
+     {
+      "ms": 141,
+      "ends_at": "turn end: ok"
+     },
+     {
+      "ms": 316,
+      "ends_at": "fold: chatsum.txt N"
+     },
+     {
+      "ms": 13,
+      "ends_at": "telegram: settled page"
+     },
+     {
+      "ms": 612,
+      "ends_at": "telegram: send ok"
+     }
+    ]
+   }
+  ]
+ },
+ "upload_fit": {
+  "n": 130,
+  "ms_per_byte": 0.004191858394325891,
+  "Bps_marginal": 238557.6767940449,
+  "intercept_ms": -4.571924894228232
+ },
+ "derived": {
+  "connect_ms_anthropic": 1228.0,
+  "upload_Bps": 238558,
+  "prd_constants": {
+   "connect_ms": 1500,
+   "upload_Bps": 70000
+  },
+  "link_ms_at": {
+   "pad_60000": {
+    "measured_conn_plus_up": 1479.5,
+    "prd_model": 2357,
+    "measured_total_haiku": 1869.5
+   },
+   "pad_85000": {
+    "measured_conn_plus_up": 1567.0,
+    "prd_model": 2714,
+    "measured_total_haiku": 2016.0
+   },
+   "pad_120000": {
+    "measured_conn_plus_up": 1720.5,
+    "prd_model": 3214,
+    "measured_total_haiku": 2162.0
+   },
+   "pad_180000": {
+    "measured_conn_plus_up": 1975.0,
+    "prd_model": 4071,
+    "measured_total_haiku": 3291.0
+   },
+   "pad_250000": {
+    "measured_conn_plus_up": 2261.5,
+    "prd_model": 5071,
+    "measured_total_haiku": 2730.5
+   },
+   "pad_120000_x100": {
+    "measured_conn_plus_up": 1720.5,
+    "prd_model": 3214,
+    "measured_total_haiku": 2192.0
+   }
+  },
+  "read_window_ms": {
+   "anthropic": 120000,
+   "routed": 90000
+  },
+  "inline_album": {
+   "inline_body_264662": {
+    "total_ms_median": 3342.0,
+    "total_ms_max": 3701.0,
+    "share_of_anthropic_window": 0.0308,
+    "share_of_routed_window": 0.0411
+   },
+   "inline_body_468714": {
+    "total_ms_median": 4711.5,
+    "total_ms_max": 4951.0,
+    "share_of_anthropic_window": 0.0413,
+    "share_of_routed_window": 0.055
+   }
+  },
+  "files_upload_ms": 2005.5,
+  "card_longest_hold_ms": 162.0,
+  "card_hold_gate_ms": 150,
+  "restart_fill_130k_ms": 89.0,
+  "restart_fill_gate_ms": 3000,
+  "arrival_over_hold_ms": 2624.0,
+  "result_to_send_ms": 2527.0
+ }
+}
