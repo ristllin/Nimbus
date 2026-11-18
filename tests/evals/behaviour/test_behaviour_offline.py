@@ -105,21 +105,23 @@ class Ledger(unittest.TestCase):
         self.assertEqual(self.w.rows[0].day, "2026-11-16")
         self.assertIn("day 2026-11-16", text)
         self.assertIn("day 2026-11-17", text)
-        self.assertFalse(self.w.call("ledger_remove", {"ids": [rid]})[1])
+        self.assertFalse(self.w.call("ledger_write", {"ops": [{"op": "remove", "id": rid}]})[1])
         self.assertEqual(self.w.rows, [])
 
     def test_three_tool_surface_reaches_the_same_store(self):
+        self.w = World(now=NOW, variant="L3")
         self.assertFalse(self.w.call("ledger_add", {"rows": [add_op()["row"]]})[1])
         rid = self.w.rows[0].id
         self.assertFalse(self.w.call("ledger_update", {"id": rid, "set": {"day": "yesterday"}})[1])
         self.assertEqual(self.w.rows[0].day, "2026-11-16")
 
     def test_unknown_argument_is_an_error_naming_the_accepted_ones(self):
+        self.w = World(now=NOW, variant="L3")
         text, err = self.w.call("ledger_add", {"rows": [add_op()["row"]], "day": "today"})
         self.assertTrue(err)
         self.assertIn("accepted: rows", text)
         self.assertEqual(self.w.rows, [])
-        text, err = self.w.call("ledger_write", {"ops": [{"op": "add", "row": {"item": "x", "kcal": 1}}]})
+        text, err = World(now=NOW).call("ledger_write", {"ops": [{"op": "add", "row": {"item": "x", "kcal": 1}}]})
         self.assertTrue(err)
         self.assertIn("missing basis", text)
 
@@ -181,6 +183,54 @@ class FollowUpArms(unittest.TestCase):
         self.assertEqual(stamp(NOW, "L1y"), "[Tue 17 Nov 2026 13:02] ")
         self.assertEqual(stamp(NOW, "L1uy"), "[Tue 17 Nov 2026 13:02] ")
         self.assertEqual(stamp(NOW, "L1u"), "[Tue 17 Nov 13:02] ")
+
+
+class Robustness(unittest.TestCase):
+    def test_a_tool_outside_the_arms_list_is_an_error(self):
+        for variant, name, args in (
+            ("L1", "delete_file", {"path": "a/b"}),
+            ("L3", "ledger_write", {"ops": [add_op()]}),
+        ):
+            w = World(now=NOW, variant=variant, files={"a/b": "x"})
+            text, err = w.call(name, args)
+            self.assertTrue(err, (variant, name))
+            self.assertEqual((w.rows, list(w.files)), ([], ["a/b"]))
+
+    def test_wrongly_typed_arguments_are_tool_errors_not_crashes(self):
+        w = World(now=NOW)
+        for name, args in (
+            ("ledger_day", {"day": "2026-02-30"}),
+            ("ledger_day", {"days": "abc"}),
+            ("note", {"op": "set", "key": "a", "value": 5}),
+            ("schedule", {"op": ["x"]}),
+            ("more", {"name": 5}),
+        ):
+            self.assertTrue(w.call(name, args)[1], (name, args))
+
+    def test_a_failed_save_is_not_a_fetch(self):
+        w = World(now=NOW, variant="P")
+        self.assertTrue(w.call("fetch_url", {"url": "https://x.org/a", "save_to": "bad path"})[1])
+        self.assertEqual(w.fetched, [])
+
+    def test_reminder_ids_are_not_reused(self):
+        w = World(now=NOW)
+        ids = []
+        for t in ("a", "b"):
+            ids.append(w.call("schedule", {"op": "create", "when": "2026-11-17 18:00", "text": t})[0].split()[2])
+        w.call("schedule", {"op": "delete", "id": ids[0]})
+        ids.append(w.call("schedule", {"op": "create", "when": "2026-11-17 19:00", "text": "c"})[0].split()[2])
+        self.assertEqual(len(set(ids)), 3)
+
+    def test_error_text_is_redacted(self):
+        import os
+
+        os.environ["OPENAI_API_KEY"] = "sk-test-0123456789abcdef"
+        try:
+            text = providers.redact("401: Incorrect API key provided: sk-test-0123456789abcdef and sk-ab12****cd")
+        finally:
+            del os.environ["OPENAI_API_KEY"]
+        self.assertNotIn("0123456789", text)
+        self.assertNotIn("ab12", text)
 
 
 class Faults(unittest.TestCase):
@@ -376,6 +426,10 @@ class Report(unittest.TestCase):
         self.assertEqual(s["behaviour"]["default_L1"]["false_claim"]["k"], 0)
         self.assertEqual(s["ledger"]["one_tool_L1"]["first_call"]["k"], 1)
         self.assertEqual(s["ledger"]["three_tools_L3"]["first_call"]["turns_without_a_write"], 1)
+
+    def test_a_head_under_300_turns_gets_no_verdict(self):
+        heads = {"h": {"behaviour": {"all_variants": {"turns": 54}}}}
+        self.assertFalse(report.verdicts(heads)["h"]["measured"])
 
     def test_an_unjudged_turn_is_not_counted_as_clean(self):
         ep = episodes.ledger_episode(0)

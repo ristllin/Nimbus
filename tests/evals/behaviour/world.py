@@ -162,10 +162,14 @@ class World:
     def call(self, name: str, args) -> tuple:
         """(text, is_error) for one tool call, logged."""
         try:
+            if name not in manifest.direct_names(self.variant):
+                raise ToolError(f"no tool named {name} in this tools list")
             text = self._dispatch(name, args if args is not None else {})
             out = (text, False)
         except ToolError as e:
             out = (f"error: {e}", True)
+        except (TypeError, ValueError, AttributeError, KeyError) as e:  # a wrongly typed argument is the model's error
+            out = (f"error: invalid arguments ({type(e).__name__}: {str(e)[:120]})", True)
         self.log.append((name, args, out[0], out[1]))
         return out
 
@@ -520,10 +524,11 @@ class World:
         if not re.match(r"^https?://", url):
             raise ToolError("url must start with http:// or https://")
         text = self.pages.get(url, "Example page. Nothing else here.")
+        dest = self._path(a["save_to"]) if a.get("save_to") else None
         self.fetched.append(url)
         saved = ""
-        if a.get("save_to"):
-            p = self._path(a["save_to"])
+        if dest:
+            p = dest
             self.files[p] = text
             saved = f"\nsaved to {p} ({len(text.encode())} B)"
         return f"[outside content from {url}, {len(text.encode())} B]\n{text}{saved}"
@@ -562,7 +567,8 @@ class World:
         when = a.get("when") or a.get("every")
         if kind == "reminder" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?", when):
             raise ToolError(f"when '{when}' is not YYYY-MM-DD HH:MM")
-        rid = f"s{len(self.reminders) + 1}"
+        self._seq += 1
+        rid = f"s{self._seq}"
         self.reminders.append({"id": rid, "kind": kind, "when": when.replace("T", " ")[:16], "text": a["text"]})
         return f"created {kind} {rid} at {when}: {a['text']}"
 

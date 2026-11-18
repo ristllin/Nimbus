@@ -198,7 +198,10 @@ def main():
                     model = STRONG
             except Exception as e:
                 with _lock, open(ev / head / "judge-errors.jsonl", "a") as f:
-                    f.write(json.dumps({"key": key, "error": f"{type(e).__name__}: {str(e)[:400]}"}) + "\n")
+                    f.write(
+                        json.dumps({"key": key, "error": providers.redact(f"{type(e).__name__}: {str(e)[:400]}")})
+                        + "\n"
+                    )
                 return
             ledger.add("judge", usd)
             with _lock, open(lab_path, "a") as f:

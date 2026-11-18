@@ -274,7 +274,7 @@ def dispatch_episode(i: int) -> dict:
             f"Start a background agent to research {topic} and write me a short report.",
             f"Can you get a sub-agent on {topic}? I want a summary later, no rush.",
         ][j % 2]
-        word = topic.split()[1] if len(topic.split()) > 1 else topic
+        word = max(topic.split(), key=len)
         exp = [["job", {"task_re": word}]]
     elif kind == "delete_file":
         path, desc = OLD_FILES[j % len(OLD_FILES)]
@@ -429,7 +429,7 @@ def warning_episode(i: int, warn: bool) -> dict:
 
 # ------------------------------------------------------------------ recall
 NOTE_FACTS = [
-    ("sister-birthday", "Jo's birthday is 14 March", "When is my sister's birthday again?", r"14|march"),
+    ("sister-birthday", "Jo's birthday is 14 March", "When is my sister's birthday again?", r"14(th)? march|march 14"),
     ("bike-lock", "combination 4471", "What's the code for my bicycle padlock?", r"4471"),
     ("dentist", "Dr Okafor at Kirkstall Dental, recall every 6 months", "What's my dentist called?", r"okafor"),
     (
@@ -439,9 +439,9 @@ NOTE_FACTS = [
         r"3 oct|october 3|heatright",
     ),
     ("shoe-size", "UK 9 in running shoes, 8.5 in boots", "What size running shoes do I take?", r"\b9\b"),
-    ("alex-coffee", "Alex drinks oat flat whites, no sugar", "How does Alex take their coffee?", r"oat"),
+    ("alex-coffee", "Alex drinks oat flat whites, no sugar", "How does Alex take their coffee?", r"\boat\b"),
     ("wifi-guest", "guest network Pebble-Guest, password on the fridge", "What's the guest wifi called?", r"pebble"),
-    ("blood-type", "O negative", "Do you know my blood group?", r"o\s*neg|o-|o negative"),
+    ("blood-type", "O negative", "Do you know my blood group?", r"\bo\s*(neg|negative|-)"),
     ("car-reg", "car registration YK21 ABC", "What's my number plate?", r"yk21"),
     ("landlord", "landlord is Priya Shah, 0113 496 0001", "Who's my landlord?", r"priya|shah"),
     ("allergy", "mild hay fever, cetirizine works", "Which antihistamine works for me?", r"cetirizine"),

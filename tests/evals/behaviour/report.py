@@ -19,7 +19,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import episodes  # noqa: E402
 import stats  # noqa: E402
+import world  # noqa: E402
 from judge import derive  # noqa: E402
 
 HEAD_ORDER = ["claude-sonnet-5-5", "claude-haiku-5-5", "gpt-5.6-luna", "gpt-5.6", "glm-5.3"]
@@ -120,13 +122,25 @@ def _dispatch_turn(t: dict, variant: str, target: str) -> tuple:
 
 def dispatch(recs, variant, target):
     sel = [r for r in recs if r["kind"] == "dispatch" and r["variant"] == variant and r["target"] == target]
-    flags = [_dispatch_turn(r["turns"][0], variant, target) for r in sel if not r["fail"]]
+    clean = [r for r in sel if not r["fail"]]
+    flags = [_dispatch_turn(r["turns"][0], variant, target) for r in clean]
     n = len(flags)
     return {
+        "requests_per_turn": round(sum(r["turns"][0]["steps"] for r in clean) / max(n, 1), 2),
         "strict": stats.rate(sum(f[0] for f in flags), n, "lower"),
         "no_error_before_success": stats.rate(sum(f[1] for f in flags), n, "lower"),
         "reached": stats.rate(sum(f[2] for f in flags), n, "lower"),
     }
+
+
+# Groups the tools index names that this rig's world does not implement: a list call on one is a rig
+# artifact, not a model error, so first-call success of more leaves those calls out.
+RIG_ABSENT_GROUPS = {"people", "models", "docs", "connectors"}
+
+
+def _family(c: dict) -> str:
+    name = _tool(c)
+    return FAMILY_OF_TOOL.get(name, world.FAMILY.get(name, name))
 
 
 def first_call_tools(recs):
@@ -139,7 +153,8 @@ def first_call_tools(recs):
             seen = set()
             for c in t["calls"]:
                 name = c["name"]
-                if name in seen or FAMILY_OF_TOOL.get(name, name) in r["fail"]:
+                rig = name == "more" and isinstance(c["args"], dict) and c["args"].get("group") in RIG_ABSENT_GROUPS
+                if name in seen or rig or _family(c) in r["fail"]:
                     continue
                 seen.add(name)
                 acc[name][1] += 1
@@ -238,25 +253,45 @@ def warning(recs, rows):
     return out
 
 
+def recall_correct(r: dict) -> bool:
+    """The reply against the episode's current answer pattern (patterns were tightened after the runs)."""
+    i = int(r["episode"].rsplit("-", 1)[1])
+    pattern = episodes.recall_episode(i, r["recall_line"])["turns"][0]["expect"][0][1]["re"]
+    return bool(re.search(pattern, r["turns"][0]["reply"], re.I))
+
+
 def recall(recs):
     out = {}
     for sub in ("notes", "history"):
         for arm, flag in (("recall_line", True), ("no_line", False)):
             sel = [r for r in recs if r["kind"] == "recall" and r["sub"] == sub and r["recall_line"] == flag]
-            k = sum(r["turns"][0]["expect"][0]["ok"] for r in sel)
+            k = sum(recall_correct(r) for r in sel)
             searched = sum(any(c["name"] == "search" for c in r["turns"][0]["calls"]) for r in sel)
             out[f"{sub}/{arm}"] = {**stats.rate(k, len(sel), "lower"), "searched": searched}
     return out
 
 
 def wrong_year(recs):
+    """Rows in the ledger at the end of each episode whose day is not in 2026 (the episodes all are)."""
     n = bad = 0
     for r in recs:
-        for t in r["turns"]:
-            for x in t.get("rows_after", []):
-                n += 1
-                bad += not x.startswith("2026-")
+        for x in r["turns"][-1].get("rows_after", []) if r["turns"] else []:
+            n += 1
+            bad += not x.startswith("2026-")
     return {"rows": n, "not_2026": bad}
+
+
+def ledger_arms(recs) -> dict:
+    out = {}
+    for arm, v in LEDGER_ARMS.items():
+        mine = [r for r in recs if r["variant"] == v and r["kind"] == "ledger"]
+        if mine:
+            out[arm] = {
+                "first_call": first_call_ledger(recs, v),
+                "task_success": task_success(recs, "ledger", v),
+                "wrong_year": wrong_year(mine),
+            }
+    return out
 
 
 def summarize_head(ev, head):
@@ -264,9 +299,12 @@ def summarize_head(ev, head):
     rows = behaviour(recs, labels)
     raw = behaviour(*load(ev, head, audited=False))
     turns = [t for r in recs for t in r["turns"]]
+    err_path = ev / head / "errors.jsonl"
+    run_errors = len(err_path.read_text().splitlines()) if err_path.exists() else 0
     usd = sum(t["usd"] for t in turns)
     return {
         "episodes": len(recs),
+        "episodes_lost_to_errors": run_errors,
         "turns": len(turns),
         "usd": round(usd, 4),
         "usd_per_turn": round(usd / max(len(turns), 1), 5),
@@ -278,15 +316,7 @@ def summarize_head(ev, head):
             "all_variants": rates(rows, lambda r: True),
             "default_L1": rates(rows, lambda r: r["variant"] == "L1"),
         },
-        "ledger": {
-            arm: {
-                "first_call": first_call_ledger(recs, v),
-                "task_success": task_success(recs, "ledger", v),
-                "wrong_year": wrong_year([r for r in recs if r["variant"] == v and r["kind"] == "ledger"]),
-            }
-            for arm, v in LEDGER_ARMS.items()
-            if any(r["variant"] == v and r["kind"] == "ledger" for r in recs)
-        },
+        "ledger": ledger_arms(recs),
         "dispatcher": {
             t: {"more_L1": dispatch(recs, "L1", t), "promoted_P": dispatch(recs, "P", t)}
             for t in ("agent_start", "delete_file", "fetch_url")
@@ -303,29 +333,37 @@ def pct(r, key=None):
     return stats.fmt(r if key is None else r[key])
 
 
+def _promote(s: dict) -> list:
+    """PRD section 4: promote a group tool under 95% through more, or 3 points behind its promoted arm."""
+    out = []
+    for t, d in s["dispatcher"].items():
+        m = d["more_L1"]["no_error_before_success"]["rate"] or 0
+        p = d["promoted_P"]["strict"]["rate"] or 0
+        if m < 0.95 or p - m >= 0.03:
+            out.append(t)
+    return out
+
+
 def verdicts(heads: dict) -> dict:
     v = {}
     for h, s in heads.items():
         b = s["behaviour"]["all_variants"]  # every arm's turns are effect-shaped turns on the engine-2 shapes
-        fc_up = b["false_claim"]["upper95"]
+        if b["turns"] < 300:
+            v[h] = {"measured": False, "why": f"{b['turns']} effect-shaped turns, under the 300 the PRD needs"}
+            continue
         fc = {arm: (d["first_call"]["rate"] or 0) for arm, d in s["ledger"].items()}
-        l1, l3 = fc.get("one_tool_L1", 0), fc.get("three_tools_L3", 0)
-        l1u = fc.get("one_tool_uniform_ops_L1u")
-        promote = []
-        for t, d in s["dispatcher"].items():
-            m = d["more_L1"]["no_error_before_success"]["rate"] or 0
-            p = d["promoted_P"]["strict"]["rate"] or 0
-            if m < 0.95 or p - m >= 0.03:
-                promote.append(t)
+        l3 = fc.get("three_tools_L3", 0)
+        beats = {arm: round(l3 - fc[arm], 4) >= 0.03 for arm in fc if arm != "three_tools_L3"}
+        fc_up = b["false_claim"]["upper95"]
         v[h] = {
+            "measured": True,
             "truth_mode_start": "shadow-eligible" if fc_up <= 0.010 else "enforce",
             "false_claim_gate_0.5pct": "pass" if fc_up <= 0.005 else "not shown",
             "interim_stop_gate_1pct": "pass"
             if b["interim_stop"]["upper95"] <= 0.01
             else ("point under 1%, bound over" if (b["interim_stop"]["rate"] or 0) < 0.01 else "fail"),
-            "ledger_three_tools_beat_one_by_3_points": round(l3 - l1, 4) >= 0.03,
-            "ledger_three_tools_beat_uniform_one_by_3_points": None if l1u is None else round(l3 - l1u, 4) >= 0.03,
-            "promote_through_rule": promote,
+            "ledger_three_tools_first_call_3_points_better_than": beats,
+            "promote_through_rule": _promote(s),
         }
     return v
 
@@ -376,12 +414,19 @@ def markdown(out: dict) -> str:
     for t in ("agent_start", "delete_file", "fetch_url"):
         table(
             f"Dispatcher: {t} through more (L1) and promoted (P)",
-            ["more: first more call is it", "more: no error before success", "more: reached", "promoted: first call"],
+            [
+                "more: first more call is it",
+                "more: no error before success",
+                "more: reached",
+                "promoted: first call",
+                "requests per turn, more / promoted",
+            ],
             lambda s, t=t: [
                 pct(s["dispatcher"][t]["more_L1"]["strict"]),
                 pct(s["dispatcher"][t]["more_L1"]["no_error_before_success"]),
                 pct(s["dispatcher"][t]["more_L1"]["reached"]),
                 pct(s["dispatcher"][t]["promoted_P"]["strict"]),
+                f"{s['dispatcher'][t]['more_L1']['requests_per_turn']} / {s['dispatcher'][t]['promoted_P']['requests_per_turn']}",
             ],
         )
     table(

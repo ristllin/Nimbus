@@ -278,6 +278,10 @@ def tools_for(variant: str) -> list:
     raise ValueError(variant)
 
 
+def direct_names(variant: str) -> set:
+    return {t["name"] for t in tools_for(variant)}
+
+
 def tools_index(variant: str) -> str:
     lines = ["Tools behind more (more with group lists them; more with name and args calls one):"]
     for g, names in groups_for(variant).items():

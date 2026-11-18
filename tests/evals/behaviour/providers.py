@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 
 # model -> (input, output, cache read, cache write) USD per million tokens
@@ -281,9 +282,21 @@ HEADS = {
 }
 
 
+KEY_ENVS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "Z_AI_TOKEN")
+
+
+def redact(text: str) -> str:
+    """Error text with every loaded key value and anything key-shaped masked, before it is written anywhere."""
+    for k in KEY_ENVS:
+        v = os.environ.get(k)
+        if v and len(v) >= 8:
+            text = text.replace(v, "[key]")
+    return re.sub(r"(sk-[A-Za-z0-9_\-]{2})[A-Za-z0-9_\-*.]+", r"\1[masked]", text)
+
+
 def load_env(path: str):
     """Put the provider keys this eval uses into os.environ; values never leave the process."""
-    wanted = {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "Z_AI_TOKEN"}
+    wanted = set(KEY_ENVS)
     with open(path) as f:
         for line in f:
             s = line.strip()
