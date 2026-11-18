@@ -366,6 +366,17 @@ class HoldCandidateLeg:
         self.srv = Path(ev.path("srv"))
         self.res: Dict[str, Any] = {"at": bd.utc_iso(), "steps": {}}
 
+    def ota(self) -> str:
+        for _ in range(5):
+            line = self.c.cmd("OTA?", "OTA state=", 6.0)
+            if "slot=" in line:
+                return line
+        return ""
+
+    @staticmethod
+    def slot(line: str) -> str:
+        return line.split("slot=")[-1].split()[0] if "slot=" in line else "?"
+
     def check(self, tag: str) -> str:
         self.c.cmd("OTACHECK", "OTACHECK", 8.0)
         seen = ""
@@ -393,7 +404,7 @@ class HoldCandidateLeg:
         sign_manifest(self.srv, "manifest.json", STABLE_V, self.base, image, hold_line="e2")
         cand = sign_manifest(self.srv, "manifest-candidate.json", CANDIDATE_V, self.base, image)
         cpath = self.srv / "manifest-candidate.json"
-        slot0 = self.c.cmd("OTA?", "OTA state=", 6.0)
+        slot0 = self.ota()
         self.api.post_form("/api/orch", {"tlsVerify": "0"})
         self.c.cmd(f"OTAURL {self.base}/manifest.json", "OTAURL", 8.0)
         ck = {}
@@ -420,8 +431,8 @@ class HoldCandidateLeg:
         self.check("candidate-truncated-check")
         s = self.dry_install("candidate-truncated")
         ck["truncatedFails"] = "state=error" in s and "err=download" in s
-        end = self.c.cmd("OTA?", "OTA state=", 6.0)
-        ck["neverFlipped"] = slot0.split("slot=")[-1].split()[0] == end.split("slot=")[-1].split()[0]
+        end = self.ota()
+        ck["neverFlipped"] = self.slot(slot0) != "?" and self.slot(slot0) == self.slot(end)
         self.res["checks"] = ck
         self.res["grade"] = "PASS" if all(ck.values()) else "FAIL"
         return self.res
@@ -455,7 +466,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     ap.add_argument("--mac", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--url", default="", help="the manifest's https URL; or use --serve")
-    ap.add_argument("--serve", metavar="FIRMWARE_BIN", help="sign and serve this image from here with the test key")
+    ap.add_argument(
+        "--serve",
+        metavar="FIRMWARE_BIN",
+        help="sign and serve this image from here with the test key (hold-candidate: any image in the OTA size "
+        "range, e.g. the esp32s3-cyd build; a test image is larger than one production slot and is never flipped to)",
+    )
     ap.add_argument("--want-version", default="v5.0.0", help="the version the manifest offers")
     ap.add_argument(
         "--want-build", default="", help="the candidate's git describe; /api/state .build must start with it"
