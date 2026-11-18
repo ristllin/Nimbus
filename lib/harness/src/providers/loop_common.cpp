@@ -186,6 +186,7 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
     const bool shortAtFailure = memoryShort(pd, *ctx->cfg);
     const Resend verdict = resendVerdict(pd, *ctx->cfg, wire::lastExchange().lowMem);
     if (verdict != Resend::Go) {
+      wire::lastExchange().stayedLow = verdict == Resend::StayedLow;
       hlog::logf("%s: request not sent and the heap did not recover (heap %u) - no resend",
                  ctx->who, heapAt);
       // The error names the reason the resend was refused. After a wait the verdict
@@ -507,9 +508,10 @@ class RoundRecovery {
   __attribute__((noinline)) bool sendFloorRetry(const std::string& host, const orch::HeadStep& sr) {
     const wire::LastExchange& x = wire::lastExchange();
     if (sr.ok || floorTried_ || !x.unsent || !x.lowMem || orch::sendFloorHeld()) return false;
-    // The memory verdict stands (candidate 4, F4): when the heap stayed low through the wait
-    // (resendUnsentOnce named it LowMemory) the turn ends with the memory reply, as in v5.1.1.
-    if (sr.error == kUnsentLowMem) return false;
+    // The memory verdict stands (candidate 4, F4): when the wait itself ended StayedLow the
+    // turn ends with the memory reply, as in v5.1.1. A low reading after a resend the wait
+    // allowed is the A10 death the floor is for (candidate 5, G1), so only the verdict counts.
+    if (x.stayedLow) return false;
     if (orch::budgetLink() != orch::BudgetLink::Device) return false;
     if (wire::lastRound().load.bodyBytes <= orch::kLegacyWireBodyBytes) return false;   // the floor changes nothing
     floorTried_ = true;

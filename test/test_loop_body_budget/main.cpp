@@ -1503,12 +1503,40 @@ static void test_no_floor_resend_when_the_heap_stayed_low() {
   r.d.http.script.push_back({"", "", 200, finalResponse("anthropic")});
   // Healthy at the round's start; after the upload died the total stays starved.
   r.pd.freeHeap = [&r] { return r.d.http.seen.empty() ? (uint32_t)100000 : (uint32_t)10000; };
+  r.pd.delayMs = [](uint32_t) {};   // the device waits: the verdict is StayedLow (candidate 5, G1)
   LogCapture::install();
   std::string err;
   TEST_ASSERT_FALSE(r.run(err));
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)r.d.http.seen.size(), "no floor resend on a starved heap");
   TEST_ASSERT_FALSE(LogCapture::contains("upload failed for memory"));
   TEST_ASSERT_TRUE_MESSAGE(err.find("low memory") != std::string::npos, err.c_str());
+}
+
+// Candidate 5, G1: only the wait's StayedLow verdict stops the floor resend. The full-size
+// upload dies for memory, the wait says Go, the one full-size resend dies too and the heap
+// reads low right after it (lwIP has not yet returned the connection's buffers): that is the
+// A10 death the floor exists for, so the round is resent once at 85,000 B and delivered.
+static void test_a_low_reading_after_the_full_size_resend_still_reaches_the_floor() {
+  BudgetScope scope(nullptr, 250000);
+  SonnetRig r(false);
+  r.d.http.script.push_back(harness_test::transportCut(10, kDmaWriteFailed));
+  r.d.http.script.push_back(harness_test::transportCut(10, kDmaWriteFailed));   // the full-size resend
+  r.d.http.script.push_back({"", "", 200, finalResponse("anthropic")});
+  int lowReads = 0;   // one low reading, the first after the resend died
+  r.pd.freeHeap = [&r, &lowReads] {
+    if (r.d.http.seen.size() == 2 && lowReads == 0) {
+      lowReads++;
+      return (uint32_t)10000;
+    }
+    return (uint32_t)100000;
+  };
+  LogCapture::install();
+  std::string err;
+  TEST_ASSERT_TRUE_MESSAGE(r.run(err), err.c_str());
+  TEST_ASSERT_EQUAL_INT(1, lowReads);
+  TEST_ASSERT_TRUE(LogCapture::contains("upload failed for memory"));
+  TEST_ASSERT_EQUAL_INT(3, (int)r.d.http.seen.size());
+  TEST_ASSERT_TRUE_MESSAGE(r.d.http.seen.back().body.size() <= 85000, std::to_string(r.d.http.seen.back().body.size()).c_str());
 }
 
 // Lane B's caps send at least 1 token and leave it to the wire to refuse a round whose fit
@@ -1670,6 +1698,7 @@ int main(int, char**) {
   RUN_TEST(test_fragmented_pool_turn_gives_up_history_with_its_note);
   RUN_TEST(test_upload_dead_for_memory_is_resent_once_at_the_floor);
   RUN_TEST(test_no_floor_resend_when_the_heap_stayed_low);
+  RUN_TEST(test_a_low_reading_after_the_full_size_resend_still_reaches_the_floor);
   RUN_TEST(test_rounds_at_the_send_floor_are_counted);
   RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);

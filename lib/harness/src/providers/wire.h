@@ -63,6 +63,9 @@ struct LastExchange {
   // (an interrupted Anthropic session still running, or a read-back that failed): nothing
   // was counted, and the caller reads the stop as not yet confirmed.
   bool cancelUnsettled = false;
+  // Candidate 5, G1: the wait after this exchange's unsent failure ended StayedLow (the total
+  // stayed under the resend threshold the whole wait). Only this stops the floor resend.
+  bool stayedLow = false;
 };
 inline LastExchange& lastExchange() {
   static LastExchange s;
