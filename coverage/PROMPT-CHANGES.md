@@ -249,3 +249,23 @@ deleted. Engine 2 has no baseline.
   connectors)
 - why: the group one-liners, the tools-index lines and the more tool's results and errors of
   lib/core/src/orch_tool_groups.cpp (693 B), catalogued by RB-B5 with the file. Planned work (ruling 18).
+
+### PC-0003: engine-2 system core, composed by plain_request.cpp
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 0 -> 1680
+- sha8: e3b0c442 -> 16b607df
+- lane: RB-E2
+- prd: section 4
+- why: the plain engine's system core (identity and channel, time zone, how to work, what you see, outside content, the recall line, the food paragraph, the model line and the tools index header), RB-M0a's measured text made person-neutral
+
+### PC-0004: the 14 always-on tools (16 declarations, both packs)
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 0 -> 5732
+- sha8: e3b0c442 -> 4e763b15
+- lane: RB-E2
+- prd: section 4
+- why: names, descriptions and schemas of the always-on tools and the pack pair agent_start and delete_file, RB-M0a's measured shapes (Ruling 11)

@@ -576,6 +576,44 @@ tool and caller class). A group's listing is at most 2,048 B; the tools index
 unknown name gets back the callable names, at most 640 B. The before-dispatch seam reads
 `callClass` or `moreTarget` to see the tool a `more` call reaches.
 
+### Request composition and the text catalog
+
+Every model-facing string of engine 2 lives in `lib/harness/include/nimbus/harness/plain/texts.h`,
+in one namespace per class (core, device notes, stubs, tool results, probe, summarizer, tool
+descriptions). `tools/release_gate/gen_model_text_catalog.py` extracts them into
+`test/golden/model_text_catalog.txt` with a byte ceiling per class (PRD section 4), together
+with the prose of `orch_tool_groups.cpp` (the `more` results and the tools index), and the
+no-prompt-patch gate fails any change to a class without a ledger entry. A plain engine file
+holds no prose of its own.
+
+`lib/harness/src/plain_request.cpp` composes a request from `plain::RequestFacts`:
+
+- `composeSystem` writes the three system blocks. The core (at most 3,072 B) is identity
+  and channel, time zone, how to work, what you see, outside content, the recall line, the
+  food paragraph when the food capability is on, the model line and the tools index (at
+  most 512 B). The notes block is the skills index (at most 1,024 B, whole lines, with a
+  true count of the rest) and the pinned notes (at most 4,096 B, whole lines, so core and
+  notes stay within 8,192 B). The digests block is the digest block and the recent-files
+  list. There is no clock in it: every message carries its own send time.
+- `toolManifest` lists the always-on tools in a fixed order: read_file, write_file,
+  append_file, edit_file, list_files, note, search, web_search, view, send, schedule, the
+  pack (ledger_write and ledger_day with the food capability, else agent_start and
+  delete_file), then `more`. A tool is listed only when it is registered and the caller may
+  call it, at most 14 tools in 10,240 B. write_file's schema states its host's content cap
+  (12,000 B, or 4,096 B on a 60 s host).
+- A sentence that names a tool appears only when that caller can call the tool
+  (`uncallableNames`), so a guest is never told to schedule.
+- The same facts give the same bytes: nothing else is read (no turn number, round, clock or
+  taint), and each fact moves only its own block, so the provider's cache keeps hitting.
+
+A binding registers each always-on tool with the declared bytes,
+`reg.add(d->name, d->description, handler, plain::declSchema(*d, shortHost))` with
+`d = plain::toolDecl(name)`, and calls `plain::applyToolPack(reg, food)` after registering,
+so the tools index never lists a tool that is also in the array. `test/test_plain_request`
+proves the ceilings for every role, pack and host on a synthetic Lumi-shaped state and
+writes the measured figures to `test/golden/plain_prompt_core.txt`, which
+`tools/release_gate/check_plain_ceilings.py` gates.
+
 ## Extension points
 
 - **New provider backend**: subclass `ManagedAgentAdapter` + one
