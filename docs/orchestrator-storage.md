@@ -465,6 +465,38 @@ to purge).
 Test builds can ask for a pass out of schedule with `POST /api/test/epiprune`; it
 goes through the same schedule and gate.
 
+## 4a. Food ledger store - SD `/mem/ledger` (engine 2, not linked yet)
+
+The food ledger that replaces the keyed `files.append` of `food/food-log.csv`
+(`nimbus/orch/ledger.h`, host-tested in `test/test_ledger`). It lives beside
+`/mem/tx`, outside the file index, so an older image ignores it and no file tool can
+write it. Nothing in the turn path calls it yet: the tools on top of it
+(`ledger_write`, `ledger_day`) and its device binding come with lane RB-L1b, the import
+and the legacy-format mirror with lane RB-L1c.
+
+Per person, `/mem/ledger/<person>/` holds:
+
+- `YYYY-MM.csv`: the rows of one month, sorted by day then time. Line 1 is
+  `# nimbus ledger v1 seq=<n>`, the last change the file holds; line 2 is the column
+  header `id,day,time,meal,item,qty,unit,kcal,protein_g,carb_g,fat_g,fibre_g,polyol_g,alcohol_g,per100,basis,src,note,call`.
+- `changes.log`: the write-ahead record, one line per write
+  (`L1 <seq> <bodyLen> <crc32> <body>`). Appending that line is the commit point. The
+  body holds the call id, the time, the receipt and the resulting rows, so a replay is
+  idempotent and a repeated call id gets its first receipt back. Past 256 KB the log
+  becomes `changes.old.log`; both are read at open.
+- A month is replaced by a swap: the new copy is written to `.part`, the old one is
+  renamed to `.bak`, `.part` is renamed into place, `.bak` is removed.
+
+At open (before the first read or write, and after any failed step) leftover `.part`
+files go, a month whose file is missing gets its `.bak` back, and every logged write a
+month file lacks is applied again in order. A power cut at any step leaves each month
+with either the old rows or the new ones. A month file that cannot be parsed is kept as
+it is and named in every read or write that needs it.
+
+Rows carry a device id (`L` plus five base-32 characters). Figures are fixed-point
+integers (kcal in 0.1 kcal, grams in 0.01 g, quantity in 0.001 unit), so totals are
+exact sums. The ledger day runs from 04:00 to 04:00 local time.
+
 ## 5. Migration and no-SD degraded mode
 
 **Boot/mount:** `solide::storage::begin()` → on success `setDataFs(SD)`,
