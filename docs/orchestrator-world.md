@@ -135,7 +135,8 @@ word beats the log: a stored row is not evidence against the owner - when they
 dispute something, the reply shows the row's source and corrects it, and a claim
 that the owner said, confirmed or photographed something needs a real message of
 theirs behind it (the device no longer checks this in the reply since v5.2.0; the
-truth check of RB-G0 replaces the claim check).
+truth check only asks whether a reply claims a stored change that no effect backs, see
+[turn anatomy](turn-anatomy.md#the-truth-check)).
 
 Daily targets live in `food/food-targets.csv` (`date,metric,target,source`), a row
 per metric with where it came from. With targets stored the block shows what is left,

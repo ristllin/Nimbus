@@ -153,8 +153,10 @@ once, with the problems named and the array form shown; so is an answer that is 
 filler or, on a turn with nothing to say, empty.
 The reply's words are not held against what the turn did: the claim check, the
 promise and work-now checks it carried, the reply-scope check and the check of a reply
-that says sub-agents started were deleted in v5.2.0 (lane RB-Q1b; the truth check of
-RB-G0 replaces them). At most one correction round runs per turn, shared by all of
+that says sub-agents started were deleted in v5.2.0 (lane RB-Q1b). The truth check
+([turn anatomy](../turn-anatomy.md#the-truth-check)) is the last final check: on a head in
+enforce mode, a reply its probe says claims a stored change no effect backs gets the round,
+with a device item that lists what the device did. At most one correction round runs per turn, shared by all of
 them, never on the forced final round, never for a cut answer and never for a prose
 answer. The one exception is filler: it gets one more tool-less round on the forced
 final round as well

@@ -464,8 +464,8 @@ fails a build whose image holds such a line. What stays:
 - the turn's effect ledger in RAM (at most 32 entries, never stored): every tool call and
   its result, the memory writes, the scratchpad save, the sub-agents the job queue accepted,
   the sub-agent results the turn read. The history row's `fx:` tag and the empty-answer
-  check read it; RB-FX stores the chat's recent effects from it, for the truth check of
-  RB-G0 that replaces the claim check;
+  check read it; RB-FX stores the chat's recent effects from it, and the truth check (below)
+  reads both;
 - the final-answer checks of [the final check](reference/turn-contract.md#the-final-check):
   the turn shape (a field the device cannot use) and a placeholder answer;
 - the device's own lines about its own actions, each a plain "Note: ..." line after the reply:
@@ -474,6 +474,32 @@ fails a build whose image holds such a line. What stays:
   a chat that may not start sub-agents is told so. A sub-agent intent that did not start
   reaches the head as a `[SPAWN REFUSED]` line on the chat's next turn;
 - `/api/state` keeps `claimsCorrected` and `claimsTailed` at 0 for the readers that poll them.
+
+### The truth check
+
+What replaces the claim check does not read the reply for words either. It asks one small
+model one question, measured before it was built (`tests/evals/measured/probe.json`): does
+this reply claim a stored change (a ledger row, a file, a note, a memory, a routine, a
+setting, a message sent) that no listed effect backs? The question carries the owner's
+message, the reply, this turn's effects (its tool calls, and what the answer's own fields
+will store) and the chat's recent effects (the stored ring), never a photo. With the recent
+effects a true "I logged it at 13:02" is backed and is not a hit.
+
+- **Enforce** (a head whose probe model passed the measurement: Anthropic direct, with
+  claude-haiku-5-5): a yes holds the answer for the turn's one correction round. The head gets
+  one device item that states what the device did and nothing else
+  (`[device] effects this turn: ... Recent: ...`), and what it answers then is delivered as
+  written. At most one hold a turn.
+- **Receipt-only** (every other head, a turn that read outside content, a chat whose ring is
+  not loaded from the card): never a probe.
+- **The receipt line**: when the last write of a kind failed this turn (and no later one of
+  that kind landed), one separate message follows the reply, `Note: the ledger change in this
+  reply did not go through (<the tool's error>)`. On an enforce head it is sent only when the
+  probe says the delivered reply reports success, or when the probe gave no answer; on a
+  receipt-only head it is always sent.
+- The probe fails open: no answer within 8 s, an error or an answer that is not the JSON
+  object delivers the reply and is counted. Modes and counters per head live in
+  `/data/truth_state.json`; v5.2.0 never moves a head to shadow mode on its own.
 
 A sub-agent result for a live-data task (a status, the weather, prices, news) that
 ran no tool is marked `[NOT CHECKED]`, and every `[FRESH RESULTS]` line says how
