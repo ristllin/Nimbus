@@ -242,7 +242,16 @@ serves:
   body in PSRAM is encrypted through a DMA bounce allocation (up to 1,600 B), and a larger
   body died mid-upload on that allocation (bench A10). An upload that fails that way over
   85,000 B is rebuilt at 85,000 B and sent once more, with what was left out named in the
-  request; a second failure fails the round. Every adapter reads completeness - Anthropic
+  request; a second failure fails the round. When the heap stayed low through the wait after
+  that failure (the memory verdict), there is no resend at the floor: the turn ends with the
+  memory reply, as in v5.1.1. A turn that left history out while its rounds went at the
+  floor makes the chat's fold due, and that fold keeps v5.1.1's tail (half of v5.1.1's
+  window on that head) instead of the head's large one, so on a pool that stays fragmented
+  every row is in the next request or in the summary; the window itself is never held to
+  the floor. The fold's own request (summary, digest and prompt, under 60,000 B of input)
+  fits the floor. The state JSON's `mem` block carries `rounds` and `floorRounds` (every
+  round since boot, and those at the floor), and each turn that took the floor and left rows
+  out logs one `history(<chat>): rows left out at the send floor` line. Every adapter reads completeness - Anthropic
   `stop_reason:"max_tokens"`, Mistral `finish_reason:"length"` (or tool arguments that
   do not parse), OpenAI `status:"incomplete"`, the custom head `finish_reason:"length"`
   - and a cut answer is never run or delivered as complete. A cut round is retried once

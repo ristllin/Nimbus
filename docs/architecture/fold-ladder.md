@@ -77,7 +77,9 @@ fold(<chat>): rung i/n <host>/<model> failed -> <kind> (<detail>)
 
 with `<kind>` one of transport, timeout, 4xx, 402 park, 5xx, cut twice, empty, thin.
 A success keeps `fold(<chat>): ok on <host> (...)`; a failed cycle logs
-`fold(<chat>): cycle failed, next try <date time>`.
+`fold(<chat>): cycle failed, next try <date time>`. A chat with a reason to fold that a
+pass does not start logs `fold(<chat>): due, not started - <reason>` at most once an hour
+for each chat and reason (a table of eight), so held chats never flood the durable log.
 
 **The quality gate** (`foldAnswerThin`): for digests of 8 KB or more, a 2xx answer
 shorter than min(800 B, 30% of the previous summary) or naming fewer than 2 of the
@@ -159,8 +161,11 @@ Device-wide, in `/data/fold_ctl.txt` (`nimbus::orch::FoldCtl`; on the VN
 automatic fold requests a local day, every chat together, of which chats that are not the
 owner's spend at most 6; the owner's due chats fold first; 2xx answers and timeouts after
 the upload count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of
-failing, sent to the owner's Telegram chat or the web chat, by role on the VN: the first
-Admin chat; another chat's failure is only logged and does not use up the day),
+failing, spent only when it reached a chat a person reads: an owner's Telegram chat or the
+web chat directly; the serial console's and the screen's alert goes to the owner's Telegram
+chat, else the web chat, and names where the summary failed; with neither, or when the send
+fails, it is logged and the day is not spent; by role on the VN: the first Admin chat; a
+guest chat's failure is only logged and does not use up the day),
 `manualPendingChat` (up to 4 queued manual requests), `fwAtLastFail` and `unreadSince` (per chat, when its fold first met rows the store would not give back; a few chats). Because this
 lives outside the per-chat blob, evicting a chat's record (the blob keeps the 16 most
 recently used chats inside 64 KB, about ten with a full summary) never resets the cap
@@ -178,7 +183,9 @@ the history hides behind the anchor, or its last slice stopped short of the newe
 its cycles chain oldest first (at most 64) and one
 confirmation names the whole span. A manual request never waits behind an automatic cycle:
 one that is between rungs when a manual request is ready ends uncounted, its failed
-rungs going last. Every manual request is answered: the confirmation,
+rungs going last; an automatic cycle that started in a manual read's yield and has paid for
+a rung counts as a failed cycle when the read's next pass ends it (backoff and the alert
+clock), so the yields cannot start and discard paid cycles without end. Every manual request is answered: the confirmation,
 a failure with the next try time, or "Nothing to compact yet."
 
 ## Status
@@ -205,7 +212,8 @@ end.
 | `test_orch_compact` | backoff, thrash wait, legacy lift, firmware reset, rollback round trip (the v5.1.1 parser), no reachable state stays off past 12 h, FoldCtl codec, trigger math, proportional cap |
 | `test_fold_backlog` | a long chat's catch-up, a refill that only waits, a failure that schedules a retry |
 | `test_fold_ladder` | every failure kind at every rung is answered by the next; no (host, model) twice; Large 4 on Small at effort none on the real wire; the matcher fixtures |
-| `test_fold_driver` | Pending per rung, one CycleFailed, the never-lost manual request, keep 0, the device-wide cap, a failing week on five chats, no clock, fresh device, the Lumi blob folding forward with no id gap |
+| `test_fold_driver` | Pending per rung, one CycleFailed, the never-lost manual request, keep 0, the device-wide cap, a failing week on five chats, no clock, fresh device, the Lumi blob folding forward with no id gap, the hourly "due, not started" line, a cycle ended by a manual read's pass counted as failed, the device alert hook's routing |
+| `test_fold_invariant` | no row is lost to a fold under the store's failure shapes; after a turn cut at the send floor, the fold leaves every row in the next request or the summary |
 | `nimbusd/tests/test_fold_driver_vn` | the VN reaches the same outcomes as the device; the routes |
 | `tools/release_gate/check_fold_health.py` | no reachable pause, fold control present, the blobs round-trip |
 
