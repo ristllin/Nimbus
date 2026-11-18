@@ -639,10 +639,12 @@ struct WireRun {
   agent::HttpRequest req;
 };
 // One round on the wire (the custom endpoint: its single shot) with this prompt and seed.
+bool g_wireFragmented = false;   // runWire's DMA pool: under kDmaChunkFloor when set
 WireRun runWire(const WireCase& w, const std::string& ins, const std::string& seed) {
   FakeProviderDeps d;
   d.http.script.push_back({"", "", 200, finalFor(w.kind)});
   providers::ProviderDeps pd = d.contract();
+  if (g_wireFragmented) pd.dmaLargestBlock = [] { return (uint32_t)4000; };
   const std::string model = w.model;
   pd.orchModel = [model](const char*) { return model; };
   if (w.routed) {
@@ -997,7 +999,9 @@ static void test_album_on_large4_fragmented_goes_natively() {
   BudgetScope scope(+table);
   Album album(10, 40000, 640, 480);
   LogCapture::install();
-  const AlbumRun r = runAlbum(album, 55000, 50000, 8000);
+  // The text stays inside v5.1.1's 85,000 B, the budget of a round on a fragmented pool
+  // (bench A10): the photos' time is what the fit gives history up for.
+  const AlbumRun r = runAlbum(album, 55000, 15000, 8000);
   TEST_ASSERT_TRUE_MESSAGE(r.ok, r.err.c_str());
   TEST_ASSERT_TRUE(r.historyGives > 0);                 // older history went first
   TEST_ASSERT_EQUAL_INT(1, (int)r.seen.size());         // nothing over the fit was sent
@@ -1233,8 +1237,10 @@ static void test_album_transcribed_keeps_the_whole_history() {
   pd.dmaLargestBlock = [] { return (uint32_t)4000; };
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
-  const size_t keep = 30000;   // the history fits the photo round's text budget: only the time fit cuts it
-  RealFit f(30, 1000, album.text, &rig.ht, keep);
+  // The history fits the photo round's text budget (on a fragmented pool v5.1.1's 85,000 B,
+  // bench A10): only the time fit cuts it.
+  const size_t keep = 20000;
+  RealFit f(25, 1000, album.text, &rig.ht, keep);
   const size_t whole = f.live();
   f.bind(rig.ht);
   const nimbus::orch::ActiveTurnImages active(&album.set);
@@ -1337,6 +1343,129 @@ static void test_zai_loop_recovers_from_an_oversize_newest_message() {
   }
 }
 
+// ---- the send floor on a fragmented DMA pool (bench A10, candidate d5afa30a) -------------
+// Unit F1 under 20 KB of ballast (DMA-capable pool fragmented): a 184,521 B Sonnet body died
+// at 155,648 B on a 1,600 B esp-aes DMA bounce allocation, and the turn failed with no reply.
+// v5.1.1 never sent more than 85,000 B. (a) A round that starts with the pool fragmented by
+// the transport's own measure (largest DMA block under kDmaChunkFloor) has v5.1.1's body
+// budget on every wire the device sends, routed or not; a healthy pool keeps the head's own.
+static void test_fragmented_pool_sends_at_the_v5_1_1_floor_on_every_wire() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 300000;   // a derived head's budget, routed or not
+    return b;
+  };
+  BudgetScope scope(+table);
+  agent::layout::PromptParts parts;   // a split prompt: its history rides as messages
+  parts.split = true;
+  parts.stat = "SYS " + std::string(30000, 's');
+  parts.dyn = "[NOW] 09:00";
+  const std::string ins = agent::layout::join(parts);
+  for (int i = 0; i < 35; ++i) {
+    parts.history.push_back({true, "Q" + std::to_string(i) + " " + std::string(1000, 'q')});
+    parts.history.push_back({false, "A" + std::to_string(i) + " " + std::string(1000, 'a')});
+  }
+  const std::string big = agent::layout::join(parts);   // 100 KB: over 85,000 B, under 300,000 B
+  for (const WireCase& w : kWires) {
+    if (w.kind == WireKind::CustomShot) continue;   // the flat single shot: its string is under the floor already
+    const std::string seed = std::string(20000, 'u');
+    g_wireFragmented = false;
+    const WireRun healthy = runWire(w, big, seed);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)healthy.sent, (std::string(w.name) + " healthy: " + healthy.err).c_str());
+    g_wireFragmented = true;
+    const WireRun frag = runWire(w, big, seed);
+    g_wireFragmented = false;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)frag.sent, w.name);   // refused before a byte left
+    size_t budget = 0, size = 0;
+    TEST_ASSERT_TRUE_MESSAGE(nimbus::orch::parseBodyBudgetError(frag.err, budget, size),
+                             (std::string(w.name) + ": " + frag.err).c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(85000, (uint32_t)budget, w.name);
+    // Inside the floor it goes, fragmented or not.
+    g_wireFragmented = true;
+    const WireRun small = runWire(w, ins, seed);
+    g_wireFragmented = false;
+    TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)small.sent, (std::string(w.name) + " small: " + small.err).c_str());
+  }
+}
+
+namespace {
+// A Sonnet head over the real give-up order with `exchanges` of history: the A10 shape.
+struct SonnetRig {
+  FakeProviderDeps d;
+  providers::ProviderDeps pd;
+  FakeProviderDeps::ToolRig rig;
+  std::unique_ptr<RealFit> fit;
+  explicit SonnetRig(bool fragmented) {
+    pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("claude-sonnet-5-5"); };
+    if (fragmented) pd.dmaLargestBlock = [] { return (uint32_t)4000; };
+    d.fillTools(rig);
+    fit.reset(new RealFit(55, 1100, "what did I eat yesterday?", &rig.ht, 0));
+    fit->bind(rig.ht);
+  }
+  bool run(std::string& err) {
+    std::string out;
+    return providers::runFabricLoop(pd, {"anthropic"}, agent::composeInstructions(fit->ci),
+                                    "what did I eat yesterday?", out, err, rig.ht, nullptr, nullptr);
+  }
+};
+const char* const kDmaWriteFailed =
+    "request body truncated: write failed after 155648 of 184521 bytes: low memory (alloc failed 1600 B DMA)";
+}  // namespace
+
+// (a), the turn: a Sonnet head whose request is 150 KB with its history goes out at the floor
+// on a fragmented pool, its older history given up with the LEFT OUT note; on a healthy pool
+// the same turn goes whole.
+static void test_fragmented_pool_turn_gives_up_history_with_its_note() {
+  BudgetScope scope(nullptr, 250000);   // Sonnet's own budget
+  for (bool fragmented : {false, true}) {
+    SonnetRig r(fragmented);
+    r.d.http.script.push_back({"", "", 200, finalResponse("anthropic")});
+    std::string err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(err), err.c_str());
+    TEST_ASSERT_EQUAL_INT(1, (int)r.d.http.seen.size());
+    const std::string& body = r.d.http.seen[0].body;
+    if (!fragmented) {
+      TEST_ASSERT_TRUE(body.size() > 100000);
+      TEST_ASSERT_TRUE(body.find("LEFT OUT TO FIT") == std::string::npos);
+      continue;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(body.size() <= 85000, std::to_string(body.size()).c_str());
+    TEST_ASSERT_TRUE(body.find("LEFT OUT TO FIT") != std::string::npos);
+    TEST_ASSERT_TRUE(r.fit->fit->historyRowsLeftOut() > 0 || r.fit->fit->historyMessagesLeftOut() > 0);
+  }
+}
+
+// (b) An upload that dies for memory mid-body (the transport's own wording, A10's Sonnet leg)
+// is rebuilt at the floor and sent once more, on a heap the pre-round check read as healthy:
+// the turn answers. A second death at the floor fails the turn: one floor resend, no more.
+static void test_upload_dead_for_memory_is_resent_once_at_the_floor() {
+  BudgetScope scope(nullptr, 250000);
+  {
+    SonnetRig r(false);
+    r.d.http.script.push_back(harness_test::transportCut(10, kDmaWriteFailed));
+    r.d.http.script.push_back(harness_test::transportCut(10, kDmaWriteFailed));   // the unsent resend (CUM-477)
+    r.d.http.script.push_back({"", "", 200, finalResponse("anthropic")});
+    LogCapture::install();
+    std::string err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(err), err.c_str());
+    TEST_ASSERT_TRUE(LogCapture::contains("upload failed for memory"));
+    const std::string& last = r.d.http.seen.back().body;
+    TEST_ASSERT_TRUE_MESSAGE(last.size() <= 85000, std::to_string(last.size()).c_str());
+    TEST_ASSERT_TRUE(last.find("LEFT OUT TO FIT") != std::string::npos);
+    TEST_ASSERT_TRUE(r.d.http.seen[0].body.size() > 85000);
+  }
+  {
+    SonnetRig r(false);
+    for (int i = 0; i < 4; ++i) r.d.http.script.push_back(harness_test::transportCut(10, kDmaWriteFailed));
+    std::string err;
+    TEST_ASSERT_FALSE(r.run(err));
+    size_t atFloor = 0;
+    for (const auto& q : r.d.http.seen) atFloor += q.body.size() <= 85000;
+    TEST_ASSERT_TRUE_MESSAGE(atFloor >= 1 && atFloor <= 2, std::to_string(atFloor).c_str());   // one floor send (and its unsent resend)
+  }
+}
+
 // Lane B's caps send at least 1 token and leave it to the wire to refuse a round whose fit
 // cannot carry the host's minimum final. A text round over v5.1.1's 85,000 B that is too big
 // for its host's read window (a budget larger than the window allows) is refused with the
@@ -1353,14 +1482,14 @@ static void test_text_round_over_its_time_fit_is_refused_and_refit() {
   d.http.script.push_back({"", "", 200, finalResponse("mistral")});
   providers::ProviderDeps pd = d.contract();
   pd.orchModel = [](const char*) { return std::string("mistral-large-4-0"); };
-  pd.dmaLargestBlock = [] { return (uint32_t)4000; };
+  pd.dmaLargestBlock = [] { return (uint32_t)8000; };   // healthy: a fragmented pool sends at 85,000 B (bench A10)
   FakeProviderDeps::ToolRig rig;
   d.fillTools(rig);
   agent::layout::PromptParts parts;
   parts.split = true;
   parts.stat = "SYS";
   parts.dyn = "[NOW] 09:00";
-  for (int i = 0; i < 150; ++i) {
+  for (int i = 0; i < 280; ++i) {   // ~900 KB: over the 60 s window even on a healthy pool
     parts.history.push_back({true, "question " + std::to_string(i) + " " + std::string(1600, 'q')});
     parts.history.push_back({false, "answer " + std::to_string(i) + " " + std::string(1600, 'a')});
   }
@@ -1492,6 +1621,9 @@ int main(int, char**) {
   RUN_TEST(test_album_transcribed_keeps_the_whole_history);
   RUN_TEST(test_seed_over_its_budget_keeps_the_history);
   RUN_TEST(test_zai_loop_recovers_from_an_oversize_newest_message);
+  RUN_TEST(test_fragmented_pool_sends_at_the_v5_1_1_floor_on_every_wire);
+  RUN_TEST(test_fragmented_pool_turn_gives_up_history_with_its_note);
+  RUN_TEST(test_upload_dead_for_memory_is_resent_once_at_the_floor);
   RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);

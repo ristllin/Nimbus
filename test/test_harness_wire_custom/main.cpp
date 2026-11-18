@@ -871,44 +871,35 @@ static void test_zai_cut_round_retries_with_room_then_fails_as_cut() {
   TEST_ASSERT_TRUE(bodyHas(r.d, 2, "LAST ATTEMPT RAN OUT OF ROOM"));
 }
 
-// Z.ai at its 64k target (211 KB) on a fragmented heap: the fit after the upload, the paced
-// slices and the prefill leaves GLM about its minimum final, so the round asks for 1,600
-// tokens and has no retry (it would not give 400 more): the step pays no second cut (the
-// provider gap item of plan v3); the host loop's one rerun with the cut note is all that follows.
-static void test_zai_at_64k_fragmented_sends_1600_and_no_retry() {
-  ZaiRig r;
-  r.pd.dmaLargestBlock = [] { return (uint32_t)4000; };   // under kDmaChunkFloor: paced
-  const nimbus::orch::RequestBudget b = providers::wireBudgetFor("zai", "glm-5.3", false);
-  // A head prompt whose history brings the round to about 97% of the budget.
-  agent::layout::PromptParts parts;
-  parts.split = true;
-  parts.stat = "SYS " + std::string(20000, 's');
-  parts.dyn = "[NOW] 09:00";
-  while (agent::layout::join(parts).size() < b.wireBodyBytes * 97 / 100 - 4000) {
-    parts.history.push_back({true, "I had oats, 60 g, and a flat white at 08:10. " + std::string(1500, 'q')});
-    parts.history.push_back({false, "Logged. " + std::string(1500, 'a')});
+// Z.ai at its 64k target on a fragmented DMA pool (bench A10, candidate d5afa30a: a body over
+// v5.1.1's 85,000 B died mid-upload on an esp-aes DMA bounce allocation there): the round is
+// held at v5.1.1's budget and refused before a byte leaves (the turn's give-up order then fits
+// it); on a healthy pool the same 64k round goes whole.
+static void test_zai_at_64k_fragmented_is_held_at_the_v5_1_1_floor() {
+  for (bool fragmented : {true, false}) {
+    ZaiRig r;
+    r.pd.dmaLargestBlock = [fragmented] { return (uint32_t)(fragmented ? 4000 : 30000); };
+    const nimbus::orch::RequestBudget b = providers::wireBudgetFor("zai", "glm-5.3", false);
+    agent::layout::PromptParts parts;   // a head prompt whose history brings the round to 97% of the budget
+    parts.split = true;
+    parts.stat = "SYS " + std::string(20000, 's');
+    parts.dyn = "[NOW] 09:00";
+    while (agent::layout::join(parts).size() < b.wireBodyBytes * 97 / 100 - 4000) {
+      parts.history.push_back({true, "I had oats, 60 g, and a flat white at 08:10. " + std::string(1500, 'q')});
+      parts.history.push_back({false, "Logged. " + std::string(1500, 'a')});
+    }
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, zaiOkBody()});
+    std::string conv, out, err;
+    const bool ok = providers::orchTurnCustom(r.pd, conv, agent::layout::join(parts), "USER", out, err, &r.ht, nullptr);
+    if (!fragmented) {
+      TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
+      TEST_ASSERT_TRUE(r.d.http.seen[0].body.size() > 150000);
+      continue;
+    }
+    TEST_ASSERT_FALSE(ok);   // no refit in this rig: refused, nothing sent
+    TEST_ASSERT_EQUAL_INT(0, (int)r.d.http.seen.size());
+    TEST_ASSERT_TRUE_MESSAGE(err.find("request body over the 85 KB budget") != std::string::npos, err.c_str());
   }
-  const std::string cut =
-      "{\"choices\":[{\"finish_reason\":\"length\",\"message\":{\"content\":\"partial\"}}],"
-      "\"usage\":{\"prompt_tokens\":64000,\"completion_tokens\":1600}}";
-  r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
-  r.d.http.script.push_back({"api.z.ai", kPath, 200, cut});
-  std::string conv, out, err;
-  TEST_ASSERT_FALSE(providers::orchTurnCustom(r.pd, conv, agent::layout::join(parts), "USER", out, err, &r.ht, nullptr));
-  const providers::wire::RoundRecord& sent = providers::wire::lastRound();
-  char msg[160];
-  std::snprintf(msg, sizeof msg, "body %zu B of %u, fragmented %d, cap %u retry %u", sent.load.bodyBytes,
-                (unsigned)b.wireBodyBytes, (int)sent.load.fragmented, (unsigned)sent.cap.maxTokens,
-                (unsigned)sent.cap.retryTokens);
-  TEST_MESSAGE(msg);
-  TEST_ASSERT_TRUE_MESSAGE(sent.load.fragmented, msg);
-  TEST_ASSERT_TRUE_MESSAGE(sent.load.bodyBytes > 150000, msg);
-  TEST_ASSERT_EQUAL_UINT32_MESSAGE(1600, sent.cap.maxTokens, msg);
-  TEST_ASSERT_FALSE_MESSAGE(sent.cap.hasRetry(), msg);
-  TEST_ASSERT_EQUAL_INT_MESSAGE(2, (int)r.d.http.seen.size(), msg);   // no in-step retry, one rerun
-  TEST_ASSERT_TRUE(bodyHas(r.d, 0, "\"max_tokens\":1600"));
-  TEST_ASSERT_FALSE(bodyHas(r.d, 0, "LAST ATTEMPT RAN OUT OF ROOM"));
-  TEST_ASSERT_TRUE(bodyHas(r.d, 1, "LAST ATTEMPT RAN OUT OF ROOM"));
 }
 
 // Z.ai's content filter ends a round with no answer: a failed round, never an empty reply.
@@ -1112,7 +1103,7 @@ int main(int, char**) {
   RUN_TEST(test_zai_final_with_no_reply_field_is_an_empty_reply);
   RUN_TEST(test_zai_forced_final_text_is_the_answer);
   RUN_TEST(test_zai_cut_round_retries_with_room_then_fails_as_cut);
-  RUN_TEST(test_zai_at_64k_fragmented_sends_1600_and_no_retry);
+  RUN_TEST(test_zai_at_64k_fragmented_is_held_at_the_v5_1_1_floor);
   RUN_TEST(test_zai_filtered_round_fails_the_step);
   RUN_TEST(test_lan_custom_head_stays_single_shot);
   RUN_TEST(test_zai_fold_is_plain_prose);

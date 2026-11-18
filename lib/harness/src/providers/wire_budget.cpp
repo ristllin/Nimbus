@@ -20,6 +20,19 @@ RoundBudget roundBudget(const ProviderDeps& pd, const std::string& host, const s
   rb.routed = routed;
   rb.budget = wireBudgetFor(host, model, routed);
   rb.fragmented = fragmentedNow(pd);
+  // Bench A10: on a fragmented DMA pool (or after an upload of this turn failed for memory)
+  // a body over v5.1.1's 85,000 B dies mid-upload on an esp-aes bounce allocation; the
+  // round goes at v5.1.1's budget, and what does not fit is given up with its note.
+  const bool lower = nimbus::orch::budgetLink() == nimbus::orch::BudgetLink::Device &&
+                     (rb.fragmented || nimbus::orch::sendFloorHeld()) &&
+                     rb.budget.wireBodyBytes > nimbus::orch::kLegacyWireBodyBytes;
+  if (lower) {
+    hlog::logf("wire: %s/%s %s - this round's body budget is %u B", host.c_str(), model.c_str(),
+               rb.fragmented ? "DMA pool fragmented" : "an upload failed for memory this turn",
+               (unsigned)nimbus::orch::kLegacyWireBodyBytes);
+    rb.budget = nimbus::orch::atSendFloor(rb.budget);
+    rb.sendFloor = true;
+  }
   return rb;
 }
 

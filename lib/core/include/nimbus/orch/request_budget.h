@@ -140,6 +140,19 @@ RequestBudget turnBudgetFor(const std::string& host, const std::string& model, b
 RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn, BudgetLink link,
                             bool routedLift);
 
+// ---- the send floor (bench A10 on candidate d5afa30a, 18 Nov 2026) --------------------
+// Unit F1 with its DMA-capable pool fragmented: a 184,521 B Sonnet body died at 155,648 B on
+// a 1,600 B esp-aes DMA bounce allocation (every TLS record of a PSRAM body bounces through
+// one) and the turn failed with no reply; v5.1.1 never sent more than 85,000 B. On a Device
+// link a round whose pool is fragmented by the transport's own measure, or any round after an
+// upload of this turn failed for memory (holdSendFloor), has v5.1.1's body budget.
+// The budget at the send floor: wireBodyBytes at most kLegacyWireBodyBytes (bound Floor,
+// target recomputed); a budget already there is returned unchanged.
+RequestBudget atSendFloor(const RequestBudget& b);
+// The turn's hold: set when an upload failed for memory, cleared when the turn's loop ends.
+void holdSendFloor(bool on);
+bool sendFloorHeld();
+
 // ---- the rates and the round's time (shared with output_caps' load-aware fit) --------
 // Each takes the sending host and model; a router selector or an upstream-prefixed id
 // reads its upstream's figures.

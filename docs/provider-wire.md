@@ -236,7 +236,13 @@ serves:
   90 s through the router; `docs/reference/request-budgets.md` lists every model's caps.
   A text round over 85,000 B whose fit cannot carry the minimum final is not sent: it is
   refused with the body-budget wording at the size whose fit does, so the turn gives up
-  what it can and builds it again. Every adapter reads completeness - Anthropic
+  what it can and builds it again. On the device, a round that starts with the DMA pool
+  short (the pacing measure above), or any round after an upload of the turn failed for
+  memory, has v5.1.1's 85,000 B body budget whatever its head's own: each TLS record of a
+  body in PSRAM is encrypted through a DMA bounce allocation (up to 1,600 B), and a larger
+  body died mid-upload on that allocation (bench A10). An upload that fails that way over
+  85,000 B is rebuilt at 85,000 B and sent once more, with what was left out named in the
+  request; a second failure fails the round. Every adapter reads completeness - Anthropic
   `stop_reason:"max_tokens"`, Mistral `finish_reason:"length"` (or tool arguments that
   do not parse), OpenAI `status:"incomplete"`, the custom head `finish_reason:"length"`
   - and a cut answer is never run or delivered as complete. A cut round is retried once

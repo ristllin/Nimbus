@@ -138,6 +138,7 @@ bool heldAtV511(const WireKey& k) {
 }
 
 std::atomic<BudgetLink> g_link{BudgetLink::Device};
+std::atomic<bool> g_sendFloorHeld{false};
 
 // ---- the memo ------------------------------------------------------------------------
 // A few heads per device (the head, its sub and fold models): a small table, made on first
@@ -241,6 +242,17 @@ void bound(RequestBudget& b, const WireKey& k) {
 }  // namespace
 
 void installBudgetLink(BudgetLink link) { g_link.store(link); }
+
+RequestBudget atSendFloor(const RequestBudget& b) {
+  if (b.wireBodyBytes <= kLegacyWireBodyBytes) return b;
+  RequestBudget f = b;
+  f.wireBodyBytes = kLegacyWireBodyBytes;
+  f.bound = BudgetBound::Floor;
+  f.targetTokens = (uint32_t)((uint64_t)f.wireBodyBytes * 100 / (f.rNomX100 ? f.rNomX100 : 400));
+  return f;
+}
+void holdSendFloor(bool on) { g_sendFloorHeld.store(on); }
+bool sendFloorHeld() { return g_sendFloorHeld.load(); }
 BudgetLink budgetLink() { return g_link.load(); }
 
 const char* budgetBoundSlug(BudgetBound b) {

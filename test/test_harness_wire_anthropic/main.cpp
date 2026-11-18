@@ -1873,7 +1873,7 @@ static void test_caps_follow_the_round_load() {
     parts.split = true;
     parts.stat = "SYS";
     parts.dyn = "[NOW] 09:00";
-    for (int i = 0; i < 40; ++i) {
+    for (int i = 0; i < 18; ++i) {   // inside 85,000 B: a fragmented pool sends at v5.1.1's budget (A10)
       parts.history.push_back({true, "q " + std::to_string(i) + " " + std::string(2000, 'q')});
       parts.history.push_back({false, "a " + std::to_string(i) + " " + std::string(2000, 'a')});
     }
