@@ -39,6 +39,7 @@
 #include "prefs_subsystem.h"            // standing rules: the block, /prefs, the delivery filter
 #include "budget_command.h"             // lane BUD: /usage, /budget, /model (the spending commands)
 #include "../sys/ota_update.h"          // RB-OTA2: /ota, the owner's update channel switch
+#include "effect_ring_device.h"         // lane RB-FX: each chat's recent effects on the card
 #include "nimbus/orch/no_dash.h"         // applyOutputFilters (the delivery seam filter)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
 #include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
@@ -1531,6 +1532,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // right now? The engine reads this to capture a background turn's reply into
   // TurnEndEv.wakeReply instead of delivering it at night.
   d.hooks.quietHoursNow = [] { return loops::quietHoursNow(); };
+  d.hooks.onEffect = fxdev::record;   // lane RB-FX: the chat's effect ring (the truth check reads it)
   d.hooks.onToolCall = [](const orch::HeadToolCall& call) {
     nimbus::pollwatch::beat("tool");
     if (!memory::traceActive()) return;

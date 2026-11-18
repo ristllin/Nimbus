@@ -22,10 +22,6 @@ lib/core/src/orch_tx_rules.cpp
 # image allowance covers it then).
 lib/core/src/orch_ledger.cpp
 
-# The effect ring (RB-FX) is not linked by the old engine until its device binding lands
-# (phase 2, after RB-Q1b); RB-FX removes this line then (its image allowance covers it).
-lib/core/src/orch_effect_ring.cpp
-
 lib/harness/src/plain_agents.cpp
 lib/harness/src/plain_compact.cpp
 lib/harness/src/plain_deliver.cpp
