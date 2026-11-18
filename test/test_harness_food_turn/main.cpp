@@ -242,14 +242,15 @@ static void test_ledger_figures_are_claim_sources() {
 }
 
 // The food figure check (a target nothing holds, a day total off the ledger) went with the
-// claim check (RB-Q1b): the reply goes out as written, once, with no "(Correction" line.
+// claim check (RB-Q1b): the reply goes out as written, once, with no "(Correction" line; since
+// RB-Q3a the turn carries neither the ledger's figures nor the [FOOD TARGETS] pointer.
 static void test_a_made_up_target_reaches_the_owner_marked() {
   Rig r;
   r.reply = "{\"reply\":\"You have 38.3 g protein left from your 250 g daily protein target.\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->handleMessage("how much protein is left?", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
   TEST_ASSERT_EQUAL_STRING("You have 38.3 g protein left from your 250 g daily protein target.", r.delivered.back().c_str());
-  TEST_ASSERT_TRUE_MESSAGE(has(r.last().dyn, "[FOOD TARGETS]"), r.last().dyn.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(r.last().dyn, "[FOOD TARGETS]"), r.last().dyn.c_str());   // RB-Q3a: no ledger block
 }
 
 static void test_the_day_total_in_a_reply_is_checked_against_the_ledger() {
@@ -258,7 +259,7 @@ static void test_the_day_total_in_a_reply_is_checked_against_the_ledger() {
   r.eng->handleMessage("so what are we at for today?", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
   TEST_ASSERT_EQUAL_STRING("Today's total is now 3,989 kcal.", r.delivered.back().c_str());
-  TEST_ASSERT_TRUE_MESSAGE(has(r.last().dyn, "1315"), r.last().dyn.c_str());   // the ledger's own total rode the turn
+  TEST_ASSERT_FALSE_MESSAGE(has(r.last().dyn, "1315"), r.last().dyn.c_str());   // RB-Q3a: the ledger does not ride the turn
 }
 
 // The fold's input closes with the date and today's ledger, so the summary dates
