@@ -152,6 +152,15 @@ RequestBudget atSendFloor(const RequestBudget& b);
 // The turn's hold: set when an upload failed for memory, cleared when the turn's loop ends.
 void holdSendFloor(bool on);
 bool sendFloorHeld();
+// How often the floor is taken (candidate 4, F6), since boot, for the state JSON's mem block:
+// every round counts once when its budget is set (wire roundBudget), and a round at the send
+// floor counts in floorRounds too. Two words of RAM; no durable line per round.
+struct SendFloorCounts {
+  uint32_t floorRounds = 0;
+  uint32_t rounds = 0;
+};
+void noteRoundBudget(bool atSendFloor);
+SendFloorCounts sendFloorCounts();
 
 // ---- the rates and the round's time (shared with output_caps' load-aware fit) --------
 // Each takes the sending host and model; a router selector or an upstream-prefixed id

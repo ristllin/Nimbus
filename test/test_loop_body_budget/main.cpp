@@ -1388,6 +1388,32 @@ static void test_fragmented_pool_sends_at_the_v5_1_1_floor_on_every_wire() {
   }
 }
 
+// Candidate 4, F6: the bench can tell how often the floor was taken. Every round's budget counts
+// once in the since-boot pair the state JSON's mem block carries: all rounds, and the rounds at
+// the send floor.
+static void test_rounds_at_the_send_floor_are_counted() {
+  auto table = [](const std::string& host, const std::string& model, bool routed) {
+    nimbus::orch::RequestBudget b = nimbus::orch::requestBudgetFor(host, model, routed);
+    b.wireBodyBytes = 300000;
+    return b;
+  };
+  BudgetScope scope(+table);
+  const WireCase& w = kWires[0];
+  const std::string seed = std::string(2000, 'u');
+  const nimbus::orch::SendFloorCounts c0 = nimbus::orch::sendFloorCounts();
+  g_wireFragmented = false;
+  TEST_ASSERT_EQUAL_INT(1, (int)runWire(w, "SYS short", seed).sent);
+  const nimbus::orch::SendFloorCounts c1 = nimbus::orch::sendFloorCounts();
+  TEST_ASSERT_EQUAL_UINT32(c0.rounds + 1, c1.rounds);
+  TEST_ASSERT_EQUAL_UINT32(c0.floorRounds, c1.floorRounds);
+  g_wireFragmented = true;
+  TEST_ASSERT_EQUAL_INT(1, (int)runWire(w, "SYS short", seed).sent);
+  g_wireFragmented = false;
+  const nimbus::orch::SendFloorCounts c2 = nimbus::orch::sendFloorCounts();
+  TEST_ASSERT_EQUAL_UINT32(c1.rounds + 1, c2.rounds);
+  TEST_ASSERT_EQUAL_UINT32(c1.floorRounds + 1, c2.floorRounds);
+}
+
 namespace {
 // A Sonnet head over the real give-up order with `exchanges` of history: the A10 shape.
 struct SonnetRig {
@@ -1644,6 +1670,7 @@ int main(int, char**) {
   RUN_TEST(test_fragmented_pool_turn_gives_up_history_with_its_note);
   RUN_TEST(test_upload_dead_for_memory_is_resent_once_at_the_floor);
   RUN_TEST(test_no_floor_resend_when_the_heap_stayed_low);
+  RUN_TEST(test_rounds_at_the_send_floor_are_counted);
   RUN_TEST(test_photo_round_text_budget_shrinks_by_the_estimate);
   RUN_TEST(test_album_on_large4_fragmented_goes_natively);
   RUN_TEST(test_album_that_cannot_fit_goes_as_transcriptions);

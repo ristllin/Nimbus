@@ -139,6 +139,7 @@ bool heldAtV511(const WireKey& k) {
 
 std::atomic<BudgetLink> g_link{BudgetLink::Device};
 std::atomic<bool> g_sendFloorHeld{false};
+std::atomic<uint32_t> g_floorRounds{0}, g_rounds{0};
 
 // ---- the memo ------------------------------------------------------------------------
 // A few heads per device (the head, its sub and fold models): a small table, made on first
@@ -253,6 +254,16 @@ RequestBudget atSendFloor(const RequestBudget& b) {
 }
 void holdSendFloor(bool on) { g_sendFloorHeld.store(on); }
 bool sendFloorHeld() { return g_sendFloorHeld.load(); }
+void noteRoundBudget(bool atSendFloor) {
+  g_rounds.fetch_add(1);
+  if (atSendFloor) g_floorRounds.fetch_add(1);
+}
+SendFloorCounts sendFloorCounts() {
+  SendFloorCounts c;
+  c.floorRounds = g_floorRounds.load();
+  c.rounds = g_rounds.load();
+  return c;
+}
 BudgetLink budgetLink() { return g_link.load(); }
 
 const char* budgetBoundSlug(BudgetBound b) {

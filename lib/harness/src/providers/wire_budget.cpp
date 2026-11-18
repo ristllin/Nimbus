@@ -33,6 +33,7 @@ RoundBudget roundBudget(const ProviderDeps& pd, const std::string& host, const s
     rb.budget = nimbus::orch::atSendFloor(rb.budget);
     rb.sendFloor = true;
   }
+  nimbus::orch::noteRoundBudget(rb.sendFloor);   // the since-boot pair (candidate 4, F6)
   return rb;
 }
 
