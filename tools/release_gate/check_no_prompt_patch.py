@@ -48,8 +48,11 @@ EMPTY_SHA8 = cat.class_sha8([])
 KINDS = ("swap", "remove", "build")
 # Rows up to this id predate the rule (18 Nov 2026); every later row needs a red scenario.
 REGISTER_LAST_GRANDFATHERED = 55
-MISSING_CHECK = re.compile(r"\b(missing|no|lacked?|lacking|without( an?)?|absent)\s+(\w+\s+)?"
-                           r"(check|guard|test|assertion|validation|gate)s?\b", re.I)
+MISSING_CHECK = re.compile(
+    r"\b(missing|no|lacked?|lacking|without( an?)?|absent)\s+(\w+\s+)?"
+    r"(check|guard|test|assertion|validation|gate)s?\b",
+    re.I,
+)
 BASE_REFS = ("rb-main", "origin/rb-main", "main", "origin/main")
 
 _ENTRY_HEAD = re.compile(r"^### (PC-\d{4})\b")
@@ -127,51 +130,73 @@ def scenario_exists(root: str, sid: str) -> bool:
     return False
 
 
-def check_entry(root: str, e: dict) -> "tuple[list, tuple | None]":
-    """Field problems of one entry, and its parsed transition (catalog, class, b0, b1, s0, s1)."""
+def _first_word(value: str) -> str:
+    return value.split()[0] if value.split() else ""
+
+
+def _identity_errors(e: dict) -> "list[str]":
+    eid, catalog, cls, kind = e["id"], e.get("catalog", ""), e.get("class", ""), e.get("kind", "")
     errs = []
-    eid = e["id"]
-    catalog, cls, kind = e.get("catalog", ""), e.get("class", ""), e.get("kind", "")
     if catalog not in cat.CATALOGS:
         errs.append(f"{eid}: catalog must be one of {', '.join(cat.CATALOGS)} (got {catalog!r})")
     elif cls not in cat.CATALOGS[catalog]["classes"]:
         errs.append(f"{eid}: class {cls!r} is not a class of {catalog}")
     if kind not in KINDS:
         errs.append(f"{eid}: kind must be one of {', '.join(KINDS)} (got {kind!r})")
-    mb, ms = _PAIR_INT.match(e.get("bytes", "")), _PAIR_SHA.match(e.get("sha8", ""))
-    if not mb:
-        errs.append(f"{eid}: bytes must read '<before> -> <after>'")
-    if not ms:
-        errs.append(f"{eid}: sha8 must read '<before> -> <after>' (8 hex each)")
-    if not e.get("lane"):
-        errs.append(f"{eid}: lane is required")
-    if not e.get("why"):
-        errs.append(f"{eid}: why is required")
-    if kind == "swap":
-        sid = e.get("scenario", "").split()[0] if e.get("scenario") else ""
-        if not sid:
-            errs.append(f"{eid}: a swap needs the red scenario id (scenario:)")
-        elif not scenario_exists(root, sid):
-            errs.append(f"{eid}: scenario {sid!r} does not resolve under {SCENARIO_ROOT}/**/scenarios")
-        if not _COMMIT.match(e.get("red_at", "").split()[0] if e.get("red_at") else ""):
-            errs.append(f"{eid}: a swap needs red_at: the commit where its scenario was red")
-        if not _RATES.match(e.get("rates", "")):
-            errs.append(f"{eid}: a swap needs the parity rates: 'rates: before=<0..1> after=<0..1>'")
+    for field in ("lane", "why"):
+        if not e.get(field):
+            errs.append(f"{eid}: {field} is required")
+    return errs
+
+
+def _proof_errors(root: str, e: dict) -> "list[str]":
+    """A swap's red-scenario-first proof; a build entry's PRD section."""
+    eid, kind = e["id"], e.get("kind", "")
+    errs = []
     if kind == "build" and not re.search(r"\bsection \d+", e.get("prd", "")):
         errs.append(f"{eid}: a build entry names the PRD section it implements (prd: section N)")
-    if errs or not (mb and ms):
+    if kind != "swap":
+        return errs
+    sid = _first_word(e.get("scenario", ""))
+    if not sid:
+        errs.append(f"{eid}: a swap needs the red scenario id (scenario:)")
+    elif not scenario_exists(root, sid):
+        errs.append(f"{eid}: scenario {sid!r} does not resolve under {SCENARIO_ROOT}/**/scenarios")
+    if not _COMMIT.match(_first_word(e.get("red_at", ""))):
+        errs.append(f"{eid}: a swap needs red_at: the commit where its scenario was red")
+    if not _RATES.match(e.get("rates", "")):
+        errs.append(f"{eid}: a swap needs the parity rates: 'rates: before=<0..1> after=<0..1>'")
+    return errs
+
+
+def _size_errors(e: dict, b0: int, b1: int) -> "list[str]":
+    eid, catalog, cls, kind = e["id"], e["catalog"], e["class"], e["kind"]
+    if kind == "build":
+        phase = cat.CATALOGS[catalog]["phase"]
+        return [] if phase == "build" else [f"{eid}: kind build is refused: catalog {catalog} is {phase}"]
+    if b1 > b0:
+        return [
+            f"{eid}: {catalog} {cls} grows {b0} -> {b1} B (+{b1 - b0}); growth fails unless equal bytes are "
+            "removed in the same class"
+        ]
+    if kind == "remove" and b1 == b0:
+        return [f"{eid}: kind remove must shrink the class ({b0} -> {b1})"]
+    return []
+
+
+def check_entry(root: str, e: dict) -> "tuple[list, tuple | None]":
+    """Field problems of one entry, and its parsed transition (catalog, class, b0, b1, s0, s1)."""
+    errs = _identity_errors(e) + _proof_errors(root, e)
+    mb, ms = _PAIR_INT.match(e.get("bytes", "")), _PAIR_SHA.match(e.get("sha8", ""))
+    if not mb:
+        errs.append(f"{e['id']}: bytes must read '<before> -> <after>'")
+    if not ms:
+        errs.append(f"{e['id']}: sha8 must read '<before> -> <after>' (8 hex each)")
+    if errs:
         return errs, None
     b0, b1 = int(mb.group(1)), int(mb.group(2))
-    if b1 > b0 and kind != "build":
-        errs.append(f"{eid}: {catalog} {cls} grows {b0} -> {b1} B (+{b1 - b0}); growth fails unless equal "
-                    "bytes are removed in the same class")
-    if kind == "build" and cat.CATALOGS[catalog]["phase"] != "build":
-        errs.append(f"{eid}: kind build is refused: catalog {catalog} is {cat.CATALOGS[catalog]['phase']}")
-    if kind == "remove" and b1 >= b0:
-        errs.append(f"{eid}: kind remove must shrink the class ({b0} -> {b1})")
-    if kind == "swap" and b1 > b0:
-        errs.append(f"{eid}: a swap may not grow the class ({b0} -> {b1})")
-    return errs, (catalog, cls, b0, b1, ms.group(1), ms.group(2))
+    errs = _size_errors(e, b0, b1)
+    return errs, (e["catalog"], e["class"], b0, b1, ms.group(1), ms.group(2))
 
 
 def check_ledger(root: str, changes: dict, current: dict) -> "list[str]":
@@ -189,19 +214,24 @@ def check_ledger(root: str, changes: dict, current: dict) -> "list[str]":
         catalog, cls, b0, b1, s0, s1 = tr
         prev = state.get((catalog, cls), (0, EMPTY_SHA8))
         if (b0, s0) != prev:
-            errs.append(f"{e['id']}: before state {b0} B {s0} is not the last accepted state of {catalog} {cls} "
-                        f"({prev[0]} B {prev[1]}); entries chain in file order")
+            errs.append(
+                f"{e['id']}: before state {b0} B {s0} is not the last accepted state of {catalog} {cls} "
+                f"({prev[0]} B {prev[1]}); entries chain in file order"
+            )
         if b1 > cat.ceilings(catalog).get(cls, 0):
-            errs.append(f"{e['id']}: {catalog} {cls} after {b1} B is over its ceiling "
-                        f"{cat.ceilings(catalog).get(cls, 0)} B")
+            errs.append(
+                f"{e['id']}: {catalog} {cls} after {b1} B is over its ceiling {cat.ceilings(catalog).get(cls, 0)} B"
+            )
         state[(catalog, cls)] = (b1, s1)
     for catalog, classes in current.items():
         for cls, st in classes.items():
             want = state.get((catalog, cls), (0, EMPTY_SHA8))
             if (st["bytes"], st["sha8"]) != want:
-                errs.append(f"{catalog} {cls}: model-facing text changed ({want[0]} B {want[1]} -> {st['bytes']} B "
-                            f"{st['sha8']}) with no entry in {CHANGES}; a fix changes a tool, the transcript or "
-                            "the model, not the text (PRD section 11)")
+                errs.append(
+                    f"{catalog} {cls}: model-facing text changed ({want[0]} B {want[1]} -> {st['bytes']} B "
+                    f"{st['sha8']}) with no entry in {CHANGES}; a fix changes a tool, the transcript or "
+                    "the model, not the text (PRD section 11)"
+                )
     return errs
 
 
@@ -216,8 +246,9 @@ def check_ceilings(current: dict, baseline: dict) -> "list[str]":
                 errs.append(f"{catalog} {cls}: {st['bytes']} B is over its ceiling {ceil[cls]} B")
     for (catalog, cls), (b, _s) in baseline.items():
         if catalog == "e1" and cat.ceilings("e1").get(cls, 0) > b:
-            errs.append(f"e1 {cls}: ceiling {cat.ceilings('e1')[cls]} B is above its baseline {b} B "
-                        "(engine 1 only shrinks)")
+            errs.append(
+                f"e1 {cls}: ceiling {cat.ceilings('e1')[cls]} B is above its baseline {b} B (engine 1 only shrinks)"
+            )
     return errs
 
 
@@ -243,11 +274,15 @@ def check_register(root: str, text: "str | None" = None) -> "list[str]":
             continue
         ids = re.findall(r"\b[a-z0-9][a-z0-9._-]+\b", cells[7])
         if not any(scenario_exists(root, i) for i in ids):
-            errs.append(f"{rid}: the live case column names no scenario that resolves under {SCENARIO_ROOT}/**/"
-                        "scenarios; every owner-visible failure gets a red multi-turn scenario before its fix")
+            errs.append(
+                f"{rid}: the live case column names no scenario that resolves under {SCENARIO_ROOT}/**/"
+                "scenarios; every owner-visible failure gets a red multi-turn scenario before its fix"
+            )
         if MISSING_CHECK.search(cells[4]):
-            errs.append(f"{rid}: 'missing check' is not an accepted root cause (say why the product did the "
-                        f"wrong thing): {cells[4][:80]!r}")
+            errs.append(
+                f"{rid}: 'missing check' is not an accepted root cause (say why the product did the "
+                f"wrong thing): {cells[4][:80]!r}"
+            )
     return errs
 
 
@@ -280,39 +315,47 @@ def show(root: str, base: str, rel: str) -> "str | None":
     return git(root, "show", f"{base}:{rel}")
 
 
-def check_history(root: str, base: str, changes: dict) -> "list[str]":
+def _merged_entry_errors(changes: dict, old: dict) -> "list[str]":
     errs = []
+    if old["baseline"] != changes["baseline"]:
+        errs.append(f"{CHANGES}: the baseline differs from the base commit's; it is written once")
+    now = {e["id"]: e["_text"] for e in changes["entries"]}
+    for e in old["entries"]:
+        if now.get(e["id"]) != e["_text"]:
+            errs.append(f"{e['id']}: a merged entry was edited or removed; add a new entry instead")
+    return errs
+
+
+def _added_texts(root: str, base: str, catalog: str, cls: str) -> Counter:
+    old_golden = show(root, base, cat.CATALOGS[catalog]["golden"])
+    new_golden = cat._read(root, cat.CATALOGS[catalog]["golden"])
+    if old_golden is None or new_golden is None:
+        return Counter()
+    was = Counter(x.text for x in cat.parse(old_golden)["entries"] if x.cls == cls)
+    now = Counter(x.text for x in cat.parse(new_golden)["entries"] if x.cls == cls)
+    return now - was
+
+
+def check_history(root: str, base: str, changes: dict) -> "list[str]":
+    """Merged entries and the baseline are unchanged; a remove entry hides no added text."""
     old_text = show(root, base, CHANGES)
-    if old_text is not None:
-        old = parse_changes(old_text)
-        if old["baseline"] != changes["baseline"]:
-            errs.append(f"{CHANGES}: the baseline differs from the base commit's; it is written once")
-        now = {e["id"]: e["_text"] for e in changes["entries"]}
-        for e in old["entries"]:
-            if now.get(e["id"]) != e["_text"]:
-                errs.append(f"{e['id']}: a merged entry was edited or removed; add a new entry instead")
-        old_ids = {e["id"] for e in old["entries"]}
-        new_entries = [e for e in changes["entries"] if e["id"] not in old_ids]
-    else:
-        new_entries = list(changes["entries"])
-    # A remove entry may not hide added text: compare the class's texts with the base golden.
-    by_class = {}
-    for e in new_entries:
-        by_class.setdefault((e.get("catalog"), e.get("class")), set()).add(e.get("kind"))
-    for (catalog, cls), kinds in by_class.items():
-        if kinds != {"remove"} or catalog not in cat.CATALOGS:
+    old = parse_changes(old_text) if old_text is not None else {"baseline": changes["baseline"], "entries": []}
+    errs = _merged_entry_errors(changes, old)
+    old_ids = {e["id"] for e in old["entries"]}
+    kinds: dict = {}
+    for e in changes["entries"]:
+        if e["id"] not in old_ids:
+            kinds.setdefault((e.get("catalog"), e.get("class")), set()).add(e.get("kind"))
+    for (catalog, cls), ks in kinds.items():
+        if ks != {"remove"} or catalog not in cat.CATALOGS:
             continue
-        old_golden = show(root, base, cat.CATALOGS[catalog]["golden"])
-        new_golden = cat._read(root, cat.CATALOGS[catalog]["golden"])
-        if old_golden is None or new_golden is None:
-            continue
-        was = Counter(x.text for x in cat.parse(old_golden)["entries"] if x.cls == cls)
-        now = Counter(x.text for x in cat.parse(new_golden)["entries"] if x.cls == cls)
-        added = now - was
+        added = _added_texts(root, base, catalog, cls)
         if added:
-            sample = next(iter(added))
-            errs.append(f"{catalog} {cls}: logged as remove but text was added ({sum(len(t.encode()) for t in added.elements())} B, "
-                        f"e.g. {sample[:70]!r}); log a swap with its red scenario and rates")
+            size = sum(len(t.encode("utf-8")) for t in added.elements())
+            errs.append(
+                f"{catalog} {cls}: logged as remove but text was added ({size} B, e.g. "
+                f"{next(iter(added))[:70]!r}); log a swap with its red scenario and rates"
+            )
     return errs
 
 
@@ -332,8 +375,10 @@ def current_stats(root: str) -> "tuple[dict, list]":
             continue
         stats[name] = cat.class_stats(name, entries)
         if golden != cat.render(name, entries):
-            errs.append(f"{golden_rel} is stale: regenerate with gen_model_text_catalog.py --write and log the "
-                        f"change in {CHANGES}")
+            errs.append(
+                f"{golden_rel} is stale: regenerate with gen_model_text_catalog.py --write and log the "
+                f"change in {CHANGES}"
+            )
     return stats, errs
 
 
@@ -358,8 +403,10 @@ def run(root: str, base: "str | None", use_base: bool = True, quiet: bool = Fals
     if not quiet:
         for name, classes in stats.items():
             for cls, st in classes.items():
-                print(f"  {name} {cls:18} {st['bytes']:7d} B  ceiling {cat.ceilings(name).get(cls, 0):7d} B  "
-                      f"sha8 {st['sha8']}")
+                print(
+                    f"  {name} {cls:18} {st['bytes']:7d} B  ceiling {cat.ceilings(name).get(cls, 0):7d} B  "
+                    f"sha8 {st['sha8']}"
+                )
     return errs
 
 

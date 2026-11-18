@@ -182,15 +182,37 @@ CATALOGS = {
     "e2": {"golden": "test/golden/model_text_catalog.txt", "phase": "build", "classes": E2_CLASSES},
 }
 
-LOG_CALLS = frozenset({
-    "logf", "log", "logLine", "alog", "alogf", "beat", "printf", "fprintf",
-    "log_e", "log_w", "log_i", "log_d", "ESP_LOGE", "ESP_LOGW", "ESP_LOGI", "ESP_LOGD", "ESP_LOGV",
-    "Serial.printf", "Serial.println", "Serial.print", "static_assert",
-})
+LOG_CALLS = frozenset(
+    {
+        "logf",
+        "log",
+        "logLine",
+        "alog",
+        "alogf",
+        "beat",
+        "printf",
+        "fprintf",
+        "log_e",
+        "log_w",
+        "log_i",
+        "log_d",
+        "ESP_LOGE",
+        "ESP_LOGW",
+        "ESP_LOGI",
+        "ESP_LOGD",
+        "ESP_LOGV",
+        "Serial.printf",
+        "Serial.println",
+        "Serial.print",
+        "static_assert",
+    }
+)
 RESULT_CALLS = frozenset({"ok", "fail"})
 ADD_CALLS = frozenset({"add", "addOwnerOnly"})  # tool registration: (reg,) name, description, handler, schema
-TOOL_FILE = re.compile(r'\bToolResult::(?:ok|fail)\s*\(|(?<!struct )\bToolResult\s*\{|registry\(\)\s*\.add\s*\(|'
-                       r'\.add\(\s*"[a-z][a-z0-9_]*\.[a-z0-9_.]+"')
+TOOL_FILE = re.compile(
+    r'\bToolResult::(?:ok|fail)\s*\(|(?<!struct )\bToolResult\s*\{|registry\(\)\s*\.add\s*\(|'
+    r'\.add\(\s*"[a-z][a-z0-9_]*\.[a-z0-9_.]+"'
+)
 SCAN_DIRS = ("lib", "src", "nimbusd/src")
 SCAN_SKIP = ("lib/core/include/nimbus/orch/tool_registry.h",)
 
@@ -199,19 +221,30 @@ SCAN_SKIP = ("lib/core/include/nimbus/orch/tool_registry.h",)
 class Literal:
     text: str
     line: int
-    calls: tuple = ()        # enclosing call names, outermost first
-    arg_index: int = -1      # argument position in the innermost call (-1: not in a call)
-    namespaces: tuple = ()   # enclosing namespace names, outermost first
-    names: tuple = ()        # identifiers of the statement before the literal (kAppendDesc, ...)
-    in_add: bool = False     # a direct argument of a tool registration call, outside a lambda body
+    calls: tuple = ()  # enclosing call names, outermost first
+    arg_index: int = -1  # argument position in the innermost call (-1: not in a call)
+    namespaces: tuple = ()  # enclosing namespace names, outermost first
+    names: tuple = ()  # identifiers of the statement before the literal (kAppendDesc, ...)
+    in_add: bool = False  # a direct argument of a tool registration call, outside a lambda body
 
     @property
     def logged(self) -> bool:
         return any(c in LOG_CALLS for c in self.calls)
 
 
-_ESC = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "'": "'", '"': '"', "?": "?",
-        "a": "\a", "b": "\b", "f": "\f", "v": "\v"}
+_ESC = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "?": "?",
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+}
 
 
 def _unescape(body: str) -> str:
@@ -226,16 +259,16 @@ def _unescape(body: str) -> str:
             continue
         n = body[i + 1] if i + 1 < len(body) else ""
         if n == "x":
-            m = re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2:])
+            m = re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2 :])
             out.append(int(m.group(0), 16) if m else ord("x"))
             i += 2 + (len(m.group(0)) if m else 0)
         elif n in "01234567" and n:
-            m = re.match(r"[0-7]{1,3}", body[i + 1:])
+            m = re.match(r"[0-7]{1,3}", body[i + 1 :])
             out.append(int(m.group(0), 8) & 0xFF)
             i += 1 + len(m.group(0))
         elif n in ("u", "U"):
             k = 4 if n == "u" else 8
-            out += chr(int(body[i + 2:i + 2 + k], 16)).encode("utf-8")
+            out += chr(int(body[i + 2 : i + 2 + k], 16)).encode("utf-8")
             i += 2 + k
         else:
             out += _ESC.get(n, n).encode("utf-8")
@@ -244,28 +277,90 @@ def _unescape(body: str) -> str:
 
 
 _STR_START = re.compile(r'(?:u8|u|U|L)?(R)?"')
+_DIRECTIVE_SKIP = re.compile(r"#\s*(include|pragma|error|warning)\b")
 
 
-def extract_literals(src: str) -> list:
-    """Every string literal of a C/C++ source, adjacent literals joined, with the calls
-    and namespaces that enclose it. Comments, char literals and preprocessor include
-    lines are skipped."""
-    out: list = []
-    stack: list = []          # entries: [kind, name, arg_index] kind 'call'|'paren'|'brace'|'ns'
-    pending_ns = None
-    last_ident = ""
-    stmt: list = []           # identifiers since the last ; { or }
-    cur = None                # literal being joined: [text, first line]
-    i, n, line = 0, len(src), 1
+class _Lexer:
+    """One pass over a C/C++ source: string literals with the calls, namespaces and
+    statement names around them. Adjacent literals are joined as the compiler joins them."""
 
-    def flush():
-        nonlocal cur
-        if cur is None:
+    def __init__(self, src: str):
+        self.src, self.n = src, len(src)
+        self.i, self.line = 0, 1
+        self.stack: list = []  # [kind, name, arg_index], kind: call | paren | brace | ns
+        self.stmt: list = []  # identifiers since the last ; { or }
+        self.out: list = []
+        self.pending_ns = None  # "" after the keyword namespace, then its name
+        self.last_ident = ""
+        self.cur = None  # the literal being joined: [text, first line]
+
+    def run(self) -> list:
+        while self.i < self.n:
+            if self._skip() or self._string():
+                continue
+            self._flush()
+            if self._char_literal() or self._ident():
+                continue
+            self._punct(self.src[self.i])
+            self.i += 1
+        self._flush()
+        return self.out
+
+    # -- what does not end a literal run --------------------------------------------------
+    def _skip(self) -> bool:
+        src, i = self.src, self.i
+        c = src[i]
+        if c in " \t\r\f\v\n":
+            self.line += c == "\n"
+            self.i += 1
+        elif c == "\\" and src.startswith("\n", i + 1 + (src[i + 1 : i + 2] == "\r")):  # macro line continuation
+            self.i += 1
+        elif src.startswith("//", i):
+            self.i = self._eol(i)
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = self.n if j < 0 else j + 2
+            self.line += src.count("\n", i, j)
+            self.i = j
+        elif c == "#" and src[src.rfind("\n", 0, i) + 1 : i].strip() == "" and _DIRECTIVE_SKIP.match(src, i):
+            self.i = self._eol(i)
+        else:
+            return False
+        return True
+
+    def _eol(self, i: int) -> int:
+        j = self.src.find("\n", i)
+        return self.n if j < 0 else j
+
+    def _string(self) -> bool:
+        src, i = self.src, self.i
+        m = _STR_START.match(src, i) if src[i] in 'uULR"' else None
+        if not m or (i > 0 and (src[i - 1].isalnum() or src[i - 1] == "_")):
+            return False
+        if m.group(1):  # raw string R"delim( ... )delim"
+            k = src.index("(", m.end())
+            delim = src[m.end() : k]
+            end = src.index(")" + delim + '"', k)
+            body, text = src[k + 1 : end], src[k + 1 : end]
+            self.i = end + len(delim) + 2
+        else:
+            j = m.end()
+            while src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            body = src[m.end() : j]
+            text = _unescape(body)
+            self.i = j + 1
+        if self.cur is None:
+            self.cur = ["", self.line]
+        self.cur[0] += text
+        self.line += body.count("\n")
+        return True
+
+    def _flush(self) -> None:
+        if self.cur is None:
             return
-        calls = tuple(e[1] for e in stack if e[0] == "call")
+        stack = self.stack
         inner = next((e for e in reversed(stack) if e[0] in ("call", "paren")), None)
-        arg = inner[2] if inner is not None and inner[0] == "call" else -1
-        nss = tuple(e[1] for e in stack if e[0] == "ns")
         in_add = False
         for e in reversed(stack):
             if e[0] in ("brace", "ns"):
@@ -273,123 +368,85 @@ def extract_literals(src: str) -> list:
             if e[0] == "call" and e[1] in ADD_CALLS:
                 in_add = True
                 break
-        out.append(Literal(cur[0], cur[1], calls, arg, nss, tuple(stmt), in_add))
-        cur = None
+        self.out.append(
+            Literal(
+                text=self.cur[0],
+                line=self.cur[1],
+                calls=tuple(e[1] for e in stack if e[0] == "call"),
+                arg_index=inner[2] if inner is not None and inner[0] == "call" else -1,
+                namespaces=tuple(e[1] for e in stack if e[0] == "ns"),
+                names=tuple(self.stmt),
+                in_add=in_add,
+            )
+        )
+        self.cur = None
 
-    while i < n:
-        c = src[i]
-        if c == "\n":
-            line += 1
-            i += 1
-            continue
-        if c in " \t\r\f\v":
-            i += 1
-            continue
-        if c == "\\" and src.startswith("\n", i + 1 + (src[i + 1:i + 2] == "\r")):  # macro line continuation
-            i += 1
-            continue
-        if src.startswith("//", i):
-            j = src.find("\n", i)
-            i = n if j < 0 else j
-            continue
-        if src.startswith("/*", i):
-            j = src.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            line += src.count("\n", i, j)
-            i = j
-            continue
-        if c == "#" and (i == 0 or src.rfind("\n", 0, i) == i - 1 or src[src.rfind("\n", 0, i) + 1:i].strip() == ""):
-            m = re.match(r"#\s*(include|pragma|error|warning)\b", src[i:])
-            if m:
-                j = src.find("\n", i)
-                i = n if j < 0 else j
-                continue
-        m = _STR_START.match(src, i) if c in 'uULR"' else None
-        if m and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
-            start_line = line
-            if m.group(1):  # raw string R"delim( ... )delim"
-                k = src.index("(", m.end())
-                delim = src[m.end():k]
-                end = src.index(")" + delim + '"', k)
-                body, raw = src[k + 1:end], True
-                i = end + len(delim) + 2
-            else:
-                j = m.end()
-                while src[j] != '"':
-                    j += 2 if src[j] == "\\" else 1
-                body, raw = src[m.end():j], False
-                i = j + 1
-            line += body.count("\n")
-            if cur is None:
-                cur = ["", start_line]
-            cur[0] += body if raw else _unescape(body)  # adjacent literals join
-            continue
-        flush()
-        if c == "'":
-            j = i + 1
-            while j < n and src[j] != "'":
-                j += 2 if src[j] == "\\" else 1
-            i = j + 1
-            continue
-        if c.isalpha() or c == "_":
-            j = i
-            while j < n and (src[j].isalnum() or src[j] == "_"):
-                j += 1
-            word = src[i:j]
-            # Serial.printf and similar: keep the dotted owner for log detection.
-            if i > 0 and src[i - 1] == "." and last_ident:
-                k = i - 2
-                while k >= 0 and (src[k].isalnum() or src[k] == "_"):
-                    k -= 1
-                owner = src[k + 1:i - 1]
-                if owner:
-                    word = owner + "." + word
-            if word == "namespace":
-                pending_ns = ""
-            elif pending_ns == "":
-                pending_ns = word
-            last_ident = word
-            stmt.append(word)
-            i = j
-            continue
+    # -- tokens between literals ----------------------------------------------------------
+    def _char_literal(self) -> bool:
+        if self.src[self.i] != "'":
+            return False
+        j = self.i + 1
+        while j < self.n and self.src[j] != "'":
+            j += 2 if self.src[j] == "\\" else 1
+        self.i = j + 1
+        return True
+
+    def _ident(self) -> bool:
+        src, i = self.src, self.i
+        if not (src[i].isalpha() or src[i] == "_"):
+            return False
+        j = i
+        while j < self.n and (src[j].isalnum() or src[j] == "_"):
+            j += 1
+        word = src[i:j]
+        if i > 0 and src[i - 1] == "." and self.last_ident:  # Serial.printf: keep the owner for log detection
+            k = i - 2
+            while k >= 0 and (src[k].isalnum() or src[k] == "_"):
+                k -= 1
+            if src[k + 1 : i - 1]:
+                word = src[k + 1 : i - 1] + "." + word
+        if word == "namespace":
+            self.pending_ns = ""
+        elif self.pending_ns == "":
+            self.pending_ns = word
+        self.last_ident = word
+        self.stmt.append(word)
+        self.i = j
+        return True
+
+    def _punct(self, c: str) -> None:
+        if c in ":<>":
+            return  # keep the name across nimbus::hlog::logf and template arguments
         if c == "(":
-            if last_ident:
-                stack.append(["call", last_ident, 0])
-            else:
-                stack.append(["paren", "", 0])
-            last_ident = ""
+            self.stack.append(["call", self.last_ident, 0] if self.last_ident else ["paren", "", 0])
         elif c == "{":
-            stmt.clear()
-            if pending_ns is not None:
-                stack.append(["ns", pending_ns or "<anon>", 0])
-                pending_ns = None
-            else:
-                stack.append(["brace", "", 0])
-            last_ident = ""
+            self.stmt.clear()
+            self.stack.append(
+                ["ns", self.pending_ns or "<anon>", 0] if self.pending_ns is not None else ["brace", "", 0]
+            )
+            self.pending_ns = None
         elif c in ")}":
+            self._close(("brace", "ns") if c == "}" else ("call", "paren"))
             if c == "}":
-                stmt.clear()
-            want = "brace" if c == "}" else None
-            while stack:
-                e = stack.pop()
-                if (want == "brace" and e[0] in ("brace", "ns")) or (want is None and e[0] in ("call", "paren")):
-                    break
-            last_ident = ""
-        elif c == ",":
-            if stack and stack[-1][0] == "call":
-                stack[-1][2] += 1
-            last_ident = ""
+                self.stmt.clear()
+        elif c == "," and self.stack and self.stack[-1][0] == "call":
+            self.stack[-1][2] += 1
         elif c == ";":
-            stmt.clear()
-            pending_ns = None
-            last_ident = ""
-        elif c in ":<>":
-            pass  # keep last_ident across nimbus::hlog::logf and template args
-        else:
-            last_ident = ""
-        i += 1
-    flush()
-    return out
+            self.stmt.clear()
+            self.pending_ns = None
+        self.last_ident = ""
+
+    def _close(self, kinds: tuple) -> None:
+        while self.stack:
+            if self.stack.pop()[0] in kinds:
+                return
+
+
+def extract_literals(src: str) -> list:
+    """Every string literal of a C/C++ source, adjacent literals joined, with the calls,
+    namespaces and statement names that enclose it. Comments, char literals and
+    #include / #pragma lines are skipped."""
+    return _Lexer(src).run()
 
 
 _PROSE = re.compile(r"[A-Za-z]{2,}")
@@ -519,8 +576,10 @@ def build_e1(root: str) -> list:
         raise CatalogError("no engine-1 source found: wrong --root?")
     stray = uncatalogued_tool_files(root)
     if stray:
-        raise CatalogError("a file builds a tool result or registers a tool but is in no catalog class "
-                           "(add it to E1_SOURCES or E1_RESULT_ONLY): " + ", ".join(stray))
+        raise CatalogError(
+            "a file builds a tool result or registers a tool but is in no catalog class "
+            "(add it to E1_SOURCES or E1_RESULT_ONLY): " + ", ".join(stray)
+        )
     return entries
 
 
@@ -533,8 +592,9 @@ def _e2_literal_entries(rel: str, src: str, default_cls: "str | None") -> list:
             continue
         out.append(Entry(cls, rel, lit.text))
     if bad:
-        raise CatalogError("a literal in texts.h sits in no class namespace (" + ", ".join(E2_CLASSES) +
-                           "): " + ", ".join(bad))
+        raise CatalogError(
+            "a literal in texts.h sits in no class namespace (" + ", ".join(E2_CLASSES) + "): " + ", ".join(bad)
+        )
     return out
 
 
@@ -580,8 +640,11 @@ def class_stats(name: str, entries: list) -> dict:
     out = {}
     for cls in CATALOGS[name]["classes"]:
         texts = [e.text for e in entries if e.cls == cls]
-        out[cls] = {"bytes": sum(len(t.encode("utf-8")) for t in texts), "entries": len(texts),
-                    "sha8": class_sha8(texts)}
+        out[cls] = {
+            "bytes": sum(len(t.encode("utf-8")) for t in texts),
+            "entries": len(texts),
+            "sha8": class_sha8(texts),
+        }
     return out
 
 
@@ -594,8 +657,9 @@ def render(name: str, entries: list) -> str:
         "# One entry per line: class, source, sha8, bytes, the text as a JSON string.",
     ]
     for cls, st in stats.items():
-        lines.append(f"# class {cls} bytes={st['bytes']} ceiling={ceil.get(cls, 0)} "
-                     f"entries={st['entries']} sha8={st['sha8']}")
+        lines.append(
+            f"# class {cls} bytes={st['bytes']} ceiling={ceil.get(cls, 0)} entries={st['entries']} sha8={st['sha8']}"
+        )
     order = {c: i for i, c in enumerate(CATALOGS[name]["classes"])}
     for e in sorted(entries, key=lambda e: (order[e.cls], e.path)):  # stable: keeps source order in a file
         lines.append(f"{e.cls}\t{e.path}\t{e.sha8}\t{e.size}\t{json.dumps(e.text, ensure_ascii=True)}")
@@ -611,8 +675,12 @@ def parse(text: str) -> dict:
     for line in text.splitlines():
         m = _CLASS_LINE.match(line)
         if m:
-            classes[m.group(1)] = {"bytes": int(m.group(2)), "ceiling": int(m.group(3)),
-                                   "entries": int(m.group(4)), "sha8": m.group(5)}
+            classes[m.group(1)] = {
+                "bytes": int(m.group(2)),
+                "ceiling": int(m.group(3)),
+                "entries": int(m.group(4)),
+                "sha8": m.group(5),
+            }
             continue
         if not line or line.startswith("#"):
             continue
@@ -649,8 +717,10 @@ def main(argv: "list[str] | None" = None) -> int:
         text = render(name, entries)
         if args.summary:
             for cls, st in class_stats(name, entries).items():
-                print(f"{name} {cls:18} {st['bytes']:7d} B  {st['entries']:4d} entries  ceiling "
-                      f"{ceilings(name).get(cls, 0)}")
+                print(
+                    f"{name} {cls:18} {st['bytes']:7d} B  {st['entries']:4d} entries  ceiling "
+                    f"{ceilings(name).get(cls, 0)}"
+                )
         if args.write:
             with open(golden, "w", encoding="utf-8") as f:
                 f.write(text)
@@ -658,8 +728,10 @@ def main(argv: "list[str] | None" = None) -> int:
             continue
         cur = _read(args.root, CATALOGS[name]["golden"])
         if cur != text:
-            print(f"{name}: {CATALOGS[name]['golden']} is stale: model-facing text changed. Regenerate with "
-                  "--write, then log the change in coverage/PROMPT-CHANGES.md")
+            print(
+                f"{name}: {CATALOGS[name]['golden']} is stale: model-facing text changed. Regenerate with "
+                "--write, then log the change in coverage/PROMPT-CHANGES.md"
+            )
             ok = False
     print("MODEL TEXT CATALOG GREEN" if ok else "MODEL TEXT CATALOG RED")
     return 0 if ok else 1

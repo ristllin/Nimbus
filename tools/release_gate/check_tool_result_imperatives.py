@@ -33,21 +33,86 @@ LINT_CLASSES = {"e1": ("tool_results",), "e2": ("tool_results", "stubs")}
 # Verbs that open an order when they start a sentence (base form only: "saved", "added"
 # and "read 120 B" state facts).
 ORDER_VERBS = (
-    "add", "answer", "append", "ask", "avoid", "call", "check", "confirm", "consider", "continue",
-    "delete", "do", "don't", "edit", "ensure", "fetch", "finish", "fix", "follow", "give", "include", "keep",
-    "let", "list", "look", "make", "mention", "move", "never", "always", "note", "pass", "pick", "please",
-    "prefer", "put", "quote", "re-run", "rerun", "read", "remember", "remove", "reply", "report", "request",
-    "retry", "return", "run", "save", "say", "search", "send", "set", "show", "split", "start", "state",
-    "stop", "switch", "tell", "try", "use", "verify", "wait", "write",
+    "add",
+    "answer",
+    "append",
+    "ask",
+    "avoid",
+    "call",
+    "check",
+    "confirm",
+    "consider",
+    "continue",
+    "delete",
+    "do",
+    "don't",
+    "edit",
+    "ensure",
+    "fetch",
+    "finish",
+    "fix",
+    "follow",
+    "give",
+    "include",
+    "keep",
+    "let",
+    "list",
+    "look",
+    "make",
+    "mention",
+    "move",
+    "never",
+    "always",
+    "note",
+    "pass",
+    "pick",
+    "please",
+    "prefer",
+    "put",
+    "quote",
+    "re-run",
+    "rerun",
+    "read",
+    "remember",
+    "remove",
+    "reply",
+    "report",
+    "request",
+    "retry",
+    "return",
+    "run",
+    "save",
+    "say",
+    "search",
+    "send",
+    "set",
+    "show",
+    "split",
+    "start",
+    "state",
+    "stop",
+    "switch",
+    "tell",
+    "try",
+    "use",
+    "verify",
+    "wait",
+    "write",
 )
 _START = r"(?:^|[.!?;:]\s+|\n\s*|\(\s*|-\s+|\]\s*)(?:(?:now|then|first|just|also|so|instead)\s+)?"
 # The verb must be followed by a word, a quote or a bracket ("read 120 B" states a fact), and
 # not by a status word ("write failed", "list not supported" name what happened).
 _STATUS = r"(?:failed|fails|not|is|was|were|refused|error|errors|ok|done|skipped|succeeded|ran|timed)\b"
-ORDER_START = re.compile(_START + r"(" + "|".join(re.escape(v) for v in ORDER_VERBS) + r")\s+"
-                         r"(?!" + _STATUS + r")(?=[A-Za-z_'\"`(\[])", re.I)
-DIRECTIVE = re.compile(r"\b(you (?:must|should|need to|have to|may not|cannot skip)|make sure|be sure|"
-                       r"do not|don't|never (?:call|say|tell|claim|use|retry)|instead,? (?:call|use|ask))\b", re.I)
+ORDER_START = re.compile(
+    _START + r"(" + "|".join(re.escape(v) for v in ORDER_VERBS) + r")\s+"
+    r"(?!" + _STATUS + r")(?=[A-Za-z_'\"`(\[])",
+    re.I,
+)
+DIRECTIVE = re.compile(
+    r"\b(you (?:must|should|need to|have to|may not|cannot skip)|make sure|be sure|"
+    r"do not|don't|never (?:call|say|tell|claim|use|retry)|instead,? (?:call|use|ask))\b",
+    re.I,
+)
 _BASE_ROW = re.compile(r"^\| (\S+) \| ([0-9a-f]{8}) \|")
 
 
@@ -57,7 +122,7 @@ def order_in(text: str) -> "str | None":
     if m:
         return m.group(0)
     for m in ORDER_START.finditer(text):
-        nxt = re.match(r"\S+", text[m.end():])
+        nxt = re.match(r"\S+", text[m.end() :])
         return f"{m.group(1)} {nxt.group(0) if nxt else ''}".strip()
     return None
 
@@ -106,8 +171,10 @@ def run(root: str, base: "str | None", use_base: bool = True) -> "list[str]":
         if name == "e1" and key in allowed:
             seen.add(key)
             continue
-        errs.append(f"{path} {sha}: a tool result gives an order ({order!r}): {text[:90]!r}; state the fact "
-                    "and let the model decide")
+        errs.append(
+            f"{path} {sha}: a tool result gives an order ({order!r}): {text[:90]!r}; state the fact "
+            "and let the model decide"
+        )
     for key in sorted(allowed - seen):
         errs.append(f"imperative baseline: {key[0]} {key[1]} no longer gives an order or is gone; delete its row")
     if use_base and base:

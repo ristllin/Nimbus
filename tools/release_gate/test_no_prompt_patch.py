@@ -25,9 +25,18 @@ PAD = " and this sentence was planted by a test to grow the class by exactly the
 
 
 def _git(root, *args):
-    subprocess.run(["git", "-C", root, *args], check=True, capture_output=True,
-                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-                        "GIT_COMMITTER_EMAIL": "t@t"})
+    subprocess.run(
+        ["git", "-C", root, *args],
+        check=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
+    )
 
 
 def make_tree(dst):
@@ -53,12 +62,16 @@ def template(tmp_path_factory):
     return make_tree(str(tmp_path_factory.mktemp("template") / "t"))
 
 
-@pytest.fixture
-def tree(tmp_path, template):
+def copy_template(template, tmp_path):
     """A fresh copy of the template repo, on branch lane; main is its merge base."""
     dst = str(tmp_path / "t")
     shutil.copytree(template, dst, symlinks=True)
     return dst
+
+
+@pytest.fixture
+def tree(tmp_path, template):
+    return copy_template(template, tmp_path)
 
 
 def merge(root):
@@ -122,8 +135,15 @@ def append_entry(root, **fields):
 
 def entry_for(root, catalog, cls, before, kind, **extra):
     now = stats(root, catalog)[cls]
-    fields = {"catalog": catalog, "class": cls, "kind": kind, "bytes": f"{before['bytes']} -> {now['bytes']}",
-              "sha8": f"{before['sha8']} -> {now['sha8']}", "lane": "RB-TEST", "why": "a test"}
+    fields = {
+        "catalog": catalog,
+        "class": cls,
+        "kind": kind,
+        "bytes": f"{before['bytes']} -> {now['bytes']}",
+        "sha8": f"{before['sha8']} -> {now['sha8']}",
+        "lane": "RB-TEST",
+        "why": "a test",
+    }
     fields.update(extra)
     return fields
 
@@ -204,8 +224,11 @@ def test_text_moved_between_files_of_one_class_is_neutral(tree):
 
 
 def test_a_new_tool_file_outside_the_catalog_fails(tree):
-    write(tree, "src/agent/new_tool.cpp",
-          '#include "x.h"\nToolResult f() { return ToolResult::ok("done; now tell the owner"); }\n')
+    write(
+        tree,
+        "src/agent/new_tool.cpp",
+        '#include "x.h"\nToolResult f() { return ToolResult::ok("done; now tell the owner"); }\n',
+    )
     errs = errors(tree)
     assert any("in no catalog class" in e and "src/agent/new_tool.cpp" in e for e in errs), errs
 
@@ -218,7 +241,7 @@ def test_a_new_tool_file_outside_the_catalog_fails(tree):
 def _swap(tree, cls="tool_results", tail=" never mind."):
     before = stats(tree)[cls]
     path, text = plain_literal(tree, cls)
-    new = text[:-len(tail)] + tail
+    new = text[: -len(tail)] + tail
     assert len(new) == len(text)
     edit_literal(tree, path, text, new)
     regen(tree)
@@ -252,15 +275,17 @@ def test_a_swap_entry_needs_scenario_commit_and_rates(tree, drop, message):
 
 def test_a_swap_entry_with_an_unknown_scenario_fails(tree):
     before = _swap(tree)
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap",
-                                   **{**SWAP_PROOF, "scenario": "lc-does-not-exist"}))
+    append_entry(
+        tree, **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "scenario": "lc-does-not-exist"})
+    )
     assert any("does not resolve" in e for e in errors(tree))
 
 
 def test_a_swap_entry_with_rates_out_of_range_fails(tree):
     before = _swap(tree)
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap",
-                                   **{**SWAP_PROOF, "rates": "before=60 after=98"}))
+    append_entry(
+        tree, **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "rates": "before=60 after=98"})
+    )
     assert any("parity rates" in e for e in errors(tree))
 
 
@@ -272,8 +297,10 @@ def test_a_complete_swap_entry_passes(tree):
 
 def test_a_refloop_scenario_id_resolves(tree):
     before = _swap(tree)
-    append_entry(tree, **entry_for(tree, "e1", "tool_results", before, "swap",
-                                   **{**SWAP_PROOF, "scenario": "recent-compare-food"}))
+    append_entry(
+        tree,
+        **entry_for(tree, "e1", "tool_results", before, "swap", **{**SWAP_PROOF, "scenario": "recent-compare-food"}),
+    )
     assert errors(tree) == []
 
 
@@ -347,7 +374,9 @@ def test_editing_a_merged_entry_fails(tree):
 def test_editing_the_baseline_fails(tree):
     text = read(tree, gate.CHANGES)
     row = re.search(r"^\| e1 \| skills \| (\d+) \| ([0-9a-f]{8}) \|$", text, re.M)
-    write(tree, gate.CHANGES, text.replace(row.group(0), f"| e1 | skills | {int(row.group(1)) + 300} | {row.group(2)} |"))
+    write(
+        tree, gate.CHANGES, text.replace(row.group(0), f"| e1 | skills | {int(row.group(1)) + 300} | {row.group(2)} |")
+    )
     errs = errors(tree)
     assert any("the baseline differs" in e for e in errs), errs
 
@@ -468,9 +497,12 @@ def test_e2_literal_outside_a_class_namespace_fails(tree):
 def test_e2_model_text_in_a_plain_engine_file_fails(tree):
     _e2(tree)
     _e2_build_entries(tree)
-    write(tree, "lib/harness/src/plain_request.cpp",
-          'std::string sys() { return std::string("Always check the ledger before you answer."); }\n'
-          'void f() { pending("plain::stub marker text"); hlog::logf("a log line %d", 1); }\n')
+    write(
+        tree,
+        "lib/harness/src/plain_request.cpp",
+        'std::string sys() { return std::string("Always check the ledger before you answer."); }\n'
+        'void f() { pending("plain::stub marker text"); hlog::logf("a log line %d", 1); }\n',
+    )
     errs = errors(tree)
     assert any("model text outside texts.h" in e and "plain_request.cpp:1" in e for e in errs), errs
     assert not any("plain_request.cpp:2" in e for e in errs), errs
@@ -497,7 +529,7 @@ def _register(tree, **kw):
     text = read(tree, gate.REGISTER)
     last = list(re.finditer(r"^\| OIR-\d+ \|.*$", text, re.M))[-1]
     row = ROW.format(**{"n": 56, "cause": "the ledger day ended at midnight, not 04:00", "live": "lc-day-total", **kw})
-    write(tree, gate.REGISTER, text[:last.end()] + "\n" + row + text[last.end():])
+    write(tree, gate.REGISTER, text[: last.end()] + "\n" + row + text[last.end() :])
 
 
 def test_register_row_with_a_scenario_passes(tree):
@@ -512,7 +544,9 @@ def test_register_row_needs_a_red_scenario(tree, live):
     assert any("names no scenario" in e for e in errs), errs
 
 
-@pytest.mark.parametrize("cause", ["missing check on the reply", "no guard on the total", "the claim check lacked a test"])
+@pytest.mark.parametrize(
+    "cause", ["missing check on the reply", "no guard on the total", "the claim check lacked a test"]
+)
 def test_register_rejects_missing_check_as_root_cause(tree, cause):
     _register(tree, cause=cause)
     errs = gate.check_register(tree)
