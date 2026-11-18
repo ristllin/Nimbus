@@ -6,8 +6,9 @@
 // reboot" while the turn had done nothing of the kind (16-18 Oct, nine of 51
 // replies). The evidence was always on the device - every tool result, every
 // mem_write outcome, the spawn enqueue, the scratchpad persist - but scattered
-// over log lines. This ledger collects it in one place so the claim check
-// (claims.h) can compare the reply with it before delivery.
+// over log lines. This ledger collects it in one place: the history row's fx: tag, the
+// empty-answer check and apply read it (the claim check that compared the reply with it
+// was deleted in v5.2.0, lane RB-Q1b; RB-FX stores the chat's recent effects from it).
 //
 // Fed by:
 //   - the head loop's tool dispatch (one entry per tool call, from the tool's
@@ -18,7 +19,7 @@
 //
 // RAM only, one turn long, never persisted. At most kMax entries (about 1 KB),
 // held in the working (PSRAM) allocator. Portable, Arduino-free, host-tested
-// (test_orch_claims).
+// (test_turn_effects).
 
 #include <cstddef>
 #include <cstdint>

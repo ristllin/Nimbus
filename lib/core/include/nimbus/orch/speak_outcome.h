@@ -9,7 +9,7 @@
 // Telegram as a voice message with Telegram's message id, or not voiced with the
 // reason. The apply layer (lib/harness/src/apply.cpp) records and reports exactly that.
 //
-// Portable and host-tested (test_harness_apply, test_orch_claims).
+// Portable and host-tested (test_harness_apply, test_turn_effects).
 
 #include <cstdint>
 #include <string>

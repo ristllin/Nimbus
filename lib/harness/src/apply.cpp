@@ -76,8 +76,7 @@ static uint8_t savedTextFileRow(const std::string& argsJson) {
 }
 
 uint16_t toolCallFlags(const std::string& regName, const std::string& argsJson) {
-  // A read of the device's own state (L19-11): the only thing that can confirm
-  // "it is working" (kEvHealthRead comes from the ledger, never from text).
+  // A read of the device's own state (L19-11), recorded as such in the ledger.
   if (regName == "device.status" || regName == "system.health") return nimbus::orch::kFxHealth;
   if (regName == "media.play") return nimbus::orch::kFxMusic;   // kept only if the result says it is playing
   // CUM-782 + the review: a files.append only writes text documents, and the landed-row
@@ -816,8 +815,8 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   // the parser already named the intents it could not carry (t.spawnDrops), and
   // an item that arrives here with no task joins them - it used to be skipped
   // in silence while the reply said "spawning..." (16-18 Oct: six turns, 34
-  // promised sub-agents, none started, no trace). spawnedOut and the claim
-  // check's ledger count ACCEPTED spawns only: an enqueue the job engine refuses
+  // promised sub-agents, none started, no trace). spawnedOut and the turn's
+  // ledger count ACCEPTED spawns only: an enqueue the job engine refuses
   // (a full queue) already told the owner and the head, and backs no "started".
   spawnedOut = false;
   std::vector<nimbus::orch::SpawnDrop> drops = t.spawnDrops;
@@ -1007,8 +1006,11 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
                        (st.effects && landedChange(*st.effects));
     const bool waiting = !st.scheduledTurn && !st.quietFallback &&
                          nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Owner;
-    // A session op speaks for itself below (a stop, or the refusal of one).
-    if (waiting && d.deliver && t.session_ops.empty()) d.deliver(chatId, acted ? kNoMessageAfterAction : kEmptyAnswer);
+    // A stop speaks for itself above (a stop, or the refusal of one). A spawn that did not start
+    // has no owner line since RB-Q1b, so a turn of only that still gets the empty-answer line.
+    const bool stopSpoke = std::any_of(t.session_ops.begin(), t.session_ops.end(),
+                                       [](const nimbus::orch::SessionOp& op) { return op.op == "terminate"; });
+    if (waiting && d.deliver && !stopSpoke) d.deliver(chatId, acted ? kNoMessageAfterAction : kEmptyAnswer);
     else if (d.turnComplete) d.turnComplete(chatId);
   }
   // (ApplyState.quietFallback / the quietOk plumbing are now vestigial - a later

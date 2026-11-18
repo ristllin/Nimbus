@@ -4150,6 +4150,11 @@ static void test_lane_l_a_cut_answer_that_claims_spawns_is_marked() {
     TEST_ASSERT_EQUAL(0, r.jobs->pendingCount());
     TEST_ASSERT_TRUE(r.hookEnds.back().error.rfind("cut: ", 0) == 0);
     TEST_ASSERT_EQUAL_STRING(got.c_str(), r.assistantRows.back().second.c_str());   // what the owner saw
+    // The answer carried a spawn item and nothing in it ran: the head hears it (from the
+    // answer's structure, not its words).
+    TEST_ASSERT_TRUE(LogCapture::contains("spawn ledger spawned=0 claimed=1"));
+    r.eng->handleMessage("and?", "Roy", "1001");
+    TEST_ASSERT_TRUE(r.attempts.back().inputs.find("that answer was cut off or unreadable") != std::string::npos);
   }
   // An unreadable (not cut) answer: no cut marker, the salvaged reply as written.
   Rig u(true);
@@ -4160,6 +4165,18 @@ static void test_lane_l_a_cut_answer_that_claims_spawns_is_marked() {
   u.eng->handleMessage("research it", "Roy", "1001");
   TEST_ASSERT_EQUAL_STRING(kClaimReply, u.lastText().c_str());
   TEST_ASSERT_TRUE(u.hookEnds.back().error.rfind("parse: ", 0) == 0);
+  u.eng->handleMessage("and?", "Roy", "1001");   // no spawn item in it: the head gets no spawn note
+  TEST_ASSERT_TRUE(u.attempts.back().inputs.find("that answer was cut off or unreadable") == std::string::npos);
+  // An unreadable answer that did carry a spawn item: the head hears that nothing ran.
+  Rig w(true);
+  w.cfg.toolLoop = false;
+  s.outJson = std::string("{\"reply\":\"") + kClaimReply +
+              "\",\"session_ops\":[{\"op\":\"spawn\",\"task\":\"a\"}]} and then some chatter";
+  w.scripts["anthropic"] = {s};
+  w.eng->handleMessage("research it", "Roy", "1001");
+  TEST_ASSERT_EQUAL(0, w.jobs->pendingCount());
+  w.eng->handleMessage("and?", "Roy", "1001");
+  TEST_ASSERT_TRUE(w.attempts.back().inputs.find("that answer was cut off or unreadable") != std::string::npos);
 }
 
 // Over every byte cut of a turn whose reply claims three sub-agents and carries

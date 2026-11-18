@@ -140,8 +140,7 @@ class LabRig {
     std::vector<agent::FaultRule> faults;  // --fault=<spec>, already parsed
     std::string recordDir;              // --record=<dir>: usage + error bodies
     // The scratchpad save fails, as on a full NVS partition: changes live in RAM
-    // only and every surface must say so (the claim check holds a "survives a
-    // restart" reply against it).
+    // only and every surface must say so.
     bool        scratchSaveFails = false;
     // The turn-structured history (histV2), as on the device: on by default;
     // --hist-v1 renders the previous 12-row window instead.

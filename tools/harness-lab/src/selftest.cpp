@@ -161,7 +161,7 @@ void testFaultChain() {
   check(echo.seen.size() == 2, "the injected request never reached the network");
 }
 
-// The lab's keyed files.append reads as a replacement to the device's claim check, so a
+// The lab's keyed files.append reads as a replacement to the device's effect ledger, so a
 // lab run judges a keyed write the way the firmware does. Lane UPSERT: only a correction
 // of the SAME item replaces; a different item under a reused key is appended under a new
 // key and records no replacement.

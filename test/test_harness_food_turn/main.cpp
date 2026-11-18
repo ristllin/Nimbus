@@ -232,11 +232,9 @@ static void test_follow_ups_get_the_playbook() {
   TEST_ASSERT_FALSE(has(n.last().dyn, "[FOOD PLAYBOOK"));
 }
 
-// The ledger's figures are sources: a total quoted from it is not corrected; a
-// figure from nowhere still is (counter-test). Rebase (HON, 28 Oct): the quoted
-// total now credits the ledger itself - lane HON's source rule asks for a source
-// this turn's texts name, and no label was seen this turn; the counter keeps a
-// source noun so the figure check still fires on a figure from nowhere.
+// Since v5.2.0 (lane RB-Q1b) a reply's figures are not checked against the turn's sources:
+// a total quoted from the ledger and one from nowhere are both delivered as written, once.
+// The ledger block still rides the turn (the tests above), so the head has the real figure.
 static void test_ledger_figures_are_claim_sources() {
   Rig r;
   r.reply = "{\"reply\":\"The ledger says 1315 kcal for today.\",\"memory\":\"\",\"ask\":\"\"}";
@@ -245,7 +243,7 @@ static void test_ledger_figures_are_claim_sources() {
   Rig c;
   c.reply = "{\"reply\":\"The label says 2402 kcal for today.\",\"memory\":\"\",\"ask\":\"\"}";
   c.eng->handleMessage("what's my total?", "Roy", "1001");
-  TEST_ASSERT_TRUE(c.delivered.back() != "The label says 2402 kcal for today.");
+  TEST_ASSERT_EQUAL_STRING("The label says 2402 kcal for today.", c.delivered.back().c_str());
 }
 
 // The fold's input closes with the date and today's ledger, so the summary dates
@@ -291,35 +289,25 @@ static void test_the_owners_food_skill_rides_a_logged_meal() {
   TEST_ASSERT_TRUE(has(r.last().dyn, "[the rest: skill.get meal-photo-science]"));
 }
 
+// The food figure check (a target nothing holds, a day total off the ledger) went with the
+// claim check (RB-Q1b): the reply goes out as written, once, with no "(Correction" line; the
+// turn still carries the ledger's own figures and the [FOOD TARGETS] pointer.
 static void test_a_made_up_target_reaches_the_owner_marked() {
   Rig r;
   r.reply = "{\"reply\":\"You have 38.3 g protein left from your 250 g daily protein target.\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->handleMessage("how much protein is left?", "Roy", "1001");
-  TEST_ASSERT_FALSE(r.delivered.empty());
-  TEST_ASSERT_TRUE_MESSAGE(has(r.delivered.back(), "(Correction: the device has no source for a daily target of 250 g protein."),
-                           r.delivered.back().c_str());
-  // The owner's own earlier word is a source; the assistant's is not.
-  Rig told;
-  told.turn((uint32_t)(kNow / 3600) - 2, "my protein target is 150 g", "Got it.");
-  told.reply = "{\"reply\":\"Your 150 g protein target stands.\",\"memory\":\"\",\"ask\":\"\"}";
-  told.eng->handleMessage("what is my protein target?", "Roy", "1001");
-  TEST_ASSERT_FALSE_MESSAGE(has(told.delivered.back(), "no source"), told.delivered.back().c_str());
-  Rig said;
-  said.turn((uint32_t)(kNow / 3600) - 2, "what is my protein target?", "Your 250 g protein target stands.");
-  said.reply = "{\"reply\":\"Your 250 g protein target stands.\",\"memory\":\"\",\"ask\":\"\"}";
-  said.eng->handleMessage("are you sure?", "Roy", "1001");
-  TEST_ASSERT_TRUE_MESSAGE(has(said.delivered.back(), "no source"), said.delivered.back().c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING("You have 38.3 g protein left from your 250 g daily protein target.", r.delivered.back().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(r.last().dyn, "[FOOD TARGETS]"), r.last().dyn.c_str());
 }
 
 static void test_the_day_total_in_a_reply_is_checked_against_the_ledger() {
   Rig r;
   r.reply = "{\"reply\":\"Today's total is now 3,989 kcal.\",\"memory\":\"\",\"ask\":\"\"}";
   r.eng->handleMessage("so what are we at for today?", "Roy", "1001");
-  TEST_ASSERT_TRUE_MESSAGE(has(r.delivered.back(), "(Correction: the food log has today at 1315 kcal.)"), r.delivered.back().c_str());
-  Rig ok;
-  ok.reply = "{\"reply\":\"Today's total is now 1,315 kcal.\",\"memory\":\"\",\"ask\":\"\"}";
-  ok.eng->handleMessage("so what are we at for today?", "Roy", "1001");
-  TEST_ASSERT_FALSE_MESSAGE(has(ok.delivered.back(), "Correction"), ok.delivered.back().c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING("Today's total is now 3,989 kcal.", r.delivered.back().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(r.last().dyn, "1315"), r.last().dyn.c_str());   // the ledger's own total rode the turn
 }
 
 static void test_the_fold_carries_the_day() {

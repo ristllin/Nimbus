@@ -66,6 +66,7 @@ RECEIPT_ONE_RE = re.compile(r"voice: delivered to Telegram as a voice message \(
 RECEIPT_MANY_RE = re.compile(r"voice: delivered to Telegram as \d+ voice messages \(message_id ([\d, ]+);")
 TTS_RE = re.compile(r"tts: (?:mistral|openai) wrote (\d+) bytes -> (\S+)")
 SPEND_RE = re.compile(r"fabric-spend: (\S+) in=(\d+) out=(\d+) cR=(\d+) cW=(\d+)")
+# The claim check's line before v5.2.0; it must not come back (lane RB-Q1b).
 CORRECTION = "(Correction: no voice message was delivered.)"
 
 
@@ -298,7 +299,6 @@ EVIDENCE_MARKS = (
     "tts: ",
     "telegram: send",
     "voice: ",
-    "claims: ",
     "tg_poll stack",
     "held the card lock",
     "speak: ",
@@ -344,7 +344,6 @@ def test_v1_a_voice_reply_reaches_telegram_with_a_receipt(device, voice_bench):
     assert not speaker_touches(lines), f"the speaker path ran for a Telegram request: {speaker_touches(lines)}"
     assert not [ln for ln in lines if "held the card lock" in ln], "a tool held the card lock through the voice reply"
     assert _loopguard(device) == blocking0, "the main loop waited for the card lock during the voice reply"
-    assert any("claims: ok" in ln for ln in win), "the claim check did not pass the receipted reply"
     print(f"[V1] PASS message_id(s) {ids} confirmed by Telegram")
 
 
@@ -370,9 +369,11 @@ def test_v2_a_refused_upload_is_reported_honestly(device, voice_bench, net):
     reply = _reply_text(win)
     b = type("B", (), {"tool_rows": []})()
     lies = S._voice_lies(reply.lower(), b)
-    assert not lies or CORRECTION in reply, (
-        f"the reply claims a voice message that never arrived: {lies}: {reply[:300]}"
-    )
+    # Since v5.2.0 (lane RB-Q1b) the device appends no correction to the model's words: the
+    # reply goes out as written, and a false claim in it is the truth check's (RB-G0) to catch.
+    assert CORRECTION not in reply, f"a correction line was appended: {reply[:300]}"
+    if lies:
+        print(f"[V2] note: the model's reply claims a voice message that never arrived: {lies}")
     print(f"[V2] PASS refusal {fails[0]!r}; reply: {reply[:200]}")
 
 

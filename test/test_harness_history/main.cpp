@@ -893,9 +893,9 @@ static void test_engine_stamps_the_second_a_row_was_stored() {
 
 // Lane MLQ (OIR-06): an owner message that got no reply renders with the "[no reply]"
 // marker, and unansweredOwnerMessages finds exactly those (an answered one, the summary
-// pair and the in-flight message never). The engine hands them to the reply-scope check of
-// a human turn: a final answer that takes the earlier message up draws the correction, and
-// the same answer after an answered message, or on a message that brings it up, does not.
+// pair and the in-flight message never). Since v5.2.0 (lane RB-Q1b) no check reads the
+// reply for them: the reply-scope check and its [REPLY SCOPE] line are deleted, so the final
+// answer costs no round and the turn input stays the base's ("\n\n[USER]\n").
 static void test_mlq_unanswered_owner_message_reaches_the_scope_check() {
   using agent::HistMsg;
   const std::vector<HistMsg> h = {{true, std::string(agent::kSummaryUserHead) + "older"},
@@ -911,43 +911,20 @@ static void test_mlq_unanswered_owner_message_reaches_the_scope_check() {
   TEST_ASSERT_EQUAL_STRING("(Sun 8 Nov) I love tech trivia, ask me sometime.", un[0].c_str());
   TEST_ASSERT_EQUAL_STRING("save it", un[1].c_str());
 
-  const std::string probe = "{\"reply\":\"Logged your lunch. I'll quiz you on tech trivia sometime!\"}";
-  {
-    Rig r;
-    r.cfg.toolLoop = true;
-    r.finalProbe = probe;
-    r.add("123", "user", MsgKind::Message, "I love tech trivia, ask me sometime.", "from:Roy");
-    r.eng->handleMessage("Log my lunch: a chicken bowl, 620 kcal.", "Roy", "123");
-    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
-    TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") != std::string::npos, r.finalChecks[0].c_str());
-    // Fix pass: the [REPLY SCOPE] line rides the per-turn head lines, and only on a turn whose
-    // history holds an unanswered owner message; the turn input is the base's ("\n\n[USER]\n").
-    TEST_ASSERT_TRUE(r.instructions.back().find("[REPLY SCOPE] Answer this message.") != std::string::npos);
-    const std::string& in = r.inputs.back();
-    TEST_ASSERT_TRUE(in.find("[REPLY SCOPE]") == std::string::npos);
-    TEST_ASSERT_TRUE(in.find("[DISPUTED CLAIM]") == std::string::npos);
-    TEST_ASSERT_TRUE(in.find("\n\n[USER]\nLog my lunch") != std::string::npos);
-  }
-  {
-    Rig r;   // the earlier message was answered: no round
-    r.cfg.toolLoop = true;
-    r.finalProbe = probe;
-    r.add("123", "user", MsgKind::Message, "I love tech trivia, ask me sometime.", "from:Roy");
-    r.add("123", "assistant", MsgKind::Message, "Noted.", "");
-    r.eng->handleMessage("Log my lunch: a chicken bowl, 620 kcal.", "Roy", "123");
-    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
-    TEST_ASSERT_TRUE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") == std::string::npos);
-    TEST_ASSERT_TRUE(r.instructions.back().find("[REPLY SCOPE] Answer this message.") == std::string::npos);   // nothing to hold
-  }
-  {
-    Rig r;   // this message brings the earlier one up: no round
-    r.cfg.toolLoop = true;
-    r.finalProbe = probe;
-    r.add("123", "user", MsgKind::Message, "I love tech trivia, ask me sometime.", "from:Roy");
-    r.eng->handleMessage("Log my lunch, then one trivia question.", "Roy", "123");
-    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
-    TEST_ASSERT_TRUE(r.finalChecks[0].find("[REPLY SCOPE CHECK]") == std::string::npos);
-  }
+  Rig r;
+  r.cfg.toolLoop = true;
+  r.finalProbe = "{\"reply\":\"Logged your lunch. I'll quiz you on tech trivia sometime!\"}";
+  r.add("123", "user", MsgKind::Message, "I love tech trivia, ask me sometime.", "from:Roy");
+  r.eng->handleMessage("Log my lunch: a chicken bowl, 620 kcal.", "Roy", "123");
+  TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+  TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+  TEST_ASSERT_TRUE(r.instructions.back().find("[REPLY SCOPE]") == std::string::npos);
+  const std::string& in = r.inputs.back();
+  TEST_ASSERT_TRUE(in.find("[DISPUTED CLAIM]") == std::string::npos);
+  TEST_ASSERT_TRUE(in.find("\n\n[USER]\nLog my lunch") != std::string::npos);
+  TEST_ASSERT_TRUE(r.instructions.back().find("[no reply]") != std::string::npos ||
+                   in.find("[no reply]") != std::string::npos ||
+                   r.instructions.back().find("I love tech trivia") != std::string::npos);
 }
 
 // Lane MLQ fix pass: a turn the head acted on but did not answer in words ("[did: memory]

@@ -188,7 +188,10 @@ def test_copied_tree_is_green(tree):
 @pytest.mark.parametrize("cls", cat.E1_CLASSES)
 def test_a_seeded_300_byte_addition_fails_in_every_e1_class(tree, cls):
     path, text = plain_literal(tree, cls)
-    pad = (PAD * 5)[:300]
+    # A class a remove entry shrank (RB-Q1b: device_notes) sits below its ceiling; the seed
+    # still grows it past the ceiling, by at least 300 B.
+    over = max(300, cat.E1_CEILINGS[cls] - stats(tree)[cls]["bytes"] + 1)
+    pad = (PAD * (over // len(PAD) + 1))[:over]
     edit_literal(tree, path, text, text + pad)
     regen(tree)
     errs = errors(tree)

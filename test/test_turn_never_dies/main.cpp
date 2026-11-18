@@ -1142,40 +1142,42 @@ static const char* const kNotPromises[] = {
 };
 static const char* const kLaterLine = "will not continue on its own";
 
-// The served path: one correction round, and the model's corrected answer goes out.
-static void test_promise_gets_one_correction_round() {
+// The served path since v5.2.0 (lane RB-Q1b): the promise check went with the claim check,
+// so the answer is delivered once as written, with no correction round and no line; RB-G0's
+// truth check owns this class now. The forced round the same. (The reply guard's sentence drop,
+// RB-Q1c's, may still take a sentence that tells the owner about a key; the promise itself
+// stays, once, with no line.)
+static std::string promiseSentence(const std::string& p) {
+  const size_t at = p.rfind(". ");
+  return at == std::string::npos ? p : p.substr(at + 2);
+}
+
+static void test_promise_is_delivered_as_written() {
   for (const char* p : kPromises) {
     Rig r({"mistral"}, 2000);
     r.script(ok("mistral", finalBody("mistral", p)));
-    r.script(ok("mistral", finalBody("mistral", "That is not done. Ask me to continue.")));
     r.turn("so where are we at?");
-    TEST_ASSERT_TRUE_MESSAGE(r.saidAny("That is not done"), p);
-    TEST_ASSERT_FALSE_MESSAGE(r.saidAny(p), p);
-    TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.requests(), p);
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[1].body.find("nothing continues") != std::string::npos, p);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.requests(), p);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), p);
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].find(promiseSentence(p)) != std::string::npos, p);
+    TEST_ASSERT_FALSE_MESSAGE(r.saidAny(kLaterLine), p);
   }
 }
 
-// A model that repeats it: the owner gets the plain line with it. And the forced
-// round, where no correction can run.
-static void test_stubborn_or_forced_promise_gets_the_line() {
+static void test_a_forced_round_promise_is_delivered_as_written() {
   for (const char* p : kPromises) {
-    Rig r({"mistral"}, 2000);
-    r.script(ok("mistral", finalBody("mistral", p)));
-    r.script(ok("mistral", finalBody("mistral", p)));
-    r.turn("so where are we at?");
-    TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
     Rig f({"mistral"}, 2000);
     f.cfg.rounds = 1;
     f.script(ok("mistral", toolBody("mistral", 1)));
     f.script(ok("mistral", finalBody("mistral", p)));
     f.turn("Use a web lookup to find the latest stable Python 3 release");
-    TEST_ASSERT_TRUE_MESSAGE(f.saidAny(kLaterLine), f.all().c_str());
+    TEST_ASSERT_TRUE_MESSAGE(f.saidAny(promiseSentence(p).c_str()), f.all().c_str());
+    TEST_ASSERT_FALSE_MESSAGE(f.saidAny(kLaterLine), f.all().c_str());
   }
 }
 
-// The cut path and the unreadable path deliver the model's own text without apply:
-// the same line rides there.
+// The cut path and the unreadable path deliver the model's own text without apply: the
+// reply guard's line still rides there until lane RB-Q1c deletes it with the guard.
 static void test_salvaged_promise_gets_the_line() {
   Rig r({"mistral"}, 2000);
   for (int i = 0; i < 4; i++) r.script(ok("mistral", cutBody("mistral", "I'll finish the rest next turn.")));
@@ -1184,30 +1186,34 @@ static void test_salvaged_promise_gets_the_line() {
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
 }
 
-// Prose (a head that ignored the schema) goes the same way.
-static void test_prose_promise_gets_the_line() {
+// Prose (a head that ignored the schema) goes the same way as the served path: as written.
+static void test_prose_promise_is_delivered_as_written() {
   Rig r({"anthropic"}, 2000);
   const std::string prose =
       "{\"content\":[{\"type\":\"text\",\"text\":\"I'll finish that next turn.\"}],\"stop_reason\":\"end_turn\"}";
   for (int i = 0; i < 3; i++) r.script(ok("anthropic", prose));
   r.turn("so where are we at?");
-  TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny("I'll finish that next turn."), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
 }
 
-// A synthesis turn and a scheduled routine: nobody waits on them, and the line still rides.
-static void test_unattended_promise_gets_the_line() {
+// A synthesis turn and a scheduled routine: delivered as written, once.
+static void test_unattended_promise_is_delivered_as_written() {
   const char* p = "I'll finish the rest of the summary next turn.";
   Rig r({"mistral"}, 2000);
   r.jobs->addFreshResult("job0008", "openai/gpt-5.2", "the findings");
   r.script(ok("mistral", finalBody("mistral", p)));
   r.script(ok("mistral", finalBody("mistral", p)));
   r.eng->maybeConsolidate("1001");
-  TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(r.saidAny(p), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
   Rig s({"mistral"}, 2000);
   s.script(ok("mistral", finalBody("mistral", p)));
   s.script(ok("mistral", finalBody("mistral", p)));
   s.eng->injectScheduledTurn("1001", "Write the morning brief.", "brief");
-  TEST_ASSERT_TRUE_MESSAGE(s.saidAny(kLaterLine), s.all().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.saidAny(p), s.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(s.saidAny(kLaterLine), s.all().c_str());
 }
 
 // The single-shot head (fabric off, as the custom head always runs) and an answer the
@@ -1265,20 +1271,14 @@ static void test_a_routine_behind_the_promise_stands() {
   TEST_ASSERT_EQUAL(1, (int)run.requests());
   TEST_ASSERT_FALSE_MESSAGE(run.saidAny(kLaterLine), run.all().c_str());
 
-  // A wakeup that has fired has nothing left behind it.
+  // Since RB-Q1b nothing on the served path reads the promise: a fired wakeup's run and a
+  // routine's chat deliver the words as written, once.
   Rig once({"mistral"}, 2000);
   once.script(ok("mistral", finalBody("mistral", watch)));
-  once.script(ok("mistral", finalBody("mistral", watch)));
   once.eng->injectScheduledTurn("1001", "Check the parcel.", "parcel", "lp123456", /*quietOk=*/false, /*once=*/true);
-  TEST_ASSERT_TRUE_MESSAGE(once.saidAny(kLaterLine), once.all().c_str());
+  TEST_ASSERT_EQUAL(1, (int)once.requests());
+  TEST_ASSERT_FALSE_MESSAGE(once.saidAny(kLaterLine), once.all().c_str());
 
-  // The dimension it must not swallow: a routine does not finish this turn's work later.
-  Rig busy({"mistral"}, 2000);
-  busy.standing = true;
-  busy.script(ok("mistral", finalBody("mistral", "I'll rewrite the whole file next turn.")));
-  busy.script(ok("mistral", finalBody("mistral", "That is not done. Ask me to continue.")));
-  busy.turn("so where are we at?");
-  TEST_ASSERT_TRUE_MESSAGE(busy.saidAny("That is not done"), busy.all().c_str());
 
   // The salvage path reads the same.
   const agent::SalvageOutcome s =
@@ -1379,11 +1379,11 @@ int main() {
   RUN_TEST(test_placeholder_never_reaches_the_owner);
   RUN_TEST(test_a_real_task_keeps_its_rounds_and_chat_stays_capped);
   RUN_TEST(test_turn_shape_does_not_touch_the_cached_static_block);
-  RUN_TEST(test_promise_gets_one_correction_round);
-  RUN_TEST(test_stubborn_or_forced_promise_gets_the_line);
+  RUN_TEST(test_promise_is_delivered_as_written);
+  RUN_TEST(test_a_forced_round_promise_is_delivered_as_written);
   RUN_TEST(test_salvaged_promise_gets_the_line);
-  RUN_TEST(test_prose_promise_gets_the_line);
-  RUN_TEST(test_unattended_promise_gets_the_line);
+  RUN_TEST(test_prose_promise_is_delivered_as_written);
+  RUN_TEST(test_unattended_promise_is_delivered_as_written);
   RUN_TEST(test_unreadable_promise_gets_the_line);
   RUN_TEST(test_a_job_behind_the_promise_stands);
   RUN_TEST(test_a_routine_behind_the_promise_stands);

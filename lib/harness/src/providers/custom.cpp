@@ -415,7 +415,7 @@ static bool zaiLoopBody(const ProviderDeps& pd, const ZaiRound& a, std::string& 
 // does this despite tool_choice "required", and the forced round that followed gave back an
 // orch_turn with no reply, having already answered (parity eval, 1 Nov). The whole reply as
 // one orch_turn object runs as one, and anything else reaches the owner as prose (no device
-// action, memory write or spawn rides it, and the reply's claims are still checked).
+// action, memory write or spawn rides it).
 static void zaiFinishFromText(nimbus::orch::HeadStep& out) {
   if (out.finished || !out.toolCalls.empty() || out.text.empty()) return;
   bool whole = false;

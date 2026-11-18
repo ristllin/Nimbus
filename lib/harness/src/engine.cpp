@@ -854,6 +854,17 @@ std::string TurnEngine::syncCapacityText() const {
   return out;
 }
 
+void TurnEngine::noteUnappliedSpawns(const std::string& chatId, const std::string& rawAnswer) {
+  if (rawAnswer.find("\"session_ops\"") == std::string::npos && rawAnswer.find("\"spawn\"") == std::string::npos)
+    return;
+  hlog::log("orchestrator: spawn ledger spawned=0 claimed=1");
+  if (d_.jobs)
+    d_.jobs->noteSpawnIntentRefused(chatId, "", "",
+                                    "your reply said sub-agents were started, but that answer was "
+                                    "cut off or unreadable, so nothing in it ran and nothing is "
+                                    "running for them");
+}
+
 std::string TurnEngine::buildDynamicContext(const std::string& chatId) {
   std::string ctx;
   // F1 (lane I): the approved skills attached to THIS chat (pinned context
@@ -2304,6 +2315,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
       const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, laterBehind(), userText);
+      noteUnappliedSpawns(chatId, outJson);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
       // With no text to keep, what the turn did run is still told (Lumi, 31 Oct: four
       // tools ran, then "how did you fail without getting back to me?").
@@ -2442,6 +2454,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
     const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, laterBehind(), userText);
+    noteUnappliedSpawns(chatId, outJson);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
     // Lane T: the parse exit notes its synthetic device cause, so the chain and every
@@ -2511,7 +2524,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.pendingMemResults   = &parked.body;
   st.unverifiedConnector = unverifiedTurn_;
   // Every spawn that does not start reaches the head's next turn as a
-  // [SPAWN REFUSED] line for this chat (and the owner line rides this reply).
+  // [SPAWN REFUSED] line for this chat.
   st.noteSpawnRefused = [this, chatId](const std::string& name, const std::string& task,
                                        const std::string& reason) {
     if (d_.jobs) d_.jobs->noteSpawnIntentRefused(chatId, name, task, reason);

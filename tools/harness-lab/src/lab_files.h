@@ -166,7 +166,7 @@ class LabFiles {
           nimbus::orch::planCsvUpsert(files_[p + "/" + n], t, key, sum, todayStr());
       if (!up.ok) return nimbus::orch::ToolResult::fail(up.err);
       if (up.changed) files_[p + "/" + n] = up.out;
-      // The device's own reply, word for word: the claim check reads it (turn_effects).
+      // The device's own reply, word for word: the turn's effect ledger reads it (turn_effects).
       return nimbus::orch::ToolResult::ok(nimbus::orch::renderUpsertReply(
           up, p + "/" + n, sum, nimbus::orch::logDayOf(std::time(nullptr), true).zone));
     }

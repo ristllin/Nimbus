@@ -41,7 +41,7 @@ inline constexpr const char* kSubReplyCapNote =
     "saved whole as a file the head can read, so finish your full report and do not pad or repeat it.]";
 
 // CUM-824: how a spawn ledger line names what a sub ran ("...; it ran notion_search x2
-// (why ...)"). The claim check reads the names back from it (claim_check.cpp).
+// (why ...)"). The head reads it in the spawn ledger block.
 inline constexpr const char* kLedgerRanLead = "; it ran ";
 
 // CUM-824: the second line of every [FRESH RESULTS] block. A synthesis states what the

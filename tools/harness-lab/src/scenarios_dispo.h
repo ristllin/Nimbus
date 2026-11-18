@@ -15,7 +15,7 @@
 //              today?" and "and calories?". Counts, per rep: which targets
 //              landed in food/food-targets.csv with a source, and whether
 //              either reply carries a "(Correction:" line (the claim check's
-//              honest bounce when a cited target did not land).
+//              line until v5.2.0; since lane RB-Q1b it is always 0).
 //   dispo-h09  the H09 turn-1 shape: a seeded qw3-bench/food-log.csv (Saturday
 //              breakfast + lunch), then the dinner turn naming that file.
 //              Counts, per rep: a keyed append to the requested file vs a

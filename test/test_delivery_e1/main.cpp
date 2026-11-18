@@ -12,7 +12,7 @@
 //
 // What holds for every class, on every wire (Anthropic Messages, OpenAI Responses, the
 // chat dialect) and on every path the guards used to sit on (a tool-less reply, a reply
-// after a tool error, a group chat, the voice channel):
+// after a tool error, a group chat, the voice channel, the ask field, a scheduled routine):
 //   - the owner gets exactly one message, and it is the model's reply byte for byte;
 //   - no "(Correction" or "(Note" text reaches the owner or the history row;
 //   - the turn costs the rounds the model asked for and no correction round;
@@ -33,6 +33,7 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/engine.h"
+#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
 #include "nimbus/orch/journal.h"
 
 namespace {
@@ -80,6 +81,15 @@ std::string finalBody(const std::string& host, const std::string& reply) {
          "\"abcdefghi\",\"function\":{\"name\":\"orch_turn\",\"arguments\":\"" + jsonEscaped(args) + "\"}}]}}]}";
 }
 
+// The same answer with the text in the ask field instead (it reaches the owner as the message).
+std::string askBody(const std::string& host, const std::string& ask) {
+  std::string b = finalBody(host, "");
+  const std::string from = host == "anthropic" ? "{\"reply\":\"\"}" : jsonEscaped("{\"reply\":\"\"}");
+  const std::string to = host == "anthropic" ? "{\"reply\":\"\",\"ask\":\"" + jsonEscaped(ask) + "\"}"
+                                             : jsonEscaped("{\"reply\":\"\",\"ask\":\"" + jsonEscaped(ask) + "\"}");
+  return b.replace(b.find(from), from.size(), to);
+}
+
 // One tool round: the model calls memory_search.
 std::string toolBody(const std::string& host) {
   if (host == "anthropic")
@@ -100,14 +110,17 @@ Exchange ok(const std::string& host, const std::string& body) {
 }
 
 // The paths the guards sat on.
-enum class Path { ToolLess, AfterToolError, GroupChat, Voice };
-const Path kPaths[] = {Path::ToolLess, Path::AfterToolError, Path::GroupChat, Path::Voice};
+enum class Path { ToolLess, AfterToolError, GroupChat, Voice, AskField, Scheduled };
+const Path kPaths[] = {Path::ToolLess, Path::AfterToolError, Path::GroupChat, Path::Voice, Path::AskField,
+                       Path::Scheduled};
 const char* pathName(Path p) {
   switch (p) {
     case Path::ToolLess: return "tool-less";
     case Path::AfterToolError: return "after a tool error";
     case Path::GroupChat: return "group chat";
     case Path::Voice: return "voice";
+    case Path::AskField: return "the ask field";
+    case Path::Scheduled: return "a scheduled routine";
   }
   return "?";
 }
@@ -279,8 +292,11 @@ std::string runCase(const Case& c, const char* host, Path p) {
     r.script(ok(host, toolBody(host)));
     rounds = 2;
   }
-  r.script(ok(host, finalBody(host, c.reply)));
-  r.eng->handleMessage(c.owner, "Roy", chat);
+  r.script(ok(host, p == Path::AskField ? askBody(host, c.reply) : finalBody(host, c.reply)));
+  if (p == Path::Scheduled)
+    r.eng->injectScheduledTurn(chat, c.owner, "check");
+  else
+    r.eng->handleMessage(c.owner, "Roy", chat);
 
   std::string all;
   for (const auto& d : r.delivered) all += d.second + "\n---\n";
@@ -340,12 +356,15 @@ static void test_consecutive_turns_deliver_one_message_each() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE(kCases[0].reply, r.delivered[0].second.c_str(), host);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(kCases[1].reply, r.delivered[1].second.c_str(), host);
     TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.requests(), host);
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)r.captured.size(), host);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(kCases[1].reply, r.captured[1].second.c_str(), host);
   }
 }
 
 // Counter-test: the seam still sends what the model really says about its own failure
 // (an honest "not saved" reply is delivered as written), and an empty answer is never
-// lost: the owner hears that the model returned nothing (kEmptyAnswer), once.
+// lost: after its one retry the owner hears that the model returned nothing (kEmptyAnswer),
+// once, and history holds that line.
 static void test_the_seam_never_loses_a_turn() {
   for (const char* host : kWires) {
     Rig r(host);
@@ -358,7 +377,8 @@ static void test_the_seam_never_loses_a_turn() {
     e.script(ok(host, finalBody(host, "")));
     e.eng->handleMessage("hello?", "Roy", "1001");
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)e.delivered.size(), host);
-    TEST_ASSERT_FALSE_MESSAGE(e.delivered[0].second.empty(), host);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(agent::kEmptyAnswer, e.delivered[0].second.c_str(), host);
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)e.requests(), host);
   }
 }
 

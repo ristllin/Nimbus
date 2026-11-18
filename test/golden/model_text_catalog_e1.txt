@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=47989 ceiling=47989 entries=542 sha8=faa8207c
-# class device_notes bytes=56924 ceiling=74350 entries=1552 sha8=69778190
+# class device_notes bytes=57060 ceiling=74350 entries=1553 sha8=98450dc7
 # class tool_descriptions bytes=23131 ceiling=23055 entries=98 sha8=542ad7ca
 # class tool_results bytes=41962 ceiling=41269 entries=1249 sha8=63debd41
 # class side_prompts bytes=8078 ceiling=8078 entries=157 sha8=14424ae7
@@ -1219,6 +1219,7 @@ device_notes	lib/harness/src/engine.cpp	592b20cb	85	" sub-agents run in parallel
 device_notes	lib/harness/src/engine.cpp	e564db6f	6	"; use "
 device_notes	lib/harness/src/engine.cpp	3719d361	56	" for research, long work or anything that needs the web."
 device_notes	lib/harness/src/engine.cpp	cf8df924	40	"Keep each sub-agent to one focused step."
+device_notes	lib/harness/src/engine.cpp	45bb6c7b	136	"your reply said sub-agents were started, but that answer was cut off or unreadable, so nothing in it ran and nothing is running for them"
 device_notes	lib/harness/src/engine.cpp	a84aafe6	18	"[ACTIVE SESSIONS]\n"
 device_notes	lib/harness/src/engine.cpp	46f01458	84	" possibly still running on its provider after a timeout; its result will not arrive)"
 device_notes	lib/harness/src/engine.cpp	bfaf2035	17	"[SPAWN CAPACITY] "

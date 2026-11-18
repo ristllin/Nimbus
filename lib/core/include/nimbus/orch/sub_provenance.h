@@ -10,7 +10,7 @@
 //   - every [FRESH RESULTS] line says how many tools ran, so the head can judge
 //     any result, live or not.
 //
-// Portable, Arduino-free, host-tested (test_orch_claims).
+// Portable, Arduino-free, host-tested (test_turn_effects).
 
 #include <cstddef>
 #include <cstdint>

@@ -645,6 +645,10 @@ class TurnEngine {
   // (orch::refusalTurnAnswer).
   void deliverParkedRefusal(const std::string& chatId, const std::string& host, nimbus::orch::StepErr kind,
                             int activeJobs, bool nothingRan);
+  // An answer that was not applied (cut or unreadable) whose raw text carries a spawn
+  // item: nothing in it ran, so the head hears that its spawns did not start (the ledger
+  // line and a [SPAWN REFUSED] note). Read from the answer's structure, never its words.
+  void noteUnappliedSpawns(const std::string& chatId, const std::string& rawAnswer);
   std::string buildDynamicContext(const std::string& chatId);
   // Lane CTX (day_context.cpp): load this chat's food ledger for the turn into
   // ledger_; then, once the history is known, fill the per-turn ledger and (a food

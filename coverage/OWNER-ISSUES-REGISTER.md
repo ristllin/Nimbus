@@ -372,12 +372,13 @@ byte-identical. Not edited: any scenario, assertion or thresholds.json.
 - OIR-06: every human turn gets [REPLY SCOPE] before [USER] (owner_voice.h), and the
   reply-scope final check gives one correction round when the reply takes up an earlier owner
   message that got no reply and this message does not bring it up. Guards: oir_06,
-  test_harness_claim_check (deleted in v5.2.0 with the claim check, lane RB-Q1b; the seam is held by test_delivery_e1) test_mlq_reply_scope_check_holds_an_unanswered_message,
+  test_harness_claim_check test_mlq_reply_scope_check_holds_an_unanswered_message (that suite was deleted in v5.2.0 with the claim check, lane RB-Q1b; the seam is held by test_delivery_e1),
   test_harness_history test_mlq_unanswered_owner_message_reaches_the_scope_check (both fail with
   the check disabled, verified). Precision over 4,287 stored live replies: 17 of 19 flags are the
   unasked-topic replies; the other 2 exist only in a stress pairing a synthesis turn never runs.
 - OIR-50: a message that disputes an attribution gets [DISPUTED CLAIM], and on that turn a
   quoted "you told me" that is not the owner's own words is checked; the owner-action correction
   says to take the claim back without the phrase. Guards: oir_50
-  test_oir_50_disputed_quote_is_checked, test_harness_claim_check (deleted in v5.2.0 with the claim check, lane RB-Q1b; the seam is held by test_delivery_e1)
-  test_mlq_disputed_attribution_checks_the_quoted_phrase.
+  test_oir_50_disputed_quote_is_checked, test_harness_claim_check
+  test_mlq_disputed_attribution_checks_the_quoted_phrase (both deleted in v5.2.0 with the claim check, lane RB-Q1b; the
+  seam is held by test_delivery_e1).

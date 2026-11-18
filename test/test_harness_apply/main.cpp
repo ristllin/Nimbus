@@ -1643,6 +1643,26 @@ static void test_a_failed_tts_does_not_resend_what_reply_telegram_sent() {
   }
 }
 
+// A turn whose only output was a spawn that did not start is never silent on an async
+// channel: since RB-Q1b it has no spawn line, so the owner hears the empty-answer line
+// once, and the head hears why next turn.
+static void test_a_reply_less_turn_whose_spawn_did_not_start_is_not_silent() {
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  Turn t;
+  nimbus::orch::SessionOp op;
+  op.op = "spawn";
+  op.name = "x";   // no task: it cannot start
+  t.session_ops.push_back(op);
+  ApplyState st = makeState(r);
+  bool spawned = false;
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_FALSE(spawned);
+  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
+  TEST_ASSERT_EQUAL_STRING(agent::kEmptyAnswer, r.delivered[0].second.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.turnCompletes.size());
+}
+
 // The ask rides the same message, and like the reply it goes out as written (RB-Q1b).
 static void test_claims_ask_is_checked_with_the_reply() {
   Rec r;
@@ -2643,6 +2663,7 @@ int main(int, char**) {
   RUN_TEST(test_claims_refused_enqueue_is_not_a_spawn);
   RUN_TEST(test_claims_ram_only_scratchpad_against_a_durability_claim);
   RUN_TEST(test_claims_noop_device_action_backs_nothing);
+  RUN_TEST(test_a_reply_less_turn_whose_spawn_did_not_start_is_not_silent);
   RUN_TEST(test_claims_ask_is_checked_with_the_reply);
   RUN_TEST(test_claims_no_check_attached_is_byte_identical);
   RUN_TEST(test_every_mem_write_outcome_is_reported);

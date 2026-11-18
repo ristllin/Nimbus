@@ -284,8 +284,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: device_notes
 - kind: remove
-- bytes: 74350 -> 56924
-- sha8: 5460c809 -> 69778190
+- bytes: 74350 -> 57060
+- sha8: 5460c809 -> 98450dc7
 - lane: RB-Q1b
 - why: the old engine's reply guards read one turn and matched words, so they sent correct answers back
   or appended "(Correction: ...)" and "(Note: ...)" lines to them (rebuild/evidence/DIAGNOSIS.md RC-09:
@@ -294,4 +294,7 @@ deleted. Engine 2 has no baseline.
   orch_spawn_claim.cpp (the spawn correction line), orch_owner_voice.cpp (the per-turn [REPLY SCOPE] and
   [DISPUTED CLAIM] lines), and in turn_contract.cpp the [TURN CHECK] item for a reply that says
   sub-agents started. Nothing was added: ownerAskedHow moved byte for byte into orch_reply_guard.cpp
-  (same class).
+  (same class), and the head's note for an unapplied answer that carried a spawn item keeps its base
+  text (engine.cpp noteUnappliedSpawns, now read from the answer's structure, not its words). Left for
+  a later lane (an edit there is a swap with rates, not a deletion): the mem_write description in
+  orch_schema.h and compose.cpp still says the device confirms or corrects a save claim.

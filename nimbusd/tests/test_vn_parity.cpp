@@ -475,7 +475,10 @@ static void testEmbeddingsHonestAnswers(ndtest::Ctx& c) {
     rig.say("owner", "What is my sister's cat called? Search your memory.");
     c.ok(tx.seen.size() == 2 && has(tx.seen[1].body, "Zorblax5521"), "and the next turn's recall brings it by keyword");
     const TurnRecord promised = rig.say("owner", "Remember my locker is 12. Confirm when stored.");
-    c.ok(has(promised.reply, "no confirmation will follow"), "a reply that promises a later confirmation is corrected in the same message");
+    // Since v5.2.0 (lane RB-Q1b) the claim check that appended "no confirmation will follow" is gone:
+    // the reply goes out as written, once (RB-G0's truth check owns this class).
+    c.ok(promised.reply == "Saving it. I'll confirm it's stored in my next message.",
+         "a reply that promises a later confirmation is delivered as written: " + promised.reply);
     clearEnv();
   }
   {

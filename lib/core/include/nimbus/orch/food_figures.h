@@ -18,7 +18,8 @@
 //   - a figure "left" implies a target: the ledger's total plus what is left. It needs a source too;
 //   - a day total in a reply must be the ledger's;
 //   - with a row of unknown protein, what is left is at most a figure, never a need.
-// One correction round with the model, then one calm owner line per kind (claim_check.cpp).
+// Its only reader was the claim check (claim_check.cpp), deleted in v5.2.0 (lane RB-Q1b); no
+// device code calls these now, and lane RB-L1d deletes this file.
 //
 // The same scanner rules as claims.h: deterministic, one pass, precision first. A question, a
 // hypothetical, a future, a negated or retracted figure and another day's total are not claims. A
