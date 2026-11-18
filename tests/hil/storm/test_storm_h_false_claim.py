@@ -11,8 +11,11 @@ both images (no spend). Unit A.
 Bounds on the release candidate: one turn and at most two head requests, no log line
 repeated more than 5 times, the fresh message answered within 120 s. Since v5.2.0 (lane
 RB-Q1b) the device appends no correction to a reply: the claim check that wrote one is
-gone, so the leg's notice bound is zero. RB-G0's truth check (a receipt that names the
-refused write) sets the bound for this leg again when it lands.
+gone, so the leg's notice bound is zero. RB-G0's truth check keeps it at zero: it never
+appends a correction. On a measured head it holds the unbacked "saved" once for one more
+head round (so up to two head requests, inside the bound) and delivers what returns
+unchanged; its only line is a separate receipt for a write that failed, and this turn wrote
+nothing. Its probe requests go to the probe model, not to the head mock.
 
 Run: NIMBUS_STORM_UNIT=A python3 -m pytest tests/hil/storm/test_storm_h_false_claim.py --allow-hardware -s
 """
