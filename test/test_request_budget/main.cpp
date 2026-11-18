@@ -22,6 +22,7 @@
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"   // flatPromptBudget - the wires' flat cap
 #include "nimbus/orch/budget.h"
+#include "nimbus/orch/connectors_wire.h"
 #include "nimbus/orch/model_family.h"
 #include "nimbus/orch/model_window.h"
 #include "nimbus/orch/request_budget.h"
@@ -464,6 +465,7 @@ static void test_every_id_that_means_large_4_gets_its_row() {
     const std::string what = r.id + (r.large4 ? " (Large 4)" : "");
     TEST_ASSERT_EQUAL_MESSAGE(r.large4, isMistralLarge4(r.id), what.c_str());
     TEST_ASSERT_EQUAL_MESSAGE(r.large4, isMistralLarge4("mistral/" + r.id), what.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(r.large4, modelRefusesBuiltinConnectors(r.id), what.c_str());   // the 3004 refusal
     const bool glm = r.id.rfind("glm-", 0) == 0 || r.id.rfind("zai-glm", 0) == 0;
     TEST_ASSERT_EQUAL_MESSAGE(r.large4 || glm, mistralForcedReasoner(r.id), what.c_str());
     TEST_ASSERT_EQUAL_MESSAGE(r.large4 || glm, mistralForcedReasoner("mistral/" + r.id), what.c_str());

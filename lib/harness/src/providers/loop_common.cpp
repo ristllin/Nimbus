@@ -516,12 +516,16 @@ class RoundRecovery {
   const orch::HeadStep& failure(const orch::HeadStep& last) const { return savedCut_ ? *savedCut_ : last; }
 
   // A round moved to another host: that host gets its own trim and its own rerun.
-  void newHost() { overflowTried_ = cutRerun_ = false; }
+  void newHost() {
+    overflowTried_ = cutRerun_ = false;
+    seedFits_ = 0;
+  }
 
   // The round is served. What was recovered is over: a later round's failure is about
   // itself, it may have its own trim and rerun, and it is not told about this cut.
   __attribute__((noinline)) void served() {
     overflowTried_ = cutRerun_ = false;
+    seedFits_ = 0;   // the pass bound is per round: a later round's seed gets its own
     savedCut_.reset();
     heldHost_.clear();
     heldCause_.clear();
@@ -556,8 +560,9 @@ class RoundRecovery {
   bool fitted_ = false;
   bool overflowTried_ = false, cutRerun_ = false;
   // A seed refit measures the rendered prompt, not the seed alone: a pass that freed bytes
-  // elsewhere (the playbook) is tried again, a few times at most.
-  static constexpr int kSeedFitPasses = 4;
+  // elsewhere (the playbook) is tried again, a few times at most per round (one per rung
+  // of NewestMessage, and one for a partial clip).
+  static constexpr int kSeedFitPasses = 5;
   int seedFits_ = 0;
   std::unique_ptr<orch::HeadStep> savedCut_;
   std::string cutNote_;
