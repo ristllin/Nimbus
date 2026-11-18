@@ -4,10 +4,9 @@
 #include <string>
 
 // reply_guard - what a head's answer must never be, and how honest the turn's shape is.
+// (The placeholder check lives in nimbus/harness/turn_contract.h and the cut round's
+// note in providers/loop_common.h: the old engine keeps them, RB-Q1a.)
 //
-//   - isPlaceholderReply: template filler written where an answer belongs. Hosted
-//     Virtual Nimbus, 1 Nov: a forced final round on mistral-large-4-0 answered
-//     {"reply":"placeholder",...} and the device delivered the word to the owner.
 //   - asksForWork: a message that asks for work, not a chat line. The same turn was a
 //     real task ("Use a web lookup ...") that the plain-chat cap of 2 tool rounds
 //     throttled; lookups, reads and writes keep the configured rounds.
@@ -17,23 +16,11 @@
 //     a final answer unless a sub-agent, a routine or a wakeup does.
 //   - announcesWorkNow: a reply that says the work is happening right now ("Logging it now.")
 //     while the turn ran nothing: held to the same correction as a promise of later work.
-//   - cutRetryNote: what a round that ran out of room is told when it runs again.
 //
 // Deterministic token matchers over flash tables, English only like the claim scan.
 // Portable, Arduino-free, host-tested (test_reply_guard).
 namespace nimbus {
 namespace orch {
-
-// True when the whole reply is template filler. `ownerText`: a word the owner's own
-// message holds is an answer ("Say the word placeholder").
-bool isPlaceholderReply(const std::string& reply, const std::string& ownerText = std::string());
-
-// The correction a placeholder answer gets (model-facing).
-extern const char kPlaceholderCorrection[];
-
-// The final-answer check over an orch_turn's JSON: its `reply` field read loosely.
-// "" when it is an answer, else kPlaceholderCorrection.
-std::string placeholderCheck(const std::string& finalTurnJson, const std::string& ownerText);
 
 // Lane POL2: internal plumbing in an owner-facing reply - memory ids (m84cc98c8),
 // job ids (result-job0009), storage wording ("read back confirmed", "stored on the
@@ -138,10 +125,6 @@ extern const char kPackQuestionCorrection[];
 // a round can still run (model-facing; `excerpt` is the sentence).
 extern const char kLaterPromiseLine[];
 std::string laterCorrection(const std::string& excerpt);
-
-// The note a round gets when it runs again after a cut. `why` is the cut's error line;
-// `partial` what the model wrote before it (quoted back in part, "" = nothing).
-std::string cutRetryNote(const std::string& why, const std::string& partial);
 
 }  // namespace orch
 }  // namespace nimbus

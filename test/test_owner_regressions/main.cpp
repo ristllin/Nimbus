@@ -15,6 +15,7 @@
 #include "nimbus/harness/fold_driver.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/harness/turn_fit.h"
+#include "../../lib/harness/src/providers/loop_common.h"   // cutRetryNote (RB-Q1a: moved out of reply_guard)
 #include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/claims.h"
@@ -348,7 +349,7 @@ void test_oir_22_unsourced_protein_target() {
 
 // OIR-23: an output cut carries a retry note naming the cut, never silence.
 void test_oir_23_cut_retry_note() {
-  const std::string note = cutRetryNote("output cut", "partial answer");
+  const std::string note = agent::providers::cutRetryNote("output cut", "partial answer");
   TEST_ASSERT_FALSE(note.empty());
 }
 

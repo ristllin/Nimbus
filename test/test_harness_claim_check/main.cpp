@@ -430,12 +430,12 @@ static void test_figures_against_the_turn_sources() {
 
 static void test_device_actions_back_their_claims_only_when_allowed() {
   FxKind k;
-  TEST_ASSERT_TRUE(ClaimCheck::deviceActionEffect("{\"type\":\"tts\",\"text\":\"hi\"}", k));
+  TEST_ASSERT_TRUE(agent::deviceActionEffect("{\"type\":\"tts\",\"text\":\"hi\"}", k));
   TEST_ASSERT_EQUAL((int)FxKind::Speak, (int)k);
-  TEST_ASSERT_TRUE(ClaimCheck::deviceActionEffect("{\"type\":\"lights\",\"value\":\"off\"}", k));
+  TEST_ASSERT_TRUE(agent::deviceActionEffect("{\"type\":\"lights\",\"value\":\"off\"}", k));
   TEST_ASSERT_EQUAL((int)FxKind::Config, (int)k);
-  TEST_ASSERT_FALSE(ClaimCheck::deviceActionEffect("{\"type\":\"nope\"}", k));
-  TEST_ASSERT_FALSE(ClaimCheck::deviceActionEffect("not json", k));
+  TEST_ASSERT_FALSE(agent::deviceActionEffect("{\"type\":\"nope\"}", k));
+  TEST_ASSERT_FALSE(agent::deviceActionEffect("not json", k));
 }
 
 // Live-eval shapes: a scratchpad save that landed backs "saved"; a RAM-only one
@@ -453,15 +453,15 @@ static void test_scratch_outcomes_and_permanent_tool_writes() {
   TEST_ASSERT_FALSE(ram.finalCheck(saved).empty());
   TEST_ASSERT_EQUAL_STRING("", ram.finalCheck(turnJson("Noted.")).c_str());
   TEST_ASSERT_EQUAL((int)nimbus::orch::kFxPermanent,
-                    (int)ClaimCheck::toolCallFlags("memory.write", R"({"content":"x","permanent":true})"));
-  TEST_ASSERT_EQUAL(0, (int)ClaimCheck::toolCallFlags("memory.write", R"({"content":"x"})"));
-  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)ClaimCheck::toolCallFlags("files.append", R"({"name":"x.csv"})"));
-  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)ClaimCheck::toolCallFlags("files.edit", R"({"name":"x.csv"})"));
-  TEST_ASSERT_EQUAL(0, (int)ClaimCheck::toolCallFlags("files.read", R"({"permanent":true})"));
+                    (int)agent::toolCallFlags("memory.write", R"({"content":"x","permanent":true})"));
+  TEST_ASSERT_EQUAL(0, (int)agent::toolCallFlags("memory.write", R"({"content":"x"})"));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)agent::toolCallFlags("files.append", R"({"name":"x.csv"})"));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxLogRow, (int)agent::toolCallFlags("files.edit", R"({"name":"x.csv"})"));
+  TEST_ASSERT_EQUAL(0, (int)agent::toolCallFlags("files.read", R"({"permanent":true})"));
   ClaimCheck pin;
   pin.beginTurn();
   pin.noteTool(FxKind::MemWrite, false, "stored memory m52ff9c86",
-               ClaimCheck::toolCallFlags("memory.write", R"({"content":"x","permanent":true})"));
+               agent::toolCallFlags("memory.write", R"({"content":"x","permanent":true})"));
   TEST_ASSERT_EQUAL_STRING("", pin.finalCheck(turnJson("Saved as a permanent note. It is pinned, so it can never decay.")).c_str());
 }
 
@@ -690,6 +690,7 @@ static Applied applyMockTurn(WriteEnd end) {
   ClaimCheck cc;
   cc.beginTurn();
   agent::ApplyState st;
+  st.effects = &cc.effects();
   st.claims = &cc;
   st.unverifiedConnector = end == WriteEnd::Unverified;
   bool spawned = false;
@@ -749,7 +750,7 @@ static void test_a_played_claim_is_backed_by_media_play_through_the_tool_seam() 
   for (const Row& row : rows) {
     ClaimCheck cc;
     cc.beginTurn();
-    cc.noteTool(agent::fxKindForTool(row.tool), false, row.out, ClaimCheck::toolCallFlags(row.tool, "{}"));
+    cc.noteTool(agent::fxKindForTool(row.tool), false, row.out, agent::toolCallFlags(row.tool, "{}"));
     const std::string tail = cc.tailAfterApply("Done, I played it on the speaker.", false);
     TEST_ASSERT_EQUAL_MESSAGE(row.backed, tail.empty(), row.tool);
   }
@@ -758,12 +759,12 @@ static void test_a_played_claim_is_backed_by_media_play_through_the_tool_seam() 
 static void test_voice_claim_needs_a_telegram_receipt() {
   using nimbus::orch::kFxVoice;
   const std::string voiceArgs = R"({"text":"Here is your evening summary.","voice":true})";
-  const uint8_t flags = ClaimCheck::toolCallFlags("reply.telegram", voiceArgs);
+  const uint8_t flags = agent::toolCallFlags("reply.telegram", voiceArgs);
   TEST_ASSERT_EQUAL_UINT8((uint8_t)(nimbus::orch::kFxTelegram | kFxVoice), flags);
   TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxTelegram,
-                          ClaimCheck::toolCallFlags("reply.telegram", R"({"text":"hi"})"));
+                          agent::toolCallFlags("reply.telegram", R"({"text":"hi"})"));
   TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxTelegram,
-                          ClaimCheck::toolCallFlags("files.send", R"({"path":"/sd/a.jpg"})"));
+                          agent::toolCallFlags("files.send", R"({"path":"/sd/a.jpg"})"));
   TEST_ASSERT_TRUE(agent::fxKindForTool("reply.telegram") == FxKind::Send);
   const char* claims[] = {"I've sent you a voice message with the summary.", "Voice message sent.",
                           "I sent the recap to Telegram as a voice note.",
@@ -944,9 +945,9 @@ static void test_working_claims_need_a_health_read() {
   ClaimCheck cc;
   cc.beginTurn();
   TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxHealth,
-                         ClaimCheck::toolCallFlags("device.status", "{}"));
+                         agent::toolCallFlags("device.status", "{}"));
   TEST_ASSERT_EQUAL_UINT8(nimbus::orch::kFxHealth,
-                         ClaimCheck::toolCallFlags("system.health", "{}"));
+                         agent::toolCallFlags("system.health", "{}"));
   const char* works = "My vision path is working fine now.";
   // Nothing was read: the unchecked line.
   TEST_ASSERT_TRUE(cc.tailAfterApply(works).find(
@@ -1137,17 +1138,17 @@ static void test_a_clipped_evidence_store_asserts_no_absence() {
 // (its rows are counted by the keyed append path, not a whole-file save).
 static void test_a_log_claim_needs_an_append_that_landed_a_row() {
   const std::string csv = R"({"project":"food","name":"2026-10-27.csv","text":"date,meal,kcal\n2026-10-27,lunch,450"})";
-  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow, ClaimCheck::toolCallFlags("files.append", csv));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow, agent::toolCallFlags("files.append", csv));
   TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
-                    ClaimCheck::toolCallFlags("files.append", R"({"project":"p","name":"RUNS.LOG","text":"x"})"));
+                    agent::toolCallFlags("files.append", R"({"project":"p","name":"RUNS.LOG","text":"x"})"));
   TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
-                    ClaimCheck::toolCallFlags("files.append", R"({"project":"p","name":"notes.md","text":"x"})"));
-  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow, ClaimCheck::toolCallFlags("files.append", "{not json"));
+                    agent::toolCallFlags("files.append", R"({"project":"p","name":"notes.md","text":"x"})"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow, agent::toolCallFlags("files.append", "{not json"));
   TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
-                    ClaimCheck::toolCallFlags("artifact.save", R"({"project":"p","name":"daylog.txt","text":"x"})"));
+                    agent::toolCallFlags("artifact.save", R"({"project":"p","name":"daylog.txt","text":"x"})"));
   TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
-                    ClaimCheck::toolCallFlags("artifact.save", R"({"project":"p","name":"notes.md","text":"x"})"));
-  TEST_ASSERT_EQUAL(0, ClaimCheck::toolCallFlags("artifact.save", csv));
+                    agent::toolCallFlags("artifact.save", R"({"project":"p","name":"notes.md","text":"x"})"));
+  TEST_ASSERT_EQUAL(0, agent::toolCallFlags("artifact.save", csv));
   const char* reply = "I updated your food log with the lunch.";
   size_t n = 0;
   const nimbus::orch::ToolTaintRow* rows = nimbus::orch::toolTaintTable(n);
@@ -1161,7 +1162,7 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
     ClaimCheck cc;
     cc.beginTurn();
     cc.noteTool(agent::fxKindForTool(rows[i].name), false, "saved food/2026-10-27.csv (310 B)",
-                ClaimCheck::toolCallFlags(rows[i].name, csv));
+                agent::toolCallFlags(rows[i].name, csv));
     TEST_ASSERT_NOT_EQUAL_MESSAGE(0, (int)cc.finalCheck(turnJson(reply)).size(), rows[i].name);
   }
   TEST_ASSERT_GREATER_OR_EQUAL(4, writers);
@@ -1177,7 +1178,7 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
   for (const Append& a : appends) {
     ClaimCheck cc;
     cc.beginTurn();
-    cc.noteTool(agent::fxKindForTool("files.append"), false, a.out, ClaimCheck::toolCallFlags("files.append", a.args));
+    cc.noteTool(agent::fxKindForTool("files.append"), false, a.out, agent::toolCallFlags("files.append", a.args));
     TEST_ASSERT_EQUAL_MESSAGE(a.backs, cc.finalCheck(turnJson(reply)).empty(), a.out);
     if (!a.backs)
       TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)", cc.tailAfterApply(reply).c_str());
@@ -1199,7 +1200,7 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
   for (const Edit& e : edits) {
     ClaimCheck cc;
     cc.beginTurn();
-    cc.noteTool(agent::fxKindForTool("files.edit"), e.error, e.out, ClaimCheck::toolCallFlags("files.edit", csv));
+    cc.noteTool(agent::fxKindForTool("files.edit"), e.error, e.out, agent::toolCallFlags("files.edit", csv));
     TEST_ASSERT_EQUAL_MESSAGE(e.backs, cc.finalCheck(turnJson(reply)).empty(), e.out);
   }
   // The review r2 K1 shape, end to end: correcting a line of a free-text log is a
@@ -1220,7 +1221,7 @@ static void test_a_log_claim_needs_an_append_that_landed_a_row() {
     cc.beginTurn();
     if (s.out[0])
       cc.noteTool(agent::fxKindForTool("artifact.save"), s.error, s.out,
-                  ClaimCheck::toolCallFlags("artifact.save", txt));
+                  agent::toolCallFlags("artifact.save", txt));
     TEST_ASSERT_EQUAL_MESSAGE(s.backs, cc.finalCheck(turnJson(daylogReply)).empty(), s.out);
     if (!s.backs)
       TEST_ASSERT_EQUAL_STRING("\n\n(Correction: no row was added to a log file this turn.)",
@@ -1890,7 +1891,7 @@ static void test_a_logged_pack_meal_never_asks_how_much_was_eaten() {
     TurnSources parts;
     parts.owner = owner;
     cc.setSources("", "", parts);
-    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    cc.noteTool(FxKind::FileWrite, false, landed, agent::toolCallFlags("files.append", csv));
     const std::string fix = cc.finalCheck(turnJson(asking));
     TEST_ASSERT_TRUE_MESSAGE(fix.find("REPLY CHECK") != std::string::npos, fix.c_str());
     TEST_ASSERT_TRUE_MESSAGE(fix.find("re-send the row with 0 kcal") != std::string::npos, fix.c_str());
@@ -1902,7 +1903,7 @@ static void test_a_logged_pack_meal_never_asks_how_much_was_eaten() {
     TurnSources parts;
     parts.owner = owner;
     cc.setSources("", "", parts);
-    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    cc.noteTool(FxKind::FileWrite, false, landed, agent::toolCallFlags("files.append", csv));
     TEST_ASSERT_EQUAL_STRING("", cc.finalCheck(turnJson(clean)).c_str());
     TEST_ASSERT_FALSE(cc.corrected());
   }
@@ -1921,7 +1922,7 @@ static void test_a_logged_pack_meal_never_asks_how_much_was_eaten() {
     TurnSources parts;
     parts.owner = "Here is my lunch photo: a plate of chicken, lentils and hummus.";
     cc.setSources("", "", parts);
-    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    cc.noteTool(FxKind::FileWrite, false, landed, agent::toolCallFlags("files.append", csv));
     TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(asking)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
   }
   {  // the owner asked how something works: their question is answered, not corrected
@@ -1930,7 +1931,7 @@ static void test_a_logged_pack_meal_never_asks_how_much_was_eaten() {
     TurnSources parts;
     parts.owner = "Here is a photo of the label on my protein bar pack. How should I log this?";
     cc.setSources("", "", parts);
-    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    cc.noteTool(FxKind::FileWrite, false, landed, agent::toolCallFlags("files.append", csv));
     TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(asking)).find("REPLY CHECK") == std::string::npos, "pack correction fired");
   }
   {  // the owner asked the quantity themselves ("how many bars is one serving?"): the reply
@@ -1940,7 +1941,7 @@ static void test_a_logged_pack_meal_never_asks_how_much_was_eaten() {
     TurnSources parts;
     parts.owner = "Here is a photo of the label on my protein bar pack. Log my snack - how many bars is one serving?";
     cc.setSources("", "", parts);
-    cc.noteTool(FxKind::FileWrite, false, landed, ClaimCheck::toolCallFlags("files.append", csv));
+    cc.noteTool(FxKind::FileWrite, false, landed, agent::toolCallFlags("files.append", csv));
     const char* echo =
         "You asked how many: one serving is a single bar, so I logged 220 kcal.";
     TEST_ASSERT_TRUE_MESSAGE(cc.finalCheck(turnJson(echo)).find("REPLY CHECK") == std::string::npos, "pack correction fired");

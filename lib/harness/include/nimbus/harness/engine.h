@@ -9,6 +9,7 @@
 
 #include "nimbus/attention.h"           // nimbus::attn::Event (head Running/Offline arc)
 #include "nimbus/harness/apply.h"       // ApplyDeps / ApplyState / applyTurn (Stage E)
+#include "nimbus/harness/claim_check.h"  // ClaimCheck / TurnSources: the claim check (RB-Q1b deletes it)
 #include "nimbus/harness/compose.h"     // ComposeInputs / composeInstructions (Stage D)
 #include "nimbus/harness/config.h"      // HarnessConfig
 #include "nimbus/harness/head_tools.h"  // HeadTools (mid-turn tool loop context)
@@ -555,8 +556,10 @@ class TurnEngine {
   // The last turn's billed total, on EVERY exit (a failed turn's spend too): a
   // scheduled fire and the dream report their own spend, never a previous turn's.
   nimbus::orch::TokenUsage lastTurnUsage() const { return lastTurnUsage_; }
-  // The claim check of the current (or last) turn: its effect ledger and flags.
+  // The claim check of the current (or last) turn: its flags, over turnEffects().
   const ClaimCheck& claimCheck() const { return claims_; }
+  // The effect ledger of the current (or last) turn: what it really did.
+  const nimbus::orch::TurnEffects& turnEffects() const { return turnFx_; }
   // The tags of the assistant row being captured now: S's fx: tag, and under
   // histV2 its out: kind (reply / ask / tts).
   std::string assistantRowTags() const;
@@ -773,7 +776,11 @@ class TurnEngine {
 
   // The most recent composed World system prompt (for PROMPT? / diagnostics).
   std::string lastInstructions_;
-  ClaimCheck claims_;               // lane S: this turn's effect ledger and claim check
+  // Lane S: this turn's effect ledger (turn_effects.h). The turn state holds it: runTurn
+  // resets it and records the fresh results and every head tool call, apply records the
+  // final turn's outcomes (ApplyState::effects), and the checks below read it.
+  nimbus::orch::TurnEffects turnFx_;
+  ClaimCheck claims_;               // lane S: this turn's claim check, over turnFx_
   TurnSources claimSources(const std::string& chatId, const std::string& userText,
                            const ComposeInputs& ci) const;   // CUM-824
   int freshSourced_ = 0;            // sub-agent results folded into this turn: with a lookup

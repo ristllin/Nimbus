@@ -455,7 +455,7 @@ std::string convMapSet(std::string raw, const std::string& chat,
   return out;
 }
 
-TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) {}
+TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) { claims_.useEffects(&turnFx_); }
 
 void ProviderHosts::noteFailed(const std::string& host, const std::string& err) const {
   if (!failed || nimbus::orch::isParkedRefusal(err)) return;   // no request was answered
@@ -1187,7 +1187,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Lane S: a fresh effect ledger; the sub-agent results the entry wrapper
   // folded in count as read (sourced or with no lookup behind them).
   claims_.beginTurn();
-  claims_.noteFresh(freshSourced_, freshUnsourced_);
+  turnFx_.reset();
+  recordFreshResults(turnFx_, freshSourced_, freshUnsourced_);
   freshSourced_ = freshUnsourced_ = 0;   // consumed: never carried into a later turn
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
@@ -1701,9 +1702,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         orch::HeadToolResult r = inner(call);
         auto it = nameMap->find(call.name);
         const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
-        const uint16_t flags = ClaimCheck::toolCallFlags(regName, call.argsJson);
+        const uint16_t flags = toolCallFlags(regName, call.argsJson);
+        orch::recordToolEffect(turnFx_, fxKindForTool(regName), r.isError, r.output, flags);
         claims_.noteToolArgs(regName, call.argsJson);   // the words a write saved: seen when it lands
-        claims_.noteTool(fxKindForTool(regName), r.isError, r.output, flags, regName);
+        claims_.noteToolResult(r.isError, r.output, flags, regName);
         return r;
       };
     }
@@ -1770,7 +1772,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.cfg.validateFinal = orch::chainFinalChecks({
         [pseudo](const std::string& finalTurn) { return turnShapeCorrection(finalTurn, pseudo.get()); },
         [this](const std::string& finalTurn) { return claims_.finalCheck(finalTurn, /*skipSpawned=*/true); },
-        [&userText](const std::string& finalTurn) { return orch::placeholderCheck(finalTurn, userText); },
+        [&userText](const std::string& finalTurn) { return placeholderCheck(finalTurn, userText); },
         // Lane MLQ (OIR-06): an earlier owner message that got no reply is not taken up
         // unless this message brings it up (owner_voice.h).
         [this](const std::string& finalTurn) { return claims_.scopeCheck(finalTurn); },
@@ -1780,7 +1782,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         // An empty reply gets one more try, on every provider. Only a turn with nothing to
         // say goes without one: scheduled, quiet, or one a tool or a sub-agent answers.
         [this, pseudo](const std::string& finalTurn) {
-          const orch::TurnEffects& fx = claims_.effects();
+          const orch::TurnEffects& fx = turnFx_;
           if (scheduledTurn_ || quietTurn_ || toolReplied_ || fx.anyOk(orch::FxKind::Spawn) ||
               fx.anyOk(orch::FxKind::Send) || fx.anyOk(orch::FxKind::Speak))
             return std::string();
@@ -1790,7 +1792,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // The forced round too: no real answer means one more tool-less round (VN, 1 Nov: the
     // literal "placeholder" went to the owner). The turn's end holds the line after it.
     headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
-      return orch::placeholderCheck(finalTurn, userText);
+      return placeholderCheck(finalTurn, userText);
     };
     // Lane POL2: a prose final answer is the owner-facing reply too (glm-5.3
     // answered in the text channel with a memory id and the orch_turn check
@@ -2553,8 +2555,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Checked on the reply as written AND after the echo drop below: a filler reply can
   // itself be an echo sentence ("[reply]" opens with a rule word), and the filler path
   // must own it before the drop can empty it.
-  if (orch::isPlaceholderReply(turn.reply, userText) ||
-      orch::isPlaceholderReply(orch::dropEchoSentences(turn.reply), userText)) {
+  if (isPlaceholderReply(turn.reply, userText) ||
+      isPlaceholderReply(orch::dropEchoSentences(turn.reply), userText)) {
     hlog::logf("orchestrator: %s answered with template filler (%u B) - not delivered", host.c_str(),
                (unsigned)turn.reply.size());
     err = "placeholder: the model wrote template filler instead of an answer";
@@ -2609,6 +2611,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                        const std::string& reason) {
     if (d_.jobs) d_.jobs->noteSpawnIntentRefused(chatId, name, task, reason);
   };
+  st.effects             = &turnFx_;
   st.claims              = &claims_;
   bool spawned = false;
   if (memoryOnly) {

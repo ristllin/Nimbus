@@ -34,24 +34,6 @@ constexpr size_t kOwnerTextMax = 1024;     // the owner's message a why-question
 constexpr size_t kEvidenceTextMax = 32768; // a text longer than this is read only in part (orch_claims)
 constexpr size_t kImageReadsMax = 8192;    // the raw image.* args/results the label gate reads
 
-// What an allowed device action does, by the device's own validator (a blocked
-// or unknown element backs nothing).
-bool deviceEffect(const std::string& json, orch::FxKind& out) {
-  JsonDocument d;
-  if (deserializeJson(d, json) != DeserializationError::Ok) return false;
-  const orch::ValidatedAction va = orch::validateAction(d.as<JsonVariantConst>());
-  if (!va.allowed) return false;
-  switch (va.kind) {
-    case orch::ActionKind::Tts: out = orch::FxKind::Speak; return true;
-    case orch::ActionKind::Led:
-    case orch::ActionKind::Lights:
-    case orch::ActionKind::Config:
-    case orch::ActionKind::OrchModel:
-    case orch::ActionKind::Reboot: out = orch::FxKind::Config; return true;
-    default: return false;
-  }
-}
-
 // A photo in the owner's message that a model could read (attached, described or
 // transcribed): it may show a label, a receipt, a watch or a gauge.
 bool readablePhoto(const std::string& ownerText) {
@@ -156,10 +138,6 @@ bool appendsToLog(const std::string& argsJson) {
 
 }  // namespace
 
-// From the one shared tool table (orch::toolEffect, lane L), so the ledger and
-// the other rails that read the table can never disagree about a tool. A spawn
-// called as a tool joins the turn's spawn items and apply records whether the
-// job queue took it, so the call itself vouches for nothing (Read).
 std::string ranSourceNames(const std::string& provenance) {
   const size_t ran = provenance.find(" [ran: ");
   if (ran == std::string::npos) return std::string();
@@ -181,36 +159,9 @@ std::string ranSourceNames(const std::string& provenance) {
   return out;
 }
 
-orch::FxKind fxKindForTool(const std::string& n) {
-  using orch::FxKind;
-  static const FxKind kByEffect[] = {
-      FxKind::Read,       // Read
-      FxKind::MemWrite,   // MemWrite
-      FxKind::MemUpdate,  // MemUpdate
-      FxKind::MemPin,     // MemPin
-      FxKind::MemDelete,  // MemDelete
-      FxKind::Scratch,    // Scratch
-      FxKind::FileWrite,  // FileWrite
-      FxKind::Send,       // Share
-      FxKind::SkillSave,  // SkillSave
-      FxKind::Read,       // Spawn
-      FxKind::Config,     // Cancel
-      FxKind::Send,       // Send
-      FxKind::Speak,      // Speak
-      FxKind::Schedule,   // Schedule
-      FxKind::Config,     // Config
-      FxKind::Config,     // Admin
-      FxKind::Config,     // Media
-  };
-  static_assert(sizeof(kByEffect) / sizeof(kByEffect[0]) == (size_t)orch::ToolEffect::Media + 1,
-                "every ToolEffect needs a ledger kind");
-  const size_t e = (size_t)orch::toolEffect(n);
-  return e < sizeof(kByEffect) / sizeof(kByEffect[0]) ? kByEffect[e] : FxKind::Read;
-}
-
 void ClaimCheck::beginTurn() {
   laterWork_ = orch::LaterWork::None;
-  fx_.reset();
+  fx_->reset();
   sources_.clear();
   recalled_.clear();
   ownerNums_.clear();
@@ -308,49 +259,6 @@ void ClaimCheck::noteToolText(const std::string& output) {
   clipped_ = clipped_ || clipped;
 }
 
-// An artifact.save into a .txt/.md text document (not a .csv, whose rows are counted
-// by the keyed append path): it may have rewritten a log.
-uint8_t savedTextFileRow(const std::string& argsJson) {
-  JsonDocument d;
-  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return 0;
-  std::string name = d["name"] | "";
-  for (char& c : name) c = (char)std::tolower((unsigned char)c);
-  const size_t n = name.size();
-  return n > 4 && (name.compare(n - 4, 4, ".txt") == 0 || name.compare(n - 3, 3, ".md") == 0)
-             ? orch::kFxLogRow
-             : 0;
-}
-
-uint16_t ClaimCheck::toolCallFlags(const std::string& regName, const std::string& argsJson) {
-  // A read of the device's own state (L19-11): the only thing that can confirm
-  // "it is working" (kEvHealthRead comes from the ledger, never from text).
-  if (regName == "device.status" || regName == "system.health") return orch::kFxHealth;
-  if (regName == "media.play") return orch::kFxMusic;   // kept only if the result says it is playing
-  // CUM-782 + the review: a files.append only writes text documents, and the landed-row
-  // count (fxAppendedRows, in recordToolEffect) is the proof a row exists - the flag is
-  // asked for on every append and kept only when a row lands, whatever the extension
-  // (.txt and .md logs are logs too, not only .csv/.log).
-  // A files.edit changes a text document in place: its proof is its own "replaced A of B".
-  if (regName == "files.append" || regName == "files.edit") return orch::kFxLogRow;
-  // An artifact.save that rewrites a text document also updates a log (the review: the
-  // free-text day log is corrected by rewriting the file): its proof is its own landed
-  // receipt (recordToolEffect keeps the flag when the result counts rows or the save
-  // landed, "saved p/n (N bytes)").
-  if (regName == "artifact.save") return savedTextFileRow(argsJson);
-  const bool memory = regName == "memory.write" || regName == "memory.update";
-  const bool telegram = regName == "reply.telegram" || regName == "files.send";
-  if (!memory && !telegram) return 0;
-  JsonDocument d;
-  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return 0;
-  if (telegram) {
-    // 22 Oct: a Telegram send (text, document, photo, voice) is backed only by
-    // Telegram's own receipt, never by the send tool's success text.
-    return (d["voice"] | false) ? (uint8_t)(orch::kFxTelegram | orch::kFxVoice)
-                                : orch::kFxTelegram;
-  }
-  return (d["permanent"] | false) ? orch::kFxPermanent : 0;
-}
-
 void ClaimCheck::stashImageRead(const std::string& text) {
   if (imageReads_.size() + text.size() + 1 > kImageReadsMax) clipped_ = true;
   else imageReads_ += "\n" + text;
@@ -407,7 +315,12 @@ void ClaimCheck::noteToolArgs(const std::string& regName, const std::string& arg
 
 void ClaimCheck::noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
                           uint16_t flags, const std::string& regName) {
-  orch::recordToolEffect(fx_, kind, isError, output, flags);
+  orch::recordToolEffect(*fx_, kind, isError, output, flags);
+  noteToolResult(isError, output, flags, regName);
+}
+
+void ClaimCheck::noteToolResult(bool isError, const std::string& output, uint16_t flags,
+                                const std::string& regName) {
   causeEvidence_ |= orch::causeEvidenceOf(output);
   // An image.* result (a blind host's caption answer to image.look) is a label read
   // of this turn's photo too.
@@ -452,16 +365,6 @@ void ClaimCheck::noteToolNumbers(const std::string& output) {
   if (!targetsClipped_ && !read.empty()) targetNums_ += " " + read;
 }
 
-void ClaimCheck::noteFresh(int sourced, int unsourced) {
-  if (sourced > 0) fx_.add(orch::FxKind::SubSourced, true, "", (uint8_t)(sourced > 255 ? 255 : sourced));
-  if (unsourced > 0)
-    fx_.add(orch::FxKind::SubUnsourced, true, "", (uint8_t)(unsourced > 255 ? 255 : unsourced));
-}
-
-bool ClaimCheck::deviceActionEffect(const std::string& json, orch::FxKind& out) {
-  return deviceEffect(json, out);
-}
-
 void ClaimCheck::addPending(orch::TurnEffects& fx, const orch::Turn& t) {
   using orch::FxKind;
   const uint8_t p = orch::kFxPending;
@@ -475,7 +378,7 @@ void ClaimCheck::addPending(orch::TurnEffects& fx, const orch::Turn& t) {
   if (t.scratchpad.present) fx.add(FxKind::Scratch, true, "", 1, p);
   for (const orch::DeviceAction& da : t.device) {
     FxKind k;
-    if (deviceEffect(da.json, k)) fx.add(k, true, "", 1, p);
+    if (deviceActionEffect(da.json, k)) fx.add(k, true, "", 1, p);
   }
 }
 
@@ -671,7 +574,7 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   orch::Turn t;
   orch::ParseError err;
   if (!orch::parseTurn(finalTurnJson, t, err)) return std::string();   // the shape check's case
-  orch::TurnEffects pending = fx_;
+  orch::TurnEffects pending = *fx_;
   addPending(pending, t);
   const std::string said = t.ask.empty() ? t.reply : t.reply + "\n\n" + t.ask;   // one message
   const std::vector<orch::ClaimGap> gaps = gapsFor(said, pending, skipSpawned);
@@ -692,7 +595,7 @@ std::string ClaimCheck::finalCheck(const std::string& finalTurnJson, bool skipSp
   // how much themselves - packMealAskedHowMuch returns false when the owner's own message
   // asks the amount ("how many bars is one serving?" is the owner asking, and a reply echoing
   // it answers them), and !ownerAskedHow_ covers the how-works question.
-  const bool pack = !ownerAskedHow_ && fx_.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow) &&
+  const bool pack = !ownerAskedHow_ && fx_->anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow) &&
                     orch::packMealAskedHowMuch(ownerText_, said);
   // A stored vision record of the same label (another provider's read) that disagrees
   // with this reply's figures is surfaced, never averaged (food_label.h).
@@ -804,7 +707,7 @@ std::string ClaimCheck::unbackedPromise(const std::string& reply, const orch::Tu
 
 std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawned) {
   if (reply.find_first_not_of(" \t\r\n") == std::string::npos) return std::string();
-  const std::vector<orch::ClaimGap> gaps = gapsFor(reply, fx_, skipSpawned);
+  const std::vector<orch::ClaimGap> gaps = gapsFor(reply, *fx_, skipSpawned);
   orch::FoodFacts facts;
   const std::vector<orch::FoodGap> food = foodGaps(reply, facts);
   std::string tail = (gaps.empty() ? std::string() : orch::claimTail(gaps)) + orch::foodGapTail(food, facts);
@@ -814,7 +717,7 @@ std::string ClaimCheck::tailAfterApply(const std::string& reply, bool skipSpawne
   int staleAge = 0;
   if (!routineDay_.empty() && !orch::staleStatusIn(reply, routineDay_, orch::kStaleStatusDays, &staleAge).empty())
     tail += orch::staleStatusNote(staleAge);
-  const bool later = !unbackedPromise(reply, fx_).empty();
+  const bool later = !unbackedPromise(reply, *fx_).empty();
   if (later) tail += std::string("\n\n") + orch::kLaterPromiseLine;
   // The second-read disagreement with a stored record, surfaced on the delivered
   // reply too (food_label.h): both values, never averaged.

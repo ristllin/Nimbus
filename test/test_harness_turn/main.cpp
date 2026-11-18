@@ -5921,8 +5921,61 @@ static void test_roleofchat_reads_the_owner_rule_from_nvs_not_the_poll_tasks_str
                            "the owner rule comes from NVS via telegramOwnerOf");
 }
 
+// ---- the placeholder check (turn_contract.h; moved from test_reply_guard by RB-Q1a) ----
+static void test_filler_class() {
+  for (const char* f : {"placeholder", "Placeholder", " placeholder. ", "<placeholder>", "[placeholder]", "{{reply}}",
+                        "<reply>", "your reply here", "Your answer here.", "TODO", "...", "\xE2\x80\xA6",
+                        "lorem ipsum", "final answer", "*placeholder*", "\"placeholder\""})
+    TEST_ASSERT_TRUE_MESSAGE(agent::isPlaceholderReply(f), f);
+}
+
+// The dimension the matcher must not swallow: real replies, however short, and a reply
+// that merely mentions the word.
+static void test_real_replies_are_not_filler() {
+  for (const char* r : {"ok", "Done.", "Yes", "No", "n/a", "42", "2,400 kcal", "Hi", "Thanks!", "The answer is 7.",
+                        "That is a placeholder in the template, not your data.", "I used a placeholder name.", "string theory",
+                        "reply sent", "string", "TBD", "?", "\xF0\x9F\x91\x8D"})
+    TEST_ASSERT_FALSE_MESSAGE(agent::isPlaceholderReply(r), r);
+  TEST_ASSERT_FALSE(agent::isPlaceholderReply(""));   // an empty reply is its own path (never filler text)
+  TEST_ASSERT_FALSE(agent::isPlaceholderReply("placeholder", "Say the word placeholder and nothing else."));
+  TEST_ASSERT_TRUE(agent::isPlaceholderReply("placeholder", "Say the word banana."));
+}
+
+static void test_final_check_reads_the_field() {
+  TEST_ASSERT_TRUE(agent::placeholderCheck("{\"reply\":\"placeholder\",\"memory\":\"\",\"ask\":\"\"}", "hi").find("REPLY CHECK") != std::string::npos);
+  TEST_ASSERT_TRUE(agent::placeholderCheck("{\"reply\":\"a real answer\"}", "hi").empty());
+  TEST_ASSERT_TRUE(agent::placeholderCheck("not json", "hi").empty());
+  TEST_ASSERT_TRUE(agent::placeholderCheck("{\"reply\":\"\"}", "hi").empty());
+}
+
+// RB-Q1a: the turn's effect ledger is the turn state's, not the claim check's. The
+// engine records each head tool call into it itself, and the claim check only reads
+// the same ledger, so deleting the check (RB-Q1b) keeps every record.
+static void test_the_turn_state_holds_the_effect_ledger() {
+  for (const char* tool : {"memory_search", "files_append"}) {
+    Rig r;
+    r.specs.push_back(orch::ToolRegistry::Spec{"memory.search", "search facts", "{}"});
+    r.specs.push_back(orch::ToolRegistry::Spec{"files.append", "append to a file", "{}"});
+    Rig::Script sc;
+    sc.dispatchTools = 1;
+    sc.toolName = tool;
+    sc.toolArgs = "{\"project\":\"p\",\"name\":\"log.csv\",\"text\":\"x\"}";
+    r.scripts["anthropic"] = {sc};
+    r.eng->handleMessage("look it up", "", "1001");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.toolResults.size(), tool);
+    const orch::TurnEffects& fx = r.eng->turnEffects();
+    TEST_ASSERT_TRUE_MESSAGE(&fx == &r.eng->claimCheck().effects(), tool);   // one ledger, read by the check
+    const orch::FxKind k = agent::fxKindForTool(std::string(tool) == "memory_search" ? "memory.search" : "files.append");
+    TEST_ASSERT_EQUAL_MESSAGE(1, fx.countOk(k) + fx.countFailed(k), tool);    // the call, recorded by the engine
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_the_turn_state_holds_the_effect_ledger);
+  RUN_TEST(test_filler_class);
+  RUN_TEST(test_real_replies_are_not_filler);
+  RUN_TEST(test_final_check_reads_the_field);
   RUN_TEST(test_cum828_a_turns_requests_carry_its_chats_grant);
   RUN_TEST(test_cum830_a_turn_reads_only_its_own_chats_results);
   runFirstHalf();

@@ -11,6 +11,8 @@
 
 #include "../support/fake_platform.h"
 #include "nimbus/harness/apply.h"
+#include "nimbus/harness/claim_check.h"   // the claim check apply's tail reads (RB-Q1b deletes it)
+#include "nimbus/orch/tool_taint.h"         // toolTaintTable: every registered tool's effect
 #include "nimbus/orch/model_catalog.h"     // lane F: the model store
 #include "nimbus/orch/model_choices.h"
 #include "nimbus/orch/model_refresh.h"
@@ -821,6 +823,7 @@ static void test_a_lookup_alone_is_not_an_action() {
   agent::ClaimCheck claims;
   claims.effects().add(nimbus::orch::FxKind::Read, true);
   claims.effects().add(nimbus::orch::FxKind::Scratch, true);
+  st.effects = &claims.effects();
   st.claims = &claims;
   bool spawned = false;
   agent::applyTurn(Turn{}, "1001", d, st, spawned);
@@ -1056,6 +1059,7 @@ static std::string applyChecked(Rec& r, ApplyDeps& d, const Turn& t, agent::Clai
                                 bool unverified = false, bool* spawnedOut = nullptr) {
   ApplyState st = makeState(r);
   st.unverifiedConnector = unverified;
+  st.effects = &cc.effects();
   st.claims = &cc;
   bool spawned = false;
   agent::applyTurn(t, "1001", d, st, spawned);
@@ -1486,6 +1490,7 @@ static void test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check() {
     agent::ClaimCheck cc;
     cc.beginTurn();
     ApplyState st = makeState(r);
+    st.effects = &cc.effects();
     st.claims = &cc;
     bool spawned = false;
     agent::applyTurn(turnWithDevice(json.c_str()), row.chat, d, st, spawned);
@@ -1569,6 +1574,7 @@ static void test_the_shortened_note_never_goes_out_alone() {
     ApplyDeps d = makeDeps(r, /*tts=*/true);
     ApplyState st = makeState(r, scheduled != 0);
     agent::ClaimCheck cc;   // the landed speak is recorded in the effects, so the turn counts as acted
+    st.effects = &cc.effects();
     st.claims = &cc;
     bool spawned = false;
     agent::applyTurn(turnWithDevice(json.c_str()), "1001", d, st, spawned);
@@ -1986,6 +1992,7 @@ static void test_mem_write_of_an_unbacked_cause_is_refused() {
   agent::ClaimCheck cc;
   cc.beginTurn();   // no records this turn: no cause evidence at all
   ApplyState st = makeState(r);
+  st.effects = &cc.effects();
   st.claims = &cc;
   bool spawned = false;
   Turn t;
@@ -2011,6 +2018,7 @@ static void test_mem_write_of_an_unbacked_cause_is_refused() {
   cc2.setSources("[tg] client error: the owner's Telegram client rejected the upload\n"
                  "the photos arrived corrupt (partial upload)\n", "");
   ApplyState st2 = makeState(r2);
+  st2.effects = &cc2.effects();
   st2.claims = &cc2;
   agent::applyTurn(t, "web", d2, st2, spawned);
   TEST_ASSERT_EQUAL(1, (int)r2.memCalls.size());
@@ -2181,6 +2189,7 @@ static void test_rbac_orch_model_only_the_owner_writing_now() {
     t.reply = "Done, I switched to Claude.";
     agent::ClaimCheck cc;
     cc.beginTurn();
+    st.effects = &cc.effects();
     st.claims = &cc;
     bool spawned = false;
     agent::applyTurn(t, chat, d, st, spawned);
@@ -2375,6 +2384,7 @@ static void test_rbac_a_refused_action_backs_no_claim() {
       ApplyState st = makeState(r2, cl.unattended);
       agent::ClaimCheck cc;
       cc.beginTurn();
+      st.effects = &cc.effects();
       st.claims = &cc;
       bool spawned = false;
       agent::applyTurn(turnWithDevice(json), cl.chat, d2, st, spawned);
@@ -2469,8 +2479,118 @@ static void test_a_refused_action_never_reads_as_finished() {
   }
 }
 
+// ---- the turn's effect ledger without a claim check (RB-Q1a) ------------------------
+// The ledger is the turn state's: apply records the final turn's real outcomes into
+// ApplyState::effects whether or not a claim check is attached, so deleting the check
+// (RB-Q1b) leaves every record in place. The class: each recorder apply has (a memory
+// write, a spawn, the scratchpad, a device action) lands with no check attached.
+static void test_apply_records_the_turn_ledger_with_no_claim_check() {
+  using nimbus::orch::FxKind;
+  Rec r;
+  ApplyDeps d = makeDeps(r);
+  d.principalFor = [](const std::string& c) {
+    return nimbus::orch::principalForRole(c, nimbus::orch::Role::Admin);   // the scratchpad is admin-only
+  };
+  d.applyScratch = [](const nimbus::orch::ScratchUpdate&) { return agent::ScratchOutcome::Applied; };
+  Turn t = turnWithDevice("{\"type\":\"lights\",\"value\":\"off\"}");
+  t.reply = "Done.";
+  t.mem_write.push_back(nimbus::orch::MemWrite{"ran 5 km", 0.5, false, ""});
+  nimbus::orch::SessionOp op;
+  op.op = "spawn";
+  op.task = "find car seat reviews";
+  t.session_ops.push_back(op);
+  t.scratchpad.present = true;
+  t.scratchpad.hasLong = true;
+  t.scratchpad.longItems = {"no em dashes"};
+  nimbus::orch::TurnEffects fx;
+  ApplyState st = makeState(r);
+  st.effects = &fx;
+  TEST_ASSERT_NULL(st.claims);
+  bool spawned = false;
+  agent::applyTurn(t, "1001", d, st, spawned);
+  TEST_ASSERT_EQUAL(1, fx.countOk(FxKind::MemWrite));
+  TEST_ASSERT_EQUAL(1, fx.countOk(FxKind::Spawn));
+  TEST_ASSERT_EQUAL(1, fx.countOk(FxKind::Scratch));
+  TEST_ASSERT_EQUAL(1, fx.countOk(FxKind::Config) + fx.countFailed(FxKind::Config));
+  TEST_ASSERT_EQUAL_STRING("Done.", r.delivered[0].second.c_str());   // no check: no line
+  // Counter-case: no ledger attached records nothing and still delivers.
+  Rec r2;
+  ApplyDeps d2 = makeDeps(r2);
+  ApplyState st2 = makeState(r2);
+  agent::applyTurn(replyTurn("Logged."), "1001", d2, st2, spawned);
+  TEST_ASSERT_EQUAL_STRING("Logged.", r2.delivered[0].second.c_str());
+}
+
+// The ledger's readings moved with the ledger out of the claim check (RB-Q1a): every
+// registered tool's kind comes from the shared tool table, per effect (written out here
+// independently of the lookup, so a reordered table fails); unknown names read as a lookup.
+static nimbus::orch::FxKind ledgerKindOf(nimbus::orch::ToolEffect e) {
+  using E = nimbus::orch::ToolEffect;
+  using nimbus::orch::FxKind;
+  struct Pair { E effect; FxKind kind; };
+  static const Pair kPairs[] = {
+      {E::MemWrite, FxKind::MemWrite}, {E::MemUpdate, FxKind::MemUpdate}, {E::MemPin, FxKind::MemPin},
+      {E::MemDelete, FxKind::MemDelete}, {E::Scratch, FxKind::Scratch}, {E::FileWrite, FxKind::FileWrite},
+      {E::SkillSave, FxKind::SkillSave}, {E::Send, FxKind::Send}, {E::Share, FxKind::Send},
+      {E::Speak, FxKind::Speak}, {E::Schedule, FxKind::Schedule}, {E::Config, FxKind::Config},
+      {E::Cancel, FxKind::Config}, {E::Admin, FxKind::Config}, {E::Media, FxKind::Config},
+  };
+  for (const Pair& p : kPairs)
+    if (p.effect == e) return p.kind;
+  return FxKind::Read;   // Read, and Spawn (apply records the real outcome)
+}
+
+static void test_the_ledger_readings_every_recorder_shares() {
+  using nimbus::orch::FxKind;
+  size_t n = 0;
+  const nimbus::orch::ToolTaintRow* rows = nimbus::orch::toolTaintTable(n);
+  TEST_ASSERT_GREATER_THAN(10, (int)n);
+  for (size_t i = 0; i < n; i++)
+    TEST_ASSERT_EQUAL_MESSAGE((int)ledgerKindOf(rows[i].effect), (int)agent::fxKindForTool(rows[i].name), rows[i].name);
+  TEST_ASSERT_EQUAL((int)FxKind::Read, (int)agent::fxKindForTool("notion.search_pages"));
+  // The flags a call's arguments carry.
+  TEST_ASSERT_EQUAL((int)nimbus::orch::kFxPermanent,
+                    (int)agent::toolCallFlags("memory.write", R"({"content":"x","permanent":true})"));
+  TEST_ASSERT_EQUAL(0, (int)agent::toolCallFlags("memory.write", R"({"content":"x"})"));
+  TEST_ASSERT_EQUAL(0, (int)agent::toolCallFlags("files.read", R"({"permanent":true})"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxHealth, agent::toolCallFlags("device.status", "{}"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxHealth, agent::toolCallFlags("system.health", "{}"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxMusic, agent::toolCallFlags("media.play", "{}"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxTelegram | nimbus::orch::kFxVoice,
+                    agent::toolCallFlags("reply.telegram", R"({"text":"hi","voice":true})"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxTelegram, agent::toolCallFlags("reply.telegram", R"({"text":"hi"})"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxTelegram, agent::toolCallFlags("files.send", R"({"path":"/sd/a.jpg"})"));
+  const std::string csv = R"({"project":"food","name":"2026-10-27.csv","text":"x"})";
+  for (const char* tool : {"files.append", "files.edit"}) {
+    TEST_ASSERT_EQUAL_MESSAGE(nimbus::orch::kFxLogRow, agent::toolCallFlags(tool, csv), tool);
+    TEST_ASSERT_EQUAL_MESSAGE(nimbus::orch::kFxLogRow, agent::toolCallFlags(tool, "{not json"), tool);
+  }
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
+                    agent::toolCallFlags("artifact.save", R"({"project":"p","name":"daylog.txt","text":"x"})"));
+  TEST_ASSERT_EQUAL(nimbus::orch::kFxLogRow,
+                    agent::toolCallFlags("artifact.save", R"({"project":"p","name":"notes.md","text":"x"})"));
+  TEST_ASSERT_EQUAL(0, agent::toolCallFlags("artifact.save", csv));
+  // A device[] element's effect, by the device's own validator.
+  FxKind k;
+  TEST_ASSERT_TRUE(agent::deviceActionEffect("{\"type\":\"tts\",\"text\":\"hi\"}", k));
+  TEST_ASSERT_EQUAL((int)FxKind::Speak, (int)k);
+  TEST_ASSERT_TRUE(agent::deviceActionEffect("{\"type\":\"lights\",\"value\":\"off\"}", k));
+  TEST_ASSERT_EQUAL((int)FxKind::Config, (int)k);
+  TEST_ASSERT_FALSE(agent::deviceActionEffect("{\"type\":\"nope\"}", k));
+  TEST_ASSERT_FALSE(agent::deviceActionEffect("not json", k));
+  // The sub-agent results a turn read, capped at the entry's count.
+  nimbus::orch::TurnEffects fx;
+  agent::recordFreshResults(fx, 0, 0);
+  TEST_ASSERT_TRUE(fx.empty());
+  agent::recordFreshResults(fx, 2, 300);
+  TEST_ASSERT_EQUAL(2, fx.countOk(FxKind::SubSourced));
+  TEST_ASSERT_EQUAL(255, fx.countOk(FxKind::SubUnsourced));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_apply_records_the_turn_ledger_with_no_claim_check);
+  RUN_TEST(test_the_ledger_readings_every_recorder_shares);
   RUN_TEST(test_scheduled_turn_refuses_reboot);
   RUN_TEST(test_owner_turn_allows_reboot);
   RUN_TEST(test_scheduled_turn_strips_risky_config_knobs);

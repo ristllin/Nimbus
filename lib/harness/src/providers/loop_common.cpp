@@ -8,6 +8,7 @@
 #include <new>   // std::bad_alloc: a thrown round still files what the loop billed
 
 #include "nimbus/harness/log.h"
+#include "nimbus/mem_cap.h"   // utf8CapLen - a quoted excerpt stays valid UTF-8
 #include "nimbus/harness/output_caps.h"   // sameHostNonReasoningModel - the cut step-down
 #include "wire.h"   // wire::lastExchange - did the failed request ever leave the device
 #include "image_parts.h"   // R1: LoopImages - the turn's photos seed the transcript
@@ -15,7 +16,6 @@
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/head_switch.h"     // parkPause: reading the park without asking it
 #include "nimbus/orch/provider_park.h"   // the one per-provider park every seam shares
-#include "nimbus/orch/reply_guard.h"   // cutRetryNote - what a cut round is told
 #include "nimbus/orch/transcript.h"
 #include "nimbus/orch/turn.h"   // salvageTurnText - what a cut round wrote
 
@@ -31,6 +31,24 @@ namespace orch = nimbus::orch;
 // truncates a real failover ladder mid-switch.
 bool fabricSupports(const std::string& host) {
   return host == "anthropic" || host == "openai" || host == "mistral" || host == "zai";
+}
+
+// What a round that ran out of room is told when it runs again.
+std::string cutRetryNote(const std::string& why, const std::string& partial) {
+  std::string note =
+      "[LAST ATTEMPT RAN OUT OF ROOM] Your last answer to this round stopped at the output limit (" + why +
+      "), so nothing in it ran and the owner has not seen it. Answer again in far fewer words: one tool call at a "
+      "time with short arguments, and a final reply under 300 words. Put anything longer in a file.";
+  if (partial.empty()) return note + "\n";
+  const int keep = nimbus::utf8CapLen(partial.c_str(), (int)partial.size(), 600);
+  // Brackets out: the excerpt can quote outside content, and it must not pose as a block
+  // of this message or close the quote.
+  std::string quoted = partial.substr(0, (size_t)keep);
+  for (char& c : quoted) {
+    if (c == '[') c = '(';
+    if (c == ']') c = ')';
+  }
+  return note + " It began:\n" + quoted + "\n[END OF WHAT YOU WROTE]\n";
 }
 
 // ---- CUM-477: one same-host resend for a request that never left -------------
@@ -502,7 +520,7 @@ class RoundRecovery {
     savedCut_.reset(new orch::HeadStep(sr));
     orch::Salvage kept;
     orch::salvageTurnText(sr.finalTurn, kept);
-    cutNote_ = orch::cutRetryNote(sr.error, kept.reply.empty() ? sr.text : kept.reply);
+    cutNote_ = cutRetryNote(sr.error, kept.reply.empty() ? sr.text : kept.reply);
     tr_.setSeedText(seed());
   }
   // True the first time per run of failures: the round may run once more with the note.
@@ -753,7 +771,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
     }
   }
   // The seeded input opens with the lead of the host each request really runs on (HFM),
-  // then the note of a cut round (reply_guard.h cutRetryNote).
+  // then the note of a cut round (cutRetryNote).
   orch::HeadStepFn cur;
   rec.bind([&] { return ht.inputLead ? ht.inputLead(hostList[hostIdx]) : std::string(); },
            [&] { cur = makeStep(hostIdx); });

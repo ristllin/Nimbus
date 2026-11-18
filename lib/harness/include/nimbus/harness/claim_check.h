@@ -23,6 +23,10 @@
 // (memory, files, skills, the scratchpad, spawns, durability, figures from a
 // source, unsourced sub-agent results) is always checked.
 //
+// The ledger itself is the turn state's (RB-Q1a): the engine holds it and records into it,
+// apply records the final turn's real outcomes (ApplyState::effects), and the check reads it
+// through useEffects. A check with no ledger attached uses its own (host tests).
+//
 // RAM only, one turn long. Portable, host-tested (test_harness_claim_check).
 
 #include <cstdint>
@@ -30,6 +34,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/apply.h"   // the ledger's readings (fxKindForTool, toolCallFlags, ...)
 #include "nimbus/orch/claims.h"
 #include "nimbus/orch/food_figures.h"
 #include "nimbus/orch/hosted_runs.h"
@@ -38,11 +43,6 @@
 #include "nimbus/orch/turn_effects.h"
 
 namespace agent {
-
-// The effect class of a registered tool, for the ledger, from the shared tool
-// table (orch::toolEffect). Unknown names (a connector's remote tools) read as
-// a lookup: nothing the device can vouch for.
-nimbus::orch::FxKind fxKindForTool(const std::string& regName);
 
 // The tool names a result's provenance tag (" [ran: web_search x2, Notion x0]") shows
 // as RUN (count above zero), never the idle x0 ones: an idle "Notion x0" must not
@@ -69,6 +69,14 @@ struct TurnSources {
 
 class ClaimCheck {
  public:
+  ClaimCheck() = default;
+  ClaimCheck(const ClaimCheck&) = delete;              // fx_ may point at own_
+  ClaimCheck& operator=(const ClaimCheck&) = delete;
+
+  // The turn's effect ledger this check reads (the turn state's); null goes back to the
+  // check's own. The caller keeps it alive for as long as the check reads it.
+  void useEffects(nimbus::orch::TurnEffects* fx) { fx_ = fx ? fx : &own_; }
+
   // Start a turn: clears the ledger, the sources, the per-turn flags and this
   // thread's record of hosted tool runs (nimbus::orch::resetHostedRuns).
   void beginTurn();
@@ -123,25 +131,23 @@ class ClaimCheck {
   // turn source holds is refused unless the row is marked [assumed]. The refusal, or "".
   std::string labelRowRefusal(const std::string& regName, const std::string& argsJson) const;
   // A head tool ran: its effect class (the shared tool table) and its result.
+  // noteTool records it in the ledger (recordToolEffect) and then reads the result
+  // (noteToolResult). A caller that records the ledger itself (the engine) calls
+  // noteToolResult only.
+  void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
+                uint16_t flags = 0, const std::string& regName = std::string());
   // The result text joins the figure sources (bounded). `regName` (the registered
   // name) lets the label gate keep the raw text of this turn's image.* calls - the
   // head's own reads of the turn's photos, which the input block does not hold when
   // a photo rides the message as an image.
-  void noteTool(nimbus::orch::FxKind kind, bool isError, const std::string& output,
-                uint16_t flags = 0, const std::string& regName = std::string());
+  void noteToolResult(bool isError, const std::string& output, uint16_t flags = 0,
+                      const std::string& regName = std::string());
   // The arguments of the same call, right before noteTool: the words a memory or file
   // write saved join the quote rule's seen text when the write lands, so a save
   // confirmation quoting them is never corrected as an invented record (the review).
   void noteToolArgs(const std::string& regName, const std::string& argsJson);
-  // The ledger flags a tool call's arguments carry (kFxPermanent for a memory
-  // written or updated with permanent:true, kFxVoice for reply.telegram
-  // voice:true, kFxHealth for a read of the device's own state, kFxLogRow for a
-  // files.append into a .csv or .log file, kept only if its result counts a row, kFxMusic for
-  // media.play, kept only if its result says the player is playing).
-  static uint16_t toolCallFlags(const std::string& regName, const std::string& argsJson);
-  // Sub-agent results this turn read: how many had a lookup behind them and how
-  // many were live-data results with none.
-  void noteFresh(int sourced, int unsourced);
+  // Sub-agent results this turn read, into the ledger (recordFreshResults).
+  void noteFresh(int sourced, int unsourced) { recordFreshResults(*fx_, sourced, unsourced); }
 
   // This turn's cause evidence (L19-11): what the records the model was given
   // (its inputs, its tool results, its health reads) say about causes, as
@@ -149,8 +155,8 @@ class ClaimCheck {
   // store an unbacked cause as a fact.
   uint32_t causeEvidence() const { return causeEvidence_; }
 
-  nimbus::orch::TurnEffects& effects() { return fx_; }
-  const nimbus::orch::TurnEffects& effects() const { return fx_; }
+  nimbus::orch::TurnEffects& effects() { return *fx_; }
+  const nimbus::orch::TurnEffects& effects() const { return *fx_; }
 
   // What stands behind a promise of later work as the turn starts (reply_guard.h).
   void setLaterWork(nimbus::orch::LaterWork behind) { laterWork_ = behind; }
@@ -177,9 +183,6 @@ class ClaimCheck {
 
   // Pending effects a final turn carries in its own fields (exposed for tests).
   static void addPending(nimbus::orch::TurnEffects& fx, const nimbus::orch::Turn& t);
-  // The effect an allowed device[] element has (apply records it); false for a
-  // blocked or unknown one.
-  static bool deviceActionEffect(const std::string& json, nimbus::orch::FxKind& out);
 
   // RAM counters for /api/state (process lifetime, never persisted).
   static uint32_t correctedCount();
@@ -230,7 +233,8 @@ class ClaimCheck {
   };
   mutable SeenCache seen_;
   void ensureSeenCache() const;
-  nimbus::orch::TurnEffects fx_;
+  nimbus::orch::TurnEffects own_;            // the ledger when none is attached (useEffects)
+  nimbus::orch::TurnEffects* fx_ = &own_;    // the ledger this check reads
   std::string sources_;
   std::string recalled_;
   std::string ownerNums_;        // the numbers the owner's own message holds (CUM-824)

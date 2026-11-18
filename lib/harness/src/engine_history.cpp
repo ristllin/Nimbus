@@ -60,7 +60,7 @@ bool TurnEngine::histV2On() const {
 }
 
 std::string TurnEngine::assistantRowTags() const {
-  std::string tags = claims_.effects().fxTag();
+  std::string tags = turnFx_.fxTag();
   if (!outKind_.empty()) tags += std::string(",") + kOutTag + outKind_;
   // F1 (lane I): the ids this turn read (skill.get) or had attached, so a
   // later turn answers "did you use the skill for that?" from the row - the

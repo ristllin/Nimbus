@@ -1,6 +1,9 @@
 #include "nimbus/harness/turn_contract.h"
 
+#include <ArduinoJson.h>
+
 #include <cctype>
+#include <cstring>
 #include <set>
 
 #include "nimbus/orch/caps.h"
@@ -180,6 +183,58 @@ std::string emptyAnswerCorrection(const std::string& finalTurn, const PseudoSpaw
          "mention this check to the owner.";
 }
 
+namespace {
+
+std::string lowered(const std::string& s) {
+  std::string out(s);
+  for (char& c : out) c = (char)std::tolower((unsigned char)c);
+  return out;
+}
+
+// The reply with its wrapping punctuation and brackets off, lowercased.
+std::string fillerCore(const std::string& reply) {
+  std::string t = lowered(reply);
+  auto wrap = [](char c) { return std::isspace((unsigned char)c) || std::strchr("<>[]{}()\"'`*_.:!-", c) != nullptr; };
+  size_t b = 0, e = t.size();
+  while (b < e && wrap(t[b])) b++;
+  while (e > b && wrap(t[e - 1])) e--;
+  return t.substr(b, e - b);
+}
+
+// A reply that is only these words is filler. Words a real question can have as its whole
+// answer ("ok", "done", "yes", "n/a", "string", "TBD") are not on it.
+const char* const kFiller[] = {
+    "placeholder", "placeholder text", "placeholder reply", "placeholder answer", "placeholder response",
+    "reply", "your reply", "your reply here", "reply here", "reply text", "the reply", "your response",
+    "your response here", "response here", "your answer", "your answer here", "answer here", "final answer",
+    "your final answer", "insert reply", "insert reply here", "insert answer here", "text here",
+    "todo", "lorem ipsum", "example reply", "sample reply",
+};
+
+}  // namespace
+
+const char kPlaceholderCorrection[] =
+    "[REPLY CHECK] The reply field holds template filler, not an answer. Write the real answer for the owner "
+    "now, from what this turn found. If it found nothing, say that plainly and say what you could not do.";
+
+bool isPlaceholderReply(const std::string& reply, const std::string& ownerText) {
+  // Only dots or ellipses, or nothing but wrapping marks around nothing.
+  if (reply.find_first_not_of(" \t\r\n") == std::string::npos) return false;   // empty is its own case
+  const std::string core = fillerCore(reply);
+  if (core.empty() || core == "\xE2\x80\xA6") return true;
+  bool filler = false;
+  for (const char* f : kFiller) filler = filler || core == f;
+  if (!filler) return false;
+  return lowered(ownerText).find(core) == std::string::npos;
+}
+
+std::string placeholderCheck(const std::string& finalTurnJson, const std::string& ownerText) {
+  JsonDocument d;
+  if (deserializeJson(d, finalTurnJson) != DeserializationError::Ok) return std::string();
+  const char* reply = d["reply"] | "";
+  return isPlaceholderReply(reply, ownerText) ? std::string(kPlaceholderCorrection) : std::string();
+}
+
 const char kEmptyAnswer[] = "The model returned an empty answer. Try asking again.";
 const char kNoMessageAfterAction[] = "Finished. The model sent no message.";
 
@@ -206,7 +261,7 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
                                                 ownerText)
                      : std::string();
   if (!ask.empty()) text += (text.empty() ? "" : "\n") + ask;
-  if (orch::isPlaceholderReply(text)) text.clear();   // filler is nothing salvaged
+  if (isPlaceholderReply(text)) text.clear();   // filler is nothing salvaged
   o.cut = reportedCut || truncated || (!sv.reply.empty() && !sv.replyComplete);
   if (text.empty()) {
     o.text = o.cut ? kCutNothingSalvaged : kUnreadableNothingSalvaged;

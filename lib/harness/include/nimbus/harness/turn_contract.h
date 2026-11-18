@@ -15,7 +15,11 @@
 //     while no spawn item is present (the promise-without-spawn class);
 //   - the leak-repair gate: fields recovered from leaked tool markup carry
 //     actions, so they apply only on an attended owner turn that read no
-//     external content.
+//     external content;
+//   - the placeholder check: template filler written where an answer belongs.
+//     Hosted Virtual Nimbus, 1 Nov: a forced final round on mistral-large-4-0
+//     answered {"reply":"placeholder",...} and the device delivered the word to
+//     the owner.
 // Portable, host-tested (test_harness_turn_contract); the engine wires them.
 namespace agent {
 
@@ -87,6 +91,17 @@ struct SalvageOutcome {
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail, bool reportedCut,
                                nimbus::orch::LaterWork behind = nimbus::orch::LaterWork::None,
                                const std::string& ownerText = std::string());
+// True when the whole reply is template filler. `ownerText`: a word the owner's own
+// message holds is an answer ("Say the word placeholder").
+bool isPlaceholderReply(const std::string& reply, const std::string& ownerText = std::string());
+
+// The correction a placeholder answer gets (model-facing).
+extern const char kPlaceholderCorrection[];
+
+// The final-answer check over an orch_turn's JSON: its `reply` field read loosely.
+// "" when it is an answer, else kPlaceholderCorrection.
+std::string placeholderCheck(const std::string& finalTurnJson, const std::string& ownerText);
+
 // The plain lines for an answer with nothing salvageable.
 extern const char kCutNothingSalvaged[];
 extern const char kUnreadableNothingSalvaged[];

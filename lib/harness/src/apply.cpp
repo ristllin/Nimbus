@@ -1,4 +1,5 @@
 #include "nimbus/harness/apply.h"
+#include "nimbus/harness/claim_check.h"     // the claim check's calls only (RB-Q1b deletes them)
 #include "nimbus/harness/output_caps.h"     // modelFitNote
 #include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
 #include "nimbus/orch/model_defaults.h"     // currentTurnRole
@@ -15,6 +16,7 @@
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
 #include "nimbus/orch/head_switch.h"     // a pause never moves the owner's head
 #include "nimbus/orch/spawn_claim.h"
+#include "nimbus/orch/tool_taint.h"       // toolEffect: the shared tool table the ledger reads
 #include "nimbus/orch/voice_notes.h"      // cutForSpeech: the tts action's bound
 
 // Lifted from src/agent/orchestrator.cpp applyTurn (Stage E). Every summary
@@ -28,6 +30,107 @@ using nimbus::orch::ActionKind;
 using nimbus::orch::ToolResult;
 using nimbus::orch::Turn;
 using nimbus::orch::ValidatedAction;
+
+// ---- the turn's effect ledger: the readings every recorder shares ----------------------
+
+// From the one shared tool table (orch::toolEffect, lane L), so the ledger and
+// the other rails that read the table can never disagree about a tool. A spawn
+// called as a tool joins the turn's spawn items and apply records whether the
+// job queue took it, so the call itself vouches for nothing (Read).
+nimbus::orch::FxKind fxKindForTool(const std::string& n) {
+  using nimbus::orch::FxKind;
+  static const FxKind kByEffect[] = {
+      FxKind::Read,       // Read
+      FxKind::MemWrite,   // MemWrite
+      FxKind::MemUpdate,  // MemUpdate
+      FxKind::MemPin,     // MemPin
+      FxKind::MemDelete,  // MemDelete
+      FxKind::Scratch,    // Scratch
+      FxKind::FileWrite,  // FileWrite
+      FxKind::Send,       // Share
+      FxKind::SkillSave,  // SkillSave
+      FxKind::Read,       // Spawn
+      FxKind::Config,     // Cancel
+      FxKind::Send,       // Send
+      FxKind::Speak,      // Speak
+      FxKind::Schedule,   // Schedule
+      FxKind::Config,     // Config
+      FxKind::Config,     // Admin
+      FxKind::Config,     // Media
+  };
+  static_assert(sizeof(kByEffect) / sizeof(kByEffect[0]) == (size_t)nimbus::orch::ToolEffect::Media + 1,
+                "every ToolEffect needs a ledger kind");
+  const size_t e = (size_t)nimbus::orch::toolEffect(n);
+  return e < sizeof(kByEffect) / sizeof(kByEffect[0]) ? kByEffect[e] : FxKind::Read;
+}
+
+// An artifact.save into a .txt/.md text document (not a .csv, whose rows are counted
+// by the keyed append path): it may have rewritten a log.
+static uint8_t savedTextFileRow(const std::string& argsJson) {
+  JsonDocument d;
+  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return 0;
+  std::string name = d["name"] | "";
+  for (char& c : name) c = (char)std::tolower((unsigned char)c);
+  const size_t n = name.size();
+  return n > 4 && (name.compare(n - 4, 4, ".txt") == 0 || name.compare(n - 3, 3, ".md") == 0)
+             ? nimbus::orch::kFxLogRow
+             : 0;
+}
+
+uint16_t toolCallFlags(const std::string& regName, const std::string& argsJson) {
+  // A read of the device's own state (L19-11): the only thing that can confirm
+  // "it is working" (kEvHealthRead comes from the ledger, never from text).
+  if (regName == "device.status" || regName == "system.health") return nimbus::orch::kFxHealth;
+  if (regName == "media.play") return nimbus::orch::kFxMusic;   // kept only if the result says it is playing
+  // CUM-782 + the review: a files.append only writes text documents, and the landed-row
+  // count (fxAppendedRows, in recordToolEffect) is the proof a row exists - the flag is
+  // asked for on every append and kept only when a row lands, whatever the extension
+  // (.txt and .md logs are logs too, not only .csv/.log).
+  // A files.edit changes a text document in place: its proof is its own "replaced A of B".
+  if (regName == "files.append" || regName == "files.edit") return nimbus::orch::kFxLogRow;
+  // An artifact.save that rewrites a text document also updates a log (the review: the
+  // free-text day log is corrected by rewriting the file): its proof is its own landed
+  // receipt (recordToolEffect keeps the flag when the result counts rows or the save
+  // landed, "saved p/n (N bytes)").
+  if (regName == "artifact.save") return savedTextFileRow(argsJson);
+  const bool memory = regName == "memory.write" || regName == "memory.update";
+  const bool telegram = regName == "reply.telegram" || regName == "files.send";
+  if (!memory && !telegram) return 0;
+  JsonDocument d;
+  if (deserializeJson(d, argsJson) != DeserializationError::Ok) return 0;
+  if (telegram) {
+    // 22 Oct: a Telegram send (text, document, photo, voice) is backed only by
+    // Telegram's own receipt, never by the send tool's success text.
+    return (d["voice"] | false) ? (uint8_t)(nimbus::orch::kFxTelegram | nimbus::orch::kFxVoice)
+                                : nimbus::orch::kFxTelegram;
+  }
+  return (d["permanent"] | false) ? nimbus::orch::kFxPermanent : 0;
+}
+
+// What an allowed device action does, by the device's own validator (a blocked
+// or unknown element backs nothing).
+bool deviceActionEffect(const std::string& json, nimbus::orch::FxKind& out) {
+  using nimbus::orch::FxKind;
+  JsonDocument d;
+  if (deserializeJson(d, json) != DeserializationError::Ok) return false;
+  const ValidatedAction va = nimbus::orch::validateAction(d.as<JsonVariantConst>());
+  if (!va.allowed) return false;
+  switch (va.kind) {
+    case ActionKind::Tts: out = FxKind::Speak; return true;
+    case ActionKind::Led:
+    case ActionKind::Lights:
+    case ActionKind::Config:
+    case ActionKind::OrchModel:
+    case ActionKind::Reboot: out = FxKind::Config; return true;
+    default: return false;
+  }
+}
+
+void recordFreshResults(nimbus::orch::TurnEffects& fx, int sourced, int unsourced) {
+  using nimbus::orch::FxKind;
+  if (sourced > 0) fx.add(FxKind::SubSourced, true, "", (uint8_t)(sourced > 255 ? 255 : sourced));
+  if (unsourced > 0) fx.add(FxKind::SubUnsourced, true, "", (uint8_t)(unsourced > 255 ? 255 : unsourced));
+}
 
 const char kUnverifiedMemoryRefusal[] =
     "Not stored: this turn carries a sub-agent result whose connector was NOT "
@@ -562,11 +665,10 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
   if (t.scratchpad.present && d.applyScratch) {
     if (nimbus::orch::actionAllowed("turn.scratchpad", caller)) {
       st.scratchOutcome = d.applyScratch(t.scratchpad);
-      if (st.claims && st.scratchOutcome != ScratchOutcome::Skipped)
-        st.claims->effects().add(st.scratchOutcome == ScratchOutcome::Applied
-                                     ? nimbus::orch::FxKind::Scratch
-                                     : nimbus::orch::FxKind::ScratchRamOnly,
-                                 true);
+      if (st.effects && st.scratchOutcome != ScratchOutcome::Skipped)
+        st.effects->add(st.scratchOutcome == ScratchOutcome::Applied ? nimbus::orch::FxKind::Scratch
+                                                                     : nimbus::orch::FxKind::ScratchRamOnly,
+                        true);
     } else {
       st.scratchOutcome = ScratchOutcome::Skipped;
       hlog::log("orchestrator: scratchpad write skipped (not admin)");
@@ -607,9 +709,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     if (one.rfind(kKept, 0) == 0 && st.pendingMemResults)
       *st.pendingMemResults += "[DEVICE] orch_model not applied, the head stays: " + one.substr(kKept.size()) + "\n";
     nimbus::orch::FxKind k;
-    if (st.claims && ClaimCheck::deviceActionEffect(da.json, k)) {
-      if (k == nimbus::orch::FxKind::Speak) nimbus::orch::recordSpeakSummary(st.claims->effects(), one);
-      else st.claims->effects().add(k, deviceElementLanded(one));
+    if (st.effects && deviceActionEffect(da.json, k)) {
+      if (k == nimbus::orch::FxKind::Speak) nimbus::orch::recordSpeakSummary(*st.effects, one);
+      else st.effects->add(k, deviceElementLanded(one));
     }
     if (one.rfind(kTtsNotSpoken, 0) == 0) {
       const size_t lead = sizeof(kTtsNotSpoken) - 1;
@@ -645,8 +747,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
       if (refuseWrites) {
         hlog::logf("orchestrator: mem_write refused (%u item(s)) - unverified connector result",
                    (unsigned)t.mem_write.size());
-        if (st.claims) st.claims->effects().add(nimbus::orch::FxKind::MemWrite, false, "",
-                                                (uint8_t)t.mem_write.size());
+        if (st.effects) st.effects->add(nimbus::orch::FxKind::MemWrite, false, "", (uint8_t)t.mem_write.size());
         if (st.pendingMemResults)
           *st.pendingMemResults += std::string("[MEMORY] ") + kUnverifiedMemoryRefusal + "\n";
       }
@@ -662,8 +763,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
           if (st.claims && st.claims->unsourcedFoodTarget(w.content, &unbacked)) {
             hlog::logf("orchestrator: mem_write refused - a target with no source: %s", memExcerpt(unbacked).c_str());
             st.memRefused++;
-            nimbus::orch::recordToolEffect(st.claims->effects(), nimbus::orch::FxKind::MemWrite, true,
-                                           "refused: that daily target has no source this turn", 0);
+            if (st.effects)
+              nimbus::orch::recordToolEffect(*st.effects, nimbus::orch::FxKind::MemWrite, true,
+                                             "refused: that daily target has no source this turn", 0);
             if (st.pendingMemResults)
               *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
                                        "\" -> NOT stored: it states a daily target nothing this turn holds (\"" +
@@ -673,8 +775,9 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
           if (st.claims && nimbus::orch::unbackedCause(w.content, st.claims->causeEvidence(), &unbacked)) {
             hlog::logf("orchestrator: mem_write refused - unbacked cause: %s", memExcerpt(unbacked).c_str());
             st.memRefused++;
-            nimbus::orch::recordToolEffect(st.claims->effects(), nimbus::orch::FxKind::MemWrite, true,
-                                           "refused: that cause is not on record this turn", 0);
+            if (st.effects)
+              nimbus::orch::recordToolEffect(*st.effects, nimbus::orch::FxKind::MemWrite, true,
+                                             "refused: that cause is not on record this turn", 0);
             if (st.pendingMemResults)
               *st.pendingMemResults += "[MEMORY] mem_write \"" + memExcerpt(w.content) +
                                        "\" -> NOT stored: it states a cause this turn's records do " +
@@ -697,9 +800,8 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
           // (13-14 Oct: 8 facts lost in silence).
           const MemWriteOutcome mo = memWriteOutcome(r);
           const bool landed = mo == MemWriteOutcome::Stored || mo == MemWriteOutcome::Duplicate;
-          if (st.claims)
-            nimbus::orch::recordToolEffect(st.claims->effects(), nimbus::orch::FxKind::MemWrite,
-                                           !landed, r.output,
+          if (st.effects)
+            nimbus::orch::recordToolEffect(*st.effects, nimbus::orch::FxKind::MemWrite, !landed, r.output,
                                            w.permanent ? nimbus::orch::kFxPermanent : 0);
           switch (mo) {
             case MemWriteOutcome::Stored:
@@ -778,8 +880,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     nimbus::orch::Spawn spawn = s;
     if (!t.reply.empty()) spawn.note.clear();
     const bool ok = d.enqueueSpawn(spawn, chatId, st.scheduledTurn);
-    if (st.claims) st.claims->effects().add(ok ? nimbus::orch::FxKind::Spawn
-                                               : nimbus::orch::FxKind::SpawnRefused, ok);
+    if (st.effects) st.effects->add(ok ? nimbus::orch::FxKind::Spawn : nimbus::orch::FxKind::SpawnRefused, ok);
     if (!ok) return;
     spawnedOut = true;
     st.spawnsEnqueued++;
@@ -956,7 +1057,7 @@ void applyTurn(const Turn& t, const std::string& chatId, const ApplyDeps& d,
     // cat called?" with "Done.", VN reality check 1 Nov).
     // Landed, not attempted: a refused switch or an unstored fact finished nothing.
     const bool acted = deviceLanded || st.memStored > 0 || st.memDuplicate > 0 ||
-                       (st.claims && landedChange(st.claims->effects()));
+                       (st.effects && landedChange(*st.effects));
     const bool waiting = !st.scheduledTurn && !st.quietFallback &&
                          nimbus::orch::currentTurnRole() == nimbus::orch::TurnRole::Owner;
     // A session op speaks for itself below (a stop, or the refusal of one).

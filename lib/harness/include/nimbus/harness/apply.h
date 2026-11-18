@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "nimbus/harness/claim_check.h"
 #include "nimbus/orch/device_actions.h"
 #include "nimbus/orch/head_switch.h"     // OwnerMessage - who may confirm a head switch
 #include "nimbus/orch/memory_tools.h"   // kMemOutcome* codes
@@ -14,6 +13,7 @@
 #include "nimbus/orch/speak_outcome.h"   // how a spoken reply ended
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn.h"
+#include "nimbus/orch/turn_effects.h"   // the turn's effect ledger apply records into
 
 // apply - turn-application POLICY, lifted from src/agent/orchestrator.cpp
 // (Stage E). The portable side owns every decision: who may run each device
@@ -25,6 +25,31 @@
 // with no policy branches, so the security rails are host-tested
 // (test_harness_apply) and can never silently regress device-side.
 namespace agent {
+
+class ClaimCheck;   // claim_check.h: the claim check that reads the turn's ledger
+
+// The turn's effect ledger (nimbus/orch/turn_effects.h) is the turn state's, not a
+// check's: the engine holds it for the turn, records each head tool call and the
+// sub-agent results the turn read, and apply records the real outcomes of the final
+// turn's fields (ApplyState::effects). These are the readings every recorder shares.
+//
+// The effect class of a registered tool, from the shared tool table
+// (orch::toolEffect). Unknown names (a connector's remote tools) read as a lookup:
+// nothing the device can vouch for.
+nimbus::orch::FxKind fxKindForTool(const std::string& regName);
+// The ledger flags a tool call's arguments carry (kFxPermanent for a memory written
+// or updated with permanent:true, kFxTelegram and kFxVoice for a Telegram send,
+// kFxHealth for a read of the device's own state, kFxLogRow for a files.append or
+// files.edit and for an artifact.save of a .txt/.md document, kept only if its result
+// counts a row, kFxMusic for media.play, kept only if its result says the player is
+// playing).
+uint16_t toolCallFlags(const std::string& regName, const std::string& argsJson);
+// The effect an allowed device[] element has, by the device's own validator; false
+// for a blocked or unknown one.
+bool deviceActionEffect(const std::string& json, nimbus::orch::FxKind& out);
+// Sub-agent results the turn read: how many had a lookup behind them and how many
+// were live-data results with none.
+void recordFreshResults(nimbus::orch::TurnEffects& fx, int sourced, int unsourced);
 
 // What an inline scratchpad update did (ApplyDeps::applyScratch).
 enum class ScratchOutcome : uint8_t { Applied = 0, AppliedRamOnly, Skipped };
@@ -158,10 +183,12 @@ struct ApplyState {
   std::vector<nimbus::orch::WorkingString, nimbus::orch::WorkingAllocator<nimbus::orch::WorkingString>> toolReplyTexts;
   std::string lastReply;             // out: captured for loops' semantic-repeat hash
   ScratchOutcome scratchOutcome = ScratchOutcome::Skipped;   // out: the inline scratchpad write
-  // Lane S, the claim check: apply records each real outcome in its ledger (a
-  // memory write's result, an accepted or refused spawn, the scratchpad save,
-  // the device actions), then a reply claim nothing backs gets one owner line
-  // per class, and the history keeps the delivered text. Null => no check.
+  // The turn's effect ledger (the turn state's): apply records each real outcome
+  // in it (a memory write's result, an accepted or refused spawn, the scratchpad
+  // save, the device actions). Null => nothing is recorded.
+  nimbus::orch::TurnEffects* effects = nullptr;
+  // Lane S, the claim check: a reply claim the ledger does not back gets one owner
+  // line per class, and the history keeps the delivered text. Null => no check.
   ClaimCheck* claims = nullptr;
   std::string delivered;            // out: the reply text as the owner received it
   std::string* pendingMemResults = nullptr;  // deferred [MEMORY RESULTS] accumulator

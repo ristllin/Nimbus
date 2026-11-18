@@ -5,7 +5,6 @@
 #include <cctype>
 #include <cstring>
 
-#include "nimbus/mem_cap.h"           // utf8CapLen - a quoted excerpt stays valid UTF-8
 #include "nimbus/orch/action_rules.h"  // actionRuleTable - the request-advertised action names
 #include "nimbus/orch/claims.h"        // ownerAskedHow - the asked-how gate
 
@@ -42,51 +41,6 @@ bool hasAnyWord(const std::string& hay, const char* const (&words)[N]) {
   return false;
 }
 
-// The reply with its wrapping punctuation and brackets off, lowercased.
-std::string fillerCore(const std::string& reply) {
-  std::string t = lowered(reply);
-  auto wrap = [](char c) { return std::isspace((unsigned char)c) || std::strchr("<>[]{}()\"'`*_.:!-", c) != nullptr; };
-  size_t b = 0, e = t.size();
-  while (b < e && wrap(t[b])) b++;
-  while (e > b && wrap(t[e - 1])) e--;
-  return t.substr(b, e - b);
-}
-
-// A reply that is only these words is filler. Words a real question can have as its whole
-// answer ("ok", "done", "yes", "n/a", "string", "TBD") are not on it.
-const char* const kFiller[] = {
-    "placeholder", "placeholder text", "placeholder reply", "placeholder answer", "placeholder response",
-    "reply", "your reply", "your reply here", "reply here", "reply text", "the reply", "your response",
-    "your response here", "response here", "your answer", "your answer here", "answer here", "final answer",
-    "your final answer", "insert reply", "insert reply here", "insert answer here", "text here",
-    "todo", "lorem ipsum", "example reply", "sample reply",
-};
-
-}  // namespace
-
-const char kPlaceholderCorrection[] =
-    "[REPLY CHECK] The reply field holds template filler, not an answer. Write the real answer for the owner "
-    "now, from what this turn found. If it found nothing, say that plainly and say what you could not do.";
-
-bool isPlaceholderReply(const std::string& reply, const std::string& ownerText) {
-  // Only dots or ellipses, or nothing but wrapping marks around nothing.
-  if (reply.find_first_not_of(" \t\r\n") == std::string::npos) return false;   // empty is its own case
-  const std::string core = fillerCore(reply);
-  if (core.empty() || core == "\xE2\x80\xA6") return true;
-  bool filler = false;
-  for (const char* f : kFiller) filler = filler || core == f;
-  if (!filler) return false;
-  return lowered(ownerText).find(core) == std::string::npos;
-}
-
-std::string placeholderCheck(const std::string& finalTurnJson, const std::string& ownerText) {
-  JsonDocument d;
-  if (deserializeJson(d, finalTurnJson) != DeserializationError::Ok) return std::string();
-  const char* reply = d["reply"] | "";
-  return isPlaceholderReply(reply, ownerText) ? std::string(kPlaceholderCorrection) : std::string();
-}
-
-namespace {
 
 // Lane POL2: the plumbing an owner must never read. Each pattern is a class the
 // 2 Nov signals named: a memory id, a job id, storage wording, a device path.
@@ -1162,23 +1116,6 @@ std::string laterCorrection(const std::string& excerpt) {
          "stands behind it. Do the work now with your tools, start a sub-agent or a routine for it, or say plainly "
          "what is not done and that the owner can ask to continue. Do not repeat anything already done, and do not "
          "mention this check.";
-}
-
-std::string cutRetryNote(const std::string& why, const std::string& partial) {
-  std::string note =
-      "[LAST ATTEMPT RAN OUT OF ROOM] Your last answer to this round stopped at the output limit (" + why +
-      "), so nothing in it ran and the owner has not seen it. Answer again in far fewer words: one tool call at a "
-      "time with short arguments, and a final reply under 300 words. Put anything longer in a file.";
-  if (partial.empty()) return note + "\n";
-  const int keep = utf8CapLen(partial.c_str(), (int)partial.size(), 600);
-  // Brackets out: the excerpt can quote outside content, and it must not pose as a block
-  // of this message or close the quote.
-  std::string quoted = partial.substr(0, (size_t)keep);
-  for (char& c : quoted) {
-    if (c == '[') c = '(';
-    if (c == ']') c = ')';
-  }
-  return note + " It began:\n" + quoted + "\n[END OF WHAT YOU WROTE]\n";
 }
 
 }  // namespace orch
