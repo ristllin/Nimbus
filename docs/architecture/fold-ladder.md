@@ -123,16 +123,16 @@ why (`SliceState`), and only one outcome may give rows up:
 | Ready | a digest to summarize | runs the cycle |
 | Nothing | the read reached the kept tail or the end (and only then) and found nothing worth a summary | restarts the counters; gives up hidden rows only up to where the read reached (`readTo`) |
 | Wait | the rows are not readable yet: the cache has not read far enough to know the kept tail (with rows hidden the slice takes those rows alone instead), a store read budget, a failing card, the scan for the newest `/clear` of a chat with no anchor, a read that stopped short holding nothing to summarize, a stale cursor | Deferred, the store untouched |
-| Unread | the store named a span after the anchor it will not give back | Deferred, the store untouched; after 24 h of it, the owner's daily alert (fail-closed: the anchor never passes the span) |
+| Unread | the store named a span after the anchor it will not give back | Deferred, the store untouched; after 24 h of it (the clock is kept in the control file and ends only when a read gets past the span), the owner's daily alert (fail-closed: the anchor never passes the span) |
 
 So `thru` moves only past rows a landed summary took. A `/clear` anchors the chat at its
 boundary row (device and VN); for a chat cleared before that (no anchor), only a read that
 reached its bound is folded, so nothing before the newest `/clear` is ever summarized. A read
 budget that found none of the chat's rows is resumed from where the store stopped on the next
 pass. Such a cursor is a byte position (`day:off`) that only fits the store state it came from:
-when the store answers it with an empty page and nothing more (its index completed meanwhile),
-or with rows at or before the anchor, it is dropped and the read starts again from the anchor
-(Wait, never the end). The cache's gap probe (one store read a call) treats its own cursor the
+when the store names it stale (`EpiQueryInfo::cursorStale`: its index completed meanwhile), or
+answers it with rows at or before the anchor, it is dropped and the read starts again from the
+anchor (Wait, never the end). An empty page the store does not name stale is the real end. The cache's gap probe (one store read a call) treats its own cursor the
 same way. A cold no-clock day-stream blocks only cursors it could hold rows after. The slice runs inside a `PsramFirstScope` and spills each kept row as it is read: the
 fold runs outside a turn, where a block of 128 B or less would otherwise stay in internal SRAM.
 
@@ -161,7 +161,7 @@ owner's spend at most 6; the owner's due chats fold first; 2xx answers and timeo
 the upload count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of
 failing, sent to the owner's Telegram chat or the web chat, by role on the VN: the first
 Admin chat; another chat's failure is only logged and does not use up the day),
-`manualPendingChat` (up to 4 queued manual requests) and `fwAtLastFail`. Because this
+`manualPendingChat` (up to 4 queued manual requests), `fwAtLastFail` and `unreadSince` (per chat, when its fold first met rows the store would not give back; a few chats). Because this
 lives outside the per-chat blob, evicting a chat's record (the blob keeps the 16 most
 recently used chats inside 64 KB, about ten with a full summary) never resets the cap
 or loses a request.
@@ -171,7 +171,9 @@ or loses a request.
 `/compact`, `POST /api/fold/run` and the Memory page's **Summarize Now** stage the chat
 (any task), and the pump moves it into `manualPendingChat`. Manual cycles run one at a
 time, two minutes apart, skip the daily cap (they are counted in it) and the quiet wait,
-and take a keep-0 slice. A manual request is a catch-up: while the chat still has rows
+and take a keep-0 slice. A manual read that goes on (a /clear scan, a read budget) yields a pass
+to the automatic folds between its passes and is answered after 64 of them, so one chat that
+reads slowly never holds up the others. A manual request is a catch-up: while the chat still has rows
 the history hides behind the anchor, or its last slice stopped short of the newest row,
 its cycles chain oldest first (at most 64) and one
 confirmation names the whole span. A manual request never waits behind an automatic cycle:
