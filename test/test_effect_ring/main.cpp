@@ -135,21 +135,33 @@ size_t lineCount(const std::string& s) {
   return n;
 }
 
+// The length a lead byte announces (1 to 4), 0 for a byte that cannot start a sequence.
+size_t announced(uint8_t b) {
+  if (b < 0x80) return 1;
+  if ((b >> 5) == 6) return 2;
+  if ((b >> 4) == 14) return 3;
+  return (b >> 3) == 30 ? 4 : 0;
+}
+
+// The scalar of a whole sequence of `len` bytes, or UINT32_MAX when a byte is not a continuation.
+uint32_t scalar(const std::string& s, size_t i, size_t len) {
+  const uint8_t b = (uint8_t)s[i];
+  uint32_t cp = len == 1 ? b : (uint32_t)(b & (0x7F >> len));
+  for (size_t k = 1; k < len; ++k) {
+    const uint8_t c = (uint8_t)s[i + k];
+    if ((c & 0xC0) != 0x80) return UINT32_MAX;
+    cp = (cp << 6) | (c & 0x3F);
+  }
+  return cp;
+}
+
 bool validUtf8(const std::string& s) {
-  size_t i = 0;
-  while (i < s.size()) {
-    const uint8_t b = (uint8_t)s[i];
-    size_t len = b < 0x80 ? 1 : (b >> 5) == 6 ? 2 : (b >> 4) == 14 ? 3 : (b >> 3) == 30 ? 4 : 0;
+  static const uint32_t kMin[5] = {0, 0, 0x80, 0x800, 0x10000};
+  for (size_t i = 0; i < s.size();) {
+    const size_t len = announced((uint8_t)s[i]);
     if (!len || i + len > s.size()) return false;
-    uint32_t cp = len == 1 ? b : len == 2 ? (b & 0x1F) : len == 3 ? (b & 0x0F) : (b & 0x07);
-    for (size_t k = 1; k < len; ++k) {
-      const uint8_t c = (uint8_t)s[i + k];
-      if ((c & 0xC0) != 0x80) return false;
-      cp = (cp << 6) | (c & 0x3F);
-    }
-    if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
-        (cp >= 0xD800 && cp <= 0xDFFF))
-      return false;
+    const uint32_t cp = scalar(s, i, len);
+    if (cp < kMin[len] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
     i += len;
   }
   return true;
@@ -270,6 +282,8 @@ void test_every_byte_value_is_cleaned_to_one_line() {
   TEST_ASSERT_EQUAL_STRING("????x", fx::cleanText("\xF4\x90\x80\x80x", 160).c_str());
   TEST_ASSERT_EQUAL_STRING("?x", fx::cleanText("\x80x", 160).c_str());
   TEST_ASSERT_EQUAL_STRING("??", fx::cleanText("\xE2\x82", 160).c_str());
+  // A sequence cut by the length (its last byte is past n, and valid) is not read past n.
+  TEST_ASSERT_EQUAL_STRING("??", fx::cleanText("\xE2\x82\xAC", 2, 160).c_str());
   // Newline, carriage return and tab: a space each.
   TEST_ASSERT_EQUAL_STRING("a b c d", fx::cleanText("a\nb\rc\td", 160).c_str());
 }
@@ -757,6 +771,14 @@ void test_the_stored_form_is_fixed() {
   TEST_ASSERT_EQUAL_INT64(INT64_MAX, d.epoch);
   const char* over = "f1\t9999999999999999999\tt\tx\td884ebc9";   // past int64, crc good
   TEST_ASSERT_FALSE(fx::decodeLine(over, std::strlen(over), d));
+  const char* wraps = "f1\t18446744073709551617\tt\tx\t29e1a663";   // 2^64 + 1: twenty digits
+  TEST_ASSERT_FALSE(fx::decodeLine(wraps, std::strlen(wraps), d));
+  // The crc of "f1 TAB 12 TAB t TAB r" is 4071e101; "4071e0g1" would read as the same value
+  // if a digit past f were taken, so only the exact lower-case form is accepted.
+  const char* ok = "f1\t12\tt\tr\t4071e101";
+  const char* g = "f1\t12\tt\tr\t4071e0g1";
+  TEST_ASSERT_TRUE(fx::decodeLine(ok, std::strlen(ok), d));
+  TEST_ASSERT_FALSE(fx::decodeLine(g, std::strlen(g), d));
   // A Telegram chat id is its own key; anything else is "k" + hex.
   std::string k;
   TEST_ASSERT_TRUE(fx::ringKey("-1001234567890", k));

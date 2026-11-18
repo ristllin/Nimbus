@@ -27,34 +27,43 @@ uint32_t crc32Of(const char* p, size_t n) {
   return ~c;
 }
 
+// The sequence length a lead byte starts (2 to 4) and its payload bits; 0 when no valid
+// sequence starts with it (a continuation, C0, C1, F5 and up).
+size_t leadLen(uint8_t b, uint32_t& cp) {
+  if (b >= 0xC2 && b <= 0xDF) {
+    cp = b & 0x1F;
+    return 2;
+  }
+  if (b >= 0xE0 && b <= 0xEF) {
+    cp = b & 0x0F;
+    return 3;
+  }
+  if (b >= 0xF0 && b <= 0xF4) {
+    cp = b & 0x07;
+    return 4;
+  }
+  return 0;
+}
+
+// A decoded scalar is valid: not overlong, not a surrogate, not past U+10FFFF.
+bool scalarOk(size_t len, uint32_t cp) {
+  const bool overlong = (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000);
+  return !overlong && cp <= 0x10FFFF && !(cp >= 0xD800 && cp <= 0xDFFF);
+}
+
 // Length of the valid UTF-8 sequence at p (1 to 4), or 0 when the bytes there are not one.
 size_t utf8Len(const uint8_t* p, size_t n, uint32_t& cp) {
-  const uint8_t b = p[0];
-  size_t len;
-  if (b < 0x80) {
-    cp = b;
+  if (p[0] < 0x80) {
+    cp = p[0];
     return 1;
   }
-  if (b >= 0xC2 && b <= 0xDF) {
-    len = 2;
-    cp = b & 0x1F;
-  } else if (b >= 0xE0 && b <= 0xEF) {
-    len = 3;
-    cp = b & 0x0F;
-  } else if (b >= 0xF0 && b <= 0xF4) {
-    len = 4;
-    cp = b & 0x07;
-  } else {
-    return 0;
-  }
-  if (len > n) return 0;
+  const size_t len = leadLen(p[0], cp);
+  if (len == 0 || len > n) return 0;
   for (size_t k = 1; k < len; ++k) {
     if ((p[k] & 0xC0) != 0x80) return 0;
     cp = (cp << 6) | (p[k] & 0x3F);
   }
-  const bool overlong = (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000);
-  if (overlong || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
-  return len;
+  return scalarOk(len, cp) ? len : 0;
 }
 
 bool isControl(uint32_t cp) { return cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x2028 || cp == 0x2029; }
@@ -63,6 +72,31 @@ void copyField(char* dst, size_t dstSize, const std::string& s) {
   const size_t n = s.size() < dstSize - 1 ? s.size() : dstSize - 1;
   std::memcpy(dst, s.data(), n);
   dst[n] = '\0';
+}
+
+// Eight lower-case hex digits.
+bool readHex8(const char* p, uint32_t& out) {
+  out = 0;
+  for (int i = 0; i < 8; ++i) {
+    const char c = p[i];
+    const int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
+    if (v < 0) return false;
+    out = (out << 4) | (uint32_t)v;
+  }
+  return true;
+}
+
+// 1 to 19 decimal digits that fit an int64.
+bool readEpoch(const char* p, size_t n, int64_t& out) {
+  if (n == 0 || n > 19) return false;
+  uint64_t v = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (p[i] < '0' || p[i] > '9') return false;
+    v = v * 10 + (uint64_t)(p[i] - '0');
+  }
+  if (v > (uint64_t)INT64_MAX) return false;
+  out = (int64_t)v;
+  return true;
 }
 
 // A field read from a line is taken only as cleanText would have written it.
@@ -175,30 +209,16 @@ std::string encodeLine(const RingEntry& e) {
 bool decodeLine(const char* p, size_t n, RingEntry& out) {
   if (n < kTagLen + 9 || n > kLineMax - 1 || std::memcmp(p, kTag, kTagLen) != 0) return false;
   const size_t body = n - 9;   // the last tab
-  if (p[body] != '\t') return false;
   uint32_t crc = 0;
-  for (size_t i = body + 1; i < n; ++i) {
-    const char c = p[i];
-    const int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
-    if (v < 0) return false;
-    crc = (crc << 4) | (uint32_t)v;
-  }
-  if (crc != crc32Of(p, body)) return false;
+  if (p[body] != '\t' || !readHex8(p + body + 1, crc) || crc != crc32Of(p, body)) return false;
   // epoch \t tool \t receipt, between the tag and the last tab.
   const char* q = p + kTagLen;
   const char* end = p + body;
   const char* t1 = static_cast<const char*>(std::memchr(q, '\t', (size_t)(end - q)));
-  if (!t1 || t1 == q || t1 - q > 19) return false;
-  uint64_t epoch = 0;
-  for (const char* c = q; c < t1; ++c) {
-    if (*c < '0' || *c > '9') return false;
-    epoch = epoch * 10 + (uint64_t)(*c - '0');
-  }
-  if (epoch > (uint64_t)INT64_MAX) return false;
+  if (!t1) return false;
   const char* t2 = static_cast<const char*>(std::memchr(t1 + 1, '\t', (size_t)(end - t1 - 1)));
-  if (!t2) return false;
   RingEntry e;
-  e.epoch = (int64_t)epoch;
+  if (!t2 || !readEpoch(q, (size_t)(t1 - q), e.epoch)) return false;
   if (!cleanField(t1 + 1, (size_t)(t2 - t1 - 1), kToolMax, e.tool, sizeof e.tool)) return false;
   if (!cleanField(t2 + 1, (size_t)(end - t2 - 1), kReceiptMax, e.receipt, sizeof e.receipt)) return false;
   e.stored = true;
@@ -240,45 +260,40 @@ EffectRing::~EffectRing() {
   workingFree(slots_);
 }
 
-EffectRing::Slot* EffectRing::slotFor(const std::string& chatId, const std::string& key) {
-  (void)chatId;
+EffectRing::Slot* EffectRing::findSlot(const std::string& key) {
+  for (size_t i = 0; i < kMaxChats; ++i)
+    if (slots_[i].used && key == slots_[i].key) return &slots_[i];
+  return nullptr;
+}
+
+// A free slot, or the least recently used one, cleared for `key` (its ring block is reused).
+EffectRing::Slot* EffectRing::claimSlot(const std::string& key) {
+  Slot* pick = nullptr;
+  for (size_t i = 0; i < kMaxChats; ++i)   // a free slot has lastUse 0, older than any use
+    if (!pick || slots_[i].lastUse < pick->lastUse) pick = &slots_[i];
+  if (pick->used) ++stats_.evictions;
+  if (!pick->ring) pick->ring = static_cast<RingEntry*>(workingAlloc(kRingEntries * sizeof(RingEntry)));
+  if (!pick->ring) return nullptr;
+  RingEntry* ring = pick->ring;
+  std::memset(pick, 0, sizeof(Slot));
+  pick->ring = ring;
+  pick->used = true;
+  copyField(pick->key, sizeof pick->key, key);
+  return pick;
+}
+
+EffectRing::Slot* EffectRing::slotFor(const std::string& key) {
   if (!slots_) {
     void* mem = workingAlloc(kMaxChats * sizeof(Slot));
     if (!mem) return nullptr;
     slots_ = static_cast<Slot*>(mem);
     std::memset(mem, 0, kMaxChats * sizeof(Slot));
   }
-  Slot* pick = nullptr;
-  for (size_t i = 0; i < kMaxChats; ++i) {
-    Slot& s = slots_[i];
-    if (s.used && key == s.key) {
-      pick = &s;
-      break;
-    }
-  }
-  std::string path = std::string(kFxRoot) + "/" + key + ".ring";
-  if (!pick) {
-    for (size_t i = 0; i < kMaxChats; ++i) {
-      Slot& s = slots_[i];
-      if (!s.used) {
-        pick = &s;
-        break;
-      }
-      if (!pick || s.lastUse < pick->lastUse) pick = &s;
-    }
-    if (pick->used) ++stats_.evictions;
-    if (!pick->ring) {
-      pick->ring = static_cast<RingEntry*>(workingAlloc(kRingEntries * sizeof(RingEntry)));
-      if (!pick->ring) return nullptr;
-    }
-    RingEntry* ring = pick->ring;
-    std::memset(pick, 0, sizeof(Slot));
-    pick->ring = ring;
-    pick->used = true;
-    copyField(pick->key, sizeof pick->key, key);
-  }
+  Slot* pick = findSlot(key);
+  if (!pick) pick = claimSlot(key);
+  if (!pick) return nullptr;
   pick->lastUse = ++tick_;
-  if (files_ && (!pick->loaded || pick->unsettled)) loadInto(*pick, path);
+  if (files_ && (!pick->loaded || pick->unsettled)) loadInto(*pick, std::string(kFxRoot) + "/" + key + ".ring");
   return pick;
 }
 
@@ -350,7 +365,7 @@ AppendResult EffectRing::append(const std::string& chatId, int64_t epoch, const 
     ++stats_.refused;
     return AppendResult::Refused;
   }
-  Slot* s = slotFor(chatId, key);
+  Slot* s = slotFor(key);
   if (!s) {
     ++stats_.refused;
     return AppendResult::Refused;
@@ -386,7 +401,7 @@ size_t EffectRing::visit(const std::string& chatId, size_t n, const std::functio
   std::lock_guard<std::mutex> lock(mu_);
   std::string key;
   if (!ringKey(chatId, key)) return 0;
-  Slot* s = slotFor(chatId, key);
+  Slot* s = slotFor(key);
   if (!s) return 0;
   const size_t m = n < s->count ? n : s->count;
   for (size_t i = s->count - m; i < s->count; ++i) fn(s->at(i));
@@ -402,7 +417,7 @@ Backing EffectRing::backing(const std::string& chatId) {
   std::lock_guard<std::mutex> lock(mu_);
   std::string key;
   if (!files_ || !ringKey(chatId, key)) return Backing::RamOnly;
-  Slot* s = slotFor(chatId, key);
+  Slot* s = slotFor(key);
   return s && s->loaded && !s->unsettled && !s->writeFailed ? Backing::Storage : Backing::RamOnly;
 }
 

@@ -164,7 +164,9 @@ class EffectRing {
 
  private:
   struct Slot;
-  Slot* slotFor(const std::string& chatId, const std::string& key);   // load, settle or evict
+  Slot* slotFor(const std::string& key);   // find or claim, then load or settle
+  Slot* findSlot(const std::string& key);
+  Slot* claimSlot(const std::string& key);  // a free or the least recently used slot
   void loadInto(Slot& s, const std::string& path);
   bool rewrite(Slot& s, const std::string& path);
 
