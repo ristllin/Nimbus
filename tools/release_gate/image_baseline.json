@@ -1,6 +1,6 @@
 {
   "about": "Image bytes per built env at sha, measured by check_image_size.py --record-baseline: image_bytes is firmware.bin, docs_pack_bytes is the docs pack read from firmware.elf (the tables named in docs_pack_tables plus every string they point at, merged literals once), code_bytes is the difference. A lane's code delta against this row must be at most its allowance in image_budget.d/<lane>.json. Re-recorded after each merge into the integration branch, on the merge commit, so the next lane is measured against the line it joins.",
-  "sha": "d0dea0393544a139aca5a9f53beea53746e5c2a6",
+  "sha": "a30b12fb65ec2594da67e8c8f3026988e4cd4497",
   "docs_pack_tables": [
     {
       "symbol": "_ZN6nimbus4docs13kDocsSectionsE",
@@ -22,24 +22,24 @@
   ],
   "envs": {
     "esp32s3": {
-      "image_bytes": 6497264,
-      "docs_pack_bytes": 428530,
-      "code_bytes": 6068734
+      "image_bytes": 6497712,
+      "docs_pack_bytes": 428820,
+      "code_bytes": 6068892
     },
     "esp32s3-cyd": {
-      "image_bytes": 6532352,
-      "docs_pack_bytes": 428530,
-      "code_bytes": 6103822
+      "image_bytes": 6532576,
+      "docs_pack_bytes": 428820,
+      "code_bytes": 6103756
     },
     "test": {
-      "image_bytes": 6632560,
-      "docs_pack_bytes": 428530,
-      "code_bytes": 6204030
+      "image_bytes": 6633056,
+      "docs_pack_bytes": 428820,
+      "code_bytes": 6204236
     },
     "test-cyd": {
-      "image_bytes": 6667440,
-      "docs_pack_bytes": 428530,
-      "code_bytes": 6238910
+      "image_bytes": 6667952,
+      "docs_pack_bytes": 428820,
+      "code_bytes": 6239132
     }
   }
 }
