@@ -13,6 +13,7 @@ What it measures, per head:
 | First-call success, ledger | The first ledger write call of a turn returns without an error: one `ledger_write` (arm L1) against `ledger_add`, `ledger_update`, `ledger_remove` (arm L3), on the same episodes. |
 | First-call success, dispatcher | `agent_start`, `delete_file`, `fetch_url` behind `more` with the tools index (arm L1) against the same tools promoted to direct tools (arm P), on the same episodes. |
 | Recall | A question about a fact that is only in unpinned notes or three-week-old history, answered correctly, with the recall line in the system text and without it. There is no automatic recall. |
+| Follow-up ledger arms | The same ledger episodes with the same model-facing bytes as L1: L1u (every op takes `id` or `ids`, an add takes `day`, `time`, `meal` beside `row`), L1y (the message stamp carries the year), L1uy (both). |
 | Warning reaction | A correct label row (a protein bar with polyols, a beer) logged with a macro warning in the receipt, and without one: does the figure change, does the reply hedge. |
 
 Every rate is a count with an exact one-sided 95% bound (Clopper-Pearson, `stats.py`): 0 events in
@@ -41,6 +42,8 @@ Every rate is a count with an exact one-sided 95% bound (Clopper-Pearson, `stats
   a missing effect, a tool error or a label warning go to claude-sonnet-5-5; the rest are screened by
   claude-haiku-5-5 and a positive screen is judged again by claude-sonnet-5-5. The rates come from
   `derive()`, which combines the labels with the device state.
+- `audit.json`: the hand audit of every judged positive. `report.py` applies its overrides and also
+  reports the judge's raw counts.
 - `report.py`: the numbers, `behaviour.json` and a RESULTS.md table.
 
 ## Run it
@@ -51,13 +54,15 @@ python3 tests/evals/behaviour/test_behaviour_offline.py
 
 # PAID: one head, the whole plan (460 episodes, 420 effect-shaped turns); reruns skip stored episodes
 python tests/evals/behaviour/run.py --head claude-haiku-5-5 --evidence <dir> --env-file <dotenv> --max-usd 1
+# PAID: the follow-up ledger arms (100 episodes each)
+python tests/evals/behaviour/run.py --head claude-haiku-5-5 --evidence <dir> --env-file <dotenv> --max-usd 1 --follow-up L1u,L1y,L1uy
 python tests/evals/behaviour/judge.py --evidence <dir> --env-file <dotenv> --max-usd 4
 python tests/evals/behaviour/report.py --evidence <dir> --out tests/evals/measured/behaviour.json --md <dir>/RESULTS.md
 ```
 
 The dotenv needs `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and, for glm-5.3, `Z_AI_TOKEN`; keys are read
 inside the process and never printed. Measured cost on 18 Nov 2026: about 0.0003 USD per episode on
-claude-haiku-5-5 and gpt-5.6-luna, about 0.01 on claude-sonnet-5-5 and gpt-5.6.
+claude-haiku-5-5 and gpt-5.6-luna, 0.005 on claude-sonnet-5-5 and 0.009 on gpt-5.6.
 
 ## Limits
 
@@ -66,5 +71,9 @@ claude-haiku-5-5 and gpt-5.6-luna, about 0.01 on claude-sonnet-5-5 and gpt-5.6.
   the reference the implementing lanes start from.
 - Episodes are one or two owner turns after a short prior exchange, not 15-turn conversations; the
   L3 parity suite (RB-B2b) measures the long shapes.
+- The tools index names groups this world does not implement (people, models, docs, connectors); a
+  `more` list call on one is left out of first-call success as a rig artifact.
+- Episodes are paired across arms and drawn from a few templates, so the turns are not independent
+  samples: the bounds are optimistic about variance across templates.
 - The judge is a model. Every turn whose effect is missing or whose tools failed, which is where false
   claims and interim stops live, is judged by claude-sonnet-5-5.
