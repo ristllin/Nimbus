@@ -16,6 +16,7 @@
 // Storage is RB-T2's fault-injecting fake (test/support/tx_battery/mem_files.h).
 #include <unity.h>
 
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -47,6 +48,7 @@ class FxFiles : public txb::MemFiles {
   long cutWhole = -1;         // the writeWhole with this index is cut after cutBytes
   long cutRename = -1;        // the rename with this index is cut (after the remove, if any)
   bool renameRemovesFirst = false;
+  bool refuseWhole = false;   // a whole write lands half its bytes and answers false
   std::vector<std::string> appended;   // the bytes of every append that ran
   size_t wholeCalls = 0;
 
@@ -63,6 +65,10 @@ class FxFiles : public txb::MemFiles {
   bool writeWhole(const std::string& path, const std::string& data) override {
     if (noCard) return false;
     const long idx = (long)wholeCalls++;
+    if (refuseWhole) {
+      files[path] = data.substr(0, data.size() / 2);
+      return false;
+    }
     if (idx == cutWhole) {
       files[path] = data.substr(0, std::min(cutBytes, data.size()));
       throw txb::Killed{"whole"};
@@ -607,6 +613,7 @@ void test_card_pulled_mid_life_then_back_has_no_duplicates() {
   f.noCard = false;
   for (int i = 13; i < 200; ++i) r.append("19", i, "t", receiptOf("19", i));
   TEST_ASSERT_TRUE(receipts(r, "19") == expected("19", 0, 200));
+  r.visit("19", fx::kRingEntries, [](const fx::RingEntry& e) { TEST_ASSERT_TRUE(e.stored); });   // rewritten
   fx::EffectRing r2(&f);
   TEST_ASSERT_TRUE(receipts(r2, "19") == expected("19", 0, 200));
 }
@@ -730,6 +737,45 @@ void test_ram_rings_live_in_the_working_allocator() {
   TEST_ASSERT_TRUE(sizeof(fx::RingEntry) <= 224);
 }
 
+// ---- the stored form is fixed (a change is a format change, not a refactor) -------------------
+void test_the_stored_form_is_fixed() {
+  fx::RingEntry e;
+  e.epoch = 1763470920;
+  std::snprintf(e.tool, sizeof e.tool, "ledger_write");
+  std::snprintf(e.receipt, sizeof e.receipt, "added L00A3 skyr 150 g");
+  TEST_ASSERT_EQUAL_STRING("f1\t1763470920\tledger_write\tadded L00A3 skyr 150 g\tabd007e9\n", fx::encodeLine(e).c_str());
+  fx::RingEntry d;
+  const char* big = "f1\t9223372036854775807\tt\tx\tc0f0528b";
+  TEST_ASSERT_TRUE(fx::decodeLine(big, std::strlen(big), d));
+  TEST_ASSERT_EQUAL_INT64(INT64_MAX, d.epoch);
+  const char* over = "f1\t9999999999999999999\tt\tx\td884ebc9";   // past int64, crc good
+  TEST_ASSERT_FALSE(fx::decodeLine(over, std::strlen(over), d));
+  // A Telegram chat id is its own key; anything else is "k" + hex.
+  std::string k;
+  TEST_ASSERT_TRUE(fx::ringKey("-1001234567890", k));
+  TEST_ASSERT_EQUAL_STRING("-1001234567890", k.c_str());
+  TEST_ASSERT_TRUE(fx::ringKey("web", k));
+  TEST_ASSERT_EQUAL_STRING("k776562", k.c_str());
+  TEST_ASSERT_TRUE(fx::ringKey(std::string(fx::kOtherIdMax, 'a'), k));
+  TEST_ASSERT_EQUAL_UINT32(1 + 2 * fx::kOtherIdMax, k.size());
+}
+
+void test_a_refused_rewrite_leaves_no_temp_and_retries() {
+  FxFiles f;
+  fx::EffectRing r(&f);
+  f.refuseWhole = true;
+  for (int i = 0; i < (int)fx::kCompactLines + 5; ++i)
+    TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(r.append("21", i, "t", receiptOf("21", i))));
+  TEST_ASSERT_EQUAL_UINT32(0, f.files.count("/mem/fx/21.ring.tmp"));
+  TEST_ASSERT_EQUAL_UINT32(0, r.stats().rewrites);
+  f.refuseWhole = false;
+  r.append("21", 999, "t", receiptOf("21", (int)fx::kCompactLines + 5));
+  TEST_ASSERT_EQUAL_UINT32(1, r.stats().rewrites);
+  TEST_ASSERT_EQUAL_UINT32(fx::kRingEntries, lineCount(f.files["/mem/fx/21.ring"]));
+  fx::EffectRing r2(&f);
+  TEST_ASSERT_TRUE(receipts(r2, "21") == expected("21", 0, (int)fx::kCompactLines + 6));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_fifty_per_chat_oldest_dropped_at_every_count);
@@ -753,5 +799,7 @@ int main() {
   RUN_TEST(test_ram_only_chats_are_kept_apart_too);
   RUN_TEST(test_the_chat_key_is_injective_and_safe);
   RUN_TEST(test_ram_rings_live_in_the_working_allocator);
+  RUN_TEST(test_the_stored_form_is_fixed);
+  RUN_TEST(test_a_refused_rewrite_leaves_no_temp_and_retries);
   return UNITY_END();
 }
