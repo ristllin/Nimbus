@@ -356,6 +356,8 @@ void FoldStore::begin(FoldStoreIO* io) {
     Slot s;
     s.chatId            = f[0];
     s.f.bytesSinceFold  = toU32(f[1]);
+    const std::vector<uint32_t> kept = numSuffixes(f[1]);   // "<bytes>[;keptAtFold]" (lane CTXR1)
+    s.f.keptAtFold      = kept.empty() ? 0 : kept[0];
     s.f.msgsSinceFold   = toU32(f[2]);
     s.f.lastFoldEpoch   = toU32(f[3]);
     s.f.thru            = idSuffix(f[3]);
@@ -400,6 +402,7 @@ std::string FoldStore::encodeSlot(const Slot& s) {
   std::string out;
   out += stripCtl(s.chatId);
   out += '\x1F'; out += std::to_string(s.f.bytesSinceFold);
+  if (s.f.keptAtFold) out += ";" + std::to_string(s.f.keptAtFold);   // v5.1.1 reads the number only
   out += '\x1F'; out += std::to_string(s.f.msgsSinceFold);
   out += '\x1F'; out += std::to_string(s.f.lastFoldEpoch);
   if (!s.f.thru.empty()) out += ";" + cleanId(s.f.thru);
@@ -484,14 +487,15 @@ void FoldStore::setSoftStart(const std::string& chatId, const std::string& rowId
 void FoldStore::noteHistoryBytes(const std::string& chatId, size_t bytes) {
   Slot& s = upsert(chatId);
   const uint32_t b = bytes > UINT32_MAX ? UINT32_MAX : (uint32_t)bytes;
-  if (b > s.f.bytesSinceFold && s.f.bytesSinceFold < kOverflowMarkBytes) s.f.bytesSinceFold = b;
+  if (b > s.f.windowBytes) s.f.windowBytes = b;
 }
 
 void FoldStore::noteFoldSkipped(const std::string& chatId, const std::string& readTo, uint32_t keptBytes) {
   Slot* s = find(stripCtl(chatId));
   if (!s) return;
-  s->f.bytesSinceFold = keptBytes;
+  s->f.bytesSinceFold = 0;
   s->f.keptAtFold = keptBytes;
+  s->f.windowBytes = 0;
   s->f.msgsSinceFold = 0;
   // Rows a shift hid that the read examined and found nothing to summarize in (job
   // deliveries, rows behind a /clear) are given up rather than asked about on every
@@ -534,14 +538,13 @@ namespace {
 // The counters every fold restarts: over them again soon after a fold means the
 // fold is not shrinking this chat.
 bool refilled(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold) {
-  return f.bytesSinceFold >= bytesThreshold || (msgsThreshold > 0 && f.msgsSinceFold >= msgsThreshold);
+  return bytesAfterThru(f) >= bytesThreshold || (msgsThreshold > 0 && f.msgsSinceFold >= msgsThreshold);
 }
-// The same for the thrash guard, over what came after the fold only: a fold that kept a tail
-// and left a backlog (lane CTXR1: the counter restarts at the bytes left after thru) is not a
-// fold that failed to shrink the chat.
+// The same for the thrash guard, over what came after the fold only (bytesSinceFold): a fold
+// that kept a tail and left a backlog (lane CTXR1: the trigger counts the bytes after thru) is
+// not a fold that failed to shrink the chat, before or after a restart.
 bool refilledSinceFold(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold) {
-  const uint32_t fresh = f.bytesSinceFold > f.keptAtFold ? f.bytesSinceFold - f.keptAtFold : 0;
-  return fresh >= bytesThreshold || (msgsThreshold > 0 && f.msgsSinceFold >= msgsThreshold);
+  return f.bytesSinceFold >= bytesThreshold || (msgsThreshold > 0 && f.msgsSinceFold >= msgsThreshold);
 }
 // H3: an overflow shift hides rows the summary does not cover yet.
 bool hidesRows(const ChatFold& f) {
@@ -594,8 +597,9 @@ void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
   // it can never re-fire on a fold that cannot move the anchor.
   if (id.empty()) s.f.softStart.clear();
   s.f.summary        = capSummary(summary, summaryCap);
-  s.f.bytesSinceFold = summary.empty() ? 0 : keptBytes;
-  s.f.keptAtFold     = s.f.bytesSinceFold;
+  s.f.bytesSinceFold = 0;
+  s.f.keptAtFold     = summary.empty() ? 0 : keptBytes;
+  s.f.windowBytes    = 0;
   s.f.msgsSinceFold  = 0;
   s.f.turnsSinceFold = 0;
   s.f.lastFoldEpoch  = epoch;

@@ -509,7 +509,11 @@ static void test_foldstore_lumi_fixture_is_due_at_once() {
 }
 
 // The v5.1.1 parser (FoldStore::begin at 591245f4), for the rollback round trip.
-struct LegacyChat { std::string chat, summary, thru, softStart; uint32_t epoch = 0, fails = 0; bool paused = false; };
+struct LegacyChat {
+  std::string chat, summary, thru, softStart;
+  uint32_t epoch = 0, fails = 0, bytes = 0, msgs = 0, turns = 0;
+  bool paused = false;
+};
 static uint32_t legacyU32(const std::string& s) {
   uint32_t v = 0;
   for (char c : s) {
@@ -538,6 +542,9 @@ static std::vector<LegacyChat> legacyParse(const std::string& raw) {
     LegacyChat c;
     c.chat = f[0];
     c.epoch = legacyU32(f[3]);
+    c.bytes = legacyU32(f[1]);
+    c.msgs = legacyU32(f[2]);
+    c.turns = legacyU32(f[4]);
     const size_t s3 = f[3].find(';');
     c.thru = s3 == std::string::npos ? "" : f[3].substr(s3 + 1);
     const size_t s4 = f[4].find(';');
@@ -582,6 +589,38 @@ static void test_foldstore_rollback_round_trip() {
   TEST_ASSERT_EQUAL_UINT32(t0 + 2000 + 3600, f.nextTry);
   TEST_ASSERT_EQUAL_STRING("m000017d9", f.thru.c_str());
   TEST_ASSERT_EQUAL_STRING("m00001c96", f.softStart.c_str());
+}
+
+// v5.1.2 fix review H and C. A head with room restarts its trigger at the conversation a fold
+// kept after thru (up to about 206 KB) and lifts it to the window's bytes. Rollback: v5.1.1
+// reads the blob's bytes field as bytes since the last fold against its 48 KB trigger, so
+// that field keeps v5.1.1's meaning and the kept tail rides a ';' suffix its number parser
+// stops before: v5.1.1 is not due on its first pass because of a value v5.1.2 wrote. Restart:
+// the kept tail is read back, so the thrash guard does not take the backlog for new bytes.
+static void test_foldstore_kept_tail_is_rollback_safe_and_survives_a_restart() {
+  FakeIO io;
+  const uint32_t t0 = 1763200000;
+  {
+    FoldStore fs;
+    fs.begin(&io);
+    fs.applyFold("owner", "1. Decisions & preferences\n- kcal 1,900\n", t0, "m000017d9", kChatSummaryMax, 150000);
+    fs.noteHistoryBytes("owner", 180000);
+    fs.noteMessage("owner", 3000);
+    fs.noteTurn("owner");
+    TEST_ASSERT_EQUAL_UINT32(180000, bytesAfterThru(fs.get("owner")));   // the window renders more than kept + new
+  }
+  const std::vector<LegacyChat> old = legacyParse(io.blob);
+  TEST_ASSERT_EQUAL(1, (int)old.size());
+  TEST_ASSERT_EQUAL_UINT32(3000, old[0].bytes);   // v5.1.1's meaning: since the last fold
+  TEST_ASSERT_TRUE(old[0].bytes < 48u * 1024u && old[0].msgs < 200 && old[0].softStart.empty());   // not due on v5.1.1
+  FoldStore back;
+  back.begin(&io);
+  const ChatFold f = back.get("owner");
+  TEST_ASSERT_EQUAL_UINT32(150000, f.keptAtFold);
+  TEST_ASSERT_EQUAL_UINT32(153000, bytesAfterThru(f));   // the window's figure is RAM only
+  bool thrash = true;
+  TEST_ASSERT_EQUAL_INT((int)FoldDue::Yes, (int)back.evaluateDue("owner", 94464, kFoldMsgsThreshold, t0 + 60, &thrash));
+  TEST_ASSERT_FALSE_MESSAGE(thrash, "a backlog work-off after a restart is not thrash");
 }
 
 // The candidate blob fixture (test/support/fixtures/fold_blob_v5_1_2_lumi.txt): Lumi's
@@ -918,6 +957,7 @@ int main(int, char**) {
   RUN_TEST(test_foldstore_legacy_pauses_lift_on_load);
   RUN_TEST(test_foldstore_lumi_fixture_is_due_at_once);
   RUN_TEST(test_foldstore_rollback_round_trip);
+  RUN_TEST(test_foldstore_kept_tail_is_rollback_safe_and_survives_a_restart);
   RUN_TEST(test_candidate_blob_fixture_matches_the_encoder);
   RUN_TEST(test_foldstore_no_reachable_state_stays_off);
   RUN_TEST(test_fold_ctl_codec_and_queue);

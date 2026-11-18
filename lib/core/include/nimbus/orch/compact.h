@@ -201,10 +201,23 @@ struct ChatFold {
   // RAM only (L19-26, fold on content): a hash of the chat's last owner message,
   // so a re-served copy of it adds nothing toward the next fold.
   uint32_t lastOwnerHash = 0;
-  // RAM only (lane CTXR1): the byte count the last fold restarted at (the tail it kept on a
-  // head with room). The thrash guard counts only the bytes that came after it.
+  // Lane CTXR1, a head with room: the conversation bytes the last fold kept after thru, and
+  // (RAM only) the most the window has rendered since. bytesSinceFold keeps v5.1.1's meaning
+  // (bytes captured since the last fold, restarting at 0), so a rollback reads the blob as
+  // v5.1.1 wrote it; keptAtFold rides the bytes field as a ';' suffix that v5.1.1's number
+  // parser stops before. The trigger reads bytesAfterThru(); the thrash guard bytesSinceFold.
   uint32_t keptAtFold = 0;
+  uint32_t windowBytes = 0;
 };
+
+// The conversation bytes after thru (lane CTXR1): what the fold kept plus what came since, or
+// what the window rendered, whichever is more. On the floor branch keptAtFold and windowBytes
+// stay 0, so it is bytesSinceFold, v5.1.1's reading.
+inline uint32_t bytesAfterThru(const ChatFold& f) {
+  const uint64_t sum = (uint64_t)f.bytesSinceFold + f.keptAtFold;
+  const uint32_t est = sum > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)sum;
+  return est > f.windowBytes ? est : f.windowBytes;
+}
 
 // Owner messages a chat may gather before a fold is due by count alone (the
 // byte threshold is the owner's compactAtK). Only DISTINCT messages count.

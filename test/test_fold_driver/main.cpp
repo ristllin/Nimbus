@@ -493,7 +493,7 @@ static void test_a_huge_kept_tail_does_not_skip_every_pass() {
   d.nothingKept = 200 * 1024;
   TEST_ASSERT_TRUE(d.tick(kT0) == FoldTick::Skipped);
   for (int i = 1; i < 20; i++) TEST_ASSERT_TRUE(d.tick(kT0 + (uint32_t)i * 60) == FoldTick::Idle);
-  TEST_ASSERT_TRUE(d.folds.get("c").bytesSinceFold < 48u * 1024u);
+  TEST_ASSERT_TRUE(orch::bytesAfterThru(d.folds.get("c")) < 48u * 1024u);
 }
 
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
