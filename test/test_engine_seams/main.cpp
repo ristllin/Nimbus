@@ -757,10 +757,60 @@ static void test_budgets_v5_1_1_fixture_holds_every_recorded_model() {
 
 // v5.1.1's frozen window table and caps still derive budgets_v5_1_1.json row for row: the
 // no-shrink baseline a request budget is held to (lane H re-pinned it to legacyCtxTokens at
-// its switch-over; the fixture itself never changes).
+// its switch-over; the fixture itself never changes). One kind of row may differ, in its caps
+// only: an alias Mistral moved to another model since the fixture was written. Its v5.1.1 caps
+// were the old model's; today it gets the caps of the model it names (release review v5.1.2:
+// mistral-large-latest was mistral-large-2512's alias on the 2026-10 list and is Large 4's on
+// the 14 Nov list, nimbus/orch/model_family.h), which never ask for fewer tokens.
 static void test_todays_table_is_v5_1_1() {
-  const std::string have = readFixture(kBudgetsFixture);
-  TEST_ASSERT_TRUE_MESSAGE(have == budgetsFixtureText(), "v5.1.1's budgets or caps differ from budgets_v5_1_1.json");
+  struct Moved { const char* id; const char* now; };
+  static const Moved kMoved[] = {{"mistral-large-latest", "mistral-large-4-0"}};
+  auto lines = [](const std::string& t) {
+    std::vector<std::string> out;
+    size_t at = 0;
+    for (size_t nl; (nl = t.find('\n', at)) != std::string::npos; at = nl + 1) out.push_back(t.substr(at, nl - at));
+    return out;
+  };
+  auto rowOf = [](std::string line, JsonDocument& doc) {
+    if (!line.empty() && line.back() == ',') line.pop_back();
+    return !deserializeJson(doc, line);
+  };
+  const std::vector<std::string> have = lines(readFixture(kBudgetsFixture));
+  const std::vector<std::string> want = lines(budgetsFixtureText());
+  TEST_ASSERT_EQUAL_MESSAGE((int)have.size(), (int)want.size(), "v5.1.1's budgets differ from budgets_v5_1_1.json");
+  std::map<std::string, std::string> capsNow;
+  for (const std::string& l : want) {
+    JsonDocument d;
+    if (rowOf(l, d)) {
+      std::string caps;
+      serializeJson(d["caps"], caps);
+      capsNow[std::string(d["provider"] | "") + "/" + (d["id"] | "")] = caps;
+    }
+  }
+  int moved = 0;
+  for (size_t i = 0; i < have.size(); i++) {
+    if (have[i] == want[i]) continue;
+    JsonDocument h, w;
+    TEST_ASSERT_TRUE_MESSAGE(rowOf(have[i], h) && rowOf(want[i], w), want[i].c_str());
+    const std::string id = h["id"] | "";
+    const Moved* m = nullptr;
+    for (const Moved& x : kMoved)
+      if (id == x.id && std::string(h["provider"] | "") == "mistral") m = &x;
+    TEST_ASSERT_NOT_NULL_MESSAGE(m, ("v5.1.1's budgets or caps differ from budgets_v5_1_1.json: " + want[i]).c_str());
+    std::string wantCaps;
+    serializeJson(w["caps"], wantCaps);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(capsNow[std::string("mistral/") + m->now].c_str(), wantCaps.c_str(), id.c_str());
+    h.remove("caps");
+    w.remove("caps");
+    std::string hb, wb;
+    serializeJson(h, hb);
+    serializeJson(w, wb);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(hb.c_str(), wb.c_str(), id.c_str());   // only the caps moved
+    for (const char* kind : {"tool", "final", "single", "fold"})
+      TEST_ASSERT_TRUE_MESSAGE((w["caps"][kind][0] | 0u) >= (h["caps"][kind][0] | 0u), id.c_str());
+    moved++;
+  }
+  TEST_ASSERT_EQUAL_INT((int)(sizeof(kMoved) / sizeof(kMoved[0])), moved);
 }
 
 int main(int, char**) {
