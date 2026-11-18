@@ -1,0 +1,1431 @@
+[
+ {
+  "id": "rig-claude-haiku-5-5-coherence-30-rep1-t26",
+  "family": "rig-seed",
+  "owner": "How much money did I say we have for all of this?",
+  "reply": "You said the budget is capped at **£480 all in**, which includes the £150 hall hire.",
+  "this_turn": [],
+  "recent": [],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/coherence-30/rep1 turn 26"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-coherence-30-rep2-t26",
+  "family": "rig-seed",
+  "owner": "How much money did I say we have for all of this?",
+  "reply": "You said the budget is capped at **£480 all in**. The hall costs £150, which leaves £330 for everything else.",
+  "this_turn": [],
+  "recent": [],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/coherence-30/rep2 turn 26"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-coherence-30-rep3-t26",
+  "family": "rig-seed",
+  "owner": "How much money did I say we have for all of this?",
+  "reply": "You said the budget is capped at **£480 all in**.",
+  "this_turn": [],
+  "recent": [],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/coherence-30/rep3 turn 26"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-file-lifecycle-rep1-t6",
+  "family": "rig-seed",
+  "owner": "Read me the packing list file back exactly as it is saved.",
+  "reply": "Here is the file exactly as it is saved in your travel folder:\n\n```\n# Lisbon Trip - Packing List\n\n- [ ] Passport\n- [ ] Charger\n- [ ] Sunglasses\n- [ ] Swim shorts\n- [ ] Rain jacket\n```\n\nThe file still has the old title and still lists sunglasses. Neither the \"Lisbon 4-7 March\" heading nor the sunglasses removal has been saved. Say the word and I'll save the version with the heading and without sunglasses.",
+  "this_turn": [
+   {
+    "tool": "files_list",
+    "receipt": "travel/lisbon-packing-list.md (112 bytes)",
+    "ok": true
+   },
+   {
+    "tool": "files_read",
+    "receipt": "# Lisbon Trip - Packing List - [ ] Passport - [ ] Charger - [ ] Sunglasses - [ ] Swim shorts - [ ] Rain jacket",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved travel/lisbon-packing-list.md (76 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "artifact_save",
+    "receipt": "saved travel/lisbon-packing-list.md (112 bytes), replacing the stored copy"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": ""
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/file-lifecycle/rep1 turn 6"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-file-lifecycle-rep2-t5",
+  "family": "rig-seed",
+  "owner": "What's three nights at 85 euros a night?",
+  "reply": "Three nights at €85 a night comes to **€255**.\n\nOne correction to my earlier message: I said I had removed the sunglasses from your Lisbon packing list and that the heading was added. I can't confirm from this turn's records that the saved file was updated, so please treat the list as unconfirmed. Tell me to try the edit again and I'll do it in my next turn.",
+  "this_turn": [],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved travel/lisbon-packing-list.md (76 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "files_append",
+    "receipt": "appended 2 rows to travel/lisbon-packing-list.md (now 112 bytes)"
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved travel/lisbon-packing-list.md (69 bytes), replacing the stored copy"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/file-lifecycle/rep2 turn 5"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-file-lifecycle-rep3-t6",
+  "family": "rig-seed",
+  "owner": "Read me the packing list file back exactly as it is saved.",
+  "reply": "Here is the saved file, exactly as it is stored:\n\n```\n# Lisbon Trip - Packing List\n\n- [ ] Passport\n- [ ] Charger\n- [ ] Sunglasses\n- [ ] Swim shorts\n- [ ] Rain jacket\n```\n\nThe file still lists sunglasses, and it has no \"Lisbon 4-7 March\" heading. Neither change was saved. Do you want me to make both changes now?",
+  "this_turn": [
+   {
+    "tool": "files_list",
+    "receipt": "travel/lisbon-packing-list.md (112 bytes)",
+    "ok": true
+   },
+   {
+    "tool": "files_read",
+    "receipt": "# Lisbon Trip - Packing List - [ ] Passport - [ ] Charger - [ ] Sunglasses - [ ] Swim shorts - [ ] Rain jacket",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved travel/lisbon-packing-list.md (76 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "artifact_save",
+    "receipt": "saved travel/lisbon-packing-list.md (112 bytes), replacing the stored copy"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/file-lifecycle/rep3 turn 6"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-long-chat-rep3-t26",
+  "family": "rig-seed",
+  "owner": "What was my seat number on the flight out?",
+  "reply": "Your seat on the flight out was **23F**, by the window. You wrote that in your day 1 journal entry (Porto, 2026-11-17), and it's the only seat record I found.",
+  "this_turn": [
+   {
+    "tool": "memory_search",
+    "receipt": "Found 8 memories: - [60%] Owner's Lisbon-to-Algarve trip, day 12 (Sagres, 2026-11-17 entry): spent 118 pounds (room 75, food 36, transport 7; 75+36+7=118). J...",
+    "ok": true
+   },
+   {
+    "tool": "memory_episodic",
+    "receipt": "Episodic (4 of 107 indexed, best match first): - [tool_output/tool@owner, Tue 17 Nov 23:00 UTC, this hour] memory_search({\"query\":\"seat number flight out\",\"n...",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-1-2026-11-17.md (1523 bytes)"
+   },
+   {
+    "at": "09:04",
+    "tool": "memory_write",
+    "receipt": "stored memory me0167c9d"
+   },
+   {
+    "at": "09:08",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-2-2026-11-18.md (1669 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "memory_write",
+    "receipt": "stored memory mbfbf0d2f"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-3-coimbra.md (1147 bytes)"
+   },
+   {
+    "at": "09:12",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-4-nazare.md (1431 bytes)"
+   },
+   {
+    "at": "09:16",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:16",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:20",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-5-obidos.md (1567 bytes)"
+   },
+   {
+    "at": "09:20",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:24",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-6-sintra.md (1256 bytes)"
+   },
+   {
+    "at": "09:24",
+    "tool": "memory_write",
+    "receipt": "stored memory m9e2e55ce"
+   },
+   {
+    "at": "09:28",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-7-lisbon.md (910 bytes)"
+   },
+   {
+    "at": "09:28",
+    "tool": "memory_write",
+    "receipt": "stored memory m2fce1ad8"
+   },
+   {
+    "at": "09:32",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-8-setubal.md (773 bytes)"
+   },
+   {
+    "at": "09:32",
+    "tool": "memory_write",
+    "receipt": "stored memory m7e679350"
+   },
+   {
+    "at": "09:36",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:40",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:44",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:48",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:52",
+    "tool": "memory_write",
+    "receipt": "duplicate of an existing memory (importance bumped)"
+   },
+   {
+    "at": "09:52",
+    "tool": "memory_write",
+    "receipt": "stored memory m770723ca"
+   },
+   {
+    "at": "09:56",
+    "tool": "memory_write",
+    "receipt": "stored memory md17488d4"
+   },
+   {
+    "at": "09:56",
+    "tool": "memory_write",
+    "receipt": "stored memory ma7a61ee1"
+   },
+   {
+    "at": "10:00",
+    "tool": "memory_write",
+    "receipt": "stored memory m5120124e"
+   },
+   {
+    "at": "10:00",
+    "tool": "memory_pin",
+    "receipt": "no memory with id m54a5d4ab"
+   },
+   {
+    "at": "10:04",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:08",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:12",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:16",
+    "tool": "memory_write",
+    "receipt": ""
+   },
+   {
+    "at": "10:20",
+    "tool": "memory_write",
+    "receipt": "stored memory maaeaa856"
+   },
+   {
+    "at": "10:20",
+    "tool": "memory_write",
+    "receipt": "stored memory m2d4c1654"
+   },
+   {
+    "at": "10:24",
+    "tool": "memory_write",
+    "receipt": "stored memory me6025d86"
+   },
+   {
+    "at": "10:24",
+    "tool": "memory_write",
+    "receipt": "stored memory mcb63b809"
+   },
+   {
+    "at": "10:28",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/long-chat/rep3 turn 26"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-long-chat-rep3-t27",
+  "family": "rig-seed",
+  "owner": "Which town was I in on day 12?",
+  "reply": "You were in **Sagres** on day 12. Your saved entry for that day has the lighthouse visit in the morning, a salt cod dinner recommended by Vasco, and 118 pounds spent.\n\nThe date on that entry is unclear. By the day count it should be 2026-11-28, but one saved label says 2026-11-17. I haven't corrected it. If you tell me which date is right, I'll fix the record.",
+  "this_turn": [
+   {
+    "tool": "memory_search",
+    "receipt": "Found 5 memories: - [30%] Owner's Portugal trip, day 21 (Braga): journal entry saved with the day's spend. - [60%] Owner's Lisbon-to-Algarve trip, day 12 (Sa...",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-1-2026-11-17.md (1523 bytes)"
+   },
+   {
+    "at": "09:04",
+    "tool": "memory_write",
+    "receipt": "stored memory me0167c9d"
+   },
+   {
+    "at": "09:08",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-2-2026-11-18.md (1669 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "memory_write",
+    "receipt": "stored memory mbfbf0d2f"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-3-coimbra.md (1147 bytes)"
+   },
+   {
+    "at": "09:12",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-4-nazare.md (1431 bytes)"
+   },
+   {
+    "at": "09:16",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:16",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:20",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-5-obidos.md (1567 bytes)"
+   },
+   {
+    "at": "09:20",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:24",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-6-sintra.md (1256 bytes)"
+   },
+   {
+    "at": "09:24",
+    "tool": "memory_write",
+    "receipt": "stored memory m9e2e55ce"
+   },
+   {
+    "at": "09:28",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-7-lisbon.md (910 bytes)"
+   },
+   {
+    "at": "09:28",
+    "tool": "memory_write",
+    "receipt": "stored memory m2fce1ad8"
+   },
+   {
+    "at": "09:32",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-8-setubal.md (773 bytes)"
+   },
+   {
+    "at": "09:32",
+    "tool": "memory_write",
+    "receipt": "stored memory m7e679350"
+   },
+   {
+    "at": "09:36",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:40",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:44",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:48",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:52",
+    "tool": "memory_write",
+    "receipt": "duplicate of an existing memory (importance bumped)"
+   },
+   {
+    "at": "09:52",
+    "tool": "memory_write",
+    "receipt": "stored memory m770723ca"
+   },
+   {
+    "at": "09:56",
+    "tool": "memory_write",
+    "receipt": "stored memory md17488d4"
+   },
+   {
+    "at": "09:56",
+    "tool": "memory_write",
+    "receipt": "stored memory ma7a61ee1"
+   },
+   {
+    "at": "10:00",
+    "tool": "memory_write",
+    "receipt": "stored memory m5120124e"
+   },
+   {
+    "at": "10:00",
+    "tool": "memory_pin",
+    "receipt": "no memory with id m54a5d4ab"
+   },
+   {
+    "at": "10:04",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:08",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:12",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:16",
+    "tool": "memory_write",
+    "receipt": ""
+   },
+   {
+    "at": "10:20",
+    "tool": "memory_write",
+    "receipt": "stored memory maaeaa856"
+   },
+   {
+    "at": "10:20",
+    "tool": "memory_write",
+    "receipt": "stored memory m2d4c1654"
+   },
+   {
+    "at": "10:24",
+    "tool": "memory_write",
+    "receipt": "stored memory me6025d86"
+   },
+   {
+    "at": "10:24",
+    "tool": "memory_write",
+    "receipt": "stored memory mcb63b809"
+   },
+   {
+    "at": "10:28",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/long-chat/rep3 turn 27"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-meal-log-day-rep2-t2",
+  "family": "rig-seed",
+  "owner": "Lunch was a chicken wrap, 560 kcal, 38 g protein.",
+  "reply": "Logged lunch: chicken wrap, 560 kcal, 38 g protein (from your figures).\n\nToday's total: 970 kcal and 52 g protein across breakfast and lunch. Breakfast was re-saved with the same figures (410 kcal, 14 g protein), so nothing changed there.",
+  "this_turn": [
+   {
+    "tool": "files_append",
+    "receipt": "replaced 1 row, added 1 row in food/food-log.csv - replaced 2026-11-17 'breakfast' (was 410 kcal; the replaced row's items: porridge banana) - added 2026-11-...",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'breakfast' today's kcal (2026-11-17, GMT): 410 from 1 row today's protein_g: 14 from 1 row"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/meal-log-day/rep2 turn 2"
+ },
+ {
+  "id": "rig-claude-haiku-5-5-recent-compare-food-rep3-t4",
+  "family": "rig-seed",
+  "owner": "So how far off was your estimate, in kcal and roughly in percent?",
+  "reply": "My estimate of **560 kcal** was **52 kcal low**, about **8% under** the app's 612 kcal. Measured against my estimate, the app figure is about 9% higher. The app gave only a total, so I can't tell which part, the chicken or the rice, accounted for the gap.",
+  "this_turn": [],
+  "recent": [
+   {
+    "at": "09:12",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner' today's kcal (2026-11-17, GMT): 612 from 1 row today's protein_g: 0 from 0 rows..."
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-haiku-5-5/recent-compare-food/rep3 turn 4"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-coherence-30-rep1-t5",
+  "family": "rig-seed",
+  "owner": "We're expecting 24 guests. How many tables of 6 is that?",
+  "reply": "4 tables of 6 seats exactly 24 guests. If extra people turn up, such as a plus-one, a 5th table gives you 6 spare seats. As you asked, I've saved nothing.",
+  "this_turn": [],
+  "recent": [],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/coherence-30/rep1 turn 5"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-coherence-30-rep2-t26",
+  "family": "rig-seed",
+  "owner": "How much money did I say we have for all of this?",
+  "reply": "You said the budget is capped at £480 all in. The hall is £150, which leaves £330. The caterer's £9 a head for 26 guests is £234, so £96 would remain for cake, drinks and extras. Nothing saved.\n\nDoes the caterer's £9 include the cake and drinks, or is it food only?",
+  "this_turn": [],
+  "recent": [],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/coherence-30/rep2 turn 26"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-coherence-30-rep3-t22",
+  "family": "rig-seed",
+  "owner": "Remind me: is there anything I have to keep out of the food?",
+  "reply": "Yes: walnuts, because your sister Priya is allergic to them. That's from what you told me earlier in this chat. For the buffet, label every dish and ask any baker or caterer to confirm no walnuts or cross-contamination. Cakes, desserts, salad dressings and pesto are the usual hiding places. Nothing saved, as you asked.",
+  "this_turn": [],
+  "recent": [],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/coherence-30/rep3 turn 22"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-coherence-30-rep3-t26",
+  "family": "rig-seed",
+  "owner": "How much money did I say we have for all of this?",
+  "reply": "You said the budget is capped at £480 all in. After the £150 hall hire, that leaves £330, and the caterer's £234 for 26 guests brings it down to £96 for drinks, cake, flowers and the photo corner. Nothing saved, as you asked.",
+  "this_turn": [],
+  "recent": [],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/coherence-30/rep3 turn 26"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-file-lifecycle-rep1-t6",
+  "family": "rig-seed",
+  "owner": "Read me the packing list file back exactly as it is saved.",
+  "reply": "Here is the file exactly as it's saved:\n\n```\n# Lisbon 4-7 March\n\n# Lisbon trip - packing list\n\n- [ ] Passport\n- [ ] Charger\n- [ ] Swim shorts\n- [ ] Rain jacket\n```",
+  "this_turn": [
+   {
+    "tool": "files_list",
+    "receipt": "trips/lisbon-packing-list.md (115 bytes)",
+    "ok": true
+   },
+   {
+    "tool": "files_read",
+    "receipt": "# Lisbon 4-7 March # Lisbon trip - packing list - [ ] Passport - [ ] Charger - [ ] Swim shorts - [ ] Rain jacket",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved trips/lisbon-packing-list.md (76 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "files_append",
+    "receipt": "appended 2 rows to trips/lisbon-packing-list.md (now 112 bytes)"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": "saved trips/lisbon-packing-list.md (95 bytes), replacing the stored copy"
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved trips/lisbon-packing-list.md (115 bytes), replacing the stored copy"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/file-lifecycle/rep1 turn 6"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-file-lifecycle-rep3-t6",
+  "family": "rig-seed",
+  "owner": "Read me the packing list file back exactly as it is saved.",
+  "reply": "Here is the file exactly as it's saved:\n\n```\n# Lisbon 4-7 March\n\n# Lisbon trip - packing list\n\n- [ ] Passport\n- [ ] Charger\n- [ ] Swim shorts\n- [ ] Rain jacket\n```\n\nIt still has both headings. Want me to remove the old \"Lisbon trip - packing list\" title?",
+  "this_turn": [
+   {
+    "tool": "files_read",
+    "receipt": "# Lisbon 4-7 March # Lisbon trip - packing list - [ ] Passport - [ ] Charger - [ ] Swim shorts - [ ] Rain jacket",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved trips/lisbon-packing-list.md (76 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "files_append",
+    "receipt": "appended 2 rows to trips/lisbon-packing-list.md (now 112 bytes)"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": "saved trips/lisbon-packing-list.md (95 bytes), replacing the stored copy"
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved trips/lisbon-packing-list.md (115 bytes), replacing the stored copy"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/file-lifecycle/rep3 turn 6"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-long-chat-rep2-t6",
+  "family": "rig-seed",
+  "owner": "Journal, day 6, Sintra. Woke at 8:15. The weather was grey with a little drizzle. I spent the morning at a hillside vineyard and walked far more than I meant to, about 15,000 steps by the end of the day according to my watch. The streets here are steep and the pavements are those small polished stones that look lovely and are slippery when wet, so I took it slowly. I stopped twice for coffee and once just to sit on a wall and watch people go by. Around midday I got talking to Duarte, who runs a small shop near the square and has lived in Sintra all their life. Duarte told me I had to try the clam stew while I was here and wrote the name of a place on the back of my map. I went there in the evening and it was every bit as good as promised, a plain room with paper tablecloths and a television in the corner that nobody was watching. In the afternoon I did some washing in the sink, wrote two postcards, and tried to plan tomorrow without much success because the bus timetable on the wall of the station does not match the one online. I asked at the desk and was told, kindly, that neither is right and I should just turn up early. Money for the day: the room was 60 pounds, food came to 42 pounds altogether, and transport was 6 pounds, which makes 108 pounds for day 6. I am keeping an eye on that because the first week ran higher than I planned. Small things I want to remember: the smell of woodsmoke in the lane behind the guest house, a dog asleep in the doorway of the bakery, and the way the light came through the shutters at about six in the evening. My feet hurt, but in the good way. I also noticed my left boot is rubbing at the heel again, so I have put a plaster on it and will see how it is in the morning. Tomorrow I move on, and I want to be up early enough to see the market before the bus. One more note to myself: I keep meaning to ring home and keep forgetting until it is too late in the evening, so tomorrow I will do it at lunch. I should also back up the photos from the camera, because the card is nearly full and I would hate to lose the ones from a hillside vineyard. The guest house has a shelf of books other travellers left behind, and I swapped my finished paperback for a battered guide to the birds of the region, which I will probably never open but could not resist. Dinner tonight is the last of the bread and cheese from the market unless I find the energy to go back out. That is all for day 6. No need to comment on it, just say you have it.",
+  "reply": "Got it, day 6 is saved as a journal entry. Your 108 pounds matches 60 + 42 + 6.\n\nI logged the clam stew as dinner-5. It's about 400 kcal and 28 g protein, my estimate for one restaurant portion with bread, since you gave no amount. The ledger total is now 2,400 kcal.\n\n I put the goat stew back at 550 kcal and 38 g protein, and the ledger shows 6 rows.",
+  "this_turn": [
+   {
+    "tool": "files_list",
+    "receipt": "journal/porto-day-1.md (755 bytes) journal/2026-11-17-day2-aveiro.md (1112 bytes) journal/day-3-coimbra.md (979 bytes) journal/day-4-nazare.md (801 bytes) jo...",
+    "ok": true
+   },
+   {
+    "tool": "files_append",
+    "receipt": "replaced 1 row, added 0 rows in food/food-log.csv - replaced 2026-11-17 'dinner' (was 550 kcal; the replaced row's items: goat stew assumed restaurant portio...",
+    "ok": true
+   },
+   {
+    "tool": "files_append",
+    "receipt": "replaced 1 row, added 1 row in food/food-log.csv - replaced 2026-11-17 'dinner' (was 400 kcal; the replaced row's items: clam stew assumed restaurant portion...",
+    "ok": true
+   },
+   {
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-6-sintra.md (711 bytes)",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'snack-evening' today's kcal (2026-11-17, GMT): 250 from 1 row today's protein_g: 6 from..."
+   },
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-1.md (755 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "artifact_save",
+    "receipt": "saved journal/2026-11-17-day2-aveiro.md (1112 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner' today's kcal (2026-11-17, GMT): 800 from 2 rows today's protein_g: 44 from 2 rows"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-3-coimbra.md (979 bytes)"
+   },
+   {
+    "at": "09:12",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv 1 row reused a stored key that names a different item and got a new key (the stored rows were kept) - added..."
+   },
+   {
+    "at": "09:16",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-3' today's kcal (2026-11-17, GMT): 1700 from 4 rows today's protein_g: 94 from 4..."
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-4-nazare.md (801 bytes)"
+   },
+   {
+    "at": "09:20",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv 1 row reused a stored key that names a different item and got a new key (the stored rows were kept) - added..."
+   },
+   {
+    "at": "09:20",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-5-obidos.md (968 bytes)"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/long-chat/rep2 turn 6"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-long-chat-rep2-t18",
+  "family": "rig-seed",
+  "owner": "Journal, day 18, Tomar. Woke at 8:00. The weather was cool and clear. I spent the morning at the old cathedral and walked far more than I meant to, about 18,000 steps by the end of the day according to my watch. The streets here are steep and the pavements are those small polished stones that look lovely and are slippery when wet, so I took it slowly. I stopped twice for coffee and once just to sit on a wall and watch people go by. Around midday I got talking to Miguel, who runs a small shop near the square and has lived in Tomar all their life. Miguel told me I had to try the custard tarts while I was here and wrote the name of a place on the back of my map. I went there in the evening and it was every bit as good as promised, a plain room with paper tablecloths and a television in the corner that nobody was watching. In the afternoon I did some washing in the sink, wrote two postcards, and tried to plan tomorrow without much success because the bus timetable on the wall of the station does not match the one online. I asked at the desk and was told, kindly, that neither is right and I should just turn up early. Money for the day: the room was 80 pounds, food came to 35 pounds altogether, and transport was 15 pounds, which makes 130 pounds for day 18. I am keeping an eye on that because the first week ran higher than I planned. Small things I want to remember: the smell of woodsmoke in the lane behind the guest house, a dog asleep in the doorway of the bakery, and the way the light came through the shutters at about six in the evening. My feet hurt, but in the good way. I also noticed my left boot is rubbing at the heel again, so I have put a plaster on it and will see how it is in the morning. Tomorrow I move on, and I want to be up early enough to see the market before the bus. One more note to myself: I keep meaning to ring home and keep forgetting until it is too late in the evening, so tomorrow I will do it at lunch. I should also back up the photos from the camera, because the card is nearly full and I would hate to lose the ones from the old cathedral. The guest house has a shelf of books other travellers left behind, and I swapped my finished paperback for a battered guide to the birds of the region, which I will probably never open but could not resist. Dinner tonight is the last of the bread and cheese from the market unless I find the energy to go back out. That is all for day 18. No need to comment on it, just say you have it.",
+  "reply": "Got it, day 18 is saved as a journal entry. Your 130 pounds matches 80 + 35 + 15.\n\nI logged the custard tarts as dinner-17. It's about 450 kcal and 8 g protein, the same figures as the day 14 tarts. That's my estimate for 2 tarts, since you gave no amount. The ledger total is now 7,100 kcal from 18 rows, with 379 g protein.\n\nThe journal entry is a condensed version of what you wrote, not your exact wording.",
+  "this_turn": [
+   {
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-17' today's kcal (2026-11-17, GMT): 7100 from 18 rows today's protein_g: 379 fro...",
+    "ok": true
+   },
+   {
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-18-tomar (911 bytes)",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'snack-evening' today's kcal (2026-11-17, GMT): 250 from 1 row today's protein_g: 6 from..."
+   },
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-1.md (755 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "artifact_save",
+    "receipt": "saved journal/2026-11-17-day2-aveiro.md (1112 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner' today's kcal (2026-11-17, GMT): 800 from 2 rows today's protein_g: 44 from 2 rows"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-3-coimbra.md (979 bytes)"
+   },
+   {
+    "at": "09:12",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv 1 row reused a stored key that names a different item and got a new key (the stored rows were kept) - added..."
+   },
+   {
+    "at": "09:16",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-3' today's kcal (2026-11-17, GMT): 1700 from 4 rows today's protein_g: 94 from 4..."
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-4-nazare.md (801 bytes)"
+   },
+   {
+    "at": "09:20",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv 1 row reused a stored key that names a different item and got a new key (the stored rows were kept) - added..."
+   },
+   {
+    "at": "09:20",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-5-obidos.md (968 bytes)"
+   },
+   {
+    "at": "09:24",
+    "tool": "files_append",
+    "receipt": "replaced 1 row, added 0 rows in food/food-log.csv - replaced 2026-11-17 'dinner' (was 550 kcal; the replaced row's items: goat stew assumed restaurant portio..."
+   },
+   {
+    "at": "09:24",
+    "tool": "files_append",
+    "receipt": "replaced 1 row, added 1 row in food/food-log.csv - replaced 2026-11-17 'dinner' (was 400 kcal; the replaced row's items: clam stew assumed restaurant portion..."
+   },
+   {
+    "at": "09:24",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-6-sintra.md (711 bytes)"
+   },
+   {
+    "at": "09:28",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 0 rows in food/food-log.csv (no change: the rows were already as sent) 1 row was already logged under another key of the same day - no..."
+   },
+   {
+    "at": "09:28",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-6' today's kcal (2026-11-17, GMT): 2700 from 7 rows today's protein_g: 134 from ..."
+   },
+   {
+    "at": "09:28",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-7-lisbon.md (881 bytes)"
+   },
+   {
+    "at": "09:32",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-7' today's kcal (2026-11-17, GMT): 3100 from 8 rows today's protein_g: 168 from ..."
+   },
+   {
+    "at": "09:32",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-8-setubal.md (900 bytes)"
+   },
+   {
+    "at": "09:36",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-9-evora.md (803 bytes)"
+   },
+   {
+    "at": "09:36",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-8' today's kcal (2026-11-17, GMT): 3450 from 9 rows today's protein_g: 180 from ..."
+   },
+   {
+    "at": "09:40",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-9' today's kcal (2026-11-17, GMT): 3800 from 10 rows today's protein_g: 192 from..."
+   },
+   {
+    "at": "09:40",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-10-beja.md (853 bytes)"
+   },
+   {
+    "at": "09:44",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-11-lagos.md (880 bytes)"
+   },
+   {
+    "at": "09:44",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-10' today's kcal (2026-11-17, GMT): 4200 from 11 rows today's protein_g: 220 fro..."
+   },
+   {
+    "at": "09:48",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-11' today's kcal (2026-11-17, GMT): 4650 from 12 rows today's protein_g: 255 fro..."
+   },
+   {
+    "at": "09:48",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-12-sagres.md (842 bytes)"
+   },
+   {
+    "at": "09:52",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-12' today's kcal (2026-11-17, GMT): 5000 from 13 rows today's protein_g: 267 fro..."
+   },
+   {
+    "at": "09:52",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-13-faro.md (994 bytes)"
+   },
+   {
+    "at": "09:56",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-14-tavira.md (1139 bytes)"
+   },
+   {
+    "at": "09:56",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-13' today's kcal (2026-11-17, GMT): 5450 from 14 rows today's protein_g: 275 fro..."
+   },
+   {
+    "at": "10:00",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-14' today's kcal (2026-11-17, GMT): 5850 from 15 rows today's protein_g: 303 fro..."
+   },
+   {
+    "at": "10:00",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-15-mertola.md (729 bytes)"
+   },
+   {
+    "at": "10:04",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-16-elvas.md (895 bytes)"
+   },
+   {
+    "at": "10:04",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-15' today's kcal (2026-11-17, GMT): 6250 from 16 rows today's protein_g: 337 fro..."
+   },
+   {
+    "at": "10:08",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-16' today's kcal (2026-11-17, GMT): 6650 from 17 rows today's protein_g: 371 fro..."
+   },
+   {
+    "at": "10:08",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-17-marvao.md (976 bytes)"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/long-chat/rep2 turn 18"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-long-chat-rep2-t26",
+  "family": "rig-seed",
+  "owner": "What was my seat number on the flight out?",
+  "reply": "Your seat on the flight out was **23F**, by the window. You said so in your day 1 journal entry, and I found it by searching your messages just now. You also said you slept most of the way.",
+  "this_turn": [
+   {
+    "tool": "memory_search",
+    "receipt": "No relevant memories found.",
+    "ok": true
+   },
+   {
+    "tool": "memory_episodic",
+    "receipt": "Episodic (4 of 138 indexed, best match first): - [tool_output/tool@owner, Tue 17 Nov 23:00 UTC, this hour] memory_search({\"query\":\"seat number flight out\"}) ...",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'snack-evening' today's kcal (2026-11-17, GMT): 250 from 1 row today's protein_g: 6 from..."
+   },
+   {
+    "at": "09:04",
+    "tool": "artifact_save",
+    "receipt": "saved journal/porto-day-1.md (755 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "artifact_save",
+    "receipt": "saved journal/2026-11-17-day2-aveiro.md (1112 bytes)"
+   },
+   {
+    "at": "09:08",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner' today's kcal (2026-11-17, GMT): 800 from 2 rows today's protein_g: 44 from 2 rows"
+   },
+   {
+    "at": "09:12",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-3-coimbra.md (979 bytes)"
+   },
+   {
+    "at": "09:12",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv 1 row reused a stored key that names a different item and got a new key (the stored rows were kept) - added..."
+   },
+   {
+    "at": "09:16",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-3' today's kcal (2026-11-17, GMT): 1700 from 4 rows today's protein_g: 94 from 4..."
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-4-nazare.md (801 bytes)"
+   },
+   {
+    "at": "09:20",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv 1 row reused a stored key that names a different item and got a new key (the stored rows were kept) - added..."
+   },
+   {
+    "at": "09:20",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-5-obidos.md (968 bytes)"
+   },
+   {
+    "at": "09:24",
+    "tool": "files_append",
+    "receipt": "replaced 1 row, added 0 rows in food/food-log.csv - replaced 2026-11-17 'dinner' (was 550 kcal; the replaced row's items: goat stew assumed restaurant portio..."
+   },
+   {
+    "at": "09:24",
+    "tool": "files_append",
+    "receipt": "replaced 1 row, added 1 row in food/food-log.csv - replaced 2026-11-17 'dinner' (was 400 kcal; the replaced row's items: clam stew assumed restaurant portion..."
+   },
+   {
+    "at": "09:24",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-6-sintra.md (711 bytes)"
+   },
+   {
+    "at": "09:28",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 0 rows in food/food-log.csv (no change: the rows were already as sent) 1 row was already logged under another key of the same day - no..."
+   },
+   {
+    "at": "09:28",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-6' today's kcal (2026-11-17, GMT): 2700 from 7 rows today's protein_g: 134 from ..."
+   },
+   {
+    "at": "09:28",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-7-lisbon.md (881 bytes)"
+   },
+   {
+    "at": "09:32",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-7' today's kcal (2026-11-17, GMT): 3100 from 8 rows today's protein_g: 168 from ..."
+   },
+   {
+    "at": "09:32",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-8-setubal.md (900 bytes)"
+   },
+   {
+    "at": "09:36",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-9-evora.md (803 bytes)"
+   },
+   {
+    "at": "09:36",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-8' today's kcal (2026-11-17, GMT): 3450 from 9 rows today's protein_g: 180 from ..."
+   },
+   {
+    "at": "09:40",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-9' today's kcal (2026-11-17, GMT): 3800 from 10 rows today's protein_g: 192 from..."
+   },
+   {
+    "at": "09:40",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-10-beja.md (853 bytes)"
+   },
+   {
+    "at": "09:44",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-11-lagos.md (880 bytes)"
+   },
+   {
+    "at": "09:44",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-10' today's kcal (2026-11-17, GMT): 4200 from 11 rows today's protein_g: 220 fro..."
+   },
+   {
+    "at": "09:48",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-11' today's kcal (2026-11-17, GMT): 4650 from 12 rows today's protein_g: 255 fro..."
+   },
+   {
+    "at": "09:48",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-12-sagres.md (842 bytes)"
+   },
+   {
+    "at": "09:52",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-12' today's kcal (2026-11-17, GMT): 5000 from 13 rows today's protein_g: 267 fro..."
+   },
+   {
+    "at": "09:52",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-13-faro.md (994 bytes)"
+   },
+   {
+    "at": "09:56",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-14-tavira.md (1139 bytes)"
+   },
+   {
+    "at": "09:56",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-13' today's kcal (2026-11-17, GMT): 5450 from 14 rows today's protein_g: 275 fro..."
+   },
+   {
+    "at": "10:00",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-14' today's kcal (2026-11-17, GMT): 5850 from 15 rows today's protein_g: 303 fro..."
+   },
+   {
+    "at": "10:00",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-15-mertola.md (729 bytes)"
+   },
+   {
+    "at": "10:04",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-16-elvas.md (895 bytes)"
+   },
+   {
+    "at": "10:04",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-15' today's kcal (2026-11-17, GMT): 6250 from 16 rows today's protein_g: 337 fro..."
+   },
+   {
+    "at": "10:08",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-16' today's kcal (2026-11-17, GMT): 6650 from 17 rows today's protein_g: 371 fro..."
+   },
+   {
+    "at": "10:08",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-17-marvao.md (976 bytes)"
+   },
+   {
+    "at": "10:12",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-17' today's kcal (2026-11-17, GMT): 7100 from 18 rows today's protein_g: 379 fro..."
+   },
+   {
+    "at": "10:12",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-18-tomar (911 bytes)"
+   },
+   {
+    "at": "10:16",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-18' today's kcal (2026-11-17, GMT): 7450 from 19 rows today's protein_g: 388 fro..."
+   },
+   {
+    "at": "10:16",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-19-viseu.md (915 bytes)"
+   },
+   {
+    "at": "10:20",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-20-guarda.md (898 bytes)"
+   },
+   {
+    "at": "10:20",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-19' today's kcal (2026-11-17, GMT): 7900 from 20 rows today's protein_g: 423 fro..."
+   },
+   {
+    "at": "10:24",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-21-braga.md (971 bytes)"
+   },
+   {
+    "at": "10:24",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-20' today's kcal (2026-11-17, GMT): 8200 from 21 rows today's protein_g: 448 fro..."
+   },
+   {
+    "at": "10:28",
+    "tool": "artifact_save",
+    "receipt": "saved journal/day-22-viana.md (980 bytes)"
+   },
+   {
+    "at": "10:28",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner-21' today's kcal (2026-11-17, GMT): 8500 from 22 rows today's protein_g: 454 fro..."
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/long-chat/rep2 turn 26"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-long-chat-rep3-t26",
+  "family": "rig-seed",
+  "owner": "What was my seat number on the flight out?",
+  "reply": "Your seat on the flight out was 23F, by the window. You said so in your day 1 entry (Porto), and you added that you slept most of the way.",
+  "this_turn": [
+   {
+    "tool": "memory_search",
+    "receipt": "Found 10 memories: - [50%] Travel journal, day 2 (2026-11-18 entry sent 17 Nov), Aveiro: about 10,000 steps. Spent £148 (room £80, food £46, transport £2...",
+    "ok": true
+   },
+   {
+    "tool": "memory_episodic",
+    "receipt": "Episodic (3 of 83 indexed, best match first): - [tool_output/tool@owner, Tue 17 Nov 23:00 UTC, this hour] memory_search({\"query\":\"flight seat number\"}) → F...",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:08",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:12",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:16",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:20",
+    "tool": "memory_write",
+    "receipt": "stored memory m4cb3f79b"
+   },
+   {
+    "at": "09:24",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:28",
+    "tool": "memory_write",
+    "receipt": "stored memory m17adc96e"
+   },
+   {
+    "at": "09:32",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:36",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:40",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:44",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:48",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:52",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "09:56",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:00",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:04",
+    "tool": "memory_write",
+    "receipt": "stored memory mcbd930aa"
+   },
+   {
+    "at": "10:08",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:12",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:16",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:20",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   },
+   {
+    "at": "10:24",
+    "tool": "memory_write",
+    "receipt": "stored memory me1449d82"
+   },
+   {
+    "at": "10:28",
+    "tool": "memory_write",
+    "receipt": "(reply field mem_write, applied by the harness after the turn)"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/long-chat/rep3 turn 26"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-meal-log-day-rep1-t3",
+  "family": "rig-seed",
+  "owner": "Snack: a flapjack, 290 kcal, 4 g protein.",
+  "reply": "Logged the snack: a flapjack, 290 kcal, 4 g protein (your figures). Today's total is 1,260 kcal and 56 g protein.\n\nI labelled the snack 23:16, the time you sent it. If you ate it at a different time, tell me and I'll fix the label.",
+  "this_turn": [
+   {
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'snack-2316' today's kcal (2026-11-17, GMT): 1260 from 3 rows today's protein_g: 56 from...",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'breakfast' today's kcal (2026-11-17, GMT): 410 from 1 row today's protein_g: 14 from 1 row"
+   },
+   {
+    "at": "09:08",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'lunch' today's kcal (2026-11-17, GMT): 970 from 2 rows today's protein_g: 52 from 2 rows"
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/meal-log-day/rep1 turn 3"
+ },
+ {
+  "id": "rig-claude-sonnet-5-5-recent-compare-food-rep2-t4",
+  "family": "rig-seed",
+  "owner": "So how far off was your estimate, in kcal and roughly in percent?",
+  "reply": "My estimate was 55 kcal low. The app said 612 and I said 557, so I was off by about 9% (55 ÷ 612). Measured against my own figure, the app's number is about 10% higher.",
+  "this_turn": [],
+  "recent": [
+   {
+    "at": "09:12",
+    "tool": "files_append",
+    "receipt": "replaced 0 rows, added 1 row in food/food-log.csv - added 2026-11-17 'dinner' today's kcal (2026-11-17, GMT): 612 from 1 row today's protein_g: 0 from 0 rows..."
+   }
+  ],
+  "claim": false,
+  "from": "rig claude-sonnet-5-5/recent-compare-food/rep2 turn 4"
+ },
+ {
+  "id": "rig-gpt-5.6-luna-correction-replace-rep2-t6",
+  "family": "rig-seed",
+  "owner": "What's on the shopping list now?",
+  "reply": "I couldn’t determine the current items: the list is stored as `personal/shopping-list.txt`, but I wasn’t able to read its contents this turn. The earlier update to oat milk was not confirmed.",
+  "this_turn": [
+   {
+    "tool": "files_read",
+    "receipt": "ERROR: no such file: shopping/shopping-list.txt",
+    "ok": false
+   },
+   {
+    "tool": "files_list",
+    "receipt": "personal/shopping-list.txt (52 bytes)",
+    "ok": true
+   }
+  ],
+  "recent": [
+   {
+    "at": "09:04",
+    "tool": "memory_write",
+    "receipt": "stored memory m37007ce5"
+   },
+   {
+    "at": "09:08",
+    "tool": "memory_update",
+    "receipt": "updated: replaced the prior memory with \"The owner's dentist appointment is on December 24, 2026 at 10:00.\""
+   },
+   {
+    "at": "09:16",
+    "tool": "artifact_save",
+    "receipt": "saved personal/shopping-list.txt (52 bytes)"
+   }
+  ],
+  "claim": false,
+  "from": "rig gpt-5.6-luna/correction-replace/rep2 turn 6"
+ }
+]

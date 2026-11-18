@@ -1,0 +1,655 @@
+[
+ [
+  {
+   "at": "10:06",
+   "tool": "files_write",
+   "receipt": "saved books/to-read.md (157 bytes)"
+  },
+  {
+   "at": "10:40",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  },
+  {
+   "at": "10:44",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  },
+  {
+   "at": "10:51",
+   "tool": "files_write",
+   "receipt": "saved garden/seed-order.md (233 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "08:58",
+   "tool": "files_write",
+   "receipt": "saved books/to-read.md (157 bytes)"
+  },
+  {
+   "at": "09:51",
+   "tool": "routine_create",
+   "receipt": "created routine daily 06:45: take the vitamin D"
+  }
+ ],
+ [
+  {
+   "at": "06:39",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  },
+  {
+   "at": "06:43",
+   "tool": "routine_create",
+   "receipt": "created routine daily 07:00: stretch for ten minutes"
+  },
+  {
+   "at": "07:18",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  },
+  {
+   "at": "08:39",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  },
+  {
+   "at": "09:18",
+   "tool": "routine_create",
+   "receipt": "created routine daily 07:00: stretch for ten minutes"
+  }
+ ],
+ [
+  {
+   "at": "06:47",
+   "tool": "files_write",
+   "receipt": "saved health/physio-plan.md (529 bytes)"
+  },
+  {
+   "at": "07:12",
+   "tool": "files_write",
+   "receipt": "saved trips/lisbon-packing.md (118 bytes)"
+  },
+  {
+   "at": "07:56",
+   "tool": "files_write",
+   "receipt": "saved work/standup-notes.md (412 bytes)"
+  },
+  {
+   "at": "08:46",
+   "tool": "files_write",
+   "receipt": "saved trips/lisbon-packing.md (118 bytes)"
+  },
+  {
+   "at": "09:58",
+   "tool": "routine_create",
+   "receipt": "created routine daily 22:00: put the phone on charge"
+  }
+ ],
+ [
+  {
+   "at": "07:39",
+   "tool": "files_write",
+   "receipt": "saved home/shopping-list.txt (64 bytes)"
+  },
+  {
+   "at": "08:30",
+   "tool": "files_write",
+   "receipt": "saved bike/parts-to-buy.txt (96 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "08:41",
+   "tool": "files_write",
+   "receipt": "saved recipes/pancakes.md (380 bytes)"
+  },
+  {
+   "at": "10:19",
+   "tool": "files_write",
+   "receipt": "saved books/to-read.md (157 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "09:25",
+   "tool": "files_write",
+   "receipt": "saved recipes/pancakes.md (380 bytes)"
+  },
+  {
+   "at": "10:24",
+   "tool": "routine_create",
+   "receipt": "created routine daily 19:15: practise guitar"
+  }
+ ],
+ [
+  {
+   "at": "10:15",
+   "tool": "files_write",
+   "receipt": "saved bike/parts-to-buy.txt (96 bytes)"
+  },
+  {
+   "at": "10:38",
+   "tool": "routine_create",
+   "receipt": "created routine daily 08:15: water the tomatoes"
+  }
+ ],
+ [
+  {
+   "at": "07:16",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  },
+  {
+   "at": "08:47",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  }
+ ],
+ [
+  {
+   "at": "07:08",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  },
+  {
+   "at": "08:26",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  },
+  {
+   "at": "09:56",
+   "tool": "routine_create",
+   "receipt": "created routine daily 19:15: practise guitar"
+  }
+ ],
+ [
+  {
+   "at": "07:06",
+   "tool": "files_write",
+   "receipt": "saved work/standup-notes.md (412 bytes)"
+  },
+  {
+   "at": "08:36",
+   "tool": "files_write",
+   "receipt": "saved home/shopping-list.txt (64 bytes)"
+  },
+  {
+   "at": "09:10",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  },
+  {
+   "at": "10:06",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's parking bay is level 3, bay 41"
+  }
+ ],
+ [
+  {
+   "at": "06:27",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's wifi network name for the shed is ShedNet-5G"
+  },
+  {
+   "at": "08:24",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  },
+  {
+   "at": "08:29",
+   "tool": "files_write",
+   "receipt": "saved work/standup-notes.md (412 bytes)"
+  },
+  {
+   "at": "10:31",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  }
+ ],
+ [
+  {
+   "at": "06:17",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  },
+  {
+   "at": "07:45",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's parking bay is level 3, bay 41"
+  },
+  {
+   "at": "08:42",
+   "tool": "routine_create",
+   "receipt": "created routine daily 22:00: put the phone on charge"
+  },
+  {
+   "at": "09:12",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's sister's birthday is 14 March"
+  }
+ ],
+ [
+  {
+   "at": "08:16",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's library card number is LC 778 210"
+  },
+  {
+   "at": "09:55",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  },
+  {
+   "at": "10:23",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's library card number is LC 778 210"
+  },
+  {
+   "at": "10:53",
+   "tool": "files_write",
+   "receipt": "saved recipes/pancakes.md (380 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "08:07",
+   "tool": "files_write",
+   "receipt": "saved work/standup-notes.md (412 bytes)"
+  },
+  {
+   "at": "10:48",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  }
+ ],
+ [
+  {
+   "at": "07:23",
+   "tool": "files_write",
+   "receipt": "saved party/guest-list.md (244 bytes)"
+  },
+  {
+   "at": "07:56",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's library card number is LC 778 210"
+  },
+  {
+   "at": "08:41",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's library card number is LC 778 210"
+  },
+  {
+   "at": "09:12",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's wifi network name for the shed is ShedNet-5G"
+  }
+ ],
+ [
+  {
+   "at": "08:42",
+   "tool": "files_write",
+   "receipt": "saved books/to-read.md (157 bytes)"
+  },
+  {
+   "at": "10:51",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's wifi network name for the shed is ShedNet-5G"
+  }
+ ],
+ [
+  {
+   "at": "06:28",
+   "tool": "routine_create",
+   "receipt": "created routine daily 08:15: water the tomatoes"
+  },
+  {
+   "at": "09:12",
+   "tool": "routine_create",
+   "receipt": "created routine daily 07:00: stretch for ten minutes"
+  },
+  {
+   "at": "10:34",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  }
+ ],
+ [
+  {
+   "at": "07:09",
+   "tool": "files_write",
+   "receipt": "saved trips/lisbon-packing.md (118 bytes)"
+  },
+  {
+   "at": "08:01",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  },
+  {
+   "at": "08:22",
+   "tool": "routine_create",
+   "receipt": "created routine daily 22:00: put the phone on charge"
+  },
+  {
+   "at": "09:44",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  },
+  {
+   "at": "10:41",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  }
+ ],
+ [
+  {
+   "at": "07:02",
+   "tool": "files_write",
+   "receipt": "saved work/standup-notes.md (412 bytes)"
+  },
+  {
+   "at": "08:57",
+   "tool": "files_write",
+   "receipt": "saved books/to-read.md (157 bytes)"
+  },
+  {
+   "at": "10:25",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  },
+  {
+   "at": "10:50",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  }
+ ],
+ [
+  {
+   "at": "06:07",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  },
+  {
+   "at": "10:39",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  },
+  {
+   "at": "10:41",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's gym membership number is GM-20931"
+  }
+ ],
+ [
+  {
+   "at": "06:17",
+   "tool": "files_write",
+   "receipt": "saved garden/seed-order.md (233 bytes)"
+  },
+  {
+   "at": "09:17",
+   "tool": "routine_create",
+   "receipt": "created routine daily 08:15: water the tomatoes"
+  },
+  {
+   "at": "09:45",
+   "tool": "routine_create",
+   "receipt": "created routine daily 06:45: take the vitamin D"
+  }
+ ],
+ [
+  {
+   "at": "07:40",
+   "tool": "routine_create",
+   "receipt": "created routine daily 08:15: water the tomatoes"
+  },
+  {
+   "at": "08:59",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's wifi network name for the shed is ShedNet-5G"
+  },
+  {
+   "at": "10:39",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's library card number is LC 778 210"
+  }
+ ],
+ [
+  {
+   "at": "08:50",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's library card number is LC 778 210"
+  },
+  {
+   "at": "08:57",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's wifi network name for the shed is ShedNet-5G"
+  },
+  {
+   "at": "09:06",
+   "tool": "routine_create",
+   "receipt": "created routine daily 08:15: water the tomatoes"
+  },
+  {
+   "at": "10:13",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's bike lock combination is 3-0-9-2"
+  }
+ ],
+ [
+  {
+   "at": "07:00",
+   "tool": "routine_create",
+   "receipt": "created routine daily 07:00: stretch for ten minutes"
+  },
+  {
+   "at": "07:07",
+   "tool": "files_write",
+   "receipt": "saved trips/lisbon-packing.md (118 bytes)"
+  },
+  {
+   "at": "07:14",
+   "tool": "routine_create",
+   "receipt": "created routine daily 06:45: take the vitamin D"
+  },
+  {
+   "at": "08:33",
+   "tool": "routine_create",
+   "receipt": "created routine daily 22:00: put the phone on charge"
+  },
+  {
+   "at": "08:43",
+   "tool": "files_write",
+   "receipt": "saved work/standup-notes.md (412 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "07:54",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  },
+  {
+   "at": "10:01",
+   "tool": "routine_create",
+   "receipt": "created routine daily 19:15: practise guitar"
+  },
+  {
+   "at": "10:17",
+   "tool": "files_write",
+   "receipt": "saved bike/parts-to-buy.txt (96 bytes)"
+  },
+  {
+   "at": "10:57",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  }
+ ],
+ [
+  {
+   "at": "06:59",
+   "tool": "routine_create",
+   "receipt": "created routine daily 12:30: drink a glass of water"
+  },
+  {
+   "at": "08:42",
+   "tool": "files_write",
+   "receipt": "saved home/shopping-list.txt (64 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "06:47",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's library card number is LC 778 210"
+  },
+  {
+   "at": "06:48",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's gym membership number is GM-20931"
+  },
+  {
+   "at": "07:12",
+   "tool": "files_write",
+   "receipt": "saved books/to-read.md (157 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "06:38",
+   "tool": "files_write",
+   "receipt": "saved bike/parts-to-buy.txt (96 bytes)"
+  },
+  {
+   "at": "06:48",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's bike lock combination is 3-0-9-2"
+  },
+  {
+   "at": "08:00",
+   "tool": "routine_create",
+   "receipt": "created routine daily 22:00: put the phone on charge"
+  },
+  {
+   "at": "09:38",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's parking bay is level 3, bay 41"
+  },
+  {
+   "at": "10:19",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  }
+ ],
+ [
+  {
+   "at": "10:23",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's parking bay is level 3, bay 41"
+  },
+  {
+   "at": "10:23",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's parking bay is level 3, bay 41"
+  }
+ ],
+ [
+  {
+   "at": "08:43",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  },
+  {
+   "at": "09:02",
+   "tool": "files_write",
+   "receipt": "saved party/guest-list.md (244 bytes)"
+  },
+  {
+   "at": "09:13",
+   "tool": "files_write",
+   "receipt": "saved party/guest-list.md (244 bytes)"
+  },
+  {
+   "at": "10:09",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's bike lock combination is 3-0-9-2"
+  }
+ ],
+ [
+  {
+   "at": "06:52",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  },
+  {
+   "at": "07:21",
+   "tool": "routine_create",
+   "receipt": "created routine daily 21:30: take the bins out"
+  },
+  {
+   "at": "09:27",
+   "tool": "routine_create",
+   "receipt": "created routine daily 22:00: put the phone on charge"
+  },
+  {
+   "at": "09:41",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's bike lock combination is 3-0-9-2"
+  }
+ ],
+ [
+  {
+   "at": "06:24",
+   "tool": "routine_create",
+   "receipt": "created routine daily 07:00: stretch for ten minutes"
+  },
+  {
+   "at": "08:12",
+   "tool": "routine_create",
+   "receipt": "created routine daily 06:45: take the vitamin D"
+  },
+  {
+   "at": "08:56",
+   "tool": "routine_create",
+   "receipt": "created routine daily 07:00: stretch for ten minutes"
+  },
+  {
+   "at": "09:00",
+   "tool": "files_write",
+   "receipt": "saved books/to-read.md (157 bytes)"
+  },
+  {
+   "at": "10:31",
+   "tool": "files_write",
+   "receipt": "saved recipes/pancakes.md (380 bytes)"
+  }
+ ],
+ [
+  {
+   "at": "06:16",
+   "tool": "files_write",
+   "receipt": "saved garden/seed-order.md (233 bytes)"
+  },
+  {
+   "at": "06:21",
+   "tool": "routine_create",
+   "receipt": "created routine daily 18:00: call mum"
+  },
+  {
+   "at": "06:51",
+   "tool": "files_write",
+   "receipt": "saved home/shopping-list.txt (64 bytes)"
+  },
+  {
+   "at": "06:57",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
+  },
+  {
+   "at": "09:35",
+   "tool": "memory_write",
+   "receipt": "saved memory: owner's sister's birthday is 14 March"
+  }
+ ]
+]
