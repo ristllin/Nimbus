@@ -94,7 +94,7 @@ struct RequestBudget {
   uint32_t prefillTokPerS = 0;   // the prompt's slowest read rate (the prefill floor)
   uint32_t decodeTokPerS = 0;    // the answer's slowest write rate at the target's context
   bool routed = false;           // the Cumulo router relays the request
-  bool flat = false;             // the flat single-string wire (the custom endpoint)
+  bool flat = false;             // the flat single-string wire (the custom endpoint); see flatTurn
   // Lane B's derivation (P0 declared the fields above).
   uint32_t readWindowMs = 0;     // the effective read window every fit uses (gateway, router)
   uint32_t minFinalTokens = 0;   // the answer a round must be able to carry
@@ -106,9 +106,10 @@ struct RequestBudget {
   uint32_t v511CtxTokens = 0;    // v5.1.1's window for the head (legacyCtxTokens): the no-shrink baseline
   uint32_t v511ReplayBytes = 0;  // the sending wire's v5.1.1 replay cap (Anthropic 16,384, else 24,576)
   // Lane L: the form the head's turn goes out in (see the header): one prompt string under
-  // kFlatPromptBytes, not a split prompt under wireBodyBytes. (`flat` above is the wire: a
-  // custom endpoint has no other form and sits on the floor; a Mistral or Z.ai head's turn is
-  // flat only while the tool loop is off, and its wire keeps its body budget.)
+  // kFlatPromptBytes, not a split prompt under wireBodyBytes. Only turnBudgetFor sets it.
+  // (`flat` above is the wire: a custom endpoint has no other form and sits on the floor; a
+  // Mistral or Z.ai head's turn is flat only while the tool loop is off, and its wire keeps
+  // its body budget.)
   bool flatTurn = false;
   // The bytes the turn's context is sized from (deriveRequestContext): the body budget, or
   // on a flat turn the flat prompt budget, never more than the body budget.
@@ -133,7 +134,7 @@ RequestBudget requestBudgetFor(const std::string& host, const std::string& model
 // the owner's tool-loop setting. Every consumer of the head's context (the turn's caps and
 // history marks, the fold's trigger, step and summary cap, the console's values) derives
 // from this one, never from requestBudgetFor, which is a single request's body budget (the
-// wires read it per round) and always answers for a turn with the loop on.
+// wires read it per round) and names no form: flatTurn is never set in what it returns.
 RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn);
 // The same on an explicit link and routed lift (tests and the generated table).
 RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn, BudgetLink link,

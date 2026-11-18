@@ -101,8 +101,8 @@ inline constexpr size_t kFoldTriggerMinBytes = 24 * 1024;
 // value for the same head (deriveBudget over rb.v511CtxTokens; budgets_v5_1_1.json), owner
 // overrides verbatim as deriveBudget applies them. B is rb.contextBytes(): the body bytes,
 // or on a flat turn the flat prompt budget (the same formula; it then leaves no room for
-// history, so a flat turn takes the floor branch, and its summary and message cap are the
-// small ones):
+// history, so a flat turn takes the floor branch, and its summary and message cap are
+// never the large-target ones):
 //   system cap   max(32,768, 12% of B), at most 56,000;
 //   summary      6,144 at a 60k-token target and above, else 4,096;
 //   tool result  max(8,192, 3% of B), at most 16,384;

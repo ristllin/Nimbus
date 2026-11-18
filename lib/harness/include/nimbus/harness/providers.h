@@ -86,8 +86,8 @@ bool setTestBudgetSource(WireBudgetFn fn);
 // The budget of a flat single shot's one prompt string (the custom wire, a loop-off
 // Mistral or Z.ai head): the provider string guard less 4 KB for the turn's input and the
 // envelope, so the history fitted into it is announced, never cut by the guard (lane W
-// fits it). The request budget's own figure (request_budget.h): a turn that goes out flat
-// is sized from it (turnBudgetFor), so its history never fills the string by itself.
+// fits it). The request budget's own figure (request_budget.h kFlatPromptBytes): the head's
+// turn budget sizes a flat turn from it (turnBudgetFor).
 inline constexpr size_t flatPromptBudget() { return nimbus::orch::kFlatPromptBytes; }
 
 // A model pinned for one host while this object lives (RAII): a fold rung asks a host

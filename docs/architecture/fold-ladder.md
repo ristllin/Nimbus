@@ -139,8 +139,9 @@ every 5 s; the VN builds it on the engine thread. The CTX echo (`CTX?`,
 ## Summary size
 
 The head's cap is lane B's `chatSummaryBytes` (`deriveRequestContext`): 6,144 B for a
-request target of 60k tokens or more, else 4,096 B, and 4,096 B on a head whose turn is one
-flat prompt string (the input names the larger budget in a `[SUMMARY BUDGET]` line). `capSummary()` keeps every
+request target of 60k tokens or more, else 4,096 B; a head whose turn is one flat prompt
+string never takes the larger cap (the input names the larger budget in a
+`[SUMMARY BUDGET]` line). `capSummary()` keeps every
 section header and trims each body in proportion to its size, whole lines from the
 end.
 

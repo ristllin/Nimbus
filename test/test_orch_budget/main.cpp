@@ -206,11 +206,12 @@ static int deriveCallsOutsideTheSeam(std::string& where) {
   }
   return n;
 }
-// Lane L: a context derived straight from requestBudgetFor (a single request's body budget,
-// always the loop's form) sizes a loop-off Mistral or Z.ai head at its body budget while its
-// turn is one 55.9 KB string. The class: no consumer does it. Every deriveRequestContext call
-// outside the seam's file takes the head's turn budget (turnBudgetFor) or a wire's own round
-// budget (wire_budget.cpp: a loop round's replay), never requestBudgetFor.
+// Lane L: a context derived from requestBudgetFor (a single request's body budget, which
+// names no form) sizes a loop-off Mistral or Z.ai head at its body budget while its turn is
+// one 55.9 KB string. The class: no consumer does it. A source file that derives a context
+// (deriveRequestContext) outside the seam's own file never reads requestBudgetFor, in the
+// call or through a variable: it takes the head's turn budget (turnBudgetFor) or a wire's
+// own round budget (wire_budget.cpp: a loop round's replay).
 static int contextsDerivedAroundTheTurnBudget(std::string& where) {
   int n = 0;
   for (const char* dir : {"src", "lib/harness/src", "lib/core/src", "nimbusd/src", "tools/harness-lab/src"}) {
@@ -218,12 +219,9 @@ static int contextsDerivedAroundTheTurnBudget(std::string& where) {
       const std::string path = e.path().string();
       if (!e.is_regular_file() || !sourceFile(path) || path == "lib/core/src/orch_budget.cpp") continue;
       const std::string src = stripLineComments(readFile(path.c_str()));
-      for (size_t p = src.find("deriveRequestContext("); p != std::string::npos; p = src.find("deriveRequestContext(", p + 1)) {
-        const size_t end = src.find(';', p);
-        if (src.substr(p, end - p).find("requestBudgetFor(") == std::string::npos) continue;
-        where += path + " ";
-        n++;
-      }
+      if (!countOf(src, "deriveRequestContext(") || !countOf(src, "requestBudgetFor(")) continue;
+      where += path + " ";
+      n++;
     }
   }
   return n;

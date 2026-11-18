@@ -36,8 +36,9 @@
 //      string, or a split prompt with the history as messages (request_budget.h
 //      turnBudgetFor), and at its head's own budget a turn with the tool loop off is never
 //      refused at round 0 on a direct head: its history is sized for the form it goes out in
-//      (on main a loop-off Large 4, Medium or glm-5.3 head got its body budget's history for
-//      one 55,904 B string: 15 of these shapes were refused, recall and the playbook first).
+//      (sized from the body budget, a loop-off Large 4, Medium or glm-5.3 head got that
+//      budget's history for one 55,904 B string: 15 of these shapes were refused, and recall
+//      and the playbook left first).
 // Requests go through the device's own provider code to a scripted transport, each wire at
 // its head's own request budget (the wire reads the head's model; the Z.ai head is pointed
 // as the device points it), and again with every wire at the 85,000 B floor, the budget of
@@ -614,7 +615,8 @@ static void test_a_loop_off_turn_is_never_refused_at_round_0_at_its_own_budget()
 // carries (200 exchanges on the days before, 40 today: about 230 KB), ten recalled memories and
 // a food message, which attaches the food playbook. v5.1.1 sent that turn whole: its window
 // (the newest 5 KB of history, the owner's day up to its cap), the ten memories and the
-// playbook. Main refused it at round 0 and gave up recall and the playbook before any history.
+// playbook. Sized from the body budget the turn was refused at round 0 and gave up recall and
+// the playbook before any history.
 namespace {
 const Head kLoopOffHeads[] = {
     {"mistral/large-4", "mistral", "mistral-large-4-0", "mistral"},
@@ -669,9 +671,12 @@ static void test_a_loop_off_medium_head_keeps_recall_and_the_playbook_as_v5_1_1_
 static void test_a_loop_off_glm_head_keeps_recall_and_the_playbook_as_v5_1_1_did() { loopOffParityOn(kLoopOffHeads[2]); }
 
 // The loop state the budget reads is the owner's setting, never one turn's heap gate. A turn
-// the gate sends as a single shot (entry heap under the loop's floor) on a head with the
-// setting on keeps the head's standing marks: nothing shifts, so the turns after it carry the
-// conversation as before, and what this one request cannot carry it names.
+// the gate sends as a single shot (entry heap in the 2 KB between the turn's floor and the
+// loop's) on a head with the setting on keeps the head's standing marks: nothing shifts and
+// the cache keeps its bound, so the turns after it carry the conversation as before. The
+// price is this one request: its history is over the string, so it is refused locally and
+// fitted by the give-up order (recall first), and it names what it left out. The known limit
+// of sizing by the setting, pinned so a change to it is a decision.
 static void test_a_heap_gated_single_shot_keeps_the_head_s_standing_marks() {
   LogCapture::install();
   Shape s;
@@ -682,11 +687,18 @@ static void test_a_heap_gated_single_shot_keeps_the_head_s_standing_marks() {
   r.plat.heap = 13000;          // over the turn floor (12,000), under the loop's (14,000)
   r.eng->handleMessage("about my day", "Roy", "1001");
   TEST_ASSERT_FALSE(r.wire.http.seen.empty());
+  const std::string& body = r.wire.http.seen[0].body;
   TEST_ASSERT_TRUE(LogCapture::contains("tool-loop DEFERRED"));
   TEST_ASSERT_TRUE(LogCapture::contains(" hist 201/161/108 KB"));    // the head's derived marks
   TEST_ASSERT_FALSE(LogCapture::contains("overflow shift"));
   TEST_ASSERT_TRUE(r.marks.softStart.empty());
-  TEST_ASSERT_TRUE(r.wire.http.seen[0].body.find(kFlatHistoryHeader) != std::string::npos);   // it did go out flat
+  TEST_ASSERT_TRUE(body.find(kFlatHistoryHeader) != std::string::npos);   // it did go out flat
+  TEST_ASSERT_TRUE(LogCapture::contains("refused the request for its size"));   // locally, before any send
+  TEST_ASSERT_TRUE(body.find("LEFT OUT TO FIT THIS REQUEST") != std::string::npos);
+  TEST_ASSERT_EQUAL(0, countOf(body, "a remembered fact"));               // recall is the first rung to go
+  Verdict v;
+  checkRows(r, s, body, "heap-gated single shot", v);                     // every live row sent or named
+  TEST_ASSERT_EQUAL_MESSAGE(0, v.violations, v.first.c_str());
 }
 
 int main(int, char**) {
