@@ -11,7 +11,10 @@
 #include <string>
 #include <thread>
 
+#include <ArduinoJson.h>
+
 #include "engine_thread.h"
+#include "posix_platform.h"
 #include "reply_buffer.h"
 #include "rig.h"
 #include "web_api.h"
@@ -40,6 +43,9 @@
 //   GET  /api/replies?after=<seq>  last-N chat entries newer than <seq> (gated)
 //   POST /api/message   {"chat_id","text"} -> 202, enqueues a turn (gated)
 //   POST /mcp           JSON-RPC to the tool registry, run on the engine (gated)
+//   GET|POST /test/clock  the test clock (gated), ONLY when the process started with
+//                       NIMBUSD_TEST_CLOCK=1, a web token and the 127.0.0.1 bind;
+//                       otherwise the route does not exist (404)
 //
 // Auth decision (CUM-263 / CUM-265): "/", "/index.html" and "/logo.svg" are
 // served UNGATED. The page is a static shell that carries no instance data -
@@ -61,8 +67,15 @@ class HttpControl {
               NimbusdRig* rig = nullptr)
       : eng_(eng), bindAddr_(bindAddr), port_(port), token_(std::move(token)),
         dataDir_(rig ? rig->options().dataDir : std::string("/data")),
-        replies_(replies), page_(buildWebUiPage(token_)), script_(buildWebUiScript()), api_(rig, eng, replies) {
+        replies_(replies), page_(buildWebUiPage(token_)), script_(buildWebUiScript()), api_(rig, eng, replies),
+        testClock_(testClockArmed(bindAddr, token_)) {
     api_.setWebToken(token_);
+    if (vclock::testClockEnabled() && !testClock_)
+      std::fprintf(stderr, "[nimbusd] NIMBUSD_TEST_CLOCK=1 ignored: the test clock needs a web token and a "
+                           "127.0.0.1 bind\n");
+    if (testClock_)
+      std::fprintf(stderr, "[nimbusd] TEST CLOCK ON (NIMBUSD_TEST_CLOCK=1): /test/clock can move time; "
+                           "never set this on a client instance\n");
   }
   ~HttpControl() { stop(); }
 
@@ -176,6 +189,17 @@ class HttpControl {
         {"POST", "/api/message", &HttpControl::handleMessage, false},
         {"POST", "/mcp", &HttpControl::handleMcp, false},
     };
+    // The test clock exists only in a process started with the flag (fixed here at
+    // construction): without it the path falls through to the plain 404 below, so
+    // nothing tells it apart from a page that is not there.
+    if (testClock_ && pathIs(path, "/test/clock") && (method == "GET" || method == "POST")) {
+      if (!authorized(path, head)) {
+        respond(fd, 401, "application/json", R"({"error":"unauthorized"})");
+        return;
+      }
+      handleTestClock(fd, method, body);
+      return;
+    }
     for (const auto& r : kRoutes) {
       if (method != r.method || !pathIs(path, r.path)) continue;
       if (!r.ungated && !authorized(path, head)) {
@@ -269,6 +293,61 @@ class HttpControl {
       return;
     }
     respond(fd, 200, "application/json", fut.get());
+  }
+
+  // GET reads the clock. POST {"advance_s":N} or {"to_epoch":E} moves it forward
+  // (never back, at most vclock::kMaxAdvanceSec) and answers once one idle step ran
+  // on the engine thread after the move (EngineThread::advanceClock; the run loop's
+  // own pump follows, so idle_steps grows by at least one). The answer is
+  // {"offset_s","epoch","idle_steps"} either way. Test-only, so it may hold the one
+  // HTTP thread for as long as a due routine or a fold takes (cap 600 s; on a 504 the
+  // advance still lands when the engine reaches it).
+  void handleTestClock(int fd, const std::string& method, const std::string& body) {
+    if (method == "POST") {
+      uint64_t sec = 0;
+      std::string why;
+      if (!testClockAdvance(body, sec, why)) {
+        respond(fd, 400, "application/json", "{\"error\":\"" + why + "\"}");
+        return;
+      }
+      auto fut = eng_->advanceClock(sec);
+      // A due routine or a fold may run a paid call in this idle step: wait for it.
+      if (fut.wait_for(std::chrono::seconds(600)) != std::future_status::ready) {
+        respond(fd, 504, "application/json", R"({"error":"the idle step is still running"})");
+        return;
+      }
+      bool moved = false;
+      try { moved = fut.get(); } catch (...) {}   // a daemon stopping drops the task unrun
+      if (!moved) {
+        respond(fd, 400, "application/json", R"({"error":"the clock refused the advance"})");
+        return;
+      }
+    }
+    respond(fd, 200, "application/json",
+            "{\"offset_s\":" + std::to_string(vclock::offsetSec()) + ",\"epoch\":" +
+                std::to_string(vclock::epoch()) + ",\"idle_steps\":" + std::to_string(eng_->idleSteps()) + "}");
+  }
+  // The test clock route exists only with the flag, a web token and a loopback bind:
+  // an ungated or exposed surface never gets a way to move time.
+  static bool testClockArmed(const std::string& bindAddr, const std::string& token) {
+    return vclock::testClockEnabled() && !token.empty() && bindAddr == "127.0.0.1";
+  }
+  // Seconds to advance from a POST body: a whole advance_s, or a to_epoch not in the past.
+  static bool testClockAdvance(const std::string& body, uint64_t& sec, std::string& why) {
+    JsonDocument d;
+    if (deserializeJson(d, body) || !d.is<JsonObject>()) { why = "the body is not a JSON object"; return false; }
+    if (d["advance_s"].is<uint64_t>()) {
+      sec = d["advance_s"].as<uint64_t>();
+    } else if (d["to_epoch"].is<uint64_t>()) {
+      const uint64_t to = d["to_epoch"].as<uint64_t>(), now = vclock::epoch();
+      if (to < now) { why = "to_epoch is in the past"; return false; }
+      sec = to - now;
+    } else {
+      why = "give advance_s (whole seconds, not negative) or to_epoch";
+      return false;
+    }
+    if (sec > vclock::kMaxAdvanceSec) { why = "at most a year and a day per advance"; return false; }
+    return true;
   }
 
   bool authorized(const std::string& path, const std::string& head) const {
@@ -439,6 +518,7 @@ class HttpControl {
   std::string page_;    // the assembled web app, token seeded, built once
   std::string script_;  // its script, served as GET /app.js (built once)
   WebApi api_;        // the /api/* surface (honest Virtual Nimbus semantics)
+  const bool testClock_;   // NIMBUSD_TEST_CLOCK=1 at construction: /test/clock exists
   int listenFd_ = -1;
   std::atomic<bool> running_{false};
   std::thread thread_;

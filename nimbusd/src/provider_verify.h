@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "posix_platform.h"
 #include "nimbus/harness/http.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/router_refusals.h"
@@ -97,13 +98,13 @@ class ProviderVerifyStore {
     if (verdict == -1 && reason.empty() && p.verify == 1) return;
     p.verify = verdict;
     p.reason = verdict == -1 ? reason : std::string();
-    p.vts = (uint64_t)time(nullptr);
+    p.vts = vclock::epoch();
   }
   void setCatalog(const std::string& slug, std::vector<nimbus::orch::ModelInfo> models) {
     std::lock_guard<std::mutex> lk(mu_);
     ProviderVerify& p = m_[slug];
     p.models = std::move(models);
-    p.catalogAt = (uint64_t)time(nullptr);
+    p.catalogAt = vclock::epoch();
   }
   // A turn that answered on this head proves the key works (the cheapest truthful signal).
   void markWorking(const std::string& slug) {
@@ -112,7 +113,7 @@ class ProviderVerifyStore {
     if (p.verify == 1) return;
     p.verify = 1;
     p.reason.clear();
-    p.vts = (uint64_t)time(nullptr);
+    p.vts = vclock::epoch();
   }
   void forget(const std::string& slug) {
     std::lock_guard<std::mutex> lk(mu_);

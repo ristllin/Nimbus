@@ -271,7 +271,7 @@ int runDaemon(nimbusd::Config& cfg) {
           if (!g_stop.load()) { logLine("telegram poll error: " + err); std::this_thread::sleep_for(std::chrono::seconds(3)); }
           continue;
         }
-        const auto st = nimbusd::routeTelegramUpdates(ups, rig.telegramAccess(), io, std::time(nullptr));
+        const auto st = nimbusd::routeTelegramUpdates(ups, rig.telegramAccess(), io, nimbusd::vclock::now());
         if (st.refused)
           logLine("telegram: refused " + std::to_string(st.refused) +
                   " update(s) from unapproved chats (waiting for the owner's approval)");

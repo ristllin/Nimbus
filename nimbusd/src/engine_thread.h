@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "nimbus/orch/owner_first.h"
+#include "posix_platform.h"
 #include "rig.h"
 
 // engine_thread - the daemon's concurrency layer (the one genuinely new design
@@ -59,7 +60,7 @@ class EngineThread {
   void start() {
     if (running_.exchange(true)) return;
     snap_.devName = rig_->settings().devName;
-    snap_.startedEpoch = (uint64_t)time(nullptr);
+    snap_.startedEpoch = vclock::epoch();
     refreshSnapshot();
     thread_ = std::thread([this] { run(); });
   }
@@ -163,6 +164,27 @@ class EngineThread {
     return snap_;
   }
 
+  // The test clock (lane RB-VCa, NIMBUSD_TEST_CLOCK=1 only): move the clock forward
+  // by `sec` ON this thread, between tasks, so no turn ever sees time jump under it,
+  // then run one idle step (pumpPeriodic: jobs, fold, routines, drain, spend) before
+  // the future resolves. False when vclock refuses (no flag, or past its cap).
+  // Queued behind any turn already waiting; the run loop's own pump follows as usual.
+  std::future<bool> advanceClock(uint64_t sec) {
+    auto prom = std::make_shared<std::promise<bool>>();
+    auto fut = prom->get_future();
+    post([this, sec, prom] {
+      bool ok = false;
+      try {
+        ok = vclock::advance(sec);
+        if (ok) pumpPeriodic();
+      } catch (...) {}
+      prom->set_value(ok);
+    }, /*background=*/true);
+    return fut;
+  }
+  // Idle steps run since start (each pumpPeriodic pass): the test clock route reports it.
+  uint64_t idleSteps() const { return idleSteps_.load(); }
+
   bool running() const { return running_.load(); }
   // True while the engine thread executes ANY task (a turn, a read, background work,
   // a job pump step). A web read checks it to answer an honest busy at once instead
@@ -193,7 +215,7 @@ class EngineThread {
         task.fn();
         if (!task.background) {
           snapInFlight(false);
-          ownerFirst_.noteTurnEnd(NimbusdRig::steadyMs());
+          ownerFirst_.noteTurnEnd(vclock::steadyMs());
         }
         busy_.store(false);
       }
@@ -209,6 +231,7 @@ class EngineThread {
   // Periodic work between tasks: jobs, fold, routines, memory, spend, parked
   // recheck, held release. Each step is skipped while stopping.
   void pumpPeriodic() {
+    idleSteps_.fetch_add(1);
     if (running_.load()) pumpJobs();   // never start a sub dispatch while stopping
     if (running_.load()) foldTick();   // the conversation fold, between turns
     if (running_.load()) routinesTick();   // at most one due routine or wake-up
@@ -216,7 +239,7 @@ class EngineThread {
     if (running_.load()) rig_->spendTick();   // lane DEF: the month rollover and owed notices
     // A parked provider nothing else is calling. It blocks this thread, so it waits for
     // a quiet moment: a client's next message comes first (device parity, owner_first.h).
-    if (running_.load() && ownerFirst_.parkRecheckMayStart(false, NimbusdRig::steadyMs())) rig_->recheckTick();
+    if (running_.load() && ownerFirst_.parkRecheckMayStart(false, vclock::steadyMs())) rig_->recheckTick();
     if (running_.load()) releaseHeld();
   }
 
@@ -350,6 +373,7 @@ class EngineThread {
   std::deque<Task> queue_;
   std::atomic<uint64_t> curWebTurn_{0};   // web turn id of the running task (0 = none)
   std::atomic<bool> busy_{false};          // any task / pump step executing now
+  std::atomic<uint64_t> idleSteps_{0};     // pumpPeriodic passes (the test clock route)
   HeldQueue held_;                  // turns waiting on another namespace (engine thread)
   nimbus::orch::OwnerFirstGate ownerFirst_;   // engine thread only: the idle re-check waits for a quiet moment)
 

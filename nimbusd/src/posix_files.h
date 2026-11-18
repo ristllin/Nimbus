@@ -7,6 +7,7 @@
 #include <ctime>
 #include <string>
 
+#include "posix_platform.h"
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
@@ -347,7 +348,7 @@ class PosixFiles {
     e.project = p;
     e.name = n;
     e.bytes = (uint32_t)text.size();
-    e.createdAt = (uint32_t)time(nullptr);
+    e.createdAt = vclock::epoch32();
     e.kind = nimbus::orch::fileKindForName(n);
     if (!store_.add(e, err)) {
       if (!replacing) ::unlink(bytesPath(p, n).c_str());   // a late refusal leaves no new file behind
@@ -387,7 +388,7 @@ class PosixFiles {
     if (!old) {
       e.project = p;
       e.name = n;
-      e.createdAt = (uint32_t)time(nullptr);
+      e.createdAt = vclock::epoch32();
       e.kind = nimbus::orch::fileKindForName(n);
     }
     e.bytes = (uint32_t)(cur.size() + wrote);
@@ -407,7 +408,7 @@ class PosixFiles {
   // The keyed CSV upsert (file_append.h): the daemon merges by key and reports
   // the day total, the same reply the device gives.
   static std::string todayStr() {
-    const nimbus::orch::LocalDate d = nimbus::orch::localDateOf(time(nullptr));
+    const nimbus::orch::LocalDate d = nimbus::orch::localDateOf(vclock::now());
     if (!d.valid()) return std::string();
     char buf[16];
     std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", d.year, d.month, d.day);
@@ -442,7 +443,7 @@ class PosixFiles {
       if (!old) {
         e.project = p;
         e.name = n;
-        e.createdAt = (uint32_t)time(nullptr);
+        e.createdAt = vclock::epoch32();
         e.kind = nimbus::orch::fileKindForName(n);
       }
       e.bytes = (uint32_t)up.out.size();
@@ -452,7 +453,7 @@ class PosixFiles {
     }
     // The device's own reply, word for word: the claim check reads it (turn_effects).
     out.note = nimbus::orch::renderUpsertReply(up, p + "/" + n, sum,
-                                               nimbus::orch::logDayOf(time(nullptr), true).zone);
+                                               nimbus::orch::logDayOf(vclock::now(), true).zone);
     return true;
   }
 
@@ -475,7 +476,7 @@ class PosixFiles {
   std::string tailWithTotal(const std::string& n, const std::string& body, ArduinoJson::JsonObjectConst a) {
     std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
     const std::string sum = str(a, "sum");
-    if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), nimbus::orch::logDayOf(time(nullptr), true).zone);
+    if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), nimbus::orch::logDayOf(vclock::now(), true).zone);
     return text;
   }
 

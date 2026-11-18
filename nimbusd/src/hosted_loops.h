@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "nimbus/harness/skill_store.h"   // skillTurnTainted: this turn read outside content
+#include "posix_platform.h"
 #include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/owner_prefs.h"   // standingBlocksFire - a rule binds a routine (lane POL2)
@@ -222,7 +223,7 @@ class HostedLoops {
     if ((int)loops_.size() >= caps_.maxCount) return "too many loops (max " + std::to_string(caps_.maxCount) + ")";
     return prompt.empty() ? std::string("prompt is required") : std::string();
   }
-  static uint64_t epoch() { return (uint64_t)time(nullptr); }
+  static uint64_t epoch() { return vclock::epoch(); }
   static nimbus::orch::CivilTime civilLocal(uint64_t e) {
     time_t t = (time_t)e;
     struct tm lt{};

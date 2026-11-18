@@ -308,10 +308,7 @@ class NimbusdRig {
   }
 
   // ---- memory writes that survive an embedding outage (lane P) ------------
-  static uint32_t steadyMs() {
-    return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch()).count();
-  }
+  static uint32_t steadyMs() { return vclock::steadyMs(); }
   bool persistPending() {
     const bool ok = fsutil::writeFileAtomic(pendingPath(), pending_.serialize());
     if (ok) pending_.markClean();
@@ -442,10 +439,9 @@ class NimbusdRig {
       std::fprintf(stderr, "[nimbusd] chat %s must wait for another person's sub-agents\n", chatId.c_str());
       return cur_;
     }
-    const auto t0 = std::chrono::steady_clock::now();
+    const uint32_t t0 = vclock::steadyMs();
     eng_->handleMessage(text, "Owner", chatId);
-    cur_.seconds = std::chrono::duration<double>(
-                       std::chrono::steady_clock::now() - t0).count();
+    cur_.seconds = (double)(uint32_t)(vclock::steadyMs() - t0) / 1000.0;
     cur_.tokensIn = eng_->lastTurnUsage().promptTokens;
     cur_.tokensOut = eng_->lastTurnUsage().completionTokens;
     cur_.ok = !cur_.deliveries.empty();
@@ -790,7 +786,7 @@ class NimbusdRig {
   agent::FoldTick foldTick(const std::function<void(bool)>& busy) {
     if (!eng_ || !foldDriver_) return agent::FoldTick::Idle;
     foldBusy_ = &busy;
-    const agent::FoldTick t = foldDriver_->tick(steadyMs(), (uint32_t)time(nullptr));
+    const agent::FoldTick t = foldDriver_->tick(steadyMs(), vclock::epoch32());
     foldBusy_ = nullptr;
     // The conversation cache's idle fill (device historyCacheTick): a page a pass after a
     // restart, between turns.
@@ -814,7 +810,7 @@ class NimbusdRig {
   bool foldStatusJson(std::string chat, std::string& out) const {
     if (chat.empty()) chat = foldDefaultChat();
     if (!foldChatKnown(chat)) return false;
-    const uint32_t now = (uint32_t)time(nullptr);
+    const uint32_t now = vclock::epoch32();
     std::vector<agent::FoldStatus> all;
     for (const std::string& c : foldChats()) all.push_back(foldDriver_->status(c, steadyMs(), now));
     out = agent::foldStatusJson(foldDriver_->status(chat, steadyMs(), now), now, hostedOffsetAt(now), &all);
@@ -888,7 +884,7 @@ class NimbusdRig {
     std::lock_guard<std::mutex> lk(wsMu_);
     if (noted) ws_ = std::move(fresh);
     wsProbe_ = WorkspaceProbe{sent ? resp.status : 0, resp.body.size(), noted,
-                              (uint64_t)time(nullptr), wsProbe_.runs + 1};
+                              vclock::epoch(), wsProbe_.runs + 1};
     std::fprintf(stderr, "[nimbusd] connectors: mistral workspace probe HTTP %d (%zu bytes)%s\n",
                  wsProbe_.status, wsProbe_.bytes,
                  noted ? "" : " - no answer, kept the last one");
@@ -1694,10 +1690,7 @@ class NimbusdRig {
     return t;
   }
 
-  static uint32_t nowHours() {
-    return (uint32_t)std::chrono::duration_cast<std::chrono::hours>(
-               std::chrono::system_clock::now().time_since_epoch()).count();
-  }
+  static uint32_t nowHours() { return (uint32_t)(vclock::epoch() / 3600); }
 
   // Legacy NIMBUSD_TG_CHAT_ID: an optional one-time SEED of the allowlist, no longer
   // a gate (TelegramAccess::seedFromEnv has the rules). Logged so an operator can see
@@ -2395,7 +2388,7 @@ class NimbusdRig {
       memLog("memory: the stored memories are " + haveS + " wide, so embeddings use that width");
       return;
     }
-    const std::string kept = vectorsPath() + ".mismatch-" + std::to_string((long long)time(nullptr));
+    const std::string kept = vectorsPath() + ".mismatch-" + std::to_string((long long)vclock::epoch());
     if (!fsutil::writeFileAtomic(kept, vec_.serialize())) {
       opt_.embedDims = have;
       memLog("memory: " + n + " stored memories are " + haveS + " wide but the saved embedding model is " + wantS +
@@ -2494,10 +2487,7 @@ class NimbusdRig {
     pd.customKey = [] { return std::string(); };
     pd.customConv = [] { return std::string("openai"); };
     pd.customModel = [] { return std::string(); };
-    pd.nowMs = [] {
-      return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-                 std::chrono::steady_clock::now().time_since_epoch()).count();
-    };
+    pd.nowMs = [] { return vclock::steadyMs(); };
     pd.monoMs = pd.nowMs;   // lane QW4: a request's held time (the no-answer estimate)
     pd.delayMs = [](uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); };   // a router's retryAfterMs
     pd.freeHeap = [this] { return mem_.freeBytes(); };
@@ -2792,7 +2782,7 @@ class NimbusdRig {
       const std::string where =
           std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
       orch::FoodLedger l = orch::scanFoodLedger(files_->get(where), files_->has(where),
-                                                orch::logDayOf(std::time(nullptr), true),
+                                                orch::logDayOf(vclock::now(), true),
                                                 orch::kFoodLedgerProject, orch::kFoodLedgerOwnerName);
       l.targets = orch::scanFoodTargets(
           files_->get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodTargetsOwnerName));
@@ -2802,7 +2792,7 @@ class NimbusdRig {
     d.foodRecall = [this](const std::string& chat, const std::string& message) {
       if (!access_->principalFor(chat).owner) return std::string();
       return orch::renderFoodRecall(files_->get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName),
-                                    orch::logDayOf(std::time(nullptr), true).date, message);
+                                    orch::logDayOf(vclock::now(), true).date, message);
     };
 
     wireTurnHooks(d);
@@ -2889,7 +2879,7 @@ class NimbusdRig {
   // version, and the hardware a hosted instance really has (none of the desk
   // device's ring, screen, mic, speaker or battery; always online).
   void fillHostedFacts(agent::ComposeInputs& in) const {
-    in.now = hosted::localTime(time(nullptr), "%Y-%m-%d %a %H:%M %Z");
+    in.now = hosted::localTime(vclock::now(), "%Y-%m-%d %a %H:%M %Z");
     in.fw = NIMBUS_FW_VERSION " (" NIMBUS_FW_BUILD ")";
     in.hw.ring = false;
     in.hw.touch = false;
@@ -3302,7 +3292,7 @@ class NimbusdRig {
   }
 
   static std::string localNowString() {
-    return hosted::localTime(time(nullptr), "%Y-%m-%d %H:%M %Z (%A)");
+    return hosted::localTime(vclock::now(), "%Y-%m-%d %H:%M %Z (%A)");
   }
 
   // The spawning chat's recent window for the sub-agent brief (device chatContext):
@@ -3439,7 +3429,7 @@ class NimbusdRig {
     };
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds_.setSoftStart(c, soft); };
     d.foldTriggerBytes = [this] { return foldTriggerNow(); };
-    d.utcOffsetMin = [] { return hostedOffsetAt((uint32_t)time(nullptr)); };
+    d.utcOffsetMin = [] { return hostedOffsetAt(vclock::epoch32()); };
     d.utcOffsetAt = [](uint32_t unixSec) { return hostedOffsetAt(unixSec); };
   }
   // Minutes east of UTC in the owner's zone at `unixSec` (the process zone, under

@@ -146,6 +146,7 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | `NIMBUSD_TOOL_LOOP` | `1` (default) head tool loop, `0` single-shot head turns (device `orchLoop`) |
 | `NIMBUSD_EMBEDDINGS` | `1` (default) long-term memory embeddings on, `0` off |
 | `NIMBUSD_EMBED_HOST` / `NIMBUSD_EMBED_MODEL` / `NIMBUSD_EMBED_DIMS` | the default embedding provider (`mistral`, `openai` or `cumulo`), model and width; the web app's embedding settings, once saved, win |
+| `NIMBUSD_TEST_CLOCK` | `1` exactly: the regression rig's test clock (`/test/clock` below), armed only with a web token and the `127.0.0.1` bind. Never set on a client instance: an advance past a month boundary rolls the monthly spend ceiling. Unset, the route does not exist |
 
 **Embeddings on a one-key instance (CUM-540).** Each embedding call resolves its
 route from the current keys: a direct key for the embedding provider wins; without
@@ -345,6 +346,19 @@ the roles are stored on the instance volume, so they survive restarts and ride
 The routing and every rule above are host-tested offline in
 `tests/test_tg_access.cpp` and `tests/test_sub_fabric.cpp`.
 
+## One clock
+
+Every time reading in `nimbusd/src` goes through `nimbusd::vclock`
+(`posix_platform.h`): `epoch()` / `now()` / `epoch32()` for wall time, `steadyMs()` /
+`steadySec()` for monotonic time, and the engine's `Platform` reads the same two.
+Both are the host clock plus one offset, which is 0 in production and only grows. It
+moves only through `vclock::advance`, which refuses unless `NIMBUSD_TEST_CLOCK=1`; the
+regression rig drives it through `POST /test/clock` so a battery can put a real gap
+(a cold start, an overnight compaction, a 04:00 rollover) between two turns.
+`nimbusd/tests/test_clock.cpp` fails on any direct clock read elsewhere in the tree.
+Sleeps and waits stay real durations, and provider caches do not expire on the
+virtual clock: the rig prices a request after a long advance as cold itself.
+
 ## Control surface (the seam the Phase-1 sidecar forwards to)
 
 Bound to **loopback only**. The data routes require the web token
@@ -365,6 +379,7 @@ every forwarded request, so the browser reaches all of these through the tunnel.
 | `GET /api/themes`, `/api/qr`, `/api/docs/search` | pure/static surfaces (no engine, no hardware) |
 | hardware panels (`/api/audio/*`, `/api/wifi`, `/api/ota/*`, ...) | honest "not on a hosted instance" - never a faked value or a dead control |
 | `POST /mcp`, `GET /backup` | JSON-RPC to the tool registry / a consistent tar of the mem tree |
+| `GET` / `POST /test/clock` | **test clock, only with `NIMBUSD_TEST_CLOCK=1`, a web token and the loopback bind** (otherwise a plain 404). `GET` reads `{"offset_s","epoch","idle_steps"}`; `POST {"advance_s":N}` or `{"to_epoch":E}` moves the clock forward (never back, at most 366 days a call) on the engine thread between tasks, runs one idle step (jobs, fold, routines, drain, spend), then answers with the same shape (`idle_steps` grows by at least one; the run loop's own pass follows). It may hold the control surface while a due routine or a fold runs (up to 600 s, then 504 with the advance still queued). See One clock below |
 | `GET /api/lastturn`, `/api/log`, `/api/errlog/recent?bytes=` | the last turn's anatomy (prompt, input, raw output, tool rounds; key-shaped text (the sk-, sk_, cumulo_sk_ and tvly- prefixes, and a long token named a key or a token, as in "my key is ..." or `NAME_KEY=...`, but not a URL whose parts are ordinary words, a long host name such as `generativelanguage.googleapis.com` included (a path word of 16 letters or more counts as random), or a model id such as `claude-sonnet-5-20260301`; a UUID, or a URL with a secret-shaped part, such as a webhook's path, a bot token, a query value, a password or a random host label such as a function URL's id, still is, in JSON or percent-encoded too) and every key the instance holds masked (a copy cut short by a clipped line too, and another key that starts the same way, such as a second Anthropic key, masked whole), again as it is served, so a key saved after the turn is masked too; the 256 KB cut never keeps the head of a word it splits), the bounded engine log (1000 lines, key-shaped text masked), and its failure lines (device diagnostics, CUM-546). `/api/orch` usage (`sessIn`/`sessOut`/`turns`, `lastIn`/`lastOut`) and `/api/state` `turnCount` keep counting across a key or model save |
 | `GET/POST /api/connectors` | the connector registry (device contract); each configured entry carries the derived `auth` the badge reads, and a posted token with a space, a line break or another hidden character inside is refused with the device's sentence (`400`, nothing saved) |
 | `GET /api/connectors/catalog` | the model-facing `[PROVIDERS & CONNECTORS]` block exactly as the next turn gets it (text) |

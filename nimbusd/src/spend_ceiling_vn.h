@@ -8,6 +8,7 @@
 
 #include "posix_fs.h"   // fsutil::readFile, writeFileAtomic - fsync'd tmp + rename
 #include "nimbus/orch/seam_meter.h"   // the meter every paid call outside a turn reports to
+#include "posix_platform.h"
 #include "nimbus/orch/spend_ceiling.h"
 #include "nimbus/orch/usage_ledger.h"
 
@@ -150,7 +151,7 @@ class SpendCeilingVn {
     static SpendCeilingVn* s = nullptr;
     return s;
   }
-  static uint32_t monthNow() { return nimbus::orch::ceilingMonthKey(time(nullptr)); }
+  static uint32_t monthNow() { return nimbus::orch::ceilingMonthKey(vclock::now()); }
 
   // Caller holds mu_. No file: a new instance starts at zero for this month; one that
   // already had state (an earlier release ran here) owes its web chat one notice. A
@@ -205,7 +206,7 @@ class SpendCeilingVn {
     f.limitMicro = c_.limitMicro;
     f.spentMicro = c_.spentMicro;
     f.monthKey = c_.monthKey;
-    const time_t now = time(nullptr);
+    const time_t now = vclock::now();
     struct tm tmv;
     if (now >= nimbus::orch::kCeilingClockValid && localtime_r(&now, &tmv)) f.dayOfMonth = tmv.tm_mday;
     f.headModel = head_;

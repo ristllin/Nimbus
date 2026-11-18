@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "posix_platform.h"
 #include "nimbus/harness/skill_attach.h"
 #include "nimbus/harness/skill_md.h"
 #include "nimbus/harness/skill_store.h"
@@ -90,11 +91,8 @@ class HostedSkills {
     cfg.maxStored = 0;
     return cfg;
   }
-  static uint32_t nowMs() {
-    return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now().time_since_epoch()).count();
-  }
-  static std::string stamp() { return hosted::localTime(time(nullptr), "%Y-%m-%d %H:%M"); }
+  static uint32_t nowMs() { return vclock::steadyMs(); }
+  static std::string stamp() { return hosted::localTime(vclock::now(), "%Y-%m-%d %H:%M"); }
   bool scheduled() const { return h_.inScheduledTurn && h_.inScheduledTurn(); }
 
   PosixSkillFs fs_;

@@ -6,6 +6,8 @@
 #include <mutex>
 #include <string>
 
+#include "posix_platform.h"
+
 // reply_buffer - a bounded, thread-safe ring of the most recent chat entries
 // (owner prompts and assistant replies). The web chat page (served at "/") polls
 // it read-only through GET /api/replies. Two producers write to it: the HTTP
@@ -43,7 +45,7 @@ class ReplyBuffer {
                 const std::string& chat = "", uint64_t turnId = 0) {
     std::lock_guard<std::mutex> lk(mu_);
     const uint64_t seq = ++lastSeq_;
-    entries_.push_back(Entry{seq, (uint64_t)time(nullptr), role, text, chat, turnId});
+    entries_.push_back(Entry{seq, vclock::epoch(), role, text, chat, turnId});
     // A reply no web turn is waiting for (a sub-agent's result, its acknowledgement, a
     // routine's message): the page's watcher re-reads the history when this moves.
     if (role == "assistant" && turnId == 0) asyncSeq_++;

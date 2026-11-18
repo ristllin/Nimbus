@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "nimbus/orch/health_rows.h"   // parksJson: the park in /api/orch
+#include "posix_platform.h"
 #include "embed_check.h"
 #include "engine_thread.h"
 #include "multipart_form.h"
@@ -509,7 +510,7 @@ class WebApi {
     if (name.empty()) name = filename;
     auto err = std::make_shared<std::string>();
     ApiResp r = engineWrite([this, proj, name, bytes, err] {
-      if (isChatPhoto(proj, name)) rig_->files().sweepChatPhotos((uint32_t)time(nullptr));
+      if (isChatPhoto(proj, name)) rig_->files().sweepChatPhotos(vclock::epoch32());
       return rig_->files().put(proj, name, bytes, *err) ? std::string(R"({"ok":true})") : std::string();
     }, 5);
     if (r.status == 200 && !err->empty()) return refuse("Couldn't store the file: " + *err + ".");
@@ -803,7 +804,7 @@ class WebApi {
     batt["onExtPower"] = true;
     // Real clock (the host is NTP-synced), so routines and usage history work.
     JsonObject clock = d["clock"].to<JsonObject>();
-    const time_t now = time(nullptr);
+    const time_t now = vclock::now();
     clock["tz"] = rig_->clockTz();   // the owner's time zone (CUM-543), else the operator's, else UTC
     clock["epoch"] = (double)now;
     clock["local"] = hosted::localTime(now, "%Y-%m-%d %H:%M");
@@ -868,7 +869,7 @@ class WebApi {
     const StateSnapshot s = eng_->snapshot();
     JsonDocument d;
     d["running"] = true;
-    nimbus::orch::parksJson(nimbus::orch::providerPark(), NimbusdRig::steadyMs(), d["parks"].to<JsonArray>());
+    nimbus::orch::parksJson(nimbus::orch::providerPark(), vclock::steadyMs(), d["parks"].to<JsonArray>());
     JsonObject provs = d["providers"].to<JsonObject>();
     // Walk the CANONICAL provider registry (lib/core provider_slots.h) so this GET,
     // the device UI, and orchPost all read the SAME slug/label/keyField table. The
@@ -1332,7 +1333,7 @@ class WebApi {
   ApiResp modelsResp(const std::string& path) {
     const std::string only = queryParam(path, "provider");
     JsonDocument d;
-    d["generatedAt"] = (double)time(nullptr);
+    d["generatedAt"] = (double)vclock::epoch();
     d["ttlSec"] = 86400;
     int rc = 0;
     const char* const* rt = nimbus::orch::roleTokens(rc);
@@ -1394,7 +1395,7 @@ class WebApi {
     // delivers zero or several messages can no longer shift or drop a neighbour's
     // reply (CUM-218 stale-replay -> CUM-293 the burst residual).
     const uint64_t turn = replies_->push("user", text, kWebChat);
-    pending_.push_back(PendingTurn{turn, time(nullptr) + 900});
+    pending_.push_back(PendingTurn{turn, vclock::now() + 900});
     // Flood backstop (symmetry with resolved_'s cap): an authenticated owner hammering
     // POSTs faster than the single engine thread replies cannot grow this without bound.
     while (pending_.size() > 256) pending_.pop_front();
@@ -1569,8 +1570,7 @@ class WebApi {
     embedCheck_.settle(gen, width, err, steadyS());
   }
   static int64_t steadyS() {
-    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch())
-        .count();
+    return vclock::steadySec();
   }
   // A check that has not settled: nothing is saved. Verify answers 202 (the page
   // shows the sentence and saves nothing); Save answers 503, because the page
@@ -1966,7 +1966,7 @@ class WebApi {
 
   ApiResp usageHistory() {
     JsonDocument d;
-    d["today"] = (uint32_t)(time(nullptr) / 86400);
+    d["today"] = (uint32_t)(vclock::epoch() / 86400);
     d["days"].to<JsonArray>();
     std::string out; serializeJson(d, out);
     return okJson(out);
@@ -2064,7 +2064,7 @@ class WebApi {
         pending_.pop_front();
         continue;
       }
-      if (m == ReplyBuffer::TurnMatch::Later || time(nullptr) > t.deadline) {
+      if (m == ReplyBuffer::TurnMatch::Later || vclock::now() > t.deadline) {
         stashResolved(t.userSeq, "");   // this turn ran and produced no reply of its own
         pending_.pop_front();
         continue;
