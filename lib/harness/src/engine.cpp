@@ -1098,6 +1098,10 @@ struct RunTurnLocals {
   std::unique_ptr<TurnFit> fit;   // lane H: what the request gives up when it does not fit
   uint32_t reqBodyBytes = 0;      // the head's request body budget (the context line)
   size_t round0Bytes = 0;         // the round-0 request as composed (the context line)
+  // RB-Q1b: the turn's host names on the heap too (the tg_poll ratchet, 4,400 B free).
+  std::string requestedHost;      // the head chosen before any failover (CUM-236)
+  std::string requestedModel;     // ... and its model
+  std::string headModel;          // the head model the context budget is derived from
 };
 }  // namespace
 
@@ -1308,12 +1312,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // The resolution is the ONE shared rule (resolveTurnHost); the per-turn line names the
   // host each request then really runs on.
   std::string host = resolveTurnHost(d_);
-  // The head chosen BEFORE any failover - the "requested" side of served-by
-  // disclosure (CUM-236). `host` mutates below on budget/error failover; this and
-  // its model stay fixed so a substitution can be reported honestly at turn end.
-  const std::string requestedHost = host;
-  const std::string requestedModel =
-      d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
 
   // Lane STACK (8 Nov 2026): the turn's largest locals live on the heap, which the
   // PsramFirstScope above points at PSRAM, not on the stack of the Telegram poll task
@@ -1322,8 +1320,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // routine). Built in place: the inputs are the composeInputs result itself, never a
   // stack copy.
   std::unique_ptr<RunTurnLocals> locals(
-      new RunTurnLocals{d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{}, {}, {}, {}, {}, {}, 0, 0});
+      new RunTurnLocals{d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{}, {}, {}, {}, {}, {}, 0, 0, {}, {}, {}});
   ComposeInputs& ci = locals->ci;
+  // The head chosen BEFORE any failover - the "requested" side of served-by
+  // disclosure (CUM-236). `host` mutates below on budget/error failover; this and
+  // its model stay fixed so a substitution can be reported honestly at turn end.
+  locals->requestedHost = host;
+  locals->requestedModel = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
+  const std::string& requestedHost = locals->requestedHost;
+  const std::string& requestedModel = locals->requestedModel;
   turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
   loadFoodLedger(chatId);   // lane CTX: this turn's food ledger (applyFoodContext shows it)
   // W10 (prism): the speaker line is for a REAL human message only. The device
@@ -1341,8 +1346,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   bov.maxContextBytes = ci.budgetBytes;  // device closure passes MemConfig's value (0 = auto)
   bov.toolResultCap = d_.cfg.loop.resultCap ? d_.cfg.loop.resultCap() : 0;
   bov.toolTotalCap = d_.cfg.loop.totalCap ? d_.cfg.loop.totalCap() : 0;
-  const std::string headModel =
-      d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
+  locals->headModel = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
+  const std::string& headModel = locals->headModel;
   const orch::ContextBudget budget = orch::headContextBudget(host, headModel, detail::toolLoopSetting(d_), bov);
   ci.budgetBytes = budget.systemPromptBytes;
   ci.perTurnFloorBytes = (int)budget.perTurnFloorBytes;   // lane H: recall always has room

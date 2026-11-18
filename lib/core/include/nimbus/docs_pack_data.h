@@ -4892,8 +4892,8 @@ configured rounds: an action or lookup verb where a request starts, a link, a wo
 web, search, file or calendar, more than 240 bytes, or text this check cannot read.)NIMBUSDOC"},
   {"turn-anatomy#what-the-device-checks-in-a-reply-since-v5-2-0", "What the device checks in a reply (since v5.2.0)",
    R"NIMBUSDOC(The device no longer reads a reply's words against what the turn did. The claim check
-(a scanner of ten claim classes, its correction round and its "(Correction: ...)" and
-"(Note: ...)" lines), the spawn-claim line, the owner-action and reply-scope checks and the
+(a scanner of ten claim classes, its correction round and the parenthesized Correction and
+Note lines it appended), the spawn-claim line, the owner-action and reply-scope checks and the
 refusal of a memory write that stated a cause or a daily target were deleted in v5.2.0
 (lane RB-Q1b): they read one turn and matched words, so they sent correct answers back or
 appended lines to them (39 of 702 replies in the owner's month carried such a line). The
@@ -4907,8 +4907,8 @@ fails a build whose image holds such a line. What stays:
   RB-G0 that replaces the claim check;
 - the final-answer checks of [the final check](reference/turn-contract.md#the-final-check):
   the turn shape (a field the device cannot use) and a placeholder answer;
-- the device's own lines about its own actions: a `tts` that did not play gets "(Note: that
-  could not be spoken aloud: <reason>.)", a voiced text cut to the speech bound says so, and
+- the device's own lines about its own actions: a `tts` that did not play gets a note that it
+  could not be spoken aloud, with the reason; a voiced text cut to the speech bound says so, and
   a chat that may not start sub-agents is told so. A sub-agent intent that did not start
   reaches the head as a `[SPAWN REFUSED]` line on the chat's next turn;
 - `/api/state` keeps `claimsCorrected` and `claimsTailed` at 0 for the readers that poll them.
