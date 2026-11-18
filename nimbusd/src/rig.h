@@ -74,6 +74,7 @@
 #include "posix_platform.h"
 #include "provider_verify.h"
 #include "router_head.h"
+#include "hosted_effects.h"   // lane RB-FX: each chat's recent effects on the volume
 #include "nimbus/harness/router_catalog.h"   // CUM-530: the device's bound + order for the router list
 #include "sub_fabric.h"
 #include "tg_access.h"
@@ -275,6 +276,12 @@ class NimbusdRig {
 
   // ---- durable data layout --------------------------------------------------
   std::string memDir() const { return opt_.dataDir + "/mem"; }
+  // Lane RB-FX: the instance's effect rings (the truth check and the recent-actions view read
+  // effects().ring()).
+  HostedEffects& effects() {
+    std::call_once(effectsOnce_, [this] { effects_.reset(new HostedEffects(opt_.dataDir)); });
+    return *effects_;
+  }
   std::string vectorsPath() const { return memDir() + "/vectors.bin"; }
   // Memory writes waiting for an embedding (an outage), as text (lane P).
   std::string pendingPath() const { return memDir() + "/pending_embed.bin"; }
@@ -2830,6 +2837,10 @@ class NimbusdRig {
 
   // What each turn leaves behind: its identity, its tool rows, its end-of-turn accounting.
   void wireTurnHooks(agent::TurnEngine::Deps& d) {
+    // Lane RB-FX: every effect of a turn joins its chat's ring (<data>/mem/fx).
+    d.hooks.onEffect = [this](const std::string& chat, const std::string& tool, const std::string& receipt) {
+      effects().record(chat, (int64_t)std::time(nullptr), tool, receipt);
+    };
     d.hooks.onTurnStart = [this](const agent::TurnStartEv&) {
       // The turn's identity is its user row's id (the chat view joins a bubble to its
       // tool rows by it); a seedless turn mints one from the same counter.
@@ -3618,6 +3629,8 @@ class NimbusdRig {
   Config cfg_;
   Options opt_;
   std::unique_ptr<SpendCeilingVn> ceiling_;   // lane DEF: before the engine (its config reads it)
+  std::once_flag effectsOnce_;                 // lane RB-FX: before the engine (its hook writes it)
+  std::unique_ptr<HostedEffects> effects_;
   // Telegram allowlist + RBAC (CUM-459). Declared early so it outlives the engine and
   // job engine whose closures consult it.
   std::unique_ptr<TelegramAccess> access_;

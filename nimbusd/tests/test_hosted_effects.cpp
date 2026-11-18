@@ -6,7 +6,9 @@
 //       as empty;
 //   (d) a torn tail on the real disk is dropped at load and the next effect is not glued;
 //   (e) the file stays bounded (rewritten by temp and rename, no temp left behind);
-//   (f) a volume that cannot be written runs the ring from RAM and says so.
+//   (f) a volume that cannot be written runs the ring from RAM and says so;
+//   (g) a real hosted turn (scripted provider) records its file write in the chat's ring
+//       through the engine's effect hook, and its lookup not.
 // Offline: no provider traffic.
 #include <sys/stat.h>
 #include <unistd.h>
@@ -15,7 +17,12 @@
 #include <string>
 #include <vector>
 
+#include <dirent.h>
+#include <cstdlib>
+
+#include "../../test/support/fake_http.h"
 #include "hosted_effects.h"
+#include "rig.h"
 #include "test_util.h"
 
 using namespace nimbusd;
@@ -160,6 +167,56 @@ static void testNoVolume(ndtest::Ctx& c) {
   ndtest::rmTree(ndtest::scratchDir("fx-f"));
 }
 
+// A hosted turn: the head calls files_append, then answers. The write lands in the ring of
+// the turn's chat with its result; a memory_search turn records nothing.
+static void testHostedTurnRecordsItsEffects(ndtest::Ctx& c) {
+  std::printf("\n-- a hosted turn records its effects --\n");
+  for (const char* k : {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MISTRAL_API_KEY", "TAVILY_API_KEY", "CUMULO_API_KEY",
+                        "Z_AI_TOKEN"})
+    unsetenv(k);
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_FX", 1);
+  struct Case {
+    const char* tool;
+    const char* args;
+    bool recorded;
+  };
+  const Case cases[] = {{"files_append", "{\\\"project\\\":\\\"notes\\\",\\\"name\\\":\\\"log.txt\\\",\\\"text\\\":\\\"x\\\"}", true},
+                        {"memory_search", "{\\\"query\\\":\\\"x\\\"}", false}};
+  for (const Case& k : cases) {
+    const std::string tag = std::string("fx-g-") + k.tool;
+    const std::string dir = freshDir(tag);
+    harness_test::FakeHttpTransport tx;
+    tx.script.push_back(harness_test::Exchange{"", "", 200,
+        std::string("{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"t1\",") +
+        "\"name\":\"" + k.tool + "\",\"arguments\":\"" + k.args + "\"}]}"});
+    tx.script.push_back(harness_test::Exchange{"", "", 200,
+        "{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c\","
+        "\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"done\\\"}\"}]}"});
+    Config cfg;
+    NimbusdRig::Options o;
+    o.dataDir = dir;
+    o.embeddings = false;
+    o.embedDims = 64;
+    o.toolLoop = true;
+    NimbusdRig rig(cfg, o, &tx);
+    rig.say("owner", "please do it");
+    std::string rings;
+    if (DIR* d = ::opendir((dir + "/mem/fx").c_str())) {
+      while (struct dirent* e = ::readdir(d)) {
+        std::string body;
+        if (e->d_name[0] != '.') fsutil::readFile(dir + "/mem/fx/" + e->d_name, body);
+        rings += body;
+      }
+      ::closedir(d);
+    }
+    const bool hasWrite = rings.find("\tfiles.append\t") != std::string::npos;
+    c.ok(hasWrite == k.recorded, std::string(k.tool) + (k.recorded ? ": recorded in the chat's ring" : ": not recorded"));
+    c.ok(rings.find("memory.search") == std::string::npos, std::string(k.tool) + ": no lookup in any ring");
+    ndtest::rmTree(ndtest::scratchDir(tag));
+  }
+  unsetenv("CUMULO_API_KEY");
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted effects (lane RB-FX, offline) ===\n");
@@ -169,6 +226,7 @@ int main() {
   testTornTail(c);
   testBounded(c);
   testNoVolume(c);
+  testHostedTurnRecordsItsEffects(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
