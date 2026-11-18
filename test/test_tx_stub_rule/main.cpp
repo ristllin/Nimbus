@@ -705,6 +705,12 @@ void test_rules_stamps_carry_the_year() {
   TEST_ASSERT_EQUAL_STRING("", s.c_str());
   TXB_OK(tx::omissionLine(2, std::string(), s));
   TEST_ASSERT_EQUAL_STRING("[2 earlier turns, not shown: search finds them]", s.c_str());
+  s = "16-17 Nov 2026";   // the output may be the input
+  TXB_OK(tx::omissionLine(2, s, s));
+  TEST_ASSERT_EQUAL_STRING("[2 earlier turns, 16-17 Nov 2026, not shown: search finds them]", s.c_str());
+  s = "Tue 17 Nov 2026 13:02";
+  TXB_OK(tx::photoStub("ab12cd34", s, s));
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 2026 13:02 not shown: view id=pab12cd34]", s.c_str());
   TXB_OK(tx::photoStub("ab12cd34", "", s));
   TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 not shown: view id=pab12cd34]", s.c_str());
 }

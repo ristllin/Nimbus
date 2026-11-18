@@ -405,14 +405,17 @@ Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::str
 }
 
 Status photoStub(const std::string& ref8, const std::string& when, std::string& out) {
-  out.clear();
-  if (!isRef(ref8)) return Status::fail(Err::InvalidArgument, "tx::photoStub");
-  out = "[photo p" + ref8 + " ";
-  if (!when.empty()) {
-    appendLine(out, when, 40, true);
-    out += ' ';
+  if (!isRef(ref8)) {
+    out.clear();
+    return Status::fail(Err::InvalidArgument, "tx::photoStub");
   }
-  out += "not shown: view id=p" + ref8 + "]";
+  std::string s = "[photo p" + ref8 + " ";   // built apart: `when` may be `out`
+  if (!when.empty()) {
+    appendLine(s, when, 40, true);
+    s += ' ';
+  }
+  s += "not shown: view id=p" + ref8 + "]";
+  out.swap(s);
   return Status::success();
 }
 
@@ -575,11 +578,14 @@ Status omissionSpan(const std::vector<TurnSpan>& turns, size_t needBytes, uint32
 }
 
 Status omissionLine(uint32_t turns, const std::string& dates, std::string& out) {
-  out.clear();
-  if (turns == 0) return Status::fail(Err::InvalidArgument, "tx::omissionLine");
-  out = "[" + std::to_string(turns) + kOmissionMid;
-  appendLine(out, dates, kOmissionDatesMaxBytes, true);
-  out += dates.empty() ? kOmissionTail + 2 : kOmissionTail;   // no dates: "..., not shown: ..."
+  if (turns == 0) {
+    out.clear();
+    return Status::fail(Err::InvalidArgument, "tx::omissionLine");
+  }
+  std::string s = "[" + std::to_string(turns) + kOmissionMid;   // built apart: `dates` may be `out`
+  appendLine(s, dates, kOmissionDatesMaxBytes, true);
+  s += dates.empty() ? kOmissionTail + 2 : kOmissionTail;   // no dates: "..., not shown: ..."
+  out.swap(s);
   return Status::success();
 }
 
