@@ -448,6 +448,7 @@ def summarize(rows: list) -> dict:
         models[model] = {
             "measured": True,
             "settings": SETTINGS[model],
+            "complete": all(c["errors"] == 0 for c in conds.values()),
             "qualifies": qualifies(conds["with"]),
             "qualifies_without_recent": qualifies(conds["without"]),
             **conds,
@@ -502,8 +503,8 @@ def table(summary: dict) -> str:
     return "\n".join(out) + "\n"
 
 
-def read_rows(out: Path) -> list:
-    return [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+def read_rows(out: Path, name: str = "results.jsonl") -> list:
+    return [json.loads(line) for line in (out / name).read_text().splitlines()]
 
 
 def apply_notes(models: dict, notes: list) -> None:
@@ -534,6 +535,10 @@ def cmd_summarize(args) -> int:
         }
         usd += other["usd_total"]
         text += f"\n{label}:\n\n" + table(other)
+    stale = out / "results-stale-rows.jsonl"  # probes of rows regenerated since: paid for, not scored
+    if stale.exists():
+        summary["usd_superseded_rows"] = round(sum(r["usd"] for r in read_rows(out, stale.name)), 4)
+        usd += summary["usd_superseded_rows"]
     summary["usd_all_runs"] = round(usd, 4)
     Path(args.json).write_text(json.dumps(summary, indent=1) + "\n")
     (out / "TABLE.md").write_text(text)
