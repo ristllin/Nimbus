@@ -193,15 +193,21 @@ class FoldDriver {
   const char* waitOf(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const;
   void noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs);
   void noteGatesClosed(uint32_t nowMs);
-  // "due, not started" lines: one per chat and cause per hour (candidate 4, F1). Bounded: the
-  // oldest entry gives way when a ninth key turns up.
+  // "due, not started" lines: one per chat and cause per hour (candidate 4, F1). A fixed table
+  // of a 32-bit hash of chat and cause with its time, no heap (candidate 5, G3); a miss with
+  // every slot inside its hour logs nothing and evicts nothing, apart from one "more chats
+  // held" line an hour.
   struct NotStartedLine {
-    std::string key;
+    uint32_t hash = 0;
     uint32_t ms = 0;
+    bool used = false;
   };
   static constexpr size_t kNotStartedLines = 8;
   static constexpr uint32_t kNotStartedEveryMs = 3600000u;
   NotStartedLine notStarted_[kNotStartedLines];
+  uint32_t moreHeldMs_ = 0;
+  bool moreHeldLogged_ = false;
+  bool notStartedSlot(uint32_t hash, uint32_t nowMs);
   std::vector<FoldRung> orderedRungs() const;
   bool capReached(uint32_t nowEpoch, const std::string& chat = std::string());
   bool isOwnerChat(const std::string& chat) const { return !hooks_.ownerChat || hooks_.ownerChat(chat); }

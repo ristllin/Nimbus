@@ -264,19 +264,35 @@ bool FoldDriver::wantsFold(const std::string& chat) const {
 // A chat with a reason to fold that this pass does not start, and why (bench B11, candidate 2:
 // the bench saw silence). At most one line per chat and cause per hour (candidate 4, F1): the
 // line is durable, and one key in total let two held chats write a line each on every pass.
-void FoldDriver::noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs) {
-  const std::string key = chat + "|" + why;
-  NotStartedLine* slot = &notStarted_[0];
+// True when a line for `hash` may go now (its slot taken or renewed).
+bool FoldDriver::notStartedSlot(uint32_t hash, uint32_t nowMs) {
+  NotStartedLine* free = nullptr;
   for (NotStartedLine& l : notStarted_) {
-    if (l.key == key) {
-      if (nowMs - l.ms < kNotStartedEveryMs) return;
-      slot = &l;
-      break;
+    if (l.used && l.hash == hash) {
+      if (nowMs - l.ms < kNotStartedEveryMs) return false;
+      l.ms = nowMs;
+      return true;
     }
-    if (!slot->key.empty() && (l.key.empty() || l.ms - slot->ms > 0x80000000u)) slot = &l;   // empty, else oldest
+    if (!free && (!l.used || nowMs - l.ms >= kNotStartedEveryMs)) free = &l;
   }
-  slot->key = key;
-  slot->ms = nowMs;
+  if (free) {
+    *free = NotStartedLine{hash, nowMs, true};
+    return true;
+  }
+  if (!moreHeldLogged_ || nowMs - moreHeldMs_ >= kNotStartedEveryMs) {
+    moreHeldLogged_ = true;
+    moreHeldMs_ = nowMs;
+    hlog::log("fold: more chats held than the not-started lines track - theirs wait for a free slot");
+  }
+  return false;
+}
+
+void FoldDriver::noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs) {
+  uint32_t h = 2166136261u;   // FNV-1a over chat, a separator and the cause
+  for (const char* p = chat.c_str(); *p; ++p) h = (h ^ (uint8_t)*p) * 16777619u;
+  h = (h ^ (uint8_t)'|') * 16777619u;
+  for (const char* p = why; *p; ++p) h = (h ^ (uint8_t)*p) * 16777619u;
+  if (!notStartedSlot(h, nowMs)) return;
   hlog::logf("fold(%s): due, not started - %s", chat.c_str(), why);
 }
 

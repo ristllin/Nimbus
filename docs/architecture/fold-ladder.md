@@ -79,7 +79,9 @@ with `<kind>` one of transport, timeout, 4xx, 402 park, 5xx, cut twice, empty, t
 A success keeps `fold(<chat>): ok on <host> (...)`; a failed cycle logs
 `fold(<chat>): cycle failed, next try <date time>`. A chat with a reason to fold that a
 pass does not start logs `fold(<chat>): due, not started - <reason>` at most once an hour
-for each chat and reason (a table of eight), so held chats never flood the durable log.
+for each chat and reason (a fixed table of eight hashes of chat and reason with their
+times, no heap), so held chats never flood the durable log; with more chats held than that,
+the others wait for a free slot and one `fold: more chats held ...` line goes out an hour.
 
 **The quality gate** (`foldAnswerThin`): for digests of 8 KB or more, a 2xx answer
 shorter than min(800 B, 30% of the previous summary) or naming fewer than 2 of the

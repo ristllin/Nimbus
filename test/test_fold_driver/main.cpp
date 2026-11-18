@@ -638,6 +638,31 @@ static void test_due_not_started_lines_are_bounded_per_chat_and_cause() {
   TEST_ASSERT_TRUE_MESSAGE(lines >= 2 && lines <= 6, std::to_string(lines).c_str());
 }
 
+// Candidate 5, G3: with more chats held than the table has slots (twelve guests past their
+// share, every pass for two hours), the lines stay bounded: a miss while all eight slots are
+// inside their hour logs nothing and evicts nothing, apart from one "more chats held" line
+// an hour.
+static void test_more_held_chats_than_slots_stay_bounded() {
+  Device d;
+  d.failing = false;
+  for (int g = 0; g < 12; g++) d.guests.insert("g" + std::to_string(g));
+  d.boot();
+  for (int g = 0; g < 12; g++) d.backlog("g" + std::to_string(g), 40, 0x100 + g * 0x100);
+  orch::FoldCtl c;
+  c.notePaid(orch::foldLocalDay(kT0, 0), 6, true);   // the guests' share of the day is spent
+  d.ctlText = c.encode();
+  d.reboot();
+  LogCapture::lines().clear();
+  for (uint32_t s = 0; s < 2u * 3600u; s += 20) d.tick(kT0 + s);
+  int lines = 0, more = 0;
+  for (const auto& l : LogCapture::lines()) {
+    lines += l.find("due, not started") != std::string::npos;
+    more += l.find("more chats held") != std::string::npos;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(lines >= 8 && lines <= 2 * 8, std::to_string(lines).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(more >= 1 && more <= 2, std::to_string(more).c_str());
+}
+
 // Candidate 5, G2 (replaces candidate 4's F3, which counted the cycle as failed): an automatic
 // cycle that starts in a manual read's yield is never cut by the read's next pass. It finishes
 // its ladder (lands or fails as any cycle does) and the manual starts on the pass after.
@@ -893,6 +918,7 @@ int main(int, char**) {
   RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
   RUN_TEST(test_the_unread_clock_survives_waits_and_restarts);
   RUN_TEST(test_due_not_started_lines_are_bounded_per_chat_and_cause);
+  RUN_TEST(test_more_held_chats_than_slots_stay_bounded);
   RUN_TEST(test_an_automatic_cycle_in_a_manual_yield_finishes_its_ladder);
   RUN_TEST(test_the_device_alert_hook_routes_to_a_chat_a_person_reads);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
