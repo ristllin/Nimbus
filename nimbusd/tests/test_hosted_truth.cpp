@@ -62,7 +62,7 @@ struct Rig {
     HostedTruth::Deps x;
     x.http = &http;
     x.key = [this](const std::string& host) { return host == "anthropic" ? key : std::string(); };
-    x.nowMs = [this]() { return (uint64_t)clock; };
+    x.nowMs = [this]() { return clock; };
     return x;
   }
 };
