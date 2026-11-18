@@ -1,0 +1,5 @@
+{
+  "lane": "RB-OTA2",
+  "allowance_bytes": 1024,
+  "why": "PLAN.json's figure for this lane (image growth at most 1,024 B on esp32s3-cyd). Measured on the lane tip against rb-main 831986f9, both built in the same tree: esp32s3-cyd code +2,759 B (docs pack +249 B, counted apart): the route, the /ota command and help line, the fail-closed switch and its lines. Over this figure: the lane reports BLOCKED for an orchestrator ruling rather than raise it (ruling 10)."
+}
