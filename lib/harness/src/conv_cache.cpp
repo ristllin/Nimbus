@@ -180,29 +180,36 @@ bool ConvCache::fillPage(Entry& e, const Bound& bound, const ReadFn& read) {
 // the store read to the end: a cold walk its read budget stopped (newerExists), a span
 // the card would not give back, or a failing card whose RAM ring does not reach thru
 // (olderExists: lane CTXR1, a fill once completed on the ring's rows alone) leaves rows unread.
+namespace {
+// A probe cursor the store's state moved under (its index completed, or it read from the start
+// and gave back rows at or before thru): a byte cursor with an empty page and nothing more.
+bool staleProbe(const std::string& probeAt, const std::string& thru, const std::vector<EpisodicMessage>& first,
+                const nimbus::orch::EpiQueryInfo& info) {
+  if (probeAt.empty()) return false;
+  if (first.empty()) return !info.newerExists && !info.olderExists;
+  return !thru.empty() && !rowIdAfter(first.front().id, thru);
+}
+}  // namespace
+
 bool ConvCache::gapAfterThru(Entry& e, const ReadFn& read) {
-  for (int i = 0; i < kProbeReads; i++) {
-    nimbus::orch::EpiQueryInfo info;
-    const std::string from = !e.probeAt.empty() ? e.probeAt : e.thru.empty() ? std::string(kBeforeFirstRow) : e.thru;
-    HistoryQuery q(1, std::string(), from);
-    q.info = &info;
-    const std::vector<EpisodicMessage> first = read(q);
-    // A span the card would not give back is a gap even when rows after it came back: the
-    // store skips it and reads on (lane CTXR1: the fill completed past unread rows).
-    if (!info.unreadable.empty()) return true;
-    // A byte cursor the store's state moved under (its index completed, or read from the start
-    // and gave back rows at or before thru): dropped, the probe starts again at thru (lane CTXR1).
-    const bool stale = !e.probeAt.empty() && ((first.empty() && !info.newerExists && !info.olderExists) ||
-                                              (!first.empty() && !e.thru.empty() && !rowIdAfter(first.front().id, e.thru)));
-    if (stale) {
-      e.probeAt.clear();
-      return true;
-    }
-    if (!first.empty()) return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
-    if (info.olderExists) return true;   // a failing card: the RAM ring does not reach thru
-    if (!info.newerExists || info.nextAfter.empty()) return false;   // read to the end: no gap
-    e.probeAt = info.nextAfter;   // none of the chat's rows before it: the next read goes on there
+  nimbus::orch::EpiQueryInfo info;
+  const std::string from = !e.probeAt.empty() ? e.probeAt : e.thru.empty() ? std::string(kBeforeFirstRow) : e.thru;
+  HistoryQuery q(1, std::string(), from);
+  q.info = &info;
+  const std::vector<EpisodicMessage> first = read(q);
+  // A span the card would not give back is a gap even when rows after it came back: the
+  // store skips it and reads on (lane CTXR1: the fill completed past unread rows).
+  if (!info.unreadable.empty()) return true;
+  if (staleProbe(e.probeAt, e.thru, first, info)) {   // dropped: the probe starts again at thru
+    e.probeAt.clear();
+    return true;
   }
+  if (!first.empty()) return e.rows.empty() || rowIdAfter(e.rows.front().id, first.front().id);
+  if (info.olderExists) return true;   // a failing card: the RAM ring does not reach thru
+  if (!info.newerExists || info.nextAfter.empty()) return false;   // read to the end: no gap
+  // None of the chat's rows before it: the next call goes on there. One read a call (fix review
+  // D): a turn keeps to its one card page, and the idle pump to its time bound.
+  e.probeAt = info.nextAfter;
   return true;   // not known yet: the rows below stay named as unread
 }
 

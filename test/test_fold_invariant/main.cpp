@@ -138,10 +138,8 @@ struct FaultStore {
     std::vector<orch::EpisodicMessage> out;
     orch::EpiQueryInfo scratch;
     orch::EpiQueryInfo& info = q.info ? *q.info : scratch;
-    const size_t colon = q.after.find(':');
-    const bool byteCur = colon != std::string::npos;
-    const uint32_t from = byteCur ? (uint32_t)std::strtoul(q.after.c_str() + colon + 1, nullptr, 16)
-                                  : orch::epiIdSuffix(q.after);
+    const bool byteCur = q.after.find(':') != std::string::npos;
+    const uint32_t from = cursorSfx(q.after);
     // The real store (orch_episodic_log.cpp queryAfter): a byte cursor on a store whose index is
     // complete is answered with an empty page and nothing more; while the index is still
     // truncated, the walk past the cold region reads the index from its start.
@@ -150,31 +148,44 @@ struct FaultStore {
       info.olderExists = true;   // the card is failing and the ring does not reach the cursor
       return out;
     }
-    size_t walked = 0;
-    uint32_t last = from;
+    Walk w{0, from};
     for (const auto& m : rows) {
       const uint32_t sfx = orch::epiIdSuffix(m.id);
-      if (sfx <= from && !(byteCur && sfx >= indexFloor)) continue;
-      if (sfx < indexFloor && !failing) {   // the cold region: the walk's budget
-        if (++walked > coldBudget) {
-          info.newerExists = true;
-          char c[24];
-          std::snprintf(c, sizeof(c), "7:%08x", (unsigned)last);
-          info.nextAfter = c;
-          return out;
-        }
-        if (unreadableAt(sfx)) {
-          info.unreadable = "7:0-4096";
-          last = sfx;
-          continue;
-        }
-      }
-      last = sfx;
+      if (sfx <= from && !(byteCur && sfx >= indexFloor)) continue;   // a byte cursor: the index from its start
+      const int cold = coldStep(sfx, w, info);
+      if (cold < 0) return out;   // the walk's budget is spent
+      if (cold > 0) continue;     // an unreadable row: skipped and named
+      w.last = sfx;
       if (m.sessionId != chat) continue;
       out.push_back(m);
       if (out.size() >= q.limit) return out;
     }
     return out;
+  }
+  static uint32_t cursorSfx(const std::string& after) {
+    const size_t colon = after.find(':');
+    if (colon == std::string::npos) return orch::epiIdSuffix(after);
+    return (uint32_t)std::strtoul(after.c_str() + colon + 1, nullptr, 16);
+  }
+  struct Walk {
+    size_t walked;
+    uint32_t last;
+  };
+  // A row of the cold region: -1 when the walk's budget stops before it, 1 when it is skipped
+  // as unreadable, 0 when it is read.
+  int coldStep(uint32_t sfx, Walk& w, orch::EpiQueryInfo& info) const {
+    if (sfx >= indexFloor || failing) return 0;
+    if (++w.walked > coldBudget) {
+      info.newerExists = true;
+      char c[24];
+      std::snprintf(c, sizeof(c), "7:%08x", (unsigned)w.last);
+      info.nextAfter = c;
+      return -1;
+    }
+    if (!unreadableAt(sfx)) return 0;
+    info.unreadable = "7:0-4096";
+    w.last = sfx;
+    return 1;
   }
 };
 

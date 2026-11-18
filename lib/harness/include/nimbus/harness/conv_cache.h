@@ -56,8 +56,6 @@ class ConvCache {
   // (each turn still tries one page), so the fill resumes by itself once the index has the
   // rows.
   static constexpr uint8_t kIdleStalls = 3;
-  // Reads one gap probe may make (each a store call under its cold read budget).
-  static constexpr int kProbeReads = 4;
 
   // One read of a chat's rows (Deps::historyRows bound to the chat).
   using ReadFn = std::function<std::vector<nimbus::orch::EpisodicMessage>(const HistoryQuery&)>;

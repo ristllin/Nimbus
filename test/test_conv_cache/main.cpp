@@ -487,6 +487,34 @@ static void test_a_stale_probe_cursor_is_not_the_end() {
   assertIds(s.truth("c1", thru), ids(v));
 }
 
+// v5.1.2 fix review D: the gap probe makes one store read a call, so a turn keeps to its one
+// card page and an idle pass to its time bound (it made up to four cold walks in one page).
+static void test_the_gap_probe_reads_once_a_call() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  for (int i = 1; i <= 4; i++) s.turn("c1", i);
+  int probes = 0, n = 0;
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn cut = [&](const HistoryQuery& q) {
+    if (!q.after.empty() && q.limit == 1) {   // a probe: the cold walk out of budget every time
+      probes++;
+      if (q.info) {
+        q.info->newerExists = true;
+        q.info->nextAfter = "20591:" + std::to_string(++n * 131072);
+      }
+      return std::vector<EpisodicMessage>();
+    }
+    return q.after.empty() ? std::vector<EpisodicMessage>() : full(q);   // the index holds none of the chat
+  };
+  ConvCache cache;
+  for (int call = 0; call < 5; call++) {
+    probes = 0;
+    cache.access("c1", thru, kWide, 1, cut);
+    TEST_ASSERT_TRUE_MESSAGE(probes <= 1, std::to_string(probes).c_str());
+  }
+  TEST_ASSERT_TRUE(n >= 3);   // and the walk still goes forward, a read a call
+}
+
 // A device boot replays the photo records it kept: no cache holds a row yet, so the replay
 // does not fill the patch journal (it would push out records a running cache still needs).
 static void test_a_boot_replay_is_not_journaled() {
@@ -740,6 +768,7 @@ int main(int, char**) {
   RUN_TEST(test_an_empty_probe_the_store_cut_short_is_not_the_end);
   RUN_TEST(test_a_boot_replay_is_not_journaled);
   RUN_TEST(test_a_stale_probe_cursor_is_not_the_end);
+  RUN_TEST(test_the_gap_probe_reads_once_a_call);
   RUN_TEST(test_an_empty_first_page_still_reads_every_newer_row);
   RUN_TEST(test_a_capped_index_still_completes_the_fill);
   RUN_TEST(test_one_card_page_with_the_duplicate_check);
