@@ -292,6 +292,85 @@ def test_a_row_with_no_v511_record_uses_the_nearest_one(tmp_path):
     assert pick("custom", "llama-3-70b") is None
 
 
+# ---- with the tool loop off (lane CTXL) -------------------------------------------------------
+
+LOOP_COLS = (
+    "Provider", "Model", "Bytes", "Sized from", "System cap", "Recall", "Summary", "Message cap", "Hist max",
+    "Hist soft", "Hist keep", "Fold slice", "Rows", "Trigger",
+)  # fmt: skip
+LOOP_OFF = "With the tool loop off"
+
+
+def loop_row(provider="mistral", model="mistral-large-4-0", nbytes=360000, **over) -> str:
+    """A loop-off row at v5.1.1's window (v511_model's figures), sized from the flat prompt."""
+    cells = {"Provider": provider, "Model": model, "Bytes": nbytes, "Sized from": 55904, "System cap": 32768,
+             "Recall": 4096, "Summary": 4096, "Message cap": 6144, "Hist max": 8192, "Hist soft": 4096,
+             "Hist keep": 4096, "Fold slice": 65536, "Rows": 64, "Trigger": 49152}  # fmt: skip
+    cells.update({k.replace("_", " ").capitalize() if k not in cells else k: v for k, v in over.items()})
+    return "| " + " | ".join(str(cells[c]) for c in LOOP_COLS) + " |"
+
+
+def loop_section(rows: list) -> str:
+    return (
+        f"\n## {LOOP_OFF}\n\n"
+        + "\n".join(["| " + " | ".join(LOOP_COLS) + " |", "|" + "---|" * len(LOOP_COLS), *rows])
+        + "\n"
+    )
+
+
+def flat_header(tmp_path, guard: int = 60000, minus: int = 4096) -> tuple:
+    w = tmp_path / "wire_limits.h"
+    w.write_text(f"inline constexpr size_t kJsonStrGuard = {guard};        // every model-bound string\n")
+    h = tmp_path / "request_budget.h"
+    h.write_text("inline constexpr bool kRoutedBudgetLift = false;\n"
+                 f"inline constexpr uint32_t kFlatPromptBytes = (uint32_t)kJsonStrGuard - {minus};\n")  # fmt: skip
+    return str(h), str(w)
+
+
+def test_a_loop_off_table_at_v511s_window_passes(tmp_path):
+    t, v = write(tmp_path, clean_rows(), more=loop_section([loop_row()]))
+    h, w = flat_header(tmp_path)
+    assert G.problems(t, v, h, w) == []
+
+
+@pytest.mark.parametrize(
+    "over, why",
+    [
+        ({"Sized from": 360000}, "sized from 360000"),
+        ({"Hist max": 206080}, "historyMaxBytes 206080, v5.1.1"),
+        ({"Hist soft": 3000}, "historySoftBytes 3000, v5.1.1"),
+        ({"Rows": 1073}, "historyRows 1073, v5.1.1"),
+        ({"Trigger": 164864}, "fold trigger 164864"),
+        ({"Recall": 2048}, "recallBytes 2048 under its v5.1.1"),
+        ({"Bytes": 250000}, "250000 B here"),
+    ],
+)  # fmt: skip
+def test_a_planted_loop_off_violation_fails(tmp_path, over, why):
+    t, v = write(
+        tmp_path, clean_rows(), more=loop_section([loop_row(**{k.replace(" ", "_"): x for k, x in over.items()})])
+    )
+    h, w = flat_header(tmp_path)
+    errs = G.problems(t, v, h, w)
+    assert any(why in e for e in errs), errs
+
+
+def test_a_loop_off_row_on_a_split_prompt_wire_fails(tmp_path):
+    # Anthropic and OpenAI keep a split prompt with the loop off: their rows do not change, so a
+    # row of theirs in this table is a table that sized the wrong turn.
+    t, v = write(tmp_path, clean_rows(), more=loop_section([loop_row("anthropic", "claude-sonnet-5-5", 250000)]))
+    h, w = flat_header(tmp_path)
+    assert any("split prompt" in e for e in G.problems(t, v, h, w))
+
+
+def test_the_flat_prompt_figure_is_read_from_the_code(tmp_path):
+    h, w = flat_header(tmp_path, guard=64000, minus=4096)
+    assert G.flat_prompt_bytes(h, w) == 59904
+    t, v = write(tmp_path, clean_rows(), more=loop_section([loop_row()]))
+    assert any("sized from 55904" in e for e in G.problems(t, v, h, w))
+    (tmp_path / "wire_limits.h").write_text("// no guard here\n")
+    assert any("kFlatPromptBytes" in e for e in G.problems(t, v, h, w))
+
+
 def test_numbers_read_with_their_units():
     assert G.number("360 KB") == 360000 and G.number("100k") == 100000
     assert G.number("1,048,576") == 1048576 and G.number("3.6") == 3.6 and G.number("-") is None
@@ -311,8 +390,9 @@ def test_the_repository_table_passes_and_its_header_is_the_one_bound_here():
     assert HEAD in text
     headings = [h for h, _ in G.parse_tables(text)]
     assert [G.norm(h) for h in headings] == list(G.TABLES)
-    full = [rows[0] for h, rows in G.parse_tables(text) if not G.TABLES[G.norm(h)].get("preview")]
-    assert all(set(r) == set(G.COLUMNS) - {"perTurnFloorBytes"} for r in full)
+    full = [rows[0] for h, rows in G.parse_tables(text) if not ({"preview", "loop_off"} & set(G.TABLES[G.norm(h)]))]
+    assert all(set(r) == set(G.COLUMNS) - {"perTurnFloorBytes", "sized_from"} for r in full)
+    assert "| " + " | ".join(LOOP_COLS) + " |" in text  # lane CTXL's loop-off header, column for column
 
 
 def test_the_release_ships_with_the_routed_lift_off():

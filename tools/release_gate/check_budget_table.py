@@ -37,7 +37,12 @@ Every table of the file with a model column is read, by its section heading (TAB
 every recorded model (all of the above, and coverage), the routed heads and the custom
 endpoint (all of the above; a routed head is compared with its upstream's v5.1.1 row), the
 routed heads once the router meters cached tokens (a preview with few columns: the clamp and
-the floor only), and Virtual Nimbus (a server: no upload and no pacing in a round's time). A
+the floor only), Virtual Nimbus (a server: no upload and no pacing in a round's time), and the
+heads with the tool loop off (lane CTXL: a Mistral, Z.ai, custom or routed Mistral/Z.ai head
+sends one prompt string, so it is sized from kFlatPromptBytes and keeps v5.1.1's history
+window, fold slice, rows and 48 KB trigger exactly, with no field below v5.1.1 and the same
+Bytes as its row in the tables above; an Anthropic or OpenAI row there fails, since a split
+prompt does not change with the loop off). A
 table under a heading the gate does not know fails, so a new table cannot dodge it. Columns
 are found by name (see COLUMNS), so a renamed column fails loudly instead of being skipped:
 every check names the columns it needs.
@@ -59,6 +64,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TABLE = os.path.join(REPO, "docs", "reference", "request-budgets.md")
 BUDGET_HEADER = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "request_budget.h")
+WIRE_LIMITS = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "wire_limits.h")
 V511 = os.path.join(REPO, "test", "support", "fixtures", "budgets_v5_1_1.json")
 
 TARGET_CLAMP = 100_000
@@ -78,7 +84,13 @@ TABLES = {
     "routed heads and the custom endpoint": {"routed": True},
     "routed heads once the router meters cached tokens": {"preview": True},
     "virtual nimbus": {"server": True},
+    "with the tool loop off": {"loop_off": True},
 }
+# Wires whose loop-off turn is one prompt string (custom.cpp, mistral.cpp, zai): a routed head
+# goes out on its upstream's wire (wire_of).
+FLAT_WIRES = ("mistral", "zai", "custom")
+# Loop-off rows keep v5.1.1's window exactly (RULINGS-v3: no head below its v5.1.1 behavior).
+LOOP_OFF_V511 = ("historyMaxBytes", "historySoftBytes", "historyKeepBytes", "historyRows", "foldSliceBytes")
 
 # canonical key -> accepted header names (lowercase, spaces and punctuation squeezed)
 COLUMNS = {
@@ -107,6 +119,7 @@ COLUMNS = {
     "foldSliceBytes": ("fold slice", "foldslicebytes"),
     "perTurnFloorBytes": ("per turn floor", "perturnfloorbytes"),
     "bound": ("bound",),
+    "sized_from": ("sized from",),
     "trigger": ("trigger", "fold trigger"),
     "caps_healthy": ("caps healthy",),
     "caps_fragmented": ("caps fragmented",),
@@ -386,6 +399,46 @@ def routed_problems(row: dict, lift: "bool | None") -> "list[str]":
     return []
 
 
+def flat_prompt_bytes(header_path: str, limits_path: str) -> "int | None":
+    """kFlatPromptBytes as the code defines it (kJsonStrGuard less a margin); None if not found."""
+    try:
+        with open(header_path, encoding="utf-8") as f:
+            m = re.search(r"\bkFlatPromptBytes\s*=\s*\(uint32_t\)\s*kJsonStrGuard\s*-\s*(\d+)", f.read())
+        with open(limits_path, encoding="utf-8") as f:
+            g = re.search(r"\bkJsonStrGuard\s*=\s*(\d+)", f.read())
+    except OSError:
+        return None
+    return int(g.group(1)) - int(m.group(1)) if m and g else None
+
+
+def loop_off_window_problems(row: dict, base: "dict | None") -> "list[str]":
+    """v5.1.1's fold trigger and window, field for field (none of them below v5.1.1 either)."""
+    name, errs = row_name(row), []
+    trigger = val(row, "trigger")
+    if trigger is None or abs(trigger - TRIGGER_V511) > 1:
+        errs.append(f"{name}: fold trigger {trigger}, v5.1.1's is {TRIGGER_V511} with the loop off")
+    for field in LOOP_OFF_V511 if base else ():
+        got = val(row, field)
+        if got is not None and field in base and abs(got - base[field]) > 1:
+            errs.append(f"{name}: {field} {got:.0f}, v5.1.1 has {base[field]} (the loop-off window is v5.1.1's)")
+    return errs + shrink_problems(row, base or {})
+
+
+def loop_off_problems(row: dict, base: "dict | None", flat: "int | None", main_bytes: "float | None") -> "list[str]":
+    """A head with the tool loop off: one prompt string sized from the flat budget, v5.1.1's window."""
+    name, errs = row_name(row), []
+    if wire_of(row.get("provider", "").lower(), row.get("model", "")) not in FLAT_WIRES:
+        return [f"{name}: a split prompt wire in the loop-off table (its rows do not change with the loop off)"]
+    if flat is None:
+        return [f"{name}: kFlatPromptBytes not found in request_budget.h / wire_limits.h"]
+    sized, nbytes = val(row, "sized_from"), val(row, "bytes")
+    if sized is None or abs(sized - flat) > 1:
+        errs.append(f"{name}: sized from {sized if sized is None else round(sized)}, not kFlatPromptBytes {flat}")
+    if main_bytes is not None and nbytes is not None and abs(nbytes - main_bytes) > 1:
+        errs.append(f"{name}: {nbytes:.0f} B here, {main_bytes:.0f} B in its row above")
+    return errs + loop_off_window_problems(row, base)
+
+
 def preview_problems(row: dict) -> "list[str]":
     """The lifted routed heads to come: few columns, so the clamp and the floor only."""
     target, nbytes = val(row, "target"), val(row, "bytes")
@@ -416,9 +469,13 @@ def baseline_of(row: dict, old: dict) -> "dict | None":
     return old[pick] if pick else None
 
 
-def row_problems(row: dict, profile: dict, old: dict, lift: "bool | None") -> "list[str]":
+def row_problems(row: dict, profile: dict, old: dict, lift: "bool | None", ctx: "dict | None" = None) -> "list[str]":
     if profile.get("preview"):
         return preview_problems(row)
+    if profile.get("loop_off"):
+        ctx = ctx or {}
+        main = ctx.get("bytes", {}).get((row.get("provider", ""), row.get("model", "")))
+        return loop_off_problems(row, baseline_of(row, old), ctx.get("flat"), main)
     server, base = bool(profile.get("server")), baseline_of(row, old)
     errs = bound_problems(row) + round_problems(row, server)
     errs += shrink_problems(row, base or {})
@@ -432,7 +489,9 @@ def row_problems(row: dict, profile: dict, old: dict, lift: "bool | None") -> "l
     return errs
 
 
-def table_problems(heading: str, rows: "list[dict]", old: dict, lift: "bool | None") -> "list[str]":
+def table_problems(
+    heading: str, rows: "list[dict]", old: dict, lift: "bool | None", ctx: "dict | None" = None
+) -> "list[str]":
     profile = TABLES.get(norm(heading))
     if profile is None:
         return [f"a table under '{heading}' is not one the gate knows (TABLES): {len(rows)} rows unchecked"]
@@ -441,11 +500,13 @@ def table_problems(heading: str, rows: "list[dict]", old: dict, lift: "bool | No
         have = {(r.get("provider", ""), r.get("model", "")) for r in rows}
         errs += [f"{p}/{m}: in budgets_v5_1_1.json, no row in the table" for (p, m) in old if (p, m) not in have]
     for row in rows:
-        errs += [f"[{heading}] {e}" for e in row_problems(row, profile, old, lift)]
+        errs += [f"[{heading}] {e}" for e in row_problems(row, profile, old, lift, ctx)]
     return errs
 
 
-def problems(table_path: str, v511_path: str, header_path: str = BUDGET_HEADER) -> "list[str]":
+def problems(
+    table_path: str, v511_path: str, header_path: str = BUDGET_HEADER, limits_path: str = WIRE_LIMITS
+) -> "list[str]":
     for p, what in ((table_path, "the budget table"), (v511_path, "the v5.1.1 budgets")):
         if not os.path.exists(p):
             return [f"{what} {os.path.relpath(p, REPO)} does not exist"]
@@ -459,8 +520,15 @@ def problems(table_path: str, v511_path: str, header_path: str = BUDGET_HEADER) 
     if not any(TABLES.get(norm(h), {}).get("coverage") for h, _ in tables):
         errs.append("no 'Every recorded model' table: coverage of budgets_v5_1_1.json is unchecked")
     lift = routed_lift(header_path)
+    # The loop-off table names device heads of the tables above: their Bytes must agree (a
+    # Virtual Nimbus row is a server's budget, not the device's).
+    sized = [
+        r for h, rs in tables if not ({"preview", "loop_off", "server"} & set(TABLES.get(norm(h), {}))) for r in rs
+    ]
+    ctx = {"flat": flat_prompt_bytes(header_path, limits_path),
+           "bytes": {(r.get("provider", ""), r.get("model", "")): val(r, "bytes") for r in sized}}  # fmt: skip
     for heading, rows in tables:
-        errs += table_problems(heading, rows, old, lift)
+        errs += table_problems(heading, rows, old, lift, ctx)
     return errs
 
 
@@ -478,7 +546,7 @@ def main(argv: "list[str] | None" = None) -> int:
         return 1
     print(
         "PASS budget table: every head of every table inside its bounds, its rounds and caps inside its window, "
-        "no field below v5.1.1, routed heads on the floor"
+        "no field below v5.1.1, routed heads on the floor, loop-off heads at v5.1.1's window"
     )
     return 0
 
