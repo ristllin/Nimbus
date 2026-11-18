@@ -2344,7 +2344,6 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         " (firmware " NIMBUS_FW_VERSION
                         "). Send a message and I'll reply here.\n\nOwner commands:\n"
                         "/update - install a pending firmware update\n"
-                        "/ota candidate|stable - the update channel\n"
                         "/loops - list routines\n"
                         "/remind <when> <what> - one-time reminder (e.g. /remind 30m ...)\n"
                         "/compact - summarize this conversation into memory\n"

@@ -135,7 +135,12 @@ E1_SOURCES = {
 # Files a new file's prose may sit in without being model text, each with its reason. A file
 # added under SCAN_DIRS with prose literals outside a log call must be in a catalog or here
 # (check_no_prompt_patch.py, with a git base).
-NON_MODEL_FILES: dict = {}
+NON_MODEL_FILES: dict = {
+    "lib/core/src/ota_channel.cpp": "RB-OTA2: the owner's /ota answers and the /api/ota/channel JSON lines, sent to the "
+    "owner's chat or a web client as device copy, never to a model",
+    "src/net/ota_channel_routes.cpp": "RB-OTA2: the route's 401 body for a web client (the same literal every owner "
+    "route sends), never sent to a model",
+}
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the
 # baseline table of coverage/PROMPT-CHANGES.md too (check_no_prompt_patch.py fails when they
