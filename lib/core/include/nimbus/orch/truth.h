@@ -249,6 +249,10 @@ struct Turn {
   std::string reply;                  // the head's reply, as it would be delivered
   std::vector<TurnEffect> now;        // this turn's effects, in order
   std::vector<fx::RingEntry> recent;  // the chat's ring, oldest first (the newest 50)
+  // The ring above is the chat's whole recent record (loaded from storage). Without it the
+  // probe flags about a third of true replies about earlier turns (RB-M0c), so a turn whose
+  // ring is unknown (no binding, RAM only after a restart) is receipt-only.
+  bool ringKnown = false;
   int64_t nowEpoch = 0;
   int32_t utcOffsetSec = 0;
 };
@@ -270,6 +274,54 @@ std::string factsItem(const std::vector<TurnEffect>& now, const std::vector<Rece
 // "Note: the ledger change in this reply did not go through (<the tool's error>)": one line
 // naming every write kind whose last effect this turn failed; "" when none did.
 std::string receiptLine(const std::vector<TurnEffect>& now);
+
+// ---- one turn across the old engine's head loop (engine 1) --------------------------------
+// The binding: the device (src/agent/truth_device.cpp) and nimbusd (hosted_truth.h).
+class Binding {
+ public:
+  virtual ~Binding() = default;
+  // Open one turn's check for the head on `host`: fill t.mode (turnMode of the stored state
+  // and the table), t.recent and t.ringKnown (the chat's ring), t.nowEpoch, t.utcOffsetSec and
+  // the probe (empty: none). Returns that head's counters, or null to skip the check (nothing
+  // is counted; no line is ever sent). Must not throw.
+  virtual Counters* open(const std::string& chatId, const std::string& host, const std::string& model,
+                         bool tainted, Turn& t, ProbeFn& probe) = 0;
+  // The turn's check is over: store the counters (and apply nextMode).
+  virtual void close() = 0;
+};
+
+// One turn's check, split where the old engine can act: the head loop's final-answer check
+// asks the probe and may hold the answer for its one correction round (atFinal); the turn's end
+// decides the receipt line (finish). The same rules as check(), which is built on it.
+class TurnCheck {
+ public:
+  // A new turn (the last one's state is dropped). `binding` may be null: no check.
+  void reset(Binding* binding, const std::string& chatId, const std::string& owner);
+  // Open through the binding for the head that answers (once; true when the check runs).
+  bool open(const std::string& host, const std::string& model, bool tainted);
+  // Open directly (tests, check()): `t` is the turn without its reply.
+  void start(const Turn& t, ProbeFn probe, Counters* c);
+  // One effect of this turn, in order (before or after open).
+  void note(const TurnEffect& e);
+  // At a final answer that may still get one more round: "" accepts it; else the facts item,
+  // the text of the one held round. Asked at most once a turn.
+  std::string atFinal(const std::string& reply, bool canHold = true);
+  // The turn's end, with the reply to be delivered (the round's when one was held, unless
+  // `roundReplied` is false): the outcome. Closes the binding.
+  Outcome finish(const std::string& reply, bool roundReplied = true);
+  bool active() const { return c_ != nullptr; }
+  Truth mode() const;   // the turn's effective mode (receipt-only when tainted or ring unknown)
+
+ private:
+  Binding* binding_ = nullptr;
+  std::string chatId_, host_, firstReply_;
+  Turn t_;
+  ProbeFn probe_;
+  Counters* c_ = nullptr;
+  Outcome o_;
+  bool asked_ = false;
+  Verdict first_ = Verdict::Error;
+};
 
 // Run the check on one reply. `probe` may be empty (no probe available: as receipt-only, with
 // the failure counted when the mode wanted one); `retry` runs the one extra round of a hold.

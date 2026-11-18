@@ -143,6 +143,7 @@ truth::Turn enforceTurn(const std::string& reply) {
   truth::Turn t;
   t.host = "anthropic";
   t.mode = Truth::Enforce;
+  t.ringKnown = true;
   t.owner = "Log 150 g skyr for breakfast";
   t.reply = reply;
   t.nowEpoch = kNow;
@@ -534,14 +535,20 @@ void test_a_failed_or_empty_retry_delivers_the_first_reply() {
     TEST_ASSERT_EQUAL_UINT32(1, c.retryFailed);
     TEST_ASSERT_EQUAL_UINT32(0, c.retryReplies);
   }
-  // No retry function at all: the same.
+  // No retry function at all: nothing can be held; the reply is delivered, a failed write
+  // still earns its line.
   truth::Turn t = enforceTurn("Saved.");
+  t.now.push_back(eff("note_save", false, "card busy", truth::Kind::Memory));
   Scripted s;
   s.answers = {{Verdict::Yes, 700}};
   truth::Counters c;
   const truth::Outcome out = truth::check(t, s.fn(), truth::RetryFn(), c);
   TEST_ASSERT_TRUE(out.reply == t.reply);
-  TEST_ASSERT_EQUAL_UINT32(1, c.retryFailed);
+  TEST_ASSERT_FALSE(out.held);
+  TEST_ASSERT_EQUAL_UINT32(0, c.holds);
+  TEST_ASSERT_EQUAL_UINT32(0, c.retryFailed);
+  TEST_ASSERT_EQUAL_UINT32(1, c.receiptsProbed);
+  TEST_ASSERT_FALSE(out.status.empty());
 }
 
 // The round after a hold may itself write: its effects join this turn's before the receipt
@@ -939,6 +946,120 @@ void test_effect_shaped_turns_are_counted() {
   TEST_ASSERT_EQUAL_UINT32(4, c.probes);
 }
 
+// ---- the old engine's two-step check (TurnCheck through a binding) ---------------------
+
+namespace {
+struct FakeBinding : truth::Binding {
+  truth::Counters c;
+  Scripted* s = nullptr;
+  bool ringKnown = true, refuse = false;
+  int opens = 0, closes = 0;
+  std::string host, model;
+  bool tainted = false;
+  truth::Counters* open(const std::string&, const std::string& h, const std::string& m, bool t, truth::Turn& turn,
+                        truth::ProbeFn& probe) override {
+    ++opens;
+    host = h, model = m, tainted = t;
+    if (refuse) return nullptr;
+    truth::HeadState hs;
+    hs.mode = Truth::Enforce;
+    turn.mode = truth::turnMode(truth::startMode(h.c_str(), m.c_str(), hq::Line::E1), hs, t);
+    turn.ringKnown = ringKnown;
+    turn.nowEpoch = kNow;
+    turn.recent.push_back(entry(kNow - 600, "ledger_write", "added L00A1 skyr 150 g"));
+    if (s) probe = s->fn();
+    return &c;
+  }
+  void close() override { ++closes; }
+};
+}  // namespace
+
+void test_the_engine_flow_holds_once_and_decides_the_line_at_the_end() {
+  Scripted s;
+  s.answers = {{Verdict::Yes, 300}, {Verdict::Yes, 300}};
+  FakeBinding b;
+  b.s = &s;
+  truth::TurnCheck k;
+  k.reset(&b, "111", "log my skyr");
+  k.note(eff("ledger_write", false, "busy", truth::Kind::Ledger));   // before the check opens
+  TEST_ASSERT_TRUE(k.open("anthropic", "claude-sonnet-5-5", false));
+  TEST_ASSERT_TRUE(k.open("openai", "x", true));   // opens once: the first head stays
+  TEST_ASSERT_EQUAL(1, b.opens);
+  const std::string item = k.atFinal("Logged.");
+  TEST_ASSERT_EQUAL_STRING(
+      "[device] effects this turn: ledger_write FAILED: busy. Recent: 12:52 ledger_write: added L00A1 skyr 150 g.",
+      item.c_str());
+  TEST_ASSERT_EQUAL_STRING("", k.atFinal("Logged again.").c_str());   // one hold a turn
+  k.note(eff("ledger_write", false, "busy again", truth::Kind::Ledger));   // the round's own write
+  const truth::Outcome o = k.finish("Logged now.");
+  TEST_ASSERT_TRUE(o.held && o.retried);
+  TEST_ASSERT_EQUAL_STRING("Logged now.", o.reply.c_str());
+  TEST_ASSERT_EQUAL_STRING("Note: the ledger change in this reply did not go through (busy again)", o.status.c_str());
+  TEST_ASSERT_EQUAL_size_t(2, s.seen.size());
+  TEST_ASSERT_EQUAL(1, b.closes);
+  TEST_ASSERT_EQUAL_UINT32(1, b.c.turns);
+  TEST_ASSERT_EQUAL_UINT32(1, b.c.holds);
+  TEST_ASSERT_FALSE(k.active());
+}
+
+void test_the_engine_flow_without_a_round_never_holds() {
+  // The loop never asked (a single shot, or another check used the one round).
+  Scripted s;
+  s.answers = {{Verdict::Yes, 300}};
+  FakeBinding b;
+  b.s = &s;
+  truth::TurnCheck k;
+  k.reset(&b, "111", "o");
+  k.note(eff("files_write", false, "disk full", truth::Kind::File));
+  k.open("anthropic", "claude-sonnet-5-5", false);
+  const truth::Outcome o = k.finish("Saved it.");
+  TEST_ASSERT_FALSE(o.held);
+  TEST_ASSERT_EQUAL_STRING("Saved it.", o.reply.c_str());
+  TEST_ASSERT_EQUAL_STRING("Note: the file change in this reply did not go through (disk full)", o.status.c_str());
+  // A held turn whose round came back blank delivers the first reply.
+  Scripted s2;
+  s2.answers = {{Verdict::Yes, 300}};
+  b.s = &s2;
+  k.reset(&b, "111", "o");
+  k.open("anthropic", "claude-sonnet-5-5", false);
+  TEST_ASSERT_FALSE(k.atFinal("Saved.").empty());
+  const truth::Outcome o2 = k.finish("  ");
+  TEST_ASSERT_EQUAL_STRING("Saved.", o2.reply.c_str());
+  TEST_ASSERT_EQUAL_UINT32(1, b.c.retryFailed);
+}
+
+// No binding, a refused open, a tainted turn or an unknown ring: never a probe.
+void test_the_engine_flow_without_a_known_ring_never_probes() {
+  for (int which = 0; which < 4; ++which) {
+    Scripted s;
+    s.answers = {{Verdict::Yes, 300}};
+    FakeBinding b;
+    b.s = &s;
+    b.ringKnown = which != 2;
+    b.refuse = which == 1;
+    truth::TurnCheck k;
+    k.reset(which == 0 ? nullptr : &b, "111", "o");
+    k.note(eff("ledger_write", false, "busy", truth::Kind::Ledger));
+    k.open("anthropic", "claude-sonnet-5-5", which == 3);
+    TEST_ASSERT_EQUAL_STRING("", k.atFinal("Logged.").c_str());
+    const truth::Outcome o = k.finish("Logged.");
+    TEST_ASSERT_EQUAL_size_t(0, s.seen.size());
+    TEST_ASSERT_EQUAL_STRING("Logged.", o.reply.c_str());
+    // A refused or missing binding sends nothing; a known receipt-only turn sends the fixed line.
+    TEST_ASSERT_EQUAL(which >= 2, !o.status.empty());
+  }
+  // The library's own check: an unknown ring is receipt-only too.
+  truth::Turn t = enforceTurn("Logged.");
+  t.ringKnown = false;
+  Scripted s;
+  truth::Counters c;
+  truth::check(t, s.fn(), Retry().fn(), c);
+  TEST_ASSERT_EQUAL_size_t(0, s.seen.size());
+  truth::HeadState h;
+  truth::shadowProbe(t, s.fn(), h);
+  TEST_ASSERT_EQUAL_size_t(0, s.seen.size());
+}
+
 // ---- modes and the stored state ---------------------------------------------------------
 
 void test_modes_move_only_as_the_prd_says() {
@@ -1078,6 +1199,9 @@ int main(int, char**) {
   RUN_TEST(test_the_probe_fails_open_at_8_s_with_a_counter);
   RUN_TEST(test_no_word_filter_decides_what_is_probed);
   RUN_TEST(test_effect_shaped_turns_are_counted);
+  RUN_TEST(test_the_engine_flow_holds_once_and_decides_the_line_at_the_end);
+  RUN_TEST(test_the_engine_flow_without_a_round_never_holds);
+  RUN_TEST(test_the_engine_flow_without_a_known_ring_never_probes);
   RUN_TEST(test_modes_move_only_as_the_prd_says);
   RUN_TEST(test_the_state_file_round_trips_and_refuses_damage);
   return UNITY_END();

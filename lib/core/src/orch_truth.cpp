@@ -186,43 +186,6 @@ bool runRound(const RetryFn& retry, const std::string& item, std::string& r, std
   }
 }
 
-// The hold: one facts-only round; its reply is delivered unless the round failed or is blank.
-// The round's own effects are added to `now`.
-void hold(const Turn& t, const RetryFn& retry, std::vector<TurnEffect>& now, Counters& c, Outcome& o) {
-  ++c.holds;
-  o.held = true;
-  const std::string item = factsItem(t.now, recentLines(t.recent, t.nowEpoch, t.utcOffsetSec));
-  std::string r;
-  std::vector<TurnEffect> more;
-  const bool ran = runRound(retry, item, r, more);
-  now.insert(now.end(), more.begin(), more.end());
-  if (ran && !blank(r)) {
-    o.reply = r;
-    o.retried = true;
-    ++c.retryReplies;
-  } else {
-    ++c.retryFailed;
-  }
-}
-
-void enforce(const Turn& t, bool failed, const ProbeFn& probe, const RetryFn& retry, Counters& c, Outcome& o) {
-  const Verdict v = ask(t, t.now, t.reply, probe, c, o);
-  if (answered(v) && (!t.now.empty() || v == Verdict::Yes)) {
-    ++c.effectTurns;
-    c.effectHits += v == Verdict::Yes;
-  }
-  if (v != Verdict::Yes) {
-    if (failed) receiptAfter(v, t.now, c, o);
-    return;
-  }
-  std::vector<TurnEffect> now = t.now;   // this turn's effects, then the round's
-  hold(t, retry, now, c, o);
-  if (!writeFailed(now)) return;
-  // The receipt question about the reply that is delivered: the retry's, else the first
-  // (which the probe already said reports success).
-  receiptAfter(o.retried ? ask(t, now, o.reply, probe, c, o) : Verdict::Yes, now, c, o);
-}
-
 }  // namespace
 
 // ---- the measured probe ------------------------------------------------------------------
@@ -602,29 +565,109 @@ std::string factsItem(const std::vector<TurnEffect>& now, const std::vector<Rece
   return item + ".";
 }
 
-Outcome check(const Turn& t, const ProbeFn& probe, const RetryFn& retry, Counters& c) {
-  Outcome o;
-  o.reply = t.reply;
-  ++c.turns;
-  if (t.tainted) ++c.tainted;
-  const bool failed = writeFailed(t.now);
-  const Truth mode = t.tainted ? Truth::ReceiptOnly : t.mode;
-  if (mode == Truth::ReceiptOnly || blank(t.reply)) {
-    if (failed) receiptAfter(Verdict::Error, t.now, c, o);
-    return o;
+// ---- one turn's check across a head loop ------------------------------------------------
+
+namespace {
+bool ringModeOk(const Turn& t) { return t.ringKnown && !t.tainted; }
+}  // namespace
+
+Truth TurnCheck::mode() const { return ringModeOk(t_) ? t_.mode : Truth::ReceiptOnly; }
+
+void TurnCheck::reset(Binding* binding, const std::string& chatId, const std::string& owner) {
+  *this = TurnCheck();
+  binding_ = binding;
+  chatId_ = chatId;
+  t_.owner = owner;
+}
+
+void TurnCheck::start(const Turn& t, ProbeFn probe, Counters* c) {
+  std::vector<TurnEffect> pending = std::move(t_.now);
+  t_ = t;
+  t_.now.insert(t_.now.end(), pending.begin(), pending.end());
+  host_ = t.host ? t.host : "";
+  t_.host = host_.c_str();
+  probe_ = std::move(probe);
+  c_ = c;
+}
+
+bool TurnCheck::open(const std::string& host, const std::string& model, bool tainted) {
+  if (c_) return true;
+  if (!binding_) return false;
+  Turn t;
+  ProbeFn probe;
+  t.owner = t_.owner;
+  host_ = host;
+  t.host = host_.c_str();
+  t.tainted = tainted;
+  Counters* c = binding_->open(chatId_, host, model, tainted, t, probe);
+  if (!c) return false;
+  t.host = host_.c_str();   // whatever the binding did with it, the head is this one
+  t.tainted = tainted;
+  start(t, std::move(probe), c);
+  return true;
+}
+
+void TurnCheck::note(const TurnEffect& e) { t_.now.push_back(e); }
+
+std::string TurnCheck::atFinal(const std::string& reply, bool canHold) {
+  if (!c_ || asked_) return "";
+  asked_ = true;
+  firstReply_ = reply;
+  ++c_->turns;
+  if (t_.tainted) ++c_->tainted;
+  if (mode() != Truth::Enforce || blank(reply)) return "";
+  first_ = ask(t_, t_.now, reply, probe_, *c_, o_);
+  if (answered(first_) && (!t_.now.empty() || first_ == Verdict::Yes)) {
+    ++c_->effectTurns;
+    c_->effectHits += first_ == Verdict::Yes;
   }
-  if (mode == Truth::Enforce) {
-    enforce(t, failed, probe, retry, c, o);
+  if (first_ != Verdict::Yes || !canHold) return "";
+  ++c_->holds;
+  o_.held = true;
+  return factsItem(t_.now, recentLines(t_.recent, t_.nowEpoch, t_.utcOffsetSec));
+}
+
+Outcome TurnCheck::finish(const std::string& reply, bool roundReplied) {
+  if (c_ && !asked_) atFinal(reply, false);   // the loop never asked (a single shot, a used round)
+  Outcome o = o_;
+  o.reply = reply;
+  if (!c_) return o;
+  const bool failed = writeFailed(t_.now);
+  const Truth m = mode();
+  if (m == Truth::ReceiptOnly || blank(firstReply_)) {
+    if (failed) receiptAfter(Verdict::Error, t_.now, *c_, o);
+  } else if (m == Truth::Shadow) {
+    if (failed) receiptAfter(ask(t_, t_.now, reply, probe_, *c_, o), t_.now, *c_, o);
+    else o.shadowDue = true;
+  } else if (o.held) {
+    o.retried = roundReplied && !blank(reply);
+    ++(o.retried ? c_->retryReplies : c_->retryFailed);
+    if (!o.retried) o.reply = firstReply_;
+    // The receipt question about the reply that is delivered: the round's, else the first
+    // (which the probe already said reports success).
+    if (failed) receiptAfter(o.retried ? ask(t_, t_.now, o.reply, probe_, *c_, o) : Verdict::Yes, t_.now, *c_, o);
   } else if (failed) {
-    receiptAfter(ask(t, t.now, t.reply, probe, c, o), t.now, c, o);
-  } else {
-    o.shadowDue = true;
+    receiptAfter(first_, t_.now, *c_, o);
   }
+  if (binding_) binding_->close();
+  c_ = nullptr;
   return o;
 }
 
+Outcome check(const Turn& t, const ProbeFn& probe, const RetryFn& retry, Counters& c) {
+  TurnCheck k;
+  k.start(t, probe, &c);
+  const std::string item = k.atFinal(t.reply, (bool)retry);
+  if (item.empty()) return k.finish(t.reply);
+  std::string r;
+  std::vector<TurnEffect> more;
+  const bool ran = runRound(retry, item, r, more);
+  for (const TurnEffect& e : more) k.note(e);
+  return k.finish(ran ? r : t.reply, ran);
+}
+
 void shadowProbe(const Turn& t, const ProbeFn& probe, HeadState& h) {
-  if (t.tainted || blank(t.reply)) return;
+  if (!ringModeOk(t) || blank(t.reply)) return;
   ProbeRequest req;
   const std::string user = renderUser(t.owner, t.reply, t.now, recentLines(t.recent, t.nowEpoch, t.utcOffsetSec));
   if (!probe || !buildRequest(t.host, user, req)) {

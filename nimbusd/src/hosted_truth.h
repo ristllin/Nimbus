@@ -20,7 +20,7 @@
 // calls check() there.
 namespace nimbusd {
 
-class HostedTruth {
+class HostedTruth : public nimbus::orch::truth::Binding {
  public:
   struct Deps {
     agent::HttpTransport* http = nullptr;
@@ -31,6 +31,10 @@ class HostedTruth {
     std::function<uint32_t()> nowMs;
     // Automatic enforce/shadow moves (PRD 8.8). Off for v5.2.0: the rate is measured first.
     bool allowShadow = false;
+    // The engine's clock for the probe's times (epoch seconds, 0 = unset) and the owner's
+    // UTC offset now (seconds); null reads 0.
+    std::function<int64_t()> nowEpoch;
+    std::function<int32_t()> utcOffsetSec;
   };
 
   // One reply to check, as the engine has it after the head loop.
@@ -59,6 +63,34 @@ class HostedTruth {
     nimbus::orch::truth::nextMode(h, deps_.allowShadow);
     save();
     return o;
+  }
+
+  // The engine's binding (truth::Binding): one turn's head state, ring and probe.
+  nimbus::orch::truth::Counters* open(const std::string& chatId, const std::string& host, const std::string& model,
+                                      bool tainted, nimbus::orch::truth::Turn& t,
+                                      nimbus::orch::truth::ProbeFn& probe) override {
+    Input in;
+    in.chatId = chatId;
+    in.host = host;
+    in.model = model;
+    in.tainted = tainted;
+    in.nowEpoch = deps_.nowEpoch ? deps_.nowEpoch() : 0;
+    in.utcOffsetSec = deps_.utcOffsetSec ? deps_.utcOffsetSec() : 0;
+    nimbus::orch::truth::HeadState& h = head(in);
+    const std::string owner = t.owner;
+    const char* hostRef = t.host;   // the caller's: `in` dies with this call
+    t = turn(in, h);
+    t.owner = owner;
+    t.host = hostRef;
+    probe = probeFor(host);
+    openKey_ = h.key;
+    return &h.c;
+  }
+  void close() override {
+    for (auto& h : state_.heads)
+      if (h.key == openKey_) nimbus::orch::truth::nextMode(h, deps_.allowShadow);
+    openKey_.clear();
+    save();
   }
 
   // The idle step's shadow probe (Outcome::shadowDue): counters and the window only.
@@ -96,7 +128,12 @@ class HostedTruth {
     t.owner = in.owner;
     t.reply = in.reply;
     t.now = in.now;
-    if (effects_) effects_->ring().recent(in.chatId, nimbus::orch::fx::kRingEntries, t.recent);
+    // The ring is the chat's whole record only when it lives on the volume (a RAM-only ring
+    // after a restart lacks every earlier effect: receipt-only then).
+    if (effects_) {
+      effects_->ring().recent(in.chatId, nimbus::orch::fx::kRingEntries, t.recent);
+      t.ringKnown = effects_->ring().backing(in.chatId) == nimbus::orch::fx::Backing::Storage;
+    }
     t.nowEpoch = in.nowEpoch;
     t.utcOffsetSec = in.utcOffsetSec;
     return t;
@@ -125,7 +162,7 @@ class HostedTruth {
 
   void save() { fsutil::writeFileAtomic(path_, nimbus::orch::truth::renderState(state_)); }
 
-  std::string path_;
+  std::string path_, openKey_;
   Deps deps_;
   HostedEffects* effects_;
   nimbus::orch::truth::State state_;

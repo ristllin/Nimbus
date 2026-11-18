@@ -242,6 +242,52 @@ void testTheStateFile(ndtest::Ctx& c) {
   ndtest::rmTree(ndtest::scratchDir("truth-f"));
 }
 
+void testTheEngineBinding(ndtest::Ctx& c) {
+  std::printf("\n-- the engine's binding (TurnCheck) --\n");
+  const std::string dir = freshDir("truth-g");
+  {
+    Rig rig(dir);
+    rig.effects.record("111", kNow - 3600, "ledger_write", "added L00A3 breakfast: skyr 150 g");
+    rig.http.script = {answer(true), answer(false)};
+    truth::TurnCheck k;
+    k.reset(&rig.truth, "111", "Log 200 g yoghurt");
+    truth::TurnEffect e;
+    e.tool = "ledger_write";
+    e.ok = false;
+    e.receipt = "the month file is damaged";
+    e.kind = truth::Kind::Ledger;
+    k.note(e);
+    c.ok(k.open("anthropic", "claude-sonnet-5-5", false), "opens for a measured head");
+    const std::string item = k.atFinal("Logged 200 g yoghurt.");
+    c.ok(item.find("ledger_write FAILED: the month file is damaged") != std::string::npos, "held with the facts item");
+    const truth::Outcome o = k.finish("The ledger write failed; nothing was logged.");
+    c.ok(o.held && o.retried && o.status.empty(), "the honest round is delivered, no line");
+    c.eqi((long)rig.http.seen.size(), 2, "two probes (the hold, the receipt question)");
+  }
+  {
+    Rig rig(dir);
+    c.eqi((long)rig.truth.state().heads.at(0).c.holds, 1, "the hold was stored at close");
+  }
+  {
+    // No ring at all: receipt-only, no request.
+    ndtest::rmTree(ndtest::scratchDir("truth-h"));
+    const std::string d2 = ndtest::scratchDir("truth-h") + "/data";
+    FakeHttpTransport http;
+    HostedTruth::Deps deps;
+    deps.http = &http;
+    deps.key = [](const std::string&) { return std::string("test-key-not-real"); };
+    HostedTruth t(d2, deps, nullptr);
+    truth::TurnCheck k;
+    k.reset(&t, "111", "o");
+    k.open("anthropic", "claude-sonnet-5-5", false);
+    k.atFinal("Logged.");
+    k.finish("Logged.");
+    c.eqi((long)http.seen.size(), 0, "no ring: no probe");
+    ndtest::rmTree(ndtest::scratchDir("truth-h"));
+  }
+  ndtest::rmTree(ndtest::scratchDir("truth-g"));
+}
+
 }  // namespace
 
 int main() {
@@ -253,6 +299,7 @@ int main() {
   testFailOpen(c);
   testNoProbe(c);
   testTheStateFile(c);
+  testTheEngineBinding(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;
 }
