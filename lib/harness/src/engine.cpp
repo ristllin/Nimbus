@@ -2624,7 +2624,7 @@ __attribute__((noinline)) void TurnEngine::truthRescue(bool& ok, std::string& ou
     rescue = !orch::finalTurnText(outJson, reply, &ask) ? false : reply.empty() && ask.empty();
   }
   if (!rescue) return;
-  hlog::log("truth: the held round gave no answer: the held answer ends the turn");
+  hlog::log("truth: held answer delivered");
   outJson.swap(truthHeld_);
   ok = true;
   truthRescued_ = true;

@@ -1,5 +1,6 @@
 {
   "lane": "RB-G0",
-  "allowance_bytes": 20480,
-  "why": "Ruling 33: what remains after a one-hour size audit, at most 20,480 B (PRD flash ledger +6 KB). Measured same-tree on esp32s3-cyd against lane/RB-FX d138bd78 (check_image_size.measure): code bytes 5,980,302 -> 6,013,692 B (+33,390 B), docs pack +2,210 B, after the audit's mechanical cuts (the shadow bound as a precomputed table, no log or exp; the char-buffer JSON reader and writer; the turn moved, not copied; kindOf as a table). The growth is the check's own logic (about 22 KB of truth symbols) plus its exception tables and strings. It is over this cap; the need (33,536 B, rounded up to 256 B) is the orchestrator's ruling, see lanes/RB-G0/PROGRESS.md."
+  "allowance_bytes": 33536,
+  "envs": {"esp32s3": 33536, "esp32s3-cyd": 33536, "test": 33024, "test-cyd": 33280},
+  "why": "Ruling 38: 33,536 B on esp32s3-cyd (PRD flash ledger +6 KB; ruling 33's one-hour audit, then raised as measured; no further raise). Same-tree code bytes against lane/RB-FX bd728c78 (check_image_size.measure), after the audit's mechanical cuts (the shadow bound as a precomputed table, no log or exp; the char-buffer JSON reader and writer; the turn moved, not copied; kindOf as a table; TurnCheck reset field by field; one log line shorter, one dropped): esp32s3 +33,294 B, esp32s3-cyd +33,438 B, test +32,990 B, test-cyd +33,054 B, each rounded up to 256 B. Docs pack +2,210 B, counted apart."
 }

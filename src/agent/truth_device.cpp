@@ -10,7 +10,6 @@
 #include "fs_atomic.h"       // agent::writeFileAtomic, flashMounted
 #include "store.h"           // the Anthropic key
 #include "transport_tls.h"   // agent::deviceTransport(): the one TLS slot
-#include "../sys/agent_log.h"
 
 namespace agent {
 namespace truthdev {
@@ -67,7 +66,7 @@ truth::ProbeResult send(const truth::ProbeRequest& r) {
   truth::ProbeResult out;
   out.ms = millis() - t0;   // the check bounds it at 8 s
   out.verdict = sent ? truth::parseResponse(resp.status, resp.body) : truth::Verdict::Error;
-  if (!sent) alogf("truth: probe not answered (%.80s)", err.c_str());
+  // A probe with no answer is logged by the transport's own exchange line (fail=...).
   return out;
 }
 

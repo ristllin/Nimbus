@@ -629,10 +629,18 @@ bool ringModeOk(const Turn& t) { return t.ringKnown && !t.tainted; }
 Truth TurnCheck::mode() const { return ringModeOk(t_) ? t_.mode : Truth::ReceiptOnly; }
 
 void TurnCheck::reset(Binding* binding, const std::string& chatId, const std::string& owner) {
-  *this = TurnCheck();
+  // Field by field (no temporary TurnCheck): everything a turn left behind is dropped.
   binding_ = binding;
   chatId_ = chatId;
+  host_.clear();
+  firstReply_.clear();
+  t_ = Turn();
   t_.owner = owner;
+  probe_ = nullptr;
+  c_ = nullptr;
+  o_ = Outcome();
+  asked_ = false;
+  first_ = Verdict::Error;
 }
 
 void TurnCheck::start(Turn t, ProbeFn probe, Counters* c) {
