@@ -3204,6 +3204,10 @@ static void reportBackfillOutcome(const BackfillSlice& sl, uint32_t nowMs) {
   } else if (sl.st.capped) {
     alogf("memory: episodic index stopped at its cap (%d rows) - older rows stay on the card, "
           "searched on demand; old attachments are kept", sl.rows);
+  } else if (g_epiLog && g_epiLog->stalledForMemory()) {   // v5.1.2: its growth was refused, in a row
+    alogf("memory: episodic index incomplete (%d rows; memory for its growth was refused %d times in a row) - "
+          "older rows stay on the card, searched on demand; retried at the next boot; old attachments are kept",
+          sl.rows, nimbus::orch::kBackfillMaxReadErrors);
   } else {
     alogf("memory: episodic index incomplete (%d rows; a row too long to index) - older rows "
           "stay on the card, searched on demand; old attachments are kept", sl.rows);

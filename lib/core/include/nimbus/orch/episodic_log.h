@@ -134,6 +134,8 @@ inline constexpr int    kBackfillMaxReadErrors = 8;
 // kIndexFreeSlots free for live appends.
 inline constexpr int    kIndexGrowRows = 2048;
 inline constexpr int    kIndexFreeSlots = 1024;
+// A refused top-up is tried again only after this many further live appends (S3).
+inline constexpr int    kTopUpBackoffRows = 256;
 
 // COLD-QUERY budget (v4.0.0). What the boot scan leaves unindexed is still on
 // the card; an opt-in cold pass reads it back on demand. The budget is the
@@ -278,6 +280,14 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // rows, the index's free slots and the bytes of one index row.
   std::pair<size_t, long> backfillCursor() const { return {bfPos_, bfEnd_}; }
   size_t ringRows() const { return recent_.size(); }
+  std::vector<std::string> ringIds() const {
+    std::vector<std::string> ids;
+    for (const auto& c : recent_) ids.push_back(st(c.id));
+    return ids;
+  }
+  // The backfill stopped because the index's growth was refused kBackfillMaxReadErrors times
+  // in a row (the stalled state, for this boot): the device logs it as a memory stop (S4).
+  bool stalledForMemory() const { return bfStats_.stalled && bfMemRefusals_ >= kBackfillMaxReadErrors; }
   size_t indexFreeSlots() const { return index_.capacity() - index_.size(); }
   static size_t indexRowBytes() { return sizeof(IdxRec); }
   // Read-only walk of the index, oldest first: each row's day, byte offset,
@@ -460,6 +470,11 @@ class AppendLogEpisodicStore : public EpisodicStore {
   // backfill reserve toward the existing stalled state.
   void topUpIndex();
   void growForLiveRow();
+  // S1: one growth step, min(kIndexGrowRows, size) rows (never more than v5.1.1's doubling),
+  // and the free slots the top-up keeps, min(kIndexFreeSlots, size).
+  size_t indexStep() const { return std::min<size_t>(kIndexGrowRows, std::max<size_t>(1, index_.size())); }
+  size_t freeTarget() const { return std::min<size_t>(kIndexFreeSlots, std::max<size_t>(1, index_.size())); }
+  int topUpBackoff_ = 0;   // live appends left before a refused top-up is tried again (S3)
   bool backfillRefused();
   bool backfillRoom(int sliceRows);   // the slice's room, asked for before anything is read
   int  bfMemRefusals_ = 0;

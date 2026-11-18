@@ -362,23 +362,31 @@ int AppendLogEpisodicStore::flushHeld(int maxRows) {
 
 // ---- index growth (candidate 6, revised) ------------------------------------
 void AppendLogEpisodicStore::topUpIndex() {
-  if (index_.capacity() - index_.size() >= (size_t)kIndexFreeSlots) return;
+  if (index_.capacity() - index_.size() >= freeTarget() || topUpBackoff_ > 0) return;
   try {
-    index_.reserve(index_.size() + kIndexGrowRows);   // strong guarantee: refused, nothing changed
+    index_.reserve(index_.size() + indexStep());   // strong guarantee: refused, nothing changed
   } catch (const std::bad_alloc&) {
+    topUpBackoff_ = kTopUpBackoffRows;   // S3: not one failed allocation per message
   }
 }
 
 void AppendLogEpisodicStore::growForLiveRow() {
+  if (topUpBackoff_ > 0) topUpBackoff_--;
   topUpIndex();
-  if (index_.size() == index_.capacity()) index_.reserve(index_.size() + kIndexGrowRows);
+  if (index_.size() == index_.capacity()) index_.reserve(index_.size() + indexStep());
 }
 
+// The slice's room plus the slots kept for live appends (S2: the backfill does not eat them).
+// The ask covers the slice (max with the slice's room) and stops where the cap allows.
 bool AppendLogEpisodicStore::backfillRoom(int sliceRows) {
   const int room = std::min(sliceRows, indexCap_ - (int)index_.size());
-  if (room <= 0 || index_.capacity() - index_.size() >= (size_t)room) return true;
+  if (room <= 0) return true;
+  const size_t size = index_.size(), need = (size_t)room + freeTarget();
+  if (index_.capacity() - size >= need) return true;
+  const size_t want = std::min(size + std::max(indexStep(), need), std::max((size_t)indexCap_, size + (size_t)room));
+  if (want <= index_.capacity()) return true;   // the slice fits; the cap allows no more
   try {
-    index_.reserve(index_.size() + kIndexGrowRows);   // strong guarantee: refused, nothing changed
+    index_.reserve(want);   // strong guarantee: refused, nothing changed
   } catch (const std::bad_alloc&) {
     return false;
   }

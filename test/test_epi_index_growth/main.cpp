@@ -9,6 +9,7 @@
 // refusal was really taken.
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -59,15 +60,17 @@ struct FakeFs : EpiFs {
   bool exists(const std::string& p) const override { return files.count(p) > 0; }
 };
 
-// The hook: refuses any block over g_refuseOver bytes (0 = none), counts refusals, and
-// records the largest block asked for.
+// The hook: refuses any block over g_refuseOver bytes (0 = none), or with g_refuseOnce only the
+// first such block; counts refusals and records the largest block asked for.
 size_t g_refuseOver = 0;
+bool g_refuseOnce = false;
 long g_refused = 0;
 size_t g_largest = 0;
 void* hookAlloc(size_t n) {
   if (n > g_largest) g_largest = n;
   if (g_refuseOver && n > g_refuseOver) {
     g_refused++;
+    if (g_refuseOnce) g_refuseOver = 0;
     return nullptr;
   }
   return std::malloc(n ? n : 1);
@@ -118,7 +121,7 @@ void assertEveryRowFound(const AppendLogEpisodicStore& st, uint32_t rows, const 
 struct Shot {
   std::vector<std::vector<uint32_t>> index;
   std::pair<size_t, long> cursor;
-  size_t ring = 0;
+  std::vector<std::string> ring;
   uint32_t nextId = 0;
   int count = 0;
   bool operator==(const Shot& o) const {
@@ -129,25 +132,31 @@ Shot shot(const AppendLogEpisodicStore& st) {
   Shot s;
   st.forEachIndexed([&](uint32_t d, uint32_t off, uint32_t len, uint32_t sfx) { s.index.push_back({d, off, len, sfx}); });
   s.cursor = st.backfillCursor();
-  s.ring = st.ringRows();
+  s.ring = st.ringIds();
   s.nextId = st.nextIdHint();
   s.count = st.messageCount();
   return s;
 }
+size_t capacity(const AppendLogEpisodicStore& st) { return st.indexFreeSlots() + (size_t)st.messageCount(); }
+// v5.1.1's doubling or 2,048 rows, whichever is less (S1).
+size_t step(size_t size) { return std::min<size_t>(kIndexGrowRows, std::max<size_t>(1, size)); }
+
 // A store whose boot scan indexed `boot` rows; then, with every block over 64 KB refused (the
-// index's next step), the backfill runs on the slots it already has until the next slice
-// would need a new block.
+// index's next step), the backfill runs on the slots it already has until its first refused
+// step (the first of the refusals in a row).
 void bootAndFill(AppendLogEpisodicStore& st, int boot) {
   st.hydrate(boot, 0);
   st.backfillStep();   // the first step tops the index up (memory still free)
   g_refuseOver = 64 * 1024;
-  while (st.indexFreeSlots() >= (size_t)kBackfillSliceRows && st.backfillStep()) {
+  for (int i = 0; i < 2000 && g_refused == 0 && st.backfillStep(); i++) {
   }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)g_refused, "the fill ends on one refused step");
 }
 }  // namespace
 
 void setUp() {
   g_refuseOver = 0;
+  g_refuseOnce = false;
   g_refused = 0;
   g_largest = 0;
   setWorkingAllocators(hookAlloc, hookFree);
@@ -157,111 +166,164 @@ void tearDown() {
   setWorkingAllocators(nullptr, nullptr);
 }
 
-// R1: from a boot scan of 100 rows to the cap, no single block the index asks for is larger
-// than (its size + kIndexGrowRows) rows: steps, never doubling.
-static void test_the_index_grows_in_steps_never_doubling() {
+// S1: every growth, backfill or live, from an empty or a 100-row index to past the cap, adds
+// at most min(2,048, size) rows (plus the slice's own room at a backfill step): never more
+// than v5.1.1's doubling, never more than 2,048 rows. Checked on the index's capacity.
+static void test_every_growth_is_at_most_its_size_or_2048_rows() {
   FakeFs fs;
   writeRows(fs, 0, 9000);
   AppendLogEpisodicStore st(fs, kDir, 64);
   st.hydrate(100, 0);
-  size_t worst = 0, rowBytes = 0;
   for (int i = 0; i < 2000; i++) {
-    const size_t size = (size_t)st.messageCount();
-    g_largest = 0;
+    const size_t size = (size_t)st.messageCount(), cap = capacity(st);
     const bool more = st.backfillStep();
-    if (g_largest > 0 && st.indexRowBytes()) {
-      rowBytes = st.indexRowBytes();
-      const size_t allowed = (size + (size_t)kIndexGrowRows + (size_t)kIndexFreeSlots) * rowBytes;
-      if (g_largest > worst) worst = g_largest;
-      TEST_ASSERT_TRUE_MESSAGE(g_largest <= allowed, std::to_string(g_largest).c_str());
-    }
+    if (capacity(st) > cap)
+      TEST_ASSERT_TRUE_MESSAGE(capacity(st) <= size + step(size) + (size_t)kBackfillSliceRows,
+                               (std::to_string(size) + " -> " + std::to_string(capacity(st))).c_str());
     if (!more) break;
   }
   TEST_ASSERT_TRUE(st.indexComplete());
-  TEST_ASSERT_TRUE(worst > 0);
-  // Live appends past it grow by the same step.
   for (uint32_t n = 9000; n < 12000; n++) {
-    const size_t size = (size_t)st.messageCount();
-    g_largest = 0;
+    const size_t size = (size_t)st.messageCount(), cap = capacity(st);
     st.addMessage(row(n));
-    if (g_largest > 1024 * 1024)   // the index's block (the row's own strings are small)
-      TEST_ASSERT_TRUE(g_largest <= (size + (size_t)kIndexGrowRows) * rowBytes);
+    if (capacity(st) > cap) TEST_ASSERT_TRUE(capacity(st) <= size + step(size));
   }
   assertEveryRowFound(st, 12000, "every row after growth");
+  FakeFs empty;   // from nothing: the first live appends ask for a row or two, not 2,048
+  AppendLogEpisodicStore e(empty, kDir, 64);
+  e.hydrate(0, 0);
+  for (uint32_t n = 0; n < 3000; n++) {
+    const size_t size = (size_t)e.messageCount(), cap = capacity(e);
+    e.addMessage(row(n));
+    if (capacity(e) > cap)
+      TEST_ASSERT_TRUE_MESSAGE(capacity(e) <= size + step(size),
+                               (std::to_string(size) + " -> " + std::to_string(capacity(e))).c_str());
+  }
+  assertEveryRowFound(e, 3000, "every row from an empty index");
 }
 
-// R2: a backfill step whose reserve is refused changes nothing (index, ring, cursors, the
-// next-id hint), is retried, and after kBackfillMaxReadErrors refusals in a row stops in the
-// existing stalled state; every row stays reachable meanwhile; with memory back and a restart
-// the index completes.
-static void test_a_refused_backfill_reserve_changes_nothing_then_stalls() {
+// S1/S5: the live append's own step, with its top-up refused once: the append goes, the step is
+// at most 2,048 rows (a doubling there would add the index's whole size), one refusal taken.
+static void test_the_live_step_under_a_refuse_once_hook() {
   FakeFs fs;
-  writeRows(fs, 0, 4000);
+  writeRows(fs, 0, 3000);
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.hydrate(0, 0);   // 3,000 rows, no free slot
+  TEST_ASSERT_EQUAL_INT(0, (int)st.indexFreeSlots());
+  g_refuseOver = 64 * 1024;
+  g_refuseOnce = true;
+  st.addMessage(row(3000));
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)g_refused, "the top-up was refused once");
+  TEST_ASSERT_TRUE_MESSAGE(capacity(st) <= 3000 + (size_t)kIndexGrowRows, std::to_string(capacity(st)).c_str());
+  assertEveryRowFound(st, 3001, "every row after the step");
+}
+
+// R2/S5: a refused backfill reserve changes nothing (index rows, ring content, cursor, next-id
+// hint, count), each refused step is exactly one refusal of the backfill's own reserve (the
+// top-up is not due, or backed off), refusals short of the limit with a success in between do not stall, and
+// kBackfillMaxReadErrors in a row do; every row stays reachable; a restart completes the index.
+static void test_refusals_in_a_row_stall_and_a_success_in_between_does_not() {
+  FakeFs fs;
+  writeRows(fs, 0, 6000);
   AppendLogEpisodicStore st(fs, kDir, 64);
   bootAndFill(st, 100);
   TEST_ASSERT_FALSE(st.indexComplete());
-  for (int i = 0; i < kBackfillMaxReadErrors - 1; i++) {
-    const Shot before = shot(st);
-    const long refused = g_refused;
-    TEST_ASSERT_TRUE_MESSAGE(st.backfillStep(), "a refused step is tried again");
-    TEST_ASSERT_TRUE_MESSAGE(g_refused > refused, "the refusal was really taken");
-    TEST_ASSERT_TRUE_MESSAGE(shot(st) == before, "a refused step changes nothing");
+  for (int round = 0; round < 2; round++) {
+    for (int i = (round == 0 ? 1 : 0); i < kBackfillMaxReadErrors - 1; i++) {
+      const Shot before = shot(st);
+      const long refused = g_refused;
+      TEST_ASSERT_TRUE_MESSAGE(st.backfillStep(), "a refused step is tried again");
+      // The first refused step after the success may also refuse the top-up (which then backs
+      // off); every other is exactly one refusal: the backfill's own reserve.
+      if (round == 1 && i == 0) TEST_ASSERT_TRUE(g_refused - refused >= 1);
+      else TEST_ASSERT_EQUAL_INT_MESSAGE(1, (int)(g_refused - refused), "one refusal: the backfill's reserve");
+      TEST_ASSERT_TRUE_MESSAGE(shot(st) == before, "a refused step changes nothing");
+    }
+    if (round == 0) {   // one step with memory in between: the count of refusals in a row restarts
+      g_refuseOver = 0;
+      const int rows = st.messageCount();
+      TEST_ASSERT_TRUE(st.backfillStep());
+      TEST_ASSERT_TRUE(st.messageCount() > rows);
+      g_refuseOver = 64 * 1024;
+      TEST_ASSERT_FALSE(st.backfillStats().stalled);
+    }
   }
-  TEST_ASSERT_FALSE_MESSAGE(st.backfillStep(), "the limit stops the backfill");
+  TEST_ASSERT_FALSE_MESSAGE(st.backfillStats().stalled, "seven in a row do not stall");
+  TEST_ASSERT_FALSE_MESSAGE(st.backfillStep(), "the eighth in a row stops the backfill");
   TEST_ASSERT_TRUE(st.backfillStats().stalled);
+  TEST_ASSERT_TRUE(st.stalledForMemory());
   TEST_ASSERT_FALSE(st.stalledOnReadErrors());
-  TEST_ASSERT_FALSE(st.indexComplete());
   g_refuseOver = 0;
-  assertEveryRowFound(st, 4000, "every row reachable while stalled");
-  // Memory back and a restart: the index completes.
+  assertEveryRowFound(st, 6000, "every row reachable while stalled");
   AppendLogEpisodicStore again(fs, kDir, 64);
   again.hydrate(100, 0);
-  for (int i = 0; i < 2000 && again.backfillStep(); i++) {}
+  for (int i = 0; i < 4000 && again.backfillStep(); i++) {}
   TEST_ASSERT_TRUE(again.indexComplete());
-  TEST_ASSERT_EQUAL_INT(4000, again.messageCount());
-  assertEveryRowFound(again, 4000, "every row after the restart");
+  assertEveryRowFound(again, 6000, "every row after the restart");
 }
 
-// R2: a refusal in between is forgiven: the counter is of refusals IN A ROW.
+// S3: a refused top-up backs off: while blocks are refused, live appends on the free slots
+// already there try the top-up once per kTopUpBackoffRows appends, not once per message.
+static void test_a_refused_top_up_backs_off() {
+  FakeFs fs;
+  writeRows(fs, 0, 3000);
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.hydrate(0, 0);
+  st.addMessage(row(3000));   // memory free: the step gives 2,048 free slots
+  uint32_t n = 3001;
+  g_refuseOver = 64 * 1024;
+  while (st.indexFreeSlots() > 1) st.addMessage(row(n++));
+  const long attempts = (long)(kIndexGrowRows - kIndexFreeSlots) / kTopUpBackoffRows + 2;
+  TEST_ASSERT_TRUE_MESSAGE(g_refused > 0, "the top-up was tried");
+  TEST_ASSERT_TRUE_MESSAGE(g_refused <= attempts, std::to_string(g_refused).c_str());
+  g_refuseOver = 0;
+  assertEveryRowFound(st, n, "every live row");
+}
+
+// S5: a small heap (every block over 64 KB refused from the start): appends to an empty store
+// and to a 300-row store go, as they did in v5.1.1.
+static void test_a_small_heap_takes_appends_to_small_stores() {
+  g_refuseOver = 64 * 1024;
+  FakeFs empty;
+  AppendLogEpisodicStore e(empty, kDir, 64);
+  e.hydrate(0, 0);
+  for (uint32_t n = 0; n < 200; n++) e.addMessage(row(n));
+  FakeFs fs;
+  {
+    g_refuseOver = 0;
+    writeRows(fs, 0, 300);
+    g_refuseOver = 64 * 1024;
+  }
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.hydrate(0, 0);
+  for (uint32_t n = 300; n < 400; n++) st.addMessage(row(n));
+  g_refuseOver = 0;
+  assertEveryRowFound(e, 200, "the empty store's rows");
+  assertEveryRowFound(st, 400, "the 300-row store's rows");
+}
+
+// R2: refusals short of the limit are forgiven once memory returns, and the index completes.
 static void test_a_later_step_with_memory_completes_the_index() {
   FakeFs fs;
   writeRows(fs, 0, 4000);
   AppendLogEpisodicStore st(fs, kDir, 64);
   bootAndFill(st, 100);
+  const long refused = g_refused;
   for (int i = 0; i < kBackfillMaxReadErrors - 2; i++) st.backfillStep();
-  TEST_ASSERT_TRUE(g_refused > 0);
+  TEST_ASSERT_TRUE(g_refused > refused);
   g_refuseOver = 0;
   for (int i = 0; i < 2000 && st.backfillStep(); i++) {}
   TEST_ASSERT_TRUE(st.indexComplete());
   assertEveryRowFound(st, 4000, "complete after memory returned");
 }
 
-// R3: the top-up keeps kIndexFreeSlots free for live appends, also once the backfill is
-// done; a refused top-up changes nothing and the live append still goes (a step block).
-static void test_the_top_up_keeps_free_slots_and_a_refusal_changes_nothing() {
-  FakeFs fs;
-  writeRows(fs, 0, 300);
-  AppendLogEpisodicStore st(fs, kDir, 64);
-  st.hydrate(0, 0);   // complete at boot: the backfill has nothing to do
-  st.addMessage(row(300));
-  TEST_ASSERT_TRUE_MESSAGE(st.indexFreeSlots() >= (size_t)kIndexFreeSlots, "free slots after a live append");
-  // Use the free slots up with the top-up refused: nothing changes but the rows appended.
-  g_refuseOver = 64 * 1024;
-  uint32_t n = 301;
-  while (st.indexFreeSlots() > 1) st.addMessage(row(n++));
-  const long refused = g_refused;
-  TEST_ASSERT_TRUE_MESSAGE(refused > 0, "the top-up was refused");
-  g_refuseOver = 0;
-  st.addMessage(row(n++));   // the step block, allowed again
-  TEST_ASSERT_TRUE(st.indexFreeSlots() >= (size_t)kIndexFreeSlots);
-  assertEveryRowFound(st, n, "every live row");
-}
-
 int main(int, char**) {
   UNITY_BEGIN();
-  RUN_TEST(test_the_index_grows_in_steps_never_doubling);
-  RUN_TEST(test_a_refused_backfill_reserve_changes_nothing_then_stalls);
+  RUN_TEST(test_every_growth_is_at_most_its_size_or_2048_rows);
+  RUN_TEST(test_the_live_step_under_a_refuse_once_hook);
+  RUN_TEST(test_refusals_in_a_row_stall_and_a_success_in_between_does_not);
+  RUN_TEST(test_a_refused_top_up_backs_off);
+  RUN_TEST(test_a_small_heap_takes_appends_to_small_stores);
   RUN_TEST(test_a_later_step_with_memory_completes_the_index);
-  RUN_TEST(test_the_top_up_keeps_free_slots_and_a_refusal_changes_nothing);
   return UNITY_END();
 }
