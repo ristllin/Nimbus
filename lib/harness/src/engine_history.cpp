@@ -625,7 +625,8 @@ void TurnEngine::planFold(const std::string& chatId, bool manual, FoldPlan& p) {
 }
 
 // A read that held no row, or found nothing worth a summary, or (no anchor) stopped short.
-FoldSlice TurnEngine::sliceWithoutDigest(const std::string& chatId, FoldPlan& p, const FoldRead& r, bool held) {
+FoldSlice TurnEngine::sliceWithoutDigest(const std::string& chatId, FoldPlan& p, const FoldRead& r,
+                                         bool nothingToSummarize) {
   FoldSlice s = p.s;
   const bool ended = r.end == FoldRead::End::Tail || r.end == FoldRead::End::Last;
   if (!p.known && !ended) {
@@ -641,9 +642,18 @@ FoldSlice TurnEngine::sliceWithoutDigest(const std::string& chatId, FoldPlan& p,
     s.progressed = r.end != FoldRead::End::Unread && (r.progressed || !r.lastSeen.empty());
     return s;
   }
-  if (held || ended) s.state = SliceState::Nothing;
-  else s.state = r.end == FoldRead::End::Unread ? SliceState::Unread : SliceState::Wait;
   s.progressed = r.progressed;
+  if (ended) {
+    s.state = SliceState::Nothing;   // only a read that reached its bound
+  } else {
+    s.state = r.end == FoldRead::End::Unread ? SliceState::Unread : SliceState::Wait;
+    if (nothingToSummarize && !r.lastSeen.empty()) {
+      // The rows it held were none of the conversation (job deliveries, a /clear's): the next
+      // read goes on after them instead of reading them again (fix review B).
+      foldCursor(chatId, p.marks.thru).resume = r.lastSeen;
+      s.progressed = s.state == SliceState::Wait;
+    }
+  }
   s.readTo = ended && p.hidden ? p.marks.softStart : r.lastSeen;   // a read to its bound saw every hidden row
   return s;
 }
@@ -678,7 +688,7 @@ FoldSlice TurnEngine::historyFoldSlice(const std::string& chatId, size_t capByte
   if (!ended && turns.size() > 1) turns.pop_back();
   FoldSlice built = foldSlice(turns, 0, capBytes, /*manual=*/true, p.o.utcOffsetMin);
   if (built.digest.empty() || (!manual && !p.hidden && built.digest.size() < kFoldMinNewBytes))
-    return sliceWithoutDigest(chatId, p, r, true);
+    return sliceWithoutDigest(chatId, p, r, built.digest.empty());
   built.state = SliceState::Ready;
   built.firstId = turns.front().firstId;
   built.more = !ended || rowIdAfter(lastRead, built.thru);   // read short, or the digest cap left rows

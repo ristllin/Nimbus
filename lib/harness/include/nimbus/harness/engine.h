@@ -883,7 +883,7 @@ class TurnEngine {
   struct FoldReadPass;
   void planFold(const std::string& chatId, bool manual, FoldPlan& p);
   SliceState foldStart(const std::string& chatId, FoldPlan& p);
-  FoldSlice sliceWithoutDigest(const std::string& chatId, FoldPlan& p, const FoldRead& r, bool held);
+  FoldSlice sliceWithoutDigest(const std::string& chatId, FoldPlan& p, const FoldRead& r, bool nothingToSummarize);
   static void noteHeld(const ConvCache::View& view, const HistoryBudget& b, FoldBounds& out);
   FoldRead readFoldRows(const std::string& chatId, const std::string& from, const FoldBounds& bounds, size_t capBytes,
                         std::vector<nimbus::orch::EpisodicMessage>* fwd);

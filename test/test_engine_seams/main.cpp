@@ -27,6 +27,7 @@
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fold_ladder.h"
 #include "nimbus/harness/hooks.h"
+#include "nimbus/harness/jobs.h"
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"
@@ -394,6 +395,35 @@ static void test_the_fold_read_stops_before_rows_the_card_will_not_give_back() {
   const agent::FoldSlice none = r.eng->historyFoldSlice("1001", 65536, true);
   TEST_ASSERT_TRUE(none.digest.empty());
   TEST_ASSERT_TRUE_MESSAGE(none.state == agent::SliceState::Unread, agent::sliceStateName(none.state));
+}
+
+// v5.1.2 fix review B: only a read that reached its bound may say Nothing. Rows after thru
+// that are none of the conversation (job deliveries), then a span the card will not give
+// back: the slice is Unread, not Nothing (which skipped the read-wait backoff and re-read the
+// span every pass), and the next read starts after the rows it already passed.
+static void test_a_read_that_stopped_short_is_never_nothing() {
+  Rig r;
+  r.addTurns(3);   // m0001..m0006
+  for (int i = 0; i < 5; i++) {
+    orch::EpisodicMessage m;
+    char id[16];
+    std::snprintf(id, sizeof(id), "m%04d", (int)r.rows.size() + 1);
+    m.id = id;
+    m.sessionId = "1001";
+    m.role = "assistant";
+    m.text = "job result " + std::to_string(i);
+    m.tags = agent::kJobDeliveryTag;
+    r.rows.push_back(m);   // m0007..m0011
+  }
+  r.marks.thru = "m0006";
+  r.unreadableAfter = "m0011";
+  const agent::FoldSlice s = r.eng->historyFoldSlice("1001", 65536, true);
+  TEST_ASSERT_TRUE(s.digest.empty());
+  TEST_ASSERT_TRUE_MESSAGE(s.state == agent::SliceState::Unread, agent::sliceStateName(s.state));
+  r.reads.clear();
+  r.eng->historyFoldSlice("1001", 65536, true);
+  TEST_ASSERT_FALSE(r.reads.empty());
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("m0011", r.reads.front().after.c_str(), "the next read goes on after the rows passed");
 }
 
 // After a restart a shift's hidden rows make an automatic fold due before the conversation
@@ -842,6 +872,7 @@ int main(int, char**) {
   RUN_TEST(test_the_fold_read_goes_on_past_a_page_the_store_cut_short);
   RUN_TEST(test_the_fold_read_stops_before_rows_the_card_will_not_give_back);
   RUN_TEST(test_an_automatic_fold_waits_for_the_tail_after_a_restart);
+  RUN_TEST(test_a_read_that_stopped_short_is_never_nothing);
   RUN_TEST(test_an_owner_trigger_below_the_keep_mark_still_folds);
   RUN_TEST(test_listed_window_from_the_stored_list);
   RUN_TEST(test_listed_window_lookup_install);
