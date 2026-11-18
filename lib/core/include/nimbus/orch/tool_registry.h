@@ -201,8 +201,8 @@ class ToolRegistry {
   void setRouter(const std::string& name, bool v = true);
   bool isRouter(const std::string& name) const;
   // The registry name a caller's spelling stands for: the exact name, else the one
-  // whose '.' folded to '_' matches (the head loop's spelling), first in add order;
-  // "" when none.
+  // whose '.' folded to '_' matches (the head loop's spelling); "" when none, or when
+  // two names fold to the same spelling.
   std::string resolveName(const std::string& spelled) const;
 
   bool has(const std::string& name) const;

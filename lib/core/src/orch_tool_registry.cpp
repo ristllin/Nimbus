@@ -42,7 +42,12 @@ bool ToolRegistry::isAdminOnly(const std::string& name) const {
 
 void ToolRegistry::setClass(const std::string& name, const ToolClass& c) {
   for (auto& t : tools_)
-    if (t.name == name) { t.hasClass = true; t.cls = c; return; }
+    if (t.name == name) {
+      t.hasClass = true;
+      t.cls = c;
+      t.cls.group = toolGroupName(c.group);   // never a caller's temporary
+      return;
+    }
 }
 
 ToolClass ToolRegistry::classOf(const std::string& name) const {
@@ -73,9 +78,13 @@ bool sameFolded(const std::string& reg, const std::string& spelled) {
 std::string ToolRegistry::resolveName(const std::string& spelled) const {
   if (spelled.empty()) return std::string();
   if (find(spelled)) return spelled;
-  for (const auto& t : tools_)
-    if (sameFolded(t.name, spelled)) return t.name;
-  return std::string();
+  std::string hit;
+  for (const auto& t : tools_) {
+    if (!sameFolded(t.name, spelled)) continue;
+    if (!hit.empty()) return std::string();   // two tools spell the same: neither is guessed
+    hit = t.name;
+  }
+  return hit;
 }
 
 const Tool* ToolRegistry::find(const std::string& name) const {

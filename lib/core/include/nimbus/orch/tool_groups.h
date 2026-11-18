@@ -78,6 +78,9 @@ struct ToolGroup {
 };
 const ToolGroup* toolGroupTable(size_t& count);
 bool isToolGroup(const std::string& name);
+// The table's own pointer for a group name: "" for always on, a listed group, else
+// "connectors" (so a declared class never holds a caller's temporary string).
+const char* toolGroupName(const char* name);
 
 // ---- more ---------------------------------------------------------------------------
 constexpr const char kMoreTool[] = "more";
@@ -89,8 +92,9 @@ constexpr size_t kMoreNamesMax = 640;      // the callable names an unknown name
 extern const char kMoreDescription[];
 extern const char kMoreSchema[];
 
-// Register `more` on `reg` (which must outlive it). Nothing in the old engine calls this;
-// the engine that puts `more` in its tools array does.
+// Register `more` on `reg`. Its handler holds `reg`'s address: `reg` must outlive it and
+// must not be copied after this (a copy's `more` would still reach the original).
+// Nothing in the old engine calls this; the engine that puts `more` in its tools array does.
 void registerMore(ToolRegistry& reg);
 
 // What a `more` call does with these arguments, resolved without running anything, for
@@ -98,7 +102,8 @@ void registerMore(ToolRegistry& reg);
 // calls (empty when it lists, or the name is unknown or refused) and that tool's class.
 struct MoreTarget {
   std::string name;
-  ToolClass   cls;   // the target's class; a listing reads as {"", Internal, Pure}
+  ToolClass   cls;   // the target's class; a listing reads Read, Internal for a named group
+                     // other than connectors and External otherwise
   bool        lists = false;
 };
 MoreTarget moreTarget(const ToolRegistry& reg, ArduinoJson::JsonObjectConst args, const Principal& who);

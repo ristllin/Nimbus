@@ -2,6 +2,8 @@
 
 #include "nimbus/orch/tool_registry.h"
 
+#include <cstring>
+
 using ArduinoJson::JsonArrayConst;
 using ArduinoJson::JsonDocument;
 using ArduinoJson::JsonObjectConst;
@@ -140,6 +142,7 @@ const ToolClassRow kRows[] = {
 
 constexpr size_t kDescMax = 240;   // a listed description (PRD section 4)
 constexpr size_t kEchoMax = 64;    // a model-written name echoed in an error
+constexpr size_t kSigMax = 200;    // one tool's signature (a connector's schema may be long)
 
 }  // namespace
 
@@ -181,6 +184,13 @@ const ToolGroup* toolGroupTable(size_t& count) {
   return kGroups;
 }
 
+const char* toolGroupName(const char* name) {
+  if (name && !name[0]) return "";
+  for (const ToolGroup& g : kGroups)
+    if (name && std::strcmp(name, g.name) == 0) return g.name;
+  return ToolClass::kConnectorsGroup;
+}
+
 bool isToolGroup(const std::string& name) {
   for (const ToolGroup& g : kGroups)
     if (name == g.name) return true;
@@ -210,6 +220,22 @@ bool reachable(const ToolRegistry& reg, const std::string& name, const Principal
   return reg.accessFor(name, JsonObjectConst(), who).kind == ToolRegistry::Verdict::Allow;
 }
 
+// Cut at most `max` bytes, never inside a UTF-8 character.
+std::string clipUtf8(const std::string& s, size_t max) {
+  if (s.size() <= max) return s;
+  size_t n = max;
+  while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) n--;
+  return s.substr(0, n);
+}
+
+// One line of model-facing text: control characters (a connector's newline) become spaces,
+// so a description can never forge another listing line.
+std::string oneLine(std::string s) {
+  for (char& c : s)
+    if (static_cast<unsigned char>(c) < 0x20) c = ' ';
+  return s;
+}
+
 // "name(path, limit?)": every argument with '?' on the optional ones, or with
 // requiredOnly the required ones alone.
 std::string signature(const std::string& spelled, const std::string& schemaJson, bool requiredOnly) {
@@ -230,16 +256,10 @@ std::string signature(const std::string& spelled, const std::string& schemaJson,
       first = false;
     }
   }
-  return out + ")";
+  if (out.size() > kSigMax) out = clipUtf8(out, kSigMax - 3) + "...";
+  return oneLine(out) + ")";
 }
 
-// Cut at most `max` bytes, never inside a UTF-8 character.
-std::string clipUtf8(const std::string& s, size_t max) {
-  if (s.size() <= max) return s;
-  size_t n = max;
-  while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) n--;
-  return s.substr(0, n);
-}
 
 // Lines in order while they fit `cap` with room for a tail naming the rest; the tail is
 // `tailLead` and the names that did not fit, itself clipped to the cap.
@@ -275,7 +295,7 @@ std::string groupListing(const ToolRegistry& reg, const std::string& group, cons
   for (const ToolRegistry::Spec& s : reg.toolSpecs()) {
     if (group != groupOf(reg, s.name) || !reachable(reg, s.name, who)) continue;
     const std::string spelled = spelledFor(who, s.name);
-    lines.push_back(signature(spelled, s.schemaJson, false) + ": " + clipUtf8(s.description, kDescMax));
+    lines.push_back(signature(spelled, s.schemaJson, false) + ": " + clipUtf8(oneLine(s.description), kDescMax));
     names.push_back(spelled);
   }
   return fitLines(lines, names, "not shown: ", kMoreListMax);
@@ -352,7 +372,7 @@ ToolResult listFor(const ToolRegistry& reg, JsonVariantConst group, const Princi
   }
   if (!group.is<const char*>()) return ToolResult::fail("group must be a group name: " + groupNames() + ".");
   const std::string g = group.as<const char*>();
-  if (!isToolGroup(g)) return ToolResult::fail("no group " + clipUtf8(g, kEchoMax) + ". Groups: " + groupNames() + ".");
+  if (!isToolGroup(g)) return ToolResult::fail("no group " + oneLine(clipUtf8(g, kEchoMax)) + ". Groups: " + groupNames() + ".");
   const std::string l = groupListing(reg, g, who);
   return ToolResult::ok(l.empty() ? "group " + g + ": nothing callable here." : l);
 }
@@ -371,7 +391,7 @@ Resolved resolveMore(const ToolRegistry& reg, JsonObjectConst args, const Princi
   const std::string stray = strayKeys(args);
   if (!stray.empty()) {
     r.error = "more takes group, name and args (the tool's arguments go in args); not read: " +
-              clipUtf8(stray, kEchoMax) + ".";
+              oneLine(clipUtf8(stray, kEchoMax)) + ".";
     return r;
   }
   JsonVariantConst name = args["name"];
@@ -390,7 +410,7 @@ Resolved resolveMore(const ToolRegistry& reg, JsonObjectConst args, const Princi
   }
   r.target = targetName(reg, spelled, who);
   if (r.target.empty()) {
-    r.error = "no tool " + clipUtf8(spelled, kEchoMax) + " behind more. " + callableNames(reg, who);
+    r.error = "no tool " + oneLine(clipUtf8(spelled, kEchoMax)) + " behind more. " + callableNames(reg, who);
     return r;
   }
   JsonVariantConst inner = args["args"];
@@ -418,11 +438,22 @@ void registerMore(ToolRegistry& reg) {
   reg.setRouter(kMoreTool);
 }
 
+namespace {
+Taint listingTaint(JsonVariantConst group) {
+  if (group.is<const char*>() && std::string(group.as<const char*>()) != ToolClass::kConnectorsGroup)
+    return Taint::Internal;
+  return Taint::External;
+}
+}  // namespace
+
 MoreTarget moreTarget(const ToolRegistry& reg, JsonObjectConst args, const Principal& who) {
   const Resolved r = resolveMore(reg, args, who);
   MoreTarget t;
   t.lists = r.lists;
-  if (r.lists) t.cls = ToolClass{"", Taint::Internal, EffectClass::Pure};
+  // A listing changes nothing but is not suppressed (it follows gates and roles). It is
+  // outside content when it can show a connector's own words: the connectors group, or
+  // the index, which names every group.
+  if (r.lists) t.cls = ToolClass{"", listingTaint(args["group"]), EffectClass::Read};
   else if (!r.target.empty()) t.cls = reg.classOf(t.name = r.target);
   return t;   // refused without running: the fail-closed class
 }
