@@ -16,6 +16,7 @@ Sets:
   past_reference  past_reference.json: true replies (claim false), many about earlier turns.
   near_miss       near_miss.json: unbacked claims beside related effects (claim true).
   acks            acks.json: bare acknowledgements with and without a keep request (held out).
+  stress          stress.json: near-full rings, and replies that try to talk the probe out of a hit.
 
 Conditions: "with" renders the recent effects; "without" renders them as (none), the
 one-turn view of the deleted claim check. Scoring is fail-open, as shipped: an answer slower
@@ -28,8 +29,10 @@ dotenv file inside this process and never printed. Mistral is not called (no cre
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import re
 import statistics
 import sys
@@ -44,7 +47,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 CORPUS = REPO / "tests" / "evals" / "claim_corpus" / "noted.json"
 MEASURED = REPO / "tests" / "evals" / "measured" / "probe.json"
-DEFAULT_ENV = Path("/Users/roydarnell/Projects/nimbus-project/nimbus/.env")
+DEFAULT_ENV = Path(os.environ.get("NIMBUS_ENV_FILE", str(REPO / ".env")))  # the main checkout holds it
 PROMPT = (HERE / "prompt.txt").read_text()
 CORPUS_N = len(json.loads(CORPUS.read_text()))  # a qualifying run answered every corpus row
 
@@ -67,6 +70,7 @@ SETTINGS = {
     "gpt-5.6-luna": "reasoning effort low",
     "glm-5.3-flash": "reasoning_effort low (thinking cannot be disabled on this model)",
 }
+OUT_OF_CREDIT = re.compile(rb"insufficient_quota|no credits|Insufficient balance|\"1113\"")  # retrying cannot help
 ANSWER = re.compile(r'\{\s*"claims_unbacked_action"\s*:\s*(true|false)\s*\}')
 
 
@@ -87,40 +91,59 @@ def load_items() -> list:
         }
         for i, r in enumerate(corpus)
     ]
-    for name in ("past_reference", "near_miss", "acks"):
+    for name in ("past_reference", "near_miss", "acks", "stress"):
         for r in json.loads((HERE / f"{name}.json").read_text()):
             items.append({**r, "set": name})
     return items
+
+
+TAGS = ("owner_message", "reply", "effects_this_turn", "recent_effects")
+FORGED = re.compile(r"<(/?)(" + "|".join(TAGS) + r")>")
+
+
+def inert(text: str) -> str:
+    """Untrusted text cannot open or close one of the request's own sections."""
+    return FORGED.sub(r"&lt;\1\2>", text)
 
 
 def render(item: dict, with_recent: bool) -> str:
     """The probe's user message. The same bytes the device will send (RB-G0)."""
 
     def lines(rows, fmt):
-        return "\n".join(fmt(r) for r in rows) if rows else "(none)"
+        return "\n".join(inert(fmt(r)) for r in rows) if rows else "(none)"
 
     now = lines(item["this_turn"], lambda e: f"- {e['tool']} {'ok' if e['ok'] else 'FAILED'}: {e['receipt']}")
     recent = lines(item["recent"] if with_recent else [], lambda e: f"- {e['at']} {e['tool']}: {e['receipt']}")
     return (
-        f"<owner_message>\n{item['owner']}\n</owner_message>\n"
-        f"<reply>\n{item['reply']}\n</reply>\n"
+        f"<owner_message>\n{inert(item['owner'])}\n</owner_message>\n"
+        f"<reply>\n{inert(item['reply'])}\n</reply>\n"
         f"<effects_this_turn>\n{now}\n</effects_this_turn>\n"
         f"<recent_effects>\n{recent}\n</recent_effects>"
     )
 
 
-def parse_answer(text: str):
-    """True, False, or None when the answer is malformed (the device then delivers)."""
+def strict_answer(text: str):
+    """The answer when the whole text is the JSON object (code fences allowed), else None."""
     t = (text or "").strip()
     if t.startswith("```"):
         t = t.strip("`").removeprefix("json").strip()
     try:
         v = json.loads(t)
-        if isinstance(v, dict) and isinstance(v.get("claims_unbacked_action"), bool) and len(v) == 1:
-            return v["claims_unbacked_action"]
     except ValueError:
-        pass
-    m = ANSWER.search(t)
+        return None
+    if isinstance(v, dict) and isinstance(v.get("claims_unbacked_action"), bool) and len(v) == 1:
+        return v["claims_unbacked_action"]
+    return None
+
+
+def parse_answer(text: str):
+    """True, False, or None when the answer is malformed (the device then delivers). Falls back
+    to the first well-formed object inside prose; RB-G0's parser must do the same, or count the
+    'lenient' answers (scored apart) as malformed."""
+    v = strict_answer(text)
+    if v is not None:
+        return v
+    m = ANSWER.search(text or "")
     return None if not m else m.group(1) == "true"
 
 
@@ -215,11 +238,15 @@ def ask(model: str, key: str, text: str) -> dict:
                 "error": None,
             }
         except urllib.error.HTTPError as e:
-            err = f"HTTP {e.code}: {e.read()[:200]!r}"
-            if e.code not in (429, 500, 502, 503, 529):
+            body = e.read()[:200]
+            err = f"HTTP {e.code}: {body!r}"
+            if e.code not in (429, 500, 502, 503, 529) or OUT_OF_CREDIT.search(body):
                 break
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             err = f"{type(e).__name__}: {e}"
+        except (KeyError, IndexError, TypeError, ValueError) as e:  # a 200 with an unexpected body
+            err = f"bad body: {type(e).__name__}: {e}"
+            break
         time.sleep(3 * (attempt + 1))
     return {
         "answer": "",
@@ -234,21 +261,34 @@ def ask(model: str, key: str, text: str) -> dict:
 
 
 # ---- run -------------------------------------------------------------------------------
-def done_keys(path: Path) -> set:
+def jsonl(path: Path) -> list:
+    """The records of a results file; a line cut short by a killed run is skipped."""
     if not path.exists():
-        return set()
-    keys = set()
+        return []
+    out = []
     for line in path.read_text().splitlines():
-        r = json.loads(line)
-        if r["error"] is None:
-            keys.add((r["model"], r["cond"], r["set"], r["id"]))
-    return keys
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def input_sha(text: str) -> str:
+    return hashlib.sha256((PROMPT + "\0" + text).encode()).hexdigest()[:16]
+
+
+def done_keys(path: Path) -> dict:
+    """(model, cond, set, id) -> the input digest of its answered probe (None in early records)."""
+    return {(r["model"], r["cond"], r["set"], r["id"]): r.get("input") for r in jsonl(path) if r["error"] is None}
+
+
+def is_done(done: dict, key: tuple, text: str) -> bool:
+    return key in done and done[key] in (None, input_sha(text))
 
 
 def spent(path: Path) -> float:
-    if not path.exists():
-        return 0.0
-    return sum(json.loads(line)["usd"] for line in path.read_text().splitlines())
+    return sum(r["usd"] for r in jsonl(path))
 
 
 def cmd_run(args) -> int:
@@ -270,15 +310,22 @@ def cmd_run(args) -> int:
     total = [spent(path)]
     for model in args.models.split(","):
         key = read_key(Path(args.env), MODELS[model][1])
-        jobs = [(c, i) for c in args.conds.split(",") for i in items if (model, c, i["set"], i["id"]) not in done]
+        jobs = [
+            (c, i)
+            for c in args.conds.split(",")
+            for i in items
+            if not is_done(done, (model, c, i["set"], i["id"]), render(i, c == "with"))
+        ]
         print(f"{model}: {len(jobs)} probes to run (spent so far {total[0]:.4f} USD)", flush=True)
 
         def one(job, model=model, key=key):
             cond, item = job
             if total[0] >= args.max_usd:
                 return
-            res = ask(model, key, render(item, cond == "with"))
+            text = render(item, cond == "with")
+            res = ask(model, key, text)
             rec = {
+                "input": input_sha(text),
                 "model": model,
                 "cond": cond,
                 "set": item["set"],
@@ -394,6 +441,7 @@ def score_time(rows: list) -> dict:
         "over_bound": sum(1 for x in secs if x > BOUND_S),
         "errors": sum(1 for r in rows if r["error"] is not None),
         "malformed": sum(1 for r in rows if r["error"] is None and r["verdict"] is None),
+        "lenient": sum(1 for r in rows if r["verdict"] is not None and strict_answer(r.get("answer")) is None),
     }
 
 
@@ -407,6 +455,7 @@ def score(rows: list) -> dict:
         "past_reference": score_past(part("past_reference")),
         "near_miss": score_near(part("near_miss")),
         "acks": score_acks(part("acks")),
+        "stress": score_acks(part("stress")),
         **score_time(rows),
         "usd": round(sum(r["usd"] for r in rows), 4),
     }
@@ -427,7 +476,7 @@ def qualifies(s: dict) -> bool:
 
 
 def latest(rows: list) -> list:
-    """One record per probe: the last answered one (a failed attempt is replaced by its rerun)."""
+    """One record per probe: the first answered one (a failed attempt is replaced by its rerun)."""
     by: dict = {}
     for r in rows:
         k = (r["model"], r["cond"], r["set"], r["id"])
@@ -450,6 +499,7 @@ def summarize(rows: list) -> dict:
             "settings": SETTINGS[model],
             "complete": all(c["errors"] == 0 for c in conds.values()),
             "qualifies": qualifies(conds["with"]),
+            "past_fp_upper95_within_gate": (conds["with"]["past_reference"]["fp_upper95"] or 1.0) <= GATE["fp_rate"],
             "qualifies_without_recent": qualifies(conds["without"]),
             **conds,
         }
@@ -471,6 +521,7 @@ def summarize(rows: list) -> dict:
             "past_reference": "tests/evals/probe/past_reference.json",
             "near_miss": "tests/evals/probe/near_miss.json",
             "acks": "tests/evals/probe/acks.json",
+            "stress": "tests/evals/probe/stress.json",
         },
         "models": models,
         "seconds_p50_all": round(statistics.median(secs), 3) if secs else None,
@@ -481,22 +532,23 @@ def summarize(rows: list) -> dict:
 def table(summary: dict) -> str:
     head = (
         "| model | recent effects | corpus precision (95% CI) | corpus recall (95% CI) | past-ref FP (upper 95%) "
-        "| near-miss recall | acks P / R | p50 s | p90 s | >8 s | err/malformed | qualifies |"
+        "| near-miss recall | acks P / R | stress FP, recall | p50 s | p90 s | >8 s | err/malformed | qualifies |"
     )
-    out = [head, "|" + "---|" * 12]
+    out = [head, "|" + "---|" * 13]
     for model, m in summary["models"].items():
         if not m.get("measured"):
-            out.append(f"| {model} | - | unmeasured | | | | | | | | | no ({m['reason'].split(':')[0]}) |")
+            out.append(f"| {model} | - | unmeasured | | | | | | | | | | no ({m['reason'].split(':')[0]}) |")
             continue
         for cond in ("with", "without"):
             s = m[cond]
-            c, p, n, a = s["corpus"], s["past_reference"], s["near_miss"], s["acks"]
+            c, p, n, a, st = s["corpus"], s["past_reference"], s["near_miss"], s["acks"], s["stress"]
             q = m["qualifies"] if cond == "with" else m["qualifies_without_recent"]
             out.append(
                 f"| {model} | {cond} | {c['precision']} {c['precision_ci95']} ({c['tp']}/{c['tp'] + c['fp']}) "
                 f"| {c['recall']} {c['recall_ci95']} ({c['tp']}/{c['positives']}) "
                 f"| {p['fp_rate']} ({p['fp']}/{p['n']}, <= {p['fp_upper95']}) | {n['recall']} ({n['tp']}/{n['n']}) "
                 f"| {a['precision']} / {a['recall']} ({a['tp']}/{a['tp'] + a['fp']}, {a['tp']}/{a['positives']}) "
+                f"| {st['fp']}/{st['n'] - st['positives']}, {st['tp']}/{st['positives']} "
                 f"| {s['seconds_p50']} | {s['seconds_p90']} | {s['over_bound']} | {s['errors']}/{s['malformed']} "
                 f"| {'yes' if q else 'no'} |"
             )
@@ -504,7 +556,7 @@ def table(summary: dict) -> str:
 
 
 def read_rows(out: Path, name: str = "results.jsonl") -> list:
-    return [json.loads(line) for line in (out / name).read_text().splitlines()]
+    return jsonl(out / name)
 
 
 def apply_notes(models: dict, notes: list) -> None:
@@ -523,6 +575,7 @@ def cmd_summarize(args) -> int:
     apply_notes(summary["models"], args.note)
     text = table(summary)
     usd = summary["usd_total"]
+    summary["finding"] = args.finding
     summary["other_runs"] = {}
     for extra in args.extra:  # LABEL=PROMPT_FILE=RUN_DIR: a repeat, or a prompt tried and not shipped
         label, prompt_file, run_dir = extra.split("=", 2)
@@ -575,6 +628,7 @@ def main() -> int:
     s.add_argument("--out", required=True)
     s.add_argument("--json", default=str(MEASURED))
     s.add_argument("--extra", action="append", default=[], help="LABEL=PROMPT_FILE=RUN_DIR, another run for the record")
+    s.add_argument("--finding", default="", help="the result in one paragraph, for the reader of probe.json")
     s.add_argument("--note", action="append", default=[], help="MODEL=TEXT, why a model is not fully measured")
     w = sub.add_parser("show")
     w.add_argument("--set", required=True)

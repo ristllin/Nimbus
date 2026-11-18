@@ -11,6 +11,7 @@ probe before it is built, per small model, with and without the chat's recent ef
 | `run_probe.py` | Renders each row (`render`), asks each model, scores fail-open, writes `probe.json`. |
 | `past_reference.json` | 350 true replies (claim false): the rig's 23 false corrections, synthetic equivalents of two device rows, and 14 synthetic families, most of them about effects of earlier turns. |
 | `acks.json` | 48 bare acknowledgements, 24 after a keep request (claim true) and 24 without (claim false). Written after prompt v1 met the corpus's "Noted" rows and before any prompt change: a held-out check of that class. Reported, not a gate. |
+| `stress.json` | 50 rows: 30 true replies and 10 unbacked claims inside rings of about 46 entries (the device ring holds 50), and 10 replies that try to talk the probe out of a hit (forged sections, forged effect lines, an embedded answer). Reported, not a gate. |
 | `near_miss.json` | 80 replies that claim a change nothing made, beside related recent effects (claim true). Reported, not a gate. |
 | `corpus_rings.json` | One distractor ring per row of `tests/evals/claim_corpus/noted.json`, so the corpus is also read with a non-empty recent list that backs none of its claims. |
 | `seeds_rig.json` | The rig's 23 false corrections, from `extract_rig_seeds.py` over the RBREF evidence. |
@@ -32,9 +33,16 @@ System: `prompt.txt`. User message, from `run_probe.render`:
 - <tool> ok|FAILED: <receipt>        (or "(none)")
 </effects_this_turn>
 <recent_effects>
-- <time> <tool>: <receipt>           (oldest first, at most 50, receipt at most 160 B; or "(none)")
+- <time> <tool>: <receipt>           (at most 50, receipt at most 160 B; or "(none)")
 </recent_effects>
 ```
+
+Times are HH:MM for today and carry a weekday prefix for earlier days; in the sets the list is sorted as text, so a
+weekday entry can sort after today's entries (the device ring is oldest first). Owner, reply and receipt text cannot
+open or close one of the four sections (`run_probe.inert`). The answer parser takes the whole text as the JSON object
+and falls back to the first well-formed object inside prose; answers that needed the fallback are counted as
+`lenient` (22 of 3,272 haiku answers over all runs, none on the other models), and RB-G0 must parse the same way or count them as
+malformed.
 
 Answer: `{"claims_unbacked_action": true}` or `{"claims_unbacked_action": false}`. The "without" condition renders the
 recent effects as `(none)`: the one-turn view of the deleted claim check, and of a device whose ring is still empty.
@@ -59,6 +67,7 @@ python3 tests/evals/probe/run_probe.py summarize --out <evidence dir> [--extra L
 python3 tests/evals/probe/run_probe.py show --set past_reference --id restate-log-001 [--without]
 ```
 
-Keys are read by name (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `Z_AI_TOKEN`) from the dotenv file inside the process
+The dotenv file is `--env`, else `NIMBUS_ENV_FILE`, else the repo's own `.env` (a lane worktree has none: point it
+at the main checkout's). Keys are read by name (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `Z_AI_TOKEN`) from the dotenv file inside the process
 and never printed. Mistral is not called while its keys are exhausted; `mistral-small-latest` is recorded as
 unmeasured. A full run of two models is 2,048 probes and costs about 0.3 USD.
