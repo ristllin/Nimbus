@@ -269,3 +269,13 @@ deleted. Engine 2 has no baseline.
 - lane: RB-E2
 - prd: section 4
 - why: names, descriptions and schemas of the always-on tools and the pack pair agent_start and delete_file, RB-M0a's measured shapes (Ruling 11)
+
+### PC-0005: the plain file tools' results and errors
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 0 -> 1982
+- sha8: e3b0c442 -> 57e32b33
+- lane: RB-N2a
+- prd: section 4
+- why: read_file, write_file, append_file, edit_file and list_files results and errors (lib/core/src/orch_file_tools.cpp, listed in E2_EXTRA_SOURCES, so every literal of the file counts: 1,539 B of templates plus the argument names and format pieces), facts only; RB-E2 or RB-N2a moves the templates into plain/texts.h

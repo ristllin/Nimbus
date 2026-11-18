@@ -30,6 +30,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/plain/request.h"   // plain::toolDecl - the manifest the binding registers with
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/file_tools.h"
 #include "nimbus/orch/path_rules.h"
@@ -1042,6 +1043,26 @@ static void test_registration_states_the_accepted_arguments() {
     TEST_ASSERT_EQUAL_MESSAGE(int(args.size()), int(n), t.tool);
   }
   TEST_ASSERT_TRUE(fileToolArgs("files.read").empty());
+  // The manifest the binding registers with (RB-E2's plain::toolDecl) offers exactly these arguments, and its
+  // write_file schema states the content cap this config enforces, on both host classes.
+  for (const ToolCase& t : kTools) {
+    const auto* d = agent::plain::toolDecl(t.tool);
+    TEST_ASSERT_NOT_NULL_MESSAGE(d, t.tool);
+    for (bool shortHost : {false, true}) {
+      JsonDocument doc;
+      TEST_ASSERT_FALSE(deserializeJson(doc, agent::plain::declSchema(*d, shortHost)));
+      size_t n = 0;
+      for (auto kv : doc["properties"].as<JsonObjectConst>()) {
+        TEST_ASSERT_TRUE_MESSAGE(std::find(t.accepted.begin(), t.accepted.end(), std::string(kv.key().c_str())) !=
+                                     t.accepted.end(),
+                                 kv.key().c_str());
+        n++;
+      }
+      TEST_ASSERT_EQUAL_MESSAGE(int(fileToolArgs(t.tool).size()), int(n), t.tool);
+      if (std::string(t.tool) == "write_file")
+        TEST_ASSERT_EQUAL(shortHost ? 4096 : 12000, doc["properties"]["content"]["maxLength"].as<int>());
+    }
+  }
 }
 
 int main() {
