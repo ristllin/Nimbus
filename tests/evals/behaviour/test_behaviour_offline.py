@@ -233,6 +233,18 @@ class Robustness(unittest.TestCase):
         self.assertNotIn("ab12", text)
 
 
+class Spend(unittest.TestCase):
+    def test_a_head_cap_does_not_count_a_longer_model_name(self):
+        from run import Ledger
+
+        with tempfile.TemporaryDirectory() as d:
+            led = Ledger(Path(d) / "spend.jsonl")
+            led.add("head:gpt-5.6", 1.0)
+            led.add("head:gpt-5.6-luna", 0.25)
+            self.assertEqual(led.total("head:gpt-5.6"), 1.0)
+            self.assertEqual(led.total(), 1.25)
+
+
 class Faults(unittest.TestCase):
     def test_once_then_success(self):
         w = World(now=NOW, fail={"note": ("once", "busy")})

@@ -220,12 +220,13 @@ class Ledger:
     def __init__(self, path: Path):
         self.path = path
 
-    def total(self, label_prefix="") -> float:
+    def total(self, label: str | None = None) -> float:
+        """USD under one exact label (head:<model> or judge), or everything with no label."""
         if not self.path.exists():
             return 0.0
         with _lock:
             rows = [json.loads(x) for x in self.path.read_text().splitlines() if x.strip()]
-        return sum(r["usd"] for r in rows if r["label"].startswith(label_prefix))
+        return sum(r["usd"] for r in rows if label is None or r["label"] == label)
 
     def add(self, label: str, usd: float):
         with _lock, open(self.path, "a") as f:
