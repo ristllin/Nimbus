@@ -13,6 +13,7 @@
 #include "nimbus/orch/effect_ring.h"   // RB-Q3a: the ring behind RingRecentActions, kToolMax, kReceiptMax
 #include "nimbus/orch/history_rows.h"  // wdayAbbr, monthAbbr
 #include "nimbus/orch/loops.h"         // civilFromDays
+#include "nimbus/orch/tool_taint.h"    // toolTaintRow: outside-content tools stay out of the block
 #include "nimbus/utf8.h"
 
 // Every model-visible string here moved BYTE-IDENTICAL from
@@ -650,10 +651,15 @@ std::string renderRecentActions(RecentActionsSource& src, const std::string& cha
   std::vector<RecentAction> got;
   src.recent(chatId, kRecentActionsMax, got);
   if (got.size() > kRecentActionsMax) got.erase(got.begin(), got.end() - kRecentActionsMax);
-  // Newest first until the block is full; the oldest that do not fit go whole.
+  // Newest first until the block is full; the oldest that do not fit go whole. A tool whose
+  // output is outside content (taint row External: files.fetch, image.generate) is left out:
+  // its receipt is the first bytes of that output, and this block rides every later turn of
+  // the chat with nothing marking it as outside content.
   std::vector<std::string> lines;
   size_t used = sizeof(kRecentActionsHead) - 1;
   for (auto it = got.rbegin(); it != got.rend(); ++it) {
+    const nimbus::orch::ToolTaintRow* row = nimbus::orch::toolTaintRow(it->tool);
+    if (row && row->taint == nimbus::orch::Taint::External) continue;
     std::string line = actionTime(it->epoch, zoneAt) + " " + oneLine(it->tool, nimbus::orch::fx::kToolMax) + ": " +
                        oneLine(it->receipt, nimbus::orch::fx::kReceiptMax) + "\n";
     if (used + line.size() > kRecentActionsBytes) break;

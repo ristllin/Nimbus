@@ -176,7 +176,8 @@ std::string composeInstructions(const ComposeInputs& in);
 // oldest first, one line each ("<local time> <tool>: <receipt>"), at most
 // kRecentActionsBytes. Facts only, so a correction can name a row id without a read.
 // Fields are cleaned to one line and clipped on a UTF-8 boundary to the ring's own
-// limits; when the lines do not fit, the oldest go whole. "" when the chat has none.
+// limits; when the lines do not fit, the oldest go whole. An entry of a tool whose taint
+// row is External (its receipt is outside content) is left out. "" when the chat has none.
 // Deterministic: the same entries give the same bytes (it rides the per-turn block,
 // after the cache point).
 struct RecentAction {

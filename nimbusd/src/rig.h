@@ -2837,7 +2837,7 @@ class NimbusdRig {
       effects().record(chat, (int64_t)vclock::epoch(), tool, receipt);   // the instance clock
     };
     // Lane RB-Q3a: the same rings' newest receipts ride each turn as [RECENT ACTIONS].
-    recentFx_.reset(new agent::RingRecentActions(effects().ring()));
+    if (!recentFx_) recentFx_.reset(new agent::RingRecentActions(effects().ring()));   // once: an engine rebuild keeps it
     d.recentActions = recentFx_.get();
     d.hooks.onTurnStart = [this](const agent::TurnStartEv&) {
       // The turn's identity is its user row's id (the chat view joins a bubble to its

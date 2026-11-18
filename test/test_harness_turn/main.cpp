@@ -6092,7 +6092,10 @@ static void test_the_truth_check_hook() {
 }
 
 // RB-Q3a, the definition of done, scripted: a correction names a row id from the [RECENT
-// ACTIONS] block and completes in one ledger_write, with no read. The ring holds the earlier
+// ACTIONS] block and completes in one ledger_write, with no read. The scripted head makes the
+// one call by construction; what the case proves is the plumbing: the block reaches the head
+// with the newest row last, the id it names is the one the call carries, another chat's row
+// never rides, and with an empty ring there is no id to name. The ring holds the earlier
 // write's receipt as RB-L1b's sink words it (two rows of the day); the owner corrects the
 // last one; the scripted head takes the id of the newest ledger_write line from the block it
 // was handed, and the turn makes exactly one tool call: ledger_write with that id. (RB-L1b's
