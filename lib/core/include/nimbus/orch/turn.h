@@ -303,5 +303,11 @@ ReplyShape parseHeadReply(const std::string& text, Turn& out, ParseError& err,
 // lenient reader uses `wholeReply` to decide whether the reply is a turn.
 std::string leadingJsonObject(const std::string& text, bool* wholeReply = nullptr);
 
+// The text fields of a final orch_turn's JSON, read loosely: `reply` and (when given) `ask`
+// get the field's string, "" for a missing or non-string field. False, and nothing set, when
+// the JSON does not parse. The final-answer checks read the turn through it, so the image
+// holds one copy of the JSON reader for them (RB-Q1a).
+bool finalTurnText(const std::string& json, std::string& reply, std::string* ask = nullptr);
+
 }  // namespace orch
 }  // namespace nimbus

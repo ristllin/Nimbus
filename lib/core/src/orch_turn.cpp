@@ -733,6 +733,22 @@ bool turnShaped(const std::string& json) {
   return !deserializeJson(d, json) && d["reply"].is<const char*>();
 }
 
+}  // namespace
+
+bool finalTurnText(const std::string& json, std::string& reply, std::string* ask) {
+  JsonDocument d;
+  if (deserializeJson(d, json) != DeserializationError::Ok) return false;
+  const char* r = d["reply"] | "";
+  reply = r;
+  if (ask) {
+    const char* a = d["ask"] | "";
+    *ask = a;
+  }
+  return true;
+}
+
+namespace {
+
 ReplyShape prose(const std::string& text, Turn& out, ParseError& err) {
   const size_t b = text.find_first_not_of(kSpace);
   const size_t e = text.find_last_not_of(kSpace);

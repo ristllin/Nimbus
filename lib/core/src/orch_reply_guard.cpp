@@ -1,12 +1,11 @@
 #include "nimbus/orch/reply_guard.h"
 
-#include <ArduinoJson.h>
-
 #include <cctype>
 #include <cstring>
 
 #include "nimbus/orch/action_rules.h"  // actionRuleTable - the request-advertised action names
 #include "nimbus/orch/claims.h"        // ownerAskedHow - the asked-how gate
+#include "nimbus/orch/turn.h"          // finalTurnText - the final turn's reply and ask
 
 namespace nimbus {
 namespace orch {
@@ -165,10 +164,8 @@ std::string plumbingCheckText(const std::string& text) {
 }
 
 std::string plumbingCheck(const std::string& finalTurnJson) {
-  JsonDocument d;
-  if (deserializeJson(d, finalTurnJson) != DeserializationError::Ok) return std::string();
-  const char* reply = d["reply"] | "";
-  const char* ask = d["ask"] | "";
+  std::string reply, ask;   // read through the turn's one JSON reader (turn.h, RB-Q1a)
+  if (!finalTurnText(finalTurnJson, reply, &ask)) return std::string();
   // The ask field reaches the owner too (it is the question shown), so both are
   // checked: plumbing in either is a leak.
   if (!hasPlumbing(reply) && !hasPlumbing(ask)) return std::string();

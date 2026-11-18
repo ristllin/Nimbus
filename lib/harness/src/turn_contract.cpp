@@ -1,7 +1,5 @@
 #include "nimbus/harness/turn_contract.h"
 
-#include <ArduinoJson.h>
-
 #include <cctype>
 #include <cstring>
 #include <set>
@@ -229,9 +227,8 @@ bool isPlaceholderReply(const std::string& reply, const std::string& ownerText) 
 }
 
 std::string placeholderCheck(const std::string& finalTurnJson, const std::string& ownerText) {
-  JsonDocument d;
-  if (deserializeJson(d, finalTurnJson) != DeserializationError::Ok) return std::string();
-  const char* reply = d["reply"] | "";
+  std::string reply;
+  if (!orch::finalTurnText(finalTurnJson, reply)) return std::string();
   return isPlaceholderReply(reply, ownerText) ? std::string(kPlaceholderCorrection) : std::string();
 }
 

@@ -5946,6 +5946,17 @@ static void test_final_check_reads_the_field() {
   TEST_ASSERT_TRUE(agent::placeholderCheck("{\"reply\":\"a real answer\"}", "hi").empty());
   TEST_ASSERT_TRUE(agent::placeholderCheck("not json", "hi").empty());
   TEST_ASSERT_TRUE(agent::placeholderCheck("{\"reply\":\"\"}", "hi").empty());
+  // RB-Q1a: the final checks read the turn through orch::finalTurnText. A field that is
+  // missing or not a string reads as "", and text that does not parse sets nothing.
+  TEST_ASSERT_TRUE(agent::placeholderCheck("{\"reply\":5,\"ask\":\"placeholder\"}", "hi").empty());
+  std::string reply = "kept", ask = "kept";
+  TEST_ASSERT_FALSE(orch::finalTurnText("{\"reply\":", reply, &ask));
+  TEST_ASSERT_EQUAL_STRING("kept", reply.c_str());
+  TEST_ASSERT_TRUE(orch::finalTurnText("{\"reply\":\"a\",\"ask\":{\"x\":1}}", reply, &ask));
+  TEST_ASSERT_EQUAL_STRING("a", reply.c_str());
+  TEST_ASSERT_EQUAL_STRING("", ask.c_str());
+  TEST_ASSERT_TRUE(orch::finalTurnText("{\"ask\":\"q?\"}", reply));
+  TEST_ASSERT_EQUAL_STRING("", reply.c_str());
 }
 
 // RB-Q1a: the turn's effect ledger is the turn state's, not the claim check's. The
