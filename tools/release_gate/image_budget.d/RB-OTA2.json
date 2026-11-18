@@ -1,6 +1,6 @@
 {
   "lane": "RB-OTA2",
-  "allowance_bytes": 2816,
-  "envs": {"esp32s3-cyd": 2816, "test": 2816, "test-cyd": 2560},
-  "why": "Ruling 22 (18 Nov 14:05Z) raised this lane's figure from the plan's 1,024 B to its measured need, rounded up to the next 256 B; the web route and the /ota command both stay. Measured on the lane tip 98be70a4 against rb-main 831986f9, both built in the same tree, code bytes (docs pack +249 B counted apart): esp32s3 +2,791 B, esp32s3-cyd +2,759 B, test +2,583 B, test-cyd +2,551 B (the route, the /ota command and help line, the fail-closed switch and its lines)."
+  "allowance_bytes": 3072,
+  "envs": {"esp32s3-cyd": 3072, "test": 2816, "test-cyd": 2560},
+  "why": "Ruling 22 (18 Nov 14:05Z): the lane's measured need, rounded up to the next 256 B; the web route and the /ota command both stay. Measured again after the rebase onto rb-main 9bcb0736 (RB-Q1b merged), lane tip against 9bcb0736, both built in the same tree, code bytes (docs pack +249 B counted apart): esp32s3 +2,855 B, esp32s3-cyd +2,839 B, test +2,583 B, test-cyd +2,551 B (the route, the /ota command and help line, the fail-closed switch and its lines). Before the rebase, against 831986f9: +2,791 / +2,759 / +2,583 / +2,551 B."
 }
