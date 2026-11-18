@@ -2972,7 +2972,9 @@ static agent::FoldDriverHooks foldHooks() {
   // (candidate 4, F2): an owner's Telegram chat or the web chat directly; the serial
   // console's and the screen's through the owner's Telegram chat, else the web chat; a
   // guest chat's is only logged (agent::foldAlertRoute, host-tested).
-  h.alert = agent::foldAlertHook(foldOwnerChat, foldOwnerTelegram, "web", foldSay);
+  h.alert = [](const std::string& chat, const std::string& text) {
+    return agent::foldAlertSend(chat, text, foldOwnerChat(chat), foldOwnerTelegram(), "web", foldSay);
+  };
   h.ownerChat = foldOwnerChat;   // the owner's chats fold first; guests share half the cap
   h.changed = [](const std::string& chat) {
     if (!chat.empty()) publishFoldStatus(chat);   // the CTX echo, then the web copy

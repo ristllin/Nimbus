@@ -479,11 +479,17 @@ static void test_the_daily_alert_is_spent_only_when_it_reaches_the_owner() {
 }
 
 // Candidate 4, F2 (replaces the source grep the review called hollow): the device's alert
-// hook, built by agent::foldAlertHook as the firmware builds it, driven through the driver.
+// hook over agent::foldAlertSend, bound as the firmware binds it, driven through the driver.
 // The serial console's (or the screen's) alert goes to the owner's Telegram chat, else the
 // web chat, and names where the summary failed; with neither, or when the send fails, it is
 // logged and the day's alert is not spent. A guest's is logged only.
 namespace {
+bool g_sendOk = true;
+std::vector<std::pair<std::string, std::string>> g_sent;
+bool fakeSend(const std::string& to, const std::string& text) {
+  if (g_sendOk) g_sent.push_back({to, text});
+  return g_sendOk;
+}
 struct AlertCase {
   std::string ownerTelegram, webChat;
   bool sendOk;
@@ -497,14 +503,13 @@ static void test_the_device_alert_hook_routes_to_a_chat_a_person_reads() {
     Device d;
     d.guests = {"guest"};
     d.thinText = "";
-    std::vector<std::pair<std::string, std::string>> sent;
-    std::set<std::string> owners = {"web", "serial", "voice", "111"};
-    d.alertHook = agent::foldAlertHook([owners](const std::string& c) { return owners.count(c) > 0; },
-                                       [k] { return k.ownerTelegram; }, k.webChat,
-                                       [&sent, k](const std::string& to, const std::string& text) {
-                                         if (k.sendOk) sent.push_back({to, text});
-                                         return k.sendOk;
-                                       });
+    std::vector<std::pair<std::string, std::string>>& sent = g_sent;
+    sent.clear();
+    g_sendOk = k.sendOk;
+    const std::set<std::string> owners = {"web", "serial", "voice", "111"};
+    d.alertHook = [owners, k](const std::string& c, const std::string& text) {   // as the firmware binds it
+      return agent::foldAlertSend(c, text, owners.count(c) > 0, k.ownerTelegram, k.webChat, fakeSend);
+    };
     d.boot();
     d.backlog("serial", 40);
     d.folds.noteCycleFailed("serial", kT0 - 30 * 3600);

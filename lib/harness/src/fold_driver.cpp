@@ -485,6 +485,11 @@ FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t n
   return FoldTick::Deferred;
 }
 
+// An automatic cycle starting between two passes of a manual read that goes on.
+bool FoldDriver::automaticInYield(bool manual) const {
+  return !manual && manualWaitPasses_ && !ctl_.manualPendingChat.empty();
+}
+
 FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   std::string chat;
   bool manual = false, overflow = false;
@@ -510,7 +515,7 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   c.msgsAtStart = f ? f->msgsSinceFold : 0;
   c.rungs = orderedRungs();
   c.startedMs = nowMs;
-  c.inYield = !manual && manualWaitPasses_ && !ctl_.manualPendingChat.empty();
+  c.inYield = automaticInYield(manual);
   cycle_ = std::move(c);
   hlog::logf("fold(%s): cycle start (%s, %u rungs, %u B digest, %u rows)", chat.c_str(),
              manual ? "manual" : "automatic", (unsigned)cycle_.rungs.size(), (unsigned)cycle_.slice.digest.size(),
@@ -780,23 +785,19 @@ FoldAlertRoute foldAlertRoute(const std::string& chat, bool chatIsOwners, const 
   return r;
 }
 
-std::function<bool(const std::string&, const std::string&)> foldAlertHook(
-    std::function<bool(const std::string&)> ownerChat, std::function<std::string()> ownerTelegram,
-    std::string webChat, std::function<bool(const std::string&, const std::string&)> send) {
-  return [ownerChat, ownerTelegram, webChat, send](const std::string& chat, const std::string& text) {
-    const bool owners = !ownerChat || ownerChat(chat);
-    const FoldAlertRoute r =
-        foldAlertRoute(chat, owners, ownerTelegram ? ownerTelegram() : std::string(), webChat, text);
-    if (r.target.empty()) {
-      hlog::logf("fold(%s): the daily alert is logged only (%s), the day's alert not spent", chat.c_str(),
-                 owners ? "no chat a person reads" : "not the owner's chat");
-      return false;
-    }
-    if (send && send(r.target, r.text)) return true;
-    hlog::logf("fold(%s): the daily alert to %s was not delivered, the day's alert not spent", chat.c_str(),
-               r.target.c_str());
+bool foldAlertSend(const std::string& chat, const std::string& text, bool chatIsOwners,
+                   const std::string& ownerTelegram, const std::string& webChat,
+                   bool (*send)(const std::string&, const std::string&)) {
+  const FoldAlertRoute r = foldAlertRoute(chat, chatIsOwners, ownerTelegram, webChat, text);
+  if (r.target.empty()) {
+    hlog::logf("fold(%s): the daily alert is logged only (%s), the day's alert not spent", chat.c_str(),
+               chatIsOwners ? "no chat a person reads" : "not the owner's chat");
     return false;
-  };
+  }
+  if (send && send(r.target, r.text)) return true;
+  hlog::logf("fold(%s): the daily alert to %s was not delivered, the day's alert not spent", chat.c_str(),
+             r.target.c_str());
+  return false;
 }
 
 }  // namespace agent

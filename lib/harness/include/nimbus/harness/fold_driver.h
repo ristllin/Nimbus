@@ -248,6 +248,7 @@ class FoldDriver {
   uint32_t paidToday(uint32_t nowEpoch) const;
   uint32_t guestPaidToday(uint32_t nowEpoch) const;
   void endAutomaticForManual(uint32_t nowMs, uint32_t nowEpoch);
+  bool automaticInYield(bool manual) const;
 };
 
 // Where the daily fold alert goes (candidate 4, F2): only to a chat a person reads. An owner's
@@ -261,9 +262,10 @@ struct FoldAlertRoute {
 };
 FoldAlertRoute foldAlertRoute(const std::string& chat, bool chatIsOwners, const std::string& ownerTelegram,
                               const std::string& webChat, const std::string& text);
-// The binding's alert hook over that route: true only when `send` delivered it.
-std::function<bool(const std::string& chat, const std::string& text)> foldAlertHook(
-    std::function<bool(const std::string& chat)> ownerChat, std::function<std::string()> ownerTelegram,
-    std::string webChat, std::function<bool(const std::string& target, const std::string& text)> send);
+// The binding's alert over that route (its FoldDriverHooks::alert calls this): true only when
+// `send` delivered it; otherwise one log line and the day's alert is not spent.
+bool foldAlertSend(const std::string& chat, const std::string& text, bool chatIsOwners,
+                   const std::string& ownerTelegram, const std::string& webChat,
+                   bool (*send)(const std::string& target, const std::string& text));
 
 }  // namespace agent
