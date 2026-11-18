@@ -520,10 +520,20 @@ def _e2(tree, core=""):
     regen(tree)
 
 
+def _e2_ledger_state(tree):
+    """Each e2 class's last accepted state in the tree's ledger (the repository's own entries chain first)."""
+    state = {}
+    for e in gate.parse_changes(read(tree, gate.CHANGES))["entries"]:
+        if e.get("catalog") == "e2":
+            state[e["class"]] = {"bytes": int(e["bytes"].split("->")[1]), "sha8": e["sha8"].split("->")[1].strip()}
+    return state
+
+
 def _e2_build_entries(tree, before=None):
     st = stats(tree, "e2")
+    before = before or _e2_ledger_state(tree)
     for cls in cat.E2_CLASSES:
-        b = (before or {}).get(cls, {"bytes": 0, "sha8": gate.EMPTY_SHA8})
+        b = before.get(cls, {"bytes": 0, "sha8": gate.EMPTY_SHA8})
         if (b["bytes"], b["sha8"]) == (st[cls]["bytes"], st[cls]["sha8"]):
             continue
         append_entry(tree, **entry_for(tree, "e2", cls, b, "build", prd="section 4", lane="RB-E2"))
