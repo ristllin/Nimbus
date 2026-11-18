@@ -167,6 +167,22 @@
       ],
       "plan_text": "lib/core/src/ota_logic.cpp, lib/core/include/nimbus/ota/ota_logic.h, src/sys/ota_update.cpp, lib/core/src/orch_head_qual.cpp, lib/core/include/nimbus/orch/head_qual.h, tools/make_manifest.py, tools/test_make_manifest.py, test/test_ota_logic, test/test_head_qual, tests/hil/ota_rehearsal.py (one leg)"
     },
+    "RB-OTA2": {
+      "stage": "S0",
+      "files": [
+        "src/sys/ota_update.cpp",
+        "src/sys/ota_update.h",
+        "src/agent/telegram.cpp",
+        "src/net/ota_channel_routes.cpp",
+        "docs/ota.md",
+        "test/test_ota_channel/**",
+        "tests/hil/test_ota_channel.py"
+      ],
+      "notes": [
+        "src/agent/telegram.cpp: the one /ota command row only (the plan text); the /ota dispatch turned out to live in src/agent/orchestrator.cpp and lib/core/include/nimbus/orch/command.h, so the lane declares those under Cross-lane edits and leaves telegram.cpp untouched. Not added to hot_files: PRD section 10's telegram.cpp order is unchanged."
+      ],
+      "plan_text": "src/sys/ota_update.cpp and ota_update.h (the setChannel seam RB-OTA1 left), the Telegram command table entry for /ota (src/agent/telegram.cpp is a hot file: one command row only, after RB-Q1c and RB-TS1 are not yet started so you are first; keep the edit to the command dispatch), one owner-authenticated web API route in a new src/net/ota_channel_routes.cpp (no web page change: the page has 485 B free), docs/ota.md, test/test_ota_channel/ (new), tests/hil/test_ota_channel.py (new)"
+    },
     "RB-GATE0": {
       "stage": "S0",
       "files": [

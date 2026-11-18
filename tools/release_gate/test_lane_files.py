@@ -20,6 +20,10 @@ import check_lane_files as gate
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 PLAN = os.environ.get("RB_PLAN_JSON", "/Users/roydarnell/Projects/nimbus-project/program-2026-10-18/rebuild/PLAN.json")
+# Lanes the orchestrator added that wait outside PLAN.json until their owners.json entry is
+# merged (PLAN-pending.json beside the plan). They are program lanes all the same, so the
+# table may carry their entries while they wait; a lane in both files counts once.
+PLAN_PENDING = os.environ.get("RB_PLAN_PENDING_JSON", os.path.join(os.path.dirname(PLAN), "PLAN-pending.json"))
 
 
 def owners(**lanes):
@@ -314,6 +318,10 @@ def test_real_owners_table_covers_every_plan_lane():
         pytest.skip(f"the program's PLAN.json is not on this machine ({PLAN}); set RB_PLAN_JSON to check it")
     with open(PLAN, encoding="utf-8") as f:
         plan = json.load(f)
+    if os.path.exists(PLAN_PENDING):
+        with open(PLAN_PENDING, encoding="utf-8") as f:
+            known = {row["id"] for row in plan["lanes"]}
+            plan["lanes"] += [row for row in json.load(f).get("lanes", []) if row["id"] not in known]
     assert gate.plan_problems(real_owners(), plan) == []
 
 
