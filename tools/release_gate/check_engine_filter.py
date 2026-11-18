@@ -175,7 +175,11 @@ def check_maps(
             if env in require:
                 fails.append(f"env:{env}: {os.path.relpath(path, root)} is not built (required)")
             continue
-        if env_engine(cp, env) != 1:
+        try:
+            engine = env_engine(cp, env)
+        except engine_filter.EngineFilterError:
+            continue  # check_hooks reports the bad option
+        if engine != 1:
             lines.append(f"env:{env}: engine 2, not an engine-1 image (skipped)")
             continue
         with open(path, "r", encoding="utf-8", errors="replace") as fh:

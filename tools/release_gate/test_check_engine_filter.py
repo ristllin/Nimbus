@@ -140,7 +140,9 @@ class GateTests(unittest.TestCase):
         self.assertTrue(ok, fails)
 
     def test_bad_engine_option_fails(self):
-        self.assertFails(self.tree(extra="custom_nimbus_engine = 3"), "must be 1 or 2")
+        t = self.tree(extra="custom_nimbus_engine = 3")
+        t.map("test-cyd", CLEAN_MAP)  # the map pass must not crash on the bad option
+        self.assertFails(t, "must be 1 or 2")
 
     # 3. the maps
     def test_loaded_engine2_object_fails(self):
