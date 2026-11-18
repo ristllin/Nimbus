@@ -776,10 +776,6 @@ class TurnEngine {
 
   // The most recent composed World system prompt (for PROMPT? / diagnostics).
   std::string lastInstructions_;
-  // Lane S: this turn's effect ledger (turn_effects.h). The turn state holds it: runTurn
-  // resets it and records the fresh results and every head tool call, apply records the
-  // final turn's outcomes (ApplyState::effects), and the checks below read it.
-  nimbus::orch::TurnEffects turnFx_;
   ClaimCheck claims_;               // lane S: this turn's claim check, over turnFx_
   TurnSources claimSources(const std::string& chatId, const std::string& userText,
                            const ComposeInputs& ci) const;   // CUM-824
@@ -938,6 +934,12 @@ class TurnEngine {
   void meterSpend(const nimbus::orch::TurnSpend& spend, const std::string& tag);
   // The model-facing label of the turn in flight ("nightly dream", ...).
   std::string turnLabel() const;
+  // Lane S: this turn's effect ledger (turn_effects.h). The turn state holds it: runTurn
+  // resets it and records the fresh results and every head tool call, apply records the
+  // final turn's outcomes (ApplyState::effects), and the checks read it. Last member, so the
+  // members the turn code reads keep their offsets (RB-Q1a: tg_poll stack).
+  nimbus::orch::TurnEffects turnFx_;
+  void startTurnLedger();   // runTurn's start: turnFx_ reset, the fresh results recorded
 };
 
 }  // namespace agent

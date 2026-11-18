@@ -234,7 +234,6 @@ class ClaimCheck {
   mutable SeenCache seen_;
   void ensureSeenCache() const;
   nimbus::orch::TurnEffects own_;            // the ledger when none is attached (useEffects)
-  nimbus::orch::TurnEffects* fx_ = &own_;    // the ledger this check reads
   std::string sources_;
   std::string recalled_;
   std::string ownerNums_;        // the numbers the owner's own message holds (CUM-824)
@@ -281,6 +280,7 @@ class ClaimCheck {
   uint32_t causeEvidence_ = 0;   // this turn's records, as CauseEvidence bits
   nimbus::orch::HostedRuns subRuns_;   // TurnSources::subRuns
   bool corrected_ = false;
+  nimbus::orch::TurnEffects* fx_ = &own_;    // the ledger this check reads (useEffects)
 };
 
 }  // namespace agent

@@ -457,6 +457,14 @@ std::string convMapSet(std::string raw, const std::string& chat,
 
 TurnEngine::TurnEngine(Deps d, Tuning t) : d_(std::move(d)), t_(t) { claims_.useEffects(&turnFx_); }
 
+// A fresh effect ledger for the turn, with the sub-agent results the entry wrapper folded in
+// (consumed: never carried into a later turn). Out of line: runTurn's frame stays as it was.
+__attribute__((noinline)) void TurnEngine::startTurnLedger() {
+  turnFx_.reset();
+  recordFreshResults(turnFx_, freshSourced_, freshUnsourced_);
+  freshSourced_ = freshUnsourced_ = 0;
+}
+
 void ProviderHosts::noteFailed(const std::string& host, const std::string& err) const {
   if (!failed || nimbus::orch::isParkedRefusal(err)) return;   // no request was answered
   int status = 0;
@@ -1187,9 +1195,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // Lane S: a fresh effect ledger; the sub-agent results the entry wrapper
   // folded in count as read (sourced or with no lookup behind them).
   claims_.beginTurn();
-  turnFx_.reset();
-  recordFreshResults(turnFx_, freshSourced_, freshUnsourced_);
-  freshSourced_ = freshUnsourced_ = 0;   // consumed: never carried into a later turn
+  startTurnLedger();
   // Lifecycle hook: turn start (observer-only; source set by the entry wrapper).
   if (d_.hooks.onTurnStart) {
     TurnStartEv ev;
