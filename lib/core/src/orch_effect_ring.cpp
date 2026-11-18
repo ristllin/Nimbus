@@ -16,6 +16,7 @@ namespace {
 
 constexpr const char kTag[] = "f1\t";
 constexpr size_t kTagLen = 3;
+constexpr char kHex[] = "0123456789abcdef";
 
 uint32_t crc32Of(const char* p, size_t n) {
   uint32_t c = 0xFFFFFFFFu;
@@ -176,7 +177,6 @@ bool ringKey(const std::string& chatId, std::string& key) {
     return true;
   }
   if (chatId.size() > kOtherIdMax) return false;
-  static const char kHex[] = "0123456789abcdef";
   key = "k";
   for (char c : chatId) {
     key += kHex[(uint8_t)c >> 4];
@@ -194,7 +194,6 @@ bool ringPath(const std::string& chatId, std::string& path) {
 }
 
 std::string encodeLine(const RingEntry& e) {
-  static const char kHex[] = "0123456789abcdef";
   std::string line(kTag);
   line += std::to_string((long long)(e.epoch > 0 ? e.epoch : 0));
   line += '\t';

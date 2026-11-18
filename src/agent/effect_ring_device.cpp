@@ -4,7 +4,6 @@
 #include <FS.h>
 #include <cstring>
 #include <ctime>
-#include <mutex>
 #include <new>
 #include <vector>
 
@@ -124,19 +123,10 @@ CardFxFiles& cardFiles() {
   return f;
 }
 
-// The pending receipt slot (one tool call at a time runs on the turn task).
-std::mutex& pendingMu() {
-  static std::mutex m;
-  return m;
-}
-std::string& pendingTool() {
-  static std::string s;
-  return s;
-}
-std::string& pendingLine() {
-  static std::string s;
-  return s;
-}
+// The pending receipt slot. No lock: a tool's sink and the record() after the call both run
+// on the turn task, one tool call at a time (no on-device concurrency, AGENTS.md section 4).
+std::string g_pendingTool;
+std::string g_pendingLine;
 
 // The clock is set once it is past 2023 (the ledger's kMinClockEpoch rule); 0 otherwise.
 int64_t nowEpoch() {
@@ -153,10 +143,10 @@ fx::EffectRing& ring() {
 
 void notePendingReceipt(const std::string& tool, const std::string& line) {
   try {
-    std::lock_guard<std::mutex> g(pendingMu());
-    pendingTool() = tool;
-    pendingLine() = line;
+    g_pendingTool = tool;
+    g_pendingLine = line;
   } catch (const std::bad_alloc&) {   // the tool's result stands in for it
+    g_pendingTool.clear();
   }
 }
 
@@ -164,12 +154,9 @@ void record(const std::string& chatId, const std::string& tool, const std::strin
   const PsramFirstScope psram;
   try {
     std::string line;
-    {
-      std::lock_guard<std::mutex> g(pendingMu());
-      if (!pendingTool().empty() && pendingTool() == tool) line.swap(pendingLine());
-      pendingTool().clear();
-      pendingLine().clear();
-    }
+    if (!g_pendingTool.empty() && g_pendingTool == tool) line.swap(g_pendingLine);
+    g_pendingTool.clear();
+    g_pendingLine.clear();
     ring().append(chatId, nowEpoch(), tool, line.empty() ? receipt : line);   // NoMemory is a state, not a throw
   } catch (const std::bad_alloc&) {   // the pending copy: the effect is not recorded, the turn goes on
   }
