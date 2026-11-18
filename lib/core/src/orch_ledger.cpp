@@ -1116,56 +1116,63 @@ bool LedgerStore::applyAdd(Work& w, const Op& op, size_t index, std::string& err
   return true;
 }
 
+namespace {
+
+// The errors an update, remove or move has before any row is looked up.
+std::string changeOpError(const Op& op) {
+  if (op.ids.empty()) return "no id given (send id or ids)";
+  if (op.ids.size() > kMaxIdsPerOp) return "an op names at most 16 ids";
+  if (op.kind == OpKind::Update && op.setMask == 0) return "set names no column";
+  return std::string();
+}
+
+}  // namespace
+
 bool LedgerStore::applyChange(Work& w, const Op& op, std::string& err) {
-  if (op.ids.empty()) {
-    err = "no id given (send id or ids)";
-    return false;
-  }
-  if (op.ids.size() > kMaxIdsPerOp) {
-    err = "an op names at most 16 ids";
-    return false;
-  }
-  if (op.kind == OpKind::Update && op.setMask == 0) {
-    err = "set names no column";
-    return false;
-  }
+  if (!(err = changeOpError(op)).empty()) return false;
   std::set<std::string> seen;
   for (const std::string& raw : op.ids) {
     const std::string id = normalizeId(raw);
-    if (!seen.insert(id).second) continue;
-    std::string ym;
-    size_t pos = 0;
-    if (!locate(w, id, ym, pos, err)) return false;
-    const Row old = w.months[ym].rows[pos];
-    w.days.insert(old.day);
-    w.touched.insert(ym);
-    if (op.kind == OpKind::Remove) {
-      w.entries.push_back(Entry{'D', old});
-      applyEntry(w.months[ym].rows, w.entries.back());
-      w.changed.push_back(old);
-      w.lines.push_back("removed " + renderRow(old));
-      continue;
-    }
-    Row nr = old;
-    if (op.kind == OpKind::Move) nr.day = clean(op.day);
-    else applySet(nr, op.setMask, op.set);
-    nr.call = w.call;
-    if (!(err = rowError(nr)).empty()) return false;
-    const std::string nym = monthOf(nr.day);
-    if (nym != ym) {
-      if (!w.months.count(nym) && !loadMonth(nym, w.months[nym], &err)) return false;
-      w.entries.push_back(Entry{'D', old});
-      applyEntry(w.months[ym].rows, w.entries.back());
-    }
-    w.entries.push_back(Entry{'P', nr});
-    applyEntry(w.months[nym].rows, w.entries.back());
-    for (const std::string& x : figureWarnings(nr)) w.warnings.push_back(x);
-    w.touched.insert(nym);
-    w.days.insert(nr.day);
-    w.changed.push_back(nr);
-    w.lines.push_back(op.kind == OpKind::Move ? "moved from " + old.day + ": " + renderRow(nr)
-                                              : "updated " + renderRow(nr));
+    if (seen.insert(id).second && !changeOne(w, op, id, err)) return false;
   }
+  return true;
+}
+
+// One row of an update, remove or move. A row that changes month is removed from the old
+// month and put in the new one.
+bool LedgerStore::changeOne(Work& w, const Op& op, const std::string& id, std::string& err) {
+  std::string ym;
+  size_t pos = 0;
+  if (!locate(w, id, ym, pos, err)) return false;
+  const Row old = w.months[ym].rows[pos];
+  w.days.insert(old.day);
+  w.touched.insert(ym);
+  if (op.kind == OpKind::Remove) {
+    w.entries.push_back(Entry{'D', old});
+    applyEntry(w.months[ym].rows, w.entries.back());
+    w.changed.push_back(old);
+    w.lines.push_back("removed " + renderRow(old));
+    return true;
+  }
+  Row nr = old;
+  if (op.kind == OpKind::Move) nr.day = clean(op.day);
+  else applySet(nr, op.setMask, op.set);
+  nr.call = w.call;
+  if (!(err = rowError(nr)).empty()) return false;
+  const std::string nym = monthOf(nr.day);
+  if (nym != ym) {
+    if (!w.months.count(nym) && !loadMonth(nym, w.months[nym], &err)) return false;
+    w.entries.push_back(Entry{'D', old});
+    applyEntry(w.months[ym].rows, w.entries.back());
+  }
+  w.entries.push_back(Entry{'P', nr});
+  applyEntry(w.months[nym].rows, w.entries.back());
+  for (const std::string& x : figureWarnings(nr)) w.warnings.push_back(x);
+  w.touched.insert(nym);
+  w.days.insert(nr.day);
+  w.changed.push_back(nr);
+  w.lines.push_back(op.kind == OpKind::Move ? "moved from " + old.day + ": " + renderRow(nr)
+                                            : "updated " + renderRow(nr));
   return true;
 }
 
@@ -1184,6 +1191,15 @@ const char* opName(OpKind k) {
     case OpKind::Move: return "move";
   }
   return "op";
+}
+
+// The errors of a write's arguments, before storage is read.
+std::string argumentError(const std::string& person, const std::string& callId, size_t ops) {
+  if (!validPerson(person)) return "person '" + person + "' is not a valid ledger name";
+  if (callId.size() > kMaxCall) return "the call id is longer than 80 bytes";
+  if (clean(callId) != callId) return "the call id holds a control character";   // kept exactly, never cleaned
+  if (ops == 0 || ops > kMaxOps) return "a write takes 1 to 16 ops";
+  return std::string();
 }
 
 WriteResult refusal(WriteStatus st, const std::string& why) {
@@ -1249,16 +1265,13 @@ bool LedgerStore::commit(Work& w, const std::string& receipt, bool& known) {
 
 WriteResult LedgerStore::write(const std::vector<Op>& ops, const std::string& callId, const Clock& now,
                                const Targets* targets) {
-  std::string err;
-  if (!validPerson(person_)) return refusal(WriteStatus::Refused, "person '" + person_ + "' is not a valid ledger name");
-  if (callId.size() > kMaxCall) return refusal(WriteStatus::Refused, "the call id is longer than 80 bytes");
+  std::string err = argumentError(person_, callId, ops.size());
+  if (!err.empty()) return refusal(WriteStatus::Refused, err);
   if (!ensureOpen(&err) || (logChanged() && !open(&err)))
     return refusal(WriteStatus::NotSaved, "the ledger could not be read: " + err);
-  if (clean(callId) != callId) return refusal(WriteStatus::Refused, "the call id holds a control character");
   const std::string& call = callId;
   const auto seen = call.empty() ? calls_.end() : calls_.find(call);
   if (seen != calls_.end()) return alreadyApplied(call, seen->second);
-  if (ops.empty() || ops.size() > kMaxOps) return refusal(WriteStatus::Refused, "a write takes 1 to 16 ops");
   if (lastSeq_ >= kMaxSeq) return refusal(WriteStatus::Refused, "the ledger has used every change number");
   Work w;
   w.seq = lastSeq_ + 1;

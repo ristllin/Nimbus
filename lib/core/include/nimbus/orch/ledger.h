@@ -269,6 +269,7 @@ class LedgerStore {
   bool applyOp(Work& w, const Op& op, size_t index, std::string& err);
   bool applyAdd(Work& w, const Op& op, size_t index, std::string& err);
   bool applyChange(Work& w, const Op& op, std::string& err);
+  bool changeOne(Work& w, const Op& op, const std::string& id, std::string& err);
   bool locate(Work& w, const std::string& id, std::string& ym, size_t& pos, std::string& err);
   void identicalWarnings(Work& w, const Row& r);
   void maybeRoll();
