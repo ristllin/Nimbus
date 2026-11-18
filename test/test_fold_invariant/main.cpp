@@ -195,17 +195,18 @@ struct Device {
   size_t bootIndexRows = 60;
   size_t backfillRows = 30;
 
-  Device(const std::string& h, const std::string& m) : host(h), model(m) {
+  Device(const std::string& h, const std::string& m, bool toolLoop = false) : host(h), model(m) {
+    cfg.toolLoop = toolLoop;
     cfg.orchHost = h;
     cfg.orchModels[h] = m;
     cfg.keyed.insert(h);
     cfg.priority = h;
-    cfg.toolLoop = false;
     plat.epoch = kT0;
     boot();
   }
 
-  orch::ContextBudget headCtx() const { return orch::deriveRequestContext(orch::requestBudgetFor(host, model, host == "cumulo"), {}); }
+  // The device's headRequestContext: the head's turn budget in the form its turn goes out in.
+  orch::ContextBudget headCtx() const { return orch::deriveRequestContext(orch::turnBudgetFor(host, model, cfg.toolLoop), {}); }
   uint32_t trigger() const { return (uint32_t)orch::foldTriggerBytes(headCtx(), orch::kCompactAtKbDefault); }
 
   void boot() {
@@ -254,12 +255,13 @@ struct Device {
       return agent::HistoryMarks{f.thru, f.softStart, 0, f.lastFoldEpoch};
     };
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds.setSoftStart(c, soft); };
+    d.noteHistoryBytes = [this](const std::string& c, size_t bytes) { folds.noteHistoryBytes(c, bytes); };
     d.foldTriggerBytes = [this] { return trigger(); };
     eng.reset(new TurnEngine(std::move(d)));
     FoldDriverHooks h;
     h.quiet = [this](bool) { return quiet; };
     h.triggerBytes = [this] { return trigger(); };
-    h.foldStepBytes = [this] { return headCtx().foldStepBytes; };
+    h.foldCycleBytes = [this] { return orch::foldCycleBytes(headCtx()); };
     h.folded = [this](const agent::FoldDone& done) { onLanded(done); };
     h.firmware = "5.1.2";
     orch::FoldCtlIO io;
@@ -357,6 +359,27 @@ struct Device {
     maxHidden = std::max(maxHidden, hiddenRows(kMain));
   }
   // Every row after thru that existed before the turn is in the window or in its left-out span.
+  static bool inSpan(const agent::ConvSpan& s, const std::string& id) {
+    return !s.empty() && (s.afterId.empty() || agent::rowIdAfter(id, s.afterId)) &&
+           (s.beforeId.empty() || agent::rowIdAfter(s.beforeId, id));
+  }
+  // A row the request must carry or name: after thru, before the kept turns.
+  static bool owedToRequest(const std::string& id, const std::string& thru, const std::string& firstKept) {
+    if (!thru.empty() && !agent::rowIdAfter(id, thru)) return false;
+    return firstKept.empty() || agent::rowIdAfter(firstKept, id);
+  }
+  void dumpAround(const std::string& id) const {
+    const uint32_t at = orch::epiIdSuffix(id);
+    for (const auto& x : store.rows) {
+      const uint32_t sx = orch::epiIdSuffix(x.id);
+      if (sx + 4 >= at && sx <= at + 14)
+        std::printf("  row %s %s %s [%s] %.12s\n", x.id.c_str(), x.sessionId.c_str(), x.role.c_str(), x.tags.c_str(),
+                    x.text.c_str());
+    }
+    std::printf("  floor %u failing %d unread %u-%u\n", (unsigned)store.indexFloor, (int)store.failing,
+                (unsigned)store.unreadable.first, (unsigned)store.unreadable.second);
+  }
+  // Every row after thru that existed before the turn is in the window or in its left-out span.
   void checkWindow(const std::string& chat, size_t rowsBefore) {
     checkCovered();
     const agent::HistoryWindow& w = eng->lastHistoryWindow();
@@ -364,27 +387,11 @@ struct Device {
     const std::string firstKept = w.kept.empty() ? std::string() : w.kept.front().firstId;
     for (const auto* m : live(chat)) {
       if ((size_t)(m - store.rows.data()) >= rowsBefore) break;
-      if (!f.thru.empty() && !agent::rowIdAfter(m->id, f.thru)) continue;
-      if (!firstKept.empty() && !agent::rowIdAfter(firstKept, m->id)) continue;
-      const agent::ConvSpan& s = w.leftOut;
-      const bool named = !s.empty() && (s.afterId.empty() || agent::rowIdAfter(m->id, s.afterId)) &&
-                         (s.beforeId.empty() || agent::rowIdAfter(s.beforeId, m->id));
-      if (!named) {
-        violations.push_back("row " + m->id + " is in neither the request, the summary nor a named span (thru " +
-                             f.thru + " soft " + f.softStart + " kept " + firstKept + " span " + s.afterId + ".." +
-                             s.beforeId + " rows " + std::to_string(s.rows) + ")");
-        const uint32_t at = orch::epiIdSuffix(m->id);
-        for (const auto& x : store.rows) {
-          const uint32_t sx = orch::epiIdSuffix(x.id);
-          if (sx + 4 >= at && sx <= at + 14)
-            std::printf("  row %s %s %s [%s] %.12s\n", x.id.c_str(), x.sessionId.c_str(), x.role.c_str(), x.tags.c_str(),
-                        x.text.c_str());
-        }
-        std::printf("  clearMark %u floor %u failing %d unread %u-%u\n", (unsigned)clearMark[chat],
-                    (unsigned)store.indexFloor, (int)store.failing, (unsigned)store.unreadable.first,
-                    (unsigned)store.unreadable.second);
-        return;
-      }
+      if (!owedToRequest(m->id, f.thru, firstKept) || inSpan(w.leftOut, m->id)) continue;
+      violations.push_back("row " + m->id + " is in neither the request, the summary nor a named span (thru " +
+                           f.thru + " soft " + f.softStart + " kept " + firstKept + ")");
+      dumpAround(m->id);
+      return;
     }
   }
 };
@@ -398,25 +405,39 @@ struct Lcg {
   }
 };
 
-void runSequence(Device& d, uint32_t seed, int steps, int& totalLanded, int& totalRestartsHidden, int& totalHidden) {
-  Lcg r(seed);
-  const char* others[] = {"2002", "3003", "4004"};
-  for (int step = 0; step < steps && d.violations.empty(); step++) {
-    const uint32_t p = r.next(100);
-    if (p < 42) d.turn(kMain);
-    else if (p < 52) d.turn(others[r.next(3)]);
-    else if (p < 78) d.pump(1 + r.next(4), 30 + r.next(600));
-    else if (p < 83) d.restart();
-    else if (p < 87) d.store.failing = !d.store.failing;
-    else if (p < 91) {   // a span the card will not give back, right after the anchor
-      const orch::ChatFold f = d.folds.get(kMain);
-      const uint32_t at = f.thru.empty() ? 1 : orch::epiIdSuffix(f.thru) + 1;
-      d.store.unreadable = d.store.unreadable.second ? std::make_pair(0u, 0u) : std::make_pair(at, at + 30);
-    } else if (p < 93) d.clear(kMain, true);
-    else if (p < 94) d.clear(kMain, false);
-    else if (p < 97) d.drv->requestManual(kMain);
-    else d.quiet = !d.quiet;
+// One random step of the sequence.
+void randomStep(Device& d, Lcg& r) {
+  static const char* const others[] = {"2002", "3003", "4004"};
+  const uint32_t p = r.next(100);
+  if (p < 42) return d.turn(kMain);
+  if (p < 52) return d.turn(others[r.next(3)]);
+  if (p < 78) return d.pump(1 + r.next(4), 30 + r.next(600));
+  if (p < 83) return d.restart();
+  if (p < 87) {
+    d.store.failing = !d.store.failing;
+    return;
   }
+  if (p < 91) {   // a span the card will not give back, right after the anchor
+    const orch::ChatFold f = d.folds.get(kMain);
+    const uint32_t at = f.thru.empty() ? 1 : orch::epiIdSuffix(f.thru) + 1;
+    d.store.unreadable = d.store.unreadable.second ? std::make_pair(0u, 0u) : std::make_pair(at, at + 30);
+    return;
+  }
+  if (p < 94) return d.clear(kMain, p < 93);
+  if (p < 97) {
+    d.drv->requestManual(kMain);
+    return;
+  }
+  d.quiet = !d.quiet;
+}
+
+struct Totals {
+  int landed = 0, restartsHidden = 0, hidden = 0;
+};
+
+void runSequence(Device& d, uint32_t seed, int steps, Totals& t) {
+  Lcg r(seed);
+  for (int step = 0; step < steps && d.violations.empty(); step++) randomStep(d, r);
   // Heal and drain: the card comes back, the backfill finishes, the chat folds forward.
   d.store.failing = false;
   d.store.unreadable = {0, 0};
@@ -428,26 +449,25 @@ void runSequence(Device& d, uint32_t seed, int steps, int& totalLanded, int& tot
     for (size_t i = L.size() > 40 ? L.size() - 40 : 0; i < L.size(); i++) std::printf("  log: %s\n", L[i].c_str());
     TEST_FAIL_MESSAGE(d.violations.front().c_str());
   }
-  totalLanded += d.landed;
-  totalRestartsHidden += d.restartsWithHidden;
-  totalHidden += d.maxHidden;
+  t.landed += d.landed;
+  t.restartsHidden += d.restartsWithHidden;
+  t.hidden += d.maxHidden;
 }
 
 void runProperty(const std::string& host, const std::string& model, size_t replyBytes, bool wantFloor) {
-  const orch::ContextBudget cb = orch::deriveRequestContext(orch::requestBudgetFor(host, model, host == "cumulo"), {});
-  TEST_ASSERT_EQUAL_MESSAGE(wantFloor, cb.floorBranch, (host + "/" + model).c_str());
-  int landed = 0, restartsHidden = 0, hidden = 0;
+  TEST_ASSERT_EQUAL_MESSAGE(wantFloor, Device(host, model).headCtx().floorBranch, (host + "/" + model).c_str());
+  Totals t;
   for (uint32_t seed = 1; seed <= 12; seed++) {
     Device d(host, model);
     d.replyBytes = replyBytes;
-    runSequence(d, seed, 260, landed, restartsHidden, hidden);
+    runSequence(d, seed, 260, t);
   }
   std::printf("%s/%s: %d folds landed, %d restarts with hidden rows, %d hidden rows seen\n", host.c_str(),
-              model.c_str(), landed, restartsHidden, hidden);
+              model.c_str(), t.landed, t.restartsHidden, t.hidden);
   // Not vacuous: the sequences fold, and restart with rows a shift hid.
-  TEST_ASSERT_TRUE(landed > 20);
-  TEST_ASSERT_TRUE(restartsHidden > 0);
-  TEST_ASSERT_TRUE(hidden > 0);
+  TEST_ASSERT_TRUE(t.landed > 20);
+  TEST_ASSERT_TRUE(t.restartsHidden > 0);
+  TEST_ASSERT_TRUE(t.hidden > 0);
 }
 
 }  // namespace
@@ -555,6 +575,49 @@ static void test_a_read_that_cannot_reach_the_rows_waits_and_retries() {
   }
 }
 
+// Steady state on every head with room the rig can drive (lane H's "fold before shift"): the
+// trigger counts the bytes after thru, so after a fold it fires again at the soft mark, before
+// the window reaches its maximum. N consecutive folds with no overflow shift between them. The
+// counter used to restart at 0 while the kept tail stayed after thru, so every fold after the
+// first came only once a shift had hidden the oldest fifth of the window.
+static void test_steady_state_folds_come_before_any_shift() {
+  const char* const heads[][2] = {{"anthropic", "claude-sonnet-5-5"}, {"openai", "gpt-5.6"},
+                                  {"mistral", "mistral-medium-latest"}};
+  for (const auto& hm : heads) {
+    Device d(hm[0], hm[1], /*toolLoop=*/true);
+    TEST_ASSERT_FALSE_MESSAGE(d.headCtx().floorBranch, hm[1]);
+    d.replyBytes = 3000;
+    int shiftsAfterFirst = 0;
+    for (int i = 0; i < 600 && d.landed < 8; i++) {
+      LogCapture::lines().clear();
+      d.turn(kMain);
+      if (d.landed > 0 && LogCapture::contains("overflow shift")) shiftsAfterFirst++;
+      d.pump(1, 120);
+    }
+    std::printf("%s/%s: %d folds, %d shifts after the first fold\n", hm[0], hm[1], d.landed, shiftsAfterFirst);
+    TEST_ASSERT_TRUE_MESSAGE(d.landed >= 8, hm[1]);
+    TEST_ASSERT_EQUAL_MESSAGE(0, shiftsAfterFirst, hm[1]);
+    TEST_ASSERT_TRUE(d.violations.empty());
+  }
+}
+
+// One Summarize now summarizes everything up to the newest message, hidden rows or not (lane
+// CTXR1: the step that makes a rollback to v5.1.1 safe, docs/compaction.md). A long window
+// with nothing hidden used to fold one digest cap per press.
+static void test_one_summarize_now_reaches_the_newest_row() {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.replyBytes = 1500;
+  d.quiet = false;   // no automatic fold meanwhile
+  for (int i = 0; i < 70; i++) d.turn(kMain);
+  TEST_ASSERT_EQUAL(0, d.hiddenRows(kMain));
+  d.drv->requestManual(kMain);
+  for (int i = 0; i < 200 && !d.drv->ctl().manualPendingChat.empty(); i++) d.pump(1, 130);
+  TEST_ASSERT_TRUE(d.violations.empty());
+  TEST_ASSERT_TRUE_MESSAGE(d.landed > 1, "more than one digest cap");
+  const std::vector<const orch::EpisodicMessage*> rows = d.live(kMain);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(rows.back()->id.c_str(), d.folds.get(kMain).thru.c_str(), "thru at the newest row");
+}
+
 // ---- the production device's shape on the real SD log store ----------------------------
 namespace {
 struct FakeFs : orch::EpiFs {
@@ -599,6 +662,78 @@ struct FakeFs : orch::EpiFs {
 // backfill not run. The first passes fold forward from the row right after thru, every
 // landed slice starting exactly where the last one ended, until the shift is covered; thru
 // never passes a row no summary took.
+namespace {
+// Lumi's card: rows m00001700..m00001ca0 (every seventh another chat's) across 13 day files.
+void writeLumiCard(orch::RowTextOverlay& overlay, const std::string& chat) {
+  const uint32_t hour0 = (uint32_t)(kT0 / 3600) - 14 * 24;
+  for (uint32_t sfx = 0x1700; sfx <= 0x1ca0; sfx++) {
+    orch::EpisodicMessage m;
+    m.id = idOf(sfx);
+    m.sessionId = sfx % 7 == 0 ? std::string("web") : chat;
+    m.role = sfx % 2 ? "assistant" : "user";
+    m.kind = orch::MsgKind::Message;
+    m.text = "T" + std::to_string(sfx) + ". " + (sfx % 2 ? "Logged it: " + std::string(300, 'k') : "Breakfast two eggs");
+    m.tsHours = hour0 + (sfx - 0x1700) / 4;   // about 13 days of rows
+    overlay.addMessage(m);
+  }
+}
+
+// The device's engine over the store, the blob's fold state and a Sonnet head.
+TurnEngine::Deps lumiDeps(FakePlatform& plat, FakeConfig& cfg, orch::RowTextOverlay& overlay, orch::FoldStore& folds) {
+  cfg.orchHost = "anthropic";
+  cfg.orchModels["anthropic"] = "claude-sonnet-5-5";
+  TurnEngine::Deps d;
+  d.cfg = cfg.contract();
+  d.platform = plat.contract();
+  for (const char* h : {"openai", "anthropic", "mistral"})
+    d.hosts.add(h, [](std::string&, const std::string& ins, const std::string& in, std::string& out, std::string&,
+                      const agent::HeadTools*, orch::TokenUsage* u) {
+      if (u) u->responses = 1;
+      out = ins == orch::ORCH_COMPACT_PROMPT ? goodSummary(in) : "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
+      return true;
+    });
+  d.histV2 = [] { return true; };
+  d.captureUserRow = [](const std::string&, const std::string&, const std::string&) { return std::string("m00001ca1"); };
+  d.historyRows = [&overlay](const std::string& c, const HistoryQuery& hq) {
+    orch::MsgQuery q;
+    q.sessionId = c;
+    q.haveKind = true;
+    q.kind = orch::MsgKind::Message;
+    q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
+    q.limit = (int)hq.limit;
+    q.before = hq.before;
+    q.after = hq.after;
+    return overlay.query(q, hq.info);
+  };
+  d.historyMarks = [&folds](const std::string& c) {
+    const orch::ChatFold f = folds.get(c);
+    return agent::HistoryMarks{f.thru, f.softStart, 0, f.lastFoldEpoch};
+  };
+  d.noteHistoryShift = [&folds](const std::string& c, const std::string& soft) { folds.setSoftStart(c, soft); };
+  return d;
+}
+
+// No gap: each slice starts at the chat's first row after the previous anchor.
+void assertLumiSlicesHaveNoGap(const std::vector<agent::FoldDone>& done) {
+  std::string prevThru = "m000017d9";
+  for (const agent::FoldDone& fd : done) {
+    uint32_t next = orch::epiIdSuffix(prevThru) + 1;
+    while (next % 7 == 0) next++;   // the web chat's rows are not this chat's
+    const std::string first = "T" + std::to_string(next) + ".";
+    TEST_ASSERT_TRUE_MESSAGE(fd.slice.digest.find(first) != std::string::npos &&
+                                 fd.slice.digest.find(first) == fd.slice.digest.find('T'),
+                             ("an id gap after " + prevThru).c_str());
+    prevThru = fd.slice.thru;
+  }
+}
+}  // namespace
+
+// Lumi on the first boot of v5.1.2: the recorded v5.1.1 blob (thru m000017d9, softStart
+// m00001c96, fails=3 paused=1, a 13-day-old summary) over its card: rows m000017da..m00001ca0
+// of the chat across 13 day files, the boot index holding only the newest 300 rows, the
+// backfill not run. The first passes fold forward from the row right after thru, every
+// landed slice starting exactly where the last one ended, until the shift is covered; thru
+// never passes a row no summary took.
 static void test_production_device_shape_folds_forward_with_no_gap() {
   FakeFs fs;
   orch::AppendLogEpisodicStore log(fs, "/mem/episodic", 512);
@@ -616,59 +751,16 @@ static void test_production_device_shape_folds_forward_with_no_gap() {
     if (folds.get(c).thru == "m000017d9") chat = c;
   TEST_ASSERT_FALSE(chat.empty());
   TEST_ASSERT_EQUAL_STRING("m00001c96", folds.get(chat).softStart.c_str());
-  std::map<std::string, std::string> textOf;
-  const uint32_t hour0 = (uint32_t)(kT0 / 3600) - 14 * 24;
-  for (uint32_t sfx = 0x1700; sfx <= 0x1ca0; sfx++) {
-    orch::EpisodicMessage m;
-    m.id = idOf(sfx);
-    m.sessionId = sfx % 7 == 0 ? std::string("web") : chat;
-    m.role = sfx % 2 ? "assistant" : "user";
-    m.kind = orch::MsgKind::Message;
-    m.text = "T" + std::to_string(sfx) + ". " + (sfx % 2 ? "Logged it: " + std::string(300, 'k') : "Breakfast two eggs");
-    m.tsHours = hour0 + (sfx - 0x1700) / 4;   // about 13 days of rows
-    overlay.addMessage(m);
-    textOf[m.id] = m.text;
-  }
+  writeLumiCard(overlay, chat);
   log.hydrate(300, 0);   // the boot scan: the newest rows only, the backfill not run
   FakePlatform plat;
   plat.epoch = kT0;
   FakeConfig cfg;
-  cfg.orchHost = "anthropic";
-  cfg.orchModels["anthropic"] = "claude-sonnet-5-5";
-  TurnEngine::Deps d;
-  d.cfg = cfg.contract();
-  d.platform = plat.contract();
-  std::vector<std::string> digests;
-  for (const char* h : {"openai", "anthropic", "mistral"})
-    d.hosts.add(h, [&](std::string&, const std::string& ins, const std::string& in, std::string& out, std::string&,
-                       const agent::HeadTools*, orch::TokenUsage* u) {
-      if (u) u->responses = 1;
-      out = ins == orch::ORCH_COMPACT_PROMPT ? goodSummary(in) : "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
-      return true;
-    });
-  d.histV2 = [] { return true; };
-  d.captureUserRow = [](const std::string&, const std::string&, const std::string&) { return std::string("m00001ca1"); };
-  d.historyRows = [&](const std::string& c, const HistoryQuery& hq) {
-    orch::MsgQuery q;
-    q.sessionId = c;
-    q.haveKind = true;
-    q.kind = orch::MsgKind::Message;
-    q.alsoKinds = {orch::MsgKind::Image, orch::MsgKind::File, orch::MsgKind::Audio};
-    q.limit = (int)hq.limit;
-    q.before = hq.before;
-    q.after = hq.after;
-    return overlay.query(q, hq.info);
-  };
-  d.historyMarks = [&](const std::string& c) {
-    const orch::ChatFold f = folds.get(c);
-    return agent::HistoryMarks{f.thru, f.softStart, 0, f.lastFoldEpoch};
-  };
-  d.noteHistoryShift = [&](const std::string& c, const std::string& soft) { folds.setSoftStart(c, soft); };
-  TurnEngine eng(std::move(d));
+  TurnEngine eng(lumiDeps(plat, cfg, overlay, folds));
   std::vector<agent::FoldDone> done;
   FoldDriverHooks h;
   h.triggerBytes = [] { return 94464u; };
-  h.foldStepBytes = [] { return (size_t)35424; };   // Sonnet 5.5's step
+  h.foldCycleBytes = [] { return (size_t)35424; };   // Sonnet 5.5's step
   h.folded = [&](const agent::FoldDone& fd) { done.push_back(fd); };
   std::string ctl;
   orch::FoldCtlIO io;
@@ -679,30 +771,19 @@ static void test_production_device_shape_folds_forward_with_no_gap() {
   };
   FoldDriver drv(eng, folds, io, h);
   drv.begin();
-  std::string prevThru = "m000017d9";
   uint32_t ms = 1000, epoch = kT0;
   for (int pass = 0; pass < 2000 && agent::rowIdAfter("m00001c96", folds.get(chat).thru); pass++) {
     ms += 60000;
     epoch += 60;
     drv.tick(ms, epoch);
     eng.historyIdleStep();
-    const orch::ChatFold f = folds.get(chat);
     // thru never passes a row no landed digest took.
-    TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter(f.thru, done.empty() ? std::string("m000017d9") : done.back().slice.thru),
+    TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter(folds.get(chat).thru, done.empty() ? std::string("m000017d9") : done.back().slice.thru),
                               "the anchor moved with no summary");
   }
   TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter("m00001c96", folds.get(chat).thru), "the backlog is folded");
   TEST_ASSERT_TRUE(done.size() > 3);
-  // No gap: each slice starts at the chat's first row after the previous anchor.
-  for (const agent::FoldDone& fd : done) {
-    uint32_t next = orch::epiIdSuffix(prevThru) + 1;
-    while (next % 7 == 0) next++;   // the web chat's rows are not this chat's
-    const std::string first = "T" + std::to_string(next) + ".";
-    TEST_ASSERT_TRUE_MESSAGE(fd.slice.digest.find(first) != std::string::npos &&
-                                 fd.slice.digest.find(first) == fd.slice.digest.find('T'),
-                             ("an id gap after " + prevThru).c_str());
-    prevThru = fd.slice.thru;
-  }
+  assertLumiSlicesHaveNoGap(done);
   std::printf("production shape: %u folds to %s\n", (unsigned)done.size(), folds.get(chat).thru.c_str());
 }
 
@@ -711,6 +792,8 @@ int main(int, char**) {
   RUN_TEST(test_a_restart_with_hidden_rows_folds_them_first);
   RUN_TEST(test_production_device_shape_folds_forward_with_no_gap);
   RUN_TEST(test_clear_bounds_the_fold);
+  RUN_TEST(test_steady_state_folds_come_before_any_shift);
+  RUN_TEST(test_one_summarize_now_reaches_the_newest_row);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);

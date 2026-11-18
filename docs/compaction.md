@@ -23,7 +23,14 @@ device's memory is in [memory.md](memory.md#3-conversation-compaction---the-fold
   the chat gets one message: "✓ Compacted. Summary updated: covered N messages
   from D1 to D2". A conversation with a long backlog (the first summary after an
   update) catches up in one request: the device summarizes it piece by piece,
-  oldest first, and confirms once at the end.
+  oldest first, until no older message is left outside the summary, and confirms
+  once at the end.
+- **After `/clear`** (or **Clear conversation** on the web), the summary starts over
+  from the clear: nothing you cleared is summarized again.
+- **When older messages can't be read yet** (right after a restart, while the device
+  is still indexing its card, or while the card has trouble), the summary waits for
+  them and tries again by itself, a minute later and then less often. It never skips
+  them: until they are summarized, each request names them as not included.
 
 ## The Memory page
 
@@ -52,11 +59,14 @@ Virtual Nimbus, the hosted web chat).
 
 ## When a provider has trouble
 
-- **It tries every provider you have a key for**, one per pass: the model you chat
-  with first (Mistral Large 4 summarizes on Mistral Small, which does not spend the
-  answer on thinking; Large 4 itself is never asked for a summary), then your other
-  providers in your priority order, then the head provider's sub-agent model. A provider that answered with nothing usable
-  goes last next time.
+- **It tries the providers in your priority list**, one per pass: the model you chat
+  with first (Mistral Large 4, under any of its names, summarizes on Mistral Small,
+  which does not spend the answer on thinking; Large 4 itself is never asked for a
+  summary), then the other providers you checked in Settings, in your order, then
+  Cumulo when the device has a Cumulo key, then the head provider's sub-agent model.
+  A provider you left unchecked, or a custom endpoint not in the list, never receives
+  your conversation. A provider that answered with nothing usable, or ran out of room
+  thinking, goes last next time.
 - **It never pauses for good.** When every provider failed, it tries again after
   15 minutes, then 1 hour, then 4 hours, then every 12 hours, and each try after a
   failure takes a smaller piece (half, down to 8 KB). An update to new firmware
@@ -67,20 +77,25 @@ Virtual Nimbus, the hosted web chat).
   long summary that does not use the expected section names (another language, say),
   the longest is kept rather than retried.
 - **You hear about it once a day at most**, in your own chat, and only after a day of
-  failing:
+  failing (a guest's conversation failing first does not use up that day's notice):
   "This chat's summary hasn't updated since 2026-11-02. It keeps retrying on its
   own; send /compact to try now."
 - **Cost stays bounded**: at most 12 paid summary requests a day on the whole
   device for automatic summaries (every request a provider answers counts, and one
   that timed out after it was sent; a refused request costs nothing and does not
-  count). Summaries you ask for are not held to
-  that limit but are counted in it. The spend ceiling and each provider's own
-  limits apply as for any turn.
+  count). Conversations that are not yours (a guest or a group) share at most 6
+  of them, so your own summaries always have room. With no clock (no time server
+  reachable) the day is counted from the first request. Summaries you ask for are
+  not held to that limit but are counted in it. The spend ceiling and each
+  provider's own limits apply as for any turn.
 
 ## Size
 
-A summary is at most 6,144 bytes for a model with a window of 60k tokens or more,
-else 4,096. When a summary runs long, every section keeps its heading and each
+A summary is at most 6,144 bytes when the model's request budget is 60k tokens or
+more (Claude, GPT-5.6, Mistral Large 4), else 4,096; a model on the 85 KB floor
+(a Cumulo head, a custom endpoint) keeps the size v5.1.1 gave it. The Summary column
+of [reference/request-budgets.md](reference/request-budgets.md) has the figure for
+every model. When a summary runs long, every section keeps its heading and each
 section is shortened in proportion to its size.
 
 ## Going back to v5.1.1
@@ -90,3 +105,12 @@ shortens any summary over 4,096 bytes when it loads it, and it writes the file b
 at no more than 48 KB, so with many long conversations it can drop the oldest
 conversations' summaries. On v5.1.1, three failures in a row pause automatic
 summaries again until `/compact`.
+
+v5.1.2 keeps much more of a conversation word for word after its summary (up to
+about 200 KB on a model with room), and v5.1.1 shows only the newest 8 to 16 KB of
+it. Its summary then reads only the newest 400 messages after the summary's end,
+so in a long conversation of short messages the older ones would be in neither the
+summary nor the history (they stay on the card and searchable). To avoid that,
+press **Summarize Now** (or send `/compact`) in each long conversation before going
+back, and wait for its confirmation: it summarizes everything up to the newest
+message.

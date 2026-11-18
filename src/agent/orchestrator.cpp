@@ -1466,6 +1466,7 @@ static TurnEngine::Deps buildTurnDeps() {
   d.noteHistoryShift = [](const std::string& chatId, const std::string& softStart) {
     g_folds.setSoftStart(chatId, softStart);   // persisted with the turn's blob write
   };
+  d.noteHistoryBytes = [](const std::string& chatId, size_t bytes) { g_folds.noteHistoryBytes(chatId, bytes); };
   d.foldTriggerBytes = [] { return foldTriggerNow(); };   // the fold driver's own (foldHooks)
   // Minutes east of UTC from the device's own TZ, now and at any row's time (the TZ rule
   // decides DST for a past time, so a row stored before a clock change keeps its offset).
@@ -2930,6 +2931,14 @@ static agent::FoldSlice legacyFoldSlice(const std::string& chat, size_t cap) {
   return s;
 }
 
+// The owner's chats (the daily alert, the fold's order and the guests' share of the cap):
+// the web chat and the owner's Telegram chat.
+static bool foldOwnerChat(const std::string& chat) {
+  if (chat == "web") return true;
+  const String owner = agent::telegram::ownerChat();
+  return owner.length() && chat == owner.c_str();
+}
+
 static agent::FoldDriverHooks foldHooks() {
   agent::FoldDriverHooks h;
   h.online = [] { return nimbus::net::staConnected(); };   // an offline fold is a guaranteed failure
@@ -2941,7 +2950,8 @@ static agent::FoldDriverHooks foldHooks() {
   };
   h.notDue = [] { g_ownerFirst.noteFoldNotDue(); };
   h.triggerBytes = [] { return foldTriggerNow(); };
-  h.foldStepBytes = [] { return headRequestContext().foldStepBytes; };   // one fold's step (lane B)
+  // What one fold input can carry (lane CTXR1): a backlog is paid off in large bites.
+  h.foldCycleBytes = [] { return nimbus::orch::foldCycleBytes(headRequestContext()); };
   h.slice = [](const std::string& chat, size_t cap, bool manual) {
     return g_engine->histV2On() ? g_engine->historyFoldSlice(chat, cap, manual) : legacyFoldSlice(chat, cap);
   };
@@ -2951,10 +2961,14 @@ static agent::FoldDriverHooks foldHooks() {
   // The daily alert is the owner's: their Telegram chat or the web chat; a guest chat's
   // failing summary is only logged.
   h.alert = [](const std::string& chat, const std::string& text) {
-    const String owner = agent::telegram::ownerChat();
-    if (chat == "web" || (owner.length() && chat == owner.c_str())) return foldTell(chat, text);
+    if (foldOwnerChat(chat)) {
+      foldTell(chat, text);
+      return true;
+    }
     alogf("fold(%s): not the owner's chat - the daily alert is logged only", chat.c_str());
+    return false;
   };
+  h.ownerChat = foldOwnerChat;   // the owner's chats fold first; guests share half the cap
   h.changed = [](const std::string& chat) {
     if (!chat.empty()) publishFoldStatus(chat);   // the CTX echo, then the web copy
     publishFoldWebStatus();

@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <set>
@@ -188,7 +189,9 @@ static void test_rung_report_names_kind_paid_and_degraded() {
 
 // No (host, model) is asked twice in a cycle, over random keyed sets, priority orders,
 // pinned heads, routers and Sub models that equal the head model, with every rung
-// failing; and the ladder holds every keyed provider once.
+// failing; the ladder holds every keyed provider of the owner's list, and (privacy ruling,
+// lane CTXR1) no provider outside it: the head, the list, then the router fallback only with
+// no provider key or, for Cumulo, with a Cumulo key.
 // A random device: keyed set, priority, pinned head, router, Sub models and heads.
 static void randomConfig(Rig& r, const std::function<uint32_t(uint32_t)>& rnd) {
   static const char* const hosts[] = {"openai", "anthropic", "mistral", "zai", "cumulo", "custom"};
@@ -224,16 +227,25 @@ static void test_no_host_model_is_asked_twice_per_cycle() {
       TEST_ASSERT_TRUE_MESSAGE(seen.insert(a.first + "/" + a.second).second, "a (host, model) was asked twice");
     TEST_ASSERT_TRUE(rungs.empty() ? res == FoldResult::Deferred : res == FoldResult::Failed);
     TEST_ASSERT_EQUAL((int)rungs.size(), (int)r.asked.size());
+    const std::string listed = "," + r.cfg.priority + "," + r.cfg.orchHost + ",";
     for (const std::string& k : r.cfg.keyed) {
+      if (listed.find("," + k + ",") == std::string::npos) continue;
       bool there = false;
       for (const FoldRung& g : rungs) there = there || g.host == k;
-      TEST_ASSERT_TRUE_MESSAGE(there, ("a keyed provider is missing from the ladder: " + k).c_str());
+      TEST_ASSERT_TRUE_MESSAGE(there, ("a listed keyed provider is missing from the ladder: " + k).c_str());
+    }
+    const std::string head = r.eng->headHost();
+    for (const FoldRung& g : rungs) {
+      if (g.host == head || listed.find("," + g.host + ",") != std::string::npos) continue;
+      const bool router = g.kind == FoldRungKind::RouterFallback && g.host == r.cfg.routerHost;
+      TEST_ASSERT_TRUE_MESSAGE(router, ("the digest goes to a provider outside the owner's list: " + g.host).c_str());
     }
   }
 }
 
-// The rung order: the head host first on its fold model, the other keyed providers in the
-// owner's order, the router only with no key set, the head's Sub model last.
+// The rung order: the head host first on its fold model, the other keyed providers of the
+// owner's list in its order (a keyed provider the list leaves out is never a rung), the
+// router only with no key set, the head's Sub model last.
 static void test_rung_order_and_kinds() {
   Rig r;
   r.cfg.keyed = {"openai", "anthropic", "mistral", "cumulo"};
@@ -242,12 +254,9 @@ static void test_rung_order_and_kinds() {
   r.cfg.subModels["mistral"] = "mistral-medium-latest";
   const std::vector<FoldRung> rungs = r.eng->foldRungs();
   // A Large 4 head: Small is its only Mistral rung (no Sub step-down after it).
-  const char* const want[][2] = {{"mistral", "mistral-small-latest"},
-                                 {"anthropic", "model-anthropic"},
-                                 {"cumulo", "model-cumulo"},
-                                 {"openai", "model-openai"}};
-  TEST_ASSERT_EQUAL(4, (int)rungs.size());
-  for (size_t i = 0; i < 4; i++) {
+  const char* const want[][2] = {{"mistral", "mistral-small-latest"}, {"anthropic", "model-anthropic"}};
+  TEST_ASSERT_EQUAL(2, (int)rungs.size());   // openai and cumulo are keyed but not listed
+  for (size_t i = 0; i < 2; i++) {
     TEST_ASSERT_EQUAL_STRING(want[i][0], rungs[i].host.c_str());
     TEST_ASSERT_EQUAL_STRING(want[i][1], rungs[i].model.c_str());
   }
@@ -256,10 +265,18 @@ static void test_rung_order_and_kinds() {
   r.cfg.orchModels["mistral"] = "mistral-medium-latest";
   r.cfg.subModels["mistral"] = "mistral-small-latest";
   const std::vector<FoldRung> med = r.eng->foldRungs();
-  TEST_ASSERT_EQUAL(5, (int)med.size());
+  TEST_ASSERT_EQUAL(3, (int)med.size());
   TEST_ASSERT_EQUAL_STRING("mistral-medium-latest", med[0].model.c_str());
-  TEST_ASSERT_TRUE(med[4].kind == FoldRungKind::SubModel);
-  TEST_ASSERT_EQUAL_STRING("mistral-small-latest", med[4].model.c_str());
+  TEST_ASSERT_TRUE(med[2].kind == FoldRungKind::SubModel);
+  TEST_ASSERT_EQUAL_STRING("mistral-small-latest", med[2].model.c_str());
+  // A custom endpoint the list leaves out is never a rung; listed, it is one.
+  r.cfg.keyed.insert("custom");
+  for (const FoldRung& g : r.eng->foldRungs()) TEST_ASSERT_TRUE(g.host != "custom");
+  r.cfg.priority = "mistral,anthropic,custom";
+  bool custom = false;
+  for (const FoldRung& g : r.eng->foldRungs()) custom = custom || g.host == "custom";
+  TEST_ASSERT_TRUE(custom);
+  r.cfg.priority = "mistral,anthropic";
   // A parked or capped provider is not a rung; with no key the router is the only rung.
   r.cfg.overBudgetHosts.insert("anthropic");
   for (const FoldRung& g : r.eng->foldRungs()) TEST_ASSERT_TRUE(g.host != "anthropic");
@@ -327,10 +344,17 @@ static void test_large4_head_folds_on_small_at_effort_none() {
 // Lane W's live legs (16 Nov): a Large 4 head folding on Large 4 is cut at its fit (2,118
 // and 2,824 tokens) while mistral-small-latest folds fine. The class, over every model in
 // the recorded Mistral list (and its routed form): as the head with any Sub model, and as
-// another keyed provider, no fold rung runs a forced-reasoning model (one mistralHeadEffort
-// answers "low" for), and a forced-reasoner head's only Mistral rung is mistral-small-latest.
+// another keyed provider, no fold rung runs a forced-reasoning model, and a forced-reasoner
+// head's only Mistral rung is mistral-small-latest. Lane CTXR1: the oracle is the recorded
+// list itself, independent of the code under test: every id AND every alias it lists (the
+// alias mistral-large-latest, nimbusd's default Mistral model, was missed), forced when the
+// model it names (the entry's canonical name) is Large 4 or a hosted GLM.
+static std::map<std::string, std::string> g_canonical;   // id or alias -> the model it names
 static bool forcedReasoner(const std::string& model) {
-  return std::string(providers::mistralHeadEffort(model)) == "low";
+  std::string id = model.rfind("mistral/", 0) == 0 ? model.substr(8) : model;
+  const auto it = g_canonical.find(id);
+  const std::string name = it == g_canonical.end() ? id : it->second;
+  return name.rfind("mistral-large-4", 0) == 0 || name.rfind("glm-", 0) == 0 || name.rfind("zai-glm", 0) == 0;
 }
 static std::vector<std::string> recordedMistralModels() {
   std::ifstream f("test/support/fixtures/models_2026-11/mistral.json", std::ios::binary);
@@ -339,7 +363,16 @@ static std::vector<std::string> recordedMistralModels() {
   JsonDocument d;
   deserializeJson(d, ss.str());
   std::vector<std::string> ids;
-  for (JsonVariantConst m : d["data"].as<JsonArrayConst>()) ids.push_back(m["id"].as<std::string>());
+  for (JsonVariantConst m : d["data"].as<JsonArrayConst>()) {
+    const std::string name = m["name"].as<std::string>();
+    ids.push_back(m["id"].as<std::string>());
+    g_canonical[ids.back()] = name;
+    for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>()) {
+      const std::string alias = a.as<std::string>();
+      if (!g_canonical.count(alias)) ids.push_back(alias);
+      g_canonical[alias] = name;
+    }
+  }
   return ids;
 }
 
@@ -409,6 +442,9 @@ static void test_no_rung_runs_a_forced_reasoner() {
     checkRoutedOnCumulo(id, routedForced);
   }
   TEST_ASSERT_TRUE_MESSAGE(forcedHeads > 0, "the list holds a forced reasoner (Large 4)");
+  TEST_ASSERT_TRUE_MESSAGE(forcedReasoner("mistral-large-latest"), "the oracle names the alias Large 4");
+  TEST_ASSERT_TRUE_MESSAGE(std::find(ids.begin(), ids.end(), "mistral-large-latest") != ids.end(),
+                           "the aliases are in the class (nimbusd's default Mistral model)");
   TEST_ASSERT_TRUE_MESSAGE(routedForced > 0, "the routed legs reached a forced reasoner on Cumulo");
 }
 

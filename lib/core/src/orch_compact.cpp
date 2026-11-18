@@ -481,10 +481,17 @@ void FoldStore::setSoftStart(const std::string& chatId, const std::string& rowId
   s.f.softStart = id;   // persisted with the turn's blob write (noteTurn)
 }
 
+void FoldStore::noteHistoryBytes(const std::string& chatId, size_t bytes) {
+  Slot& s = upsert(chatId);
+  const uint32_t b = bytes > UINT32_MAX ? UINT32_MAX : (uint32_t)bytes;
+  if (b > s.f.bytesSinceFold && s.f.bytesSinceFold < kOverflowMarkBytes) s.f.bytesSinceFold = b;
+}
+
 void FoldStore::noteFoldSkipped(const std::string& chatId, const std::string& readTo, uint32_t keptBytes) {
   Slot* s = find(stripCtl(chatId));
   if (!s) return;
   s->f.bytesSinceFold = keptBytes;
+  s->f.keptAtFold = keptBytes;
   s->f.msgsSinceFold = 0;
   // Rows a shift hid that the read examined and found nothing to summarize in (job
   // deliveries, rows behind a /clear) are given up rather than asked about on every
@@ -529,6 +536,13 @@ namespace {
 bool refilled(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold) {
   return f.bytesSinceFold >= bytesThreshold || (msgsThreshold > 0 && f.msgsSinceFold >= msgsThreshold);
 }
+// The same for the thrash guard, over what came after the fold only: a fold that kept a tail
+// and left a backlog (lane CTXR1: the counter restarts at the bytes left after thru) is not a
+// fold that failed to shrink the chat.
+bool refilledSinceFold(const ChatFold& f, uint32_t bytesThreshold, uint32_t msgsThreshold) {
+  const uint32_t fresh = f.bytesSinceFold > f.keptAtFold ? f.bytesSinceFold - f.keptAtFold : 0;
+  return fresh >= bytesThreshold || (msgsThreshold > 0 && f.msgsSinceFold >= msgsThreshold);
+}
 // H3: an overflow shift hides rows the summary does not cover yet.
 bool hidesRows(const ChatFold& f) {
   return !f.softStart.empty() && (f.thru.empty() || rowIdAfter(f.softStart, f.thru));
@@ -553,7 +567,8 @@ FoldDue FoldStore::evaluateDue(const std::string& chatId, uint32_t bytesThreshol
   // a fold that does not shrink the chat costs one request per 15 minutes at most
   // (inside the daily cap), never a loop, never a pause. Hidden rows alone are not
   // that: a backlog larger than one fold is folded again, oldest first.
-  if (refill && s->f.lastFoldEpoch != 0 && s->f.turnsSinceFold <= kThrashTurns) {
+  if (refilledSinceFold(s->f, bytesThreshold, msgsThreshold) && s->f.lastFoldEpoch != 0 &&
+      s->f.turnsSinceFold <= kThrashTurns) {
     if (thrash) *thrash = true;
     if (nowEpoch != 0) {
       s->f.nextTry = nowEpoch + kFoldThrashRetryS;
@@ -580,6 +595,7 @@ void FoldStore::applyFold(const std::string& chatId, const std::string& summary,
   if (id.empty()) s.f.softStart.clear();
   s.f.summary        = capSummary(summary, summaryCap);
   s.f.bytesSinceFold = summary.empty() ? 0 : keptBytes;
+  s.f.keptAtFold     = s.f.bytesSinceFold;
   s.f.msgsSinceFold  = 0;
   s.f.turnsSinceFold = 0;
   s.f.lastFoldEpoch  = epoch;
@@ -640,12 +656,14 @@ std::string ctlText(const std::string& v) {
 }
 }  // namespace
 
-void FoldCtl::notePaid(uint32_t day, uint32_t n) {
+void FoldCtl::notePaid(uint32_t day, uint32_t n, bool guest) {
   if (paidDay != day) {
     paidDay = day;
     paidCount = 0;
+    guestPaid = 0;
   }
   paidCount += n;
+  if (guest) guestPaid += n;
 }
 
 bool FoldCtl::queueManual(const std::string& chatId) {
@@ -669,6 +687,7 @@ std::string FoldCtl::encode() const {
   std::string q;
   for (const std::string& c : manualPendingChat) q += (q.empty() ? "" : ",") + c;
   return "paidDay=" + std::to_string(paidDay) + "\npaidCount=" + std::to_string(paidCount) +
+         "\nguestPaid=" + std::to_string(guestPaid) +
          "\nlastAlertDay=" + std::to_string(lastAlertDay) + "\nmanualPendingChat=" + q +
          "\nfwAtLastFail=" + ctlText(fwAtLastFail) + "\n";
 }
@@ -685,6 +704,7 @@ FoldCtl FoldCtl::decode(const std::string& text) {
     const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
     if (k == "paidDay") c.paidDay = toU32(v);
     else if (k == "paidCount") c.paidCount = toU32(v);
+    else if (k == "guestPaid") c.guestPaid = toU32(v);
     else if (k == "lastAlertDay") c.lastAlertDay = toU32(v);
     else if (k == "fwAtLastFail") c.fwAtLastFail = ctlText(v);
     else if (k == "manualPendingChat")

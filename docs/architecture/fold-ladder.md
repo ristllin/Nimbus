@@ -10,7 +10,8 @@ Read it when you change the fold, its schedule, or Summarize now. The owner's vi
 On 2 Nov 2026 three folds on Lumi failed in 95 seconds, all on the same host and
 model, and the third paused automatic summaries. Nothing lifted the pause for 13 days.
 Owner ruling 2 (15 Nov): the summary can never stay off for days again, a failure
-walks every keyed provider, and the bound on cost is a daily cap, not a pause.
+walks every provider in the owner's priority list, and the bound on cost is a daily cap,
+not a pause.
 
 ## One driver, two hosts
 
@@ -45,9 +46,12 @@ quiet gate; a manual one does not wait for quiet.
 1. the head host on its fold model: the head model, or the host's non-reasoning model
    when the head is a forced reasoner (Mistral Large 4 folds on `mistral-small-latest`
    at effort none, orchestrator ruling of 16 Nov);
-2. every other keyed, unparked, in-budget provider, in the owner's priority order, then
-   any keyed provider the list leaves out (Cumulo only with a Cumulo key);
-3. the router fallback (Cumulo, then Z.ai) when no provider key is set;
+2. every other keyed, unparked, in-budget provider of the owner's priority list, in its
+   order, and nothing else: a keyed provider the owner left unchecked (a key kept for
+   voice, embeddings or sub-agents) and a custom endpoint not in the list never receive
+   the digest (privacy ruling, v5.1.2 review);
+3. the router fallback (Cumulo, then Z.ai) when no provider key is set, and Cumulo when the
+   device holds a Cumulo key (RULINGS-v3 item 15);
 4. the head host on its Sub model (a direct host only; none for a forced-reasoner head, whose
    first rung already stepped down).
 
@@ -57,8 +61,12 @@ head, another provider, the Sub model) such a model is replaced by `mistral-smal
 and on Cumulo's router `mistral/<forced reasoner>` by `mistral/mistral-small-latest`. A rung
 on another model than the host's pick runs under a model pin (`ScopedModelOverride`): the
 direct hosts and the Cumulo head read it, on the fold's own task only.
-No (host, model) appears twice. A rung that answered empty or thin goes last in the
-next cycle. A rung whose host left the ladder since the cycle started (parked, capped)
+"Forced reasoner" is one predicate, `nimbus::orch::mistralForcedReasoner` (`model_family.h`):
+Large 4 under every id Mistral serves it as (`mistral-large-4*` and the alias
+`mistral-large-latest`, nimbusd's default Mistral model) and the hosted GLM models. The
+class test runs it against every id and alias of the recorded model list, with the list's
+canonical name as the oracle. No (host, model) appears twice. A rung that answered empty
+or thin, or was cut twice, goes last in the next cycle. A rung whose host left the ladder since the cycle started (parked, capped)
 is passed over. Every failed rung logs one line the persona rig reads:
 
 ```
@@ -84,10 +92,39 @@ The fold reads lane B's request context for the head (`deriveRequestContext` ove
 server link): `foldTriggerBytes(budget, compactAtKB)`
 makes a chat due (0 off; 48, the default, the derived soft mark; another value that mark
 clamped inside the history; on the floor branch v5.1.1's reading, compactAtKB KB) and
-`foldStepBytes` is what one fold takes (on the floor branch v5.1.1's slice). The VN reads
+`foldCycleBytes(budget)` = min(`foldSliceBytes`, `foldDigestCap(chatSummaryBytes)`) is what
+one cycle may take: the slice stops at the kept tail, so a steady-state fold takes about
+`foldStepBytes` (soft - keep) and only a backlog takes more per paid request.
+
+On a head with room the trigger compares the soft mark with the history after `thru`: a
+landed fold restarts the byte count at the conversation it kept after the new anchor
+(`applyFold`'s `keptBytes`), and each turn lifts it to the bytes its window renders
+(`noteHistoryBytes`), so after the first fold the next one is due at the soft mark, before
+the window reaches its maximum and shifts. The thrash wait counts only the bytes that came
+after the fold. The floor branch keeps v5.1.1's reading (the count restarts at 0). The VN reads
 `kHostedCompactKb` (48) the same way. A head whose turn is one flat prompt string (a
 custom endpoint; Mistral or Z.ai with the tool loop off) is on the floor branch: the fold
 keeps the tail that string can carry.
+
+## The slice and its four outcomes
+
+`TurnEngine::historyFoldSlice` reads the rows after `thru` forward (the after cursor, the
+card's cold region included), oldest first, up to the kept tail. A slice with no digest says
+why (`SliceState`), and only one outcome may give rows up:
+
+| outcome | when | the driver |
+|---|---|---|
+| Ready | a digest to summarize | runs the cycle |
+| Nothing | the read reached the kept tail or the end and found nothing worth a summary | restarts the counters; gives up hidden rows only up to where the read reached (`readTo`) |
+| Wait | the rows are not readable yet: the cache has not read far enough to know the kept tail (with rows hidden the slice takes those rows alone instead), a store read budget, a failing card, the scan for the newest `/clear` of a chat with no anchor | Deferred, the store untouched |
+| Unread | the store named a span after the anchor it will not give back | Deferred, the store untouched |
+
+So `thru` moves only past rows a landed summary took. A `/clear` anchors the chat at its
+boundary row (device and VN); for a chat cleared before that (no anchor), only a read that
+reached its bound is folded, so nothing before the newest `/clear` is ever summarized. A read
+budget that found none of the chat's rows is resumed from where the store stopped on the next
+pass. The slice runs inside a `PsramFirstScope` and spills each kept row as it is read: the
+fold runs outside a turn, where a block of 128 B or less would otherwise stay in internal SRAM.
 
 ## The schedule (FoldStore and FoldCtl)
 
@@ -102,15 +139,18 @@ v5.1.1 image reads a chat that is neither failing nor paused.
 | a summary lands | the failure count and a backoff wait clear |
 | a refill within 2 turns of a fold (thrash) | due once, `nextTry` = now + 15 min; never a pause |
 | a legacy pause (`paused=1` or `2`) | ignored on load: due on the first pass |
+| a slice that cannot read its rows (`SliceState::Wait` or `Unread`) | nothing in the store changes; the next look is the next pass when the read moved forward, else 1 min doubling to 1 h (RAM) |
 | a new firmware (`fwAtLastFail` differs) | every chat's wait and failure count restart |
-| no clock | the wait is kept in RAM on the monotonic clock; paid requests count under day 0 in RAM, never over a real day's count; no alert |
+| no clock | the wait is kept in RAM on the monotonic clock; paid requests count under day 0 in RAM, never over a real day's count, and that count restarts 24 h after its first request; a chat with a persisted wait is held 10 minutes after boot for the clock; no alert |
 | a wait longer than 12 h 15 min (the clock stepped back) | read as due |
 
 Device-wide, in `/data/fold_ctl.txt` (`nimbus::orch::FoldCtl`; on the VN
-`<data>/mem/fold_ctl.txt`): `paidDay` and `paidCount` (at most 12 paid automatic fold
-requests a local day, every chat together; 2xx answers and timeouts after the upload
-count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of failing, sent to the owner's
-Telegram chat or the web chat; another chat's is only logged),
+`<data>/mem/fold_ctl.txt`): `paidDay`, `paidCount` and `guestPaid` (at most 12 paid
+automatic fold requests a local day, every chat together, of which chats that are not the
+owner's spend at most 6; the owner's due chats fold first; 2xx answers and timeouts after
+the upload count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of
+failing, sent to the owner's Telegram chat or the web chat, by role on the VN: the first
+Admin chat; another chat's failure is only logged and does not use up the day),
 `manualPendingChat` (up to 4 queued manual requests) and `fwAtLastFail`. Because this
 lives outside the per-chat blob, evicting a chat's record (the blob keeps the 16 most
 recently used chats inside 64 KB, about ten with a full summary) never resets the cap
@@ -122,7 +162,8 @@ or loses a request.
 (any task), and the pump moves it into `manualPendingChat`. Manual cycles run one at a
 time, two minutes apart, skip the daily cap (they are counted in it) and the quiet wait,
 and take a keep-0 slice. A manual request is a catch-up: while the chat still has rows
-the history hides behind the anchor, its cycles chain oldest first (at most 64) and one
+the history hides behind the anchor, or its last slice stopped short of the newest row,
+its cycles chain oldest first (at most 64) and one
 confirmation names the whole span. A manual request never waits behind an automatic cycle:
 one that is between rungs when a manual request is ready ends uncounted, its failed
 rungs going last. Every manual request is answered: the confirmation,

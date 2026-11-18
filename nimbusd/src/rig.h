@@ -813,6 +813,8 @@ class NimbusdRig {
   // The chat's anchored summary ("" = never folded): diagnostics and the tests.
   orch::ChatFold foldState(const std::string& chat) const { return folds_.get(chat); }
   agent::FoldDriver& foldDriver() { return *foldDriver_; }
+  // The last router selector a head turn worked on (the Selector refusal's fallback): tests.
+  const std::string& lastGoodCumuloSelector() const { return lastGoodCumulo_; }
   // GET /api/fold/status (engine thread): the chat's fold health ("" = the default
   // chat: the Telegram owner when a bot runs here, else the web chat). False for a chat
   // the instance does not know.
@@ -2657,7 +2659,9 @@ class NimbusdRig {
       noteRefusal(r.lastKind, r.lastTried, o);
       return false;
     }
-    lastGoodCumulo_ = r.used;
+    // A fold rung pinned on another model is not the owner's pick working (device parity,
+    // cumuloFoldPinned): the last good selector stays the pick's (lane CTXR1).
+    if (agent::providers::modelOverrideFor(kCumuloSlug).empty()) lastGoodCumulo_ = r.used;
     if (eng_ && eng_->turnInFlight()) agent::router_refusal::settleClamp(tap_.servedCapped(), steadyMs(), o.out);
     if (!r.fellBack()) return true;
     // A background compaction call (the fold runs through this same head, with no
@@ -3444,6 +3448,7 @@ class NimbusdRig {
       return agent::HistoryMarks{f.thru, f.softStart, 0, f.lastFoldEpoch};
     };
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds_.setSoftStart(c, soft); };
+    d.noteHistoryBytes = [this](const std::string& c, size_t bytes) { folds_.noteHistoryBytes(c, bytes); };
     d.foldTriggerBytes = [this] { return foldTriggerNow(); };
     d.utcOffsetMin = [] { return hostedOffsetAt((uint32_t)time(nullptr)); };
     d.utcOffsetAt = [](uint32_t unixSec) { return hostedOffsetAt(unixSec); };
@@ -3541,16 +3546,22 @@ class NimbusdRig {
     // The VN has no compactAtKB setting: the hosted value over the head's derived
     // history (RULINGS-v3 item 3), or the test seam's bytes.
     h.triggerBytes = [this]() -> uint32_t { return foldTriggerNow(); };
-    h.foldStepBytes = [this] { return headRequestContext().foldStepBytes; };   // one fold's step (lane B)
+    // What one fold input can carry (lane CTXR1): a backlog is paid off in large bites.
+    h.foldCycleBytes = [this] { return orch::foldCycleBytes(headRequestContext()); };
     h.utcOffsetMin = [](uint32_t epoch) { return hostedOffsetAt(epoch); };
     h.folded = [this](const agent::FoldDone& d) { foldLanded(d); };
     h.tell = [this](const std::string& chat, const std::string& text) { record(chat, text); };
     // The daily alert is the owner's (the web chat, or the Telegram owner): another chat's
     // failing summary is only logged.
     h.alert = [this](const std::string& chat, const std::string& text) {
-      if (chat == kWebChatId || chat == foldDefaultChat()) return record(chat, text);
+      if (foldOwnerChat(chat)) {
+        record(chat, text);
+        return true;
+      }
       agent::hlog::logf("fold(%s): not the owner's chat - the daily alert is logged only", chat.c_str());
+      return false;
     };
+    h.ownerChat = [this](const std::string& chat) { return foldOwnerChat(chat); };
     h.asking = [this](bool on) {
       if (foldBusy_ && *foldBusy_) (*foldBusy_)(on);
     };
@@ -3586,15 +3597,19 @@ class NimbusdRig {
                 thru.empty() ? std::string("ev:compact") : "ev:compact,thru:" + thru);
     flush();
   }
-  // The chat Summarize now takes by default: the Telegram owner when a bot runs here,
-  // else the web chat.
+  // The chat Summarize now takes by default: the first allow-listed Telegram chat whose role
+  // is Admin when a bot runs here, else the web chat. By role, not by position (lane CTXR1):
+  // a hosted instance approves chats as User, so the first approved chat is often a guest.
   std::string foldDefaultChat() const {
-    if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_) {
-      const std::string allow = access_->allowCsv();
-      const std::string owner = allow.substr(0, allow.find(','));
-      if (!owner.empty()) return owner;
-    }
+    if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_)
+      for (const auto& m : access_->members())
+        if (m.owner) return m.id;
     return kWebChatId;
+  }
+  // The owner's chats on this instance: the web chat and any Admin Telegram chat.
+  bool foldOwnerChat(const std::string& chat) const {
+    if (chat == kWebChatId) return true;
+    return access_ && cfg_.has("TELEGRAM_BOT_TOKEN") && access_->principalFor(chat).owner;
   }
   std::vector<std::string> foldChats() const {
     std::vector<std::string> out = folds_.chatIds();

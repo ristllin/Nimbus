@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "nimbus/orch/compact.h"       // kChatSummaryMax - what the fold store keeps
 #include "nimbus/orch/model_window.h"   // kCtxDefaultTokens - the window table
 #include "nimbus/orch/request_budget.h" // requestBudgetFor - the seam's body
 #include "nimbus/orch/mem_config.h"  // MemConfig::kContextMin/Max - the owner-override clamp
@@ -126,7 +127,9 @@ ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverride
   // room for history (the floor branch below: v5.1.1's window) and is never a large target.
   const uint64_t body = rb.contextBytes();
   const bool large = !rb.flatTurn && rb.targetTokens >= kLargeTargetTokens;
-  b.chatSummaryBytes = std::max<size_t>(old.chatSummaryBytes, large ? 6144 : 4096);
+  // Never more than the fold store keeps (lane CTXR1: a gpt-6 head was told and capped at
+  // v5.1.1's 8,192 B, then stored at kChatSummaryMax, so every fold lost its tail lines).
+  b.chatSummaryBytes = std::min<size_t>(kChatSummaryMax, std::max<size_t>(old.chatSummaryBytes, large ? 6144 : 4096));
   if (ov.maxContextBytes <= 0)
     b.systemPromptBytes = std::max(old.systemPromptBytes, (int)pct(body, 12, 32768, 56000));
   if (ov.toolResultCap <= 0) b.toolResultBytes = std::max(old.toolResultBytes, pct(body, 3, 8192, 16384));
@@ -142,6 +145,10 @@ ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverride
   if (room) deriveHistory(b, (size_t)historyMax);
   b.foldSliceBytes = std::max(old.foldSliceBytes, b.foldStepBytes);
   return b;
+}
+
+size_t foldCycleBytes(const ContextBudget& b) {
+  return std::min(b.foldSliceBytes, foldDigestCap(b.chatSummaryBytes));
 }
 
 size_t foldTriggerBytes(const ContextBudget& b, uint32_t compactAtKB) {

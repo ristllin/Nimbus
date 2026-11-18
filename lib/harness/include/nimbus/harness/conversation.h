@@ -337,6 +337,9 @@ struct FoldSlice {
   std::string readTo;
   // Wait: this attempt moved the read forward (a scan or a read budget resumes from there).
   bool progressed = false;
+  // Ready: the read stopped short of its bound (the cap, the page bound, a span it could not
+  // read): rows after `thru` remain for the next fold (a manual catch-up goes on).
+  bool more = false;
   // A head with room (lane H's derived marks): the conversation bytes left after the new
   // anchor (Ready: after `thru`; Nothing: after the old one). The fold trigger counts on
   // from there, so it reads "bytes after thru" (budget.h). 0 on the floor branch.

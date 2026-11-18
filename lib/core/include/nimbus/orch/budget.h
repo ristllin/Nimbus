@@ -126,6 +126,12 @@ inline constexpr size_t kFoldTriggerMinBytes = 24 * 1024;
 // new mark (soft - keep) and may sit under v5.1.1's alias of the fold slice.
 ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverrides& ov);
 
+// What one automatic fold cycle may take (lane CTXR1): what one fold input can carry,
+// min(foldSliceBytes, foldDigestCap(chatSummaryBytes)). The slice still stops at the kept
+// tail, so a steady-state fold takes about foldStep (soft - keep); only a backlog (a busy
+// day, a day at the cap, a v5.1.1 pause carried into the update) takes more per paid call.
+size_t foldCycleBytes(const ContextBudget& b);
+
 // The fold trigger an owner's compactAtKB setting gives: 0 = off (0); the floor branch:
 // the setting as v5.1.1 reads it (KB x 1,024); kCompactAtKbDefault: the derived soft mark;
 // any other value: that soft mark, clamped to [8 KB, historyMax - 8 KB].

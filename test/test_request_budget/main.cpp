@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../support/recorded_models.h"
+#include "nimbus/orch/compact.h"   // kChatSummaryMax
 #include "nimbus/harness/conversation.h"   // historyDayBytes - the day floor of v5.1.1's window
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/harness/providers.h"   // flatPromptBudget - the wires' flat cap
@@ -296,8 +297,13 @@ static void assertNoShrink(const ContextBudget& c, JsonObjectConst old, const st
                          c.briefBytes, c.foldSliceBytes, c.historyMaxBytes, c.historySoftBytes,
                          c.historyKeepBytes, c.historyRows, c.replayBytes, c.perTurnFloorBytes,
                          c.historyMessageCap, c.recallBytes};
-  for (size_t i = 0; i < sizeof(have) / sizeof(have[0]); i++)
-    TEST_ASSERT_TRUE_MESSAGE(have[i] >= (size_t)(old[kFields[i]] | 0u), (what + " " + kFields[i]).c_str());
+  for (size_t i = 0; i < sizeof(have) / sizeof(have[0]); i++) {
+    size_t floor = (size_t)(old[kFields[i]] | 0u);
+    // The summary: what a summary could actually be, v5.1.1's figure within what the fold store
+    // keeps (v5.1.1's store kept 4,096 B; a gpt-6 row's 8,192 B was never stored). Lane CTXR1.
+    if (i == 0) floor = std::min(floor, kChatSummaryMax);
+    TEST_ASSERT_TRUE_MESSAGE(have[i] >= floor, (what + " " + kFields[i]).c_str());
+  }
 }
 
 // No field shrinks (RULINGS-v3 item 8), field by field against budgets_v5_1_1.json, for
@@ -328,6 +334,8 @@ static void test_history_room_or_the_floor_branch_for_every_head() {
     TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(c, kCompactAtKbDefault) >= kFoldTriggerMinBytes, what.c_str());
     TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= c.historySoftBytes && c.historySoftBytes <= c.historyMaxBytes,
                              what.c_str());
+    // Lane CTXR1: the summary a fold is told and capped at is never more than the fold store keeps.
+    TEST_ASSERT_TRUE_MESSAGE(c.chatSummaryBytes <= kChatSummaryMax, what.c_str());
     if (!c.floorBranch) {
       TEST_ASSERT_TRUE_MESSAGE(c.foldStepBytes <= foldDigestCap(c.chatSummaryBytes), what.c_str());
       continue;
@@ -358,6 +366,35 @@ static void test_a_week_at_the_floor_stays_under_the_daily_fold_cap() {
         pending = c.historyKeepBytes < pending ? c.historyKeepBytes : 0;
       }
       TEST_ASSERT_TRUE_MESSAGE(folds <= 12, nameOf(h).c_str());
+    }
+  }
+}
+
+// A simulated fortnight on EVERY head (lane CTXR1): a household's 45 exchanges of 3 KB a day,
+// the fold driver's rules (due at the trigger, counted on the bytes after thru; one cycle takes
+// whole exchanges up to the kept tail and at most foldCycleBytes; 12 paid folds a local day on
+// the device). The backlog never grows: at the end of every day what lies after thru is within
+// one cycle of the trigger. With a cycle bounded by the steady-state step (soft - keep, 11.7 KB
+// on Mistral Medium) a busy day at the cap left rows hidden that no later day caught up.
+static void test_a_fortnight_on_every_head_works_off_its_backlog() {
+  constexpr size_t kExchange = 3 * 1024;
+  for (const Head& h : allHeads()) {
+    const ContextBudget c = deriveRequestContext(requestBudgetFor(h.host, h.model, h.routed), {});
+    const size_t trigger = foldTriggerBytes(c, kCompactAtKbDefault);
+    const size_t keep = std::min(c.historyKeepBytes, trigger > kExchange ? trigger - kExchange : 0);
+    const size_t cycle = foldCycleBytes(c);
+    size_t after = 0;   // conversation bytes after thru
+    for (int day = 0; day < 14; day++) {
+      int paid = 0;
+      for (int turn = 0; turn < 45; turn++) {
+        after += kExchange;
+        if (after < trigger || paid >= 12) continue;
+        const size_t take = std::min(cycle, after - keep) / kExchange * kExchange;   // whole exchanges
+        if (!take) continue;
+        after -= take;
+        paid++;
+      }
+      TEST_ASSERT_TRUE_MESSAGE(after <= trigger + cycle, (nameOf(h) + " day " + std::to_string(day)).c_str());
     }
   }
 }
@@ -756,6 +793,7 @@ int main(int, char**) {
   RUN_TEST(test_no_field_below_v5_1_1_for_every_recorded_model);
   RUN_TEST(test_history_room_or_the_floor_branch_for_every_head);
   RUN_TEST(test_a_week_at_the_floor_stays_under_the_daily_fold_cap);
+  RUN_TEST(test_a_fortnight_on_every_head_works_off_its_backlog);
   RUN_TEST(test_the_derived_fields_for_the_main_heads);
   RUN_TEST(test_owner_settings);
   RUN_TEST(test_the_form_of_every_head_turn);

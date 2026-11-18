@@ -56,6 +56,8 @@ class ConvCache {
   // (each turn still tries one page), so the fill resumes by itself once the index has the
   // rows.
   static constexpr uint8_t kIdleStalls = 3;
+  // Reads one gap probe may make (each a store call under its cold read budget).
+  static constexpr int kProbeReads = 4;
 
   // One read of a chat's rows (Deps::historyRows bound to the chat).
   using ReadFn = std::function<std::vector<nimbus::orch::EpisodicMessage>(const HistoryQuery&)>;
@@ -100,7 +102,7 @@ class ConvCache {
     std::string newestId;             // the newest row read (kept when a fold trims every row)
     std::string fillBefore;           // the next fill page's before cursor ("" = from the newest)
     bool complete = false;            // the fill reached thru, a /clear or the chat's start
-    bool started = false;             // the first fill page ran
+    std::string probeAt;              // where the gap probe's cold walk goes on ("" = from thru)
     size_t bytes = 0;
     ConvSpan span;                    // evicted rows (counted) and the unread rest
     uint32_t lastUse = 0;
@@ -117,7 +119,7 @@ class ConvCache {
   void applyPatches(Entry& e);
   int readNewer(Entry& e, const ReadFn& read);
   bool fillPage(Entry& e, const Bound& bound, const ReadFn& read);
-  static bool gapAfterThru(const Entry& e, const ReadFn& read);
+  static bool gapAfterThru(Entry& e, const ReadFn& read);
   void enforce(Entry& e, const Bound& bound);
   static size_t rowBytes(const nimbus::orch::EpisodicMessage& m);
   View viewOf(const Entry& e) const;

@@ -319,6 +319,10 @@ class TurnEngine {
     // shift's advance (persisted with the turn).
     std::function<HistoryMarks(const std::string& chatId)> historyMarks;
     std::function<void(const std::string& chatId, const std::string& softStart)> noteHistoryShift;
+    // Lane CTXR1, a head with room: the rendered bytes of the window a turn just built (the
+    // conversation after thru the request carries), so the fold trigger compares the soft
+    // mark with the history after thru as the window measures it (FoldStore::noteHistoryBytes).
+    std::function<void(const std::string& chatId, size_t bytes)> noteHistoryBytes;
     // The automatic fold's byte trigger, as the fold driver reads it (its triggerBytes hook:
     // the owner's Compact threshold over the head's budget). An owner's trigger below the
     // head's soft mark makes the fold slice keep a tail in proportion; unwired or 0 = the
@@ -863,8 +867,22 @@ class TurnEngine {
   size_t foldKeepBytes(const HistoryBudget& b) const;
   SliceState foldBounds(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
                         const HistoryOptions& o, bool hidden, FoldBounds& out);
-  SliceState foldStart(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
-                       const FoldBounds& bounds, std::string& from, bool& known, bool& progressed);
+  // What a slice knows before it reads (planFold): the budget, the marks, the bounds, the
+  // read's start (`known` false: no anchor, and only a read to its bound may be folded).
+  struct FoldPlan {
+    HistoryBudget b;
+    HistoryMarks marks;
+    HistoryOptions o;
+    bool hidden = false;
+    FoldBounds bounds;
+    std::string from;
+    bool known = true;
+    FoldSlice s;   // state, keptBytes and progressed so far
+  };
+  struct FoldReadPass;
+  void planFold(const std::string& chatId, bool manual, FoldPlan& p);
+  SliceState foldStart(const std::string& chatId, FoldPlan& p);
+  FoldSlice sliceWithoutDigest(const std::string& chatId, FoldPlan& p, const FoldRead& r, bool held);
   static void noteHeld(const ConvCache::View& view, const HistoryBudget& b, FoldBounds& out);
   FoldRead readFoldRows(const std::string& chatId, const std::string& from, const FoldBounds& bounds, size_t capBytes,
                         std::vector<nimbus::orch::EpisodicMessage>* fwd);

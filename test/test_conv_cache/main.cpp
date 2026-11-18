@@ -384,6 +384,66 @@ static void test_an_empty_probe_the_store_cut_short_is_not_the_end() {
   TEST_ASSERT_EQUAL(4, (int)v.rows.size());   // turns 3 and 4
 }
 
+// Lane CTXR1: the fill's first page came back empty (a chat with no row yet, on a store whose
+// cold probe is cut by its budget, so the entry stays incomplete). The rows written after it
+// must reach every later access: the delta read needs a newest id, and an empty first page
+// used to leave it unset for good (turns 3, 4, 5 saw only exchange 1).
+static void test_an_empty_first_page_still_reads_every_newer_row() {
+  Store s;
+  for (int i = 0; i < 30; i++) s.turn("c9", i);   // another chat's rows
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn cut = [&full](const HistoryQuery& q) {
+    if (!q.after.empty() && q.limit == 1 && q.info) {   // the gap probe: a cold walk out of budget
+      q.info->newerExists = true;
+      q.info->nextAfter = q.after;
+      return std::vector<EpisodicMessage>();
+    }
+    return full(q);
+  };
+  ConvCache cache;
+  const ConvCache::View first = cache.access("c1", "", kWide, 1, cut);
+  TEST_ASSERT_TRUE(first.rows.empty());
+  TEST_ASSERT_FALSE(first.complete);
+  for (int t = 1; t <= 5; t++) {
+    const std::string newest = s.turn("c1", t);
+    const ConvCache::View v = cache.access("c1", "", kWide, 1, cut);
+    TEST_ASSERT_FALSE_MESSAGE(v.rows.empty(), "the chat's rows reach the cache");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(newest.c_str(), v.rows.back().id.c_str(), "every later exchange reaches the view");
+    assertIds(s.truth("c1", ""), ids(v));
+  }
+}
+
+// Lane CTXR1: a store whose index never reaches thru (an index capped at its row cap, or a
+// hosted instance that never backfilled): the gap probe's cold walk goes on from where the
+// store's read budget stopped, so the fill completes, and once complete a turn reads no card
+// row (it used to restart the walk at thru on every call: 17 card reads a turn, for good, and
+// a request that said the rows were still being read).
+static void test_a_capped_index_still_completes_the_fill() {
+  Store s;
+  for (int i = 0; i < 400; i++) s.turn("c9", i, 400);   // 2,400 rows of another chat on the card
+  s.turn("c1", 0);
+  s.turn("c1", 1);
+  s.log.hydrate(300, 0);   // the boot scan, then the backfill until the index cap stops it
+  s.log.setIndexCap(600);
+  for (int i = 0; i < 1000 && s.log.backfillStep(); i++) {
+  }
+  TEST_ASSERT_TRUE_MESSAGE(s.log.hydrateTruncated(), "the index stays short of the chat's start");
+  ConvCache cache;
+  ConvCache::View v;
+  int calls = 0;
+  for (; calls < 20 && !v.complete; calls++) v = cache.access("c1", "", kWide, 1, s.reader("c1"));
+  TEST_ASSERT_TRUE_MESSAGE(v.complete, "the fill completes");
+  TEST_ASSERT_TRUE(v.span.empty());
+  assertIds(s.truth("c1", ""), ids(v));
+  for (int t = 2; t < 6; t++) {
+    s.turn("c1", t);
+    s.fs.readRanges = 0;
+    v = cache.access("c1", "", kWide, 1, s.reader("c1"));
+    TEST_ASSERT_TRUE(v.complete);
+    TEST_ASSERT_EQUAL_MESSAGE(0, s.fs.readRanges, "a turn after the fill reads no card row");
+  }
+}
+
 // A device boot replays the photo records it kept: no cache holds a row yet, so the replay
 // does not fill the patch journal (it would push out records a running cache still needs).
 static void test_a_boot_replay_is_not_journaled() {
@@ -553,6 +613,46 @@ static uint32_t firstTurnCardReads(bool namedSource) {
   TEST_ASSERT_TRUE(r.instructions.back().find("answer 200 ") != std::string::npos);
   return r.eng->historyRead().cardReads;
 }
+// Lane CTXR1 (H7): a Telegram update served again after a manual compaction (thru at the
+// newest row: the cache holds nothing) or after /clear (it holds only the boundary row) is
+// still found and dropped, never answered twice: the duplicate check reads the chat's newest
+// rows from the store when the cache holds fewer.
+static void test_a_replayed_update_is_dropped_after_a_compaction_or_a_clear() {
+  for (int shape = 0; shape < 2; shape++) {
+    Store s;
+    s.turn("c1", 0);
+    EngineRig r(s.fs, s.seq, "");
+    const auto deliver = [&r]() {
+      agent::history::Inbound in;
+      in.chatId = "c1";
+      in.src = "tg:1:5000x1";
+      agent::history::noteInbound(in, "log my lunch");
+      r.eng->handleMessage("log my lunch", "Roy", "c1");
+    };
+    deliver();
+    TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+    if (shape == 0) {
+      char id[16];
+      std::snprintf(id, sizeof(id), "m%08x", (unsigned)r.seq);   // a manual fold up to the newest row
+      r.marks.thru = id;
+    } else {
+      EpisodicMessage m;
+      char id[16];
+      std::snprintf(id, sizeof(id), "m%08x", (unsigned)(++r.seq));
+      m.id = id;
+      m.sessionId = "c1";
+      m.role = "system";
+      m.text = agent::kClearBoundaryText;
+      m.tags = agent::kClearBoundaryTag;
+      m.tsHours = kHour0 + r.seq / 8;
+      r.overlay.addMessage(m);
+      r.marks.thru = id;   // /clear anchors at its boundary row
+    }
+    deliver();   // the same update, served again
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.instructions.size(), shape ? "after /clear" : "after a manual compaction");
+  }
+}
+
 static void test_one_card_page_with_the_duplicate_check() {
   const uint32_t plain = firstTurnCardReads(false);
   TEST_ASSERT_TRUE(plain > 0);
@@ -596,7 +696,10 @@ int main(int, char**) {
   RUN_TEST(test_the_first_turn_after_a_restart_carries_the_newest_exchanges);
   RUN_TEST(test_an_empty_probe_the_store_cut_short_is_not_the_end);
   RUN_TEST(test_a_boot_replay_is_not_journaled);
+  RUN_TEST(test_an_empty_first_page_still_reads_every_newer_row);
+  RUN_TEST(test_a_capped_index_still_completes_the_fill);
   RUN_TEST(test_one_card_page_with_the_duplicate_check);
+  RUN_TEST(test_a_replayed_update_is_dropped_after_a_compaction_or_a_clear);
   RUN_TEST(test_after_the_fill_the_whole_backlog_rides_the_request);
   return UNITY_END();
 }

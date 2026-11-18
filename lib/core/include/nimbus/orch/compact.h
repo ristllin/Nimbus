@@ -65,6 +65,10 @@ uint32_t foldBackoffS(uint32_t failedCycles);
 // At most this many paid fold requests a local day on the whole device (automatic
 // cycles; a manual Summarize now or /compact is exempt but still counted).
 constexpr uint32_t kFoldPaidPerDay = 12;
+// Of those, chats that are not the owner's (a guest, a group, a routine's chat) may spend at
+// most this many (lane CTXR1): one busy or failing guest chat cannot stop the owner's own
+// automatic summaries for the day.
+constexpr uint32_t kFoldGuestPaidPerDay = kFoldPaidPerDay / 2;
 // The owner hears about a failing summary once a local day, and only after it has
 // been failing this long.
 constexpr uint32_t kFoldAlertAfterS = 24u * 3600u;
@@ -82,6 +86,7 @@ constexpr size_t kFoldManualQueueMax = 4;
 struct FoldCtl {
   uint32_t paidDay = 0;        // the local day paidCount counts (0 = clock unset)
   uint32_t paidCount = 0;      // paid fold requests on paidDay, every chat together
+  uint32_t guestPaid = 0;      // of those, the requests made for chats that are not the owner's
   uint32_t lastAlertDay = 0;   // the local day the owner was last told (0 = never)
   // Manual requests not started yet, oldest first (a chat appears once): a request
   // survives a reboot and its chat's slot being evicted from the fold blob.
@@ -89,7 +94,8 @@ struct FoldCtl {
   std::string fwAtLastFail;    // the firmware that last failed a cycle ("" = none)
 
   uint32_t paidOn(uint32_t day) const { return paidDay == day ? paidCount : 0; }
-  void notePaid(uint32_t day, uint32_t n);
+  uint32_t guestPaidOn(uint32_t day) const { return paidDay == day ? guestPaid : 0; }
+  void notePaid(uint32_t day, uint32_t n, bool guest = false);
   // Queue a manual request (a chat already queued keeps its place). False when full.
   bool queueManual(const std::string& chatId);
   void dropManual(const std::string& chatId);
@@ -195,6 +201,9 @@ struct ChatFold {
   // RAM only (L19-26, fold on content): a hash of the chat's last owner message,
   // so a re-served copy of it adds nothing toward the next fold.
   uint32_t lastOwnerHash = 0;
+  // RAM only (lane CTXR1): the byte count the last fold restarted at (the tail it kept on a
+  // head with room). The thrash guard counts only the bytes that came after it.
+  uint32_t keptAtFold = 0;
 };
 
 // Owner messages a chat may gather before a fold is due by count alone (the
@@ -238,6 +247,11 @@ class FoldStore {
   // H3: the history's overflow shift moved forward to `rowId` (persisted with
   // the turn's blob write). Rows it hides make a fold due.
   void setSoftStart(const std::string& chatId, const std::string& rowId);
+  // Lane CTXR1, a head with room: a turn's window carries `bytes` of the conversation after
+  // thru. The byte counter is lifted to it (never lowered): the trigger then reads the bytes
+  // after thru as the window renders them, and fires at the soft mark before the window
+  // reaches its maximum. Persisted with the turn's blob write.
+  void noteHistoryBytes(const std::string& chatId, size_t bytes);
   // A due fold found nothing new worth a summary (the slice beyond the kept
   // verbatim tail was empty): the counters restart without a paid call, the byte
   // count at `keptBytes` (the conversation still after thru; 0 on the floor branch).

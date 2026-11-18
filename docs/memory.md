@@ -467,8 +467,13 @@ the fold's ladder, schedule and driver are in
   once with "✓ Compacted. Summary updated: covered N messages from D1 to D2" (or
   says it couldn't, with the time of the next try). In the web chat the confirmation
   is a history row, never the reply slot.
-- **If a provider is down**: the fold walks every provider you have a key for, one
-  request per pump pass, before a cycle counts as failed (fold-ladder.md).
+- **If a provider is down**: the fold walks the providers of your priority list (then
+  Cumulo with a Cumulo key, then the head's Sub model), one request per pump pass, before
+  a cycle counts as failed (fold-ladder.md). A provider left out of the list never
+  receives the conversation.
+- **If older rows cannot be read yet** (after a restart, while the card is indexed, a card
+  outage): the fold waits and looks again, and never moves the summary's anchor past a
+  row it has not summarized; those rows stay named in each request as not included.
 - **If it keeps failing**: it never pauses. A failed cycle tries again after 15
   minutes, 1 hour, 4 hours, then every 12 hours, each time on a smaller slice; a new
   firmware restarts the wait; a pause an older version left lifts on the first
@@ -550,7 +555,10 @@ flowchart LR
   pre-v3.6 firmware simply ignores the file. A rollback to v5.1.1 reads the blob
   (summary, anchor and shift intact, nothing paused), re-caps a summary over
   4,096 B, and writes the blob back at 48 KB, which can drop the oldest chats'
-  records. Crash mid-fold: the write order (summary first, thread reset second)
+  records. v5.1.1's fold reads only the newest 400 rows after the anchor, so a long
+  window of short messages kept by v5.1.2 can leave rows in neither summary nor
+  history after a rollback: run Summarize Now in each long chat first (one press
+  summarizes up to the newest message). Crash mid-fold: the write order (summary first, thread reset second)
   means the worst case is a fold that re-runs, never a lost summary with a reset
   thread.
 

@@ -182,6 +182,15 @@ FoldTick FoldDriver::stopAtCap() {
 }
 
 FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
+  if (!ticked_) {
+    ticked_ = true;
+    firstTickMs_ = nowMs;
+  }
+  lastTickMs_ = nowMs;
+  if (clocklessPaid_ && nowMs - clocklessSinceMs_ >= 24u * 3600u * 1000u) {   // a clockless day ends
+    hlog::log("fold: 24 hours with no clock since the first paid request - the daily count restarts");
+    clocklessPaid_ = clocklessGuest_ = 0;
+  }
   if (!gatesOpen()) return cycleActive() || !ctl_.manualPendingChat.empty() ? FoldTick::Deferred : FoldTick::Idle;
   std::string ready;
   if (pickManual(nowMs, ready)) endAutomaticForManual();
@@ -191,16 +200,19 @@ FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
   } else if (automaticRungWaits()) {
     return FoldTick::Deferred;
   }
-  if (!cycle_.manual && capReached(nowEpoch)) return stopAtCap();
+  if (!cycle_.manual && capReached(nowEpoch, cycle_.chat)) return stopAtCap();
   return runRung(nowMs, nowEpoch);
 }
 
-void FoldDriver::notePaid(uint32_t nowEpoch, uint32_t n) {
-  if (nowEpoch == 0) {   // no clock: day 0, in RAM
+void FoldDriver::notePaid(uint32_t nowEpoch, uint32_t n, const std::string& chat) {
+  const bool guest = !isOwnerChat(chat);
+  if (nowEpoch == 0) {   // no clock: in RAM, the day counted from its first request
+    if (!clocklessPaid_) clocklessSinceMs_ = lastTickMs_;
     clocklessPaid_ += n;
+    if (guest) clocklessGuest_ += n;
     return;
   }
-  ctl_.notePaid(today(nowEpoch), n);
+  ctl_.notePaid(today(nowEpoch), n, guest);
   saveCtl();
 }
 
@@ -208,8 +220,13 @@ uint32_t FoldDriver::paidToday(uint32_t nowEpoch) const {
   return nowEpoch == 0 ? clocklessPaid_ : ctl_.paidOn(today(nowEpoch));
 }
 
-bool FoldDriver::capReached(uint32_t nowEpoch) {
+uint32_t FoldDriver::guestPaidToday(uint32_t nowEpoch) const {
+  return nowEpoch == 0 ? clocklessGuest_ : ctl_.guestPaidOn(today(nowEpoch));
+}
+
+bool FoldDriver::capReached(uint32_t nowEpoch, const std::string& chat) {
   const uint32_t paid = paidToday(nowEpoch);
+  if (!chat.empty() && !isOwnerChat(chat) && guestPaidToday(nowEpoch) >= orch::kFoldGuestPaidPerDay) return true;
   if (paid < orch::kFoldPaidPerDay) return false;
   const uint32_t day = today(nowEpoch);
   if (capLoggedDay_ != day) {
@@ -232,6 +249,12 @@ bool FoldDriver::dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpo
   if (w != ramWaitMs_.end() && (int32_t)(w->second - nowMs) > 0) return false;   // no clock: its RAM wait
   const auto r = readWaits_.find(chat);
   if (r != readWaits_.end() && (int32_t)(r->second.untilMs - nowMs) > 0) return false;   // its rows' read waits
+  // No clock yet: a chat that carries a persisted wait is held a few minutes for the clock,
+  // not retried at once on every boot (its wait cannot be read without one).
+  if (nowEpoch == 0 && nowMs - firstTickMs_ < FoldDriverHooks::kNoClockGraceMs) {
+    const orch::ChatFold* f = folds_.peek(chat);
+    if (f && f->nextTry) return false;
+  }
   bool thrash = false;
   const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
   if (folds_.evaluateDue(chat, trigger, orch::kFoldMsgsThreshold, nowEpoch, &thrash) != orch::FoldDue::Yes)
@@ -240,20 +263,26 @@ bool FoldDriver::dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpo
   return true;
 }
 
-bool FoldDriver::pickAutomatic(uint32_t nowMs, uint32_t nowEpoch, std::string& chat) {
-  // The chat the last turn ran in first, then every other chat with a fold state, least
-  // recently used first: a chat left due before a restart (the legacy pause Lumi held)
-  // folds on the first pass, before anyone writes in it.
-  if (!lastTurnChat_.empty() && dueNow(lastTurnChat_, nowMs, nowEpoch)) {
+bool FoldDriver::pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::string& chat) {
+  if (!lastTurnChat_.empty() && isOwnerChat(lastTurnChat_) == owners && dueNow(lastTurnChat_, nowMs, nowEpoch)) {
     chat = lastTurnChat_;
     return true;
   }
   for (const std::string& c : folds_.chatIds()) {
-    if (c == lastTurnChat_ || c == "system" || !dueNow(c, nowMs, nowEpoch)) continue;
+    if (c == lastTurnChat_ || c == "system" || isOwnerChat(c) != owners) continue;
+    if (!owners && guestPaidToday(nowEpoch) >= orch::kFoldGuestPaidPerDay) return false;   // their share is spent
+    if (!dueNow(c, nowMs, nowEpoch)) continue;
     chat = c;
     return true;
   }
   return false;
+}
+
+bool FoldDriver::pickAutomatic(uint32_t nowMs, uint32_t nowEpoch, std::string& chat) {
+  // The owner's chats first (the chat the last turn ran in, then the others, least recently
+  // used first), then everyone else's: a chat left due before a restart (the legacy pause
+  // Lumi held) folds on the first pass, before anyone writes in it.
+  return pickFrom(nowMs, nowEpoch, true, chat) || pickFrom(nowMs, nowEpoch, false, chat);
 }
 
 std::vector<FoldRung> FoldDriver::orderedRungs() const {
@@ -278,7 +307,7 @@ FoldTick FoldDriver::pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& ch
   // A due automatic fold waits for the owner (owner_first.h); an overflow fold is
   // needed by the next turn. Then the device-wide daily cap.
   if (hooks_.quiet && !hooks_.quiet(overflow)) return FoldTick::Deferred;
-  return capReached(nowEpoch) ? FoldTick::Deferred : FoldTick::Pending;
+  return capReached(nowEpoch, chat) ? FoldTick::Deferred : FoldTick::Pending;
 }
 
 // A due fold whose slice read to its bound and found nothing: a manual request is answered
@@ -339,7 +368,7 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   const orch::ChatFold* f = folds_.peek(chat);
   Cycle c;
   c.prevSummary = f ? f->summary : std::string();
-  const size_t step = hooks_.foldStepBytes ? hooks_.foldStepBytes() : kDefaultFoldStep;
+  const size_t step = hooks_.foldCycleBytes ? hooks_.foldCycleBytes() : kDefaultFoldStep;
   const size_t cap =
       std::min(orch::foldDigestAfterFailures(step, f ? f->failedCycles : 0), orch::foldDigestCap(c.prevSummary.size()));
   c.slice = hooks_.slice ? hooks_.slice(chat, cap, manual) : eng_->historyFoldSlice(chat, cap, manual);
@@ -381,11 +410,13 @@ FoldTick FoldDriver::runRung(uint32_t nowMs, uint32_t nowEpoch) {
   if (hooks_.asking) hooks_.asking(true);
   const FoldResult r = eng_->runFoldRung(cycle_.chat, cycle_.prevSummary, cycle_.slice.digest, rung, summary, &rep);
   if (hooks_.asking) hooks_.asking(false);
-  if (rep.paidRequests) notePaid(nowEpoch, rep.paidRequests);
+  if (rep.paidRequests) notePaid(nowEpoch, rep.paidRequests, cycle_.chat);
   if (r == FoldResult::Deferred) return FoldTick::Deferred;   // a gate closed: the rung waits
   if (r == FoldResult::Ok) return landed(rep, summary, nowMs, nowEpoch);
   hlog::log(foldRungFailLine(cycle_.chat, cycle_.idx, n, rep).c_str());
-  if (rep.degraded) degraded_.insert(rungKey(rep.host, rep.model));
+  // A rung that answered empty or thin, or was cut twice (a model that thinks past its cap),
+  // goes last next cycle: the ladder does not pay for it first again.
+  if (rep.degraded || rep.fail == FoldFailKind::Cut) degraded_.insert(rungKey(rep.host, rep.model));
   if (rep.thinSummary.size() > cycle_.bestThin.thinSummary.size()) cycle_.bestThin = rep;
   if (++cycle_.idx < n) {
     changed(cycle_.chat);
@@ -430,11 +461,13 @@ bool FoldDriver::catchUpContinues(const std::string& chat, const FoldSlice& land
   if (span.firstDate.empty()) span.firstDate = landed.firstDate;
   if (!landed.lastDate.empty()) span.lastDate = landed.lastDate;
   span.thru = landed.thru;
-  // More to catch up: rows the history still hides behind the anchor. The request
-  // stays queued (a restart resumes it), the next cycle starts on a later pass.
+  // More to catch up: rows the history still hides behind the anchor, or a read that stopped
+  // short of the newest row (lane CTXR1: one press summarizes everything, so a rollback to
+  // v5.1.1 skips nothing). The request stays queued (a restart resumes it), the next cycle
+  // starts on a later pass.
   const orch::ChatFold* f = folds_.peek(chat);
   const bool hidden = f && !f->softStart.empty() && (f->thru.empty() || rowIdAfter(f->softStart, f->thru));
-  return hidden && ++catchUp_.cycles < kCatchUpCycles;
+  return (hidden || landed.more) && ++catchUp_.cycles < kCatchUpCycles;
 }
 
 FoldTick FoldDriver::cycleFailed(uint32_t nowMs, uint32_t nowEpoch) {
@@ -475,11 +508,16 @@ FoldTick FoldDriver::cycleFailed(uint32_t nowMs, uint32_t nowEpoch) {
 void FoldDriver::maybeAlert(const std::string& chat, const orch::ChatFold* f, uint32_t nowEpoch, int32_t off) {
   if (!f || !nowEpoch || !f->firstFail || nowEpoch <= f->firstFail) return;
   if (nowEpoch - f->firstFail < orch::kFoldAlertAfterS || ctl_.lastAlertDay == today(nowEpoch)) return;
+  const std::string text = alertNotice(f->lastFoldEpoch ? f->lastFoldEpoch : f->firstFail, off);
+  bool told = false;
+  if (hooks_.alert) told = hooks_.alert(chat, text);
+  else if (hooks_.tell) {
+    hooks_.tell(chat, text);
+    told = true;
+  }
+  if (!told) return;   // only logged (not the owner's chat): the day's alert is still the owner's
   ctl_.lastAlertDay = today(nowEpoch);
   saveCtl();
-  const std::string text = alertNotice(f->lastFoldEpoch ? f->lastFoldEpoch : f->firstFail, off);
-  if (hooks_.alert) hooks_.alert(chat, text);
-  else if (hooks_.tell) hooks_.tell(chat, text);
 }
 
 void FoldDriver::endManual(const std::string& chat, uint32_t nowMs) {
