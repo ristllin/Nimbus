@@ -2583,14 +2583,17 @@ static void test_pol2_openq_observer_skips_scheduled_turns() {
   TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
 }
 
-// A prose final answer is delivered as written: the engine wires no prose check since the
-// reply guard's plumbing check went (v5.2.0, lane RB-Q1c; it sent back replies that named the
-// owner's own files). The loop keeps the hook (test_orch_head_loop).
+// A prose final answer is delivered as written: the engine wires no word check on prose since
+// the reply guard's plumbing check went (v5.2.0, lane RB-Q1c; it sent back replies that named
+// the owner's own files). The one hook left on prose is the truth check (RB-G0), which reads no
+// words and, with no binding, never sends a reply back. The loop keeps the hook
+// (test_orch_head_loop).
 static void test_no_prose_check_is_wired() {
   Rig r;
   r.scripts["anthropic"] = {Rig::Script{}};   // one plain loop turn is enough
   r.eng->handleMessage("go", "Roy", "1001");
-  TEST_ASSERT_EQUAL(0, (int)r.proseChecks.size());
+  for (const std::string& fix : r.proseChecks) TEST_ASSERT_EQUAL_STRING("", fix.c_str());
+  TEST_ASSERT_EQUAL(0, r.truth.opens);
 }
 
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
@@ -6064,7 +6067,9 @@ static void test_the_truth_check_hook() {
     r.scripts["anthropic"] = {s};
     r.eng->handleMessage("what is my sister's cat called?", "Roy", "1001");
     TEST_ASSERT_TRUE(r.finalChecks[0].rfind("[TURN CHECK]", 0) == 0);
-    TEST_ASSERT_EQUAL(0, (int)r.truth.probed.size());
+    // (The rig also hands the prose hook a fixed prose sample, which the real loop never does
+    // after a final answer; only that sample may have been probed.)
+    for (const std::string& body : r.truth.probed) TEST_ASSERT_TRUE(body.find("Brompton") != std::string::npos);
   }
   {  // Off: never a probe, the final check unchanged.
     Rig r;
