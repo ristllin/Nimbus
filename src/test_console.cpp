@@ -55,6 +55,9 @@
 #include <esp_system.h>
 #include <sys/time.h>                  // settimeofday - REBOOT cold (CUM-504)
 #include <time.h>                      // TZCHK - setenv(TZ)/tzset/localtime_r
+#include <atomic>                      // CLOCK - the held skew
+#include <esp_sntp.h>                  // CLOCK - the SNTP sync callback that holds the skew
+#include "nimbus/clock_skew.h"         // CLOCK - parse, cap, next local HH:MM (host-tested)
 #include <nvs.h>                       // NVSFILL - raw scratch-namespace writes (bypass the reserve)
 #include "nimbus/tg_updates.h"         // TGINJECT - parse a raw getUpdates page (host-tested)
 #include "nimbus/harness/turn_inbox.h"  // HISTV2 - the turn-structured history switch
@@ -648,6 +651,88 @@ void tzCheck(const String& tz, long long epoch) {
   Serial.flush();
   if (saved[0]) setenv("TZ", saved, 1); else unsetenv("TZ");
   tzset();
+}
+
+// CLOCK: skew the wall clock forward and hold it (nimbus/clock_skew.h has the forms), so a
+// bench leg grades a cold start, an overnight compaction, the 04:00 rollover or a photo
+// expiring with a real model and no waiting. Held: an SNTP resync lands the network time
+// and clockSkewResync puts the skew back on top. Only the wall clock moves; millis()
+// timers do not see the gap. Test builds only (this file); the release gate's ELF scan
+// refuses a shipped image that links any clockSkew symbol (check_elf_symbols.py).
+std::atomic<int32_t> s_clockSkew{0};   // held seconds, at most clockskew::kMaxSkewSec
+bool s_clockSkewHooked = false;        // the SNTP callback is installed (once, on first use)
+
+void clockSkewResync(struct timeval*) {
+  const int32_t k = s_clockSkew.load();
+  if (k <= 0) return;
+  struct timeval now;
+  gettimeofday(&now, nullptr);
+  now.tv_sec += k;
+  settimeofday(&now, nullptr);
+}
+
+void clockSkewShift(int64_t sec) {
+  struct timeval now;
+  gettimeofday(&now, nullptr);
+  now.tv_sec += (time_t)sec;
+  settimeofday(&now, nullptr);
+}
+
+void clockSkewReport() {
+  const time_t now = time(nullptr);
+  struct tm lt;
+  localtime_r(&now, &lt);
+  char buf[24];
+  strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", &lt);
+  Serial.printf("CLOCK skew=%ld epoch=%lld local=%s valid=%d\n", (long)s_clockSkew.load(), (long long)now, buf,
+                int((int64_t)now >= nimbus::clockskew::kValidEpoch));
+  Serial.flush();
+}
+
+// One forward step (CLOCK +N, CLOCK at HH:MM): refused on a clock that was never set, and
+// past the held cap; nothing moves on a refusal.
+void clockSkewForward(int64_t step) {
+  namespace cs = nimbus::clockskew;
+  int64_t held = 0;
+  if ((int64_t)time(nullptr) < cs::kValidEpoch) { reply("CLOCK ERR the clock is not set yet (NTP or CLOCK <epoch>)"); return; }
+  if (!cs::addSkew(s_clockSkew.load(), step, &held)) { reply("CLOCK ERR past the held cap of 3660 days"); return; }
+  if (!s_clockSkewHooked) {
+    sntp_set_time_sync_notification_cb(clockSkewResync);
+    s_clockSkewHooked = true;
+  }
+  s_clockSkew.store((int32_t)held);
+  clockSkewShift(step);
+  clockSkewReport();
+}
+
+void clockSkewCmd(const String& arg) {
+  namespace cs = nimbus::clockskew;
+  const cs::Cmd c = cs::parse(arg.c_str());
+  switch (c.op) {
+    case cs::Op::Read: clockSkewReport(); return;
+    case cs::Op::Forward: clockSkewForward(c.value); return;
+    case cs::Op::At: {
+      const time_t now = time(nullptr);
+      const time_t at = cs::nextLocal(now, c.hour, c.minute);
+      if (at <= now) { reply("CLOCK ERR cannot place that local time"); return; }
+      clockSkewForward((int64_t)(at - now));
+      return;
+    }
+    case cs::Op::Off:
+      clockSkewShift(-(int64_t)s_clockSkew.exchange(0));
+      clockSkewReport();
+      return;
+    case cs::Op::Set: {
+      // The absolute form (HIL legs place the device with it): no skew is held after it.
+      s_clockSkew.store(0);
+      struct timeval tv = {(time_t)c.value, 0};
+      settimeofday(&tv, nullptr);
+      Serial.printf("CLOCK set epoch=%lld skew=0\n", (long long)c.value);
+      Serial.flush();
+      return;
+    }
+    default: reply("CLOCK usage: CLOCK? | CLOCK +<seconds> | CLOCK at HH:MM | CLOCK off | CLOCK <epoch>"); return;
+  }
 }
 
 // WEBGUARD?: the web guard counters (nimbus/sys/web_guard.h). blocking= (a web request
@@ -2177,14 +2262,10 @@ void dispatch(String line) {
     Serial.flush();
     return;
   }
-  if (line.startsWith("CLOCK ")) {
-    // Set the wall clock to <epoch> (seconds). Lets a timezone/routine leg place
-    // the device at a chosen instant without waiting or NTP (study: CLOCK + TZCHK).
-    const long long epoch = atoll(line.substring(6).c_str());
-    struct timeval tv = { (time_t)epoch, 0 };
-    settimeofday(&tv, nullptr);
-    Serial.printf("CLOCK set epoch=%lld\n", epoch);
-    Serial.flush();
+  if (line == "CLOCK?" || line.startsWith("CLOCK ")) {
+    // CLOCK <epoch> places the device at a chosen instant without waiting or NTP (study:
+    // CLOCK + TZCHK); CLOCK +N / at HH:MM / off / ? hold a forward skew (clockSkewCmd).
+    clockSkewCmd(line == "CLOCK?" ? String("?") : line.substring(6));
     return;
   }
   if (line.startsWith("TZCHK ")) {

@@ -57,6 +57,9 @@ TEST_ONLY_MARKERS = (
     "firePanic",
     "faultNullStore",
     "faultDeepen",
+    # The console's CLOCK skew (src/test_console.cpp): a shipped image that linked it could
+    # have its wall clock moved over serial. Every clockSkew* function carries the marker.
+    "clockSkew",
 )
 
 # ESP-IDF app image layout (esp_image_format.h / esp_app_desc.h): a 24-byte image
