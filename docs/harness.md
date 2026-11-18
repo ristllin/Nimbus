@@ -486,7 +486,7 @@ every cut and every flipped bit of a line.
 `head.json`, and bulk payloads in `b/<turn>.txb`. Storing an item is exactly one append of
 its whole line, and nothing in a segment is ever rewritten. A power cut that tears an
 append leaves bytes that readers drop (no line end, or a failed crc); the next append
-after a restart starts with a line end of its own, so it is never glued onto them.
+after a restart starts with `~` and a line end, so it is never glued onto them and a tail that lacked only its line end is never completed.
 `head.json` is only a cache with its own crc: at open it is trusted when the line it says
 ends the open segment is there, then the lines written after it are caught up; when it is
 missing, torn or stale it is rebuilt from the segments (newest segment first, until the
@@ -498,7 +498,7 @@ The restart fill is one sequential read in 8 KB slices from just past the newest
 all, the oldest turns are given up and reported, so the newest stay. `store` is the persist
 point the engine calls for every item: into the arena, then the arena's bytes to storage.
 When storage refuses (no card, lock, memory floor), the item stays in RAM flagged not
-stored and the turn goes on; it is never written later. Chat keys are letters, digits,
+stored and the turn goes on; it is never written later. Chat keys are lower-case letters, digits,
 `_` and `-` only, and a bulk handle (`b/<turn>.txb@<offset>+<length>`) names a turn number
 and offsets, never a path, so nothing reaches outside the chat's folder.
 `test/test_tx_log` covers reopening, the head cache, a cut at every append, torn and

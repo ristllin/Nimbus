@@ -721,6 +721,192 @@ void test_open_checks_the_head_in_one_slice() {
   }
 }
 
+// A cut that wrote everything but the line end: the bytes stay dropped, and storing the
+// same q again with other content gives back the new item, never the old one.
+void test_a_tail_missing_only_its_line_end_is_never_completed() {
+  txb::MemFiles files;
+  txb::Convo c;
+  for (int i = 0; i < 2; ++i) c.ownerTurn("q", "a");
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  std::string seg, line;
+  TXB_OK(tx::segmentPath(kKey, 1, seg));
+  tx::Item old = c.items.back();
+  old.q = c.q + 1;
+  old.kind = tx::ItemKind::User;
+  old.x = "the old content";
+  TXB_OK(tx::encodeLine(old, line));
+  files.files[seg] += line.substr(0, line.size() - 1);
+  tx::TxLog again(files, kKey);
+  TXB_OK(again.open(head));
+  TEST_ASSERT_EQUAL_UINT64(c.q + 1, head.nextQ);
+  tx::Item fresh = old;
+  fresh.x = "the new content";
+  tx::StoreState st;
+  TXB_OK(again.append(fresh, st));
+  tx::TxArena arena;
+  initArena(arena);
+  TXB_OK(again.fill(tx::HeadState{}, arena));
+  TEST_ASSERT_EQUAL((int)c.items.size() + 1, (int)arena.count());
+  tx::Item got;
+  TXB_OK(arena.get(arena.count() - 1, got));
+  TEST_ASSERT_EQUAL_STRING("the new content", got.x.c_str());
+}
+
+// A cut or refusal at the rename leaves head.json.tmp newer than head.json: open reads it.
+void test_a_temp_newer_than_head_wins() {
+  txb::MemFiles files;
+  txb::Convo c;
+  c.ownerTurn("q", "a");
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  TXB_OK(log.writeHead(head));
+  head.pinned = {"new pin"};
+  files.refuseRename = true;
+  TEST_ASSERT_TRUE(log.writeHead(head).err == tx::Err::Io);
+  files.clearFaults();
+  tx::TxLog reader(files, kKey);
+  tx::HeadState got;
+  TXB_OK(reader.open(got));
+  TEST_ASSERT_EQUAL(1, (int)got.pinned.size());
+}
+
+// The 16 KB cap is on the written bytes: escapes count.
+void test_a_head_over_its_cap_after_escaping_is_refused() {
+  txb::MemFiles files;
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  head.pinned.assign(tx::kHeadMaxPinned, std::string(tx::kHeadMaxString, '\x01'));
+  TEST_ASSERT_TRUE(log.writeHead(head).err == tx::Err::InvalidArgument);
+  std::string hp;
+  TXB_OK(tx::headPath(kKey, hp));
+  TEST_ASSERT_EQUAL(0, (int)files.files.count(hp));
+}
+
+// head.json names the last line it saw (end_q) and the line before the fill start must be
+// one a digest covers: a crc-valid head.json of another state of the log is rebuilt.
+void test_a_foreign_head_is_rebuilt() {
+  txb::MemFiles files;
+  uint64_t thru = 0;
+  const txb::Convo c = days(8, thru);
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  TXB_OK(log.open(head));
+  head.pinned = {"marker"};
+  TXB_OK(log.writeHead(head));
+  std::string hp;
+  TXB_OK(tx::headPath(kKey, hp));
+  const std::string saved = unseal(files.files[hp]);
+  const auto forged = [&](const std::string& key, uint64_t from, uint64_t to) {
+    std::string body = saved;
+    const std::string a = "\"" + key + "\":" + std::to_string(from), b = "\"" + key + "\":" + std::to_string(to);
+    TEST_ASSERT_TRUE_MESSAGE(body.find(a) != std::string::npos, a.c_str());
+    body.replace(body.find(a), a.size(), b);
+    files.files[hp] = seal(body);
+    tx::TxLog reader(files, kKey);
+    tx::HeadState got;
+    TXB_OK(reader.open(got));
+    return got;
+  };
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)forged("end_q", c.q, c.q - 1).pinned.size(), "end_q of another log");
+  const tx::HeadState g = forged("thru", thru, thru - 2);   // the fill start is past a line it does not cover
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)g.pinned.size(), "thru of another log");
+  TEST_ASSERT_EQUAL_UINT64(thru, g.thru);
+  files.files[hp] = seal(saved);
+  tx::TxLog reader(files, kKey);
+  tx::HeadState ok;
+  TXB_OK(reader.open(ok));
+  TEST_ASSERT_EQUAL(1, (int)ok.pinned.size());
+}
+
+// Pointers past the log are refused; a stray q of 2^64 - 1 does not wrap next_q to 0.
+void test_pointers_and_q_stay_in_range() {
+  txb::MemFiles files;
+  txb::Convo c;
+  c.ownerTurn("q", "a");
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  head.thru = c.q + 1;
+  TEST_ASSERT_TRUE(log.writeHead(head).err == tx::Err::InvalidArgument);
+  head.thru = 0;
+  head.stub = 1000;
+  TEST_ASSERT_TRUE(log.writeHead(head).err == tx::Err::InvalidArgument);
+  const std::string huge = seal("{\"k\":\"h\",\"q\":18446744073709551615,\"x\":\"x\",\"cls\":\"notice\"");
+  tx::StoreState st;
+  TXB_OK(log.appendLine(huge.data(), huge.size(), st));
+  tx::TxLog reader(files, kKey);
+  TXB_OK(reader.open(head));
+  TEST_ASSERT_TRUE(head.nextQ == UINT64_MAX);
+}
+
+// A head.json with a key a newer writer added (string or list) is still read.
+void test_a_head_with_newer_keys_is_read() {
+  txb::MemFiles files;
+  txb::Convo c;
+  c.ownerTurn("q", "a");
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  head.pinned = {"p"};
+  TXB_OK(log.writeHead(head));
+  std::string hp;
+  TXB_OK(tx::headPath(kKey, hp));
+  files.files[hp] = seal(unseal(files.files[hp]) + ",\"later\":\"x\",\"more\":[\"a\",\"b\"],\"n\":7");
+  tx::TxLog reader(files, kKey);
+  tx::HeadState got;
+  TXB_OK(reader.open(got));
+  TEST_ASSERT_EQUAL(1, (int)got.pinned.size());
+}
+
+// Upper case is refused (FAT folders ignore case: two keys would share a folder); a bulk
+// payload over its cap is refused whole.
+void test_keys_are_lower_case_and_bulk_is_capped() {
+  TEST_ASSERT_FALSE(tx::chatKeyOk("Abc"));
+  TEST_ASSERT_TRUE(tx::chatKeyOk("abc"));
+  txb::MemFiles files;
+  tx::TxLog log(files, kKey);
+  std::string h, out;
+  TEST_ASSERT_TRUE(log.appendBulk(3, std::string(tx::kBulkMaxBytes + 1, 'b'), h).err == tx::Err::TooLarge);
+  TEST_ASSERT_EQUAL(0, (int)files.appends);
+  TXB_OK(log.appendBulk(3, std::string(tx::kBulkMaxBytes, 'b'), h));
+  TEST_ASSERT_TRUE(log.readBulk("b/3.txb@0+524289", 0, 10, out).err == tx::Err::InvalidArgument);
+}
+
+// One turn larger than the arena: the fill never gives up the turn it is filling, so the
+// arena keeps that turn's start (its t item) and reports the rest as dropped.
+void test_one_turn_larger_than_the_arena_keeps_its_start() {
+  txb::MemFiles files;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("big");
+  for (int i = 0; i < 60; ++i) {
+    const std::string id = c.call("read_file", R"({"path":"a"})");
+    c.receipt(id, "read_file", std::string(1500, 'r'));
+  }
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  tx::TxArena arena;
+  initArena(arena, 16 * 1024);
+  tx::FillReport rep;
+  TXB_OK(log.fill(tx::HeadState{}, arena, rep));
+  tx::ArenaEntry first;
+  TXB_OK(arena.header(0, first));
+  TEST_ASSERT_EQUAL_UINT64(1, first.q);
+  TEST_ASSERT_EQUAL((int)c.items.size(), (int)(arena.count() + rep.dropped));
+}
+
 inline void run() {
   RUN_TEST(test_restart_fill_gives_the_same_arena_bytes);
   RUN_TEST(test_restart_fill_is_one_bounded_sequential_read);
@@ -740,6 +926,14 @@ inline void run() {
   RUN_TEST(test_a_head_behind_the_segment_is_not_trusted);
   RUN_TEST(test_fill_drops_crc_valid_lines_it_cannot_read);
   RUN_TEST(test_open_checks_the_head_in_one_slice);
+  RUN_TEST(test_a_tail_missing_only_its_line_end_is_never_completed);
+  RUN_TEST(test_a_temp_newer_than_head_wins);
+  RUN_TEST(test_a_head_over_its_cap_after_escaping_is_refused);
+  RUN_TEST(test_a_foreign_head_is_rebuilt);
+  RUN_TEST(test_pointers_and_q_stay_in_range);
+  RUN_TEST(test_a_head_with_newer_keys_is_read);
+  RUN_TEST(test_keys_are_lower_case_and_bulk_is_capped);
+  RUN_TEST(test_one_turn_larger_than_the_arena_keeps_its_start);
 }
 
 }  // namespace store_tests

@@ -19,6 +19,12 @@ namespace {
 
 // ---- small helpers --------------------------------------------------------------------
 
+// q + 1, saturating (a stray crc-valid q of 2^64 - 1 must not wrap next_q to 0).
+uint64_t qAfter(uint64_t q) { return q == UINT64_MAX ? q : q + 1; }
+
+const char kTornBreak[] = "~\n";   // ends a torn tail: never a line end after a whole line's bytes
+constexpr size_t kTornBreakBytes = 2;
+
 uint32_t crc32(const char* data, size_t len) {
   uint32_t c = 0xFFFFFFFFu;
   for (size_t i = 0; i < len; ++i) {
@@ -124,6 +130,7 @@ Status scanFile(TxFiles& files, const std::string& path, uint64_t from, std::vec
   size_t total = 0;
   if (!files.size(path, total)) return Status::fail(Err::NotFound, "tx::TxLog scan");
   if (from > total) return Status::fail(Err::InvalidArgument, "tx::TxLog scan");
+  if (from == total) return Status::success();
   if (buf.size() < kMaxLineBytes + kFillSliceBytes) buf.resize(kMaxLineBytes + kFillSliceBytes);
   Carry c{buf.data()};
   c.start = from;
@@ -159,6 +166,7 @@ struct ScanFacts {
   uint64_t eQ = 0;
   uint32_t eTurn = 0;
   uint64_t lastReqAt = 0;
+  uint64_t lastLineQ = 0;   // q of the last whole line in scan order
   bool all() const { return haveS && haveX && haveU && haveT; }
 };
 
@@ -194,6 +202,7 @@ void observeDecoded(ScanFacts& f, const LineHeader& h, const Item& it) {
 void observe(ScanFacts& f, const LineAt& l, Item& scratch) {
   const LineHeader& h = l.h;
   f.maxQ = std::max(f.maxQ, h.q);
+  f.lastLineQ = h.q;
   if (h.kind == ItemKind::Assistant || h.kind == ItemKind::TurnEnd) f.lastReqAt = std::max(f.lastReqAt, h.t);
   if (h.kind == ItemKind::TurnEnd && h.q > f.eQ) {
     f.eQ = h.q;
@@ -238,6 +247,7 @@ void encodeHead(const HeadState& h, std::string& s) {
   field(s, "stub", h.stub);
   field(s, "seg", h.seg);
   field(s, "end", h.end);
+  field(s, "end_q", h.endQ);
   field(s, "thru_seg", h.thruSeg);
   field(s, "thru_off", h.thruOffset);
   field(s, "hw", h.hw);
@@ -335,6 +345,7 @@ const NumKey kNumKeys[] = {
     {"next_q", 1, UINT64_MAX, 2u, [](HeadState& h, uint64_t v) { h.nextQ = v; }},
     {"seg", 1, kMaxSegment, 4u, [](HeadState& h, uint64_t v) { h.seg = static_cast<uint32_t>(v); }},
     {"end", 0, UINT64_MAX, 8u, [](HeadState& h, uint64_t v) { h.end = v; }},
+    {"end_q", 0, UINT64_MAX, 0, [](HeadState& h, uint64_t v) { h.endQ = v; }},
     {"thru", 0, UINT64_MAX, 0, [](HeadState& h, uint64_t v) { h.thru = v; }},
     {"stub", 0, UINT64_MAX, 0, [](HeadState& h, uint64_t v) { h.stub = v; }},
     {"thru_seg", 1, kMaxSegment, 0, [](HeadState& h, uint64_t v) { h.thruSeg = static_cast<uint32_t>(v); }},
@@ -349,8 +360,13 @@ const NumKey kNumKeys[] = {
 bool headField(const std::string& key, HeadCursor& c, HeadState& h, unsigned& seen) {
   if (key == "profile") return readStr(c, h.profile, kHeadMaxString);
   if (key == "pinned") return readStrList(c, h.pinned);
+  if (c.p < c.end && (*c.p == '"' || *c.p == '[')) {   // a key a newer writer added
+    std::string skip;
+    std::vector<std::string> skipList;
+    return *c.p == '"' ? readStr(c, skip, kHeadMaxString) : readStrList(c, skipList);
+  }
   uint64_t v = 0;
-  if (!readNum(c, v)) return false;   // an unknown key holds a number or the line is not ours
+  if (!readNum(c, v)) return false;
   for (const NumKey& k : kNumKeys) {
     if (key != k.key) continue;
     if (v < k.min || v > k.max) return false;
@@ -396,7 +412,7 @@ bool headWithinLimits(const HeadState& h) {
 // ---- paths ----------------------------------------------------------------------------
 
 bool keyChar(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+  return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
 }
 
 Status chatFile(const std::string& chatKey, const char* name, const char* where, std::string& out) {
@@ -417,7 +433,7 @@ bool parseHandle(const std::string& h, uint32_t& turn, uint64_t& off, uint64_t& 
   if (!parseU64(h.data() + at + 1, plus - at - 1, off) || !parseU64(h.data() + plus + 1, h.size() - plus - 1, len))
     return false;
   turn = static_cast<uint32_t>(t);
-  return len > 0 && off <= UINT64_MAX - len;
+  return len > 0 && len <= kBulkMaxBytes && off <= UINT64_MAX - len;
 }
 
 }  // namespace
@@ -502,23 +518,28 @@ Status TxLog::checkHead(const HeadState& h, const std::vector<uint32_t>& segs) {
   const bool haveSeg = std::binary_search(segs.begin(), segs.end(), h.seg);
   const bool haveThru = std::binary_search(segs.begin(), segs.end(), h.thruSeg);
   if (!haveSeg || !haveThru || h.thruSeg > h.seg || (h.thruSeg == h.seg && h.thruOffset > h.end)) return bad;
-  return lastLineOk(h) && lineStartOk(h.thruSeg, h.thruOffset) ? Status::success() : bad;
+  return lastLineOk(h) && thruLineOk(h) ? Status::success() : bad;
 }
 
-// The line that ends at h.end of segment h.seg is whole, crc-valid and below next_q.
+// The line that ends at h.end of segment h.seg is whole, crc-valid, the one head.json names
+// (end_q) and below next_q: a head.json of another state of the log does not pass.
 bool TxLog::lastLineOk(const HeadState& h) {
   std::string path;
   size_t size = 0;
   if (!segmentPath(chatKey_, h.seg, path).ok() || !files_.size(path, size) || size < h.end) return false;
-  if (h.end == 0) return true;
-  // One slice first (an open holds the card lock for one bounded read); the longest line
-  // only when the last line is longer than a slice.
+  if (h.end == 0) return h.endQ == 0;
+  LineHeader lh;
+  return lineBefore(path, h.end, lh) && lh.q == h.endQ && lh.q < h.nextQ;
+}
+
+// The whole, crc-valid line that ends at `end` of `path`: one slice first (an open holds the
+// card lock for one bounded read), the longest line only when it is longer than a slice.
+bool TxLog::lineBefore(const std::string& path, uint64_t end, LineHeader& lh) {
   std::string tail;
   size_t start = 0;
-  if (!lastLine(path, h.end, kFillSliceBytes, tail, start) && !lastLine(path, h.end, kMaxLineBytes, tail, start))
+  if (!lastLine(path, end, kFillSliceBytes, tail, start) && !lastLine(path, end, kMaxLineBytes + 1, tail, start))
     return false;
-  LineHeader lh;
-  return checkLine(tail.data() + start, tail.size() - start, lh).ok() && lh.q < h.nextQ;
+  return checkLine(tail.data() + start, tail.size() - start, lh).ok();
 }
 
 // Read up to `cap` bytes ending at `end` of `path`: true when they hold the whole line that
@@ -535,14 +556,12 @@ bool TxLog::lastLine(const std::string& path, uint64_t end, size_t cap, std::str
   return prev != std::string::npos || end == span;
 }
 
-// `off` of segment `seg` is the start of a line (the file start, or just past a '\n').
-bool TxLog::lineStartOk(uint32_t seg, uint64_t off) {
-  if (off == 0) return true;
+// The fill start sits just past a whole line that a digest covers (q <= thru).
+bool TxLog::thruLineOk(const HeadState& h) {
+  if (h.thruOffset == 0) return true;
   std::string path;
-  char c = 0;
-  size_t got = 0;
-  return segmentPath(chatKey_, seg, path).ok() && files_.readAt(path, static_cast<size_t>(off - 1), &c, 1, got) &&
-         got == 1 && c == '\n';
+  LineHeader lh;
+  return segmentPath(chatKey_, h.thruSeg, path).ok() && lineBefore(path, h.thruOffset, lh) && lh.q <= h.thru;
 }
 
 // The lines appended after head.json was written: from (seg, end) to the newest segment.
@@ -571,7 +590,8 @@ Status TxLog::catchUp(HeadState& h, const std::vector<uint32_t>& segs) {
 
 // What lines written after head.json say, on top of it.
 void TxLog::applyLater(const ScanFacts& f, HeadState& h) {
-  h.nextQ = std::max(h.nextQ, f.maxQ + 1);
+  h.nextQ = std::max(h.nextQ, qAfter(f.maxQ));
+  if (f.lastLineQ) h.endQ = f.lastLineQ;
   if (f.haveX) h.stub = std::max(h.stub, f.stub);
   if (f.haveU) {
     h.hw = std::max(h.hw, f.hw);
@@ -630,8 +650,9 @@ Status TxLog::rebuildFrom(const std::vector<uint32_t>& segs, HeadState& out) {
       return true;
     });
     if (!s.ok() && s.err != Err::NotFound) return s;
+    if (it == segs.rbegin()) out.endQ = f.lastLineQ;   // the open segment's last whole line
   }
-  out.nextQ = f.maxQ + 1;
+  out.nextQ = qAfter(f.maxQ);
   out.thru = f.thru;
   out.stub = f.stub;
   out.hw = f.hw;
@@ -686,6 +707,7 @@ Status TxLog::adopt(const HeadState& h, const std::vector<uint32_t>& segs) {
     tailTorn_ = last != '\n';
   }
   maxQ_ = h.nextQ ? h.nextQ - 1 : 0;
+  lastLineQ_ = h.endQ;
   thru_ = h.thru;
   stub_ = h.stub;
   thruSeg_ = h.thruSeg;
@@ -702,18 +724,20 @@ Status TxLog::open(HeadState& head) {
   std::vector<uint32_t> segs;
   if (!(st = segments(segs)).ok()) return st;
   HeadState h;
-  bool have = false;
-  if (!segs.empty()) {
-    for (const char* name : {kHeadName, kHeadTmpName}) {
-      if (have) break;
-      have = readHeadFile(dir_ + "/" + name, h).ok() && checkHead(h, segs).ok() && catchUp(h, segs).ok();
-    }
-    if (!have && !(st = rebuildFrom(segs, h)).ok()) return st;
+  bool have = segs.empty();
+  // The temp first: a whole one exists only when a cut or a refusal stopped its rename, so
+  // it is newer than head.json.
+  for (const char* name : {kHeadTmpName, kHeadName}) {
+    if (have) break;
+    have = readHeadFile(dir_ + "/" + name, h).ok() && checkHead(h, segs).ok() && catchUp(h, segs).ok();
   }
+  const bool rebuilt = !have;
+  if (rebuilt && !(st = rebuildFrom(segs, h)).ok()) return st;
   if (!(st = adopt(h, segs)).ok()) return st;
   h.seg = seg_;
   h.end = segBytes_;
   head = h;
+  if (rebuilt) (void)writeHead(h);   // best effort: the next boot does not rebuild again
   return Status::success();
 }
 
@@ -735,7 +759,9 @@ Status TxLog::writeHead(const HeadState& head) {
   if (!open_) return Status::fail(Err::InvalidArgument, "tx::TxLog::writeHead: log not open");
   if (!headWithinLimits(head) || head.v != 1) return Status::fail(Err::InvalidArgument, "tx::TxLog::writeHead");
   HeadState h = head;
-  h.nextQ = std::max<uint64_t>({h.nextQ, maxQ_ + 1, 1});
+  h.nextQ = std::max<uint64_t>({h.nextQ, qAfter(maxQ_), 1});
+  if (h.thru >= h.nextQ || h.stub >= h.nextQ)
+    return Status::fail(Err::InvalidArgument, "tx::TxLog::writeHead: thru or stub past the log");
   h.stub = std::max(h.stub, stub_);
   if (h.thru > thru_) {
     std::vector<uint32_t> segs;
@@ -749,9 +775,11 @@ Status TxLog::writeHead(const HeadState& head) {
   h.thruOffset = thruOff_;
   h.seg = seg_;
   h.end = segBytes_;
+  h.endQ = lastLineQ_;
   stub_ = h.stub;
   std::string text;
   encodeHead(h, text);
+  if (text.size() > kHeadMaxBytes) return Status::fail(Err::InvalidArgument, "tx::TxLog::writeHead: over 16 KB");
   const std::string tmp = dir_ + "/" + kHeadTmpName;
   if (!files_.writeWhole(tmp, text) || !files_.rename(tmp, dir_ + "/" + kHeadName))
     return Status::fail(Err::Io, "tx::TxLog::writeHead");
@@ -785,7 +813,7 @@ Status TxLog::writeLine(const char* line, size_t len, uint64_t q, StoreState& st
   if (needsSync_) (void)syncTail();
   // Unknown tail after a refusal we could not check: start with a line end to be safe.
   bool lead = tailTorn_ || needsSync_;
-  if (segBytes_ > 0 && segBytes_ + (lead ? 1 : 0) + len > kSegmentRollBytes) {
+  if (segBytes_ > 0 && segBytes_ + (lead ? kTornBreakBytes : 0) + len > kSegmentRollBytes) {
     if (seg_ >= kMaxSegment) return Status::fail(Err::TooLarge, "tx::TxLog::append: segments exhausted");
     ++seg_;
     segBytes_ = 0;
@@ -798,7 +826,7 @@ Status TxLog::writeLine(const char* line, size_t len, uint64_t q, StoreState& st
   size_t n = len;
   if (lead) {
     if (line != line_.data()) line_.assign(line, len);
-    line_.insert(line_.begin(), '\n');
+    line_.insert(0, kTornBreak, kTornBreakBytes);
     data = line_.data();
     n = line_.size();
   }
@@ -807,6 +835,7 @@ Status TxLog::writeLine(const char* line, size_t len, uint64_t q, StoreState& st
     return Status::fail(Err::NotStored, "tx::TxLog::append");
   }
   segBytes_ += n;
+  lastLineQ_ = q;
   tailTorn_ = false;
   maxQ_ = std::max(maxQ_, q);
   state = StoreState::Stored;
@@ -845,27 +874,23 @@ Status TxLog::store(const Item& item, TxArena& arena, StoreState& state) {
   if (state == StoreState::Stored) return Status::success();
   ArenaEntry e;
   if (arena.header(at, e).ok()) (void)arena.setFlags(at, static_cast<uint8_t>(e.flags | kItemNotStored));
-  return st.err == Err::NotStored ? Status::success() : st;
+  return Status::success();
 }
 
 // ==== bulk ===============================================================================
 
 Status TxLog::appendBulk(uint32_t turn, const std::string& payload, std::string& handle) {
   handle.clear();
-  std::string path, dir;
+  std::string path;
   Status st = bulkPath(chatKey_, turn, path);
   if (!st.ok() || payload.empty()) return Status::fail(Err::InvalidArgument, "tx::TxLog::appendBulk");
-  (void)txDir(chatKey_, dir);
-  size_t off = 0;
-  if (!files_.size(path, off)) {
-    // Missing, or a refusal: only a file that is not there starts at offset 0.
-    std::vector<std::string> names;
-    const std::string name = path.substr(dir.size() + 3);
-    if (!files_.list(dir + "/b", names) || std::find(names.begin(), names.end(), name) != names.end())
-      return Status::fail(Err::NotStored, "tx::TxLog::appendBulk");
-    off = 0;
-  }
-  if (!files_.append(path, payload.data(), payload.size())) return Status::fail(Err::NotStored, "tx::TxLog::appendBulk");
+  if (payload.size() > kBulkMaxBytes) return Status::fail(Err::TooLarge, "tx::TxLog::appendBulk");
+  // The offset is read after the append (TxFiles::size cannot tell a missing file from a
+  // refusal): the payload ends at the file's end. Without a size there is no handle.
+  size_t size = 0;
+  if (!files_.append(path, payload.data(), payload.size()) || !files_.size(path, size) || size < payload.size())
+    return Status::fail(Err::NotStored, "tx::TxLog::appendBulk");
+  const size_t off = size - payload.size();
   handle = "b/";
   putU64(handle, turn);
   handle += ".txb@";
@@ -919,9 +944,9 @@ Status TxLog::pruneBulk(uint32_t beforeTurn, size_t& removed) {
 namespace {
 
 // Give up the oldest resident turn (a run of items with the first item's turn number).
-bool dropOldestTurn(TxArena& arena, FillReport& r) {
+bool dropOldestTurn(TxArena& arena, FillReport& r, uint32_t keepTurn) {
   ArenaEntry first, e;
-  if (!arena.count() || !arena.header(0, first).ok()) return false;
+  if (!arena.count() || !arena.header(0, first).ok() || first.turn == keepTurn) return false;
   uint64_t last = first.q;
   size_t n = 0;
   for (size_t i = 0; i < arena.count() && arena.header(i, e).ok() && e.turn == first.turn; ++i, ++n) last = e.q;
@@ -953,7 +978,7 @@ struct FillLine {
       ++report.invalid;
       return true;
     }
-    while (recordBytes(l.len) > arena.freeBytes() && dropOldestTurn(arena, report)) {
+    while (recordBytes(l.len) > arena.freeBytes() && dropOldestTurn(arena, report, l.h.turn)) {
     }
     if (recordBytes(l.len) > arena.freeBytes()) {   // larger than the whole arena
       ++report.dropped;

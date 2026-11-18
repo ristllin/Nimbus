@@ -24,26 +24,37 @@
 //   line; nothing in a segment is ever rewritten. A segment rolls before a line would take
 //   it past kSegmentRollBytes, so every segment ends on a line end unless a cut tore its
 //   last append.
-// - A torn tail (a cut inside an append) is dropped by every reader: its bytes have no
-//   newline or fail the line crc. open() notices one at the end of the open segment and the
-//   next append starts with one '\n' (inside the same append), so the torn bytes become a
-//   line of their own that readers drop and the next item is never glued onto them.
+// - A torn tail (a cut inside an append) is dropped by every reader: a line counts only
+//   with its '\n' and a good crc. open() notices one at the end of the open segment and the
+//   next append starts with "~\n" (inside the same append), so the torn bytes become a line
+//   of their own that readers drop, the next item is never glued onto them, and a tail that
+//   lacked only its '\n' is never completed into a second line of a q stored again.
 // - q is assigned by the caller (HeadState::nextQ is where to start). The log does not
 //   refuse a q out of order (a replay after a cut may write one again); readers keep the
 //   first line of each q in file order and the arena refuses q that do not increase.
-// - head.json is only a cache with its own crc. open() reads it (or head.json.tmp when a
-//   cut fell between the temp write and the rename), checks that the line it says ends the
-//   open segment is there, then catches up on the lines appended after it. When it is
-//   missing, torn or does not match, open() rebuilds it from the segments: newest segment
-//   first, each read forward in kFillSliceBytes slices, until the newest s, x, u and t
-//   items are found (or the oldest segment is read), then the line of thru is located.
+// - head.json is only a cache with its own crc. open() reads head.json.tmp first (a whole
+//   one exists only when a cut or refusal stopped its rename, so it is the newer), then
+//   head.json, and trusts one only when the line ending at `end` is the one it names
+//   (end_q, below next_q) and the line before the fill start is covered by thru; then it
+//   catches up on the lines appended after it. Otherwise open() rebuilds it from the
+//   segments, newest segment first, each read forward in kFillSliceBytes slices, until the
+//   newest s, x, u and t items are found, then locates thru's line, and writes the rebuilt
+//   head back (best effort). A chat with no digest yet is read whole, as its fill is.
 // - The restart fill is one sequential read from (thruSeg, thruOffset) to the end of the
 //   open segment in kFillSliceBytes slices: 80 to 130 KB on Lumi's shape, about 16 reads.
 // - A refused append (no card, lock not taken, memory floor) answers NotStored and leaves
 //   no whole line behind; the caller keeps the item in RAM flagged kItemNotStored and the
-//   item is never written later (a later write would break the q order on storage).
-// - Every path is built from a checked chat key: [A-Za-z0-9_-], 1 to kChatKeyMaxBytes
-//   bytes. A bulk handle names only a turn number and offsets, never a path.
+//   item is never written later (a later write would break the q order on storage). The
+//   stored transcript then has a hole: the engine names it (an h item of class gap on the
+//   first stored item after the episode). After open() answered Io the log stays closed:
+//   the caller opens it again when storage returns (card inserted, lock free).
+// - Memory: open, fill, writeHead, the rebuild and bulk reads use buffers of up to
+//   kMaxLineBytes + kFillSliceBytes for the call, and append keeps one line buffer; on the
+//   device every call runs under the PSRAM-first allocation scope (PRD section 1).
+// - Every path is built from a checked chat key: [a-z0-9_-] (lower case: FAT folders ignore
+//   case), 1 to kChatKeyMaxBytes bytes. A bulk handle names only a turn number and offsets,
+//   never a path, and is not bound to a file generation: a handle read after its turn's file
+//   was pruned answers NotFound or other bytes of the same chat.
 namespace nimbus {
 namespace orch {
 namespace tx {
@@ -58,6 +69,7 @@ inline constexpr uint32_t kMaxSegment = 999999;       // seg-NNNNNN: six digits
 inline constexpr size_t kHeadMaxBytes = 16384;        // head.json, crc tail included
 inline constexpr size_t kHeadMaxPinned = 64;          // HeadState::pinned entries
 inline constexpr size_t kHeadMaxString = 128;         // profile and each pinned entry
+inline constexpr size_t kBulkMaxBytes = 512 * 1024;   // one bulk payload (the binding splits card writes)
 
 // The storage the log runs over. Every call is one bounded operation; false is a
 // refusal (no card, lock not taken, write failed) and never throws. A binding keeps to:
@@ -82,7 +94,7 @@ class TxFiles {
 };
 
 // head.json: a cache, rebuilt from the segments when it is missing, torn or stale.
-// On disk: {"v":1,"next_q":N,"thru":N,"stub":N,"seg":N,"end":N,"thru_seg":N,"thru_off":N,
+// On disk: {"v":1,"next_q":N,"thru":N,"stub":N,"seg":N,"end":N,"end_q":N,"thru_seg":N,"thru_off":N,
 // "hw":N,"m_hi":N,"profile":"...","pinned":["..."],"last_req_at":N,"open_turn":N,
 // "attempts":N,"z":"<crc32>"} and a newline; the crc is the line crc of tx/item.h.
 struct HeadState {
@@ -92,6 +104,7 @@ struct HeadState {
   uint64_t stub = 0;            // the stub pointer (the newest x item's stub)
   uint32_t seg = 1;             // the open segment number
   uint64_t end = 0;             // bytes of the open segment when head.json was written
+  uint64_t endQ = 0;            // q of the line that ends at `end` (0 = no line)
   uint32_t thruSeg = 1;         // the segment the restart fill starts in
   uint64_t thruOffset = 0;      // byte offset in thruSeg just past thru's line (fill start)
   uint64_t hw = 0;              // highest Telegram update id seen on this chat (u.src)
@@ -138,13 +151,14 @@ class TxLog {
   // Torn or InvalidArgument when checkLine refuses it.
   Status appendLine(const char* line, size_t len, StoreState& state);
   // The persist point: append `item` to `arena`, then its arena line to storage, and flag
-  // it kItemNotStored in the arena when storage refused (state NotStored, status ok: the
-  // item is in RAM and the transcript goes on). An arena refusal (TooLarge when full,
-  // InvalidArgument for q out of order) is returned and nothing is written anywhere.
+  // it kItemNotStored in the arena when storage did not take it (state NotStored, status
+  // ok: the item is in RAM and the transcript goes on). An arena refusal (TooLarge when
+  // full: the caller compacts or names an omission; InvalidArgument for q out of order) is
+  // returned and nothing is written anywhere.
   Status store(const Item& item, TxArena& arena, StoreState& state);
   // Append one payload to b/<turn>.txb in one append; `handle` ("b/<turn>.txb@<off>+<len>")
   // names where it landed. NotStored when storage refused; InvalidArgument for an empty
-  // payload or turn 0.
+  // payload or turn 0; TooLarge over kBulkMaxBytes (nothing written).
   Status appendBulk(uint32_t turn, const std::string& payload, std::string& handle);
   // Read [offset, offset + limit) of a bulk payload, clipped to its end (view and exact
   // paging; an offset at or past the end reads nothing). InvalidArgument for a handle this
@@ -158,15 +172,17 @@ class TxLog {
   // the newest segment into `arena`, in kFillSliceBytes slices. Lines at or below head.thru
   // or not above arena.lastQ() are skipped (so a second fill only tops up). When the arena
   // is full, its oldest resident turn is given up (report.dropped, report.droppedThru) so
-  // the newest items are the ones resident. Allocates one buffer of kMaxLineBytes +
-  // kFillSliceBytes for the call: on the device, run it under the PSRAM-first scope.
+  // the newest turns are the ones resident; the turn being filled is never given up (a line
+  // of it that does not fit is dropped and counted instead). `head` is trusted as given:
+  // pass the one open() returned. Allocates one buffer of kMaxLineBytes + kFillSliceBytes.
   Status fill(const HeadState& head, TxArena& arena, FillReport& report);
   Status fill(const HeadState& head, TxArena& arena);
   // Write head.json by temp and rename (turn close, after a compaction). The log sets
   // seg, end, thruSeg and thruOffset itself (it locates the line of a new thru by reading
   // forward from the last one), nextQ is at least one above the highest q it stored, and
-  // thru and stub never move back. InvalidArgument before open() or for a head over the
-  // limits above; Io when the storage refused (head.json is a cache: nothing is lost).
+  // thru and stub never move back. InvalidArgument before open(), for thru or stub at or
+  // past next_q, or for a head over the limits above (16 KB counted after escaping); Io
+  // when the storage refused (head.json is a cache: nothing is lost).
   Status writeHead(const HeadState& head);
   // Rebuild HeadState from the segments alone (ignores head.json). pinned and lastReqAt
   // beyond the newest a or e item cannot be recovered.
@@ -190,6 +206,7 @@ class TxLog {
   uint32_t seg_ = 1;
   uint64_t segBytes_ = 0;
   uint64_t maxQ_ = 0;
+  uint64_t lastLineQ_ = 0;      // q of the last whole line of the open segment
   uint64_t thru_ = 0;
   uint64_t stub_ = 0;
   uint32_t thruSeg_ = 1;
@@ -201,8 +218,9 @@ class TxLog {
   Status readHeadFile(const std::string& path, HeadState& out);
   Status checkHead(const HeadState& head, const std::vector<uint32_t>& segs);
   bool lastLineOk(const HeadState& head);
+  bool lineBefore(const std::string& path, uint64_t end, LineHeader& lh);
+  bool thruLineOk(const HeadState& head);
   bool lastLine(const std::string& path, uint64_t end, size_t cap, std::string& tail, size_t& start);
-  bool lineStartOk(uint32_t seg, uint64_t off);
   void applyLater(const ScanFacts& f, HeadState& head);
   Status locateBackward(uint64_t thru, const std::vector<uint32_t>& segs, uint32_t& seg, uint64_t& off);
   Status catchUp(HeadState& head, const std::vector<uint32_t>& segs);
