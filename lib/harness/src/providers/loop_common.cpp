@@ -695,6 +695,11 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // The same-host step-down model once a cut forced it ("" = none). It holds for the rest of
   // the turn: every later build of the Mistral step (a refit's rebuild included) is on it.
   std::string stepDownModel;
+  // The model host `i`'s requests name now: the step-down's once it holds, else the configured one.
+  auto modelOf = [&](size_t i) -> std::string {
+    if (hostList[i] == "mistral" && !stepDownModel.empty()) return stepDownModel;
+    return pd.orchModel ? pd.orchModel(hostList[i].c_str()) : std::string();
+  };
   auto makeStep = [&](size_t i) -> orch::HeadStepFn {
     const std::string& h = hostList[i];
     const std::string& ins = rec.instructions();
@@ -811,9 +816,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
       // its next request (wire::exchange) instead of running to the turn's end.
       const orch::TokenUsage before = hostUse[hostIdx];
       orch::HeadStep sr = cur(allowTools, prior, budgetMs, capReason);
-      orch::notePendingUsage(hostList[hostIdx].c_str(),
-                             pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
-                             before, hostUse[hostIdx]);
+      orch::notePendingUsage(hostList[hostIdx].c_str(), modelOf(hostIdx).c_str(), before, hostUse[hostIdx]);
       if (sr.ok) {
         unparkHost(hostList[hostIdx]);
         rec.served();
@@ -860,9 +863,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         hostUse[hostIdx].servedModel.clear();
         const orch::TokenUsage beforeRetry = hostUse[hostIdx];
         sr2 = cur(allowTools, prior, budgetMs, capReason);
-        orch::notePendingUsage(hostList[hostIdx].c_str(),
-                               pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()).c_str() : "",
-                               beforeRetry, hostUse[hostIdx]);
+        orch::notePendingUsage(hostList[hostIdx].c_str(), modelOf(hostIdx).c_str(), beforeRetry, hostUse[hostIdx]);
         if (sr2.ok) {
           unparkHost(hostList[hostIdx]);
           rec.served();
@@ -894,6 +895,10 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
             pd.orchModel ? pd.orchModel(hostList[hostIdx].c_str()) : std::string();
         const char* alt = providers::sameHostNonReasoningModel(hostList[hostIdx], headModel);
         if (alt && *alt && headModel != alt) {
+          // What the configured head billed is filed under it; the step's rounds file under
+          // the step-down model (its own price: Medium's output costs more than Large 4's).
+          if (spend) spend->add(hostList[hostIdx].c_str(), headModel.c_str(), hostUse[hostIdx]);
+          hostUse[hostIdx] = orch::TokenUsage();
           stepDownModel = alt;
           hlog::logf("fabric: %s (%s) cut at its output cap - one same-host step on %s "
                      "before another provider",
@@ -946,8 +951,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // Every exit files what each host billed, once (nothing bills before the loop).
   auto fileSpend = [&] {
     for (size_t i = 0; i < hostCount; ++i)
-      spend->add(hostList[i].c_str(), pd.orchModel ? pd.orchModel(hostList[i].c_str()).c_str() : "",
-                 hostUse[i]);
+      spend->add(hostList[i].c_str(), modelOf(i).c_str(), hostUse[i]);
   };
   const std::unique_ptr<orch::HeadOutcome> outcome(new orch::HeadOutcome());
   orch::HeadOutcome& res = *outcome;

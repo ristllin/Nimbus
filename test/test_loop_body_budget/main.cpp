@@ -19,6 +19,7 @@
 #include "nimbus/orch/head_loop.h"
 #include "nimbus/orch/transcript.h"
 #include "nimbus/orch/turn_images.h"
+#include "nimbus/orch/turn_spend.h"
 #include "../../lib/harness/src/providers/image_parts.h"   // photoTokens, photoTextBudget, LoopImages
 #include "../../lib/harness/src/providers/wire.h"          // wire::lastRound, the round fit
 
@@ -799,10 +800,12 @@ static void test_large4_step_down_holds_through_the_refit() {
     const std::string tool =
         "{\"choices\":[{\"finish_reason\":\"tool_calls\",\"message\":{\"content\":\"\",\"tool_calls\":[{\"id\":"
         "\"abcdefghj\",\"function\":{\"name\":\"memory_search\",\"arguments\":\"{\\\"q\\\":\\\"x\\\"}\"}}]}}]}";
-    d.http.script.push_back({"", "", 200, cut});
-    d.http.script.push_back({"", "", 200, cut});
-    d.http.script.push_back({"", "", 200, tool});
-    d.http.script.push_back({"", "", 200, finalResponse("mistral")});
+    const std::string usage = ",\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":100}}";
+    auto billed = [&usage](const std::string& body) { return body.substr(0, body.size() - 1) + usage; };
+    d.http.script.push_back({"", "", 200, billed(cut)});
+    d.http.script.push_back({"", "", 200, billed(cut)});
+    d.http.script.push_back({"", "", 200, billed(tool)});
+    d.http.script.push_back({"", "", 200, billed(finalResponse("mistral"))});
     providers::ProviderDeps pd = d.contract();
     const std::string m = head;
     pd.orchModel = [m](const char*) { return m; };
@@ -821,9 +824,20 @@ static void test_large4_step_down_holds_through_the_refit() {
     };
     LogCapture::install();
     std::string out, err;
-    const bool ok = providers::runFabricLoop(pd, {"mistral"}, prompt, input, out, err, rig.ht, nullptr, nullptr);
+    nimbus::orch::TurnSpend spend;
+    const bool ok = providers::runFabricLoop(pd, {"mistral"}, prompt, input, out, err, rig.ht, &spend, nullptr);
     TEST_ASSERT_TRUE_MESSAGE(ok, err.c_str());
     TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("one same-host step on mistral-medium-latest"), head);
+    // Each model's rounds are filed under that model (its own price), none merged.
+    int headBilled = 0, mediumBilled = 0;
+    for (size_t i = 0; i < spend.n; ++i) {
+      if (std::string(spend.slot[i].model).rfind("mistral-medium", 0) == 0)   // the family's price key
+        mediumBilled += spend.slot[i].billed;
+      else
+        headBilled += spend.slot[i].billed;
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, headBilled, head);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(2, mediumBilled, head);
     TEST_ASSERT_TRUE_MESSAGE(refits > 0, head);
     TEST_ASSERT_EQUAL_INT_MESSAGE(4, (int)d.http.seen.size(), head);
     for (size_t i = 0; i < d.http.seen.size(); ++i) {
