@@ -940,6 +940,21 @@ static const char* commitAndFlip() {
                                                         : "commit";
 }
 
+// The automatic install's hold re-check on the re-fetched manifest: true (the release
+// shown, the state back to Available) when a head is held now.
+static bool autoInstallHeld() {
+  String heldHost, heldModel;
+  if (!heldNow(heldHost, heldModel)) return false;
+  g_held = true;
+  g_latestVersion = g_manifest.version;   // the re-fetched release is the one shown
+  g_latestNotes = g_manifest.notes;
+  g_state = State::Available;
+  agent::alogf("ota: automatic install of %s held for %s %s", g_manifest.version,
+               heldHost.length() ? heldHost.c_str() : "?",
+               heldModel.length() ? heldModel.c_str() : "?");
+  return true;
+}
+
 // The install itself. Runs on the dedicated otainstall task or inline on the
 // Telegram poll task (runOnPoll); the caller releases the claim when it returns. A
 // committed install never returns: it restarts the device holding the claim.
@@ -982,16 +997,8 @@ static void installRun() {
   // as they are now: a hold published, or a head switched, since the check stops it
   // here. Nothing is written; the current image keeps running and stays Available.
   if (g_installAuto) {
-    String heldHost, heldModel;
-    if (heldNow(heldHost, heldModel)) {
+    if (autoInstallHeld()) {
       agent::arbiter::releaseWork();
-      g_held = true;
-      g_latestVersion = g_manifest.version;   // the re-fetched release is the one shown
-      g_latestNotes = g_manifest.notes;
-      g_state = State::Available;
-      agent::alogf("ota: automatic install of %s held for %s %s", g_manifest.version,
-                   heldHost.length() ? heldHost.c_str() : "?",
-                   heldModel.length() ? heldModel.c_str() : "?");
       return;
     }
     fireEvent(EvInstallStart, "real", "");

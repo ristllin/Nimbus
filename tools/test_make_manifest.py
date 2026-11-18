@@ -155,7 +155,13 @@ def test_notes_ride_the_manifest_and_must_fit_the_device_field():
 # test/test_head_qual/main.cpp (kGoldenE1/kGoldenE2), rendered there by the C++
 # table: change a row, change both goldens.
 GOLDEN_HOLD = {
-    "e1": ["*/*", "!anthropic/claude-haiku-5-5-*", "!anthropic/claude-haiku-5-5", "!anthropic/claude-sonnet-5-5-*", "!anthropic/claude-sonnet-5-5"],
+    "e1": [
+        "*/*",
+        "!anthropic/claude-haiku-5-5-*",
+        "!anthropic/claude-haiku-5-5",
+        "!anthropic/claude-sonnet-5-5-*",
+        "!anthropic/claude-sonnet-5-5",
+    ],
     "e2": ["*/*"],
 }
 
