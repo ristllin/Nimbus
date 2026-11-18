@@ -53,6 +53,7 @@ class CutFiles : public tx::TxFiles {
   size_t tornBytes = 0;
   bool dead = false;
   bool refuseAppend = false;   // the card answers false without writing
+  bool blindReads = false;     // size, readAt and list answer false (a flaky card) while writes work
   long steps = 0;
   std::vector<Step> trace;
 
@@ -77,7 +78,7 @@ class CutFiles : public tx::TxFiles {
   }
   bool readAt(const std::string& p, size_t off, char* buf, size_t want, size_t& got) override {
     got = 0;
-    if (dead) return false;
+    if (dead || blindReads) return false;
     auto it = files.find(p);
     if (it == files.end()) return false;
     if (off >= it->second.size()) return true;
@@ -86,7 +87,7 @@ class CutFiles : public tx::TxFiles {
     return true;
   }
   bool size(const std::string& p, size_t& out) override {
-    if (dead) return false;
+    if (dead || blindReads) return false;
     auto it = files.find(p);
     if (it == files.end()) return false;
     out = it->second.size();
@@ -117,7 +118,7 @@ class CutFiles : public tx::TxFiles {
   }
   bool list(const std::string& dir, std::vector<std::string>& names) override {
     names.clear();
-    if (dead) return false;
+    if (dead || blindReads) return false;
     const std::string pre = dir + "/";
     for (const auto& kv : files)
       if (kv.first.rfind(pre, 0) == 0 && kv.first.find('/', pre.size()) == std::string::npos)
@@ -496,6 +497,14 @@ std::vector<Scenario> scenarios() {
 
 enum class Outcome { Old, New, Mixed };
 
+// What a cut write said must be true of what recovery finds: Ok means stored, NotSaved and
+// Refused mean not stored, Uncertain may be either.
+void assertClaimHolds(WriteStatus said, Outcome found, const std::string& where) {
+  const bool ok = said == WriteStatus::Uncertain || (said == WriteStatus::Ok && found == Outcome::New) ||
+                  ((said == WriteStatus::NotSaved || said == WriteStatus::Refused) && found == Outcome::Old);
+  TEST_ASSERT_TRUE_MESSAGE(ok, (where + ": the write's status does not match what was stored").c_str());
+}
+
 Outcome classify(const std::vector<std::string>& got, const std::vector<std::string>& oldRows,
                  const std::vector<std::string>& newRows) {
   if (got == oldRows) return Outcome::Old;
@@ -577,12 +586,12 @@ void test_kill_at_every_step_recovers_old_or_new() {
         fs.tornBytes = torn;
         LedgerStore s(fs, "owner", kTestRoll);
         WriteResult w = s.write(sc.ops(b.ids), "under-test", at("2026-12-01", "20:00"), nullptr);
-        (void)w;
         TEST_ASSERT_TRUE_MESSAGE(fs.dead, "the cut was never reached: the write took other steps");
         char where[200];
         snprintf(where, sizeof where, "%s: cut at step %zu (%c %s), %zu bytes landed", sc.name, k, b.steps[k].kind,
                  b.steps[k].path.c_str(), torn);
         const Outcome o = recoverAndRetry(sc, b, fs, where);
+        assertClaimHolds(w.status, o, where);
         ++cuts;
         (o == Outcome::Old ? olds : news)++;
         kinds.insert(b.steps[k].kind);
@@ -1197,7 +1206,7 @@ void test_day_and_time_validation() {
 
 void test_odd_call_ids_are_kept_exactly() {
   CutFiles fs;
-  for (const char* call : {" leading space", "tab\tinside", "line\nbreak", "back\\slash", "L1 2 3 abcdef01 x"}) {
+  for (const char* call : {" leading space", "comma, \"quote\"", "back\\slash", "L1 2 3 abcdef01 x", "caf\xC3\xA9"}) {
     LedgerStore s(fs, "owner", kTestRoll);
     WriteResult a = s.write({add(food("tea", "2"), "2026-11-17")}, call, at("2026-11-17", "08:00"), nullptr);
     TEST_ASSERT_EQUAL_MESSAGE((int)WriteStatus::Ok, (int)a.status, call);
@@ -1207,6 +1216,122 @@ void test_odd_call_ids_are_kept_exactly() {
     TEST_ASSERT_TRUE_MESSAGE(has(b.text, a.text), call);
   }
   TEST_ASSERT_EQUAL(5, snapshot(fs).size());
+  // A control character would make two ids one after cleaning: refused, never cleaned.
+  LedgerStore s(fs, "owner", kTestRoll);
+  for (const char* call : {"tab\tinside", "line\nbreak", "bell\x07"}) {
+    WriteResult w = s.write({add(food("tea", "2"), "2026-11-17")}, call, at("2026-11-17", "08:00"), nullptr);
+    TEST_ASSERT_EQUAL_MESSAGE((int)WriteStatus::Refused, (int)w.status, call);
+    TEST_ASSERT_TRUE(has(w.text, "control character"));
+  }
+  TEST_ASSERT_EQUAL(5, snapshot(fs).size());
+}
+
+void test_a_cut_after_the_record_landed_is_uncertain_not_unsaved() {
+  CutFiles fs;
+  {
+    LedgerStore s(fs, "owner", kTestRoll);
+    s.write({add(food("egg", "78"), "2026-11-17")}, "a", at("2026-11-17", "08:00"), nullptr);
+  }
+  fs.reboot();
+  fs.cutAt = 0;          // the first storage step of the next write is its log append
+  fs.tornBytes = 1 << 20;   // all of it lands, then the card dies
+  LedgerStore s(fs, "owner", kTestRoll);
+  WriteResult w = s.write({add(food("bread", "90"), "2026-11-17")}, "b", at("2026-11-17", "08:30"), nullptr);
+  TEST_ASSERT_EQUAL((int)WriteStatus::Uncertain, (int)w.status);
+  TEST_ASSERT_TRUE(has(w.text, "not known"));
+  fs.reboot();
+  TEST_ASSERT_EQUAL(2, snapshot(fs).size());   // it was stored
+  LedgerStore again(fs, "owner", kTestRoll);
+  TEST_ASSERT_EQUAL((int)WriteStatus::AlreadyApplied,
+                    (int)again.write({add(food("bread", "90"), "2026-11-17")}, "b", at("2026-11-17", "08:31"), nullptr).status);
+}
+
+void test_a_second_instance_never_reuses_a_change_number() {
+  CutFiles fs;
+  LedgerStore a(fs, "owner", kTestRoll), b(fs, "owner", kTestRoll);
+  TEST_ASSERT_TRUE(a.open());
+  TEST_ASSERT_TRUE(b.open());
+  WriteResult wa = a.write({add(food("egg", "78"), "2026-11-17")}, "a", at("2026-11-17", "08:00"), nullptr);
+  WriteResult wb = b.write({add(food("toast", "90"), "2026-11-17")}, "b", at("2026-11-17", "08:01"), nullptr);
+  TEST_ASSERT_EQUAL((int)WriteStatus::Ok, (int)wb.status);
+  TEST_ASSERT_TRUE(wa.seq != wb.seq);
+  TEST_ASSERT_TRUE(firstId(wa) != firstId(wb));
+  TEST_ASSERT_EQUAL(2, snapshot(fs).size());
+  // And a's next write sees b's.
+  WriteResult wa2 = a.write({add(food("jam", "40"), "2026-11-17")}, "c", at("2026-11-17", "08:02"), nullptr);
+  TEST_ASSERT_EQUAL_UINT64(3, wa2.seq);
+  TEST_ASSERT_EQUAL(3, snapshot(fs).size());
+}
+
+void test_a_ledger_that_reads_back_empty_is_not_started_over() {
+  CutFiles fs;
+  LedgerStore s(fs, "owner", kTestRoll);
+  for (int k = 0; k < 3; ++k)
+    s.write({add(food("egg", "78"), "2026-11-17")}, "a" + std::to_string(k), at("2026-11-17", "08:00"), nullptr);
+  const auto before = fs.files;
+  fs.blindReads = true;   // every file now looks missing, but writes would still land
+  WriteResult w = s.write({add(food("toast", "90"), "2026-11-17")}, "b", at("2026-11-17", "08:30"), nullptr);
+  TEST_ASSERT_EQUAL_MESSAGE((int)WriteStatus::NotSaved, (int)w.status, w.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(w.text, "not readable"), w.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(before == fs.files, "a blind store wrote over the ledger");
+  fs.blindReads = false;
+  TEST_ASSERT_EQUAL((int)WriteStatus::Ok,
+                    (int)s.write({add(food("toast", "90"), "2026-11-17")}, "b", at("2026-11-17", "08:31"), nullptr).status);
+  TEST_ASSERT_EQUAL(4, snapshot(fs).size());
+}
+
+void test_limits_on_ids_and_units() {
+  CutFiles fs;
+  LedgerStore s(fs, "owner", kTestRoll);
+  WriteResult seed = s.write({add(food("egg", "78"), "2026-11-17")}, "a", at("2026-11-17", "08:00"), nullptr);
+  Op many;
+  many.kind = OpKind::Remove;
+  many.ids.assign(kMaxIdsPerOp + 1, firstId(seed));
+  WriteResult w = s.write({many}, "b", at("2026-11-17", "08:00"), nullptr);
+  TEST_ASSERT_EQUAL((int)WriteStatus::Refused, (int)w.status);
+  TEST_ASSERT_TRUE(has(w.text, "at most 16 ids"));
+  Row oil = food("olive oil", "1850");
+  oil.qty = fx("0.1", kQtyDp);
+  oil.unit = "kg";
+  TEST_ASSERT_TRUE(has(rowError([&] { Row r = oil; r.day = "2026-11-17"; return r; }()), "more than 900 kcal per 100 g"));
+  Row butter = food("butter", "7170");
+  butter.qty = fx("1", kQtyDp);
+  butter.unit = "KG";
+  butter.day = "2026-11-17";
+  TEST_ASSERT_EQUAL_STRING("", rowError(butter).c_str());
+  Row wine = food("wine", "850");
+  wine.qty = fx("1", kQtyDp);
+  wine.unit = "l";
+  wine.day = "2026-11-17";
+  TEST_ASSERT_EQUAL_STRING("", rowError(wine).c_str());
+  Row bar = food("bar", "250");   // a unit the rule does not read: no density check
+  bar.qty = fx("1", kQtyDp);
+  bar.unit = "bar";
+  bar.day = "2026-11-17";
+  TEST_ASSERT_EQUAL_STRING("", rowError(bar).c_str());
+}
+
+void test_no_roll_while_a_month_is_damaged() {
+  CutFiles fs;
+  {
+    LedgerStore s(fs, "owner", kTestRoll);
+    s.write({add(food("egg", "78"), "2026-11-17")}, "a", at("2026-11-17", "08:00"), nullptr);
+  }
+  fs.files["/mem/ledger/owner/2026-11.csv"] = "garbage\n";
+  LedgerStore s(fs, "owner", kTestRoll);
+  Row big = food("filler", "1");
+  big.note = std::string(380, 'n');
+  for (int k = 0; k < 20; ++k)
+    TEST_ASSERT_EQUAL((int)WriteStatus::Ok,
+                      (int)s.write({add(big, "2026-10-02")}, "f" + std::to_string(k), at("2026-11-17", "09:00"), nullptr).status);
+  TEST_ASSERT_TRUE(fs.files["/mem/ledger/owner/changes.log"].size() > kTestRoll);
+  TEST_ASSERT_FALSE(fs.files.count("/mem/ledger/owner/changes.old.log"));
+  // Repaired (here: the file removed), the next open rebuilds November from the log.
+  fs.files.erase("/mem/ledger/owner/2026-11.csv");
+  LedgerStore again(fs, "owner", kTestRoll);
+  DayView v;
+  TEST_ASSERT_TRUE(again.day("2026-11-17", v));
+  TEST_ASSERT_EQUAL(1, v.rows.size());
 }
 
 void test_a_damaged_row_does_not_block_other_months() {
@@ -1263,5 +1388,10 @@ int main(int, char**) {
   RUN_TEST(test_day_and_time_validation);
   RUN_TEST(test_odd_call_ids_are_kept_exactly);
   RUN_TEST(test_a_damaged_row_does_not_block_other_months);
+  RUN_TEST(test_a_cut_after_the_record_landed_is_uncertain_not_unsaved);
+  RUN_TEST(test_a_second_instance_never_reuses_a_change_number);
+  RUN_TEST(test_a_ledger_that_reads_back_empty_is_not_started_over);
+  RUN_TEST(test_limits_on_ids_and_units);
+  RUN_TEST(test_no_roll_while_a_month_is_damaged);
   return UNITY_END();
 }

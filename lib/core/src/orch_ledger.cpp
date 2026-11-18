@@ -173,6 +173,7 @@ bool readAll(tx::TxFiles& fs, const std::string& path, std::string& out, bool& e
   size_t n = 0;
   exists = fs.size(path, n);
   if (!exists) return true;
+  if (n > kMaxFileBytes) return false;   // never trust a size the card reports past this
   out.resize(n);
   size_t off = 0;
   while (off < n) {
@@ -397,9 +398,12 @@ std::string renderDayLine(const DayTotals& t, const Targets* targets) {
 // ---- row checks --------------------------------------------------------------------------
 namespace {
 
-bool massUnit(const std::string& unit) {
+// Grams (or ml) per unit of qty for the units the density rule reads; 0 for any other unit.
+int64_t gramsPerUnit(const std::string& unit) {
   const std::string u = foldCase(unit);
-  return u == "g" || u == "ml";
+  if (u == "g" || u == "ml") return 1;
+  if (u == "kg" || u == "l") return 1000;
+  return 0;
 }
 
 std::string figureError(const char* name, const Fixed& f, int64_t max, int dp) {
@@ -417,10 +421,12 @@ std::string textError(const char* name, const std::string& s, size_t max) {
 std::string densityError(const Row& r) {
   const char* fact = " kcal per 100 g is more than 900 kcal per 100 g; no food has more (fat is 900, and 1 kcal is 4.184 kJ)";
   if (r.per100.set && r.per100.v > 9000) return formatFixed(r.per100, kKcalDp) + fact;
-  if (!r.qty.set || r.qty.v <= 0 || !massUnit(r.unit)) return std::string();
-  // kcal (0.1) * 100 > 9 * qty (0.001) is the same as kcal per 100 g above 900.
-  if (r.kcal.v * 100 <= 9 * r.qty.v) return std::string();
-  const int64_t per100 = r.kcal.v * 100000 / r.qty.v;   // 0.1 kcal per 100
+  const int64_t scale = gramsPerUnit(r.unit);
+  if (!r.qty.set || r.qty.v <= 0 || !scale) return std::string();
+  const int64_t grams = r.qty.v * scale;   // 0.001 g
+  // kcal (0.1) * 100 > 9 * grams (0.001) is the same as kcal per 100 g above 900.
+  if (r.kcal.v * 100 <= 9 * grams) return std::string();
+  const int64_t per100 = r.kcal.v * 100000 / grams;   // 0.1 kcal per 100 g
   return formatFixed(Fixed::of(per100), kKcalDp) + fact;
 }
 
@@ -770,6 +776,7 @@ bool LedgerStore::finishSwaps(std::vector<std::string>& months, std::string& rep
 
 bool LedgerStore::open(std::string* report) {
   std::string rep;
+  const uint64_t seenBefore = lastSeq_;
   opened_ = false;
   dirty_ = true;
   tornTail_ = false;
@@ -801,6 +808,14 @@ bool LedgerStore::open(std::string* report) {
   ok = ok && readLogs(recs);
   if (ok) scanLogs(recs);
   ok = ok && replay(recs, rep);
+  // The storage interface answers "missing" for a file it cannot reach, so a card that went
+  // away reads as an empty ledger. A ledger never goes back: older than this instance last
+  // saw means the storage is not readable, not that the changes are gone.
+  if (ok && lastSeq_ < seenBefore) {
+    ok = false;
+    lastSeq_ = seenBefore;
+    rep += "the ledger reads back older than change " + std::to_string(seenBefore) + "; the storage is not readable";
+  }
   if (report) *report = rep;
   opened_ = true;
   dirty_ = !ok;
@@ -829,7 +844,31 @@ bool readRecords(tx::TxFiles& fs, const std::string& path, std::vector<LedgerSto
 }  // namespace
 
 bool LedgerStore::readLogs(std::vector<Record>& recs) {
-  return readRecords(files_, path(kOldLogName), recs, nullptr) && readRecords(files_, path(kLogName), recs, &tornTail_);
+  if (!readRecords(files_, path(kOldLogName), recs, nullptr) || !readRecords(files_, path(kLogName), recs, &tornTail_))
+    return false;
+  logSize_ = 0;
+  files_.size(path(kLogName), logSize_);
+  return true;
+}
+
+// After a failed append: is record `seq` in the log? `known` is false when the log cannot be
+// read back. A log that cannot be found counts as unreadable, because the storage answers
+// "missing" for a file it cannot reach, and the append may have created it.
+bool LedgerStore::recordLanded(uint64_t seq, bool& known) {
+  std::vector<Record> recs;
+  size_t sz = 0;
+  known = files_.size(path(kLogName), sz) && readRecords(files_, path(kLogName), recs, nullptr);
+  if (!known) return false;
+  for (const Record& r : recs)
+    if (r.seq == seq) return true;
+  return false;
+}
+
+// Did something other than this instance append to (or roll) the log since it last looked?
+bool LedgerStore::logChanged() {
+  size_t sz = 0;
+  if (!files_.size(path(kLogName), sz)) sz = 0;
+  return sz != logSize_;
 }
 
 void LedgerStore::scanLogs(const std::vector<Record>& recs) {
@@ -988,9 +1027,12 @@ bool LedgerStore::locate(Work& w, const std::string& id, std::string& ym, size_t
   std::vector<std::string> names = monthNames();
   for (auto it = names.rbegin(); it != names.rend(); ++it) {
     if (w.months.count(*it)) continue;
-    Month& m = w.months[*it];
+    Month m;   // only the month that holds the id stays loaded
     if (!loadMonth(*it, m, &err)) return false;
-    if (search(m)) return true;
+    if (search(m)) {
+      w.months[*it] = std::move(m);
+      return true;
+    }
   }
   err = "no row " + id + " in the ledger";
   return false;
@@ -1077,6 +1119,10 @@ bool LedgerStore::applyAdd(Work& w, const Op& op, size_t index, std::string& err
 bool LedgerStore::applyChange(Work& w, const Op& op, std::string& err) {
   if (op.ids.empty()) {
     err = "no id given (send id or ids)";
+    return false;
+  }
+  if (op.ids.size() > kMaxIdsPerOp) {
+    err = "an op names at most 16 ids";
     return false;
   }
   if (op.kind == OpKind::Update && op.setMask == 0) {
@@ -1171,20 +1217,23 @@ std::string LedgerStore::receiptOf(Work& w, const Targets* targets) {
 }
 
 // Append the record (the commit point), then swap each month in. False: not committed.
-bool LedgerStore::commit(Work& w, const std::string& receipt) {
+bool LedgerStore::commit(Work& w, const std::string& receipt, bool& known) {
   Record rec;
   rec.seq = w.seq;
   rec.call = w.call;
   rec.at = w.now.valid() ? w.now.epoch : 0;
   rec.receipt = receipt;
   rec.entries = w.entries;
-  if (!appendRecord(encodeRecord(rec))) {
-    // Whether the record landed is unknown: recovery reads the log back and decides (and
-    // replays the record if it is there).
+  const std::string line = encodeRecord(rec);
+  const size_t encodedSize = line.size() + (tornTail_ ? 1 : 0);
+  if (!appendRecord(line)) {
     dirty_ = true;
-    return open() && lastSeq_ >= w.seq;
+    if (!recordLanded(w.seq, known)) return false;
+    open();   // committed after all: recovery swaps the months in (now, or before the next step)
+    return true;
   }
   tornTail_ = false;
+  logSize_ += encodedSize;
   lastSeq_ = w.seq;
   if (!w.call.empty()) calls_.emplace(w.call, w.seq);
   for (const auto& kv : w.addedNow)
@@ -1203,8 +1252,10 @@ WriteResult LedgerStore::write(const std::vector<Op>& ops, const std::string& ca
   std::string err;
   if (!validPerson(person_)) return refusal(WriteStatus::Refused, "person '" + person_ + "' is not a valid ledger name");
   if (callId.size() > kMaxCall) return refusal(WriteStatus::Refused, "the call id is longer than 80 bytes");
-  if (!ensureOpen(&err)) return refusal(WriteStatus::NotSaved, "the ledger could not be read: " + err);
-  const std::string call = clean(callId);
+  if (!ensureOpen(&err) || (logChanged() && !open(&err)))
+    return refusal(WriteStatus::NotSaved, "the ledger could not be read: " + err);
+  if (clean(callId) != callId) return refusal(WriteStatus::Refused, "the call id holds a control character");
+  const std::string& call = callId;
   const auto seen = call.empty() ? calls_.end() : calls_.find(call);
   if (seen != calls_.end()) return alreadyApplied(call, seen->second);
   if (ops.empty() || ops.size() > kMaxOps) return refusal(WriteStatus::Refused, "a write takes 1 to 16 ops");
@@ -1221,7 +1272,16 @@ WriteResult LedgerStore::write(const std::vector<Op>& ops, const std::string& ca
     w.months[ym].seq = w.seq;
   }
   const std::string receipt = receiptOf(w, targets);
-  if (!commit(w, receipt)) return refusal(WriteStatus::NotSaved, "the change log could not be written");
+  bool known = true;
+  if (!commit(w, receipt, known)) {
+    if (known) return refusal(WriteStatus::NotSaved, "the change log could not be written");
+    WriteResult r;
+    r.status = WriteStatus::Uncertain;
+    r.seq = w.seq;
+    r.text = "error: the change log write failed part way and could not be read back, so whether this "
+             "change is stored is not known; the same call id again applies it once or says already applied";
+    return r;
+  }
   WriteResult res;
   res.status = WriteStatus::Ok;
   res.text = receipt;
@@ -1237,6 +1297,9 @@ WriteResult LedgerStore::write(const std::vector<Op>& ops, const std::string& ca
 void LedgerStore::maybeRoll() {
   size_t sz = 0;
   if (dirty_ || !files_.size(path(kLogName), sz) || sz <= rollBytes_) return;
+  // A damaged month still lacks the records in the logs: keep them until it is repaired.
+  for (const auto& kv : monthSeq_)
+    if (kv.second == kDamaged) return;
   files_.remove(path(kOldLogName));
   files_.rename(path(kLogName), path(kOldLogName));
   opened_ = false;   // re-read the call ids and recent adds from the logs that remain

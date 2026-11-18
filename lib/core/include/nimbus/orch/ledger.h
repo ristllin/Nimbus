@@ -53,6 +53,8 @@ inline constexpr uint64_t kMaxSeq = (1ull << 21) - 1;   // ids are (seq * 16 + i
 // Text field ceilings in bytes; longer is an error naming the field, never a silent clip.
 inline constexpr size_t kMaxItem = 200, kMaxMeal = 40, kMaxUnit = 16, kMaxSrc = 80,
                         kMaxNote = 400, kMaxCall = 80;
+inline constexpr size_t kMaxIdsPerOp = 16;            // ids an update, remove or move may name
+inline constexpr size_t kMaxFileBytes = 1024 * 1024;  // a month file or log larger is not read
 
 // Decimal places of each figure.
 inline constexpr int kKcalDp = 1, kGramDp = 2, kQtyDp = 3;
@@ -158,6 +160,9 @@ enum class WriteStatus : uint8_t {
   AlreadyApplied,    // the call id was seen: `text` is the first receipt, marked
   Refused,           // nothing was written; `text` names why (an error, never a heuristic)
   NotSaved,          // the storage refused the commit; nothing was written
+  Uncertain,         // the commit failed part way and the log could not be read back: the
+                     // change may or may not be stored. The same call id again settles it
+                     // (it applies the change once, or says "already applied").
 };
 
 struct WriteResult {
@@ -212,6 +217,9 @@ bool validPerson(const std::string& person);             // [A-Za-z0-9_-], 1 to 
 uint32_t crc32(const std::string& data);
 
 // ---- the store ---------------------------------------------------------------------------
+// One LedgerStore per person, used from one task (the device's turn task, or one hosted
+// loop); a second instance on the same folder is noticed by the log size and re-reads it
+// before writing, but two writers at the same moment are not supported.
 class LedgerStore {
  public:
   // `logRollBytes`: the size past which changes.log rolls (tests pass a small one).
@@ -254,7 +262,9 @@ class LedgerStore {
   bool findReceipt(uint64_t seq, std::string& receipt);
   WriteResult alreadyApplied(const std::string& call, uint64_t seq);
   std::string receiptOf(Work& w, const Targets* targets);
-  bool commit(Work& w, const std::string& receipt);
+  bool commit(Work& w, const std::string& receipt, bool& known);
+  bool logChanged();
+  bool recordLanded(uint64_t seq, bool& known);
   bool replayRecord(const Record& r, std::map<std::string, Month>& pending, std::string& report);
   bool applyOp(Work& w, const Op& op, size_t index, std::string& err);
   bool applyAdd(Work& w, const Op& op, size_t index, std::string& err);
@@ -272,6 +282,7 @@ class LedgerStore {
   bool opened_ = false;
   bool dirty_ = false;       // a step failed: recover before the next read or write
   bool tornTail_ = false;    // changes.log does not end in a newline
+  size_t logSize_ = 0;       // changes.log size as this instance last saw it
   uint64_t lastSeq_ = 0;
   std::map<std::string, uint64_t> calls_;     // call id -> seq of its record
   std::map<std::string, int64_t> addedAt_;    // id -> epoch of its add, recent adds only
