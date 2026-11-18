@@ -449,13 +449,14 @@ std::string stateKey(const char* host, const char* model, headqual::Line line) {
 }
 
 namespace {
-// P(X <= k) for X ~ Binomial(n, p), summed in log space so a large n cannot underflow the terms
-// that matter.
+// P(X <= k) for X ~ Binomial(n, p), each term carried as a logarithm so a large n cannot
+// underflow the terms that matter (log, log1p and exp only: no lgamma in the image).
 double binomCdf(uint32_t k, uint32_t n, double p) {
-  double sum = 0;
+  const double step = std::log(p) - std::log1p(-p);
+  double lt = n * std::log1p(-p), sum = 0;   // log P(X = 0)
   for (uint32_t i = 0; i <= k && i <= n; ++i) {
-    const double lc = std::lgamma((double)n + 1) - std::lgamma((double)i + 1) - std::lgamma((double)(n - i) + 1);
-    sum += std::exp(lc + i * std::log(p) + (n - i) * std::log1p(-p));
+    sum += std::exp(lt);
+    lt += std::log((double)(n - i) / (double)(i + 1)) + step;
   }
   return sum;
 }
