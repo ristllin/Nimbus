@@ -3,7 +3,6 @@
 #include "nimbus/orch/effect_ring.h"
 
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <new>
 
@@ -194,15 +193,17 @@ bool ringPath(const std::string& chatId, std::string& path) {
 }
 
 std::string encodeLine(const RingEntry& e) {
-  char head[32];
-  std::snprintf(head, sizeof head, "%s%lld\t", kTag, (long long)(e.epoch > 0 ? e.epoch : 0));
-  std::string line = head;
+  static const char kHex[] = "0123456789abcdef";
+  std::string line(kTag);
+  line += std::to_string((long long)(e.epoch > 0 ? e.epoch : 0));
+  line += '\t';
   line += e.tool;
   line += '\t';
   line += e.receipt;
-  char tail[16];
-  std::snprintf(tail, sizeof tail, "\t%08x\n", (unsigned)crc32Of(line.data(), line.size()));
-  line += tail;
+  const uint32_t crc = crc32Of(line.data(), line.size());
+  line += '\t';
+  for (int shift = 28; shift >= 0; shift -= 4) line += kHex[(crc >> shift) & 15];
+  line += '\n';
   return line;
 }
 
