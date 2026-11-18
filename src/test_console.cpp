@@ -1138,6 +1138,7 @@ void cardTimeReplace(size_t n, bool raw) {
       ok = ok && fs.rename("/mem/rbm2/replace.part", "/mem/rbm2/replace.md");
     } else if (g) {
       ok = agent::files::saveText("rbm2", "replace.md", text, err);
+      if (!ok) agent::files::noteRefusal(err);   // a full store is noted, as every save path does
     }
     t2 = millis();
   }
