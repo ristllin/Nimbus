@@ -14,6 +14,11 @@ at most 33 KB free, the release bench recipe), with the head named by
 ``NIMBUS_IMG_HEAD`` ("anthropic:claude-haiku-5-5" by default, or
 "mistral:mistral-large-latest"); ``NIMBUS_IMG_MODE=inline`` turns the upload (and so
 the re-attach) off, so an Anthropic head views the photo again through image.look only.
+``NIMBUS_IMG_HISTORY_KB=<n>`` fills the chat with n KB of distinct owner rows right after
+the leg's /clear (HISTADD, no provider call), so the photo turn and the look-again turn run on
+a full history: bench row A10p sets it to nine tenths of Claude Sonnet 5.5's history max, the
+multi-round photo turn on the 250,000 B head (a photo re-attached from an earlier round is
+not in that round's photo estimate, so the row reads each round's time against the window).
 The head, the photo mode, the ballast and the allowlist are restored.
 
 * ``test_img_photo_turn_then_look_again``: a label photo (a number only a reader of the
@@ -70,6 +75,8 @@ LUMI_LARGEST = 7700
 LUMI_FREE = 33000
 IDLE_WATCH_S = 45  # the old record call ran in the idle steps right after the reply
 LABEL_VALUE = "58213"
+HISTORY_KB = int(os.environ.get("NIMBUS_IMG_HISTORY_KB", "0") or 0)
+HISTORY_ROW_BYTES = 900
 DOTS_MIN, DOTS_MAX = (
     5,
     8,
@@ -113,6 +120,14 @@ def head_cache_read(lines: List[str], host: str) -> Optional[int]:
 def head_spec(value: str) -> Tuple[str, str]:
     host, _, model = (value or "anthropic:claude-haiku-5-5").partition(":")
     return host, model or "claude-haiku-5-5"
+
+
+def history_fill_lines(chat, kb: int) -> List[str]:
+    """The HISTADD lines for `kb` KB of distinct owner rows in `chat` ([] for 0). Distinct:
+    identical rows collapse into one history row with a repeat count."""
+    filler = "an earlier day's notes: lunch, a walk, the post and the week ahead. " * 16
+    rows = kb * 1024 // HISTORY_ROW_BYTES
+    return [f"HISTADD {chat} 1 " + (f"earlier note {i:04d}: " + filler)[:HISTORY_ROW_BYTES] for i in range(rows)]
 
 
 def label_photo(value: str, seed: int, dots: int = 0, red: int = 0) -> bytes:
@@ -212,6 +227,19 @@ def img_head(device, net, owner_chat):  # noqa: F811 - the lane D fixture, impor
         if prev_model:
             restore[f"orchM_{host}"] = prev_model
         _http(lambda: net.post("/api/orch", restore, timeout=8.0), "restoring the head")
+
+
+def _fill_history(device, chat, kb: int) -> int:
+    """`kb` KB of earlier conversation in the chat with no provider call; the rows written."""
+    lines = history_fill_lines(chat, kb)
+    for ln in lines:
+        for _ in range(5):  # "HISTADD busy: a turn holds the card - retry"
+            if "HISTADD chat=" in (device.cmd(ln, "HISTADD", timeout=10.0) or ""):
+                break
+            time.sleep(1.0)
+        else:
+            pytest.fail(f"HISTADD did not land: {ln[:60]}")
+    return len(lines)
 
 
 def _stage_label(net, value: str, seed: int, dots: int = 0, red: int = 0) -> Tuple[str, int]:
@@ -356,6 +384,8 @@ def test_img_photo_turn_then_look_again(device, net, img_head, lumi_heap):
     # reported as "13 filled dots", the count from runs 7/8's history). /clear yes
     # is the owner's own command (drops the conversation, keeps memory and files).
     _inject(device, tb.page([tb.text_update(uid - 100, chat, "/clear yes")]))
+    if HISTORY_KB:  # bench row A10p: the same turns on a full history
+        print(f"history: {_fill_history(device, chat, HISTORY_KB)} rows, {HISTORY_KB} KB, after the /clear")
     lines, ref, red = _photo_turn(device, net, chat, uid)
     lines2 = _look_turn(device, net, chat, uid + 1, ref, red)
     if host != "anthropic":
@@ -407,3 +437,15 @@ def test_host_caption_and_spend_parse():
     assert REATTACH_RE.search("[agent] anthropic: 1 recent photo(s) ride their history message (kept files)")
     assert head_spec("") == ("anthropic", "claude-haiku-5-5")
     assert head_spec("mistral:mistral-large-latest") == ("mistral", "mistral-large-latest")
+
+
+@pytest.mark.host
+def test_host_history_fill_lines_are_distinct_and_fit_the_console_line():
+    assert history_fill_lines(7, 0) == []
+    lines = history_fill_lines(7, 100)
+    assert all(ln.startswith("HISTADD 7 1 earlier note ") for ln in lines)
+    assert len(set(lines)) == len(lines) == 100 * 1024 // HISTORY_ROW_BYTES  # identical rows collapse into one
+    assert max(len(ln) for ln in lines) < 4096  # the console's line cap
+    texts = [ln.split(" ", 3)[3] for ln in lines]
+    assert all(len(t) == HISTORY_ROW_BYTES for t in texts)
+    assert 99 * 1024 < sum(len(t) for t in texts) <= 100 * 1024

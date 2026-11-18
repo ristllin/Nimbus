@@ -13,10 +13,14 @@ import json
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bench_driver as bd  # noqa: E402
 import bench_rows as br  # noqa: E402
+
+pytestmark = pytest.mark.host
 
 TRIMMED = [
     "10 100 - headloop: round 0 body 96210 B over the 85000 B budget - folded 12754 B of the prompt and input",

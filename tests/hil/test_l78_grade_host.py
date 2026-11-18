@@ -11,9 +11,13 @@ from __future__ import annotations
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import test_l78_owner_first as l78  # noqa: E402
+
+pytestmark = pytest.mark.host
 
 REPLY = [{"text": "The last word is QUOKKA."}]
 REFIT = "headloop: round 7 body 86541 B over the {b} B budget - folded 7966 B of the replayed tool rounds"
