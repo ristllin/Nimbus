@@ -17,10 +17,23 @@ WARN (still exit 0): headroom under --warn-bytes (default 64 KB). Every env is
 printed with its partition table, app slot size, image size and headroom,
 production envs included.
 
+Per-lane allowance (lane RB-GATE0, PRD section 10): with --lane, every built env that has
+a row in image_baseline.json is also measured as code bytes plus docs pack bytes. The docs
+pack is read from firmware.elf (the pack's tables and every string they point at, merged
+literals counted once) and counted apart; code bytes are firmware.bin minus the pack. The
+code delta against the baseline must be at most the lane's allowance in
+image_budget.d/<lane>.json (no file: 0 B; a negative allowance is a promised deletion).
+FAIL: over the allowance, a malformed budget file, a bin without its ELF, no built image
+with a baseline row, or a baseline whose sha is not an ancestor of HEAD. The baseline is
+re-recorded with --record-baseline after each merge into the integration branch.
+
 Usage:
     python3 tools/release_gate/check_image_size.py [--root REPO] [--build-dir DIR]
         [--warn-bytes N] [--framework-partitions DIR ...]
-Exit 0 = every built image fits; exit 1 = overflow / nothing built / bad table.
+    python3 tools/release_gate/check_image_size.py --lane RB-X        # slot fit + allowance
+    python3 tools/release_gate/check_image_size.py --record-baseline  # after a merge, at its sha
+Exit 0 = every built image fits (and, with --lane, is inside the allowance: "IMAGE ALLOWANCE
+GREEN"); exit 1 = overflow / over the allowance / nothing built / bad table or file.
 """
 
 from __future__ import annotations
@@ -28,11 +41,18 @@ from __future__ import annotations
 import argparse
 import configparser
 import glob
+import json
 import os
+import struct
+import subprocess
 import sys
 
 WARN_BYTES = 64 * 1024
 DEFAULT_BUILD_DIR = os.path.join(".pio", "build")
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASELINE = os.path.join(HERE, "image_baseline.json")
+BUDGET_DIR = os.path.join(HERE, "image_budget.d")
+ATAG = "[gate:image-allowance]"
 
 
 def parse_ini(path: str) -> configparser.ConfigParser:
@@ -167,6 +187,206 @@ def check(
     return (not fails), lines, fails, warns
 
 
+# --- per-lane allowance: code bytes and docs pack bytes, measured apart -----------------
+
+SHT_SYMTAB, SHT_NOBITS, SHF_ALLOC = 2, 8, 0x2
+
+
+def elf_sections(blob: bytes) -> "list[dict[str, int]]":
+    """Section headers of an ELF32 little-endian image (the xtensa toolchain's output)."""
+    if len(blob) < 52 or blob[:4] != b"\x7fELF" or blob[4] != 1 or blob[5] != 1:
+        raise ValueError("not a 32-bit little-endian ELF")
+    shoff = struct.unpack_from("<I", blob, 0x20)[0]
+    shentsize, shnum = struct.unpack_from("<HH", blob, 0x2E)
+    if shentsize < 40 or shoff + shnum * shentsize > len(blob):
+        raise ValueError("bad section table")
+    keys = ("name", "type", "flags", "addr", "offset", "size", "link")
+    return [dict(zip(keys, struct.unpack_from("<7I", blob, shoff + i * shentsize))) for i in range(shnum)]
+
+
+def elf_symbols(blob: bytes, sections: "list[dict[str, int]]", wanted: "set[str]") -> "dict[str, tuple[int, int]]":
+    """Wanted symbol name -> (address, size), from every SHT_SYMTAB."""
+    out: "dict[str, tuple[int, int]]" = {}
+    keys = {w.encode(): w for w in wanted}
+    for sec in sections:
+        if sec["type"] != SHT_SYMTAB or sec["link"] >= len(sections):
+            continue
+        strs = sections[sec["link"]]
+        names = blob[strs["offset"] : strs["offset"] + strs["size"]]
+        table = blob[sec["offset"] : sec["offset"] + sec["size"] - sec["size"] % 16]
+        for name_off, value, size, _info, _other, _shndx in struct.iter_unpack("<IIIBBH", table):
+            end = names.find(b"\x00", name_off)
+            key = keys.get(names[name_off:end]) if end > name_off else None
+            if key:
+                out[key] = (value, size)
+    return out
+
+
+def file_offset(sections: "list[dict[str, int]]", addr: int) -> "int | None":
+    for sec in sections:
+        loaded = sec["flags"] & SHF_ALLOC and sec["type"] != SHT_NOBITS
+        if loaded and sec["addr"] <= addr < sec["addr"] + sec["size"]:
+            return sec["offset"] + addr - sec["addr"]
+    return None
+
+
+def docs_pack_bytes(blob: bytes, tables: "list[dict]") -> "tuple[int, list[str]]":
+    """(bytes the docs pack occupies in the image, notes): table bytes plus unique strings."""
+    sections = elf_sections(blob)
+    syms = elf_symbols(blob, sections, {t["symbol"] for t in tables})
+    total, notes, seen = 0, [], set()
+    for t in tables:
+        if t["symbol"] not in syms:
+            notes.append(f"{t['symbol']} is not in the image: counted as 0 docs pack bytes")
+            continue
+        addr, size = syms[t["symbol"]]
+        base = file_offset(sections, addr)
+        if base is None:
+            raise ValueError(f"{t['symbol']} is not in a loaded section")
+        total += size
+        for row in range(0, size - size % t["entry_bytes"], t["entry_bytes"]):
+            for off in t["string_offsets"]:
+                ptr = struct.unpack_from("<I", blob, base + row + off)[0]
+                total += string_bytes(blob, sections, ptr, seen)
+    return total, notes
+
+
+def string_bytes(blob: bytes, sections: "list[dict[str, int]]", ptr: int, seen: "set[int]") -> int:
+    """Bytes of the NUL-terminated string at ptr, once per address."""
+    if ptr == 0 or ptr in seen:
+        return 0
+    seen.add(ptr)
+    off = file_offset(sections, ptr)
+    if off is None:
+        raise ValueError(f"docs pack string at {ptr:#x} is not in a loaded section")
+    return blob.find(b"\x00", off) - off + 1
+
+
+def measure(env_dir: str, tables: "list[dict]") -> "dict[str, int]":
+    """image, docs pack and code bytes of one built env. Raises OSError / ValueError."""
+    image = os.path.getsize(os.path.join(env_dir, "firmware.bin"))
+    elf = os.path.join(env_dir, "firmware.elf")
+    if not os.path.isfile(elf):
+        raise ValueError(f"{elf} is missing: the docs pack is measured from the ELF beside firmware.bin")
+    with open(elf, "rb") as fh:
+        docs, _ = docs_pack_bytes(fh.read(), tables)
+    return {"image_bytes": image, "docs_pack_bytes": docs, "code_bytes": image - docs}
+
+
+def record_baseline(build_dir: str, sha: str, path: str, tables: "list[dict]", about: str = "") -> "dict":
+    envs = {}
+    for env in sorted(os.listdir(build_dir)):
+        if os.path.isfile(os.path.join(build_dir, env, "firmware.bin")):
+            envs[env] = measure(os.path.join(build_dir, env), tables)
+    row = {"about": about, "sha": sha, "docs_pack_tables": tables, "envs": envs}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(row, fh, indent=2)
+        fh.write("\n")
+    return row
+
+
+def load_budget(budget_dir: str, lane: str) -> "tuple[dict | None, list[str]]":
+    """(budget row or None when the lane has no file, problems)."""
+    path = os.path.join(budget_dir, f"{lane}.json")
+    if not os.path.exists(path):
+        return None, []
+    name = os.path.basename(path)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            row = json.load(fh)
+    except (OSError, ValueError) as e:
+        return None, [f"{name}: {e}"]
+    errs = []
+    if not isinstance(row, dict) or row.get("lane") != lane:
+        errs.append(f"{name}: 'lane' must be {lane}")
+        row = row if isinstance(row, dict) else {}
+    values = [row.get("allowance_bytes"), *dict(row.get("envs") or {}).values()]
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        errs.append(f"{name}: allowance_bytes and every envs value must be integers (bytes)")
+    if not str(row.get("why") or "").strip():
+        errs.append(f"{name}: 'why' is required (where the figure comes from)")
+    return row, errs
+
+
+def env_allowance(env: str, budget: "dict | None") -> int:
+    if budget is None:
+        return 0
+    return int(dict(budget.get("envs") or {}).get(env, budget["allowance_bytes"]))
+
+
+def judge_env(env: str, now: "dict[str, int]", base: "dict[str, int]", allow: int) -> "tuple[str, str | None]":
+    delta = now["code_bytes"] - base["code_bytes"]
+    ddelta = now["docs_pack_bytes"] - base["docs_pack_bytes"]
+    line = (
+        f"{env}: code {now['code_bytes']} B ({delta:+d} B; allowance {allow} B), "
+        f"docs pack {now['docs_pack_bytes']} B ({ddelta:+d} B, counted apart), image {now['image_bytes']} B"
+    )
+    if delta <= allow:
+        return line, None
+    return line, f"{env}: code grew {delta:+d} B against the baseline, {delta - allow} B over the allowance {allow} B"
+
+
+def check_allowance(build_dir: str, lane: str, baseline_path: str, budget_dir: str, is_ancestor=None):
+    """(ok, report lines, failures) for one lane's images against the recorded baseline."""
+    with open(baseline_path, encoding="utf-8") as fh:
+        baseline = json.load(fh)
+    budget, fails = load_budget(budget_dir, lane)
+    usable = None if fails else budget  # a malformed file grants nothing
+    lines = [f"{lane}: " + ("no budget file: allowance 0 B" if budget is None else f"budget {lane}.json")]
+    if is_ancestor is not None and not is_ancestor(baseline["sha"]):
+        fails.append(f"baseline {baseline['sha'][:12]} is not an ancestor of HEAD: record it on this line")
+    checked = 0
+    for env, base in sorted(baseline["envs"].items()):
+        env_dir = os.path.join(build_dir, env)
+        if not os.path.isfile(os.path.join(env_dir, "firmware.bin")):
+            continue
+        checked += 1
+        try:
+            now = measure(env_dir, baseline["docs_pack_tables"])
+        except (OSError, ValueError) as e:
+            fails.append(f"{env}: {e}")
+            continue
+        line, fail = judge_env(env, now, base, env_allowance(env, usable))
+        lines.append(line)
+        if fail:
+            fails.append(fail)
+    if checked == 0:
+        fails.append(f"no image with a baseline row is built under {build_dir}; nothing was measured")
+    return not fails, lines, fails
+
+
+def git_is_ancestor(root: str):
+    def check(sha: str) -> bool:
+        r = subprocess.run(["git", "-C", root, "merge-base", "--is-ancestor", sha, "HEAD"], capture_output=True)
+        return r.returncode == 0
+
+    return check
+
+
+def run_allowance(args, root: str, build_dir: str) -> int:
+    ancestry = None if args.no_ancestry else git_is_ancestor(root)
+    try:
+        ok, lines, fails = check_allowance(build_dir, args.lane, args.baseline, args.budget_dir, ancestry)
+    except (OSError, ValueError, KeyError) as e:
+        ok, lines, fails = False, [], [f"cannot read {args.baseline}: {e}"]
+    for line in lines:
+        print(f"{ATAG} {line}")
+    for detail in fails:
+        print(f"{ATAG} FAIL: {detail}")
+    print(f"{ATAG} IMAGE ALLOWANCE {'GREEN' if ok else 'RED'} {args.lane}")
+    return 0 if ok else 1
+
+
+def run_record(args, root: str, build_dir: str) -> int:
+    sha = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    with open(args.baseline, encoding="utf-8") as fh:
+        old = json.load(fh)
+    row = record_baseline(build_dir, sha, args.baseline, old["docs_pack_tables"], old.get("about", ""))
+    for env, e in row["envs"].items():
+        print(f"{ATAG} recorded {env}: {e} at {sha[:12]}")
+    return 0 if row["envs"] else 1
+
+
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="Release gate: built firmware.bin must fit its env's app partition")
     default_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -179,10 +399,17 @@ def main(argv: "list[str] | None" = None) -> int:
         default=None,
         help="extra dir to resolve named partition tables (repeatable; default: ~/.platformio framework packages)",
     )
+    ap.add_argument("--lane", help="also check this lane's image allowance (RB-<id>)")
+    ap.add_argument("--baseline", default=BASELINE, help="recorded baseline (default: image_baseline.json)")
+    ap.add_argument("--budget-dir", default=BUDGET_DIR, help="lane budget files (default: image_budget.d)")
+    ap.add_argument("--record-baseline", action="store_true", help="re-record the baseline from the built images")
+    ap.add_argument("--no-ancestry", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     root = os.path.abspath(args.root)
     build_dir = os.path.abspath(args.build_dir) if args.build_dir else os.path.join(root, DEFAULT_BUILD_DIR)
+    if args.record_baseline:
+        return run_record(args, root, build_dir)
     framework_dirs = args.framework_partitions or default_framework_dirs()
     ok, lines, fails, warns = check(root, build_dir, args.warn_bytes, framework_dirs)
     for line in lines:
@@ -193,9 +420,11 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"[gate:image-size] WARN: {detail}")
     if ok:
         print(f"[gate:image-size] PASS: every built image fits its app partition (WARN threshold {args.warn_bytes} B)")
-        return 0
-    print("[gate:image-size] FAIL: see above")
-    return 1
+    else:
+        print("[gate:image-size] FAIL: see above")
+    if args.lane:
+        return max(0 if ok else 1, run_allowance(args, root, build_dir))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
