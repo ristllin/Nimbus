@@ -34,7 +34,7 @@ import refloop
 from capture_proxy import CaptureProxy
 from costs import cold_cost_usd, cost_usd, virtual_costs
 from nimbusd_ctl import PROVIDER_ENV, Nimbusd
-from scenario import RIG_TZ, advance_target, needs_state
+from scenario import RIG_TZ, advance_target, needs_state, parse_advance
 
 HEAD_PATHS = ("/v1/messages", "/v1/responses")
 PROVIDER_HOST = {"anthropic": "api.anthropic.com", "openai": "api.openai.com/v1"}
@@ -231,6 +231,7 @@ class Arm:
         self.d = None
         self.turn = 0
         self.advances = 0
+        self.restarts = 0
         self.clock_marks = []  # (real time, clock offset from then on): one per advance
         self.conversations = 0
         self.chat_key = self._chat_key()
@@ -277,9 +278,7 @@ class Arm:
 
     def step(self, step: dict) -> dict:
         if "restart" in step:
-            self.restart()
-            self.cold_next = True
-            return {"kind": "restart"}
+            return self._restart_step()
         if "new_conversation" in step:
             self.conversations += 1
             self.chat_key, self.cold_next, self.last_end_vt = self._chat_key(), True, None
@@ -314,17 +313,34 @@ class Arm:
             rec["state"] = snapshot_state(self.d)
         return rec
 
+    def _restart_step(self) -> dict:
+        """A restart: the daemon comes back on the same clock (its own idle step runs then), and the
+        next turn opens cold. Requests made meanwhile are this step's, not the previous turn's."""
+        self.restarts += 1
+        self.proxy.mark(restart=self.restarts)
+        self.restart()
+        self.cold_next = True
+        self._settle()
+        return {"kind": "restart", **self._metrics(self.proxy.rows(restart=self.restarts))}
+
     def advance(self, value) -> dict:
         """Move this arm's clock (its daemon's, and arm B's stamps), then run the daemon's idle work."""
         self.advances += 1
         self.proxy.mark(advance=self.advances)
         before = self.d.clock()
-        seconds = max(advance_target(value, before["epoch"], RIG_TZ) - before["epoch"], 0)
+        target = advance_target(value, before["epoch"], RIG_TZ)
+        seconds = max(target - before["epoch"], 0)
         started = time.time()
         # Marked before the move: a request the idle step makes is already on the new clock.
         self.clock_marks.append((started, before["offset_s"] + seconds))
-        after = self.d.advance(seconds)
+        try:
+            # A wall time lands exactly (to_epoch); a duration moves by its length.
+            after = self.d.advance_to(target) if parse_advance(value)[0] == "wall" else self.d.advance(seconds)
+        except Exception:
+            self.clock_marks.pop()  # the clock did not move (or not knowably): price as if it had not
+            raise
         self.clock_marks[-1] = (started, after["offset_s"])
+        seconds = after["offset_s"] - before["offset_s"]
         self.clock_moved()
         ticks = self.d.tick_idle()
         self._settle()

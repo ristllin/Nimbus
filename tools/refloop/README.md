@@ -192,11 +192,16 @@ Every rig daemon runs with the test clock (`NIMBUSD_TEST_CLOCK=1`; nimbusd/READM
 clock"). An `advance` step takes whole seconds, a duration (`90m`, `8h`, `7d`) or a local wall
 time `HH:MM`: the next time that wall time comes round in Europe/London, strictly after the
 arm's current virtual time (so `"04:00"` from 23:10 is the next morning, across a DST change
-too). Each arm reads its own daemon's virtual time and moves by the difference, so both land
-on the same wall time. The move runs one idle step on the engine thread; the rig then runs
+too). `12:00` needs no quotes: the scenario loader does not read YAML 1.1 base-60 numbers. A wall
+time lands exactly (`to_epoch`); a duration moves by its length from each arm's own virtual
+time, so both arms land on the same wall time. A wall time inside a DST gap or overlap takes
+what Python's zoneinfo gives (the first reading); scenarios avoid 01:00 to 02:00 on change
+nights. Arm B's system prompt keeps the date it was created with, as it always did; each owner
+message carries its virtual time. The move runs one idle step on the engine thread; the rig then runs
 more (`advance_s: 0`, at least two) while `/api/fold/status` says a compaction is running or
 queued, so the compaction an overnight gap makes due is done before the next turn. A restart
-puts the offset back. Advance only between turns: a pending web turn past its 900 s deadline
+puts the offset back (in steps of at most 366 days); the requests a restart's own idle step
+makes are counted on the restart step. Advance only between turns: a pending web turn past its 900 s deadline
 is dropped.
 
 A provider's prompt cache lives in real time, so after an advance it is still warm. Each

@@ -599,6 +599,9 @@ class FakeClockDaemon:
         self.fold_rungs = max(self.fold_rungs - 1, 0)  # each idle step runs one rung of a due compaction
         return self.clock()
 
+    def advance_to(self, epoch):
+        return self.advance(epoch - self.clock()["epoch"])
+
     fold_busy = nimbusd_ctl.Nimbusd.fold_busy
     tick_idle = nimbusd_ctl.Nimbusd.tick_idle
 
@@ -646,6 +649,11 @@ class TimeTest(unittest.TestCase):
                 scenario.parse_advance(bad)
         good = {"id": "x", "title": "t", "judge_notes": "n", "turns": [{"say": "hi"}, {"advance": "04:00"}]}
         scenario.validate(good)
+        # YAML 1.1 reads an unquoted 12:00 as the number 720: the scenario loader must not.
+        loaded = scenario.parse_yaml("turns:\n  - advance: 12:00\n  - advance: 04:00\n  - advance: 90\n  - say: 1.5")
+        self.assertEqual([t.get("advance") for t in loaded["turns"][:3]], ["12:00", "04:00", 90])
+        self.assertEqual(scenario.parse_advance(loaded["turns"][0]["advance"]), ("wall", 12, 0))
+        self.assertEqual(loaded["turns"][3]["say"], 1.5)
         for bad_step in (
             {"advance": "soon"},
             {"advance": 60, "expect": [{"reply_regex": "a"}]},
@@ -740,6 +748,8 @@ class TimeTest(unittest.TestCase):
         rows = [row(1, t), row(2, t + 2 + 299), row(3, t + 600, model="claude-haiku-5-5"), row(4, t + 1000)]
         priced = costs.virtual_costs(rows, [])
         self.assertEqual([priced[n][1] for n in (1, 2, 3, 4)], [False, False, True, True])
+        edge = costs.virtual_costs([row(1, t), row(2, t + 2 + 300), row(3, t + 304 + 300.5)], [])
+        self.assertEqual([edge[n][1] for n in (1, 2, 3)], [False, False, True])  # exactly 300 s is still warm
         marks = [(t + 100, 301)]  # a 301 s advance between rows 1 and 2 makes row 2 cold
         self.assertTrue(costs.virtual_costs(rows, marks)[2][1])
         self.assertEqual(costs.offset_at(marks, t), 0)
@@ -816,6 +826,43 @@ class TimeTest(unittest.TestCase):
             self.assertEqual(d.clock()["offset_s"], 5000)
             self.assertEqual(d.bodies[-1], ({"advance_s": 5000}, nimbusd_ctl.CLOCK_TIMEOUT_S))
             self.assertGreaterEqual(nimbusd_ctl.CLOCK_TIMEOUT_S, 600)  # the route may run a paid idle step
+
+    def test_a_restart_past_a_year_puts_the_offset_back_in_steps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = nimbusd_ctl.Nimbusd(Path(tmp), {}, Path(tmp) / "log")
+            posts = []
+            d.start = d.stop = lambda *a: None
+            d.advance = lambda s: posts.append(s) or setattr(d, "offset_s", d.offset_s + s)
+            d.offset_s = 2 * scenario.MAX_ADVANCE_S + 5
+            d.restart()
+            self.assertEqual(posts, [scenario.MAX_ADVANCE_S, scenario.MAX_ADVANCE_S, 5])
+
+    def test_a_failed_advance_leaves_the_clock_marks_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arm = arms.ArmA(job_for(tmp))
+            arm.d = FakeClockDaemon()
+
+            def refuse(seconds):
+                raise RuntimeError("POST /test/clock answered 400")
+
+            arm.d.advance = refuse
+            with self.assertRaises(RuntimeError):
+                arm.step({"advance": "8h"})
+            self.assertEqual((arm.clock_marks, arm.offset_s), ([], 0))
+
+    def test_a_restart_keeps_arm_b_on_its_clock_and_counts_its_own_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            arm = arms.ArmB(job_for(tmp))
+            arm.d, arm.tools = FakeClockDaemon(), FakeTools()
+            arm.dir.mkdir(parents=True)
+            arm.conv = arm._conversation(load=False)
+            arm.step({"advance": "7d"})
+            arm.d.restart = lambda: arm.proxy.records.append(row(9, time.time(), **dict(arm.proxy.ctx)))
+            arm._connect = lambda: None
+            rec = arm.step({"restart": True})
+            self.assertEqual(arm.conv.clock_offset_s, 7 * 86400)  # reloaded from the saved transcript
+            self.assertEqual((rec["kind"], rec["head_requests"]), ("restart", 1))
+            self.assertEqual(arm.metrics(0)["head_requests"], 0)  # not booked on an earlier step
 
     def test_every_rig_daemon_runs_the_test_clock(self):
         env = nimbusd_ctl.Nimbusd(Path("/tmp/x"), {}, Path("/tmp/x/log"))._environment("anthropic")

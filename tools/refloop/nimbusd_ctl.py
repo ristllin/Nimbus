@@ -28,7 +28,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from scenario import RIG_TZ
+from scenario import MAX_ADVANCE_S, RIG_TZ
 
 REPO = Path(__file__).resolve().parents[2]
 DAEMON = REPO / "nimbusd" / "build" / "nimbusd"
@@ -151,8 +151,8 @@ class Nimbusd:
         self.stop()
         self.start(self.head)
         self.offset_s = 0
-        if offset:
-            self.advance(offset)
+        while self.offset_s < offset:  # one POST moves at most MAX_ADVANCE_S
+            self.advance(min(offset - self.offset_s, MAX_ADVANCE_S))
 
     def wait_ready(self, timeout_s: float = 30):
         end = time.time() + timeout_s
@@ -245,9 +245,16 @@ class Nimbusd:
 
     def advance(self, seconds: int) -> dict:
         """Move the clock forward by whole seconds and run one idle step; answers after that step."""
-        payload = json.dumps({"advance_s": int(seconds)}).encode()
+        return self._move({"advance_s": int(seconds)})
+
+    def advance_to(self, epoch: int) -> dict:
+        """Move the clock to a unix time (not in the past) and run one idle step: exact for a wall time."""
+        return self._move({"to_epoch": int(epoch)})
+
+    def _move(self, body: dict) -> dict:
+        payload = json.dumps(body).encode()
         reply = self._send(self._request("POST", "/test/clock", payload, "application/json"), CLOCK_TIMEOUT_S)
-        return self._clock_answer(*reply, f"POST /test/clock advance_s={int(seconds)}")
+        return self._clock_answer(*reply, f"POST /test/clock {body}")
 
     def fold_busy(self) -> bool:
         """A compaction is running or queued. No fold chat yet (404) is not busy; engine busy (503) is."""

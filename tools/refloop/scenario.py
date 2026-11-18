@@ -76,6 +76,33 @@ class ScenarioError(ValueError):
     pass
 
 
+class _Loader(yaml.SafeLoader):
+    """YAML 1.1 reads an unquoted 12:00 as the base-60 integer 720, so `advance: 12:00` would move
+    12 minutes. This loader keeps every implicit type except base-60 numbers: 12:00 stays text."""
+
+
+_Loader.yaml_implicit_resolvers = {
+    first: [(tag, rx) for tag, rx in resolvers if tag not in ("tag:yaml.org,2002:int", "tag:yaml.org,2002:float")]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_Loader.add_implicit_resolver(
+    "tag:yaml.org,2002:int",
+    re.compile(r"^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+)$"),
+    list("-+0123456789"),
+)
+_Loader.add_implicit_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(
+        r"^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9_]+(?:[eE][-+][0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"
+    ),
+    list("-+0123456789."),
+)
+
+
+def parse_yaml(text: str):
+    return yaml.load(text, Loader=_Loader)  # noqa: S506 - a SafeLoader subclass
+
+
 def parse_advance(value) -> tuple:
     """("seconds", n) or ("wall", hour, minute) for an advance step's value. Anything else is refused."""
     if isinstance(value, int) and not isinstance(value, bool):
@@ -173,7 +200,7 @@ def _expand(sc: dict) -> dict:
 
 
 def load(path: Path) -> dict:
-    return _expand(validate(yaml.safe_load(Path(path).read_text()), Path(path).name))
+    return _expand(validate(parse_yaml(Path(path).read_text()), Path(path).name))
 
 
 def load_all(paths: list) -> list:
