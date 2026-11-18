@@ -1,0 +1,669 @@
+#!/usr/bin/env python3
+"""Extract every model-facing string of the built engines into a catalog golden.
+
+The catalog is the input of the no-prompt-patch gate (check_no_prompt_patch.py,
+PRD section 11): growth in any class of model-facing text fails the build unless
+equal bytes are removed and the parity rates before and after are logged in
+coverage/PROMPT-CHANGES.md.
+
+Two catalogs:
+- e1, the old engine (test/golden/model_text_catalog_e1.txt): the string literals of
+  the source files listed in E1_SOURCES, by class. A literal counts when a model could
+  read it as words (letters and a space) and it is not written by a log call. Files
+  that build a tool result or register a tool must be listed (the coverage check fails
+  on one that is not), so a new tool cannot hide its text outside the catalog.
+- e2, the plain engine (test/golden/model_text_catalog.txt): every literal of
+  lib/harness/include/nimbus/harness/plain/texts.h, classed by the namespace that holds
+  it (core, device_notes, stubs, tool_results, probe, summarizer, tool_descriptions),
+  plus the sources RB-E2 lists in E2_EXTRA_SOURCES. The catalog is live once texts.h
+  exists; from then on a prose literal in a plain engine file (lib/harness/src/plain_*,
+  providers/plain_wire_*) outside texts.h is an error.
+
+Usage (from the repo root):
+  python3 tools/release_gate/gen_model_text_catalog.py            # check the goldens are fresh
+  python3 tools/release_gate/gen_model_text_catalog.py --write    # regenerate them
+  python3 tools/release_gate/gen_model_text_catalog.py --summary  # bytes per class
+Exit 0: every golden matches the sources (last line MODEL TEXT CATALOG GREEN); 1: drift
+or a source error (MODEL TEXT CATALOG RED).
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from dataclasses import dataclass
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ---------------------------------------------------------------------------
+# Engine 1: the source files whose prose literals reach a model, by class.
+# ---------------------------------------------------------------------------
+
+E1_CLASSES = ("system", "device_notes", "tool_descriptions", "tool_results", "side_prompts", "skills")
+
+# Every prose literal of these files is in the class. In a tool_results file the
+# description and schema of a registered tool go to tool_descriptions instead.
+E1_SOURCES = {
+    "system": (
+        "lib/core/include/nimbus/orch/orch_schema.h",
+        "lib/core/src/orch_connectors_wire.cpp",
+        "lib/core/src/orch_food_ledger.cpp",
+        "lib/core/src/orch_world.cpp",
+        "lib/harness/include/nimbus/harness/board_identity.h",
+        "lib/harness/include/nimbus/harness/prompt_layout.h",
+        "lib/harness/src/compose.cpp",
+        "lib/harness/src/day_context.cpp",
+        "lib/harness/src/prompt_layout.cpp",
+        "lib/harness/src/skill_attach.cpp",
+        "lib/harness/src/skill_md.cpp",
+    ),
+    "device_notes": (
+        "lib/core/include/nimbus/orch/billing_refusal.h",
+        "lib/core/src/orch_claims.cpp",
+        "lib/core/src/orch_degraded.cpp",
+        "lib/core/src/orch_gradient.cpp",
+        "lib/core/src/orch_head_loop.cpp",
+        "lib/core/src/orch_owner_voice.cpp",
+        "lib/core/src/orch_provider_caps.cpp",
+        "lib/core/src/orch_provider_park.cpp",
+        "lib/core/src/orch_reply_guard.cpp",
+        "lib/core/src/orch_spawn_claim.cpp",
+        "lib/core/src/orch_spend_ceiling.cpp",
+        "lib/core/src/orch_transcript.cpp",
+        "lib/core/src/orch_turn.cpp",
+        "lib/harness/include/nimbus/harness/jobs.h",
+        "lib/harness/include/nimbus/harness/router_refusal.h",
+        "lib/harness/src/apply.cpp",
+        "lib/harness/src/claim_check.cpp",
+        "lib/harness/src/conversation.cpp",
+        "lib/harness/src/engine.cpp",
+        "lib/harness/src/engine_fold.cpp",
+        "lib/harness/src/jobs.cpp",
+        "lib/harness/src/providers/anthropic.cpp",
+        "lib/harness/src/providers/custom.cpp",
+        "lib/harness/src/providers/loop_common.cpp",
+        "lib/harness/src/providers/mistral.cpp",
+        "lib/harness/src/providers/openai.cpp",
+        "lib/harness/src/turn_contract.cpp",
+        "lib/harness/src/turn_memory.cpp",
+    ),
+    "tool_results": (
+        "lib/core/include/nimbus/orch/result_envelope.h",
+        "lib/core/include/nimbus/orch/tool_gates.h",
+        "lib/core/src/orch_file_append.cpp",
+        "lib/core/src/orch_file_edit.cpp",
+        "lib/core/src/orch_food_figures.cpp",
+        "lib/core/src/orch_food_portions.cpp",
+        "lib/core/src/orch_loops.cpp",
+        "lib/core/src/orch_memory_tools.cpp",
+        "lib/core/src/orch_models_tool.cpp",
+        "lib/core/src/orch_openq_tools.cpp",
+        "lib/core/src/orch_prefs_tools.cpp",
+        "lib/core/src/orch_result_store.cpp",
+        "lib/core/src/orch_session_tools.cpp",
+        "lib/core/src/orch_tool_registry.cpp",
+        "lib/harness/src/skill_store.cpp",
+        "lib/harness/src/websearch.cpp",
+        "nimbusd/src/hosted_loops.h",
+        "nimbusd/src/hosted_photos.h",
+        "nimbusd/src/hosted_skills.h",
+        "nimbusd/src/posix_files.h",
+        "src/agent/connectors.cpp",
+        "src/agent/device_log_tool.cpp",
+        "src/agent/files_subsystem.cpp",
+        "src/agent/food_ledger_device.cpp",
+        "src/agent/loops_subsystem.cpp",
+        "src/agent/memory_subsystem.cpp",
+        "src/agent/pdf_tool.cpp",
+        "src/sfx/music.cpp",
+    ),
+    "side_prompts": (
+        "lib/core/src/orch_compact.cpp",
+        "lib/harness/src/dream.cpp",
+        "lib/harness/src/fold_driver.cpp",
+        "lib/harness/src/vision_caption.cpp",
+        "src/agent/dream_subsystem.cpp",
+    ),
+    "skills": ("lib/harness/src/builtin_skills.cpp",),
+}
+
+# Large mixed files (wiring, web pages, the test rig): only the text of a tool result
+# (ToolResult::ok / fail) and of a registered tool is model-facing there.
+E1_RESULT_ONLY = (
+    "nimbusd/src/rig.h",
+    "src/agent/orchestrator.cpp",
+    "src/main.cpp",
+)
+
+# Byte ceilings of engine 1: the bytes measured when the gate was introduced. Engine 1
+# only shrinks; a ceiling is never raised (the ledger's baseline in PROMPT-CHANGES.md
+# holds the same figures and check_no_prompt_patch.py fails a ceiling above them).
+E1_CEILINGS = {
+    "system": 47995,
+    "device_notes": 58395,
+    "tool_descriptions": 22951,
+    "tool_results": 41178,
+    "side_prompts": 7570,
+    "skills": 23264,
+}
+
+# ---------------------------------------------------------------------------
+# Engine 2: texts.h by namespace (PRD section 4 ceilings).
+# ---------------------------------------------------------------------------
+
+E2_TEXTS = "lib/harness/include/nimbus/harness/plain/texts.h"
+E2_CLASSES = ("core", "device_notes", "stubs", "tool_results", "probe", "summarizer", "tool_descriptions")
+E2_CEILINGS = {
+    "core": 3072,
+    "device_notes": 2048,
+    "stubs": 512,
+    "tool_results": 6144,
+    "probe": 1024,
+    "summarizer": 1024,
+    "tool_descriptions": 10240,
+}
+# RB-E2: a manifest file outside texts.h whose literals are model text, as
+# (path, class); every literal of it counts (not only prose), like texts.h.
+E2_EXTRA_SOURCES: tuple = ()
+# The engine-2 files that may hold no model text of their own once texts.h exists.
+E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")
+# Calls in engine-2 files whose literals are not model text (stub markers).
+E2_NON_MODEL_CALLS = frozenset({"pending"})
+
+# phase "build": the engine is being written to its spec, and a PROMPT-CHANGES entry of
+# kind build may grow a class inside its ceiling. phase "frozen": growth always fails.
+# e2 flips to frozen at the engine-2 candidate gate (PRD stage S2).
+CATALOGS = {
+    "e1": {"golden": "test/golden/model_text_catalog_e1.txt", "phase": "frozen", "classes": E1_CLASSES},
+    "e2": {"golden": "test/golden/model_text_catalog.txt", "phase": "build", "classes": E2_CLASSES},
+}
+
+LOG_CALLS = frozenset({
+    "logf", "log", "logLine", "alog", "alogf", "beat", "printf", "fprintf",
+    "log_e", "log_w", "log_i", "log_d", "ESP_LOGE", "ESP_LOGW", "ESP_LOGI", "ESP_LOGD", "ESP_LOGV",
+    "Serial.printf", "Serial.println", "Serial.print", "static_assert",
+})
+RESULT_CALLS = frozenset({"ok", "fail"})
+ADD_CALLS = frozenset({"add", "addOwnerOnly"})  # tool registration: (reg,) name, description, handler, schema
+TOOL_FILE = re.compile(r'\bToolResult::(?:ok|fail)\s*\(|(?<!struct )\bToolResult\s*\{|registry\(\)\s*\.add\s*\(|'
+                       r'\.add\(\s*"[a-z][a-z0-9_]*\.[a-z0-9_.]+"')
+SCAN_DIRS = ("lib", "src", "nimbusd/src")
+SCAN_SKIP = ("lib/core/include/nimbus/orch/tool_registry.h",)
+
+
+@dataclass
+class Literal:
+    text: str
+    line: int
+    calls: tuple = ()        # enclosing call names, outermost first
+    arg_index: int = -1      # argument position in the innermost call (-1: not in a call)
+    namespaces: tuple = ()   # enclosing namespace names, outermost first
+    names: tuple = ()        # identifiers of the statement before the literal (kAppendDesc, ...)
+    in_add: bool = False     # a direct argument of a tool registration call, outside a lambda body
+
+    @property
+    def logged(self) -> bool:
+        return any(c in LOG_CALLS for c in self.calls)
+
+
+_ESC = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "'": "'", '"': '"', "?": "?",
+        "a": "\a", "b": "\b", "f": "\f", "v": "\v"}
+
+
+def _unescape(body: str) -> str:
+    """C escapes to text. Byte escapes (\\xNN, octal) are gathered as bytes and decoded as UTF-8."""
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c != "\\":
+            out += c.encode("utf-8")
+            i += 1
+            continue
+        n = body[i + 1] if i + 1 < len(body) else ""
+        if n == "x":
+            m = re.match(r"[0-9A-Fa-f]{1,2}", body[i + 2:])
+            out.append(int(m.group(0), 16) if m else ord("x"))
+            i += 2 + (len(m.group(0)) if m else 0)
+        elif n in "01234567" and n:
+            m = re.match(r"[0-7]{1,3}", body[i + 1:])
+            out.append(int(m.group(0), 8) & 0xFF)
+            i += 1 + len(m.group(0))
+        elif n in ("u", "U"):
+            k = 4 if n == "u" else 8
+            out += chr(int(body[i + 2:i + 2 + k], 16)).encode("utf-8")
+            i += 2 + k
+        else:
+            out += _ESC.get(n, n).encode("utf-8")
+            i += 2
+    return out.decode("utf-8", errors="replace")
+
+
+_STR_START = re.compile(r'(?:u8|u|U|L)?(R)?"')
+
+
+def extract_literals(src: str) -> list:
+    """Every string literal of a C/C++ source, adjacent literals joined, with the calls
+    and namespaces that enclose it. Comments, char literals and preprocessor include
+    lines are skipped."""
+    out: list = []
+    stack: list = []          # entries: [kind, name, arg_index] kind 'call'|'paren'|'brace'|'ns'
+    pending_ns = None
+    last_ident = ""
+    stmt: list = []           # identifiers since the last ; { or }
+    cur = None                # literal being joined: [text, first line]
+    i, n, line = 0, len(src), 1
+
+    def flush():
+        nonlocal cur
+        if cur is None:
+            return
+        calls = tuple(e[1] for e in stack if e[0] == "call")
+        inner = next((e for e in reversed(stack) if e[0] in ("call", "paren")), None)
+        arg = inner[2] if inner is not None and inner[0] == "call" else -1
+        nss = tuple(e[1] for e in stack if e[0] == "ns")
+        in_add = False
+        for e in reversed(stack):
+            if e[0] in ("brace", "ns"):
+                break
+            if e[0] == "call" and e[1] in ADD_CALLS:
+                in_add = True
+                break
+        out.append(Literal(cur[0], cur[1], calls, arg, nss, tuple(stmt), in_add))
+        cur = None
+
+    while i < n:
+        c = src[i]
+        if c == "\n":
+            line += 1
+            i += 1
+            continue
+        if c in " \t\r\f\v":
+            i += 1
+            continue
+        if c == "\\" and src.startswith("\n", i + 1 + (src[i + 1:i + 2] == "\r")):  # macro line continuation
+            i += 1
+            continue
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            line += src.count("\n", i, j)
+            i = j
+            continue
+        if c == "#" and (i == 0 or src.rfind("\n", 0, i) == i - 1 or src[src.rfind("\n", 0, i) + 1:i].strip() == ""):
+            m = re.match(r"#\s*(include|pragma|error|warning)\b", src[i:])
+            if m:
+                j = src.find("\n", i)
+                i = n if j < 0 else j
+                continue
+        m = _STR_START.match(src, i) if c in 'uULR"' else None
+        if m and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+            start_line = line
+            if m.group(1):  # raw string R"delim( ... )delim"
+                k = src.index("(", m.end())
+                delim = src[m.end():k]
+                end = src.index(")" + delim + '"', k)
+                body, raw = src[k + 1:end], True
+                i = end + len(delim) + 2
+            else:
+                j = m.end()
+                while src[j] != '"':
+                    j += 2 if src[j] == "\\" else 1
+                body, raw = src[m.end():j], False
+                i = j + 1
+            line += body.count("\n")
+            if cur is None:
+                cur = ["", start_line]
+            cur[0] += body if raw else _unescape(body)  # adjacent literals join
+            continue
+        flush()
+        if c == "'":
+            j = i + 1
+            while j < n and src[j] != "'":
+                j += 2 if src[j] == "\\" else 1
+            i = j + 1
+            continue
+        if c.isalpha() or c == "_":
+            j = i
+            while j < n and (src[j].isalnum() or src[j] == "_"):
+                j += 1
+            word = src[i:j]
+            # Serial.printf and similar: keep the dotted owner for log detection.
+            if i > 0 and src[i - 1] == "." and last_ident:
+                k = i - 2
+                while k >= 0 and (src[k].isalnum() or src[k] == "_"):
+                    k -= 1
+                owner = src[k + 1:i - 1]
+                if owner:
+                    word = owner + "." + word
+            if word == "namespace":
+                pending_ns = ""
+            elif pending_ns == "":
+                pending_ns = word
+            last_ident = word
+            stmt.append(word)
+            i = j
+            continue
+        if c == "(":
+            if last_ident:
+                stack.append(["call", last_ident, 0])
+            else:
+                stack.append(["paren", "", 0])
+            last_ident = ""
+        elif c == "{":
+            stmt.clear()
+            if pending_ns is not None:
+                stack.append(["ns", pending_ns or "<anon>", 0])
+                pending_ns = None
+            else:
+                stack.append(["brace", "", 0])
+            last_ident = ""
+        elif c in ")}":
+            if c == "}":
+                stmt.clear()
+            want = "brace" if c == "}" else None
+            while stack:
+                e = stack.pop()
+                if (want == "brace" and e[0] in ("brace", "ns")) or (want is None and e[0] in ("call", "paren")):
+                    break
+            last_ident = ""
+        elif c == ",":
+            if stack and stack[-1][0] == "call":
+                stack[-1][2] += 1
+            last_ident = ""
+        elif c == ";":
+            stmt.clear()
+            pending_ns = None
+            last_ident = ""
+        elif c in ":<>":
+            pass  # keep last_ident across nimbus::hlog::logf and template args
+        else:
+            last_ident = ""
+        i += 1
+    flush()
+    return out
+
+
+_PROSE = re.compile(r"[A-Za-z]{2,}")
+
+
+def is_prose(text: str) -> bool:
+    """A literal a model could read as words: letters and at least one space."""
+    return " " in text and _PROSE.search(text) is not None
+
+
+# ---------------------------------------------------------------------------
+# Catalog
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Entry:
+    cls: str
+    path: str
+    text: str
+
+    @property
+    def size(self) -> int:
+        return len(self.text.encode("utf-8"))
+
+    @property
+    def sha8(self) -> str:
+        return sha8(self.text)
+
+
+def sha8(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+
+
+def class_sha8(texts) -> str:
+    """The identity of a class: its texts as a multiset, so a move between files is neutral."""
+    return hashlib.sha256("\0".join(sorted(texts)).encode("utf-8")).hexdigest()[:8]
+
+
+class CatalogError(Exception):
+    pass
+
+
+def _read(root: str, rel: str) -> "str | None":
+    path = os.path.join(root, rel)
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+_DESC_NAME = re.compile(r"desc|schema", re.I)
+
+
+def _is_tool_description(lit: Literal) -> bool:
+    """The description or schema of a tool: an add() argument, a JSON schema, or a named description."""
+    return lit.in_add or _is_schema(lit.text) or any(_DESC_NAME.search(n) for n in lit.names)
+
+
+def _is_schema(text: str) -> bool:
+    t = text.lstrip()
+    return t.startswith("{") and '"type"' in t
+
+
+def _e1_file_entries(cls: str, rel: str, src: str, result_only: bool) -> list:
+    out = []
+    for lit in extract_literals(src):
+        if lit.logged or not is_prose(lit.text):
+            continue
+        desc = _is_tool_description(lit)
+        if result_only:
+            if desc:
+                out.append(Entry("tool_descriptions", rel, lit.text))
+            elif RESULT_CALLS.intersection(lit.calls):
+                out.append(Entry("tool_results", rel, lit.text))
+            continue
+        if cls == "tool_results" and desc:
+            out.append(Entry("tool_descriptions", rel, lit.text))
+        else:
+            out.append(Entry(cls, rel, lit.text))
+    return out
+
+
+def e1_sources() -> list:
+    """(class, path, result_only) for every engine-1 source."""
+    rows = [(cls, p, False) for cls, paths in E1_SOURCES.items() for p in paths]
+    rows += [("tool_results", p, True) for p in E1_RESULT_ONLY]
+    return rows
+
+
+def _scan_files(root: str):
+    for d in SCAN_DIRS:
+        for dirpath, dirnames, files in os.walk(os.path.join(root, d)):
+            dirnames.sort()
+            for f in sorted(files):
+                if f.endswith((".cpp", ".h", ".hpp", ".cc")):
+                    yield os.path.relpath(os.path.join(dirpath, f), root).replace(os.sep, "/")
+
+
+def _is_e2_engine_file(rel: str) -> bool:
+    return any(re.match(g, rel) for g in E2_ENGINE_GLOBS)
+
+
+def uncatalogued_tool_files(root: str) -> list:
+    """Files that build a tool result or register a tool but are in no catalog."""
+    listed = {p for _, p, _ in e1_sources()} | {p for p, _ in E2_EXTRA_SOURCES} | {E2_TEXTS}
+    out = []
+    for rel in _scan_files(root):
+        if rel in listed or rel in SCAN_SKIP or _is_e2_engine_file(rel):
+            continue
+        src = _read(root, rel) or ""
+        if TOOL_FILE.search(src):
+            out.append(rel)
+    return out
+
+
+def build_e1(root: str) -> list:
+    entries = []
+    missing = 0
+    for cls, rel, result_only in e1_sources():
+        src = _read(root, rel)
+        if src is None:  # engine-1 files are deleted on the way to v6.1.0; their text leaves with them
+            missing += 1
+            continue
+        entries += _e1_file_entries(cls, rel, src, result_only)
+    if missing == len(e1_sources()):
+        raise CatalogError("no engine-1 source found: wrong --root?")
+    stray = uncatalogued_tool_files(root)
+    if stray:
+        raise CatalogError("a file builds a tool result or registers a tool but is in no catalog class "
+                           "(add it to E1_SOURCES or E1_RESULT_ONLY): " + ", ".join(stray))
+    return entries
+
+
+def _e2_literal_entries(rel: str, src: str, default_cls: "str | None") -> list:
+    out, bad = [], []
+    for lit in extract_literals(src):
+        cls = next((n for n in reversed(lit.namespaces) if n in E2_CLASSES), default_cls)
+        if cls is None:
+            bad.append(f"{rel}:{lit.line}")
+            continue
+        out.append(Entry(cls, rel, lit.text))
+    if bad:
+        raise CatalogError("a literal in texts.h sits in no class namespace (" + ", ".join(E2_CLASSES) +
+                           "): " + ", ".join(bad))
+    return out
+
+
+def e2_stray_literals(root: str) -> list:
+    """Prose literals in plain engine files: model text belongs in texts.h."""
+    out = []
+    for rel in _scan_files(root):
+        if not _is_e2_engine_file(rel):
+            continue
+        for lit in extract_literals(_read(root, rel) or ""):
+            if lit.logged or E2_NON_MODEL_CALLS.intersection(lit.calls) or not is_prose(lit.text):
+                continue
+            out.append(f"{rel}:{lit.line} {lit.text[:60]!r}")
+    return out
+
+
+def build_e2(root: str) -> "list | None":
+    """None while texts.h does not exist (RB-E2 creates it)."""
+    src = _read(root, E2_TEXTS)
+    if src is None:
+        return None
+    entries = _e2_literal_entries(E2_TEXTS, src, None)
+    for rel, cls in E2_EXTRA_SOURCES:
+        extra = _read(root, rel)
+        if extra is None:
+            raise CatalogError(f"E2_EXTRA_SOURCES names a missing file: {rel}")
+        entries += _e2_literal_entries(rel, extra, cls)
+    stray = e2_stray_literals(root)
+    if stray:
+        raise CatalogError("model text outside texts.h in a plain engine file: " + "; ".join(stray))
+    return entries
+
+
+BUILDERS = {"e1": build_e1, "e2": build_e2}
+
+
+def ceilings(name: str) -> dict:
+    return dict(E1_CEILINGS if name == "e1" else E2_CEILINGS)
+
+
+def class_stats(name: str, entries: list) -> dict:
+    """{class: {bytes, entries, sha8}} in the catalog's class order."""
+    out = {}
+    for cls in CATALOGS[name]["classes"]:
+        texts = [e.text for e in entries if e.cls == cls]
+        out[cls] = {"bytes": sum(len(t.encode("utf-8")) for t in texts), "entries": len(texts),
+                    "sha8": class_sha8(texts)}
+    return out
+
+
+def render(name: str, entries: list) -> str:
+    stats = class_stats(name, entries)
+    ceil = ceilings(name)
+    lines = [
+        f"# Model text catalog {name}: generated by tools/release_gate/gen_model_text_catalog.py; do not edit.",
+        "# Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).",
+        "# One entry per line: class, source, sha8, bytes, the text as a JSON string.",
+    ]
+    for cls, st in stats.items():
+        lines.append(f"# class {cls} bytes={st['bytes']} ceiling={ceil.get(cls, 0)} "
+                     f"entries={st['entries']} sha8={st['sha8']}")
+    order = {c: i for i, c in enumerate(CATALOGS[name]["classes"])}
+    for e in sorted(entries, key=lambda e: (order[e.cls], e.path)):  # stable: keeps source order in a file
+        lines.append(f"{e.cls}\t{e.path}\t{e.sha8}\t{e.size}\t{json.dumps(e.text, ensure_ascii=True)}")
+    return "\n".join(lines) + "\n"
+
+
+_CLASS_LINE = re.compile(r"^# class (\w+) bytes=(\d+) ceiling=(\d+) entries=(\d+) sha8=([0-9a-f]{8})$")
+
+
+def parse(text: str) -> dict:
+    """A rendered catalog back to {"classes": {cls: {bytes, ceiling, entries, sha8}}, "entries": [Entry]}."""
+    classes, entries = {}, []
+    for line in text.splitlines():
+        m = _CLASS_LINE.match(line)
+        if m:
+            classes[m.group(1)] = {"bytes": int(m.group(2)), "ceiling": int(m.group(3)),
+                                   "entries": int(m.group(4)), "sha8": m.group(5)}
+            continue
+        if not line or line.startswith("#"):
+            continue
+        cls, path, _sha, _size, js = line.split("\t", 4)
+        entries.append(Entry(cls, path, json.loads(js)))
+    return {"classes": classes, "entries": entries}
+
+
+def build_all(root: str) -> dict:
+    """{catalog name: entries or None (not live yet)}."""
+    return {name: BUILDERS[name](root) for name in CATALOGS}
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--root", default=REPO)
+    ap.add_argument("--write", action="store_true", help="regenerate the goldens")
+    ap.add_argument("--summary", action="store_true", help="print bytes per class")
+    args = ap.parse_args(argv)
+    try:
+        built = build_all(args.root)
+    except CatalogError as e:
+        print(f"model text catalog: {e}")
+        print("MODEL TEXT CATALOG RED")
+        return 1
+    ok = True
+    for name, entries in built.items():
+        golden = os.path.join(args.root, CATALOGS[name]["golden"])
+        if entries is None:
+            if os.path.exists(golden):
+                print(f"{name}: {CATALOGS[name]['golden']} exists but its sources do not")
+                ok = False
+            continue
+        text = render(name, entries)
+        if args.summary:
+            for cls, st in class_stats(name, entries).items():
+                print(f"{name} {cls:18} {st['bytes']:7d} B  {st['entries']:4d} entries  ceiling "
+                      f"{ceilings(name).get(cls, 0)}")
+        if args.write:
+            with open(golden, "w", encoding="utf-8") as f:
+                f.write(text)
+            print(f"wrote {CATALOGS[name]['golden']} ({len(entries)} entries)")
+            continue
+        cur = _read(args.root, CATALOGS[name]["golden"])
+        if cur != text:
+            print(f"{name}: {CATALOGS[name]['golden']} is stale: model-facing text changed. Regenerate with "
+                  "--write, then log the change in coverage/PROMPT-CHANGES.md")
+            ok = False
+    print("MODEL TEXT CATALOG GREEN" if ok else "MODEL TEXT CATALOG RED")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
