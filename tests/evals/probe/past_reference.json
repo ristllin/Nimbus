@@ -8684,7 +8684,7 @@
   "id": "nothing-saved-007",
   "family": "nothing-saved",
   "owner": "What's 15% of 64?",
-  "reply": "9.60. I haven't stored anything.",
+  "reply": "9.60. I haven't stored that.",
   "this_turn": [],
   "recent": [
    {
@@ -8726,7 +8726,7 @@
   "id": "nothing-saved-009",
   "family": "nothing-saved",
   "owner": "What's 15% of 64?",
-  "reply": "9.60. I haven't stored anything.",
+  "reply": "9.60. I haven't stored that.",
   "this_turn": [],
   "recent": [],
   "claim": false,
@@ -8738,13 +8738,7 @@
   "owner": "Is anything saved from this chat?",
   "reply": "No, nothing from this chat has been saved.",
   "this_turn": [],
-  "recent": [
-   {
-    "at": "07:14",
-    "tool": "memory_write",
-    "receipt": "saved memory: owner's dentist appointment is Thursday 3 December at 09:40"
-   }
-  ],
+  "recent": [],
   "claim": false,
   "from": "synthetic"
  },
@@ -8815,7 +8809,7 @@
   "id": "nothing-saved-014",
   "family": "nothing-saved",
   "owner": "What's 15% of 64?",
-  "reply": "9.60. I haven't stored anything.",
+  "reply": "9.60. I haven't stored that.",
   "this_turn": [],
   "recent": [
    {
@@ -8841,7 +8835,7 @@
   "id": "nothing-saved-015",
   "family": "nothing-saved",
   "owner": "What's 15% of 64?",
-  "reply": "9.60. I haven't stored anything.",
+  "reply": "9.60. I haven't stored that.",
   "this_turn": [],
   "recent": [
    {

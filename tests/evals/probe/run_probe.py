@@ -15,10 +15,13 @@ Sets:
                   turn); "with" reads it beside a distractor ring (corpus_rings.json).
   past_reference  past_reference.json: true replies (claim false), many about earlier turns.
   near_miss       near_miss.json: unbacked claims beside related effects (claim true).
+  acks            acks.json: bare acknowledgements with and without a keep request (held out).
 
 Conditions: "with" renders the recent effects; "without" renders them as (none), the
 one-turn view of the deleted claim check. Scoring is fail-open, as shipped: an answer slower
-than 8 s, an HTTP error or a malformed answer is not a hit. Keys are read by name from the
+than 8 s or a malformed answer is not a hit. Rates are over answered probes (an HTTP error measures
+the provider, not the model, and is counted apart); a qualifying run answered every corpus row and
+at least 300 past-reference rows. Keys are read by name from the
 dotenv file inside this process and never printed. Mistral is not called (no credit).
 """
 
@@ -43,6 +46,7 @@ CORPUS = REPO / "tests" / "evals" / "claim_corpus" / "noted.json"
 MEASURED = REPO / "tests" / "evals" / "measured" / "probe.json"
 DEFAULT_ENV = Path("/Users/roydarnell/Projects/nimbus-project/nimbus/.env")
 PROMPT = (HERE / "prompt.txt").read_text()
+CORPUS_N = len(json.loads(CORPUS.read_text()))  # a qualifying run answered every corpus row
 
 BOUND_S = 8.0  # the probe's fail-open bound on the device
 CLIENT_TIMEOUT_S = 30.0  # measure past the bound so the tail is visible
@@ -83,7 +87,7 @@ def load_items() -> list:
         }
         for i, r in enumerate(corpus)
     ]
-    for name in ("past_reference", "near_miss"):
+    for name in ("past_reference", "near_miss", "acks"):
         for r in json.loads((HERE / f"{name}.json").read_text()):
             items.append({**r, "set": name})
     return items
@@ -254,6 +258,11 @@ def cmd_run(args) -> int:
     items = load_items()
     if args.sets:
         items = [i for i in items if i["set"] in args.sets.split(",")]
+    if args.ids:
+        items = [i for i in items if i["id"] in args.ids.split(",")]
+    if args.prompt:  # an earlier prompt version, for the record (the default is prompt.txt)
+        global PROMPT
+        PROMPT = Path(args.prompt).read_text()
     if args.limit:
         items = items[: args.limit]
     done = done_keys(path)
@@ -372,6 +381,11 @@ def score_near(near: list) -> dict:
     return {"n": len(near), "tp": tp, "recall": ratio(tp, len(near)), "recall_ci95": wilson(tp, len(near))}
 
 
+def score_acks(acks: list) -> dict:
+    c = score_corpus(acks)
+    return {k: c[k] for k in ("n", "positives", "tp", "fp", "fn", "precision", "recall", "false_hits", "missed")}
+
+
 def score_time(rows: list) -> dict:
     secs = [r["seconds"] for r in rows if r["error"] is None]
     return {
@@ -384,14 +398,15 @@ def score_time(rows: list) -> dict:
 
 
 def score(rows: list) -> dict:
-    def part(name):
-        return [r for r in rows if r["set"] == name]
+    def part(name):  # answered probes only: an unanswered one measures the provider, not the model
+        return [r for r in rows if r["set"] == name and r["error"] is None]
 
     return {
         "probes": len(rows),
         "corpus": score_corpus(part("corpus")),
         "past_reference": score_past(part("past_reference")),
         "near_miss": score_near(part("near_miss")),
+        "acks": score_acks(part("acks")),
         **score_time(rows),
         "usd": round(sum(r["usd"] for r in rows), 4),
     }
@@ -404,6 +419,7 @@ def qualifies(s: dict) -> bool:
         and c["precision"] >= GATE["precision"]
         and c["recall"] is not None
         and c["recall"] >= GATE["recall"]
+        and c["n"] == CORPUS_N
         and p["n"] >= GATE["min_past"]
         and p["fp_rate"] is not None
         and p["fp_rate"] <= GATE["fp_rate"]
@@ -453,6 +469,7 @@ def summarize(rows: list) -> dict:
             "corpus": "tests/evals/claim_corpus/noted.json (+ corpus_rings.json in 'with')",
             "past_reference": "tests/evals/probe/past_reference.json",
             "near_miss": "tests/evals/probe/near_miss.json",
+            "acks": "tests/evals/probe/acks.json",
         },
         "models": models,
         "seconds_p50_all": round(statistics.median(secs), 3) if secs else None,
@@ -463,35 +480,68 @@ def summarize(rows: list) -> dict:
 def table(summary: dict) -> str:
     head = (
         "| model | recent effects | corpus precision (95% CI) | corpus recall (95% CI) | past-ref FP (upper 95%) "
-        "| near-miss recall | p50 s | p90 s | >8 s | err/malformed | qualifies |"
+        "| near-miss recall | acks P / R | p50 s | p90 s | >8 s | err/malformed | qualifies |"
     )
-    out = [head, "|" + "---|" * 11]
+    out = [head, "|" + "---|" * 12]
     for model, m in summary["models"].items():
         if not m.get("measured"):
-            out.append(f"| {model} | - | unmeasured | | | | | | | | no ({m['reason'].split(':')[0]}) |")
+            out.append(f"| {model} | - | unmeasured | | | | | | | | | no ({m['reason'].split(':')[0]}) |")
             continue
         for cond in ("with", "without"):
             s = m[cond]
-            c, p, n = s["corpus"], s["past_reference"], s["near_miss"]
+            c, p, n, a = s["corpus"], s["past_reference"], s["near_miss"], s["acks"]
             q = m["qualifies"] if cond == "with" else m["qualifies_without_recent"]
             out.append(
                 f"| {model} | {cond} | {c['precision']} {c['precision_ci95']} ({c['tp']}/{c['tp'] + c['fp']}) "
                 f"| {c['recall']} {c['recall_ci95']} ({c['tp']}/{c['positives']}) "
                 f"| {p['fp_rate']} ({p['fp']}/{p['n']}, <= {p['fp_upper95']}) | {n['recall']} ({n['tp']}/{n['n']}) "
+                f"| {a['precision']} / {a['recall']} ({a['tp']}/{a['tp'] + a['fp']}, {a['tp']}/{a['positives']}) "
                 f"| {s['seconds_p50']} | {s['seconds_p90']} | {s['over_bound']} | {s['errors']}/{s['malformed']} "
                 f"| {'yes' if q else 'no'} |"
             )
     return "\n".join(out) + "\n"
 
 
+def read_rows(out: Path) -> list:
+    return [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
+
+
+def apply_notes(models: dict, notes: list) -> None:
+    """--note model=text: why a model has no complete result in this run."""
+    for note in notes:
+        model, text = note.split("=", 1)
+        row = models.setdefault(model, {"measured": False})
+        row["note"] = text
+        if not row.get("measured"):
+            row["reason"], row["qualifies"] = text, False
+
+
 def cmd_summarize(args) -> int:
     out = Path(args.out)
-    rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
-    summary = summarize(rows)
+    summary = summarize(read_rows(out))
+    apply_notes(summary["models"], args.note)
+    text = table(summary)
+    usd = summary["usd_total"]
+    summary["other_runs"] = {}
+    for extra in args.extra:  # LABEL=PROMPT_FILE=RUN_DIR: a repeat, or a prompt tried and not shipped
+        label, prompt_file, run_dir = extra.split("=", 2)
+        other = summarize(read_rows(Path(run_dir)))
+        prompt_text = Path(prompt_file).read_text()
+        summary["other_runs"][label] = {
+            "prompt": "the shipped prompt" if prompt_text == PROMPT else prompt_text,
+            "models": {m: v for m, v in other["models"].items() if v.get("measured")},
+            "usd_total": other["usd_total"],
+        }
+        usd += other["usd_total"]
+        text += f"\n{label}:\n\n" + table(other)
+    summary["usd_all_runs"] = round(usd, 4)
     Path(args.json).write_text(json.dumps(summary, indent=1) + "\n")
-    (out / "TABLE.md").write_text(table(summary))
-    print(table(summary))
-    print(f"total {summary['usd_total']} USD; median {summary['seconds_p50_all']} s; written {args.json}")
+    (out / "TABLE.md").write_text(text)
+    print(text)
+    print(
+        f"shipped prompt run {summary['usd_total']} USD, all runs {summary['usd_all_runs']} USD; "
+        f"median {summary['seconds_p50_all']} s; written {args.json}"
+    )
     return 0
 
 
@@ -511,12 +561,16 @@ def main() -> int:
     r.add_argument("--conds", default="with,without")
     r.add_argument("--sets", default="")
     r.add_argument("--limit", type=int, default=0)
+    r.add_argument("--ids", default="", help="only these item ids (comma-separated)")
+    r.add_argument("--prompt", default="", help="system text file in place of prompt.txt")
     r.add_argument("--workers", type=int, default=6)
     r.add_argument("--env", default=str(DEFAULT_ENV))
     r.add_argument("--max-usd", type=float, default=4.0)
     s = sub.add_parser("summarize")
     s.add_argument("--out", required=True)
     s.add_argument("--json", default=str(MEASURED))
+    s.add_argument("--extra", action="append", default=[], help="LABEL=PROMPT_FILE=RUN_DIR, another run for the record")
+    s.add_argument("--note", action="append", default=[], help="MODEL=TEXT, why a model is not fully measured")
     w = sub.add_parser("show")
     w.add_argument("--set", required=True)
     w.add_argument("--id", required=True)

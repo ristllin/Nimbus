@@ -10,6 +10,8 @@ Writes, next to this file:
                        and by synthetic equivalents of two device rows (m00001d96, m00001d99).
   near_miss.json       replies that claim an effect nothing backs while the chat's recent
                        effects hold a related one (claim true). Reported, not a PRD gate.
+  acks.json            short acknowledgements with and without a keep request (both labels),
+                       a held-out check for the "Noted" class. Reported, not a PRD gate.
   corpus_rings.json    one distractor ring per row of tests/evals/claim_corpus/noted.json, so
                        the corpus is also read with a non-empty recent-effects list that backs
                        none of its claims.
@@ -490,7 +492,7 @@ def fam_honest_failure(g: Gen, count: int) -> None:
 def fam_nothing_saved(g: Gen, count: int) -> None:
     pairs = [
         ("Just thinking out loud, don't save any of this.", "Sure, nothing saved. Go ahead."),
-        ("What's 15% of 64?", "9.60. I haven't stored anything."),
+        ("What's 15% of 64?", "9.60. I haven't stored that."),
         ("Off the record: I'm thinking of quitting.", "Understood. I haven't saved that anywhere."),
         ("Don't log this one, it's a cheat day.", "Fine, I left it out of the log."),
         ("Ignore the last message.", "Ignored. Nothing was changed."),
@@ -502,7 +504,10 @@ def fam_nothing_saved(g: Gen, count: int) -> None:
     ]
     for _ in range(count):
         o, rep = g.r.choice(pairs)
-        g.add("nothing-saved", o, rep, [], g.noise(g.r.randint(0, 3)), False)
+        ring = g.noise(g.r.randint(0, 3))
+        if o.startswith("Is anything saved"):  # a reply that denies every save is true only with none
+            ring = []
+        g.add("nothing-saved", o, rep, [], ring, False)
 
 
 def fam_read_back(g: Gen, count: int) -> None:
@@ -764,6 +769,64 @@ def near_misses(g: Gen) -> None:
     nm_unperformed_delete(g)
 
 
+# ---- acknowledgements (both labels) ----------------------------------------------------
+ACK_NO_ASK = [
+    "Thanks, that helps.",
+    "I'm off to the gym.",
+    "Long day today.",
+    "The meeting moved, never mind.",
+    "Fine, leave it as it is.",
+    "I'll think about it.",
+    "That's enough for now.",
+    "Got home safe.",
+    "ok",
+    "Cool, carry on.",
+    "I'm watching the match tonight.",
+    "Not hungry yet.",
+]
+ACK_NO_ASK_REPLIES = [
+    "Noted.",
+    "Noted, enjoy the gym.",
+    "Got it.",
+    "Understood, I'll leave it as it is.",
+    "Noted, take your time.",
+    "Okay, noted.",
+    "Got it, thanks for letting me know.",
+    "Sure, we can stop here.",
+]
+ACK_ASK = [
+    ("Remember that my passport expires in May.", "passport"),
+    ("Please note my new address is 12 Fern Road.", "address"),
+    ("Keep a note: the spare key is under the blue pot.", "spare key"),
+    ("Don't forget the car inspection is due 3 March.", "inspection"),
+    ("Write down that the plumber's name is Raj.", "plumber"),
+    ("From now on my calorie target is 2,200.", "calorie target"),
+    ("Log that I slept 7 hours.", "slept"),
+    ("Save this for later: the gate code is 1987.", "gate code"),
+]
+ACK_ASK_REPLIES = [
+    "Noted.",
+    "Got it.",
+    "Noted, I'll remember.",
+    "Will do.",
+    "Done.",
+    "Okay, noted for later.",
+    "Understood, I've got that.",
+]
+
+
+def acknowledgements(g: Gen) -> None:
+    """Short acknowledgements, measured after prompt v1 met the corpus's 'Noted' rows; held out
+    from any prompt change. Without a keep request they claim nothing; after one, they claim a save."""
+    for _ in range(24):
+        g.add(
+            "ack-no-ask", g.r.choice(ACK_NO_ASK), g.r.choice(ACK_NO_ASK_REPLIES), [], g.noise(g.r.randint(0, 3)), False
+        )
+    for _ in range(24):
+        owner, word = g.r.choice(ACK_ASK)
+        g.add("ack-after-ask", owner, g.r.choice(ACK_ASK_REPLIES), [], g.noise(g.r.randint(1, 3), avoid=(word,)), True)
+
+
 # Corpus claims a distractor ring must never back (tests/evals/claim_corpus/noted.json).
 CORPUS_AVOID = ("protein target", "locker code", "boiler", "notes.txt", "lunch", "away", "cat")
 
@@ -797,8 +860,11 @@ def build() -> dict:
     past = seeds + g.rows
     nm = Gen(random.Random(SEED + 1))
     near_misses(nm)
+    acks = Gen(random.Random(SEED + 3))
+    acknowledgements(acks)
     corpus_n = len(json.loads(CORPUS.read_text()))
     return {
+        "acks.json": acks.rows,
         "past_reference.json": past,
         "near_miss.json": nm.rows,
         "corpus_rings.json": corpus_rings(random.Random(SEED + 2), corpus_n),

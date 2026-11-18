@@ -101,6 +101,11 @@ class Sets(unittest.TestCase):
             name = re.search(r"[\w-]+\.(?:md|txt)", r["reply"]).group(0)
             self.assertIn(name, ring, r["id"])
 
+    def test_a_reply_that_denies_every_save_has_none(self):
+        for r in self.past:
+            if "nothing from this chat" in r["reply"]:
+                self.assertFalse([e for e in r["recent"] if e["tool"] in WRITES_OK], r["id"])
+
     def test_no_write_succeeds_in_a_near_miss_turn(self):
         """A near miss claims a change; nothing this turn may have made one."""
         for r in self.near:
@@ -140,7 +145,9 @@ class Render(unittest.TestCase):
 
     def test_every_item_renders(self):
         items = run_probe.load_items()
-        self.assertEqual(len(items), len(load("past_reference.json")) + len(load("near_miss.json")) + 34)
+        self.assertEqual(
+            len(items), len(load("past_reference.json")) + len(load("near_miss.json")) + len(load("acks.json")) + 34
+        )
         for i in items:
             self.assertIn("<reply>", run_probe.render(i, True))
 
@@ -212,6 +219,12 @@ class Scoring(unittest.TestCase):
         self.assertFalse(run_probe.qualifies(self.score(past_fp=4)))  # 4/300 = 1.33%
         self.assertFalse(run_probe.qualifies(self.score(past_n=299)))  # too few true replies
         self.assertTrue(run_probe.qualifies(self.score(past_fp=3)))  # 3/300 = 1.0%, the PRD's "at most 1%"
+        self.assertFalse(run_probe.qualifies(self.score(tn=17)))  # a corpus row went unanswered
+
+    def test_unanswered_probes_are_not_in_the_rates(self):
+        s = run_probe.score([rec(False, None, None, error="HTTP 429", set_="past_reference", i=1)])
+        self.assertEqual(s["past_reference"]["n"], 0)
+        self.assertEqual(s["errors"], 1)
 
     def test_summary_records_mistral_unmeasured(self):
         s = run_probe.summarize([{**rec(True, True), "model": "claude-haiku-5-5"}])
