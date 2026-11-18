@@ -59,8 +59,20 @@ the label does not print, sodium aside). Rates carry an exact one-sided 95% boun
 - Both rules refuse to decide unless both Claude heads read all 40 labels in all four P and T arms;
   a failed read counts as wrong.
 - Transcription (PRD section 5): kept unless the head alone is at least as accurate as pixels plus
-  transcription and at or above 95% field accuracy, at the chosen rendition. One intake path serves
-  every head, so it is kept if the rule keeps it on either Claude head.
+  transcription and at or above 95% field accuracy, at the chosen rendition, decided per head.
+
+## Limits
+
+- Ceiling: both Claude heads read all 639 scored figures right at 800 px from the pixels alone. With
+  zero misses in 639, the one-sided 95% bound is 99.5%; the set cannot separate the two renditions
+  for those heads below that. It does separate gpt-5.6-luna (98.1% alone, 100% with transcription).
+- The truth was read by a Claude model (the lane's agent), the family of two of the heads, so an
+  error the agent and the heads share would not show. Blurred figures were checked against the
+  column arithmetic (per 100 times the serving), unreadable ones were left out, and the row
+  mapping of the one label whose row names are cut off was taken from the OFF record.
+- The photos are contributors' crops framed on the table. A wide shot where the table is a small
+  part of the frame is rarer here (two labels) than in a quick phone photo; 1,280 px may matter
+  more there.
 
 ## Run it
 

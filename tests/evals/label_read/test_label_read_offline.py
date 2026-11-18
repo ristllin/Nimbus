@@ -39,6 +39,11 @@ class Norm(unittest.TestCase):
         for a, b in (("30,4 g", "30.4"), ("2104 kJ", "2104"), ("0,107", "0.107"), ("26.0", "26"), ("(0.6g)", "0.6")):
             self.assertTrue(same(a, b), (a, b))
 
+    def test_a_copied_ri_share_is_not_part_of_the_figure(self):
+        self.assertTrue(same("8,6 (12%)", "8.6"))
+        self.assertTrue(same("0 (0%)", "0"))
+        self.assertFalse(same("8,6 (12%)", "12"))
+
     def test_less_than_is_part_of_the_figure(self):
         self.assertTrue(same("<0,5 g", "<0.5"))
         self.assertFalse(same("0.5", "<0.5"))
@@ -281,7 +286,7 @@ class Pipeline(unittest.TestCase):
                 h["P800"]["protein_misreads"]["k"], sum(1 for x in LABELS if "protein" in x["columns"]["per100"])
             )
             self.assertEqual(doc["decision"]["rendition_px"], 1280)  # Haiku gains over a point at 1,280
-            self.assertFalse(doc["decision"]["keep_transcription"])  # perfect alone at 1,280 on both heads
+            self.assertEqual(doc["decision"]["keep_transcription_for"], [])  # perfect alone at 1,280
             self.assertIn("| claude-haiku-5-5 | P800 |", md.read_text())
 
 
@@ -299,11 +304,12 @@ class Decide(unittest.TestCase):
 
     def test_transcription_kept_unless_alone_is_as_good_and_at_95(self):
         d = report.decide(heads(self.SAME, self.SAME), 40)
-        self.assertFalse(d["keep_transcription"])  # 96% alone, equal with transcription: dropped
+        self.assertEqual(d["keep_transcription_for"], [])  # 96% alone, equal with transcription: dropped
         better = dict(self.SAME, T800=970)
-        self.assertTrue(report.decide(heads(self.SAME, better), 40)["keep_transcription"])  # helps Haiku
+        d = report.decide(heads(self.SAME, better), 40)
+        self.assertEqual(d["keep_transcription_for"], ["claude-haiku-5-5"])  # helps Haiku only
         low = {a: 940 for a in self.SAME}
-        self.assertTrue(report.decide(heads(low, low), 40)["keep_transcription"])  # 94% alone: under the floor
+        self.assertEqual(len(report.decide(heads(low, low), 40)["keep_transcription_for"]), 2)  # under 95%
 
     def test_a_missing_or_partial_arm_refuses_to_decide(self):
         partial = {"P800": 960, "P1280": 960, "T800": 960}

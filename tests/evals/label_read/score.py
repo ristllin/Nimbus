@@ -26,6 +26,7 @@ FIELDS = (
 BASES = ("per100", "serving")
 
 _UNIT = re.compile(r"(kcal|kj|mg|g|ml|cal)\b", re.I)
+_RI_SUFFIX = re.compile(r"\(<?[\d.,]+%\)$")  # a reference-intake share copied after the figure: '8,6 (12%)'
 
 
 def norm(v):
@@ -37,7 +38,7 @@ def norm(v):
         return None
     if s.startswith(("trace", "tr", "spuren", "traces")):
         return "trace"
-    s = _UNIT.sub("", s).replace(",", ".").strip("()")
+    s = _UNIT.sub("", _RI_SUFFIX.sub("", s)).replace(",", ".").strip("()")
     lt = s.startswith("<") or s.startswith("&lt;")
     s = s.lstrip("<").removeprefix("&lt;")
     try:

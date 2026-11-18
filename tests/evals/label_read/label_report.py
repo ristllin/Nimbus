@@ -8,8 +8,8 @@ Decision rules (PRD section 5 and this lane's DECISION lines):
   more fields right than at 800 px (P800) on claude-sonnet-5-5 or claude-haiku-5-5. The T arms are
   left out: both carry the same transcription, made from the 1,280 px photo the device downloads.
 - Transcription, per head at the chosen rendition: kept unless the head alone (P) is at least as
-  accurate as pixels plus transcription (T) and at or above 95% field accuracy. The design keeps it
-  if the rule keeps it on either Claude head (one intake path serves every head).
+  accurate as pixels plus transcription (T) and at or above 95% field accuracy. The result is the
+  list of heads the rule keeps it for.
 """
 
 from __future__ import annotations
@@ -147,14 +147,14 @@ def decide(heads: dict, n_labels: int) -> dict:
             continue
         drop = acc(p) >= acc(t) and acc(p) >= TRANSCRIPT_FLOOR
         per_head[head] = {"pixels_only": acc(p), "with_transcription": acc(t), "keep_transcription": not drop}
-    keep = any(per_head[h]["keep_transcription"] for h in DECIDING_HEADS)
+    keep_for = sorted(h for h, t in per_head.items() if t["keep_transcription"])
     return {
         "rendition_px": px,
         "rendition_rule": f"800 px unless 1,280 px pixels alone read >= {100 * RENDITION_MARGIN:.0f} point more fields right on Sonnet or Haiku",
         "rendition_gain_1280_minus_800": gains,
         "transcription_rule": "kept unless the head alone is at least as accurate and at or above 95% field accuracy (PRD section 5)",
         "transcription_per_head": per_head,
-        "keep_transcription": keep,
+        "keep_transcription_for": keep_for,
     }
 
 
@@ -254,7 +254,7 @@ def markdown(doc: dict) -> str:
         f"- Rendition: **{d['rendition_px']} px**. Rule: {d['rendition_rule']}. Gain of 1,280 over 800: "
         + ", ".join(f"{h} {100 * g:+.1f} points" for h, g in d["rendition_gain_1280_minus_800"].items())
         + ".",
-        f"- Transcription: **{'kept' if d['keep_transcription'] else 'dropped'}**. Rule: {d['transcription_rule']}.",
+        f"- Transcription kept for: **{', '.join(d['keep_transcription_for']) or 'no head'}**. Rule, per head at the chosen rendition: {d['transcription_rule']}.",
     ]
     for head, t in d["transcription_per_head"].items():
         lines.append(

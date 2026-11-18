@@ -583,8 +583,7 @@
      "sugars": "3.4",
      "polyols": "22.0",
      "fibre": "11.3",
-     "protein": "36.4",
-     "salt": "0.48"
+     "protein": "36.4"
     },
     "serving": {
      "energy_kj": "901",
@@ -599,8 +598,10 @@
      "salt": "0.29"
     }
    },
-   "unscored": [],
-   "note": "blurred; each figure read by eye and consistent with 60 g arithmetic; OFF record differs"
+   "unscored": [
+    "per100.salt"
+   ],
+   "note": "blurred; each figure read by eye and consistent with 60 g arithmetic; OFF record differs; per-100 g salt reads as 0.48 or 0.49 even at full size (5 head reads said 0.49), so it is not scored"
   },
   {
    "id": "gum_3175680011480",

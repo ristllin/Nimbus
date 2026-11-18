@@ -1,0 +1,1144 @@
+{
+ "lane": "RB-M1",
+ "generated": "2026-11-18",
+ "method": "tests/evals/label_read/README.md",
+ "labels": 40,
+ "scored_fields": 639,
+ "transcriber": {
+  "model": "claude-haiku-5-5",
+  "effort": "low",
+  "px": 1280,
+  "T_full": {
+   "count": 40,
+   "stopped_at_max_tokens": 0,
+   "over_media_text_max": 1,
+   "max_tokens": 4000,
+   "usd": 0.0246
+  },
+  "D_device_cap": {
+   "count": 40,
+   "stopped_at_max_tokens": 22,
+   "over_media_text_max": 0,
+   "max_tokens": 900,
+   "usd": 0.0203
+  }
+ },
+ "decision": {
+  "rendition_px": 800,
+  "rendition_rule": "800 px unless 1,280 px pixels alone read >= 1 point more fields right on Sonnet or Haiku",
+  "rendition_gain_1280_minus_800": {
+   "claude-sonnet-5-5": 0.0,
+   "claude-haiku-5-5": 0.0
+  },
+  "transcription_rule": "kept unless the head alone is at least as accurate and at or above 95% field accuracy (PRD section 5)",
+  "transcription_per_head": {
+   "claude-haiku-5-5": {
+    "pixels_only": 1.0,
+    "with_transcription": 1.0,
+    "keep_transcription": false
+   },
+   "claude-sonnet-5-5": {
+    "pixels_only": 1.0,
+    "with_transcription": 1.0,
+    "keep_transcription": false
+   },
+   "gpt-5.6-luna": {
+    "pixels_only": 0.9812,
+    "with_transcription": 1.0,
+    "keep_transcription": true
+   }
+  },
+  "keep_transcription_for": [
+   "gpt-5.6-luna"
+  ]
+ },
+ "heads": {
+  "claude-haiku-5-5": {
+   "D1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0217,
+    "usd_per_read": 0.00054,
+    "prompt_tokens_mean": 2737.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 2.94
+   },
+   "D800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 635,
+     "n": 639,
+     "rate": 0.9937,
+     "lower95": 0.9857
+    },
+    "labels_all_correct": {
+     "k": 39,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 2,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0205,
+    "usd_per_read": 0.00051,
+    "prompt_tokens_mean": 1968,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 3.02
+   },
+   "P1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0203,
+    "usd_per_read": 0.00051,
+    "prompt_tokens_mean": 2447.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 2.77
+   },
+   "P800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0195,
+    "usd_per_read": 0.00049,
+    "prompt_tokens_mean": 1678.0,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 2.85
+   },
+   "T1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0227,
+    "usd_per_read": 0.00057,
+    "prompt_tokens_mean": 2955.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 2.81
+   },
+   "T800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0216,
+    "usd_per_read": 0.00054,
+    "prompt_tokens_mean": 2187.0,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 3.11
+   }
+  },
+  "claude-sonnet-5-5": {
+   "D1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 635,
+     "n": 639,
+     "rate": 0.9937,
+     "lower95": 0.9857
+    },
+    "labels_all_correct": {
+     "k": 39,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 2,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.3112,
+    "usd_per_read": 0.00778,
+    "prompt_tokens_mean": 2737.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 2.46
+   },
+   "D800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 638,
+     "n": 639,
+     "rate": 0.9984,
+     "lower95": 0.9926
+    },
+    "labels_all_correct": {
+     "k": 39,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 35,
+      "n": 36
+     },
+     "wide": {
+      "k": 157,
+      "n": 158
+     }
+    },
+    "usd_total": 0.2501,
+    "usd_per_read": 0.00625,
+    "prompt_tokens_mean": 1968,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 2.48
+   },
+   "P1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.2882,
+    "usd_per_read": 0.0072,
+    "prompt_tokens_mean": 2447.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 2.47
+   },
+   "P800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.2289,
+    "usd_per_read": 0.00572,
+    "prompt_tokens_mean": 1678.0,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 2.41
+   },
+   "T1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 635,
+     "n": 639,
+     "rate": 0.9937,
+     "lower95": 0.9857
+    },
+    "labels_all_correct": {
+     "k": 39,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 2,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.3288,
+    "usd_per_read": 0.00822,
+    "prompt_tokens_mean": 2955.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 2.45
+   },
+   "T800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.2673,
+    "usd_per_read": 0.00668,
+    "prompt_tokens_mean": 2187.0,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 2.41
+   }
+  },
+  "gpt-5.6-luna": {
+   "P1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 625,
+     "n": 639,
+     "rate": 0.9781,
+     "lower95": 0.966
+    },
+    "labels_all_correct": {
+     "k": 36,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 4,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 60,
+      "n": 71
+     },
+     "curved": {
+      "k": 119,
+      "n": 121
+     },
+     "glare": {
+      "k": 61,
+      "n": 71
+     },
+     "low_light": {
+      "k": 48,
+      "n": 50
+     },
+     "polyols": {
+      "k": 99,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0283,
+    "usd_per_read": 0.00071,
+    "prompt_tokens_mean": 1553.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 3.77
+   },
+   "P800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 627,
+     "n": 639,
+     "rate": 0.9812,
+     "lower95": 0.9698
+    },
+    "labels_all_correct": {
+     "k": 37,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 2,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 68,
+      "n": 71
+     },
+     "curved": {
+      "k": 119,
+      "n": 121
+     },
+     "glare": {
+      "k": 61,
+      "n": 71
+     },
+     "low_light": {
+      "k": 48,
+      "n": 50
+     },
+     "polyols": {
+      "k": 99,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0259,
+    "usd_per_read": 0.00065,
+    "prompt_tokens_mean": 847.0,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 3.95
+   },
+   "T1280": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0267,
+    "usd_per_read": 0.00067,
+    "prompt_tokens_mean": 1894.0,
+    "jpeg_bytes_mean": 178096.0,
+    "seconds_median": 3.21
+   },
+   "T800": {
+    "labels": 40,
+    "failed_reads": 0,
+    "field_accuracy": {
+     "k": 639,
+     "n": 639,
+     "rate": 1.0,
+     "lower95": 0.9953
+    },
+    "labels_all_correct": {
+     "k": 40,
+     "n": 40
+    },
+    "kj_kcal_confusions": 0,
+    "protein_misreads": {
+     "k": 0,
+     "n": 73
+    },
+    "extra_figures": 0,
+    "by_tag": {
+     "blur": {
+      "k": 71,
+      "n": 71
+     },
+     "curved": {
+      "k": 121,
+      "n": 121
+     },
+     "glare": {
+      "k": 71,
+      "n": 71
+     },
+     "low_light": {
+      "k": 50,
+      "n": 50
+     },
+     "polyols": {
+      "k": 109,
+      "n": 109
+     },
+     "row_offset": {
+      "k": 56,
+      "n": 56
+     },
+     "running_text": {
+      "k": 18,
+      "n": 18
+     },
+     "small_text": {
+      "k": 36,
+      "n": 36
+     },
+     "wide": {
+      "k": 158,
+      "n": 158
+     }
+    },
+    "usd_total": 0.0214,
+    "usd_per_read": 0.00054,
+    "prompt_tokens_mean": 1188.0,
+    "jpeg_bytes_mean": 80579.0,
+    "seconds_median": 3.13
+   }
+  }
+ },
+ "paired_fields": {
+  "claude-haiku-5-5": {
+   "P1280_vs_P800": {
+    "a_only": 0,
+    "b_only": 0
+   },
+   "T1280_vs_T800": {
+    "a_only": 0,
+    "b_only": 0
+   },
+   "T800_vs_P800": {
+    "a_only": 0,
+    "b_only": 0
+   },
+   "T1280_vs_P1280": {
+    "a_only": 0,
+    "b_only": 0
+   },
+   "T800_vs_D800": {
+    "a_only": 4,
+    "b_only": 0
+   },
+   "T1280_vs_D1280": {
+    "a_only": 0,
+    "b_only": 0
+   }
+  },
+  "claude-sonnet-5-5": {
+   "P1280_vs_P800": {
+    "a_only": 0,
+    "b_only": 0
+   },
+   "T1280_vs_T800": {
+    "a_only": 0,
+    "b_only": 4
+   },
+   "T800_vs_P800": {
+    "a_only": 0,
+    "b_only": 0
+   },
+   "T1280_vs_P1280": {
+    "a_only": 0,
+    "b_only": 4
+   },
+   "T800_vs_D800": {
+    "a_only": 1,
+    "b_only": 0
+   },
+   "T1280_vs_D1280": {
+    "a_only": 0,
+    "b_only": 0
+   }
+  },
+  "gpt-5.6-luna": {
+   "P1280_vs_P800": {
+    "a_only": 8,
+    "b_only": 10
+   },
+   "T1280_vs_T800": {
+    "a_only": 0,
+    "b_only": 0
+   },
+   "T800_vs_P800": {
+    "a_only": 12,
+    "b_only": 0
+   },
+   "T1280_vs_P1280": {
+    "a_only": 14,
+    "b_only": 0
+   }
+  }
+ },
+ "lane_spend_usd": 1.9481
+}
