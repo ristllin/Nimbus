@@ -1,0 +1,5 @@
+{
+  "lane": "RB-G0",
+  "allowance_bytes": 20480,
+  "why": "Ruling 33: what remains after a one-hour size audit, at most 20,480 B (PRD flash ledger +6 KB). Measured same-tree on esp32s3-cyd (base = the lane tip with orch_truth.cpp still engine-2-only and no binding): 6,383,730 -> 6,418,698 B (+34,968 B) before the audit, 6,415,202 B (+31,472 B) after its mechanical cuts (the shadow bound as a precomputed table instead of log/exp, the char-buffer JSON reader and writer the image already carries, the turn moved instead of copied). The remaining growth is the check's own code (22 KB of truth symbols: the probe render and request, the answer and response parsers, the facts item and receipt line, the stored modes and counters, TurnCheck and the device binding) plus its exception tables and strings. It does not fit this cap: see lanes/RB-G0/PROGRESS.md (the need is 31,744 B, a ruling)."
+}

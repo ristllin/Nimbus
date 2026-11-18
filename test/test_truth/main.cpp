@@ -22,6 +22,7 @@
 
 #include <ArduinoJson.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -1060,7 +1061,52 @@ void test_the_engine_flow_without_a_known_ring_never_probes() {
   TEST_ASSERT_EQUAL_size_t(0, s.seen.size());
 }
 
+// Every effect class of the old engine has its kind: writes are writes, lookups and speech
+// store nothing; a ledger tool is a ledger change whatever class the table gives it.
+void test_every_old_engine_effect_class_has_its_kind() {
+  using F = nimbus::orch::FxKind;
+  using K = truth::Kind;
+  std::map<int, K> want = {
+      {(int)F::MemWrite, K::Memory}, {(int)F::MemUpdate, K::Memory}, {(int)F::MemPin, K::Memory},
+      {(int)F::MemPinNoop, K::Read}, {(int)F::MemDelete, K::Memory}, {(int)F::Scratch, K::Memory},
+      {(int)F::ScratchRamOnly, K::Memory}, {(int)F::FileWrite, K::File}, {(int)F::SkillSave, K::Memory},
+      {(int)F::Spawn, K::Other}, {(int)F::SpawnRefused, K::Other}, {(int)F::Send, K::Send},
+      {(int)F::Speak, K::Read}, {(int)F::Schedule, K::Routine}, {(int)F::Config, K::Setting},
+      {(int)F::Read, K::Read}, {(int)F::SubSourced, K::Read}, {(int)F::SubUnsourced, K::Read},
+      {(int)F::FileReplace, K::File}};
+  TEST_ASSERT_EQUAL_size_t((size_t)F::kCount, want.size());   // a new class needs its row here
+  for (int f = 0; f < (int)F::kCount; ++f)
+    TEST_ASSERT_EQUAL_MESSAGE((int)want[f], (int)truth::kindOf("files_write", (F)f), nimbus::orch::fxSlug((F)f));
+  TEST_ASSERT_EQUAL((int)K::Ledger, (int)truth::kindOf("ledger_write", F::FileWrite));
+  TEST_ASSERT_EQUAL((int)K::Read, (int)truth::kindOf("ledger_day", F::Read));
+  const truth::TurnEffect e = truth::effectOf("files_write", F::FileWrite, true, "disk full\nsecond line");
+  TEST_ASSERT_FALSE(e.ok);
+  TEST_ASSERT_EQUAL_STRING("disk full", e.receipt.c_str());
+  TEST_ASSERT_EQUAL((int)K::File, (int)e.kind);
+}
+
 // ---- modes and the stored state ---------------------------------------------------------
+
+// The device's table is the Clopper-Pearson bound itself: each entry is the first n (at least
+// 300) where P(X <= k | n, 1%) <= 5%.
+static double binomCdf(uint32_t k, uint32_t n) {
+  double lt = n * std::log1p(-0.01), sum = 0;
+  for (uint32_t i = 0; i <= k; ++i) {
+    sum += std::exp(lt);
+    lt += std::log((double)(n - i) / (double)(i + 1)) + std::log(0.01) - std::log1p(-0.01);
+  }
+  return sum;
+}
+
+void test_the_shadow_table_is_the_bound() {
+  for (uint32_t k = 0; k <= 50; ++k) {
+    const uint32_t n = truth::shadowTurnsFor(k);
+    TEST_ASSERT_TRUE(n >= 300);
+    TEST_ASSERT_TRUE(binomCdf(k, n) <= 0.05);
+    TEST_ASSERT_TRUE(n == 300 || binomCdf(k, n - 1) > 0.05);
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, truth::shadowTurnsFor(51));
+}
 
 void test_modes_move_only_as_the_prd_says() {
   struct Case {
@@ -1202,6 +1248,8 @@ int main(int, char**) {
   RUN_TEST(test_the_engine_flow_holds_once_and_decides_the_line_at_the_end);
   RUN_TEST(test_the_engine_flow_without_a_round_never_holds);
   RUN_TEST(test_the_engine_flow_without_a_known_ring_never_probes);
+  RUN_TEST(test_every_old_engine_effect_class_has_its_kind);
+  RUN_TEST(test_the_shadow_table_is_the_bound);
   RUN_TEST(test_modes_move_only_as_the_prd_says);
   RUN_TEST(test_the_state_file_round_trips_and_refuses_damage);
   return UNITY_END();

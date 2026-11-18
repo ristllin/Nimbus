@@ -369,8 +369,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: device_notes
 - kind: spec
-- bytes: 53828 -> 54170
-- sha8: ab262df9 -> aed45072
+- bytes: 53828 -> 54203
+- sha8: ab262df9 -> c415e340
 - lane: RB-G0
 - prd: section 8 (rail 8: the facts-only device item of a hold, the failed-write receipt line) and
   section 9 (the receipt is one of the listed harness-written messages)

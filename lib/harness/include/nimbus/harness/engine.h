@@ -29,6 +29,7 @@
 #include "nimbus/orch/token_usage.h"
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - the turn's per-host spend
 #include "nimbus/orch/tool_registry.h"  // ToolRegistry::Spec (toolSpecs closure)
+#include "nimbus/orch/truth.h"          // truth::Binding, TurnCheck - the truth check (RB-G0)
 
 // engine - the TURN ORCHESTRATION, lifted from src/agent/orchestrator.cpp
 // (Stage G, the final lift). One TurnEngine owns the full turn pipeline: the
@@ -355,6 +356,9 @@ class TurnEngine {
     // The approved stored skills about food (foodSkillId, by id): the one that guides a logged
     // meal rides that turn, so the owner's own method is consulted, not just listed.
     std::function<std::vector<std::string>()> foodSkills;
+    // RB-G0: the truth check's binding (the probe, the chat's ring, the stored modes). Null:
+    // no check (host tests, a build without it).
+    nimbus::orch::truth::Binding* truth = nullptr;
   };
 
   // Heap floors, defaulted to src/agent/agent_config.h's values so the
@@ -923,6 +927,15 @@ class TurnEngine {
   // members the turn code reads keep their offsets (RB-Q1a: tg_poll stack).
   nimbus::orch::TurnEffects turnFx_;
   void startTurnLedger();   // runTurn's start: turnFx_ reset, the fresh results recorded
+  // RB-G0: this turn's truth check (PRD section 8 rail 8), on the heap; its steps out of line
+  // so runTurn's frame does not grow.
+  std::unique_ptr<nimbus::orch::truth::TurnCheck> truth_;
+  size_t truthMark_ = 0;   // turnFx_ entries before the ones apply records
+  void startTruth(const std::string& chatId, const std::string& userText, bool memoryOnly);
+  void noteTruthEffect(const std::string& tool, bool isError, const std::string& output);
+  std::string truthAtFinal(const std::string& finalTurn, bool prose, const std::string& host);
+  void truthFinishAndSend(const std::string& chatId, const std::string& reply, const std::string& host,
+                          bool captureWakeReply);
 };
 
 }  // namespace agent

@@ -71,7 +71,34 @@ using solide::ring::Status;
 static const char* kGoodTurn = "{\"reply\":\"hello there\",\"memory\":\"\",\"ask\":\"\"}";
 
 // ---- rig: engine + fakes ----------------------------------------------------
+// RB-G0: the truth check's binding as a test drives it: off (open refuses) unless a test
+// turns it on, a scripted probe, a fixed mode and a known ring.
+struct FakeTruth : nimbus::orch::truth::Binding {
+  bool on = false;
+  nimbus::orch::truth::Truth mode = nimbus::orch::truth::Truth::Enforce;
+  std::vector<nimbus::orch::truth::Verdict> answers;   // in order; No once used up
+  std::vector<std::string> probed;                     // the user message of each probe
+  nimbus::orch::truth::Counters c;
+  int opens = 0, closes = 0;
+  nimbus::orch::truth::Counters* open(const std::string&, const std::string& host, const std::string&, bool tainted,
+                                      nimbus::orch::truth::Turn& t, nimbus::orch::truth::ProbeFn& probe) override {
+    if (!on) return nullptr;
+    ++opens;
+    t.mode = tainted ? nimbus::orch::truth::Truth::ReceiptOnly : mode;
+    t.ringKnown = true;
+    probe = [this](const nimbus::orch::truth::ProbeRequest& r) {
+      probed.push_back(r.body);
+      const size_t i = probed.size() - 1;
+      return nimbus::orch::truth::ProbeResult{i < answers.size() ? answers[i] : nimbus::orch::truth::Verdict::No, 300};
+    };
+    (void)host;
+    return &c;
+  }
+  void close() override { ++closes; }
+};
+
 struct Rig {
+  FakeTruth truth;   // RB-G0: off unless a test turns it on
   FakePlatform plat;
   FakeConfig cfg;
 
@@ -253,6 +280,7 @@ struct Rig {
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.jobs = jobs.get();
+    d.truth = &truth;   // RB-G0
     d.deliver = [this](const std::string& c, const std::string& t) {
       delivered.push_back({c, t});
       if (onDeliver) onDeliver();
@@ -5938,8 +5966,84 @@ static void test_every_effect_reaches_the_effect_hook_once() {
   TEST_ASSERT_EQUAL_STRING(fx.at(first).ref, r.effects[0][2].c_str());
 }
 
+// RB-G0: the truth check's hook. A reply that reports a stored change no effect backs makes
+// the final-answer check return the facts item (the one held round); the reply the turn ends
+// with is delivered once, unchanged; a failed write's receipt line follows it as its own
+// message; an honest or backed reply gets nothing; a probe never runs while the hook is off.
+static void test_the_truth_check_hook() {
+  using nimbus::orch::truth::Verdict;
+  {  // A yes holds: the facts item is the correction; the turn's reply is delivered once.
+    Rig r;
+    r.truth.on = true;
+    r.truth.answers = {Verdict::Yes};
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = "{\"reply\":\"Logged 150 g skyr.\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("log 150 g skyr", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.finalChecks.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.finalChecks[0].find("[device] effects this turn: none. Recent: none.") != std::string::npos,
+                             r.finalChecks[0].c_str());
+    TEST_ASSERT_EQUAL(1, (int)r.truth.probed.size());
+    TEST_ASSERT_TRUE(r.truth.probed[0].find("Logged 150 g skyr.") != std::string::npos);
+    int replies = 0;
+    for (const auto& d : r.delivered) replies += d.second.find("Logged 150 g skyr.") != std::string::npos;
+    for (const auto& a : r.assistantRows) replies += a.second.find("Logged 150 g skyr.") != std::string::npos;
+    TEST_ASSERT_TRUE(replies >= 1);
+    for (const auto& d : r.delivered) TEST_ASSERT_TRUE(d.second.rfind("Note: ", 0) != 0);
+    TEST_ASSERT_EQUAL(1, r.truth.closes);
+    TEST_ASSERT_EQUAL_UINT32(1, r.truth.c.holds);
+  }
+  {  // A failed write on a receipt-only head: the line follows, after the reply, once.
+    Rig r;
+    r.truth.on = true;
+    r.truth.mode = nimbus::orch::truth::Truth::ReceiptOnly;
+    r.specs.push_back(orch::ToolRegistry::Spec{"files.append", "append to a file", "{}"});
+    r.mcpResponse =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"isError\":true,"
+        "\"content\":[{\"type\":\"text\",\"text\":\"the card write failed\"}]}}";
+    Rig::Script s;
+    s.dispatchTools = 1;
+    s.toolName = "files_append";
+    s.toolArgs = "{\"project\":\"p\",\"name\":\"log.csv\",\"text\":\"x\"}";
+    s.checkFinal = true;
+    s.outJson = "{\"reply\":\"Added it to the log.\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("add x to the log", "Roy", "1001");
+    TEST_ASSERT_EQUAL(0, (int)r.truth.probed.size());
+    int lines = 0;
+    for (const auto& d : r.delivered)
+      lines += d.second == "Note: the file change in this reply did not go through (the card write failed)";
+    TEST_ASSERT_EQUAL(1, lines);
+    TEST_ASSERT_EQUAL_STRING("Note: the file change in this reply did not go through (the card write failed)",
+                             r.delivered.back().second.c_str());
+  }
+  {  // A no: nothing held, nothing added.
+    Rig r;
+    r.truth.on = true;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = "{\"reply\":\"Pixel.\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("what is my sister's cat called?", "Roy", "1001");
+    TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+    for (const auto& d : r.delivered) TEST_ASSERT_TRUE(d.second.rfind("Note: ", 0) != 0);
+  }
+  {  // Off: never a probe, the final check unchanged.
+    Rig r;
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = "{\"reply\":\"Logged.\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("log it", "Roy", "1001");
+    TEST_ASSERT_EQUAL(0, r.truth.opens);
+    TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_the_truth_check_hook);
   RUN_TEST(test_the_turn_state_holds_the_effect_ledger);
   RUN_TEST(test_every_effect_reaches_the_effect_hook_once);
   RUN_TEST(test_filler_class);

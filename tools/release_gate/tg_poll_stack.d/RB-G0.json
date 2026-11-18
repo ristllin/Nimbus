@@ -1,0 +1,15 @@
+{
+  "about": "Lane RB-G0 (v5.2.0): the truth check runs on tg_poll. Its probe is one more TLS request (the device transport, an 8 s bound) made from inside the head loop's final-answer check (truthAtFinal, which may hold the answer for the one correction round) and once more at the turn's end (truthFinishAndSend, the receipt question). Each is measured on its own so a deeper probe path shows here first.",
+  "paths": [
+    {
+      "name": "truth probe in the final-answer check (a held turn)",
+      "through": ["^agent::TurnEngine::truthAtFinal\\("],
+      "_why": "validateFinal's last check: the probe request, and on a yes the facts item that makes the one correction round"
+    },
+    {
+      "name": "truth receipt question at the turn's end",
+      "through": ["^agent::TurnEngine::truthFinishAndSend\\("],
+      "_why": "after apply: at most one more probe request and the receipt line's delivery"
+    }
+  ]
+}

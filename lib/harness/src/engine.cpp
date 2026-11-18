@@ -1288,6 +1288,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // tool list and the loop's callable set, and the dispatch below refuses any other
   // name the model calls anyway.
   const bool memoryOnly = dreamTurn_;
+  startTruth(chatId, userText, memoryOnly);   // RB-G0
   if (memoryOnly)
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [](const orch::ToolRegistry::Spec& s) {
@@ -1612,6 +1613,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         orch::recordToolEffect(turnFx_, kind, r.isError, r.output, flags);
         // Lane RB-FX: the chat's effect ring keeps it across turns (the truth check reads it).
         if (d_.hooks.onEffect && orch::fx::recordsAsEffect(kind)) d_.hooks.onEffect(chatId, regName, r.output);
+        noteTruthEffect(regName, r.isError, r.output);   // RB-G0
         return r;
       };
     }
@@ -1685,11 +1687,19 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
             return std::string();
           return emptyAnswerCorrection(finalTurn, pseudo.get());
         },
+        // RB-G0: the truth check (PRD 8.8). A reply that reports a stored change no effect
+        // backs gets the facts-only item and this one round; it never reads the reply for words.
+        [this, &host](const std::string& finalTurn) { return truthAtFinal(finalTurn, false, host); },
     });
     // The forced round too: no real answer means one more tool-less round (VN, 1 Nov: the
     // literal "placeholder" went to the owner). The turn's end holds the line after it.
     headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
       return placeholderCheck(finalTurn, userText);
+    };
+    // RB-G0: a prose final answer is the owner-facing reply too: the truth check holds on the
+    // prose itself, with the same one-round budget.
+    headTools.cfg.validateProseFinal = [this, &host](const std::string& prose) {
+      return truthAtFinal(prose, true, host);
     };
     headTools.cfg.maxRounds          = roundsNow;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
@@ -2555,6 +2565,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       };
     }
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
+    truthFinishAndSend(chatId, turn.reply, host, captureWakeReply);   // RB-G0: the receipt line
     if (innerDeliver) d_.apply.deliver = std::move(innerDeliver);
   }
   reportApplyEffects(d_.hooks, turnFx_, chatId, fxMark);
@@ -2591,6 +2602,98 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     hlog::log("orchestrator: a second allocation failed while ending the turn");
   }
   return false;
+}
+
+// ---- RB-G0: the truth check (nimbus/orch/truth.h), out of line ---------------------------
+// Each step fails open: a refused allocation or any throw inside the check leaves the turn
+// and its reply exactly as they were (the check is skipped, nothing is sent for it).
+
+__attribute__((noinline)) void TurnEngine::startTruth(const std::string& chatId, const std::string& userText,
+                                                      bool memoryOnly) {
+  try {
+    if (!truth_) truth_.reset(new orch::truth::TurnCheck());
+    truth_->reset(memoryOnly ? nullptr : d_.truth, chatId, userText);
+  } catch (...) {
+    truth_.reset();
+  }
+  truthMark_ = turnFx_.size();
+}
+
+__attribute__((noinline)) void TurnEngine::noteTruthEffect(const std::string& tool, bool isError,
+                                                           const std::string& output) {
+  truthMark_ = turnFx_.size();
+  if (!truth_) return;
+  try {
+    truth_->note(orch::truth::effectOf(tool, fxKindForTool(tool), isError, output));
+  } catch (...) {
+  }
+}
+
+namespace {
+// What an orch_turn's own fields will store once the answer is accepted (apply runs them
+// after the loop): shown to the probe as this turn's effects, so a true "noted" backed by a
+// mem_write field is not a hit.
+void pendingFieldEffects(const orch::Turn& t, std::vector<orch::truth::TurnEffect>& out) {
+  using orch::truth::Kind;
+  auto pend = [&out](const char* tool, const std::string& what, Kind k) {
+    orch::truth::TurnEffect e;
+    e.tool = tool;
+    e.ok = true;
+    e.receipt = "with this reply: " + what;
+    e.kind = k;
+    out.push_back(e);
+  };
+  if (!t.memory.empty()) pend("memory", t.memory, Kind::Memory);
+  for (const auto& m : t.mem_write) pend("mem_write", m.content, Kind::Memory);
+  if (t.scratchpad.present) pend("scratchpad", t.scratchpad.active, Kind::Memory);
+  for (const auto& d : t.device) pend("device", d.json, Kind::Setting);
+  for (const auto& op : t.session_ops)
+    if (op.op == "spawn") pend("session_ops", "spawn " + op.task, Kind::Other);
+}
+}  // namespace
+
+__attribute__((noinline)) std::string TurnEngine::truthAtFinal(const std::string& finalTurn, bool prose,
+                                                               const std::string& host) {
+  if (!truth_) return std::string();
+  try {
+    const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
+    if (!truth_->open(host, model, externalContentSeen_ || unverifiedTurn_)) return std::string();
+    if (prose) return truth_->atFinal(finalTurn);
+    const std::unique_ptr<orch::Turn> t(new orch::Turn());
+    orch::ParseError perr;
+    if (!orch::parseTurn(finalTurn, *t, perr)) return std::string();   // the engine salvages it
+    std::vector<orch::truth::TurnEffect> pending;
+    pendingFieldEffects(*t, pending);
+    return truth_->atFinal(t->reply, true, &pending);
+  } catch (...) {
+    return std::string();
+  }
+}
+
+__attribute__((noinline)) void TurnEngine::truthFinishAndSend(const std::string& chatId, const std::string& reply,
+                                                              const std::string& host, bool captureWakeReply) {
+  if (!truth_) return;
+  std::string line;
+  try {
+    // What apply did with the answer's own fields: its real outcomes, after the loop's calls.
+    for (size_t i = truthMark_; i < turnFx_.size(); ++i) {
+      const orch::Effect& e = turnFx_.at(i);
+      truth_->note(orch::truth::effectOf(orch::fxSlug(e.kind), e.kind, !e.ok,
+                                         e.ok ? std::string(e.ref) : std::string("not stored")));
+    }
+    const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
+    truth_->open(host, model, externalContentSeen_ || unverifiedTurn_);
+    line = truth_->finish(reply).status;   // the reply itself is never changed here
+  } catch (...) {
+    return;
+  }
+  if (line.empty()) return;
+  hlog::logf("truth: %.120s", line.c_str());
+  if (captureWakeReply) {
+    wakeReply_ += wakeReply_.empty() ? line : ("\n\n" + line);
+    return;
+  }
+  deliver(chatId, line);
 }
 
 void TurnEngine::endTurnAfterFailedAllocation(const std::string& chatId) {

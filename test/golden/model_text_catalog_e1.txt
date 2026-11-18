@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=47989 ceiling=47989 entries=542 sha8=faa8207c
-# class device_notes bytes=54170 ceiling=74350 entries=1459 sha8=aed45072
+# class device_notes bytes=54203 ceiling=74350 entries=1462 sha8=c415e340
 # class tool_descriptions bytes=23131 ceiling=23055 entries=98 sha8=542ad7ca
 # class tool_results bytes=41962 ceiling=41269 entries=1249 sha8=63debd41
 # class side_prompts bytes=9374 ceiling=8078 entries=158 sha8=897e5bc2
@@ -1179,6 +1179,9 @@ device_notes	lib/harness/src/engine.cpp	5b501b30	65	"placeholder: the model wrot
 device_notes	lib/harness/src/engine.cpp	1eb01ba5	21	"That didn't finish - "
 device_notes	lib/harness/src/engine.cpp	a217ae90	25	" did not write an answer."
 device_notes	lib/harness/src/engine.cpp	ed66b258	18	"ask again to retry"
+device_notes	lib/harness/src/engine.cpp	61210e9c	17	"with this reply: "
+device_notes	lib/harness/src/engine.cpp	2fdd2f76	6	"spawn "
+device_notes	lib/harness/src/engine.cpp	55c2123b	10	"not stored"
 device_notes	lib/harness/src/engine.cpp	c294b99e	48	"low memory: an allocation failed during the turn"
 device_notes	lib/harness/src/engine.cpp	132b6c3c	32	"low memory: an allocation failed"
 device_notes	lib/harness/src/engine.cpp	9e3567c9	157	"\n[SYSTEM]\nSub-agents just finished. Synthesize: relay only what each result's task asked for, leave out the rest, never repeating it, not even to dismiss it."

@@ -6,7 +6,6 @@
 #include <ArduinoJson.h>
 
 #include <cctype>
-#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -40,7 +39,16 @@ std::string clip(const std::string& s, size_t cap) {
   return s.substr(0, n);
 }
 
-std::string oneLine(const std::string& s, size_t cap) { return fx::cleanText(s, cap); }
+// One line of at most `cap` bytes: every ASCII control character (newline and tab included)
+// becomes a space, clipped on a UTF-8 boundary. (The ring cleans its own entries the same way
+// and more; this file does not link the ring store, so an engine-1 image may carry the check
+// without it.)
+std::string oneLine(const std::string& s, size_t cap) {
+  std::string out = clip(s, cap);
+  for (char& ch : out)
+    if ((unsigned char)ch < 0x20 || ch == 0x7F) ch = ' ';
+  return out;
+}
 
 std::string nowLine(const TurnEffect& e) {
   return oneLine(e.tool, fx::kToolMax) + (e.ok ? " ok: " : " FAILED: ") + oneLine(e.receipt, kNowReceiptMax);
@@ -133,6 +141,15 @@ std::string strictForm(const std::string& text) {
   t = a == std::string::npos ? std::string() : t.substr(a, b - a + 1);
   if (t.compare(0, 4, "json") == 0) t.erase(0, 4);
   return strictForm(t);
+}
+
+// A document as compact JSON, through the char-buffer writer the rest of the image already
+// carries (no std::string writer instance for this file alone).
+void serializeTo(const JsonDocument& d, std::string& out) {
+  const size_t n = measureJson(d);
+  out.assign(n + 1, '\0');
+  serializeJson(d, &out[0], n + 1);
+  out.resize(n);
 }
 
 Verdict timed(const ProbeResult& r, uint32_t bound) { return r.ms > bound ? Verdict::Timeout : r.verdict; }
@@ -233,6 +250,45 @@ const char* kindNoun(Kind k) {
     case Kind::Other:   return "the change";
   }
   return "the change";
+}
+
+// The kind of each FxKind, in its order (turn_effects.h); test_truth checks every row.
+constexpr Kind kKindOfFx[] = {
+    Kind::Memory,   // MemWrite
+    Kind::Memory,   // MemUpdate
+    Kind::Memory,   // MemPin
+    Kind::Read,     // MemPinNoop: nothing changed
+    Kind::Memory,   // MemDelete
+    Kind::Memory,   // Scratch
+    Kind::Memory,   // ScratchRamOnly
+    Kind::File,     // FileWrite
+    Kind::Memory,   // SkillSave
+    Kind::Other,    // Spawn
+    Kind::Other,    // SpawnRefused
+    Kind::Send,     // Send
+    Kind::Read,     // Speak: spoken, not stored
+    Kind::Routine,  // Schedule
+    Kind::Setting,  // Config
+    Kind::Read,     // Read
+    Kind::Read,     // SubSourced
+    Kind::Read,     // SubUnsourced
+    Kind::File,     // FileReplace
+};
+static_assert(sizeof(kKindOfFx) / sizeof(kKindOfFx[0]) == (size_t)FxKind::kCount, "one kind per FxKind");
+
+Kind kindOf(const std::string& tool, FxKind fx) {
+  const Kind k = (size_t)fx < (size_t)FxKind::kCount ? kKindOfFx[(size_t)fx] : Kind::Read;
+  if (tool.compare(0, 6, "ledger") == 0) return k == Kind::Read ? Kind::Read : Kind::Ledger;
+  return k;
+}
+
+TurnEffect effectOf(const std::string& tool, FxKind fx, bool isError, const std::string& output) {
+  TurnEffect e;
+  e.tool = tool;
+  e.ok = !isError;
+  e.receipt = output.substr(0, output.find('\n'));
+  e.kind = kindOf(tool, fx);
+  return e;
 }
 
 namespace {
@@ -348,8 +404,7 @@ bool buildRequest(const char* host, const std::string& user, ProbeRequest& out) 
   JsonObject m = d["messages"].add<JsonObject>();
   m["role"] = "user";
   m["content"] = user;
-  out.body.clear();
-  serializeJson(d, out.body);
+  serializeTo(d, out.body);
   out.model = kAnthropicProbeModel;
   out.host = "api.anthropic.com";
   out.path = "/v1/messages";
@@ -384,7 +439,7 @@ Verdict parseResponse(int status, const std::string& body) {
   JsonDocument filter, d;
   filter["content"][0]["type"] = true;
   filter["content"][0]["text"] = true;
-  if (deserializeJson(d, body, DeserializationOption::Filter(filter))) return Verdict::Error;
+  if (deserializeJson(d, body.data(), body.size(), DeserializationOption::Filter(filter))) return Verdict::Error;
   std::string text;
   for (JsonVariant b : d["content"].as<JsonArray>())
     if (same(b["type"] | "", "text")) text += b["text"] | "";
@@ -412,25 +467,25 @@ std::string stateKey(const char* host, const char* model, headqual::Line line) {
 }
 
 namespace {
-// P(X <= k) for X ~ Binomial(n, p), each term carried as a logarithm so a large n cannot
-// underflow the terms that matter (log, log1p and exp only: no lgamma in the image).
-double binomCdf(uint32_t k, uint32_t n, double p) {
-  const double step = std::log(p) - std::log1p(-p);
-  double lt = n * std::log1p(-p), sum = 0;   // log P(X = 0)
-  for (uint32_t i = 0; i <= k && i <= n; ++i) {
-    sum += std::exp(lt);
-    lt += std::log((double)(n - i) / (double)(i + 1)) + step;
-  }
-  return sum;
-}
+// The fewest effect-shaped turns with k hits (k = 0..50) at which the one-sided 95%
+// Clopper-Pearson upper bound of the false-claim rate is at most 1% (and never under 300):
+// P(X <= k | n, 1%) <= 5%. Precomputed (tests/test_truth checks the PRD's 300, 475 and 630
+// pass), so the device links no floating-point log or exp for it. Past 50 hits it never moves.
+constexpr uint16_t kShadowTurns[] = {
+    300,  473,  628,  773,  913,  1049, 1182, 1312, 1441, 1568, 1693, 1818, 1941, 2064, 2185, 2306, 2426,
+    2546, 2665, 2784, 2902, 3020, 3137, 3254, 3371, 3487, 3603, 3719, 3834, 3949, 4064, 4179, 4293, 4407,
+    4521, 4635, 4749, 4862, 4975, 5088, 5201, 5314, 5427, 5539, 5651, 5764, 5876, 5988, 6099, 6211, 6323};
 }  // namespace
+
+uint32_t shadowTurnsFor(uint32_t hits) {
+  return hits < sizeof(kShadowTurns) / sizeof(kShadowTurns[0]) ? kShadowTurns[hits] : 0;
+}
 
 bool nextMode(HeadState& h, bool allowShadow) {
   if (!allowShadow) return false;
   if (h.mode == Truth::Enforce) {
-    // The one-sided 95% upper bound is at most 1% exactly when P(X <= k | p = 1%) <= 5%.
-    const uint32_t k = h.c.effectHits, n = h.c.effectTurns;
-    if (n < kShadowMinTurns || k >= n || binomCdf(k, n, 0.01) > 0.05) return false;
+    const uint32_t need = shadowTurnsFor(h.c.effectHits);
+    if (!need || h.c.effectTurns < need) return false;
     h.mode = Truth::Shadow;
     return true;
   }
@@ -524,14 +579,14 @@ std::string renderState(const State& s) {
     o["p"] = h.winPos;
   }
   std::string out;
-  serializeJson(d, out);
+  serializeTo(d, out);
   return out;
 }
 
 bool parseState(const std::string& json, State& out) {
   out.heads.clear();
   JsonDocument d;
-  if (deserializeJson(d, json) || !d.is<JsonObject>() || (d["v"] | 0) != 1 || !d["heads"].is<JsonArray>()) return false;
+  if (deserializeJson(d, json.data(), json.size()) || !d.is<JsonObject>() || (d["v"] | 0) != 1 || !d["heads"].is<JsonArray>()) return false;
   State s;
   for (JsonVariant v : d["heads"].as<JsonArray>()) {
     HeadState h;
@@ -580,11 +635,11 @@ void TurnCheck::reset(Binding* binding, const std::string& chatId, const std::st
   t_.owner = owner;
 }
 
-void TurnCheck::start(const Turn& t, ProbeFn probe, Counters* c) {
+void TurnCheck::start(Turn t, ProbeFn probe, Counters* c) {
   std::vector<TurnEffect> pending = std::move(t_.now);
-  t_ = t;
+  t_ = std::move(t);
   t_.now.insert(t_.now.end(), pending.begin(), pending.end());
-  host_ = t.host ? t.host : "";
+  host_ = t_.host ? t_.host : "";
   t_.host = host_.c_str();
   probe_ = std::move(probe);
   c_ = c;
@@ -603,20 +658,22 @@ bool TurnCheck::open(const std::string& host, const std::string& model, bool tai
   if (!c) return false;
   t.host = host_.c_str();   // whatever the binding did with it, the head is this one
   t.tainted = tainted;
-  start(t, std::move(probe), c);
+  start(std::move(t), std::move(probe), c);
   return true;
 }
 
 void TurnCheck::note(const TurnEffect& e) { t_.now.push_back(e); }
 
-std::string TurnCheck::atFinal(const std::string& reply, bool canHold) {
+std::string TurnCheck::atFinal(const std::string& reply, bool canHold, const std::vector<TurnEffect>* pending) {
   if (!c_ || asked_) return "";
   asked_ = true;
   firstReply_ = reply;
   ++c_->turns;
   if (t_.tainted) ++c_->tainted;
   if (mode() != Truth::Enforce || blank(reply)) return "";
-  first_ = ask(t_, t_.now, reply, probe_, *c_, o_);
+  std::vector<TurnEffect> shown = t_.now;
+  if (pending) shown.insert(shown.end(), pending->begin(), pending->end());
+  first_ = ask(t_, shown, reply, probe_, *c_, o_);
   if (answered(first_) && (!t_.now.empty() || first_ == Verdict::Yes)) {
     ++c_->effectTurns;
     c_->effectHits += first_ == Verdict::Yes;

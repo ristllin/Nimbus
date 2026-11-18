@@ -21,6 +21,7 @@
 #include "adapters/anthropic_adapter.h" // orchTurnAnthropic - Anthropic host
 #include "adapters/mistral_adapter.h"   // orchTurnMistral - Mistral host (Conversations)
 #include "transport_tls.h"              // deviceProviderDeps - head-custom host (Stage H)
+#include "truth_device.h"   // RB-G0: the truth check's binding
 #include "nimbus/harness/providers.h"   // providers::orchTurnCustom
 #include "nimbus/harness/turn_contract.h"   // kNoMessageAfterAction
 #include "loops_subsystem.h"            // loops::checkDue - Local Loops tick (on tg_poll)
@@ -1256,6 +1257,7 @@ static TurnEngine::Deps buildTurnDeps() {
     deliver(String(chatId.c_str()), String(text.c_str()));
   };
   d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };
+  d.truth = truthdev::binding();   // RB-G0: the truth check (truth_device.h)
   d.event = [](const attn::Event& e) { if (g_sinks.event) g_sinks.event(e); };
   d.fire = [](const char* cue) {
     if (strcmp(cue, "turnstart") == 0) ::sfx::fire(nimbus::sfx::Ev::TurnStart);   // "Roger that."

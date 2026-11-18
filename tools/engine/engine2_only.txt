@@ -22,9 +22,6 @@ lib/core/src/orch_tx_rules.cpp
 # image allowance covers it then).
 lib/core/src/orch_ledger.cpp
 
-# The truth check (RB-G0) is not linked by the old engine until its device binding lands
-# (phase 2, after RB-Q1b); RB-G0 removes this line then (its image allowance covers it).
-lib/core/src/orch_truth.cpp
 
 lib/harness/src/plain_agents.cpp
 lib/harness/src/plain_compact.cpp

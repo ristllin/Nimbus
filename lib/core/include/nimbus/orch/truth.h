@@ -7,6 +7,7 @@
 
 #include "nimbus/orch/effect_ring.h"   // fx::RingEntry: the chat's recent effects (RB-FX)
 #include "nimbus/orch/head_qual.h"     // headqual::Truth: the mode, per head and line
+#include "nimbus/orch/turn_effects.h"  // FxKind: the old engine's effect class of a tool
 
 // truth.h - the truth check (PRD section 8 rail 8; lane RB-G0). It replaces the old engine's
 // word-scanning claim check: nothing here reads the reply for words. After the head loop
@@ -125,6 +126,15 @@ struct TurnEffect {
   Kind kind = Kind::Read;
 };
 
+// The kind of one of the old engine's tool calls, from its tool name and its effect class
+// (fxKindForTool): ledger_* is Ledger; memory, scratchpad and skill writes Memory; file writes
+// File; routines and reminders Routine; configuration Setting; sends Send; spawns Other;
+// lookups, speech and everything that stores nothing Read.
+Kind kindOf(const std::string& tool, FxKind fx);
+// One of the old engine's tool calls as an effect of this turn: its first output line is the
+// receipt (or the error).
+TurnEffect effectOf(const std::string& tool, FxKind fx, bool isError, const std::string& output);
+
 // True when, for some write kind, the last effect of that kind this turn failed.
 bool writeFailed(const std::vector<TurnEffect>& now);
 
@@ -218,11 +228,14 @@ std::string stateKey(const char* host, const char* model, headqual::Line line);
 
 // The moves of PRD 8.8, a pure function of the counters: enforce -> shadow when the one-sided
 // 95% Clopper-Pearson upper bound of effectHits / effectTurns is at most 1% over at least 300
-// turns (0 in 300, 1 in 473, 2 in 628, 3 in 773: the PRD's 300, 475 and 630 all pass); shadow ->
+// turns (0 in 300, 1 in 473, 2 in 628, 3 in 773: the PRD's 300, 475 and 630 all pass; a
+// precomputed table to 50 hits, past which it never moves: shadowTurnsFor); shadow ->
 // enforce when 4 of the trailing 200 shadow probes hit. Only
 // when allowShadow (v5.2.0 leaves it off: the rate is measured on the candidate first).
 // ReceiptOnly never moves. Returns true when the mode changed.
 bool nextMode(HeadState& h, bool allowShadow);
+// The fewest effect-shaped turns with `hits` hits that move enforce to shadow; 0 = never.
+uint32_t shadowTurnsFor(uint32_t hits);
 
 // Every head's state, at most kMaxHeads (least recently used dropped).
 inline constexpr size_t kMaxHeads = 8;
@@ -300,12 +313,15 @@ class TurnCheck {
   // Open through the binding for the head that answers (once; true when the check runs).
   bool open(const std::string& host, const std::string& model, bool tainted);
   // Open directly (tests, check()): `t` is the turn without its reply.
-  void start(const Turn& t, ProbeFn probe, Counters* c);
+  void start(Turn t, ProbeFn probe, Counters* c);
   // One effect of this turn, in order (before or after open).
   void note(const TurnEffect& e);
   // At a final answer that may still get one more round: "" accepts it; else the facts item,
   // the text of the one held round. Asked at most once a turn.
-  std::string atFinal(const std::string& reply, bool canHold = true);
+  // `pending` lists effects that land only if this answer is accepted (an orch_turn's own
+  // fields, applied after the loop): shown to this probe, dropped with a held answer.
+  std::string atFinal(const std::string& reply, bool canHold = true,
+                      const std::vector<TurnEffect>* pending = nullptr);
   // The turn's end, with the reply to be delivered (the round's when one was held, unless
   // `roundReplied` is false): the outcome. Closes the binding.
   Outcome finish(const std::string& reply, bool roundReplied = true);
