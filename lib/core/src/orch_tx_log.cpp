@@ -511,15 +511,22 @@ bool TxLog::lastLineOk(const HeadState& h) {
   size_t size = 0, got = 0;
   if (!segmentPath(chatKey_, h.seg, path).ok() || !files_.size(path, size) || size < h.end) return false;
   if (h.end == 0) return true;
-  const size_t span = static_cast<size_t>(std::min<uint64_t>(h.end, kMaxLineBytes));
-  std::string tail(span, '\0');
-  if (!files_.readAt(path, static_cast<size_t>(h.end - span), &tail[0], span, got) || got != span) return false;
-  if (span < 2 || tail.back() != '\n') return false;
-  const size_t prev = tail.find_last_of('\n', span - 2);
-  if (prev == std::string::npos && h.end != span) return false;   // longer than any line
+  // One slice first (an open holds the card lock for one bounded read); the longest line
+  // only when the last line is longer than a slice.
+  std::string tail;
+  size_t prev = std::string::npos;
+  for (size_t cap : {kFillSliceBytes, kMaxLineBytes}) {
+    const size_t span = static_cast<size_t>(std::min<uint64_t>(h.end, cap));
+    tail.assign(span, '\0');
+    if (!files_.readAt(path, static_cast<size_t>(h.end - span), &tail[0], span, got) || got != span) return false;
+    if (span < 2 || tail.back() != '\n') return false;
+    prev = tail.find_last_of('\n', span - 2);
+    if (prev != std::string::npos || h.end == span) break;
+  }
+  if (prev == std::string::npos && h.end != tail.size()) return false;   // longer than any line
   const size_t start = prev == std::string::npos ? 0 : prev + 1;
   LineHeader lh;
-  return checkLine(tail.data() + start, span - start, lh).ok() && lh.q < h.nextQ;
+  return checkLine(tail.data() + start, tail.size() - start, lh).ok() && lh.q < h.nextQ;
 }
 
 // `off` of segment `seg` is the start of a line (the file start, or just past a '\n').

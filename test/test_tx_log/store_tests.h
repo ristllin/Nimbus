@@ -29,14 +29,43 @@ struct CountingFiles : txb::MemFiles {
   size_t reads = 0;
   size_t readBytes = 0;
   std::vector<size_t> offsets;
+  size_t maxSegRead = 0;
   bool readAt(const std::string& path, size_t offset, char* buf, size_t want, size_t& got) override {
     const bool ok = txb::MemFiles::readAt(path, offset, buf, want, got);
     ++reads;
     readBytes += got;
-    if (path.find("/seg-") != std::string::npos) offsets.push_back(offset);
+    if (path.find("/seg-") != std::string::npos) {
+      offsets.push_back(offset);
+      maxSegRead = std::max(maxSegRead, got);
+    }
     return ok;
   }
 };
+
+// The line crc (IEEE crc32) and tail, to forge lines and head.json files a writer bug or
+// another state of the log would leave.
+inline uint32_t crc32(const std::string& s) {
+  uint32_t c = 0xFFFFFFFFu;
+  for (unsigned char b : s) {
+    c ^= b;
+    for (int k = 0; k < 8; ++k) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+  }
+  return ~c;
+}
+inline std::string seal(const std::string& body) {
+  char hex[9];
+  std::snprintf(hex, sizeof hex, "%08x", crc32(body));
+  return body + ",\"z\":\"" + hex + "\"}\n";
+}
+// The body of a sealed line or head.json (everything before its 17-byte tail).
+inline std::string unseal(const std::string& line) { return line.substr(0, line.size() - 17); }
+
+void appendItems(tx::TxLog& log, const std::vector<tx::Item>& items) {
+  for (const tx::Item& it : items) {
+    tx::StoreState st;
+    TXB_OK(log.append(it, st));
+  }
+}
 
 void* alloc(size_t n) { return std::malloc(n); }
 void release(void* p) { std::free(p); }
@@ -586,6 +615,112 @@ void test_head_round_trips_its_fields() {
   TEST_ASSERT_TRUE(reader.writeHead(big).err == tx::Err::InvalidArgument);
 }
 
+// A torn last append with nothing after it: the fill and open drop it.
+void test_a_torn_tail_at_the_end_is_dropped() {
+  txb::MemFiles files;
+  txb::Convo c;
+  for (int i = 0; i < 3; ++i) c.ownerTurn("q", "a");
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  std::string seg, line;
+  TXB_OK(tx::segmentPath(kKey, 1, seg));
+  tx::Item more = c.items.back();
+  more.q = c.q + 1;
+  TXB_OK(tx::encodeLine(more, line));
+  files.files[seg] += line.substr(0, line.size() - 1);   // all but its line end
+  tx::TxLog again(files, kKey);
+  TXB_OK(again.open(head));
+  TEST_ASSERT_EQUAL_UINT64(c.q + 1, head.nextQ);
+  tx::TxArena arena;
+  initArena(arena);
+  tx::FillReport rep;
+  TXB_OK(again.fill(tx::HeadState{}, arena, rep));
+  TEST_ASSERT_EQUAL((int)c.items.size(), (int)arena.count());
+  TEST_ASSERT_EQUAL(1, (int)rep.torn);
+}
+
+// A crc-valid head.json whose next_q is behind the segment (another state of the log, a
+// restored card) is not trusted: next_q comes from the segment, never from the cache.
+void test_a_head_behind_the_segment_is_not_trusted() {
+  txb::MemFiles files;
+  txb::Convo c;
+  for (int i = 0; i < 4; ++i) c.ownerTurn("q", "a");
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  TXB_OK(log.open(head));
+  TXB_OK(log.writeHead(head));
+  std::string hp;
+  TXB_OK(tx::headPath(kKey, hp));
+  std::string body = unseal(files.files[hp]);
+  const std::string want = "\"next_q\":" + std::to_string(c.q + 1);
+  TEST_ASSERT_TRUE(body.find(want) != std::string::npos);
+  body.replace(body.find(want), want.size(), "\"next_q\":5");
+  files.files[hp] = seal(body);
+  tx::TxLog reader(files, kKey);
+  tx::HeadState got;
+  TXB_OK(reader.open(got));
+  TEST_ASSERT_EQUAL_UINT64(c.q + 1, got.nextQ);
+}
+
+// A crc-valid line decodeLine cannot read (a writer bug) never reaches the arena.
+void test_fill_drops_crc_valid_lines_it_cannot_read() {
+  txb::MemFiles files;
+  txb::Convo c;
+  for (int i = 0; i < 2; ++i) c.ownerTurn("q", "a");
+  tx::TxLog log(files, kKey);
+  tx::HeadState head;
+  TXB_OK(log.open(head));
+  appendItems(log, c.items);
+  const std::string bad = seal("{\"k\":\"u\",\"q\":" + std::to_string(c.q + 1) + ",\"x\":5");
+  tx::LineHeader h;
+  TXB_OK(tx::checkLine(bad.data(), bad.size(), h));   // the forged line passes the crc
+  tx::StoreState st;
+  TXB_OK(log.appendLine(bad.data(), bad.size(), st));
+  c.q += 1;
+  const size_t before = c.items.size();
+  for (int i = 0; i < 2; ++i) c.ownerTurn("q2", "a2");
+  appendItems(log, std::vector<tx::Item>(c.items.begin() + (long)before, c.items.end()));
+  tx::TxArena arena;
+  initArena(arena);
+  tx::FillReport rep;
+  TXB_OK(log.fill(tx::HeadState{}, arena, rep));
+  TEST_ASSERT_EQUAL(1, (int)rep.invalid);
+  TEST_ASSERT_EQUAL((int)c.items.size(), (int)arena.count());
+  for (size_t i = 0; i < arena.count(); ++i) {
+    tx::Item it;
+    TXB_OK(arena.get(i, it));
+  }
+}
+
+// open() checks head.json with one 8 KB read of the segment when the last line is short,
+// and still trusts it (pinned survives: a rebuild would lose it) when the last line is long.
+void test_open_checks_the_head_in_one_slice() {
+  for (size_t lastBytes : {100u, 20000u}) {
+    CountingFiles files;
+    txb::Convo c;
+    for (int i = 0; i < 40; ++i) c.ownerTurn("q", std::string(300, 'a'));
+    c.openTurn();
+    c.say(std::string(lastBytes, 'z'), false);
+    tx::TxLog log(files, kKey);
+    tx::HeadState head;
+    TXB_OK(log.open(head));
+    appendItems(log, c.items);
+    TXB_OK(log.open(head));
+    head.pinned = {"pin"};
+    TXB_OK(log.writeHead(head));
+    files.maxSegRead = 0;
+    tx::TxLog reader(files, kKey);
+    tx::HeadState got;
+    TXB_OK(reader.open(got));
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)got.pinned.size(), "a good head.json was rebuilt");
+    if (lastBytes < tx::kFillSliceBytes) TEST_ASSERT_TRUE(files.maxSegRead <= tx::kFillSliceBytes);
+  }
+}
+
 inline void run() {
   RUN_TEST(test_restart_fill_gives_the_same_arena_bytes);
   RUN_TEST(test_restart_fill_is_one_bounded_sequential_read);
@@ -601,6 +736,10 @@ inline void run() {
   RUN_TEST(test_bulk_handles_cannot_name_a_path);
   RUN_TEST(test_partial_refusal_never_glues);
   RUN_TEST(test_head_round_trips_its_fields);
+  RUN_TEST(test_a_torn_tail_at_the_end_is_dropped);
+  RUN_TEST(test_a_head_behind_the_segment_is_not_trusted);
+  RUN_TEST(test_fill_drops_crc_valid_lines_it_cannot_read);
+  RUN_TEST(test_open_checks_the_head_in_one_slice);
 }
 
 }  // namespace store_tests

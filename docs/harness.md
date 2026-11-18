@@ -479,6 +479,31 @@ compaction folded all work inside that block: `test/test_tx_arena` counts every
 slot's block. `test/test_tx_item` round-trips every kind with every field set and drops
 every cut and every flipped bit of a line.
 
+### The transcript log
+
+`TxLog` (`orch_tx_log.cpp`) keeps a chat's transcript on storage under
+`/mem/tx/<chatKey>/`: append-only segment files `seg-000001.jsonl` rolled at 1 MB,
+`head.json`, and bulk payloads in `b/<turn>.txb`. Storing an item is exactly one append of
+its whole line, and nothing in a segment is ever rewritten. A power cut that tears an
+append leaves bytes that readers drop (no line end, or a failed crc); the next append
+after a restart starts with a line end of its own, so it is never glued onto them.
+`head.json` is only a cache with its own crc: at open it is trusted when the line it says
+ends the open segment is there, then the lines written after it are caught up; when it is
+missing, torn or stale it is rebuilt from the segments (newest segment first, until the
+newest digest, pointer move, owner message and turn open are found). A cut between its
+temp write and the rename leaves a state open accepts.
+
+The restart fill is one sequential read in 8 KB slices from just past the newest digest's
+`thru` to the end of the open segment, into the chat's arena; when the arena cannot hold it
+all, the oldest turns are given up and reported, so the newest stay. `store` is the persist
+point the engine calls for every item: into the arena, then the arena's bytes to storage.
+When storage refuses (no card, lock, memory floor), the item stays in RAM flagged not
+stored and the turn goes on; it is never written later. Chat keys are letters, digits,
+`_` and `-` only, and a bulk handle (`b/<turn>.txb@<offset>+<length>`) names a turn number
+and offsets, never a path, so nothing reaches outside the chat's folder.
+`test/test_tx_log` covers reopening, the head cache, a cut at every append, torn and
+partial writes, the bounded fill and the paths over every byte.
+
 `test/support/scripted_provider/` is the scripted model these suites run against. It
 sits at the `HttpTransport` seam, answers each request with the next scripted step in
 the request's dialect (Anthropic Messages, OpenAI Responses, chat completions), records
