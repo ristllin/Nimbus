@@ -26,7 +26,7 @@ void tearDown() {}
 
 namespace {
 
-sp::RequestView viewWith(size_t calls, const std::string& assistantText = "") {
+sp::RequestView viewWith(size_t calls, const std::string& assistantText = "", bool withResults = true) {
   sp::RequestView v;
   v.parsed = true;
   v.messages.push_back(sp::Message{"user", {sp::detail::textBlock("hi")}});
@@ -41,10 +41,10 @@ sp::RequestView viewWith(size_t calls, const std::string& assistantText = "") {
     sp::Block r;
     r.kind = sp::BlockKind::ToolResult;
     r.id = c.id;
-    u.blocks.push_back(r);
+    if (withResults) u.blocks.push_back(r);
   }
-  if (calls) v.messages.push_back(a);
-  if (calls) v.messages.push_back(u);
+  if (calls || !assistantText.empty()) v.messages.push_back(a);
+  if (!u.blocks.empty()) v.messages.push_back(u);
   return v;
 }
 
@@ -57,8 +57,9 @@ void test_checker_rejects_a_wrong_loop() {
   // One request too many (an extra round after the text), or one too few.
   TEST_ASSERT_FALSE(txb::loopShapeHolds(twoSteps, {&r0, &r1, &r2}, "found it", why));
   TEST_ASSERT_FALSE(txb::loopShapeHolds(twoSteps, {&r0}, "found it", why));
-  // The results of the first round missing from the second request.
-  TEST_ASSERT_FALSE(txb::loopShapeHolds(twoSteps, {&r0, &r0}, "found it", why));
+  // The results of the first round missing from the second request (its call and text kept).
+  const sp::RequestView noResults = viewWith(1, "let me look", false);
+  TEST_ASSERT_FALSE(txb::loopShapeHolds(twoSteps, {&r0, &noResults}, "found it", why));
   // The text said with the call dropped.
   const sp::RequestView noText = viewWith(1);
   TEST_ASSERT_FALSE(txb::loopShapeHolds(twoSteps, {&r0, &noText}, "found it", why));
