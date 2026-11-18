@@ -100,7 +100,6 @@ std::vector<StubRow> stubs() {
       {"plain::checkGuards", [] { plain::GuardTrip t; return plain::checkGuards({}, {}, t); }},
       {"plain::isPureTool", [] { return plain::isPureTool("read_file", flag); }},
       {"plain::installSuppression", [] { return plain::installSuppression(gHooks); }},
-      {"plain::runExchange", [] { plain::ExchangeResult r; return plain::runExchange({}, {}, r); }},
       {"plain::deliverTurn", [] { plain::DeliverOutcome o; return plain::deliverTurn({}, {}, o); }},
       {"plain::turnEndItem", [] { return plain::turnEndItem(gTurn, {}, item); }},
       {"plain::installResume", [] { return plain::installResume(gHooks, {}); }},

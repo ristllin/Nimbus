@@ -547,6 +547,38 @@ the same request, and none of them drops anything without a line that names it.
 `test/test_tx_stub_rule` checks each rule over its class (every byte value, every write tool
 and ledger shape, the photo table per head kind, every split of turns for the ladder).
 
+### One exchange: the body writer, the cap and the retry policy
+
+`plain_exchange.cpp` (`exchange.h`) sends one request of a turn and reads its answer;
+`providers/plain_body.h` is the writer every plain wire renders its body with.
+
+- **The body writer** (`body::BodyWriter`) writes JSON straight into the body string, with no
+  JSON document in between. Every string is UTF-8-repaired, escaped strictly (no raw byte
+  under 0x20) and held to 60,000 B of text: over it, system and owner text refuses the body
+  (`Over::Refuse`, nothing is sent) and tool results, arguments and replayed prose are cut on
+  a character boundary with a visible `[cut: kept K of N bytes]` note (`Over::Clip`). Stored
+  JSON (schemas, call arguments, signed thinking) goes through `raw()` under the same rules.
+  Photos are spliced into a string at send time (`splice()`), never copied into it.
+- **The output cap** is main's load-aware cap (`output_caps.h`) for the real body inside the
+  time the turn has left; the caller's `maxTokens` is never what is sent.
+- **The budget**: a body over the head's cap is never sent; the caller's ladder climbs a rung
+  and the body is rendered again, or the exchange ends with nothing sent.
+- **The check**: no body leaves with a string over 60,000 B or with invalid UTF-8.
+- **Errors, by class**: no answer, 5xx and 429 send the same request again after 2 s, then
+  8 s (at most two retries, each only when its wait and a request fit the turn's wall clock);
+  a context refusal climbs the ladder to rung 3 and sends once more; a billing or key refusal
+  parks the host; a cut answer is asked once more at the retry cap, then delivered with its
+  status line, and none of its calls is dispatched; anything else is one plain line. A routed
+  head follows the router's refusal contract. A retry renders the same stored state, so it
+  never runs a tool again.
+- **Who may answer instead** (`pickFallback`, `qualifiedTargets`): a fallback host answers
+  only a fresh attempt with no effect run and the head parked, and only a head the
+  qualification table qualifies for the engine; ladder targets the table does not qualify
+  are skipped.
+
+`test/test_plain_exchange` injects every error class through the scripted provider with a
+scripted clock.
+
 ### The battery's property suites (layer L1)
 
 Nine suites state what the plain engine must keep true before it exists:
