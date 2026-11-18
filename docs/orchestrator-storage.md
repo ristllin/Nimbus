@@ -497,6 +497,30 @@ Rows carry a device id (`L` plus five base-32 characters). Figures are fixed-poi
 integers (kcal in 0.1 kcal, grams in 0.01 g, quantity in 0.001 unit), so totals are
 exact sums. The ledger day runs from 04:00 to 04:00 local time.
 
+## 4b. Effect ring - SD `/mem/fx` (each chat's recent effects)
+
+What the device actually did in each chat lately (`nimbus/orch/effect_ring.h`, lane RB-FX,
+host-tested in `test/test_effect_ring`). The truth check reads it, so a true "I logged it
+at 13:02" is not taken for a false claim, and the old engine's recent-actions view is
+rendered from it. Every turn effect lands here through the engine's `Hooks::onEffect`:
+a head tool call whose kind changes something (with its result) and each outcome the
+turn's apply recorded (with the per-turn ledger's summary of it). Lookups do not.
+
+- One file per chat, `/mem/fx/<key>.ring`, outside the file index. The key is the
+  Telegram chat id itself, or `k` plus the hex of any other chat id of up to 23 bytes.
+- One line per effect: `f1`, the time (UTC seconds, 0 when the clock was not set), the
+  tool, a one-line receipt of at most 160 B and a crc32, tab-separated. Receipts are
+  cleaned at append (no control characters, valid UTF-8, clipped on a character
+  boundary).
+- RAM keeps the newest 50 per chat (in PSRAM, at most 8 chats resident). Every effect is
+  one append of one line. At 100 lines the file is rewritten from RAM (a temp file, then
+  a rename).
+- A torn last line is dropped when the file is read, and the next line is never glued
+  onto it. A temp left by a cut or refused rewrite is removed beside a whole file, or
+  becomes the file when it is the only copy.
+- No card: the ring runs from RAM and says so (`Backing::RamOnly`). A refused memory
+  allocation is a designed answer (`AppendResult::NoMemory`), never a restart.
+
 ## 5. Migration and no-SD degraded mode
 
 **Boot/mount:** `solide::storage::begin()` → on success `setDataFs(SD)`,
