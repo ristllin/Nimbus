@@ -307,6 +307,7 @@ void test_overflow_moves_the_oldest_to_its_month_file() {
     appendDay(c, log, n, sizeOf(n), live);
     TXB_OK(tx::settleDigests(c.files, kChat, tx::Profile::Lean, live, block, rep));
     TEST_ASSERT_EQUAL(0u, rep.pending);
+    TEST_ASSERT_EQUAL_MESSAGE(linesOf(block).size(), live.size(), "an archived digest stayed live");
     movedTotal += rep.moved;
     TEST_ASSERT_TRUE(block.size() <= tx::kDigestBlockLean);
     checkNothingLost(c, block, "settle");
@@ -469,6 +470,16 @@ void test_restart_gives_the_same_block_and_stops_at_the_archive() {
       std::vector<tx::DigestEntry> live;
       tx::SettleReport rep;
       for (int n = 0; n < 60; ++n) {
+        // Two 55 KB owner messages a day: a segment rolls about every nine days, so the
+        // block's digests sit in more than one segment.
+        for (int k = 0; k < 2; ++k) {
+          tx::Item big;
+          big.kind = tx::ItemKind::User;
+          big.q = c.nextQ++;
+          big.x = std::string(55000, 'a' + n % 26);
+          tx::StoreState st;
+          TXB_OK(log.append(big, st));
+        }
         appendDay(c, log, n, sizeOf(n), live);
         TXB_OK(tx::settleDigests(c.files, kChat, p, live, block, rep));
       }
@@ -483,6 +494,8 @@ void test_restart_gives_the_same_block_and_stops_at_the_archive() {
     tx::DigestScan scan;
     TXB_OK(tx::loadDigests(c.files, kChat, head, live, &scan));
     TEST_ASSERT_TRUE(scan.reachedArchive);
+    if (p != tx::Profile::Tight) TEST_ASSERT_TRUE(scan.segments >= 2);
+    TEST_ASSERT_TRUE(scan.segments < c.files.segments("/mem/tx/1001").size());
     std::string again;
     std::vector<tx::DigestEntry> archive;
     TXB_OK(tx::digestBlock(live, p, again, archive));
@@ -494,6 +507,21 @@ void test_restart_gives_the_same_block_and_stops_at_the_archive() {
 void test_a_chat_without_digests_reads_nothing() {
   txb::MemFiles files;
   tx::HeadState head;
+  {
+    tx::TxLog log(files, kChat);
+    TXB_OK(log.open(head));
+    for (uint64_t q = 1; q <= 20; ++q) {
+      tx::Item u;
+      u.kind = tx::ItemKind::User;
+      u.q = q;
+      u.x = "no digest yet " + std::to_string(q);
+      tx::StoreState st;
+      TXB_OK(log.append(u, st));
+    }
+  }
+  tx::TxLog log(files, kChat);
+  TXB_OK(log.open(head));
+  TEST_ASSERT_EQUAL_UINT64(0, head.thru);
   std::vector<tx::DigestEntry> live = {makeDigest(1, 200, 3, 2)};
   tx::DigestScan scan;
   TXB_OK(tx::loadDigests(files, kChat, head, live, &scan));
@@ -759,6 +787,13 @@ void test_mirror_limits_and_refusals() {
   TEST_ASSERT_TRUE(out.find("partial") == std::string::npos);
   TEST_ASSERT_TRUE(decoded(out, "5000").summary.empty());   // the oldest went first
   TEST_ASSERT_FALSE(decoded(out, "5019").summary.empty());
+  // Twenty small records: the count limit, ours included, oldest dropped.
+  blob.clear();
+  for (int i = 0; i < 20; ++i)
+    blob += std::to_string(6000 + i) + "\x1F" "0\x1F" "0\x1F" "0\x1F" "0\x1F" "0\x1F" "0\x1F" "s\x1E";
+  TXB_OK(tx::mirrorChatsum(blob, f, v, out));
+  TEST_ASSERT_EQUAL(16, std::count(out.begin(), out.end(), '\x1E'));
+  TEST_ASSERT_TRUE(out.find("6004\x1F") == std::string::npos && out.find("6005\x1F") != std::string::npos);
   // Nothing to mirror: the blob stays as it is.
   TXB_OK(tx::mirrorChatsum("x\x1E", f, {}, out));
   TEST_ASSERT_EQUAL_STRING("x\x1E", out.c_str());
