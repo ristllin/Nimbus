@@ -81,7 +81,12 @@ inline constexpr const char* kAnthropicProbeModel = "claude-haiku-5-5";
 inline constexpr uint32_t kProbeMaxTokens = 1024;
 // Bounds on what the probe is shown (the measured rows were far below them).
 inline constexpr size_t kOwnerMax = 8192;   // owner message bytes
-inline constexpr size_t kReplyMax = 16384;  // reply bytes (tier 1 holds 12,288)
+inline constexpr size_t kReplyMax = 16384;  // reply bytes: a longer one keeps its start and its end
+// This turn's receipts as the probe and the facts item see them (a ledger day of rows; the
+// ring's own receipts are 160 B).
+inline constexpr size_t kNowReceiptMax = 512;
+// Before this time (2023-01-01) the device's clock is taken as not set.
+inline constexpr int64_t kClockSetEpoch = 1672531200;
 // The facts-only retry item: this turn's effects whole, then the newest recent ones that fit.
 inline constexpr size_t kItemRecentMax = 12;
 inline constexpr size_t kItemMax = 2048;
@@ -128,15 +133,19 @@ struct RecentLine {
   std::string at, tool, receipt;
 };
 // Untrusted text cannot open or close one of the request's four sections: "<tag>" and
-// "</tag>" of owner_message, reply, effects_this_turn and recent_effects become "&lt;tag>".
+// "</tag>" of owner_message, reply, effects_this_turn and recent_effects, in any case and with
+// spaces or tabs before the '>', become "&lt;tag>" (the rest of the tag kept as written).
 std::string inert(const std::string& text);
 // The time of a ring entry as the probe sees it, in the owner's local time (utcOffsetSec is
 // the offset now): "HH:MM" on the day of `now`, "Ddd HH:MM" within the six days before it,
-// "YYYY-MM-DD HH:MM" earlier, "--:--" when the clock was not set (epoch 0).
+// "YYYY-MM-DD HH:MM" earlier, "--:--" when the clock was not set (epoch 0). While the device's
+// own clock is not set (now before kClockSetEpoch) every entry carries its full date.
 std::string formatAt(int64_t epoch, int64_t now, int32_t utcOffsetSec);
 std::vector<RecentLine> recentLines(const std::vector<fx::RingEntry>& ring, int64_t now, int32_t utcOffsetSec);
 // The probe's user message, the bytes RB-M0c measured (run_probe.render): four sections, an
-// empty list as "(none)". Owner and reply are clipped to kOwnerMax and kReplyMax.
+// empty list as "(none)". The owner's message is clipped to kOwnerMax; a reply over kReplyMax
+// keeps its first and last kReplyMax / 2 bytes around "\n[...]\n"; this turn's receipts are
+// one line of at most kNowReceiptMax bytes.
 std::string renderUser(const std::string& owner, const std::string& reply, const std::vector<TurnEffect>& now,
                        const std::vector<RecentLine>& recent);
 
@@ -165,8 +174,10 @@ struct ProbeResult {
 };
 // Sends one probe. The binding's transport (device, nimbusd) or a test's scripted provider.
 using ProbeFn = std::function<ProbeResult(const ProbeRequest&)>;
-// One more head round with `item` as a device item; true with the round's reply text.
-using RetryFn = std::function<bool(const std::string& item, std::string& reply)>;
+// One more head round with `item` as a device item; true with the round's reply text, and in
+// `more` the effects the round itself had (its tool calls, in order), which join this turn's.
+using RetryFn =
+    std::function<bool(const std::string& item, std::string& reply, std::vector<TurnEffect>& more)>;
 
 // ---- counters and the stored modes (/data/truth_state.json) ------------------------------
 struct Counters {
@@ -205,8 +216,9 @@ struct HeadState {
 std::string stateKey(const char* host, const char* model, headqual::Line line);
 
 // The moves of PRD 8.8, a pure function of the counters: enforce -> shadow when the one-sided
-// 95% upper bound of effectHits / effectTurns is at most 1% over at least 300 turns (0 in 300,
-// 1 in 475, 2 in 630); shadow -> enforce when 4 of the trailing 200 shadow probes hit. Only
+// 95% Clopper-Pearson upper bound of effectHits / effectTurns is at most 1% over at least 300
+// turns (0 in 300, 1 in 473, 2 in 628, 3 in 773: the PRD's 300, 475 and 630 all pass); shadow ->
+// enforce when 4 of the trailing 200 shadow probes hit. Only
 // when allowShadow (v5.2.0 leaves it off: the rate is measured on the candidate first).
 // ReceiptOnly never moves. Returns true when the mode changed.
 bool nextMode(HeadState& h, bool allowShadow);
@@ -260,6 +272,8 @@ std::string receiptLine(const std::vector<TurnEffect>& now);
 
 // Run the check on one reply. `probe` may be empty (no probe available: as receipt-only, with
 // the failure counted when the mode wanted one); `retry` runs the one extra round of a hold.
+// A probe that throws counts as an error, a round that throws as a failed round: the reply is
+// never lost to either.
 Outcome check(const Turn& t, const ProbeFn& probe, const RetryFn& retry, Counters& c);
 // The shadow probe, from the idle step after delivery: counters and the window only.
 void shadowProbe(const Turn& t, const ProbeFn& probe, HeadState& h);

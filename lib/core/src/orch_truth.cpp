@@ -6,6 +6,7 @@
 #include <ArduinoJson.h>
 
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -42,7 +43,15 @@ std::string clip(const std::string& s, size_t cap) {
 std::string oneLine(const std::string& s, size_t cap) { return fx::cleanText(s, cap); }
 
 std::string nowLine(const TurnEffect& e) {
-  return oneLine(e.tool, fx::kToolMax) + (e.ok ? " ok: " : " FAILED: ") + oneLine(e.receipt, fx::kReceiptMax);
+  return oneLine(e.tool, fx::kToolMax) + (e.ok ? " ok: " : " FAILED: ") + oneLine(e.receipt, kNowReceiptMax);
+}
+
+// A reply the probe can read whole up to kReplyMax; a longer one keeps its start and its end.
+std::string clipReply(const std::string& s) {
+  if (s.size() <= kReplyMax) return s;
+  size_t from = s.size() - kReplyMax / 2;
+  while (from < s.size() && ((unsigned char)s[from] & 0xC0) == 0x80) ++from;
+  return clip(s, kReplyMax / 2) + "\n[...]\n" + s.substr(from);
 }
 
 std::string recentLine(const RecentLine& r) { return r.at + " " + r.tool + ": " + r.receipt; }
@@ -64,12 +73,23 @@ int64_t floorDiv(int64_t a, int64_t b) { return a >= 0 ? a / b : -((-a + b - 1) 
 
 const char* const kTags[] = {"owner_message", "reply", "effects_this_turn", "recent_effects"};
 
-// The length of a section tag ("<tag>" or "</tag>") at s[i], 0 when there is none.
+bool sameNoCase(const std::string& s, size_t at, const char* t, size_t n) {
+  if (at + n > s.size()) return false;
+  for (size_t k = 0; k < n; ++k)
+    if (std::tolower((unsigned char)s[at + k]) != t[k]) return false;
+  return true;
+}
+
+// The length of a section tag ("<tag>" or "</tag>", any case, spaces or tabs before the '>') at
+// s[i], 0 when there is none.
 size_t tagAt(const std::string& s, size_t i) {
-  size_t j = i + 1 + (i + 1 < s.size() && s[i + 1] == '/');
+  const size_t j = i + 1 + (i + 1 < s.size() && s[i + 1] == '/');
   for (const char* t : kTags) {
     const size_t n = std::strlen(t);
-    if (s.compare(j, n, t) == 0 && j + n < s.size() && s[j + n] == '>') return j + n + 1 - i;
+    if (!sameNoCase(s, j, t, n)) continue;
+    size_t e = j + n;
+    while (e < s.size() && (s[e] == ' ' || s[e] == '\t')) ++e;
+    if (e < s.size() && s[e] == '>') return e + 1 - i;
   }
   return 0;
 }
@@ -125,15 +145,25 @@ void countFail(Verdict v, Counters& c) {
 
 bool answered(Verdict v) { return v == Verdict::Yes || v == Verdict::No; }
 
-// One probe of `reply`: builds the request, sends it, bounds it, counts it.
-Verdict ask(const Turn& t, const std::string& reply, const ProbeFn& probe, Counters& c, Outcome& o) {
+// One probe, bounded; a probe that throws is an error.
+Verdict send(const ProbeFn& probe, const ProbeRequest& req) {
+  try {
+    return timed(probe(req), req.timeoutMs);
+  } catch (...) {
+    return Verdict::Error;
+  }
+}
+
+// One probe of `reply` against `now`: builds the request, sends it, bounds it, counts it.
+Verdict ask(const Turn& t, const std::vector<TurnEffect>& now, const std::string& reply, const ProbeFn& probe,
+            Counters& c, Outcome& o) {
   ProbeRequest req;
-  const std::string user = renderUser(t.owner, reply, t.now, recentLines(t.recent, t.nowEpoch, t.utcOffsetSec));
+  const std::string user = renderUser(t.owner, reply, now, recentLines(t.recent, t.nowEpoch, t.utcOffsetSec));
   Verdict v = Verdict::Error;
   if (probe && buildRequest(t.host, user, req)) {
     ++c.probes;
     ++o.probes;
-    v = timed(probe(req), req.timeoutMs);
+    v = send(probe, req);
   }
   if (o.probes <= 1 && o.first == Verdict::Error) o.first = v;
   if (v == Verdict::Yes) ++c.hits;
@@ -142,19 +172,31 @@ Verdict ask(const Turn& t, const std::string& reply, const ProbeFn& probe, Count
 }
 
 // The receipt line after a probe: on yes, or deterministically when there was no answer.
-void receiptAfter(Verdict v, const Turn& t, Counters& c, Outcome& o) {
+void receiptAfter(Verdict v, const std::vector<TurnEffect>& now, Counters& c, Outcome& o) {
   if (v == Verdict::No) return;
-  o.status = receiptLine(t.now);
+  o.status = receiptLine(now);
   ++(v == Verdict::Yes ? c.receiptsProbed : c.receiptsFixed);
 }
 
+bool runRound(const RetryFn& retry, const std::string& item, std::string& r, std::vector<TurnEffect>& more) {
+  try {
+    return retry && retry(item, r, more);
+  } catch (...) {
+    return false;
+  }
+}
+
 // The hold: one facts-only round; its reply is delivered unless the round failed or is blank.
-void hold(const Turn& t, const RetryFn& retry, Counters& c, Outcome& o) {
+// The round's own effects are added to `now`.
+void hold(const Turn& t, const RetryFn& retry, std::vector<TurnEffect>& now, Counters& c, Outcome& o) {
   ++c.holds;
   o.held = true;
   const std::string item = factsItem(t.now, recentLines(t.recent, t.nowEpoch, t.utcOffsetSec));
   std::string r;
-  if (retry && retry(item, r) && !blank(r)) {
+  std::vector<TurnEffect> more;
+  const bool ran = runRound(retry, item, r, more);
+  now.insert(now.end(), more.begin(), more.end());
+  if (ran && !blank(r)) {
     o.reply = r;
     o.retried = true;
     ++c.retryReplies;
@@ -164,20 +206,21 @@ void hold(const Turn& t, const RetryFn& retry, Counters& c, Outcome& o) {
 }
 
 void enforce(const Turn& t, bool failed, const ProbeFn& probe, const RetryFn& retry, Counters& c, Outcome& o) {
-  const Verdict v = ask(t, t.reply, probe, c, o);
+  const Verdict v = ask(t, t.now, t.reply, probe, c, o);
   if (answered(v) && (!t.now.empty() || v == Verdict::Yes)) {
     ++c.effectTurns;
     c.effectHits += v == Verdict::Yes;
   }
   if (v != Verdict::Yes) {
-    if (failed) receiptAfter(v, t, c, o);
+    if (failed) receiptAfter(v, t.now, c, o);
     return;
   }
-  hold(t, retry, c, o);
-  if (!failed) return;
+  std::vector<TurnEffect> now = t.now;   // this turn's effects, then the round's
+  hold(t, retry, now, c, o);
+  if (!writeFailed(now)) return;
   // The receipt question about the reply that is delivered: the retry's, else the first
   // (which the probe already said reports success).
-  receiptAfter(o.retried ? ask(t, o.reply, probe, c, o) : Verdict::Yes, t, c, o);
+  receiptAfter(o.retried ? ask(t, now, o.reply, probe, c, o) : Verdict::Yes, now, c, o);
 }
 
 }  // namespace
@@ -287,15 +330,16 @@ std::string inert(const std::string& text) {
 
 std::string formatAt(int64_t epoch, int64_t now, int32_t utcOffsetSec) {
   if (epoch == 0) return "--:--";
+  const bool clockSet = now >= kClockSetEpoch;
   static const char* const kDays[] = {"Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"};
   const int64_t local = epoch + utcOffsetSec;
   const int64_t day = floorDiv(local, 86400), today = floorDiv(now + utcOffsetSec, 86400);
   const int64_t sec = local - day * 86400;
   char buf[32];
   const int hh = (int)(sec / 3600), mm = (int)(sec % 3600 / 60);
-  if (day >= today) {
+  if (clockSet && day >= today) {
     snprintf(buf, sizeof(buf), "%02d:%02d", hh, mm);
-  } else if (today - day <= 6) {
+  } else if (clockSet && today - day <= 6) {
     snprintf(buf, sizeof(buf), "%s %02d:%02d", kDays[(int)(((day % 7) + 7) % 7)], hh, mm);
   } else {
     int y;
@@ -321,7 +365,7 @@ std::string renderUser(const std::string& owner, const std::string& reply, const
   std::string u;
   u.reserve(owner.size() + reply.size() + nowText.size() + recentText.size() + 160);
   u += "<owner_message>\n" + inert(clip(owner, kOwnerMax)) + "\n</owner_message>\n";
-  u += "<reply>\n" + inert(clip(reply, kReplyMax)) + "\n</reply>\n";
+  u += "<reply>\n" + inert(clipReply(reply)) + "\n</reply>\n";
   u += "<effects_this_turn>\n" + (nowText.empty() ? std::string("(none)") : nowText) + "\n</effects_this_turn>\n";
   u += "<recent_effects>\n" + (recentText.empty() ? std::string("(none)") : recentText) + "\n</recent_effects>";
   return u;
@@ -400,12 +444,25 @@ std::string stateKey(const char* host, const char* model, headqual::Line line) {
   return std::string(host ? host : "") + "/" + (model ? model : "") + "/" + headqual::lineSlug(line);
 }
 
+namespace {
+// P(X <= k) for X ~ Binomial(n, p), summed in log space so a large n cannot underflow the terms
+// that matter.
+double binomCdf(uint32_t k, uint32_t n, double p) {
+  double sum = 0;
+  for (uint32_t i = 0; i <= k && i <= n; ++i) {
+    const double lc = std::lgamma((double)n + 1) - std::lgamma((double)i + 1) - std::lgamma((double)(n - i) + 1);
+    sum += std::exp(lc + i * std::log(p) + (n - i) * std::log1p(-p));
+  }
+  return sum;
+}
+}  // namespace
+
 bool nextMode(HeadState& h, bool allowShadow) {
-  static const uint32_t kTurnsFor[] = {300, 475, 630};   // PRD 8.8: 0 in 300, 1 in 475, 2 in 630
   if (!allowShadow) return false;
   if (h.mode == Truth::Enforce) {
-    const uint32_t k = h.c.effectHits;
-    if (k >= 3 || h.c.effectTurns < kTurnsFor[k]) return false;
+    // The one-sided 95% upper bound is at most 1% exactly when P(X <= k | p = 1%) <= 5%.
+    const uint32_t k = h.c.effectHits, n = h.c.effectTurns;
+    if (n < kShadowMinTurns || k >= n || binomCdf(k, n, 0.01) > 0.05) return false;
     h.mode = Truth::Shadow;
     return true;
   }
@@ -548,13 +605,13 @@ Outcome check(const Turn& t, const ProbeFn& probe, const RetryFn& retry, Counter
   const bool failed = writeFailed(t.now);
   const Truth mode = t.tainted ? Truth::ReceiptOnly : t.mode;
   if (mode == Truth::ReceiptOnly || blank(t.reply)) {
-    if (failed) receiptAfter(Verdict::Error, t, c, o);
+    if (failed) receiptAfter(Verdict::Error, t.now, c, o);
     return o;
   }
   if (mode == Truth::Enforce) {
     enforce(t, failed, probe, retry, c, o);
   } else if (failed) {
-    receiptAfter(ask(t, t.reply, probe, c, o), t, c, o);
+    receiptAfter(ask(t, t.now, t.reply, probe, c, o), t.now, c, o);
   } else {
     o.shadowDue = true;
   }
@@ -570,7 +627,7 @@ void shadowProbe(const Turn& t, const ProbeFn& probe, HeadState& h) {
     return;
   }
   ++h.c.probes;
-  const Verdict v = timed(probe(req), req.timeoutMs);
+  const Verdict v = send(probe, req);
   if (!answered(v)) {
     countFail(v, h.c);
     return;

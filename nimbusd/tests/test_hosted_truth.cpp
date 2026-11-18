@@ -91,7 +91,7 @@ std::string header(const agent::HttpRequest& r, const std::string& name) {
 }
 
 truth::RetryFn retryWith(const std::string& text, std::vector<std::string>* items) {
-  return [text, items](const std::string& item, std::string& reply) {
+  return [text, items](const std::string& item, std::string& reply, std::vector<truth::TurnEffect>&) {
     items->push_back(item);
     reply = text;
     return true;

@@ -26,6 +26,8 @@
 #include <cstdio>
 #include <fstream>
 #include <map>
+#include <new>
+#include <stdexcept>
 #include <random>
 #include <set>
 #include <sstream>
@@ -109,15 +111,18 @@ struct Oracle {
   }
 };
 
-// A retry round that records its item and answers with a fixed text.
+// A retry round that records its item and answers with a fixed text and the effects the
+// round itself had.
 struct Retry {
   std::string answer;
   bool ok = true;
+  std::vector<truth::TurnEffect> roundFx;
   std::vector<std::string> items;
   truth::RetryFn fn() {
-    return [this](const std::string& item, std::string& reply) {
+    return [this](const std::string& item, std::string& reply, std::vector<truth::TurnEffect>& more) {
       items.push_back(item);
       reply = answer;
+      more = roundFx;
       return ok;
     };
   }
@@ -313,8 +318,12 @@ void test_untrusted_text_cannot_open_a_section() {
     }
   }
   // Other angle brackets and near misses are left alone.
-  for (const char* keep : {"<b>", "<reply >", "< reply>", "<Reply>", "<replyx>", "a < b > c", "</owner>"})
+  for (const char* keep : {"<b>", "< reply>", "<replyx>", "a < b > c", "</owner>", "<reply", "<reply x>"})
     TEST_ASSERT_EQUAL_STRING(keep, truth::inert(keep).c_str());
+  // Any case, and spaces before the '>', are a tag to a reader: inert too.
+  TEST_ASSERT_EQUAL_STRING("&lt;/REPLY>", truth::inert("</REPLY>").c_str());
+  TEST_ASSERT_EQUAL_STRING("&lt;Recent_Effects  >", truth::inert("<Recent_Effects  >").c_str());
+  TEST_ASSERT_EQUAL_STRING("&lt;/reply\t>", truth::inert("</reply\t>").c_str());
 }
 
 void test_times_as_the_probe_sees_them() {
@@ -329,6 +338,10 @@ void test_times_as_the_probe_sees_them() {
   TEST_ASSERT_EQUAL_STRING("00:02", truth::formatAt(kNow, kNow, 11 * 3600).c_str());
   TEST_ASSERT_EQUAL_STRING("Tue 23:59", truth::formatAt(kNow - 3 * 60, kNow, 11 * 3600).c_str());
   TEST_ASSERT_EQUAL_STRING("08:02", truth::formatAt(kNow, kNow, -5 * 3600).c_str());
+  // The device's clock is not set (now before 2023): every entry carries its full date.
+  TEST_ASSERT_EQUAL_STRING("2025-11-18 13:02", truth::formatAt(kNow, 0, 0).c_str());
+  TEST_ASSERT_EQUAL_STRING("2025-11-17 13:02", truth::formatAt(kNow - 86400, 1000, 0).c_str());
+  TEST_ASSERT_EQUAL_STRING("--:--", truth::formatAt(0, 0, 0).c_str());
   // A clock that ran ahead of the entry's time still reads as today.
   TEST_ASSERT_EQUAL_STRING("13:07", truth::formatAt(kNow + 300, kNow, 0).c_str());
   std::vector<fx::RingEntry> ring = {entry(kNow - 86400, "ledger_write", "added L1"), entry(kNow, "note", "k")};
@@ -377,7 +390,20 @@ void test_owner_and_reply_are_bounded() {
   const std::string big(40000, 'a');
   const std::string u = truth::renderUser(big, big, {}, {});
   TEST_ASSERT_EQUAL_size_t(truth::kOwnerMax, section(u, "owner_message").size());
-  TEST_ASSERT_EQUAL_size_t(truth::kReplyMax, section(u, "reply").size());
+  TEST_ASSERT_TRUE(section(u, "reply").size() <= truth::kReplyMax + 8);
+  // A long reply keeps its start and its end: "saved to notes/x.md" usually closes it.
+  const std::string longReply = "Here is the plan. " + std::string(40000, 'p') + " I saved it to notes/plan.md.";
+  const std::string r = section(truth::renderUser("o", longReply, {}, {}), "reply");
+  TEST_ASSERT_TRUE(r.find("Here is the plan.") == 0);
+  TEST_ASSERT_TRUE(r.find("I saved it to notes/plan.md.") != std::string::npos);
+  // This turn's receipts reach the probe whole up to kNowReceiptMax (a ledger day of rows).
+  const std::string rows = "added L1 a, L2 b, L3 c, L4 d, L5 e, L6 f, L7 g, L8 h, L9 i, L10 j, L11 k, L12 l, "
+                           "L13 m, L14 n, L15 o, L16 p, L17 q, L18 r, L19 s, L20 t, L21 u, L22 v, L23 w, L24 x, "
+                           "L25 y, L26 z, L27 skyr 150 g";
+  TEST_ASSERT_TRUE(rows.size() > fx::kReceiptMax);
+  const std::string n = section(truth::renderUser("o", "r", {eff("ledger_write", true, rows, truth::Kind::Ledger)}, {}),
+                                "effects_this_turn");
+  TEST_ASSERT_TRUE(n.find("skyr 150 g") != std::string::npos);
   // Clipped on a UTF-8 boundary.
   std::string euro;
   for (int i = 0; i < 6000; ++i) euro += "\xe2\x82\xac";
@@ -511,6 +537,65 @@ void test_a_failed_or_empty_retry_delivers_the_first_reply() {
   const truth::Outcome out = truth::check(t, s.fn(), truth::RetryFn(), c);
   TEST_ASSERT_TRUE(out.reply == t.reply);
   TEST_ASSERT_EQUAL_UINT32(1, c.retryFailed);
+}
+
+// The round after a hold may itself write: its effects join this turn's before the receipt
+// question, so a write that landed in the round clears the line and one that failed earns it.
+void test_the_retry_rounds_own_effects_count() {
+  {
+    truth::Turn t = enforceTurn("Logged: 150 g skyr.");
+    t.now.push_back(eff("ledger_write", false, "busy", truth::Kind::Ledger));
+    Scripted s;
+    s.answers = {{Verdict::Yes, 300}, {Verdict::Yes, 300}};
+    Retry r;
+    r.answer = "Done now: skyr 150 g is logged (L00A4).";
+    r.roundFx = {eff("ledger_write", true, "added L00A4 breakfast: skyr 150 g", truth::Kind::Ledger)};
+    truth::Counters c;
+    const truth::Outcome out = truth::check(t, s.fn(), r.fn(), c);
+    TEST_ASSERT_TRUE(out.reply == r.answer);
+    TEST_ASSERT_TRUE(out.status.empty());
+    TEST_ASSERT_EQUAL(1, out.probes);   // nothing failed any more: no receipt question
+  }
+  {
+    truth::Turn t = enforceTurn("Logged: 150 g skyr.");
+    Scripted s;
+    s.answers = {{Verdict::Yes, 300}, {Verdict::Yes, 300}};
+    Retry r;
+    r.answer = "Logged it now (L00A4).";
+    r.roundFx = {eff("ledger_write", false, "the card write failed", truth::Kind::Ledger)};
+    truth::Counters c;
+    const truth::Outcome out = truth::check(t, s.fn(), r.fn(), c);
+    TEST_ASSERT_TRUE(out.reply == r.answer);
+    TEST_ASSERT_EQUAL(2, out.probes);
+    TEST_ASSERT_EQUAL_STRING("Note: the ledger change in this reply did not go through (the card write failed)",
+                             out.status.c_str());
+    // The receipt question sees the round's effect.
+    TEST_ASSERT_TRUE(section(userOf(s.seen[1]), "effects_this_turn").find("ledger_write FAILED: the card write failed") !=
+                     std::string::npos);
+  }
+}
+
+// A probe or a round that throws is a probe with no answer or a failed round: the owner still
+// gets his reply.
+void test_a_throwing_probe_or_retry_fails_open() {
+  truth::Turn t = enforceTurn("Logged.");
+  truth::Counters c;
+  truth::ProbeFn boom = [](const truth::ProbeRequest&) -> truth::ProbeResult { throw std::runtime_error("x"); };
+  truth::Outcome out = truth::check(t, boom, Retry().fn(), c);
+  TEST_ASSERT_TRUE(out.reply == t.reply);
+  TEST_ASSERT_EQUAL_UINT32(1, c.failError);
+  Scripted s;
+  s.answers = {{Verdict::Yes, 300}};
+  truth::RetryFn bad = [](const std::string&, std::string&, std::vector<truth::TurnEffect>&) -> bool {
+    throw std::bad_alloc();
+  };
+  out = truth::check(t, s.fn(), bad, c);
+  TEST_ASSERT_TRUE(out.held);
+  TEST_ASSERT_TRUE(out.reply == t.reply);
+  TEST_ASSERT_EQUAL_UINT32(1, c.retryFailed);
+  truth::HeadState h;
+  truth::shadowProbe(t, boom, h);
+  TEST_ASSERT_EQUAL_UINT32(1, h.c.failError);
 }
 
 // The item says what the device did and nothing else: take every effect's own words out and
@@ -844,8 +929,9 @@ void test_modes_move_only_as_the_prd_says() {
   struct Case {
     uint32_t hits, turns;
     bool moves;
-  } cases[] = {{0, 299, false}, {0, 300, true}, {1, 474, false}, {1, 475, true},
-               {2, 629, false}, {2, 630, true}, {3, 5000, false}, {0, 0, false}};
+  } cases[] = {{0, 299, false}, {0, 300, true},  {1, 472, false}, {1, 475, true},  {2, 627, false},
+               {2, 630, true},  {3, 772, false}, {3, 773, true},  {50, 3000, false}, {30, 5000, true},
+               {0, 0, false}};
   for (const Case& k : cases) {
     truth::HeadState h;
     h.mode = Truth::Enforce;
@@ -958,6 +1044,8 @@ int main(int, char**) {
   RUN_TEST(test_a_true_statement_about_an_effect_in_the_ring_is_never_a_hit);
   RUN_TEST(test_an_unbacked_success_is_held_once_and_the_retry_is_delivered_unchanged);
   RUN_TEST(test_a_failed_or_empty_retry_delivers_the_first_reply);
+  RUN_TEST(test_the_retry_rounds_own_effects_count);
+  RUN_TEST(test_a_throwing_probe_or_retry_fails_open);
   RUN_TEST(test_the_retry_item_holds_facts_only);
   RUN_TEST(test_the_retry_item_is_bounded_and_keeps_this_turn_whole);
   RUN_TEST(test_the_hold_sends_the_facts_item_of_this_turn);
