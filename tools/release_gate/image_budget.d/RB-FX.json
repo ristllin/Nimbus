@@ -1,0 +1,6 @@
+{
+  "lane": "RB-FX",
+  "allowance_bytes": 12288,
+  "envs": {"esp32s3": 11776, "esp32s3-cyd": 12288, "test": 12288, "test-cyd": 12288},
+  "why": "Ruling 36 accepts 12,288 B on esp32s3-cyd as measured (PRD section 10 flash ledger: RB-FX +3 KB). Measured in the lane's tree, base rb-main 7ff4cf21 (source of 9bcb0736) against tip d138bd78 (battery RB-FX-1 builds), firmware.bin, docs pack unchanged: esp32s3 6,349,424 -> 6,361,152 (+11,728), esp32s3-cyd 6,384,272 -> 6,396,304 (+12,032; +12,064 in an earlier same-tree pair), test 6,503,616 -> 6,515,712 (+12,096), test-cyd 6,538,576 -> 6,550,688 (+12,112); each rounded up to the next 256 B, at most 12,288 B. The ring store (5.8 KB), its card binding (2.5 KB), the engine hooks and their unwind tables, after a mechanical size audit."
+}
