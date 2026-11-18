@@ -210,6 +210,10 @@ void reset(Channel c = Channel::Stable, bool ok = true) {
 }
 }  // namespace dev
 
+static std::string channelCommandReply(const char* args, const ChannelOps& ops) {
+  return nimbus::ota::channelCommandReply(args, std::strlen(args), ops);
+}
+
 static void test_command_reply() {
   dev::reset();
   std::string r = channelCommandReply("", dev::kOps);
@@ -257,13 +261,29 @@ static void test_command_is_owner_only() {
 }
 
 // ---- the route --------------------------------------------------------------------
+struct RouteReply {
+  int status;
+  std::string body;
+};
+static RouteReply channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops) {
+  char body[kRouteBodyCap];
+  std::memset(body, 'x', sizeof body);
+  const int st = nimbus::ota::channelRoute(authed, post, value, ops, body, sizeof body);
+  TEST_ASSERT_TRUE(std::memchr(body, '\0', sizeof body) != nullptr);
+  const std::string b = body;
+  // Never cut: every answer fits kRouteBodyCap with room to spare.
+  TEST_ASSERT_TRUE(b.size() + 1 < sizeof body);
+  return {st, b};
+}
 static void test_route_answers() {
   dev::reset();
   RouteReply g = channelRoute(true, false, nullptr, dev::kOps);
   TEST_ASSERT_EQUAL_INT(200, g.status);
   TEST_ASSERT_EQUAL_INT(0, dev::sets);
-  TEST_ASSERT_TRUE(g.body.find("\"channel\":\"stable\"") != std::string::npos);
-  TEST_ASSERT_TRUE(g.body.find(channelLine(ChannelAsk::Show, true, Channel::Stable)) != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(
+      (std::string("{\"ok\":true,\"channel\":\"stable\",\"line\":\"") +
+       channelLine(ChannelAsk::Show, true, Channel::Stable) + "\"}").c_str(),
+      g.body.c_str());
 
   RouteReply p = channelRoute(true, true, "candidate", dev::kOps);
   TEST_ASSERT_EQUAL_INT(200, p.status);
@@ -307,7 +327,7 @@ static void test_route_sets_only_on_owner_post() {
         if (!authed) {
           TEST_ASSERT_EQUAL_INT_MESSAGE(401, r.status, msg);
           TEST_ASSERT_EQUAL_INT_MESSAGE(0, dev::gets, msg);
-          TEST_ASSERT_EQUAL_STRING_MESSAGE(kAuthRequiredJson, r.body.c_str(), msg);
+          TEST_ASSERT_EQUAL_STRING_MESSAGE("", r.body.c_str(), msg);
           continue;
         }
         if (!post) TEST_ASSERT_EQUAL_INT_MESSAGE(200, r.status, msg);

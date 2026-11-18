@@ -24,8 +24,8 @@ from webrig import chat_turn, ip_tok_or_skip, make_session, require_orchestrator
 pytestmark = [pytest.mark.net]
 
 ROUTE = "/api/ota/channel"
-STABLE_LINE = "Update channel: stable."
-CANDIDATE_LINE = "Update channel: candidate."
+STABLE_LINE = "Update channel: stable "
+CANDIDATE_LINE = "Update channel: candidate "
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +44,7 @@ def _channel(ip: str, s) -> str:
     r = s.get(f"http://{ip}{ROUTE}", timeout=10)
     assert r.status_code == 200, r.text
     j = r.json()
-    assert j["line"].startswith(f"Update channel: {j['channel']}."), j
+    assert j["line"].startswith(f"Update channel: {j['channel']} "), j
     return j["channel"]
 
 

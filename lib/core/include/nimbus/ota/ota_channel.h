@@ -12,7 +12,6 @@
 // method other than GET or POST, an unknown value) changes nothing.
 
 #include <cstddef>
-#include <string>
 
 #include "nimbus/ota/ota_logic.h"   // Channel, parseChannel, channelSlug
 
@@ -51,24 +50,21 @@ struct ChannelOps {
   Channel (*get)();
 };
 
-// The /ota command's answer for its arguments (after the verb).
-std::string channelCommandReply(const std::string& args, const ChannelOps& ops);
+// The /ota command's answer for its arguments (the text after the verb).
+const char* channelCommandReply(const char* args, size_t len, const ChannelOps& ops);
 
 // The route GET/POST /api/ota/channel. `authed`: the request carried the device
 // sign-in code (nimbus::net::webAuthOk). `post`: POST, else GET (the device binds no
 // other method). `value`: the POST body's `channel` field, nullptr when absent.
-// Unauthenticated: 401 and neither set nor get runs. GET: 200 with the channel in
-// force. POST: 400 for a missing or unknown value (nothing changes), 200 when set,
-// 500 when the switch failed (the channel in force is then stable).
-struct RouteReply {
-  int status;
-  std::string body;   // application/json
-};
-RouteReply channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops);
-
-// The 401 body every owner route sends (src/net/webui.cpp authBlocked).
-inline constexpr char kAuthRequiredJson[] =
-    "{\"error\":\"Access token required. Scan the Sign-in QR on the device.\"}";
+// Returns the HTTP status and writes the JSON answer into `body`:
+//   401: neither set nor get runs, `body` is "" (the device sends the 401 every owner
+//        route sends);
+//   GET 200: {"ok":true,"channel":"...","line":"..."}, the channel in force;
+//   POST: 400 for a missing or unknown value (nothing changes; "line" is the channel in force),
+//         200 when set, 500 when the switch failed (the channel in force is then stable).
+// `cap` of kRouteBodyCap always fits.
+inline constexpr size_t kRouteBodyCap = 192;
+int channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops, char* body, size_t cap);
 
 }  // namespace ota
 }  // namespace nimbus

@@ -296,15 +296,15 @@ Both answer with one plain line: the channel now in force and what it means.
   device sign-in code in the `X-Nimbus-Token` header (or the `t` form field), like
   every other owner route; a `?t=` query never counts, and without the code the
   answer is 401 and nothing is read or changed. The value is read from the POST
-  body only. Answers: `{"channel":"...","line":"..."}` for GET; for POST 200 with
-  `"ok":true` when set, 400 for a missing or unknown value (nothing changes), 500
-  when the switch failed. Only GET and POST are bound.
+  body only. Every answer is `{"ok":...,"channel":"...","line":"..."}` with the
+  channel in force: GET 200; POST 200 when set, 400 for a missing or unknown value
+  (nothing changes), 500 when the switch failed. Only GET and POST are bound.
 
 Every failure leaves the device on the stable channel. A switch to candidate that
 cannot be written and read back clears the file again. A switch to stable that
 cannot clear the file (remove, then overwrite it with `stable`) holds the stable
-channel in memory until the next successful switch, and the answer says the
-setting was not saved, so set it again after a restart. The web page has no
+channel in memory until the next successful switch or restart. Either way the
+answer says the channel could not be saved and that stable is in force for now. The web page has no
 switch: it is unchanged until v6.1.0.
 
 ## On a busy device: the update runs between messages

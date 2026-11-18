@@ -2,81 +2,51 @@
 #include "nimbus/ota/ota_channel.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
+#include <strings.h>
 
 namespace nimbus {
 namespace ota {
 
 namespace {
 
-constexpr char kStableLine[] = "Update channel: stable. The device gets regular releases only.";
-constexpr char kCandidateLine[] =
-    "Update channel: candidate. The device also gets test releases before everyone else.";
-constexpr char kCandidateFailedLine[] =
-    "Couldn't switch to the candidate channel. The device stays on stable and gets regular releases only.";
-constexpr char kStableUnsavedLine[] =
-    "Update channel: stable until the device restarts. The setting couldn't be saved, so set it again then.";
-// Never reached through applyChannel (it fails closed), kept so the line is true for
-// any state a caller reports.
-constexpr char kCandidateStuckLine[] =
-    "Couldn't change the update channel. The device is still on candidate, so try again.";
-constexpr char kUsageLine[] = "Send /ota candidate or /ota stable. /ota on its own shows the channel.";
-
-bool equalsWord(const char* s, size_t n, const char* word) {
-  const size_t wl = std::strlen(word);
-  if (n != wl) return false;
-  for (size_t i = 0; i < n; i++)
-    if (std::tolower((unsigned char)s[i]) != word[i]) return false;
-  return true;
-}
+constexpr char kStableLine[] = "Update channel: stable (regular releases only).";
+constexpr char kCandidateLine[] = "Update channel: candidate (test releases first).";
+// A failed switch: stable is in force (applyChannel fails closed), until the next
+// successful switch or, when even the file could not be cleared, the next restart.
+constexpr char kFailedLine[] = "Couldn't save the update channel: stable for now.";
+// Never reached through applyChannel; keeps the line true for any state a caller reports.
+constexpr char kFailedCandidateLine[] = "Couldn't save the update channel: candidate for now.";
+constexpr char kUsageLine[] = "Send /ota candidate or /ota stable.";
 
 // Stable is the missing file. When it cannot be removed, any text but "candidate"
 // is stable too (parseChannel).
 bool clearFile(const ChannelFile& f) {
-  static constexpr char kStable[] = "stable\n";
   if (f.remove() && f.read() == Channel::Stable) return true;
-  return f.write(kStable, sizeof kStable - 1) && f.read() == Channel::Stable;
-}
-
-std::string json(bool withOk, bool ok, Channel c, const char* line) {
-  std::string out = "{";
-  if (withOk) out += ok ? "\"ok\":true," : "\"ok\":false,";
-  out += "\"channel\":\"";
-  out += channelSlug(c);
-  out += "\",\"line\":\"";
-  out += line;
-  out += "\"}";
-  return out;
+  return f.write("stable\n", 7) && f.read() == Channel::Stable;
 }
 
 }  // namespace
 
 ChannelAsk parseChannelAsk(const char* text, size_t len) {
   if (!text) return ChannelAsk::Show;
-  size_t b = 0, e = len;
-  while (b < e && std::isspace((unsigned char)text[b])) b++;
-  while (e > b && std::isspace((unsigned char)text[e - 1])) e--;
-  if (b == e) return ChannelAsk::Show;
-  if (equalsWord(text + b, e - b, "candidate")) return ChannelAsk::Candidate;
-  if (equalsWord(text + b, e - b, "stable")) return ChannelAsk::Stable;
+  while (len && std::isspace((unsigned char)*text)) text++, len--;
+  while (len && std::isspace((unsigned char)text[len - 1])) len--;
+  if (!len) return ChannelAsk::Show;
+  if (len == 9 && !strncasecmp(text, "candidate", 9)) return ChannelAsk::Candidate;
+  if (len == 6 && !strncasecmp(text, "stable", 6)) return ChannelAsk::Stable;
   return ChannelAsk::Unknown;
 }
 
 bool applyChannel(const ChannelFile& f, Channel want, bool& stableLatch) {
-  bool ok;
-  if (want == Channel::Candidate) {
-    static constexpr char kCandidate[] = "candidate\n";
-    ok = f.write(kCandidate, sizeof kCandidate - 1) && f.read() == Channel::Candidate;
-    // Fail closed: whatever landed, the file goes back to stable; if even that fails
-    // the latch keeps the stable channel for this boot.
-    if (!ok) {
-      stableLatch = !clearFile(f);
-      return false;
-    }
-  } else {
-    ok = clearFile(f);
-  }
-  stableLatch = !ok;
+  bool ok = want == Channel::Candidate
+                ? f.write("candidate\n", 10) && f.read() == Channel::Candidate
+                : clearFile(f);
+  // Fail closed: a failed switch to candidate puts the file back to stable; whenever the
+  // file cannot be made stable, the latch holds the stable channel for this boot.
+  if (!ok && want == Channel::Candidate) stableLatch = !clearFile(f);
+  else stableLatch = !ok;
   return ok;
 }
 
@@ -86,33 +56,40 @@ Channel channelInForce(const ChannelFile& f, bool stableLatch) {
 
 const char* channelLine(ChannelAsk asked, bool ok, Channel inForce) {
   if (asked == ChannelAsk::Unknown) return kUsageLine;
-  if (!ok && inForce == Channel::Candidate) return kCandidateStuckLine;
-  if (!ok) return asked == ChannelAsk::Candidate ? kCandidateFailedLine : kStableUnsavedLine;
+  if (!ok) return inForce == Channel::Candidate ? kFailedCandidateLine : kFailedLine;
   return inForce == Channel::Candidate ? kCandidateLine : kStableLine;
 }
 
-std::string channelCommandReply(const std::string& args, const ChannelOps& ops) {
-  const ChannelAsk a = parseChannelAsk(args.data(), args.size());
-  if (a == ChannelAsk::Show || a == ChannelAsk::Unknown)
-    return channelLine(a, a == ChannelAsk::Show, ops.get());
+// Set the asked channel (Stable or Candidate) and answer with the line.
+static int setAndSay(ChannelAsk a, const ChannelOps& ops, const char** line) {
   const bool ok = ops.set(a == ChannelAsk::Candidate ? Channel::Candidate : Channel::Stable);
-  return channelLine(a, ok, ops.get());
+  *line = channelLine(a, ok, ops.get());
+  return ok ? 200 : 500;
 }
 
-RouteReply channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops) {
-  if (!authed) return {401, kAuthRequiredJson};
-  if (!post) {
-    const Channel c = ops.get();
-    return {200, json(false, true, c, channelLine(ChannelAsk::Show, true, c))};
+const char* channelCommandReply(const char* args, size_t len, const ChannelOps& ops) {
+  const ChannelAsk a = parseChannelAsk(args, len);
+  if (a == ChannelAsk::Show || a == ChannelAsk::Unknown) return channelLine(a, true, ops.get());
+  const char* line;
+  setAndSay(a, ops, &line);
+  return line;
+}
+
+int channelRoute(bool authed, bool post, const char* value, const ChannelOps& ops, char* body, size_t cap) {
+  if (cap) body[0] = '\0';
+  if (!authed) return 401;
+  const ChannelAsk a = post && value ? parseChannelAsk(value, std::strlen(value)) : ChannelAsk::Show;
+  int status = 200;
+  const char* line;
+  if (a == ChannelAsk::Stable || a == ChannelAsk::Candidate) {
+    status = setAndSay(a, ops, &line);
+  } else {
+    if (post) status = 400;   // a missing, empty or unknown value changes nothing
+    line = channelLine(ChannelAsk::Show, true, ops.get());
   }
-  const ChannelAsk a = value ? parseChannelAsk(value, std::strlen(value)) : ChannelAsk::Unknown;
-  if (a != ChannelAsk::Stable && a != ChannelAsk::Candidate) {
-    const Channel c = ops.get();
-    return {400, json(true, false, c, "Send channel=candidate or channel=stable.")};
-  }
-  const bool ok = ops.set(a == ChannelAsk::Candidate ? Channel::Candidate : Channel::Stable);
-  const Channel c = ops.get();
-  return {ok ? 200 : 500, json(true, ok, c, channelLine(a, ok, c))};
+  std::snprintf(body, cap, "{\"ok\":%s,\"channel\":\"%s\",\"line\":\"%s\"}", status == 200 ? "true" : "false",
+                channelSlug(ops.get()), line);
+  return status;
 }
 
 }  // namespace ota

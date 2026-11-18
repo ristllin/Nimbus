@@ -1,5 +1,5 @@
 // RB-OTA2: the owner's update channel over the web API, without a cable.
-//   GET  /api/ota/channel             -> 200 {"channel":"stable|candidate","line":"..."}
+//   GET  /api/ota/channel             -> 200 {"ok":true,"channel":"stable|candidate","line":"..."}
 //   POST /api/ota/channel channel=... -> 200 set, 400 unknown value (nothing changes),
 //                                        500 the switch failed (stable is in force)
 // Owner only, with the checks every owner route has: the device sign-in code in the
@@ -23,16 +23,17 @@ namespace {
 void handleChannel(AsyncWebServerRequest* r) {
   const bool post = r->method() == HTTP_POST;
   const AsyncWebParameter* p = post ? r->getParam("channel", /*post=*/true) : nullptr;
-  const nimbus::ota::RouteReply rep =
-      nimbus::ota::channelRoute(webAuthOk(r), post, p ? p->value().c_str() : nullptr, otaupd::channelOps());
-  AsyncWebServerResponse* res = r->beginResponse(rep.status, "application/json", String(rep.body.c_str()));
-  res->addHeader("Cache-Control", "no-store");
-  r->send(res);
+  char body[nimbus::ota::kRouteBodyCap];
+  const int status = nimbus::ota::channelRoute(webAuthOk(r), post, p ? p->value().c_str() : nullptr,
+                                               otaupd::channelOps(), body, sizeof body);
+  // The 401 every owner route sends (the literal is shared with them at link time).
+  r->send(status, "application/json",
+          status == 401 ? "{\"error\":\"Access token required. Scan the Sign-in QR on the device.\"}" : body);
 }
 
+// One registration for both methods; any other method meets the catch-all.
 void registerOtaChannelRoutes(AsyncWebServer& server) {
-  server.on("/api/ota/channel", HTTP_GET, handleChannel);
-  server.on("/api/ota/channel", HTTP_POST, handleChannel);
+  server.on("/api/ota/channel", HTTP_GET | HTTP_POST, handleChannel);
 }
 
 struct OtaChannelRouteReg {
