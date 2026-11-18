@@ -85,6 +85,14 @@ stateless (`gpt-5.6-luna`). Effort is the one model knob, and the rig sets it to
 harness itself sends for that model, read off the wire: `medium` on Claude, no effort field
 on gpt-5.6-luna. Thinking stays adaptive. No server-side fallback to another model.
 
+## The engine-2 transcript, emulated (`E2Transcript`)
+
+`refloop.py` also holds `E2Transcript`: the rebuild PRD's section 2 transcript as a pure renderer over
+an append-only item list (stub pointer, outside stubs, superseded reads, photo retention, closed-turn
+thinking, resident bound H / L per profile with digests, the four cache points). The loop above does
+not use it; `tests/evals/replay` drives it to measure what the design costs before it exists in
+firmware (see that folder's README and `tests/evals/measured/cost.json`).
+
 ## What the MCP surface cannot carry
 
 Arm B gets every tool the registry lists over MCP. The gaps between that and what the

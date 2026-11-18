@@ -65,7 +65,10 @@ FILLER = [
     "Back from the office now.",
 ]
 LABELS = [
-    ("PROTEIN BAR 60 g", ["Energy 214 kcal", "Protein 20.1 g", "Carbohydrate 21.4 g", "of which polyols 9.8 g", "Fat 6.9 g"]),
+    (
+        "PROTEIN BAR 60 g",
+        ["Energy 214 kcal", "Protein 20.1 g", "Carbohydrate 21.4 g", "of which polyols 9.8 g", "Fat 6.9 g"],
+    ),
     ("GREEK YOGHURT 170 g", ["Energy 158 kcal", "Protein 15.3 g", "Carbohydrate 6.1 g", "Fat 8.2 g"]),
     ("OAT DRINK 250 ml", ["Energy 115 kcal", "Protein 2.5 g", "Carbohydrate 16.3 g", "Fat 3.8 g"]),
     ("TUNA SALAD 220 g", ["Energy 296 kcal", "Protein 21.6 g", "Carbohydrate 14.0 g", "Fat 16.5 g"]),
@@ -88,7 +91,10 @@ def photo(kind: str, i: int) -> tuple:
         d.ellipse([70, 330, 530, 760], fill=(250, 250, 250), outline=(180, 180, 180), width=6)
         for _ in range(6):
             x, y = rng.randint(140, 400), rng.randint(400, 640)
-            d.ellipse([x, y, x + rng.randint(60, 120), y + rng.randint(40, 90)], fill=tuple(rng.randint(60, 200) for _ in range(3)))
+            d.ellipse(
+                [x, y, x + rng.randint(60, 120), y + rng.randint(40, 90)],
+                fill=tuple(rng.randint(60, 200) for _ in range(3)),
+            )
         lines = PLATES[i % len(PLATES)]
     else:
         title, rows = LABELS[i % len(LABELS)]
@@ -100,7 +106,8 @@ def photo(kind: str, i: int) -> tuple:
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=80)
     data = out.getvalue()
-    return "image/jpeg", base64.b64encode(data).decode(), hashlib.sha1(data).hexdigest()[:8]
+    # The ref names this photo, not its bytes: two sends of the same label are two photos.
+    return "image/jpeg", base64.b64encode(data).decode(), hashlib.sha1(data + f"{kind}{i}".encode()).hexdigest()[:8]
 
 
 def _pad(text: str, target: int, rng: random.Random) -> str:
@@ -126,7 +133,11 @@ def turns_for(shape: dict, seed: str) -> list:
         check = None
         photos = []
         if last:
-            kind, text, check = "recall", "What exactly did I say I had for breakfast, with the weights?", ("reply", PLANTED_CHECK)
+            kind, text, check = (
+                "recall",
+                "What exactly did I say I had for breakfast, with the weights?",
+                ("reply", PLANTED_CHECK),
+            )
         elif t["photos"]:
             kind = "photo"
             k = "label" if photo_i % 2 else "plate"
@@ -186,7 +197,9 @@ def prior_history(start: float, target_bytes: int, tz) -> list:
             h, m = map(int, hhmm.split(":"))
             t = d.replace(hour=h, minute=m)
             meal, what = MEALS[(day + k) % len(MEALS)]
-            owner = t.strftime("[%a %d %b %Y %H:%M] ") + (f"{meal.capitalize()}: {what}. Log it." if k % 3 != 2 else CHATS[k % len(CHATS)])
+            owner = t.strftime("[%a %d %b %Y %H:%M] ") + (
+                f"{meal.capitalize()}: {what}. Log it." if k % 3 != 2 else CHATS[k % len(CHATS)]
+            )
             reply = (
                 f"Logged {meal}: {what}. That is about {300 + 37 * k} kcal and {12 + k} g protein; "
                 f"the day is now at {900 + 210 * k} kcal with {1400 - 210 * k} kcal left."

@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -36,7 +35,9 @@ from PIL import Image  # noqa: E402
 MODELS = {
     "claude-sonnet-5-5": {"head": "anthropic", "effort": "medium", "sub_model": "claude-haiku-5-5"},
     "claude-haiku-5-5": {"head": "anthropic", "effort": "medium", "sub_model": "claude-haiku-5-5"},
+    # Ruling 12: gpt-5.6 only where a result must be shown on it; volume runs on gpt-5.6-luna.
     "gpt-5.6": {"head": "openai", "effort": None, "sub_model": "gpt-5.6-luna"},
+    "gpt-5.6-luna": {"head": "openai", "effort": None, "sub_model": ""},
 }
 # model -> (input, output, cache read, cache write) USD per million tokens. gpt-5.6 is the PRD's
 # 5.00 / 30.00 with OpenAI's cached-input rate; OpenAI bills no cache write.
@@ -64,6 +65,14 @@ def usd(model: str, u: dict | None, cold: bool = False) -> float:
     if cold:
         cached, written = 0, written + cached
     return (fresh * p_in + cached * p_read + written * p_write + u.get("output", 0) * p_out) / 1e6
+
+
+def redact(text: str, env: dict) -> str:
+    """Error text with every loaded key value masked before it is written anywhere."""
+    for v in env.values():
+        if v and len(v) >= 8:
+            text = text.replace(v, "[key]")
+    return text
 
 
 def png(kind: str, i: int) -> bytes:
@@ -95,6 +104,37 @@ class E1Arm(arms.ArmA):
         self.d.configure(self.job.head, self.job.model, self.job.sub_model, ceiling_cents=CEILING_CENTS)
 
 
+def price_steps(rec: dict, model: str):
+    """Price each turn on the shape's gaps: a turn's first head request after a gap over 300 s is cold.
+    usd_cold prices every turn as if it opened cold, usd_billed as billed (warm)."""
+    for n, s in enumerate(rec["steps"]):
+        mine = [r for r in rec["requests"] if (r.get("ctx") or {}).get("turn") == n + 1]
+        head = [r for r in mine if r["model"] == model and r["usage"]]
+        cold = n == 0 or (s["shape_gap_s"] or 0) > COLD_GAP_S
+        first = head[0]["seq"] if head else None
+        s["usd_billed"] = round(sum(usd(r["model"], r["usage"]) for r in mine), 6)
+        s["usd_shape"] = round(sum(usd(r["model"], r["usage"], cold and r["seq"] == first) for r in mine), 6)
+        s["usd_cold"] = round(sum(usd(r["model"], r["usage"], r["seq"] == first) for r in mine), 6)
+        s["cold_open"] = cold
+
+
+def drive(arm, a, sc: dict, turns: list, rec: dict):
+    """Every turn of the scenario, the record saved after each; stops at the run's spend limit."""
+    out = a.evidence / a.model / a.shape / "e1.json"
+    arm.start()
+    for n, step in enumerate(sc["turns"]):
+        if rows_cost(arm.proxy.records) >= a.max_usd:
+            rec["held"] = f"stopped before turn {n + 1}: run billed {a.max_usd} USD"
+            return
+        s = arm.step(step)
+        s.pop("state", None)
+        s["kind"] = turns[n]["kind"]
+        s["shape_gap_s"] = None if n == 0 else turns[n]["at_s"] - turns[n - 1]["at_s"]
+        rec["steps"].append(s)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(rec, indent=1, ensure_ascii=False))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--daemon", required=True, type=Path)
@@ -103,47 +143,24 @@ def main():
     ap.add_argument("--limit", type=int)
     ap.add_argument("--evidence", required=True, type=Path)
     ap.add_argument("--env-file", required=True)
-    ap.add_argument("--max-usd", type=float, default=6.0, help="stop starting turns once this run has billed this much")
+    ap.add_argument("--max-usd", type=float, default=2.0, help="stop starting turns once this run has billed this much")
     a = ap.parse_args()
     nimbusd_ctl.DAEMON = a.daemon.resolve()
     env = nimbusd_ctl.load_env(a.env_file)
     sc, turns = scenario(a.shape, a.limit)
     out_dir = a.evidence / a.model / a.shape
-    job = arms.Job(model=a.model, scenario=sc, rep=1, dir=out_dir, env=env, **MODELS[a.model])
-    arm = E1Arm(job)
+    arm = E1Arm(arms.Job(model=a.model, scenario=sc, rep=1, dir=out_dir, env=env, **MODELS[a.model]))
     rec = {"model": a.model, "shape": a.shape, "daemon": str(a.daemon), "steps": [], "started": time.time()}
     try:
-        arm.start()
-        for n, step in enumerate(sc["turns"]):
-            if rows_cost(arm.proxy.records) >= a.max_usd:
-                rec["held"] = f"stopped before turn {n + 1}: run billed {a.max_usd} USD"
-                break
-            s = arm.step(step)
-            s.pop("state", None)
-            s["kind"] = turns[n]["kind"]
-            s["shape_gap_s"] = None if n == 0 else turns[n]["at_s"] - turns[n - 1]["at_s"]
-            rec["steps"].append(s)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "e1.json").write_text(json.dumps(rec, indent=1, ensure_ascii=False))
+        drive(arm, a, sc, turns, rec)
     except Exception as e:
-        rec["error"] = f"{type(e).__name__}: {e}"[:600]
+        rec["error"] = redact(f"{type(e).__name__}: {e}", env)[:600]
     finally:
-        rows = arm.proxy.rows()
         rec["requests"] = [
-            {k: r.get(k) for k in ("seq", "ctx", "path", "model", "status", "ms", "usage")} for r in rows
+            {k: r.get(k) for k in ("seq", "ctx", "path", "model", "status", "ms", "usage")} for r in arm.proxy.rows()
         ]
         arm.close()
-    # Price on the shape's gaps: a turn's first head request after a gap over 300 s is cold.
-    for n, s in enumerate(rec["steps"]):
-        mine = [r for r in rec["requests"] if (r.get("ctx") or {}).get("turn") == n + 1]
-        head = [r for r in mine if r["model"] == a.model and r["usage"]]
-        cold = n == 0 or (s["shape_gap_s"] or 0) > COLD_GAP_S
-        first = head[0]["seq"] if head else None
-        s["usd_billed"] = round(sum(usd(r["model"], r["usage"]) for r in mine), 6)
-        s["usd_shape"] = round(sum(usd(r["model"], r["usage"], cold and r["seq"] == first) for r in mine), 6)
-        s["usd_all_warm"] = s["usd_billed"]
-        s["usd_cold"] = round(sum(usd(r["model"], r["usage"], r["seq"] == first) for r in mine), 6)
-        s["cold_open"] = cold
+    price_steps(rec, a.model)
     rec["ended"] = time.time()
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "e1.json").write_text(json.dumps(rec, indent=1, ensure_ascii=False))

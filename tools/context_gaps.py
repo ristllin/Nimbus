@@ -77,6 +77,73 @@ def exact_time(row: dict):
     return int(v) if v and v.isdigit() else None
 
 
+NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
+
+
+def safe_name(v) -> str:
+    """A tool or model name as written by the device, or '?' when it is anything else."""
+    return v if isinstance(v, str) and NAME_RE.fullmatch(v) else "?"
+
+
+def safe_int(v) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _turn_end(r: dict):
+    """The device's turn-end metrics row (a JSON object), or None."""
+    if r["role"] != "system" or r["kind"] != "log" or not r["text"].startswith("{"):
+        return None
+    try:
+        return json.loads(r["text"])
+    except ValueError:
+        return None
+
+
+def index_turns(rows: list) -> tuple:
+    """({turn: turn-end metrics}, {turn: [(tool, result bytes)]}, {turn: [reply rows]})."""
+    ends, tools, replies = {}, {}, {}
+    for r in rows:
+        turn = tags_of(r).get("turn")
+        if not turn:
+            continue
+        end = _turn_end(r)
+        if end is not None:
+            ends[turn] = end
+        elif r["role"] == "tool" and r["kind"] == "tool_output":
+            tools.setdefault(turn, []).append((safe_name(tags_of(r).get("tool")), len(r["text"].encode())))
+        elif r["role"] == "assistant" and r["kind"] == "message":
+            replies.setdefault(turn, []).append(r)
+    return ends, tools, replies
+
+
+def _text_bytes(rows: list) -> int:
+    return sum(len(r["text"].encode()) for r in rows)
+
+
+def _turn_record(first: dict, mine: list, end: dict, tools: list, reps: list) -> dict:
+    t0 = exact_time(first)
+    rep_at = [exact_time(r) for r in reps if exact_time(r)]
+    texts = [r for r in mine if r["kind"] in ("message", "audio")]
+    return {
+        "turn": first["id"],
+        "hour": first["ts"],
+        "t": t0,
+        "exact": t0 is not None,
+        "end": max(rep_at) if rep_at else None,
+        "msgs": len(texts),
+        "photos": sum(1 for r in mine if r["kind"] == "image"),
+        "text_bytes": _text_bytes(texts),
+        "tools": tools,
+        "reply_bytes": _text_bytes(reps),
+        "model": safe_name(end.get("model")),
+        "ok": bool(end.get("ok")),
+        "tokens": {k: safe_int(end.get(k, 0)) for k in ("in", "out", "cr", "cw")},
+    }
+
+
 def owner_turns(rows: list) -> list:
     """Owner turns in order, as numbers only.
 
@@ -85,20 +152,7 @@ def owner_turns(rows: list) -> list:
     turn-end row marks an owner turn; a turn-end row without src (before v4.6) counts as owner when
     its turn row is an owner message."""
     by_id = {r["id"]: r for r in rows}
-    ends, tools, replies = {}, {}, {}
-    for r in rows:
-        turn = tags_of(r).get("turn")
-        if not turn:
-            continue
-        if r["role"] == "system" and r["kind"] == "log" and r["text"].startswith("{"):
-            try:
-                ends[turn] = json.loads(r["text"])
-            except ValueError:
-                pass
-        elif r["role"] == "tool" and r["kind"] == "tool_output":
-            tools.setdefault(turn, []).append((tags_of(r).get("tool", "?"), len(r["text"].encode())))
-        elif r["role"] == "assistant" and r["kind"] == "message":
-            replies.setdefault(turn, []).append(r)
+    ends, tools, replies = index_turns(rows)
     starts = sorted(
         t for t, e in ends.items() if t in by_id and by_id[t]["role"] == "user" and e.get("src", "owner") == "owner"
     )
@@ -107,28 +161,7 @@ def owner_turns(rows: list) -> list:
     for n, tid in enumerate(starts):
         nxt = starts[n + 1] if n + 1 < len(starts) else "m~"
         mine = [r for r in user_rows if tid <= r["id"] < nxt]
-        first = by_id[tid]
-        t0 = exact_time(first)
-        reps = replies.get(tid, [])
-        rep_at = [exact_time(r) for r in reps if exact_time(r)]
-        e = ends[tid]
-        out.append(
-            {
-                "turn": tid,
-                "hour": first["ts"],
-                "t": t0,
-                "exact": t0 is not None,
-                "end": max(rep_at) if rep_at else None,
-                "msgs": sum(1 for r in mine if r["kind"] in ("message", "audio")),
-                "photos": sum(1 for r in mine if r["kind"] == "image"),
-                "text_bytes": sum(len(r["text"].encode()) for r in mine if r["kind"] in ("message", "audio")),
-                "tools": tools.get(tid, []),
-                "reply_bytes": sum(len(r["text"].encode()) for r in reps),
-                "model": e.get("model"),
-                "ok": bool(e.get("ok")),
-                "tokens": {"in": e.get("in", 0), "out": e.get("out", 0), "cr": e.get("cr", 0), "cw": e.get("cw", 0)},
-            }
-        )
+        out.append(_turn_record(by_id[tid], mine, ends[tid], tools.get(tid, []), replies.get(tid, [])))
     return out
 
 
@@ -182,12 +215,17 @@ def turns_per_day(turns: list, since: datetime | None = None) -> dict:
             continue
         d = datetime.fromtimestamp(ts, TZ).date().isoformat()
         days[d] = days.get(d, 0) + 1
-    vals = list(days.values())
+    if not days:
+        return {"days": 0, "turns": 0, "mean": None, "median": None}
+    first, last = min(days), max(days)
+    span = (datetime.fromisoformat(last) - datetime.fromisoformat(first)).days + 1
+    vals = [days.get((datetime.fromisoformat(first) + timedelta(days=k)).date().isoformat(), 0) for k in range(span)]
     return {
-        "days": len(vals),
+        "days": span,
         "turns": sum(vals),
-        "mean": round(statistics.mean(vals), 2) if vals else None,
-        "median": statistics.median(vals) if vals else None,
+        "mean": round(sum(vals) / span, 2),
+        "median": statistics.median(vals),
+        "note": "every calendar day from the first to the last, quiet days as 0; the last day may be partial",
     }
 
 
@@ -297,7 +335,8 @@ def hold_payoffs(corpus: Path) -> dict:
             windows.setdefault(boot, []).append(after_ms)
         if n >= 2:
             counts["joined"] += 1
-            counts[f"joined_{why}"] += 1
+            key = f"joined_{why}" if why in ("quiet", "old") else "joined_other"
+            counts[key] = counts.get(key, 0) + 1
             if why == "quiet":
                 joins.append((boot, n, after_ms))
     quiet = []

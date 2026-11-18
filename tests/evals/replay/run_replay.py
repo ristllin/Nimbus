@@ -107,7 +107,11 @@ def system_blocks(model: str, tx: E2Transcript) -> list:
     core = manifest.system_text(VARIANT, model) + "\n" + "\n".join(EXTRA_NOTES)
     return [
         {"type": "text", "text": core, "cache_control": {"type": "ephemeral"}},
-        {"type": "text", "text": (tx.digest_block() + "\n\n" + RECENT_FILES).strip(), "cache_control": {"type": "ephemeral"}},
+        {
+            "type": "text",
+            "text": (tx.digest_block() + "\n\n" + RECENT_FILES).strip(),
+            "cache_control": {"type": "ephemeral"},
+        },
     ]
 
 
@@ -148,7 +152,9 @@ class Head:
                 "output": u["output_tokens"],
                 "thinking": (u.get("output_tokens_details") or {}).get("thinking_tokens", 0),
             },
-            "dropped_thinking": sum(1 for x in d.get("input_transformations") or [] if x.get("type") == "thinking_dropped"),
+            "dropped_thinking": sum(
+                1 for x in d.get("input_transformations") or [] if x.get("type") == "thinking_dropped"
+            ),
             "s": round(time.time() - t0, 2),
         }
 
@@ -229,109 +235,123 @@ def warm_shape(shape: dict, n: int, gap_s: int = WARM_GAP_S) -> dict:
     return dict(shape, turns=turns)
 
 
-def run(
-    shape_name: str, profile: str, model: str, replay_thinking: bool, limit: int | None, out: Path, warm=0, aged=False
-) -> dict:
-    shape = synth.load_shape(shape_name)
-    if warm:
-        shape = warm_shape(shape, warm)
-    turns = synth.turns_for(shape, seed=shape_name)[: limit or None]
-    start = epoch_of(shape["first_local"])
-    head = Head(model)
-    tx = E2Transcript(profile, replay_thinking=replay_thinking)
-    if aged:
-        # Steady state: resident halfway between L and H, the digest block full.
-        h, l, cap = PROFILES[profile]
-        tx.seed(synth.prior_history(start, (h + l) // 2, TZ), synth.prior_digests(start, 30, TZ))
-    w = World(now=datetime.fromtimestamp(start, TZ), fail={}, variant=VARIANT)
-    tools = manifest.tools_for(VARIANT)
-    rec = {
-        "shape": shape_name,
-        "profile": profile,
-        "model": model,
-        "replay_thinking": replay_thinking,
-        "warm": warm,
-        "aged": aged,
-        "turns": [],
-        "requests": [],
-        "background": [],
-        "compactions": [],
-    }
-    vnow = start
-    for n, t in enumerate(turns):
-        at = start + t["at_s"]
-        if n and at - vnow >= IDLE_COMPACT_S:
-            compact(head, tx, vnow + IDLE_COMPACT_S, rec)
-        vnow = max(vnow, at)
-        w.now = datetime.fromtimestamp(vnow, TZ)
-        stamp = w.now.strftime("[%a %d %b %Y %H:%M] ")
+class Replay:
+    """One shape at one profile through the emulated engine-2 transcript. cfg: the parsed arguments
+    (shape, profile, model, replay_thinking, limit, warm, aged)."""
+
+    def __init__(self, cfg, out: Path):
+        shape = synth.load_shape(cfg.shape)
+        if cfg.warm:
+            shape = warm_shape(shape, cfg.warm)
+        self.cfg, self.out, self.model = cfg, out, cfg.model
+        self.turns = synth.turns_for(shape, seed=cfg.shape)[: cfg.limit or None]
+        self.start = epoch_of(shape["first_local"])
+        self.head = Head(cfg.model)
+        self.tx = E2Transcript(cfg.profile, replay_thinking=cfg.replay_thinking)
+        if cfg.aged:
+            # Steady state: resident halfway between L and H, the digest block full.
+            h, low, _ = PROFILES[cfg.profile]
+            self.tx.seed(synth.prior_history(self.start, (h + low) // 2, TZ), synth.prior_digests(self.start, 30, TZ))
+        self.w = World(now=datetime.fromtimestamp(self.start, TZ), fail={}, variant=VARIANT)
+        self.tools = manifest.tools_for(VARIANT)
+        self.vnow = self.start
+        self.rec = {
+            "shape": cfg.shape,
+            "profile": cfg.profile,
+            "model": cfg.model,
+            "replay_thinking": cfg.replay_thinking,
+            "warm": cfg.warm,
+            "aged": cfg.aged,
+            "turns": [],
+            "requests": [],
+            "background": [],
+            "compactions": [],
+        }
+
+    def run(self) -> dict:
+        for n, t in enumerate(self.turns):
+            at = self.start + t["at_s"]
+            if n and at - self.vnow >= IDLE_COMPACT_S:
+                compact(self.head, self.tx, self.vnow + IDLE_COMPACT_S, self.rec)
+            self.vnow = max(self.vnow, at)
+            self.rec["turns"].append(self.turn(n + 1, t))
+            self.save()
+        self.rec["changes"] = self.tx.changes
+        self.rec["final_rows"] = len(self.w.rows)
+        self.save()
+        return self.rec
+
+    def save(self):
+        self.out.write_text(json.dumps(self.rec, indent=1))
+
+    def turn(self, n: int, t: dict) -> dict:
+        w, tx = self.w, self.tx
+        w.now = datetime.fromtimestamp(self.vnow, TZ)
         w.history.append((w.now, "owner", t["text"]))
         photos = [synth.photo(k, i) for k, i in t["photos"]]
-        opened = tx.open_turn(vnow, stamp + t["text"], photos)
+        opened = tx.open_turn(self.vnow, w.now.strftime("[%a %d %b %Y %H:%M] ") + t["text"], photos)
         rows_before = len(w.rows)
-        turn = {"n": n + 1, "kind": t["kind"], "photos": len(photos), "device_tools": t["device_tools"], **opened}
+        rec = {"n": n, "kind": t["kind"], "photos": len(photos), "device_tools": t["device_tools"], **opened}
         calls, reply, real0 = [], "", time.time()
-        for rnd in range(MAX_ROUNDS):
-            system = system_blocks(model, tx)
-            messages = tx.render_anthropic()
-            body = len(json.dumps({"system": system, "tools": tools, "messages": messages}).encode())
-            gap = None if tx.last_req_end is None else vnow - tx.last_req_end
-            cold = gap is None or gap > CACHE_5M_S
-            cold_1h = gap is None or gap > CACHE_1H_S
-            st = head.step(system, tools, messages)
-            vnow += st["s"]
-            tx.mark_request(vnow)
-            tx.add_assistant(st["content"])
-            rec["requests"].append(
-                {
-                    "turn": n + 1,
-                    "round": rnd + 1,
-                    "usage": st["usage"],
-                    "body_bytes": body,
-                    "s": st["s"],
-                    "gap_s": None if gap is None else round(gap, 1),
-                    "cold": cold,
-                    "usd_5m": price(model, st["usage"], cold),
-                    "usd_1h": price(model, st["usage"], cold_1h, "1h"),
-                    "usd_billed": price(model, st["usage"], False),
-                    "dropped_thinking": st["dropped_thinking"],
-                    "stop": st["stop"],
-                }
-            )
+        for rnd in range(1, MAX_ROUNDS + 1):
+            st = self.request(n, rnd)
             reply = st["text"]
             if not st["calls"]:
                 break
-            res = []
-            for cid, name, args in st["calls"]:
-                out_, err = call_tool(w, tx, name, args)
-                res.append((cid, name, args, out_, err))
-                calls.append(name)
-            tx.add_results(res, vnow)
+            calls += self.dispatch(st["calls"])
         else:
-            turn["round_guard"] = True
-        w.history.append((datetime.fromtimestamp(vnow, TZ), "assistant", reply))
-        reqs = [r for r in rec["requests"] if r["turn"] == n + 1]
-        turn.update(
+            rec["round_guard"] = True
+        w.history.append((datetime.fromtimestamp(self.vnow, TZ), "assistant", reply))
+        reqs = [r for r in self.rec["requests"] if r["turn"] == n]
+        rec.update(
             {
                 "rounds": len(reqs),
                 "tools": calls,
                 "seconds": round(time.time() - real0, 2),
                 "check": check(w, t["check"], reply, rows_before),
                 "reply": reply[:400],
-                "usd_5m": round(sum(r["usd_5m"] for r in reqs), 6),
-                "usd_1h": round(sum(r["usd_1h"] for r in reqs), 6),
-                "usd_billed": round(sum(r["usd_billed"] for r in reqs), 6),
+                **{k: round(sum(r[k] for r in reqs), 6) for k in ("usd_5m", "usd_1h", "usd_billed")},
                 "first_cached_share": round(reqs[0]["usage"]["cached"] / max(reqs[0]["usage"]["prompt"], 1), 4),
                 "resident": tx.resident(),
                 "digests": len(tx.digests),
             }
         )
-        rec["turns"].append(turn)
-        out.write_text(json.dumps(rec, indent=1))
-    rec["changes"] = tx.changes
-    rec["final_rows"] = len(w.rows)
-    out.write_text(json.dumps(rec, indent=1))
-    return rec
+        return rec
+
+    def request(self, n: int, rnd: int) -> dict:
+        """One head request: rendered, sent, appended, recorded with its price on the virtual clock."""
+        tx = self.tx
+        system, messages = system_blocks(self.model, tx), tx.render_anthropic()
+        body = len(json.dumps({"system": system, "tools": self.tools, "messages": messages}).encode())
+        gap = None if tx.last_req_end is None else self.vnow - tx.last_req_end
+        cold, cold_1h = gap is None or gap > CACHE_5M_S, gap is None or gap > CACHE_1H_S
+        st = self.head.step(system, self.tools, messages)
+        self.vnow += st["s"]
+        tx.mark_request(self.vnow)
+        tx.add_assistant(st["content"])
+        u = st["usage"]
+        self.rec["requests"].append(
+            {
+                "turn": n,
+                "round": rnd,
+                "usage": u,
+                "body_bytes": body,
+                "s": st["s"],
+                "gap_s": None if gap is None else round(gap, 1),
+                "cold": cold,
+                "usd_5m": price(self.model, u, cold),
+                "usd_1h": price(self.model, u, cold_1h, "1h"),
+                "usd_billed": price(self.model, u, False),
+                "dropped_thinking": st["dropped_thinking"],
+                "stop": st["stop"],
+            }
+        )
+        return st
+
+    def dispatch(self, calls: list) -> list:
+        res = [(cid, name, args, *call_tool(self.w, self.tx, name, args)) for cid, name, args in calls]
+        self.tx.add_results(res, self.vnow)
+        return [name for _, name, _ in calls]
 
 
 def spent(evidence: Path) -> float:
@@ -340,6 +360,15 @@ def spent(evidence: Path) -> float:
         r = json.loads(p.read_text())
         total += sum(q["usd_billed"] for q in r["requests"]) + sum(b["usd"] for b in r["background"])
     return total
+
+
+def tag_of(a) -> str:
+    tag = f"{a.shape}-{a.profile}"
+    if a.replay_thinking:
+        tag += "-thinking"
+    if a.warm:
+        tag += f"-warm{a.warm}-rep{a.rep}"
+    return tag + ("-aged" if a.aged else "")
 
 
 def main():
@@ -354,16 +383,15 @@ def main():
     ap.add_argument("--aged", action="store_true", help="start from steady state: (H + L) / 2 resident, digests full")
     ap.add_argument("--evidence", required=True, type=Path)
     ap.add_argument("--env-file", required=True)
-    ap.add_argument("--max-usd", type=float, default=25.0)
+    ap.add_argument("--max-usd", type=float, default=12.0, help="no new run once the evidence dir has billed this")
     a = ap.parse_args()
     providers.load_env(a.env_file)
     a.evidence.mkdir(parents=True, exist_ok=True)
     if spent(a.evidence) >= a.max_usd:
         raise SystemExit(f"HELD: the evidence dir's spend reached {a.max_usd} USD")
-    tag = f"{a.shape}-{a.profile}{'-thinking' if a.replay_thinking else ''}{f'-warm{a.warm}-rep{a.rep}' if a.warm else ''}{'-aged' if a.aged else ''}"
-    out = a.evidence / f"run-{tag}.json"
+    tag = tag_of(a)
     try:
-        rec = run(a.shape, a.profile, a.model, a.replay_thinking, a.limit, out, a.warm, a.aged)
+        rec = Replay(a, a.evidence / f"run-{tag}.json").run()
     except Exception as e:  # report and keep what was stored
         print(f"FAIL {tag}: {providers.redact(f'{type(e).__name__}: {e}')[:400]}")
         raise SystemExit(1)
