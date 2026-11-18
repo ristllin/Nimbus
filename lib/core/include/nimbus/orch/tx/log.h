@@ -201,6 +201,7 @@ class TxLog {
   Status readHeadFile(const std::string& path, HeadState& out);
   Status checkHead(const HeadState& head, const std::vector<uint32_t>& segs);
   bool lastLineOk(const HeadState& head);
+  bool lastLine(const std::string& path, uint64_t end, size_t cap, std::string& tail, size_t& start);
   bool lineStartOk(uint32_t seg, uint64_t off);
   void applyLater(const ScanFacts& f, HeadState& head);
   Status locateBackward(uint64_t thru, const std::vector<uint32_t>& segs, uint32_t& seg, uint64_t& off);
