@@ -11,9 +11,10 @@
 // sequence number; order comes from q, never t.
 //
 // The line (lane RB-T1, lib/core/src/orch_tx_item.cpp): one JSON object, one line,
-//   {"k":"u","q":12,"turn":3,"t":1763384520,"x":"...","z":"1a2b3c4d"}\n
-// "k" (the kind letter) and "q" come first and are always written; then the kind's own
-// fields, each only when it differs from its default; "z" is last: the crc32 (IEEE) of
+//   {"k":"u","q":12,"turn":3,"t":1794920520,"x":"...","z":"1a2b3c4d"}\n
+// "k" (the kind letter) and "q" (from 1) come first and are always written; then the
+// kind's own fields, each only when it differs from its default (h always names its
+// class); a list holds at most kMaxListItems values; "z" is last: the crc32 (IEEE) of
 // every byte before ',"z":"', as 8 lowercase hex digits. The tail ',"z":"xxxxxxxx"}\n'
 // has a fixed width, so a torn tail, a glued line or a flipped byte fails the crc and is
 // dropped, never repaired. A line is at most kMaxLineBytes including its newline.
@@ -26,9 +27,10 @@
 //   k  x rd                    h  x cls (note class)  s  x day thru ext
 //   x  stub why sup            d  ids                 e  cause rds tools hr pr pt ot cr cw usd ms
 //                                                        ex[[b,ms,st]] ev[] ph mh
-// Decoding skips keys it does not know (the format only grows), answers Torn for a
-// framing or crc failure and InvalidArgument for a whole line it cannot read (an unknown
-// kind letter, a malformed value).
+// Decoding skips keys it does not know and keys another kind writes (the format only
+// grows), answers Torn for a framing or crc failure (a cut, a glued line, a flipped byte)
+// and InvalidArgument for a whole line it cannot read (k not first, an unknown kind
+// letter, no q, a malformed value, a list over its cap, nesting over 64).
 //
 // This struct is the decoded value type. The RAM arena (arena.h) keeps encoded bytes,
 // never one std::string per item.
@@ -204,10 +206,11 @@ inline constexpr size_t kTier1LedgerReceipt = 4096; // ledger tools: a 15-row da
 inline constexpr size_t kLongPasteHead = 4096;      // the part of a long paste the message carries
 
 inline constexpr size_t kLineTailBytes = 16;        // ',"z":"xxxxxxxx"}' before the newline
+inline constexpr size_t kMaxListItems = 256;        // values in one list field (src, parts, ids, ...)
 
 // Encode one item as one line: a JSON object with the kind's short keys, last key z =
 // crc32, ending in '\n'. TooLarge (out empty) when the line would pass kMaxLineBytes;
-// InvalidArgument for a kind outside the 12.
+// InvalidArgument (out empty) for a kind outside the 12, q 0 or a list over its cap.
 Status encodeLine(const Item& item, std::string& out);
 
 // Where encodeLineTo writes: the arena writes straight into its block, so an append
@@ -223,13 +226,16 @@ class LineSink {
 // included). The sink receives every byte even when the line is too long: on TooLarge
 // (line over kMaxLineBytes) or InvalidArgument the caller discards what it got.
 Status encodeLineTo(const Item& item, LineSink& sink, size_t& lineBytes);
-// Decode one stored line (with or without its '\n'). Torn when the crc does not match or
-// the object does not close: the caller drops it. InvalidArgument for a whole line it
-// cannot read. `out` is reset first; on failure its contents are unspecified.
+// Decode one stored line (with or without its '\n'). Torn when its framing or crc fails:
+// the caller drops it. InvalidArgument for a crc-valid line it cannot read (see above).
+// `out` is cleared in place first (its strings keep their capacity); on failure its
+// contents are unspecified.
 Status decodeLine(const char* data, size_t len, Item& out);
 
-// What a stored line says about itself without decoding its strings: the crc is checked
-// and only k, q, turn and t are read. No allocation; used by the restart fill and by
+// What a stored line says about itself without decoding its strings: the framing and crc
+// are checked, k must come first, and only k, q, turn and t are read (other values are
+// skipped, not checked: a line checkLine accepts can still fail decodeLine, which only a
+// writer bug or a newer format produces). No allocation; used by the restart fill and by
 // scans that look for the newest s and x items.
 struct LineHeader {
   uint64_t q = 0;

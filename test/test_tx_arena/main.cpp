@@ -224,6 +224,19 @@ void test_a_full_arena_refuses_and_changes_nothing() {
     expectHolds(a, in);
   }
   tx::TxArena big;
+  // A line of exactly 60,000 B is an item like any other.
+  {
+    tx::TxArena edge;
+    TEST_ASSERT_TRUE(edge.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
+    tx::Item max;
+    max.kind = tx::ItemKind::Assistant;
+    max.q = 1;
+    max.x = "a";
+    max.x.assign(tx::kMaxLineBytes - (enc(max).size() - 1), 'a');
+    TEST_ASSERT_EQUAL_UINT32(tx::kMaxLineBytes, enc(max).size());
+    TEST_ASSERT_TRUE(edge.append(max).ok());
+    expectHolds(edge, {max});
+  }
   TEST_ASSERT_TRUE(big.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
   tx::Item huge;
   huge.kind = tx::ItemKind::Assistant;
@@ -379,6 +392,14 @@ void test_pool_keeps_three_chats_least_recently_used_first_out() {
   const std::string maxKey(tx::TxArenaPool::kChatKeyMax, 'k');
   TEST_ASSERT_TRUE(pool.acquire(maxKey.c_str(), a, fresh).ok());
   TEST_ASSERT_TRUE(pool.resident(maxKey.c_str()));
+  // Re-init at a new size: every chat leaves, each slot takes a block of the new size.
+  TEST_ASSERT_TRUE(pool.init(8192, seam.alloc(), seam.release()).ok());
+  TEST_ASSERT_FALSE(pool.resident(maxKey.c_str()));
+  TEST_ASSERT_TRUE(pool.acquire("1001", a, fresh).ok());
+  TEST_ASSERT_TRUE(fresh);
+  TEST_ASSERT_EQUAL_UINT32(8192, a->capacity());
+  TEST_ASSERT_EQUAL_INT(4, seam.allocs);
+  TEST_ASSERT_EQUAL_INT(1, seam.frees);
 }
 
 int main(int, char**) {

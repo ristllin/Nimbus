@@ -32,7 +32,9 @@ uint32_t crcUpdate(uint32_t c, const char* data, size_t len) {
 uint32_t crc32(const char* data, size_t len) { return ~crcUpdate(0xFFFFFFFFu, data, len); }
 
 const char kHex[] = "0123456789abcdef";
-const char kTailHead[] = ",\"z\":\"";   // 6 bytes, then 8 hex, then "}
+const char kTailHead[] = ",\"z\":\"";   // then 8 hex digits, then "}
+constexpr size_t kTailHeadBytes = sizeof kTailHead - 1;
+static_assert(kTailHeadBytes + 8 + 2 == kLineTailBytes, "the tail is ,\"z\":\"xxxxxxxx\"}");
 
 // ---- the writer: buffers small pieces, keeps the crc and the length -----------------
 
@@ -55,9 +57,9 @@ class Writer {
   void finish() {
     flush();
     char tail[kLineTailBytes + 1];
-    std::memcpy(tail, kTailHead, 6);
+    std::memcpy(tail, kTailHead, kTailHeadBytes);
     const uint32_t crc = ~crc_;
-    for (int i = 0; i < 8; ++i) tail[6 + i] = kHex[(crc >> (28 - 4 * i)) & 15u];
+    for (int i = 0; i < 8; ++i) tail[kTailHeadBytes + i] = kHex[(crc >> (28 - 4 * i)) & 15u];
     tail[14] = '"';
     tail[15] = '}';
     tail[16] = '\n';
@@ -314,17 +316,30 @@ bool knownKind(ItemKind k) {
   return kindFromLetter(kindLetter(k), back);
 }
 
+// What a decoder accepts: a known kind, q from 1, every list within kMaxListItems.
+bool encodable(const Item& it) {
+  const size_t lists[] = {it.src.size(),    it.parts.size(),         it.photos.size(),    it.sup.size(),
+                          it.msgIds.size(), it.end.exchanges.size(), it.end.events.size()};
+  for (size_t n : lists)
+    if (n > kMaxListItems) return false;
+  return knownKind(it.kind) && it.q != 0;
+}
+
+// Keeps at most kMaxLineBytes: a far too long item costs no more than one line of memory.
 struct StringSink final : LineSink {
   std::string& s;
   explicit StringSink(std::string& out) : s(out) {}
-  void put(const char* p, size_t n) override { s.append(p, n); }
+  void put(const char* p, size_t n) override {
+    const size_t room = kMaxLineBytes - (s.size() < kMaxLineBytes ? s.size() : kMaxLineBytes);
+    s.append(p, n < room ? n : room);
+  }
 };
 
 }  // namespace
 
 Status encodeLineTo(const Item& item, LineSink& sink, size_t& lineBytes) {
   lineBytes = 0;
-  if (!knownKind(item.kind)) return Status::fail(Err::InvalidArgument, "tx::encodeLine");
+  if (!encodable(item)) return Status::fail(Err::InvalidArgument, "tx::encodeLine");
   Writer w(sink);
   w.put("{\"k\":\"", 6);
   w.put(kindLetter(item.kind));
@@ -506,44 +521,57 @@ bool readBool(Cursor& c, bool& b) {
 bool skipScalar(Cursor& c) {
   const char* start = c.p;
   while (c.more() && *c.p != ',' && *c.p != ']' && *c.p != '}' && static_cast<uint8_t>(*c.p) > 0x20 &&
-         *c.p != '"' && *c.p != '[' && *c.p != '{')
+         *c.p != '"' && *c.p != '[' && *c.p != '{' && *c.p != ':')
     ++c.p;
   return c.p != start;
 }
 
-// Skip one value of any shape, nested to any depth, without recursion.
+// Skip one value of any shape without recursion. Strings and matching brackets are
+// checked, not the full grammar; nesting deeper than kSkipDepth is refused (no line of
+// ours nests more than 3).
+constexpr size_t kSkipDepth = 64;
+
+bool skipClose(Cursor& c, uint64_t& opened, size_t& depth) {
+  if (!depth) return false;
+  const bool wantObject = (opened >> (depth - 1)) & 1u;
+  if ((*c.p == '}') != wantObject) return false;
+  --depth;
+  ++c.p;
+  return true;
+}
+
 bool skipValue(Cursor& c) {
+  uint64_t opened = 0;   // bit d: the bracket at depth d is an object
   size_t depth = 0;
   do {
     const char ch = c.peek();
-    if (ch == '"') {
-      if (!skipString(c)) return false;
-    } else if (ch == '{' || ch == '[') {
+    if (ch == '{' || ch == '[') {
+      if (depth == kSkipDepth) return false;
+      opened = (opened & ~(uint64_t(1) << depth)) | (uint64_t(ch == '{') << depth);
       ++depth;
       ++c.p;
       continue;
-    } else if (ch == '}' || ch == ']') {
-      if (!depth) return false;
-      --depth;
-      ++c.p;
+    }
+    if (ch == '}' || ch == ']') {
+      if (!skipClose(c, opened, depth)) return false;
     } else if (ch == ',' || ch == ':') {
       if (!depth) return false;
       ++c.p;
       continue;
-    } else if (!skipScalar(c)) {
+    } else if (!(ch == '"' ? skipString(c) : skipScalar(c))) {
       return false;
     }
   } while (depth && c.more());
   return depth == 0;
 }
 
-// A short key into `buf`; `fits` is false when it is longer than the buffer (an unknown
-// key, skipped by the caller).
+// A short key into `buf`; `fits` is false when it is longer than the buffer or holds a
+// NUL (a key no rule names: the caller skips its value).
 bool readKey(Cursor& c, char* buf, size_t cap, bool& fits) {
   size_t n = 0;
   fits = true;
   const bool ok = readString(c, [&](char ch) {
-    if (n + 1 < cap)
+    if (ch && n + 1 < cap)
       buf[n++] = ch;
     else
       fits = false;
@@ -552,18 +580,20 @@ bool readKey(Cursor& c, char* buf, size_t cap, bool& fits) {
   return ok;
 }
 
-// '[' each (',' each)* ']' with `each(cursor)` reading one element.
+// '[' each (',' each)* ']' with `each(cursor)` reading one element; at most kMaxListItems.
 template <class Each>
 bool readArray(Cursor& c, Each each) {
   if (!c.eat('[')) return false;
   if (c.eat(']')) return true;
+  size_t n = 0;
   do {
-    if (!each(c)) return false;
+    if (++n > kMaxListItems || !each(c)) return false;
   } while (c.eat(','));
   return c.eat(']');
 }
 
-// '{' "key":value (',' ...)* '}' with `field(key, fits, cursor)` reading one value.
+// '{' "key":value (',' ...)* '}' with `field(key, fits, cursor)` reading one value; every
+// key reaches `field`, so it can count them.
 template <class Field>
 bool readObject(Cursor& c, Field field) {
   if (!c.eat('{')) return false;
@@ -571,25 +601,26 @@ bool readObject(Cursor& c, Field field) {
   do {
     char key[8];
     bool fits = true;
-    if (!readKey(c, key, sizeof key, fits) || !c.eat(':')) return false;
-    if (!(fits ? field(key, c) : skipValue(c))) return false;
+    if (!readKey(c, key, sizeof key, fits) || !c.eat(':') || !field(key, fits, c)) return false;
   } while (c.eat(','));
   return c.eat('}');
 }
 
-// ---- the item's fields ----------------------------------------------------------------
-
-struct Decoding {
-  Item& it;
-  bool haveKind = false;
-  size_t fields = 0;
-};
-
-using FieldFn = bool (*)(Cursor&, Decoding&);
-struct FieldRule {
-  const char* key;
-  FieldFn read;
-};
+// A slug among `n` values of an enum whose slug function is `slugOf`; `fallback` when the
+// slug is unknown (a newer writer), or false to refuse it.
+template <class E>
+bool readSlug(Cursor& c, E& out, const char* (*slugOf)(E), uint8_t n, const E* fallback) {
+  char slug[12];
+  bool fits = true;
+  if (!readKey(c, slug, sizeof slug, fits)) return false;
+  for (uint8_t i = 0; fits && i < n; ++i)
+    if (std::strcmp(slug, slugOf(static_cast<E>(i))) == 0) {
+      out = static_cast<E>(i);
+      return true;
+    }
+  if (fallback) out = *fallback;
+  return fallback != nullptr;
+}
 
 bool readKindLetter(Cursor& c, ItemKind& kind) {
   char letter[3];
@@ -598,90 +629,67 @@ bool readKindLetter(Cursor& c, ItemKind& kind) {
   return kindFromLetter(letter[0], kind);
 }
 
-bool readKind(Cursor& c, Decoding& d) {
-  d.haveKind = d.fields == 1 && readKindLetter(c, d.it.kind);   // k comes first, once
-  return d.haveKind;
-}
+// ---- the item's fields ----------------------------------------------------------------
 
-bool readResultClass(Cursor& c, ResultClass& out) {
-  char slug[8];
-  bool fits = true;
-  if (!readKey(c, slug, sizeof slug, fits)) return false;
-  // An unknown class reads as outside content: never shown whole after its turn.
-  out = ResultClass::Outside;
-  for (ResultClass k : {ResultClass::Receipt, ResultClass::Bulk, ResultClass::Outside})
-    if (fits && std::strcmp(slug, resultClassSlug(k)) == 0) out = k;
-  return true;
-}
+struct Decoding {
+  Item& it;
+  size_t fields = 0;
+  bool haveKind = false;
+  bool haveQ = false;
+};
 
-bool readNoteClass(Cursor& c, NoteClass& out) {
-  char slug[12];
-  bool fits = true;
-  if (!readKey(c, slug, sizeof slug, fits)) return false;
-  out = NoteClass::Unknown;
-  for (uint8_t i = 0; i <= static_cast<uint8_t>(NoteClass::Gap); ++i)
-    if (fits && std::strcmp(slug, noteClassSlug(static_cast<NoteClass>(i))) == 0) out = static_cast<NoteClass>(i);
-  return true;
+// Kind masks: a key is read only for the kinds that write it (tx/item.h key table).
+constexpr uint16_t bit(ItemKind k) {
+  for (size_t i = 0; i < kItemKindCount; ++i)
+    if (kAllItemKinds[i] == k) return static_cast<uint16_t>(1u << i);
+  return 0;
 }
+constexpr uint16_t U = bit(ItemKind::User), T = bit(ItemKind::TurnOpen), A = bit(ItemKind::Assistant),
+                   C = bit(ItemKind::Call), I = bit(ItemKind::Intent), R = bit(ItemKind::Result),
+                   K = bit(ItemKind::RoundMeta), H = bit(ItemKind::DeviceNote), S = bit(ItemKind::Digest),
+                   X = bit(ItemKind::PointerMove), D = bit(ItemKind::Delivery), E = bit(ItemKind::TurnEnd);
 
-bool readCls(Cursor& c, Decoding& d) {
-  if (d.it.kind == ItemKind::DeviceNote) return readNoteClass(c, d.it.note);
-  return readResultClass(c, d.it.cls);
-}
-
-bool readPartKind(Cursor& c, PartKind& out) {
-  char slug[8];
-  bool fits = true;
-  if (!readKey(c, slug, sizeof slug, fits)) return false;
-  for (PartKind k : {PartKind::Image, PartKind::File, PartKind::Voice})
-    if (fits && std::strcmp(slug, partKindSlug(k)) == 0) {
-      out = k;
-      return true;
-    }
-  return false;
-}
+using FieldFn = bool (*)(Cursor&, Decoding&);
+struct FieldRule {
+  const char* key;
+  uint16_t kinds;
+  FieldFn read;
+};
 
 bool readPart(Cursor& c, Part& p) {
-  return readObject(c, [&](const char* key, Cursor& cc) {
-    if (!std::strcmp(key, "k")) return readPartKind(cc, p.kind);
-    if (!std::strcmp(key, "ref")) return readStr(cc, p.ref);
-    if (!std::strcmp(key, "mime")) return readStr(cc, p.mime);
-    if (!std::strcmp(key, "b")) return readUnsigned(cc, p.bytes);
-    return skipValue(cc);
-  });
+  bool haveKind = false;
+  return readObject(c, [&](const char* key, bool fits, Cursor& cc) {
+           if (!fits) return skipValue(cc);
+           if (!std::strcmp(key, "k"))
+             return haveKind = readSlug<PartKind>(cc, p.kind, partKindSlug, 3, nullptr);
+           if (!std::strcmp(key, "ref")) return readStr(cc, p.ref);
+           if (!std::strcmp(key, "mime")) return readStr(cc, p.mime);
+           if (!std::strcmp(key, "b")) return readUnsigned(cc, p.bytes);
+           return skipValue(cc);
+         }) &&
+         haveKind;
 }
 
 bool readExchange(Cursor& c, ExchangeFacts& x) {
   int n = 0;
   return readArray(c, [&](Cursor& cc) {
-    switch (n++) {
-      case 0: return readUnsigned(cc, x.requestBytes);
-      case 1: return readUnsigned(cc, x.ms);
-      case 2: return readUnsigned(cc, x.httpStatus);
-      default: return skipValue(cc);
-    }
-  }) && n >= 3;
+           switch (n++) {
+             case 0: return readUnsigned(cc, x.requestBytes);
+             case 1: return readUnsigned(cc, x.ms);
+             case 2: return readUnsigned(cc, x.httpStatus);
+             default: return skipValue(cc);
+           }
+         }) &&
+         n >= 3;
 }
 
-bool readStrings(Cursor& c, std::vector<std::string>& v) {
+template <class T, class One>
+bool readList(Cursor& c, std::vector<T>& v, One one) {
   v.clear();
   return readArray(c, [&](Cursor& cc) {
     v.emplace_back();
-    return readStr(cc, v.back());
+    return one(cc, v.back());
   });
-}
-
-bool readU64s(Cursor& c, std::vector<uint64_t>& v) {
-  v.clear();
-  return readArray(c, [&](Cursor& cc) {
-    v.push_back(0);
-    return readU64(cc, v.back());
-  });
-}
-
-bool readPhotosOrHash(Cursor& c, Decoding& d) {
-  if (d.it.kind == ItemKind::TurnEnd) return readUnsigned(c, d.it.end.promptHash);
-  return readStrings(c, d.it.photos);
 }
 
 bool readTz(Cursor& c, Decoding& d) {
@@ -691,88 +699,86 @@ bool readTz(Cursor& c, Decoding& d) {
   return true;
 }
 
-#define TX_STR(k, f) {k, [](Cursor& c, Decoding& d) { return readStr(c, d.it.f); }}
-#define TX_NUM(k, f) {k, [](Cursor& c, Decoding& d) { return readUnsigned(c, d.it.f); }}
-#define TX_BOOL(k, f) {k, [](Cursor& c, Decoding& d) { return readBool(c, d.it.f); }}
+bool readQ(Cursor& c, Decoding& d) {
+  d.haveQ = readU64(c, d.it.q) && d.it.q != 0;
+  return d.haveQ;
+}
+
+const ResultClass kOutside = ResultClass::Outside;   // an unknown class is never shown whole
+const NoteClass kUnknownNote = NoteClass::Unknown;
+constexpr uint8_t kNoteClasses = static_cast<uint8_t>(NoteClass::Gap) + 1;
+
+#define TX_STR(k, m, f) {k, m, [](Cursor& c, Decoding& d) { return readStr(c, d.it.f); }}
+#define TX_NUM(k, m, f) {k, m, [](Cursor& c, Decoding& d) { return readUnsigned(c, d.it.f); }}
+#define TX_BOOL(k, m, f) {k, m, [](Cursor& c, Decoding& d) { return readBool(c, d.it.f); }}
+#define TX_LIST(k, m, f, one) {k, m, [](Cursor& c, Decoding& d) { return readList(c, d.it.f, one); }}
+
+constexpr uint16_t kAll = (1u << kItemKindCount) - 1;
 
 const FieldRule kFields[] = {
-    {"k", readKind},
-    TX_NUM("q", q),
-    TX_NUM("turn", turn),
-    TX_NUM("t", t),
-    TX_STR("x", x),
-    {"tz", readTz},
-    TX_STR("ch", ch),
-    {"src", [](Cursor& c, Decoding& d) { return readU64s(c, d.it.src); }},
-    TX_NUM("m", m),
-    {"parts", [](Cursor& c, Decoding& d) {
-       d.it.parts.clear();
-       return readArray(c, [&](Cursor& cc) {
-         d.it.parts.emplace_back();
-         return readPart(cc, d.it.parts.back());
-       });
-     }},
-    TX_STR("tr", trigger),
-    TX_STR("hd", head),
-    TX_STR("pf", profile),
-    TX_NUM("at", attempt),
-    {"ph", readPhotosOrHash},
-    TX_NUM("rd", rd),
-    TX_BOOL("fin", fin),
-    TX_STR("id", id),
-    TX_STR("n", n),
-    TX_STR("args", args),
-    TX_BOOL("eff", eff),
-    TX_BOOL("ok", ok),
-    {"cls", readCls},
-    TX_STR("hdl", handle),
-    TX_NUM("b", bytes),
-    TX_NUM("l", lines),
-    TX_STR("st", st),
-    TX_STR("day", day),
-    TX_NUM("thru", thru),
-    TX_BOOL("ext", ext),
-    TX_NUM("stub", stub),
-    TX_STR("why", why),
-    {"sup", [](Cursor& c, Decoding& d) { return readU64s(c, d.it.sup); }},
-    {"ids", [](Cursor& c, Decoding& d) {
-       d.it.msgIds.clear();
-       return readArray(c, [&](Cursor& cc) {
-         d.it.msgIds.push_back(0);
-         return readI64(cc, d.it.msgIds.back());
-       });
-     }},
-    TX_STR("cause", end.cause),
-    TX_NUM("rds", end.rounds),
-    TX_NUM("tools", end.tools),
-    TX_NUM("hr", end.headRequests),
-    TX_NUM("pr", end.probeRequests),
-    TX_NUM("pt", end.promptTokens),
-    TX_NUM("ot", end.outputTokens),
-    TX_NUM("cr", end.cacheReadTokens),
-    TX_NUM("cw", end.cacheWriteTokens),
-    TX_NUM("usd", end.microUsd),
-    TX_NUM("ms", end.ms),
-    {"ex", [](Cursor& c, Decoding& d) {
-       d.it.end.exchanges.clear();
-       return readArray(c, [&](Cursor& cc) {
-         d.it.end.exchanges.emplace_back();
-         return readExchange(cc, d.it.end.exchanges.back());
-       });
-     }},
-    {"ev", [](Cursor& c, Decoding& d) { return readStrings(c, d.it.end.events); }},
-    TX_NUM("mh", end.manifestHash),
+    {"q", kAll, readQ},
+    TX_NUM("turn", kAll, turn),
+    TX_NUM("t", kAll, t),
+    TX_STR("x", U | A | R | K | H | S, x),
+    {"tz", U, readTz},
+    TX_STR("ch", U, ch),
+    TX_LIST("src", U, src, readU64),
+    TX_NUM("m", U, m),
+    TX_LIST("parts", U, parts, readPart),
+    TX_STR("tr", T, trigger),
+    TX_STR("hd", T, head),
+    TX_STR("pf", T, profile),
+    TX_NUM("at", T, attempt),
+    TX_LIST("ph", T, photos, readStr),
+    TX_NUM("rd", A | C | K, rd),
+    TX_BOOL("fin", A, fin),
+    TX_STR("id", C | I | R, id),
+    TX_STR("n", C | I | R, n),
+    TX_STR("args", C, args),
+    TX_BOOL("eff", C, eff),
+    TX_BOOL("ok", R, ok),
+    {"cls", R, [](Cursor& c, Decoding& d) { return readSlug<ResultClass>(c, d.it.cls, resultClassSlug, 3, &kOutside); }},
+    {"cls", H, [](Cursor& c, Decoding& d) { return readSlug<NoteClass>(c, d.it.note, noteClassSlug, kNoteClasses, &kUnknownNote); }},
+    TX_STR("hdl", R, handle),
+    TX_NUM("b", R, bytes),
+    TX_NUM("l", R, lines),
+    TX_STR("st", R, st),
+    TX_STR("day", S, day),
+    TX_NUM("thru", S, thru),
+    TX_BOOL("ext", S, ext),
+    TX_NUM("stub", X, stub),
+    TX_STR("why", X, why),
+    TX_LIST("sup", X, sup, readU64),
+    TX_LIST("ids", D, msgIds, readI64),
+    TX_STR("cause", E, end.cause),
+    TX_NUM("rds", E, end.rounds),
+    TX_NUM("tools", E, end.tools),
+    TX_NUM("hr", E, end.headRequests),
+    TX_NUM("pr", E, end.probeRequests),
+    TX_NUM("pt", E, end.promptTokens),
+    TX_NUM("ot", E, end.outputTokens),
+    TX_NUM("cr", E, end.cacheReadTokens),
+    TX_NUM("cw", E, end.cacheWriteTokens),
+    TX_NUM("usd", E, end.microUsd),
+    TX_NUM("ms", E, end.ms),
+    TX_LIST("ex", E, end.exchanges, readExchange),
+    TX_LIST("ev", E, end.events, readStr),
+    TX_NUM("ph", E, end.promptHash),
+    TX_NUM("mh", E, end.manifestHash),
 };
 
 #undef TX_STR
 #undef TX_NUM
 #undef TX_BOOL
+#undef TX_LIST
 
-bool readItemField(const char* key, Cursor& c, Decoding& d) {
-  ++d.fields;
-  if (d.fields == 1 && std::strcmp(key, "k") != 0) return false;   // k comes first
+// k first, then any key; a key the item's kind does not write is skipped like an unknown one.
+bool readItemField(const char* key, bool fits, Cursor& c, Decoding& d) {
+  if (++d.fields == 1) return fits && !std::strcmp(key, "k") && (d.haveKind = readKindLetter(c, d.it.kind));
+  if (fits && !std::strcmp(key, "k")) return false;   // one k
+  const uint16_t mine = bit(d.it.kind);
   for (const FieldRule& r : kFields)
-    if (!std::strcmp(key, r.key)) return r.read(c, d);
+    if (fits && (r.kinds & mine) && !std::strcmp(key, r.key)) return r.read(c, d);
   return skipValue(c);
 }
 
@@ -814,11 +820,11 @@ bool readCrc(const char* hex, uint32_t& v) {
 Status frame(const char* data, size_t& len, const char* where) {
   if (!data) return Status::fail(Err::InvalidArgument, where);
   if (len && data[len - 1] == '\n') --len;
-  if (len + 1 > kMaxLineBytes || len < kLineTailBytes + 2) return Status::fail(Err::Torn, where);
+  if (len >= kMaxLineBytes || len < kLineTailBytes + 2) return Status::fail(Err::Torn, where);
   const char* tail = data + len - kLineTailBytes;
   uint32_t want = 0;
-  const bool shaped = std::memcmp(tail, kTailHead, 6) == 0 && tail[14] == '"' && tail[15] == '}';
-  if (!shaped || !readCrc(tail + 6, want) || crc32(data, len - kLineTailBytes) != want)
+  const bool shaped = std::memcmp(tail, kTailHead, kTailHeadBytes) == 0 && tail[14] == '"' && tail[15] == '}';
+  if (!shaped || !readCrc(tail + kTailHeadBytes, want) || crc32(data, len - kLineTailBytes) != want)
     return Status::fail(Err::Torn, where);
   return Status::success();
 }
@@ -831,8 +837,9 @@ Status decodeLine(const char* data, size_t len, Item& out) {
   if (!st.ok()) return st;
   Cursor c{data, data + len};
   Decoding d{out};
-  const bool parsed = readObject(c, [&](const char* key, Cursor& cc) { return readItemField(key, cc, d); });
-  if (!parsed || c.more() || !d.haveKind) return Status::fail(Err::InvalidArgument, "tx::decodeLine");
+  const bool parsed =
+      readObject(c, [&](const char* key, bool fits, Cursor& cc) { return readItemField(key, fits, cc, d); });
+  if (!parsed || c.more() || !d.haveKind || !d.haveQ) return Status::fail(Err::InvalidArgument, "tx::decodeLine");
   return Status::success();
 }
 
@@ -843,17 +850,16 @@ Status checkLine(const char* data, size_t len, LineHeader& out) {
   Cursor c{data, data + len};
   size_t fields = 0;
   bool haveKind = false;
-  const bool parsed = readObject(c, [&](const char* key, Cursor& cc) {
-    if (++fields == 1) {
-      haveKind = std::strcmp(key, "k") == 0 && readKindLetter(cc, out.kind);
-      return haveKind;
-    }
+  const bool parsed = readObject(c, [&](const char* key, bool fits, Cursor& cc) {
+    if (++fields == 1) return haveKind = fits && !std::strcmp(key, "k") && readKindLetter(cc, out.kind);
+    if (!fits) return skipValue(cc);
+    if (!std::strcmp(key, "k")) return false;
     if (!std::strcmp(key, "q")) return readU64(cc, out.q);
     if (!std::strcmp(key, "turn")) return readUnsigned(cc, out.turn);
     if (!std::strcmp(key, "t")) return readU64(cc, out.t);
     return skipValue(cc);
   });
-  if (!parsed || c.more() || !haveKind) return Status::fail(Err::InvalidArgument, "tx::checkLine");
+  if (!parsed || c.more() || !haveKind || !out.q) return Status::fail(Err::InvalidArgument, "tx::checkLine");
   return Status::success();
 }
 

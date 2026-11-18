@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -243,6 +245,167 @@ void test_escapes_and_unknown_classes() {
   TEST_ASSERT_TRUE(it.note == tx::NoteClass::Unknown);
 }
 
+// q starts at 1 and is always there; k comes first even behind a key too long to name or
+// a key holding a NUL; a field another kind writes is skipped, never read into this item.
+void test_header_rules_and_foreign_fields() {
+  const char* refused[] = {
+      R"({"k":"u")",
+      R"({"k":"u","q":0)",
+      R"({"longkey1":1,"k":"u","q":1)",
+      "{\"k\\u0000zz\":\"u\",\"q\":1",
+      R"({"k":"u","q":1,"x":"a","k":"a")",
+  };
+  for (const char* body : refused) {
+    const std::string line = sealed(body);
+    tx::Item it;
+    tx::LineHeader h;
+    TEST_ASSERT_TRUE_MESSAGE(tx::decodeLine(line.data(), line.size(), it).err == tx::Err::InvalidArgument, body);
+    TEST_ASSERT_TRUE_MESSAGE(tx::checkLine(line.data(), line.size(), h).err == tx::Err::InvalidArgument, body);
+  }
+  const std::string line =
+      sealed(R"({"k":"u","q":1,"usd":5,"ph":"x","ok":false,"cls":"bulk","fin":true,"rd":3,"ids":[1],"x":"hi")");
+  tx::Item it;
+  TEST_ASSERT_TRUE(tx::decodeLine(line.data(), line.size(), it).ok());
+  tx::Item want;
+  want.q = 1;
+  want.x = "hi";
+  TEST_ASSERT_EQUAL_STRING("", txgen::firstDifference(want, it).c_str());
+  tx::Item zero;
+  zero.kind = tx::ItemKind::User;
+  std::string out = "keep";
+  TEST_ASSERT_TRUE(tx::encodeLine(zero, out).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_EQUAL_UINT32(0, out.size());
+}
+
+// Lists hold at most kMaxListItems values, written and read alike, for every list field:
+// a hostile line cannot make the decoder build thousands of values.
+void test_lists_are_capped_both_ways() {
+  using Fill = void (*)(tx::Item&, size_t);
+  struct Row {
+    tx::ItemKind kind;
+    Fill fill;
+    const char* element;   // one more value of the list, as JSON
+  } rows[] = {
+      {tx::ItemKind::User, [](tx::Item& it, size_t n) { it.src.assign(n, 7); }, "7"},
+      {tx::ItemKind::User, [](tx::Item& it, size_t n) { it.parts.assign(n, tx::Part{tx::PartKind::File, "a/b", "", 1}); },
+       R"({"k":"file","ref":"a/b","b":1})"},
+      {tx::ItemKind::TurnOpen, [](tx::Item& it, size_t n) { it.photos.assign(n, "p1"); }, R"("p1")"},
+      {tx::ItemKind::PointerMove, [](tx::Item& it, size_t n) { it.sup.assign(n, 3); }, "3"},
+      {tx::ItemKind::Delivery, [](tx::Item& it, size_t n) { it.msgIds.assign(n, -1); }, "-1"},
+      {tx::ItemKind::TurnEnd, [](tx::Item& it, size_t n) { it.end.exchanges.assign(n, tx::ExchangeFacts{1, 1, 200}); },
+       "[1,1,200]"},
+      {tx::ItemKind::TurnEnd, [](tx::Item& it, size_t n) { it.end.events.assign(n, "e"); }, R"("e")"},
+  };
+  for (const Row& row : rows) {
+    tx::Item it;
+    it.kind = row.kind;
+    it.q = 1;
+    row.fill(it, tx::kMaxListItems);
+    const std::string atCap = enc(it);
+    tx::Item back;
+    TEST_ASSERT_TRUE(tx::decodeLine(atCap.data(), atCap.size(), back).ok());
+    TEST_ASSERT_EQUAL_STRING("", txgen::firstDifference(it, back).c_str());
+    row.fill(it, tx::kMaxListItems + 1);
+    std::string over;
+    TEST_ASSERT_TRUE(tx::encodeLine(it, over).err == tx::Err::InvalidArgument);
+    // The same list one value longer, sealed by another writer: refused on read.
+    std::string body = atCap.substr(0, atCap.size() - 1 - tx::kLineTailBytes);
+    body.insert(body.find('[') + 1, std::string(row.element) + ",");
+    const std::string longer = sealed(body);
+    TEST_ASSERT_TRUE_MESSAGE(tx::decodeLine(longer.data(), longer.size(), back).err == tx::Err::InvalidArgument,
+                             row.element);
+  }
+}
+
+// Unknown values are skipped without recursion up to 64 levels; deeper, or with brackets
+// that do not match, the line is refused; nothing crashes on 59,000 open brackets.
+void test_nesting_is_bounded_and_matched() {
+  tx::Item it;
+  const std::string ok64 = sealed("{\"k\":\"u\",\"q\":1,\"deep\":" + std::string(64, '[') + std::string(64, ']'));
+  TEST_ASSERT_TRUE(tx::decodeLine(ok64.data(), ok64.size(), it).ok());
+  const std::string deep65 = sealed("{\"k\":\"u\",\"q\":1,\"deep\":" + std::string(65, '[') + std::string(65, ']'));
+  TEST_ASSERT_TRUE(tx::decodeLine(deep65.data(), deep65.size(), it).err == tx::Err::InvalidArgument);
+  const std::string open = sealed("{\"k\":\"u\",\"q\":1,\"deep\":" + std::string(59000, '['));
+  TEST_ASSERT_TRUE(tx::decodeLine(open.data(), open.size(), it).err == tx::Err::InvalidArgument);
+  // A skipped value is checked for its strings and matching brackets, not its full grammar.
+  const char* bad[] = {R"({"k":"u","q":1,"w":[})", R"({"k":"u","q":1,"w":{"a":1])", R"({"k":"u","q":1,"w":})",
+                       R"({"k":"u","q":1,"w":["a)"};
+  for (const char* body : bad) {
+    const std::string line = sealed(body);
+    TEST_ASSERT_TRUE_MESSAGE(tx::decodeLine(line.data(), line.size(), it).err == tx::Err::InvalidArgument, body);
+  }
+}
+
+// The edges of every number type come back exactly.
+void test_number_edges_round_trip() {
+  tx::Item it;
+  it.kind = tx::ItemKind::Delivery;
+  it.q = UINT64_MAX;
+  it.t = UINT64_MAX;
+  it.turn = UINT32_MAX;
+  it.msgIds = {INT64_MIN, INT64_MAX, -1, 1};
+  tx::Item back;
+  std::string line = enc(it);
+  TEST_ASSERT_TRUE(tx::decodeLine(line.data(), line.size(), back).ok());
+  TEST_ASSERT_EQUAL_STRING("", txgen::firstDifference(it, back).c_str());
+  tx::Item u;
+  u.kind = tx::ItemKind::User;
+  u.q = 1;
+  u.tzMinutes = INT16_MIN;
+  u.src = {UINT64_MAX};
+  line = enc(u);
+  TEST_ASSERT_TRUE(tx::decodeLine(line.data(), line.size(), back).ok());
+  TEST_ASSERT_EQUAL_STRING("", txgen::firstDifference(u, back).c_str());
+  const std::string minusZero = sealed(R"({"k":"d","q":1,"ids":[-0])");
+  TEST_ASSERT_TRUE(tx::decodeLine(minusZero.data(), minusZero.size(), back).ok());
+  TEST_ASSERT_EQUAL_INT64(0, back.msgIds.at(0));
+}
+
+// Hostile lines that pass the crc (another writer, a crc collision): 20,000 mutations of
+// real lines, each resealed and read from an exact-size heap copy. Every one answers ok or
+// InvalidArgument; what decodes re-encodes to a line that decodes to the same item.
+void test_resealed_mutations_never_break_the_reader() {
+  static const char* tokens[] = {"\"", "\\", "{", "}", "[", "]", ",", ":", "0", "-", "1e9", "null", "true",
+                                 "\"k\"", "\"q\"", "\\u", "\\ud800", "99999999999999999999", "\"x\":", "\x01"};
+  Rng r(47);
+  const std::vector<std::string> seeds = oneLinePerKind(53);
+  int decoded = 0;
+  for (int i = 0; i < 20000; ++i) {
+    const std::string& seed = seeds[r.below(seeds.size())];
+    std::string body = seed.substr(0, seed.size() - 1 - tx::kLineTailBytes);
+    for (int m = 0, n = 1 + (int)r.below(3); m < n && !body.empty(); ++m) {
+      const size_t at = r.below(body.size());
+      const std::string tok = tokens[r.below(sizeof tokens / sizeof tokens[0])];
+      switch (r.below(3)) {
+        case 0: body.replace(at, 1 + r.below(4), tok); break;
+        case 1: body.insert(at, tok); break;
+        default: body.erase(at, 1 + r.below(8)); break;
+      }
+    }
+    const std::string line = sealed(body);
+    char* exact = static_cast<char*>(std::malloc(line.size()));
+    std::memcpy(exact, line.data(), line.size());
+    tx::Item it;
+    tx::LineHeader h;
+    const tx::Status st = tx::decodeLine(exact, line.size(), it);
+    const tx::Status hs = tx::checkLine(exact, line.size(), h);
+    std::free(exact);
+    TEST_ASSERT_TRUE_MESSAGE(st.ok() || st.err == tx::Err::InvalidArgument, body.c_str());
+    TEST_ASSERT_TRUE(hs.ok() || hs.err == tx::Err::InvalidArgument);
+    if (!st.ok()) continue;
+    ++decoded;
+    TEST_ASSERT_TRUE(hs.ok() && h.q == it.q && h.kind == it.kind);
+    std::string again;
+    TEST_ASSERT_TRUE(tx::encodeLine(it, again).ok() || it.q == 0);
+    tx::Item twice;
+    TEST_ASSERT_TRUE(tx::decodeLine(again.data(), again.size(), twice).ok());
+    TEST_ASSERT_EQUAL_STRING("", txgen::firstDifference(it, twice).c_str());
+  }
+  char msg[96];
+  std::snprintf(msg, sizeof msg, "%d of 20000 resealed mutations still decode; the rest are refused", decoded);
+  TEST_MESSAGE(msg);
+}
+
 // checkLine reads k, q, turn and t without decoding, and agrees with decodeLine on every kind.
 void test_check_line_agrees_with_decode() {
   Rng r(41);
@@ -329,6 +492,11 @@ int main(int, char**) {
   RUN_TEST(test_unknown_keys_are_skipped);
   RUN_TEST(test_unreadable_whole_lines_are_refused);
   RUN_TEST(test_escapes_and_unknown_classes);
+  RUN_TEST(test_header_rules_and_foreign_fields);
+  RUN_TEST(test_lists_are_capped_both_ways);
+  RUN_TEST(test_nesting_is_bounded_and_matched);
+  RUN_TEST(test_number_edges_round_trip);
+  RUN_TEST(test_resealed_mutations_never_break_the_reader);
   RUN_TEST(test_check_line_agrees_with_decode);
   RUN_TEST(test_typed_errors);
   RUN_TEST(test_message_stamp_carries_the_year);

@@ -45,7 +45,7 @@ uint32_t* TxArena::slots() const { return reinterpret_cast<uint32_t*>(base_ + ca
 uint8_t* TxArena::record(size_t index) const { return base_ + slots()[-1 - static_cast<ptrdiff_t>(index)]; }
 
 Status TxArena::init(size_t capacity, ArenaAllocFn alloc, ArenaFreeFn release) {
-  if (capacity < kArenaMinBytes || capacity > UINT32_MAX || !alloc)
+  if (capacity < kArenaMinBytes || static_cast<uint64_t>(capacity) > UINT32_MAX || !alloc)
     return Status::fail(Err::InvalidArgument, "tx::TxArena::init");
   if (base_ && release_) release_(base_);
   base_ = nullptr;
@@ -77,9 +77,9 @@ void TxArena::place(const ArenaEntry& head, size_t lineBytes) {
   lastQ_ = head.q;
 }
 
-// q only grows: an item must be newer than every item appended since init or clear,
-// including items already dropped through.
-bool TxArena::inOrder(uint64_t q) const { return !(count_ || lastQ_) || q > lastQ_; }
+// q starts at 1 and only grows: an item must be newer than every item appended since init
+// or clear, including items already dropped through.
+bool TxArena::inOrder(uint64_t q) const { return q > lastQ_; }
 
 Status TxArena::append(const Item& item) {
   if (!base_ || !inOrder(item.q)) return Status::fail(Err::InvalidArgument, "tx::TxArena::append");
@@ -206,8 +206,9 @@ Status TxArenaPool::init(size_t perChat, ArenaAllocFn alloc, ArenaFreeFn release
   perChat_ = perChat;
   alloc_ = std::move(alloc);
   release_ = std::move(release);
-  for (Slot& s : slots_) {
+  for (Slot& s : slots_) {   // a slot takes a block of the new size on its next use
     s.key[0] = '\0';
+    s.ready = false;
     s.arena.clear();
   }
   return Status::success();

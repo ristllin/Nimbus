@@ -74,15 +74,18 @@ class TxArena {
   // first block. `release` may be null (the block is then never given back).
   Status init(size_t capacity, ArenaAllocFn alloc, ArenaFreeFn release);
   // Encode and append one item, straight into the block. Its q must be above lastQ()
-  // (InvalidArgument otherwise, or before init). TooLarge when it does not
+  // (q starts at 1; InvalidArgument otherwise, or before init, or when encodeLine
+  // refuses the item). TooLarge when it does not
   // fit: `where` is "tx::encodeLine" when the line itself passes kMaxLineBytes, else
   // "tx::TxArena::append" (the arena is full: the caller compacts or drops the oldest
   // closed turn, never this item). Nothing is changed on failure.
   Status append(const Item& item);
   // Append one stored line as is (the restart fill): Torn when its framing or crc fails,
-  // InvalidArgument for an unreadable line or a q not above lastQ(), TooLarge
+  // InvalidArgument when checkLine cannot read its k, q, turn and t or q is not above
+  // lastQ(), TooLarge
   // when it does not fit. The line may come with or without its newline; the arena keeps
-  // it with one.
+  // it with one. Only the header is read (tx/item.h checkLine): a line whose other
+  // values cannot be read is kept, and get() answers InvalidArgument for it.
   Status appendLine(const char* data, size_t len);
   // Decode the item at `index` (0 = oldest resident). NotFound past the end.
   Status get(size_t index, Item& out) const;
@@ -132,7 +135,8 @@ class TxArenaPool {
   static constexpr size_t kChatKeyMax = 47;
 
   // InvalidArgument for a null allocator or perChat under kArenaMinBytes. Allocates
-  // nothing yet.
+  // nothing yet; called again, it empties every slot and each takes a new block (and gives
+  // its old one back) on its next use.
   Status init(size_t perChat, ArenaAllocFn alloc, ArenaFreeFn release);
   // The arena of `chatKey`. `fresh` is true when the chat was not resident: the arena is
   // empty and the caller fills it from the log. Evicts the least recently used chat when
