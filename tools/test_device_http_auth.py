@@ -235,11 +235,12 @@ def test_device_api_detection_ignores_third_party_apis_and_prose():
 
 
 # A module that can put a request on the wire itself: an HTTP library, a raw socket, a
-# subprocess (curl) or a browser driver. A file that names device API paths but imports
-# none of these hands them to another module's client (tools/refloop/arms.py calls
-# nimbusd_ctl.Nimbusd), and that client is scanned on its own.
-_REQUEST_MODULES = ("urllib.request", "http.client", "requests", "httpx", "aiohttp", "urllib3", "socket")
-_REQUEST_MODULES += ("subprocess", "playwright", "selenium")
+# shell-out (curl through subprocess or os) or a browser driver. A file that names device
+# API paths but imports none of these hands them to another module's client
+# (tools/refloop/arms.py calls nimbusd_ctl.Nimbusd), and that client is scanned on its own.
+# The list errs wide: a file wrongly counted as a client only has to carry the header.
+_REQUEST_MODULES = ("urllib.request", "http.client", "requests", "httpx", "aiohttp", "urllib3", "socket", "asyncio")
+_REQUEST_MODULES += ("subprocess", "os", "playwright", "selenium")
 
 
 def _sends_requests(tree):
@@ -250,36 +251,41 @@ def _sends_requests(tree):
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             modules.add(node.module)
             modules.update(f"{node.module}.{alias.name}" for alias in node.names)
-    return any(m == r or m.startswith(r + ".") for m in modules for r in _REQUEST_MODULES)
+    # A bare `import urllib` reaches urllib.request; `import urllib.parse` alone does not.
+    return "urllib" in modules or any(m == r or m.startswith(r + ".") for m in modules for r in _REQUEST_MODULES)
 
 
-def _device_api_client(source):
-    tree = ast.parse(source)
+def _device_api_client(tree):
     return _sends_requests(tree) and any(_DEVICE_API.search(text) for text in _string_fragments(tree))
 
 
 def test_a_tool_that_only_names_device_paths_is_not_a_client():
+    def _device_api_client_src(source):
+        return _device_api_client(ast.parse(source))
+
     # Counter-tests: every way a tool can send a request makes it a client ...
-    assert _device_api_client('import urllib.request\nurl = f"http://{ip}/api/state"\n')
-    assert _device_api_client('from urllib import request\nurl = base + "/api/state"\n')
-    assert _device_api_client('from urllib.request import urlopen\nurl = base + "/api/state"\n')
-    assert _device_api_client('import http.client\nc.request("GET", "/api/state")\n')
-    assert _device_api_client('import requests\nrequests.get(base + "/api/state")\n')
-    assert _device_api_client('import subprocess\nsubprocess.run(["curl", f"http://{ip}/api/state"])\n')
-    assert _device_api_client('from playwright.sync_api import sync_playwright\npage.goto(base + "/api/log")\n')
+    assert _device_api_client_src('import urllib.request\nurl = f"http://{ip}/api/state"\n')
+    assert _device_api_client_src('from urllib import request\nurl = base + "/api/state"\n')
+    assert _device_api_client_src('from urllib.request import urlopen\nurl = base + "/api/state"\n')
+    assert _device_api_client_src('import http.client\nc.request("GET", "/api/state")\n')
+    assert _device_api_client_src('import requests\nrequests.get(base + "/api/state")\n')
+    assert _device_api_client_src('import subprocess\nsubprocess.run(["curl", f"http://{ip}/api/state"])\n')
+    assert _device_api_client_src('from playwright.sync_api import sync_playwright\npage.goto(base + "/api/log")\n')
+    assert _device_api_client_src('import urllib\nurllib.request.urlopen(base + "/api/state")\n')
+    assert _device_api_client_src('import os\nos.system(f"curl http://{ip}/api/state")\n')
     # ... and a module that only hands paths to another module's client is not one.
-    assert not _device_api_client('import urllib.parse\nimport refloop\nd.get_json("/api/loops")\n')
-    assert not _device_api_client('from .client import Device\nd.call("GET", "/api/state")\n')
+    assert not _device_api_client_src('import urllib.parse\nimport refloop\nd.get_json("/api/loops")\n')
+    assert not _device_api_client_src('from .client import Device\nd.call("GET", "/api/state")\n')
 
 
 def test_every_tool_that_calls_the_device_api_sends_the_token_header():
     clients, missing = [], []
     for path in _python_tools():
-        source = path.read_text(encoding="utf-8")
-        if not _device_api_client(source):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if not _device_api_client(tree):
             continue
         clients.append(path.name)
-        if "X-Nimbus-Token" not in _string_fragments(ast.parse(source)):
+        if "X-Nimbus-Token" not in _string_fragments(tree):
             missing.append(path.name)
     assert not missing, f"device API clients without the X-Nimbus-Token header: {missing}"
     # The guard must actually be guarding something: the known clients are found, the
