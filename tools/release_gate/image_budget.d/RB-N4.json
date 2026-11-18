@@ -1,0 +1,5 @@
+{
+  "lane": "RB-N4",
+  "allowance_bytes": 2048,
+  "why": "PRD section 10 flash ledger: RB-N4 +5 KB. Map delta measured on the lane's tip against its base rb-main 831986f9: esp32s3-cyd firmware.bin 6,536,528 -> 6,538,080 B, +1,552 B (the registry's router check, class and spelling lookups, and the class and group tables the device links), docs pack unchanged; rounded up to 2,048 B for every env."
+}
