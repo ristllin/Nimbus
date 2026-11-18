@@ -1,0 +1,14 @@
+owner001794962124;m0000002f0001. Decisions & preferences
+- Daily targets 1,900 kcal and 120 g protein; label figures win over estimates.
+- Diary notes are kept short; the owner plans the week's meals on market days.
+2. Pending items & next steps
+- Plan the week's meals from the market shopping (bread, apples).
+- Weigh-in on Monday morning; report progress only when asked.
+3. Facts worth remembering long-term
+- Training for a 10 km run in March; long runs on Sunday mornings.
+- Walks to the market most days and buys bread and apples there.
+4. Owner intent & active threads
+- SUMMARY-HEALED: keeping a daily diary of market walks and meal planning.
+- Logging every meal with kcal and protein.
+5. Device & task state
+- Food ledger in food/food-log.csv; diary notes captured in the chat.

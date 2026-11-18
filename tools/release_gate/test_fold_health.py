@@ -115,6 +115,10 @@ def test_a_missing_candidate_blob_fails(tree):
     "blob,why",
     [
         (record(paused="1"), "rollback would start paused"),
+        (
+            record(nums=["4000", "12", "1795000000;m1", "3;m2", "2;2;1795000000;1795003600"]),
+            "2 failure(s) from its pause",
+        ),
         (record(nums=["n/a", "12", "1795000000", "3", "0"]), "reads as no number"),
         (US.join(["c1", "4000", "12", "1795000000"]) + RS, "fields"),
         (record(summary="x" * 7000), "over 6144"),
@@ -147,13 +151,25 @@ def test_the_committed_lumi_shaped_v511_blob_reads():
     assert recs[0][5:7] == ["3", "1"]  # breaker fails=3, paused=1: the 2 Nov 2026 state
 
 
-def test_the_v511_tree_fails_the_gate():
-    # This repository at v5.1.1 (591245f4): the breaker and thrash pauses and their copies.
-    # Once lane F lands the tree passes and this pin flips (lane E phase 2).
-    errs = G.pause_problems(G.REPO)
-    if not errs:
-        pytest.skip("the pauses are gone from this tree (lane F landed)")
-    assert any("orch_compact.cpp" in e for e in errs)
+def test_this_tree_passes_the_gate():
+    # At v5.1.1 (591245f4) the gate reported 16 problems here: the breaker and thrash pauses, the
+    # pause copies, no fold control, no candidate blob (lane E phase 1). Lane F removed them.
+    assert G.problems(G.REPO) == []
+
+
+def test_the_candidate_blobs_the_replays_left_read_under_v511():
+    # The fold-store files a hosted instance wrote on the candidate (run_offline.py blob): a chat
+    # healed from the planted pause, and a chat whose cycle just failed (failures 0;1;first;next).
+    fx = os.path.join(G.REPO, "test", "support", "fixtures")
+    for name, schedule in (
+        ("fold_blob_v5_1_2_replay_healed.txt", False),
+        ("fold_blob_v5_1_2_replay_failing.txt", True),
+    ):
+        path = os.path.join(fx, name)
+        assert G.blob_problems(path, candidate=True) == []
+        rec = G.legacy_records(open(path, encoding="utf-8").read())[0]
+        assert rec[0] == "owner" and rec[6] == "0" and G.to_u32(rec[5]) == 0
+        assert (rec[5].count(";") == 3 and rec[5].split(";")[1] == "1") == schedule
 
 
 if __name__ == "__main__":

@@ -31,6 +31,8 @@ looking at the glass are all in scope.
 | A release ships with no word to its owners, or a line the device would cut (owner decision D5) | one line per OTA release in `docs/release-notes/<tag>.txt`: present, one line, at most 95 bytes (the device's notes field), printable ASCII, no ticket numbers; release.yml checks it in its first job (tag-shape, before any build or publish; vn- image tags need none, -rcN tags may go without) and writes it into the manifest's `notes` (not covered by the signature); the tests check the current version.h on every push | `check_release_notes.py`, `test_release_notes.py` |
 | A test build's crash switch ships in a release image | the ELF scan for the test console's crash switches runs on all four release images (even with `--identity-only`), behind the source guard that keeps every use inside `#ifdef NIMBUS_TEST` | `check_elf_symbols.py`, `test_panic_guard.py`, `test_release_gate.py` (workflow wiring) |
 | An owner-visible failure from the 28 Oct - 4 Nov window ships again (v5.0.0 launch gate, LAUNCH-5.0.0 ruling 4 Nov 20:20Z) | the owner-issues register (`coverage/OWNER-ISSUES-REGISTER.md`) must name only guards that exist (every `oir_*` id a RUN_TEST in `test/test_owner_regressions`, every suite id a real suite, the EXPECTED-FAIL roster equal to the suite's skipping tests), and a full live run of `tests/evals/owner_regressions` on the exact candidate sha must exist on disk with every hard row at its threshold on the gate models and no row regressed vs the previous candidate; a stale EXPECTED-FAIL (an xfail row that passed, or a skip in the candidate's native log) blocks too | `check_owner_regressions.py`, `test_owner_regressions.py`, `test/test_owner_regressions`, `tests/evals/owner_regressions` |
+| The conversation summary switches itself off and stays off (Lumi, 2 to 15 Nov 2026: three failed folds paused it for 13 days) | the fold sources never set a pause, never return a thrash pause and carry no "summaries are paused" copy; the daily cap, the alert day and the queued manual requests live in one device-wide file (`/data/fold_ctl.txt`, the hosted sibling) with `paidDay`, `paidCount`, `lastAlertDay`, `manualPendingChat`, `fwAtLastFail`; every fold-blob fixture reads under the v5.1.1 parser with pause and failures 0 for a candidate blob (a rollback never starts paused) and fits 64 KB. The candidate blobs include the files the offline fold replays left (`tests/evals/owner_regressions/run_offline.py blob`) | `check_fold_health.py`, `test_fold_health.py`, `test/support/fixtures/fold_blob_*.txt` |
+| A head's request budget leaves its bounds, a round or an output cap no longer fits its read window, or a budget field drops under v5.1.1 (the 15 Nov 2026 history fix raised every budget from one formula) | every table of the generated `docs/reference/request-budgets.md` against `test/support/fixtures/budgets_v5_1_1.json`: coverage of every recorded model, the 100,000 token clamp, the window and floor bounds, the worst round and each cap's round inside the read window (no upload or pacing on a Virtual Nimbus), no field below v5.1.1, the protocol's derived fields, the fold trigger (never under 24 KB), and every routed head on the 85,000 B floor while `kRoutedBudgetLift` is false. A table under an unknown heading or a renamed column fails | `check_budget_table.py`, `test_budget_table.py` |
 
 ## At merge time
 
@@ -92,6 +94,16 @@ python3 tools/release_gate/check_owner_regressions.py --candidate <sha> [--previ
 
 The static half (register/suite/gate-wiring consistency) runs with the host checks and in
 `pytest tools/release_gate` on every push.
+
+The owner-regression rows a live model cannot replay (the summary's own behavior: a planted
+pause, a provider answering empty) run offline on a hosted instance with scripted answers, no
+network and no keys; each waits the two-minute quiet bound in real time:
+
+```
+python3 tests/evals/owner_regressions/run_offline.py run          # PASS or FAIL per row, records under runs/offline/<sha>/
+python3 tools/release_gate/check_fold_health.py                   # the fold health step alone
+python3 tools/release_gate/check_budget_table.py                  # the budget table step alone
+```
 
 Full battery (prints the exact hardware and cloud commands to run and paste):
 

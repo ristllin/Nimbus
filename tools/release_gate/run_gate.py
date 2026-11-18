@@ -23,10 +23,12 @@ import sys
 # model_id_lint lives one level up in tools/.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import check_budget_table
 import check_config_mapping
 import check_critical_sections
 import check_driver_pin
 import check_elf_symbols
+import check_fold_health
 import check_image_size
 import check_lwip_core_lock
 import check_ota_preserves_nvs
@@ -153,6 +155,8 @@ def run_host_checks() -> bool:
         ("tls names the host (SNI)", check_tls_sni.main),
         ("release notes line (D5)", check_release_notes.main),
         ("owner regressions (p18-REGR)", check_owner_regressions.main),
+        ("fold health: the summary never pauses for good (v5.1.2)", check_fold_health.main),
+        ("request budget table: bounds, rounds, no field below v5.1.1 (v5.1.2)", check_budget_table.main),
     ):
         rc = fn([])
         results.append((name, rc == 0))

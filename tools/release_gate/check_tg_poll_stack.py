@@ -49,6 +49,8 @@ sound (an undeclared cycle or dynamic frame, a path that names nothing, a missin
 ELF). A config row the image does not use is reported, not failed: the four release
 images share one config. The config is tg_poll_stack.json plus each fragment in
 tg_poll_stack.d/ (one file per lane, merged in name order; a fragment only adds rows).
+A release's last lane folds the fragments into the config and removes them (v5.1.2: lane
+F's fold paths and lane H's history paths), so two releases' fragments never pile up.
 """
 
 from __future__ import annotations

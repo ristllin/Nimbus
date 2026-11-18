@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Tests for check_budget_table.py: a table built from the protocol passes, every planted
-violation fails it, and a missing input or column fails loudly instead of skipping.
+violation fails it, and a missing input, column or unknown table fails loudly instead of
+skipping.
 
-The clean rows are the plan v3 figures (PROTOCOLS.md provider matrix): Mistral Large 4 at
-100k tokens / 360,000 B, Claude Sonnet 5.5 at 100k / 250,000 B, a custom endpoint at the
-85,000 B floor. The v5.1.1 rows are budgets_v5_1_1.json's shape (lane P0).
+The clean rows are lane B's shipped figures (docs/reference/request-budgets.md): Mistral Large 4
+at 100k tokens / 360,000 B, Claude Sonnet 5.5 at 100k / 250,000 B, a custom endpoint at the
+85,000 B floor, under the document's own headings and header. The v5.1.1 rows are
+budgets_v5_1_1.json's shape (lane P0). The last tests run the gate on the repository's
+table and pin its header.
 """
 
 from __future__ import annotations
@@ -18,48 +21,63 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_budget_table as G  # noqa: E402
 
-HEAD = (
-    "| Provider | Model | Window | Target | Bytes | rNom | rSafe | Read window | Prefill | Decode | minFinal "
-    "| System cap | Tool result | Recall | Replay | Summary | Message cap | Hist max | Hist soft | Rows |"
-)
-SEP = "|" + "---|" * 20
-
-
-LEAD = ("provider", "model", "window", "target", "nbytes", "rnom", "rsafe", "read_s", "prefill", "decode", "min_final")
+# The document's header (lane B, test_request_budget), column for column.
+COLS = (
+    "Provider", "Model", "Window", "Source", "Bound", "Target", "Bytes", "rNom", "rSafe", "Read window", "Prefill",
+    "Decode", "minFinal", "System cap", "Tool result", "Recall", "Replay", "Summary", "Message cap", "Hist max",
+    "Hist soft", "Hist keep", "Fold step", "Fold slice", "Rows", "Trigger", "Caps healthy", "Caps fragmented",
+)  # fmt: skip
+HEAD = "| " + " | ".join(COLS) + " |"
+SEP = "|" + "---|" * len(COLS)
+LEAD = {"Provider": "provider", "Model": "model", "Window": "window", "Bound": "bound", "Target": "target",
+        "Bytes": "nbytes", "rNom": "rnom", "rSafe": "rsafe", "Read window": "read_s", "Prefill": "prefill",
+        "Decode": "decode", "minFinal": "min_final", "Caps healthy": "caps_healthy",
+        "Caps fragmented": "caps_fragmented"}  # fmt: skip
 
 
 def row(spec: dict, over: dict) -> str:
     """One table row from a head's inputs, its derived columns from the protocol (over replaces cells)."""
     hist_max = spec["hist_max"]
     d = G.derived(spec["nbytes"], spec["target"], hist_max, G.wire_of(spec["provider"], spec["model"]))
-    if hist_max <= 8192:  # the floor branch keeps v5.1.1's marks (RULINGS item 3)
+    floor = spec["bound"] == "floor"
+    if floor:  # the floor branch keeps v5.1.1's marks (RULINGS item 3)
         d.update(historySoftBytes=4096, historyRows=64)
+    soft = round(d.get("historySoftBytes", 0))
     cells = {
-        "System cap": d["systemPromptBytes"],
-        "Tool result": d["toolResultBytes"],
-        "Recall": d["recallBytes"],
-        "Replay": d["replayBytes"],
+        "Source": "listed",
+        "System cap": round(d["systemPromptBytes"]),
+        "Tool result": round(d["toolResultBytes"]),
+        "Recall": round(d["recallBytes"]),
+        "Replay": round(d["replayBytes"]),
         "Summary": d["chatSummaryBytes"],
         "Message cap": d["historyMessageCap"],
         "Hist max": hist_max,
-        "Hist soft": d.get("historySoftBytes", 0),
-        "Rows": d.get("historyRows", 64),
+        "Hist soft": soft,
+        "Hist keep": hist_max // 2,
+        "Fold step": 53792,
+        "Fold slice": 65536,
+        "Rows": round(d.get("historyRows", 64)),
+        "Trigger": G.TRIGGER_V511 if floor else soft,
     }
+    cells.update({c: spec[k] for c, k in LEAD.items()})
     cells.update(over)
-    vals = [spec[k] for k in LEAD]
-    vals += [round(cells[k]) for k in ("System cap", "Tool result", "Recall", "Replay", "Summary", "Message cap")]
-    vals += [round(cells[k]) for k in ("Hist max", "Hist soft", "Rows")]
-    return "| " + " | ".join(str(v) for v in vals) + " |"
+    return "| " + " | ".join(str(cells[c]) for c in COLS) + " |"
 
 
 ROWS = {
-    "large4": dict(provider="mistral", model="mistral-large-4-0", window=1048576, target=100000, nbytes=360000,
-                   rnom=3.6, rsafe=2.5, read_s=60, prefill=9000, decode=50, min_final=1500, hist_max=206000),
-    "sonnet": dict(provider="anthropic", model="claude-sonnet-5-5", window=1000000, target=100000, nbytes=250000,
-                   rnom=2.5, rsafe=2.0, read_s=120, prefill=60000, decode=75, min_final=3000, hist_max=118000),
-    "custom": dict(provider="custom", model="custom", window=100000, target=28333, nbytes=85000,
-                   rnom=3.0, rsafe=2.5, read_s=120, prefill=1000, decode=50, min_final=3000, hist_max=8192),
+    "large4": dict(provider="mistral", model="mistral-large-4-0", window=1048576, bound="clamp", target=100000,
+                   nbytes=360000, rnom=3.6, rsafe=2.5, read_s=60, prefill=9000, decode=50, min_final=1500,
+                   hist_max=206080, caps_healthy="1584 / 2112", caps_fragmented="1500 / -"),
+    "sonnet": dict(provider="anthropic", model="claude-sonnet-5-5", window=1000000, bound="clamp", target=100000,
+                   nbytes=250000, rnom=2.5, rsafe=2.0, read_s=120, prefill=60000, decode=75, min_final=3000,
+                   hist_max=118080, caps_healthy="6370 / 8494", caps_fragmented="5909 / 7879"),
+    "custom": dict(provider="custom", model="custom", window=100000, bound="floor", target=28333, nbytes=85000,
+                   rnom=3.0, rsafe=2.5, read_s=120, prefill=1000, decode=50, min_final=3000, hist_max=8192,
+                   caps_healthy="none", caps_fragmented="none"),
 }  # fmt: skip
+ROUTED = dict(provider="cumulo", model="anthropic/claude-sonnet-5-5", window=1000000, bound="floor", target=34000,
+              nbytes=85000, rnom=2.5, rsafe=2.0, read_s=90, prefill=60000, decode=75, min_final=3000,
+              hist_max=8192, caps_healthy="4878 / 6504", caps_fragmented="4647 / 6196")  # fmt: skip
 
 
 def v511_model(provider, model, **over):
@@ -71,24 +89,34 @@ def v511_model(provider, model, **over):
     return m
 
 
-def write(tmp_path, rows, v511=None):
+def write(tmp_path, rows, v511=None, more=""):
     table = tmp_path / "request-budgets.md"
-    table.write_text("# Request budgets\n\nGenerated.\n\n" + "\n".join([HEAD, SEP, *rows]) + "\n")
+    table.write_text("# Request budgets\n\n## Every recorded model\n\n" + "\n".join([HEAD, SEP, *rows]) + "\n" + more)
     models = v511 if v511 is not None else [v511_model(r["provider"], r["model"]) for r in ROWS.values()]
     fx = tmp_path / "budgets_v5_1_1.json"
     fx.write_text(json.dumps({"about": "test", "models": models}))
     return str(table), str(fx)
 
 
+def lift_header(tmp_path, lift: str) -> str:
+    h = tmp_path / "request_budget.h"
+    h.write_text(f"inline constexpr bool kRoutedBudgetLift = {lift};\n")
+    return str(h)
+
+
+def one_row(spec: dict, **changes) -> str:
+    args, over = dict(spec), {}
+    for k, v in changes.items():
+        (args if k in args else over)[k] = v
+    return row(args, over)
+
+
 def clean_rows(**changes):
-    out = []
-    for name, r in ROWS.items():
-        args = dict(r)
-        over = {}
-        for k, v in changes.get(name, {}).items():
-            (args if k in args else over)[k] = v
-        out.append(row(args, over))
-    return out
+    return [one_row(r, **changes.get(name, {})) for name, r in ROWS.items()]
+
+
+def section(heading: str, rows: list) -> str:
+    return f"\n## {heading}\n\n" + "\n".join([HEAD, SEP, *rows]) + "\n"
 
 
 def test_a_protocol_table_passes(tmp_path):
@@ -108,6 +136,16 @@ def test_a_protocol_table_passes(tmp_path):
         ({"large4": {"Recall": 20000}}, "recallBytes 20000, the protocol gives"),
         ({"sonnet": {"System cap": 30000}}, "systemPromptBytes 30000"),
         ({"large4": {"Summary": 4096}}, "chatSummaryBytes 4096"),
+        ({"large4": {"Trigger": 20000}}, "fold trigger 20000 B under 24576 B"),
+        ({"large4": {"Trigger": 49152}}, "fold trigger 49152 B, expected 164864 B (clamp bound)"),
+        ({"custom": {"Trigger": 30000}}, "fold trigger 30000 B, expected 49152 B (floor bound)"),
+        ({"sonnet": {"caps_fragmented": "2500 / 3400"}}, "fragmented cap 2500 under minFinal 3000 above the floor"),
+        ({"sonnet": {"caps_healthy": "6370 / 6600"}}, "healthy retry 6600 adds under 400 tokens to 6370"),
+        ({"large4": {"caps_fragmented": "1700 / -"}}, "fragmented cap 1700 over the healthy cap 1584"),
+        (
+            {"large4": {"caps_healthy": "2300 / 3000", "caps_fragmented": "1500 / -"}},
+            "a healthy round at its 2300 cap takes",
+        ),
     ],
 )
 def test_a_planted_violation_fails(tmp_path, change, why):
@@ -119,8 +157,8 @@ def test_a_planted_violation_fails(tmp_path, change, why):
 def test_a_floor_head_keeps_v511_marks_and_a_lifted_one_does_not(tmp_path):
     t, v = write(tmp_path, clean_rows(custom={"Hist soft": 6554}))
     assert any("custom/custom: historySoftBytes 6554, the protocol gives 4096" in e for e in G.problems(t, v))
-    t, v = write(tmp_path, clean_rows(large4={"Hist soft": 4096}))
-    assert any("mistral-large-4-0: historySoftBytes 4096, the protocol gives 164800" in e for e in G.problems(t, v))
+    t, v = write(tmp_path, clean_rows(large4={"Hist soft": 4096, "Trigger": 4096}))
+    assert any("mistral-large-4-0: historySoftBytes 4096, the protocol gives 164864" in e for e in G.problems(t, v))
 
 
 def test_the_replay_floor_is_the_wires_v511_cap(tmp_path):
@@ -134,11 +172,14 @@ def test_the_replay_floor_is_the_wires_v511_cap(tmp_path):
     )
 
 
-def test_a_floor_head_is_exempt_from_the_worst_round_only(tmp_path):
-    # At the floor (v5.1.1's 85,000 B) a slow decode does not fail the gate: the caps fit
-    # the round instead. The same decode above the floor still fails (large4 above).
-    t, v = write(tmp_path, clean_rows(custom={"decode": 10}))
+def test_a_floor_head_is_exempt_from_the_worst_round_and_minfinal_only(tmp_path):
+    # At the floor (v5.1.1's 85,000 B) a slow decode does not fail the gate, and its cap may sit
+    # under minFinal: the caps fit the round instead. Above the floor both still fail.
+    t, v = write(tmp_path, clean_rows(custom={"decode": 10, "caps_healthy": "600 / -", "caps_fragmented": "500 / -"}))
     assert G.problems(t, v) == []
+    # ...but a floor head's cap still has to fit its round (900 tokens at 10 tok/s do not).
+    t, v = write(tmp_path, clean_rows(custom={"decode": 10, "caps_healthy": "900 / -", "caps_fragmented": "800 / -"}))
+    assert any("custom/custom: a healthy round at its 900 cap takes" in e for e in G.problems(t, v))
     t, v = write(tmp_path, clean_rows(custom={"decode": 10, "nbytes": 120000}))
     assert any("custom/custom: worst round" in e for e in G.problems(t, v))
 
@@ -161,26 +202,122 @@ def test_missing_inputs_and_columns_fail_loudly(tmp_path):
     t, v = write(tmp_path, clean_rows())
     with open(t) as f:
         text = f.read()
-    with open(t, "w") as f:
-        f.write(text.replace("| Decode |", "| Speed |"))
-    assert any("needs bytes, target, prefill, decode" in e for e in G.problems(t, v))
+    for column, why in (("| Decode |", "needs bytes, target, prefill, decode"), ("| Trigger |", "needs trigger"),
+                        ("| Caps healthy |", "needs caps healthy")):  # fmt: skip
+        with open(t, "w") as f:
+            f.write(text.replace(column, "| Other |"))
+        assert any(why in e for e in G.problems(t, v)), column
     with open(t, "w") as f:
         f.write("# nothing\n")
     assert any("no table with a model column" in e for e in G.problems(t, v))
 
 
+# ---- every table of the document, by its heading --------------------------------------------
+
+
+def test_a_table_under_an_unknown_heading_fails(tmp_path):
+    t, v = write(tmp_path, clean_rows(), more=section("Heads on the moon", clean_rows()))
+    assert any("'Heads on the moon' is not one the gate knows" in e for e in G.problems(t, v))
+
+
+def test_a_document_without_the_recorded_models_table_fails(tmp_path):
+    t, v = write(tmp_path, clean_rows())
+    with open(t) as f:
+        text = f.read()
+    with open(t, "w") as f:
+        f.write(text.replace("## Every recorded model", "## Virtual Nimbus"))
+    assert any("no 'Every recorded model' table" in e for e in G.problems(t, v))
+
+
+def test_a_routed_head_stays_on_the_floor_while_the_lift_is_off(tmp_path):
+    lifted = dict(ROUTED, bound="clamp", target=100000, nbytes=250000, hist_max=118080)
+    for rows, lift, bad in (
+        ([one_row(ROUTED)], "false", False),
+        ([one_row(lifted)], "false", True),  # v5.1.2 ships with the lift off (RULINGS-v3)
+        ([one_row(lifted)], "true", False),  # the later release that flips the constant
+    ):
+        models = [v511_model(r["provider"], r["model"]) for r in ROWS.values()]
+        t, v = write(tmp_path, clean_rows(), models, more=section("Routed heads and the custom endpoint", rows))
+        errs = G.problems(t, v, lift_header(tmp_path, lift))
+        assert any("while kRoutedBudgetLift is false" in e for e in errs) == bad, errs
+    errs = G.problems(t, v, str(tmp_path / "missing.h"))
+    assert any("kRoutedBudgetLift not found" in e for e in errs)
+
+
+def test_a_routed_head_is_held_to_its_upstreams_v511_row(tmp_path):
+    t, v = write(tmp_path, clean_rows(),
+                 more=section("Routed heads and the custom endpoint", [one_row(ROUTED, **{"Tool result": 4096})]))  # fmt: skip
+    errs = G.problems(t, v, lift_header(tmp_path, "false"))
+    assert any(
+        "cumulo/anthropic/claude-sonnet-5-5: toolResultBytes 4096 under its v5.1.1 value 8192" in e for e in errs
+    )
+
+
+def test_a_server_round_counts_no_upload_and_no_pacing(tmp_path):
+    # Mistral Medium on a Virtual Nimbus (lane B's row): 55,806 tokens of prefill at 2,500 tok/s
+    # and a 3,000 token final at 85 tok/s take 59.1 s of 60 s. On a device the same body adds
+    # 2.5 s of upload and 6.3 s of pacing: over the window.
+    medium = dict(provider="mistral", model="mistral-medium-latest", window=262144, bound="latency", target=55806,
+                  nbytes=173000, rnom=3.1, rsafe=2.5, read_s=60, prefill=2500, decode=85, min_final=3000,
+                  hist_max=58528, caps_healthy="3000 / -", caps_fragmented="3000 / -")  # fmt: skip
+    over = {"Summary": 4096, "Message cap": 6144}
+    models = [v511_model(r["provider"], r["model"]) for r in ROWS.values()] + [v511_model("mistral", medium["model"])]
+    t, v = write(tmp_path, clean_rows() + [one_row(medium, **over)], models)
+    assert any("mistral-medium-latest: worst round" in e for e in G.problems(t, v))
+    t, v = write(tmp_path, clean_rows(), more=section("Virtual Nimbus", [one_row(medium, **over)]))
+    assert G.problems(t, v) == []
+
+
+def test_the_preview_table_is_held_to_the_clamp_and_the_floor(tmp_path):
+    head = "| Provider | Model | Window | Bound | Target | Bytes | Read window | Caps healthy | Caps fragmented |"
+    body = "| cumulo | openai/gpt-5.6 | 272000 | clamp | {t} | {b} | 90 | none | none |"
+    for target, nbytes, why in ((100000, 360000, None), (120000, 432000, "over the 100000 clamp"),
+                                (20000, 72000, "under the 85000 B floor")):  # fmt: skip
+        more = "\n## Routed heads once the router meters cached tokens\n\n" + "\n".join(
+            [head, "|" + "---|" * 9, body.format(t=target, b=nbytes)]
+        )
+        t, v = write(tmp_path, clean_rows(), more=more + "\n")
+        errs = G.problems(t, v)
+        assert (errs == []) if why is None else any(why in e for e in errs), errs
+
+
+def test_a_row_with_no_v511_record_uses_the_nearest_one(tmp_path):
+    old = {("openai", "gpt-5.6-sol"): {"id": "sol"}, ("openai", "gpt-5.6-luna"): {"id": "luna"},
+           ("anthropic", "claude-sonnet-5-5"): {"id": "sonnet"}}  # fmt: skip
+    pick = lambda p, m: (G.baseline_of({"provider": p, "model": m}, old) or {}).get("id")  # noqa: E731
+    assert pick("openai", "gpt-5.6-luna") == "luna"  # its own row
+    assert pick("cumulo", "anthropic/claude-sonnet-5-5") == "sonnet"  # a routed head's upstream
+    assert pick("custom", "gpt-5.6-luna") == "luna"  # the same id on another provider
+    assert pick("cumulo", "gpt-5.6") == "luna" or pick("cumulo", "gpt-5.6") == "sol"  # an alias: its family
+    assert pick("custom", "llama-3-70b") is None
+
+
 def test_numbers_read_with_their_units():
     assert G.number("360 KB") == 360000 and G.number("100k") == 100000
     assert G.number("1,048,576") == 1048576 and G.number("3.6") == 3.6 and G.number("-") is None
+    assert G.caps_of("6370 / 8494") == (6370, 8494) and G.caps_of("1600 / -") == (1600, None)
+    assert G.caps_of("none") is None
 
 
-def test_the_repository_table_is_checked_once_it_exists():
-    # The table is lane B's generated output and the fixture lane P0's; before both land the
-    # gate reports the missing input (it never passes on an absent table).
-    errs = G.problems(G.TABLE, G.V511)
-    if os.path.exists(G.TABLE) and os.path.exists(G.V511):
-        pytest.skip("both inputs exist: the gate runs in run_gate.py")
-    assert errs and "does not exist" in errs[0]
+# ---- the repository's own table ---------------------------------------------------------------
+
+
+def test_the_repository_table_passes_and_its_header_is_the_one_bound_here():
+    # docs/reference/request-budgets.md is generated by test_request_budget (lane B); this pins
+    # the header the gate reads, so a renamed column fails here before it fails the release.
+    assert G.problems(G.TABLE, G.V511) == []
+    with open(G.TABLE, encoding="utf-8") as f:
+        text = f.read()
+    assert HEAD in text
+    headings = [h for h, _ in G.parse_tables(text)]
+    assert [G.norm(h) for h in headings] == list(G.TABLES)
+    full = [rows[0] for h, rows in G.parse_tables(text) if not G.TABLES[G.norm(h)].get("preview")]
+    assert all(set(r) == set(G.COLUMNS) - {"perTurnFloorBytes"} for r in full)
+
+
+def test_the_release_ships_with_the_routed_lift_off():
+    # RULINGS-v3, release shape: v5.1.2 is not gated on the cloud; routed heads keep the floor.
+    assert G.routed_lift(G.BUDGET_HEADER) is False
 
 
 if __name__ == "__main__":
