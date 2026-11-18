@@ -73,20 +73,27 @@ bool partialTail(const std::string& s, size_t i) {
   return true;
 }
 
-// What a character becomes on a stub line: itself (nullptr), a space (a control byte, C1
-// control, U+2028 or U+2029: anything a renderer may break a line at), or '?' (a bidi
-// control, which can reorder what the line shows).
+// The code point of the valid n-byte sequence at s[i].
+uint32_t codePointAt(const std::string& s, size_t i, size_t n) {
+  static const unsigned char kLeadMask[] = {0, 0x7F, 0x1F, 0x0F, 0x07};
+  uint32_t cp = static_cast<unsigned char>(s[i]) & kLeadMask[n];
+  for (size_t k = 1; k < n; ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+  return cp;
+}
+
+// A character a renderer may break a line at: C0 and C1 controls, DEL, U+2028, U+2029.
+bool isLineBreaking(uint32_t cp) { return cp < 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x2028 || cp == 0x2029; }
+// A bidi control, which can reorder what the line shows.
+bool isBidiControl(uint32_t cp) {
+  return cp == 0x200E || cp == 0x200F || (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069);
+}
+
+// What a character becomes on a stub line: itself (nullptr), a space (line-breaking) or '?'
+// (a bidi control).
 const char* replacementOf(const std::string& s, size_t i, size_t n) {
-  const unsigned char c0 = static_cast<unsigned char>(s[i]);
-  if (n == 1) return (c0 < 0x20 || c0 == 0x7F) ? " " : nullptr;
-  const unsigned char c1 = static_cast<unsigned char>(s[i + 1]);
-  if (n == 2) return (c0 == 0xC2 && c1 <= 0x9F) ? " " : nullptr;
-  if (n != 3 || c0 != 0xE2) return nullptr;
-  const unsigned char c2 = static_cast<unsigned char>(s[i + 2]);
-  if (c1 == 0x80 && (c2 == 0xA8 || c2 == 0xA9)) return " ";
-  if (c1 == 0x80 && ((c2 >= 0xAA && c2 <= 0xAE) || c2 == 0x8E || c2 == 0x8F)) return "?";
-  if (c1 == 0x81 && c2 >= 0xA6 && c2 <= 0xA9) return "?";
-  return nullptr;
+  const uint32_t cp = codePointAt(s, i, n);
+  if (isLineBreaking(cp)) return " ";
+  return isBidiControl(cp) ? "?" : nullptr;
 }
 
 // Appends src as one line of valid UTF-8, at most maxBytes of it: see replacementOf; a byte
