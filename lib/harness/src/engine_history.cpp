@@ -608,7 +608,8 @@ FoldSlice TurnEngine::sliceWithoutDigest(const std::string& chatId, FoldPlan& p,
     hlog::logf("fold(%s): no anchor - looking for the newest /clear first (read to %s)", chatId.c_str(),
                fc.scanAt.c_str());
     s.state = r.end == FoldRead::End::Unread ? SliceState::Unread : SliceState::Wait;
-    s.progressed = r.end != FoldRead::End::Unread;
+    // Progress only when the read got somewhere (a failing card read nothing: it backs off).
+    s.progressed = r.end != FoldRead::End::Unread && (r.progressed || !r.lastSeen.empty());
     return s;
   }
   if (held || ended) s.state = SliceState::Nothing;

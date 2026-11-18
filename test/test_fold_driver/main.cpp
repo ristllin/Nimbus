@@ -140,9 +140,15 @@ struct Device {
     boot();
   }
 
+  uint32_t nothingKept = 0;   // > 0: every slice reads to its bound and finds nothing, this much kept
   FoldSlice slice(const std::string& chat, size_t cap, bool manual) {
     sliced.push_back({chat, manual});
     FoldSlice s;
+    if (nothingKept) {
+      s.state = agent::SliceState::Nothing;
+      s.keptBytes = nothingKept;
+      return s;
+    }
     const std::string thru = folds.get(chat).thru;
     const std::vector<std::string>& r = rows[chat];
     const size_t keep = manual ? 0 : 2;
@@ -476,6 +482,20 @@ static void test_a_busy_guest_chat_leaves_the_owner_room() {
   TEST_ASSERT_TRUE_MESSAGE(ownerFolded, "the owner's chat folds the same day");
 }
 
+// Review (lane CTXR1): a slice that reads to its bound and keeps a tail at or over the trigger
+// (one huge turn) restarts the count under the trigger: the chat is not due again on every
+// pass with nothing to fold.
+static void test_a_huge_kept_tail_does_not_skip_every_pass() {
+  Device d;
+  d.boot();
+  d.folds.noteMessage("c", 60 * 1024);
+  d.folds.noteTurn("c");
+  d.nothingKept = 200 * 1024;
+  TEST_ASSERT_TRUE(d.tick(kT0) == FoldTick::Skipped);
+  for (int i = 1; i < 20; i++) TEST_ASSERT_TRUE(d.tick(kT0 + (uint32_t)i * 60) == FoldTick::Idle);
+  TEST_ASSERT_TRUE(d.folds.get("c").bytesSinceFold < 48u * 1024u);
+}
+
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
 static void test_fresh_device_is_idle_and_quiet() {
   Device d;
@@ -676,6 +696,7 @@ int main(int, char**) {
   RUN_TEST(test_no_clock_boot_holds_a_persisted_wait);
   RUN_TEST(test_the_daily_alert_is_spent_only_when_it_reaches_the_owner);
   RUN_TEST(test_a_busy_guest_chat_leaves_the_owner_room);
+  RUN_TEST(test_a_huge_kept_tail_does_not_skip_every_pass);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);

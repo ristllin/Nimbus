@@ -618,6 +618,27 @@ static void test_one_summarize_now_reaches_the_newest_row() {
   TEST_ASSERT_EQUAL_STRING_MESSAGE(rows.back()->id.c_str(), d.folds.get(kMain).thru.c_str(), "thru at the newest row");
 }
 
+// Review (lane CTXR1): a chat with no anchor on a failing card. The read gets nowhere, so it is
+// not progress: the chat backs off, and a manual request is answered instead of retried on
+// every pass (which would starve every other chat's fold).
+static void test_no_anchor_on_a_failing_card_backs_off_and_answers() {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.quiet = false;
+  for (int i = 0; i < 30; i++) d.turn(kMain);
+  d.bootIndexRows = 4;
+  d.restart();
+  d.store.failing = true;
+  d.store.ringRows = 2;
+  d.drv->requestManual(kMain);
+  int deferred = 0;
+  for (int i = 0; i < 10 && !d.drv->ctl().manualPendingChat.empty(); i++)
+    deferred += d.drv->tick(d.plat.ms += 1000, (uint32_t)(d.plat.epoch += 1)) == FoldTick::Deferred;
+  TEST_ASSERT_TRUE_MESSAGE(d.drv->ctl().manualPendingChat.empty(), "the manual request is answered");
+  TEST_ASSERT_EQUAL_MESSAGE(1, deferred, "on the first look: a read that got nowhere is not progress");
+  TEST_ASSERT_TRUE(LogCapture::contains("next look in 60 s"));
+  TEST_ASSERT_TRUE(d.violations.empty());
+}
+
 // ---- the production device's shape on the real SD log store ----------------------------
 namespace {
 struct FakeFs : orch::EpiFs {
@@ -797,6 +818,7 @@ int main(int, char**) {
   RUN_TEST(test_clear_bounds_the_fold);
   RUN_TEST(test_steady_state_folds_come_before_any_shift);
   RUN_TEST(test_one_summarize_now_reaches_the_newest_row);
+  RUN_TEST(test_no_anchor_on_a_failing_card_backs_off_and_answers);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);

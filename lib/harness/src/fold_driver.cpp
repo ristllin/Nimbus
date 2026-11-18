@@ -155,7 +155,8 @@ uint32_t FoldDriver::today(uint32_t nowEpoch) const { return orch::foldLocalDay(
 
 void FoldDriver::resetDailyCount() {
   ctl_.paidCount = 0;
-  clocklessPaid_ = 0;
+  ctl_.guestPaid = 0;
+  clocklessPaid_ = clocklessGuest_ = 0;
   saveCtl();
   changed();
 }
@@ -321,7 +322,10 @@ FoldTick FoldDriver::nothingToFold(const std::string& chat, bool manual, uint32_
     catchUp_ = CatchUp();
     endManual(chat, nowMs);
   } else {
-    folds_.noteFoldSkipped(chat, s.readTo, s.keptBytes);
+    // Never restart the count at or over the trigger: a kept tail that large (one huge turn)
+    // would make the chat due again on every pass with nothing to fold.
+    const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
+    folds_.noteFoldSkipped(chat, s.readTo, std::min(s.keptBytes, trigger - trigger / 4));
     hlog::logf("fold(%s): nothing new beyond the kept history - skipped", chat.c_str());
   }
   changed(chat);
