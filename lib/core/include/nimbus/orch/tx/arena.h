@@ -27,7 +27,11 @@ using ArenaFreeFn = std::function<void(void*)>;
 class TxArena {
  public:
   TxArena() = default;
-  ~TxArena();
+  // Inline on purpose: an out-of-line destructor that calls a std::function needs unwind
+  // tables, and the device link keeps those even for an object nothing references.
+  ~TxArena() {
+    if (base_ && release_) release_(base_);
+  }
   TxArena(const TxArena&) = delete;
   TxArena& operator=(const TxArena&) = delete;
 

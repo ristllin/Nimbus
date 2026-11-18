@@ -1,15 +1,11 @@
 // The transcript arena (tx/arena.h). Stub bodies from lane RB-B0a: each answers
-// Err::NotImplemented until lane RB-T1 writes the arena. The destructor already returns
-// a block it was given, so a later init() that takes memory never leaks it.
+// Err::NotImplemented until lane RB-T1 writes the arena. (The destructor is inline in
+// arena.h; see the note there.)
 #include "nimbus/orch/tx/arena.h"
 
 namespace nimbus {
 namespace orch {
 namespace tx {
-
-TxArena::~TxArena() {
-  if (base_ && release_) release_(base_);
-}
 
 Status TxArena::init(size_t, ArenaAllocFn, ArenaFreeFn) { return Status::pending("tx::TxArena::init"); }
 Status TxArena::append(const Item&) { return Status::pending("tx::TxArena::append"); }

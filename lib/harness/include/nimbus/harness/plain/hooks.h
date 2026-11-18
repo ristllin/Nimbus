@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "nimbus/harness/plain/turn.h"
@@ -27,8 +28,10 @@
 // are registered once at boot, before the first turn; registering while a turn runs is
 // not supported.
 //
-// Seam declared by lane RB-B0a (with the registry itself, plain_hooks.cpp). The engine
-// lanes RB-E1a and RB-E1b call the run* functions at their points.
+// Seam declared by lane RB-B0a, with the registry itself, defined inline below: an
+// out-of-line registry costs unwind tables on the device even while nothing references
+// it (the device links lib objects whole and keeps their .eh_frame; measured 224 B).
+// The engine lanes RB-E1a and RB-E1b call the run* functions at their points.
 namespace agent {
 namespace plain {
 
@@ -184,6 +187,136 @@ class PlainHooks {
   std::array<IdleStepFn, kHookSlotCount> idleStep_{};
   std::array<BootResumeFn, kHookSlotCount> bootResume_{};
 };
+
+// ---- the registry ----------------------------------------------------------------
+namespace hooks_detail {
+
+// `decides`: the seam's handlers return a decision, which the Observer slot may not make.
+template <class Fn>
+inline Status put(std::array<Fn, kHookSlotCount>& slots, HookSlot slot, Fn fn, const char* where, bool decides) {
+  const size_t i = static_cast<size_t>(slot);
+  if (i >= kHookSlotCount || !fn) return Status::fail(Err::InvalidArgument, where);
+  if (decides && slot == HookSlot::Observer) return Status::fail(Err::InvalidArgument, where);
+  if (slots[i]) return Status::fail(Err::Busy, where);
+  slots[i] = std::move(fn);
+  return Status::success();
+}
+
+template <class Fn>
+inline size_t countOf(const std::array<Fn, kHookSlotCount>& slots) {
+  size_t n = 0;
+  for (const Fn& f : slots)
+    if (f) ++n;
+  return n;
+}
+
+template <class Fn>
+inline bool taken(const std::array<Fn, kHookSlotCount>& slots, HookSlot slot) {
+  const size_t i = static_cast<size_t>(slot);
+  return i < kHookSlotCount && static_cast<bool>(slots[i]);
+}
+
+}  // namespace hooks_detail
+
+inline Status PlainHooks::beforeDispatch(HookSlot slot, BeforeDispatchFn fn) {
+  return hooks_detail::put(beforeDispatch_, slot, std::move(fn), "plain::PlainHooks::beforeDispatch", true);
+}
+inline Status PlainHooks::afterResult(HookSlot slot, AfterResultFn fn) {
+  return hooks_detail::put(afterResult_, slot, std::move(fn), "plain::PlainHooks::afterResult", false);
+}
+inline Status PlainHooks::beforeDeliver(HookSlot slot, BeforeDeliverFn fn) {
+  return hooks_detail::put(beforeDeliver_, slot, std::move(fn), "plain::PlainHooks::beforeDeliver", true);
+}
+inline Status PlainHooks::afterDeliver(HookSlot slot, AfterDeliverFn fn) {
+  return hooks_detail::put(afterDeliver_, slot, std::move(fn), "plain::PlainHooks::afterDeliver", false);
+}
+inline Status PlainHooks::idleStep(HookSlot slot, IdleStepFn fn) {
+  return hooks_detail::put(idleStep_, slot, std::move(fn), "plain::PlainHooks::idleStep", true);
+}
+inline Status PlainHooks::bootResume(HookSlot slot, BootResumeFn fn) {
+  return hooks_detail::put(bootResume_, slot, std::move(fn), "plain::PlainHooks::bootResume", false);
+}
+
+inline DispatchDecision PlainHooks::runBeforeDispatch(const DispatchCtx& ctx) const {
+  for (size_t i = 0; i < kHookSlotCount; ++i) {
+    if (!beforeDispatch_[i]) continue;
+    DispatchDecision d = beforeDispatch_[i](ctx);
+    if (d.verdict == DispatchVerdict::Run) continue;
+    d.by = static_cast<HookSlot>(i);
+    return d;
+  }
+  return DispatchDecision{};
+}
+
+inline void PlainHooks::runAfterResult(const ResultCtx& ctx) const {
+  for (const AfterResultFn& f : afterResult_)
+    if (f) f(ctx);
+}
+
+inline DeliverDecision PlainHooks::runBeforeDeliver(const DeliverCtx& ctx) const {
+  if (ctx.held) return DeliverDecision{};   // at most one hold a turn
+  for (size_t i = 0; i < kHookSlotCount; ++i) {
+    if (!beforeDeliver_[i]) continue;
+    DeliverDecision d = beforeDeliver_[i](ctx);
+    if (d.verdict != DeliverVerdict::Hold) continue;
+    d.by = static_cast<HookSlot>(i);
+    return d;
+  }
+  return DeliverDecision{};
+}
+
+inline void PlainHooks::runAfterDeliver(const DeliveredCtx& ctx) const {
+  for (const AfterDeliverFn& f : afterDeliver_)
+    if (f) f(ctx);
+}
+
+inline IdleOutcome PlainHooks::runIdleStep(const IdleCtx& ctx) const {
+  if (ctx.ownerWaiting) return IdleOutcome{};   // the owner message goes first
+  for (size_t i = 0; i < kHookSlotCount; ++i) {
+    if (!idleStep_[i]) continue;
+    IdleOutcome o = idleStep_[i](ctx);
+    if (!o.worked) continue;
+    o.by = static_cast<HookSlot>(i);
+    return o;
+  }
+  return IdleOutcome{};
+}
+
+inline Status PlainHooks::runBootResume(const BootCtx& ctx) const {
+  Status first = Status::success();
+  for (const BootResumeFn& f : bootResume_) {
+    if (!f) continue;
+    const Status s = f(ctx);
+    if (!s.ok() && first.ok()) first = s;
+  }
+  return first;
+}
+
+inline size_t PlainHooks::registered(Seam seam) const {
+  switch (seam) {
+    case Seam::BeforeDispatch: return hooks_detail::countOf(beforeDispatch_);
+    case Seam::AfterResult: return hooks_detail::countOf(afterResult_);
+    case Seam::BeforeDeliver: return hooks_detail::countOf(beforeDeliver_);
+    case Seam::AfterDeliver: return hooks_detail::countOf(afterDeliver_);
+    case Seam::IdleStep: return hooks_detail::countOf(idleStep_);
+    case Seam::BootResume: return hooks_detail::countOf(bootResume_);
+  }
+  return 0;
+}
+
+inline bool PlainHooks::has(Seam seam, HookSlot slot) const {
+  switch (seam) {
+    case Seam::BeforeDispatch: return hooks_detail::taken(beforeDispatch_, slot);
+    case Seam::AfterResult: return hooks_detail::taken(afterResult_, slot);
+    case Seam::BeforeDeliver: return hooks_detail::taken(beforeDeliver_, slot);
+    case Seam::AfterDeliver: return hooks_detail::taken(afterDeliver_, slot);
+    case Seam::IdleStep: return hooks_detail::taken(idleStep_, slot);
+    case Seam::BootResume: return hooks_detail::taken(bootResume_, slot);
+  }
+  return false;
+}
+
+inline void PlainHooks::clear() { *this = PlainHooks{}; }
 
 }  // namespace plain
 }  // namespace agent
