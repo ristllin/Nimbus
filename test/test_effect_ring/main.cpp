@@ -16,10 +16,13 @@
 // Storage is RB-T2's fault-injecting fake (test/support/tx_battery/mem_files.h).
 #include <unity.h>
 
+#include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <map>
+#include <new>
 #include <random>
 #include <set>
 #include <string>
@@ -34,6 +37,36 @@ namespace tx = nimbus::orch::tx;
 
 void setUp() {}
 void tearDown() {}
+
+// ---- refused allocations (ruling 30) ---------------------------------------------------------
+// Every allocation of the test binary (plain new and the working allocator) counts while
+// armed; the one with index gFailAt is refused (plain new throws std::bad_alloc, the working
+// allocator answers nullptr, which WorkingAllocator turns into std::bad_alloc).
+static bool gArmed = false;
+static long gAllocs = 0;
+static long gFailAt = -1;
+static bool gHit = false;
+static bool refuseNow() {
+  if (!gArmed) return false;
+  if (gAllocs++ == gFailAt) {
+    gHit = true;
+    return true;
+  }
+  return false;
+}
+void* operator new(std::size_t n) {
+  if (refuseNow()) throw std::bad_alloc();
+  void* p = std::malloc(n ? n : 1);
+  if (!p) throw std::bad_alloc();
+  return p;
+}
+void* operator new[](std::size_t n) { return operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+static void* refusingWorkingAlloc(std::size_t n) { return refuseNow() ? nullptr : std::malloc(n ? n : 1); }
+static void workingFreeHook(void* p) { std::free(p); }
 
 namespace {
 
@@ -85,11 +118,16 @@ class FxFiles : public txb::MemFiles {
   bool rename(const std::string& from, const std::string& to) override {
     if (noCard) return false;
     if (renameRemovesFirst) files.erase(to);
-    if ((long)renames == cutRename) {
-      ++renames;
-      throw txb::Killed{"rename"};
-    }
-    return txb::MemFiles::rename(from, to);
+    const long idx = (long)renames++;
+    if (idx == cutRename) throw txb::Killed{"rename"};
+    if (refuseAll || refuseRename) return false;
+    // Like a filesystem rename: a refused allocation changes nothing beyond the removal above.
+    auto it = files.find(from);
+    if (it == files.end()) return false;
+    std::string data = it->second;
+    files[to] = std::move(data);
+    files.erase(from);
+    return true;
   }
   bool readAt(const std::string& path, size_t offset, char* buf, size_t want, size_t& got) override {
     got = 0;
@@ -976,6 +1014,96 @@ void test_the_least_recently_used_chat_is_evicted() {
   TEST_ASSERT_TRUE((std::vector<std::string>{"x", "y"}) == receipts(r, "1"));
 }
 
+// A refused allocation at every allocation of an append (load of a 99-line file, the append,
+// the rewrite it triggers) and of a read: the call answers a designed state, nothing stored is
+// lost, nothing half-done is left, and the ring goes on working once memory is back.
+void test_a_refused_allocation_at_every_site_is_a_designed_state() {
+  nimbus::orch::setWorkingAllocators(refusingWorkingAlloc, workingFreeHook);
+  const int pre = (int)fx::kCompactLines - 1;
+  int hits = 0;
+  for (int mode = 0; mode < 2; ++mode)
+  for (long k = 0;; ++k) {
+    FxFiles f;
+    {
+      fx::EffectRing seed(&f);
+      for (int i = 0; i < pre; ++i) seed.append("31", i, "t", receiptOf("31", i));
+    }
+    f.renameRemovesFirst = mode == 1;   // a FAT binding: a refusal inside rename may leave only the temp
+    const std::string fileBefore = f.files["/mem/fx/31.ring"];
+    fx::EffectRing r(&f);
+    const std::string chat = "31", tool = "t", X = receiptOf("31", pre);   // built before arming
+    gAllocs = 0;
+    gFailAt = k;
+    gHit = false;
+    gArmed = true;
+    fx::AppendResult res = fx::AppendResult::Refused;
+    bool threw = false;
+    try {
+      res = r.append(chat, pre, tool, X);
+    } catch (...) {
+      threw = true;
+    }
+    gArmed = false;
+    TEST_ASSERT_FALSE_MESSAGE(threw, ("an exception left append at allocation " + std::to_string(k)).c_str());
+    if (!gHit) break;   // every allocation of the call has been refused once
+    ++hits;
+    auto ram = receipts(r, "31");
+    if (res == fx::AppendResult::NoMemory) {
+      TEST_ASSERT_TRUE(std::find(ram.begin(), ram.end(), X) == ram.end());
+      TEST_ASSERT_TRUE(f.files["/mem/fx/31.ring"] == fileBefore);   // nothing written
+    } else if (res == fx::AppendResult::RamOnly) {
+      TEST_ASSERT_EQUAL_STRING(X.c_str(), ram.back().c_str());       // the load was refused: RAM only
+      TEST_ASSERT_TRUE(f.files["/mem/fx/31.ring"] == fileBefore);
+    } else {
+      TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(res));
+      TEST_ASSERT_TRUE(ram == expected("31", 0, pre + 1));          // a refused rewrite lost nothing
+    }
+    // Storage holds every stored entry, in order, and a fresh load settles any temp.
+    {
+      fx::EffectRing fresh(&f);
+      const int stored = res == fx::AppendResult::Stored ? pre + 1 : pre;
+      TEST_ASSERT_TRUE(receipts(fresh, "31") == expected("31", 0, stored));
+      TEST_ASSERT_EQUAL_UINT32(0, f.files.count("/mem/fx/31.ring.tmp"));
+    }
+    // Memory is back: the same ring goes on, and a restart agrees with it.
+    TEST_ASSERT_EQUAL(int(fx::AppendResult::Stored), int(r.append("31", 500, "t", "after")));
+    TEST_ASSERT_EQUAL_STRING("after", receipts(r, "31").back().c_str());
+    fx::EffectRing again(&f);
+    TEST_ASSERT_EQUAL_STRING("after", receipts(again, "31").back().c_str());
+  }
+  TEST_ASSERT_TRUE(hits > 5);   // the sweep reached the load, the append and the rewrite
+  // Reads: recent and visit at every allocation answer 0 or the whole, never throw.
+  for (long k = 0;; ++k) {
+    FxFiles f;
+    {
+      fx::EffectRing seed(&f);
+      for (int i = 0; i < 60; ++i) seed.append("32", i, "t", receiptOf("32", i));
+    }
+    fx::EffectRing r(&f);
+    std::vector<fx::RingEntry> v;
+    const std::string chat = "32";
+    gAllocs = 0;
+    gFailAt = k;
+    gHit = false;
+    gArmed = true;
+    size_t got = 0;
+    bool threw = false;
+    try {
+      got = r.recent(chat, 12, v);
+    } catch (...) {
+      threw = true;
+    }
+    gArmed = false;
+    TEST_ASSERT_FALSE(threw);
+    if (!gHit) break;
+    TEST_ASSERT_TRUE(got == 0 || got == 12);
+    TEST_ASSERT_EQUAL_UINT32(got, v.size());
+    TEST_ASSERT_TRUE(receipts(r, "32") == expected("32", 0, 60));   // nothing lost, loads next time
+    TEST_ASSERT_TRUE(r.stats().noMemory >= 1);
+  }
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_fifty_per_chat_oldest_dropped_at_every_count);
@@ -1009,5 +1137,6 @@ int main() {
   RUN_TEST(test_a_rewrite_marks_ram_only_entries_stored);
   RUN_TEST(test_a_load_cut_short_by_a_refused_read_trusts_nothing);
   RUN_TEST(test_the_least_recently_used_chat_is_evicted);
+  RUN_TEST(test_a_refused_allocation_at_every_site_is_a_designed_state);
   return UNITY_END();
 }

@@ -4,7 +4,7 @@
 
 #include <cstdint>
 #include <cstring>
-#include <new>
+#include <new>   // std::bad_alloc
 
 #include "nimbus/orch/psram_alloc.h"
 
@@ -113,6 +113,7 @@ bool readFile(tx::TxFiles& files, const std::string& path, WorkingVector<RingEnt
               uint32_t& dropped, bool& torn) {
   size_t size = 0;
   if (!files.size(path, size)) return false;
+  out.reserve(kRingEntries);   // one block, never grown by doubling (ruling 30)
   std::string line, buf(kReadSlice, '\0');
   line.reserve(kLineMax);
   bool overlong = false;
@@ -272,9 +273,12 @@ EffectRing::Slot* EffectRing::claimSlot(const std::string& key) {
   Slot* pick = nullptr;
   for (size_t i = 0; i < kMaxChats; ++i)   // a free slot has lastUse 0, older than any use
     if (!pick || slots_[i].lastUse < pick->lastUse) pick = &slots_[i];
-  if (pick->used) ++stats_.evictions;
   if (!pick->ring) pick->ring = static_cast<RingEntry*>(workingAlloc(kRingEntries * sizeof(RingEntry)));
-  if (!pick->ring) return nullptr;
+  if (!pick->ring) {   // refused: no slot changed
+    ++stats_.noMemory;
+    return nullptr;
+  }
+  if (pick->used) ++stats_.evictions;
   RingEntry* ring = pick->ring;
   std::memset(pick, 0, sizeof(Slot));
   pick->ring = ring;
@@ -286,7 +290,10 @@ EffectRing::Slot* EffectRing::claimSlot(const std::string& key) {
 EffectRing::Slot* EffectRing::slotFor(const std::string& key) {
   if (!slots_) {
     void* mem = workingAlloc(kMaxChats * sizeof(Slot));
-    if (!mem) return nullptr;
+    if (!mem) {
+      ++stats_.noMemory;
+      return nullptr;
+    }
     slots_ = static_cast<Slot*>(mem);
     std::memset(mem, 0, kMaxChats * sizeof(Slot));
   }
@@ -301,6 +308,16 @@ EffectRing::Slot* EffectRing::slotFor(const std::string& key) {
 // Settle the chat's files (a temp left by a cut or refused rewrite), then, the first time,
 // read the file into RAM. A loaded slot keeps RAM as the truth: settling never re-reads it.
 void EffectRing::loadInto(Slot& s, const std::string& path) {
+  // A refused allocation leaves the slot as it was (RAM untouched until the read is whole and
+  // the merge needs no memory): the chat stays not loaded, RamOnly, and is loaded at its next use.
+  try {
+    loadFiles(s, path);
+  } catch (const std::bad_alloc&) {
+    ++stats_.noMemory;
+  }
+}
+
+void EffectRing::loadFiles(Slot& s, const std::string& path) {
   std::vector<std::string> names;
   if (!files_->list(kFxRoot, names)) return;   // no card: stay in RAM
   const std::string base = path.substr(std::strlen(kFxRoot) + 1);
@@ -327,6 +344,7 @@ void EffectRing::loadInto(Slot& s, const std::string& path) {
   // Entries already in RAM never reached storage (no write runs before the load), so they are
   // newer than every line of the file: they stay, after it.
   WorkingVector<RingEntry> extra;
+  extra.reserve(s.count);
   for (size_t i = 0; i < s.count; ++i) extra.push_back(s.at(i));
   s.head = s.count = 0;
   for (const RingEntry& e : got) s.push(e);
@@ -339,6 +357,26 @@ void EffectRing::loadInto(Slot& s, const std::string& path) {
 }
 
 bool EffectRing::rewrite(Slot& s, const std::string& path) {
+  // A refused allocation skips the rewrite (nothing on storage changed); the next append
+  // tries again.
+  bool renaming = false;
+  try {
+    return rewriteFile(s, path, renaming);
+  } catch (const std::bad_alloc&) {
+    ++stats_.noMemory;
+  }
+  if (renaming) {   // the rename may have removed the file first: the temp may be the only copy
+    s.unsettled = true;
+    return false;
+  }
+  try {   // a binding refused inside its whole write may leave a part temp: the file is whole
+    files_->remove(path + ".tmp");
+  } catch (const std::bad_alloc&) {   // left for the next load, which removes it beside a whole file
+  }
+  return false;
+}
+
+bool EffectRing::rewriteFile(Slot& s, const std::string& path, bool& renaming) {
   std::string all;
   all.reserve(s.count * kLineMax);
   for (size_t i = 0; i < s.count; ++i) all += encodeLine(s.at(i));
@@ -347,6 +385,7 @@ bool EffectRing::rewrite(Slot& s, const std::string& path) {
     files_->remove(tmp);   // the file is whole; a part temp would be taken for a cut rename
     return false;
   }
+  renaming = true;
   if (!files_->rename(tmp, path)) {
     s.unsettled = true;   // the temp may be the only whole copy: settled before the next write
     return false;
@@ -361,16 +400,24 @@ bool EffectRing::rewrite(Slot& s, const std::string& path) {
 AppendResult EffectRing::append(const std::string& chatId, int64_t epoch, const std::string& tool,
                                 const std::string& receipt) {
   std::lock_guard<std::mutex> lock(mu_);
+  try {
+    return appendLocked(chatId, epoch, tool, receipt);
+  } catch (const std::bad_alloc&) {
+    // Every allocation of an append comes before its write and its RAM entry: nothing changed.
+    ++stats_.noMemory;
+    return AppendResult::NoMemory;
+  }
+}
+
+AppendResult EffectRing::appendLocked(const std::string& chatId, int64_t epoch, const std::string& tool,
+                                      const std::string& receipt) {
   std::string key;
   if (!ringKey(chatId, key)) {
     ++stats_.refused;
     return AppendResult::Refused;
   }
   Slot* s = slotFor(key);
-  if (!s) {
-    ++stats_.refused;
-    return AppendResult::Refused;
-  }
+  if (!s) return AppendResult::NoMemory;   // the slot table or the chat's ring block was refused
   RingEntry e;
   e.epoch = epoch > 0 ? epoch : 0;
   copyField(e.tool, sizeof e.tool, cleanText(tool, kToolMax));
@@ -400,9 +447,13 @@ AppendResult EffectRing::append(const std::string& chatId, int64_t epoch, const 
 
 size_t EffectRing::visit(const std::string& chatId, size_t n, const std::function<void(const RingEntry&)>& fn) {
   std::lock_guard<std::mutex> lock(mu_);
-  std::string key;
-  if (!ringKey(chatId, key)) return 0;
-  Slot* s = slotFor(key);
+  Slot* s = nullptr;
+  try {
+    std::string key;
+    if (ringKey(chatId, key)) s = slotFor(key);
+  } catch (const std::bad_alloc&) {   // the key or the path: nothing was read
+    ++stats_.noMemory;
+  }
   if (!s) return 0;
   const size_t m = n < s->count ? n : s->count;
   for (size_t i = s->count - m; i < s->count; ++i) fn(s->at(i));
@@ -411,14 +462,25 @@ size_t EffectRing::visit(const std::string& chatId, size_t n, const std::functio
 
 size_t EffectRing::recent(const std::string& chatId, size_t n, std::vector<RingEntry>& out) {
   out.clear();
-  return visit(chatId, n, [&out](const RingEntry& e) { out.push_back(e); });
+  try {
+    out.reserve(n < kRingEntries ? n : kRingEntries);
+  } catch (const std::bad_alloc&) {
+    std::lock_guard<std::mutex> lock(mu_);
+    ++stats_.noMemory;
+    return 0;
+  }
+  return visit(chatId, n, [&out](const RingEntry& e) { out.push_back(e); });   // within the reserve
 }
 
 Backing EffectRing::backing(const std::string& chatId) {
   std::lock_guard<std::mutex> lock(mu_);
-  std::string key;
-  if (!files_ || !ringKey(chatId, key)) return Backing::RamOnly;
-  Slot* s = slotFor(key);
+  Slot* s = nullptr;
+  try {
+    std::string key;
+    if (files_ && ringKey(chatId, key)) s = slotFor(key);
+  } catch (const std::bad_alloc&) {
+    ++stats_.noMemory;
+  }
   return s && s->loaded && !s->unsettled && !s->writeFailed ? Backing::Storage : Backing::RamOnly;
 }
 

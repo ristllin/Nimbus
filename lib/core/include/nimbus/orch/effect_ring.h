@@ -59,6 +59,13 @@
 //   line buffers are bounded by kReadSlice and kRingEntries * kLineMax and are made inside
 //   the call; on the device the binding calls the ring under the PSRAM-first scope
 //   (agent::PsramFirstScope). The object itself holds a few pointers in internal RAM.
+// - A refused allocation (ruling 30; the working allocator or plain new) is a designed state,
+//   never an exception out of the ring. append answers AppendResult::NoMemory with nothing
+//   kept or written (every allocation of an append comes before its write and its RAM entry);
+//   a refused load leaves the chat not loaded (RamOnly, RAM untouched) and is tried again at
+//   its next use; a refused rewrite is skipped and tried at the next append; visit and recent
+//   answer 0. Nothing already stored is lost. No buffer grows by doubling: the load reserves
+//   its kRingEntries block once.
 // - Thread safety: every public call takes the ring's own mutex, so the ring may be shared by
 //   the tasks that record and read effects. The binding's TxFiles takes the card lock per
 //   storage call; never call the ring while holding the card lock unless that lock is
@@ -102,6 +109,7 @@ enum class AppendResult : uint8_t {
   Stored = 0,    // in RAM and its line is on storage
   RamOnly = 1,   // in RAM only (no storage, or the append was refused)
   Refused = 2,   // a chat id the ring cannot key: nothing was kept
+  NoMemory = 3,  // an allocation was refused: nothing was kept or written (ruling 30)
 };
 
 // Counters for evidence and tests (never reset; summed over every chat).
@@ -114,6 +122,7 @@ struct RingStats {
   uint32_t refused = 0;        // appends refused (bad chat id)
   uint32_t rewrites = 0;       // file rewrites done (temp and rename)
   uint32_t evictions = 0;      // RAM rings evicted for room
+  uint32_t noMemory = 0;       // calls that met a refused allocation (each a designed state)
 };
 
 // The cleaning every tool name and receipt goes through: one line (control characters,
@@ -167,8 +176,12 @@ class EffectRing {
   Slot* slotFor(const std::string& key);   // find or claim, then load or settle
   Slot* findSlot(const std::string& key);
   Slot* claimSlot(const std::string& key);  // a free or the least recently used slot
-  void loadInto(Slot& s, const std::string& path);
-  bool rewrite(Slot& s, const std::string& path);
+  void loadInto(Slot& s, const std::string& path);    // never throws: a refusal leaves it unloaded
+  void loadFiles(Slot& s, const std::string& path);
+  bool rewrite(Slot& s, const std::string& path);     // never throws: a refusal skips it
+  bool rewriteFile(Slot& s, const std::string& path, bool& renaming);
+  AppendResult appendLocked(const std::string& chatId, int64_t epoch, const std::string& tool,
+                            const std::string& receipt);
 
   tx::TxFiles* files_;
   Slot* slots_ = nullptr;        // kMaxChats, in the working allocator
