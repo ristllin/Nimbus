@@ -2931,12 +2931,12 @@ static agent::FoldSlice legacyFoldSlice(const std::string& chat, size_t cap) {
   return s;
 }
 
-// The owner's chats (the daily alert, the fold's order and the guests' share of the cap):
-// the web chat and the owner's Telegram chat.
+// The owner's chats (the daily alert, the fold's order and the guests' share of the cap).
+// By role, as every rail reads it (bench B11, candidate 2): the device's own surfaces (web,
+// serial, voice) and every Admin chat are the owner's. The serial console counted as a guest
+// once, so after the guests' 6 paid folds of the day its automatic fold never started.
 static bool foldOwnerChat(const std::string& chat) {
-  if (chat == "web") return true;
-  const String owner = agent::telegram::ownerChat();
-  return owner.length() && chat == owner.c_str();
+  return roleOfChat(String(chat.c_str())) == nimbus::orch::Role::Admin;
 }
 
 static agent::FoldDriverHooks foldHooks() {

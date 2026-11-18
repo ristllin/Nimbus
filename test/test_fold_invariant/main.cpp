@@ -931,6 +931,113 @@ static void test_production_device_shape_folds_forward_with_no_gap() {
   std::printf("production shape: %u folds to %s\n", (unsigned)done.size(), folds.get(chat).thru.c_str());
 }
 
+// Bench B11 on candidate 2 (d5afa30a): the serial chat, a v5.1.1 plant with about 1,200 rows
+// hidden behind its anchor, an index that stops at its 20,000-row cap (it never completes), and
+// six paid folds already counted that local day. The automatic fold never started: the binding
+// counted the serial console as a guest, and the guests' share of the cap (6) was spent. With
+// the chat counted as the owner's (the device's own surfaces are Admin), the fold starts and
+// works the backlog off over the capped index, each slice starting where the last one ended,
+// the anchor never passing a row no summary took. As a guest, each pass now says why it does
+// not start.
+namespace {
+struct CappedBench {
+  FakeFs fs;
+  orch::AppendLogEpisodicStore log{fs, "/mem/episodic", 512};
+  orch::RowTextOverlay overlay;
+  BlobIO blob;
+  orch::FoldStore folds;
+  std::string ctl;
+  std::vector<agent::FoldDone> done;
+  static constexpr uint32_t kThru = 3000, kSoft = 4200, kRows = 24500;
+  CappedBench() {
+    overlay.bind(&log);
+    const uint32_t hour0 = (uint32_t)(kT0 / 3600) - 20 * 24;
+    for (uint32_t sfx = 1; sfx <= kRows; sfx++) {
+      orch::EpisodicMessage m;
+      m.id = idOf(sfx);
+      m.sessionId = sfx >= 2500 && sfx <= 4300 ? std::string("serial") : std::string("6098532481");
+      m.role = sfx % 2 ? "assistant" : "user";
+      m.kind = orch::MsgKind::Message;
+      m.text = "T" + std::to_string(sfx) + ". " + std::string(sfx % 2 ? 160 : 40, 'x');
+      m.tsHours = hour0 + sfx / 60;   // about 17 days of rows
+      overlay.addMessage(m);
+    }
+    log.hydrate(300, 0);
+    for (int i = 0; i < 100000 && log.backfillStep(); i++) {
+    }
+    TEST_ASSERT_TRUE_MESSAGE(log.hydrateTruncated(), "the index stopped at its cap");
+    folds.begin(&blob);
+    folds.applyFold("serial", "1. Decisions & preferences\n- notes.\n", kT0 - 86400, idOf(kThru));
+    folds.setSoftStart("serial", idOf(kSoft));
+    folds.noteTurn("serial");
+    const uint32_t day = orch::foldLocalDay(kT0, 0);
+    ctl = "paidDay=" + std::to_string(day) + "\npaidCount=6\nguestPaid=6\n";   // six paid folds that day
+  }
+  int run(bool serialIsOwners) {
+    FakePlatform plat;
+    plat.epoch = kT0;
+    FakeConfig cfg;
+    TurnEngine eng(lumiDeps(plat, cfg, overlay, folds));
+    FoldDriverHooks h;
+    h.triggerBytes = [] { return 94464u; };
+    h.foldCycleBytes = [] { return (size_t)35424; };
+    h.folded = [this](const agent::FoldDone& fd) { done.push_back(fd); };
+    h.ownerChat = [serialIsOwners](const std::string& c) { return c != "serial" || serialIsOwners; };
+    orch::FoldCtlIO io;
+    io.load = [this] { return ctl; };
+    io.save = [this](const std::string& t) {
+      ctl = t;
+      return true;
+    };
+    FoldDriver drv(eng, folds, io, h);
+    drv.begin();
+    uint32_t ms = 1000;
+    for (int pass = 0; pass < 240; pass++) {
+      ms += 60000;
+      drv.tick(ms, kT0 + (uint32_t)pass * 60);
+      eng.historyIdleStep();
+      const std::string thru = folds.get("serial").thru;
+      const std::string landedThru = done.empty() ? idOf(kThru) : done.back().slice.thru;
+      TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter(thru, landedThru), "the anchor moved with no summary");
+    }
+    return (int)done.size();
+  }
+};
+}  // namespace
+
+static void test_a_capped_index_still_folds_the_serial_backlog() {
+  {
+    CappedBench b;   // the bench's classification: the serial console as a guest
+    TEST_ASSERT_EQUAL_MESSAGE(0, b.run(false), "a guest past its share does not fold");
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("fold(serial): due, not started - the daily cap's share"),
+                             "and says why");
+  }
+  CappedBench b;
+  const int folds = b.run(true);
+  TEST_ASSERT_TRUE_MESSAGE(folds >= 3, std::to_string(folds).c_str());
+  TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter(idOf(CappedBench::kSoft), b.folds.get("serial").thru),
+                            "the backlog is folded over the capped index");
+  std::string prev = idOf(CappedBench::kThru);
+  for (const agent::FoldDone& fd : b.done) {   // each slice starts at the row after the last anchor
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(idOf(orch::epiIdSuffix(prev) + 1).c_str(), fd.slice.firstId.c_str(), "an id gap");
+    prev = fd.slice.thru;
+  }
+}
+
+// The device binding counts its own surfaces and every Admin chat as the owner's, by role: no
+// list of chat names that can leave the serial console or voice out (bench B11, candidate 2).
+static void test_the_device_owner_predicate_is_by_role() {
+  std::ifstream f("src/agent/orchestrator.cpp");
+  std::stringstream ss;
+  ss << f.rdbuf();
+  const std::string src = ss.str();
+  const size_t at = src.find("static bool foldOwnerChat(const std::string& chat) {");
+  TEST_ASSERT_TRUE(at != std::string::npos);
+  const std::string body = src.substr(at, src.find("\n}\n", at) - at);
+  TEST_ASSERT_TRUE_MESSAGE(body.find("roleOfChat(") != std::string::npos && body.find("Role::Admin") != std::string::npos,
+                           "the owner's chats are the Admin ones");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_restart_with_hidden_rows_folds_them_first);
@@ -941,6 +1048,8 @@ int main(int, char**) {
   RUN_TEST(test_no_anchor_on_a_failing_card_backs_off_and_answers);
   RUN_TEST(test_a_backfill_completing_between_passes_never_ends_the_read);
   RUN_TEST(test_a_manual_read_on_cold_rows_ends_and_never_starves_the_others);
+  RUN_TEST(test_a_capped_index_still_folds_the_serial_backlog);
+  RUN_TEST(test_the_device_owner_predicate_is_by_role);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);

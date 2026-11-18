@@ -188,6 +188,12 @@ class FoldDriver {
   bool pickManual(uint32_t nowMs, std::string& chat) const;
   bool pickAutomatic(uint32_t nowMs, uint32_t nowEpoch, std::string& chat);
   bool dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch);
+  bool wantsFold(const std::string& chat) const;
+  const char* waitOf(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const;
+  void noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs);
+  void noteGatesClosed(uint32_t nowMs);
+  std::string notStartedKey_;
+  uint32_t notStartedMs_ = 0;
   std::vector<FoldRung> orderedRungs() const;
   bool capReached(uint32_t nowEpoch, const std::string& chat = std::string());
   bool isOwnerChat(const std::string& chat) const { return !hooks_.ownerChat || hooks_.ownerChat(chat); }

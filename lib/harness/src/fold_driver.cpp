@@ -192,7 +192,10 @@ FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
     hlog::log("fold: 24 hours with no clock since the first paid request - the daily count restarts");
     clocklessPaid_ = clocklessGuest_ = 0;
   }
-  if (!gatesOpen()) return cycleActive() || !ctl_.manualPendingChat.empty() ? FoldTick::Deferred : FoldTick::Idle;
+  if (!gatesOpen()) {
+    if (!cycleActive()) noteGatesClosed(nowMs);
+    return cycleActive() || !ctl_.manualPendingChat.empty() ? FoldTick::Deferred : FoldTick::Idle;
+  }
   std::string ready;
   if (pickManual(nowMs, ready)) endAutomaticForManual();
   if (!cycleActive()) {
@@ -248,23 +251,63 @@ bool FoldDriver::pickManual(uint32_t nowMs, std::string& chat) const {
   return true;
 }
 
+// The chat has a reason to fold (over the trigger, or rows a shift hid), waits aside.
+bool FoldDriver::wantsFold(const std::string& chat) const {
+  const orch::ChatFold* f = folds_.peek(chat);
+  if (!f) return false;
+  const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
+  const bool hidden = !f->softStart.empty() && (f->thru.empty() || rowIdAfter(f->softStart, f->thru));
+  return hidden || (trigger && orch::bytesAfterThru(*f) >= trigger) || f->msgsSinceFold >= orch::kFoldMsgsThreshold;
+}
+
+// A chat with a reason to fold that this pass does not start, and why (bench B11, candidate 2:
+// the bench saw silence). One line when the reason changes, else at most once a minute.
+void FoldDriver::noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs) {
+  const std::string key = chat + "|" + why;
+  if (key == notStartedKey_ && nowMs - notStartedMs_ < 60000u) return;
+  notStartedKey_ = key;
+  notStartedMs_ = nowMs;
+  hlog::logf("fold(%s): due, not started - %s", chat.c_str(), why);
+}
+
+void FoldDriver::noteGatesClosed(uint32_t nowMs) {
+  for (const std::string& c : folds_.chatIds()) {
+    if (c == "system" || !wantsFold(c)) continue;
+    const bool offline = hooks_.online && !hooks_.online();
+    noteNotStarted(c, offline ? "the network is down" : "a turn in flight, the heap floor or no provider to ask", nowMs);
+    return;
+  }
+}
+
 bool FoldDriver::dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) {
+  const char* why = waitOf(chat, nowMs, nowEpoch);
+  if (why) {
+    if (wantsFold(chat)) noteNotStarted(chat, why, nowMs);
+    return false;
+  }
+  bool thrash = false;
+  const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
+  if (folds_.evaluateDue(chat, trigger, orch::kFoldMsgsThreshold, nowEpoch, &thrash) != orch::FoldDue::Yes) {
+    if (wantsFold(chat)) noteNotStarted(chat, "its retry wait (next try scheduled)", nowMs);
+    return false;
+  }
+  if (thrash && nowEpoch == 0) ramWaitMs_[chat] = nowMs + orch::kFoldThrashRetryS * 1000u;
+  return true;
+}
+
+// The wait that holds the chat this pass (nullptr = none).
+const char* FoldDriver::waitOf(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const {
   const auto w = ramWaitMs_.find(chat);
-  if (w != ramWaitMs_.end() && (int32_t)(w->second - nowMs) > 0) return false;   // no clock: its RAM wait
+  if (w != ramWaitMs_.end() && (int32_t)(w->second - nowMs) > 0) return "its wait (no clock)";
   const auto r = readWaitUntilMs_.find(chat);
-  if (r != readWaitUntilMs_.end() && (int32_t)(r->second - nowMs) > 0) return false;   // its rows' read waits
+  if (r != readWaitUntilMs_.end() && (int32_t)(r->second - nowMs) > 0) return "its rows' read wait";
   // No clock yet: a chat that carries a persisted wait is held a few minutes for the clock,
   // not retried at once on every boot (its wait cannot be read without one).
   if (nowEpoch == 0 && nowMs - firstTickMs_ < FoldDriverHooks::kNoClockGraceMs) {
     const orch::ChatFold* f = folds_.peek(chat);
-    if (f && f->nextTry) return false;
+    if (f && f->nextTry) return "a persisted wait, no clock yet";
   }
-  bool thrash = false;
-  const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
-  if (folds_.evaluateDue(chat, trigger, orch::kFoldMsgsThreshold, nowEpoch, &thrash) != orch::FoldDue::Yes)
-    return false;
-  if (thrash && nowEpoch == 0) ramWaitMs_[chat] = nowMs + orch::kFoldThrashRetryS * 1000u;
-  return true;
+  return nullptr;
 }
 
 bool FoldDriver::pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::string& chat) {
@@ -274,7 +317,10 @@ bool FoldDriver::pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::s
   }
   for (const std::string& c : folds_.chatIds()) {
     if (c == lastTurnChat_ || c == "system" || isOwnerChat(c) != owners) continue;
-    if (!owners && guestPaidToday(nowEpoch) >= orch::kFoldGuestPaidPerDay) return false;   // their share is spent
+    if (!owners && guestPaidToday(nowEpoch) >= orch::kFoldGuestPaidPerDay) {   // their share is spent
+      if (wantsFold(c)) noteNotStarted(c, "the daily cap's share for chats that are not the owner's", nowMs);
+      continue;
+    }
     if (!dueNow(c, nowMs, nowEpoch)) continue;
     chat = c;
     return true;
@@ -310,8 +356,13 @@ FoldTick FoldDriver::pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& ch
   overflow = folds_.overflowQueued(chat);
   // A due automatic fold waits for the owner (owner_first.h); an overflow fold is
   // needed by the next turn. Then the device-wide daily cap.
-  if (hooks_.quiet && !hooks_.quiet(overflow)) return FoldTick::Deferred;
-  return capReached(nowEpoch, chat) ? FoldTick::Deferred : FoldTick::Pending;
+  if (hooks_.quiet && !hooks_.quiet(overflow)) {
+    noteNotStarted(chat, "the quiet gate (waits for a quiet moment)", nowMs);
+    return FoldTick::Deferred;
+  }
+  if (!capReached(nowEpoch, chat)) return FoldTick::Pending;
+  noteNotStarted(chat, "the daily cap", nowMs);
+  return FoldTick::Deferred;
 }
 
 // A due fold whose slice read to its bound and found nothing: a manual request is answered
