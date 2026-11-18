@@ -7,7 +7,6 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <map>
 #include <set>
@@ -30,8 +29,6 @@ constexpr const char kOmissionTail[] = ", not shown: search finds them]";
 
 // ---- one-line UTF-8 text -------------------------------------------------------------------
 
-// Length of the valid UTF-8 sequence at s[i] (RFC 3629: no overlongs, no surrogates, at
-// most U+10FFFF), or 0 when the bytes there are not one.
 // The sequence length a lead byte starts and the allowed range of its second byte (0 when
 // the byte cannot start one).
 size_t leadOf(unsigned char c, unsigned char& lo, unsigned char& hi) {
@@ -51,6 +48,8 @@ size_t leadOf(unsigned char c, unsigned char& lo, unsigned char& hi) {
   return 0;
 }
 
+// Length of the valid UTF-8 sequence at s[i] (RFC 3629: no overlongs, no surrogates, at
+// most U+10FFFF), or 0 when the bytes there are not one.
 size_t utf8Len(const std::string& s, size_t i) {
   const unsigned char c = static_cast<unsigned char>(s[i]);
   if (c < 0x80) return 1;
@@ -64,23 +63,60 @@ size_t utf8Len(const std::string& s, size_t i) {
   return n;
 }
 
-// Appends src as one line of valid UTF-8, at most maxBytes of it: control bytes become a
-// space, a byte that starts no valid sequence becomes '?', and the cut falls on a character.
-void appendLine(std::string& out, const std::string& src, size_t maxBytes) {
+// The rest of src from i is the start of a sequence the source cut off (dropped, not '?').
+bool partialTail(const std::string& s, size_t i) {
+  unsigned char lo, hi;
+  const size_t n = leadOf(static_cast<unsigned char>(s[i]), lo, hi);
+  if (n == 0 || i + n <= s.size()) return false;
+  for (size_t k = i + 1; k < s.size(); ++k)
+    if ((static_cast<unsigned char>(s[k]) & 0xC0) != 0x80) return false;
+  return true;
+}
+
+// What a character becomes on a stub line: itself (nullptr), a space (a control byte, C1
+// control, U+2028 or U+2029: anything a renderer may break a line at), or '?' (a bidi
+// control, which can reorder what the line shows).
+const char* replacementOf(const std::string& s, size_t i, size_t n) {
+  const unsigned char c0 = static_cast<unsigned char>(s[i]);
+  if (n == 1) return (c0 < 0x20 || c0 == 0x7F) ? " " : nullptr;
+  const unsigned char c1 = static_cast<unsigned char>(s[i + 1]);
+  if (n == 2) return (c0 == 0xC2 && c1 <= 0x9F) ? " " : nullptr;
+  if (n != 3 || c0 != 0xE2) return nullptr;
+  const unsigned char c2 = static_cast<unsigned char>(s[i + 2]);
+  if (c1 == 0x80 && (c2 == 0xA8 || c2 == 0xA9)) return " ";
+  if (c1 == 0x80 && ((c2 >= 0xAA && c2 <= 0xAE) || c2 == 0x8E || c2 == 0x8F)) return "?";
+  if (c1 == 0x81 && c2 >= 0xA6 && c2 <= 0xA9) return "?";
+  return nullptr;
+}
+
+// Appends src as one line of valid UTF-8, at most maxBytes of it: see replacementOf; a byte
+// that starts no valid sequence becomes '?'; a sequence cut at the end of src is dropped; the
+// cut falls on a character. `frame`: '[' and ']' become '(' and ')', so a field set by the
+// model cannot close the stub or open a '[device]' line inside it.
+void appendLine(std::string& out, const std::string& src, size_t maxBytes, bool frame = false) {
   size_t used = 0;
   for (size_t i = 0; i < src.size();) {
     const size_t n = utf8Len(src, i);
+    if (n == 0 && partialTail(src, i)) break;
     const size_t emit = n ? n : 1;
     if (used + emit > maxBytes) break;
-    if (n == 0) out += '?';
-    else if (n == 1) {
-      const unsigned char c = static_cast<unsigned char>(src[i]);
-      out += (c < 0x20 || c == 0x7F) ? ' ' : src[i];
-    } else {
-      out.append(src, i, n);
-    }
-    used += emit;
-    i += n ? n : 1;
+    const char* r = n ? replacementOf(src, i, n) : "?";
+    if (r) out += r;
+    else if (frame && src[i] == '[') out += '(';
+    else if (frame && src[i] == ']') out += ')';
+    else out.append(src, i, n);
+    used += r ? 1 : emit;
+    i += emit;
+  }
+}
+
+// A tool name keeps [A-Za-z0-9_.-]; anything else becomes '?'.
+void appendTool(std::string& out, const std::string& tool) {
+  for (size_t i = 0; i < tool.size() && i < kStubToolMaxBytes; ++i) {
+    const char c = tool[i];
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+                    c == '.' || c == '-';
+    out += ok ? c : '?';
   }
 }
 
@@ -151,11 +187,28 @@ std::string topString(const JsonDocument& doc, const char* key) {
   return v.is<const char*>() ? std::string(v.as<const char*>()) : std::string();
 }
 
-// Every "day" date and every "id"/"ids" string anywhere in a ledger_write's arguments.
-void collectLedgerKeys(JsonVariantConst v, int depth, std::set<std::string>& days, std::set<std::string>& ids) {
-  if (depth > kArgsDepth) return;
+bool isWordChar(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+// A ledger row id: 'L' and 5 base-32 characters (PRD section 4); 4 to 8 are accepted, so
+// ids of a shorter or longer form still match while a bare number or word never does.
+bool isRowId(const std::string& s) {
+  if (s.size() < 5 || s.size() > 9 || s[0] != 'L') return false;
+  for (size_t i = 1; i < s.size(); ++i)
+    if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'A' && s[i] <= 'Z'))) return false;
+  return true;
+}
+
+void addRowId(JsonVariantConst v, std::set<std::string>& ids) {
+  if (v.is<const char*>() && isRowId(v.as<const char*>())) ids.insert(v.as<const char*>());
+}
+
+// Every "day" date and every "id"/"ids" row id anywhere in a ledger_write's arguments (the
+// parse's nesting limit bounds the depth).
+void collectLedgerKeys(JsonVariantConst v, std::set<std::string>& days, std::set<std::string>& ids) {
   if (v.is<JsonArrayConst>()) {
-    for (JsonVariantConst e : v.as<JsonArrayConst>()) collectLedgerKeys(e, depth + 1, days, ids);
+    for (JsonVariantConst e : v.as<JsonArrayConst>()) collectLedgerKeys(e, days, ids);
     return;
   }
   if (!v.is<JsonObjectConst>()) return;
@@ -165,13 +218,12 @@ void collectLedgerKeys(JsonVariantConst v, int depth, std::set<std::string>& day
     if (std::strcmp(key, "day") == 0 && val.is<const char*>()) {
       const std::string d = val.as<const char*>();
       if (isDay(d)) days.insert(d);
-    } else if ((std::strcmp(key, "id") == 0 || std::strcmp(key, "ids") == 0)) {
-      if (val.is<const char*>()) ids.insert(val.as<const char*>());
+    } else if (std::strcmp(key, "id") == 0 || std::strcmp(key, "ids") == 0) {
+      addRowId(val, ids);
       if (val.is<JsonArrayConst>())
-        for (JsonVariantConst e : val.as<JsonArrayConst>())
-          if (e.is<const char*>()) ids.insert(e.as<const char*>());
+        for (JsonVariantConst e : val.as<JsonArrayConst>()) addRowId(e, ids);
     } else {
-      collectLedgerKeys(val, depth + 1, days, ids);
+      collectLedgerKeys(val, days, ids);
     }
   }
 }
@@ -179,14 +231,12 @@ void collectLedgerKeys(JsonVariantConst v, int depth, std::set<std::string>& day
 // The "day YYYY-MM-DD" lines of a ledger receipt (the constant day-line form, PRD section 4).
 void receiptDays(const std::string& x, std::set<std::string>& days) {
   for (size_t at = x.find("day "); at != std::string::npos; at = x.find("day ", at + 4)) {
-    if (at > 0 && (std::isalnum(static_cast<unsigned char>(x[at - 1])) || x[at - 1] == '_')) continue;
+    if (at > 0 && isWordChar(x[at - 1])) continue;
     if (at + 14 > x.size()) break;
     const std::string d = x.substr(at + 4, 10);
     if (isDay(d)) days.insert(d);
   }
 }
-
-bool isWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 
 // `token` appears in x as a whole word.
 bool hasToken(const std::string& x, const std::string& token) {
@@ -208,20 +258,32 @@ struct WriteTarget {
   std::set<std::string> ids;     // ledger row ids named
 };
 
-bool readMatches(const Item& call, const Item& result, const WriteTarget& w) {
+// What an earlier read call is about, parsed once per call: the path of a file read, or
+// the day argument of a ledger view; `relevant` false for every other call.
+struct ReadKey {
+  bool relevant = false;
+  std::string key;
+};
+ReadKey readKeyOf(const Item& call, const WriteTarget& w) {
+  ReadKey k;
+  k.relevant = w.ledger ? call.n == "ledger_day" : isPathRead(call.n);
   JsonDocument doc;
-  if (!w.ledger) {
-    if (!isPathRead(call.n) || !parseArgs(call.args, doc)) return false;
-    return w.paths.count(topString(doc, "path")) > 0;
-  }
-  if (call.n != "ledger_day") return false;
-  if (parseArgs(call.args, doc) && w.days.count(topString(doc, "day"))) return true;
+  if (k.relevant && parseArgs(call.args, doc)) k.key = topString(doc, w.ledger ? "day" : "path");
+  return k;
+}
+
+bool readMatches(const ReadKey& k, const Item& result, const WriteTarget& w) {
+  if (!k.relevant) return false;
+  if (!w.ledger) return w.paths.count(k.key) > 0;
+  if (w.days.count(k.key)) return true;
+  // A view kept in bulk has no text on its line: its stored stub's preview is read instead.
+  const std::string& text = result.x.empty() ? result.st : result.x;
   std::set<std::string> viewDays;
-  receiptDays(result.x, viewDays);
+  receiptDays(text, viewDays);
   for (const std::string& d : viewDays)
     if (w.days.count(d)) return true;
   for (const std::string& id : w.ids)
-    if (hasToken(result.x, id)) return true;
+    if (hasToken(text, id)) return true;
   return false;
 }
 
@@ -238,7 +300,7 @@ bool targetOf(const Item& writeCall, const Item* writeResult, WriteTarget& w) {
   }
   if (writeCall.n != "ledger_write") return false;
   w.ledger = true;
-  if (parseArgs(writeCall.args, doc)) collectLedgerKeys(doc.as<JsonVariantConst>(), 0, w.days, w.ids);
+  if (parseArgs(writeCall.args, doc)) collectLedgerKeys(doc.as<JsonVariantConst>(), w.days, w.ids);
   if (writeResult) receiptDays(writeResult->x, w.days);
   return !w.days.empty() || !w.ids.empty();
 }
@@ -262,14 +324,14 @@ Status superseded(const Item& writeCall, const Item* writeResult, const std::vec
   if (!targetOf(writeCall, writeResult, w)) return Status::success();
   std::set<uint64_t> already;
   const uint64_t pointer = priorMoves(earlier, already);
-  std::map<std::string, size_t> lastCall;   // call id -> index of its newest c item
-  for (size_t i = 0; i < earlier.size(); ++i) {
-    const Item& it = earlier[i];
-    if (it.kind == ItemKind::Call) lastCall[it.id] = i;
+  std::map<std::string, ReadKey> lastCall;   // call id -> what its newest c item reads
+  for (const Item& it : earlier) {
+    if (writeCall.q && it.q >= writeCall.q) break;   // a read after the write is fresh
+    if (it.kind == ItemKind::Call) lastCall[it.id] = readKeyOf(it, w);
     if (it.kind != ItemKind::Result || already.count(it.q)) continue;
     if (it.cls != ResultClass::Receipt && it.q <= pointer) continue;   // already a stub
     auto c = lastCall.find(it.id);
-    if (c != lastCall.end() && readMatches(earlier[c->second], it, w)) out.push_back(it.q);
+    if (c != lastCall.end() && readMatches(c->second, it, w)) out.push_back(it.q);
   }
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());
@@ -301,11 +363,11 @@ Status stubText(const StubFacts& f, std::string& out) {
   if (f.tool.empty() || f.q == 0) return Status::fail(Err::InvalidArgument, "tx::stubText");
   const std::string q = std::to_string(f.q);
   std::string s = kStubOpen;
-  appendLine(s, f.tool, kStubToolMaxBytes);
+  appendTool(s, f.tool);
   if (f.cls == ResultClass::Outside) {
     // The call and the size only: no byte of the result is read.
     s += '(';
-    appendLine(s, f.args, kStubArgsPreviewBytes);
+    appendLine(s, f.args, kStubArgsPreviewBytes, true);
     s += ") r" + q + " " + std::to_string(f.bytes) + kOutsideMid;
     s += f.noCard ? std::string(kNoCardOutside) : "view id=r" + q;
     s += ']';
@@ -316,7 +378,7 @@ Status stubText(const StubFacts& f, std::string& out) {
   s += isHhmm(f.hhmm) ? f.hhmm : std::string(kNoClock);
   if (!f.path.empty()) {
     s += " path=";
-    appendLine(s, f.path, kStubPathMaxBytes);
+    appendLine(s, f.path, kStubPathMaxBytes, true);
   }
   if (isHex8(f.sha8)) s += " sha8=" + f.sha8;
   s += "] ";
@@ -340,7 +402,7 @@ Status photoStub(const std::string& ref8, const std::string& when, std::string& 
   if (!isRef(ref8)) return Status::fail(Err::InvalidArgument, "tx::photoStub");
   out = "[photo p" + ref8 + " ";
   if (!when.empty()) {
-    appendLine(out, when, 40);
+    appendLine(out, when, 40, true);
     out += ' ';
   }
   out += "not shown: view id=p" + ref8 + "]";
@@ -367,7 +429,9 @@ Status photoWhen(uint64_t epoch, int16_t tz, std::string& out) {
 
 Status omissionDates(uint64_t first, uint64_t last, int16_t tz, std::string& out) {
   out.clear();
-  if (first == 0 || last < first) return Status::fail(Err::InvalidArgument, "tx::omissionDates");
+  if (first == 0) first = last;   // turns stored before the clock was set
+  if (last == 0) return Status::success();
+  if (last < first) return Status::fail(Err::InvalidArgument, "tx::omissionDates");
   StampParts a, b;
   Status st = stampParts(first, tz, a, "tx::omissionDates");
   if (st.ok()) st = stampParts(last, tz, b, "tx::omissionDates");
@@ -387,10 +451,9 @@ Status supersededBy(const Item& writeCall, const std::vector<Item>& earlier, std
 
 Status supersededBy(const Item& writeCall, const Item& writeResult, const std::vector<Item>& earlier,
                     std::vector<uint64_t>& out) {
-  if (writeResult.kind != ItemKind::Result) {
-    out.clear();
-    return Status::fail(Err::InvalidArgument, "tx::supersededBy");
-  }
+  out.clear();
+  if (writeResult.kind != ItemKind::Result) return Status::fail(Err::InvalidArgument, "tx::supersededBy");
+  if (!writeResult.ok) return Status::success();   // a failed write changed nothing
   return superseded(writeCall, &writeResult, earlier, out);
 }
 
@@ -398,7 +461,8 @@ Status supersededBy(const Item& writeCall, const Item& writeResult, const std::v
 
 Status showResult(const Item& r, const ShowFacts& f, ShowAs& out) {
   out = ShowAs::Whole;
-  if (r.kind != ItemKind::Result) return Status::fail(Err::InvalidArgument, "tx::showResult");
+  if (r.kind != ItemKind::Result || (f.superseded && !std::is_sorted(f.superseded->begin(), f.superseded->end())))
+    return Status::fail(Err::InvalidArgument, "tx::showResult");
   if (f.superseded && std::binary_search(f.superseded->begin(), f.superseded->end(), r.q)) out = ShowAs::Stub;
   else if (r.cls == ResultClass::Receipt) out = ShowAs::Whole;   // tier 1: verbatim until compacted
   else if (r.q <= f.pointer) out = ShowAs::Stub;
@@ -505,10 +569,10 @@ Status omissionSpan(const std::vector<TurnSpan>& turns, size_t needBytes, uint32
 
 Status omissionLine(uint32_t turns, const std::string& dates, std::string& out) {
   out.clear();
-  if (turns == 0 || dates.empty()) return Status::fail(Err::InvalidArgument, "tx::omissionLine");
+  if (turns == 0) return Status::fail(Err::InvalidArgument, "tx::omissionLine");
   out = "[" + std::to_string(turns) + kOmissionMid;
-  appendLine(out, dates, kOmissionDatesMaxBytes);
-  out += kOmissionTail;
+  appendLine(out, dates, kOmissionDatesMaxBytes, true);
+  out += dates.empty() ? kOmissionTail + 2 : kOmissionTail;   // no dates: "..., not shown: ..."
   return Status::success();
 }
 

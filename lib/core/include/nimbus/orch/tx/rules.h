@@ -105,7 +105,12 @@ struct StubFacts {
 //  outside: '[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown: view id=r<q>]'
 //   built from the tool, the call's arguments, q and the size: never a byte of the result.
 //  noCard: the view hint becomes 'full result not kept: no storage card' (PRD section 2).
-// InvalidArgument for an empty tool or q 0.
+// Every field is one line: control bytes, C1 controls, U+2028 and U+2029 become spaces, bidi
+// controls and invalid bytes '?', a sequence cut at a field's end is dropped. The tool name
+// keeps [A-Za-z0-9_.-] (others '?', at most kStubToolMaxBytes); in the path and the outside
+// arguments '[' and ']' become '(' and ')', so a model-chosen field cannot close the stub or
+// open a '[device]' text inside it. The preview of an internal result is kept as it reads.
+// No clock: <HH:MM> reads '--:--'. InvalidArgument for an empty tool or q 0.
 Status stubText(const StubFacts& facts, std::string& out);
 // A long call argument: '[stub <bytes>B sha:<sha8>: view id=r<q>]'. InvalidArgument for q 0
 // or a sha8 that is not 8 hex characters.
@@ -119,30 +124,36 @@ Status photoStub(const std::string& ref8, const std::string& when, std::string& 
 //  stubTime     -> "13:02"                  (StubFacts::hhmm; epoch 0 -> "" and ok)
 //  photoWhen    -> "Tue 17 Nov 2026 13:02"  (photoStub's when; epoch 0 -> "" and ok)
 //  omissionDates-> "17 Nov 2026", "15-16 Nov 2026", "30 Nov-2 Dec 2026",
-//                  "31 Dec 2026-1 Jan 2027" (InvalidArgument for 0 or last before first)
+//                  "31 Dec 2026-1 Jan 2027"; a first of 0 (stored before the clock was
+//                  set) reads as last, both 0 give "" and ok; InvalidArgument for last
+//                  before first
 Status stubTime(uint64_t epoch, int16_t tzMinutes, std::string& out);
 Status photoWhen(uint64_t epoch, int16_t tzMinutes, std::string& out);
 Status omissionDates(uint64_t firstEpoch, uint64_t lastEpoch, int16_t tzMinutes, std::string& out);
 
 // ---- superseded reads and day views -------------------------------------------------------
 
-// Rule (4): the result q's a successful write supersedes, sorted and unique. The caller
-// passes only a write whose result was ok, and stores the answer as the sup list of an x item
-// (why "superseded") at the close of the writing turn.
+// Rule (4): the result q's a successful write supersedes, sorted and unique. Only results
+// stored before the write (q below writeCall.q) are read: a read after the write is fresh.
+// The caller passes only a write whose result was ok (the second form checks it), and stores
+// the answer as the sup list of an x item (why "superseded") at the close of the writing turn.
 //  - write_file, append_file, edit_file, delete_file, move_file (args path, from, to): every
 //    earlier read_file, read_pdf or file_stat result of the same path (exact string).
 //  - ledger_write: every earlier ledger_day result of a day the write touches: a "day" string
 //    anywhere in its arguments (top level, each op, a move's target) matched against the view's
 //    own "day" argument or a "day <YYYY-MM-DD>" line in its receipt; and every earlier view whose
-//    receipt names a row id the write's ops name ("id" or "ids", Ruling 11).
+//    receipt names a row id the write's ops name ("id" or "ids", Ruling 11; only ids of the
+//    ledger's form, 'L' and 4 to 8 of [0-9A-Z], as whole words). A view kept in bulk is read
+//    through its stored stub's preview.
 //  - any other tool: nothing.
 // Results already superseded by an x item in `earlier`, and tier-2 results already at or below
 // the pointer there (already stubs), are left out, so one stale read costs one change point.
 // Arguments that do not parse (a long-argument stub) supersede nothing. InvalidArgument when
 // writeCall is not a c item.
 Status supersededBy(const Item& writeCall, const std::vector<Item>& earlier, std::vector<uint64_t>& out);
-// The same, also reading the write's own receipt: a ledger_write receipt's "day <YYYY-MM-DD>"
-// lines name every day it touched (resolves "today" and row ids on other days).
+// The same, also reading the write's own receipt: a failed write (ok false) supersedes
+// nothing, and a ledger_write receipt's "day <YYYY-MM-DD>" lines name every day it touched
+// (resolves "today" and row ids on other days). InvalidArgument when writeResult is not an r item.
 Status supersededBy(const Item& writeCall, const Item& writeResult, const std::vector<Item>& earlier,
                     std::vector<uint64_t>& out);
 
@@ -158,7 +169,8 @@ struct ShowFacts {
 };
 // How a stored r item renders: Stub when superseded; a receipt otherwise Whole (Ruling 16);
 // a tier-2 result at or below the pointer, an outside result outside its own open turn, or
-// open-turn tier-2 at or below ladderStubThrough: Stub. InvalidArgument for a non-r item.
+// open-turn tier-2 at or below ladderStubThrough: Stub. InvalidArgument for a non-r item or
+// an unsorted superseded list.
 Status showResult(const Item& result, const ShowFacts& facts, ShowAs& out);
 
 // ---- photos ------------------------------------------------------------------------------------
@@ -181,7 +193,9 @@ struct PhotoFacts {
 //    kPhotoOwnerTurns owner turns, at most kFileRefPhotosMax in all, until over kPhotoIdleS
 //    idle, a restart or no clock.
 //  Inline (floor and routed heads included): carried to the next owner turn only, if it
-//    starts within kColdGapS, newest kInlinePhotosMax, at most kInlinePhotoB64Max of base64.
+//    starts within kColdGapS, newest kInlinePhotosMax, at most kInlinePhotoB64Max of base64
+//    (the bound needs b64Bytes: with sizes unknown it is not applied, so the photo lane passes
+//    them).
 //  None, or no card: nothing carried (None shows nothing at all).
 // InvalidArgument when the per-candidate lists do not match the candidates.
 Status visiblePhotos(const PhotoFacts& facts, std::vector<std::string>& out);
@@ -215,10 +229,13 @@ struct TurnSpan {
 // Rung 3: how many of the oldest turns to omit (a prefix of `turns`) so at least needBytes
 // are freed, never reaching the newest kNewestOwnerTurnsKept owner turns or anything after
 // the oldest of them. When even the whole omissible prefix frees too little it is all
-// omitted and the caller climbs to the size guard. InvalidArgument for turns out of order.
+// omitted and the caller climbs to the size guard. The omission line's own bytes (under 120 B)
+// are the caller's: it re-renders and asks nextRung again. InvalidArgument for turns out of order.
 Status omissionSpan(const std::vector<TurnSpan>& turns, size_t needBytes, uint32_t& omitCount);
 // '[N earlier turns, <dates>, not shown: search finds them]' ("turns" for every N: the
-// battery's parsers read that literal). InvalidArgument for 0 turns or empty dates.
+// battery's parsers read that literal); with no dates (clock never set) '[N earlier turns,
+// not shown: search finds them]'. '[' and ']' in dates become '(' and ')'. InvalidArgument
+// for 0 turns.
 Status omissionLine(uint32_t turns, const std::string& dates, std::string& out);
 
 }  // namespace tx
