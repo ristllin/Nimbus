@@ -17,6 +17,8 @@ model-facing string the catalog generator extracts (gen_model_text_catalog.py):
      (it resolves under tests/evals/**/scenarios), the commit where it was red, and the
      parity rates before and after.
    - kind remove: the class only shrank. With a git base, an added text fails it.
+   - kind spec (ruling 18): planned work. It names a lane of the live plan and a PRD section,
+     and may grow one class for one change (its ceiling rises by exactly that growth).
 4. History (with a git base): entries and the baseline already merged are unchanged.
 5. Register: a row of coverage/OWNER-ISSUES-REGISTER.md after OIR-55 names a scenario
    id that resolves and does not give a missing check as its root cause.
@@ -25,12 +27,16 @@ Usage (from the repo root):
   python3 tools/release_gate/check_no_prompt_patch.py [--base REF] [--no-base]
 The base defaults to $NIMBUS_PROMPT_BASE, else the merge base with rb-main or main.
 Exit 0 with NO PROMPT PATCH GREEN as the last line; exit 1 with NO PROMPT PATCH RED.
+  python3 tools/release_gate/check_no_prompt_patch.py --release   # PROMPT TOTAL GREEN|RED
+The release check (release_total_problems, for RB-R1) fails unless engine 1's total
+model-facing bytes over all classes are lower than the baseline total.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import json
 import os
 import re
 import subprocess
@@ -46,7 +52,13 @@ CHANGES = "coverage/PROMPT-CHANGES.md"
 REGISTER = "coverage/OWNER-ISSUES-REGISTER.md"
 SCENARIO_ROOT = "tests/evals"
 EMPTY_SHA8 = cat.class_sha8([])
-KINDS = ("swap", "remove", "build")
+KINDS = ("swap", "remove", "build", "spec")
+# The live plan: a spec entry names one of its lanes (ruling 18). Off this machine the plan's
+# lanes are read from tools/engine/owners.json, which is built from it.
+PLAN_JSON = os.environ.get(
+    "RB_PLAN_JSON", "/Users/roydarnell/Projects/nimbus-project/program-2026-10-18/rebuild/PLAN.json"
+)
+OWNERS = "tools/engine/owners.json"
 # Rows up to this id predate the rule (18 Nov 2026); every later row needs a red scenario.
 REGISTER_LAST_GRANDFATHERED = 55
 MISSING_CHECK_PASSIVE = re.compile(
@@ -173,12 +185,27 @@ def _identity_errors(e: dict) -> "list[str]":
     return errs
 
 
+def plan_lanes(root: str) -> "set[str]":
+    """Lane ids of the live plan (off this machine, as tools/engine/owners.json lists them)."""
+    try:
+        with open(PLAN_JSON, encoding="utf-8") as f:
+            plan = json.load(f)
+    except (OSError, ValueError):
+        plan = None
+    if plan is None:  # GitHub's checkout has no plan file: owners.json is built from it
+        owners = json.loads(cat._read(root, OWNERS) or "{}")
+        return set(owners.get("lanes", {}))
+    return {lane["id"] for lane in plan.get("lanes", []) if "id" in lane}
+
+
 def _proof_errors(root: str, e: dict) -> "list[str]":
-    """A swap's red-scenario-first proof; a build entry's PRD section."""
+    """A swap's red-scenario-first proof; a build or spec entry's PRD section; a spec entry's planned lane."""
     eid, kind = e["id"], e.get("kind", "")
     errs = []
-    if kind == "build" and not re.search(r"\bsection \d+", e.get("prd", "")):
-        errs.append(f"{eid}: a build entry names the PRD section it implements (prd: section N)")
+    if kind in ("build", "spec") and not re.search(r"\bsection \d+", e.get("prd", "")):
+        errs.append(f"{eid}: a {kind} entry names the PRD section it implements (prd: section N)")
+    if kind == "spec" and _first_word(e.get("lane", "")) not in plan_lanes(root):
+        errs.append(f"{eid}: a spec entry names a lane of the live plan ({e.get('lane', '')!r} is not in it)")
     if kind != "swap":
         return errs
     sid = _first_word(e.get("scenario", ""))
@@ -198,6 +225,8 @@ def _proof_errors(root: str, e: dict) -> "list[str]":
 
 def _size_errors(e: dict, b0: int, b1: int) -> "list[str]":
     eid, catalog, cls, kind = e["id"], e["catalog"], e["class"], e["kind"]
+    if kind == "spec":
+        return []  # planned work may grow one class for one change (ruling 18)
     if kind == "build":
         phase = cat.CATALOGS[catalog]["phase"]
         return [] if phase == "build" else [f"{eid}: kind build is refused: catalog {catalog} is {phase}"]
@@ -262,6 +291,7 @@ def check_ledger(root: str, changes: dict, current: dict) -> "list[str]":
     errs = list(changes["errors"])
     state = {k: v for k, v in changes["baseline"].items()}
     errs += rebaseline_errors(changes)
+    allowance = spec_allowance(root, changes)
     for (catalog, cls), (b, _s) in changes["baseline"].items():
         if catalog not in cat.CATALOGS or cls not in cat.CATALOGS[catalog]["classes"]:
             errs.append(f"baseline: {catalog} {cls} is not a catalog class")
@@ -277,10 +307,9 @@ def check_ledger(root: str, changes: dict, current: dict) -> "list[str]":
                 f"{e['id']}: before state {b0} B {s0} is not the last accepted state of {catalog} {cls} "
                 f"({prev[0]} B {prev[1]}); entries chain in file order"
             )
-        if b1 > cat.ceilings(catalog).get(cls, 0):
-            errs.append(
-                f"{e['id']}: {catalog} {cls} after {b1} B is over its ceiling {cat.ceilings(catalog).get(cls, 0)} B"
-            )
+        ceiling = cat.ceilings(catalog).get(cls, 0) + allowance.get((catalog, cls), 0)
+        if b1 > ceiling:
+            errs.append(f"{e['id']}: {catalog} {cls} after {b1} B is over its ceiling {ceiling} B")
         state[(catalog, cls)] = (b1, s1)
     for catalog, classes in current.items():
         for cls, st in classes.items():
@@ -294,15 +323,31 @@ def check_ledger(root: str, changes: dict, current: dict) -> "list[str]":
     return errs
 
 
-def check_ceilings(current: dict, baseline: dict) -> "list[str]":
+def spec_allowance(root: str, changes: dict) -> dict:
+    """{(catalog, class): bytes} the well-formed spec entries grew a class by: its ceiling rises by that much."""
+    out: dict = {}
+    for e in changes["entries"]:
+        if e.get("kind") != "spec":
+            continue
+        problems, tr = check_entry(root, e)
+        if problems or tr is None:
+            continue
+        catalog, cls, b0, b1 = tr[:4]
+        out[(catalog, cls)] = out.get((catalog, cls), 0) + max(0, b1 - b0)
+    return out
+
+
+def check_ceilings(current: dict, baseline: dict, allowance: "dict | None" = None) -> "list[str]":
     errs = []
+    allowance = allowance or {}
     for catalog, classes in current.items():
         ceil = cat.ceilings(catalog)
         for cls, st in classes.items():
+            limit = ceil.get(cls, 0) + allowance.get((catalog, cls), 0)
             if cls not in ceil:
                 errs.append(f"{catalog} {cls}: no byte ceiling")
-            elif st["bytes"] > ceil[cls]:
-                errs.append(f"{catalog} {cls}: {st['bytes']} B is over its ceiling {ceil[cls]} B")
+            elif st["bytes"] > limit:
+                errs.append(f"{catalog} {cls}: {st['bytes']} B is over its ceiling {limit} B")
     e1_rows = {cls: row for (catalog, cls), row in baseline.items() if catalog == "e1"}
     if e1_rows != cat.E1_BASELINE:
         errs.append(
@@ -516,7 +561,7 @@ def run(root: str, base: "str | None", use_base: bool = True, quiet: bool = Fals
     changes = parse_changes(cat._read(root, CHANGES) or "")
     if not changes["baseline"]:
         errs.append(f"{CHANGES}: no baseline table")
-    errs += check_ceilings(stats, changes["baseline"])
+    errs += check_ceilings(stats, changes["baseline"], spec_allowance(root, changes))
     errs += check_ledger(root, changes, stats)
     errs += check_register(root)
     if use_base:
@@ -536,13 +581,39 @@ def run(root: str, base: "str | None", use_base: bool = True, quiet: bool = Fals
     return errs
 
 
+def release_total_problems(root: str) -> "list[str]":
+    """The v5.2.0 release check (ruling 18, for RB-R1): engine 1's model-facing bytes, all classes
+    together, are lower than the baseline recorded when the gate was introduced."""
+    try:
+        entries = cat.build_e1(root)
+    except cat.CatalogError as e:
+        return [str(e)]
+    total = sum(e.size for e in entries)
+    baseline = sum(size for size, _sha in cat.E1_BASELINE.values())
+    if total < baseline:
+        return []
+    return [
+        f"engine 1 holds {total} B of model-facing text, not lower than its baseline {baseline} B "
+        f"(+{total - baseline} B); the release's deletions must outweigh its additions"
+    ]
+
+
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="No-prompt-patch gate (PRD section 11)")
     ap.add_argument("--root", default=REPO)
     ap.add_argument("--base", help="git ref the branch is compared with (default: merge base with rb-main or main)")
     ap.add_argument("--no-base", action="store_true", help="skip the checks that need git history")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument(
+        "--release", action="store_true", help="the release check only: engine 1's total below its baseline"
+    )
     args = ap.parse_args(argv)
+    if args.release:
+        errs = release_total_problems(args.root)
+        for e in errs:
+            print(f"no-prompt-patch release: {e}")
+        print("PROMPT TOTAL RED" if errs else "PROMPT TOTAL GREEN")
+        return 1 if errs else 0
     base = None if args.no_base else resolve_base(args.root, args.base)
     if args.base and not base:
         print(f"no-prompt-patch: base {args.base!r} does not resolve")

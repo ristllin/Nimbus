@@ -85,8 +85,12 @@ python3 tools/release_gate/check_tool_result_imperatives.py [--base REF]     # T
   base with rb-main or main, or `--base`) it also fails an edited merged entry, a remove entry
   that hides added text, a swap whose `red_at` is not a commit, a file dropped from the list while
   it exists, and a new file under `lib/`, `src/` or `nimbusd/src/` with prose literals that is in
-  no catalog (or in `NON_MODEL_FILES` with its reason). In a checkout with no history (GitHub's shallow clone) those history checks
-  are skipped; elsewhere a missing base fails.
+  no catalog (or in `NON_MODEL_FILES` with its reason). In a checkout with no history (GitHub's
+  shallow clone) those history checks are skipped; elsewhere a missing base fails.
+- Planned work (ruling 18): a ledger entry of kind `spec` names a lane of the live plan and a PRD
+  section, and may grow one class for one change. `check_no_prompt_patch.py --release`
+  (`release_total_problems(root)`, for RB-R1) fails unless engine 1's total model-facing bytes are
+  lower than the baseline total (`PROMPT TOTAL GREEN|RED`).
 - When a release line is taken into the integration branch, the orchestrator re-measures the
   baseline with `gen_model_text_catalog.py --rebaseline "<why>"` (golden, `E1_BASELINE`, the
   ledger's baseline table and a re-baseline record); see `coverage/PROMPT-CHANGES.md`.

@@ -418,6 +418,7 @@ It is done when it is verified, clean, documented, and reviewed.
    ceiling per class. `check_no_prompt_patch.py` fails growth in any class, and any change to
    a class's text that has no entry in `coverage/PROMPT-CHANGES.md`; a byte-neutral swap needs
    the red scenario id, the commit where it was red, and the parity rates before and after.
+   Planned work (a lane of the plan implementing what the PRD specifies) logs kind `spec`.
    `check_tool_result_imperatives.py` fails a tool result that gives an order. Touched a
    string a model reads? Run `gen_model_text_catalog.py --write`, read the diff, and log it.
 

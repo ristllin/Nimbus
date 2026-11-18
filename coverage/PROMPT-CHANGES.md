@@ -26,6 +26,14 @@ for the plain engine once its `texts.h` exists). This file is the gate's ledger:
   `tests/evals/**/scenarios`), `red_at` (the commit where that scenario was red) and `rates`
   (the parity pass rate before and after the change, from the same suite and head; the after
   rate may not be lower).
+- Kind `spec` (ruling 18): planned work, not a fix. A lane of the live plan (`rebuild/PLAN.json`;
+  off that machine, `tools/engine/owners.json`) implements a tool or text the PRD specifies, so
+  it may grow one class for one change: the entry names the lane (`lane:`) and the PRD section
+  (`prd: section N`), needs no parity rates (the lane's own tests and the stage gate cover it),
+  and raises that class's ceiling by exactly its growth. It chains like every other kind, so it
+  covers one change only. A release line taken into the integration branch is not a spec
+  entry: the orchestrator re-baselines (below). At the v5.2.0 release, engine 1's total bytes
+  over all classes must be lower than the baseline total (`check_no_prompt_patch.py --release`, `release_total_problems()` for RB-R1).
 - Kind `remove`: the class only shrank. With a git base the gate compares the class's texts
   with the base golden, and an added text fails the entry.
 
@@ -68,7 +76,7 @@ Entry form (one per class changed; the next free id):
 - why: what was wrong in the product, and why a text change was the fix
 ```
 
-A `build` entry has `prd: section 4` in place of `scenario`, `red_at` and `rates`.
+A `build` or `spec` entry has `prd: section N` in place of `scenario`, `red_at` and `rates`.
 
 ## Baseline
 

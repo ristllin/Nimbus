@@ -43,6 +43,7 @@ def make_tree(dst):
     """A copy of everything the gates read, committed as the base of a temp git repo."""
     rels = {p for _, p in cat.e1_sources()}
     rels |= {cat.CATALOGS["e1"]["golden"], gate.CHANGES, gate.REGISTER, "tools/release_gate/gen_model_text_catalog.py"}
+    rels.add(gate.OWNERS)
     for rel in sorted(rels):
         src = os.path.join(REPO, rel)
         if os.path.isfile(src):
@@ -701,3 +702,100 @@ def test_a_rebaseline_record_that_does_not_end_at_the_table_fails(tree, isolated
     )
     errs = errors(tree, use_base=False)
     assert any("does not end at the baseline table" in e for e in errs), errs
+
+
+# ---------------------------------------------------------------------------
+# Planned work (ruling 18): kind spec, and the release total
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def plan(tmp_path, monkeypatch):
+    """A live plan with one lane, RB-L1b."""
+    path = tmp_path / "PLAN.json"
+    path.write_text('{"lanes": [{"id": "RB-L1b", "stage": "S1"}], "stages": []}')
+    monkeypatch.setattr(gate, "PLAN_JSON", str(path))
+    return path
+
+
+def _grow(tree, cls="tool_descriptions", text=PAD):
+    before = stats(tree)[cls]
+    path, lit = plain_literal(tree, cls)
+    edit_literal(tree, path, lit, lit + text)
+    regen(tree)
+    return before
+
+
+SPEC = {"lane": "RB-L1b", "prd": "section 4 (ledger tools)"}
+
+
+def test_a_spec_entry_for_a_planned_lane_may_grow_one_class(tree, plan):
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **SPEC))
+    assert errors(tree) == []
+
+
+def test_a_spec_entry_for_a_lane_not_in_the_plan_fails(tree, plan):
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **{**SPEC, "lane": "RB-ZZ9"}))
+    errs = errors(tree)
+    assert any("a spec entry names a lane of the live plan" in e for e in errs), errs
+    assert any("over its ceiling" in e for e in errs), errs
+
+
+def test_a_spec_entry_needs_a_prd_section(tree, plan):
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **{**SPEC, "prd": "the ledger"}))
+    assert any("names the PRD section" in e for e in errors(tree))
+
+
+def test_a_spec_entry_reused_for_a_second_change_fails(tree, plan):
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **SPEC))
+    merge(tree)
+    assert errors(tree) == []
+    _grow(tree, text=" and a second planted growth that no entry covers yet")  # same class, no new entry
+    errs = errors(tree)
+    assert any("e1 tool_descriptions: model-facing text changed" in e for e in errs), errs
+    assert any("over its ceiling" in e for e in errs), errs
+
+
+def test_a_copied_spec_entry_cannot_cover_a_second_change(tree, plan):
+    before = _grow(tree)
+    first = entry_for(tree, "e1", "tool_descriptions", before, "spec", **SPEC)
+    append_entry(tree, **first)
+    _grow(tree, text=" and a second planted growth that no entry covers yet")
+    append_entry(tree, **first, title="the first entry copied")
+    errs = errors(tree)
+    assert any("is not the last accepted state" in e for e in errs), errs
+
+
+def test_a_spec_entry_grows_only_its_own_class(tree, plan):
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **SPEC))
+    _grow(tree, cls="tool_results")
+    errs = errors(tree)
+    assert any("e1 tool_results: model-facing text changed" in e for e in errs), errs
+
+
+def test_without_the_plan_file_the_owners_table_names_the_lanes(tree, monkeypatch):
+    monkeypatch.setattr(gate, "PLAN_JSON", os.path.join(tree, "no-plan.json"))
+    lanes = gate.plan_lanes(tree)
+    assert "RB-B5" in lanes and "RB-ZZ9" not in lanes
+
+
+def test_the_release_total_above_the_baseline_fails(tree, monkeypatch):
+    monkeypatch.setattr(cat, "E1_BASELINE", {c: (st["bytes"], st["sha8"]) for c, st in stats(tree).items()})
+    _grow(tree)
+    errs = gate.release_total_problems(tree)
+    assert errs and "not lower than its baseline" in errs[0], errs
+
+
+def test_the_release_total_equal_to_the_baseline_fails_and_lower_passes(tree, monkeypatch, capsys):
+    monkeypatch.setattr(cat, "E1_BASELINE", {c: (st["bytes"], st["sha8"]) for c, st in stats(tree).items()})
+    assert gate.release_total_problems(tree)  # equal is not lower
+    path, lit = plain_literal(tree, "skills")
+    edit_literal(tree, path, lit, "x")
+    assert gate.release_total_problems(tree) == []
+    assert gate.main(["--root", tree, "--release"]) == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "PROMPT TOTAL GREEN"
