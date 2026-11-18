@@ -83,21 +83,7 @@ std::vector<StubRow> stubs() {
   static std::vector<tx::DigestEntry> digests;
   static std::vector<tx::DayRow> rows;
   static bool flag;
-  static tx::StoreState state;
   return {
-      {"tx::TxLog::open", [] { return gLog.open(head); }},
-      {"tx::TxLog::append", [] { return gLog.append(item, state); }},
-      {"tx::TxLog::appendBulk", [] { return gLog.appendBulk(1, "x", s); }},
-      {"tx::TxLog::readBulk", [] { return gLog.readBulk("h", 0, 1, s); }},
-      {"tx::TxLog::fill", [] { return gLog.fill(head, gArena); }},
-      {"tx::TxLog::writeHead", [] { return gLog.writeHead(head); }},
-      {"tx::TxLog::rebuildHead", [] { return gLog.rebuildHead(head); }},
-      {"tx::txDir", [] { return tx::txDir("1001", s); }},
-      {"tx::segmentPath", [] { return tx::segmentPath("1001", 1, s); }},
-      {"tx::headPath", [] { return tx::headPath("1001", s); }},
-      {"tx::bulkPath", [] { return tx::bulkPath("1001", 1, s); }},
-      {"tx::digestArchivePath", [] { return tx::digestArchivePath("1001", "2026-11", s); }},
-      {"tx::migratedPath", [] { return tx::migratedPath("1001", s); }},
       {"tx::profileMarks", [] { tx::ProfileMarks m; return tx::profileMarks(tx::Profile::Standard, m); }},
       {"tx::budgetFor", [] { tx::HeadBudget b; return tx::budgetFor(tx::HeadKey{}, tx::Profile::Lean, b); }},
       {"tx::digestBlock", [] { std::vector<tx::DigestEntry> a; return tx::digestBlock(digests, tx::Profile::Lean, s, a); }},
@@ -151,7 +137,7 @@ static void test_every_stub_answers_not_implemented() {
     TEST_ASSERT_TRUE_MESSAGE(names.insert(row.where).second, row.where);
   }
   for (plain::Seam seam : plain::kAllSeams) TEST_ASSERT_EQUAL(0, (int)gHooks.registered(seam));
-  // A stub log never claims it stored an item.
+  // A log over refusing storage never claims it stored an item.
   tx::StoreState state = tx::StoreState::Stored;
   (void)gLog.append(tx::Item{}, state);
   TEST_ASSERT_TRUE(state == tx::StoreState::NotStored);

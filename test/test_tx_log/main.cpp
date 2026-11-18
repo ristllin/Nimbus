@@ -17,6 +17,7 @@
 #include "../support/tx_battery/pending.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/log.h"
+#include "store_tests.h"
 
 namespace tx = nimbus::orch::tx;
 
@@ -363,5 +364,6 @@ int main(int, char**) {
   RUN_TEST(test_a_line_over_the_ceiling_is_refused_whole);
   RUN_TEST(test_paths_stay_inside_the_chat_folder);
   RUN_TEST(test_nothing_is_written_outside_the_chat_folder);
+  store_tests::run();   // lane RB-T2's own cases
   return UNITY_END();
 }
