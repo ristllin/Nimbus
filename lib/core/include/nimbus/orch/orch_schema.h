@@ -119,8 +119,7 @@ namespace orch {
   "is 'permanent'. permanent:true additionally pins it so it never decays. " \
   "standing:true marks an always/never rule for every reply: it is saved in " \
   "the owner's STANDING RULES instead of memory. A " \
-  "write here is stored just before this reply is delivered, and the device " \
-  "confirms or corrects a save claim in the reply before the owner sees it; " \
+  "write here is stored just before this reply is delivered; " \
   "one that is queued (embeddings down) or not stored is reported in the " \
   "next turn's MEMORY RESULTS. So 'I saved it' in the reply is a prediction " \
   "- phrase it as intent ('I'll remember that'), never as a completed fact this " \

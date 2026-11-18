@@ -418,3 +418,24 @@ deleted. Engine 2 has no baseline.
   were 7,415 B of a 9,055 B per-turn block. Nothing replaces them in the prompt. log-rows rule 6
   loses its pointer to the [TODAY'S FOOD LEDGER] block, which no longer exists (-40 B; the rule's
   literal is rewritten, so the entry is spec, not remove).
+
+### PC-0015: the mem_write description no longer says the device confirms or corrects a save claim
+- catalog: e1
+- class: system
+- kind: remove
+- bytes: 47942 -> 47779
+- sha8: 032b80e5 -> b215dcc9
+- lane: RB-Q3a
+- why: ruling 34. Since RB-Q1b no check confirms or corrects a save claim in the reply, so the
+  sentence was false: removed from ORCH_D_MEMW in orch_schema.h (88 B) and from the v2 field
+  docs in compose.cpp (75 B). The two literals are rewritten without the clause; nothing else moved.
+
+### PC-0016: nimbusd's hosted wording swap for the removed save-claim sentence
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54203 -> 54112
+- sha8: c415e340 -> bbcda870
+- lane: RB-Q3a
+- why: nimbusd/src/rig.h rewrote "the device confirms or corrects a save claim" for a hosted
+  instance; the sentence is gone from the schema (PC-0015), so the swap row (91 B) goes with it.

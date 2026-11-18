@@ -351,13 +351,6 @@ class TurnEngine {
     // read boundary). The figure check's sources and the fold's day; since RB-Q3a it
     // never rides the per-turn block. Nullable => none.
     std::function<nimbus::orch::FoodLedger(const std::string& chatId)> foodLedger;
-    // The person's earlier ledger rows of the foods a message names (renderFoodRecall /
-    // FoodRecallScan). Unread since RB-Q3a (no keyword food block); its wiring in
-    // orchestrator.cpp, nimbusd/src/rig.h and the lab goes with RB-Q3a's phase 2.
-    std::function<std::string(const std::string& chatId, const std::string& message)> foodRecall;
-    // The approved stored skills about food (foodSkillId, by id). Unread since RB-Q3a: the
-    // owner's food skill is read on demand from the [SKILLS] shelf; wiring as foodRecall.
-    std::function<std::vector<std::string>()> foodSkills;
     // RB-G0: the truth check's binding (the probe, the chat's ring, the stored modes). Null:
     // no check (host tests, a build without it).
     nimbus::orch::truth::Binding* truth = nullptr;
@@ -655,10 +648,10 @@ class TurnEngine {
   std::string buildDynamicContext(const std::string& chatId);
   // Lane CTX (day_context.cpp): load this chat's food ledger for the turn into
   // ledger_ (the fold's day and the round budget read it). RB-Q3a: the ledger and the
-  // food playbooks no longer ride the prompt; applyFoodContext fills only the chat's
+  // food playbooks no longer ride the prompt; applyRecentActions fills only the chat's
   // recent actions (Deps::recentActions).
   void loadFoodLedger(const std::string& chatId);
-  void applyFoodContext(ComposeInputs& ci, const std::string& userText) const;
+  void applyRecentActions(ComposeInputs& ci) const;
   // The fold's day: [TODAY] and the ledger's view for this chat ("" = no clock).
   std::string foldDayContext(const std::string& chatId) const;
   // modelsTool: the CONFIG's loop toggle is on, models.list is registered and the
@@ -727,7 +720,7 @@ class TurnEngine {
   // skills: tag, so a later turn answers "did you use the skill?" from the row.
   std::vector<AttachPick> attachPicks_;
   std::vector<std::string> skillsUsed_;
-  // Lane CTX: this turn's food ledger (loadFoodLedger), shown by applyFoodContext.
+  // Lane CTX: this turn's food ledger (loadFoodLedger): the fold's day and the round budget.
   nimbus::orch::FoodLedger ledger_;
   void noteSkillUsed(const std::string& id);   // dedup, at most 4 ids
   uint32_t quietNoticesHeld_ = 0;       // engine notices a quiet turn held back (tests, diagnostics)

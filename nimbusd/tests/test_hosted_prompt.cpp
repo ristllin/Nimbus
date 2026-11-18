@@ -194,6 +194,26 @@ static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
   }
 }
 
+// RB-Q3a: the instance's effect rings feed the hosted turn's [RECENT ACTIONS] block: the
+// owner's turn shows the owner chat's receipt; another chat's never rides it.
+static void testRecentActionsRideTheHostedTurn(ndtest::Ctx& c) {
+  std::printf("  -- the VN turn carries its chat's recent actions --\n");
+  clearEnv();
+  setenv("CUMULO_API_KEY", "cumulo_sk_test_FX", 1);
+  FakeHttpTransport tx;
+  for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hp-fx"), &tx);
+  rig.effects().record("owner", 1794920520, "ledger_write", "added L3K9QZ; day 2026-11-17: 2 rows, 1,612 kcal");
+  rig.effects().record("444", 1794920520, "ledger_write", "added LOTHER; day 2026-11-17: 1 row, 90 kcal");
+  rig.say("owner", "make that 200 g");
+  c.ok(!tx.seen.empty(), "the turn dispatched");
+  c.ok(has(tx.seen[0].body, "[RECENT ACTIONS - "), "the recent-actions block rides the VN turn");
+  c.ok(has(tx.seen[0].body, "ledger_write: added L3K9QZ"), "with the owner chat's receipt");
+  c.ok(!has(tx.seen[0].body, "LOTHER"), "never another chat's");
+  clearEnv();
+}
+
 static void testWebPageIsTheWebChannel(ndtest::Ctx& c) {
   // The hosted rig opts in to the page alias at construction (a device never does).
   nimbus::orch::setHostedWebChatAlias(false);
@@ -303,6 +323,7 @@ int main() {
   testEveryHeadGetsTheHostedTruth(c);
   testClockFollowsTheOwnersZone(c);
   testFoodLedgerRidesTheHostedTurn(c);
+  testRecentActionsRideTheHostedTurn(c);
   testWebPageIsTheWebChannel(c);
   testOverflowAfterAToolIsTrimmedInTheLoop(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);

@@ -116,6 +116,9 @@ struct Rig {
     std::string toolArgs = "{\"query\":\"x\"}";   // the arguments a dispatchTools call sends
     bool partialOnFail = false;               // a failed attempt still hands back outJson (a cut turn)
     bool checkFinal = false;                  // run HeadTools' final-answer check on outJson
+    // RB-Q3a: the scripted head derives its call's arguments from the prompt it was handed
+    // (its instructions); empty = toolArgs.
+    std::function<std::string(const std::string& instructions)> argsFrom;
   };
   std::map<std::string, std::vector<Script>> scripts;
   std::map<std::string, int> scriptIdx;
@@ -136,11 +139,16 @@ struct Rig {
   std::vector<std::string> proseChecks;
   std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant: (chat, text)
   std::vector<std::array<std::string, 3>> effects;   // lane RB-FX: Hooks::onEffect (chat, tool, receipt)
+  // RB-Q3a: a RAM effects ring behind the engine's recent-actions source (empty unless a test
+  // fills it, so no other test's prompt moves).
+  orch::fx::EffectRing fxRing;
+  agent::RingRecentActions fxSrc{fxRing};
   void wireCallAndEffectHooks(TurnEngine::Deps& d) {
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) { hookToolCalls.push_back(c); };
     d.hooks.onEffect = [this](const std::string& chat, const std::string& tool, const std::string& receipt) {
       effects.push_back({chat, tool, receipt});
     };
+    d.recentActions = &fxSrc;
   }
   std::vector<std::string> assistantRowTags;   // lane I: each captured row's engine tags
   std::function<void()> onProviderCall;   // in-turn hook (stuck-turn reaper test)
@@ -602,7 +610,7 @@ struct Rig {
           orch::HeadToolCall c;
           c.id = "t1";
           c.name = s.toolName;
-          c.argsJson = s.toolArgs;
+          c.argsJson = s.argsFrom ? s.argsFrom(ins) : s.toolArgs;
           toolResults.push_back(tools->dispatch(c));
         }
       }
@@ -6083,11 +6091,61 @@ static void test_the_truth_check_hook() {
   }
 }
 
+// RB-Q3a, the definition of done, scripted: a correction names a row id from the [RECENT
+// ACTIONS] block and completes in one ledger_write, with no read. The ring holds the earlier
+// write's receipt as RB-L1b's sink words it (two rows of the day); the owner corrects the
+// last one; the scripted head takes the id of the newest ledger_write line from the block it
+// was handed, and the turn makes exactly one tool call: ledger_write with that id. (RB-L1b's
+// real tools are not on this base: the registry answers through the rig's MCP seam.)
+static void test_a_correction_names_a_row_id_from_recent_actions_in_one_write() {
+  Rig r;
+  r.specs.push_back(orch::ToolRegistry::Spec{"ledger_write", "change food rows by id", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"ledger_day", "a day's food rows with ids", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"files.read", "read a file", "{}"});
+  r.fxRing.append("1001", 1794920520, "ledger_write", "added L00A3; day 2026-11-17: 1 row, 450 kcal");
+  r.fxRing.append("1001", 1794935700, "ledger_write", "added L3K9QZ; day 2026-11-17: 2 rows, 1,612 kcal");
+  r.fxRing.append("-2002", 1794935760, "ledger_write", "added LOTHER; day 2026-11-17: 1 row, 90 kcal");
+  std::string idSeen;
+  Rig::Script sc;
+  sc.dispatchTools = 1;
+  sc.toolName = "ledger_write";
+  sc.argsFrom = [&idSeen](const std::string& ins) {
+    const size_t block = ins.find("[RECENT ACTIONS");
+    const size_t last = ins.rfind("ledger_write: added ");
+    if (block != std::string::npos && last != std::string::npos && last > block)
+      idSeen = ins.substr(last + 20, ins.find(';', last) - last - 20);
+    return "{\"ops\":[{\"op\":\"update\",\"id\":\"" + idSeen + "\",\"set\":{\"qty\":200}}]}";
+  };
+  r.scripts["anthropic"] = {sc};
+  r.eng->handleMessage("make that last one 200 g", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("L3K9QZ", idSeen.c_str());   // the newest row id, read from the block
+  TEST_ASSERT_EQUAL(1, (int)r.hookToolCalls.size());     // one call in the whole turn
+  TEST_ASSERT_EQUAL_STRING("ledger_write", r.hookToolCalls[0].name.c_str());
+  TEST_ASSERT_TRUE(r.hookToolCalls[0].argsJson.find("\"id\":\"L3K9QZ\"") != std::string::npos);
+  TEST_ASSERT_EQUAL(1, (int)r.mcpRequests.size());       // and it reached the registry once
+  for (const auto& c : r.hookToolCalls)
+    TEST_ASSERT_TRUE(c.name.find("ledger_day") == std::string::npos && c.name.find("read") == std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts.back().instructions.find("LOTHER") == std::string::npos);   // another chat's
+  // Counter-test: with an empty ring the block is absent, so the head has no id to name.
+  Rig e;
+  e.specs = r.specs;
+  std::string none = "unset";
+  Rig::Script s2 = sc;
+  s2.argsFrom = [&none](const std::string& ins) {
+    none = ins.find("[RECENT ACTIONS") == std::string::npos ? "" : "block";
+    return std::string("{}");
+  };
+  e.scripts["anthropic"] = {s2};
+  e.eng->handleMessage("make that last one 200 g", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("", none.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_truth_check_hook);
   RUN_TEST(test_the_turn_state_holds_the_effect_ledger);
   RUN_TEST(test_every_effect_reaches_the_effect_hook_once);
+  RUN_TEST(test_a_correction_names_a_row_id_from_recent_actions_in_one_write);
   RUN_TEST(test_filler_class);
   RUN_TEST(test_real_replies_are_not_filler);
   RUN_TEST(test_final_check_reads_the_field);

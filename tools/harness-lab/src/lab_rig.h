@@ -23,6 +23,7 @@
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/connectors_wire.h"   // lane CONN: the rig's connector attach + catalog
 #include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
+#include "nimbus/orch/effect_ring.h"   // RB-Q3a: the recent-actions ring
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/model_choices.h"
@@ -731,7 +732,6 @@ class LabRig {
   void wireSkillsDeps(agent::TurnEngine::Deps& d) {
     d.skillsIndex = [this] { return skills_.indexText(); };
     d.skillsPicks = [this](const std::string& chat) { return skills_.picksFor(chat); };
-    d.foodSkills = [this] { return skills_.foodSkillIds(); };
     d.skillBody = [this](const std::string& id) { return skills_.attachBody(id); };
     d.skillUsed = [this](const std::string& chat, const std::string& id) {
       skills_.noteUsed(chat, id);
@@ -812,6 +812,11 @@ class LabRig {
                      trunc(r.output, 200).c_str());
     };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) { lastHost_ = ev.host; };
+    // RB-Q3a: effects join the chat's ring and its newest receipts ride the next turns.
+    d.hooks.onEffect = [this](const std::string& chat, const std::string& tool, const std::string& receipt) {
+      fx_.append(chat, (int64_t)std::time(nullptr), tool, receipt);
+    };
+    d.recentActions = &fxSrc_;
     d.hooks.onTurnProgress = [this](const agent::TurnProgressEv& ev) {
       ProgressMark m;
       m.round = ev.round;
@@ -898,10 +903,6 @@ class LabRig {
           files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodTargetsOwnerName));
       if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_.foodPlanFiles();
       return l;
-    };
-    d.foodRecall = [this](const std::string&, const std::string& message) {
-      return orch::renderFoodRecall(files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName),
-                                    orch::logDayOf(std::time(nullptr), true).date, message);
     };
 
     wireHooks(d);
@@ -1072,6 +1073,8 @@ class LabRig {
   LabFiles           files_;
   LabSkills          skills_;   // the lab's SkillStore + attach table (lane I)
   LabPrefs           prefs_;   // lane J: the standing-rules store + tools
+  orch::fx::EffectRing fx_;     // RB-Q3a: each chat's recent effects, RAM only, as on a cardless device
+  agent::RingRecentActions fxSrc_{fx_};
   std::vector<std::string> toolNames_;
   std::string tavilyKey_;
 

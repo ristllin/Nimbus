@@ -1326,7 +1326,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const std::string& requestedHost = locals->requestedHost;
   const std::string& requestedModel = locals->requestedModel;
   turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
-  loadFoodLedger(chatId);   // lane CTX: this turn's food ledger (applyFoodContext shows it)
+  loadFoodLedger(chatId);   // lane CTX: this turn's food ledger (the fold's day, the round budget)
   // W10 (prism): the speaker line is for a REAL human message only. The device
   // closure knows the chat, not the turn source - a synthesis turn ([FRESH
   // RESULTS] from untrusted sub-agent output) and a scheduled loop both carry a
@@ -1427,7 +1427,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // R3: the skills shelf (its own cached block; "" = none on this fabric).
   if (d_.skillsIndex) ci.skillsShelf = d_.skillsIndex();
   ci.recallDegraded = recall.degraded;
-  applyFoodContext(ci, userText);   // lane CTX: today's ledger, and the food playbook on a food turn
+  applyRecentActions(ci);   // RB-Q3a: the chat's recent actions; no ledger block, no keyword playbook
   // Lane QFIX: a remember-request names its landing - on a REAL human message only. A scheduled
   // loop's prompt and a synthesis turn's [FRESH RESULTS] (untrusted sub-agent output) also reach
   // here as userText, and must not be told to save a rule or a fact because they say "remember".

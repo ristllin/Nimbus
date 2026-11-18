@@ -336,9 +336,12 @@ static void test_prompt_v2_keeps_safety_rails() {
   TEST_ASSERT_TRUE(p.find("explicit owner consent") != std::string::npos);
   // keys / priority / routing owner-only
   TEST_ASSERT_TRUE(p.find("owner-only") != std::string::npos);
-  // mem_write lands before delivery and the device checks the save claim
+  // mem_write lands before delivery; since v5.2.0 no check rewrites a save claim (RB-Q1b), and
+  // no prompt says one does (RB-Q3a, ruling 34), in v1 or v2
   TEST_ASSERT_TRUE(p.find("stored just before this reply is delivered") != std::string::npos);
-  TEST_ASSERT_TRUE(p.find("confirms or corrects a save claim") != std::string::npos);
+  TEST_ASSERT_TRUE(p.find("confirms or corrects a save claim") == std::string::npos);
+  in.promptV2 = false;
+  TEST_ASSERT_TRUE(agent::composeInstructions(in).find("confirms or corrects") == std::string::npos);
   // sub-agent fan-out governor
   TEST_ASSERT_TRUE(p.find("[SPAWN CAPACITY]") != std::string::npos);
   // the deep-history search instruction survives the memory-tier compression

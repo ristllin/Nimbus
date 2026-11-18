@@ -2806,11 +2806,6 @@ class NimbusdRig {
       if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_->foodPlanFiles();
       return l;
     };
-    d.foodRecall = [this](const std::string& chat, const std::string& message) {
-      if (!access_->principalFor(chat).owner) return std::string();
-      return orch::renderFoodRecall(files_->get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName),
-                                    orch::logDayOf(vclock::now(), true).date, message);
-    };
 
     wireTurnHooks(d);
     wireApply(d);
@@ -2841,6 +2836,9 @@ class NimbusdRig {
     d.hooks.onEffect = [this](const std::string& chat, const std::string& tool, const std::string& receipt) {
       effects().record(chat, (int64_t)vclock::epoch(), tool, receipt);   // the instance clock
     };
+    // Lane RB-Q3a: the same rings' newest receipts ride each turn as [RECENT ACTIONS].
+    recentFx_.reset(new agent::RingRecentActions(effects().ring()));
+    d.recentActions = recentFx_.get();
     d.hooks.onTurnStart = [this](const agent::TurnStartEv&) {
       // The turn's identity is its user row's id (the chat view joins a bubble to its
       // tool rows by it); a seedless turn mints one from the same counter.
@@ -2930,7 +2928,6 @@ class NimbusdRig {
         {"sub-agents run in parallel on the provider while the device collects them",
          "sub-agents run in parallel on the provider while this instance collects them"},
         {"queued on the device", "queued on this instance"},
-        {"the device confirms or corrects a save claim", "this instance confirms or corrects a save claim"},
         {"head orchestrator of a personal-assistant device.", "head orchestrator of a personal assistant."},
         {"You speak with people over Telegram/voice and can act on the device.",
          "You speak with people over the web chat and Telegram."},
@@ -3631,6 +3628,7 @@ class NimbusdRig {
   std::unique_ptr<SpendCeilingVn> ceiling_;   // lane DEF: before the engine (its config reads it)
   std::once_flag effectsOnce_;                 // lane RB-FX: before the engine (its hook writes it)
   std::unique_ptr<HostedEffects> effects_;
+  std::unique_ptr<agent::RingRecentActions> recentFx_;   // lane RB-Q3a: reads effects_
   // Telegram allowlist + RBAC (CUM-459). Declared early so it outlives the engine and
   // job engine whose closures consult it.
   std::unique_ptr<TelegramAccess> access_;

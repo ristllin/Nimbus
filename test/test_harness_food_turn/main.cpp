@@ -122,12 +122,6 @@ struct Rig {
     d.skillBody = [this](const std::string& id) {
       return id == "meal-photo-science" ? skillText : agent::builtinSkillBody(id, true);
     };
-    d.foodSkills = [this] {
-      return skillText.empty() ? std::vector<std::string>{} : std::vector<std::string>{"meal-photo-science"};
-    };
-    d.foodRecall = [this](const std::string&, const std::string& message) {
-      return renderFoodRecall(file, kToday.date, message);
-    };
     d.foodLedger = [this](const std::string&) {
       return scanFoodLedger(file, fileExists, kToday, kFoodLedgerProject, kFoodLedgerOwnerName);
     };

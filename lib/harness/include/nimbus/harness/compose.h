@@ -9,6 +9,10 @@
 #include "nimbus/harness/prompt_layout.h"      // CacheMeta, Msg - the cache settings
 #include "nimbus/orch/world.h"
 
+namespace nimbus::orch::fx {
+class EffectRing;   // nimbus/orch/effect_ring.h (RB-FX)
+}
+
 // compose - the World system-prompt composition, lifted verbatim from
 // src/agent/orchestrator.cpp (2026-07 harness extraction, Stage D). The device
 // glue gathers the live inputs (HAL health, fault mask, registry specs,
@@ -186,6 +190,16 @@ class RecentActionsSource {
   virtual ~RecentActionsSource() = default;
   // The newest `n` entries of `chatId`, oldest first; `out` is cleared first.
   virtual void recent(const std::string& chatId, size_t n, std::vector<RecentAction>& out) = 0;
+};
+// The effects ring itself as the source (RB-FX: fxdev::ring() on the device, the instance's
+// HostedEffects::ring() on nimbusd). The ring must outlive it.
+class RingRecentActions : public RecentActionsSource {
+ public:
+  explicit RingRecentActions(nimbus::orch::fx::EffectRing& ring) : ring_(ring) {}
+  void recent(const std::string& chatId, size_t n, std::vector<RecentAction>& out) override;
+
+ private:
+  nimbus::orch::fx::EffectRing& ring_;
 };
 inline constexpr size_t kRecentActionsMax = 12;
 inline constexpr size_t kRecentActionsBytes = 2048;

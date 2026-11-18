@@ -1492,11 +1492,6 @@ static TurnEngine::Deps buildTurnDeps() {
     const String cid(chatId.c_str());
     return agent::foodledger::today(chatId, nimbus::orch::principalForRole(chatId, roleOfChat(cid)));
   };
-  d.foodRecall = [](const std::string& chatId, const std::string& message) {
-    const String cid(chatId.c_str());
-    return agent::foodledger::recall(chatId, nimbus::orch::principalForRole(chatId, roleOfChat(cid)), message);
-  };
-  d.foodSkills = [] { return skills::foodSkillIds(); };
   d.firstAllowedChat = [] { return std::string(firstAllowedChat().c_str()); };
   d.journalGc = [] { g_journal.gc(); };
   // Clamped-tool-result spill (Context Fabric): the loop's truncation marker
@@ -1546,6 +1541,9 @@ static TurnEngine::Deps buildTurnDeps() {
   // TurnEndEv.wakeReply instead of delivering it at night.
   d.hooks.quietHoursNow = [] { return loops::quietHoursNow(); };
   d.hooks.onEffect = fxdev::record;   // lane RB-FX: the chat's effect ring (the truth check reads it)
+  // Lane RB-Q3a: the same ring's newest receipts ride each turn as [RECENT ACTIONS].
+  static agent::RingRecentActions recentFx(fxdev::ring());
+  d.recentActions = &recentFx;
   d.hooks.onToolCall = [](const orch::HeadToolCall& call) {
     nimbus::pollwatch::beat("tool");
     if (!memory::traceActive()) return;

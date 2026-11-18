@@ -30,8 +30,7 @@ void TurnEngine::loadFoodLedger(const std::string& chatId) {
 // rides every turn instead is this chat's recent actions: the newest effect receipts from
 // its effects ring, as data, so a correction can name a row id without a read. The ledger
 // itself is read with the ledger tools; the owner's own food skill from the [SKILLS] shelf.
-void TurnEngine::applyFoodContext(ComposeInputs& ci, const std::string& userText) const {
-  (void)userText;   // the words of the message choose nothing here any more
+void TurnEngine::applyRecentActions(ComposeInputs& ci) const {
   ci.recentActions.clear();
   if (!d_.recentActions || curChat_.empty()) return;
   const OffsetAt zoneAt = d_.utcOffsetAt ? d_.utcOffsetAt : fixedZone(d_.utcOffsetMin ? d_.utcOffsetMin() : 0);
