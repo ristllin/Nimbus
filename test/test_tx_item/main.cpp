@@ -71,6 +71,23 @@ void test_every_kind_round_trips_with_every_field_set() {
   }
 }
 
+// Decoding into a reused item (a renderer keeps one): nothing of the previous item stays,
+// whatever kind either was.
+void test_decoding_into_a_used_item_leaves_nothing_behind() {
+  Rng r(43);
+  tx::Item reused = txgen::fullItem(tx::ItemKind::TurnEnd, 1, r);
+  for (int i = 0; i < 120; ++i) {
+    const tx::Item it = txgen::fullItem(tx::kAllItemKinds[(i * 5) % tx::kItemKindCount], r.next(), r);
+    const std::string line = enc(it);
+    TEST_ASSERT_TRUE(tx::decodeLine(line.data(), line.size(), reused).ok());
+    const std::string diff = txgen::firstDifference(txgen::project(it), reused);
+    TEST_ASSERT_TRUE_MESSAGE(diff.empty(), diff.c_str());
+    reused = txgen::fullItem(tx::kAllItemKinds[i % tx::kItemKindCount], 1, r);   // every field dirty again
+    TEST_ASSERT_TRUE(tx::decodeLine(line.data(), line.size(), reused).ok());
+    TEST_ASSERT_TRUE_MESSAGE(txgen::firstDifference(txgen::project(it), reused).empty(), "dirty reuse");
+  }
+}
+
 // Defaults are not written: an item with only k and q set is the shortest line, for
 // every kind, and decodes to the default item.
 void test_default_fields_are_not_written() {
@@ -302,6 +319,7 @@ void test_message_stamp_matches_a_calendar_walk() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_kind_round_trips_with_every_field_set);
+  RUN_TEST(test_decoding_into_a_used_item_leaves_nothing_behind);
   RUN_TEST(test_default_fields_are_not_written);
   RUN_TEST(test_a_line_is_one_line_with_its_crc_last);
   RUN_TEST(test_every_cut_of_a_line_is_torn);

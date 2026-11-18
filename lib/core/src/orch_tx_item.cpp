@@ -591,11 +591,15 @@ struct FieldRule {
   FieldFn read;
 };
 
-bool readKind(Cursor& c, Decoding& d) {
+bool readKindLetter(Cursor& c, ItemKind& kind) {
   char letter[3];
   bool fits = true;
-  if (d.fields != 1 || !readKey(c, letter, sizeof letter, fits) || !fits || std::strlen(letter) != 1) return false;
-  d.haveKind = kindFromLetter(letter[0], d.it.kind);
+  if (!readKey(c, letter, sizeof letter, fits) || !fits || std::strlen(letter) != 1) return false;
+  return kindFromLetter(letter[0], kind);
+}
+
+bool readKind(Cursor& c, Decoding& d) {
+  d.haveKind = d.fields == 1 && readKindLetter(c, d.it.kind);   // k comes first, once
   return d.haveKind;
 }
 
@@ -772,6 +776,26 @@ bool readItemField(const char* key, Cursor& c, Decoding& d) {
   return skipValue(c);
 }
 
+// Every field back to its default, in place: no Item temporary on the stack (about 480 B
+// on the device) and the strings keep their capacity for the next decode.
+void clearItem(Item& it) {
+  it.q = 0, it.kind = ItemKind::User, it.turn = 0, it.t = 0;
+  it.x.clear(), it.ch.clear(), it.src.clear(), it.parts.clear();
+  it.tzMinutes = 0, it.m = 0;
+  it.trigger.clear(), it.head.clear(), it.profile.clear(), it.photos.clear();
+  it.attempt = 0, it.rd = 0, it.fin = false;
+  it.id.clear(), it.n.clear(), it.args.clear(), it.handle.clear(), it.st.clear();
+  it.eff = false, it.ok = true, it.cls = ResultClass::Receipt, it.bytes = 0, it.lines = 0;
+  it.note = NoteClass::Unknown;
+  it.day.clear(), it.why.clear(), it.sup.clear(), it.msgIds.clear();
+  it.thru = 0, it.ext = false, it.stub = 0;
+  TurnEndFacts& e = it.end;
+  e.cause.clear(), e.exchanges.clear(), e.events.clear();
+  e.rounds = e.tools = e.headRequests = e.probeRequests = 0;
+  e.promptTokens = e.outputTokens = e.cacheReadTokens = e.cacheWriteTokens = 0;
+  e.microUsd = e.ms = e.promptHash = e.manifestHash = 0;
+}
+
 // The 8 lowercase hex digits the encoder writes (an upper-case digit is not ours: torn).
 bool readCrc(const char* hex, uint32_t& v) {
   v = 0;
@@ -802,7 +826,7 @@ Status frame(const char* data, size_t& len, const char* where) {
 }  // namespace
 
 Status decodeLine(const char* data, size_t len, Item& out) {
-  out = Item{};
+  clearItem(out);
   Status st = frame(data, len, "tx::decodeLine");
   if (!st.ok()) return st;
   Cursor c{data, data + len};
@@ -821,11 +845,7 @@ Status checkLine(const char* data, size_t len, LineHeader& out) {
   bool haveKind = false;
   const bool parsed = readObject(c, [&](const char* key, Cursor& cc) {
     if (++fields == 1) {
-      Item none;   // readKind writes only the kind; no string of it is touched
-      Decoding d{none};
-      d.fields = 1;
-      haveKind = std::strcmp(key, "k") == 0 && readKind(cc, d);
-      out.kind = none.kind;
+      haveKind = std::strcmp(key, "k") == 0 && readKindLetter(cc, out.kind);
       return haveKind;
     }
     if (!std::strcmp(key, "q")) return readU64(cc, out.q);

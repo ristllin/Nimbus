@@ -455,6 +455,30 @@ The seams are declared up front so each lane fills one body:
   fixed `HookSlot`; a seam runs its handlers in slot order, never registration order,
   and a slot holds one handler.
 
+### Transcript lines and the arena
+
+Every transcript item is stored as one line and never rewritten (`orch_tx_item.cpp`):
+a JSON object with short keys, the kind letter `k` first and the sequence number `q`
+always, then only the kind's own fields that differ from their defaults, and last
+`"z":"<crc32>"` over every byte before it. The tail has a fixed width, so a line cut by a
+power loss, glued to the next append or damaged in one bit fails its crc and is dropped,
+never repaired; a line is at most 60,000 B with its newline, and a longer one is refused
+whole. Strings are kept byte for byte (renderers repair UTF-8), with control bytes
+escaped so a line never holds a raw newline. Readers skip keys they do not know, so the
+format only grows. `checkLine` reads a line's kind, `q`, turn and time without decoding
+its text, for the restart fill and for scans. `messageStamp` writes the send-time stamp
+every rendered message carries, with the year (`[Tue 17 Nov 2026 13:02]`).
+
+`TxArena` (`orch_tx_arena.cpp`) is the RAM side of one chat: a single block from the
+allocator it is given (PSRAM on the device, 384 KB for a chat), records of a 32-byte
+header and the stored line growing up, a table of 4-byte offsets growing down. Appends,
+the restart fill (`appendLine`), lookups by `q`, reads of a line and dropping the items a
+compaction folded all work inside that block: `test/test_tx_arena` counts every
+`operator new` and proves 1,000 appends take none. `get` decodes into the caller's item.
+`TxArenaPool` keeps three chats resident, least recently used first out, and reuses each
+slot's block. `test/test_tx_item` round-trips every kind with every field set and drops
+every cut and every flipped bit of a line.
+
 `test/support/scripted_provider/` is the scripted model these suites run against. It
 sits at the `HttpTransport` seam, answers each request with the next scripted step in
 the request's dialect (Anthropic Messages, OpenAI Responses, chat completions), records
