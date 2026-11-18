@@ -19,15 +19,23 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(REPO, "tools", "engine_filter.py")
 
 
-class FakeNode:
+class _Path:
     def __init__(self, path):
         self.path = path
 
-    def srcnode(self):
-        return self
-
     def get_abspath(self):
         return self.path
+
+
+class FakeNode(_Path):
+    """A build node: it lives in the variant dir and reaches its source only through srcnode()."""
+
+    def __init__(self, src_path):
+        super().__init__(os.path.join("/build/.pio/build/esp32s3-cyd/lib9b1", os.path.basename(src_path)))
+        self.src = _Path(src_path)
+
+    def srcnode(self):
+        return self.src
 
 
 class FakeEnv(dict):
@@ -90,6 +98,7 @@ class MiddlewareTests(unittest.TestCase):
         kept = FakeNode(os.path.join(root, "lib", "harness", "src", "engine.cpp"))
         self.assertIsNone(mw(listed))
         self.assertIs(mw(kept), kept)
+        self.assertEqual(mw.dropped, {ef.norm(listed.srcnode().get_abspath())})
 
     def test_path_spelling_does_not_matter(self):
         root = make_tree({"engine2_only.txt": "lib/core/src/./orch_tx_a.cpp\n"})
@@ -132,9 +141,13 @@ class ExtraScriptTests(unittest.TestCase):
         run_as_extra_script(env)
         self.assertEqual(env.exit_code, 1)
 
-    def test_import_as_a_module_runs_nothing(self):
-        # Importing for tests and the gate must not need a PlatformIO env.
-        self.assertFalse(hasattr(ef, "env"))
+    def test_the_build_path_is_never_matched(self):
+        # The middleware must read the source path: a node's own path is in .pio/build.
+        root = make_tree({"engine2_only.txt": "lib/x/plain_y.cpp\n"})
+        mw = ef.make_middleware(ef.dropped_paths(root, 1))
+        node = FakeNode(os.path.join(root, "lib", "x", "plain_y.cpp"))
+        self.assertNotEqual(node.get_abspath(), node.srcnode().get_abspath())
+        self.assertIsNone(mw(node))
 
     def test_the_real_list_loads(self):
         drop = ef.dropped_paths(REPO, 1)

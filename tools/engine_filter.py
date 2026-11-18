@@ -18,6 +18,7 @@ tools/release_gate/check_engine_filter.py checks the lists against the tree and 
 
 from __future__ import annotations
 
+import atexit
 import os
 from typing import Iterable, List, Set
 
@@ -73,14 +74,19 @@ def norm(path: str) -> str:
 
 
 def make_middleware(drop: Iterable[str]):
-    """A build middleware: returns None (drop) for a listed source, the node otherwise."""
+    """A build middleware: returns None (drop) for a listed source, the node otherwise.
+
+    The sources it actually dropped collect in `engine_middleware.dropped`."""
     drop = frozenset(drop)
 
     def engine_middleware(node):
-        if norm(node.srcnode().get_abspath()) in drop:
+        path = norm(node.srcnode().get_abspath())
+        if path in drop:
+            engine_middleware.dropped.add(path)
             return None
         return node
 
+    engine_middleware.dropped = set()
     return engine_middleware
 
 
@@ -89,8 +95,15 @@ def install(env) -> int:
     root = env["PROJECT_DIR"]
     engine = engine_number(env.GetProjectOption(ENGINE_OPTION, ""))
     drop = dropped_paths(root, engine)
-    env.AddBuildMiddleware(make_middleware(drop))
-    print(f"engine_filter: {env['PIOENV']} builds engine {engine}, {len(drop)} sources of the other engine dropped")
+    middleware = make_middleware(drop)
+    env.AddBuildMiddleware(middleware)
+    name = env["PIOENV"]
+    print(f"engine_filter: {name} builds engine {engine}, drops the {len(drop)} sources of the other engine")
+    # The count of files the build actually collected and dropped (a library the env never
+    # builds drops none), printed once the SConscripts have run.
+    atexit.register(
+        lambda: print(f"engine_filter: {name} dropped {len(middleware.dropped)} of {len(drop)} listed sources")
+    )
     return len(drop)
 
 

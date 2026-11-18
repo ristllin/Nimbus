@@ -142,7 +142,10 @@ def run_host_checks() -> bool:
         ("driver-pin (CUM-167)", check_driver_pin.main),
         ("elf-symbols (CUM-167)", check_elf_symbols.main),
         ("image-size vs app partition (lane TESTFIT)", check_image_size.main),
-        ("engine filter: no engine-2 object in a device image (RB-I0a)", check_engine_filter.main),
+        (
+            "engine filter: no engine-2 object in a device image (RB-I0a)",
+            lambda argv: check_engine_filter.main(["--require-maps", "esp32s3", "esp32s3-cyd"]),
+        ),
         ("sram-staging (CUM-24)", check_sram_staging.main),
         ("ota-nvs (CUM-237)", check_ota_preserves_nvs.main),
         ("config-mapping (CUM-388)", check_config_mapping.main),

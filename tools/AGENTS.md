@@ -31,6 +31,7 @@ Enumerated with their consumer, so a rename is caught before it ships:
 | Tool | Consumer | Breaks |
 |---|---|---|
 | `git_version.py` | `platformio.ini` `extra_scripts` | **every** build (injects `NIMBUS_FW_BUILD`) |
+| `engine_filter.py` | `platformio.ini` `[s3]` `extra_scripts` | every device image (it would compile both engines; `release_gate/check_engine_filter.py` fails) |
 | `check_param_consumers.py` | `.github/workflows/checks.yml` | the checks CI job |
 | `check_status_doc.py` | `.github/workflows/checks.yml` | the checks CI job |
 | `webui_concat_check.py` | `.github/workflows/checks.yml` | the checks CI job |
