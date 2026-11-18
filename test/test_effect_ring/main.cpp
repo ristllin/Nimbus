@@ -1080,7 +1080,12 @@ void test_a_refused_allocation_at_every_site_is_a_designed_state() {
   }
   TEST_ASSERT_TRUE(hits > 5);   // the sweep reached the load, the append and the rewrite
   TEST_ASSERT_TRUE(ramOnly > 0);  // a refused load still keeps the effect, in RAM
-  // Reads: recent and visit at every allocation answer 0 or the whole, never throw.
+  nimbus::orch::setWorkingAllocators(nullptr, nullptr);
+}
+
+void test_a_refused_allocation_in_a_read_answers_nothing_and_loses_nothing() {
+  nimbus::orch::setWorkingAllocators(refusingWorkingAlloc, workingFreeHook);
+  // recent at every allocation answers 0 or the whole and never throws.
   for (long k = 0;; ++k) {
     FxFiles f;
     {
@@ -1146,5 +1151,6 @@ int main() {
   RUN_TEST(test_a_load_cut_short_by_a_refused_read_trusts_nothing);
   RUN_TEST(test_the_least_recently_used_chat_is_evicted);
   RUN_TEST(test_a_refused_allocation_at_every_site_is_a_designed_state);
+  RUN_TEST(test_a_refused_allocation_in_a_read_answers_nothing_and_loses_nothing);
   return UNITY_END();
 }
