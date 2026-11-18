@@ -21,7 +21,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CORRECTION = re.compile(r"\n*\(Correction:[^)]*\)\n*")
-DASH = "—"  # the reply text's long dash becomes a hyphen (project style rule)
+DASH = chr(0x2014)  # the reply text's long dash becomes a hyphen (project style rule)
 # Tools that only read. Everything else the rig's registry exposes changes state.
 READS = {
     "device_status",

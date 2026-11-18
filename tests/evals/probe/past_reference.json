@@ -1589,7 +1589,7 @@
   "id": "restate-log-007",
   "family": "restate-log",
   "owner": "wait, did you actually log the two boiled eggs on toast?",
-  "reply": "Yes. I logged the two boiled eggs on toast as L0A1C at 15:55, 410 kcal. Nothing has changed since.",
+  "reply": "Yes. I logged the two boiled eggs on toast at 15:55, 410 kcal. Nothing has changed since.",
   "this_turn": [],
   "recent": [
    {
@@ -1652,7 +1652,7 @@
   "id": "restate-log-009",
   "family": "restate-log",
   "owner": "Is my lunch logged?",
-  "reply": "Yes. I logged the pasta bake as L0A21 at 12:46, 700 kcal. Nothing has changed since.",
+  "reply": "Yes. I logged the pasta bake at 12:46, 700 kcal. Nothing has changed since.",
   "this_turn": [],
   "recent": [
    {
@@ -1678,7 +1678,7 @@
   "id": "restate-log-010",
   "family": "restate-log",
   "owner": "huh?",
-  "reply": "Yes. I logged the pasta bake as L0A23 at 13:02, 700 kcal. Nothing has changed since.",
+  "reply": "Yes. I logged the pasta bake at 13:02, 700 kcal. Nothing has changed since.",
   "this_turn": [],
   "recent": [
    {
@@ -1846,7 +1846,7 @@
   "id": "restate-log-016",
   "family": "restate-log",
   "owner": "So what are we at for today?",
-  "reply": "Yes. I logged the beef chilli as L0A32 at 12:48, 610 kcal. Nothing has changed since.",
+  "reply": "Yes. I logged the beef chilli at 12:48, 610 kcal. Nothing has changed since.",
   "this_turn": [],
   "recent": [
    {
@@ -2312,7 +2312,7 @@
   "id": "restate-log-029",
   "family": "restate-log",
   "owner": "ok and where are we now",
-  "reply": "Yes. I logged the pasta bake as L0A60 at 16:03, 700 kcal. Nothing has changed since.",
+  "reply": "Yes. I logged the pasta bake at 16:03, 700 kcal. Nothing has changed since.",
   "this_turn": [],
   "recent": [
    {
@@ -2587,7 +2587,7 @@
   "id": "restate-log-037",
   "family": "restate-log",
   "owner": "Did that last one save?",
-  "reply": "The chicken caesar salad is logged (L0A7C, 430 kcal). With it you're on 1,630 kcal today, 770 under your 2,400 target.",
+  "reply": "The chicken caesar salad is logged (430 kcal). With it you're on 1,630 kcal today, 770 under your 2,400 target.",
   "this_turn": [],
   "recent": [
    {
@@ -5133,7 +5133,7 @@
   "id": "new-plus-past-009",
   "family": "new-plus-past",
   "owner": "Snack was porridge with banana, 380 kcal.",
-  "reply": "Logged as snack (L0AAF): porridge with banana, 380 kcal.\n\nToday stands at 1,980 kcal / 105 g protein from 4 rows, snack included.",
+  "reply": "Logged as snack: porridge with banana, 380 kcal.\n\nToday stands at 1,980 kcal / 105 g protein from 4 rows, snack included.",
   "this_turn": [
    {
     "tool": "files_append",
@@ -5338,7 +5338,7 @@
   "id": "new-plus-past-014",
   "family": "new-plus-past",
   "owner": "Log cheese omelette as dinner please",
-  "reply": "Logged as dinner (L0AC8): cheese omelette, 450 kcal.\n\nToday stands at 2,100 kcal / 90 g protein from 6 rows, breakfast included.",
+  "reply": "Logged as dinner: cheese omelette, 450 kcal.\n\nToday stands at 2,100 kcal / 90 g protein from 6 rows, breakfast included.",
   "this_turn": [
    {
     "tool": "files_append",
@@ -5449,7 +5449,7 @@
   "id": "new-plus-past-017",
   "family": "new-plus-past",
   "owner": "Dinner was flapjack, 290 kcal.",
-  "reply": "Logged as dinner (L0AD2): flapjack, 290 kcal.\n\nToday stands at 2,200 kcal / 103 g protein from 5 rows, snack included.",
+  "reply": "Logged as dinner: flapjack, 290 kcal.\n\nToday stands at 2,200 kcal / 103 g protein from 5 rows, snack included.",
   "this_turn": [
    {
     "tool": "files_append",
@@ -5948,7 +5948,7 @@
   "id": "new-plus-past-029",
   "family": "new-plus-past",
   "owner": "Dinner was protein bar, 210 kcal.",
-  "reply": "Logged as dinner (L0B0A): protein bar, 210 kcal.\n\nToday stands at 2,310 kcal / 131 g protein from 6 rows, lunch included. Memory was updated earlier so the soup was eaten yesterday, not today, as you said.",
+  "reply": "Logged as dinner: protein bar, 210 kcal.\n\nToday stands at 2,310 kcal / 131 g protein from 6 rows, lunch included. Memory was updated earlier so the soup was eaten yesterday, not today, as you said.",
   "this_turn": [
    {
     "tool": "files_append",

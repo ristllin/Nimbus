@@ -71,8 +71,16 @@ def load_items() -> list:
     corpus = json.loads(CORPUS.read_text())
     rings = json.loads((HERE / "corpus_rings.json").read_text())
     items = [
-        {"set": "corpus", "id": f"corpus-{i:02d}", "family": "corpus", "owner": r["owner"], "reply": r["reply"],
-         "this_turn": [], "recent": rings[i], "claim": r["claim"]}
+        {
+            "set": "corpus",
+            "id": f"corpus-{i:02d}",
+            "family": "corpus",
+            "owner": r["owner"],
+            "reply": r["reply"],
+            "this_turn": [],
+            "recent": rings[i],
+            "claim": r["claim"],
+        }
         for i, r in enumerate(corpus)
     ]
     for name in ("past_reference", "near_miss"):
@@ -83,6 +91,7 @@ def load_items() -> list:
 
 def render(item: dict, with_recent: bool) -> str:
     """The probe's user message. The same bytes the device will send (RB-G0)."""
+
     def lines(rows, fmt):
         return "\n".join(fmt(r) for r in rows) if rows else "(none)"
 
@@ -127,16 +136,31 @@ def request_for(model: str, key: str, text: str) -> urllib.request.Request:
     wire = MODELS[model][0]
     if wire == "anthropic":
         url, headers = "https://api.anthropic.com/v1/messages", {"x-api-key": key, "anthropic-version": "2023-06-01"}
-        body = {"model": model, "max_tokens": 1024, "system": PROMPT, "output_config": {"effort": "low"},
-                "messages": [{"role": "user", "content": text}]}
+        body = {
+            "model": model,
+            "max_tokens": 1024,
+            "system": PROMPT,
+            "output_config": {"effort": "low"},
+            "messages": [{"role": "user", "content": text}],
+        }
     elif wire == "openai":
         url, headers = "https://api.openai.com/v1/responses", {"authorization": "Bearer " + key}
-        body = {"model": model, "instructions": PROMPT, "input": text, "reasoning": {"effort": "low"},
-                "store": False, "max_output_tokens": 1024}
+        body = {
+            "model": model,
+            "instructions": PROMPT,
+            "input": text,
+            "reasoning": {"effort": "low"},
+            "store": False,
+            "max_output_tokens": 1024,
+        }
     else:
         url, headers = "https://api.z.ai/api/paas/v4/chat/completions", {"authorization": "Bearer " + key}
-        body = {"model": model, "max_tokens": 1024, "reasoning_effort": "low",
-                "messages": [{"role": "system", "content": PROMPT}, {"role": "user", "content": text}]}
+        body = {
+            "model": model,
+            "max_tokens": 1024,
+            "reasoning_effort": "low",
+            "messages": [{"role": "system", "content": PROMPT}, {"role": "user", "content": text}],
+        }
     headers["content-type"] = "application/json"
     return urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
@@ -151,8 +175,10 @@ def read_reply(wire: str, data: dict) -> tuple:
         u = data.get("usage") or {}
         text = "".join(
             c.get("text", "")
-            for item in data.get("output", []) if item.get("type") == "message"
-            for c in item.get("content", []) if c.get("type") == "output_text"
+            for item in data.get("output", [])
+            if item.get("type") == "message"
+            for c in item.get("content", [])
+            if c.get("type") == "output_text"
         )
         return text, u.get("input_tokens", 0), u.get("output_tokens", 0)
     u = data.get("usage") or {}
@@ -174,8 +200,16 @@ def ask(model: str, key: str, text: str) -> dict:
                 data = json.loads(r.read())
             secs = time.monotonic() - t0
             answer, tin, tout = read_reply(wire, data)
-            return {"answer": answer, "verdict": parse_answer(answer), "seconds": round(secs, 3),
-                    "attempts": attempt + 1, "in": tin, "out": tout, "usd": cost_usd(model, tin, tout), "error": None}
+            return {
+                "answer": answer,
+                "verdict": parse_answer(answer),
+                "seconds": round(secs, 3),
+                "attempts": attempt + 1,
+                "in": tin,
+                "out": tout,
+                "usd": cost_usd(model, tin, tout),
+                "error": None,
+            }
         except urllib.error.HTTPError as e:
             err = f"HTTP {e.code}: {e.read()[:200]!r}"
             if e.code not in (429, 500, 502, 503, 529):
@@ -183,8 +217,16 @@ def ask(model: str, key: str, text: str) -> dict:
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             err = f"{type(e).__name__}: {e}"
         time.sleep(3 * (attempt + 1))
-    return {"answer": "", "verdict": None, "seconds": None, "attempts": attempt + 1, "in": 0, "out": 0,
-            "usd": 0.0, "error": err}
+    return {
+        "answer": "",
+        "verdict": None,
+        "seconds": None,
+        "attempts": attempt + 1,
+        "in": 0,
+        "out": 0,
+        "usd": 0.0,
+        "error": err,
+    }
 
 
 # ---- run -------------------------------------------------------------------------------
@@ -227,8 +269,15 @@ def cmd_run(args) -> int:
             if total[0] >= args.max_usd:
                 return
             res = ask(model, key, render(item, cond == "with"))
-            rec = {"model": model, "cond": cond, "set": item["set"], "id": item["id"], "family": item["family"],
-                   "claim": item["claim"], **res}
+            rec = {
+                "model": model,
+                "cond": cond,
+                "set": item["set"],
+                "id": item["id"],
+                "family": item["family"],
+                "claim": item["claim"],
+                **res,
+            }
             with lock:
                 total[0] += res["usd"]
                 with path.open("a") as f:
@@ -279,40 +328,71 @@ def is_hit(r: dict) -> bool:
     return r["error"] is None and r["verdict"] is True and r["seconds"] <= BOUND_S
 
 
-def score(rows: list) -> dict:
-    corpus = [r for r in rows if r["set"] == "corpus"]
-    past = [r for r in rows if r["set"] == "past_reference"]
-    near = [r for r in rows if r["set"] == "near_miss"]
-    tp = sum(1 for r in corpus if r["claim"] and is_hit(r))
-    fp = sum(1 for r in corpus if not r["claim"] and is_hit(r))
+def ratio(k: int, n: int):
+    return round(k / n, 4) if n else None
+
+
+def score_corpus(corpus: list) -> dict:
+    hits = [r for r in corpus if is_hit(r)]
+    tp = sum(1 for r in hits if r["claim"])
+    fp = len(hits) - tp
     pos = sum(1 for r in corpus if r["claim"])
-    past_fp = [r for r in past if is_hit(r)]
-    near_tp = sum(1 for r in near if is_hit(r))
-    secs = [r["seconds"] for r in rows if r["error"] is None]
+    return {
+        "n": len(corpus),
+        "positives": pos,
+        "tp": tp,
+        "fp": fp,
+        "fn": pos - tp,
+        "precision": ratio(tp, tp + fp),
+        "precision_ci95": wilson(tp, tp + fp),
+        "recall": ratio(tp, pos),
+        "recall_ci95": wilson(tp, pos),
+        "missed": sorted(r["id"] for r in corpus if r["claim"] and not is_hit(r)),
+        "false_hits": sorted(r["id"] for r in hits if not r["claim"]),
+    }
+
+
+def score_past(past: list) -> dict:
+    hits = [r for r in past if is_hit(r)]
     fams: dict = {}
-    for r in past_fp:
+    for r in hits:
         fams[r["family"]] = fams.get(r["family"], 0) + 1
     return {
-        "probes": len(rows),
-        "corpus": {
-            "n": len(corpus), "positives": pos, "tp": tp, "fp": fp, "fn": pos - tp,
-            "precision": round(tp / (tp + fp), 4) if tp + fp else None, "precision_ci95": wilson(tp, tp + fp),
-            "recall": round(tp / pos, 4) if pos else None, "recall_ci95": wilson(tp, pos),
-            "missed": sorted(r["id"] for r in corpus if r["claim"] and not is_hit(r)),
-            "false_hits": sorted(r["id"] for r in corpus if not r["claim"] and is_hit(r)),
-        },
-        "past_reference": {
-            "n": len(past), "fp": len(past_fp), "fp_rate": round(len(past_fp) / len(past), 4) if past else None,
-            "fp_upper95": upper95(len(past_fp), len(past)), "fp_by_family": dict(sorted(fams.items())),
-            "false_hits": sorted(r["id"] for r in past_fp),
-        },
-        "near_miss": {"n": len(near), "tp": near_tp, "recall": round(near_tp / len(near), 4) if near else None,
-                      "recall_ci95": wilson(near_tp, len(near))},
+        "n": len(past),
+        "fp": len(hits),
+        "fp_rate": ratio(len(hits), len(past)),
+        "fp_upper95": upper95(len(hits), len(past)),
+        "fp_by_family": dict(sorted(fams.items())),
+        "false_hits": sorted(r["id"] for r in hits),
+    }
+
+
+def score_near(near: list) -> dict:
+    tp = sum(1 for r in near if is_hit(r))
+    return {"n": len(near), "tp": tp, "recall": ratio(tp, len(near)), "recall_ci95": wilson(tp, len(near))}
+
+
+def score_time(rows: list) -> dict:
+    secs = [r["seconds"] for r in rows if r["error"] is None]
+    return {
         "seconds_p50": round(statistics.median(secs), 3) if secs else None,
         "seconds_p90": round(statistics.quantiles(secs, n=10)[-1], 3) if len(secs) >= 10 else None,
-        "over_bound": sum(1 for s in secs if s > BOUND_S),
+        "over_bound": sum(1 for x in secs if x > BOUND_S),
         "errors": sum(1 for r in rows if r["error"] is not None),
         "malformed": sum(1 for r in rows if r["error"] is None and r["verdict"] is None),
+    }
+
+
+def score(rows: list) -> dict:
+    def part(name):
+        return [r for r in rows if r["set"] == name]
+
+    return {
+        "probes": len(rows),
+        "corpus": score_corpus(part("corpus")),
+        "past_reference": score_past(part("past_reference")),
+        "near_miss": score_near(part("near_miss")),
+        **score_time(rows),
         "usd": round(sum(r["usd"] for r in rows), 4),
     }
 
@@ -320,9 +400,13 @@ def score(rows: list) -> dict:
 def qualifies(s: dict) -> bool:
     c, p = s["corpus"], s["past_reference"]
     return bool(
-        c["precision"] is not None and c["precision"] >= GATE["precision"]
-        and c["recall"] is not None and c["recall"] >= GATE["recall"]
-        and p["n"] >= GATE["min_past"] and p["fp_rate"] is not None and p["fp_rate"] <= GATE["fp_rate"]
+        c["precision"] is not None
+        and c["precision"] >= GATE["precision"]
+        and c["recall"] is not None
+        and c["recall"] >= GATE["recall"]
+        and p["n"] >= GATE["min_past"]
+        and p["fp_rate"] is not None
+        and p["fp_rate"] <= GATE["fp_rate"]
     )
 
 
@@ -346,8 +430,10 @@ def summarize(rows: list) -> dict:
             continue
         conds = {c: score([r for r in mine if r["cond"] == c]) for c in ("with", "without")}
         models[model] = {
-            "measured": True, "settings": SETTINGS[model],
-            "qualifies": qualifies(conds["with"]), "qualifies_without_recent": qualifies(conds["without"]),
+            "measured": True,
+            "settings": SETTINGS[model],
+            "qualifies": qualifies(conds["with"]),
+            "qualifies_without_recent": qualifies(conds["without"]),
             **conds,
         }
     for model, reason in UNMEASURED.items():
@@ -356,13 +442,18 @@ def summarize(rows: list) -> dict:
     return {
         "what": "truth probe measurement (PRD section 8 item 8, lane RB-M0c)",
         "prompt": "tests/evals/probe/prompt.txt",
-        "gate": {**GATE, "rule": "qualifies = the 'with' condition meets precision and recall on the claim corpus "
-                 "and the false-positive rate on at least 300 true past-reference replies"},
+        "gate": {
+            **GATE,
+            "rule": "qualifies = the 'with' condition meets precision and recall on the claim corpus "
+            "and the false-positive rate on at least 300 true past-reference replies",
+        },
         "scoring": f"fail-open: a hit is a well-formed true answered within {BOUND_S:.0f} s; errors, malformed "
-                   "answers and slower answers deliver the reply",
-        "sets": {"corpus": "tests/evals/claim_corpus/noted.json (+ corpus_rings.json in 'with')",
-                 "past_reference": "tests/evals/probe/past_reference.json",
-                 "near_miss": "tests/evals/probe/near_miss.json"},
+        "answers and slower answers deliver the reply",
+        "sets": {
+            "corpus": "tests/evals/claim_corpus/noted.json (+ corpus_rings.json in 'with')",
+            "past_reference": "tests/evals/probe/past_reference.json",
+            "near_miss": "tests/evals/probe/near_miss.json",
+        },
         "models": models,
         "seconds_p50_all": round(statistics.median(secs), 3) if secs else None,
         "usd_total": round(sum(r["usd"] for r in rows), 4),
@@ -370,8 +461,10 @@ def summarize(rows: list) -> dict:
 
 
 def table(summary: dict) -> str:
-    head = ("| model | recent effects | corpus precision (95% CI) | corpus recall (95% CI) | past-ref FP (upper 95%) "
-            "| near-miss recall | p50 s | p90 s | >8 s | err/malformed | qualifies |")
+    head = (
+        "| model | recent effects | corpus precision (95% CI) | corpus recall (95% CI) | past-ref FP (upper 95%) "
+        "| near-miss recall | p50 s | p90 s | >8 s | err/malformed | qualifies |"
+    )
     out = [head, "|" + "---|" * 11]
     for model, m in summary["models"].items():
         if not m.get("measured"):
