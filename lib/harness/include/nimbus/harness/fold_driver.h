@@ -149,6 +149,7 @@ class FoldDriver {
   static std::string confirmation(const FoldSlice& s);
   static std::string failureNotice(uint32_t nextTry, uint32_t waitS, int32_t utcOffsetMin);
   static std::string alertNotice(uint32_t sinceEpoch, int32_t utcOffsetMin);
+  static std::string unreadNotice();   // rows the store refuses for a day: the daily alert
 
  private:
   struct Cycle {
@@ -168,7 +169,9 @@ class FoldDriver {
   FoldTick pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& chat, bool& manual, bool& overflow);
   FoldTick nothingToFold(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s);
   bool pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::string& chat);
-  FoldTick sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s);
+  FoldTick sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch, const FoldSlice& s);
+  void noteUnread(const std::string& chat, uint32_t nowEpoch, bool unread);
+  std::map<std::string, uint32_t> unreadSince_;   // chat -> epoch its slice first met rows it could not read
   FoldTick runRung(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick landed(const FoldRungReport& rep, const std::string& summary, uint32_t nowMs, uint32_t nowEpoch);
   FoldTick cycleFailed(uint32_t nowMs, uint32_t nowEpoch);
@@ -203,6 +206,7 @@ class FoldDriver {
   void clearReadWait(const std::string& chat) {
     readWaitCount_.erase(chat);
     readWaitUntilMs_.erase(chat);
+    unreadSince_.erase(chat);
   }
   std::map<std::string, std::string> thruDate_;   // chat -> the local date its summary reaches
   // The manual catch-up in progress: what its landed cycles covered so far.

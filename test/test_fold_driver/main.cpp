@@ -140,10 +140,15 @@ struct Device {
     boot();
   }
 
-  uint32_t nothingKept = 0;   // > 0: every slice reads to its bound and finds nothing, this much kept
+  uint32_t nothingKept = 0;
+  bool unreadAlways = false;   // every slice meets rows the store will not give back   // > 0: every slice reads to its bound and finds nothing, this much kept
   FoldSlice slice(const std::string& chat, size_t cap, bool manual) {
     sliced.push_back({chat, manual});
     FoldSlice s;
+    if (unreadAlways) {
+      s.state = agent::SliceState::Unread;
+      return s;
+    }
     if (nothingKept) {
       s.state = agent::SliceState::Nothing;
       s.keptBytes = nothingKept;
@@ -496,6 +501,31 @@ static void test_a_huge_kept_tail_does_not_skip_every_pass() {
   TEST_ASSERT_TRUE(orch::bytesAfterThru(d.folds.get("c")) < 48u * 1024u);
 }
 
+// v5.1.2 fix review E: rows the store keeps refusing stay unread (fail-closed: the anchor never
+// passes them), but not silently. After a day of it the owner hears once a local day, and a
+// Summarize now says the truth, not "try again in a few minutes".
+static void test_rows_unread_for_a_day_alert_the_owner_once_a_day() {
+  Device d;
+  d.boot();
+  d.backlog("c", 40);
+  d.unreadAlways = true;
+  for (uint32_t m = 0; m < 3u * 24u * 60u; m += 5) d.tick(kT0 + m * 60);
+  int alerts = 0;
+  for (const auto& t : d.told) alerts += t.second.find("can't move past them") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(alerts >= 1 && alerts <= 3, std::to_string(alerts).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.folds.get("c").thru.empty(), "the anchor never passes rows it could not read");
+  d.told.clear();
+  d.drv->requestManual("c");
+  for (int i = 0; i < 3; i++) d.tick(kT0 + 4u * 86400u + (uint32_t)i);
+  int answers = 0, minutes = 0;
+  for (const auto& t : d.told) {
+    answers += t.second.find("can't be read from storage right now") != std::string::npos;
+    minutes += t.second.find("Try again in a few minutes") != std::string::npos;
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(1, answers, "the manual request is answered with the truth");
+  TEST_ASSERT_EQUAL(0, minutes);
+}
+
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
 static void test_fresh_device_is_idle_and_quiet() {
   Device d;
@@ -697,6 +727,7 @@ int main(int, char**) {
   RUN_TEST(test_the_daily_alert_is_spent_only_when_it_reaches_the_owner);
   RUN_TEST(test_a_busy_guest_chat_leaves_the_owner_room);
   RUN_TEST(test_a_huge_kept_tail_does_not_skip_every_pass);
+  RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);

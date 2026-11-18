@@ -344,7 +344,31 @@ uint32_t FoldDriver::readWaitMs(uint32_t waits) {
 // is tried again later, 1 minute out and doubling to 1 hour, so it never stops folding for
 // good and never reads the card every pass. A manual request is answered: a catch-up says
 // what it covered, else the owner is told the rows could not be read.
-FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, const FoldSlice& s) {
+// Rows the store keeps refusing (Unread) stay unread, fail-closed: the anchor never passes them.
+// After a day of it the owner hears once a local day, through the alert (fix review E).
+void FoldDriver::noteUnread(const std::string& chat, uint32_t nowEpoch, bool unread) {
+  if (!unread) {
+    unreadSince_.erase(chat);
+    return;
+  }
+  if (!nowEpoch) return;   // no clock: no day to count, no alert (as for failed cycles)
+  const uint32_t since = unreadSince_.emplace(chat, nowEpoch).first->second;
+  if (nowEpoch - since < orch::kFoldAlertAfterS || ctl_.lastAlertDay == today(nowEpoch)) return;
+  const std::string text = unreadNotice();
+  bool told = false;
+  if (hooks_.alert) told = hooks_.alert(chat, text);
+  else if (hooks_.tell) {
+    hooks_.tell(chat, text);
+    told = true;
+  }
+  if (!told) return;
+  ctl_.lastAlertDay = today(nowEpoch);
+  saveCtl();
+}
+
+FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch,
+                                const FoldSlice& s) {
+  noteUnread(chat, nowEpoch, s.state == SliceState::Unread);
   uint32_t& waits = readWaitCount_[chat];
   if (!s.progressed) waits++;
   const uint32_t waitMs = readWaitMs(s.progressed ? 0 : waits);
@@ -354,9 +378,13 @@ FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t n
              s.progressed ? "progress" : std::to_string((unsigned)waits).c_str(), (unsigned)(waitMs / 1000));
   if (manual && (!s.progressed || s.state == SliceState::Unread)) {
     const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
-    if (hooks_.tell)
-      hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span)
-                                 : "\xE2\x9A\xA0 Couldn't read this chat's older messages just now. Try again in a few minutes.");
+    // The truth for each: rows the store refuses are not a matter of minutes.
+    const char* const why = s.state == SliceState::Unread
+                                ? "\xE2\x9A\xA0 Some older messages in this chat can't be read from storage right now, so "
+                                  "the summary can't include them yet. It keeps trying by itself; if this lasts, restart "
+                                  "the device."
+                                : "\xE2\x9A\xA0 Couldn't read this chat's older messages just now. Try again in a few minutes.";
+    if (hooks_.tell) hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span) : why);
     catchUp_ = CatchUp();
     endManual(chat, nowMs);
   }
@@ -378,7 +406,7 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   c.slice = hooks_.slice ? hooks_.slice(chat, cap, manual) : eng_->historyFoldSlice(chat, cap, manual);
   if (c.slice.digest.empty()) {
     if (c.slice.state == SliceState::Wait || c.slice.state == SliceState::Unread)
-      return sliceWaits(chat, manual, nowMs, c.slice);
+      return sliceWaits(chat, manual, nowMs, nowEpoch, c.slice);
     return nothingToFold(chat, manual, nowMs, c.slice);
   }
   clearReadWait(chat);
@@ -621,6 +649,11 @@ std::string FoldDriver::failureNotice(uint32_t nextTry, uint32_t waitS, int32_t 
   std::string when = "in " + waitWords(waitS);
   if (nextTry) when = "at " + localClock(nextTry, utcOffsetMin) + " (" + localDate(nextTry, utcOffsetMin) + ")";
   return "\xE2\x9A\xA0 Couldn't update the summary just now. It tries again by itself " + when + ".";
+}
+
+std::string FoldDriver::unreadNotice() {
+  return "\xE2\x9A\xA0 Some older messages in this chat can't be read from storage, so its summary can't move "
+         "past them. Restart the device; if this keeps happening, check the memory card.";
 }
 
 std::string FoldDriver::alertNotice(uint32_t sinceEpoch, int32_t utcOffsetMin) {
