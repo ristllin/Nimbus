@@ -2,11 +2,7 @@
 
 #include <Arduino.h>   // xPortCanYield
 #include <FS.h>
-#include <dirent.h>
-#include <sys/stat.h>
-
-#include <cerrno>
-#include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <mutex>
 #include <new>
@@ -55,12 +51,12 @@ class CardFxFiles : public nimbus::orch::tx::TxFiles {
     return true;
   }
   bool size(const std::string& path, size_t& out) override {
-    char vp[kVfsPathMax];
-    struct stat st;
-    if (!inside(path) || !memory::haveSd() || !vfsPath(path, vp)) return false;
+    if (!inside(path) || !memory::haveSd()) return false;
     memory::Lock g;
-    if (::stat(vp, &st) != 0 || S_ISDIR(st.st_mode)) return false;
-    out = (size_t)st.st_size;
+    File f = memory::dataFs().open(path.c_str(), FILE_READ);
+    if (!f || f.isDirectory()) return false;
+    out = (size_t)f.size();
+    f.close();
     return true;
   }
   // At most kRingEntries * kLineMax (12,150 B): one open, write and close (RB-M2: a 16 KB
@@ -91,21 +87,21 @@ class CardFxFiles : public nimbus::orch::tx::TxFiles {
   }
   bool list(const std::string& dir, std::vector<std::string>& names) override {
     names.clear();
-    char vp[kVfsPathMax];
-    if (dir != fx::kFxRoot || !memory::haveSd() || !vfsPath(dir, vp)) return false;
+    if (dir != fx::kFxRoot || !memory::haveSd()) return false;
     memory::Lock g;
-    DIR* d = ::opendir(vp);
-    if (!d) return errno == ENOENT;   // no folder yet: no files (a card is there)
-    while (struct dirent* e = ::readdir(d)) {
-      if (e->d_type == DT_DIR || e->d_name[0] == '.') continue;
-      names.emplace_back(e->d_name);
+    fs::FS& fs = memory::dataFs();
+    if (!fs.exists(fx::kFxRoot)) return true;   // no folder yet: no files (a card is there)
+    File d = fs.open(fx::kFxRoot);
+    if (!d || !d.isDirectory()) return false;
+    for (File e = d.openNextFile(); e; e = d.openNextFile()) {
+      if (e.isDirectory()) continue;
+      const char* slash = strrchr(e.path(), '/');   // the bare name, as files_subsystem reads it
+      names.emplace_back(slash ? slash + 1 : e.name());
     }
-    ::closedir(d);
     return true;
   }
 
  private:
-  static constexpr size_t kVfsPathMax = 128;
   static bool inside(const std::string& path) {
     static const std::string kPrefix = std::string(fx::kFxRoot) + "/";
     return path.rfind(kPrefix, 0) == 0 && path.find("/..") == std::string::npos;
@@ -120,12 +116,6 @@ class CardFxFiles : public nimbus::orch::tx::TxFiles {
     if (fs.exists(fx::kFxRoot)) return true;
     fs.mkdir("/mem");
     return fs.mkdir(fx::kFxRoot) || fs.exists(fx::kFxRoot);
-  }
-  static bool vfsPath(const std::string& path, char (&out)[kVfsPathMax]) {
-    const char* mp = memory::dataFs().mountpoint();
-    if (!mp) return false;
-    const int n = snprintf(out, sizeof(out), "%s%s", mp, path.c_str());
-    return n > 0 && n < (int)sizeof(out);
   }
 };
 

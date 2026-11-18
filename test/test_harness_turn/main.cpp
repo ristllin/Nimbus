@@ -5893,7 +5893,7 @@ static void test_the_turn_state_holds_the_effect_ledger() {
 
 // RB-FX: every effect of a turn reaches the chat's effect ring through Hooks::onEffect, once:
 // a head tool call whose kind changes something (with its result), and each outcome apply
-// records (with the ledger's own summary of it); a lookup never does.
+// records and that landed (with its slug and reference); a lookup never does.
 static void test_every_effect_reaches_the_effect_hook_once() {
   for (const char* tool : {"memory_search", "files_append"}) {
     Rig r;
@@ -5914,20 +5914,28 @@ static void test_every_effect_reaches_the_effect_hook_once() {
       TEST_ASSERT_EQUAL_STRING(r.toolResults[0].output.c_str(), r.effects[0][2].c_str());
     }
   }
-  // An outcome apply records (a device action of the final turn): one hook call per entry.
+  // Outcomes apply records (the scratchpad and a device action of the final turn): one hook
+  // call per entry that landed, none for one that did not.
   Rig r;
+  r.adminChats = true;   // the reboot passes the caller rule
   Rig::Script s;
-  s.outJson = "{\"reply\":\"restarting\",\"ask\":\"\",\"memory\":\"\",\"device\":[{\"type\":\"reboot\"}],"
+  s.outJson = "{\"reply\":\"restarting\",\"ask\":\"\",\"device\":[{\"type\":\"reboot\"}],"
+              "\"scratchpad\":{\"active\":\"x\",\"short\":null,\"mid\":null,\"long\":null},"
               "\"mem_write\":[],\"mem_query\":[],\"session_ops\":[]}";
   r.scripts["anthropic"] = {s};
   r.eng->handleMessage("restart please", "", "1001");
   const orch::TurnEffects& fx = r.eng->turnEffects();
-  size_t want = 0;
-  for (size_t i = 0; i < fx.size(); ++i) want += orch::fx::recordsAsEffect(fx.at(i).kind) ? 1 : 0;
+  size_t want = 0, first = fx.size();
+  for (size_t i = 0; i < fx.size(); ++i)
+    if (fx.at(i).ok && orch::fx::recordsAsEffect(fx.at(i).kind)) {
+      want++;
+      first = std::min(first, i);
+    }
   TEST_ASSERT_TRUE(want >= 1);
   TEST_ASSERT_EQUAL((int)want, (int)r.effects.size());
   TEST_ASSERT_EQUAL_STRING("1001", r.effects[0][0].c_str());
-  TEST_ASSERT_EQUAL_STRING(orch::fx::effectReceipt(fx.at(0)).c_str(), r.effects[0][2].c_str());
+  TEST_ASSERT_EQUAL_STRING(orch::fxSlug(fx.at(first).kind), r.effects[0][1].c_str());
+  TEST_ASSERT_EQUAL_STRING(fx.at(first).ref, r.effects[0][2].c_str());
 }
 
 int main(int, char**) {

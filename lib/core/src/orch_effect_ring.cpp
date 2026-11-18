@@ -233,12 +233,6 @@ bool recordsAsEffect(FxKind k) {
          k != FxKind::kCount;
 }
 
-std::string effectReceipt(const Effect& e) {
-  TurnEffects one;
-  one.add(e.kind, e.ok, e.ref, e.count, e.flags);
-  return one.summary();
-}
-
 // ---- the ring ---------------------------------------------------------------------------------
 
 struct EffectRing::Slot {

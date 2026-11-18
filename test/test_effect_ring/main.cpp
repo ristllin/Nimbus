@@ -1125,14 +1125,6 @@ void test_every_kind_is_classed_for_the_hook() {
     const bool lookup = kind == FxKind::Read || kind == FxKind::SubSourced || kind == FxKind::SubUnsourced ||
                         kind == FxKind::MemPinNoop;
     TEST_ASSERT_EQUAL_MESSAGE(!lookup, fx::recordsAsEffect(kind), nimbus::orch::fxSlug(kind));
-    nimbus::orch::Effect e;
-    e.kind = kind;
-    e.ok = k % 2 == 0;
-    std::snprintf(e.ref, sizeof e.ref, "m1a2b3c4");
-    nimbus::orch::TurnEffects one;
-    one.add(e.kind, e.ok, e.ref, e.count, e.flags);
-    TEST_ASSERT_EQUAL_STRING(one.summary().c_str(), fx::effectReceipt(e).c_str());
-    TEST_ASSERT_FALSE(fx::effectReceipt(e).empty());
   }
   TEST_ASSERT_FALSE(fx::recordsAsEffect(nimbus::orch::FxKind::kCount));
 }

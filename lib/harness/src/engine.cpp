@@ -1103,14 +1103,15 @@ struct RunTurnLocals {
   std::string headModel;          // the head model the context budget is derived from
 };
 
-// Lane RB-FX: the outcomes apply recorded this turn (entries from `mark` on) go to the chat's
-// effect ring, each with the ledger's own summary of it. Out of line: runTurn's frame.
+// Lane RB-FX: the outcomes apply recorded this turn that landed (entries from `mark` on) go to
+// the chat's effect ring: the effect's slug and its reference (a memory id, a file name tail,
+// a job tag). A failure stays this turn's (TurnEffects). Out of line: runTurn's frame.
 __attribute__((noinline)) void reportApplyEffects(const Hooks& hooks, const orch::TurnEffects& fx,
                                                   const std::string& chatId, size_t mark) {
   if (!hooks.onEffect) return;
   for (size_t i = mark; i < fx.size(); ++i)
-    if (orch::fx::recordsAsEffect(fx.at(i).kind))
-      hooks.onEffect(chatId, orch::fxSlug(fx.at(i).kind), orch::fx::effectReceipt(fx.at(i)));
+    if (fx.at(i).ok && orch::fx::recordsAsEffect(fx.at(i).kind))
+      hooks.onEffect(chatId, orch::fxSlug(fx.at(i).kind), fx.at(i).ref);
 }
 }  // namespace
 

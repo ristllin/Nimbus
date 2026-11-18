@@ -179,8 +179,8 @@ struct Hooks {
   std::function<void(const nimbus::orch::HeadToolCall&)> onToolCall;
   std::function<void(const nimbus::orch::HeadToolResult&)> onToolResult;
   // Lane RB-FX: one effect of the turn landed or failed (a head tool call whose kind changes
-  // something, or an outcome apply recorded): the chat, the tool (or the effect's slug) and
-  // its result or summary. The device and nimbusd append it to the chat's effect ring.
+  // something, with its result; or an outcome apply recorded that landed, with its slug and
+  // reference). The device and nimbusd append it to the chat's effect ring.
   std::function<void(const std::string& chatId, const std::string& tool, const std::string& receipt)> onEffect;
   std::function<void(const ThinkingEv&)> onThinking;
   std::function<void(const TurnProgressEv&)> onTurnProgress;
