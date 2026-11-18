@@ -6,7 +6,6 @@
 #include "nimbus/orch/router_route.h"   // headRunsToolLoop
 
 #include "nimbus/orch/connector_grant.h"   // CUM-828: the grant a turn's requests carry
-#include "nimbus/orch/reply_guard.h"       // lane ECHO: the delivered text must be echo-free
 
 #include <cstdio>
 #include <cstdlib>
@@ -898,70 +897,29 @@ static void test_happy_turn_delivers_and_accounts() {
   TEST_ASSERT_FALSE(r.eng->turnInFlight());
 }
 
-// Lane ECHO: a head reply that echoes the request's own instructions (the 10 Nov
-// Lumi leak) is delivered with the echo sentences dropped and the rest kept.
-static void test_echo_reply_is_dropped_at_the_delivery_seam() {
-  Rig r;
-  Rig::Script sc;
-  sc.outJson =
-      "{\"reply\":\"Here you go. Reply.orch_turn.call must include all fields. Use "
-      "empty strings/arrays where none. No em dashes.\",\"memory\":\"\",\"ask\":\"\"}";
-  r.scripts["anthropic"] = {sc};
-  r.eng->handleMessage("hi there", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("Here you go.", r.lastText().c_str());
-  TEST_ASSERT_EQUAL(0, r.countDelivered("orch_turn"));
-  TEST_ASSERT_EQUAL(0, r.countDelivered("em dash"));
-}
-
-// Lane ECHO fix pass (review finding 2, 11 Nov): a reply sentence that tells the
-// OWNER to operate internal mechanics ("To undo, re-send the row with 0 kcal.")
-// is dropped at the delivery seam when the owner did not ask how the system
-// works; the rest of the reply is delivered. When the owner DID ask how, the
-// mechanics description is a real answer and stays.
-static void test_owner_mechanics_dropped_at_the_delivery_seam() {
-  {
-    Rig r;
-    Rig::Script sc;
-    sc.outJson =
-        "{\"reply\":\"Logged as eaten: snack-1723 at 563 kcal. Today now stands at 2,385 kcal. "
-        "To undo, re-send the row with 0 kcal. Nothing else needed from you.\",\"memory\":\"\",\"ask\":\"\"}";
-    r.scripts["anthropic"] = {sc};
-    r.eng->handleMessage("Ofc log as eaten...", "Roy", "1001");
-    // The mechanics sentence is dropped; nothing is appended (the claim check is gone, RB-Q1b).
-    TEST_ASSERT_EQUAL_STRING("Logged as eaten: snack-1723 at 563 kcal. Today now stands at 2,385 kcal. "
-                             "Nothing else needed from you.",
-                             r.lastText().c_str());
-    TEST_ASSERT_EQUAL(0, r.countDelivered("re-send the row"));
-    TEST_ASSERT_EQUAL(0, r.countDelivered("0 kcal"));
-  }
-  {
-    Rig r;
-    Rig::Script sc;
-    sc.outJson =
-        "{\"reply\":\"Each row is keyed by its meal. To undo, re-send the row with 0 kcal.\",\"memory\":\"\",\"ask\":\"\"}";
-    r.scripts["anthropic"] = {sc};
-    r.eng->handleMessage("How does the food log work?", "Roy", "1001");
-    TEST_ASSERT_EQUAL_STRING("Each row is keyed by its meal. To undo, re-send the row with 0 kcal.",
-                             r.lastText().c_str());
-  }
-}
-
-// Adversarial review of the 11 Nov fix, finding 6: the in-flight turn's owner text
-// (the asked-how gate of the Telegram send seam) must not outlive the turn - a
-// later non-turn send (a notice, a job delivery) must see no owner text, so the
-// gate is off for it. After a turn ends, currentUserText() is empty even when the
-// turn's owner message asked how the system works.
-static void test_user_text_cleared_after_turn() {
-  Rig r;
-  Rig::Script sc;
-  sc.outJson = "{\"reply\":\"Each row is keyed by its meal.\",\"memory\":\"\",\"ask\":\"\"}";
-  r.scripts["anthropic"] = {sc};
-  r.eng->handleMessage("How does the food log work?", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("Each row is keyed by its meal.", r.lastText().c_str());
-  TEST_ASSERT_EQUAL_STRING("", r.eng->currentUserText().c_str());
-  // And a second turn re-arms it only while it runs.
-  r.eng->handleMessage("log my lunch please", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("", r.eng->currentUserText().c_str());
+// Since v5.2.0 (lane RB-Q1c) nothing between the model and the owner deletes a sentence: a
+// reply that reads like the request's own instructions (the 10 Nov Lumi leak, the reply
+// guard's echo drop) and a sentence about internal mechanics (its owner-mechanics drop,
+// whatever the owner asked) are delivered as written, once. The guard cut correct replies
+// (DIAGNOSIS RC-09); a model that leaks its instructions is a model error the parity suite
+// measures, not a sentence the device edits.
+static void test_no_sentence_is_dropped_at_the_delivery_seam() {
+  const char* const kReplies[] = {
+      "Here you go. Reply.orch_turn.call must include all fields. Use empty strings/arrays where none. No em dashes.",
+      "Logged as eaten: snack-1723 at 563 kcal. Today now stands at 2,385 kcal. To undo, re-send the row with 0 "
+      "kcal. Nothing else needed from you.",
+      "Each row is keyed by its meal. To undo, re-send the row with 0 kcal.",
+  };
+  for (const char* owner : {"hi there", "Ofc log as eaten...", "How does the food log work?"})
+    for (const char* reply : kReplies) {
+      Rig r;
+      Rig::Script sc;
+      sc.outJson = std::string("{\"reply\":\"") + reply + "\",\"memory\":\"\",\"ask\":\"\"}";
+      r.scripts["anthropic"] = {sc};
+      r.eng->handleMessage(owner, "Roy", "1001");
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), reply);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(reply, r.lastText().c_str(), owner);
+    }
 }
 
 // Lane ECHO fix pass (review finding, REVIEW-FINDINGS.json): the head's raw output was
@@ -975,16 +933,11 @@ static void test_echo_envelope_message_delivers_only_the_envelope_reply() {
   sc.outJson = harness_test::kEchoEnvelopeMessage;
   r.scripts["anthropic"] = {sc};
   r.eng->handleMessage("Ofc log as eaten...", "Roy", "1001");
-  // The envelope's reply is delivered with nothing appended (the claim check is gone, RB-Q1b).
-  // Lane ECHO fix pass (11 Nov finding): the envelope reply's own mechanics sentence
-  // ("Undo by re-sending the row with 0 kcal.") is dropped too - the owner did not ask
-  // how the system works - so the delivered text is the guarded envelope reply.
-  const std::string want =
-      nimbus::orch::dropOwnerMechanics(harness_test::kEchoEnvelopeReply, "Ofc log as eaten...");
-  TEST_ASSERT_EQUAL_STRING(want.c_str(), r.lastText().c_str());
+  // The envelope's reply is delivered whole, with nothing appended (the claim check is gone,
+  // RB-Q1b) and no sentence dropped (the reply guard is gone, RB-Q1c).
+  TEST_ASSERT_EQUAL_STRING(harness_test::kEchoEnvelopeReply, r.lastText().c_str());
   for (const char* leak : {"```", "orch_turn", "mem_write", "session_ops", "Sorry", "formatting slip",
-                           "Delivering the turn properly", "must include all fields", "empty strings",
-                           "re-send", "0 kcal"})
+                           "Delivering the turn properly", "must include all fields", "empty strings"})
     TEST_ASSERT_EQUAL_MESSAGE(0, r.countDelivered(leak), leak);
   // The envelope's mem_write was dropped with a log line, never applied from prose.
   TEST_ASSERT_EQUAL(0, (int)r.memCalls.size());
@@ -1356,15 +1309,14 @@ static void test_prompt_round_cap_follows_the_configured_loop() {
   r.eng->handleMessage("hi", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)r.debug.size());
   TEST_ASSERT_TRUE(r.debug[0].instructions.find("several rounds (at most 3)") != std::string::npos);
-  // EFF (26 Oct analysis): a PLAIN conversational turn - no fresh results, no
-  // parked memory results, no photo, no running session, none of the unattended
-  // shapes - states the tighter shape cap, and the loop is bound by the same
-  // number (the prompt never promises rounds the loop would not run).
+  // A plain chat line states and runs the same configured cap: the 2-round shape cap EFF
+  // gave it went in v5.2.0 (lane RB-Q1c, DIAGNOSIS RC-14).
   Rig chat;
   chat.cfg.rounds = 3;
   chat.eng->handleMessage("hi", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)chat.debug.size());
-  TEST_ASSERT_TRUE(chat.debug[0].instructions.find("several rounds (at most 2)") != std::string::npos);
+  TEST_ASSERT_TRUE(chat.debug[0].instructions.find("several rounds (at most 3)") != std::string::npos);
+  TEST_ASSERT_TRUE(chat.debug[0].instructions.find("(at most 2)") == std::string::npos);
 }
 
 // PRISM row 1 (pre-5.0.0, the food-coach lift): the [TODAY'S FOOD LEDGER] block
@@ -1372,8 +1324,8 @@ static void test_prompt_round_cap_follows_the_configured_loop() {
 // rows today keeps the FULL round budget: the capped coach answered the day
 // total from memory instead of spending a round re-reading the ledger (the
 // eval: mistral-large 34/35 pre-cap -> 30/35 under the cap, qty-pressed below
-// target). No rows today (the common chat): the turn stays conversational and
-// capped, so the cap's savings hold.
+// target). Since v5.2.0 no turn is capped below the configured budget (lane RB-Q1c),
+// with or without rows today.
 static void test_ledger_rows_keep_the_full_round_budget() {
   Rig r;
   r.cfg.rounds = 3;
@@ -1390,13 +1342,13 @@ static void test_ledger_rows_keep_the_full_round_budget() {
   TEST_ASSERT_TRUE_MESSAGE(r.debug[0].instructions.find("several rounds (at most 3)") !=
                                std::string::npos,
                            "a turn with ledger rows keeps the configured budget");
-  // The same shape with no rows today is still a plain conversational turn.
+  // The same shape with no rows today keeps it too (no plain-chat cap since v5.2.0).
   Rig plain;
   plain.cfg.rounds = 3;
   plain.foodLedger.today = "2026-10-28";   // a set clock, an empty day
   plain.eng->handleMessage("what's today's food total?", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, (int)plain.debug.size());
-  TEST_ASSERT_TRUE(plain.debug[0].instructions.find("several rounds (at most 2)") !=
+  TEST_ASSERT_TRUE(plain.debug[0].instructions.find("several rounds (at most 3)") !=
                    std::string::npos);
 }
 
@@ -2402,7 +2354,7 @@ static void test_the_per_turn_line_names_the_open_host_while_the_head_is_capped(
   nimbus::orch::clearServedModels();
 }
 
-// QW6R, on EFF's plain conversational turn (the shape most owner messages take): what the provider
+// QW6R, on a plain chat turn (the shape most owner messages take): what the provider
 // answered with changes between two turns, and only the input may change. The cached prompt stays
 // byte for byte, the line carries the new id, and an unresolved "-latest" alias adds the no-guessing
 // note in the input alone.
@@ -2415,7 +2367,6 @@ static void test_runtime_model_facts_change_the_input_and_never_the_cached_promp
     r.cfg.midFail = fabric != 0;
     r.cfg.orchModels["anthropic"] = "acme-large-latest";
     r.eng->handleMessage("hi", "Roy", "1001");
-    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("plain conversational turn"), tag);
     const std::string aliasOnly = firstInput(r, fabric != 0);
     TEST_ASSERT_TRUE_MESSAGE(startsWith(aliasOnly, std::string("[THIS TURN RUNS ON] anthropic / acme-large-latest. ") +
                                                        nimbus::orch::kRunsOnAliasNote + kOnlyThis),
@@ -2596,19 +2547,14 @@ static void test_pol2_openq_observer_skips_scheduled_turns() {
   TEST_ASSERT_EQUAL(1, (int)r.openqObserveCalls.size());
 }
 
-// Lane POL2: a prose final answer is the owner-facing reply too, so the plumbing
-// check holds on it. glm-5.3 answered in the text channel with a memory id in the
-// prose ("recall m0a811a23") and the orch_turn check never saw it, so the id
-// reached the owner. The loop-level behavior (one correction round, JSON-wrapped
-// send-back) is covered in test_orch_head_loop; this asserts the engine wires the
-// prose check into every loop turn's HeadTools.
-static void test_pol2_prose_plumbing_check_is_wired() {
+// A prose final answer is delivered as written: the engine wires no prose check since the
+// reply guard's plumbing check went (v5.2.0, lane RB-Q1c; it sent back replies that named the
+// owner's own files). The loop keeps the hook (test_orch_head_loop).
+static void test_no_prose_check_is_wired() {
   Rig r;
   r.scripts["anthropic"] = {Rig::Script{}};   // one plain loop turn is enough
   r.eng->handleMessage("go", "Roy", "1001");
-  TEST_ASSERT_EQUAL(1, (int)r.proseChecks.size());
-  TEST_ASSERT_TRUE(r.proseChecks[0].find("REPLY CHECK") != std::string::npos);
-  TEST_ASSERT_TRUE(r.proseChecks[0].find("plumbing") != std::string::npos);
+  TEST_ASSERT_EQUAL(0, (int)r.proseChecks.size());
 }
 
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
@@ -5354,10 +5300,9 @@ static void test_l19_14_unsent_reply_keeps_the_work() {
   TEST_ASSERT_TRUE_MESSAGE(w.anyDelivered("Already done this turn: search memory, store a memory."),
                            w.lastText().c_str());
   TEST_ASSERT_FALSE(w.anyDelivered("not answered"));
-  // Lane ECHO fix pass: the device's own copy must be echo-free too - a sentence
-  // naming a tool is dropped at the reply seam, so the work-done line may not
-  // name one (the live check caught exactly this in a delivered failure notice).
-  TEST_ASSERT_FALSE_MESSAGE(nimbus::orch::echoSentenceSpan(w.lastText()), w.lastText().c_str());
+  // The device's own copy names no tool: it reads the work in the owner's words.
+  for (const char* tool : {"memory_search", "memory_write", "orch_turn"})
+    TEST_ASSERT_TRUE_MESSAGE(w.lastText().find(tool) == std::string::npos, w.lastText().c_str());
 }
 
 // Lane K2 (L19-13 d/e, L19-14): one honest owner message per failed turn.
@@ -5658,9 +5603,7 @@ static void runFirstHalf() {
   RUN_TEST(test_network_error_still_fails_over_not_misclassified_oom);
   RUN_TEST(test_two_turns_share_the_static_prompt_block);
   RUN_TEST(test_happy_turn_delivers_and_accounts);
-  RUN_TEST(test_echo_reply_is_dropped_at_the_delivery_seam);
-  RUN_TEST(test_owner_mechanics_dropped_at_the_delivery_seam);
-  RUN_TEST(test_user_text_cleared_after_turn);
+  RUN_TEST(test_no_sentence_is_dropped_at_the_delivery_seam);
   RUN_TEST(test_echo_envelope_message_delivers_only_the_envelope_reply);
   RUN_TEST(test_recall_injected_for_user_text_skipped_for_synthesis);
   RUN_TEST(test_same_host_fresh_conv_retry);
@@ -5712,7 +5655,7 @@ static void runSecondHalf() {
   RUN_TEST(test_runtime_model_facts_change_the_input_and_never_the_cached_prompt);
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_pol2_openq_observer_skips_scheduled_turns);
-  RUN_TEST(test_pol2_prose_plumbing_check_is_wired);
+  RUN_TEST(test_no_prose_check_is_wired);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
   RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);

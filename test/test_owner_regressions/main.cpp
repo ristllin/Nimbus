@@ -40,7 +40,6 @@
 #endif
 #include "nimbus/orch/owner_prefs.h"
 #include "nimbus/orch/provider_park.h"
-#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/sub_provenance.h"
 #include "nimbus/orch/turn_effects.h"
@@ -231,16 +230,6 @@ void test_oir_12_grams_convert_through_kcal100() {
   TEST_ASSERT_TRUE(p.lines[0].kcal < 300);   // never the gram figure itself
 }
 
-// OIR-13/OIR-21: a "next turn" promise is detected and carries a correction line.
-void test_oir_13_later_promise_tracked() {
-  size_t b = 0, e = 0;
-  const std::string reply = "I'll finish the calculation and update the log next turn.";
-  TEST_ASSERT_TRUE(laterPromiseSpan(reply, &b, &e));
-  TEST_ASSERT_TRUE(e > b);
-  TEST_ASSERT_FALSE(std::string(kLaterPromiseLine).empty());
-  TEST_ASSERT_FALSE(laterCorrection(reply.substr(b, e - b)).empty());
-}
-
 // OIR-14: yesterday's rows never enter today's total (465, not 2,989).
 void test_oir_14_day_rollover() {
   const std::string ex = std::string(kLedgerHeader) +
@@ -420,14 +409,6 @@ void test_oir_36_rules_full_makes_room() {
                     int(p.add("Always assume the whole pack unless I say otherwise", PrefOrigin::Chat, 2,
                               false, &id, &evicted)));
   TEST_ASSERT_FALSE(evicted.empty());
-}
-
-// OIR-37: plumbing (artifact paths, memory ids) is detected and corrected.
-void test_oir_37_plumbing() {
-  const std::string t = "Stored as commute-brief/result-job0009.md (memory m84cc98c8), read back confirmed.";
-  TEST_ASSERT_TRUE(hasPlumbing(t));
-  TEST_ASSERT_FALSE(plumbingCheckText(t).empty());
-  TEST_ASSERT_FALSE(hasPlumbing("Here is your commute brief."));
 }
 
 // OIR-39: a standing rule with a stop marker ("never ask about duolingo") blocks the
@@ -894,7 +875,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_09_total_includes_every_row);
   RUN_TEST(test_oir_10_target_needs_source);
   RUN_TEST(test_oir_12_grams_convert_through_kcal100);
-  RUN_TEST(test_oir_13_later_promise_tracked);
   RUN_TEST(test_oir_14_day_rollover);
   RUN_TEST(test_oir_15_label_cross_column);
   RUN_TEST(test_oir_16_near_match_is_not_a_food_match);
@@ -911,7 +891,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_31_cross_day_recall);
   RUN_TEST(test_oir_33_raw_dump_capped);
   RUN_TEST(test_oir_36_rules_full_makes_room);
-  RUN_TEST(test_oir_37_plumbing);
   RUN_TEST(test_oir_39_never_ask_blocks_the_routine);
   RUN_TEST(test_oir_40_queued_message_deferred_not_dropped);
   RUN_TEST(test_oir_41_mistral_connector_scope);

@@ -5,7 +5,6 @@
 #include <set>
 
 #include "nimbus/orch/caps.h"
-#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/reply_markup.h"
 
 namespace agent {
@@ -237,20 +236,13 @@ const char kUnreadableNothingSalvaged[] =
     "out. Ask again.";
 
 SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail,
-                               bool reportedCut, orch::LaterWork behind,
-                               const std::string& ownerText) {
+                               bool reportedCut) {
   SalvageOutcome o;
   orch::Salvage sv;
   orch::salvageTurnText(raw, sv);
   const bool truncated = parseDetail.find("truncated") != std::string::npos;
-  // Lane ECHO fix pass: the echo drop AND the owner-mechanics drop both run on
-  // salvaged text - a cut answer is still an answer the owner reads.
-  std::string text =
-      orch::dropOwnerMechanics(orch::dropEchoSentences(orch::cleanReplyMarkup(sv.reply)), ownerText);
-  const std::string ask =
-      sv.askComplete ? orch::dropOwnerMechanics(orch::dropEchoSentences(orch::cleanReplyMarkup(sv.ask)),
-                                                ownerText)
-                     : std::string();
+  std::string text = orch::cleanReplyMarkup(sv.reply);
+  const std::string ask = sv.askComplete ? orch::cleanReplyMarkup(sv.ask) : std::string();
   if (!ask.empty()) text += (text.empty() ? "" : "\n") + ask;
   if (isPlaceholderReply(text)) text.clear();   // filler is nothing salvaged
   o.cut = reportedCut || truncated || (!sv.reply.empty() && !sv.replyComplete);
@@ -260,8 +252,6 @@ SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseD
   }
   o.salvaged = true;
   o.text = o.cut ? text + "\n\n" + orch::kSalvageCutMarker : text;
-  // This path skips apply: a promise in the kept text gets its line here.
-  if (orch::laterPromiseSpan(text, nullptr, nullptr, behind)) o.text += std::string("\n\n") + orch::kLaterPromiseLine;
   return o;
 }
 

@@ -281,28 +281,24 @@ static void test_tts_action_gated_by_owner_toggle() {
   TEST_ASSERT_EQUAL_STRING("hello", r2.spoken[0].c_str());
 }
 
-// Lane ECHO (adversarial review of the 11 Nov fix, finding 5): the speaker is a
-// reply seam too. A tts text that carries an echo sentence or an owner-mechanics
-// sentence ("To undo, re-send the row with 0 kcal.") must never be voiced - the
-// owner hears it. No owner text on the state (a non-owner turn): the asked-how
-// gate is off, so both drops apply.
-static void test_tts_text_is_guarded_at_the_speaker() {
+// The speaker is a reply seam: markup is cleaned and every sentence the model wrote is voiced.
+// The reply guard dropped echo and owner-mechanics sentences here (lane ECHO); that went in
+// v5.2.0 with the guard (lane RB-Q1c), so what the owner hears is what the model wrote.
+static void test_tts_text_is_voiced_whole_at_the_speaker() {
   Rec r;
   ApplyDeps d = makeDeps(r, /*tts=*/true);
   ApplyState st = makeState(r);
   bool spawned = false;
   agent::applyTurn(turnWithDevice("{\"tts\":\"All logged. To undo, re-send the row with 0 kcal. "
-                                  "Reply.orch_turn.call must include all fields.\"}"),
+                                  "No new topics.\"}"),
                    "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
-  TEST_ASSERT_EQUAL_STRING("All logged.", r.spoken[0].c_str());
-  TEST_ASSERT_TRUE(r.spoken[0].find("re-send the row") == std::string::npos);
-  TEST_ASSERT_TRUE(r.spoken[0].find("orch_turn") == std::string::npos);
-  // A clean tts text is voiced byte-exact.
+  TEST_ASSERT_EQUAL_STRING("All logged. To undo, re-send the row with 0 kcal. No new topics.", r.spoken[0].c_str());
+  // Markup is still cleaned: reasoning is never voiced.
   Rec r2;
   ApplyDeps d2 = makeDeps(r2, /*tts=*/true);
   ApplyState st2 = makeState(r2);
-  agent::applyTurn(turnWithDevice("{\"tts\":\"Dinner is logged.\"}"), "1001", d2, st2, spawned);
+  agent::applyTurn(turnWithDevice("{\"tts\":\"<think>plan</think>Dinner is logged.\"}"), "1001", d2, st2, spawned);
   TEST_ASSERT_EQUAL_STRING("Dinner is logged.", r2.spoken[0].c_str());
 }
 
@@ -320,8 +316,8 @@ static void test_tts_text_over_the_bound_is_cut_and_said() {
   agent::applyTurn(t, "1001", d, st, spawned);
   TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
   TEST_ASSERT_EQUAL(400, (int)r.spoken[0].size());
-  TEST_ASSERT_EQUAL_STRING("Here it is.\n\n(Note: the spoken version was shortened to the first 400 of its "
-                           "900 characters.)",
+  TEST_ASSERT_EQUAL_STRING("Here it is.\n\nNote: the spoken version was shortened to the first 400 of its "
+                           "900 characters.",
                            r.delivered[0].second.c_str());
   TEST_ASSERT_EQUAL_STRING(r.spoken[0].c_str(), r.captured[0].c_str());   // history: what was voiced
   // A text that fits is voiced whole, with no note.
@@ -1063,8 +1059,8 @@ static Turn replyTurn(const char* reply) {
 
 // The device's own note on a reply whose tts was not voiced (apply.cpp noteUnspoken). Since
 // RB-Q1b it is the only line about speech: the claim check's "(Correction: that was not
-// spoken aloud.)" is gone.
-static const char kUnspokenLead[] = "\n\n(Note: that could not be spoken aloud: ";
+// spoken aloud.)" is gone. A device line since RB-Q1c (ruling 34): "Note: ..." on its own line.
+static const char kUnspokenLead[] = "\n\nNote: that could not be spoken aloud (";
 
 static bool startsWith(const std::string& s, const std::string& p) { return s.rfind(p, 0) == 0; }
 
@@ -1225,7 +1221,7 @@ static void test_tts_at_volume_zero_is_not_spoken() {
   TEST_ASSERT_EQUAL(0, (int)r.spoken.size());
   TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: the speaker volume is 0, so speech would play as silence)"));
   TEST_ASSERT_EQUAL_STRING((std::string("I read it aloud for you.") + kUnspokenLead +
-                            "the speaker volume is 0, so speech would play as silence.)").c_str(),
+                            "the speaker volume is 0, so speech would play as silence).").c_str(),
                            out.c_str());
   TEST_ASSERT_EQUAL(0, cc.effects().countOk(nimbus::orch::FxKind::Speak));
   TEST_ASSERT_EQUAL(1, cc.effects().countFailed(nimbus::orch::FxKind::Speak));
@@ -1265,7 +1261,7 @@ static void test_tts_sink_failure_is_not_spoken() {
   const std::string out = applyChecked(r, d, t, cc);
   TEST_ASSERT_EQUAL(1, (int)r.spoken.size());
   TEST_ASSERT_EQUAL_STRING(
-      (std::string("Spoken.") + kUnspokenLead + "text-to-speech failed: the voice provider is paused.)").c_str(),
+      (std::string("Spoken.") + kUnspokenLead + "text-to-speech failed: the voice provider is paused).").c_str(),
       out.c_str());
   TEST_ASSERT_TRUE(LogCapture::contains("tts(not-spoken: text-to-speech failed: the voice provider is paused)"));
   TEST_ASSERT_EQUAL(1, (int)r.captured.size());
@@ -1330,8 +1326,8 @@ static void test_tts_voice_claims_are_checked_against_what_happened() {
       {"I read it aloud.", true, false, ""},
       {"I read it aloud.", false, true, ""},
       {"I sent you a voice message.", false, true, ""},
-      {"I read it aloud.", false, false, "the speaker is marked faulty.)"},
-      {"I sent you a voice message.", false, false, "the speaker is marked faulty.)"},
+      {"I read it aloud.", false, false, "the speaker is marked faulty)."},
+      {"I sent you a voice message.", false, false, "the speaker is marked faulty)."},
   };
   for (const Row& row : rows) {
     Rec r;
@@ -1448,7 +1444,7 @@ static void test_tts_only_turn_that_was_not_spoken_delivers_the_text() {
                    spawned);
   TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
   TEST_ASSERT_TRUE(r.delivered[0].second.find("The kettle is ready.") != std::string::npos);
-  TEST_ASSERT_TRUE(r.delivered[0].second.find("could not be spoken aloud: the speaker volume is 0") !=
+  TEST_ASSERT_TRUE(r.delivered[0].second.find("could not be spoken aloud (the speaker volume is 0") !=
                    std::string::npos);
   // History holds what the owner got in its place (the next turn can answer "what did you say?").
   TEST_ASSERT_EQUAL(1, (int)r.captured.size());
@@ -1493,7 +1489,7 @@ static void test_tts_only_turn_that_was_not_spoken_delivers_the_text() {
 // Independent review: the text of a failed tts-only turn goes out as the turn's message, with
 // the device's note (or the caller rule's line) and nothing made from its words (RB-Q1b).
 static void test_the_text_of_a_failed_tts_only_turn_gets_the_claim_check() {
-  const std::string note = "\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)";
+  const std::string note = "\n\nNote: that could not be spoken aloud (the speaker volume is 0, so speech would play as silence).";
   const std::string rule = "\nOnly the device's owner can speak aloud on the device.";
   struct Row { const char* chat; const char* text; std::string want; };
   const Row rows[] = {
@@ -1541,8 +1537,8 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
     Ledger cc;
     cc.beginTurn();
     const std::string out = applyChecked(r, d, t, cc);
-    const std::string want = std::string(reply) + "\n\n(Note: that could not be spoken aloud: the speaker "
-                                                  "volume is 0, so speech would play as silence.)";
+    const std::string want = std::string(reply) + "\n\nNote: that could not be spoken aloud (the speaker "
+                                                  "volume is 0, so speech would play as silence).";
     TEST_ASSERT_EQUAL_STRING_MESSAGE(want.c_str(), out.c_str(), reply);
     TEST_ASSERT_EQUAL_STRING_MESSAGE(out.c_str(), r.captured[0].c_str(), reply);   // history = what was delivered
   }
@@ -1557,7 +1553,7 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
     Ledger cc;
     cc.beginTurn();
     TEST_ASSERT_EQUAL_STRING_MESSAGE((std::string(claim) + kUnspokenLead +
-                                      "the speaker volume is 0, so speech would play as silence.)").c_str(),
+                                      "the speaker volume is 0, so speech would play as silence).").c_str(),
                                      applyChecked(r, d, t, cc).c_str(), claim);
   }
   // A question alone carries it too; a routine says nothing (it was silent before).
@@ -1569,7 +1565,7 @@ static void test_a_failed_tts_beside_any_reply_tells_the_owner() {
   ApplyState stAsk = makeState(ask);
   bool spawned = false;
   agent::applyTurn(tAsk, "1001", dAsk, stAsk, spawned);
-  TEST_ASSERT_EQUAL_STRING("Shall I read it again?\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)",
+  TEST_ASSERT_EQUAL_STRING("Shall I read it again?\n\nNote: that could not be spoken aloud (the speaker volume is 0, so speech would play as silence).",
                            ask.delivered[0].second.c_str());
   Rec sched;
   sched.volume = 0;
@@ -1614,8 +1610,8 @@ static void test_the_shortened_note_never_goes_out_alone() {
   t.reply = "Briefing.";
   bool spawned = false;
   agent::applyTurn(t, "1001", d, st, spawned);
-  TEST_ASSERT_EQUAL_STRING("Briefing.\n\n(Note: the spoken version was shortened to the first 400 of its 900 "
-                           "characters.)",
+  TEST_ASSERT_EQUAL_STRING("Briefing.\n\nNote: the spoken version was shortened to the first 400 of its 900 "
+                           "characters.",
                            r.delivered[0].second.c_str());
 }
 
@@ -2612,7 +2608,7 @@ int main(int, char**) {
   RUN_TEST(test_risk_note_delivered_even_without_reply);
   RUN_TEST(test_protected_config_never_reaches_exec);
   RUN_TEST(test_tts_action_gated_by_owner_toggle);
-  RUN_TEST(test_tts_text_is_guarded_at_the_speaker);
+  RUN_TEST(test_tts_text_is_voiced_whole_at_the_speaker);
   RUN_TEST(test_tts_text_over_the_bound_is_cut_and_said);
   RUN_TEST(test_tts_cut_never_splits_a_character);
   RUN_TEST(test_tts_cut_prefers_a_sentence_end);

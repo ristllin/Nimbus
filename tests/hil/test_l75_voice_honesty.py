@@ -14,7 +14,7 @@ Legs (the head is the LAN mock unless noted, so the replies are fixed and cost n
 
   T1  volume 0: a reply that says it read the text aloud, with a ``tts`` action behind it. The
       speaker would play silence, so nothing is synthesized, the log says ``tts(not-spoken: ...)``
-      and the delivered reply carries the device's note "(Note: that could not be spoken aloud: ...)"
+      and the delivered reply carries the device's note "Note: that could not be spoken aloud (...)."
       with the reason (since v5.2.0, lane RB-Q1b, no claim line is appended: the note is the
       device's record of its own action, not a reading of the reply).
   T2  a turn whose only output is that ``tts`` delivers the text with the reason, not silence.
@@ -69,7 +69,7 @@ pytestmark = [pytest.mark.hil, pytest.mark.net, pytest.mark.agent]
 # The claim check's line before v5.2.0; it must never be appended now (lane RB-Q1b).
 SPOKEN_LINE = "(Correction: that was not spoken aloud.)"
 # The device's own note on a reply whose tts was not voiced (apply.cpp noteUnspoken).
-UNSPOKEN_LEAD = "\n\n(Note: that could not be spoken aloud: "
+UNSPOKEN_LEAD = "\n\nNote: that could not be spoken aloud ("
 VOLUME_ZERO = "tts(not-spoken: the speaker volume is 0, so speech would play as silence)"
 BAD_CHAT = "1"  # a chat id Telegram does not know: the upload is refused for real
 LIVE_TURN_TIMEOUT_S = 180.0
@@ -81,7 +81,7 @@ TTS_PROVIDER = os.environ.get("NIMBUS_L75_TTS", "mistral")
 DEVICE_TTS_RE = re.compile(r"orchestrator: device\[(tts[^\]]*)\]")
 TG_FALLBACK_RE = re.compile(r"tts\(telegram message_id (\d+)\)")
 SEND_OK_RE = re.compile(r"telegram: sendAudio ok \(message_id (\d+), (\d+) bytes\)")
-SHORTENED_RE = re.compile(r"\(Note: the spoken version was shortened to the first (\d+) of its (\d+) characters\.\)")
+SHORTENED_RE = re.compile(r"Note: the spoken version was shortened to the first (\d+) of its (\d+) characters\.")
 TURN_END_RE = re.compile(r"turn end: \w+ host=(\w+)")
 STARTING_ON_RE = re.compile(r"(?:orchestrator|fabric): (\w+) is parked \((\w+)\)(?: -)? starting on (\w+)")
 
@@ -300,7 +300,7 @@ def test_t1_a_spoken_claim_at_volume_zero_carries_the_device_note(voice_settings
     )
     assert not [ln for ln in log if re.search(r"tts: (mistral|openai) wrote", ln)], "text was synthesized at volume 0"
     assert reply == (
-        "I read it aloud for you." + UNSPOKEN_LEAD + "the speaker volume is 0, so speech would play as silence.)"
+        "I read it aloud for you." + UNSPOKEN_LEAD + "the speaker volume is 0, so speech would play as silence)."
     ), reply
     assert SPOKEN_LINE not in reply and _tailed(be) == 0, reply
     print(f"[T1] PASS {reply!r}")
@@ -316,7 +316,7 @@ def test_t2_a_tts_only_turn_that_was_not_spoken_delivers_the_text(voice_settings
             print(f"[T2 debug] {ln[:200]}")
         raise
     assert "The bench kettle is ready." in reply, reply
-    assert "could not be spoken aloud: the speaker volume is 0" in reply, reply
+    assert "could not be spoken aloud (the speaker volume is 0" in reply, reply
     print(f"[T2] PASS {reply!r}")
 
 
@@ -332,7 +332,7 @@ def test_t6_a_failed_tts_is_reported_whatever_the_reply_says(voice_settings, tur
     # carries the device's reason, which only the volume-0 refusal produces.)
     assert (
         reply
-        == f"{spoken}\n\n(Note: that could not be spoken aloud: the speaker volume is 0, so speech would play as silence.)"
+        == f"{spoken}\n\nNote: that could not be spoken aloud (the speaker volume is 0, so speech would play as silence)."
     ), reply
     assert SPOKEN_LINE not in reply, f"a claim line since v5.2.0: {reply!r}"
     print(f"[T6] PASS {turn}: {reply!r}")

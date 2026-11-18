@@ -3,7 +3,6 @@
 #include <vector>
 
 #include "nimbus/orch/head_loop.h"
-#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/turn.h"
 
 // turn_contract - the engine's half of the turn-contract fixes (lane L):
@@ -81,12 +80,9 @@ struct SalvageOutcome {
   bool salvaged = false;   // text came from the answer itself
   bool cut = false;
 };
-// `behind`: what stands behind a promise in the kept text (reply_guard.h).
-// `ownerText`: the owner's message this turn answers - the asked-how gate for
-// the owner-mechanics drop (reply_guard.h); "" when the turn has no owner text.
-SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail, bool reportedCut,
-                               nimbus::orch::LaterWork behind = nimbus::orch::LaterWork::None,
-                               const std::string& ownerText = std::string());
+// Every sentence of the salvaged text is kept (v5.2.0, lane RB-Q1c: no sentence drop and no
+// later-promise line); only markup is cleaned.
+SalvageOutcome salvageForOwner(const std::string& raw, const std::string& parseDetail, bool reportedCut);
 // True when the whole reply is template filler. `ownerText`: a word the owner's own
 // message holds is an answer ("Say the word placeholder").
 bool isPlaceholderReply(const std::string& reply, const std::string& ownerText = std::string());

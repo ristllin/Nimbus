@@ -61,9 +61,7 @@
 #include <esp_app_desc.h>    // the running image's ELF hash: the guard record's build id
 #include "../sys/poll_watch.h"   // lane TGSTALL: the poll task's liveness beats
 #include <time.h>
-#include "nimbus/tg_html.h"   // v4.1.1: markdown -> Telegram HTML (plain fallback below)
-#include "nimbus/orch/reply_markup.h"   // lane L: cleanReplyMarkup at the Telegram seam
-#include "nimbus/orch/reply_guard.h"    // lane ECHO: dropEchoSentences at the Telegram seam
+#include "nimbus/orch/deliver_text.h"   // lane RB-Q1c: the one deliver function (sanitise, split, HTML)
 #include "nimbus/orch/spend_guard.h"    // lane QW4: noteHttpDateHeader - a time base without NTP
 
 #define TG_HOST "api.telegram.org"
@@ -77,8 +75,8 @@ namespace {
 struct PendingReply {
   char    chatId[32];
   char    text[4097];   // ONE Telegram message: 4096 chars max + NUL. Long turn
-                        // replies / sub-agent results are split into numbered (k/N)
-                        // parts by send() BEFORE they reach this buffer - never truncated.
+                        // replies / sub-agent results are split into parts of at most
+                        // kTelegramPartBytes by send() BEFORE they reach this buffer.
   uint8_t tries;        // resend attempts so far (transient TLS failures)
 };
 
@@ -180,11 +178,10 @@ static constexpr int  REPLY_QUEUE_DEPTH    = 16;
 static constexpr int  INBOUND_QUEUE_DEPTH   = 8;
 static constexpr int  MAX_LINE             = 512;
 static constexpr int  MAX_RESP             = 4096;
-// Long-reply splitting (Telegram caps one message at 4096 chars). send() breaks a
-// longer reply / sub-agent result into numbered "(k/N) " parts of TG_CHUNK content
-// chars each; TG_MAX_PARTS bounds one logical reply (~32 KB) so a runaway output
+// Long-reply splitting (Telegram caps one message at 4096 chars): send() queues the parts the
+// deliver function cuts (nimbus::orch::splitDeliverable, at most kTelegramPartBytes each, the
+// text byte for byte). TG_MAX_PARTS bounds one logical reply (~32 KB) so a runaway output
 // can't flood the queue - the overflow is flagged in-message, never silently cut.
-static constexpr int  TG_CHUNK             = 4000;
 static constexpr int  TG_MAX_PARTS         = 8;
 static constexpr uint32_t CONNECT_TIMEOUT  = 10000;  // ms
 
@@ -1276,41 +1273,34 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
   return strstr(resp, "\"ok\":true") != nullptr;
 }
 
-// v4.1.1: messages go out as parse_mode=HTML (the model writes markdown; the
-// portable nimbus::tgHtml converter maps **bold** / *italic* / `code` / ``` /
-// headings / links / bullet lines and escapes everything else) - previously
-// every reply reached the owner with literal asterisks. FALLBACK: if Telegram
-// rejects the entities, the ORIGINAL text is resent plain. Formatting may
-// degrade; a reply is never lost.
-// Delivery only: the reply-queue drain calls this for parts send() already observed
-// and archived whole; every other text goes through sendNow.
-static bool doSendMessageImpl(const char* chatId, const char* text, int64_t replyTo) {
-  // Defense in depth (lane L, formatting F4): every Telegram send - turn replies,
-  // reply.telegram, loop deliveries, notices - passes the reply seam, so no
-  // reasoning, tool-call markup or wrapper tag reaches the chat even from a path
-  // the engine did not clean. Idempotent: an engine-cleaned reply is unchanged.
-  // Lane ECHO fix pass: the owner-mechanics drop rides the same seam, gated on
-  // the in-flight turn's owner text (the asked-how exception).
-  const std::string ownerText = orchestrator::currentUserText().c_str();
-  const std::string clean = nimbus::orch::dropOwnerMechanics(
-      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(text ? text : "")), ownerText);
-  const std::string html = nimbus::tgHtml(clean);
-  bool ok = doSendMessageRaw(chatId, html.c_str(), /*htmlMode=*/true, replyTo);
+// One Telegram message out, as the deliver function makes it (lane RB-Q1c,
+// nimbus/orch/deliver_text.h): `part` is already deliverable text of at most one
+// part, sent as parse_mode=HTML (the model writes markdown; tgHtml maps **bold** /
+// *italic* / `code` / ``` / headings / links / bullet lines and escapes everything
+// else). FALLBACK: if Telegram rejects the entities, the same part is resent plain.
+// Formatting may degrade; the text never does. Nothing is removed from or added to
+// the part here: the reply guard's sentence deletion at this seam is gone (v5.2.0).
+static bool doSendMessageImpl(const char* chatId, const char* part, int64_t replyTo) {
+  const nimbus::orch::TelegramPart p = nimbus::orch::telegramPart(part ? part : "");
+  bool ok = doSendMessageRaw(chatId, p.html.c_str(), /*htmlMode=*/true, replyTo);
   if (!ok) {
     alogf("telegram: html send rejected - resending plain to %s", chatId);
-    ok = doSendMessageRaw(chatId, clean.c_str(), /*htmlMode=*/false, replyTo);
+    ok = doSendMessageRaw(chatId, p.plain.c_str(), /*htmlMode=*/false, replyTo);
   }
   alogf("telegram: send %s to %s", ok ? "ok" : "FAIL", chatId);
   return ok;
 }
 
-bool doSendMessage(const char* chatId, const char* text) { return doSendMessageImpl(chatId, text, 0); }
+// Delivery only: the reply-queue drain calls this for parts send() already made.
+static bool doSendMessage(const char* chatId, const char* part) { return doSendMessageImpl(chatId, part, 0); }
 
 // A short notice the poll task sends at once, bypassing the reply queue (the voice
-// note path). Archived like every outbound send.
+// note path). Archived like every outbound send, and made deliverable like every reply
+// (the device writes these notices short: one part).
 static bool sendNow(const char* chatId, const char* text, int64_t replyTo = 0) {
   agent::tgarchive::onOutboundText(String(chatId), String(text ? text : ""), "direct");   // archive hook
-  return doSendMessageImpl(chatId, text, replyTo);
+  const std::string clean = nimbus::orch::deliverableText(text ? text : "");
+  return doSendMessageImpl(chatId, clean.c_str(), replyTo);
 }
 
 // ---- voice notes (LIVE-GATED + BENCH-BROKEN) --------------------------------
@@ -3137,35 +3127,27 @@ bool send(const String& chatId, const String& text, bool block) {
   // queue. block=false: never wait - best-effort for the main render loop.
   const TickType_t wait = block ? pdMS_TO_TICKS(100) : 0;
 
-  const int n = (int)text.length();
+  // The deliver function (lane RB-Q1c): the text made safe to display, cut into parts of
+  // at most kTelegramPartBytes that are the text byte for byte (nimbusd sends the same
+  // parts). Nothing to send is no message.
+  const std::vector<std::string> parts =
+      nimbus::orch::splitDeliverable(nimbus::orch::deliverableText(text.c_str()));
   PsramItem<PendingReply> item;   // the queue copies it; PSRAM, not this (often deep) stack
   if (!item.p) return false;
   PendingReply& r = *item.p;
-  if (n <= TG_CHUNK) {                      // fits one Telegram message - the common path
-    chatId.toCharArray(r.chatId, sizeof(r.chatId));
-    text.toCharArray(r.text, sizeof(r.text));
-    return xQueueSend(g_replyQ, &r, wait) == pdTRUE;
-  }
-
-  // Long reply (sub-agent result / big turn): split into numbered "(k/N) " parts so
-  // nothing is silently truncated. Bounded by TG_MAX_PARTS; if the output would need
-  // more, the final part carries a visible "(truncated)" marker rather than a silent cut.
-  int parts = (n + TG_CHUNK - 1) / TG_CHUNK;
-  bool overflow = parts > TG_MAX_PARTS;
-  if (overflow) parts = TG_MAX_PARTS;
-  bool allOk = true;
-  for (int k = 0; k < parts; k++) {
+  // Bounded by TG_MAX_PARTS; if the output would need more, the last part sent carries a
+  // visible "(truncated)" marker rather than a silent cut.
+  const bool overflow = parts.size() > (size_t)TG_MAX_PARTS;
+  const size_t n = overflow ? (size_t)TG_MAX_PARTS : parts.size();
+  static const char kOverflow[] = "\n…(truncated - ask for the rest, or have it sent as a file)";
+  for (size_t k = 0; k < n; k++) {
     memset(&r, 0, sizeof(r));   // not `r = PendingReply{}`: that temporary would sit on the stack
     chatId.toCharArray(r.chatId, sizeof(r.chatId));
-    char hdr[16];
-    snprintf(hdr, sizeof(hdr), "(%d/%d) ", k + 1, parts);
-    String body = String(hdr) + text.substring(k * TG_CHUNK, (k + 1) * TG_CHUNK);
-    if (overflow && k == parts - 1)
-      body += "\n…(truncated - ask for the rest, or have it sent as a file)";
-    body.toCharArray(r.text, sizeof(r.text));   // body <= 4000 + short prefix/suffix < 4096
-    if (xQueueSend(g_replyQ, &r, wait) != pdTRUE) { allOk = false; break; }
+    // A part is at most kTelegramPartBytes (4,000 B) and the marker 66 B: both fit the slot.
+    snprintf(r.text, sizeof(r.text), "%s%s", parts[k].c_str(), overflow && k == n - 1 ? kOverflow : "");
+    if (xQueueSend(g_replyQ, &r, wait) != pdTRUE) return false;
   }
-  return allOk;
+  return true;
 }
 
 // ⚠ UNSAFE while tg_poll is live: this deletes g_replyQ but does NOT join the

@@ -229,7 +229,7 @@ struct HeadLoopConfig {
   // forward it. Null => no check, byte-identical to before.
   std::function<std::string(const std::string& finalTurn)> validateFinal;
   // The check that holds on the forced final round too, where validateFinal does not
-  // run: an answer that is not one (template filler, reply_guard.h) gets ONE more
+  // run: an answer that is not one (template filler, turn_contract.h) gets ONE more
   // tool-less round, with the text as the result of its orch_turn call. Separate from
   // validateFinal's budget: at most once per turn. Null => no check.
   std::function<std::string(const std::string& finalTurn)> forcedFinalCheck;

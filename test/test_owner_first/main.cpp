@@ -459,15 +459,11 @@ static void test_bounded_turn_token_bound_through_the_loop() {
   r.bounded();
   TEST_ASSERT_EQUAL_INT(3, r.calls[0].requests);
   TEST_ASSERT_TRUE(r.calls[0].replayBytes <= 2 * (2048 + 64));
+  // An owner turn under the same model is not bounded: a plain chat line runs the
+  // configured loop like any other turn (the 2-round plain-chat cap went in v5.2.0, lane
+  // RB-Q1c), so this never-satisfied model gets more than the bounded turn's 3 requests.
   r.eng->handleMessage("hi", "Roy", "1001");
-  // EFF (26 Oct analysis): a PLAIN conversational owner turn now carries its own
-  // small budget - 2 tool rounds + the forced final, so exactly 3 requests from
-  // this never-satisfied model. That is NOT the system turn's TurnBounds leaking
-  // (the loop still runs with tools; a bounded turn on a fallback head is the
-  // single-shot case pinned below) - it is the conversational shape cap.
-  TEST_ASSERT_EQUAL_INT(3, r.calls.back().requests);
-  // A WORK-shaped owner turn (fresh results folded in) keeps the configured
-  // loop: the shape cap never trims a turn that carries live data.
+  TEST_ASSERT_TRUE(r.calls.back().requests > 3);
   r.jobs->addFreshResult("job0000", "modelX", "findings");
   r.eng->handleMessage("and the results?", "Roy", "1001");
   TEST_ASSERT_TRUE(r.calls.back().requests > 3);   // a work turn keeps the configured loop

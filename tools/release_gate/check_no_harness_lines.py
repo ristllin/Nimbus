@@ -31,25 +31,11 @@ ENVS = ("esp32s3", "esp32s3-cyd", "test", "test-cyd")
 LEADS = (b"(Correction", b"(Note")
 
 # The texts an image may still hold, by their start. Owner: the lane that deletes it, or
-# "device" for a line that states the device's own record of its own action (not a reading
-# of the reply's words), which stays in the closed list of device-written lines (PRD goal 2).
-ALLOWED = (
-    {
-        "text": "(Note: nothing is running for that, so it will not continue on its own. Ask again to continue.)",
-        "owner": "RB-Q1c",
-        "why": "the reply guard's later-promise line (orch_reply_guard.cpp kLaterPromiseLine); RB-Q1c deletes it",
-    },
-    {
-        "text": "(Note: that could not be spoken aloud: ",
-        "owner": "device",
-        "why": "apply.cpp noteUnspoken: the tts action the turn asked for did not play, with the device's reason",
-    },
-    {
-        "text": "(Note: the spoken version was shortened to the first ",
-        "owner": "device",
-        "why": "orch_voice_notes.cpp: the device cut the text it voiced to the speech bound",
-    },
-)
+# "device" for a line that states the device's own record of its own action. Empty since
+# RB-Q1c deleted the reply guard's later-promise line and reworded the two speech notes into
+# the plain device-line form ("Note: ...", no parenthesis; ruling 34): an entry may only be
+# added back with an orchestrator ruling.
+ALLOWED: "tuple[dict, ...]" = ()   # empty since RB-Q1c (v5.2.0): no image holds such a line
 
 
 def found_lines(blob: bytes) -> "list[str]":

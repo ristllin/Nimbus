@@ -72,3 +72,17 @@ def test_the_real_images_hold_no_reply_check_line():
     if not images:
         pytest.skip("no built device image in this tree (CI gate-logic job): the battery's citools leg reads them")
     assert gate.problems(images) == []
+
+
+def test_the_real_list_is_empty():
+    """Since RB-Q1c (ruling 34) no image may hold a '(Correction' or '(Note' line at all."""
+    assert gate.ALLOWED == ()
+
+
+def test_the_device_line_form_passes_and_the_old_form_fails():
+    """The reworded speech notes ('Note: ...' on their own line) are not reply-check lines; the old
+    parenthesised form is one again (counter-test for the rewording)."""
+    new = _image("Here it is.\n\nNote: that could not be spoken aloud (the speaker volume is 0).")
+    assert gate.problems({"cyd": new}) == []
+    old = _image("Here it is.\n\n(Note: that could not be spoken aloud: the speaker volume is 0.)")
+    assert gate.problems({"cyd": old})

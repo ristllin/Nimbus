@@ -312,8 +312,8 @@ SpeechCut cutForSpeech(const std::string& text, size_t maxBytes) {
 }
 
 std::string speechShortenedNote(const SpeechCut& cut) {
-  return "(Note: the spoken version was shortened to the first " + groupedNumber(cut.spokenChars) +
-         " of its " + groupedNumber(cut.totalChars) + " characters.)";
+  return "Note: the spoken version was shortened to the first " + groupedNumber(cut.spokenChars) +
+         " of its " + groupedNumber(cut.totalChars) + " characters.";
 }
 
 std::string speakTooLongText(size_t chars) {

@@ -6,7 +6,6 @@
 
 #include "nimbus/orch/body_budget.h"   // bodyBudgetError - the wire's refusal of a body over budget
 #include "nimbus/orch/head_loop.h"
-#include "nimbus/orch/reply_guard.h"
 #include "nimbus/orch/transcript.h"
 
 using namespace nimbus::orch;
@@ -824,7 +823,13 @@ static void test_prose_final_is_never_checked() {
 // orch_turn, and the rejected prose returns wrapped as an orch_turn call whose
 // arguments ARE JSON, so every provider's replay stays well-formed. A clean prose
 // answer costs nothing, and a model that leaks again after its one round is
-// delivered as prose (no thrash).
+// delivered as prose (no thrash). The device wires no prose check since the reply
+// guard's plumbing check went (v5.2.0, lane RB-Q1c); the loop's hook is held here with a
+// stand-in check, for a later check that may use it.
+static std::string standInProseCheck(const std::string& prose) {
+  return prose.find("m0a811a23") == std::string::npos ? std::string() : std::string("plumbing: a memory id");
+}
+
 static void test_prose_final_check_corrects_plumbing_once() {
   Fake f;
   HeadStep leak =
@@ -834,7 +839,7 @@ static void test_prose_final_check_corrects_plumbing_once() {
   Transcript tr;
   tr.addUser("go");
   HeadLoopConfig cfg;
-  cfg.validateProseFinal = [](const std::string& prose) { return plumbingCheckText(prose); };
+  cfg.validateProseFinal = standInProseCheck;
   HeadLoopHooks h = f.hooks();
   h.transcript = &tr;
   HeadOutcome o = runHeadLoop(cfg, h);

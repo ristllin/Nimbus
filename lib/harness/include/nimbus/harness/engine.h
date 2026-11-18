@@ -331,9 +331,6 @@ class TurnEngine {
     // The prompt as this fabric's requests send it, for a request refitted inside a head's own
     // loop (the hosted Virtual Nimbus rewrites its device wording). Unwired = as composed.
     std::function<std::string(const std::string& instructions)> requestPrompt;
-    // A routine or wakeup is set for this chat (a promise to report back has something
-    // behind it). Unwired = none.
-    std::function<bool(const std::string& chatId)> standingWork;
     // Lane POL2: observe a completed owner-facing turn for the open-question list
     // (open_questions.h observeOpenQ: a reply that mentions an item marks it
     // raised, the owner's message re-opens or withdraws one). The chat rides along
@@ -532,10 +529,6 @@ class TurnEngine {
   bool externalContentSeen() const { return externalContentSeen_; }
   const std::string& lastInstructions() const { return lastInstructions_; }
   const std::string& currentChat() const { return curChat_; }
-  // Lane ECHO fix pass: the owner's message of the in-flight turn (capped), so
-  // the send seam can apply the asked-how gate of the owner-mechanics drop.
-  // Turn-scoped: empty whenever no turn is in flight (cleared at turn end).
-  const std::string& currentUserText() const { return curUserText_; }
   // A mid-loop reply.telegram/reply.speak already answered THIS turn's chat -
   // applyTurn then suppresses its bare "Done." fallback (device sendToChat
   // reports it here). The reply reached the owner, so the fire spoke too.
@@ -700,7 +693,6 @@ class TurnEngine {
   volatile bool turnInFlight_ = false;
   volatile uint32_t turnStartMs_ = 0;   // nowMs() at TurnGuard ctor (stuck-turn reaper)
   std::string curChat_;                 // routing chatId of the in-flight turn
-  std::string curUserText_;             // lane ECHO: the in-flight turn's owner text (capped)
   volatile bool toolReplied_ = false;   // a mid-loop reply already answered this turn
   // CUM-826: the one "spoke" fact of a fire - model text reached the owner (apply's
   // delivery or speech, a salvaged answer, a tool's send), set only after the hand-over
@@ -714,7 +706,6 @@ class TurnEngine {
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
-  bool routineRecurs_ = false;          // that turn is a run of a routine that will run again
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
   bool selfWakeupTurn_ = false;         // a self-wakeup record is firing: no tools, one short turn

@@ -69,7 +69,6 @@ E1_SOURCES = {
         "lib/core/src/orch_head_loop.cpp",
         "lib/core/src/orch_provider_caps.cpp",
         "lib/core/src/orch_provider_park.cpp",
-        "lib/core/src/orch_reply_guard.cpp",
         "lib/core/src/orch_spend_ceiling.cpp",
         "lib/core/src/orch_transcript.cpp",
         "lib/core/src/orch_turn.cpp",

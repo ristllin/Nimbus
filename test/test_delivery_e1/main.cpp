@@ -21,7 +21,9 @@
 // apply, over a scripted transport.
 #include <unity.h>
 
+#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <set>
@@ -33,8 +35,10 @@
 #include "../support/fake_platform.h"
 #include "../support/fake_provider_deps.h"
 #include "nimbus/harness/engine.h"
-#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer
+#include "nimbus/harness/turn_contract.h"   // kEmptyAnswer, salvageForOwner
+#include "nimbus/orch/deliver_text.h"         // the send seam (lane RB-Q1c)
 #include "nimbus/orch/journal.h"
+#include "nimbus/tg_html.h"
 
 namespace {
 
@@ -160,6 +164,18 @@ const Case kCases[] = {
     {"a cause the owner reported earlier", "my phone's Telegram app keeps crashing",
      "That sounds frustrating.", "why did my photo not arrive?",
      "Your phone's Telegram app was crashing earlier, so the photo may not have been sent."},
+    // The reply guard's classes (lane RB-Q1c): each was a correct reply the guard cut or sent back.
+    {"how to undo, in the owner's words (the owner-mechanics drop)", "", "", "log 2 eggs for breakfast",
+     "Logged 2 eggs, 180 kcal. To undo, set the kcal field to 0 and send the row again."},
+    {"advice that reads like a rule (the echo drop)", "", "", "any tips for my conference bio?",
+     "Three tips. Concise. No em dashes. Lead with what you build."},
+    {"a file the owner keeps, by its name (the plumbing check)", "make me a packing list", "Done.",
+     "where did you put my packing list?", "It is in travel/packing.md, with 14 items."},
+    {"a promise of later work with a routine behind it", "remind me about the train every morning",
+     "Set for 06:30 every day.", "will you check the train tomorrow?",
+     "Yes. I'll check the 7:10 tomorrow at 06:30 and tell you here."},
+    {"numbers and their arithmetic", "the label says 120 kcal per 100 g", "Noted.", "I ate 360 g, what is that?",
+     "3.6 x 120 kcal = 432 kcal. The day is now at 1,968 of 2,400 kcal, 432 kcal to go."},
 };
 
 std::vector<orch::EpisodicMessage> readRows(const std::vector<orch::EpisodicMessage>& rows,
@@ -384,10 +400,317 @@ static void test_the_seam_never_loses_a_turn() {
   }
 }
 
+// The plain-chat cap of 2 tool rounds is gone (lane RB-Q1c, RC-14): a chat line takes the
+// rounds it needs within the turn's round budget, like any other turn. The 1 Nov hosted case
+// needed three; five shows there is no smaller cap left. Every wire.
+static void test_a_plain_chat_turn_takes_the_rounds_it_needs() {
+  for (const char* host : kWires)
+    for (int tools : {3, 5}) {
+      Rig r(host);
+      for (int i = 0; i < tools; i++) r.script(ok(host, toolBody(host)));
+      r.script(ok(host, finalBody(host, "We are at step four of six; the oven is preheating.")));
+      r.eng->handleMessage("so where are we at?", "Roy", "1001");
+      char what[96];
+      snprintf(what, sizeof what, "%s, %d tool rounds", host, tools);
+      TEST_ASSERT_EQUAL_MESSAGE(tools + 1, (int)r.requests(), what);
+      TEST_ASSERT_EQUAL_MESSAGE(tools, r.dispatched, what);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), what);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("We are at step four of six; the oven is preheating.",
+                                       r.delivered[0].second.c_str(), what);
+      TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("plain conversational turn"), what);
+    }
+}
+
+// Counter-test: the turn's round budget still holds for a chat line. A model that never stops
+// calling tools gets the configured rounds and then the tool-less final round, and the owner
+// still gets one message.
+static void test_the_round_budget_still_holds_for_a_chat_line() {
+  for (const char* host : kWires) {
+    Rig r(host);
+    r.cfg.rounds = 3;
+    for (int i = 0; i < 3; i++) r.script(ok(host, toolBody(host)));
+    r.script(ok(host, finalBody(host, "Here is what I have so far.")));
+    r.eng->handleMessage("so where are we at?", "Roy", "1001");
+    TEST_ASSERT_EQUAL_MESSAGE(4, (int)r.requests(), host);
+    TEST_ASSERT_EQUAL_MESSAGE(3, r.dispatched, host);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), host);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Here is what I have so far.", r.delivered[0].second.c_str(), host);
+  }
+}
+
+// The placeholder check the old engine keeps (turn_contract.h, RB-Q1a): a forced final round
+// that writes filler is sent back once, and filler twice ends in the failure line, never the
+// filler.
+static void test_a_forced_final_round_of_filler_is_still_caught() {
+  for (const char* host : kWires) {
+    Rig r(host);
+    r.cfg.rounds = 2;
+    for (int i = 0; i < 2; i++) r.script(ok(host, toolBody(host)));
+    r.script(ok(host, finalBody(host, "placeholder")));
+    r.script(ok(host, finalBody(host, "placeholder")));
+    r.eng->handleMessage("so where are we at?", "Roy", "1001");
+    TEST_ASSERT_EQUAL_MESSAGE(4, (int)r.requests(), host);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), host);
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].second.find("didn't finish") != std::string::npos,
+                             r.delivered[0].second.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].second.find("placeholder") == std::string::npos,
+                             r.delivered[0].second.c_str());
+  }
+}
+
+// The salvage path (an answer cut short or unreadable, delivered without apply) keeps every
+// sentence the model wrote: no later-promise line, no sentence dropped. Only the cut marker,
+// exactly when the answer was cut.
+static void test_a_salvaged_answer_keeps_every_sentence() {
+  const char* text = "I'll finish the rest next turn. To undo, re-send the row with 0 kcal.";
+  const agent::SalvageOutcome cut =
+      agent::salvageForOwner(std::string("{\"reply\":\"") + text + "\"", "truncated", true);
+  TEST_ASSERT_EQUAL_STRING((std::string(text) + "\n\n" + orch::kSalvageCutMarker).c_str(), cut.text.c_str());
+  const agent::SalvageOutcome whole =
+      agent::salvageForOwner(std::string("{\"reply\":\"") + text + "\",\"memory\":", "unreadable", false);
+  TEST_ASSERT_EQUAL_STRING(text, whole.text.c_str());
+}
+
+// ---- the send seam: the one deliver function the device and nimbusd call (lane RB-Q1c) ----
+
+// Every word of `want` (runs of letters and digits), in order, inside `got`.
+static bool wordsInOrder(const std::string& want, const std::string& got) {
+  size_t at = 0;
+  for (size_t i = 0; i < want.size();) {
+    if (!isalnum((unsigned char)want[i])) {
+      i++;
+      continue;
+    }
+    size_t j = i;
+    while (j < want.size() && isalnum((unsigned char)want[j])) j++;
+    at = got.find(want.substr(i, j - i), at);
+    if (at == std::string::npos) return false;
+    at += j - i;
+    i = j;
+  }
+  return true;
+}
+
+// What the chat shows for a Telegram HTML body: tags out, the four entities back.
+static std::string shown(const std::string& html) {
+  std::string out;
+  for (size_t i = 0; i < html.size(); i++) {
+    if (html[i] == '<') {
+      const size_t e = html.find('>', i);
+      if (e == std::string::npos) break;
+      i = e;
+      continue;
+    }
+    if (html[i] == '&') {
+      static const char* const kEnt[][2] = {{"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", "\""}};
+      bool hit = false;
+      for (const auto& en : kEnt)
+        if (html.compare(i, strlen(en[0]), en[0]) == 0) {
+          out += en[1];
+          i += strlen(en[0]) - 1;
+          hit = true;
+          break;
+        }
+      if (hit) continue;
+    }
+    out += html[i];
+  }
+  return out;
+}
+
+// "" when Telegram would accept `html` as parse_mode=HTML: every '<' opens or closes one of the
+// tags tgHtml writes, closes nest, nothing stays open, and every '&' starts an entity.
+static std::string htmlRefusal(const std::string& html) {
+  std::vector<std::string> open;
+  for (size_t i = 0; i < html.size(); i++) {
+    if (html[i] == '&') {
+      const size_t semi = html.find(';', i);
+      if (semi == std::string::npos || semi - i > 6) return "a bare &";
+      continue;
+    }
+    if (html[i] == '>') return "a bare >";
+    if (html[i] != '<') continue;
+    const size_t e = html.find('>', i);
+    if (e == std::string::npos) return "an unclosed <";
+    std::string tag = html.substr(i + 1, e - i - 1);
+    const bool close = !tag.empty() && tag[0] == '/';
+    if (close) tag = tag.substr(1);
+    const std::string name = tag.substr(0, tag.find(' '));
+    if (name != "b" && name != "i" && name != "code" && name != "pre" && name != "a") return "a <" + name + "> tag";
+    if (close) {
+      if (open.empty() || open.back() != name) return "a stray </" + name + ">";
+      open.pop_back();
+    } else {
+      open.push_back(name);
+    }
+    i = e;
+  }
+  return open.empty() ? std::string() : "an unclosed <" + open.back() + ">";
+}
+
+// The reply guard deleted sentences at this seam (dropEchoSentences, dropOwnerMechanics): every
+// class reply now reaches Telegram whole, as one part, its plain text the reply byte for byte.
+static void test_the_send_seam_sends_every_sentence() {
+  for (const Case& c : kCases) {
+    const std::vector<orch::TelegramPart> parts = orch::deliverText(c.reply);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)parts.size(), c.cls);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.reply, parts[0].plain.c_str(), c.cls);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(nimbus::tgHtml(c.reply).c_str(), parts[0].html.c_str(), c.cls);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.reply, shown(parts[0].html).c_str(), c.cls);
+  }
+}
+
+// Markup Telegram would refuse is made safe (escaped, or converted only when it pairs), never
+// dropped with its sentence: every word the model wrote is shown, and the HTML is accepted.
+static void test_markup_telegram_would_refuse_is_made_safe() {
+  const char* const kTexts[] = {
+      "Use <b>bold here and a < b & c > d. The rest stays.",
+      "**half open and `tick. Then a second sentence.",
+      "<script>alert(1)</script> is shown as text. So is </i> a stray close.",
+      "[click](javascript:alert(1)) stays text. Only a web link converts.",
+      "A <provider> tag, List<String> and <3 stay. Fish & chips: 850 kcal.",
+      "```\nif (a < b) { return \"<x>\"; }\n```\nThe code above compares.",
+      "*almost italic\nacross lines* stays literal. _snake_case_ too.",
+      "Caf\xC3\xA9 at 3 \xE2\x82\xAC, soup \xF0\x9F\x8D\xB2 and 120 kcal/100 g.",
+  };
+  for (const char* t : kTexts) {
+    const std::vector<orch::TelegramPart> parts = orch::deliverText(t);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)parts.size(), t);
+    const std::string why = htmlRefusal(parts[0].html);
+    TEST_ASSERT_TRUE_MESSAGE(why.empty(), (why + ": " + parts[0].html).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(wordsInOrder(t, shown(parts[0].html)), parts[0].html.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(t, parts[0].plain.c_str(), t);   // the plain resend is the text
+  }
+  // A web link converts, its address escaped inside the tag.
+  const std::vector<orch::TelegramPart> link = orch::deliverText("See [docs](https://example.com/a?b=1&c=2) now.");
+  TEST_ASSERT_TRUE_MESSAGE(htmlRefusal(link[0].html).empty(), link[0].html.c_str());
+  TEST_ASSERT_EQUAL_STRING("See docs now.", shown(link[0].html).c_str());
+  // The sanitiser is the one content transform: tool-call markup and reasoning go, the
+  // sentences around them stay whole.
+  const std::vector<orch::TelegramPart> m =
+      orch::deliverText("<think>plan the reply</think>Logged 2 eggs. <tool_call>{\"name\":\"x\"}</tool_call>Anything else?");
+  TEST_ASSERT_EQUAL(1, (int)m.size());
+  TEST_ASSERT_TRUE_MESSAGE(wordsInOrder("Logged 2 eggs. Anything else?", m[0].plain), m[0].plain.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(m[0].plain.find("plan the reply") == std::string::npos, m[0].plain.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(m[0].plain.find("tool_call") == std::string::npos, m[0].plain.c_str());
+  TEST_ASSERT_TRUE(htmlRefusal(m[0].html).empty());
+}
+
+// A long reply is split into parts Telegram takes, none lost or duplicated: the parts are the
+// text byte for byte, each at most kTelegramPartBytes, cut at a line where one is near, never
+// inside a UTF-8 character, and nothing (no "(k/N)" header) is added to them.
+static void test_a_long_reply_is_split_without_a_byte_lost_or_added() {
+  std::string lines;
+  for (int i = 0; i < 400; ++i) lines += "Line " + std::to_string(i) + ": the boat is the Nereid II.\n";
+  std::string accents;
+  for (int i = 0; i < 3000; ++i) accents += i % 3 ? "\xC3\xA9" : "\xE2\x82\xAC";   // no space to cut at
+  std::string paras;
+  for (int i = 0; i < 60; ++i) paras += "Paragraph " + std::to_string(i) + std::string(120, 'x') + ".\n\n";
+  for (const std::string* t : {&lines, &accents, &paras}) {
+    const std::vector<std::string> parts = orch::splitDeliverable(*t);
+    TEST_ASSERT_TRUE(parts.size() > 1);
+    std::string joined;
+    for (const std::string& p : parts) {
+      TEST_ASSERT_TRUE(p.size() <= orch::kTelegramPartBytes);
+      TEST_ASSERT_FALSE_MESSAGE(((unsigned char)p[0] & 0xC0) == 0x80, "a part starts inside a character");
+      const unsigned char last = (unsigned char)p.back();
+      TEST_ASSERT_FALSE_MESSAGE(last >= 0xC0, "a part ends with a character's lead byte");
+      joined += p;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(joined == *t, "the parts are not the text");
+  }
+  for (const std::string& p : orch::splitDeliverable(lines)) TEST_ASSERT_EQUAL('\n', p.back());
+  for (const std::string& p : orch::splitDeliverable(paras))
+    TEST_ASSERT_TRUE(p.size() >= 2 && p.compare(p.size() - 2, 2, "\n\n") == 0);
+  // The whole pipeline: one Telegram part per split part, each plain text that part.
+  const std::vector<orch::TelegramPart> tp = orch::deliverText(lines);
+  const std::vector<std::string> sp = orch::splitDeliverable(lines);
+  TEST_ASSERT_EQUAL(sp.size(), tp.size());
+  for (size_t i = 0; i < sp.size(); i++) TEST_ASSERT_EQUAL_STRING(sp[i].c_str(), tp[i].plain.c_str());
+  // Nothing to send is no message; a run of blanks alone is never a message of its own.
+  TEST_ASSERT_EQUAL(0, (int)orch::deliverText("").size());
+  TEST_ASSERT_EQUAL(0, (int)orch::deliverText("  \n ").size());
+  const std::vector<std::string> gap = orch::splitDeliverable("a" + std::string(9000, ' ') + "b", 4000);
+  std::string gapText;
+  for (const std::string& p : gap) {
+    TEST_ASSERT_TRUE(p.find_first_not_of(' ') != std::string::npos);
+    gapText += p;
+  }
+  TEST_ASSERT_EQUAL('a', gapText.front());
+  TEST_ASSERT_EQUAL('b', gapText.back());
+}
+
+// A part is sent as it is, not sanitised again: a word the whole text kept (a literal
+// "<reply>" in the middle) stays when a cut puts it at the start of a part.
+static void test_a_part_is_not_sanitised_again() {
+  const std::string text = std::string(3995, 'x') + " <reply> is the tag the old model wrote.";
+  const std::vector<orch::TelegramPart> parts = orch::deliverText(text);
+  TEST_ASSERT_EQUAL(2, (int)parts.size());
+  TEST_ASSERT_EQUAL_STRING("<reply> is the tag the old model wrote.", parts[1].plain.c_str());
+  TEST_ASSERT_TRUE(parts[1].html.find("&lt;reply&gt;") == 0);
+}
+
+static std::string slurp(const char* path) {
+  std::string src;
+  FILE* f = std::fopen(path, "rb");
+  if (!f) return src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  return src;
+}
+
+// The body of the function that `sig` opens: from the signature to the first line that is "}".
+static std::string bodyOf(const std::string& src, const char* sig) {
+  const size_t at = src.find(sig);
+  if (at == std::string::npos) return std::string();
+  const size_t end = src.find("\n}\n", at);
+  return src.substr(at, end == std::string::npos ? std::string::npos : end - at);
+}
+
+// The device's seam and the daemon's are this deliver function (a pin: both are Arduino or
+// socket code that cannot run here): the device splits the deliverable text when it queues a
+// reply and sends each part's HTML with the part as the plain resend; the daemon sends what
+// deliverText makes. No sentence filter is left on any send path.
+static void test_the_device_and_the_daemon_send_through_the_deliver_function() {
+  const std::string dev = slurp("src/agent/telegram.cpp");
+  TEST_ASSERT_FALSE_MESSAGE(dev.empty(), "src/agent/telegram.cpp not readable");
+  const std::string send = bodyOf(dev, "bool send(const String& chatId, const String& text, bool block)");
+  TEST_ASSERT_TRUE_MESSAGE(send.find("nimbus::orch::splitDeliverable(nimbus::orch::deliverableText(") !=
+                               std::string::npos,
+                           "send() must queue the deliver function's parts");
+  const std::string impl = bodyOf(dev, "static bool doSendMessageImpl(");
+  TEST_ASSERT_TRUE_MESSAGE(impl.find("nimbus::orch::telegramPart(") != std::string::npos,
+                           "the drain must send the deliver function's part");
+  TEST_ASSERT_TRUE_MESSAGE(impl.find("tgHtml(") == std::string::npos && impl.find("cleanReplyMarkup(") == std::string::npos,
+                           "the send seam converts only through the deliver function");
+  const std::string hosted = slurp("nimbusd/src/telegram.h");
+  TEST_ASSERT_FALSE_MESSAGE(hosted.empty(), "nimbusd/src/telegram.h not readable");
+  TEST_ASSERT_TRUE_MESSAGE(hosted.find("nimbus::orch::deliverText(") != std::string::npos,
+                           "nimbusd must send the deliver function's parts");
+  for (const char* path : {"src/agent/telegram.cpp", "nimbusd/src/telegram.h", "lib/harness/src/engine.cpp",
+                           "lib/harness/src/apply.cpp", "lib/harness/src/jobs.cpp", "lib/harness/src/turn_contract.cpp"}) {
+    const std::string src = slurp(path);
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), path);
+    for (const char* gone : {"dropEchoSentences", "dropOwnerMechanics", "reply_guard.h", "laterPromiseSpan"})
+      TEST_ASSERT_TRUE_MESSAGE(src.find(gone) == std::string::npos, (std::string(path) + " holds " + gone).c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_correct_reply_is_delivered_once_unchanged_on_every_path);
   RUN_TEST(test_consecutive_turns_deliver_one_message_each);
   RUN_TEST(test_the_seam_never_loses_a_turn);
+  RUN_TEST(test_a_plain_chat_turn_takes_the_rounds_it_needs);
+  RUN_TEST(test_the_round_budget_still_holds_for_a_chat_line);
+  RUN_TEST(test_a_forced_final_round_of_filler_is_still_caught);
+  RUN_TEST(test_a_salvaged_answer_keeps_every_sentence);
+  RUN_TEST(test_the_send_seam_sends_every_sentence);
+  RUN_TEST(test_markup_telegram_would_refuse_is_made_safe);
+  RUN_TEST(test_a_long_reply_is_split_without_a_byte_lost_or_added);
+  RUN_TEST(test_a_part_is_not_sanitised_again);
+  RUN_TEST(test_the_device_and_the_daemon_send_through_the_deliver_function);
   return UNITY_END();
 }

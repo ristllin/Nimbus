@@ -7,7 +7,7 @@
 #include "daemon_config.h"
 #include "nimbus/harness/http.h"
 #include "nimbus/telegram_offset.h"
-#include "nimbus/tg_html.h"   // CUM-995 (lane MD51): markdown -> Telegram HTML, device parity
+#include "nimbus/orch/deliver_text.h"   // lane RB-Q1c: the device's deliver function (sanitise, split, HTML)
 #include "nimbus/tg_updates.h"
 #include "posix_fs.h"
 
@@ -102,29 +102,23 @@ class TelegramChannel {
     return true;
   }
 
-  // Send a message to a chat. CUM-995 (lane MD51), device parity with
-  // telegram.cpp v4.1.1: the text goes out as parse_mode=HTML - nimbus::tgHtml
-  // converts the markdown subset (**bold**, *italic*, `code`, ``` blocks,
-  // headings, links, bullet lines) and entity-escapes everything else, so a
-  // model reply can never inject markup. If Telegram rejects the entities
-  // (a 400), the ORIGINAL text is resent plain: formatting may degrade, a
-  // reply is never lost. Returns false + err only when both sends fail.
+  // Send a message to a chat, as the device sends it (lane RB-Q1c): the one deliver
+  // function (nimbus/orch/deliver_text.h) makes the text safe to display, cuts it into
+  // parts Telegram takes (a long reply is several messages, the text byte for byte) and
+  // renders each part as parse_mode=HTML (CUM-995, lane MD51: tgHtml converts the markdown
+  // subset and entity-escapes everything else, so a model reply can never inject markup).
+  // If Telegram rejects a part's entities (a 400), that part is resent plain: formatting
+  // may degrade, the text never does. Returns false + err when a part failed both ways
+  // (the parts after it are still tried, so one bad part never loses the rest).
   bool sendMessage(const std::string& chatId, const std::string& text, std::string& err) {
-    const std::string html = nimbus::tgHtml(text);
-    const std::string body = std::string("{\"chat_id\":") + jsonNum(chatId) +
-                             ",\"text\":" + jsonQuote(html) + ",\"parse_mode\":\"HTML\"}";
-    agent::HttpResponse resp;
-    if (call("sendMessage", body, resp, err) && resp.status == 200) return true;
-    const std::string firstErr =
-        err.empty() ? "sendMessage HTTP " + std::to_string(resp.status) : err;
-    const std::string plain = std::string("{\"chat_id\":") + jsonNum(chatId) +
-                              ",\"text\":" + jsonQuote(text) + "}";
-    agent::HttpResponse resp2;
-    std::string err2;
-    if (call("sendMessage", plain, resp2, err2) && resp2.status == 200) return true;
-    err = err2.empty() ? firstErr : err2;
-    if (err.empty()) err = "sendMessage HTTP " + std::to_string(resp2.status);
-    return false;
+    bool all = true;
+    for (const nimbus::orch::TelegramPart& p : nimbus::orch::deliverText(text)) {
+      std::string e;
+      if (sendPart(chatId, p, e)) continue;
+      all = false;
+      if (err.empty()) err = e;
+    }
+    return all;
   }
 
   // The typing indicator (lane PROG): Telegram shows it ~5 s, so a long turn's
@@ -169,6 +163,24 @@ class TelegramChannel {
   int32_t offset() const { return offset_; }
 
  private:
+  // One part: as HTML, and when Telegram refuses that, the same part plain.
+  bool sendPart(const std::string& chatId, const nimbus::orch::TelegramPart& p, std::string& err) {
+    const std::string body = std::string("{\"chat_id\":") + jsonNum(chatId) +
+                             ",\"text\":" + jsonQuote(p.html) + ",\"parse_mode\":\"HTML\"}";
+    agent::HttpResponse resp;
+    if (call("sendMessage", body, resp, err) && resp.status == 200) return true;
+    const std::string firstErr =
+        err.empty() ? "sendMessage HTTP " + std::to_string(resp.status) : err;
+    const std::string plain = std::string("{\"chat_id\":") + jsonNum(chatId) +
+                              ",\"text\":" + jsonQuote(p.plain) + "}";
+    agent::HttpResponse resp2;
+    std::string err2;
+    if (call("sendMessage", plain, resp2, err2) && resp2.status == 200) return true;
+    err = err2.empty() ? firstErr : err2;
+    if (err.empty()) err = "sendMessage HTTP " + std::to_string(resp2.status);
+    return false;
+  }
+
   bool call(const std::string& method, const std::string& jsonBody,
             agent::HttpResponse& resp, std::string& err, uint32_t timeoutMs = 30000) {
     if (!http_) { err = "no transport"; return false; }

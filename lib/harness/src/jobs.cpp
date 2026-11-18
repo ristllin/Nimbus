@@ -25,7 +25,6 @@
 #include "nimbus/orch/seam_meter.h"     // kSessionInputEstimateTokens - a stopped job unread (lane QW4)
 #include "nimbus/orch/spend_guard.h"    // helpersStoppedText (lane QW4)
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup - the owner fallback is a reply seam
-#include "nimbus/orch/reply_guard.h"    // lane ECHO: dropEchoSentences - the fallback is a reply seam too
 #include "nimbus/orch/router_route.h"  // resolveRouterRoute - a keyless spawn's router selector
 #include "nimbus/orch/usage_ledger.h"   // cheapestByEffectivePrice - the ledger's price (CUM-708)
 #include "nimbus/orch/vector_memory.h"  // nsForChat - the sub-agent result owner
@@ -632,18 +631,12 @@ std::string JobEngine::ownerResultsText() const { return ownerText(nullptr); }
 std::string JobEngine::ownerResultsText(const FreshScope& s) const { return ownerText(&s); }
 
 // One fresh result's body for the raw fallback. The fallback is a reply seam too:
-// a sub-agent's markup never reaches the owner. Lane ECHO fix pass: same for a
-// sentence telling the owner to operate internals (no owner text here - a sub-agent
-// turn has none - so the asked-how gate is off). A FAILED report is quoted verbatim
-// instead (the anti-spoof pin): it is a finding, not an instruction to the owner.
+// a sub-agent's markup never reaches the owner; every sentence does (the reply guard's
+// sentence drops went in v5.2.0, lane RB-Q1c).
 static std::string freshBodyText(const JobEngine::FreshResult& f) {
   static const std::string kFailed = "FAILED: ";
   const bool prefixed = f.failed && f.text.compare(0, kFailed.size(), kFailed) == 0;
-  const std::string raw = prefixed ? f.text.substr(kFailed.size()) : f.text;
-  const bool report = f.text.compare(0, kFailed.size(), kFailed) == 0;
-  if (report) return nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw));
-  return nimbus::orch::dropOwnerMechanics(
-      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(raw)), std::string());
+  return nimbus::orch::cleanReplyMarkup(prefixed ? f.text.substr(kFailed.size()) : f.text);
 }
 
 std::string JobEngine::ownerText(const FreshScope* scope) const {

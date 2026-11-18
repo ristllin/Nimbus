@@ -121,12 +121,14 @@ def test_the_expected_words_are_the_ones_the_firmware_produces():
     # The claim check that wrote it is gone (lane RB-Q1b): no source may write it again.
     for src in ("lib/harness/src/apply.cpp", "lib/harness/src/engine.cpp", "lib/core/src/orch_voice_notes.cpp"):
         assert SPOKEN_LINE not in _src(src), src
-    assert UNSPOKEN_LEAD == "\n\n(Note: that could not be spoken aloud: "
+    assert UNSPOKEN_LEAD == "\n\nNote: that could not be spoken aloud ("
     notes = _src("lib/core/src/orch_voice_notes.cpp")
-    assert "(Note: the spoken version was shortened to the first " in notes
-    m = SHORTENED_RE.search("(Note: the spoken version was shortened to the first 380 of its 895 characters.)")
+    assert "Note: the spoken version was shortened to the first " in notes
+    m = SHORTENED_RE.search("Note: the spoken version was shortened to the first 380 of its 895 characters.")
     assert (m.group(1), m.group(2)) == ("380", "895")
-    assert '"\\n\\n(Note: that could not be spoken aloud: " + why + ".)"' in apply_cpp
+    assert '"\\n\\nNote: that could not be spoken aloud (" + why + ")."' in apply_cpp
+    # Ruling 34: the device lines carry no "(Note" any more (the image gate's allowlist is empty).
+    assert "(Note" not in UNSPOKEN_LEAD and "(Note" not in notes
 
 
 def device_speech_cut(text: str, max_bytes: int = 400) -> str:

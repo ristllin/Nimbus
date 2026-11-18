@@ -8,7 +8,6 @@
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - the wire budget's refusal
 #include "nimbus/orch/budget.h"    // headContextBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
-#include "nimbus/orch/reply_guard.h"   // filler, work-shaped messages
 #include "nimbus/orch/action_rules.h"  // actionRuleRow - a tool's plain-words description
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
@@ -1131,9 +1130,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // at all in Full posture. Offline on destruction frees the arc (also on error
   // paths, since the dtor always runs).
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
-  // Lane ECHO fix pass: the owner's own words of this turn (capped), for the
-  // asked-how gate of the owner-mechanics drop at the send seam.
-  curUserText_.assign(userText.data(), userText.size() < 2048 ? userText.size() : 2048);
   // Every request this turn makes carries the connectors its chat may use (CUM-828):
   // the owner's for the owner, the provider's built-ins only for anyone else - a
   // member's, a guest's, and the synthesis turn that reads a member's sub-agent.
@@ -1193,11 +1189,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     }
     ~TurnGuard() {
       e->turnInFlight_ = false;
-      // Lane ECHO (adversarial review, 11 Nov): the in-flight turn's owner text
-      // must not outlive the turn - a later non-turn send (a notice, a job
-      // delivery) reads currentUserText() at the Telegram seam and must see no
-      // owner text, so the asked-how gate is off for it.
-      e->curUserText_.clear();
       // W6: if this turn spawned sub-agents, DON'T collapse the head arc now -
       // the children are still running (or pending dispatch), and the main-loop
       // head-arc reconciler keeps it lit until the last one finishes. Only a
@@ -1274,15 +1265,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // starts is live for the NEXT turn's full set. Rendering only: `specs` is the
   // one list the prompt's tool list, the wire and the dispatch map all read.
   const bool liveSessions = d_.jobs && !d_.jobs->sessionInfos().empty();
-  // What stands behind "I'll report back": a live sub-agent stands behind any promise; a routine
-  // or wakeup set for this chat, or the routine this turn is a run of, behind a promise to report.
-  const orch::LaterWork laterAtStart =
-      liveSessions ? orch::LaterWork::Live
-                   : (routineRecurs_ || (d_.standingWork && d_.standingWork(chatId))) ? orch::LaterWork::Standing
-                                                                                      : orch::LaterWork::None;
-  auto laterBehind = [&]() {
-    return d_.jobs && d_.jobs->activeCount() > 0 ? orch::LaterWork::Live : laterAtStart;
-  };
   if (!liveSessions)
     specs.erase(std::remove_if(specs.begin(), specs.end(),
                                [](const orch::ToolRegistry::Spec& s) {
@@ -1384,30 +1366,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
   int roundsNow = ci.loopRounds;
   if (bounds_) roundsNow = std::min(roundsNow, bounds_->maxRounds);   // a bounded turn's cap
-  // EFF (token burn, 26 Oct analysis): a PLAIN conversational turn - the owner's
-  // message and nothing else: no photo in flight, no fresh or parked results, no
-  // running session, none of the unattended shapes - gets a small tool-round
-  // budget (the HFT awareness-turn bound's number). The 17:57 meal chat spent 8
-  // model rounds re-deriving an answer the history already held. The wall-clock
-  // loopDeadline stays the outer bound; the loop's honest final-round notice
-  // tells the model why its tools went away; any live-data fact restores the full
-  // budget. The prompt states the same cap from ci.loopRounds, so it stays honest.
-  const bool conversational =
-      !bounds_ && !scheduledTurn_ && !quietTurn_ && !dreamTurn_ && !freshInTurn_ && !liveSessions &&
-      (!orch::activeTurnImages() || orch::activeTurnImages()->items.empty()) &&
-      turnMem().memBody.empty() &&   // the taken [MEMORY RESULTS] block (never user text)
-      !orch::asksForWork(userText) &&   // VN, 1 Nov: "Use a web lookup..." is a real task, not chat
-      !ledger_.hasRows();   // PRISM row 1: the [TODAY'S FOOD LEDGER] block is live data
-  // (a person's rows today ride the prompt, day_context.cpp). The pre-5.0.0 eval
-  // showed the capped coach answering the day total from MEMORY instead of
-  // spending a round re-reading the ledger, and fronting preambles after a
-  // wasted round (mistral-large 34/35 pre-cap -> 30/35 capped, qty-pressed
-  // below target; sonnet held). A turn with rows keeps the full budget; the
-  // cap still holds for every chat with no rows today.
-  if (conversational) {
-    roundsNow = std::min(roundsNow, 2);
-    hlog::logf("orchestrator: plain conversational turn - tool rounds capped at %d", roundsNow);
-  }
+  // A chat line takes the rounds it needs within the turn's round budget and wall clock, like
+  // any other turn: the 2-round cap on plain conversational turns (and the word list that
+  // told chat from work, asksForWork) was deleted in v5.2.0 (lane RB-Q1c; DIAGNOSIS RC-14:
+  // caps ended the work before it was done; the 1 Nov hosted turn needed three rounds).
   ci.loopRoundsNow = roundsNow;
   // CUM-523: the turn's one sample (unwired = true, wording unchanged). It also
   // narrows the manifest's Telegram flag, so the capability line never offers a
@@ -1700,9 +1662,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.cfg.validateFinal = orch::chainFinalChecks({
         [](const std::string& finalTurn) { return turnShapeCorrection(finalTurn); },
         [&userText](const std::string& finalTurn) { return placeholderCheck(finalTurn, userText); },
-        // Lane POL2: internal plumbing (memory ids, job ids, storage wording,
-        // device paths) never reaches the owner; one correction round fixes it.
-        [](const std::string& finalTurn) { return orch::plumbingCheck(finalTurn); },
         // An empty reply gets one more try, on every provider. Only a turn with nothing to
         // say goes without one: scheduled, quiet, or one a tool or a sub-agent answers.
         [this, pseudo](const std::string& finalTurn) {
@@ -1717,13 +1676,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // literal "placeholder" went to the owner). The turn's end holds the line after it.
     headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
       return placeholderCheck(finalTurn, userText);
-    };
-    // Lane POL2: a prose final answer is the owner-facing reply too (glm-5.3
-    // answered in the text channel with a memory id and the orch_turn check
-    // never saw it): the plumbing check holds on the prose itself, same
-    // one-round budget.
-    headTools.cfg.validateProseFinal = [](const std::string& prose) {
-      return orch::plumbingCheckText(prose);
     };
     headTools.cfg.maxRounds          = roundsNow;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
@@ -2319,7 +2271,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // a provider fault. Salvage what it wrote (when the adapter kept the partial
     // turn) with the honest marker, capture it, and record the cut.
     if (orch::isCutError(err)) {
-      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true, laterBehind(), userText);
+      const SalvageOutcome so = salvageForOwner(outJson, "truncated", /*reportedCut=*/true);
       noteUnappliedSpawns(chatId, outJson);
       const std::string fold = foldHeldNotices();   // L19-13 d: one message
       // With no text to keep, what the turn did run is still told (Lumi, 31 Oct: four
@@ -2458,7 +2410,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // fenced, possibly cut short), and only its top-level reply/ask - never the
     // raw text and never a nested field. A cut answer gets the honest marker; the
     // delivered text is captured so the next turn sees what the owner saw.
-    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false, laterBehind(), userText);
+    const SalvageOutcome so = salvageForOwner(outJson, perr.detail, /*reportedCut=*/false);
     noteUnappliedSpawns(chatId, outJson);
     deliver(chatId, so.text, /*modelText=*/so.salvaged);   // captured as the row; salvaged text spoke
     err = (so.cut ? "cut: " : "parse: ") + perr.detail;
@@ -2476,11 +2428,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   turn.ask = orch::cleanReplyMarkup(turn.ask);
   // Template filler is not an answer, on any provider and any path (a single shot, a prose
   // head, a forced round that repeated it): the turn failed, and nothing in it is applied.
-  // Checked on the reply as written AND after the echo drop below: a filler reply can
-  // itself be an echo sentence ("[reply]" opens with a rule word), and the filler path
-  // must own it before the drop can empty it.
-  if (isPlaceholderReply(turn.reply, userText) ||
-      isPlaceholderReply(orch::dropEchoSentences(turn.reply), userText)) {
+  if (isPlaceholderReply(turn.reply, userText)) {
     hlog::logf("orchestrator: %s answered with template filler (%u B) - not delivered", host.c_str(),
                (unsigned)turn.reply.size());
     err = "placeholder: the model wrote template filler instead of an answer";
@@ -2490,14 +2438,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     fireTurnEnd(false, 0);
     return false;
   }
-  // Lane ECHO: an echo of the request's instructions never reaches the owner.
-  turn.reply = orch::dropEchoSentences(turn.reply);
-  turn.ask = orch::dropEchoSentences(turn.ask);
-  // Lane ECHO fix pass (review finding 2, 11 Nov): a sentence telling the owner
-  // to operate internals ("re-send the row with 0 kcal") never reaches them
-  // either - unless their message asked how the system works.
-  turn.reply = orch::dropOwnerMechanics(turn.reply, userText);
-  turn.ask = orch::dropOwnerMechanics(turn.ask, userText);
+  // Nothing else edits the reply: the reply guard's sentence drops (echoed instructions,
+  // owner mechanics) were deleted in v5.2.0 (lane RB-Q1c, DIAGNOSIS RC-09).
   // Lane L (formatting F1): fields recovered from leaked tool markup carry
   // actions, and quoted external content (a mail body, a web page) can carry
   // the same markers - so they apply only on an attended owner turn that read
@@ -2960,7 +2902,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
   selfWakeupTurn_ = selfWakeup;
-  routineRecurs_ = !once && !ownerReminder && !loopId.empty() && !dream::isReserved(loopId);
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
   turnSource_ = TurnSource::Loop;
   loopName_ = name;   // the [FALLBACK] note names the routine a switch happened in
@@ -3067,7 +3008,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
-  routineRecurs_ = false;
   dreamTurn_ = false;
   selfWakeupTurn_ = false;
   attribution_ = "turn";                       // back to the owner default
@@ -3094,7 +3034,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
-  routineRecurs_ = false;
   dreamTurn_ = false;
   selfWakeupTurn_ = false;
   turnSource_ = TurnSource::Owner;
@@ -3291,7 +3230,6 @@ bool TurnEngine::reapStuckTurn(uint32_t nowMs) {
       (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000u + 120000u;
   if ((int32_t)(nowMs - turnStartMs_) < (int32_t)cap) return false;
   turnInFlight_ = false;
-  curUserText_.clear();   // lane ECHO: the reaped turn's owner text goes with it
   emitHead((uint8_t)Status::Offline);   // collapse the blue head arc
   return true;
 }

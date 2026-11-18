@@ -9,7 +9,6 @@
 
 #include "nimbus/harness/log.h"
 #include "nimbus/orch/action_rules.h"   // who may run each action (CUM-813)
-#include "nimbus/orch/reply_guard.h"    // dropEchoSentences / dropOwnerMechanics: the speaker is a reply seam
 #include "nimbus/orch/reply_markup.h"   // cleanReplyMarkup
 #include "nimbus/orch/models_tool.h"     // the "not in <provider> list" answers
 #include "nimbus/orch/provider_slots.h"  // the orch_model provider enum
@@ -306,12 +305,9 @@ static std::string applyTts(const ValidatedAction& va, const std::string& chatId
   using nimbus::orch::SpeakOutcome;
   const std::string refused = ttsRefusal(va, d);
   if (!refused.empty()) return refused;
-  // Lane ECHO (adversarial review, 11 Nov): the speaker is a reply seam too - no
-  // echo and no owner-mechanics sentence is voiced. The asked-how gate reads the
-  // in-flight turn's owner message (empty for a turn the owner did not write).
-  const std::string ownerText = d.ownerMessage ? d.ownerMessage().text : std::string();
-  const std::string spoken = nimbus::orch::dropOwnerMechanics(
-      nimbus::orch::dropEchoSentences(nimbus::orch::cleanReplyMarkup(va.text)), ownerText);
+  // The speaker is a reply seam too: markup is cleaned, every sentence is voiced (the reply
+  // guard's sentence drops went in v5.2.0, lane RB-Q1c).
+  const std::string spoken = nimbus::orch::cleanReplyMarkup(va.text);
   const nimbus::orch::SpeechCut cut = nimbus::orch::cutForSpeech(spoken);
   if (cut.text.empty()) return ttsNotSpoken("there was nothing to say");
   const SpeakOutcome o = d.speak(chatId, cut.text);
@@ -603,7 +599,8 @@ static bool alreadySent(const ApplyState& st, const std::string& text) {
 static void noteUnspoken(const std::string& why, bool noted, const std::string& actionJson, const Turn& t,
                          ApplyState& st) {
   hlog::logf("orchestrator: tts not spoken: %s", why.c_str());
-  const std::string plain = noted ? std::string() : "\n\n(Note: that could not be spoken aloud: " + why + ".)";
+  // A device line (PRD section 8 item 9), on its own line after the reply: not "(Note" (ruling 34).
+  const std::string plain = noted ? std::string() : "\n\nNote: that could not be spoken aloud (" + why + ").";
   std::string outcome = " - nobody was told (a routine); give it in text if the owner still needs it";
   if (!st.scheduledTurn) {
     if (!t.reply.empty() || !t.ask.empty()) {

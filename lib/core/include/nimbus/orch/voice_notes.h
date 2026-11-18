@@ -151,8 +151,9 @@ struct SpeechCut {
 // blank text comes back as an empty, not shortened, cut.
 SpeechCut cutForSpeech(const std::string& text, size_t maxBytes = kTtsActionMaxBytes);
 
-// The reply line for a shortened cut:
-//   "(Note: the spoken version was shortened to the first 212 of its 900 characters.)"
+// The reply line for a shortened cut, a device line on its own line (PRD section 8 item 9;
+// ruling 34: not "(Note"):
+//   "Note: the spoken version was shortened to the first 212 of its 900 characters."
 std::string speechShortenedNote(const SpeechCut& cut);
 
 }  // namespace orch

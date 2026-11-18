@@ -318,3 +318,36 @@ deleted. Engine 2 has no baseline.
 - lane: RB-EX
 - prd: section 7 (provider errors, cut answers) and section 8.9 (one status line per failure)
 - why: the one plain line an exchange gives the owner per error class (no reply from the provider, its server error, rate limit, a conversation too large, a refused key or credit, an unreadable answer, a refused request, a cut answer, a moderation block) and the provider names in it, composed by plain_exchange.cpp exchangeLine; no provider text rides in a line
+
+### PC-0009: the reply guard deleted (v5.2.0)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 57060 -> 53829
+- sha8: 98450dc7 -> b5a486bb
+- lane: RB-Q1c
+- why: the reply guard read one turn and matched words, so it cut or sent back correct replies
+  (rebuild/evidence/DIAGNOSIS.md RC-09): it deleted sentences that echoed the request's
+  instructions or told the owner to operate an internal object, at the send seam, in the engine,
+  the speaker, the salvage path and the sub-agent fallback; it sent a reply naming a memory id or
+  a file path back for a correction round (the plumbing check, prose and orch_turn); it appended
+  "(Note: nothing is running for that, so it will not continue on its own. Ask again to
+  continue.)" to a salvaged promise; and it held the pack-meal and work-now matchers and their
+  corrections. Deleted with lib/core/src/orch_reply_guard.cpp and its header (117 catalogued
+  texts). Nothing was added: the send seam is lib/core/src/orch_deliver_text.cpp, which carries
+  no model-facing text.
+
+### PC-0010: the device's speech note in the plain device-line form (ruling 34)
+- catalog: e1
+- class: device_notes
+- kind: spec
+- bytes: 53829 -> 53828
+- sha8: b5a486bb -> ab262df9
+- lane: RB-Q1c
+- prd: section 8 item 9 (device-written lines are separate plain status lines: "Note: ..."), ruling 34
+- why: the note a reply gets when its tts did not play was "(Note: that could not be spoken
+  aloud: <why>.)"; it is now "Note: that could not be spoken aloud (<why>)." on its own line,
+  the form PRD section 8 gives device-written lines, so no image holds "(Note" and the
+  no-harness-lines gate runs with an empty allowlist. The same rewording of the shortened-speech
+  note ("Note: the spoken version was shortened to the first N of its M characters.",
+  orch_voice_notes.cpp) is outside the catalog's sources and changes no class.

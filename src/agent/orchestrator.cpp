@@ -1828,7 +1828,6 @@ static TurnEngine::Deps buildTurnDeps() {
                                     ht, spend, notify);
   };
   d.hosts.fabricSupports = [](const std::string& h) { return providers::fabricSupports(h); };
-  d.standingWork = [](const std::string& chatId) { return loops::hasStanding(chatId); };
   // Lane POL2: the open-question list observes every completed turn in the
   // owner's own chat (raise-once bookkeeping, open_questions.h). A member's
   // turn never touches the owner's items.
@@ -2395,7 +2394,6 @@ void handleMessage(const String& text, const String& fromName, const String& cha
 // speaker (loopback-verified working); reply.telegram delivers text to a chat.
 String currentChat() { return g_engine ? String(g_engine->currentChat().c_str()) : String(); }
 // Lane ECHO fix pass: the in-flight turn's owner text, for the send seam's gate.
-String currentUserText() { return g_engine ? String(g_engine->currentUserText().c_str()) : String(); }
 
 // How long reply.speak waits for the sound task to open the speaker: a short event
 // clip or a sync step ahead of it in the queue, and a paused music track handing back

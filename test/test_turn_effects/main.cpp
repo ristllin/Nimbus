@@ -248,7 +248,7 @@ static void test_a_tts_summary_records_what_really_happened() {
     TEST_ASSERT_EQUAL_MESSAGE(landed, fx.at(0).ok, sum);
   }
   // Through device.control's tool result: the first line is the summary, a note may follow.
-  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts \n(Note: the spoken version was shortened.)");
+  { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts \nNote: the spoken version was shortened.");
     TEST_ASSERT_TRUE(fx.at(0).kind == FxKind::Speak && fx.at(0).ok); }
   { TurnEffects fx; recordToolEffect(fx, FxKind::Config, false, "applied: tts(telegram message_id 9) ");
     TEST_ASSERT_TRUE(voiceDelivered(fx)); }

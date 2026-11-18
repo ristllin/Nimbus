@@ -193,7 +193,6 @@ struct Rig {
   std::unique_ptr<TurnEngine> eng;
   int dispatched = 0;
   std::string toolOutput = "ok";
-  bool standing = false;   // a routine or wakeup stands for this chat
   std::vector<bool> trimmedForSize;   // one per turn end
   std::string failedPath;             // the last turn end's failure chain, host by host
   std::vector<std::string> recalledHits;
@@ -290,7 +289,6 @@ struct Rig {
       out.hits = recalledHits;
       return out;
     };
-    d.standingWork = [this](const std::string&) { return standing; };
     d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {
       trimmedForSize.push_back(ev.trimmedForSize);
       failedPath = ev.chain ? ev.chain->path() : std::string();
@@ -1084,38 +1082,26 @@ static void test_placeholder_never_reaches_the_owner() {
   TEST_ASSERT_FALSE_MESSAGE(e.saidAny("didn't finish"), e.all().c_str());
 }
 
-// The cap: a real task runs its full budget; plain chat stays at 2 (EFF's savings).
-static void test_a_real_task_keeps_its_rounds_and_chat_stays_capped() {
-  static const char* const kTasks[] = {
+// No shape cap: a real task and a chat line both run the configured rounds (the 2-round
+// plain-chat cap went in v5.2.0, lane RB-Q1c), so no request states a smaller cap.
+static void test_a_real_task_and_a_chat_line_keep_the_configured_rounds() {
+  static const char* const kTurns[] = {
       "Use a web lookup to find the latest stable Python 3 release listed on python.org/downloads. Tell me the "
       "version number and the URL you used.",
       "search the web for the current price of a Raspberry Pi 5",
       "please read my notes file and summarize it",
-      "can you check the weather in London tomorrow",
-      "look up who won the 2022 world cup",
-      "compare the three plans and write it to a file",
-      "find my last message about the dentist",
       "https://example.com/a what does this page say?",
-  };
-  for (const char* t : kTasks) {
-    Rig r({"mistral"}, 2000);
-    r.cfg.rounds = 5;
-    r.script(ok("mistral", finalBody("mistral")));
-    r.turn(t);
-    std::string msg = std::string("a task keeps its rounds: ") + t;
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[0].body.find("several rounds (at most 2)") == std::string::npos, msg.c_str());
-  }
-  static const char* const kChat[] = {
       "hi", "so where are we at?", "thanks", "Did you teach me about draft models?", "why do you think so?",
       "what's today's food total?", "How are you", "ok great", "Its pumpkin soup.",
   };
-  for (const char* t : kChat) {
+  for (const char* t : kTurns) {
     Rig r({"mistral"}, 2000);
     r.cfg.rounds = 5;
     r.script(ok("mistral", finalBody("mistral")));
     r.turn(t);
-    std::string msg = std::string("chat stays capped: ") + t;
-    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[0].body.find("several rounds (at most 2)") != std::string::npos, msg.c_str());
+    std::string msg = std::string("no smaller cap: ") + t;
+    TEST_ASSERT_TRUE_MESSAGE(r.wire.http.seen[0].body.find("several rounds (at most 2)") == std::string::npos, msg.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("plain conversational turn"), msg.c_str());
   }
 }
 
@@ -1142,15 +1128,9 @@ static const char* const kNotPromises[] = {
 };
 static const char* const kLaterLine = "will not continue on its own";
 
-// The served path since v5.2.0 (lane RB-Q1b): the promise check went with the claim check,
-// so the answer is delivered once as written, with no correction round and no line; RB-G0's
-// truth check owns this class now. The forced round the same. (The reply guard's sentence drop,
-// RB-Q1c's, may still take a sentence that tells the owner about a key; the promise itself
-// stays, once, with no line.)
-static std::string promiseSentence(const std::string& p) {
-  const size_t at = p.rfind(". ");
-  return at == std::string::npos ? p : p.substr(at + 2);
-}
+// Every path since v5.2.0 (lanes RB-Q1b and RB-Q1c): the promise check went with the claim
+// check and the later-promise line with the reply guard, so the answer is delivered once as
+// written, whole, with no correction round and no line; RB-G0's truth check owns this class now.
 
 static void test_promise_is_delivered_as_written() {
   for (const char* p : kPromises) {
@@ -1159,7 +1139,7 @@ static void test_promise_is_delivered_as_written() {
     r.turn("so where are we at?");
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.requests(), p);
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)r.delivered.size(), p);
-    TEST_ASSERT_TRUE_MESSAGE(r.delivered[0].find(promiseSentence(p)) != std::string::npos, p);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(p, r.delivered[0].c_str(), p);
     TEST_ASSERT_FALSE_MESSAGE(r.saidAny(kLaterLine), p);
   }
 }
@@ -1171,19 +1151,19 @@ static void test_a_forced_round_promise_is_delivered_as_written() {
     f.script(ok("mistral", toolBody("mistral", 1)));
     f.script(ok("mistral", finalBody("mistral", p)));
     f.turn("Use a web lookup to find the latest stable Python 3 release");
-    TEST_ASSERT_TRUE_MESSAGE(f.saidAny(promiseSentence(p).c_str()), f.all().c_str());
+    TEST_ASSERT_TRUE_MESSAGE(f.saidAny(p), f.all().c_str());
     TEST_ASSERT_FALSE_MESSAGE(f.saidAny(kLaterLine), f.all().c_str());
   }
 }
 
-// The cut path and the unreadable path deliver the model's own text without apply: the
-// reply guard's line still rides there until lane RB-Q1c deletes it with the guard.
-static void test_salvaged_promise_gets_the_line() {
+// The cut path and the unreadable path deliver the model's own text without apply, and
+// since v5.2.0 (lane RB-Q1c) with no later-promise line: only the cut marker when cut.
+static void test_salvaged_promise_is_delivered_as_written() {
   Rig r({"mistral"}, 2000);
   for (int i = 0; i < 4; i++) r.script(ok("mistral", cutBody("mistral", "I'll finish the rest next turn.")));
   r.turn("Use a web lookup and analyze these six photos in detail");
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny("I'll finish the rest next turn."), r.all().c_str());
-  TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
 }
 
 // Prose (a head that ignored the schema) goes the same way as the served path: as written.
@@ -1217,8 +1197,8 @@ static void test_unattended_promise_is_delivered_as_written() {
 }
 
 // The single-shot head (fabric off, as the custom head always runs) and an answer the
-// device cannot parse as a turn: the same line.
-static void test_unreadable_promise_gets_the_line() {
+// device cannot parse as a turn: the same, no line.
+static void test_unreadable_promise_is_delivered_as_written() {
   Rig r({"zai"}, 2000, /*fabric=*/false);
   Exchange serve;
   serve.body =
@@ -1227,7 +1207,7 @@ static void test_unreadable_promise_gets_the_line() {
   r.script(serve);
   r.turn("so where are we at?");
   TEST_ASSERT_TRUE_MESSAGE(r.saidAny("I'll finish that next turn."), r.all().c_str());
-  TEST_ASSERT_TRUE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
+  TEST_ASSERT_FALSE_MESSAGE(r.saidAny(kLaterLine), r.all().c_str());
 }
 
 // A job behind the words: the same sentence is true, so it stands.
@@ -1258,7 +1238,6 @@ static void test_a_job_behind_the_promise_stands() {
 static void test_a_routine_behind_the_promise_stands() {
   const char* watch = "Not arrived yet. I'll let you know when it does.";
   Rig asked({"mistral"}, 2000);
-  asked.standing = true;
   asked.script(ok("mistral", finalBody("mistral", watch)));
   asked.turn("any news?");
   TEST_ASSERT_EQUAL(1, (int)asked.requests());
@@ -1279,14 +1258,13 @@ static void test_a_routine_behind_the_promise_stands() {
   TEST_ASSERT_EQUAL(1, (int)once.requests());
   TEST_ASSERT_FALSE_MESSAGE(once.saidAny(kLaterLine), once.all().c_str());
 
-
-  // The salvage path reads the same.
-  const agent::SalvageOutcome s =
-      agent::salvageForOwner("{\"reply\":\"I'll let you know when it does.\"", "truncated", true, orch::LaterWork::Standing);
-  TEST_ASSERT_TRUE(s.text.find(kLaterLine) == std::string::npos);
-  const agent::SalvageOutcome n =
-      agent::salvageForOwner("{\"reply\":\"I'll finish it next turn.\"", "truncated", true, orch::LaterWork::Standing);
-  TEST_ASSERT_TRUE(n.text.find(kLaterLine) != std::string::npos);
+  // The salvage path reads the same: no line, with or without a routine behind it.
+  for (const char* p : {"I'll let you know when it does.", "I'll finish it next turn."}) {
+    const agent::SalvageOutcome s =
+        agent::salvageForOwner(std::string("{\"reply\":\"") + p + "\"", "truncated", true);
+    TEST_ASSERT_TRUE_MESSAGE(s.text.find(kLaterLine) == std::string::npos, s.text.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(s.text.find(p) == 0, s.text.c_str());
+  }
 }
 
 // The latch for a key or credit notice is one per episode: when a synthesis takes it, the
@@ -1328,7 +1306,8 @@ static void test_turn_shape_does_not_touch_the_cached_static_block() {
   TEST_ASSERT_TRUE(!a.empty());
   TEST_ASSERT_TRUE_MESSAGE(a == b, "the system message changed between a chat turn and a task turn");
   TEST_ASSERT_TRUE(a.find("(at most 5)") != std::string::npos);
-  TEST_ASSERT_TRUE(r.wire.http.seen[0].body.find("(at most 2)") != std::string::npos);
+  // No turn states a smaller cap since the plain-chat cap went (v5.2.0, lane RB-Q1c).
+  TEST_ASSERT_TRUE(r.wire.http.seen[0].body.find("(at most 2)") == std::string::npos);
   TEST_ASSERT_TRUE(r.wire.http.seen[1].body.find("(at most 2)") == std::string::npos);
 }
 
@@ -1377,14 +1356,14 @@ int main() {
   RUN_TEST(test_a_rerun_gets_the_time_that_is_left);
   RUN_TEST(test_forced_placeholder_is_sent_back_once);
   RUN_TEST(test_placeholder_never_reaches_the_owner);
-  RUN_TEST(test_a_real_task_keeps_its_rounds_and_chat_stays_capped);
+  RUN_TEST(test_a_real_task_and_a_chat_line_keep_the_configured_rounds);
   RUN_TEST(test_turn_shape_does_not_touch_the_cached_static_block);
   RUN_TEST(test_promise_is_delivered_as_written);
   RUN_TEST(test_a_forced_round_promise_is_delivered_as_written);
-  RUN_TEST(test_salvaged_promise_gets_the_line);
+  RUN_TEST(test_salvaged_promise_is_delivered_as_written);
   RUN_TEST(test_prose_promise_is_delivered_as_written);
   RUN_TEST(test_unattended_promise_is_delivered_as_written);
-  RUN_TEST(test_unreadable_promise_gets_the_line);
+  RUN_TEST(test_unreadable_promise_is_delivered_as_written);
   RUN_TEST(test_a_job_behind_the_promise_stands);
   RUN_TEST(test_a_routine_behind_the_promise_stands);
   RUN_TEST(test_failed_synthesis_keeps_the_next_step_notice);

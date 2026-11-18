@@ -98,9 +98,9 @@ A well-formed turn is untouched and byte-identical (a counter-test pins it).
 block and a whole-reply wrapper (`<orch_turn>`, `<reply>`, ...) before it reads
 the shape, so `<think>...</think>{json}` is a turn, never prose with raw JSON in
 it. The engine then runs `cleanReplyMarkup()` on the reply and the ask, the
-salvaged text and the fold summary, and Telegram runs it again before sending:
-reasoning, tool-call markup and wrapper tags never reach a channel, while
-unknown `<word>` content and code stay byte-exact.
+salvaged text and the fold summary, and the send seam runs it again: reasoning,
+tool-call markup and wrapper tags never reach a channel, while unknown `<word>`
+content and code stay byte-exact.
 
 ## An envelope carried inside prose
 
@@ -111,34 +111,32 @@ the envelope's other fields are dropped with a parse note (quoted JSON in prose
 never acts). When the owner's message asks for JSON, a shown example is content
 and the whole text is delivered.
 
-## Echoed instructions and owner-mechanics sentences
+## The send seam: nothing is removed from a reply
 
-The reply guard drops two sentence classes from anything delivered to the owner, on
-every path (the served reply and ask, a salvaged answer, the Telegram send, the
-spoken line, the sub-agent fallback): a sentence echoing the request's own
-instructions (a tool name or a contract phrase such as "must include all fields"),
-and a sentence telling the owner to operate an internal object ("To undo, re-send
-the row with 0 kcal." - a row, field, column, tool, command, file, json, parameter,
-schema, ledger, csv, endpoint, api or database). Everyday objects are not internal:
-a dinner table, a door key, a diary record, a student id and a garden path belong to
-the owner, so "Set the table for four." is kept. The second class is gated on the
-owner's message: when it asks how the system works ("how do I undo a row?"),
-describing the mechanics is a real answer and stays. A question ("Can you re-send
-the row?") and a first-person offer ("I'll re-send the row for you.") are never
-dropped.
+Since v5.2.0 the device and the hosted daemon send every message through one
+portable function, `lib/core/src/orch_deliver_text.cpp`
+(`nimbus/orch/deliver_text.h`): the markup sanitiser above, then a split of a long
+text into parts of at most 4,000 bytes (cut after a paragraph, a line or a space,
+never inside a UTF-8 character; the parts are the text byte for byte, with no
+`(k/N)` header), then Telegram HTML for each part, with the part itself as the plain
+resend when Telegram refuses the HTML. No sentence is removed for what it says and
+nothing is appended. The reply guard that dropped sentences echoing the request's
+instructions or telling the owner to operate an internal object, the later-promise
+line and the plumbing check were deleted in v5.2.0 (lane RB-Q1c): they cut or sent
+back correct replies. The host suite `test_delivery_e1` runs the same function the
+device runs.
 
 ## Cut and unreadable answers
 
 When the head's answer cannot be applied, `salvageTurnText()` reads only the
 top-level `reply` and `ask` of its leading object (bare or fenced, possibly cut
 short; escapes and surrogate pairs decoded). Nothing nested is ever salvaged.
-The owner gets that text, plus one fixed line exactly when the answer was cut:
-"(My answer was cut off before I finished, and nothing else in it was carried
-out. Ask me to continue.)". With nothing to salvage, one plain line says the
-answer was cut off or could not be read and that nothing in it was carried
-out. Nothing in such an answer runs, so salvaged text that says sub-agents
-started also gets the spawn correction line, cut or not, and the turn logs
-`spawn ledger spawned=0 claimed=1` and leaves the head a note. The delivered text
+The owner gets that text, every sentence of it, plus one fixed line exactly when
+the answer was cut: "(My answer was cut off before I finished, and nothing else in
+it was carried out. Ask me to continue.)". With nothing to salvage, one plain line
+says the answer was cut off or could not be read and that nothing in it was
+carried out. Nothing in such an answer runs; when it carried spawn items the head
+is told on its next turn that nothing started. The delivered text
 is captured to the chat history, and the turn-end row carries `err` `cut: ...`
 or `parse: ...`. A failed turn takes the cut path when
 its error is a cut by the typed step rule (`StepErr::Cut`: still cut after the
@@ -152,7 +150,7 @@ On a tool-loop turn, a terminal `orch_turn` passes `validateFinal` before it is
 accepted (`HeadLoopConfig::validateFinal`, built with `chainFinalChecks`). An
 answer whose spawn list cannot be read or whose spawn items cannot start is sent back
 once, with the problems named and the array form shown; so is an answer that is template
-filler or, on a turn with nothing to say, empty, and one that names internal plumbing.
+filler or, on a turn with nothing to say, empty.
 The reply's words are not held against what the turn did: the claim check, the
 promise and work-now checks it carried, the reply-scope check and the check of a reply
 that says sub-agents started were deleted in v5.2.0 (lane RB-Q1b; the truth check of

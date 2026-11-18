@@ -432,34 +432,23 @@ dots) gets one more round, on the forced final round too, and is never delivered
 that repeats it ends the turn with "That didn't finish". A word the owner's message holds
 is an answer.
 
-A reply that promises later work ("I'll finish this next turn", "I'll report back") is no
-longer held to what stands behind it on the served reply (the claim check that sent it back
-was deleted in v5.2.0, lane RB-Q1b). A cut or unreadable answer, where nothing runs, still
-gets a plain line saying nothing is running for a promise in its kept text (lane RB-Q1c
-removes that line with the reply guard).
+A reply that promises later work ("I'll finish this next turn", "I'll report back") is not
+held to what stands behind it on any path: the claim check that sent it back was deleted in
+v5.2.0 (lane RB-Q1b), and the line a cut or unreadable answer got for it went with the reply
+guard (lane RB-Q1c).
 
 An earlier owner remark with no reply shows as `[no reply]` in the history; nothing checks
 whether a reply takes it up (the reply-scope check and its `[REPLY SCOPE]` line were deleted
 in v5.2.0, lane RB-Q1b).
 
-The words are read in their sentence, since they alone prove little: "in the background" is
-often a place in a photo and counts only with a first person doing work there; "still working
-on" is often the owner's goal and counts only with a first person as its subject; a next turn
-or round can be on a road or in a contest.
+No sentence is removed from a reply, on any delivery path (text or spoken): the reply
+guard's drops of a sentence echoing the request's instructions and of a sentence telling the
+owner to operate an internal object were deleted in v5.2.0 (lane RB-Q1c). The send seam is
+specified in [turn-contract.md](reference/turn-contract.md#the-send-seam-nothing-is-removed-from-a-reply).
 
-Two sentence classes never reach the owner at all, on any delivery path (text or spoken):
-a sentence echoing the request's own instructions (a tool name, a contract phrase), and a
-sentence telling the owner to operate an internal object ("To undo, re-send the row with 0
-kcal."). The second is dropped unless the owner's message asks how the system works; a
-question ("Can you re-send the row?") and a first-person offer ("I'll re-send the row for
-you.") are kept, and so is anything about the owner's own objects ("Set the table for
-four."). The guard itself is specified in
-[turn-contract.md](reference/turn-contract.md#echoed-instructions-and-owner-mechanics-sentences).
-
-A plain chat line runs at most 2 tool rounds, stated in the per-turn block so the cached
-static block does not change between turns. A message that asks for work keeps the
-configured rounds: an action or lookup verb where a request starts, a link, a word such as
-web, search, file or calendar, more than 240 bytes, or text this check cannot read.
+A chat line takes the tool rounds it needs within the turn's round budget and wall clock,
+like any other turn: the 2-round cap on plain chat turns was deleted in v5.2.0 (lane
+RB-Q1c), because it ended work before it was done.
 
 ## What the device checks in a reply (since v5.2.0)
 
@@ -479,8 +468,9 @@ fails a build whose image holds such a line. What stays:
   RB-G0 that replaces the claim check;
 - the final-answer checks of [the final check](reference/turn-contract.md#the-final-check):
   the turn shape (a field the device cannot use) and a placeholder answer;
-- the device's own lines about its own actions: a `tts` that did not play gets a note that it
-  could not be spoken aloud, with the reason; a voiced text cut to the speech bound says so, and
+- the device's own lines about its own actions, each a plain "Note: ..." line after the reply:
+  a `tts` that did not play gets a note that it could not be spoken aloud, with the reason; a
+  voiced text cut to the speech bound says so, and
   a chat that may not start sub-agents is told so. A sub-agent intent that did not start
   reaches the head as a `[SPAWN REFUSED]` line on the chat's next turn;
 - `/api/state` keeps `claimsCorrected` and `claimsTailed` at 0 for the readers that poll them.

@@ -1,17 +1,14 @@
 // test_eff_token_delta - the EFF lane's per-shape wire measurement (the 26 Oct
 // owner analysis: every tool round re-sends the whole prompt; 13 replies cost
 // 572,191 input tokens). It measures, on the REAL tool schemas over the REAL
-// Anthropic loop-body renderer, what one turn's tool surface and the
-// conversational round budget save:
+// Anthropic loop-body renderer, what one turn's tool surface saves:
 //
 //   - the trim: the session tools that need a RUNNING sub-agent leave the wire
 //     on a turn with no live session (session.list + session.terminate;
 //     spawn/poll/tell are loopToolHidden and never rode it). The delta is their
 //     exact wire bytes - name + description + input_schema as serialized.
-//   - the budget: a plain conversational turn runs at most 3 model calls (2
-//     tool rounds + the forced final, + at most 1 claim correction) instead of
-//     the configured 8 + final. The avoided request bytes are the measured
-//     body size times the rounds not sent.
+//   (The conversational round budget it also measured, 2 tool rounds on a plain
+//   chat turn, was deleted in v5.2.0, lane RB-Q1c: it ended work before it was done.)
 //
 // The printed numbers are the evidence; the assertions pin the direction and
 // the exactness so a rendering change cannot silently shrink the delta.
@@ -124,11 +121,6 @@ static void test_the_trim_saves_the_session_tools_wire_bytes() {
               chat.toolsBytes, chat.toolsCount);
   std::printf("[eff] trim delta:    %zuB of tools[] per request, every round\n",
               work.toolsBytes - chat.toolsBytes);
-  // The conversational turn runs at most 3 model calls (2 tool rounds + the
-  // forced final, + at most 1 claim correction) where the unbounded loop could
-  // run 9; the avoided bytes are the measured body times the rounds not sent.
-  std::printf("[eff] budget:        at most 3 model calls vs up to 9; up to 6 x %zuB not sent\n",
-              chat.bodyBytes);
   TEST_ASSERT_TRUE(work.toolsBytes > chat.toolsBytes);   // the trim removes real bytes
   TEST_ASSERT_EQUAL(work.toolsCount - 2, chat.toolsCount);
   TEST_ASSERT_EQUAL(work.bodyBytes - chat.bodyBytes, work.toolsBytes - chat.toolsBytes);

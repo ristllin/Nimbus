@@ -351,7 +351,7 @@ static void test_speech_cut_keeps_whole_characters() {
   TEST_ASSERT_EQUAL(399, (int)s.text.size());   // 133 characters, the last whole one that fits
   TEST_ASSERT_EQUAL(133, (int)s.spokenChars);
   TEST_ASSERT_EQUAL(300, (int)s.totalChars);
-  TEST_ASSERT_EQUAL_STRING("(Note: the spoken version was shortened to the first 133 of its 300 characters.)",
+  TEST_ASSERT_EQUAL_STRING("Note: the spoken version was shortened to the first 133 of its 300 characters.",
                            speechShortenedNote(s).c_str());
   // The same property at every offset: 4-byte characters with a varying prefix.
   for (int pad = 0; pad < 8; pad++) {
