@@ -54,6 +54,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: Nimbus
+          # The pending-roster gate compares against merge-base(HEAD, the base branch).
+          fetch-depth: 0
       - name: Resolve solide-drivers ref from platformio.ini (single source of truth)
         id: solide
         run: |
@@ -84,9 +86,21 @@ jobs:
           key: pio-native-${{ runner.os }}-${{ hashFiles('Nimbus/platformio.ini') }}
       - name: Install PlatformIO
         run: pip install platformio
+      # The whole suite, no filter and no exclusion (PRD section 10). pipefail keeps pio's own
+      # exit status; tee only keeps the log the roster gate reads.
       - name: Run native test suite
         working-directory: Nimbus
-        run: pio test -e native
+        shell: bash
+        run: |
+          set -o pipefail
+          pio test -e native 2>&1 | tee native.log
+      # L0: the tests this run ignored are exactly test/pending_roster.txt (each one says
+      # PENDING RB-<lane>), and the roster only shrinks against the base branch. Lane RB-B0b.
+      - name: Pending-test roster equals the ignored set
+        working-directory: Nimbus
+        run: |
+          BASE="origin/${GITHUB_BASE_REF:-main}"
+          python3 tools/release_gate/check_pending_roster.py --native-log native.log --base-ref "$BASE"
 
   # The release-gate + HIL-harness LOGIC must itself be tested (it is the thing
   # that decides whether a release ships). These are pure host tests - no board,

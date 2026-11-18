@@ -456,6 +456,35 @@ reference loop through `scripted_provider.py`, so one script can run both arms o
 parity check offline. `test/test_scripted_provider` proves the old engine's parsers read
 its answers; `test/test_plain_seams` pins the stubs and the hooks registry.
 
+### The battery's property suites (layer L1)
+
+Nine suites state what the plain engine must keep true before it exists:
+`test_tx_prefix` (request N+1 extends request N except at a named change point),
+`test_tx_pairing` (every call keeps exactly one result), `test_tx_coverage` (no stored
+item is dropped silently; compaction leaves no row uncovered), `test_tx_stub_rule`,
+`test_tx_log`, `test_tx_crash` (one reply, no effect twice), `test_tx_overhead` (bytes
+around messages are bounded), `test_plain_conformance` (the loop per dialect) and
+`test_delivery_bytes` (the reply arrives as the model wrote it).
+
+A case that waits for an implementation starts with
+`TXB_WAITS_FOR("PENDING RB-<lane>", <dependency lanes>)` from
+`test/support/tx_battery/pending.h`: while a sentinel body of one of those lanes still
+answers `NotImplemented`, the case reports `TEST_IGNORE_MESSAGE("PENDING RB-<lane>")` and
+is listed in `test/pending_roster.txt`. Once every body it needs exists the case runs by
+itself, and `tools/release_gate/check_pending_roster.py` fails until its roster line is
+removed, so the roster only shrinks. Built with `-DTXB_FORCE_PENDING`, every pending case
+fails at its first stub, naming it. Each property is a pure checker in
+`test/support/tx_battery/props.h`, counter-tested on hand-built good and bad inputs (and a
+reference renderer with ten wrong variants in `toy_render.h`), so each one is shown to go
+red. The rest of `test/support/tx_battery/` is plumbing (a scripted chat through the
+engine in `driver.h`, cuttable storage in `mem_files.h`, a fake tool registry in
+`world.h`) that the implementing lanes complete; they do not edit the properties.
+
+`tools/battery2.sh --tier free` runs the whole native suite, the roster gate over it, the
+host builds and the static gates, each with its real exit status, and lists gates whose
+lane has not landed as `PENDING <lane>`; the `live` and `bench` tiers say which lane
+builds them. CI runs the roster gate after `pio test -e native` (`checks.yml`).
+
 ## Extension points
 
 - **New provider backend**: subclass `ManagedAgentAdapter` + one
