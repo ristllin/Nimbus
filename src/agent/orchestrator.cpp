@@ -1258,6 +1258,13 @@ static TurnEngine::Deps buildTurnDeps() {
   };
   d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };
   d.truth = truthdev::binding();   // RB-G0: the truth check (truth_device.h)
+  // The chat's recent effects for its probe: the effect ring (RB-FX), whole only when the
+  // ring lives on the card.
+  truthdev::useRecent([](const std::string& chatId, std::vector<nimbus::orch::fx::RingEntry>& out) {
+    const PsramFirstScope psramFirst;
+    fxdev::ring().recent(chatId, nimbus::orch::fx::kRingEntries, out);
+    return fxdev::ring().backing(chatId) == nimbus::orch::fx::Backing::Storage;
+  });
   d.event = [](const attn::Event& e) { if (g_sinks.event) g_sinks.event(e); };
   d.fire = [](const char* cue) {
     if (strcmp(cue, "turnstart") == 0) ::sfx::fire(nimbus::sfx::Ev::TurnStart);   // "Roger that."

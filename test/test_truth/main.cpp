@@ -1029,6 +1029,33 @@ void test_the_engine_flow_without_a_round_never_holds() {
   TEST_ASSERT_EQUAL_UINT32(1, b.c.retryFailed);
 }
 
+// The loop never asked: once the reply is out only the receipt question is worth a probe.
+void test_finish_without_an_ask_probes_only_for_a_failed_write() {
+  Scripted s;
+  s.answers = {{Verdict::Yes, 300}};
+  FakeBinding b;
+  b.s = &s;
+  truth::TurnCheck k;
+  k.reset(&b, "111", "o");
+  k.open("anthropic", "claude-sonnet-5-5", false);
+  const truth::Outcome o = k.finish("Logged.");
+  TEST_ASSERT_EQUAL_size_t(0, s.seen.size());
+  TEST_ASSERT_TRUE(o.status.empty());
+  TEST_ASSERT_EQUAL_UINT32(1, b.c.turns);
+  // Tainted after it opened (a held round read outside content): no probe at the end either.
+  Scripted s2;
+  s2.answers = {{Verdict::Yes, 300}, {Verdict::Yes, 300}};
+  b.s = &s2;
+  k.reset(&b, "111", "o");
+  k.open("anthropic", "claude-sonnet-5-5", false);
+  TEST_ASSERT_FALSE(k.atFinal("Logged.").empty());
+  k.note(eff("ledger_write", false, "busy", truth::Kind::Ledger));
+  k.taint(true);
+  const truth::Outcome o2 = k.finish("Logged now.");
+  TEST_ASSERT_EQUAL_size_t(1, s2.seen.size());
+  TEST_ASSERT_FALSE(o2.status.empty());   // receipt-only now: the line is deterministic
+}
+
 // No binding, a refused open, a tainted turn or an unknown ring: never a probe.
 void test_the_engine_flow_without_a_known_ring_never_probes() {
   for (int which = 0; which < 4; ++which) {
@@ -1248,6 +1275,7 @@ int main(int, char**) {
   RUN_TEST(test_the_engine_flow_holds_once_and_decides_the_line_at_the_end);
   RUN_TEST(test_the_engine_flow_without_a_round_never_holds);
   RUN_TEST(test_the_engine_flow_without_a_known_ring_never_probes);
+  RUN_TEST(test_finish_without_an_ask_probes_only_for_a_failed_write);
   RUN_TEST(test_every_old_engine_effect_class_has_its_kind);
   RUN_TEST(test_the_shadow_table_is_the_bound);
   RUN_TEST(test_modes_move_only_as_the_prd_says);

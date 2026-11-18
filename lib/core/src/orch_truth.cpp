@@ -695,7 +695,17 @@ void TurnCheck::finishHeld(Outcome& o, bool roundReplied, bool failed) {
 }
 
 Outcome TurnCheck::finish(const std::string& reply, bool roundReplied) {
-  if (c_ && !asked_) atFinal(reply, false);   // the loop never asked (a single shot, a used round)
+  // The loop never asked (a single shot, a forced or cut answer, a round another check used):
+  // the reply is out, so only the receipt question can still change anything.
+  if (c_ && !asked_) {
+    if (mode() == Truth::Enforce && !writeFailed(t_.now)) {
+      asked_ = true;
+      firstReply_ = reply;
+      ++c_->turns;
+    } else {
+      atFinal(reply, false);
+    }
+  }
   Outcome o = o_;
   o.reply = reply;
   if (!c_) return o;

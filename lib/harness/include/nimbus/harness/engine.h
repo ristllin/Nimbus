@@ -931,6 +931,9 @@ class TurnEngine {
   // so runTurn's frame does not grow.
   std::unique_ptr<nimbus::orch::truth::TurnCheck> truth_;
   size_t truthMark_ = 0;   // turnFx_ entries before the ones apply records
+  std::string truthHeld_;  // the answer a hold replaced, until the turn ends
+  bool truthRescued_ = false;   // the held answer ended the turn (its round gave none)
+  void truthRescue(bool& ok, std::string& outJson);
   void startTruth(const std::string& chatId, const std::string& userText, bool memoryOnly);
   void noteTruthEffect(const std::string& tool, bool isError, const std::string& output);
   std::string truthAtFinal(const std::string& finalTurn, bool prose, const std::string& host);

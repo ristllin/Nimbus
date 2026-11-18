@@ -325,6 +325,9 @@ class TurnCheck {
   // The turn's end, with the reply to be delivered (the round's when one was held, unless
   // `roundReplied` is false): the outcome. Closes the binding.
   Outcome finish(const std::string& reply, bool roundReplied = true);
+  // The turn read outside content after the check opened (a held round's tool): from now on
+  // it is receipt-only, never probed.
+  void taint(bool tainted) { t_.tainted = t_.tainted || tainted; }
   bool active() const { return c_ != nullptr; }
   Truth mode() const;   // the turn's effective mode (receipt-only when tainted or ring unknown)
 

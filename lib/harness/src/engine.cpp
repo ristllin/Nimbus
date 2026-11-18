@@ -1675,7 +1675,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // lane L's turn-shape check (a spawn list that cannot be read, an orch_turn that
     // cannot be read) and the placeholder check. The reply's words are never checked
     // against the turn's effects here (RB-Q1b deleted the claim check, v5.2.0).
-    headTools.cfg.validateFinal = orch::chainFinalChecks({
+    const orch::FinalCheck finalChecks = orch::chainFinalChecks({
         [](const std::string& finalTurn) { return turnShapeCorrection(finalTurn); },
         [&userText](const std::string& finalTurn) { return placeholderCheck(finalTurn, userText); },
         // An empty reply gets one more try, on every provider. Only a turn with nothing to
@@ -1687,10 +1687,14 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
             return std::string();
           return emptyAnswerCorrection(finalTurn, pseudo.get());
         },
-        // RB-G0: the truth check (PRD 8.8). A reply that reports a stored change no effect
-        // backs gets the facts-only item and this one round; it never reads the reply for words.
-        [this, &host](const std::string& finalTurn) { return truthAtFinal(finalTurn, false, host); },
     });
+    // RB-G0: the truth check (PRD 8.8) runs after the checks above and only on an answer they
+    // accept: a reply that reports a stored change no effect backs gets the facts-only item
+    // and the one round. It never reads the reply for words.
+    headTools.cfg.validateFinal = [this, &host, finalChecks](const std::string& finalTurn) {
+      const std::string fix = finalChecks(finalTurn);
+      return fix.empty() ? truthAtFinal(finalTurn, false, host) : fix;
+    };
     // The forced round too: no real answer means one more tool-less round (VN, 1 Nov: the
     // literal "placeholder" went to the owner). The turn's end holds the line after it.
     headTools.cfg.forcedFinalCheck = [&userText](const std::string& finalTurn) {
@@ -2258,6 +2262,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   }
   // Introspection snapshot - success AND failure, so /api/lastturn always shows
   // what the model actually received on the most recent attempt.
+  truthRescue(ok, outJson);   // RB-G0: a held answer whose round failed or came back empty
   if (d_.hooks.onTurnDebug) {
     const std::unique_ptr<TurnDebugEv> debugEv(new TurnDebugEv());   // 128 B, off the stack (lane STACK)
     TurnDebugEv& ev = *debugEv;
@@ -2565,9 +2570,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       };
     }
     agent::applyTurn(turn, chatId, d_.apply, st, spawned);
-    truthFinishAndSend(chatId, turn.reply, host, captureWakeReply);   // RB-G0: the receipt line
     if (innerDeliver) d_.apply.deliver = std::move(innerDeliver);
   }
+  truthFinishAndSend(chatId, turn.reply, host, captureWakeReply);   // RB-G0: the receipt line
   reportApplyEffects(d_.hooks, turnFx_, chatId, fxMark);
   parkMemResults(chatId);
   // Lane POL2: the open-question list observes the completed turn (a reply that
@@ -2608,6 +2613,23 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
 // Each step fails open: a refused allocation or any throw inside the check leaves the turn
 // and its reply exactly as they were (the check is skipped, nothing is sent for it).
 
+// A held answer is never lost to its round: a round that failed (and no retry or other host
+// answered) or came back with nothing to say ends the turn with the held answer, as the loop
+// would have returned it. Its fields apply then, as they would have.
+__attribute__((noinline)) void TurnEngine::truthRescue(bool& ok, std::string& outJson) {
+  if (truthHeld_.empty()) return;
+  bool rescue = !ok || outJson.empty();
+  if (!rescue && !toolReplied_) {
+    std::string reply, ask;
+    rescue = !orch::finalTurnText(outJson, reply, &ask) ? false : reply.empty() && ask.empty();
+  }
+  if (!rescue) return;
+  hlog::log("truth: the held round gave no answer: the held answer ends the turn");
+  outJson.swap(truthHeld_);
+  ok = true;
+  truthRescued_ = true;
+}
+
 __attribute__((noinline)) void TurnEngine::startTruth(const std::string& chatId, const std::string& userText,
                                                       bool memoryOnly) {
   try {
@@ -2616,6 +2638,8 @@ __attribute__((noinline)) void TurnEngine::startTruth(const std::string& chatId,
   } catch (...) {
     truth_.reset();
   }
+  truthHeld_.clear();
+  truthRescued_ = false;
   truthMark_ = turnFx_.size();
 }
 
@@ -2658,13 +2682,19 @@ __attribute__((noinline)) std::string TurnEngine::truthAtFinal(const std::string
   try {
     const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
     if (!truth_->open(host, model, externalContentSeen_ || unverifiedTurn_)) return std::string();
-    if (prose) return truth_->atFinal(finalTurn);
-    const std::unique_ptr<orch::Turn> t(new orch::Turn());
-    orch::ParseError perr;
-    if (!orch::parseTurn(finalTurn, *t, perr)) return std::string();   // the engine salvages it
-    std::vector<orch::truth::TurnEffect> pending;
-    pendingFieldEffects(*t, pending);
-    return truth_->atFinal(t->reply, true, &pending);
+    std::string item;
+    if (prose) {
+      item = truth_->atFinal(finalTurn);
+    } else {
+      const std::unique_ptr<orch::Turn> t(new orch::Turn());
+      orch::ParseError perr;
+      if (!orch::parseTurn(finalTurn, *t, perr)) return std::string();   // the engine salvages it
+      std::vector<orch::truth::TurnEffect> pending;
+      pendingFieldEffects(*t, pending);
+      item = truth_->atFinal(t->reply, true, &pending);
+    }
+    if (!item.empty()) truthHeld_ = finalTurn;   // the answer the round replaces, kept until it ends
+    return item;
   } catch (...) {
     return std::string();
   }
@@ -2683,7 +2713,8 @@ __attribute__((noinline)) void TurnEngine::truthFinishAndSend(const std::string&
     }
     const std::string model = d_.cfg.provider.orchModel ? d_.cfg.provider.orchModel(host) : std::string();
     truth_->open(host, model, externalContentSeen_ || unverifiedTurn_);
-    line = truth_->finish(reply).status;   // the reply itself is never changed here
+    truth_->taint(externalContentSeen_ || unverifiedTurn_);   // the round may have read outside content
+    line = truth_->finish(reply, !truthRescued_).status;   // the reply itself is never changed here
   } catch (...) {
     return;
   }

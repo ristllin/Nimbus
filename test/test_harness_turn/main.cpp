@@ -6029,6 +6029,43 @@ static void test_the_truth_check_hook() {
     TEST_ASSERT_EQUAL_STRING("", r.finalChecks[0].c_str());
     for (const auto& d : r.delivered) TEST_ASSERT_TRUE(d.second.rfind("Note: ", 0) != 0);
   }
+  {  // A held answer whose round fails (a tool ran, so no retry or other host) ends the turn:
+     // the owner gets it, once, never the failure line.
+    Rig r;
+    r.truth.on = true;
+    r.truth.answers = {Verdict::Yes};
+    r.specs.push_back(orch::ToolRegistry::Spec{"memory.search", "search facts", "{}"});
+    Rig::Script s;
+    s.dispatchTools = 1;
+    s.checkFinal = true;
+    s.ok = false;
+    s.err = "HTTP 503 overloaded";
+    s.outJson = "{\"reply\":\"Logged 150 g skyr.\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("log 150 g skyr", "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.truth.probed.size());   // asked once, never again on a retry
+    int replies = 0, failures = 0;
+    for (const auto& d : r.delivered) {
+      replies += d.second.find("Logged 150 g skyr.") != std::string::npos;
+      failures += d.second.find("didn't finish") != std::string::npos;
+    }
+    for (const auto& a : r.assistantRows) replies += a.second.find("Logged 150 g skyr.") != std::string::npos;
+    TEST_ASSERT_TRUE(replies >= 1);
+    TEST_ASSERT_EQUAL(0, failures);
+    TEST_ASSERT_EQUAL_UINT32(1, r.truth.c.retryFailed);
+  }
+  {  // An answer another check sends back is not probed (the round is theirs).
+    Rig r;
+    r.truth.on = true;
+    r.truth.answers = {Verdict::Yes};
+    Rig::Script s;
+    s.checkFinal = true;
+    s.outJson = "{\"reply\":\"\",\"ask\":\"\",\"memory\":\"\"}";
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("what is my sister's cat called?", "Roy", "1001");
+    TEST_ASSERT_TRUE(r.finalChecks[0].rfind("[TURN CHECK]", 0) == 0);
+    TEST_ASSERT_EQUAL(0, (int)r.truth.probed.size());
+  }
   {  // Off: never a probe, the final check unchanged.
     Rig r;
     Rig::Script s;

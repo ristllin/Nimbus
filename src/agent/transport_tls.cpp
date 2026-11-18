@@ -56,6 +56,15 @@ namespace agent {
 
 namespace {
 
+// RB-G0: below this bound a request's timeout covers its whole exchange (see exec).
+constexpr uint32_t kShortBoundMs = 12000;
+// What is left of a short bound since `startMs` (at least 1 ms, so a late slot still fails
+// fast instead of waiting a default).
+uint32_t shortBoundLeft(uint32_t boundMs, uint32_t startMs) {
+  const uint32_t spent = millis() - startMs;
+  return spent >= boundMs ? 1 : boundMs - spent;
+}
+
 constexpr size_t kMaxResponseBody = 256 * 1024;
 // The streaming path bounds the RETAINED document instead (the old whole-body path
 // had kMaxResponseBody): nimbus::heapwatch::kMaxRetainedBytes and retainedTooLarge()
@@ -375,8 +384,14 @@ class TlsTransport : public HttpTransport {
       return 0;
     }
 
-    arbiter::WorkSlot slot(10000);   // a guard: an exception unwinding below gives it back (L24)
+    // RB-G0: a request with a short bound (the truth probe's 8 s) spends it on the whole
+    // exchange, the wait for a work slot and the handshake included; a provider request
+    // (30 s and more) keeps the 10 s slot wait and 12 s handshake and its full read window.
+    const uint32_t startMs = millis();
+    const bool shortBound = req.timeoutMs < kShortBoundMs;
+    arbiter::WorkSlot slot(shortBound ? req.timeoutMs : 10000);   // a guard: an exception unwinding below gives it back (L24)
     if (!slot) { err = "tls work-slot busy"; return 0; }
+    const uint32_t leftMs = shortBound ? shortBoundLeft(req.timeoutMs, startMs) : req.timeoutMs;
 
     // The exchange trace (heap F1): ONE line on every path out of here, with the
     // internal heap at four phase boundaries (free/largest; divergence =
@@ -421,18 +436,18 @@ class TlsTransport : public HttpTransport {
     Client* client;
     if (req.tls) {
       tlsSetup(tls);
-      tls.setHandshakeTimeout(12);              // bound a failed handshake; retry below
+      tls.setHandshakeTimeout(shortBound ? (leftMs + 999) / 1000 : 12);   // bound a failed handshake; retry below
       // F25: setTimeout() is a NO-OP on this client (it writes Stream::_timeout,
       // which NetworkClientSecure never reads - the socket ran at the hardcoded
       // 30 s default). setConnectionTimeout() is the real API: it drives
       // SO_RCVTIMEO/SO_SNDTIMEO so a half-open NAT read can't hang past this.
-      tls.setConnectionTimeout(req.timeoutMs);
+      tls.setConnectionTimeout(leftMs);
       client = &tls;
     } else {
-      plain.setConnectionTimeout(req.timeoutMs);
+      plain.setConnectionTimeout(leftMs);
       client = &plain;
     }
-    TlsIo io{req, client, tls, plain, out, doc, filter, millis() + req.timeoutMs, {}, {}};
+    TlsIo io{req, client, tls, plain, out, doc, filter, millis() + leftMs, {}, {}};
 
     const int code = nimbus::heapwatch::tracedExchange(io, trace, [&](ExchangeTrace& t) {
       marks.open = false;
