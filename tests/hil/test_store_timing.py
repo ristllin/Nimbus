@@ -24,8 +24,8 @@ from typing import Dict, List, Optional, Sequence
 import pytest
 
 CARD_RE = re.compile(r"^CARDTIME (?P<op>append|replace|rawreplace|read) (?P<kv>.*)$")
-HOLD_GATE_MS = 150          # PRD section 2: the longest card lock hold
-REFILL_GATE_MS = 3000       # PRD section 2: restart to full transcript in card time
+HOLD_GATE_MS = 150  # PRD section 2: the longest card lock hold
+REFILL_GATE_MS = 3000  # PRD section 2: restart to full transcript in card time
 
 APPEND_SIZES = (1024, 4096, 16384)
 READ_BYTES, READ_SLICE = 133120, 8192
@@ -91,18 +91,23 @@ def test_card_lines_parse():
 def test_short_write_or_failed_replace_is_not_a_sample():
     # Counter-test: an append that landed fewer bytes, a short read and a refused replace
     # are failures, never timing samples.
-    rows = [parse_card("CARDTIME append bytes=4096 wrote=1024 wait=0 hold=5"),
-            parse_card("CARDTIME read bytes=133120 got=8192 slice=8192 slices=1 total=9 holdSum=9 holdMax=9"),
-            parse_card("CARDTIME replace bytes=20480 ok=0 wait=0 hold=3 err=SD"),
-            parse_card("CARDTIME append bytes=4096 wrote=4096 wait=0 hold=30")]
+    rows = [
+        parse_card("CARDTIME append bytes=4096 wrote=1024 wait=0 hold=5"),
+        parse_card("CARDTIME read bytes=133120 got=8192 slice=8192 slices=1 total=9 holdSum=9 holdMax=9"),
+        parse_card("CARDTIME replace bytes=20480 ok=0 wait=0 hold=3 err=SD"),
+        parse_card("CARDTIME append bytes=4096 wrote=4096 wait=0 hold=30"),
+    ]
     assert [card_ok(r) for r in rows] == [False, False, False, True]
     s = summarize_card([rows[0], rows[3]], "hold")
     assert s["ok"] == 1 and s["hold"]["median"] == 30
 
 
 def test_a_missing_or_refused_answer_is_a_failed_run():
-    rows = [parse_card_row(""), parse_card_row("CARDTIME ERR no PSRAM"),
-            parse_card_row("CARDTIME append bytes=1024 wrote=1024 wait=0 hold=6")]
+    rows = [
+        parse_card_row(""),
+        parse_card_row("CARDTIME ERR no PSRAM"),
+        parse_card_row("CARDTIME append bytes=1024 wrote=1024 wait=0 hold=6"),
+    ]
     s = summarize_card(rows, "hold")
     assert s["runs"] == 3 and s["ok"] == 1
 

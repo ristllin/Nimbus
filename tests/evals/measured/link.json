@@ -827,6 +827,12 @@
    "timeouts": 0
   }
  },
+ "upload_fit": {
+  "n": 130,
+  "ms_per_byte": 0.004191858394325891,
+  "Bps_marginal": 238557.6767940449,
+  "intercept_ms": -4.571924894228232
+ },
  "photos": {
   "photo_bytes": [
    76598,
@@ -2579,12 +2585,6 @@
     ]
    }
   ]
- },
- "upload_fit": {
-  "n": 130,
-  "ms_per_byte": 0.004191858394325891,
-  "Bps_marginal": 238557.6767940449,
-  "intercept_ms": -4.571924894228232
  },
  "derived": {
   "connect_ms_anthropic": 1228.0,
