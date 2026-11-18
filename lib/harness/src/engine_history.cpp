@@ -198,7 +198,7 @@ bool TurnEngine::captureOwnerRow(const std::string& chatId, const std::string& t
   }
   history::Inbound in;
   const bool noted = history::takeInbound(chatId, text, in);
-  if (noted && !in.src.empty() && sourceSeen(recentRows(chatId, 2 * kHistoryPageRows), in.src)) {
+  if (noted && !in.src.empty() && sourceInHistory(chatId, in.src)) {
     hlog::logf("history: %s%s is already in this chat's history - delivery dropped", kSrcTag, in.src.c_str());
     return false;   // captured once, answered once
   }
@@ -295,17 +295,20 @@ ConvCache::View TurnEngine::cachedRows(const std::string& chatId, const HistoryM
                            pageAllowed);
 }
 
-std::vector<nimbus::orch::EpisodicMessage> TurnEngine::recentRows(const std::string& chatId, size_t rows) {
+bool TurnEngine::sourceInHistory(const std::string& chatId, const std::string& src) {
+  const size_t rows = 2 * kHistoryPageRows;
   const HistoryMarks marks = d_.historyMarks ? d_.historyMarks(chatId) : HistoryMarks();
-  const ConvCache::View view = cachedRows(chatId, marks, headHistoryBudget(), true);   // newest rows first
-  std::vector<nimbus::orch::EpisodicMessage> out = convCache_.newest(chatId, rows);
-  if (out.size() >= rows || !view.complete) return out;   // filling: its newest rows are held
-  // A complete entry holds only rows after thru and after the newest /clear: after a manual
-  // fold or a /clear it holds few or none. The duplicate check reads the chat's newest rows
-  // from the store instead, whatever thru or a /clear says (v5.1.1's check; lane CTXR1). The
-  // store's RAM ring serves it in steady state; it is counted as the turn's history read.
+  cachedRows(chatId, marks, headHistoryBudget(), true);   // brought up to date (the newest rows first)
+  const std::vector<nimbus::orch::EpisodicMessage> held = convCache_.newest(chatId, rows);
+  if (sourceSeen(held, src) || held.size() >= rows) return sourceSeen(held, src);
+  // The cache holds fewer than the chat's newest rows: only rows after thru and the newest
+  // /clear (after a manual fold or a /clear it holds few or none), or, while it fills after a
+  // restart (exactly when Telegram re-serves updates), only what its first page read. The
+  // check reads the chat's newest rows from the store, whatever thru or a /clear says (v5.1.1's
+  // check; lane CTXR1). The store's RAM ring serves it in steady state; it is counted as the
+  // turn's history read.
   const PsramFirstScope psramFirst;
-  return cacheReader(chatId)(HistoryQuery(rows));
+  return sourceSeen(cacheReader(chatId)(HistoryQuery(rows)), src);
 }
 
 HistoryWindow TurnEngine::historyWindow(const std::string& chatId, const HistoryBudget& b) {

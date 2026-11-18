@@ -724,10 +724,57 @@ static void test_a_replayed_update_is_dropped_after_a_compaction_or_a_clear() {
   }
 }
 
+// v5.1.2 fix review G: right after a restart the cache entry is still filling (one page of the
+// newest rows), and that is exactly when Telegram re-serves an update. An update older than that
+// page is still found in the store's newest rows and dropped, never answered twice.
+static void test_a_replayed_update_is_dropped_while_the_cache_fills() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  uint32_t seq;
+  {
+    EngineRig r(s.fs, s.seq, thru);
+    agent::history::Inbound in;
+    in.chatId = "c1";
+    in.src = "tg:1:6000x1";
+    agent::history::noteInbound(in, "log my dinner");
+    r.eng->handleMessage("log my dinner", "Roy", "c1");
+    TEST_ASSERT_EQUAL(1, (int)r.instructions.size());
+    seq = r.seq;
+  }
+  s.seq = seq;
+  for (int i = 1; i <= 15; i++) s.turn("c1", i);   // 30 newer conversation rows: past the fill's first page
+  EngineRig again(s.fs, s.seq, thru);                 // the restart: the boot scan, an empty cache
+  agent::history::Inbound in;
+  in.chatId = "c1";
+  in.src = "tg:1:6000x1";
+  agent::history::noteInbound(in, "log my dinner");
+  again.eng->handleMessage("log my dinner", "Roy", "c1");
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)again.instructions.size(), "the re-served update is dropped");
+}
+
+// The card reads of one read of the chat's newest 48 rows on the same store after a restart:
+// what the duplicate check costs while the cache fills (fix review G).
+static uint32_t newestRowsCardReads() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  for (int i = 1; i <= 200; i++) s.turn("c1", i, 500);
+  EngineRig r(s.fs, s.seq, thru);
+  const uint32_t before = epiCardReads();
+  MsgQuery q;
+  q.sessionId = "c1";
+  q.haveKind = true;
+  q.kind = MsgKind::Message;
+  q.alsoKinds = {MsgKind::Image, MsgKind::File, MsgKind::Audio};
+  q.limit = 48;
+  r.overlay.query(q, nullptr);
+  return epiCardReads() - before;
+}
 static void test_one_card_page_with_the_duplicate_check() {
   const uint32_t plain = firstTurnCardReads(false);
   TEST_ASSERT_TRUE(plain > 0);
-  TEST_ASSERT_EQUAL_UINT32(plain, firstTurnCardReads(true));
+  // The window's read takes no second page; the duplicate check adds only its own read of the
+  // newest rows, and only while the cache does not hold them yet (fix review G).
+  TEST_ASSERT_TRUE(firstTurnCardReads(true) <= plain + newestRowsCardReads());
 }
 
 // The same restart on a head with room (Claude Sonnet: 118 KB of history since the
@@ -773,6 +820,7 @@ int main(int, char**) {
   RUN_TEST(test_a_capped_index_still_completes_the_fill);
   RUN_TEST(test_one_card_page_with_the_duplicate_check);
   RUN_TEST(test_a_replayed_update_is_dropped_after_a_compaction_or_a_clear);
+  RUN_TEST(test_a_replayed_update_is_dropped_while_the_cache_fills);
   RUN_TEST(test_after_the_fill_the_whole_backlog_rides_the_request);
   return UNITY_END();
 }

@@ -889,8 +889,8 @@ class TurnEngine {
                         std::vector<nimbus::orch::EpisodicMessage>* fwd);
   FoldCursor& foldCursor(const std::string& chatId, const std::string& anchor);
   std::vector<FoldCursor> foldCursors_;   // a few chats, oldest first
-  // The chat's newest `rows` rows, newest first, from the cache (H7's duplicate check).
-  std::vector<nimbus::orch::EpisodicMessage> recentRows(const std::string& chatId, size_t rows);
+  // H7's duplicate check: `src` is among the chat's newest rows (the cache's, else the store's).
+  bool sourceInHistory(const std::string& chatId, const std::string& src);
   ConvCache convCache_;
   HistoryReadStats histRead_;
   HistoryWindow lastWindow_;
