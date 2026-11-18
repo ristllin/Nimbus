@@ -87,6 +87,7 @@
 // carries the linkTime marker the release ELF gate refuses.
 namespace nimbus::linkTime {
 LinkTimePhases linkTimeLast;
+volatile bool linkTimeArmed = false;
 volatile bool linkTimeLogMs = false;
 }  // namespace nimbus::linkTime
 
@@ -845,12 +846,18 @@ size_t linkTimeBodyBytes(const agent::HttpRequest& r) {
   return n;
 }
 
-// One exchange through the device transport; the answer's body lands in `resp`.
+// One exchange through the device transport; the answer's body lands in `resp`. The phase
+// record is armed for this exchange only (sys/link_time.h); an exchange that never took the
+// slot leaves it empty, so its phases print as -1, never another exchange's.
 int linkTimeExchange(const agent::HttpRequest& req, std::string& resp, std::string& err) {
   agent::HttpResponse out;
+  nimbus::linkTime::linkTimeLast = nimbus::linkTime::LinkTimePhases{};
+  nimbus::linkTime::linkTimeArmed = true;
   esp_task_wdt_delete(nullptr);
   const bool ok = agent::deviceTransport().exec(req, out, err);
   esp_task_wdt_add(nullptr);
+  nimbus::linkTime::linkTimeArmed = false;
+  nimbus::linkTime::linkTimeLast.live = false;
   resp = out.body;
   return ok ? out.status : 0;
 }
@@ -900,7 +907,7 @@ uint8_t* linkTimeLoad(const String& path, size_t& len) {
   len = 0;
   agent::memory::LoopLock g(5000);
   if (!g) return nullptr;
-  File f = solide::storage::activeFs().open(path.c_str(), FILE_READ);
+  File f = agent::memory::dataFs().open(path.c_str(), FILE_READ);
   if (!f) return nullptr;
   const size_t n = f.size();
   uint8_t* buf = (n && n <= kLinkTimeMaxPhotoBytes) ? (uint8_t*)heap_caps_malloc(n, MALLOC_CAP_SPIRAM) : nullptr;
@@ -981,7 +988,11 @@ void linkTimeFile(const String& path) {
   int code = linkTimeExchange(req, resp, err);
   linkTimeReport("file", code, linkTimeBodyBytes(req), code == 200 ? err : err + resp.substr(0, 120));
   const std::string id = code == 200 ? linkTimeJsonId(resp) : std::string();
-  if (id.empty()) return;
+  if (id.empty()) {   // a stored upload with no id cannot be deleted: say so on the delete's line
+    if (code == 200) Serial.println("LINKX fdel code=0 body=0 conn=-1 head=-1 up=-1 paced=0 wait=-1 hdrs=-1 read=-1 "
+                                    "total=-1 err=no file id in the upload answer");
+    return;
+  }
   agent::HttpRequest del = linkTimeAntRequest("DELETE", "/v1/files/" + id);
   del.headers.push_back({"anthropic-beta", "files-api-2025-04-14"});
   code = linkTimeExchange(del, resp, err);

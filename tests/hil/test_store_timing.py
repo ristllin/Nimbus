@@ -42,7 +42,15 @@ def parse_card(line: str) -> Optional[Dict[str, object]]:
     return out
 
 
+def parse_card_row(line: str) -> Dict[str, object]:
+    """A row for every answer slot: a line that does not parse (no answer, CARDTIME ERR, a
+    usage line) is a failed run, never dropped."""
+    return parse_card(line or "") or {"op": "failed", "line": (line or "(no answer)")[:80]}
+
+
 def card_ok(r: Dict[str, object]) -> bool:
+    if r["op"] == "failed":
+        return False
     if r["op"] == "append":
         return r.get("wrote") == r.get("bytes")
     if r["op"] == "read":
@@ -90,6 +98,13 @@ def test_short_write_or_failed_replace_is_not_a_sample():
     assert [card_ok(r) for r in rows] == [False, False, False, True]
     s = summarize_card([rows[0], rows[3]], "hold")
     assert s["ok"] == 1 and s["hold"]["median"] == 30
+
+
+def test_a_missing_or_refused_answer_is_a_failed_run():
+    rows = [parse_card_row(""), parse_card_row("CARDTIME ERR no PSRAM"),
+            parse_card_row("CARDTIME append bytes=1024 wrote=1024 wait=0 hold=6")]
+    s = summarize_card(rows, "hold")
+    assert s["runs"] == 3 and s["ok"] == 1
 
 
 def test_malformed_card_line_is_refused():

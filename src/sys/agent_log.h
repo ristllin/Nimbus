@@ -99,8 +99,11 @@ inline void logSerial(const std::string& red) {
 #if defined(NIMBUS_TEST)
   // Lane RB-M2 (test builds only): LOGMS on stamps each serial line with the device's
   // uptime, so the bench reads device-side times off these lines ("[agent @<ms>] ...").
-  if (nimbus::linkTime::linkTimeLogMs) Serial.printf("[agent @%lu] ", (unsigned long)millis());
-  else
+  if (nimbus::linkTime::linkTimeLogMs) {
+    Serial.printf("[agent @%lu] ", (unsigned long)millis());
+    Serial.println(red.c_str());
+    return;
+  }
 #endif
   Serial.print("[agent] ");
   Serial.println(red.c_str());

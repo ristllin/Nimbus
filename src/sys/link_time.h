@@ -30,26 +30,38 @@ struct LinkTimePhases {
   uint32_t status = 0;   // the status line arrived (the provider's wait ends here)
   uint32_t hdrs = 0;     // the header block was read
   uint32_t done = 0;     // the body was read and the socket closed
+  bool live = false;     // this record belongs to the exchange running now (armed by the console)
 };
 
 extern LinkTimePhases linkTimeLast;
+// Set by the console just before its own exchange. Only the next exchange to take the
+// work slot records (it takes the arm), and it stops recording before it gives the slot
+// back, so another task's exchange can never write into the console's record.
+extern volatile bool linkTimeArmed;
 // LOGMS on: every serial log line ("[agent] ...") carries the device's uptime in ms, so a
 // bench script reads device-side times off the existing log lines.
 extern volatile bool linkTimeLogMs;
 
 inline void linkTimeBegin(uint32_t nowMs) {
+  if (!linkTimeArmed) return;
+  linkTimeArmed = false;
   linkTimeLast = LinkTimePhases{};
   linkTimeLast.start = nowMs;
+  linkTimeLast.live = true;
 }
 
 }  // namespace linkTime
 }  // namespace nimbus
 
 #define LINKTIME_BEGIN(ms) ::nimbus::linkTime::linkTimeBegin(ms)
-#define LINKTIME_MARK(field) (::nimbus::linkTime::linkTimeLast.field = (uint32_t)millis())
-#define LINKTIME_SET(field, v) (::nimbus::linkTime::linkTimeLast.field = (uint32_t)(v))
+#define LINKTIME_MARK(field) \
+  (::nimbus::linkTime::linkTimeLast.live ? (void)(::nimbus::linkTime::linkTimeLast.field = (uint32_t)millis()) : (void)0)
+#define LINKTIME_SET(field, v) \
+  (::nimbus::linkTime::linkTimeLast.live ? (void)(::nimbus::linkTime::linkTimeLast.field = (uint32_t)(v)) : (void)0)
+#define LINKTIME_END() (::nimbus::linkTime::linkTimeLast.live = false)
 #else
 #define LINKTIME_BEGIN(ms) ((void)0)
 #define LINKTIME_MARK(field) ((void)0)
 #define LINKTIME_SET(field, v) ((void)0)
+#define LINKTIME_END() ((void)0)
 #endif

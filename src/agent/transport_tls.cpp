@@ -444,6 +444,12 @@ class TlsTransport : public HttpTransport {
       nimbus::heapwatch::tlsIoEnd();
       t.minFree = nimbus::heapwatch::monitorStop(monitored);
       t.durMs = millis() - t.atMs;
+      // Lane RB-M2 (test builds): the bench record is complete before the slot is free.
+      LINKTIME_SET(body0, io.bodyStartMs);
+      LINKTIME_SET(body1, io.bodyEndMs);
+      LINKTIME_SET(paced, io.pacedMs);
+      LINKTIME_SET(done, t.atMs + t.durMs);
+      LINKTIME_END();
       slot.release();
       t.af = nimbus::heapwatch::allocFails() - afStart;
       t.done = sampleHeap();
@@ -451,10 +457,6 @@ class TlsTransport : public HttpTransport {
       // predicts (the heaptrace line's last fields; the durable line for a large body).
       t.wms = io.bodyEndMs - io.bodyStartMs;
       t.pms = io.pacedMs;
-      LINKTIME_SET(body0, io.bodyStartMs);
-      LINKTIME_SET(body1, io.bodyEndMs);
-      LINKTIME_SET(paced, io.pacedMs);
-      LINKTIME_SET(done, t.atMs + t.durMs);
       // Forensic window (heap F1.5): a healthy exchange's trace stays in the RAM ring and
       // serial; a failed one, one with a failed allocation, or one that took internal
       // memory near its floor is durable evidence.

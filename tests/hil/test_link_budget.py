@@ -673,6 +673,10 @@ def plan_turns(b: Bench, n: int, out: str) -> None:
         b.say("TURNS NOT RUN: no bench bot token or test chat in the main .env")
         return
     before = b.orch()
+    if before.get("hasTg"):
+        # A bot token cannot be read back, so one the board already has could not be put back.
+        b.say("TURNS NOT RUN: the board already has a Telegram bot; its token could not be restored")
+        return
     restore = {"orchHost": before.get("orchHost", ""), "tgAllow": before.get("tgAllow", "")}
     b.say(f"TURNS setup: head was {restore['orchHost']!r}, Telegram {'on' if before.get('hasTg') else 'off'}")
     b.http("POST", "/api/orch", {"tgToken": tg_tok, "tgAllow": chat, "orchHost": "anthropic"})
@@ -901,7 +905,7 @@ def analyze(holds: Sequence[str]) -> Dict[str, object]:
             continue
         res["photos"][k] = summarize_exchanges([x for x in (parse_linkx(ln) for ln in lines) if x])
     for k, lines in store.items():
-        rows = [r for r in (st.parse_card(ln) for ln in lines if ln) if r]
+        rows = [st.parse_card_row(ln) for ln in lines]
         key = "total" if k.startswith("read") else "hold"
         res["store"][k] = st.summarize_card(rows, key)
         if k.startswith("read"):
