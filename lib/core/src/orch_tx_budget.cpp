@@ -16,6 +16,9 @@ namespace tx {
 
 namespace {
 
+// Engine 2 always runs the tool loop: a head's turn goes out split (the history as messages), so its
+// released row is turnBudgetFor's with the loop on (the one seam, test_orch_budget).
+constexpr bool kToolLoopOn = true;
 constexpr Profile kAll[] = {Profile::Tight, Profile::Lean, Profile::Standard, Profile::Wide, Profile::Full};
 constexpr ProfileMarks kFixed[] = {{24000, 12000}, {40000, 20000}, {60000, 30000}, {100000, 50000}};
 
@@ -129,13 +132,13 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
 
 Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift, HeadBudget& out) {
   if (head.host.empty() || head.model.empty()) return Status::fail(Err::InvalidArgument, "tx::budgetFor");
-  out = budgetFromRow(requestBudgetFor(head.host, head.model, head.routed, link, routedLift), head, requested);
+  out = budgetFromRow(turnBudgetFor(head.host, head.model, kToolLoopOn, link, routedLift), head, requested);
   return Status::success();
 }
 
 Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out) {
   if (head.host.empty() || head.model.empty()) return Status::fail(Err::InvalidArgument, "tx::budgetFor");
-  out = budgetFromRow(requestBudgetFor(head.host, head.model, head.routed), head, requested);
+  out = budgetFromRow(turnBudgetFor(head.host, head.model, kToolLoopOn), head, requested);
   return Status::success();
 }
 

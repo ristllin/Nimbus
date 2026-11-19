@@ -351,6 +351,8 @@ class Battery {
     d.files = &files;
     d.chatKey = chatKey;
     d.chatId = chatKey;
+    const plain::TurnCtx head = turnCtx(0, plain::Trigger::Owner);   // the head the marks are read for (RB-T4)
+    d.headKey = tx::HeadKey{head.host, head.model, routed};
     d.head = [this] { return engine ? engine->head() : nullptr; };
     d.digests = [this] { return engine ? engine->digests() : nullptr; };
     d.omittedThru = [this] { return engine ? engine->omittedThru() : uint64_t(0); };

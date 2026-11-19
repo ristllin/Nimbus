@@ -17,7 +17,7 @@
 // The default profile is `full` everywhere (rulings 81 and 83 item 2). The smaller profiles exist
 // only as the owner's pinned choice, never as a fallback: an empty or unknown slug, a missing
 // table or a head nobody measured resolves to full. No head's default carries less than its
-// released v5.1.2 row (orch::requestBudgetFor, test/support/fixtures/budgets_v5_1_2.json).
+// released v5.1.2 row (orch::turnBudgetFor, test/support/fixtures/budgets_v5_1_2.json).
 //
 // Seam declared by lane RB-B0a; the body (orch_tx_budget.cpp) and the generated table
 // (docs/reference/transcript-budgets.md, test_tx_budget) are lane RB-T4's.
@@ -91,7 +91,7 @@ struct TokenMarks {
 struct HeadKey {
   std::string host;     // provider slug ("anthropic", "openai", "zai", "mistral", "cumulo", "custom")
   std::string model;
-  bool routed = false;  // through the Cumulo router (host "cumulo" always is)
+  bool routed = false;  // through the Cumulo router: the router is host "cumulo" (turnBudgetFor reads its upstream)
 };
 
 // Why the aim sits where it does (the released row's bound, read in tokens).
@@ -124,7 +124,8 @@ Status profileMarks(Profile p, ProfileMarks& out);
 Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out);
 // The same on an explicit link and routed lift (the generated table and tests).
 Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift, HeadBudget& out);
-// The budget from a released row already in hand (pure; the two above read requestBudgetFor).
+// The budget from a released row already in hand (pure; the two above read orch::turnBudgetFor with
+// the tool loop on).
 HeadBudget budgetFromRow(const RequestBudget& row, const HeadKey& head, Profile requested);
 
 // Body bytes of a request of `tokens` on the head's wire (the ratio budgetFor used).
