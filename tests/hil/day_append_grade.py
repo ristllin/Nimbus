@@ -92,14 +92,9 @@ def numbers_in(reply: str) -> List[int]:
     return [int(n) for n in re.findall(r"\d+", flat)]
 
 
-def grade(t: Table, after: str, final_reply: str, appends: List[tuple]) -> List[Check]:
-    """`appends`: (file before, file after) of every turn that only added rows."""
-    rows = data_rows(after)
-    sat, sun = day_rows(rows, SAT), day_rows(rows, SUN)
-    sat_sum, sun_sum = sum(figure(r, t.col) for r in sat), sum(figure(r, t.col) for r in sun)
+def _file_checks(t: Table, after: str, appends: List[tuple]) -> List[Check]:
+    """The file as the device left it: the header, the seeded rows, every append a pure one."""
     seeded = seed(t).splitlines()
-    later = [r for r in rows if r.get("date", "")[:10] > SUN]
-    nums = numbers_in(final_reply)
     grown = [b.startswith(a) and len(b) > len(a) for a, b in appends]
     return [
         Check("header kept", after.startswith(seeded[0] + "\n"), after.splitlines()[0] if after else "(empty)"),
@@ -109,26 +104,48 @@ def grade(t: Table, after: str, final_reply: str, appends: List[tuple]) -> List[
             bool(grown) and all(grown),
             f"{sum(grown)} of {len(grown)} turns kept every earlier byte and added rows",
         ),
+    ]
+
+
+def _day_checks(t: Table, rows: List[Dict[str, str]]) -> List[Check]:
+    """Each row on its local day, the correction leaving one row, both days' totals exact."""
+    sat, sun = day_rows(rows, SAT), day_rows(rows, SUN)
+    sat_sum, sun_sum = sum(figure(r, t.col) for r in sat), sum(figure(r, t.col) for r in sun)
+    near = lambda r, v: abs(figure(r, t.col) - v) < 0.5  # noqa: E731
+    later = [r for r in rows if r.get("date", "")[:10] > SUN]
+    return [
         Check("Saturday has 3 rows", len(sat) == 3, f"{len(sat)} rows dated {SAT}"),
         Check("Saturday total exact", abs(sat_sum - SAT_TOTAL) < 0.5, f"{sat_sum:g} (want {SAT_TOTAL})"),
         Check(
             "the 00:20 row on the local day (Sunday)",
-            any(abs(figure(r, t.col) - FIGURES["night"]) < 0.5 for r in sun),
+            any(near(r, FIGURES["night"]) for r in sun),
             f"Sunday figures {[figure(r, t.col) for r in sun]}",
         ),
         Check(
             "the correction left one row",
-            not any(abs(figure(r, t.col) - FIGURES["morning"]) < 0.5 for r in rows)
-            and sum(abs(figure(r, t.col) - FIGURES["fixed"]) < 0.5 for r in rows) == 1,
+            not any(near(r, FIGURES["morning"]) for r in rows) and sum(near(r, FIGURES["fixed"]) for r in rows) == 1,
             f"no {FIGURES['morning']} row left, one {FIGURES['fixed']} row",
         ),
         Check("Sunday has 2 rows", len(sun) == 2, f"{len(sun)} rows dated {SUN}"),
         Check("Sunday total exact", abs(sun_sum - SUN_TOTAL) < 0.5, f"{sun_sum:g} (want {SUN_TOTAL})"),
         Check("no row after Sunday", not later, f"{len(later)} later rows"),
-        Check(
-            "reply states both totals", SAT_TOTAL in nums and SUN_TOTAL in nums, f"numbers in the reply: {nums[:20]}"
-        ),
     ]
+
+
+def grade(t: Table, after: str, final_reply: str, appends: List[tuple]) -> List[Check]:
+    """`appends`: (file before, file after) of every turn that only added rows."""
+    nums = numbers_in(final_reply)
+    return (
+        _file_checks(t, after, appends)
+        + _day_checks(t, data_rows(after))
+        + [
+            Check(
+                "reply states both totals",
+                SAT_TOTAL in nums and SUN_TOTAL in nums,
+                f"numbers in the reply: {nums[:20]}",
+            )
+        ]
+    )
 
 
 def verdict(checks: List[Check]) -> str:

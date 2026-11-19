@@ -661,6 +661,28 @@ def release_total_problems(root: str, reference: "dict | None" = None) -> "list[
     ]
 
 
+def measure_main(tree: str, generator: "str | None") -> int:
+    """--measure-release-reference: engine 1's total over a released tree."""
+    gen = load_generator(generator) if generator else None
+    total, missing = tree_e1_total(tree, gen)
+    print(f"engine 1 total {total} B; listed sources not in that tree: {', '.join(missing) or 'none'}")
+    return 0
+
+
+def release_main(root: str) -> int:
+    """--release: the release check alone (ruling 43)."""
+    errs = release_total_problems(root)
+    for e in errs:
+        print(f"no-prompt-patch release: {e}")
+    if errs:
+        print("PROMPT TOTAL RED")
+        return 1
+    total = sum(e.size for e in cat.build_e1(root))
+    ref = RELEASE_REFERENCE
+    print(f"PROMPT TOTAL GREEN ({total} B < {ref['release']} {ref['bytes']} B, main {ref['sha'][:9]})")
+    return 0
+
+
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="No-prompt-patch gate (PRD section 11)")
     ap.add_argument("--root", default=REPO)
@@ -680,22 +702,9 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--generator", help="with --measure-release-reference: the generator file to use")
     args = ap.parse_args(argv)
     if args.measure_release_reference:
-        gen = load_generator(args.generator) if args.generator else None
-        total, missing = tree_e1_total(args.measure_release_reference, gen)
-        print(f"engine 1 total {total} B; listed sources not in that tree: {', '.join(missing) or 'none'}")
-        return 0
+        return measure_main(args.measure_release_reference, args.generator)
     if args.release:
-        errs = release_total_problems(args.root)
-        for e in errs:
-            print(f"no-prompt-patch release: {e}")
-        total = sum(e.size for e in cat.build_e1(args.root)) if not errs else 0
-        ref = RELEASE_REFERENCE
-        print(
-            "PROMPT TOTAL RED"
-            if errs
-            else f"PROMPT TOTAL GREEN ({total} B < {ref['release']} {ref['bytes']} B, main {ref['sha'][:9]})"
-        )
-        return 1 if errs else 0
+        return release_main(args.root)
     base = None if args.no_base else resolve_base(args.root, args.base)
     if args.base and not base:
         print(f"no-prompt-patch: base {args.base!r} does not resolve")

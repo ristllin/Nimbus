@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <new>
 #include <string>
 
@@ -55,56 +56,76 @@ struct Table {
   const char *project, *name, *seed, *row;
 };
 
+// One table's leg: where its file lives, what is appended, and the store of the current step.
+struct Leg {
+  const Table& t;
+  bool seeded;
+  std::string dir, path, where, text;
+  std::unique_ptr<PosixFiles> files;
+};
+
+// One call of files.append with the Nth allocation from arming refused.
+struct Step {
+  bool ok = false, threw = false, hit = false, listed = false;
+  std::string before, after, err;
+};
+
+static Step refuseAt(long k, Leg& leg) {
+  ndtest::rmTree(leg.dir);
+  mkdir(leg.dir.c_str(), 0755);
+  leg.files.reset(new PosixFiles(leg.dir));
+  if (leg.seeded) leg.files->seed(leg.where, leg.t.seed);   // stored with no final line end
+  Step s;
+  s.before = disk(leg.path);
+  s.listed = leg.files->has(leg.where);
+  std::string note;
+  s.err.reserve(64);
+  note.reserve(256);
+  gAllocs = 0;
+  gFailAt = k;
+  gHit = false;
+  gArmed = true;
+  try {
+    s.ok = leg.files->append(leg.t.project, leg.t.name, leg.text, s.err, note);
+  } catch (...) {
+    s.threw = true;
+  }
+  gArmed = false;
+  s.hit = gHit;
+  s.after = disk(leg.path);
+  return s;
+}
+
+static std::string withRows(const std::string& before, const Table& t) {
+  return before + (before.empty() ? "" : "\n") + t.row + "\n" + t.row + "\n";
+}
+
 static void sweep(ndtest::Ctx& c, const Table& t, bool seeded) {
-  const std::string dir = ndtest::scratchDir(std::string("haa-") + t.project + (seeded ? "-s" : "-n"));
-  const std::string path = dir + "/" + t.project + "/" + t.name, where = std::string(t.project) + "/" + t.name;
-  const std::string text = std::string(t.row) + "\n" + t.row;   // two rows, no final line end
+  Leg leg{t, seeded, ndtest::scratchDir(std::string("haa-") + t.project + (seeded ? "-s" : "-n")), "", "", "", nullptr};
+  leg.path = leg.dir + "/" + t.project + "/" + t.name;
+  leg.where = std::string(t.project) + "/" + t.name;
+  leg.text = std::string(t.row) + "\n" + t.row;   // two rows, no final line end
   int refusals = 0, steps = 0;
   bool clean = true;
   for (long k = 0;; ++k, ++steps) {
-    ndtest::rmTree(dir);
-    mkdir(dir.c_str(), 0755);
-    PosixFiles files(dir);
-    if (seeded) files.seed(where, t.seed);   // stored with no final line end
-    const std::string before = disk(path);
-    const std::string hashBefore = sha8(before);
-    const bool listed = files.has(where);
-    std::string err, note;
-    err.reserve(64);
-    note.reserve(256);
-    bool ok = false, threw = false;
-    gAllocs = 0;
-    gFailAt = k;
-    gHit = false;
-    gArmed = true;
-    try {
-      ok = files.append(t.project, t.name, text, err, note);
-    } catch (...) {
-      threw = true;
-    }
-    gArmed = false;
-    const std::string after = disk(path);
-    if (threw) {
+    const Step s = refuseAt(k, leg);
+    if (s.threw) {
       c.ok(false, "an exception left files.append at allocation " + std::to_string(k));
-      clean = false;
+      return;
+    }
+    if (!s.hit) {   // every allocation of the call has been refused once
+      c.ok(s.ok && s.after == withRows(s.before, t), std::string("with memory the rows land whole: ") + t.name);
       break;
     }
-    if (!gHit) {   // every allocation of the call has been refused once
-      const std::string want = before + (before.empty() ? "" : "\n") + t.row + "\n" + t.row + "\n";
-      c.ok(ok && after == want, std::string("with memory the rows land whole: ") + t.name);
-      break;
-    }
-    if (ok) {
-      // A refusal after the bytes landed (the index file write) still appended them whole.
-      clean = clean && after == before + (before.empty() ? "" : "\n") + t.row + "\n" + t.row + "\n";
+    if (s.ok) {   // a refusal after the bytes landed (the index file write) still appended them whole
+      clean = clean && s.after == withRows(s.before, t);
       continue;
     }
     ++refusals;
-    clean = clean && err == nimbus::orch::kAppendNoMemory && after == before && sha8(after) == hashBefore &&
-            files.has(where) == listed;
-    // Memory is back: the same store appends.
-    std::string e2, n2;
-    clean = clean && files.append(t.project, t.name, t.row, e2, n2) && disk(path).size() > before.size();
+    clean = clean && s.err == nimbus::orch::kAppendNoMemory && s.after == s.before &&
+            sha8(s.after) == sha8(s.before) && leg.files->has(leg.where) == s.listed;
+    std::string e2, n2;   // memory is back: the same store appends
+    clean = clean && leg.files->append(t.project, t.name, t.row, e2, n2) && disk(leg.path).size() > s.before.size();
   }
   c.ok(clean, std::string("every refusal is a clean error with the file as it was: ") + t.name +
                   (seeded ? " (stored)" : " (new)"));

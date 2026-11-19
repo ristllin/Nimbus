@@ -107,18 +107,7 @@ class PosixFiles {
             "Add rows to the END of a TEXT document (a log, a CSV); creates it when missing. "
             "Up to 4 KB per call. Only the new rows are written: nothing stored is read back, "
             "replaced or rewritten.",
-            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
-              std::vector<std::string> old;
-              for (const char* k : nimbus::orch::kAppendOldArgs)
-                if (!a[k].isNull()) old.push_back(k);
-              if (!old.empty()) return nimbus::orch::ToolResult::fail(nimbus::orch::appendArgsError(old));
-              if (p.empty() || n.empty())
-                return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
-              std::string err, note;
-              if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
-              return nimbus::orch::ToolResult::ok(note);
-            },
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return appendTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
@@ -396,27 +385,45 @@ class PosixFiles {
   }
 
  private:
-  bool appendOrThrow(const std::string& p, const std::string& n, const std::string& text,
-                     std::string& err, std::string& note) {
-    if (!nimbus::orch::FileStore::validSegment(p, 24) ||
-        !nimbus::orch::FileStore::validSegment(n, 48)) {
+  // One append, everything that allocates built before the first byte lands.
+  struct AppendJob {
+    std::string path, index, dump, done, shortWrite = "write failed - nothing was added";
+    nimbus::orch::AppendPlan plan;
+    nimbus::orch::FileStore next;
+    size_t size = 0;
+    bool existed = false;
+  };
+
+  // The reply of a landed append: rows, the new size, the line-end and width facts.
+  static std::string appendReceipt(const AppendJob& j, const std::string& p, const std::string& n, uint32_t bytes) {
+    std::string out = "appended " + std::to_string(j.plan.rows) + (j.plan.rows == 1 ? " row" : " rows") + " to " + p +
+                      "/" + n + " (now " + std::to_string(bytes) + " bytes)";
+    if (j.plan.repairedCut) out += "; its last row had no line end, so the new rows start on a fresh line";
+    if (nimbus::orch::isCsvName(n)) out += nimbus::orch::csvWidthNote(j.size ? firstLine(j.path) : "", j.plan.bytes);
+    return out;
+  }
+
+  // Plan the append, check the room, and build the next index: false (err set) refuses it.
+  bool prepareAppend(const std::string& p, const std::string& n, const std::string& text, AppendJob& j,
+                     std::string& err) {
+    if (!nimbus::orch::FileStore::validSegment(p, 24) || !nimbus::orch::FileStore::validSegment(n, 48)) {
       err = "invalid project or name";
       return false;
     }
     const nimbus::orch::FileEntry* old = store_.find(p, n);
-    const std::string path = bytesPath(p, n);
-    size_t size = 0;
+    j.existed = old != nullptr;
+    j.path = bytesPath(p, n);
     char last = '\0';
-    if (!fileEnd(path, old != nullptr, size, last)) {
+    if (!fileEnd(j.path, j.existed, j.size, last)) {
       err = "read failed - nothing was added";
       return false;
     }
-    const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last);
-    if (!plan.ok) {
-      err = plan.err;
+    j.plan = nimbus::orch::planAppend(text, j.size, last);
+    if (!j.plan.ok) {
+      err = j.plan.err;
       return false;
     }
-    if (!roomFor(p, n, size + plan.bytes.size(), err)) return false;
+    if (!roomFor(p, n, j.size + j.plan.bytes.size(), err)) return false;
     ::mkdir((root_ + "/" + p).c_str(), 0755);
     nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
     if (!old) {
@@ -425,35 +432,52 @@ class PosixFiles {
       e.createdAt = vclock::epoch32();
       e.kind = nimbus::orch::fileKindForName(n);
     }
-    e.bytes = (uint32_t)(size + plan.bytes.size());
+    e.bytes = (uint32_t)(j.size + j.plan.bytes.size());
     e.hash = 0;
-    nimbus::orch::FileStore next = store_;
-    if (!next.add(e, err)) return false;
-    const std::string index = indexPath(), dump = next.dump();
-    std::string done = "appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " + p +
-                       "/" + n + " (now " + std::to_string(e.bytes) + " bytes)" +
-                       (plan.repairedCut ? "; its last row had no line end, so the new rows start on a fresh line" : "") +
-                       (nimbus::orch::isCsvName(n) ? nimbus::orch::csvWidthNote(size ? firstLine(path) : "", plan.bytes) : "");
-    std::string shortWrite = "write failed - nothing was added";
+    j.next = store_;
+    if (!j.next.add(e, err)) return false;
+    j.index = indexPath();
+    j.dump = j.next.dump();
+    j.done = appendReceipt(j, p, n, e.bytes);
+    return true;
+  }
+
+  bool appendOrThrow(const std::string& p, const std::string& n, const std::string& text,
+                     std::string& err, std::string& note) {
+    AppendJob j;
+    if (!prepareAppend(p, n, text, j, err)) return false;
     // The first byte lands here; nothing below allocates before the bytes are known whole.
-    FILE* f = std::fopen(path.c_str(), "ab");
-    const size_t wrote = f ? std::fwrite(plan.bytes.data(), 1, plan.bytes.size(), f) : 0;
+    FILE* f = std::fopen(j.path.c_str(), "ab");
+    const size_t wrote = f ? std::fwrite(j.plan.bytes.data(), 1, j.plan.bytes.size(), f) : 0;
     const bool flushed = f && std::fflush(f) == 0;
     if (f) std::fclose(f);
-    if (wrote != plan.bytes.size() || !flushed) {
-      if (f && (old || size > 0)) (void)::truncate(path.c_str(), (off_t)size);   // the file as it was
-      else if (f) ::unlink(path.c_str());   // a file this call created
-      err.swap(shortWrite);
+    if (wrote != j.plan.bytes.size() || !flushed) {
+      if (f && (j.existed || j.size > 0)) (void)::truncate(j.path.c_str(), (off_t)j.size);   // the file as it was
+      else if (f) ::unlink(j.path.c_str());   // a file this call created
+      err.swap(j.shortWrite);
       return false;
     }
-    store_ = std::move(next);
-    note.swap(done);
+    store_ = std::move(j.next);
+    note.swap(j.done);
     try {
-      fsutil::writeFileAtomic(index, dump);
+      fsutil::writeFileAtomic(j.index, j.dump);
     } catch (const std::bad_alloc&) {
       // The rows landed and the index in memory says so; the index file catches up at the next write.
     }
     return true;
+  }
+
+  // files.append's handler: an older key, sum or replace is one error naming them (nothing written).
+  nimbus::orch::ToolResult appendTool(ArduinoJson::JsonObjectConst a) {
+    const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
+    std::vector<std::string> old;
+    for (const char* k : nimbus::orch::kAppendOldArgs)
+      if (!a[k].isNull()) old.push_back(k);
+    if (!old.empty()) return nimbus::orch::ToolResult::fail(nimbus::orch::appendArgsError(old));
+    if (p.empty() || n.empty()) return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
+    std::string err, note;
+    if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
+    return nimbus::orch::ToolResult::ok(note);
   }
 
   // The device's day (the day total of files.read {tail, sum}).

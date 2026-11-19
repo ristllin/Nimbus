@@ -728,20 +728,27 @@ bool isDated(const std::string& s) {
 // A figure that is not part of a date: a token with a digit, after the YYYY-MM-DD dates are
 // taken out, leaving the day of the month beside a month name ("16 oct") and the year after
 // a month name ("31 december 2026", "oct 2026") aside.
+bool isIsoDateAt(const std::string& s, size_t i) {
+  return allDigitsN(s, i, 4) && s[i + 4] == '-' && allDigitsN(s, i + 5, 2) && s[i + 7] == '-' && allDigitsN(s, i + 8, 2);
+}
+
+bool monthAt(const std::vector<std::string>& tok, size_t i) { return i < tok.size() && isMonthWord(tok[i]); }
+
+// Token i is part of a written date: a day of the month beside a month name, or a year after one.
+bool partOfDate(const std::vector<std::string>& tok, size_t i) {
+  const bool nearMonth = (i > 0 && monthAt(tok, i - 1)) || monthAt(tok, i + 1);
+  if (isDayNumber(tok[i]) && nearMonth) return true;
+  if (tok[i].size() != 4 || !allDigitsN(tok[i], 0, 4) || i == 0) return false;
+  return monthAt(tok, i - 1) || (i > 1 && isDayNumber(tok[i - 1]) && monthAt(tok, i - 2));
+}
+
 bool hasFigure(const std::string& s) {
   std::string rest = s;
   for (size_t i = 0; i + 10 <= rest.size(); i++)
-    if (allDigitsN(rest, i, 4) && rest[i + 4] == '-' && allDigitsN(rest, i + 5, 2) && rest[i + 7] == '-' &&
-        allDigitsN(rest, i + 8, 2))
-      rest.replace(i, 10, " ");
+    if (isIsoDateAt(rest, i)) rest.replace(i, 10, " ");
   const std::vector<std::string> tok = wordTokens(rest);
-  for (size_t i = 0; i < tok.size(); i++) {
-    if (tok[i].find_first_of("0123456789") == std::string::npos) continue;
-    const bool nearMonth = (i > 0 && isMonthWord(tok[i - 1])) || (i + 1 < tok.size() && isMonthWord(tok[i + 1]));
-    const bool year = tok[i].size() == 4 && allDigitsN(tok[i], 0, 4) && i > 0 &&
-                      (isMonthWord(tok[i - 1]) || (isDayNumber(tok[i - 1]) && i > 1 && isMonthWord(tok[i - 2])));
-    if (!(isDayNumber(tok[i]) && nearMonth) && !year) return true;
-  }
+  for (size_t i = 0; i < tok.size(); i++)
+    if (tok[i].find_first_of("0123456789") != std::string::npos && !partOfDate(tok, i)) return true;
   return false;
 }
 
