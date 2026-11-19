@@ -129,6 +129,10 @@ struct ToolSpec {
   std::string schemaJson;
 };
 
+// The device's day start in minutes after local midnight (RB-REC5): the running day before it
+// belongs to the day before. The default is 04:00; hosts fill the device setting.
+inline constexpr uint16_t kDayStartDefaultMin = 240;       // 04:00
+
 // The turn every seam is told about. Borrowed by the hooks for the length of one call.
 struct TurnCtx {
   std::string chatKey;          // the transcript key (/mem/tx/<chatKey>)
@@ -144,6 +148,7 @@ struct TurnCtx {
   uint64_t startedAt = 0;       // epoch seconds; 0 = clock not set
   uint32_t startedMs = 0;       // monotonic
   bool tainted = false;         // the request carries an outside result whole
+  uint16_t dayStartMin = kDayStartDefaultMin;   // every message stamp's running-day clause
   const nimbus::orch::Principal* who = nullptr;
 };
 

@@ -89,7 +89,7 @@ inline constexpr uint32_t kCompactWindowS = 3600;          // an idle window end
 inline constexpr uint32_t kCompactManualRequests = 8;
 inline constexpr uint32_t kCompactThinFloor = 120;
 inline constexpr uint32_t kCompactThinSlice = 2048;
-inline constexpr uint16_t kDayStartDefaultMin = 240;       // 04:00
+// kDayStartDefaultMin (04:00) lives in plain/turn.h: TurnCtx carries the day start too.
 inline constexpr size_t kCompactCtlChats = 8;              // chats whose backoff the control file keeps
 
 // One rung of the summarizer ladder.

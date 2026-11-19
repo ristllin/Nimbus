@@ -70,6 +70,8 @@ class Battery {
   nimbus::orch::ToolRegistry reg;
   // The live file list the engine's recent-files block reads (null: none), set before boot.
   tx::RecentFilesBlock::Source recentFiles;
+  // The device's day start the turn setup hands the engine (RB-REC5's setting).
+  uint16_t dayStartMin = plain::kDayStartDefaultMin;
   nimbus::orch::Principal who = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
 
   // Process state: gone at a power cut, rebuilt by boot().
@@ -250,6 +252,7 @@ class Battery {
     out.facts.reg = &reg;
     out.facts.admin = true;
     out.facts.timeZone = "Europe/London";
+    out.dayStartMin = dayStartMin;
     out.head.host = t.host;
     out.head.key = [] { return std::string("sk-fake-battery"); };
     out.wire = batteryWire(dialect);

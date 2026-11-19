@@ -187,6 +187,7 @@ class TurnRun {
     if (!st.ok()) return st;
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
     if (!(st = d_.setup(t_.ctx, t_.setup)).ok()) return fail(st);
+    t_.ctx.dayStartMin = t_.setup.dayStartMin;   // the wires stamp every message with it
     budget();
     if (!(st = storeOpen(in)).ok() || !(st = movePointer()).ok()) return st;
     if (!(st = compose()).ok()) return fail(st);

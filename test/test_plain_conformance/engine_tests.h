@@ -124,7 +124,7 @@ inline void test_a_tool_less_reply_is_one_request_and_one_message() {
   TEST_ASSERT_EQUAL_STRING("reply", lastEnd(items)->end.cause.c_str());
   TEST_ASSERT_EQUAL(1, (int)lastEnd(items)->end.headRequests);
   // The owner message is in the request before any model call, stamped with its time.
-  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[Tue 17 Nov 2026 13:02] hello"));
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[2026-11-17 Tue 13:02] hello"));
 }
 
 // ---- a cut answer ----------------------------------------------------------------------------
@@ -1364,6 +1364,22 @@ inline void test_the_log_reopens_when_storage_returns() {
   TEST_ASSERT_TRUE_MESSAGE(!storedOf(b).empty(), "storage came back and nothing was stored");
 }
 
+// The day start rides the turn (RB-REC5): a message sent at 00:30 belongs to the day before when
+// the day starts at 04:00, and the stamp says so; with the day starting at midnight it does not.
+inline void test_the_stamp_carries_the_turns_day_start() {
+  for (uint16_t start : {(uint16_t)240, (uint16_t)0}) {
+    txb::Battery b;
+    b.dayStartMin = start;
+    b.model.push(sp::say("Late."));
+    b.advance(11 * 3600 + 28 * 60);   // kT0 is 13:02 UTC: now 00:30 the next day
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("still up", out));
+    const bool clause = bodyHas(b.model.last(), "[2026-11-18 Wed 00:30 (day 2026-11-17 until 04:00)] still up");
+    TEST_ASSERT_EQUAL_MESSAGE(start == 240, clause, "the stamp does not follow the turn's day start");
+    if (start == 0) TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[2026-11-18 Wed 00:30] still up"));
+  }
+}
+
 // ---- the sentinel ----------------------------------------------------------------------------
 inline void test_an_empty_engine_answers_a_typed_outcome() {
   plain::PlainEngine e{plain::EngineDeps{}};
@@ -1431,6 +1447,7 @@ inline void run() {
   RUN_TEST(test_guard_inputs_measure_size_and_spend);
   RUN_TEST(test_a_routed_head_sends_the_deadline_header);
   RUN_TEST(test_the_log_reopens_when_storage_returns);
+  RUN_TEST(test_the_stamp_carries_the_turns_day_start);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);
 }
 

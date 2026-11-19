@@ -145,7 +145,7 @@ class StubWire : public plain::WireCodec {
   static void userPieces(const plain::RenderInput& in, const tx::Item& it, std::vector<Piece>& out) {
     char stamp[tx::kStampMaxBytes];
     std::string text = it.x;
-    if (tx::messageStamp(it.t, it.tzMinutes, stamp, sizeof stamp).ok()) text = std::string(stamp) + " " + it.x;
+    if (tx::messageStamp(it.t, it.tzMinutes, in.turn->dayStartMin, stamp, sizeof stamp).ok()) text = std::string(stamp) + " " + it.x;
     out.push_back(Piece{Role::User, 'u', text, "", "", "", false});
     for (const tx::Part& p : it.parts) {
       plain::PhotoBytes pb;

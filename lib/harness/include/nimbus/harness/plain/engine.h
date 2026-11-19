@@ -80,6 +80,7 @@ struct TurnSetup {
   int storedRounds = 0;              // the stored orchLoopRnds (guardLimitsFor)
   HeadCost cost;                     // what the spend and size guards scale from (RB-E1b)
   bool qualified = false;            // the head is qualified on engine 2 (tx::budgetFor)
+  uint16_t dayStartMin = kDayStartDefaultMin;   // the device's day start (TurnCtx::dayStartMin)
 };
 using TurnSetupFn = std::function<Status(const TurnCtx& turn, TurnSetup& out)>;
 
