@@ -223,7 +223,6 @@ ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverride
   const ContextBudget old = deriveBudget(rb.v511CtxTokens, ov);   // v5.1.1, owner overrides applied
   ContextBudget b = old;
   b.ctxTokens = rb.windowTokens;
-  b.v511KeepBytes = old.recentConvBytes / 2;   // candidate 4, F5: the fold after a send-floor cut
   // Lane L: a flat turn is sized from the flat prompt budget, which leaves the formula no
   // room for history (the floor branch below: v5.1.1's window) and is never a large target.
   const uint64_t body = rb.contextBytes();
