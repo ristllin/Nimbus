@@ -773,6 +773,15 @@ static void test_runs_have_ids() {
   r.hostOut = kSpawnTwo;
   r.report();
   TEST_ASSERT_EQUAL_MESSAGE(5, r.dispatched(), "a routine's run never resets the chain's counters");
+  // Results of two runs taken together count against none (fail closed).
+  RunRig mix;
+  for (int k = 0; k < 2; ++k) {
+    mix.jobs->setSpawnOrigin({false, false, false, mix.jobs->beginRun("1001")});
+    TEST_ASSERT_TRUE(mix.jobs->enqueueSpawn(Spawn{"", "", "", "q", "research", "x"}, "1001"));
+    mix.drain();
+  }
+  (void)mix.jobs->takeFreshResultsFor(mix.jobs->freshScopeFor("1001"), nullptr, nullptr, nullptr);
+  TEST_ASSERT_EQUAL_MESSAGE(0u, mix.jobs->takenRun(), "mixed runs read as none");
   // A restart: no run is open, an unattended spawn waits for the owner.
   RunRig boot;
   boot.hostOut = kSpawnTwo;
