@@ -282,6 +282,7 @@ extern const char kHistoryHeader[];
 // it into its answer never shows it to the owner or feeds it back into the history. Only a
 // label at the very start, with text after it; anything else is returned unchanged.
 std::string stripHistoryLabel(const std::string& reply);
+extern const char kDidLabelOpen[];   // "[did: "
 
 // Live rows after thru that a request does not carry: those strictly after `afterId`
 // and strictly before `beforeId`, oldest first (memory.episodic {"before": beforeId} reads
