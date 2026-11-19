@@ -663,6 +663,45 @@ chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the ne
 digests that fit 4,096 B as its summary, the counters, failure count and pause at 0, and
 a row pointer ("m%08x") that never moves back; other chats' records stay byte for byte.
 
+### Compaction: when, the summarizer, the swap
+
+`lib/harness/include/nimbus/harness/plain/compact.h` (body `plain_compact.cpp`, lane
+RB-C2) turns the oldest whole turns into day digests when the transcript after thru
+outgrows its budget. `CompactDriver::step` is one unit of idle work (registered on the
+idle seam's Compaction slot by `installCompaction`): at most one summarizer exchange and
+its swap. It never runs while an owner message waits.
+
+When: the bytes after thru (owner, assistant, call, result and device-note lines) are
+above H, the last turn reported prompt tokens at or above 0.8 of the head's target, or it
+is 03:00 to 05:00 local with resident above 0.8 H; an automatic step also needs 120 s of
+quiet and a request left in its idle window (two per window; a window ends at a turn or
+after an hour). What (`planSlice`): whole turns from thru forward, all of one local day
+(the day starts at 04:00 by default), at most 24 KB of summarizer input, and only while
+what stays after the slice is at least L. Never a turn of the owner's current day (unless
+that day alone is above H, then only its oldest half), never the newest six owner turns,
+and never a turn after an open turn, an intent with no result or a running agent job: thru
+never jumps over a turn.
+
+The summarizer gets owner and assistant text verbatim with the local time and one
+bracketed line per tool result that names the tool and nothing else (`[file change]`,
+`[file work]`, `[outside content read]`, `[<tool> done]`); never a call's arguments, a
+result's bytes or a device note. A turn that read outside content has its assistant text
+inside the `<data>` frame, and its digest is stored inside the frame, so the block shows
+it framed. The rungs come from the binding: the head host's small model twice, then each
+other keyed provider in the owner's order, waiting 10 min, 30 min, 2 h, then 6 h after each
+failure; at most six attempts start a day on the device (`/data/compact_ctl.txt`, written
+before the request), each capped at 400 output tokens and 45 s. An answer is taken only
+when it was not cut and holds at least 120 B for an input of 2 KB or more; otherwise only
+the failure count changes. There is no pause state.
+
+The swap keeps RB-C1's order: the s item is stored first (a refused store leaves thru
+where it was), then thru moves and the arena drops what the digest covers, then
+`settleDigests`, `writeHead` and the chatsum mirror. A cut at any write leaves every item
+either after thru or under exactly one stored digest. `/compact` (`requestManual`) skips
+the quiet wait, the backoff and the cap (it is counted), takes at most eight requests and
+is answered once. The device binding is `src/agent/plain_fold_device.cpp` (engine-2
+images only); the hosted one is `hostedTextIO` in `nimbusd/src/hosted_fold.h`.
+
 ### Request composition and the text catalog
 
 Every model-facing string of engine 2 lives in `lib/harness/include/nimbus/harness/plain/texts.h`,

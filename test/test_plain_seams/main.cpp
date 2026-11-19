@@ -103,8 +103,6 @@ std::vector<StubRow> stubs() {
       {"plain::deliverTurn", [] { plain::DeliverOutcome o; return plain::deliverTurn({}, {}, o); }},
       {"plain::turnEndItem", [] { return plain::turnEndItem(gTurn, {}, item); }},
       {"plain::installResume", [] { return plain::installResume(gHooks, {}); }},
-      {"plain::compactSlice", [] { plain::CompactOutcome o; return plain::compactSlice({}, {}, o); }},
-      {"plain::installCompaction", [] { return plain::installCompaction(gHooks, {}); }},
       {"plain::railFor", [] { plain::RailVerdict v; return plain::railFor(gTurn, gCall, v); }},
       {"plain::installRails", [] { return plain::installRails(gHooks, {}); }},
       {"plain::photoAllowed", [] { return plain::photoAllowed(gTurn, {}, flag); }},

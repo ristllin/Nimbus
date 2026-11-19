@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 
+#include "nimbus/harness/plain/compact.h"
 #include "nimbus/orch/compact.h"
 #include "posix_fs.h"
 
@@ -44,6 +45,20 @@ class FileFoldCtlIO {
  private:
   std::string path_;
 };
+
+// Engine 2 (lane RB-C2, plain/compact.h): the compaction driver's small files on the instance
+// volume, as the device keeps them on its flash: the control record (<data>/mem/compact_ctl.txt,
+// the day's attempt count and each chat's failures) and the v5.1.1 summary mirror (the fold
+// store's own file). A missing file reads as "", a save is a whole-file atomic write.
+inline agent::plain::TextIO hostedTextIO(const std::string& path) {
+  agent::plain::TextIO io;
+  io.load = [path] {
+    std::string text;
+    return fsutil::readFile(path, text) ? text : std::string();
+  };
+  io.save = [path](const std::string& text) { return fsutil::writeFileAtomic(path, text); };
+  return io;
+}
 
 // The size of a chat's new rows that makes a fold due (the device's compactAtKB
 // default). A hosted instance does not offer the knob; the page shows this value. It

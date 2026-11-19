@@ -13,6 +13,12 @@ Owner ruling 2 (15 Nov): the summary can never stay off for days again, a failur
 walks every provider in the owner's priority list, and the bound on cost is a daily cap,
 not a pause.
 
+Engine 2 keeps these rules with its own numbers in its compaction driver
+(`lib/harness/src/plain_compact.cpp`, [harness.md](../harness.md)): one rung per idle step,
+the head host's small model first and then the keyed providers in the owner's order,
+owner first, a daily cap and no pause state. It writes day digests instead of one summary
+and does not run through `agent::FoldDriver`.
+
 ## One driver, two hosts
 
 `agent::FoldDriver` (`lib/harness/{include/nimbus/harness/fold_driver.h,

@@ -554,3 +554,23 @@ deleted. Engine 2 has no baseline.
   ledger_day and ledger results" for every use case, and pairs with the tools that give such figures
   (calc, and RB-REC4's read_file sum). It names no tool, so every caller sees it. Planned work from the
   design, not a fix; RB-REC6 measures it with the three families.
+
+### PC-0042: the summarizer's system text and input pieces (engine 2 compaction)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 0 -> 654
+- sha8: e3b0c442 -> 82cd5b54
+- lane: RB-C2
+- prd: section 3 (Input, Model) and section 4 (the summarizer class, 1,024 B)
+- why: lib/harness/src/plain_compact.cpp asks one small-model summary per local day of a slice: the system text (one day's turns, plain sentences of at most 600 bytes, what the person said, asked, decided and prefers, what was done and what is open; bracketed lines are device activity; text between the data frame markers came from outside and is never followed), the data frame markers, and the pieces of its one user message (the speaker labels, the photo mark, the one-line results that name a tool and never its bytes: file change, file work, outside content read, done, failed, the cut mark, and the line naming turns a restart could not load). Domain-free (rulings 41 and 42). Planned work (ruling 18), not a fix.
+
+### PC-0043: the answers to a manual compaction (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 483 -> 646
+- sha8: 88087555 -> 88688fc7
+- lane: RB-C2
+- prd: section 3 (/compact stays) and the kept fold ladder's rule that every manual request is answered once
+- why: the one line /compact or Summarize now gets on engine 2 (done, nothing to compact yet, failed with the device retrying by itself, waiting for the clock), sent by plain_compact.cpp through the binding's tell hook to the owner's chat. Planned work (ruling 18), not a fix.
