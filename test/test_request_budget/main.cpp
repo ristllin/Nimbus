@@ -1128,6 +1128,47 @@ static void test_the_measured_floor_formula_on_its_edges() {
   installHistoryProfile(kDefaultHistoryProfile);
 }
 
+// Lane RB-BGb (ruling 83 item 9 (b)): one dense bytes-per-token observation, at the memo's 1.5 B
+// floor, on any head: the memo tightens only the window bound (a request at the old size would not
+// fit the head's window), never the price tier or any other bound. So no head's body or history
+// marks fall under its v5.1.2 row unless the window bound decides its budget. On v5.1.2 one dense
+// reading on claude-haiku-5-5 tightened its price-tier bound for the rest of the boot: 180,000 B
+// to 135,000 B, a soft mark under 24 KB, and the window fell to the v5.1.1 floor (8,192 B).
+static void test_a_dense_observation_tightens_only_the_window_bound() {
+  size_t heads = 0, windowBound = 0;
+  for (const auto& kv : v512Rows()) {
+    JsonObjectConst r = kv.second;
+    const std::string link = r["link"] | "";
+    if (link == "device-loop-off") continue;
+    const std::string host = r["provider"] | "", model = r["id"] | "";
+    const BudgetLink bl = link == "server" ? BudgetLink::Server : BudgetLink::Device;
+    clearObservedRatios();
+    noteObservedRatio(host, model, 150000, 100000);   // the densest reading the memo keeps
+    const RequestBudget rb = requestBudgetFor(host, model, host == "cumulo", bl);
+    heads++;
+    if (rb.bound == BudgetBound::Window && observedRatioX100(host, model)) {
+      windowBound++;
+      continue;   // the window itself is the limit: a larger request would not fit it
+    }
+    const ContextBudget c = deriveRequestContext(rb, {});
+    const std::string what = kv.first + " after one dense reading";
+    TEST_ASSERT_TRUE_MESSAGE(rb.wireBodyBytes >= (r["wireBodyBytes"] | 0u), what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes >= (r["historyMaxBytes"] | 0u), (what + " history max").c_str());
+    TEST_ASSERT_TRUE_MESSAGE(c.historySoftBytes >= (r["historySoftBytes"] | 0u), (what + " fold mark").c_str());
+    TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes >= (r["historyKeepBytes"] | 0u), (what + " keep").c_str());
+  }
+  clearObservedRatios();
+  TEST_ASSERT_TRUE(heads > 200);
+  TEST_ASSERT_TRUE(windowBound > 0);   // the counter-case: small windows still tighten
+  // The named case: Haiku keeps its 180,000 B and its v5.1.2 marks after the reading.
+  noteObservedRatio("anthropic", "claude-haiku-5-5", 150000, 100000);
+  const ContextBudget h = headContextBudget("anthropic", "claude-haiku-5-5", true, {});
+  TEST_ASSERT_EQUAL_UINT32(180000, requestBudgetFor("anthropic", "claude-haiku-5-5", false).wireBodyBytes);
+  TEST_ASSERT_EQUAL_UINT32(62080, h.historyMaxBytes);
+  TEST_ASSERT_FALSE(h.floorBranch);
+  clearObservedRatios();
+}
+
 // ---- the generated table (table_doc.h, included above) ---------------------------------------
 
 static void test_the_generated_table_is_current() {
@@ -1155,6 +1196,7 @@ int main(int, char**) {
   RUN_TEST(test_custom_gets_the_floor_on_the_flat_wire);
   RUN_TEST(test_server_link_drops_upload_and_pace);
   RUN_TEST(test_the_memo_only_ever_lowers);
+  RUN_TEST(test_a_dense_observation_tightens_only_the_window_bound);
   RUN_TEST(test_no_field_below_v5_1_1_for_every_recorded_model);
   RUN_TEST(test_history_room_or_the_floor_branch_for_every_head);
   RUN_TEST(test_a_week_at_the_floor_stays_under_the_daily_fold_cap);
