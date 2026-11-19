@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "nimbus/orch/head_loop.h"
 
 #include <ArduinoJson.h>
@@ -202,11 +203,25 @@ std::string stepErrCause(StepErr k, const std::string& host, int httpStatus) {
 }
 
 namespace {
-// Clamp one tool result to cfg.maxToolResultBytes (0 = no clamp), spilling the
+thread_local size_t t_resultCap = 0;   // the clamp of the call being dispatched (currentResultCap)
+}  // namespace
+
+size_t currentResultCap() { return t_resultCap; }
+
+size_t resultCapFor(const HeadLoopConfig& cfg, size_t carried) {
+  const size_t cap = cfg.maxToolResultBytes;
+  if (!cap || !cfg.maxWideResultBytes || !cfg.maxTotalToolBytes) return cap;
+  const size_t left = carried < cfg.maxTotalToolBytes ? cfg.maxTotalToolBytes - carried : 0;
+  const size_t room = left > cap ? left - cap : 0;   // one ordinary result stays possible
+  return std::max(cap, std::min(room, cfg.maxWideResultBytes));
+}
+
+namespace {
+// Clamp one tool result to `cap` (resultCapFor; 0 = no clamp), spilling the
 // FULL result first so the truncation marker can carry a widenable fetch handle
 // (Context Fabric).
-void clampResult(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks, HeadToolResult& r) {
-  if (!cfg.maxToolResultBytes || r.output.size() <= cfg.maxToolResultBytes) return;
+void clampResult(size_t cap, const HeadLoopHooks& hooks, HeadToolResult& r) {
+  if (!cap || r.output.size() <= cap) return;
   const size_t fullSize = r.output.size();
   // ⚠ Never re-spill a results.* fetch: each page would push a fresh
   // near-duplicate entry into the 16-slot ring and could evict the very
@@ -216,7 +231,7 @@ void clampResult(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks, HeadTool
   // Clamp at a UTF-8 boundary: if the first dropped byte is a continuation
   // byte (0b10xxxxxx), the cut splits a multi-byte code point - back up so the
   // fed-back string stays valid UTF-8 (invalid bytes can 400 the next request).
-  size_t cut = cfg.maxToolResultBytes;
+  size_t cut = cap;
   while (cut > 0 && ((unsigned char)r.output[cut] & 0xC0) == 0x80) --cut;
   r.output.resize(cut);
   if (handle.empty()) {
@@ -461,11 +476,14 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
     lastTools.clear();
     for (const HeadToolCall& call : calls) {
       lastTools.push_back(call.name);
+      const size_t cap = resultCapFor(cfg, totalBytes);
+      t_resultCap = cap;   // the tool sizes a continued part to it (currentResultCap)
       HeadToolResult r = hooks.dispatch(call);
+      t_resultCap = 0;
       if (r.id.empty()) r.id = call.id;      // default: echo the call id
       if (r.name.empty()) r.name = call.name;
       if (r.isError) allOk = false;
-      clampResult(cfg, hooks, r);
+      clampResult(cap, hooks, r);
       totalBytes += r.output.size();
       if (hooks.transcript) hooks.transcript->addToolResult(r, round);
       prior.push_back(std::move(r));

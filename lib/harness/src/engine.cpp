@@ -8,6 +8,7 @@
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - the wire budget's refusal
 #include "nimbus/orch/request_budget.h"   // sendFloorCounts - a turn that went at the send floor
 #include "nimbus/orch/budget.h"    // headContextBudget - per-turn caps from the head model's window
+#include "nimbus/orch/wire_limits.h"   // kToolResultCapMax - the widest one result may be (RB-TR1)
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/effect_ring.h"   // fx::recordsAsEffect, fx::effectReceipt (lane RB-FX)
 #include "nimbus/orch/action_rules.h"  // actionRuleRow - a tool's plain-words description
@@ -1767,6 +1768,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // legacy constants so their pins stay meaningful.
     headTools.cfg.maxToolResultBytes = d_.cfg.loop.resultCap ? budget.toolResultBytes : 4096;
     headTools.cfg.maxTotalToolBytes  = d_.cfg.loop.totalCap ? budget.toolTotalBytes : 24576;
+    // RB-TR1: a result may take the room the turn's total still has (resultCapFor).
+    headTools.cfg.maxWideResultBytes = orch::kToolResultCapMax;
     if (d_.spillResult)
       headTools.spill = [this, loopWho](const orch::HeadToolResult& full) {
         return d_.spillResult(full.name, full.output, loopWho.ns);

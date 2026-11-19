@@ -22,6 +22,7 @@
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "nimbus/orch/result_store.h"   // RB-TR1: the device's recent-results ring (results.get/list)
+#include "nimbus/orch/head_loop.h"      // RB-TR1: currentResultCap, the room of the call being run
 #include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
@@ -3612,6 +3613,7 @@ class NimbusdRig {
   }
   // RB-TR1: the per-result clamp this turn applies (the device's effectiveToolResultCap).
   size_t toolResultCapNow() {
+    if (const size_t loop = orch::currentResultCap()) return loop;   // the room of this call (head_loop.h)
     if (!eng_) return PosixFiles::kDefaultResultCap;
     return headRequestContext().toolResultBytes;
   }

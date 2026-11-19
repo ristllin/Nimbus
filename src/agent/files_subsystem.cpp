@@ -30,6 +30,7 @@
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
 #include "nimbus/orch/file_edit.h"    // files.edit: its caps, reply head and keyed-CSV report
 #include "nimbus/orch/file_aids_e1.h"  // files.read and files.edit on the shared CSV scan and edit (RB-REC4)
+#include "nimbus/orch/head_loop.h"     // currentResultCap: the part fits this call's result (RB-TR1)
 #include "nimbus/harness/conversation.h"  // utcOffsetAtUnix: the running day's offset
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
@@ -936,8 +937,10 @@ static bool scanCsvFile(const std::string& project, const std::string& name, con
   const std::string where = project + "/" + name;
   SdSource src(pathOf(project, name), true);
   bool ok = true;
-  // The part fits the result the head loop carries this turn (store.cpp effectiveToolResultCap).
-  const size_t cap = partAt ? (size_t)store::effectiveToolResultCap() : 0;
+  // The part fits the result the head loop carries for this call (head_loop.h currentResultCap:
+  // the turn's room, at least the per-result budget), else the per-result budget itself.
+  const size_t loopCap = nimbus::orch::currentResultCap();
+  const size_t cap = !partAt ? 0 : loopCap ? loopCap : (size_t)store::effectiveToolResultCap();
   memory::withCardReleased([&] {
     if (partAt) ok = nimbus::orch::aids::e1::readPart(src, size, *partAt, cap, out);
     else if (sums) out = nimbus::orch::aids::e1::dayTotal(src, size, where, *sums, day);
