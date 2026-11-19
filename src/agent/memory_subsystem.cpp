@@ -62,7 +62,6 @@
 #include "provider_verify.h"                // the last check's reason (nocredits, router_outdated)
 #include "nimbus/orch/action_rules.h"   // installActionRules - who may call each tool (CUM-813)
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
-#include "nimbus/orch/head_loop.h"      // currentResultCap: results.get pages to the call's room (RB-TR1)
 #include "nimbus/orch/session_tools.h"
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
 #include "nimbus/sys/loop_guard.h"        // the loop never waits for the card lock
@@ -1222,10 +1221,7 @@ void begin() {
     rh.list = [](const nimbus::orch::Principal& who) { return orchestrator::resultsList(who); };
     // The page must fit inside the turn's per-result clamp together with its
     // header (prism CRITICAL) - same derived value the loop clamps at.
-    rh.viewCap = [] {   // RB-TR1: the room of this call when the loop gives one, else the per-result budget
-      const size_t loop = nimbus::orch::currentResultCap();
-      return loop ? loop : (size_t)agent::store::effectiveToolResultCap();
-    };
+    rh.viewCap = [] { return (size_t)agent::store::effectiveToolResultCap(); };
     registerResultTools(g_reg, rh);
   }
 

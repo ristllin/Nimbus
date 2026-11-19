@@ -216,10 +216,6 @@ struct HeadLoopConfig {
                                      // alloc). Needs the largestBlock hook set; 0 => skip.
   size_t   maxToolResultBytes = 2048;   // clamp each tool result fed back (0 => no clamp)
   size_t   maxTotalToolBytes = 12288;   // cumulative tool-output budget; exceeded => force the final round (0 => no limit)
-  // RB-TR1 (ruling 86 item 3): beyond maxToolResultBytes, a result may take the room the turn's
-  // total still has - maxTotalToolBytes less what this turn carried, less one ordinary result -
-  // up to this many bytes. 0 => off: every result is clamped at maxToolResultBytes.
-  size_t   maxWideResultBytes = 0;
   // The final-answer check (the CUM-506 pattern, generalized): called with a
   // terminal orch_turn while a correction round is still possible - not on the
   // forced final round, at most once per turn. A non-empty return is the
@@ -349,13 +345,6 @@ struct HeadOutcome {
 // `fitPrompt` and `dropImages` may be null.
 size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, FitScope)>& fitPrompt,
                        const std::function<size_t()>& dropImages);
-
-// The clamp the running head loop applies to the result of the call it is dispatching on this
-// thread; 0 outside a dispatch. A tool whose result can be continued (files.read) sizes its
-// part to it, so the part arrives whole and its "next part" is exact.
-size_t currentResultCap();
-// The clamp for the next result of a turn that has carried `carried` bytes of results.
-size_t resultCapFor(const HeadLoopConfig& cfg, size_t carried);
 
 // Drive the bounded ReAct loop to a terminal orch_turn. Always returns (never
 // throws): terminates within maxRounds+1 model calls, plus at most one correction round

@@ -437,50 +437,6 @@ static void test_accumulator_clamp_and_byte_budget() {
   TEST_ASSERT_FALSE(f.allowToolsSeen.back());  // final round was tool-less
 }
 
-// (g3) RB-TR1: a result may take the room the turn still has. Every call of a turn is told its
-// clamp (currentResultCap); a tool that pages sizes its part to it and arrives whole; the clamp
-// is the per-result budget at least, and beyond it the turn's room less one ordinary result, up
-// to maxWideResultBytes. Counter-test: with the wide room off, every clamp is the per-result one.
-static void test_a_result_takes_the_room_the_turn_has() {
-  for (size_t wide : {size_t(59000), size_t(0)}) {
-    Fake f;
-    f.script = {stepCall("files.read"), stepCall("web.fetch"), stepCall("files.read"), stepFinished("{\"reply\":\"ok\"}")};
-    std::vector<size_t> caps, fed;
-    HeadLoopHooks h = f.hooks();
-    h.dispatch = [&](const HeadToolCall& c) {
-      HeadToolResult r;
-      r.id = c.id;
-      r.name = c.name;
-      caps.push_back(currentResultCap());
-      // the paging tool's part is a 40,000 B file's, at most its clamp; the other tool returns
-      // 20,000 B whatever the clamp, and is cut at it
-      r.output = std::string(c.name == "files.read" ? std::min<size_t>(40000, currentResultCap()) : 20000, 'x');
-      fed.push_back(r.output.size());
-      return r;
-    };
-    HeadLoopConfig cfg;
-    cfg.maxRounds = 8;
-    cfg.maxToolResultBytes = 8192;
-    cfg.maxTotalToolBytes = 65536;
-    cfg.maxWideResultBytes = wide;
-    HeadOutcome o = runHeadLoop(cfg, h);
-    TEST_ASSERT_TRUE(o.ok);
-    TEST_ASSERT_EQUAL_UINT32(0, (uint32_t)currentResultCap());   // nothing outside a dispatch
-    TEST_ASSERT_EQUAL_UINT32(3, (uint32_t)caps.size());
-    size_t carried = 0;
-    for (size_t i = 0; i < caps.size(); ++i) {
-      const size_t room = carried + 8192 < 65536 ? 65536 - carried - 8192 : 0;
-      const size_t want = wide ? std::max<size_t>(8192, std::min(room, wide)) : 8192;
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)want, (uint32_t)caps[i], ("call " + std::to_string(i)).c_str());
-      carried += std::min(fed[i], caps[i]);
-    }
-    // With the room: the 40 KB file arrives in one part (57,344 B of room), the 20 KB result
-    // cut at what is left (17,344 B); without it every clamp is 8,192 B.
-    TEST_ASSERT_EQUAL_UINT32(wide ? 57344 : 8192, (uint32_t)caps[0]);
-    TEST_ASSERT_EQUAL_UINT32(wide ? 17344 : 8192, (uint32_t)caps[1]);
-  }
-}
-
 // (g2) the clamp cuts at a UTF-8 boundary: a multi-byte code point straddling the
 // byte limit is dropped whole, never split (a split would feed invalid UTF-8 back
 // into the next provider request).
@@ -1059,7 +1015,6 @@ int main(int, char**) {
   RUN_TEST(test_heap_cap);
   RUN_TEST(test_heap_gate_exempts_round_zero);
   RUN_TEST(test_accumulator_clamp_and_byte_budget);
-  RUN_TEST(test_a_result_takes_the_room_the_turn_has);
   RUN_TEST(test_accumulator_clamp_respects_utf8_boundary);
   RUN_TEST(test_clamp_spills_full_and_marker_carries_handle);
   RUN_TEST(test_transcript_records_calls_and_results);
