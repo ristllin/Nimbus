@@ -39,6 +39,7 @@ void setUp() {
   installBudgetLink(BudgetLink::Device);
 }
 void tearDown() {
+  setRoutedBudgetLiftForTest(-1);
   installListedCtxLookup(nullptr);
   clearObservedRatios();
   installBudgetLink(BudgetLink::Device);
@@ -824,7 +825,9 @@ static void test_no_head_below_its_v5_1_2_budget() {
       const RequestBudget rb = requestBudgetFor(host, model, host == "cumulo", link);
       const ContextBudget c = deriveRequestContext(rb, {});
       const std::string what = kv.first + " " + historyProfileSlug(p);
-      TEST_ASSERT_EQUAL_UINT32_MESSAGE(r["wireBodyBytes"] | 0u, rb.wireBodyBytes, what.c_str());
+      // The body: v5.1.2's while the routed lift is off, at least that once it is on.
+      if (routedBudgetLift()) TEST_ASSERT_TRUE_MESSAGE(rb.wireBodyBytes >= (r["wireBodyBytes"] | 0u), what.c_str());
+      else TEST_ASSERT_EQUAL_UINT32_MESSAGE(r["wireBodyBytes"] | 0u, rb.wireBodyBytes, what.c_str());
       const char* const kFields[] = {"systemPromptBytes", "toolResultBytes", "recallBytes", "replayBytes",
                                      "chatSummaryBytes", "historyMessageCap", "historyMaxBytes", "historySoftBytes",
                                      "historyKeepBytes", "foldSliceBytes", "historyRows", "foldTriggerBytes"};
@@ -982,6 +985,7 @@ static FloorDays foldDays(size_t high, size_t keep, size_t trigger, size_t cycle
 // (v5.1.2: half of an 8 KB window). On a day ten times heavier than the owner's busiest the
 // daily cap holds and the next two ordinary days work the backlog off.
 static void test_a_fortnight_at_the_measured_floor() {
+  setRoutedBudgetLiftForTest(0);   // the floor, whatever kRoutedBudgetLift says
   size_t heads = 0;
   for (const Head& h : kRouted) {
     const RequestBudget rb = turnBudgetFor(h.host, h.model, true);
@@ -1010,6 +1014,45 @@ static void test_a_fortnight_at_the_measured_floor() {
       TEST_ASSERT_TRUE_MESSAGE(h3.after[d] <= c.historyMaxBytes, (nameOf(h) + " backlog day " + std::to_string(d)).c_str());
   }
   TEST_ASSERT_TRUE(heads > 0);
+  setRoutedBudgetLiftForTest(-1);
+}
+
+// The measured floor's formula on constructed budgets (mutation survivors): each measured wire's
+// own overhead and ratio; a body at or under the overhead, a flat turn, a flat wire or an
+// unmeasured wire keeps the floor branch; under tight, a larger compactAtKB never folds earlier.
+static void test_the_measured_floor_formula_on_its_edges() {
+  const RequestBudget base = requestBudgetFor("cumulo", "anthropic/claude-sonnet-5-5", true, BudgetLink::Device, false);
+  TEST_ASSERT_EQUAL(1, base.measuredWire);
+  const ContextBudget a = deriveRequestContext(base, {});
+  const size_t wantA = (85000 - kFloorFixedAnthropicBytes - a.chatSummaryBytes - kFloorMarginBytes - kFloorRoundReserveBytes) *
+                       100 / kFloorWirePerWindowAnthropicPct;
+  TEST_ASSERT_TRUE(a.floorMeasured);
+  TEST_ASSERT_EQUAL_UINT32(wantA, a.historyMaxBytes);
+  RequestBudget o = base;   // the same body on the OpenAI wire, with a summary that leaves it room
+  o.measuredWire = 2;
+  o.v511ReplayBytes = 24576;
+  const ContextBudget oc = deriveRequestContext(o, {});
+  const size_t wantO = (85000 - kFloorFixedOpenAIBytes - oc.chatSummaryBytes - kFloorMarginBytes - kFloorRoundReserveBytes) *
+                       100 / kFloorWirePerWindowOpenAIPct;
+  TEST_ASSERT_EQUAL_UINT32(wantO, oc.historyMaxBytes);
+  TEST_ASSERT_TRUE(oc.historyMaxBytes < a.historyMaxBytes);
+  RequestBudget small = base;   // a body under the overhead: no wrap, the floor branch
+  small.wireBodyBytes = 60000;
+  TEST_ASSERT_TRUE(deriveRequestContext(small, {}).floorBranch);
+  RequestBudget flat = base;
+  flat.flatTurn = true;
+  TEST_ASSERT_TRUE(deriveRequestContext(flat, {}).floorBranch);
+  flat = base;
+  flat.flat = true;
+  TEST_ASSERT_TRUE(deriveRequestContext(flat, {}).floorBranch);
+  RequestBudget un = base;
+  un.measuredWire = 0;
+  TEST_ASSERT_TRUE(deriveRequestContext(un, {}).floorBranch);
+  installHistoryProfile(HistoryProfile::Tight);
+  const ContextBudget t = headContextBudget("anthropic", "claude-sonnet-5-5", true, {});
+  for (const uint32_t kb : {48u, 64u, 100u, 200u})
+    TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(t, kb) >= foldTriggerBytes(t, kCompactAtKbDefault), std::to_string(kb).c_str());
+  installHistoryProfile(kDefaultHistoryProfile);
 }
 
 // ---- the generated table (table_doc.h, included above) ---------------------------------------
@@ -1055,6 +1098,7 @@ int main(int, char**) {
   RUN_TEST(test_every_head_has_a_history_that_fits_under_every_profile);
   RUN_TEST(test_the_profile_figures);
   RUN_TEST(test_a_fortnight_at_the_measured_floor);
+  RUN_TEST(test_the_measured_floor_formula_on_its_edges);
   RUN_TEST(test_the_generated_table_is_current);
   return UNITY_END();
 }

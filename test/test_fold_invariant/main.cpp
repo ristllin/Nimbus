@@ -620,7 +620,11 @@ static void test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutiv
 static void test_invariant_holds_on_a_head_with_room() { runProperty("anthropic", "claude-sonnet-5-5", 6000, false); }
 
 // The property on the floor branch (v5.1.1's window: a shift every few turns).
-static void test_invariant_holds_on_the_floor_branch() { runProperty("cumulo", "gpt-5.6", 900, true); }
+static void test_invariant_holds_on_the_floor_branch() {
+  nimbus::orch::setRoutedBudgetLiftForTest(0);   // RB-BG: the routed floor, whatever kRoutedBudgetLift says
+  runProperty("cumulo", "gpt-5.6", 900, true);
+  nimbus::orch::setRoutedBudgetLiftForTest(-1);
+}
 
 // The restart case alone, deterministic: rows a shift hid, then a restart (the cache empty, the
 // index the boot scan's newest rows). The first pass folds the hidden rows, oldest first, and

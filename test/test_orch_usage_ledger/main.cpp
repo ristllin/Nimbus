@@ -3142,6 +3142,7 @@ static SpendSlot slotFor(const char* host, const char* model, uint32_t in, uint3
 // stay outside its input; any other host (custom, an unknown one, and cumulo until the router
 // meters cached tokens) is billed whole at the input rate (fail-closed money).
 static void test_b_every_openai_shaped_slot_splits_its_cached_tokens() {
+  nimbus::orch::setRoutedBudgetLiftForTest(0);   // RB-BG: the routed floor, whatever kRoutedBudgetLift says
   for (const char* host : {"openai", "mistral", "zai"}) {
     const TokenDelta d = ledgerDelta(slotOf(host, 100000, 500, 90000, 0));
     TEST_ASSERT_EQUAL_UINT64_MESSAGE(10000, d.in, host);
@@ -3160,6 +3161,7 @@ static void test_b_every_openai_shaped_slot_splits_its_cached_tokens() {
     TEST_ASSERT_EQUAL_UINT64_MESSAGE(100000, d.in, host);
     TEST_ASSERT_EQUAL_UINT64_MESSAGE(0, d.cacheR + d.cacheW, host);
   }
+  nimbus::orch::setRoutedBudgetLiftForTest(-1);
 }
 
 // Mistral Large 4 at 100k with 99% read from the cache (the 15 Nov repeat): the ledger

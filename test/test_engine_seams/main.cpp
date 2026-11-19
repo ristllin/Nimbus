@@ -578,6 +578,7 @@ static void test_listed_window_lookup_install() {
 // flat wire, a routed head sits on the v5.1.1 floor until kRoutedBudgetLift flips, and the
 // head budgets are the plan's figures.
 static void test_request_budget_is_lane_bs() {
+  nimbus::orch::setRoutedBudgetLiftForTest(0);   // RB-BG: the routed floor, whatever kRoutedBudgetLift says
   TEST_ASSERT_EQUAL_UINT32(providers::kWireBodyMax, orch::kLegacyWireBodyBytes);
   TEST_ASSERT_EQUAL_UINT32(55904, providers::flatPromptBudget());
   TEST_ASSERT_EQUAL_UINT32(orch::kJsonStrGuard - 4096, providers::flatPromptBudget());
@@ -598,11 +599,12 @@ static void test_request_budget_is_lane_bs() {
       TEST_ASSERT_EQUAL_MESSAGE(viaRouter, b.routed, r.host);
       TEST_ASSERT_EQUAL_MESSAGE(r.flat, b.flat, r.host);
       TEST_ASSERT_TRUE_MESSAGE(b.prefillTokPerS > 0 && b.decodeTokPerS > 0, r.host);
-      const uint32_t want = viaRouter && !orch::kRoutedBudgetLift ? 85000 : r.bytes;
+      const uint32_t want = viaRouter ? 85000 : r.bytes;
       if (want) TEST_ASSERT_EQUAL_UINT32_MESSAGE(want, b.wireBodyBytes, r.host);
       TEST_ASSERT_TRUE_MESSAGE(b.wireBodyBytes >= orch::kLegacyWireBodyBytes, r.host);
     }
   }
+  nimbus::orch::setRoutedBudgetLiftForTest(-1);
 }
 
 // Lane B made the load-aware overload read the load (test_output_caps holds the class).
