@@ -35,6 +35,7 @@
 #include "nimbus/orch/file_tools.h"
 #include "nimbus/orch/path_rules.h"
 #include "nimbus/orch/psram_alloc.h"
+#include "../support/file_aids_cases.h"
 #include "nimbus/orch/rbac.h"
 #include "nimbus/utf8.h"
 
@@ -1219,6 +1220,33 @@ static void test_a_refused_allocation_in_a_sum_or_a_line_edit_changes_nothing() 
   }
 }
 
+// The shared fixtures (test/support/file_aids_cases.h) on the device's card seam give the
+// golden transcript byte for byte; nimbusd's POSIX disk must give the same bytes
+// (nimbusd/tests/test_hosted_file_aids.cpp). GOLDEN_UPDATE=1 re-blesses after a read of the diff.
+static void test_shared_fixtures_match_the_golden_transcript() {
+  FakeIo io;
+  const std::string got = aidcases::transcript(
+      io, [&](const std::string& p, const std::string& n, const std::string& b) { seed(io, p, n, b); },
+      [&](const std::string& p, const std::string& n) {
+        const auto it = io.card.find(lowerKey(p, n));
+        return it == io.card.end() ? std::string("<none>") : it->second;
+      });
+  const char* path = "test/golden/file_aids_results.txt";
+  if (std::getenv("GOLDEN_UPDATE")) {
+    FILE* f = std::fopen(path, "wb");
+    TEST_ASSERT_NOT_NULL(f);
+    std::fwrite(got.data(), 1, got.size(), f);
+    std::fclose(f);
+  }
+  std::string want;
+  FILE* f = std::fopen(path, "rb");
+  TEST_ASSERT_NOT_NULL_MESSAGE(f, "missing golden: GOLDEN_UPDATE=1 pio test -e native -f test_file_tools");
+  char buf[4096];
+  for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) want.append(buf, n);
+  std::fclose(f);
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), got.c_str());
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_following_next_offset_rebuilds_every_file_at_every_budget);
@@ -1246,5 +1274,6 @@ int main() {
   RUN_TEST(test_edit_file_line_picks_one_of_identical_rows);
   RUN_TEST(test_append_file_states_the_fence_and_identical_lines);
   RUN_TEST(test_a_refused_allocation_in_a_sum_or_a_line_edit_changes_nothing);
+  RUN_TEST(test_shared_fixtures_match_the_golden_transcript);
   return UNITY_END();
 }

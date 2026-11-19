@@ -1,0 +1,79 @@
+// test_hosted_file_aids - RB-REC4: the plain file tools on nimbusd's POSIX disk give the
+// device's results byte for byte. The shared fixtures (test/support/file_aids_cases.h: CSV
+// totals with comment lines, rows with more fields than the header and empty summed cells in
+// three domains, line-picked edits, the append fence and identical-line fact, the torn-tail
+// note) run through FileTools over PosixFileToolsIo; the transcript must equal
+// test/golden/file_aids_results.txt, which test_file_tools checks on the device's card seam.
+// Offline: no provider traffic.
+#include <algorithm>
+#include <string>
+
+#include "../../test/support/file_aids_cases.h"
+#include "nimbus/orch/file_aids.h"
+#include "posix_file_tools.h"
+#include "test_util.h"
+
+using namespace nimbusd;
+namespace orch = nimbus::orch;
+
+static std::string readAll(const std::string& path) {
+  std::string out;
+  return fsutil::readFile(path, out) ? out : std::string("<none>");
+}
+
+static void testSharedFixtures(ndtest::Ctx& c, const std::string& repo) {
+  const std::string dir = ndtest::scratchDir("file-aids");
+  ndtest::rmTree(dir);
+  fsutil::mkdirs(dir);
+  PosixFileToolsIo io(dir);
+  const std::string got = aidcases::transcript(
+      io,
+      [&](const std::string& p, const std::string& n, const std::string& b) {
+        fsutil::mkdirs(dir + "/" + p);
+        fsutil::writeFileAtomic(io.file(p, n), b);
+        orch::FileEntry e;
+        e.project = orch::workingCopy(p);
+        e.name = orch::workingCopy(n);
+        e.bytes = uint32_t(b.size());
+        e.createdAt = 1763000000;
+        e.kind = orch::fileKindForName(n);
+        e.hash = orch::aids::fnv64(orch::aids::kFnv64Basis, b);
+        e.owner = orch::workingCopy("owner");
+        std::string err;
+        io.locked([&] { io.index().add(e, err); });
+      },
+      [&](const std::string& p, const std::string& n) { return readAll(io.file(p, n)); });
+  const std::string want = readAll(repo + "/test/golden/file_aids_results.txt");
+  c.ok(want != "<none>", "the golden transcript exists");
+  c.ok(got == want, "the POSIX transcript equals the device's golden byte for byte");
+  if (got != want) {
+    const size_t at = std::mismatch(got.begin(), got.end(), want.begin(), want.end()).first - got.begin();
+    std::printf("    first difference at byte %zu:\n    got:  %s\n    want: %s\n", at, got.substr(at, 160).c_str(),
+                want.substr(std::min(at, want.size()), 160).c_str());
+  }
+  // No part file is left behind, and the index on disk reloads to the same entries.
+  c.ok(readAll(dir + "/log/.training3.csv.tools-part") == "<none>", "no part file left after an edit");
+  PosixFileToolsIo again(dir);
+  bool same = true;
+  again.locked([&] {
+    const orch::FileEntry* e = again.index().find("log", "expense3.csv");
+    same = e && e->bytes == readAll(dir + "/log/expense3.csv").size();
+  });
+  c.ok(same, "the persisted index holds the edited file's new size");
+  ndtest::rmTree(dir);
+}
+
+int main(int argc, char** argv) {
+  ndtest::Ctx c;
+  c.suite = "hosted_file_aids";
+  std::printf("=== hosted_file_aids (T1, offline) ===\n");
+  // The repo root from this file's own path (nimbusd/tests/<this file>).
+  std::string here = __FILE__;
+  for (int up = 0; up < 3; ++up) here = here.substr(0, here.find_last_of('/'));
+  testSharedFixtures(c, here);
+  std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
+  std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
+  (void)argc;
+  (void)argv;
+  return c.failures ? 1 : 0;
+}

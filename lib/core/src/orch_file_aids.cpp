@@ -186,6 +186,7 @@ struct Out {
   uint64_t bytes = 0, hash = kFnv64Basis, lines = 1;
   char last = '\n';
   StillAt still;
+  Out(AidSink& s, Finder& c, char* b) : sink(s), count(c), buf(b) {}
 
   bool flush(bool eof) {
     if (failed) return false;
