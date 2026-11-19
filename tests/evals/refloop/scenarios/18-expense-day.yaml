@@ -1,0 +1,31 @@
+id: expense-day
+title: A spending log across a day with a running total, an undo and a refund
+pain: >
+  The general harness (owner ruling 41): the meal-log-day shape with money. Totals must follow the log, an undone
+  purchase must leave it, and a refund (a negative amount) must count as one.
+# As in meal-log-day, the seeded note makes this an instance that has saved a file before.
+seed:
+  files:
+    - {project: notes, name: welcome.txt, text: "Welcome to your Nimbus."}
+turns:
+  - say: "Tracking my spending today. Coffee on the way in: 3.10."
+  - say: "Lunch, a falafel wrap: 7.45."
+  - say: "Train ticket home: 12.60."
+  - say: "What have I spent so far today?"
+    expect:
+      - reply_regex: '23\.15'
+  - say: "Scratch the train ticket, I got a lift in the end."
+  - say: "A refund came through for the umbrella I returned: minus 14.99."
+  - say: "Dinner groceries: 18.25."
+  - say: "Total for today?"
+    expect:
+      - reply_regex: '13\.81'
+      - reply_not_regex: '26\.41|28\.80'
+final:
+  - file_matching: {all: ['3\.10?\b', '7\.45', '18\.25', '-\s?14\.99'], none: ['12\.60?\b']}
+judge_notes: >
+  Purchases: coffee 3.10, falafel wrap 7.45, train ticket 12.60 (later undone: removed from the log), a refund of
+  -14.99 for an umbrella, dinner groceries 18.25. Total at turn 4: 23.15. Final total: 3.10 + 7.45 - 14.99 + 18.25 =
+  13.81. The entries should be logged with a tool (a file), not only kept in the chat; the undo must really change the
+  log and the refund counts as a negative amount. A total that still includes the train ticket (26.41) or ignores the
+  refund (28.80) is wrong.

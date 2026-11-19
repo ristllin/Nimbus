@@ -1,0 +1,28 @@
+id: training-week
+title: A training log across a week, a correction of an earlier day, and the week's volume
+pain: >
+  The general harness (owner ruling 41): sets logged on different days, a set corrected two days later, and a
+  week's volume (reps times kg) that must follow the log, not the first figure said.
+seed:
+  files:
+    - {project: notes, name: welcome.txt, text: "Welcome to your Nimbus."}
+turns:
+  - say: "Starting a training log this week. Today: squat, 3 sets of 5 at 80 kg."
+  - advance: 1d
+  - say: "Today: bench press, 3 sets of 8 at 55 kg."
+  - advance: 2d
+  - say: "Deadlift today, 2 sets of 5 at 110 kg."
+  - advance: 1d
+  - say: "Overhead press, 3 sets of 8 at 32.5 kg."
+  - say: "Wait, the deadlift sets two days ago were 105 kg, not 110."
+  - say: "What's my total volume this week, reps times kg?"
+    expect:
+      - reply_regex: '4,?350'
+      - reply_not_regex: '4,?400'
+final:
+  - file_matching: {all: ['squat', 'bench', 'deadlift', 'overhead', '\b105\b', '32\.5'], none: ['\b110\b']}
+judge_notes: >
+  Sets over four days: day 1 squat 3 x 5 at 80 kg (volume 1,200); day 2 bench press 3 x 8 at 55 kg (1,320); day 4
+  deadlift 2 x 5 at 110 kg, corrected later to 105 kg (1,050); day 5 overhead press 3 x 8 at 32.5 kg (780). Week
+  volume: 1,200 + 1,320 + 1,050 + 780 = 4,350 kg. Each day's sets dated on their own day. The correction must change
+  the stored deadlift sets (no 110 left); a volume of 4,400 still uses 110 kg and is wrong.

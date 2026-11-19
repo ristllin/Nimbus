@@ -126,15 +126,26 @@ The shim's Linux path (`LD_PRELOAD`) is written but has not been run.
 ## Scenarios (`tests/evals/refloop/scenarios/*.yaml`)
 
 Every scenario is synthetic: made-up text, generated photos and files (`fixtures.py`).
-Seventeen ship here: the fourteen shapes of the lane brief (the 15 Nov shape twice, with and
+Nineteen ship here: the fourteen shapes of the lane brief (the 15 Nov shape twice, with and
 without food), plus `long-haul` (twelve 40 KB documents: the reference loop's 150k-token
-summary and its cost) and `long-chat` (22 long messages: the harness's 48 KB fold).
+summary and its cost), `long-chat` (22 long messages: the harness's 48 KB fold), and, since
+food is one validation domain among three (owner ruling 41), `expense-day` (meal-log-day's
+shape with money: an undo and a refund) and `training-week` (sets over four days, a correction
+two days later, the week's volume).
+
+The three validation families (food, expenses, training; twelve scenarios each, the same shapes)
+are generated into `tests/evals/refloop/families/<domain>/` by `tests/evals/families/gen_families.py`
+and run with `tests/evals/families/run_families.py` (checks only; it also runs arm X, the counter-test
+arm whose appends write twice, which must turn them red). Each seeds the domain's tracking file and the
+owner's own skill (`seed.skills`).
 
 | Key | Meaning |
 |---|---|
 | `id`, `title`, `pain` | what it is and which owner pain it stands for |
 | `seed.files` | files both instances hold before turn 1: `{project, name, text}` or `{project, name, fixture}` |
 | `seed.memories` | facts stored with `memory.write` before turn 1 |
+| `seed.skills` | the owner's own skills before turn 1: `{id, md}`, saved as the owner (live at once) |
+| `{D0}`, `{D-1}`, `{D-1:dm}`, `{D-1:wd}`, `{RD}` | the run's dates: day 0 is the running day (day start 04:00) when the arm starts; `dm` is "18 Nov", `wd` the weekday; `{RD}` in a check is the running day at that turn's virtual time |
 | `turns` | steps, each exactly one of `say`, `burst`, `restart`, `new_conversation`, `advance` |
 | `final` | checks on the instance's state after the last turn |
 | `judge_notes` | the ground truth the judge is given |
@@ -156,8 +167,11 @@ Checks (`expect` on a turn, `final` on the scenario; table in `grade.py`, one pa
 failing case each in the self-test): `reply_regex`, `reply_not_regex`, `last_reply_regex`,
 `max_replies`, `difference_from_turn`, `tool_called`, `tool_not_called`, `min_tool_calls`,
 `file_matching`, `file_contains`, `file_absent`, `files_at_most`, `loops_count`,
-`loops_regex`, `loops_not_regex`, `memory_regex`, `memory_not_regex`. An unknown key or
-check stops the load.
+`loops_regex`, `loops_not_regex`, `memory_regex`, `memory_not_regex`, `day_rows` (a
+day's rows in a CSV file: `count`, each `match` regex finds exactly one row, no row matches a
+`none` regex; comment lines are no rows) and `reply_total` (the full total, or the partial total
+the read covered together with a mention of the rows it left out; a partial total presented as
+complete fails). An unknown key or check stops the load.
 
 A known trap, found by this rig on 17 Nov 2026: on a brand-new nimbusd the files directory
 does not exist until the first save, and `files.append` with no `key` then answers `write
