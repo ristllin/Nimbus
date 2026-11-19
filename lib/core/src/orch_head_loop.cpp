@@ -211,8 +211,7 @@ size_t currentResultCap() { return t_resultCap; }
 size_t resultCapFor(const HeadLoopConfig& cfg, size_t carried) {
   const size_t cap = cfg.maxToolResultBytes;
   if (!cap || !cfg.maxWideResultBytes || !cfg.maxTotalToolBytes) return cap;
-  const size_t total = cfg.wideRoomBytes ? std::min(cfg.wideRoomBytes, cfg.maxTotalToolBytes) : cfg.maxTotalToolBytes;
-  const size_t left = carried < total ? total - carried : 0;
+  const size_t left = carried < cfg.maxTotalToolBytes ? cfg.maxTotalToolBytes - carried : 0;
   const size_t room = left > cap ? left - cap : 0;   // one ordinary result stays possible
   return std::max(cap, std::min(room, cfg.maxWideResultBytes));
 }
