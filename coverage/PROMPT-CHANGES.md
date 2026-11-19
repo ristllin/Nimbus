@@ -104,35 +104,11 @@ deleted. Engine 2 has no baseline.
 | Source | sha8 | Order | Template (start) |
 |---|---|---|---|
 | lib/core/include/nimbus/orch/result_envelope.h | 40c46ffd | read the | ; read the rest with files.read from an offset] |
-| lib/core/src/orch_file_append.cpp | 1012588a | start it |  starts with # (a comment row) - start it with its first col |
-| lib/core/src/orch_file_append.cpp | 16ed2d94 | send fewer |  B) - send fewer rows per call |
-| lib/core/src/orch_file_append.cpp | 4ee45099 | Use the | . Use the earlier figure per unit unless the portion or reci |
-| lib/core/src/orch_file_append.cpp | 604baf3a | put a |  has a broken quote (an unclosed quote, or text after a clos |
-| lib/core/src/orch_file_append.cpp | 656c6fde | start the | this log has no date column, and a keyed write without one w |
 | lib/core/src/orch_file_append.cpp | 7917432a | add fewer |  B) - add fewer rows per call |
-| lib/core/src/orch_file_append.cpp | 8c3336d6 | write one | ' is not a plain number - write one number, like 450 |
-| lib/core/src/orch_file_append.cpp | 94959a39 | try again | the card read failed - the log was not changed; try again |
-| lib/core/src/orch_file_append.cpp | b4501c1e | set aside | - set aside  |
-| lib/core/src/orch_file_append.cpp | b76f2b85 | read it |  columns; read it with files.read {project, name, tail: 1} |
-| lib/core/src/orch_file_append.cpp | ba15659d | send the | creating a CSV needs its header row first (the column names, |
-| lib/core/src/orch_file_append.cpp | c281956d | put a |  - put a field that holds a comma in double quotes |
-| lib/core/src/orch_file_append.cpp | dfe382fb | send the | ) - send the stored header and its column order |
-| lib/core/src/orch_file_append.cpp | eebf4dc6 | send one | ' - send one row per date and key |
 | lib/core/src/orch_file_edit.cpp | 344f286e | make the |  per call) - make the find text longer |
 | lib/core/src/orch_file_edit.cpp | 35c6a867 | split the |  B - split the edit |
 | lib/core/src/orch_file_edit.cpp | 471f0eb6 | start a | the file is over 1 MB, too large to edit in place - start a  |
 | lib/core/src/orch_file_edit.cpp | 6073de08 | edit a |  B - edit a smaller span |
-| lib/core/src/orch_food_figures.cpp | 42eb4c5f | Check it | . Check it against your plan.) |
-| lib/core/src/orch_food_figures.cpp | 647d2f4a | Say so, | ": a row of today's ledger cannot be read, so the day's tota |
-| lib/core/src/orch_food_figures.cpp | 99e6aadd | do not | Your reply states food figures the device's records do not b |
-| lib/core/src/orch_food_figures.cpp | a6da59a5 | Read it | , and nothing this turn holds it (no stored target, standing |
-| lib/core/src/orch_food_figures.cpp | b7ee91fb | do not | , from its rows. Use the ledger's figure; do not add up a da |
-| lib/core/src/orch_food_figures.cpp | cb1072de | Check it |  days old. Check it is still current.) |
-| lib/core/src/orch_food_figures.cpp | d3c7eabe | Do not |  of today's rows have no protein figure, so the real figure  |
-| lib/core/src/orch_food_figures.cpp | e36e0050 | Check it |  left. Check it against your plan.) |
-| lib/core/src/orch_food_portions.cpp | 5f71f8a2 | give at | give at least one food |
-| lib/core/src/orch_food_portions.cpp | 62de1e21 | call again | . A food of the meal the owner named that is missing here is |
-| lib/core/src/orch_food_portions.cpp | d5a66ad2 | give amount_g | give amount_g (the portion you would choose in grams; the pr |
 | lib/core/src/orch_memory_tools.cpp | 045eec69 | do not | . Nothing keeps or retries it: tell the owner it was not sav |
 | lib/core/src/orch_memory_tools.cpp | 0612be8c | do not |  automatically when embeddings work again; keyword search fi |
 | lib/core/src/orch_memory_tools.cpp | 149e80eb | ask the | ) - ask the device's admin to raise it, or remove an old mem |
@@ -178,7 +154,6 @@ deleted. Engine 2 has no baseline.
 | nimbusd/src/hosted_skills.h | 32ecc0fd | call skill_list) | unknown skill id (call skill_list) |
 | nimbusd/src/posix_files.h | 020f8309 | ask the | Files on this instance belong to its owner; ask the owner to |
 | nimbusd/src/posix_files.h | 34648981 | pass offset |  files; pass offset to page)  |
-| nimbusd/src/posix_files.h | dde4e371 | read the | short write - read the tail before adding the rows again |
 | nimbusd/src/rig.h | 80bbe265 | try fewer | no sections match - try fewer keywords |
 | src/agent/connectors.cpp | 38d1d613 | Start again | Sign-in did not complete. Start again from the connector. |
 | src/agent/connectors.cpp | 5ea71fb2 | Use a | Browser sign-in works only with a hosted https server. Use a |
@@ -189,12 +164,9 @@ deleted. Engine 2 has no baseline.
 | src/agent/files_subsystem.cpp | 1a843fa9 | read the |  B landed - read the tail before adding the rows again |
 | src/agent/files_subsystem.cpp | 220158e8 | do not | the download runs only if they approve. Tell the owner it is |
 | src/agent/files_subsystem.cpp | 2f373de6 | try again | the card read failed - nothing was added; try again |
-| src/agent/files_subsystem.cpp | 3890f2a2 | try again | the card read or write failed - nothing was added; try again |
 | src/agent/files_subsystem.cpp | 5bb41fb8 | try again | Telegram media queue busy or Telegram not configured - try a |
 | src/agent/files_subsystem.cpp | 61f62253 | set policy | ) - kept OUT of the store; set policy to approve for manual  |
-| src/agent/files_subsystem.cpp | 688add0f | start a | the log is over 1 MB - start a new log file (like food-log-2 |
 | src/agent/files_subsystem.cpp | 87e3b7b0 | try again | the file could not be read - try again |
-| src/agent/files_subsystem.cpp | 94959a39 | try again | the card read failed - the log was not changed; try again |
 | src/agent/files_subsystem.cpp | 9d0ffed3 | ask the | this conversation has reached its file-storage limit - ask t |
 | src/agent/files_subsystem.cpp | a09a060f | use files.share | binary or non-text document - use files.share / the web view |
 | src/agent/files_subsystem.cpp | a239f3eb | try again] | [no day total: the card read failed - try again]  |
@@ -681,3 +653,58 @@ deleted. Engine 2 has no baseline.
 - lane: RB-MG1a
 - prd: section 9 (v6 stores, Conversation: digest 0 or one omission line; Going back and forward again: rows the other engine wrote are imported behind one device note, within budget or as a named omission)
 - why: lib/core/include/nimbus/orch/tx/migrate.h (listed in E2_EXTRA_SOURCES) holds the pieces of the two notes a migration stores: the anchor that stands for the conversation under the old summary's pointer ("[device] The conversation through <when> was kept by the earlier engine; search finds it.", with the saved or unsaved old summary when digest 0 was not accepted), and the PRD's note in front of each import batch ("[device] N turns between <t1> and <t2> were answered by the earlier engine; their tool work is not shown.", with the earlier messages it names when over the budget). Domain-free (rulings 41 and 42). Planned work (ruling 18), not a fix.
+
+### PC-0050: the food ledger's renderers leave the old engine (owner ruling 41)
+- catalog: e1
+- class: system
+- kind: remove
+- bytes: 47695 -> 43823
+- sha8: 55d9533e -> e31f6c20
+- lane: RB-REC1
+- why: owner ruling 41: no built-in support for one use case. lib/core/src/orch_food_ledger.cpp (its
+  ledger, recall, intent-hint, dispute and targets blocks, none of which rode a prompt since RB-Q3a
+  except the fold's day) is deleted with its last caller; nothing else in the class moved.
+
+### PC-0051: files.append and prefs.edit describe a general tool; the portion calculator leaves
+- catalog: e1
+- class: tool_descriptions
+- kind: spec
+- bytes: 23206 -> 21628
+- sha8: d9d899ae -> 7249ee6c
+- lane: RB-REC1
+- prd: section 4 (files.append becomes a pure append; no tool, group or text for one use case: rulings 41 and 42)
+- why: planned work (ruling 18), a net deletion of 1,578 B. Removed: food.portions' description (725 B),
+  files.append's keyed-upsert description on the device (747 B) and nimbusd (the key and sum text), the
+  "a meal or a day's total to the food ledger" clause of prefs.edit. Added: the pure append's one
+  description, the same text on the device and nimbusd (two literals, 183 B each), and prefs.edit's
+  literal without the ledger clause. image.note's example "the dish and portion" reads "what it shows"
+  (device and nimbusd; the review's finding, owner ruling 41).
+
+### PC-0052: the keyed append's, the label's, the figures' and the portions' results leave
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 42579 -> 34654
+- sha8: 5bbb2cef -> 53933cdf
+- lane: RB-REC1
+- prd: section 4 (files.append is pure: no merge, no refusal, no rewritten line; ruling 42 item 7)
+- why: planned work (ruling 18), a net deletion of 7,925 B (after RB-REC3's PC-0024 and RB-REC8's PC-0030). Removed: every result text of the keyed
+  upsert, the cut-row set-aside, the headerless-CSV refusal, the food label, figure and portion
+  checks, the legacy meal-log fold and the second-food-log refusal (219 literals, 8,236 B). Added on
+  nimbusd's append, which now reads only the file's end: "read failed - nothing was added", "write
+  failed - nothing was added" and the device's existing "its last row had no line end" fact (132 B);
+  on the device, nimbusd and the lab, the error of a call that carries an older key, sum or replace
+  (appendArgsError: the design's general wording, so a correction never lands as a second row) and
+  the fact that a CSV row of another width than its header counts in no day total (csvWidthNote).
+
+### PC-0053: the compaction prompt names no food block and no [TODAY] line
+- catalog: e1
+- class: side_prompts
+- kind: spec
+- bytes: 9795 -> 9507
+- sha8: fada0e91 -> 63c24ee1
+- lane: RB-REC1
+- prd: section 3 (the fold reads the conversation; no data block of one use case)
+- why: planned work (ruling 18), a net deletion of 288 B. The fold's input no longer closes with a day
+  block (the orchestrator's note: it gets none), so the prompt's food paragraph (282 B) and its
+  "[TODAY] and" date source go; the literal is rewritten without them, nothing else moved.
