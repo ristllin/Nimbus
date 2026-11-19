@@ -651,6 +651,23 @@ static void test_floor_sends_defer_the_fold_and_the_next_fold_keeps_the_full_kee
 // history, with a device-sized prompt (about 20 KB of history fits the floor).
 static void test_a_pool_that_fragments_late_defers_the_fold_too() { runFloorProperty(52000, 120, 40); }
 
+// The deferred chat is looked at once a minute, not on every driver pass (one log line each).
+static void test_a_deferred_fold_is_looked_at_once_a_minute() {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.floorPool = true;
+  d.promptPad = 24000;
+  d.boot();
+  for (int i = 0; i < 60; i++) {
+    d.turn(kMain);
+    d.pump(1, 60);
+  }
+  LogCapture::lines().clear();
+  d.pump(60, 5);   // five minutes of passes 5 s apart
+  int looks = 0;
+  for (const auto& l : LogCapture::lines()) looks += l.find("deferred - the last request went at the send floor") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(looks >= 1 && looks <= 6, std::to_string(looks).c_str());
+}
+
 // Counter-test: a Summarize now on the fragmented pool is never deferred. It lands, its request
 // fits the floor, and the next request holds every row after the new anchor.
 static void test_a_summarize_now_at_the_floor_still_lands() {
@@ -1261,6 +1278,7 @@ int main(int, char**) {
   RUN_TEST(test_invariant_holds_on_the_floor_branch);
   RUN_TEST(test_floor_sends_defer_the_fold_and_the_next_fold_keeps_the_full_keep);
   RUN_TEST(test_a_pool_that_fragments_late_defers_the_fold_too);
+  RUN_TEST(test_a_deferred_fold_is_looked_at_once_a_minute);
   RUN_TEST(test_a_summarize_now_at_the_floor_still_lands);
   RUN_TEST(test_a_healthy_pool_folds_with_the_full_keep);
   return UNITY_END();
