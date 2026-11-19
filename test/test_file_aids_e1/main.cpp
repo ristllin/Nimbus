@@ -114,7 +114,7 @@ static void test_old_and_new_shape_give_the_same_day_total() {
     }
     for (int d = 0; d < 28; ++d) {
       const std::string day = dateOf(d);
-      const std::string old = aids::e1::dayTotal(card, card.file.size(), "log/x.csv", s.col, day);
+      const std::string old = aids::e1::dayTotal(card, card.file.size(), "log/x.csv", {s.col}, day);
       aids::CsvQuery q;
       q.column = "date";
       q.from = day;
@@ -178,12 +178,36 @@ static void test_the_implicit_day_is_the_running_day() {
     card.file = std::string(f.header) + "\n2026-11-19,a,x,1,10\n" + f.late + "\n2026-11-20,b,y,1,7\n";
     for (uint16_t start : {uint16_t(240), uint16_t(0)}) {
       const std::string day = aids::e1::runningDate(at0030, 0, start);
-      const std::string line = aids::e1::dayTotal(card, card.file.size(), "log/x.csv", f.col, day);
+      const std::string line = aids::e1::dayTotal(card, card.file.size(), "log/x.csv", {f.col}, day);
       const bool yesterday = start == 240;
       TEST_ASSERT_TRUE_MESSAGE(line.find(yesterday ? "rows 2 of 3 where date 2026-11-19..2026-11-19" : "rows 1 of 3 where date 2026-11-20..2026-11-20") == 0,
                                line.c_str());
     }
   }
+}
+
+// Review cases: a source that ends short of the size it was given is a card fault, never a
+// shorter file; history rows ride after the last row on a line of their own (a file with no
+// last newline gains one) and never count as the find text still in the file.
+static void test_short_reads_and_trailers() {
+  MemCard card;
+  card.file = "date,amount\n2026-11-19,7\n";
+  std::string out;
+  aids::CsvQuery q;
+  q.sum = {"amount"};
+  TEST_ASSERT_FALSE(aids::e1::tableRead(card, card.file.size() + 100, "log/x.csv", q, out));
+  TEST_ASSERT_TRUE_MESSAGE(aids::e1::tableRead(card, card.file.size(), "log/x.csv", q, out), out.c_str());
+
+  card.file = "a\nb";
+  aids::EditRequest e;
+  e.oldText = "b";
+  e.newText = "c";
+  e.trailer = "#was: b\n";
+  const aids::EditOutcome o = aids::editFile(card, card, card.file.size(), 0, "log/x.txt", e);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("a\nc\n#was: b\n", card.file.c_str());
+  TEST_ASSERT_EQUAL_UINT64(card.file.size(), o.newSize);
+  TEST_ASSERT_EQUAL_size_t(0, o.stillAt.count);
 }
 
 int main(int, char**) {
@@ -192,5 +216,6 @@ int main(int, char**) {
   RUN_TEST(test_old_and_new_shape_give_the_same_day_total);
   RUN_TEST(test_files_edit_keeps_its_default_and_picks_by_line);
   RUN_TEST(test_the_implicit_day_is_the_running_day);
+  RUN_TEST(test_short_reads_and_trailers);
   return UNITY_END();
 }

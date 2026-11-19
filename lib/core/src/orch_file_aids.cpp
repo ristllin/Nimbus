@@ -183,7 +183,7 @@ struct Out {
   Finder& count;   // old in the new file
   char* buf = nullptr;
   size_t len = 0;
-  bool first = true, failed = false;
+  bool first = true, failed = false, counting = true;
   uint64_t bytes = 0, hash = kFnv64Basis, lines = 1;
   char last = '\n';
   StillAt still;
@@ -193,11 +193,19 @@ struct Out {
     if (failed) return false;
     if ((len || first) && !sink.partWrite(std::string_view(buf, len), first)) return !(failed = true);
     first = false;
-    std::memcpy(count.room(), buf, len);
-    count.len += len;
+    if (counting) {
+      std::memcpy(count.room(), buf, len);
+      count.len += len;
+      count.run(eof, still);
+    }
     len = 0;
-    count.run(eof, still);
     return true;
+  }
+  // The edited content is all written: old's last matches are counted, and what follows
+  // (engine 1's history rows) is never counted as old still being there.
+  void endCount() {
+    flush(true);
+    counting = false;
   }
   void put(const char* p, size_t n) {
     while (n && !failed) {
@@ -380,7 +388,11 @@ struct EditRun : FindSink {
     out = &w;
     Read r;
     const bool read = pass(src, in, r, *this);
-    if (read && !e.trailer.empty()) w.put(e.trailer.data(), e.trailer.size());
+    if (read && !e.trailer.empty()) {
+      w.endCount();
+      if (w.last != '\n') w.put("\n", 1);   // a history row never joins the last row
+      w.put(e.trailer.data(), e.trailer.size());
+    }
     const bool wrote = read && w.flush(true);
     std::string err = writeError(read, wrote, r);
     if (err.empty() && !sink.partSwap()) err = sink.refusal().empty() ? std::string(T::kCardWrite) : sink.refusal();
@@ -402,7 +414,8 @@ struct EditRun : FindSink {
     const bool firstN = countMode();
     const uint64_t k = e.all ? plan.count : firstN ? std::min<uint64_t>(e.count, plan.count) : 1;
     const uint64_t taken = e.all ? plan.takeAll : e.line ? plan.takePick : firstN ? plan.takeCount : plan.takeFirst;
-    return plan.bytes + k * e.newText.size() - k * e.oldText.size() - taken + e.trailer.size();
+    const uint64_t fence = !e.trailer.empty() && in.prev != '\n' ? 1 : 0;   // the file's last byte (pass 1)
+    return plan.bytes + k * e.newText.size() - k * e.oldText.size() - taken + fence + e.trailer.size();
   }
   void shiftAfter() {
     const uint64_t oldNl = countNl(e.oldText) + (tookEnd ? 1 : 0);

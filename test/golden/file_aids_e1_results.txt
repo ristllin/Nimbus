@@ -12,6 +12,20 @@ date,occasion,item,grams,kcal
 
 2026-11-20,breakfast,oats,60,230
 
+== old shape with no tail: the day's total alone
+ok rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+
+-- log/f.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+#was: 2026-11-19,breakfast,oats,40,150
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
 == new shape: the same day
 ok log/f.csv size=291 lines=9
 L1 date,occasion,item,grams,kcal
@@ -109,7 +123,7 @@ date,when,note,amount,tip
 2026-11-30,evening,books,12.00,0
 
 == identical rows: the first by default
-ok edited log/t.csv: replaced 1 of 2 matches (now 282 bytes); 1 more remain (all: true replaces them); at line 2; 9 lines; find is still at lines 3, 9
+ok edited log/t.csv: replaced 1 of 2 matches (now 282 bytes); 1 more remain (all: true replaces them); at line 2; 9 lines; find is still at line 3
 changed: 2026-11-13 am kg 100 -> 110
 the removed and changed rows are kept in the file as history rows (#removed: / #replaced:)
 -- log/t.csv
@@ -124,7 +138,7 @@ date,session,exercise,reps,kg
 #replaced: 2026-11-13,am,squat,5,100
 
 == identical rows: line picks the second
-ok edited log/t2.csv: replaced 1 of 2 matches (now 255 bytes); 1 more remain (all: true replaces them); at line 3; 8 lines; lines that were 4 and later are now 1 lower; find is still at lines 2, 8
+ok edited log/t2.csv: replaced 1 of 2 matches (now 255 bytes); 1 more remain (all: true replaces them); at line 3; 8 lines; lines that were 4 and later are now 1 lower; find is still at line 2
 rows removed: 2026-11-13 am
 the removed and changed rows are kept in the file as history rows (#removed: / #replaced:)
 -- log/t2.csv
@@ -162,7 +176,7 @@ date,when,note,amount,tip
 2026-11-30,evening,books,12.00,0
 
 == a correction by line
-ok edited log/e2.csv: replaced 1 of 1 match (now 355 bytes); at line 7; 9 lines; find is still at line 9
+ok edited log/e2.csv: replaced 1 of 1 match (now 355 bytes); at line 7; 9 lines
 the removed and changed rows are kept in the file as history rows (#removed: / #replaced:)
 -- log/e2.csv
 date,when,note,amount,tip

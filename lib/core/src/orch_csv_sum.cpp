@@ -566,7 +566,6 @@ bool CsvScanner::finish() { return err_.empty() && impl_ && impl_->finish(); }
 
 // ---- the driver ---------------------------------------------------------------------
 CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, const CsvQuery& q) {
-  (void)size;
   CsvScanOutcome o;
   CsvScanner s(q, path, &o.result);
   char* chunk = s.error().empty() ? static_cast<char*>(workingAlloc(kAidChunk)) : nullptr;
@@ -575,16 +574,25 @@ CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, c
     return o;
   }
   bool ok = true;
-  for (uint64_t off = 0;;) {
+  uint64_t off = 0;
+  for (;;) {
     size_t got = 0;
     if (!src.readAt(off, kAidChunk, chunk, got)) {
       o.error = T::kCardRead;
       ok = false;
       break;
     }
-    if (got && !s.feed(chunk, got)) break;
+    if (got && !s.feed(chunk, got)) {
+      ok = false;   // the scanner's own error is said below
+      break;
+    }
     off += got;
     if (got < kAidChunk) break;
+  }
+  // A read that stopped short of the size the store gave is a card fault, never a shorter file.
+  if (ok && off < size) {
+    o.error = T::kCardRead;
+    ok = false;
   }
   workingFree(chunk);
   if (ok && s.finish()) {

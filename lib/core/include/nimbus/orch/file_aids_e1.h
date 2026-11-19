@@ -18,10 +18,15 @@
 // left out named by line), so the same day gives the same total either way.
 namespace nimbus::orch::aids::e1 {
 
-// files.read {sum, date}: the day's total of one column, as the scan's tail line ("rows m
+// Which form a files.read call takes: column, from or to -> Table; else sum -> DayTotal (with
+// the tail view above it when tail is given); else tail -> Tail; else the plain paged read.
+enum class ReadForm : uint8_t { Plain, Tail, DayTotal, Table };
+ReadForm readForm(ArduinoJson::JsonObjectConst a);
+
+// files.read {sum, date}: the day's total of the sum columns, as the scan's tail line ("rows m
 // of n where <date column> D..D; sum <col>=<v>; ..."), then "\n". The date column is the
 // header's (csvDateColumnOf over the file's first rows). Errors read "[no day total: ...]\n".
-std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, const std::string& sumCol,
+std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, const std::vector<std::string>& sums,
                      const std::string& day);
 
 // The general form's arguments: column, from, to (strings), sum (a list of column names, or

@@ -4,7 +4,7 @@
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
 # class device_notes bytes=1513 ceiling=2048 entries=54 sha8=9bcb2662
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
-# class tool_results bytes=4779 ceiling=6144 entries=363 sha8=2d556baa
+# class tool_results bytes=4780 ceiling=6144 entries=364 sha8=4b66c10b
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
 # class summarizer bytes=654 ceiling=1024 entries=13 sha8=82cd5b54
 # class tool_descriptions bytes=4368 ceiling=10240 entries=46 sha8=6e063370
@@ -262,6 +262,7 @@ tool_results	lib/core/src/orch_file_aids.cpp	7f442418	10	" would be "
 tool_results	lib/core/src/orch_file_aids.cpp	58505c25	36	" B; an edit here leaves files up to "
 tool_results	lib/core/src/orch_file_aids.cpp	c908bbb4	2	" B"
 tool_results	lib/core/src/orch_file_aids.cpp	e3b0c442	0	""
+tool_results	lib/core/src/orch_file_aids.cpp	01ba4719	1	"\n"
 tool_results	lib/core/src/orch_file_aids.cpp	ae6cb4ee	18	"; lines that were "
 tool_results	lib/core/src/orch_file_aids.cpp	2c25cf86	19	" and later are now "
 tool_results	lib/core/src/orch_file_aids.cpp	c466b901	6	" lower"

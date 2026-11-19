@@ -199,8 +199,9 @@ struct CsvScanOutcome {
   CsvScanResult result;
 };
 
-// Scan the file of `size` bytes from src in kAidChunk reads. path is the stored path the
-// errors name. A query that fails checkCsvQuery is returned as its error.
+// Scan the file of `size` bytes from src in kAidChunk reads (until a short read: a file that
+// grew is read whole; one that reads short of `size` is a card fault). path is the stored path
+// the errors name. A query that fails checkCsvQuery is returned as its error.
 CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, const CsvQuery& q);
 
 // The streaming scanner the driver uses (exposed so the property tests feed arbitrary

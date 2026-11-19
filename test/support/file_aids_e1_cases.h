@@ -32,6 +32,8 @@ struct Call {
 inline const std::vector<Call>& calls() {
   static const std::vector<Call> c = {
       {"old shape: a day's total", "log/f.csv", kFood, "files.read", R"("tail":3,"sum":"kcal","date":"2026-11-19")"},
+      {"old shape with no tail: the day's total alone", "log/f.csv", nullptr, "files.read",
+       R"("sum":"kcal","date":"2026-11-19")"},
       {"new shape: the same day", "log/f.csv", nullptr, "files.read", R"("column":"date","from":"2026-11-19","sum":"kcal")"},
       {"new shape: two columns", "log/f.csv", nullptr, "files.read",
        R"("column":"date","from":"2026-11-19","sum":"grams,kcal")"},
@@ -89,8 +91,11 @@ inline std::string deviceCall(MemCard& card, const std::string& path, const Call
   const ArduinoJson::JsonObjectConst a = doc.as<ArduinoJson::JsonObjectConst>();
   std::string out;
   if (std::string(c.tool) == "files.read") {
-    if (!a["tail"].isNull())
-      return "ok " + aids::e1::dayTotal(card, card.file.size(), path, a["sum"].as<const char*>(), a["date"] | "");
+    if (aids::e1::readForm(a) == aids::e1::ReadForm::DayTotal) {
+      aids::CsvQuery q;   // the sum argument read as the CSV form reads it
+      if (!aids::e1::queryArgs(a, 0, q, out)) return "error " + out;
+      return "ok " + aids::e1::dayTotal(card, card.file.size(), path, q.sum, a["date"] | "");
+    }
     aids::CsvQuery q;
     const size_t offset = a["offset"] | 0;
     if (!aids::e1::queryArgs(a, offset, q, out)) return "error " + out;

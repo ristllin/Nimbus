@@ -4,7 +4,7 @@
 # class system bytes=43823 ceiling=47989 entries=411 sha8=e31f6c20
 # class device_notes bytes=54036 ceiling=54203 entries=1457 sha8=692e97dd
 # class tool_descriptions bytes=22131 ceiling=23131 entries=99 sha8=56b90134
-# class tool_results bytes=34788 ceiling=41962 entries=1072 sha8=02b62617
+# class tool_results bytes=34929 ceiling=41962 entries=1076 sha8=49b44107
 # class side_prompts bytes=9507 ceiling=9795 entries=170 sha8=63c24ee1
 # class skills bytes=8773 ceiling=23264 entries=26 sha8=3ef5d5db
 system	lib/core/include/nimbus/orch/orch_schema.h	955fc9b7	884	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. Never invent ids, links, or successes."
@@ -2008,9 +2008,10 @@ tool_results	lib/core/src/orch_file_aids_e1.cpp	9ab7c775	91	"\nthe removed and c
 tool_results	lib/core/src/orch_file_aids_e1.cpp	908674f3	33	"[no day total: card read failed]\n"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	aa96245a	48	"[no day total: the header names no date column]\n"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	ad480b09	15	"[no day total: "
+tool_results	lib/core/src/orch_file_aids_e1.cpp	ad480b09	15	"[no day total: "
+tool_results	lib/core/src/orch_file_aids_e1.cpp	e74f6567	33	"sum is not a list of column names"
+tool_results	lib/core/src/orch_file_aids_e1.cpp	e74f6567	33	"sum is not a list of column names"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	793d0b99	16	" is not a string"
-tool_results	lib/core/src/orch_file_aids_e1.cpp	e74f6567	33	"sum is not a list of column names"
-tool_results	lib/core/src/orch_file_aids_e1.cpp	e74f6567	33	"sum is not a list of column names"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	4f801993	6	" size="
 tool_results	lib/core/src/orch_file_aids_e1.cpp	61022fdb	7	" lines="
 tool_results	lib/core/src/orch_file_append.cpp	b2047d87	36	"need 'text': one or more rows to add"
@@ -2668,6 +2669,7 @@ tool_results	nimbusd/src/posix_files.h	34648981	29	" files; pass offset to page)
 tool_results	nimbusd/src/posix_files.h	43b9d269	14	"no such file: "
 tool_results	nimbusd/src/posix_files.h	3ef551ea	33	"line is a whole number, 1 or more"
 tool_results	nimbusd/src/posix_files.h	1a5df968	33	"need 'project', 'name' and 'find'"
+tool_results	nimbusd/src/posix_files.h	65f9c517	63	"files.edit edits a text document (.csv, .log, .md, .txt, .json)"
 tool_results	nimbusd/src/posix_files.h	7a63e4fe	14	"SD open failed"
 tool_results	nimbusd/src/posix_files.h	907ba78b	9	"not found"
 tool_results	nimbusd/src/posix_files.h	7a63e4fe	14	"SD open failed"
@@ -2769,12 +2771,14 @@ tool_results	src/agent/files_subsystem.cpp	c9b3ed4a	12	"empty buffer"
 tool_results	src/agent/files_subsystem.cpp	7a63e4fe	14	"SD open failed"
 tool_results	src/agent/files_subsystem.cpp	8bd20024	14	"SD short write"
 tool_results	src/agent/files_subsystem.cpp	fe3aa168	22	"SD write not persisted"
-tool_results	src/agent/files_subsystem.cpp	1743cff1	42	"[no day total: 'date' must be YYYY-MM-DD]\n"
-tool_results	src/agent/files_subsystem.cpp	a817d28e	9	"day total"
 tool_results	src/agent/files_subsystem.cpp	907ba78b	9	"not found"
 tool_results	src/agent/files_subsystem.cpp	7a63e4fe	14	"SD open failed"
 tool_results	src/agent/files_subsystem.cpp	87e3b7b0	38	"the file could not be read - try again"
 tool_results	src/agent/files_subsystem.cpp	87e3b7b0	38	"the file could not be read - try again"
+tool_results	src/agent/files_subsystem.cpp	9cf829a7	48	" changed while it was read; nothing was totalled"
+tool_results	src/agent/files_subsystem.cpp	a817d28e	9	"day total"
+tool_results	src/agent/files_subsystem.cpp	1743cff1	42	"[no day total: 'date' must be YYYY-MM-DD]\n"
+tool_results	src/agent/files_subsystem.cpp	ad480b09	15	"[no day total: "
 tool_results	src/agent/files_subsystem.cpp	9d0ffed3	116	"this conversation has reached its file-storage limit - ask the device's admin to raise it, or delete something first"
 tool_results	src/agent/files_subsystem.cpp	72f53269	34	"no SD card - artifact store absent"
 tool_results	src/agent/files_subsystem.cpp	0b9b074a	36	"an upload is in progress - try again"

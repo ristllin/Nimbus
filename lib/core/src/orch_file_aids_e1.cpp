@@ -82,7 +82,7 @@ std::string runningDate(uint64_t epoch, int32_t offsetMin, uint16_t startMin) {
   return d;
 }
 
-std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, const std::string& sumCol,
+std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, const std::vector<std::string>& sums,
                      const std::string& day) {
   std::vector<std::string> header;
   std::vector<std::vector<std::string>> rows;
@@ -92,13 +92,42 @@ std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, con
   CsvQuery q;
   q.column = header[size_t(dc)];
   q.from = day;
-  q.sum = {sumCol};
+  q.sum = sums;
   q.showRows = false;
+  if (const std::string bad = checkCsvQuery(q); !bad.empty()) return "[no day total: " + bad + "]\n";
   const CsvScanOutcome o = scanCsv(src, size, path, q);
   detail::Txt t;
   if (o.ok) t << std::string_view(renderCsvTail(q, o.result)) << "\n";
   else t << "[no day total: " << std::string_view(o.error) << "]\n";
   return std::move(t.s);
+}
+
+ReadForm readForm(ArduinoJson::JsonObjectConst a) {
+  if (!a["column"].isNull() || !a["from"].isNull() || !a["to"].isNull()) return ReadForm::Table;
+  if (!a["sum"].isNull()) return ReadForm::DayTotal;
+  const ArduinoJson::JsonVariantConst tail = a["tail"];
+  return tail.is<float>() && tail.as<double>() >= 1 ? ReadForm::Tail : ReadForm::Plain;
+}
+
+// sum: a list of column names, or one string of names separated by commas. False with err.
+static bool sumArgs(ArduinoJson::JsonObjectConst a, std::vector<std::string>& sums, std::string& err) {
+  const ArduinoJson::JsonVariantConst v = a["sum"];
+  if (v.is<ArduinoJson::JsonArrayConst>()) {
+    for (ArduinoJson::JsonVariantConst x : v.as<ArduinoJson::JsonArrayConst>()) {
+      if (!x.is<const char*>()) return (err = "sum is not a list of column names").empty();
+      sums.emplace_back(x.as<const char*>());
+    }
+    return true;
+  }
+  if (v.isNull()) return true;
+  if (!v.is<const char*>()) return (err = "sum is not a list of column names").empty();
+  const std::string names = v.as<const char*>();   // one string: names separated by commas
+  for (size_t at = 0; at <= names.size();) {
+    const size_t comma = std::min(names.find(',', at), names.size());
+    sums.push_back(names.substr(at, comma - at));
+    at = comma + 1;
+  }
+  return true;
 }
 
 bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::string& err) {
@@ -109,21 +138,7 @@ bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::
     if (!v.isNull() && !v.is<const char*>()) return (err = std::string(keys[i]) + " is not a string").empty();
     if (!v.isNull()) *fields[i] = v.as<const char*>();
   }
-  if (a["sum"].is<ArduinoJson::JsonArrayConst>()) {
-    for (ArduinoJson::JsonVariantConst v : a["sum"].as<ArduinoJson::JsonArrayConst>()) {
-      if (!v.is<const char*>()) return (err = "sum is not a list of column names").empty();
-      q.sum.emplace_back(v.as<const char*>());
-    }
-  } else if (a["sum"].is<const char*>()) {
-    const std::string names = a["sum"].as<const char*>();
-    for (size_t at = 0; at <= names.size();) {
-      const size_t comma = std::min(names.find(',', at), names.size());
-      q.sum.push_back(names.substr(at, comma - at));
-      at = comma + 1;
-    }
-  } else if (!a["sum"].isNull()) {
-    return (err = "sum is not a list of column names").empty();
-  }
+  if (!sumArgs(a, q.sum, err)) return false;
   q.skipRows = offset;
   q.limit = kE1PageBytes;
   err = checkCsvQuery(q);
@@ -154,7 +169,7 @@ bool edit(AidSource& src, AidSink& sink, uint64_t size, const EditCall& c, Remov
   r.line = c.line;
   r.count = c.pol.all || c.line ? 0 : uint32_t(c.pol.count > 0 ? c.pol.count : 1);
   r.oldName = "find";
-  r.trailer = c.header.empty() ? std::string() : historyRowsForKeyedEdit(c.header, c.find, c.replace);
+  r.trailer = c.header.empty() ? std::string() : historyRowsForKeyedEdit(c.header, c.find, c.replace);   // fenced by editFile
   CapSink capped(sink, c);
   const std::string where = c.project + "/" + c.name;
   const EditOutcome o = editFile(src, capped, size, 0, where, r);

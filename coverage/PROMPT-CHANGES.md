@@ -169,7 +169,6 @@ deleted. Engine 2 has no baseline.
 | src/agent/files_subsystem.cpp | 87e3b7b0 | try again | the file could not be read - try again |
 | src/agent/files_subsystem.cpp | 9d0ffed3 | ask the | this conversation has reached its file-storage limit - ask t |
 | src/agent/files_subsystem.cpp | a09a060f | use files.share | binary or non-text document - use files.share / the web view |
-| src/agent/files_subsystem.cpp | a239f3eb | try again] | [no day total: the card read failed - try again]  |
 | src/agent/files_subsystem.cpp | bd573da5 | set an | no image provider - set an OpenAI key |
 | src/agent/files_subsystem.cpp | d3102b0e | check files.list | ). It runs in the background - check files.list shortly; onl |
 | src/agent/files_subsystem.cpp | ee454775 | Send it |  Send it to the owner with files.send. |
@@ -723,18 +722,18 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: tool_results
 - kind: spec
-- bytes: 34654 -> 34788
-- sha8: 53933cdf -> 02b62617
+- bytes: 34654 -> 34929
+- sha8: 53933cdf -> 49b44107
 - lane: RB-REC4
 - prd: section 4 (the file tools), as amended by rulings 42, 47, 49 and 62
-- why: lib/core/src/orch_file_aids_e1.cpp joins E1_SOURCES (the day total's "no day total" lines, the argument errors, the keyed-CSV report's history line moved from files_subsystem.cpp); files_subsystem.cpp loses the old day-total and edit-pass texts (the over-1 MB day total, the short-write and row-too-long lines) and gains the line argument's error. The totals' tail and the edit's line facts are the shared core's (e2 catalog, PC-0032 and PC-0036). Planned work, not a fix.
+- why: lib/core/src/orch_file_aids_e1.cpp joins E1_SOURCES (the day total's "no day total" lines, the argument errors, the keyed-CSV report's history line moved from files_subsystem.cpp); files_subsystem.cpp loses the old day-total and edit-pass texts (the over-1 MB day total, the short-write and row-too-long lines) and gains the line argument's error and the "changed while it was read" line (a scan gives the card lock up per 4 KB read, so a write that lands meanwhile is said, never totalled over). The totals' tail and the edit's line facts are the shared core's (e2 catalog, PC-0032 and PC-0036). Planned work, not a fix.
 
 ### PC-0036: the shared aids' tail in totals-only form, the find name and the edit's line facts
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 4765 -> 4779
-- sha8: bda3f014 -> 2d556baa
+- bytes: 4765 -> 4780
+- sha8: bda3f014 -> 4b66c10b
 - lane: RB-REC4
 - prd: section 4 (the plain file tools), as amended by rulings 42 and 47
-- why: lib/core/src/orch_file_aids.cpp and orch_csv_sum.cpp: the edit's texts take the argument's name ("find" on the old engine, "old" on read_file's engine), renderEditLines gives the old engine's reply its line facts ("; at line 3; 8 lines"), and the totals-only tail (engine 1's day total) leaves out the shown clause. Planned work, not a fix.
+- why: lib/core/src/orch_file_aids.cpp and orch_csv_sum.cpp: the edit's texts take the argument's name ("find" on the old engine, "old" on read_file's engine), renderEditLines gives the old engine's reply its line facts ("; at line 3; 8 lines"), and the totals-only tail (engine 1's day total) leaves out the shown clause; a scan that ends short of the stored size says the card read failed. Planned work, not a fix.

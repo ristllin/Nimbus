@@ -4,7 +4,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <functional>
 #include <new>
@@ -183,21 +185,23 @@ class PosixFiles {
     std::string body;
     if (!read(p, n, body)) return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
     if (!nimbus::orch::fileReadableAsText(n, body)) return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
-    if (!a["column"].isNull() || !a["from"].isNull() || !a["to"].isNull() || a["sum"].is<ArduinoJson::JsonArrayConst>() ||
-        (!a["sum"].isNull() && a["tail"].isNull()))
-      return tableTool(p, n, a);
-    if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-      return nimbus::orch::ToolResult::ok(tailWithTotal(p, n, body, a));
-    return nimbus::orch::ToolResult::ok(body);
+    using nimbus::orch::aids::e1::ReadForm;
+    switch (nimbus::orch::aids::e1::readForm(a)) {
+      case ReadForm::Table: return tableTool(p, n, body.size(), a);
+      case ReadForm::DayTotal: return tailWithTotal(p, n, body, a);
+      case ReadForm::Tail: return nimbus::orch::ToolResult::ok(tailOf(n, body, (size_t)a["tail"].as<double>()));
+      default: return nimbus::orch::ToolResult::ok(body);
+    }
   }
 
-  nimbus::orch::ToolResult tableTool(const std::string& p, const std::string& n, ArduinoJson::JsonObjectConst a) {
+  nimbus::orch::ToolResult tableTool(const std::string& p, const std::string& n, uint64_t size,
+                                     ArduinoJson::JsonObjectConst a) {
     nimbus::orch::aids::CsvQuery q;
     std::string out;
     const size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
     if (!nimbus::orch::aids::e1::queryArgs(a, offset, q, out)) return nimbus::orch::ToolResult::fail(out);
     DiskSource src(bytesPath(p, n));
-    const bool ok = nimbus::orch::aids::e1::tableRead(src, 0, p + "/" + n, q, out);
+    const bool ok = nimbus::orch::aids::e1::tableRead(src, size, p + "/" + n, q, out);
     return ok ? nimbus::orch::ToolResult::ok(out) : nimbus::orch::ToolResult::fail(out);
   }
 
@@ -212,6 +216,7 @@ class PosixFiles {
     c.line = a["line"].is<unsigned>() ? a["line"].as<unsigned>() : 0;
     if (!a["line"].isNull() && !c.line) return "line is a whole number, 1 or more";
     if (c.project.empty() || c.name.empty() || c.find.empty()) return "need 'project', 'name' and 'find'";
+    if (!textDoc(c.name)) return "files.edit edits a text document (.csv, .log, .md, .txt, .json)";
     return nimbus::orch::validateEdit(c.find.size(), c.replace.size(), c.pol);
   }
 
@@ -232,14 +237,11 @@ class PosixFiles {
     const std::string path = bytesPath(c.project, c.name);
     struct stat st;
     if (::stat(path.c_str(), &st) != 0) return nimbus::orch::ToolResult::fail("SD open failed");
+    if (const std::string big = nimbus::orch::editSizeRefusal(size_t(st.st_size)); !big.empty())
+      return nimbus::orch::ToolResult::fail(big);
     DiskSource src(path);
     if (nimbus::orch::editChangesNothing(c.find, c.replace)) return editNoChange(src, c);
-    if (nimbus::orch::isCsvName(c.name)) {
-      std::string body;
-      read(c.project, c.name, body);
-      c.header = body.substr(0, body.find('\n'));
-      if (!c.header.empty() && c.header.back() == '\r') c.header.pop_back();
-    }
+    if (nimbus::orch::isCsvName(c.name)) c.header = firstLine(path);   // at most 512 B, as on the device
     DiskEditSink sink(*this, c.project, c.name, path);
     std::string reply;
     if (!nimbus::orch::aids::e1::edit(src, sink, uint64_t(st.st_size), c, removed_, reply))
@@ -569,18 +571,33 @@ class PosixFiles {
     return buf;
   }
 
-  // files.read {tail, sum, date}: the tail view, and the day's total of the sum column by
-  // the shared scan (file_aids_e1.h dayTotal), as the device gives it.
-  std::string tailWithTotal(const std::string& p, const std::string& n, const std::string& body,
-                            ArduinoJson::JsonObjectConst a) {
-    std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
-    const std::string sum = str(a, "sum"), date = str(a, "date");
-    if (sum.empty()) return text;
-    if (!date.empty() && nimbus::orch::isoDayOf(date) != date) return text + "[no day total: 'date' must be YYYY-MM-DD]\n";
+  // A text document by its name, the device's textDocName rule.
+  static bool textDoc(std::string name) {
+    for (char& ch : name) ch = char(std::tolower((unsigned char)ch));
+    for (const char* ext : {".md", ".txt", ".json", ".csv", ".log"}) {
+      const size_t k = std::strlen(ext);
+      if (name.size() >= k && name.compare(name.size() - k, k, ext) == 0) return true;
+    }
+    return false;
+  }
+
+  // files.read {sum, date}: the day's total of the sum columns by the shared scan
+  // (file_aids_e1.h dayTotal), under the tail view when 'tail' is given, as the device gives it.
+  nimbus::orch::ToolResult tailWithTotal(const std::string& p, const std::string& n, const std::string& body,
+                                         ArduinoJson::JsonObjectConst a) {
+    const bool tail = a["tail"].is<float>() && a["tail"].as<double>() >= 1;
+    std::string text = tail ? tailOf(n, body, (size_t)a["tail"].as<double>()) : std::string();
+    nimbus::orch::aids::CsvQuery q;   // the sum argument read as the CSV form reads it
+    std::string err;
+    if (!nimbus::orch::aids::e1::queryArgs(a, 0, q, err)) return nimbus::orch::ToolResult::fail(err);
+    const std::vector<std::string>& sums = q.sum;
+    const std::string date = str(a, "date");
+    if (!date.empty() && nimbus::orch::isoDayOf(date) != date)
+      return nimbus::orch::ToolResult::ok(text + "[no day total: 'date' must be YYYY-MM-DD]\n");
     std::string day = date.empty() && today_ ? today_() : date;
     if (day.empty()) day = todayStr();
     DiskSource src(bytesPath(p, n));
-    return text + nimbus::orch::aids::e1::dayTotal(src, 0, p + "/" + n, sum, day);
+    return nimbus::orch::ToolResult::ok(text + nimbus::orch::aids::e1::dayTotal(src, body.size(), p + "/" + n, sums, day));
   }
 
   // The stored file as the shared aids read it: pread, 4 KB a call.
@@ -594,7 +611,11 @@ class PosixFiles {
       while (got < len) {
         const ssize_t r = ::pread(fd, out + got, len - got, off_t(off + got));
         if (r < 0 && errno == EINTR) continue;
-        if (r <= 0) break;
+        if (r < 0) {   // a read fault is said, never taken for the end of the file
+          ::close(fd);
+          return false;
+        }
+        if (r == 0) break;
         got += size_t(r);
       }
       ::close(fd);
