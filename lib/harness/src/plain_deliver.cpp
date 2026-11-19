@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/plain/exchange.h"
@@ -66,26 +67,31 @@ class CountingSink : public tx::LineSink {
   void put(const char*, size_t) override {}
 };
 
+// Measured with the widest q and time the store may give it (put() sets both after this).
 bool fits(tx::Item& e) {
-  const uint64_t q = e.q;
-  if (!e.q) e.q = 1;   // the size does not depend on which q
+  const uint64_t q = e.q, t = e.t;
+  e.q = e.t = UINT64_MAX;
   CountingSink sink;
   size_t bytes = 0;
   const tx::Status st = tx::encodeLineTo(e, sink, bytes);
   e.q = q;
+  e.t = t;
   return st.ok() && bytes <= tx::kMaxLineBytes;
 }
 
+bool marker(const std::string& ev) { return ev == "events:cut" || ev == "exchanges:cut" || ev == "dossier:shed"; }
+
 // The events the e item keeps: the first `keep` of `all`, within the list cap with room for the
 // markers that say what was cut.
-void setEvents(const std::vector<std::string>& all, size_t keep, bool exchangesCut, std::vector<std::string>& out) {
+void setEvents(const std::vector<std::string>& all, size_t keep, bool exchangesCut, bool shed, std::vector<std::string>& out) {
   const size_t want = std::min(keep, all.size());
-  const bool eventsCut = want < all.size() || want + (exchangesCut ? 1 : 0) > tx::kMaxListItems;
-  const size_t markers = (eventsCut ? 1 : 0) + (exchangesCut ? 1 : 0);
-  const size_t n = std::min(want, tx::kMaxListItems - markers);
+  const size_t others = (exchangesCut ? 1 : 0) + (shed ? 1 : 0);
+  const bool eventsCut = want < all.size() || want + others > tx::kMaxListItems;
+  const size_t n = std::min(want, tx::kMaxListItems - others - (eventsCut ? 1 : 0));
   out.assign(all.begin(), all.begin() + static_cast<long>(n));
   if (eventsCut) out.emplace_back("events:cut");
   if (exchangesCut) out.emplace_back("exchanges:cut");
+  if (shed) out.emplace_back("dossier:shed");
 }
 
 // An omission line kept once moves on to the next exchange that read it from this one.
@@ -104,10 +110,8 @@ bool shedOneReference(std::vector<tx::ExchangeFacts>& xs) {
   return false;
 }
 
-// One exchange gives up its reference first (its three figures stay); then the oldest exchange
-// leaves. False when nothing is left to give up.
-bool shedOneExchange(std::vector<tx::ExchangeFacts>& xs) {
-  if (shedOneReference(xs)) return true;
+// The oldest exchange leaves (once every reference is shed). False when none is left.
+bool dropOldestExchange(std::vector<tx::ExchangeFacts>& xs) {
   if (xs.empty()) return false;
   xs.erase(xs.begin());   // holds no reference by now
   return true;
@@ -129,7 +133,7 @@ Status deliverTurn(const DeliverDeps& deps, const DeliverInput& in, DeliverOutco
     }
     if (st.ok()) out.replyDone = true;
   }
-  if (!in.statusText || in.statusText->empty() || out.statusSent) return st;
+  if (!in.statusText || blank(*in.statusText) || out.statusSent) return st;   // no empty message
   if (!listed(in.status)) return Status::fail(Err::InvalidArgument, "plain::deliverTurn.unlisted");
   const std::string& line = *in.statusText;
   bool sent = false;
@@ -153,7 +157,7 @@ Status turnEndItem(const TurnCtx& turn, const tx::TurnEndFacts& facts, tx::Item&
   if (e.cause.size() > kCauseMax) e.cause.resize(kCauseMax);
   std::vector<std::string> events;
   events.swap(e.events);
-  bool exchangesCut = false;
+  bool exchangesCut = false, shed = false;
   if (e.exchanges.size() > tx::kMaxListItems) {   // the newest are kept
     e.exchanges.erase(e.exchanges.begin(), e.exchanges.end() - static_cast<long>(tx::kMaxListItems));
     exchangesCut = true;
@@ -162,10 +166,13 @@ Status turnEndItem(const TurnCtx& turn, const tx::TurnEndFacts& facts, tx::Item&
   // set omitThrough reads as the one before it (rebuildRequest).
   for (size_t i = e.exchanges.size(); i-- > 1;)
     if (e.exchanges[i].omitThrough && e.exchanges[i].omission == e.exchanges[i - 1].omission) e.exchanges[i].omission.clear();
+  const bool hadShed = std::find(events.begin(), events.end(), "dossier:shed") != events.end();
   size_t keep = events.size();
-  setEvents(events, keep, exchangesCut, e.events);
+  setEvents(events, keep, exchangesCut, false, e.events);
   while (!fits(out)) {
-    if (shedOneExchange(e.exchanges)) {
+    if (shedOneReference(e.exchanges)) {
+      shed = true;
+    } else if (dropOldestExchange(e.exchanges)) {
       exchangesCut = true;
     } else if (keep) {
       keep /= 2;
@@ -174,7 +181,7 @@ Status turnEndItem(const TurnCtx& turn, const tx::TurnEndFacts& facts, tx::Item&
     } else {
       return Status::fail(Err::InvalidArgument, "plain::turnEndItem.encode");   // nothing left to shed
     }
-    setEvents(events, keep, exchangesCut, e.events);
+    setEvents(events, keep, exchangesCut, shed && !hadShed, e.events);
   }
   return Status::success();
 }
@@ -183,7 +190,15 @@ bool shedReference(tx::Item& e) {
   if (e.kind != tx::ItemKind::TurnEnd || !shedOneReference(e.end.exchanges)) return false;
   std::vector<std::string>& ev = e.end.events;
   if (std::find(ev.begin(), ev.end(), "dossier:shed") == ev.end()) {
-    if (ev.size() >= tx::kMaxListItems) ev.pop_back();
+    if (ev.size() >= tx::kMaxListItems) {   // room from the newest plain event, never from a marker
+      auto last = std::find_if(ev.rbegin(), ev.rend(), [](const std::string& x) { return !marker(x); });
+      if (last == ev.rend()) return true;
+      ev.erase(std::next(last).base());
+      if (std::find(ev.begin(), ev.end(), "events:cut") == ev.end()) {
+        ev.emplace_back("events:cut");
+        return true;   // the cut marker took the room; the shed itself is named by the missing hash
+      }
+    }
     ev.emplace_back("dossier:shed");
   }
   return true;

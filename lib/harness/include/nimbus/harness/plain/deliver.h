@@ -73,7 +73,7 @@ struct DeliverOutcome {
 // Each part is one Channel::send, in order, from part `in.fromPart` on; nothing else is added
 // to or removed from the model's text. Then the status line, as its own message, only when
 // `in.status` is one of kAllStatusLines (the closed list of harness-written messages) and the
-// line is not empty: a line under any other name is never sent (InvalidArgument, the reply
+// line is not blank (it is the harness's own text: not sanitised): a line under any other name is never sent (InvalidArgument, the reply
 // still goes out). A line longer than one part goes out as its first part, never as two
 // messages. A part the channel refuses (send returns false) ends the reply there (the parts
 // after it would arrive out of order); the status line still goes; Io is returned.
@@ -85,12 +85,12 @@ struct DeliverOutcome {
 Status deliverTurn(const DeliverDeps& deps, const DeliverInput& in, DeliverOutcome& out);
 
 // The e item of a turn (lane RB-E3): `out` (a TurnEnd item with its q, turn and time set by the
-// caller) gets the facts, bounded so the line always encodes: at most kMaxListItems events (the
-// last kept one names the cut, "events:cut") and exchanges (the newest kept), and when the
-// line would still pass kMaxLineBytes, the oldest exchanges' omission lines, then the oldest
-// exchanges, leave first ("exchanges:cut"). An e item that cannot be stored leaves the turn open,
-// so it never fails for its size. InvalidArgument when `out` is not a TurnEnd item, or the turn
-// has no number.
+// caller) gets the facts, bounded so the line always encodes, measured at the widest q and time
+// the store may give it: at most kMaxListItems events ("events:cut" names a cut) and exchanges
+// (the newest kept, "exchanges:cut"); when the line would still pass kMaxLineBytes, the oldest
+// request references are shed first ("dossier:shed"), then the oldest exchanges, then events.
+// An e item that cannot be stored leaves the turn open, so it never fails for its size.
+// InvalidArgument when `out` is not a TurnEnd item, or the turn has no number.
 Status turnEndItem(const TurnCtx& turn, const nimbus::orch::tx::TurnEndFacts& facts, nimbus::orch::tx::Item& out);
 
 // A full arena with nothing closed left to drop (ruling 60) sheds the e item's request

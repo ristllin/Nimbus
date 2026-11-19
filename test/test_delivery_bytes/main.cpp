@@ -276,7 +276,17 @@ void test_a_line_outside_the_table_is_never_sent() {
     TEST_ASSERT_EQUAL_STRING("Done.", r.sent[0].c_str());
     TEST_ASSERT_TRUE(out.replyDone && !out.statusSent);
   }
-  // An empty line under a listed name is nothing to send, not an empty message.
+  // An empty or blank line under a listed name is nothing to send, not an empty message.
+  for (const std::string blankLine : {std::string(), std::string("  \n "), std::string(5000, ' ')}) {
+    Recorder r2;
+    plain::DeliverInput in2;
+    in2.turn = &r2.turn;
+    in2.status = plain::StatusLine::Stopped;
+    in2.statusText = &blankLine;
+    plain::DeliverOutcome out2;
+    TXB_OK(plain::deliverTurn(r2.deps(), in2, out2));
+    TEST_ASSERT_EQUAL(0, (int)r2.sent.size());
+  }
   Recorder r;
   const std::string empty;
   plain::DeliverInput in;
@@ -406,7 +416,10 @@ void test_the_turn_end_item_always_encodes() {
         tx::Item e = blankEnd();
         TXB_OK(plain::turnEndItem(turn, f, e));
         std::string line;
+        e.q = e.t = UINT64_MAX;   // the widest the store may give it
         TXB_OK(tx::encodeLine(e, line));
+        size_t refs = 0;
+        for (const tx::ExchangeFacts& x : e.end.exchanges) refs += x.bodyHash != 0;
         TEST_ASSERT_TRUE(e.end.events.size() <= tx::kMaxListItems);
         TEST_ASSERT_TRUE(e.end.exchanges.size() <= tx::kMaxListItems);
         bool saysEvents = false, saysExchanges = false;
@@ -416,12 +429,15 @@ void test_the_turn_end_item_always_encodes() {
         }
         if (events > tx::kMaxListItems) TEST_ASSERT_TRUE_MESSAGE(saysEvents, "a cut event list does not say so");
         if (e.end.exchanges.size() < exchanges) TEST_ASSERT_TRUE_MESSAGE(saysExchanges, "cut exchanges are not named");
+        if (e.end.exchanges.size() == exchanges) TEST_ASSERT_FALSE_MESSAGE(saysExchanges, "no exchange was removed");
+        const bool saysShed = std::find(e.end.events.begin(), e.end.events.end(), "dossier:shed") != e.end.events.end();
+        if (refs < e.end.exchanges.size()) TEST_ASSERT_TRUE_MESSAGE(saysShed, "shed references are not named");
         if (exchanges) TEST_ASSERT_EQUAL_MESSAGE(exchanges - 1, e.end.exchanges.back().requestBytes, "the newest exchange left");
         // What was kept is the facts' own, in order, from the first.
         for (size_t i = 0; i < e.end.events.size() && i < events; ++i)
-          if (e.end.events[i] != "events:cut" && e.end.events[i] != "exchanges:cut")
+          if (e.end.events[i] != "events:cut" && e.end.events[i] != "exchanges:cut" && e.end.events[i] != "dossier:shed")
             TEST_ASSERT_EQUAL_STRING(("change:event-" + std::to_string(i)).c_str(), e.end.events[i].c_str());
-        if (events + 2 <= tx::kMaxListItems) TEST_ASSERT_EQUAL(events + saysExchanges, e.end.events.size());
+        if (events + 3 <= tx::kMaxListItems) TEST_ASSERT_EQUAL(events + saysExchanges + saysShed, e.end.events.size());
         if (exchanges <= 16 && !omission) TEST_ASSERT_EQUAL(exchanges, e.end.exchanges.size());
       }
 }
