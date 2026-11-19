@@ -40,7 +40,6 @@ test_tx_overhead::test_wire_overhead_night_flat RB-W4 ruling:68
 test_plain_conformance::test_loop_shape_responses RB-W2
 test_plain_conformance::test_loop_shape_chat RB-W3
 test_plain_conformance::test_loop_shape_flat RB-W4
-test_plain_conformance::test_guard_last_round_anthropic RB-W1b ruling:59
 test_plain_conformance::test_guard_last_round_responses RB-W2
 test_plain_conformance::test_guard_last_round_chat RB-W3
 test_plain_conformance::test_guard_last_round_flat RB-W4

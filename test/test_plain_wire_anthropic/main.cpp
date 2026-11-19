@@ -1966,6 +1966,18 @@ void test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepte
   }
   RENDER_OK(rig, c, out, r3NoLine);
   TEST_ASSERT_TRUE(out.req.body.find(th0) != std::string::npos);
+  // Turns a full arena already dropped from RAM: the engine's line names them though no resident
+  // turn is left out (omitThrough below every stored q); it opens the request, and it counts as a rung.
+  Opts dropped;
+  dropped.ladder.omitThrough = 1;
+  dropped.ladder.omissionLine = "[3 earlier turns, 16 Nov, not shown]";
+  txb::Convo late = build(true);
+  for (tx::Item& it : late.items) it.q += 100;   // every stored item after the dropped ones
+  Out named;
+  RENDER_OK(rig, late, named, dropped);
+  EXPECT_API_OK(named, "dropped turns named");
+  TEST_ASSERT_TRUE(named.view.messages[0].blocks[0].text == "[3 earlier turns, 16 Nov, not shown]");
+  TEST_ASSERT_TRUE(named.req.body.find(th0) == std::string::npos);
 }
 
 // ---- 13. the framing, measured (ruling 16) --------------------------------------------------------------

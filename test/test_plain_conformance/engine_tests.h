@@ -1524,6 +1524,8 @@ inline RefusalRun runRefusal(const RefusalShape& shape, int mode, long k, bool n
   shape.setup(b);
   plain::TurnInput in;
   in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.host = "api.anthropic.com";   // a real wire renders the model at its cap (RB-W1b)
+  in.ctx.model = "claude-sonnet-5-5";
   in.ctx.who = &b.who;
   in.ctx.host = "api.anthropic.com";
   in.ctx.model = "claude-sonnet-5-5";
@@ -1658,6 +1660,8 @@ inline void test_after_deliver_runs_when_the_d_item_is_refused() {
   bool escaped = false;
   plain::TurnInput in;
   in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.host = "api.anthropic.com";   // a real wire renders the model at its cap (RB-W1b)
+  in.ctx.model = "claude-sonnet-5-5";
   in.ctx.who = &b.who;
   in.ctx.host = b.headCtx().host;   // the head, named (ruling 89)
   in.ctx.model = b.headCtx().model;
@@ -2258,6 +2262,8 @@ inline void test_a_retried_turn_starts_with_nothing_seen() {
   b.world.files["notes/a.md"] = "alpha";
   plain::TurnInput in;
   in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.host = "api.anthropic.com";   // a real wire renders the model at its cap (RB-W1b)
+  in.ctx.model = "claude-sonnet-5-5";
   in.ctx.who = &b.who;
   in.ctx.host = b.headCtx().host;   // the head, named (ruling 89)
   in.ctx.model = b.headCtx().model;
@@ -2392,6 +2398,8 @@ inline void test_a_deferred_argument_is_never_reported_empty() {
   b.model.push(sp::say("Switching after this."));
   plain::TurnInput in;
   in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.host = "api.anthropic.com";   // a real wire renders the model at its cap (RB-W1b)
+  in.ctx.model = "claude-sonnet-5-5";
   in.ctx.who = &b.who;
   in.text = "switch heads";
   plain::TurnOutcome out;

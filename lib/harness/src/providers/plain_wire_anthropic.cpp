@@ -246,6 +246,12 @@ void chooseOmitted(const RenderInput& in, Facts& f) {
     if (t.first != in.turn->turn && t.second <= in.ladder->omitThrough) f.omitted.push_back(t.first);
 }
 
+// The engine's omission line stands at the head of the request whenever its ladder names one,
+// even when no resident turn is left out by it (turns a full arena already dropped from RAM).
+bool omissionNamed(const RenderInput& in) {
+  return in.ladder && in.ladder->omitThrough && !in.ladder->omissionLine.empty();
+}
+
 bool omittedTurn(const Facts& f, uint32_t turn) {
   return std::find(f.omitted.begin(), f.omitted.end(), turn) != f.omitted.end();
 }
@@ -301,7 +307,7 @@ bool assistantKind(tx::ItemKind k) {
 // all of them keeps nothing that a later rung could invalidate).
 bool sendOpenTurnThinking(const RenderInput& in) {
   const LadderState* l = in.ladder;
-  return !l || (!l->closedThrough && !l->stubThrough && !(l->omitThrough && !l->omissionLine.empty()));
+  return !l || (!l->closedThrough && !l->stubThrough && !omissionNamed(in));
 }
 
 // What is rendered, and the pairing: a call with its one result. Assistant items before the
@@ -309,7 +315,7 @@ bool sendOpenTurnThinking(const RenderInput& in) {
 // the user's turn.
 void chooseRows(const RenderInput& in, Facts& f) {
   Pairs pairs;
-  bool userSeen = !f.omitted.empty();   // the omission line opens the request
+  bool userSeen = omissionNamed(in);   // the omission line opens the request
   for (size_t i = 0; i < f.rows.size(); ++i) {
     Row& r = f.rows[i];
     if (r.q == 0 || r.q <= f.thru || omittedTurn(f, r.turn) || !r.emits) continue;
@@ -580,7 +586,7 @@ void itemBlocks(Render& r, const tx::Item& it, const Row& row) {
 }
 
 void omissionBlock(Render& r) {
-  if (!r.f.omitted.empty()) textBlock(r, Role::User, 0, false, r.in.ladder->omissionLine, Over::Refuse);
+  if (omissionNamed(r.in)) textBlock(r, Role::User, 0, false, r.in.ladder->omissionLine, Over::Refuse);
 }
 
 // The system blocks; the offsets of their two points.

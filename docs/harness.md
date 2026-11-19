@@ -838,9 +838,10 @@ after a restart.
   engine's `LadderState::closedThrough` (rung 1); `stubThrough` is rung 2; rung 3 leaves out
   every whole turn after `thru` whose items are all at or below `omitThrough` (never the open
   turn) and sends `omissionLine` (the engine's `tx::omissionLine` text) in their place, only
-  when that line is set. The wire writes no text of its own.
-- **Signed thinking under the ladder**: once any rung is applied in a turn, none of the open
-  turn's thinking is sent. A thinking block's signature binds every byte before it; a rung
+  when that line is set; the line opens the request whenever the ladder names one, also when the
+  turns it names were already dropped from RAM by a full arena. The wire writes no text of its own.
+- **Signed thinking under the ladder**: once any rung is applied in a turn (an omission line
+  naming turns a full arena dropped counts), none of the open turn's thinking is sent. A thinking block's signature binds every byte before it; a rung
   changes those bytes, and where the API enforces that check it refuses the request ("bound to a
   different conversation"), while the same request without the open turn's thinking is
   accepted (measured live, lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md).
