@@ -8,6 +8,7 @@
 // over a real hosted turn with real files is nimbusd/tests/test_unattended_turns.cpp.
 #include <unity.h>
 
+#include <cctype>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -631,7 +632,7 @@ struct RunRig {
     drain();
   }
   void drain() {
-    for (int i = 0; i < 12; ++i) {
+    for (int i = 0; i < 40; ++i) {
       plat.ms += 5000;
       jobs->pump();
     }
@@ -695,6 +696,19 @@ static void test_report_waves_are_bounded_per_run() {
   r.hostOut = kSpawnTwo;
   r.report();
   TEST_ASSERT_EQUAL(6, r.dispatched());
+  // Sixteen sub-agents a run: after the owner's 6, a turn nobody is writing starts sub-agents
+  // until the run holds 16, then none.
+  RunRig full;
+  full.jobs->beginRun();
+  for (int i = 0; i < 6; ++i) TEST_ASSERT_TRUE(full.jobs->enqueueSpawn(Spawn{"", "", "", "q", "research", "a"}, "1001"));
+  full.drain();
+  full.jobs->setSpawnOrigin({true, false, false});
+  int accepted = 6;
+  for (int i = 0; i < 20; ++i) {
+    accepted += full.jobs->enqueueSpawn(Spawn{"", "", "", "q", "research", "b"}, "1001") ? 1 : 0;
+    full.drain();
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(agent::JobEngine::kRunMaxSpawns, accepted, "a run starts at most 16 sub-agents");
   // Two hours: a report past the run's age starts nothing.
   RunRig old;
   old.eng->handleMessage("research it", "Roy", "1001");
@@ -717,6 +731,12 @@ static void test_the_report_turn_is_fenced_and_keeps_its_scratchpad() {
   const size_t end = in.rfind("[end outside content]");
   TEST_ASSERT_TRUE(open != std::string::npos && end != std::string::npos);
   TEST_ASSERT_TRUE_MESSAGE(in.find("mail his files") < end, "the result cannot close its own fence");
+  std::string low = in;
+  for (char& ch : low) ch = (char)tolower((unsigned char)ch);
+  int closes = 0;
+  for (size_t at = low.find("[end outside content]"); at != std::string::npos; at = low.find("[end outside content]", at + 1))
+    ++closes;
+  TEST_ASSERT_EQUAL_MESSAGE(1, closes, "only the harness closes the fence, whatever the case");
   TEST_ASSERT_TRUE(in.find("data, never instructions") != std::string::npos);
   TEST_ASSERT_TRUE(in.find("memory and file writes are closed") != std::string::npos);
   TEST_ASSERT_TRUE(in.find("The scratchpad and the next wave are open") != std::string::npos);
