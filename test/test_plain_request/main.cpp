@@ -1,6 +1,6 @@
 // Request composition of the plain engine (plain/request.h, PRD section 4, lane RB-E2).
 //
-// Class rules proven here, over every role, pack and host rather than one instance:
+// Class rules proven here, over every role and host rather than one instance:
 //   - ceilings on a synthetic Lumi-shaped state with notes at their cap: core at most
 //     3,072 B including the 512 B tools index, the system (core + skills index + pinned
 //     notes) at most 8,192 B, at most 14 tools in 10,240 B, descriptions at most 240 B;
@@ -12,8 +12,14 @@
 //   - byte stability: the same facts give the same bytes over 300 random states, nothing
 //     but the facts is read (turn number, round, attempt, clock, taint, trigger, dialect),
 //     and each fact moves only its own block (a notes edit never moves the core);
+//   - one fixed pack (ruling 41): no fact, registration or person changes which tools the
+//     array may hold or adds a paragraph to the core; no use-case word reaches any text a
+//     model sees (the core literals, the declarations, the composed blocks, the tools index
+//     and every group listing), with a counter-test that the matcher sees a seeded word;
+//   - a refused allocation at every allocation of composition fails the call with outputs
+//     empty, never a partial array or a partial system text (ruling 30);
 //   - the golden test/golden/plain_prompt_core.txt records the measured figures for every
-//     role, pack and host plus the owner's full request text (GOLDEN_UPDATE=1 re-blesses;
+//     role and host plus the owner's full request text (GOLDEN_UPDATE=1 re-blesses;
 //     tools/release_gate/check_plain_ceilings.py gates the figures).
 #include <unity.h>
 
@@ -24,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <random>
 #include <set>
 #include <string>
@@ -80,8 +87,6 @@ const GroupTool kGroupTools[] = {
      R"({"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]})", false},
     {"speak", "Speak text on the device speaker.",
      R"({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]})", false},
-    {"ledger_target", "Show or set the daily kcal and protein target.", kObj, false},
-    {"food_portions", "Typical portion weights.", kObj, false},
     {"skill_list", "List saved skills.", kObj, true},
     {"skill_save", "Save a skill.", kPathSchema, true},
     {"skill_delete", "Delete a skill.", kPathSchema, true},
@@ -100,27 +105,23 @@ Principal principalOf(Who w) {
   }
 }
 
-// One device's registry. Ledger and food tools exist only where the food capability is
-// on. A guest may call nothing that has an effect (the fixture's access rule).
+// One device's registry: every declared tool registered with its declared bytes (the
+// always-on ones and those declared for a group behind more), then the group tools. A
+// guest may call nothing that has an effect (the fixture's access rule).
 struct Rig {
   ToolRegistry reg;
-  bool food;
   bool shortHost;
-  Rig(bool food_, bool shortHost_) : food(food_), shortHost(shortHost_) {
+  explicit Rig(bool shortHost_) : shortHost(shortHost_) {
     for (const td::ToolDecl& d : td::kTools) {
-      const std::string n = d.name;
-      if (n == "more") continue;
-      if (!food && (n == "ledger_write" || n == "ledger_day")) continue;
-      reg.add(n, d.description, okHandler, plain::declSchema(d, shortHost));
+      if (std::string(d.name) == "more") continue;
+      reg.add(d.name, d.description, okHandler, plain::declSchema(d, shortHost));
     }
+    for (const td::ToolDecl& d : td::kBehindMore) reg.add(d.name, d.description, okHandler, plain::declSchema(d, shortHost));
     for (const GroupTool& g : kGroupTools) {
-      const std::string n = g.name;
-      if (!food && (n == "ledger_target" || n == "food_portions")) continue;
-      reg.add(n, g.desc, okHandler, g.schema);
-      if (g.adminOnly) reg.setAdminOnly(n);
+      reg.add(g.name, g.desc, okHandler, g.schema);
+      if (g.adminOnly) reg.setAdminOnly(g.name);
     }
     registerMore(reg);
-    plain::applyToolPack(reg, food);
     reg.setAccessResolver([this](const std::string& name, JsonObjectConst, const Principal& who) {
       if (who.role == Role::Guest && reg.classOf(name).effect == EffectClass::Effect)
         return ToolRegistry::Verdict::deny("guest");
@@ -192,7 +193,6 @@ std::unique_ptr<State> lumiState(const Rig& rig, Who w, const std::string& model
   s->facts.digestBlock = digestsAt(6144);
   s->facts.recentFiles = recentFilesAt(600);
   s->facts.timeZone = tz;
-  s->facts.food = rig.food;
   s->facts.admin = (w == Who::Owner);
   s->facts.shortHost = rig.shortHost;
   return s;
@@ -224,18 +224,15 @@ Composed compose(const plain::RequestFacts& f) {
   return c;
 }
 
-std::string label(Who w, bool food, bool shortHost) {
-  return std::string(whoSlug(w)) + (food ? " food" : " nofood") + (shortHost ? " 60s" : " 120s");
-}
+std::string label(Who w, bool shortHost) { return std::string(whoSlug(w)) + (shortHost ? " 60s" : " 120s"); }
 
 template <typename F>
 void forEveryConfig(F fn) {
   for (Who w : kAllWho)
-    for (bool food : {true, false})
-      for (bool shortHost : {false, true}) {
-        Rig rig(food, shortHost);
-        fn(rig, w, label(w, food, shortHost));
-      }
+    for (bool shortHost : {false, true}) {
+      Rig rig(shortHost);
+      fn(rig, w, label(w, shortHost));
+    }
 }
 
 bool hasWord(const std::string& text, const std::string& word) {
@@ -252,7 +249,7 @@ bool hasWord(const std::string& text, const std::string& word) {
 
 // ---- ceilings ------------------------------------------------------------------------
 
-static void test_every_role_pack_and_host_fits_the_ceilings() {
+static void test_every_role_and_host_fits_the_ceilings() {
   const std::string longModel(plain::kModelNameMax + 30, 'm');
   const std::string longTz(plain::kTimeZoneMax + 30, 'z');
   forEveryConfig([&](Rig& rig, Who w, const std::string& at) {
@@ -278,11 +275,13 @@ static void test_every_role_pack_and_host_fits_the_ceilings() {
   });
 }
 
-// Every declaration fits on its own, and the whole catalog of declarations (both packs)
-// fits the tool_descriptions class.
+// Every declaration fits on its own, and the whole catalog of declarations (the array's and
+// those behind more) fits the tool_descriptions class.
 static void test_every_declaration_fits() {
   size_t total = 0;
-  for (const td::ToolDecl& d : td::kTools) {
+  std::vector<td::ToolDecl> all(std::begin(td::kTools), std::end(td::kTools));
+  all.insert(all.end(), std::begin(td::kBehindMore), std::end(td::kBehindMore));
+  for (const td::ToolDecl& d : all) {
     TEST_ASSERT_TRUE_MESSAGE(std::strlen(d.description) <= plain::kToolDescriptionMax, d.name);
     for (bool shortHost : {false, true}) {
       JsonDocument doc;
@@ -291,7 +290,11 @@ static void test_every_declaration_fits() {
     total += std::strlen(d.name) + std::strlen(d.description) + std::strlen(d.schema) +
              (d.schemaTail ? std::strlen(d.schemaTail) : 0);
     TEST_ASSERT_TRUE_MESSAGE(toolClassFor(d.name).group != nullptr, d.name);
+    TEST_ASSERT_TRUE_MESSAGE(plain::toolDecl(d.name) != nullptr, d.name);
   }
+  // The array's declarations are always on by the class table; those behind more are not.
+  for (const td::ToolDecl& d : td::kTools) TEST_ASSERT_TRUE_MESSAGE(toolClassFor(d.name).alwaysOn(), d.name);
+  for (const td::ToolDecl& d : td::kBehindMore) TEST_ASSERT_FALSE_MESSAGE(toolClassFor(d.name).alwaysOn(), d.name);
   TEST_ASSERT_TRUE(total <= plain::kToolsBytesCeiling);
   // write_file states its host's cap in the schema.
   const td::ToolDecl* w = plain::toolDecl("write_file");
@@ -321,7 +324,7 @@ static void test_every_tool_like_name_is_callable() {
       const ToolResult r = rig.reg.dispatch(t.name, args.as<JsonObjectConst>(), s->who);
       TEST_ASSERT_TRUE_MESSAGE(r.success, (at + " " + t.name + ": " + r.error).c_str());
     }
-    // And each declared tool left out is out of the pack or not callable by this caller.
+    // And each declared tool left out is not callable by this caller.
     for (const td::ToolDecl& d : td::kTools) {
       bool listed = false;
       for (const plain::ToolSpec& t : c.tools) listed = listed || t.name == d.name;
@@ -329,8 +332,7 @@ static void test_every_tool_like_name_is_callable() {
       JsonDocument args;
       args.to<ArduinoJson::JsonObject>();
       const ToolResult r = rig.reg.dispatch(d.name, args.as<JsonObjectConst>(), s->who);
-      const bool packOut = (std::string(d.name).rfind("ledger_", 0) == 0) != rig.food;
-      TEST_ASSERT_TRUE_MESSAGE(packOut || !r.success, (at + " left out but callable: " + d.name).c_str());
+      TEST_ASSERT_FALSE_MESSAGE(r.success, (at + " left out but callable: " + d.name).c_str());
     }
   });
 }
@@ -338,28 +340,29 @@ static void test_every_tool_like_name_is_callable() {
 // Counter-test: the checker sees what it must, and a sentence naming a tool the caller
 // cannot call is left out of the core (a guest cannot schedule).
 static void test_the_checker_catches_an_uncallable_name() {
-  Rig rig(false, false);
+  Rig rig(false);
   auto s = lumiState(rig, Who::Owner);
   const Composed c = compose(s->facts);
   auto bad = [&](const std::string& t) { return plain::uncallableNames(t, c.tools, rig.reg, s->who); };
   TEST_ASSERT_EQUAL(1, (int)bad("then call fetch_page(url) to read it").size());
-  TEST_ASSERT_EQUAL_STRING("ledger_write", bad("log it with ledger_write").at(0).c_str());   // no food pack
+  TEST_ASSERT_EQUAL_STRING("records_write", bad("log it with records_write(rows)").at(0).c_str());   // no such tool
   TEST_ASSERT_EQUAL_STRING("files_read", bad("use files_read").at(0).c_str());              // an old-engine name
   TEST_ASSERT_EQUAL(0, (int)bad("agent_list through more, then view r12").size());           // reachable, advertised
+  TEST_ASSERT_EQUAL(0, (int)bad("delete_file through more").size());                        // behind more, reachable
   TEST_ASSERT_EQUAL(0, (int)bad("Search the web. Send a note. Schedule it.").size());         // capitals are words
-  TEST_ASSERT_EQUAL(0, (int)bad("notes/ledger.ledger_write").size());                       // an extension
+  TEST_ASSERT_EQUAL(0, (int)bad("notes/list.files_read").size());                           // an extension
   // A seeded mention in the composed core turns the property red.
-  TEST_ASSERT_EQUAL(1, (int)bad(c.sys.core + " Use ledger_day for totals.").size());
+  TEST_ASSERT_EQUAL(1, (int)bad(c.sys.core + " Use files_read for totals.").size());
 
-  Rig food(true, false);
-  auto g = lumiState(food, Who::Guest);
-  auto o = lumiState(food, Who::Owner);
-  const Composed gc = compose(g->facts), oc = compose(o->facts);
-  TEST_ASSERT_TRUE(hasWord(oc.sys.core, "schedule"));
+  auto g = lumiState(rig, Who::Guest);
+  const Composed gc = compose(g->facts);
+  TEST_ASSERT_TRUE(hasWord(c.sys.core, "schedule"));
   TEST_ASSERT_FALSE(hasWord(gc.sys.core, "schedule"));
-  TEST_ASSERT_FALSE(hasWord(gc.sys.core, "ledger_write"));   // the guest cannot write the ledger
-  TEST_ASSERT_TRUE(hasWord(oc.sys.core, "ledger_write"));
-  for (const plain::ToolSpec& t : gc.tools) TEST_ASSERT_TRUE_MESSAGE(food.reg.classOf(t.name).effect != EffectClass::Effect || t.name == "more", t.name.c_str());
+  for (const plain::ToolSpec& t : gc.tools) TEST_ASSERT_TRUE_MESSAGE(rig.reg.classOf(t.name).effect != EffectClass::Effect || t.name == "more", t.name.c_str());
+  // The guest's array holds what it may call: the reads, calc and more.
+  const char* guest[] = {"read_file", "list_files", "search", "web_search", "view", "calc", "more"};
+  TEST_ASSERT_EQUAL(7, (int)gc.tools.size());
+  for (size_t i = 0; i < 7; i++) TEST_ASSERT_EQUAL_STRING(guest[i], gc.tools[i].name.c_str());
 }
 
 // The registry carries the declared bytes, so a listing through more, the MCP surface and
@@ -385,38 +388,50 @@ static void test_registry_and_manifest_agree() {
   TEST_ASSERT_EQUAL_STRING(kMoreSchema, m->schema);
 }
 
-static void test_fixed_order_and_packs() {
-  const char* food[] = {"read_file", "write_file", "append_file", "edit_file", "list_files", "note", "search",
-                        "web_search", "view", "send", "schedule", "ledger_write", "ledger_day", "more"};
-  const char* nofood[] = {"read_file", "write_file", "append_file", "edit_file", "list_files", "note", "search",
-                          "web_search", "view", "send", "schedule", "agent_start", "delete_file", "more"};
-  for (bool f : {true, false}) {
-    Rig rig(f, false);
+// One fixed pack: 13 always-on tools plus more, the same order on every host, whatever the
+// registry holds behind more (ruling 41: nothing swaps a slot for a use case).
+static void test_one_fixed_pack_in_a_fixed_order() {
+  const char* want[] = {"read_file", "write_file", "append_file", "edit_file", "list_files", "note", "search",
+                        "web_search", "view", "send", "schedule", "calc", "agent_start", "more"};
+  for (bool shortHost : {false, true}) {
+    Rig rig(shortHost);
     auto s = lumiState(rig, Who::Owner);
     const Composed c = compose(s->facts);
     TEST_ASSERT_EQUAL(14, (int)c.tools.size());
-    for (size_t i = 0; i < 14; i++) TEST_ASSERT_EQUAL_STRING((f ? food : nofood)[i], c.tools[i].name.c_str());
-    // The tools index never repeats a tool of the array.
+    for (size_t i = 0; i < 14; i++) TEST_ASSERT_EQUAL_STRING(want[i], c.tools[i].name.c_str());
+    TEST_ASSERT_EQUAL((int)td::kToolCount, (int)c.tools.size());
+    // The tools index never repeats a tool of the array, and lists what is behind more.
     const std::string idx = toolsIndex(rig.reg, s->who);
     TEST_ASSERT_TRUE(idx.size() > 0);
     for (const plain::ToolSpec& t : c.tools) TEST_ASSERT_FALSE_MESSAGE(hasWord(idx, t.name), t.name.c_str());
-    // Turning food on again puts the pair back behind more.
-    plain::applyToolPack(rig.reg, true);
-    TEST_ASSERT_FALSE(rig.reg.classOf("agent_start").alwaysOn());
-    TEST_ASSERT_EQUAL_STRING("agents", rig.reg.classOf("agent_start").group);
-  }
-  // The pack follows the capability, not what happens to be registered: with food off,
-  // registered ledger tools are not in the array and the core has no food paragraph.
-  {
-    Rig rig(true, false);
-    auto s = lumiState(rig, Who::Owner);
-    s->facts.food = false;
-    const Composed c = compose(s->facts);
-    for (const plain::ToolSpec& t : c.tools) TEST_ASSERT_TRUE_MESSAGE(t.name.rfind("ledger_", 0) != 0, t.name.c_str());
-    TEST_ASSERT_FALSE(hasWord(c.sys.core, "ledger_write"));
+    TEST_ASSERT_TRUE_MESSAGE(hasWord(idx, "delete_file"), idx.c_str());
+    // A tool registered behind more never enters the array, and taking every group tool out
+    // leaves the array and the core above the index as they were.
+    Rig bare(shortHost);
+    for (const GroupTool& g : kGroupTools) TEST_ASSERT_TRUE(bare.reg.remove(g.name));
+    for (const td::ToolDecl& d : td::kBehindMore) TEST_ASSERT_TRUE(bare.reg.remove(d.name));
+    auto b = lumiState(bare, Who::Owner);
+    const Composed cb = compose(b->facts);
+    TEST_ASSERT_EQUAL((int)c.tools.size(), (int)cb.tools.size());
+    for (size_t i = 0; i < c.tools.size(); i++) {
+      TEST_ASSERT_TRUE(c.tools[i].name == cb.tools[i].name && c.tools[i].description == cb.tools[i].description &&
+                       c.tools[i].schemaJson == cb.tools[i].schemaJson);
+    }
+    // With nothing behind more there is no index paragraph; everything above it is the same.
+    const size_t idxAt = c.sys.core.find(std::string("\n\n") + agent::plain::texts::core::kToolsIndex);
+    TEST_ASSERT_TRUE(idxAt != std::string::npos);
+    TEST_ASSERT_TRUE(cb.sys.core == c.sys.core.substr(0, idxAt));
+    // A binding that moves an array tool into a group shows it there, never twice.
+    Rig moved(shortHost);
+    moved.reg.setClass("agent_start", ToolClass{"agents", Taint::Internal, EffectClass::Effect});
+    auto m = lumiState(moved, Who::Owner);
+    const Composed cm = compose(m->facts);
+    TEST_ASSERT_EQUAL(13, (int)cm.tools.size());
+    for (const plain::ToolSpec& t : cm.tools) TEST_ASSERT_TRUE(t.name != "agent_start");
+    TEST_ASSERT_TRUE(hasWord(toolsIndex(moved.reg, m->who), "agent_start"));
   }
   // An unregistered tool is never advertised.
-  Rig rig(true, false);
+  Rig rig(false);
   TEST_ASSERT_TRUE(rig.reg.remove("send"));
   auto s = lumiState(rig, Who::Owner);
   const Composed c = compose(s->facts);
@@ -424,10 +439,152 @@ static void test_fixed_order_and_packs() {
   for (const plain::ToolSpec& t : c.tools) TEST_ASSERT_NOT_EQUAL(0, (int)(t.name != "send"));
 }
 
+// ---- no use case in any model-facing text (ruling 41) ----------------------------------
+
+namespace {
+// The domain words of the lint (tools/check_no_domain_words.py, RB-REC1) and their close
+// kin, as whole tokens of letters, any case: a tool, a schema, an index line or a core
+// sentence that names one of them gives a use case built-in support.
+const char* const kDomainWords[] = {"food",  "foods",     "meal",   "meals",  "kcal",     "calorie",
+                                    "calories", "protein", "macro", "macros", "nutrition", "kj",
+                                    "ledger", "diet",     "carb",   "carbs",  "fibre",    "fiber",
+                                    "portion", "portions", "eaten",  "intake"};
+std::string domainWordIn(const std::string& text) {
+  std::string tok;
+  for (size_t i = 0; i <= text.size(); i++) {
+    const char ch = i < text.size() ? text[i] : ' ';
+    if (std::isalpha((unsigned char)ch)) {
+      tok += (char)std::tolower((unsigned char)ch);
+      continue;
+    }
+    for (const char* w : kDomainWords)
+      if (tok == w) return tok;
+    tok.clear();
+  }
+  return "";
+}
+}  // namespace
+
+static void test_no_domain_word_reaches_a_model() {
+  // Counter-test: the matcher sees a seeded word as a token, in any case, and only as one.
+  TEST_ASSERT_EQUAL_STRING("kcal", domainWordIn("Totals in KCAL come from the device.").c_str());
+  TEST_ASSERT_EQUAL_STRING("ledger", domainWordIn("ledger_write(ops)").c_str());
+  TEST_ASSERT_EQUAL_STRING("", domainWordIn("themeAlertHue centsPerKCalls TickCallback mealtimes").c_str());
+  // Every literal a model can be shown, whether or not this build composes it.
+  const char* core[] = {agent::plain::texts::core::kIdentityOwner, agent::plain::texts::core::kIdentityMember,
+                        agent::plain::texts::core::kReplyForm,     agent::plain::texts::core::kTimeZone,
+                        agent::plain::texts::core::kStamped,       agent::plain::texts::core::kHowToWork,
+                        agent::plain::texts::core::kNoLater,       agent::plain::texts::core::kOneQuestion,
+                        agent::plain::texts::core::kStubs,         agent::plain::texts::core::kOlderDays,
+                        agent::plain::texts::core::kDeviceLines,   agent::plain::texts::core::kOutside,
+                        agent::plain::texts::core::kRecall,        agent::plain::texts::core::kModel,
+                        agent::plain::texts::core::kToolsIndex,    agent::plain::texts::core::kSkills,
+                        agent::plain::texts::core::kSkillsMore,    agent::plain::texts::core::kNotes,
+                        agent::plain::texts::core::kDigests,       agent::plain::texts::core::kRecentFiles};
+  for (const char* t : core) TEST_ASSERT_EQUAL_STRING_MESSAGE("", domainWordIn(t).c_str(), t);
+  for (const td::ToolDecl* list : {td::kTools, td::kBehindMore}) {
+    const size_t n = list == td::kTools ? td::kToolCount : sizeof(td::kBehindMore) / sizeof(td::kBehindMore[0]);
+    for (size_t i = 0; i < n; i++) {
+      const std::string all = std::string(list[i].name) + " " + list[i].description + " " +
+                              plain::declSchema(list[i], false);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", domainWordIn(all).c_str(), list[i].name);
+    }
+  }
+  // The groups behind more and every table name.
+  size_t gc = 0;
+  const ToolGroup* g = toolGroupTable(gc);
+  for (size_t i = 0; i < gc; i++) {
+    const std::string line = std::string(g[i].name) + " " + g[i].about;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", domainWordIn(line).c_str(), g[i].name);
+  }
+  size_t rc = 0;
+  const ToolClassRow* rows = toolClassTable(rc);
+  for (size_t i = 0; i < rc; i++) {
+    if (std::strchr(rows[i].name, '.')) continue;   // an engine-1 name (RB-REC1 removes those)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", domainWordIn(rows[i].name).c_str(), rows[i].name);
+  }
+  // What every caller is shown: the composed blocks (the fixture's notes and digests are
+  // synthetic), the array, the tools index and each group's listing.
+  forEveryConfig([&](Rig& rig, Who w, const std::string& at) {
+    auto s = lumiState(rig, w);
+    const Composed c = compose(s->facts);
+    std::string all = c.sys.core + "\n" + c.sys.notes + "\n" + c.sys.digests;
+    for (const plain::ToolSpec& t : c.tools) all += "\n" + t.name + " " + t.description + " " + t.schemaJson;
+    all += "\n" + toolsIndex(rig.reg, s->who);
+    for (size_t i = 0; i < gc; i++) all += "\n" + groupListing(rig.reg, g[i].name, s->who);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", domainWordIn(all).c_str(), at.c_str());
+  });
+}
+
+// ---- a refused allocation (ruling 30) ------------------------------------------------------
+
+namespace {
+// The refusing allocator: while armed, the Nth allocation from now and every one after it
+// is refused (std::bad_alloc, as the host's operator new does when memory runs out).
+long g_allocsLeft = -1;   // -1: not armed
+}  // namespace
+
+void* operator new(std::size_t n) {
+  if (g_allocsLeft == 0) throw std::bad_alloc();
+  if (g_allocsLeft > 0) g_allocsLeft--;
+  void* p = std::malloc(n ? n : 1);
+  if (!p) throw std::bad_alloc();
+  return p;
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+
+namespace {
+
+// Composition refused at its first, second, ... allocation, until it needs no more: every
+// refusal answers TooLarge with every output empty (no partial system text, no partial
+// tools array), and the run that completes gives the unconstrained bytes.
+static void test_a_refused_allocation_leaves_no_partial_request() {
+  forEveryConfig([&](Rig& rig, Who w, const std::string& at) {
+    auto s = lumiState(rig, w);
+    const Composed want = compose(s->facts);
+    int refusedSystem = 0, refusedTools = 0;
+    for (long k = 0;; k++) {
+      TEST_ASSERT_TRUE_MESSAGE(k < 200000, at.c_str());
+      plain::SystemBlocks b;
+      b.core = b.notes = b.digests = "stale";
+      g_allocsLeft = k;
+      const plain::Status st = plain::composeSystem(s->facts, b);
+      g_allocsLeft = -1;
+      if (st.ok()) {
+        TEST_ASSERT_TRUE_MESSAGE(b.core == want.sys.core && b.notes == want.sys.notes && b.digests == want.sys.digests,
+                                 at.c_str());
+        break;
+      }
+      refusedSystem++;
+      TEST_ASSERT_TRUE_MESSAGE(st.err == plain::Err::TooLarge, at.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(b.core.empty() && b.notes.empty() && b.digests.empty(), at.c_str());
+    }
+    for (long k = 0;; k++) {
+      TEST_ASSERT_TRUE_MESSAGE(k < 200000, at.c_str());
+      std::vector<plain::ToolSpec> t(3);
+      g_allocsLeft = k;
+      const plain::Status st = plain::toolManifest(s->facts, t);
+      g_allocsLeft = -1;
+      if (st.ok()) {
+        TEST_ASSERT_EQUAL_MESSAGE((int)want.tools.size(), (int)t.size(), at.c_str());
+        for (size_t i = 0; i < t.size(); i++) TEST_ASSERT_TRUE(t[i].schemaJson == want.tools[i].schemaJson);
+        break;
+      }
+      refusedTools++;
+      TEST_ASSERT_TRUE_MESSAGE(st.err == plain::Err::TooLarge, at.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(t.empty(), at.c_str());
+    }
+    TEST_ASSERT_TRUE_MESSAGE(refusedSystem > 50 && refusedTools > 10, at.c_str());
+  });
+}
+
+}  // namespace
+
 // ---- clipping ------------------------------------------------------------------------
 
 static void test_notes_and_skills_clip_at_whole_lines() {
-  Rig rig(true, false);
+  Rig rig(false);
   auto s = lumiState(rig, Who::Owner);
   s->facts.pinnedNotes = notesAtCap(9000, 7);
   const Composed c = compose(s->facts);
@@ -472,7 +629,7 @@ static void test_empty_facts_are_refused() {
 
 // toolsBytes measures exactly the array a request carries.
 static void test_tools_bytes_is_the_rendered_array() {
-  Rig rig(true, false);
+  Rig rig(false);
   auto s = lumiState(rig, Who::Owner);
   const Composed c = compose(s->facts);
   JsonDocument doc;
@@ -487,10 +644,10 @@ static void test_tools_bytes_is_the_rendered_array() {
   TEST_ASSERT_EQUAL((int)measureJson(doc), (int)plain::toolsBytes(c.tools));
 }
 
-// Policy, gates and the pack's declaration decide the array exactly as dispatch does; a
-// refused `more` takes the tools index and every sentence that names it along.
+// Policy, gates and the class table decide the array exactly as dispatch does; a refused
+// `more` takes the tools index and every sentence that names it along.
 static void test_policy_gates_and_pack_decide_the_array() {
-  Rig rig(true, false);
+  Rig rig(false);
   rig.reg.setPolicy("send", ToolRegistry::Verdict::deny("off"));
   rig.reg.setGate("web_search", [] { return false; }, "no key");
   auto s = lumiState(rig, Who::Owner);
@@ -509,17 +666,8 @@ static void test_policy_gates_and_pack_decide_the_array() {
   std::string all = c.sys.core + "\n" + c.sys.notes;
   TEST_ASSERT_EQUAL(0, (int)plain::uncallableNames(all, c.tools, rig.reg, s->who).size());
   TEST_ASSERT_EQUAL_STRING("agent_list", plain::uncallableNames("agent_list", c.tools, rig.reg, s->who).at(0).c_str());
-  // A registry whose pack was not declared for this capability: the pair stays behind
-  // more, listed once in the index, never in the array as well.
-  Rig food(true, false);
-  auto n = lumiState(food, Who::Owner);
-  n->facts.food = false;
-  const Composed d = compose(n->facts);
-  TEST_ASSERT_EQUAL(12, (int)d.tools.size());
-  for (const plain::ToolSpec& t : d.tools) TEST_ASSERT_TRUE(t.name != "agent_start" && t.name != "delete_file");
-  TEST_ASSERT_TRUE(hasWord(d.sys.core, "agent_start"));
   // The owner's identity needs the owner's Principal, whatever the flag says.
-  Rig r(true, false);
+  Rig r(false);
   auto m = lumiState(r, Who::Member);
   m->facts.admin = true;
   TEST_ASSERT_TRUE(compose(m->facts).sys.core.rfind(agent::plain::texts::core::kIdentityMember, 0) == 0);
@@ -528,7 +676,7 @@ static void test_policy_gates_and_pack_decide_the_array() {
 // Device-supplied text is normalised: whole UTF-8 characters, no blank or whitespace-only
 // lines, no CR or Unicode line break, one oversized note skipped and the rest kept.
 static void test_device_text_is_normalised() {
-  Rig rig(true, false);
+  Rig rig(false);
   auto s = lumiState(rig, Who::Owner);
   std::string tz;
   while (tz.size() < plain::kTimeZoneMax + 10) tz += "\xC3\xBC";   // u-umlaut, 2 bytes each
@@ -557,7 +705,7 @@ static void test_device_text_is_normalised() {
 // digests): a digests change leaves tools, core and notes; a notes or skills change
 // leaves tools, core and digests.
 static void test_each_fact_moves_only_its_block() {
-  Rig rig(true, false);
+  Rig rig(false);
   auto a = lumiState(rig, Who::Owner), b = lumiState(rig, Who::Owner), c = lumiState(rig, Who::Owner);
   b->facts.digestBlock += "2026-11-18: one more day\n";
   b->facts.recentFiles += "notes/new.md 2026-11-18 09:00\n";
@@ -595,9 +743,9 @@ std::string randomText(std::mt19937& rng, int lines) {
 static void test_same_facts_same_bytes() {
   std::mt19937 rng(20261118);
   for (int i = 0; i < 300; i++) {
-    const bool food = rng() % 2, shortHost = rng() % 2;
+    const bool shortHost = rng() % 2;
     const Who w = kAllWho[rng() % 3];
-    Rig a(food, shortHost), b(food, shortHost);
+    Rig a(shortHost), b(shortHost);
     auto sa = lumiState(a, w), sb = lumiState(b, w);
     const std::string notes = randomText(rng, rng() % 80), skills = randomText(rng, rng() % 40);
     const std::string tz = rng() % 4 ? "Europe/London" : "", model = rng() % 2 ? "claude-haiku-5-5" : "gpt-5.6-luna";
@@ -646,7 +794,7 @@ static void test_same_facts_same_bytes() {
 
 // Counter-test: a clock in the core is caught by the same comparison.
 static void test_a_clock_in_the_core_would_be_caught() {
-  Rig rig(true, false);
+  Rig rig(false);
   auto a = lumiState(rig, Who::Owner), b = lumiState(rig, Who::Owner);
   b->turn.startedAt = a->turn.startedAt + 300;
   auto withClock = [](const State& s) {
@@ -676,7 +824,7 @@ bool readAll(const std::string& path, std::string& out) {
 }
 }  // namespace
 
-static void test_golden_records_every_role_pack_and_host() {
+static void test_golden_records_every_role_and_host() {
   std::string g =
       "# Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).\n"
       "# Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.\n"
@@ -688,17 +836,17 @@ static void test_golden_records_every_role_pack_and_host() {
     for (const plain::ToolSpec& t : c.tools) longest = t.description.size() > longest ? t.description.size() : longest;
     char line[400];
     std::snprintf(line, sizeof(line),
-                  "measure role=%s pack=%s host=%s core=%zu index=%zu notes=%zu system=%zu digests=%zu tools=%zu "
+                  "measure role=%s host=%s core=%zu index=%zu notes=%zu system=%zu digests=%zu tools=%zu "
                   "tools_bytes=%zu longest_description=%zu\n",
-                  whoSlug(w), rig.food ? "food" : "nofood", rig.shortHost ? "60s" : "120s", c.sys.core.size(),
+                  whoSlug(w), rig.shortHost ? "60s" : "120s", c.sys.core.size(),
                   toolsIndex(rig.reg, s->who).size(), c.sys.notes.size(), systemBytes(c.sys),
                   c.sys.digests.size(), c.tools.size(), plain::toolsBytes(c.tools), longest);
     g += line;
   });
-  Rig rig(true, false);
+  Rig rig(false);
   auto s = lumiState(rig, Who::Owner);
   const Composed c = compose(s->facts);
-  g += "== core (owner, food, 120s, claude-sonnet-5-5, Europe/London)\n" + c.sys.core + "\n";
+  g += "== core (owner, 120s, claude-sonnet-5-5, Europe/London)\n" + c.sys.core + "\n";
   g += "== notes (first 400 B)\n" + c.sys.notes.substr(0, 400) + "\n";
   g += "== tools\n";
   for (const plain::ToolSpec& t : c.tools) {
@@ -708,11 +856,11 @@ static void test_golden_records_every_role_pack_and_host() {
   }
   if (const char* dump = std::getenv("PLAIN_REQUEST_DUMP")) {   // the provider acceptance check reads it
     JsonDocument d;
-    for (bool f : {true, false}) {
-      Rig r(f, false);
+    {
+      Rig r(false);
       auto st = lumiState(r, Who::Owner);
       const Composed x = compose(st->facts);
-      ArduinoJson::JsonObject o = d[f ? "food" : "nofood"].to<ArduinoJson::JsonObject>();
+      ArduinoJson::JsonObject o = d["owner"].to<ArduinoJson::JsonObject>();
       o["core"] = x.sys.core;
       o["notes"] = x.sys.notes;
       o["digests"] = x.sys.digests;
@@ -753,12 +901,14 @@ static void test_golden_records_every_role_pack_and_host() {
 
 int main(int, char**) {
   UNITY_BEGIN();
-  RUN_TEST(test_every_role_pack_and_host_fits_the_ceilings);
+  RUN_TEST(test_every_role_and_host_fits_the_ceilings);
   RUN_TEST(test_every_declaration_fits);
   RUN_TEST(test_every_tool_like_name_is_callable);
   RUN_TEST(test_the_checker_catches_an_uncallable_name);
   RUN_TEST(test_registry_and_manifest_agree);
-  RUN_TEST(test_fixed_order_and_packs);
+  RUN_TEST(test_one_fixed_pack_in_a_fixed_order);
+  RUN_TEST(test_no_domain_word_reaches_a_model);
+  RUN_TEST(test_a_refused_allocation_leaves_no_partial_request);
   RUN_TEST(test_notes_and_skills_clip_at_whole_lines);
   RUN_TEST(test_policy_gates_and_pack_decide_the_array);
   RUN_TEST(test_device_text_is_normalised);
@@ -767,6 +917,6 @@ int main(int, char**) {
   RUN_TEST(test_tools_bytes_is_the_rendered_array);
   RUN_TEST(test_same_facts_same_bytes);
   RUN_TEST(test_a_clock_in_the_core_would_be_caught);
-  RUN_TEST(test_golden_records_every_role_pack_and_host);
+  RUN_TEST(test_golden_records_every_role_and_host);
   return UNITY_END();
 }

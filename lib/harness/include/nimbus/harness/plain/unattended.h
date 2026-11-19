@@ -26,7 +26,7 @@ struct RoutineFire {
   std::string id;
   std::string name;
   std::string instruction;
-  std::vector<std::string> tools;   // the definition's tools (default web_search, read_file, ledger_day, send)
+  std::vector<std::string> tools;   // the definition's tools (default web_search, read_file, send)
   uint64_t fireAt = 0;
 };
 

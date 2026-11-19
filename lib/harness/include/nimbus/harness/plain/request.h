@@ -36,7 +36,8 @@ inline constexpr size_t kTimeZoneMax = 48;           // longer names are clipped
 inline constexpr size_t kModelNameMax = 64;
 
 // Everything composition reads. The same facts give the same bytes (byte-stable): no
-// clock, no turn number, no attempt, nothing random is read.
+// clock, no turn number, no attempt, nothing random is read. No fact names a use case:
+// every device and person gets the one fixed pack (ruling 41).
 struct RequestFacts {
   const TurnCtx* turn = nullptr;   // reads turn->model and turn->who only
   const nimbus::orch::ToolRegistry* reg = nullptr;  // the registered tools (with `more`)
@@ -45,7 +46,7 @@ struct RequestFacts {
   std::string digestBlock;     // tx::digestBlock
   std::string recentFiles;     // tx::recentFilesList
   std::string timeZone;        // IANA name ("Europe/London"); "" when not set
-  bool food = false;           // the food capability is on (ledger tools, food paragraph)
+  bool food = false;           // not read (ruling 41): removed in the next commit
   bool admin = false;          // the person is the owner
   bool shortHost = false;      // the head host answers within 60 s (write_file 4,096 B)
 };
@@ -54,26 +55,24 @@ struct RequestFacts {
 // (skills index, at most kSkillsIndexCeiling, then pinned notes, at most
 // kPinnedNotesCeiling, clipped at whole lines so core + notes <= kSystemBytesCeiling),
 // digests (digest block and recent files, as given). InvalidArgument without turn,
-// turn->who or reg; TooLarge if the core would pass its ceiling.
+// turn->who or reg; TooLarge if the core would pass its ceiling, or when an allocation is
+// refused (ruling 30: `out` is left empty, never part of a request).
 Status composeSystem(const RequestFacts& facts, SystemBlocks& out);
 // The tools array for this person and head, in the fixed order of
-// texts::tool_descriptions::kTools: slots 1-11, the pack (food: ledger_write and
-// ledger_day; else agent_start and delete_file), then more. A tool is listed only when
-// it is registered and the caller may call it. It never changes inside a turn.
-// InvalidArgument without turn, turn->who or reg; TooLarge over 14 tools or
-// kToolsBytesCeiling.
+// texts::tool_descriptions::kTools: slots 1-11, calc, agent_start, then more. A tool is
+// listed only when it is registered and the caller may call it. It never changes inside a
+// turn. InvalidArgument without turn, turn->who or reg; TooLarge over 14 tools or
+// kToolsBytesCeiling, or when an allocation is refused (`out` is left empty: no partial
+// array is ever sent).
 Status toolManifest(const RequestFacts& facts, std::vector<ToolSpec>& out);
 
 // The declaration of an always-on tool (description and schema as the manifest shows
-// them), or nullptr. A binding registers its tool with these bytes:
+// them) or of a tool declared here for its group behind more (kBehindMore), or nullptr. A
+// binding registers its tool with these bytes:
 //   reg.add(d->name, d->description, handler, plain::declSchema(*d, shortHost));
 const texts::tool_descriptions::ToolDecl* toolDecl(const std::string& name);
 // A declaration's schema, with write_file's content cap for this host.
 std::string declSchema(const texts::tool_descriptions::ToolDecl& d, bool shortHost);
-// Declare the pack on the registry: without food, agent_start and delete_file are
-// always on (so the tools index does not list them again); with food they go back to
-// their groups. Call it when tools are registered and when the capability changes.
-void applyToolPack(nimbus::orch::ToolRegistry& reg, bool food);
 // The tools array as the request carries it ([{"name","description","input_schema"}]):
 // the figure the 10,240 B ceiling is measured on.
 size_t toolsBytes(const std::vector<ToolSpec>& tools);

@@ -146,7 +146,7 @@ void test_internal_stub_has_the_prd_shape() {
 
 void test_stub_text_is_bounded_for_every_tool_and_size() {
   TXB_WAITS_FOR("PENDING RB-T3");
-  const std::string tools[] = {"read_file", "ledger_day", std::string(60, 't')};
+  const std::string tools[] = {"read_file", "list_files", std::string(60, 't')};
   const uint64_t qs[] = {1, 999999, 18446744073709551615ULL};
   for (const std::string& tool : tools)
     for (uint64_t q : qs)
@@ -306,22 +306,6 @@ void test_a_write_supersedes_earlier_reads_of_that_path_only() {
   TEST_ASSERT_EQUAL(2, (int)sup.size());
   TEST_ASSERT_EQUAL_UINT64(ra, sup[0]);
   TEST_ASSERT_EQUAL_UINT64(ra2, sup[1]);
-}
-
-void test_a_ledger_write_supersedes_views_of_that_day_only() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  txb::Convo c;
-  c.openTurn();
-  const std::string d17 = c.call("ledger_day", R"({"day":"2026-11-17"})");
-  const uint64_t r17 = c.receipt(d17, "ledger_day", "L00A3 skyr 150 g");
-  const std::string d16 = c.call("ledger_day", R"({"day":"2026-11-16"})");
-  c.receipt(d16, "ledger_day", "L0099 oats 40 g");
-  const std::vector<tx::Item> earlier = c.items;
-  c.call("ledger_write", R"({"day":"2026-11-17","add":[{"food":"apple","g":120}]})", true);
-  std::vector<uint64_t> sup;
-  TXB_OK(tx::supersededBy(c.items.back(), earlier, sup));
-  TEST_ASSERT_EQUAL(1, (int)sup.size());
-  TEST_ASSERT_EQUAL_UINT64(r17, sup[0]);
 }
 
 // ---- photos ----------------------------------------------------------------------------
@@ -528,50 +512,56 @@ void test_rules_supersede_counts_each_read_once() {
   TEST_ASSERT_EQUAL_UINT64(r3, sup[0]);
 }
 
-// ledger_write in every shape Ruling 11 allows: ops with day, a move's target day, rows named
-// by id or ids, and (with the write's own receipt) its day lines, which resolve "today".
-void test_rules_ledger_write_shapes_supersede_their_days() {
-  auto build = [](txb::Convo& c, uint64_t& r17, uint64_t& r16, uint64_t& r15) {
-    c.openTurn();
-    r17 = c.receipt(c.call("ledger_day", R"({"day":"2026-11-17"})"), "ledger_day", "L00A3 skyr 150 g");
-    r16 = c.receipt(c.call("ledger_day", R"({"day":"today"})"), "ledger_day",
-                    "L0099 oats 40 g\nday 2026-11-16 (ledger day, 04:00 to 04:00): 1 rows");
-    r15 = c.receipt(c.call("ledger_day", R"({"day":"2026-11-15"})"), "ledger_day", "L0077 rice 80 g");
-  };
+// No tool is special for what it stores (ruling 41): only a file write supersedes, and only
+// reads of the paths it names. A write by any other tool, whatever days, row ids or paths
+// its arguments or its receipt name (a tracker's shapes included), supersedes nothing; the
+// same reads are superseded by a file write of their path.
+void test_rules_no_tool_is_special_for_what_it_stores() {
   struct Row {
+    const char* tool;
     const char* args;
     const char* receipt;
-    int want;   // bit 0: r17, bit 1: r16, bit 2: r15
   } rows[] = {
-      {R"({"ops":[{"op":"add","row":{"item":"apple"},"day":"2026-11-17"}]})", nullptr, 1},
-      {R"({"ops":[{"op":"move","ids":["L0077"],"day":"2026-11-16"}]})", nullptr, 6},
-      {R"({"ops":[{"op":"update","id":"L00A3","set":{"qty":200}}]})", nullptr, 1},
-      {R"({"ops":[{"op":"remove","ids":"L0099"}]})", nullptr, 2},
-      {R"({"ops":[{"op":"add","row":{"item":"tea"},"day":"today"}]})", nullptr, 0},
-      {R"({"ops":[{"op":"add","row":{"item":"tea"},"day":"today"}]})", "L00B1 tea\nday 2026-11-16 (ledger day, 04:00 to 04:00): 2 rows", 2},
-      {R"({"ops":[{"op":"add","row":{"item":"L0077 lookalike","note":"day 2026-11-15"}}]})", nullptr, 0},
+      {"ledger_write", R"({"ops":[{"op":"add","row":{"item":"apple"},"day":"2026-11-17"}]})", nullptr},
+      {"ledger_write", R"({"ops":[{"op":"move","ids":["L0077"],"day":"2026-11-16"}]})",
+       "L0077 moved\nday 2026-11-16 (04:00 to 04:00): 2 rows"},
+      {"records_write", R"({"table":"expenses","ops":[{"op":"remove","id":"R0001"}],"path":"expenses/2026.csv"})", nullptr},
+      {"note", R"({"op":"set","key":"training","value":"day 2026-11-17","path":"training/log.csv"})", nullptr},
+      {"schedule", R"({"op":"create","when":"2026-11-17 18:00","text":"food/food-log.csv"})", nullptr},
   };
   for (const Row& row : rows) {
     txb::Convo c;
-    uint64_t r17, r16, r15;
-    build(c, r17, r16, r15);
+    c.openTurn();
+    const uint64_t day = c.receipt(c.call("records_day", R"({"day":"2026-11-17"})"), "records_day", "R0001 taxi 14.80");
+    // The old engine-2 day view: a write naming its day or row once superseded it.
+    const uint64_t old = c.receipt(c.call("ledger_day", R"({"day":"2026-11-17"})"), "ledger_day",
+                                   "L0077 rice 80 g\nday 2026-11-16 (04:00 to 04:00): 1 rows");
+    const uint64_t view = c.receipt(c.call("list_files", R"({"prefix":"expenses"})"), "list_files", "expenses/2026.csv");
+    uint64_t reads[3];
+    const char* paths[] = {"food/food-log.csv", "expenses/2026.csv", "training/log.csv"};
+    for (int i = 0; i < 3; ++i)
+      reads[i] = c.receipt(c.call("read_file", std::string(R"({"path":")") + paths[i] + "\"}"), "read_file", "date,item");
     const std::vector<tx::Item> earlier = c.items;
-    const std::string id = c.call("ledger_write", row.args, true);
+    const std::string id = c.call(row.tool, row.args, true);
     const tx::Item call = c.items.back();
     std::vector<uint64_t> sup;
     if (row.receipt) {
-      c.receipt(id, "ledger_write", row.receipt);
+      c.receipt(id, row.tool, row.receipt);
       TXB_OK(tx::supersededBy(call, c.items.back(), earlier, sup));
     } else {
       TXB_OK(tx::supersededBy(call, earlier, sup));
     }
-    std::vector<uint64_t> want;
-    if (row.want & 1) want.push_back(r17);
-    if (row.want & 2) want.push_back(r16);
-    if (row.want & 4) want.push_back(r15);
-    std::sort(want.begin(), want.end());
-    TEST_ASSERT_EQUAL_MESSAGE((int)want.size(), (int)sup.size(), row.args);
-    for (size_t i = 0; i < want.size(); ++i) TEST_ASSERT_EQUAL_UINT64_MESSAGE(want[i], sup[i], row.args);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)sup.size(), row.tool);
+    // Counter: a file write of each path supersedes exactly that path's read.
+    for (int i = 0; i < 3; ++i) {
+      c.call("edit_file", std::string(R"({"path":")") + paths[i] + R"(","old":"a","new":"b"})", true);
+      TXB_OK(tx::supersededBy(c.items.back(), earlier, sup));
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)sup.size(), paths[i]);
+      TEST_ASSERT_EQUAL_UINT64_MESSAGE(reads[i], sup[0], paths[i]);
+    }
+    (void)day;
+    (void)view;
+    (void)old;
   }
 }
 
@@ -759,23 +749,6 @@ void test_rules_only_earlier_reads_of_a_successful_write() {
   TEST_ASSERT_TRUE(tx::supersededBy(call, call, c.items, sup).err == tx::Err::InvalidArgument);
 }
 
-// Row ids match only in the ledger's form and as whole words; a bulk view is read through
-// its stored stub.
-void test_rules_ledger_ids_match_exactly() {
-  txb::Convo c;
-  c.openTurn();
-  const uint64_t near = c.receipt(c.call("ledger_day", R"({"day":"today"})"), "ledger_day", "1 egg at 12:30; L00A3x; XL00A3");
-  const uint64_t bulk = c.bulkResult(c.call("ledger_day", R"({"day":"today"})"), "ledger_day",
-                                     "L00A3 skyr 150 g\n" + std::string(6000, 'r'));
-  const std::vector<tx::Item> earlier = c.items;
-  c.call("ledger_write", R"({"ops":[{"op":"update","id":"1","set":{}},{"op":"remove","ids":["L00A3"]}]})", true);
-  std::vector<uint64_t> sup;
-  TXB_OK(tx::supersededBy(c.items.back(), earlier, sup));
-  TEST_ASSERT_EQUAL(1, (int)sup.size());
-  TEST_ASSERT_EQUAL_UINT64(bulk, sup[0]);
-  (void)near;
-}
-
 // A model-chosen tool name, path or outside argument cannot close the stub, open a device
 // line inside it, or reorder it.
 void test_rules_fields_cannot_forge_the_frame() {
@@ -832,7 +805,6 @@ int main(int, char**) {
   RUN_TEST(test_warm_open_moves_only_past_the_bulk_threshold);
   RUN_TEST(test_pointer_never_moves_backwards);
   RUN_TEST(test_a_write_supersedes_earlier_reads_of_that_path_only);
-  RUN_TEST(test_a_ledger_write_supersedes_views_of_that_day_only);
   RUN_TEST(test_file_reference_photos_follow_the_table);
   RUN_TEST(test_inline_photos_follow_the_table);
   RUN_TEST(test_ladder_climbs_one_rung_at_a_time);
@@ -842,14 +814,13 @@ int main(int, char**) {
   RUN_TEST(test_rules_no_card_stub_says_not_kept);
   RUN_TEST(test_rules_every_path_write_supersedes_its_reads);
   RUN_TEST(test_rules_supersede_counts_each_read_once);
-  RUN_TEST(test_rules_ledger_write_shapes_supersede_their_days);
+  RUN_TEST(test_rules_no_tool_is_special_for_what_it_stores);
   RUN_TEST(test_rules_show_result_table);
   RUN_TEST(test_rules_photo_table_edges);
   RUN_TEST(test_rules_omission_span_keeps_the_newest_six_owner_turns);
   RUN_TEST(test_rules_stamps_carry_the_year);
   RUN_TEST(test_rules_bad_inputs_are_typed);
   RUN_TEST(test_rules_only_earlier_reads_of_a_successful_write);
-  RUN_TEST(test_rules_ledger_ids_match_exactly);
   RUN_TEST(test_rules_fields_cannot_forge_the_frame);
   RUN_TEST(test_rules_show_result_needs_a_sorted_list);
   return UNITY_END();

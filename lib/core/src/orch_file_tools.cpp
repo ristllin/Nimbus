@@ -35,8 +35,7 @@ const char kNoFile[] = "no file {}";
 const char kNoSkill[] = "no approved skill {}";
 const char kReadOnly[] = "{} is read-only here: {}";
 const char kOwnerSkill[] = "skill_save changes skills (group skills)";
-const char kOwnerLedger[] = "ledger_write changes the food ledger";
-const char kOwnerArchive[] = "an archive from before the ledger moved; no tool writes it";
+const char kOwnerArchive[] = "an export the migration wrote; no tool writes it";
 const char kOwnerInbox[] = "the device writes files sent in a chat";
 const char kOwnerAgents[] = "agent jobs (agent_start) write agent reports";
 const char kOthers[] = "{} belongs to someone else here";
@@ -185,7 +184,6 @@ struct ArgReader {
 const char* reservedText(Reserved k) {
   switch (k) {
     case Reserved::Skill: return R::kOwnerSkill;
-    case Reserved::Ledger: return R::kOwnerLedger;
     case Reserved::Archive: return R::kOwnerArchive;
     case Reserved::Inbox: return R::kOwnerInbox;
     default: return R::kOwnerAgents;

@@ -69,7 +69,7 @@ inline const char* dialectSlug(Dialect d) {
 // One tool call as the model made it, and what the model is shown back.
 struct ToolCall {
   std::string id;        // the provider's call id
-  std::string name;      // the tool name as advertised (read_file, ledger_write, ...)
+  std::string name;      // the tool name as advertised (read_file, edit_file, ...)
   std::string argsJson;  // the raw JSON arguments object ("{}" if none)
   bool complete = true;  // false: cut or not valid JSON; never dispatched
 };

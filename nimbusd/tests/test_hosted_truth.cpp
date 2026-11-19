@@ -184,10 +184,10 @@ void testFailOpen(ndtest::Ctx& c) {
 void testNoProbe(ndtest::Ctx& c) {
   std::printf("\n-- no probe: no key, unmeasured head, tainted --\n");
   truth::TurnEffect failed;
-  failed.tool = "ledger_write";
+  failed.tool = "edit_file";
   failed.ok = false;
-  failed.receipt = "the ledger month file is damaged";
-  failed.kind = truth::Kind::Ledger;
+  failed.receipt = "card write failed; nothing changed";
+  failed.kind = truth::Kind::File;
   for (int which = 0; which < 3; ++which) {
     Rig rig(freshDir("truth-e"));
     HostedTruth::Input in = input("111", "Logged.");
@@ -200,7 +200,7 @@ void testNoProbe(ndtest::Ctx& c) {
     const char* why = which == 0 ? "no key" : which == 1 ? "luna (no passing row)" : "tainted";
     c.eqi((long)rig.http.seen.size(), 0, std::string(why) + ": no request");
     c.ok(!o.held && o.reply == "Logged.", std::string(why) + ": delivered as written");
-    c.eq(o.status, "Note: the ledger change in this reply did not go through (the ledger month file is damaged)",
+    c.eq(o.status, "Note: the file change in this reply did not go through (card write failed; nothing changed)",
          std::string(why) + ": the receipt line");
     ndtest::rmTree(ndtest::scratchDir("truth-e"));
   }
@@ -252,14 +252,14 @@ void testTheEngineBinding(ndtest::Ctx& c) {
     truth::TurnCheck k;
     k.reset(&rig.truth, "111", "Log 200 g yoghurt");
     truth::TurnEffect e;
-    e.tool = "ledger_write";
+    e.tool = "edit_file";
     e.ok = false;
     e.receipt = "the month file is damaged";
-    e.kind = truth::Kind::Ledger;
+    e.kind = truth::Kind::File;
     k.note(e);
     c.ok(k.open("anthropic", "claude-sonnet-5-5", false), "opens for a measured head");
     const std::string item = k.atFinal("Logged 200 g yoghurt.");
-    c.ok(item.find("ledger_write FAILED: the month file is damaged") != std::string::npos, "held with the facts item");
+    c.ok(item.find("edit_file FAILED: the month file is damaged") != std::string::npos, "held with the facts item");
     const truth::Outcome o = k.finish("The ledger write failed; nothing was logged.");
     c.ok(o.held && o.retried && o.status.empty(), "the honest round is delivered, no line");
     c.eqi((long)rig.http.seen.size(), 2, "two probes (the hold, the receipt question)");

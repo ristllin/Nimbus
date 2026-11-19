@@ -11,8 +11,8 @@
 
 // effect_ring.h - each chat's recent effects, stored (PRD section 8, rail 8 "Truth check";
 // lane RB-FX). What the device actually did, one entry per effect: the time, the tool and a
-// one-line receipt. It is the cross-turn, per-chat continuation of the per-turn ledger
-// (turn_effects.h): the truth check (RB-G0, lib/core/src/orch_truth.cpp) reads it so a true
+// one-line receipt. It is the cross-turn, per-chat continuation of the per-turn effects
+// record (turn_effects.h): the truth check (RB-G0, lib/core/src/orch_truth.cpp) reads it so a true
 // "I logged it at 13:02" is not a hit, and the old engine's "recent actions" data block
 // (RB-Q3a: the newest 12, at most 2,048 B) is rendered from it. Readers own every
 // model-facing word; this file renders no text for the model.
@@ -83,7 +83,7 @@ namespace fx {
 
 inline constexpr const char* kFxRoot = "/mem/fx";
 inline constexpr size_t kRingEntries = 50;     // per chat
-inline constexpr size_t kReceiptMax = 160;     // bytes; equals ledger::kSinkLineMax (RB-L1b)
+inline constexpr size_t kReceiptMax = 160;     // bytes: one receipt line, whatever tool wrote it
 inline constexpr size_t kToolMax = 48;         // bytes of a tool name
 inline constexpr size_t kOtherIdMax = 23;      // bytes of a chat id that is not a Telegram id
 inline constexpr size_t kKeyMax = 47;          // bytes of a key (and of a Telegram chat id)

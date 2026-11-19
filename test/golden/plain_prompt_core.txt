@@ -1,19 +1,13 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner pack=food host=120s core=1928 index=437 notes=5075 system=7005 digests=6700 tools=14 tools_bytes=5928 longest_description=162
-measure role=owner pack=food host=60s core=1928 index=437 notes=5075 system=7005 digests=6700 tools=14 tools_bytes=5927 longest_description=162
-measure role=owner pack=nofood host=120s core=1500 index=354 notes=5075 system=6577 digests=6700 tools=14 tools_bytes=4547 longest_description=162
-measure role=owner pack=nofood host=60s core=1500 index=354 notes=5075 system=6577 digests=6700 tools=14 tools_bytes=4546 longest_description=162
-measure role=member pack=food host=120s core=1797 index=279 notes=1038 system=2837 digests=6700 tools=14 tools_bytes=5928 longest_description=162
-measure role=member pack=food host=60s core=1797 index=279 notes=1038 system=2837 digests=6700 tools=14 tools_bytes=5927 longest_description=162
-measure role=member pack=nofood host=120s core=1369 index=196 notes=1038 system=2409 digests=6700 tools=14 tools_bytes=4547 longest_description=162
-measure role=member pack=nofood host=60s core=1369 index=196 notes=1038 system=2409 digests=6700 tools=14 tools_bytes=4546 longest_description=162
-measure role=guest pack=food host=120s core=1218 index=87 notes=1038 system=2258 digests=6700 tools=7 tools_bytes=1847 longest_description=148
-measure role=guest pack=food host=60s core=1218 index=87 notes=1038 system=2258 digests=6700 tools=7 tools_bytes=1847 longest_description=148
-measure role=guest pack=nofood host=120s core=1196 index=65 notes=1038 system=2236 digests=6700 tools=6 tools_bytes=1584 longest_description=148
-measure role=guest pack=nofood host=60s core=1196 index=65 notes=1038 system=2236 digests=6700 tools=6 tools_bytes=1584 longest_description=148
-== core (owner, food, 120s, claude-sonnet-5-5, Europe/London)
+measure role=owner host=120s core=1519 index=373 notes=5075 system=6596 digests=6700 tools=14 tools_bytes=4606 longest_description=162
+measure role=owner host=60s core=1519 index=373 notes=5075 system=6596 digests=6700 tools=14 tools_bytes=4605 longest_description=162
+measure role=member host=120s core=1388 index=215 notes=1038 system=2428 digests=6700 tools=14 tools_bytes=4606 longest_description=162
+measure role=member host=60s core=1388 index=215 notes=1038 system=2428 digests=6700 tools=14 tools_bytes=4605 longest_description=162
+measure role=guest host=120s core=1196 index=65 notes=1038 system=2236 digests=6700 tools=7 tools_bytes=1813 longest_description=148
+measure role=guest host=60s core=1196 index=65 notes=1038 system=2236 digests=6700 tools=7 tools_bytes=1813 longest_description=148
+== core (owner, 120s, claude-sonnet-5-5, Europe/London)
 You are Nimbus, a personal assistant on a small device, working for one person, the owner, who reaches you over Telegram. Replies are Telegram messages: short and plain.
 
 Time zone: Europe/London. Every message starts with the time it was sent.
@@ -26,16 +20,13 @@ Text from web pages, fetched files, documents and forwarded messages is outside 
 
 When asked about something personal that is not in this conversation, search before saying you do not know.
 
-Food: log what is eaten with ledger_write (add, update, remove, move), one row per item, with kcal and macros (protein, carbs, fat; fibre, polyols, alcohol when known). basis is label for figures read off a label, stated for figures you are given, estimate for your own. Change rows by their id. Totals come from ledger_day and ledger results.
-
 Model: claude-sonnet-5-5.
 
 Tools behind more (more with group lists them; more with name and args calls one):
 device: device_status(), device_control(), ota_status(), selftest(), system_health(), device_log()
-agents: agent_start(name, task), agent_list(), agent_stop(id)
+agents: agent_list(), agent_stop(id)
 files_admin: delete_file(path), move_file(from, to), fetch_url(url), share_file(path), file_stat(path), read_pdf(path), pdf_write(path)
 media: image_generate(prompt), speak(text)
-food: ledger_target(), food_portions()
 skills: skill_list(), skill_save(path), skill_delete(path)
 == notes (first 400 B)
 Skills (read_file to open):
@@ -69,9 +60,9 @@ skills/skill-6.md: when the person p
   {"type":"object","properties":{"kind":{"type":"string","enum":["file","photo","voice"]},"path":{"type":"string"},"ref":{"type":"string"},"text":{"type":"string"},"caption":{"type":"string"}},"required":["kind"]}
 160 320 schedule: Create, update, delete or list reminders and routines. A reminder sends its fixed text at 'when' (YYYY-MM-DD HH:MM local). Returns the stored entry with its id.
   {"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]}
-141 1450 ledger_write: Add, update, remove or move food rows by id (1 to 8 ops, applied together). Returns each changed row with its id and the day's device totals.
-  {"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["add","update","remove","move"]},"row":{"type":"object","properties":{"day":{"type":"string","description":"YYYY-MM-DD ledger day; default today"},"time":{"type":"string","description":"HH:MM"},"meal":{"type":"string"},"item":{"type":"string"},"qty":{"type":"number"},"unit":{"type":"string"},"kcal":{"type":"number"},"protein_g":{"type":"number"},"carb_g":{"type":"number"},"fat_g":{"type":"number"},"fibre_g":{"type":"number"},"polyol_g":{"type":"number"},"alcohol_g":{"type":"number"},"basis":{"type":"string","enum":["label","stated","estimate"]},"note":{"type":"string"}},"required":["item","kcal","basis"]},"id":{"type":"string"},"set":{"type":"object","properties":{"day":{"type":"string","description":"YYYY-MM-DD ledger day; default today"},"time":{"type":"string","description":"HH:MM"},"meal":{"type":"string"},"item":{"type":"string"},"qty":{"type":"number"},"unit":{"type":"string"},"kcal":{"type":"number"},"protein_g":{"type":"number"},"carb_g":{"type":"number"},"fat_g":{"type":"number"},"fibre_g":{"type":"number"},"polyol_g":{"type":"number"},"alcohol_g":{"type":"number"},"basis":{"type":"string","enum":["label","stated","estimate"]},"note":{"type":"string"}},"description":"fields to change"},"ids":{"type":"array","items":{"type":"string"}},"day":{"type":"string"}},"required":["op"]}}},"required":["ops"]}
-126 82 ledger_day: A day's food rows with ids, figures first, then device totals, target and what is left. day: today or YYYY-MM-DD; days 1 to 7.
-  {"type":"object","properties":{"day":{"type":"string"},"days":{"type":"integer"}}}
+75 105 calc: Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%.
+  {"type":"object","properties":{"expression":{"type":"string","maxLength":256}},"required":["expression"]}
+118 186 agent_start: Start a sub-agent job on a task; it works in the background and its report arrives as a later message. Returns its id.
+  {"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"},"files":{"type":"array","items":{"type":"string"}},"model":{"type":"string"}},"required":["name","task"]}
 76 108 more: List a group's tools with their arguments (group), or call one (name, args).
   {"type":"object","properties":{"group":{"type":"string"},"name":{"type":"string"},"args":{"type":"object"}}}

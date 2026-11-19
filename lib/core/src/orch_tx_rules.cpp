@@ -146,13 +146,6 @@ bool isRef(const std::string& s) {
   return true;
 }
 
-bool isDay(const std::string& s) {
-  if (s.size() != 10 || s[4] != '-' || s[7] != '-') return false;
-  for (size_t i = 0; i < 10; ++i)
-    if (i != 4 && i != 7 && !(s[i] >= '0' && s[i] <= '9')) return false;
-  return true;
-}
-
 // ---- stamps (Ruling 11) -----------------------------------------------------------------------
 
 // The fields of messageStamp's "[Tue 17 Nov 2026 13:02]".
@@ -194,122 +187,38 @@ std::string topString(const JsonDocument& doc, const char* key) {
   return v.is<const char*>() ? std::string(v.as<const char*>()) : std::string();
 }
 
-bool isWordChar(char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
-}
-
-// A ledger row id: 'L' and 5 base-32 characters (PRD section 4); 4 to 8 are accepted, so
-// ids of a shorter or longer form still match while a bare number or word never does.
-bool isRowId(const std::string& s) {
-  if (s.size() < 5 || s.size() > 9 || s[0] != 'L') return false;
-  for (size_t i = 1; i < s.size(); ++i)
-    if (!((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'A' && s[i] <= 'Z'))) return false;
-  return true;
-}
-
-void addRowId(JsonVariantConst v, std::set<std::string>& ids) {
-  if (v.is<const char*>() && isRowId(v.as<const char*>())) ids.insert(v.as<const char*>());
-}
-
-// Every "day" date and every "id"/"ids" row id anywhere in a ledger_write's arguments (the
-// parse's nesting limit bounds the depth).
-void collectLedgerKeys(JsonVariantConst v, std::set<std::string>& days, std::set<std::string>& ids) {
-  if (v.is<JsonArrayConst>()) {
-    for (JsonVariantConst e : v.as<JsonArrayConst>()) collectLedgerKeys(e, days, ids);
-    return;
-  }
-  if (!v.is<JsonObjectConst>()) return;
-  for (JsonPairConst kv : v.as<JsonObjectConst>()) {
-    const char* key = kv.key().c_str();
-    JsonVariantConst val = kv.value();
-    if (std::strcmp(key, "day") == 0 && val.is<const char*>()) {
-      const std::string d = val.as<const char*>();
-      if (isDay(d)) days.insert(d);
-    } else if (std::strcmp(key, "id") == 0 || std::strcmp(key, "ids") == 0) {
-      addRowId(val, ids);
-      if (val.is<JsonArrayConst>())
-        for (JsonVariantConst e : val.as<JsonArrayConst>()) addRowId(e, ids);
-    } else {
-      collectLedgerKeys(val, days, ids);
-    }
-  }
-}
-
-// The "day YYYY-MM-DD" lines of a ledger receipt (the constant day-line form, PRD section 4).
-void receiptDays(const std::string& x, std::set<std::string>& days) {
-  for (size_t at = x.find("day "); at != std::string::npos; at = x.find("day ", at + 4)) {
-    if (at > 0 && isWordChar(x[at - 1])) continue;
-    if (at + 14 > x.size()) break;
-    const std::string d = x.substr(at + 4, 10);
-    if (isDay(d)) days.insert(d);
-  }
-}
-
-// `token` appears in x as a whole word.
-bool hasToken(const std::string& x, const std::string& token) {
-  if (token.empty()) return false;
-  for (size_t at = x.find(token); at != std::string::npos; at = x.find(token, at + 1)) {
-    const bool left = at == 0 || !isWordChar(x[at - 1]);
-    const size_t end = at + token.size();
-    const bool right = end >= x.size() || !isWordChar(x[end]);
-    if (left && right) return true;
-  }
-  return false;
-}
-
-// What one write makes stale.
+// What one write makes stale: the paths a file write names. No tool is special for what
+// it stores (ruling 41): a write that names no path makes nothing stale.
 struct WriteTarget {
-  bool ledger = false;
-  std::set<std::string> paths;   // file writes
-  std::set<std::string> days;    // ledger days touched
-  std::set<std::string> ids;     // ledger row ids named
+  std::set<std::string> paths;
 };
 
-// What an earlier read call is about, parsed once per call: the path of a file read, or
-// the day argument of a ledger view; `relevant` false for every other call.
+// What an earlier read call is about, parsed once per call: the path of a file read;
+// `relevant` false for every other call.
 struct ReadKey {
   bool relevant = false;
   std::string key;
 };
-ReadKey readKeyOf(const Item& call, const WriteTarget& w) {
+ReadKey readKeyOf(const Item& call) {
   ReadKey k;
-  k.relevant = w.ledger ? call.n == "ledger_day" : isPathRead(call.n);
+  k.relevant = isPathRead(call.n);
   JsonDocument doc;
-  if (k.relevant && parseArgs(call.args, doc)) k.key = topString(doc, w.ledger ? "day" : "path");
+  if (k.relevant && parseArgs(call.args, doc)) k.key = topString(doc, "path");
   return k;
 }
 
-bool readMatches(const ReadKey& k, const Item& result, const WriteTarget& w) {
-  if (!k.relevant) return false;
-  if (!w.ledger) return w.paths.count(k.key) > 0;
-  if (w.days.count(k.key)) return true;
-  // A view kept in bulk has no text on its line: its stored stub's preview is read instead.
-  const std::string& text = result.x.empty() ? result.st : result.x;
-  std::set<std::string> viewDays;
-  receiptDays(text, viewDays);
-  for (const std::string& d : viewDays)
-    if (w.days.count(d)) return true;
-  for (const std::string& id : w.ids)
-    if (hasToken(text, id)) return true;
-  return false;
-}
+bool readMatches(const ReadKey& k, const WriteTarget& w) { return k.relevant && w.paths.count(k.key) > 0; }
 
 // What the write makes stale; false when it makes nothing stale.
-bool targetOf(const Item& writeCall, const Item* writeResult, WriteTarget& w) {
+bool targetOf(const Item& writeCall, WriteTarget& w) {
+  if (!isPathWrite(writeCall.n)) return false;
   JsonDocument doc;
-  if (isPathWrite(writeCall.n)) {
-    if (!parseArgs(writeCall.args, doc)) return false;
-    for (const char* key : {"path", "from", "to"}) {
-      const std::string p = topString(doc, key);
-      if (!p.empty()) w.paths.insert(p);
-    }
-    return !w.paths.empty();
+  if (!parseArgs(writeCall.args, doc)) return false;
+  for (const char* key : {"path", "from", "to"}) {
+    const std::string p = topString(doc, key);
+    if (!p.empty()) w.paths.insert(p);
   }
-  if (writeCall.n != "ledger_write") return false;
-  w.ledger = true;
-  if (parseArgs(writeCall.args, doc)) collectLedgerKeys(doc.as<JsonVariantConst>(), w.days, w.ids);
-  if (writeResult) receiptDays(writeResult->x, w.days);
-  return !w.days.empty() || !w.ids.empty();
+  return !w.paths.empty();
 }
 
 // Results x items already superseded, and the pointer (the newest x item's stub).
@@ -328,17 +237,18 @@ Status superseded(const Item& writeCall, const Item* writeResult, const std::vec
   out.clear();
   if (writeCall.kind != ItemKind::Call) return Status::fail(Err::InvalidArgument, "tx::supersededBy");
   WriteTarget w;
-  if (!targetOf(writeCall, writeResult, w)) return Status::success();
+  (void)writeResult;   // only its ok flag matters (supersededBy's second form)
+  if (!targetOf(writeCall, w)) return Status::success();
   std::set<uint64_t> already;
   const uint64_t pointer = priorMoves(earlier, already);
   std::map<std::string, ReadKey> lastCall;   // call id -> what its newest c item reads
   for (const Item& it : earlier) {
     if (writeCall.q && it.q >= writeCall.q) break;   // a read after the write is fresh
-    if (it.kind == ItemKind::Call) lastCall[it.id] = readKeyOf(it, w);
+    if (it.kind == ItemKind::Call) lastCall[it.id] = readKeyOf(it);
     if (it.kind != ItemKind::Result || already.count(it.q)) continue;
     if (it.cls != ResultClass::Receipt && it.q <= pointer) continue;   // already a stub
     auto c = lastCall.find(it.id);
-    if (c != lastCall.end() && readMatches(c->second, it, w)) out.push_back(it.q);
+    if (c != lastCall.end() && readMatches(c->second, w)) out.push_back(it.q);
   }
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());

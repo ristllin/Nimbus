@@ -9,7 +9,7 @@
 // plain/agents.h - sub-agents as tools per backend (PRD section 6) over the kept jobs.cpp.
 // Briefs carry task text and file paths, never the owner's transcript. Arrival: the
 // report is saved whole as agents/<id>-<name>.md, one h item carries it as an outside
-// bulk result, then one head turn runs in which ledger, note, schedule and device writes
+// bulk result, then one head turn runs in which file, note, schedule and device writes
 // are refused. Registered in HookSlot::Agents.
 //
 // Seam declared by lane RB-B0a; the body (plain_agents.cpp) is lane RB-U2's.

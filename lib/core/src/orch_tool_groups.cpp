@@ -25,7 +25,6 @@ const ToolGroup kGroups[] = {
     {"agents", "sub-agent jobs"},
     {"files_admin", "file deletion, moves, downloads, sharing, stat, PDFs"},
     {"media", "images, speech, music"},
-    {"food", "targets and portions"},
     {"people", "who may use the device (admin only)"},
     {"models", "the providers' model lists"},
     {"docs", "the device's own documentation"},
@@ -50,8 +49,8 @@ const ToolClassRow kRows[] = {
     {"view", "", EC::Read},
     {"send", "", EC::Effect},
     {"schedule", "", EC::Effect},
-    {"ledger_write", "", EC::Effect},
-    {"ledger_day", "", EC::Pure},
+    {"calc", "", EC::Pure},          // RB-REC8 registers it (ruling 42 item 3)
+    {"agent_start", "", EC::Effect},  // always on in every pack; its jobs are behind more (agents)
     {"more", "", EC::Read},   // a router: callClass reads the class of the tool it reaches
     {"device_status", "device", EC::Read},
     {"device_control", "device", EC::Effect},
@@ -59,7 +58,6 @@ const ToolClassRow kRows[] = {
     {"selftest", "device", EC::Read},
     {"system_health", "device", EC::Read},
     {"device_log", "device", EC::Read},
-    {"agent_start", "agents", EC::Effect},
     {"agent_list", "agents", EC::Read},
     {"agent_stop", "agents", EC::Effect},
     {"delete_file", "files_admin", EC::Effect},
@@ -71,8 +69,6 @@ const ToolClassRow kRows[] = {
     {"pdf_write", "files_admin", EC::Effect},
     {"image_generate", "media", EC::Effect},
     {"speak", "media", EC::Effect},
-    {"ledger_target", "food", EC::Effect},
-    {"food_portions", "food", EC::Read},
     {"skill_list", "skills", EC::Read},
     {"skill_save", "skills", EC::Effect},
     {"skill_delete", "skills", EC::Effect},
@@ -119,7 +115,7 @@ const ToolClassRow kRows[] = {
     {"media.play", "media", EC::Effect},
     {"media.pause", "media", EC::Effect},
     {"media.stop", "media", EC::Effect},
-    {"food.portions", "food", EC::Read},
+    {"food.portions", "", EC::Read},   // engine 1 only; RB-REC1 deletes it with its tool
     {"tenant.list", "people", EC::Read},
     {"tenant.set_role", "people", EC::Effect},
     {"tenant.set_quota", "people", EC::Effect},

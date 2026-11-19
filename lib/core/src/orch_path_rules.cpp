@@ -48,10 +48,6 @@ bool sameFolded(std::string_view a, std::string_view b) {
   return true;
 }
 
-bool startsFolded(std::string_view s, std::string_view prefix) {
-  return s.size() >= prefix.size() && sameFolded(s.substr(0, prefix.size()), prefix);
-}
-
 bool endsFolded(std::string_view s, std::string_view suffix) {
   return s.size() >= suffix.size() && sameFolded(s.substr(s.size() - suffix.size()), suffix);
 }
@@ -153,13 +149,7 @@ PathRule pathRuleFor(std::string_view project, std::string_view name) {
       r.skillId = std::string(name.substr(0, name.size() - 3));
     return r;
   }
-  if (sameFolded(project, "food") && startsFolded(name, "food-log") && endsFolded(name, ".csv")) {
-    r.kind = Reserved::Ledger;
-    r.writable = false;
-    r.owner = "ledger_write";
-    return r;
-  }
-  if (sameFolded(project, "food-pre-v2") || sameFolded(project, "export-pre-v2")) {
+  if (sameFolded(project, "export-pre-v2")) {
     r.kind = Reserved::Archive;
     r.writable = false;
     return r;

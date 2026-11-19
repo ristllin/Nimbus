@@ -840,9 +840,8 @@ static void test_quotas_and_room_hold_for_every_write() {
 static void test_a_write_to_a_reserved_path_names_its_owner() {
   const char* const paths[][2] = {
       {"skills/food-coach.md", "skill_save"},   {"SKILLS/Food-Coach.MD", "skill_save"},
-      {"skills/notes.txt", "skill_save"},       {"food/food-log.csv", "ledger_write"},
-      {"Food/Food-Log-2002.CSV", "ledger_write"}, {"food-pre-v2/food-log.csv", "no tool"},
-      {"export-pre-v2/x.md", "no tool"},          {"inbox/12-report.txt", "the device"},
+      {"skills/notes.txt", "skill_save"},       {"export-pre-v2/x.md", "no tool"},
+      {"inbox/12-report.txt", "the device"},
       {"agents/research-a1.md", "agent_start"},
   };
   int checked = 0;
@@ -862,12 +861,25 @@ static void test_a_write_to_a_reserved_path_names_its_owner() {
       checked++;
     }
   }
-  // Readable: the ledger, an archive, the inbox and agent reports read like any file.
+  // Readable: an archive, the inbox and agent reports read like any file.
   Rig rig;
-  seed(rig.io, "food", "food-log.csv", "id,day\n");
+  seed(rig.io, "export-pre-v2", "openq.txt", "an old question\n");
   seed(rig.io, "inbox", "12-report.txt", "from a document\n");
-  TEST_ASSERT_TRUE(rig.call("read_file", R"({"path":"food/food-log.csv"})").success);
+  TEST_ASSERT_TRUE(rig.call("read_file", R"({"path":"export-pre-v2/openq.txt"})").success);
   TEST_ASSERT_TRUE(rig.call("read_file", R"({"path":"inbox/12-report.txt"})").success);
+  // A person's own log or table, whatever it tracks, is an ordinary file: written, appended
+  // and edited like any other (ruling 41; three use cases as equal fixtures).
+  for (const char* p : {"food/food-log.csv", "expenses/2026.csv", "training/log.csv"}) {
+    Rig own;
+    const std::string path = jsonStr(p);
+    const ToolResult w = own.call("write_file", "{\"path\":" + path + ",\"content\":\"date,item,qty\\n\"}");
+    TEST_ASSERT_TRUE_MESSAGE(w.success, (std::string(p) + ": " + w.error).c_str());
+    const ToolResult a = own.call("append_file", "{\"path\":" + path + ",\"text\":\"2026-11-19,x,1\\n\"}");
+    TEST_ASSERT_TRUE_MESSAGE(a.success, (std::string(p) + ": " + a.error).c_str());
+    const ToolResult e = own.call("edit_file", "{\"path\":" + path + ",\"old\":\",x,1\",\"new\":\",x,2\"}");
+    TEST_ASSERT_TRUE_MESSAGE(e.success, (std::string(p) + ": " + e.error).c_str());
+    TEST_ASSERT_TRUE(own.call("read_file", "{\"path\":" + path + "}").output.find("2026-11-19,x,2") != std::string::npos);
+  }
   TEST_MESSAGE(("property: " + std::to_string(checked) + " writes to reserved paths, each naming its owner").c_str());
 }
 

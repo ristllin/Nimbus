@@ -2,9 +2,9 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=47658 ceiling=47989 entries=540 sha8=f0539dbc
-# class device_notes bytes=54053 ceiling=54203 entries=1458 sha8=1c7b6f11
+# class device_notes bytes=54036 ceiling=54203 entries=1457 sha8=692e97dd
 # class tool_descriptions bytes=23131 ceiling=23131 entries=98 sha8=542ad7ca
-# class tool_results bytes=41962 ceiling=41962 entries=1249 sha8=63debd41
+# class tool_results bytes=41942 ceiling=41962 entries=1248 sha8=df517712
 # class side_prompts bytes=9795 ceiling=9795 entries=170 sha8=fada0e91
 # class skills bytes=8773 ceiling=23264 entries=26 sha8=3ef5d5db
 system	lib/core/include/nimbus/orch/orch_schema.h	955fc9b7	884	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. Never invent ids, links, or successes."
@@ -841,7 +841,6 @@ device_notes	lib/core/src/orch_transcript.cpp	ebb1408b	9	" (error) "
 device_notes	lib/core/src/orch_transcript.cpp	da169a41	26	" earlier entries omitted)\n"
 device_notes	lib/core/src/orch_truth.cpp	8f43596a	5	" ok: "
 device_notes	lib/core/src/orch_truth.cpp	ba60cd46	9	" FAILED: "
-device_notes	lib/core/src/orch_truth.cpp	c1e23580	17	"the ledger change"
 device_notes	lib/core/src/orch_truth.cpp	e7387238	15	"the file change"
 device_notes	lib/core/src/orch_truth.cpp	4c08d98f	17	"the memory change"
 device_notes	lib/core/src/orch_truth.cpp	583a4093	19	"the reminder change"
@@ -2730,7 +2729,6 @@ tool_results	lib/core/src/orch_tool_groups.cpp	1f87db8b	54	"device state, contro
 tool_results	lib/core/src/orch_tool_groups.cpp	1f6d54f2	14	"sub-agent jobs"
 tool_results	lib/core/src/orch_tool_groups.cpp	bdf9ec2e	52	"file deletion, moves, downloads, sharing, stat, PDFs"
 tool_results	lib/core/src/orch_tool_groups.cpp	a6580dc6	21	"images, speech, music"
-tool_results	lib/core/src/orch_tool_groups.cpp	01fc8637	20	"targets and portions"
 tool_results	lib/core/src/orch_tool_groups.cpp	c640341e	35	"who may use the device (admin only)"
 tool_results	lib/core/src/orch_tool_groups.cpp	16c339ef	26	"the providers' model lists"
 tool_results	lib/core/src/orch_tool_groups.cpp	4887bcc6	30	"the device's own documentation"

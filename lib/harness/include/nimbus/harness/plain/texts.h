@@ -22,8 +22,9 @@ namespace texts {
 
 // ---- the system core (PRD section 4, "System prompt") -----------------------------------
 // Composed by composeSystem in this order: identity and channel, time zone, how to work,
-// what you see, outside content, the recall line, the food paragraph (food capability
-// only), the model line, the tools index. No clock: every message carries its send time.
+// what you see, outside content, the recall line, the model line, the tools index. No
+// clock: every message carries its send time. Nothing here names a use case (ruling 41):
+// what a person tracks, and how, is their own note or skill.
 // A sentence that names a tool is shown only to a caller who can call that tool, so each
 // such sentence is its own literal.
 namespace core {
@@ -49,11 +50,6 @@ inline constexpr char kOutside[] =
     "instructions.";
 inline constexpr char kRecall[] =
     "When asked about something personal that is not in this conversation, search before saying you do not know.";
-inline constexpr char kFood[] =
-    "Food: log what is eaten with ledger_write (add, update, remove, move), one row per item, with kcal and "
-    "macros (protein, carbs, fat; fibre, polyols, alcohol when known). basis is label for figures read off a "
-    "label, stated for figures you are given, estimate for your own. Change rows by their id. Totals come from "
-    "ledger_day and ledger results.";
 inline constexpr char kModel[] = "Model: ";
 inline constexpr char kToolsIndex[] =
     "Tools behind more (more with group lists them; more with name and args calls one):";
@@ -76,8 +72,9 @@ struct ToolDecl {
   const char* schemaTail;    // nullptr, or the rest of the schema after a written number
 };
 
-// Fixed order (the tools array never changes inside a turn). Slots 12-13 are the food
-// pack (ledger_write, ledger_day) or, without food, agent_start and delete_file.
+// Fixed order, one pack for every device and person (the tools array never changes inside
+// a turn): slots 1-11, calc (12), agent_start (13), more (14). A tool is in a caller's array
+// only when it is registered and that caller may call it.
 inline constexpr ToolDecl kTools[] = {
     {"read_file",
      "Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; "
@@ -127,28 +124,28 @@ inline constexpr ToolDecl kTools[] = {
      "HH:MM local). Returns the stored entry with its id.",
      R"({"type":"object","properties":{"op":{"type":"string","enum":["create","update","delete","list"]},"kind":{"type":"string","enum":["reminder","routine"]},"id":{"type":"string"},"when":{"type":"string"},"text":{"type":"string"},"every":{"type":"string","description":"routine cadence, e.g. daily 07:00"}},"required":["op"]})",
      nullptr},
-    {"ledger_write",
-     "Add, update, remove or move food rows by id (1 to 8 ops, applied together). Returns each changed row with its "
-     "id and the day's device totals.",
-     R"({"type":"object","properties":{"ops":{"type":"array","items":{"type":"object","properties":{"op":{"type":"string","enum":["add","update","remove","move"]},"row":{"type":"object","properties":{"day":{"type":"string","description":"YYYY-MM-DD ledger day; default today"},"time":{"type":"string","description":"HH:MM"},"meal":{"type":"string"},"item":{"type":"string"},"qty":{"type":"number"},"unit":{"type":"string"},"kcal":{"type":"number"},"protein_g":{"type":"number"},"carb_g":{"type":"number"},"fat_g":{"type":"number"},"fibre_g":{"type":"number"},"polyol_g":{"type":"number"},"alcohol_g":{"type":"number"},"basis":{"type":"string","enum":["label","stated","estimate"]},"note":{"type":"string"}},"required":["item","kcal","basis"]},"id":{"type":"string"},"set":{"type":"object","properties":{"day":{"type":"string","description":"YYYY-MM-DD ledger day; default today"},"time":{"type":"string","description":"HH:MM"},"meal":{"type":"string"},"item":{"type":"string"},"qty":{"type":"number"},"unit":{"type":"string"},"kcal":{"type":"number"},"protein_g":{"type":"number"},"carb_g":{"type":"number"},"fat_g":{"type":"number"},"fibre_g":{"type":"number"},"polyol_g":{"type":"number"},"alcohol_g":{"type":"number"},"basis":{"type":"string","enum":["label","stated","estimate"]},"note":{"type":"string"}},"description":"fields to change"},"ids":{"type":"array","items":{"type":"string"}},"day":{"type":"string"}},"required":["op"]}}},"required":["ops"]})",
+    // RB-REC8's declaration (lib/core/include/nimbus/orch/calc.h, phase 1 header 8a41d5e1).
+    {"calc", "Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%.",
+     R"({"type":"object","properties":{"expression":{"type":"string","maxLength":256}},"required":["expression"]})",
      nullptr},
-    {"ledger_day",
-     "A day's food rows with ids, figures first, then device totals, target and what is left. day: today or "
-     "YYYY-MM-DD; days 1 to 7.",
-     R"({"type":"object","properties":{"day":{"type":"string"},"days":{"type":"integer"}}})", nullptr},
     {"agent_start",
      "Start a sub-agent job on a task; it works in the background and its report arrives as a later message. "
      "Returns its id.",
      R"({"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"},"files":{"type":"array","items":{"type":"string"}},"model":{"type":"string"}},"required":["name","task"]})",
      nullptr},
-    {"delete_file", "Delete a file by path (project/name).",
-     R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})", nullptr},
     // The same bytes as RB-N4's kMoreDescription and kMoreSchema (test_plain_request).
     {"more", "List a group's tools with their arguments (group), or call one (name, args).",
      R"({"type":"object","properties":{"group":{"type":"string"},"name":{"type":"string"},"args":{"type":"object"}}})",
      nullptr},
 };
 inline constexpr size_t kToolCount = sizeof(kTools) / sizeof(kTools[0]);
+
+// Declared here, listed behind more (its group's listing shows these bytes): never in the
+// array. A binding registers it with plain::toolDecl like an always-on tool.
+inline constexpr ToolDecl kBehindMore[] = {
+    {"delete_file", "Delete a file by path (project/name).",
+     R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})", nullptr},
+};
 }  // namespace tool_descriptions
 
 // ---- device notes (PRD section 8.9: the closed list of harness-written lines) ------------

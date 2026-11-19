@@ -19,11 +19,14 @@
 //   - a valid path is never changed, so making valid twice changes nothing.
 // The result names the stored path; the tools state it when it differs from the asked one.
 //
-// Reserved paths (matched without letter case: the card's FAT opens names that way):
+// Reserved paths (matched without letter case: the card's FAT opens names that way). Each
+// is reserved because something other than the file tools writes it, never because of
+// what a person keeps in it: every other path, whatever it holds (a log, a table, notes),
+// is the person's own file store (ruling 41).
 //   skills/<id>.md       the skill store's approved version, read-only (skill_save writes it);
 //                        every other name under skills/ is the skill store's too
-//   food/food-log*.csv   the food ledger, read-only (ledger_write writes it)
-//   food-pre-v2/*, export-pre-v2/*   archives kept from before the ledger moved, read-only
+//   export-pre-v2/*      what the migration to engine 2 exported from the old engine's own
+//                        stores (PRD section 9), read-only
 //   inbox/*              files sent in a chat, written by the device, readable
 //   agents/*             agent reports, written by agent jobs, readable
 // Portable, Arduino-free, host-tested (test_path_rules).
@@ -61,7 +64,7 @@ std::string validSegmentFor(std::string_view segment, size_t maxLen);
 std::string validCharsFor(std::string_view text);
 
 // The reserved families. A path outside them is the person's own file store.
-enum class Reserved : uint8_t { None = 0, Skill, Ledger, Archive, Inbox, Agents };
+enum class Reserved : uint8_t { None = 0, Skill, Archive, Inbox, Agents };
 
 struct PathRule {
   Reserved kind = Reserved::None;

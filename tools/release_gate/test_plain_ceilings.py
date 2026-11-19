@@ -4,7 +4,7 @@ Run: python3 -m pytest tools/release_gate/test_plain_ceilings.py
 
 The first test runs the gate on the real tree. Each counter-test copies what the gate reads
 into a temp folder, plants a fault and asserts the gate turns red: a 300 B addition to each
-engine-2 class that composition reads, a figure over each ceiling, a missing role, pack or
+engine-2 class that composition reads, a figure over each ceiling, a missing role or
 host, a malformed line, a class over its catalog ceiling and a stale catalog.
 """
 
@@ -72,7 +72,9 @@ def test_a_seeded_300_byte_addition_is_red(tmp_path, cls, anchor):
 
 def test_a_logged_growth_over_the_class_ceiling_is_red(tmp_path):
     root = make_tree(tmp_path)
-    big = "x " * 2600  # tool_descriptions 5,732 + 5,200 B > 10,240
+    # Past the class ceiling from wherever the class stands now (4,095 B since RB-REC3).
+    size = cat.class_stats("e2", cat.build_e2(root))["tool_descriptions"]["bytes"]
+    big = "x " * ((cat.E2_CEILINGS["tool_descriptions"] - size) // 2 + 50)
     edit(root, cat.E2_TEXTS, lambda t: t.replace('"Search the web.', '"' + big + "Search the web.", 1))
     regenerate(root)
     errs = gate.run(root)
@@ -96,7 +98,7 @@ def test_a_figure_over_its_ceiling_is_red(tmp_path, figure, value):
     edit(
         root,
         gate.GOLDEN,
-        lambda t: re.sub(rf"(measure role=member pack=food host=60s.*? {figure}=)\d+", rf"\g<1>{value}", t, count=1),
+        lambda t: re.sub(rf"(measure role=member host=60s.*? {figure}=)\d+", rf"\g<1>{value}", t, count=1),
     )
     errs = gate.run(root)
     assert any(f"{figure} {value} is over its ceiling" in e for e in errs), errs
@@ -104,8 +106,12 @@ def test_a_figure_over_its_ceiling_is_red(tmp_path, figure, value):
 
 def test_a_missing_or_malformed_line_is_red(tmp_path):
     root = make_tree(tmp_path)
-    edit(root, gate.GOLDEN, lambda t: re.sub(r"measure role=guest pack=nofood host=60s[^\n]*\n", "", t))
-    assert any("role=guest pack=nofood host=60s" in e for e in gate.run(root))
+    edit(root, gate.GOLDEN, lambda t: re.sub(r"measure role=guest host=60s[^\n]*\n", "", t))
+    assert any("role=guest host=60s" in e for e in gate.run(root))
+    # One fixed pack (ruling 41): a line that names a pack again is malformed, not a new key.
+    root_p = make_tree(tmp_path / "p")
+    edit(root_p, gate.GOLDEN, lambda t: t.replace("measure role=owner host=120s", "measure role=owner pack=extra host=120s", 1))
+    assert any("malformed" in e for e in gate.run(root_p))
     root2 = make_tree(tmp_path / "m")
     edit(root2, gate.GOLDEN, lambda t: t.replace(" tools=14", " tools=fourteen", 1))
     assert any("malformed" in e for e in gate.run(root2))

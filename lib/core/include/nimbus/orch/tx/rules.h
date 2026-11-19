@@ -139,21 +139,14 @@ Status omissionDates(uint64_t firstEpoch, uint64_t lastEpoch, int16_t tzMinutes,
 // the answer as the sup list of an x item (why "superseded") at the close of the writing turn.
 //  - write_file, append_file, edit_file, delete_file, move_file (args path, from, to): every
 //    earlier read_file, read_pdf or file_stat result of the same path (exact string).
-//  - ledger_write: every earlier ledger_day result of a day the write touches: a "day" string
-//    anywhere in its arguments (top level, each op, a move's target) matched against the view's
-//    own "day" argument or a "day <YYYY-MM-DD>" line in its receipt; and every earlier view whose
-//    receipt names a row id the write's ops name ("id" or "ids", Ruling 11; only ids of the
-//    ledger's form, 'L' and 4 to 8 of [0-9A-Z], as whole words). A view kept in bulk is read
-//    through its stored stub's preview.
-//  - any other tool: nothing.
+//  - any other tool: nothing. No tool is special for what it stores (ruling 41).
 // Results already superseded by an x item in `earlier`, and tier-2 results already at or below
 // the pointer there (already stubs), are left out, so one stale read costs one change point.
 // Arguments that do not parse (a long-argument stub) supersede nothing. InvalidArgument when
 // writeCall is not a c item.
 Status supersededBy(const Item& writeCall, const std::vector<Item>& earlier, std::vector<uint64_t>& out);
-// The same, also reading the write's own receipt: a failed write (ok false) supersedes
-// nothing, and a ledger_write receipt's "day <YYYY-MM-DD>" lines name every day it touched
-// (resolves "today" and row ids on other days). InvalidArgument when writeResult is not an r item.
+// The same, also reading the write's own result: a failed write (ok false) supersedes
+// nothing. InvalidArgument when writeResult is not an r item.
 Status supersededBy(const Item& writeCall, const Item& writeResult, const std::vector<Item>& earlier,
                     std::vector<uint64_t>& out);
 

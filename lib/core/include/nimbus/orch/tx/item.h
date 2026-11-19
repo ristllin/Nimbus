@@ -178,7 +178,7 @@ struct Item {
   NoteClass note = NoteClass::Unknown;
 
   // s
-  std::string day;                 // "YYYY-MM-DD" (local ledger day)
+  std::string day;                 // "YYYY-MM-DD" (the local day)
   uint64_t thru = 0;               // the last q the digest covers
   bool ext = false;                // archived out of the block
 
@@ -202,7 +202,6 @@ inline constexpr size_t kTier1OwnerText = 12288;    // owner text kept inline
 inline constexpr size_t kTier1AssistantText = 12288;
 inline constexpr size_t kTier1CallArgs = 1024;      // longer string arguments go to bulk
 inline constexpr size_t kTier1Receipt = 2048;       // internal results kept inline
-inline constexpr size_t kTier1LedgerReceipt = 4096; // ledger tools: a 15-row day keeps its ids
 inline constexpr size_t kLongPasteHead = 4096;      // the part of a long paste the message carries
 
 inline constexpr size_t kLineTailBytes = 16;        // ',"z":"xxxxxxxx"}' before the newline

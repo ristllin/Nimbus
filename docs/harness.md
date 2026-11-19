@@ -533,9 +533,8 @@ the same request, and none of them drops anything without a line that names it.
   heads). At or below it only tier-2 bulk and outside results render as stubs; receipts stay
   verbatim until compacted (`showResult`).
 - **Superseded reads** (`supersededBy`): a successful file write marks earlier reads of the
-  same path stale; a `ledger_write` marks earlier `ledger_day` views of each day it touches
-  (by its `day` fields, its receipt's day lines, or the row ids its ops name). Each stale
-  read is listed once, in the `sup` list of an `x` item.
+  same path stale; no other tool supersedes anything, whatever it stores. Each stale read is
+  listed once, in the `sup` list of an `x` item.
 - **Photos** (`visiblePhotos`): heads with file references keep the last two photo turns for
   two more owner turns, at most 4, until an hour idle or a restart; inline heads (routed and
   other 85,000 B heads too) carry the newest 2 to the next owner turn only, within 270 s and
@@ -677,27 +676,30 @@ holds no prose of its own.
 
 - `composeSystem` writes the three system blocks. The core (at most 3,072 B) is identity
   and channel, time zone, how to work, what you see, outside content, the recall line, the
-  food paragraph when the food capability is on, the model line and the tools index (at
-  most 512 B). The notes block is the skills index (at most 1,024 B, whole lines, with a
+  model line and the tools index (at most 512 B). No paragraph names a use case: what a
+  person tracks and how is their own note or skill (ruling 41). The notes block is the skills index (at most 1,024 B, whole lines, with a
   true count of the rest) and the pinned notes (at most 4,096 B, whole lines, so core and
   notes stay within 8,192 B). The digests block is the digest block and the recent-files
   list. There is no clock in it: every message carries its own send time.
-- `toolManifest` lists the always-on tools in a fixed order: read_file, write_file,
-  append_file, edit_file, list_files, note, search, web_search, view, send, schedule, the
-  pack (ledger_write and ledger_day with the food capability, else agent_start and
-  delete_file), then `more`. A tool is listed only when it is registered and the caller may
-  call it, at most 14 tools in 10,240 B. write_file's schema states its host's content cap
+- `toolManifest` lists the always-on tools in one fixed order for every device and person:
+  read_file, write_file, append_file, edit_file, list_files, note, search, web_search, view,
+  send, schedule, calc, agent_start, then `more` (13 plus more). A tool is listed only when it
+  is registered, always on in the class table and callable by the caller, at most 14 tools in
+  10,240 B. delete_file is declared in `texts.h` too (`kBehindMore`) and listed behind more. write_file's schema states its host's content cap
   (12,000 B, or 4,096 B on a 60 s host).
 - A sentence that names a tool appears only when that caller can call the tool
   (`uncallableNames`), so a guest is never told to schedule.
 - The same facts give the same bytes: nothing else is read (no turn number, round, clock or
   taint), and each fact moves only its own block, so the provider's cache keeps hitting.
+- A refused allocation fails the call with `TooLarge` and every output empty, so no partial
+  system text or tools array is ever sent (ruling 30).
 
 A binding registers each always-on tool with the declared bytes,
 `reg.add(d->name, d->description, handler, plain::declSchema(*d, shortHost))` with
-`d = plain::toolDecl(name)`, and calls `plain::applyToolPack(reg, food)` after registering,
-so the tools index never lists a tool that is also in the array. `test/test_plain_request`
-proves the ceilings for every role, pack and host on a synthetic Lumi-shaped state and
+`d = plain::toolDecl(name)`; the class table decides what is always on, so the tools index
+never lists a tool that is also in the array. `test/test_plain_request` proves the ceilings
+for every role and host on a synthetic Lumi-shaped state, that no use-case word reaches any
+text a model sees, and
 writes the measured figures to `test/golden/plain_prompt_core.txt`, which
 `tools/release_gate/check_plain_ceilings.py` gates.
 
@@ -724,9 +726,10 @@ A path is exactly the store's two segments, `project/name`. A leading `/`, an em
 refuses is replaced one for one (a Latin-1 letter folds to ASCII), and an over-long name
 keeps its extension and gains an 8-hex hash. Results state the stored path. Reserved paths
 (matched without letter case): `skills/<id>.md` reads the approved skill and `skill_save`
-writes it; `food/food-log*.csv` is written by `ledger_write`; `food-pre-v2/*` and
-`export-pre-v2/*` are read-only archives; `inbox/*` and `agents/*` are written by the device
-and agent jobs. A write there names the tool that owns it. Ownership, shared files and the
+writes it; `export-pre-v2/*` is the read-only export the migration wrote; `inbox/*` and
+`agents/*` are written by the device and agent jobs. A write there names the tool that owns
+it. A path is reserved only because something other than the file tools writes it: a log or
+table the person keeps, in any project, is an ordinary file. Ownership, shared files and the
 per-person byte quota hold for every tool (`test/test_file_tools`).
 
 Card time: every raw card op runs inside one `FileToolsIo::locked()` hold, holding at most

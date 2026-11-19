@@ -471,3 +471,71 @@ deleted. Engine 2 has no baseline.
 - why: owner ruling 41: no built-in support for one use case. log-rows (3,639 B body, 211 B of
   index lines) taught the food log's keyed rows; files.append's own description states the keyed
   append, and what is general about a log (append rows, read the end) is in the file tools.
+
+### PC-0020: the food paragraph deleted from the engine-2 core (ruling 41)
+- catalog: e2
+- class: core
+- kind: remove
+- bytes: 1685 -> 1342
+- sha8: 6e260cff -> 0124d4bf
+- lane: RB-REC3
+- why: the owner ruled that Nimbus is a general harness and food tracking only a validation scenario
+  (ruling 41, design rebuild/DESIGN-GENERAL-RECORDS.md). The core's food paragraph (kFood, 343 B:
+  ledger_write, kcal, macros, basis, ledger_day) and the "food on" switch that showed it are deleted;
+  the composed system text loses 345 B (the paragraph and its join) on every head request, and the
+  tools index loses its food line (39 B, the e1 tool_results entry below). Nothing was added.
+
+### PC-0021: one fixed tool pack: the ledger declarations out, calc in, delete_file behind more
+- catalog: e2
+- class: tool_descriptions
+- kind: build
+- bytes: 5732 -> 4095
+- sha8: 4e763b15 -> 85a758ac
+- lane: RB-REC3
+- prd: section 4 (the always-on tools; ruling 42 items 1 and 3)
+- why: ledger_write (12 + 141 + 1,450 B) and ledger_day (10 + 126 + 82 B) are deleted with the
+  food pack (ruling 42 item 1). The slot they free holds the general calc tool (ruling 42 item 3),
+  declared with RB-REC8's figures (header 8a41d5e1: name 4 B, description 75 B, schema 105 B).
+  agent_start is always on in every pack; delete_file moves behind more (files_admin) and keeps its
+  declaration, byte for byte, in kBehindMore, so its binding and its group listing show the same
+  bytes. Array: 13 always-on tools plus more, 4,606 B rendered (was 5,928 B with the food pack,
+  4,547 B without).
+
+### PC-0022: the file tools' reserved-path texts: the food ledger's owner line deleted
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 1982 -> 1936
+- sha8: 57e32b33 -> bfe0657b
+- lane: RB-REC3
+- prd: section 4 (reserved paths)
+- why: food/food-log*.csv is no longer a reserved path (ruling 42 item 1), so kOwnerLedger
+  ("ledger_write changes the food ledger", 36 B) is deleted; food-pre-v2 never existed (RB-L1c is
+  closed unlanded), so the archive text names the one archive left, export-pre-v2, by what wrote it:
+  "an export the migration wrote; no tool writes it" (48 B, was 58 B "an archive from before the
+  ledger moved; ..."). A changed fact about a path, not an instruction.
+
+### PC-0023: the truth check's ledger kind deleted (one receipt noun fewer)
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54053 -> 54036
+- sha8: 1c7b6f11 -> 692e97dd
+- lane: RB-REC3
+- why: lib/core/src/orch_truth.cpp: Kind::Ledger and its noun "the ledger change" (17 B) are deleted
+  with the rule that made any tool named ledger* a ledger change; a failed write's kind comes from
+  its effect class alone, so a failed file edit reads "Note: the file change in this reply did not
+  go through (...)" whatever the file holds (ruling 42). No engine-1 tool name starts with "ledger",
+  so engine 1's lines are unchanged. Nothing was added.
+
+### PC-0024: the food group behind more deleted
+- catalog: e1
+- class: tool_results
+- kind: remove
+- bytes: 41962 -> 41942
+- sha8: 63debd41 -> df517712
+- lane: RB-REC3
+- why: lib/core/src/orch_tool_groups.cpp: the group row "food" ("targets and portions") and the
+  engine-2 rows ledger_write, ledger_day, ledger_target and food_portions are deleted (ruling 42
+  item 1); the tools index loses its food line and more's group list its food name. Nothing was
+  added.

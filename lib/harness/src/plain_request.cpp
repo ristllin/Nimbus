@@ -5,6 +5,7 @@
 #include "nimbus/harness/plain/request.h"
 
 #include <cstring>
+#include <new>
 #include <set>
 
 #include "nimbus/orch/tool_groups.h"
@@ -102,15 +103,10 @@ bool offered(const ToolRegistry& reg, const std::string& name, const Principal& 
   return reachable(reg, name, who);
 }
 
-// In this pack's array: the food pair only with food; the other pair only without it and
-// only once applyToolPack declared it always on (otherwise the tools index lists it and it
-// stays behind more, so no tool is shown twice).
-bool inPack(const ToolRegistry& reg, const char* name, bool food) {
-  const std::string n = name;
-  if (n == "ledger_write" || n == "ledger_day") return food;
-  if (n == "agent_start" || n == "delete_file") return !food && reg.classOf(n).alwaysOn();
-  return true;
-}
+// A declared tool is in the array only while the registry keeps it always on: one a
+// binding moved into a group is listed there by the tools index instead, so no tool is
+// shown twice.
+bool alwaysOn(const ToolRegistry& reg, const char* name) { return reg.classOf(name).alwaysOn(); }
 
 bool moreOffered(const std::vector<ToolSpec>& tools) {
   return !tools.empty() && tools.back().name == nimbus::orch::kMoreTool;
@@ -144,7 +140,6 @@ std::string coreText(const RequestFacts& f, const std::vector<ToolSpec>& tools) 
   para({core::kStubs, core::kOlderDays, core::kDeviceLines});
   para({core::kOutside});
   para({core::kRecall});
-  if (f.food) para({core::kFood});
   if (!f.turn->model.empty()) para({core::kModel + oneLine(f.turn->model, kModelNameMax) + "."});
   const std::string idx = moreOffered(tools) ? nimbus::orch::toolsIndex(*f.reg, *f.turn->who) : "";
   if (!idx.empty()) addPara(out, std::string(core::kToolsIndex) + kLine + idx);
@@ -210,9 +205,26 @@ bool lowerName(const std::string& w) {
   return !w.empty() && w[0] >= 'a' && w[0] <= 'z';
 }
 
-}  // namespace
+// Ruling 30: a refused allocation is a designed state, never an abort. The body's outputs
+// are cleared and the call answers TooLarge (tx::digestBlock's rule), so the caller ends the
+// turn with its device line and no partial request leaves.
+template <class Body, class Clear>
+Status guarded(const char* where, Body&& body, Clear&& clear) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+  try {
+    return body();
+  } catch (const std::bad_alloc&) {
+    clear();
+    return Status::fail(Err::TooLarge, where);
+  }
+#else
+  (void)where;
+  (void)clear;
+  return body();
+#endif
+}
 
-Status composeSystem(const RequestFacts& facts, SystemBlocks& out) {
+Status composeBody(const RequestFacts& facts, SystemBlocks& out) {
   out = SystemBlocks{};
   if (!validFacts(facts)) return Status::fail(Err::InvalidArgument, "plain::composeSystem");
   std::vector<ToolSpec> tools;
@@ -239,11 +251,11 @@ Status composeSystem(const RequestFacts& facts, SystemBlocks& out) {
   return Status::success();
 }
 
-Status toolManifest(const RequestFacts& facts, std::vector<ToolSpec>& out) {
+Status manifestBody(const RequestFacts& facts, std::vector<ToolSpec>& out) {
   out.clear();
   if (!validFacts(facts)) return Status::fail(Err::InvalidArgument, "plain::toolManifest");
   for (const td::ToolDecl& d : td::kTools) {
-    if (!inPack(*facts.reg, d.name, facts.food) || !offered(*facts.reg, d.name, *facts.turn->who)) continue;
+    if (!alwaysOn(*facts.reg, d.name) || !offered(*facts.reg, d.name, *facts.turn->who)) continue;
     out.push_back(ToolSpec{d.name, d.description, declSchema(d, facts.shortHost)});
   }
   if (out.size() > kMaxAlwaysOnTools || toolsBytes(out) > kToolsBytesCeiling) {
@@ -253,8 +265,20 @@ Status toolManifest(const RequestFacts& facts, std::vector<ToolSpec>& out) {
   return Status::success();
 }
 
+}  // namespace
+
+Status composeSystem(const RequestFacts& facts, SystemBlocks& out) {
+  return guarded("plain::composeSystem", [&] { return composeBody(facts, out); }, [&] { out = SystemBlocks{}; });
+}
+
+Status toolManifest(const RequestFacts& facts, std::vector<ToolSpec>& out) {
+  return guarded("plain::toolManifest", [&] { return manifestBody(facts, out); }, [&] { out.clear(); });
+}
+
 const td::ToolDecl* toolDecl(const std::string& name) {
   for (const td::ToolDecl& d : td::kTools)
+    if (name == d.name) return &d;
+  for (const td::ToolDecl& d : td::kBehindMore)
     if (name == d.name) return &d;
   return nullptr;
 }
@@ -263,14 +287,6 @@ std::string declSchema(const td::ToolDecl& d, bool shortHost) {
   std::string s = d.schema;
   if (d.schemaTail) s += std::to_string(shortHost ? kWriteContentMaxShort : kWriteContentMax) + d.schemaTail;
   return s;
-}
-
-void applyToolPack(ToolRegistry& reg, bool food) {
-  for (const char* name : {"agent_start", "delete_file"}) {
-    nimbus::orch::ToolClass c = nimbus::orch::toolClassFor(name);
-    if (!food) c.group = "";
-    reg.setClass(name, c);
-  }
 }
 
 size_t toolsBytes(const std::vector<ToolSpec>& tools) {

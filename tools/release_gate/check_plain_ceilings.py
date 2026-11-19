@@ -4,13 +4,14 @@
 Two inputs, both generated and both checked for freshness elsewhere:
 - test/golden/plain_prompt_core.txt: the figures test_plain_request measures on the real
   build (lib/harness/src/plain_request.cpp composing a synthetic Lumi-shaped state with
-  notes at their cap), one `measure` line per role, pack and host. The native suite fails
+  notes at their cap), one `measure` line per role and host (one fixed tool pack for every
+  device and person, ruling 41: a line that names a pack is malformed). The native suite fails
   when the golden differs from what the build composes, so these are the build's numbers.
 - test/golden/model_text_catalog.txt: every engine-2 model-facing literal by class
   (gen_model_text_catalog.py).
 
 It fails (PLAIN CEILINGS RED) when:
-- a role, pack or host has no measure line, or a line is malformed;
+- a role or host has no measure line, or a line is malformed;
 - a measured figure passes its ceiling: core 3,072 B including the tools index of 512 B;
   system (core, skills index, pinned notes) 8,192 B; at most 14 tools in 10,240 B; a
   description over 240 B; the digest block over the standard 6,744 B plus its two headers;
@@ -39,7 +40,6 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 GOLDEN = "test/golden/plain_prompt_core.txt"
 
 ROLES = ("owner", "member", "guest")
-PACKS = ("food", "nofood")
 HOSTS = ("120s", "60s")
 # Figure -> ceiling (PRD section 4 and section 2's fixed overhead; 30 B: the two block headers).
 CEILINGS = {
@@ -51,7 +51,7 @@ CEILINGS = {
     "longest_description": 240,
     "digests": 6744 + 30,
 }
-_MEASURE = re.compile(r"^measure role=(\w+) pack=(\w+) host=(\w+)((?: \w+=\d+)+)$")
+_MEASURE = re.compile(r"^measure role=(\w+) host=(\w+)((?: \w+=\d+)+)$")
 
 
 def measure_problems(text: str) -> "list[str]":
@@ -63,8 +63,8 @@ def measure_problems(text: str) -> "list[str]":
         if not m:
             errs.append(f"{GOLDEN}: malformed line: {line}")
             continue
-        key = m.group(1, 2, 3)
-        figures = dict((k, int(v)) for k, v in (kv.split("=") for kv in m.group(4).split()))
+        key = m.group(1, 2)
+        figures = dict((k, int(v)) for k, v in (kv.split("=") for kv in m.group(3).split()))
         if key in seen:
             errs.append(f"{GOLDEN}: {' '.join(key)} measured twice")
         seen.add(key)
@@ -73,9 +73,9 @@ def measure_problems(text: str) -> "list[str]":
                 errs.append(f"{' '.join(key)}: no {fig} figure")
             elif figures[fig] > ceiling:
                 errs.append(f"{' '.join(key)}: {fig} {figures[fig]} is over its ceiling {ceiling}")
-    for key in ((r, p, h) for r in ROLES for p in PACKS for h in HOSTS):
+    for key in ((r, h) for r in ROLES for h in HOSTS):
         if key not in seen:
-            errs.append(f"{GOLDEN}: no measure line for role={key[0]} pack={key[1]} host={key[2]}")
+            errs.append(f"{GOLDEN}: no measure line for role={key[0]} host={key[1]}")
     return errs
 
 

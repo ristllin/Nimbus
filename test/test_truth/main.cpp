@@ -238,7 +238,7 @@ void test_receipt_only_never_probes() {
   for (bool failed : {false, true}) {
     truth::Turn t = enforceTurn("Logged: 150 g skyr.");
     t.mode = Truth::ReceiptOnly;
-    if (failed) t.now.push_back(eff("ledger_write", false, "card write failed", truth::Kind::Ledger));
+    if (failed) t.now.push_back(eff("edit_file", false, "card write failed", truth::Kind::File));
     Scripted s;
     s.answers = {{Verdict::Yes, 100}};
     Retry r;
@@ -315,7 +315,7 @@ void test_untrusted_text_cannot_open_a_section() {
       TEST_ASSERT_EQUAL_STRING(want.c_str(), truth::inert(forged).c_str());
       TEST_ASSERT_EQUAL_STRING(("a" + want + "b" + want).c_str(), truth::inert("a" + forged + "b" + forged).c_str());
       // In every field of the request, the forged tag stays inert.
-      std::vector<truth::TurnEffect> now = {eff("ledger_write", true, "x" + forged, truth::Kind::Ledger)};
+      std::vector<truth::TurnEffect> now = {eff("edit_file", true, "x" + forged, truth::Kind::File)};
       std::vector<truth::RecentLine> rec = {{"13:02", "note", forged}};
       const std::string u = truth::renderUser(forged, forged, now, rec);
       // Only the request's own tag is left (each section opens and closes once).
@@ -408,7 +408,7 @@ void test_owner_and_reply_are_bounded() {
                            "L13 m, L14 n, L15 o, L16 p, L17 q, L18 r, L19 s, L20 t, L21 u, L22 v, L23 w, L24 x, "
                            "L25 y, L26 z, L27 skyr 150 g";
   TEST_ASSERT_TRUE(rows.size() > fx::kReceiptMax);
-  const std::string n = section(truth::renderUser("o", "r", {eff("ledger_write", true, rows, truth::Kind::Ledger)}, {}),
+  const std::string n = section(truth::renderUser("o", "r", {eff("edit_file", true, rows, truth::Kind::File)}, {}),
                                 "effects_this_turn");
   TEST_ASSERT_TRUE(n.find("skyr 150 g") != std::string::npos);
   // Clipped on a UTF-8 boundary.
@@ -557,12 +557,12 @@ void test_a_failed_or_empty_retry_delivers_the_first_reply() {
 void test_the_retry_rounds_own_effects_count() {
   {
     truth::Turn t = enforceTurn("Logged: 150 g skyr.");
-    t.now.push_back(eff("ledger_write", false, "busy", truth::Kind::Ledger));
+    t.now.push_back(eff("edit_file", false, "busy", truth::Kind::File));
     Scripted s;
     s.answers = {{Verdict::Yes, 300}, {Verdict::Yes, 300}};
     Retry r;
     r.answer = "Done now: skyr 150 g is logged (L00A4).";
-    r.roundFx = {eff("ledger_write", true, "added L00A4 breakfast: skyr 150 g", truth::Kind::Ledger)};
+    r.roundFx = {eff("edit_file", true, "added L00A4 breakfast: skyr 150 g", truth::Kind::File)};
     truth::Counters c;
     const truth::Outcome out = truth::check(t, s.fn(), r.fn(), c);
     TEST_ASSERT_TRUE(out.reply == r.answer);
@@ -575,15 +575,15 @@ void test_the_retry_rounds_own_effects_count() {
     s.answers = {{Verdict::Yes, 300}, {Verdict::Yes, 300}};
     Retry r;
     r.answer = "Logged it now (L00A4).";
-    r.roundFx = {eff("ledger_write", false, "the card write failed", truth::Kind::Ledger)};
+    r.roundFx = {eff("edit_file", false, "the card write failed", truth::Kind::File)};
     truth::Counters c;
     const truth::Outcome out = truth::check(t, s.fn(), r.fn(), c);
     TEST_ASSERT_TRUE(out.reply == r.answer);
     TEST_ASSERT_EQUAL(2, out.probes);
-    TEST_ASSERT_EQUAL_STRING("Note: the ledger change in this reply did not go through (the card write failed)",
+    TEST_ASSERT_EQUAL_STRING("Note: the file change in this reply did not go through (the card write failed)",
                              out.status.c_str());
     // The receipt question sees the round's effect.
-    TEST_ASSERT_TRUE(section(userOf(s.seen[1]), "effects_this_turn").find("ledger_write FAILED: the card write failed") !=
+    TEST_ASSERT_TRUE(section(userOf(s.seen[1]), "effects_this_turn").find("edit_file FAILED: the card write failed") !=
                      std::string::npos);
   }
 }
@@ -651,7 +651,7 @@ void test_the_retry_item_holds_facts_only() {
 
 void test_the_retry_item_is_bounded_and_keeps_this_turn_whole() {
   std::vector<truth::TurnEffect> now;
-  for (int i = 0; i < 6; ++i) now.push_back(eff("ledger_write", true, std::string(150, 'n'), truth::Kind::Ledger));
+  for (int i = 0; i < 6; ++i) now.push_back(eff("edit_file", true, std::string(150, 'n'), truth::Kind::File));
   std::vector<truth::RecentLine> rec;
   for (int i = 0; i < 50; ++i) rec.push_back({"12:00", "files_write", std::string(150, 'a' + i % 26)});
   const std::string item = truth::factsItem(now, rec);
@@ -676,7 +676,7 @@ void test_the_retry_item_is_bounded_and_keeps_this_turn_whole() {
 void test_the_hold_sends_the_facts_item_of_this_turn() {
   truth::Turn t = enforceTurn("Logged.");
   t.recent.push_back(entry(kNow - 600, "ledger_write", "added L00A1 skyr 150 g"));
-  t.now.push_back(eff("ledger_write", false, "the card write failed", truth::Kind::Ledger));
+  t.now.push_back(eff("edit_file", false, "the card write failed", truth::Kind::File));
   Scripted s;
   s.answers = {{Verdict::Yes, 400}, {Verdict::No, 400}};
   Retry r;
@@ -688,9 +688,53 @@ void test_the_hold_sends_the_facts_item_of_this_turn() {
       truth::factsItem(t.now, truth::recentLines(t.recent, t.nowEpoch, t.utcOffsetSec));
   TEST_ASSERT_EQUAL_STRING(want.c_str(), r.items[0].c_str());
   TEST_ASSERT_EQUAL_STRING(
-      "[device] effects this turn: ledger_write FAILED: the card write failed. Recent: 12:52 ledger_write: added "
+      "[device] effects this turn: edit_file FAILED: the card write failed. Recent: 12:52 ledger_write: added "
       "L00A1 skyr 150 g.",
       r.items[0].c_str());
+}
+
+// Three use cases as equal fixtures (ruling 41): a reply that says a correction was saved
+// after the edit failed is caught the same way for a food log, an expense log and a
+// training log. The effect's kind comes from its class (effectOf), never from the file, so
+// the receipt line differs only by the tool's own error.
+void test_a_false_saved_claim_after_a_failed_edit_is_caught_in_every_domain() {
+  struct Case {
+    const char* owner;
+    const char* path;
+    const char* old;
+  };
+  const Case cases[] = {
+      {"Change the 2 eggs at breakfast to 3", "food/food-log.csv", "2026-11-18,08:10,eggs,2"},
+      {"The taxi was 18.40, not 14.80", "expenses/2026-11.csv", "2026-11-18,taxi,14.80"},
+      {"Squat set 3 was 5 reps, not 3", "training/log.csv", "2026-11-18,squat,3,3,100"},
+  };
+  std::set<std::string> frames;
+  for (const Case& k : cases) {
+    const std::string err = std::string("no match for \"") + k.old + "\" in " + k.path;
+    for (Truth mode : {Truth::Enforce, Truth::ReceiptOnly}) {
+      truth::Turn t = enforceTurn(std::string("Saved: ") + k.path + " is corrected.");
+      t.mode = mode;
+      t.owner = k.owner;
+      t.now.push_back(truth::effectOf("edit_file", nimbus::orch::FxKind::FileWrite, true, err));
+      Scripted s;
+      s.answers = {{Verdict::Yes, 300}, {Verdict::Yes, 300}};
+      Retry r;
+      r.answer = std::string("Done: ") + k.path + " is saved.";   // the retry claims it again
+      truth::Counters c;
+      const truth::Outcome out = truth::check(t, s.fn(), r.fn(), c);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(("Note: the file change in this reply did not go through (" + err + ")").c_str(),
+                                       out.status.c_str(), k.path);
+      TEST_ASSERT_EQUAL_MESSAGE(mode == Truth::Enforce, out.held, k.path);
+      if (mode == Truth::Enforce)
+        TEST_ASSERT_TRUE_MESSAGE(section(userOf(s.seen[0]), "effects_this_turn").find("edit_file FAILED: " + err) !=
+                                     std::string::npos,
+                                 k.path);
+      std::string frame = out.status;
+      frame.replace(frame.find(err), err.size(), "<error>");
+      frames.insert(frame);
+    }
+  }
+  TEST_ASSERT_EQUAL_size_t(1, frames.size());   // one line for every domain
 }
 
 // ---- the receipt line -------------------------------------------------------------------
@@ -698,15 +742,15 @@ void test_the_hold_sends_the_facts_item_of_this_turn() {
 void test_the_receipt_names_each_kind_whose_last_attempt_failed() {
   using K = truth::Kind;
   TEST_ASSERT_EQUAL_STRING("", truth::receiptLine({}).c_str());
-  TEST_ASSERT_EQUAL_STRING("Note: the ledger change in this reply did not go through (the card write failed)",
-                           truth::receiptLine({eff("ledger_write", false, "the card write failed", K::Ledger)}).c_str());
+  TEST_ASSERT_EQUAL_STRING("Note: the file change in this reply did not go through (the card write failed)",
+                           truth::receiptLine({eff("edit_file", false, "the card write failed", K::File)}).c_str());
   // A later attempt of the same kind that landed: no line.
-  TEST_ASSERT_EQUAL_STRING("", truth::receiptLine({eff("ledger_write", false, "busy", K::Ledger),
-                                                   eff("ledger_write", true, "added L1", K::Ledger)})
+  TEST_ASSERT_EQUAL_STRING("", truth::receiptLine({eff("edit_file", false, "busy", K::File),
+                                                   eff("edit_file", true, "added L1", K::File)})
                                    .c_str());
   // A landed attempt followed by a failed one: the line.
-  TEST_ASSERT_FALSE(truth::receiptLine({eff("ledger_write", true, "added L1", K::Ledger),
-                                        eff("ledger_write", false, "busy", K::Ledger)})
+  TEST_ASSERT_FALSE(truth::receiptLine({eff("edit_file", true, "added L1", K::File),
+                                        eff("edit_file", false, "busy", K::File)})
                         .empty());
   // A failed read never earns one.
   TEST_ASSERT_EQUAL_STRING("", truth::receiptLine({eff("files_read", false, "no such file", K::Read)}).c_str());
@@ -719,15 +763,15 @@ void test_the_receipt_names_each_kind_whose_last_attempt_failed() {
           .c_str());
   // Three kinds: "a, b and c".
   TEST_ASSERT_EQUAL_STRING(
-      "Note: the ledger change, the file change and the message in this reply did not go through (x; y; z)",
-      truth::receiptLine({eff("ledger_write", false, "x", K::Ledger), eff("files_write", false, "y", K::File),
+      "Note: the memory change, the file change and the message in this reply did not go through (x; y; z)",
+      truth::receiptLine({eff("note_save", false, "x", K::Memory), eff("files_write", false, "y", K::File),
                           eff("send_message", false, "z", K::Send)})
           .c_str());
   // The error is one line and bounded.
   const std::string l = truth::receiptLine({eff("x", false, std::string(400, 'e') + "\nsecond", K::Other)});
   TEST_ASSERT_TRUE(l.find('\n') == std::string::npos);
   TEST_ASSERT_TRUE(l.size() <= 64 + truth::kErrorMax);
-  for (K k : {K::Ledger, K::File, K::Memory, K::Routine, K::Setting, K::Send, K::Other})
+  for (K k : {K::File, K::Memory, K::Routine, K::Setting, K::Send, K::Other})
     TEST_ASSERT_TRUE(std::string(truth::kindNoun(k)).size() > 0);
   TEST_ASSERT_EQUAL_STRING("", truth::kindNoun(K::Read));
 }
@@ -750,7 +794,7 @@ void test_the_receipt_follows_only_a_probe_yes_in_enforce() {
   };
   for (const Case& k : cases) {
     truth::Turn t = enforceTurn("Logged: 150 g skyr.");
-    t.now.push_back(eff("ledger_write", false, "the card write failed", truth::Kind::Ledger));
+    t.now.push_back(eff("edit_file", false, "the card write failed", truth::Kind::File));
     Scripted s;
     s.answers = {{k.first, 300}, {k.second, 300}};
     Retry r;
@@ -777,7 +821,7 @@ void test_shadow_never_holds_and_probes_now_only_for_a_failed_write() {
   for (Verdict v : {Verdict::Yes, Verdict::No, Verdict::Timeout}) {
     truth::Turn t = enforceTurn("Logged: 150 g skyr.");
     t.mode = Truth::Shadow;
-    t.now.push_back(eff("ledger_write", false, "busy", truth::Kind::Ledger));
+    t.now.push_back(eff("edit_file", false, "busy", truth::Kind::File));
     Scripted s;
     s.answers = {{v, 300}};
     Retry r;
@@ -937,7 +981,7 @@ void test_effect_shaped_turns_are_counted() {
   truth::Turn plain = enforceTurn("Hello there.");
   truth::check(plain, s.fn(), Retry().fn(), c);            // no effect, no hit: not effect-shaped
   truth::Turn acted = enforceTurn("Logged.");
-  acted.now.push_back(eff("ledger_write", true, "added L1", truth::Kind::Ledger));
+  acted.now.push_back(eff("edit_file", true, "added L1", truth::Kind::File));
   truth::check(acted, s.fn(), Retry().fn(), c);            // an effect: counted, no hit
   truth::check(plain, s.fn(), Retry().fn(), c);            // a hit: counted
   truth::check(acted, s.fn(), Retry().fn(), c);            // no answer: not counted
@@ -982,20 +1026,20 @@ void test_the_engine_flow_holds_once_and_decides_the_line_at_the_end() {
   b.s = &s;
   truth::TurnCheck k;
   k.reset(&b, "111", "log my skyr");
-  k.note(eff("ledger_write", false, "busy", truth::Kind::Ledger));   // before the check opens
+  k.note(eff("edit_file", false, "busy", truth::Kind::File));   // before the check opens
   TEST_ASSERT_TRUE(k.open("anthropic", "claude-sonnet-5-5", false));
   TEST_ASSERT_TRUE(k.open("openai", "x", true));   // opens once: the first head stays
   TEST_ASSERT_EQUAL(1, b.opens);
   const std::string item = k.atFinal("Logged.");
   TEST_ASSERT_EQUAL_STRING(
-      "[device] effects this turn: ledger_write FAILED: busy. Recent: 12:52 ledger_write: added L00A1 skyr 150 g.",
+      "[device] effects this turn: edit_file FAILED: busy. Recent: 12:52 ledger_write: added L00A1 skyr 150 g.",
       item.c_str());
   TEST_ASSERT_EQUAL_STRING("", k.atFinal("Logged again.").c_str());   // one hold a turn
-  k.note(eff("ledger_write", false, "busy again", truth::Kind::Ledger));   // the round's own write
+  k.note(eff("edit_file", false, "busy again", truth::Kind::File));   // the round's own write
   const truth::Outcome o = k.finish("Logged now.");
   TEST_ASSERT_TRUE(o.held && o.retried);
   TEST_ASSERT_EQUAL_STRING("Logged now.", o.reply.c_str());
-  TEST_ASSERT_EQUAL_STRING("Note: the ledger change in this reply did not go through (busy again)", o.status.c_str());
+  TEST_ASSERT_EQUAL_STRING("Note: the file change in this reply did not go through (busy again)", o.status.c_str());
   TEST_ASSERT_EQUAL_size_t(2, s.seen.size());
   TEST_ASSERT_EQUAL(1, b.closes);
   TEST_ASSERT_EQUAL_UINT32(1, b.c.turns);
@@ -1049,7 +1093,7 @@ void test_finish_without_an_ask_probes_only_for_a_failed_write() {
   k.reset(&b, "111", "o");
   k.open("anthropic", "claude-sonnet-5-5", false);
   TEST_ASSERT_FALSE(k.atFinal("Logged.").empty());
-  k.note(eff("ledger_write", false, "busy", truth::Kind::Ledger));
+  k.note(eff("edit_file", false, "busy", truth::Kind::File));
   k.taint(true);
   const truth::Outcome o2 = k.finish("Logged now.");
   TEST_ASSERT_EQUAL_size_t(1, s2.seen.size());
@@ -1067,7 +1111,7 @@ void test_the_engine_flow_without_a_known_ring_never_probes() {
     b.refuse = which == 1;
     truth::TurnCheck k;
     k.reset(which == 0 ? nullptr : &b, "111", "o");
-    k.note(eff("ledger_write", false, "busy", truth::Kind::Ledger));
+    k.note(eff("edit_file", false, "busy", truth::Kind::File));
     k.open("anthropic", "claude-sonnet-5-5", which == 3);
     TEST_ASSERT_EQUAL_STRING("", k.atFinal("Logged.").c_str());
     const truth::Outcome o = k.finish("Logged.");
@@ -1089,7 +1133,8 @@ void test_the_engine_flow_without_a_known_ring_never_probes() {
 }
 
 // Every effect class of the old engine has its kind: writes are writes, lookups and speech
-// store nothing; a ledger tool is a ledger change whatever class the table gives it.
+// store nothing. The class decides, never the tool's name: no name is special for what it
+// stores (ruling 41).
 void test_every_old_engine_effect_class_has_its_kind() {
   using F = nimbus::orch::FxKind;
   using K = truth::Kind;
@@ -1104,8 +1149,9 @@ void test_every_old_engine_effect_class_has_its_kind() {
   TEST_ASSERT_EQUAL_size_t((size_t)F::kCount, want.size());   // a new class needs its row here
   for (int f = 0; f < (int)F::kCount; ++f)
     TEST_ASSERT_EQUAL_MESSAGE((int)want[f], (int)truth::kindOf("files_write", (F)f), nimbus::orch::fxSlug((F)f));
-  TEST_ASSERT_EQUAL((int)K::Ledger, (int)truth::kindOf("ledger_write", F::FileWrite));
-  TEST_ASSERT_EQUAL((int)K::Read, (int)truth::kindOf("ledger_day", F::Read));
+  for (const char* name : {"edit_file", "ledger_write", "records_write", "x"})
+    for (int f = 0; f < (int)F::kCount; ++f)
+      TEST_ASSERT_EQUAL_MESSAGE((int)want[f], (int)truth::kindOf(name, (F)f), name);
   const truth::TurnEffect e = truth::effectOf("files_write", F::FileWrite, true, "disk full\nsecond line");
   TEST_ASSERT_FALSE(e.ok);
   TEST_ASSERT_EQUAL_STRING("disk full", e.receipt.c_str());
@@ -1261,6 +1307,7 @@ int main(int, char**) {
   RUN_TEST(test_an_unbacked_success_is_held_once_and_the_retry_is_delivered_unchanged);
   RUN_TEST(test_a_failed_or_empty_retry_delivers_the_first_reply);
   RUN_TEST(test_the_retry_rounds_own_effects_count);
+  RUN_TEST(test_a_false_saved_claim_after_a_failed_edit_is_caught_in_every_domain);
   RUN_TEST(test_a_throwing_probe_or_retry_fails_open);
   RUN_TEST(test_the_retry_item_holds_facts_only);
   RUN_TEST(test_the_retry_item_is_bounded_and_keeps_this_turn_whole);

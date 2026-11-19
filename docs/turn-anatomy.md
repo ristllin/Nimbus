@@ -461,7 +461,7 @@ appended lines to them (39 of 702 replies in the owner's month carried such a li
 model's reply is delivered once, as written; `tools/release_gate/check_no_harness_lines.py`
 fails a build whose image holds such a line. What stays:
 
-- the turn's effect ledger in RAM (at most 32 entries, never stored): every tool call and
+- the turn's effects record in RAM (at most 32 entries, never stored): every tool call and
   its result, the memory writes, the scratchpad save, the sub-agents the job queue accepted,
   the sub-agent results the turn read. The history row's `fx:` tag and the empty-answer
   check read it; RB-FX stores the chat's recent effects from it, and the truth check (below)
@@ -493,7 +493,7 @@ effects a true "I logged it at 13:02" is backed and is not a hit.
 - **Receipt-only** (every other head, a turn that read outside content, a chat whose ring is
   not loaded from the card): never a probe.
 - **The receipt line**: when the last write of a kind failed this turn (and no later one of
-  that kind landed), one separate message follows the reply, `Note: the ledger change in this
+  that kind landed), one separate message follows the reply, `Note: the file change in this
   reply did not go through (<the tool's error>)`. On an enforce head it is sent only when the
   probe says the delivered reply reports success, or when the probe gave no answer; on a
   receipt-only head it is always sent.

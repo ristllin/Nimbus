@@ -100,14 +100,14 @@ std::set<std::string> registeredNames() {
 const std::map<std::string, std::string> kPlan = {
     {"read_file", ""},          {"write_file", ""},         {"append_file", ""},      {"edit_file", ""},
     {"list_files", ""},         {"note", ""},               {"search", ""},           {"web_search", ""},
-    {"view", ""},               {"send", ""},               {"schedule", ""},         {"ledger_write", ""},
-    {"ledger_day", ""},         {"more", ""},               {"device_status", "device"},
+    {"view", ""},               {"send", ""},               {"schedule", ""},         {"calc", ""},
+    {"agent_start", ""},        {"more", ""},               {"device_status", "device"},
     {"device_control", "device"}, {"ota_status", "device"}, {"selftest", "device"},   {"system_health", "device"},
-    {"device_log", "device"},   {"agent_start", "agents"},  {"agent_list", "agents"}, {"agent_stop", "agents"},
+    {"device_log", "device"},   {"agent_list", "agents"}, {"agent_stop", "agents"},
     {"delete_file", "files_admin"}, {"move_file", "files_admin"}, {"fetch_url", "files_admin"},
     {"share_file", "files_admin"},  {"file_stat", "files_admin"}, {"read_pdf", "files_admin"},
     {"pdf_write", "files_admin"},   {"image_generate", "media"},  {"speak", "media"},
-    {"ledger_target", "food"},      {"food_portions", "food"},    {"skill_list", "skills"},
+    {"skill_list", "skills"},
     {"skill_save", "skills"},       {"skill_delete", "skills"}};
 
 // ---- caller classes (the test_action_rules classes) ---------------------------------
@@ -304,7 +304,7 @@ static void test_every_row_is_consistent() {
                         "models.list", "session.poll", "mcp.linear.search"})
     TEST_ASSERT_TRUE_MESSAGE(toolClassFor(n).effect != EffectClass::Pure, n);
   // The tools PRD section 1 names as pure are.
-  for (const char* n : {"read_file", "list_files", "ledger_day", "search", "files.read", "files.list"})
+  for (const char* n : {"read_file", "list_files", "search", "calc", "files.read", "files.list"})
     TEST_ASSERT_EQUAL_MESSAGE(int(EffectClass::Pure), int(toolClassFor(n).effect), n);
   // Groups are a fixed list with no duplicates, and connectors is one of them.
   size_t gc = 0;
@@ -559,15 +559,18 @@ static void test_tools_index_names_required_arguments_within_512() {
   // The engine-2 shape (Ruling 11): each tool with its required arguments.
   ToolRegistry reg;
   auto h = [](JsonObjectConst, const Principal&) { return ToolResult::ok(""); };
-  reg.add("agent_start", "Start.", h,
-          R"({"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["name","task"]})");
+  reg.add("agent_stop", "Stop.", h,
+          R"({"type":"object","properties":{"id":{"type":"string"},"why":{"type":"string"}},"required":["id"]})");
   reg.add("agent_list", "List.", h);
+  reg.add("agent_start", "Start.", h,
+          R"({"type":"object","properties":{"name":{"type":"string"},"task":{"type":"string"}},"required":["name","task"]})");
   reg.add("fetch_url", "Fetch.", h,
           R"({"type":"object","properties":{"url":{"type":"string"},"path":{"type":"string"}},"required":["url"]})");
   reg.add("read_file", "Read.", h);
   registerMore(reg);
   const std::string idx = toolsIndex(reg, principalForRole("1001", Role::Admin));
-  TEST_ASSERT_TRUE_MESSAGE(idx.find("agents: agent_start(name, task), agent_list()") != std::string::npos, idx.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(idx.find("agents: agent_stop(id), agent_list()") != std::string::npos, idx.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(idx.find("agent_start") == std::string::npos, idx.c_str());   // always on
   TEST_ASSERT_TRUE_MESSAGE(idx.find("files_admin: fetch_url(url)") != std::string::npos, idx.c_str());
   TEST_ASSERT_TRUE_MESSAGE(idx.find("read_file") == std::string::npos, idx.c_str());   // always on: not behind more
   TEST_ASSERT_TRUE_MESSAGE(idx.find("more(") == std::string::npos, idx.c_str());
@@ -686,7 +689,7 @@ static void test_connector_text_is_clipped_and_flattened() {
 static void test_index_overflow_names_the_rest() {
   ToolRegistry reg;
   auto h = [](JsonObjectConst, const Principal&) { return ToolResult::ok(""); };
-  const char* groups[] = {"device", "agents", "files_admin", "media", "food", "people", "models", "docs", "skills"};
+  const char* groups[] = {"device", "agents", "files_admin", "media", "people", "models", "docs", "skills"};
   for (const char* g : groups)
     for (int i = 0; i < 4; i++) {
       const std::string n = std::string(g) + "_tool_with_a_long_name_" + std::to_string(i);

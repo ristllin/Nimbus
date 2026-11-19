@@ -4,7 +4,7 @@
 // read, so they can never disagree:
 //   - the leak repair's gate (lane L): fields recovered from leaked tool markup
 //     carry actions, so they apply only on a turn that read no external content;
-//   - the effect ledger and claim check (lane S): which tool backs which claim;
+//   - the effects record and claim check (lane S): which tool backs which claim;
 //   - owner preferences and skills (lanes J, I): what a tainted turn may change.
 // Unknown names (a connector's remote tools, registered at runtime) read as
 // External with no known effect - fail closed. A host test scans every tool the

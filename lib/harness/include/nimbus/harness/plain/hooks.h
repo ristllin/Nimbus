@@ -82,7 +82,7 @@ enum class DispatchVerdict : uint8_t {
 struct DispatchCtx {
   const TurnCtx* turn = nullptr;
   const ToolCall* call = nullptr;
-  bool pure = false;     // declared pure (read_file, list_files, ledger_day, search)
+  bool pure = false;     // declared pure (read_file, list_files, search, calc)
   bool effect = false;   // an effect tool (writes, sends, schedules, device control)
 };
 struct DispatchDecision {

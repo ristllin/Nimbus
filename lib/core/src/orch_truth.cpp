@@ -241,7 +241,6 @@ Truth startMode(const char* host, const char* model, headqual::Line line) {
 const char* kindNoun(Kind k) {
   switch (k) {
     case Kind::Read:    return "";
-    case Kind::Ledger:  return "the ledger change";
     case Kind::File:    return "the file change";
     case Kind::Memory:  return "the memory change";
     case Kind::Routine: return "the reminder change";
@@ -277,9 +276,8 @@ constexpr Kind kKindOfFx[] = {
 static_assert(sizeof(kKindOfFx) / sizeof(kKindOfFx[0]) == (size_t)FxKind::kCount, "one kind per FxKind");
 
 Kind kindOf(const std::string& tool, FxKind fx) {
-  const Kind k = (size_t)fx < (size_t)FxKind::kCount ? kKindOfFx[(size_t)fx] : Kind::Read;
-  if (tool.compare(0, 6, "ledger") == 0) return k == Kind::Read ? Kind::Read : Kind::Ledger;
-  return k;
+  (void)tool;   // the class decides, never the name
+  return (size_t)fx < (size_t)FxKind::kCount ? kKindOfFx[(size_t)fx] : Kind::Read;
 }
 
 TurnEffect effectOf(const std::string& tool, FxKind fx, bool isError, const std::string& output) {

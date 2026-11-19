@@ -83,8 +83,8 @@ inline constexpr uint32_t kProbeMaxTokens = 1024;
 // Bounds on what the probe is shown (the measured rows were far below them).
 inline constexpr size_t kOwnerMax = 8192;   // owner message bytes
 inline constexpr size_t kReplyMax = 16384;  // reply bytes: a longer one keeps its start and its end
-// This turn's receipts as the probe and the facts item see them (a ledger day of rows; the
-// ring's own receipts are 160 B).
+// This turn's receipts as the probe and the facts item see them (a day of a file's rows;
+// the ring's own receipts are 160 B).
 inline constexpr size_t kNowReceiptMax = 512;
 // Before this time (2023-01-01) the device's clock is taken as not set.
 inline constexpr int64_t kClockSetEpoch = 1672531200;
@@ -115,8 +115,8 @@ Truth startModeFrom(Truth rowMode, bool probeWireExists, bool probeModelPasses);
 
 // ---- effects ---------------------------------------------------------------------------
 // What an effect changed, for the receipt line. Read never earns a receipt.
-enum class Kind : uint8_t { Read = 0, Ledger, File, Memory, Routine, Setting, Send, Other };
-const char* kindNoun(Kind k);   // "the ledger change", ...; "" for Read
+enum class Kind : uint8_t { Read = 0, File, Memory, Routine, Setting, Send, Other };
+const char* kindNoun(Kind k);   // "the file change", ...; "" for Read
 
 // One effect of this turn, in the order it happened.
 struct TurnEffect {
@@ -127,9 +127,9 @@ struct TurnEffect {
 };
 
 // The kind of one of the old engine's tool calls, from its tool name and its effect class
-// (fxKindForTool): ledger_* is Ledger; memory, scratchpad and skill writes Memory; file writes
-// File; routines and reminders Routine; configuration Setting; sends Send; spawns Other;
-// lookups, speech and everything that stores nothing Read.
+// (fxKindForTool) alone, never its name: memory, scratchpad and skill writes Memory; file
+// writes File (whatever the file holds); routines and reminders Routine; configuration
+// Setting; sends Send; spawns Other; lookups, speech and everything that stores nothing Read.
 Kind kindOf(const std::string& tool, FxKind fx);
 // One of the old engine's tool calls as an effect of this turn: its first output line is the
 // receipt (or the error).
@@ -284,7 +284,7 @@ struct Outcome {
 // Recent: <at> <tool>: <receipt>; ...", "none" for an empty list. No instruction, no
 // judgement: only what the device did.
 std::string factsItem(const std::vector<TurnEffect>& now, const std::vector<RecentLine>& recent);
-// "Note: the ledger change in this reply did not go through (<the tool's error>)": one line
+// "Note: the file change in this reply did not go through (<the tool's error>)": one line
 // naming every write kind whose last effect this turn failed; "" when none did.
 std::string receiptLine(const std::vector<TurnEffect>& now);
 

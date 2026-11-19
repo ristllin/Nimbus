@@ -184,10 +184,6 @@ static void test_reserved_families_in_every_case() {
   const Row rows[] = {
       {"skills", "food-coach.md", Reserved::Skill, "skill_save"},
       {"skills", "notes.txt", Reserved::Skill, "skill_save"},
-      {"food", "food-log.csv", Reserved::Ledger, "ledger_write"},
-      {"food", "food-log-12345.csv", Reserved::Ledger, "ledger_write"},
-      {"food", "food-logs.csv", Reserved::Ledger, "ledger_write"},
-      {"food-pre-v2", "food-log.csv", Reserved::Archive, ""},
       {"export-pre-v2", "anything.md", Reserved::Archive, ""},
       {"inbox", "1234-report.pdf", Reserved::Inbox, ""},
       {"agents", "research-a1.md", Reserved::Agents, "agent_start"},
@@ -211,15 +207,46 @@ static void test_reserved_families_in_every_case() {
 
 static void test_lookalikes_are_not_reserved() {
   const char* const paths[][2] = {
-      {"food", "food-targets.csv"}, {"food", "food-log.txt"}, {"food", "my-food-log.csv"}, {"foods", "food-log.csv"},
       {"skill", "x.md"},           {"skills-old", "x.md"},   {"inboxes", "x"},           {"agent", "x.md"},
-      {"food-pre-v3", "x"},        {"notes", "skills.md"},   {"notes", "inbox"},         {"export", "x"},
+      {"export-pre-v3", "x"},      {"notes", "skills.md"},   {"notes", "inbox"},         {"export", "x"},
   };
   for (const auto& p : paths) {
     const PathRule r = pathRuleFor(p[0], p[1]);
     TEST_ASSERT_EQUAL_MESSAGE(int(Reserved::None), int(r.kind), p[1]);
     TEST_ASSERT_TRUE(r.writable);
   }
+}
+
+// What a person keeps is never reserved (ruling 41): a reserved path is one something other
+// than the file tools writes (the skill store, the migration's export, the device's inbox,
+// agent jobs), so the reserved projects are exactly those four, and a log or table in any
+// other project, with any name, is the person's own and writable. Three use cases as equal
+// fixtures, plus the names the old engine once treated as special.
+static void test_what_a_person_keeps_is_never_reserved() {
+  const char* const projects[] = {"food",     "expenses", "training", "notes",       "body",
+                                  "food-pre-v2", "nutrition", "budget",  "workouts", "finance"};
+  const char* const names[] = {"food-log.csv",    "food-log-12345.csv", "2026.csv",    "log.csv", "targets.csv",
+                               "food-targets.csv", "month-11.csv",      "weights.md", "x"};
+  int checked = 0;
+  for (const char* p : projects)
+    for (const char* n : names)
+      for (uint32_t mask : {0u, 0xffffffffu, 0x55555555u}) {
+        const std::string pp = withCase(p, mask), nn = withCase(n, mask >> 3);
+        const PathRule r = pathRuleFor(pp, nn);
+        const std::string msg = pp + "/" + nn;
+        TEST_ASSERT_EQUAL_MESSAGE(int(Reserved::None), int(r.kind), msg.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(r.writable, msg.c_str());
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("", r.owner, msg.c_str());
+        checked++;
+      }
+  // The reserved projects are exactly the four whose writer is not the person.
+  int reserved = 0;
+  for (const char* p : {"skills", "export-pre-v2", "inbox", "agents"}) {
+    TEST_ASSERT_TRUE_MESSAGE(pathRuleFor(p, "x.md").kind != Reserved::None, p);
+    reserved++;
+  }
+  TEST_ASSERT_EQUAL(4, reserved);
+  TEST_MESSAGE(("property: " + std::to_string(checked) + " paths of a person's own logs and tables, none reserved").c_str());
 }
 
 static void test_skill_ids() {
@@ -242,6 +269,7 @@ int main() {
   RUN_TEST(test_long_names_keep_the_extension_and_stay_distinct);
   RUN_TEST(test_reserved_families_in_every_case);
   RUN_TEST(test_lookalikes_are_not_reserved);
+  RUN_TEST(test_what_a_person_keeps_is_never_reserved);
   RUN_TEST(test_skill_ids);
   return UNITY_END();
 }

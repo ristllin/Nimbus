@@ -1,12 +1,12 @@
 #pragma once
-// turn_effects - the per-turn effect ledger: what THIS turn actually did and saw.
+// turn_effects - the per-turn effects record: what THIS turn actually did and saw.
 //
 // The device used to deliver the model's reply as written, so a reply could say
 // "saved", "written and waiting", "three sub-agents started" or "survives a
 // reboot" while the turn had done nothing of the kind (16-18 Oct, nine of 51
 // replies). The evidence was always on the device - every tool result, every
 // mem_write outcome, the spawn enqueue, the scratchpad persist - but scattered
-// over log lines. This ledger collects it in one place: the history row's fx: tag, the
+// over log lines. This record collects it in one place: the history row's fx: tag, the
 // empty-answer check and apply read it (the claim check that compared the reply with it
 // was deleted in v5.2.0, lane RB-Q1b; RB-FX stores the chat's recent effects from it).
 //
@@ -188,7 +188,7 @@ void recordSpeakSummary(TurnEffects& fx, const std::string& summary, bool isErro
 // the caller rule strip and a stored value changed ("cfg "); "cfg(no change) " and
 // "cfg(nothing) " change nothing. A sink-less led, a refused reboot and an invalid,
 // keyless or refused model switch land nothing either. False when the summary names no
-// action the ledger records (a tts is recorded by recordSpeakSummary, not here).
+// action the record holds (a tts is recorded by recordSpeakSummary, not here).
 bool deviceSummaryEffect(const std::string& summary, FxKind& kind, bool& landed);
 
 }  // namespace orch
