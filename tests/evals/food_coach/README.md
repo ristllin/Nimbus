@@ -1,5 +1,9 @@
 # Food coach eval
 
+> Not a gate (lane RB-REC7, owner ruling 41). Coaching is user content: Nimbus is a general harness, and food is
+> one validation domain among three (food, expenses, training; `tests/evals/families`). This eval stays here as a
+> user-content example; no release gate runs it (`tools/release_gate/v520_gate.json`, `check_v520_gate.py`).
+
 A scripted, qualitative eval of how the assistant coaches food. It replays short
 conversations through the real agent harness with real model calls, then has a
 separate judge model grade each transcript against a written rubric. Nothing is

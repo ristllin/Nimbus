@@ -1,0 +1,29 @@
+{
+  "about": "The v5.2.0 release gate rows that replace the ledger rows (owner rulings 41 and 81; rebuild/DESIGN-GENERAL-RECORDS.md, RB-R1 release gates; lane RB-REC7). RB-R1 runs each row on the candidate and pastes its evidence. check_v520_gate.py keeps this list whole: every row named below, every path it names present, no removed gate back.",
+  "rows": [
+    {"id": "file-first-call", "what": "file-tool first call succeeds, 95% lower bound at least 95% per head per family, claude-haiku-5-5 included", "measure": "tests/evals/behaviour (RB-REC6's arms on the file tools)", "paths": ["tests/evals/behaviour"]},
+    {"id": "file-totals", "what": "totals correct at least 98% (95% lower bound) per head per family", "measure": "tests/evals/behaviour (RB-REC6)", "paths": ["tests/evals/behaviour"]},
+    {"id": "no-stray-or-duplicate-lines", "what": "0 stray or duplicate lines in the families; the doubled-append arm X turns them red", "measure": "python3 tests/evals/families/run_families.py run --arms A,B,X ... then table", "paths": ["tests/evals/families/run_families.py", "tests/evals/refloop/families"]},
+    {"id": "refloop-day-scenarios", "what": "refloop totals 9 of 9 (3 heads x 3 repetitions) on every family's day scenario: meal-log-day, expense-day, training-week", "measure": "python3 tools/refloop/compare.py run --only meal-log-day,expense-day,training-week --reps 3", "paths": ["tests/evals/refloop/scenarios/12-meal-log-day.yaml", "tests/evals/refloop/scenarios/18-expense-day.yaml", "tests/evals/refloop/scenarios/19-training-week.yaml"]},
+    {"id": "families-parity", "what": "green parity on claude-sonnet-5-5 and claude-haiku-5-5 for food, expenses and training: the harness's check rate at least the reference loop's less 5 points", "measure": "python3 tests/evals/families/run_families.py table", "paths": ["tests/evals/families/run_families.py"]},
+    {"id": "owner-regressions", "what": "the owner-regression battery with its food family on file lines and its expense and training families (lc-exp-*, lc-trn-*), every row at its threshold on the gate models", "measure": "python3 tests/evals/owner_regressions/run_eval.py run --sha <candidate>; check_owner_regressions.py", "paths": ["tests/evals/owner_regressions/run_eval.py", "tools/release_gate/check_owner_regressions.py"]},
+    {"id": "file-replay", "what": "the file replay: every owner-shaped and three-domain case passes on the candidate", "measure": "python3 tests/evals/file_replay/replay.py", "paths": ["tests/evals/file_replay/replay.py"]},
+    {"id": "no-false-claims", "what": "0 false claims", "measure": "the parity runner and the truth probe's corpus (rulings 9, 33)", "paths": []},
+    {"id": "hedge-rate", "what": "a hedge rate no worse than the RB-M0a control", "measure": "tests/evals/measured/behaviour.json against the candidate's run", "paths": ["tests/evals/measured/behaviour.json"]},
+    {"id": "domain-words-lint", "what": "the domain-words lint passes", "measure": "tools/check_no_domain_words.py (RB-REC1)", "paths": ["tools/check_no_domain_words.py"]},
+    {"id": "free-flash", "what": "at least 48,000 B free on esp32s3-cyd (ruling 39)", "measure": "check_image_size.py on the candidate", "paths": ["tools/release_gate/check_image_size.py"]},
+    {"id": "cut-during-append", "what": "a cut during files.append leaves the old file, the whole append or a torn tail that the next read names and the next append fences", "measure": "pytest tests/hil/test_files_bench.py -m hil --allow-hardware -k append", "paths": ["tests/hil/test_files_bench.py"]},
+    {"id": "cut-during-edit", "what": "a cut during files.edit leaves the old or the new file, never a mix", "measure": "pytest tests/hil/test_files_bench.py -m hil --allow-hardware -k edit", "paths": ["tests/hil/test_files_bench.py"]},
+    {"id": "round-trip-one-row", "what": "a round trip with one row added: one line more, every other byte as it was", "measure": "pytest tests/hil/test_files_bench.py -m hil --allow-hardware -k round_trip", "paths": ["tests/hil/test_files_bench.py"]},
+    {"id": "rollback-up-down-up", "what": "candidate, v5.1.1 and v5.1.2, candidate: sha8 unchanged with no writes; the old image's append leaves engine-2 rows byte-identical (its keyed merge of one date and key is the recorded limit, ruling 42 item 7)", "measure": "pytest tests/hil/test_files_bench.py -m hil --allow-hardware -k up_down_up --rollback-images <dir>", "paths": ["tests/hil/test_files_bench.py"]},
+    {"id": "refused-allocation", "what": "one append and one edit under a refusing allocator: no file change, an honest reply", "measure": "pytest tests/hil/test_files_bench.py -m hil --allow-hardware -k refused (needs the ALLOCREFUSE console verb)", "paths": ["tests/hil/test_files_bench.py"]},
+    {"id": "history-never-reduced", "what": "owner ruling 81: every head's default history max, fold mark and keep are at least v5.1.2's; no default carries less conversation", "measure": "RB-BG's property test test/test_request_budget::test_no_head_below_its_v5_1_2_budget in the candidate's native run", "paths": []}
+  ],
+  "removed": [
+    {"gate": "food_coach eval", "path": "tests/evals/food_coach", "why": "coaching is user content (owner ruling 41); its files stay under tests/ as an example, outside every gate"},
+    {"gate": "ledger_write first call 95%", "path": "", "why": "no ledger tool exists (ruling 42); replaced by file-first-call"},
+    {"gate": "ledger bench (tests/hil/test_ledger_bench.py)", "path": "tests/hil/test_ledger_bench.py", "why": "replaced by tests/hil/test_files_bench.py"},
+    {"gate": "food replay (tests/evals/food_replay)", "path": "tests/evals/food_replay", "why": "became tests/evals/file_replay"},
+    {"gate": "the label and figure warning arm", "path": "", "why": "the warnings left with the ledger store (ruling 42)"}
+  ]
+}
