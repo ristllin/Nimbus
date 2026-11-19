@@ -7,6 +7,9 @@
 # (tools/release_gate/check_engine_filter.py fails otherwise, and on an entry that does not exist).
 # A lane that adds an engine-2 source adds its line here in the same commit.
 
+# The general file aids (RB-REC4 phase 1): linked into no image until phase 2 binds them.
+lib/core/src/orch_csv_sum.cpp
+lib/core/src/orch_file_aids.cpp
 lib/core/src/orch_file_tools.cpp
 lib/core/src/orch_path_rules.cpp
 lib/core/src/orch_tx_arena.cpp
