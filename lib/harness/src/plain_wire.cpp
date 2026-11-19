@@ -10,7 +10,9 @@ const WireCodec& anthropicWire();   // providers/plain_wire_anthropic.cpp (rende
 Status wireFor(Dialect dialect, const WireCodec*& out) {
   out = nullptr;
   switch (dialect) {
-    case Dialect::AnthropicMessages: return Status::pending("plain::wireFor anthropic");
+    case Dialect::AnthropicMessages:   // complete: render RB-W1a, parse RB-W1b
+      out = &anthropicWire();
+      return Status::success();
     case Dialect::OpenAIResponses: return Status::pending("plain::wireFor responses");
     case Dialect::ChatCompletions: return Status::pending("plain::wireFor chat");
     case Dialect::Flat: return Status::pending("plain::wireFor flat");
@@ -19,11 +21,7 @@ Status wireFor(Dialect dialect, const WireCodec*& out) {
 }
 
 Status renderWireFor(Dialect dialect, const WireCodec*& out) {
-  if (dialect == Dialect::AnthropicMessages) {   // render landed (RB-W1a); wireFor waits for the parse (RB-W1b)
-    out = &anthropicWire();
-    return Status::success();
-  }
-  return wireFor(dialect, out);
+  return wireFor(dialect, out);   // every landed render belongs to a complete wire
 }
 
 }  // namespace plain

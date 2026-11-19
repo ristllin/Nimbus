@@ -391,6 +391,10 @@ inline std::string withoutCap(std::string body) {
     while (end < body.size() && body[end] >= '0' && body[end] <= '9') ++end;
     body.erase(at, end - at);
   }
+  // A cache point is a marker, not part of the cached prefix: the previous turn's point and the
+  // moving last block's move with every request (the Anthropic wire, RB-W1a).
+  const std::string mark = ",\"cache_control\":{\"type\":\"ephemeral\"}";
+  for (size_t at = body.find(mark); at != std::string::npos; at = body.find(mark, at)) body.erase(at, mark.size());
   return body;
 }
 

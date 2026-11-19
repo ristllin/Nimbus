@@ -290,14 +290,18 @@ bool assistantKind(tx::ItemKind k) {
   return k == tx::ItemKind::Assistant || k == tx::ItemKind::RoundMeta || k == tx::ItemKind::Call;
 }
 
-// Whether the open turn's signed thinking is sent. OPEN QUESTION, settled by RB-W1b with a live
-// conformance request: between two renders of one turn the ladder (rungs 1 to 3) can change
-// bytes BEFORE the stored thinking; a provider that binds preserved thinking to its prefix may
-// refuse that request, and dropping the thinking may itself be refused while a tool round with
-// thinking is open. Today: always sent. This is the one place to change.
+// Whether the open turn's signed thinking is sent: not once a ladder rung is applied. Settled live
+// by RB-W1b (evidence/LIVE-CONFORMANCE.md, claude-haiku-5-5, 19 Nov 2026): a signature binds the
+// block to every byte before it, a rung changes bytes before it (rungs 1 and 2 stub earlier
+// results, rung 3 replaces earlier turns), and where the API enforces that check (accounts made on
+// or after 31 Aug 2026, or a request that sets prefix_mismatch_behavior) the request is a 400
+// ("bound to a different conversation"); the same request with the open turn's thinking left out
+// is accepted, enforced or not, with no block reported dropped. The engine's ladder only climbs
+// inside a turn, so from the first rung on every request of the turn goes without it (leaving out
+// all of them keeps nothing that a later rung could invalidate).
 bool sendOpenTurnThinking(const RenderInput& in) {
-  (void)in;
-  return true;
+  const LadderState* l = in.ladder;
+  return !l || (!l->closedThrough && !l->stubThrough && !(l->omitThrough && !l->omissionLine.empty()));
 }
 
 // What is rendered, and the pairing: a call with its one result. Assistant items before the
@@ -699,6 +703,390 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   return Status::success();
 }
 
+// ---- the parse half (lane RB-W1b) ---------------------------------------------------------
+//
+// parse() reads one 2xx Messages answer with a strict JSON reader of its own (no JSON document:
+// no 65,535 B string limit, no second copy of the body, every byte of a signed block kept as
+// served) into a local ParsedStep that reaches `out` only once the whole body has been read and
+// checked: a cut, malformed or error body fills nothing, so nothing half-read is acted on.
+//
+//   text              the text blocks, joined in order
+//   tool_use          a call: id, name, its input object byte for byte (complete); an input that
+//                     is not an object is a call that is never run (complete = false)
+//   thinking          signed (a non-empty signature) or redacted (non-empty data): one opaque
+//   redacted_thinking MetaPart, the block's bytes as served, before the call it preceded; a block
+//                     a stored line cannot hold (tx::kMaxLineBytes) is not kept (wire.h MetaPart:
+//                     the open turn's next request goes without it; the provider accepts that,
+//                     evidence/LIVE-CONFORMANCE.md)
+//   other block types are not ours to act on and are passed over.
+// stop_reason: end_turn and stop_sequence end the turn, tool_use asks for the calls, max_tokens
+// and model_context_window_exceeded are a cut (every call complete = false: its arguments may be
+// cut), refusal keeps the text and drops every call (stop_details names why), anything else is
+// Other. usage: input_tokens (Anthropic leaves cache reads and writes out of it), the cache split
+// (read, write, the 1-hour part of the write), output_tokens, the served model.
+constexpr uint8_t kParseDepth = 64;
+
+class JsonReader {
+ public:
+  explicit JsonReader(const std::string& s) : s_(s) {}
+  size_t at() const { return i_; }
+  void ws() {
+    while (i_ < s_.size() && (s_[i_] == ' ' || s_[i_] == '\n' || s_[i_] == '\r' || s_[i_] == '\t')) ++i_;
+  }
+  bool peek(char c) {
+    ws();
+    return i_ < s_.size() && s_[i_] == c;
+  }
+  bool eat(char c) {
+    if (!peek(c)) return false;
+    ++i_;
+    return true;
+  }
+  bool end() {
+    ws();
+    return i_ == s_.size();
+  }
+
+  // One string; its decoded text into `out` when given (escapes and surrogate pairs to UTF-8).
+  bool str(std::string* out) {
+    if (!eat('"')) return false;
+    if (out) out->clear();
+    for (;;) {
+      if (i_ >= s_.size()) return false;
+      const unsigned char c = (unsigned char)s_[i_];
+      if (c == '"') {
+        ++i_;
+        return true;
+      }
+      if (c < 0x20) return false;   // a raw control byte: not JSON
+      if (c != '\\') {
+        const size_t from = i_;
+        while (i_ < s_.size() && s_[i_] != '"' && s_[i_] != '\\' && (unsigned char)s_[i_] >= 0x20) ++i_;
+        if (out) out->append(s_, from, i_ - from);
+        continue;
+      }
+      if (++i_ >= s_.size()) return false;
+      const char e = s_[i_++];
+      if (e == 'u') {
+        long code = 0;
+        if (!hex4(code)) return false;
+        if (code >= 0xD800 && code <= 0xDBFF) {   // a high surrogate needs its low half
+          long low = 0;
+          if (!(i_ + 1 < s_.size() && s_[i_] == '\\' && s_[i_ + 1] == 'u')) return false;
+          i_ += 2;
+          if (!hex4(low) || low < 0xDC00 || low > 0xDFFF) return false;
+          code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+        } else if (code >= 0xDC00 && code <= 0xDFFF) {
+          return false;   // a lone low surrogate
+        }
+        if (out) putUtf8(*out, code);
+        continue;
+      }
+      const char* kEsc = "\"\\/bfnrt";
+      const char* kOut = "\"\\/\b\f\n\r\t";
+      const char* hit = e ? std::strchr(kEsc, e) : nullptr;
+      if (!hit) return false;
+      if (out) out->push_back(kOut[hit - kEsc]);
+    }
+  }
+
+  // A non-negative integer (saturating at UINT32_MAX) or null (0).
+  bool count(uint32_t& out) {
+    ws();
+    out = 0;
+    if (literal("null")) return true;
+    const size_t from = i_;
+    if (!skipNumber()) return false;
+    uint64_t v = 0;
+    for (size_t k = from; k < i_; ++k) {
+      const char c = s_[k];
+      if (c < '0' || c > '9') return false;   // negative, a fraction or an exponent: not a count
+      v = v * 10 + (uint64_t)(c - '0');
+      if (v > UINT32_MAX) v = UINT32_MAX;
+    }
+    out = (uint32_t)v;
+    return true;
+  }
+
+  // Any one value.
+  bool skip() {
+    ws();
+    if (i_ >= s_.size()) return false;
+    const char c = s_[i_];
+    if (c == '"') return str(nullptr);
+    if (c == '{') return object([this](const std::string&) { return skip(); });
+    if (c == '[') return array([this] { return skip(); });
+    if (c == '-' || (c >= '0' && c <= '9')) return skipNumber();
+    return literal("true") || literal("false") || literal("null");
+  }
+
+  // An object: `onKey(key)` reads each value.
+  template <typename F>
+  bool object(F onKey) {
+    if (!eat('{') || ++depth_ > kParseDepth) return false;
+    std::string key;
+    for (bool first = true; !eat('}'); first = false) {
+      if (!first && !eat(',')) return false;
+      if (!peek('"') || !str(&key) || !eat(':') || !onKey(key)) return false;
+    }
+    --depth_;
+    return true;
+  }
+  // An array: `onItem()` reads each element.
+  template <typename F>
+  bool array(F onItem) {
+    if (!eat('[') || ++depth_ > kParseDepth) return false;
+    for (bool first = true; !eat(']'); first = false) {
+      if (!first && !eat(',')) return false;
+      if (!onItem()) return false;
+    }
+    --depth_;
+    return true;
+  }
+
+ private:
+  bool literal(const char* w) {
+    const size_t n = std::strlen(w);
+    if (s_.compare(i_, n, w) != 0) return false;
+    i_ += n;
+    return true;
+  }
+  bool digits() {
+    const size_t d = i_;
+    while (i_ < s_.size() && s_[i_] >= '0' && s_[i_] <= '9') ++i_;
+    return i_ > d;
+  }
+  bool skipNumber() {
+    if (i_ < s_.size() && s_[i_] == '-') ++i_;
+    const size_t intAt = i_;
+    if (!digits()) return false;
+    if (s_[intAt] == '0' && i_ - intAt > 1) return false;   // no leading zero
+    if (i_ < s_.size() && s_[i_] == '.') {
+      ++i_;
+      if (!digits()) return false;
+    }
+    if (i_ < s_.size() && (s_[i_] == 'e' || s_[i_] == 'E')) {
+      ++i_;
+      if (i_ < s_.size() && (s_[i_] == '+' || s_[i_] == '-')) ++i_;
+      if (!digits()) return false;
+    }
+    return true;
+  }
+  bool hex4(long& code) {
+    if (i_ + 4 > s_.size()) return false;
+    code = 0;
+    for (int k = 0; k < 4; ++k) {
+      const char h = s_[i_++];
+      const int v = h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1;
+      if (v < 0) return false;
+      code = code * 16 + v;
+    }
+    return true;
+  }
+  static void putUtf8(std::string& o, long c) {
+    if (c < 0x80) {
+      o.push_back((char)c);
+    } else if (c < 0x800) {
+      o.push_back((char)(0xC0 | (c >> 6)));
+      o.push_back((char)(0x80 | (c & 0x3F)));
+    } else if (c < 0x10000) {
+      o.push_back((char)(0xE0 | (c >> 12)));
+      o.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+      o.push_back((char)(0x80 | (c & 0x3F)));
+    } else {
+      o.push_back((char)(0xF0 | (c >> 18)));
+      o.push_back((char)(0x80 | ((c >> 12) & 0x3F)));
+      o.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+      o.push_back((char)(0x80 | (c & 0x3F)));
+    }
+  }
+
+  const std::string& s_;
+  size_t i_ = 0;
+  uint8_t depth_ = 0;
+};
+
+// One content block as read: its fields and where its bytes sit in the body.
+struct Block {
+  std::string type, text, id, name;
+  size_t from = 0, to = 0;            // the block's bytes
+  size_t inputFrom = 0, inputTo = 0;  // tool_use: the input's bytes when it is an object
+  bool inputObject = false;
+  bool thinkingText = false;          // thinking: its "thinking" is a string
+  bool signed_ = false;               // thinking: a non-empty signature; redacted_thinking: non-empty data
+  uint32_t seen = 0;                  // the fields read (a field given twice is not one answer)
+};
+
+// Each field of a block once; a known field of the wrong type fails the body.
+bool blockField(JsonReader& j, const std::string& key, Block& b) {
+  static const char* const kFields[] = {"type", "text", "id", "name", "input", "thinking", "signature", "data"};
+  for (uint32_t k = 0; k < sizeof(kFields) / sizeof(kFields[0]); ++k) {
+    if (key != kFields[k]) continue;
+    if (b.seen & (1u << k)) return false;
+    b.seen |= 1u << k;
+    std::string scratch;
+    switch (k) {
+      case 0: return j.str(&b.type);
+      case 1: return j.str(&b.text);
+      case 2: return j.str(&b.id);
+      case 3: return j.str(&b.name);
+      case 4:
+        b.inputObject = j.peek('{');
+        b.inputFrom = j.at();
+        if (!j.skip()) return false;
+        b.inputTo = j.at();
+        return true;
+      case 5:
+        if (!j.peek('"')) return j.skip();   // read as not a thinking text below
+        b.thinkingText = true;
+        return j.str(nullptr);
+      default:   // signature, data
+        if (!j.str(&scratch)) return false;
+        b.signed_ = b.signed_ || !scratch.empty();
+        return true;
+    }
+  }
+  return j.skip();
+}
+
+// Whether one opaque block fits the k item that stores it (the line limit, newline included).
+bool fitsALine(const std::string& bytes) {
+  struct Count final : tx::LineSink {
+    void put(const char*, size_t) override {}
+  } sink;
+  tx::Item k;
+  k.kind = tx::ItemKind::RoundMeta;
+  k.q = 999999999999ULL;   // the widest q, turn, time and round a line holds
+  k.turn = UINT32_MAX;
+  k.t = 9999999999ULL;
+  k.rd = 255;
+  k.x = bytes;
+  size_t n = 0;
+  return tx::encodeLineTo(k, sink, n).ok();
+}
+
+struct Answer {
+  std::vector<Block> blocks;
+  std::string stop, refusal, model;
+  nimbus::orch::TokenUsage usage;
+  bool content = false, isMessage = false;
+  uint32_t seen = 0;
+};
+
+bool usageField(JsonReader& j, const std::string& key, nimbus::orch::TokenUsage& u) {
+  if (key == "input_tokens") return j.count(u.promptTokens);
+  if (key == "output_tokens") return j.count(u.completionTokens);
+  if (key == "cache_read_input_tokens") return j.count(u.cacheReadTokens);
+  if (key == "cache_creation_input_tokens") return j.count(u.cacheWriteTokens);
+  if (key == "cache_creation" && j.peek('{'))
+    return j.object([&j, &u](const std::string& k) {
+      return k == "ephemeral_1h_input_tokens" ? j.count(u.cacheWrite1hTokens) : j.skip();
+    });
+  return j.skip();
+}
+
+bool stopDetails(JsonReader& j, Answer& a) {
+  if (!j.peek('{')) return j.skip();   // null on every stop but a refusal
+  std::string category, explanation;
+  const bool ok = j.object([&](const std::string& k) {
+    if (k == "category" && j.peek('"')) return j.str(&category);
+    if (k == "explanation" && j.peek('"')) return j.str(&explanation);
+    return j.skip();
+  });
+  a.refusal = !explanation.empty() ? explanation : category;
+  return ok;
+}
+
+bool topField(JsonReader& j, const std::string& key, Answer& a) {
+  static const char* const kFields[] = {"type", "content", "stop_reason", "stop_details", "usage", "model"};
+  for (uint32_t k = 0; k < sizeof(kFields) / sizeof(kFields[0]); ++k) {
+    if (key != kFields[k]) continue;
+    if (a.seen & (1u << k)) return false;   // a field given twice is not one answer
+    a.seen |= 1u << k;
+    std::string type;
+    switch (k) {
+      case 0:
+        if (!j.str(&type)) return false;
+        a.isMessage = type == "message";
+        return true;
+      case 1:
+        a.content = true;
+        return j.array([&j, &a] {
+          Block b;
+          j.ws();
+          b.from = j.at();
+          if (!j.object([&j, &b](const std::string& f) { return blockField(j, f, b); })) return false;
+          b.to = j.at();
+          a.blocks.push_back(std::move(b));
+          return true;
+        });
+      case 2: return j.peek('"') ? j.str(&a.stop) : j.skip();   // null: no stop named
+      case 3: return stopDetails(j, a);
+      case 4: return j.object([&j, &a](const std::string& f) { return usageField(j, f, a.usage); });
+      default: return j.peek('"') ? j.str(&a.model) : j.skip();
+    }
+  }
+  return j.skip();
+}
+
+StopReason stopOf(const std::string& s) {
+  if (s == "end_turn" || s == "stop_sequence") return StopReason::EndTurn;
+  if (s == "tool_use") return StopReason::ToolUse;
+  if (s == "max_tokens" || s == "model_context_window_exceeded") return StopReason::MaxTokens;
+  if (s == "refusal") return StopReason::Refusal;
+  return StopReason::Other;
+}
+
+// The step an answer that was read whole gives.
+void stepOf(const std::string& body, const Answer& a, ParsedStep& step) {
+  for (const Block& b : a.blocks) {
+    if (b.type == "text") {
+      step.text += b.text;
+    } else if (b.type == "tool_use") {
+      ToolCall c;
+      c.id = b.id;
+      c.name = b.name;
+      c.complete = b.inputObject;
+      c.argsJson = b.inputObject ? body.substr(b.inputFrom, b.inputTo - b.inputFrom) : std::string("{}");
+      step.calls.push_back(std::move(c));
+    } else if ((b.type == "thinking" && b.thinkingText && b.signed_) || (b.type == "redacted_thinking" && b.signed_)) {
+      MetaPart m;
+      m.beforeCall = (uint16_t)std::min<size_t>(step.calls.size(), UINT16_MAX);
+      m.bytes = body.substr(b.from, b.to - b.from);
+      if (fitsALine(m.bytes)) step.meta.push_back(std::move(m));
+    }
+  }
+  step.stop = stopOf(a.stop);
+  if (step.stop == StopReason::MaxTokens)
+    for (ToolCall& c : step.calls) c.complete = false;   // its arguments may be cut: never run
+  if (step.stop == StopReason::Refusal) {
+    step.calls.clear();   // a refused answer runs nothing
+    step.refusal = a.refusal.empty() ? a.stop : a.refusal;
+  }
+  step.usage = a.usage;
+  step.usage.responses = 1;
+  step.usage.servedModel = a.model;
+  const uint64_t whole = (uint64_t)a.usage.promptTokens + a.usage.cacheReadTokens + a.usage.cacheWriteTokens;
+  step.usage.maxRequestIn = (uint32_t)std::min<uint64_t>(whole, UINT32_MAX);
+}
+
+Status parseBody(const HttpResponse& in, ParsedStep& out) {
+  if (in.status < 200 || in.status > 299) return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.status");
+  if (!nimbus::utf8Valid(in.body)) return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.utf8");
+  JsonReader j(in.body);
+  Answer a;
+  if (!j.object([&j, &a](const std::string& k) { return topField(j, k, a); }) || !j.end())
+    return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.json");
+  if (!a.isMessage || !a.content) return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.notAMessage");
+  for (const Block& b : a.blocks)   // a call that cannot be answered is not an answer
+    if (b.type == "tool_use" && (b.id.empty() || b.name.empty()))
+      return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.callWithoutIdOrName");
+  ParsedStep step;
+  stepOf(in.body, a, step);
+  out = std::move(step);
+  return Status::success();
+}
+
 class AnthropicWire final : public WireCodec {
  public:
   Dialect dialect() const override { return Dialect::AnthropicMessages; }
@@ -722,10 +1110,20 @@ class AnthropicWire final : public WireCodec {
     return st;
   }
 
-  // Lane RB-W1b writes the parse half.
-  Status parse(const HttpResponse&, ParsedStep& out) const override {
+  Status parse(const HttpResponse& in, ParsedStep& out) const override {
     out = ParsedStep{};
-    return Status::pending("plain::anthropic.parse");
+    Status st;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
+    try {
+      st = parseBody(in, out);
+    } catch (const std::bad_alloc&) {   // ruling 30: a refused allocation is a status, nothing half-read
+      st = Status::fail(Err::TooLarge, "plain::anthropic.parse.memory");
+    }
+#else
+    st = parseBody(in, out);
+#endif
+    if (!st.ok()) out = ParsedStep{};
+    return st;
   }
 };
 

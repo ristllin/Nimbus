@@ -80,7 +80,6 @@ std::vector<StubRow> stubs() {
   static tx::Item item;
   static bool flag;
   return {
-      {"plain::wireFor anthropic", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::AnthropicMessages, w); }},
       {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
       {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
       {"plain::wireFor flat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::Flat, w); }},

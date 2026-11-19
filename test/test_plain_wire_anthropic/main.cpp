@@ -1611,16 +1611,21 @@ void test_the_envelope_carries_the_facts_and_no_orch_turn() {
   TEST_ASSERT_TRUE(w->dialect() == plain::Dialect::AnthropicMessages);
   agent::HttpRequest req;
   TEST_ASSERT_EQUAL(tx::Err::InvalidArgument, w->render(plain::RenderInput{}, req).err);
-  // The parse half is RB-W1b's: until it lands the engine gets no Anthropic wire at all
-  // (wireFor answers only for a complete wire), only the render half answers.
+  // The wire is complete (render RB-W1a, parse RB-W1b): wireFor hands the engine the same codec,
+  // and its parse reads answers (an object that is not a message is refused, never pending).
   plain::ParsedStep step;
   agent::HttpResponse resp;
   resp.status = 200;
   resp.body = "{}";
-  TEST_ASSERT_TRUE(w->parse(resp, step).notImplemented());
+  const tx::Status parsed = w->parse(resp, step);
+  TEST_ASSERT_FALSE(parsed.notImplemented());
+  TEST_ASSERT_EQUAL(tx::Err::InvalidArgument, parsed.err);
   const plain::WireCodec* engineWire = nullptr;
-  TEST_ASSERT_TRUE(plain::wireFor(plain::Dialect::AnthropicMessages, engineWire).notImplemented());
-  TEST_ASSERT_NULL(engineWire);
+  TXB_OK(plain::wireFor(plain::Dialect::AnthropicMessages, engineWire));
+  TEST_ASSERT_TRUE(engineWire == w);
+  resp.body = R"({"type":"message","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"})";
+  TXB_OK(engineWire->parse(resp, step));
+  TEST_ASSERT_EQUAL_STRING("hi", step.text.c_str());
 }
 
 // ---- 12. a refused allocation (ruling 30) ------------------------------------------------------------
@@ -1904,16 +1909,62 @@ void test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes() {
   for (int turn = 0; turn < 3; ++turn) TEST_ASSERT_TRUE(out.body.find("RESULT-" + std::to_string(turn)) != std::string::npos);
 }
 
-// ---- 12c. open: thinking under a ladder rung (RB-W1b settles it live) ------------------------------
+// ---- 12c. thinking under a ladder rung (settled live by RB-W1b) -------------------------------------
 // Between two renders of one turn a rung changes bytes BEFORE the open turn's signed thinking
-// (rung 1 and 2 stub earlier results, rung 3 replaces earlier turns with the omission line). A
-// provider that binds preserved thinking to its prefix may refuse that request; dropping the
-// thinking may be refused while a tool round with thinking is open. RB-W1b sends the request
-// live, implements what the API accepts in sendOpenTurnThinking (plain_wire_anthropic.cpp) and
-// replaces this body with the offline rule it measured.
+// (rungs 1 and 2 stub earlier results, rung 3 replaces earlier turns with the omission line). Live
+// on claude-haiku-5-5 (lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md): with the thinking replayed the
+// API refuses that request where it enforces its prefix check ("bound to a different
+// conversation", HTTP 400); the same request with the open turn's thinking left out is accepted,
+// enforced or not. So once a rung is applied, no open-turn thinking is sent: the body is byte for
+// byte the render of the same transcript without the open turn's k items, every call keeps its
+// result, and without a rung (or with rung 3 named but no line) the thinking rides as stored.
 void test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider() {
-  TXB_WAITS_FOR("PENDING RB-W1b");
-  TEST_FAIL_MESSAGE("RB-W1b: settle with a live conformance request and replace this body with the accepted rule");
+  Rig rig;
+  const std::string th0 = R"({"type":"thinking","thinking":"","signature":"EqQBsig0"})";
+  const std::string th1 = R"({"type":"redacted_thinking","data":"EqQBdata1"})";
+  auto build = [&](bool withThinking) {
+    txb::Convo c;
+    c.openTurn();
+    c.owner("show the log");
+    const std::string id = c.call("read_file", R"({"path":"notes/log.md"})");
+    c.bulkResult(id, "read_file", txb::payload("LOG", 6000));
+    c.nextRound();
+    c.say("Here it is.");
+    c.close();
+    c.openTurn();
+    c.owner("which file says Thursday?");
+    if (withThinking) c.add(tx::ItemKind::RoundMeta).x = th0;
+    const std::string a = c.call("read_file", R"({"path":"notes/a.md"})");
+    if (withThinking) c.add(tx::ItemKind::RoundMeta).x = th1;
+    c.receipt(a, "read_file", "a says Thursday");
+    c.nextRound();
+    return c;
+  };
+  const txb::Convo c = build(true), bare = build(false);
+  Opts none;
+  Out out;
+  RENDER_OK(rig, c, out, none);
+  EXPECT_API_OK(out, "no rung");
+  TEST_ASSERT_TRUE(out.req.body.find(th0) != std::string::npos && out.req.body.find(th1) != std::string::npos);
+  Opts r1, r2, r3, r3NoLine;
+  r1.ladder.closedThrough = 7;   // the closed turn's items (t u c r a d e)
+  r2.ladder.stubThrough = 13;    // the open turn's first round
+  r3.ladder.omitThrough = 7;
+  r3.ladder.omissionLine = "[1 earlier turn left out]";
+  r3NoLine.ladder.omitThrough = 7;   // no line: rung 3 is not applied, nothing changes
+  for (const Opts* o : {&r1, &r2, &r3}) {
+    Out with, without;
+    RENDER_OK(rig, c, with, *o);
+    RENDER_OK(rig, bare, without, *o);
+    EXPECT_API_OK(with, "a rung applied");
+    TEST_ASSERT_TRUE(with.req.body.find("signature") == std::string::npos && with.req.body.find("redacted") == std::string::npos);
+    TEST_ASSERT_TRUE_MESSAGE(with.req.body == without.req.body, "a rung's body is not the body without the open turn's thinking");
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(sp::callsPaired(with.view, why), why.c_str());
+    TEST_ASSERT_TRUE(with.req.body != out.req.body);
+  }
+  RENDER_OK(rig, c, out, r3NoLine);
+  TEST_ASSERT_TRUE(out.req.body.find(th0) != std::string::npos);
 }
 
 // ---- 13. the framing, measured (ruling 16) --------------------------------------------------------------
@@ -2018,6 +2069,8 @@ void test_the_measured_framing_per_block_is_inside_the_battery_allowances() {
 
 }  // namespace
 
+#include "parse_tests.h"
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_checker_accepts_the_documented_shape_and_rejects_what_the_api_refuses);
@@ -2043,5 +2096,6 @@ int main(int, char**) {
   RUN_TEST(test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes);
   RUN_TEST(test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider);
   RUN_TEST(test_the_measured_framing_per_block_is_inside_the_battery_allowances);
+  parse_tests::run();
   return UNITY_END();
 }
