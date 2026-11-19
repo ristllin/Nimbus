@@ -52,6 +52,8 @@ class World {
     } else if (c.name == "web_search" || c.name == "fetch_url") {
       o.outside = true;
       o.text = payload(std::string("OUTSIDE-") + (a["q"] | "page"), a["bytes"] | 3000);
+    } else if (c.name == "clock_now") {   // a read whose repeat may differ: never suppressed
+      o.text = "13:02";
     } else if (c.name == "big_read") {
       o.text = payload(std::string("BULK-") + (a["tag"] | "x"), a["bytes"] | 20000);
     } else if (c.name == "device_control") {   // restart, install and a head switch run after the turn
@@ -62,6 +64,7 @@ class World {
                    : action == "head"    ? plain::Deferred::HeadSwitch
                                          : plain::Deferred::None;
       o.deferredArg = a["to"] | "";
+      o.isError = a["fail"] | false;   // a failed call asks for nothing (the loop must not defer it)
     } else {
       o.isError = true;
       o.text = "unknown tool " + c.name;

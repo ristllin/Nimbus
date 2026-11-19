@@ -1963,7 +1963,7 @@ inline size_t dispatchedOf(const txb::Battery& b, const std::string& name) {
 
 inline void test_a_repeated_pure_call_is_answered_from_the_earlier_result() {
   for (int viaMore = 0; viaMore < 2; ++viaMore) {   // ruling 52 item 3: through more too
-    txb::Battery b;
+    txb::Battery b(plain::Dialect::ChatCompletions);   // arguments as the model wrote them, spaces and all
     if (viaMore) withMore(b);
     b.world.files["notes/a.md"] = "alpha";
     const std::string direct = R"({"path":"notes/a.md"})", routed = R"({"name":"read_file","args":{"path":"notes/a.md"}})";
@@ -2004,6 +2004,25 @@ inline void test_a_write_between_two_reads_lets_the_second_run() {
 }
 
 inline void test_a_repeat_of_a_tool_that_is_not_pure_always_runs() {
+  for (int viaMore = 0; viaMore < 2; ++viaMore) {   // an internal read whose repeat may differ
+    txb::Battery b;
+    withMore(b);
+    b.model.push(viaMore ? sp::call("more", R"({"name":"clock_now","args":{}})") : sp::call("clock_now", "{}"));
+    b.model.push(viaMore ? sp::call("more", R"({"name":"clock_now","args":{}})") : sp::call("clock_now", "{}"));
+    b.model.push(sp::say("Asked twice."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("the time twice", out));
+    TEST_ASSERT_EQUAL(2, (int)dispatchedOf(b, "clock_now"));
+  }
+  {   // an earlier error result answers nothing
+    txb::Battery b;
+    b.model.push(sp::call("read_file", R"({"path":"notes/none.md"})"));
+    b.model.push(sp::call("read_file", R"({"path":"notes/none.md"})"));
+    b.model.push(sp::say("Not there."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read a missing file twice", out));
+    TEST_ASSERT_EQUAL(2, (int)dispatchedOf(b, "read_file"));
+  }
   for (int viaMore = 0; viaMore < 2; ++viaMore) {
     txb::Battery b;
     withMore(b);
@@ -2059,7 +2078,15 @@ inline void test_a_deferred_effect_runs_after_the_turn_is_closed() {
     TEST_ASSERT_EQUAL(1, (int)countKind(items, tx::ItemKind::Delivery));
     expectPaired(b);
   }
-  // A failed or refused call asks for nothing.
+  {   // a failed call asks for nothing
+    txb::Battery f;
+    f.model.push(sp::call("device_control", R"({"action":"restart","fail":true})"));
+    f.model.push(sp::say("It failed."));
+    plain::TurnOutcome out;
+    TXB_OK(f.owner("restart", out));
+    TEST_ASSERT_EQUAL(0, (int)out.deferred.mask);
+  }
+  // A refused call asks for nothing.
   txb::Battery b;
   TXB_OK(b.boot());
   TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Rails, [](const plain::DispatchCtx&) {

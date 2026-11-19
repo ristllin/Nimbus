@@ -255,6 +255,8 @@ class Battery {
     reg.add("big_read", "", handler);
     reg.setClass("big_read", orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Pure});
     reg.add("device_control", "", handler);
+    reg.add("clock_now", "", handler);
+    reg.setClass("clock_now", orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Read});
   }
 
   tx::Status setup(const plain::TurnCtx& t, plain::TurnSetup& out) {
