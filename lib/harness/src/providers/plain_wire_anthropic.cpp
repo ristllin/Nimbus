@@ -730,6 +730,7 @@ class JsonReader {
  public:
   explicit JsonReader(const std::string& s) : s_(s) {}
   size_t at() const { return i_; }
+  const std::string& body() const { return s_; }
   void ws() {
     while (i_ < s_.size() && (s_[i_] == ' ' || s_[i_] == '\n' || s_[i_] == '\r' || s_[i_] == '\t')) ++i_;
   }
@@ -808,17 +809,53 @@ class JsonReader {
     return true;
   }
 
-  // Any one value.
+  // Any one value, read without recursion (the device's stack never grows with the answer's
+  // nesting): one bit per open container, object or array. peak() is the deepest nesting it met,
+  // counted from where it started.
   bool skip() {
-    ws();
-    if (i_ >= s_.size()) return false;
-    const char c = s_[i_];
-    if (c == '"') return str(nullptr);
-    if (c == '{') return object([this](const std::string&) { return skip(); });
-    if (c == '[') return array([this] { return skip(); });
-    if (c == '-' || (c >= '0' && c <= '9')) return skipNumber();
-    return literal("true") || literal("false") || literal("null");
+    uint64_t objects = 0;   // bit k: container k is an object
+    uint8_t open = 0;
+    peak_ = 0;
+    for (;;) {
+      ws();
+      if (i_ >= s_.size()) return false;
+      const char c = s_[i_];
+      bool closed = false;   // a value just ended
+      if (c == '{' || c == '[') {
+        if (depth_ + open + 1 > kParseDepth) return false;
+        ++i_;
+        objects = (objects << 1) | (c == '{' ? 1u : 0u);
+        if (++open > peak_) peak_ = open;
+        if (eat(c == '{' ? '}' : ']')) {
+          --open;
+          objects >>= 1;
+          closed = true;
+        } else if (c == '{' && !(peek('"') && str(nullptr) && eat(':'))) {
+          return false;
+        }
+      } else {
+        const bool ok = c == '"' ? str(nullptr)
+                        : (c == '-' || (c >= '0' && c <= '9')) ? skipNumber()
+                                                                : (literal("true") || literal("false") || literal("null"));
+        if (!ok) return false;
+        closed = true;
+      }
+      while (closed) {   // after a value: the end, a comma and the next value, or a close
+        if (!open) return true;
+        const bool obj = objects & 1u;
+        if (eat(',')) {
+          if (obj && !(peek('"') && str(nullptr) && eat(':'))) return false;
+          closed = false;
+        } else if (eat(obj ? '}' : ']')) {
+          --open;
+          objects >>= 1;
+        } else {
+          return false;
+        }
+      }
+    }
   }
+  uint8_t peak() const { return peak_; }
 
   // An object: `onKey(key)` reads each value.
   template <typename F>
@@ -904,6 +941,7 @@ class JsonReader {
   const std::string& s_;
   size_t i_ = 0;
   uint8_t depth_ = 0;
+  uint8_t peak_ = 0;
 };
 
 // One content block as read: its fields and where its bytes sit in the body.
@@ -912,10 +950,26 @@ struct Block {
   size_t from = 0, to = 0;            // the block's bytes
   size_t inputFrom = 0, inputTo = 0;  // tool_use: the input's bytes when it is an object
   bool inputObject = false;
+  bool inputRunnable = false;         // tool_use: an object the render can send back as it is
   bool thinkingText = false;          // thinking: its "thinking" is a string
-  bool signed_ = false;               // thinking: a non-empty signature; redacted_thinking: non-empty data
+  bool signature = false;             // a non-empty "signature" (thinking)
+  bool data = false;                  // a non-empty "data" (redacted_thinking)
   uint32_t seen = 0;                  // the fields read (a field given twice is not one answer)
 };
+
+// A call's input is run only when the render can send it back as the model wrote it: one object,
+// nested no deeper than the body writer takes (body::kMaxDepth), each of its own keys once.
+bool runnableInput(const std::string& body, size_t from, size_t to, uint8_t peak) {
+  if (peak > body::kMaxDepth) return false;
+  const std::string input = body.substr(from, to - from);
+  JsonReader j(input);
+  std::vector<std::string> keys;
+  return j.object([&j, &keys](const std::string& k) {
+    if (std::find(keys.begin(), keys.end(), k) != keys.end()) return false;
+    keys.push_back(k);
+    return j.skip();
+  });
+}
 
 // Each field of a block once; a known field of the wrong type fails the body.
 bool blockField(JsonReader& j, const std::string& key, Block& b) {
@@ -935,14 +989,19 @@ bool blockField(JsonReader& j, const std::string& key, Block& b) {
         b.inputFrom = j.at();
         if (!j.skip()) return false;
         b.inputTo = j.at();
+        b.inputRunnable = b.inputObject && runnableInput(j.body(), b.inputFrom, b.inputTo, j.peak());
         return true;
       case 5:
         if (!j.peek('"')) return j.skip();   // read as not a thinking text below
         b.thinkingText = true;
         return j.str(nullptr);
-      default:   // signature, data
+      case 6:
         if (!j.str(&scratch)) return false;
-        b.signed_ = b.signed_ || !scratch.empty();
+        b.signature = !scratch.empty();
+        return true;
+      default:
+        if (!j.str(&scratch)) return false;
+        b.data = !scratch.empty();
         return true;
     }
   }
@@ -969,19 +1028,28 @@ struct Answer {
   std::vector<Block> blocks;
   std::string stop, refusal, model;
   nimbus::orch::TokenUsage usage;
-  bool content = false, isMessage = false;
+  bool content = false, isMessage = false, notAssistant = false;
   uint32_t seen = 0;
 };
 
-bool usageField(JsonReader& j, const std::string& key, nimbus::orch::TokenUsage& u) {
-  if (key == "input_tokens") return j.count(u.promptTokens);
-  if (key == "output_tokens") return j.count(u.completionTokens);
-  if (key == "cache_read_input_tokens") return j.count(u.cacheReadTokens);
-  if (key == "cache_creation_input_tokens") return j.count(u.cacheWriteTokens);
-  if (key == "cache_creation" && j.peek('{'))
-    return j.object([&j, &u](const std::string& k) {
-      return k == "ephemeral_1h_input_tokens" ? j.count(u.cacheWrite1hTokens) : j.skip();
+bool usageField(JsonReader& j, const std::string& key, nimbus::orch::TokenUsage& u, uint32_t& seen) {
+  static const char* const kFields[] = {"input_tokens", "output_tokens", "cache_read_input_tokens",
+                                        "cache_creation_input_tokens", "cache_creation"};
+  uint32_t* const into[] = {&u.promptTokens, &u.completionTokens, &u.cacheReadTokens, &u.cacheWriteTokens, nullptr};
+  for (uint32_t k = 0; k < sizeof(kFields) / sizeof(kFields[0]); ++k) {
+    if (key != kFields[k]) continue;
+    if (seen & (1u << k)) return false;   // a count given twice is not one answer
+    seen |= 1u << k;
+    if (into[k]) return j.count(*into[k]);
+    if (!j.peek('{')) return j.skip();
+    bool once = false;
+    return j.object([&j, &u, &once](const std::string& f) {
+      if (f != "ephemeral_1h_input_tokens") return j.skip();
+      if (once) return false;
+      once = true;
+      return j.count(u.cacheWrite1hTokens);
     });
+  }
   return j.skip();
 }
 
@@ -998,7 +1066,7 @@ bool stopDetails(JsonReader& j, Answer& a) {
 }
 
 bool topField(JsonReader& j, const std::string& key, Answer& a) {
-  static const char* const kFields[] = {"type", "content", "stop_reason", "stop_details", "usage", "model"};
+  static const char* const kFields[] = {"type", "content", "stop_reason", "stop_details", "usage", "model", "role"};
   for (uint32_t k = 0; k < sizeof(kFields) / sizeof(kFields[0]); ++k) {
     if (key != kFields[k]) continue;
     if (a.seen & (1u << k)) return false;   // a field given twice is not one answer
@@ -1022,8 +1090,16 @@ bool topField(JsonReader& j, const std::string& key, Answer& a) {
         });
       case 2: return j.peek('"') ? j.str(&a.stop) : j.skip();   // null: no stop named
       case 3: return stopDetails(j, a);
-      case 4: return j.object([&j, &a](const std::string& f) { return usageField(j, f, a.usage); });
-      default: return j.peek('"') ? j.str(&a.model) : j.skip();
+      case 4: {   // null: no usage given (every count 0)
+        if (!j.peek('{')) return j.skip();
+        uint32_t seen = 0;
+        return j.object([&j, &a, &seen](const std::string& f) { return usageField(j, f, a.usage, seen); });
+      }
+      case 5: return j.peek('"') ? j.str(&a.model) : j.skip();
+      default:
+        if (!j.str(&type)) return false;
+        a.notAssistant = type != "assistant";
+        return true;
     }
   }
   return j.skip();
@@ -1038,27 +1114,45 @@ StopReason stopOf(const std::string& s) {
 }
 
 // The step an answer that was read whole gives.
+//
+// Signed thinking is kept only while everything served before it is replayed byte for byte:
+// the engine stores a round as [thinking before the first call] [one text] [call, thinking]...
+// (plain_engine.cpp storeAnswer), and a signature binds every byte before its block (live,
+// evidence/LIVE-CONFORMANCE.md). So the first block that would come back otherwise (a second
+// text block, text after a call or after thinking that preceded it, text the engine stores as
+// its stub, a block of a type not replayed, a thinking block not kept) ends the run: no later
+// thinking block of the answer is kept. Leaving out a trailing run is accepted by the API.
 void stepOf(const std::string& body, const Answer& a, ParsedStep& step) {
+  step.stop = stopOf(a.stop);
+  bool replayed = true;   // every block so far comes back byte for byte
+  bool sawText = false;
   for (const Block& b : a.blocks) {
     if (b.type == "text") {
+      replayed = replayed && !sawText && step.calls.empty();
       step.text += b.text;
+      sawText = true;
+      replayed = replayed && step.text.size() <= tx::kTier1AssistantText;
     } else if (b.type == "tool_use") {
       ToolCall c;
       c.id = b.id;
       c.name = b.name;
-      c.complete = b.inputObject;
+      // Only an answer that stops to call runs its calls: a cut one may hold cut arguments,
+      // any other stop (none, a refusal, a pause, one not known) is not asking.
+      c.complete = b.inputRunnable && step.stop == StopReason::ToolUse;
       c.argsJson = b.inputObject ? body.substr(b.inputFrom, b.inputTo - b.inputFrom) : std::string("{}");
       step.calls.push_back(std::move(c));
-    } else if ((b.type == "thinking" && b.thinkingText && b.signed_) || (b.type == "redacted_thinking" && b.signed_)) {
+    } else if (b.type == "thinking" || b.type == "redacted_thinking") {
+      const bool signedBlock = b.type == "thinking" ? b.thinkingText && b.signature : b.data;
       MetaPart m;
       m.beforeCall = (uint16_t)std::min<size_t>(step.calls.size(), UINT16_MAX);
-      m.bytes = body.substr(b.from, b.to - b.from);
-      if (fitsALine(m.bytes)) step.meta.push_back(std::move(m));
+      replayed = replayed && signedBlock && !(sawText && step.calls.empty());
+      if (replayed) m.bytes = body.substr(b.from, b.to - b.from);
+      replayed = replayed && fitsALine(m.bytes);
+      if (replayed) step.meta.push_back(std::move(m));
+    } else {
+      replayed = false;   // a block the round does not store
     }
   }
-  step.stop = stopOf(a.stop);
-  if (step.stop == StopReason::MaxTokens)
-    for (ToolCall& c : step.calls) c.complete = false;   // its arguments may be cut: never run
   if (step.stop == StopReason::Refusal) {
     step.calls.clear();   // a refused answer runs nothing
     step.refusal = a.refusal.empty() ? a.stop : a.refusal;
@@ -1077,7 +1171,8 @@ Status parseBody(const HttpResponse& in, ParsedStep& out) {
   Answer a;
   if (!j.object([&j, &a](const std::string& k) { return topField(j, k, a); }) || !j.end())
     return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.json");
-  if (!a.isMessage || !a.content) return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.notAMessage");
+  if (!a.isMessage || !a.content || a.notAssistant)
+    return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.notAMessage");
   for (const Block& b : a.blocks)   // a call that cannot be answered is not an answer
     if (b.type == "tool_use" && (b.id.empty() || b.name.empty()))
       return Status::fail(Err::InvalidArgument, "plain::anthropic.parse.callWithoutIdOrName");

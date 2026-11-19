@@ -153,7 +153,7 @@ void test_parse_reads_a_refusal_interleaved_thinking_and_an_empty_answer() {
     TXB_OK(parseBody(base + st[0] + R"(,"usage":{"input_tokens":1,"output_tokens":1}})", s));
     TEST_ASSERT_EQUAL_STRING(st[1], plain::stopSlug(s.stop));
     TEST_ASSERT_EQUAL(1, (int)s.calls.size());
-    TEST_ASSERT_EQUAL(std::string(st[1]) != "cut", s.calls[0].complete);
+    TEST_ASSERT_EQUAL_MESSAGE(std::string(st[1]) == "tool", s.calls[0].complete, st[0]);   // only a stop to call runs
   }
 }
 
@@ -361,6 +361,81 @@ void test_parsed_thinking_rides_the_next_request_of_its_turn_as_served() {
   TEST_ASSERT_TRUE(out.req.body.find(s.calls[0].argsJson) != std::string::npos);
 }
 
+// Thinking is kept only while every block before it comes back byte for byte (the engine stores
+// a round as [thinking before the first call][one text][call, thinking]...): the first block that
+// would come back otherwise ends the run, and no later thinking of the answer is kept.
+void test_thinking_is_kept_only_while_the_round_replays_byte_for_byte() {
+  plain::ParsedStep s;
+  const std::string t1 = R"({"type":"thinking","thinking":"","signature":"sig1"})";
+  const std::string t2 = R"({"type":"thinking","thinking":"","signature":"sig2"})";
+  const std::string r3 = R"({"type":"redacted_thinking","data":"dat3"})";
+  auto call = [](int n) {
+    return R"({"type":"tool_use","id":"toolu_)" + std::to_string(n) + R"(","name":"read_file","input":{"path":"a"}})";
+  };
+  auto text = [](const std::string& t) { return R"({"type":"text","text":")" + t + R"("})"; };
+  struct Case {
+    std::vector<std::string> blocks;
+    size_t kept;
+  };
+  const std::string tooBig = thinkingBlock(61000);
+  const std::string unsignedT = R"({"type":"thinking","thinking":"x","signature":""})";
+  const std::string crossed = R"({"type":"thinking","thinking":"x","signature":"","data":"d"})";
+  const std::string crossedR = R"({"type":"redacted_thinking","data":"","signature":"s"})";
+  const Case cases[] = {
+      {{t1, text("a"), call(1), t2, call(2), r3}, 3},           // the engine's own order: all kept
+      {{t1, call(1), t2, call(2)}, 2},
+      {{text("a"), t1, call(1)}, 0},                             // thinking after text: stored before it
+      {{t1, text("a"), text("b"), t2, call(1)}, 1},              // two text blocks come back as one
+      {{t1, call(1), text("late"), t2, call(2)}, 1},             // text after a call comes back before it
+      {{t1, tooBig, t2, call(1)}, 1},                            // a block not kept ends the run
+      {{t1, unsignedT, t2, call(1)}, 1},
+      {{crossed, t2}, 0},                                        // a signature belongs to thinking,
+      {{crossedR, t2}, 0},                                       // data to redacted thinking
+      {{t1, R"({"type":"server_tool_use","id":"srv_1","name":"x","input":{}})", t2, call(1)}, 1},
+      {{t1, text(std::string(12289, 'x')), t2, call(1)}, 1},     // text the engine stores as its stub
+  };
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    std::string body = R"({"type":"message","role":"assistant","content":[)";
+    for (size_t k = 0; k < cases[i].blocks.size(); ++k) body += (k ? "," : "") + cases[i].blocks[k];
+    body += R"(],"stop_reason":"tool_use"})";
+    TXB_OK(parseBody(body, s));
+    TEST_ASSERT_EQUAL_MESSAGE((int)cases[i].kept, (int)s.meta.size(), ("case " + std::to_string(i)).c_str());
+  }
+}
+
+// A call runs only when its answer stops to call and its input comes back as written: an object,
+// nested no deeper than the render takes, each key once. Any other call is answered, never run.
+void test_a_call_runs_only_as_written_in_an_answer_that_stops_to_call() {
+  plain::ParsedStep s;
+  auto one = [&s](const std::string& input) {
+    TXB_OK(parseBody(R"({"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"note","input":)" + input +
+                         R"(}],"stop_reason":"tool_use"})",
+                     s));
+    TEST_ASSERT_EQUAL(1, (int)s.calls.size());
+    return s.calls[0].complete;
+  };
+  auto nest = [](int levels) {   // an input object `levels` deep in all
+    std::string v = "1";
+    for (int i = 1; i < levels; ++i) v = "[" + v + "]";
+    return "{\"a\":" + v + "}";
+  };
+  TEST_ASSERT_TRUE(one(nest(32)));
+  TEST_ASSERT_FALSE(one(nest(33)));
+  TEST_ASSERT_TRUE(one(R"({"path":"a","more":{"path":"b"}})"));   // a key again inside a nested object
+  TEST_ASSERT_FALSE(one(R"({"path":"a","path":"b"})"));
+  // usage given as null, a count given twice, a role that is not the assistant's
+  TXB_OK(parseBody(R"({"type":"message","content":[],"stop_reason":"end_turn","usage":null})", s));
+  TEST_ASSERT_EQUAL(0, (int)s.usage.promptTokens);
+  for (const char* bad : {R"({"type":"message","content":[],"usage":{"input_tokens":1,"input_tokens":2}})",
+                          R"({"type":"message","content":[],"usage":{"cache_creation":{"ephemeral_1h_input_tokens":1,"ephemeral_1h_input_tokens":2}}})",
+                          R"({"type":"message","role":"user","content":[]})", R"({"type":"message","role":"assistant","role":"assistant","content":[]})"})
+    TEST_ASSERT_FALSE_MESSAGE(parseBody(bad, s).ok(), bad);
+  // Deep values anywhere are read without recursion: 64 levels read, more refuse the body.
+  std::string deep = "1";
+  for (int i = 0; i < 60; ++i) deep = "{\"k\":[" + deep + "]}";
+  TEST_ASSERT_FALSE(parseBody(R"({"type":"message","content":[],"x":)" + deep + "}", s).ok());
+}
+
 // ---- 5b. usage reaches the e item ----------------------------------------------------------------
 // Through the engine on this wire: two requests of one turn, each answer's usage with its cache
 // split, summed into the turn's e item (the guard and the spend figures read it there).
@@ -454,15 +529,21 @@ void test_a_file_id_rides_later_turns_only_while_the_provider_holds_it() {
   // Another chat never sees it; the provider's refusal forgets it; with no bytes, the stub line.
   ip::keepFileId(chat, ref, "file_033", now);
   TEST_ASSERT_TRUE(ip::heldFileId("2002", ref, now).empty());
-  TEST_ASSERT_FALSE(ip::forgetRefusedFileId(400, R"({"type":"error","error":{"message":"max_tokens too large"}})"));
-  TEST_ASSERT_TRUE(ip::forgetRefusedFileId(404, R"({"type":"error","error":{"type":"not_found_error","message":"File not found: file_033"}})"));
+  TEST_ASSERT_FALSE(ip::forgetRefusedFileId(chat, 400, R"({"type":"error","error":{"message":"max_tokens too large"}})"));
+  ip::keepFileId("2002", "pother001", "file_other", now);   // another chat's photo stays
+  TEST_ASSERT_TRUE(ip::forgetRefusedFileId(chat, 404, R"({"type":"error","error":{"type":"not_found_error","message":"File not found."}})"));
+  TEST_ASSERT_EQUAL_STRING("file_other", ip::heldFileId("2002", "pother001", now).c_str());
+  TEST_ASSERT_TRUE(ip::heldFileId(chat, ref, now).empty());
+  ip::keepFileId(chat, ref, "file_033", now);
+  TEST_ASSERT_TRUE(ip::forgetRefusedFileId("2002", 404, R"({"type":"error","error":{"message":"File not found: file_033"}})"));
+  TEST_ASSERT_EQUAL_STRING("file_other", ip::heldFileId("2002", "pother001", now).c_str());   // only the one named
   haveBytes = false;
   render(out);
   EXPECT_API_OK(out, "forgotten id, no bytes");
   TEST_ASSERT_TRUE(out.body.find("file_033") == std::string::npos);
   TEST_ASSERT_EQUAL(0, (int)txb::detail::countImages(out.view));
   TEST_ASSERT_TRUE(txb::detail::textIn(out.view, "user", "[photo pab12cd34 "));
-  TEST_ASSERT_FALSE(ip::forgetRefusedFileId(404, "file not found"));   // nothing left to forget
+  TEST_ASSERT_FALSE(ip::forgetRefusedFileId(chat, 404, "file not found"));   // nothing left to forget
   ip::dropFileRefs();
 }
 
@@ -503,6 +584,8 @@ void run() {
   RUN_TEST(test_a_call_is_complete_only_with_an_object_input_and_never_in_a_cut);
   RUN_TEST(test_signed_thinking_is_kept_byte_for_byte_only_when_its_line_fits);
   RUN_TEST(test_parsed_thinking_rides_the_next_request_of_its_turn_as_served);
+  RUN_TEST(test_thinking_is_kept_only_while_the_round_replays_byte_for_byte);
+  RUN_TEST(test_a_call_runs_only_as_written_in_an_answer_that_stops_to_call);
   RUN_TEST(test_usage_with_the_cache_split_reaches_the_e_item);
   RUN_TEST(test_a_file_id_rides_later_turns_only_while_the_provider_holds_it);
   RUN_TEST(test_a_refused_allocation_in_parse_answers_a_status_and_fills_nothing);

@@ -20,6 +20,7 @@
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/log.h"
 #include "nimbus/orch/tx/rules.h"
+#include "providers/image_parts.h"
 
 namespace agent {
 namespace plain {
@@ -585,6 +586,12 @@ class TurnRun {
     req.deadlineMs = used < wall ? wall - used : 1;
     req.bodyCap = t_.bodyCap;
     req.climb = [this](const ClimbAsk& ask) { return climb(ask); };
+    if (r.photo) {   // a photo's file id the provider no longer holds: forgotten, sent once more without it
+      const std::string chat = t_.ctx.chatKey;
+      req.refusedRef = [chat](int st, const std::string& body) {
+        return providers::imageparts::forgetRefusedFileId(chat, st, body);
+      };
+    }
     t_.ex = ExchangeResult{};
     const Status st = runExchange(ExchangeDeps{d_.transport, d_.platform}, req, t_.ex);
     account(t_.ex);

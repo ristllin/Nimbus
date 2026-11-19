@@ -611,8 +611,7 @@ durability around it and nothing that reads, edits or appends to the model's tex
   and wire once; the system text and the tools are composed once and kept for every round.
 - **The loop**: render the stored transcript, post it (`runExchange`: retries, the cap and the
   ladder live there; rung 2 follows the open turn's rounds, rung 3 omits only the oldest turns
-  the body needs to drop, sized by what each turn renders (its text and one block's framing, not
-  its stored line), and climbs again while still over; every omissible one only after a
+  the body needs to drop, sized by what each turn renders, and climbs again while still over; every omissible one only after a
   provider's size refusal), store what the model said (k, a, c) before anything runs. No call: that
   text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
   runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
@@ -848,20 +847,28 @@ after a restart.
 - **Photos by file id across turns**: the photo function answers a kept id only while the
   provider still holds it (`imageparts::heldFileId`: used within the hour and younger than the
   provider's expiry less 20 minutes); otherwise the photo goes inline from its bytes, or as its
-  stub line. A refusal naming a file is forgotten and the request sent once more (above).
+  stub line. A refusal naming a file is forgotten and the request sent once more (above); the
+  engine binds that resend whenever the turn has a photo function. Known limit: such a resend
+  changes bytes before any thinking the open turn already carries, so on an account that
+  enforces the prefix check it can still be refused once.
 - A refused allocation answers `TooLarge` with nothing rendered (ruling 30).
 
 Reading the answer (`parse`): a strict JSON reader of the wire's own, with no JSON document
 (no 65,535 B string limit: a signed block of 157 KB has come back live), fills a step that
 reaches the loop only when the whole body was read; a body cut by the transport, malformed, an
 error body or a status outside 2xx fills nothing. Text blocks join in order. A `tool_use` is a
-call, complete only when its input is a JSON object, and never complete in a cut answer
+call; it runs only when the answer stops with `tool_use` and its input comes back as written (a
+JSON object no deeper than the body writer takes, each of its keys once). A cut answer
 (`max_tokens`, `model_context_window_exceeded`: a cut call came back live as a closed object
-missing its long argument); a call without an id or a name fails the body. A refusal keeps its
-text, drops every call and names its reason from `stop_details`. Signed thinking (`thinking`
-with a signature, `redacted_thinking` with data) is kept byte for byte as served, before the call
-it preceded, and only when its k line fits 60,000 B (about 24,000 thinking tokens); a larger
-block is not kept, and the next request of the turn goes without it, which the API accepts.
+missing its long argument), or any other stop, answers its calls without running them; a call
+without an id or a name fails the body. A refusal keeps its text, drops every call and names its
+reason from `stop_details`. Signed thinking (`thinking` with a signature, `redacted_thinking`
+with data) is kept byte for byte as served, before the call it preceded, only while every block
+before it comes back byte for byte in the round as stored (one text, then the calls) and only
+when its k line fits 60,000 B (about 24,000 thinking tokens); the first block that would come
+back otherwise ends the run and no later thinking of that answer is kept. The next request of
+the turn goes without what was not kept, which the API accepts. Deep values are read without
+recursion.
 Usage: `input_tokens` (Anthropic leaves cache reads and writes out of it), the cache read and
 write and the write's 1-hour part, `output_tokens`, the served model; the loop sums them into
 the e item.

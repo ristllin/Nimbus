@@ -744,10 +744,24 @@ void keepFileId(const std::string& chatKey, const std::string& ref, const std::s
   v.push_back(f);
 }
 
-bool forgetRefusedFileId(int httpStatus, const std::string& errText) {
-  if (!refusedFileRefs(httpStatus, errText) || fileRefs().empty()) return false;
-  forgetFileRefs(nullptr, errText);
-  return true;
+bool forgetRefusedFileId(const std::string& chatKey, int httpStatus, const std::string& errText) {
+  if (!refusedFileRefs(httpStatus, errText)) return false;
+  // The refusal names the file it could not find: only that one goes. One naming none takes this
+  // chat's ids (another chat's photos are not this request's).
+  auto& v = fileRefs();
+  const auto named = [&errText](const FileRef& f) { return errText.find(f.id.c_str()) != std::string::npos; };
+  const bool one = std::any_of(v.begin(), v.end(), named);
+  bool forgot = false;
+  for (size_t i = 0; i < v.size();) {
+    if (one ? !named(v[i]) : v[i].chat != chatKey.c_str()) {
+      ++i;
+      continue;
+    }
+    queueDelete(v[i].id);
+    v.erase(v.begin() + (long)i);
+    forgot = true;
+  }
+  return forgot;
 }
 
 }  // namespace imageparts

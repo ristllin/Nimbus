@@ -624,7 +624,7 @@ static void test_a_refused_file_reference_is_forgotten_and_sent_once_more() {
   int asked = 0;
   rig.req.refusedRef = [&asked](int st, const std::string& body) {
     ++asked;
-    return ip::forgetRefusedFileId(st, body);
+    return ip::forgetRefusedFileId("1001", st, body);
   };
   rig.model.push(sp::httpError(404, gone));
   rig.model.push(sp::say("I see it."));
@@ -637,7 +637,7 @@ static void test_a_refused_file_reference_is_forgotten_and_sent_once_more() {
   // Once per exchange: a second refusal is the one line.
   ip::keepFileId("1001", "pab12cd34", "file_0aa", gClock);
   Rig twice;
-  twice.req.refusedRef = [](int st, const std::string& body) { return ip::forgetRefusedFileId(st, body) || true; };
+  twice.req.refusedRef = [](int st, const std::string& body) { return ip::forgetRefusedFileId("1001", st, body) || true; };
   twice.model.push(sp::httpError(400, gone));
   twice.model.push(sp::httpError(400, gone));
   twice.model.push(sp::say("never asked"));
@@ -649,7 +649,7 @@ static void test_a_refused_file_reference_is_forgotten_and_sent_once_more() {
   for (int k = 0; k < 4; ++k) {
     Rig one;
     if (k == 0) one.req.refusedRef = [](int, const std::string&) { return false; };
-    if (k >= 2) one.req.refusedRef = [](int st, const std::string& body) { return ip::forgetRefusedFileId(st, body); };
+    if (k >= 2) one.req.refusedRef = [](int st, const std::string& body) { return ip::forgetRefusedFileId("1001", st, body); };
     ip::keepFileId("1001", "pab12cd34", "file_0aa", gClock);
     one.model.push(k == 2 ? sp::httpError(422, gone) : k == 3 ? sp::httpError(400) : sp::httpError(404, gone));
     one.model.push(sp::say("never asked"));

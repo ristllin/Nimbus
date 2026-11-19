@@ -208,9 +208,9 @@ std::string heldFileId(const std::string& chatKey, const std::string& ref, uint3
 // photo replaces it; the bound of kMaxFileRefs drops the longest unused).
 void keepFileId(const std::string& chatKey, const std::string& ref, const std::string& id, uint32_t nowMs);
 // The provider refused a request that named a file (refusedFileRefs: 400 or 404 naming a file,
-// an id it no longer holds): forget the id its error names, or every kept id when it names
-// none. True when something was forgotten, so the caller renders the request once more.
-bool forgetRefusedFileId(int httpStatus, const std::string& errText);
+// an id it no longer holds): forget the id its error names, or every id kept for `chatKey` when
+// it names none. True when something was forgotten, so the caller renders the request once more.
+bool forgetRefusedFileId(const std::string& chatKey, int httpStatus, const std::string& errText);
 
 }  // namespace imageparts
 }  // namespace providers
