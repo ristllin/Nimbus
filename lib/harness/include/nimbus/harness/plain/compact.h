@@ -253,4 +253,13 @@ Status installCompaction(PlainHooks& hooks, const CompactDeps& deps);
 Status installCompaction(PlainHooks& hooks, CompactDriver& driver);
 
 }  // namespace plain
+
+// The device's binding (src/agent/plain_fold_device.cpp, engine-2 device images only, on
+// tools/engine/engine2_only.txt): the two small files on the internal flash.
+//   deviceCompactCtlIO  /data/compact_ctl.txt, the device-wide attempt count of the day and each
+//                       chat's failures (missing or damaged reads as fresh; older images never read it)
+//   deviceChatsumIO     /data/chatsum.txt, the v5.1.1 summary store the swap mirrors into
+plain::TextIO deviceCompactCtlIO();
+plain::TextIO deviceChatsumIO();
+
 }  // namespace agent

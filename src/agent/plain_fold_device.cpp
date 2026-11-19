@@ -1,5 +1,5 @@
-// The device binding of the engine-2 compaction driver (plain_fold_device.h, lane RB-C2).
-#include "plain_fold_device.h"
+// The device binding of the engine-2 compaction driver (declared in plain/compact.h, lane RB-C2).
+#include "nimbus/harness/plain/compact.h"
 
 #include <LittleFS.h>
 
