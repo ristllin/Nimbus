@@ -25,6 +25,8 @@ const char kMissingArg[] = "{} is missing; {} takes {}";
 const char kNotString[] = "{} is not a string";
 const char kNotCount[] = "{} is not a whole number, 0 or more";
 const char kNotBool[] = "{} is not true or false";
+const char kNotNames[] = "sum is not a list of column names";
+const char kNotLine[] = "line is not a whole number, 1 or more";
 const char kIfExists[] = "if_exists is fail or replace";
 const char kPath[] = "path \"{}\" is not project/name (two parts, no leading /, no . or ..)";
 const char kNoCaller[] = "no file store for this caller";
@@ -50,15 +52,13 @@ const char kNotText[] = "{} is not text ({})";
 const char kPdf[] = "{} is a PDF; its text is not readable yet";
 const char kBinary[] = "binary data";
 const char kEmptyText[] = "text is empty";
-const char kEmptyOld[] = "old is empty";
-const char kSame[] = "old and new are the same";
-const char kNoMatch[] = "old is not in {} ({} B)";
-const char kManyMatches[] = "old is in {} {} times (lines {}); all=true replaces all";
 const char kEditTooBig[] = "{} is {} B; edit_file takes files up to {} B";
 const char kChanged[] = "{} changed during the edit; nothing written";
 const char kAfter[] = "after: {} is not listed";
 // results
 const char kReadHead[] = "{} size={} lines={} sha8={} bytes {}-{}";
+const char kTableHead[] = "{} size={} lines={} sha8={}";
+const char kTornNote[] = "; {}";
 const char kLimitNote[] = " (limit {} B here)";
 const char kAskedNote[] = " (asked \"{}\")";
 const char kSkillNote[] = " (approved skill)";
@@ -71,7 +71,6 @@ const char kAppended[] = "appended {} B to {}; file is {} B";
 const char kLines[] = ", {} lines";
 const char kNoNewline[] = "; ends without a newline";
 const char kIndexNote[] = "; file index not saved";
-const char kEdited[] = "replaced {} in {}; file is {} B (was {} B), sha8={}";
 const char kListLine[] = "{} {} B {}";
 const char kShared[] = " shared";
 const char kMore[] = "more: {}";
@@ -88,10 +87,10 @@ namespace R = texts::tool_results;
 using ArduinoJson::JsonObjectConst;
 using ArduinoJson::JsonVariantConst;
 
-const std::vector<const char*> kReadArgs = {"path", "offset", "limit"};
+const std::vector<const char*> kReadArgs = {"path", "offset", "limit", "column", "from", "to", "sum"};
 const std::vector<const char*> kWriteArgs = {"path", "content", "if_exists"};
 const std::vector<const char*> kAppendArgs = {"path", "text"};
-const std::vector<const char*> kEditArgs = {"path", "old", "new", "all"};
+const std::vector<const char*> kEditArgs = {"path", "old", "new", "all", "line"};
 const std::vector<const char*> kListArgs = {"prefix", "after"};
 
 // A template with each "{}" replaced by the next value.
@@ -167,6 +166,18 @@ struct ArgReader {
       return false;
     }
     out = v.as<uint64_t>();
+    return true;
+  }
+  // A list of strings (sum's column names).
+  bool names(const char* key, std::vector<std::string>& out, bool& given) {
+    JsonVariantConst v = a[key];
+    given = !v.isNull();
+    if (!given) return true;
+    if (!v.is<ArduinoJson::JsonArrayConst>()) return (err = R::kNotNames).empty();
+    for (JsonVariantConst e : v.as<ArduinoJson::JsonArrayConst>()) {
+      if (!e.is<const char*>()) return (err = R::kNotNames).empty();
+      out.emplace_back(e.as<const char*>());
+    }
     return true;
   }
   bool flag(const char* key, bool& out) {
@@ -404,52 +415,158 @@ ToolResult FileTools::readSkill(const Target& t, size_t offset, size_t limit) {
   return ToolResult::ok(pageOf(head, window, cut, offset, body.size()));
 }
 
+namespace {
+
+// read_file's arguments; table: column, from, to or sum was given.
+struct ReadCall {
+  std::string path;
+  uint64_t offset = 0, limit = 0;
+  bool hasOffset = false, hasLimit = false, table = false;
+  aids::CsvQuery q;
+};
+
+bool readArgs(JsonObjectConst args, ReadCall& c, std::string& err) {
+  ArgReader in{args, "read_file", kReadArgs, ""};
+  bool col = false, from = false, to = false, sum = false;
+  const bool ok = in.str("path", true, c.path) && in.count("offset", c.offset, c.hasOffset) &&
+                  in.count("limit", c.limit, c.hasLimit) && in.str("column", false, c.q.column, &col) &&
+                  in.str("from", false, c.q.from, &from) && in.str("to", false, c.q.to, &to) &&
+                  in.names("sum", c.q.sum, sum);
+  c.table = col || from || to || sum;
+  err = in.err;
+  return ok;
+}
+
+}  // namespace
+
 ToolResult FileTools::read(JsonObjectConst args, const Principal& who) {
-  std::string err, path;
+  std::string err;
+  ReadCall c;
   Target t;
   t.tool = "read_file";
-  if (!onlyKnown(args, t.tool, kReadArgs, err)) return ToolResult::fail(err);
-  ArgReader in{args, t.tool, kReadArgs, ""};
-  uint64_t offset = 0, limit = 0;
-  bool hasOffset = false, hasLimit = false;
-  if (!in.str("path", true, path) || !in.count("offset", offset, hasOffset) || !in.count("limit", limit, hasLimit))
-    return ToolResult::fail(in.err);
-  if (!resolve(args, t, err)) return ToolResult::fail(err);
-  if (hasLimit && limit < kFileReadMinLimit) return ToolResult::fail(fill(R::kLimitMin, {num(kFileReadMinLimit)}));
+  if (!onlyKnown(args, t.tool, kReadArgs, err) || !readArgs(args, c, err) || !resolve(args, t, err))
+    return ToolResult::fail(err);
+  if (c.hasLimit && c.limit < kFileReadMinLimit) return ToolResult::fail(fill(R::kLimitMin, {num(kFileReadMinLimit)}));
   if (!callerReads(who)) return ToolResult::fail(R::kNoCaller);
-  const size_t eff = size_t(hasLimit ? std::min<uint64_t>(limit, cfg_.readCap) : cfg_.readCap);
-  const std::string note = hasLimit && limit > cfg_.readCap ? fill(R::kLimitNote, {num(cfg_.readCap)}) : "";
-  if (t.rule.kind != Reserved::Skill) return readStored(t, who, offset, eff, note);
-  ToolResult r = readSkill(t, size_t(std::min<uint64_t>(offset, SIZE_MAX / 2)), eff);
+  const size_t eff = size_t(c.hasLimit ? std::min<uint64_t>(c.limit, cfg_.readCap) : cfg_.readCap);
+  const std::string note = c.hasLimit && c.limit > cfg_.readCap ? fill(R::kLimitNote, {num(cfg_.readCap)}) : "";
+  const size_t offset = size_t(std::min<uint64_t>(c.offset, SIZE_MAX / 2));
+  if (c.table) {
+    c.q.skipRows = offset;
+    c.q.limit = eff;
+    err = aids::checkCsvQuery(c.q);
+    return err.empty() ? readTable(t, who, c.q, note) : ToolResult::fail(err);
+  }
+  if (t.rule.kind != Reserved::Skill) return readStored(t, who, c.offset, eff, note);
+  ToolResult r = readSkill(t, offset, eff);
   if (r.success) r.output.insert(r.output.find('\n'), note);
   return r;
 }
 
+// The lookup and the kind checks every text read makes: a file this caller reads, stored,
+// not a PDF, an image, audio or binary data. False with err.
+bool FileTools::textFile(Target& t, const Principal& who, std::string& err) {
+  int state = 0;
+  if (!lookup(t, who, state)) return (err = R::kNoCard).empty();
+  if (state != 1) return (err = fill(R::kNoFile, {t.path()})).empty();
+  const FileKind kind = fileKindForName(t.sp.name);
+  if (isPdf(t.sp.name)) return (err = fill(R::kPdf, {t.path()})).empty();
+  if (kind == FileKind::Image || kind == FileKind::Audio)
+    return (err = fill(R::kNotText, {t.path(), fileKindName(kind)})).empty();
+  std::string head;
+  if (!readSpan(t, 0, std::min<uint64_t>(t.entry.bytes, kTextSniffBytes), head)) return (err = R::kCardRead).empty();
+  if (!fileReadableAsText(t.sp.name, head)) return (err = fill(R::kNotText, {t.path(), R::kBinary})).empty();
+  return true;
+}
+
 ToolResult FileTools::readStored(Target& t, const Principal& who, uint64_t offset, size_t limit,
                                  const std::string& note) {
-  int state = 0;
-  if (!lookup(t, who, state)) return ToolResult::fail(R::kNoCard);
-  if (state != 1) return ToolResult::fail(fill(R::kNoFile, {t.path()}));
+  std::string err, window, last;
+  if (!textFile(t, who, err)) return ToolResult::fail(err);
   const uint64_t size = t.entry.bytes;
-  const FileKind kind = fileKindForName(t.sp.name);
-  if (isPdf(t.sp.name)) return ToolResult::fail(fill(R::kPdf, {t.path()}));
-  if (kind == FileKind::Image || kind == FileKind::Audio)
-    return ToolResult::fail(fill(R::kNotText, {t.path(), fileKindName(kind)}));
   if (offset > size) return ToolResult::fail(fill(R::kPastEnd, {num(offset), num(size)}));
-  std::string window, head;
   if (!readSpan(t, offset, std::min<uint64_t>(size, offset + limit), window)) return ToolResult::fail(R::kCardRead);
-  const uint64_t sniff = std::min<uint64_t>(size, kTextSniffBytes);
-  if (offset == 0 && window.size() >= sniff) head = window.substr(0, size_t(sniff));
-  else if (!readSpan(t, 0, sniff, head)) return ToolResult::fail(R::kCardRead);
-  if (!fileReadableAsText(t.sp.name, head)) return ToolResult::fail(fill(R::kNotText, {t.path(), R::kBinary}));
-  const size_t cut = pageCut(window, limit, offset + window.size() >= size);
+  const bool atEnd = offset + window.size() >= size;
+  if (atEnd && !window.empty()) last = window.substr(window.size() - 1);
+  else if (size && !readSpan(t, size - 1, size, last)) return ToolResult::fail(R::kCardRead);
+  const size_t cut = pageCut(window, limit, atEnd);
   Page p;
   p.haveWhole = offset == 0 && window.size() == size;
   if (p.haveWhole) p.whole = window;
   countFile(t, p);
   std::string line = readHeader(t.path(), size, p.lines, p.hash, offset, offset + cut) + note;
   if (t.sp.changed) line += fill(R::kAskedNote, {shown(t.asked)});
+  if (aids::endsTorn(size, last.empty() ? '\n' : last[0])) line += fill(R::kTornNote, {aids::kTornTail});
   return ToolResult::ok(pageOf(line, window, cut, offset, size));
+}
+
+namespace {
+
+// The stored file as file_aids.h reads it: one card-lock hold per call, hashed as it goes.
+struct CardSource : aids::AidSource {
+  FileToolsIo& io;
+  const StorePath& sp;
+  uint64_t hash = kFnvBasis;
+  std::string piece;
+  CardSource(FileToolsIo& i, const StorePath& p) : io(i), sp(p) {}
+  // Past the stored size is the end of the file (a short read), so a file that shrank under
+  // an edit reads as changed, never as a card fault.
+  bool readAt(uint64_t offset, size_t len, char* out, size_t& got) override {
+    bool ok = false;
+    got = 0;
+    piece.clear();
+    const auto read = [&] {
+      const FileEntry* e = io.index().find(sp.project, sp.name);
+      const uint64_t size = e ? e->bytes : 0;
+      ok = offset >= size || io.readAt(sp.project, sp.name, offset, size_t(std::min<uint64_t>(len, size - offset)), piece);
+      if (offset >= size) piece.clear();
+    };
+    if (!io.locked(read) || !ok) return false;
+    got = std::min(piece.size(), len);
+    std::memcpy(out, piece.data(), got);
+    hash = fnvContinue(hash, std::string_view(out, got));
+    return true;
+  }
+};
+
+// An approved skill's text as a source (read_file on skills/<id>.md with column or sum).
+struct TextSource : aids::AidSource {
+  std::string_view text;
+  explicit TextSource(std::string_view t) : text(t) {}
+  bool readAt(uint64_t offset, size_t len, char* out, size_t& got) override {
+    got = offset < text.size() ? std::min(len, size_t(text.size() - offset)) : 0;
+    std::memcpy(out, text.data() + std::min<uint64_t>(offset, text.size()), got);
+    return true;
+  }
+};
+
+}  // namespace
+
+// read_file with column/from/to/sum: the CSV scan, then "<path> size=.. lines=.. sha8=.." and
+// the shown rows with the totals' tail (file_aids.h's renderCsvRead).
+ToolResult FileTools::readTable(Target& t, const Principal& who, const aids::CsvQuery& q, const std::string& note) {
+  std::string err, path = t.path(), body;
+  uint64_t size = 0, hash = 0;
+  aids::CsvScanOutcome o;
+  if (t.rule.kind == Reserved::Skill) {
+    if (t.rule.skillId.empty() || !io_.skillBody(t.rule.skillId, body))
+      return ToolResult::fail(fill(R::kNoSkill, {t.rule.skillId}));
+    TextSource src(body);
+    path = "skills/" + t.rule.skillId + ".md";
+    size = body.size();
+    hash = hashOf(body);
+    o = aids::scanCsv(src, size, path, q);
+  } else {
+    if (!textFile(t, who, err)) return ToolResult::fail(err);
+    CardSource src(io_, t.sp);
+    size = t.entry.bytes;
+    o = aids::scanCsv(src, size, path, q);
+    hash = t.entry.hash ? t.entry.hash : src.hash;
+  }
+  if (!o.ok) return ToolResult::fail(o.error);
+  std::string line = fill(R::kTableHead, {path, num(o.result.bytes), num(o.result.lines), sha8Of(hash)}) + note;
+  if (t.sp.changed) line += fill(R::kAskedNote, {shown(t.asked)});
+  return ToolResult::ok(line + aids::renderCsvRead(q, o.result));
 }
 
 // ---- writes ----------------------------------------------------------------------------
@@ -633,57 +750,71 @@ std::string FileTools::linesNote(const Target& t, uint64_t size) {
   if (size > cfg_.lineCountMax) return std::string();
   std::string all;
   if (!readSpan(t, 0, size, all)) return std::string();
-  return fill(R::kLines, {num(countLines(all))});
+  return num(countLines(all));
 }
 
-ToolResult FileTools::appendText(Target& t, const std::string& text, const Principal& who) {
-  std::string err;
-  bool ok = false;
+// Step 1 of an append, one hold: the checks and room for `add` more bytes; before is the
+// stored size. False with err (no card is kNoCard).
+bool FileTools::appendRoom(Target& t, const Principal& who, uint64_t add, uint64_t& before, std::string& err) {
   WriteMode m;
   m.replace = true;
-  const auto newSize = [&] {
-    const FileEntry* cur = io_.index().find(t.sp.project, t.sp.name);
-    return uint64_t(cur ? cur->bytes : 0) + text.size();
-  };
-  // 1. The checks, and room (a binding may reclaim regenerable copies here).
+  bool ok = false;
   const bool card = io_.locked([&] {
-    ok = writeCheck(t, who, m, newSize(), err);
+    const FileEntry* cur = io_.index().find(t.sp.project, t.sp.name);
+    before = cur ? cur->bytes : 0;
     std::string why;
-    if (ok && !io_.roomFor(t.sp.project, t.sp.name, newSize(), why)) {
-      err = fill(R::kRoom, {why});
-      ok = false;
-    }
+    ok = writeCheck(t, who, m, before + add, err);
+    if (ok && !io_.roomFor(t.sp.project, t.sp.name, before + add, why)) ok = (err = fill(R::kRoom, {why})).empty();
   });
-  if (!card) return ToolResult::fail(R::kNoCard);
-  if (!ok) return ToolResult::fail(err);
-  // 2. One hold: the checks again, the append, the index entry.
-  bool fresh = false;
-  uint64_t size = 0;
+  if (!card) err = R::kNoCard;
+  return card && ok;
+}
+
+// Step 3, one hold: the checks again, the append, the index entry. size is the new size.
+bool FileTools::appendBytes(Target& t, const Principal& who, const std::string& bytes, bool& fresh, uint64_t& size,
+                            std::string& err) {
+  WriteMode m;
+  m.replace = true;
+  bool ok = false;
   io_.locked([&] {
-    size = newSize();
-    ok = writeCheck(t, who, m, size, err);
-    if (!ok) return;
     FileStore& s = io_.index();
     const FileEntry* cur = s.find(t.sp.project, t.sp.name);
-    if (!io_.append(t.sp.project, t.sp.name, text)) {
-      err = R::kCardWrite;
-      ok = false;
-      return;
-    }
+    size = uint64_t(cur ? cur->bytes : 0) + bytes.size();
+    if (!writeCheck(t, who, m, size, err)) return;
+    if (!io_.append(t.sp.project, t.sp.name, bytes)) return void(err = R::kCardWrite);
     fresh = cur == nullptr;
-    const uint64_t hash = cur ? (cur->hash ? fnvContinue(cur->hash, text) : 0) : hashOf(text);
+    const uint64_t hash = cur ? (cur->hash ? fnvContinue(cur->hash, bytes) : 0) : hashOf(bytes);
     const FileEntry e = entryAfter(cur, t.sp, who, size, hash, io_.now());
     t.sp.project = plainCopy(e.project);
     t.sp.name = plainCopy(e.name);
     std::string addErr;
     s.add(e, addErr);
+    ok = true;
   });
-  if (!ok) return ToolResult::fail(err);
+  return ok;
+}
+
+ToolResult FileTools::appendText(Target& t, const std::string& text, const Principal& who) {
+  std::string err, tail;
+  uint64_t before = 0, size = 0;
+  bool fresh = false;
+  if (!appendRoom(t, who, text.size(), before, err)) return ToolResult::fail(err);   // the commit checks the fence too
+  // Step 2, one hold: the file's last bytes, for the newline fence and the identical-line fact.
+  const uint64_t from = before - std::min<uint64_t>(before, aids::kAppendTailBytes);
+  if (before && !readSpan(t, from, before, tail)) return ToolResult::fail(R::kCardRead);
+  const bool fence = aids::endsTorn(before, tail.empty() ? '\n' : tail.back());
+  const std::string bytes = fence ? "\n" + text : text;
+  if (!appendBytes(t, who, bytes, fresh, size, err)) return ToolResult::fail(err);
   const std::string index = persisted();
-  std::string out = fill(R::kAppended, {num(text.size()), t.path(), num(size)}) + linesNote(t, size);
+  const std::string lines = linesNote(t, size);
+  std::string out = fill(R::kAppended, {num(bytes.size()), t.path(), num(size)});
+  if (!lines.empty()) out += fill(R::kLines, {lines});
   if (fresh) out += R::kNewFile;
   if (text.back() != '\n') out += R::kNoNewline;
   if (t.sp.changed) out += fill(R::kAskedSemi, {shown(t.asked)});
+  // The lines the file had before: what it has now, less the text's own.
+  const uint64_t had = lines.empty() ? 0 : std::stoull(lines) - countLines(text);
+  out += aids::appendFacts(tail, from == 0, before, had, text).note;
   return ToolResult::ok(out + index);
 }
 
@@ -703,77 +834,102 @@ ToolResult FileTools::append(JsonObjectConst args, const Principal& who) {
 
 namespace {
 
-// Where `old` starts in `body`, left to right, never overlapping.
-std::vector<size_t> matchesOf(const std::string& body, const std::string& old) {
-  std::vector<size_t> at;
-  for (size_t p = body.find(old); p != std::string::npos; p = body.find(old, p + old.size())) at.push_back(p);
-  return at;
-}
-
-std::string lineNumbers(const std::string& body, const std::vector<size_t>& at) {
-  std::string out;
-  for (size_t i = 0; i < at.size() && i < 5; i++)
-    out += (out.empty() ? "" : ", ") + num(1 + size_t(std::count(body.begin(), body.begin() + long(at[i]), '\n')));
-  return at.size() > 5 ? out + ", ..." : out;
-}
+// The part file and the commit as file_aids.h's edit writes them: 4 KB per hold; the swap
+// hold runs the binding's checks again (whose file, quota, room, unchanged since pass 1)
+// and updates the index entry with the new size and hash.
+struct EditSink : aids::AidSink {
+  FileToolsIo& io;
+  const StorePath& sp;
+  std::function<bool(uint64_t bytes, uint64_t hash, std::string& err)> commit;
+  std::function<bool(uint64_t bytes, std::string& err)> check;
+  uint64_t bytes = 0, hash = kFnvBasis;
+  std::string err;
+  EditSink(FileToolsIo& i, const StorePath& p) : io(i), sp(p) {}
+  bool partWrite(std::string_view b, bool first) override {
+    bool ok = false;
+    if (first) bytes = 0, hash = kFnvBasis;
+    if (!io.locked([&] { ok = io.partWrite(sp.project, sp.name, b, first); }) || !ok) return false;
+    bytes += b.size();
+    hash = fnvContinue(hash, b);
+    return true;
+  }
+  bool partSwap() override {
+    bool ok = false;
+    return io.locked([&] { ok = commit(bytes, hash, err); }) && ok;
+  }
+  void partDiscard() override {
+    io.locked([&] { io.partDiscard(sp.project, sp.name); });
+  }
+  bool admit(uint64_t newSize) override {
+    bool ok = false;
+    return io.locked([&] { ok = check(newSize, err); }) && ok;
+  }
+  std::string refusal() const override { return err; }
+};
 
 }  // namespace
 
-ToolResult FileTools::editText(Target& t, const std::string& oldText, const std::string& newText, bool all,
-                               const Principal& who) {
+ToolResult FileTools::editText(Target& t, const aids::EditRequest& e, const Principal& who) {
   int state = 0;
   if (!lookup(t, who, state)) return ToolResult::fail(R::kNoCard);
   if (state != 1) return ToolResult::fail(fill(R::kNoFile, {t.path()}));
   const uint32_t was = t.entry.bytes;
   if (was > cfg_.editMax) return ToolResult::fail(fill(R::kEditTooBig, {t.path(), num(was), num(cfg_.editMax)}));
-  std::string body;
-  if (!readSpan(t, 0, was, body)) return ToolResult::fail(R::kCardRead);
-  if (t.entry.hash && hashOf(body) != t.entry.hash) return ToolResult::fail(fill(R::kChanged, {t.path()}));
-  const std::vector<size_t> at = matchesOf(body, oldText);
-  if (at.empty()) return ToolResult::fail(fill(R::kNoMatch, {t.path(), num(was)}));
-  if (at.size() > 1 && !all)
-    return ToolResult::fail(fill(R::kManyMatches, {t.path(), num(at.size()), lineNumbers(body, at)}));
-  // The result's size, before it is built: it is never larger than edit_file takes.
-  const uint64_t after = uint64_t(body.size()) - at.size() * oldText.size() + at.size() * newText.size();
-  if (after > cfg_.editMax) return ToolResult::fail(fill(R::kEditTooBig, {t.path(), num(after), num(cfg_.editMax)}));
-  std::string out;
-  out.reserve(size_t(after));
-  size_t from = 0;
-  for (size_t p : at) {
-    out.append(body, from, p - from);
-    out += newText;
-    from = p + oldText.size();
-  }
-  out.append(body, from, std::string::npos);
   WriteMode m;
   m.replace = m.expect = true;
   m.bytes = was;
   m.hash = t.entry.hash;
   m.at = t.entry.createdAt;
-  const ToolResult w = writeBytes(t, out, who, m);
-  if (!w.success) return w;
-  const std::string index = w.output.find(R::kIndexNote) == std::string::npos ? "" : R::kIndexNote;
-  return ToolResult::ok(fill(R::kEdited, {num(at.size()), t.path(), num(out.size()), num(was), sha8Of(hashOf(out))}) +
-                        index);
+  std::string err;
+  bool ok = false;
+  if (!io_.locked([&] { ok = writeCheck(t, who, m, was, err); })) return ToolResult::fail(R::kNoCard);
+  if (!ok) return ToolResult::fail(err);
+  CardSource src(io_, t.sp);
+  EditSink sink(io_, t.sp);
+  sink.check = [&](uint64_t bytes, std::string& why) {
+    if (bytes > cfg_.editMax) return (why = fill(R::kEditTooBig, {t.path(), num(bytes), num(cfg_.editMax)})).empty();
+    std::string room;
+    if (!writeCheck(t, who, m, bytes, why)) return false;
+    if (!io_.roomFor(t.sp.project, t.sp.name, bytes, room)) return (why = fill(R::kRoom, {room})).empty();
+    return true;
+  };
+  sink.commit = [&](uint64_t bytes, uint64_t hash, std::string& why) {
+    if (!writeCheck(t, who, m, bytes, why)) return false;
+    std::string room;
+    if (!io_.roomFor(t.sp.project, t.sp.name, bytes, room)) return (why = fill(R::kRoom, {room})).empty();
+    if (!io_.partSwap(t.sp.project, t.sp.name)) return false;
+    FileStore& s = io_.index();
+    const FileEntry next = entryAfter(s.find(t.sp.project, t.sp.name), t.sp, who, bytes, hash, io_.now());
+    std::string addErr;
+    s.add(next, addErr);   // cannot refuse: writeCheck ran wouldExceed in this same hold
+    return true;
+  };
+  const aids::EditOutcome o = aids::editFile(src, sink, was, t.entry.hash, t.path(), e);
+  if (!o.ok) return ToolResult::fail(o.error);
+  return ToolResult::ok(aids::renderEdit(t.path(), o) + persisted());
 }
 
 ToolResult FileTools::edit(JsonObjectConst args, const Principal& who) {
-  std::string err, path, oldText, newText;
-  bool all = false;
+  std::string err, path;
+  aids::EditRequest e;
+  uint64_t line = 0;
+  bool hasLine = false;
   Target t;
   t.tool = "edit_file";
   if (!onlyKnown(args, t.tool, kEditArgs, err)) return ToolResult::fail(err);
   ArgReader in{args, t.tool, kEditArgs, ""};
-  if (!in.str("path", true, path) || !in.str("old", true, oldText) || !in.str("new", true, newText) ||
-      !in.flag("all", all))
+  if (!in.str("path", true, path) || !in.str("old", true, e.oldText) || !in.str("new", true, e.newText) ||
+      !in.flag("all", e.all) || !in.count("line", line, hasLine))
     return ToolResult::fail(in.err);
+  if (hasLine && (line == 0 || line > UINT32_MAX)) return ToolResult::fail(R::kNotLine);
+  e.line = uint32_t(line);
   if (!resolve(args, t, err)) return ToolResult::fail(err);
-  if (oldText.empty()) return ToolResult::fail(R::kEmptyOld);
-  if (oldText == newText) return ToolResult::fail(R::kSame);
-  if (!withinCap("old", oldText.size(), cfg_.contentCap, err) || !withinCap("new", newText.size(), cfg_.contentCap, err) ||
-      !writeTarget(who, t.rule, t.path(), err))
+  err = aids::checkEdit(e);
+  if (!err.empty()) return ToolResult::fail(err);
+  if (!withinCap("old", e.oldText.size(), cfg_.contentCap, err) ||
+      !withinCap("new", e.newText.size(), cfg_.contentCap, err) || !writeTarget(who, t.rule, t.path(), err))
     return ToolResult::fail(err);
-  return editText(t, oldText, newText, all, who);
+  return editText(t, e, who);
 }
 
 // ---- list ------------------------------------------------------------------------------

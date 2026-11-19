@@ -34,6 +34,7 @@
 #include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/file_tools.h"
 #include "nimbus/orch/path_rules.h"
+#include "nimbus/orch/psram_alloc.h"
 #include "nimbus/orch/rbac.h"
 #include "nimbus/utf8.h"
 
@@ -179,7 +180,7 @@ FileToolDecl measuredDecl(const char* tool, size_t cap) {
   const std::string t = tool;
   if (t == "read_file")
     return {"Read a file by path (project/name) with exact paging.",
-            R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]})"};
+            R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"sum":{"type":"array","items":{"type":"string"}}},"required":["path"]})"};
   if (t == "write_file")
     return {"Create or replace a file (project/name).",
             R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string","maxLength":)" +
@@ -190,7 +191,7 @@ FileToolDecl measuredDecl(const char* tool, size_t cap) {
             R"({"type":"object","properties":{"path":{"type":"string"},"text":{"type":"string"}},"required":["path","text"]})"};
   if (t == "edit_file")
     return {"Exact find and replace in a file.",
-            R"({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"}},"required":["path","old","new"]})"};
+            R"({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"},"line":{"type":"integer"}},"required":["path","old","new"]})"};
   return {"List files newest first.", R"({"type":"object","properties":{"prefix":{"type":"string"},"after":{"type":"string"}}})"};
 }
 
@@ -370,7 +371,9 @@ static void test_read_states_size_lines_and_sha8() {
   seed(rig.io, "notes", "a.md", body);
   const ToolResult r = rig.call("read_file", R"({"path":"notes/a.md"})");
   TEST_ASSERT_TRUE(r.success);
-  const std::string want = "notes/a.md size=13 lines=3 sha8=" + blobHash(body).substr(0, 8) + " bytes 0-13\n" + body;
+  // The last line has no line end: the head says a write may have been cut short (file_aids.h kTornTail).
+  const std::string want = "notes/a.md size=13 lines=3 sha8=" + blobHash(body).substr(0, 8) +
+                           " bytes 0-13; last line has no newline (a write may have been cut short)\n" + body;
   TEST_ASSERT_EQUAL_STRING(want.c_str(), r.output.c_str());
   // The stored path is stated when the asked one was made valid; letter case follows the store.
   seed(rig.io, "my-notes", "Shopping-List.md", "milk\n");
@@ -438,9 +441,13 @@ static void test_append_only_appends() {
         const ToolResult r =
             rig.call("append_file", "{\"path\":\"food/meals.csv\",\"text\":" + jsonStr(text) + "}");
         TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
-        want += text;
+        // The newline fence: a file that ends without a line end gets one before the text.
+        const bool fence = !want.empty() && want.back() != '\n';
+        want += (fence ? "\n" : "") + text;
         TEST_ASSERT_TRUE_MESSAGE(cardOf(rig.io, "food/meals.csv") == want, r.output.c_str());
-        const std::string head = "appended " + std::to_string(text.size()) + " B to food/meals.csv; file is " +
+        TEST_ASSERT_EQUAL_MESSAGE(fence, r.output.find("; added a newline before the text") != std::string::npos,
+                                  r.output.c_str());
+        const std::string head = "appended " + std::to_string(text.size() + fence) + " B to food/meals.csv; file is " +
                                  std::to_string(want.size()) + " B";
         TEST_ASSERT_EQUAL_MESSAGE(0, int(r.output.find(head)), r.output.c_str());
         TEST_ASSERT_EQUAL(want.back() != '\n', r.output.find("ends without a newline") != std::string::npos);
@@ -456,7 +463,8 @@ static void test_append_only_appends() {
       }
     }
   }
-  TEST_MESSAGE(("property: " + std::to_string(checked) + " appends, each the file before plus the text").c_str());
+  TEST_MESSAGE(("property: " + std::to_string(checked) +
+                " appends, each the file before plus the text (with a line end first when it had none)").c_str());
 }
 
 static void test_append_reports_lines() {
@@ -485,10 +493,10 @@ struct ToolCase {
   std::vector<const char*> accepted;
 };
 const std::vector<ToolCase> kTools = {
-    {"read_file", R"("path":"notes/a.md")", {"path", "offset", "limit"}},
+    {"read_file", R"("path":"notes/a.md")", {"path", "offset", "limit", "column", "from", "to", "sum"}},
     {"write_file", R"("path":"notes/new.md","content":"hi")", {"path", "content", "if_exists"}},
     {"append_file", R"("path":"notes/a.md","text":"more")", {"path", "text"}},
-    {"edit_file", R"("path":"notes/a.md","old":"hello","new":"bye")", {"path", "old", "new", "all"}},
+    {"edit_file", R"("path":"notes/a.md","old":"hello","new":"bye")", {"path", "old", "new", "all", "line"}},
     {"list_files", R"("prefix":"notes")", {"prefix", "after"}},
 };
 }  // namespace
@@ -589,14 +597,18 @@ static void test_edit_file_exact_find_and_replace() {
   TEST_ASSERT_FALSE(none.success);
   const ToolResult two = rig.call("edit_file", R"({"path":"notes/a.md","old":"milk","new":"oat milk"})");
   TEST_ASSERT_FALSE(two.success);
-  TEST_ASSERT_TRUE_MESSAGE(two.error.find("2 times (lines 1, 3)") != std::string::npos, two.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("old is in notes/a.md 2 times, at lines 1, 3; line picks one, all=true replaces all",
+                           two.error.c_str());
   TEST_ASSERT_TRUE(cardOf(rig.io, "notes/a.md") == "milk\neggs\nmilk\nbread\n");
   const ToolResult all = rig.call("edit_file", R"({"path":"notes/a.md","old":"milk","new":"oat milk","all":true})");
   TEST_ASSERT_TRUE_MESSAGE(all.success, all.error.c_str());
   const std::string want = "oat milk\neggs\noat milk\nbread\n";
   TEST_ASSERT_TRUE(cardOf(rig.io, "notes/a.md") == want);
-  TEST_ASSERT_EQUAL_STRING(("replaced 2 in notes/a.md; file is 29 B (was 21 B), sha8=" + blobHash(want).substr(0, 8)).c_str(),
-                           all.output.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      ("replaced 2 in notes/a.md at lines 1, 3; file is 29 B (was 21 B), 4 lines, sha8=" + blobHash(want).substr(0, 8) +
+       "; old is still at lines 1, 3")   // "oat milk" holds "milk"
+          .c_str(),
+      all.output.c_str());
   const ToolResult one = rig.call("edit_file", R"({"path":"notes/a.md","old":"eggs\n","new":""})");
   TEST_ASSERT_TRUE(one.success);
   TEST_ASSERT_TRUE(cardOf(rig.io, "notes/a.md") == "oat milk\noat milk\nbread\n");
@@ -967,7 +979,7 @@ static void test_every_hold_is_short_at_the_caps() {
       for (const Op& o : h) {
         if (o.kind == 'r') TEST_ASSERT_TRUE(o.bytes <= kFileReadSlice);
         if (o.kind == 'w') TEST_ASSERT_TRUE(o.bytes <= kFileWriteSlice);
-        if (o.kind == 'a') TEST_ASSERT_TRUE(o.bytes <= rig.cfg.contentCap);
+        if (o.kind == 'a') TEST_ASSERT_TRUE(o.bytes <= rig.cfg.contentCap + 1);   // + the newline fence
       }
   }
 }
@@ -994,7 +1006,7 @@ static void test_a_card_fault_at_every_step_leaves_old_or_new() {
   const std::vector<W> writes = {
       {"write_file", "{\"path\":\"notes/a.md\",\"if_exists\":\"replace\",\"content\":" + jsonStr(std::string(10000, 'n')) + "}",
        std::string(10000, 'n')},
-      {"append_file", R"({"path":"notes/a.md","text":"line three\n"})", old + "line three\n"},
+      {"append_file", R"({"path":"notes/a.md","text":"line three\n"})", old + "\nline three\n"},   // fenced
       {"edit_file", R"({"path":"notes/a.md","old":"two","new":"2"})", "line one\nline 2\n" + std::string(9000, 'o')},
       {"write_file", "{\"path\":\"notes/b.md\",\"content\":" + jsonStr(std::string(5000, 'n')) + "}", std::string(5000, 'n')},
       {"append_file", R"({"path":"notes/b.md","text":"first\n"})", "first\n"},
@@ -1077,6 +1089,136 @@ static void test_registration_states_the_accepted_arguments() {
   }
 }
 
+// ---- the general file aids through the tools (RB-REC4, file_aids.h) ------------------------
+
+namespace {
+long gAidAllocs = 0, gAidRefuseAt = -1;
+void* aidAlloc(size_t n) { return ++gAidAllocs == gAidRefuseAt ? nullptr : std::malloc(n ? n : 1); }
+void aidFree(void* p) { std::free(p); }
+const char* kLog =
+    "# kept by hand\n"
+    "date,occasion,note,qty,amount\n"
+    "2026-11-18,dinner,soup,1,4.5\n"
+    "2026-11-19,lunch,\"rice, beans\",2,7.25\n"
+    "2026-11-19,lunch,rice, beans,2,7.25\n"
+    "#was: 2026-11-19,lunch,rice,1,3\n"
+    "2026-11-19,tea,green,1,\n"
+    "2026-11-19,tea,green,1,\n"
+    "2026-11-20,breakfast,oats,1,2\n";
+}  // namespace
+
+static void test_read_file_filters_and_totals_csv_rows() {
+  Rig rig;
+  seed(rig.io, "log", "2026.csv", kLog);
+  const ToolResult r =
+      rig.call("read_file", R"({"path":"log/2026.csv","column":"date","from":"2026-11-19","sum":["amount","qty"]})");
+  TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      ("log/2026.csv size=" + std::to_string(std::strlen(kLog)) + " lines=9 sha8=" +
+       blobHash(kLog).substr(0, 8) +
+       "\nL2 date,occasion,note,qty,amount\nL4 2026-11-19,lunch,\"rice, beans\",2,7.25\nL7 2026-11-19,tea,green,1,\n"
+       "L8 2026-11-19,tea,green,1,\n"
+       "rows 3 of 6 where date 2026-11-19..2026-11-19; sum amount=7.25 qty=4; 2 comment lines skipped (lines 1, 6); "
+       "blank 2 (amount line 7, amount line 8); skipped 1 (line 5: field count is not the header's 5); "
+       "identical lines 1 group (7=8)")
+          .c_str(),
+      r.output.c_str());
+  // Every read is 4 KB per hold, one card op each.
+  for (const auto& h : rig.io.holds) {
+    TEST_ASSERT_TRUE(h.size() <= 1);
+    for (const Op& o : h)
+      if (o.kind == 'r') TEST_ASSERT_TRUE(o.bytes <= aids::kAidChunk);
+  }
+  // The errors state the fact and read nothing more.
+  TEST_ASSERT_EQUAL_STRING("sum is not a list of column names",
+                           rig.call("read_file", R"({"path":"log/2026.csv","sum":"amount"})").error.c_str());
+  TEST_ASSERT_EQUAL_STRING("column needs from", rig.call("read_file", R"({"path":"log/2026.csv","column":"date"})").error.c_str());
+  TEST_ASSERT_EQUAL_STRING("column day is not in the header: date,occasion,note,qty,amount",
+                           rig.call("read_file", R"({"path":"log/2026.csv","column":"day","from":"x"})").error.c_str());
+  TEST_ASSERT_EQUAL_STRING("no file log/none.csv", rig.call("read_file", R"({"path":"log/none.csv","sum":["a"]})").error.c_str());
+  // offset pages the shown rows (never the sums); next_offset follows the rows.
+  const ToolResult p = rig.call("read_file", R"({"path":"log/2026.csv","sum":["amount"],"limit":16})");
+  TEST_ASSERT_TRUE(p.success);
+  TEST_ASSERT_TRUE_MESSAGE(p.output.find("sum amount=13.75") != std::string::npos, p.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(p.output.find("\nnext_offset=1") != std::string::npos, p.output.c_str());
+}
+
+static void test_edit_file_line_picks_one_of_identical_rows() {
+  Rig rig;
+  seed(rig.io, "log", "2026.csv", kLog);
+  const ToolResult many = rig.call("edit_file", R"({"path":"log/2026.csv","old":"2026-11-19,tea,green,1,","new":""})");
+  TEST_ASSERT_EQUAL_STRING("old is in log/2026.csv 2 times, at lines 7, 8; line picks one, all=true replaces all",
+                           many.error.c_str());
+  const ToolResult one =
+      rig.call("edit_file", R"({"path":"log/2026.csv","old":"2026-11-19,tea,green,1,","new":"","line":8})");
+  TEST_ASSERT_TRUE_MESSAGE(one.success, one.error.c_str());
+  const std::string now = cardOf(rig.io, "log/2026.csv");
+  TEST_ASSERT_EQUAL(0, int(one.output.find("replaced 1 in log/2026.csv at line 8; file is " + std::to_string(now.size()))));
+  TEST_ASSERT_TRUE_MESSAGE(one.output.find("; lines that were 9 and later are now 1 lower; old is still at line 7") !=
+                               std::string::npos,
+                           one.output.c_str());
+  // A stale number fails with the current lines and changes nothing.
+  const ToolResult stale =
+      rig.call("edit_file", R"({"path":"log/2026.csv","old":"2026-11-19,tea,green,1,","new":"x","line":8})");
+  TEST_ASSERT_EQUAL_STRING("no match on line 8; matches at line 7", stale.error.c_str());
+  TEST_ASSERT_TRUE(cardOf(rig.io, "log/2026.csv") == now);
+  TEST_ASSERT_EQUAL_STRING("line is not a whole number, 1 or more",
+                           rig.call("edit_file", R"({"path":"log/2026.csv","old":"a","new":"b","line":0})").error.c_str());
+  TEST_ASSERT_EQUAL_STRING("line picks one match and all=true replaces every match; not both",
+                           rig.call("edit_file", R"({"path":"log/2026.csv","old":"a","new":"b","line":2,"all":true})")
+                               .error.c_str());
+  // The index holds the new size and hash.
+  rig.io.locked([&] {
+    const FileEntry* e = rig.io.store.find("log", "2026.csv");
+    TEST_ASSERT_EQUAL(int(now.size()), int(e->bytes));
+    TEST_ASSERT_TRUE(e->hash == strtoull(blobHash(now).c_str(), nullptr, 16));
+  });
+}
+
+static void test_append_file_states_the_fence_and_identical_lines() {
+  Rig rig;
+  seed(rig.io, "log", "2026.csv", "date,amount\n2026-11-19,5\n2026-11-19,6");
+  const ToolResult r = rig.call("append_file", R"({"path":"log/2026.csv","text":"2026-11-19,5\n"})");
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_EQUAL_STRING(
+      "appended 14 B to log/2026.csv; file is 51 B, 4 lines; added a newline before the text; identical to line 2",
+      r.output.c_str());
+  TEST_ASSERT_TRUE(cardOf(rig.io, "log/2026.csv") == "date,amount\n2026-11-19,5\n2026-11-19,6\n2026-11-19,5\n");
+}
+
+static void test_a_refused_allocation_in_a_sum_or_a_line_edit_changes_nothing() {
+  for (int tool = 0; tool < 2; ++tool) {
+    const char* call = tool == 0 ? R"({"path":"log/2026.csv","sum":["amount"]})"
+                                 : R"({"path":"log/2026.csv","old":"2026-11-19,tea,green,1,","new":"","line":8})";
+    const char* name = tool == 0 ? "read_file" : "edit_file";
+    long need = 0;
+    {
+      Rig rig;
+      seed(rig.io, "log", "2026.csv", kLog);
+      gAidAllocs = 0;
+      gAidRefuseAt = -1;
+      setWorkingAllocators(aidAlloc, aidFree);
+      TEST_ASSERT_TRUE(rig.call(name, call).success);
+      need = gAidAllocs;
+      setWorkingAllocators(nullptr, nullptr);
+    }
+    TEST_ASSERT_TRUE(need >= 2);
+    for (long k = 1; k <= need; ++k) {
+      Rig rig;
+      seed(rig.io, "log", "2026.csv", kLog);
+      gAidAllocs = 0;
+      gAidRefuseAt = k;
+      setWorkingAllocators(aidAlloc, aidFree);
+      const ToolResult r = rig.call(name, call);
+      setWorkingAllocators(nullptr, nullptr);
+      TEST_ASSERT_FALSE(r.success);
+      TEST_ASSERT_EQUAL_STRING(aids::kAidNoMemory, r.error.c_str());
+      TEST_ASSERT_TRUE(cardOf(rig.io, "log/2026.csv") == kLog);
+      TEST_ASSERT_EQUAL(0, int(rig.io.parts.size()));
+    }
+  }
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_following_next_offset_rebuilds_every_file_at_every_budget);
@@ -1100,5 +1242,9 @@ int main() {
   RUN_TEST(test_the_hold_model_catches_the_old_whole_file_save);
   RUN_TEST(test_a_card_fault_at_every_step_leaves_old_or_new);
   RUN_TEST(test_registration_states_the_accepted_arguments);
+  RUN_TEST(test_read_file_filters_and_totals_csv_rows);
+  RUN_TEST(test_edit_file_line_picks_one_of_identical_rows);
+  RUN_TEST(test_append_file_states_the_fence_and_identical_lines);
+  RUN_TEST(test_a_refused_allocation_in_a_sum_or_a_line_edit_changes_nothing);
   return UNITY_END();
 }

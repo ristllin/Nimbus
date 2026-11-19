@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "nimbus/orch/file_aids.h"       // the CSV scan, the line-picked edit, the append facts
 #include "nimbus/orch/file_store.h"      // FileStore - the index, ownership and quotas
 #include "nimbus/orch/path_rules.h"      // StorePath, PathRule - the path rule
 #include "nimbus/orch/tool_registry.h"   // ToolRegistry, ToolResult, Principal
@@ -17,7 +18,13 @@
 //     falls on a UTF-8 boundary, after a line end when one sits in the page's second half;
 //   - write_file creates a file, or replaces one only when if_exists=replace;
 //   - append_file only appends (it never replaces, re-keys or skips a row);
-//   - edit_file replaces exact text, and zero matches or several without all=true are errors;
+//   - read_file with column/from/to/sum filters CSV rows and totals named columns on the
+//     device (file_aids.h's scan: exact decimals, every row left out named by line);
+//   - edit_file replaces exact text, and zero matches or several without all=true or line
+//     are errors; line picks the whole-line match at that line (file_aids.h's editFile,
+//     streamed, results with current line numbers);
+//   - append_file writes a newline first when the file does not end in one, and names an
+//     appended line identical to one of the file's last 64 lines;
 //   - list_files lists newest first, 40 at a time, with the true remainder;
 //   - every write returns what changed; an unknown argument is an error naming the
 //     accepted ones; nothing refuses on a heuristic; paths follow path_rules.h.
@@ -138,12 +145,16 @@ class FileTools {
   void countFile(const Target& t, Page& p);
   ToolResult readSkill(const Target& t, size_t offset, size_t limit);
   ToolResult readStored(Target& t, const Principal& who, uint64_t offset, size_t limit, const std::string& note);
+  ToolResult readTable(Target& t, const Principal& who, const aids::CsvQuery& q, const std::string& note);
+  bool textFile(Target& t, const Principal& who, std::string& err);
   bool writeCheck(Target& t, const Principal& who, const WriteMode& m, uint64_t newBytes, std::string& err);
   bool writePart(const Target& t, const std::string& bytes);
   ToolResult writeBytes(Target& t, const std::string& bytes, const Principal& who, const WriteMode& m);
   ToolResult appendText(Target& t, const std::string& text, const Principal& who);
-  ToolResult editText(Target& t, const std::string& oldText, const std::string& newText, bool all,
-                      const Principal& who);
+  bool appendRoom(Target& t, const Principal& who, uint64_t add, uint64_t& before, std::string& err);
+  bool appendBytes(Target& t, const Principal& who, const std::string& bytes, bool& fresh, uint64_t& size,
+                   std::string& err);
+  ToolResult editText(Target& t, const aids::EditRequest& e, const Principal& who);
   std::string linesNote(const Target& t, uint64_t size);
   std::string persisted();
 

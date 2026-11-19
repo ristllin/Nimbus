@@ -80,8 +80,8 @@ struct ToolDecl {
 inline constexpr ToolDecl kTools[] = {
     {"read_file",
      "Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; "
-     "next_offset when more remains.",
-     R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]})",
+     "next_offset when more remains. CSV: column with from/to keeps matching rows; sum totals named columns.",
+     R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"sum":{"type":"array","items":{"type":"string"}}},"required":["path"]})",
      nullptr},
     {"write_file",
      "Create or replace a file (project/name). if_exists: fail (default) or replace. Returns the stored path, size "
@@ -94,9 +94,9 @@ inline constexpr ToolDecl kTools[] = {
      R"({"type":"object","properties":{"path":{"type":"string"},"text":{"type":"string"}},"required":["path","text"]})",
      nullptr},
     {"edit_file",
-     "Exact find and replace in a file. Zero matches, or several without all=true, is an error. Returns the number "
-     "replaced and the new size.",
-     R"({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"}},"required":["path","old","new"]})",
+     "Exact find and replace in a file. Zero matches, or several without all=true or line, is an error that lists "
+     "the match lines. line picks one. Returns the number replaced and the new size.",
+     R"({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"},"line":{"type":"integer"}},"required":["path","old","new"]})",
      nullptr},
     {"list_files",
      "List files newest first under a prefix (a project, or project/start of a name), up to 40, with a true count "

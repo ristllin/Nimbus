@@ -74,6 +74,15 @@ class AidSink {
   virtual bool partSwap() = 0;
   // Remove the part file (after any failure).
   virtual void partDiscard() = 0;
+  // Before any part write: may the edit leave a file of newSize bytes (the exact size pass
+  // 1 computed)? A binding checks ownership, quota and room here. False: refusal() says why.
+  virtual bool admit(uint64_t newSize) {
+    (void)newSize;
+    return true;
+  }
+  // Why the last admit or partSwap refused, when it was not a card fault (a binding's
+  // ownership, quota or room check); "" means "card write failed; nothing changed".
+  virtual std::string refusal() const { return std::string(); }
 };
 
 // ---- exact decimals ---------------------------------------------------------------
@@ -245,6 +254,7 @@ struct EditRequest {
   bool all = false;
   uint32_t line = 0;      // 0 = no pick
   std::string ifSha8;     // "" = no check; else 8 lowercase hex (sha8Of)
+  uint64_t maxSize = 0;   // 0 = none; else the largest file the edit may leave (checked before any write)
 };
 // "" when the request is well formed (old not empty, old != new, line with no all).
 std::string checkEdit(const EditRequest& e);
@@ -281,6 +291,7 @@ EditOutcome editFile(AidSource& src, AidSink& sink, uint64_t size, uint64_t hash
 //   old is part of line <l>, not the whole line; line <l> is: <text>
 //   <path> changed since sha8=<asked> (now <hex>); nothing written
 //   <path> changed during the edit; nothing written
+//   <path> would be <N> B; an edit here leaves files up to <M> B
 //   card read failed | card write failed; nothing changed | kAidNoMemory
 std::string renderEdit(const std::string& path, const EditOutcome& o);
 

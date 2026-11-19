@@ -250,6 +250,8 @@ struct Plan {
   std::string quote;       // the picked line's text (for the part-of error)
   uint64_t bytes = 0, hash = 0, fileLines = 0;
   uint64_t pickLine = 0;
+  uint64_t takeAll = 0, takeFirst = 0, takePick = 0;   // line-end bytes a removal takes
+  uint64_t newSize = 0;                                 // the size the edit leaves, exactly
 };
 
 bool takesLineEnd(const EditRequest& e) {
@@ -267,6 +269,8 @@ std::string planError(const std::string& path, const EditRequest& e, const Plan&
   if (e.line && p.pick < 0) return join({T::kNoMatchOn, Num(e.line), "; matches at ", renderLines(p.lines)});
   if (!e.line && !e.all && p.count > 1)
     return join({T::kManyA, path, " ", Num(p.count), " times, at ", renderLines(p.lines), T::kManyB});
+  if (e.maxSize && p.newSize > e.maxSize)
+    return join({path, " would be ", Num(p.newSize), " B; an edit here leaves files up to ", Num(e.maxSize), " B"});
   return "";
 }
 
@@ -306,8 +310,11 @@ struct EditRun : FindSink {
   }
   bool noteMatch(const Hit& h) {
     const bool here = e.line && h.line == e.line;
+    const uint64_t take = h.whole && takesLineEnd(e) ? h.lineEnd : 0;
     plan.onLine |= here;
-    if (here && h.lineStart && h.whole) plan.pick = long(plan.count);
+    plan.takeAll += take;
+    if (!plan.count) plan.takeFirst = take;
+    if (here && h.lineStart && h.whole) plan.pick = long(plan.count), plan.takePick = take;
     listAdd(plan.lines, uint32_t(h.line));
     ++plan.count;
     return false;
@@ -321,7 +328,12 @@ struct EditRun : FindSink {
     plan.fileLines = rawLine - 1 + (plan.bytes && in.prev != '\n' ? 1 : 0);
     o.oldSize = plan.bytes;
     if (hash && hash != plan.hash) return fail(path + T::kChanged);
+    const uint64_t k = e.all ? plan.count : 1;
+    const uint64_t taken = e.all ? plan.takeAll : (e.line ? plan.takePick : plan.takeFirst);
+    plan.newSize = plan.bytes + k * e.newText.size() - k * e.oldText.size() - taken;
     o.error = planError(path, e, plan);
+    if (o.error.empty() && !sink.admit(plan.newSize))
+      o.error = sink.refusal().empty() ? std::string(T::kCardWrite) : sink.refusal();
     return o.error.empty();
   }
 
@@ -362,7 +374,7 @@ struct EditRun : FindSink {
     const bool read = pass(src, in, r, *this);
     const bool wrote = read && w.flush(true);
     std::string err = writeError(read, wrote, r);
-    if (err.empty() && !sink.partSwap()) err = T::kCardWrite;
+    if (err.empty() && !sink.partSwap()) err = sink.refusal().empty() ? std::string(T::kCardWrite) : sink.refusal();
     if (!err.empty()) {
       sink.partDiscard();
       return fail(err);
