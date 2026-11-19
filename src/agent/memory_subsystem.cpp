@@ -1,4 +1,5 @@
 #include "memory_subsystem.h"
+#include "nimbus/orch/recall_warm.h"   // lane RB-TS1: the recall embedding made during the hold
 
 #include "prefs_subsystem.h"   // lane J: the standing-rules store + tools
 
@@ -2147,6 +2148,49 @@ std::vector<std::string> recall(const String& queryText, int k,
   return recallFor(queryText, k, who).hits;
 }
 
+// ---- the recall embedding made ahead of its turn (lane RB-TS1) ------------------
+// One slot: the text, its vector and the embedder that made it. Written by warmRecall
+// during the settle hold (Telegram task) and consumed by the turn's recallFor, under the
+// card lock (another task's recall may look).
+// The rules: nimbus/orch/recall_warm.h.
+namespace {
+nimbus::orch::RecallWarm g_warm;
+
+std::string embedderNow() {
+  return std::string(store::embedProvider().c_str()) + "|" + store::embedModel().c_str() + "|" +
+         std::to_string(store::embedDims());
+}
+}  // namespace
+
+void warmRecall(const String& text) {
+  if (nimbus::fault::active(nimbus::fault::MEMORY) || text.length() == 0) return;
+  {
+    Lock g;   // g_warm: any task's recall may read it (recallFor)
+    if (g_warm.has(std::string(text.c_str()))) return;   // made already
+    repickLockedIfDue();
+    if (g_vec.size() == 0 && g_pending.empty()) return;   // the turn would not embed either
+  }
+  if (!embeddings::available() || !recallHeapOk()) return;
+  {
+    Lock g;
+    if (g_park.blocked(millis())) return;
+  }
+  const uint32_t t0 = millis();
+  String err;
+  std::vector<int8_t> v = embedRaw(text, err);   // TLS - NOT under the lock
+  noteRecallEmbed(!v.empty(), err);
+  if (v.empty()) {
+    alogf("memory: recall embed ahead of the turn failed (%s)", err.c_str());
+    return;
+  }
+  const uint32_t at = millis();
+  {
+    Lock g;
+    g_warm.put(std::string(text.c_str()), embedderNow(), std::move(v), at);
+  }
+  alogf("memory: recall embedded ahead of its turn in %u ms", (unsigned)(at - t0));
+}
+
 nimbus::orch::RecallOut recallFor(const String& queryText, int k,
                                   const nimbus::orch::Principal& who) {
   nimbus::orch::RecallOut res;
@@ -2174,8 +2218,18 @@ nimbus::orch::RecallOut recallFor(const String& queryText, int k,
     return keywordRecall(queryText, k, who, std::string(why.c_str()));
   }
   String err;
-  std::vector<int8_t> qv = embedRaw(queryText, err);  // TLS - NOT under the lock
-  noteRecallEmbed(!qv.empty(), err);
+  std::vector<int8_t> qv;
+  bool warm;
+  {
+    Lock g;
+    warm = g_warm.take(std::string(queryText.c_str()), embedderNow(), millis(), qv);
+  }
+  if (warm) {
+    alog("memory: recall uses the embedding made during the hold");
+  } else {
+    qv = embedRaw(queryText, err);  // TLS - NOT under the lock
+    noteRecallEmbed(!qv.empty(), err);
+  }
   if (qv.empty()) {
     alogf("memory: recall embed failed (%s) - keyword recall", err.c_str());
     std::string detail;

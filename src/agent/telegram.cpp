@@ -47,6 +47,8 @@
 #include "nimbus/net/tg_poll_sched.h" // CUM-462 idle waits yield to local turns (host-tested)
 #include "nimbus/net/tg_backoff.h"    // getUpdates backoff + retry_after (host-tested)
 #include "nimbus/net/tg_reply_drain.h" // lane RB-TS1: the reply queue's send rules (host-tested)
+#include "nimbus/orch/recall_warm.h"    // lane RB-TS1: the recall embedding made during the hold (host-tested)
+#include "nimbus/orch/spend_ceiling.h"  // paidCallAllowed: no embedding ahead while paid calls are paused
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 #include "nimbus/net/tg_receipt.h"     // Telegram's answer -> a delivery receipt (host-tested)
 
@@ -2113,15 +2115,35 @@ static void noteCrossed(const std::string& chat, const nimbus::orch::PsString& t
     alogf("telegram: a turn for %s was sent before its chat's last answer went out (the turn is told)", chat.c_str());
 }
 
+// Lane RB-TS1: the turn's recall embedding is made while the settle hold waits, not
+// after it (the hold is quiet time; the embedding cost 1.2 s of handshake and more after
+// the hold on the bench, coverage/LINK-2026-11.md section 5). Which pages, and when the
+// turn may use the vector: nimbus/orch/recall_warm.h. Not while paid calls are paused.
+// One TLS session at a time: the held page's keep-alive socket closes first.
+static std::string s_warmedText;   // the held text last embedded (poll task)
+
+static void warmHeldText(const std::vector<nimbus::tg::Update>& page) {
+  const nimbus::tg::Update* u = nimbus::orch::warmableHeldText(
+      page, [](const std::string& chat) { return allowed(String(chat.c_str())); },
+      [](int64_t date) { return !sentAtOf(date).empty(); });   // a late text carries its send time
+  if (!u || u->text == s_warmedText) return;
+  if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Head)) return;
+  s_warmedText = u->text;
+  closePollSocket();
+  agent::memory::warmRecall(String(u->text.c_str()));
+}
+
 // The receive cycle's I/O on this task (nimbus/net/tg_receive.h): one TLS session at a
 // time, every fetch and turn after the poll socket closed.
 struct TgIo {
   bool polled = true;                                  // false: an injected test page
   nimbus::net::TgPollOutcome* outcome = nullptr;       // CUM-308 classification of the fetch
 
+  const std::vector<nimbus::tg::Update>* fetched = nullptr;   // the page this cycle read (RB-TS1)
   nimbus::net::TgFetch fetch(int32_t offset, int timeoutS, std::vector<nimbus::tg::Update>& out) {
     nimbus::net::TgFetch f;
     fetchOnePage(offset, timeoutS, out, f.rp, f.yielded, outcome);
+    fetched = &out;
     return f;
   }
   uint32_t nowMs() const { return millis(); }
@@ -2147,6 +2169,7 @@ struct TgIo {
   // loop runs here synchronously. The rendered text lives in PSRAM; one at a time.
   void runTurn(const std::string& from, const std::string& chat, const nimbus::orch::PsString& text, bool) {
     closePollSocket();
+    s_warmedText.clear();   // lane RB-TS1: the next held text is embedded again, even the same words
     noteHistory(text);   // histV2: the turn's source and stored media, for its history row
     // R1: the photos this turn attached go to the head as images (the engine takes
     // them with the turn and frees them when it ends; a turn that never took them, a
@@ -2238,8 +2261,10 @@ static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, 
   yielded = c.kind == nimbus::net::TgCycle::Kind::Yielded;
   retryAfterS = c.retryAfterS;
   const nimbus::net::TgSettle& st = g_receiver.settle();
-  if (c.kind == nimbus::net::TgCycle::Kind::Held)
+  if (c.kind == nimbus::net::TgCycle::Kind::Held) {
     alogif("telegram: settle hold (re-poll %d, %s)", st.repolls(), nimbus::net::settleWhyName(st.why()));
+    if (io.fetched) warmHeldText(*io.fetched);   // lane RB-TS1: the turn's recall embedding, now
+  }
   else if (c.kind == nimbus::net::TgCycle::Kind::Ran && st.lastHeldMs())
     alogf("telegram: settle dispatch n=%d after %u ms (%s)", c.messages, (unsigned)st.lastHeldMs(),
           nimbus::net::settleWhyName(st.why()));
@@ -2369,6 +2394,7 @@ static void drainSettledInject() {
       holdTyping(nimbus::net::newestTextChatOf(ups, allowedChat));
     if (held) {
       alogif("telegram: settle hold (injected, re-poll %d)", s_injSettle.repolls());
+      warmHeldText(ups);   // lane RB-TS1: the turn's recall embedding, as for a polled page
       return;
     }
     portENTER_CRITICAL(&s_settleMux);

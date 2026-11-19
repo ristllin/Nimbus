@@ -271,6 +271,13 @@ std::vector<std::string> recall(const String& queryText, int k = 0,
 // so the turn's prompt says recall is keyword-only. The engine's recall seam.
 nimbus::orch::RecallOut recallFor(const String& queryText, int k,
                                   const nimbus::orch::Principal& who);
+// Lane RB-TS1: embed `text` now for the recall of the turn that will answer it (the
+// Telegram task calls this while the settle hold waits on a single held text). It
+// makes the embedding only when that turn's recall would (memory not faulted, vectors
+// stored, a key, not parked, the embed path's memory floors) and keeps it in one slot;
+// recallFor uses it, once, when its query is exactly `text` with the same embedder
+// within 30 s, and embeds as before otherwise (nimbus/orch/recall_warm.h).
+void warmRecall(const String& text);
 
 // Persist current state. persistVectors() writes the whole blob (O(n), cheap for
 // the device's scale); called automatically after a mutating MCP call.
