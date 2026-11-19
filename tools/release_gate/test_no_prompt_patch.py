@@ -129,7 +129,8 @@ def stats(root, catalog="e1"):
 def append_entry(root, **fields):
     """Add an entry under ## Changes (replacing the 'None yet.' line)."""
     text = read(root, gate.CHANGES).replace("\nNone yet.\n", "\n")
-    n = len(re.findall(r"^### PC-\d{4}", text, re.M)) + 1
+    # The next id after the highest one (ruling 37 leaves gaps for lanes in flight).
+    n = max((int(i) for i in re.findall(r"^### PC-(\d{4})", text, re.M)), default=0) + 1
     title = fields.pop("title", "a test change")
     lines = [f"### PC-{n:04d}: {title}"] + [f"- {k}: {v}" for k, v in fields.items()]
     write(root, gate.CHANGES, text.rstrip("\n") + "\n\n" + "\n".join(lines) + "\n")
@@ -831,6 +832,40 @@ def test_a_spec_entry_grows_only_its_own_class(tree, plan):
     _grow(tree, cls="tool_results")
     errs = errors(tree)
     assert any("e1 tool_results: model-facing text changed" in e for e in errs), errs
+
+
+def _waiting_plan(plan, name, lane):
+    (plan.parent / name).write_text(json.dumps({"lanes": [{"id": lane}]}))
+
+
+@pytest.mark.parametrize("name", ["PLAN-pending.json", "PLAN-future.json"])
+def test_a_spec_entry_may_name_a_pending_or_future_plan_lane(tree, plan, name):
+    _waiting_plan(plan, name, "RB-YY7")
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **{**SPEC, "lane": "RB-YY7"}))
+    assert errors(tree) == []
+
+
+def test_a_spec_entry_naming_a_lane_in_none_of_the_three_plans_fails(tree, plan):
+    _waiting_plan(plan, "PLAN-pending.json", "RB-YY7")
+    _waiting_plan(plan, "PLAN-future.json", "RB-YY8")
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **{**SPEC, "lane": "RB-ZZ9"}))
+    assert any("a spec entry names a lane of the live plan" in e for e in errors(tree))
+
+
+def test_missing_pending_and_future_plans_add_nothing(tree, plan, monkeypatch):
+    monkeypatch.setattr(gate, "PLAN_PENDING_JSON", str(plan.parent / "absent-pending.json"))
+    monkeypatch.setattr(gate, "PLAN_FUTURE_JSON", str(plan.parent / "absent-future.json"))
+    assert gate.plan_lanes(tree) == {lane["id"] for lane in json.loads(plan.read_text())["lanes"]}
+
+
+def test_the_future_plan_is_read_from_its_override(tree, plan, monkeypatch, tmp_path):
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    _waiting_plan(other / "x", "PLAN-future.json", "RB-YY9")
+    monkeypatch.setattr(gate, "PLAN_FUTURE_JSON", str(other / "PLAN-future.json"))
+    assert "RB-YY9" in gate.plan_lanes(tree)
 
 
 def test_without_the_plan_file_the_owners_table_names_the_lanes(tree, monkeypatch):

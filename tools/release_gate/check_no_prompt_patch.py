@@ -58,6 +58,11 @@ KINDS = ("swap", "remove", "build", "spec")
 PLAN_JSON = os.environ.get(
     "RB_PLAN_JSON", "/Users/roydarnell/Projects/nimbus-project/program-2026-10-18/rebuild/PLAN.json"
 )
+# Lanes that wait outside PLAN.json (ruling 50): PLAN-pending.json and PLAN-future.json beside
+# it (the RB-REC family lives in the future file). A spec entry may name one of them; a
+# missing file adds nothing. Unset, each is read beside PLAN_JSON.
+PLAN_PENDING_JSON = os.environ.get("RB_PLAN_PENDING_JSON")
+PLAN_FUTURE_JSON = os.environ.get("RB_PLAN_FUTURE_JSON")
 OWNERS = "tools/engine/owners.json"
 # Rows up to this id predate the rule (18 Nov 2026); every later row needs a red scenario.
 REGISTER_LAST_GRANDFATHERED = 55
@@ -185,17 +190,27 @@ def _identity_errors(e: dict) -> "list[str]":
     return errs
 
 
-def plan_lanes(root: str) -> "set[str]":
-    """Lane ids of the live plan (off this machine, as tools/engine/owners.json lists them)."""
+def _lanes_of(path: str) -> "set[str] | None":
+    """The lane ids of one plan file, or None when it is missing or unreadable."""
     try:
-        with open(PLAN_JSON, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             plan = json.load(f)
     except (OSError, ValueError):
-        plan = None
-    if plan is None:  # GitHub's checkout has no plan file: owners.json is built from it
+        return None
+    return {lane["id"] for lane in plan.get("lanes", []) if "id" in lane}
+
+
+def plan_lanes(root: str) -> "set[str]":
+    """Lane ids of the live plan plus the pending and future plans beside it (off this machine,
+    as tools/engine/owners.json lists them)."""
+    lanes = _lanes_of(PLAN_JSON)
+    if lanes is None:  # GitHub's checkout has no plan file: owners.json is built from it
         owners = json.loads(cat._read(root, OWNERS) or "{}")
         return set(owners.get("lanes", {}))
-    return {lane["id"] for lane in plan.get("lanes", []) if "id" in lane}
+    beside = os.path.dirname(PLAN_JSON)
+    for waiting, name in ((PLAN_PENDING_JSON, "PLAN-pending.json"), (PLAN_FUTURE_JSON, "PLAN-future.json")):
+        lanes |= _lanes_of(waiting or os.path.join(beside, name)) or set()
+    return lanes
 
 
 def _proof_errors(root: str, e: dict) -> "list[str]":
