@@ -45,11 +45,21 @@ DOMAINS = {
         "label": "food log",
         "skill_id": "my-food-log",
         "items": [
-            ("porridge", 1, "bowl", 310, 11), ("banana", 1, "piece", 105, 1.3), ("flat white", 1, "cup", 120, 7),
-            ("lentil soup", 1, "bowl", 260, 14), ("rye toast", 2, "slice", 170, 6), ("greek yogurt", 150, "g", 146, 15),
-            ("chicken wrap", 1, "piece", 480, 31), ("apple", 1, "piece", 80, 0.4), ("almonds", 30, "g", 174, 6.3),
-            ("salmon fillet", 1, "piece", 360, 34), ("rice", 180, "g", 234, 4.8), ("dark chocolate", 20, "g", 120, 1.6),
-            ("egg fried rice", 1, "box", 520, 13), ("hummus", 50, "g", 140, 4), ("oat bar", 1, "bar", 190, 4.5),
+            ("porridge", 1, "bowl", 310, 11),
+            ("banana", 1, "piece", 105, 1.3),
+            ("flat white", 1, "cup", 120, 7),
+            ("lentil soup", 1, "bowl", 260, 14),
+            ("rye toast", 2, "slice", 170, 6),
+            ("greek yogurt", 150, "g", 146, 15),
+            ("chicken wrap", 1, "piece", 480, 31),
+            ("apple", 1, "piece", 80, 0.4),
+            ("almonds", 30, "g", 174, 6.3),
+            ("salmon fillet", 1, "piece", 360, 34),
+            ("rice", 180, "g", 234, 4.8),
+            ("dark chocolate", 20, "g", 120, 1.6),
+            ("egg fried rice", 1, "box", 520, 13),
+            ("hummus", 50, "g", 140, 4),
+            ("oat bar", 1, "bar", 190, 4.5),
         ],
     },
     "expenses": {
@@ -60,11 +70,21 @@ DOMAINS = {
         "label": "spending log",
         "skill_id": "my-spending",
         "items": [
-            ("coffee", "eating out", 3.2), ("bus fare", "transport", 1.75), ("groceries", "groceries", 23.48),
-            ("lunch deal", "eating out", 6.4), ("phone top-up", "bills", 10), ("paperback", "leisure", 8.99),
-            ("cinema ticket", "leisure", 11.5), ("train ticket", "transport", 14.2), ("bakery", "eating out", 4.35),
-            ("hardware store", "home", 17.06), ("pharmacy", "health", 7.89), ("parking", "transport", 3.6),
-            ("takeaway", "eating out", 18.75), ("plants", "home", 12.3), ("gym day pass", "health", 9),
+            ("coffee", "eating out", 3.2),
+            ("bus fare", "transport", 1.75),
+            ("groceries", "groceries", 23.48),
+            ("lunch deal", "eating out", 6.4),
+            ("phone top-up", "bills", 10),
+            ("paperback", "leisure", 8.99),
+            ("cinema ticket", "leisure", 11.5),
+            ("train ticket", "transport", 14.2),
+            ("bakery", "eating out", 4.35),
+            ("hardware store", "home", 17.06),
+            ("pharmacy", "health", 7.89),
+            ("parking", "transport", 3.6),
+            ("takeaway", "eating out", 18.75),
+            ("plants", "home", 12.3),
+            ("gym day pass", "health", 9),
         ],
     },
     "training": {
@@ -75,15 +95,30 @@ DOMAINS = {
         "label": "training log",
         "skill_id": "my-training",
         "items": [
-            ("back squat", 3, 8, 60), ("bench press", 3, 6, 50), ("deadlift", 2, 5, 90), ("pull-up", 3, 6, 0),
-            ("overhead press", 3, 8, 32.5), ("barbell row", 3, 10, 45), ("lunge", 2, 12, 16), ("dip", 3, 8, 0),
-            ("leg press", 3, 12, 110), ("plank", 3, 1, 0), ("curl", 2, 12, 12.5), ("hip thrust", 3, 10, 70),
+            ("back squat", 3, 8, 60),
+            ("bench press", 3, 6, 50),
+            ("deadlift", 2, 5, 90),
+            ("pull-up", 3, 6, 0),
+            ("overhead press", 3, 8, 32.5),
+            ("barbell row", 3, 10, 45),
+            ("lunge", 2, 12, 16),
+            ("dip", 3, 8, 0),
+            ("leg press", 3, 12, 110),
+            ("plank", 3, 1, 0),
+            ("curl", 2, 12, 12.5),
+            ("hip thrust", 3, 10, 70),
         ],
     },
 }
 DOMAIN_ORDER = ("food", "expenses", "training")
 # Free text with a bare comma: the owner file's commonest wrong-field-count shape.
-COMMA_NOTES = ["with milk, no sugar", "split, paid half", "felt good, slow tempo", "late, rushed", "left, right"]
+COMMA_NOTES = [
+    "with milk, no sugar",
+    "split, paid half",
+    "felt good, slow tempo",
+    "late, rushed",
+    "left, right",
+]
 NOTES = ["", "", "", "", "quick", "home", "work", "weekend"]
 
 
@@ -118,7 +153,11 @@ class Row:
     """One logical row: its fields as intended, how it is written, and what it counts for."""
 
     def __init__(self, dom: str, fields: list, shape: str = "ok"):
-        self.dom, self.fields, self.shape = dom, fields, shape  # shape: ok | extra | empty
+        self.dom, self.fields, self.shape = (
+            dom,
+            fields,
+            shape,
+        )  # shape: ok | extra | empty
 
     def line(self) -> str:
         return ",".join(self.fields)
@@ -134,11 +173,12 @@ class Row:
         return None if v == "" else float(v)
 
 
-def make_row(dom: str, day: str, hh: int, mm: int, rng: random.Random, shape: str = "ok", pick=None) -> Row:
+def make_row(dom: str, day: str, minute: int, rng: random.Random, shape: str = "ok", pick=None) -> Row:
+    """One row at `minute` after midnight; shape ok, extra (a bare comma in free text) or empty (summed cell)."""
     d = DOMAINS[dom]
     it = pick if pick is not None else rng.choice(d["items"])
     note = rng.choice(COMMA_NOTES) if shape == "extra" else rng.choice(NOTES)
-    t = f"{hh:02d}:{mm:02d}"
+    t = f"{minute // 60:02d}:{minute % 60:02d}"
     if dom == "food":
         name, qty, unit, kcal, prot = it
         f = [day, t, name, num(qty), unit, num(kcal), num(float(prot)), note]
@@ -183,13 +223,22 @@ class Table:
 
     def device_total(self, col: str, lo: str, hi: str) -> float:
         """What read_file's sum states: the rows with the header's field count only."""
-        return round(sum((r.value(col) or 0.0) for r in self.rows if lo <= r.date <= hi and r.shape != "extra"), 3)
+        return round(
+            sum((r.value(col) or 0.0) for r in self.rows if lo <= r.date <= hi and r.shape != "extra"),
+            3,
+        )
 
     def skipped_in(self, lo: str, hi: str) -> int:
         return sum(1 for r in self.rows if lo <= r.date <= hi and r.shape == "extra")
 
 
-def build_table(dom: str, now: datetime, rng: random.Random, days: int = 30, today_rows: int | None = None) -> Table:
+def build_table(
+    dom: str,
+    now: datetime,
+    rng: random.Random,
+    days: int = 30,
+    today_rows: int | None = None,
+) -> Table:
     """A month of rows up to now: about 11% wrong field count, 3% empty summed cell, 12% comment lines,
     a few blank lines. No identical lines unless an episode adds them."""
     t = Table(dom)
@@ -207,7 +256,7 @@ def build_table(dom: str, now: datetime, rng: random.Random, days: int = 30, tod
             items = [x for x in DOMAINS[dom]["items"] if x[0] not in used]
             pick = rng.choice(items)
             used.add(pick[0])
-            r = make_row(dom, day, m // 60, m % 60, rng, shape, pick)
+            r = make_row(dom, day, m, rng, shape, pick)
             if rng.random() < 0.13:  # a history line of v5.1.x's keyed append: '#', a word, a colon, the old row
                 old = list(r.fields)
                 old[1] = f"{max(0, m // 60 - 1):02d}:{m % 60:02d}"
@@ -232,25 +281,33 @@ def skill_body(dom: str) -> str:
     """An invented user skill of the owner's size class (about 3.4 to 4 KB with front matter)."""
     d = DOMAINS[dom]
     cols = ",".join(d["header"])
-    what = {"food": "what I eat and drink", "expenses": "what I spend", "training": "my gym sets"}[dom]
-    num_cols = {"food": "qty, kcal and protein_g", "expenses": "amount", "training": "sets, reps and kg"}[dom]
+    what = {
+        "food": "what I eat and drink",
+        "expenses": "what I spend",
+        "training": "my gym sets",
+    }[dom]
+    num_cols = {
+        "food": "qty, kcal and protein_g",
+        "expenses": "amount",
+        "training": "sets, reps and kg",
+    }[dom]
     example = {
         "food": "2026-11-18,08:05,porridge,1,bowl,310,11,",
         "expenses": "2026-11-18,08:05,coffee,eating out,3.2,",
         "training": "2026-11-18,18:30,back squat,3,8,60,",
     }[dom]
     body = f"""---
-title: My {d['label']}
+title: My {d["label"]}
 desc: how I keep {what}
 version: 3
 ---
-# My {d['label']}
+# My {d["label"]}
 
-I keep {what} in one CSV file that I own: `{d['path']}`. Use this skill every time I log, correct,
+I keep {what} in one CSV file that I own: `{d["path"]}`. Use this skill every time I log, correct,
 move, remove or total anything in it. The file is mine; never create a second file for the same thing.
 
 ## The file
-- Path: `{d['path']}`. Header (line 1, never change it): `{cols}`.
+- Path: `{d["path"]}`. Header (line 1, never change it): `{cols}`.
 - One row per entry, one line per row, fields in header order, plain commas between fields.
 - `date` is YYYY-MM-DD and `time` is HH:MM, 24-hour, local time.
 - {num_cols} are plain numbers: digits and a point, no units and no thousands separators.
@@ -293,7 +350,7 @@ move, remove or total anything in it. The file is mine; never create a second fi
 - I usually log within an hour of the entry; a message with no time means "now" by the stamp.
 - If I write "same as yesterday", read yesterday's rows and copy the matching one with today's
   date and time, so the row is mine and not a guess.
-- I sometimes send two entries in one line ("{example.split(',')[2]} and a second one"): one row each.
+- I sometimes send two entries in one line ("{example.split(",")[2]} and a second one"): one row each.
 - A week is the last 7 days including today unless I name the days. A month so far starts on the 1st.
 
 ## Replies
@@ -312,14 +369,25 @@ def other_skill_body(dom: str) -> str:
 
 # ------------------------------------------------------------------ owner phrasing
 def _ask_total(dom: str, rng: random.Random, kind: str) -> str:
-    d = DOMAINS[dom]
     q = {
-        ("food", "day"): ["How many kcal have I had today?", "What's my kcal total for today so far?"],
-        ("food", "yesterday"): ["How many kcal did I eat yesterday?", "What was my kcal total yesterday?"],
+        ("food", "day"): [
+            "How many kcal have I had today?",
+            "What's my kcal total for today so far?",
+        ],
+        ("food", "yesterday"): [
+            "How many kcal did I eat yesterday?",
+            "What was my kcal total yesterday?",
+        ],
         ("food", "week"): ["How many kcal in total over the last 7 days, today included?"],
         ("food", "month"): ["Total kcal this month so far?"],
-        ("expenses", "day"): ["How much have I spent today?", "What's today's spending total?"],
-        ("expenses", "yesterday"): ["How much did I spend yesterday?", "What did yesterday's spending come to?"],
+        ("expenses", "day"): [
+            "How much have I spent today?",
+            "What's today's spending total?",
+        ],
+        ("expenses", "yesterday"): [
+            "How much did I spend yesterday?",
+            "What did yesterday's spending come to?",
+        ],
         ("expenses", "week"): ["How much have I spent over the last 7 days, today included?"],
         ("expenses", "month"): ["How much have I spent this month so far?"],
         ("training", "day"): ["How many sets have I done today?", "Total sets today?"],
@@ -387,10 +455,15 @@ def _now(rng: random.Random, late: bool) -> datetime:
     return base.replace(hour=rng.randint(12, 22), minute=rng.randint(0, 59))
 
 
+def late_total(i: int) -> bool:
+    """Every seventh total question is asked between midnight and the 04:00 day start."""
+    return i % 7 == 3
+
+
 def total_episode(i: int, dom: str) -> dict:
     rng = random.Random(f"total-{dom}-{i}")
     kind = ["day", "day", "yesterday", "week", "month", "day"][i % 6]
-    now = _now(rng, late=(i % 7 == 3))
+    now = _now(rng, late=late_total(i))
     t = build_table(dom, now, rng)
     today = running_day(now)
     lo, hi = _range(kind, today)
@@ -414,58 +487,106 @@ def total_episode(i: int, dom: str) -> dict:
     }
 
 
+def _unused_pick(dom: str, t: "Table", today: str, rng: random.Random):
+    used = {r.fields[2] for r in t.rows if r.date == today}
+    return rng.choice([x for x in DOMAINS[dom]["items"] if x[0] not in used])
+
+
+def _ep_add(ep: dict, ok_today: list, rng: random.Random):
+    dom, now, today = ep["dom"], ep["now"], running_day(ep["now"])
+    new = make_row(
+        dom,
+        today,
+        now.hour * 60 + now.minute,
+        rng,
+        "ok",
+        _unused_pick(dom, ep["table"], today, rng),
+    )
+    new.fields[-1] = ""
+    ep["turns"] = [{"at": now, "text": _add_text(dom, new)}]
+    ep["expect"] = {"op": "add", "row": new.fields}
+
+
+def _ep_correct(ep: dict, ok_today: list, rng: random.Random):
+    dom, now, today = ep["dom"], ep["now"], running_day(ep["now"])
+    if ep["sub"] == "correct_visible":
+        # logged earlier in this chat: the prior turn appended it for real
+        pick = _unused_pick(dom, ep["table"], today, rng)
+        t_prior = now - timedelta(minutes=rng.randint(20, 90))
+        target = make_row(dom, today, t_prior.hour * 60 + t_prior.minute, rng, "ok", pick)
+        target.fields[-1] = ""
+        ep["prior"] = [
+            {
+                "at": t_prior,
+                "text": _add_text(dom, target),
+                "append": target.line() + "\n",
+            }
+        ]
+        when = "I just logged"
+    else:
+        target = rng.choice(ok_today)
+        when = f"at {target.fields[1]} today"
+    new_v = _new_value(dom, target, rng)
+    ep["turns"] = [{"at": now, "text": _correct_text(dom, target, new_v, when)}]
+    ep["expect"] = {
+        "op": "replace",
+        "old": target.fields,
+        "new": _with_value(dom, target, new_v).fields,
+        "appended_in_prior": ep["sub"] == "correct_visible",
+    }
+
+
+def _ep_identical(ep: dict, ok_today: list, rng: random.Random):
+    target = rng.choice(ok_today)
+    # the owner logged it twice: an identical line right after it
+    lines = ep["table"].lines
+    lines.insert(lines.index(target) + 1, Row(ep["dom"], list(target.fields), "ok"))
+    text = f"I logged the {target.fields[2]} at {target.fields[1]} twice. Remove one of them."
+    ep["turns"] = [{"at": ep["now"], "text": text}]
+    ep["expect"] = {"op": "remove_one", "old": target.fields}
+
+
+def _ep_move(ep: dict, ok_today: list, rng: random.Random):
+    target = rng.choice(ok_today)
+    y = (datetime.strptime(running_day(ep["now"]), "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    moved = [y, *target.fields[1:]]
+    text = f"The {target.fields[2]} at {target.fields[1]} today was really yesterday. Move it."
+    ep["turns"] = [{"at": ep["now"], "text": text}]
+    ep["expect"] = {
+        "op": "replace",
+        "old": target.fields,
+        "new": moved,
+        "appended_in_prior": False,
+    }
+
+
+EPISODE_BUILDERS = {
+    "add": _ep_add,
+    "correct_visible": _ep_correct,
+    "correct_hidden": _ep_correct,
+    "identical": _ep_identical,
+    "move": _ep_move,
+}
+
+
 def write_episode(i: int, dom: str, sub: str, fault: str = "") -> dict:
     """add | correct_visible | correct_hidden | identical | move."""
     rng = random.Random(f"write-{dom}-{sub}-{i}-{fault}")
-    late = sub == "add" and i % 4 == 1
-    now = _now(rng, late=late)
+    now = _now(rng, late=sub == "add" and i % 4 == 1)
     t = build_table(dom, now, rng, today_rows=rng.randint(3, 5))
     today = running_day(now)
     ok_today = [r for r in t.rows if r.date == today and r.shape == "ok"]
-    ep = {"id": f"{sub}-{dom}-{i:03d}{('-' + fault) if fault else ''}", "kind": "write", "sub": sub, "dom": dom,
-          "now": now, "table": t, "prior": [], "fault": fault}
-    if sub == "add":
-        used = {r.fields[2] for r in t.rows if r.date == today}
-        pick = rng.choice([x for x in DOMAINS[dom]["items"] if x[0] not in used])
-        new = make_row(dom, today, now.hour, now.minute, rng, "ok", pick)
-        new.fields[-1] = ""
-        ep["turns"] = [{"at": now, "text": _add_text(dom, new)}]
-        ep["expect"] = {"op": "add", "row": new.fields}
-    elif sub in ("correct_visible", "correct_hidden"):
-        if sub == "correct_visible":
-            # logged earlier in this chat: the prior turn appended it for real
-            used = {r.fields[2] for r in t.rows if r.date == today}
-            pick = rng.choice([x for x in DOMAINS[dom]["items"] if x[0] not in used])
-            t_prior = now - timedelta(minutes=rng.randint(20, 90))
-            target = make_row(dom, today, t_prior.hour, t_prior.minute, rng, "ok", pick)
-            target.fields[-1] = ""
-            ep["prior"] = [{"at": t_prior, "text": _add_text(dom, target), "append": target.line() + "\n"}]
-            when = "I just logged"
-        else:
-            target = rng.choice(ok_today)
-            when = f"at {target.fields[1]} today"
-        new_v = _new_value(dom, target, rng)
-        ep["turns"] = [{"at": now, "text": _correct_text(dom, target, new_v, when)}]
-        ep["expect"] = {"op": "replace", "old": target.fields, "new": _with_value(dom, target, new_v).fields,
-                        "appended_in_prior": sub == "correct_visible"}
-    elif sub == "identical":
-        target = rng.choice(ok_today)
-        # the owner logged it twice: an identical line right after it
-        idx = t.lines.index(target)
-        t.lines.insert(idx + 1, Row(dom, list(target.fields), "ok"))
-        ep["turns"] = [{"at": now, "text": f"I logged the {target.fields[2]} at {target.fields[1]} twice. "
-                                              "Remove one of them."}]
-        ep["expect"] = {"op": "remove_one", "old": target.fields}
-    elif sub == "move":
-        target = rng.choice(ok_today)
-        y = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-        moved = list(target.fields)
-        moved[0] = y
-        ep["turns"] = [{"at": now, "text": f"The {target.fields[2]} at {target.fields[1]} today was really "
-                                              "yesterday. Move it."}]
-        ep["expect"] = {"op": "replace", "old": target.fields, "new": moved, "appended_in_prior": False}
-    else:
-        raise ValueError(sub)
+    ep = {
+        "id": f"{sub}-{dom}-{i:03d}{('-' + fault) if fault else ''}",
+        "kind": "write",
+        "sub": sub,
+        "dom": dom,
+        "now": now,
+        "table": t,
+        "prior": [],
+        "fault": fault,
+    }
+    EPISODE_BUILDERS[sub](ep, ok_today, rng)
     return ep
 
 
@@ -594,47 +715,79 @@ def multiset_diff(before: list, after: list) -> tuple:
     return list((b - a).elements()), list((a - b).elements())
 
 
-def judge_write(ep: dict, before_text: str, after_text: str) -> dict:
-    """The file after the turn against what the owner asked: exact on every other line."""
-    header = DOMAINS[ep["dom"]]["header"]
-    exp = ep["expect"]
-    before, after = _data_lines(before_text), _data_lines(after_text)
-    removed, added = multiset_diff(before, after)
-    raw_b = (before_text or "").split("\n")
-    raw_a = (after_text or "").split("\n")
-    comments_b = [x for x in raw_b if x.lstrip().startswith("#")]
-    comments_a = [x for x in raw_a if x.lstrip().startswith("#")]
-    header_ok = (raw_a[:1] == raw_b[:1])
-    blank_added = max(0, sum(1 for x in raw_a[:-1] if x.strip() == "") - sum(1 for x in raw_b[:-1] if x.strip() == ""))
-    lost_comments, new_comments = multiset_diff(comments_b, comments_a)
+def _frame(before_text: str, after_text: str) -> tuple:
+    """(data lines removed, data lines added, stray count and facts) of everything but the rows themselves."""
+    removed, added = multiset_diff(_data_lines(before_text), _data_lines(after_text))
+    raw_b, raw_a = (before_text or "").split("\n"), (after_text or "").split("\n")
+    is_comment = lambda x: x.lstrip().startswith("#")  # noqa: E731
+    blanks = lambda raw: sum(1 for x in raw[:-1] if x.strip() == "")  # noqa: E731
+    lost_comments, new_comments = multiset_diff(
+        [x for x in raw_b if is_comment(x)], [x for x in raw_a if is_comment(x)]
+    )
+    header_ok = raw_a[:1] == raw_b[:1]
+    blank_added = max(0, blanks(raw_a) - blanks(raw_b))
     # A '#' history line the head adds beside a correction follows the file's own convention: it is
     # no row and no total reads it (ruling 49), so it is counted apart, never as a stray line.
-    out = {"removed": removed, "added": added, "blank_added": blank_added, "header_ok": header_ok,
-           "comments_lost": len(lost_comments), "history_added": len(new_comments)}
-    stray = blank_added + (0 if header_ok else 1) + len(lost_comments)
-    if exp["op"] == "add":
-        good = [x for x in added if _row_matches(x, exp["row"], header)]
-        ok = not removed and len(added) == 1 and len(good) == 1
-        dup = max(0, len(good) - 1)
-        stray += len(removed) + max(0, len(added) - len(good)) + dup
-    elif exp["op"] == "replace":
-        old_line = ",".join(exp["old"])
-        good = [x for x in added if _row_matches(x, exp["new"], header, loose_time=False)]
-        ok = removed == [old_line] and len(added) == 1 and len(good) == 1
-        dup = max(0, len(good) - 1)
-        stray += max(0, len(removed) - 1) + max(0, len(added) - len(good)) + dup
-        if removed and removed != [old_line]:
-            stray += 1
-    else:  # remove_one
-        old_line = ",".join(exp["old"])
-        ok = removed == [old_line] and not added
-        dup = 0
-        stray += len(added) + max(0, len(removed) - 1) + (1 if removed and removed[0] != old_line else 0)
+    facts = {
+        "removed": removed,
+        "added": added,
+        "blank_added": blank_added,
+        "header_ok": header_ok,
+        "comments_lost": len(lost_comments),
+        "history_added": len(new_comments),
+    }
+    return (
+        removed,
+        added,
+        blank_added + (0 if header_ok else 1) + len(lost_comments),
+        facts,
+    )
+
+
+def _check_add(exp, header, removed, added) -> tuple:
+    good = [x for x in added if _row_matches(x, exp["row"], header)]
+    ok = not removed and len(added) == 1 and len(good) == 1
+    dup = max(0, len(good) - 1)
+    return ok, len(removed) + max(0, len(added) - len(good)) + dup, dup
+
+
+def _check_replace(exp, header, removed, added) -> tuple:
+    old_line = ",".join(exp["old"])
+    good = [x for x in added if _row_matches(x, exp["new"], header, loose_time=False)]
+    ok = removed == [old_line] and len(added) == 1 and len(good) == 1
+    dup = max(0, len(good) - 1)
+    stray = max(0, len(removed) - 1) + max(0, len(added) - len(good)) + dup
+    return ok, stray + (1 if removed and removed != [old_line] else 0), dup
+
+
+def _check_remove_one(exp, header, removed, added) -> tuple:
+    old_line = ",".join(exp["old"])
+    ok = removed == [old_line] and not added
+    return (
+        ok,
+        len(added) + max(0, len(removed) - 1) + (1 if removed and removed[0] != old_line else 0),
+        0,
+    )
+
+
+CHECKS = {"add": _check_add, "replace": _check_replace, "remove_one": _check_remove_one}
+
+
+def judge_write(ep: dict, before_text: str, after_text: str) -> dict:
+    """The file after the turn against what the owner asked: exact on every other line."""
+    removed, added, stray, out = _frame(before_text, after_text)
+    exp = ep["expect"]
+    ok, more, dup = CHECKS[exp["op"]](exp, DOMAINS[ep["dom"]]["header"], removed, added)
+    stray += more
     out.update({"ok": ok and stray == 0, "effect_ok": ok, "stray": stray, "dup": dup})
     return out
 
 
-NUMERIC = {"food": ("qty", "kcal", "protein_g"), "expenses": ("amount",), "training": ("sets", "reps", "kg")}
+NUMERIC = {
+    "food": ("qty", "kcal", "protein_g"),
+    "expenses": ("amount",),
+    "training": ("sets", "reps", "kg"),
+}
 
 
 def _day_totals(text: str, dom: str, days: set) -> dict:

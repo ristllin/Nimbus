@@ -53,7 +53,7 @@ class Tables(unittest.TestCase):
         import random
 
         for dom in records.DOMAIN_ORDER:
-            r = records.make_row(dom, "2026-11-19", 9, 0, random.Random(1), "extra")
+            r = records.make_row(dom, "2026-11-19", 9 * 60, random.Random(1), "extra")
             self.assertGreater(len(r.line().split(",")), len(records.DOMAINS[dom]["header"]))
 
     def test_intended_and_device_totals(self):

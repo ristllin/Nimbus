@@ -33,8 +33,19 @@ from run import Ledger  # noqa: E402
 MAX_ROUNDS = 16
 NO_MEMORY = "not enough memory for this call; nothing changed"  # aids::kAidNoMemory
 WRITES = {"append_file", "write_file", "edit_file"}
-AID_TOOLS = {"read_file", "write_file", "append_file", "edit_file", "list_files", "calc", "more"}
-F_ARGS = {"read_file": ["path", "offset", "limit"], "edit_file": ["path", "old", "new", "all"]}
+AID_TOOLS = {
+    "read_file",
+    "write_file",
+    "append_file",
+    "edit_file",
+    "list_files",
+    "calc",
+    "more",
+}
+F_ARGS = {
+    "read_file": ["path", "offset", "limit"],
+    "edit_file": ["path", "old", "new", "all"],
+}
 _lock = threading.Lock()
 
 
@@ -46,7 +57,12 @@ class Aid:
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True)
-        self.p = subprocess.Popen([binary, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.p = subprocess.Popen(
+            [binary, str(root)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
 
     def q(self, obj: dict) -> dict:
         self.p.stdin.write(json.dumps(obj) + "\n")
@@ -86,46 +102,78 @@ class World:
             return f"{name}: arguments must be an object", True
         target = tool_name(name, args)
         targs = args.get("args") if name == "more" and isinstance(args.get("args"), dict) else args
-        if self.arm == "F" and target in F_ARGS:
-            extra = sorted(k for k in targs if k not in F_ARGS[target])
-            if extra:
-                acc = ", ".join(F_ARGS[target])
-                return (f"{target} takes {acc}; not read: {', '.join(extra)}\n"
-                        f"(not read: {', '.join(extra)}: this tool has no such argument)"), True
-        faulted = self.fault and (target in WRITES or (target == "read_file" and targs.get("sum")))
-        if faulted and (self.fault == "always" or self.fault_hits == 0):
-            self.fault_hits += 1
-            if target in ("edit_file", "read_file"):  # the real refusal: the call under a refusing allocator
-                r = self.aid.q({"op": "call", "tool": name, "args": args, "refuse": True})
-                return r["text"], not r["ok"]
-            return NO_MEMORY, True  # append and write take no working block: the core's stated refusal
+        refused = self._arm_f_refusal(target, targs)
+        if refused:
+            return refused, True
+        if self._faulted(target, targs):
+            return self._refuse(name, target, args)
         if name in AID_TOOLS:
-            r = self.aid.q({"op": "call", "tool": name, "args": args})
-            text = r["text"]
-            if self.arm == "F" and target == "edit_file" and not r["ok"]:
-                text = text.replace("; line picks one, all=true replaces all", "; all=true replaces all")
-            return text, not r["ok"]
+            return self._aid(name, target, args)
         if name == "note":
-            key, val = str(args.get("key", "")), str(args.get("value", ""))
-            if args.get("op") == "remove":
-                self.notes.pop(key, None)
-                return f"removed note {key}", False
-            self.notes[key] = val
-            return f"stored note {key}: {val[:300]} (pinned {bool(args.get('pin'))})", False
+            return self._note(args)
         if name == "search":
             return "0 results", False
-        if name == "schedule":  # this device has no reminders or routines until one is created
-            op = args.get("op")
-            if op == "create":
-                self.reminders.append(dict(args))
-                return f"stored {args.get('kind', 'reminder')} s{len(self.reminders)} at {args.get('when', '')}", False
-            if op == "list":
-                if not self.reminders:
-                    return "no reminders or routines", False
-                return "\n".join(f"s{k} {r.get('when', '')} {r.get('text', '')}" for k, r in
-                                 enumerate(self.reminders, 1)), False
-            return f"no reminder or routine with id {args.get('id', '')}", True
+        if name == "schedule":
+            return self._schedule(args)
         return f"{name}: done", False
+
+    def _arm_f_refusal(self, target: str, targs: dict) -> str:
+        """Arm F declares no column/from/to/sum and no line: the registry's refusal, naming F's arguments."""
+        if self.arm != "F" or target not in F_ARGS:
+            return ""
+        extra = sorted(k for k in targs if k not in F_ARGS[target])
+        if not extra:
+            return ""
+        acc, bad = ", ".join(F_ARGS[target]), ", ".join(extra)
+        return f"{target} takes {acc}; not read: {bad}\n(not read: {bad}: this tool has no such argument)"
+
+    def _faulted(self, target: str, targs: dict) -> bool:
+        hit = self.fault and (target in WRITES or (target == "read_file" and targs.get("sum")))
+        return bool(hit and (self.fault == "always" or self.fault_hits == 0))
+
+    def _refuse(self, name: str, target: str, args: dict) -> tuple:
+        self.fault_hits += 1
+        if target in (
+            "edit_file",
+            "read_file",
+        ):  # the real refusal: the call under a refusing allocator
+            r = self.aid.q({"op": "call", "tool": name, "args": args, "refuse": True})
+            return r["text"], not r["ok"]
+        return (
+            NO_MEMORY,
+            True,
+        )  # append and write take no working block: the core's stated refusal
+
+    def _aid(self, name: str, target: str, args: dict) -> tuple:
+        r = self.aid.q({"op": "call", "tool": name, "args": args})
+        text = r["text"]
+        if self.arm == "F" and target == "edit_file" and not r["ok"]:
+            text = text.replace("; line picks one, all=true replaces all", "; all=true replaces all")
+        return text, not r["ok"]
+
+    def _note(self, args: dict) -> tuple:
+        key, val = str(args.get("key", "")), str(args.get("value", ""))
+        if args.get("op") == "remove":
+            self.notes.pop(key, None)
+            return f"removed note {key}", False
+        self.notes[key] = val
+        return f"stored note {key}: {val[:300]} (pinned {bool(args.get('pin'))})", False
+
+    def _schedule(self, args: dict) -> tuple:
+        """This device has no reminders or routines until one is created."""
+        op = args.get("op")
+        if op == "create":
+            self.reminders.append(dict(args))
+            return (
+                f"stored {args.get('kind', 'reminder')} s{len(self.reminders)} at {args.get('when', '')}",
+                False,
+            )
+        if op == "list" and not self.reminders:
+            return "no reminders or routines", False
+        if op == "list":
+            rows = (f"s{k} {r.get('when', '')} {r.get('text', '')}" for k, r in enumerate(self.reminders, 1))
+            return "\n".join(rows), False
+        return f"no reminder or routine with id {args.get('id', '')}", True
 
 
 # ------------------------------------------------------------------ requests
@@ -136,14 +184,28 @@ def compose(aid: Aid, ep: dict, arm: str, head: str) -> tuple:
     sid = records.DOMAINS[dom]["skill_id"]
     if arm == "K1":
         skills = f"skills/{sid}.md: {records.skill_body(dom).split('desc: ')[1].split(chr(10))[0]}\n"
-    c = aid.q({"op": "compose", "notes": "\n".join(notes), "skills": skills, "tz": "Europe/London", "model": head})
+    c = aid.q(
+        {
+            "op": "compose",
+            "notes": "\n".join(notes),
+            "skills": skills,
+            "tz": "Europe/London",
+            "model": head,
+        }
+    )
     system = c["core"] + ("\n\n" + c["notes"] if c["notes"] else "")
     tools = []
     for t in c["tools"]:
         if arm == "F" and t["name"] in F_ARGS:
             tools.append(manifest.CORE[t["name"]])
         else:
-            tools.append({"name": t["name"], "description": t["description"], "schema": json.loads(t["schema"])})
+            tools.append(
+                {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "schema": json.loads(t["schema"]),
+                }
+            )
     return system, tools
 
 
@@ -151,7 +213,13 @@ def attach_block(aid: Aid, ep: dict, arm: str) -> str:
     if arm not in ("K2", "K3"):
         return ""
     dom = ep["dom"]
-    skills = [{"id": records.DOMAINS[dom]["skill_id"], "rev": 3, "body": records.skill_body(dom)}]
+    skills = [
+        {
+            "id": records.DOMAINS[dom]["skill_id"],
+            "rev": 3,
+            "body": records.skill_body(dom),
+        }
+    ]
     if arm == "K3":
         other, body = records.other_skill_body(dom)
         skills.append({"id": records.DOMAINS[other]["skill_id"], "rev": 3, "body": body})
@@ -160,9 +228,21 @@ def attach_block(aid: Aid, ep: dict, arm: str) -> str:
 
 def seed(aid: Aid, ep: dict, arm: str):
     dom = ep["dom"]
-    aid.q({"op": "seed", "path": records.DOMAINS[dom]["path"], "bytes": ep["table"].text()})
+    aid.q(
+        {
+            "op": "seed",
+            "path": records.DOMAINS[dom]["path"],
+            "bytes": ep["table"].text(),
+        }
+    )
     if arm in ("K1", "K2", "K3"):
-        aid.q({"op": "skill", "id": records.DOMAINS[dom]["skill_id"], "body": records.skill_body(dom)})
+        aid.q(
+            {
+                "op": "skill",
+                "id": records.DOMAINS[dom]["skill_id"],
+                "body": records.skill_body(dom),
+            }
+        )
     if arm == "K3":
         other, body = records.other_skill_body(dom)
         aid.q({"op": "skill", "id": records.DOMAINS[other]["skill_id"], "body": body})
@@ -182,7 +262,15 @@ def run_turn(prov, system, tools, messages, w: World, cache_key: str) -> dict:
         for cid, name, args in st.calls:
             out, err = w.call(name, args)
             res.append((cid, out, err))
-            calls.append({"name": name, "args": args, "result": out[:2500], "err": err, "step": steps})
+            calls.append(
+                {
+                    "name": name,
+                    "args": args,
+                    "result": out[:2500],
+                    "err": err,
+                    "step": steps,
+                }
+            )
         messages += prov.results(res)
     else:
         stop = "round_guard"
@@ -205,15 +293,60 @@ def pickup(calls: list, dom: str) -> dict:
         path = str((c["args"] or {}).get("path", "")) if isinstance(c["args"], dict) else ""
         if t == "read_file" and path.startswith("skills/") and sid in path and skill_at is None:
             skill_at = k
-        elif t in ("read_file", "append_file", "edit_file", "write_file", "list_files") and not path.startswith(
-            "skills/"
-        ) and track_at is None:
+        elif (
+            t in ("read_file", "append_file", "edit_file", "write_file", "list_files")
+            and not path.startswith("skills/")
+            and track_at is None
+        ):
             track_at = k
     return {
         "skill_read": skill_at is not None,
         "tracked": track_at is not None,
         "before_first_action": skill_at is not None and (track_at is None or skill_at < track_at),
     }
+
+
+def prior_items(aid: Aid, ep: dict) -> list:
+    """The prior exchange as neutral items; its append runs on the device for a real receipt."""
+    neutral = []
+    path = records.DOMAINS[ep["dom"]]["path"]
+    for n, pr in enumerate(ep.get("prior", [])):
+        args = {"path": path, "text": pr["append"]}
+        r = aid.q({"op": "call", "tool": "append_file", "args": args})
+        cid = f"toolu_seed{n:02d}"
+        neutral += [
+            {"t": "user", "text": records.stamp(pr["at"]) + pr["text"]},
+            {"t": "call", "id": cid, "name": "append_file", "args": args},
+            {"t": "result", "id": cid, "text": r["text"], "err": not r["ok"]},
+            {"t": "atext", "text": "Logged."},
+        ]
+    return neutral
+
+
+def used_sum(calls: list) -> bool:
+    for c in calls:
+        a = c["args"] if isinstance(c["args"], dict) else {}
+        if tool_name(c["name"], a) == "read_file" and (a.get("sum") or (a.get("args") or {}).get("sum")):
+            return True
+    return False
+
+
+def finish(rec: dict, ep: dict, before: str, after: str):
+    """The facts a report needs beside the raw turns (the report applies the checks again)."""
+    last = rec["turns"][-1]
+    if ep["kind"] == "total":
+        rec["truth"] = ep["truth"]
+        rec["total"] = records.judge_total(last["reply"], ep["truth"])
+        rec["used_sum"] = used_sum(last["calls"])
+        rec["used_calc"] = any(tool_name(c["name"], c["args"]) == "calc" for c in last["calls"])
+    else:
+        rec["expect"] = ep["expect"]
+        rec["file"] = records.judge_write(ep, before, after)
+        fw = first_write(last["calls"])
+        rec["first_write"] = None if fw is None else {"name": tool_name(fw["name"], fw["args"]), "ok": not fw["err"]}
+        rec["before"], rec["after"] = before, after
+    if rec["arm"].startswith("K"):
+        rec["pickup"] = pickup(rec["turns"][0]["calls"], ep["dom"])
 
 
 def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=None) -> dict:
@@ -223,27 +356,23 @@ def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=No
         system, tools = compose(aid, ep, arm, head)
         seed(aid, ep, arm)
         w = World(aid, arm, ep.get("fault", ""))
-        neutral = []
+        messages = prov.render(prior_items(aid, ep))
         path = records.DOMAINS[ep["dom"]]["path"]
-        for n, pr in enumerate(ep.get("prior", [])):
-            neutral.append({"t": "user", "text": records.stamp(pr["at"]) + pr["text"]})
-            args = {"path": path, "text": pr["append"]}
-            r = aid.q({"op": "call", "tool": "append_file", "args": args})
-            cid = f"toolu_seed{n:02d}"
-            neutral += [
-                {"t": "call", "id": cid, "name": "append_file", "args": args},
-                {"t": "result", "id": cid, "text": r["text"], "err": not r["ok"]},
-                {"t": "atext", "text": "Logged."},
-            ]
-        messages = prov.render(neutral)
         before = aid.q({"op": "cat", "path": path})["bytes"]
         block = attach_block(aid, ep, arm)
-        rec = {"head": head, "arm": arm, "episode": ep["id"], "kind": ep["kind"], "sub": ep["sub"], "dom": ep["dom"],
-               "fault": ep.get("fault", ""), "turns": [], "attach_bytes": len(block)}
+        rec = {
+            "head": head,
+            "arm": arm,
+            "episode": ep["id"],
+            "kind": ep["kind"],
+            "sub": ep["sub"],
+            "dom": ep["dom"],
+            "fault": ep.get("fault", ""),
+            "turns": [],
+            "attach_bytes": len(block),
+        }
         for turn in ep["turns"]:
-            text = records.stamp(turn["at"]) + turn["text"]
-            if block:
-                text = block + "\n" + text
+            text = (block + "\n" if block else "") + records.stamp(turn["at"]) + turn["text"]
             messages += prov.user(text)
             t0 = time.time()
             out = run_turn(prov, system, tools, messages, w, f"rbrec6-{arm}-{ep['dom']}")
@@ -251,28 +380,9 @@ def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=No
             out["owner"] = turn["text"]
             out["usd"] = round(sum(providers.price(head, u) for u in out["usage"]), 6)
             rec["turns"].append(out)
-        after = aid.q({"op": "cat", "path": path})["bytes"]
-        last = rec["turns"][-1]
         rec["usd"] = round(sum(t["usd"] for t in rec["turns"]), 6)
         rec["system_bytes"] = len(system.encode())
-        if ep["kind"] == "total":
-            rec["truth"] = ep["truth"]
-            rec["total"] = records.judge_total(last["reply"], ep["truth"])
-            rec["used_sum"] = any(
-                tool_name(c["name"], c["args"]) == "read_file"
-                and isinstance(c["args"], dict)
-                and (c["args"].get("sum") or (c["args"].get("args") or {}).get("sum"))
-                for c in last["calls"]
-            )
-            rec["used_calc"] = any(tool_name(c["name"], c["args"]) == "calc" for c in last["calls"])
-        else:
-            rec["expect"] = ep["expect"]
-            rec["file"] = records.judge_write(ep, before, after)
-            fw = first_write(last["calls"])
-            rec["first_write"] = None if fw is None else {"name": tool_name(fw["name"], fw["args"]), "ok": not fw["err"]}
-            rec["before"], rec["after"] = before, after
-        if arm.startswith("K"):
-            rec["pickup"] = pickup(rec["turns"][0]["calls"], ep["dom"])
+        finish(rec, ep, before, aid.q({"op": "cat", "path": path})["bytes"])
         return rec
     finally:
         aid.close()
@@ -293,7 +403,12 @@ def main():
     ap.add_argument("--env-file", default="")
     ap.add_argument("--aidserve", required=True)
     ap.add_argument("--work", required=True)
-    ap.add_argument("--max-usd", type=float, required=True, help="this head's cap in the spend ledger")
+    ap.add_argument(
+        "--max-usd",
+        type=float,
+        required=True,
+        help="this head's cap in the spend ledger",
+    )
     ap.add_argument("--totals", type=int, default=0)
     ap.add_argument("--writes", type=int, default=0)
     ap.add_argument("--faults", type=int, default=0)
@@ -331,9 +446,17 @@ def main():
             with _lock:
                 stats["errors"] += 1
                 with open(out_dir / "errors.jsonl", "a") as f:
-                    f.write(json.dumps({"arm": args.arm, "episode": ep["id"],
-                                        "error": providers.redact(f"{type(e).__name__}: {str(e)[:600]}"),
-                                        "trace": providers.redact(traceback.format_exc()[-1500:])}) + "\n")
+                    f.write(
+                        json.dumps(
+                            {
+                                "arm": args.arm,
+                                "episode": ep["id"],
+                                "error": providers.redact(f"{type(e).__name__}: {str(e)[:600]}"),
+                                "trace": providers.redact(traceback.format_exc()[-1500:]),
+                            }
+                        )
+                        + "\n"
+                    )
             return
         if not args.scripted:
             ledger.add(f"head:{head}", rec["usd"])
@@ -346,8 +469,18 @@ def main():
 
     with ThreadPoolExecutor(args.parallel) as pool:
         list(pool.map(work, todo))
-    print(json.dumps({"head": head, "arm": args.arm, **stats, "spend_head": round(ledger.total(f"head:{head}"), 4),
-                      "spend_all": round(ledger.total(), 4), "records": str(rec_path)}))
+    print(
+        json.dumps(
+            {
+                "head": head,
+                "arm": args.arm,
+                **stats,
+                "spend_head": round(ledger.total(f"head:{head}"), 4),
+                "spend_all": round(ledger.total(), 4),
+                "records": str(rec_path),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
