@@ -238,7 +238,8 @@ std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& his
 // weights it had estimated itself. dayStartUnix 0 (no clock) = no floor.
 //
 // Lane H (the history fix, 16 Nov 2026): a head with room (ContextBudget's derived
-// branch, `derived` set) keeps no day floor and never shifts at midnight. The window
+// branch, `derived` set) keeps no day floor (RB-BG: except a measured floor head, whose
+// dayBytes keeps v5.1.1's day floor) and never shifts at midnight. The window
 // grows append-only; at softBytes a fold is due (the fold takes the oldest turns beyond
 // keepBytes); only past maxBytes are the oldest turns hidden, down to softBytes, and the
 // request names them. A head at or under v5.1.1's room (the floor branch) keeps the

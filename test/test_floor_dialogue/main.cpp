@@ -448,6 +448,8 @@ std::string row(const Head& h, const Shape& s, const Measured& m) {
 // 2 KB over what the build measures (so a shrinking request gives its room back to the
 // conversation); and the routed Anthropic head carries at least 7,500 B of dialogue on every
 // shape (v5.1.2: 2,979 B after a shift).
+constexpr size_t kV512TodayDialogue = 10955;   // v5.1.2's floor branch, the 17nov-today shape
+
 void test_a_floor_head_carries_its_measured_room() {
   setRoutedBudgetLiftForTest(0);   // the floor, whatever kRoutedBudgetLift says (the lift: its own test)
   size_t measuredHeads = 0;
@@ -467,6 +469,10 @@ void test_a_floor_head_carries_its_measured_room() {
       TEST_ASSERT_TRUE_MESSAGE(fixed <= constant, (what + " fixed " + std::to_string(fixed)).c_str());
       if (s.recall) TEST_ASSERT_TRUE_MESSAGE(fixed + 2048 >= constant, (what + " fixed " + std::to_string(fixed)).c_str());
       if (anthropic) TEST_ASSERT_TRUE_MESSAGE(m.dialogue >= 7500, (what + " " + std::to_string(m.dialogue)).c_str());
+      // Ruling 81, audit blocker 10: never less of today's conversation than v5.1.2. v5.1.2's floor
+      // branch carried 10,955 B of a same-day history on this shape (its day floor; measured on this
+      // twin with the floor branch forced, evidence/baseline-floor-dialogue-5edefb72e-v512-floor.txt).
+      if (s.today) TEST_ASSERT_TRUE_MESSAGE(m.dialogue >= kV512TodayDialogue, (what + " " + std::to_string(m.dialogue)).c_str());
     }
   TEST_ASSERT_TRUE(measuredHeads > 0);
   setRoutedBudgetLiftForTest(-1);

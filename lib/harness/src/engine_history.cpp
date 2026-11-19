@@ -241,6 +241,9 @@ HistoryBudget TurnEngine::historyBudgetOf(const nimbus::orch::ContextBudget& cb,
   b.keepBytes = cb.historyKeepBytes;
   b.highRows = cb.historyRows;
   b.floorKeepBytes = cb.v511KeepBytes;
+  // RB-BG (ruling 81): a measured floor head keeps v5.1.1's day floor too: today's turns up to
+  // its cap stay in the window and the fold's tail, as on the floor branch.
+  if (cb.floorMeasured) b.dayBytes = historyDayBytes(orch::legacyCtxTokens(host, model));
   return b;
 }
 
@@ -414,7 +417,7 @@ SliceState TurnEngine::foldBounds(const std::string& chatId, const HistoryMarks&
   foldRuns(view.rows, to, 0, rows, repeats);
   const std::vector<HistTurn> tail = historyTurns(rows, to, &repeats);
   const size_t keep = foldKeepBytes(b, chatId);
-  const HistoryBudget day = b.derived ? HistoryBudget() : b;   // v5.1.1 keeps the owner's day too
+  const HistoryBudget day = b;   // the owner's day, where the budget has a day floor (dayBytes)
   const size_t kept = std::max(foldKeptTail(tail, keep, o.utcOffsetMin), dayTailTurns(tail, day, o.utcOffsetMin));
   if (kept > 0 && kept < tail.size()) {
     out.keepFrom = tail[tail.size() - kept].firstId;

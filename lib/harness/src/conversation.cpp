@@ -845,9 +845,9 @@ size_t dayTailTurns(const std::vector<HistTurn>& turns, const HistoryBudget& b, 
 namespace {
 // How many of the oldest turns a window drops. v5.1.1 (the floor branch): past high water
 // (bytes or rows) down to low water, never the owner's current day up to its cap. Lane H
-// (derived): only past maxBytes (or the row bound), down to softBytes; no day floor and
-// nothing at midnight. Either way the newest turn and every turn back to the last answered
-// one stay.
+// (derived): only past maxBytes (or the row bound), down to softBytes; no day floor (RB-BG:
+// unless the budget sets dayBytes, a measured floor head) and nothing at midnight. Either way
+// the newest turn and every turn back to the last answered one stay.
 size_t droppedTurns(const std::vector<HistTurn>& turns, const std::vector<size_t>& len, size_t bytes,
                     size_t rows, const HistoryBudget& b, int32_t utcOffsetMin) {
   size_t keepFrom = turns.size() > kHistoryKeepTurns ? turns.size() - kHistoryKeepTurns : 0;
@@ -858,8 +858,9 @@ size_t droppedTurns(const std::vector<HistTurn>& turns, const std::vector<size_t
     }
   const bool over = b.derived ? bytes > b.maxBytes || rows > b.highRows : bytes > b.highBytes || rows > b.highRows;
   if (!over) return 0;
-  // Lane CTX: and the owner's current day, up to its cap (v5.1.1 only).
-  if (!b.derived) keepFrom = std::min(keepFrom, turns.size() - dayTailTurns(turns, b, utcOffsetMin));
+  // Lane CTX: and the owner's current day, up to its cap (where the budget has one: v5.1.1's
+  // window and, RB-BG, a measured floor head).
+  keepFrom = std::min(keepFrom, turns.size() - dayTailTurns(turns, b, utcOffsetMin));
   const size_t lowB = b.derived ? b.softBytes : b.lowBytes();
   const size_t lowR = b.derived ? b.highRows * 4 / 5 : b.lowRows();
   size_t drop = 0;
