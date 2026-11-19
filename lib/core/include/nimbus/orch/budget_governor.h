@@ -33,6 +33,7 @@ namespace nimbus {
 namespace orch {
 
 // The measured month cost of each profile against medium (60,000/30,000 B), in thousandths
+// (full is priced at large's ratio: to be replaced by RB-T4's measured full arm)
 // (RB-M0b, tests/evals/measured/cost.json, engine2_sonnet blended turn USD at the measured cold
 // share: tight 0.03737, lean 0.051261, standard 0.064633, wide 0.093597 for tiny, small, medium
 // and large; test_budget_governor reads the file and fails when these drift). Full has no
@@ -71,6 +72,9 @@ struct GovernorFacts {
   uint64_t spentMicro = 0;     // this month's spend, every provider and paid call
   bool ceilingActive = false;  // a ceiling holds (the default 20 USD, or the owner's)
   uint64_t ceilingMicro = 0;
+  // The head's fold mark under each profile, in tokens (profileMarksFor; 0 = not known): the
+  // advice names the fitting profile's size in tokens (owner ruling 82).
+  uint32_t dueTokens[5] = {};
 };
 // The spend store's figures a night reads.
 struct SpendFacts {
@@ -116,12 +120,16 @@ bool profileCommandChanges(const BudgetFile& f, const std::string& arg);
 
 std::string usdText(uint64_t micro);           // "$23.10"
 std::string dayMonthText(int64_t calendarDay);  // "24 November"
-// The status line /usage carries: the profile in force and whether it is the owner's choice;
-// when the file could not be read, that it is not adjusted until it is written again.
-std::string profileStatusText(const BudgetFile& f, BudgetFileRead read);
+// "about 37,800 tokens" (rounded to the hundred).
+std::string tokensText(uint32_t tokens);
+// The status line /usage carries: the profile in force, its size in tokens first (`now`: the
+// head's marks under it; all zero = not known) and whether it is the owner's choice; when the
+// file could not be read, that the advice is off until it is written again.
+std::string profileStatusText(const BudgetFile& f, BudgetFileRead read, const ProfileMarks& now = ProfileMarks());
 // The reply to /budget profile (`arg` "" = show, or a profile slug); `ok` false when the word
-// is none of these.
-std::string profileReplyText(const BudgetFile& f, const std::string& arg, bool ok);
+// is none of these. `all` (5 entries, tiny to full; nullptr = not known) gives each profile's
+// size on the head in tokens, for the menu and the reply.
+std::string profileReplyText(const BudgetFile& f, const std::string& arg, bool ok, const ProfileMarks* all = nullptr);
 
 }  // namespace orch
 }  // namespace nimbus

@@ -124,6 +124,14 @@ bool parseHistoryProfile(const std::string& word, HistoryProfile& out);
 // /data/budget.json). kDefaultHistoryProfile (full) until installed.
 void installHistoryProfile(HistoryProfile p);
 HistoryProfile installedHistoryProfile();
+// Owner ruling 82: the owner reads tokens. A head's history marks under `p` (the window's high
+// water, the fold's due mark and its keep) in bytes and in tokens at the head's nominal bytes per
+// token (rNom), for the words the owner reads; whatever profile is installed.
+struct ProfileMarks {
+  uint32_t maxBytes = 0, dueBytes = 0, keepBytes = 0;
+  uint32_t maxTokens = 0, dueTokens = 0, keepTokens = 0;
+};
+ProfileMarks profileMarksFor(const std::string& host, const std::string& model, bool loopOn, HistoryProfile p);
 
 // The measured overhead a floor head's history is sized from (RB-Q3b's synthetic busy twin, one
 // owner text turn of the old engine through the real adapters on a Cumulo head, history hidden

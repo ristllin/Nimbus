@@ -39,14 +39,22 @@ class HostedBudget {
   // One night at `epoch` (the instance's day start `startMin`, `offsetMin` east of UTC) against
   // `spendStateJson` (SpendCeilingVn::stateJson). A night whose write fails is undone and runs
   // again on the next tick. Returns the night's advice (Kind::None when nothing ran).
+  // `head`: the head the instance runs, so the advice names sizes in tokens (empty host = not known).
+  struct Head {
+    std::string host, model;
+    bool loopOn = true;
+  };
   nimbus::orch::BudgetAdvice night(uint64_t epoch, int32_t offsetMin, uint16_t startMin,
-                                   const std::string& spendStateJson) {
+                                   const std::string& spendStateJson, const Head& head = Head()) {
     nimbus::orch::BudgetAdvice a;
     nimbus::orch::LimitsView v;
     if (!nimbus::orch::limitsViewFromJson(spendStateJson, v) || !v.loaded) return a;
     nimbus::orch::GovernorFacts g;
     if (!nimbus::orch::governorFactsAt(epoch, offsetMin, startMin, {v.monthKey, v.spentMicro, v.active, v.limitMicro}, g))
       return a;
+    for (uint8_t i = 0; !head.host.empty() && i < 5; i++)
+      g.dueTokens[i] =
+          nimbus::orch::profileMarksFor(head.host, head.model, head.loopOn, (nimbus::orch::HistoryProfile)i).dueTokens;
     std::lock_guard<std::mutex> lk(mu_);
     if (read_ == nimbus::orch::BudgetFileRead::Corrupt) return a;
     const nimbus::orch::BudgetFile before = file_;
@@ -80,9 +88,10 @@ class HostedBudget {
     std::lock_guard<std::mutex> lk(mu_);
     return file_.effective();
   }
-  std::string status() {
+  // `now`: the head's marks under the profile in force (profileMarksFor), for tokens first.
+  std::string status(const nimbus::orch::ProfileMarks& now = nimbus::orch::ProfileMarks()) {
     std::lock_guard<std::mutex> lk(mu_);
-    return nimbus::orch::profileStatusText(file_, read_);
+    return nimbus::orch::profileStatusText(file_, read_, now);
   }
   nimbus::orch::BudgetFileRead readState() {
     std::lock_guard<std::mutex> lk(mu_);

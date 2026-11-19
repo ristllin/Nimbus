@@ -386,7 +386,7 @@ class NimbusdRig {
   void spendTick() {
     ceiling_->tick();
     if (eng_) ceiling_->setHeadModel(modelFor(eng_->headHost()));
-    budget_->night(vclock::epoch32(), hostedOffsetAt(vclock::epoch32()), nimbus::orch::day::startOrDefault(settings_.get().dayStarts.c_str()), ceiling_->stateJson());   // lane RB-BG
+    if (eng_) budget_->night(vclock::epoch32(), hostedOffsetAt(vclock::epoch32()), nimbus::orch::day::startOrDefault(settings_.get().dayStarts.c_str()), ceiling_->stateJson(), {eng_->headHost(), modelFor(eng_->headHost()), settings_.get().toolLoop});   // lane RB-BG
     spendNotice(nimbus::orch::NoticeChannel::Web, kWebChatId);
     if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_) {
       const std::string allow = access_->allowCsv();

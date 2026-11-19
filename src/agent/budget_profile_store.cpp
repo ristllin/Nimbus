@@ -70,6 +70,15 @@ std::string readText() {
   return "?";
 }
 
+// The head's marks under each profile, tiny to full (the owner reads tokens: ruling 82).
+void headMarks(nimbus::orch::ProfileMarks out[5]) {
+  const String h = agent::store::resolvedOrchHost();
+  const std::string host = h.c_str(), model = agent::store::orchModel(h).c_str();
+  const bool loop = agent::store::orchToolLoop();
+  for (uint8_t i = 0; i < 5; i++)
+    out[i] = nimbus::orch::profileMarksFor(host, model, loop, (nimbus::orch::HistoryProfile)i);
+}
+
 int64_t today() {
   const time_t now = time(nullptr);
   if (now < nimbus::orch::kCeilingClockValid) return 0;
@@ -105,8 +114,13 @@ bool factsNow(nimbus::orch::GovernorFacts& g) {
   nimbus::orch::LimitsView v;
   if (!nimbus::orch::limitsViewFromJson(state, v) || !v.loaded) return false;
   const nimbus::orch::SpendFacts spend{v.monthKey, v.spentMicro, v.active, v.limitMicro};
-  return nimbus::orch::governorFactsAt((uint64_t)now, agent::utcOffsetAtUnix((uint32_t)now),
-                                       agent::store::dayStartMin(), spend, g);
+  if (!nimbus::orch::governorFactsAt((uint64_t)now, agent::utcOffsetAtUnix((uint32_t)now),
+                                     agent::store::dayStartMin(), spend, g))
+    return false;
+  nimbus::orch::ProfileMarks m[5];
+  headMarks(m);
+  for (uint8_t i = 0; i < 5; i++) g.dueTokens[i] = m[i].dueTokens;
+  return true;
 }
 
 // The night under the lock: stored and owed, or undone when the write fails. It never changes
@@ -143,21 +157,25 @@ void tick() {
 }
 
 std::string statusLine() {
+  nimbus::orch::ProfileMarks m[5];
+  headMarks(m);
   std::lock_guard<std::mutex> lk(g_mx);
-  return nimbus::orch::profileStatusText(g_file, g_read);
+  return nimbus::orch::profileStatusText(g_file, g_read, m[(uint8_t)g_file.profile]);
 }
 
 std::string command(const std::string& arg, bool& changed, std::string& record) {
   changed = false;
   load();
+  nimbus::orch::ProfileMarks m[5];
+  headMarks(m);
   std::lock_guard<std::mutex> lk(g_mx);
-  if (arg.empty()) return nimbus::orch::profileReplyText(g_file, arg, true);
+  if (arg.empty()) return nimbus::orch::profileReplyText(g_file, arg, true, m);
   nimbus::orch::HistoryProfile p = nimbus::orch::kDefaultHistoryProfile;
   if (!nimbus::orch::parseHistoryProfile(arg, p)) return nimbus::orch::profileReplyText(g_file, arg, false);
   // Nothing to change (a corrupt file still gets written: the owner's command brings the
   // advice back).
   if (!nimbus::orch::profileCommandChanges(g_file, arg) && g_read != BudgetFileRead::Corrupt)
-    return nimbus::orch::profileStatusText(g_file, g_read);
+    return nimbus::orch::profileStatusText(g_file, g_read, m[(uint8_t)g_file.profile]);
   const BudgetFile before = g_file;
   nimbus::orch::chooseProfile(g_file, p, today());
   if (!saveLocked()) {
@@ -166,9 +184,10 @@ std::string command(const std::string& arg, bool& changed, std::string& record) 
   }
   installLocked();
   changed = true;
-  record = std::string("History profile ") + nimbus::orch::historyProfileSlug(g_file.profile) + " (was " +
+  record = std::string("History profile ") + nimbus::orch::historyProfileSlug(g_file.profile) + ", " +
+           nimbus::orch::tokensText(m[(uint8_t)g_file.profile].dueTokens) + " (was " +
            nimbus::orch::historyProfileSlug(before.profile) + "), chosen by the owner";
-  return nimbus::orch::profileReplyText(g_file, arg, true);
+  return nimbus::orch::profileReplyText(g_file, arg, true, m);
 }
 
 std::string nextNotice(bool telegram) {

@@ -256,6 +256,23 @@ ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverride
   return b;
 }
 
+ProfileMarks profileMarksFor(const std::string& host, const std::string& model, bool loopOn, HistoryProfile p) {
+  const RequestBudget rb = turnBudgetFor(host, model, loopOn);
+  BudgetOverrides own;
+  own.noProfile = true;
+  ContextBudget c = deriveRequestContext(rb, own);
+  if (!c.floorBranch && !c.floorMeasured) capToProfile(c, p);
+  const uint32_t r = rb.rNomX100 ? rb.rNomX100 : 400;
+  ProfileMarks m;
+  m.maxBytes = (uint32_t)c.historyMaxBytes;
+  m.dueBytes = (uint32_t)c.historySoftBytes;
+  m.keepBytes = (uint32_t)c.historyKeepBytes;
+  m.maxTokens = (uint32_t)((uint64_t)m.maxBytes * 100 / r);
+  m.dueTokens = (uint32_t)((uint64_t)m.dueBytes * 100 / r);
+  m.keepTokens = (uint32_t)((uint64_t)m.keepBytes * 100 / r);
+  return m;
+}
+
 size_t foldCycleBytes(const ContextBudget& b) {
   return std::min(b.foldSliceBytes, foldDigestCap(b.chatSummaryBytes));
 }

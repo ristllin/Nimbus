@@ -111,10 +111,17 @@ bool largestFit(const BudgetFile& f, const GovernorFacts& g, HistoryProfile& out
   return false;
 }
 
-std::string fitClause(const BudgetAdvice& a) {
+// "medium (about 24,000 tokens before a summary)" or the bare slug when the size is not known.
+std::string sized(HistoryProfile p, uint32_t dueTokens) {
+  if (!dueTokens) return slug(p);
+  return std::string(slug(p)) + " (" + tokensText(dueTokens) + " before a summary)";
+}
+
+std::string fitClause(const BudgetAdvice& a, const GovernorFacts& g) {
   if (a.fits)
-    return fmt(" A shorter conversation history would fit: send /budget profile %s if you want it (it stays until you "
-               "change it); nothing changes otherwise.", slug(a.fit));
+    return " A shorter conversation history would fit: " + sized(a.fit, g.dueTokens[(uint8_t)a.fit]) +
+           fmt(". Send /budget profile %s if you want it (it stays until you change it); nothing changes otherwise.",
+               slug(a.fit));
   if (a.profile == HistoryProfile::Tiny) return " Nothing changes unless you raise the ceiling.";
   return " Even the shortest conversation history (tiny) would not keep it under; nothing changes unless you raise "
          "the ceiling or choose a profile.";
@@ -293,9 +300,12 @@ BudgetAdvice governorNight(BudgetFile& f, const GovernorFacts& g) {
   a.fits = largestFit(f, g, a.fit);
   a.line = fmt("Spending this month is on course for %s against the %s ceiling.", Usd(a.projectedMicro).s,
                Usd(g.ceilingMicro).s) +
-           clampClause(a.clampDay, a.projectedMicro, g) + fitClause(a);
-  a.record = fmt("On course for %s of the %s ceiling: the owner was told (%s%s)", Usd(a.projectedMicro).s,
-                 Usd(g.ceilingMicro).s, a.fits ? slug(a.fit) : "no profile", a.fits ? " would fit" : " fits");
+           clampClause(a.clampDay, a.projectedMicro, g) + fitClause(a, g);
+  const uint32_t fitTokens = a.fits ? g.dueTokens[(uint8_t)a.fit] : 0;
+  a.record = fmt("On course for %s of the %s ceiling: the owner was told (%s%s%s)", Usd(a.projectedMicro).s,
+                 Usd(g.ceilingMicro).s, a.fits ? slug(a.fit) : "no profile",
+                 fitTokens ? (", " + tokensText(fitTokens)).c_str() : "",
+                 a.fits ? " would fit" : " fits");
   return a;
 }
 
@@ -323,28 +333,56 @@ std::string dayMonthText(int64_t calendarDay) {
   return fmt("%d %s", c.day, kMonths[c.month - 1]);
 }
 
-std::string profileStatusText(const BudgetFile& f, BudgetFileRead read) {
-  const bool chosen = f.profile != kDefaultHistoryProfile;
-  if (read == BudgetFileRead::Corrupt)
-    return fmt("Conversation history: %s. The budget settings file could not be read, so %s applies and the "
-               "spending advice is off; send /budget profile <name> to write it again.",
-               slug(f.profile), chosen ? "your chosen profile" : "the default");
-  if (!chosen) return "Conversation history: full (the default: as much as the model carries).";
-  const std::string when = f.setDay ? " on " + dayMonthText(f.setDay) : std::string();
-  return fmt("Conversation history: %s, chosen by you%s. Send /budget profile full for the default.", slug(f.profile),
-             when.c_str());
+std::string tokensText(uint32_t tokens) {
+  const uint32_t r = (tokens + 50) / 100 * 100;
+  char b[32];
+  if (r >= 1000) std::snprintf(b, sizeof b, "about %u,%03u tokens", (unsigned)(r / 1000), (unsigned)(r % 1000));
+  else std::snprintf(b, sizeof b, "about %u tokens", (unsigned)r);
+  return b;
 }
 
-std::string profileReplyText(const BudgetFile& f, const std::string& arg, bool ok) {
+namespace {
+// ", about 37,800 tokens before a summary, keeping about 23,600 (94,464 / 59,040 B)" ("" unknown).
+std::string sizeClause(const ProfileMarks& m) {
+  if (!m.dueTokens) return std::string();
+  return ", " + tokensText(m.dueTokens) + " before a summary, keeping " + tokensText(m.keepTokens).substr(0) +
+         fmt(" (%u / %u B)", (unsigned)m.dueBytes, (unsigned)m.keepBytes);
+}
+}  // namespace
+
+std::string profileStatusText(const BudgetFile& f, BudgetFileRead read, const ProfileMarks& now) {
+  const bool chosen = f.profile != kDefaultHistoryProfile;
+  if (read == BudgetFileRead::Corrupt)
+    return fmt("Conversation history: %s%s. The budget settings file could not be read, so %s applies and the "
+               "spending advice is off; send /budget profile <name> to write it again.",
+               slug(f.profile), sizeClause(now).c_str(), chosen ? "your chosen profile" : "the default");
+  if (!chosen)
+    return "Conversation history: full (the default: as much as the model carries)" + sizeClause(now) + ".";
+  const std::string when = f.setDay ? " on " + dayMonthText(f.setDay) : std::string();
+  return fmt("Conversation history: %s%s, chosen by you%s. Send /budget profile full for the default.",
+             slug(f.profile), sizeClause(now).c_str(), when.c_str());
+}
+
+std::string profileReplyText(const BudgetFile& f, const std::string& arg, bool ok, const ProfileMarks* all) {
   if (!ok) return "Unknown profile. Use /budget profile tiny, small, medium, large or full (the default).";
-  if (arg.empty())
-    return profileStatusText(f, BudgetFileRead::Ok) +
-           "\nChoose one with /budget profile tiny, small, medium, large or full (the default).";
+  const ProfileMarks none;
+  const ProfileMarks& now = all ? all[(uint8_t)f.profile] : none;
+  if (arg.empty()) {
+    std::string menu = profileStatusText(f, BudgetFileRead::Ok, now) + "\nChoose one with /budget profile <name>:";
+    for (int i = (int)HistoryProfile::Full; i >= 0; i--) {
+      const HistoryProfile p = (HistoryProfile)i;
+      menu += std::string("\n") + slug(p) + (p == kDefaultHistoryProfile ? " (the default)" : "");
+      if (all && all[i].dueTokens)
+        menu += ": " + tokensText(all[i].dueTokens) + " before a summary, keeping " + tokensText(all[i].keepTokens);
+    }
+    return menu;
+  }
   if (f.profile == kDefaultHistoryProfile)
     return "Conversation history is back to full, the default: replies carry as much of the conversation as the "
-           "model allows.";
-  return fmt("Conversation history set to %s: replies carry less of the conversation and cost less. It stays until "
-             "you change it; send /budget profile full for the default.", slug(f.profile));
+           "model allows" + sizeClause(now) + ".";
+  return fmt("Conversation history set to %s%s: replies carry less of the conversation and cost less. It stays "
+             "until you change it; send /budget profile full for the default.",
+             slug(f.profile), sizeClause(now).c_str());
 }
 
 }  // namespace orch

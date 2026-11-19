@@ -57,6 +57,9 @@ static std::string cells(const std::vector<std::string>& v) {
   return out + "\n";
 }
 
+// Owner ruling 82: tokens first. Bytes at the head's nominal bytes per token.
+static std::string tok(size_t bytes, uint16_t rNomX100) { return num((uint64_t)bytes * 100 / (rNomX100 ? rNomX100 : 400)); }
+
 static std::string headRow(const Head& h, BudgetLink link) {
   const RequestBudget b = requestBudgetFor(h.host, h.model, h.routed, link);
   const ContextBudget c = deriveRequestContext(b, {});
@@ -64,14 +67,16 @@ static std::string headRow(const Head& h, BudgetLink link) {
                 num(b.wireBodyBytes), ratio(b.rNomX100), ratio(b.rSafeX100), num(b.readWindowMs / 1000),
                 num(b.prefillTokPerS), num(b.decodeTokPerS), num(b.minFinalTokens), num((uint32_t)c.systemPromptBytes),
                 num(c.toolResultBytes), num(c.recallBytes), num(c.replayBytes), num(c.chatSummaryBytes),
-                num(c.historyMessageCap), num(c.historyMaxBytes), num(c.historySoftBytes), num(c.historyKeepBytes),
-                num(c.foldStepBytes), num(c.foldSliceBytes), num(c.historyRows), num(c.foldTriggerBytes),
-                capsCell(h, b, false), capsCell(h, b, true)});
+                num(c.historyMessageCap), tok(c.historyMaxBytes, b.rNomX100), tok(c.historySoftBytes, b.rNomX100),
+                tok(c.historyKeepBytes, b.rNomX100), num(c.historyMaxBytes), num(c.historySoftBytes),
+                num(c.historyKeepBytes), num(c.foldStepBytes), num(c.foldSliceBytes), num(c.historyRows),
+                num(c.foldTriggerBytes), capsCell(h, b, false), capsCell(h, b, true)});
 }
 
 static const char* kHeadColumns =
     "| Provider | Model | Window | Source | Bound | Target | Bytes | rNom | rSafe | Read window | Prefill | Decode "
-    "| minFinal | System cap | Tool result | Recall | Replay | Summary | Message cap | Hist max | Hist soft "
+    "| minFinal | System cap | Tool result | Recall | Replay | Summary | Message cap | Hist max tokens "
+    "| Hist soft tokens | Hist keep tokens | Hist max | Hist soft "
     "| Hist keep | Fold step | Fold slice | Rows | Trigger | Caps healthy | Caps fragmented |\n";
 
 static std::string separator(size_t n) {
@@ -84,7 +89,7 @@ static std::string separator(size_t n) {
 static std::string tableOf(const std::vector<Head>& heads, BudgetLink link) {
   const BudgetLink was = budgetLink();
   installBudgetLink(link);
-  std::string t = std::string(kHeadColumns) + separator(28);
+  std::string t = std::string(kHeadColumns) + separator(31);
   for (const Head& h : heads) t += headRow(h, link);
   installBudgetLink(was);
   return t;
@@ -123,9 +128,10 @@ static std::vector<Head> routedAndCustomHeads() {
 // Lane L: the heads whose turn is one flat prompt string with the tool loop off, sized from
 // that string's budget (turnBudgetFor): the main heads and the routed ones.
 static std::string loopOffTable() {
-  std::string t = "| Provider | Model | Bytes | Sized from | System cap | Recall | Summary | Message cap | Hist max "
+  std::string t = "| Provider | Model | Bytes | Sized from | System cap | Recall | Summary | Message cap "
+                  "| Hist max tokens | Hist soft tokens | Hist keep tokens | Hist max "
                   "| Hist soft | Hist keep | Fold slice | Rows | Trigger |\n" +
-                  separator(14);
+                  separator(17);
   std::vector<Head> heads = mainHeads();
   heads.insert(heads.end(), std::begin(kRouted), std::end(kRouted));
   for (const Head& h : heads) {
@@ -133,7 +139,8 @@ static std::string loopOffTable() {
     if (!b.flatTurn) continue;
     const ContextBudget c = deriveRequestContext(b, {});
     t += cells({h.host, h.model, num(b.wireBodyBytes), num(b.contextBytes()), num((uint32_t)c.systemPromptBytes),
-                num(c.recallBytes), num(c.chatSummaryBytes), num(c.historyMessageCap), num(c.historyMaxBytes),
+                num(c.recallBytes), num(c.chatSummaryBytes), num(c.historyMessageCap), tok(c.historyMaxBytes, b.rNomX100),
+                tok(c.historySoftBytes, b.rNomX100), tok(c.historyKeepBytes, b.rNomX100), num(c.historyMaxBytes),
                 num(c.historySoftBytes), num(c.historyKeepBytes), num(c.foldSliceBytes), num(c.historyRows),
                 num(c.foldTriggerBytes)});
   }
@@ -151,18 +158,21 @@ static std::string profilesSection() {
       "never moves a head at the floor. The fold is due at min(the head's soft mark, H) and keeps min(its\n"
       "keep mark, L) (never less than one fold can take); the window's high water is 5/4 of the due mark; no\n"
       "due mark goes under 24 KB, so tiny's 24,000 B reads as 24,576 B.\n\n"
-      "| Provider | Model | Profile | H / L | Hist max | Hist soft | Hist keep | Fold step | Rows | Trigger |\n" +
-      separator(10);
+      "| Provider | Model | Profile | H / L | Hist max tokens | Hist soft tokens | Hist keep tokens | Hist max | Hist soft "
+      "| Hist keep | Fold step | Rows | Trigger |\n" +
+      separator(13);
   for (const Head& h : {Head{"anthropic", "claude-sonnet-5-5"}, Head{"anthropic", "claude-haiku-5-5"},
                         Head{"openai", "gpt-5.6"}, Head{"openai", "gpt-5.6-luna"}, Head{"zai", "glm-5.3"},
                         Head{"mistral", "mistral-large-4-0"}})
     for (const HistoryProfile p : {HistoryProfile::Full, HistoryProfile::Large, HistoryProfile::Medium,
                                    HistoryProfile::Small, HistoryProfile::Tiny}) {
       installHistoryProfile(p);
-      const ContextBudget c = deriveRequestContext(requestBudgetFor(h.host, h.model, false, BudgetLink::Device), {});
+      const RequestBudget rb = requestBudgetFor(h.host, h.model, false, BudgetLink::Device);
+      const ContextBudget c = deriveRequestContext(rb, {});
       const HistoryProfileMarks m = historyProfileMarks(p);
       const std::string hl = m.high ? num(m.high) + " / " + num(m.low) : std::string("the head's own (default)");
-      t += cells({h.host, h.model, historyProfileSlug(p), hl, num(c.historyMaxBytes),
+      t += cells({h.host, h.model, historyProfileSlug(p), hl, tok(c.historyMaxBytes, rb.rNomX100),
+                  tok(c.historySoftBytes, rb.rNomX100), tok(c.historyKeepBytes, rb.rNomX100), num(c.historyMaxBytes),
                   num(c.historySoftBytes), num(c.historyKeepBytes), num(c.foldStepBytes), num(c.historyRows),
                   num(foldTriggerBytes(c, kCompactAtKbDefault))});
     }
@@ -187,8 +197,9 @@ static std::string floorSection() {
       "trigger stays v5.1.1's 48 KB. Where that leaves no more than v5.1.1's window, the head keeps v5.1.1's\n"
       "window exactly (the floor branch), and so does a head on a wire whose overhead is not measured\n"
       "(Mistral, Z.ai and the other router upstreams).\n\n"
-      "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |\n" +
-      separator(9);
+      "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max tokens | Hist soft tokens "
+      "| Hist keep tokens | Hist max | Hist soft | Hist keep | Branch |\n" +
+      separator(12);
   for (const Head& h : kRouted) {
     const RequestBudget rb = turnBudgetFor(h.host, h.model, true, BudgetLink::Device, routedBudgetLift());
     const ContextBudget c = deriveRequestContext(rb, {});
@@ -197,8 +208,9 @@ static std::string floorSection() {
                       (long)c.chatSummaryBytes - (long)kFloorMarginBytes - (long)kFloorRoundReserveBytes;
     t += cells({h.host, h.model, num(rb.wireBodyBytes), num(c.chatSummaryBytes),
                 rb.measuredWire ? std::to_string(left) : std::string("not measured"),
-                num(c.historyMaxBytes), num(c.historySoftBytes), num(c.historyKeepBytes),
-                c.floorMeasured ? "measured" : c.floorBranch ? "v5.1.1 window" : "room"});
+                tok(c.historyMaxBytes, rb.rNomX100), tok(c.historySoftBytes, rb.rNomX100),
+                tok(c.historyKeepBytes, rb.rNomX100), num(c.historyMaxBytes), num(c.historySoftBytes),
+                num(c.historyKeepBytes), c.floorMeasured ? "measured" : c.floorBranch ? "v5.1.1 window" : "room"});
   }
   return t;
 }
@@ -258,7 +270,8 @@ static std::string budgetTableDoc() {
       "100,000 tokens, the latency bound, 0.75 of the window and 0.9 of a price tier, never under the floor of\n"
       "85,000 B (or 0.85 of a tiny window). Bound names which one decided. Target is bytes over rNom, in tokens.\n"
       "Read window is in seconds, prefill and decode in tokens per second (decode at the target's context),\n"
-      "and every other figure in bytes. No figure is below the head's v5.1.1 value. The history marks (Hist\n"
+      "and every other figure in bytes; the history marks are given in tokens first (at the head's rNom, owner\n"
+      "ruling 82), then in bytes. No figure is below the head's v5.1.2 value. The history marks (Hist\n"
       "max, soft, keep, Fold step, Rows, Trigger) are shown under the default history profile, full: each\n"
       "head's own marks, as v5.1.2 derives them (smaller profiles are the owner's choice: History profiles\n"
       "below). A split-prompt head at the 85,000 B floor sizes its history from the measured\n"

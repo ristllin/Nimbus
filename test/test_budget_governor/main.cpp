@@ -387,6 +387,53 @@ void test_the_advice_waits_and_a_choice_is_observed_afresh() {
   TEST_ASSERT_EQUAL(1, (int)s.told.size());
 }
 
+// Owner ruling 82: the owner reads tokens. The advice names the fitting profile's size in tokens;
+// the status, the menu and the reply give each profile's due mark and keep in tokens first, bytes
+// after in parentheses.
+void test_the_owner_reads_tokens() {
+  TEST_ASSERT_EQUAL_STRING("about 37,800 tokens", tokensText(37785).c_str());
+  TEST_ASSERT_EQUAL_STRING("about 900 tokens", tokensText(870).c_str());
+  Sim s(2026, 11, 1);
+  s.baseUsdPerDay = 0.5;
+  s.night();
+  // The device fills each profile's fold mark on its head (Sonnet: rNom 2.5).
+  int told = 0;
+  for (int d = 0; d < 6; d++) {
+    const double usd = s.baseUsdPerDay * profileCostPermille(s.file.effective()) / 1000.0;
+    s.spent += (uint64_t)std::llround(usd * kUsd);
+    s.day++;
+    GovernorFacts g;
+    TEST_ASSERT_TRUE(governorFactsAt((uint64_t)s.day * 86400u + 4 * 3600u + 60u, 0, 240,
+                                     SpendFacts{s.month, s.spent, true, kCeiling}, g));
+    for (int i = 0; i < 5; i++)
+      g.dueTokens[i] = profileMarksFor("anthropic", "claude-sonnet-5-5", true, (HistoryProfile)i).dueTokens;
+    const BudgetAdvice a = governorNight(s.file, g);
+    if (a.kind != BudgetAdvice::Kind::Advice) continue;
+    TEST_ASSERT_TRUE_MESSAGE(a.line.find("medium (about 24,000 tokens before a summary)") != std::string::npos,
+                             a.line.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(a.record.find("medium, about 24,000 tokens would fit") != std::string::npos,
+                             a.record.c_str());
+    TEST_ASSERT_TRUE(a.record.size() <= 111);
+    told++;
+  }
+  TEST_ASSERT_EQUAL(1, told);
+  ProfileMarks all[5];
+  for (int i = 0; i < 5; i++) all[i] = profileMarksFor("anthropic", "claude-sonnet-5-5", true, (HistoryProfile)i);
+  TEST_ASSERT_EQUAL_UINT32(94464, all[4].dueBytes);   // full: v5.1.2's own
+  TEST_ASSERT_EQUAL_UINT32(37785, all[4].dueTokens);  // at 2.5 B a token
+  BudgetFile f;
+  const std::string status = profileStatusText(f, BudgetFileRead::Ok, all[4]);
+  TEST_ASSERT_TRUE_MESSAGE(status.find("about 37,800 tokens before a summary, keeping about 23,600 tokens (94464 / "
+                                       "59040 B)") != std::string::npos,
+                           status.c_str());
+  const std::string menu = profileReplyText(f, "", true, all);
+  TEST_ASSERT_TRUE_MESSAGE(menu.find("full (the default): about 37,800 tokens") != std::string::npos, menu.c_str());
+  TEST_ASSERT_TRUE(menu.find("tiny: about 9,800 tokens") != std::string::npos);
+  TEST_ASSERT_TRUE(menu.find("full (the default)") < menu.find("tiny:"));
+  chooseProfile(f, HistoryProfile::Medium, 1);
+  TEST_ASSERT_TRUE(profileReplyText(f, "medium", true, all).find("medium, about 24,000 tokens") != std::string::npos);
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -400,5 +447,6 @@ int main(int, char**) {
   RUN_TEST(test_the_cost_ratios_are_the_measured_ones);
   RUN_TEST(test_the_profile_command);
   RUN_TEST(test_the_advice_waits_and_a_choice_is_observed_afresh);
+  RUN_TEST(test_the_owner_reads_tokens);
   return UNITY_END();
 }

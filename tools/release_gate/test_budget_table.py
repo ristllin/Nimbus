@@ -426,7 +426,8 @@ def test_the_repository_table_passes_and_its_header_is_the_one_bound_here():
     assert G.problems(G.TABLE, G.V511) == []
     with open(G.TABLE, encoding="utf-8") as f:
         text = f.read()
-    assert HEAD in text
+    head_repo = HEAD.replace("| Hist max |", "| Hist max tokens | Hist soft tokens | Hist keep tokens | Hist max |")
+    assert head_repo in text  # owner ruling 82: the token columns first
     headings = [h for h, _ in G.parse_tables(text)]
     assert [G.norm(h) for h in headings] == list(G.TABLES)
     rbbg = {"profiles", "floor_heads"}  # lane RB-BG's tables have their own columns
@@ -437,7 +438,11 @@ def test_the_repository_table_passes_and_its_header_is_the_one_bound_here():
         set(r) == set(G.COLUMNS) - {"perTurnFloorBytes", "sized_from", "profile", "marks", "left", "branch"}
         for r in full
     )
-    assert "| " + " | ".join(LOOP_COLS) + " |" in text  # lane CTXL's loop-off header, column for column
+    loop_repo = "| " + " | ".join(LOOP_COLS) + " |"
+    loop_repo = loop_repo.replace(
+        "| Hist max |", "| Hist max tokens | Hist soft tokens | Hist keep tokens | Hist max |"
+    )
+    assert loop_repo in text  # lane CTXL's loop-off header, column for column, the token columns first
 
 
 PROFILE_HEAD = "| Provider | Model | Profile | H / L | Hist max | Hist soft | Hist keep | Fold step | Rows | Trigger |"
@@ -498,12 +503,13 @@ def test_sonnet_lowered_under_v512_turns_the_gate_red(tmp_path):
     with open(G.TABLE, encoding="utf-8") as f:
         lines = f.read().split("\n")
     head = next(line for line in lines if line.startswith("| Provider | Model | Window"))
-    col = [c.strip() for c in head.strip("|").split("|")].index("Hist max")
+    names = [c.strip() for c in head.strip("|").split("|")]
+    col, tcol = names.index("Hist max"), names.index("Hist max tokens")
     done = False
     for i, line in enumerate(lines):
         cells = [c.strip() for c in line.strip("|").split("|")]
         if not done and len(cells) > col and cells[:2] == ["anthropic", "claude-sonnet-5-5"]:
-            cells[col] = "100000"
+            cells[col], cells[tcol] = "100000", "40000"  # bytes and tokens lowered together
             lines[i] = "| " + " | ".join(cells) + " |"
             done = True
     assert done
@@ -512,6 +518,19 @@ def test_sonnet_lowered_under_v512_turns_the_gate_red(tmp_path):
     assert G.problems(str(t), G.V512) != [] and any(
         "historyMaxBytes 100000 under its v5.1.2 value 118080" in e for e in G.problems(str(t), G.V512)
     )
+
+
+def test_a_token_column_that_disagrees_fails(tmp_path):
+    row = {
+        "provider": "anthropic",
+        "model": "x",
+        "rnom": "2.5",
+        "historyMaxTokens": "50000",
+        "historyMaxBytes": "118080",
+    }
+    assert G.token_problems(row)
+    row["historyMaxTokens"] = "47232"
+    assert G.token_problems(row) == []
 
 
 def test_the_release_ships_with_the_routed_lift_off():

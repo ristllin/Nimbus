@@ -35,6 +35,8 @@ test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
   8. the release shape: while kRoutedBudgetLift is false in request_budget.h (v5.1.2 ships
      that way, RULINGS-v3), every routed head sits on the 85,000 B floor.
 
+  10. owner ruling 82: a token column (hist max, soft and keep tokens) agrees with its byte column at the
+     row's rNom, and is never larger than it.
   9. lane RB-BG: the history profiles (full, the default, marked as such and the head's own marks;
      under an owner's smaller profile a direct head's fold is due at no more than its H, never
      under 24 KB, as its trigger; a larger profile never gives a smaller mark) and the
@@ -128,6 +130,9 @@ COLUMNS = {
     "replayBytes": ("replay", "replaybytes"),
     "chatSummaryBytes": ("summary", "chatsummarybytes"),
     "historyMessageCap": ("message cap", "historymessagecap"),
+    "historyMaxTokens": ("hist max tokens",),
+    "historySoftTokens": ("hist soft tokens",),
+    "historyKeepTokens": ("hist keep tokens",),
     "historyMaxBytes": ("hist max", "history max", "historymaxbytes"),
     "historySoftBytes": ("hist soft", "history soft", "historysoftbytes"),
     "historyKeepBytes": ("hist keep", "history keep", "historykeepbytes"),
@@ -629,9 +634,28 @@ def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[st
     return [f"{name}: branch '{row['branch']}' is neither measured nor v5.1.1's window"]
 
 
+TOKEN_PAIRS = (("historyMaxTokens", "historyMaxBytes"), ("historySoftTokens", "historySoftBytes"),
+               ("historyKeepTokens", "historyKeepBytes"))  # fmt: skip
+
+
+def token_problems(row: dict) -> "list[str]":
+    """Owner ruling 82: a token column says the same as its byte column at the row's rNom."""
+    errs, rnom = [], val(row, "rnom")
+    for tk, bk in TOKEN_PAIRS:
+        tokens, nbytes = val(row, tk), val(row, bk)
+        if tokens is None or nbytes is None:
+            continue
+        if tokens > nbytes or (rnom and abs(tokens - nbytes / rnom) > 1):
+            errs.append(f"{row_name(row)}: {tk} {tokens:.0f} does not match {bk} {nbytes:.0f} at rNom {rnom}")
+    return errs
+
+
 def row_problems(row: dict, profile: dict, old: dict, lift: "bool | None", ctx: "dict | None" = None) -> "list[str]":
     if profile.get("preview"):
         return preview_problems(row)
+    tok = token_problems(row)
+    if tok:
+        return tok
     if profile.get("profiles"):
         return profile_row_problems(row)
     if profile.get("floor_heads"):
