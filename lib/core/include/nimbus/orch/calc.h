@@ -68,22 +68,22 @@
 //   TooLong           longer than 256 bytes     (position: the character holding byte 257)
 //   BadChar           unexpected 'X'            (X a printable ASCII character; any other
 //                                                byte or character reads "unexpected character")
-//   UnknownWord       unknown word 'W': use numbers, + - * / ( ) % and of
+//   UnknownWord       unknown word 'W' (calc reads numbers, + - * / ( ) % and of)
 //                                               (W at most 12 bytes)
-//   Unsupported       'X' is not supported: use + - * / ( ) %
+//   Unsupported       'X' is not supported (calc reads + - * / ( ) %)
 //   ExpectedValue     expected a number or '('
 //   ExpectedOperator  expected an operator or ')'
 //   MissingClose      missing ')'               (position: the innermost '(' left open)
 //   ExtraClose        ')' without '('
 //   TooDeep           more than 10 nested parentheses
 //   NumberTooLong     more than 18 digits before or after the point
-//   BadNumber         number not understood: use digits with one '.' for decimals
-//   UnclearNumber     'T' could be A or B: write one of them
+//   BadNumber         number not understood (digits, one decimal mark, thousands in groups of 3)
+//   UnclearNumber     'T' could be A or B
 //                     (T the number as typed, A its thousands reading, B its decimal
 //                     reading; T is at most 7 bytes)
 //   PercentPlacement  '%' must follow a number
 //   OfPlacement       'of' must follow a percent, as in 15% of 80
-//   UnclearPercent    unclear percent: write N% of X, or put it in parentheses
+//   UnclearPercent    unclear percent (N% of X, or a percent in parentheses, is clear)
 //   DivByZero         division by zero          (position: the '/')
 //   Overflow          too large to compute exactly (position: the operator)
 //

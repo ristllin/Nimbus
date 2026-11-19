@@ -708,10 +708,10 @@ void putFixedReason(Error e, Line& line) {
       {Error::ExtraClose, "')' without '('"},
       {Error::TooDeep, "more than 10 nested parentheses"},
       {Error::NumberTooLong, "more than 18 digits before or after the point"},
-      {Error::BadNumber, "number not understood: use digits with one '.' for decimals"},
+      {Error::BadNumber, "number not understood (digits, one decimal mark, thousands in groups of 3)"},
       {Error::PercentPlacement, "'%' must follow a number"},
       {Error::OfPlacement, "'of' must follow a percent, as in 15% of 80"},
-      {Error::UnclearPercent, "unclear percent: write N% of X, or put it in parentheses"},
+      {Error::UnclearPercent, "unclear percent (N% of X, or a percent in parentheses, is clear)"},
       {Error::DivByZero, "division by zero"},
       {Error::Overflow, "too large to compute exactly"},
   };
@@ -736,12 +736,12 @@ void putReason(Error e, std::string_view span, Line& line) {
     case Error::UnknownWord:
       line.put("unknown word '");
       line.put(head(span, 12));
-      line.put("': use numbers, + - * / ( ) % and of");
+      line.put("' (calc reads numbers, + - * / ( ) % and of)");
       break;
     case Error::Unsupported:
       line.put("'");
       line.put(span);
-      line.put("' is not supported: use + - * / ( ) %");
+      line.put("' is not supported (calc reads + - * / ( ) %)");
       break;
     case Error::UnclearNumber: {
       const size_t comma = span.find(',');
@@ -754,7 +754,7 @@ void putReason(Error e, std::string_view span, Line& line) {
       line.put(head(span, comma));
       line.put(".");
       line.put(after(span, comma));
-      line.put(": write one of them");
+      line.put("");
       break;
     }
     default: putFixedReason(e, line); break;

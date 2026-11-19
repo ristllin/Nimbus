@@ -185,6 +185,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("lib/core/src/orch_file_tools.cpp", "tool_results"),
     # RB-C1: the device-written pieces of the digest block and the recent-files list.
     ("lib/core/include/nimbus/orch/tx/digest.h", "core"),
+    # RB-REC8: the calc tool's result and error lines (phase 2 moves them into texts.h).
+    ("lib/core/src/orch_calc.cpp", "tool_results"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

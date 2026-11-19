@@ -603,3 +603,13 @@ deleted. Engine 2 has no baseline.
   lib/core/src/orch_day_start.cpp (25 B; engine 2 renders the same words), and the zone's
   name moves to the cached date line as ", time zone BST" (12 B). One literal "Current time: " is shared
   by both forms of the line. Planned work (ruling 42), on the device, nimbusd and the harness lab.
+
+### PC-0031: the calc tool's result and error lines
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 1936 -> 2635
+- sha8: bfe0657b -> 614181ca
+- lane: RB-REC8
+- prd: section 4 (the tools), as ruling 42 item 3 adds a general calc tool, always on
+- why: lib/core/src/orch_calc.cpp, listed in E2_EXTRA_SOURCES, so every literal of the file counts: the result line ("= ", " (rounded to 6 decimal places)"), "error at position N: " and the 18 error reasons, each a fact about the expression with its position, plus the operator and word tokens it reads
