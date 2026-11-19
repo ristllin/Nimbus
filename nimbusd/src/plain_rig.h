@@ -29,7 +29,7 @@
 // Nothing here enters a device image: device bindings are src/agent/*_device.cpp.
 //
 //   nimbusd::PlainRig rig(cfg, PlainRigBindings{&platform, &transport, &files, wire});
-//   rig.registry().add(...);                   // a tool binding (hosted_<name>.h), before boot
+//   rig.registry() is where a tool binding (hosted_<name>.h) registers its tool, before boot
 //   (void)plain::installRails(rig.hooks(), ...);   // a seam module, before boot
 //   rig.boot();
 //   nimbusd::PlainTurn t = rig.say("hello");   // t.stated is never empty
