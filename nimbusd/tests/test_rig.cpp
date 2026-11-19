@@ -8,6 +8,10 @@
 // durable state came back and the tool surface is composed as expected.
 #include <string>
 
+#include "../../test/test_calc_tool/fixtures.h"   // RB-REC8: calc's shared fixtures
+#include "nimbus/harness/plain/request.h"
+#include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/calc.h"
 #include "rig.h"
 #include "test_util.h"
 
@@ -56,6 +60,26 @@ int main() {
     c.ok(regHas(rig.registry(), "artifact.save"), "artifact.save is registered");
     c.ok(regHas(rig.registry(), "docs.search"), "docs.search is registered");
     c.ok(regHas(rig.registry(), "device.status"), "device.status is registered");
+    // RB-REC8: calc is registered with engine 2's declaration bytes and answers each
+    // shared fixture with exactly calc::evaluate's line.
+    c.ok(regHas(rig.registry(), "calc"), "calc is registered");
+    {
+      const auto* decl = agent::plain::toolDecl("calc");
+      bool same = decl != nullptr;
+      for (const auto& s : rig.registry().toolSpecs())
+        if (s.name == "calc") same = same && s.description == decl->description && s.schemaJson == decl->schema;
+      c.ok(same, "calc carries engine 2's description and schema bytes");
+      bool bytes = true;
+      for (const char* expr : calc_fixtures::kExpressions) {
+        JsonDocument d;
+        d["expression"] = expr;
+        const orch::ToolResult r = rig.registry().dispatch("calc", d.as<JsonObjectConst>(),
+                                                           orch::principalForRole("c", orch::Role::Admin));
+        const std::string line = r.success ? r.output : r.error;
+        bytes = bytes && line == std::string(orch::calc::evaluate(expr).text());
+      }
+      c.ok(bytes, "calc's lines on the shared fixtures are calc::evaluate's bytes");
+    }
     // web.search is advertised ONLY when a Tavily key is present - none here.
     c.ok(!regHas(rig.registry(), "web.search"),
          "web.search is absent with no Tavily key (advertised == callable)");

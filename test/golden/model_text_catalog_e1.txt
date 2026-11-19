@@ -3,8 +3,8 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=47695 ceiling=47989 entries=544 sha8=55d9533e
 # class device_notes bytes=54036 ceiling=54203 entries=1457 sha8=692e97dd
-# class tool_descriptions bytes=23131 ceiling=23131 entries=98 sha8=542ad7ca
-# class tool_results bytes=41942 ceiling=41962 entries=1248 sha8=df517712
+# class tool_descriptions bytes=23206 ceiling=23131 entries=99 sha8=d9d899ae
+# class tool_results bytes=42579 ceiling=41962 entries=1271 sha8=5bbb2cef
 # class side_prompts bytes=9795 ceiling=9795 entries=170 sha8=fada0e91
 # class skills bytes=8773 ceiling=23264 entries=26 sha8=3ef5d5db
 system	lib/core/include/nimbus/orch/orch_schema.h	955fc9b7	884	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. Never invent ids, links, or successes."
@@ -2008,6 +2008,7 @@ device_notes	src/main.cpp	8ec6526a	53	"SD card lost - memory demoted to RAM tier
 device_notes	src/main.cpp	4d23fbbe	51	"SD card recovered - memory promoted back to SD tier"
 device_notes	src/main.cpp	595e6452	5	"TURN "
 device_notes	src/main.cpp	822a280d	38	"TURN busy - inbound queue full, resend"
+tool_descriptions	lib/core/src/orch_calc_tool.cpp	3c417204	75	"Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%."
 tool_descriptions	lib/core/src/orch_file_edit.cpp	adfbeb08	10	"#removed: "
 tool_descriptions	lib/core/src/orch_file_edit.cpp	d0102f4c	11	"#replaced: "
 tool_descriptions	lib/core/src/orch_food_portions.cpp	e937289e	725	"Exact amounts for a meal plan, or for using up what is left of the day: give left_kcal (and left_protein), and EVERY food of the meal, the owner's fixed ones included, from the foods the owner said they have (none named: ask what they have instead of calling): its kcal and protein per 100 g, then fixed_g for an amount the owner gave (an approximate one too), else amount_g (required) for the sensible portion you would choose (the proportions are kept and scaled together to fill the kcal left), and unit_g for slices or pieces. Returns each food's amount, kcal and protein and the total. Use it for every plan and every how-much answer instead of adding up yourself, and answer with exactly its amounts; it writes nothing."
@@ -2113,6 +2114,29 @@ tool_results	lib/core/include/nimbus/orch/result_envelope.h	4fa0aad4	20	" bytes,
 tool_results	lib/core/include/nimbus/orch/result_envelope.h	40c46ffd	47	"; read the rest with files.read from an offset]"
 tool_results	lib/core/include/nimbus/orch/tool_gates.h	630dd386	123	"web search is not set up on this device (no web-search key); the owner can add a Tavily, Mistral or Z.ai key in the web app"
 tool_results	lib/core/include/nimbus/orch/tool_gates.h	fbd5dc54	99	"image generation is not set up on this device (no OpenAI key); the owner can add one in the web app"
+tool_results	lib/core/src/orch_calc.cpp	fbe98e27	30	" (rounded to 6 decimal places)"
+tool_results	lib/core/src/orch_calc.cpp	bde8fe0a	24	"expected a number or '('"
+tool_results	lib/core/src/orch_calc.cpp	f9e78660	27	"expected an operator or ')'"
+tool_results	lib/core/src/orch_calc.cpp	8d73d9cf	11	"missing ')'"
+tool_results	lib/core/src/orch_calc.cpp	37af5e18	15	"')' without '('"
+tool_results	lib/core/src/orch_calc.cpp	b4f939fc	31	"more than 10 nested parentheses"
+tool_results	lib/core/src/orch_calc.cpp	910125be	45	"more than 18 digits before or after the point"
+tool_results	lib/core/src/orch_calc.cpp	11cb0b68	74	"number not understood (digits, one decimal mark, thousands in groups of 3)"
+tool_results	lib/core/src/orch_calc.cpp	7f8195ff	24	"'%' must follow a number"
+tool_results	lib/core/src/orch_calc.cpp	c37c79b5	43	"'of' must follow a percent, as in 15% of 80"
+tool_results	lib/core/src/orch_calc.cpp	06e62572	64	"unclear percent (N% of X, or a percent in parentheses, is clear)"
+tool_results	lib/core/src/orch_calc.cpp	2bc12460	16	"division by zero"
+tool_results	lib/core/src/orch_calc.cpp	eb0d8a60	28	"too large to compute exactly"
+tool_results	lib/core/src/orch_calc.cpp	753fb969	16	"empty expression"
+tool_results	lib/core/src/orch_calc.cpp	15f814b9	21	"longer than 256 bytes"
+tool_results	lib/core/src/orch_calc.cpp	2080d0ae	20	"unexpected character"
+tool_results	lib/core/src/orch_calc.cpp	9d227668	12	"unexpected '"
+tool_results	lib/core/src/orch_calc.cpp	dfc5fbb2	14	"unknown word '"
+tool_results	lib/core/src/orch_calc.cpp	72204a5f	44	"' (calc reads numbers, + - * / ( ) % and of)"
+tool_results	lib/core/src/orch_calc.cpp	97061cf6	45	"' is not supported (calc reads + - * / ( ) %)"
+tool_results	lib/core/src/orch_calc.cpp	8871c2da	11	"' could be "
+tool_results	lib/core/src/orch_calc.cpp	e1a3e78c	4	" or "
+tool_results	lib/core/src/orch_calc.cpp	a095aad8	18	"error at position "
 tool_results	lib/core/src/orch_file_append.cpp	ba15659d	253	"creating a CSV needs its header row first (the column names, no data - e.g. date,meal,items,kcal,protein_g for the food log): a headerless CSV cannot be updated by key later, so corrections would duplicate - send the header row first, then the data rows"
 tool_results	lib/core/src/orch_file_append.cpp	b2047d87	36	"need 'text': one or more rows to add"
 tool_results	lib/core/src/orch_file_append.cpp	cb6ca1d2	35	"text too large for one append (max "

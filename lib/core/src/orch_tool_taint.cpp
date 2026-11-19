@@ -31,6 +31,9 @@ const ToolTaintRow kRows[] = {
     // the portion calculator (lib/core/src/orch_food_portions.cpp): arithmetic over the
     // model's own arguments, nothing stored or fetched
     {"food.portions", T::Internal, E::Read},
+    // calc (lib/core/src/orch_calc_tool.cpp): exact arithmetic on its own argument, nothing
+    // stored or fetched
+    {"calc", T::Internal, E::Read},
     // the recent-results ring (lib/core/src/orch_result_store.cpp)
     {"results.get", T::External, E::Read},
     {"results.list", T::External, E::Read},

@@ -182,6 +182,7 @@ const Expect kExpect[] = {
     {"image.generate", kTurn},
     {"image.look", kTurn},
     {"image.note", kTurn},
+    {"calc", kOpen},   // RB-REC8
     // docs, routines, replies, skills, people
     {"docs.list", kOpen},
     {"docs.read", kOpen},
@@ -265,7 +266,12 @@ void walk(const std::string& dir, std::vector<std::string>& out) {
   closedir(d);
 }
 
+// Old-engine tools registered under an undotted name (RB-REC8: calc, always on on both
+// engines). Engine-2-only names (read_file, ...) stay out: they have no rows here.
+const std::set<std::string> kUndottedTools = {"calc"};
+
 bool toolNameShape(const std::string& s) {
+  if (kUndottedTools.count(s)) return true;
   const size_t dot = s.find('.');
   if (dot == std::string::npos || dot == 0 || dot + 1 >= s.size()) return false;
   for (char c : s)

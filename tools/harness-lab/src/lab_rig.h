@@ -25,6 +25,7 @@
 #include "nimbus/orch/connectors_wire.h"   // lane CONN: the rig's connector attach + catalog
 #include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/effect_ring.h"   // RB-Q3a: the recent-actions ring
+#include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/model_choices.h"
@@ -443,6 +444,7 @@ class LabRig {
     // "unavailable" to the memory tools, which then degrade / refuse honestly).
     mc.embed = [this](const std::string& text, std::string& err) { err.clear(); return embed(text); };
     mc.persistScratch = [this] { return saveScratch(); };
+    orch::registerCalcTool(reg_);   // RB-REC8: calc, as the device registers it
     prefs_.bindStanding(mc);   // lane J: mem_write standing:true -> the rules
     orch::registerMemoryTools(reg_, mc);
     prefs_.registerTools(reg_);   // lane J: prefs.edit, registered as the device does

@@ -95,6 +95,8 @@ E1_SOURCES = {
     "tool_results": (
         "lib/core/include/nimbus/orch/result_envelope.h",
         "lib/core/include/nimbus/orch/tool_gates.h",
+        "lib/core/src/orch_calc.cpp",   # RB-REC8: calc's result and error lines
+        "lib/core/src/orch_calc_tool.cpp",   # RB-REC8: calc's registration
         "lib/core/src/orch_file_append.cpp",
         "lib/core/src/orch_file_edit.cpp",
         "lib/core/src/orch_food_figures.cpp",

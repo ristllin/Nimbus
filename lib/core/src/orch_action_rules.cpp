@@ -95,6 +95,7 @@ const ActionRuleRow kRows[] = {
     {"image.generate", R::TurnOnly, "make an image"},
     {"image.look", R::TurnOnly, "look at a photo"},
     {"image.note", R::TurnOnly, "note a photo"},   // the head records what a photo showed
+    {"calc", R::Open, "calculate"},   // RB-REC8: exact arithmetic on its argument; it writes nothing
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},
     {"docs.read", R::Open, "read the docs"},

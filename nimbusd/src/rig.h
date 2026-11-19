@@ -21,6 +21,7 @@
 #include "nimbus/orch/food_ledger.h"     // scanFoodLedger - the VN ledger (CUM-840)
 #include "nimbus/orch/food_portions.h"   // food.portions
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
+#include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
@@ -1925,6 +1926,7 @@ class NimbusdRig {
       return orch::prefsSaveStanding(prefsCtx(), text, who, handled);
     };
     memCtx_ = mc;
+    orch::registerCalcTool(reg_);   // RB-REC8: calc, always on, as the device registers it
     orch::registerMemoryTools(reg_, mc);
     orch::registerFoodTools(reg_);   // the food playbook's portion calculator (as the device)
     // Lane POL2 (hosted parity): the owner's standing rules and open questions,

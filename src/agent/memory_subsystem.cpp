@@ -8,6 +8,7 @@
 
 #include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/reset_plan.h"   // scrubChunk: the erase plan (host-tested)
+#include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 
 
 #include <LittleFS.h>
@@ -1181,6 +1182,7 @@ void begin() {
     return nimbus::orch::prefsSaveStanding(prefs::context(), text, who, handled);
   };
   g_ctx = ctx;
+  nimbus::orch::registerCalcTool(g_reg);   // RB-REC8: calc, always on (ruling 42 item 3)
   registerMemoryTools(g_reg, ctx);
   nimbus::orch::registerPrefsTools(g_reg, prefs::context());
   nimbus::orch::registerOpenQTools(g_reg, prefs::openQContext());   // lane POL2: openq.edit

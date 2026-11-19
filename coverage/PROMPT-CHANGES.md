@@ -604,6 +604,26 @@ deleted. Engine 2 has no baseline.
   name moves to the cached date line as ", time zone BST" (12 B). One literal "Current time: " is shared
   by both forms of the line. Planned work (ruling 42), on the device, nimbusd and the harness lab.
 
+### PC-0029: calc registered on the old engine: its description
+- catalog: e1
+- class: tool_descriptions
+- kind: spec
+- bytes: 23131 -> 23206
+- sha8: 542ad7ca -> d9d899ae
+- lane: RB-REC8
+- prd: section 4 (the tools), as ruling 42 item 3 adds a general calc tool, always on, on both engines
+- why: lib/core/src/orch_calc_tool.cpp registers calc on the old engine and nimbusd with the same 75 B description as engine 2's texts.h row (test_calc_tool compares the bytes)
+
+### PC-0030: calc registered on the old engine: its result and error lines
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 41942 -> 42579
+- sha8: df517712 -> 5bbb2cef
+- lane: RB-REC8
+- prd: section 4 (the tools), as ruling 42 item 3 adds a general calc tool, always on, on both engines
+- why: lib/core/src/orch_calc.cpp's result line and 18 error reasons, now linked into the old engine (the same bytes engine 2 returns, PC-0028), each a fact about the expression with its position
+
 ### PC-0031: the calc tool's result and error lines
 - catalog: e2
 - class: tool_results
