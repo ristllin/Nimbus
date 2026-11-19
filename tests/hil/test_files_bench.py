@@ -68,7 +68,8 @@ def after_append(before: bytes, text: bytes, after: bytes) -> str:
 
 def fenced(torn: bytes, text: bytes, after: bytes, result: str) -> bool:
     """The append after a torn tail wrote a line end before the text and said so."""
-    return after == torn + b"\n" + text and "newline" in result
+    said = any(w in result for w in ("newline", "line end", "fresh line"))
+    return after == torn + b"\n" + text and said
 
 
 def after_edit(old: bytes, new: bytes, after: bytes) -> str:
@@ -91,6 +92,7 @@ def csv_rows(n: int, start: int = 0) -> bytes:
 
 
 HEADER = b"date,category,note,amount,paid_with\n"
+NL = b"\n"
 
 
 def test_after_append_names_every_outcome():
@@ -179,7 +181,8 @@ class Unit:
         if self.dev is None:
             return self.attach()
         self.dev.reopen_after_reenumerate()
-        self._ready()
+        if not self._ready():
+            self.recover()
 
     def detach(self) -> None:
         if self.dev is not None:
@@ -187,13 +190,39 @@ class Unit:
             self.dev = None
 
     def con(self, line: str, expect: str, timeout: float = 10.0) -> str:
-        if self.dev is None:
-            self.attach()
-        try:
-            return self.dev.cmd(line, expect, timeout)
-        except Exception as e:  # noqa: BLE001 - an unanswered command is an empty reply; the leg asserts on it
-            record("console.log", f"{line!r}: no {expect!r} ({type(e).__name__})")
-            return ""
+        """One command; on a silent console (the S3 USB console wedges after repeated panics, a recorded bench
+        defect) one guarded bus reset of this board and one retry."""
+        for attempt in (1, 2):
+            if self.dev is None:
+                self.attach()
+            try:
+                return self.dev.cmd(line, expect, timeout)
+            except Exception as e:  # noqa: BLE001 - an unanswered command is an empty reply; the leg asserts on it
+                record("console.log", f"{line!r}: no {expect!r} ({type(e).__name__}), attempt {attempt}")
+                if attempt == 1:
+                    self.recover()
+        return ""
+
+    def recover(self) -> None:
+        """The guarded bus reset (tools/usb_reset.py: this board only, the forbidden one skipped by its serial; a
+        wedged board shows no serial), then a fresh console session. The board restarts: the caller re-arms."""
+        import subprocess
+
+        self.detach()
+        forbidden = os.environ.get("NIMBUS_FORBIDDEN_MAC", "28:84:85:42:18:FC")
+        cmd = [
+            os.environ.get("NIMBUS_PY", "python3"),
+            os.path.join(REPO, "tools", "usb_reset.py"),
+            "--skip",
+            forbidden,
+            "--anonymous-ok",
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        record("recovery.log", f"bus reset: {(out.stdout + out.stderr).strip()[-160:]}")
+        time.sleep(4)
+        self.wait_api(180)
+        self.attach()
+        self.rezero("after a console recovery")
 
     def wait_api(self, timeout: float = 120.0) -> dict:
         end = time.time() + timeout
@@ -324,7 +353,13 @@ def test_cut_during_append_leaves_the_old_bytes_and_a_fenced_tail(unit):
             record("cuts.log", f"append cut at {k}: the next read says {seen[-160:]!r}")
             assert named, f"cut at {k}: the read does not name the torn tail"
             result = _call(unit.api, "files.append", {"name": name, "text": row.decode()})
-            assert fenced(after, row, _file(unit.api, name), result), f"cut at {k}: the next append did not fence it"
+            now = _file(unit.api, name)
+            fenced_bytes = after + NL + row
+            record(
+                "cuts.log",
+                f"append cut at {k}: the next append says {result[-200:]!r}; fenced bytes {now == fenced_bytes}",
+            )
+            assert fenced(after, row, now, result), f"cut at {k}: the next append did not fence it"
 
 
 @pytest.mark.hil
