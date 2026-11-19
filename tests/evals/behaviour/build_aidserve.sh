@@ -11,11 +11,13 @@ mkdir -p "$OUT"
 ARGS=(-C "$REPO/nimbusd" "BUILD=$OUT")
 [ -n "$AJ" ] && ARGS+=("AJ_SRC=$AJ")
 # Compile every core object (the daemon's rule); the daemon itself is not linked.
-OBJS=$(make "${ARGS[@]}" -s -p -n daemon 2>/dev/null | sed -n 's/^CORE_OBJS := //p' | head -n1)
-make "${ARGS[@]}" -s -j"${JOBS:-4}" $OBJS >/dev/null
+read -r -a OBJS <<<"$(make "${ARGS[@]}" -s -p -n daemon 2>/dev/null | sed -n 's/^CORE_OBJS := //p' | head -n1)"
+make "${ARGS[@]}" -s -j"${JOBS:-4}" "${OBJS[@]}" >/dev/null
 AJI=${AJ:-$(make "${ARGS[@]}" -s -p -n daemon 2>/dev/null | sed -n 's/^AJ_SRC := //p' | head -n1)}
 CURL_PREFIX=$(curl-config --prefix 2>/dev/null || true)
-[ -n "$CURL_PREFIX" ] && CURL_RPATH="-Wl,-rpath,$CURL_PREFIX/lib"
-eval "c++ -std=gnu++17 -O1 -DNIMBUS_NATIVE -I$REPO/nimbusd/src -I$REPO/lib/harness/include -I$REPO/lib/core/include \
-  -I$REPO/include -I$REPO/../solide-drivers/include -I$AJI \"$HERE/aidserve.cpp\" $OBJS $(curl-config --libs 2>/dev/null || echo -lcurl) ${CURL_RPATH:-} -lpthread -o \"$OUT/aidserve\""
+read -r -a LIBS <<<"$(curl-config --libs 2>/dev/null || echo -lcurl)"
+[ -n "$CURL_PREFIX" ] && LIBS+=("-Wl,-rpath,$CURL_PREFIX/lib")
+c++ -std=gnu++17 -O1 -DNIMBUS_NATIVE -I"$REPO/nimbusd/src" -I"$REPO/lib/harness/include" -I"$REPO/lib/core/include" \
+  -I"$REPO/include" -I"$REPO/../solide-drivers/include" -I"$AJI" "$HERE/aidserve.cpp" "${OBJS[@]}" "${LIBS[@]}" -lpthread \
+  -o "$OUT/aidserve"
 echo "built $OUT/aidserve"

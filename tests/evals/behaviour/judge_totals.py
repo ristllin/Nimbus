@@ -117,7 +117,7 @@ def main():
                 lab, usd = ask(render(rec, truth), client)
             except Exception as e:
                 with _lock, open(ev / head / "judge-errors.jsonl", "a") as f:
-                    f.write(json.dumps({"key": key, "error": providers.redact(f"{type(e).__name__}: {str(e)[:400]}")}))
+                    f.write(json.dumps({"key": key, "error": providers.redact(f"{type(e).__name__}: {e}")[:400]}))
                     f.write("\n")
                 return
             ledger.add("judge-totals", usd)

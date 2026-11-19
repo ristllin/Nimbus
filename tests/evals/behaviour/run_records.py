@@ -426,8 +426,8 @@ def main():
                             {
                                 "arm": args.arm,
                                 "episode": ep["id"],
-                                "error": providers.redact(f"{type(e).__name__}: {str(e)[:600]}"),
-                                "trace": providers.redact(traceback.format_exc()[-1500:]),
+                                "error": providers.redact(f"{type(e).__name__}: {e}")[:600],
+                                "trace": providers.redact(traceback.format_exc())[-1500:],
                             }
                         )
                         + "\n"

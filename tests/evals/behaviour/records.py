@@ -645,7 +645,7 @@ NUM_RE = re.compile(r"(?<![\w.])-?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\w])|(?<![\w.]
 MONTHS = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
 NOT_FIGURES = re.compile(
     r"\d{4}-\d{2}-\d{2}|\b\d{1,2}:\d{2}\b|"
-    rf"\b\d{{1,2}}(?:st|nd|rd|th)?(?:\s*[-–—]\s*\d{{1,2}}(?:st|nd|rd|th)?)?\s+{MONTHS}\b|"
+    rf"\b\d{{1,2}}(?:st|nd|rd|th)?(?:\s*[-\u2013\u2014]\s*\d{{1,2}}(?:st|nd|rd|th)?)?\s+{MONTHS}\b|"
     rf"\b{MONTHS}\s+\d{{1,2}}(?:st|nd|rd|th)?\b|"
     r"\blines?\s+\d+(?:\s*(?:,|and|to|-)\s*\d+)*",
     re.I,
