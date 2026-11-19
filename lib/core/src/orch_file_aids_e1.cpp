@@ -144,11 +144,11 @@ size_t digits(uint64_t v) {
   return d;
 }
 
-// The longest head line readPart writes for a file of `size` bytes: five numbers of at most
-// digits(size + 1) each, the next offset one more.
+// The longest head line readPart writes for a file of `size` bytes: seven numbers (a, b, n,
+// x, y, m and the next offset) of at most digits(size + 1) each.
 size_t headBound(uint64_t size) {
   static constexpr char kLongest[] = "bytes - of , lines - of ; next part: \"offset\":\n";
-  return sizeof(kLongest) - 1 + 6 * digits(size + 1);
+  return sizeof(kLongest) - 1 + 7 * digits(size + 1);
 }
 
 bool isContinuation(char c) { return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
@@ -204,12 +204,16 @@ bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::s
   size_t skip = 0;
   while (skip < 3 && skip < w.size() && isContinuation(w[skip])) ++skip;
   const uint64_t from = from0 + skip;
-  size_t len = size_t(std::min<uint64_t>(room, size - from));
+  const size_t full = size_t(std::min<uint64_t>(room, size - from));
+  size_t len = full;
   if (from + len < size) {
     const size_t nl = w.rfind('\n', skip + len - 1);
     if (nl != std::string_view::npos && nl >= skip + len / 2) len = nl + 1 - skip;
     else
       while (len > 0 && isContinuation(w[skip + len])) --len;
+    // Bytes that are no character at all (a run of continuation bytes): the part takes them
+    // as they are (the wire repairs what is not UTF-8), so a read always reaches the end.
+    if (len == 0) len = full;
   }
   const std::string_view part = w.substr(skip, len);
   const uint64_t to = from + len;
@@ -225,6 +229,14 @@ bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::s
   t << part;
   out = std::move(t.s);
   return true;
+}
+
+uint64_t offsetArg(ArduinoJson::JsonObjectConst a) {
+  const ArduinoJson::JsonVariantConst v = a["offset"];
+  if (!v.is<float>()) return 0;
+  const double d = v.as<double>();
+  constexpr double kMax = 9007199254740992.0;   // 2^53: every integer below it is exact
+  return d > 0 ? uint64_t(d < kMax ? d : kMax) : 0;
 }
 
 bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::string& err) {

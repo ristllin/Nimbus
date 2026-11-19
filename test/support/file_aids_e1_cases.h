@@ -56,6 +56,11 @@ inline std::string oneLine() {   // 30 KB with no line end before its last byte,
   for (int i = 0; i < 6000; ++i) s += "\xe2\x82\xac";
   return s + "\n";
 }
+inline std::string denseLines() {   // 20,000 two-byte lines: the head's numbers are all five digits
+  std::string s;
+  for (int i = 0; i < 20000; ++i) s += "x\n";
+  return s;
+}
 inline std::vector<std::pair<std::string, std::string>> partFiles() {
   std::string csv = "date,note,amount\n";
   for (int i = 0; i < 900; ++i) {
@@ -70,6 +75,7 @@ inline std::vector<std::pair<std::string, std::string>> partFiles() {
           {"docs/no-end.txt", noEnd},
           {"docs/one-line.txt", oneLine()},
           {"docs/big.txt", proseFile(300000, 3)},
+          {"docs/dense.txt", denseLines()},
           {"docs/empty.txt", ""},
           {"docs/blank.txt", "\n"}};
 }

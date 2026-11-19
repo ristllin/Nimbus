@@ -44,10 +44,15 @@ bool tableRead(AidSource& src, uint64_t size, const std::string& path, const Csv
 //   "bytes a-b of n, lines x-y of m; next part: \"offset\":b\n" then bytes [a, b), or
 //   "...; end of file\n" on the last part ("bytes n-n of n; end of file\n" past the end).
 // A part ends at a line end when one falls in its second half, else on a character boundary;
-// an offset inside a character starts at the next one. The file is streamed kAidChunk at a
+// an offset inside a character starts at the next one. Every part but the last holds at least
+// one byte, so following "next part" always reaches the end. Each call reads the whole file
+// once (the line count), 4 KB per read. The file is streamed kAidChunk at a
 // time (any size); `size` is the stored size and a read that ends short of it is the card
 // fault. False with out = the error.
 bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::string& out);
+// files.read's offset argument: a number of 0 or more, held to 2^53 (a larger or a negative
+// one never wraps); 0 when absent or not a number.
+uint64_t offsetArg(ArduinoJson::JsonObjectConst a);
 // The smallest cap readPart takes (a smaller one is raised to it).
 inline constexpr size_t kPartMinCap = 512;
 

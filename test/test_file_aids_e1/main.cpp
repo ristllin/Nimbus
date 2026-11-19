@@ -246,6 +246,28 @@ static void test_a_part_starts_on_a_character_and_says_the_end() {
   TEST_ASSERT_EQUAL_STRING("bytes 5-8 of 8, lines 1-1 of 1; end of file\ncd\n", out.c_str());
   TEST_ASSERT_TRUE(aids::e1::readPart(card, card.file.size(), 99, 8192, out));
   TEST_ASSERT_EQUAL_STRING("bytes 8-8 of 8; end of file\n", out.c_str());
+  // A run of bytes that are no character: every part still moves on, and the read ends.
+  MemCard junk;
+  junk.file = std::string(20000, '\x80') + "end\n";
+  uint64_t at = 0;
+  int calls = 0;
+  for (; calls < 100; ++calls) {
+    TEST_ASSERT_TRUE(aids::e1::readPart(junk, junk.file.size(), at, 4096, out));
+    const size_t next = out.find("next part: \"offset\":");
+    if (next == std::string::npos) break;
+    const uint64_t to = std::stoull(out.substr(next + 20));
+    TEST_ASSERT_TRUE(to > at);
+    at = to;
+  }
+  TEST_ASSERT_TRUE(calls < 10);   // 20 KB at 4 KB a part
+  // The offset argument never wraps: negative, huge and missing are 0, 2^53 and 0.
+  ArduinoJson::JsonDocument d;
+  d["offset"] = -5;
+  TEST_ASSERT_EQUAL_UINT64(0, aids::e1::offsetArg(d.as<ArduinoJson::JsonObjectConst>()));
+  d["offset"] = 1e30;
+  TEST_ASSERT_EQUAL_UINT64(9007199254740992ull, aids::e1::offsetArg(d.as<ArduinoJson::JsonObjectConst>()));
+  d["offset"] = 12345;
+  TEST_ASSERT_EQUAL_UINT64(12345, aids::e1::offsetArg(d.as<ArduinoJson::JsonObjectConst>()));
   TEST_ASSERT_FALSE(aids::e1::readPart(card, card.file.size() + 10, 0, 8192, out));
   TEST_ASSERT_EQUAL_STRING("the card read failed; nothing was shown", out.c_str());
 }

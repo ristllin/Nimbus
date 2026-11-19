@@ -194,7 +194,7 @@ class PosixFiles {
       default: break;
     }
     // The plain form: the part that fits one result, naming the next (file_aids_e1.h readPart).
-    const uint64_t offset = a["offset"].is<float>() && a["offset"].as<double>() > 0 ? uint64_t(a["offset"].as<double>()) : 0;
+    const uint64_t offset = nimbus::orch::aids::e1::offsetArg(a);
     DiskSource src(bytesPath(p, n));
     std::string out;
     if (!nimbus::orch::aids::e1::readPart(src, body.size(), offset, resultCap_ ? resultCap_() : kDefaultResultCap, out))

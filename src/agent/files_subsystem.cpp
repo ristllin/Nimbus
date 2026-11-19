@@ -1757,7 +1757,8 @@ void registerTools() {
             if (!textDocName(name))
               return nimbus::orch::ToolResult::fail(
                   "binary or non-text document - use files.share / the web viewer");
-            const size_t offset = a["offset"].is<float>() && a["offset"].as<double>() > 0 ? (size_t)a["offset"].as<double>() : 0;
+            const uint64_t at = nimbus::orch::aids::e1::offsetArg(a);   // never wraps (2^53 at most)
+            const size_t offset = (size_t)std::min<uint64_t>(at, SIZE_MAX);
             const nimbus::orch::aids::e1::ReadForm form = nimbus::orch::aids::e1::readForm(a);
             if (form != nimbus::orch::aids::e1::ReadForm::Plain) return readForms(a, form, project, name, offset);
             // A text name is a claim, not proof: the head of the file answers, the same rule
@@ -1770,7 +1771,6 @@ void registerTools() {
             // The part that fits the result this turn carries, streamed 4 KB per card hold, any
             // size; its head names the part and the next offset (file_aids_e1.h readPart).
             std::string out;
-            const uint64_t at = offset;
             if (!scanCsvFile(project, name, nullptr, nullptr, std::string(), out, &at))
               return nimbus::orch::ToolResult::fail(out);
             return nimbus::orch::ToolResult::ok(out);
