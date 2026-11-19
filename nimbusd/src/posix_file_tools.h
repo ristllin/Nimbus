@@ -4,13 +4,13 @@
 #include <unistd.h>
 
 #include <cstdio>
-#include <ctime>
 #include <mutex>
 #include <string>
 
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/file_tools.h"
 #include "posix_fs.h"
+#include "posix_platform.h"
 
 // posix_file_tools - the plain file tools' card seam (file_tools.h FileToolsIo) over a POSIX
 // tree, so nimbusd runs the same library as the device: bytes at <root>/<project>/<name>, the
@@ -85,7 +85,7 @@ class PosixFileToolsIo : public nimbus::orch::FileToolsIo {
   }
   void partDiscard(const std::string& p, const std::string& n) override { std::remove(part(p, n).c_str()); }
   bool persistIndex() override { return fsutil::writeFileAtomic(root_ + "/.index", store_.dump()); }
-  uint32_t now() override { return uint32_t(std::time(nullptr)); }
+  uint32_t now() override { return vclock::epoch32(); }   // the daemon's one clock (posix_platform.h)
 
   std::string file(const std::string& p, const std::string& n) const { return root_ + "/" + p + "/" + n; }
 
