@@ -166,7 +166,7 @@ truth::TurnEffect eff(const char* tool, bool ok, const std::string& text, truth:
 
 void test_the_prompt_is_the_measured_one_byte_for_byte() {
   const std::string want = readFile("tests/evals/probe/prompt.txt");
-  TEST_ASSERT_EQUAL_size_t(1296, want.size());
+  TEST_ASSERT_EQUAL_size_t(1307, want.size());   // RB-REC6's neutral wording (PC-0094; v1 was 1,296 B)
   TEST_ASSERT_EQUAL_size_t(want.size(), truth::kProbePromptLen);
   TEST_ASSERT_TRUE(want == std::string(truth::kProbePrompt, truth::kProbePromptLen));
 }

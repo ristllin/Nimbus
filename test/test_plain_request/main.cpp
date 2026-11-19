@@ -521,18 +521,16 @@ static void test_no_domain_word_reaches_a_model() {
 // catalog (tool results and errors, device notes, stubs, probe, summarizer) and the e1 rows
 // of the sources engine 2 shares (the truth check's probe, facts item and receipt line; the
 // groups behind more). The goldens are fresh by their own gate (gen_model_text_catalog.py).
-// One deferred phrase: the truth probe's measured prompt says "a ledger row" (ruling 9 holds
-// it byte for byte to tests/evals/probe/prompt.txt; a new measurement changes it). It must
-// still be there, so this allowance is dropped the day the prompt changes.
+// The truth probe's prompt is held byte for byte to tests/evals/probe/prompt.txt (ruling 9);
+// its neutral wording was measured by RB-REC6, so no phrase is deferred.
 namespace {
 bool readAll(const std::string& path, std::string& out);   // below, with the golden test
 }  // namespace
 
 static void test_no_domain_word_in_any_catalogued_text() {
-  const char* kDeferred = "adding, editing or removing a ledger row; ";
   const std::string shared[] = {"lib/core/src/orch_truth.cpp", "lib/core/include/nimbus/orch/truth.h",
                                 "lib/core/src/orch_tool_groups.cpp"};
-  int scanned = 0, deferred = 0;
+  int scanned = 0;
   for (const char* golden : {"test/golden/model_text_catalog.txt", "test/golden/model_text_catalog_e1.txt"}) {
     std::string all;
     TEST_ASSERT_TRUE_MESSAGE(readAll(golden, all), golden);
@@ -554,16 +552,10 @@ static void test_no_domain_word_in_any_catalogued_text() {
       JsonDocument d;
       TEST_ASSERT_FALSE_MESSAGE(deserializeJson(d, f[4]), line.c_str());
       std::string text = d.as<std::string>();
-      const size_t hit = text.find(kDeferred);
-      if (hit != std::string::npos) {
-        text.erase(hit, std::strlen(kDeferred));
-        deferred++;
-      }
       TEST_ASSERT_EQUAL_STRING_MESSAGE("", domainWordIn(text).c_str(), (f[1] + ": " + text.substr(0, 80)).c_str());
       scanned++;
     }
   }
-  TEST_ASSERT_EQUAL(1, deferred);   // the probe's phrase, once; drop the allowance when it goes
   TEST_ASSERT_TRUE(scanned > 250);
   TEST_MESSAGE(("property: " + std::to_string(scanned) + " catalogued texts engine 2 can show, no domain word").c_str());
 }

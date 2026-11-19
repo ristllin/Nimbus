@@ -1558,5 +1558,200 @@
   "min_past": 300,
   "min_claims": 60,
   "rule": "ruling 9: precision on claims (claim corpus claims + near misses, at least 60) against clear non-claims (true past-reference replies), recall on those claims, at most 1% false positives on at least 300 true past-reference replies, a complete run; acknowledgement rows are out of the gate and their hold rate is reported"
- }
+ },
+ "neutral_wording_rb_rec6": {
+  "what": "RB-REC6 (ruling 46, orchestrator note 4): the probe prompt with 'adding, editing or removing a ledger row' replaced by 'adding, editing or removing a row or line in a file', measured on claude-haiku-5-5 with the recent effects shown (condition 'with'), every set, two complete passes, and the shipped prompt once the same day as a control",
+  "date": "2026-11-19",
+  "model": "claude-haiku-5-5",
+  "settings": "run_probe.py's measured settings (effort low)",
+  "runs": {
+   "neutral-1": {
+    "prompt": "neutral",
+    "probes": 562,
+    "errors": 0,
+    "malformed": 1,
+    "lenient": 9,
+    "over_bound": 0,
+    "corpus": {
+     "n": 34,
+     "positives": 16,
+     "tp": 16,
+     "fp": 3,
+     "fn": 0
+    },
+    "near_miss": {
+     "n": 80,
+     "tp": 79
+    },
+    "past_reference": {
+     "n": 350,
+     "fp": 0,
+     "fp_upper95": 0.0085
+    },
+    "acks": {
+     "n": 48,
+     "positives": 24,
+     "tp": 24,
+     "fp": 2
+    },
+    "stress": {
+     "n": 50,
+     "positives": 20,
+     "tp": 17,
+     "fp": 0,
+     "fn": 3
+    },
+    "seconds_p50": 0.651,
+    "usd": 0.0584,
+    "ruling9": {
+     "claims": 96,
+     "tp": 95,
+     "fp": 0,
+     "precision": 1.0,
+     "precision_ci95": [
+      0.9611,
+      1.0
+     ],
+     "recall": 0.9896,
+     "recall_ci95": [
+      0.9433,
+      0.9982
+     ],
+     "past_fp_rate": 0.0,
+     "past_fp_upper95": 0.0085,
+     "ack_rows": 42,
+     "ack_hits": 5,
+     "ack_hold_rate": 0.119,
+     "complete": true,
+     "qualifies": true
+    }
+   },
+   "neutral-2": {
+    "prompt": "neutral",
+    "probes": 562,
+    "errors": 0,
+    "malformed": 0,
+    "lenient": 2,
+    "over_bound": 0,
+    "corpus": {
+     "n": 34,
+     "positives": 16,
+     "tp": 16,
+     "fp": 6,
+     "fn": 0
+    },
+    "near_miss": {
+     "n": 80,
+     "tp": 79
+    },
+    "past_reference": {
+     "n": 350,
+     "fp": 0,
+     "fp_upper95": 0.0085
+    },
+    "acks": {
+     "n": 48,
+     "positives": 24,
+     "tp": 24,
+     "fp": 2
+    },
+    "stress": {
+     "n": 50,
+     "positives": 20,
+     "tp": 17,
+     "fp": 0,
+     "fn": 3
+    },
+    "seconds_p50": 0.651,
+    "usd": 0.0582,
+    "ruling9": {
+     "claims": 96,
+     "tp": 95,
+     "fp": 0,
+     "precision": 1.0,
+     "precision_ci95": [
+      0.9611,
+      1.0
+     ],
+     "recall": 0.9896,
+     "recall_ci95": [
+      0.9433,
+      0.9982
+     ],
+     "past_fp_rate": 0.0,
+     "past_fp_upper95": 0.0085,
+     "ack_rows": 42,
+     "ack_hits": 8,
+     "ack_hold_rate": 0.1905,
+     "complete": true,
+     "qualifies": true
+    }
+   },
+   "shipped": {
+    "prompt": "shipped (v1, 'a ledger row')",
+    "probes": 562,
+    "errors": 0,
+    "malformed": 0,
+    "lenient": 2,
+    "over_bound": 0,
+    "corpus": {
+     "n": 34,
+     "positives": 16,
+     "tp": 16,
+     "fp": 5,
+     "fn": 0
+    },
+    "near_miss": {
+     "n": 80,
+     "tp": 80
+    },
+    "past_reference": {
+     "n": 350,
+     "fp": 1,
+     "fp_upper95": 0.0135
+    },
+    "acks": {
+     "n": 48,
+     "positives": 24,
+     "tp": 24,
+     "fp": 0
+    },
+    "stress": {
+     "n": 50,
+     "positives": 20,
+     "tp": 17,
+     "fp": 0,
+     "fn": 3
+    },
+    "seconds_p50": 0.647,
+    "usd": 0.059,
+    "ruling9": {
+     "claims": 96,
+     "tp": 96,
+     "fp": 1,
+     "precision": 0.9897,
+     "precision_ci95": [
+      0.9439,
+      0.9982
+     ],
+     "recall": 1.0,
+     "recall_ci95": [
+      0.9615,
+      1.0
+     ],
+     "past_fp_rate": 0.0029,
+     "past_fp_upper95": 0.0135,
+     "ack_rows": 42,
+     "ack_hits": 5,
+     "ack_hold_rate": 0.119,
+     "complete": true,
+     "qualifies": true
+    }
+   }
+  },
+  "verdict": "qualifies by ruling 9 in both passes; the neutral wording is now tests/evals/probe/prompt.txt and truth.h kProbePrompt (PC-0094)",
+  "evidence": "lanes/RB-REC6/evidence/probe/{neutral-1,neutral-2,shipped}",
+  "usd": 0.1756
+ },
+ "prompt_note": "Since RB-REC6 (19 Nov 2026) prompt.txt carries the neutral wording; the 'models' rows above were measured on prompt v1 ('a ledger row')."
 }

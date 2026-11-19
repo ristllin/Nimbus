@@ -479,7 +479,7 @@ fails a build whose image holds such a line. What stays:
 
 What replaces the claim check does not read the reply for words either. It asks one small
 model one question, measured before it was built (`tests/evals/measured/probe.json`): does
-this reply claim a stored change (a ledger row, a file, a note, a memory, a routine, a
+this reply claim a stored change (a row in a file, a file, a note, a memory, a routine, a
 setting, a message sent) that no listed effect backs? The question carries the owner's
 message, the reply, this turn's effects (its tool calls, and what the answer's own fields
 will store) and the chat's recent effects (the stored ring), never a photo. With the recent
