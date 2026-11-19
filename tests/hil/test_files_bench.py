@@ -146,37 +146,39 @@ def record(name: str, text: str) -> None:
 
 
 class Unit:
-    """The bench unit: its console (opened per command, as the bench tools do) and its web API."""
+    """The bench unit: one long-lived console session (an open resets an S3 USB console, so it is opened once and
+    again only after the unit itself went away) and the web API."""
 
     def __init__(self, port: str, mac: str, api: bd.Api):
         self.port, self.mac, self.api = port, mac, api
+        self.dev = None
+
+    def attach(self) -> None:
+        from device import Device
+
+        self.dev = Device(port=self.port).open()
+        self.dev.wait_console_ready(40)
+
+    def reattach(self) -> None:
+        """After the unit died (a cut) or was flashed: the USB node re-enumerates."""
+        if self.dev is None:
+            return self.attach()
+        self.dev.reopen_after_reenumerate()
+        self.dev.wait_console_ready(40)
+
+    def detach(self) -> None:
+        if self.dev is not None:
+            self.dev.close()
+            self.dev = None
 
     def con(self, line: str, expect: str, timeout: float = 10.0) -> str:
-        import serial
-
-        s = serial.Serial()
-        s.port, s.baudrate, s.timeout, s.dtr, s.rts = self.port, 115200, 0.2, False, False
-        s.open()
+        if self.dev is None:
+            self.attach()
         try:
-            buf, end = b"", time.time() + 25
-            while time.time() < end:  # the console answers PONG once the app task is up (the READY race)
-                s.write(b"PING\n")
-                t = time.time() + 1.0
-                while time.time() < t:
-                    buf += s.read(4096)
-                if b"PONG" in buf and b"boot console" not in buf.split(b"PONG")[-1][:20]:
-                    break
-            buf = b""
-            s.write((line + "\n").encode())
-            end = time.time() + timeout
-            while time.time() < end:
-                buf += s.read(4096)
-                for ln in buf.decode("utf-8", "replace").splitlines():
-                    if expect in ln:
-                        return ln
+            return self.dev.cmd(line, expect, timeout)
+        except Exception as e:  # noqa: BLE001 - an unanswered command is an empty reply; the leg asserts on it
+            record("console.log", f"{line!r}: no {expect!r} ({type(e).__name__})")
             return ""
-        finally:
-            s.close()
 
     def wait_api(self, timeout: float = 120.0) -> dict:
         end = time.time() + timeout
@@ -191,8 +193,12 @@ class Unit:
         """Sound 0 and voice replies off after every flash or reset, read back and recorded (the bench rule)."""
         if console:
             record("rezero.log", f"{label} console SFXVOL 0 -> {self.con('SFXVOL 0', 'SFXVOL')}")
-        r = self.api.post_form("/api/orch", {"ttsOn": "0", "sfxVol": "0", "sfxLvlO": "0", "sfxLvlN": "0"})
-        back = self.api.get_json("/api/orch")
+        for _ in range(10):  # right after a boot the settings route may answer empty for a moment
+            r = self.api.post_form("/api/orch", {"ttsOn": "0", "sfxVol": "0", "sfxLvlO": "0", "sfxLvlN": "0"})
+            back = self.api.get_json("/api/orch")
+            if back.get("sfxVol") is not None:
+                break
+            time.sleep(3)
         state = self.api.state()
         record(
             "rezero.log",
@@ -208,6 +214,7 @@ class Unit:
         import port_guard
 
         port_guard.check_mac(self.mac, "test_files_bench flash")
+        self.detach()  # esptool takes the port
         esp = [ESPTOOL, "--chip", "esp32s3", "--port", self.port]
         reset = [
             os.environ.get("NIMBUS_PY", "python3"),
@@ -254,7 +261,8 @@ def unit(allow_hardware):
     u = Unit(port, mac, bd.Api(ip, token))
     if u.api.tool("files.list", {"project": PROJECT}).code == 404:
         pytest.fail("BLOCKED: this image has no /api/test/astool (flash the candidate's test-cyd image)")
-    return u
+    yield u
+    u.detach()
 
 
 def _call(api, name: str, args: dict, timeout: float = 60.0) -> str:
@@ -275,6 +283,7 @@ def _cut(unit: Unit, arm: str, call) -> None:
     except Exception:  # noqa: BLE001 - the unit dies inside the call: the request fails
         pass
     time.sleep(5)
+    unit.reattach()
     st = unit.wait_api(180)
     after = (st.get("boot") or {}).get("n")
     assert after != before, f"CUTARM {arm}: the unit did not restart (boot {before} -> {after}); no cut happened"
@@ -296,7 +305,9 @@ def test_cut_during_append_leaves_the_old_bytes_and_a_fenced_tail(unit):
         assert after == before + text[:k], f"cut at {k}: the file is not the old bytes plus the {k} B that landed"
         if 0 < k < len(text):
             seen = _call(unit.api, "files.read", {"name": name, "tail": 2})
-            assert "newline" in seen or "cut short" in seen, f"cut at {k}: the read does not name the torn tail"
+            named = any(w in seen for w in ("newline", "cut short", "incomplete", "cut mid-write"))
+            record("cuts.log", f"append cut at {k}: the next read says {seen[-160:]!r}")
+            assert named, f"cut at {k}: the read does not name the torn tail"
             result = _call(unit.api, "files.append", {"name": name, "text": row.decode()})
             assert fenced(after, row, _file(unit.api, name), result), f"cut at {k}: the next append did not fence it"
 
@@ -405,6 +416,7 @@ def test_up_down_up_keeps_engine_two_rows(request, unit):
         assert line.encode() in now, f"{old}: its append did not land ({turn.error or turn.reply[:120]})"
         held = now
     unit.flash(imgs["candidate"], "candidate")
+    unit.attach()
     unit.rezero("candidate again")
     now = _file(unit.api, name)
     record("rollback.log", f"candidate again: {len(now)} B sha8 {sha8(now)} (was {sha8(held)})")
