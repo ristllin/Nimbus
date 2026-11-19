@@ -3,6 +3,8 @@
 #include "nimbus/harness/plain/deliver.h"
 
 #include <algorithm>
+#include <cctype>
+#include <new>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -318,6 +320,112 @@ Status rebuildRequest(const RebuildInput& in, HttpRequest& out) {
   if (!(st = in.wire->render(r, out)).ok()) return st;
   if (requestHashOf(out) != ref.bodyHash) return Status::fail(Err::Torn, "plain::rebuildRequest.hash");
   return Status::success();
+}
+
+// ---- progress on a long turn -------------------------------------------------------------------
+namespace {
+
+std::string elapsedText(uint32_t ms) {
+  const uint32_t s = ms / 1000;
+  return s < 120 ? std::to_string(s) + " s" : std::to_string(s / 60) + " min";
+}
+
+// A tool's or guard's name as the owner may see it: a short machine name, else nothing.
+std::string safeDetail(const std::string& d) {
+  if (d.empty() || d.size() > 40) return std::string();
+  for (char c : d)
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') return std::string();
+  return d;
+}
+
+}  // namespace
+
+std::string ProgressReporter::text(const ProgressEvent& e, uint32_t elapsedMs, uint16_t steps) {
+  std::string line = "Still working (" + elapsedText(elapsedMs);
+  if (steps) line += ", step " + std::to_string(steps);
+  line += "): ";
+  const std::string d = safeDetail(e.detail);
+  switch (e.kind) {
+    case ProgressKind::ToolRound: line += d.empty() ? "ran a tool." : "ran " + d + "."; break;
+    case ProgressKind::ProviderWait: line += "waiting for the model's answer."; break;
+    case ProgressKind::SoftGuard: line += "taking longer than usual, still making progress."; break;
+  }
+  return line;
+}
+
+std::string ProgressReporter::finalText(uint32_t elapsedMs, uint16_t steps) {
+  std::string line = "Worked " + elapsedText(elapsedMs);
+  if (steps) line += " (" + std::to_string(steps) + (steps == 1 ? " step)" : " steps)");
+  return line + ".";
+}
+
+void ProgressReporter::open(const TurnCtx& turn, uint32_t startedMs) {
+  chatId_ = turn.chatId;
+  turn_ = turn.turn;
+  startedMs_ = lastVisibleMs_ = startedMs;
+  msgId_ = 0;
+  haveMsg_ = false;
+  lines_ = edits_ = steps_ = 0;
+  last_.clear();
+  open_ = true;
+}
+
+bool ProgressReporter::tick(const ProgressEvent& e) {
+  if (!open_ || !deps_.send) return false;
+  if (e.kind == ProgressKind::ToolRound) ++steps_;
+  const uint32_t since = e.nowMs - lastVisibleMs_;
+  bool due = false;
+  if (!lines_) due = since >= kProgressFirstMs;
+  else if (haveMsg_) due = since >= kProgressEditMs;
+  else due = lines_ < kProgressMaxLines && since >= kProgressNewLineMs;
+  if (!due) return false;
+  try {
+    return show(text(e, e.nowMs - startedMs_, steps_), e.nowMs);
+  } catch (const std::bad_alloc&) {
+    return false;
+  }
+}
+
+bool ProgressReporter::show(const std::string& line, uint32_t nowMs) {
+  if (line == last_) return false;
+  if (haveMsg_) {
+    if (!deps_.edit(chatId_, msgId_, line)) return false;
+    ++edits_;
+  } else {
+    int64_t id = 0;
+    if (!deps_.send(chatId_, line, id)) return false;
+    ++lines_;
+    msgId_ = id;
+    haveMsg_ = id != 0 && static_cast<bool>(deps_.edit);
+  }
+  lastVisibleMs_ = nowMs;
+  last_ = line;
+  return true;
+}
+
+void ProgressReporter::close(uint32_t nowMs) {
+  if (!open_) return;
+  open_ = false;
+  if (!haveMsg_) return;
+  try {
+    if (deps_.edit(chatId_, msgId_, finalText(nowMs - startedMs_, steps_))) ++edits_;
+  } catch (const std::bad_alloc&) {
+  }
+}
+
+Status installProgress(PlainHooks& hooks, ProgressReporter& r, std::function<uint32_t()> nowMs) {
+  if (!nowMs) return Status::fail(Err::InvalidArgument, "plain::installProgress");
+  Status st = hooks.afterResult(HookSlot::Observer, [&r, nowMs](const ResultCtx& c) {
+    if (!c.turn) return;
+    if (!r.isOpen() || r.turn() != c.turn->turn) r.open(*c.turn, c.turn->startedMs);
+    ProgressEvent e;
+    e.kind = ProgressKind::ToolRound;
+    e.nowMs = nowMs();
+    if (c.call) e.detail = c.call->name;
+    (void)r.tick(e);
+  });
+  if (!st.ok()) return st;
+  return hooks.afterDeliver(HookSlot::Observer, [&r, nowMs](const DeliveredCtx&) { r.close(nowMs()); });
 }
 
 }  // namespace plain

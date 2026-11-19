@@ -740,6 +740,16 @@ wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each l
   of the range, and (Torn) when the render differs; it never renders less (owner ruling 81). A full
   arena with nothing closed left to drop sheds the references (`shedReference`, event
   `dossier:shed`) before it would refuse the e item: they never cost a resident turn.
+- **Progress on a long turn** (owner ruling 82 item 6; `ProgressReporter`, `installProgress`): a
+  turn that runs long says it is still working and on what ("Still working (45 s, step 4): ran
+  read_file."). The first line goes out after 20 s with no visible update; where the channel can
+  edit, the same message is edited at most every 10 s and gets a final form ("Worked 74 s (9
+  steps).") when the turn ends; where it cannot, a new line at most every 60 s and at most three a
+  turn. Progress lines are their own class: they go through the binding's `ProgressDeps`, never
+  through `deliverTurn`, are never stored as transcript items, never count as the answer or as
+  the one status line after a turn, and never shorten a turn's work. `installProgress` ticks on
+  each tool result and closes after delivery; the engine ticks the provider wait and a soft guard
+  reached while the turn still progresses.
 
 ### The Anthropic wire: what a request carries
 

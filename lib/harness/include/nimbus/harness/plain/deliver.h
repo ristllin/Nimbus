@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -149,6 +150,81 @@ struct RebuildInput {
 // the range; Torn when the render does not hash to what was sent (`out` is then not the
 // request). Ok: `out` is the request as sent, byte for byte (headers rebuilt by the wire).
 Status rebuildRequest(const RebuildInput& in, HttpRequest& out);
+
+// ---- progress on a long turn (owner ruling 82 item 6) ------------------------------------
+// A long turn says that it is still working and on what. The progress line is its own class
+// of harness-written message, apart from the closed list of kAllStatusLines: it goes out
+// while the turn runs, through the binding's ProgressDeps (never Channel::send, never
+// deliverTurn), is edited in place where the channel can edit, is never stored as a
+// transcript item (no a or d item; the d item holds the reply's ids only), never counts as
+// the answer and never counts against "at most one device-written message after a turn".
+// The test_delivery_bytes exemption table names it ("progress"). It never shortens a turn's
+// work or its answer: it only reports.
+//
+// Timings (DECISION, ruling 82): the first line after kProgressFirstMs with no visible update
+// (the turn's start counts as one); then, where the channel edits, the same message is edited
+// at most every kProgressEditMs when what the turn does has changed; where it cannot edit, a
+// new line at most every kProgressNewLineMs and at most kProgressMaxLines a turn. At the
+// turn's end an editable line gets its final form; nothing new is sent then.
+inline constexpr uint32_t kProgressFirstMs = 20000;
+inline constexpr uint32_t kProgressEditMs = 10000;
+inline constexpr uint32_t kProgressNewLineMs = 60000;
+inline constexpr uint8_t kProgressMaxLines = 3;
+
+// What the turn is doing when a progress event fires.
+enum class ProgressKind : uint8_t {
+  ToolRound = 0,      // a tool ran (detail: the tool's name)
+  ProviderWait = 1,   // a request to the provider is about to leave, or a retry waits (detail: "")
+  SoftGuard = 2,      // a soft guard was reached while the turn still progresses (detail: its slug)
+};
+
+struct ProgressEvent {
+  ProgressKind kind = ProgressKind::ToolRound;
+  uint32_t nowMs = 0;        // the platform's monotonic clock
+  std::string detail;
+};
+
+// How a binding sends and edits a progress line. `send` gives back the message id an `edit`
+// needs; an empty `edit` (or a send that gives no id) means the channel cannot edit.
+struct ProgressDeps {
+  std::function<bool(const std::string& chatId, const std::string& text, int64_t& msgId)> send;
+  std::function<bool(const std::string& chatId, int64_t msgId, const std::string& text)> edit;
+};
+
+class ProgressReporter {
+ public:
+  explicit ProgressReporter(ProgressDeps deps) : deps_(std::move(deps)) {}
+  // A new turn: nothing shown yet; `startedMs` is its start (the first visible update).
+  void open(const TurnCtx& turn, uint32_t startedMs);
+  // One event of the open turn: sends or edits the line when due. True when something went out.
+  // A send or edit that fails or throws std::bad_alloc is dropped: progress never ends a turn.
+  bool tick(const ProgressEvent& e);
+  // The turn ended at `nowMs`: an editable line gets its final form. Nothing new is sent.
+  void close(uint32_t nowMs);
+  uint16_t lines() const { return lines_; }   // messages sent this turn
+  uint16_t edits() const { return edits_; }   // edits this turn
+  bool isOpen() const { return open_; }
+  uint32_t turn() const { return turn_; }
+  // The owner's line for an event at `elapsedMs` into the turn, after `steps` tool rounds.
+  static std::string text(const ProgressEvent& e, uint32_t elapsedMs, uint16_t steps);
+  static std::string finalText(uint32_t elapsedMs, uint16_t steps);
+
+ private:
+  bool show(const std::string& line, uint32_t nowMs);
+  ProgressDeps deps_;
+  std::string chatId_;
+  uint32_t turn_ = 0, startedMs_ = 0, lastVisibleMs_ = 0;
+  int64_t msgId_ = 0;
+  bool open_ = false, haveMsg_ = false;
+  uint16_t lines_ = 0, edits_ = 0, steps_ = 0;
+  std::string last_;
+};
+
+// Ticks `r` from the seams the engine already calls: afterResult (a tool round; a new turn
+// number opens the turn) and afterDeliver (close), both in the Observer slot. The provider wait
+// and a soft guard are the engine's to tick at its round boundary (see PR_BODY). Err::Busy
+// when the Observer slot of either seam is taken.
+Status installProgress(PlainHooks& hooks, ProgressReporter& r, std::function<uint32_t()> nowMs);
 
 }  // namespace plain
 }  // namespace agent

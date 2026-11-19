@@ -565,17 +565,23 @@ void test_a_request_with_an_omission_is_rebuilt_byte_for_byte() {
     plain::TurnOutcome o;
     TXB_OK(b.owner("short turn " + std::to_string(i) + " " + std::string(600, 's'), o));
   }
+  b.world.files["notes/a.md"] = "alpha";
   b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
   b.model.push(sp::say("Read it."));
   plain::TurnOutcome out;
   TXB_OK(b.owner("read the big one", out));
   std::vector<tx::Item> items;
   TXB_OK(b.stored(items));
-  bool omitted = false;
+  bool omitted = false, inherited = false;
   for (const tx::Item& it : items)
     if (it.kind == tx::ItemKind::TurnEnd)
-      for (const tx::ExchangeFacts& x : it.end.exchanges) omitted |= x.omitThrough != 0 && !x.omission.empty();
+      for (const tx::ExchangeFacts& x : it.end.exchanges) {
+        omitted |= x.omitThrough != 0 && !x.omission.empty();
+        inherited |= x.omitThrough != 0 && x.omission.empty();   // kept once, read from the one before
+      }
   TEST_ASSERT_TRUE_MESSAGE(omitted, "no request needed rung 3: the case does not test the omission");
+  TEST_ASSERT_TRUE_MESSAGE(inherited, "no later request repeated the omission line: the case does not test it");
   rebuildEveryRequest(b);
 }
 
@@ -765,6 +771,143 @@ void test_a_repeated_omission_line_is_kept_once() {
   TEST_ASSERT_EQUAL_STRING("[2 earlier turns not shown]", e.end.exchanges[1].omission.c_str());
 }
 
+// ---- progress on a long turn (owner ruling 82 item 6) --------------------------------------
+struct ProgressSink {
+  bool canEdit = true;
+  std::vector<std::string> lines;              // every message sent
+  std::vector<std::pair<uint32_t, std::string>> shown;   // (clock ms, text) of each send or edit
+  std::string current;
+  uint32_t* clock = nullptr;
+  plain::ProgressDeps deps() {
+    plain::ProgressDeps d;
+    d.send = [this](const std::string&, const std::string& t, int64_t& id) {
+      lines.push_back(t);
+      shown.emplace_back(clock ? *clock : 0, t);
+      current = t;
+      id = (int64_t)lines.size();
+      return true;
+    };
+    if (canEdit)
+      d.edit = [this](const std::string&, int64_t, const std::string& t) {
+        shown.emplace_back(clock ? *clock : 0, t);
+        current = t;
+        return true;
+      };
+    return d;
+  }
+};
+
+// Tool rounds of `stepMs` each, then a reply, with progress installed.
+void longTurn(txb::Battery& b, plain::ProgressReporter& r, int rounds, uint32_t stepMs, const std::string& reply) {
+  TXB_OK(b.boot());
+  TXB_OK(plain::installProgress(*b.hooks, r, [&b] { return b.ms; }));
+  b.world.files["notes/a.md"] = "alpha";
+  for (int i = 0; i < rounds; ++i) {
+    sp::Step s = sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(i) + "}");
+    s.takesMs = stepMs;
+    b.model.push(s);
+  }
+  b.model.push(sp::say(reply));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("work on it", out));
+  TEST_ASSERT_EQUAL_STRING(reply.c_str(), out.text.c_str());
+}
+
+void test_a_short_turn_shows_no_progress() {
+  txb::Battery b;
+  ProgressSink sink;
+  plain::ProgressReporter r(sink.deps());
+  longTurn(b, r, 3, 3000, "Done quickly.");
+  TEST_ASSERT_EQUAL(0, (int)sink.shown.size());
+}
+
+// A long turn: one line after 20 s with no visible update, edited in place as the turn goes
+// on (at most every 10 s), its final form at the end. The answer arrives exactly as the model
+// wrote it, and the progress line is not one of the after-turn messages (its own class).
+void test_a_long_turn_shows_progress_edited_in_place_apart_from_the_answer() {
+  txb::Battery b;
+  ProgressSink sink;
+  sink.clock = &b.ms;
+  plain::ProgressReporter r(sink.deps());
+  const std::string reply = "Here is the long answer, whole.";
+  longTurn(b, r, 12, 8000, reply);
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)sink.lines.size(), "progress sent a second message where it can edit");
+  TEST_ASSERT_TRUE(sink.shown.size() >= 3);
+  TEST_ASSERT_TRUE_MESSAGE(sink.shown.front().first >= plain::kProgressFirstMs, "a progress line before 20 s");
+  for (size_t i = 1; i + 1 < sink.shown.size(); ++i)
+    TEST_ASSERT_TRUE_MESSAGE(sink.shown[i].first - sink.shown[i - 1].first >= plain::kProgressEditMs, "edits closer than 10 s");
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Worked", sink.current.substr(0, 6).c_str(), sink.current.c_str());
+  for (const auto& s : sink.shown) TEST_ASSERT_TRUE(s.second.find(reply) == std::string::npos);
+  std::vector<std::string> chunks;
+  TXB_OK(txb::expectedChunks(reply, chunks));
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(txb::deliveredExactly(chunks, false, "", b.sent, why), why.c_str());
+  TEST_ASSERT_TRUE(sink.lines[0].rfind("Still working (", 0) == 0);
+}
+
+// Where the channel cannot edit: a new line at most every 60 s and at most three a turn.
+void test_without_edit_progress_lines_are_spaced_and_bounded() {
+  txb::Battery b;
+  ProgressSink sink;
+  sink.canEdit = false;
+  sink.clock = &b.ms;
+  plain::ProgressReporter r(sink.deps());
+  longTurn(b, r, 15, 15000, "Finally done.");   // 225 s: inside the 16 rounds and the soft wall
+  TEST_ASSERT_EQUAL((int)plain::kProgressMaxLines, (int)sink.lines.size());
+  TEST_ASSERT_EQUAL(sink.lines.size(), sink.shown.size());   // nothing edited
+  for (size_t i = 1; i < sink.shown.size(); ++i)
+    TEST_ASSERT_TRUE(sink.shown[i].first - sink.shown[i - 1].first >= plain::kProgressNewLineMs);
+  std::string why;
+  std::vector<std::string> chunks;
+  TXB_OK(txb::expectedChunks("Finally done.", chunks));
+  TEST_ASSERT_TRUE_MESSAGE(txb::deliveredExactly(chunks, false, "", b.sent, why), why.c_str());
+}
+
+// The reporter by itself: the first line is due at 20 s, each kind has its line, a name that is
+// not a plain machine name is not shown, a refused allocation in the binding is dropped.
+void test_the_progress_reporter_by_itself() {
+  ProgressSink sink;
+  plain::ProgressReporter r(sink.deps());
+  plain::TurnCtx t;
+  t.chatId = "1001";
+  t.turn = 3;
+  r.open(t, 1000);
+  plain::ProgressEvent e;
+  e.kind = plain::ProgressKind::ProviderWait;
+  e.nowMs = 1000 + plain::kProgressFirstMs - 1;
+  TEST_ASSERT_FALSE(r.tick(e));
+  e.nowMs += 1;
+  TEST_ASSERT_TRUE(r.tick(e));
+  TEST_ASSERT_EQUAL_STRING("Still working (20 s): waiting for the model's answer.", sink.current.c_str());
+  e.kind = plain::ProgressKind::ToolRound;
+  e.detail = "<b>x</b>";
+  e.nowMs += plain::kProgressEditMs;
+  TEST_ASSERT_TRUE(r.tick(e));
+  TEST_ASSERT_EQUAL_STRING("Still working (30 s, step 1): ran a tool.", sink.current.c_str());
+  e.kind = plain::ProgressKind::SoftGuard;
+  e.detail = "rounds";
+  e.nowMs += 200000;
+  TEST_ASSERT_TRUE(r.tick(e));
+  TEST_ASSERT_EQUAL_STRING("Still working (3 min, step 1): taking longer than usual, still making progress.", sink.current.c_str());
+  r.close(e.nowMs);
+  TEST_ASSERT_EQUAL_STRING("Worked 3 min (1 step).", sink.current.c_str());
+  TEST_ASSERT_FALSE(r.tick(e));   // closed
+  // A binding that throws a refused allocation: dropped, the turn goes on.
+  plain::ProgressDeps bad;
+  bad.send = [](const std::string&, const std::string&, int64_t&) -> bool { throw std::bad_alloc(); };
+  plain::ProgressReporter rb(bad);
+  rb.open(t, 0);
+  e.nowMs = plain::kProgressFirstMs;
+  TEST_ASSERT_FALSE(rb.tick(e));
+  rb.close(e.nowMs);
+  // A turn that never showed a line ends with nothing sent.
+  ProgressSink quiet;
+  plain::ProgressReporter rq(quiet.deps());
+  rq.open(t, 0);
+  rq.close(5000);
+  TEST_ASSERT_EQUAL(0, (int)quiet.shown.size());
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -787,5 +930,9 @@ int main(int, char**) {
   RUN_TEST(test_the_reference_is_read_from_what_was_rendered);
   RUN_TEST(test_a_full_arena_sheds_references_before_the_turn_end_item);
   RUN_TEST(test_a_repeated_omission_line_is_kept_once);
+  RUN_TEST(test_a_short_turn_shows_no_progress);
+  RUN_TEST(test_a_long_turn_shows_progress_edited_in_place_apart_from_the_answer);
+  RUN_TEST(test_without_edit_progress_lines_are_spaced_and_bounded);
+  RUN_TEST(test_the_progress_reporter_by_itself);
   return UNITY_END();
 }
