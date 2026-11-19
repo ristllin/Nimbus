@@ -114,12 +114,24 @@ struct ToolCall {
   std::string argsJson;  // the raw JSON arguments object ("{}" if none)
   bool complete = true;  // false: cut or not valid JSON; never dispatched
 };
+// An effect a tool asks to run only after the turn is closed (PRD section 1 step 6): the reply
+// is delivered and the d and e items are stored first. The binding runs them in this order.
+enum class Deferred : uint8_t { None = 0, HeadSwitch = 1, Install = 2, Restart = 3 };
+inline constexpr size_t kDeferredKinds = 4;
+struct DeferredEffects {
+  uint8_t mask = 0;                       // bit (1 << kind) for each effect to run
+  std::string arg[kDeferredKinds];        // its argument (the head to switch to, the image), by kind
+  bool has(Deferred d) const { return (mask >> static_cast<uint8_t>(d)) & 1u; }
+};
+
 struct ToolOutput {
   std::string id;        // echoes ToolCall::id
   std::string name;
   std::string text;      // what the model sees
   bool isError = false;
   bool outside = false;  // outside content (web, fetch, connectors): taints the turn
+  Deferred deferred = Deferred::None;   // run after the turn is closed (a restart, an install, a head switch)
+  std::string deferredArg;
 };
 
 // One advertised tool (name, description at most 240 B, JSON schema).

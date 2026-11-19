@@ -1726,6 +1726,352 @@ inline void test_a_turn_that_stops_without_a_line_still_gets_one() {
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)b.sent.size(), got.c_str());
 }
 
+// ---- PART TWO (lane RB-E1b): guards scaled to the head, identical-call suppression, deferred effects ----
+// What each head class costs, as a binding fills TurnSetup::cost from its budget and price row.
+// Figures for the test only (PRD section 3's table: request size in tokens at the profile; rates
+// in micro-USD per 1M tokens); warm and cold request costs follow from the same rates.
+struct HeadClass {
+  const char* name;
+  plain::Dialect dialect;
+  uint32_t requestTokens;       // P: the request at the profile's trigger
+  uint64_t in, out, cacheR;     // cacheR 0: 0.1 x in; a router with no cache discount: = in
+  bool routed;
+};
+inline std::vector<HeadClass> headClasses() {
+  return {
+      {"claude-sonnet-5-5 direct, standard", plain::Dialect::AnthropicMessages, 28300, 3000000, 15000000, 0, false},
+      {"claude-haiku-5-5 direct, standard", plain::Dialect::AnthropicMessages, 28300, 1000000, 5000000, 0, false},
+      {"gpt-5.6 direct, standard", plain::Dialect::OpenAIResponses, 28300, 5000000, 40000000, 0, false},
+      {"gpt-5.6-luna direct, standard", plain::Dialect::OpenAIResponses, 28300, 250000, 2000000, 0, false},
+      {"glm-5.3 direct, lean", plain::Dialect::ChatCompletions, 21480, 1000000, 4000000, 0, false},
+      {"router gpt-5.6, lean, no cache discount", plain::Dialect::ChatCompletions, 21480, 5000000, 40000000, 5000000, true},
+      {"router claude-sonnet-5-5, lean", plain::Dialect::ChatCompletions, 21480, 3000000, 15000000, 3000000, true},
+      {"mistral-large-4-0 direct, lean, assumed", plain::Dialect::ChatCompletions, 21480, 2000000, 6000000, 2000000, false},
+      {"paid custom at the highest price row, lean", plain::Dialect::Flat, 21480, 15000000, 75000000, 15000000, false},
+  };
+}
+inline plain::HeadCost costOf(const HeadClass& h) {
+  plain::HeadCost c;
+  c.targetTokens = h.requestTokens;
+  c.requestTokensAtTrigger = h.requestTokens;
+  c.inMicroPerM = h.in;
+  c.outMicroPerM = h.out;
+  c.cacheReadMicroPerM = h.cacheR;
+  plain::RequestTokens warm{h.requestTokens / 10, 740, h.requestTokens - h.requestTokens / 10, 0};
+  plain::RequestTokens cold{h.requestTokens, 740, 0, 0};
+  c.warmRequestMicroUsd = plain::requestMicroUsd(c, warm);
+  c.coldRequestMicroUsd = plain::requestMicroUsd(c, cold);
+  return c;
+}
+// A round's usage as the head reports it: the request grows by about 600 tokens a round, 90%
+// of it read from the cache after the first round.
+inline sp::Usage usageAt(const HeadClass& h, size_t round) {
+  sp::Usage u;
+  const uint32_t size = h.requestTokens + (uint32_t)round * 600;
+  u.input = round ? size / 10 : size;
+  u.cacheRead = round ? size - size / 10 : 0;
+  u.output = 740;
+  return u;
+}
+
+// A scripted turn of `rounds` tool rounds, then the reply, on one head class.
+inline void scriptedTurn(txb::Battery& b, const HeadClass& h, size_t rounds, const char* tool) {
+  for (size_t i = 0; i < rounds; ++i) {
+    sp::Step s = std::string(tool) == "write_file"
+                     ? sp::call("write_file", "{\"path\":\"notes/fix.md\",\"text\":\"row " + std::to_string(i) + "\"}")
+                     : sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(i) + "}");
+    s.usage = usageAt(h, i);
+    b.model.push(s);
+  }
+  sp::Step done = sp::say("Done.");
+  done.usage = usageAt(h, rounds);
+  b.model.push(done);
+}
+
+// The definition of done: a scripted 8-round turn completes on every head class, and a
+// 12-call correction (twelve writes, one round each) finishes in one turn.
+inline void test_an_8_round_turn_and_a_12_call_correction_complete_on_every_head_class() {
+  for (const HeadClass& h : headClasses())
+    for (size_t rounds : {(size_t)8, (size_t)12}) {
+      txb::Battery b(h.dialect);
+      b.cost = costOf(h);
+      b.routed = h.routed;
+      b.world.files["notes/a.md"] = "alpha";
+      scriptedTurn(b, h, rounds, rounds == 12 ? "write_file" : "read_file");
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("go", out));
+      char msg[160];
+      std::snprintf(msg, sizeof msg, "%s, %u rounds: trip %s, %u USD micro", h.name, (unsigned)rounds,
+                    plain::guardTripSlug(out.trip), (unsigned)out.end.microUsd);
+      TEST_ASSERT_TRUE_MESSAGE(out.trip == plain::GuardTrip::None, msg);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("Done.", out.text.c_str(), msg);
+      TEST_ASSERT_EQUAL_MESSAGE(1, (int)b.sent.size(), msg);
+      TEST_ASSERT_EQUAL_MESSAGE((int)rounds + 1, (int)b.model.requests().size(), msg);
+      TEST_ASSERT_TRUE_MESSAGE(out.end.microUsd > 0, msg);   // priced
+    }
+}
+
+// Each guard: exactly one device item, exactly one last round (tool choice none), the last
+// round's text delivered, and one status line naming the guard.
+inline void expectOneTrip(txb::Battery& b, const plain::TurnOutcome& out, plain::GuardTrip g, const char* who) {
+  const std::string slug = plain::guardTripSlug(g);
+  char msg[160];
+  std::snprintf(msg, sizeof msg, "%s: the %s guard (tripped %s)", who, slug.c_str(), plain::guardTripSlug(out.trip));
+  TEST_ASSERT_TRUE_MESSAGE(out.trip == g, msg);
+  const std::vector<tx::Item> items = storedOf(b);
+  size_t notes = 0;
+  for (const tx::Item& it : items)
+    if (it.kind == tx::ItemKind::DeviceNote) {
+      ++notes;
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(("[device] limit reached (" + slug + ")").c_str(), it.x.c_str(), msg);
+    }
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)notes, msg);
+  size_t none = 0;
+  for (const auto& r : b.model.requests()) none += r.view.toolChoice == "none";
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)none, msg);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("none", b.model.last().view.toolChoice.c_str(), msg);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Stopped at the limit.", out.text.c_str(), msg);
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)b.sent.size(), msg);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Stopped at the limit.", b.sent[0].text.c_str(), msg);
+  const std::string line = std::string(texts::device_notes::kLimitStopped) + slug + texts::device_notes::kLimitStoppedEnd;
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(line.c_str(), b.sent[1].text.c_str(), msg);
+  TEST_ASSERT_TRUE_MESSAGE(out.status == plain::StatusLine::LimitReached, msg);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(("limit:" + slug).c_str(), lastEnd(items)->end.cause.c_str(), msg);
+}
+
+inline sp::Step heavyUntilNone(const sp::Recorded& r, const sp::Usage& u) {
+  sp::Step s = untilNone(r, 0);
+  s.usage = u;
+  return s;
+}
+
+inline void test_each_guard_gives_one_item_and_one_last_round() {
+  for (plain::Dialect d : plain::kAllDialects) {
+    {   // rounds
+      txb::Battery b(d);
+      b.world.files["notes/a.md"] = "alpha";
+      b.model.respondWith([](const sp::Recorded& r, size_t) { return untilNone(r, 0); });
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("keep reading", out));
+      expectOneTrip(b, out, plain::GuardTrip::Rounds, plain::dialectSlug(d));
+      TEST_ASSERT_EQUAL(plain::kDefaultRounds + 1, (int)b.model.requests().size());
+    }
+    {   // time: 70 s an answer, the 240 s soft wall
+      txb::Battery b(d);
+      b.world.files["notes/a.md"] = "alpha";
+      b.model.respondWith([](const sp::Recorded& r, size_t) { return untilNone(r, 70000); });
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("keep reading slowly", out));
+      expectOneTrip(b, out, plain::GuardTrip::Time, plain::dialectSlug(d));
+    }
+    {   // spend: 0.20 USD a request at a 0.50 USD cap
+      txb::Battery b(d);
+      b.world.files["notes/a.md"] = "alpha";
+      b.cost.inMicroPerM = 10000000;   // 10 USD per 1M
+      sp::Usage u;
+      u.input = 20000;
+      b.model.respondWith([u](const sp::Recorded& r, size_t) { return heavyUntilNone(r, u); });
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("keep reading", out));
+      expectOneTrip(b, out, plain::GuardTrip::Spend, plain::dialectSlug(d));
+      TEST_ASSERT_EQUAL(4, (int)b.model.requests().size());   // 0.20, 0.40, 0.60: trip, then the last round
+    }
+    {   // size: cached tokens count (a request of 100,000 tokens, 99% from the cache)
+      txb::Battery b(d);
+      b.world.files["notes/a.md"] = "alpha";
+      b.cost.targetTokens = b.cost.requestTokensAtTrigger = 20000;   // cap 320,000 tokens
+      sp::Usage u;
+      u.input = 1000;
+      u.cacheRead = 99000;
+      b.model.respondWith([u](const sp::Recorded& r, size_t) { return heavyUntilNone(r, u); });
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("keep reading", out));
+      expectOneTrip(b, out, plain::GuardTrip::Size, plain::dialectSlug(d));
+      TEST_ASSERT_EQUAL(5, (int)b.model.requests().size());
+    }
+  }
+}
+
+// The limits themselves (PRD section 1 step 5).
+inline void test_guard_limits_scale_with_the_head() {
+  plain::GuardLimits l;
+  plain::HeadCost none;
+  TXB_OK(plain::guardLimitsFor(8, none, l));
+  TEST_ASSERT_EQUAL(16, l.rounds);
+  TXB_OK(plain::guardLimitsFor(0, none, l));
+  TEST_ASSERT_EQUAL(16, l.rounds);
+  TXB_OK(plain::guardLimitsFor(9, none, l));
+  TEST_ASSERT_EQUAL(9, l.rounds);
+  TXB_OK(plain::guardLimitsFor(32, none, l));
+  TEST_ASSERT_EQUAL(32, l.rounds);
+  TXB_OK(plain::guardLimitsFor(40, none, l));
+  TEST_ASSERT_EQUAL(32, l.rounds);
+  TEST_ASSERT_EQUAL(plain::kSoftWallMs, l.softWallMs);
+  TEST_ASSERT_EQUAL(16u * plain::kDefaultRequestTokens, l.maxPromptTokens);
+  TEST_ASSERT_EQUAL(plain::kMinSpendCapMicroUsd, l.maxSpendMicroUsd);
+  plain::HeadCost c;
+  c.targetTokens = 200000;            // 4 x target wins
+  c.requestTokensAtTrigger = 30000;
+  c.warmRequestMicroUsd = 50000;      // 16 x 0.05 + 0.20 = 1.00 USD wins over 0.50
+  c.coldRequestMicroUsd = 200000;
+  TXB_OK(plain::guardLimitsFor(8, c, l));
+  TEST_ASSERT_EQUAL(800000u, l.maxPromptTokens);
+  TEST_ASSERT_EQUAL(1000000u, l.maxSpendMicroUsd);
+  c.targetTokens = 1000;              // 16 x request wins
+  TXB_OK(plain::guardLimitsFor(8, c, l));
+  TEST_ASSERT_EQUAL(480000u, l.maxPromptTokens);
+  // The order: rounds, time, spend, size; each at its limit, not before.
+  plain::GuardState s;
+  plain::GuardTrip t;
+  TXB_OK(plain::checkGuards(l, s, t));
+  TEST_ASSERT_TRUE(t == plain::GuardTrip::None);
+  s.promptTokens = l.maxPromptTokens - 1;
+  s.spendMicroUsd = l.maxSpendMicroUsd - 1;
+  s.rounds = (uint16_t)(l.rounds - 1);
+  s.elapsedMs = l.softWallMs - plain::kMinRequestMs - 1;
+  TXB_OK(plain::checkGuards(l, s, t));
+  TEST_ASSERT_TRUE(t == plain::GuardTrip::None);
+  s.promptTokens = l.maxPromptTokens;
+  TXB_OK(plain::checkGuards(l, s, t));
+  TEST_ASSERT_TRUE(t == plain::GuardTrip::Size);
+  s.spendMicroUsd = l.maxSpendMicroUsd;
+  TXB_OK(plain::checkGuards(l, s, t));
+  TEST_ASSERT_TRUE(t == plain::GuardTrip::Spend);
+  s.elapsedMs += 1;
+  TXB_OK(plain::checkGuards(l, s, t));
+  TEST_ASSERT_TRUE(t == plain::GuardTrip::Time);
+  s.rounds = l.rounds;
+  TXB_OK(plain::checkGuards(l, s, t));
+  TEST_ASSERT_TRUE(t == plain::GuardTrip::Rounds);
+  // The spend of one request: cache rates default to 0.1x and 1.25x of the input rate.
+  plain::HeadCost p;
+  p.inMicroPerM = 3000000;
+  p.outMicroPerM = 15000000;
+  TEST_ASSERT_EQUAL(3000u + 15000u + 300u + 3750u, plain::requestMicroUsd(p, plain::RequestTokens{1000, 1000, 1000, 1000}));
+  TEST_ASSERT_EQUAL(0u, plain::requestMicroUsd(plain::HeadCost{}, plain::RequestTokens{1000000, 1000000, 0, 0}));
+}
+
+// ---- identical-call suppression: pure tools only, one turn, the earlier result whole ----------
+inline size_t dispatchedOf(const txb::Battery& b, const std::string& name) {
+  size_t n = 0;
+  for (const std::string& d : b.world.dispatched) n += d == name;
+  return n;
+}
+
+inline void test_a_repeated_pure_call_is_answered_from_the_earlier_result() {
+  for (int viaMore = 0; viaMore < 2; ++viaMore) {   // ruling 52 item 3: through more too
+    txb::Battery b;
+    if (viaMore) withMore(b);
+    b.world.files["notes/a.md"] = "alpha";
+    const std::string direct = R"({"path":"notes/a.md"})", routed = R"({"name":"read_file","args":{"path":"notes/a.md"}})";
+    b.model.push(sp::call("read_file", direct));
+    b.model.push(viaMore ? sp::call("more", routed) : sp::call("read_file", "{ \"path\" : \"notes/a.md\" }"));
+    b.model.push(sp::say("It says alpha."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read it twice", out));
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)dispatchedOf(b, "read_file"), viaMore ? "through more" : "direct");
+    TEST_ASSERT_TRUE(bodyHas(b.model.last(), texts::tool_results::kSameAsEarlier));
+    TEST_ASSERT_EQUAL_STRING("It says alpha.", out.text.c_str());
+    expectPaired(b);
+    // Not across turns: the next turn reads again.
+    b.model.push(sp::call("read_file", direct));
+    b.model.push(sp::say("Still alpha."));
+    b.advance(30);
+    TXB_OK(b.owner("and now?", out));
+    TEST_ASSERT_EQUAL(2, (int)dispatchedOf(b, "read_file"));
+  }
+}
+
+inline void test_a_write_between_two_reads_lets_the_second_run() {
+  for (int viaMore = 0; viaMore < 2; ++viaMore) {
+    txb::Battery b;
+    withMore(b);
+    b.world.files["notes/a.md"] = "alpha";
+    const std::string rf = R"({"path":"notes/a.md"})";
+    b.model.push(sp::call("read_file", rf));
+    b.model.push(viaMore ? sp::call("more", R"({"name":"write_file","args":{"path":"notes/a.md","text":"beta"}})")
+                         : sp::call("write_file", R"({"path":"notes/a.md","text":"beta"})"));
+    b.model.push(sp::call("more", R"({"name":"read_file","args":{"path":"notes/a.md"}})"));
+    b.model.push(sp::say("Now beta."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read, write, read", out));
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)dispatchedOf(b, "read_file"), viaMore ? "write through more" : "direct write");
+    TEST_ASSERT_FALSE(bodyHas(b.model.last(), texts::tool_results::kSameAsEarlier));
+  }
+}
+
+inline void test_a_repeat_of_a_tool_that_is_not_pure_always_runs() {
+  for (int viaMore = 0; viaMore < 2; ++viaMore) {
+    txb::Battery b;
+    withMore(b);
+    const std::string args = R"({"query":"weather"})";
+    const std::string routed = R"({"name":"web_search","args":{"query":"weather"}})";
+    b.model.push(viaMore ? sp::call("more", routed) : sp::call("web_search", args));
+    b.model.push(viaMore ? sp::call("more", routed) : sp::call("web_search", args));
+    b.model.push(sp::say("Searched twice."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("search twice", out));
+    TEST_ASSERT_EQUAL(2, (int)dispatchedOf(b, "web_search"));
+  }
+}
+
+// The earlier result is no longer whole (ladder rung 2 stubbed it): the repeat runs.
+inline void test_a_repeat_runs_when_the_earlier_result_is_a_stub() {
+  txb::Battery b;
+  shortTurns(b, 8);
+  const std::string first = R"({"tag":"r0","bytes":20000})";
+  b.model.push(sp::call("big_read", first));
+  for (int i = 1; i < 6; ++i) b.model.push(sp::call("big_read", "{\"tag\":\"r" + std::to_string(i) + "\",\"bytes\":20000}"));
+  b.model.push(sp::call("big_read", first));
+  b.model.push(sp::say("Read seven."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read seven big ones", out));
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Read seven.", out.text.c_str(), out.statusText.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(7, (int)dispatchedOf(b, "big_read"), "a repeat was answered from a result shown as a stub");
+}
+
+// ---- deferred effects --------------------------------------------------------------------
+// A restart or a head switch asked for by a tool runs after the turn: the reply goes out and
+// the d and e items are stored first; the binding reads TurnOutcome::deferred. Through more too.
+inline void test_a_deferred_effect_runs_after_the_turn_is_closed() {
+  for (int viaMore = 0; viaMore < 2; ++viaMore) {
+    txb::Battery b;
+    withMore(b);
+    const std::string restart = R"({"action":"restart"})", head = R"({"action":"head","to":"claude-haiku-5-5"})";
+    if (viaMore)
+      b.model.push(sp::calls({{"more", R"({"name":"device_control","args":{"action":"restart"}})", ""},
+                              {"more", R"({"name":"device_control","args":{"action":"head","to":"claude-haiku-5-5"}})", ""}}));
+    else
+      b.model.push(sp::calls({{"device_control", restart, ""}, {"device_control", head, ""}}));
+    b.model.push(sp::say("Switching and restarting after this reply."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("switch to haiku and restart", out));
+    TEST_ASSERT_TRUE(out.deferred.has(plain::Deferred::Restart));
+    TEST_ASSERT_TRUE(out.deferred.has(plain::Deferred::HeadSwitch));
+    TEST_ASSERT_FALSE(out.deferred.has(plain::Deferred::Install));
+    TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", out.deferred.arg[(size_t)plain::Deferred::HeadSwitch].c_str());
+    TEST_ASSERT_EQUAL(1, (int)b.sent.size());   // the reply went out before the binding acts
+    const std::vector<tx::Item> items = storedOf(b);
+    TEST_ASSERT_EQUAL(1, (int)countKind(items, tx::ItemKind::TurnEnd));
+    TEST_ASSERT_EQUAL(1, (int)countKind(items, tx::ItemKind::Delivery));
+    expectPaired(b);
+  }
+  // A failed or refused call asks for nothing.
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Rails, [](const plain::DispatchCtx&) {
+    plain::DispatchDecision d;
+    d.verdict = plain::DispatchVerdict::Refuse;
+    d.text = "refused";
+    return d;
+  }));
+  b.model.push(sp::call("device_control", R"({"action":"restart"})"));
+  b.model.push(sp::say("It was refused."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("restart", out));
+  TEST_ASSERT_EQUAL(0, (int)out.deferred.mask);
+}
+
 // ---- red cases for other lanes (ruling 56; on test/pending_roster.txt with ruling:56) ---------
 inline void test_a_full_arena_frees_its_oldest_closed_turn() {
   txb::Battery b;
@@ -1787,16 +2133,40 @@ inline void test_signed_thinking_over_the_line_limit_keeps_the_turn() {
   TEST_ASSERT_EQUAL_STRING("done", out.text.c_str());
 }
 
+// Ruling 56 and 59 item 7: the guard inputs measure size and spend, asserted on the guard
+// itself: cached prompt tokens count toward the size guard (the e item's promptTokens stays the
+// uncached count), and a priced head's spend trips the spend guard.
 inline void test_guard_inputs_measure_size_and_spend() {
-  TXB_WAITS_FOR("PENDING RB-E1b", "RB-E1a");
-  txb::Battery b;
-  sp::Step s = sp::say("hi");
-  s.usage.cacheRead = 9000;
-  b.model.push(s);
-  plain::TurnOutcome out;
-  TXB_OK(b.owner("hello", out));
-  TEST_ASSERT_TRUE_MESSAGE(out.end.promptTokens >= 9000, "the size guard does not count cached prompt tokens");
-  TEST_ASSERT_TRUE_MESSAGE(out.end.microUsd > 0, "the spend guard has no price");
+  {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    b.cost.targetTokens = b.cost.requestTokensAtTrigger = 500;   // a size cap of 8,000 tokens
+    sp::Step s = sp::call("read_file", R"({"path":"notes/a.md"})");
+    s.usage.input = 100;
+    s.usage.cacheRead = 9000;
+    b.model.push(s);
+    b.model.push(sp::say("Stopped at the limit."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("hello", out));
+    TEST_ASSERT_TRUE_MESSAGE(out.trip == plain::GuardTrip::Size, "the size guard does not count cached prompt tokens");
+    TEST_ASSERT_EQUAL_STRING("limit:size", lastEnd(storedOf(b))->end.cause.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.end.promptTokens < 9000, "the e item's uncached count took the cached tokens");
+  }
+  {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    b.cost.inMicroPerM = 3000000;
+    b.cost.outMicroPerM = 15000000;
+    sp::Step s = sp::call("read_file", R"({"path":"notes/a.md"})");
+    s.usage.input = 200000;   // 0.60 USD over a 0.50 USD cap
+    b.model.push(s);
+    b.model.push(sp::say("Stopped at the limit."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("hello", out));
+    TEST_ASSERT_TRUE_MESSAGE(out.trip == plain::GuardTrip::Spend, "the spend guard has no price");
+    TEST_ASSERT_TRUE(out.end.microUsd >= 600000);
+    TEST_ASSERT_EQUAL_STRING("limit:spend", lastEnd(storedOf(b))->end.cause.c_str());
+  }
 }
 
 // Ruling 59 item 7: the head is routed (the router host, HeadEndpoint::routed), so only a
@@ -1934,6 +2304,14 @@ inline void run() {
   RUN_TEST(test_a_message_with_too_many_parts_gets_its_own_line);
   RUN_TEST(test_a_chat_that_filled_its_arena_keeps_answering_between_rounds);
   RUN_TEST(test_a_full_arena_frees_its_oldest_closed_turn);
+  RUN_TEST(test_an_8_round_turn_and_a_12_call_correction_complete_on_every_head_class);
+  RUN_TEST(test_each_guard_gives_one_item_and_one_last_round);
+  RUN_TEST(test_guard_limits_scale_with_the_head);
+  RUN_TEST(test_a_repeated_pure_call_is_answered_from_the_earlier_result);
+  RUN_TEST(test_a_write_between_two_reads_lets_the_second_run);
+  RUN_TEST(test_a_repeat_of_a_tool_that_is_not_pure_always_runs);
+  RUN_TEST(test_a_repeat_runs_when_the_earlier_result_is_a_stub);
+  RUN_TEST(test_a_deferred_effect_runs_after_the_turn_is_closed);
   RUN_TEST(test_a_dangling_call_is_answered_before_a_full_arena_drops_its_turn);
   RUN_TEST(test_every_after_deliver_handler_runs_when_one_is_refused);
   RUN_TEST(test_a_receipt_survives_when_the_reply_cannot_be_sent);

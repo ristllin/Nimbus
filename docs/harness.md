@@ -603,9 +603,29 @@ durability around it and nothing that reads, edits or appends to the model's tex
   text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
   runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
   to the bulk file, its stub computed once) before the next request, `afterResult`.
-- **Limits**: at each round boundary the guards (rounds and wall clock until RB-E1b scales them
-  to the head) write one `[device] limit reached (...)` item and send one last round with
-  tool choice none; the soft wall bounds every request, the last round may run to the hard wall.
+- **Limits** (`plain/guards.h`, `plain_guards.cpp`): the only guards, scaled to the head from
+  `TurnSetup::storedRounds` and `TurnSetup::cost`: 16 rounds (a stored orchLoopRnds of 8 or less
+  reads as 16, 9 to 32 is honoured); 240 s soft wall clock; prompt tokens summed over the turn's
+  rounds, cached ones included, at most max(4 x the head's target, 16 x its request size at the
+  profile trigger; 24,000 tokens when the head does not say); spend, priced per request from the
+  head's rates (cache rates default to 0.1x and 1.25x of the input rate), at most max(0.50 USD,
+  16 warm requests plus one cold). Checked in that order at each round boundary; a trip writes one
+  `[device] limit reached (rounds|time|spend|size)` item and sends one last round with tool choice
+  none; its text is delivered with one status line naming the guard, and a last round that only
+  called tools ends with the limit line instead. The soft wall bounds every request, the last
+  round may run to the hard wall. A head with no rates is not priced: the spend guard measures
+  nothing there (the e item's USD stays 0), rounds, time and size still bound the turn.
+- **Identical-call suppression** (`installSuppression`, HookSlot::Suppression): inside one turn,
+  a call to a pure tool (by the class of the tool a `more` call reaches) with the same arguments
+  as an earlier successful call is answered "not run again ..." instead of running, while that
+  earlier result is still shown whole (above rung 2's line) and no effect has been tried since.
+  Never across turns, never for a tool that is not pure (the web, the clock, the device,
+  connectors), never from an error or outside result.
+- **Deferred effects**: a tool asks for a restart, an install or a head switch by setting
+  `ToolOutput::deferred` (and `deferredArg`); the loop never acts on it. It is reported in
+  `TurnOutcome::deferred` when the call's result was stored as a success, and the binding runs
+  them in `Deferred` order (head switch, install, restart) after `runTurn` returns, the reply
+  delivered and the d and e items stored.
 - **Endings**: a failed exchange ends the turn with its one plain line; a cut answer is
   delivered with the cut line and its calls are answered "not run"; `beforeDeliver` may hold
   the reply once (one device item, one more round). Then delivery, the d item, `afterDeliver`,

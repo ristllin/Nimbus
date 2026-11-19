@@ -746,3 +746,23 @@ deleted. Engine 2 has no baseline.
 - lane: RB-E1b
 - prd: section 8.9 (the closed list of harness-written lines: one status line per failure) and ruling 59 item 4 (the memory line only for a full arena or a refused allocation; an item refused as InvalidArgument gets its own true line)
 - why: lib/harness/src/plain_engine.cpp: an owner message with more parts or update ids than one stored line holds (the encoder's 256-item limit) ended with "ran out of memory", which was false and repeated on every resend; it now ends with a line that says what happened and the one next step; planned work, not a fix
+
+### PC-0081: the owner's line when a guard stopped the turn (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 1597 -> 1652
+- sha8: bc2899db -> 68c61711
+- lane: RB-E1b
+- prd: section 1 step 5 (guards scaled to the head: on a trip one item, one last round with tool choice none, the text is delivered) and section 8.9 (one status line per guard: limit reached)
+- why: lib/harness/src/plain_engine.cpp: when a guard (rounds, time, spend, size) stopped the turn and its last round's text was delivered, the owner gets one status line after it naming the guard by its slug and the one next step; the last round that only called tools keeps RB-E1a's line (PC-0026); planned work, not a fix
+
+### PC-0082: identical-call suppression's result (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 4765 -> 4898
+- sha8: bda3f014 -> 8ee90b89
+- lane: RB-E1b
+- prd: section 1 ("Identical-call suppression: inside one turn only, only for tools declared pure, only while the earlier result is still shown whole and no write has succeeded since")
+- why: lib/harness/src/plain_guards.cpp: a pure call that repeats an earlier call of the same turn is not run again; its result states that fact and that the earlier result above still holds (a fact, no order); planned work, not a fix

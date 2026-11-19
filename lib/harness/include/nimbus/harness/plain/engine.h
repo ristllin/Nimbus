@@ -127,6 +127,10 @@ struct TurnOutcome {
   std::string statusText;
   bool parkHost = false;         // the head's key or credit was refused: the binding parks it
   bool failOver = false;         // routed: the router said fail over to the next target
+  // Effects the turn's tools asked for after the turn (a stored, successful result each): the
+  // binding runs them in Deferred order once runTurn returns, the reply and the turn's items
+  // already stored. The mask survives a refused allocation; an argument may not.
+  DeferredEffects deferred;
   nimbus::orch::tx::TurnEndFacts end;
 };
 

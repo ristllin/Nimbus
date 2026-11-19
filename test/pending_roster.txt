@@ -52,7 +52,7 @@ test_plain_conformance::test_loop_shape_anthropic RB-E1a
 test_plain_conformance::test_loop_shape_responses RB-W2
 test_plain_conformance::test_loop_shape_chat RB-W3
 test_plain_conformance::test_loop_shape_flat RB-W4
-test_plain_conformance::test_guard_last_round_anthropic RB-E1b
+test_plain_conformance::test_guard_last_round_anthropic RB-W1b ruling:59
 test_plain_conformance::test_guard_last_round_responses RB-W2
 test_plain_conformance::test_guard_last_round_chat RB-W3
 test_plain_conformance::test_guard_last_round_flat RB-W4
@@ -67,7 +67,6 @@ test_delivery_bytes::test_a_failed_turn_sends_exactly_one_line RB-E3
 test_plain_conformance::test_view_fetches_a_long_argument_and_a_long_reply_back RB-N3 ruling:56
 test_plain_conformance::test_a_long_owner_message_goes_to_the_inbox_as_a_file RB-TG1 ruling:56
 test_plain_conformance::test_signed_thinking_over_the_line_limit_keeps_the_turn RB-W1b ruling:56
-test_plain_conformance::test_guard_inputs_measure_size_and_spend RB-E1b ruling:56
 test_plain_conformance::test_a_routed_head_sends_the_deadline_header RB-W4 ruling:56
 test_plain_conformance::test_the_log_reopens_when_storage_returns RB-I3 ruling:56
 

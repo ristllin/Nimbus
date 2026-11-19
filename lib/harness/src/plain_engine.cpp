@@ -83,6 +83,8 @@ struct Turn {
   bool sawOutside = false;
   bool sawMeta = false;
   bool dropped = false;                // a full arena gave up closed turns this turn
+  uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
+  DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
   GuardTrip trip = GuardTrip::None;
   bool reply = false;                  // replyText is the model's reply
   bool answered = false;               // a final answer came back (possibly empty)
@@ -309,7 +311,7 @@ class TurnRun {
     if (!(st = compose()).ok()) return fail(st);
     if (!t_.wire && !(st = wireFor(t_.ctx.dialect, t_.wire)).ok()) return fail(st);
     if (!t_.wire) return fail(Status::fail(Err::NotFound, "plain::wireFor"));
-    if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, t_.limits).ok()) t_.limits = GuardLimits{};   // RB-E1b
+    if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, t_.limits).ok()) t_.limits = GuardLimits{};
     // Whatever the scale, every round has a bound and the last round has time before the hard wall.
     t_.limits.rounds = std::max<uint16_t>(1, std::min<uint16_t>(t_.limits.rounds, kMaxRounds));
     t_.limits.softWallMs = std::min<uint32_t>(t_.limits.softWallMs, kHardWallMs - 2 * kMinRequestMs);
@@ -506,12 +508,10 @@ class TurnRun {
     GuardState g;
     g.rounds = t_.toolRounds;
     g.elapsedMs = elapsedMs();
-    g.promptTokens = t_.end.promptTokens;
+    g.promptTokens = t_.sizeTokens;
     g.spendMicroUsd = t_.end.microUsd;
     GuardTrip trip = GuardTrip::None;
-    if (!checkGuards(t_.limits, g, trip).ok())   // RB-E1b; until then rounds and time only
-      trip = g.rounds >= t_.limits.rounds ? GuardTrip::Rounds
-             : g.elapsedMs + kMinRequestMs >= t_.limits.softWallMs ? GuardTrip::Time : GuardTrip::None;
+    (void)checkGuards(t_.limits, g, trip);   // the limits are clamped at open: never InvalidArgument
     if (trip == GuardTrip::None) return Status::success();
     t_.trip = trip;
     t_.lastRound = true;
@@ -563,6 +563,11 @@ class TurnRun {
     t_.end.outputTokens += u.completionTokens;
     t_.end.cacheReadTokens += u.cacheReadTokens;
     t_.end.cacheWriteTokens += u.cacheWriteTokens;
+    // The guards' inputs: size counts every prompt token (cached ones too); spend prices them.
+    const uint64_t size = (uint64_t)t_.sizeTokens + u.promptTokens + u.cacheReadTokens + u.cacheWriteTokens;
+    t_.sizeTokens = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
+    const RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens};
+    t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
     t_.parkHost |= ex.parkHost;
     t_.failOver |= ex.failOver;
   }
@@ -781,6 +786,9 @@ class TurnRun {
   void settle() {
     t_.replyText = !t_.answer.empty() ? &t_.answer : t_.held && !t_.heldText.empty() ? &t_.heldText : nullptr;
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
+    if (t_.reply && t_.trip != GuardTrip::None && personTrigger(t_.ctx.trigger))   // the guard that stopped it
+      setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +
+                                              texts::device_notes::kLimitStoppedEnd);
     if (t_.reply || !personTrigger(t_.ctx.trigger)) return;
     if (t_.answered && t_.trip != GuardTrip::None) setStatus(StatusLine::LimitReached, texts::device_notes::kLimitLine);
     else if (t_.answered || t_.status == StatusLine::None)   // never silent: an answer the turn could not use
@@ -981,11 +989,21 @@ class TurnRun {
     const orch::ToolClass& cls = view.cls;
     DispatchDecision dd;
     if (d_.hooks) {
+      ToolCall target;   // the tool a `more` call reaches, as the seams' rules see it
+      const bool routed = view.name != call.name;
+      if (routed) {
+        target.id = call.id;
+        target.name = view.name;
+        target.argsJson = view.args;
+        target.complete = call.complete;
+      }
       DispatchCtx dc;
       dc.turn = &t_.ctx;
       dc.call = &call;
+      dc.target = routed ? &target : nullptr;
       dc.pure = cls.effect == orch::EffectClass::Pure;
       dc.effect = cls.effect == orch::EffectClass::Effect;
+      dc.stubThrough = t_.ladder.stubThrough;
       dd = d_.hooks->runBeforeDispatch(dc);
     }
     ToolOutput out;
@@ -1059,6 +1077,13 @@ class TurnRun {
       t_.ctx.tainted = true;   // the request now carries an outside result whole
     }
     if (r.ok && orch::tx::changesFileSet(view.name)) t_.fileSetChanged = true;
+    if (r.ok && out.deferred != Deferred::None) {   // run by the binding once the turn is closed
+      const size_t kind = static_cast<size_t>(out.deferred);
+      if (kind < kDeferredKinds) {
+        t_.deferred.arg[kind] = out.deferredArg;
+        t_.deferred.mask |= (uint8_t)(1u << kind);
+      }
+    }
     keepWrite(call, r, view);
     if (d_.hooks) {
       ResultCtx rc;
@@ -1386,9 +1411,11 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.status = t->status;
   out.parkHost = t->parkHost;
   out.failOver = t->failOver;
+  out.deferred.mask = t->deferred.mask;
   try {
     if (t->replyText) out.text = *t->replyText;
     if (t->statusRef) out.statusText = *t->statusRef;
+    for (size_t k = 0; k < kDeferredKinds; ++k) out.deferred.arg[k] = t->deferred.arg[k];
     out.end = t->end;
   } catch (const std::bad_alloc&) {
   }

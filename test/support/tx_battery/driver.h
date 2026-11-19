@@ -78,6 +78,8 @@ class Battery {
   std::string hostOverride, modelOverride;
   bool routed = false;
   plain::DeliverFn deliverFn;
+  plain::HeadCost cost;            // what the guards scale from (TurnSetup::cost)
+  int storedRounds = 0;            // the stored orchLoopRnds (TurnSetup::storedRounds)
 
   // Process state: gone at a power cut, rebuilt by boot().
   agent::Platform platform;
@@ -262,6 +264,8 @@ class Battery {
     out.dayStartMin = dayStartMin;
     out.head.host = t.host;
     out.head.routed = routed;
+    out.cost = cost;
+    out.storedRounds = storedRounds;
     out.head.key = [] { return std::string("sk-fake-battery"); };
     out.wire = batteryWire(dialect);
     return tx::Status::success();

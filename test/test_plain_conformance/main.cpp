@@ -181,7 +181,7 @@ void guardLastRound(plain::Dialect d) {
 }
 
 void test_guard_last_round_anthropic() {
-  TXB_WAITS_FOR("PENDING RB-E1b", "RB-E1a", "RB-W1b");
+  TXB_WAITS_FOR("PENDING RB-W1b", "RB-E1a", "RB-E1b");
   guardLastRound(plain::Dialect::AnthropicMessages);
 }
 void test_guard_last_round_responses() {

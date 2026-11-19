@@ -54,8 +54,14 @@ class World {
       o.text = payload(std::string("OUTSIDE-") + (a["q"] | "page"), a["bytes"] | 3000);
     } else if (c.name == "big_read") {
       o.text = payload(std::string("BULK-") + (a["tag"] | "x"), a["bytes"] | 20000);
-    } else if (c.name == "device_control") {
-      o.text = std::string("scheduled ") + (a["action"] | "");
+    } else if (c.name == "device_control") {   // restart, install and a head switch run after the turn
+      const std::string action = a["action"] | "";
+      o.text = "scheduled " + action;
+      o.deferred = action == "restart"   ? plain::Deferred::Restart
+                   : action == "install" ? plain::Deferred::Install
+                   : action == "head"    ? plain::Deferred::HeadSwitch
+                                         : plain::Deferred::None;
+      o.deferredArg = a["to"] | "";
     } else {
       o.isError = true;
       o.text = "unknown tool " + c.name;

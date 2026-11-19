@@ -83,8 +83,13 @@ enum class DispatchVerdict : uint8_t {
 struct DispatchCtx {
   const TurnCtx* turn = nullptr;
   const ToolCall* call = nullptr;
+  // The call as the tool it reaches: a `more` call resolved once to its target's name and
+  // arguments (ruling 52 item 3); null when that is the call itself. pure and effect are the
+  // target's class.
+  const ToolCall* target = nullptr;
   bool pure = false;     // declared pure (read_file, list_files, search, calc)
   bool effect = false;   // an effect tool (writes, sends, schedules, device control)
+  uint64_t stubThrough = 0;   // the open turn's results at or below this q render as stubs (ladder rung 2)
 };
 struct DispatchDecision {
   DispatchVerdict verdict = DispatchVerdict::Run;

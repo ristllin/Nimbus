@@ -198,6 +198,10 @@ inline constexpr char kMessageTooLong[] = "That message is too long for the devi
 inline constexpr char kTooManyParts[] = "That message has too many parts for the device to keep. Send them in smaller groups.";
 // The last allowed round answered with tool calls and no text.
 inline constexpr char kLimitLine[] = "The turn reached its limit before a reply. Ask again to continue.";
+// A guard stopped the turn and its last round's text was delivered: the guard, by its slug
+// (guardTripSlug), between these two (lane RB-E1b).
+inline constexpr char kLimitStopped[] = "This turn stopped at its ";
+inline constexpr char kLimitStoppedEnd[] = " limit. Ask again to continue.";
 // The tool slug of a long reply's stub ('[stub assistant r<q> ...]').
 inline constexpr char kAssistantSlug[] = "assistant";
 }  // namespace device_notes
@@ -214,6 +218,10 @@ inline constexpr char kOutcomeUnknown[] =
     "outcome unknown: the device stopped while this call ran; it may or may not have taken effect";
 // A tool handler threw (not a refused allocation): that one call failed, the turn goes on.
 inline constexpr char kToolFailed[] = "failed: the tool stopped with an internal error";
+// Identical-call suppression (lane RB-E1b, plain_guards.cpp): a pure call that repeats an earlier
+// call of this turn while that result is still shown whole and nothing was written since.
+inline constexpr char kSameAsEarlier[] =
+    "not run again: an earlier call this turn had the same tool and arguments, nothing was written since, and its result above still holds";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3): its system text and the
