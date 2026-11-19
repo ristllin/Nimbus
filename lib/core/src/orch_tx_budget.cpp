@@ -94,7 +94,9 @@ Status profileMarks(Profile p, ProfileMarks& out) {
 HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile requested) {
   HeadBudget b;
   const WireRatio w = wireOf(r, head);
-  const ContextBudget c = deriveRequestContext(r, {});   // v5.1.2's own marks: the floors
+  BudgetOverrides released;
+  released.noProfile = true;   // the head's own v5.1.2 marks, whatever engine 1's history profile is
+  const ContextBudget c = deriveRequestContext(r, released);   // the floors
   b.profile = (uint8_t)requested <= (uint8_t)Profile::Full ? requested : kDefaultProfile;
   b.floorHead = r.bound == BudgetBound::Floor || r.bound == BudgetBound::Held;
   b.bodyMilliBytesPerToken = w.milli;

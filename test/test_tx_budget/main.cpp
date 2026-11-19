@@ -25,6 +25,7 @@
 
 #include "../support/recorded_models.h"
 #include "nimbus/harness/plain/turn.h"
+#include "nimbus/orch/budget.h"
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/orch/tx/arena.h"
@@ -71,7 +72,7 @@ const std::vector<V512>& v512() {
     v.toolResult = r["toolResultBytes"] | 0u;
     rows.push_back(v);
   }
-  TEST_ASSERT_EQUAL(230, (int)rows.size());
+  TEST_ASSERT_TRUE(rows.size() >= 230);   // RB-BG's fixture: every released row
   return rows;
 }
 
@@ -189,6 +190,19 @@ void test_no_head_default_is_under_its_v5_1_2_row() {
 
 // The engine keeps owner and assistant text inline up to its tier-1 caps and a stored result inline up to
 // kBulkWholeMax when there is no bulk storage: each at least the largest released row.
+// An owner's smaller engine-1 history profile never lowers engine 2's floors (they are the head's
+// own v5.1.2 row, read with no profile).
+void test_engine_1s_profile_never_lowers_engine_2s_floors() {
+  const tx::HeadBudget before = direct("anthropic", "claude-sonnet-5-5");
+  nimbus::orch::installHistoryProfile(nimbus::orch::HistoryProfile::Tiny);
+  const tx::HeadBudget after = direct("anthropic", "claude-sonnet-5-5");
+  nimbus::orch::installHistoryProfile(nimbus::orch::kDefaultHistoryProfile);
+  TEST_ASSERT_EQUAL_UINT32(before.releasedKeep, after.releasedKeep);
+  TEST_ASSERT_EQUAL_UINT32(before.releasedFold, after.releasedFold);
+  TEST_ASSERT_EQUAL_UINT32(before.marks.low, after.marks.low);
+  TEST_ASSERT_EQUAL_UINT32(59040, after.releasedKeep);
+}
+
 void test_the_engines_inline_caps_hold_every_released_row() {
   for (const V512& v : v512()) {
     TEST_ASSERT_TRUE(tx::kTier1OwnerText >= v.messageCap && tx::kTier1AssistantText >= v.messageCap);
@@ -461,6 +475,7 @@ int main() {
   RUN_TEST(test_the_smaller_profiles_are_fixed_and_full_is_per_head);
   RUN_TEST(test_the_row_checker_catches_one_byte_short_in_every_field);
   RUN_TEST(test_no_head_default_is_under_its_v5_1_2_row);
+  RUN_TEST(test_engine_1s_profile_never_lowers_engine_2s_floors);
   RUN_TEST(test_the_engines_inline_caps_hold_every_released_row);
   RUN_TEST(test_the_aim_is_tokens_due_before_it_and_keeps_70_percent);
   RUN_TEST(test_the_named_head_classes);

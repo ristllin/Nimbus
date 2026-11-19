@@ -16,7 +16,7 @@ Tokens are the unit, as the provider counts them (owner ruling 82). A head's req
 | glm-5.3 direct (Z.ai), Virtual Nimbus | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 | 6,744 | 12,288 | 41,250 | no | 145,664 / 91,872 |
 | routed default (cumulo gpt-5.6), lift off | 23,611 | 20,069 | 16,527 | floor | 85,000 | 49,152 | 34,000 | 6,744 | 12,288 | 11,141 | yes | 49,152 / 5,570 |
 | routed default (cumulo gpt-5.6), lift on | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 | 6,744 | 12,288 | 45,000 | no | 164,864 / 111,072 |
-| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 34,000 | 30,000 | 23,800 | floor | 85,000 | 49,152 | 34,000 | 6,744 | 12,288 | 10,625 | yes | 49,152 / 4,096 |
+| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 34,000 | 30,000 | 23,800 | floor | 85,000 | 49,152 | 34,000 | 6,744 | 12,288 | 10,625 | yes | 49,152 / 9,645 |
 | routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift on | 100,000 | 96,000 | 70,000 | clamp | 250,000 | 214,000 | 149,000 | 6,744 | 12,288 | 31,250 | no | 94,464 / 59,040 |
 | mistral-large-4-0 direct, ASSUMED (held) | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 | 6,744 | 12,288 | 45,000 | no | 164,864 / 111,072 |
 | paid custom endpoint (gpt-5.6-luna id) | 28,333 | 24,333 | 19,833 | floor | 85,000 | 49,152 | 34,000 | 6,744 | 12,288 | 11,141 | yes | 49,152 / 5,570 |
@@ -310,3 +310,9 @@ Every head of budgets_v5_1_2.json (the released v5.1.2 rows), at full, routed li
 | server | anthropic | claude-opus-5-5 | 100,000 | 96,000 | 70,000 | clamp | 292,000 | 254,000 | 176,000 |
 | server | zai | glm-5.3 | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 |
 | server | custom | gpt-5.6-luna | 28,333 | 24,333 | 19,833 | floor | 85,000 | 49,152 | 34,000 |
+| device-loop-off | mistral | mistral-large-4-0 | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
+| device-loop-off | mistral | mistral-medium-latest | 48,709 | 44,709 | 34,096 | latency | 151,000 | 113,000 | 80,000 |
+| device-loop-off | zai | glm-5.3 | 56,969 | 52,969 | 39,878 | latency | 188,000 | 149,000 | 106,000 |
+| device-loop-off | custom | gpt-5.6-luna | 28,333 | 24,333 | 19,833 | floor | 85,000 | 49,152 | 34,000 |
+| device-loop-off | cumulo | mistral/mistral-large-4-0 | 23,611 | 20,069 | 16,527 | floor | 85,000 | 49,152 | 34,000 |
+| device-loop-off | cumulo | zai/glm-5.3 | 25,757 | 21,893 | 18,029 | floor | 85,000 | 49,152 | 34,000 |
