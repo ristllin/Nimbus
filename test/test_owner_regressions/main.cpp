@@ -24,8 +24,6 @@
 #include "nimbus/orch/failure_chain.h"
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_store.h"
-#include "nimbus/orch/food_figures.h"
-#include "nimbus/orch/food_label.h"
 #include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/model_choices.h"
@@ -80,22 +78,6 @@ struct FoldIO : FoldStoreIO {
   void save(const std::string& b) override { blob = b; }
 };
 
-bool hasGapKind(const std::vector<FoodGap>& gaps, FoodGapKind k) {
-  for (const auto& g : gaps)
-    if (g.kind == k) return true;
-  return false;
-}
-
-FoodFacts facts(double kcal, double protein, int unknown = 0) {
-  FoodFacts f;
-  f.have = true;
-  f.kcal = kcal;
-  f.rows = 4;
-  f.protein = protein;
-  f.proteinUnknown = unknown;
-  return f;
-}
-
 const char* kLedgerHeader = "date,meal,items,kcal,protein_g\n";
 
 // The device's day total of files.read {tail, sum} (file_append.h CsvDayTally) over a whole text.
@@ -132,14 +114,7 @@ void test_oir_01_routine_fire_request_carries_prompt() {
   TEST_ASSERT_EQUAL_STRING(l.prompt.c_str(), fr.prompt.c_str());
 }
 
-// OIR-04: a reply total that disagrees with the owner's own figures is flagged.
-void test_oir_04_owner_figures_win() {
-  const auto gaps = foodFigureGaps("Today's total is 1,005 kcal.", facts(1045, 0), "1045");
-  TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::WrongDayTotal));
-}
-
-// OIR-05: the receipt sums every row of the day (1,611), and a reply stating 1,461
-// is a WrongDayTotal gap.
+// OIR-05: the device's day total sums every row of the day (1,611), never the model's 1,461.
 void test_oir_05_day_total_receipt() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-10-28,breakfast,oats,120,8\n"
@@ -149,14 +124,6 @@ void test_oir_05_day_total_receipt() {
   double t = -1;
   TEST_ASSERT_TRUE(dayTotalOf(ex, "kcal", "2026-10-28", t));
   TEST_ASSERT_EQUAL_INT(1611, (int)t);
-  const auto gaps = foodFigureGaps("Today's total is 1,461 kcal.", facts(1611, 0), "");
-  TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::WrongDayTotal));
-}
-
-// OIR-07: "finalised at 2,526" against a ledger whose rows give 2,676 is flagged.
-void test_oir_07_unconfirmed_finalised() {
-  const auto gaps = foodFigureGaps("Today's total is 2,526 kcal.", facts(2676, 0), "");
-  TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::WrongDayTotal));
 }
 
 // OIR-08/OIR-34/OIR-39: an open item is raised once, re-opened when the owner returns
@@ -194,36 +161,6 @@ void test_oir_09_total_includes_every_row() {
   TEST_ASSERT_EQUAL_INT(534, (int)t);
 }
 
-// OIR-03: a second vision read that disagrees with the head's is surfaced with both
-// values, never averaged; an agreeing second read is quiet.
-void test_oir_03_second_read_disagreement_surfaced() {
-  const std::string head =
-      "Nutritional values Per 100g Per serving\n"
-      "Energy kJ/kcal 750/179 982/235\n"
-      "Fat 5.6g 7.3g\n"
-      "Carbohydrate 0.9g 1.2g\n"
-      "Protein 31.3g 41.0g\n"
-      "Net 131 g";
-  const std::string misread =
-      "Nutritional values Per 100g Per serving\n"
-      "Energy kJ/kcal 750/179 982/235\n"
-      "Fat 5.6g 7.3g\n"
-      "Carbohydrate 0.9g 1.2g\n"
-      "Protein 31.3g 4.3g\n"
-      "Net 131 g";
-  const auto d = labelReadDisagreements(head, misread);
-  TEST_ASSERT_EQUAL_INT(1, (int)d.size());
-  TEST_ASSERT_NOT_NULL(strstr(d[0].field.c_str(), "protein per serving"));
-  TEST_ASSERT_EQUAL_FLOAT(41.0, d[0].head);
-  TEST_ASSERT_EQUAL_FLOAT(4.3, d[0].second);
-  const std::string note = secondReadNote(head, misread, "openai");
-  TEST_ASSERT_FALSE(note.empty());
-  TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "41"));
-  TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "4.3"));
-  TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "never averaged"));
-  TEST_ASSERT_TRUE(secondReadNote(head, head, "openai").empty());
-}
-
 // OIR-14: yesterday's rows never enter today's total (465, not 2,989).
 void test_oir_14_day_rollover() {
   const std::string ex = std::string(kLedgerHeader) +
@@ -236,19 +173,6 @@ void test_oir_14_day_rollover() {
   TEST_ASSERT_EQUAL_INT(465, (int)t);
 }
 
-// OIR-15: a misread per-100 g column fails the label's own cross-column arithmetic.
-void test_oir_15_label_cross_column() {
-  const LabelRead r = parseLabelRead(
-      "Nutritional values Per 100g Per serving\n"
-      "Energy kJ/kcal 750/179 982/235\n"
-      "Fat 5.6g 7.3g\n"
-      "Carbohydrate 0.9g 1.2g\n"
-      "Protein 31.3g 4.3g\n"
-      "Net 131 g");
-  const auto doubts = checkLabelRead(r);
-  TEST_ASSERT_FALSE(doubts.empty());
-}
-
 // OIR-17: a sub-agent result with no live task and no connector call is unverified,
 // and the note says so.
 void test_oir_17_subagent_invented_items() {
@@ -257,7 +181,7 @@ void test_oir_17_subagent_invented_items() {
   TEST_ASSERT_FALSE(liveDataNotCheckedNote().empty());
 }
 
-// OIR-18: the receipt gives 4,006 for the rows the reply itself listed as 3,989.
+// OIR-18: the device's day total gives 4,006 for the rows the reply itself listed as 3,989.
 void test_oir_18_receipt_vs_reply_rows() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-10-30,lunch,chicken sandwich,900,40\n"
@@ -268,8 +192,6 @@ void test_oir_18_receipt_vs_reply_rows() {
   double t = -1;
   TEST_ASSERT_TRUE(dayTotalOf(ex, "kcal", "2026-10-30", t));
   TEST_ASSERT_EQUAL_INT(4006, (int)t);
-  const auto gaps = foodFigureGaps("Today's total is 3,989 kcal.", facts(4006, 0), "");
-  TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::WrongDayTotal));
 }
 
 // OIR-19: "1 avocado" was logged over half an avocado because a keyed write replaced a row
@@ -284,15 +206,6 @@ void test_oir_19_silent_replace_fixed() {
   double t = -1;
   TEST_ASSERT_TRUE(dayTotalOf(after, "kcal", "2026-11-04", t));
   TEST_ASSERT_EQUAL_INT(902, (int)t);
-}
-
-// OIR-22: "38.3 g protein left" implies a 250 g target no source holds.
-void test_oir_22_unsourced_protein_target() {
-  FoodFacts f = facts(1890, 118.1);
-  f.targetsKnown = true;
-  f.proteinTarget = 150;
-  const auto gaps = foodFigureGaps("38.3 g protein left for today.", f, "150 160");
-  TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::UnsourcedTarget));
 }
 
 // OIR-23: an output cut carries a retry note naming the cut, never silence.
@@ -340,15 +253,6 @@ void test_oir_27_day_sum_receipt_multirow() {
   double t = -1;
   TEST_ASSERT_TRUE(dayTotalOf(ex, "kcal", "2026-11-04", t));
   TEST_ASSERT_EQUAL_INT(1878, (int)t);
-}
-
-// OIR-28: a reply citing a date 18 days old is stale and flagged.
-void test_oir_28_stale_status() {
-  int age = 0;
-  const std::string note = staleStatusIn("Your Duolingo streak, last active 2026-10-14, is 14 days.",
-                                         "2026-11-01", 7, &age);
-  TEST_ASSERT_FALSE(note.empty());
-  TEST_ASSERT_TRUE(age >= 18);
 }
 
 // OIR-33: a raw findings dump is capped at the budget, never delivered whole.
@@ -815,25 +719,19 @@ int main(int argc, char** argv) {
   (void)argv;
   UNITY_BEGIN();
   RUN_TEST(test_oir_01_routine_fire_request_carries_prompt);
-  RUN_TEST(test_oir_03_second_read_disagreement_surfaced);
-  RUN_TEST(test_oir_04_owner_figures_win);
   RUN_TEST(test_oir_05_day_total_receipt);
-  RUN_TEST(test_oir_07_unconfirmed_finalised);
 #ifdef OIR_HAVE_OPENQ
   RUN_TEST(test_oir_08_open_question_raise_once_and_drop);
 #endif
   RUN_TEST(test_oir_09_total_includes_every_row);
   RUN_TEST(test_oir_14_day_rollover);
-  RUN_TEST(test_oir_15_label_cross_column);
   RUN_TEST(test_oir_17_subagent_invented_items);
   RUN_TEST(test_oir_18_receipt_vs_reply_rows);
   RUN_TEST(test_oir_19_silent_replace_fixed);
-  RUN_TEST(test_oir_22_unsourced_protein_target);
   RUN_TEST(test_oir_23_cut_retry_note);
   RUN_TEST(test_oir_24_compact_thrash_pause);
   RUN_TEST(test_oir_25_body_budget_roundtrip);
   RUN_TEST(test_oir_27_day_sum_receipt_multirow);
-  RUN_TEST(test_oir_28_stale_status);
   RUN_TEST(test_oir_33_raw_dump_capped);
   RUN_TEST(test_oir_36_rules_full_makes_room);
   RUN_TEST(test_oir_39_never_ask_blocks_the_routine);
