@@ -1,0 +1,6 @@
+{
+  "lane": "RB-SYNC",
+  "allowance_bytes": 7680,
+  "envs": {"esp32s3": 7680, "esp32s3-cyd": 7680, "test": 8448, "test-cyd": 8448},
+  "why": "The released v5.1.2 line taken whole (main d5afa30a..a01ef7fb; the brief: rb-main must contain v5.1.2 exactly, so none of it is cut). The PRD flash ledger has no row for it; the brief's estimate was about 6 KB on esp32s3-cyd. Measured: lane tip against rb-main 6d0280e7, both built in the same tree, code bytes (docs pack identical, +0 B): esp32s3 +7,504 B, esp32s3-cyd +7,600 B, test +8,288 B, test-cyd +8,240 B, rounded up to the next 256 B. By symbol on esp32s3-cyd, +5,404 B of functions (the fold driver's alert routing and not-started table, the floor retry in runHostLoop, deliver's queued flag, foldKeepBytes/noteFloorTrim, the index's stepped growth), the rest strings and tables. Pending the orchestrator's acceptance, as every allowance is."
+}
