@@ -1985,10 +1985,17 @@ void test_the_measured_framing_per_block_is_inside_the_battery_allowances() {
                 "(file_pab12cd34); photo stub block %ld",
                 envelope, owner, nightOwner, nightLabelOk ? "passes" : "fails", text, textJoined, pair, pairJoined, isError, noteJoined, fileImage, photoStub);
   TEST_MESSAGE(line);
+  // The battery allows each owner message its framing plus its own stamp, exactly as RB-REC5 makes it
+  // (props.h: kOverheadPerOwnerMessage beside OverheadInput::stampBytes; ruling 68).
+  const long dayStamp = (long)txb::stampOf(two.items.back(), plain::kDayStartDefaultMin).size();
+  const long nightStamp = (long)txb::stampOf(night.items.back(), plain::kDayStartDefaultMin).size();
+  TEST_ASSERT_TRUE_MESSAGE(dayStamp > 0 && nightStamp > dayStamp, line);
   TEST_ASSERT_TRUE_MESSAGE(envelope <= (long)txb::kOverheadEnvelope, line);
-  TEST_ASSERT_TRUE_MESSAGE(owner <= (long)txb::kOverheadPerOwnerMessage, line);
+  TEST_ASSERT_TRUE_MESSAGE(owner <= (long)txb::kOverheadPerOwnerMessage + dayStamp, line);
+  TEST_ASSERT_TRUE_MESSAGE(nightOwner <= (long)txb::kOverheadPerOwnerMessage + nightStamp, line);
+  TEST_ASSERT_TRUE_MESSAGE(nightLabelOk, (std::string(line) + " " + nightWhy).c_str());
   TEST_ASSERT_TRUE_MESSAGE(pair + isError <= (long)(txb::kOverheadPerCall + txb::kOverheadPerResult), line);
-  TEST_ASSERT_TRUE_MESSAGE(owner + fileImage <= (long)(txb::kOverheadPerOwnerMessage + txb::kOverheadPerPhotoLabel), line);
+  TEST_ASSERT_TRUE_MESSAGE(owner + fileImage <= (long)(txb::kOverheadPerOwnerMessage + dayStamp + txb::kOverheadPerPhotoLabel), line);
   // Over random transcripts the bound of test_tx_overhead holds.
   for (unsigned seed = 1; seed <= 200; ++seed) {
     Rig r;

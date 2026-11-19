@@ -41,7 +41,6 @@ test_tx_crash::test_restart_and_install_are_never_resumed RB-X1
 test_tx_overhead::test_wire_overhead_responses RB-W2
 test_tx_overhead::test_wire_overhead_chat RB-W3
 test_tx_overhead::test_wire_overhead_flat RB-W4
-test_tx_overhead::test_wire_overhead_night_anthropic RB-W1a ruling:68
 test_tx_overhead::test_wire_overhead_night_responses RB-W2 ruling:68
 test_tx_overhead::test_wire_overhead_night_chat RB-W3 ruling:68
 test_tx_overhead::test_wire_overhead_night_flat RB-W4 ruling:68
