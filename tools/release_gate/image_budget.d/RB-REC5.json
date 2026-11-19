@@ -1,0 +1,5 @@
+{
+  "lane": "RB-REC5",
+  "allowance_bytes": 5632,
+  "why": "Over the 3,072 B a lane may take without a ruling: asks for one (PR_BODY.md). Same-tree builds, base 0fb78d73e (RB-REC3's tip on rb-main 4e7f4ac27) in lanes/RB-REC5/scratch/base against the lane tip: esp32s3-cyd 6,397,376 -> 6,402,800 (+5,424), esp32s3 6,362,304 -> 6,367,648 (+5,344); the docs pack is +82 B of that, so code bytes are +5,342 and +5,262. By object from the esp32s3-cyd maps: the shared day start and stamp (orch_day_start.cpp) +1,446; webui.cpp +1,420 (the day_starts field and hint in the served page, +692 B of page, and its /api/config check and /api/state value); store.cpp +787 (the setting as a flash file, not a new NVS key); docs pack +669 (the setting's docs ride the image); engine.cpp +412 and compose.cpp +353 (engine 1's stamp and the zone on the date line); esp.c +709 is build metadata. The allowance is the larger image delta rounded up to a multiple of 512 B."
+}
