@@ -209,9 +209,8 @@ bool fitsCaps(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
 // Lane CTX: a dated one-off fact is refused with where it belongs.
 PrefErr datedRefusal(const std::string& text) {
   switch (datedKindOf(text)) {
-    case DatedKind::Food:        return PrefErr::DatedFood;
-    case DatedKind::Measurement: return PrefErr::DatedFact;
-    case DatedKind::None:        break;
+    case DatedKind::Fact: return PrefErr::DatedFact;
+    case DatedKind::None: break;
   }
   return PrefErr::Ok;
 }
@@ -262,9 +261,6 @@ const char* prefErrWords(PrefErr e) {
     case PrefErr::NotFound:      return "no standing rule with that id";
     case PrefErr::NotPending:    return "that rule is already active";
     case PrefErr::PersistFailed: return "could not save the standing rules (storage error); nothing changed";
-    case PrefErr::DatedFood:
-      return "that is a dated meal or day total, not a standing rule: meals and totals go in today's food "
-             "ledger (food/food-log.csv), which the assistant reads every turn";
     case PrefErr::DatedFact:
       return "that is a dated one-off fact (a measurement or an event), not a standing rule: keep it in "
              "memory instead, where it is recalled when it matters";
@@ -665,15 +661,12 @@ const char* const kMonthWords[] = {"jan",      "feb",     "mar",      "apr",    
                                    "january",  "february", "march",   "april",   "june",     "july",
                                    "august",   "september", "october", "november", "december"};
 // Day words date a fact only beside a past-tense or reported figure ("today was",
-// "had", "weighed"): "show today's total after each meal" is a rule.
+// "had", "weighed"): "show today's total after each entry" is a rule.
 const char* const kDayWords[] = {"today", "yesterday", "tonight", "this morning", "this evening",
                                  "this afternoon", "last night", "earlier today"};
 const char* const kReported[] = {"had", "ate", "eaten", "was", "were", "closed at", "came to", "weighed",
                                  "weigh-in", "provided", "logged", "drank", "slept", "measured", "total",
                                  "totals"};
-const char* const kFoodFacts[] = {"kcal",  "calorie", "calories", "protein", "meal",  "meals", "breakfast",
-                                  "brunch", "lunch",  "dinner",   "snack",   "ate",   "eaten", "day total",
-                                  "daily total"};
 // A recurring instruction is not a one-off fact, even with today in it.
 const char* const kRecurring[] = {"every", "daily", "weekly", "each day", "each morning", "each evening",
                                   "after each"};
@@ -681,9 +674,6 @@ const char* const kRecurring[] = {"every", "daily", "weekly", "each day", "each 
 const char* const kImperativeLeads[] = {"show", "report", "keep", "give", "send", "tell", "remind", "use",
                                         "track", "count", "list", "answer", "reply", "write", "make",
                                         "ask", "log", "treat"};
-const char* const kMeasureFacts[] = {"weighed", "weigh-in", "weight",   "kg",        "kgs",      "lb",
-                                     "lbs",     "steps",    "bpm",      "heart rate", "blood pressure",
-                                     "mmol",    "slept",    "body fat", "waist"};
 
 bool allDigitsN(const std::string& s, size_t from, size_t n) {
   if (from + n > s.size()) return false;
@@ -742,6 +732,24 @@ bool isDated(const std::string& s) {
   return hasIsoDate(s) || hasDayMonth(s) || (anyOf(s, kDayWords) && anyOf(s, kReported));
 }
 
+// A figure that is not part of a date: a token with a digit, after the YYYY-MM-DD dates are
+// taken out and leaving the day of the month beside a month name ("16 oct") aside.
+bool hasFigure(const std::string& s) {
+  std::string rest = s;
+  for (size_t i = 0; i + 10 <= rest.size(); i++)
+    if (allDigitsN(rest, i, 4) && rest[i + 4] == '-' && allDigitsN(rest, i + 5, 2) && rest[i + 7] == '-' &&
+        allDigitsN(rest, i + 8, 2))
+      rest.replace(i, 10, " ");
+  const std::vector<std::string> tok = wordTokens(rest);
+  for (size_t i = 0; i < tok.size(); i++) {
+    if (tok[i].find_first_of("0123456789") == std::string::npos) continue;
+    const bool dayOfMonth = isDayNumber(tok[i]) && ((i > 0 && isMonthWord(tok[i - 1])) ||
+                                                    (i + 1 < tok.size() && isMonthWord(tok[i + 1])));
+    if (!dayOfMonth) return true;
+  }
+  return false;
+}
+
 bool startsImperative(const std::string& s) {
   const std::vector<std::string> tok = wordTokens(s);
   if (tok.empty()) return false;
@@ -756,9 +764,7 @@ DatedKind datedKindOf(const std::string& text) {
   const std::string s = collapseSpaces(lowerAscii(sanitizePrefText(text)));
   if (!isDated(s) || startsImperative(s) || anyOf(s, kStandingMarkers) || anyOf(s, kRecurring))
     return DatedKind::None;
-  if (anyOf(s, kFoodFacts)) return DatedKind::Food;
-  if (anyOf(s, kMeasureFacts)) return DatedKind::Measurement;
-  return DatedKind::None;
+  return hasFigure(s) ? DatedKind::Fact : DatedKind::None;
 }
 
 std::string prefAgeText(uint32_t createdHours, uint32_t nowHours) {

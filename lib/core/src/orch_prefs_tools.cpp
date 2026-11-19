@@ -256,8 +256,8 @@ void registerPrefsTools(ToolRegistry& reg, const PrefsToolContext& ctx) {
                       "under [STANDING RULES]. ") +
               kStandingRuleTest +
               " Then add it here, only when the owner asks in their own words; facts and one-off "
-              "details go to memory, and a meal or a day's total to the food ledger (a dated "
-              "one-off fact is refused here). add {text} | replace {id,text} | remove {id} | list.",
+              "details go to memory (a dated one-off fact is refused here). add {text} | "
+              "replace {id,text} | remove {id} | list.",
           [ctx](ArduinoJson::JsonObjectConst a, const Principal& who) { return doPrefsEdit(ctx, a, who); },
           R"({"type":"object","properties":{"action":{"type":"string",)"
           R"("enum":["add","replace","remove","list"]},"id":{"type":"string"},)"
@@ -268,11 +268,10 @@ void registerPrefsTools(ToolRegistry& reg, const PrefsToolContext& ctx) {
 
 ToolResult prefsSaveStanding(const PrefsToolContext& ctx, const std::string& text, const Principal& who,
                              bool& handled) {
-  // Lane CTX: a dated measurement marked standing is a fact: it is stored as an
-  // ordinary memory (the caller's route). A dated meal is refused below with the
-  // food ledger named.
+  // Lane CTX: a dated one-off fact marked standing is a fact: it is stored as an
+  // ordinary memory (the caller's route).
   handled = who.owner && who.perms().manageTenants && !scheduled(ctx) &&
-            datedKindOf(text) != DatedKind::Measurement;
+            datedKindOf(text) != DatedKind::Fact;
   if (!handled) return ToolResult::fail("not a standing rule here");
   const ModelAdd r = modelAdd(ctx, text);
   noticeForAdd(ctx, r);
@@ -369,7 +368,6 @@ int prefErrHttpStatus(PrefErr e) {
     case PrefErr::Ok:            return 200;
     case PrefErr::Empty:
     case PrefErr::TooLong:
-    case PrefErr::DatedFood:
     case PrefErr::DatedFact:     return 400;
     case PrefErr::NotFound:      return 404;
     case PrefErr::Full:

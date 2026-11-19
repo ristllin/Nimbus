@@ -820,9 +820,9 @@ static void test_web_actions_and_json() {
 }
 
 // ---- lane CTX: a dated one-off fact is not a rule ------------------------------------
-// Lumi's rule p1 (26 Oct): a 16 Oct meal, stored as a standing rule, rode every prompt
-// and was counted as that day's meal. Rules refuse dated meals, day totals and
-// measurements with where they belong; a rule that merely mentions a quantity, or a
+// Lumi's rule p1 (26 Oct): a dated entry, stored as a standing rule, rode every prompt and
+// was counted again on later days. Rules refuse a dated one-off fact (a date or a day word
+// with a reported figure) with where it belongs; a rule that merely mentions a quantity, or a
 // standing rule with a date, stays a rule.
 namespace {
 const char* const kLumiP1 =
@@ -831,14 +831,18 @@ const char* const kLumiP1 =
 }  // namespace
 
 static void test_ctx_dated_facts_are_classified() {
-  for (const char* food : {kLumiP1, "Wednesday 21 Oct closed at ~2,365 kcal / ~155g protein",
+  // RB-REC1 (owner ruling 41): one rule for every domain - a date or a day word beside a
+  // reported event, with a figure that is not the date. A food entry, an expense, a training
+  // set and a measurement read alike; no use case's word list decides it.
+  for (const char* fact : {kLumiP1, "Wednesday 21 Oct closed at ~2,365 kcal / ~155g protein",
                            "Today Roy had pasta for dinner, about 600 kcal",
                            "Breakfast on 2026-10-25 was skyr with berries (320 kcal)",
-                           "Yesterday's total: 2,410 kcal", "Last night dinner was 850 kcal"})
-    TEST_ASSERT_EQUAL_MESSAGE(int(DatedKind::Food), int(datedKindOf(food)), food);
-  for (const char* measure : {"Roy weighed 104.2 kg on 2026-10-20", "This morning's weigh-in: 103.8 kg",
-                              "Resting heart rate 58 bpm on 14 October", "Slept 6.5 hours last night"})
-    TEST_ASSERT_EQUAL_MESSAGE(int(DatedKind::Measurement), int(datedKindOf(measure)), measure);
+                           "Yesterday's total: 2,410 kcal", "Last night dinner was 850 kcal",
+                           "Roy weighed 104.2 kg on 2026-10-20", "This morning's weigh-in: 103.8 kg",
+                           "Resting heart rate 58 bpm on 14 October", "Slept 6.5 hours last night",
+                           "On 2026-11-02 the train ticket was 24.30", "Yesterday's spend came to 61 GBP",
+                           "Today Roy had 5 sets of squats at 80 kg", "Last night the run was 7.2 km"})
+    TEST_ASSERT_EQUAL_MESSAGE(int(DatedKind::Fact), int(datedKindOf(fact)), fact);
   for (const char* rule : {"Plain cappuccino = 100 ml semi-skimmed milk, about 52 kcal and 3.6 g protein",
                            "Never use em dashes", "Meat weights I give are raw",
                            "On weekday commute days, send a train brief at exactly 06:00",
@@ -846,10 +850,11 @@ static void test_ctx_dated_facts_are_classified() {
                            "Every day at 21:00 send me today's kcal total",
                            "Treat workout-watch calorie figures as gross, not free food",
                            "Roy's birthday is 3 March", "Remind me on 30 Oct to book the dentist",
+                           "The meeting on 16 Oct was moved",   // dated, but no figure
                            // rules that name today or a figure (the review's counter-examples)
                            "Show the day's calorie total for today after each meal I log",
                            "Report protein for today in grams, not kcal", "Keep today's meal plan under 2000 kcal",
-                           "Breakfast at 8 may be skipped on gym days"})
+                           "Breakfast at 8 may be skipped on gym days", "Keep today's spend under 40 GBP"})
     TEST_ASSERT_EQUAL_MESSAGE(int(DatedKind::None), int(datedKindOf(rule)), rule);
 }
 
@@ -859,36 +864,39 @@ static void test_ctx_every_add_path_refuses_a_dated_fact() {
   std::string id;
   // The store, on every origin.
   for (PrefOrigin o : {PrefOrigin::Chat, PrefOrigin::Web, PrefOrigin::Command, PrefOrigin::Import})
-    TEST_ASSERT_EQUAL(int(PrefErr::DatedFood), int(w.p.add(kLumiP1, o, 10, false, &id)));
+    TEST_ASSERT_EQUAL(int(PrefErr::DatedFact), int(w.p.add(kLumiP1, o, 10, false, &id)));
   TEST_ASSERT_EQUAL(int(PrefErr::DatedFact), int(w.p.add("Roy weighed 104.2 kg on 2026-10-20", PrefOrigin::Web, 10, false, &id)));
   TEST_ASSERT_EQUAL(0, (int)w.p.entries().size());
   TEST_ASSERT_EQUAL(0, w.io.saves);   // refused before anything was written
   w.p.add("Never use em dashes", PrefOrigin::Web, 10, false, &id);
-  TEST_ASSERT_EQUAL(int(PrefErr::DatedFood), int(w.p.replace(1, kLumiP1, PrefOrigin::Web, 11)));
+  TEST_ASSERT_EQUAL(int(PrefErr::DatedFact), int(w.p.replace(1, kLumiP1, PrefOrigin::Web, 11)));
   TEST_ASSERT_EQUAL_STRING("Never use em dashes", w.p.find(1)->text.c_str());
   // The words point where each fact belongs.
-  TEST_ASSERT_TRUE(std::string(prefErrWords(PrefErr::DatedFood)).find("food ledger (food/food-log.csv)") != std::string::npos);
   TEST_ASSERT_TRUE(std::string(prefErrWords(PrefErr::DatedFact)).find("keep it in memory") != std::string::npos);
-  TEST_ASSERT_EQUAL(400, prefErrHttpStatus(PrefErr::DatedFood));
+  TEST_ASSERT_EQUAL(400, prefErrHttpStatus(PrefErr::DatedFact));
   // prefs.edit and /prefs say so; the owner gets no notice for a refusal.
   ToolRegistry reg;
   registerPrefsTools(reg, w.ctx());
   const Principal owner = principalForRole("owner-chat", Role::Admin);
   const ToolResult r = callTool(reg, "add", nullptr, kLumiP1, owner);
   TEST_ASSERT_FALSE(r.success);
-  TEST_ASSERT_TRUE_MESSAGE(r.error.find("not saved: that is a dated meal or day total") != std::string::npos, r.error.c_str());
-  TEST_ASSERT_TRUE(prefsCommand(w.ctx(), std::string("add ") + kLumiP1).find("Not saved: that is a dated meal") == 0);
+  TEST_ASSERT_TRUE_MESSAGE(r.error.find("not saved: that is a dated one-off fact") != std::string::npos, r.error.c_str());
+  TEST_ASSERT_TRUE(prefsCommand(w.ctx(), std::string("add ") + kLumiP1).find("Not saved: that is a dated one-off fact") == 0);
   TEST_ASSERT_EQUAL(0, w.notices);
-  // The loop-off route (a standing:true mem_write): a dated meal is refused with the
-  // ledger named; a dated measurement goes on as an ordinary memory.
+  // The loop-off route (a standing:true mem_write): every dated fact goes on as an
+  // ordinary memory, whatever it is about (the rules are never touched).
+  for (const char* fact : {kLumiP1, "Roy weighed 104.2 kg on 2026-10-20", "On 2026-11-02 the train ticket was 24.30"}) {
+    bool handled = true;
+    prefsSaveStanding(w.ctx(), fact, owner, handled);
+    TEST_ASSERT_FALSE_MESSAGE(handled, fact);
+  }
+  // A standing rule still takes the rules route.
   bool handled = false;
-  const ToolResult m = prefsSaveStanding(w.ctx(), kLumiP1, owner, handled);
+  const ToolResult m = prefsSaveStanding(w.ctx(), "Never use exclamation marks", owner, handled);
   TEST_ASSERT_TRUE(handled);
-  TEST_ASSERT_FALSE(m.success);
-  TEST_ASSERT_EQUAL_STRING(kMemOutcomeRefused, m.code.c_str());
-  prefsSaveStanding(w.ctx(), "Roy weighed 104.2 kg on 2026-10-20", owner, handled);
-  TEST_ASSERT_FALSE(handled);
-  TEST_ASSERT_EQUAL(1, (int)w.p.entries().size());
+  TEST_ASSERT_TRUE_MESSAGE(m.success, m.error.c_str());
+  TEST_ASSERT_EQUAL(2, (int)w.p.entries().size());
+  TEST_ASSERT_TRUE(w.p.find(2) != nullptr);
   // The first-boot seed never lifts one.
   TEST_ASSERT_EQUAL(0, (int)pickSeedRules({{kLumiP1, true, 1.0f, 5}}).size());
 }

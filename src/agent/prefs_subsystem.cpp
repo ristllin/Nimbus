@@ -168,8 +168,8 @@ std::string observeOwnerTurn(const std::string& ownerText, const std::string& re
 
 namespace {
 
-// Lane CTX: the one-time move of rules that are dated one-off facts (a 16 Oct meal
-// stored as rule p1 rode every prompt on Lumi and was counted as 26 Oct's). Each
+// Lane CTX: the one-time move of rules that are dated one-off facts (a 16 Oct entry
+// stored as rule p1 rode every prompt on Lumi and was counted again on 26 Oct). Each
 // leaves the prompt at once (state moved, still in the file: /prefs restore brings it
 // back), is queued as an owner memory with no network call (stored when the queue
 // next drains), is logged, and the owner is told once. Runs on every boot until the

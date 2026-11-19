@@ -19,10 +19,10 @@
 // was a rule; kept out of the prompt, copied to memory, and restorable). dated=1:
 // the one-time move has run. Ids are never reused while the file exists.
 //
-// Lane CTX: a rule is for every later reply, so a dated one-off fact (a meal, a
-// day's total, a measurement) is refused with a pointer to where it belongs: the
-// food ledger or memory. On 26 Oct a 16 Oct meal stored as rule p1 rode every
-// prompt and was counted as that day's meal.
+// Lane CTX: a rule is for every later reply, so a dated one-off fact (a date or a day
+// word with a reported figure) is refused with a pointer to where it belongs: memory
+// or a file the owner keeps. On 26 Oct a dated entry stored as rule p1 rode every
+// prompt and was counted again on later days.
 //
 // Portable, Arduino-free, host-tested (test_owner_prefs). The device glue
 // (src/agent/prefs_subsystem.cpp) supplies the file IO and the lock.
@@ -67,8 +67,7 @@ enum class PrefErr : uint8_t {
   NotFound,       // no rule with that id
   NotPending,     // approve on a rule that is already active
   PersistFailed,  // the file could not be written: nothing changed
-  DatedFood,      // lane CTX: a dated meal or day total, not a rule (the food ledger)
-  DatedFact,      // lane CTX: a dated measurement or one-off fact, not a rule (memory)
+  DatedFact,      // lane CTX: a dated one-off fact with a figure, not a rule (memory)
   NotMoved,       // restore on a rule that was not retired
 };
 // Plain words for an error, for the tool result, /prefs and the web route.
@@ -109,11 +108,12 @@ uint32_t filtersForRule(const std::string& text);
 uint32_t parsePrefId(const std::string& s);
 
 // Lane CTX: what a text reads as when it is a dated one-off fact rather than a
-// rule - a calendar date or a day word (today, yesterday, tonight, this morning,
-// last night, 16 Oct, 2026-10-16) together with a meal or a day's total (Food) or
-// a body measurement (Measurement), and no standing marker (always, never, every,
-// from now on, whenever, by default, unless). None for a rule or a plain fact.
-enum class DatedKind : uint8_t { None = 0, Food, Measurement };
+// rule - a calendar date or a day word beside a reported event (today, yesterday,
+// tonight, this morning, last night, 16 Oct, 2026-10-16) together with a figure
+// that is not part of the date (Fact), and no standing marker (always, never, every,
+// from now on, whenever, by default, unless) and no instruction lead. No word list of
+// a use case decides it (owner ruling 41). None for a rule or a plain fact.
+enum class DatedKind : uint8_t { None = 0, Fact };
 DatedKind datedKindOf(const std::string& text);
 // "added today", "added 1 day ago", "added 11 days ago"; "" when either hour is
 // unknown (0) or the rule is newer than now (a clock change).
