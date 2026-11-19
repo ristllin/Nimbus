@@ -55,8 +55,9 @@ inline constexpr const char* kAidNoMemory = "not enough memory for this call; no
 class AidSource {
  public:
   virtual ~AidSource() = default;
-  // Read up to len bytes at offset into out; got is the count (0 only at the end).
-  // False is a card fault.
+  // Read up to len bytes at offset into out; got is the count, less than len only at the
+  // end of the file (the drivers read until a short read, so growth is seen). False is a
+  // card fault.
   virtual bool readAt(uint64_t offset, size_t len, char* out, size_t& got) = 0;
 };
 // The part file an edit writes, then swaps in place of the file (file_swap.h): until
@@ -188,6 +189,13 @@ class CsvScanner {
 
  private:
   struct Impl;
+  bool header();
+  bool endRecord();
+  int inRange(std::string_view key) const;
+  void show();
+  bool remember();
+  bool addSums(const std::string_view* cells);
+  void collectGroups();
   Impl* impl_ = nullptr;
   std::string err_;
   CsvScanResult res_;
@@ -294,6 +302,6 @@ std::string renderLines(const LineList& l);
 // FNV-1a 64 over bytes, continued (blob_store.h's content hash).
 uint64_t fnv64(uint64_t hash, std::string_view bytes);
 inline constexpr uint64_t kFnv64Basis = 1469598103934665603ULL;
-std::string sha8Hex(uint64_t hash);  // 8 lowercase hex of the low 32 bits ("unknown" for 0)
+std::string sha8Hex(uint64_t hash);  // 8 lowercase hex of the high 32 bits, as sha8Of ("unknown" for 0)
 
 }  // namespace nimbus::orch::aids
