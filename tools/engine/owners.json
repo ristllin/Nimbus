@@ -1469,7 +1469,7 @@
         "settings schema: the device keeps day_starts in a flash file through src/agent/store.cpp (no new NVS key, test_nvs_full), validated and shown by src/net/webui.cpp's /api/config and /api/state.",
         "webui_page.h: the field beside the time zone lives in include/web/ui_device.h and ui_js.h; tools/webui_page.snapshot and nimbusd/src/webui_page.h are their generated outputs.",
         "plain_request.cpp stamp builder: engine 2's per-message stamp is tx::messageStamp (lib/core/src/orch_tx_item.cpp, RB-T1's) over the shared lib/core/src/orch_day_start.cpp; the orchestrator notes of 19 Nov give this lane the old engine's, nimbusd's and the lab's stamp too (engine.cpp, compose.cpp, orchestrator.cpp, rig.h, the lab): declared as cross-lane edits.",
-        "digest day boundary: tx::digestDay in RB-C1's digest files; RB-C2 binds its day rule to it when it lands."
+        "digest day boundary: tx::digestDay in RB-C1's digest files, and RB-C2's day rule (lib/harness/src/plain_compact.cpp dayNumber and localDay) bound to the same function: declared as cross-lane edits."
       ],
       "plan_text": "settings schema, webui_page.h (setting beside time zone), plain_request.cpp stamp builder, texts.h kStamped, digest day boundary, nimbusd config parity, tests test_stamp_day"
     }

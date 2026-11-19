@@ -16,6 +16,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/turn_memory.h"
+#include "nimbus/orch/day_start.h"   // RB-REC5: the one day rule
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/log.h"
 #include "nimbus/orch/tx/rules.h"
@@ -24,6 +25,7 @@ namespace agent {
 namespace plain {
 
 namespace tx = nimbus::orch::tx;
+namespace day = nimbus::orch::day;
 namespace st = texts::summarizer;
 
 // ---- the control record -------------------------------------------------------------------
@@ -144,33 +146,14 @@ const char* compactStepSlug(CompactStep s) {
 
 namespace {
 
-int64_t floorDiv(int64_t a, int64_t b) { return a / b - ((a % b) != 0 && ((a < 0) != (b < 0))); }
-
-// Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-void civil(int64_t z, int& y, unsigned& m, unsigned& d) {
-  z += 719468;
-  const int64_t era = floorDiv(z, 146097);
-  const unsigned doe = (unsigned)(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  d = doy - (153 * mp + 2) / 5 + 1;
-  m = mp < 10 ? mp + 3 : mp - 9;
-  y = (int)(yoe + era * 400) + (m <= 2);
-}
-
-int64_t dayNumber(uint64_t epoch, int16_t tz, uint16_t dayStartMin) {
-  return floorDiv((int64_t)epoch + (int64_t)tz * 60 - (int64_t)dayStartMin * 60, 86400);
-}
+// RB-REC5: the device's one day rule (orch/day_start.h), the boundary the message stamp names.
+int64_t dayNumber(uint64_t epoch, int16_t tz, uint16_t dayStartMin) { return day::runningDay(epoch, tz, dayStartMin); }
 
 }  // namespace
 
 std::string localDay(uint64_t epoch, int16_t tzMinutes, uint16_t dayStartMin) {
-  int y = 0;
-  unsigned m = 0, d = 0;
-  civil(dayNumber(epoch, tzMinutes, dayStartMin), y, m, d);
   char buf[16];
-  std::snprintf(buf, sizeof buf, "%04d-%02u-%02u", y, m, d);
+  day::formatDate(dayNumber(epoch, tzMinutes, dayStartMin), buf, sizeof buf);
   return buf;
 }
 
@@ -503,7 +486,7 @@ uint32_t lastPromptTokens(const tx::TxArena& arena) {
 
 bool nightHour(uint64_t now, int16_t tz) {
   const int64_t local = (int64_t)now + (int64_t)tz * 60;
-  const int64_t h = (local - floorDiv(local, 86400) * 86400) / 3600;
+  const int64_t h = (local - day::calendarDay(now, tz) * 86400) / 3600;
   return h >= 3 && h < 5;
 }
 
