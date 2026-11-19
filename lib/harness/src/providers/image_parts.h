@@ -196,6 +196,22 @@ size_t fileRefCount();
 // A refusal of a file reference itself (HTTP 400/404 naming a file).
 bool refusedFileRefs(int httpStatus, const std::string& errText);
 
+// ---- engine 2: a photo's file id across turns (lane RB-W1b) -----------------------------
+// The same kept ids, keyed by chat explicitly (engine 2 has no loop in flight to read it from).
+// heldFileId: the kept id of photo `ref` in chat `chatKey` only while the provider still holds
+// it (used within kKeptUploadIdleMs and younger than its expiry less 20 minutes, the rule the
+// idle step deletes by); "" otherwise, and an id past that is forgotten (its deletion queued).
+// The plain wire then sends the photo's bytes inline when it has them, else its stub line: never
+// a reference the provider would refuse. Each answer counts as a use.
+std::string heldFileId(const std::string& chatKey, const std::string& ref, uint32_t nowMs);
+// Keep an id engine 2 uploaded for photo `ref` in chat `chatKey` (a later upload of the same
+// photo replaces it; the bound of kMaxFileRefs drops the longest unused).
+void keepFileId(const std::string& chatKey, const std::string& ref, const std::string& id, uint32_t nowMs);
+// The provider refused a request that named a file (refusedFileRefs: 400 or 404 naming a file,
+// an id it no longer holds): forget the id its error names, or every kept id when it names
+// none. True when something was forgotten, so the caller renders the request once more.
+bool forgetRefusedFileId(int httpStatus, const std::string& errText);
+
 }  // namespace imageparts
 }  // namespace providers
 }  // namespace agent

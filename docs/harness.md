@@ -585,7 +585,10 @@ and ledger shape, the photo table per head kind, every split of turns for the la
   a context refusal climbs the ladder to rung 3 and sends once more; a billing or key refusal
   parks the host; a cut answer is asked once more at the retry cap, then delivered with its
   status line, and none of its calls is dispatched (a retry with no more room than the cut
-  request is not sent); anything else is one plain line. A routed head follows the router's
+  request is not sent); a 400 or 404 refusing a file the request named (an expired or unknown
+  photo id) is handed to the caller's `refusedRef`, which forgets the id
+  (`imageparts::forgetRefusedFileId`) and has the same state rendered and sent once more, the
+  photo inline or as its stub line; anything else is one plain line. A routed head follows the router's
   refusal contract, and a routed 401 to 403 that names no reason never parks the router. A retry renders the same stored state, so it
   never runs a tool again.
 - **Who may answer instead** (`pickFallback`, `qualifiedTargets`): a fallback host answers
@@ -608,7 +611,8 @@ durability around it and nothing that reads, edits or appends to the model's tex
   and wire once; the system text and the tools are composed once and kept for every round.
 - **The loop**: render the stored transcript, post it (`runExchange`: retries, the cap and the
   ladder live there; rung 2 follows the open turn's rounds, rung 3 omits only the oldest turns
-  the body needs to drop, sized by what each turn renders, and climbs again while still over; every omissible one only after a
+  the body needs to drop, sized by what each turn renders (its text and one block's framing, not
+  its stored line), and climbs again while still over; every omissible one only after a
   provider's size refusal), store what the model said (k, a, c) before anything runs. No call: that
   text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
   runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
@@ -803,8 +807,7 @@ answer is that resume's own: at most one resume and one boot send per turn, then
 ### The Anthropic wire: what a request carries
 
 `providers/plain_wire_anthropic.cpp` renders one Messages API request from the stored
-transcript; the response half is RB-W1b's. Until it lands `renderWireFor` hands out the render
-half (the property suites use it) and `wireFor`, which the engine uses, answers only for a
+transcript (lane RB-W1a) and reads the answer (lane RB-W1b); `wireFor` hands the engine the
 complete wire. Render is a
 pure function of `RenderInput`: the same items and facts give the same bytes every time and
 after a restart.
@@ -837,7 +840,31 @@ after a restart.
   every whole turn after `thru` whose items are all at or below `omitThrough` (never the open
   turn) and sends `omissionLine` (the engine's `tx::omissionLine` text) in their place, only
   when that line is set. The wire writes no text of its own.
+- **Signed thinking under the ladder**: once any rung is applied in a turn, none of the open
+  turn's thinking is sent. A thinking block's signature binds every byte before it; a rung
+  changes those bytes, and where the API enforces that check it refuses the request ("bound to a
+  different conversation"), while the same request without the open turn's thinking is
+  accepted (measured live, lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md).
+- **Photos by file id across turns**: the photo function answers a kept id only while the
+  provider still holds it (`imageparts::heldFileId`: used within the hour and younger than the
+  provider's expiry less 20 minutes); otherwise the photo goes inline from its bytes, or as its
+  stub line. A refusal naming a file is forgotten and the request sent once more (above).
 - A refused allocation answers `TooLarge` with nothing rendered (ruling 30).
+
+Reading the answer (`parse`): a strict JSON reader of the wire's own, with no JSON document
+(no 65,535 B string limit: a signed block of 157 KB has come back live), fills a step that
+reaches the loop only when the whole body was read; a body cut by the transport, malformed, an
+error body or a status outside 2xx fills nothing. Text blocks join in order. A `tool_use` is a
+call, complete only when its input is a JSON object, and never complete in a cut answer
+(`max_tokens`, `model_context_window_exceeded`: a cut call came back live as a closed object
+missing its long argument); a call without an id or a name fails the body. A refusal keeps its
+text, drops every call and names its reason from `stop_details`. Signed thinking (`thinking`
+with a signature, `redacted_thinking` with data) is kept byte for byte as served, before the call
+it preceded, and only when its k line fits 60,000 B (about 24,000 thinking tokens); a larger
+block is not kept, and the next request of the turn goes without it, which the API accepts.
+Usage: `input_tokens` (Anthropic leaves cache reads and writes out of it), the cache read and
+write and the write's 1-hour part, `output_tokens`, the served model; the loop sums them into
+the e item.
 
 `test/test_plain_wire_anthropic` checks every body against a strict local model of the
 API's request shape (counter-tested), over random transcripts with stored faults.

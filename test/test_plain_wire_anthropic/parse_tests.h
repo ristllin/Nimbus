@@ -133,6 +133,16 @@ void test_parse_reads_a_refusal_interleaved_thinking_and_an_empty_answer() {
   TXB_OK(parseBody(fixture("synthetic_empty_content.json"), s));
   TEST_ASSERT_TRUE(s.stop == plain::StopReason::EndTurn);
   TEST_ASSERT_TRUE(s.text.empty() && s.calls.empty() && s.meta.empty());
+  // Text blocks join in order, escapes decode (every JSON escape, a surrogate pair), counts saturate.
+  TXB_OK(parseBody(R"({"type":"message","content":[{"type":"text","text":"a\/b\\c\"d\b\f\n\r\t"},)"
+                   R"({"type":"text","text":" \u00e9\ud83d\ude00"}],"stop_reason":"end_turn",)"
+                   R"("usage":{"input_tokens":99999999999,"cache_read_input_tokens":4294967295,"output_tokens":null}})",
+                   s));
+  TEST_ASSERT_EQUAL_STRING("a/b\\c\"d\b\f\n\r\t \xC3\xA9\xF0\x9F\x98\x80", s.text.c_str());
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, s.usage.promptTokens);
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, s.usage.cacheReadTokens);
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, s.usage.maxRequestIn);
+  TEST_ASSERT_EQUAL(0, (int)s.usage.completionTokens);
   // Other stops: the context window is a cut, a stop sequence ends the turn, pause and unknown are Other.
   const std::string base = R"({"type":"message","role":"assistant","model":"m","content":[{"type":"text","text":"t"},)"
                            R"({"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"a"}}],"stop_reason":)";
@@ -384,6 +394,78 @@ void test_usage_with_the_cache_split_reaches_the_e_item() {
   TEST_ASSERT_EQUAL(390, (int)e->end.cacheWriteTokens);
 }
 
+// ---- 5c. a photo's file id across turns ------------------------------------------------------------
+// A photo kept by file id rides later turns by that id only while the provider still holds it;
+// past the idle limit or near the provider's expiry, or once the provider refused it, the same
+// render sends the bytes inline, or the stub line when no bytes are at hand. Never a request
+// naming an id the provider would refuse, never a lost photo without a line.
+void test_a_file_id_rides_later_turns_only_while_the_provider_holds_it() {
+  namespace ip = agent::providers::imageparts;
+  ip::dropFileRefs();
+  const std::string chat = "1001", ref = "pab12cd34", bytes = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(80, 'j');
+  uint32_t now = 1000;
+  ip::keepFileId(chat, ref, "file_011CNha8iCJcU1wXNR6q4V8w", now);
+  bool haveBytes = true;
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.items.back().photos = {ref};
+  c.owner("look", {ref});
+  auto render = [&](Out& out) {
+    tx::TxArena arena;
+    TXB_OK(arena.init(1 << 20, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }));
+    for (const tx::Item& it : c.items) TXB_OK(arena.append(it));
+    plain::TurnCtx turn;
+    plain::RenderInput in = rig.input(c, arena, Opts(), turn, 0);
+    in.photo = [&](const std::string& r, plain::PhotoBytes& p) {   // the binding RB-P1 writes
+      p.fileId = ip::heldFileId(chat, r, now);
+      if (haveBytes) {
+        p.bytes = (const uint8_t*)bytes.data();
+        p.len = bytes.size();
+        p.mime = "image/jpeg";
+      }
+      return p.fileId.empty() && !haveBytes ? tx::Status::fail(tx::Err::NotFound, "no photo") : tx::Status::success();
+    };
+    TXB_OK(wire().render(in, out.req));
+    out.body = agent::materializeBody(out.req);
+    sp::parseRequest(sp::Dialect::Anthropic, out.body, out.view);
+  };
+  Out out;
+  render(out);
+  EXPECT_API_OK(out, "held id");
+  TEST_ASSERT_TRUE(out.body.find("\"file_id\":\"file_011CNha8iCJcU1wXNR6q4V8w\"") != std::string::npos);
+  // Used within the idle limit it stays; idle past it, it is never named again: bytes go inline.
+  now += ip::kKeptUploadIdleMs - 1000;
+  render(out);
+  TEST_ASSERT_TRUE(out.body.find("file_011") != std::string::npos);
+  now += ip::kKeptUploadIdleMs + 1;
+  render(out);
+  EXPECT_API_OK(out, "idle id");
+  TEST_ASSERT_TRUE(out.body.find("file_011") == std::string::npos);
+  TEST_ASSERT_TRUE(out.body.find("\"media_type\":\"image/jpeg\",\"data\":\"") != std::string::npos);
+  // Near the provider's expiry, however recently used: not named.
+  ip::keepFileId(chat, ref, "file_022", now);
+  for (uint32_t step = 0; step < 6; ++step) {
+    now += 20u * 60u * 1000u;   // used every 20 minutes: named up to 100 minutes old (2 h less 20 min)
+    render(out);
+    const bool named = out.body.find("file_022") != std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(step < 5, named, std::to_string(step).c_str());
+  }
+  // Another chat never sees it; the provider's refusal forgets it; with no bytes, the stub line.
+  ip::keepFileId(chat, ref, "file_033", now);
+  TEST_ASSERT_TRUE(ip::heldFileId("2002", ref, now).empty());
+  TEST_ASSERT_FALSE(ip::forgetRefusedFileId(400, R"({"type":"error","error":{"message":"max_tokens too large"}})"));
+  TEST_ASSERT_TRUE(ip::forgetRefusedFileId(404, R"({"type":"error","error":{"type":"not_found_error","message":"File not found: file_033"}})"));
+  haveBytes = false;
+  render(out);
+  EXPECT_API_OK(out, "forgotten id, no bytes");
+  TEST_ASSERT_TRUE(out.body.find("file_033") == std::string::npos);
+  TEST_ASSERT_EQUAL(0, (int)txb::detail::countImages(out.view));
+  TEST_ASSERT_TRUE(txb::detail::textIn(out.view, "user", "[photo pab12cd34 "));
+  TEST_ASSERT_FALSE(ip::forgetRefusedFileId(404, "file not found"));   // nothing left to forget
+  ip::dropFileRefs();
+}
+
 // ---- 6. a refused allocation (ruling 30) -------------------------------------------------------------
 void test_a_refused_allocation_in_parse_answers_a_status_and_fills_nothing() {
   const std::string body = fixture("thinking_then_call.json");
@@ -422,6 +504,7 @@ void run() {
   RUN_TEST(test_signed_thinking_is_kept_byte_for_byte_only_when_its_line_fits);
   RUN_TEST(test_parsed_thinking_rides_the_next_request_of_its_turn_as_served);
   RUN_TEST(test_usage_with_the_cache_split_reaches_the_e_item);
+  RUN_TEST(test_a_file_id_rides_later_turns_only_while_the_provider_holds_it);
   RUN_TEST(test_a_refused_allocation_in_parse_answers_a_status_and_fills_nothing);
 }
 

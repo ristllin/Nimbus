@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "../../lib/harness/src/providers/image_parts.h"
 #include "../../lib/harness/src/providers/plain_body.h"
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/platform.h"
@@ -612,6 +613,53 @@ static void test_a_key_or_billing_refusal_parks_and_is_never_retried() {
   }
 }
 
+// A refused file reference (an expired or unknown photo id, lane RB-W1b): the caller forgets it
+// and the exchange renders and sends once more; anything else stays one request and one line.
+static void test_a_refused_file_reference_is_forgotten_and_sent_once_more() {
+  namespace ip = agent::providers::imageparts;
+  const std::string gone = R"({"type":"error","error":{"type":"not_found_error","message":"File not found: file_0aa"}})";
+  ip::dropFileRefs();
+  ip::keepFileId("1001", "pab12cd34", "file_0aa", gClock);
+  Rig rig;
+  int asked = 0;
+  rig.req.refusedRef = [&asked](int st, const std::string& body) {
+    ++asked;
+    return ip::forgetRefusedFileId(st, body);
+  };
+  rig.model.push(sp::httpError(404, gone));
+  rig.model.push(sp::say("I see it."));
+  expectOk(rig.run());
+  TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::None);
+  TEST_ASSERT_EQUAL_STRING("I see it.", rig.out.step.text.c_str());
+  TEST_ASSERT_EQUAL(2, (int)rig.model.requests().size());
+  TEST_ASSERT_EQUAL(1, asked);
+  TEST_ASSERT_TRUE(ip::heldFileId("1001", "pab12cd34", gClock).empty());
+  // Once per exchange: a second refusal is the one line.
+  ip::keepFileId("1001", "pab12cd34", "file_0aa", gClock);
+  Rig twice;
+  twice.req.refusedRef = [](int st, const std::string& body) { return ip::forgetRefusedFileId(st, body) || true; };
+  twice.model.push(sp::httpError(400, gone));
+  twice.model.push(sp::httpError(400, gone));
+  twice.model.push(sp::say("never asked"));
+  expectOk(twice.run());
+  TEST_ASSERT_TRUE(twice.out.err == ExchangeErr::Other);
+  TEST_ASSERT_EQUAL(2, (int)twice.model.requests().size());
+  expectOnePlainLine(twice.out);
+  // The caller's no, no caller, another status, another kind of 400: one request.
+  for (int k = 0; k < 4; ++k) {
+    Rig one;
+    if (k == 0) one.req.refusedRef = [](int, const std::string&) { return false; };
+    if (k >= 2) one.req.refusedRef = [](int st, const std::string& body) { return ip::forgetRefusedFileId(st, body); };
+    ip::keepFileId("1001", "pab12cd34", "file_0aa", gClock);
+    one.model.push(k == 2 ? sp::httpError(422, gone) : k == 3 ? sp::httpError(400) : sp::httpError(404, gone));
+    one.model.push(sp::say("never asked"));
+    expectOk(one.run());
+    TEST_ASSERT_TRUE_MESSAGE(one.out.err == ExchangeErr::Other, std::to_string(k).c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)one.model.requests().size(), std::to_string(k).c_str());
+  }
+  ip::dropFileRefs();
+}
+
 // Anything else, and a 2xx that does not parse: one request, one plain line.
 static void test_other_answers_are_one_plain_line() {
   const sp::Step steps[] = {sp::httpError(400), sp::httpError(404), sp::httpError(422), sp::raw(200, "not json"),
@@ -1020,6 +1068,7 @@ int main(int, char**) {
   RUN_TEST(test_a_context_refusal_climbs_once_and_retries_once);
   RUN_TEST(test_a_key_or_billing_refusal_parks_and_is_never_retried);
   RUN_TEST(test_other_answers_are_one_plain_line);
+  RUN_TEST(test_a_refused_file_reference_is_forgotten_and_sent_once_more);
   RUN_TEST(test_a_cut_answer_retries_once_then_is_delivered_with_its_line);
   RUN_TEST(test_cut_arguments_are_never_returned_for_dispatch);
   RUN_TEST(test_a_cut_then_a_failed_retry_keeps_the_cut_text);

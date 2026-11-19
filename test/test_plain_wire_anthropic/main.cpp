@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "../../lib/harness/src/providers/image_parts.h"
 #include "../../lib/harness/src/providers/plain_body.h"
 #include "../support/tx_battery/fixtures.h"
 #include "../support/tx_battery/pending.h"

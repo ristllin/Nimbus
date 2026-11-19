@@ -118,6 +118,11 @@ struct ClimbAsk {
 // stub-through point, the omission span); false when no rung is left. The exchange renders
 // again after every true.
 using ClimbFn = std::function<bool(const ClimbAsk& ask)>;
+// A request refused for something it named that the provider no longer holds (a photo's
+// file id that expired or is unknown: HTTP 400 or 404 naming a file). The caller forgets it
+// (imageparts::forgetRefusedFileId) and answers true: the exchange renders once more, the photo
+// going inline or as its stub, so the turn never fails on an id. False: the refusal stands.
+using RefusedRefFn = std::function<bool(int httpStatus, const std::string& body)>;
 
 struct ExchangeDeps {
   HttpTransport* transport = nullptr;
@@ -131,6 +136,7 @@ struct ExchangeRequest {
   uint32_t deadlineMs = 0;     // the turn's remaining soft wall clock; required
   uint32_t bodyCap = 0;        // the head's body cap (tx::budgetFor); 0 = its released row (requestBudgetFor)
   ClimbFn climb;               // the overflow ladder; empty = no rung to climb
+  RefusedRefFn refusedRef;     // a refused file reference, once per exchange; empty = none
 };
 
 struct ExchangeResult {

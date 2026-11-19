@@ -694,6 +694,62 @@ int expireKept(uint32_t nowMs) {
 }
 
 }  // namespace
+
+// ---- engine 2: a photo's file id across turns (lane RB-W1b) ----------------------------------
+namespace {
+FileRef* findRefIn(const std::string& chat, const std::string& ref) {
+  for (auto& f : fileRefs())
+    if (!ref.empty() && f.ref == ref.c_str() && f.chat == chat.c_str()) return &f;
+  return nullptr;
+}
+}  // namespace
+
+std::string heldFileId(const std::string& chatKey, const std::string& ref, uint32_t nowMs) {
+  auto& v = fileRefs();
+  for (size_t i = 0; i < v.size(); ++i) {
+    FileRef& f = v[i];
+    if (ref.empty() || f.ref != ref.c_str() || f.chat != chatKey.c_str()) continue;
+    if (keptExpired(f, nowMs)) {   // the provider may no longer hold it: never name it again
+      queueDelete(f.id);
+      v.erase(v.begin() + (long)i);
+      return std::string();
+    }
+    f.usedMs = nowMs;
+    return orch::plainCopy(f.id);
+  }
+  return std::string();
+}
+
+void keepFileId(const std::string& chatKey, const std::string& ref, const std::string& id, uint32_t nowMs) {
+  if (ref.empty() || id.empty()) return;
+  if (FileRef* have = findRefIn(chatKey, ref)) {   // a new upload of the same photo replaces the old id
+    if (have->id != id.c_str()) queueDelete(have->id);
+    have->id = orch::workingCopy(id);
+    have->usedMs = have->keptMs = nowMs;
+    return;
+  }
+  auto& v = fileRefs();
+  if (v.size() >= kMaxFileRefs) {   // the bound: the longest unused one goes
+    auto oldest = std::max_element(v.begin(), v.end(), [nowMs](const FileRef& a, const FileRef& b) {
+      return nowMs - a.usedMs < nowMs - b.usedMs;
+    });
+    queueDelete(oldest->id);
+    v.erase(oldest);
+  }
+  FileRef f;
+  f.ref = orch::workingCopy(ref);
+  f.id = orch::workingCopy(id);
+  f.chat = orch::workingCopy(chatKey);
+  f.usedMs = f.keptMs = nowMs;
+  v.push_back(f);
+}
+
+bool forgetRefusedFileId(int httpStatus, const std::string& errText) {
+  if (!refusedFileRefs(httpStatus, errText) || fileRefs().empty()) return false;
+  forgetFileRefs(nullptr, errText);
+  return true;
+}
+
 }  // namespace imageparts
 
 bool keptUploadsDue(uint32_t nowMs) {

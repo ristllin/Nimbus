@@ -239,6 +239,7 @@ class Exchange {
     httpStatus_ = answered ? resp.status : 0;
     verdict_ = classify(httpStatus_, resp.body, routed_);
     if (verdict_.err == ExchangeErr::None) read(resp);
+    else if (verdict_.err == ExchangeErr::Other) refusedBody_ = resp.body.substr(0, 4096);
   }
 
   void read(const HttpResponse& resp) {
@@ -263,6 +264,7 @@ class Exchange {
     switch (verdict_.err) {
       case ExchangeErr::Cut: return retryCut();
       case ExchangeErr::ContextRefused: return retryClimb();
+      case ExchangeErr::Other: return retryRefusedRef();
       case ExchangeErr::Transport:
       case ExchangeErr::Server:
       case ExchangeErr::RateLimited:
@@ -314,6 +316,15 @@ class Exchange {
     return true;
   }
 
+  // A file reference the provider no longer holds: the caller forgets it and the same stored
+  // state renders once more without it (inline bytes or the stub line).
+  bool retryRefusedRef() {
+    if (refResent_ || !req_.refusedRef || (httpStatus_ != 400 && httpStatus_ != 404) || !fits(0)) return false;
+    if (!req_.refusedRef(httpStatus_, refusedBody_)) return false;
+    refResent_ = true;
+    return true;
+  }
+
   bool retryClimb() {
     if (refusedClimbed_ || !req_.climb || !fits(0) || !req_.climb(ClimbAsk{Climb::Refused, 0, bodyCap_})) return false;
     refusedClimbed_ = true;
@@ -359,7 +370,8 @@ class Exchange {
   bool haveCut_ = false;
   nimbus::orch::TokenUsage usage_;
   uint8_t sameHost_ = 0, capClimbs_ = 0;
-  bool cutRetried_ = false, refusedClimbed_ = false, routerResent_ = false;
+  bool cutRetried_ = false, refusedClimbed_ = false, routerResent_ = false, refResent_ = false;
+  std::string refusedBody_;
   uint32_t routerCap_ = 0;
   uint32_t cutSentTokens_ = 0;
   std::string cutSentEffort_;
