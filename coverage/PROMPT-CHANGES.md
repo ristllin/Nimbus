@@ -676,8 +676,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: device_notes
 - kind: build
-- bytes: 646 -> 1006
-- sha8: 88688fc7 -> 6237cc21
+- bytes: 1153 -> 1513
+- sha8: 9d5c54e9 -> 9bcb2662
 - lane: RB-MG1a
 - prd: section 9 (v6 stores, Conversation: digest 0 or one omission line; Going back and forward again: rows the other engine wrote are imported behind one device note, within budget or as a named omission)
 - why: lib/core/include/nimbus/orch/tx/migrate.h (listed in E2_EXTRA_SOURCES) holds the pieces of the two notes a migration stores: the anchor that stands for the conversation under the old summary's pointer ("[device] The conversation through <when> was kept by the earlier engine; search finds it.", with the saved or unsaved old summary when digest 0 was not accepted), and the PRD's note in front of each import batch ("[device] N turns between <t1> and <t2> were answered by the earlier engine; their tool work is not shown.", with the earlier messages it names when over the budget). Domain-free (rulings 41 and 42). Planned work (ruling 18), not a fix.
