@@ -181,6 +181,40 @@ def test_counter_roster_that_grew_against_the_base_fails():
     assert any("test_tx_log::test_torn_tail_dropped" in f and "can only shrink" in f for f in fails)
 
 
+def test_a_new_line_that_names_a_ruling_may_grow_the_roster():
+    base = "test_tx_prefix::test_prefix_is_stable RB-T3\n"
+    roster = base + "test_tx_log::test_torn_tail_dropped RB-T2 ruling:56\n"
+    ok, lines, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=base)
+    assert ok, fails
+    assert any("added under a ruling" in ln and "test_tx_log::test_torn_tail_dropped" in ln for ln in lines)
+
+
+def test_counter_a_new_line_without_a_ruling_still_fails_beside_one_with_it():
+    base = "test_tx_prefix::test_prefix_is_stable RB-T3\n"
+    roster = "test_tx_prefix::test_prefix_is_stable RB-T3 ruling:56\ntest_tx_log::test_torn_tail_dropped RB-T2\n"
+    ok, _, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=base)
+    assert not ok
+    assert any("test_tx_log::test_torn_tail_dropped" in f and "can only shrink" in f for f in fails)
+    assert not any("test_tx_prefix::test_prefix_is_stable" in f for f in fails)
+
+
+@pytest.mark.parametrize("bad", [" ruling:", " ruling:0", " ruling:x", " ruling 56", " ruling:56 extra"])
+def test_counter_a_malformed_ruling_tag_fails(bad):
+    ok, _, fails = run(native_log([PENDING_A]), "test_tx_prefix::test_prefix_is_stable RB-T3" + bad + "\n")
+    assert not ok
+    assert any("line 1" in f for f in fails)
+
+
+def test_static_leg_reads_a_ruled_line_like_any_other(tmp_path):
+    suite = tmp_path / "test" / "test_tx_prefix"
+    suite.mkdir(parents=True)
+    (suite / "main.cpp").write_text('void test_prefix_is_stable() { TXB_WAITS_FOR("PENDING RB-T3"); }\n')
+    roster, _ = gate.parse_roster("test_tx_prefix::test_prefix_is_stable RB-T3 ruling:56\n")
+    assert gate.static_problems(str(tmp_path), roster) == []
+    roster, _ = gate.parse_roster("test_tx_prefix::test_missing RB-T3 ruling:56\n")
+    assert gate.static_problems(str(tmp_path), roster)
+
+
 def test_counter_moving_an_entry_to_another_lane_is_growth():
     base = "test_tx_prefix::test_prefix_is_stable RB-T2\n"
     ok, _, fails = run(native_log([PENDING_A]), "test_tx_prefix::test_prefix_is_stable RB-T3\n", base=base)
