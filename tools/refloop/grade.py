@@ -66,8 +66,15 @@ def _difference_from_turn(arg: dict, step: dict, turns: list) -> tuple:
     return False, f"earlier numbers {said[:6]}, numbers in this reply {sorted(seen)[:12]}"
 
 
+def _rows_only(body: str) -> str:
+    """The file without its comment lines (first non-blank byte '#': never a row, ruling 49), e.g. the
+    `#removed: ...` history line the device's edit leaves behind."""
+    return "\n".join(ln for ln in body.split("\n") if not ln.lstrip().startswith("#"))
+
+
 def _file_matching(arg: dict, state: dict) -> tuple:
     for path, body in state.get("files", {}).items():
+        body = _rows_only(body) if arg.get("rows_only") else body
         if all(re.search(p, body, FLAGS) for p in arg.get("all", [])) and not any(
             re.search(p, body, FLAGS) for p in arg.get("none", [])
         ):

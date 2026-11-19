@@ -20,12 +20,12 @@ turns:
   - say: "Total for today?"
     expect:
       - reply_regex: '13\.81'
-      - reply_not_regex: '26\.41|28\.80'
+      - reply_not_regex: '26\.41'
 final:
-  - file_matching: {all: ['3\.10?\b', '7\.45', '18\.25', '-\s?14\.99'], none: ['12\.60?\b']}
+  - file_matching: {rows_only: true, all: ['3\.10?\b', '7\.45', '18\.25', '-\s?14\.99'], none: ['12\.60?\b']}
 judge_notes: >
   Purchases: coffee 3.10, falafel wrap 7.45, train ticket 12.60 (later undone: removed from the log), a refund of
   -14.99 for an umbrella, dinner groceries 18.25. Total at turn 4: 23.15. Final total: 3.10 + 7.45 - 14.99 + 18.25 =
   13.81. The entries should be logged with a tool (a file), not only kept in the chat; the undo must really change the
   log and the refund counts as a negative amount. A total that still includes the train ticket (26.41) or ignores the
-  refund (28.80) is wrong.
+  refund (28.80 as the total) is wrong. A comment line the device's edit leaves (#removed: ...) is not a row.

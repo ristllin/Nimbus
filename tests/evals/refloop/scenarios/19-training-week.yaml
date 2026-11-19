@@ -20,7 +20,7 @@ turns:
       - reply_regex: '4,?350'
       - reply_not_regex: '4,?400'
 final:
-  - file_matching: {all: ['squat', 'bench', 'deadlift', 'overhead', '\b105\b', '32\.5'], none: ['\b110\b']}
+  - file_matching: {rows_only: true, all: ['squat', 'bench', 'deadlift', 'overhead', '\b105\b', '32\.5'], none: ['\b110\b']}
 judge_notes: >
   Sets over four days: day 1 squat 3 x 5 at 80 kg (volume 1,200); day 2 bench press 3 x 8 at 55 kg (1,320); day 4
   deadlift 2 x 5 at 110 kg, corrected later to 105 kg (1,050); day 5 overhead press 3 x 8 at 32.5 kg (780). Week

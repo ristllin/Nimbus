@@ -300,6 +300,12 @@ class GradeTest(unittest.TestCase):
             self.assertTrue(grade.CHECKS[name](good, STEP, STATE, EARLIER)[0], name)
             self.assertFalse(grade.CHECKS[name](bad, STEP, STATE, EARLIER)[0], name)
 
+    def test_rows_only_reads_past_comment_lines(self):
+        state = {"files": {"m/s.csv": "date,item,amount\n2026-11-19,coffee,3.10\n#removed: 2026-11-19,train,12.60\n"}}
+        arg = {"all": ["3\\.10"], "none": ["12\\.60"]}
+        self.assertFalse(grade.CHECKS["file_matching"](arg, {}, state, [])[0])
+        self.assertTrue(grade.CHECKS["file_matching"]({**arg, "rows_only": True}, {}, state, [])[0])
+
     def test_a_doubled_append_fails_the_day_rows_check(self):
         state = {"files": dict(STATE["files"])}
         state["files"]["money/s.csv"] += "2026-11-19,bus,day pass,4.10\n"
