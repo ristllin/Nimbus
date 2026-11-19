@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstring>
 
-#include "nimbus/orch/file_append.h"   // kKeyedMaxBytes
+#include "nimbus/orch/file_append.h"   // csvHeaderOf, csvStoredRow, csvFigure: rows read as the day total reads them
 
 namespace nimbus::orch {
 
@@ -49,7 +49,7 @@ EditDecision decideEdit(size_t findLen, size_t replaceLen, const EditPolicy& pol
 }
 
 std::string editSizeRefusal(size_t fileBytes) {
-  if (fileBytes <= kKeyedMaxBytes) return std::string();
+  if (fileBytes <= kEditMaxBytes) return std::string();
   return "the file is over 1 MB, too large to edit in place - start a new file for new text "
          "(like notes-2.md); nothing was changed";
 }
@@ -196,7 +196,7 @@ std::vector<SpanRow> spanRows(const std::string& text, const std::vector<std::st
 }
 
 // The key column: the leftmost column other than the date that no parsed row
-// reads as a plain number in (a meal, a category), or a column named "key"
+// reads as a plain number in (a category, a label), or a column named "key"
 // when every other column is numeric; -1 = none, and the caller says nothing.
 int diffKeyColumn(const std::vector<std::string>& header, int dateCol,
                   const std::vector<SpanRow>& rows) {

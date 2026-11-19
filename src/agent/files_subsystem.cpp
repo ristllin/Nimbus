@@ -32,7 +32,6 @@
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
-#include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
 #include "nimbus/orch/spend_ceiling.h"  // paidCallAllowed - the scan's gate before the download (lane QW4)
 #include "nimbus/orch/tool_registry.h"
 
@@ -748,7 +747,7 @@ static nimbus::orch::StreamEnd streamFile(const std::string& path, nimbus::orch:
 // streamed. `dayArg` "" = today (the log's day). Caller holds memory::Lock.
 static std::string dayTotalLine(const std::string& path, size_t size, const std::string& sumCol,
                                 const std::string& dayArg, const nimbus::orch::LogDay& today) {
-  if (size > nimbus::orch::kKeyedMaxBytes) return "[no day total: the file is over 1 MB]\n";
+  if (size > nimbus::orch::kDayTotalMaxBytes) return "[no day total: the file is over 1 MB]\n";
   if (!dayArg.empty() && nimbus::orch::isoDayOf(dayArg) != dayArg)
     return "[no day total: 'date' must be YYYY-MM-DD]\n";
   const std::string day = dayArg.empty() ? today.date : dayArg;
@@ -886,58 +885,9 @@ static bool fileEnd(const std::string& path, bool listed, size_t& size, char& la
   return ok;
 }
 
-// A CSV whose last row has no line end: its header, the row before and that row,
-// and where that row starts - enough to tell a provably cut row from a whole one
-// (file_append.h csvLastRowCut). False (err set) when it cannot be read.
-struct CsvTail {
-  std::string header, prev, last;
-  size_t lastStart = 0;   // 0 = the file is one line (its header): never a data row
-};
-// The file's first line and its last `span` bytes (the window), or false.
-static bool readEnds(const std::string& path, size_t size, std::string& first, std::string& w, size_t& start) {
-  File f = memory::dataFs().open(path.c_str(), FILE_READ);
-  if (!f) return false;
-  const size_t span = nimbus::orch::RowSplitter::kRowMaxBytes * 2;
-  start = size > span ? size - span : 0;
-  w.assign(size - start, '\0');
-  bool ok = f.seek(start) && f.read((uint8_t*)&w[0], w.size()) == w.size();
-  char head[1024];
-  const int hn = ok && f.seek(0) ? f.read((uint8_t*)head, sizeof head) : -1;
-  f.close();
-  ok = ok && hn >= 0;
-  if (ok) first.assign(head, (size_t)hn);
-  return ok;
-}
-
 static void dropCr(std::string& r) {
   if (!r.empty() && r.back() == '\r') r.pop_back();
 }
-
-static bool readCsvTail(const std::string& path, size_t size, CsvTail& t, std::string& err) {
-  std::string first, w;
-  size_t start = 0;
-  if (!readEnds(path, size, first, w, start)) {
-    err = "the card read failed - nothing was added; try again";
-    return false;
-  }
-  t.header = first.substr(0, first.find('\n'));
-  const size_t nl = w.rfind('\n');
-  if (nl == std::string::npos) {
-    if (start == 0) return true;   // one line: the header itself
-    err = "the last row is longer than 16 KB - this is not a log; nothing was added";
-    return false;
-  }
-  t.last = w.substr(nl + 1);
-  t.lastStart = start + nl + 1;
-  const size_t pb = nl == 0 ? std::string::npos : w.rfind('\n', nl - 1);
-  const size_t ps = pb == std::string::npos ? 0 : pb + 1;
-  t.prev = w.substr(ps, nl - ps);
-  dropCr(t.header);
-  dropCr(t.prev);
-  dropCr(t.last);
-  return true;
-}
-
 
 // The index entry after `added` bytes landed at the end of a `size`-byte file.
 static bool commitAppend(const std::string& project, const std::string& name, size_t size,
@@ -958,111 +908,6 @@ static bool commitAppend(const std::string& project, const std::string& name, si
   if (!g_store.add(e, err)) return false;
   persistIndex();
   return true;
-}
-
-// The .part writer of a streamed rewrite: buffered, counts what landed.
-struct PartWriter {
-  File f;
-  std::string buf;
-  size_t bytes = 0;
-  bool bad = false;
-  bool put(const std::string& s) {
-    buf += s;
-    return buf.size() < 1024 || flush();
-  }
-  bool flush() {
-    if (!bad && !buf.empty()) {
-      const size_t n = f.write(reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
-      bytes += n;
-      bad = n != buf.size();
-    }
-    buf.clear();
-    return !bad;
-  }
-};
-
-// Stream the stored log (when there is one) through the merger into the .part
-// (file_append.h mergeKeyed): every stored row is written back as it was or
-// replaced in place, then the new rows. True with the .part complete and its size
-// in `bytes`; false with `err` and no .part. A card read fault refuses - a short
-// read is never taken for a shorter log. Caller holds memory::Lock.
-static bool writeMergedPart(const std::string& path, bool stored,
-                            nimbus::orch::CsvUpsertStream& m, size_t& bytes, std::string& err) {
-  fs::FS& fs = memory::dataFs();
-  File src;
-  if (stored && !(src = fs.open(path.c_str(), FILE_READ))) {
-    err = "the card read failed - the log was not changed; try again";
-    return false;
-  }
-  if (src && src.size() > nimbus::orch::kKeyedMaxBytes) {
-    src.close();
-    err = "the log is over 1 MB - start a new log file (like food-log-2027.csv) and log there; nothing was changed";
-    return false;
-  }
-  fs.remove(kPartPath);
-  PartWriter w;
-  w.f = fs.open(kPartPath, FILE_WRITE);
-  if (!w.f) {
-    if (src) src.close();
-    err = "SD open failed - the log was not changed";
-    return false;
-  }
-  const bool done = nimbus::orch::mergeKeyed(
-                        m, stored, stored ? src.size() : 0,
-                        [&](char* d, size_t n) { return (int)src.read(reinterpret_cast<uint8_t*>(d), n); },
-                        [&](const std::string& b) { return w.put(b); }, err) &&
-                    w.flush();
-  if (src) src.close();
-  w.f.close();
-  // The bytes must have persisted (a flaky card can accept a write it drops).
-  File chk = done ? fs.open(kPartPath, FILE_READ) : File();
-  const size_t on = chk ? chk.size() : 0;
-  if (chk) chk.close();
-  if (!done || on != w.bytes) {
-    fs.remove(kPartPath);
-    if (err.empty()) err = "SD write not persisted - the log was not changed";
-    return false;
-  }
-  bytes = w.bytes;
-  return true;
-}
-
-// Commit a merged .part of `bytes` over project/name: the quota, then the swap
-// (the old copy is kept on any failure). Caller holds memory::Lock.
-static bool commitMerged(const std::string& project, const std::string& name, size_t bytes,
-                         const nimbus::orch::Principal& who, std::string& err) {
-  const nimbus::orch::FileEntry* old = g_store.find(project, name);
-  // The caller's usage without the copy being replaced - when that copy counts
-  // toward the caller at all (bytesFor's own owner rule).
-  const uint64_t used = g_store.bytesFor(who.ns);
-  const bool mine = old && (old->owner.empty()
-                                ? std::string_view(nimbus::orch::kOwnerNs) == who.ns
-                                : std::string_view(old->owner) == who.ns);
-  const uint64_t replaced = mine && used >= old->bytes ? old->bytes : 0;
-  const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
-  if (q.maxBytes && used - replaced + bytes > q.maxBytes) {
-    memory::dataFs().remove(kPartPath);
-    err = kStorageLimit;
-    return false;
-  }
-  if (checkRoomLocked(project, name, bytes, err)) {   // FSCAP: reclaim copies first
-    memory::dataFs().remove(kPartPath);
-    err = refusalForHead(err);
-    return false;
-  }
-  nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
-  if (!old) {
-    e.owner = who.ns;
-    e.project = project;
-    e.name = name;
-    e.createdAt = nowEpoch();
-    e.kind = nimbus::orch::fileKindForName(name);
-  }
-  e.bytes = uint32_t(bytes);
-  e.hash = 0;                 // streamed: unknown until the next whole write
-  e.providerTag.clear();      // an uploaded provider copy is stale now
-  e.providerFileId.clear();
-  return commitPart(e, err);
 }
 
 // The last keyed-CSV rows an edit removed (one file, in RAM only, bounded): a
@@ -1149,125 +994,10 @@ static std::string rewriteHistoryOf(const std::string& path, const std::string& 
   return scan.finish();
 }
 
-// files.append with a key: the keyed CSV upsert (file_append.h). The model sends
-// only the new rows; the device merges them by date and key, row by row from the
-// card (any log size), and reports what each row did and the day totals. The
-// whole merge holds the store lock, so nothing else writes the log between the
-// read and the swap.
+// files.append's arguments.
 struct AppendArgs {
-  std::string project, name, text, key, sum;
-  bool replaceAll = false;   // replace: "all" - stored duplicates of a key are set aside
+  std::string project, name, text;
 };
-
-static nimbus::orch::ToolResult upsertRows(const AppendArgs& a, const nimbus::orch::Principal& who) {
-  using nimbus::orch::ToolResult;
-  const std::string &project = a.project, &name = a.name, &sum = a.sum;
-  if (!fileKindIsCsv(name))
-    return ToolResult::fail("the keyed upsert is for CSV files (.csv) - name the file .csv");
-  const nimbus::orch::LogDay day = logDay();   // an NVS read: before the lock
-  memory::Lock g;
-  // The ownership gate BEFORE anything on the card is opened: a caller who cannot
-  // write this file must never learn what is in it either.
-  const std::string gate = appendGate(project, name, who);
-  if (!gate.empty()) return ToolResult::fail(gate);
-  nimbus::orch::CsvUpsertStream m(a.key, sum, day.date);
-  m.setZone(day.zone);
-  m.setSupersede(a.replaceAll);
-  if (!m.begin(a.text)) return ToolResult::fail(m.result().err);
-  fs::FS& fs = memory::dataFs();
-  fs.mkdir(dirOf(project).c_str());
-  const std::string path = pathOf(project, name);
-  size_t bytes = 0;
-  std::string err;
-  // A file on the card that the index lost (a power cut before the index write) is
-  // merged too, never replaced as if new - by the owner only: whose it was is
-  // unknown, so nobody else may read or take it over.
-  const bool indexed = g_store.find(project, name) != nullptr;
-  const bool stored = indexed || fs.exists(path.c_str());
-  if (stored && !indexed && !who.owner)
-    return ToolResult::fail("that project/name belongs to someone else - choose another name");
-  if (!writeMergedPart(path, stored, m, bytes, err)) return ToolResult::fail(err);
-  const nimbus::orch::CsvUpsert& up = m.result();
-  if (!up.changed) {
-    fs.remove(kPartPath);
-  } else {
-    if (!commitMerged(project, name, bytes, who, err)) return ToolResult::fail(err);
-    if (up.replaced == 0)   // only new rows: the plain append's log line, honestly
-      alogf("files: appended %d row(s) to %s/%s (keyed, %u B)", up.appended, project.c_str(),
-            name.c_str(), unsigned(bytes));
-    else
-      alogf("files: upsert %s/%s replaced %d appended %d (%u B)", project.c_str(), name.c_str(),
-            up.replaced, up.appended, unsigned(bytes));
-  }
-  std::string reply = nimbus::orch::renderUpsertReply(up, project + "/" + name, sum, day.zone);
-  if (up.changed) {   // rows landed: any the note remembers and this did not re-add are named
-    std::vector<nimbus::orch::CsvEditRow> written;
-    for (const nimbus::orch::RowChange& c : up.changes) written.push_back({c.date, c.key});
-    if (const std::string warn = reconcileRemovedRows(project, name, written); !warn.empty())
-      reply += "\n" + warn;
-  }
-  return ToolResult::ok(reply);
-}
-
-// Copy the first `upto` bytes of `src` into the .part.
-static bool copyPrefix(File& src, PartWriter& w, size_t upto) {
-  char buf[512];
-  for (size_t done = 0; done < upto;) {
-    const size_t want = upto - done < sizeof buf ? upto - done : sizeof buf;
-    const int n = (int)src.read((uint8_t*)buf, want);
-    if (n <= 0 || !w.put(std::string(buf, (size_t)n))) return false;
-    done += (size_t)n;
-  }
-  return true;
-}
-
-// The .part of a cut-aside append: the file up to its cut last row, then `tail`.
-static bool writeCutAsidePart(const std::string& path, size_t upto, const std::string& tail, size_t& bytes) {
-  fs::FS& fs = memory::dataFs();
-  File src = fs.open(path.c_str(), FILE_READ);
-  fs.remove(kPartPath);
-  PartWriter w;
-  w.f = fs.open(kPartPath, FILE_WRITE);
-  const bool ok = src && w.f && copyPrefix(src, w, upto) && w.put(tail) && w.flush();
-  if (src) src.close();
-  if (w.f) w.f.close();
-  bytes = w.bytes;
-  if (!ok) fs.remove(kPartPath);
-  return ok;
-}
-
-// files.append on a CSV whose last row was provably cut by a power loss: that row
-// is set aside as a "#cut: " comment row (never counted again, the keyed path's
-// rule) and the new rows follow, through the same .part and swap as any rewrite.
-// Caller holds memory::Lock.
-static nimbus::orch::ToolResult appendCutAside(const AppendArgs& a, size_t size, const CsvTail& t,
-                                               const nimbus::orch::Principal& who) {
-  using nimbus::orch::ToolResult;
-  const nimbus::orch::FileEntry* old = g_store.find(a.project, a.name);
-  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, 0, '\n');
-  if (!plan.ok) return ToolResult::fail(plan.err);
-  if (!old) return ToolResult::fail("the file is not in the file list - nothing was added");
-  const std::string tail = "#cut: " + t.last + "\n" + plan.bytes;
-  const size_t newSize = t.lastStart + tail.size();
-  const std::string refusal = appendRefusal(a.project, a.name, newSize - size, newSize, who);
-  if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
-  size_t bytes = 0;
-  if (!writeCutAsidePart(pathOf(a.project, a.name), t.lastStart, tail, bytes) || bytes != newSize) {
-    memory::dataFs().remove(kPartPath);
-    return ToolResult::fail("the card read or write failed - nothing was added; try again");
-  }
-  nimbus::orch::FileEntry e = *old;
-  e.bytes = uint32_t(newSize);
-  e.hash = 0;
-  std::string err;
-  if (!commitPart(e, err)) return ToolResult::fail(err);
-  alogf("files: appended %d row(s) to %s/%s, a cut last row set aside (%u B)", plan.rows, a.project.c_str(),
-        a.name.c_str(), unsigned(newSize));
-  return ToolResult::ok("appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
-                        a.project + "/" + a.name + " (now " + std::to_string((unsigned)newSize) +
-                        " bytes); its last row was cut mid-write: it is kept as a #cut: row and not counted - "
-                        "log that row again in full");
-}
 
 // The plain append's bytes on the end of the file. Caller holds memory::Lock.
 static nimbus::orch::ToolResult appendBytes(const AppendArgs& a, size_t size, const nimbus::orch::AppendPlan& plan,
@@ -1289,24 +1019,21 @@ static nimbus::orch::ToolResult appendBytes(const AppendArgs& a, size_t size, co
                             " B landed - read the tail before adding the rows again");
   alogf("files: appended %d row(s) to %s/%s (%u B)", plan.rows, a.project.c_str(), a.name.c_str(),
         unsigned(size + n));
-  const char* closed = !plan.repairedCut      ? ""
-                       : fileKindIsCsv(a.name) ? "; its last row had no line end, so the new rows start on a fresh line"
-                                               : "; its last row was incomplete and is left as it was";
+  const char* closed = plan.repairedCut ? "; its last row had no line end, so the new rows start on a fresh line" : "";
   return ToolResult::ok("appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
                         a.project + "/" + a.name + " (now " + std::to_string((unsigned)(size + n)) + " bytes)" +
                         closed);
 }
 
-// files.append: the new rows go on the END of a text document (created when
-// missing); nothing already stored is read back or rewritten (file_append.h) -
-// except a CSV's provably cut last row, which is set aside first.
+// files.append: the new rows go on the END of a text document (created when missing);
+// nothing already stored is read back, replaced or rewritten (file_append.h), whatever
+// the file is called or holds - a pure append on every path (owner ruling 41).
 static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
   if (a.project.empty() || a.name.empty() || a.text.empty())
     return ToolResult::fail("need 'project', 'name' and 'text'");
   if (!textDocName(a.name))
     return ToolResult::fail("files.append adds rows to a text document (.csv, .log, .md, .txt, .json)");
-  if (!a.key.empty()) return upsertRows(a, who);
   memory::Lock g;
   const std::string gate = appendGate(a.project, a.name, who);
   if (!gate.empty()) return ToolResult::fail(gate);
@@ -1315,18 +1042,8 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
   char last = '\0';
   if (!fileEnd(path, g_store.find(a.project, a.name) != nullptr, size, last))
     return ToolResult::fail("the card read failed - nothing was added; try again");
-  // v4.6.3: an append that would CREATE a CSV must carry its header row first (a
-  // headerless CSV can never be updated by key: the 30 Oct investigation's duplicate
-  // loop). A non-CSV or an existing file is unchanged.
-  const bool csvCreate = size == 0 && fileKindIsCsv(a.name);
-  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last, csvCreate);
+  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last);
   if (!plan.ok) return ToolResult::fail(plan.err);
-  if (plan.repairedCut && fileKindIsCsv(a.name)) {
-    CsvTail t;
-    std::string err;
-    if (!readCsvTail(path, size, t, err)) return ToolResult::fail(err);
-    if (t.lastStart > 0 && nimbus::orch::csvLastRowCut(t.header, t.prev, t.last)) return appendCutAside(a, size, t, who);
-  }
   return appendBytes(a, size, plan, who);
 }
 
@@ -2159,27 +1876,17 @@ void registerTools() {
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
 
   reg.add("files.append",
-          "Add rows to a TEXT document (a log, a CSV); creates it when missing (put a "
-          "CSV's header row first). Up to 4 KB per call. Use it to log a row instead of "
-          "reading and re-saving the whole file. Without 'key' the rows go on the END and "
-          "nothing stored is rewritten. For a dated CSV such as a food log (it needs a date "
-          "column of YYYY-MM-DD dates) pass 'key' (the column that tells one day's rows "
-          "apart, like meal): a row is its date plus its key, so the same date and key "
-          "again REPLACES that row (a correction) and other days are never touched; text = "
-          "the stored header row, then the rows. 'sum' (a numeric column) puts the day "
-          "totals in the reply. replace: \"all\" only when a refusal says the key names "
-          "several stored rows that are one item logged twice.",
+          "Add rows to the END of a TEXT document (a log, a CSV); creates it when missing. "
+          "Up to 4 KB per call. Only the new rows are written: nothing stored is read back, "
+          "replaced or rewritten.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             AppendArgs args;
             args.project = argStr(a, "project");
             args.name = argStr(a, "name");
             args.text = argStr(a, "text");
-            args.key = argStr(a, "key");
-            args.sum = argStr(a, "sum");
-            args.replaceAll = argStr(a, "replace") == "all";
             return appendRows(args, who);
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"},"replace":{"type":"string","enum":["all"]}},"required":["project","name","text"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
 
   reg.add("files.edit",
           "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole "

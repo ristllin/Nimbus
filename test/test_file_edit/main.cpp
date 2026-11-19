@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <string>
 
-#include "nimbus/orch/file_append.h"   // kKeyedMaxBytes
+#include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_edit.h"
 #include "nimbus/orch/turn_effects.h"
 
@@ -307,8 +307,8 @@ static void test_the_edit_commits_through_the_swap() {
 // keyed path's ceiling: a bigger file is refused with the way out, before a byte is read.
 static void test_a_file_over_the_ceiling_is_refused_with_the_way_out() {
   TEST_ASSERT_EQUAL_STRING("", editSizeRefusal(0).c_str());
-  TEST_ASSERT_EQUAL_STRING("", editSizeRefusal(kKeyedMaxBytes).c_str());
-  const std::string over = editSizeRefusal(kKeyedMaxBytes + 1);
+  TEST_ASSERT_EQUAL_STRING("", editSizeRefusal(kEditMaxBytes).c_str());
+  const std::string over = editSizeRefusal(kEditMaxBytes + 1);
   TEST_ASSERT_TRUE(over.find("over 1 MB") != std::string::npos);
   TEST_ASSERT_TRUE(over.find("nothing was changed") != std::string::npos);
   TEST_ASSERT_TRUE(over.find("new file") != std::string::npos);
@@ -499,13 +499,13 @@ static void test_not_readded_names_the_missing_row() {
   TEST_ASSERT_EQUAL_STRING("", renderNotReadded({}).c_str());
 }
 
-// The device wires the diff into files.edit's reply and the note into both
-// write paths: the report exists only if the seams carry it. editDoc's row
+// The device wires the diff and the note into files.edit's reply: the report
+// exists only if the seams carry it. editDoc's row
 // report lives in keyedEditReport (split out of the writer for the complexity
 // gate), so the seam is the writer's call plus the helper's own calls; the
 // note rides the reconcileRemovedRows helper (defined before both writers),
-// so the seam there is the helper's call from each writer plus the helper's
-// own two calls.
+// so the seam there is the helper's call from the edit plus the helper's own
+// two calls.
 static void test_the_device_reports_the_diff_and_the_missing_readd() {
   const std::string src = readSubsystem();
   const size_t edit = src.find("ToolResult editDoc(");
@@ -517,9 +517,9 @@ static void test_the_device_reports_the_diff_and_the_missing_readd() {
   TEST_ASSERT_TRUE(src.find("renderKeyedEditDiff(", report) != std::string::npos);
   TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", report) != std::string::npos);
   TEST_ASSERT_TRUE(src.find("rememberRemovedRows(", report) != std::string::npos);
-  const size_t upsert = src.find("ToolResult upsertRows(");
-  TEST_ASSERT_TRUE(upsert != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", upsert) != std::string::npos);
+  // RB-REC1: files.append is a pure append with no key, so the edit is the one writer that
+  // names rows; the plain append never rewrites or reconciles a row.
+  TEST_ASSERT_TRUE(src.find("ToolResult upsertRows(") == std::string::npos);
   const size_t reconcile = src.find("static std::string reconcileRemovedRows(");
   TEST_ASSERT_TRUE(reconcile != std::string::npos);
   TEST_ASSERT_TRUE(src.find("notReadded(", reconcile) != std::string::npos);

@@ -54,9 +54,10 @@ std::string validateEdit(size_t findLen, size_t replaceLen, const EditPolicy& po
 EditDecision decideEdit(size_t findLen, size_t replaceLen, const EditPolicy& pol,
                         size_t matches);
 
-// The ceiling on the stored file, kKeyedMaxBytes (file_append.h): an edit holds the store
-// lock across two whole-file passes and a rewrite, so a bigger file is refused with the
-// way out instead of stalling every other card user. "" when the file may be edited.
+// The ceiling on the stored file: an edit holds the store lock across two whole-file
+// passes and a rewrite, so a bigger file is refused with the way out instead of stalling
+// every other card user. "" when the file may be edited.
+inline constexpr size_t kEditMaxBytes = 1024 * 1024;
 std::string editSizeRefusal(size_t fileBytes);
 
 // A replacement identical to the find text changes no byte (spans that differ always do),
@@ -182,7 +183,7 @@ std::string renderNotReadded(const std::vector<CsvEditRow>& missing);
 // text) as a "#replaced: " row holding the old text; a whole-file rewrite
 // (artifact.save over a keyed CSV) keeps the old file's rows of `today` that the
 // new text drops or changes the same way. "" when the spans do not read as rows
-// of a keyed CSV. Capped like the ledger's history rows (food_ledger.h).
+// of a keyed CSV. Capped at a dozen rows.
 inline constexpr size_t kEditHistoryMaxRows = 12;
 inline constexpr size_t kEditHistoryMaxBytes = 900;
 

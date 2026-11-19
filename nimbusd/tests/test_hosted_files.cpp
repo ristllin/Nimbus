@@ -118,29 +118,48 @@ static void testTraversalRefused(ndtest::Ctx& c) {
   c.ok(has(web.call("GET", "/api/files/list").body, "\"count\":0"), "nothing was stored");
 }
 
-// The hosted tools take the same food log rules as the device: one log, the same receipt.
-static void testOneFoodLogAndItsReceipt(ndtest::Ctx& c) {
-  std::printf("  -- one food log, the same receipt --\n");
-  const std::string dir = ndtest::scratchDir("hf-food");
-  ndtest::rmTree(dir);
-  mkdir(dir.c_str(), 0755);
-  PosixFiles files(dir);
-  nimbus::orch::ToolRegistry reg;
-  files.registerTools(reg);
-  nimbus::orch::Principal owner = nimbus::orch::principalForRole("1", nimbus::orch::Role::Admin);
-  owner.owner = true;
-  const auto call = [&](const char* name, const std::string& json) {
-    JsonDocument d;
-    deserializeJson(d, json);
-    return reg.dispatch(name, d.as<JsonObjectConst>(), owner);
+// RB-REC1 (owner ruling 41): the hosted files.append is the device's pure append, the same
+// for a food log, an expenses log and a training log: the rows go on the end as sent (an older
+// keyed call too, whose key is named as not read), nothing stored is rewritten, and the tail's
+// day total adds up the rows of the day.
+static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
+  std::printf("  -- three tables append alike, the same receipt --\n");
+  struct Table {
+    const char *project, *name, *header, *row, *col, *total;
   };
-  const std::string today = nimbus::orch::logDayOf(std::time(nullptr), true).date;
-  const auto first = call("files.append", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"key\":\"meal\",\"sum\":\"kcal\",\"text\":\"date,meal,items,kcal,protein_g\\n" + today + ",lunch,soup,300,10\"}");
-  c.ok(first.success && has(first.output, "added 1 row") && has(first.output, "300 from 1 row"), "the keyed write answers with the device's receipt");
-  // A plain append with a bare comma in its items: the sum reads it.
-  call("files.append", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"text\":\"" + today + ",dinner,steak, mash,900,\"}");
-  const auto tail = call("files.read", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"tail\":5,\"sum\":\"kcal\"}");
-  c.ok(has(tail.output, "1200 from 2 rows"), "files.read {tail, sum} gives the day's total, a bare comma included");
+  const Table tables[] = {
+      {"food", "food-log.csv", "date,time,item,qty,kcal", ",12:40,soup,1,300", "kcal", "600 from 2 rows"},
+      {"money", "expenses.csv", "date,time,item,qty,amount", ",12:40,train,1,24.5", "amount", "49 from 2 rows"},
+      {"gym", "training.csv", "date,time,item,qty,kg", ",12:40,squat,5,80", "kg", "160 from 2 rows"},
+  };
+  for (const Table& t : tables) {
+    const std::string dir = ndtest::scratchDir(std::string("hf-tbl-") + t.project);
+    ndtest::rmTree(dir);
+    mkdir(dir.c_str(), 0755);
+    PosixFiles files(dir);
+    nimbus::orch::ToolRegistry reg;
+    files.registerTools(reg);
+    nimbus::orch::Principal owner = nimbus::orch::principalForRole("1", nimbus::orch::Role::Admin);
+    owner.owner = true;
+    const auto call = [&](const char* name, const std::string& json) {
+      JsonDocument d;
+      deserializeJson(d, json);
+      return reg.dispatch(name, d.as<JsonObjectConst>(), owner);
+    };
+    const std::string today = nimbus::orch::logDayOf(std::time(nullptr), true).date;
+    const std::string row = today + t.row;
+    const std::string where = std::string("{\"project\":\"") + t.project + "\",\"name\":\"" + t.name + "\"";
+    const auto first = call("files.append", where + ",\"text\":\"" + t.header + "\\n" + row + "\"}");
+    c.ok(first.success && has(first.output, "appended 2 rows"), std::string("the first append lands: ") + t.name);
+    // An older keyed call: the rows land as sent, the key is named as not read, nothing is replaced.
+    const auto keyed = call("files.append", where + ",\"key\":\"item\",\"sum\":\"" + t.col + "\",\"text\":\"" + row + "\"}");
+    c.ok(keyed.success && has(keyed.output, "appended 1 row") && has(keyed.output, "not read: "),
+         std::string("a keyed call appends as sent: ") + keyed.output);
+    const std::string body = files.get(std::string(t.project) + "/" + t.name);
+    c.ok(body == std::string(t.header) + "\n" + row + "\n" + row + "\n", std::string("byte for byte, the row twice: ") + t.name);
+    const auto tail = call("files.read", where + ",\"tail\":5,\"sum\":\"" + t.col + "\"}");
+    c.ok(has(tail.output, t.total), std::string("the day total adds up both rows: ") + tail.output);
+  }
 }
 
 // files.delete: the chat can delete a stored file (the privacy persona asks for
@@ -298,57 +317,6 @@ static void testListingsArePaged(ndtest::Ctx& c) {
        "a project filter: count is the whole store, listCount the filtered rows");
 }
 
-// The keyed files.append reply on a hosted client has to read as a replacement to the
-// same effect ledger the device keeps (turn_effects.h): the merge-back shipped nimbusd's
-// own "updated N rows" wording past a reader that only knows the device's reply, and no
-// test here drove the keyed path. (The claim check that read the ledger is gone, lane
-// RB-Q1b; the ledger and its record of a replacement stay.)
-static void testKeyedCorrectionRecordsWhatItDid(ndtest::Ctx& c) {
-  namespace orch = nimbus::orch;
-  std::printf("  -- (f) a keyed correction records what it did --\n");
-  Config cfg;
-  NimbusdRig rig(cfg, opts("hf-f"));
-  const std::string head = "date,meal,items,kcal,protein_g\n";
-  auto keyed = [&](const std::string& rows) {
-    JsonDocument args;
-    args["project"] = "food";
-    args["name"] = "food-log.csv";
-    args["text"] = head + rows;
-    args["key"] = "meal";
-    args["sum"] = "kcal";
-    std::string json;
-    serializeJson(args, json);
-    return toolText(rig.callTool("files.append", json));
-  };
-  auto effects = [](const std::string& reply) {
-    orch::TurnEffects fx;
-    orch::recordToolEffect(fx, orch::FxKind::FileWrite, false, reply, orch::kFxLogRow);
-    return fx;
-  };
-
-  const std::string first = keyed("2026-10-30,lunch,black beans,300,10\n");
-  const orch::TurnEffects added = effects(first);
-  c.ok(has(first, "added 1 row"), "a new row reads as added: " + first);
-  c.ok(!added.anyOk(orch::FxKind::FileReplace), "a row that only landed replaced nothing");
-  c.ok(added.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "but it landed a log row");
-
-  // Lane UPSERT: only a correction of the SAME item replaces; a different item under
-  // the reused key "lunch" is appended under a new key and records no replacement.
-  const std::string fixed = keyed("2026-10-30,lunch,black beans,320,11\n");
-  const orch::TurnEffects replaced = effects(fixed);
-  c.ok(replaced.anyOk(orch::FxKind::FileReplace), "a keyed correction of the same item records a replacement: " + fixed);
-  c.ok(replaced.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "and a landed log row");
-
-  const std::string other = keyed("2026-10-30,lunch,rice,250,6\n");
-  const orch::TurnEffects rekeyed = effects(other);
-  c.ok(!rekeyed.anyOk(orch::FxKind::FileReplace), "a different item under a reused key replaced nothing: " + other);
-  c.ok(rekeyed.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "but it still landed a row");
-
-  const orch::TurnEffects same = effects(keyed("2026-10-30,lunch,black beans,320,11\n"));
-  c.ok(!same.anyOk(orch::FxKind::FileReplace), "a re-send that changed nothing replaced nothing");
-  c.ok(!same.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "and landed no row");
-}
-
 // files.read of a binary file used to put its bytes in the tool result, and the next
 // request was unreadable on every provider: the turn died with "That didn't finish".
 static void testBinaryReadIsRefused(ndtest::Ctx& c) {
@@ -385,12 +353,11 @@ int main() {
   testRemove(c);
   testFilesDeleteTool(c);
   testTraversalRefused(c);
-  testOneFoodLogAndItsReceipt(c);
+  testThreeTablesAppendAlike(c);
   testNotYetHosted(c);
   testRefusedUploadLeavesNoFile(c);
   testByteQuotaEvictsCopiesFirst(c);
   testListingsArePaged(c);
-  testKeyedCorrectionRecordsWhatItDid(c);
   testBinaryReadIsRefused(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");

@@ -5,12 +5,13 @@
 
 #include <cstdio>
 #include <ctime>
+#include <new>
 #include <string>
 
 #include "posix_platform.h"
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_store.h"
-#include "nimbus/orch/provider_caps.h"  // LocalDate - the upsert's today
+#include "nimbus/orch/provider_caps.h"  // LocalDate - the day total's today
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
 #include "posix_fs.h"
@@ -100,25 +101,21 @@ class PosixFiles {
             R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"}},"required":["project","name"]})");
 
     // The device's files.append (file_append.h): the new rows go on the end of the
-    // file; nothing stored is rewritten. With 'key' it is the keyed CSV upsert
-    // (G1, rows 32/33) and the reply carries the day total.
+    // file; nothing stored is read back, replaced or rewritten.
     addOwnerOnly(reg, "files.append",
-            "Add rows to the END of a text file (a log, a CSV): only the new rows are "
-            "written. Creates the file when missing (put a CSV's header row first). Up to "
-            "4 KB per call. Use it to log a row instead of re-saving the whole file. For "
-            "a keyed CSV pass 'key' (the column whose value identifies a row) to UPDATE "
-            "that row instead of adding a duplicate, and 'sum' (a numeric column) to get "
-            "its total for today in the reply.",
+            "Add rows to the END of a TEXT document (a log, a CSV); creates it when missing. "
+            "Up to 4 KB per call. Only the new rows are written: nothing stored is read back, "
+            "replaced or rewritten.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-              const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text"),
-                                key = str(a, "key"), sum = str(a, "sum");
+              const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
-              return appendTool(p, n, t, key, sum);
+              std::string err, note;
+              if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
+              return nimbus::orch::ToolResult::ok(note);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"text":{"type":"string"},)"
-            R"("key":{"type":"string"},"sum":{"type":"string"}},)"
+            R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
 
     addOwnerOnly(reg, "files.delete",
@@ -341,32 +338,66 @@ class PosixFiles {
     return true;
   }
 
+  // The file's size and last byte: all a pure append reads of what is stored. False when
+  // a file the index lists cannot be opened or read (the append then writes nothing).
+  static bool fileEnd(const std::string& path, bool listed, size_t& size, char& last) {
+    size = 0;
+    last = '\0';
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return !listed;   // a new file
+    bool ok = std::fseek(f, 0, SEEK_END) == 0;
+    const long end = ok ? std::ftell(f) : -1;
+    ok = end >= 0;
+    if (ok && end > 0) {
+      const int c = std::fseek(f, end - 1, SEEK_SET) == 0 ? std::fgetc(f) : EOF;
+      ok = c != EOF;
+      last = ok ? (char)c : '\0';
+    }
+    std::fclose(f);
+    size = ok ? (size_t)end : 0;
+    return ok;
+  }
+
+ public:
+  // files.append (file_append.h): the new rows go on the end of the file, whatever it is
+  // called or holds - a pure append on every path (owner ruling 41). Nothing stored is read
+  // back, replaced or rewritten. A refused allocation (ruling 30) answers kAppendNoMemory
+  // and leaves the file's bytes as they were: everything that allocates (the plan, the new
+  // index and its dump, the receipt) is built before the first byte lands; after the write
+  // only a short write cuts the file back to its old size.
   bool append(const std::string& p, const std::string& n, const std::string& text,
               std::string& err, std::string& note) {
+    try {
+      return appendOrThrow(p, n, text, err, note);
+    } catch (const std::bad_alloc&) {
+      err.assign(nimbus::orch::kAppendNoMemory);   // a small string: no allocation
+      return false;
+    }
+  }
+
+ private:
+  bool appendOrThrow(const std::string& p, const std::string& n, const std::string& text,
+                     std::string& err, std::string& note) {
     if (!nimbus::orch::FileStore::validSegment(p, 24) ||
         !nimbus::orch::FileStore::validSegment(n, 48)) {
       err = "invalid project or name";
       return false;
     }
-    std::string cur;
     const nimbus::orch::FileEntry* old = store_.find(p, n);
-    if (old) read(p, n, cur);
-    const nimbus::orch::AppendPlan plan =
-        nimbus::orch::planAppend(text, cur.size(), cur.empty() ? '\0' : cur.back(),
-                                 cur.empty() && nimbus::orch::isCsvName(n));   // the device's create rule
+    const std::string path = bytesPath(p, n);
+    size_t size = 0;
+    char last = '\0';
+    if (!fileEnd(path, old != nullptr, size, last)) {
+      err = "read failed - nothing was added";
+      return false;
+    }
+    const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(text, size, last);
     if (!plan.ok) {
       err = plan.err;
       return false;
     }
-    if (!roomFor(p, n, cur.size() + plan.bytes.size(), err)) return false;
+    if (!roomFor(p, n, size + plan.bytes.size(), err)) return false;
     ::mkdir((root_ + "/" + p).c_str(), 0755);
-    FILE* f = std::fopen(bytesPath(p, n).c_str(), "ab");
-    if (!f) {
-      err = "write failed";
-      return false;
-    }
-    const size_t wrote = std::fwrite(plan.bytes.data(), 1, plan.bytes.size(), f);
-    std::fclose(f);
     nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
     if (!old) {
       e.project = p;
@@ -374,83 +405,43 @@ class PosixFiles {
       e.createdAt = vclock::epoch32();
       e.kind = nimbus::orch::fileKindForName(n);
     }
-    e.bytes = (uint32_t)(cur.size() + wrote);
+    e.bytes = (uint32_t)(size + plan.bytes.size());
     e.hash = 0;
-    if (!store_.add(e, err)) return false;
-    fsutil::writeFileAtomic(indexPath(), store_.dump());
-    if (wrote != plan.bytes.size()) {
-      err = "short write - read the tail before adding the rows again";
+    nimbus::orch::FileStore next = store_;
+    if (!next.add(e, err)) return false;
+    const std::string index = indexPath(), dump = next.dump();
+    std::string done = "appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " + p +
+                       "/" + n + " (now " + std::to_string(e.bytes) + " bytes)" +
+                       (plan.repairedCut ? "; its last row had no line end, so the new rows start on a fresh line" : "");
+    std::string shortWrite = "write failed - nothing was added";
+    // The first byte lands here; nothing below allocates before the bytes are known whole.
+    FILE* f = std::fopen(path.c_str(), "ab");
+    const size_t wrote = f ? std::fwrite(plan.bytes.data(), 1, plan.bytes.size(), f) : 0;
+    const bool flushed = f && std::fflush(f) == 0;
+    if (f) std::fclose(f);
+    if (wrote != plan.bytes.size() || !flushed) {
+      if (f && (old || size > 0)) (void)::truncate(path.c_str(), (off_t)size);   // the file as it was
+      else if (f) ::unlink(path.c_str());   // a file this call created
+      err.swap(shortWrite);
       return false;
     }
-    note = "appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
-           p + "/" + n + " (now " + std::to_string(e.bytes) + " bytes)" +
-           (plan.repairedCut ? "; its last row was incomplete and is left as it was" : "");
+    store_ = std::move(next);
+    note.swap(done);
+    try {
+      fsutil::writeFileAtomic(index, dump);
+    } catch (const std::bad_alloc&) {
+      // The rows landed and the index in memory says so; the index file catches up at the next write.
+    }
     return true;
   }
 
-  // The keyed CSV upsert (file_append.h): the daemon merges by key and reports
-  // the day total, the same reply the device gives.
+  // The device's day (the day total of files.read {tail, sum}).
   static std::string todayStr() {
     const nimbus::orch::LocalDate d = nimbus::orch::localDateOf(vclock::now());
     if (!d.valid()) return std::string();
     char buf[16];
     std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", d.year, d.month, d.day);
     return buf;
-  }
-
-  // The upsert's outcome in one bundle (the function stays under the argument
-  // ceiling): ok + the error text or the model-facing note.
-  struct UpsertOut {
-    bool        ok = false;
-    std::string err, note;
-  };
-
-  bool upsert(const std::string& p, const std::string& n, const std::string& text,
-              const std::string& key, const std::string& sum, UpsertOut& out) {
-    std::string cur;
-    const nimbus::orch::FileEntry* old = store_.find(p, n);
-    if (old) read(p, n, cur);
-    const nimbus::orch::CsvUpsert up =
-        nimbus::orch::planCsvUpsert(cur, text, key, sum, todayStr());
-    if (!up.ok) {
-      out.err = up.err;
-      return false;
-    }
-    if (up.changed) {
-      if (!roomFor(p, n, up.out.size(), out.err)) return false;
-      if (!fsutil::writeFileAtomic(bytesPath(p, n), up.out)) {
-        out.err = "write failed";
-        return false;
-      }
-      nimbus::orch::FileEntry e = old ? *old : nimbus::orch::FileEntry{};
-      if (!old) {
-        e.project = p;
-        e.name = n;
-        e.createdAt = vclock::epoch32();
-        e.kind = nimbus::orch::fileKindForName(n);
-      }
-      e.bytes = (uint32_t)up.out.size();
-      e.hash = 0;
-      if (!store_.add(e, out.err)) return false;
-      fsutil::writeFileAtomic(indexPath(), store_.dump());
-    }
-    // The device's own reply, word for word: the claim check reads it (turn_effects).
-    out.note = nimbus::orch::renderUpsertReply(up, p + "/" + n, sum,
-                                               nimbus::orch::logDayOf(vclock::now(), true).zone);
-    return true;
-  }
-
-  // files.append: the one food log first, then the keyed upsert or a plain append.
-  nimbus::orch::ToolResult appendTool(const std::string& p, const std::string& n, const std::string& t,
-                                      const std::string& key, const std::string& sum) {
-    if (!key.empty()) {
-      UpsertOut out;
-      if (!upsert(p, n, t, key, sum, out)) return nimbus::orch::ToolResult::fail(out.err);
-      return nimbus::orch::ToolResult::ok(out.note);
-    }
-    std::string err, note;
-    if (!append(p, n, t, err, note)) return nimbus::orch::ToolResult::fail(err);
-    return nimbus::orch::ToolResult::ok(note);
   }
 
   // files.read {tail, sum}: the tail view, and the day's total when a sum column is named.

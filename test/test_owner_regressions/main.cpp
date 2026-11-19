@@ -98,6 +98,26 @@ FoodFacts facts(double kcal, double protein, int unknown = 0) {
 
 const char* kLedgerHeader = "date,meal,items,kcal,protein_g\n";
 
+// The device's day total of files.read {tail, sum} (file_append.h CsvDayTally) over a whole text.
+bool dayTotalOf(const std::string& file, const std::string& col, const std::string& day, double& out) {
+  CsvDayTally tally(col, day);
+  RowSplitter rows([&](const std::string& r, bool complete) {
+    tally.feed(r, complete);
+    return true;
+  });
+  rows.push(file.data(), file.size());
+  rows.end();
+  out = tally.total().total;
+  return tally.ok();
+}
+
+// files.append on a whole text: the plan's bytes on the end (file_append.h planAppend).
+std::string appended(const std::string& file, const std::string& text) {
+  const AppendPlan p = planAppend(text, file.size(), file.empty() ? '\0' : file.back());
+  TEST_ASSERT_TRUE_MESSAGE(p.ok, p.err.c_str());
+  return file + p.bytes;
+}
+
 // OIR-01: a routine's fire request carries the routine's prompt verbatim; nothing
 // else is appended to what the owner asked the routine to do.
 void test_oir_01_routine_fire_request_carries_prompt() {
@@ -127,7 +147,7 @@ void test_oir_05_day_total_receipt() {
                          "2026-10-28,lunch,plate,355,20\n"
                          "2026-10-28,dinner,plate,1005,40\n";
   double t = -1;
-  TEST_ASSERT_TRUE(csvDayTotal(ex, "kcal", "2026-10-28", t));
+  TEST_ASSERT_TRUE(dayTotalOf(ex, "kcal", "2026-10-28", t));
   TEST_ASSERT_EQUAL_INT(1611, (int)t);
   const auto gaps = foodFigureGaps("Today's total is 1,461 kcal.", facts(1611, 0), "");
   TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::WrongDayTotal));
@@ -170,7 +190,7 @@ void test_oir_09_total_includes_every_row() {
                          "2026-10-29,breakfast,plate,486,20\n"
                          "2026-10-29,drink,cappuccino,48,3\n";
   double t = -1;
-  TEST_ASSERT_TRUE(csvDayTotal(ex, "kcal", "2026-10-29", t));
+  TEST_ASSERT_TRUE(dayTotalOf(ex, "kcal", "2026-10-29", t));
   TEST_ASSERT_EQUAL_INT(534, (int)t);
 }
 
@@ -211,9 +231,9 @@ void test_oir_14_day_rollover() {
   const std::string nw = "2026-10-30,snack,skyr,342,20\n"
                          "2026-10-30,coffee,black coffee,75,2\n"
                          "2026-10-30,drink,cappuccino,48,3\n";
-  const CsvUpsert up = planCsvUpsert(ex, std::string(kLedgerHeader) + nw, "meal", "kcal", "2026-10-30");
-  TEST_ASSERT_TRUE_MESSAGE(up.ok, up.err.c_str());
-  TEST_ASSERT_EQUAL_INT(465, (int)up.todayTotal);
+  double t = -1;
+  TEST_ASSERT_TRUE(dayTotalOf(appended(ex, nw), "kcal", "2026-10-30", t));
+  TEST_ASSERT_EQUAL_INT(465, (int)t);
 }
 
 // OIR-15: a misread per-100 g column fails the label's own cross-column arithmetic.
@@ -246,36 +266,24 @@ void test_oir_18_receipt_vs_reply_rows() {
                          "2026-10-30,snack,raspberries,50,1\n"
                          "2026-10-30,dinner,plate,2606,90\n";
   double t = -1;
-  TEST_ASSERT_TRUE(csvDayTotal(ex, "kcal", "2026-10-30", t));
+  TEST_ASSERT_TRUE(dayTotalOf(ex, "kcal", "2026-10-30", t));
   TEST_ASSERT_EQUAL_INT(4006, (int)t);
   const auto gaps = foodFigureGaps("Today's total is 3,989 kcal.", facts(4006, 0), "");
   TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::WrongDayTotal));
 }
 
-// OIR-16: a two-letter fragment ("bb") yields no food words, so it can never match
-// "black beans" as the same food - a near-match is not a match, and no recall or
-// provenance backs an invented item.
-void test_oir_16_near_match_is_not_a_food_match() {
-  TEST_ASSERT_TRUE(foodWordsOf("bb").empty());
-  TEST_ASSERT_FALSE(sameFoodWords(foodWordsOf("bb"), foodWordsOf("black beans")));
-  TEST_ASSERT_FALSE(foodWordIn("bb", foodWordsOf("black beans")));
-  // Control: the same food named two ways still matches.
-  TEST_ASSERT_TRUE(sameFoodWords(foodWordsOf("boba tea"), foodWordsOf("another boba tea, no milk")));
-}
-
-// OIR-19 (fixed, lane UPSERT 0cefb9d3): a keyed write whose key names a meal slot must never
-// replace a row describing a different item. The new item appends with its own key (UPSERT
-// TASK item 1: only a correction of the same item replaces), so the replace count is 0 and
-// both rows count in the day total (457 + 445 = 902).
+// OIR-19: "1 avocado" was logged over half an avocado because a keyed write replaced a row
+// describing a different item. Since v5.2.0 files.append only appends (owner ruling 41): the
+// stored row is never touched, the new row lands after it, and the day counts both (457 + 445).
 void test_oir_19_silent_replace_fixed() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-11-04,dinner,smoked brisket 150 g and bread 58 g,457,40.2\n";
   const std::string nw = "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken 70% of 406 g pack,445,26.0\n";
-  const CsvUpsert up = planCsvUpsert(ex, std::string(kLedgerHeader) + nw, "meal", "kcal", "2026-11-04");
-  TEST_ASSERT_TRUE(up.ok);
-  TEST_ASSERT_EQUAL_INT(0, up.replaced);
-  TEST_ASSERT_EQUAL_INT(1, up.appended);
-  TEST_ASSERT_EQUAL_INT(902, (int)up.todayTotal);
+  const std::string after = appended(ex, nw);
+  TEST_ASSERT_EQUAL_STRING((ex + nw).c_str(), after.c_str());
+  double t = -1;
+  TEST_ASSERT_TRUE(dayTotalOf(after, "kcal", "2026-11-04", t));
+  TEST_ASSERT_EQUAL_INT(902, (int)t);
 }
 
 // OIR-22: "38.3 g protein left" implies a 250 g target no source holds.
@@ -330,7 +338,7 @@ void test_oir_27_day_sum_receipt_multirow() {
                          "2026-11-04,snack,waffles,277,5.7\n"
                          "2026-11-04,dinner,brisket and bread,445,26.0\n";
   double t = -1;
-  TEST_ASSERT_TRUE(csvDayTotal(ex, "kcal", "2026-11-04", t));
+  TEST_ASSERT_TRUE(dayTotalOf(ex, "kcal", "2026-11-04", t));
   TEST_ASSERT_EQUAL_INT(1878, (int)t);
 }
 
@@ -411,8 +419,8 @@ void test_oir_41_mistral_connector_scope() {
   TEST_ASSERT_EQUAL(int(CapScope::SubsessionsOnly), int(connectorScope(c, ps)));
 }
 
-// OIR-42 (fixed, lane UPSERT 0cefb9d3): after a second dinner is logged, the day total must
-// be 2,335 (both rows), not 1,878 (the replaced row lost).
+// OIR-42: after a second dinner is logged, the day total must be 2,335 (both rows), not 1,878
+// (the replaced row lost). Since v5.2.0 the second row is a plain append (owner ruling 41).
 void test_oir_42_upsert_total_fixed() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-11-04,breakfast,skyr and granola,533,32.5\n"
@@ -421,9 +429,9 @@ void test_oir_42_upsert_total_fixed() {
                          "2026-11-04,snack,waffles,277,5.7\n"
                          "2026-11-04,dinner,smoked brisket 150 g and bread 58 g,457,40.2\n";
   const std::string nw = "2026-11-04,dinner,Frive Smoky Baharat Mango Chicken 70% of 406 g pack,445,26.0\n";
-  const CsvUpsert up = planCsvUpsert(ex, std::string(kLedgerHeader) + nw, "meal", "kcal", "2026-11-04");
-  TEST_ASSERT_TRUE(up.ok);
-  TEST_ASSERT_EQUAL_INT(2335, (int)up.todayTotal);
+  double t = -1;
+  TEST_ASSERT_TRUE(dayTotalOf(appended(ex, nw), "kcal", "2026-11-04", t));
+  TEST_ASSERT_EQUAL_INT(2335, (int)t);
 }
 
 // OIR-43 (fixed, lane FSCAP fd75210d): the store's 256-entry count cap must not be a limit
@@ -817,7 +825,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_09_total_includes_every_row);
   RUN_TEST(test_oir_14_day_rollover);
   RUN_TEST(test_oir_15_label_cross_column);
-  RUN_TEST(test_oir_16_near_match_is_not_a_food_match);
   RUN_TEST(test_oir_17_subagent_invented_items);
   RUN_TEST(test_oir_18_receipt_vs_reply_rows);
   RUN_TEST(test_oir_19_silent_replace_fixed);

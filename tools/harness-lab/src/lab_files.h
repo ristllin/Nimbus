@@ -68,16 +68,14 @@ class LabFiles {
     // CUM-644: the lab's files.append and tail view match the device's, so a
     // lab run exercises the same calls the firmware will see.
     reg.add("files.append",
-            "Add rows to the END of a TEXT document (a log, a CSV): only the new rows are "
-            "written. For a keyed CSV pass 'key' (the column whose value identifies a row) "
-            "to UPDATE that row instead of adding a duplicate, and 'sum' (a numeric column) "
-            "to get its total for today in the reply.",
+            "Add rows to the END of a TEXT document (a log, a CSV); creates it when missing. "
+            "Up to 4 KB per call. Only the new rows are written: nothing stored is read back, "
+            "replaced or rewritten.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
               return appendTool(a, who);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"text":{"type":"string"},)"
-            R"("key":{"type":"string"},"sum":{"type":"string"}},)"
+            R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
   }
 
@@ -151,20 +149,11 @@ class LabFiles {
     return nimbus::orch::ToolResult::ok(it->second);
   }
 
+  // The device's pure append (owner ruling 41): the rows go on the end, whatever the file holds.
   nimbus::orch::ToolResult appendTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-    const std::string p = str(a, "project"), n = str(a, "name"),
-                      t = str(a, "text"), key = str(a, "key"), sum = str(a, "sum");
+    const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
     if (p.empty() || n.empty() || t.empty())
       return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
-    if (!key.empty()) {
-      const nimbus::orch::CsvUpsert up =
-          nimbus::orch::planCsvUpsert(files_[p + "/" + n], t, key, sum, todayStr());
-      if (!up.ok) return nimbus::orch::ToolResult::fail(up.err);
-      if (up.changed) files_[p + "/" + n] = up.out;
-      // The device's own reply, word for word: the turn's effect ledger reads it (turn_effects).
-      return nimbus::orch::ToolResult::ok(nimbus::orch::renderUpsertReply(
-          up, p + "/" + n, sum, nimbus::orch::logDayOf(std::time(nullptr), true).zone));
-    }
     return appendPlain(p, n, t);
   }
 
@@ -184,9 +173,8 @@ class LabFiles {
   nimbus::orch::ToolResult appendPlain(const std::string& p, const std::string& n,
                                        const std::string& t) {
     const std::string path = p + "/" + n;
-    const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(
-        t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back(),
-        files_[path].empty() && nimbus::orch::isCsvName(n));
+    const nimbus::orch::AppendPlan plan =
+        nimbus::orch::planAppend(t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back());
     if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
     files_[path] += plan.bytes;
     return nimbus::orch::ToolResult::ok(
@@ -196,7 +184,7 @@ class LabFiles {
   }
 
 
-  // The lab's "today" (the same device rule the upsert and the tail view use).
+  // The lab's "today" (the same device rule the tail view's day total uses).
   static std::string todayStr() {
     const time_t now = std::time(nullptr);
     std::tm loc{};
