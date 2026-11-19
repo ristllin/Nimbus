@@ -455,15 +455,14 @@ def test_editing_a_merged_entry_fails(tree):
 
 @pytest.mark.parametrize("use_base", [True, False])
 def test_editing_the_baseline_fails_with_or_without_a_base(tree, use_base):
-    # A class no ledger entry has moved yet (RB-Q3a: an entry moves system), so its state is
-    # its baseline row; a swap, then that row rewritten to match it.
+    # Any class's baseline row (since RB-REC1 every e1 class has moved off its baseline): a swap,
+    # then that row rewritten to the swapped state.
     text = read(tree, gate.CHANGES)
-    cls = next(
-        c for c in cat.E1_CLASSES if f"| e1 | {c} | {stats(tree)[c]['bytes']} | {stats(tree)[c]['sha8']} |" in text
-    )
-    before = _swap(tree, cls)
+    cls = "tool_results"
+    size, sha = cat.E1_BASELINE[cls]
+    _swap(tree, cls)
     now = stats(tree)[cls]
-    row = f"| e1 | {cls} | {before['bytes']} | {before['sha8']} |"
+    row = f"| e1 | {cls} | {size} | {sha} |"
     assert row in text
     write(tree, gate.CHANGES, text.replace(row, f"| e1 | {cls} | {now['bytes']} | {now['sha8']} |"))
     errs = errors(tree, use_base=use_base)
@@ -673,8 +672,10 @@ def isolated_baseline(monkeypatch):
 
 
 def _release_line_growth(tree):
+    # Past its baseline, whatever deletions moved the class below it since (RB-REC1).
+    deficit = max(0, cat.E1_BASELINE["side_prompts"][0] - stats(tree)["side_prompts"]["bytes"])
     path, lit = plain_literal(tree, "side_prompts")
-    edit_literal(tree, path, lit, lit + " (a notice the release line added)")
+    edit_literal(tree, path, lit, lit + " (a notice the release line added" + "x" * deficit + ")")
 
 
 def test_a_rebaseline_makes_a_release_line_growth_the_baseline(tree, isolated_baseline):
@@ -785,6 +786,15 @@ def _grow(tree, cls="tool_descriptions", text=PAD):
 SPEC = {"lane": "RB-L1b", "prd": "section 4 (ledger tools)"}
 
 
+def _past_ceiling(tree, cls="tool_descriptions"):
+    """A growth text that takes the class over its effective ceiling (its ceiling plus its spec
+    allowance), whatever deletions moved the class below it (RB-L1d, RB-REC1)."""
+    changes = gate.parse_changes(read(tree, gate.CHANGES))
+    limit = cat.ceilings("e1")[cls] + gate.spec_allowance(tree, changes).get(("e1", cls), 0)
+    room = limit - stats(tree)[cls]["bytes"]
+    return PAD + "y" * max(0, room - len(PAD) + 16)
+
+
 def test_a_spec_entry_for_a_planned_lane_may_grow_one_class(tree, plan):
     before = _grow(tree)
     append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **SPEC))
@@ -792,7 +802,7 @@ def test_a_spec_entry_for_a_planned_lane_may_grow_one_class(tree, plan):
 
 
 def test_a_spec_entry_for_a_lane_not_in_the_plan_fails(tree, plan):
-    before = _grow(tree)
+    before = _grow(tree, text=_past_ceiling(tree))
     append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **{**SPEC, "lane": "RB-ZZ9"}))
     errs = errors(tree)
     assert any("a spec entry names a lane of the live plan" in e for e in errs), errs
@@ -810,7 +820,7 @@ def test_a_spec_entry_reused_for_a_second_change_fails(tree, plan):
     append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **SPEC))
     merge(tree)
     assert errors(tree) == []
-    _grow(tree, text=" and a second planted growth that no entry covers yet")  # same class, no new entry
+    _grow(tree, text=" and a second planted growth" + _past_ceiling(tree))  # same class, no new entry
     errs = errors(tree)
     assert any("e1 tool_descriptions: model-facing text changed" in e for e in errs), errs
     assert any("over its ceiling" in e for e in errs), errs
