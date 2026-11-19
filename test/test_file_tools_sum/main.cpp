@@ -123,7 +123,7 @@ struct RefSplitter {
   }
   // A comment line here (first non-blank byte '#'): skip to past its line end, quotes or not.
   bool skipComment() {
-    const size_t j = f.find_first_not_of(" \t", i);
+    size_t j = f.find_first_not_of(" \t", i == 0 && f.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : i);
     if (j == std::string::npos || f[j] != '#') return false;
     const size_t nl = f.find('\n', j);
     i = nl == std::string::npos ? f.size() : nl + 1;
@@ -240,6 +240,7 @@ struct Ref {
   std::string errorStart;
   uint64_t lines = 0;
   size_t records = 0, matched = 0, outOfRange = 0, notCompared = 0, fieldCount = 0, tooLong = 0, empty = 0;
+  size_t fieldCountOutside = 0;
   std::vector<RefSum> sums;
   std::vector<uint32_t> matchedLines;
   std::vector<std::string> matchedRaw;
@@ -287,8 +288,9 @@ void refRecord(Ref& ref, const RefRecord& r, size_t nfields, int key, const std:
   if (r.openQuote) ref.openQuote = r.line;
   if (r.tooLong) { ++ref.tooLong; ref.tooLongL.push_back(span); return; }
   const auto fs = refFields(r.raw);
+  const int m = key < 0 ? 1 : size_t(key) < fs.size() ? refRange(fs[size_t(key)], q.from, q.to.empty() ? q.from : q.to) : -1;
+  if (fs.size() != nfields && m == 0 && r.line == r.endLine) { ++ref.fieldCountOutside; return; }
   if (fs.size() != nfields) { ++ref.fieldCount; ref.fieldCountL.push_back(span); return; }
-  const int m = key >= 0 ? refRange(fs[size_t(key)], q.from, q.to.empty() ? q.from : q.to) : 1;
   if (m < 0) { ++ref.notCompared; ref.notComparedL.push_back(span); }
   if (m == 0) ++ref.outOfRange;
   if (m <= 0) return;
@@ -470,7 +472,9 @@ void checkAgainstReference(const std::string& file, const CsvQuery& q, const Csv
   TEST_ASSERT_EQUAL_MESSAGE(ref.comments, r.commentLines, what);
   checkSpans(ref.commentRuns, r.commentSpans, what);
   // Nothing is dropped silently: every record is in exactly one bucket.
-  TEST_ASSERT_EQUAL_MESSAGE(r.records, r.matched + r.outOfRange + r.notCompared.count + r.fieldCount.count + r.tooLong.count,
+  TEST_ASSERT_EQUAL_MESSAGE(ref.fieldCountOutside, r.fieldCountOutside, what);
+  TEST_ASSERT_EQUAL_MESSAGE(r.records, r.matched + r.outOfRange + r.notCompared.count + r.fieldCount.count +
+                                           r.fieldCountOutside + r.tooLong.count,
                             what);
   TEST_ASSERT_EQUAL_MESSAGE(ref.sums.size(), r.sums.size(), what);
   for (size_t c = 0; c < ref.sums.size(); ++c) {
@@ -1156,6 +1160,62 @@ static void test_comment_lines_are_counted_once_and_never_summed() {
       renderCsvRead(q, o.result).c_str());
 }
 
+// Stack review P: a day's result never lists another day's rows with a wrong field count; it
+// counts them once. A bad row on the queried day is named and left out of the total.
+static void test_bad_rows_of_other_days_are_counted_not_listed() {
+  const std::string f =
+      "date,occasion,item,grams,kcal\n"
+      "2026-11-18,lunch,toast, butter,80,260\n"
+      "2026-11-19,breakfast,oats,60,230\n"
+      "2026-11-19,lunch,\"rice, beans\",250,410\n"
+      "2026-11-20,dinner,soup, hot,300,180\n"
+      "2026-11-21,dinner,soup, hot, salted,300,180\n";
+  CsvQuery q;
+  q.column = "date";
+  q.from = "2026-11-19";
+  q.sum = {"kcal"};
+  auto o = scanWith(f, q, 7);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING(
+      "rows 2 of 5 where date 2026-11-19..2026-11-19; sum kcal=640; 3 other rows outside the range have a wrong field count",
+      renderCsvTail(q, o.result).c_str());
+  q.from = "2026-11-20";
+  o = scanWith(f, q, 7);
+  TEST_ASSERT_EQUAL_STRING(
+      "rows 0 of 5 where date 2026-11-20..2026-11-20; sum kcal=0; skipped 1 (line 5: field count is not the header's 5); "
+      "2 other rows outside the range have a wrong field count",
+      renderCsvTail(q, o.result).c_str());
+  // On the owner file's shape, a day with no bad row has no skipped clause.
+  for (const ShapeDomain& d : kShapes) {
+    Rng g(5150 + d.maxA);
+    ShapeCounts n;
+    const std::string file = shapeFile(g, d, 600, n);
+    size_t clean = 0;
+    for (int day = 0; day < 365; ++day) {
+      const CsvQuery dq = shapeQuery(d, dateOf(day), "");
+      const auto r = scanWith(file, dq, 4096);
+      checkAgainstReference(file, dq, r, d.header);
+      if (r.result.fieldCount.count == 0) {
+        ++clean;
+        TEST_ASSERT_TRUE(renderCsvTail(dq, r.result).find("; skipped ") == std::string::npos);
+      }
+    }
+    TEST_ASSERT_TRUE(clean > 100);
+  }
+}
+
+// Stack review Q: a byte order mark before a leading comment line hides nothing.
+static void test_a_bom_before_a_leading_comment_line() {
+  CsvQuery q;
+  q.sum = {"amount"};
+  const auto o = scanWith("\xEF\xBB\xBF# notes\ndate,amount\n2026-11-19,5\n", q, 1);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("rows 1 of 1; sum amount=5; 1 comment line skipped (line 1)", renderCsvTail(q, o.result).c_str());
+  const auto h = scanWith("\xEF\xBB\xBF" "date,amount\n2026-11-19,5\n", q, 2);
+  TEST_ASSERT_TRUE_MESSAGE(h.ok, h.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("\nL1 date,amount\nL2 2026-11-19,5\nrows 1 of 1; sum amount=5", renderCsvRead(q, h.result).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scan_agrees_with_the_reference_over_three_domains_and_hostile_rows);
@@ -1176,5 +1236,7 @@ int main(int, char**) {
   RUN_TEST(test_owner_shaped_files_name_every_row_left_out_of_a_total);
   RUN_TEST(test_a_year_of_the_owner_shape_is_exact_in_each_domain);
   RUN_TEST(test_comment_lines_are_counted_once_and_never_summed);
+  RUN_TEST(test_bad_rows_of_other_days_are_counted_not_listed);
+  RUN_TEST(test_a_bom_before_a_leading_comment_line);
   return UNITY_END();
 }

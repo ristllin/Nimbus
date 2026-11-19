@@ -7,7 +7,8 @@ gets one first, and a row identical to a recent line is named.
 Totals: `read_file` with `sum` (columns to total) and optionally `column` with `from` and
 `to` (a range: `2026-11-19` is a day, `2026-11` a month). Totals are exact. The result says
 how many rows it covers and names every row left out, by line: blank or non-number cells,
-rows with a field count unlike the header's, keys not like `from`.
+rows with a field count unlike the header's (outside the range they are only counted),
+keys not like `from`.
 
 A line whose first non-blank character is `#` is a comment: never a row, never summed;
 reads count it. Shown rows carry `L<n>`, their line number.

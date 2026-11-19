@@ -308,13 +308,18 @@ struct CsvScanner::Impl {
     if (c == '"' && fieldStart) inQ = true;
     fieldStart = false;
   }
+  // A byte of a UTF-8 byte order mark at the very start of the file (blank for the comment test).
+  bool bomByte(char c) const {
+    static const char kBom[] = "\xEF\xBB\xBF";
+    return recLine == 1 && recLen < 3 && res.bytes == recLen + 1 && c == kBom[recLen];
+  }
   // True when c belongs to a comment line (and is consumed by it).
   bool commentByte(char c) {
     if (inComment) {
       if (c == '\n') comment(uint32_t(physLine++));
       return true;
     }
-    if (!leadBlank || c == ' ' || c == '\t' || c == '\n') return false;
+    if (!leadBlank || c == ' ' || c == '\t' || c == '\n' || bomByte(c)) return false;
     leadBlank = false;
     return inComment = c == '#';
   }
@@ -403,14 +408,23 @@ struct CsvScanner::Impl {
     ++res.records;
     if (tooLong) return spanAdd(res.tooLong, recLine, lastLine), true;
     std::string_view want[kWanted];
-    if (!fields(want)) return spanAdd(res.fieldCount, recLine, lastLine), true;
+    const bool counted = fields(want);
     const int r = keyIdx >= 0 ? inRange(want[0]) : 1;
+    if (!counted) return badCount(r, lastLine);
     if (r < 0) spanAdd(res.notCompared, recLine, lastLine);
     if (r == 0) ++res.outOfRange;
     if (r <= 0) return true;
     ++res.matched;
     show();
     return remember() && addSums(want + 1);
+  }
+  // A row whose field count differs from the header's. Another day's (its key plainly out of
+  // range) is counted only; one in range, not comparable or spanning lines (it may hold other
+  // rows) is named by line.
+  bool badCount(int r, uint32_t lastLine) {
+    if (r == 0 && lastLine == recLine) ++res.fieldCountOutside;
+    else spanAdd(res.fieldCount, recLine, lastLine);
+    return true;
   }
 
   void show() {
@@ -680,6 +694,10 @@ std::string tailFacts(const CsvQuery& q, const CsvScanResult& r) {
                 join({": ", q.column, " blank or not like ", q.from}));
   out += clause("skipped", r.fieldCount, renderLines(r.fieldCount),
                 join({": field count is not the header's ", Num(r.headerFields)}));
+  if (r.fieldCountOutside)
+    out += join({"; ", Num(r.fieldCountOutside), r.fieldCountOutside == 1 ? " other row outside the range has"
+                                                                          : " other rows outside the range have",
+                 " a wrong field count"});
   out += clause("too long", r.tooLong, renderLines(r.tooLong), join({": over ", Num(kCsvRecordMax), " B"}));
   out += countClause("empty lines ", r.emptyLines);
   out += countClause("identical lines ", r.identicalGroups,

@@ -153,7 +153,12 @@ struct LineGroup {
 // stands (ruling 49: a file-format convention, not a domain rule): never a row, never summed,
 // never "not compared", counted once with its runs. The header is the first record that is
 // not a comment. Every data record (a CSV record after the header that is not an empty line)
-// is in exactly one of: matched, outOfRange, notCompared, fieldCount, tooLong.
+// is in exactly one of: matched, outOfRange, notCompared, fieldCount, fieldCountOutside,
+// tooLong. A row whose field count differs from the header's is still placed by its key (the
+// field at the header's key index): plainly out of range, it is only counted
+// (fieldCountOutside, no line list) unless it spans several lines (a quote that swallowed
+// rows); in range or not comparable, it is named by line
+// (fieldCount), so a day's result never lists bad rows of other days.
 struct CsvScanResult {
   uint64_t bytes = 0;          // bytes scanned (the file's size)
   uint64_t lines = 0;          // physical lines in the file
@@ -165,6 +170,7 @@ struct CsvScanResult {
   size_t headerFields = 0;
   LineList tooLong;            // over kCsvRecordMax
   size_t emptyLines = 0;       // empty physical lines outside a quoted field
+  size_t fieldCountOutside = 0;  // rows with a wrong field count whose key is plainly out of range
   size_t commentLines = 0;     // lines whose first non-blank byte is '#' (never a row, never summed)
   LineList commentSpans;       // their runs of consecutive lines (count = runs; ends = each run's last line)
   std::vector<CsvColumnSum> sums;  // in sum's order
@@ -226,6 +232,7 @@ class CsvScanner {
 //   [; rounded to 3 decimals <k> (<col> line <l>, ...)]
 //   [; not compared <k> (lines <l>, ... +N: <column> blank or not like <from>)]
 //   [; skipped <k> (lines <l>, ... +N: field count is not the header's <h>)]
+//   [; <k> other row(s) outside the range have a wrong field count]
 //   [; too long <k> (lines <l>, ... +N: over 8192 B)]
 //   [; empty lines <k>]
 //   [; identical lines <g> groups (<l>=<l>=<l>+N, <l>=<l>, ... +N)]

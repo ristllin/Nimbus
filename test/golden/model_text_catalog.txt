@@ -4,7 +4,7 @@
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
 # class device_notes bytes=1153 ceiling=2048 entries=32 sha8=9d5c54e9
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
-# class tool_results bytes=4674 ceiling=6144 entries=356 sha8=0dc220c4
+# class tool_results bytes=4765 ceiling=6144 entries=361 sha8=bda3f014
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
 # class summarizer bytes=654 ceiling=1024 entries=13 sha8=82cd5b54
 # class tool_descriptions bytes=4368 ceiling=10240 entries=46 sha8=6e063370
@@ -134,6 +134,7 @@ tool_results	lib/core/src/orch_csv_sum.cpp	3db97c25	20	"limit is at least 16"
 tool_results	lib/core/src/orch_csv_sum.cpp	b1b73ac0	35	"from and to take at most 3 decimals"
 tool_results	lib/core/src/orch_csv_sum.cpp	e3b0c442	0	""
 tool_results	lib/core/src/orch_csv_sum.cpp	f1945cd6	3	"\ufeff"
+tool_results	lib/core/src/orch_csv_sum.cpp	f1945cd6	3	"\ufeff"
 tool_results	lib/core/src/orch_csv_sum.cpp	ba5ec51d	1	")"
 tool_results	lib/core/src/orch_csv_sum.cpp	a52b8864	7	"column "
 tool_results	lib/core/src/orch_csv_sum.cpp	8a331fdd	1	"\""
@@ -190,6 +191,10 @@ tool_results	lib/core/src/orch_csv_sum.cpp	45822f54	2	": "
 tool_results	lib/core/src/orch_csv_sum.cpp	e08b2ab6	19	" blank or not like "
 tool_results	lib/core/src/orch_csv_sum.cpp	389595a4	7	"skipped"
 tool_results	lib/core/src/orch_csv_sum.cpp	26eae820	34	": field count is not the header's "
+tool_results	lib/core/src/orch_csv_sum.cpp	0a2d3f8f	2	"; "
+tool_results	lib/core/src/orch_csv_sum.cpp	42a3f9e2	32	" other row outside the range has"
+tool_results	lib/core/src/orch_csv_sum.cpp	16a51301	34	" other rows outside the range have"
+tool_results	lib/core/src/orch_csv_sum.cpp	ffc9848f	20	" a wrong field count"
 tool_results	lib/core/src/orch_csv_sum.cpp	24f3ac3b	8	"too long"
 tool_results	lib/core/src/orch_csv_sum.cpp	b3323712	7	": over "
 tool_results	lib/core/src/orch_csv_sum.cpp	c908bbb4	2	" B"
