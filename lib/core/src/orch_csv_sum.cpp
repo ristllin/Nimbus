@@ -158,16 +158,26 @@ std::string renderDec3(Dec3 d) {
 }
 
 // ---- the query ----------------------------------------------------------------------
+namespace {
+
+std::string checkSumNames(const std::vector<std::string>& sum) {
+  if (sum.size() > kCsvSumMax) return "sum takes at most " + num(kCsvSumMax) + " columns";
+  for (size_t i = 0; i < sum.size(); ++i) {
+    if (trimmed(sum[i]).empty()) return "sum has an empty column name";
+    for (size_t j = 0; j < i; ++j)
+      if (trimmed(sum[j]) == trimmed(sum[i])) return "sum names " + sum[i] + " twice";
+  }
+  return "";
+}
+
+}  // namespace
+
 std::string checkCsvQuery(const CsvQuery& q) {
   if (q.column.empty() && q.sum.empty()) return "column or sum is needed";
   if (!q.column.empty() && q.from.empty()) return "column needs from";
   if (q.column.empty() && (!q.from.empty() || !q.to.empty())) return "from and to need column";
-  if (q.sum.size() > kCsvSumMax) return "sum takes at most " + num(kCsvSumMax) + " columns";
-  for (size_t i = 0; i < q.sum.size(); ++i) {
-    if (trimmed(q.sum[i]).empty()) return "sum has an empty column name";
-    for (size_t j = 0; j < i; ++j)
-      if (trimmed(q.sum[j]) == trimmed(q.sum[i])) return "sum names " + q.sum[i] + " twice";
-  }
+  const std::string names = checkSumNames(q.sum);
+  if (!names.empty()) return names;
   if (q.limit < 16) return "limit is at least 16";
   Dec3 d;
   if (parseDec3(q.from, d) == NumParse::Rounded || parseDec3(q.to, d) == NumParse::Rounded)
