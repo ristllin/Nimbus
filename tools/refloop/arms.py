@@ -269,6 +269,10 @@ class Arm:
             out, err = self.d.call_tool("memory.write", {"content": fact})
             if err:
                 raise RuntimeError(f"seed memory: {out}")
+        for skill in seed.get("skills", []):  # the owner's own save: live at once, read through the index
+            body = self.d.post_form("/api/skills/save", {"id": skill["id"], "md": skill["md"]})
+            if '"ok":false' in body.replace(" ", ""):
+                raise RuntimeError(f"seed skill {skill['id']}: {body[:200]}")
 
     def close(self):
         if self.d:
@@ -298,6 +302,7 @@ class Arm:
             "chat_key": self.chat_key,
             "gap_s": gap,
             "cold_transition": self.cold_next or (gap is not None and gap > COLD_TURN_GAP_S),
+            "vt": round(self.vnow()),  # the arm's virtual time as the turn starts ({RD} in a check)
         }
         started = time.time()
         try:
@@ -553,4 +558,33 @@ class ArmB(Arm):
         self.conv = self._conversation(load=False)
 
 
-ARMS = {"A": ArmA, "B": ArmB}
+class DoubledAppend:
+    """The tools of arm B with one fault: every append is written twice (the model sees the first
+    result only). The counter-test arm: a suite that cannot see a doubled write is no gate."""
+
+    APPENDS = {"files_append", "append_file"}
+
+    def __init__(self, tools):
+        self.inner = tools
+
+    def specs(self) -> list:
+        return self.inner.specs()
+
+    def call(self, name: str, args: dict) -> tuple:
+        first = self.inner.call(name, args)
+        if name in self.APPENDS and not first[1]:
+            self.inner.call(name, args)
+        return first
+
+
+class ArmX(ArmB):
+    """Counter-test arm (RB-REC7): the reference loop whose appends write twice. Never a contender."""
+
+    name = "X"
+
+    def _connect(self):
+        super()._connect()
+        self.tools = DoubledAppend(self.tools)
+
+
+ARMS = {"A": ArmA, "B": ArmB, "X": ArmX}

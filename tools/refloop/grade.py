@@ -27,7 +27,7 @@ from pathlib import Path
 import fixtures
 from costs import add_spend, cost_usd
 from nimbusd_ctl import PROVIDER_ENV
-from scenario import user_turns
+from scenario import fill_days, running_day, user_turns
 
 JUDGE_MODEL = "claude-sonnet-5-5"
 JUDGE_PASSES = 2  # the second pass shows the two transcripts in the opposite order
@@ -83,6 +83,54 @@ def _one_file(arg: dict, state: dict) -> str | None:
     return state.get("files", {}).get(f"{arg['project']}/{arg['name']}")
 
 
+def _day_lines(arg: dict, state: dict) -> list:
+    """The file's rows dated arg['day'] (first field starts with it; comment lines are no rows)."""
+    body = _one_file(arg, state) or ""
+    return [ln for ln in body.split("\n") if ln.split(",", 1)[0].strip().startswith(arg["day"]) and ln.strip()[:1] != "#"]
+
+
+def _day_rows(arg: dict, state: dict) -> tuple:
+    """A day's rows in a tracking file: how many there are, which ones each regex finds (exactly
+    one row each), and that none match a forbidden one. Duplicated writes fail the count."""
+    rows = _day_lines(arg, state)
+    seen = f"{len(rows)} rows dated {arg['day']}: " + " | ".join(rows)[:240]
+    if "count" in arg and len(rows) != arg["count"]:
+        return False, seen
+    for rx in arg.get("match", []):
+        if sum(1 for r in rows if re.search(rx, r, FLAGS)) != 1:
+            return False, f"{rx!r} is not exactly one row; {seen}"
+    if any(re.search(rx, r, FLAGS) for rx in arg.get("none", []) for r in rows):
+        return False, f"a row matches one of {arg['none']}; {seen}"
+    return True, seen
+
+
+NUMBER_RE = re.compile(r"(?<![\d.])-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?")
+
+
+def _numbers(text: str) -> set:
+    out = set()
+    for m in NUMBER_RE.findall(text or ""):
+        try:
+            out.add(float(m.replace(",", "")))
+        except ValueError:
+            pass
+    return out
+
+
+def _reply_total(arg: dict, step: dict) -> tuple:
+    """A stated total is honest (ruling 49): the full figure, or the figure over the rows the read
+    covered together with a mention of the rows it left out. A partial total with no word about
+    the missing rows is a fail, and so is no total at all."""
+    reply = step.get("reply", "")
+    said = _numbers(reply)
+    if any(float(v) in said for v in arg.get("values", [])):
+        return True, "full total stated"
+    if any(float(v) in said for v in arg.get("partial", [])):
+        named = [rx for rx in arg.get("named", []) if re.search(rx, reply, FLAGS)]
+        return bool(named), ("partial total, missing rows named" if named else "partial total, missing rows NOT named")
+    return False, f"no expected total in: {reply[:160]}"
+
+
 # name -> fn(arg, step, state, turns) -> (passed, what was seen). `state` is the instance's state
 # after the turn (or at the end, for a final check); `turns` is every owner-turn record so far.
 CHECKS = {
@@ -115,23 +163,37 @@ CHECKS = {
     ),
     "memory_regex": lambda a, s, st, t: (bool(re.search(a, _memory_text(st), FLAGS)), _memory_text(st)[:300]),
     "memory_not_regex": lambda a, s, st, t: (not re.search(a, _memory_text(st), FLAGS), _memory_text(st)[:300]),
+    "day_rows": lambda a, s, st, t: _day_rows(a, st),
+    "reply_total": lambda a, s, st, t: _reply_total(a, s),
 }
+
+
+def _at_turn(arg, step: dict):
+    """{RD} in a check: the running day at the turn's virtual time (the arm records vt)."""
+    if "vt" not in step:
+        return arg
+    day = running_day(step["vt"])
+    return json.loads(json.dumps(arg).replace("{RD}", day))
 
 
 def run_checks(sc: dict, record: dict) -> list:
     """Every check of the scenario against one arm's record. A turn that never ran fails its checks."""
     turns = [s for s in record.get("steps", []) if s.get("kind") in ("say", "burst")]
+    if record.get("day0"):
+        sc = fill_days(sc, record["day0"])
     out = []
     for n, step in enumerate(user_turns(sc)):
         got = turns[n] if n < len(turns) else {}
         for check in step.get("expect") or []:
             ((name, arg),) = check.items()
+            arg = _at_turn(arg, got)
             passed, seen = (
                 CHECKS[name](arg, got, got.get("state") or {}, turns[: n + 1]) if got else (False, "turn not run")
             )
             out.append({"turn": n + 1, "check": name, "arg": arg, "pass": bool(passed), "seen": str(seen)[:300]})
     for check in sc.get("final") or []:
         ((name, arg),) = check.items()
+        arg = _at_turn(arg, turns[-1] if turns else {})
         state = record.get("final_state")
         passed, seen = CHECKS[name](arg, {}, state, turns) if state else (False, "no final state")
         out.append({"turn": "final", "check": name, "arg": arg, "pass": bool(passed), "seen": str(seen)[:300]})
@@ -232,6 +294,8 @@ def render_transcript(record: dict) -> str:
 def judge_pair(client, sc: dict, rec_a: dict, rec_b: dict, a_is_x: bool) -> dict:
     """One blind judgment of both arms. Returns per-arm scores, the verdict and the order used."""
     first, second = (rec_a, rec_b) if a_is_x else (rec_b, rec_a)
+    if rec_a.get("day0"):
+        sc = fill_days(sc, rec_a["day0"])
     prompt = (
         f"SCENARIO: {sc['title']}\nWHAT IT TESTS: {sc.get('pain', '')}\nGROUND TRUTH: {sc['judge_notes']}\n\n"
         f"===== ASSISTANT X =====\n{render_transcript(first)}\n\n"

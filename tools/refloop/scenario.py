@@ -7,6 +7,10 @@ full table):
   id, title, pain            what it is and which owner pain it stands for
   seed.files                 files both instances hold before turn 1: {project, name, text | fixture}
   seed.memories              facts stored with memory.write before turn 1
+  seed.skills                the owner's own skills before turn 1: {id, md} (saved as the owner, live at once)
+  {D0} {D-1} {D+1} ...       the run's dates: day 0 is the running day (day start 04:00) when the arm
+                             starts; {Dn:dm} is "18 Nov", {Dn:wd} "Wednesday"; {RD} in a check is the
+                             running day at that turn. Filled in everywhere (texts, seeds, checks, notes).
   turns                      a list of steps, each exactly one of:
       say: text              one owner message   (+ photos: [fixture, ...]); "{fixture:name}" in the
                              text is replaced by that text fixture
@@ -58,6 +62,7 @@ STATE_CHECKS = {
     "loops_not_regex",
     "memory_regex",
     "memory_not_regex",
+    "day_rows",
 }
 REPLY_CHECKS = {
     "reply_regex",
@@ -68,6 +73,7 @@ REPLY_CHECKS = {
     "tool_called",
     "tool_not_called",
     "min_tool_calls",
+    "reply_total",
 }
 CHECK_NAMES = STATE_CHECKS | REPLY_CHECKS
 
@@ -171,8 +177,11 @@ def validate(sc: dict, source: str = "") -> dict:
         _check_step(step, f"{source} step {n + 1}")
     _check_list(sc.get("final"), f"{source} final", STATE_CHECKS)
     seed = sc.get("seed") or {}
-    if set(seed) - {"files", "memories"}:
+    if set(seed) - {"files", "memories", "skills"}:
         raise ScenarioError(f"{source}: unknown seed key(s)")
+    for k in seed.get("skills", []):
+        if set(k) != {"id", "md"} or not re.match(r"^[a-z0-9][a-z0-9-]{0,47}$", str(k["id"])):
+            raise ScenarioError(f"{source}: a seed skill is an id (lowercase, digits, -) and its md")
     for f in seed.get("files", []):
         if set(f) - {"project", "name", "text", "fixture"} or ("text" in f) == ("fixture" in f):
             raise ScenarioError(f"{source}: a seed file is project, name and one of text or fixture")
@@ -197,6 +206,35 @@ def _expand(sc: dict) -> dict:
         if isinstance(step.get("say"), str) and "{fixture:" in step["say"]:
             step["say"] = FIXTURE_RE.sub(lambda m: fixtures.text(m.group(1)), step["say"])
     return sc
+
+
+DAY_RE = re.compile(r"\{D([+-]\d{1,3}|0)(?::(dm|wd))?\}")
+DAY_START_MIN = 4 * 60  # the device's default "day starts at" (lib/core day_start.h)
+
+
+def running_day(epoch: float, tz: str = RIG_TZ, day_start_min: int = DAY_START_MIN) -> str:
+    """The day still running at `epoch`: before the day start it is the calendar day before."""
+    return (datetime.fromtimestamp(epoch, ZoneInfo(tz)) - timedelta(minutes=day_start_min)).strftime("%Y-%m-%d")
+
+
+def fill_days(value, day0: str):
+    """Every {Dn}, {Dn:dm}, {Dn:wd} in a scenario (any nesting) as a date relative to day0 (YYYY-MM-DD)."""
+    base = datetime.strptime(day0, "%Y-%m-%d")
+
+    def one(m):
+        when = base + timedelta(days=int(m.group(1)))
+        form = m.group(2)
+        if form == "dm":
+            return f"{when.day} {when:%b}"
+        return when.strftime("%A") if form == "wd" else when.strftime("%Y-%m-%d")
+
+    if isinstance(value, str):
+        return DAY_RE.sub(one, value)
+    if isinstance(value, list):
+        return [fill_days(v, day0) for v in value]
+    if isinstance(value, dict):
+        return {k: fill_days(v, day0) for k, v in value.items()}
+    return value
 
 
 def load(path: Path) -> dict:

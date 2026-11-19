@@ -243,7 +243,11 @@ class ScenarioTest(unittest.TestCase):
 
 
 STATE = {
-    "files": {"trips/list.md": "# Lisbon 4-7 March\n- passport\n- oat milk 1 litre"},
+    "files": {
+        "trips/list.md": "# Lisbon 4-7 March\n- passport\n- oat milk 1 litre",
+        "money/s.csv": "date,category,note,amount\n2026-11-18,coffee,kiosk,2.40\n# replaced: 2026-11-19,x,y,1\n"
+        "2026-11-19,lunch,bakery,6.75\n2026-11-19,bus,day pass,4.10\n",
+    },
     "loops": [{"id": "l1", "at": "08:15"}],
     "memories": ["Dentist appointment is on 24 December at 10:00"],
     "rules": "",
@@ -274,12 +278,17 @@ CASES = {
         {"project": "trips", "name": "list.md", "regex": "bread"},
     ),
     "file_absent": ({"project": "trips", "name": "gone.md"}, {"project": "trips", "name": "list.md"}),
-    "files_at_most": (1, 0),
+    "files_at_most": (2, 1),
     "loops_count": (1, 0),
     "loops_regex": ("08:15", "07:30"),
     "loops_not_regex": ("07:30", "08:15"),
     "memory_regex": ("24 December", "14 December"),
     "memory_not_regex": ("14 December", "24 December"),
+    "day_rows": (
+        {"project": "money", "name": "s.csv", "day": "2026-11-19", "count": 2, "match": ["bakery"], "none": ["kiosk"]},
+        {"project": "money", "name": "s.csv", "day": "2026-11-19", "count": 3},
+    ),
+    "reply_total": ({"values": ["560"]}, {"values": ["612.5"], "partial": ["52"], "named": ["line 7"]}),
 }
 
 
@@ -290,6 +299,59 @@ class GradeTest(unittest.TestCase):
         for name, (good, bad) in CASES.items():
             self.assertTrue(grade.CHECKS[name](good, STEP, STATE, EARLIER)[0], name)
             self.assertFalse(grade.CHECKS[name](bad, STEP, STATE, EARLIER)[0], name)
+
+    def test_a_doubled_append_fails_the_day_rows_check(self):
+        state = {"files": dict(STATE["files"])}
+        state["files"]["money/s.csv"] += "2026-11-19,bus,day pass,4.10\n"
+        arg = {"project": "money", "name": "s.csv", "day": "2026-11-19", "count": 2, "match": ["day pass"]}
+        self.assertTrue(grade.CHECKS["day_rows"](arg, {}, STATE, [])[0])
+        self.assertFalse(grade.CHECKS["day_rows"](arg, {}, state, [])[0])
+        self.assertFalse(grade.CHECKS["day_rows"]({**arg, "count": 3}, {}, state, [])[0])  # "day pass" twice
+
+    def test_a_partial_total_passes_only_when_it_names_the_missing_rows(self):
+        arg = {"values": ["124.30"], "partial": ["96.05"], "named": [r"line 9|pasty", r"line 18|Ines"]}
+        check = grade.CHECKS["reply_total"]
+        self.assertTrue(check(arg, {"reply": "You spent £124.30 that day."}, {}, [])[0])
+        self.assertTrue(check(arg, {"reply": "£96.05, but lines 9 and 18 have extra commas."}, {}, [])[0])
+        self.assertFalse(check(arg, {"reply": "You spent £96.05 that day."}, {}, [])[0])
+        self.assertFalse(check(arg, {"reply": "You spent about £100."}, {}, [])[0])
+        self.assertTrue(check({"values": ["2353"]}, {"reply": "2,353 kcal"}, {}, [])[0])
+
+    def test_day_placeholders_and_the_running_day(self):
+        sc = {"say": "Total for {D-1:dm} ({D-1:wd})?", "x": ["{D0}", {"d": "{D+1}"}], "rd": "{RD}"}
+        self.assertEqual(
+            scenario.fill_days(sc, "2026-11-19"),
+            {"say": "Total for 18 Nov (Wednesday)?", "x": ["2026-11-19", {"d": "2026-11-20"}], "rd": "{RD}"},
+        )
+        self.assertEqual(scenario.running_day(london(2026, 11, 20, 0, 30)), "2026-11-19")
+        self.assertEqual(scenario.running_day(london(2026, 11, 20, 4, 0)), "2026-11-20")
+        step = {"vt": london(2026, 11, 20, 0, 30)}
+        arg = grade._at_turn({"day": "{RD}"}, step)
+        self.assertEqual(arg, {"day": "2026-11-19"})
+
+    def test_a_seed_skill_is_an_id_and_its_md(self):
+        good = {"id": "x", "title": "t", "judge_notes": "n", "turns": [{"say": "hi"}]}
+        scenario.validate({**good, "seed": {"skills": [{"id": "my-log", "md": "---\ntitle: t\n---\nbody"}]}})
+        for bad in ({"id": "My Log", "md": "x"}, {"id": "a"}, {"id": "a", "md": "x", "extra": 1}):
+            with self.assertRaises(scenario.ScenarioError):
+                scenario.validate({**good, "seed": {"skills": [bad]}})
+
+    def test_the_counter_arm_writes_every_append_twice(self):
+        calls = []
+
+        class Tools:
+            def specs(self):
+                return []
+
+            def call(self, name, args):
+                calls.append(name)
+                return ("appended", False)
+
+        tools = arms.DoubledAppend(Tools())
+        self.assertEqual(tools.call("files_append", {"text": "a"}), ("appended", False))
+        tools.call("files_read", {})
+        self.assertEqual(calls, ["files_append", "files_append", "files_read"])
+        self.assertIn("X", arms.ARMS)
 
     def test_a_difference_said_in_words_counts(self):
         turns = [

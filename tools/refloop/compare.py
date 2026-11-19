@@ -22,6 +22,7 @@ A run is PAID: real provider turns on both arms. --max-usd stops new runs once t
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import gzip
 import json
 import sys
@@ -96,8 +97,11 @@ def run_task(job: Job, arm_name: str, args) -> str:
         return f"skip  {tag} (already run)"
     if total_spend(ledger) >= args.max_usd:
         return f"HELD  {tag}: the spend ledger reached --max-usd {args.max_usd}"
+    day0 = scenario.running_day(time.time())  # the run's day 0 ({D0}); the clock starts at real time
+    job = dataclasses.replace(job, scenario=scenario.fill_days(job.scenario, day0))
     arm = ARMS[arm_name](job)
     rec = {
+        "day0": day0,
         "arm": arm_name,
         "model": job.model,
         "scenario": job.scenario["id"],
