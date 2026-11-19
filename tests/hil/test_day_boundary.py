@@ -72,7 +72,7 @@ def _turn(bench, net, at: int, text: str) -> str:
 def test_last_nights_estimate_is_in_the_request_after_midnight(device, net):
     import kit
     from test_l52_history_cache import _history
-    from test_qw3_food_log_midnight import _anthropic_key, _clock, _london
+    from test_day_boundary_append import _anthropic_key, _clock, _london
 
     kit.MODEL = MODEL
     bench = kit.StormBench(device, net, leg="dayb")

@@ -232,9 +232,8 @@ Notes:
   `desc:`; the assistant's history rows carry a `skills:` tag saying which
   skills a reply used.
 
-Nothing is attached by keyword: since v5.2.0 the food playbooks (`food-log`, `food-coach`)
-are gone, and an approved stored skill about food is read from the `[SKILLS]` index like
-any other.
+Nothing is attached by keyword: since v5.2.0 no built-in skill serves one use case, and an
+approved stored skill is read from the `[SKILLS]` index like any other.
 
 ## `prefs.*` - the owner's standing rules
 
@@ -244,7 +243,7 @@ ride the never-dropped part of every owner-facing prompt as `[STANDING RULES]`.
 
 | Tool | Description (as registered) | Arguments | State |
 |---|---|---|---|
-| `prefs.edit` | Your owner's STANDING RULES: always/never rules they want in EVERY reply whatever the topic. Add one only when the owner asks in their own words; facts and topic-specific likes go to memory, and a meal or a day's total to the food ledger (a dated one-off fact is refused here). | `action` (**required**, `add` \| `replace` \| `remove` \| `list`), `text` (string), `id` (string, e.g. `p3`) | live (owner/admin only) |
+| `prefs.edit` | Your owner's STANDING RULES: always/never rules they want in EVERY reply whatever the topic. Add one only when the owner asks in their own words; facts, one-off details and topic-specific likes go to memory (a dated one-off fact is refused here). | `action` (**required**, `add` \| `replace` \| `remove` \| `list`), `text` (string), `id` (string, e.g. `p3`) | live (owner/admin only) |
 
 Notes:
 - Owner-only: a member or guest turn never sees the tool or the rules.
@@ -255,11 +254,10 @@ Notes:
 - The owner sees every change in a line the device writes itself, over Telegram.
 - A rule whose words ban em dashes also switches on a device-enforced filter
   that removes them from every delivered reply.
-- A dated one-off fact (a date or a day word with a meal, a day's total or a
-  measurement, and no always, never or every) is refused on every add path
-  (`prefs.edit`, `/prefs add`, the web page) with where it belongs: a meal or a
-  total goes to the food ledger, a measurement to memory. A `standing: true`
-  `mem_write` of a dated measurement is stored as an ordinary memory instead.
+- A dated one-off fact (a date or a day word with a reported figure, and no always,
+  never or every) is refused on every add path (`prefs.edit`, `/prefs add`, the web
+  page): it belongs in memory or in a file the owner keeps. A `standing: true`
+  `mem_write` of a dated fact is stored as an ordinary memory instead.
 - `list` and `/prefs` show each rule's age ("added 11 days ago") and, under
   their own heading, the rules moved to memory at boot as dated facts, each with
   `/prefs restore <id>`.
@@ -348,7 +346,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
 | `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV, and with `sum` a day's total of that column. | `project` (**required**), `name` (**required**), `offset` (number), `tail` (number of rows, max 200), `sum` (optional, a numeric column), `date` (optional, `YYYY-MM-DD`; default today) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
-| `files.append` | Add rows to a text document (a log, a CSV); creates it when missing. Without `key`, the rows go on the end and nothing stored is rewritten. With `key`, a keyed CSV update: a row is its date plus its key, so the same date and key again replaces that row only when it describes the same item (a correction; the device decides by the items column, and a different item under the same key is appended under a new unique key, e.g. `dinner-2`, with the stored row kept) and other days are never touched. Every replace keeps the replaced row in the file as a `#replaced:` history row and the reply names what it held. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call; with `key`, the stored header row first), `key` (optional, the column that tells one day's rows apart, such as `meal`; the log needs a date column), `sum` (optional, a numeric column - the reply carries the day totals), `replace` (optional, `"all"`: when the key names several stored rows that are one item logged twice, this row replaces them) | live |
+| `files.append` | Add rows to the END of a text document (a log, a CSV); creates it when missing. Only the new rows are written: nothing stored is read back, replaced or rewritten. Up to 4 KB per call. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call) | live |
 | `files.edit` | Edit a saved text document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - instead of reading and re-saving the whole file. Replaces the first match by default; `all: true` for every match, `count` for the first N. The reply says how many matches were found and replaced; a no-match changes nothing, and a replacement identical to the find text says no change. An edit to a keyed CSV (a log with a date and a key column) also names the rows it removed, added or changed, and a later re-add that skips a removed row is named too. A file over 1 MB is refused. | `project` (**required**), `name` (**required**, a text extension), `find` (**required**, max 2 KB), `replace` (optional, max 4 KB; empty deletes the span), `all` (boolean, default false), `count` (integer, default 1, max 200) | live |
 | `files.delete` | Delete one saved file for good: the bytes and the index entry both go. Only a file the caller may write can be deleted; anyone else's file is simply not found. A missing file is refused by name. | `project` (**required**), `name` (**required**) | live |
 | `artifact.save` | Persist a TEXT artifact (report, summary, document) into the durable store. | `project` (**required**), `name` (**required**, with extension `.md`/`.txt`/`.csv`/`.json`), `text` (**required**, max ~24 KB per call) | live |
@@ -369,49 +367,22 @@ Notes:
   It is **allowed in scheduled turns**.
 - `artifact.save` overwrites the same `project`+`name`, refuses a write onto
   another person's file, and counts against the caller's file-storage quota.
-- `files.append` without `key` writes only the new rows (line ends normalized,
-  a final line end added). When the file's last row has no line end, the new
-  rows start on a fresh line; on a CSV whose last row is provably cut by a power
-  loss (a quote left open, fewer fields than the header, or no number where the
-  row before holds one) that row is first set aside as a `#cut:` row, never
-  counted, and the reply says so. It follows the same ownership and quota rules
-  as `artifact.save`.
-- The keyed update (a `key` column) is the one exception to "never rewrites":
-  the merge happens on the device, row by row from the card, so only the new
-  rows cross the model's context and a log of up to 1 MB fits. A row is
-  identified by its date plus its key column. The date column is found by its
-  name (`date`, `day`, or a name holding date, day or time) or by its content
-  (the column the new rows fill with `YYYY-MM-DD` dates); a log with no date
-  column is refused for keyed writes. The same date and key again replaces
-  that row only when the new row describes the SAME item - decided on the
-  device by the items column (or, without one, by the row's non-date,
-  non-key, non-figure fields), never by the model's wording: a different
-  item under the same key (a second dinner under `dinner`) is appended
-  under a new unique key (`dinner-2`, avoiding the keys the day already
-  holds) and the stored row is kept, so a reused label never silently
-  replaces a row describing a different item. `key` = the date column
-  itself (a one-row-per-day ledger) has no reused label and replaces as
-  before. Every replace keeps the replaced row in the file as a
-  `#replaced:` history row (never matched or counted), so a disputed day
-  can be re-read against what it held before; the reply names what each
-  replaced row held. The call is
-  refused, and nothing is written, when the key names more than one stored row
-  (unless `replace: "all"`, which keeps the others as `#superseded:` rows) or
-  two rows of the call, when the header differs from the stored one (the reply
-  names the stored header when it is plain labels), or when a row has the wrong
-  field count (a comma inside a field needs double quotes), no key, a date that
-  is not `YYYY-MM-DD` or is after today, or no plain number in the `sum` column.
-  A stored last row without a line end is complete when it is well-formed (it
-  gets its line end); a provably cut one is replaced by a new row with its date
-  and key, or kept as a `#cut:` row that is never counted; rows starting with
-  `#` are comments. The
-  reply says what each row did (a replaced row with what it was: its figure
-  and its items, and a rekeyed row with the stored key it kept) and, with
-  `sum`, each day's total with its row count: today first, with its time zone
-  (`today's kcal (2026-10-25, GMT): 976 from 2 rows`), then every other date
-  written. With no time zone set the device's day is the UTC day and the reply
-  says so. `files.read {tail, sum, date}` gives any day's total the same way.
-- A whole-file write (`artifact.save`, a keyed update, an upload) never removes
+- `files.append` writes only the new rows (line ends normalized, a final line end
+  added) on every path: no row is merged, replaced, refused or set aside, whatever
+  the file holds (owner ruling 41: a food log, an expenses log and a training log
+  append alike). When the file's last row has no line end, the new rows start on a
+  fresh line and the reply says so. A correction is a `files.edit` of the row. An
+  argument the tool does not take (an older `key`, `sum` or `replace`) is named as
+  not read, and the rows are appended as sent. It follows the same ownership and
+  quota rules as `artifact.save`.
+- `files.read {tail, sum, date}` gives one day's total of a numeric column: the rows
+  whose date column (by its name: `date`, `day`, or a name holding date, day or time,
+  else the first column of `YYYY-MM-DD` dates) holds that day, today by default in the
+  device's time zone (`today's amount (2026-10-25, GMT): 976 from 2 rows`). A row that
+  states a total is not counted, a row whose columns cannot be read (a field count
+  other than the header's, a figure that is not a plain number) leaves the total "not
+  known" until it is fixed, and rows with no `YYYY-MM-DD` date are counted apart.
+- A whole-file write (`artifact.save`, an upload) never removes
   the stored copy before the new one is in place: the old copy is kept as a
   backup until the new one lands, a failure puts it back, and a power cut in
   between is repaired at the next start. If even the put-back fails, every

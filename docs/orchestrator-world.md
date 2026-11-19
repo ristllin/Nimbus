@@ -62,10 +62,10 @@ surfaces from it.
 The assistant adds one only when the owner asks in their own words
 (`prefs.edit`, or a `mem_write` item marked `standing:true`), never from an
 unattended turn, and a turn that read outside content can only add one that
-waits for the owner's approval. A dated one-off fact is refused as a rule
-with where it belongs: a meal or a day's total goes to the food ledger, a
-measurement or an event to memory (a `standing: true` memory of a dated
-measurement is stored as an ordinary memory). Once per device, rules saved
+waits for the owner's approval. A dated one-off fact (a date or a day word
+with a reported figure) is refused as a rule: it belongs in memory or in a file
+the owner keeps (a `standing: true` memory of a dated fact is stored as an
+ordinary memory). Once per device, rules saved
 before this check that read as dated facts leave the rules for memory at boot
 (logged, the owner told once, and `/prefs restore <id>` brings one back). The
 owner manages the list with `/prefs`
@@ -96,17 +96,19 @@ removed when the owner pairs a drop cue with it ("forget the skyr label"). The
 model adds one with `openq.edit` when the owner leaves something open, and
 never from an unattended turn or a turn that read outside content.
 
-### 1.1d Today's food ledger
+### 1.1d Tables the owner keeps, and recent actions
 
-Meals live in one ledger file per person, never in memory: `food/food-log.csv`
-for the owner (`food/food-log-<chat id>.csv` for a member, who cannot write the
-owner's file), one row per eating occasion (`date,meal,items,kcal,protein_g`),
-written with `files.append` keyed by date and meal, so a correction replaces its
-row. Since v5.2.0 the ledger does not ride the prompt and no food playbook is
-attached by keyword: the model reads the ledger with a tool when a turn needs it,
-and the owner's own food skill from the `[SKILLS]` index. What rides every turn is
-the chat's recent actions (below). The fold summary copies the ledger's dated
-totals.
+Nimbus has no built-in table for any one use case (owner ruling 41): a food log, an
+expenses log or a training log is an ordinary CSV file the owner keeps in any project,
+written with the file tools. `files.append` only appends: the rows go on the end of the
+file as sent, nothing stored is read back, replaced or rewritten, and a file whose last
+line has no line end gets one before the new rows. A correction is a `files.edit` of
+the row. `files.read` with `tail` reads the end of the file, and with `sum` (a numeric
+column) adds that column over the rows dated today (or `date`): a row that states a
+total is not counted, a row whose columns cannot be read leaves the total "not known"
+until it is fixed, and rows with no YYYY-MM-DD date are counted apart. No table rides
+the prompt: the model reads a file with a tool when a turn needs it, and the owner's
+own habits (columns, targets, how he reads labels) live in his own note and skill.
 
 **Recent actions.** The per-turn block carries `[RECENT ACTIONS ...]`: the newest 12
 effect receipts of this chat from its effects ring (`effect_ring.h`), oldest first,
@@ -118,41 +120,6 @@ image.generate) never renders. Another chat's
 receipts never appear, an empty ring gives no block, and the block sits after the
 cache point, byte for byte the same while nothing changed (`compose.h`
 `renderRecentActions`).
-
-The food log is one file: a write to another CSV whose name says both food and log
-(or only "log" in a food project) is refused with the call to use instead; a weight
-log or a list of meal ideas is not one, and a log left at `nutrition/meal_log.csv`
-folds into the ledger at the next start. It goes once all its figures are in the
-ledger; if a row cannot be read it stays, marked as folded, and does not fold again.
-The day's sum counts meal rows and nothing
-else: a bare comma in a row's items is read back into the items, a row that states
-a total is never summed, a pasted header is no row, and a meal logged twice counts
-once with its last figures. A row the device cannot read for certain leaves the
-day's total "not known" until it is fixed. A meal with no protein figure stays
-unknown, so the day shows protein known and unknown apart.
-
-A labelled row is no longer checked against the label's arithmetic or the turn's inputs
-before it lands: that check lived in the claim check, which v5.2.0 deleted (lane RB-Q1b),
-and lane RB-L1d replaces the keyed ledger with row ids and exact warnings.
-A food or pack photo sent with no question means eaten whole: the per-serving
-(whole pack) figures are logged, said in one line with the undo (re-send the row
-with 0 kcal), and the device never asks whether the whole pack was eaten. When a
-second vision provider read the same label (the photo's stored record,
-`(transcribed by X) ...`), the device compares the reply's read with that record and
-each disagreement is surfaced with both values, never averaged. And the owner's
-word beats the log: a stored row is not evidence against the owner - when they
-dispute something, the reply shows the row's source and corrects it, and a claim
-that the owner said, confirmed or photographed something needs a real message of
-theirs behind it (the device no longer checks this in the reply since v5.2.0; the
-truth check only asks whether a reply claims a stored change that no effect backs, see
-[turn anatomy](turn-anatomy.md#the-truth-check)).
-
-Daily targets live in `food/food-targets.csv` (`date,metric,target,source`), a row
-per metric with where it came from. Since v5.2.0 (lane RB-Q1b) neither a write to the targets file
-nor the reply's figures are checked against the turn's sources: the refusal of a sourceless
-target and the reply's food figure check went with the claim check. A keyed write says when an
-earlier day's row of the same food holds a figure off by more than a quarter, so the same food
-keeps the same estimate.
 
 ### 1.2 Scratchpad - model-owned working goals
 A set of goal tiers (short-term / mid-term / long-term goals plus an

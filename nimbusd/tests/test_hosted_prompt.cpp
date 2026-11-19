@@ -119,79 +119,53 @@ static void testClockFollowsTheOwnersZone(ndtest::Ctx& c) {
 // page's turn (POST /api/chat) names the web UI, as the device's page does, and a
 // real Telegram message from an approved chat still says Telegram.
 
-// Lane CTX (CUM-840), RB-Q3a: the hosted turn reads today's food ledger from the VN's own
-// files store (the figure check's source and the fold's day), but since v5.2.0 the ledger
-// never rides the prompt, and no food playbook does either: a seeded owner ledger and a
-// food message give a turn with neither. With no ledger file there is nothing either.
-static void testFoodLedgerRidesTheHostedTurn(ndtest::Ctx& c) {
-  std::printf("  -- the VN turn carries no food ledger block and no playbook --\n");
-  const std::string where =
-      std::string(nimbus::orch::kFoodLedgerProject) + "/" + nimbus::orch::kFoodLedgerOwnerName;
-  const std::string row = "date,time,food,amount_unit,kcal,note\n";
-  {
-    clearEnv();
-    setenv("CUMULO_API_KEY", "cumulo_sk_test_FOOD", 1);
-    FakeHttpTransport tx;
-    for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
-    Config cfg;
-    NimbusdRig rig(cfg, opts("hp-food"), &tx);
-    rig.files().seed(where, row);
-    rig.say("owner", "I ate lunch, log it please");
-    c.ok(!tx.seen.empty(), "the ledger turn dispatched");
-    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER"), "no ledger block rides the VN turn");
-    c.ok(!has(tx.seen[0].body, "[FOOD PLAYBOOK"), "no food playbook rides the VN turn");
-    c.ok(!has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"), "no ledger header row rides");
-    c.ok(!has(tx.seen[0].body, where), "the turn never names the ledger file");
-    clearEnv();
-  }
-  // Without one: no block, no phantom day.
-  {
-    clearEnv();
-    setenv("CUMULO_API_KEY", "cumulo_sk_test_FOOD2", 1);
-    FakeHttpTransport tx;
-    for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
-    Config cfg;
-    NimbusdRig rig(cfg, opts("hp-food2"), &tx);
-    rig.say("owner", "what's on the agenda?");
-    c.ok(!tx.seen.empty(), "the plain turn dispatched");
-    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER - "), "no ledger block without a ledger");
-    clearEnv();
-  }
-  // A member's turn NEVER carries the owner's ledger (the review's finding D: the
-  // hosted store is owner-only, so the honest answer for an approved member is
-  // no block - never the owner's rows in the member's prompt).
-  {
-    clearEnv();
-    setenv("CUMULO_API_KEY", "cumulo_sk_test_FOOD3", 1);
-    FakeHttpTransport tx;
-    for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
-    Config cfg;
-    NimbusdRig rig(cfg, opts("hp-food3"), &tx);
-    rig.files().seed(where, row);
-    {
-      EngineThread eng(&rig);
-      eng.start();
-      ReplyBuffer replies;
-      WebApi api(&rig, &eng, &replies);
-      ApiResp out;
-      api.handle("POST", "/api/orch", "tgAllow=444", out);
-      c.eqi(out.status, 200, "the member chat is approved");
-      eng.stop();
+// RB-REC1 (owner ruling 41): no stored file rides a hosted turn by itself. Whatever table the
+// owner keeps (a food log, an expenses log, a training log: the same expectations for each),
+// neither the owner's turn nor an approved member's carries its rows, its header or its
+// name; the assistant reads a file with a tool when it needs one.
+static void testNoStoredTableRidesTheHostedTurn(ndtest::Ctx& c) {
+  std::printf("  -- the VN turn carries no stored table, for any domain --\n");
+  struct Table {
+    const char* path;
+    const char* header;
+    const char* row;
+    const char* message;
+  };
+  const Table tables[] = {
+      {"food/food-log.csv", "date,time,item,qty,kcal", "2026-11-19,12:40,soup,1,310", "I had soup for lunch, log it"},
+      {"money/expenses.csv", "date,time,item,qty,amount", "2026-11-19,12:40,train ticket,1,24.30", "I paid 24.30 for the train"},
+      {"gym/training.csv", "date,time,exercise,reps,kg", "2026-11-19,12:40,squat,5,80", "5 squats at 80 kg, log it"},
+  };
+  int n = 0;
+  for (const Table& t : tables) {
+    for (const char* who : {"owner", "444"}) {
+      clearEnv();
+      const std::string key = "cumulo_sk_test_TBL" + std::to_string(++n);
+      setenv("CUMULO_API_KEY", key.c_str(), 1);
+      FakeHttpTransport tx;
+      for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
+      Config cfg;
+      NimbusdRig rig(cfg, opts(("hp-tbl" + std::to_string(n)).c_str()), &tx);
+      rig.files().seed(t.path, std::string(t.header) + "\n" + t.row + "\n");
+      if (std::string(who) == "444") {
+        EngineThread eng(&rig);
+        eng.start();
+        ReplyBuffer replies;
+        WebApi api(&rig, &eng, &replies);
+        ApiResp out;
+        api.handle("POST", "/api/orch", "tgAllow=444", out);
+        c.eqi(out.status, 200, "the member chat is approved");
+        eng.stop();
+      }
+      rig.say(who, t.message);
+      const std::string what = std::string(t.path) + " / " + who;
+      c.ok(!tx.seen.empty(), ("the turn dispatched: " + what).c_str());
+      if (tx.seen.empty()) continue;
+      c.ok(!has(tx.seen[0].body, t.header), ("no header row rides: " + what).c_str());
+      c.ok(!has(tx.seen[0].body, t.row), ("no stored row rides: " + what).c_str());
+      c.ok(!has(tx.seen[0].body, t.path), ("the turn never names the file: " + what).c_str());
+      clearEnv();
     }
-    rig.say("444", "I ate lunch, log it please");
-    c.ok(!tx.seen.empty(), "the member turn dispatched");
-    // The data block is what leaks the owner's rows: its head is
-    // "[TODAY'S FOOD LEDGER - <file>". The food playbook sentence
-    // "[TODAY'S FOOD LEDGER] in this turn's context..." is generic coaching text
-    // and may legitimately ride any food turn - it carries no owner data, so the
-    // assertions target the data block and the rows/file, never the playbook phrase.
-    c.ok(!has(tx.seen[0].body, "[TODAY'S FOOD LEDGER - "),
-         "an approved member's turn carries NO ledger data block");
-    c.ok(!has(tx.seen[0].body, "date,time,food,amount_unit,kcal,note"),
-         "none of the owner's ledger rows ride the member's turn");
-    c.ok(!has(tx.seen[0].body, nimbus::orch::kFoodLedgerOwnerName),
-         "the member's turn never names the owner's ledger file");
-    clearEnv();
   }
 }
 
@@ -323,7 +297,7 @@ int main() {
   std::printf("=== hosted prompt truth (CUM-542, offline) ===\n");
   testEveryHeadGetsTheHostedTruth(c);
   testClockFollowsTheOwnersZone(c);
-  testFoodLedgerRidesTheHostedTurn(c);
+  testNoStoredTableRidesTheHostedTurn(c);
   testRecentActionsRideTheHostedTurn(c);
   testWebPageIsTheWebChannel(c);
   testOverflowAfterAToolIsTrimmedInTheLoop(c);

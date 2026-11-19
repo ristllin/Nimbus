@@ -529,14 +529,13 @@ flowchart LR
   the `compact` attribution (never a routine's budget). Gates (low heap, over
   budget, turn in flight) **defer** - only a cycle whose every rung failed counts,
   and it schedules the next try (fold-ladder.md), never a pause.
-- **Dated, with the day's ledger**: the fold input closes with `[TODAY]` and
-  the person's food ledger for the day (its rows and totals; only the date and
-  totals when the input is near the one-string limit). The prompt has every
-  date written as YYYY-MM-DD (never today or yesterday) and every total name its
-  day, copies the ledger's totals and any open food question into Pending
-  items, never adds up a day's meals from the conversation, and drops rules that
-  belonged to a passing situation (how to answer repeated messages, an outage, a
-  workaround) once the conversation no longer shows it.
+- **Dated, from the conversation only**: the fold input is the previous summary
+  and the conversation since, nothing else (no data block of one use case closes
+  it, owner ruling 41). The prompt has every date written as YYYY-MM-DD from the
+  conversation's day markers (never today or yesterday) and every total name its
+  day, and drops rules that belonged to a passing situation (how to answer
+  repeated messages, an outage, a workaround) once the conversation no longer
+  shows it.
 - **Anchored, not cumulative**: each fold UPDATES the previous summary with
   the new slice (opencode's pattern), so fold cost stays bounded forever. The
   summary re-enters every prompt as `## CONVERSATION SUMMARY` - explicitly

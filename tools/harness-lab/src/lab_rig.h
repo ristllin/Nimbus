@@ -904,18 +904,6 @@ class LabRig {
     d.firstAllowedChat = [] { return std::string("owner"); };
     d.journalGc = [] {};
     wireHistory(d);
-    // Lane CTX: today's food ledger over the RAM files, as the device reads its card
-    // (the lab is single-owner, so every chat reads the owner's file).
-    d.foodLedger = [this](const std::string&) {
-      const std::string where = std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
-      orch::FoodLedger l = orch::scanFoodLedger(files_.get(where), files_.has(where),
-                                                orch::logDayOf(std::time(nullptr), true), orch::kFoodLedgerProject,
-                                                orch::kFoodLedgerOwnerName);
-      l.targets = orch::scanFoodTargets(
-          files_.get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodTargetsOwnerName));
-      if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_.foodPlanFiles();
-      return l;
-    };
 
     wireHooks(d);
 

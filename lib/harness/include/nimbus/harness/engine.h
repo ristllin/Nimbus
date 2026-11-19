@@ -20,7 +20,6 @@
 #include "nimbus/orch/budget.h"            // ContextBudget - the head's history marks
 #include "nimbus/harness/fold_ladder.h"    // FoldResult / FoldRung - the fold's ladder
 #include "nimbus/harness/skill_attach.h"   // AttachPick - the [ACTIVE SKILLS] picks (F1)
-#include "nimbus/orch/food_ledger.h"   // lane CTX: Deps::foodLedger
 #include "nimbus/orch/owner_prefs.h"     // lane QFIX: renderMemoryRoutingHint
 #include "nimbus/orch/episodic.h"       // EpisodicMessage (historyRows)
 #include "nimbus/orch/failure_chain.h"  // FailureChain - the turn's causes
@@ -350,11 +349,6 @@ class TurnEngine {
     // Unwired = 04:00.
     std::function<uint16_t()> dayStartMin;
 
-    // Lane CTX: today's food ledger for this chat's person (nimbus/orch/food_ledger.h;
-    // device: the canonical file streamed through FoodLedgerScan under the turn's
-    // read boundary). The figure check's sources and the fold's day; since RB-Q3a it
-    // never rides the per-turn block. Nullable => none.
-    std::function<nimbus::orch::FoodLedger(const std::string& chatId)> foodLedger;
     // RB-G0: the truth check's binding (the probe, the chat's ring, the stored modes). Null:
     // no check (host tests, a build without it).
     nimbus::orch::truth::Binding* truth = nullptr;
@@ -653,8 +647,6 @@ class TurnEngine {
   // RB-Q3a (day_context.cpp): the chat's recent actions into the per-turn block
   // (Deps::recentActions); no ledger block and no keyword playbook ride any prompt.
   void applyRecentActions(ComposeInputs& ci) const;
-  // The fold's day: [TODAY] and the ledger's view for this chat ("" = no clock).
-  std::string foldDayContext(const std::string& chatId) const;
   // modelsTool: the CONFIG's loop toggle is on, models.list is registered and the
   // head runs a tool loop, so [AVAILABLE MODELS] is the one pointer line instead
   // of the per-provider lists. Config-keyed, never this turn's heap gate: the

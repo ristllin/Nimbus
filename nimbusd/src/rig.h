@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
-#include "nimbus/orch/food_ledger.h"     // scanFoodLedger - the VN ledger (CUM-840)
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "connectors_store.h"
@@ -2785,26 +2784,6 @@ class NimbusdRig {
       if (access_->roleOf(chat) != orch::Role::Admin) return std::string();
       std::lock_guard<std::mutex> g(prefsMu_);
       return orch::observeOpenQ(openq_, ownerText, reply);
-    };
-    // Lane CTX (CUM-840): today's food ledger over the VN's own POSIX files store,
-    // the same scan the device runs - the hosted turn's per-turn block and the fold
-    // read the real path, not the desk device's card. The hosted store is
-    // OWNER-ONLY (posix_files.h), so a member's turn carries NO ledger: serving
-    // the owner's rows to an approved member's prompt would be a cross-principal
-    // disclosure (the review's finding D). The device serves per-principal
-    // (food_ledger_device.cpp); here an empty ledger is the honest answer for
-    // every non-owner chat.
-    d.foodLedger = [this](const std::string& chat) {
-      if (!access_->principalFor(chat).owner) return orch::FoodLedger{};
-      const std::string where =
-          std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodLedgerOwnerName;
-      orch::FoodLedger l = orch::scanFoodLedger(files_->get(where), files_->has(where),
-                                                orch::logDayOf(vclock::now(), true),
-                                                orch::kFoodLedgerProject, orch::kFoodLedgerOwnerName);
-      l.targets = orch::scanFoodTargets(
-          files_->get(std::string(orch::kFoodLedgerProject) + "/" + orch::kFoodTargetsOwnerName));
-      if (l.targets.kcal <= 0 && l.targets.protein <= 0) l.planFiles = files_->foodPlanFiles();
-      return l;
     };
 
     wireTurnHooks(d);

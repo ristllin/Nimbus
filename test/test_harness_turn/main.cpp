@@ -195,9 +195,6 @@ struct Rig {
   std::vector<std::string> recallQueries;
   std::vector<std::string> recallResult{"[92%] owner likes tea"};
   std::string recallDegraded;   // lane P: the cause when recall was keyword-only
-  // PRISM row 1: today's ledger as the device closure serves it (empty = no
-  // ledger file: the plain-chat turns below stay conversational).
-  nimbus::orch::FoodLedger foodLedger;
   std::vector<orch::ToolRegistry::Spec> specs;      // advertised registry tools
   std::vector<std::string> mcpRequests;
   std::string mcpResponse =
@@ -301,7 +298,6 @@ struct Rig {
       recallQueries.push_back(q);
       return nimbus::orch::RecallOut{recallResult, recallDegraded};
     };
-    d.foodLedger = [this](const std::string&) { return foodLedger; };
     d.composeInputs = [this](const std::string&) {
       agent::ComposeInputs in;
       in.hw = hw;
@@ -1366,37 +1362,18 @@ static void test_prompt_round_cap_follows_the_configured_loop() {
   TEST_ASSERT_TRUE(chat.debug[0].instructions.find("(at most 2)") == std::string::npos);
 }
 
-// PRISM row 1 (pre-5.0.0, the food-coach lift): the [TODAY'S FOOD LEDGER] block
-// is LIVE data, like a fresh result or a photo. A person turn whose ledger has
-// rows today keeps the FULL round budget: the capped coach answered the day
-// total from memory instead of spending a round re-reading the ledger (the
-// eval: mistral-large 34/35 pre-cap -> 30/35 under the cap, qty-pressed below
-// target). Since v5.2.0 no turn is capped below the configured budget (lane RB-Q1c),
-// with or without rows today.
-static void test_ledger_rows_keep_the_full_round_budget() {
-  Rig r;
-  r.cfg.rounds = 3;
-  r.foodLedger.today = "2026-10-28";
-  r.foodLedger.zone = "GMT";
-  r.foodLedger.project = nimbus::orch::kFoodLedgerProject;
-  r.foodLedger.name = nimbus::orch::kFoodLedgerOwnerName;
-  r.foodLedger.exists = true;
-  r.foodLedger.header = "date,meal,food,amount_unit,kcal,note";
-  r.foodLedger.rows.push_back("2026-10-28,breakfast,2 eggs,2 eggs,180,");
-  r.foodLedger.rowsToday = 1;
-  r.eng->handleMessage("what's today's food total?", "Roy", "1001");
-  TEST_ASSERT_EQUAL(1, (int)r.debug.size());
-  TEST_ASSERT_TRUE_MESSAGE(r.debug[0].instructions.find("several rounds (at most 3)") !=
-                               std::string::npos,
-                           "a turn with ledger rows keeps the configured budget");
-  // The same shape with no rows today keeps it too (no plain-chat cap since v5.2.0).
-  Rig plain;
-  plain.cfg.rounds = 3;
-  plain.foodLedger.today = "2026-10-28";   // a set clock, an empty day
-  plain.eng->handleMessage("what's today's food total?", "Roy", "1001");
-  TEST_ASSERT_EQUAL(1, (int)plain.debug.size());
-  TEST_ASSERT_TRUE(plain.debug[0].instructions.find("several rounds (at most 3)") !=
-                   std::string::npos);
+// PRISM row 1 (pre-5.0.0): a turn about a day's rows was capped below the configured round
+// budget and answered from memory instead of re-reading. Since v5.2.0 no turn is capped below
+// the configured budget (lane RB-Q1c), whatever the turn is about (RB-REC1: the same for a
+// food, an expenses and a training question).
+static void test_every_turn_keeps_the_full_round_budget() {
+  for (const char* ask : {"what's today's food total?", "what did I spend today?", "how many sets today?"}) {
+    Rig r;
+    r.cfg.rounds = 3;
+    r.eng->handleMessage(ask, "Roy", "1001");
+    TEST_ASSERT_EQUAL(1, (int)r.debug.size());
+    TEST_ASSERT_TRUE_MESSAGE(r.debug[0].instructions.find("several rounds (at most 3)") != std::string::npos, ask);
+  }
 }
 
 // EFF (26 Oct analysis): the turn's tool surface. With no live session, the
@@ -5665,7 +5642,7 @@ static void runFirstHalf() {
   RUN_TEST(test_failed_attempt_echo_never_names_the_serving_model);
   RUN_TEST(test_cum477_unsent_request_reply_blames_memory_not_connection);
   RUN_TEST(test_prompt_round_cap_follows_the_configured_loop);
-  RUN_TEST(test_ledger_rows_keep_the_full_round_budget);
+  RUN_TEST(test_every_turn_keeps_the_full_round_budget);
   RUN_TEST(test_no_live_session_trims_the_session_tools_from_the_turn);
   RUN_TEST(test_a_live_session_restores_the_session_tools);
   RUN_TEST(test_cum544_timeout_fails_over_without_same_host_retry);

@@ -26,7 +26,7 @@ and how a turn flows through the live turn loop -
 Anthropic `tool_use`). One exception (R3, row 23): the Anthropic wire, where the
 schema is advisory, ships a LEAN top-level `required` list - `reply` only - and
 the tool description says to OMIT fields the turn is not using, so the head
-stops re-emitting unchanged fields as empty values (a food-log turn once spent
+stops re-emitting unchanged fields as empty values (a logging turn once spent
 3,000 output tokens on 1,240 B of content that way). But `parseTurn()` is
 defensive: on Anthropic the wire schema is advisory (its strict-grammar budget
 rejects a contract this size), so the parser is the real enforcement layer, and

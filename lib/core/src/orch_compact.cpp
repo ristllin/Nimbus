@@ -5,7 +5,6 @@
 
 #include "nimbus/mem_cap.h"   // utf8CapLen - every re-injected cap must be UTF-8-safe
 #include "nimbus/orch/history_rows.h"   // rowIdAfter / rowTextHash - the anchors, the repeat check
-#include "nimbus/orch/food_ledger.h"    // kFoldTodayLine / kFoldTotalsLine - the day's short form
 #include "nimbus/orch/wire_limits.h"    // kJsonStrGuard - the fold input is one provider string
 
 namespace nimbus {
@@ -77,10 +76,10 @@ size_t overflowTrimBytes(const std::string& err, size_t totalBytes) {
 // no volatile section is left) and keeps every section short enough that the
 // whole summary fits.
 // Lane CTX (26 Oct): the summary written at 15:03 carried a storm-era reply rule
-// ("Dupe batch #N, nothing counted") and an earlier day's closing total, but not
-// that morning's meal estimates; facts came back as "today" on later days. The
-// rules below date every fact (CUM-783), drop rules that belonged to a passing
-// situation, and copy the device's food ledger instead of re-adding meals.
+// and an earlier day's closing total; facts came back as "today" on later days. The
+// rules below date every fact (CUM-783) and drop rules that belonged to a passing
+// situation. The fold reads the conversation only: no data block of one use case
+// closes its input (owner ruling 41, RB-REC1).
 const char* const ORCH_PARK_RECHECK_PROMPT = "Reply with the single word ok.";
 
 const char* const ORCH_COMPACT_PROMPT =
@@ -91,17 +90,13 @@ const char* const ORCH_COMPACT_PROMPT =
     "If a [PREVIOUS SUMMARY] block is present, UPDATE it: keep still-true details, "
     "drop stale ones, merge in the new conversation. Otherwise create it fresh.\n"
     "Dates: the summary is read on later days, so write every date as YYYY-MM-DD "
-    "(from [TODAY] and the conversation's day markers) and never write today, "
+    "(from the conversation's day markers) and never write today, "
     "yesterday, tonight or this morning. Every total, count or figure about a day "
     "names that day's date.\n"
     "Drop what belonged to a passing situation once the new conversation no longer "
     "shows it: how to answer repeated or duplicate messages, an outage, a bug or "
     "its workaround, a test. Rules the device keeps (its [STANDING RULES]) are "
     "shown to the assistant separately: do not copy them in.\n"
-    "Food: a [FOOD LEDGER] block is the device's record of that day's meals. Copy "
-    "its date and totals exactly into Pending items, with every food question "
-    "still open (a weight not given, a meal not logged yet), each with its date. "
-    "Never add up a day's meals from the conversation.\n"
     "Structure the summary with exactly these sections, IN THIS ORDER (the "
     "durable ones first - if the summary runs long, the end is what gets "
     "trimmed):\n"
@@ -118,22 +113,6 @@ const char* const ORCH_COMPACT_PROMPT =
     "essentials rather than padding it.\n"
     "Be dense and specific (names, numbers, exact wording where it matters). "
     "Do not invent or embellish; omit sections with nothing to say.";
-
-namespace {
-// The day context's short form: its [TODAY] line and its totals line.
-std::string dayEssentials(const std::string& day) {
-  std::string out;
-  size_t p = 0;
-  while (p < day.size()) {
-    const size_t nl = day.find('\n', p);
-    const size_t end = nl == std::string::npos ? day.size() : nl + 1;
-    const std::string line = day.substr(p, end - p);
-    if (line.rfind(kFoldTodayLine, 0) == 0 || line.rfind(kFoldTotalsLine, 0) == 0) out += line;
-    p = end;
-  }
-  return out;
-}
-}  // namespace
 
 namespace {
 // "5,200": the figure the budget line names, with a thousands separator.
@@ -154,8 +133,7 @@ std::string withBudget(const std::string& in, size_t summaryCap) {
 }  // namespace
 
 std::string buildCompactInputs(const std::string& prevSummary,
-                               const std::string& digest,
-                               const std::string& day, size_t summaryCap) {
+                               const std::string& digest, size_t summaryCap) {
   std::string in;
   if (!prevSummary.empty()) {
     in += "[PREVIOUS SUMMARY]\n";
@@ -164,13 +142,6 @@ std::string buildCompactInputs(const std::string& prevSummary,
   }
   in += "[CONVERSATION SINCE]\n";
   in += digest.empty() ? "(no new messages)" : digest;
-  if (day.empty()) return withBudget(in, summaryCap);
-  // The day closes the input, inside the one-string guard (wire_limits.h): whole,
-  // else its short form, else not at all.
-  if (in.size() + 2 + day.size() <= kJsonStrGuard) return withBudget(in + "\n\n" + day, summaryCap);
-  const std::string brief = dayEssentials(day);
-  if (!brief.empty() && in.size() + 2 + brief.size() <= kJsonStrGuard)
-    return withBudget(in + "\n\n" + brief, summaryCap);
   return withBudget(in, summaryCap);
 }
 

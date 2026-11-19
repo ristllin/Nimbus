@@ -380,29 +380,29 @@ static void test_sd_quota_and_supported_card() {
   TEST_ASSERT_TRUE(store.wouldExceed("p", "f", 100, err));  // any real add refused
 }
 
-// Lane CTX: the food ledgers are reserved names. Nobody creates another person's
-// ledger before that person's first meal (the device would read the squatter's
-// rows as their day), with any spelling the card's FAT file system folds together.
-void test_food_ledger_names_are_reserved() {
-  FileStore st;
-  for (const char* name : {"food-log.csv", "FOOD-LOG.CSV", "food-log-99.csv", "food-log-backup.csv"}) {
-    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed("food", name, "chat:42", false), name);
-    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed("Food", name, "chat:42", false), name);
-    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed("food", name, "guest", false), name);
-    TEST_ASSERT_TRUE_MESSAGE(st.writeAllowed("food", name, nimbus::orch::kOwnerNs, true), name);
+// RB-REC1 (owner ruling 41): no file name is reserved for one use case. A table a person
+// keeps is an ordinary file in any project, a food log, an expenses log and a training log
+// alike: a member may create one under any free name, and only ownership refuses a write
+// (an existing file of the owner's is refused to the member in any letter case).
+void test_no_name_is_reserved_for_one_use_case() {
+  const char* tables[][2] = {{"food", "food-log.csv"}, {"money", "expenses.csv"}, {"gym", "training.csv"}};
+  for (const auto& t : tables) {
+    FileStore st;
+    TEST_ASSERT_TRUE_MESSAGE(st.writeAllowed(t[0], t[1], "chat:42", false), t[1]);
+    TEST_ASSERT_TRUE_MESSAGE(st.writeAllowed(t[0], t[1], nimbus::orch::kOwnerNs, true), t[1]);
+    FileEntry own;
+    own.project = t[0];
+    own.name = t[1];
+    own.bytes = 1;
+    own.owner = nimbus::orch::kOwnerNs;
+    std::string err;
+    TEST_ASSERT_TRUE(st.add(own, err));
+    std::string upper = t[1];
+    for (char& c : upper) c = (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : c;
+    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed(t[0], t[1], "chat:42", false), t[1]);
+    TEST_ASSERT_FALSE_MESSAGE(st.writeAllowed(t[0], upper, "chat:42", false), upper.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(st.writeAllowed(t[0], t[1], nimbus::orch::kOwnerNs, true), t[1]);
   }
-  TEST_ASSERT_TRUE(st.writeAllowed("food", "food-log-42.csv", "chat:42", false));   // a member's own
-  TEST_ASSERT_TRUE(st.writeAllowed("food", "recipes.md", "chat:42", false));        // other names
-  TEST_ASSERT_TRUE(st.writeAllowed("notes", "food-log.csv", "chat:42", false));     // other projects
-  // An entry the member owns elsewhere changes nothing: the name is still reserved.
-  FileEntry squat;
-  squat.project = "food";
-  squat.name = "food-log.csv";
-  squat.bytes = 1;
-  squat.owner = "chat:42";
-  std::string err;
-  TEST_ASSERT_TRUE(st.add(squat, err));
-  TEST_ASSERT_FALSE(st.writeAllowed("food", "food-log.csv", "chat:42", false));
 }
 
 // CUM-836: the card's FAT is case-blind, so the INDEX must resolve identity the
@@ -599,7 +599,7 @@ int main() {
   RUN_TEST(test_dump_load_roundtrip);
   RUN_TEST(test_load_tolerates_garbage_and_revalidates);
   RUN_TEST(test_list_and_projects);
-  RUN_TEST(test_food_ledger_names_are_reserved);
+  RUN_TEST(test_no_name_is_reserved_for_one_use_case);
   RUN_TEST(test_identity_is_case_blind_like_fat);
   RUN_TEST(test_load_collapses_case_variant_rows_to_owner_control);
   RUN_TEST(test_text_readable_rule);

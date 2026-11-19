@@ -82,9 +82,6 @@ std::string FileStore::relPath(std::string_view project, std::string_view name) 
 // letter-case variant (CUM-836: a member writing "MEALS.CSV" onto the owner's
 // "meals.csv" was a NEW file to the index, and the card then wrote the owner's
 // file). validSegment() admits printable ASCII only, so folding ASCII is exact.
-// The SAME fold as the food-ledger gate (words::lowerAscii) is used here on
-// purpose: the index-identity rule and the reserved-ledger-name rule are two
-// gates over one case-blind FAT, and they must not drift (review finding 4).
 // Allocation-free on purpose: indexOf runs inside add()/wouldExceed, and with no
 // entry cap a per-comparison std::string would put transient churn on the
 // internal heap at every save (lane FSCAP review fix).

@@ -104,7 +104,7 @@ def _owner_rows(net) -> dict:
 def test_history_days_across_the_london_clock_change(device, net):
     import kit
     from test_l52_history_cache import _history
-    from test_qw3_food_log_midnight import _anthropic_key, _clock, _london
+    from test_day_boundary_append import _anthropic_key, _clock, _london
 
     kit.MODEL = MODEL
     bench = kit.StormBench(device, net, leg="hist")

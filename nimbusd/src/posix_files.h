@@ -80,9 +80,9 @@ class PosixFiles {
               const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project' and 'name'");
-              std::string err = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
+              std::string err;
               const bool replacing = store_.find(p, n) != nullptr;
-              if (!err.empty() || !save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
+              if (!save(p, n, t, err)) return nimbus::orch::ToolResult::fail(err);
               return nimbus::orch::ToolResult::ok("saved " + p + "/" + n + " (" + std::to_string(t.size()) + " bytes)" +
                                                   (replacing ? std::string(", ") + nimbus::orch::kSaveReplacedNote
                                                              : std::string()));
@@ -204,23 +204,6 @@ class PosixFiles {
   // sets it from the real card size at mount.
   void setLimits(const nimbus::orch::FileStore::Limits& l) { store_.setLimits(l); }
   const nimbus::orch::FileStore& store() const { return store_; }
-
-  // Files that look like the owner's food or weight plan (food_ledger.h), newest first.
-  std::vector<std::string> foodPlanFiles() const {
-    std::vector<const nimbus::orch::FileEntry*> found;
-    for (const auto* e : store_.list(std::string()))
-      if (nimbus::orch::looksLikeFoodPlan(nimbus::orch::plainCopy(e->project),
-                                         nimbus::orch::plainCopy(e->name)))
-        found.push_back(e);
-    std::sort(found.begin(), found.end(), [](const nimbus::orch::FileEntry* a, const nimbus::orch::FileEntry* b) {
-      return a->createdAt > b->createdAt;
-    });
-    std::vector<std::string> out;
-    for (const auto* e : found)
-      if (out.size() < nimbus::orch::kMaxPlanFiles)
-        out.push_back(nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name));
-    return out;
-  }
 
   // ---- the web app's Files panel (device /api/files/*, CUM-543) ----
   // The listing in the device's shape (web_files.cpp + files_subsystem listJson).
@@ -460,8 +443,6 @@ class PosixFiles {
   // files.append: the one food log first, then the keyed upsert or a plain append.
   nimbus::orch::ToolResult appendTool(const std::string& p, const std::string& n, const std::string& t,
                                       const std::string& key, const std::string& sum) {
-    const std::string second = nimbus::orch::secondFoodLogRefusal(p, n, true, std::string());
-    if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
     if (!key.empty()) {
       UpsertOut out;
       if (!upsert(p, n, t, key, sum, out)) return nimbus::orch::ToolResult::fail(out.err);

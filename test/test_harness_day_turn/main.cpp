@@ -13,16 +13,15 @@
 #include "nimbus/harness/prompt_layout.h"
 #include "nimbus/orch/body_budget.h"   // bodyBudgetError - a wire's refusal of a body too big to send
 #include "nimbus/orch/episodic.h"
-#include "nimbus/orch/food_ledger.h"
+#include "nimbus/orch/compact.h"   // buildCompactInputs - the fold's input is the conversation only
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
 
-// Lane CTX through the real TurnEngine: the ledger's figures as claim sources, the
-// fold's day, the whole day in the history on a 128K head, and the request body guard.
-// RB-Q3a: no food playbook and no ledger block in any prompt; the chat's recent actions
-// (the effects ring) ride the per-turn block instead.
-// Replays the shape of the owner's 26 Oct evening (Mistral large head, embeddings
-// paused, a day of meals).
+// A day of chat through the real TurnEngine: the whole day in the history on a 128K head,
+// the request body guard, the fold's input, and (RB-Q3a) the chat's recent actions in the
+// per-turn block. Replays the shape of the owner's 26 Oct evening (Mistral large head,
+// embeddings paused, a busy day). RB-REC1 (owner ruling 41): the fold reads the
+// conversation only; no data block of one use case closes its input.
 
 using namespace nimbus::orch;
 using agent::TurnEngine;
@@ -36,13 +35,6 @@ namespace {
 
 constexpr uint32_t kDay = 1792972800u;                 // 2026-10-26 00:00 UTC
 constexpr uint64_t kNow = kDay + 18 * 3600 + 35 * 60;   // 18:35, the "you estimated earlier" turn
-const LogDay kToday{"2026-10-26", "GMT"};
-
-const char kLedgerFile[] =
-    "date,meal,items,kcal,protein_g\n"
-    "2026-10-25,dinner,pasta,800,30\n"
-    "2026-10-26,breakfast,skyr + berries + granola,450,30\n"
-    "2026-10-26,lunch,brunch plate: 2 eggs + 250 g chicken + veg,865,70\n";
 
 // The effects ring's API behind the engine's recent-actions source (RB-Q3a), per chat.
 struct FakeEffects : agent::RecentActionsSource {
@@ -60,9 +52,7 @@ struct Rig {
   FakeConfig cfg;
   InMemoryEpisodicStore store;
   int seq = 0;
-  std::string file = kLedgerFile;
-  bool fileExists = true;
-  std::string skillText;   // the owner's stored food skill ("" = none)
+  std::string skillText;   // the owner's own stored skill ("" = none)
   std::string reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   std::vector<std::string> instructions, inputs, delivered;
   std::vector<std::string> refusals;   // lane H: the host refuses these calls for size first, in order
@@ -121,9 +111,6 @@ struct Rig {
     d.recentActions = &effects;
     d.skillBody = [this](const std::string& id) {
       return id == "meal-photo-science" ? skillText : agent::builtinSkillBody(id, true);
-    };
-    d.foodLedger = [this](const std::string&) {
-      return scanFoodLedger(file, fileExists, kToday, kFoodLedgerProject, kFoodLedgerOwnerName);
     };
     d.apply.deliver = d.deliver;
     d.apply.principalFor = [](const std::string& chat) { return principalForRole(chat, Role::Admin); };
@@ -222,52 +209,24 @@ void printBlocks(const char* label, const std::string& text) {
 
 }  // namespace
 
-// Since v5.2.0 (lane RB-Q1b) a reply's figures are not checked against the turn's sources:
-// a total quoted from the ledger and one from nowhere are both delivered as written, once.
-static void test_ledger_figures_are_claim_sources() {
-  Rig r;
-  r.reply = "{\"reply\":\"The ledger says 1315 kcal for today.\",\"memory\":\"\",\"ask\":\"\"}";
-  r.eng->handleMessage("what's my total?", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("The ledger says 1315 kcal for today.", r.delivered.back().c_str());
-  Rig c;
-  c.reply = "{\"reply\":\"The label says 2402 kcal for today.\",\"memory\":\"\",\"ask\":\"\"}";
-  c.eng->handleMessage("what's my total?", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("The label says 2402 kcal for today.", c.delivered.back().c_str());
-}
-
-// The food figure check (a target nothing holds, a day total off the ledger) went with the
-// claim check (RB-Q1b): the reply goes out as written, once, with no "(Correction" line; since
-// RB-Q3a the turn carries neither the ledger's figures nor the [FOOD TARGETS] pointer.
-static void test_a_made_up_target_reaches_the_owner_marked() {
-  Rig r;
-  r.reply = "{\"reply\":\"You have 38.3 g protein left from your 250 g daily protein target.\",\"memory\":\"\",\"ask\":\"\"}";
-  r.eng->handleMessage("how much protein is left?", "Roy", "1001");
-  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
-  TEST_ASSERT_EQUAL_STRING("You have 38.3 g protein left from your 250 g daily protein target.", r.delivered.back().c_str());
-  TEST_ASSERT_FALSE_MESSAGE(has(r.last().dyn, "[FOOD TARGETS]"), r.last().dyn.c_str());   // RB-Q3a: no ledger block
-}
-
-static void test_the_day_total_in_a_reply_is_checked_against_the_ledger() {
-  Rig r;
-  r.reply = "{\"reply\":\"Today's total is now 3,989 kcal.\",\"memory\":\"\",\"ask\":\"\"}";
-  r.eng->handleMessage("so what are we at for today?", "Roy", "1001");
-  TEST_ASSERT_EQUAL(1, (int)r.delivered.size());
-  TEST_ASSERT_EQUAL_STRING("Today's total is now 3,989 kcal.", r.delivered.back().c_str());
-  TEST_ASSERT_FALSE_MESSAGE(has(r.last().dyn, "1315"), r.last().dyn.c_str());   // RB-Q3a: the ledger does not ride the turn
-}
-
-// The fold's input closes with the date and today's ledger, so the summary dates
-// its facts and carries the day's totals (a side prompt, not the per-turn block).
-static void test_the_fold_carries_the_day() {
-  Rig r;
-  std::string summary;
-  TEST_ASSERT_EQUAL(int(TurnEngine::FoldResult::Ok),
-                    int(r.eng->runFold("1001", "", "- user: breakfast\n- assistant: logged\n", summary)));
-  const std::string& in = r.inputs.back();
-  TEST_ASSERT_TRUE_MESSAGE(has(in, "[TODAY] 2026-10-26 (GMT)"), in.c_str());
-  TEST_ASSERT_TRUE(has(in, "[FOOD LEDGER - food/food-log.csv on 2026-10-26 (GMT)"));
-  TEST_ASSERT_TRUE(has(in, "Totals for 2026-10-26: 1315 kcal from 2 rows, 100 g protein."));
-  TEST_ASSERT_TRUE(has(r.instructions.back(), "a [FOOD LEDGER] block is the device's record"));
+// RB-REC1: the fold's input is the earlier summary and the conversation, nothing else: the
+// same for a day of food, of expenses and of training (owner ruling 41). It ends byte for byte
+// with what buildCompactInputs makes of those two, so no block can join it unseen.
+static void test_the_fold_reads_only_the_conversation() {
+  const char* digests[] = {"- user: soup for lunch, 310 kcal\n- assistant: logged\n",
+                           "- user: train ticket 24.30\n- assistant: logged\n",
+                           "- user: 5 squats at 80 kg\n- assistant: logged\n"};
+  for (const char* digest : digests) {
+    Rig r;
+    std::string summary;
+    TEST_ASSERT_EQUAL(int(TurnEngine::FoldResult::Ok), int(r.eng->runFold("1001", "1. Decisions\n- x\n", digest, summary)));
+    const std::string& in = r.inputs.back();
+    // At most the head's [SUMMARY BUDGET] line ahead of it; nothing after the conversation.
+    const std::string whole = buildCompactInputs("1. Decisions\n- x\n", digest);
+    TEST_ASSERT_TRUE_MESSAGE(in.size() >= whole.size() && in.compare(in.size() - whole.size(), whole.size(), whole) == 0,
+                             in.c_str());
+    TEST_ASSERT_TRUE(in.size() == whole.size() || in.rfind("[SUMMARY BUDGET] ", 0) == 0);
+  }
 }
 
 // On the 128K head the whole day is in the history at 18:35, the 12:55 estimate
@@ -354,68 +313,8 @@ static void test_memory_routing_hint_rides_only_a_real_owner_message() {
   TEST_ASSERT_FALSE_MESSAGE(has(s.last().dyn, "[MEMORY ROUTING]"), s.last().dyn.c_str());
 }
 
-// RB-Q3a: no keyword playbook and no per-turn ledger block in any prompt the head receives,
-// for any role and any trigger: whatever the ledger's own renderers (food_ledger.h) produce
-// for this day, and every playbook or skill attachment the food path ever made, is absent
-// from the instructions and the input of every request. The markers come from the
-// renderers themselves, so a renamed header is still caught.
-static void test_no_food_playbook_or_ledger_block_in_any_prompt() {
-  const FoodLedger day = scanFoodLedger(kLedgerFile, true, kToday, kFoodLedgerProject, kFoodLedgerOwnerName);
-  std::vector<std::string> markers = {"[FOOD PLAYBOOK", "# Food log", "# Food coach", "[SKILL meal-photo-science"};
-  auto firstLines = [&markers](const std::string& block) {
-    size_t at = 0;
-    while (at < block.size()) {   // every bracketed header line of the block
-      const size_t nl = block.find('\n', at);
-      const std::string line = block.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
-      if (!line.empty() && line[0] == '[') markers.push_back(line.substr(0, 40));
-      at = nl == std::string::npos ? block.size() : nl + 1;
-    }
-  };
-  firstLines(renderLedgerBlock(day, true));
-  firstLines(renderLedgerBlock(day, false));
-  firstLines(renderLedgerDispute(day));
-  firstLines(renderFoodRecall(kLedgerFile, kToday.date, "I had some pasta for dinner"));
-  for (FoodIntent i : {FoodIntent::Unclear, FoodIntent::Eaten, FoodIntent::Ask, FoodIntent::Complaint})
-    firstLines(renderFoodIntentHint(i));
-  TEST_ASSERT_TRUE(markers.size() >= 10);   // the renderers still render: the check has teeth
-  const char* triggers[] = {"Lunch was a chicken salad, about 150 g chicken",
-                            "how many calories are left for today?",
-                            "brine",
-                            "your total is wrong, I never had the brunch plate",
-                            "I had some pasta for dinner",
-                            "what's my total?",
-                            "is it raining at the office?"};
-  for (const char* role : {"admin", "user", "guest"}) {
-    for (const char* text : triggers) {
-      for (bool loop : {false, true}) {
-        Rig r;
-        r.role = role;
-        r.cfg.toolLoop = loop;
-        r.skillText = "Blinded estimate first, then the label.";
-        r.turn((uint32_t)(kNow / 3600) - 1, "tuna 80 g", "Logged. Was the tuna in brine or oil?");
-        r.eng->handleMessage(text, "Roy", "1001");
-        TEST_ASSERT_FALSE_MESSAGE(r.instructions.empty(), text);
-        for (size_t k = 0; k < r.instructions.size(); k++)
-          for (const std::string& m : markers) {
-            const std::string where = std::string(role) + " / " + text + ": " + m;
-            TEST_ASSERT_FALSE_MESSAGE(has(r.instructions[k], m), where.c_str());
-            TEST_ASSERT_FALSE_MESSAGE(has(r.inputs[k], m), where.c_str());
-          }
-      }
-    }
-  }
-  // A scheduled routine about food carries none of it either.
-  Rig s;
-  s.eng->injectScheduledTurn("1001", "tell Roy what he ate today and how many calories are left", "evening", "L1");
-  TEST_ASSERT_FALSE(s.instructions.empty());
-  for (const std::string& m : markers) TEST_ASSERT_FALSE_MESSAGE(has(s.instructions.back() + s.inputs.back(), m), m.c_str());
-  // The playbooks are gone from the built-ins too: nothing can be attached or read as one.
-  TEST_ASSERT_FALSE(agent::isBuiltinSkill("food-log"));
-  TEST_ASSERT_FALSE(agent::isBuiltinSkill("food-coach"));
-}
-
-// RB-Q3a: this chat's newest effect receipts ride the per-turn block of every turn, food or
-// not; another chat's never do, and a chat with none gets no block.
+// RB-Q3a: this chat's newest effect receipts ride the per-turn block of every turn, whatever
+// it is about; another chat's never do, and a chat with none gets no block.
 static void test_recent_actions_ride_the_turn_for_this_chat_only() {
   Rig r;
   const int64_t t = (int64_t)kNow - 600;   // 18:25
@@ -435,10 +334,10 @@ static void test_recent_actions_ride_the_turn_for_this_chat_only() {
   TEST_ASSERT_FALSE(has(r.last().dyn, "[RECENT ACTIONS"));
 }
 
-// RB-Q3a: the owner's food turn as the head receives it (the owner's role, the tool loop on,
-// rows today, the owner's own food skill stored), pinned byte for byte, with the bytes of
-// every block printed for the lane's measurement.
-static void test_owner_food_turn_prompt_golden() {
+// RB-Q3a: the owner's logging turn as the head receives it (the owner's role, the tool loop on,
+// rows today, the owner's own skill stored), pinned byte for byte, with the bytes of every
+// block printed for the lane's measurement.
+static void test_owner_day_turn_prompt_golden() {
   Rig r;
   r.cfg.toolLoop = true;
   r.skillText = "Blinded estimate first, then the label.";
@@ -452,9 +351,8 @@ static void test_owner_food_turn_prompt_golden() {
   std::printf("RBQ3A-MEASURE total-instructions %zu B; static %zu, shelf %zu, history %zu msgs, per-turn %zu; input %zu\n",
               ins.size(), p.stat.size(), p.shelf.size(), p.history.size(), p.dyn.size(), r.inputs.back().size());
   printBlocks("per-turn", p.dyn);
-  checkTextGolden("orch_prompt_owner_food_turn.txt", agent::layout::display(ins));
-  // The other food shapes, measured only: a question (the coach's shape) and a short
-  // follow-up to a food exchange (both playbooks' shape).
+  checkTextGolden("orch_prompt_owner_day_turn.txt", agent::layout::display(ins));
+  // Two other shapes, measured only: a question and a short follow-up.
   const struct {
     const char* label;
     const char* text;
@@ -473,16 +371,12 @@ static void test_owner_food_turn_prompt_golden() {
 
 int main(int, char**) {
   UNITY_BEGIN();
-  RUN_TEST(test_ledger_figures_are_claim_sources);
-  RUN_TEST(test_a_made_up_target_reaches_the_owner_marked);
-  RUN_TEST(test_the_day_total_in_a_reply_is_checked_against_the_ledger);
-  RUN_TEST(test_the_fold_carries_the_day);
+  RUN_TEST(test_the_fold_reads_only_the_conversation);
   RUN_TEST(test_the_whole_day_is_in_the_history);
   RUN_TEST(test_history_leaves_only_after_a_real_refusal);
   RUN_TEST(test_device_scale_loop_turn_keeps_the_mornings_estimate);
   RUN_TEST(test_memory_routing_hint_rides_only_a_real_owner_message);
-  RUN_TEST(test_no_food_playbook_or_ledger_block_in_any_prompt);
   RUN_TEST(test_recent_actions_ride_the_turn_for_this_chat_only);
-  RUN_TEST(test_owner_food_turn_prompt_golden);
+  RUN_TEST(test_owner_day_turn_prompt_golden);
   return UNITY_END();
 }

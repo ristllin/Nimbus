@@ -29,7 +29,6 @@
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
 #include "nimbus/orch/file_edit.h"    // files.edit: the streaming text substitution
-#include "nimbus/orch/ledger_migrate.h"  // v4.6.3: the legacy meal-log fold
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
@@ -288,8 +287,6 @@ void registerTools();   // fwd (bottom)
 
 }  // namespace
 
-void migrateLegacyMealLog();   // fwd: the one-time legacy meal-log fold (below)
-
 void begin() {
   memory::Lock g;
   if (g_begun) return;
@@ -356,7 +353,6 @@ void begin() {
   reindexRecovered(swapped);
   reindexRecovered(g_keptAside);   // the owner sees it in the Files list
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
-  migrateLegacyMealLog();   // v4.6.3: the one-time fold into the designed ledger
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
   registerTools();
@@ -794,93 +790,6 @@ static size_t fileBytes(const char* project, const char* name) {
   const size_t n = f.size();
   f.close();
   return n;
-}
-
-// v4.6.3 (the 30 Oct Lumi investigation): the one-time fold of the legacy meal
-// log into the designed ledger. The investigated device held an ad-hoc log
-// (nutrition/meal_log.csv: headerless, five generations of the same days in
-// four schemas) whose keyed writes all refused and whose "corrections" all
-// appended duplicates. The designed ledger (ONE file, one row per meal,
-// corrections by key) is where meals belong; this folds the legacy file's
-// final figures into it once at boot and removes the legacy file, so the
-// model stops appending to an unfixable orphan. Only the owner's file folds, and the
-// file goes only when all its figures reached the ledger. Caller holds the Lock (begin).
-void migrateLegacyMealLog() {
-  constexpr const char* kLegacyProject = "nutrition";
-  constexpr const char* kLegacyName = "meal_log.csv";
-  const nimbus::orch::FileEntry* legacyEntry = g_store.find(kLegacyProject, kLegacyName);
-  if (!legacyEntry) return;
-  if (!nimbus::orch::legacyLogFoldable(g_store, *legacyEntry)) {
-    alogf("files: legacy %s/%s left alone (it is not the owner's file)", kLegacyProject, kLegacyName);
-    return;
-  }
-  const std::string legacyOwner = nimbus::orch::plainCopy(legacyEntry->owner);   // the ledger's save below may move the entry
-  // A designed ledger may already exist: on 31 Oct the head rebuilt the legacy file next
-  // to it and logged every later meal there. Those rows fold in too; the ledger's own rows
-  // keep their keys.
-  const bool ledgerStored = g_store.find(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName) != nullptr;
-  // PRISM v4.6.3 row 1: the fold reads the file through a bounded read
-  // (kFoldCap, below). A file OVER that cap must be left ENTIRELY alone: the
-  // read would silently take only its head, and under append order the tail
-  // holds the owner's LATEST generations - exactly the final figures the fold
-  // exists to keep - and the orphan would then be removed. Never fold what
-  // was not fully read. The ledger is held to the same rule: the fold replaces it
-  // and deletes the legacy file, so a short read of either (a badly seated card, a ledger
-  // past the cap) leaves both as they are (planLedgerFold).
-  constexpr size_t kFoldCap = nimbus::orch::kLedgerFoldCap;
-  const size_t legacyBytes = fileBytes(kLegacyProject, kLegacyName);
-  if (legacyBytes == kUnreadableBytes) return;   // the index names the file; the card may have lost it - nothing to fold
-  if (legacyBytes > kFoldCap) {
-    alogf("files: legacy %s/%s is %u KB - too large to fold safely, left in place",
-          kLegacyProject, kLegacyName, (unsigned)(legacyBytes / 1024));
-    return;
-  }
-  const size_t ledgerBytes = ledgerStored ? fileBytes(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName) : 0;
-  const std::string legacy = readWhole(kLegacyProject, kLegacyName, kFoldCap);
-  const std::string stored = ledgerStored && ledgerBytes <= kFoldCap
-                                 ? readWhole(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, kFoldCap)
-                                 : std::string();
-  const nimbus::orch::LedgerMigration m =
-      nimbus::orch::planLedgerFold(legacy, legacyBytes, ledgerStored, stored, ledgerBytes);
-  if (!m.err.empty()) {
-    alogf("files: legacy meal log not folded (%s), both files left in place", m.err.c_str());
-    return;
-  }
-  // A fold that folded NOTHING also leaves the orphan alone: its rows were
-  // unmappable, and removing the file would still lose the raw record.
-  if (!m.ok || m.folded == 0) {
-    alogf("files: legacy meal log not migrated (nothing foldable), left in place");
-    return;
-  }
-  std::string err;
-  // A dropped data row has no other copy: the source stays. Its last row then says it has
-  // been folded, so the next boot leaves it alone and this runs once either way: the ledger
-  // existing no longer stops the fold, and a kept source must not refill a row removed since.
-  // The mark is therefore written BEFORE the ledger: a kept source that is not durably
-  // marked would fold again at every boot and re-add rows the owner removed since. If the
-  // mark write fails, nothing is written at all and the fold retries at the next boot.
-  const bool keepSource = !m.sourceFullyFolded();
-  if (keepSource &&
-      !saveText(kLegacyProject, kLegacyName, nimbus::orch::markLegacyFolded(legacy), err, legacyOwner)) {
-    alogf("files: the kept legacy meal log could not be marked as folded: %s - nothing written, the fold retries at the next boot",
-          err.c_str());
-    return;
-  }
-  if (!saveText(nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.out, err,
-                std::string())) {
-    alogf("files: legacy meal log migration failed: %s", err.c_str());
-    return;
-  }
-  if (keepSource) {
-    alogf("files: migrated the legacy meal log into %s/%s (%d rows folded), %d rows unread: source kept (marked as folded)",
-          nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.droppedData);
-    return;
-  }
-  memory::dataFs().remove(pathOf(kLegacyProject, kLegacyName).c_str());
-  g_store.remove(kLegacyProject, kLegacyName);
-  persistIndex();
-  alogf("files: migrated the legacy meal log into %s/%s (%d rows folded, %d dropped)",
-        nimbus::orch::kLedgerProject, nimbus::orch::kLedgerName, m.folded, m.dropped);
 }
 
 // files.read {tail}: the last rows of a text document, read from the END of the
@@ -1713,23 +1622,6 @@ int removeProject(const std::string& project) {
   return (int)names.size();
 }
 
-std::vector<std::string> foodPlanFiles(const nimbus::orch::Principal& who) {
-  memory::Lock g;
-  std::vector<const nimbus::orch::FileEntry*> found;
-  for (const auto* e : g_store.list(std::string())) {
-    if (nimbus::orch::looksLikeFoodPlan(nimbus::orch::plainCopy(e->project), nimbus::orch::plainCopy(e->name)) && g_store.readableBy(*e, who.ns, who.owner, false))
-      found.push_back(e);
-  }
-  std::sort(found.begin(), found.end(),
-            [](const nimbus::orch::FileEntry* a, const nimbus::orch::FileEntry* b) { return a->createdAt > b->createdAt; });
-  std::vector<std::string> out;
-  for (const auto* e : found) {
-    if (out.size() == nimbus::orch::kMaxPlanFiles) break;
-    out.push_back(nimbus::orch::plainCopy(e->project + "/" + e->name));
-  }
-  return out;
-}
-
 // Lane FSCAP: a listing is bounded per call. One call emits at most `limit`
 // readable entries (default page kListPageDefault, ceiling kListPageMax) after
 // `offset`; the payload's `count` says how many there are in all, so a client
@@ -2224,8 +2116,6 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
             if (text.size() > 24 * 1024)
               return nimbus::orch::ToolResult::fail("text too large (max 24 KB per call)");
-            const std::string second = nimbus::orch::secondFoodLogRefusal(project, name, who.owner, who.ns);
-            if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
             std::string err;
             // (project,name) is the identity and add() REPLACES - so a write
             // that lands on another principal's artifact would DESTROY it.
@@ -2287,8 +2177,6 @@ void registerTools() {
             args.key = argStr(a, "key");
             args.sum = argStr(a, "sum");
             args.replaceAll = argStr(a, "replace") == "all";
-            const std::string second = nimbus::orch::secondFoodLogRefusal(args.project, args.name, who.owner, who.ns);
-            if (!second.empty()) return nimbus::orch::ToolResult::fail(second);
             return appendRows(args, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"},"key":{"type":"string"},"sum":{"type":"string"},"replace":{"type":"string","enum":["all"]}},"required":["project","name","text"]})");

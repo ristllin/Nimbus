@@ -250,7 +250,7 @@ TurnEngine::FoldResult TurnEngine::runFoldOn(const std::string& chatId, const st
   // and its convId is never persisted. The head's summary cap (lane B: 6,144 B at a
   // 60k-token target and above, else 4,096 B) is named in the input when it is the larger one.
   const size_t cap = headFoldContext(d_).chatSummaryBytes;
-  const std::string inputs = orch::buildCompactInputs(prevSummary, digest, foldDayContext(chatId), cap);
+  const std::string inputs = orch::buildCompactInputs(prevSummary, digest, cap);
   // The attempt's spend, a failed one included, filed under its own host and model and
   // metered once as "compact" (lane T: the same per-host rule and R4 cache split as a
   // turn). The turn's spend table is free here: a fold never runs while a turn does.

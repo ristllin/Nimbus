@@ -134,10 +134,6 @@ static void testOneFoodLogAndItsReceipt(ndtest::Ctx& c) {
     deserializeJson(d, json);
     return reg.dispatch(name, d.as<JsonObjectConst>(), owner);
   };
-  const auto refused = call("files.append", "{\"project\":\"nutrition\",\"name\":\"meal_log.csv\",\"text\":\"date,meal,kcal\\n\"}");
-  c.ok(!refused.success && has(refused.error, "food/food-log.csv"), "a second food log is refused with the one to use");
-  const auto saved = call("artifact.save", "{\"project\":\"nutrition\",\"name\":\"meal_log.csv\",\"text\":\"date,meal,kcal\\n\"}");
-  c.ok(!saved.success && has(saved.error, "food/food-log.csv"), "a whole-file save of one too");
   const std::string today = nimbus::orch::logDayOf(std::time(nullptr), true).date;
   const auto first = call("files.append", "{\"project\":\"food\",\"name\":\"food-log.csv\",\"key\":\"meal\",\"sum\":\"kcal\",\"text\":\"date,meal,items,kcal,protein_g\\n" + today + ",lunch,soup,300,10\"}");
   c.ok(first.success && has(first.output, "added 1 row") && has(first.output, "300 from 1 row"), "the keyed write answers with the device's receipt");

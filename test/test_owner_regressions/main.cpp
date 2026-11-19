@@ -26,8 +26,6 @@
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/food_figures.h"
 #include "nimbus/orch/food_label.h"
-#include "nimbus/orch/food_ledger.h"
-#include "nimbus/orch/ledger_migrate.h"
 #include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/loops.h"
 #include "nimbus/orch/model_choices.h"
@@ -174,14 +172,6 @@ void test_oir_09_total_includes_every_row() {
   double t = -1;
   TEST_ASSERT_TRUE(csvDayTotal(ex, "kcal", "2026-10-29", t));
   TEST_ASSERT_EQUAL_INT(534, (int)t);
-}
-
-// OIR-10: a target row without a source counts for nothing; an invented
-// "we adjusted it to 2,500" is flagged against the plan's 2,400.
-void test_oir_10_target_needs_source() {
-  const FoodTargets t = scanFoodTargets("date,metric,target,source\n2026-10-29,kcal,2500,\n");
-  TEST_ASSERT_EQUAL_INT(0, (int)t.kcal);
-  TEST_ASSERT_FALSE(unsourcedFoodTargets("we adjusted it to 2,500 kcal", "2400").empty());
 }
 
 // OIR-03: a second vision read that disagrees with the head's is surfaced with both
@@ -353,22 +343,6 @@ void test_oir_28_stale_status() {
   TEST_ASSERT_TRUE(age >= 18);
 }
 
-// OIR-30: "need ~102 g more" over a day with an unknown-protein row is flagged.
-void test_oir_30_protein_unknown() {
-  const auto gaps = foodFigureGaps("you need at least ~102 g more protein today", facts(1792, 48.4, 1), "");
-  TEST_ASSERT_TRUE(hasGapKind(gaps, FoodGapKind::ProteinLeftUnknown));
-}
-
-// OIR-31: the same food on an earlier day is recalled, so its figures stay consistent.
-void test_oir_31_cross_day_recall() {
-  const std::string file = std::string(kLedgerHeader) +
-                           "2026-10-29,drink,boba tea no milk,225,0.5\n"
-                           "2026-11-01,drink,boba tea no milk,90,0.5\n";
-  const std::string recall = renderFoodRecall(file, "2026-11-01", "another boba tea, no milk");
-  TEST_ASSERT_FALSE(recall.empty());
-  TEST_ASSERT_NOT_NULL(strstr(recall.c_str(), "225"));
-}
-
 // OIR-33: a raw findings dump is capped at the budget, never delivered whole.
 void test_oir_33_raw_dump_capped() {
   const std::string big(200000, 'x');
@@ -488,22 +462,6 @@ void test_oir_47_park_402_billing() {
   v.httpStatus = 402;
   TEST_ASSERT_FALSE(parkWords("mistral", v).empty());
   TEST_ASSERT_EQUAL_STRING("billing", parkKindSlug(ParkKind::Billing));
-}
-
-// OIR-48: a second food log outside the one ledger is refused with the one call to use.
-void test_oir_48_second_ledger_refused() {
-  TEST_ASSERT_FALSE(secondFoodLogRefusal("nutrition", "meal_log.csv", true, "owner").empty());
-  TEST_ASSERT_TRUE(secondFoodLogRefusal("food", "food-log.csv", true, "owner").empty());
-}
-
-// OIR-49: a migration that cannot map legacy rows reports them (dropped > 0), so the
-// owner can be told instead of the rows vanishing silently.
-void test_oir_49_migration_reports_dropped() {
-  const std::string legacy = "lunch 900 kcal\n???\n???\ndinner 1600 kcal\n";
-  const LedgerMigration m = planLedgerFold(legacy, legacy.size(), false, "", 0);
-  TEST_ASSERT_TRUE(m.ok);
-  TEST_ASSERT_TRUE(m.dropped >= 2);
-  TEST_ASSERT_FALSE(m.sourceFullyFolded());
 }
 
 }  // namespace
@@ -857,7 +815,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_08_open_question_raise_once_and_drop);
 #endif
   RUN_TEST(test_oir_09_total_includes_every_row);
-  RUN_TEST(test_oir_10_target_needs_source);
   RUN_TEST(test_oir_14_day_rollover);
   RUN_TEST(test_oir_15_label_cross_column);
   RUN_TEST(test_oir_16_near_match_is_not_a_food_match);
@@ -870,8 +827,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_25_body_budget_roundtrip);
   RUN_TEST(test_oir_27_day_sum_receipt_multirow);
   RUN_TEST(test_oir_28_stale_status);
-  RUN_TEST(test_oir_30_protein_unknown);
-  RUN_TEST(test_oir_31_cross_day_recall);
   RUN_TEST(test_oir_33_raw_dump_capped);
   RUN_TEST(test_oir_36_rules_full_makes_room);
   RUN_TEST(test_oir_39_never_ask_blocks_the_routine);
@@ -881,8 +836,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_oir_43_store_count_cap_fixed);
   RUN_TEST(test_oir_46_embed_parked_not_used);
   RUN_TEST(test_oir_47_park_402_billing);
-  RUN_TEST(test_oir_48_second_ledger_refused);
-  RUN_TEST(test_oir_49_migration_reports_dropped);
   RUN_TEST(test_oir_51_own_estimate_stays_in_the_request);
   RUN_TEST(test_oir_52_no_summary_pause_survives);
   RUN_TEST(test_oir_53_no_phantom_recall_note);

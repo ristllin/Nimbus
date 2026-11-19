@@ -407,7 +407,7 @@ void legFold(const Leg& leg, LegTransport& http, agent::providers::ProviderDeps 
   std::string digest;
   for (int i = 0; digest.size() < step; ++i) digest += "- owner: " + loggedDay(i) + "\n- assistant: Logged.\n";
   digest.resize(step);
-  const std::string inputs = nimbus::orch::buildCompactInputs("", digest, "[TODAY] 2026-11-16 (Europe/London)");
+  const std::string inputs = nimbus::orch::buildCompactInputs("", digest);
   const size_t first = http.curl.calls.size();
   std::string out, err;
   const bool ok = runTurn(leg, pd, nimbus::orch::ORCH_COMPACT_PROMPT, inputs, nullptr, {out, err});
