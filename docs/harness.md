@@ -585,6 +585,38 @@ and ledger shape, the photo table per head kind, every split of turns for the la
 `test/test_plain_exchange` injects every error class through the scripted provider with a
 scripted clock.
 
+### The plain loop
+
+`plain_engine.cpp` (`engine.h`) is the engine-2 turn: the simplest agent loop, with
+durability around it and nothing that reads, edits or appends to the model's text.
+
+- **Turn open**: a call an earlier turn stored with no result (the turn stopped while it ran)
+  gets an "outcome unknown" result first, so every request stays paired, and is never run
+  again; then the owner message (u), the turn header (t) and the stub pointer's move (x), all
+  stored before the first request. The binding's `TurnSetup` gives the registry, notes, head
+  and wire once; the system text and the tools are composed once and kept for every round.
+- **The loop**: render the stored transcript, post it (`runExchange`: retries, the cap and the
+  ladder live there), store what the model said (k, a, c) before anything runs. No call: that
+  text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
+  runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
+  to the bulk file, its stub computed once) before the next request, `afterResult`.
+- **Limits**: at each round boundary the guards (rounds and wall clock until RB-E1b scales them
+  to the head) write one `[device] limit reached (...)` item and send one last round with
+  tool choice none; the soft wall bounds every request, the last round may run to the hard wall.
+- **Endings**: a failed exchange ends the turn with its one plain line; a cut answer is
+  delivered with the cut line and its calls are answered "not run"; `beforeDeliver` may hold
+  the reply once (one device item, one more round). Then the superseded reads (x), delivery,
+  the d item, `afterDeliver`, the e item (cause, counts, tokens, per-exchange sizes, change
+  points, prompt and manifest hashes) and head.json.
+- **Storage**: every item goes through `TxLog::store`. An item the card refused stays in RAM;
+  the model sees one device note at the next round boundary and the owner one storage line,
+  once per episode. With no card the chat runs from RAM and no effect tool runs.
+- **Memory**: the turn's state lives on the heap; `runTurn`'s own frame is 240 B on the device
+  compiler. A refused allocation ends the turn with a status, never an abort.
+
+`test/test_plain_conformance/engine_tests.h` drives scripted turns on each dialect's stand-in
+wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each lands).
+
 ### The battery's property suites (layer L1)
 
 Nine suites state what the plain engine must keep true before it exists:

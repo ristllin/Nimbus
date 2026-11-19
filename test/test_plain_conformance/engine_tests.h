@@ -15,6 +15,7 @@
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/props.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/tool_groups.h"
 
 namespace engine_tests {
 
@@ -502,6 +503,78 @@ inline void test_a_refused_allocation_ends_the_turn_with_a_status_never_an_abort
   expectPaired(b);
 }
 
+// ---- what the review found (fresh-context hostile review, lane RB-E1a) -----------------------
+// An effect reached through `more` is an effect: its intent comes first, and a refused intent
+// keeps it from running.
+inline void test_an_effect_through_more_needs_its_intent() {
+  for (int refuse = 0; refuse < 2; ++refuse) {
+    txb::Battery b;
+    nimbus::orch::registerMore(b.reg);
+    TXB_OK(b.boot());
+    if (refuse)
+      b.files.refuseWhen = [](const char* data, size_t len) {
+        return std::string(data, len).find("\"k\":\"i\"") != std::string::npos;
+      };
+    b.model.push(sp::call("more", R"({"name":"device_control","args":{"action":"restart"}})"));
+    b.model.push(sp::say("Done."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("restart please", out));
+    const std::vector<tx::Item> items = storedOf(b);
+    bool eff = false;
+    for (const tx::Item& it : items) eff |= it.kind == tx::ItemKind::Call && it.n == "more" && it.eff;
+    TEST_ASSERT_TRUE_MESSAGE(eff, "a more call that reaches an effect is not stored as one");
+    TEST_ASSERT_EQUAL_MESSAGE(refuse ? 0 : 1, (int)b.world.dispatched.size(), "the intent rule did not hold through more");
+    if (!refuse) TEST_ASSERT_EQUAL(1, (int)countKind(items, tx::ItemKind::Intent));
+  }
+}
+
+// A result the card refused (kept in RAM), a turn that then closes on the card, a restart:
+// the call is answered "outcome unknown" at the next open, so the request stays paired.
+inline void test_a_result_lost_to_the_card_is_closed_after_a_restart() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  b.files.refuseWhen = [](const char* data, size_t len) {
+    return std::string(data, len).find("\"k\":\"r\"") != std::string::npos;
+  };
+  b.model.push(sp::call("write_file", R"({"path":"notes/x.md","text":"v1"})"));
+  b.model.push(sp::say("Saved."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("save v1", out));
+  TEST_ASSERT_EQUAL(1, b.world.runsOf("write_file"));
+  TXB_OK(b.restartAfterCut());
+  b.model.push(sp::say("It may have saved."));
+  b.advance(30);
+  TXB_OK(b.owner("did it?", out));
+  TEST_ASSERT_EQUAL(1, b.world.runsOf("write_file"));
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "outcome unknown"));
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(b.model.last().view, why), why.c_str());
+}
+
+// Slow tools inside one round: once the soft wall has passed no further call starts; the
+// rest are answered "not run" and the guard's last round follows.
+inline void test_no_call_starts_past_the_soft_wall() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [&b](const plain::DispatchCtx&) {
+    b.ms += 100000;   // each call takes 100 s
+    return plain::DispatchDecision{};
+  }));
+  b.world.files["notes/a.md"] = "alpha";
+  const std::string rf = R"({"path":"notes/a.md"})";
+  b.model.push(sp::calls({{"read_file", rf, ""}, {"read_file", rf, ""}, {"read_file", rf, ""}, {"read_file", rf, ""}}));
+  b.model.push(sp::say("Stopped at the limit."));
+  const uint32_t t0 = b.ms;
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read it four times", out));
+  TEST_ASSERT_TRUE_MESSAGE(b.world.dispatched.size() < 4, "every slow call ran");
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), texts::tool_results::kNotRunLimit));
+  TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Time);
+  TEST_ASSERT_EQUAL_STRING("none", b.model.last().view.toolChoice.c_str());
+  TEST_ASSERT_TRUE(b.ms - t0 <= plain::kHardWallMs);
+  expectPaired(b);
+}
+
 // ---- the sentinel ----------------------------------------------------------------------------
 inline void test_an_empty_engine_answers_a_typed_outcome() {
   plain::PlainEngine e{plain::EngineDeps{}};
@@ -529,6 +602,9 @@ inline void run() {
   RUN_TEST(test_every_seam_is_called_at_its_point);
   RUN_TEST(test_boot_runs_the_resume_seam_once);
   RUN_TEST(test_a_refused_allocation_ends_the_turn_with_a_status_never_an_abort);
+  RUN_TEST(test_an_effect_through_more_needs_its_intent);
+  RUN_TEST(test_a_result_lost_to_the_card_is_closed_after_a_restart);
+  RUN_TEST(test_no_call_starts_past_the_soft_wall);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);
 }
 

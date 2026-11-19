@@ -93,9 +93,6 @@ std::vector<StubRow> stubs() {
       {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
       {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
       {"plain::wireFor flat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::Flat, w); }},
-      {"plain::PlainEngine::runTurn", [] { plain::PlainEngine e(plain::EngineDeps{}); plain::TurnOutcome o; return e.runTurn({}, o); }},
-      {"plain::PlainEngine::idle", [] { plain::PlainEngine e(plain::EngineDeps{}); plain::IdleOutcome o; return e.idle({}, o); }},
-      {"plain::PlainEngine::boot", [] { plain::PlainEngine e(plain::EngineDeps{}); return e.boot({}); }},
       {"plain::guardLimitsFor", [] { plain::GuardLimits l; return plain::guardLimitsFor(8, {}, l); }},
       {"plain::checkGuards", [] { plain::GuardTrip t; return plain::checkGuards({}, {}, t); }},
       {"plain::isPureTool", [] { return plain::isPureTool("read_file", flag); }},
@@ -138,9 +135,9 @@ static void test_every_stub_answers_not_implemented() {
   TEST_ASSERT_NULL(w);
 }
 
-// The engine stub wired the way the engine lanes will wire it: a scripted model behind
-// the transport. Until RB-E1a lands, a turn answers NotImplemented and sends nothing.
-static void test_engine_stub_sends_nothing() {
+// The engine wired with a scripted model behind the transport but never booted (and with
+// no dispatch): the turn answers InvalidArgument and sends nothing (RB-E1a wrote the body).
+static void test_engine_before_boot_sends_nothing() {
   sp::ScriptedProvider model;
   model.push(sp::say("hello"));
   plain::EngineDeps deps;
@@ -154,7 +151,7 @@ static void test_engine_stub_sends_nothing() {
   in.text = "hi";
   plain::TurnOutcome out;
   const tx::Status st = engine.runTurn(in, out);
-  TEST_ASSERT_TRUE(st.notImplemented());
+  TEST_ASSERT_TRUE(st.err == tx::Err::InvalidArgument);
   TEST_ASSERT_FALSE(out.delivered);
   TEST_ASSERT_EQUAL(0, (int)model.requests().size());
 }
@@ -360,7 +357,7 @@ static void test_slug_tables_are_whole() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_stub_answers_not_implemented);
-  RUN_TEST(test_engine_stub_sends_nothing);
+  RUN_TEST(test_engine_before_boot_sends_nothing);
   RUN_TEST(test_hooks_declares_the_six_seams);
   RUN_TEST(test_registration_rules);
   RUN_TEST(test_dispatch_runs_in_slot_order);

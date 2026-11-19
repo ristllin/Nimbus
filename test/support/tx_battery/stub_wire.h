@@ -105,13 +105,41 @@ class StubWire : public plain::WireCodec {
       if (lad.omitThrough && it.q <= lad.omitThrough && it.turn &&
           std::find(omitted.begin(), omitted.end(), it.turn) == omitted.end())
         omitted.push_back(it.turn);
-    if (!lad.omissionLine.empty()) out.push_back(Piece{Role::User, 'u', lad.omissionLine, "", "", "", false});
+    std::vector<Piece> flat;
+    if (!lad.omissionLine.empty()) flat.push_back(Piece{Role::User, 'u', lad.omissionLine, "", "", "", false});
     for (const tx::Item& it : items) {
       if (std::find(omitted.begin(), omitted.end(), it.turn) != omitted.end()) continue;
-      plain::Status st = piece(in, it, show, out);
+      plain::Status st = piece(in, it, show, flat);
       if (!st.ok()) return st;
     }
+    pairResults(flat, out);
     return plain::Status::success();
+  }
+
+  // Each result right after the run of assistant pieces that holds its call, by call id: a
+  // result stored late (the engine answers a call the card lost as "outcome unknown" at the
+  // next turn open) still pairs with its call. A result with no call shown is left out.
+  static void pairResults(const std::vector<Piece>& flat, std::vector<Piece>& out) {
+    for (size_t i = 0; i < flat.size();) {
+      if (flat[i].kind == 'r') {
+        ++i;
+        continue;
+      }
+      if (flat[i].role != Role::Assistant) {
+        out.push_back(flat[i++]);
+        continue;
+      }
+      size_t j = i;
+      while (j < flat.size() && flat[j].role == Role::Assistant) out.push_back(flat[j++]);
+      for (size_t c = i; c < j; ++c)
+        if (flat[c].kind == 'c')
+          for (const Piece& r : flat)
+            if (r.kind == 'r' && r.id == flat[c].id) {
+              out.push_back(r);
+              break;
+            }
+      i = j;
+    }
   }
 
   plain::Status piece(const plain::RenderInput& in, const tx::Item& it, const tx::ShowFacts& show,
