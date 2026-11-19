@@ -322,8 +322,11 @@ bool seedStep(lab::LabRig& rig, const std::string& chat, const std::string& kind
     return true;
   }
   if (kind == "skill") {  // the owner's own skill, saved by him (live at once); run_eval.py fills id and md
-    const agent::SkillResult r = rig.skills().ownerSave(str(st["id"]), str(st["md"]));
-    if (!r.ok) std::fprintf(stderr, "hon_driver: seed skill %s refused: %s\n", str(st["id"]).c_str(), r.err.c_str());
+    const agent::SkillResult r = rig.skills().ownerSave(str(st["id"]), substituteDays(str(st["md"])));
+    if (!r.ok) {  // a skill scenario run without its skill would measure something else: stop
+      std::fprintf(stderr, "hon_driver: seed skill %s refused: %s\n", str(st["id"]).c_str(), r.err.c_str());
+      std::exit(3);
+    }
     return true;
   }
   if (kind == "pref") {  // standing rules already on the device

@@ -39,11 +39,11 @@ FIXED_DAYS = {"{D-2}": "2026-11-17", "{D-1}": "2026-11-18"}
 
 
 def arduinojson(tree: Path) -> Path:
-    for root in (tree, REPO, *sorted(REPO.parents[1].glob("*/nimbus"))):
+    for root in (tree, REPO):
         aj = root / ".pio/libdeps/native/ArduinoJson/src"
         if aj.is_dir():
             return aj
-    sys.exit("no ArduinoJson under .pio/libdeps/native: run pio test -e native once in some tree")
+    sys.exit("no ArduinoJson under .pio/libdeps/native: run pio test -e native once in this tree")
 
 
 def build(tree: Path, out: Path) -> Path:

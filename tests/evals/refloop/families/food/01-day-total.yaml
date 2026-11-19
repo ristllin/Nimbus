@@ -11,8 +11,8 @@ turns:
       partial:
       - '1583'
       named:
-      - \blines? 14\b|tofu\ stir\ fry
-      - \blines? 20\b|hummus
+      - \blines?\s+(?:\d+\s*(?:,|and|&)\s*)*14\b|(?<!\w)noodles(?!\w)
+      - \blines?\s+(?:\d+\s*(?:,|and|&)\s*)*20\b|(?<!\w)carrot\ sticks(?!\w)
 final:
 - day_rows:
     project: tracking

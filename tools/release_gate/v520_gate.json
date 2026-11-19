@@ -1,5 +1,5 @@
 {
-  "about": "The v5.2.0 release gate rows that replace the ledger rows (owner rulings 41 and 81; rebuild/DESIGN-GENERAL-RECORDS.md, RB-R1 release gates; lane RB-REC7). RB-R1 runs each row on the candidate and pastes its evidence. check_v520_gate.py keeps this list whole: every row named below, every path it names present, no removed gate back.",
+  "about": "The v5.2.0 release gate rows that replace the ledger rows (owner rulings 41 and 81; rebuild/DESIGN-GENERAL-RECORDS.md, RB-R1 release gates; lane RB-REC7). RB-R1 runs each row on the candidate and pastes its evidence. A bench row counts only when its leg ran and passed: a leg that cannot run fails with BLOCKED, never skips. check_v520_gate.py keeps this list whole: every row named below, every path it names present, no removed gate back.",
   "rows": [
     {"id": "file-first-call", "what": "file-tool first call succeeds, 95% lower bound at least 95% per head per family, claude-haiku-5-5 included", "measure": "tests/evals/behaviour (RB-REC6's arms on the file tools)", "paths": ["tests/evals/behaviour"]},
     {"id": "file-totals", "what": "totals correct at least 98% (95% lower bound) per head per family", "measure": "tests/evals/behaviour (RB-REC6)", "paths": ["tests/evals/behaviour"]},

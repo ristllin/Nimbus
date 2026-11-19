@@ -11,8 +11,8 @@ turns:
       partial:
       - '96.05'
       named:
-      - \blines? 10\b|bakery:\ pasty
-      - \blines? 20\b|dinner\ with\ Bram
+      - \blines?\s+(?:\d+\s*(?:,|and|&)\s*)*10\b|(?<!\w)juice(?!\w)
+      - \blines?\s+(?:\d+\s*(?:,|and|&)\s*)*20\b|(?<!\w)Ines(?!\w)
 final:
 - day_rows:
     project: money

@@ -18,6 +18,9 @@ power (uhubctl finds no hub that switches ports), and a cable pull needs a perso
 arbitrary byte like a power loss does; it does not take power from the card mid-sector, so the evidence says
 "panic reset", never "power cut".
 
+A leg that cannot run (no image with /api/test/astool, no ALLOCREFUSE verb, no released images) FAILS with
+"BLOCKED: ..." under --allow-hardware: a gate row is never passed by a skip.
+
 The pure checks below (classification of a file after a cut, sha8, rows rewritten) run on the host in CI; the legs
 need the test image (`/api/test/astool`), the board and --allow-hardware:
 
@@ -138,11 +141,11 @@ def test_sha8_is_the_tools_sha8():
 @pytest.fixture()
 def api(device, net):
     if not net.ip or not net.token:
-        pytest.skip("BLOCKED: the board's IP and device sign-in code are needed for the file API")
+        pytest.fail("BLOCKED: the board's IP and device sign-in code are needed for the file API")
     a = bd.Api(net.ip, net.token)
     probe = a.tool("files.list", {"project": PROJECT})
     if probe.code == 404:
-        pytest.skip("BLOCKED: this image has no /api/test/astool (flash the test env of the candidate)")
+        pytest.fail("BLOCKED: this image has no /api/test/astool (flash the test env of the candidate)")
     return a
 
 
@@ -192,6 +195,8 @@ def test_cut_during_append_leaves_old_whole_or_a_fenced_torn_tail(device, api):
             result = _call(api, "files.append", {"name": name, "text": row.decode()})
             assert fenced(after, row, _file(api, name), result), f"cut {n}: the next append did not fence the tail"
     print(f"append cuts: {outcomes}")
+    # A run whose every cut landed before or after the write proves nothing about a cut inside it.
+    assert "torn" in outcomes, f"no cut landed inside an append in {CUTS} tries: raise NIMBUS_FILES_BENCH_CUTS"
 
 
 @pytest.mark.hil
@@ -223,7 +228,7 @@ def test_round_trip_with_one_row_added(api):
     assert rows_rewritten(before, after) == []
     listed = api.get("/api/files/list?" + urllib.parse.urlencode({"project": PROJECT})).text
     assert name in listed
-    if "sha8=" in result:
+    if "sha8=" in result:  # files.append states it when the file's size allows the hash (the edit always does)
         assert f"sha8={sha8(after)}" in result
 
 
@@ -232,7 +237,7 @@ def test_refused_allocation_changes_nothing_and_says_so(device, api):
     """Needs a test-console verb that arms the refusing allocator (setWorkingAllocators) for the next N blocks."""
     reply = device.cmd("ALLOCREFUSE 1", "ALLOCREFUSE", timeout=5.0) if hasattr(device, "cmd") else ""
     if "armed" not in reply:
-        pytest.skip("BLOCKED: no ALLOCREFUSE console verb on this image (src/test_console.cpp, a hot file)")
+        pytest.fail("BLOCKED: no ALLOCREFUSE console verb on this image (src/test_console.cpp, a hot file)")
     name = "refused.csv"
     before = HEADER + csv_rows(50)
     assert api.upload(PROJECT, name, before).code == 200
@@ -249,7 +254,7 @@ def test_up_down_up_keeps_engine_two_rows(request, device, api):
         request.config.getoption("--rollback-images", default=None) if hasattr(request.config, "getoption") else None
     )
     if not images:
-        pytest.skip(
+        pytest.fail(
             "BLOCKED: pass --rollback-images DIR holding candidate.bin, v5.1.1.bin and v5.1.2.bin (released images)"
         )
-    pytest.skip("BLOCKED: the flash steps of the rollback leg are run by RB-R1's release bench, not in this session")
+    pytest.fail("BLOCKED: the flash steps of the rollback leg are run by RB-R1's release bench, not in this session")

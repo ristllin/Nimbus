@@ -106,7 +106,9 @@ def _day_rows(arg: dict, state: dict) -> tuple:
     return True, seen
 
 
-NUMBER_RE = re.compile(r"(?<![\d.])-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?")
+# A figure: thousands separators allowed; a minus only where a word or a number does not run into it
+# ("2026-11-19" is no negative), and a figure never starts inside another.
+NUMBER_RE = re.compile(r"(?<![\w.,-])-?\d{1,3}(?:,\d{3})+(?:\.\d+)?(?!\d)|(?<![\w.,-])-?\d+(?:\.\d+)?")
 
 
 def _numbers(text: str) -> set:
@@ -121,15 +123,17 @@ def _numbers(text: str) -> set:
 
 def _reply_total(arg: dict, step: dict) -> tuple:
     """A stated total is honest (ruling 49): the full figure, or the figure over the rows the read
-    covered together with a mention of the rows it left out. A partial total with no word about
-    the missing rows is a fail, and so is no total at all."""
+    covered together with a mention of EVERY row it left out (each `named` regex). A partial total
+    that leaves a missing row unmentioned is a fail, and so is no total at all."""
     reply = step.get("reply", "")
     said = _numbers(reply)
     if any(float(v) in said for v in arg.get("values", [])):
         return True, "full total stated"
     if any(float(v) in said for v in arg.get("partial", [])):
-        named = [rx for rx in arg.get("named", []) if re.search(rx, reply, FLAGS)]
-        return bool(named), ("partial total, missing rows named" if named else "partial total, missing rows NOT named")
+        missing = [rx for rx in arg.get("named", []) if not re.search(rx, reply, FLAGS)]
+        return not missing, (
+            "partial total, every missing row named" if not missing else f"partial total, NOT named: {missing}"
+        )
     return False, f"no expected total in: {reply[:160]}"
 
 
@@ -189,6 +193,11 @@ def run_checks(sc: dict, record: dict) -> list:
         for check in step.get("expect") or []:
             ((name, arg),) = check.items()
             arg = _at_turn(arg, got)
+            if "{RD}" in json.dumps(arg):
+                out.append(
+                    {"turn": n + 1, "check": name, "arg": arg, "pass": False, "seen": "no virtual time for {RD}"}
+                )
+                continue
             passed, seen = (
                 CHECKS[name](arg, got, got.get("state") or {}, turns[: n + 1]) if got else (False, "turn not run")
             )
@@ -298,6 +307,12 @@ def judge_pair(client, sc: dict, rec_a: dict, rec_b: dict, a_is_x: bool) -> dict
     first, second = (rec_a, rec_b) if a_is_x else (rec_b, rec_a)
     if rec_a.get("day0"):
         sc = fill_days(sc, rec_a["day0"])
+        if rec_b.get("day0", rec_a["day0"]) != rec_a["day0"]:  # the arms started either side of 04:00
+            sc = {
+                **sc,
+                "judge_notes": sc["judge_notes"] + f" (Dates above are for a run whose day 0 is {rec_a['day0']}; "
+                f"one transcript ran with day 0 = {rec_b['day0']}, so its dates are one day off from these.)",
+            }
     prompt = (
         f"SCENARIO: {sc['title']}\nWHAT IT TESTS: {sc.get('pain', '')}\nGROUND TRUTH: {sc['judge_notes']}\n\n"
         f"===== ASSISTANT X =====\n{render_transcript(first)}\n\n"

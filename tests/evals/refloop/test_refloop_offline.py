@@ -309,11 +309,18 @@ class GradeTest(unittest.TestCase):
         self.assertFalse(grade.CHECKS["day_rows"]({**arg, "count": 3}, {}, state, [])[0])  # "day pass" twice
 
     def test_a_partial_total_passes_only_when_it_names_the_missing_rows(self):
-        arg = {"values": ["124.30"], "partial": ["96.05"], "named": [r"line 9|pasty", r"line 18|Ines"]}
+        line = r"\blines?\s+(?:\d+\s*(?:,|and|&)\s*)*{}\b"
+        arg = {
+            "values": ["124.30"],
+            "partial": ["96.05"],
+            "named": [line.format(9) + "|juice", line.format(18) + "|Ines"],
+        }
         check = grade.CHECKS["reply_total"]
         self.assertTrue(check(arg, {"reply": "You spent £124.30 that day."}, {}, [])[0])
         self.assertTrue(check(arg, {"reply": "£96.05, but lines 9 and 18 have extra commas."}, {}, [])[0])
         self.assertFalse(check(arg, {"reply": "You spent £96.05 that day."}, {}, [])[0])
+        self.assertFalse(check(arg, {"reply": "£96.05; line 9 has an extra comma."}, {}, [])[0])  # one of two
+        self.assertTrue(check(arg, {"reply": "£96.05 without the juice and Ines rows."}, {}, [])[0])
         self.assertFalse(check(arg, {"reply": "You spent about £100."}, {}, [])[0])
         self.assertTrue(check({"values": ["2353"]}, {"reply": "2,353 kcal"}, {}, [])[0])
 

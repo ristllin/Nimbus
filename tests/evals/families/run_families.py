@@ -12,8 +12,8 @@ whose appends write twice), and prints per head, domain and arm the checks passe
 scenarios with every check green.
 
 Parity (green) for a head and a domain: the harness's check pass rate is at least the loop's less
-5 points, and the counter-test arm X, where it ran, is red (it fails the family: some scenario
-that appends has a failed check).
+5 points, and the counter-test arm X, where it ran, is red on a row count (a day_rows check failed:
+the doubled write was seen, not just any failure).
 """
 
 from __future__ import annotations
@@ -97,7 +97,8 @@ def arm_cell(rows: list) -> dict | None:
         return None
     p, t = sum(r["passed"] for r in rows), sum(r["total"] for r in rows)
     green = sum(r["passed"] == r["total"] for r in rows)
-    return {"passed": p, "total": t, "rate": p / max(t, 1), "green": green, "runs": len(rows)}
+    doubled = sum(any(":day_rows " in f for f in r["failed"]) for r in rows)  # a row count a doubled write breaks
+    return {"passed": p, "total": t, "rate": p / max(t, 1), "green": green, "runs": len(rows), "doubled": doubled}
 
 
 def verdicts(rows: list) -> list:
@@ -109,7 +110,7 @@ def verdicts(rows: list) -> list:
             if not cell:
                 continue
             parity = cell["A"]["rate"] >= cell["B"]["rate"] - 0.05 if "A" in cell and "B" in cell else None
-            counter = cell["X"]["green"] < cell["X"]["runs"] if "X" in cell else None
+            counter = cell["X"]["doubled"] > 0 if "X" in cell else None  # red on a row count, not on noise
             out.append({"model": model, "domain": dom, "cell": cell, "parity": parity, "counter_red": counter})
     return out
 

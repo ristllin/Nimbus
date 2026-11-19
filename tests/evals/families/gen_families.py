@@ -166,7 +166,11 @@ def _day_total(dom: D.Domain, say) -> dict:
     v, cols, file = VOCAB[dom.name], dom.sum_cols, _file(dom)
     h = D.honest_day(dom, "{D-1}")
     bad_rows = [dom.days["{D-1}"][i - 1] for i in h["named"]]
-    named = [rf"\blines? {_line_of(file, ','.join(r))}\b|{re.escape(r[2].split(',')[0])}" for r in bad_rows]
+    # Each left-out row by its line (alone or in a list) or by the text a bare comma split off its free text.
+    named = [
+        rf"\blines?\s+(?:\d+\s*(?:,|and|&)\s*)*{_line_of(file, ','.join(r))}\b|(?<!\w){re.escape(r[2].split(',')[-1].strip())}(?!\w)"
+        for r in bad_rows
+    ]
     full = [_fmt(h["full"][c]) for c in cols[:1]]
     clean = [_fmt(h["clean"][c]) for c in cols[:1]]
     n_d1 = len(dom.days["{D-1}"])

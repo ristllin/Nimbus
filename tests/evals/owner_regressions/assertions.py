@@ -352,7 +352,8 @@ def file_row(sc: dict, t: dict, params: dict):
     params['date'] the row must be of that day."""
     col, want, cols = tracking(sc, params)["value"], params.get("value"), params.get("cols") or {}
     for r in _text_hits(sc, t, params, params.get("text", "")):
-        if r["ok"] and num(r.get(col)) == want and all(num(r.get(k)) == v for k, v in cols.items()):
+        empty_ok = want is not None or not r.get(col, "").strip()  # null: an empty cell, not just a non-number
+        if r["ok"] and empty_ok and num(r.get(col)) == want and all(num(r.get(k)) == v for k, v in cols.items()):
             return True, f"line {r['line']}: {r['raw']}"
     unread = [r["line"] for r in _text_hits(sc, t, params, params.get("text", "")) if not r["ok"]]
     why = f"; lines {unread} hold it with a wrong field count" if unread else ""
@@ -376,6 +377,8 @@ def file_row_value_ne(sc: dict, t: dict, params: dict):
     params['col']), readable or not: a wrong figure in a row with a wrong field count is still in
     the file."""
     col, bad_v = params.get("col") or tracking(sc, params)["value"], params.get("value")
+    if bad_v is None:
+        raise ValueError("file_row_value_ne needs the wrong value (a number)")
     bad = [
         r["raw"]
         for r in _text_hits(sc, t, params, params.get("text", ""))
@@ -415,27 +418,37 @@ def file_row_count(sc: dict, t: dict, params: dict):
     return ok, f"{n} rows (min {params.get('min')}, max {params.get('max', '-')})"
 
 
+MONTH_AFTER = r"(?!\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b)"
+
+
 def _stated(reply: str, unit: str) -> tuple:
-    """(figures stated as a total, figures stated in plain day wording) in a reply."""
-    fig = r"(-?\d[\d,]*(?:\.\d+)?)"
-    u = rf"\s*{re.escape(unit)}" if unit else ""
-    cur = r"[£$€]?\s*"
-    strong = re.findall(rf"total[^.\n]{{0,60}}?{cur}{fig}{u}", reply, re.IGNORECASE)
-    weak = re.findall(rf"\b(?:so far|today|day|spent)\b[^.\n]{{0,60}}?{cur}{fig}{u}", reply, re.IGNORECASE)
-    weak += re.findall(
-        rf"{cur}{fig}{u}[^.\n]{{0,40}}?\b(?:so far today|today so far|for today|today)\b", reply, re.IGNORECASE
-    )
-    clean = lambda xs: [v for v in (num(x) for x in xs) if v is not None]  # noqa: E731
+    """(figures stated as a total, figures stated in plain day wording) in a reply. With no unit word
+    (money) a figure counts only with a currency sign or decimals, so a date ("19 Nov") or a count
+    ("15 purchases") after the word total is never read as the total."""
+    if unit:
+        fig = rf"(-?\d[\d,]*(?:\.\d+)?)\s*{re.escape(unit)}"
+    else:
+        fig = rf"(?:[£$€]\s*(-?\d[\d,]*(?:\.\d+)?)|(?<![\w.])(-?\d[\d,]*\.\d+)){MONTH_AFTER}"
+    strong = re.findall(rf"total[^.\n]{{0,60}}?{fig}", reply, re.IGNORECASE)
+    weak = re.findall(rf"\b(?:so far|today|day|spent)\b[^.\n]{{0,60}}?{fig}", reply, re.IGNORECASE)
+    weak += re.findall(rf"{fig}[^.\n]{{0,40}}?\b(?:so far today|today so far|for today|today)\b", reply, re.IGNORECASE)
+    flat = lambda xs: [x if isinstance(x, str) else next((g for g in x if g), "") for x in xs]  # noqa: E731
+    clean = lambda xs: [v for v in (num(x) for x in flat(xs)) if v is not None]  # noqa: E731
     return clean(strong), clean(weak)
 
 
+# "line 7", "lines 3 and 7", "lines 3, 5, 7": a line number in a list after the word line.
+LINE_LIST = r"\blines?\s+(?:\d+\s*(?:,|and|&)\s*)*{n}\b"
+
+
 def _names(reply: str, row: dict) -> bool:
-    """The reply points at a row: its line number, or the first word of its free text (third field)."""
-    if re.search(rf"\blines? {row['line']}\b", reply):
+    """The reply points at a row: its line number, or its free text (the third field and any field a
+    bare comma split off it, up to the last two), whole words."""
+    if re.search(LINE_LIST.format(n=row["line"]), reply, re.IGNORECASE):
         return True
-    cells = row["raw"].split(",")
-    word = re.match(r"[^\W\d_]{3,}", cells[2].strip()) if len(cells) > 2 else None
-    return bool(word) and ci(reply, word.group(0))
+    cells = [c.strip() for c in row["raw"].split(",")]
+    pieces = [p for p in cells[2:-2] if len(p) >= 4 and not re.fullmatch(r"[\d.\s-]*", p)]
+    return any(re.search(rf"(?<!\w){re.escape(p)}(?!\w)", reply, re.IGNORECASE) for p in pieces[-1:])
 
 
 @assertion
@@ -452,7 +465,7 @@ def file_day_total(sc: dict, t: dict, params: dict):
     strong, weak = _stated(r, tr.get("unit", ""))
     stated = strong + weak
     full = params.get("full")  # the figure over every row as written, when the rows say it plainly
-    if full is not None and _says(stated, float(full)):
+    if full is not None and _says(stated, float(full)) and all(_says([float(full)], v) for v in strong):
         return True, f"the full figure {float(full):g} stated (stated {stated})"
     return _total_verdict(r, strong, stated, expected, unread, params.get("require_stated", True))
 
@@ -466,7 +479,7 @@ def _total_verdict(reply: str, strong: list, stated: list, expected: float, unre
         return False, f"no day figure stated matching the device sum {expected:g} (stated {stated})"
     if [v for v in strong if abs(v - expected) > 0.005]:
         return False, f"reply totals {strong} != device sum {expected:g}"
-    if unread and _says(stated, expected) and not any(_names(reply, u) for u in unread):
+    if unread and _says(stated, expected) and not all(_names(reply, u) for u in unread):
         return False, f"total {expected:g} leaves out lines {[u['line'] for u in unread]} and the reply does not say so"
     return True, f"day figure stated {stated} == device sum {expected:g}"
 

@@ -245,7 +245,8 @@ def driver_scenario(sc: dict, rep_dir: Path) -> str:
         if st.get("do") == "skill":
             dom = DOMAINS.DOMAINS[st["domain"]]
             path = (out.get("tracking") or {}).get("path", dom.path)
-            st.update(id=DOMAINS.SKILL_FIELDS[dom.name]["id"], md=DOMAINS.skill_md(dom, path=path))
+            md = DOMAINS.dated(DOMAINS.skill_md(dom, path=path), {"{D0}": "{{TODAY}}"})  # the driver fills {{TODAY}}
+            st.update(id=DOMAINS.SKILL_FIELDS[dom.name]["id"], md=md)
     target = rep_dir / "scenario.json"
     target.write_text(json.dumps(out, ensure_ascii=False))
     return str(target)

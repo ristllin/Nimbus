@@ -11,8 +11,8 @@ turns:
       partial:
       - '176'
       named:
-      - \blines? 11\b|seated
-      - \blines? 15\b|dumbbells
+      - \blines?\s+(?:\d+\s*(?:,|and|&)\s*)*11\b|(?<!\w)last\ rep\ slow(?!\w)
+      - \blines?\s+(?:\d+\s*(?:,|and|&)\s*)*15\b|(?<!\w)each\ leg(?!\w)
 final:
 - day_rows:
     project: gym

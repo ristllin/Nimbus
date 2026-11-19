@@ -104,7 +104,25 @@ def test_a_day_total_equals_the_device_sum_and_names_what_it_leaves_out():
     assert not check("file_day_total", MONEY, t("You spent 5.20 today."), **params)  # silently partial: FAIL
     assert not check("file_day_total", MONEY, t("Your total today is 11.95."), **params)  # not the device sum
     assert check("file_day_total", MONEY, t("Your total today is 11.95."), full=11.95, **params)  # read in full
-    assert check("file_day_total", MONEY, t("Total today: 5.20, leaving out the bakery row."), **params)
+    assert check("file_day_total", MONEY, t("Total today: 5.20, leaving out the pasty and juice row."), **params)
+    assert not check(
+        "file_day_total", MONEY, t("Total today: 5.20, leaving out the bakery row."), **params
+    )  # a clean word
+    # A date or a count after "total" is not the total (money has no unit word).
+    assert check(
+        "file_day_total", MONEY, t("Total for 5 Nov across 2 purchases: £5.20, not counting line 3."), **params
+    )
+
+
+def test_every_left_out_row_must_be_named():
+    rows = [
+        "2026-11-05,coffee,kiosk,2.40,card",
+        "2026-11-05,lunch,bakery: pasty, juice,6.75,card",
+        "2026-11-05,gift,flowers for Odile, Ines,15.00,cash",
+    ]
+    t = lambda reply: tfile(MONEY, *rows, reply=reply)  # noqa: E731
+    assert check("file_day_total", MONEY, t("Today: £2.40; lines 3 and 4 have extra commas."), date="2026-11-05")
+    assert not check("file_day_total", MONEY, t("Today: £2.40; line 3 has an extra comma."), date="2026-11-05")
 
 
 # ---- memory_contains: a write must be able to fail it (fix pass F2) ------------------------
