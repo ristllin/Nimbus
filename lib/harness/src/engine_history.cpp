@@ -369,6 +369,27 @@ HistoryWindow TurnEngine::historyWindow(const std::string& chatId, const History
   return w;
 }
 
+namespace {
+// The oldest row the request already carries: the window's first turn, else the in-flight row.
+std::string earlierFloor(const std::string& inFlight, const std::vector<HistTurn>& kept) {
+  std::string before = inFlight;
+  for (const HistTurn& t : kept)
+    if (!t.firstId.empty() && (before.empty() || rowIdAfter(before, t.firstId))) before = t.firstId;
+  return before;
+}
+
+// The chat's newest /clear boundary among the store's matches ("" = none).
+std::string newestClear(const std::function<std::vector<nimbus::orch::EpisodicMessage>(const nimbus::orch::MsgQuery&)>& search,
+                        const std::string& chatId) {
+  std::string cleared;
+  nimbus::orch::MsgQuery cq = earlierQuery(chatId, kClearBoundaryText, std::string());
+  cq.limit = kEarlierCandidates;
+  for (const auto& m : search(cq))
+    if (isClearBoundary(m) && (cleared.empty() || rowIdAfter(m.id, cleared))) cleared = m.id;
+  return cleared;
+}
+}  // namespace
+
 // Ruling 90 (RB-Q2b): the owner's own earlier lines of this chat for the new message, older
 // than the window (and the in-flight row) and not carried by the summary. Two index reads of
 // the store (the search and the newest /clear boundary); a failure adds nothing.
@@ -377,21 +398,13 @@ __attribute__((noinline)) void TurnEngine::earlierRecall(const std::string& chat
   earlierLines_ = earlierMs_ = 0;
   if (!d_.searchStore || !histV2On() || chatId.empty() || chatId == "system") return;
   const uint32_t t0 = d_.platform.nowMs ? d_.platform.nowMs() : 0;
-  std::string before = curUserRowId_;
-  for (const HistTurn& t : lastWindow_.kept)
-    if (!t.firstId.empty() && (before.empty() || rowIdAfter(before, t.firstId))) before = t.firstId;
   try {
-    const nimbus::orch::MsgQuery q = earlierQuery(chatId, text, before);
+    const nimbus::orch::MsgQuery q = earlierQuery(chatId, text, earlierFloor(curUserRowId_, lastWindow_.kept));
     if (!q.limit) return;
     const std::vector<nimbus::orch::EpisodicMessage> rows = d_.searchStore(q);
     if (rows.empty()) return;
-    std::string cleared;
-    nimbus::orch::MsgQuery cq = earlierQuery(chatId, kClearBoundaryText, std::string());
-    cq.limit = kEarlierCandidates;
-    for (const auto& m : d_.searchStore(cq))
-      if (isClearBoundary(m) && (cleared.empty() || rowIdAfter(m.id, cleared))) cleared = m.id;
-    const std::vector<std::string> lines =
-        earlierBullets(rows, summary, cleared, d_.utcOffsetMin ? d_.utcOffsetMin() : 0);
+    const std::vector<std::string> lines = earlierBullets(rows, summary, newestClear(d_.searchStore, chatId),
+                                                          d_.utcOffsetMin ? d_.utcOffsetMin() : 0);
     into.insert(into.end(), lines.begin(), lines.end());
     earlierLines_ = (uint32_t)lines.size();
   } catch (...) {   // a refused allocation or a store fault: the turn goes on without it
