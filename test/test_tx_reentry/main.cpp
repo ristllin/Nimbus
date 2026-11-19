@@ -115,7 +115,7 @@ struct World {
 
 void firstMigration(World& w, uint32_t seed) {
   w.rng.seed(seed);
-  w.m = month(w.old, seed, 400, 6, 3, 5, 800);
+  w.m = month(w.old, {seed, 400, 6, 3, 5, 800});
   w.clock = w.m.lastT + kHour;
   w.done("first");
 }
@@ -282,7 +282,7 @@ void test_a_lost_marker_never_imports_a_row_twice() {
   for (int lose = 0; lose < 3; ++lose) {
     World w;
     w.rng.seed(8);
-    w.m = month(w.old, 8, 400, 6, lose == 2 ? 6 : 3, 0, 800);   // 2: every row under the old pointer
+    w.m = month(w.old, {8, 400, 6, lose == 2 ? 6 : 3, 0, 800});   // 2: every row under the old pointer
     w.clock = w.m.lastT + kHour;
     if (lose != 2) {
       w.old.add(kChat, w.clock, "user", "message", "the last question");
@@ -312,7 +312,7 @@ void test_a_lost_marker_never_imports_a_row_twice() {
 void test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing() {
   World w;
   w.rng.seed(9);
-  w.m = month(w.old, 9, 300, 5, 3, 4, 700);
+  w.m = month(w.old, {9, 300, 5, 3, 4, 700});
   w.clock = w.m.lastT + kHour;
   w.files.killAtAppend = 1;   // digest 0's s item
   try {

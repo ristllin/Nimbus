@@ -250,13 +250,17 @@ std::string importNote(const ImportPlan& plan);
 // the same items byte for byte.
 class BatchBuilder {
  public:
+  using Emit = std::function<bool(const Item&, uint64_t row)>;
   explicit BatchBuilder(const ImportPlan& plan) : plan_(plan) {}
   // Items for the next rows; `last` after the final page closes the open turn.
-  Status feed(const std::vector<DayRow>& rows, bool last,
-              const std::function<bool(const Item&, uint64_t row)>& emit);
+  Status feed(const std::vector<DayRow>& rows, bool last, const Emit& emit);
   uint64_t nextQ() const { return q_; }
 
  private:
+  bool put(const Item& it, uint64_t row, const Emit& emit);
+  bool closeTurn(const Emit& emit);
+  bool note(const Emit& emit);
+  bool row(const DayRow& r, const Emit& emit);
   const ImportPlan& plan_;
   uint64_t q_ = 0;
   uint32_t turn_ = 0;

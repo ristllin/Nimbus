@@ -755,9 +755,16 @@ Status answerOf(const ExchangeResult& r, bool cut, const SlicePlan& plan, std::s
 
 namespace {
 
+// What one rung answered.
+struct RungAnswer {
+  std::string summary;
+  uint8_t requests = 0;
+  bool parked = false;
+};
+
 // One summarizer exchange on one rung (the driver's attempt and a migration's digest 0).
 Status askRung(const CompactDeps& d, const SummarizerRung& rung, const SlicePlan& plan, uint64_t now,
-               std::string& summary, uint8_t& requests, bool& parked) {
+               RungAnswer& ans) {
   const WireCodec* wire = rung.wire;
   Status s = wire ? Status::success() : wireFor(rung.dialect, wire);
   if (!s.ok() || !wire) return s.ok() ? Status::fail(Err::NotFound, "plain::CompactDriver::ask") : s;
@@ -791,15 +798,20 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const SlicePlan
   req.deadlineMs = kCompactRequestMs;
   ExchangeResult r;
   s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
-  requests = r.requests;
-  parked = r.parkHost;
-  return s.ok() ? answerOf(r, capped.cut, plan, summary) : s;
+  ans.requests = r.requests;
+  ans.parked = r.parkHost;
+  return s.ok() ? answerOf(r, capped.cut, plan, ans.summary) : s;
 }
 
 }  // namespace
 
 Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out) {
-  return askRung(d_, rung, plan, now, out.summary, out.requests, out.parked);
+  RungAnswer ans;
+  const Status s = askRung(d_, rung, plan, now, ans);
+  out.summary = std::move(ans.summary);
+  out.requests = ans.requests;
+  out.parked = ans.parked;
+  return s;
 }
 
 // The swap. The s line goes to storage first (log.appendLine), so a full arena never refuses a
@@ -909,14 +921,12 @@ Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0An
   SlicePlan plan;
   if (!(s = planSlice(arena, 0, rules, plan)).ok()) return s;
   if (!plan.thru) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
-  uint8_t requests = 0;
-  bool parked = false;
-  std::string summary;
-  s = askRung(d, rung, plan, ask.now ? ask.now : rules.now, summary, requests, parked);
-  if (parked && d.park) d.park(rung);
+  RungAnswer ans;
+  s = askRung(d, rung, plan, ask.now ? ask.now : rules.now, ans);
+  if (ans.parked && d.park) d.park(rung);
   if (!s.ok()) return s;
-  if (!(s = digestFor(plan, summary, out.text)).ok()) return s;
-  out.summary = summary;
+  if (!(s = digestFor(plan, ans.summary, out.text)).ok()) return s;
+  out.summary = ans.summary;
   out.day = plan.day;
   return Status::success();
 }

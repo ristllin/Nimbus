@@ -267,8 +267,17 @@ struct Month {
 
 // About `rows` rows over `days` days (one heavy day), the old summary covering the first
 // `thruDay` days and, when shiftDay > thruDay, the shift pointer at the end of shiftDay.
-Month month(OldStore& s, uint32_t seed, size_t rows, int days, int thruDay, int shiftDay, size_t summaryBytes) {
-  std::mt19937 r(seed);
+struct Shape {
+  uint32_t seed;
+  size_t rows;
+  int days, thruDay, shiftDay;
+  size_t summaryBytes;
+};
+Month month(OldStore& s, const Shape& sh) {
+  const size_t rows = sh.rows;
+  const int days = sh.days, thruDay = sh.thruDay, shiftDay = sh.shiftDay;
+  const size_t summaryBytes = sh.summaryBytes;
+  std::mt19937 r(sh.seed);
   Month m;
   const size_t perDay = rows / (days + 4);
   for (int d = 0; d < days; ++d) {
@@ -338,37 +347,39 @@ uint32_t turnsIn(const std::string& note) {
   return (uint32_t)std::strtoul(note.substr(9, k - 9).c_str(), nullptr, 10);
 }
 
-// `overtaken`: the binding broke the contract (the engine stored before Done): the note's turn
-// count and the order against engine 2's items are not promised then; nothing lost or doubled is.
-void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t hi, const char* when,
-                     bool overtaken = false) {
-  char msg[320];
+// The conversation rows a migration up to `hi` must account for (above the old pointer).
+std::vector<tx::DayRow> expectedRows(OldStore& s, uint64_t oldThru, uint64_t hi) {
   std::vector<tx::DayRow> expect;
-  {
-    StoreSource src(s, kChat);
-    std::vector<tx::DayRow> page;
-    bool end = false;
-    uint64_t after = 0;
-    do {
-      TEST_ASSERT_TRUE(src.read(after, hi, 1000, page, end).ok());
-      for (const tx::DayRow& r : page) {
-        after = r.id;
-        if (!r.ours && (r.role == tx::RowRole::Owner || r.role == tx::RowRole::Assistant) && !r.text.empty() &&
-            r.id > oldThru)
-          expect.push_back(r);
-      }
-    } while (!end && !page.empty());
-  }
-  const std::vector<tx::Item> items = stored(f);
+  StoreSource src(s, kChat);
+  std::vector<tx::DayRow> page;
+  bool end = false;
+  uint64_t after = 0;
+  do {
+    TEST_ASSERT_TRUE(src.read(after, hi, 1000, page, end).ok());
+    for (const tx::DayRow& r : page) {
+      after = r.id;
+      const bool conv = r.role == tx::RowRole::Owner || r.role == tx::RowRole::Assistant;
+      if (!r.ours && conv && !r.text.empty() && r.id > oldThru) expect.push_back(r);
+    }
+  } while (!end && !page.empty());
+  return expect;
+}
+
+// The walk over the stored items behind expectAccounted.
+struct Accounting {
+  const char* when;
+  bool overtaken;
+  std::vector<tx::DayRow> expect;
+  char msg[320];
   size_t next = 0;
-  uint64_t prevQ = 0;
+  uint64_t prevQ = 0, lastM = 0;   // lastM: owner rows (engine 2's and imported) in row order
   std::set<uint64_t> ms;
   std::map<uint32_t, bool> open;
   uint32_t anchors = 0;
-  uint64_t lastM = 0;          // owner rows (engine 2's and imported) in row order
-  int64_t claimed = -1;        // the open note's turn count
-  std::set<uint32_t> under;    // turns imported under it
-  auto closeNote = [&]() {
+  int64_t claimed = -1;            // the open note's turn count
+  std::set<uint32_t> under;        // turns imported under it
+
+  void closeNote() {
     if (claimed >= 0 && !overtaken) {
       std::snprintf(msg, sizeof msg, "%s: a note claims %d turns, %u are under it", when, (int)claimed,
                     (unsigned)under.size());
@@ -376,8 +387,8 @@ void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t h
     }
     claimed = -1;
     under.clear();
-  };
-  for (const tx::Item& it : items) {
+  }
+  void order(const tx::Item& it) {
     if (it.kind == tx::ItemKind::User && it.m) {
       std::snprintf(msg, sizeof msg, "%s: owner row m%llx after m%llx", when, (unsigned long long)it.m,
                     (unsigned long long)lastM);
@@ -387,57 +398,67 @@ void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t h
     std::snprintf(msg, sizeof msg, "%s: q%llu after q%llu", when, (unsigned long long)it.q, (unsigned long long)prevQ);
     TEST_ASSERT_TRUE_MESSAGE(it.q > prevQ, msg);
     prevQ = it.q;
-    if (it.kind == tx::ItemKind::DeviceNote && it.x.find("was kept by the earlier engine") != std::string::npos) {
-      ++anchors;
-      continue;
-    }
-    if (importNoteText(it)) {
-      closeNote();
-      claimed = turnsIn(it.x);
-      const uint32_t n = namedIn(it.x);
-      std::snprintf(msg, sizeof msg, "%s: note names %u rows, %u left", when, n, (unsigned)(expect.size() - next));
-      TEST_ASSERT_TRUE_MESSAGE(next + n <= expect.size(), msg);
-      next += n;
-      continue;
-    }
-    if (it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant) {
-      if (startsWith(it.x, "E2 ")) {
-        closeNote();
-        continue;
-      }
-      under.insert(it.turn);
-      std::snprintf(msg, sizeof msg, "%s: item q%llu (%c) has no row left", when, (unsigned long long)it.q,
-                    (char)it.kind);
-      TEST_ASSERT_TRUE_MESSAGE(next < expect.size(), msg);
-      const tx::DayRow& r = expect[next++];
-      std::snprintf(msg, sizeof msg, "%s: q%llu stands for the wrong row (expected m%llx)", when,
-                    (unsigned long long)it.q, (unsigned long long)r.id);
-      const bool owner = r.role == tx::RowRole::Owner;
-      TEST_ASSERT_TRUE_MESSAGE(owner == (it.kind == tx::ItemKind::User), msg);
-      TEST_ASSERT_TRUE_MESSAGE(startsWith(r.text, it.x) && !it.x.empty(), msg);
-      if (owner) {
-        TEST_ASSERT_EQUAL_UINT64_MESSAGE(r.id, it.m, msg);
-        TEST_ASSERT_TRUE_MESSAGE(ms.insert(it.m).second, "a row imported twice");
-      }
-      open[it.turn] = true;
-    }
-    if (it.kind == tx::ItemKind::TurnEnd) open[it.turn] = false;
   }
-  closeNote();
-  std::snprintf(msg, sizeof msg, "%s: %u of %u rows accounted", when, (unsigned)next, (unsigned)expect.size());
-  TEST_ASSERT_EQUAL_UINT32_MESSAGE(expect.size(), next, msg);
-  for (const auto& kv : open) {
-    std::snprintf(msg, sizeof msg, "%s: imported turn %u is not closed", when, kv.first);
-    TEST_ASSERT_FALSE_MESSAGE(kv.second, msg);
+  void note(const tx::Item& it) {
+    closeNote();
+    claimed = turnsIn(it.x);
+    const uint32_t n = namedIn(it.x);
+    std::snprintf(msg, sizeof msg, "%s: note names %u rows, %u left", when, n, (unsigned)(expect.size() - next));
+    TEST_ASSERT_TRUE_MESSAGE(next + n <= expect.size(), msg);
+    next += n;
   }
-  if (oldThru) TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, anchors, "one anchor for the rows under the old pointer");
+  void imported(const tx::Item& it) {
+    under.insert(it.turn);
+    std::snprintf(msg, sizeof msg, "%s: item q%llu (%c) has no row left", when, (unsigned long long)it.q, (char)it.kind);
+    TEST_ASSERT_TRUE_MESSAGE(next < expect.size(), msg);
+    const tx::DayRow& r = expect[next++];
+    std::snprintf(msg, sizeof msg, "%s: q%llu stands for the wrong row (expected m%llx)", when,
+                  (unsigned long long)it.q, (unsigned long long)r.id);
+    const bool owner = r.role == tx::RowRole::Owner;
+    TEST_ASSERT_TRUE_MESSAGE(owner == (it.kind == tx::ItemKind::User), msg);
+    TEST_ASSERT_TRUE_MESSAGE(startsWith(r.text, it.x) && !it.x.empty(), msg);
+    if (owner) {
+      TEST_ASSERT_EQUAL_UINT64_MESSAGE(r.id, it.m, msg);
+      TEST_ASSERT_TRUE_MESSAGE(ms.insert(it.m).second, "a row imported twice");
+    }
+    open[it.turn] = true;
+  }
+  void item(const tx::Item& it) {
+    order(it);
+    const bool text = it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant;
+    if (it.kind == tx::ItemKind::DeviceNote && it.x.find("was kept by the earlier engine") != std::string::npos) ++anchors;
+    else if (importNoteText(it)) note(it);
+    else if (text && startsWith(it.x, "E2 ")) closeNote();
+    else if (text) imported(it);
+    else if (it.kind == tx::ItemKind::TurnEnd) open[it.turn] = false;
+  }
+  void finish(uint64_t oldThru) {
+    closeNote();
+    std::snprintf(msg, sizeof msg, "%s: %u of %u rows accounted", when, (unsigned)next, (unsigned)expect.size());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(expect.size(), next, msg);
+    for (const auto& kv : open) {
+      std::snprintf(msg, sizeof msg, "%s: imported turn %u is not closed", when, kv.first);
+      TEST_ASSERT_FALSE_MESSAGE(kv.second, msg);
+    }
+    if (oldThru) TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, anchors, "one anchor for the rows under the old pointer");
+  }
+};
+
+// `overtaken`: the binding broke the contract (the engine stored before Done): the note's turn
+// count and the order against engine 2's items are not promised then; nothing lost or doubled is.
+void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t hi, const char* when,
+                     bool overtaken = false) {
+  Accounting acc{when, overtaken, expectedRows(s, oldThru, hi)};
+  const std::vector<tx::Item> items = stored(f);
+  for (const tx::Item& it : items) acc.item(it);
+  acc.finish(oldThru);
   // head.json's m_hi is the newest owner row mirrored (the re-entry comparator)
   tx::TxLog log(f, kChatKey);
   tx::HeadState head;
   if (!items.empty() && log.open(head).ok()) {
-    std::snprintf(msg, sizeof msg, "%s: m_hi %llu, newest mirrored %llu", when, (unsigned long long)head.mHi,
-                  (unsigned long long)lastM);
-    TEST_ASSERT_EQUAL_UINT64_MESSAGE(lastM, head.mHi, msg);
+    std::snprintf(acc.msg, sizeof acc.msg, "%s: m_hi %llu, newest mirrored %llu", when, (unsigned long long)head.mHi,
+                  (unsigned long long)acc.lastM);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(acc.lastM, head.mHi, acc.msg);
   }
 }
 

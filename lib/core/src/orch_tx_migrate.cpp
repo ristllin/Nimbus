@@ -98,88 +98,116 @@ bool monthWord(const std::string& t, size_t start, size_t end) {
   return false;
 }
 
-// A month name next to [s, e): the word before it ("Nov 17", "Nov. 17") or after it ("17 Nov",
-// "17th of" is not one, "17th Nov" is).
-bool besideMonth(const std::string& t, size_t s, size_t e) {
+// The word right before s, past at most two spaces or dots ("Nov 17", "Nov. 17").
+bool monthBefore(const std::string& t, size_t s) {
   size_t b = s;
   for (int k = 0; k < 2 && b > 0 && (t[b - 1] == ' ' || t[b - 1] == '.'); ++k) --b;
   size_t a = b;
   while (a > 0 && isAlpha(t[a - 1])) --a;
-  if (a < b && monthWord(t, a, b)) return true;
-  size_t f = e;
-  if (f + 2 <= t.size() && (f + 2 == t.size() || !isAlpha(t[f + 2]))) {
-    const std::string suf = t.substr(f, 2);
-    if (suf == "st" || suf == "nd" || suf == "rd" || suf == "th") f += 2;
-  }
+  return a < b && monthWord(t, a, b);
+}
+
+// An ordinal suffix at f ("17th"): its length, else 0.
+size_t ordinalAt(const std::string& t, size_t f) {
+  if (f + 2 > t.size() || (f + 2 < t.size() && isAlpha(t[f + 2]))) return 0;
+  const std::string suf = t.substr(f, 2);
+  return suf == "st" || suf == "nd" || suf == "rd" || suf == "th" ? 2 : 0;
+}
+
+// The word right after e, past an ordinal and at most two spaces, dots or commas ("17 Nov", "17th Nov").
+bool monthAfter(const std::string& t, size_t e) {
+  size_t f = e + ordinalAt(t, e);
   for (int k = 0; k < 2 && f < t.size() && (t[f] == ' ' || t[f] == '.' || t[f] == ','); ++k) ++f;
   size_t g = f;
   while (g < t.size() && isAlpha(t[g])) ++g;
   return monthWord(t, f, g);
 }
 
+bool dateSep(char c) { return c == '-' || c == ':' || c == '/'; }
+
+// The digit run at i (digits with '.' or ',' between digits); i moves past it.
+void digitRun(const std::string& t, size_t& i) {
+  while (i < t.size() && (isDigit(t[i]) || ((t[i] == '.' || t[i] == ',') && i + 1 < t.size() && isDigit(t[i + 1])))) ++i;
+}
+
+// The run [s, e) as a figure: its group separators dropped.
+std::string figureText(const std::string& t, size_t s, size_t e) {
+  std::string fig;
+  for (size_t k = s; k < e; ++k)
+    if (t[k] != ',') fig += t[k];
+  return fig;
+}
+
+// A part of a date or a clock time: "2026-11-17", "13:02", a year alone, a day beside a month.
+bool datePart(const std::string& t, size_t s, size_t e, const std::string& fig) {
+  if (s >= 2 && dateSep(t[s - 1]) && isDigit(t[s - 2])) return true;
+  if (e + 1 < t.size() && dateSep(t[e]) && isDigit(t[e + 1])) return true;
+  const bool year = fig.size() == 4 && fig.find('.') == std::string::npos &&
+                    (fig.compare(0, 2, "19") == 0 || fig.compare(0, 2, "20") == 0);
+  return year || monthBefore(t, s) || monthAfter(t, e);
+}
+
+// The token around text[i..]: whitespace-separated, outer punctuation trimmed (a leading slash
+// kept); i moves past it. Empty at the end.
+std::string nextToken(const std::string& text, size_t& i) {
+  while (i < text.size() && isSpace(text[i])) ++i;
+  size_t s = i;
+  while (i < text.size() && !isSpace(text[i])) ++i;
+  size_t e = i;
+  auto trimmable = [](char c) { return std::strchr("()[]{}\"'.,;:!?<>*`", c) != nullptr; };
+  while (s < e && trimmable(text[s])) ++s;
+  while (e > s && trimmable(text[e - 1])) --e;
+  return text.substr(s, e - s);
+}
+
+// A slash or backslash that joins two parts of a name ("notes/boat.md", "/data"), not a fraction.
+bool slashPath(const std::string& tok) {
+  for (size_t k = 0; k + 1 < tok.size(); ++k) {
+    if (tok[k] != '/' && tok[k] != '\\') continue;
+    if (k == 0) {
+      if (isAlpha(tok[1]) || tok[1] == '.') return true;   // "/data", "/.cfg"
+      continue;
+    }
+    if (!(isDigit(tok[k - 1]) && isDigit(tok[k + 1]))) return true;   // "1/2" is not one
+  }
+  return false;
+}
+
+// A name with an extension of 2 to 4 lower-case letters or digits ("boat.md", "photo.jpeg").
+bool extPath(const std::string& tok) {
+  const size_t dot = tok.rfind('.');
+  if (dot == std::string::npos || dot == 0 || tok.size() - dot - 1 < 2 || tok.size() - dot - 1 > 4) return false;
+  bool ext = true, letter = false, nameLetter = false;
+  for (size_t k = dot + 1; k < tok.size(); ++k) {
+    ext &= isLowerAlnum(tok[k]);
+    letter |= isAlpha(tok[k]);
+  }
+  for (size_t k = 0; k < dot; ++k) nameLetter |= isAlpha(tok[k]);
+  return ext && letter && nameLetter;
+}
+
 }  // namespace
 
 std::vector<std::string> figuresOf(const std::string& t) {
   std::vector<std::string> out;
-  size_t i = 0;
-  while (i < t.size()) {
+  for (size_t i = 0; i < t.size();) {
     if (!isDigit(t[i])) {
       ++i;
       continue;
     }
     const size_t s = i;
-    while (i < t.size() && (isDigit(t[i]) || ((t[i] == '.' || t[i] == ',') && i + 1 < t.size() && isDigit(t[i + 1]))))
-      ++i;
-    const size_t e = i;
-    const bool dateBefore = s >= 2 && (t[s - 1] == '-' || t[s - 1] == ':' || t[s - 1] == '/') && isDigit(t[s - 2]);
-    const bool dateAfter = e + 1 < t.size() && (t[e] == '-' || t[e] == ':' || t[e] == '/') && isDigit(t[e + 1]);
-    if (dateBefore || dateAfter) continue;
-    std::string fig;
-    for (size_t k = s; k < e; ++k)
-      if (t[k] != ',') fig += t[k];
-    if (fig.size() < 2) continue;
-    const bool plain = fig.find('.') == std::string::npos;
-    if (plain && fig.size() == 4 && (fig.compare(0, 2, "19") == 0 || fig.compare(0, 2, "20") == 0)) continue;
-    if (besideMonth(t, s, e)) continue;
+    digitRun(t, i);
+    const std::string fig = figureText(t, s, i);
+    if (fig.size() < 2 || datePart(t, s, i, fig)) continue;
     if (std::find(out.begin(), out.end(), fig) == out.end()) out.push_back(fig);
   }
   return out;
 }
 
 bool hasPathLikeToken(const std::string& text) {
-  size_t i = 0;
-  while (i < text.size()) {
-    while (i < text.size() && isSpace(text[i])) ++i;
-    size_t s = i;
-    while (i < text.size() && !isSpace(text[i])) ++i;
-    size_t e = i;
-    auto trimmable = [](char c) { return std::strchr("()[]{}\"'.,;:!?<>*`", c) != nullptr; };
-    while (s < e && trimmable(text[s]) && text[s] != '/' && text[s] != '\\') ++s;
-    while (e > s && trimmable(text[e - 1])) --e;
-    if (e <= s) continue;
-    const std::string tok = text.substr(s, e - s);
-    for (size_t k = 0; k < tok.size(); ++k) {
-      if (tok[k] != '/' && tok[k] != '\\') continue;
-      const bool before = k > 0, after = k + 1 < tok.size();
-      if (!after) continue;
-      if (!before) {
-        if (isAlpha(tok[k + 1]) || tok[k + 1] == '.') return true;   // "/data", "/.cfg"
-        continue;
-      }
-      if (isDigit(tok[k - 1]) && isDigit(tok[k + 1])) continue;       // "1/2"
-      if (tok[k - 1] == ' ' || tok[k + 1] == ' ') continue;
-      return true;
-    }
-    const size_t dot = tok.rfind('.');
-    if (dot != std::string::npos && dot > 0 && tok.size() - dot - 1 >= 2 && tok.size() - dot - 1 <= 4) {
-      bool ext = true, letter = false, nameLetter = false;
-      for (size_t k = dot + 1; k < tok.size(); ++k) {
-        ext &= isLowerAlnum(tok[k]);
-        letter |= isAlpha(tok[k]);
-      }
-      for (size_t k = 0; k < dot; ++k) nameLetter |= isAlpha(tok[k]);
-      if (ext && letter && nameLetter) return true;
-    }
+  for (size_t i = 0; i < text.size();) {
+    const std::string tok = nextToken(text, i);
+    if (!tok.empty() && (slashPath(tok) || extPath(tok))) return true;
   }
   return false;
 }
@@ -271,56 +299,55 @@ std::string importNote(const ImportPlan& p) {
   return s;
 }
 
-Status BatchBuilder::feed(const std::vector<DayRow>& rows, bool last,
-                          const std::function<bool(const Item&, uint64_t)>& emit) {
-  if (stopped_) return Status::success();
+bool BatchBuilder::put(const Item& it, uint64_t row, const Emit& emit) {
+  if (!emit(it, row)) stopped_ = true;
+  ++q_;
+  return !stopped_;
+}
+
+bool BatchBuilder::closeTurn(const Emit& emit) {
+  Item e;
+  e.q = q_;
+  e.kind = ItemKind::TurnEnd;
+  e.turn = turn_;
+  e.t = lastT_;
+  e.end.cause = "import";
+  open_ = false;
+  return put(e, 0, emit);
+}
+
+bool BatchBuilder::note(const Emit& emit) {
+  noted_ = true;
+  q_ = plan_.q0;
+  turn_ = plan_.turnBase;
+  Item h;
+  h.q = q_;
+  h.kind = ItemKind::DeviceNote;
+  h.note = plan_.named ? NoteClass::Omit : NoteClass::Notice;
+  h.t = plan_.firstT ? plan_.firstT : plan_.namedLastT;
+  h.x = importNote(plan_);
+  return put(h, 0, emit);
+}
+
+// One row: an owner row (or the first row) opens a turn, closing the one before.
+bool BatchBuilder::row(const DayRow& r, const Emit& emit) {
+  if (r.id <= plan_.cut || r.id > plan_.hi || !importable(r)) return true;
+  if (r.role == RowRole::Owner || !open_) {
+    if (open_ && !closeTurn(emit)) return false;
+    ++turn_;
+    open_ = true;
+  }
   Item it;
-  auto put = [&](uint64_t row) {
-    if (!emit(it, row)) stopped_ = true;
-    ++q_;
-    return !stopped_;
-  };
-  if (!noted_) {
-    noted_ = true;
-    q_ = plan_.q0;
-    turn_ = plan_.turnBase;
-    it = Item{};
-    it.q = q_;
-    it.kind = ItemKind::DeviceNote;
-    it.note = plan_.named ? NoteClass::Omit : NoteClass::Notice;
-    it.t = plan_.firstT ? plan_.firstT : plan_.namedLastT;
-    it.x = importNote(plan_);
-    if (!put(0)) return Status::success();
-  }
-  for (const DayRow& r : rows) {
-    if (r.id <= plan_.cut || r.id > plan_.hi || !importable(r)) continue;
-    if (r.role == RowRole::Owner || !open_) {
-      if (open_) {
-        it = Item{};
-        it.q = q_;
-        it.kind = ItemKind::TurnEnd;
-        it.turn = turn_;
-        it.t = lastT_;
-        it.end.cause = "import";
-        if (!put(0)) return Status::success();
-      }
-      ++turn_;
-      open_ = true;
-    }
-    rowItem(r, q_, turn_, plan_.tzMinutes, it);
-    lastT_ = r.t;
-    if (!put(r.id)) return Status::success();
-  }
-  if (last && open_) {
-    it = Item{};
-    it.q = q_;
-    it.kind = ItemKind::TurnEnd;
-    it.turn = turn_;
-    it.t = lastT_;
-    it.end.cause = "import";
-    open_ = false;
-    put(0);
-  }
+  rowItem(r, q_, turn_, plan_.tzMinutes, it);
+  lastT_ = r.t;
+  return put(it, r.id, emit);
+}
+
+Status BatchBuilder::feed(const std::vector<DayRow>& rows, bool last, const Emit& emit) {
+  if (stopped_ || (!noted_ && !note(emit))) return Status::success();
+  for (const DayRow& r : rows)
+    if (!row(r, emit)) return Status::success();
+  if (last && open_) (void)closeTurn(emit);
   return Status::success();
 }
 
@@ -710,58 +737,76 @@ struct Run {
     return s;
   }
 
+  // A digest text the driver would store for `day`: valid, its day header first, no path in it.
+  static bool validText(const Digest0Answer& a) {
+    DigestEntry e{a.day, a.text, 2, 1};
+    Item it;
+    DigestEntry back;
+    std::string header;
+    if (!digestItem(e, 0, 1, it).ok() || !digestOf(it, back).ok() || !dayHeader(a.day, header).ok()) return false;
+    return a.text.size() <= kDigestMaxBytes && !hasPathLikeToken(a.text) &&
+           a.text.compare(0, header.size() + 2, header + digest_text::kDaySep) == 0;
+  }
+
+  // The verdict on one answer: the acceptance rule, then the text the driver made of it.
+  Status judge(const Digest0Answer& a, uint32_t days, Digest0Verdict& v) {
+    const std::vector<std::string> figs = figuresOf(a.summary);
+    std::vector<bool> fromTool;
+    Status s = toolFigures(figs, fromTool);
+    if (!s.ok()) return s;
+    v = checkDigest0(a.summary, days, [&](const std::string& f) {
+      for (size_t i = 0; i < figs.size(); ++i)
+        if (figs[i] == f) return (bool)fromTool[i];
+      return false;
+    });
+    if (v == Digest0Verdict::Accepted && !validText(a)) v = Digest0Verdict::Text;
+    return Status::success();
+  }
+
+  // Ask until an answer comes or the tries are spent (each counted in the marker first).
+  Status askDigest0(uint32_t days) {
+    D0Plan& p = m.d0;
+    while (m.tries < kDigest0Tries) {
+      Digest0Ask ask;
+      ask.summary = d.fold.summary;
+      ask.at = p.at;
+      ask.now = d.now;
+      ask.tzMinutes = d.tzMinutes;
+      ask.dayStartMin = d.dayStartMin;
+      ask.attempt = m.tries++;
+      Status s = save();   // counted before it is asked
+      if (!s.ok()) return s;
+      Digest0Answer a;
+      ++out.asks;
+      if (!d.digest0(ask, a).ok()) continue;
+      if (!(s = judge(a, days, p.verdict)).ok()) return s;
+      p.accepted = p.verdict == Digest0Verdict::Accepted;
+      if (p.accepted) {
+        p.text = a.text;
+        p.day = a.day;
+      }
+      return Status::success();
+    }
+    return Status::success();
+  }
+
+  uint32_t daysCovered(const Covered& c) const {
+    if (!c.firstT) return 1;
+    return (uint32_t)(dayNumber(c.lastT, d.tzMinutes, d.dayStartMin) - dayNumber(c.firstT, d.tzMinutes, d.dayStartMin) + 1);
+  }
+
   Status planDigest0() {
     Covered c;
     Status s = coveredRows(c);
     if (!s.ok()) return s;
     D0Plan& p = m.d0;
     p = D0Plan{};
+    const bool summary = !d.fold.summary.empty();
     p.at = c.lastT ? c.lastT : d.fold.foldEpoch ? d.fold.foldEpoch : d.now;
-    p.anchor = c.rows > 0 || !d.fold.summary.empty();
-    p.verdict = d.fold.summary.empty() ? Digest0Verdict::NoSummary : Digest0Verdict::Asked;
-    if (p.anchor && !d.fold.summary.empty() && d.digest0 && p.at) {
-      const uint32_t days =
-          c.firstT ? (uint32_t)(dayNumber(c.lastT, d.tzMinutes, d.dayStartMin) - dayNumber(c.firstT, d.tzMinutes, d.dayStartMin) + 1) : 1;
-      while (m.tries < kDigest0Tries) {
-        Digest0Ask ask;
-        ask.summary = d.fold.summary;
-        ask.at = p.at;
-        ask.now = d.now;
-        ask.tzMinutes = d.tzMinutes;
-        ask.dayStartMin = d.dayStartMin;
-        ask.attempt = m.tries;
-        ++m.tries;
-        if (!(s = save()).ok()) return s;   // counted before it is asked
-        Digest0Answer a;
-        ++out.asks;
-        if (!d.digest0(ask, a).ok()) continue;
-        std::vector<std::string> figs = figuresOf(a.summary);
-        std::vector<bool> fromTool;
-        if (!(s = toolFigures(figs, fromTool)).ok()) return s;
-        p.verdict = checkDigest0(a.summary, days, [&](const std::string& f) {
-          for (size_t i = 0; i < figs.size(); ++i)
-            if (figs[i] == f) return (bool)fromTool[i];
-          return false;
-        });
-        if (p.verdict == Digest0Verdict::Accepted) {
-          DigestEntry e{a.day, a.text, 2, 1};
-          Item it;
-          DigestEntry back;
-          std::string header;
-          const bool valid = digestItem(e, 0, 1, it).ok() && digestOf(it, back).ok() && a.text.size() <= kDigestMaxBytes &&
-                             !hasPathLikeToken(a.text) && dayHeader(a.day, header).ok() &&
-                             a.text.compare(0, header.size() + 2, header + digest_text::kDaySep) == 0;
-          if (!valid) p.verdict = Digest0Verdict::Text;
-        }
-        if (p.verdict == Digest0Verdict::Accepted) {
-          p.accepted = true;
-          p.text = a.text;
-          p.day = a.day;
-        }
-        break;
-      }
-    }
-    if (p.anchor && !p.accepted && !d.fold.summary.empty()) {
+    p.anchor = c.rows > 0 || summary;
+    p.verdict = summary ? Digest0Verdict::Asked : Digest0Verdict::NoSummary;
+    if (p.anchor && summary && d.digest0 && p.at && !(s = askDigest0(daysCovered(c))).ok()) return s;
+    if (p.anchor && summary && !p.accepted) {
       p.path = exportPath(p.at);
       p.exported = d.exportText && d.exportText(p.path, d.fold.summary);
       out.exported = p.exported;
@@ -898,70 +943,114 @@ struct Run {
     return Status::success();
   }
 
-  // The plan for rows lo < id <= hi: what fits the budget (newest first, whole turns), the rest
-  // named. `any` false when no row is importable.
+  // The stored line bytes a row would take (the import budget's measure).
+  size_t rowCost(const DayRow& r) {
+    Item it;
+    std::string line;
+    rowItem(r, 1, 1, d.tzMinutes, it);
+    return encodeLine(it, line).ok() ? line.size() : 0;
+  }
+
+  // What the first pass learns about the importable rows of a range.
+  struct Totals {
+    uint64_t bytes = 0, rows = 0, lastOwner = 0, lastRow = 0;
+  };
+  Status totals(uint64_t lo, uint64_t hi, Totals& t) {
+    return eachRow(lo, hi, [&](const DayRow& r) {
+      if (!importable(r)) return;
+      t.bytes += rowCost(r);
+      ++t.rows;
+      t.lastRow = r.id;
+      if (r.role == RowRole::Owner) t.lastOwner = r.id;
+    });
+  }
+
+  // The second pass, one row: named while the rows from it on are over the budget, and after that
+  // until the next owner row (a turn is imported whole) when one is left; the newest row is always
+  // imported.
+  struct Cutter {
+    const Totals& t;
+    size_t budget;
+    uint64_t before = 0;
+    bool importing = false, first = true;
+    bool imports(const DayRow& r, uint64_t cost) {
+      if (!importing) {
+        const bool fits = t.bytes - before <= budget;
+        const bool turnStart = r.role == RowRole::Owner || first || r.id > t.lastOwner;
+        importing = (fits && turnStart) || r.id == t.lastRow;
+      }
+      first = false;
+      before += cost;
+      return importing;
+    }
+  };
+  static void count(ImportPlan& p, const DayRow& r, bool imported) {
+    if (!imported) {
+      ++p.named;
+      p.cut = r.id;
+      if (r.t) p.namedLastT = std::max(p.namedLastT, r.t);
+      return;
+    }
+    ++p.imported;
+    if (r.role == RowRole::Owner || p.imported == 1) ++p.turns;
+    if (r.t && !p.firstT) p.firstT = r.t;
+    if (r.t) p.lastT = std::max(p.lastT, r.t);
+  }
+
+  // The plan for rows lo < id <= hi. `any` false when no row is importable.
   Status planBatch(uint64_t lo, uint64_t hi, ImportPlan& p, bool& any) {
     p = ImportPlan{};
-    p.lo = lo;
-    p.cut = lo;
+    p.lo = p.cut = lo;
     p.hi = hi;
     p.tzMinutes = d.tzMinutes;
-    std::string line;
-    Item it;
-    auto cost = [&](const DayRow& r) {
-      rowItem(r, 1, 1, d.tzMinutes, it);
-      return encodeLine(it, line).ok() ? line.size() : 0;
-    };
-    uint64_t total = 0, rows = 0, lastOwner = 0, lastRow = 0;
-    Status s = eachRow(lo, hi, [&](const DayRow& r) {
-      if (!importable(r)) return;
-      total += cost(r);
-      ++rows;
-      lastRow = r.id;
-      if (r.role == RowRole::Owner) lastOwner = r.id;
-    });
-    if (!s.ok()) return s;
-    any = rows > 0;
-    if (!any) return Status::success();
-    // Walk forward: a row is named while the rows from it on are over the budget, and after that
-    // until the next owner row (a turn is imported whole) when one is left; the newest row is
-    // always imported.
-    uint64_t before = 0;
-    bool importing = false;
-    bool firstSeen = false;
+    Totals t;
+    Status s = totals(lo, hi, t);
+    any = s.ok() && t.rows > 0;
+    if (!any) return s;
+    Cutter cut{t, d.importBudget};
     s = eachRow(lo, hi, [&](const DayRow& r) {
-      if (!importable(r)) return;
-      const uint64_t c = cost(r);
-      if (!importing) {
-        const bool fits = total - before <= d.importBudget;
-        const bool turnStart = r.role == RowRole::Owner || !firstSeen || r.id > lastOwner;
-        if ((fits && turnStart) || r.id == lastRow) importing = true;
-      }
-      firstSeen = true;
-      before += c;
-      if (!importing) {
-        ++p.named;
-        p.cut = r.id;
-        if (r.t) p.namedLastT = std::max(p.namedLastT, r.t);
-        return;
-      }
-      ++p.imported;
-      if (r.role == RowRole::Owner || p.imported == 1) ++p.turns;
-      if (r.t && !p.firstT) p.firstT = r.t;
-      if (r.t) p.lastT = std::max(p.lastT, r.t);
+      if (importable(r)) count(p, r, cut.imports(r, rowCost(r)));
     });
     if (!s.ok()) return s;
     p.q0 = nextQ();
     return maxTurn(p.turnBase);
   }
 
+  // How far the already stored part of a batch reaches.
   struct Matched {
     bool note = false;
     uint64_t row = 0;
     bool open = false;
     uint32_t turn = 0;
     uint64_t t = 0;
+    void saw(const Item& it, uint64_t r) {
+      note |= it.kind == ItemKind::DeviceNote;
+      if (r) row = r;
+      if (it.kind == ItemKind::User || it.kind == ItemKind::Assistant) {
+        open = true;
+        turn = it.turn;
+        t = it.t;
+      }
+      if (it.kind == ItemKind::TurnEnd) open = false;
+    }
   };
+
+  // The batch's rows from the source, page by page, into the builder.
+  Status feedRows(BatchBuilder& b, const BatchBuilder::Emit& emit, const bool& going) {
+    std::vector<DayRow> page;
+    page.reserve(kRowPage);
+    for (uint64_t after = m.plan.cut; going;) {
+      bool end = false;
+      page.clear();
+      Status s = d.rows->read(after, m.plan.hi, kRowPage, page, end);
+      if (!s.ok()) return s;
+      if (!page.empty()) after = page.back().id;
+      end |= page.empty();
+      if (!(s = b.feed(page, end, emit)).ok() || end) return s;
+    }
+    return Status::success();
+  }
+
   Status applyBatch(bool& overtaken, Matched& got) {
     overtaken = false;
     Apply a(*d.files, d.chatKey);
@@ -972,40 +1061,15 @@ struct Run {
     uint64_t maxM = 0;
     auto emit = [&](const Item& it, uint64_t row) {
       const uint32_t before = out.items;
-      going = applyItem(a, it);
-      if (!going) return false;
+      if (!(going = applyItem(a, it))) return false;
       if (it.kind == ItemKind::User) maxM = std::max(maxM, it.m);
-      if (out.items == before) {   // already stored: remember how far the stored part reaches
-        if (it.kind == ItemKind::DeviceNote) got.note = true;
-        if (row) got.row = row;
-        if (it.kind == ItemKind::User || it.kind == ItemKind::Assistant) {
-          got.open = true;
-          got.turn = it.turn;
-          got.t = it.t;
-        }
-        if (it.kind == ItemKind::TurnEnd) got.open = false;
-      } else if (row) {
-        ++out.imported;
-        if (it.kind == ItemKind::User) ++out.turns;
-      }
+      if (out.items == before) got.saw(it, row);   // already stored
+      else if (row) ++out.imported, out.turns += it.kind == ItemKind::User;
       return true;
     };
-    std::vector<DayRow> page;
-    page.reserve(kRowPage);
-    uint64_t after = m.plan.cut;
-    while (going) {
-      bool end = false;
-      page.clear();
-      if (!(s = d.rows->read(after, m.plan.hi, kRowPage, page, end)).ok()) return s;
-      if (!page.empty()) after = page.back().id;
-      if (!(s = b.feed(page, end || page.empty(), emit)).ok()) return s;
-      if (end || page.empty()) break;
-    }
-    if (a.result == Applied::Overtaken) {
-      overtaken = true;
-      return Status::success();
-    }
-    if (!a.status.ok()) return a.status;
+    if (!(s = feedRows(b, emit, going)).ok()) return s;
+    overtaken = a.result == Applied::Overtaken;
+    if (overtaken || !a.status.ok()) return a.status;
     head.nextQ = nextQ();
     head.mHi = std::max(head.mHi, maxM);   // head.json's m_hi: the newest row mirrored
     (void)log.writeHead(head);
@@ -1124,37 +1188,39 @@ struct Run {
     return save();
   }
 
+  // The newest mirrored owner row in the log and the assistant texts stored after it.
+  Status logTail(uint64_t& lastM, std::vector<std::string>& tail) {
+    std::vector<uint32_t> segs;
+    Status s = segmentList(*d.files, d.chatKey, segs);
+    if (!s.ok() || segs.empty()) return s;
+    LineCursor cur(*d.files, d.chatKey);
+    if (!(s = cur.start(segs.front(), 0)).ok()) return s;
+    std::string line;
+    LineHeader h;
+    Item it;
+    bool after = false;
+    for (bool have = true; have;) {
+      if (!(s = cur.next(line, h, have)).ok()) return s;
+      if (!have || (h.kind != ItemKind::User && h.kind != ItemKind::Assistant)) continue;
+      if (!decodeLine(line.data(), line.size(), it).ok()) continue;
+      if (it.kind == ItemKind::Assistant) {
+        if (after) tail.push_back(it.x);
+        continue;
+      }
+      after = it.m && it.m >= lastM;
+      if (after) lastM = it.m, tail.clear();
+    }
+    return Status::success();
+  }
+
   // A log with items and no marker (lost, or engine 2 ran here without a migration): hi is the
   // newest mirrored owner row (never below the old pointer), then past it the assistant rows the
   // log already holds as the a items after that owner row.
   Status fallbackHi(uint64_t& hi) {
-    std::vector<uint32_t> segs;
-    Status s = segmentList(*d.files, d.chatKey, segs);
-    if (!s.ok()) return s;
     uint64_t lastM = 0;
     std::vector<std::string> tail;
-    bool after = false;
-    if (!segs.empty()) {
-      LineCursor cur(*d.files, d.chatKey);
-      if (!(s = cur.start(segs.front(), 0)).ok()) return s;
-      std::string line;
-      LineHeader h;
-      Item it;
-      for (bool have = true; have;) {
-        if (!(s = cur.next(line, h, have)).ok()) return s;
-        if (!have || (h.kind != ItemKind::User && h.kind != ItemKind::Assistant)) continue;
-        if (!decodeLine(line.data(), line.size(), it).ok()) continue;
-        if (it.kind == ItemKind::User) {
-          after = it.m && it.m >= lastM;
-          if (after) {
-            lastM = it.m;
-            tail.clear();
-          }
-        } else if (after) {
-          tail.push_back(it.x);
-        }
-      }
-    }
+    Status s = logTail(lastM, tail);
+    if (!s.ok()) return s;
     hi = std::max(lastM, d.fold.thru);
     std::vector<DayRow> page;
     size_t j = 0;
@@ -1254,6 +1320,52 @@ void anomaly(MigrationReport& r, const char* slug) {
 
 }  // namespace
 
+namespace {
+
+void foldAnomalies(const OldFold& f, uint64_t newest, MigrationReport& r) {
+  if (f.thru && f.summary.empty()) anomaly(r, "pointer-without-summary");
+  if (!f.thru && !f.summary.empty()) anomaly(r, "summary-without-pointer");
+  if (f.shift && f.shift <= f.thru) anomaly(r, "shift-not-after-pointer");
+  if (f.thru > newest) anomaly(r, "pointer-past-rows");
+}
+
+// The dry run's count of one row (counts and anomaly classes only, never content).
+struct RowCounter {
+  const MigrateDeps& d;
+  MigrationReport& r;
+  bool re;
+  std::vector<int64_t> days;
+  uint64_t lastT = 0;
+  void conversation(const DayRow& row) {
+    const OldFold& f = d.fold;
+    ++r.conversation;
+    if (row.text.empty()) anomaly(r, "empty-text");
+    if (row.text.size() > kTier1OwnerText) anomaly(r, "text-over-tier1");
+    if (!re && row.id <= f.thru) ++r.covered;
+    if (!re && row.id > f.thru && f.shift && row.id <= f.shift) ++r.betweenPointers;
+  }
+  void time(const DayRow& row) {
+    if (!row.t) {
+      anomaly(r, "row-without-time");
+      return;
+    }
+    if (row.t < lastT) anomaly(r, "time-backwards");
+    lastT = row.t;
+    const int64_t dn = dayNumber(row.t, d.tzMinutes, d.dayStartMin);
+    if (std::find(days.begin(), days.end(), dn) == days.end()) days.push_back(dn);
+  }
+  void operator()(const DayRow& row) {
+    ++r.rows;
+    r.ours += row.ours;
+    const bool conv = row.role == RowRole::Owner || row.role == RowRole::Assistant;
+    if (!conv) ++r.toolRows;
+    if (conv && !row.ours) conversation(row);
+    time(row);
+  }
+};
+
+}  // namespace
+
 Status dryRun(const MigrateDeps& d, MigrationReport& r) {
   r = MigrationReport{};
   if (!depsOk(d)) return Status::fail(Err::InvalidArgument, "tx::dryRun");
@@ -1268,44 +1380,15 @@ Status dryRun(const MigrateDeps& d, MigrationReport& r) {
     if (re && !marked && !(s = run.fallbackHi(run.m.hi)).ok()) return s;
     uint64_t newest = 0;
     if (!(s = d.rows->newest(newest)).ok()) return s;
-    const OldFold& f = d.fold;
-    if (f.thru && f.summary.empty()) anomaly(r, "pointer-without-summary");
-    if (!f.thru && !f.summary.empty()) anomaly(r, "summary-without-pointer");
-    if (f.shift && f.shift <= f.thru) anomaly(r, "shift-not-after-pointer");
-    if (f.thru > newest) anomaly(r, "pointer-past-rows");
-    std::vector<int64_t> days;
-    uint64_t lastT = 0;
-    s = run.eachRow(0, 0, [&](const DayRow& row) {
-      ++r.rows;
-      if (row.ours) ++r.ours;
-      const bool conv = row.role == RowRole::Owner || row.role == RowRole::Assistant;
-      if (!conv) ++r.toolRows;
-      if (conv && !row.ours) {
-        ++r.conversation;
-        if (row.text.empty()) anomaly(r, "empty-text");
-        if (row.text.size() > kTier1OwnerText) anomaly(r, "text-over-tier1");
-        if (!re && row.id <= f.thru) ++r.covered;
-        if (!re && row.id > f.thru && f.shift && row.id <= f.shift) ++r.betweenPointers;
-      }
-      if (!row.t) anomaly(r, "row-without-time");
-      if (row.t && row.t < lastT) anomaly(r, "time-backwards");
-      if (row.t) {
-        lastT = row.t;
-        const int64_t dn = dayNumber(row.t, d.tzMinutes, d.dayStartMin);
-        if (days.empty() || days.back() != dn) {
-          if (std::find(days.begin(), days.end(), dn) == days.end()) days.push_back(dn);
-        }
-      }
-    });
-    if (!s.ok()) return s;
-    r.days = (uint32_t)days.size();
-    const uint64_t lo = re ? run.m.hi : std::max(run.m.hi, f.thru);
+    foldAnomalies(d.fold, newest, r);
+    RowCounter counter{d, r, re};
+    if (!(s = run.eachRow(0, 0, [&](const DayRow& row) { counter(row); })).ok()) return s;
+    r.days = (uint32_t)counter.days.size();
+    const uint64_t lo = re ? run.m.hi : std::max(run.m.hi, d.fold.thru);
     ImportPlan p;
     bool any = false;
-    if (newest > lo) {
-      run.head = HeadState{};   // planning only: no log is opened (it may write)
-      if (!(s = run.planBatch(lo, newest, p, any)).ok()) return s;
-    }
+    run.head = HeadState{};   // planning only: no log is opened (it may write)
+    if (newest > lo && !(s = run.planBatch(lo, newest, p, any)).ok()) return s;
     r.toImport = p.imported;
     r.toName = p.named;
     if (p.named) anomaly(r, "rows-over-budget");

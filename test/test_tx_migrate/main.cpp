@@ -224,7 +224,7 @@ void expectDigest0(World& w, bool accepted, const char* when) {
 
 void test_a_month_migrates_every_row_once() {
   World w;
-  w.m = month(w.old, 7, 6000, 31, 18, 27, 3500);
+  w.m = month(w.old, {7, 6000, 31, 18, 27, 3500});
   w.answers.texts = {kGood};
   const auto before = w.old.snapshot();
   gPeak = gLive;
@@ -282,7 +282,7 @@ void test_a_chat_with_nothing_old_gets_a_marker_and_no_item() {
 
 void test_rows_with_no_old_pointer_are_imported_without_digest0() {
   World w;
-  w.m = month(w.old, 3, 300, 5, 0, 0, 0);
+  w.m = month(w.old, {3, 300, 5, 0, 0, 0});
   const tx::MigrationOutcome out = w.done("no pointer");
   TEST_ASSERT_FALSE(out.digest0);
   TEST_ASSERT_EQUAL(0, w.answers.asks);
@@ -300,7 +300,7 @@ void test_digest0_not_accepted_exports_the_old_text_and_names_it() {
   };
   // a figure only a tool row of the covered rows holds
   World probe;
-  probe.m = month(probe.old, 11, 400, 6, 4, 0, 1200);
+  probe.m = month(probe.old, {11, 400, 6, 4, 0, 1200});
   std::string toolFig, ownerFig;
   for (const OldRow& r : probe.old.rows) {
     if (r.id > probe.m.thru || r.session != kChat) continue;
@@ -320,7 +320,7 @@ void test_digest0_not_accepted_exports_the_old_text_and_names_it() {
   for (const Case& c : cases) {
     for (bool refuse : {false, true}) {
       World w;
-      w.m = month(w.old, 11, 400, 6, 4, 0, 1200);
+      w.m = month(w.old, {11, 400, 6, 4, 0, 1200});
       w.answers.texts = {c.answer};
       w.refuseExport = refuse;
       const tx::MigrationOutcome out = w.done(c.name);
@@ -343,7 +343,7 @@ void test_digest0_not_accepted_exports_the_old_text_and_names_it() {
   }
   // the same figure written by the owner is the owner's: accepted
   World w;
-  w.m = month(w.old, 11, 400, 6, 4, 0, 1200);
+  w.m = month(w.old, {11, 400, 6, 4, 0, 1200});
   w.old.add(kChat, kMonthStart + kHour, "user", "message", "it was " + toolFig + " exactly");
   // (that row is newer than the pointer: only rows under it count)
   w.answers.texts = {"The person logged a meal of " + toolFig + " units."};
@@ -373,7 +373,7 @@ void test_owner_figures_are_the_owners() {
 
 void test_digest0_is_asked_at_most_twice_then_the_old_text_is_named() {
   World w;
-  w.m = month(w.old, 5, 300, 5, 3, 0, 900);
+  w.m = month(w.old, {5, 300, 5, 3, 0, 900});
   w.answers.fail = {true, true, true};
   tx::MigrationOutcome out = w.done("two failures");
   TEST_ASSERT_EQUAL(2, w.answers.asks);
@@ -382,7 +382,7 @@ void test_digest0_is_asked_at_most_twice_then_the_old_text_is_named() {
   expectAccounted(w.old, w.files, w.m.thru, out.hi, "two failures");
   // one failure, then an answer
   World x;
-  x.m = month(x.old, 5, 300, 5, 3, 0, 900);
+  x.m = month(x.old, {5, 300, 5, 3, 0, 900});
   x.answers.fail = {true};
   x.answers.texts = {kGood};
   out = x.done("one failure");
@@ -390,7 +390,7 @@ void test_digest0_is_asked_at_most_twice_then_the_old_text_is_named() {
   TEST_ASSERT_TRUE(out.digest0);
   // no summarizer at all: the omission line, nothing asked
   World y;
-  y.m = month(y.old, 5, 300, 5, 3, 0, 900);
+  y.m = month(y.old, {5, 300, 5, 3, 0, 900});
   tx::MigrateDeps d = y.deps();
   d.digest0 = nullptr;
   TEST_ASSERT_TRUE(tx::migrate(d, out).ok());
@@ -460,7 +460,7 @@ struct Driver {
 
 void test_digest0_is_asked_through_the_drivers_slice_and_prompt() {
   World w;
-  w.m = month(w.old, 9, 500, 8, 5, 7, 2600);
+  w.m = month(w.old, {9, 500, 8, 5, 7, 2600});
   Driver drv;
   drv.model.push(sp::say(kGood));
   tx::MigrateDeps d = w.deps();
@@ -507,7 +507,7 @@ void test_the_drivers_acceptance_holds_for_digest0() {
   // a cut answer and a thin one are not taken; the second try asks the next rung
   for (int kind = 0; kind < 4; ++kind) {
     World w;
-    w.m = month(w.old, 9, 500, 8, 5, 0, 2600);
+    w.m = month(w.old, {9, 500, 8, 5, 0, 2600});
     Driver drv;
     if (kind == 0) drv.model.push(sp::cut(kGood)).push(sp::cut(kGood));
     if (kind == 1) drv.model.push(sp::say("Fine.")).push(sp::say("Fine."));
@@ -532,7 +532,7 @@ void test_the_drivers_acceptance_holds_for_digest0() {
 
 void test_rows_between_the_pointers_come_first_and_are_compacted_first() {
   World w;
-  w.m = month(w.old, 21, 900, 10, 4, 8, 1500);
+  w.m = month(w.old, {21, 900, 10, 4, 8, 1500});
   w.budget = 1u << 30;   // everything fits: nothing is named
   w.answers.texts = {kGood};
   const tx::MigrationOutcome out = w.done("between");
@@ -566,7 +566,7 @@ void test_rows_between_the_pointers_come_first_and_are_compacted_first() {
 
 void test_rows_between_the_pointers_over_the_budget_are_named() {
   World w;
-  w.m = month(w.old, 22, 900, 10, 4, 8, 1500);
+  w.m = month(w.old, {22, 900, 10, 4, 8, 1500});
   w.budget = 8000;
   w.answers.texts = {kGood};
   const tx::MigrationOutcome out = w.done("between named");
@@ -601,7 +601,7 @@ struct Small {
 };
 
 void fill(World& w, const Small& s) {
-  w.m = month(w.old, s.seed, s.rows, 6, 3, 5, 700);
+  w.m = month(w.old, {s.seed, s.rows, 6, 3, 5, 700});
   w.budget = s.budget;
   w.answers.texts = {kGood};
 }
@@ -771,7 +771,7 @@ void test_every_q_is_above_the_log_and_the_arena() {
 
 void test_a_dry_run_writes_nothing_asks_nothing_and_shows_no_content() {
   World w;
-  w.m = month(w.old, 71, 1500, 12, 6, 10, 900);
+  w.m = month(w.old, {71, 1500, 12, 6, 10, 900});
   w.budget = 6000;
   const auto files = w.files.files;
   tx::MigrationReport r;
