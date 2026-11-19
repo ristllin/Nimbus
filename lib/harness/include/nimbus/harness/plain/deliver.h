@@ -27,46 +27,8 @@ class TxLog;
 namespace agent {
 namespace plain {
 
-// The complete list of harness-written messages (PRD section 8.9). Slugs are the
-// exemption names of the delivered-bytes test: frozen. Append only.
-enum class StatusLine : uint8_t {
-  None = 0,
-  UpdateNotice = 1,
-  VoiceHeard = 2,
-  LimitReached = 3,
-  CutAnswer = 4,
-  ProviderError = 5,
-  CrashNotice = 6,
-  PausedSpend = 7,
-  FailedWrite = 8,
-  SummarizerTrouble = 9,
-  StorageState = 10,
-  Stopped = 11,
-  ModerationBlock = 12,
-};
-inline constexpr StatusLine kAllStatusLines[] = {
-    StatusLine::UpdateNotice,  StatusLine::VoiceHeard,   StatusLine::LimitReached,      StatusLine::CutAnswer,
-    StatusLine::ProviderError, StatusLine::CrashNotice,  StatusLine::PausedSpend,       StatusLine::FailedWrite,
-    StatusLine::SummarizerTrouble, StatusLine::StorageState, StatusLine::Stopped,       StatusLine::ModerationBlock,
-};
-inline const char* statusLineSlug(StatusLine s) {
-  switch (s) {
-    case StatusLine::None: return "none";
-    case StatusLine::UpdateNotice: return "update-notice";
-    case StatusLine::VoiceHeard: return "voice-heard";
-    case StatusLine::LimitReached: return "limit-reached";
-    case StatusLine::CutAnswer: return "cut-answer";
-    case StatusLine::ProviderError: return "provider-error";
-    case StatusLine::CrashNotice: return "crash-notice";
-    case StatusLine::PausedSpend: return "paused-spend";
-    case StatusLine::FailedWrite: return "failed-write";
-    case StatusLine::SummarizerTrouble: return "summarizer-trouble";
-    case StatusLine::StorageState: return "storage-state";
-    case StatusLine::Stopped: return "stopped";
-    case StatusLine::ModerationBlock: return "moderation-block";
-  }
-  return "none";
-}
+// StatusLine, the closed list of harness-written messages, lives in plain/turn.h (the
+// beforeDeliver seam carries one too).
 
 struct DeliverDeps {
   const Channel* channel = nullptr;

@@ -108,11 +108,16 @@ enum class DeliverVerdict : uint8_t {
 struct DeliverCtx {
   const TurnCtx* turn = nullptr;
   const std::string* text = nullptr;   // the reply; nothing may rewrite it
-  bool held = false;                   // this turn already held once (at most one hold)
+  bool held = false;                   // this turn already held once: a Hold is not taken
+  bool cut = false;                    // a cut answer: no further round, a Hold is not taken
 };
 struct DeliverDecision {
   DeliverVerdict verdict = DeliverVerdict::Deliver;
   std::string deviceNote;              // Hold: facts only, starting '[device]'
+  // One status line to send after the reply (section 8.9's closed list, for example the
+  // truth check's failed-write receipt); taken only when the turn has none of its own.
+  StatusLine status = StatusLine::None;
+  std::string statusText;
   HookSlot by = HookSlot::None;
 };
 
@@ -164,7 +169,9 @@ class PlainHooks {
 
   // What the engine calls. beforeDispatch: slot order, the first verdict other than
   // Run decides. afterResult and afterDeliver: every handler, slot order.
-  // beforeDeliver: slot order, the first Hold decides (none when ctx.held).
+  // beforeDeliver: every handler in slot order (held and cut turns included); the first
+  // Hold decides the verdict and the first status line rides along. The engine takes a Hold
+  // at most once a turn and never on a cut answer.
   // idleStep: slot order, stops at the first handler that worked; nothing runs while
   // ctx.ownerWaiting. bootResume: every handler; the first failure is returned after all ran.
   DispatchDecision runBeforeDispatch(const DispatchCtx& ctx) const;
@@ -254,15 +261,20 @@ inline void PlainHooks::runAfterResult(const ResultCtx& ctx) const {
 }
 
 inline DeliverDecision PlainHooks::runBeforeDeliver(const DeliverCtx& ctx) const {
-  if (ctx.held) return DeliverDecision{};   // at most one hold a turn
+  DeliverDecision out;
   for (size_t i = 0; i < kHookSlotCount; ++i) {
     if (!beforeDeliver_[i]) continue;
     DeliverDecision d = beforeDeliver_[i](ctx);
-    if (d.verdict != DeliverVerdict::Hold) continue;
-    d.by = static_cast<HookSlot>(i);
-    return d;
+    if (out.status == StatusLine::None && d.status != StatusLine::None) {
+      out.status = d.status;
+      out.statusText = std::move(d.statusText);
+    }
+    if (out.verdict == DeliverVerdict::Hold || d.verdict != DeliverVerdict::Hold) continue;
+    out.verdict = DeliverVerdict::Hold;
+    out.deviceNote = std::move(d.deviceNote);
+    out.by = static_cast<HookSlot>(i);
   }
-  return DeliverDecision{};
+  return out;
 }
 
 inline void PlainHooks::runAfterDeliver(const DeliveredCtx& ctx) const {

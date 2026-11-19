@@ -637,11 +637,11 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: device_notes
 - kind: build
-- bytes: 646 -> 850
-- sha8: 88688fc7 -> 09b77780
+- bytes: 646 -> 929
+- sha8: 88688fc7 -> 8a236d11
 - lane: RB-E1a
 - prd: section 1 step 5 (on a guard trip one item '[device] limit reached (rounds|time|spend|size)') and section 2 ("No card": a failed append puts the item in a not-stored state, the model sees one device line, the owner one line per episode)
-- why: lib/harness/src/plain_engine.cpp: the frame of the guard's limit item (the slug is guardTripSlug), the one device note the model sees when storage refused part of the conversation, and the owner's storage-state line (section 8.9's closed list); planned work, not a fix
+- why: lib/harness/src/plain_engine.cpp: the frame of the guard's limit item (the slug is guardTripSlug), the one device note the model sees when storage refused part of the conversation, the owner's storage-state line, and the owner's line when the device's memory refused the turn (an allocation, or the conversation's arena: ruling 30's designed state ends with a plain line), both on section 8.9's closed list; planned work, not a fix
 
 ### PC-0027: the plain loop's results for a call that did not run (engine 2)
 - catalog: e2

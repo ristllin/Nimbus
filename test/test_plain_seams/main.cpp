@@ -239,7 +239,8 @@ static void test_dispatch_runs_in_slot_order() {
   TEST_ASSERT_EQUAL(11, seen[1]);
 }
 
-// At most one hold a turn: a held turn delivers whatever the seam would say.
+// Every handler is asked, held turns too (the engine takes a Hold at most once a turn); the
+// first Hold decides and the first status line rides along.
 static void test_deliver_holds_at_most_once() {
   plain::PlainHooks h;
   int asked = 0;
@@ -256,8 +257,18 @@ static void test_deliver_holds_at_most_once() {
   TEST_ASSERT_TRUE(d.by == plain::HookSlot::Truth);
   ctx.held = true;
   d = h.runBeforeDeliver(ctx);
-  TEST_ASSERT_TRUE(d.verdict == plain::DeliverVerdict::Deliver);
-  TEST_ASSERT_EQUAL(1, asked);
+  TEST_ASSERT_EQUAL(2, asked);   // the runner reports; the at-most-one-hold rule is the engine's
+  TEST_ASSERT_TRUE(h.beforeDeliver(plain::HookSlot::Rails, [](const plain::DeliverCtx&) {
+                     plain::DeliverDecision d2;
+                     d2.status = plain::StatusLine::FailedWrite;
+                     d2.statusText = "receipt";
+                     return d2;
+                   }).ok());
+  d = h.runBeforeDeliver(ctx);
+  TEST_ASSERT_TRUE(d.verdict == plain::DeliverVerdict::Hold);
+  TEST_ASSERT_TRUE(d.by == plain::HookSlot::Truth);
+  TEST_ASSERT_TRUE(d.status == plain::StatusLine::FailedWrite);
+  TEST_ASSERT_EQUAL_STRING("receipt", d.statusText.c_str());
   int delivered = 0;
   TEST_ASSERT_TRUE(h.afterDeliver(plain::HookSlot::Observer, [&delivered](const plain::DeliveredCtx&) { ++delivered; }).ok());
   h.runAfterDeliver({});

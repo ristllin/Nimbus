@@ -458,7 +458,7 @@ inline void test_every_seam_is_called_at_its_point() {
       "beforeDispatch read_file pure",   "afterResult read_file stored",
       "beforeDispatch big_read pure",    "afterResult big_read stored",
       "beforeDispatch device_control effect", "afterResult device_control stored error",
-      "beforeDeliver Done, I think.",   // after the one hold the registry asks no handler again
+      "beforeDeliver Done, I think.",   "beforeDeliver Read alpha; the restart was refused. held",
       "afterDeliver Read alpha; the restart was refused. sent", "idleStep"};
   std::string got;
   for (const std::string& l : log) got += l + " | ";
@@ -500,6 +500,11 @@ inline void test_a_refused_allocation_ends_the_turn_with_a_status_never_an_abort
   const tx::Status st = b.owner("save", out);
   TEST_ASSERT_TRUE(st.err == tx::Err::TooLarge);
   TEST_ASSERT_EQUAL(0, b.world.runsOf("write_file"));
+  // The owner is told in one plain line, and the turn is closed with its e item.
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent[0].text.c_str());
+  TEST_ASSERT_TRUE(out.status == plain::StatusLine::CrashNotice);
+  TEST_ASSERT_EQUAL_STRING("memory", lastEnd(storedOf(b))->end.cause.c_str());
   b.hooks->clear();
   b.model.push(sp::say("It may not have saved."));
   TXB_OK(b.owner("did it?", out));
@@ -646,6 +651,346 @@ inline void test_a_size_refusal_may_omit_every_omissible_turn() {
   TEST_ASSERT_EQUAL(4, (int)txb::detail::omittedTurnsNamed(b.model.last().view));
 }
 
+// ---- the stack review (coordinator, 19 Nov): rules keyed on the tool see through `more` -----
+inline void withMore(txb::Battery& b) {
+  nimbus::orch::registerMore(b.reg);
+  auto handler = [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return nimbus::orch::ToolResult::ok("");
+  };
+  b.reg.add("delete_file", "", handler);
+  b.reg.add("mcp_linear_search", "", handler);   // a connector tool: no class row, outside
+}
+
+// A: a connector reached through more is outside content: classed outside, the turn tainted
+// for its later calls, the outside change point logged.
+inline void test_outside_content_through_more_taints_the_turn() {
+  txb::Battery b;
+  withMore(b);
+  TXB_OK(b.boot());
+  bool taintedAtRead = false;
+  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [&](const plain::DispatchCtx& c) {
+    if (c.call->name == "read_file") taintedAtRead = c.turn->tainted;
+    return plain::DispatchDecision{};
+  }));
+  b.world.files["notes/a.md"] = "alpha";
+  b.model.push(sp::call("more", R"({"name":"mcp_linear_search","args":{"q":"open issues"}})"));
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::say("Done."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("check linear", out));
+  const std::vector<tx::Item> items = storedOf(b);
+  bool outside = false;
+  for (const tx::Item& it : items) outside |= it.kind == tx::ItemKind::Result && it.n == "more" && it.cls == tx::ResultClass::Outside;
+  TEST_ASSERT_TRUE_MESSAGE(outside, "a connector's result through more was stored as internal");
+  TEST_ASSERT_TRUE_MESSAGE(taintedAtRead, "the turn was not tainted after outside content through more");
+  const auto& ev = lastEnd(items)->end.events;
+  TEST_ASSERT_TRUE(std::find(ev.begin(), ev.end(), "change:outside") != ev.end());
+}
+
+// B: a file deleted through more rebuilds the recent-files list at the turn's close.
+inline void test_a_delete_through_more_rebuilds_the_recent_files() {
+  txb::Battery b;
+  withMore(b);
+  b.world.files["notes/a.md"] = "alpha";
+  b.world.files["notes/b.md"] = "beta";
+  b.recentFiles = [&b](std::vector<tx::RecentFile>& out) {
+    out.clear();
+    for (const auto& kv : b.world.files) out.push_back(tx::RecentFile{kv.first, b.epoch});
+    return true;
+  };
+  TXB_OK(txb::runTurns(b, {txb::chat(30, "hello", "hi"),
+                           txb::withTool(30, "delete a", "more", R"({"name":"delete_file","args":{"path":"notes/a.md"}})", "Deleted."),
+                           txb::chat(30, "and now?", "ok")}));
+  const auto& reqs = b.model.requests();
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(reqs[0], "notes/a.md ("), "the first turn's list does not name the file");
+  TEST_ASSERT_TRUE_MESSAGE(!bodyHas(reqs.back(), "notes/a.md ("), "a deleted file is still listed");
+  TEST_ASSERT_TRUE(bodyHas(reqs.back(), "notes/b.md ("));
+}
+
+// C: a delete through more supersedes the earlier whole read of that path (rule 4).
+inline void test_a_write_through_more_supersedes_the_earlier_read() {
+  txb::Battery b;
+  withMore(b);
+  b.world.files["notes/plan.md"] = "PLAN-V1 " + std::string(1500, 'p') + " PLAN-V1-TAIL";
+  TXB_OK(txb::runTurns(b, {txb::withTool(30, "read my plan", "read_file", R"({"path":"notes/plan.md"})", "read"),
+                           txb::withTool(30, "delete it", "more", R"({"name":"delete_file","args":{"path":"notes/plan.md"}})", "Deleted."),
+                           txb::chat(30, "what now?", "nothing")}));
+  TEST_ASSERT_TRUE_MESSAGE(!bodyHas(b.model.last(), "PLAN-V1-TAIL"), "the read of a deleted file is still shown whole");
+  size_t sup = 0;
+  for (const tx::Item& it : storedOf(b)) sup += it.kind == tx::ItemKind::PointerMove && !it.sup.empty();
+  TEST_ASSERT_EQUAL(1, (int)sup);
+}
+
+// D: an answer with nothing to deliver (empty content, a refusal) ends with one plain line.
+inline void test_an_empty_answer_gets_one_plain_line() {
+  for (int refusal = 0; refusal < 2; ++refusal) {
+    txb::Battery b;
+    sp::Step s = sp::say("");
+    if (refusal) s.finish = sp::Finish::Refusal;
+    b.model.push(s);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("hello", out));
+    TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+    TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
+    TEST_ASSERT_EQUAL_STRING(out.statusText.c_str(), b.sent[0].text.c_str());
+    TEST_ASSERT_TRUE(b.sent[0].text.find(refusal ? texts::device_notes::kRefused : texts::device_notes::kUnreadable) !=
+                     std::string::npos);
+    TEST_ASSERT_EQUAL_STRING("empty", lastEnd(storedOf(b))->end.cause.c_str());
+  }
+}
+
+// E: a refusal after the reply went out sends nothing more and still closes the turn.
+inline void test_a_refused_allocation_after_the_reply_keeps_the_reply() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->afterDeliver(plain::HookSlot::Observer, [](const plain::DeliveredCtx&) { throw std::bad_alloc(); }));
+  b.model.push(sp::say("Here it is."));
+  plain::TurnOutcome out;
+  const tx::Status st = b.owner("hi", out);
+  TEST_ASSERT_TRUE(st.err == tx::Err::TooLarge);
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("Here it is.", b.sent[0].text.c_str());
+  TEST_ASSERT_TRUE(out.delivered);
+  TEST_ASSERT_EQUAL(1, (int)countKind(storedOf(b), tx::ItemKind::TurnEnd));
+}
+
+// F: rung 3 sizes turns by what they render, not by their stored lines (t, d and e lines
+// render nothing): 65 short turns, then a 40 KB read in the open turn. Sized by stored lines
+// it would free too little and end with the size line; it fits and answers.
+inline void test_rung_three_sizes_turns_by_what_they_render() {
+  txb::Battery b;
+  for (int i = 0; i < 65; ++i) {
+    b.model.push(sp::say("ok " + std::to_string(i)));
+    b.advance(60);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("short turn " + std::to_string(i) + " " + std::string(600, 's'), out));
+  }
+  b.model.push(sp::call("big_read", R"({"tag":"last","bytes":40000})"));
+  b.model.push(sp::say("Read it."));
+  b.advance(60);
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read the big one", out));
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Read it.", out.text.c_str(), out.statusText.c_str());
+  TEST_ASSERT_TRUE(b.model.last().body.size() <= tx::kFloorHeadBodyCap);
+  const long named = txb::detail::omittedTurnsNamed(b.model.last().view);
+  TEST_ASSERT_TRUE_MESSAGE(named > 0 && named < 20, "rung 3 omitted none, or far more than needed");
+}
+
+// G: an item the arena refuses (here an owner message over the line limit) ends the turn with
+// a line that says what happened; the chat goes on.
+inline void test_an_item_the_arena_refuses_ends_the_turn_with_a_true_line() {
+  txb::Battery b;
+  plain::TurnOutcome out;
+  const tx::Status st = b.owner(std::string(70000, 'x'), out);
+  TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_EQUAL(0, (int)b.model.requests().size());
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent[0].text.c_str());
+  b.model.push(sp::say("Hi."));
+  b.advance(30);
+  TXB_OK(b.owner("hello", out));
+  TEST_ASSERT_EQUAL_STRING("Hi.", out.text.c_str());
+}
+
+// ---- the stack review, second batch (coordinator, 19 Nov): H to L --------------------------------
+// H: the tier rules at capture. A 12 KB argument renders as its stub from the next request on
+// (the call still ran with the whole argument); a 70 KB argument and a 61 KB reply never end the
+// turn as a storage failure, and the reply goes out whole.
+inline void test_a_long_argument_is_stored_as_its_stub() {
+  txb::Battery b;
+  const std::string big = std::string(12000, 'k') + "-ARG-TAIL";
+  b.model.push(sp::call("write_file", "{\"path\":\"notes/big.md\",\"text\":\"" + big + "\"}"));
+  b.model.push(sp::say("Saved."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("save it", out));
+  TEST_ASSERT_EQUAL_STRING(big.c_str(), b.world.files["notes/big.md"].c_str());   // ran whole
+  TEST_ASSERT_TRUE_MESSAGE(!bodyHas(b.model.last(), "-ARG-TAIL"), "the long argument is re-sent whole");
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[stub 12009B sha:"));
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "notes/big.md"));   // the short argument stays
+}
+
+inline void test_a_huge_argument_and_a_huge_reply_keep_the_turn() {
+  txb::Battery b;
+  b.model.push(sp::call("write_file", "{\"path\":\"notes/huge.md\",\"text\":\"" + std::string(70000, 'h') + "\"}"));
+  const std::string reply = std::string(61000, 'r') + " END";
+  b.model.push(sp::say(reply));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("save a lot", out));
+  TEST_ASSERT_EQUAL(1, b.world.runsOf("write_file"));
+  TEST_ASSERT_TRUE(out.delivered);
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_TRUE_MESSAGE(b.sent[0].text == reply, "the reply was not delivered whole");
+  TEST_ASSERT_EQUAL_STRING("reply", lastEnd(storedOf(b))->end.cause.c_str());
+  b.model.push(sp::say("ok"));
+  TXB_OK(b.owner("next", out));
+  TEST_ASSERT_TRUE(b.model.last().body.find(" END") == std::string::npos);   // the reply is a stub now
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[stub reply r"));
+}
+
+// I: results pair with their call by q, not by id: a dialect that reuses ids still gets each
+// write's superseded reads right.
+inline void test_results_pair_by_the_calls_q_when_ids_repeat() {
+  txb::Battery b;
+  b.world.files["notes/a.md"] = "A1 " + std::string(1500, 'a') + " A-TAIL";
+  b.world.files["notes/b.md"] = "B1 " + std::string(1500, 'b') + " B-TAIL";
+  b.model.push(sp::calls({{"read_file", R"({"path":"notes/a.md"})", "r1"}, {"read_file", R"({"path":"notes/b.md"})", "r2"}}));
+  b.model.push(sp::say("read"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read both", out));
+  sp::Step w1 = sp::call("write_file", R"({"path":"notes/a.md","text":"A2"})");
+  w1.calls[0].id = "dup";
+  sp::Step w2 = sp::call("write_file", R"({"path":"notes/b.md","text":"B2"})");
+  w2.calls[0].id = "dup";
+  b.model.push(w1);
+  b.model.push(w2);
+  b.model.push(sp::say("both written"));
+  b.advance(30);
+  TXB_OK(b.owner("write both", out));
+  std::vector<uint64_t> sup;
+  for (const tx::Item& it : storedOf(b))
+    if (it.kind == tx::ItemKind::PointerMove) sup.insert(sup.end(), it.sup.begin(), it.sup.end());
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)sup.size(), "a write with a reused call id lost its superseded read");
+}
+
+// J: a gap note the card refused stays owed: once storage is back one is stored.
+inline void test_the_gap_note_is_stored_once_storage_returns() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  b.world.files["notes/a.md"] = "alpha";
+  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [&b](const plain::DispatchCtx&) {
+    b.files.refuseAll = !b.files.refuseAll;   // the first call's result and the note are refused
+    return plain::DispatchDecision{};
+  }));
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::say("done"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read twice", out));
+  size_t gaps = 0;
+  for (const tx::Item& it : storedOf(b)) gaps += it.kind == tx::ItemKind::DeviceNote && it.note == tx::NoteClass::Gap;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)gaps, "the stored transcript never names the hole");
+}
+
+// K: a held reply is never lost: when the extra round fails, it goes out with the plain line.
+inline void test_a_held_reply_survives_a_failed_extra_round() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [](const plain::DeliverCtx& c) {
+    plain::DeliverDecision d;
+    if (!c.held) {
+      d.verdict = plain::DeliverVerdict::Hold;
+      d.deviceNote = "[device] effects this turn: none.";
+    }
+    return d;
+  }));
+  b.model.push(sp::say("Logged it."));
+  b.model.respondWith([](const sp::Recorded&, size_t) { return sp::httpError(500); });
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("log it", out));
+  TEST_ASSERT_EQUAL(2, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("Logged it.", b.sent[0].text.c_str());
+  TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
+}
+
+// L: a status line a seam asks for is sent after the reply; a cut answer is shown to the seam.
+inline void test_a_seam_status_line_goes_out_and_a_cut_reaches_the_seam() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  int cuts = 0;
+  TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [&cuts](const plain::DeliverCtx& c) {
+    cuts += c.cut;
+    plain::DeliverDecision d;
+    d.status = plain::StatusLine::FailedWrite;
+    d.statusText = "receipt line";
+    return d;
+  }));
+  b.model.push(sp::say("Done."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("do it", out));
+  TEST_ASSERT_EQUAL(2, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("receipt line", b.sent[1].text.c_str());
+  b.model.respondWith([](const sp::Recorded&, size_t) { return sp::cut("half"); });
+  TXB_OK(b.owner("again", out));
+  TEST_ASSERT_EQUAL(1, cuts);
+}
+
+// The mutation pass's survivors after A to G: a router call that reaches nothing reads as
+// outside; a pure tool through more needs no intent; a reply in hand when the send itself is
+// refused memory still goes out; rung 3 sizes by what renders (one climb) and climbs again
+// when a later round grows the body.
+inline void test_more_resolution_edges() {
+  txb::Battery b;
+  withMore(b);
+  b.world.files["notes/a.md"] = "alpha";
+  b.model.push(sp::calls({{"more", R"({"name":"not_a_tool","args":{}})", ""},
+                          {"more", R"({"name":"read_file","args":{"path":"notes/a.md"}})", ""}}));
+  b.model.push(sp::say("ok"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("try", out));
+  const std::vector<tx::Item> items = storedOf(b);
+  // Only the unresolved call takes an intent (the fail-closed class is an effect), not the read.
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)countKind(items, tx::ItemKind::Intent), "a pure read through more took an intent");
+  size_t outside = 0;
+  for (const tx::Item& it : items) outside += it.kind == tx::ItemKind::Result && it.cls == tx::ResultClass::Outside;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)outside, "an unresolved router call is not outside (or a read is)");
+}
+
+inline void test_a_refused_send_still_delivers_the_reply_in_hand() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  int calls = 0;
+  b.channel.send = [&](const std::string& chat, const std::string& text) {
+    if (calls++ == 0) throw std::bad_alloc();
+    b.sent.push_back(txb::SentMessage{chat, text});
+    return true;
+  };
+  b.model.push(sp::say("The answer."));
+  plain::TurnOutcome out;
+  (void)b.owner("q", out);
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("The answer.", b.sent[0].text.c_str());
+}
+
+inline size_t ladderEvents(txb::Battery& b) {
+  const std::vector<tx::Item> items = storedOf(b);   // named: the e item points into it
+  size_t n = 0;
+  for (const std::string& e : lastEnd(items)->end.events) n += e == "change:ladder";
+  return n;
+}
+
+inline void shortTurns(txb::Battery& b, int n) {
+  for (int i = 0; i < n; ++i) {
+    b.model.push(sp::say("ok " + std::to_string(i)));
+    b.advance(60);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("short turn " + std::to_string(i) + " " + std::string(600, 's'), out));
+  }
+}
+
+inline void test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows() {
+  {
+    txb::Battery b;
+    shortTurns(b, 65);
+    b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));
+    b.model.push(sp::say("Read it."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read the big one", out));
+    TEST_ASSERT_EQUAL_STRING("Read it.", out.text.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)ladderEvents(b), "rung 3 needed more than one climb: sized by stored lines");
+  }
+  {
+    txb::Battery b;
+    shortTurns(b, 80);
+    b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));
+    b.model.push(sp::call("big_read", R"({"tag":"two","bytes":20000})"));
+    b.model.push(sp::say("Read both."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read two big ones", out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Read both.", out.text.c_str(), out.statusText.c_str());
+    TEST_ASSERT_TRUE(ladderEvents(b) >= 2);
+  }
+}
+
 // ---- the sentinel ----------------------------------------------------------------------------
 inline void test_an_empty_engine_answers_a_typed_outcome() {
   plain::PlainEngine e{plain::EngineDeps{}};
@@ -679,6 +1024,22 @@ inline void run() {
   RUN_TEST(test_a_late_round_gets_only_the_time_left);
   RUN_TEST(test_rung_three_omits_only_the_turns_the_request_needs);
   RUN_TEST(test_a_size_refusal_may_omit_every_omissible_turn);
+  RUN_TEST(test_outside_content_through_more_taints_the_turn);
+  RUN_TEST(test_a_delete_through_more_rebuilds_the_recent_files);
+  RUN_TEST(test_a_write_through_more_supersedes_the_earlier_read);
+  RUN_TEST(test_an_empty_answer_gets_one_plain_line);
+  RUN_TEST(test_a_refused_allocation_after_the_reply_keeps_the_reply);
+  RUN_TEST(test_rung_three_sizes_turns_by_what_they_render);
+  RUN_TEST(test_an_item_the_arena_refuses_ends_the_turn_with_a_true_line);
+  RUN_TEST(test_a_long_argument_is_stored_as_its_stub);
+  RUN_TEST(test_a_huge_argument_and_a_huge_reply_keep_the_turn);
+  RUN_TEST(test_results_pair_by_the_calls_q_when_ids_repeat);
+  RUN_TEST(test_the_gap_note_is_stored_once_storage_returns);
+  RUN_TEST(test_a_held_reply_survives_a_failed_extra_round);
+  RUN_TEST(test_a_seam_status_line_goes_out_and_a_cut_reaches_the_seam);
+  RUN_TEST(test_more_resolution_edges);
+  RUN_TEST(test_a_refused_send_still_delivers_the_reply_in_hand);
+  RUN_TEST(test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);
 }
 

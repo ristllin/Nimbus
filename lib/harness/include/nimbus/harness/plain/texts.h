@@ -187,6 +187,9 @@ inline constexpr char kLimitReachedEnd[] = ")";
 inline constexpr char kNotStored[] =
     "[device] storage refused part of this conversation: it is kept in memory until the device restarts.";
 inline constexpr char kStorageLine[] = "Storage refused part of this conversation; it is kept until the device restarts.";
+// The device's memory refused this turn (an allocation, or the conversation's own memory):
+// what was already stored stays, nothing more of the turn is kept.
+inline constexpr char kNoMemory[] = "The device ran out of memory for this turn and stopped. Send the message again.";
 }  // namespace device_notes
 
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).

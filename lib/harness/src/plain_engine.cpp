@@ -36,7 +36,8 @@ struct PlainEngine::ChatState {
   bool booted = false;
   bool afterRestart = true;            // the first turn after boot opens cold
   bool storageEpisode = false;         // storage refused an item and has stored none since
-  bool noteDue = false;                // the not-stored note waits for the next round boundary
+  bool noteDue = false;                // a stored gap note is still owed for the last episode
+  bool noteShown = false;              // the model has seen the note in this episode (RAM at least)
 };
 
 namespace {
@@ -65,6 +66,9 @@ struct Turn {
   std::vector<uint64_t> roundStart;    // the first q of each answered round (ladder rung 2)
   bool lastRound = false;              // a guard tripped: this request goes with tool choice none
   bool held = false;                   // beforeDeliver held the reply once
+  std::string heldText;                // the held reply: delivered if the extra round fails
+  std::vector<uint64_t> callQ;         // the q of each call of the round being run (pairing)
+  uint64_t curCallQ = 0;               // the q of the call whose result is being stored
   bool storeFailed = false;            // the arena refused an item: the turn ends
   bool storageLineDue = false;
   bool fileSetChanged = false;
@@ -73,6 +77,7 @@ struct Turn {
   GuardTrip trip = GuardTrip::None;
   bool reply = false;                  // `text` is the model's reply
   bool sent = false;                   // the reply went out
+  bool endStored = false;              // the e item is stored
   std::string text;
   StatusLine status = StatusLine::None;
   std::string statusText;
@@ -141,17 +146,18 @@ class TurnRun {
     if (stored) *stored = ok;
     if (!ok && !c_.storageEpisode) {
       c_.storageEpisode = c_.noteDue = t_.storageLineDue = true;
+      c_.noteShown = false;
       event("not-stored");
     }
     if (ok) c_.storageEpisode = false;
     return Status::success();
   }
 
-  Status note(const std::string& text, tx::NoteClass cls) {
+  Status note(const std::string& text, tx::NoteClass cls, bool* stored = nullptr) {
     tx::Item& h = blank(tx::ItemKind::DeviceNote);
     h.x = text;
     h.note = cls;
-    return put(h);
+    return put(h, stored);
   }
 
   // ---- turn open ----------------------------------------------------------------------
@@ -339,10 +345,14 @@ class TurnRun {
   // round with tool choice none on a trip).
   Status boundary() {
     t_.ctx.roundNo = t_.rounds;
-    if (c_.noteDue) {
-      c_.noteDue = false;
-      Status st = note(texts::device_notes::kNotStored, tx::NoteClass::Gap);
+    // The gap note: shown once when an episode starts, and owed until one is stored, so the
+    // stored transcript names the hole once storage is back.
+    if (c_.noteDue && (!c_.noteShown || !c_.storageEpisode)) {
+      bool stored = false;
+      Status st = note(texts::device_notes::kNotStored, tx::NoteClass::Gap, &stored);
       if (!st.ok()) return st;
+      c_.noteShown = true;
+      c_.noteDue = !stored;
     }
     if (t_.lastRound) return Status::success();
     GuardState g;
@@ -411,6 +421,10 @@ class TurnRun {
 
   // Nothing came from the model: the exchange's one plain line ends the turn.
   Status failed(ExchangeErr err, const Status& st) {
+    if (t_.held) {   // the reply the model gave before the hold is never lost
+      t_.reply = true;
+      t_.text = t_.heldText;
+    }
     t_.cause = std::string("provider:") + exchangeErrSlug(err);
     t_.status = StatusLine::ProviderError;
     t_.statusText = t_.ex.errorLine.empty() ? exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0)
@@ -425,28 +439,40 @@ class TurnRun {
     t_.cause = "cut";
     t_.status = t_.ex.status;
     t_.statusText = t_.ex.errorLine;
+    if (d_.hooks) {   // the truth seam sees a cut answer too; it cannot hold one
+      DeliverCtx dc;
+      dc.turn = &t_.ctx;
+      dc.text = &t_.ex.step.text;
+      dc.held = t_.held;
+      dc.cut = true;
+      (void)d_.hooks->runBeforeDeliver(dc);
+    }
     Status st = storeAnswer(t_.ex.step, true);
-    for (size_t i = 0; st.ok() && i < t_.ex.step.calls.size(); ++i)
+    for (size_t i = 0; st.ok() && i < t_.ex.step.calls.size(); ++i) {
+      t_.curCallQ = callQOf(i);
       st = answerUnrun(t_.ex.step.calls[i], texts::tool_results::kNotRunCut);
+    }
     t_.reply = st.ok();
     t_.text = t_.ex.step.text;
     return st;
   }
 
-  // The overflow ladder (tx::nextRung), one rung per call; false when no rung is left. Rung 3
-  // omits the fewest oldest turns that free what the body is over its cap (and the omission
-  // line's own bytes); a refusal knows no size, so there it omits every omissible turn.
+  // The overflow ladder (tx::nextRung), one rung per call; false when no rung is left. Rung 1
+  // and 2 climb only when they change what renders. Rung 3 omits the fewest oldest turns that
+  // free what the body is over its cap (and the omission line's own bytes), and climbs again
+  // with more turns while the body is still over and omissible turns remain; a refusal knows
+  // no size, so there it omits every omissible turn.
   bool climb(const ClimbAsk& ask) {
     LadderState& l = t_.ladder;
     const bool over = ask.why == Climb::OverCap;
     bool climbed = false;
-    if (over && !l.closedThrough && c_.lastClosedQ > c_.head.stub) {
+    if (over && !l.closedThrough && closedBulkAbovePointer()) {
       l.closedThrough = c_.lastClosedQ;   // (1) every closed turn as stubs
       climbed = true;
     } else if (over && !l.stubThrough && t_.roundStart.size() > 2) {
       l.stubThrough = t_.roundStart[t_.roundStart.size() - 2] - 1;   // (2) bulk older than two rounds
       climbed = true;
-    } else if (!l.omitThrough) {
+    } else {
       const size_t need = over && ask.bodyBytes > ask.bodyCap ? ask.bodyBytes - ask.bodyCap + kOmissionLineRoom
                                                              : std::numeric_limits<size_t>::max();
       climbed = omitOldest(need);   // (3) one omission line, never the newest 6 owner turns
@@ -456,10 +482,43 @@ class TurnRun {
   }
   static constexpr size_t kOmissionLineRoom = 160;   // the line and its block (under 120 B of text)
 
-  // Rung 3: the oldest whole turns that free at least `need` bytes, counted as stored (a stored
-  // line carries its keys and crc, so it is usually a little longer than what it renders). If
-  // that still falls short, the next render is over the cap again and the exchange ends with
-  // the size line: rung 3 is applied once.
+  // Tier-2 bulk of a closed turn shown whole above the pointer: what rung 1 would stub.
+  bool closedBulkAbovePointer() const {
+    tx::Item& it = t_.read;
+    for (size_t i = 0; i < d_.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || e.kind != tx::ItemKind::Result) continue;
+      if (e.q <= c_.head.stub || e.q > c_.lastClosedQ) continue;
+      if (d_.arena->get(i, it).ok() && it.cls == tx::ResultClass::Bulk) return true;
+    }
+    return false;
+  }
+
+  // What one stored item adds to the request, about: its text for what renders (an owner or
+  // assistant text, a call, a device note), a result as it shows (whole receipt, or its stub
+  // when stubbed or outside), nothing for the items no wire renders (t, i, x, d, e, s; k of a
+  // closed turn). Rung 3 sizes its omission with it.
+  size_t renderedBytes(size_t index, const tx::ArenaEntry& e) const {
+    switch (e.kind) {
+      case tx::ItemKind::User:
+      case tx::ItemKind::Assistant:
+      case tx::ItemKind::Call:
+      case tx::ItemKind::DeviceNote:
+        return e.lineBytes;
+      case tx::ItemKind::Result: {
+        tx::Item& r = t_.read;
+        if (!d_.arena->get(index, r).ok()) return e.lineBytes;
+        const bool stub = r.cls == tx::ResultClass::Outside ||
+                          (r.cls == tx::ResultClass::Bulk && (r.q <= c_.head.stub || r.q <= t_.ladder.closedThrough));
+        return stub || r.cls == tx::ResultClass::Receipt ? e.lineBytes : r.bytes;
+      }
+      default:
+        return 0;
+    }
+  }
+
+  // Rung 3: the oldest whole turns that free at least `need` more bytes than the turns it
+  // already left out; false when no further turn may go.
   bool omitOldest(size_t need) {
     std::vector<tx::TurnSpan> spans;
     std::vector<uint64_t> lastQ;
@@ -472,11 +531,14 @@ class TurnRun {
         lastQ.push_back(0);
       }
       spans.back().owner |= e.kind == tx::ItemKind::User;
-      spans.back().bytes += e.lineBytes;
+      spans.back().bytes += renderedBytes(i, e);
       lastQ.back() = e.q;
     }
+    uint32_t done = 0;   // turns already left out: the body no longer carries them
+    for (; done < spans.size() && lastQ[done] <= t_.ladder.omitThrough; ++done)
+      if (need != std::numeric_limits<size_t>::max()) need += spans[done].bytes;
     uint32_t n = 0;
-    if (!tx::omissionSpan(spans, need, n).ok() || n == 0) return false;
+    if (!tx::omissionSpan(spans, need, n).ok() || n <= done) return false;
     std::string dates;
     (void)tx::omissionDates(spans[0].firstAt, spans[n - 1].firstAt, t_.tz, dates);
     if (!tx::omissionLine(n, dates, t_.ladder.omissionLine).ok()) return false;
@@ -498,18 +560,37 @@ class TurnRun {
     }
     const bool hold = dd.verdict == DeliverVerdict::Hold && !t_.held;   // at most one hold a turn
     Status st = storeAnswer(step, !hold);
-    for (size_t i = 0; st.ok() && i < step.calls.size(); ++i)   // the last round still called
+    for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {   // the last round still called
+      t_.curCallQ = callQOf(i);
       st = answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
+    }
     if (!st.ok()) return st;
+    takeStatus(dd);
     if (hold) {
       t_.held = true;
+      t_.heldText = step.text;
       event("hold");
       return note(dd.deviceNote, tx::NoteClass::Notice);
     }
     t_.reply = true;
     t_.text = step.text;
     t_.cause = t_.trip == GuardTrip::None ? "reply" : std::string("limit:") + guardTripSlug(t_.trip);
+    if (step.text.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger)) {
+      // Nothing to deliver (empty content, thinking only, a refusal): a person waiting gets
+      // one plain line, never silence. A routine's empty text stays its silence.
+      t_.cause = "empty";
+      t_.status = StatusLine::ProviderError;
+      t_.statusText = exchangeLine(step.stop == StopReason::Refusal ? ExchangeErr::Other : ExchangeErr::Malformed,
+                                   providerSlugOf(t_.ctx, t_.setup.head), 0);
+    }
     return Status::success();
+  }
+
+  // A status line a seam asked for (the failed-write receipt), when the turn has none.
+  void takeStatus(const DeliverDecision& dd) {
+    if (dd.status == StatusLine::None || t_.status != StatusLine::None) return;
+    t_.status = dd.status;
+    t_.statusText = dd.statusText;
   }
 
   // k, a and c items in the order the model gave them, before any call runs.
@@ -518,26 +599,89 @@ class TurnRun {
     Status st = meta(step, 0);
     if (st.ok() && (!step.text.empty() || step.calls.empty())) {
       tx::Item& a = blank(tx::ItemKind::Assistant);
-      a.x = step.text;
       a.rd = (uint8_t)std::min<uint16_t>(t_.rounds, 255);
       a.fin = fin;
-      st = put(a);
+      st = tierText(step.text, a);   // over tier 1: bulk and a stub; the delivered text stays whole
+      if (st.ok()) st = put(a);
     }
+    t_.callQ.clear();
     for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {
       if (i && !(st = meta(step, (uint16_t)i)).ok()) break;
       tx::Item& c = blank(tx::ItemKind::Call);
       c.id = step.calls[i].id;
       c.n = step.calls[i].name;
-      c.args = step.calls[i].argsJson;
-      c.eff = classOf(step.calls[i]).effect == orch::EffectClass::Effect;
+      if (!(st = tierArgs(step.calls[i].argsJson, c.args)).ok()) break;
+      c.eff = viewOf(step.calls[i]).cls.effect == orch::EffectClass::Effect;
       c.rd = a_round();
       st = put(c);
+      t_.callQ.push_back(c.q);
       if (st.ok()) t_.writes.push_back(c);   // pruned to successful effects when their result lands
     }
     if (st.ok() && !step.calls.empty()) st = meta(step, (uint16_t)step.calls.size());
     return st;
   }
   uint8_t a_round() const { return (uint8_t)std::min<uint16_t>(t_.rounds, 255); }
+  uint64_t callQOf(size_t i) const { return i < t_.callQ.size() ? t_.callQ[i] : 0; }
+
+  // Tier 1 for a call's arguments (PRD section 2): a string argument over kTier1CallArgs is
+  // stored as its long-argument stub, and the whole arguments go to the bulk file once. The
+  // call itself runs with the model's arguments; later requests show the stub.
+  Status tierArgs(const std::string& args, std::string& out) {
+    out = args;
+    if (args.size() <= tx::kTier1CallArgs) return Status::success();
+    ArduinoJson::JsonDocument doc;
+    if (deserializeJson(doc, args, ArduinoJson::DeserializationOption::NestingLimit(64))) return Status::success();
+    if (!stubLongStrings(doc.as<ArduinoJson::JsonVariant>())) return Status::success();
+    out.clear();
+    serializeJson(doc, out);
+    std::string handle;
+    (void)d_.log->appendBulk(t_.ctx.turn, args, handle);   // the full arguments, for view
+    return Status::success();
+  }
+  bool stubLongStrings(ArduinoJson::JsonVariant v) {
+    bool changed = false;
+    if (v.is<ArduinoJson::JsonObject>()) {
+      for (ArduinoJson::JsonPair kv : v.as<ArduinoJson::JsonObject>()) changed |= stubLongStrings(kv.value());
+    } else if (v.is<ArduinoJson::JsonArray>()) {
+      for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) changed |= stubLongStrings(e);
+    } else if (v.is<const char*>()) {
+      const std::string str = v.as<const char*>();
+      std::string stub;
+      if (str.size() <= tx::kTier1CallArgs || !tx::longArgStub((uint32_t)str.size(), hex8(str), c_.nextQ, stub).ok())
+        return false;
+      v.set(stub);
+      return true;
+    }
+    return changed;
+  }
+  static std::string hex8(const std::string& s) {
+    static const char kHex[] = "0123456789abcdef";
+    uint32_t h = fnv1a(2166136261u, s);
+    std::string out(8, '0');
+    for (int i = 7; i >= 0; --i, h >>= 4) out[(size_t)i] = kHex[h & 15];
+    return out;
+  }
+
+  // Tier 1 for assistant text: over kTier1AssistantText it goes to the bulk file and the a
+  // item holds its stub (computed once, like a result's).
+  Status tierText(const std::string& text, tx::Item& a) {
+    if (text.size() <= tx::kTier1AssistantText) {
+      a.x = text;
+      return Status::success();
+    }
+    std::string handle;
+    const bool kept = d_.log->appendBulk(t_.ctx.turn, text, handle).ok();
+    tx::StubFacts& f = renew(t_.stub);
+    f.tool = "reply";
+    f.q = c_.nextQ;
+    f.bytes = (uint32_t)text.size();
+    f.lines = 1 + (uint32_t)std::count(text.begin(), text.end(), '\n');
+    (void)tx::stubTime(epoch(), t_.tz, f.hhmm);
+    f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
+    f.cls = tx::ResultClass::Bulk;
+    f.noCard = !kept;
+    return tx::stubText(f, a.x);
+  }
 
   Status meta(const ParsedStep& step, uint16_t beforeCall) {
     for (const MetaPart& m : step.meta) {
@@ -552,39 +696,71 @@ class TurnRun {
     return Status::success();
   }
 
-  // The class of one call as the rails see it: for `more`, the class of the tool it reaches
-  // (callClass); arguments that do not parse reach nothing knowable, so a router reads as an
-  // effect (the fail-closed default).
-  orch::ToolClass classOf(const ToolCall& call) const {
+  // One call as every rule keyed on the tool must see it (class, taint, the file-set change,
+  // superseded reads): a `more` call is the tool it reaches with that tool's arguments
+  // (moreTarget). The stored c item keeps the model's own call (`more` and its arguments):
+  // that is what the next request renders and what its result pairs with.
+  struct CallView {
+    std::string name;      // the tool the call reaches
+    std::string args;      // its arguments (JSON)
+    orch::ToolClass cls;   // its class; a router that reaches nothing knowable: the fail-closed default
+    bool unresolved = false;   // a router call with no target (a listing, an unknown or refused name)
+  };
+  CallView viewOf(const std::string& name, const std::string& argsJson) const {
+    CallView v;
+    v.name = name;
+    v.args = argsJson;
     const orch::ToolRegistry* reg = t_.setup.facts.reg;
-    if (!reg) return orch::toolClassFor(call.name);
+    if (!reg) {
+      v.cls = orch::toolClassFor(name);
+      return v;
+    }
+    const std::string regName = reg->resolveName(name);
+    if (regName.empty() || !reg->isRouter(regName)) {
+      v.cls = reg->classOf(regName.empty() ? name : regName);
+      return v;
+    }
+    v.unresolved = true;   // until the target is known: the fail-closed class (outside, effect)
     ArduinoJson::JsonDocument args;
-    if (deserializeJson(args, call.argsJson, ArduinoJson::DeserializationOption::NestingLimit(64)) ||
+    if (deserializeJson(args, argsJson, ArduinoJson::DeserializationOption::NestingLimit(64)) ||
         !args.is<ArduinoJson::JsonObjectConst>() || !t_.ctx.who)
-      return reg->isRouter(call.name) ? orch::ToolClass{} : reg->classOf(call.name);
-    return orch::callClass(*reg, call.name, args.as<ArduinoJson::JsonObjectConst>(), *t_.ctx.who);
+      return v;
+    const orch::MoreTarget mt = orch::moreTarget(*reg, args.as<ArduinoJson::JsonObjectConst>(), *t_.ctx.who);
+    v.cls = mt.cls;
+    if (mt.name.empty()) return v;
+    v.unresolved = false;
+    v.name = mt.name;
+    v.args.clear();
+    if (args["args"].is<ArduinoJson::JsonObjectConst>()) serializeJson(args["args"], v.args);
+    else v.args = "{}";
+    return v;
   }
-  // Outside content by class: a tool with a taint row that says so, or a tool nothing
-  // classes at all (unknown tools read as outside). The engine-2 names have class rows but
-  // no taint rows yet: their own result says whether it is outside (ToolOutput::outside).
-  static bool outsideByClass(const std::string& name, const orch::ToolClass& cls) {
-    if (cls.taint != orch::Taint::External) return false;
-    return orch::toolTaintRow(name) != nullptr || orch::toolClassRow(name) == nullptr;
+  CallView viewOf(const ToolCall& call) const { return viewOf(call.name, call.argsJson); }
+  // Outside content by class: a tool with a taint row that says so, a tool nothing classes at
+  // all, or a router call that reaches nothing knowable (each reads as outside). The engine-2
+  // names have class rows but no taint rows yet: their own result says whether it is outside
+  // (ToolOutput::outside).
+  static bool outsideByClass(const CallView& v) {
+    if (v.cls.taint != orch::Taint::External) return false;
+    return v.unresolved || orch::toolTaintRow(v.name) != nullptr || orch::toolClassRow(v.name) == nullptr;
   }
 
   // ---- one call -----------------------------------------------------------------------------
   // The round's calls in order; past the soft wall no further call starts.
   Status runCalls(const ParsedStep& step) {
     Status st = Status::success();
-    for (size_t i = 0; st.ok() && i < step.calls.size(); ++i)
+    for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {
+      t_.curCallQ = callQOf(i);
       st = elapsedMs() < t_.limits.softWallMs ? runCall(step.calls[i])
                                               : answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
+    }
     ++t_.toolRounds;
     return st;
   }
 
   Status runCall(const ToolCall& call) {
-    const orch::ToolClass cls = classOf(call);
+    const CallView view = viewOf(call);
+    const orch::ToolClass& cls = view.cls;
     DispatchDecision dd;
     if (d_.hooks) {
       DispatchCtx dc;
@@ -620,8 +796,8 @@ class TurnRun {
     }
     out.id = call.id;
     out.name = call.name;
-    out.outside |= outsideByClass(call.name, cls);
-    return storeResult(call, out, cls);
+    out.outside |= outsideByClass(view);
+    return storeResult(call, out, view);
   }
 
   Status answerUnrun(const ToolCall& call, const char* why) {
@@ -630,10 +806,13 @@ class TurnRun {
     out.name = call.name;
     out.text = why;
     out.isError = true;
-    return storeResult(call, out, orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Read});
+    CallView view;
+    view.name = call.name;
+    view.cls = orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Read};
+    return storeResult(call, out, view);
   }
 
-  Status storeResult(const ToolCall& call, const ToolOutput& out, const orch::ToolClass& cls) {
+  Status storeResult(const ToolCall& call, const ToolOutput& out, const CallView& view) {
     tx::Item& r = blank(tx::ItemKind::Result);
     r.id = call.id;
     r.n = call.name;
@@ -646,8 +825,8 @@ class TurnRun {
       t_.sawOutside = true;
       t_.ctx.tainted = true;   // the request now carries an outside result whole
     }
-    if (r.ok && orch::tx::changesFileSet(call.name)) t_.fileSetChanged = true;
-    keepWrite(call, r, cls);
+    if (r.ok && orch::tx::changesFileSet(view.name)) t_.fileSetChanged = true;
+    keepWrite(call, r, view);
     if (d_.hooks) {
       ResultCtx rc;
       rc.turn = &t_.ctx;
@@ -689,23 +868,32 @@ class TurnRun {
     return put(r, stored);
   }
 
-  void keepWrite(const ToolCall& call, const tx::Item& r, const orch::ToolClass& cls) {
+  // A successful effect's call and result, kept for the superseded-read rule in the view of
+  // the tool they reached (a `more` call as its target, with the target's arguments).
+  void keepWrite(const ToolCall& call, const tx::Item& r, const CallView& view) {
+    const uint64_t q = t_.curCallQ;   // by the call's q: dialects reuse or omit call ids
     auto it = std::find_if(t_.writes.begin(), t_.writes.end(),
-                           [&](const tx::Item& c) { return c.kind == tx::ItemKind::Call && c.id == call.id; });
+                           [&](const tx::Item& c) { return c.kind == tx::ItemKind::Call && c.q == q; });
     if (it == t_.writes.end()) return;
-    if (!r.ok || cls.effect != orch::EffectClass::Effect) {
+    if (!r.ok || view.cls.effect != orch::EffectClass::Effect) {
       t_.writes.erase(it);
       return;
     }
-    t_.writes.insert(it + 1, r);
+    it->n = view.name;
+    it->args = view.args;
+    it = t_.writes.insert(it + 1, r);
+    it->n = view.name;
   }
 
   // ---- turn close -----------------------------------------------------------------------------
+  // Delivery first: nothing that allocates much (the superseded-read scan) runs before the
+  // reply in hand has gone out.
   Status close() {
     closingFacts();
     DeliverOutcome sent;
     deliver(sent);
     t_.sent = sent.sent;
+    if (!t_.storeFailed) supersede();
     Status st = delivered(sent);
     if (!t_.storeFailed) st = storeEnd();
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
@@ -716,12 +904,14 @@ class TurnRun {
 
   // The turn's status line, the superseded reads and the change points, before delivery.
   void closingFacts() {
-    if (t_.cause.empty()) t_.cause = t_.storeFailed ? "storage" : "stopped";
-    if (t_.storeFailed || (t_.storageLineDue && t_.status == StatusLine::None)) {
+    if (t_.cause.empty() || t_.storeFailed) t_.cause = t_.storeFailed ? "memory" : "stopped";
+    if (t_.storeFailed) {   // the arena refused: nothing of this turn from here on was kept
+      t_.status = StatusLine::CrashNotice;
+      t_.statusText = texts::device_notes::kNoMemory;
+    } else if (t_.storageLineDue && t_.status == StatusLine::None) {
       t_.status = StatusLine::StorageState;
       t_.statusText = texts::device_notes::kStorageLine;
     }
-    if (!t_.storeFailed) supersede();
     if (t_.sawOutside) event("change:outside");
     if (t_.sawMeta) event("change:thinking");   // closed-turn thinking is not replayed (ruling 13)
     if (d_.recentFiles && t_.fileSetChanged) {
@@ -755,6 +945,7 @@ class TurnRun {
     if (t_.writes.empty()) return;
     std::vector<tx::Item> earlier(d_.arena->count());
     for (size_t i = 0; i < earlier.size(); ++i) (void)d_.arena->get(i, earlier[i]);
+    resolveRouted(earlier);
     std::vector<uint64_t> sup, one;
     for (size_t i = 0; i + 1 < t_.writes.size(); ++i) {
       if (t_.writes[i].kind != tx::ItemKind::Call || t_.writes[i + 1].kind != tx::ItemKind::Result) continue;
@@ -768,6 +959,23 @@ class TurnRun {
     x.why = tx::moveWhySlug(tx::MoveWhy::Superseded);
     x.sup = sup;
     if (put(x).ok()) event("change:superseded");
+  }
+
+  // Earlier calls through a router, and their results, as the tools they reached.
+  void resolveRouted(std::vector<tx::Item>& items) const {
+    std::vector<std::pair<std::string, std::string>> names;   // call id -> target name
+    for (tx::Item& it : items) {
+      if (it.kind == tx::ItemKind::Call) {
+        const CallView v = viewOf(it.n, it.args);
+        if (v.name == it.n) continue;
+        names.emplace_back(it.id, v.name);
+        it.n = v.name;
+        it.args = v.args;
+      } else if (it.kind == tx::ItemKind::Result) {
+        for (const auto& kv : names)
+          if (kv.first == it.id) it.n = kv.second;
+      }
+    }
   }
 
   // One portable deliver function (RB-E3); until it lands, the channel's send, the reply
@@ -799,9 +1007,37 @@ class TurnRun {
     }
     Status st = put(e);
     if (st.ok()) c_.lastClosedQ = e.q;
+    t_.endStored = st.ok();
     return st;
   }
 
+ public:
+  // A refused allocation stopped the turn (ruling 30): the owner gets the reply already in
+  // hand, or one plain line, and the turn is closed where storage allows. Each step stands
+  // alone: a second refusal skips only that step.
+  void refused() {
+    if (!t_.sent) {
+      const bool reply = t_.reply && !t_.text.empty();
+      t_.reply = reply;
+      t_.status = reply ? StatusLine::None : StatusLine::CrashNotice;
+      t_.statusText = reply ? std::string() : std::string(texts::device_notes::kNoMemory);
+      try {
+        DeliverOutcome sent;
+        deliver(sent);
+        t_.sent = sent.sent;
+      } catch (const std::bad_alloc&) {
+      }
+    }
+    t_.cause = "memory";
+    try {
+      if (!t_.storeFailed && (t_.endStored || storeEnd().ok())) c_.head.openTurn = 0;
+      c_.head.nextQ = c_.nextQ;
+      if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);
+    } catch (const std::bad_alloc&) {
+    }
+  }
+
+ private:
   const EngineDeps& d_;
   PlainEngine::ChatState& c_;
   Turn& t_;
@@ -823,28 +1059,32 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out = TurnOutcome{};
   if (!depsReady(deps_) || !chat_ || !chat_->booted) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn");
   std::unique_ptr<Turn> t(new (std::nothrow) Turn());
-  if (!t) return Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
-  try {
-    const Status st = TurnRun(deps_, *chat_, *t).run(in);
-    out.delivered = t->sent;
-    out.text = t->reply ? t->text : std::string();
-    out.rounds = t->rounds;
-    out.toolCalls = t->end.tools;
-    out.headRequests = t->end.headRequests;
-    out.trip = t->trip;
-    out.status = t->status;
-    out.statusText = t->statusText;
-    out.parkHost = t->parkHost;
-    out.failOver = t->failOver;
-    out.end = t->end;
-    return st;
-  } catch (const std::bad_alloc&) {
-    // A refused allocation ends the turn here: what was stored stays, and a call left
-    // without its result is answered "outcome unknown" at the next turn open.
+  if (!t) {   // not even the turn's state: the owner still hears it (nothing was stored)
+    if (deps_.channel && deps_.channel->send) (void)deps_.channel->send(in.ctx.chatId, texts::device_notes::kNoMemory);
+    out.status = StatusLine::CrashNotice;
     return Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
-  } catch (const std::exception&) {   // a tool or a binding threw: the same designed state
-    return Status::fail(Err::Io, "plain::PlainEngine::runTurn.exception");
   }
+  Status st = Status::success();
+  try {
+    st = TurnRun(deps_, *chat_, *t).run(in);
+  } catch (const std::bad_alloc&) {
+    // A refused allocation is a designed state: what was stored stays, the owner is told, a
+    // call left without its result is answered "outcome unknown" at the next turn open.
+    TurnRun(deps_, *chat_, *t).refused();
+    st = Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
+  }
+  out.delivered = t->sent;
+  out.text = t->reply ? t->text : std::string();
+  out.rounds = t->rounds;
+  out.toolCalls = t->end.tools;
+  out.headRequests = t->end.headRequests;
+  out.trip = t->trip;
+  out.status = t->status;
+  out.statusText = t->statusText;
+  out.parkHost = t->parkHost;
+  out.failOver = t->failOver;
+  out.end = t->end;
+  return st;
 }
 
 Status PlainEngine::idle(const IdleCtx& ctx, IdleOutcome& out) {

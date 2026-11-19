@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
-# class device_notes bytes=850 ceiling=2048 entries=27 sha8=09b77780
+# class device_notes bytes=929 ceiling=2048 entries=28 sha8=8a236d11
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
 # class tool_results bytes=2831 ceiling=6144 entries=194 sha8=26149529
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
@@ -58,6 +58,7 @@ device_notes	lib/harness/include/nimbus/harness/plain/texts.h	cee20507	24	"[devi
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	ba5ec51d	1	")"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	df899193	99	"[device] storage refused part of this conversation: it is kept in memory until the device restarts."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	2d44ce0b	80	"Storage refused part of this conversation; it is kept until the device restarts."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	5c6a161f	79	"The device ran out of memory for this turn and stopped. Send the message again."
 tool_results	lib/core/src/orch_calc.cpp	98398703	2	"**"
 tool_results	lib/core/src/orch_calc.cpp	a318c242	1	"+"
 tool_results	lib/core/src/orch_calc.cpp	3973e022	1	"-"

@@ -597,8 +597,9 @@ durability around it and nothing that reads, edits or appends to the model's tex
   stored before the first request. The binding's `TurnSetup` gives the registry, notes, head
   and wire once; the system text and the tools are composed once and kept for every round.
 - **The loop**: render the stored transcript, post it (`runExchange`: retries, the cap and the
-  ladder live there; rung 3 omits only the oldest turns the body needs to drop, every omissible
-  one only after a provider's size refusal), store what the model said (k, a, c) before anything runs. No call: that
+  ladder live there; rung 3 omits only the oldest turns the body needs to drop, sized by what
+  each turn renders, and climbs again while still over; every omissible one only after a
+  provider's size refusal), store what the model said (k, a, c) before anything runs. No call: that
   text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
   runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
   to the bulk file, its stub computed once) before the next request, `afterResult`.
@@ -610,10 +611,19 @@ durability around it and nothing that reads, edits or appends to the model's tex
   the reply once (one device item, one more round). Then the superseded reads (x), delivery,
   the d item, `afterDeliver`, the e item (cause, counts, tokens, per-exchange sizes, change
   points, prompt and manifest hashes) and head.json.
+- **Through `more`**: every rule keyed on the tool (effect class and intent, outside content and
+  taint, the recent-files rebuild, superseded reads) sees a `more` call as the tool it reaches with
+  that tool's arguments; the stored c item keeps the model's own call, which the next request
+  renders and the result pairs with. A router call that reaches nothing knowable reads as outside
+  and as an effect.
+- **Nothing to deliver**: an answer with no text and no call (empty content, a refusal) gets the
+  exchange's plain line for a person; a routine's empty text stays its silence.
 - **Storage**: every item goes through `TxLog::store`. An item the card refused stays in RAM;
   the model sees one device note at the next round boundary and the owner one storage line,
   once per episode. With no card the chat runs from RAM and no effect tool runs.
-- **Memory**: the turn's state lives on the heap; `runTurn`'s own frame is 240 B on the device
+- **Memory**: an item the arena refuses, or a refused allocation, ends the turn with one plain
+  line (or the reply already in hand) and the e item where storage allows; delivery runs before the
+  superseded-read scan. The turn's state lives on the heap; `runTurn`'s own frame is 240 B on the device
   compiler. A refused allocation ends the turn with a status, never an abort.
 
 `test/test_plain_conformance/engine_tests.h` drives scripted turns on each dialect's stand-in

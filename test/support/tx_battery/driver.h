@@ -67,6 +67,8 @@ class Battery {
   // What composition reads (RB-E1a): the world's tools as the registry declares them, the
   // owner's Principal, and the wire (the dialect's real one once it lands, else txb::StubWire).
   nimbus::orch::ToolRegistry reg;
+  // The live file list the engine's recent-files block reads (null: none), set before boot.
+  tx::RecentFilesBlock::Source recentFiles;
   nimbus::orch::Principal who = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
 
   // Process state: gone at a power cut, rebuilt by boot().
@@ -269,7 +271,8 @@ class Battery {
     d.hooks = hooks.get();
     d.log = log.get();
     d.arena = arena.get();
-    d.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return world.dispatch(c, t); };
+    d.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return dispatch(c, t); };
+    d.recentFiles = recentFiles;
     d.files = &files;
     d.chatKey = chatKey;
     d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
@@ -284,6 +287,37 @@ class Battery {
     (void)plain::installResume(*hooks, plain::ResumeDeps{log.get()});
     (void)plain::installCompaction(*hooks, plain::CompactDeps{&platform, &model, log.get(), arena.get()});
     (void)plain::installRails(*hooks, plain::RailsDeps{});
+  }
+
+  // The world's tools as the registry would run them: a `more` call runs the tool it names
+  // with its arguments (the registry's router, without its listings), and delete_file
+  // removes a world file.
+  plain::ToolOutput dispatch(const plain::ToolCall& c, const plain::TurnCtx& t) {
+    if (c.name == "more") {
+      JsonDocument a;
+      if (deserializeJson(a, c.argsJson) || !a["name"].is<const char*>()) return world.dispatch(c, t);
+      plain::ToolCall inner = c;
+      inner.name = a["name"].as<const char*>();
+      inner.argsJson.clear();
+      if (a["args"].is<JsonObjectConst>()) serializeJson(a["args"], inner.argsJson);
+      else inner.argsJson = "{}";
+      plain::ToolOutput o = dispatch(inner, t);
+      o.name = c.name;
+      return o;
+    }
+    if (c.name == "delete_file") {
+      JsonDocument a;
+      deserializeJson(a, c.argsJson);
+      world.dispatched.push_back(c.name);
+      ++world.effectRuns[c.name + " " + c.argsJson];
+      plain::ToolOutput o;
+      o.id = c.id;
+      o.name = c.name;
+      o.isError = world.files.erase(a["path"] | "") == 0;
+      o.text = std::string(o.isError ? "no such file: " : "deleted ") + (a["path"] | "");
+      return o;
+    }
+    return world.dispatch(c, t);
   }
 
   bool onSend(const std::string& chat, const std::string& text) {
