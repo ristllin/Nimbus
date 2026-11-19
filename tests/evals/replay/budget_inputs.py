@@ -99,8 +99,16 @@ def due_and_after(run: dict) -> list:
         prev = [q["usage"]["prompt"] for q in run["requests"] if q["turn"] < turn]
         nxt = [q["usage"]["prompt"] for q in run["requests"] if q["turn"] == turn]
         if prev and nxt:
-            out.append({"shape": run["shape"], "turn": turn, "before": prev[-1], "after": nxt[0],
-                        "turns": c["turns"], "digests": c["digests"]})
+            out.append(
+                {
+                    "shape": run["shape"],
+                    "turn": turn,
+                    "before": prev[-1],
+                    "after": nxt[0],
+                    "turns": c["turns"],
+                    "digests": c["digests"],
+                }
+            )
     return out
 
 

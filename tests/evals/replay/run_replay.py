@@ -228,17 +228,26 @@ def compact(head: Head, tx: E2Transcript, now: float, rec: dict, requests: int =
         return
     by_day = tx.slice_text(turns)
     days = list(by_day)[:requests]
-    done_turns = [t for t in turns if any(d in tx.slice_text([t]) for d in days)]
     digests = []
-    for day in days:
+    for day in days:  # oldest first; each day is stored on its own, as the engine stores each slice
         text, usage, stop = head.summarize(by_day[day])
         rec["background"].append({"day": day, "usage": usage, "stop": stop, "usd": price(SUMMARIZER, usage, False)})
         if stop == "max_tokens" or len(text.encode()) < 120:
-            return  # not accepted: the old state stays
+            break  # not accepted: this day and the ones after it stay
         digests.append((day, text))
+    if not digests:
+        return
+    kept = [d for d, _ in digests]
+    done_turns = [t for t in turns if any(d in tx.slice_text([t]) for d in kept)]
     tx.apply_digests(done_turns, digests)
     rec["compactions"].append(
-        {"at": now, "turns": len(done_turns), "digests": len(digests), "resident": tx.resident(), "before_turn": len(rec["turns"]) + 1}
+        {
+            "at": now,
+            "turns": len(done_turns),
+            "digests": len(digests),
+            "resident": tx.resident(),
+            "before_turn": len(rec["turns"]) + 1,
+        }
     )
 
 
@@ -264,7 +273,8 @@ class Replay:
         if cfg.aged:
             # Steady state: resident halfway between L and H, the digest block full.
             h, low, _ = PROFILES[cfg.profile]
-            self.tx.seed(synth.prior_history(self.start, (h + low) // 2, TZ), synth.prior_digests(self.start, 30, TZ))
+            history = synth.prior_history(self.start, (h + low) // 2, TZ, day_turns=getattr(cfg, "aged_day_turns", 10))
+            self.tx.seed(history, synth.prior_digests(self.start, 30, TZ))
         self.w = World(now=datetime.fromtimestamp(self.start, TZ), fail={}, variant=VARIANT)
         self.tools = manifest.tools_for(VARIANT)
         self.vnow = self.start
@@ -288,7 +298,13 @@ class Replay:
             if n and at - self.vnow >= IDLE_COMPACT_S:
                 day = datetime.fromtimestamp(self.vnow, TZ).strftime("%Y-%m-%d")
                 asked = len(self.rec["background"])
-                compact(self.head, self.tx, self.vnow + IDLE_COMPACT_S, self.rec, idle_requests(at - self.vnow, self.paid.get(day, 0)))
+                compact(
+                    self.head,
+                    self.tx,
+                    self.vnow + IDLE_COMPACT_S,
+                    self.rec,
+                    idle_requests(at - self.vnow, self.paid.get(day, 0)),
+                )
                 self.paid[day] = self.paid.get(day, 0) + len(self.rec["background"]) - asked
             self.vnow = max(self.vnow, at)
             self.rec["turns"].append(self.turn(n + 1, t))
@@ -399,6 +415,7 @@ def main():
     ap.add_argument("--warm", type=int, default=0, help="the first N turns back to back (the thinking arm)")
     ap.add_argument("--rep", type=int, default=1)
     ap.add_argument("--aged", action="store_true", help="start from steady state: (H + L) / 2 resident, digests full")
+    ap.add_argument("--aged-day-turns", type=int, default=10, help="turns a seeded earlier day carries (its size)")
     ap.add_argument("--evidence", required=True, type=Path)
     ap.add_argument("--env-file", required=True)
     ap.add_argument("--max-usd", type=float, default=12.0, help="no new run once the evidence dir has billed this")

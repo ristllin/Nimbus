@@ -12,6 +12,7 @@ quantities and the last turn asks for them back, as on 30 Oct. Nothing here come
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 import hashlib
 import io
 import json
@@ -184,17 +185,24 @@ def turns_for(shape: dict, seed: str) -> list:
 AGED_DAY_TIMES = ("07:40", "08:15", "10:30", "12:45", "13:20", "15:10", "18:05", "19:30", "20:40", "22:10")
 
 
-def prior_history(start: float, target_bytes: int, tz) -> list:
+def aged_day_times(day_turns: int) -> list:
+    """(hour, minute) of a seeded day's turns: AGED_DAY_TIMES for ten, else spread evenly 07:00 to 22:30."""
+    if day_turns == len(AGED_DAY_TIMES):
+        return [tuple(map(int, hhmm.split(":"))) for hhmm in AGED_DAY_TIMES]
+    step = (22 * 60 + 30 - 7 * 60) / max(day_turns - 1, 1)
+    return [divmod(7 * 60 + round(k * step), 60) for k in range(day_turns)]
+
+
+def prior_history(start: float, target_bytes: int, tz, day_turns: int = 10) -> list:
     """[(t, owner text, reply text)] of made-up earlier days, newest last, about target_bytes in all:
-    ten food-and-chat turns a day going back from the day before start."""
-    from datetime import datetime, timedelta
+    `day_turns` food-and-chat turns a day (ten by default) going back from the day before start."""
+    from datetime import timedelta
 
     out, size, day = [], 0, 1
     base = datetime.fromtimestamp(start, tz).replace(hour=0, minute=0, second=0, microsecond=0)
     while size < target_bytes:
         d = base - timedelta(days=day)
-        for k, hhmm in enumerate(AGED_DAY_TIMES):
-            h, m = map(int, hhmm.split(":"))
+        for k, (h, m) in enumerate(aged_day_times(day_turns)):
             t = d.replace(hour=h, minute=m)
             meal, what = MEALS[(day + k) % len(MEALS)]
             owner = t.strftime("[%a %d %b %Y %H:%M] ") + (

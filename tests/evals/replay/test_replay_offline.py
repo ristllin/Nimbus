@@ -354,6 +354,46 @@ class Transcript(unittest.TestCase):
         self.assertEqual(f(10 * 3600, 6), 0)
         self.assertEqual(f(60, 0), 0)
 
+    def test_aged_days_can_carry_the_shapes_own_day_size(self):
+        """Lane RB-T4: an aged day may carry more turns, so its bytes match the shape's own days; the
+        default stays ten turns a day."""
+        tz = ZoneInfo("Europe/London")
+        ten = synth.prior_history(T0, 30_000, tz)
+        forty = synth.prior_history(T0, 30_000, tz, day_turns=40)
+        days = lambda h: len({datetime.fromtimestamp(t, tz).date() for t, _, _ in h})  # noqa: E731
+        self.assertGreater(days(ten), 3 * days(forty))
+        self.assertEqual(sorted(forty), forty)
+        self.assertEqual(len({t for t, _, _ in forty}), len(forty))
+
+    def test_a_failed_day_keeps_the_days_before_it(self):
+        """Lane RB-T4: as the engine stores each slice on its own, a summary refused for one day keeps
+        the digests of the days before it and moves thru past them only."""
+
+        class Head:
+            def __init__(self):
+                self.calls = 0
+
+            def summarize(self, text):
+                self.calls += 1
+                ok = self.calls == 1
+                return (
+                    ("First fact. " * 20 if ok else "x"),
+                    {"prompt": 10, "output": 10},
+                    "end_turn" if ok else "max_tokens",
+                )
+
+        tx = refloop.E2Transcript("tight")
+        for d in (3, 2):
+            for k in range(8):
+                tx_with_turn(tx, T0 - d * 86400 + 600 * k, text="y" * 3000)
+        for k in range(7):
+            tx_with_turn(tx, T0 + 600 * k, text="z" * 100)
+        rec = {"background": [], "compactions": [], "turns": []}
+        run_replay.compact(Head(), tx, T0 + 6000, rec, requests=2)
+        self.assertEqual(len(tx.digests), 1)
+        self.assertEqual(len(rec["compactions"]), 1)
+        self.assertTrue(all(tx._turn_time(it["turn"]) >= T0 - 2 * 86400 - 3600 for it in tx.items if it["q"] > tx.thru))
+
     def test_digest_block_keeps_under_its_cap(self):
         tx = refloop.E2Transcript("tight")
         tx.seed([], [(f"day {k}", "d" * 700) for k in range(10)])
