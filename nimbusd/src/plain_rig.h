@@ -217,8 +217,7 @@ class PlainRig {
   plain::ToolOutput dispatchCall(const plain::ToolCall& c, const plain::TurnCtx& turn) {
     if (b_.dispatch) return b_.dispatch(c, turn);
     JsonDocument args;
-    if (deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64)) || !args.is<JsonObject>())
-      args.to<JsonObject>();
+    (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));   // not an object: empty
     const nimbus::orch::ToolResult r = reg_.dispatch(c.name, args.as<JsonObjectConst>(), turn.who ? *turn.who : who_);
     plain::ToolOutput o;
     o.id = c.id;

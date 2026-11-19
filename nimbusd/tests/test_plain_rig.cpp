@@ -267,6 +267,17 @@ void testHostFaults(ndtest::Ctx& c) {
   Host h;
   c.ok(h.rig->boot().err == tx::Err::Busy, "a second boot is refused");
 
+  // A refused allocation at boot (ruling 30): a status, an unbooted rig, never an abort.
+  {
+    Host a;
+    a.platform.allocLarge = [](size_t) -> void* { return nullptr; };
+    a.reboot();
+    c.ok(!a.booted.ok(), "a refused arena allocation fails the boot with a status");
+    const nimbusd::PlainTurn ta = a.rig->say("hello");
+    c.eq(nimbusd::plainEndingSlug(ta.ending), "failed", "and a turn on the unbooted rig fails, stated");
+    c.ok(a.model.requests().empty(), "with nothing sent to the provider");
+  }
+
   // The host's channel: it gets what the engine sends, to the chat; a send it refuses is
   // never reported as delivered.
   {
@@ -346,9 +357,11 @@ void testToolBinding(ndtest::Ctx& c) {
     const auto* decl = plain::toolDecl("read_file");
     rig.registry().add(
         "read_file", decl ? decl->description : "", [&](ArduinoJson::JsonObjectConst a, const orch::Principal& who) {
-          seen.push_back(a["path"] | std::string("<none>"));
+          const std::string path = a["path"] | std::string("<none>");
+          seen.push_back(path);
           asOwner.push_back(who.owner);
-          return orch::ToolResult::ok("alpha");
+          return path == "notes/missing.md" ? orch::ToolResult::fail("no such file: notes/missing.md")
+                                            : orch::ToolResult::ok("alpha");
         },
         decl ? plain::declSchema(*decl, false) : "{}");
   };
@@ -357,6 +370,8 @@ void testToolBinding(ndtest::Ctx& c) {
   h.model.push(sp::say("It says alpha."));
   h.model.push(sp::call("read_file", R"(["not","an","object"])"));
   h.model.push(sp::say("Nothing there."));
+  h.model.push(sp::call("read_file", R"({"path":"notes/missing.md"})"));
+  h.model.push(sp::say("It is missing."));
   const nimbusd::PlainTurn t = h.rig->say("read my note");
   c.eq(t.stated, "It says alpha.", "the turn answers after the tool round");
   c.ok(seen.size() >= 1 && seen[0] == "notes/a.md", "the registered handler got the call's arguments");
@@ -367,6 +382,13 @@ void testToolBinding(ndtest::Ctx& c) {
   const nimbusd::PlainTurn t2 = h.rig->say("again");
   c.eq(t2.stated, "Nothing there.", "a call with arguments that are not an object still ends in a reply");
   c.ok(seen.size() == 2 && seen[1] == "<none>", "and its handler saw an empty object");
+  h.ms += 60000;
+  c.eq(h.rig->say("and the missing one").stated, "It is missing.", "a tool that fails still ends in a reply");
+  bool errorStored = false;
+  for (const tx::Item& it : h.stored())
+    if (it.kind == tx::ItemKind::Result && it.x.find("no such file: notes/missing.md") != std::string::npos)
+      errorStored = !it.ok;
+  c.ok(errorStored, "and its failure is stored as a failed result, with the handler's error text");
   std::string why;
   c.ok(h.model.verify(why), "the script was used exactly (" + why + ")");
 }
