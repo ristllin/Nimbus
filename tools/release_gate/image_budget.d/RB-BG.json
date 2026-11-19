@@ -1,11 +1,11 @@
 {
   "lane": "RB-BG",
-  "allowance_bytes": 19456,
+  "allowance_bytes": 19968,
   "envs": {
-    "esp32s3": 19456,
-    "esp32s3-cyd": 19456,
-    "test": 19456,
-    "test-cyd": 19456
+    "esp32s3": 19968,
+    "esp32s3-cyd": 19968,
+    "test": 19968,
+    "test-cyd": 19968
   },
-  "why": "Ruling 77: up to 20,480 B on esp32s3-cyd accepted. Same-tree builds of esp32s3-cyd on rb-main 5edefb72e (lanes/RB-BG/scratch/base) against the lane tip: 6,307,168 -> 6,325,808 B (+18,640 B) at 86a8a9559 and 6,326,624 B (+19,456 B) at d21346987 after the complexity-gate split (battery RB-BG-2), docs pack unchanged. By object (linked symbols per object, lanes/RB-BG/evidence/image-objdelta.txt): orch_budget_governor.cpp +5,526 (the governor, budget.json reader and writer, the owner's words), budget_profile_store.cpp +4,830 (the device store, nightly tick, /budget profile), budget_command.cpp +1,067 (dispatch, change record), main.cpp +876 (the owner line in the notice pump), orch_budget_command.cpp +603 (/budget profile parse); the rest is shared inline code placed in other objects and the owner copy and log strings. Cut from +23,520 B by snprintf words and a reader of the file's own shape in place of ArduinoJson."
+  "why": "Ruling 77: up to 20,480 B on esp32s3-cyd accepted. Same-tree builds of esp32s3-cyd on rb-main d740777c2 (lanes/RB-BG/scratch/base, 6,331,824 B) against the lane tip after owner rulings 81 to 83 (battery RB-BG-4 build, 6,351,408 B): +19,584 B, docs pack unchanged; rounded up to 512 B. The owner's profile store, the /budget profile command and words in tokens, the once-a-month spending advice (orch_budget_governor.cpp), the measured floor and nimbusd-free device code; the governor's step-down state was removed (ruling 81), and the token words added back."
 }

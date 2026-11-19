@@ -26,6 +26,12 @@
 // Thread-safe: the engine thread ticks, the HTTP thread may read the status.
 namespace nimbusd {
 
+// The head a hosted night sizes its advice for.
+struct HostedHead {
+  std::string host, model;
+  bool loopOn = true;
+};
+
 class HostedBudget {
  public:
   explicit HostedBudget(std::string path) : path_(std::move(path)) {
@@ -40,12 +46,8 @@ class HostedBudget {
   // `spendStateJson` (SpendCeilingVn::stateJson). A night whose write fails is undone and runs
   // again on the next tick. Returns the night's advice (Kind::None when nothing ran).
   // `head`: the head the instance runs, so the advice names sizes in tokens (empty host = not known).
-  struct Head {
-    std::string host, model;
-    bool loopOn = true;
-  };
   nimbus::orch::BudgetAdvice night(uint64_t epoch, int32_t offsetMin, uint16_t startMin,
-                                   const std::string& spendStateJson, const Head& head = Head()) {
+                                   const std::string& spendStateJson, const HostedHead& head = HostedHead()) {
     nimbus::orch::BudgetAdvice a;
     nimbus::orch::LimitsView v;
     if (!nimbus::orch::limitsViewFromJson(spendStateJson, v) || !v.loaded) return a;
