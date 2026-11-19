@@ -1416,6 +1416,23 @@ bool depsReady(const EngineDeps& d) {
 
 }  // namespace
 
+namespace {
+
+// A turn end stored between turns (the resume seam closes a turn at boot, lane RB-X1): the last
+// closed turn is the newest e item the engine has not seen, wherever it came from.
+void syncClosed(PlainEngine::ChatState& c, const tx::TxArena& arena) {
+  for (size_t i = arena.count(); i-- > 0;) {
+    tx::ArenaEntry e;
+    if (!arena.header(i, e).ok() || e.q < c.nextQ) return;
+    if (e.kind == tx::ItemKind::TurnEnd) {
+      c.lastClosedQ = std::max(c.lastClosedQ, e.q);
+      return;
+    }
+  }
+}
+
+}  // namespace
+
 PlainEngine::PlainEngine(const EngineDeps& deps) : deps_(deps), chat_(new (std::nothrow) ChatState()) {}
 PlainEngine::~PlainEngine() = default;
 
@@ -1435,8 +1452,10 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
     }
     return Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
   }
-  // Items stored between turns (the compaction driver's digests) take their q from head.nextQ:
-  // the turn's first item comes after them.
+  // Items stored between turns (the compaction driver's digests, the resume seam's items at
+  // boot) take their q from head.nextQ: the turn's first item comes after them, and a turn the
+  // resume seam closed counts as the last closed turn.
+  syncClosed(*chat_, *deps_.arena);
   chat_->nextQ = std::max({chat_->nextQ, chat_->head.nextQ, deps_.arena->lastQ() + 1});
   Status st = Status::success();
   try {

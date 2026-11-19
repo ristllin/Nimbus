@@ -751,6 +751,48 @@ wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each l
   each tool result and closes after delivery; the engine ticks the provider wait and a soft guard
   reached while the turn still progresses.
 
+### Crash resume: intents, one resume, stored-not-sent replies
+
+`plain_resume.cpp` (`plain/resume.h`, lane RB-X1) registers in the `bootResume` seam
+(`HookSlot::Resume`); the rules it reads are portable (`nimbus/orch/intents.h`,
+`lib/core/src/orch_intents.cpp`). The loop's own rule makes them possible: an effect call runs
+only once its intent item (i) is stored after its call (c), and every result is stored before
+the next request leaves. At boot, after the engine filled the arena from the card:
+
+1. **Every call with no stored result is answered, and never run again.** Its intent is stored:
+   "outcome unknown" (it may have taken effect). No intent (an effect that never started, or a
+   pure or read call): "no result: the device restarted before this call finished; it changed
+   nothing" (`texts::tool_results::kRestartedBeforeRun`). The model reads which and decides.
+2. **The newest turn gets one action** (`intents::bootAction`):
+
+| What is stored for the newest turn | Action |
+|---|---|
+| its e item | nothing |
+| its d item, no e item | close it: the e item only (cause `resume:closed`) |
+| a turn no person started (a routine, an agent report, a notice) | close it, never resumed |
+| the final answer (a, fin), no d item | send it with no model call, then d and e (cause and event `resume:sent-stored`) |
+| no final answer | one automatic resume: trigger `resume`, the same turn number, attempt + 1, through the engine's own `runTurn` |
+| one resume already made, or the stored answer is only its stub | the plain crash notice (`nimbus::orch::crashNotice`) as the one status line, then the e item (cause `resume:notice`) |
+
+- **The counter is written ahead**: before a resume or a send the attempt goes to head.json
+  (`open_turn`, `attempts`), so a cut inside the resume itself is counted and the next boot
+  sends the notice. When head.json cannot be written the boot sends the notice: never a resume
+  it cannot count. The RTC record is not used (a power cut empties it) and its layout is
+  unchanged.
+- **Twice, named**: the boot cannot tell a cut just before the send from one just after it when
+  the d item did not reach the card. A reply that went out just before such a cut goes out again;
+  the e item's event `resume:sent-stored` names every boot send.
+- **Everything stored is carried** (owner ruling 81): the resumed turn renders the whole arena,
+  so its first request carries every item stored before the cut (`test_tx_crash` asserts it at
+  every append of the turn, clean and torn).
+- **Deferred effects** (restart, install, head switch) run only after a turn's reply is sent and
+  its e item stored, so a restart they cause is never resumed, and the boot never runs a deferred
+  effect of a turn it closes. A resumed turn's own deferred effects come back in
+  `ResumeReport::outcome.deferred` (`ResumeDeps::done`), which the binding runs after boot.
+- The items the boot stores take their q above head.json's next q, the arena and the log (a
+  card-only gap note keeps its q), and the engine counts a turn the boot closed as the last
+  closed turn at its next open (the cold open moves the stub pointer to it).
+
 ### The Anthropic wire: what a request carries
 
 `providers/plain_wire_anthropic.cpp` renders one Messages API request from the stored

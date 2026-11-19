@@ -15,7 +15,6 @@ test_tx_prefix::test_wire_prefix_flat RB-W4
 test_tx_pairing::test_wire_pairing_responses RB-W2
 test_tx_pairing::test_wire_pairing_chat RB-W3
 test_tx_pairing::test_wire_pairing_flat RB-W4
-test_tx_pairing::test_pairs_survive_a_cut_at_every_append RB-X1
 
 # test_tx_coverage
 test_tx_coverage::test_wire_coverage_responses RB-W2
@@ -28,14 +27,6 @@ test_tx_coverage::test_a_floor_head_names_what_the_ladder_omits RB-W3
 # test_tx_log
 
 # test_tx_crash
-test_tx_crash::test_a_cut_at_every_append_gives_one_reply_and_no_second_effect RB-X1
-test_tx_crash::test_a_torn_cut_at_every_append_gives_one_reply_and_no_second_effect RB-X1
-test_tx_crash::test_a_cut_inside_the_send_delivers_at_most_twice RB-X1
-test_tx_crash::test_an_intent_without_result_is_shown_as_outcome_unknown_and_never_rerun RB-X1
-test_tx_crash::test_an_intent_that_cannot_be_stored_keeps_the_tool_from_running RB-X1
-test_tx_crash::test_a_second_failure_sends_the_crash_notice_and_nothing_more RB-X1
-test_tx_crash::test_a_stored_reply_never_sent_is_sent_without_a_model_call RB-X1
-test_tx_crash::test_restart_and_install_are_never_resumed RB-X1
 
 # test_tx_overhead
 test_tx_overhead::test_wire_overhead_responses RB-W2

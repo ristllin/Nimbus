@@ -266,7 +266,9 @@ inline void test_no_card_runs_from_ram_and_never_runs_an_effect() {
 // restart the fill replays the stored items, the dangling call is answered "outcome
 // unknown" before the next owner message, and nothing runs twice; an effect whose intent
 // never reached the card never ran.
-inline void restartAt(const char* kind, int wantRuns) {
+// The boot resumes the interrupted turn once (RB-X1): its request carries the stored message and
+// the call's boot-time result, `told`.
+inline void restartAt(const char* kind, int wantRuns, const char* told) {
   txb::Battery b;
   TXB_OK(b.boot());
   const std::string marker = std::string("\"k\":\"") + kind + "\"";
@@ -276,21 +278,24 @@ inline void restartAt(const char* kind, int wantRuns) {
   const tx::Status st = b.owner("save v1", out);
   TEST_ASSERT_FALSE(st.ok());
   TEST_ASSERT_TRUE_MESSAGE(b.killed, "the cut never fired");
+  b.model.push(sp::say("I could not confirm the save."));   // the one automatic resume
   TXB_OK(b.restartAfterCut());   // the u item was stored: nothing is redelivered
-  b.model.push(sp::say("I could not confirm the save."));
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "save v1"), "the resume lost the interrupted turn");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), told), kind);
+  b.model.push(sp::say("It may not have saved."));
   b.advance(30);
   TXB_OK(b.owner("did it save?", out));
   TEST_ASSERT_EQUAL_MESSAGE(wantRuns, b.world.runsOf("write_file"), kind);
   TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "save v1"), "the fill lost the interrupted turn");
-  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "outcome unknown"), kind);
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), told), kind);
   expectPaired(b);
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(b.model.verify(why), why.c_str());
 }
 
 inline void test_a_restart_mid_turn_replays_the_fill_and_runs_nothing_twice() {
-  restartAt("r", 1);   // the effect ran; its result was cut
-  restartAt("i", 0);   // the intent was cut: the effect never ran
+  restartAt("r", 1, "outcome unknown");   // the effect ran; its result was cut
+  restartAt("i", 0, plain::texts::tool_results::kRestartedBeforeRun);   // the intent was cut: it never ran
 }
 
 // A clean restart between turns: the next request extends the last one (the fill renders
@@ -484,7 +489,7 @@ inline void test_boot_runs_the_resume_seam_once() {
   txb::Battery b;
   int boots = 0;
   TXB_OK(b.boot());
-  TXB_OK(b.hooks->bootResume(plain::HookSlot::Resume, [&](const plain::BootCtx&) {
+  TXB_OK(b.hooks->bootResume(plain::HookSlot::Observer, [&](const plain::BootCtx&) {
     ++boots;
     return tx::Status::success();
   }));
@@ -1786,7 +1791,7 @@ inline void test_a_turn_opens_with_room_when_the_arena_is_nearly_full() {
 inline void test_a_refused_allocation_in_the_resume_seam_is_a_status() {
   txb::Battery b;
   TXB_OK(b.boot());
-  TXB_OK(b.hooks->bootResume(plain::HookSlot::Resume, [](const plain::BootCtx&) -> tx::Status { throw std::bad_alloc(); }));
+  TXB_OK(b.hooks->bootResume(plain::HookSlot::Observer, [](const plain::BootCtx&) -> tx::Status { throw std::bad_alloc(); }));
   tx::Status st = tx::Status::success();
   bool escaped = false;
   try {

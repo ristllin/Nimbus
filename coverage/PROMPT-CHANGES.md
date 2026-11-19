@@ -866,3 +866,12 @@ deleted. Engine 2 has no baseline.
 - lane: RB-REC6
 - prd: section 4 (the plain file tools), as amended by rulings 42 and 88 (RB-REC6's measurement: the sum result made totals worse on gpt-5.6-luna and glm-5.3; the whole-line rule under line cost claude-sonnet-5-5 its first call on corrections)
 - why: lib/core/src/orch_csv_sum.cpp: when sum is asked each figure carries its coverage in the same clause, as a fact ("sum amount=4.9 (3 of 5 rows; not in it: line 3 (field count is not the header's 6), line 6 (blank))"); the blank, not-a-number, not-compared, skipped and too-long lists move into that clause, and a read without sum is byte for byte as before. lib/core/src/orch_file_aids.cpp: with line and no whole-line match there, an exact part of that line found there once is the match; there twice or more is the new error "<old> is on line <l> <k> times; line <l> is: <text>". Both engines and nimbusd render through these two files. Planned work, not a fix.
+### PC-0105: a call the boot closes that never started says it changed nothing (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 4913 -> 4990
+- sha8: 887d1856 -> d76661ac
+- lane: RB-X1
+- prd: section 7 ("Crash safety": an intent with no result is shown as outcome unknown and never re-run; an effect tool does not run if its intent cannot be stored)
+- why: lib/harness/src/plain_resume.cpp: at boot every stored call with no stored result gets one result and is never run again. A call whose intent is stored keeps kOutcomeUnknown (it may have taken effect); a call with no intent (an effect that never started, by the write-ahead rule, or a pure or read call) gets kRestartedBeforeRun, a fact (it changed nothing), no order. Without it the model is told a call that did nothing may have done something, and an owner's request is dropped; planned work, not a fix

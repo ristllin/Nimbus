@@ -84,7 +84,6 @@ std::vector<StubRow> stubs() {
       {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
       {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
       {"plain::wireFor flat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::Flat, w); }},
-      {"plain::installResume", [] { return plain::installResume(gHooks, {}); }},
       {"plain::railFor", [] { plain::RailVerdict v; return plain::railFor(gTurn, gCall, v); }},
       {"plain::installRails", [] { return plain::installRails(gHooks, {}); }},
       {"plain::photoAllowed", [] { return plain::photoAllowed(gTurn, {}, flag); }},
