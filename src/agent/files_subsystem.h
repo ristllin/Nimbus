@@ -26,6 +26,15 @@
 
 namespace agent::files {
 
+#ifdef NIMBUS_TEST
+// CUTARM (test builds only; lane RB-REC7 bench, ruling 87): the next write of the named kind panics at its cut
+// point, the bench's stand-in for a power cut it cannot switch: Append after `at` bytes of a files.append's bytes
+// reached the card; Part after `at` bytes of a files.edit's part file; Swap before the `at`-th card operation
+// (0-based) of the next whole-file swap. None disarms.
+enum class TestCut : uint8_t { None, Append, Part, Swap };
+void testArmCut(TestCut where, uint32_t at);
+#endif
+
 // Mount/scan the store (call AFTER memory::begin resolved the SD tier). Loads
 // /mem/files/.index, or rebuilds it by scanning the tree when missing. Also
 // registers the agent tools (files.list / files.stat / artifact.save /

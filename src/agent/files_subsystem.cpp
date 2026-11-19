@@ -117,14 +117,42 @@ void persistIndex() {
 
 // The card calls a whole-file replace needs (nimbus/orch/file_swap.h). Caller
 // holds memory::Lock.
+#ifdef NIMBUS_TEST
+// CUTARM (files_subsystem.h): the armed cut, and the panic at its point. The bytes before the cut are on the card
+// (the file was closed) when the device dies, as after a power loss at that byte.
+namespace {
+volatile uint8_t g_cutWhere = 0;
+volatile uint32_t g_cutAt = 0, g_cutOps = 0;
+}  // namespace
+static bool testCutArmed(TestCut where) { return g_cutWhere == uint8_t(where); }
+[[noreturn]] static void testCutNow(const char* where, uint32_t at) {
+  Serial.printf("CUT %s at %u - panic now\n", where, (unsigned)at);
+  Serial.flush();
+  delay(30);
+  abort();
+}
+// Before a mutating card operation of a swap: the armed op is never done.
+static void testCutSwapStep() {
+  if (testCutArmed(TestCut::Swap) && g_cutOps++ == g_cutAt) testCutNow("swap", g_cutAt);
+}
+#define CUT_SWAP_STEP() testCutSwapStep()
+#else
+#define CUT_SWAP_STEP() ((void)0)
+#endif
+
 class SdSwapFs : public nimbus::orch::SwapFs {
  public:
   bool exists(const std::string& p) override { return memory::dataFs().exists(p.c_str()); }
   bool rename(const std::string& a, const std::string& b) override {
+    CUT_SWAP_STEP();
     return memory::dataFs().rename(a.c_str(), b.c_str());
   }
-  bool remove(const std::string& p) override { return memory::dataFs().remove(p.c_str()); }
+  bool remove(const std::string& p) override {
+    CUT_SWAP_STEP();
+    return memory::dataFs().remove(p.c_str());
+  }
   bool writeText(const std::string& p, const std::string& t) override {
+    CUT_SWAP_STEP();
     File f = memory::dataFs().open(p.c_str(), FILE_WRITE);
     if (!f) return false;
     const size_t n = f.write(reinterpret_cast<const uint8_t*>(t.data()), t.size());
@@ -1083,6 +1111,14 @@ static nimbus::orch::ToolResult appendBytes(const AppendArgs& a, size_t size, co
   fs.mkdir(dirOf(a.project).c_str());
   File f = fs.open(pathOf(a.project, a.name).c_str(), FILE_APPEND);
   if (!f) return ToolResult::fail("SD open failed");
+#ifdef NIMBUS_TEST
+  if (testCutArmed(TestCut::Append)) {   // CUTARM append: only the first `at` bytes reach the card
+    const size_t k = std::min<size_t>(g_cutAt, plan.bytes.size());
+    f.write(reinterpret_cast<const uint8_t*>(plan.bytes.data()), k);
+    f.close();
+    testCutNow("append", uint32_t(k));
+  }
+#endif
   const size_t n = f.write(reinterpret_cast<const uint8_t*>(plan.bytes.data()), plan.bytes.size());
   f.close();
   std::string err;
@@ -1174,6 +1210,14 @@ struct SdEditSink : nimbus::orch::aids::AidSink {
     }
     File f = fs.open(kPartPath, first ? FILE_WRITE : FILE_APPEND);
     if (!f) return false;
+#ifdef NIMBUS_TEST
+    if (testCutArmed(TestCut::Part) && written + b.size() > g_cutAt) {   // CUTARM part: the part stops at `at` bytes
+      const size_t k = g_cutAt > written ? size_t(g_cutAt - written) : 0;
+      f.write(reinterpret_cast<const uint8_t*>(b.data()), k);
+      f.close();
+      testCutNow("part", uint32_t(written + k));
+    }
+#endif
     const size_t n = b.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(b.data()), b.size());
     f.close();
     written += n;
@@ -2312,5 +2356,13 @@ std::string fetchQueueJson() {
 bool fetchApprove(uint32_t id) { std::lock_guard<std::mutex> lk(g_fetchMx); return g_fetchQ.approve(id); }
 bool fetchDeny(uint32_t id)    { std::lock_guard<std::mutex> lk(g_fetchMx); return g_fetchQ.deny(id); }
 int  fetchPendingCount()       { std::lock_guard<std::mutex> lk(g_fetchMx); return g_fetchQ.pendingCount(); }
+
+#ifdef NIMBUS_TEST
+void testArmCut(TestCut where, uint32_t at) {   // CUTARM (files_subsystem.h)
+  g_cutAt = at;
+  g_cutOps = 0;
+  g_cutWhere = uint8_t(where);
+}
+#endif
 
 }  // namespace agent::files

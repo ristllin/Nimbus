@@ -80,7 +80,8 @@
 #include "nimbus/orch/provider_park.h"   // PARK? / PARK clear - the one per-provider park (L19-8)
 #include "agent/transport_tls.h"          // LINKX - the device's one provider transport (lane RB-M2)
 #include "nimbus/orch/file_aids_e1.h"     // AIDREAD: the query, as files.read reads it
-#include "agent/files_subsystem.h"       // CARDTIME replace - the file store's whole-file replace
+#include "agent/files_subsystem.h"       // CARDTIME replace - the file store's whole-file replace; CUTARM
+#include "nimbus/orch/psram_alloc.h"     // ALLOCREFUSE - the working allocator hooks
 #include "sys/link_time.h"               // LINKX phase marks, LOGMS serial stamps (lane RB-M2)
 #include <ArduinoJson.h>
 
@@ -98,6 +99,24 @@ namespace {
 Hooks    s_h;                 // captured by begin()
 String   s_line;             // command-line accumulator (also the frame-tee prefix buffer)
 bool     s_badge = false;     // F9 error badge armed
+
+// ALLOCREFUSE (lane RB-REC7 bench): the device's PSRAM working hooks (main.cpp installs the same pair at boot),
+// and a refusing one in front of them that says no to the s_refuseAt-th block of at least s_refuseMin bytes.
+volatile long s_refuseAt = -1, s_refuseSeen = 0, s_refused = 0;
+volatile size_t s_refuseMin = 1024;
+void* psramWorkingAlloc(size_t n) {
+  void* p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM);
+  return p ? p : heap_caps_malloc(n, MALLOC_CAP_8BIT);
+}
+void psramWorkingFree(void* p) { heap_caps_free(p); }
+void* refusingWorkingAlloc(size_t n) {
+  if (s_refuseAt > 0 && n >= s_refuseMin && ++s_refuseSeen == s_refuseAt) {
+    s_refuseAt = -1;
+    s_refused = s_refused + 1;
+    return nullptr;
+  }
+  return psramWorkingAlloc(n);
+}
 int      s_badgeReason = 0;   // last WiFi disconnect reason
 
 // Bytes per command line; the rest of a longer line is dropped until the newline, so
@@ -2781,6 +2800,54 @@ void dispatch(String line) {
     return;
   }
 
+  if (line.startsWith("CUTARM ")) {
+    // CUTARM append|part|swap <n> | off (lane RB-REC7 bench, ruling 87): the next write of that kind panics
+    // at its cut point, the bench's stand-in for a power cut (files_subsystem.h testArmCut).
+    String rest = line.substring(7);
+    rest.trim();
+    using agent::files::TestCut;
+    if (rest == "off") {
+      agent::files::testArmCut(TestCut::None, 0);
+      reply("CUTARM off");
+      return;
+    }
+    const int sp = rest.indexOf(' ');
+    const String kind = sp > 0 ? rest.substring(0, sp) : rest;
+    const long at = sp > 0 ? rest.substring(sp + 1).toInt() : -1;
+    const TestCut w = kind == "append" ? TestCut::Append : kind == "part" ? TestCut::Part
+                    : kind == "swap" ? TestCut::Swap : TestCut::None;
+    if (w == TestCut::None || at < 0) { reply("CUTARM usage: CUTARM append|part|swap <n> | off"); return; }
+    agent::files::testArmCut(w, (uint32_t)at);
+    reply(String("CUTARM armed ") + kind + " " + at);
+    return;
+  }
+  if (line.startsWith("ALLOCREFUSE")) {
+    // ALLOCREFUSE <n> [min bytes] | off | ? (lane RB-REC7 bench, ruling 87): the working allocator
+    // (psram_alloc.h) refuses the n-th block of at least <min bytes> (default 1024) asked for from now, once,
+    // then serves as the device's PSRAM hooks do. The file aids must end such a call with no change.
+    String rest = line.length() > 11 ? line.substring(12) : String("?");
+    rest.trim();
+    if (rest == "?") {
+      Serial.printf("ALLOCREFUSE armed=%ld seen=%ld refused=%ld\n", s_refuseAt, s_refuseSeen, s_refused);
+      return;
+    }
+    if (rest == "off") {
+      s_refuseAt = -1;
+      nimbus::orch::setWorkingAllocators(psramWorkingAlloc, psramWorkingFree);
+      reply("ALLOCREFUSE off");
+      return;
+    }
+    const int sp = rest.indexOf(' ');
+    const long n = (sp > 0 ? rest.substring(0, sp) : rest).toInt();
+    const long minB = sp > 0 ? rest.substring(sp + 1).toInt() : 1024;
+    if (n < 1 || minB < 0) { reply("ALLOCREFUSE usage: ALLOCREFUSE <n> [min bytes] | off | ?"); return; }
+    s_refuseMin = (size_t)minB;
+    s_refuseSeen = 0;
+    s_refuseAt = n;
+    nimbus::orch::setWorkingAllocators(refusingWorkingAlloc, psramWorkingFree);
+    reply(String("ALLOCREFUSE armed ") + n + " min " + minB);
+    return;
+  }
   if (line.startsWith("TOOLSTALL ")) {
     // TOOLSTALL <ms>: the next tool dispatch holds the card lock for <ms> before it
     // runs, the way a slow tool does (the HIL stall leg). 0 disarms.
