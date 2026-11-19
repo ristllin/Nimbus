@@ -90,6 +90,26 @@ def _num(v: str) -> float:
         return 0.0
 
 
+def _context(owner: str, tools: list) -> Ctx:
+    m = STAMP_RE.search(owner)
+    props = {t["name"]: t for t in tools}["read_file"]["schema"].get("properties", {})
+    return Ctx(
+        owner=owner,
+        body=owner[owner.index("] ", m.start()) + 2 :],
+        day=m.group(4) or m.group(1),
+        has_sum="sum" in props,
+    )
+
+
+def _table(c: Ctx, system: str, results: list) -> list:
+    """The table's path: from the system text, the owner's message, else any result so far."""
+    want = _wanted(c.body)
+    found = _paths(system, want) or _paths(c.owner, want)
+    for r in results:
+        found = found or _paths(r["text"], want)
+    return found
+
+
 class Scripted:
     wire = "scripted"
     sloppy = False
@@ -125,23 +145,11 @@ class Scripted:
 
     def step(self, system, tools, messages, cache_key=None):
         k = max(i for i, m in enumerate(messages) if m.get("t") == "user")
-        owner = messages[k]["text"]
-        done = [m for m in messages[k + 1 :] if m.get("t") in ("call", "result")]
-        m = STAMP_RE.search(owner)
-        props = {t["name"]: t for t in tools}["read_file"]["schema"].get("properties", {})
-        c = Ctx(
-            owner=owner,
-            body=owner[owner.index("] ", m.start()) + 2 :],
-            day=m.group(4) or m.group(1),
-            has_sum="sum" in props,
-        )
-        calls = [x for x in done if x["t"] == "call"]
-        results = [x for x in done if x["t"] == "result"]
-        want = _wanted(c.body)
-        found = _paths(system, want) or _paths(owner, want)
-        if not found:
-            for r in results:
-                found = _paths(r["text"], want) or found
+        c = _context(messages[k]["text"], tools)
+        done = messages[k + 1 :]
+        calls = [x for x in done if x.get("t") == "call"]
+        results = [x for x in done if x.get("t") == "result"]
+        found = _table(c, system, results)
         if not found:
             return self._find(system, calls)
         c.path = found[0]
@@ -213,16 +221,19 @@ class Scripted:
         return self._call(c.calls[-1]["name"], c.calls[-1]["args"])
 
     def _write(self, c: Ctx):
-        if c.results and c.results[-1]["err"] and "not enough memory" in c.results[-1]["text"]:
+        last = c.results[-1] if c.results else None
+        if last and last["err"] and "not enough memory" in last["text"]:
             return self._after_fault(c)
         adding = c.body.startswith(("Log", "Spent"))
         writes = [x for x in c.calls if x["name"] in ("append_file", "edit_file", "write_file")]
-        if writes and not c.results[-1]["err"]:
-            if self.sloppy and adding and len(writes) == 1:
-                return self._call(writes[0]["name"], writes[0]["args"])  # the double append
-            return self._say("Done.")
+        if writes and not last["err"]:
+            return self._after_write(c, writes, adding)
         if adding:
             return self._call("append_file", {"path": c.path, "text": self._parse_add(c) + "\n"})
+        return self._fix(c)
+
+    def _fix(self, c: Ctx):
+        """A correction, a move or an identical-row removal: read the table, then edit one line."""
         reads = [r for r in c.results if not r["err"] and r["text"].startswith(c.path)]
         if not reads:
             return self._call("read_file", {"path": c.path})
@@ -231,10 +242,18 @@ class Scripted:
         if "twice" in c.body:
             return self._identical(c, lines)
         if "Move it" in c.body:
-            m = re.search(r"The (.+) at (\d\d:\d\d) today", c.body)
-            hit = [raw for _, raw in lines if raw.startswith(c.day) and f",{m.group(2)},{m.group(1)}," in raw][0]
-            return self._call("edit_file", {"path": c.path, "old": hit, "new": _yesterday(c.day) + hit[10:]})
+            return self._move(c, lines)
         return self._correct(c, header, lines)
+
+    def _after_write(self, c: Ctx, writes, adding):
+        if self.sloppy and adding and len(writes) == 1:
+            return self._call(writes[0]["name"], writes[0]["args"])  # the double append
+        return self._say("Done.")
+
+    def _move(self, c: Ctx, lines):
+        m = re.search(r"The (.+) at (\d\d:\d\d) today", c.body)
+        hit = [raw for _, raw in lines if raw.startswith(c.day) and f",{m.group(2)},{m.group(1)}," in raw][0]
+        return self._call("edit_file", {"path": c.path, "old": hit, "new": _yesterday(c.day) + hit[10:]})
 
     def _identical(self, c: Ctx, lines):
         m = re.search(r"logged the (.+) at (\d\d:\d\d) twice", c.body)
