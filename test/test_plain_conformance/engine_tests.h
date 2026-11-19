@@ -2518,7 +2518,7 @@ inline void test_deliver_turn_adds_to_the_progress_of_an_earlier_attempt() {
   ch.isAllowed = [](const std::string&) { return true; };
   plain::TurnCtx turn;
   turn.chatId = turn.chatKey = "1001";
-  const std::string reply = std::string(4500, 'a') + " " + std::string(4500, 'b');   // two parts
+  const std::string reply = std::string(3999, 'a') + "\n" + std::string(3000, 'b');   // two parts: cut after the line break
   plain::DeliverInput in;
   in.turn = &turn;
   in.text = &reply;
