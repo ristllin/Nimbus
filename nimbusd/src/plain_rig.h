@@ -94,8 +94,8 @@ struct PlainTurn {
   std::vector<std::string> sent;      // every message the host's channel took in this turn, in order
   std::vector<std::string> unsent;    // every message the host's channel refused
   PlainEnding ending = PlainEnding::Failed;
-  // Never empty: the reply when one went out, else the status line, else the rig's one line
-  // naming why nothing went out (for the host's log; the rig never sends it).
+  // Never empty: the reply when one went out, else the status line, else a slug naming why
+  // nothing went out ("plain-rig:<why>[:<detail>]", for the host's log; the rig never sends it).
   std::string stated;
 };
 
@@ -157,12 +157,12 @@ class PlainRig {
     PlainTurn t;
     if (busy_) {
       t.status = plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::PlainRig::say.busy");
-      t.stated = "engine 2: a turn is already running on this chat";
+      t.stated = "plain-rig:busy";
       return t;
     }
     if (!engine_) {
       t.status = plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "nimbusd::PlainRig::say.before-boot");
-      t.stated = "engine 2: the rig is not booted";
+      t.stated = "plain-rig:not-booted";
       return t;
     }
     busy_ = true;
@@ -252,14 +252,13 @@ class PlainRig {
       t.stated = t.sent.back();
     } else if (!t.unsent.empty()) {
       t.ending = PlainEnding::Failed;
-      t.stated = "engine 2: the host's channel refused " + std::to_string(t.unsent.size()) + " message(s)";
+      t.stated = "plain-rig:channel-refused:" + std::to_string(t.unsent.size());
     } else if (t.status.ok()) {
       t.ending = PlainEnding::Silent;
-      t.stated = "engine 2: the turn sent nothing (cause " + t.out.end.cause + ")";
+      t.stated = "plain-rig:silent:" + t.out.end.cause;
     } else {
       t.ending = PlainEnding::Failed;
-      t.stated = std::string("engine 2: the turn failed (") + nimbus::orch::tx::errSlug(t.status.err) + " at " +
-                 t.status.where + ")";
+      t.stated = std::string("plain-rig:failed:") + nimbus::orch::tx::errSlug(t.status.err) + "@" + t.status.where;
     }
   }
 
