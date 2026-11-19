@@ -114,6 +114,8 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   full.low = std::max(roundDown(bytesAt(w, b.tokens.keep) - std::min(around, bytesAt(w, b.tokens.keep)), 1000),
                       (uint32_t)c.historyKeepBytes);
   b.marks = full;
+  b.releasedFold = foldMark;
+  b.releasedKeep = (uint32_t)c.historyKeepBytes;
   ProfileMarks chosen;
   if (profileMarks(b.profile, chosen).ok())   // an owner's smaller profile lowers the marks only
     b.marks = {std::min(chosen.high, full.high), std::min(chosen.low, full.low)};

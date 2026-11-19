@@ -173,6 +173,7 @@ struct Unit {
   uint64_t lastQ = 0;
   uint64_t at = 0;              // epoch of its first clocked item
   size_t bytes = 0;
+  size_t text = 0;              // owner and assistant text (v5.1.2's unit: what its window counted)
   bool owner = false;           // has a u item
   bool content = false;         // has a u or an a item
   bool closed = false;          // has its e item (or is turn 0: device items between turns)
@@ -187,9 +188,13 @@ void noteItem(const tx::Item& it, Unit& u) {
   switch (it.kind) {
     case tx::ItemKind::User:
       u.owner = u.content = true;
+      u.text += it.x.size();
       for (const tx::Part& p : it.parts) u.tainted |= p.kind == tx::PartKind::File;
       break;
-    case tx::ItemKind::Assistant: u.content = true; break;
+    case tx::ItemKind::Assistant:
+      u.content = true;
+      u.text += it.x.size();
+      break;
     case tx::ItemKind::Intent: u.intents.push_back(it.id); break;
     case tx::ItemKind::Result:
       u.tainted |= it.cls == tx::ResultClass::Outside;
@@ -213,6 +218,7 @@ void joinTurn(std::vector<Unit>& units) {
   for (size_t i = k; i < units.size(); ++i) {
     const Unit& u = units[i];
     head.bytes += u.bytes;
+    head.text += u.text;
     head.owner |= u.owner;
     head.content |= u.content;
     head.tainted |= u.tainted;
@@ -398,11 +404,12 @@ void assignDays(std::vector<Unit>& units, const SliceRules& r) {
     if (units[i - 1].day.empty()) units[i - 1].day = units[i].day;
 }
 
-// May a turn with text join the slice: its day, and what stays after it at least L.
+// May a turn with text join the slice: its day, and what stays after it at least L, with at least
+// the head's v5.1.2 keep of owner and assistant text (owner ruling 81).
 bool joins(const Unit& u, const SliceRules& r, const SlicePlan& plan) {
   if (!u.content) return true;
   if (u.day.empty() || (!plan.day.empty() && u.day != plan.day)) return false;
-  return r.manual || plan.rest - u.bytes >= r.low;
+  return r.manual || (plan.rest - u.bytes >= r.low && plan.restText >= u.text + r.keepText);
 }
 
 void take(const Unit& u, std::string& text, uint64_t row, SlicePlan& out) {
@@ -414,6 +421,7 @@ void take(const Unit& u, std::string& text, uint64_t row, SlicePlan& out) {
   out.input += text;
   out.lastRow = row;
   out.rest -= u.bytes;
+  out.restText -= u.text;
   out.thru = u.lastQ;
   out.tainted |= u.tainted;
   if (!u.content) return;
@@ -430,7 +438,10 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
   Status s = scanUnits(arena, thru, units);
   if (!s.ok()) return s;
   assignDays(units, r);
-  for (const Unit& u : units) out.resident += u.bytes;
+  for (const Unit& u : units) {
+    out.resident += u.bytes;
+    out.restText += u.text;
+  }
   out.rest = out.resident;
   const size_t stop = protectedFrom(units, r, localDay(r.now, r.tzMinutes, r.dayStartMin));
   std::string text;
@@ -442,9 +453,10 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
     take(units[i], text, row, out);
   }
   if (!out.turns) {   // device items alone are never a slice: they go with the next turn
-    const size_t resident = out.resident;
+    const size_t resident = out.resident, text = out.restText;
     out = SlicePlan{};
     out.resident = out.rest = resident;
+    out.restText = text;
   } else if (r.omittedThru > thru) {   // stored items the arena could not hold: named, never silent
     out.input.insert(0, std::string(st::kNotLoaded) + "\n");
   }
@@ -454,22 +466,6 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
 // ---- the driver ---------------------------------------------------------------------------------
 
 namespace {
-
-tx::Profile profileOf(const std::string& slug) {
-  for (tx::Profile p : {tx::Profile::Tight, tx::Profile::Lean, tx::Profile::Standard, tx::Profile::Wide})
-    if (slug == tx::profileSlug(p)) return p;
-  return tx::Profile::Lean;
-}
-
-// H and L of a profile: RB-T4's table, and the PRD's ceilings (budget.h) while that body is not
-// written yet.
-Status marksFor(tx::Profile p, tx::ProfileMarks& out) {
-  Status s = tx::profileMarks(p, out);
-  if (!s.notImplemented()) return s;
-  static const tx::ProfileMarks kPrd[] = {{24000, 12000}, {40000, 20000}, {60000, 30000}, {100000, 50000}};
-  out = kPrd[(size_t)p < 4 ? (size_t)p : 1];
-  return Status::success();
-}
 
 uint32_t calendarDay(uint64_t now, int16_t tz) { return (uint32_t)dayNumber(now, tz, 0); }
 
@@ -632,21 +628,26 @@ bool CompactDriver::automaticMayAsk(const IdleCtx& ctx) {
 }
 
 Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) {
-  tx::ProfileMarks marks;
-  Status s = marksFor(profileOf(d_.head()->profile), marks);
+  // The head's marks at its profile (tx::budgetFor). No head named: nothing is compacted, never a
+  // fixed smaller profile in its place (ruling 83 item 4).
+  tx::HeadBudget b;
+  Status s = tx::budgetFor(d_.headKey, tx::profileOf(d_.head()->profile), b);
   if (!s.ok()) return s;
+  const tx::ProfileMarks marks = b.marks;
   SliceRules rules;
   rules.now = ctx.now;
   rules.tzMinutes = ctx.tzMinutes;
   rules.dayStartMin = d_.dayStartMin;
   rules.high = marks.high;
   rules.low = marks.low;
+  rules.keepText = b.profile == tx::Profile::Full ? b.releasedKeep : 0;   // an owner's smaller profile is his choice
   rules.manual = manual_;
   rules.jobRunning = d_.jobRunning;
   rules.omittedThru = d_.omittedThru ? d_.omittedThru() : 0;
   if (!(s = planSlice(*d_.arena, d_.head()->thru, rules, plan)).ok()) return s;
-  const uint64_t target = d_.promptTargetTokens;
-  const bool hot = target && (uint64_t)lastPromptTokens(*d_.arena) * 5 >= target * 4;
+  // The hot trigger in real tokens: the last request reached the due mark (the aim less the next
+  // request's growth), so the next one would pass the aim.
+  const bool hot = lastPromptTokens(*d_.arena) >= b.tokens.due;
   const bool night = nightHour(ctx.now, ctx.tzMinutes) && (uint64_t)plan.resident * 5 > (uint64_t)marks.high * 4;
   due = manual_ || plan.resident > marks.high || hot || night;
   return Status::success();
@@ -854,7 +855,7 @@ Status CompactDriver::swap(const SlicePlan& plan, const std::string& summary, ui
   out.thru = head.thru;
   std::string block;
   tx::SettleReport rep;
-  (void)tx::settleDigests(*d_.files, d_.chatKey, profileOf(head.profile), live, block, rep);
+  (void)tx::settleDigests(*d_.files, d_.chatKey, tx::profileOf(head.profile), live, block, rep);
   (void)d_.log->writeHead(head);   // a cache: a refusal is rebuilt from the s item
   if (!d_.chatsum.load || !d_.chatsum.save) return Status::success();
   const std::string blob = d_.chatsum.load();

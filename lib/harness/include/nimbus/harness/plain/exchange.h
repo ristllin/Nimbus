@@ -129,7 +129,7 @@ struct ExchangeRequest {
   const RenderInput* render = nullptr;   // turn and head are required; maxTokens is the exchange's
   uint32_t timeoutMs = 0;      // the host's read window (Anthropic 120 s, ...); 0 = readWindowMsFor
   uint32_t deadlineMs = 0;     // the turn's remaining soft wall clock; required
-  uint32_t bodyCap = 0;        // the head's body cap (tx::budgetFor); 0 = the 85,000 B floor cap
+  uint32_t bodyCap = 0;        // the head's body cap (tx::budgetFor); 0 = its released row (requestBudgetFor)
   ClimbFn climb;               // the overflow ladder; empty = no rung to climb
 };
 

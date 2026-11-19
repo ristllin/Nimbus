@@ -127,6 +127,7 @@ struct Chat {
   uint64_t maxThru = 0;
   bool jobRuns = false;
   std::string profile = "standard";
+  tx::HeadKey headKey{"anthropic", "claude-sonnet-5-5", false};   // the head the marks are read for
 
   Chat() {
     model.clock = &gClock;
@@ -159,6 +160,7 @@ struct Chat {
     d.ctl.save = [this](const std::string& t) { ctlText = t; return true; };
     d.chatsum.load = [this] { return chatsumText; };
     d.chatsum.save = [this](const std::string& t) { chatsumText = t; return true; };
+    d.headKey = headKey;
     return d;
   }
   // A process start over the same storage: the engine's boot order (RB-C1).
@@ -893,19 +895,100 @@ void test_nothing_due_under_H_and_the_night_and_prompt_triggers() {
   TEST_ASSERT_FALSE(n.step().ran);
   n.now = kNoon + 15 * 3600 + 1800;   // 18 Nov 03:30 UTC
   TEST_ASSERT_TRUE(n.step().ran);
-  // The prompt trigger: the last turn reported 0.8 of the target.
-  Chat p;
-  p.day(-2, 12, 3000, "a");
-  p.day(0, 6, 1000, "b");
-  tx::Item e;
-  e.kind = tx::ItemKind::TurnEnd;
-  e.end.promptTokens = 80000;
-  p.store(e);
-  plain::CompactDeps d = p.deps();
-  d.promptTargetTokens = 100000;
-  p.driver.reset(new plain::CompactDriver(d));
-  p.answer([] { return sp::say(kSummary); });
-  TEST_ASSERT_TRUE(p.step().ran);
+  // The prompt trigger, in real tokens: the last request reached the head's due mark (tx::budgetFor:
+  // the aim less the next request's growth). One token under it is not enough.
+  tx::HeadBudget b;
+  TEST_ASSERT_TRUE(tx::budgetFor(Chat().headKey, tx::Profile::Standard, b).ok());
+  for (uint32_t tokens : {b.tokens.due - 1, b.tokens.due}) {
+    Chat p;
+    p.day(-2, 12, 3000, "a");
+    p.day(0, 6, 1000, "b");
+    tx::Item e;
+    e.kind = tx::ItemKind::TurnEnd;
+    e.end.promptTokens = tokens;
+    p.store(e);
+    p.answer([] { return sp::say(kSummary); });
+    TEST_ASSERT_EQUAL(tokens >= b.tokens.due, p.step().ran);
+  }
+  // No head named: nothing is compacted automatically (never a fixed smaller profile instead).
+  Chat none;
+  none.day(-2, 30, 3000, "a");
+  none.day(0, 6, 1000, "b");
+  none.headKey = tx::HeadKey{};
+  none.driver.reset(new plain::CompactDriver(none.deps()));
+  none.answer([] { return sp::say(kSummary); });
+  plain::CompactOutcome out;
+  TEST_ASSERT_FALSE(none.driver->step(none.idle(), out).ok());
+  TEST_ASSERT_FALSE(out.ran);
+}
+
+// Owner ruling 81, ruling 83 items 2 and 3: on every head class at its default (full) profile, the
+// due mark is never under the head's v5.1.2 fold mark, and at every compaction the owner and
+// assistant text kept is at least the head's v5.1.2 keep, however much of the transcript is tool
+// work (v5.1.2 carried no tool result across turns, so its keep was all text).
+size_t keptText(const Chat& c) {
+  size_t n = 0;
+  for (size_t i = 0; i < c.arena->count(); ++i) {
+    tx::ArenaEntry e;
+    tx::Item it;
+    if (!c.arena->header(i, e).ok() || e.q <= c.head.thru) continue;
+    if (e.kind != tx::ItemKind::User && e.kind != tx::ItemKind::Assistant) continue;
+    if (c.arena->get(i, it).ok()) n += it.x.size();
+  }
+  return n;
+}
+
+void test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class() {
+  const tx::HeadKey heads[] = {{"anthropic", "claude-sonnet-5-5", false}, {"anthropic", "claude-haiku-5-5", false},
+                               {"openai", "gpt-5.6-luna", false},         {"zai", "glm-5.3", false},
+                               {"cumulo", "gpt-5.6", true},               {"custom", "llama-3-70b", false}};
+  int bound = 0;
+  for (const tx::HeadKey& k : heads) {
+    tx::HeadBudget b;
+    TEST_ASSERT_TRUE(tx::budgetFor(k, tx::Profile::Full, b).ok());
+    TEST_ASSERT_TRUE_MESSAGE(b.marks.high >= b.releasedFold, k.model.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(b.marks.low >= b.releasedKeep, k.model.c_str());
+    for (size_t text : {200u, 1200u, 6000u}) {   // tool-heavy to text-heavy turns, each with a 2 KB receipt
+      Chat c;
+      c.profile = c.head.profile = "full";
+      c.headKey = k;
+      c.driver.reset(new plain::CompactDriver(c.deps()));
+      int n = 0;
+      c.answer([&n] { return sp::say(std::string(kSummary) + " Part " + std::to_string(++n) + "."); });
+      const size_t perTurn = text + tx::kTier1Receipt + 200;
+      const int turns = (int)((b.marks.low + b.marks.low / 5) / perTurn) + 8;   // past L, inside the arena
+      int stored = 0;
+      for (int d = -4; d <= 0; ++d) {
+        c.now = kNoon - 3 * 3600 + (int64_t)d * kDay;
+        for (int i = 0; i < turns / 5 + 1; ++i) {
+          c.now += 120;
+          Chat::TurnOpts o;
+          o.ask = std::to_string(d) + " ask " + std::to_string(i) + " " + std::string(text / 2, 'q');
+          o.reply = "reply " + std::to_string(i) + " " + std::string(text / 2, 'r');
+          o.tool = "read_file";
+          o.result = std::string(tx::kTier1Receipt, 'f');
+          c.turnOf(o);
+        }
+        tx::Item e;   // the day's last request reached the due mark: compaction is due
+        e.kind = tx::ItemKind::TurnEnd;
+        e.end.promptTokens = b.tokens.due;
+        c.store(e);
+        c.now += 3600;
+        gClock += 3600000;
+        for (int s = 0; s < 4; ++s) {
+          if (c.step().step != plain::CompactStep::Stored) continue;
+          ++stored;
+          const size_t kept = keptText(c);
+          const std::string why = k.model + " kept " + std::to_string(kept) + " B of text, v5.1.2 keeps " +
+                                  std::to_string(b.releasedKeep);
+          TEST_ASSERT_TRUE_MESSAGE(kept >= b.releasedKeep, why.c_str());
+          if (kept < b.releasedKeep + perTurn) ++bound;
+        }
+      }
+      if (text >= 6000u) TEST_ASSERT_TRUE_MESSAGE(stored > 0, (k.model + " never compacted").c_str());
+    }
+  }
+  TEST_ASSERT_TRUE_MESSAGE(bound > 0, "the text floor never decided a slice: the transcripts do not test it");
 }
 
 // A power cut at every append and every rename a compaction makes, whole or torn, then a
@@ -1398,13 +1481,17 @@ void test_the_days_count_holds_and_only_rises() {
   TEST_ASSERT_FALSE_MESSAGE(w.step().ran, "a stale record cut the wait after three failures");
 }
 
-void test_a_head_with_no_profile_reads_as_lean_and_live_ahead_of_thru_stores_nothing() {
-  Chat c;
-  c.day(-2, 14, 3000, "a");   // about 46 KB: over lean's H, under standard's
-  c.day(0, 6, 200, "b");
-  c.head.profile.clear();
-  c.answer([] { return sp::say(kSummary); });
-  TEST_ASSERT_TRUE_MESSAGE(c.step().ran, "no profile did not read as lean");
+// Ruling 83 item 4: an empty or unknown profile reads as full, never as a smaller one; a smaller
+// profile applies only when it is the one stored (the owner's pinned choice).
+void test_a_head_with_no_profile_reads_as_full_and_live_ahead_of_thru_stores_nothing() {
+  for (const char* stored : {"", "unknown", "lean"}) {
+    Chat c;
+    c.day(-2, 14, 3000, "a");   // about 46 KB: over lean's H, far under full's
+    c.day(0, 6, 200, "b");
+    c.head.profile = stored;
+    c.answer([] { return sp::say(kSummary); });
+    TEST_ASSERT_EQUAL_MESSAGE(std::string(stored) == "lean", c.step().ran, stored);
+  }
   Chat d;
   threeDays(d);
   tx::DigestEntry ahead;
@@ -1437,6 +1524,7 @@ int main(int, char**) {
   RUN_TEST(test_a_failing_week_spends_at_most_the_cap_a_day_and_recovers_the_next);
   RUN_TEST(test_owner_first_quiet_window_and_no_clock_gates);
   RUN_TEST(test_nothing_due_under_H_and_the_night_and_prompt_triggers);
+  RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);
   RUN_TEST(test_a_refused_store_leaves_thru_and_the_retry_stores_once);
   RUN_TEST(test_a_refused_allocation_at_every_index_is_a_status);
@@ -1451,6 +1539,6 @@ int main(int, char**) {
   RUN_TEST(test_the_record_keeps_at_most_eight_chats_and_the_slice_reads_every_result_kind);
   RUN_TEST(test_today_over_H_gives_only_its_oldest_half);
   RUN_TEST(test_the_days_count_holds_and_only_rises);
-  RUN_TEST(test_a_head_with_no_profile_reads_as_lean_and_live_ahead_of_thru_stores_nothing);
+  RUN_TEST(test_a_head_with_no_profile_reads_as_full_and_live_ahead_of_thru_stores_nothing);
   return UNITY_END();
 }

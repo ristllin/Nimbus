@@ -102,6 +102,8 @@ struct HeadBudget {
   uint32_t warmBulk = 0;         // whole internal bulk above the pointer that moves it on a warm open
   uint32_t digestBlock = 0;      // digest block plus recent-files list, bytes
   uint32_t messageCap = 0;       // owner and assistant text kept inline, bytes
+  uint32_t releasedFold = 0;     // v5.1.2's fold mark for this head (owner and assistant text)
+  uint32_t releasedKeep = 0;     // v5.1.2's keep: a compaction leaves at least this much text
   uint32_t bodyMilliBytesPerToken = 0;   // the wire ratio the byte marks were derived with (x1000)
   int32_t bodyInterceptBytes = 0;        // and its intercept (0 on a released nominal ratio)
 };

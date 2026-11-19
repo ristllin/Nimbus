@@ -623,6 +623,7 @@ inline void tenTurns(txb::Battery& b, size_t lastBytes) {
 
 inline void test_rung_three_omits_only_the_turns_the_request_needs() {
   txb::Battery b;
+  b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
   tenTurns(b, 27000);
   const auto& reqs = b.model.requests();
   for (size_t i = 0; i + 1 < reqs.size(); ++i)
@@ -763,6 +764,7 @@ inline void test_a_refused_allocation_after_the_reply_keeps_the_reply() {
 // it would free too little and end with the size line; it fits and answers.
 inline void test_rung_three_sizes_turns_by_what_they_render() {
   txb::Battery b;
+  b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
   for (int i = 0; i < 65; ++i) {
     b.model.push(sp::say("ok " + std::to_string(i)));
     b.advance(60);
@@ -1026,6 +1028,7 @@ inline void test_rung_three_estimate_never_exceeds_the_rendered_bytes_of_any_ite
   };
   for (const Kind& k : kinds) {
     txb::Battery b;
+    b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
     b.world.files["notes/r.md"] = std::string(900, 'r');
     // History up to just under the cap, so no request before the big read climbs.
     for (int i = 0; i < 400 && (b.model.requests().empty() || b.model.last().body.size() < 80000); ++i) {
@@ -1047,6 +1050,7 @@ inline void test_rung_three_estimate_never_exceeds_the_rendered_bytes_of_any_ite
 inline void test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows() {
   {
     txb::Battery b;
+    b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
     shortTurns(b, 65);
     b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));
     b.model.push(sp::say("Read it."));
@@ -1057,6 +1061,7 @@ inline void test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows
   }
   {
     txb::Battery b;
+    b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
     shortTurns(b, 80);
     b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));
     b.model.push(sp::call("big_read", R"({"tag":"two","bytes":20000})"));
@@ -2066,6 +2071,7 @@ inline void test_a_repeat_of_a_tool_that_is_not_pure_always_runs() {
 // The earlier result is no longer whole (ladder rung 2 stubbed it): the repeat runs.
 inline void test_a_repeat_runs_when_the_earlier_result_is_a_stub() {
   txb::Battery b;
+  b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
   shortTurns(b, 8);
   const std::string first = R"({"tag":"r0","bytes":20000})";
   b.model.push(sp::call("big_read", first));

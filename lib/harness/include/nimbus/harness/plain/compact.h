@@ -152,7 +152,9 @@ struct CompactDeps {
   // The newest q the restart fill gave up for a full arena (TxLog::fill's FillReport::droppedThru;
   // unset or 0: none). A slice that covers such items says so in its input.
   std::function<uint64_t()> omittedThru;
-  uint32_t promptTargetTokens = 0;   // the head's prompt target (0: that trigger is off)
+  // The head the marks and the token due mark are read for (tx::budgetFor). Unset: nothing is
+  // compacted automatically (a manual run still answers).
+  nimbus::orch::tx::HeadKey headKey;
   uint16_t dayStartMin = kDayStartDefaultMin;
 };
 
@@ -163,6 +165,7 @@ struct SliceRules {
   int16_t tzMinutes = 0;
   uint16_t dayStartMin = kDayStartDefaultMin;
   uint32_t high = 0, low = 0;    // H and L of the profile
+  uint32_t keepText = 0;         // owner and assistant text a slice leaves at least (the v5.1.2 keep)
   bool manual = false;           // take all the rules allow, ignoring L
   std::function<bool(uint32_t turn)> jobRunning;
   uint64_t omittedThru = 0;      // items up to this q are stored but not resident (CompactDeps)
@@ -175,6 +178,7 @@ struct SlicePlan {
   uint32_t turns = 0;            // turns with text in the slice
   size_t resident = 0;           // bytes after the old thru
   size_t rest = 0;               // bytes after the new thru
+  size_t restText = 0;           // owner and assistant text after the new thru
   uint64_t lastRow = 0;          // the newest u.m in the slice (the chatsum row pointer)
 };
 // The local day of `epoch`, where a day starts at dayStartMin past midnight: "YYYY-MM-DD".

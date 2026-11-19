@@ -160,7 +160,8 @@ class Exchange {
       model_ = route.model;
     }
     window_ = req_.timeoutMs ? req_.timeoutMs : orch::readWindowMsFor(capHost_, model_, routed_);
-    bodyCap_ = req_.bodyCap ? req_.bodyCap : orch::tx::kFloorHeadBodyCap;
+    // No cap given: the head's released row, never the 85,000 B floor by accident (ruling 83).
+    bodyCap_ = req_.bodyCap ? req_.bodyCap : orch::requestBudgetFor(slug_, in->turn->model, routed_).wireBodyBytes;
     return Status::success();
   }
 

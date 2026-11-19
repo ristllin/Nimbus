@@ -63,7 +63,8 @@ struct Turn {
   SystemBlocks system;
   std::vector<ToolSpec> tools;
   const WireCodec* wire = nullptr;
-  uint32_t bodyCap = 0;                // 0: the exchange's 85,000 B floor
+  uint32_t bodyCap = 0;                // the head's body cap (budget()); 0 only before it runs
+  bool floorHead = false;              // the head's class (tx::HeadBudget::floorHead)
   GuardLimits limits;
   LadderState ladder;
   RenderInput render;
@@ -393,17 +394,25 @@ class TurnRun {
     return st;
   }
 
+  // The head's budget (tx::budgetFor). Never the floor by accident: a key the table cannot read
+  // takes the head's released row (orch::requestBudgetFor), and a floor head is its class.
   void budget() {
     tx::HeadKey key;
     key.host = providerSlugOf(t_.ctx, t_.setup.head);
     key.model = t_.ctx.model;
     key.routed = t_.setup.head.routed;
     tx::HeadBudget b;
-    if (!tx::budgetFor(key, t_.ctx.profile, b).ok()) return;   // RB-T4: until then the floor cap
-    t_.bodyCap = b.bodyCap;
-    t_.ctx.profile = b.profile;
+    if (tx::budgetFor(key, t_.ctx.profile, b).ok()) {
+      t_.bodyCap = b.bodyCap;
+      t_.floorHead = b.floorHead;
+      t_.ctx.profile = b.profile;
+      return;
+    }
+    const orch::RequestBudget r = orch::requestBudgetFor(key.host, key.model, key.routed);
+    t_.bodyCap = r.wireBodyBytes;
+    t_.floorHead = r.bound == orch::BudgetBound::Floor || r.bound == orch::BudgetBound::Held;
   }
-  bool floorHead() const { return t_.bodyCap == 0 || t_.bodyCap <= tx::kFloorHeadBodyCap; }
+  bool floorHead() const { return t_.floorHead; }
 
   Status storeOpen(const TurnInput& in) {
     tx::Item& t = blank(tx::ItemKind::TurnOpen);
@@ -1491,7 +1500,7 @@ Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
   if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
     std::string block;
     tx::SettleReport rep;
-    (void)tx::settleDigests(*deps.files, deps.chatKey, tx::Profile::Standard, c.live, block, rep);
+    (void)tx::settleDigests(*deps.files, deps.chatKey, tx::profileOf(c.head.profile), c.live, block, rep);
   }
   c.booted = true;
   return Status::success();

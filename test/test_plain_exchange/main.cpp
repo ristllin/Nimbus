@@ -747,15 +747,22 @@ static void test_a_body_over_the_cap_climbs_and_is_never_sent() {
   TEST_ASSERT_EQUAL(0, never.out.httpStatus);
   expectOnePlainLine(never.out);
 
-  // no cap given: the 85,000 B floor cap holds
-  Rig floor;
-  floor.wire.text = std::string(50000, 'y');
-  floor.wire.copies = 2;
-  floor.req.bodyCap = 0;
-  floor.req.climb = nullptr;
-  expectOk(floor.run());
-  TEST_ASSERT_TRUE(floor.out.err == ExchangeErr::ContextRefused);
-  TEST_ASSERT_EQUAL(0, (int)floor.model.requests().size());
+  // No cap given: the head's released row holds (claude-sonnet-5-5: 250,000 B), never the 85,000 B
+  // floor by accident (ruling 83 item 4). A 100 KB body goes out; one over the row is refused.
+  const uint32_t row = nimbus::orch::requestBudgetFor("anthropic", "claude-sonnet-5-5", false).wireBodyBytes;
+  TEST_ASSERT_TRUE(row > nimbus::orch::tx::kFloorHeadBodyCap);
+  for (int copies : {2, (int)(row / 50000) + 1}) {
+    Rig floor;
+    floor.wire.text = std::string(50000, 'y');
+    floor.wire.copies = copies;
+    floor.req.bodyCap = 0;
+    floor.req.climb = nullptr;
+    floor.model.push(sp::say("ok"));
+    expectOk(floor.run());
+    const bool over = (uint32_t)copies * 50000 > row;
+    TEST_ASSERT_EQUAL(over, floor.out.err == ExchangeErr::ContextRefused);
+    TEST_ASSERT_EQUAL(over ? 0 : 1, (int)floor.model.requests().size());
+  }
 }
 
 // No body leaves with a string over the 60,000 B guard or with invalid UTF-8, whatever the
