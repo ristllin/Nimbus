@@ -121,6 +121,7 @@ struct CsvQuery {
   std::vector<std::string> sum;  // at most kCsvSumMax names, none twice
   size_t skipRows = 0;           // matching rows not shown (read_file offset)
   size_t limit = 32768;          // bytes of shown lines (read_file limit, 16 to kCsvShowMax); the first row of a page is always shown
+  bool showRows = true;          // false: totals only (engine 1's day total); no row shown, no "shown" clause
 };
 // "" when the query is well formed, else the error (no file is read).
 std::string checkCsvQuery(const CsvQuery& q);
@@ -299,6 +300,10 @@ EditOutcome editFile(AidSource& src, AidSink& sink, uint64_t size, uint64_t hash
 //   "; at line(s) <l>, ...; <n> lines[; lines that were <s> and later are now <d> lower|higher]
 //   [; <old> is still at line(s) <l>, ...]"
 std::string renderEditLines(const EditOutcome& o);
+
+// The non-overlapping matches of old in the file (the same finder the edit uses). False: a
+// card fault or a refused block.
+bool countMatches(AidSource& src, std::string_view old, size_t& matches);
 
 // The edit result, one line:
 //   replaced <k> in <path> at line <l>[, <l>... +N]; file is <M> B (was <N> B), <n> lines,

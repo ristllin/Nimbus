@@ -428,7 +428,7 @@ struct CsvScanner::Impl {
   }
 
   void show() {
-    if (res.matched <= q.skipRows || showFull) return;
+    if (!q.showRows || res.matched <= q.skipRows || showFull) return;
     char lead[16];
     const int ln = std::snprintf(lead, sizeof lead, "L%u ", unsigned(recLine));
     const size_t need = size_t(ln) + recLen + 1;
@@ -666,8 +666,9 @@ namespace {
 std::string tailCounts(const CsvQuery& q, const CsvScanResult& r) {
   std::string out = join({"rows ", Num(r.matched), " of ", Num(r.records)});
   if (!q.column.empty()) out += join({" where ", q.column, " ", q.from, "..", q.to.empty() ? q.from : q.to});
-  if (!r.shownFirst && r.matched) out += "; shown none";
-  else if (r.shownFirst > 1 || r.shownLast < r.matched) out += join({"; shown ", Num(r.shownFirst), "-", Num(r.shownLast)});
+  const bool partial = r.shownFirst > 1 || r.shownLast < r.matched;
+  if (q.showRows && !r.shownFirst && r.matched) out += "; shown none";
+  else if (q.showRows && partial) out += join({"; shown ", Num(r.shownFirst), "-", Num(r.shownLast)});
   if (r.sums.empty()) return out;
   out += "; sum";
   for (const auto& s : r.sums) out += join({" ", s.name, "=", renderDec3(s.total)});

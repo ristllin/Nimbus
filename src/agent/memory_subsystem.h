@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <Arduino.h>
 #include <FS.h>
 
@@ -84,6 +85,10 @@ void begin();
 // ops, NEVER across a blocking network embed. Prefer the RAII `Lock` guard.
 void lock();
 void unlock();
+// Run fn with the card lock this task holds given up (the tool call's whole-call lock), for a
+// tool that takes the lock per bounded card operation itself: RB-REC4's file scans hold it per
+// 4 KB read, never across a scan. On the web task, or with no lock held, fn runs as is.
+void withCardReleased(const std::function<void()>& fn);
 // Create the card lock. Called first thing in setup() (after the OTA boot guard) so
 // the lock exists for the first log line and in Notifier mode; begin() calls it too.
 void lockInit();

@@ -58,6 +58,17 @@ std::string expectOut(const std::string& src, const std::string& find,
 
 }  // namespace
 
+static std::string readSource(const char* path) {
+  std::FILE* f = std::fopen(path, "rb");
+  if (!f) { TEST_FAIL_MESSAGE(path); return std::string(); }
+  std::string src;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
+  std::fclose(f);
+  return src;
+}
+
 static std::string readSubsystem() {
   std::FILE* f = std::fopen("src/agent/files_subsystem.cpp", "rb");
   if (!f) { TEST_FAIL_MESSAGE("src/agent/files_subsystem.cpp unreadable"); return std::string(); }
@@ -270,11 +281,11 @@ static void test_the_edit_gates_the_upload_slot_before_touching_it() {
   const size_t gateAt = src.find("std::string appendGate(");
   TEST_ASSERT_TRUE(gateAt != std::string::npos);
   TEST_ASSERT_TRUE(src.find("uploadActiveLocked()", gateAt) != std::string::npos);
-  // editDoc runs the gate before substituteDoc touches the slot.
+  // editDoc runs the gate before the shared edit's sink (SdEditSink) touches the slot.
   const size_t editAt = src.find("ToolResult editDoc(");
   TEST_ASSERT_TRUE(editAt != std::string::npos);
   const size_t gateCall = src.find("appendGate(project, name, who)", editAt);
-  const size_t subCall = src.find("substituteDoc(path", editAt);
+  const size_t subCall = src.find("e1::edit(src, sink", editAt);
   TEST_ASSERT_TRUE(gateCall != std::string::npos);
   TEST_ASSERT_TRUE(subCall != std::string::npos);
   TEST_ASSERT_TRUE(gateCall < subCall);
@@ -291,14 +302,15 @@ static void test_the_edit_commits_through_the_swap() {
   size_t n;
   while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) src.append(buf, n);
   std::fclose(f);
-  const size_t sub = src.find("static std::string substituteDoc(");
-  const size_t commit = src.find("static bool commitEdit(", sub);
+  const size_t sub = src.find("static bool commitEdit(");
+  const size_t commit = src.find("struct SdEditSink", sub);
   const size_t edit = src.find("ToolResult editDoc(", commit);
   const size_t after = src.find("std::string readDocText(", edit);
   TEST_ASSERT_TRUE(sub != std::string::npos && commit != std::string::npos);
   TEST_ASSERT_TRUE(edit != std::string::npos && after != std::string::npos);
   const std::string body = src.substr(sub, after - sub);
   TEST_ASSERT_TRUE(body.find("return commitPart(e, err)") != std::string::npos);
+  TEST_ASSERT_TRUE(body.find("return commitEdit(project, name") != std::string::npos);   // the sink's swap
   TEST_ASSERT_TRUE(body.find(".rename(") == std::string::npos);
   TEST_ASSERT_TRUE(body.find("remove(path") == std::string::npos);
 }
@@ -314,14 +326,14 @@ static void test_a_file_over_the_ceiling_is_refused_with_the_way_out() {
   TEST_ASSERT_TRUE(over.find("new file") != std::string::npos);
   TEST_ASSERT_FALSE(editSizeRefusal(8u * 1024 * 1024).empty());   // the store's largest file
 
-  const std::string src = readSubsystem();
-  const size_t count = src.find("static std::string countDocMatches(");
-  TEST_ASSERT_TRUE(count != std::string::npos);
-  const size_t size = src.find("oldSize = f.size();", count);
-  const size_t refuse = src.find("editSizeRefusal(oldSize)", count);
-  const size_t read = src.find("f.read(", count);
-  TEST_ASSERT_TRUE(size != std::string::npos && refuse != std::string::npos && read != std::string::npos);
-  TEST_ASSERT_TRUE_MESSAGE(size < refuse && refuse < read, "the ceiling runs before the first read");
+  // The shared edit (both hosts) checks the ceiling before its first read (editFile's pass 1).
+  const std::string src = readSource("lib/core/src/orch_file_aids_e1.cpp");
+  const size_t edit = src.find("bool edit(AidSource& src");
+  TEST_ASSERT_TRUE(edit != std::string::npos);
+  const size_t refuse = src.find("editSizeRefusal(size_t(size))", edit);
+  const size_t read = src.find("editFile(", edit);
+  TEST_ASSERT_TRUE(refuse != std::string::npos && read != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(refuse < read, "the ceiling runs before the first read");
 }
 
 // The reply is the claim check's evidence. Replacing a span with the same text changed
@@ -362,11 +374,11 @@ static void test_a_replacement_identical_to_the_find_text_is_no_change() {
   const size_t edit = src.find("ToolResult editDoc(");
   TEST_ASSERT_TRUE(edit != std::string::npos);
   const size_t noop = src.find("editChangesNothing(find, replace)", edit);
-  const size_t sub = src.find("substituteDoc(path", edit);
+  const size_t sub = src.find("e1::edit(src, sink", edit);
   TEST_ASSERT_TRUE(noop != std::string::npos && sub != std::string::npos);
   TEST_ASSERT_TRUE_MESSAGE(noop < sub, "a no-op must not rewrite the file");
   TEST_ASSERT_TRUE(src.find("renderEditNoChange(", edit) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("renderEditReply(", edit) != std::string::npos);
+  TEST_ASSERT_TRUE(readSource("lib/core/src/orch_file_aids_e1.cpp").find("renderEditReply(") != std::string::npos);
 }
 
 // ---- the keyed-CSV row diff (RCA 2026-11-01/02 cause 15) ----------------------
@@ -507,23 +519,22 @@ static void test_not_readded_names_the_missing_row() {
 // so the seam there is the helper's call from the edit plus the helper's own
 // two calls.
 static void test_the_device_reports_the_diff_and_the_missing_readd() {
+  // RB-REC4 part 2b: the report is the shared edit's (file_aids_e1.h keyedReport), so the
+  // device and nimbusd give the same lines; the device passes its remembered rows in.
   const std::string src = readSubsystem();
   const size_t edit = src.find("ToolResult editDoc(");
   TEST_ASSERT_TRUE(edit != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("keyedEditReport(", edit) != std::string::npos);
-  const size_t report = src.find("static std::string keyedEditReport(");
+  TEST_ASSERT_TRUE(src.find("e1::edit(src, sink, size, call, g_removedRows, reply)", edit) != std::string::npos);
+  const std::string core = readSource("lib/core/src/orch_file_aids_e1.cpp");
+  const size_t report = core.find("std::string keyedReport(");
   TEST_ASSERT_TRUE(report != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("diffKeyedEdit(", report) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("renderKeyedEditDiff(", report) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("reconcileRemovedRows(", report) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("rememberRemovedRows(", report) != std::string::npos);
+  TEST_ASSERT_TRUE(core.find("diffKeyedEdit(", report) != std::string::npos);
+  TEST_ASSERT_TRUE(core.find("renderKeyedEditDiff(", report) != std::string::npos);
+  TEST_ASSERT_TRUE(core.find("notReadded(", report) != std::string::npos);
+  TEST_ASSERT_TRUE(core.find("renderNotReadded(", report) != std::string::npos);
   // RB-REC1: files.append is a pure append with no key, so the edit is the one writer that
   // names rows; the plain append never rewrites or reconciles a row.
   TEST_ASSERT_TRUE(src.find("ToolResult upsertRows(") == std::string::npos);
-  const size_t reconcile = src.find("static std::string reconcileRemovedRows(");
-  TEST_ASSERT_TRUE(reconcile != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("notReadded(", reconcile) != std::string::npos);
-  TEST_ASSERT_TRUE(src.find("renderNotReadded(", reconcile) != std::string::npos);
   TEST_ASSERT_TRUE(src.find("g_removedRows") != std::string::npos);
 }
 

@@ -28,7 +28,9 @@
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
-#include "nimbus/orch/file_edit.h"    // files.edit: the streaming text substitution
+#include "nimbus/orch/file_edit.h"    // files.edit: its caps, reply head and keyed-CSV report
+#include "nimbus/orch/file_aids_e1.h"  // files.read and files.edit on the shared CSV scan and edit (RB-REC4)
+#include "nimbus/harness/conversation.h"  // utcOffsetAtUnix: the running day's offset
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
@@ -743,26 +745,77 @@ static nimbus::orch::StreamEnd streamFile(const std::string& path, nimbus::orch:
   return end;
 }
 
-// files.read {tail, sum}: one day's total of `sumCol` over the whole file,
-// streamed. `dayArg` "" = today (the log's day). Caller holds memory::Lock.
-static std::string dayTotalLine(const std::string& path, size_t size, const std::string& sumCol,
-                                const std::string& dayArg, const nimbus::orch::LogDay& today) {
-  if (size > nimbus::orch::kDayTotalMaxBytes) return "[no day total: the file is over 1 MB]\n";
+// The shared aids' reads on the card (file_aids.h AidSource). With `perChunk` each read takes
+// the card lock for itself and the file is opened for it: the tool call gave its whole-call
+// lock up (memory::withCardReleased), so no hold spans a scan, only one 4 KB read. The
+// longest hold is kept for the log line (the bench row reads it).
+struct SdSource : nimbus::orch::aids::AidSource {
+  std::string path;
+  bool perChunk = false;
+  uint32_t reads = 0, longestUs = 0;
+  SdSource(std::string p, bool each) : path(std::move(p)), perChunk(each) {}
+  bool readOnce(uint64_t off, size_t len, char* out, size_t& got) {
+    File f = memory::dataFs().open(path.c_str(), FILE_READ);
+    if (!f) return false;
+    const size_t n = f.size();
+    const bool ok = off >= n || f.seek(off);
+    if (ok && off < n) got = f.read((uint8_t*)out, std::min(len, size_t(n - off)));
+    f.close();
+    return ok;
+  }
+  bool readAt(uint64_t off, size_t len, char* out, size_t& got) override {
+    got = 0;
+    const uint32_t t0 = micros();
+    bool ok = false;
+    if (perChunk) {
+      memory::Lock g;
+      ok = available() && readOnce(off, len, out, got);
+    } else {
+      ok = readOnce(off, len, out, got);
+    }
+    const uint32_t us = micros() - t0;
+    ++reads;
+    if (us > longestUs) longestUs = us;
+    return ok;
+  }
+};
+
+// The day files.read {sum} totals when the call names none: the running day (day_start.h:
+// before the device's "day starts at" time it is still yesterday), else the log's day.
+static std::string runningDay() {
+  const uint32_t now = (uint32_t)time(nullptr);
+  const std::string d = nimbus::orch::aids::e1::runningDate(now, agent::utcOffsetAtUnix(now), store::dayStartMin());
+  return d.empty() ? logDay().date : d;
+}
+
+// files.read {sum, date}: the day's total of one column by the shared scan, 4 KB per hold.
+// Called with no card lock of its own (the caller released it).
+static std::string dayTotalLine(const std::string& project, const std::string& name, const std::string& sumCol,
+                                const std::string& dayArg) {
   if (!dayArg.empty() && nimbus::orch::isoDayOf(dayArg) != dayArg)
     return "[no day total: 'date' must be YYYY-MM-DD]\n";
-  const std::string day = dayArg.empty() ? today.date : dayArg;
-  nimbus::orch::CsvDayTally tally(sumCol, day);
-  nimbus::orch::RowSplitter rows([&](const std::string& row, bool complete) {
-    tally.feed(row, complete);
-    return true;
+  const std::string day = dayArg.empty() ? runningDay() : dayArg;
+  SdSource src(pathOf(project, name), true);
+  std::string line;
+  memory::withCardReleased([&] {
+    line = nimbus::orch::aids::e1::dayTotal(src, 0, project + "/" + name, sumCol, day);
   });
-  const nimbus::orch::StreamEnd end = streamFile(path, rows);
-  if (end == nimbus::orch::StreamEnd::ReadFailed) return "[no day total: the card read failed - try again]\n";
-  if (end == nimbus::orch::StreamEnd::Stopped) return "[no day total: a row is too long - this is not a log]\n";
-  if (!tally.ok()) return "[no day total: " + tally.whyNot() + "]\n";
-  std::string line = nimbus::orch::renderDayTotal(tally.total(), sumCol, day == today.date, today.zone) + "\n";
-  if (tally.undated() > 0) line += nimbus::orch::renderUndated(tally.undated()) + "\n";
+  alogf("files: day total %s/%s in %u reads, longest hold %u ms", project.c_str(), name.c_str(),
+        (unsigned)src.reads, (unsigned)(src.longestUs / 1000));
   return line;
+}
+
+// files.read {column, from, to, sum, offset, limit}: CSV rows filtered by a column range and
+// named columns totalled on the device, every row left out named by line (file_aids_e1.h).
+static nimbus::orch::ToolResult readTable(const std::string& project, const std::string& name,
+                                          const nimbus::orch::aids::CsvQuery& q) {
+  SdSource src(pathOf(project, name), true);
+  std::string out;
+  bool ok = false;
+  memory::withCardReleased([&] { ok = nimbus::orch::aids::e1::tableRead(src, 0, project + "/" + name, q, out); });
+  alogf("files: scan %s/%s in %u reads, longest hold %u ms", project.c_str(), name.c_str(), (unsigned)src.reads,
+        (unsigned)(src.longestUs / 1000));
+  return ok ? nimbus::orch::ToolResult::ok(out) : nimbus::orch::ToolResult::fail(out);
 }
 
 // A CSV's header row for the tail view: the window's first line when the window
@@ -795,10 +848,7 @@ static size_t fileBytes(const char* project, const char* name) {
 // file - never the whole file (file_append.h). The window starts one byte early so
 // tailRows can tell a row that starts exactly at the window from a partial one.
 // A CSV's first line rides along as the header when it is not in the window.
-static nimbus::orch::ToolResult readTail(const std::string& project, const std::string& name,
-                                         size_t rows, const std::string& sumCol,
-                                         const std::string& day) {
-  const nimbus::orch::LogDay today = sumCol.empty() ? nimbus::orch::LogDay{} : logDay();   // NVS: before the lock
+static nimbus::orch::ToolResult readTail(const std::string& project, const std::string& name, size_t rows) {
   memory::Lock g;
   if (!available() || !g_store.find(project, name))
     return nimbus::orch::ToolResult::fail("not found");
@@ -827,10 +877,7 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
   const std::string header = fileKindIsCsv(name) ? csvHeader(f, window, start) : std::string();
   f.close();
   const nimbus::orch::TailView v = nimbus::orch::tailRows(window, start, rows);
-  std::string text = nimbus::orch::renderTail(v, name, size, header);
-  // The day total rides the same reply, so a log row never costs a second read.
-  if (!sumCol.empty()) text += dayTotalLine(path, size, sumCol, day, today);
-  return nimbus::orch::ToolResult::ok(text);
+  return nimbus::orch::ToolResult::ok(nimbus::orch::renderTail(v, name, size, header));
 }
 
 // The quota refusal of every assistant write that would pass the caller's share.
@@ -910,43 +957,10 @@ static bool commitAppend(const std::string& project, const std::string& name, si
   return true;
 }
 
-// The last keyed-CSV rows an edit removed (one file, in RAM only, bounded): a
-// later write that lands rows for the same file is told which of them were not
-// logged again, so a from-scratch re-entry cannot quietly drop a row the owner
-// already reported (RCA 2026-11-01/02 cause 15: the fries row). The note lives
-// until its rows are logged again or another removal replaces it; a restart
-// forgets it, which is the honest bound - it guards a re-entry, not history.
-struct RemovedRowsNote {
-  std::string project, name;
-  std::vector<nimbus::orch::CsvEditRow> rows;
-};
-static RemovedRowsNote g_removedRows;
-
-// What a landed write to project/name still owes the note: the remembered rows
-// minus the ones this write logged again (the note keeps what is still
-// missing). "" when nothing is missing. Caller holds the store lock.
-static std::string reconcileRemovedRows(const std::string& project, const std::string& name,
-                                         const std::vector<nimbus::orch::CsvEditRow>& written) {
-  if (g_removedRows.project != project || g_removedRows.name != name) return std::string();
-  const std::vector<nimbus::orch::CsvEditRow> missing =
-      nimbus::orch::notReadded(g_removedRows.rows, written);
-  g_removedRows.rows = missing;
-  if (missing.empty()) g_removedRows = RemovedRowsNote();
-  return nimbus::orch::renderNotReadded(missing);
-}
-
-// Remember this edit's removals on the note (bounded; a removal on another
-// file starts that file's note fresh). Caller holds the store lock.
-static void rememberRemovedRows(const std::string& project, const std::string& name,
-                                const std::vector<nimbus::orch::CsvEditRow>& removed) {
-  if (removed.empty()) return;
-  if (g_removedRows.project != project || g_removedRows.name != name)
-    g_removedRows = RemovedRowsNote{project, name, {}};
-  for (const nimbus::orch::CsvEditRow& r : removed) {
-    if (g_removedRows.rows.size() >= nimbus::orch::kRemovedNoteMaxRows) break;
-    g_removedRows.rows.push_back(r);
-  }
-}
+// The last keyed-CSV rows an edit removed (one file, in RAM only, bounded): a later edit
+// that lands rows for the same file is told which of them were not logged again (RCA
+// 2026-11-01/02 cause 15). A restart forgets it, which is the honest bound.
+static nimbus::orch::aids::e1::RemovedRows g_removedRows;
 
 // The first row (the header) of a stored file, bounded: the keyed edit diff's
 // column names. "" when it cannot be read.
@@ -1051,113 +1065,6 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
   return appendBytes(a, size, plan, who, note);
 }
 
-// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
-// way to change a byte used to be the whole-file rewrite (files.read plus
-// artifact.save - every stored byte over the prompt twice, a whole-file buffer
-// on the device); the edit substitutes an exact span in place. Bounded
-// streaming, one Lock held throughout: scan-count the matches, decide, then
-// substitute into the part file and swap it in like every whole-file replace
-// (commitPart, file_swap.h) - the original is untouched until the substituted
-// file is fully written and size-verified, and it is kept on any failure.
-// Pass 1 of files.edit: count the matches without emitting anything (a
-// bounded stream; the file is never held whole). "" from countDocMatches means
-// the file could not be read.
-static std::string countDocMatches(const std::string& path, const std::string& find,
-                                   const std::string& replace, size_t& oldSize,
-                                   size_t& matches) {
-  fs::FS& fs = memory::dataFs();
-  File f = fs.open(path.c_str(), FILE_READ);
-  if (!f) return "SD open failed";
-  oldSize = f.size();
-  if (const std::string big = nimbus::orch::editSizeRefusal(oldSize); !big.empty()) {
-    f.close();
-    return big;
-  }
-  nimbus::orch::TextEditStream scan(find, replace, true);
-  std::string discard;
-  char buf[512];
-  for (;;) {
-    const size_t got = f.read((uint8_t*)buf, sizeof buf);
-    if (got == 0) break;
-    scan.feed(buf, got, discard);
-  }
-  f.close();
-  scan.finish(discard);
-  matches = scan.found();
-  return std::string();
-}
-
-// Pass 2 of files.edit: stream the substitution into the part file and verify
-// its size. The stored file is not touched here: "" leaves a finished .part for
-// commitEdit to swap in, anything else leaves no .part.
-static std::string substituteDoc(const std::string& path, const std::string& find,
-                                 const std::string& replace, size_t apply, size_t newSize) {
-  fs::FS& fs = memory::dataFs();
-  fs.remove(kPartPath);
-  File src = fs.open(path.c_str(), FILE_READ);
-  if (!src) return "SD open failed";
-  File dst = fs.open(kPartPath, FILE_WRITE);
-  if (!dst) { src.close(); return "SD open failed"; }
-  nimbus::orch::TextEditStream sub(find, replace, false);
-  sub.setApplyLimit(apply);
-  std::string out;
-  out.reserve(512 + replace.size());
-  char buf[512];
-  bool writeOk = true;
-  for (;;) {
-    const size_t got = src.read((uint8_t*)buf, sizeof buf);
-    if (got == 0) break;
-    out.clear();
-    sub.feed(buf, got, out);
-    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size()) {
-      writeOk = false;
-      break;
-    }
-  }
-  src.close();
-  if (writeOk) {
-    out.clear();
-    sub.finish(out);
-    if (!out.empty() && dst.write((const uint8_t*)out.data(), out.size()) != out.size())
-      writeOk = false;
-  }
-  dst.close();
-  {   // Verify the substituted file is exactly the size the decision promised.
-    File chk = fs.open(kPartPath, FILE_READ);
-    const size_t on = chk ? chk.size() : 0;
-    if (chk) chk.close();
-    if (!writeOk || on != newSize) {
-      fs.remove(kPartPath);
-      return "SD short write: the file is unchanged";
-    }
-  }
-  return std::string();
-}
-
-// Lane UPSERT fix pass: append the history rows a keyed-CSV edit keeps (the
-// rows it removed or changed) to the finished .part, then verify the .part
-// holds exactly the size the edit promised. "" hist leaves the .part alone.
-static bool appendHistoryToPart(const std::string& hist, size_t expectTotal) {
-  if (hist.empty()) return true;
-  fs::FS& fs = memory::dataFs();
-  File f = fs.open(kPartPath, FILE_APPEND);
-  if (!f) return false;
-  const size_t n = f.write(reinterpret_cast<const uint8_t*>(hist.data()), hist.size());
-  f.close();
-  if (n != hist.size()) {
-    fs.remove(kPartPath);
-    return false;
-  }
-  File chk = fs.open(kPartPath, FILE_READ);
-  const size_t on = chk ? chk.size() : 0;
-  if (chk) chk.close();
-  if (on != expectTotal) {
-    fs.remove(kPartPath);
-    return false;
-  }
-  return true;
-}
-
 // Swap the finished .part in over project/name. The entry keeps its owner and creation
 // time (still the same file); the content hash is unknown until the next whole write,
 // and an uploaded provider copy is stale now.
@@ -1188,87 +1095,90 @@ static std::string editPrecheck(const std::string& project, const std::string& n
   return nimbus::orch::validateEdit(find.size(), replace.size(), pol);
 }
 
-// files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
-// way to change a byte used to be the whole-file rewrite (files.read plus
-// artifact.save - every stored byte over the prompt twice, a whole-file buffer
-// on the device); the edit substitutes an exact span in place. Bounded
-// streaming, one Lock held throughout: scan-count the matches, decide, then
-// substitute into the part file and swap it in.
-// The row-level report of a keyed CSV edit (editDoc's tail, split out for the
-// complexity gate): what changed against what was there, and the removals
-// remembered for a later re-add that skips a row. Lane UPSERT fix pass: the
-// history rows the edit kept in the file are named too, so a disputed total can
-// be re-read from the file itself.
-static std::string keyedEditReport(const std::string& project, const std::string& name,
-                                   const std::string& header, const std::string& find,
-                                   const std::string& replace, const std::string& hist) {
-  std::string out;
-  if (header.empty()) return out;
-  const nimbus::orch::CsvEditDiff diff = nimbus::orch::diffKeyedEdit(header, find, replace);
-  if (!diff.keyed) return out;
-  if (const std::string lines = nimbus::orch::renderKeyedEditDiff(diff); !lines.empty())
-    out += "\n" + lines;
-  if (!hist.empty())
-    out += "\nthe removed and changed rows are kept in the file as history rows (#removed: / #replaced:)";
-  if (const std::string warn = reconcileRemovedRows(project, name, diff.added); !warn.empty())
-    out += "\n" + warn;
-  rememberRemovedRows(project, name, diff.removed);
-  return out;
-}
+// The part file and the swap of files.edit (file_aids.h AidSink), under the edit's one Lock:
+// the slot /mem/files/.part, written 4 KB at a time and size-checked; the swap goes through
+// commitPart (file_swap.h), so the original is untouched until the new file is whole. admit
+// runs the same quota and room rules as artifact.save before a byte is written.
+struct SdEditSink : nimbus::orch::aids::AidSink {
+  std::string project, name;
+  const nimbus::orch::Principal& who;
+  size_t oldSize = 0;
+  uint64_t written = 0;
+  std::string err;
+  SdEditSink(std::string p, std::string n, const nimbus::orch::Principal& w, size_t old)
+      : project(std::move(p)), name(std::move(n)), who(w), oldSize(old) {}
+  bool partWrite(std::string_view b, bool first) override {
+    fs::FS& fs = memory::dataFs();
+    if (first) {
+      fs.remove(kPartPath);
+      written = 0;
+    }
+    File f = fs.open(kPartPath, first ? FILE_WRITE : FILE_APPEND);
+    if (!f) return false;
+    const size_t n = b.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(b.data()), b.size());
+    f.close();
+    written += n;
+    return n == b.size();
+  }
+  bool partSwap() override {
+    File chk = memory::dataFs().open(kPartPath, FILE_READ);
+    const size_t on = chk ? chk.size() : 0;
+    if (chk) chk.close();
+    if (on != written) return false;
+    return commitEdit(project, name, size_t(written), err);
+  }
+  void partDiscard() override { memory::dataFs().remove(kPartPath); }
+  bool admit(uint64_t newSize, size_t) override {
+    const size_t growth = newSize > oldSize ? size_t(newSize - oldSize) : 0;
+    const std::string refusal = appendRefusal(project, name, growth, size_t(newSize), who);
+    if (!refusal.empty()) err = refusalForHead(refusal);
+    return refusal.empty();
+  }
+  std::string refusal() const override { return err; }
+};
 
+// files.edit: the shared edit (file_aids_e1.h) - the first match by default, the first
+// 'count', 'all', or the whole-line match at 'line' - streamed in two passes under one Lock,
+// into the part file and swapped in. The reply keeps its head ("edited p/n: replaced A of B
+// match(es)", which the claim check reads) and gains the current line numbers.
 static nimbus::orch::ToolResult editDoc(const std::string& project, const std::string& name,
                                         const std::string& find, const std::string& replace,
-                                        const nimbus::orch::EditPolicy& pol,
+                                        const nimbus::orch::EditPolicy& pol, uint32_t line,
                                         const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
   if (const std::string bad = editPrecheck(project, name, find, replace, pol); !bad.empty())
     return ToolResult::fail(bad);
   memory::Lock g;
-  // appendGate ARBITRATES THE UPLOAD SESSION'S .part SLOT before substituteDoc
-  // consumes it: its uploadActiveLocked() check refuses an active session ("an
-  // upload is in progress - try again") - the same check every writer of the
-  // slot makes - and the one Lock held below keeps a session from starting
-  // mid-edit (prism v4.6.2 row 1; pinned by test_file_edit's slot-gate scan).
+  // appendGate ARBITRATES THE UPLOAD SESSION'S .part SLOT before the edit's sink writes it:
+  // its uploadActiveLocked() check refuses an active session, and the one Lock held below
+  // keeps a session from starting mid-edit (pinned by test_file_edit's slot-gate scan).
   const std::string gate = appendGate(project, name, who);
   if (!gate.empty()) return ToolResult::fail(gate);
   if (!g_store.find(project, name)) return ToolResult::fail("not found");   // an edit never creates
   const std::string path = pathOf(project, name);
-  size_t oldSize = 0, matches = 0;
-  if (const std::string err = countDocMatches(path, find, replace, oldSize, matches); !err.empty())
-    return ToolResult::fail(err);
-  const nimbus::orch::EditDecision d =
-      nimbus::orch::decideEdit(find.size(), replace.size(), pol, matches);
-  if (!d.ok) return ToolResult::fail(d.err);
+  const size_t size = fileBytes(project.c_str(), name.c_str());
+  if (size == kUnreadableBytes) return ToolResult::fail("SD open failed");
+  SdSource src(path, false);
   const std::string where = project + "/" + name;
-  if (nimbus::orch::editChangesNothing(find, replace))
-    return ToolResult::ok(nimbus::orch::renderEditNoChange(where, d));
-  // The header of the keyed CSV (read before the swap: the find span's rows
-  // are the file's own), for the row-level report and the history rows below.
-  const std::string header = nimbus::orch::isCsvName(name) ? firstRowOf(path) : std::string();
-  // Lane UPSERT fix pass: a keyed-CSV edit keeps the rows it removed or changed
-  // as history rows appended to the file, so the file still accounts for every
-  // row a dispute may name.
-  const std::string hist = header.empty()
-                               ? std::string()
-                               : nimbus::orch::historyRowsForKeyedEdit(header, find, replace);
-  const size_t subSize = size_t((int64_t)oldSize + d.sizeDelta);
-  const size_t newSize = subSize + hist.size();
-  {   // the same quota rules as artifact.save: an edit's growth is a write
-    const size_t growth = (d.sizeDelta > 0 ? size_t(d.sizeDelta) : 0) + hist.size();
-    const std::string refusal = appendRefusal(project, name, growth, newSize, who);
-    if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
+  if (nimbus::orch::editChangesNothing(find, replace)) {
+    size_t matches = 0;
+    if (!nimbus::orch::aids::countMatches(src, find, matches)) return ToolResult::fail("SD open failed");
+    const nimbus::orch::EditDecision d = nimbus::orch::decideEdit(find.size(), replace.size(), pol, matches);
+    return d.ok ? ToolResult::ok(nimbus::orch::renderEditNoChange(where, d)) : ToolResult::fail(d.err);
   }
-  if (const std::string err = substituteDoc(path, find, replace, size_t(d.apply), subSize);
-      !err.empty())
-    return ToolResult::fail(err);
-  if (!appendHistoryToPart(hist, newSize))
-    return ToolResult::fail("SD short write: the file is unchanged");
-  std::string err;
-  if (!commitEdit(project, name, newSize, err)) return ToolResult::fail(err);
-  alogf("files: edit %s/%s replaced %d of %u match(es) (%u B -> %u B)", project.c_str(),
-        name.c_str(), d.apply, (unsigned)matches, (unsigned)oldSize, (unsigned)newSize);
-  std::string reply = nimbus::orch::renderEditReply(where, d, newSize);
-  reply += keyedEditReport(project, name, header, find, replace, hist);
+  nimbus::orch::aids::e1::EditCall call;
+  call.project = project;
+  call.name = name;
+  call.find = find;
+  call.replace = replace;
+  call.pol = pol;
+  call.line = line;
+  // The header of a CSV, for the keyed-CSV report and its history rows.
+  call.header = nimbus::orch::isCsvName(name) ? firstRowOf(path) : std::string();
+  SdEditSink sink(project, name, who, size);
+  std::string reply;
+  if (!nimbus::orch::aids::e1::edit(src, sink, size, call, g_removedRows, reply)) return ToolResult::fail(reply);
+  alogf("files: edit %s/%s (%u B -> %u B)", project.c_str(), name.c_str(), (unsigned)size, (unsigned)sink.written);
   return ToolResult::ok(reply);
 }
 
@@ -1692,8 +1602,8 @@ void registerTools() {
           "are paged: pass 'offset' to continue from where the previous view ended. "
           "Pass 'tail' (a row count) to read only the last rows of a log or CSV; with "
           "'sum' (a numeric column) the tail also reports that column's total for "
-          "today (the owner's local date), or for 'date' (YYYY-MM-DD), counted from "
-          "the file's own rows, so a log read and a day total are one call.",
+          "today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps "
+          "matching rows; 'sum' (columns, comma-separated) totals them on the device.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             const std::string project = argStr(a, "project"), name = argStr(a, "name");
             if (project.empty() || name.empty())
@@ -1711,10 +1621,22 @@ void registerTools() {
             if (!textDocName(name))
               return nimbus::orch::ToolResult::fail(
                   "binary or non-text document - use files.share / the web viewer");
-            if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-              return readTail(project, name, (size_t)a["tail"].as<double>(), argStr(a, "sum"),
-                              argStr(a, "date"));
             const size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
+            // The general CSV form: rows by a column range, named columns totalled (file_aids_e1.h).
+            if (!a["column"].isNull() || !a["from"].isNull() || !a["to"].isNull() || a["sum"].is<ArduinoJson::JsonArrayConst>() ||
+                (!a["sum"].isNull() && a["tail"].isNull())) {
+              nimbus::orch::aids::CsvQuery q;
+              std::string err;
+              if (!nimbus::orch::aids::e1::queryArgs(a, offset, q, err)) return nimbus::orch::ToolResult::fail(err);
+              return readTable(project, name, q);
+            }
+            if (a["tail"].is<float>() && a["tail"].as<double>() >= 1) {
+              nimbus::orch::ToolResult r = readTail(project, name, (size_t)a["tail"].as<double>());
+              // The day total rides the same reply, so a log row never costs a second read.
+              if (r.success && !argStr(a, "sum").empty())
+                r.output += dayTotalLine(project, name, argStr(a, "sum"), argStr(a, "date"));
+              return r;
+            }
             // Whole-file read through PSRAM, then a bounded UTF-8-safe window -
             // page size leaves header room inside the loop's per-result clamp
             // (the results.get viewCap rule).
@@ -1743,7 +1665,7 @@ void registerTools() {
                                std::to_string((unsigned)total) + "\n";
             return nimbus::orch::ToolResult::ok(head + text.substr(off, (size_t)keep));
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"}},"required":["project","name"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
@@ -1901,18 +1823,21 @@ void registerTools() {
           "FIRST match by default; 'all': true replaces every match, 'count' replaces the first "
           "N. The reply says how many matches were found and how many were replaced, so nothing "
           "happens silently. A no-match says so and changes nothing. An empty 'replace' deletes "
-          "the span. An edit to a keyed CSV (a log with a date and a key column) also names "
-          "the rows it removed, added or changed. The file's other bytes keep their exact "
-          "order (a CSV's rows stay rows). "
+          "the span. 'line' picks the match that is the whole of that line (identical rows: "
+          "a stale number fails with the current lines). The reply gives the current line "
+          "numbers. An edit to a keyed CSV also names the rows it removed, added or changed. "
           "Max 2 KB find, 4 KB replacement, 200 matches per call, 1 MB file.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             nimbus::orch::EditPolicy pol;
             pol.all = a["all"].as<bool>();
             if (a["count"].is<int>()) pol.count = a["count"].as<int>();
+            const uint32_t line = a["line"].is<unsigned>() ? a["line"].as<unsigned>() : 0;
+            if (!a["line"].isNull() && !line)
+              return nimbus::orch::ToolResult::fail("line is a whole number, 1 or more");
             return editDoc(argStr(a, "project"), argStr(a, "name"), argStr(a, "find"),
-                          argStr(a, "replace"), pol, who);
+                          argStr(a, "replace"), pol, line, who);
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"}},"required":["project","name","find"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"},"line":{"type":"integer"}},"required":["project","name","find"]})");
 
   reg.add("files.delete",
           "Delete one of your saved files for good: the bytes and the index entry both go. "

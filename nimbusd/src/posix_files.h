@@ -1,15 +1,18 @@
 #pragma once
 #include <ArduinoJson.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdio>
 #include <ctime>
+#include <functional>
 #include <new>
 #include <string>
 #include <vector>
 
 #include "posix_platform.h"
+#include "nimbus/orch/file_aids_e1.h"   // files.read and files.edit on the shared aids (RB-REC4)
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/provider_caps.h"  // LocalDate - the day total's today
@@ -96,10 +99,24 @@ class PosixFiles {
     addOwnerOnly(reg, "files.read",
             "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
             "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
-            "reports that column's total for today.",
+            "reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: "
+            "'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) "
+            "totals them on the device.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return readTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"}},"required":["project","name"]})");
+            R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},)"
+            R"("column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
+
+    // The device's files.edit on the shared edit (file_aids_e1.h): the same reply bytes.
+    addOwnerOnly(reg, "files.edit",
+            "Edit a saved TEXT document surgically: find an exact text span and replace it. "
+            "Replaces the FIRST match by default; 'all': true replaces every match, 'count' the "
+            "first N; 'line' picks the match that is the whole of that line. An empty 'replace' "
+            "deletes the span. The reply gives the current line numbers.",
+            [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return editTool(a); },
+            R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},)"
+            R"("find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},)"
+            R"("count":{"type":"integer"},"line":{"type":"integer"}},"required":["project","name","find"]})");
 
     // The device's files.append (file_append.h): the new rows go on the end of the
     // file; nothing stored is read back, replaced or rewritten.
@@ -159,16 +176,74 @@ class PosixFiles {
     return nimbus::orch::ToolResult::ok(out);
   }
 
-  // files.read: the text of a stored file, or the rule's refusal (file_store.h).
+  // files.read: the text of a stored file, or the rule's refusal (file_store.h); the CSV
+  // form and the day total through the shared scan (file_aids_e1.h), as on the device.
   nimbus::orch::ToolResult readTool(ArduinoJson::JsonObjectConst a) {
     const std::string p = str(a, "project"), n = str(a, "name");
     std::string body;
     if (!read(p, n, body)) return nimbus::orch::ToolResult::fail("no such file: " + p + "/" + n);
     if (!nimbus::orch::fileReadableAsText(n, body)) return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
+    if (!a["column"].isNull() || !a["from"].isNull() || !a["to"].isNull() || a["sum"].is<ArduinoJson::JsonArrayConst>() ||
+        (!a["sum"].isNull() && a["tail"].isNull()))
+      return tableTool(p, n, a);
     if (a["tail"].is<float>() && a["tail"].as<double>() >= 1)
-      return nimbus::orch::ToolResult::ok(tailWithTotal(n, body, a));
+      return nimbus::orch::ToolResult::ok(tailWithTotal(p, n, body, a));
     return nimbus::orch::ToolResult::ok(body);
   }
+
+  nimbus::orch::ToolResult tableTool(const std::string& p, const std::string& n, ArduinoJson::JsonObjectConst a) {
+    nimbus::orch::aids::CsvQuery q;
+    std::string out;
+    const size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
+    if (!nimbus::orch::aids::e1::queryArgs(a, offset, q, out)) return nimbus::orch::ToolResult::fail(out);
+    DiskSource src(bytesPath(p, n));
+    const bool ok = nimbus::orch::aids::e1::tableRead(src, 0, p + "/" + n, q, out);
+    return ok ? nimbus::orch::ToolResult::ok(out) : nimbus::orch::ToolResult::fail(out);
+  }
+
+  // files.edit through the shared edit; the part file beside the store, swapped by rename.
+  nimbus::orch::ToolResult editTool(ArduinoJson::JsonObjectConst a) {
+    nimbus::orch::aids::e1::EditCall c;
+    c.project = str(a, "project");
+    c.name = str(a, "name");
+    c.find = str(a, "find");
+    c.replace = str(a, "replace");
+    c.pol.all = a["all"].as<bool>();
+    if (a["count"].is<int>()) c.pol.count = a["count"].as<int>();
+    c.line = a["line"].is<unsigned>() ? a["line"].as<unsigned>() : 0;
+    if (!a["line"].isNull() && !c.line) return nimbus::orch::ToolResult::fail("line is a whole number, 1 or more");
+    if (c.project.empty() || c.name.empty() || c.find.empty())
+      return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'find'");
+    if (const std::string bad = nimbus::orch::validateEdit(c.find.size(), c.replace.size(), c.pol); !bad.empty())
+      return nimbus::orch::ToolResult::fail(bad);
+    if (!store_.find(c.project, c.name)) return nimbus::orch::ToolResult::fail("not found");
+    const std::string path = bytesPath(c.project, c.name);
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0) return nimbus::orch::ToolResult::fail("SD open failed");
+    DiskSource src(path);
+    const std::string where = c.project + "/" + c.name;
+    if (nimbus::orch::editChangesNothing(c.find, c.replace)) {
+      size_t matches = 0;
+      if (!nimbus::orch::aids::countMatches(src, c.find, matches)) return nimbus::orch::ToolResult::fail("SD open failed");
+      const nimbus::orch::EditDecision d = nimbus::orch::decideEdit(c.find.size(), c.replace.size(), c.pol, matches);
+      return d.ok ? nimbus::orch::ToolResult::ok(nimbus::orch::renderEditNoChange(where, d))
+                  : nimbus::orch::ToolResult::fail(d.err);
+    }
+    if (nimbus::orch::isCsvName(c.name)) {
+      std::string body;
+      read(c.project, c.name, body);
+      c.header = body.substr(0, body.find('\n'));
+      if (!c.header.empty() && c.header.back() == '\r') c.header.pop_back();
+    }
+    DiskEditSink sink(*this, c.project, c.name, path);
+    std::string reply;
+    if (!nimbus::orch::aids::e1::edit(src, sink, uint64_t(st.st_size), c, removed_, reply))
+      return nimbus::orch::ToolResult::fail(reply);
+    return nimbus::orch::ToolResult::ok(reply);
+  }
+
+  // files.read {sum}'s default day (the rig sets the running day; the calendar date alone).
+  void setToday(std::function<std::string()> fn) { today_ = std::move(fn); }
 
   // ---- direct access (scenario seeding + assertions) ----
   void seed(const std::string& path, const std::string& text) {
@@ -489,13 +564,69 @@ class PosixFiles {
     return buf;
   }
 
-  // files.read {tail, sum}: the tail view, and the day's total when a sum column is named.
-  std::string tailWithTotal(const std::string& n, const std::string& body, ArduinoJson::JsonObjectConst a) {
+  // files.read {tail, sum, date}: the tail view, and the day's total of the sum column by
+  // the shared scan (file_aids_e1.h dayTotal), as the device gives it.
+  std::string tailWithTotal(const std::string& p, const std::string& n, const std::string& body,
+                            ArduinoJson::JsonObjectConst a) {
     std::string text = tailOf(n, body, (size_t)a["tail"].as<double>());
-    const std::string sum = str(a, "sum");
-    if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(body, sum, todayStr(), nimbus::orch::logDayOf(vclock::now(), true).zone);
-    return text;
+    const std::string sum = str(a, "sum"), date = str(a, "date");
+    if (sum.empty()) return text;
+    if (!date.empty() && nimbus::orch::isoDayOf(date) != date) return text + "[no day total: 'date' must be YYYY-MM-DD]\n";
+    std::string day = date.empty() && today_ ? today_() : date;
+    if (day.empty()) day = todayStr();
+    DiskSource src(bytesPath(p, n));
+    return text + nimbus::orch::aids::e1::dayTotal(src, 0, p + "/" + n, sum, day);
   }
+
+  // The stored file as the shared aids read it: pread, 4 KB a call.
+  struct DiskSource : nimbus::orch::aids::AidSource {
+    std::string path;
+    explicit DiskSource(std::string p) : path(std::move(p)) {}
+    bool readAt(uint64_t off, size_t len, char* out, size_t& got) override {
+      got = 0;
+      const int fd = ::open(path.c_str(), O_RDONLY);
+      if (fd < 0) return false;
+      while (got < len) {
+        const ssize_t r = ::pread(fd, out + got, len - got, off_t(off + got));
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        got += size_t(r);
+      }
+      ::close(fd);
+      return true;
+    }
+  };
+
+  // The part file of an edit and its swap: <file>.edit-part, renamed over the file, the
+  // index entry's size updated and persisted.
+  struct DiskEditSink : nimbus::orch::aids::AidSink {
+    PosixFiles& owner;
+    std::string project, name, path, part;
+    uint64_t written = 0;
+    DiskEditSink(PosixFiles& o, std::string p, std::string n, std::string f)
+        : owner(o), project(std::move(p)), name(std::move(n)), path(std::move(f)), part(path + ".edit-part") {}
+    bool partWrite(std::string_view b, bool first) override {
+      const int fd = ::open(part.c_str(), O_CREAT | O_WRONLY | (first ? O_TRUNC : O_APPEND), 0644);
+      if (fd < 0) return false;
+      const bool ok = fsutil::writeAll(fd, std::string(b));
+      ::close(fd);
+      written = (first ? 0 : written) + (ok ? b.size() : 0);
+      return ok;
+    }
+    bool partSwap() override {
+      if (std::rename(part.c_str(), path.c_str()) != 0) return false;
+      const nimbus::orch::FileEntry* old = owner.store_.find(project, name);
+      if (!old) return false;
+      nimbus::orch::FileEntry e = *old;
+      e.bytes = uint32_t(written);
+      e.hash = 0;
+      std::string err;
+      owner.store_.add(e, err);
+      fsutil::writeFileAtomic(owner.indexPath(), owner.store_.dump());
+      return true;
+    }
+    void partDiscard() override { ::unlink(part.c_str()); }
+  };
 
   // The tail view over a whole body (the device reads only the window; on disk the
   // daemon can afford the whole read, and the result is the same text).
@@ -523,6 +654,8 @@ class PosixFiles {
 
   std::string root_;
   nimbus::orch::FileStore store_;
+  std::function<std::string()> today_;
+  nimbus::orch::aids::e1::RemovedRows removed_;
 };
 
 }  // namespace nimbusd

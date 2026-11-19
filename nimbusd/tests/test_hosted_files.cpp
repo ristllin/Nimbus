@@ -128,9 +128,9 @@ static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
     const char *project, *name, *header, *row, *col, *counted;
   };
   const Table tables[] = {
-      {"food", "food-log.csv", "date,time,item,qty,kcal", ",12:40,soup,1,300", "kcal", "600 counted from 2 rows"},
-      {"money", "expenses.csv", "date,time,item,qty,amount", ",12:40,train,1,24.5", "amount", "49 counted from 2 rows"},
-      {"gym", "training.csv", "date,time,item,qty,kg", ",12:40,squat,5,80", "kg", "160 counted from 2 rows"},
+      {"food", "food-log.csv", "date,time,item,qty,kcal", ",12:40,soup,1,300", "kcal", "sum kcal=600"},
+      {"money", "expenses.csv", "date,time,item,qty,amount", ",12:40,train,1,24.5", "amount", "sum amount=49"},
+      {"gym", "training.csv", "date,time,item,qty,kg", ",12:40,squat,5,80", "kg", "sum kg=160"},
   };
   for (const Table& t : tables) {
     const std::string dir = ndtest::scratchDir(std::string("hf-tbl-") + t.project);
@@ -165,7 +165,7 @@ static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
     c.ok(body == std::string(t.header) + "\n" + row + "\n" + row + "\n" + today + ",x\n",
          std::string("byte for byte, the rows as sent: ") + t.name);
     const auto tail = call("files.read", where + ",\"tail\":5,\"sum\":\"" + t.col + "\"}");
-    c.ok(has(tail.output, "not known") && has(tail.output, t.counted),
+    c.ok(has(tail.output, "skipped 1 (line 4: field count is not the header's 5)") && has(tail.output, t.counted),
          std::string("the day total adds up both rows and says the narrow one is unread: ") + tail.output);
   }
 }

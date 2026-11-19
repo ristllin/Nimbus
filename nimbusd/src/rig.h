@@ -1895,6 +1895,12 @@ class NimbusdRig {
     foldCtlIO_.setPath(memDir() + "/fold_ctl.txt");   // the device's /data/fold_ctl.txt
 
     files_.reset(new PosixFiles(filesDir()));
+    // files.read {sum}'s default day: the running day (day_start.h), as on the device.
+    files_->setToday([this] {
+      const uint32_t now = vclock::epoch32();
+      return orch::aids::e1::runningDate(now, hostedOffsetAt(now),
+                                        orch::day::startOrDefault(settings_.get().dayStarts.c_str()));
+    });
 
     orch::MemoryContext mc;
     mc.vec = &vec_;

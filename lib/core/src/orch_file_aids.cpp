@@ -444,6 +444,22 @@ std::string renderEdit(const std::string& path, const EditOutcome& o) {
          moveFacts(o);
 }
 
+bool countMatches(AidSource& src, std::string_view old, size_t& matches) {
+  struct Counter : FindSink {
+    size_t n = 0;
+    bool match(const Hit&) override {
+      ++n;
+      return false;
+    }
+  } counter;
+  Finder f;
+  Read r;
+  matches = 0;
+  if (old.empty() || !f.init(old) || !pass(src, f, r, counter)) return false;
+  matches = counter.n;
+  return true;
+}
+
 std::string renderEditLines(const EditOutcome& o) {
   return join({"; at ", renderLines(atLines(o)), "; ", Num(o.newLines), " lines"}) + moveFacts(o);
 }

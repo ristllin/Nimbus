@@ -295,6 +295,11 @@ class CardRelease {
 };
 std::atomic<uint32_t> g_netLockReleases{0};
 
+void withCardReleased(const std::function<void()>& fn) {
+  CardRelease r;
+  fn();
+}
+
 // ---- which provider embeds (QW5) ---------------------------------------------
 // Memory follows the keys the owner has (nimbus/orch/embed_pick.h): a device set up
 // with only a Cumulo Nimbus (or Mistral) key embeds through it instead of failing on
