@@ -39,6 +39,9 @@ struct ComposeInputs {
   std::string hostLabel;             // hostForPrompt(...); not rendered since v4.6.1: each request's
                                      // input names its host ([THIS TURN RUNS ON], engine runsOnText)
   std::string now;                   // local "YYYY-MM-DD Day HH:MM TZ"; "" = clock unsynced
+  std::string stamp;                 // RB-REC5: this turn's orch::day::stamp, filled by the engine
+                                     // when `now` is set and the clock is (the per-turn clock line);
+                                     // "" = the line reads the time from `now`
   std::string fw;                    // firmware version (+build) for the identity line
   // CUM-514: the board this build runs on (identity line + the capability
   // line's screen/ring facts). nullptr = buildBoardIdentity(), the build's own.

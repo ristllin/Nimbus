@@ -39,7 +39,7 @@ constexpr size_t kPlainBytes = 20;     // "2026-11-19 Thu 08:10"
 constexpr size_t kClauseBytes = 29;    // " (day 2026-11-18 until 04:00)"
 constexpr size_t kPlainCap = kPlainBytes + 1;
 constexpr size_t kFullCap = kPlainBytes + kClauseBytes + 1;
-constexpr char kNoClock[] = "time unknown";
+extern const char kNoClock[];   // "time unknown" (in orch_day_start.cpp: model text, catalogued)
 
 // Read a stored or posted "HH:MM" (two digits each, 00:00 to 23:59, nothing else).
 // Returns nullptr and sets `minutes` when valid, else the plain sentence to show the

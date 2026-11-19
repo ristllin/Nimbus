@@ -809,6 +809,11 @@ class WebApi {
     clock["epoch"] = (double)now;
     clock["local"] = hosted::localTime(now, "%Y-%m-%d %H:%M");
     clock["synced"] = true;
+    {
+      char ds[6];   // RB-REC5: the day start as it applies (device parity: absent or invalid = 04:00)
+      nimbus::orch::day::formatStart(nimbus::orch::day::startOrDefault(rig_->settings().dayStarts.c_str()), ds);
+      clock[nimbus::orch::day::kSettingKey] = ds;
+    }
     // Session usage (real engine counters).
     d["turnInFlight"] = s.turnInFlight;
     d["turnCount"]    = s.turnCount;
@@ -1290,6 +1295,13 @@ class WebApi {
                       "zone name such as Europe/London.");
       fns.push_back([tz](HostedSettings& s) { s.devTz = tz; });
     }
+    // RB-REC5 (device parity): "HH:MM" from 00:00 to 23:59, or blank for 04:00.
+    if (present(names, nimbus::orch::day::kSettingKey)) {
+      const std::string ds = hosted::trim(formValue(body, nimbus::orch::day::kSettingKey));
+      uint16_t m = 0;
+      if (!ds.empty() && nimbus::orch::day::parseStart(ds.c_str(), m)) return refuse(nimbus::orch::day::kStartError);
+      fns.push_back([ds](HostedSettings& s) { s.dayStarts = ds; });
+    }
     // The settings store and the time zone are thread-safe; no engine state changes.
     if (!fns.empty() && !rig_->updateSettings([&fns](HostedSettings& s) { for (const auto& fn : fns) fn(s); }))
       return ApiResp{500, "application/json", R"({"ok":false,"error":"Couldn't save. Try again."})"};
@@ -1300,6 +1312,7 @@ class WebApi {
     JsonDocument d;
     d["devName"] = st.devName;
     d["devTz"] = st.devTz;
+    d[nimbus::orch::day::kSettingKey] = st.dayStarts;
     std::string out;
     serializeJson(d, out);
     return okJson(out);

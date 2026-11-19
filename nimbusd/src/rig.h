@@ -3449,6 +3449,8 @@ class NimbusdRig {
     d.foldTriggerBytes = [this] { return foldTriggerNow(); };
     d.utcOffsetMin = [] { return hostedOffsetAt(vclock::epoch32()); };
     d.utcOffsetAt = [](uint32_t unixSec) { return hostedOffsetAt(unixSec); };
+    // RB-REC5: the owner's day start (device parity: absent or invalid = 04:00).
+    d.dayStartMin = [this] { return nimbus::orch::day::startOrDefault(settings_.get().dayStarts.c_str()); };
   }
   // Minutes east of UTC in the owner's zone at `unixSec` (the process zone, under
   // the lock every local-time read here takes).

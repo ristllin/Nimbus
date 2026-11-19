@@ -1076,6 +1076,7 @@ function applyState(d){
     const wasSynced=window.CLOCK&&window.CLOCK.synced; window.CLOCK=d.clock;
     const tzi=$('devTz');
     if(tzi&&document.activeElement!==tzi&&!tzi.dataset.dirty)tzi.value=d.clock.tz||'';
+    const dsi=$('day_starts');if(d.clock.day_starts&&document.activeElement!==dsi&&!dsi.dataset.dirty)dsi.value=d.clock.day_starts;
     const ck=$('devClock');
     if(ck){
       // Timezone hint: the device's local time at its epoch vs this computer's local
@@ -1209,6 +1210,8 @@ function applyState(d){
     if(tzd&&bt){tzd.textContent='Use this computer\'s timezone ('+(bt.iana||bt.posix)+')';
       tzd.onclick=()=>{tz.value=bt.posix;apply({devTz:bt.posix}).then(ok=>{if(ok){delete tz.dataset.dirty;toast('Timezone set');}});};}
     else if(tzd)tzd.style.display='none';}
+  const ds=$('day_starts');ds.oninput=()=>ds.dataset.dirty=1;
+  $('day_startsSave').onclick=()=>apply({day_starts:ds.value}).then(ok=>ok&&delete ds.dataset.dirty);
   const csb=$('clockSyncBtn');
   if(csb)csb.onclick=()=>apply({clockSync:1});
   // params - rebuild the DOM ONLY on first load or when the param SET changes;

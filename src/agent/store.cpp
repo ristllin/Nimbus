@@ -1,6 +1,7 @@
 #include "nimbus/orch/budget.h"    // headContextBudget - the effective tool-result cap
 #include "nimbus/orch/caps.h"      // kMemDirectiveMax - owner-directive byte cap
 #include "nimbus/orch/compact.h"   // modelCtxTokens
+#include "nimbus/orch/day_start.h"   // RB-REC5: the day start setting
 #include "store.h"
 #include "nimbus/device_identity.h"   // makeSetupPass - the setup-AP passphrase generator
 #include "nimbus/power/power_policy.h"
@@ -640,6 +641,50 @@ bool movedSet(MovedValue& m, const String& v) {
   return true;
 }
 }  // namespace
+
+// ---- the day start (RB-REC5) ----
+// A flash file, not settings storage (no new NVS key since v4.5.16, test_nvs_full): five
+// bytes "HH:MM", read once and kept in RAM; absent or invalid reads as 04:00 (day_start.h).
+// Before flash storage is mounted it reads as unset and a write is refused.
+namespace {
+constexpr const char* kDayStartsPath = "/data/day_starts.txt";
+std::mutex g_dayMx;
+std::string g_dayStarts;
+bool g_dayLoaded = false;
+}  // namespace
+
+String dayStarts() {
+  std::lock_guard<std::mutex> lk(g_dayMx);
+  if (!g_dayLoaded) {
+    if (!agent::flashMounted()) return String();
+    g_dayStarts.clear();
+    if (LittleFS.exists(kDayStartsPath)) {
+      File f = LittleFS.open(kDayStartsPath, "r");
+      if (f) {
+        String v = f.readString();
+        f.close();
+        v.trim();
+        g_dayStarts.assign(v.c_str(), v.length() > 8 ? 8 : v.length());
+      }
+    }
+    g_dayLoaded = true;
+  }
+  return String(g_dayStarts.c_str());
+}
+uint16_t dayStartMin() { return nimbus::orch::day::startOrDefault(dayStarts().c_str()); }
+bool setDayStarts(const String& hhmm) {
+  (void)dayStarts();   // load first
+  std::lock_guard<std::mutex> lk(g_dayMx);
+  const std::string next(hhmm.c_str(), hhmm.length());
+  if (g_dayLoaded && next == g_dayStarts) return true;
+  if (!agent::flashMounted()) return nimbus::sys::noteFilePersist(false, nimbus::orch::day::kSettingKey);
+  LittleFS.mkdir("/data");
+  const bool ok = agent::writeFileAtomic(kDayStartsPath, next, nimbus::orch::day::kSettingKey);
+  if (!nimbus::sys::noteFilePersist(ok, nimbus::orch::day::kSettingKey)) return false;
+  g_dayStarts = next;
+  g_dayLoaded = true;
+  return true;
+}
 
 String antEnvId()      { return movedGet(g_antEnv); }
 bool   setAntEnvId(const String& v)    { return movedSet(g_antEnv, v); }

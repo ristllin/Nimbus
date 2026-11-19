@@ -228,26 +228,34 @@ static void splitClock(const std::string& now, std::string& date, std::string& t
 // Temporal grounding (owner 2026-07-24): without this the model - and every
 // sub-agent it briefs - had NO clock and fell back to its training-data prior for
 // "today" (a news loop confidently mis-dated its own verification by six months).
-static std::string staticClockLine(const std::string& now) {
+// RB-REC5: with the engine's stamp (orch::day::stamp, the same bytes engine 2 renders) the
+// date comes from it, so the cached date and the per-turn line never straddle a midnight,
+// and the zone's name moves here (the stamp carries none).
+static std::string staticClockLine(const std::string& now, const std::string& stamp) {
   if (now.empty())
     return "Current date-time: UNKNOWN (device clock not synced) - never state "
            "today's date or time from memory, and date nothing.\n";
   std::string date, time;
   splitClock(now, date, time);
   if (date.empty()) return std::string();
+  if (stamp.size() >= 14) {
+    const size_t sp = time.find(' ');
+    const std::string zone = sp == std::string::npos ? std::string() : time.substr(sp + 1);
+    date = stamp.substr(0, 14) + (zone.empty() ? std::string() : ", time zone " + zone);
+  }
   return "Current date: " + date +
          " (trust THIS over any internal sense of what year it is; include it when "
          "briefing sub-agents). The time of day is in this turn's context below.\n";
 }
-static std::string dynamicClockLine(const std::string& now) {
+static std::string dynamicClockLine(const std::string& now, const std::string& stamp) {
   if (now.empty()) return std::string();
   std::string date, time;
   splitClock(now, date, time);
-  if (date.empty())
+  if (stamp.empty() && date.empty())
     return "Current date-time: " + now +
            " (trust THIS over any internal sense of what year it is; include it when "
            "briefing sub-agents).\n";
-  return "Current time: " + time + ".\n";
+  return "Current time: " + (stamp.empty() ? time : stamp) + ".\n";
 }
 
 // W10: name THIS turn's speaker + their role - the device is multi-tenant, and
@@ -388,7 +396,7 @@ std::string composeInstructions(const ComposeInputs& in) {
                 "Orchestrator mode on a " + board.name + " desk device.\n" +
                 (in.fw.empty() ? std::string()
                                : "Firmware: " + in.fw + ".\n") +
-                staticClockLine(in.now) +
+                staticClockLine(in.now, in.stamp) +
                 "\n[HOW YOU RUN]\n"
                 "- You exist as TURNS. A turn starts when a person messages you (" +
                 std::string(in.telegram ? "Telegram text or voice" : "the web page or voice") +
@@ -568,7 +576,7 @@ std::string composeInstructions(const ComposeInputs& in) {
   // then the sessions, the histV1 text window, the scratchpad and the recall,
   // trimmed to what is left after the cached blocks.
   ContextInputs dyn;
-  std::string head = dynamicClockLine(in.now) + speakerLine(in);
+  std::string head = dynamicClockLine(in.now, in.stamp) + speakerLine(in);
   if (!in.runningMemory.empty())
     head += (head.empty() ? "" : "\n") + std::string("[RUNNING MEMORY]\n") + in.runningMemory + "\n";
   const std::string recent = in.recentActions.empty() ? std::string() : "\n" + in.recentActions;

@@ -345,6 +345,10 @@ class TurnEngine {
     // The same, valid at a unix time: DST and zone changes apply to each row at its own
     // time. Unwired = utcOffsetMin for every row.
     OffsetAt utcOffsetAt;
+    // RB-REC5: the device's day start in minutes past local midnight (setting day_starts,
+    // orch/day_start.h): before it the per-turn clock line names the day still running.
+    // Unwired = 04:00.
+    std::function<uint16_t()> dayStartMin;
 
     // Lane CTX: today's food ledger for this chat's person (nimbus/orch/food_ledger.h;
     // device: the canonical file streamed through FoodLedgerScan under the turn's

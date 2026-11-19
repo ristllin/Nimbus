@@ -36,7 +36,8 @@ inline constexpr char kIdentityMember[] =
     "someone the owner lets use it, over Telegram.";
 inline constexpr char kReplyForm[] = "Replies are Telegram messages: short and plain.";
 inline constexpr char kTimeZone[] = "Time zone: ";
-inline constexpr char kStamped[] = "Every message starts with the time it was sent.";
+inline constexpr char kStamped[] =
+    "Every message starts with the time it was sent; before the day start it also names the day still running.";
 inline constexpr char kHowToWork[] =
     "How to work: act with your tools in this reply; when asked for something a tool can do, do it now. Say that "
     "something happened only when a tool result in this conversation shows it. When a tool fails, say so. "

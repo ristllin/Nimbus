@@ -7,6 +7,8 @@ namespace nimbus {
 namespace orch {
 namespace day {
 
+const char kNoClock[] = "time unknown";
+
 namespace {
 
 int64_t floorDiv(int64_t a, int64_t b) { return a / b - ((a % b != 0) && ((a < 0) != (b < 0))); }
@@ -110,7 +112,7 @@ StampForm stamp(uint64_t epoch, int32_t offsetMin, uint16_t startMin, char* out,
     return StampForm::None;
   }
   if (!clockSet(epoch)) {
-    std::memcpy(out, kNoClock, sizeof kNoClock);
+    std::memcpy(out, kNoClock, std::strlen(kNoClock) + 1);   // fits: cap >= kPlainCap
     return StampForm::NoClock;
   }
   const int64_t local = static_cast<int64_t>(epoch) + static_cast<int64_t>(offsetMin) * 60;

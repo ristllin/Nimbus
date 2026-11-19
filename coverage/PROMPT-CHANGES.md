@@ -574,3 +574,32 @@ deleted. Engine 2 has no baseline.
 - lane: RB-C2
 - prd: section 3 (/compact stays) and the kept fold ladder's rule that every manual request is answered once
 - why: the one line /compact or Summarize now gets on engine 2 (done, nothing to compact yet, failed with the device retrying by itself, waiting for the clock), sent by plain_compact.cpp through the binding's tell hook to the owner's chat. Planned work (ruling 18), not a fix.
+
+### PC-0038: the stamp line says what the running-day clause means
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1416 -> 1474
+- sha8: f79606ba -> e511c6c4
+- lane: RB-REC5
+- prd: section 4 (System prompt, the stamp line; ruling 42 item 2(c) and rebuild/DESIGN-GENERAL-RECORDS.md design section 4)
+- why: kStamped becomes the design's text byte for byte: "Every message starts with the time it was sent;
+  before the day start it also names the day still running." (105 B, +58). Each message's stamp is now
+  orch::day::stamp in brackets: "[2026-11-19 Thu 08:10]", and between midnight and the device's day start
+  (setting day_starts, default 04:00) "[2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00)]". Planned work
+  from the design, not a fix; general to every use (ruling 41).
+
+### PC-0039: engine 1's clock line is the shared stamp (year, weekday, running-day clause)
+- catalog: e1
+- class: system
+- kind: spec
+- bytes: 47658 -> 47695
+- sha8: f0539dbc -> 55d9533e
+- lane: RB-REC5
+- prd: section 4 (the message stamp; ruling 42 item 2(c): built on BOTH engines from one shared function)
+- why: the per-turn line "Current time: 18:10 BST." becomes "Current time: <orch::day::stamp>." with the
+  date, weekday and, before the day start, " (day <yesterday> until 04:00)"; the stamp's own words
+  " (day ", " until " and, with no clock, "time unknown" are catalogued from
+  lib/core/src/orch_day_start.cpp (25 B; engine 2 renders the same words), and the zone's
+  name moves to the cached date line as ", time zone BST" (12 B). One literal "Current time: " is shared
+  by both forms of the line. Planned work (ruling 42), on the device, nimbusd and the harness lab.

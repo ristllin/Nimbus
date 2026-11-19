@@ -111,6 +111,7 @@
 #include "nimbus/orch/key_shape.h"       // CUM-514: posted key/token shape check
 #include "nimbus/orch/key_home.h"        // QW5: a key posted into another provider's slot
 #include "nimbus/orch/posix_tz.h"        // QW5: a timezone rule the device cannot read is refused
+#include "nimbus/orch/day_start.h"       // RB-REC5: the day start setting
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
@@ -1024,6 +1025,11 @@ static void buildState(String& out) {
     ck["synced"] = agent::memory::clockSynced();
     ck["epoch"]  = (uint64_t)now;
     ck["tz"]     = agent::store::deviceTz();
+    {
+      char ds[6];
+      nimbus::orch::day::formatStart(agent::store::dayStartMin(), ds);
+      ck["day_starts"] = ds;   // RB-REC5: the setting as it applies (absent or invalid = 04:00)
+    }
     struct tm lt;
     localtime_r(&now, &lt);
     char buf[20];
@@ -2429,6 +2435,18 @@ void beginWeb(const WebConfig& wc) {
         return;
       }
     }
+    // RB-REC5: the day start is "HH:MM" (00:00 to 23:59) or blank (04:00); anything else is
+    // refused with the sentence to show, before anything is stored.
+    if (r->hasParam(nimbus::orch::day::kSettingKey, true)) {
+      String ds = r->getParam(nimbus::orch::day::kSettingKey, true)->value();
+      ds.trim();
+      uint16_t m = 0;
+      if (ds.length() && nimbus::orch::day::parseStart(ds.c_str(), m)) {
+        JsonDocument e; e["error"] = nimbus::orch::day::kStartError; String out; serializeJson(e, out);
+        r->send(400, "application/json", out);
+        return;
+      }
+    }
     nimbus::sys::SaveScope save;   // CUM-479: every NVS write below answers through sendSaved
     bool touched = false;
     String battWarn;   // set when a battery param is clamped, surfaced as a toast
@@ -2479,6 +2497,13 @@ void beginWeb(const WebConfig& wc) {
         if (agent::store::setDeviceTz(tz)) agent::loops::stageWebMutation("{\"action\":\"tzapply\"}");
         touched = true;
       }
+    }
+    // RB-REC5: the day start, checked above; the next turn reads it.
+    if (r->hasParam(nimbus::orch::day::kSettingKey, true)) {
+      String ds = r->getParam(nimbus::orch::day::kSettingKey, true)->value();
+      ds.trim();
+      (void)agent::store::setDayStarts(ds);   // SaveScope answers a write that did not land
+      touched = true;
     }
     // "Sync now" - re-kick SNTP (rate-limited in the drain). No immediate ack
     // is possible (sync is async); the UI watches clock.synced on the poll.

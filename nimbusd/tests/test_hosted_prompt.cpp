@@ -100,7 +100,8 @@ static void testClockFollowsTheOwnersZone(ndtest::Ctx& c) {
     eng.stop();
   }
   rig.say("owner", "what time is it?");
-  c.ok(!tx.seen.empty() && has(tx.seen[0].body, " QQT."), "the next turn's time of day is in the owner's zone");
+  // RB-REC5: the per-turn line is the shared stamp; the zone's name rides the date line.
+  c.ok(!tx.seen.empty() && has(tx.seen[0].body, ", time zone QQT ("), "the next turn's clock is in the owner's zone");
   {
     EngineThread eng(&rig);
     eng.start();

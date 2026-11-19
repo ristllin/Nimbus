@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "nimbus/orch/caps.h"
+#include "nimbus/orch/day_start.h"   // RB-REC5: the day start setting (device parity)
 #include "nimbus/orch/provider_slots.h"
 #include "posix_fs.h"
 
@@ -35,6 +36,7 @@ struct HostedSettings {
   std::string provPrio;    // device provPrio (head failover order)
   std::string subPrio;     // device subPrio ("" = same as provPrio)
   std::string devTz;       // POSIX TZ or zoneinfo name ("" = UTC)
+  std::string dayStarts;   // device day_starts, "HH:MM" ("" or invalid = 04:00, orch/day_start.h)
   std::string directive;   // device sysPrompt ("" = the shipped default)
   std::string devName;     // the instance's display name
   bool toolLoop = true;    // device orchLoop
@@ -57,6 +59,7 @@ class SettingsStore {
     readStr(d, "provPrio", s_.provPrio);
     readStr(d, "subPrio", s_.subPrio);
     readStr(d, "devTz", s_.devTz);
+    readStr(d, nimbus::orch::day::kSettingKey, s_.dayStarts);
     readStr(d, "directive", s_.directive);
     readStr(d, "devName", s_.devName);
     if (d["toolLoop"].is<bool>()) s_.toolLoop = d["toolLoop"].as<bool>();
@@ -78,6 +81,7 @@ class SettingsStore {
     d["provPrio"] = next.provPrio;
     d["subPrio"] = next.subPrio;
     d["devTz"] = next.devTz;
+    d[nimbus::orch::day::kSettingKey] = next.dayStarts;
     d["directive"] = next.directive;
     d["devName"] = next.devName;
     d["toolLoop"] = next.toolLoop;
@@ -311,11 +315,11 @@ inline Verdict orchFieldVerdict(const std::string& field, const std::string& val
   return Verdict::Refuse;
 }
 
-// What POST /api/config does with one posted field: the name and the time zone
-// apply, "Sync now" is a no-op (the host clock is always synced), the rest are
+// What POST /api/config does with one posted field: the name, the time zone and the day
+// start apply, "Sync now" is a no-op (the host clock is always synced), the rest are
 // device-only (mode, battery, display, onboarding...).
 inline Verdict configFieldVerdict(const std::string& field) {
-  if (field == "devName" || field == "devTz") return Verdict::Apply;
+  if (field == "devName" || field == "devTz" || field == nimbus::orch::day::kSettingKey) return Verdict::Apply;
   if (field == "clockSync" || field == "t" || field == "token") return Verdict::NoOp;
   return Verdict::Refuse;
 }

@@ -1487,6 +1487,7 @@ static TurnEngine::Deps buildTurnDeps() {
   // decides DST for a past time, so a row stored before a clock change keeps its offset).
   d.utcOffsetMin = []() -> int32_t { return agent::utcOffsetAtUnix((uint32_t)time(nullptr)); };
   d.utcOffsetAt = [](uint32_t unixSec) -> int32_t { return agent::utcOffsetAtUnix(unixSec); };
+  d.dayStartMin = [] { return agent::store::dayStartMin(); };   // RB-REC5: the setting day_starts
   // Lane CTX: today's food ledger of the turn's person (the per-turn block and the fold).
   d.foodLedger = [](const std::string& chatId) {
     const String cid(chatId.c_str());

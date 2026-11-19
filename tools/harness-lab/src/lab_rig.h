@@ -2,6 +2,7 @@
 #include <chrono>
 #include <thread>
 #include <cstdio>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <set>
@@ -98,6 +99,16 @@ struct TurnRecord {
   bool        ok = false;
   std::string systemPrompt;
 };
+
+// RB-REC5: the lab's clock line source, the device's localTimeStr shape in UTC (the lab wires
+// no zone, as a device before its zone is set): "YYYY-MM-DD Ddd HH:MM UTC". With it set the
+// engine stamps each turn with the device's one stamp (orch::day::stamp, 04:00 day start).
+inline std::string labNow(time_t t) {
+  struct tm g;
+  char buf[40];
+  if (!gmtime_r(&t, &g) || !std::strftime(buf, sizeof buf, "%Y-%m-%d %a %H:%M UTC", &g)) return std::string();
+  return buf;
+}
 
 class LabRig {
  public:
@@ -859,6 +870,7 @@ class LabRig {
     d.composeInputs = [this](const std::string& chat) {
       agent::ComposeInputs in;
       in.devName = opt_.devName;
+      in.now = labNow(std::time(nullptr));   // RB-REC5: the engine stamps the turn from it
       // The device names its configured head (compose.h hostForPrompt), so the
       // identity line is the same on every turn and the static block caches.
       in.hostLabel = agent::hostForPrompt(config().provider);

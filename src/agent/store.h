@@ -56,6 +56,12 @@ String setupApPass();        // per-device setup-AP passphrase (gen-on-first-use
                              // device's setup screen; the softAP + Wi-Fi QR use it.
 String deviceTz();           // POSIX TZ for Local Loops wall-clock schedules (default UTC0)
 [[nodiscard]] bool   setDeviceTz(const String& tz);
+// RB-REC5: the device's day start ("HH:MM", orch/day_start.h), in /data/day_starts.txt.
+// dayStarts() is the stored text ("" when never set); dayStartMin() reads it, an absent or
+// invalid value as 04:00. setDayStarts takes a value parseStart accepted ("" = 04:00).
+String   dayStarts();
+uint16_t dayStartMin();
+[[nodiscard]] bool setDayStarts(const String& hhmm);
 
 // Cloud relay (cumulo-nimbus) pairing state. Orchestrator-only; ships dark
 // (cloudOptIn default false). The credential is cloud-minted at pairing (unlike

@@ -52,6 +52,7 @@ E1_SOURCES = {
     "system": (
         "lib/core/include/nimbus/orch/orch_schema.h",
         "lib/core/src/orch_connectors_wire.cpp",
+        "lib/core/src/orch_day_start.cpp",
         "lib/core/src/orch_food_ledger.cpp",
         "lib/core/src/orch_world.cpp",
         "lib/harness/include/nimbus/harness/board_identity.h",
@@ -137,6 +138,8 @@ E1_SOURCES = {
 # added under SCAN_DIRS with prose literals outside a log call must be in a catalog or here
 # (check_no_prompt_patch.py, with a git base).
 NON_MODEL_FILES: dict = {
+    "lib/core/include/nimbus/orch/day_start.h": "RB-REC5: the day start setting's error sentence for the web page and "
+    "/api/config, never sent to a model (the stamp's own words are in lib/core/src/orch_day_start.cpp, catalogued)",
     "lib/core/src/ota_channel.cpp": "RB-OTA2: the owner's /ota answers and the /api/ota/channel JSON lines, sent to the "
     "owner's chat or a web client as device copy, never to a model",
     "src/net/ota_channel_routes.cpp": "RB-OTA2: the route's 401 body for a web client (the same literal every owner "

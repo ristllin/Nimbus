@@ -13,6 +13,7 @@
 #include "nimbus/orch/action_rules.h"  // actionRuleRow - a tool's plain-words description
 #include "nimbus/orch/compact.h"   // ORCH_COMPACT_PROMPT + buildCompactInputs + capSummary (runFold)
 #include "nimbus/orch/connector_grant.h"   // whose connectors a turn's requests carry (CUM-828)
+#include "nimbus/orch/day_start.h"   // RB-REC5: the per-turn clock line is the device's one stamp
 
 #include <ArduinoJson.h>
 
@@ -365,6 +366,18 @@ using detail::trimInPlace;   // engine_internal.h: shared with engine_fold.cpp
 // What holds provider `p` off now (head_switch.h HeadPause): the device's read, plus the
 // monthly budget check every turn makes. The head (Chat seam) for the [THIS TURN RUNS ON]
 // line; spawnPauseOf reads the Spawn seam for the sub-agent advice.
+// RB-REC5: this instant's stamp (orch::day::stamp: year, weekday, and before the day start
+// the day still running), at the offset valid now and the device's day start. "" with no clock.
+static std::string turnStamp(const TurnEngine::Deps& d) {
+  const uint64_t now = d.platform.nowEpoch ? d.platform.nowEpoch() : 0;
+  if (!orch::day::clockSet(now) || now > UINT32_MAX) return std::string();
+  const int32_t off = d.utcOffsetAt ? d.utcOffsetAt((uint32_t)now) : d.utcOffsetMin ? d.utcOffsetMin() : 0;
+  const uint16_t start = d.dayStartMin ? d.dayStartMin() : orch::day::kDefaultStartMin;
+  char buf[orch::day::kFullCap];
+  const orch::day::StampForm f = orch::day::stamp(now, off, start, buf, sizeof buf);
+  return f == orch::day::StampForm::Full ? std::string(buf) : std::string();
+}
+
 static orch::HeadPause providerPauseOf(const TurnEngine::Deps& d, const std::string& p) {
   orch::HeadPause hp = d.apply.headPause ? d.apply.headPause(p) : orch::HeadPause();
   if (d.cfg.budget.overBudget && d.cfg.budget.overBudget(p)) hp.overBudget = true;
@@ -1318,6 +1331,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   std::unique_ptr<RunTurnLocals> locals(
       new RunTurnLocals{d_.composeInputs ? d_.composeInputs(curChat_) : ComposeInputs{}, {}, {}, {}, {}, {}, 0, 0, {}, {}, {}});
   ComposeInputs& ci = locals->ci;
+  if (!ci.now.empty()) ci.stamp = turnStamp(d_);   // RB-REC5: only when the host says the clock is set
   // The head chosen BEFORE any failover - the "requested" side of served-by
   // disclosure (CUM-236). `host` mutates below on budget/error failover; this and
   // its model stay fixed so a substitution can be reported honestly at turn end.

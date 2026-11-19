@@ -14,6 +14,9 @@
 #include <vector>
 
 #include "lab_files.h"
+#include "lab_rig.h"   // RB-REC5: labNow
+#include "nimbus/harness/compose.h"
+#include "nimbus/orch/day_start.h"
 #include "lab_options.h"
 #include "lab_text.h"
 #include "lab_wire.h"
@@ -314,9 +317,29 @@ void testRecorderBodyCut() {
   fs::remove_all(dir);
 }
 
+// RB-REC5: the lab's clock line goes through the device's one stamp. The lab's now string has
+// the shape the composer splits, and with the engine's stamp the turn carries exactly
+// orch::day::stamp's bytes and the cached date names the zone.
+void testLabStamp() {
+  const time_t t = 1795048200;   // 2026-11-19 00:30 UTC
+  const std::string now = labNow(t);
+  check(now == "2026-11-19 Thu 00:30 UTC", "the lab's clock string is the device's shape in UTC");
+  char stamp[nimbus::orch::day::kFullCap];
+  nimbus::orch::day::stamp((uint64_t)t, 0, nimbus::orch::day::kDefaultStartMin, stamp, sizeof stamp);
+  agent::ComposeInputs in;
+  in.now = now;
+  in.stamp = stamp;
+  const std::string p = agent::composeInstructions(in);
+  check(p.find("Current time: 2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00).\n") != std::string::npos,
+        "the lab's turn carries the shared stamp");
+  check(p.find("Current date: 2026-11-19 Thu, time zone UTC (") != std::string::npos,
+        "the lab's cached date names its zone");
+}
+
 }  // namespace
 
 int cmdSelftest() {
+  testLabStamp();
   testWirePins();
   testOptions();
   testScrub();
