@@ -2933,7 +2933,6 @@ class NimbusdRig {
          "You speak with people over the web chat and Telegram."},
         {"You speak with people over the web page/voice and can act on the device.",
          "You speak with people over the web chat."},
-        {"The device checks each claim", "This instance checks each claim"},
         {"from the device web page", "from this instance's web page"},
         {"from the device's web page", "from this instance's web page"},
         {"whose full content the device inserts", "whose full content this instance inserts"},

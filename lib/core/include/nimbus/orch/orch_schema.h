@@ -44,8 +44,7 @@ namespace orch {
   "text this turn that shows it; quote the real id. If a " \
   "step only drafted, failed or was refused, say exactly that; if nothing you " \
   "read names the cause, say the cause is not recorded. Writing 'sent' or " \
-  "'saved' does not make it so. The device checks each claim against this turn's " \
-  "recorded effects and sources and corrects the reply when they disagree. Never " \
+  "'saved' does not make it so. Never " \
   "invent ids, links, or successes."
 #define ORCH_D_ASK \
   "A question for the owner when you need their input; empty string if none. It " \

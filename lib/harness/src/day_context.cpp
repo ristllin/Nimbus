@@ -1,5 +1,4 @@
-// day_context - lane CTX's part of the turn: today's food ledger as the figure check's
-// source, the fold's day, and (RB-Q3a) the chat's recent actions in the per-turn block.
+// day_context - the fold's day and (RB-Q3a) the chat's recent actions in the per-turn block.
 // TurnEngine members and their free helpers (engine.h), kept apart from engine.cpp so
 // the turn core stays readable. (The speculative wire guard that cut history before any request,
 // fitHistoryToWire, is gone - lane H of the history fix: history leaves a request
@@ -21,15 +20,10 @@ bool personChat(const std::string& chatId) { return !chatId.empty() && chatId !=
 
 bool isSummaryMessage(const HistMsg& m) { return startsWith(m.text, kSummaryUserHead) || m.text == kSummaryAck; }
 
-void TurnEngine::loadFoodLedger(const std::string& chatId) {
-  ledger_ = nimbus::orch::FoodLedger();
-  if (d_.foodLedger && personChat(chatId)) ledger_ = d_.foodLedger(chatId);
-}
-
-// RB-Q3a: no keyword playbook and no per-turn ledger block (PRD section 1, item 9). What
-// rides every turn instead is this chat's recent actions: the newest effect receipts from
-// its effects ring, as data, so a correction can name a row id without a read. The ledger
-// itself is read with the ledger tools; the owner's own food skill from the [SKILLS] shelf.
+// RB-Q3a: no keyword playbook and no per-turn data block of one use case ride a prompt
+// (ruling 41). What rides every turn is this chat's recent actions: the newest effect
+// receipts from its effects ring, as data, so a correction can name what it changes without
+// a read. Anything else is read with a tool; the owner's own skills from the [SKILLS] shelf.
 void TurnEngine::applyRecentActions(ComposeInputs& ci) const {
   ci.recentActions.clear();
   if (!d_.recentActions || curChat_.empty()) return;

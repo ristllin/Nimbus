@@ -204,13 +204,13 @@ static void testRecentActionsRideTheHostedTurn(ndtest::Ctx& c) {
   for (int i = 0; i < 4; i++) tx.script.push_back(Exchange{"", "", 500, "{}"});
   Config cfg;
   NimbusdRig rig(cfg, opts("hp-fx"), &tx);
-  rig.effects().record("owner", 1794920520, "ledger_write", "added L3K9QZ; day 2026-11-17: 2 rows, 1,612 kcal");
-  rig.effects().record("444", 1794920520, "ledger_write", "added LOTHER; day 2026-11-17: 1 row, 90 kcal");
-  rig.say("owner", "make that 200 g");
+  rig.effects().record("owner", 1794920520, "files.edit", "added row R3K9QZ to log/day.csv; 2 rows");
+  rig.effects().record("444", 1794920520, "files.edit", "added row ROTHER to log/day.csv; 1 row");
+  rig.say("owner", "make that 200");
   c.ok(!tx.seen.empty(), "the turn dispatched");
   c.ok(has(tx.seen[0].body, "[RECENT ACTIONS - "), "the recent-actions block rides the VN turn");
-  c.ok(has(tx.seen[0].body, "ledger_write: added L3K9QZ"), "with the owner chat's receipt");
-  c.ok(!has(tx.seen[0].body, "LOTHER"), "never another chat's");
+  c.ok(has(tx.seen[0].body, "files.edit: added row R3K9QZ"), "with the owner chat's receipt");
+  c.ok(!has(tx.seen[0].body, "ROTHER"), "never another chat's");
   clearEnv();
 }
 

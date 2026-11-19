@@ -191,8 +191,8 @@ Notes:
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; store in
 `src/agent/skills.cpp`, built-in text in `lib/harness/src/builtin_skills.cpp`).
-On-device markdown playbooks: six built-ins (`architecture`, `deep-research`,
-`hardware`, `tools-guide`, `deliver-pdf`, `log-rows`) plus owner- or agent-authored capsules
+On-device markdown playbooks: five built-ins (`architecture`, `deep-research`,
+`hardware`, `tools-guide`, `deliver-pdf`) plus owner- or agent-authored capsules
 on the SD card. A built-in names `reply.telegram` or `files.send` only on a turn
 that was offered both; on any other turn it points at the Files list on the
 device web page.

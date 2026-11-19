@@ -434,7 +434,7 @@ static const char* const kTelegramOnlyNames[] = {"files.send", "reply.telegram",
 // with no Telegram, names neither Telegram-only tool. The Telegram side keeps the
 // delivery steps (the variant is a different recipe, not deleted text).
 static void test_cum523_builtin_capsules_follow_the_turn() {
-  TEST_ASSERT_EQUAL(6, (int)agent::builtinSkillCount());   // RB-Q3a: food-log and food-coach left
+  TEST_ASSERT_EQUAL(5, (int)agent::builtinSkillCount());   // RB-Q3a: food-log, food-coach and log-rows left
   for (size_t i = 0; i < agent::builtinSkillCount(); ++i) {
     const agent::BuiltinSkill& b = agent::builtinSkill(i);
     TEST_ASSERT_TRUE_MESSAGE(agent::isBuiltinSkill(b.id), b.id);
@@ -456,24 +456,9 @@ static void test_cum523_builtin_capsules_follow_the_turn() {
                    std::string::npos);
   TEST_ASSERT_TRUE(agent::builtinSkillBody("deep-research", true).find("files.send for Telegram") !=
                    std::string::npos);
-  // The logging playbook teaches the append and the tail, never a whole-file
-  // rewrite to add a row; deliver-pdf reads a log's end, not the whole file.
-  const std::string rows = agent::builtinSkillBody("log-rows", true);
-  TEST_ASSERT_TRUE(rows.find("files.append {project, name, text}") != std::string::npos);
-  TEST_ASSERT_TRUE(rows.find("files.read {project, name, tail: 5}") != std::string::npos);
-  // QW3: ONE correction model, shared with the tool and the total (file_append.h):
-  // a dated log is keyed by date + key, a correction REPLACES its row; the old
-  // "a correction adds its own row" rule (which double-counted) never comes back.
-  TEST_ASSERT_TRUE(rows.find("files.append {project, name, text, key, sum}") != std::string::npos);
-  TEST_ASSERT_TRUE(rows.find("REPLACES that row") != std::string::npos);
-  TEST_ASSERT_TRUE(rows.find("NEVER add a second row for the same meal to correct it") != std::string::npos);
-  TEST_ASSERT_TRUE(rows.find("a correction adds its own row") == std::string::npos);
-  TEST_ASSERT_TRUE(rows.find("the latest row for a date is the current one") == std::string::npos);
+  // RB-Q3a (ruling 41): no built-in teaches one use case's log; deliver-pdf reads a log's end.
+  TEST_ASSERT_FALSE(agent::isBuiltinSkill("log-rows"));
   TEST_ASSERT_TRUE(webPdf.find("files.read {project, name, tail: N}") != std::string::npos);
-  // Lane CTX: the food log is one file; RB-Q3a: no block names it any more, so log-rows does.
-  TEST_ASSERT_TRUE(rows.find("[TODAY'S FOOD LEDGER]") == std::string::npos);
-  TEST_ASSERT_TRUE(rows.find("food/food-log.csv") != std::string::npos);
-  TEST_ASSERT_TRUE(rows.find("e.g. food-log.csv in") == std::string::npos);
   TEST_ASSERT_EQUAL_STRING("", agent::builtinSkillBody("no-such-skill", true).c_str());
   TEST_ASSERT_FALSE(agent::isBuiltinSkill("no-such-skill"));
 }

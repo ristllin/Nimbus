@@ -439,3 +439,35 @@ deleted. Engine 2 has no baseline.
 - lane: RB-Q3a
 - why: nimbusd/src/rig.h rewrote "the device confirms or corrects a save claim" for a hosted
   instance; the sentence is gone from the schema (PC-0015), so the swap row (91 B) goes with it.
+
+### PC-0017: the reply description no longer says the device checks each claim and corrects the reply
+- catalog: e1
+- class: system
+- kind: remove
+- bytes: 47779 -> 47658
+- sha8: b215dcc9 -> f0539dbc
+- lane: RB-Q3a
+- why: ruling 34. Since RB-Q1b no check corrects the reply (RB-G0's truth check holds a reply for
+  one silent round and never rewrites it), so the sentence in ORCH_D_REPLY was false (121 B). The
+  literal is rewritten without it; nothing else moved.
+
+### PC-0018: nimbusd's hosted wording swap for the removed claim-check sentence
+- catalog: e1
+- class: device_notes
+- kind: remove
+- bytes: 54112 -> 54053
+- sha8: bbcda870 -> 1c7b6f11
+- lane: RB-Q3a
+- why: nimbusd/src/rig.h rewrote "The device checks each claim" for a hosted instance; the
+  sentence is gone (PC-0017), so the swap row (59 B) goes with it.
+
+### PC-0019: the log-rows built-in leaves (ruling 41)
+- catalog: e1
+- class: skills
+- kind: remove
+- bytes: 12623 -> 8773
+- sha8: f8884363 -> 3ef5d5db
+- lane: RB-Q3a
+- why: owner ruling 41: no built-in support for one use case. log-rows (3,639 B body, 211 B of
+  index lines) taught the food log's keyed rows; files.append's own description states the keyed
+  append, and what is general about a log (append rows, read the end) is in the file tools.

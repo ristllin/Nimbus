@@ -172,69 +172,6 @@ const Part kDeliverPdf[] = {
      "exactly why; do not silently downgrade to markdown.\n"},
 };
 
-// Logging a row (the meal-photo addendum, and any tracker): files.append writes
-// only the new rows and files.read {tail} reads only the end, so a logged meal is
-// one tool call instead of a whole-file read plus a whole-file rewrite (on 15 Oct
-// a typical meal turn read three CSVs whole and re-saved all three). A dated CSV
-// is keyed by date plus a key column (nimbus/orch/file_append.h): a correction
-// REPLACES its row, so the day total (the sum of the day's rows) never counts a
-// corrected figure twice - the one correction rule the tool, the total and this
-// playbook share.
-const Part kLogRows[] = {
-    {Side::Both,
-     "# Logging rows (food log, ledger, any tracker)\n"
-     "A log is a text file that grows by rows: a CSV (date,meal,kcal,...) or a .log.\n"
-     "1. Add rows with files.append {project, name, text}: the device writes only\n"
-     "   the new rows. NEVER files.read a whole log and artifact.save it back -\n"
-     "   that rewrites the whole file.\n"
-     "2. To see the columns or the latest rows, read only the end:\n"
-     "   files.read {project, name, tail: 5} (a CSV's header row comes with it).\n"
-     "3. A new log: the first files.append carries the header row, then the row.\n"
-     "4. A dated CSV (the food log, a daily ledger) is KEYED: a row is its date plus\n"
-     "   its key column, so it needs a date column (a keyed write to a log without\n"
-     "   one is refused). Write with files.append {project, name, text, key, sum}:\n"
-     "   text = the stored header row, then the rows; key = the column that tells one\n"
-     "   day's rows apart (meal in the food log); sum = the figure to total (kcal).\n"
-     "   The same date and key again REPLACES that row only when it describes the\n"
-     "   SAME item - the device decides by the items column, not your wording; a\n"
-     "   different item under the same key is appended under a new unique key\n"
-     "   (dinner-2), the stored row kept. A new key adds a row; other days are never\n"
-     "   touched. Every replace keeps the replaced row as a #replaced: history row\n"
-     "   and names it in the reply.\n"
-     "5. Dates are the owner's local date as YYYY-MM-DD, from the Current date line.\n"
-     "   What was eaten before midnight belongs to that day, even when logged later.\n"
-     "6. The food log is ONE file (the owner's is food/food-log.csv), columns\n"
-     "   date,meal,items,kcal,protein_g.\n"
-     "   Never split a day's meals across\n"
-     "   files. Each eating occasion gets its own meal name for that day (breakfast,\n"
-     "   lunch, dinner, else snack plus the time); a DIFFERENT item under\n"
-     "   a meal name already logged is a separate occasion - its own meal name, never\n"
-     "   the first row re-sent with the new item's figures. Separate items with +\n"
-     "   (a field with a comma goes in double quotes).\n"
-     "7. A correction (the owner fixes a figure, or a meal sits on the wrong day):\n"
-     "   re-send the row with the same date and meal and the corrected figures; it\n"
-     "   replaces the old row, so nothing counts twice. The files.append reply says\n"
-     "   what it replaced - quote that in your reply as a replace, never as a plain\n"
-     "   \"logged\". To take a row off a day, re-send it with 0 in the figures and the\n"
-     "   reason in items (moved to 2026-10-25). NEVER add a second row for the same meal to correct it.\n"
-     "8. Before estimating anything logged before, read the log's tail. Totals\n"
-     "   come from the files tool, never from memory or the conversation; if the\n"
-     "   owner's stated total and the file's disagree, say both.\n"
-     "9. Never say a figure was logged, updated, corrected or removed without the\n"
-     "   files.append reply that shows it (replaced or added). A replace must be said\n"
-     "   as a replace in your reply (\"replaced dinner: brisket 457 kcal with the\n"
-     "   mango chicken 445 kcal\") - a reply that hides a replace behind \"logged\" is\n"
-     "   corrected by the device. A refused files.append wrote nothing: fix what it\n"
-     "   names and send again. If it says the log already holds 2\n"
-     "   or more rows for that date and meal: one meal logged more than once, send\n"
-     "   the same call with replace: \"all\" (the others are kept as #superseded:\n"
-     "   rows, not counted); separate items, log the new one under its own meal name.\n"
-     "10. A meal photo: estimate it, then one files.append to the food log, then\n"
-     "   reply with the row you wrote. Several rows for one meal go in ONE call.\n"
-     "11. If a reply says the stored last row was cut mid-write, log that row again\n"
-     "   in full. 12. A log with no header row: fix it with files.edit.\n"},
-};
-
 // ONE table: the index entry and the body together, so they cannot drift.
 struct Entry {
   BuiltinSkill meta;
@@ -263,10 +200,6 @@ const Entry kEntries[] = {
       "device's own writer) and deliver it - read BEFORE promising, refusing, or downgrading a "
       "PDF/document request."},
      NIMBUS_PARTS(kDeliverPdf)},
-    {{"log-rows", "Log a row to a CSV or log file (food log, ledger)",
-      "Add rows to a log with files.append and read its end with files.read tail - read "
-      "BEFORE logging or correcting a meal, a weight, a ledger total or any tracker row."},
-     NIMBUS_PARTS(kLogRows)},
 };
 #undef NIMBUS_PARTS
 constexpr size_t kEntryCount = sizeof(kEntries) / sizeof(kEntries[0]);

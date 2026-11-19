@@ -3,7 +3,7 @@
 #include <string>
 
 // builtin_skills - the device's built-in capsules (architecture, deep-research,
-// hardware, tools-guide, deliver-pdf, log-rows): the [SKILLS] index line and the body
+// hardware, tools-guide, deliver-pdf): the [SKILLS] index line and the body
 // skill.get serves. Portable and flash-resident (const tables, no heap until a
 // body is rendered), so the host suite reads exactly what the model reads.
 //

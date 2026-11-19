@@ -419,18 +419,18 @@ static void test_no_food_playbook_or_ledger_block_in_any_prompt() {
 static void test_recent_actions_ride_the_turn_for_this_chat_only() {
   Rig r;
   const int64_t t = (int64_t)kNow - 600;   // 18:25
-  r.effects.byChat["1001"].push_back({t, "ledger_write", "added L3K9QZ; day 2026-10-26: 3 rows, 1,765 kcal"});
-  r.effects.byChat["-2002"].push_back({t, "ledger_write", "added LMEMBR; day 2026-10-26: 1 row, 90 kcal"});
+  r.effects.byChat["1001"].push_back({t, "files.edit", "added row R3K9QZ to log/day.csv; 3 rows"});
+  r.effects.byChat["-2002"].push_back({t, "files.edit", "added row RMEMBR to log/day.csv; 1 row"});
   r.eng->handleMessage("is it raining at the office?", "Roy", "1001");
   std::string dyn = r.last().dyn;
   TEST_ASSERT_TRUE_MESSAGE(has(dyn, "[RECENT ACTIONS - "), dyn.c_str());
-  TEST_ASSERT_TRUE(has(dyn, "Mon 26 Oct 2026 18:25 ledger_write: added L3K9QZ; day 2026-10-26: 3 rows, 1,765 kcal\n"));
-  TEST_ASSERT_FALSE(has(dyn, "LMEMBR"));
+  TEST_ASSERT_TRUE(has(dyn, "Mon 26 Oct 2026 18:25 files.edit: added row R3K9QZ to log/day.csv; 3 rows\n"));
+  TEST_ASSERT_FALSE(has(dyn, "RMEMBR"));
   TEST_ASSERT_FALSE(has(r.last().stat + r.last().shelf, "[RECENT ACTIONS"));   // never the cached blocks
-  r.eng->handleMessage("make that 200 g", "Roy", "-2002");
+  r.eng->handleMessage("make that 200", "Roy", "-2002");
   dyn = r.last().dyn;
-  TEST_ASSERT_TRUE(has(dyn, "added LMEMBR"));
-  TEST_ASSERT_FALSE(has(dyn, "L3K9QZ"));
+  TEST_ASSERT_TRUE(has(dyn, "added row RMEMBR"));
+  TEST_ASSERT_FALSE(has(dyn, "R3K9QZ"));
   r.eng->handleMessage("hello", "Roy", "3003");
   TEST_ASSERT_FALSE(has(r.last().dyn, "[RECENT ACTIONS"));
 }
@@ -442,9 +442,9 @@ static void test_owner_food_turn_prompt_golden() {
   Rig r;
   r.cfg.toolLoop = true;
   r.skillText = "Blinded estimate first, then the label.";
-  // The day's two earlier writes as the ledger tools' receipt sink words them (RB-L1b sinkLine).
-  r.effects.byChat["1001"] = {{(int64_t)kDay + 8 * 3600 + 40 * 60, "ledger_write", "added L00A3; day 2026-10-26: 1 row, 450 kcal"},
-                              {(int64_t)kDay + 12 * 3600 + 55 * 60, "ledger_write", "added L00A4; day 2026-10-26: 2 rows, 1,315 kcal"}};
+  // The day's two earlier writes as the file tools' results put them in the chat's ring.
+  r.effects.byChat["1001"] = {{(int64_t)kDay + 8 * 3600 + 40 * 60, "files.append", "appended 1 row to log/day.csv (now 2 rows)"},
+                              {(int64_t)kDay + 12 * 3600 + 55 * 60, "files.append", "appended 1 row to log/day.csv (now 3 rows)"}};
   r.eng->handleMessage("Lunch was a chicken salad, about 150 g chicken", "Roy", "1001");
   TEST_ASSERT_EQUAL_INT(1, (int)r.instructions.size());
   const std::string& ins = r.instructions.back();

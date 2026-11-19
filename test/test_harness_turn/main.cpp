@@ -143,11 +143,13 @@ struct Rig {
   // RB-Q3a: a RAM effects ring behind the engine's recent-actions source (empty unless a test
   // fills it, so no other test's prompt moves).
   orch::fx::EffectRing fxRing;
+  bool ringFromHook = false;   // the effect hook also feeds fxRing (the device's wiring)
   agent::RingRecentActions fxSrc{fxRing};
   void wireCallAndEffectHooks(TurnEngine::Deps& d) {
     d.hooks.onToolCall = [this](const orch::HeadToolCall& c) { hookToolCalls.push_back(c); };
     d.hooks.onEffect = [this](const std::string& chat, const std::string& tool, const std::string& receipt) {
       effects.push_back({chat, tool, receipt});
+      if (ringFromHook) fxRing.append(chat, 1794920520, tool, receipt);
     };
     d.recentActions = &fxSrc;
   }
@@ -6092,45 +6094,42 @@ static void test_the_truth_check_hook() {
   }
 }
 
-// RB-Q3a, the definition of done, scripted: a correction names a row id from the [RECENT
-// ACTIONS] block and completes in one ledger_write, with no read. The scripted head makes the
-// one call by construction; what the case proves is the plumbing: the block reaches the head
-// with the newest row last, the id it names is the one the call carries, another chat's row
-// never rides, and with an empty ring there is no id to name. The ring holds the earlier
-// write's receipt as RB-L1b's sink words it (two rows of the day); the owner corrects the
-// last one; the scripted head takes the id of the newest ledger_write line from the block it
-// was handed, and the turn makes exactly one tool call: ledger_write with that id. (RB-L1b's
-// real tools are not on this base: the registry answers through the rig's MCP seam.)
-static void test_a_correction_names_a_row_id_from_recent_actions_in_one_write() {
+// RB-Q3a, the definition of done, scripted: a correction names a row from the [RECENT
+// ACTIONS] block and completes in one write, with no read. The scripted head makes the one
+// call by construction; what the case proves is the plumbing: the block reaches the head with
+// the newest row last, the row it names is the one the call carries, another chat's row never
+// rides, and with an empty ring there is nothing to name. (General tools only, ruling 41: the
+// earlier writes are files.edit receipts; the registry answers through the rig's MCP seam.)
+static void test_a_correction_names_a_row_from_recent_actions_in_one_write() {
   Rig r;
-  r.specs.push_back(orch::ToolRegistry::Spec{"ledger_write", "change food rows by id", "{}"});
-  r.specs.push_back(orch::ToolRegistry::Spec{"ledger_day", "a day's food rows with ids", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"files.edit", "edit lines of a file", "{}"});
+  r.specs.push_back(orch::ToolRegistry::Spec{"files.search", "search files", "{}"});
   r.specs.push_back(orch::ToolRegistry::Spec{"files.read", "read a file", "{}"});
-  r.fxRing.append("1001", 1794920520, "ledger_write", "added L00A3; day 2026-11-17: 1 row, 450 kcal");
-  r.fxRing.append("1001", 1794935700, "ledger_write", "added L3K9QZ; day 2026-11-17: 2 rows, 1,612 kcal");
-  r.fxRing.append("-2002", 1794935760, "ledger_write", "added LOTHER; day 2026-11-17: 1 row, 90 kcal");
+  r.fxRing.append("1001", 1794920520, "files.edit", "added row R00A3 to log/day.csv; 1 row");
+  r.fxRing.append("1001", 1794935700, "files.edit", "added row R3K9QZ to log/day.csv; 2 rows");
+  r.fxRing.append("-2002", 1794935760, "files.edit", "added row ROTHER to log/day.csv; 1 row");
   std::string idSeen;
   Rig::Script sc;
   sc.dispatchTools = 1;
-  sc.toolName = "ledger_write";
+  sc.toolName = "files_edit";
   sc.argsFrom = [&idSeen](const std::string& ins) {
     const size_t block = ins.find("[RECENT ACTIONS");
-    const size_t last = ins.rfind("ledger_write: added ");
+    const size_t last = ins.rfind("files.edit: added row ");
     if (block != std::string::npos && last != std::string::npos && last > block)
-      idSeen = ins.substr(last + 20, ins.find(';', last) - last - 20);
-    return "{\"ops\":[{\"op\":\"update\",\"id\":\"" + idSeen + "\",\"set\":{\"qty\":200}}]}";
+      idSeen = ins.substr(last + 22, ins.find(' ', last + 22) - last - 22);
+    return "{\"row\":\"" + idSeen + "\",\"set\":{\"amount\":200}}";
   };
   r.scripts["anthropic"] = {sc};
-  r.eng->handleMessage("make that last one 200 g", "Roy", "1001");
-  TEST_ASSERT_EQUAL_STRING("L3K9QZ", idSeen.c_str());   // the newest row id, read from the block
+  r.eng->handleMessage("make that last one 200", "Roy", "1001");
+  TEST_ASSERT_EQUAL_STRING("R3K9QZ", idSeen.c_str());   // the newest row, read from the block
   TEST_ASSERT_EQUAL(1, (int)r.hookToolCalls.size());     // one call in the whole turn
-  TEST_ASSERT_EQUAL_STRING("ledger_write", r.hookToolCalls[0].name.c_str());
-  TEST_ASSERT_TRUE(r.hookToolCalls[0].argsJson.find("\"id\":\"L3K9QZ\"") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("files_edit", r.hookToolCalls[0].name.c_str());
+  TEST_ASSERT_TRUE(r.hookToolCalls[0].argsJson.find("\"row\":\"R3K9QZ\"") != std::string::npos);
   TEST_ASSERT_EQUAL(1, (int)r.mcpRequests.size());       // and it reached the registry once
   for (const auto& c : r.hookToolCalls)
-    TEST_ASSERT_TRUE(c.name.find("ledger_day") == std::string::npos && c.name.find("read") == std::string::npos);
-  TEST_ASSERT_TRUE(r.attempts.back().instructions.find("LOTHER") == std::string::npos);   // another chat's
-  // Counter-test: with an empty ring the block is absent, so the head has no id to name.
+    TEST_ASSERT_TRUE(c.name.find("search") == std::string::npos && c.name.find("read") == std::string::npos);
+  TEST_ASSERT_TRUE(r.attempts.back().instructions.find("ROTHER") == std::string::npos);   // another chat's
+  // Counter-test: with an empty ring the block is absent, so the head has nothing to name.
   Rig e;
   e.specs = r.specs;
   std::string none = "unset";
@@ -6140,8 +6139,32 @@ static void test_a_correction_names_a_row_id_from_recent_actions_in_one_write() 
     return std::string("{}");
   };
   e.scripts["anthropic"] = {s2};
-  e.eng->handleMessage("make that last one 200 g", "Roy", "1001");
+  e.eng->handleMessage("make that last one 200", "Roy", "1001");
   TEST_ASSERT_EQUAL_STRING("", none.c_str());
+}
+
+// RB-Q3a (ruling 40): the block shows only effects that happened. A failed write never joins
+// the chat's ring, so it never renders on a later turn; the same write that lands does.
+static void test_a_failed_write_never_joins_the_recent_actions() {
+  for (bool fail : {true, false}) {
+    Rig r;
+    r.ringFromHook = true;
+    r.specs.push_back(orch::ToolRegistry::Spec{"files.append", "append to a file", "{}"});
+    if (fail)
+      r.mcpResponse = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"isError\":true,"
+                      "\"content\":[{\"type\":\"text\",\"text\":\"refused: no such project\"}]}}";
+    Rig::Script sc;
+    sc.dispatchTools = 1;
+    sc.toolName = "files_append";
+    sc.toolArgs = "{\"project\":\"p\",\"name\":\"log.csv\",\"text\":\"x\"}";
+    r.scripts["anthropic"] = {sc, Rig::Script{}};
+    r.eng->handleMessage("add the row", "Roy", "1001");
+    r.eng->handleMessage("and now?", "Roy", "1001");
+    const std::string& ins = r.attempts.back().instructions;
+    TEST_ASSERT_EQUAL_MESSAGE(fail ? 0 : 1, (int)r.effects.size(), fail ? "failed" : "landed");
+    TEST_ASSERT_EQUAL_MESSAGE(!fail, ins.find("files.append: ") != std::string::npos, fail ? "failed" : "landed");
+    TEST_ASSERT_TRUE(ins.find("refused: no such project") == std::string::npos);
+  }
 }
 
 int main(int, char**) {
@@ -6149,7 +6172,8 @@ int main(int, char**) {
   RUN_TEST(test_the_truth_check_hook);
   RUN_TEST(test_the_turn_state_holds_the_effect_ledger);
   RUN_TEST(test_every_effect_reaches_the_effect_hook_once);
-  RUN_TEST(test_a_correction_names_a_row_id_from_recent_actions_in_one_write);
+  RUN_TEST(test_a_correction_names_a_row_from_recent_actions_in_one_write);
+  RUN_TEST(test_a_failed_write_never_joins_the_recent_actions);
   RUN_TEST(test_filler_class);
   RUN_TEST(test_real_replies_are_not_filler);
   RUN_TEST(test_final_check_reads_the_field);

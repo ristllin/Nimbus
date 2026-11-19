@@ -689,7 +689,7 @@ std::vector<std::string> attachedIds(const std::string& block) {
 static void test_attach_selection_property() {
   std::mt19937 rng(11);
   const std::vector<std::string> chats = {"c1", "c2", "c3"};
-  const std::vector<std::string> ids = {"tools-guide", "log-rows", "s-ctx", "s-a", "s-b"};
+  const std::vector<std::string> ids = {"tools-guide", "deliver-pdf", "s-ctx", "s-a", "s-b"};
   for (int run = 0; run < 40; ++run) {
     AttachRig r;
     std::map<std::string, std::set<std::string>> readIn;   // what each chat read (an upper bound)
@@ -744,10 +744,10 @@ static void test_attach_lifecycle_and_no_thrash() {
   // A third read in the chat evicts the least recently read (at most 2 per chat).
   r.get("c1", "tools-guide");
   r.now += 10;
-  r.get("c1", "log-rows");
+  r.get("c1", "deliver-pdf");
   const auto ids = attachedIds(r.turn("c1"));
   TEST_ASSERT_EQUAL(2, (int)ids.size());
-  TEST_ASSERT_EQUAL_STRING("log-rows", ids[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("deliver-pdf", ids[0].c_str());
   TEST_ASSERT_EQUAL_STRING("tools-guide", ids[1].c_str());
   // Idle past the window: gone. /clear: gone. Delete: gone.
   r.now += agent::kSkillStickyIdleMs + 1;

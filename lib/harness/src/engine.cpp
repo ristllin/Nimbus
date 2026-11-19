@@ -1326,7 +1326,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const std::string& requestedHost = locals->requestedHost;
   const std::string& requestedModel = locals->requestedModel;
   turnMem().gate.phase("context", freeHeap(), largestFreeBlock());
-  loadFoodLedger(chatId);   // lane CTX: this turn's food ledger (the fold's day, the round budget)
   // W10 (prism): the speaker line is for a REAL human message only. The device
   // closure knows the chat, not the turn source - a synthesis turn ([FRESH
   // RESULTS] from untrusted sub-agent output) and a scheduled loop both carry a
@@ -1614,7 +1613,9 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
         const orch::FxKind kind = fxKindForTool(regName);
         orch::recordToolEffect(turnFx_, kind, r.isError, r.output, flags);
         // Lane RB-FX: the chat's effect ring keeps it across turns (the truth check reads it).
-        if (d_.hooks.onEffect && orch::fx::recordsAsEffect(kind)) d_.hooks.onEffect(chatId, regName, r.output);
+        // RB-Q3a (ruling 40): only an effect that happened; a failed call stays this turn's.
+        if (d_.hooks.onEffect && !r.isError && orch::fx::recordsAsEffect(kind))
+          d_.hooks.onEffect(chatId, regName, r.output);
         noteTruthEffect(regName, r.isError, r.output);   // RB-G0
         return r;
       };
