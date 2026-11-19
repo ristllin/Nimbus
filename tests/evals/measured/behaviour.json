@@ -6527,5 +6527,571 @@
    "zai_usd": 4.9596,
    "note": "heads include the pilots and the discarded runs; judges are the claim judge and the totals judge"
   }
+ },
+ "records_rb_rec6_part2": {
+  "lane": "RB-REC6",
+  "generated": "2026-11-19",
+  "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
+  "evidence": "/Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/RB-REC6/evidence/part2/main",
+  "cells": {
+   "claude-haiku-5-5": {
+    "S": {
+     "episodes": 150,
+     "usd": 0.0881,
+     "total_accuracy": {
+      "k": 144,
+      "n": 150,
+      "rate": 0.96,
+      "lower95": 0.9226
+     },
+     "total_verdicts": {
+      "full": 84,
+      "partial_named": 60,
+      "wrong": 2,
+      "partial_silent": 4
+     },
+     "total_partial_judged": 64,
+     "total_used_sum": 148,
+     "total_used_calc": 8,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 48,
+       "n": 50,
+       "rate": 0.96,
+       "lower95": 0.8794
+      },
+      "expenses": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "training": {
+       "k": 47,
+       "n": 50,
+       "rate": 0.94,
+       "lower95": 0.8522
+      }
+     }
+    }
+   },
+   "gpt-5.6-luna": {
+    "S": {
+     "episodes": 340,
+     "usd": 0.1708,
+     "total_accuracy": {
+      "k": 70,
+      "n": 150,
+      "rate": 0.4667,
+      "lower95": 0.3973
+     },
+     "total_verdicts": {
+      "full": 70,
+      "partial_silent": 76,
+      "wrong": 4
+     },
+     "total_partial_judged": 76,
+     "total_used_sum": 150,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 24,
+       "n": 50,
+       "rate": 0.48,
+       "lower95": 0.3573
+      },
+      "expenses": {
+       "k": 21,
+       "n": 50,
+       "rate": 0.42,
+       "lower95": 0.3014
+      },
+      "training": {
+       "k": 25,
+       "n": 50,
+       "rate": 0.5,
+       "lower95": 0.3762
+      }
+     },
+     "first_call": {
+      "k": 178,
+      "n": 186,
+      "rate": 0.957,
+      "lower95": 0.9237
+     },
+     "first_call_correction_identical": {
+      "k": 139,
+      "n": 147,
+      "rate": 0.9456,
+      "lower95": 0.9039
+     },
+     "write_turns_without_a_write": 4,
+     "effect": {
+      "k": 184,
+      "n": 190,
+      "rate": 0.9684,
+      "lower95": 0.9386
+     },
+     "effect_correction_identical": {
+      "k": 147,
+      "n": 151,
+      "rate": 0.9735,
+      "lower95": 0.9404
+     },
+     "totals_after_correction_identical": {
+      "k": 147,
+      "n": 151,
+      "rate": 0.9735,
+      "lower95": 0.9404
+     },
+     "stray_or_duplicate": {
+      "k": 2,
+      "n": 190,
+      "rate": 0.0105,
+      "upper95": 0.0328
+     },
+     "by_sub": {
+      "add": {
+       "k": 37,
+       "n": 39,
+       "rate": 0.9487,
+       "lower95": 0.8472
+      },
+      "correct_hidden": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "correct_visible": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "identical": {
+       "k": 37,
+       "n": 37,
+       "rate": 1.0,
+       "lower95": 0.9222
+      },
+      "move": {
+       "k": 32,
+       "n": 36,
+       "rate": 0.8889,
+       "lower95": 0.7635
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 60,
+       "n": 64,
+       "rate": 0.9375,
+       "lower95": 0.8627
+      },
+      "expenses": {
+       "k": 59,
+       "n": 59,
+       "rate": 1.0,
+       "lower95": 0.9505
+      },
+      "training": {
+       "k": 59,
+       "n": 63,
+       "rate": 0.9365,
+       "lower95": 0.8606
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 64,
+       "n": 64,
+       "rate": 1.0,
+       "lower95": 0.9543
+      },
+      "expenses": {
+       "k": 57,
+       "n": 63,
+       "rate": 0.9048,
+       "lower95": 0.8207
+      },
+      "training": {
+       "k": 63,
+       "n": 63,
+       "rate": 1.0,
+       "lower95": 0.9536
+      }
+     },
+     "history_line_added": 2,
+     "totals_after_correction_identical_without_ambiguous": {
+      "k": 147,
+      "n": 148,
+      "rate": 0.9932,
+      "lower95": 0.9683
+     },
+     "first_call_correction_identical_without_ambiguous": {
+      "k": 139,
+      "n": 147,
+      "rate": 0.9456,
+      "lower95": 0.9039
+     },
+     "ambiguous_episodes": 3,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 190,
+      "rate": 0.0,
+      "upper95": 0.0156
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     }
+    },
+    "Sp": {
+     "episodes": 150,
+     "usd": 0.0746,
+     "total_accuracy": {
+      "k": 91,
+      "n": 150,
+      "rate": 0.6067,
+      "lower95": 0.5366
+     },
+     "total_verdicts": {
+      "full": 88,
+      "partial_silent": 57,
+      "partial_named": 3,
+      "wrong": 2
+     },
+     "total_partial_judged": 60,
+     "total_used_sum": 150,
+     "total_used_calc": 20,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 32,
+       "n": 50,
+       "rate": 0.64,
+       "lower95": 0.5142
+      },
+      "expenses": {
+       "k": 32,
+       "n": 50,
+       "rate": 0.64,
+       "lower95": 0.5142
+      },
+      "training": {
+       "k": 27,
+       "n": 50,
+       "rate": 0.54,
+       "lower95": 0.4148
+      }
+     }
+    },
+    "Sq": {
+     "episodes": 150,
+     "usd": 0.0646,
+     "total_accuracy": {
+      "k": 118,
+      "n": 150,
+      "rate": 0.7867,
+      "lower95": 0.7243
+     },
+     "total_verdicts": {
+      "wrong": 7,
+      "full": 101,
+      "partial_silent": 25,
+      "partial_named": 17
+     },
+     "total_partial_judged": 42,
+     "total_used_sum": 150,
+     "total_used_calc": 36,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 40,
+       "n": 50,
+       "rate": 0.8,
+       "lower95": 0.6844
+      },
+      "expenses": {
+       "k": 41,
+       "n": 50,
+       "rate": 0.82,
+       "lower95": 0.7069
+      },
+      "training": {
+       "k": 37,
+       "n": 50,
+       "rate": 0.74,
+       "lower95": 0.6187
+      }
+     }
+    },
+    "Spq": {
+     "episodes": 150,
+     "usd": 0.0816,
+     "total_accuracy": {
+      "k": 128,
+      "n": 150,
+      "rate": 0.8533,
+      "lower95": 0.7972
+     },
+     "total_verdicts": {
+      "full": 118,
+      "wrong": 8,
+      "partial_silent": 14,
+      "partial_named": 10
+     },
+     "total_partial_judged": 24,
+     "total_used_sum": 150,
+     "total_used_calc": 55,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 44,
+       "n": 50,
+       "rate": 0.88,
+       "lower95": 0.7768
+      },
+      "expenses": {
+       "k": 44,
+       "n": 50,
+       "rate": 0.88,
+       "lower95": 0.7768
+      },
+      "training": {
+       "k": 40,
+       "n": 50,
+       "rate": 0.8,
+       "lower95": 0.6844
+      }
+     }
+    }
+   },
+   "glm-5.3": {
+    "S": {
+     "episodes": 60,
+     "usd": 0.9283,
+     "total_accuracy": {
+      "k": 51,
+      "n": 60,
+      "rate": 0.85,
+      "lower95": 0.7528
+     },
+     "total_verdicts": {
+      "full": 48,
+      "partial_silent": 4,
+      "wrong": 5,
+      "partial_named": 3
+     },
+     "total_partial_judged": 7,
+     "total_used_sum": 60,
+     "total_used_calc": 12,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 17,
+       "n": 20,
+       "rate": 0.85,
+       "lower95": 0.6563
+      },
+      "expenses": {
+       "k": 17,
+       "n": 20,
+       "rate": 0.85,
+       "lower95": 0.6563
+      },
+      "training": {
+       "k": 17,
+       "n": 20,
+       "rate": 0.85,
+       "lower95": 0.6563
+      }
+     }
+    }
+   },
+   "claude-sonnet-5-5": {
+    "S": {
+     "episodes": 250,
+     "usd": 2.0659,
+     "total_accuracy": {
+      "k": 59,
+      "n": 60,
+      "rate": 0.9833,
+      "lower95": 0.9234
+     },
+     "total_verdicts": {
+      "full": 57,
+      "partial_named": 2,
+      "partial_silent": 1
+     },
+     "total_partial_judged": 3,
+     "total_used_sum": 60,
+     "total_used_calc": 20,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 19,
+       "n": 20,
+       "rate": 0.95,
+       "lower95": 0.7839
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      }
+     },
+     "first_call": {
+      "k": 181,
+      "n": 190,
+      "rate": 0.9526,
+      "lower95": 0.9188
+     },
+     "first_call_correction_identical": {
+      "k": 142,
+      "n": 151,
+      "rate": 0.9404,
+      "lower95": 0.8983
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 190,
+      "n": 190,
+      "rate": 1.0,
+      "lower95": 0.9844
+     },
+     "effect_correction_identical": {
+      "k": 151,
+      "n": 151,
+      "rate": 1.0,
+      "lower95": 0.9804
+     },
+     "totals_after_correction_identical": {
+      "k": 151,
+      "n": 151,
+      "rate": 1.0,
+      "lower95": 0.9804
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 190,
+      "rate": 0.0,
+      "upper95": 0.0156
+     },
+     "by_sub": {
+      "add": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "correct_hidden": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "correct_visible": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "identical": {
+       "k": 37,
+       "n": 37,
+       "rate": 1.0,
+       "lower95": 0.9222
+      },
+      "move": {
+       "k": 36,
+       "n": 36,
+       "rate": 1.0,
+       "lower95": 0.9202
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 56,
+       "n": 64,
+       "rate": 0.875,
+       "lower95": 0.7857
+      },
+      "expenses": {
+       "k": 62,
+       "n": 63,
+       "rate": 0.9841,
+       "lower95": 0.9269
+      },
+      "training": {
+       "k": 63,
+       "n": 63,
+       "rate": 1.0,
+       "lower95": 0.9536
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 64,
+       "n": 64,
+       "rate": 1.0,
+       "lower95": 0.9543
+      },
+      "expenses": {
+       "k": 63,
+       "n": 63,
+       "rate": 1.0,
+       "lower95": 0.9536
+      },
+      "training": {
+       "k": 63,
+       "n": 63,
+       "rate": 1.0,
+       "lower95": 0.9536
+      }
+     },
+     "history_line_added": 0,
+     "totals_after_correction_identical_without_ambiguous": {
+      "k": 148,
+      "n": 148,
+      "rate": 1.0,
+      "lower95": 0.98
+     },
+     "first_call_correction_identical_without_ambiguous": {
+      "k": 139,
+      "n": 148,
+      "rate": 0.9392,
+      "lower95": 0.8963
+     },
+     "ambiguous_episodes": 3
+    }
+   }
+  },
+  "usd": {
+   "anthropic_heads_usd": 2.1547,
+   "anthropic_judges_usd": 0.6326,
+   "openai_usd": 0.387,
+   "zai_usd": 0.9283,
+   "note": "ruling 88 re-measure on the tip with the coverage clause and the line part pick; Sp, Sq, Spq are candidate wordings applied in the rig, not built"
+  }
  }
 }

@@ -229,6 +229,7 @@ def main():
     ap.add_argument("--heads", default="")
     ap.add_argument("--measured", default="", help="merge the cells into this behaviour.json under records_rb_rec6")
     ap.add_argument("--spend", default="", help="a JSON object of USD per provider for the record")
+    ap.add_argument("--key", default="records_rb_rec6", help="the key in --measured (part 2: records_rb_rec6_part2)")
     args = ap.parse_args()
     ev = Path(args.evidence)
     heads = args.heads.split(",") if args.heads else [h for h in HEAD_ORDER if (ev / h).is_dir()]
@@ -245,7 +246,7 @@ def main():
     if args.measured:
         m = Path(args.measured)
         d = json.loads(m.read_text())
-        d["records_rb_rec6"] = {
+        d[args.key] = {
             "lane": "RB-REC6",
             "generated": __import__("datetime").date.today().isoformat(),
             "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
