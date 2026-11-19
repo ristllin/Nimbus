@@ -632,3 +632,41 @@ def judge_write(ep: dict, before_text: str, after_text: str) -> dict:
         stray += len(added) + max(0, len(removed) - 1) + (1 if removed and removed[0] != old_line else 0)
     out.update({"ok": ok and stray == 0, "effect_ok": ok, "stray": stray, "dup": dup})
     return out
+
+
+NUMERIC = {"food": ("qty", "kcal", "protein_g"), "expenses": ("amount",), "training": ("sets", "reps", "kg")}
+
+
+def _day_totals(text: str, dom: str, days: set) -> dict:
+    """Per day and numeric column, the total of the rows a device sum counts (the header's field count)."""
+    header = DOMAINS[dom]["header"]
+    out = {}
+    for line in _data_lines(text):
+        f = line.split(",")
+        if len(f) != len(header) or f[0] not in days:
+            continue
+        for col in NUMERIC[dom]:
+            v = f[header.index(col)]
+            try:
+                out[(f[0], col)] = round(out.get((f[0], col), 0.0) + (float(v) if v else 0.0), 3)
+            except ValueError:
+                out[(f[0], col)] = None
+    return out
+
+
+def totals_after_fix(ep: dict, before_text: str, after_text: str) -> bool:
+    """Correction, move and identical-row episodes: every device total of the days the change touches
+    (each numeric column) equals the total the owner's request leads to."""
+    exp, dom = ep["expect"], ep["dom"]
+    if exp["op"] == "add":
+        return True
+    old = ",".join(exp["old"])
+    days = {exp["old"][0]} | ({exp["new"][0]} if exp["op"] == "replace" else set())
+    lines = (before_text or "").split("\n")
+    if exp["op"] == "replace" and exp.get("appended_in_prior") is not None:
+        k = lines.index(old)
+        lines[k] = ",".join(exp["new"])
+    else:
+        lines.remove(old)
+    want = _day_totals("\n".join(lines), dom, days)
+    return _day_totals(after_text, dom, days) == want

@@ -133,6 +133,24 @@ class WriteCheck(unittest.TestCase):
         self.assertFalse(lost["ok"])
 
 
+class TotalsAfterFix(unittest.TestCase):
+    head = "date,time,item,category,amount,note\n"
+    row = "2026-11-19,08:00,coffee,eating out,3.2,"
+
+    def test_one_of_two_identical_removed_gives_the_day_total(self):
+        e = {"dom": "expenses", "expect": {"op": "remove_one", "old": self.row.split(",")}}
+        before = self.head + self.row + "\n" + self.row + "\n"
+        self.assertTrue(records.totals_after_fix(e, before, self.head + self.row + "\n"))
+        self.assertFalse(records.totals_after_fix(e, before, self.head))
+
+    def test_a_move_changes_both_days(self):
+        moved = "2026-11-18" + self.row[10:]
+        e = {"dom": "expenses", "expect": {"op": "replace", "old": self.row.split(","), "new": moved.split(","),
+                                           "appended_in_prior": False}}
+        self.assertTrue(records.totals_after_fix(e, self.head + self.row + "\n", self.head + moved + "\n"))
+        self.assertFalse(records.totals_after_fix(e, self.head + self.row + "\n", self.head + self.row + "\n"))
+
+
 @unittest.skipUnless(os.environ.get("AIDSERVE"), "set AIDSERVE to the built aidserve for the dry runs")
 class DryRuns(unittest.TestCase):
     def run_cell(self, kind, arm):

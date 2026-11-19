@@ -10,6 +10,8 @@ Definitions:
                   rows it left out (records.judge_total); a total that silently misses named rows fails.
   first call      the first write call of a write turn returns without an error (fault episodes are out).
   effect          the file holds exactly the change asked for (records.judge_write).
+  totals after fix  correction, move and identical-row episodes: every device total (each numeric
+                  column) of the days the change touches equals the total the request leads to.
   stray/dup       a write episode added a line it was not asked for: a duplicate, a blank line, a
                   changed header or comment line, a second edit.
   false claim     judged (judge_records.py): the reply says a change was made that the file lacks.
@@ -88,6 +90,9 @@ def cell(recs: list, labels: dict) -> dict:
         out["effect"] = lo(sum(r["file"]["ok"] for r in wr), len(wr))
         ci = [r for r in wr if r["sub"] in ("correct_visible", "correct_hidden", "identical", "move")]
         out["effect_correction_identical"] = lo(sum(r["file"]["ok"] for r in ci), len(ci))
+        out["totals_after_correction_identical"] = lo(
+            sum(records.totals_after_fix({"dom": r["dom"], "expect": r["expect"]}, r["before"], r["after"]) for r in ci),
+            len(ci))
         out["stray_or_duplicate"] = up(sum(1 for r in wr if r["file"]["stray"]), len(wr))
         out["by_sub"] = {s: lo(sum(r["file"]["ok"] for r in wr if r["sub"] == s), sum(1 for r in wr if r["sub"] == s))
                          for s in sorted({r["sub"] for r in wr})}
@@ -135,12 +140,13 @@ def fmt(r) -> str:
 
 def table(res: dict) -> str:
     lines = ["| head | arm | n | total accuracy | first call | first call (corr/ident) | effect | stray or dup | "
-             "false claim (judged) | pickup | task (K) | USD |", "|" + "---|" * 12]
+             "totals after fix | false claim (judged) | pickup | task (K) | USD |", "|" + "---|" * 13]
     for head, arms in res.items():
         for arm, c in arms.items():
             g = lambda k: fmt(c[k]) if k in c else ""  # noqa: E731
             lines.append(f"| {head} | {arm} | {c['episodes']} | {g('total_accuracy')} | {g('first_call')} | "
                          f"{g('first_call_correction_identical')} | {g('effect')} | {g('stray_or_duplicate')} | "
+                         f"{g('totals_after_correction_identical')} | "
                          f"{g('false_claim_judged')} | {g('pickup_before_first_action')} | {g('task_success')} | "
                          f"{c['usd']} |")
     return "\n".join(lines)
