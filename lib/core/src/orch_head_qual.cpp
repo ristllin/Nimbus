@@ -19,8 +19,7 @@ constexpr State H = State::Held;
 // line. Within a host, specific families come before the host's "*" row. A family is
 // the exact id plus its dated forms ("<id>-*"), never a bare prefix that would also
 // match a different model ("claude-sonnet-5-5*" would take claude-sonnet-5-50).
-#define HQ_ROW(host, family, wire, e1, e2, cap, prof, truth) \
-  Row{host, family, Wire::wire, e1, e2, cap, Profile::prof, Truth::truth}
+#define HQ_ROW(host, family, wire, e1, e2, truth) Row{host, family, Wire::wire, e1, e2, Truth::truth}
 
 // Initial rows (PRD section 9; ruling 9 for the truth modes). Anthropic Sonnet and
 // Haiku are qualified on e1 by v5.2.0's own parity run (RB-R1 flips a row back if it
@@ -28,26 +27,26 @@ constexpr State H = State::Held;
 // (RB-R1 for e1, RB-W2 to RB-W4 for e2); Mistral and custom are held. Nothing is
 // qualified on e2 before its parity run.
 const Row kRows[] = {
-    HQ_ROW("anthropic", "claude-sonnet-5-5", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
-    HQ_ROW("anthropic", "claude-sonnet-5-5-*", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
-    HQ_ROW("anthropic", "claude-haiku-5-5", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
-    HQ_ROW("anthropic", "claude-haiku-5-5-*", AnthropicMessages, Q, A, kNoTableCap, Wide, Enforce),
-    HQ_ROW("anthropic", "claude-sonnet-5", AnthropicMessages, A, A, kNoTableCap, Wide, Enforce),
-    HQ_ROW("anthropic", "*", AnthropicMessages, H, H, kUnqualifiedBodyCap, Lean, Enforce),
-    HQ_ROW("openai", "gpt-5.6-luna*", OpenAiResponses, A, A, kNoTableCap, Wide, ReceiptOnly),
-    HQ_ROW("openai", "gpt-5.6*", OpenAiResponses, A, A, kNoTableCap, Wide, ReceiptOnly),
-    HQ_ROW("openai", "*", OpenAiResponses, H, H, kUnqualifiedBodyCap, Lean, ReceiptOnly),
-    HQ_ROW("zai", "glm-5.3*", ChatCompat, A, A, kUnqualifiedBodyCap, Lean, ReceiptOnly),
-    HQ_ROW("zai", "*", ChatCompat, H, H, kUnqualifiedBodyCap, Lean, ReceiptOnly),
-    HQ_ROW("cumulo", "*", Router, A, A, kUnqualifiedBodyCap, Lean, ReceiptOnly),
-    HQ_ROW("mistral", "*", MistralChat, H, H, kUnqualifiedBodyCap, Lean, ReceiptOnly),
-    HQ_ROW("custom", "*", ChatCompat, H, H, kUnqualifiedBodyCap, Lean, ReceiptOnly),
+    HQ_ROW("anthropic", "claude-sonnet-5-5", AnthropicMessages, Q, A, Enforce),
+    HQ_ROW("anthropic", "claude-sonnet-5-5-*", AnthropicMessages, Q, A, Enforce),
+    HQ_ROW("anthropic", "claude-haiku-5-5", AnthropicMessages, Q, A, Enforce),
+    HQ_ROW("anthropic", "claude-haiku-5-5-*", AnthropicMessages, Q, A, Enforce),
+    HQ_ROW("anthropic", "claude-sonnet-5", AnthropicMessages, A, A, Enforce),
+    HQ_ROW("anthropic", "*", AnthropicMessages, H, H, Enforce),
+    HQ_ROW("openai", "gpt-5.6-luna*", OpenAiResponses, A, A, ReceiptOnly),
+    HQ_ROW("openai", "gpt-5.6*", OpenAiResponses, A, A, ReceiptOnly),
+    HQ_ROW("openai", "*", OpenAiResponses, H, H, ReceiptOnly),
+    HQ_ROW("zai", "glm-5.3*", ChatCompat, A, A, ReceiptOnly),
+    HQ_ROW("zai", "*", ChatCompat, H, H, ReceiptOnly),
+    HQ_ROW("cumulo", "*", Router, A, A, ReceiptOnly),
+    HQ_ROW("mistral", "*", MistralChat, H, H, ReceiptOnly),
+    HQ_ROW("custom", "*", ChatCompat, H, H, ReceiptOnly),
 };
 
 #undef HQ_ROW
 
-// The row every unknown head gets: held everywhere, lean, receipt-only.
-const Row kUnknown{"*", "*", Wire::Any, H, H, kUnqualifiedBodyCap, Profile::Lean, Truth::ReceiptOnly};
+// The row every unknown head gets: held everywhere, receipt-only.
+const Row kUnknown{"*", "*", Wire::Any, H, H, Truth::ReceiptOnly};
 
 State stateOn(const Row& r, Line l) { return l == Line::E1 ? r.e1 : r.e2; }
 
@@ -92,16 +91,6 @@ Wire wireForHost(const char* host) {
   return Wire::Any;
 }
 
-const char* profileSlug(Profile p) {
-  switch (p) {
-    case Profile::Tight:    return "tight";
-    case Profile::Lean:     return "lean";
-    case Profile::Standard: return "standard";
-    case Profile::Wide:     return "wide";
-  }
-  return "lean";
-}
-
 const char* truthSlug(Truth t) {
   switch (t) {
     case Truth::ReceiptOnly: return "receipt-only";
@@ -127,12 +116,9 @@ static const Row& matchRow(const char* host, const char* model, Wire wire) {
 
 Verdict lookup(const char* host, const char* model, Line line, Wire wire) {
   const Row& r = matchRow(host, model, wire);
-  Verdict v{&r, stateOn(r, line), kUnqualifiedBodyCap, Profile::Lean, r.truth};
-  if (v.state != State::Qualified) return v;
-  // e1 keeps v5.1.2's budgets on every head (PRD section 9); the table caps e2 only.
-  v.bodyCap = line == Line::E1 ? kNoTableCap : r.bodyCap;
-  v.profileCap = r.profileCap;
-  return v;
+  // The state decides which engine answers and the truth mode, never the window (ruling 83 item 6):
+  // e1 keeps every head's v5.1.2 budget, e2 gives every head its full budget (tx::budgetFor).
+  return Verdict{&r, stateOn(r, line), r.truth};
 }
 
 std::string renderHoldHeads(Line line) {

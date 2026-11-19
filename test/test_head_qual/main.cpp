@@ -1,5 +1,7 @@
 #include <unity.h>
 
+#include <type_traits>
+
 #include <cstring>
 #include <set>
 #include <string>
@@ -112,32 +114,39 @@ static void test_unknown_heads_fail_closed() {
     for (Line l : {Line::E1, Line::E2}) {
       const Verdict v = lookup(q.host, q.model, l, q.wire);
       TEST_ASSERT_EQUAL((int)State::Held, (int)v.state);
-      TEST_ASSERT_EQUAL_UINT32(kUnqualifiedBodyCap, v.bodyCap);
-      TEST_ASSERT_EQUAL((int)Profile::Lean, (int)v.profileCap);
       TEST_ASSERT_EQUAL((int)Truth::ReceiptOnly, (int)v.truth);
       TEST_ASSERT_EQUAL_STRING("*", v.row->host);
     }
 }
 
-// Class rule over every row and line: an unqualified head is capped at 85,000 B and
-// lean; a qualified one keeps v5.1.2's budgets on e1 and its row's caps on e2.
-static void test_caps_follow_state() {
+// Ruling 83 items 5 and 6: qualification decides which engine answers and the truth mode, never the
+// size of the window. Neither a row nor a verdict carries a body or a profile: an unqualified head
+// keeps its released budget on engine 1 and gets its full budget on engine 2 (tx::budgetFor).
+template <typename T, typename = void>
+struct HasBodyCap : std::false_type {};
+template <typename T>
+struct HasBodyCap<T, std::void_t<decltype(&T::bodyCap)>> : std::true_type {};
+template <typename T, typename = void>
+struct HasProfileCap : std::false_type {};
+template <typename T>
+struct HasProfileCap<T, std::void_t<decltype(&T::profileCap)>> : std::true_type {};
+struct Sized {
+  uint32_t bodyCap;
+  int profileCap;
+};
+
+static void test_qualification_never_sizes_the_window() {
+  TEST_ASSERT_TRUE(HasBodyCap<Sized>::value && HasProfileCap<Sized>::value);   // the detectors see a cap
+  TEST_ASSERT_FALSE(HasBodyCap<Row>::value);
+  TEST_ASSERT_FALSE(HasProfileCap<Row>::value);
+  TEST_ASSERT_FALSE(HasBodyCap<Verdict>::value);
+  TEST_ASSERT_FALSE(HasProfileCap<Verdict>::value);
   size_t n = 0;
   const Row* r = rows(n);
   for (size_t i = 0; i < n; i++) {
     std::string model = r[i].family;
     if (model.back() == '*') model.back() = 'x';
-    for (Line l : {Line::E1, Line::E2}) {
-      const Verdict v = lookup(r[i].host, model.c_str(), l);
-      TEST_ASSERT_TRUE_MESSAGE(v.row == &r[i], model.c_str());
-      if (holds(v.state)) {
-        TEST_ASSERT_EQUAL_UINT32(kUnqualifiedBodyCap, v.bodyCap);
-        TEST_ASSERT_EQUAL((int)Profile::Lean, (int)v.profileCap);
-      } else {
-        TEST_ASSERT_EQUAL_UINT32(l == Line::E1 ? kNoTableCap : r[i].bodyCap, v.bodyCap);
-        TEST_ASSERT_EQUAL((int)r[i].profileCap, (int)v.profileCap);
-      }
-    }
+    for (Line l : {Line::E1, Line::E2}) TEST_ASSERT_TRUE_MESSAGE(lookup(r[i].host, model.c_str(), l).row == &r[i], model.c_str());
   }
 }
 
@@ -155,7 +164,6 @@ static void test_slugs() {
   TEST_ASSERT_EQUAL_STRING("qualified", stateSlug(State::Qualified));
   TEST_ASSERT_EQUAL_STRING("router", wireSlug(wireForHost("cumulo")));
   TEST_ASSERT_EQUAL_STRING("any", wireSlug(wireForHost("google")));
-  TEST_ASSERT_EQUAL_STRING("lean", profileSlug(Profile::Lean));
   TEST_ASSERT_EQUAL_STRING("enforce", truthSlug(Truth::Enforce));
 }
 
@@ -180,7 +188,7 @@ int main(int, char**) {
   RUN_TEST(test_default_heads_have_rows);
   RUN_TEST(test_initial_states);
   RUN_TEST(test_unknown_heads_fail_closed);
-  RUN_TEST(test_caps_follow_state);
+  RUN_TEST(test_qualification_never_sizes_the_window);
   RUN_TEST(test_slugs);
   RUN_TEST(test_pattern_match);
   return UNITY_END();

@@ -207,6 +207,13 @@ void test_the_named_head_classes() {
   TEST_ASSERT_EQUAL_UINT32(tx::kWarmBulkBytesFloor, b.warmBulk);
   b = direct("custom", "llama-3-70b");
   TEST_ASSERT_TRUE(b.floorHead);
+  // A held (unqualified) head gets its full budget: qualification never sizes the window.
+  b = direct("mistral", "mistral-large-4-0");
+  TEST_ASSERT_EQUAL_UINT32(360000, b.bodyCap);
+  TEST_ASSERT_FALSE(b.floorHead);
+  TEST_ASSERT_EQUAL_UINT32(100000, b.tokens.aim);
+  // A key the table cannot read is refused, never sized as a smaller head.
+  TEST_ASSERT_TRUE(tx::budgetFor(tx::HeadKey{}, tx::Profile::Full, b).err == tx::Err::InvalidArgument);
 }
 
 // ---- 3. both routed rows, one switch ---------------------------------------------------------

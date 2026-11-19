@@ -14,9 +14,10 @@
 //     ladder (lookup()).
 // Pure: no Arduino, host-tested (test/test_head_qual).
 //
-// A head absent from the table is UNQUALIFIED on every line: held, the lean
-// profile, the 85,000 B body cap, receipt-only truth checking. Every reader fails
-// closed to that row.
+// A head absent from the table is UNQUALIFIED on every line: held and receipt-only
+// truth checking. Every reader fails closed to that row. The table never sizes a
+// window (ruling 83 item 6): the head's budget is its own (orch::requestBudgetFor on
+// engine 1, tx::budgetFor on engine 2), whatever its state.
 
 namespace nimbus {
 namespace orch {
@@ -47,18 +48,9 @@ enum class Wire : uint8_t {
 const char* wireSlug(Wire w);
 Wire wireForHost(const char* host);                 // the device's one wire per host
 
-// The context profile cap (PRD section 2): the largest profile a head may run.
-enum class Profile : uint8_t { Tight = 0, Lean = 1, Standard = 2, Wide = 3 };
-const char* profileSlug(Profile p);
-
 // The truth check mode a head STARTS in on a line (PRD section 8 item 8, ruling 9).
 enum class Truth : uint8_t { ReceiptOnly = 0, Enforce = 1, Shadow = 2 };
 const char* truthSlug(Truth t);
-
-// The body cap an unqualified head is held at (PRD section 2, the lean profile).
-inline constexpr uint32_t kUnqualifiedBodyCap = 85000;
-// No cap from this table: main's requestBudgetFor decides alone.
-inline constexpr uint32_t kNoTableCap = 0xFFFFFFFFu;
 
 struct Row {
   const char* host;        // provider slug ("anthropic", "openai", "mistral", "zai", "cumulo", "custom")
@@ -66,8 +58,6 @@ struct Row {
   Wire        wire;
   State       e1;
   State       e2;
-  uint32_t    bodyCap;     // B when qualified (kNoTableCap = defer to requestBudgetFor)
-  Profile     profileCap;  // the profile cap when qualified
   Truth       truth;       // the start mode of the truth check
 };
 
@@ -80,8 +70,6 @@ const Row* rows(size_t& count);
 struct Verdict {
   const Row* row;
   State      state;
-  uint32_t   bodyCap;      // kUnqualifiedBodyCap unless qualified on an E2 line
-  Profile    profileCap;   // Lean unless qualified
   Truth      truth;
 };
 Verdict lookup(const char* host, const char* model, Line line, Wire wire = Wire::Any);
