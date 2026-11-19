@@ -1477,6 +1477,17 @@
       ],
       "plan_text": "settings schema, webui_page.h (setting beside time zone), plain_request.cpp stamp builder, texts.h kStamped, digest day boundary, nimbusd config parity, tests test_stamp_day"
     },
+    "RB-REC6": {
+      "stage": "S2",
+      "files": [
+        "tests/evals/behaviour/**",
+        "tests/evals/measured/behaviour.json"
+      ],
+      "notes": [
+        "The truth probe's measured neutral wording (ruling 46, orchestrator note 4) is declared as cross-lane edits in PR_BODY.md: lib/core/include/nimbus/orch/truth.h, tests/evals/probe/prompt.txt, tests/evals/measured/probe.json, test/test_truth/main.cpp, test/test_plain_request/main.cpp, docs/turn-anatomy.md, lib/core/include/nimbus/docs_pack_data.h, test/golden/model_text_catalog_e1.txt and coverage/PROMPT-CHANGES.md (PC-0094)."
+      ],
+      "plan_text": "tests/evals/behaviour (new arms), tests/evals/measured/behaviour.json, report in the lane folder"
+    },
     "RB-REC8": {
       "stage": "S1",
       "files": [
