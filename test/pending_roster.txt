@@ -7,13 +7,11 @@
 # First holder: lane RB-B0b (the battery's property suites).
 
 # test_tx_prefix
-test_tx_prefix::test_wire_prefix_anthropic RB-W1a
 test_tx_prefix::test_wire_prefix_responses RB-W2
 test_tx_prefix::test_wire_prefix_chat RB-W3
 test_tx_prefix::test_wire_prefix_flat RB-W4
 
 # test_tx_pairing
-test_tx_pairing::test_wire_pairing_anthropic RB-W1a
 test_tx_pairing::test_wire_pairing_responses RB-W2
 test_tx_pairing::test_wire_pairing_chat RB-W3
 test_tx_pairing::test_wire_pairing_flat RB-W4
@@ -21,7 +19,6 @@ test_tx_pairing::test_a_suppressed_repeat_is_still_paired RB-E1b
 test_tx_pairing::test_pairs_survive_a_cut_at_every_append RB-X1
 
 # test_tx_coverage
-test_tx_coverage::test_wire_coverage_anthropic RB-W1a
 test_tx_coverage::test_wire_coverage_responses RB-W2
 test_tx_coverage::test_wire_coverage_chat RB-W3
 test_tx_coverage::test_wire_coverage_flat RB-W4
@@ -42,7 +39,6 @@ test_tx_crash::test_a_stored_reply_never_sent_is_sent_without_a_model_call RB-X1
 test_tx_crash::test_restart_and_install_are_never_resumed RB-X1
 
 # test_tx_overhead
-test_tx_overhead::test_wire_overhead_anthropic RB-W1a
 test_tx_overhead::test_wire_overhead_responses RB-W2
 test_tx_overhead::test_wire_overhead_chat RB-W3
 test_tx_overhead::test_wire_overhead_flat RB-W4

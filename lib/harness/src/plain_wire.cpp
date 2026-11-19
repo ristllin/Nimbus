@@ -5,10 +5,14 @@
 namespace agent {
 namespace plain {
 
+const WireCodec& anthropicWire();   // providers/plain_wire_anthropic.cpp (RB-W1a, RB-W1b)
+
 Status wireFor(Dialect dialect, const WireCodec*& out) {
   out = nullptr;
   switch (dialect) {
-    case Dialect::AnthropicMessages: return Status::pending("plain::wireFor anthropic");
+    case Dialect::AnthropicMessages:
+      out = &anthropicWire();
+      return Status::success();
     case Dialect::OpenAIResponses: return Status::pending("plain::wireFor responses");
     case Dialect::ChatCompletions: return Status::pending("plain::wireFor chat");
     case Dialect::Flat: return Status::pending("plain::wireFor flat");

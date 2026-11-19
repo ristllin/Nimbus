@@ -654,6 +654,45 @@ durability around it and nothing that reads, edits or appends to the model's tex
 `test/test_plain_conformance/engine_tests.h` drives scripted turns on each dialect's stand-in
 wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each lands).
 
+### The Anthropic wire: what a request carries
+
+`providers/plain_wire_anthropic.cpp` (`wireFor(Dialect::AnthropicMessages)`) renders one
+Messages API request from the stored transcript; the response half is RB-W1b's. Render is a
+pure function of `RenderInput`: the same items and facts give the same bytes every time and
+after a restart.
+
+- **Envelope**: `model`, `max_tokens` (required: a render with no output cap is refused),
+  `output_config.effort` when the head sets one, the three system blocks as given (an empty
+  block is left out), the tools exactly as given, `tool_choice` auto, or none on the guard's
+  last round. Headers: `x-api-key` (a routed head sends a bearer token instead), the API
+  version, and the Files beta only when a photo goes by file id. No key rides a cleartext
+  socket.
+- **Messages** come from the items after the newest digest's `thru`, in stored order. An
+  owner message opens its own user message: its stamped text, then each photo, as pixels
+  when the open turn's `t` item lists it as visible, else its stub line. Assistant text,
+  calls and the open turn's signed thinking go in the assistant message; results and device
+  notes in the user message after it. Closed turns' thinking, whitespace-only text and the
+  bookkeeping items (`t i x s d e`) are not sent. A block joins the message before it only
+  in the same role and turn, so a later item never rewrites a message already sent.
+- **Pairing, whatever was stored**: a call is sent only with its one result and a result
+  only after its call; dangling calls, orphan or second results and repeated ids are left
+  out; the results of a round open the next user message, and anything stored between a
+  call and its result waits until they are sent. Arguments that are not one JSON object (a
+  cut call) are sent as `{}`. An id the API cannot take is sent in a mapped form, the same on
+  the call and its result.
+- **Four cache points**: the end of the notes block (the core when there are no notes), the
+  end of the system, the last block of the previous turn and the moving last block; never on
+  a thinking block. Bytes before a point do not change when a later item is appended.
+- **Stubs and the ladder**: results render whole or as their stored stub by `tx::showResult`
+  (the pointer is the higher of `RenderInput::stubPointer` and the newest `x` item's;
+  `ladderStubThrough` is rung 2), and `omitTurns` replaces the oldest whole turns after
+  `thru` with `tx::omissionLine` (rung 3; never the open turn). The wire writes no text of
+  its own.
+- A refused allocation answers `TooLarge` with nothing rendered (ruling 30).
+
+`test/test_plain_wire_anthropic` checks every body against a strict local model of the
+API's request shape (counter-tested), over random transcripts with stored faults.
+
 ### The battery's property suites (layer L1)
 
 Nine suites state what the plain engine must keep true before it exists:
