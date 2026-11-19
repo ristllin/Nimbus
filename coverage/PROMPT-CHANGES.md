@@ -657,8 +657,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: tool_results
 - kind: build
-- bytes: 1936 -> 3823
-- sha8: bfe0657b -> c966a57f
+- bytes: 2635 -> 4522
+- sha8: 614181ca -> 02175228
 - lane: RB-REC4
 - prd: section 4 (the plain file tools), as amended by ruling 42 (the three general aids: read_file column/from/to/sum, edit_file line, the append facts and the torn-tail note)
 - why: lib/core/include/nimbus/orch/file_aids.h, lib/core/src/orch_csv_sum.cpp and lib/core/src/orch_file_aids.cpp, listed in E2_EXTRA_SOURCES (every literal counts, format pieces included): the scan's tail ("rows <m> of <n>", the sums, each row or cell left out of a total by reason with its lines), the comment-line count (ruling 49: a line whose first non-blank byte is # is never a row), the count of other days' rows with a wrong field count (stack review), its errors, the edit's result and errors with current line numbers, and the append facts. Facts only. Planned work (ruling 42; logged as kind build like PC-0005), not a fix. Phase 2a binds them in lib/core/src/orch_file_tools.cpp (its own edit-result and match-count templates leave; the sum and line argument errors join). Id from RB-REC4's reserved range PC-0032..PC-0037 (ruling 51).

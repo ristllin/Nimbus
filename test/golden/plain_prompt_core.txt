@@ -1,12 +1,12 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner host=120s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4606 longest_description=162
-measure role=owner host=60s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4605 longest_description=162
-measure role=member host=120s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4606 longest_description=162
-measure role=member host=60s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4605 longest_description=162
-measure role=guest host=120s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=1813 longest_description=148
-measure role=guest host=60s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=1813 longest_description=148
+measure role=owner host=120s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4879 longest_description=203
+measure role=owner host=60s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4878 longest_description=203
+measure role=member host=120s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4879 longest_description=203
+measure role=member host=60s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4878 longest_description=203
+measure role=guest host=120s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=2009 longest_description=203
+measure role=guest host=60s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=2009 longest_description=203
 == core (owner, 120s, claude-sonnet-5-5, Europe/London)
 You are Nimbus, a personal assistant on a small device, working for one person, the owner, who reaches you over Telegram. Replies are Telegram messages: short and plain.
 
@@ -38,14 +38,14 @@ skills/skill-4.md: when the person plans thing number 4
 skills/skill-5.md: when the person plans thing number 5
 skills/skill-6.md: when the person p
 == tools
-131 132 read_file: Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; next_offset when more remains.
-  {"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"]}
+203 256 read_file: Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; next_offset when more remains. CSV: column with from/to keeps matching rows; sum totals named columns.
+  {"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"sum":{"type":"array","items":{"type":"string"}}},"required":["path"]}
 118 189 write_file: Create or replace a file (project/name). if_exists: fail (default) or replace. Returns the stored path, size and sha8.
   {"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string","maxLength":12000},"if_exists":{"type":"string","enum":["fail","replace"]}},"required":["path","content"]}
 124 109 append_file: Add text to the end of a file (project/name), creating it if missing. It only appends. Returns bytes added and the new size.
   {"type":"object","properties":{"path":{"type":"string"},"text":{"type":"string"}},"required":["path","text"]}
-135 162 edit_file: Exact find and replace in a file. Zero matches, or several without all=true, is an error. Returns the number replaced and the new size.
-  {"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"}},"required":["path","old","new"]}
+186 188 edit_file: Exact find and replace in a file. Zero matches, or several without all=true or line, is an error that lists the match lines. line picks one. Returns the number replaced and the new size.
+  {"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"},"line":{"type":"integer"}},"required":["path","old","new"]}
 120 85 list_files: List files newest first under a prefix (a project, or project/start of a name), up to 40, with a true count of the rest.
   {"type":"object","properties":{"prefix":{"type":"string"},"after":{"type":"string"}}}
 162 293 note: Set or remove one note (key: value). kind rule or fact; pin true keeps it in every prompt, pin false stores it for search. Returns the stored line and space used.
