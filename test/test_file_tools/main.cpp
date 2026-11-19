@@ -1119,9 +1119,9 @@ static void test_read_file_filters_and_totals_csv_rows() {
        blobHash(kLog).substr(0, 8) +
        "\nL2 date,occasion,note,qty,amount\nL4 2026-11-19,lunch,\"rice, beans\",2,7.25\nL7 2026-11-19,tea,green,1,\n"
        "L8 2026-11-19,tea,green,1,\n"
-       "rows 3 of 6 where date 2026-11-19..2026-11-19; sum amount=7.25 qty=4; 2 comment lines skipped (lines 1, 6); "
-       "blank 2 (amount line 7, amount line 8); skipped 1 (line 5: field count is not the header's 5); "
-       "identical lines 1 group (7=8)")
+       "rows 3 of 6 where date 2026-11-19..2026-11-19; sum amount=7.25 (1 of 4 rows; not in it: line 5 (field count is "
+       "not the header's 5), lines 7, 8 (blank)); sum qty=4 (3 of 4 rows; not in it: line 5 (field count is not the "
+       "header's 5)); 2 comment lines skipped (lines 1, 6); identical lines 1 group (7=8)")
           .c_str(),
       r.output.c_str());
   // Every read is 4 KB per hold, one card op each.

@@ -856,3 +856,13 @@ deleted. Engine 2 has no baseline.
 - lane: RB-E3
 - prd: section 8 item 9 (harness-written messages) and owner ruling 82 item 6 (a long turn says it is still working and on what)
 - why: lib/harness/src/plain_deliver.cpp ProgressReporter: the owner's progress line while a long turn runs ("Still working (45 s, step 4): ran read_file.", "waiting for the model's answer.", "taking longer than usual, still making progress.") and its final form ("Worked 74 s (9 steps)."). Owner-facing only: the model never sees it, it is never stored in the transcript; planned work, not a fix
+
+### PC-0095: each sum states what it covers; with line, an edit may match a part of that line
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 4913 -> 5065
+- sha8: 887d1856 -> 432650f6
+- lane: RB-REC6
+- prd: section 4 (the plain file tools), as amended by rulings 42 and 88 (RB-REC6's measurement: the sum result made totals worse on gpt-5.6-luna and glm-5.3; the whole-line rule under line cost claude-sonnet-5-5 its first call on corrections)
+- why: lib/core/src/orch_csv_sum.cpp: when sum is asked each figure carries its coverage in the same clause, as a fact ("sum amount=4.9 (3 of 5 rows; not in it: line 3 (field count is not the header's 6), line 6 (blank))"); the blank, not-a-number, not-compared, skipped and too-long lists move into that clause, and a read without sum is byte for byte as before. lib/core/src/orch_file_aids.cpp: with line and no whole-line match there, an exact part of that line found there once is the match; there twice or more is the new error "<old> is on line <l> <k> times; line <l> is: <text>". Both engines and nimbusd render through these two files. Planned work, not a fix.

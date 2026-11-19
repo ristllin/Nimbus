@@ -585,10 +585,79 @@ static void test_the_filtered_read_has_its_exact_format() {
       "L4 2026-11-19,12:00,d,,3.25\n"
       "L5 2026-11-19,12:00,d,,3.25\n"
       "L7 2026-11-19,14:00,f,x,1\n"
-      "rows 4 of 8 where date 2026-11-19..2026-11-19; sum amount=18 qty=2; blank 2 (qty line 4, qty line 5); "
-      "not a number 1 (qty line 7); not compared 1 (line 6: date blank or not like 2026-11-19); "
-      "skipped 1 (line 8: field count is not the header's 5); empty lines 1; identical lines 1 group (4=5)",
+      "rows 4 of 8 where date 2026-11-19..2026-11-19; sum amount=18 (4 of 6 rows; not in it: line 8 (field count is "
+      "not the header's 5), line 6 (date blank or not like 2026-11-19)); sum qty=2 (1 of 6 rows; not in it: line 8 "
+      "(field count is not the header's 5), line 6 (date blank or not like 2026-11-19), lines 4, 5 (blank), line 7 (not "
+      "a number)); empty lines 1; identical lines 1 group (4=5)",
       renderCsvRead(q, o.result).c_str());
+}
+
+// Ruling 88: each figure states what it covers in the same clause, as a fact: how many rows
+// of how many are in it and which lines are not (by line, with the reason).
+static void test_each_sum_states_its_rows_and_the_lines_not_in_it() {
+  const std::string file =
+      "date,time,item,qty,amount\n"
+      "2026-11-19,08:00,a,1,2.5\n"
+      "2026-11-19,09:00,b, c,1,4\n"
+      "2026-11-19,10:00,d,,3\n"
+      "2026-11-20,11:00,e,1,9\n";
+  CsvQuery q;
+  q.column = "date";
+  q.from = "2026-11-19";
+  q.sum = {"amount", "qty"};
+  auto o = scanWith(file, q, 4096);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "rows 2 of 4 where date 2026-11-19..2026-11-19; "
+      "sum amount=5.5 (2 of 3 rows; not in it: line 3 (field count is not the header's 5)); "
+      "sum qty=1 (1 of 3 rows; not in it: line 3 (field count is not the header's 5), line 4 (blank))",
+      renderCsvTail(q, o.result).c_str());
+  // Every row in: the figure says so, and nothing else is listed.
+  q.sum = {"amount"};
+  q.from = "2026-11-20";
+  o = scanWith(file, q, 4096);
+  TEST_ASSERT_EQUAL_STRING("rows 1 of 4 where date 2026-11-20..2026-11-20; sum amount=9 (1 of 1 row); 1 other row outside "
+                           "the range has a wrong field count",
+                           renderCsvTail(q, o.result).c_str());
+  // Without sum the tail is as before: the lists stand on their own.
+  q.sum.clear();
+  q.from = "2026-11-19";
+  o = scanWith(file, q, 4096);
+  TEST_ASSERT_EQUAL_STRING(
+      "rows 2 of 4 where date 2026-11-19..2026-11-19; skipped 1 (line 3: field count is not the header's 5)",
+      renderCsvTail(q, o.result).c_str());
+}
+
+// Property: over the owner-shaped files of three domains, every sum clause's "k of n" is the
+// column's counted cells against the rows the range may hold, and its listed lines are exactly
+// the lines the result leaves out of that column (none silent, none twice).
+static void test_the_coverage_clause_agrees_with_the_scan_counts() {
+  Rng g(4242);
+  size_t clauses = 0;
+  for (const Domain& d : domains()) {
+    for (int rep = 0; rep < 20; ++rep) {
+      const std::string file = makeFile(g, d, 30, 15, 10, true);
+      const CsvQuery q = dayQuery(d, dateOf(300 + int(g.below(30))), "");
+      const auto o = scanWith(file, q, 4096);
+      TEST_ASSERT_TRUE(o.ok);
+      const auto& r = o.result;
+      const std::string tail = renderCsvTail(q, r);
+      const size_t n = r.matched + r.fieldCount.count + r.notCompared.count + r.tooLong.count;
+      for (const auto& s : r.sums) {
+        const std::string head = "; sum " + s.name + "=" + renderDec3(s.total) + " (" + std::to_string(s.numbers) +
+                                 " of " + std::to_string(n) + (n == 1 ? " row" : " rows");
+        TEST_ASSERT_TRUE_MESSAGE(tail.find(head) != std::string::npos, (head + " in " + tail).c_str());
+        const bool out = r.fieldCount.count || r.notCompared.count || r.tooLong.count || s.blank || s.notNumber;
+        TEST_ASSERT_EQUAL_MESSAGE(out, tail.find(head + "; not in it: ") != std::string::npos, tail.c_str());
+        TEST_ASSERT_EQUAL(s.numbers + s.blank + s.notNumber, r.matched);
+        ++clauses;
+      }
+      // The cell and row lists live only in the clauses when sum is asked.
+      TEST_ASSERT_TRUE(tail.find("; skipped ") == std::string::npos);
+      TEST_ASSERT_TRUE(tail.find("; blank ") == std::string::npos);
+    }
+  }
+  TEST_ASSERT_TRUE(clauses >= 60);
 }
 
 static void test_paging_never_changes_the_sums_and_next_offset_shows_every_row_once() {
@@ -906,7 +975,7 @@ static void test_identical_groups_are_named_once_each_and_the_table_limit_is_sta
   q.sum = {"amount"};
   auto o = scanWith(f, q, 4096);
   TEST_ASSERT_EQUAL(2, o.result.identicalGroups);
-  TEST_ASSERT_EQUAL_STRING("rows 5 of 5; sum amount=27; identical lines 2 groups (2=3=4, 5=6)",
+  TEST_ASSERT_EQUAL_STRING("rows 5 of 5; sum amount=27 (5 of 5 rows); identical lines 2 groups (2=3=4, 5=6)",
                            renderCsvTail(q, o.result).c_str());
   // Past the table, the result says how far it checked.
   std::string big = "id,amount\n";
@@ -924,7 +993,7 @@ static void test_a_torn_last_line_is_named_in_the_tail() {
   q.sum = {"amount"};
   const auto o = scanWith("date,amount\n2026-11-19,5\n2026-11-19,3", q, 4096);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING("rows 2 of 2; sum amount=8; last line 3 has no newline (a write may have been cut short)",
+  TEST_ASSERT_EQUAL_STRING("rows 2 of 2; sum amount=8 (2 of 2 rows); last line 3 has no newline (a write may have been cut short)",
                            renderCsvTail(q, o.result).c_str());
   TEST_ASSERT_TRUE(endsTorn(3, '3'));
   TEST_ASSERT_FALSE(endsTorn(3, '\n'));
@@ -943,8 +1012,8 @@ static void test_review_cases_are_named_not_lost() {
   f += "2026-11-20,x,3\n";
   auto o = scanWith(f, q, 4096);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING("rows 5 of 7 where date 2026-11-19..2026-11-19; sum amt=50; too long 1 (lines 2-3: over 8192 B); "
-                           "identical lines 1 group (4=5=6=7+1)",
+  TEST_ASSERT_EQUAL_STRING("rows 5 of 7 where date 2026-11-19..2026-11-19; sum amt=50 (5 of 6 rows; not in it: lines 2-3 "
+                           "(over 8192 B)); identical lines 1 group (4=5=6=7+1)",
                            renderCsvTail(q, o.result).c_str());
   // A quote that never closes: the span it swallowed is named, to the end of the file.
   f = "date,note,amt\n2026-11-18,\"big one,450\n";
@@ -952,7 +1021,8 @@ static void test_review_cases_are_named_not_lost() {
   o = scanWith(f, q, 64);
   TEST_ASSERT_TRUE(o.ok);
   TEST_ASSERT_EQUAL_STRING(
-      "rows 0 of 1 where date 2026-11-19..2026-11-19; sum amt=0; skipped 1 (lines 2-22: field count is not the header's 3); "
+      "rows 0 of 1 where date 2026-11-19..2026-11-19; sum amt=0 (0 of 1 row; not in it: lines 2-22 (field count is not "
+      "the header's 3)); "
       "the row at line 2 ends inside a quoted field (a write may have been cut short)",
       renderCsvTail(q, o.result).c_str());
   // A write cut inside a quoted field at the very end.
@@ -961,7 +1031,7 @@ static void test_review_cases_are_named_not_lost() {
   o = scanWith(f, q, 4096);
   TEST_ASSERT_TRUE(o.ok);
   TEST_ASSERT_EQUAL_STRING(
-      "rows 2 of 2 where date 2026-11-19..2026-11-19; sum amt=12; the row at line 3 ends inside a quoted field (a write "
+      "rows 2 of 2 where date 2026-11-19..2026-11-19; sum amt=12 (2 of 2 rows); the row at line 3 ends inside a quoted field (a write "
       "may have been cut short)",
       renderCsvTail(q, o.result).c_str());
   // A numeric key with more decimals than the comparison holds is not compared.
@@ -974,7 +1044,7 @@ static void test_review_cases_are_named_not_lost() {
   n.to = "1.001";
   o = scanWith("w,n\n1.00041,1\n1.0004,1\n1.001,1\n", n, 4096);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING("rows 1 of 3 where w 1..1.001; sum n=1; not compared 2 (lines 2, 3: w blank or not like 1)",
+  TEST_ASSERT_EQUAL_STRING("rows 1 of 3 where w 1..1.001; sum n=1 (1 of 3 rows; not in it: lines 2, 3 (w blank or not like 1))",
                            renderCsvTail(n, o.result).c_str());
   // Read by prefix, 1.5004 would sit between 1 and 2; it is not compared instead.
   n.from = "1";
@@ -1096,7 +1166,7 @@ static void test_owner_shaped_files_name_every_row_left_out_of_a_total() {
       TEST_ASSERT_EQUAL_MESSAGE(n.rows - n.extraFields, o.result.matched, d.header);
       const std::string tail = renderCsvTail(all, o.result);
       if (n.comments) TEST_ASSERT_TRUE(tail.find(" skipped (lines ") != std::string::npos);
-      if (n.extraFields) TEST_ASSERT_TRUE(tail.find("; skipped ") != std::string::npos);
+      if (n.extraFields) TEST_ASSERT_TRUE(tail.find("(field count is not the header's") != std::string::npos);
       // A day, a week and a month agree with the reference too.
       for (const auto& q : {shapeQuery(d, dateOf(100), ""), shapeQuery(d, dateOf(100), dateOf(106)), shapeQuery(d, "2026-04", "")}) {
         checkAgainstReference(file, q, scanWith(file, q, 4096), d.header);
@@ -1156,7 +1226,7 @@ static void test_comment_lines_are_counted_once_and_never_summed() {
   TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
   TEST_ASSERT_EQUAL_STRING(
       "\nL2 date,occasion,amount\nL3 2026-11-19,lunch,5\nL6 2026-11-19,tea,2\n"
-      "rows 2 of 2 where date 2026-11-19..2026-11-19; sum amount=7; 4 comment lines skipped (lines 1, 4-5, 7)",
+      "rows 2 of 2 where date 2026-11-19..2026-11-19; sum amount=7 (2 of 2 rows); 4 comment lines skipped (lines 1, 4-5, 7)",
       renderCsvRead(q, o.result).c_str());
 }
 
@@ -1177,13 +1247,14 @@ static void test_bad_rows_of_other_days_are_counted_not_listed() {
   auto o = scanWith(f, q, 7);
   TEST_ASSERT_TRUE(o.ok);
   TEST_ASSERT_EQUAL_STRING(
-      "rows 2 of 5 where date 2026-11-19..2026-11-19; sum kcal=640; 3 other rows outside the range have a wrong field count",
+      "rows 2 of 5 where date 2026-11-19..2026-11-19; sum kcal=640 (2 of 2 rows); 3 other rows outside the range have a "
+      "wrong field count",
       renderCsvTail(q, o.result).c_str());
   q.from = "2026-11-20";
   o = scanWith(f, q, 7);
   TEST_ASSERT_EQUAL_STRING(
-      "rows 0 of 5 where date 2026-11-20..2026-11-20; sum kcal=0; skipped 1 (line 5: field count is not the header's 5); "
-      "2 other rows outside the range have a wrong field count",
+      "rows 0 of 5 where date 2026-11-20..2026-11-20; sum kcal=0 (0 of 1 row; not in it: line 5 (field count is not the "
+      "header's 5)); 2 other rows outside the range have a wrong field count",
       renderCsvTail(q, o.result).c_str());
   // On the owner file's shape, a day with no bad row has no skipped clause.
   for (const ShapeDomain& d : kShapes) {
@@ -1197,7 +1268,7 @@ static void test_bad_rows_of_other_days_are_counted_not_listed() {
       checkAgainstReference(file, dq, r, d.header);
       if (r.result.fieldCount.count == 0) {
         ++clean;
-        TEST_ASSERT_TRUE(renderCsvTail(dq, r.result).find("; skipped ") == std::string::npos);
+        TEST_ASSERT_TRUE(renderCsvTail(dq, r.result).find("(field count is not the header's") == std::string::npos);
       }
     }
     TEST_ASSERT_TRUE(clean > 100);
@@ -1210,10 +1281,10 @@ static void test_a_bom_before_a_leading_comment_line() {
   q.sum = {"amount"};
   const auto o = scanWith("\xEF\xBB\xBF# notes\ndate,amount\n2026-11-19,5\n", q, 1);
   TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
-  TEST_ASSERT_EQUAL_STRING("rows 1 of 1; sum amount=5; 1 comment line skipped (line 1)", renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("rows 1 of 1; sum amount=5 (1 of 1 row); 1 comment line skipped (line 1)", renderCsvTail(q, o.result).c_str());
   const auto h = scanWith("\xEF\xBB\xBF" "date,amount\n2026-11-19,5\n", q, 2);
   TEST_ASSERT_TRUE_MESSAGE(h.ok, h.error.c_str());
-  TEST_ASSERT_EQUAL_STRING("\nL1 date,amount\nL2 2026-11-19,5\nrows 1 of 1; sum amount=5", renderCsvRead(q, h.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("\nL1 date,amount\nL2 2026-11-19,5\nrows 1 of 1; sum amount=5 (1 of 1 row)", renderCsvRead(q, h.result).c_str());
 }
 
 int main(int, char**) {
@@ -1221,6 +1292,8 @@ int main(int, char**) {
   RUN_TEST(test_scan_agrees_with_the_reference_over_three_domains_and_hostile_rows);
   RUN_TEST(test_the_result_never_depends_on_the_chunking);
   RUN_TEST(test_the_filtered_read_has_its_exact_format);
+  RUN_TEST(test_each_sum_states_its_rows_and_the_lines_not_in_it);
+  RUN_TEST(test_the_coverage_clause_agrees_with_the_scan_counts);
   RUN_TEST(test_paging_never_changes_the_sums_and_next_offset_shows_every_row_once);
   RUN_TEST(test_decimals_are_exact_and_round_half_away_from_zero);
   RUN_TEST(test_a_total_past_int64_is_an_error_never_a_partial_sum);

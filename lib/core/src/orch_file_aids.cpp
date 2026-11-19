@@ -23,6 +23,7 @@ constexpr const char* kManyA = " is in ";
 constexpr const char* kManyB = "; line picks one, all=true replaces all";
 constexpr const char* kNoMatchOn = "no match on line ";
 constexpr const char* kPartOf = " is part of line ";
+constexpr const char* kOnLine = " is on line ";
 constexpr const char* kChangedSince = " changed since sha8=";
 constexpr const char* kChanged = " changed during the edit; nothing written";
 constexpr const char* kCardRead = "card read failed";
@@ -257,6 +258,8 @@ struct Plan {
   LineList lines;          // start lines of the matches
   long pick = -1;          // the match a line pick replaces
   bool onLine = false;     // some match starts on the picked line
+  size_t onLineCount = 0;  // matches that start on the picked line
+  long part = -1;          // the first of them that is a part of that line (old has no line end)
   std::string quote;       // the picked line's text (for the part-of error)
   uint64_t bytes = 0, hash = 0, fileLines = 0;
   uint64_t pickLine = 0;
@@ -277,6 +280,9 @@ std::string planError(const std::string& path, const EditRequest& e, const Plan&
       << "); nothing written";
   else if (!p.count)
     t << e.oldName << T::kNotIn << where << " (" << p.bytes << " B)";
+  else if (e.line && p.pick < 0 && p.part >= 0)
+    t << e.oldName << T::kOnLine << uint64_t(e.line) << " " << uint64_t(p.onLineCount) << " times; line "
+      << uint64_t(e.line) << " is: " << std::string_view(quoteCut(p.quote, kAidQuoteMax));
   else if (e.line && p.pick < 0 && p.onLine)
     t << e.oldName << T::kPartOf << uint64_t(e.line) << ", not the whole line; line " << uint64_t(e.line) << " is: "
       << std::string_view(quoteCut(p.quote, kAidQuoteMax));
@@ -328,6 +334,9 @@ struct EditRun : FindSink {
     const bool here = e.line && h.line == e.line;
     const uint64_t take = h.whole && takesLineEnd(e) ? h.lineEnd : 0;
     plan.onLine |= here;
+    plan.onLineCount += here;
+    if (here && plan.part < 0 && !(h.lineStart && h.whole) && e.oldText.find('\n') == std::string::npos)
+      plan.part = long(plan.count);
     plan.takeAll += take;
     if (!plan.count) plan.takeFirst = take;
     if (plan.count < e.count) plan.takeCount += take;
@@ -343,6 +352,9 @@ struct EditRun : FindSink {
     plan.hash = r.hash;
     if (!plan.quote.empty() && plan.quote.back() == '\r') plan.quote.pop_back();
     plan.fileLines = rawLine - 1 + (plan.bytes && in.prev != '\n' ? 1 : 0);
+    // Ruling 88: with line and no whole-line match there, an exact part of that line is the
+    // pick when it is there exactly once (a part takes no line end).
+    if (e.line && plan.pick < 0 && plan.part >= 0 && plan.onLineCount == 1) plan.pick = plan.part, plan.takePick = 0;
     o.oldSize = plan.bytes;
     if (hash && hash != plan.hash) return fail(path + T::kChanged);
     plan.newSize = newSize();

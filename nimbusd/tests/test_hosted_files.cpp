@@ -165,7 +165,8 @@ static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
     c.ok(body == std::string(t.header) + "\n" + row + "\n" + row + "\n" + today + ",x\n",
          std::string("byte for byte, the rows as sent: ") + t.name);
     const auto tail = call("files.read", where + ",\"tail\":5,\"sum\":\"" + t.col + "\"}");
-    c.ok(has(tail.output, "skipped 1 (line 4: field count is not the header's 5)") && has(tail.output, t.counted),
+    c.ok(has(tail.output, "(2 of 3 rows; not in it: line 4 (field count is not the header's 5))") &&
+             has(tail.output, t.counted),
          std::string("the day total adds up both rows and says the narrow one is unread: ") + tail.output);
   }
 }

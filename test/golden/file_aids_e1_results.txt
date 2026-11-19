@@ -1,5 +1,5 @@
 == old shape: a day's total
-ok rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+ok rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640 (2 of 4 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
 
 -- log/f.csv
 date,occasion,item,grams,kcal
@@ -13,7 +13,7 @@ date,occasion,item,grams,kcal
 2026-11-20,breakfast,oats,60,230
 
 == old shape with no tail: the day's total alone
-ok rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+ok rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640 (2 of 4 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
 
 -- log/f.csv
 date,occasion,item,grams,kcal
@@ -32,7 +32,7 @@ L1 date,occasion,item,grams,kcal
 L3 2026-11-19,breakfast,oats,60,230
 L5 2026-11-19,lunch 12:30,"rice, beans",250,410
 L7 2026-11-19,snack 2,apple,150,
-rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640 (2 of 4 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
 -- log/f.csv
 date,occasion,item,grams,kcal
 2026-11-18,dinner,soup,300,180
@@ -50,7 +50,7 @@ L1 date,occasion,item,grams,kcal
 L3 2026-11-19,breakfast,oats,60,230
 L5 2026-11-19,lunch 12:30,"rice, beans",250,410
 L7 2026-11-19,snack 2,apple,150,
-rows 3 of 6 where date 2026-11-19..2026-11-19; sum grams=460 kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+rows 3 of 6 where date 2026-11-19..2026-11-19; sum grams=460 (3 of 4 rows; not in it: line 6 (field count is not the header's 5)); sum kcal=640 (2 of 4 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
 -- log/f.csv
 date,occasion,item,grams,kcal
 2026-11-18,dinner,soup,300,180
@@ -68,7 +68,7 @@ L1 date,session,exercise,reps,kg
 L3 2026-11-13,am,squat,5,100
 L5 2026-11-15,pm,"rows, cable",12,40.5
 L7 2026-11-19,set 2,bench press,8,
-rows 4 of 6 where date 2026-11-13..2026-11-19; shown 2-4; sum reps=30 kg=240.5; 1 comment line skipped (line 4); blank 1 (kg line 7); skipped 1 (line 6: field count is not the header's 5); identical lines 1 group (2=3)
+rows 4 of 6 where date 2026-11-13..2026-11-19; shown 2-4; sum reps=30 (4 of 5 rows; not in it: line 6 (field count is not the header's 5)); sum kg=240.5 (3 of 5 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); identical lines 1 group (2=3)
 -- log/t.csv
 date,session,exercise,reps,kg
 2026-11-13,am,squat,5,100
@@ -86,7 +86,7 @@ L3 2026-11-02,morning,grocer,31.15,0
 L5 2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
 L7 2026-11-19,errand 2,train ticket,,0
 L8 2026-11-30,evening,books,12.00,0
-rows 4 of 6 where date 2026-11..2026-11; sum amount=50.55 tip=1; 1 comment line skipped (line 4); blank 1 (amount line 7); skipped 1 (line 6: field count is not the header's 5)
+rows 4 of 6 where date 2026-11..2026-11; sum amount=50.55 (3 of 5 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); sum tip=1 (4 of 5 rows; not in it: line 6 (field count is not the header's 5)); 1 comment line skipped (line 4)
 -- log/e.csv
 date,when,note,amount,tip
 2026-10-31,evening,books,24.90,0
@@ -98,7 +98,7 @@ date,when,note,amount,tip
 2026-11-30,evening,books,12.00,0
 
 == old shape: the month's day with an empty cell
-ok rows 1 of 6 where date 2026-11-19..2026-11-19; sum amount=0; 1 comment line skipped (line 4); blank 1 (amount line 7); 1 other row outside the range has a wrong field count
+ok rows 1 of 6 where date 2026-11-19..2026-11-19; sum amount=0 (0 of 1 row; not in it: line 7 (blank)); 1 comment line skipped (line 4); 1 other row outside the range has a wrong field count
 
 -- log/e.csv
 date,when,note,amount,tip
@@ -164,7 +164,7 @@ date,session,exercise,reps,kg
 #removed: 2026-11-13,am,squat,5,100
 
 == part of a line
-error find is part of line 7, not the whole line; line 7 is: 2026-11-19,errand 2,train ticket,,0
+ok edited log/e2.csv: replaced 1 of 1 match (now 295 bytes); at line 7; 8 lines
 -- log/e2.csv
 date,when,note,amount,tip
 2026-10-31,evening,books,24.90,0
@@ -172,7 +172,7 @@ date,when,note,amount,tip
 #gone: 2026-11-02,morning,grocer,13.15,0
 2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
 2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
-2026-11-19,errand 2,train ticket,,0
+2026-11-19,errand 2,bus,,0
 2026-11-30,evening,books,12.00,0
 
 == a correction by line

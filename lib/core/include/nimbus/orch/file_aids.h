@@ -232,15 +232,19 @@ class CsvScanner {
 // The tail read_file prints after the shown rows, one line (no line end):
 //   rows <m> of <n>[ where <column> <from>..<to>]
 //   [; shown <a>-<b> | ; shown none]                       (only when not every row is shown)
-//   [; sum <name>=<total>[ <name>=<total>...]]
+//   [; sum <name>=<total> (<k> of <n> rows[; not in it: <lines> (<why>), ...])]   (each column; ruling 88)
 //   [; <k> comment line(s) skipped (lines <a>-<b>, <c>, ... +N runs)]
-//   [; blank <k> (<col> line <l>, ... +N)]
-//   [; not a number <k> (<col> line <l>, ... +N)]
+//   [; blank <k> (<col> line <l>, ... +N)]                  (without sum; with it, in each sum clause)
+//   [; not a number <k> (<col> line <l>, ... +N)]           (likewise)
 //   [; rounded to 3 decimals <k> (<col> line <l>, ...)]
-//   [; not compared <k> (lines <l>, ... +N: <column> blank or not like <from>)]
-//   [; skipped <k> (lines <l>, ... +N: field count is not the header's <h>)]
+//   [; not compared <k> (lines <l>, ... +N: <column> blank or not like <from>)]   (likewise)
+//   [; skipped <k> (lines <l>, ... +N: field count is not the header's <h>)]      (likewise)
 //   [; <k> other row(s) outside the range have a wrong field count]
-//   [; too long <k> (lines <l>, ... +N: over 8192 B)]
+//   [; too long <k> (lines <l>, ... +N: over 8192 B)]                             (likewise)
+// In a sum clause k is the cells that entered the total and n the matching rows plus every
+// row the range may hold that the scan could not place or read (a wrong field count, a key
+// not compared, a row too long); each of those, and the column's blank and not-a-number
+// cells, is named in the clause with its reason: one statement of fact, never an order.
 //   [; empty lines <k>]
 //   [; identical lines <g> groups (<l>=<l>=<l>+N, <l>=<l>, ... +N)]
 //   [; identical lines checked in the first <c> matching rows only]
@@ -257,9 +261,11 @@ std::string renderCsvRead(const CsvQuery& q, const CsvScanResult& r);
 //   - all=false, no line: exactly one match is replaced; several are an error naming
 //     their lines;
 //   - line: the match that starts at the start of that line and covers whole lines
-//     (it ends at a line end or the end of the file) is replaced. Any other row, even one
-//     holding old as part of its text, is never touched: a stale number fails with the
-//     current match lines;
+//     (it ends at a line end or the end of the file) is replaced; else, for an old with no
+//     line end in it, the one match that starts on that line, an exact part of it (ruling
+//     88; there twice or more is an error that says so). Any other row, even one holding
+//     old as part of its text, is never touched: a stale number fails with the current
+//     match lines;
 //   - all=true: every match (line with all is an error).
 // A remove (new "") of whole lines takes the line end after them with it. ifSha8, when
 // set, must be the file's current sha8 or nothing is written.
@@ -318,7 +324,8 @@ bool countMatches(AidSource& src, std::string_view old, size_t& matches);
 //   old is not in <path> (<N> B)
 //   old is in <path> <k> times, at lines <l>, ... +N; line picks one, all=true replaces all
 //   no match on line <l>; matches at line(s) <l>, ... +N
-//   old is part of line <l>, not the whole line; line <l> is: <text>
+//   old is on line <l> <k> times; line <l> is: <text>
+//   old is part of line <l>, not the whole line; line <l> is: <text>   (an old with a line end, not at a line start)
 //   <path> changed since sha8=<asked> (now <hex>); nothing written
 //   <path> changed during the edit; nothing written
 //   <path> would be <N> B; an edit here leaves files up to <M> B

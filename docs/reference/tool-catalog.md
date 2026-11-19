@@ -381,9 +381,10 @@ Notes:
   `date`, `day`, or a name holding date, day or time, else the first column of
   `YYYY-MM-DD` dates) holds that day, the running day by default (before the device's
   "day starts at" time it is still yesterday). The line reads like the general form's
-  tail: `rows 3 of 6 where date 2026-11-19..2026-11-19; sum amount=24.3`, then every row or
-  cell left out by reason with its lines (blank, not a number, a field count unlike the
-  header's, not compared); a line whose first non-blank character is `#` is a comment
+  tail: `rows 3 of 6 where date 2026-11-19..2026-11-19; sum amount=24.3 (2 of 3 rows; not in
+  it: line 7 (blank))`: each figure says in the same clause how many rows of how many it
+  covers and names every row or cell left out of it by line and reason (blank, not a number,
+  a field count unlike the header's, not compared); a line whose first non-blank character is `#` is a comment
   and is counted, never summed. `files.read {column, from, to, sum}` is the general form:
   the matching rows with their line numbers (`L5 ...`), the same tail, `offset` pages the
   rows shown, never the sums; the scan holds the card lock per 4 KB read, never across it.
@@ -395,9 +396,11 @@ Notes:
   restart the device") until the backup is restored, and a backup larger than
   the file it would leave is kept as `<name>.recovered`, never deleted.
 - `files.edit` changes only the matched spans; every other byte keeps its exact
-  position, so a CSV's rows stay rows. With `line` it changes only the match that starts
-  that line and covers whole lines (a stale number fails with the current match lines,
-  never touching another row); a removal of whole lines takes their line end. The reply
+  position, so a CSV's rows stay rows. With `line` it changes only that line: the match that
+  starts it and covers whole lines, or an exact part of it when the find text is on that line
+  once (twice or more is an error that says how many times; a stale number fails with the
+  current match lines, never touching another row); a removal of whole lines takes their
+  line end, a removal of part of a line keeps the line. The reply
   keeps its head (`edited p/n: replaced A of B matches`) and adds the current lines
   (`; at line 3; 8 lines; lines that were 4 and later are now 1 lower`). It never creates a file (`not found` is
   the answer), never reads the file into the model's context, and streams the

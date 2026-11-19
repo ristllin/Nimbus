@@ -80,10 +80,16 @@ std::vector<size_t> refPicks(const std::string& f, const EditRequest& e) {
   const auto ms = matchesOf(f, e.oldText);
   if (e.all) return ms;
   if (!e.line) return ms.size() == 1 ? ms : std::vector<size_t>();
-  std::vector<size_t> pick;
-  for (size_t p : ms)
-    if (lineAt(f, p) == e.line && wholeLineAt(f, p, e.oldText.size())) pick.push_back(p);
-  return pick.size() == 1 ? pick : std::vector<size_t>();
+  // line: the match that starts that line and covers whole lines; else, for an old with no
+  // line end in it, the one match that starts on that line (an exact part of it, ruling 88).
+  std::vector<size_t> pick, part;
+  for (size_t p : ms) {
+    if (lineAt(f, p) != e.line) continue;
+    if (wholeLineAt(f, p, e.oldText.size())) pick.push_back(p);
+    else if (e.oldText.find('\n') == std::string::npos) part.push_back(p);
+  }
+  if (pick.size() == 1) return pick;
+  return part.size() == 1 ? part : std::vector<size_t>();
 }
 // Where the bytes a replacement at p takes end: old, and for a removal of whole lines
 // the line end after it.
@@ -203,7 +209,9 @@ static void test_a_line_pick_replaces_exactly_that_line_or_fails() {
       std::vector<std::string> expect = lines;
       std::string picked = expect[e.line - 1];
       if (!picked.empty() && picked.back() == '\r') picked.pop_back();
-      TEST_ASSERT_EQUAL_STRING(old.c_str(), picked.c_str());   // the line held exactly old
+      TEST_ASSERT_TRUE_MESSAGE(picked.find(old) != std::string::npos, "the picked line held old");
+      for (size_t k = 0; k + 1 < e.line && k < after.size(); ++k)   // every line before it is as it was
+        TEST_ASSERT_EQUAL_STRING(lines[k].c_str(), after[k].c_str());
       checkLinesAreCurrent(file, e, o, c.file);
     }
   }
@@ -243,13 +251,16 @@ static void test_a_stale_number_after_a_removal_fails_with_the_current_lines() {
     TEST_ASSERT_FALSE(o.ok);
     TEST_ASSERT_EQUAL_STRING("no match on line 4; matches at lines 3, 5", o.error.c_str());
     TEST_ASSERT_EQUAL_STRING(before.c_str(), c.file.c_str());
-    // Part of a row is never picked: line 2 holds x, which contains old's text only in part.
+    // Part of a row is picked on that line only (ruling 88): line 2 holds x, which holds old's
+    // text once; every other line, the ones holding the same text included, stays.
     e.oldText = x.substr(0, 10);
+    e.newText = "2026-12-01";
     e.line = 2;
     o = run(c, e);
-    TEST_ASSERT_FALSE(o.ok);
-    TEST_ASSERT_EQUAL_STRING(("old is part of line 2, not the whole line; line 2 is: " + x).c_str(), o.error.c_str());
-    TEST_ASSERT_EQUAL_STRING(before.c_str(), c.file.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+    std::string want = before;
+    want.replace(want.find(x), 10, "2026-12-01");
+    TEST_ASSERT_EQUAL_STRING(want.c_str(), c.file.c_str());
   }
 }
 
@@ -347,11 +358,108 @@ static void test_errors_state_the_fact() {
   // A long line is quoted cut at 120 B on a UTF-8 boundary.
   std::string longLine = std::string(119, 'a') + "\xC3\xA9tail";
   c.file = "h\n" + longLine + "\n";
-  e.oldText = "tail";
+  c.file += "next\n";
+  e.oldText = "tail\nnext";
   e.line = 2;
   o = run(c, e);
   TEST_ASSERT_EQUAL_STRING(("old is part of line 2, not the whole line; line 2 is: " + std::string(119, 'a') + " ...").c_str(),
                            o.error.c_str());
+  // An old found twice on the picked line names how many times, with the line.
+  c.file = "date,a,b\n2026-11-19,3.50,3.50\n";
+  e.oldText = "3.50";
+  e.line = 2;
+  o = run(c, e);
+  TEST_ASSERT_EQUAL_STRING("old is on line 2 2 times; line 2 is: 2026-11-19,3.50,3.50", o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,a,b\n2026-11-19,3.50,3.50\n", c.file.c_str());
+}
+
+// ---- ruling 88: with line, old may be any exact part of that line ---------------------
+static void test_a_part_of_the_picked_line_is_replaced_on_that_line_only() {
+  const std::string file = "date,payee,category,amount\n2026-11-19,cafe,misc,3.50\n2026-11-19,cafe,misc,3.50\n"
+                           "2026-11-20,bakery,misc,3.50\n";
+  Card c;
+  c.file = file;
+  EditRequest e;
+  e.oldText = "3.50";
+  e.newText = "4.50";
+  e.line = 3;
+  auto o = run(c, e);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,payee,category,amount\n2026-11-19,cafe,misc,3.50\n2026-11-19,cafe,misc,4.50\n"
+                           "2026-11-20,bakery,misc,3.50\n",
+                           c.file.c_str());
+  TEST_ASSERT_EQUAL(1, int(o.replaced));
+  TEST_ASSERT_EQUAL_UINT32(3, o.at[0]);
+  checkLinesAreCurrent(file, e, o, c.file);
+  TEST_ASSERT_EQUAL_STRING(("replaced 1 in p/t.csv at line 3; file is " + std::to_string(file.size()) + " B (was " +
+                            std::to_string(file.size()) + " B), 4 lines, sha8=" + sha8Hex(fnv64(kFnv64Basis, c.file)) +
+                            "; old is still at lines 2, 4")
+                               .c_str(),
+                           renderEdit("p/t.csv", o).c_str());
+  // A removal of part of a line keeps the line and its line end.
+  c.file = file;
+  e.oldText = ",misc";
+  e.newText = "";
+  e.line = 4;
+  o = run(c, e);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,payee,category,amount\n2026-11-19,cafe,misc,3.50\n2026-11-19,cafe,misc,3.50\n"
+                           "2026-11-20,bakery,3.50\n",
+                           c.file.c_str());
+  // Not on that line: the existing error, the file untouched.
+  c.file = file;
+  e.oldText = "cafe";
+  e.newText = "tea room";
+  e.line = 4;
+  o = run(c, e);
+  TEST_ASSERT_EQUAL_STRING("no match on line 4; matches at lines 2, 3", o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING(file.c_str(), c.file.c_str());
+  // A whole-line old still picks the whole line (and a removal takes its line end).
+  c.file = file;
+  e.oldText = "2026-11-19,cafe,misc,3.50";
+  e.newText = "";
+  e.line = 2;
+  o = run(c, e);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,payee,category,amount\n2026-11-19,cafe,misc,3.50\n2026-11-20,bakery,misc,3.50\n",
+                           c.file.c_str());
+}
+
+// Counter-test: the part rule never reaches another line. An old that is on the picked line
+// AND elsewhere, in every position of every line, changes only the picked line.
+static void test_a_part_pick_never_touches_another_line() {
+  size_t picks = 0;
+  for (uint64_t seed = 1; seed <= 200; ++seed) {
+    Rng g(seed * 977);
+    const Domain& d = domains()[seed % 3];
+    const std::string file = makeFile(g, d, 6 + int(g.below(20)));
+    const auto lines = splitLines(file);
+    const size_t src = 1 + g.below(lines.size() - 1);
+    std::string row = lines[src];
+    if (!row.empty() && row.back() == '\r') row.pop_back();
+    if (row.size() < 4) continue;
+    const size_t a = g.below(row.size() - 2), n = 1 + g.below(row.size() - a - 1);
+    EditRequest e;
+    e.oldText = row.substr(a, n);
+    e.newText = "X";
+    e.line = uint32_t(src + 1);
+    Card c;
+    c.file = file;
+    const auto o = run(c, e);
+    const auto ref = reference(file, e);
+    TEST_ASSERT_EQUAL_MESSAGE(ref.ok, o.ok, o.error.c_str());
+    if (!o.ok) {
+      TEST_ASSERT_EQUAL_STRING(file.c_str(), c.file.c_str());
+      continue;
+    }
+    ++picks;
+    TEST_ASSERT_EQUAL_STRING(ref.file.c_str(), c.file.c_str());
+    const auto after = splitLines(c.file);
+    TEST_ASSERT_EQUAL(lines.size(), after.size());
+    for (size_t k = 0; k < lines.size(); ++k)
+      if (k != src) TEST_ASSERT_EQUAL_STRING(lines[k].c_str(), after[k].c_str());
+  }
+  TEST_ASSERT_TRUE(picks >= 60);
 }
 
 static void test_a_removal_takes_the_line_end_and_crlf_files_stay_crlf() {
@@ -591,5 +699,7 @@ int main(int, char**) {
   RUN_TEST(test_a_pick_at_a_read_boundary_is_a_whole_line);
   RUN_TEST(test_removals_name_their_old_lines);
   RUN_TEST(test_a_line_pick_addresses_a_comment_line);
+  RUN_TEST(test_a_part_of_the_picked_line_is_replaced_on_that_line_only);
+  RUN_TEST(test_a_part_pick_never_touches_another_line);
   return UNITY_END();
 }

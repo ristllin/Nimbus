@@ -4,7 +4,7 @@ L1 date,occasion,item,grams,kcal
 L3 2026-11-19,breakfast,oats,60,230
 L5 2026-11-19,lunch 12:30,"rice, beans",250,410
 L7 2026-11-19,snack 2,apple,150,
-rows 3 of 6 where date 2026-11-19..2026-11-19; sum grams=460 kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+rows 3 of 6 where date 2026-11-19..2026-11-19; sum grams=460 (3 of 4 rows; not in it: line 6 (field count is not the header's 5)); sum kcal=640 (2 of 4 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
 -- log/food.csv
 date,occasion,item,grams,kcal
 2026-11-18,dinner,soup,300,180
@@ -23,7 +23,7 @@ L3 2026-11-02,morning,grocer,31.15,0
 L5 2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
 L7 2026-11-19,errand 2,train ticket,,0
 L8 2026-11-30,evening,books,12.00,0
-rows 4 of 6 where date 2026-11..2026-11; sum amount=50.55 tip=1; 1 comment line skipped (line 4); blank 1 (amount line 7); skipped 1 (line 6: field count is not the header's 5)
+rows 4 of 6 where date 2026-11..2026-11; sum amount=50.55 (3 of 5 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); sum tip=1 (4 of 5 rows; not in it: line 6 (field count is not the header's 5)); 1 comment line skipped (line 4)
 -- log/expense.csv
 date,when,note,amount,tip
 2026-10-31,evening,books,24.90,0
@@ -41,7 +41,7 @@ L2 2026-11-13,am,squat,5,100
 L3 2026-11-13,am,squat,5,100
 L5 2026-11-15,pm,"rows, cable",12,40.5
 L7 2026-11-19,set 2,bench press,8,
-rows 4 of 6 where date 2026-11-13..2026-11-19; sum reps=30 kg=240.5; 1 comment line skipped (line 4); blank 1 (kg line 7); skipped 1 (line 6: field count is not the header's 5); identical lines 1 group (2=3)
+rows 4 of 6 where date 2026-11-13..2026-11-19; sum reps=30 (4 of 5 rows; not in it: line 6 (field count is not the header's 5)); sum kg=240.5 (3 of 5 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); identical lines 1 group (2=3)
 -- log/training.csv
 date,session,exercise,reps,kg
 2026-11-13,am,squat,5,100
@@ -56,7 +56,7 @@ date,session,exercise,reps,kg
 ok log/food2.csv size=291 lines=9 sha8=c5b9150c
 L1 date,occasion,item,grams,kcal
 L3 2026-11-19,breakfast,oats,60,230
-rows 5 of 6; shown 2-2; sum kcal=1050; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+rows 5 of 6; shown 2-2; sum kcal=1050 (4 of 6 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
 next_offset=2
 -- log/food2.csv
 date,occasion,item,grams,kcal
@@ -133,8 +133,20 @@ date,session,exercise,reps,kg
 2026-11-20,am,squat,5,105
 
 == part of a line
-error old is part of line 7, not the whole line; line 7 is: 2026-11-19,errand 2,train ticket,,0
+ok replaced 1 in log/expense2.csv at line 7; file is 295 B (was 304 B), 8 lines, sha8=5691577b
 -- log/expense2.csv
+date,when,note,amount,tip
+2026-10-31,evening,books,24.90,0
+2026-11-02,morning,grocer,31.15,0
+#gone: 2026-11-02,morning,grocer,13.15,0
+2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
+2026-11-19,errand 2,bus,,0
+2026-11-30,evening,books,12.00,0
+
+== part of a line, there twice
+error old is on line 7 4 times; line 7 is: 2026-11-19,errand 2,train ticket,,0
+-- log/expense5.csv
 date,when,note,amount,tip
 2026-10-31,evening,books,24.90,0
 2026-11-02,morning,grocer,31.15,0

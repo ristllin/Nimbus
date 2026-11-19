@@ -50,7 +50,7 @@ inline const std::vector<Call>& calls() {
       {"a stale line number", "log/t2.csv", nullptr, "files.edit",
        R"("find":"2026-11-13,am,squat,5,100","replace":"x","line":3)"},
       {"part of a line", "log/e2.csv", kExpense, "files.edit", R"("find":"train ticket","replace":"bus","line":7)"},
-      {"a correction by line", "log/e2.csv", nullptr, "files.edit",
+      {"a correction by line", "log/e2.csv", kExpense, "files.edit",
        R"("find":"2026-11-19,errand 2,train ticket,,0","replace":"2026-11-19,errand 2,train ticket,8.60,0","line":7)"},
       {"the first two matches", "log/f2.csv", kFood, "files.edit", R"("find":"oats","replace":"oat flakes","count":2)"},
       {"every match", "log/f3.csv", kFood, "files.edit", R"("find":"lunch 12:30","replace":"lunch","all":true)"},

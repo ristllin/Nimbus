@@ -678,6 +678,58 @@ void groupsInto(Txt& t, const CsvScanResult& r) {
   more(t, r.identicalGroups, r.identical.size());
 }
 
+// One column's cells of a reason (blank, not a number) as a line list: the lines of that
+// column the list names, and that column's full count.
+LineList cellsOf(const LineList& l, size_t col, size_t count) {
+  LineList out;
+  out.count = count;
+  for (size_t i = 0; i < l.lines.size(); ++i)
+    if (i < l.columns.size() && l.columns[i] == col) out.lines.push_back(l.lines[i]);
+  return out;
+}
+
+// ", " before every item but the first of a "not in it" list.
+void item(Txt& t, bool& first, const LineList& l) {
+  t << (first ? "; not in it: " : ", ");
+  first = false;
+  linesInto(t, l);
+}
+
+// Ruling 88: a figure and what it covers are one statement of fact:
+//   "; sum <name>=<total> (<k> of <n> rows[; not in it: <lines> (<why>), ...])"
+// k is the cells that entered the total; n the matching rows plus every row the range may
+// hold that the scan could not place or read (a wrong field count, a key not compared, a row
+// too long), each of them named here with its reason, as are the column's blank and
+// not-a-number cells.
+void sumInto(Txt& t, const CsvQuery& q, const CsvScanResult& r, size_t i) {
+  const CsvColumnSum& s = r.sums[i];
+  const uint64_t n = r.matched + r.fieldCount.count + r.notCompared.count + r.tooLong.count;
+  t << "; sum " << std::string_view(s.name) << "=" << std::string_view(renderDec3(s.total)) << " ("
+    << uint64_t(s.numbers) << " of " << n << (n == 1 ? " row" : " rows");
+  bool first = true;
+  if (r.fieldCount.count) {
+    item(t, first, r.fieldCount);
+    t << " (field count is not the header's " << uint64_t(r.headerFields) << ")";
+  }
+  if (r.notCompared.count) {
+    item(t, first, r.notCompared);
+    t << " (" << std::string_view(q.column) << " blank or not like " << std::string_view(q.from) << ")";
+  }
+  if (r.tooLong.count) {
+    item(t, first, r.tooLong);
+    t << " (over " << uint64_t(kCsvRecordMax) << " B)";
+  }
+  if (s.blank) {
+    item(t, first, cellsOf(r.blankCells, i, s.blank));
+    t << " (blank)";
+  }
+  if (s.notNumber) {
+    item(t, first, cellsOf(r.notNumberCells, i, s.notNumber));
+    t << " (not a number)";
+  }
+  t << ")";
+}
+
 // The row counts: rows, the range, what is shown, the sums.
 void countsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
   t << "rows " << uint64_t(r.matched) << " of " << uint64_t(r.records);
@@ -687,9 +739,7 @@ void countsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
   const bool partial = r.shownFirst > 1 || r.shownLast < r.matched;
   if (q.showRows && !r.shownFirst && r.matched) t << "; shown none";
   else if (q.showRows && partial) t << "; shown " << uint64_t(r.shownFirst) << "-" << uint64_t(r.shownLast);
-  if (r.sums.empty()) return;
-  t << "; sum";
-  for (const auto& s : r.sums) t << " " << std::string_view(s.name) << "=" << std::string_view(renderDec3(s.total));
+  for (size_t i = 0; i < r.sums.size(); ++i) sumInto(t, q, r, i);
 }
 
 // "; <what> <k> (" when the list has rows; false when it has none.
@@ -705,12 +755,16 @@ void listsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
     linesInto(t, r.commentSpans);
     t << ")";
   }
+  const bool summed = !r.sums.empty();   // then blank, not a number, not compared, skipped and too long are in each sum
   const struct {
     const char* what;
     const LineList& l;
-  } cells[] = {{"blank", r.blankCells}, {"not a number", r.notNumberCells}, {"rounded to 3 decimals", r.roundedCells}};
+  } cells[] = {{"blank", summed ? LineList() : r.blankCells},
+               {"not a number", summed ? LineList() : r.notNumberCells},
+               {"rounded to 3 decimals", r.roundedCells}};
   for (const auto& c : cells)
     if (open(t, c.what, c.l.count)) cellsInto(t, c.l, r), t << ")";
+  if (summed) return;
   if (open(t, "not compared", r.notCompared.count)) {
     linesInto(t, r.notCompared);
     t << ": " << std::string_view(q.column) << " blank or not like " << std::string_view(q.from) << ")";
@@ -727,7 +781,7 @@ void factsInto(Txt& t, const CsvScanResult& r) {
     t << "; " << uint64_t(r.fieldCountOutside)
       << (r.fieldCountOutside == 1 ? " other row outside the range has" : " other rows outside the range have")
       << " a wrong field count";
-  if (open(t, "too long", r.tooLong.count)) {
+  if (r.sums.empty() && open(t, "too long", r.tooLong.count)) {
     linesInto(t, r.tooLong);
     t << ": over " << uint64_t(kCsvRecordMax) << " B)";
   }

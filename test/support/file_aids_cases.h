@@ -79,6 +79,8 @@ inline const std::vector<Case>& cases() {
        R"({"path":"log/training4.csv","old":"2026-11-13,am,squat,5,100","new":"x","line":4})"},
       {"part of a line", "log/expense2.csv", kExpense, "edit_file",
        R"({"path":"log/expense2.csv","old":"train ticket","new":"bus","line":7})"},
+      {"part of a line, there twice", "log/expense5.csv", kExpense, "edit_file",
+       R"({"path":"log/expense5.csv","old":",","new":";","line":7})"},
       {"a correction by line", "log/expense3.csv", kExpense, "edit_file",
        R"({"path":"log/expense3.csv","old":"2026-11-19,errand 2,train ticket,,0","new":"2026-11-19,errand 2,train ticket,8.60,0","line":7})"},
       {"a comment line by line", "log/food4.csv", kFood, "edit_file",
