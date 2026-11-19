@@ -6,13 +6,15 @@
   "clock": "{{TODAY}} {{DOW}} 12:13 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Log my lunch please: a grain bowl and a fresh orange juice, 1045 kcal in total for the meal."}
   ],
   "assertions": [
     "reply_ok",
     {"id": "reply_contains_re", "params": {"re": "1,?045"}},
-    {"id": "ledger_forbids", "params": {"forbidden": ["1005"], "where": "all"}},
-    {"id": "ledger_row_count", "params": {"min": 1}}
+    {"id": "file_forbids", "params": {"forbidden": ["1005"], "where": "all"}},
+    {"id": "file_row_count", "params": {"min": 1}}
   ]
 }

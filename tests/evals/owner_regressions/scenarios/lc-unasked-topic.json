@@ -9,12 +9,14 @@
   "history": [
     {"role": "user", "text": "I love tech trivia, ask me sometime."}
   ],
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Log my lunch: a chicken bowl, 620 kcal."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_row", "params": {"item": "chicken bowl", "kcal": 620}},
+    {"id": "file_row", "params": {"text": "chicken bowl", "value": 620}},
     {"id": "reply_forbids", "params": {"forbidden": ["quiz", "trivia", "fun fact", "did you know"]}}
   ]
 }

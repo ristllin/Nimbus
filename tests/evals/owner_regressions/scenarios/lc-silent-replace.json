@@ -6,14 +6,16 @@
   "clock": "{{TODAY}} {{DOW}} 20:04 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},dinner,brisket with bread,457,38\n"},
     {"do": "say", "text": "Log my dinner for today: Frive Smoky Baharat Mango Chicken. The pack is 635 kcal for the whole pack and I ate 70 percent of it, that is 445 kcal."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_row", "params": {"item": "brisket", "kcal": 457}},
-    {"id": "ledger_row", "params": {"item": "mango chicken", "kcal": 445}},
-    {"id": "ledger_day_total", "params": {"require_stated": false}}
+    {"id": "file_row", "params": {"text": "brisket", "value": 457}},
+    {"id": "file_row", "params": {"text": "mango chicken", "value": 445}},
+    {"id": "file_day_total", "params": {"require_stated": false}}
   ]
 }

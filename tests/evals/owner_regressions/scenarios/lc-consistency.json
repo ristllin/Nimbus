@@ -6,12 +6,14 @@
   "clock": "{{TODAY}} {{DOW}} 17:10 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{YESTERDAY}},snack-1500,boba tea no milk,225,0\n"},
     {"do": "say", "text": "Log the same boba tea I had yesterday afternoon, same size as then."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_row_kcal_near", "params": {"item": "boba", "expected": 225, "tol": 15}}
+    {"id": "file_row_value_near", "params": {"text": "boba", "expected": 225, "tol": 15}}
   ]
 }

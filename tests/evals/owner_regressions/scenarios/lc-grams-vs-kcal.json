@@ -6,12 +6,14 @@
   "clock": "{{TODAY}} {{DOW}} 21:56 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Log my afternoon drink: a 350 g serving of boba tea. The label says 68 kcal per 100 g."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_row_kcal_near", "params": {"item": "boba", "expected": 238, "tol": 5}},
-    {"id": "ledger_row_kcal_ne", "params": {"item": "boba", "kcal": 350}}
+    {"id": "file_row_value_near", "params": {"text": "boba", "expected": 238, "tol": 5}},
+    {"id": "file_row_value_ne", "params": {"text": "boba", "value": 350}}
   ]
 }

@@ -6,12 +6,14 @@
   "clock": "{{TODAY}} {{DOW}} 12:11 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Here is my lunch photo: a plate of chicken, lentils and hummus, with a small piece of flatbread on the side."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_contains_any", "params": {"any": ["chicken", "lentils", "hummus"]}},
-    {"id": "ledger_forbids", "params": {"forbidden": ["beef", "rice", "coleslaw"], "where": "ledger"}}
+    {"id": "file_contains_any", "params": {"any": ["chicken", "lentils", "hummus"]}},
+    {"id": "file_forbids", "params": {"forbidden": ["beef", "rice", "coleslaw"], "where": "file"}}
   ]
 }

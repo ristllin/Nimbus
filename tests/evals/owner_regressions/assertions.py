@@ -9,9 +9,13 @@ pass/fail comes from here.
 
 Each assertion is a function (scenario, transcript, params) -> (pass, evidence),
 registered under an id the scenarios reference:
-  {"id": "ledger-row", "params": {"item": "skyr", "kcal": 262}}
+  {"id": "file_row", "params": {"text": "skyr", "value": 262}}
 
-The ledger day: the driver expands {{TODAY}} with the device's local day at run time;
+Assertions check file lines and replies, never a domain field by name: a scenario's
+"tracking" key names its file and columns (food, expenses and training are three
+validation domains of equal weight; owner ruling 41, lane RB-REC7).
+
+The day: the driver expands {{TODAY}} with the device's local day at run time;
 assertions compute the same day from the local clock (a run never crosses midnight in
 practice - see README).
 """
@@ -22,8 +26,6 @@ import csv
 import io
 import re
 from datetime import date, timedelta
-
-FOOD_LEDGER = "food/food-log.csv"
 
 ASSERTIONS: dict = {}
 
@@ -68,52 +70,40 @@ def files(t: dict) -> dict:
     return t.get("files") or {}
 
 
-LEDGER_WIDTH = 5  # date,meal,items,kcal,protein_g
-ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-PLAIN_NUMBER = re.compile(r"^\d+(\.\d+)?$")
+# ---- the tracking file (any domain) ------------------------------------------------
+# A scenario that tracks something names its file and columns once (owner ruling 41: food is one
+# validation domain among three, and the core knows none of them):
+#   "tracking": {"path": "money/spending.csv", "key": "date", "text": "note", "value": "amount", "unit": ""}
+# key: the column a day is matched on; text: the free-text column an entry is found by; value: the
+# column a day total adds up; unit: the word a stated total carries ("kcal", "kg"; "" for money).
+# Rows are read the way the shared file aids read them (ruling 49): a line whose first non-blank
+# byte is '#' is a comment, never a row; a row whose field count differs from the header's is NOT
+# read by position (no recovery): its figures are unknown, and the assertions say so.
 
 
-def widen_row(row: list) -> list:
-    """A ledger row read the way the device reads it (readWideRow, lib/core/src/orch_file_append.cpp).
-
-    A bare comma in the free-text items (rule 3 of the food-log playbook forbids it, and
-    some heads still write one) gives csv.reader more fields than the five columns, and
-    the figures land in the wrong ones. The device reads such a row anyway - on 31 Oct
-    rows with a comma were left out of the day's sum and the fix made them count - and the
-    owner sees the row's real figures. The assertions grade what the owner sees, so they
-    read it the same way: the extra fields belong to the items when the date is a day, the
-    last two fields (kcal, protein) are a plain number or empty, and no absorbed field is
-    a bare number (that is a shifted figure, never words). Any other wide row is returned
-    unchanged, so it still fails the figure checks."""
-    if len(row) <= LEDGER_WIDTH or not ISO_DAY.match(row[0].strip()):
-        return row
-    kcal, prot = row[-2].strip(), row[-1].strip()
-    absorbed = row[2:-2]
-    if any(f and not PLAIN_NUMBER.match(f) for f in (kcal, prot)):
-        return row
-    if any(PLAIN_NUMBER.match(f.strip()) for f in absorbed):
-        return row
-    return [row[0], row[1], ", ".join(f.strip() for f in absorbed), kcal, prot]
+def tracking(sc: dict, params: dict) -> dict:
+    tr = {**(sc.get("tracking") or {}), **(params.get("tracking") or {})}
+    for key in ("path", "key", "text", "value"):
+        if not tr.get(key):
+            raise KeyError(f"the scenario names no tracking {key} (scenario key 'tracking')")
+    return tr
 
 
-def ledger_rows(t: dict, path: str = FOOD_LEDGER) -> list:
-    """The food ledger's rows as dicts (header date,meal,items,kcal,protein_g)."""
-    text = files(t).get(path, "")
-    rows = []
-    for raw_row in csv.reader(io.StringIO(text)):
-        if not raw_row or raw_row[0].strip().lower() == "date":
+def tracked_rows(sc: dict, t: dict, params: dict | None = None) -> list:
+    """The tracking file's rows as dicts by header name, each with raw (its text), line (1-based)
+    and ok (its field count is the header's: only then are its cells read)."""
+    tr = tracking(sc, params or {})
+    header, rows = None, []
+    for n, line in enumerate(files(t).get(tr["path"], "").split("\n"), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
-        row = widen_row(raw_row)
-        rows.append(
-            {
-                "date": row[0].strip() if len(row) > 0 else "",
-                "meal": row[1].strip() if len(row) > 1 else "",
-                "items": row[2].strip() if len(row) > 2 else "",
-                "kcal": row[3].strip() if len(row) > 3 else "",
-                "protein_g": row[4].strip() if len(row) > 4 else "",
-                "raw": ",".join(raw_row),
-            }
-        )
+        cells = next(csv.reader(io.StringIO(line)))
+        if header is None:
+            header = [h.strip() for h in cells]
+            continue
+        ok = len(cells) == len(header)
+        row = dict(zip(header, (c.strip() for c in cells))) if ok else {header[0]: cells[0].strip()}
+        rows.append({**row, "raw": line, "line": n, "ok": ok})
     return rows
 
 
@@ -130,9 +120,9 @@ def day_param(params: dict) -> str:
     return d
 
 
-def day_rows(t: dict, params: dict) -> list:
-    want = day_param(params)
-    return [r for r in ledger_rows(t) if r["date"] == want]
+def day_rows(sc: dict, t: dict, params: dict) -> list:
+    want, key = day_param(params), tracking(sc, params)["key"]
+    return [r for r in tracked_rows(sc, t, params) if r.get(key, "").startswith(want)]
 
 
 def num(s):
@@ -142,13 +132,17 @@ def num(s):
         return None
 
 
-def day_kcal_sum(t: dict, params: dict) -> float:
-    total = 0.0
-    for r in day_rows(t, params):
-        v = num(r["kcal"])
+def day_sum(sc: dict, t: dict, params: dict) -> tuple:
+    """(the total over the day's readable rows, the day's rows a total cannot cover: wrong field
+    count or a value that is not a number)."""
+    col, total, unread = tracking(sc, params)["value"], 0.0, []
+    for r in day_rows(sc, t, params):
+        v = num(r.get(col, "")) if r["ok"] else None
         if v is not None:
             total += v
-    return total
+        elif not r["ok"] or r.get(col, "").strip():
+            unread.append(r)
+    return total, unread
 
 
 def ci(hay: str, needle: str) -> bool:
@@ -340,108 +334,129 @@ def tool_called(sc: dict, t: dict, params: dict):
     return bool(hits), f"{len(hits)} call(s) with {name!r}" if hits else f"no tool call with {name!r}"
 
 
-# ---- ledger / state assertions -----------------------------------------------------
+# ---- tracking-file assertions (file lines, any domain) ------------------------------
+
+
+def _text_hits(sc: dict, t: dict, params: dict, needle: str) -> list:
+    """Rows whose text column (the whole line when the column is "*") holds needle; with
+    params['date'] only rows of that day."""
+    col = tracking(sc, params)["text"]
+    rows = day_rows(sc, t, params) if "date" in params else tracked_rows(sc, t, params)
+    return [r for r in rows if ci(r["raw"] if col == "*" else r.get(col, r["raw"]), needle)]
 
 
 @assertion
-def ledger_row(sc: dict, t: dict, params: dict):
-    """A food-ledger row exists with params['item'] in items and kcal == params['kcal']
-    (and protein_g == params['protein'] when given)."""
-    item, kcal = params.get("item", ""), params.get("kcal")
-    prot = params.get("protein")
-    for r in ledger_rows(t):
-        if item.lower() in r["items"].lower() and num(r["kcal"]) == kcal:
-            if prot is None or num(r["protein_g"]) == prot:
-                return True, f"row: {r['raw']}"
-    return False, f"no row with item~{item!r} kcal={kcal} protein={prot}"
+def file_row(sc: dict, t: dict, params: dict):
+    """A readable row with params['text'] in its text column and value == params['value'] (null:
+    the cell is empty, an unknown) and each column of params['cols'] equal when given; with
+    params['date'] the row must be of that day."""
+    col, want, cols = tracking(sc, params)["value"], params.get("value"), params.get("cols") or {}
+    for r in _text_hits(sc, t, params, params.get("text", "")):
+        if r["ok"] and num(r.get(col)) == want and all(num(r.get(k)) == v for k, v in cols.items()):
+            return True, f"line {r['line']}: {r['raw']}"
+    unread = [r["line"] for r in _text_hits(sc, t, params, params.get("text", "")) if not r["ok"]]
+    why = f"; lines {unread} hold it with a wrong field count" if unread else ""
+    return False, f"no readable row with {params.get('text')!r} {col}={want} {cols or ''}{why}"
 
 
 @assertion
-def ledger_row_kcal_near(sc: dict, t: dict, params: dict):
-    """A ledger row with params['item'] has kcal within params['tol'] of params['expected']."""
-    item = params.get("item", "")
-    exp = float(params.get("expected", 0))
-    tol = float(params.get("tol", 3))
-    for r in ledger_rows(t):
-        if item.lower() in r["items"].lower():
-            v = num(r["kcal"])
-            if v is not None and abs(v - exp) <= tol:
-                return True, f"row: {r['raw']} (kcal {v})"
-    return False, f"no row with item~{item!r} near {exp} +/- {tol}"
+def file_row_value_near(sc: dict, t: dict, params: dict):
+    """A readable row with params['text'] has its value within params['tol'] of params['expected']."""
+    col, exp, tol = tracking(sc, params)["value"], float(params.get("expected", 0)), float(params.get("tol", 3))
+    for r in _text_hits(sc, t, params, params.get("text", "")):
+        v = num(r.get(col)) if r["ok"] else None
+        if v is not None and abs(v - exp) <= tol:
+            return True, f"line {r['line']}: {r['raw']} ({col} {v:g})"
+    return False, f"no readable row with {params.get('text')!r} near {exp:g} +/- {tol:g}"
 
 
 @assertion
-def ledger_row_kcal_ne(sc: dict, t: dict, params: dict):
-    """No ledger row with params['item'] has kcal == params['kcal'] (the misread figure)."""
-    item, kcal = params.get("item", ""), params.get("kcal")
-    bad = [r["raw"] for r in ledger_rows(t) if item.lower() in r["items"].lower() and num(r["kcal"]) == kcal]
-    return not bad, f"misread row present: {bad}" if bad else f"no {item!r} row at {kcal} kcal"
+def file_row_value_ne(sc: dict, t: dict, params: dict):
+    """No row with params['text'] carries the wrong value params['value'] in the value column (or
+    params['col']), readable or not: a wrong figure in a row with a wrong field count is still in
+    the file."""
+    col, bad_v = params.get("col") or tracking(sc, params)["value"], params.get("value")
+    bad = [r["raw"] for r in _text_hits(sc, t, params, params.get("text", ""))
+           if (num(r.get(col)) == bad_v if r["ok"] else re.search(rf"(?<![\d.]){bad_v:g}(?![\d.])", r["raw"]))]
+    return not bad, f"wrong row present: {bad}" if bad else f"no {params.get('text')!r} row at {bad_v:g}"
 
 
 @assertion
-def ledger_contains_any(sc: dict, t: dict, params: dict):
-    """Some ledger row's items contain one of params['any']."""
-    text = " ".join(r["items"] for r in ledger_rows(t))
+def file_contains_any(sc: dict, t: dict, params: dict):
+    """Some row's text column holds one of params['any']."""
+    col = tracking(sc, params)["text"]
+    text = " ".join(r["raw"] if col == "*" else r.get(col, r["raw"]) for r in tracked_rows(sc, t, params))
     hits = [w for w in params.get("any", []) if ci(text, w)]
-    return bool(hits), f"matched {hits}" if hits else f"none of {params.get('any')} in ledger items"
+    return bool(hits), f"matched {hits}" if hits else f"none of {params.get('any')} in the file's rows"
 
 
 @assertion
-def ledger_forbids(sc: dict, t: dict, params: dict):
-    """No ledger row contains params['forbidden']; where=files/all also checks every
-    stored file, where=reply/all also checks every reply."""
-    where = params.get("where", "ledger")
-    hay = [r["raw"] for r in ledger_rows(t)]
+def file_forbids(sc: dict, t: dict, params: dict):
+    """No row of the tracking file contains params['forbidden']; where=files/all also checks
+    every stored file, where=reply/all also checks every reply."""
+    where = params.get("where", "file")
+    hay = [r["raw"] for r in tracked_rows(sc, t, params)]
     if where in ("files", "all"):
         hay += [f"{k}={v}" for k, v in files(t).items()]
     if where in ("reply", "all"):
         hay += replies(t)
-    hits = []
-    for h in hay:
-        for w in params.get("forbidden", []):
-            if ci(h, w):
-                hits.append(w)
-    return not hits, f"found {sorted(set(hits))}" if hits else "none present"
+    hits = sorted({w for h in hay for w in params.get("forbidden", []) if ci(h, w)})
+    return not hits, f"found {hits}" if hits else "none present"
 
 
 @assertion
-def ledger_row_count(sc: dict, t: dict, params: dict):
-    """At least params['min'] ledger rows for the day (params['date'], default today)."""
-    n = len(day_rows(t, params))
-    return n >= int(params.get("min", 1)), f"{n} rows (min {params.get('min')})"
+def file_row_count(sc: dict, t: dict, params: dict):
+    """At least params['min'] (and at most params['max'] when given) rows for the day."""
+    n = len(day_rows(sc, t, params))
+    ok = n >= int(params.get("min", 1)) and ("max" not in params or n <= int(params["max"]))
+    return ok, f"{n} rows (min {params.get('min')}, max {params.get('max', '-')})"
+
+
+def _stated(reply: str, unit: str) -> tuple:
+    """(figures stated as a total, figures stated in plain day wording) in a reply."""
+    fig = r"(-?\d[\d,]*(?:\.\d+)?)"
+    u = rf"\s*{re.escape(unit)}" if unit else ""
+    cur = r"[£$€]?\s*"
+    strong = re.findall(rf"total[^.\n]{{0,60}}?{cur}{fig}{u}", reply, re.IGNORECASE)
+    weak = re.findall(rf"\b(?:so far|today|day|spent)\b[^.\n]{{0,60}}?{cur}{fig}{u}", reply, re.IGNORECASE)
+    weak += re.findall(rf"{cur}{fig}{u}[^.\n]{{0,40}}?\b(?:so far today|today so far|for today|today)\b", reply, re.IGNORECASE)
+    clean = lambda xs: [v for v in (num(x) for x in xs) if v is not None]  # noqa: E731
+    return clean(strong), clean(weak)
+
+
+def _names(reply: str, row: dict) -> bool:
+    """The reply points at a row: its line number, or the first word of its free text (third field)."""
+    if re.search(rf"\blines? {row['line']}\b", reply):
+        return True
+    cells = row["raw"].split(",")
+    word = re.match(r"[^\W\d_]{3,}", cells[2].strip()) if len(cells) > 2 else None
+    return bool(word) and ci(reply, word.group(0))
 
 
 @assertion
-def ledger_day_total(sc: dict, t: dict, params: dict):
-    """The graded reply states the day's figure and it equals the receipt: the sum of
-    the day's kcal rows in the final ledger. A 'total ... N kcal' is always checked
-    against the receipt. The day's figure stated in plain day wording counts as
-    stated too ('so far today ... N kcal', 'today ... N kcal', 'N kcal ... today'):
-    REGR-RUN-2 found replies that stated the correct figure without the word
-    'total', which the old wording-only check failed. With require_stated (default
-    true) the reply must state a figure matching the receipt at all; a stated
-    'total' that disagrees with the receipt always fails."""
-    expected = day_kcal_sum(t, params)
+def file_day_total(sc: dict, t: dict, params: dict):
+    """The graded reply states the day's figure and it equals the device sum over the day's
+    readable rows in the final file (the read_file sum). A stated 'total' that disagrees always
+    fails. With require_stated (default true) the reply must state the matching figure at all.
+    When the day has rows a total cannot cover (a wrong field count, a value that is not a
+    number), the reply must name them (by line, or by their text) - ruling 49: a total that
+    silently misses rows is a FAIL."""
+    tr = tracking(sc, params)
+    expected, unread = day_sum(sc, t, params)
     r = last_reply(t)
-    strong = [
-        v
-        for v in (num(m) for m in re.findall(r"total[^.\n]{0,60}?(\d[\d,\.]*)\s*kcal", r, re.IGNORECASE))
-        if v is not None
-    ]
-    weak = []
-    for pat in (
-        r"\b(?:so far|today|day)\b[^.\n]{0,60}?(\d[\d,\.]*)\s*kcal",
-        r"(\d[\d,\.]*)\s*kcal[^.\n]{0,40}?\b(?:so far today|today so far|for today|today)\b",
-    ):
-        weak += [v for v in (num(m) for m in re.findall(pat, r, re.IGNORECASE)) if v is not None]
+    strong, weak = _stated(r, tr.get("unit", ""))
     stated = strong + weak
-    require = params.get("require_stated", True)
-    if require and not any(abs(v - expected) <= 0.5 for v in stated):
-        return False, f"no day figure stated matching the receipt {expected:g} kcal (stated {stated})"
-    bad = [v for v in strong if abs(v - expected) > 0.5]
+    full = params.get("full")  # the figure over every row as written, when the rows say it plainly
+    if full is not None and any(abs(v - float(full)) <= 0.005 for v in stated):
+        return True, f"the full figure {float(full):g} stated (stated {stated})"
+    if params.get("require_stated", True) and not any(abs(v - expected) <= 0.005 for v in stated):
+        return False, f"no day figure stated matching the device sum {expected:g} (stated {stated})"
+    bad = [v for v in strong if abs(v - expected) > 0.005]
     if bad:
-        return False, f"reply totals {strong} != receipt {expected:g} kcal"
-    return True, f"day figure stated {stated} == receipt {expected:g} kcal"
+        return False, f"reply totals {strong} != device sum {expected:g}"
+    if unread and any(abs(v - expected) <= 0.005 for v in stated) and not any(_names(r, u) for u in unread):
+        return False, f"total {expected:g} leaves out lines {[u['line'] for u in unread]} and the reply does not say so"
+    return True, f"day figure stated {stated} == device sum {expected:g}"
 
 
 @assertion

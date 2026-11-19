@@ -1,12 +1,13 @@
-"""Host tests for the owner-regression suite's ledger reading (tests/evals/owner_regressions/assertions.py).
+"""Host tests for the owner-regression suite's file reading (tests/evals/owner_regressions/assertions.py).
 
 Run: python3 -m pytest tools/release_gate
 
-The suite grades the owner's outcome from the final on-device ledger. The device reads a ledger
-row with a bare comma in its items (readWideRow, lib/core/src/orch_file_append.cpp), so the
-assertions must too, or a correct row fails the figure checks (lane QFIX: glm-5.3 wrote such a
-row in 7 of 200 reps and three scenarios graded the correct figure as a failure). The reading
-must stay strict where the device is: a shifted figure is never words.
+The suite grades the owner's outcome from the final file, in any of the three validation domains
+(owner ruling 41): a scenario's "tracking" key names the file and its columns, and the assertions
+read rows the way the shared file aids do (ruling 49): a '#' line is a comment, and a row whose
+field count differs from the header's is NOT read by position. Its figures are unknown, so a
+figure check fails on it and a day total must name it. (Until RB-REC7 the suite widened such rows
+the way v5.1.x's keyed append read them; that reader is gone from the product.)
 """
 
 import importlib.util
@@ -19,79 +20,79 @@ spec = importlib.util.spec_from_file_location("owner_regression_assertions", ASS
 A = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(A)
 
-HEADER = "date,meal,items,kcal,protein_g\n"
+FOOD = {"tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"}}
+MONEY = {"tracking": {"path": "money/spending.csv", "key": "date", "text": "*", "value": "amount", "unit": ""}}
+SETS = {"tracking": {"path": "gym/sets.csv", "key": "date", "text": "*", "value": "reps", "unit": "reps"}}
+HEADERS = {"food/food-log.csv": "date,meal,items,kcal,protein_g\n", "money/spending.csv": "date,category,note,amount,paid_with\n",
+           "gym/sets.csv": "date,exercise,note,reps,kg\n"}
 
 
-def ledger(*rows):
-    return {"files": {A.FOOD_LEDGER: HEADER + "".join(r + "\n" for r in rows)}, "turns": []}
+def tfile(sc, *rows, reply=""):
+    path = sc["tracking"]["path"]
+    return {"files": {path: HEADERS[path] + "".join(r + "\n" for r in rows)}, "turns": [{"reply": reply}]}
 
 
-def near(t, item, expected):
-    ok, _ = A.ASSERTIONS["ledger_row_kcal_near"]({}, t, {"item": item, "expected": expected, "tol": 5})
+def check(name, sc, t, **params):
+    ok, _ = A.ASSERTIONS[name](sc, t, params)
     return ok
 
 
-def not_at(t, item, kcal):
-    ok, _ = A.ASSERTIONS["ledger_row_kcal_ne"]({}, t, {"item": item, "kcal": kcal})
-    return ok
+def test_an_exact_width_row_is_read():
+    t = tfile(FOOD, "2026-11-05,snack,boba tea 350 g,238,")
+    (r,) = A.tracked_rows(FOOD, t)
+    assert r["ok"] and (r["meal"], r["items"], r["kcal"], r["protein_g"]) == ("snack", "boba tea 350 g", "238", "")
+    assert check("file_row_value_near", FOOD, t, text="boba", expected=238, tol=5)
+    assert check("file_row", FOOD, t, text="boba", value=238)
 
 
-def test_an_exact_width_row_is_read_as_before():
-    t = ledger("2026-11-05,snack,boba tea 350 g,238,")
-    (r,) = A.ledger_rows(t)
-    assert (r["meal"], r["items"], r["kcal"], r["protein_g"]) == ("snack", "boba tea 350 g", "238", "")
-    assert near(t, "boba", 238)
+def test_a_bare_comma_row_is_not_read_by_position():
+    # Counter-test of the old widening: the figures of a wrong-field-count row are unknown.
+    t = tfile(FOOD, "2026-11-05,snack,boba tea 350 g (68 kcal/100 g, label),238,")
+    (r,) = A.tracked_rows(FOOD, t)
+    assert not r["ok"] and "label)" in r["raw"]
+    assert not check("file_row", FOOD, t, text="boba", value=238)
+    assert not check("file_row_value_near", FOOD, t, text="boba", expected=238, tol=5)
+    # ...but a wrong figure in it is still a wrong figure in the file.
+    wrong = tfile(FOOD, "2026-11-05,snack,boba tea 350 g (68 kcal/100 g, label),350,")
+    assert not check("file_row_value_ne", FOOD, wrong, text="boba", value=350)
 
 
-def test_a_bare_comma_in_the_items_is_read_like_the_device_reads_it():
-    # The rows glm-5.3 wrote on 5 Nov (lc-grams-vs-kcal rep2, lc-photo-default rep2, lc-near-match rep2).
-    boba = ledger("2026-11-05,snack-1600,boba tea 350 g (68 kcal/100 g, label),238,")
-    (r,) = A.ledger_rows(boba)
-    assert r["items"] == "boba tea 350 g (68 kcal/100 g, label)"
-    assert (r["kcal"], r["protein_g"]) == ("238", "")
-    assert near(boba, "boba", 238)
-    bars = ledger("2026-11-05,snack-0815,protein bar pack (4 bars, 220 kcal each, owner's label figures),880,")
-    assert near(bars, "protein bar", 880)
-    lunch = ledger("2026-11-05,lunch,chicken (450 g, assumed cooked breast)+blueberries (250 g),886,141.3")
-    (r,) = A.ledger_rows(lunch)
-    assert "blueberries" in r["items"] and (r["kcal"], r["protein_g"]) == ("886", "141.3")
-    # The raw text stays the file's own, for the forbid checks.
-    assert "label)" in A.ledger_rows(boba)[0]["raw"]
+def test_comment_lines_are_never_rows():
+    t = tfile(MONEY, "# replaced: 2026-11-05,coffee,kiosk,2.40,card", "2026-11-05,coffee,kiosk,2.60,card")
+    assert len(A.tracked_rows(MONEY, t)) == 1
+    assert check("file_row_count", MONEY, t, date="2026-11-05", min=1, max=1)
 
 
-def test_the_widened_reading_still_fails_a_wrong_figure():
-    # Counter-test: the comma is forgiven, the figure is not (350 g logged as 350 kcal).
-    wrong = ledger("2026-11-05,snack,boba tea 350 g (68 kcal/100 g, label),350,")
-    assert not near(wrong, "boba", 238)
-    assert not not_at(wrong, "boba", 350)
+def test_an_unknown_is_an_empty_cell_never_zero():
+    blank = tfile(MONEY, "2026-11-05,parking,station,,card")
+    zero = tfile(MONEY, "2026-11-05,parking,station,0,card")
+    assert check("file_row", MONEY, blank, text="parking", value=None)
+    assert not check("file_row", MONEY, zero, text="parking", value=None)
 
 
-def test_a_shifted_figure_is_never_words():
-    # "350" is a bare number among the absorbed fields: another schema or a shifted figure,
-    # so the row stays wide and the figure checks read it as csv does (kcal 350, not 238).
-    shifted = ledger("2026-11-05,snack,boba tea,350,238,")
-    (r,) = A.ledger_rows(shifted)
-    assert r["kcal"] == "350"
-    assert not near(shifted, "boba", 238)
-    assert not not_at(shifted, "boba", 350)
+def test_the_same_checks_hold_in_three_domains():
+    for sc, row, word, value, cols in (
+        (FOOD, "2026-11-05,lunch,tuna sandwich,470,32", "tuna", 470, {"protein_g": 32}),
+        (MONEY, "2026-11-05,groceries,market,25.45,card", "grocer", 25.45, {}),
+        (SETS, "2026-11-05,bench press,,8,52.5", "bench", 8, {"kg": 52.5}),
+    ):
+        t = tfile(sc, row)
+        assert check("file_row", sc, t, text=word, value=value, cols=cols), sc
+        assert not check("file_row", sc, t, text=word, value=value + 1), sc
+        assert check("file_row_count", sc, t, date="2026-11-05", min=1, max=1), sc
+        assert not check("file_row_count", sc, tfile(sc, row, row), date="2026-11-05", min=1, max=1), sc
 
 
-def test_a_wide_row_whose_last_fields_are_not_figures_stays_unread():
-    unread = ledger("2026-11-05,snack,boba tea 350 g (68 kcal/100 g, label),238 kcal,")
-    (r,) = A.ledger_rows(unread)
-    assert r["items"] == "boba tea 350 g (68 kcal/100 g"
-    assert not near(unread, "boba", 238)
-
-
-def test_a_wide_row_with_no_day_stays_unread():
-    other = ledger("not-a-day,snack,boba tea (68 kcal/100 g, label),238,")
-    assert not near(other, "boba", 238)
-
-
-def test_the_day_total_counts_a_widened_row():
-    t = ledger("2026-11-05,breakfast,eggs,300,20", "2026-11-05,snack,boba (350 g, label),238,")
-    total = sum(float(r["kcal"]) for r in A.ledger_rows(t))
-    assert total == 538.0
+def test_a_day_total_equals_the_device_sum_and_names_what_it_leaves_out():
+    day = ["2026-11-05,coffee,kiosk,2.40,card", "2026-11-05,lunch,bakery: pasty, juice,6.75,card",
+           "2026-11-05,bus,ticket,2.80,cash", "2026-11-04,books,atlas,6.00,cash"]
+    t = lambda reply: tfile(MONEY, *day, reply=reply)  # noqa: E731
+    params = {"date": "2026-11-05"}
+    assert check("file_day_total", MONEY, t("You spent 5.20 today; line 3 (bakery) has an extra comma, so it is not in it."), **params)
+    assert not check("file_day_total", MONEY, t("You spent 5.20 today."), **params)  # silently partial: FAIL
+    assert not check("file_day_total", MONEY, t("Your total today is 11.95."), **params)  # not the device sum
+    assert check("file_day_total", MONEY, t("Your total today is 11.95."), full=11.95, **params)  # read in full
+    assert check("file_day_total", MONEY, t("Total today: 5.20, leaving out the bakery row."), **params)
 
 
 # ---- memory_contains: a write must be able to fail it (fix pass F2) ------------------------

@@ -6,12 +6,14 @@
   "clock": "{{TODAY}} {{DOW}} 06:02 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Log my lunch: a turkey sandwich, 480 kcal. Then confirm it is saved."}
   ],
   "assertions": [
     "reply_ok",
     "no_plumbing",
-    {"id": "ledger_row", "params": {"item": "turkey", "kcal": 480}}
+    {"id": "file_row", "params": {"text": "turkey", "value": 480}}
   ]
 }

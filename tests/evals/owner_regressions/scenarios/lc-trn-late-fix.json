@@ -1,0 +1,65 @@
+{
+  "id": "lc-trn-late-fix",
+  "title": "training: late fix (validation family, owner ruling 41)",
+  "rows": [
+    "OIR-19"
+  ],
+  "replays": "A validation family shape in the training domain (lane RB-REC7): the general file tools and the owner's own skill, no domain code.",
+  "clock": "{{TODAY}} {{DOW}} 20:30 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "tracking": {
+    "path": "gym/sets.csv",
+    "key": "date",
+    "text": "*",
+    "value": "reps",
+    "unit": "reps"
+  },
+  "steps": [
+    {
+      "do": "skill",
+      "domain": "training"
+    },
+    {
+      "do": "file",
+      "path": "gym/sets.csv",
+      "text": "date,exercise,note,reps,kg\n{{YESTERDAY}},squat,warm-up, felt fine,5,60\n{{YESTERDAY}},squat,top set,5,80\n{{YESTERDAY}},bench press,paused,5,55\n{{YESTERDAY}},row,strict,8,50\n{{TODAY}},deadlift,warm-up,5,70\n# replaced: {{TODAY}},deadlift,working set,5,100\n{{TODAY}},deadlift,working set,5,100\n{{TODAY}},deadlift,working set,5,100\n{{TODAY}},overhead press,seated,8,30\n{{TODAY}},overhead press,seated, last rep slow,8,30\n\n{{TODAY}},pull-up,bodyweight,6,0\n{{TODAY}},pull-up,bodyweight,5,0\n{{TODAY}},lunge,dumbbells, each leg,10,16\n{{TODAY}},lunge,dumbbells,10,16\n{{TODAY}},curl,EZ bar,12,20\n{{TODAY}},curl,EZ bar,10,\n{{TODAY}},plank,seconds in reps,60,0\n{{TODAY}},face pull,cable,15,12.5\n{{TODAY}},face pull,cable,15,12.5\n{{TODAY}},calf raise,machine,20,40\n\n"
+    },
+    {
+      "do": "say",
+      "text": "Log this: Bench press, 8 reps at 57.5 kg."
+    },
+    {
+      "do": "say",
+      "text": "What's a good warm-up for squats? One line."
+    },
+    {
+      "do": "say",
+      "text": "And for how long?"
+    },
+    {
+      "do": "say",
+      "text": "The bench set was 52.5 kg, not 57.5."
+    }
+  ],
+  "assertions": [
+    "reply_ok",
+    {
+      "id": "file_row",
+      "params": {
+        "text": "bench",
+        "value": 8.0,
+        "cols": {
+          "kg": 52.5
+        }
+      }
+    },
+    {
+      "id": "file_row_count",
+      "params": {
+        "min": 16,
+        "max": 16
+      }
+    }
+  ]
+}

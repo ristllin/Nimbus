@@ -1,0 +1,54 @@
+{
+  "id": "lc-exp-valid-odd",
+  "title": "expenses: valid odd (validation family, owner ruling 41)",
+  "rows": [
+    "OIR-04"
+  ],
+  "replays": "A validation family shape in the expenses domain (lane RB-REC7): the general file tools and the owner's own skill, no domain code.",
+  "clock": "{{TODAY}} {{DOW}} 20:30 GMT",
+  "devName": "Nimbus",
+  "webSearch": false,
+  "tracking": {
+    "path": "money/spending.csv",
+    "key": "date",
+    "text": "*",
+    "value": "amount",
+    "unit": ""
+  },
+  "steps": [
+    {
+      "do": "skill",
+      "domain": "expenses"
+    },
+    {
+      "do": "file",
+      "path": "money/spending.csv",
+      "text": "date,category,note,amount,paid_with\n{{YESTERDAY}},transport,bus pass top-up,12.50,card\n{{YESTERDAY}},groceries,corner shop: milk, bread,4.85,cash\n{{YESTERDAY}},eating out,noodle bar,14.20,card\n{{YESTERDAY}},books,second-hand atlas,6.00,cash\n{{TODAY}},coffee,kiosk espresso,2.40,card\n# replaced: {{TODAY}},groceries,weekly shop,48.37,card\n{{TODAY}},groceries,weekly shop,48.37,card\n{{TODAY}},transport,train to Harwick,17.90,card\n{{TODAY}},lunch,bakery: pasty, juice,6.75,card\n{{TODAY}},household,light bulbs,8.99,card\n\n{{TODAY}},refund,returned kettle,-24.99,card\n{{TODAY}},gift,flowers for Odile,15.00,cash\n{{TODAY}},parking,station car park,,card\n{{TODAY}},coffee,oat cappuccino,3.10,card\n{{TODAY}},pharmacy,plasters,3.49,card\n{{TODAY}},subscription,music service,10.99,card\n{{TODAY}},snacks,vending machine,1.80,cash\n{{TODAY}},split bill,dinner with Bram, Ines,21.50,card\n{{TODAY}},laundry,service wash,7.00,cash\n{{TODAY}},tips,taxi driver,2.00,cash\n\n"
+    },
+    {
+      "do": "say",
+      "text": "Log this: Refund for a returned lamp, minus 18.99, on card."
+    }
+  ],
+  "assertions": [
+    "reply_ok",
+    {
+      "id": "file_row_count",
+      "params": {
+        "min": 16,
+        "max": 16
+      }
+    },
+    {
+      "id": "reply_forbids",
+      "params": {
+        "forbidden": [
+          "can't",
+          "cannot",
+          "won't",
+          "unable"
+        ]
+      }
+    }
+  ]
+}

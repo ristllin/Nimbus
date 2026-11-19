@@ -17,7 +17,13 @@ Incident classes covered in every family:
   RC-01 a correction after three turns; RC-02 a correction after a cold start   (late-fix, cold-fix)
   a photo source kept in the transcript   (photo)
 
-    python3 tests/evals/families/gen_families.py            # write tests/evals/refloop/families/<domain>/*.yaml
+It also writes the expense and training families of the owner-regression battery
+(tests/evals/owner_regressions/scenarios/lc-exp-*.json and lc-trn-*.json; the food family there is the
+34 existing scenarios with their assertions on file lines): the same shapes as far as the lab driver
+goes (no clock moves, no restart; RC-19 and the photo source are the refloop family's), plus an unknown
+left empty and a question that is not an entry.
+
+    python3 tests/evals/families/gen_families.py            # write both sets
     python3 tests/evals/families/gen_families.py --check    # exit 1 when a written file is stale
 """
 
@@ -277,6 +283,128 @@ def render(sc: dict) -> str:
     return HEADER + yaml.dump(sc, Dumper=_Dumper, sort_keys=False, allow_unicode=True, width=120)
 
 
+# ---- the owner-regression families (lab driver, tests/evals/owner_regressions) ---------------
+OWNER_OUT = HERE.parent / "owner_regressions" / "scenarios"
+OWNER_PREFIX = {"expenses": "lc-exp-", "training": "lc-trn-"}
+OWNER_ROWS = {  # the owner-issues register rows each shape stands for
+    "day-total": ["OIR-05", "OIR-09", "OIR-27"], "log-three": ["OIR-18"], "correct": ["OIR-19", "OIR-04"],
+    "undo": ["OIR-42"], "move": ["OIR-14"], "relog": ["OIR-42"], "routine": ["OIR-01", "OIR-06"],
+    "valid-odd": ["OIR-04"], "late-fix": ["OIR-19"], "cold-fix": ["OIR-11", "OIR-19"], "unknown-empty": ["OIR-30"],
+    "question": ["OIR-08"],
+}
+OWNER_EXTRA = {
+    "expenses": {
+        "unknown": ("Parking at the station, I don't know the amount yet, paid by card.", "parking"),
+        "question": ("Did I buy a coffee today? Just tell me, don't log anything.", r"coffee|espresso|cappuccino"),
+        "routine": "Routine: remind the owner to check the bank app.",
+        "keys": ["coffee", "grocer", "bus"],
+        "cold_row": "{{TODAY}},groceries,market,27.45,card",
+    },
+    "training": {
+        "unknown": ("Leg press, 12 reps, I forgot to note the weight.", "leg press"),
+        "question": ("Did I do any deadlifts today? Just tell me, don't log anything.", r"deadlift"),
+        "routine": "Routine: remind the owner to stretch.",
+        "keys": ["squat", "bench", "row,"],
+        "cold_row": "{{TODAY}},bench press,,8,57.5",
+    },
+}
+
+
+def _wrong(dom: D.Domain, entry) -> dict:
+    """The figure a correction replaces, and its column."""
+    col = "kg" if dom.name == "training" else "amount"
+    return {"col": col, "value": float(entry[2][col])}
+
+
+def owner_scenarios(dom: D.Domain) -> list:
+    """The owner-regression family of a domain: the 15-row day is today ({{TODAY}}), the 4-row day
+    yesterday ({{YESTERDAY}}), the owner's skill seeded first. Assertions on file lines and replies."""
+    v, x = VOCAB[dom.name], OWNER_EXTRA[dom.name]
+    file = D.dated(_file(dom), {"{D-2}": "{{YESTERDAY}}", "{D-1}": "{{TODAY}}"})
+    value = dom.sum_cols[0]  # amount; reps (the training question asks for reps)
+    track = {"path": dom.path, "key": "date", "text": "*", "value": value, "unit": "reps" if dom.name == "training" else ""}
+    h = D.honest_day(dom, "{D-1}")
+    n = len(dom.days["{D-1}"])
+
+    def row(entry_text, figures, date=None):
+        """A file_row for an entry by a word of its text and its figures."""
+        word = entry_text
+        cols = {c: float(figures[c]) for c in dom.sum_cols if c != value and c in figures}
+        p = {"text": word, "value": float(figures[value])}
+        if cols:
+            p["cols"] = cols
+        if date:
+            p["date"] = date
+        return {"id": "file_row", "params": p}
+
+    e = v["e"]
+    word = lambda entry: x["keys"][e.index(entry)]  # noqa: E731  (a word of the row the entry makes)
+    fixed = dict(e[1][2])
+    fixed[re.search(r"\b(kg|amount)\b", "kg" if dom.name == "training" else "amount").group(1)] = re.findall(
+        r"\d+(?:\.\d+)?", v["fix"][0])[0]  # the corrected figure: the first number of the fix
+    count = lambda k: {"id": "file_row_count", "params": {"min": n + k, "max": n + k}}  # noqa: E731
+    move_row = next(r for r in dom.days["{D-1}"] if r[1] == v["move"])
+    say = lambda text: {"do": "say", "text": text}  # noqa: E731
+    shapes = {
+        "day-total": ([say(v["day_q"].replace(" on {D-1:dm}", " today").replace(" for {D-1:dm}", " for today"))],
+                      [{"id": "file_day_total", "params": {"full": float(h["full"][value])}}]),
+        "log-three": ([say("Log this: " + e[0][0]), say(e[1][0]), say(e[2][0])],
+                      [row(word(e[0]), e[0][2]), row(word(e[1]), e[1][2]), row(word(e[2]), e[2][2]), count(3)]),
+        "correct": ([say("Log this: " + e[1][0]), say(v["fix"][0])],
+                    [row(word(e[1]), fixed), {"id": "file_row_value_ne", "params": {"text": word(e[1]), **_wrong(dom, e[1])}}, count(1)]),
+        "undo": ([say("Log this: " + e[0][0]), say(e[2][0]), say("Undo the last one, that didn't happen after all.")],
+                 [row(word(e[0]), e[0][2]), count(1)]),
+        "move": ([say(f"The {move_row[1]} today ({move_row[2]}) was really yesterday. Please move it.")],
+                 [{"id": "file_row_count", "params": {"min": n - 1, "max": n - 1}},
+                  {"id": "file_contains_any", "params": {"any": [move_row[2]]}},
+                  row(move_row[2], dict(zip(dom.header[3:], move_row[3:])), date="yesterday")]),
+        "relog": ([say("Log this: " + e[2][0]), say(v["again"]), say("Sorry, that second one was a mistake. Remove it.")],
+                  [row(word(e[2]), e[2][2]), count(1)]),
+        "routine": ([say("Log this: " + e[1][0]), {"do": "scheduled", "name": "Reminder", "text": x["routine"]}],
+                    [row(word(e[1]), e[1][2]), count(1)]),
+        "valid-odd": ([say("Log this: " + v["odd"][0])],
+                      [count(1), {"id": "reply_forbids", "params": {"forbidden": ["can't", "cannot", "won't", "unable"]}}]),
+        "late-fix": ([say("Log this: " + e[1][0]), say(v["chat"][0]), say(v["chat"][1]), say(v["fix"][0])],
+                     [row(word(e[1]), fixed), count(1)]),
+        "cold-fix": ([{"do": "file", "path": dom.path, "text": file + x["cold_row"] + "\n"},
+                      say(v["coldfix"])],
+                     [row(word(e[1]), fixed), count(1)]),
+        "unknown-empty": ([say("Log this: " + x["unknown"][0])],
+                          [{"id": "file_row", "params": {"text": x["unknown"][1], "value": None}}, count(1)]),
+        "question": ([say(x["question"][0])], [count(0), {"id": "reply_contains_re", "params": {"re": x["question"][1]}}]),
+    }
+    out = []
+    for shape, (steps, checks) in shapes.items():
+        if shape == "cold-fix":
+            steps = [{"do": "skill", "domain": dom.name}, *steps]  # its own file step carries today's row
+        else:
+            steps = [{"do": "skill", "domain": dom.name}, {"do": "file", "path": dom.path, "text": file}, *steps]
+        out.append({
+            "id": OWNER_PREFIX[dom.name] + shape,
+            "title": f"{dom.name}: {shape.replace('-', ' ')} (validation family, owner ruling 41)",
+            "rows": OWNER_ROWS[shape],
+            "replays": "A validation family shape in the "
+            f"{dom.name} domain (lane RB-REC7): the general file tools and the owner's own skill, no domain code.",
+            "clock": "{{TODAY}} {{DOW}} 20:30 GMT",
+            "devName": "Nimbus",
+            "webSearch": False,
+            "tracking": track,
+            "steps": steps,
+            "assertions": ["reply_ok", *checks],
+        })
+    return out
+
+
+def owner_files() -> dict:
+    import json
+
+    want = {}
+    for name in OWNER_PREFIX:
+        for sc in owner_scenarios(D.DOMAINS[name]):
+            want[OWNER_OUT / f"{sc['id']}.json"] = json.dumps(sc, indent=2, ensure_ascii=False) + "\n"
+    return want
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--check", action="store_true")
@@ -285,7 +413,9 @@ def main(argv=None) -> int:
     for dom in D.DOMAINS.values():
         for n, sc in enumerate(scenarios(dom), 1):
             want[OUT / dom.name / f"{n:02d}-{sc['id'].split('-', 1)[1]}.yaml"] = render(sc)
+    want.update(owner_files())
     have = set(OUT.glob("*/*.yaml")) if OUT.exists() else set()
+    have |= set(OWNER_OUT.glob("lc-exp-*.json")) | set(OWNER_OUT.glob("lc-trn-*.json"))
     for path, text in want.items():
         if not path.exists() or path.read_text() != text:
             stale.append(path)
@@ -300,7 +430,7 @@ def main(argv=None) -> int:
         for p in stale:
             print(f"stale: {p.relative_to(HERE.parents[2])}")
         return 1 if stale else 0
-    print(f"wrote {len(stale)} of {len(want)} family scenarios")
+    print(f"wrote {len(stale)} of {len(want)} family scenarios (refloop and owner-regression)")
     return 0
 
 

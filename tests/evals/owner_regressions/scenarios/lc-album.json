@@ -6,13 +6,15 @@
   "clock": "{{TODAY}} {{DOW}} 20:06 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Here are six photos from my lunch today. Photo 1: a bowl of tomato soup. Photo 2: half a grilled cheese sandwich. Photo 3: the second sandwich half. Photo 4: a small side salad. Photo 5: a pickle spear. Photo 6: a glass of lemonade. Log the whole meal as lunch."}
   ],
   "assertions": [
     "reply_ok",
     {"id": "reply_max_len", "params": {"max": 4000}},
-    {"id": "ledger_row_count", "params": {"min": 1}},
-    {"id": "ledger_contains_any", "params": {"any": ["soup", "sandwich", "cheese"]}}
+    {"id": "file_row_count", "params": {"min": 1}},
+    {"id": "file_contains_any", "params": {"any": ["soup", "sandwich", "cheese"]}}
   ]
 }

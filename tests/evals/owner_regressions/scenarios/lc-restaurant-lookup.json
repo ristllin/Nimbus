@@ -6,12 +6,14 @@
   "clock": "{{TODAY}} {{DOW}} 15:07 GMT",
   "devName": "Nimbus",
   "webSearch": true,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Here is a photo of my dinner at Flat Iron: their standard flank steak plate with a side salad. Log it."}
   ],
   "assertions": [
     "reply_ok",
     {"id": "tool_called", "params": {"name": "web"}},
-    {"id": "ledger_contains_any", "params": {"any": ["steak"]}}
+    {"id": "file_contains_any", "params": {"any": ["steak"]}}
   ]
 }

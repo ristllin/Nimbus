@@ -47,6 +47,9 @@ sys.path.insert(0, str(HERE))
 import spend_ledger  # noqa: E402  (the lab's provider price table)
 import assertions as A  # noqa: E402
 
+sys.path.insert(0, str(HERE.parent / "families"))
+import domains as DOMAINS  # noqa: E402  (the three validation domains and the owner's skill per domain)
+
 THRESHOLDS = json.loads((HERE / "thresholds.json").read_text())
 REP_RECORD = re.compile(r"rep\d+\.json$")
 EM_DASH = chr(0x2014)
@@ -78,12 +81,14 @@ def check_scenario(sc: dict) -> list:
     if not sc.get("id", "").startswith("lc-"):
         errs.append("id must start with lc-")
     for st in sc.get("steps", []):
-        if st.get("do") not in ("say", "sub", "row", "file", "pref", "scheduled"):
+        if st.get("do") not in ("say", "sub", "row", "file", "pref", "scheduled", "skill"):
             errs.append(f"unknown step {st.get('do')!r}")
         if st.get("do") == "sub" and not st.get("name"):
             errs.append("sub step missing name")
         if st.get("do") == "scheduled" and not st.get("text"):
             errs.append("scheduled step missing text")
+        if st.get("do") == "skill" and st.get("domain") not in DOMAINS.DOMAINS:
+            errs.append(f"skill step names no known domain ({sorted(DOMAINS.DOMAINS)})")
     for a in sc.get("assertions", []):
         aid = a["id"] if isinstance(a, dict) else a
         if aid not in A.known_ids():
@@ -222,6 +227,23 @@ def run_records(raw: Path) -> list:
     return sorted(p for p in raw.glob("*/*/rep*.json") if REP_RECORD.match(p.name))
 
 
+def driver_scenario(sc: dict, rep_dir: Path) -> str:
+    """The scenario file the driver reads: a skill step ({"do": "skill", "domain": d}) becomes the
+    owner's own skill for that domain (tests/evals/families/domains.py), saved as the owner before
+    the turns, pointing at the scenario's tracking file. Other scenarios go as they are."""
+    if not any(st.get("do") == "skill" for st in sc.get("steps", [])):
+        return sc["_path"]
+    out = json.loads(Path(sc["_path"]).read_text())
+    for st in out["steps"]:
+        if st.get("do") == "skill":
+            dom = DOMAINS.DOMAINS[st["domain"]]
+            path = (out.get("tracking") or {}).get("path", dom.path)
+            st.update(id=DOMAINS.SKILL_FIELDS[dom.name]["id"], md=DOMAINS.skill_md(dom, path=path))
+    target = rep_dir / "scenario.json"
+    target.write_text(json.dumps(out, ensure_ascii=False))
+    return str(target)
+
+
 def run_one(sc: dict, model: str, host: str, args, rep: int, rep_dir: Path) -> dict:
     rep_dir.mkdir(parents=True, exist_ok=True)
     rec = rep_dir / f"rep{rep}.rec"
@@ -230,7 +252,7 @@ def run_one(sc: dict, model: str, host: str, args, rep: int, rep_dir: Path) -> d
     cmd = [
         str(DRIVER),
         "--scenario",
-        sc["_path"],
+        driver_scenario(sc, rep_dir),
         "--out",
         str(transcript_path),
         "--host",

@@ -9,13 +9,15 @@
   "history": [
     {"role": "user", "text": "I also had some bb with my lunch earlier, I will tell you about it later."}
   ],
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Log today's lunch: 450 g of chicken and 250 g of blueberries. And please also add the bb I mentioned earlier."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_contains_any", "params": {"any": ["chicken"]}},
-    {"id": "ledger_contains_any", "params": {"any": ["blueberrie"]}},
-    {"id": "ledger_forbids", "params": {"forbidden": ["black bean"], "where": "all"}}
+    {"id": "file_contains_any", "params": {"any": ["chicken"]}},
+    {"id": "file_contains_any", "params": {"any": ["blueberrie"]}},
+    {"id": "file_forbids", "params": {"forbidden": ["black bean"], "where": "all"}}
   ]
 }

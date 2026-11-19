@@ -8,7 +8,18 @@
   "clock": "{{TODAY}} {{DOW}} 15:40 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {
+    "path": "food/food-log.csv",
+    "key": "date",
+    "text": "items",
+    "value": "kcal",
+    "unit": "kcal"
+  },
   "steps": [
+    {
+      "do": "skill",
+      "domain": "food"
+    },
     {
       "do": "say",
       "text": "Here is a photo of the nutrition label on my trail mix pouch: 150 kcal per serving, 4 servings per pouch. Logging my snack."
@@ -17,9 +28,9 @@
   "assertions": [
     "reply_ok",
     {
-      "id": "ledger_row_kcal_near",
+      "id": "file_row_value_near",
       "params": {
-        "item": "trail mix",
+        "text": "trail mix",
         "expected": 600,
         "tol": 5
       }

@@ -9,13 +9,15 @@
   "history": [
     {"role": "assistant", "text": "Still open: the garage door sensor question and the pharmacy run. Let me know when you want to handle these."}
   ],
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n"},
     {"do": "say", "text": "All sorted, thanks. What is my total today?"}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_day_total", "params": {"require_stated": false}},
+    {"id": "file_day_total", "params": {"require_stated": false}},
     {"id": "reply_forbids", "params": {"forbidden": ["still open"]}}
   ]
 }

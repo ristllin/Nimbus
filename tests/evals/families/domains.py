@@ -283,10 +283,11 @@ This is how I keep my {what_short} log. I wrote it; follow it whenever I log som
 """
 
 
-def skill_md(dom: Domain) -> str:
+def skill_md(dom: Domain, path: str = "") -> str:
+    """The owner's skill for a domain; path: where his file lives when not the domain's default."""
     f = SKILL_FIELDS[dom.name]
     return SKILL_TEMPLATE.format(
         title=f["title"], desc=f["desc"], what_short=dom.name if dom.name != "food" else "meal",
-        path=dom.path, what=f["what"], header=",".join(dom.header), columns=f["columns"], example=f["example"],
+        path=path or dom.path, what=f["what"], header=",".join(dom.header), columns=f["columns"], example=f["example"],
         unknown=f["unknown"], target=f["target"], left=f["left"], labels=f["labels"],
     )

@@ -6,13 +6,15 @@
   "clock": "{{TODAY}} {{DOW}} 15:44 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,oats with a banana,290,12\n{{TODAY}},lunch,chicken wrap,615,40\n"},
     {"do": "say", "text": "Check my food log and tell me my total so far today. Take your time and be thorough."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_day_total", "params": {"require_stated": false}},
+    {"id": "file_day_total", "params": {"require_stated": false}},
     {"id": "reply_forbids", "params": {"forbidden": ["next turn", "hold on", "one moment", "in a moment", "I'll finish", "I will finish", "shortly"]}}
   ]
 }

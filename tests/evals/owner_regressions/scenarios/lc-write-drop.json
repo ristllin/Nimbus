@@ -6,12 +6,14 @@
   "clock": "{{TODAY}} {{DOW}} 10:00 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "Log my evening snack: a slice of banana bread, 260 kcal."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_row", "params": {"item": "banana bread", "kcal": 260}},
+    {"id": "file_row", "params": {"text": "banana bread", "value": 260}},
     {"id": "reply_forbids", "params": {"forbidden": ["hold on"]}}
   ]
 }

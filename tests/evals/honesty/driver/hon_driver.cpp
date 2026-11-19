@@ -28,6 +28,7 @@
 //   file a file on the card before the steps run; {{TODAY}}/{{YESTERDAY}}/{{TOMORROW}}
 //        in its text expand to the device's local day strings.
 //   pref standing rules already on the device ("texts": [rule, ...]).
+//   skill the owner's own skill ("id", "md"), saved as the owner before the turns run.
 //   scheduled an unattended turn (a routine firing): the text is the routine's
 //        prompt, the name the routine's display name, loopId its loop id. The
 //        turn runs exactly as the device would fire it (the prefs rails read the
@@ -318,6 +319,11 @@ bool seedStep(lab::LabRig& rig, const std::string& chat, const std::string& kind
   }
   if (kind == "file") {  // a file on the card before the steps run ({{TODAY}} & co. expand)
     rig.files().seed(str(st["path"]), substituteDays(str(st["text"])));
+    return true;
+  }
+  if (kind == "skill") {  // the owner's own skill, saved by him (live at once); run_eval.py fills id and md
+    const agent::SkillResult r = rig.skills().ownerSave(str(st["id"]), str(st["md"]));
+    if (!r.ok) std::fprintf(stderr, "hon_driver: seed skill %s refused: %s\n", str(st["id"]).c_str(), r.err.c_str());
     return true;
   }
   if (kind == "pref") {  // standing rules already on the device

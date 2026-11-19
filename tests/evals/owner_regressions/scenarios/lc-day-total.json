@@ -6,14 +6,16 @@
   "clock": "{{TODAY}} {{DOW}} 12:29 GMT",
   "devName": "Nimbus",
   "webSearch": false,
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "file", "path": "food/food-log.csv", "text": "date,meal,items,kcal,protein_g\n{{TODAY}},breakfast,black coffee and a cappuccino,48,3\n{{TODAY}},lunch,chicken salad with dressing,563,38\n{{TODAY}},snack-1100,greek yogurt with honey,1000,15\n"},
     {"do": "say", "text": "What is my total so far today?"}
   ],
   "assertions": [
     "reply_ok",
-    "ledger_day_total",
-    {"id": "ledger_row_count", "params": {"min": 3}},
+    "file_day_total",
+    {"id": "file_row_count", "params": {"min": 3}},
     {"id": "reply_forbids", "params": {"forbidden": ["1461", "1,461"]}}
   ]
 }

@@ -10,12 +10,14 @@
     {"role": "user", "text": "By the way, what time does the village library close on Saturdays?"},
     {"role": "assistant", "text": "Your snack was logged: 240 kcal."}
   ],
+  "tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"},
   "steps": [
+    {"do": "skill", "domain": "food"},
     {"do": "say", "text": "You did not answer me: what time does the village library close on Saturdays? Also log my snack: a granola bar, 210 kcal."}
   ],
   "assertions": [
     "reply_ok",
-    {"id": "ledger_row", "params": {"item": "granola", "kcal": 210}},
+    {"id": "file_row", "params": {"text": "granola", "value": 210}},
     {"id": "reply_contains_any", "params": {"any": ["library", "librar", "close", "closing"]}}
   ]
 }
