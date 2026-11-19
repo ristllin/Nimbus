@@ -630,6 +630,13 @@ void test_a_reference_never_covers_less_than_the_engine_held() {
     if (it.kind == tx::ItemKind::TurnEnd) lastEnd = &it;
   agent::HttpRequest out;
   TEST_ASSERT_TRUE(partial.rebuild(*lastEnd, 0, out).err == tx::Err::NotFound);
+  // Given less inside the range (the first turn's reply, not its first item), it refuses too.
+  uint64_t firstReply = 0;
+  for (const tx::Item& it : rb.stored)
+    if (it.kind == tx::ItemKind::Assistant && !firstReply) firstReply = it.q;
+  TEST_ASSERT_TRUE(firstReply > rb.stored.front().q);
+  Rebuilder hole(b, {firstReply});
+  TEST_ASSERT_TRUE(hole.rebuild(*lastEnd, 0, out).err == tx::Err::NotFound);
   // A reference made to describe less (its range raised past the first turn) does not rebuild.
   tx::Item shorter = *lastEnd;
   shorter.end.exchanges[0].fromQ = firstOwner + 1;
