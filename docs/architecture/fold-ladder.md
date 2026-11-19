@@ -194,10 +194,11 @@ confirmation names the whole span. A manual request never waits behind an automa
 one that is between rungs when a manual request is ready ends uncounted, its failed
 rungs going last. An automatic cycle that started in a manual read's yield is never cut by
 the read: it finishes its ladder (lands or fails as any cycle does) and the manual starts on
-the pass after, so no paid answer is thrown away and none lands early. After a turn cut at
-the send floor, an automatic fold keeps v5.1.1's tail; when its slice stops short of that
-tail, the chat is due again on the next pass (an overflow fold, up to four in a row, logged
-`fold(<chat>): rows before v5.1.1's tail remain after a send-floor cut - folding again`). Every manual request is answered: the confirmation,
+the pass after, so no paid answer is thrown away and none lands early. After a turn that sent
+a round at the send floor, the chat's automatic fold waits (logged `fold(<chat>): deferred -
+the last request went at the send floor`, looked at again every 60 s, never backed off) until
+a turn's rounds all go above the floor; then it keeps the head's full keep (lane RB-BGb).
+Rows a window shift hid fold meanwhile, and only they. A manual request is never deferred. Every manual request is answered: the confirmation,
 a failure with the next try time, or "Nothing to compact yet."
 
 ## Status
@@ -225,7 +226,7 @@ end.
 | `test_fold_backlog` | a long chat's catch-up, a refill that only waits, a failure that schedules a retry |
 | `test_fold_ladder` | every failure kind at every rung is answered by the next; no (host, model) twice; Large 4 on Small at effort none on the real wire; the matcher fixtures |
 | `test_fold_driver` | Pending per rung, one CycleFailed, the never-lost manual request, keep 0, the device-wide cap, a failing week on five chats, no clock, fresh device, the Lumi blob folding forward with no id gap, the hourly "due, not started" line, a cycle started in a manual read's yield finishing its ladder, the device alert hook's routing |
-| `test_fold_invariant` | no row is lost to a fold under the store's failure shapes; after a turn cut at the send floor, the fold leaves every row in the next request or the summary |
+| `test_fold_invariant` | no row is lost to a fold under the store's failure shapes; after floor sends the automatic fold waits, each row stays in the request, its LEFT OUT note or the summary, and the next fold keeps the head's full keep |
 | `nimbusd/tests/test_fold_driver_vn` | the VN reaches the same outcomes as the device; the routes |
 | `tools/release_gate/check_fold_health.py` | no reachable pause, fold control present, the blobs round-trip |
 

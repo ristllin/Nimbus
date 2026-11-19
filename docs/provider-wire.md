@@ -245,16 +245,20 @@ serves:
   85,000 B is rebuilt at 85,000 B and sent once more, with what was left out named in the
   request; a second failure fails the round. When the heap stayed low through the wait after
   that failure (the memory verdict), there is no resend at the floor: the turn ends with the
-  memory reply, as in v5.1.1. A turn that left history out while its rounds went at the
-  floor makes the chat's fold due, and that fold keeps v5.1.1's tail (half of v5.1.1's
-  window on that head) instead of the head's large one, so on a pool that stays fragmented
-  every row is in the next request or in the summary; the window itself is never held to
-  the floor. When that fold's slice could not reach the tail (a history built at the head's
-  size before the pool fragmented), the chat folds again on the next pass, up to four times
-  in a row, instead of waiting out the thrash turns. The fold's own request (summary, digest and prompt, under 60,000 B of input)
+  memory reply, as in v5.1.1. A turn that sent a round at the floor defers the chat's
+  automatic fold until a turn's rounds all go above the floor (lane RB-BGb, ruling 83 item
+  9): a fold at the floor would keep the head's full tail (about 23,600 tokens, 59,040 B, on
+  claude-sonnet-5-5), which the floor cuts again. Each floor request names what it leaves
+  out (the LEFT OUT note, with the rows to read back), rows a window shift hid still fold
+  (only they), a Summarize now is never deferred, and the fold after the deferral keeps the
+  head's full keep, never v5.1.1's about 1,600 tokens (4,096 B). The window itself is never
+  held to the floor. The fold's own request (summary, digest and prompt, under 60,000 B of input)
   fits the floor. The state JSON's `mem` block carries `rounds` and `floorRounds` (every
-  round since boot, and those at the floor), and each turn that took the floor and left rows
-  out logs one `history(<chat>): rows left out at the send floor` line. Every adapter reads completeness - Anthropic
+  round since boot, and those at the floor). The deferral logs `history(<chat>): a request
+  went at the send floor - the automatic fold waits for one above it` when it starts, `a
+  request went above the send floor - the automatic fold may run` when it ends, and each
+  pass that finds the chat due `fold(<chat>): deferred - the last request went at the send
+  floor, next look in 60 s`. Every adapter reads completeness - Anthropic
   `stop_reason:"max_tokens"`, Mistral `finish_reason:"length"` (or tool arguments that
   do not parse), OpenAI `status:"incomplete"`, the custom head `finish_reason:"length"`
   - and a cut answer is never run or delivered as complete. A cut round is retried once
