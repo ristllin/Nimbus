@@ -2641,6 +2641,35 @@ static void test_rbq4_filler_prose_gets_the_placeholder_round() {
   for (const std::string& fix : r.proseChecks) TEST_ASSERT_EQUAL_STRING("", fix.c_str());
 }
 
+// RB-Q4: the history labels each past reply with what it did ("[did: nothing] ..."), and a
+// head answering in prose copies that label into its own answer (the parity run: 54 of 840
+// replies, 2 before the change, when the wrap round rewrote them). The label is the device's
+// own markup: it never reaches the owner and never goes back into the history. The class:
+// every reply shape (prose, an orch_turn), the label with any content. Counter-tests: a label
+// that is not at the start, a reply that is only the label, and an ordinary bracket stay.
+static void test_rbq4_history_label_never_reaches_the_owner() {
+  struct Case { const char* out; const char* delivered; };
+  const Case cases[] = {
+      {"[did: nothing] Mercury.", "Mercury."},
+      {"[did: lookup, files_read notes.md]\nThe plot fee is 12.", "The plot fee is 12."},
+      {"{\"reply\":\"[did: nothing] Six.\"}", "Six."},
+      {"Mercury is first. [did: nothing] stays mid-text.", "Mercury is first. [did: nothing] stays mid-text."},
+      {"[did: nothing]", "[did: nothing]"},
+      {"[1] is the first source.", "[1] is the first source."},
+  };
+  for (const Case& c : cases) {
+    Rig r;
+    Rig::Script s;
+    s.outJson = c.out;
+    r.scripts["anthropic"] = {s};
+    r.eng->handleMessage("which planet is closest to the sun?", "Roy", "1001");
+    TEST_ASSERT_FALSE_MESSAGE(r.delivered.empty(), c.out);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.delivered, r.delivered.front().second.c_str(), c.out);
+    TEST_ASSERT_FALSE_MESSAGE(r.assistantRows.empty(), c.out);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(c.delivered, r.assistantRows.back().second.c_str(), c.out);
+  }
+}
+
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
 // be a lie about a one-shot the model armed for itself, and the framing must
 // hand the model back its own note plus the it-has-retired fact.
@@ -5742,6 +5771,7 @@ static void runSecondHalf() {
   RUN_TEST(test_no_prose_check_is_wired);
   RUN_TEST(test_rbq4_prose_is_the_reply_on_owner_turns_only);
   RUN_TEST(test_rbq4_filler_prose_gets_the_placeholder_round);
+  RUN_TEST(test_rbq4_history_label_never_reaches_the_owner);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
   RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);

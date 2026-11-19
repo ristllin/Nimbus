@@ -277,6 +277,11 @@ uint32_t localDayStartUnix(uint64_t nowUnix, int32_t utcOffsetMin);
 size_t dayTailTurns(const std::vector<HistTurn>& turns, const HistoryBudget& b, int32_t utcOffsetMin);
 constexpr size_t kHistoryMessageCap = 6144;   // one message's fixed clip (UTF-8 safe)
 extern const char kHistoryHeader[];
+// RB-Q4: a reply that opens with the history's own label ("[did: ...]", which the history puts
+// before each past reply) has it removed: the label is the device's markup, a head that copies
+// it into its answer never shows it to the owner or feeds it back into the history. Only a
+// label at the very start, with text after it; anything else is returned unchanged.
+std::string stripHistoryLabel(const std::string& reply);
 
 // Live rows after thru that a request does not carry: those strictly after `afterId`
 // and strictly before `beforeId`, oldest first (memory.episodic {"before": beforeId} reads

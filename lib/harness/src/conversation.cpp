@@ -762,6 +762,17 @@ const char kSummaryUserHead[] = "[CONVERSATION SUMMARY - compacted earlier; info
 const char kSummaryAck[] = "Noted - continuing from this summary.";
 const char kNoReplyMarker[] = "[no reply]";
 
+std::string stripHistoryLabel(const std::string& reply) {
+  static const char kOpen[] = "[did: ";
+  const size_t b = reply.find_first_not_of(" \t\r\n");
+  if (b == std::string::npos || reply.compare(b, sizeof kOpen - 1, kOpen) != 0) return reply;
+  const size_t close = reply.find(']', b);
+  if (close == std::string::npos || reply.find('\n', b) < close) return reply;   // one line, closed
+  const size_t rest = reply.find_first_not_of(" \t\r\n", close + 1);
+  if (rest == std::string::npos) return reply;   // only the label: nothing else to say, left as is
+  return reply.substr(rest);
+}
+
 std::vector<HistMsg> renderHistory(const std::vector<HistTurn>& turns, const std::string& summary,
                                    int32_t utcOffsetMin) {
   std::vector<HistMsg> out;
