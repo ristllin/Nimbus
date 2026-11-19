@@ -29,7 +29,7 @@ MOVED = {
     "src/agent/orchestrator.cpp": (
         "g_memEcho",
         "g_foldEcho",
-        "s_sysTurnPrompt",
+        "s_noticeText",
         "engine",
         "turnEngine",
         "journalStore",
