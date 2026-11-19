@@ -129,7 +129,7 @@ static std::string loopOffTable() {
   std::vector<Head> heads = mainHeads();
   heads.insert(heads.end(), std::begin(kRouted), std::end(kRouted));
   for (const Head& h : heads) {
-    const RequestBudget b = turnBudgetFor(h.host, h.model, false, BudgetLink::Device, kRoutedBudgetLift);
+    const RequestBudget b = turnBudgetFor(h.host, h.model, false, BudgetLink::Device, routedBudgetLift());
     if (!b.flatTurn) continue;
     const ContextBudget c = deriveRequestContext(b, {});
     t += cells({h.host, h.model, num(b.wireBodyBytes), num(b.contextBytes()), num((uint32_t)c.systemPromptBytes),
@@ -189,7 +189,7 @@ static std::string floorSection() {
       "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |\n" +
       separator(9);
   for (const Head& h : kRouted) {
-    const RequestBudget rb = turnBudgetFor(h.host, h.model, true, BudgetLink::Device, kRoutedBudgetLift);
+    const RequestBudget rb = turnBudgetFor(h.host, h.model, true, BudgetLink::Device, routedBudgetLift());
     const ContextBudget c = deriveRequestContext(rb, {});
     const bool anthropic = rb.measuredWire == 1;
     const long left = (long)rb.wireBodyBytes - (long)(anthropic ? kFloorFixedAnthropicBytes : kFloorFixedOpenAIBytes) -

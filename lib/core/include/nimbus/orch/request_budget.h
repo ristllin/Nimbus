@@ -48,7 +48,19 @@ inline constexpr uint32_t kLegacyWireBodyBytes = 85000;
 // Cumulo-routed heads above the floor (and the cumulo ledger's cache split, usage_ledger)
 // wait for the router to meter cached tokens (cumulo CUM-R1, verified on prod). v5.1.2
 // ships false: routed heads keep the 85,000 B floor (RULINGS-v3 release shape).
+//
+// Lane RB-BG (ruling 77): the flip is this ONE line. Every reader goes through routedBudgetLift()
+// below (the request and turn budgets, the cumulo ledger split), and each state is tested on the
+// real engine whatever this line says (test_floor_dialogue: off, a routed head stays on the floor
+// exactly as today; on, it gets its model's budget, carries at least 20,000 B of dialogue on the
+// 17 Nov shape, and its rounds still count the wallet's second upload). The flip's commit changes
+// this line and re-runs the generators (GOLDEN_UPDATE=1 for test_request_budget and
+// test_floor_dialogue); it waits for the router's cache metering to be verified on production.
 inline constexpr bool kRoutedBudgetLift = false;
+// The routed lift in force: kRoutedBudgetLift, unless a test set a state.
+bool routedBudgetLift();
+// Tests only: -1 the compiled kRoutedBudgetLift, 0 off, 1 on.
+void setRoutedBudgetLiftForTest(int state);
 
 // Ruling 1: no target above 100k tokens.
 inline constexpr uint32_t kBudgetTargetClampTokens = 100000;

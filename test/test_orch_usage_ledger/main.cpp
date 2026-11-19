@@ -3267,10 +3267,14 @@ static void test_b_mistral_and_zai_cache_folded_in_nvs_and_reloaded() {
 // router slot splits by its upstream's shape: OpenAI-shaped for openai, mistral, zai and a
 // bare id (the default upstream), Anthropic-shaped for anthropic.
 static void test_b_cumulo_split_waits_for_the_lift() {
-  TEST_ASSERT_FALSE(nimbus::orch::kRoutedBudgetLift);
+  nimbus::orch::setRoutedBudgetLiftForTest(0);   // RB-BG: the off state, whatever the compiled line says
   const SpendSlot oai = slotFor("cumulo", "openai/gpt-5.6", 100000, 500, 90000, 0);
   TEST_ASSERT_EQUAL_UINT64(100000, ledgerDelta(oai).in);
   TEST_ASSERT_FALSE(nimbus::orch::cacheFoldedInNvs("cumulo"));
+  nimbus::orch::setRoutedBudgetLiftForTest(1);   // and the on state: the split by the upstream's shape
+  TEST_ASSERT_EQUAL_UINT64(10000, ledgerDelta(oai).in);
+  TEST_ASSERT_TRUE(nimbus::orch::cacheFoldedInNvs("cumulo"));
+  nimbus::orch::setRoutedBudgetLiftForTest(-1);
   for (const char* m : {"openai/gpt-5.6", "mistral/mistral-large-4-0", "zai/glm-5.3", "gpt-5.6"}) {
     const TokenDelta d = ledgerDelta(slotFor("cumulo", m, 100000, 500, 90000, 0), true);
     TEST_ASSERT_EQUAL_UINT64_MESSAGE(10000, d.in, m);

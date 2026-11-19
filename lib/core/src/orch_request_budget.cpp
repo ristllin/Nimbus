@@ -326,12 +326,25 @@ uint32_t roundOverheadMs(BudgetLink link, size_t bodyBytes, bool fragmented, uin
   return (uint32_t)std::min<uint64_t>(ms, UINT32_MAX);
 }
 
+namespace {
+std::atomic<int>& liftOverride() {
+  static std::atomic<int> v{-1};
+  return v;
+}
+}  // namespace
+
+bool routedBudgetLift() {
+  const int v = liftOverride().load();
+  return v < 0 ? kRoutedBudgetLift : v != 0;
+}
+void setRoutedBudgetLiftForTest(int state) { liftOverride().store(state < 0 ? -1 : state ? 1 : 0); }
+
 RequestBudget requestBudgetFor(const std::string& host, const std::string& model, bool routed) {
   return requestBudgetFor(host, model, routed, budgetLink());
 }
 
 RequestBudget requestBudgetFor(const std::string& host, const std::string& model, bool routed, BudgetLink link) {
-  return requestBudgetFor(host, model, routed, link, kRoutedBudgetLift);
+  return requestBudgetFor(host, model, routed, link, routedBudgetLift());
 }
 
 RequestBudget requestBudgetFor(const std::string& host, const std::string& model, bool routed, BudgetLink link,
@@ -370,7 +383,7 @@ bool flatTurnOn(const WireKey& k, bool loopOn) {
 }  // namespace
 
 RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn) {
-  return turnBudgetFor(host, model, loopOn, budgetLink(), kRoutedBudgetLift);
+  return turnBudgetFor(host, model, loopOn, budgetLink(), routedBudgetLift());
 }
 
 RequestBudget turnBudgetFor(const std::string& host, const std::string& model, bool loopOn, BudgetLink link,

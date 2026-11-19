@@ -187,7 +187,7 @@ static void test_monotonic_in_the_window() {
 // v5.1.2 (kRoutedBudgetLift false): every routed head, on cumulo or a direct host routed,
 // sits exactly on the floor; with the lift a cumulo selector is its upstream's routed row.
 static void test_routed_heads_at_the_floor_until_the_lift() {
-  TEST_ASSERT_FALSE(kRoutedBudgetLift);
+  setRoutedBudgetLiftForTest(0);   // RB-BG: the off state, whatever the compiled line says
   for (const Head& h : kRouted) {
     const RequestBudget b = requestBudgetFor(h.host, h.model, true);
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.floorBytes, b.wireBodyBytes, h.model.c_str());
@@ -207,6 +207,8 @@ static void test_routed_heads_at_the_floor_until_the_lift() {
     TEST_ASSERT_TRUE_MESSAGE(c.wireBodyBytes > kLegacyWireBodyBytes, p.id);
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(std::min<uint32_t>(readWindowMsFor(p.up, p.id, false), 90000), c.readWindowMs, p.id);
   }
+  setRoutedBudgetLiftForTest(-1);
+  TEST_ASSERT_EQUAL(kRoutedBudgetLift, routedBudgetLift());
 }
 
 static void test_custom_gets_the_floor_on_the_flat_wire() {

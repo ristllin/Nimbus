@@ -119,7 +119,7 @@ CacheShape shapeOf(const SpendSlot& s, bool routedLift) {
 
 }  // namespace
 
-TokenDelta ledgerDelta(const SpendSlot& s) { return ledgerDelta(s, kRoutedBudgetLift); }
+TokenDelta ledgerDelta(const SpendSlot& s) { return ledgerDelta(s, routedBudgetLift()); }
 
 TokenDelta ledgerDelta(const SpendSlot& s, bool routedLift) {
   TokenDelta d;
@@ -150,7 +150,7 @@ TokenDelta ledgerDelta(const SpendSlot& s, bool routedLift) {
 
 // Every provider whose input count includes its cache tokens (the Included shape).
 bool cacheFoldedInNvs(const std::string& prov) {
-  if (prov == "cumulo") return kRoutedBudgetLift;
+  if (prov == "cumulo") return routedBudgetLift();
   return prov == "openai" || prov == "mistral" || prov == "zai";
 }
 
