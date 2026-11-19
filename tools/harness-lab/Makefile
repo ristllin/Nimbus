@@ -80,7 +80,8 @@ run: $(BIN)
 	$(BIN) scenarios
 
 # The anti-rot gate, offline and keyless, cheap enough for every battery: the lab
-# still builds against the current harness, its own seams work (selftest), its
+# still builds against the current harness, its own seams work (selftest, and
+# engine 2's scripted turn, lab_plain.h), its
 # Python tools pass their tests, no compiled-in model id has drifted from the
 # recorded provider lists or lost its price row (tools/model_id_lint.py), and no
 # unordered container keyed by a custom-allocator string relies on std::hash
@@ -91,6 +92,7 @@ PY_TESTS  := $(wildcard $(CURDIR)/test_*.py)
 
 check: $(BIN)
 	@$(BIN) selftest
+	@$(BIN) --engine=2 selftest
 	@python3 -m unittest -q $(PY_TESTS)
 	@python3 $(REPO)/tools/model_id_lint.py
 	@python3 $(REPO)/tools/check_custom_alloc_hash.py

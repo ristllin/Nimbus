@@ -11,7 +11,7 @@
 //   nimbus-lab models-live [leg]      models on demand live suite (lane_h_live.cpp)
 //   nimbus-lab mg-live [leg]          Mistral and GLM live legs (lane_mg_live.cpp)
 //
-// Flags: --host=<h> --model=<m> --verbose --no-tools --no-embed, plus the run pins
+// Flags: --engine=<1|2> --host=<h> --model=<m> --verbose --no-tools --no-embed, plus the run pins
 // (--effort --max-tokens --ceiling-ms --rounds --fault --record; see lab_options.h
 // for the NIMBUS_LAB_* environment they override).
 #include <cstdio>
@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "lab_options.h"
+#include "lab_plain.h"
 #include "lab_rig.h"
 #include "photo_eval.h"
 #include "lane_h_live.h"
@@ -66,6 +67,8 @@ void usage() {
       "                            leaves uploads queued, so a long run reaches inline photos\n"
       "\n"
       "Options:\n"
+      "  --engine=<1|2>                      the turn engine (default 1, the current one);\n"
+      "                                      2 is the plain loop, offline only: selftest\n"
       "  --host=<openai|anthropic|mistral>   force the provider (default: priority order)\n"
       "  --model=<id>                        override the model for --host\n"
       "  --priority=<a,b,c>                  provider failover order\n"
@@ -156,6 +159,7 @@ int main(int argc, char** argv) {
   lab::SubOptions sub;
   lab::LaneLOptions laneL;   // --reps: the lane L suites
   lab::PhotoEvalOptions pe;
+  std::string engine = "1";   // --engine: 1 is the current engine, 2 the plain loop (lab_plain.h)
 
   // The environment first (NIMBUS_LAB_*), so every flag below overrides it.
   for (int i = 1; i < argc; i++)
@@ -174,6 +178,7 @@ int main(int argc, char** argv) {
     else if (a.rfind("--model=", 0) == 0)    forceModel = a.substr(8);
     else if (a.rfind("--priority=", 0) == 0) opt.priority = a.substr(11);
     else if (a.rfind("--env=", 0) == 0)      {}   // consumed before this loop (env loads first)
+    else if (a.rfind("--engine=", 0) == 0)   engine = a.substr(9);
     else if (a == "--verbose")               opt.verboseHttp = true;
     else if (a == "--no-tools")              opt.toolLoop = false;
     else if (a == "--no-embed")              opt.embeddings = false;
@@ -207,6 +212,17 @@ int main(int argc, char** argv) {
     else args.push_back(a);
   }
   if (args.empty()) { usage(); return 2; }
+  if (engine != "1" && engine != "2") {
+    std::fprintf(stderr, "unknown --engine=%s (use 1 or 2)\n", engine.c_str());
+    return 2;
+  }
+  // Engine 2 runs offline only until its wires land: no command of the current engine is
+  // answered by it, and none silently falls back to engine 1.
+  if (engine == "2") {
+    if (args[0] == "selftest") return lab::cmdPlainSelftest();
+    std::fprintf(stderr, "--engine=2 runs only: selftest\n");
+    return 2;
+  }
 
   // ⚠ prism: an unrecognized --role used to fall back to ADMIN silently, so a
   // typo ("--role=Guest") produced a full-visibility session while the operator
