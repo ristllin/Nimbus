@@ -216,10 +216,13 @@ struct HeadLoopConfig {
                                      // alloc). Needs the largestBlock hook set; 0 => skip.
   size_t   maxToolResultBytes = 2048;   // clamp each tool result fed back (0 => no clamp)
   size_t   maxTotalToolBytes = 12288;   // cumulative tool-output budget; exceeded => force the final round (0 => no limit)
-  // RB-TR1 (ruling 86 item 3): beyond maxToolResultBytes, a result may take the room the turn's
-  // total still has - maxTotalToolBytes less what this turn carried, less one ordinary result -
-  // up to this many bytes. 0 => off: every result is clamped at maxToolResultBytes.
+  // RB-TR1 (ruling 86 item 3): beyond maxToolResultBytes, a result may take the room the turn
+  // still has - its room (wideRoomBytes, at most maxTotalToolBytes) less what this turn carried,
+  // less one ordinary result - up to this many bytes. 0 => off: every result is clamped at
+  // maxToolResultBytes. wideRoomBytes is what the wire replays of this turn's results
+  // (budget replayBytes; 0 => maxTotalToolBytes), so a wide result is never clipped there.
   size_t   maxWideResultBytes = 0;
+  size_t   wideRoomBytes = 0;
   // The final-answer check (the CUM-506 pattern, generalized): called with a
   // terminal orch_turn while a correction round is still possible - not on the
   // forced final round, at most once per turn. A non-empty return is the

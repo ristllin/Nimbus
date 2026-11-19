@@ -479,6 +479,15 @@ static void test_a_result_takes_the_room_the_turn_has() {
     TEST_ASSERT_EQUAL_UINT32(wide ? 57344 : 8192, (uint32_t)caps[0]);
     TEST_ASSERT_EQUAL_UINT32(wide ? 17344 : 8192, (uint32_t)caps[1]);
   }
+  // The room is what the wire replays when that is less than the turn's total: 37,500 B of
+  // replay leaves 29,308 B for the first result, so the wire never clips a wide one.
+  HeadLoopConfig cfg;
+  cfg.maxToolResultBytes = 8192;
+  cfg.maxTotalToolBytes = 65536;
+  cfg.maxWideResultBytes = 59000;
+  cfg.wideRoomBytes = 37500;
+  TEST_ASSERT_EQUAL_UINT32(29308, (uint32_t)resultCapFor(cfg, 0));
+  TEST_ASSERT_EQUAL_UINT32(8192, (uint32_t)resultCapFor(cfg, 29308));
 }
 
 // (g2) the clamp cuts at a UTF-8 boundary: a multi-byte code point straddling the

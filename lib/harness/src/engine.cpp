@@ -1768,8 +1768,10 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // legacy constants so their pins stay meaningful.
     headTools.cfg.maxToolResultBytes = d_.cfg.loop.resultCap ? budget.toolResultBytes : 4096;
     headTools.cfg.maxTotalToolBytes  = d_.cfg.loop.totalCap ? budget.toolTotalBytes : 24576;
-    // RB-TR1: a result may take the room the turn's total still has (resultCapFor).
+    // RB-TR1: a result may take the room the turn still has (resultCapFor): what the wire
+    // replays of the turn's results (budget replayBytes; each wire keeps at least that).
     headTools.cfg.maxWideResultBytes = orch::kToolResultCapMax;
+    headTools.cfg.wideRoomBytes      = budget.replayBytes;
     if (d_.spillResult)
       headTools.spill = [this, loopWho](const orch::HeadToolResult& full) {
         return d_.spillResult(full.name, full.output, loopWho.ns);
