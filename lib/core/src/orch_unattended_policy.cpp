@@ -2,9 +2,8 @@
 
 #include <cstring>
 
-#include "nimbus/orch/action_rules.h"     // toolActionKey: the argument-narrowed key of a call
+#include "nimbus/orch/action_rules.h"     // toolActionKey, actionRuleRow: every tool the old engine registers
 #include "nimbus/orch/device_actions.h"   // validateAction: the kind of a device[] element
-#include "nimbus/orch/tool_groups.h"      // toolClassFor: the registration class of a name
 
 namespace nimbus {
 namespace orch {
@@ -40,8 +39,11 @@ const UnattendedPolicyRow kPolicy[] = {
     {TurnClass::Dream, ModelCall::Sub, Output::Silent, {Y, N, Y, N, N, N, N, N}},
 };
 
-// The tool class of each name or argument-narrowed key that is not a plain read. A name
-// with no row reads by its registration class: pure or read is Read, an effect Control.
+// The tool class of each name or argument-narrowed key that is not a plain read, and of the
+// engine-2 reads (whose names have no action rule). Any other name the action rules know (a
+// class test keeps every registered tool in that table) is a read; a name neither table knows
+// (a connected server's tool, anything unknown) is Control (fail closed). test_unattended_policy
+// holds this table to tool_groups.h: no tool registered as an effect reads as Read.
 struct UseRow {
   const char* key;
   ToolUse use;
@@ -119,10 +121,23 @@ const UseRow kUses[] = {
     {"files.share", U::Control},   // makes a file readable by everyone who talks to the device
     {"files.share.owner", U::Control},
     {"share_file", U::Control},
-    // reads whose registration class is an effect only because a verb narrows them
-    {"prefs.edit", U::Read},
-    {"openq.edit", U::Read},
-    {"memory.config", U::Read},
+    // engine 2's reads (they have no action rule row)
+    {"read_file", U::Read},
+    {"list_files", U::Read},
+    {"search", U::Read},
+    {"web_search", U::Read},
+    {"view", U::Read},
+    {"more", U::Read},   // a router: each tool it reaches is its own dispatch, checked on its own
+    {"calc", U::Read},
+    {"device_status", U::Read},
+    {"device_log", U::Read},
+    {"ota_status", U::Read},
+    {"selftest", U::Read},
+    {"system_health", U::Read},
+    {"agent_list", U::Read},
+    {"file_stat", U::Read},
+    {"read_pdf", U::Read},
+    {"skill_list", U::Read},
 };
 
 const UseRow* useRow(const std::string& key) {
@@ -133,7 +148,7 @@ const UseRow* useRow(const std::string& key) {
 
 ToolUse useOfKey(const std::string& key) {
   if (const UseRow* r = useRow(key)) return r->use;
-  return toolClassFor(key).effect == EffectClass::Effect ? U::Control : U::Read;
+  return actionRuleRow(key) ? U::Read : U::Control;
 }
 
 // A device action by its kind: light, sound and speech Ambient, the rest Control.
@@ -308,7 +323,7 @@ ToolUse useOfSessionOp(const SessionOp& op) {
 
 ToolUse useOfDeviceJson(const DeviceAction& da) {
   ArduinoJson::JsonDocument doc;
-  if (deserializeJson(doc, da.json)) return U::Control;
+  if (deserializeJson(doc, da.json.c_str())) return U::Control;
   return useOfDeviceAction(doc.as<ArduinoJson::JsonVariantConst>());
 }
 
