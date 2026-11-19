@@ -97,6 +97,7 @@ const Case kAccepted[] = {
     {"80+(15%)", "= 80.15"},
     {"15% of 80 + 5", "= 17"},
     {"5 + 15% of 80", "= 17"},
+    {"15% of 200 + 5", "= 35"},
     {"50% of 20% of 80", "= 8"},
     {"-15% of 80", "= -12"},
     {"15% of -80", "= -12"},
@@ -155,6 +156,9 @@ const Case kRefused[] = {
     {"1 000", "error at position 3: expected an operator or ')'"},
     {"(2+3", "error at position 1: missing ')'"},
     {"((2+3)", "error at position 1: missing ')'"},
+    {"((1", "error at position 2: missing ')'"},
+    {"(1+(2", "error at position 4: missing ')'"},
+    {"1/0 $", "error at position 5: unexpected '$'"},
     {"2+3)", "error at position 4: ')' without '('"},
     {"()", "error at position 2: expected a number or '('"},
     {"2+", "error at position 3: expected a number or '('"},
@@ -210,6 +214,11 @@ const Case kRefused[] = {
      "error at position 40: too large to compute exactly"},
     {"0.000000000000000001*0.000000000000000001/100000",
      "error at position 42: too large to compute exactly"},
+    // A sum whose common-denominator step needs more than 128 bits is refused even though
+    // the reduced sum would fit (calc.h: the documented limit of the method).
+    {"(((56+(0.290-51623.937))-((0.11+0)+(2.50-0.617058885)))+(((6813959749.0*28469.070447118552630652)/"
+     "2418835687525093.90)+((0.498831480471-0.683)*(43.172*1715979.69))))",
+     "error at position 119: too large to compute exactly"},
     // The two cross numerators fit in 128 bits, their sum does not (a wrapped sum would
     // reduce to an in-range wrong figure).
     {"817584165233875340*318/740460644283772927+861172268078593469*488/183014892035689449",

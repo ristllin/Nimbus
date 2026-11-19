@@ -11,7 +11,9 @@
 //
 // Arithmetic is exact: every value is a reduced fraction of two unsigned 128-bit integers
 // (numerator and denominator below 2^124) with a sign, so 0.1+0.2 is 0.3 and 100/3*3 is 100.
-// A value that would leave that range is the Overflow error, never a rounded figure.
+// A value that would leave that range is the Overflow error, never a rounded figure; so is a
+// sum whose cross products over the common denominator need more than 128 bits, even when
+// the reduced sum would fit (it takes about 30 significant digits to get there).
 // No heap and no recursion: pending operators wait on two fixed stacks inside the evaluator,
 // which lives on the caller's stack, and the result line is inside Result (a refusing
 // allocator changes nothing). Parentheses nest at most kMaxDepth deep. Portable,
@@ -28,7 +30,9 @@
 //               Thousands groups are exactly 3 digits after a first group of 1 to 3 digits
 //               that does not start with 0; anything else is refused. At most kMaxDigits
 //               digits before and after the point (leading zeros before, trailing zeros
-//               after, are not counted). No spaces, apostrophes or underscores inside a number.
+//               after, are not counted). A trailing '.' is a decimal point with no places
+//               (5. and 1,234. are accepted); a trailing ',' is refused (it may be a list).
+//               No spaces, apostrophes or underscores inside a number.
 //   operators   + - * / and the typed forms U+00D7 (times), U+00F7 (divide),
 //               U+2212 (minus); parentheses; unary minus and plus (repeatable).
 //               No implicit multiplication: 2(3) is an error. '^' and '**' are refused.
@@ -39,8 +43,9 @@
 //                                   is N percent of the running total on its left
 //                                   (100+10+5% is 115.5)
 //                 (15%)          -> 0.15: parentheses make a percent an ordinary number
-//               Refused as unclear: any other percent that is an operand of + or -
-//               (15%+5, 50%+50%, 80+2*15%, 80+-15%, 80+50% of 20%); '%' not after a
+//               Refused as unclear: any other percent that is an operand of + or -,
+//               including a product or quotient that holds one (15%+5, 50%+50%, 80+2*15%,
+//               200*15%+5, 80+-15%, 80+50% of 20%; write 15% of 200 + 5); '%' not after a
 //               number; 'of' not after a percent.
 //   spaces      spaces, tabs and line breaks between tokens; one trailing '=' is ignored.
 //
@@ -51,11 +56,16 @@
 //   "= 0.333333 (rounded to 6 decimal places)" the exact value has more decimal places
 //                                              (or never ends); rounded half away from
 //                                              zero to kRoundedPlaces, trailing zeros
-//                                              trimmed; a value that rounds to zero is "0"
-//   "error at position N: <reason>"            N is the 1-based character position
+//                                              trimmed; a value that rounds to zero reads
+//                                              "= 0 (rounded to 6 decimal places)"
+//   "error at position N: <reason>"            N is the 1-based character position of the
+//                                              first error met reading left to right (a
+//                                              division by zero or an overflow is met when
+//                                              its right operand is complete, so a later
+//                                              unreadable token can be named first)
 // The error reasons, exactly (Error, then the text after "error at position N: "):
 //   Empty             empty expression
-//   TooLong           longer than 256 bytes
+//   TooLong           longer than 256 bytes     (position: the character holding byte 257)
 //   BadChar           unexpected 'X'            (X a printable ASCII character; any other
 //                                                byte or character reads "unexpected character")
 //   UnknownWord       unknown word 'W': use numbers, + - * / ( ) % and of
@@ -63,7 +73,7 @@
 //   Unsupported       'X' is not supported: use + - * / ( ) %
 //   ExpectedValue     expected a number or '('
 //   ExpectedOperator  expected an operator or ')'
-//   MissingClose      missing ')'               (position: the '(' left open)
+//   MissingClose      missing ')'               (position: the innermost '(' left open)
 //   ExtraClose        ')' without '('
 //   TooDeep           more than 10 nested parentheses
 //   NumberTooLong     more than 18 digits before or after the point
