@@ -31,6 +31,7 @@ class MemFiles : public tx::TxFiles {
   bool refuseAll = false;    // every write answers false
   long killAtRename = -1;    // the rename with this index is cut before it happens
   bool refuseRename = false;
+  bool refuseWholeWrites = false;   // every whole-file write answers false (head.json; RB-X1)
   // Content-aware faults: cut or refuse the first append whose bytes match.
   std::function<bool(const char* data, size_t len)> killWhen;
   std::function<bool(const char* data, size_t len)> refuseWhen;
@@ -71,7 +72,7 @@ class MemFiles : public tx::TxFiles {
   }
   bool writeWhole(const std::string& path, const std::string& data) override {
     ++wholeWrites;
-    if (refuseAll) return false;
+    if (refuseAll || refuseWholeWrites) return false;
     files[path] = data;
     return true;
   }
@@ -99,7 +100,7 @@ class MemFiles : public tx::TxFiles {
   }
   void clearFaults() {
     killAtAppend = refuseAppend = killAtRename = -1;
-    tornKill = refuseAll = refuseRename = false;
+    tornKill = refuseAll = refuseRename = refuseWholeWrites = false;
     killWhen = refuseWhen = nullptr;
   }
   // The segment files of one chat, in name order (seg-000001.jsonl, ...).

@@ -95,6 +95,9 @@ class Battery {
   size_t sends = 0;
   size_t tornCuts = 0;                 // torn cuts so far: each may leave one undecodable line
   plain::TurnInput lastInput;          // the owner message in flight (redelivered after a cut)
+  std::vector<plain::ResumeReport> resumeReports;   // what the resume seam did at each boot (RB-X1)
+  long killAtDispatch = -1;            // the dispatch with this index is cut before the tool runs (RB-X1)
+  size_t dispatches = 0;
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
   plain::TurnCtx headCtx() const { return turnCtx(0, plain::Trigger::Owner); }
@@ -139,6 +142,19 @@ class Battery {
     return deliverInput(lastInput, out);
   }
 
+  // A turn no person started (a routine fire, an agent report): its text is the turn's device
+  // note. Nothing is redelivered after a cut (no Telegram update carries it).
+  tx::Status unattended(plain::Trigger trigger, const std::string& text, plain::TurnOutcome& out) {
+    if (!engine) {
+      tx::Status st = boot();
+      if (!st.ok()) return st;
+    }
+    lastInput = plain::TurnInput{};
+    lastInput.ctx = turnCtx(++turnNo, trigger);
+    lastInput.text = text;
+    return deliverInput(lastInput, out);
+  }
+
   // A power cut, then the boot that follows it: the resume seam runs there. Telegram then
   // redelivers the update the cut left unconfirmed (the offset lives in RAM); when its u item
   // was stored the seen index drops it, so the battery redelivers only an unstored message.
@@ -149,7 +165,7 @@ class Battery {
     log.reset();
     arena.reset();
     files.clearFaults();
-    killAtSend = killBeforeSend = -1;
+    killAtSend = killBeforeSend = killAtDispatch = -1;
     const size_t before = model.requests().size();
     tx::Status st = boot(true);
     for (size_t i = before; i < model.requests().size(); ++i) requestTurn.push_back(turnNo);
@@ -320,15 +336,36 @@ class Battery {
   // steps (test_truth covers it).
   void install() {
     (void)plain::installSuppression(*hooks);
-    (void)plain::installResume(*hooks, plain::ResumeDeps{log.get()});
+    (void)plain::installResume(*hooks, resumeDeps());
     (void)plain::installCompaction(*hooks, compactDeps());
     (void)plain::installRails(*hooks, plain::RailsDeps{});
+  }
+
+  // The resume seam (RB-X1): the engine's head, runTurn and delivery, read when it runs (the
+  // engine exists by then: boot runs the seam), and the chat's context as an owner turn's.
+  plain::ResumeDeps resumeDeps() {
+    plain::ResumeDeps d;
+    d.log = log.get();
+    d.arena = arena.get();
+    d.head = [this] { return engine ? engine->head() : nullptr; };
+    d.runTurn = [this](const plain::TurnInput& in, plain::TurnOutcome& out) {
+      return engine ? engine->runTurn(in, out) : tx::Status::fail(tx::Err::InvalidArgument, "txb::resume");
+    };
+    d.deliver = deps().deliver;
+    d.context = [this](plain::TurnCtx& out) {
+      out = turnCtx(turnNo, plain::Trigger::Resume);
+      return tx::Status::success();
+    };
+    d.now = [this] { return epoch; };
+    d.done = [this](const plain::ResumeReport& r) { resumeReports.push_back(r); };
+    return d;
   }
 
   // The world's tools as the registry would run them: a `more` call runs the tool it names
   // with its arguments (the registry's router, without its listings), delete_file removes a
   // world file, and throw_tool throws (a handler's own exception).
   plain::ToolOutput dispatch(const plain::ToolCall& c, const plain::TurnCtx& t) {
+    if ((long)dispatches++ == killAtDispatch) throw Killed{"dispatch " + std::to_string(dispatches - 1) + " " + c.name};
     if (c.name == "more") {
       JsonDocument a;
       if (deserializeJson(a, c.argsJson) || !a["name"].is<const char*>()) return world.dispatch(c, t);

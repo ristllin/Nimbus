@@ -231,6 +231,10 @@ inline constexpr char kNotRunLimit[] = "not run: the turn reached its limit";
 // A stored call with no stored result (the turn stopped while it ran), closed at the next turn open.
 inline constexpr char kOutcomeUnknown[] =
     "outcome unknown: the device stopped while this call ran; it may or may not have taken effect";
+// A stored call with no stored result and no stored intent, answered at the boot after a cut
+// (lane RB-X1, plain_resume.cpp): no effect runs before its intent is stored, so it changed
+// nothing (a call whose intent is stored gets kOutcomeUnknown instead).
+inline constexpr char kRestartedBeforeRun[] = "no result: the device restarted before this call finished; it changed nothing";
 // A tool handler threw (not a refused allocation): that one call failed, the turn goes on.
 inline constexpr char kToolFailed[] = "failed: the tool stopped with an internal error";
 // Identical-call suppression (lane RB-E1b, plain_guards.cpp): a pure call that repeats an earlier
