@@ -126,6 +126,12 @@ line and the plumbing check were deleted in v5.2.0 (lane RB-Q1c): they cut or se
 back correct replies. The host suite `test_delivery_e1` runs the same function the
 device runs.
 
+On the device the reply leaves as soon as the turn hands it over, before the turn's
+history, memory, usage and summary writes (lane RB-TS1); a reply's parts are queued
+together or not at all. A part whose send got no answer may already be in the chat:
+it is sent again at most once and never as plain text, so an owner sees a part at
+most twice; a part Telegram did not take is retried in front of the parts after it.
+
 ## Cut and unreadable answers
 
 When the head's answer cannot be applied, `salvageTurnText()` reads only the

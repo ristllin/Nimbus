@@ -1,0 +1,6 @@
+{
+  "lane": "RB-TS1",
+  "allowance_bytes": 3584,
+  "envs": {"esp32s3": 3584, "esp32s3-cyd": 3584, "test": 3840, "test-cyd": 3840},
+  "why": "Lane RB-TS1 (no PRD flash ledger figure): the reply drain's rules and all-or-none queuing (tg_reply_drain.h), the in-turn send window and flush, the answered-at-send record, the recall embedding made during the hold (recall_warm.h, memory::warmRecall). Same-tree code bytes against rb-main 6d0280e7 (check_image_size.measure, lanes/RB-TS1/scratch/delta): esp32s3 +3,472 B, esp32s3-cyd +3,440 B, test +3,840 B, test-cyd +3,824 B, each rounded up to 256 B. Docs pack: one paragraph in docs/reference/turn-contract.md (counted apart)."
+}
