@@ -321,6 +321,28 @@ class Transcript(unittest.TestCase):
         shown = sum(1 for m in tx.render_anthropic() for b in m["content"] if b.get("text", "").endswith("y" * 3000))
         self.assertEqual(shown, 12 - len(picked))
 
+    def test_full_is_due_by_real_tokens_before_its_byte_mark(self):
+        """Lane RB-T4 (ruling 82): at full, compaction is due once the last request reached the due
+        mark in tokens (the aim less the next request's growth), or the resident passed H; one token
+        under the mark with the resident under H is not due."""
+        tx = refloop.E2Transcript("full")
+        self.assertEqual(tx.due_tokens, refloop.FULL_DUE_TOKENS)
+        day1 = T0 - 86400
+        for k in range(45):
+            tx_with_turn(tx, day1 + 600 * k, text="y" * 3000)
+        for k in range(7):
+            tx_with_turn(tx, T0 + 600 * k, text="z" * 100)
+        self.assertLess(tx.L, tx.resident())
+        self.assertLess(tx.resident(), tx.H)
+        tx.note_prompt(refloop.FULL_DUE_TOKENS - 1)
+        self.assertEqual(tx.compaction_slice(T0 + 6000), [])
+        tx.note_prompt(refloop.FULL_DUE_TOKENS)
+        self.assertTrue(tx.compaction_slice(T0 + 6000))
+        # The fixed profiles keep their byte rule only.
+        std = refloop.E2Transcript("standard")
+        std.note_prompt(10**6)
+        self.assertIsNone(std.due_tokens)
+
     def test_digest_block_keeps_under_its_cap(self):
         tx = refloop.E2Transcript("tight")
         tx.seed([], [(f"day {k}", "d" * 700) for k in range(10)])

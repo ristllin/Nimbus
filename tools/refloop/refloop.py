@@ -359,7 +359,14 @@ PROFILES = {  # name -> (H, L, digest block bytes)
     "lean": (40_000, 20_000, 4_096),
     "standard": (60_000, 30_000, 6_144),
     "wide": (100_000, 50_000, 6_144),
+    # Lane RB-T4 (owner ruling 82): full, for claude-sonnet-5-5. Due at 96,000 prompt tokens (the
+    # 100,000-token aim less the next request's growth), keeping 70,000 (tx::budgetFor). In this
+    # emulation's resident unit the marks come from RB-M0b's aged replays, where the first request of
+    # a photo-free turn counted tokens = 6,288 + 0.538 x resident (124 turns): 96,000 and 70,000
+    # tokens are about 166,000 and 118,000 B. The byte mark is the backstop; the token rule is first.
+    "full": (166_000, 118_000, 6_144),
 }
+FULL_DUE_TOKENS = 96_000  # compaction is due once a request reached this many prompt tokens
 COLD_OPEN_S = 270  # a turn opening this long after the last request moves the stub pointer
 RECEIPT_MAX = 2_048  # internal results up to this stay whole until compacted (tier 1)
 LEDGER_RECEIPT_MAX = 4_096
@@ -394,6 +401,8 @@ class E2Transcript:
         warm_bulk_max: int = WARM_BULK_MAX,
     ):
         self.H, self.L, self.digest_cap = PROFILES[profile]
+        self.due_tokens = FULL_DUE_TOKENS if profile == "full" else None
+        self.last_prompt = 0  # the newest request's prompt tokens (note_prompt)
         self.warm_bulk_max = warm_bulk_max  # 8,192 B on an 85,000 B head
         self.profile, self.replay_thinking, self.tz = profile, replay_thinking, ZoneInfo(tz)
         self.items, self.q, self.turn = [], 0, 0
@@ -626,11 +635,20 @@ class E2Transcript:
     def _ledger_day(self, t: float) -> str:
         return (datetime.fromtimestamp(t, self.tz) - timedelta(hours=LEDGER_DAY_START_H)).strftime("%Y-%m-%d")
 
+    def note_prompt(self, tokens: int):
+        """The newest request's prompt tokens, as the provider counted them (the hot trigger reads it)."""
+        self.last_prompt = tokens
+
+    def _due(self) -> bool:
+        hot = self.due_tokens is not None and self.last_prompt >= self.due_tokens
+        return hot or self.resident() > self.H
+
     def compaction_slice(self, now: float) -> list:
         """Whole turns from thru forward until the rest is at or under L, none of the newest six owner
         turns and none of the current ledger day's turns (unless that day alone is over H: then its
-        oldest half). [] when resident is at or under H."""
-        if self.resident() <= self.H:
+        oldest half). [] when nothing is due: resident at or under H and, at full, the last request
+        under the due mark in tokens."""
+        if not self._due():
             return []
         turns = sorted({it["turn"] for it in self.items if it["q"] > self.thru})
         protected = set(turns[-KEEP_NEWEST_TURNS:])

@@ -330,6 +330,7 @@ class Replay:
         tx.mark_request(self.vnow)
         tx.add_assistant(st["content"])
         u = st["usage"]
+        tx.note_prompt(u["prompt"])
         self.rec["requests"].append(
             {
                 "turn": n,
@@ -374,7 +375,7 @@ def tag_of(a) -> str:
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--shape", required=True)
-    ap.add_argument("--profile", default="standard", choices=["tight", "lean", "standard", "wide"])
+    ap.add_argument("--profile", default="standard", choices=["tight", "lean", "standard", "wide", "full"])
     ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--replay-thinking", action="store_true")
     ap.add_argument("--limit", type=int)
