@@ -198,9 +198,26 @@ bool pattern(const char* s, size_t max) {
   }
   return true;
 }
+// White space as the API reads it: ASCII and the Unicode space characters.
 bool visibleText(const char* s) {
-  for (; s && *s; ++s)
-    if (!std::isspace((unsigned char)*s)) return true;
+  static const char* const kSpaces[] = {"\xC2\x85", "\xC2\xA0", "\xE1\x9A\x80", "\xE2\x80\xA8", "\xE2\x80\xA9",
+                                        "\xE2\x80\xAF", "\xE2\x81\x9F", "\xE3\x80\x80"};
+  while (s && *s) {
+    if (std::isspace((unsigned char)*s)) {
+      ++s;
+      continue;
+    }
+    const unsigned char* u = (const unsigned char*)s;
+    if (u[0] == 0xE2 && u[1] == 0x80 && u[2] >= 0x80 && u[2] <= 0x8A) {   // U+2000 to U+200A
+      s += 3;
+      continue;
+    }
+    size_t n = 0;
+    for (const char* sp : kSpaces)
+      if (std::strncmp(s, sp, std::strlen(sp)) == 0) n = std::strlen(sp);
+    if (!n) return true;
+    s += n;
+  }
   return false;
 }
 bool onlyKeys(JsonObjectConst o, std::initializer_list<const char*> keys, C& c, const std::string& where) {
@@ -1552,7 +1569,42 @@ void test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes() {
   RENDER_OK(rig, n, out);
   EXPECT_API_OK(out, "names, blanks, thinking order");
   TEST_ASSERT_TRUE(out.view.messages[1].blocks[0].kind == sp::BlockKind::Thinking);
+  TEST_ASSERT_EQUAL(4, (int)out.view.messages[1].blocks.size());   // thinking and three calls, no blank text
   TEST_ASSERT_EQUAL_MESSAGE(3, (int)out.view.messages[2].blocks.size(), out.body.c_str());
+  // A result answers the latest open call of its id, in its own turn only.
+  txb::Convo two;
+  two.openTurn();
+  two.owner("ask 1:");
+  two.call("read_file", R"({"n":1})");
+  two.items.back().id = "toolu_x";
+  two.call("read_file", R"({"n":2})");
+  two.items.back().id = "toolu_x";
+  two.receipt("toolu_x", "read_file", "one result");
+  two.nextRound();
+  RENDER_OK(rig, two, out);
+  EXPECT_API_OK(out, "latest call");
+  TEST_ASSERT_EQUAL(1, (int)out.view.messages[1].blocks.size());
+  TEST_ASSERT_EQUAL_STRING(R"({"n":2})", out.view.messages[1].blocks[0].args.c_str());
+  txb::Convo late;
+  late.openTurn();
+  late.owner("ask 1:");
+  late.call("read_file", "{}");
+  late.items.back().id = "toolu_y";   // never answered in its turn
+  late.say("cut");
+  late.close();
+  late.openTurn();
+  late.owner("ask 2:");
+  late.receipt("toolu_y", "read_file", "LATE-RESULT");
+  RENDER_OK(rig, late, out);
+  EXPECT_API_OK(out, "late result");
+  TEST_ASSERT_TRUE(out.body.find("toolu_y") == std::string::npos && out.body.find("LATE-RESULT") == std::string::npos);
+  // A blank system block is left out; the stable point moves to the core.
+  Rig blank;
+  blank.fx.system.notes = " \n\xE3\x80\x80";
+  RENDER_OK(blank, two, out);
+  EXPECT_API_OK(out, "blank notes");
+  TEST_ASSERT_EQUAL(2, (int)out.view.systemBlocks.size());
+  TEST_ASSERT_TRUE(marksOf(out.body)[0].system && marksOf(out.body)[0].block == 0);
   // A round whose calls were all left out leaves no thinking alone; a turn cut by thru opens
   // with the user's turn; a blank note after the final text ends nothing.
   txb::Convo t;

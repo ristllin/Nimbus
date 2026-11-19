@@ -545,10 +545,10 @@ void itemBlocks(Render& r, const tx::Item& it, const Row& row) {
       ownerMessage(r, it);
       return;
     case tx::ItemKind::Assistant:
-      if (visible(it.x)) textBlock(r, Role::Assistant, it.turn, true, it.x, Over::Clip);
+      textBlock(r, Role::Assistant, it.turn, true, it.x, Over::Clip);   // blank text is not kept (emitsBlock)
       return;
     case tx::ItemKind::DeviceNote:
-      if (visible(it.x)) textBlock(r, Role::User, it.turn, true, it.x, Over::Clip);
+      textBlock(r, Role::User, it.turn, true, it.x, Over::Clip);
       return;
     case tx::ItemKind::RoundMeta:   // the open turn's signed thinking, as stored; never a point
       if (!oneObject(it.x)) return;
