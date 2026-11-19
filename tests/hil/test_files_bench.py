@@ -459,9 +459,12 @@ def test_up_down_up_keeps_engine_two_rows(request, unit):
         record("rollback.log", f"{old}: no write, {len(now)} B sha8 {sha8(now)} (was {sha8(held)})")
         assert now == held, f"{old}: the file changed with no write"
         line = f"2026-11-19,{old.replace('.', '')},rollback leg,1.{old[-1]}0,card"
-        turn = bd.chat_turn(
-            unit.api, f"Append exactly this one line to the file {PROJECT}/{name}, nothing else: {line}", 180
-        )
+        ask = f"Append exactly this one line to the file {PROJECT}/{name}, nothing else: {line}"
+        for _ in range(12):  # a unit busy with its boot work answers 503 for a while
+            turn = bd.chat_turn(unit.api, ask, 180)
+            if turn.http != 503 and "503" not in turn.error:
+                break
+            time.sleep(10)
         now = _file(unit.api, name)
         record(
             "rollback.log",
