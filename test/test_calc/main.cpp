@@ -210,6 +210,10 @@ const Case kRefused[] = {
      "error at position 40: too large to compute exactly"},
     {"0.000000000000000001*0.000000000000000001/100000",
      "error at position 42: too large to compute exactly"},
+    // The two cross numerators fit in 128 bits, their sum does not (a wrapped sum would
+    // reduce to an in-range wrong figure).
+    {"817584165233875340*318/740460644283772927+861172268078593469*488/183014892035689449",
+     "error at position 42: too large to compute exactly"},
 };
 
 void checkTable(const Case* cases, size_t n) {
@@ -454,19 +458,24 @@ struct Gen {
   }
 
   // One of the number formats people type, always an unambiguous one.
+  static std::vector<std::string> groupedForms(const std::string& I, const std::string& F) {
+    if (I.size() < 7 && (I.size() < 4 || F.empty())) return {};
+    if (F.empty()) return {group(I, ','), group(I, '.')};
+    return {group(I, ',') + "." + F, group(I, '.') + "," + F};
+  }
+
   std::string number(const Node& n) {
     const std::string& I = n.I;
     const std::string& F = n.F;
-    const bool groupable = I.size() >= 4;
-    const uint64_t c = r(10);
-    if (c == 0 && groupable && (!F.empty() || I.size() >= 7)) return group(I, ',') + (F.empty() ? "" : "." + F);
-    if (c == 1 && groupable && (!F.empty() || I.size() >= 7)) return group(I, '.') + (F.empty() ? "" : "," + F);
+    const std::string dotF = F.empty() ? "" : "." + F;
+    std::vector<std::string> forms = groupedForms(I, F);
+    forms.insert(forms.begin(), I + dotF);
     const bool commaUnclear = F.size() == 3 && I.size() <= 3 && I[0] != '0';
-    if (c == 2 && !F.empty() && !commaUnclear) return I + "," + F;
-    if (c == 3 && I == "0" && !F.empty()) return "." + F;
-    if (c == 4 && F.empty()) return I + ".";
-    if (c == 5 && I.size() < 18) return "0" + I + (F.empty() ? "" : "." + F);
-    return I + (F.empty() ? "" : "." + F);
+    if (!F.empty() && !commaUnclear) forms.push_back(I + "," + F);
+    if (I == "0" && !F.empty()) forms.push_back("." + F);
+    if (F.empty()) forms.push_back(I + ".");
+    if (I.size() < 18) forms.push_back("0" + I + dotF);
+    return p(40) ? forms[0] : forms[r(forms.size())];
   }
 
   void opChar(char op) {

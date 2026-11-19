@@ -268,6 +268,26 @@ inline Rat reduce(const Rat& a) {
   return r;
 }
 
+// Rounds integer digits ip and fraction digits frac (at least 7 known, or all of them) half
+// away from zero to 6 places.
+inline void roundTo6(std::string& ip, std::string& frac) {
+  const bool up = frac.size() > 6 && frac[6] >= '5';
+  frac.resize(6, '0');
+  if (!up) return;
+  std::string all = ip + frac;
+  size_t i = all.size();
+  while (i-- > 0) {
+    if (all[i] != '9') {
+      all[i]++;
+      break;
+    }
+    all[i] = '0';
+  }
+  if (i == (size_t)-1) all.insert(all.begin(), '1');
+  ip = all.substr(0, all.size() - 6);
+  frac = all.substr(all.size() - 6);
+}
+
 // The expected result line, by decimal expansion: exact when the expansion ends within 12
 // places, otherwise the first 7 places decide a half-away-from-zero rounding to 6.
 inline std::string render(const Rat& v) {
@@ -286,25 +306,7 @@ inline std::string render(const Rat& v) {
   }
   const bool exact = r.zero() && frac.size() <= 12;
   std::string ip = toDigits(q);
-  if (!exact) {
-    const bool up = frac.size() > 6 && frac[6] >= '5';
-    frac.resize(6, '0');
-    if (up) {
-      std::string all = ip + frac;
-      size_t i = all.size();
-      while (i-- > 0) {
-        if (all[i] == '9') {
-          all[i] = '0';
-          continue;
-        }
-        all[i]++;
-        break;
-      }
-      if (i == (size_t)-1) all.insert(all.begin(), '1');
-      ip = all.substr(0, all.size() - 6);
-      frac = all.substr(all.size() - 6);
-    }
-  }
+  if (!exact) roundTo6(ip, frac);
   while (!frac.empty() && frac.back() == '0') frac.pop_back();
   std::string out = "= ";
   if (v.neg && !(ip == "0" && frac.empty())) out += "-";

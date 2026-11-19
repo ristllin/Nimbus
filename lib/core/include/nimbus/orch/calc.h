@@ -12,9 +12,10 @@
 // Arithmetic is exact: every value is a reduced fraction of two unsigned 128-bit integers
 // (numerator and denominator below 2^124) with a sign, so 0.1+0.2 is 0.3 and 100/3*3 is 100.
 // A value that would leave that range is the Overflow error, never a rounded figure.
-// No heap: the evaluator lives on the caller's stack and the result line is inside Result
-// (a refusing allocator changes nothing). Recursion happens only at '(' and is bounded by
-// kMaxDepth. Portable, Arduino-free, host-tested (test/test_calc).
+// No heap and no recursion: pending operators wait on two fixed stacks inside the evaluator,
+// which lives on the caller's stack, and the result line is inside Result (a refusing
+// allocator changes nothing). Parentheses nest at most kMaxDepth deep. Portable,
+// Arduino-free, host-tested (test/test_calc).
 //
 // Accepted input (at most kMaxExpr bytes, UTF-8):
 //   numbers     12  12.5  .5  5.  007; thousands separators and decimal commas as people
