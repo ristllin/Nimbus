@@ -2599,10 +2599,10 @@ static void test_no_prose_check_is_wired() {
 }
 
 // RB-Q4: on an owner's turn a prose answer is the reply on every round (the loop flag is on);
-// on the nightly dream it is not, because the dream's product is the end-of-turn fields
-// (mem_write, memory), so a prose answer there is still wrapped. Counter-test in one: the flag
-// is per turn, not a sticky engine state.
-static void test_rbq4_prose_is_the_reply_on_owner_turns_not_on_the_dream() {
+// on an unattended turn it is not: the nightly dream's product is the end-of-turn fields
+// (mem_write, memory), and a routine or a sub-agent report may have nothing to send, which only
+// an orch_turn's empty reply says. Counter-test in one: the flag is per turn, not sticky.
+static void test_rbq4_prose_is_the_reply_on_owner_turns_only() {
   Rig r;
   r.scripts["anthropic"] = {Rig::Script{}};
   r.eng->handleMessage("go", "Roy", "1001");
@@ -2612,6 +2612,16 @@ static void test_rbq4_prose_is_the_reply_on_owner_turns_not_on_the_dream() {
   TEST_ASSERT_TRUE_MESSAGE(night.ok, night.error.c_str());
   TEST_ASSERT_EQUAL(0, r.proseIsReply.back());
   r.eng->handleMessage("and again", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, r.proseIsReply.back());
+  const size_t before = r.proseIsReply.size();
+  r.eng->injectScheduledTurn("1001", "daily brief", "brief");   // a routine
+  TEST_ASSERT_EQUAL((int)before + 1, (int)r.proseIsReply.size());
+  TEST_ASSERT_EQUAL(0, r.proseIsReply.back());
+  r.jobs->addFreshResult("job0001", "researcher", "findings");   // a sub-agent report
+  r.eng->maybeConsolidate("1001");
+  TEST_ASSERT_EQUAL((int)before + 2, (int)r.proseIsReply.size());
+  TEST_ASSERT_EQUAL(0, r.proseIsReply.back());
+  r.eng->handleMessage("and once more", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, r.proseIsReply.back());
 }
 
@@ -5727,7 +5737,7 @@ static void runSecondHalf() {
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_pol2_openq_observer_skips_scheduled_turns);
   RUN_TEST(test_no_prose_check_is_wired);
-  RUN_TEST(test_rbq4_prose_is_the_reply_on_owner_turns_not_on_the_dream);
+  RUN_TEST(test_rbq4_prose_is_the_reply_on_owner_turns_only);
   RUN_TEST(test_rbq4_filler_prose_gets_the_placeholder_round);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);

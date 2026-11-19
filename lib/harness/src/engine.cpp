@@ -1751,10 +1751,12 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       if (isPlaceholderReply(prose, userText)) return std::string(kPlaceholderCorrection);
       return truthAtFinal(prose, true, host);
     };
-    // RB-Q4: a text answer that ended normally is the reply on every round (requests = tool
-    // rounds + 1). Not on the nightly dream: its product is the end-of-turn fields (mem_write,
-    // memory), which only an orch_turn carries, so its prose is still wrapped.
-    headTools.cfg.proseIsReply = !memoryOnly;
+    // RB-Q4: on a person's turn a text answer that ended normally is the reply on every round
+    // (requests = tool rounds + 1), as measured against the reference loop. Unattended turns keep
+    // the wrap: the dream's product is the end-of-turn fields (mem_write, memory), and a routine,
+    // wakeup or sub-agent report may have nothing to send, which only an orch_turn's empty reply
+    // can say (a prose "nothing to add" would reach the owner).
+    headTools.cfg.proseIsReply = !memoryOnly && unattendedClass() == orch::TurnClass::Attended;
     headTools.cfg.maxRounds          = roundsNow;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;
