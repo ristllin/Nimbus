@@ -110,9 +110,11 @@ totals.
 
 **Recent actions.** The per-turn block carries `[RECENT ACTIONS ...]`: the newest 12
 effect receipts of this chat from its effects ring (`effect_ring.h`), oldest first,
-one line each (`Tue 17 Nov 2026 13:02 ledger_write: added L3K9QZ; day 2026-11-17: 7
-rows, 1,612 kcal`), at most 2,048 B (the oldest lines go whole when they do not fit),
-as data. A correction can name a row id from it without a read. Another chat's
+one line each (`Tue 17 Nov 2026 13:02 files.append: appended 1 row to log/day.csv (now 3
+rows)`), at most 2,048 B (the oldest lines go whole when they do not fit), as data. A correction
+can name what it changes from it without a read. Only effects that happened are there: a failed
+call never joins the ring, and a tool whose output is outside content (files.fetch,
+image.generate) never renders. Another chat's
 receipts never appear, an empty ring gives no block, and the block sits after the
 cache point, byte for byte the same while nothing changed (`compose.h`
 `renderRecentActions`).

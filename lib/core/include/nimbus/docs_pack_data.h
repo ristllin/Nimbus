@@ -110,9 +110,11 @@ totals.
 
 **Recent actions.** The per-turn block carries `[RECENT ACTIONS ...]`: the newest 12
 effect receipts of this chat from its effects ring (`effect_ring.h`), oldest first,
-one line each (`Tue 17 Nov 2026 13:02 ledger_write: added L3K9QZ; day 2026-11-17: 7
-rows, 1,612 kcal`), at most 2,048 B (the oldest lines go whole when they do not fit),
-as data. A correction can name a row id from it without a read. Another chat's
+one line each (`Tue 17 Nov 2026 13:02 files.append: appended 1 row to log/day.csv (now 3
+rows)`), at most 2,048 B (the oldest lines go whole when they do not fit), as data. A correction
+can name what it changes from it without a read. Only effects that happened are there: a failed
+call never joins the ring, and a tool whose output is outside content (files.fetch,
+image.generate) never renders. Another chat's
 receipts never appear, an empty ring gives no block, and the block sits after the
 cache point, byte for byte the same while nothing changed (`compose.h`
 `renderRecentActions`).
@@ -4544,7 +4546,7 @@ of the table first, then recall bullets one at a time:)NIMBUSDOC"},
   {"turn-anatomy#the-three-parts-of-a-turn-1-instructions-the-system-prompt-rebuilt-every-turn-3", "The three parts of a turn - 1. INSTRUCTIONS - the system prompt (rebuilt every turn) (3/4)",
    R"NIMBUSDOC(| 8 | history | the conversation messages | `conversation.cpp::renderHistory` | the fold summary's message pair first, then **per-chat history: one user and one assistant message per turn, oldest first, append-only between boundaries, every turn after the fold anchor up to the head's history budget (derived from its request budget: 206 KB on Mistral Large 4, 118 KB on Claude Sonnet; on a head at v5.1.1's room, and on a Mistral or Z.ai head with the tool loop off, v5.1.1's window with the owner's local day on top), stopping at the newest `/clear` boundary or the fold anchor** (shared photos, files and voice notes appear once, in the turn that carried them; the in-flight turn arrives as `[USER]`). Providers send these as real history messages; a flat head reads them as `## RECENT CONVERSATION`. Rules: see below |
 | 9 | per-turn | clock, speaker, `[RUNNING MEMORY]`, tool-loop note | `compose.cpp` | the time of day, who sent this message (human turns only), the model's own `memory` field from last turn, and whether the tool loop is ON this turn. On a "remember" message, a `[MEMORY ROUTING]` line names where it lands: an always/never rule to the standing rules via `prefs.edit` (a full list retires the oldest rule), a lasting fact to `mem_write`, a recall question to a search with nothing saved. It rides this part only, so cached blocks stay identical, and never a routine's prompt or a sub-agent's results. On a turn whose history holds an earlier unreplied owner message, a `[REPLY SCOPE]` line follows: answer this message; an earlier question or request with `[no reply]` is still owed its answer; other earlier messages are context. Absent otherwise |
-| 10 | per-turn | `[RECENT ACTIONS]` | the chat's effects ring (`nimbus/orch/effect_ring.h`, through `compose.h` `RecentActionsSource`) | this chat's newest 12 effect receipts, oldest first, one line each (local time with the year, tool, receipt), at most 2,048 B (the oldest lines go whole), as data, so a correction can name a row id without a read; another chat's receipts never appear; absent when the ring is empty. Since v5.2.0 no food ledger block and no food playbook ride any turn. Never dropped, and never takes the rest of the per-turn part's room |
+| 10 | per-turn | `[RECENT ACTIONS]` | the chat's effects ring (`nimbus/orch/effect_ring.h`, through `compose.h` `RecentActionsSource`) | this chat's newest 12 effect receipts, oldest first, one line each (local time with the year, tool, receipt), at most 2,048 B (the oldest lines go whole), as data, so a correction can name what it changes without a read; only effects that happened (a failed call never joins the ring); another chat's receipts never appear; absent when the ring is empty. Since v5.2.0 no food ledger block and no food playbook ride any turn. Never dropped, and never takes the rest of the per-turn part's room |
 | 11 | per-turn | `## RUNNING SESSIONS (your sub-agents)` | job journal | live sub-agent digest (also authoritative as `[ACTIVE SESSIONS]` in the input) |
 | 12 | per-turn | `## SCRATCHPAD` | flash file `/data/scratchpad.bin` | the model's own goal tiers (now/short/long) |
 | 13 | per-turn | `## RELEVANT MEMORIES` | vector-DB recall on the user text | top-k long-term memories semantically similar to your message, prefixed `[NN%]` |)NIMBUSDOC"},
