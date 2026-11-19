@@ -142,23 +142,38 @@ class StubWire : public plain::WireCodec {
     }
   }
 
+  static void userPieces(const plain::RenderInput& in, const tx::Item& it, std::vector<Piece>& out) {
+    char stamp[tx::kStampMaxBytes];
+    std::string text = it.x;
+    if (tx::messageStamp(it.t, it.tzMinutes, stamp, sizeof stamp).ok()) text = std::string(stamp) + " " + it.x;
+    out.push_back(Piece{Role::User, 'u', text, "", "", "", false});
+    for (const tx::Part& p : it.parts) {
+      plain::PhotoBytes pb;
+      if (p.kind == tx::PartKind::Image && in.photo && in.photo(p.ref, pb).ok() && !pb.fileId.empty())
+        out.push_back(Piece{Role::User, 'i', pb.fileId, "", "", "", false});
+      else
+        out.push_back(Piece{Role::User, 'u', "[photo " + p.ref + " not shown: view id=" + p.ref + "]", "", "", "", false});
+    }
+  }
+
+  static plain::Status resultPiece(const plain::RenderInput& in, const tx::Item& it, const tx::ShowFacts& show,
+                                   std::vector<Piece>& out) {
+    tx::ShowAs as = tx::ShowAs::Whole;
+    plain::Status st = tx::showResult(it, show, as);
+    if (!st.ok()) return st;
+    std::string text = it.x;
+    if (as == tx::ShowAs::Stub) text = it.st;
+    else if (!it.handle.empty() && (!in.bulk || !in.bulk(it.handle, text).ok())) text = it.st;
+    out.push_back(Piece{Role::Tool, 'r', text, it.id, it.n, "", !it.ok});
+    return plain::Status::success();
+  }
+
   plain::Status piece(const plain::RenderInput& in, const tx::Item& it, const tx::ShowFacts& show,
                       std::vector<Piece>& out) const {
     switch (it.kind) {
-      case tx::ItemKind::User: {
-        char stamp[tx::kStampMaxBytes];
-        std::string text = it.x;
-        if (tx::messageStamp(it.t, it.tzMinutes, stamp, sizeof stamp).ok()) text = std::string(stamp) + " " + it.x;
-        out.push_back(Piece{Role::User, 'u', text, "", "", "", false});
-        for (const tx::Part& p : it.parts) {
-          plain::PhotoBytes pb;
-          if (p.kind == tx::PartKind::Image && in.photo && in.photo(p.ref, pb).ok() && !pb.fileId.empty())
-            out.push_back(Piece{Role::User, 'i', pb.fileId, "", "", "", false});
-          else
-            out.push_back(Piece{Role::User, 'u', "[photo " + p.ref + " not shown: view id=" + p.ref + "]", "", "", "", false});
-        }
+      case tx::ItemKind::User:
+        userPieces(in, it, out);
         return plain::Status::success();
-      }
       case tx::ItemKind::Assistant:
         if (!it.x.empty()) out.push_back(Piece{Role::Assistant, 'a', it.x, "", "", "", false});
         return plain::Status::success();
@@ -171,16 +186,8 @@ class StubWire : public plain::WireCodec {
       case tx::ItemKind::Call:
         out.push_back(Piece{Role::Assistant, 'c', "", it.id, it.n, jsonObject(it.args) ? it.args : "{}", false});
         return plain::Status::success();
-      case tx::ItemKind::Result: {
-        tx::ShowAs as = tx::ShowAs::Whole;
-        plain::Status st = tx::showResult(it, show, as);
-        if (!st.ok()) return st;
-        std::string text = it.x;
-        if (as == tx::ShowAs::Stub) text = it.st;
-        else if (!it.handle.empty() && (!in.bulk || !in.bulk(it.handle, text).ok())) text = it.st;
-        out.push_back(Piece{Role::Tool, 'r', text, it.id, it.n, "", !it.ok});
-        return plain::Status::success();
-      }
+      case tx::ItemKind::Result:
+        return resultPiece(in, it, show, out);
       default:
         return plain::Status::success();
     }

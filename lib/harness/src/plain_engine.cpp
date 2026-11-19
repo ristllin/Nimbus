@@ -102,11 +102,7 @@ class TurnRun {
         if (!(st = finalAnswer(step)).ok() || !t_.held || t_.reply) break;
         continue;                                                          // held once: one more round
       }
-      if (!(st = storeAnswer(step, false)).ok()) break;
-      for (size_t i = 0; st.ok() && i < step.calls.size(); ++i)   // past the soft wall no call starts
-        st = elapsedMs() < t_.limits.softWallMs ? runCall(step.calls[i])
-                                                : answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
-      ++t_.toolRounds;
+      if ((st = storeAnswer(step, false)).ok()) st = runCalls(step);       // each result stored in turn
     }
     const Status closed = close();
     return st.ok() ? closed : st;
@@ -567,6 +563,16 @@ class TurnRun {
   }
 
   // ---- one call -----------------------------------------------------------------------------
+  // The round's calls in order; past the soft wall no further call starts.
+  Status runCalls(const ParsedStep& step) {
+    Status st = Status::success();
+    for (size_t i = 0; st.ok() && i < step.calls.size(); ++i)
+      st = elapsedMs() < t_.limits.softWallMs ? runCall(step.calls[i])
+                                              : answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
+    ++t_.toolRounds;
+    return st;
+  }
+
   Status runCall(const ToolCall& call) {
     const orch::ToolClass cls = classOf(call);
     DispatchDecision dd;
@@ -686,6 +692,20 @@ class TurnRun {
 
   // ---- turn close -----------------------------------------------------------------------------
   Status close() {
+    closingFacts();
+    DeliverOutcome sent;
+    deliver(sent);
+    t_.sent = sent.sent;
+    Status st = delivered(sent);
+    if (!t_.storeFailed) st = storeEnd();
+    if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
+    c_.head.nextQ = c_.nextQ;
+    if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);   // a cache: Io loses nothing
+    return st;
+  }
+
+  // The turn's status line, the superseded reads and the change points, before delivery.
+  void closingFacts() {
     if (t_.cause.empty()) t_.cause = t_.storeFailed ? "storage" : "stopped";
     if (t_.storeFailed || (t_.storageLineDue && t_.status == StatusLine::None)) {
       t_.status = StatusLine::StorageState;
@@ -699,9 +719,10 @@ class TurnRun {
       (void)c_.recent.atClose(true, d_.recentFiles, t_.tz);
       if (c_.recent.text() != before) event("change:recent-files");
     }
-    DeliverOutcome sent;
-    deliver(sent);
-    t_.sent = sent.sent;
+  }
+
+  // The d item and afterDeliver.
+  Status delivered(const DeliverOutcome& sent) {
     Status st = Status::success();
     if (!t_.storeFailed && sent.sent) {
       tx::Item& dItem = blank(tx::ItemKind::Delivery);
@@ -716,10 +737,6 @@ class TurnRun {
       dc.sent = sent.sent;
       d_.hooks->runAfterDeliver(dc);
     }
-    if (!t_.storeFailed) st = storeEnd();
-    if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
-    c_.head.nextQ = c_.nextQ;
-    if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);   // a cache: Io loses nothing
     return st;
   }
 
