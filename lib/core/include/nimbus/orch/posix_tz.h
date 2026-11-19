@@ -8,7 +8,7 @@
 //
 // The device keeps its timezone as a POSIX TZ rule (devTz) and hands it to
 // setenv("TZ")/tzset(). A rule the library cannot parse is silently treated as UTC, so
-// a typo saved from Settings or the setup wizard left routines and food-log days on
+// a typo saved from Settings or the setup wizard left routines and log days on
 // UTC while the page said "Saved". POST /api/config refuses such a rule with the
 // sentence below, before anything is stored.
 //

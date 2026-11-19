@@ -37,7 +37,7 @@
 //
 // kSettleQuietTextMs comes from the owner's traffic: in four days the one text and photo
 // that belonged together were 5 s apart by Telegram's whole-second dates (4 to 6 s in
-// fact), and the nearest pair that did not (two separate meals) was 10 s apart. 6 s joins
+// fact), and the nearest pair that did not (two separate entries) was 10 s apart. 6 s joins
 // every pair 5 s apart by those dates (owner ruling, 26 Oct 2026): a follow-up that
 // arrives within 6 s of the device first seeing the text (never earlier than the send),
 // plus the last re-poll's round trip. The windows run from that first sight. While a

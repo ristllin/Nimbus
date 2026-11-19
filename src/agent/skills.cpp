@@ -166,7 +166,6 @@ bool setSelfApprove(bool on) {
 
 std::string indexText() { return storeFor().indexText(); }
 
-std::vector<std::string> foodSkillIds() { return storeFor().approvedFoodSkills(); }
 
 std::vector<agent::AttachPick> picksFor(const std::string& chatId) {
   // noteTurn (idle expiry) rides the pick: the table expires lazily here, the

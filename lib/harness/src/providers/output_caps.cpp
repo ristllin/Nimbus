@@ -133,7 +133,7 @@ const char* modelFitNote(const std::string& provider, const std::string& model) 
   const std::string m = startsWith(model, "mistral/") ? model.substr(8) : model;
   if (!startsWith(m, "mistral-small")) return "";
   return "Mistral Small is quick and cheap for chat, but it can say a file was changed without changing it and "
-         "it stalls on food math. For daily use, pick Mistral Large 4.";
+         "it stalls on arithmetic. For daily use, pick Mistral Large 4.";
 }
 
 const char* roundKindSlug(RoundKind k) {

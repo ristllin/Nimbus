@@ -79,8 +79,8 @@ std::string FileStore::relPath(std::string_view project, std::string_view name) 
 
 // FAT opens the card's file names without regard to case, so the index must
 // resolve identity the same way or every ownership check can be bypassed with a
-// letter-case variant (CUM-836: a member writing "MEALS.CSV" onto the owner's
-// "meals.csv" was a NEW file to the index, and the card then wrote the owner's
+// letter-case variant (CUM-836: a member writing "NOTES.CSV" onto the owner's
+// "notes.csv" was a NEW file to the index, and the card then wrote the owner's
 // file). validSegment() admits printable ASCII only, so folding ASCII is exact.
 // Allocation-free on purpose: indexOf runs inside add()/wouldExceed, and with no
 // entry cap a per-comparison std::string would put transient churn on the

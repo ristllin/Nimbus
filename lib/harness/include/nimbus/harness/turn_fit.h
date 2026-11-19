@@ -15,7 +15,7 @@
 // Lumi, 1 Nov 18:51Z: "headloop: round 0 body 90519 B over the 85000 B budget - folded 0 B
 // ... nothing left to fold". The request-body budget and a provider's context window are both
 // limits on one thing, so one ladder answers both. Lumi, 15 Nov 16:00 (lane H of the history
-// fix): the owner's own estimate from five minutes earlier went before the food playbook and
+// fix): the owner's own estimate from five minutes earlier went before the playbook then attached and
 // the recalled memories, which a tool can read again, and the model was not told. So the
 // order is the protocol's give-up order (plan v3), the same for the head loop's refits, a
 // provider's window refusal and the single shot, and only after a real refusal of the actual

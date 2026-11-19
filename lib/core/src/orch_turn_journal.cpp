@@ -101,7 +101,7 @@ std::string crashNotice(const std::string& deviceName, const TurnJournal* j,
     // v4.6.3 (the 29 Oct boba mechanism): a crashed MESSAGE turn was already
     // received and may have partly done its work (a row may be logged) before
     // the crash took the reply. Telling the owner to send it again is what
-    // logged the same meal twice; the receipt says what may already be done.
+    // logged the same row twice; the receipt says what may already be done.
     if (j->kind == "message")
       return msg + " while answering your " + noun + from +
              ". The reply was lost; the message arrived and its work may be done - check "

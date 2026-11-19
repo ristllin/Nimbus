@@ -605,7 +605,7 @@ HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
         // R3: when every sibling is a pure write and they all succeed, the
         // answer is accepted as written (the re-ask round exists for results
         // the reply should have seen; a successful ack can only confirm it).
-        // One model round saved on the food-log class of turn.
+        // One model round saved on the logging class of turn.
         bool allAcks = true;
         for (const HeadToolCall& c : sr.toolCalls) allAcks = allAcks && isAckWrite(c.name);
         prior.clear();

@@ -117,7 +117,7 @@ class TextEditStream {
 
 // ---- the keyed-CSV row diff: a whole-day rewrite says what changed -----------
 // RCA 2026-11-01/02 cause 15: a day delete and a from-scratch re-entry dropped
-// the fries row and changed a protein figure, and the reply said only
+// one row and changed another row's figure, and the reply said only
 // "replaced 1 of 1 match(es)". The find text IS what was there, so the
 // row-level change is computed from the spans themselves - no second pass over
 // the file, and nothing is claimed that the caller's own words do not show.

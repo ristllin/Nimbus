@@ -343,7 +343,7 @@ a.mdlk{color:var(--teal)}
 <option value=1>Orchestrator: AI assistant</option>
 </select>
 <label>Timezone <button class=qh type=button aria-expanded=false aria-label="About the timezone">?</button></label>
-<p class="hint tip">Sets the device's local time: when daily and weekly routines (including nightly memory upkeep) fire, and which day each food-log entry belongs to. Tap <b>Use this computer's timezone</b>, or pick a suggestion or type one in POSIX format, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately: check the clock below after saving.</p>
+<p class="hint tip">Sets the device's local time: when daily and weekly routines (including nightly memory upkeep) fire, and which day each record belongs to. Tap <b>Use this computer's timezone</b>, or pick a suggestion or type one in POSIX format, e.g. <b>GMT0BST,M3.5.0/1,M10.5.0/2</b> for the UK. Blank = UTC. Applies immediately: check the clock below after saving.</p>
 <div class=row><input id=devTz list=tzlist placeholder="UTC0" maxlength=48><button id=devTzSave type=button>Save</button></div>
 <div class=row><button id=devTzDetect type=button>Use this computer's timezone</button></div>
 <datalist id=tzlist>
@@ -2472,7 +2472,7 @@ function otaNotesText(d){
   return whose+d.otaNotes;
 }
 // ---- Timezone from this browser (QW5) ------------------------------------------
-// Routines, reminders and each day's food log follow the device's POSIX TZ (devTz),
+// Routines, reminders and each day's records follow the device's POSIX TZ (devTz),
 // and a new device runs on UTC. The browser knows this computer's zone (Intl), so
 // derive the POSIX rule from the browser's own clock: the standard and daylight
 // offsets, and each change as month.week.weekday/time in the local time in force
@@ -6254,7 +6254,7 @@ setInterval(()=>{loadMemStats();loadScratch();},6000);
       '<p class=hint id=onb_memmsg></p>'+
       '<p class=hint>The key stays on the device and is never shown again. It is checked with the provider before you continue.</p>'+
       '<p class=hint id=onb_defaults></p>';
-    if(s.id==='timezone')return '<p class=hint>Routines, reminders and each day\'s food log follow the device\'s local time. A new device runs on UTC until you set its timezone.</p>'+
+    if(s.id==='timezone')return '<p class=hint>Routines, reminders and each day\'s records follow the device\'s local time. A new device runs on UTC until you set its timezone.</p>'+
       '<p id=onb_tzdetect class=hint></p>'+
       '<div class=row><button type=button id=onb_tzuse>Use this timezone</button></div>'+
       '<label style="margin-top:10px">Or type a timezone rule</label>'+

@@ -234,7 +234,7 @@ std::vector<std::string> unansweredOwnerMessages(const std::vector<HistMsg>& his
 // Lane CTX, the day floor: the owner's current local day stays verbatim. Its turns
 // never shift out and never fold (foldSlice), up to dayBytes of them, the newest
 // first. On 26 Oct a 128K head kept 2.6 to 5.2 KB (about 10 messages) and the fold
-// took the morning's meal estimates at 15:03, so at 18:35 the head asked for
+// took the morning's estimates at 15:03, so at 18:35 the head asked for
 // weights it had estimated itself. dayStartUnix 0 (no clock) = no floor.
 //
 // Lane H (the history fix, 16 Nov 2026): a head with room (ContextBudget's derived

@@ -14,7 +14,7 @@
 //   [image 1/1] (could not be fetched: too large)
 //   [file 1/2 ref=0011223344556677] menu.pdf
 //   [image 1/2 ref=0123456789abcdef] (attached: the photo itself is in this message)
-//   [image 2/2 ref=fedcba9876543210] (transcribed by openai) Nutrition facts ...
+//   [image 2/2 ref=fedcba9876543210] (transcribed by openai) Receipt total ...
 //   [image 1/1 ref=0123456789abcdef] (not read: anthropic out of credit (HTTP 429))
 //   [image 1/1 ref=0123456789abcdef] (seen; note: receipt, 3 items, total 12.40)
 //   [image 1/1 ref=0123456789abcdef] (seen in its turn; image.look shows it again)

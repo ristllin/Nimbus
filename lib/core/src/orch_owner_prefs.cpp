@@ -6,7 +6,7 @@
 
 #include "nimbus/mem_cap.h"   // utf8CapLen
 #include "nimbus/orch/history_rows.h"   // kClockValidHours - an hour from before the clock was set
-#include "nimbus/orch/word_match.h"     // whole-word phrase tests (shared with the food ledger)
+#include "nimbus/orch/word_match.h"     // whole-word phrase tests
 #include "nimbus/utf8.h"      // utf8Repair
 
 namespace nimbus {

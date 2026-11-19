@@ -6,7 +6,7 @@
 // card calls).
 //
 // The old way removed the stored file and then renamed the new copy over it: a
-// failed rename, or a power cut between the two steps, lost the file (a food log
+// failed rename, or a power cut between the two steps, lost the file (a log
 // rewritten by a keyed update was gone). Now the stored copy is first renamed to a
 // backup, the new copy is renamed into place, and the backup is removed only once
 // the new copy is accepted; any failure on the way puts the old copy back. A note

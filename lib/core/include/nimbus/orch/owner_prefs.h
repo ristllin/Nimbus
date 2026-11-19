@@ -266,7 +266,7 @@ std::string seedListingText(const OwnerPrefs& p);
 // topic? Deterministic, whole-word: a rule with a stop marker (never, stop, no
 // more, don't, do not) whose subject words occur in the loop's own prompt
 // blocks the fire ("never ask about duolingo" blocks a "check the Duolingo
-// streak" routine; "always log meals" blocks nothing). The routine's NAME is
+// streak" routine; "always log my runs" blocks nothing). The routine's NAME is
 // part of its topic: a "Duolingo streak check" whose prompt only says "check
 // the streak" is still the Duolingo routine. The device and nimbusd consult it
 // before a loop fires and defer a blocked one.

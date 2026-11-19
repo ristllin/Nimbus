@@ -37,7 +37,7 @@ constexpr uint32_t kPhotoBudget = 512u * 1024;
 // 98,304 B) and 800 px bodies (86-152 KB) 14 of 14; v4.6.0 paced every 220 KB photo
 // request with a 60 s deadline into that deadline (4 of 4 lost). The 800 px copy halves
 // the body, the pacing and the vision tokens, and a label stays legible at it (a cheap
-// vision call read every value of a nutrition label at 800 px). So the photo path takes
+// vision call read every value of a printed label at 800 px). So the photo path takes
 // the LARGEST legible rendition within kPhotoPickBudget, which is the 800 px one (50-80
 // KB), and when none fits, the SMALLEST legible one within kPhotoBudget: never a
 // thumbnail a label cannot be read from while a legible copy exists. A photo with no

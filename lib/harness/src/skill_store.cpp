@@ -301,19 +301,6 @@ std::string SkillStore::liveBody(const std::string& id, const SkillSide& side) {
   return builtinSkillBody(id, side.telegram, side.fileSend);
 }
 
-std::vector<std::string> SkillStore::approvedFoodSkills() {
-  std::vector<std::string> out;
-  for (const SkillMeta& m : list()) {
-    if (m.builtin() || !m.approved) continue;
-    for (const char* word : {"meal", "food", "nutrition", "diet", "calorie"})
-      if (m.id.find(word) != std::string::npos) {
-        out.push_back(m.id);
-        break;
-      }
-  }
-  return out;
-}
-
 std::string SkillStore::spawnCapsule(const std::string& id) {
   // Built-ins stay pure provider hints (pre-P2 behavior); a waiting skill never
   // rides a spawn brief (a persistent instruction blob is a prompt-injection
@@ -458,7 +445,7 @@ SkillResult SkillStore::agentWrite(const std::string& id, SkillMd doc, const Sto
 }
 
 // An existing stored skill whose id shares the new id's first two words
-// ("meal-photo-addenda" next to "meal-photo-science"), or "" when none does.
+// ("photo-addenda" next to "photo-science"), or "" when none does.
 std::string SkillStore::similarTo(const std::string& id) {
   auto stem = [](const std::string& s) {
     size_t cut = s.find_first_of("-_");

@@ -805,7 +805,7 @@ static void stripDescriptions(ArduinoJson::JsonVariant v) {
 // R3 (row 23): the schema is ADVISORY here (no strict:true), so the top-level
 // required list can be lean - only reply. The device parser treats every other
 // field as optional, and a lean list stops the head re-emitting unchanged
-// fields as empty values: a food-log turn spent 3,000 output tokens on
+// fields as empty values: a logging turn spent 3,000 output tokens on
 // 1,240 B of content (sdlog m00000622). The strict wires (OpenAI, Mistral,
 // custom) keep the full list: their validators demand it.
 static void leanOrchRequired(ArduinoJson::JsonVariant schema) {
@@ -935,7 +935,7 @@ static void renderAntMessages(const nimbus::orch::Transcript& tr, ArduinoJson::J
 // prose IS the answer the owner is waiting for. It rides back as an assistant
 // message followed by a user nudge (so the request still ends on a user turn), and
 // the final round keeps that answer instead of writing a different one (18 Oct: a
-// 305 kcal estimate thrown away for a 345 kcal one written blind).
+// 305 estimate thrown away for a 345 one written blind).
 static void antEchoStall(const nimbus::orch::Transcript& tr, JsonArray msgs) {
   using Kind = nimbus::orch::TranscriptItem::Kind;
   int last = -1;

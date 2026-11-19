@@ -4,8 +4,8 @@
 #include <vector>
 
 // word_match - whole-word phrase tests over lowercase text, shared by the lexical
-// classifiers: the standing rules' rule and dated-fact tests (owner_prefs.h) and the
-// food ledger's food and intent tests (food_ledger.h). Portable, header-only.
+// classifiers: the standing rules' rule and dated-fact tests (owner_prefs.h). Portable,
+// header-only.
 namespace nimbus::orch::words {
 
 inline std::string lowerAscii(const std::string& s) {
