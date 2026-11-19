@@ -918,7 +918,7 @@ struct Run {
       std::vector<DigestEntry> live{DigestEntry{m.d0.day, m.d0.text, m.d0.sq, m.d0.q0}};
       std::string block;
       SettleReport rep;
-      (void)settleDigests(*d.files, d.chatKey, Profile::Standard, live, block, rep);
+      (void)settleDigests(*d.files, d.chatKey, profileOf(head.profile), live, block, rep);   // the head's profile, else full
     }
     head.nextQ = nextQ();
     (void)log.writeHead(head);   // a cache: a refusal is rebuilt from the items
