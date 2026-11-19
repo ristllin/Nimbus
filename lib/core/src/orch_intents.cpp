@@ -83,6 +83,7 @@ tx::Status newestTurn(const tx::TxArena& arena, uint32_t& newest) {
 struct TurnFold {
   bool ended = false;
   bool delivered = false;
+  uint64_t resumedAt = 0;   // the newest t item of a resumed run (attempt 1 or more)
 };
 
 // One item of the newest turn into what openTurn reports; `it` is scratch.
@@ -102,6 +103,7 @@ tx::Status fold(const tx::TxArena& arena, size_t i, const tx::ArenaEntry& e, tx:
   if (it.kind == tx::ItemKind::TurnOpen) {
     out.person = out.person || personSlug(it.trigger);
     if (it.attempt > out.attempts) out.attempts = it.attempt;
+    if (it.attempt) f.resumedAt = it.q;
   } else if (it.fin) {
     out.answerQ = it.q;
   }
@@ -130,6 +132,7 @@ tx::Status openTurn(const tx::TxArena& arena, OpenTurn& out) {
     if (!(st = fold(arena, i, e, it, out, f)).ok()) return st;
   }
   out.turn = newest;
+  out.resumedAnswer = f.resumedAt && out.answerQ > f.resumedAt;
   out.state = stateOf(f, out);
   return tx::Status::success();
 }
@@ -147,9 +150,14 @@ const char* bootActionSlug(BootAction a) {
 
 BootAction bootAction(const OpenTurn& turn, uint8_t attempts, uint8_t maxResumes, bool answerWhole) {
   if (turn.state == TurnState::Closed || !turn.turn) return BootAction::None;
-  if (turn.state == TurnState::Delivered || !turn.person) return BootAction::Close;
+  if (turn.state == TurnState::Delivered) return BootAction::Close;
+  if (turn.state == TurnState::AnswerStored) {
+    const bool left = attempts < maxResumes || (turn.resumedAnswer && attempts == maxResumes);
+    if (answerWhole && left) return BootAction::SendStored;
+    return turn.person ? BootAction::Notice : BootAction::Close;
+  }
+  if (!turn.person) return BootAction::Close;
   if (attempts >= maxResumes) return BootAction::Notice;
-  if (turn.state == TurnState::AnswerStored) return answerWhole ? BootAction::SendStored : BootAction::Notice;
   return BootAction::Resume;
 }
 

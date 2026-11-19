@@ -40,26 +40,35 @@ class BootResume {
     Status st = intents::openTurn(*d_.arena, open);
     if (st.ok()) st = intents::openCalls(*d_.arena, calls);
     if (!st.ok()) return st;
-    const uint8_t made = decide(open, rep);
-    if (!(st = answer(calls, rep.answered)).ok()) return st;
-    if (rep.action == BootAction::None) return Status::success();
-    if (!(st = context(open, made)).ok()) return st;
+    made_ = std::max<uint8_t>(open.attempts, head_.openTurn == open.turn ? head_.attempts : 0);
+    rep.turn = open.turn;
+    rep.action = intents::bootAction(open, made_, kMaxAutoResumes,
+                                     open.state != intents::TurnState::AnswerStored || wholeAnswer(open));
+    if (rep.action != BootAction::None && !(st = context(open)).ok()) return st;   // before anything is counted
+    if (rep.action == BootAction::SendStored || rep.action == BootAction::Resume) {
+      rep.counted = count(open.turn, static_cast<uint8_t>(made_ + 1));
+      if (!rep.counted) rep.action = open.person ? BootAction::Notice : BootAction::Close;   // never an attempt it cannot count
+    }
+    // With little room the boot stores no result into the arena (a drop to make room is the engine's,
+    // named by its omission line): the engine's own turn open answers the open calls, and the d
+    // and e items go to the card only.
+    roomy_ = d_.arena->freeBytes() >= kBootRoomBytes;
+    if (roomy_ && !(st = answer(calls, rep.answered)).ok()) return st;
     return act(rep, open);
   }
 
  private:
-  // The one action, and the write-ahead count of a resume or a send; the resumes already made.
-  uint8_t decide(const intents::OpenTurn& open, ResumeReport& rep) {
-    const uint8_t made = std::max<uint8_t>(open.attempts, head_.openTurn == open.turn ? head_.attempts : 0);
-    const bool whole = open.state != intents::TurnState::AnswerStored || wholeAnswer(open);
-    rep.turn = open.turn;
-    rep.action = intents::bootAction(open, made, kMaxAutoResumes, whole);
-    if (rep.action == BootAction::SendStored || rep.action == BootAction::Resume) {
-      rep.counted = count(open.turn, made);
-      if (!rep.counted) rep.action = BootAction::Notice;   // never a resume it cannot count
-    }
-    return made;
-  }
+  static constexpr size_t kBootRoomBytes = 4096;
+
+  const ResumeDeps& d_;
+  tx::HeadState& head_;
+  TurnCtx ctx_;
+  tx::Item item_;          // the item being stored, and one read back
+  uint8_t made_ = 0;       // resumes and boot sends already made for the newest turn
+  bool roomy_ = true;      // the arena has room for the boot's own items
+
+  uint64_t now() const { return d_.now ? d_.now() : 0; }
+  uint64_t nextQ() const { return std::max({head_.nextQ, d_.arena->lastQ() + 1, d_.log->lastQ() + 1}); }
 
   Status act(ResumeReport& rep, const intents::OpenTurn& open) {
     switch (rep.action) {
@@ -71,13 +80,6 @@ class BootResume {
     }
     return Status::success();
   }
-
-  const ResumeDeps& d_;
-  tx::HeadState& head_;
-  TurnCtx ctx_;
-  tx::Item item_;   // the item being stored, and one read back
-
-  uint64_t now() const { return d_.now ? d_.now() : 0; }
 
   // Read the item stored at q into item_.
   bool readAt(uint64_t q) {
@@ -101,20 +103,21 @@ class BootResume {
     return at == std::string::npos || item_.x.compare(0, at + mark.size(), stub, 0, at + mark.size()) != 0;
   }
 
-  // The write-ahead counter: the attempt about to start, in head.json, before it starts.
-  bool count(uint32_t turn, uint8_t made) {
+  // The write-ahead counter: the attempts made once the one about to start has started, in
+  // head.json, before it starts.
+  bool count(uint32_t turn, uint8_t attempts) {
     if (!d_.log->isOpen()) return false;
     head_.openTurn = turn;
-    head_.attempts = static_cast<uint8_t>(made + 1);
+    head_.attempts = attempts;
     head_.nextQ = std::max(head_.nextQ, d_.arena->lastQ() + 1);
     return d_.log->writeHead(head_).ok();
   }
 
   Status put(tx::Item& it) {
-    it.q = std::max({head_.nextQ, d_.arena->lastQ() + 1, d_.log->lastQ() + 1});
+    it.q = nextQ();
     it.t = now();
     tx::StoreState state = tx::StoreState::Stored;
-    const Status st = d_.log->store(it, *d_.arena, state);
+    const Status st = roomy_ ? d_.log->store(it, *d_.arena, state) : d_.log->append(it, state);
     if (st.ok()) head_.nextQ = it.q + 1;
     return st;
   }
@@ -143,7 +146,7 @@ class BootResume {
   void stub(const intents::OpenCall& c) {
     tx::StubFacts f;
     f.tool = c.n;
-    f.q = std::max({head_.nextQ, d_.arena->lastQ() + 1, d_.log->lastQ() + 1});
+    f.q = nextQ();
     f.bytes = item_.bytes;
     f.lines = item_.lines;
     (void)tx::stubTime(now(), 0, f.hhmm);
@@ -152,14 +155,26 @@ class BootResume {
     if (!tx::stubText(f, item_.st).ok()) item_.st.clear();
   }
 
-  Status context(const intents::OpenTurn& open, uint8_t made) {
+  // The chat's context for the turn; tainted when the turn already read outside content (the
+  // resumed request carries it whole, as the first run's did).
+  Status context(const intents::OpenTurn& open) {
     Status st = d_.context(ctx_);
     if (!st.ok()) return st;
     ctx_.turn = open.turn;
     ctx_.trigger = Trigger::Resume;
-    ctx_.attempt = static_cast<uint8_t>(made + 1);
+    ctx_.attempt = static_cast<uint8_t>(made_ + 1);
     ctx_.startedAt = now();
+    ctx_.tainted = ctx_.tainted || readOutside(open.turn);
     return Status::success();
+  }
+
+  bool readOutside(uint32_t turn) {
+    for (size_t i = 0; i < d_.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || e.turn != turn || e.kind != tx::ItemKind::Result) continue;
+      if (d_.arena->get(i, item_).ok() && item_.cls == tx::ResultClass::Outside) return true;
+    }
+    return false;
   }
 
   // The e item and head.json: the turn is closed, nothing of it runs again.
@@ -167,8 +182,7 @@ class BootResume {
     item_ = tx::Item{};
     item_.kind = tx::ItemKind::TurnEnd;
     item_.turn = ctx_.turn;
-    item_.q = std::max({head_.nextQ, d_.arena->lastQ() + 1, d_.log->lastQ() + 1});
-    item_.t = now();
+    item_.q = nextQ();   // turnEndItem measures the line at its q
     tx::TurnEndFacts f;
     f.cause = cause;
     if (namedSend) f.events.push_back(kCauseSent);   // a reply that went out before the cut goes out twice
@@ -189,7 +203,10 @@ class BootResume {
     in.text = &text;
     DeliverOutcome out;
     const Status sent = d_.deliver(in, out);
-    if (!out.sent) return sent.ok() ? Status::fail(Err::Io, "plain::resume.send") : sent;
+    if (!out.sent) {   // nothing reached the owner: the attempt is given back, a later boot sends it
+      (void)count(open.turn, made_);
+      return sent.ok() ? Status::fail(Err::Io, "plain::resume.send") : sent;
+    }
     item_ = tx::Item{};
     item_.kind = tx::ItemKind::Delivery;
     item_.turn = ctx_.turn;
@@ -199,7 +216,8 @@ class BootResume {
     return close(kCauseSent, true);
   }
 
-  // The plain crash notice (the released engine's own words), as the one status line.
+  // The plain crash notice (the released engine's own words), as the one status line. A notice
+  // the channel refused leaves the turn open: a later boot sends it.
   Status notice(const intents::OpenTurn& open) {
     nimbus::orch::TurnJournal j;
     j.chat = ctx_.chatId;
@@ -217,7 +235,8 @@ class BootResume {
     in.status = StatusLine::CrashNotice;
     in.statusText = &line;
     DeliverOutcome out;
-    (void)d_.deliver(in, out);   // the turn is closed either way: the notice is never a loop
+    const Status sent = d_.deliver(in, out);
+    if (!out.statusSent) return sent.ok() ? Status::fail(Err::Io, "plain::resume.notice") : sent;
     return close(kCauseNotice, false);
   }
 

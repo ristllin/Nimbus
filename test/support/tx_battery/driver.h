@@ -97,6 +97,9 @@ class Battery {
   plain::TurnInput lastInput;          // the owner message in flight (redelivered after a cut)
   std::vector<plain::ResumeReport> resumeReports;   // what the resume seam did at each boot (RB-X1)
   long killAtDispatch = -1;            // the dispatch with this index is cut before the tool runs (RB-X1)
+  bool refuseSends = false;            // the channel refuses every send (no network at boot; RB-X1)
+  size_t arenaBytes = tx::kActiveChatArenaBytes;   // the chat's arena at each boot (RB-X1: a small one)
+  std::function<void(plain::PlainHooks&)> moreHooks;   // a test's own handlers, installed at each boot
   size_t dispatches = 0;
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
@@ -119,7 +122,7 @@ class Battery {
   tx::Status boot(bool afterCrash = false) {
     killed = false;
     arena.reset(new tx::TxArena());
-    tx::Status st = arena->init(tx::kActiveChatArenaBytes, platform.allocLarge, platform.freeLarge);
+    tx::Status st = arena->init(arenaBytes, platform.allocLarge, platform.freeLarge);
     if (!st.ok()) return st;
     log.reset(new tx::TxLog(files, chatKey));   // the engine opens and fills it at boot
     hooks.reset(new plain::PlainHooks());
@@ -339,6 +342,7 @@ class Battery {
     (void)plain::installResume(*hooks, resumeDeps());
     (void)plain::installCompaction(*hooks, compactDeps());
     (void)plain::installRails(*hooks, plain::RailsDeps{});
+    if (moreHooks) moreHooks(*hooks);
   }
 
   // The resume seam (RB-X1): the engine's head, runTurn and delivery, read when it runs (the
@@ -431,6 +435,7 @@ class Battery {
 
   bool onSend(const std::string& chat, const std::string& text) {
     if ((long)sends++ == killBeforeSend) throw Killed{"before send " + std::to_string(sends - 1)};
+    if (refuseSends) return false;
     sent.push_back(SentMessage{chat, text});
     if ((long)sent.size() - 1 == killAtSend) throw Killed{"inside send " + std::to_string(sent.size() - 1)};
     return true;

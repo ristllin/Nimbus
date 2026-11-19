@@ -304,22 +304,27 @@ void test_the_boot_action_over_every_turn_state() {
   using A = intents::BootAction;
   for (S st : {S::Closed, S::Unanswered, S::AnswerStored, S::Delivered})
     for (bool person : {false, true})
-      for (uint8_t attempts = 0; attempts <= plain::kMaxAutoResumes + 1; ++attempts)
-        for (bool whole : {false, true}) {
-          intents::OpenTurn t;
-          t.state = st;
-          t.turn = st == S::Closed ? 0 : 7;
-          t.person = person;
-          const A got = intents::bootAction(t, attempts, plain::kMaxAutoResumes, whole);
-          A want = A::Resume;
-          if (st == S::Closed) want = A::None;
-          else if (st == S::Delivered || !person) want = A::Close;
-          else if (attempts >= plain::kMaxAutoResumes) want = A::Notice;
-          else if (st == S::AnswerStored) want = whole ? A::SendStored : A::Notice;
-          const std::string label = std::string(intents::turnStateSlug(st)) + (person ? " person" : " unattended") +
-                                    " attempts " + std::to_string(attempts) + (whole ? " whole" : " stub");
-          TEST_ASSERT_EQUAL_STRING_MESSAGE(intents::bootActionSlug(want), intents::bootActionSlug(got), label.c_str());
-        }
+      for (uint8_t attempts = 0; attempts <= plain::kMaxAutoResumes + 2; ++attempts)
+        for (bool whole : {false, true})
+          for (bool resumed : {false, true}) {
+            intents::OpenTurn t;
+            t.state = st;
+            t.turn = st == S::Closed ? 0 : 7;
+            t.person = person;
+            t.resumedAnswer = resumed;
+            const A got = intents::bootAction(t, attempts, plain::kMaxAutoResumes, whole);
+            const bool left = attempts < plain::kMaxAutoResumes || (resumed && attempts == plain::kMaxAutoResumes);
+            A want = A::Resume;
+            if (st == S::Closed) want = A::None;
+            else if (st == S::Delivered) want = A::Close;
+            else if (st == S::AnswerStored) want = whole && left ? A::SendStored : person ? A::Notice : A::Close;
+            else if (!person) want = A::Close;
+            else if (attempts >= plain::kMaxAutoResumes) want = A::Notice;
+            const std::string label = std::string(intents::turnStateSlug(st)) + (person ? " person" : " unattended") +
+                                      " attempts " + std::to_string(attempts) + (whole ? " whole" : " stub") +
+                                      (resumed ? " resumed" : "");
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(intents::bootActionSlug(want), intents::bootActionSlug(got), label.c_str());
+          }
 }
 
 // After an intent, before the effect ran (the cut falls inside the dispatch, before the tool
@@ -485,6 +490,202 @@ void test_no_resume_without_its_counter_written_first() {
   }
 }
 
+
+// The resumed run reads the outside content its turn already read whole: the resumed turn is
+// tainted like the first run was (the rails gate its effects the same way).
+void test_a_resumed_turn_that_read_outside_content_stays_tainted() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  std::vector<std::pair<std::string, bool>> seen;   // tool, turn tainted
+  b.moreHooks = [&seen](plain::PlainHooks& h) {
+    (void)h.beforeDispatch(plain::HookSlot::Policy, [&seen](const plain::DispatchCtx& c) {
+      seen.emplace_back(c.call->name, c.turn->tainted);
+      return plain::DispatchDecision{};
+    });
+  };
+  b.model.respondWith([](const sp::Recorded& r, size_t) {
+    if (r.body.find("OUTSIDE-") == std::string::npos) return sp::call("web_search", R"({"q":"train times"})");
+    if (r.body.find("wrote notes/t.md") == std::string::npos) return sp::call("write_file", R"({"path":"notes/t.md","text":"x"})");
+    return sp::say("Saved the times.");
+  });
+  b.files.killWhen = [](const char* d, size_t n) { return lineIs(d, n, tx::ItemKind::Call, "write_file"); };
+  runCut(b, {txb::TurnScript{30, "find the train times and save them", {}}});
+  TEST_ASSERT_TRUE(b.killed);
+  seen.clear();
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)seen.size(), "the resumed run did not call write_file once");
+  TEST_ASSERT_EQUAL_STRING("write_file", seen[0].first.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(seen[0].second, "the resumed turn lost the taint of the outside content it carries");
+  TEST_ASSERT_EQUAL(1, (int)replies(b, "Saved the times."));
+}
+
+// A small arena: the turn's own long owner message fills most of it. The resumed run makes room
+// at its open, and never by dropping its own turn: the request still carries the message.
+void test_a_resumed_turn_keeps_its_own_items_when_the_arena_is_short() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  b.arenaBytes = 64 * 1024;
+  sanity(b, "ledger_write", kWrite, kReply);
+  const std::string ask = "log it. " + std::string(40000, 'n');
+  b.files.killWhen = [](const char* d, size_t n) { return lineIs(d, n, tx::ItemKind::Assistant, nullptr); };
+  runCut(b, {txb::TurnScript{30, ask, {}}});
+  TEST_ASSERT_TRUE(b.killed);
+  std::vector<tx::Item> before;
+  TXB_OK(b.stored(before));
+  const size_t from = b.model.requests().size();
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_TRUE_MESSAGE(b.model.requests().size() > from, "no resume");
+  TEST_ASSERT_TRUE_MESSAGE(resumedRequestSays(b, from, std::string(40000, 'n')), "the resumed run dropped its own owner message");
+  expectEveryItemCarried(b, before, from, "short arena");
+  TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
+  TEST_ASSERT_EQUAL(1, b.world.runsOf("ledger_write"));
+}
+
+// The arena has no room for the boot's own items: the d and e items go to the card, the open
+// calls are left to the engine's own turn open, and the stored reply still goes out once.
+void test_a_full_arena_at_boot_still_sends_the_stored_reply_once() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  b.arenaBytes = 48 * 1024;
+  sanity(b, "ledger_write", kWrite, kReply);
+  b.killBeforeSend = 0;
+  runCut(b, {txb::TurnScript{30, "log it. " + std::string(44500, 'n'), {}}});
+  TEST_ASSERT_TRUE(b.killed);
+  const size_t requests = b.model.requests().size();
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_TRUE_MESSAGE(b.arena->freeBytes() < 4096, "the arena was not short at boot: the case tests nothing");
+  TEST_ASSERT_EQUAL(requests, b.model.requests().size());
+  TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
+  TXB_OK(b.restartAfterCut());   // the card holds the d and e items: nothing is sent again
+  TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
+  std::vector<tx::Item> after;
+  TXB_OK(b.stored(after));
+  const tx::Item* e = lastOf(after, tx::ItemKind::TurnEnd);
+  TEST_ASSERT_NOT_NULL(e);
+  TEST_ASSERT_EQUAL_STRING("resume:sent-stored", e->end.cause.c_str());
+}
+
+// The one resume stored its answer and was cut before the send: the next boot sends that
+// answer (one boot send after the one resume), with no model call.
+void test_the_resumed_runs_stored_answer_is_sent_at_the_next_boot() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  sanity(b, "ledger_write", kWrite, kReply);
+  b.files.killWhen = [](const char* d, size_t n) { return lineIs(d, n, tx::ItemKind::Assistant, nullptr); };
+  runCut(b, {txb::TurnScript{30, "log it", {}}});
+  TEST_ASSERT_TRUE(b.killed);
+  b.engine.reset();
+  b.files.clearFaults();
+  b.killBeforeSend = (long)b.sends;   // the resume's own send is cut
+  const tx::Status st = b.boot(true);
+  if (st.notImplemented()) TXB_OK(st);
+  TEST_ASSERT_TRUE_MESSAGE(b.killed, "the resume's send was not cut");
+  const size_t requests = b.model.requests().size();
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_EQUAL_MESSAGE(requests, b.model.requests().size(), "the stored answer cost a model call");
+  TEST_ASSERT_EQUAL_STRING("send-stored", intents::bootActionSlug(b.resumeReports.back().action));
+  TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL(1, b.world.runsOf("ledger_write"));
+}
+
+// A routine's stored answer that was never sent goes out at boot (no model call): only the
+// model call of a resume is a person's turn's alone.
+void test_a_routines_stored_answer_is_sent_not_lost() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  sanity(b, "ledger_write", kWrite, kReply);
+  b.killBeforeSend = 0;
+  plain::TurnOutcome out;
+  const tx::Status st = b.unattended(plain::Trigger::Routine, "routine: log it", out);
+  if (st.notImplemented()) TXB_OK(st);
+  TEST_ASSERT_TRUE(b.killed);
+  const size_t requests = b.model.requests().size();
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_EQUAL(requests, b.model.requests().size());
+  TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
+}
+
+// The channel refuses the boot's send (no network yet): nothing reached the owner, so the
+// attempt is given back and the turn stays open; the next boot sends the reply once.
+void test_a_refused_boot_send_is_tried_again_at_the_next_boot() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  sanity(b, "ledger_write", kWrite, kReply);
+  b.killBeforeSend = 0;
+  runCut(b, {txb::TurnScript{30, "log it", {}}});
+  TEST_ASSERT_TRUE(b.killed);
+  b.refuseSends = true;
+  (void)b.restartAfterCut();
+  TEST_ASSERT_EQUAL(0, (int)b.sent.size());
+  TEST_ASSERT_FALSE(b.resumeReports.back().status.ok());
+  b.refuseSends = false;
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_EQUAL_STRING("send-stored", intents::bootActionSlug(b.resumeReports.back().action));
+  TEST_ASSERT_EQUAL(1, (int)replies(b, kReply));
+  // A refused crash notice leaves the turn open too: a later boot sends it.
+  txb::Battery n;
+  sanity(n, "ledger_day", R"({"day":"2026-11-17"})", "Nothing logged today.");
+  n.files.killAtAppend = 1;
+  runCut(n, {txb::TurnScript{30, "what did I eat?", {}}});
+  n.files.refuseWholeWrites = true;   // no counter: the boot can only send the notice
+  n.refuseSends = true;
+  n.engine.reset();
+  (void)n.boot(true);
+  TEST_ASSERT_EQUAL(0, (int)n.sent.size());
+  n.refuseSends = false;
+  n.engine.reset();
+  TXB_OK(n.boot(true));
+  TEST_ASSERT_EQUAL(1, (int)n.sent.size());
+  TEST_ASSERT_EQUAL_STRING("notice", intents::bootActionSlug(n.resumeReports.back().action));
+}
+
+
+// head.json lost after the one resume stored its t item: the t item's attempt still counts it,
+// so the next boot sends the notice, never a second resume.
+void test_the_resumed_t_item_counts_when_head_json_is_lost() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  sanity(b, "ledger_write", kWrite, kReply);
+  b.files.killAtAppend = 1;   // after the owner item
+  runCut(b, {txb::TurnScript{30, "log it", {}}});
+  b.engine.reset();
+  b.files.clearFaults();
+  b.files.killWhen = [](const char* d, size_t n) { return lineIs(d, n, tx::ItemKind::Assistant, nullptr); };
+  const tx::Status st = b.boot(true);   // the resume runs and is cut at its answer
+  if (st.notImplemented()) TXB_OK(st);
+  TEST_ASSERT_TRUE(b.killed);
+  std::vector<tx::Item> items;
+  TXB_OK(b.stored(items));
+  bool resumedT = false;
+  for (const tx::Item& it : items) resumedT |= it.kind == tx::ItemKind::TurnOpen && it.attempt == 1;
+  TEST_ASSERT_TRUE_MESSAGE(resumedT, "the resume stored no t item of attempt 1");
+  std::string head;
+  TXB_OK(tx::headPath(b.chatKey, head));
+  b.files.files.erase(head);
+  const size_t requests = b.model.requests().size();
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_EQUAL_MESSAGE(requests, b.model.requests().size(), "a second resume after head.json was lost");
+  TEST_ASSERT_EQUAL_STRING("notice", intents::bootActionSlug(b.resumeReports.back().action));
+}
+
+// A reply over the stored line's tier went to the bulk file and the a item holds its stub: the
+// boot never sends the stub as the reply; the owner gets the plain crash notice.
+void test_a_stored_answer_kept_only_as_its_stub_is_never_sent() {
+  TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
+  txb::Battery b;
+  std::string longReply = "Here is the plan. ";
+  while (longReply.size() < 14000) longReply += "Step and detail, line by line.\n";
+  sanity(b, "ledger_write", kWrite, longReply);
+  b.killBeforeSend = 0;
+  runCut(b, {txb::TurnScript{30, "plan it", {}}});
+  TEST_ASSERT_TRUE(b.killed);
+  TXB_OK(b.restartAfterCut());
+  TEST_ASSERT_EQUAL_STRING("notice", intents::bootActionSlug(b.resumeReports.back().action));
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_TRUE_MESSAGE(b.sent[0].text.find("[stub") == std::string::npos, "the stub went out as the reply");
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -506,5 +707,13 @@ int main(int, char**) {
   RUN_TEST(test_a_turn_the_boot_closed_counts_as_closed);
   RUN_TEST(test_a_turn_no_person_started_is_closed_never_resumed);
   RUN_TEST(test_no_resume_without_its_counter_written_first);
+  RUN_TEST(test_a_resumed_turn_that_read_outside_content_stays_tainted);
+  RUN_TEST(test_a_resumed_turn_keeps_its_own_items_when_the_arena_is_short);
+  RUN_TEST(test_a_full_arena_at_boot_still_sends_the_stored_reply_once);
+  RUN_TEST(test_the_resumed_runs_stored_answer_is_sent_at_the_next_boot);
+  RUN_TEST(test_a_routines_stored_answer_is_sent_not_lost);
+  RUN_TEST(test_a_refused_boot_send_is_tried_again_at_the_next_boot);
+  RUN_TEST(test_the_resumed_t_item_counts_when_head_json_is_lost);
+  RUN_TEST(test_a_stored_answer_kept_only_as_its_stub_is_never_sent);
   return UNITY_END();
 }

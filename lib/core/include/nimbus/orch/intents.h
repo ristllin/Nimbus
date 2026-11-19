@@ -58,16 +58,19 @@ struct OpenTurn {
   uint8_t attempts = 0;       // the highest attempt of its t items (0: the first run)
   uint64_t userQ = 0;         // its owner message (0: none stored)
   uint64_t answerQ = 0;       // its newest final answer (0: none stored)
+  bool resumedAnswer = false; // that answer came after a resumed run's t item (attempt 1 or more)
 };
 tx::Status openTurn(const tx::TxArena& arena, OpenTurn& out);
 
 // The boot's one action for the newest turn (lane RB-X1's rule, PRD section 7):
 //   Closed: None. Delivered: Close (no send, no model call).
-//   A turn no person started (a routine, an agent report, a notice): Close (never resumed).
-//   attempts at or over maxResumes: Notice (the plain crash notice, then Close).
-//   AnswerStored: SendStored when the stored answer is whole, else Notice.
-//   Unanswered: Resume.
-// `attempts` is the resumes already made for that turn (its t items and head.json's count).
+//   AnswerStored: SendStored when the stored answer is whole and an attempt is left (fewer than
+//     maxResumes made, or exactly maxResumes when the answer is the resumed run's own: one boot
+//     send after the one resume); else Notice for a person's turn and Close for any other.
+//   Unanswered: Close for a turn no person started (a routine, an agent report, a notice: never
+//     resumed); Notice once maxResumes are made; else Resume.
+// `attempts` is the resumes and boot sends already made for that turn (its t items and
+// head.json's count). The bound: one resume and one boot send at most, then the notice.
 enum class BootAction : uint8_t { None = 0, Close = 1, SendStored = 2, Resume = 3, Notice = 4 };
 const char* bootActionSlug(BootAction a);
 BootAction bootAction(const OpenTurn& turn, uint8_t attempts, uint8_t maxResumes, bool answerWhole);

@@ -301,9 +301,14 @@ class TurnRun {
     t_.ctx.startedAt = epoch();
     t_.ctx.startedMs = t_.startMs = d_.platform->nowMs();
     t_.tz = in.tzMinutes;
+    // A resumed run's turn is open from its first item (its owner message, calls and results of the
+    // run a cut stopped): a drop to make room never takes them (lane RB-X1).
+    const uint64_t own = t_.ctx.trigger == Trigger::Resume ? firstQOfTurn(t_.ctx.turn) : 0;
+    t_.firstQ = own;
     Status st = closeDangling();   // first: a drop never takes a call before its late result is stored
+    t_.firstQ = own;
     if (st.ok()) makeRoom();
-    t_.firstQ = c_.nextQ;
+    t_.firstQ = own ? own : c_.nextQ;
     if (st.ok()) st = storeInput(in);
     if (!st.ok()) return st;
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
