@@ -277,6 +277,8 @@ bool toolResult(JsonObjectConst b, C& c, const std::string& w, Seen& s) {
       if (std::string(p["type"] | "") != "text" || !textBlock(p, c, w + ".content", s)) return c.fail(w + ": content block");
   }
   if (!b["is_error"].isNull() && !b["is_error"].is<bool>()) return c.fail(w + ": is_error is not a bool");
+  if ((b["is_error"] | false) && (content.isNull() || std::string(content | "x").empty()))
+    return c.fail(w + ": an error result with no content");
   s.anyToolBlock = true;
   return onlyKeys(b, {"type", "tool_use_id", "content", "is_error", "cache_control"}, c, w) && cacheOk(b, c, w, s.marks);
 }
@@ -318,7 +320,7 @@ bool assistantTurn(const Turn& t, size_t i, C& c, std::vector<std::string>& call
     other = other || !th;
     if (typeOf(b) == "tool_use") calls.push_back(b["id"] | "");
   }
-  return true;
+  return other ? true : c.fail("turn " + std::to_string(i) + ": an assistant turn of thinking alone");
 }
 
 bool calledBefore(const std::vector<Turn>& turns, size_t i, const std::string& id) {
@@ -547,6 +549,8 @@ struct Gen {
     for (int i = 1 + pick(3); i > 0; --i) {
       c.call(chance(50) ? "read_file" : "list_files", args(), chance(30));
       if (o.broken && chance(8)) c.items.back().id = chance(50) ? "call.1:x/" + std::to_string(c.q) : "";
+      if (o.broken && chance(8)) c.items.back().id = "call_" + std::to_string(i);   // numbered per answer
+      if (o.broken && chance(5)) c.items.back().n = chance(50) ? "files.read" : "";
       ids.push_back(c.items.back().id);
     }
     return ids;
@@ -735,6 +739,9 @@ void test_the_checker_accepts_the_documented_shape_and_rejects_what_the_api_refu
       {R"({"type":"text","text":"hi"})", R"({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"A@A"}})"},
       {R"("text":"hi")", "\"text\":\"h\x01i\""},                                            // a raw control byte
       {R"("text":"hi")", "\"text\":\"h\xC3i\""},                                            // invalid UTF-8
+      {R"("content":"x"})", R"("content":"","is_error":true})"},                          // an error with no content
+      {R"({"type":"thinking","thinking":"t","signature":"s"},{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}]},)",
+       R"({"type":"thinking","thinking":"t","signature":"s"}]},{"role":"user","content":[{"type":"text","text":"y"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}]},)"},
   };
   int caught = 0;
   for (const Bad& b : bad) {
@@ -975,6 +982,7 @@ struct Growth {
     const std::string id = c.call("read_file", R"({"path":"a"})");
     if (rng() % 2) c.receipt(id, "read_file", "A " + std::to_string(c.q));
     else c.bulkResult(id, "read_file", txb::payload("B" + std::to_string(c.q), 4000));
+    if (rng() % 4 == 0) c.note("[device] round note " + std::to_string(c.q));
     c.nextRound();
     snap();
   }
@@ -1413,6 +1421,171 @@ void test_a_refused_allocation_at_every_site_answers_a_status() {
   TEST_ASSERT_TRUE(after.body == good.body);
 }
 
+// ---- 12b. stored facts the wire reads --------------------------------------------------------------
+// The pointer of the newest x item, its superseded reads and the newest digest's thru.
+void test_pointer_moves_superseded_reads_and_thru_come_from_the_stored_items() {
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("ask 1: read");
+  const std::string a = c.call("read_file", R"({"path":"a"})");
+  const uint64_t bulkQ = c.bulkResult(a, "read_file", txb::payload("OLDBULK", 3000));
+  const std::string b = c.call("read_file", R"({"path":"b"})");
+  const uint64_t readQ = c.receipt(b, "read_file", "STALE-RECEIPT");
+  c.nextRound();
+  c.say("read both");
+  c.close();
+  c.advance(600);
+  c.openTurn();
+  c.move(c.q - 1, "cold");                  // the pointer moves to the last closed turn
+  c.move(c.q - 2, "superseded", {readQ});   // and the receipt was superseded
+  c.owner("ask 2: again");
+  Out out;
+  RENDER_OK(rig, c, out);   // RenderInput::stubPointer stays 0: the stored move counts
+  EXPECT_API_OK(out, "stored moves");
+  for (const tx::Item& it : c.items)
+    if (it.q == bulkQ || it.q == readQ)
+      TEST_ASSERT_EQUAL_STRING(it.st.c_str(), txb::detail::blocksOf(out.view, sp::BlockKind::ToolResult, it.id)[0]->text.c_str());
+  TEST_ASSERT_TRUE(out.body.find("OLDBULK\\nrow") == std::string::npos && out.body.find("STALE-RECEIPT\"") == std::string::npos);
+  // Items at or below the newest digest's thru are the digests' job.
+  tx::Item& d = c.add(tx::ItemKind::Digest);
+  d.day = "2026-11-17";
+  d.x = "digest";
+  d.thru = 9;   // through turn 1's e item
+  RENDER_OK(rig, c, out);
+  EXPECT_API_OK(out, "thru");
+  TEST_ASSERT_TRUE(out.body.find("ask 1:") == std::string::npos && out.body.find("ask 2:") != std::string::npos);
+  TEST_ASSERT_TRUE(out.body.find(a) == std::string::npos);
+}
+
+// A turn that opens with a device note (an agent result) never joins the message the turn
+// before it ended with: the earlier request's messages stay as they were sent.
+void test_a_new_turn_never_rewrites_the_message_a_turn_ended_with() {
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("ask 1: start the job");
+  const std::string id = c.call("agent_start", R"({"name":"j"})", true);
+  c.receipt(id, "agent_start", "not run: the answer was cut", false);
+  c.nextRound();
+  Out first;
+  RENDER_OK(rig, c, first);
+  c.close();
+  c.advance(30);
+  c.openTurn("agent");
+  c.note("[device] agent j finished: report saved");
+  Out second;
+  RENDER_OK(rig, c, second);
+  EXPECT_API_OK(second, "agent turn");
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(sp::isPrefix(first.view, second.view, why), why.c_str());
+  TEST_ASSERT_EQUAL(first.view.messages.size() + 1, second.view.messages.size());
+}
+
+// The stamp is tx::messageStamp's, then one space, then the stored text.
+void test_an_owner_message_is_its_stamp_and_its_text() {
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("hello there");
+  c.items.back().tzMinutes = 60;
+  Out out;
+  RENDER_OK(rig, c, out);
+  char stamp[tx::kStampMaxBytes];
+  TXB_OK(tx::messageStamp(c.items.back().t, 60, stamp, sizeof stamp));
+  TEST_ASSERT_EQUAL_STRING((std::string(stamp) + " hello there").c_str(), out.view.messages[0].blocks[0].text.c_str());
+  // No clock: the text alone.
+  c.items.back().t = 0;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_EQUAL_STRING("hello there", out.view.messages[0].blocks[0].text.c_str());
+}
+
+// Outside content is never sent whole after its turn, not even when no stub was stored.
+void test_outside_content_without_a_stub_is_never_sent_whole() {
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("ask 1: search");
+  const std::string id = c.call("web_search", R"({"q":"x"})");
+  c.outside(id, "web_search", R"({"q":"x"})", txb::payload("OUTSIDE-SECRET", 500));
+  c.items.back().st.clear();
+  c.nextRound();
+  c.say("found it");
+  c.close();
+  c.openTurn();
+  c.owner("ask 2: thanks");
+  Out out;
+  RENDER_OK(rig, c, out);
+  EXPECT_API_OK(out, "outside no stub");
+  TEST_ASSERT_TRUE(out.body.find("OUTSIDE-SECRET") == std::string::npos);
+}
+
+// What the API refuses is never sent, whatever was stored.
+void test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes() {
+  Rig rig;
+  // Tool blocks need a tools array: a render without tools over tool history is refused.
+  txb::Convo c;
+  c.openTurn();
+  c.owner("ask 1:");
+  const std::string id = c.call("read_file", "{}");
+  c.receipt(id, "read_file", "", false);   // an error with no text: sent without is_error
+  c.nextRound();
+  Out out;
+  RENDER_OK(rig, c, out);
+  EXPECT_API_OK(out, "empty error");
+  TEST_ASSERT_FALSE(out.view.messages[2].blocks[0].isError);
+  Rig bare;
+  bare.fx.tools.clear();
+  TEST_ASSERT_EQUAL(tx::Err::InvalidArgument, bare.render(c, out).err);
+  // Names the API cannot take; blank text in any script; thinking stored after text.
+  txb::Convo n;
+  n.openTurn();
+  n.owner("ask 1:");
+  n.say("\xC2\xA0\xE3\x80\x80 \xE2\x80\xAF", false);
+  n.add(tx::ItemKind::RoundMeta).x = R"({"type":"thinking","thinking":"t","signature":"s"})";
+  std::vector<std::string> ids;
+  for (const char* name : {"files.read", "", "a_name_far_longer_than_sixty_four_bytes_which_the_api_refuses_outright_x"})
+    ids.push_back(n.call(name, "{}"));
+  for (const std::string& cid : ids) n.receipt(cid, "read_file", "ok");
+  n.note("\xE2\x80\x83\xE2\x80\x83");
+  n.nextRound();
+  RENDER_OK(rig, n, out);
+  EXPECT_API_OK(out, "names, blanks, thinking order");
+  TEST_ASSERT_TRUE(out.view.messages[1].blocks[0].kind == sp::BlockKind::Thinking);
+  TEST_ASSERT_EQUAL_MESSAGE(3, (int)out.view.messages[2].blocks.size(), out.body.c_str());
+  // A round whose calls were all left out leaves no thinking alone; a turn cut by thru opens
+  // with the user's turn; a blank note after the final text ends nothing.
+  txb::Convo t;
+  t.openTurn();
+  t.say("leading text of a compacted turn", false);
+  t.owner("ask 1:");
+  t.add(tx::ItemKind::RoundMeta).x = R"({"type":"thinking","thinking":"t","signature":"s"})";
+  t.call("read_file", "{}");   // dangling
+  t.note("[device] still here");
+  t.say("final");
+  t.note("   ");
+  RENDER_OK(rig, t, out);
+  EXPECT_API_OK(out, "thinking alone, leading and trailing assistant");
+  TEST_ASSERT_TRUE(out.body.find("leading text") == std::string::npos && out.body.find("\"thinking\"") == std::string::npos);
+  // Ids a dialect numbers per answer ("call_0" every turn) keep every call, each its own id.
+  txb::Convo r;
+  for (int turn = 0; turn < 3; ++turn) {
+    r.openTurn();
+    r.owner("ask " + std::to_string(r.turn) + ":");
+    r.call("read_file", "{}");
+    r.items.back().id = "call_0";
+    r.receipt("call_0", "read_file", "RESULT-" + std::to_string(turn));
+    r.nextRound();
+    if (turn < 2) {
+      r.say("ok");
+      r.close();
+    }
+  }
+  RENDER_OK(rig, r, out);
+  EXPECT_API_OK(out, "reused ids");
+  for (int turn = 0; turn < 3; ++turn) TEST_ASSERT_TRUE(out.body.find("RESULT-" + std::to_string(turn)) != std::string::npos);
+}
+
 // ---- 13. the framing, measured (ruling 16) --------------------------------------------------------------
 long overheadOf(const Rig& rig, const txb::Convo& c, Out& out) {
   TXB_OK(rig.render(c, out));
@@ -1518,6 +1691,11 @@ int main(int, char**) {
   RUN_TEST(test_signed_thinking_rides_the_open_turn_only);
   RUN_TEST(test_the_envelope_carries_the_facts_and_no_orch_turn);
   RUN_TEST(test_a_refused_allocation_at_every_site_answers_a_status);
+  RUN_TEST(test_pointer_moves_superseded_reads_and_thru_come_from_the_stored_items);
+  RUN_TEST(test_a_new_turn_never_rewrites_the_message_a_turn_ended_with);
+  RUN_TEST(test_an_owner_message_is_its_stamp_and_its_text);
+  RUN_TEST(test_outside_content_without_a_stub_is_never_sent_whole);
+  RUN_TEST(test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes);
   RUN_TEST(test_the_measured_framing_per_block_is_inside_the_battery_allowances);
   return UNITY_END();
 }
