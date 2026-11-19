@@ -1,0 +1,7 @@
+{
+  "lane": "RB-REC8",
+  "ruling": "Ruling 45",
+  "tools_bytes": 184,
+  "tools_wire_bytes": 229,
+  "why": "calc, always on in the old engine (ruling 42 item 3, ruling 45): name 4 B, description 75 B, schema 105 B = 184 B of declarations; 229 B in the Anthropic tools array. Measured by test_e1_request_ceiling on rb-main f49dab8ad (written by RB-Q3b, which landed after RB-REC8)."
+}

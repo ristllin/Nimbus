@@ -74,8 +74,11 @@ NOT_LISTED = {
     "session.tell": "registered for the LAN MCP endpoint; loopToolHidden keeps it off the head's list",
     "session.poll": "registered for the LAN MCP endpoint; loopToolHidden keeps it off the head's list",
     "reasoning.encrypted_content": "an OpenAI include[] value added to a JSON array, not a tool",
+    "more": "lib/core's router (orch_tool_groups.cpp registerMore): engine 2 registers it; the old engine does "
+    "not (ruling 65)",
 }
-_TOOL_NAME = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_.]+$")
+# Sources compiled only into an engine-2 image (tools/engine_filter.py drops them from an engine-1 one).
+ENGINE2_ONLY = "tools/engine/engine2_only.txt"
 _MEASURE = re.compile(r"^measure turn=owner_text((?: \w+=\d+)+)$")
 _TOOL = re.compile(r"^tool name=(\S+) group=(\S+) raw=(\d+) sent=([01])$")
 
@@ -318,13 +321,18 @@ def _registration(rel: str, args: list, constants: dict, errs: list) -> "Registr
 
 
 def scan_sources(root: str) -> "tuple[list, dict, list]":
-    """The registrations, the constants (identifier -> literal) and any errors."""
+    """The registrations of an engine-1 image's sources, the constants (identifier -> literal) of every
+    source and any errors."""
+    e2 = {ln.strip() for ln in (cat._read(root, ENGINE2_ONLY) or "").splitlines() if ln.strip()}
     calls, constants, errs = [], {}, []
     for d in REGISTRATION_DIRS:
         for path in sorted(glob.glob(os.path.join(root, d, "**", "*.*"), recursive=True)):
             if path.endswith((".cpp", ".h")):
                 rel = os.path.relpath(path, root)
-                _scan_file(rel, cat._read(root, rel) or "", calls, constants, errs)
+                found = []
+                _scan_file(rel, cat._read(root, rel) or "", found, constants, errs)
+                if rel not in e2:
+                    calls += found
     regs = [r for r in (_registration(rel, args, constants, errs) for rel, args in calls) if r]
     return regs, constants, errs
 
@@ -337,7 +345,8 @@ def _matches(expr: str, text: str, constants: dict) -> bool:
 
 
 def registered_names(regs: list) -> "set[str]":
-    return {r.name for r in regs if _TOOL_NAME.match(r.name)}
+    """Every name a registry add( gives a tool, dotted or not (calc has no dot)."""
+    return {r.name for r in regs}
 
 
 def fixture_problems(root: str, fixture: dict, scanned: tuple) -> "list[str]":

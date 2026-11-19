@@ -152,6 +152,21 @@ class PromptCeilingTest(unittest.TestCase):
         t.write("src/agent/more.cpp", 'void m(ToolRegistry& reg) { reg.add("device.new", "New.", h, "{}"); }\n')
         self.assertTrue(any("registers device.new" in e for e in t.errs()))
 
+    def test_a_tool_with_a_dotless_name_is_held_too(self):
+        t = self.tree()
+        t.write("src/agent/calc.cpp", 'void c(ToolRegistry& reg) { reg.add("calc", "Exact arithmetic.", h, "{}"); }\n')
+        self.assertTrue(any("registers calc" in e for e in t.errs()))
+
+    def test_an_engine2_only_source_is_not_an_engine1_tool(self):
+        t = self.tree()
+        t.write(
+            "lib/core/src/orch_file_tools.cpp",
+            'void f(ToolRegistry& reg) { reg.add("read_file", "Read.", h, "{}"); }\n',
+        )
+        self.assertTrue(any("registers read_file" in e for e in t.errs()))
+        t.write(gate.ENGINE2_ONLY, "lib/core/src/orch_file_tools.cpp\n")
+        self.assertFalse(any("read_file" in e for e in t.errs()))
+
     def test_a_golden_that_names_a_tool_the_fixture_lacks_is_red(self):
         t = self.tree()
         t.write(gate.GOLDEN, golden(1, 1, "tool name=ghost.tool group=always raw=5 sent=1\n"))

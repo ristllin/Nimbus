@@ -57,6 +57,11 @@
    "schema": "{\"type\":\"object\",\"properties\":{\"left_kcal\":{\"type\":\"number\"},\"left_protein\":{\"type\":\"number\"},\"foods\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"kcal_100g\":{\"type\":\"number\"},\"protein_100g\":{\"type\":\"number\"},\"amount_g\":{\"type\":\"number\"},\"unit_g\":{\"type\":\"number\"},\"fixed_g\":{\"type\":\"number\"}},\"required\":[\"name\",\"kcal_100g\"]}}},\"required\":[\"left_kcal\",\"foods\"]}"
   },
   {
+   "name": "calc",
+   "description": "Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%.",
+   "schema": "{\"type\":\"object\",\"properties\":{\"expression\":{\"type\":\"string\",\"maxLength\":256}},\"required\":[\"expression\"]}"
+  },
+  {
    "name": "session.terminate",
    "description": "Stop a running sub-agent.",
    "schema": "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}"
