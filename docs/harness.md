@@ -978,6 +978,14 @@ changes nothing, and an edit swaps its part file in only when the second pass sa
 first pass planned on (`test/test_file_tools_sum`, `test_file_edit_line`,
 `test_file_append_facts`).
 
+The old engine's `files.read` and `files.edit` (device and nimbusd) run the same scan and
+edit (`file_aids_e1.h`): `files.read` keeps `tail`, `sum` and `date` (the day total, on the
+running day by default) and gains `column`, `from`, `to`; `files.edit` keeps its first-match
+default, `count` and `all`, and gains `line` and the current line numbers. On the device the
+scan gives the tool call's card lock up and takes it per 4 KB read
+(`memory::withCardReleased`); the shared fixtures give `test/golden/file_aids_e1_results.txt`
+on both hosts (`test_file_aids_e1`, `test_hosted_file_aids`).
+
 ## Extension points
 
 - **New provider backend**: subclass `ManagedAgentAdapter` + one

@@ -98,6 +98,7 @@ E1_SOURCES = {
         "lib/core/src/orch_calc_tool.cpp",  # RB-REC8: calc's registration
         "lib/core/src/orch_file_append.cpp",
         "lib/core/src/orch_file_edit.cpp",
+        "lib/core/src/orch_file_aids_e1.cpp",  # RB-REC4: files.read and files.edit on the shared aids
         "lib/core/src/orch_loops.cpp",
         "lib/core/src/orch_memory_tools.cpp",
         "lib/core/src/orch_models_tool.cpp",

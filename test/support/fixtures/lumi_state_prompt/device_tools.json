@@ -178,8 +178,8 @@
   },
   {
    "name": "files.read",
-   "description": "Read a stored TEXT document's content (md/txt/json/csv/log). Large files are paged: pass 'offset' to continue from where the previous view ended. Pass 'tail' (a row count) to read only the last rows of a log or CSV; with 'sum' (a numeric column) the tail also reports that column's total for today (the owner's local date), or for 'date' (YYYY-MM-DD), counted from the file's own rows, so a log read and a day total are one call.",
-   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"offset\":{\"type\":\"number\"},\"tail\":{\"type\":\"number\"},\"sum\":{\"type\":\"string\"},\"date\":{\"type\":\"string\"}},\"required\":[\"project\",\"name\"]}"
+   "description": "Read a stored TEXT document's content (md/txt/json/csv/log). Large files are paged: pass 'offset' to continue from where the previous view ended. Pass 'tail' (a row count) to read only the last rows of a log or CSV; with 'sum' (a numeric column) the tail also reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) totals them on the device.",
+   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"offset\":{\"type\":\"number\"},\"tail\":{\"type\":\"number\"},\"sum\":{\"type\":\"string\"},\"date\":{\"type\":\"string\"},\"column\":{\"type\":\"string\"},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"project\",\"name\"]}"
   },
   {
    "name": "files.search",
@@ -198,8 +198,8 @@
   },
   {
    "name": "files.edit",
-   "description": "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - never read and re-save the whole file. Replaces the FIRST match by default; 'all': true replaces every match, 'count' replaces the first N. The reply says how many matches were found and how many were replaced, so nothing happens silently. A no-match says so and changes nothing. An empty 'replace' deletes the span. An edit to a keyed CSV (a log with a date and a key column) also names the rows it removed, added or changed. The file's other bytes keep their exact order (a CSV's rows stay rows). Max 2 KB find, 4 KB replacement, 200 matches per call, 1 MB file.",
-   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"find\":{\"type\":\"string\"},\"replace\":{\"type\":\"string\"},\"all\":{\"type\":\"boolean\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"project\",\"name\",\"find\"]}"
+   "description": "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - never read and re-save the whole file. Replaces the FIRST match by default; 'all': true replaces every match, 'count' replaces the first N. The reply says how many matches were found and how many were replaced, so nothing happens silently. A no-match says so and changes nothing. An empty 'replace' deletes the span. 'line' picks the match that is the whole of that line (identical rows: a stale number fails with the current lines). The reply gives the current line numbers. An edit to a keyed CSV also names the rows it removed, added or changed. Max 2 KB find, 4 KB replacement, 200 matches per call, 1 MB file.",
+   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"find\":{\"type\":\"string\"},\"replace\":{\"type\":\"string\"},\"all\":{\"type\":\"boolean\"},\"count\":{\"type\":\"integer\"},\"line\":{\"type\":\"integer\"}},\"required\":[\"project\",\"name\",\"find\"]}"
   },
   {
    "name": "files.delete",

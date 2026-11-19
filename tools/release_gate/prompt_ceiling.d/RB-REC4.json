@@ -1,0 +1,7 @@
+{
+  "lane": "RB-REC4",
+  "ruling": "Ruling 47",
+  "tools_bytes": 160,
+  "tools_wire_bytes": 160,
+  "why": "The old engine's files.read and files.edit on the shared aids (rulings 42, 47, 49): files.read's description names the CSV form (column with from/to keeps matching rows, sum totals them on the device) and its schema gains column, from and to; files.edit's description names line and the current line numbers and its schema gains line. Measured by test_e1_request_ceiling: tools 25,346 -> 25,506 B, tools_wire 31,937 -> 32,097 B; the prompt itself is unchanged."
+}

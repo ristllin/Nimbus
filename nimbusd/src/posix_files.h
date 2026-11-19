@@ -105,7 +105,7 @@ class PosixFiles {
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return readTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},)"
-            R"("column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
+            R"("column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"offset":{"type":"number"}},"required":["project","name"]})");
 
     // The device's files.edit on the shared edit (file_aids_e1.h): the same reply bytes.
     addOwnerOnly(reg, "files.edit",
@@ -201,9 +201,8 @@ class PosixFiles {
     return ok ? nimbus::orch::ToolResult::ok(out) : nimbus::orch::ToolResult::fail(out);
   }
 
-  // files.edit through the shared edit; the part file beside the store, swapped by rename.
-  nimbus::orch::ToolResult editTool(ArduinoJson::JsonObjectConst a) {
-    nimbus::orch::aids::e1::EditCall c;
+  // files.edit's arguments, as the device reads them; "" when they may go on to the file.
+  static std::string editArgs(ArduinoJson::JsonObjectConst a, nimbus::orch::aids::e1::EditCall& c) {
     c.project = str(a, "project");
     c.name = str(a, "name");
     c.find = str(a, "find");
@@ -211,24 +210,30 @@ class PosixFiles {
     c.pol.all = a["all"].as<bool>();
     if (a["count"].is<int>()) c.pol.count = a["count"].as<int>();
     c.line = a["line"].is<unsigned>() ? a["line"].as<unsigned>() : 0;
-    if (!a["line"].isNull() && !c.line) return nimbus::orch::ToolResult::fail("line is a whole number, 1 or more");
-    if (c.project.empty() || c.name.empty() || c.find.empty())
-      return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'find'");
-    if (const std::string bad = nimbus::orch::validateEdit(c.find.size(), c.replace.size(), c.pol); !bad.empty())
-      return nimbus::orch::ToolResult::fail(bad);
+    if (!a["line"].isNull() && !c.line) return "line is a whole number, 1 or more";
+    if (c.project.empty() || c.name.empty() || c.find.empty()) return "need 'project', 'name' and 'find'";
+    return nimbus::orch::validateEdit(c.find.size(), c.replace.size(), c.pol);
+  }
+
+  // A replacement identical to the find text: the matches are counted, the file not touched.
+  static nimbus::orch::ToolResult editNoChange(nimbus::orch::aids::AidSource& src, const nimbus::orch::aids::e1::EditCall& c) {
+    size_t matches = 0;
+    if (!nimbus::orch::aids::countMatches(src, c.find, matches)) return nimbus::orch::ToolResult::fail("SD open failed");
+    const nimbus::orch::EditDecision d = nimbus::orch::decideEdit(c.find.size(), c.replace.size(), c.pol, matches);
+    return d.ok ? nimbus::orch::ToolResult::ok(nimbus::orch::renderEditNoChange(c.project + "/" + c.name, d))
+                : nimbus::orch::ToolResult::fail(d.err);
+  }
+
+  // files.edit through the shared edit; the part file beside the store, swapped by rename.
+  nimbus::orch::ToolResult editTool(ArduinoJson::JsonObjectConst a) {
+    nimbus::orch::aids::e1::EditCall c;
+    if (const std::string bad = editArgs(a, c); !bad.empty()) return nimbus::orch::ToolResult::fail(bad);
     if (!store_.find(c.project, c.name)) return nimbus::orch::ToolResult::fail("not found");
     const std::string path = bytesPath(c.project, c.name);
     struct stat st;
     if (::stat(path.c_str(), &st) != 0) return nimbus::orch::ToolResult::fail("SD open failed");
     DiskSource src(path);
-    const std::string where = c.project + "/" + c.name;
-    if (nimbus::orch::editChangesNothing(c.find, c.replace)) {
-      size_t matches = 0;
-      if (!nimbus::orch::aids::countMatches(src, c.find, matches)) return nimbus::orch::ToolResult::fail("SD open failed");
-      const nimbus::orch::EditDecision d = nimbus::orch::decideEdit(c.find.size(), c.replace.size(), c.pol, matches);
-      return d.ok ? nimbus::orch::ToolResult::ok(nimbus::orch::renderEditNoChange(where, d))
-                  : nimbus::orch::ToolResult::fail(d.err);
-    }
+    if (nimbus::orch::editChangesNothing(c.find, c.replace)) return editNoChange(src, c);
     if (nimbus::orch::isCsvName(c.name)) {
       std::string body;
       read(c.project, c.name, body);

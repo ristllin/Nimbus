@@ -295,11 +295,6 @@ class CardRelease {
 };
 std::atomic<uint32_t> g_netLockReleases{0};
 
-void withCardReleased(const std::function<void()>& fn) {
-  CardRelease r;
-  fn();
-}
-
 // ---- which provider embeds (QW5) ---------------------------------------------
 // Memory follows the keys the owner has (nimbus/orch/embed_pick.h): a device set up
 // with only a Cumulo Nimbus (or Mistral) key embeds through it instead of failing on
@@ -3450,6 +3445,12 @@ std::string handleMcp(const std::string& jsonRpcRequest,
   }
   if (isToolCall) noteToolHold(name, millis() - heldFrom - (g_releasedMs - releasedBefore));
   return resp;
+}
+
+// RB-REC4: a scan that takes the card lock per 4 KB read gives the tool call's lock up first.
+void withCardReleased(const std::function<void()>& fn) {
+  CardRelease r;
+  fn();
 }
 
 Stats stats() {

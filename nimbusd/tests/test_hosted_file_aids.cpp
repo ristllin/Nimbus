@@ -9,6 +9,8 @@
 #include <string>
 
 #include "../../test/support/file_aids_cases.h"
+#include "../../test/support/file_aids_e1_cases.h"
+#include "posix_files.h"
 #include "nimbus/orch/file_aids.h"
 #include "posix_file_tools.h"
 #include "test_util.h"
@@ -63,6 +65,40 @@ static void testSharedFixtures(ndtest::Ctx& c, const std::string& repo) {
   ndtest::rmTree(dir);
 }
 
+// The old engine's files.read and files.edit (PosixFiles, the hosted files.* tools) give the
+// device's reply bytes: the transcript equals test/golden/file_aids_e1_results.txt.
+static void testOldEngineTools(ndtest::Ctx& c, const std::string& repo) {
+  const std::string dir = ndtest::scratchDir("file-aids-e1");
+  ndtest::rmTree(dir);
+  fsutil::mkdirs(dir);
+  PosixFiles files(dir);
+  orch::ToolRegistry reg;
+  files.registerTools(reg);
+  orch::Principal owner = orch::principalForRole("1", orch::Role::Admin);
+  owner.owner = true;
+  const std::string got = aidcases::e1::transcript(
+      [&](const aidcases::e1::Call& k, const std::string& path) {
+        if (k.seed) files.seed(path, k.seed);
+        const std::string project = path.substr(0, path.find('/')), name = path.substr(path.find('/') + 1);
+        ArduinoJson::JsonDocument d;
+        deserializeJson(d, "{\"project\":\"" + project + "\",\"name\":\"" + name + "\"," + k.args + "}");
+        const orch::ToolResult r = reg.dispatch(k.tool, d.as<ArduinoJson::JsonObjectConst>(), owner);
+        if (!r.success) return "error " + r.error;
+        const bool tail = std::string(k.args).find("\"tail\"") != std::string::npos;
+        return "ok " + (tail ? aidcases::e1::dayTotalPart(r.output) : r.output);
+      },
+      [&](const std::string& path) { return files.get(path); });
+  const std::string want = readAll(repo + "/test/golden/file_aids_e1_results.txt");
+  c.ok(want != "<none>", "the old engine's golden transcript exists");
+  c.ok(got == want, "files.read and files.edit on the POSIX disk equal the device's golden byte for byte");
+  if (got != want) {
+    const size_t at = std::mismatch(got.begin(), got.end(), want.begin(), want.end()).first - got.begin();
+    std::printf("    first difference at byte %zu:\n    got:  %s\n    want: %s\n", at, got.substr(at, 160).c_str(),
+                want.substr(std::min(at, want.size()), 160).c_str());
+  }
+  ndtest::rmTree(dir);
+}
+
 int main(int argc, char** argv) {
   ndtest::Ctx c;
   c.suite = "hosted_file_aids";
@@ -71,6 +107,7 @@ int main(int argc, char** argv) {
   std::string here = __FILE__;
   for (int up = 0; up < 3; ++up) here = here.substr(0, here.find_last_of('/'));
   testSharedFixtures(c, here);
+  testOldEngineTools(c, here);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   (void)argc;

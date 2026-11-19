@@ -1,0 +1,227 @@
+== old shape: a day's total
+ok rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+
+-- log/f.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+#was: 2026-11-19,breakfast,oats,40,150
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
+== new shape: the same day
+ok log/f.csv size=291 lines=9
+L1 date,occasion,item,grams,kcal
+L3 2026-11-19,breakfast,oats,60,230
+L5 2026-11-19,lunch 12:30,"rice, beans",250,410
+L7 2026-11-19,snack 2,apple,150,
+rows 3 of 6 where date 2026-11-19..2026-11-19; sum kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+-- log/f.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+#was: 2026-11-19,breakfast,oats,40,150
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
+== new shape: two columns
+ok log/f.csv size=291 lines=9
+L1 date,occasion,item,grams,kcal
+L3 2026-11-19,breakfast,oats,60,230
+L5 2026-11-19,lunch 12:30,"rice, beans",250,410
+L7 2026-11-19,snack 2,apple,150,
+rows 3 of 6 where date 2026-11-19..2026-11-19; sum grams=460 kcal=640; 1 comment line skipped (line 4); blank 1 (kcal line 7); skipped 1 (line 6: field count is not the header's 5); empty lines 1
+-- log/f.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+#was: 2026-11-19,breakfast,oats,40,150
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
+== new shape: a week, paged
+ok log/t.csv size=245 lines=8
+L1 date,session,exercise,reps,kg
+L3 2026-11-13,am,squat,5,100
+L5 2026-11-15,pm,"rows, cable",12,40.5
+L7 2026-11-19,set 2,bench press,8,
+rows 4 of 6 where date 2026-11-13..2026-11-19; shown 2-4; sum reps=30 kg=240.5; 1 comment line skipped (line 4); blank 1 (kg line 7); skipped 1 (line 6: field count is not the header's 5); identical lines 1 group (2=3)
+-- log/t.csv
+date,session,exercise,reps,kg
+2026-11-13,am,squat,5,100
+2026-11-13,am,squat,5,100
+#was: 2026-11-13,am,squat,5,10
+2026-11-15,pm,"rows, cable",12,40.5
+2026-11-17,pm,rows, cable, slow,12,40
+2026-11-19,set 2,bench press,8,
+2026-11-20,am,squat,5,105
+
+== new shape: a month
+ok log/e.csv size=304 lines=8
+L1 date,when,note,amount,tip
+L3 2026-11-02,morning,grocer,31.15,0
+L5 2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+L7 2026-11-19,errand 2,train ticket,,0
+L8 2026-11-30,evening,books,12.00,0
+rows 4 of 6 where date 2026-11..2026-11; sum amount=50.55 tip=1; 1 comment line skipped (line 4); blank 1 (amount line 7); skipped 1 (line 6: field count is not the header's 5)
+-- log/e.csv
+date,when,note,amount,tip
+2026-10-31,evening,books,24.90,0
+2026-11-02,morning,grocer,31.15,0
+#gone: 2026-11-02,morning,grocer,13.15,0
+2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
+2026-11-19,errand 2,train ticket,,0
+2026-11-30,evening,books,12.00,0
+
+== old shape: the month's day with an empty cell
+ok rows 1 of 6 where date 2026-11-19..2026-11-19; sum amount=0; 1 comment line skipped (line 4); blank 1 (amount line 7); 1 other row outside the range has a wrong field count
+
+-- log/e.csv
+date,when,note,amount,tip
+2026-10-31,evening,books,24.90,0
+2026-11-02,morning,grocer,31.15,0
+#gone: 2026-11-02,morning,grocer,13.15,0
+2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
+2026-11-19,errand 2,train ticket,,0
+2026-11-30,evening,books,12.00,0
+
+== an unknown column
+error column day is not in the header: date,when,note,amount,tip
+-- log/e.csv
+date,when,note,amount,tip
+2026-10-31,evening,books,24.90,0
+2026-11-02,morning,grocer,31.15,0
+#gone: 2026-11-02,morning,grocer,13.15,0
+2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
+2026-11-19,errand 2,train ticket,,0
+2026-11-30,evening,books,12.00,0
+
+== identical rows: the first by default
+ok edited log/t.csv: replaced 1 of 2 matches (now 282 bytes); 1 more remain (all: true replaces them); at line 2; 9 lines; find is still at lines 3, 9
+changed: 2026-11-13 am kg 100 -> 110
+the removed and changed rows are kept in the file as history rows (#removed: / #replaced:)
+-- log/t.csv
+date,session,exercise,reps,kg
+2026-11-13,am,squat,5,110
+2026-11-13,am,squat,5,100
+#was: 2026-11-13,am,squat,5,10
+2026-11-15,pm,"rows, cable",12,40.5
+2026-11-17,pm,rows, cable, slow,12,40
+2026-11-19,set 2,bench press,8,
+2026-11-20,am,squat,5,105
+#replaced: 2026-11-13,am,squat,5,100
+
+== identical rows: line picks the second
+ok edited log/t2.csv: replaced 1 of 2 matches (now 255 bytes); 1 more remain (all: true replaces them); at line 3; 8 lines; lines that were 4 and later are now 1 lower; find is still at lines 2, 8
+rows removed: 2026-11-13 am
+the removed and changed rows are kept in the file as history rows (#removed: / #replaced:)
+-- log/t2.csv
+date,session,exercise,reps,kg
+2026-11-13,am,squat,5,100
+#was: 2026-11-13,am,squat,5,10
+2026-11-15,pm,"rows, cable",12,40.5
+2026-11-17,pm,rows, cable, slow,12,40
+2026-11-19,set 2,bench press,8,
+2026-11-20,am,squat,5,105
+#removed: 2026-11-13,am,squat,5,100
+
+== a stale line number
+error no match on line 3; matches at lines 2, 8
+-- log/t2.csv
+date,session,exercise,reps,kg
+2026-11-13,am,squat,5,100
+#was: 2026-11-13,am,squat,5,10
+2026-11-15,pm,"rows, cable",12,40.5
+2026-11-17,pm,rows, cable, slow,12,40
+2026-11-19,set 2,bench press,8,
+2026-11-20,am,squat,5,105
+#removed: 2026-11-13,am,squat,5,100
+
+== part of a line
+error find is part of line 7, not the whole line; line 7 is: 2026-11-19,errand 2,train ticket,,0
+-- log/e2.csv
+date,when,note,amount,tip
+2026-10-31,evening,books,24.90,0
+2026-11-02,morning,grocer,31.15,0
+#gone: 2026-11-02,morning,grocer,13.15,0
+2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
+2026-11-19,errand 2,train ticket,,0
+2026-11-30,evening,books,12.00,0
+
+== a correction by line
+ok edited log/e2.csv: replaced 1 of 1 match (now 355 bytes); at line 7; 9 lines; find is still at line 9
+the removed and changed rows are kept in the file as history rows (#removed: / #replaced:)
+-- log/e2.csv
+date,when,note,amount,tip
+2026-10-31,evening,books,24.90,0
+2026-11-02,morning,grocer,31.15,0
+#gone: 2026-11-02,morning,grocer,13.15,0
+2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
+2026-11-19,errand 2,train ticket,8.60,0
+2026-11-30,evening,books,12.00,0
+#replaced: 2026-11-19,errand 2,train ticket,,0
+
+== the first two matches
+ok edited log/f2.csv: replaced 2 of 3 matches (now 303 bytes); 1 more remain (all: true replaces them); at lines 3, 4; 9 lines; find is still at line 9
+-- log/f2.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oat flakes,60,230
+#was: 2026-11-19,breakfast,oat flakes,40,150
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
+== every match
+ok edited log/f3.csv: replaced 2 of 2 matches (now 279 bytes); at lines 5, 6; 9 lines
+-- log/f3.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+#was: 2026-11-19,breakfast,oats,40,150
+2026-11-19,lunch,"rice, beans",250,410
+2026-11-19,lunch,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
+== a comment line by line
+ok edited log/f4.csv: replaced 1 of 1 match (now 252 bytes); at line 4; 8 lines; lines that were 5 and later are now 1 lower
+-- log/f4.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
+== no match
+error find is not in log/f4.csv (252 B)
+-- log/f4.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+

@@ -29,7 +29,7 @@ bool firstRows(AidSource& src, std::vector<std::string>& header, std::vector<std
     const size_t first = line.find_first_not_of(" \t");
     if (first == std::string::npos || line[first] == '#') continue;
     if (header.empty()) header = csvHeaderOf(line);
-    else rows.push_back(csvStoredRow(line, header));
+    else if (std::vector<std::string> r = csvStoredRow(line, header); !r.empty()) rows.push_back(std::move(r));
   }
   return true;
 }

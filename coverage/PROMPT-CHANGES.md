@@ -708,3 +708,33 @@ deleted. Engine 2 has no baseline.
 - why: planned work (ruling 18), a net deletion of 288 B. The fold's input no longer closes with a day
   block (the orchestrator's note: it gets none), so the prompt's food paragraph (282 B) and its
   "[TODAY] and" date source go; the literal is rewritten without them, nothing else moved.
+
+### PC-0034: the old engine's files.read and files.edit name the shared aids
+- catalog: e1
+- class: tool_descriptions
+- kind: spec
+- bytes: 21628 -> 22131
+- sha8: 7249ee6c -> 56b90134
+- lane: RB-REC4
+- prd: section 4 (the file tools), as amended by rulings 42, 47 and 62 (the general aids on both engines)
+- why: src/agent/files_subsystem.cpp and nimbusd/src/posix_files.h: files.read keeps its tail, sum and date shape and names the CSV form beside it (column with from/to keeps matching rows; sum, comma-separated, totals them on the device), its schema gains column, from and to (nimbusd also offset and date); files.edit names line (the whole-line match at that number) and the current line numbers in its reply, its schema gains line; nimbusd gains the device's files.edit declaration. Planned work, not a fix.
+
+### PC-0035: the old engine's files.read and files.edit results come from the shared aids
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 34654 -> 34779
+- sha8: 53933cdf -> cbb1ae9f
+- lane: RB-REC4
+- prd: section 4 (the file tools), as amended by rulings 42, 47, 49 and 62
+- why: lib/core/src/orch_file_aids_e1.cpp joins E1_SOURCES (the day total's "no day total" lines, the argument errors, the keyed-CSV report's history line moved from files_subsystem.cpp); files_subsystem.cpp loses the old day-total and edit-pass texts (the over-1 MB day total, the short-write and row-too-long lines) and gains the line argument's error. The totals' tail and the edit's line facts are the shared core's (e2 catalog, PC-0032 and PC-0036). Planned work, not a fix.
+
+### PC-0036: the shared aids' tail in totals-only form, the find name and the edit's line facts
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 4765 -> 4772
+- sha8: bda3f014 -> 0f827e9f
+- lane: RB-REC4
+- prd: section 4 (the plain file tools), as amended by rulings 42 and 47
+- why: lib/core/src/orch_file_aids.cpp and orch_csv_sum.cpp: the edit's texts take the argument's name ("find" on the old engine, "old" on read_file's engine), renderEditLines gives the old engine's reply its line facts ("; at line 3; 8 lines"), and the totals-only tail (engine 1's day total) leaves out the shown clause. Planned work, not a fix.
