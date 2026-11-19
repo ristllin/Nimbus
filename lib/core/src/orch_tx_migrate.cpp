@@ -583,9 +583,9 @@ class LineCursor {
       std::string path;
       Status s = segmentPath(chatKey_, segs_[idx_], path);
       if (!s.ok()) return s;
-      char chunk[kFillSliceBytes];
+      chunk_.resize(kFillSliceBytes);   // on the heap (PSRAM-first on the device), never the task's stack
       size_t got = 0;
-      if (!files_.readAt(path, (size_t)off_, chunk, sizeof chunk, got))
+      if (!files_.readAt(path, (size_t)off_, &chunk_[0], chunk_.size(), got))
         return Status::fail(Err::Io, "tx::migrate read");
       if (got == 0) {   // segment end: a torn tail is dropped
         ++idx_;
@@ -594,7 +594,7 @@ class LineCursor {
         continue;
       }
       if (buf_.size() > kMaxLineBytes) buf_.clear();   // no line is this long: the rest of it is dropped
-      buf_.append(chunk, got);
+      buf_.append(chunk_.data(), got);
       off_ += got;
     }
     return Status::success();
@@ -606,7 +606,7 @@ class LineCursor {
   std::vector<uint32_t> segs_;
   size_t idx_ = 0;
   uint64_t off_ = 0;
-  std::string buf_;
+  std::string buf_, chunk_;
   size_t pos_ = 0;
 };
 
