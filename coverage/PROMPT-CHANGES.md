@@ -672,3 +672,12 @@ deleted. Engine 2 has no baseline.
 - lane: RB-REC4
 - prd: section 4 (the plain file tools), as amended by ruling 42 (read_file filters CSV rows and totals named columns; edit_file line picks one match)
 - why: lib/harness/include/nimbus/harness/plain/texts.h: read_file's description gains its CSV sentence and its schema column, from, to and sum (array of strings); edit_file's description names line and the match-line list, and its schema gains line (integer). The design's figures (124 B and 26 B of schema, 103 B of description growth). Planned work (ruling 42), not a fix; kind build because RB-REC4 is in PLAN-future.json (ruling 50); id from RB-REC4's reserved range PC-0032..PC-0037 (ruling 51).
+### PC-0085: the device notes of a migration and a re-entry (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 646 -> 1006
+- sha8: 88688fc7 -> 6237cc21
+- lane: RB-MG1a
+- prd: section 9 (v6 stores, Conversation: digest 0 or one omission line; Going back and forward again: rows the other engine wrote are imported behind one device note, within budget or as a named omission)
+- why: lib/core/include/nimbus/orch/tx/migrate.h (listed in E2_EXTRA_SOURCES) holds the pieces of the two notes a migration stores: the anchor that stands for the conversation under the old summary's pointer ("[device] The conversation through <when> was kept by the earlier engine; search finds it.", with the saved or unsaved old summary when digest 0 was not accepted), and the PRD's note in front of each import batch ("[device] N turns between <t1> and <t2> were answered by the earlier engine; their tool work is not shown.", with the earlier messages it names when over the budget). Domain-free (rulings 41 and 42). Planned work (ruling 18), not a fix.

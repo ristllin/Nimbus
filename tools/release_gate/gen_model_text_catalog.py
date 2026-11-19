@@ -194,6 +194,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("lib/core/include/nimbus/orch/file_aids.h", "tool_results"),
     ("lib/core/src/orch_csv_sum.cpp", "tool_results"),
     ("lib/core/src/orch_file_aids.cpp", "tool_results"),
+    # RB-MG1a: the device notes a migration and a re-entry store (the anchor and the import note).
+    ("lib/core/include/nimbus/orch/tx/migrate.h", "device_notes"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

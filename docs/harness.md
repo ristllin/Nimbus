@@ -796,6 +796,41 @@ the quiet wait, the backoff and the cap (it is counted), takes at most eight req
 is answered once. The device binding is `src/agent/plain_fold_device.cpp` (engine-2
 images only); the hosted one is `hostedTextIO` in `nimbusd/src/hosted_fold.h`.
 
+### Migration into the transcript and the re-entry rule
+
+`lib/core/include/nimbus/orch/tx/migrate.h` (body `orch_tx_migrate.cpp`, lane RB-MG1a) moves
+one chat's conversation from the old engine's store into `/mem/tx/<chatKey>/` when engine 2
+starts, and brings it up to date at every later start. The old store (the day streams and
+`/data/chatsum.txt`) is only read: the binding hands in a `RowSource` over the chat's rows and
+the chat's FoldStore record (`OldFold`: the summary and its two pointers).
+
+- Under the old summary's pointer (thru): one anchor note, then digest 0 covering it. Digest 0
+  is one small-model call through the compaction driver (`plain::digest0Asker`: the old summary
+  as one closed turn, its input built by `planSlice`, the summarizer text, the driver's own
+  acceptance). It is kept only when it holds no path-like token, no figure that a tool row of
+  those rows holds and no owner row does, and at most 768 B per day covered. Otherwise the old
+  summary is exported to `export-pre-v2/summary-<day>-<chatKey>.md` and the anchor note stands
+  in as the omission line, naming that file. Digest 0 is asked at most twice in all.
+- After the pointer: one import batch. Owner and assistant rows become text items (u with the
+  row id in m, a), one turn per owner message, closed by an e item; tool, trace and log rows
+  are not replayed. The newest rows that fit the import budget (60,000 B by default) are
+  imported and the older ones are named in the batch's note. The rows between the two old
+  pointers are the oldest after thru, so the compaction driver folds them first.
+- The re-entry rule: `migrated.json` records the newest row accounted for. A later start
+  imports only the rows after it that engine 2 did not write (its own day-stream rows carry
+  the tag `e2`), as one more batch behind one note: "[device] N turns between t1 and t2 were
+  answered by the earlier engine; their tool work is not shown." A start with nothing new
+  writes nothing.
+- Resumable at every step: each step is planned into `migrated.json` (temp and rename, crc)
+  before it acts, and its items are regenerated from the plan and compared line for line with
+  what the segments hold, so a reset at any write goes on after the last stored line and never
+  stores a row twice. A refused write or allocation stops the step with a status; the next
+  call goes on. The binding runs the migration before the chat's engine opens its log and lets
+  the engine store only after it answered Done.
+- `dryRun` reports counts and anomaly classes only (rows, conversation and tool rows, days,
+  rows under the pointer and between the pointers, rows to import and to name), and writes
+  and asks nothing.
+
 ### Request composition and the text catalog
 
 Every model-facing string of engine 2 lives in `lib/harness/include/nimbus/harness/plain/texts.h`,

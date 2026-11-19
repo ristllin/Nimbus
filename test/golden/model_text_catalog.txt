@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
-# class device_notes bytes=1153 ceiling=2048 entries=32 sha8=9d5c54e9
+# class device_notes bytes=1513 ceiling=2048 entries=54 sha8=9bcb2662
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
 # class tool_results bytes=4765 ceiling=6144 entries=361 sha8=bda3f014
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
@@ -31,6 +31,28 @@ core	lib/harness/include/nimbus/harness/plain/texts.h	e9984488	30	" more: skill_
 core	lib/harness/include/nimbus/harness/plain/texts.h	808d4eb8	13	"Pinned notes:"
 core	lib/harness/include/nimbus/harness/plain/texts.h	74c267af	13	"Earlier days:"
 core	lib/harness/include/nimbus/harness/plain/texts.h	210916c2	13	"Recent files:"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	d64248cc	13	"export-pre-v2"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	15dbe01a	9	"[device] "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	f910fadb	25	"The conversation through "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	f48d42d9	24	"The earlier conversation"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	bd692704	49	" was kept by the earlier engine; search finds it."
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	5fc14ac4	29	" Its old summary is saved in "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	2f6f41b6	31	" Its old summary was not saved."
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	cdb4ee2a	1	"."
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	f26d6348	5	" turn"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	fd533755	6	" turns"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	49c3ef53	9	" between "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	e3ee915a	5	" and "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	2e0d6c9b	62	" answered by the earlier engine; their tool work is not shown."
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	cc826042	4	" was"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	e1ee6023	5	" were"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	79e3f2a5	5	" The "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	e1ef19a3	16	" earlier message"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	ea4068db	17	" earlier messages"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	442350c7	8	" before "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	a147107d	30	" not shown: search finds them."
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	a8bdfde1	3	" is"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	2cd01b8b	4	" are"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	c6ce8486	10	"No reply: "
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	29769472	46	" could not be reached. Send the message again."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	efc69d8c	19	" had a server error"
