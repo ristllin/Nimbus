@@ -19,6 +19,8 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <new>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -361,6 +363,8 @@ void testToolBinding(ndtest::Ctx& c) {
     rig.registry().add(
         "read_file", decl ? decl->description : "", [&](ArduinoJson::JsonObjectConst a, const orch::Principal& who) {
           const std::string path = a["path"] | std::string("<none>");
+          if (path == "notes/throws.md") throw std::runtime_error("handler broke");
+          if (path == "notes/huge.md") throw std::bad_alloc();
           seen.push_back(path);
           asOwner.push_back(who.owner);
           return path == "notes/missing.md" ? orch::ToolResult::fail("no such file: notes/missing.md")
@@ -392,6 +396,27 @@ void testToolBinding(ndtest::Ctx& c) {
     if (it.kind == tx::ItemKind::Result && it.x.find("no such file: notes/missing.md") != std::string::npos)
       errorStored = !it.ok;
   c.ok(errorStored, "and its failure is stored as a failed result, with the handler's error text");
+
+  // A handler that throws: that call gets an error result at the dispatch seam and the turn goes on to the
+  // model's reply (ruling 56). A refused allocation inside a handler ends the turn with one plain line.
+  h.model.push(sp::call("read_file", R"({"path":"notes/throws.md"})"));
+  h.model.push(sp::say("That one broke."));
+  h.ms += 60000;
+  const nimbusd::PlainTurn thrown = h.rig->say("read the broken one");
+  c.eq(nimbusd::plainEndingSlug(thrown.ending), "reply", "a throwing handler: the turn still ends with the reply");
+  c.eq(thrown.stated, "That one broke.", "a throwing handler: the model saw the error and answered");
+  bool thrownStored = false;
+  for (const tx::Item& it : h.stored())
+    if (it.kind == tx::ItemKind::Result && it.turn == h.lastEnd().turn) thrownStored = !it.ok;
+  c.ok(thrownStored, "a throwing handler: its call is answered with a failed result");
+  h.model.push(sp::call("read_file", R"({"path":"notes/huge.md"})"));
+  h.ms += 60000;
+  const nimbusd::PlainTurn oom = h.rig->say("read the huge one");
+  c.eq(nimbusd::plainEndingSlug(oom.ending), "status", "a refused allocation in a handler: one plain line, never silence");
+  c.ok(oom.sent.size() == 1 && !oom.stated.empty(), "a refused allocation in a handler: exactly one message");
+  h.model.push(sp::say("Fine again."));
+  h.ms += 60000;
+  c.eq(h.rig->say("still there?").stated, "Fine again.", "a refused allocation in a handler: the next turn answers");
   std::string why;
   c.ok(h.model.verify(why), "the script was used exactly (" + why + ")");
 }
