@@ -797,8 +797,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: device_notes
 - kind: spec
-- bytes: 53835 -> 54498
-- sha8: 7df1bd2b -> f906e9da
+- bytes: 53835 -> 54782
+- sha8: 7df1bd2b -> 9b026f48
 - lane: RB-Q2a
 - prd: section 6 (unattended turns, routines and sub-agents; ruling 76 items 2, 3, 4, 5 and 7)
 - why: the security review of RB-Q2a (evidence/security-review-1.json) upheld two blockers and three majors,
@@ -809,17 +809,21 @@ deleted. Engine 2 has no baseline.
   with the head's refusal reason). The owner's routine switch: two command answers, its help line and the
   update notice's fixed extra line on a device with routines (orchestrator.cpp, 275 B). The self-wakeup
   preamble goes back to "No tools" (-6 B): a held note is one short request again. Two parse literals
-  ("[saved: ", "[end outside") are read by the catalog as text (32 B). Class +663 B.
+  ("[saved: ", "[end outside") are read by the catalog as text (32 B). Round 3 (ruling 80): the head hears in
+  one line when a spawn lost its attach and project (jobs.cpp, about 140 B), the hosted twin answers
+  `/loop grants on|off` as the device does (rig.h, about 160 B), the fence close is matched word by word
+  and the scratchpad mark reuses the fence's opening line (no new text). Class +947 B.
 
 ### PC-0076: the deep-research playbook says what the automatic report turn may do
 - catalog: e1
 - class: skills
 - kind: spec
-- bytes: 8773 -> 9023
-- sha8: 3ef5d5db -> 952dcec9
+- bytes: 8773 -> 8251
+- sha8: 3ef5d5db -> 6fae894e
 - lane: RB-Q2a
 - prd: section 6 (ruling 76 item 4)
 - why: ruling 76 closes memory, file writes, attach and project to a spawn from the report turn and opens its
   scratchpad, with at most 2 automatic waves a run. The built-in deep-research playbook told the head to do
   exactly those things in that turn; it now says what is open and closed there, so no reply claims a save that
-  was dropped (+250 B).
+  was dropped. Round 3 (ruling 80 item 5): its report steps no longer start an attached final-report sub-agent
+  or re-spawn it; the head writes the report in its reply from the results and files.read. Class -522 B.

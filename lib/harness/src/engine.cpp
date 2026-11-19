@@ -1163,9 +1163,17 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       uf.cls == orch::TurnClass::Attended || orch::unattendedGranted(uf, orch::ToolUse::Spend)
           ? (uf.cls == orch::TurnClass::SubagentReport ? orch::ConnectorGrant::BuiltinsOnly : chatGrant)
           : orch::ConnectorGrant::None);
-  if (d_.jobs)
+  if (d_.jobs) {
+    // Its spawns count against a run (ruling 80 item 1): the chat's for a person's turn, the
+    // results' for a report, the routine's own with the owner's switch on, none otherwise.
+    const bool routineSpends = uf.cls == orch::TurnClass::Routine && uf.routineGrants;
+    const uint32_t run = uf.cls == orch::TurnClass::Attended         ? d_.jobs->chatRun(chatId)
+                         : uf.cls == orch::TurnClass::SubagentReport ? d_.jobs->takenRun()
+                         : routineSpends                             ? routineRun_
+                                                                     : 0u;
     d_.jobs->setSpawnOrigin({uf.cls != orch::TurnClass::Attended, uf.cls == orch::TurnClass::SubagentReport,
-                             uf.cls == orch::TurnClass::Routine && uf.routineGrants});
+                             routineSpends, run});
+  }
   // F1 (lane I): this turn's skills start from what buildDynamicContext
   // attached (buildDynamicContext runs just before runTurn); a mid-loop
   // skill.get adds its id through noteSkillUsed.
@@ -1261,7 +1269,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // advertised one capability set and judged by another (W14).
   const orch::Principal turnWho = d_.apply.whoFor(chatId);
   orch::RecallOut recall;
-  if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall)   // a channel's note never steers recall
+  if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall &&
+      orch::unattendedPolicy(unattendedClass()).tools)   // a held note makes no paid recall (ruling 80)   // a channel's note never steers recall
     recall = d_.recall(userText.substr(0, nimbus::net::withoutCrossedNote(userText.data(), userText.size())), turnWho);
   const std::vector<std::string>& recalled = recall.hits;
   const uint32_t heapAfterRecall = freeHeap();
@@ -2544,6 +2553,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     if (dropped) hlog::logf("dream: dropped %d device/session item(s) (memory only)", dropped);
   }
   {   // RB-Q2a: the end-of-turn fields of an unattended turn, cut to its class's row
+    const orch::UnattendedFacts uf = unattendedFacts();
+    // A scratchpad entry from a turn that saw outside content is marked as outside content, so
+    // an attended turn reads it as data, never as its own plan (ruling 80 item 4).
+    if (uf.cls != orch::TurnClass::Attended && uf.outside && turn.scratchpad.present) {
+      const std::string mark = std::string(agent::kOutsideContentOpen) + " ";
+      if (turn.scratchpad.hasActive) turn.scratchpad.active = mark + turn.scratchpad.active;
+      for (auto* items : {&turn.scratchpad.shortItems, &turn.scratchpad.midItems, &turn.scratchpad.longItems})
+        for (std::string& it : *items) it = mark + it;
+    }
     std::string refused;
     const int cut = nimbus::orch::restrictUnattendedTurn(turn, unattendedFacts(), refused);
     // Logged, not parked for the chat's next turn: that turn may be the owner's, which
@@ -2808,18 +2826,6 @@ void TurnEngine::endTurnAfterFailedAllocation(const std::string& chatId) {
 
 // ---- consolidation ----------------------------------------------------------
 
-// The "<project>/<file>" of every "[saved: ...]" line in the results (the files their
-// envelopes name, RB-Q2a).
-static std::vector<std::string> savedPaths(const std::string& fresh) {
-  static const char kSaved[] = "[saved: ";
-  std::vector<std::string> out;
-  for (size_t at = fresh.find(kSaved); at != std::string::npos; at = fresh.find(kSaved, at + 1)) {
-    const size_t from = at + sizeof(kSaved) - 1, end = fresh.find(']', from);
-    if (end != std::string::npos) out.push_back(fresh.substr(from, end - from));
-  }
-  return out;
-}
-
 void TurnEngine::maybeConsolidate(const std::string& chatId) {
   // Only this chat's results (CUM-830: the owner's turns read every owner sub-agent's,
   // a member's or a guest's only its own chat's); the rest wait for their own chat.
@@ -2874,9 +2880,9 @@ void TurnEngine::maybeConsolidate(const std::string& chatId) {
   turnMem().fresh = d_.jobs->peekFreshFor(scope);   // L24: put back if the turn ends for memory
   std::string fresh = d_.jobs->takeFreshResultsFor(scope, &unverifiedTurn_, &freshSourced_, &freshUnsourced_);
   freshInTurn_ = !fresh.empty();   // lane L: sub-agent text is external content
-  // RB-Q2a (ruling 76 item 3): the files the results' envelopes name ("[saved: p/n]") are the
-  // only ones this turn may send.
-  artifacts_ = savedPaths(fresh);
+  // RB-Q2a (ruling 76 item 3, ruling 80 item 2): the files the device itself saved for these
+  // results are the only ones this turn may send; nothing a result says adds to them.
+  artifacts_ = d_.jobs->takenSaved();
   bool ok = false;
   try {   // L24: a failed allocation from here is a failed synthesis: the raw results still go out
     std::string inputs = takePendingMemResults(chatId) + takeSpawnNotes(chatId) + fresh + buildDynamicContext(chatId) +
@@ -2994,7 +3000,7 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
 
   attribution_ = "turn";                       // owner-driven spend (the default)
   turnSource_ = (chatId == "serial") ? TurnSource::Serial : TurnSource::Owner;
-  if (d_.apply.whoFor(chatId).owner) noteOwnerWrote();
+  if (isPersonSource(turnSource_)) noteWrote(chatId, d_.apply.whoFor(chatId).owner);
   // CUM-536: results folded into an owner turn carry their provenance flag too.
   unverifiedTurn_ = false;
   const std::string fresh = takeChatFresh(d_.jobs, chatId, &unverifiedTurn_, &freshSourced_, &freshUnsourced_);
@@ -3104,8 +3110,9 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   selfWakeupTurn_ = selfWakeup;
   fireClass_ = nimbus::orch::fireClass(dream::isReserved(loopId), selfWakeup, ownerReminder, once);
   if (fireClass_ == orch::TurnClass::Wakeup && wakeHops_ < 0xFF) ++wakeHops_;   // one hop of a chain
-  if (fireClass_ == orch::TurnClass::Routine && d_.routineGrants && d_.routineGrants() && d_.jobs)
-    d_.jobs->beginRun();   // the owner's standing grant starts the routine's own run
+  routineRun_ = fireClass_ == orch::TurnClass::Routine && d_.routineGrants && d_.routineGrants() && d_.jobs
+                    ? d_.jobs->beginRun()   // the owner's standing grant: the routine's own run
+                    : 0u;
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
   turnSource_ = TurnSource::Loop;
   loopName_ = name;   // the [FALLBACK] note names the routine a switch happened in
@@ -3396,9 +3403,9 @@ orch::UnattendedFacts TurnEngine::unattendedFacts() const {
   return f;
 }
 
-void TurnEngine::noteOwnerWrote() {
-  wakeHops_ = 0;
-  if (d_.jobs) d_.jobs->beginRun();
+void TurnEngine::noteWrote(const std::string& chatId, bool owner) {
+  if (owner) wakeHops_ = 0;
+  if (d_.jobs) d_.jobs->beginRun(chatId);   // a person's message starts its chat's run (ruling 80)
 }
 
 void TurnEngine::recordNotice(const std::string& chatId, const std::string& text) {

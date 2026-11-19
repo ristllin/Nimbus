@@ -118,8 +118,9 @@ TurnClass fireClass(bool dream, bool selfWakeup, bool ownerReminder, bool once);
 // Control (fail closed).
 ToolUse toolUseFor(const std::string& name, ArduinoJson::JsonObjectConst args);
 
-// The path a file call names: `path`, else `project`/`name`, else `name`; "" when none.
-std::string callPath(ArduinoJson::JsonObjectConst args);
+// The path a file call really acts on: the old engine's dotted tools ("files.send") read
+// `project`/`name`, engine 2's tools `path`; else `name`; "" when none (ruling 80 item 2).
+std::string callPath(const std::string& tool, ArduinoJson::JsonObjectConst args);
 // Is `path` one of `listed`? An entry ending in '/' lists a folder and everything under it.
 // A path with a ".." segment, or an empty one, is never listed.
 bool pathListed(const std::string& path, const std::vector<std::string>& listed);

@@ -753,7 +753,8 @@ class TurnEngine {
   nimbus::orch::TurnClass fireClass_ = nimbus::orch::TurnClass::Attended;
   uint8_t wakeHops_ = 0;                   // unattended wakeup fires since the owner last wrote
   std::vector<std::string> artifacts_;     // files the report turn's results name ([saved: ...])
-  void noteOwnerWrote();                   // an attended owner message: a new run, no hops
+  uint32_t routineRun_ = 0;                // the run of a routine fire the owner's switch lets spend
+  void noteWrote(const std::string& chatId, bool owner);   // a person's message: its chat's run
 
   nimbus::orch::TokenUsage sessionUsage_;   // running sum of billed tokens since boot
   uint32_t                 turnCount_ = 0;  // non-empty turns since boot

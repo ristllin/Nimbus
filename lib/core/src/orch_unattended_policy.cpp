@@ -275,11 +275,13 @@ ToolUse toolUseFor(const std::string& name, ArduinoJson::JsonObjectConst args) {
   return useOfKey(toolActionKey(name, args, ActionCaller{}));
 }
 
-std::string callPath(ArduinoJson::JsonObjectConst args) {
-  if (args["path"].is<const char*>()) return args["path"].as<const char*>();
+std::string callPath(const std::string& tool, ArduinoJson::JsonObjectConst args) {
   const char* name = args["name"].is<const char*>() ? args["name"].as<const char*>() : "";
-  if (args["project"].is<const char*>() && *name) return std::string(args["project"].as<const char*>()) + "/" + name;
-  return name;
+  if (tool.find('.') != std::string::npos) {   // the old engine's file tools
+    if (args["project"].is<const char*>() && *name) return std::string(args["project"].as<const char*>()) + "/" + name;
+    return name;
+  }
+  return args["path"].is<const char*>() ? args["path"].as<const char*>() : name;
 }
 
 bool pathListed(const std::string& path, const std::vector<std::string>& listed) {
@@ -305,11 +307,11 @@ bool unattendedGranted(const UnattendedFacts& f, ToolUse u, bool pathListedNow) 
 std::string unattendedRefusal(const UnattendedFacts& f, const std::string& name, ArduinoJson::JsonObjectConst args) {
   if (f.cls == TurnClass::Attended) return std::string();
   const ToolUse u = toolUseFor(name, args);
-  const bool listedNow = u == U::Write && f.listed && pathListed(callPath(args), *f.listed);
+  const bool listedNow = u == U::Write && f.listed && pathListed(callPath(name, args), *f.listed);
   bool ok = unattendedGranted(f, u, listedNow);
   // Outside content seen: a send carries only a file the results' envelopes name.
   if (ok && u == U::Send && f.outside)
-    ok = isFileSend(name) && f.artifacts && pathListed(callPath(args), *f.artifacts);
+    ok = isFileSend(name) && f.artifacts && pathListed(callPath(name, args), *f.artifacts);
   return ok ? std::string() : refusalFor(f.cls, u);
 }
 

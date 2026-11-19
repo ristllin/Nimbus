@@ -290,11 +290,17 @@ message, and none from a turn that has seen outside content.
 
 Sub-agents started by a turn nobody is writing run without the owner's connectors (unless his routine switch
 is on), may not name a connector skill, get no attach of his documents and no chat context, and save into
-none of his projects. The owner's message starts a run: report turns may start at most 2 further waves, and a
-run at most 16 sub-agents in 2 hours; a refused wave is said in one plain line. Sub-agent results reach the
-report turn fenced as outside content, and a turn that has seen outside content sends only a file the
-results name. The owner's routine switch (`/loop grants on|off`, off by default) lets his routines use his
-connectors and start sub-agents (never with an attach).
+none of his projects; the head is told in one line when an attach or project was dropped. A person's message
+starts a run for that chat, with its own id: report turns may start at most 2 further waves of it, and a run
+at most 16 sub-agents in 2 hours; a refused wave is said in one plain line. A routine the owner's switch lets
+spend runs in its own run and never resets another. After a restart no run is open, so unattended spawns
+wait for a person's message. Sub-agent results reach the report turn fenced as outside content (a result
+cannot close the fence, whatever its case or spacing), and a turn that has seen outside content sends only a
+file the device itself saved for the results, never one a result's text names. A scratchpad entry such a
+turn writes carries the fence's mark, so a later turn reads it as data. The owner's routine switch
+(`/loop grants on|off` on the device and the hosted twin, off by default) lets his routines use his
+connectors, search the web and start sub-agents (never with an attach); light and speech stay off for
+routines in both states.
 
 | Class | Read | Write files | Memory | Scratchpad | Send (own chat) | Spend | Schedule | Light, sound, speech | Settings |
 |---|---|---|---|---|---|---|---|---|---|

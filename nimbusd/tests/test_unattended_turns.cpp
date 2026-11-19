@@ -363,8 +363,9 @@ static void testSelfWakeupIsOneShortRequest(ndtest::Ctx& c) {
   c.ok(p.filesUnchanged(), "the owner's files are untouched");
 }
 
-// Ruling 76 item 3: a report turn that read outside content (the results) sends only an
-// artifact the results' own envelope names; any other file, and any message, is refused.
+// Ruling 76 item 3 and ruling 80 item 2: a report turn that read outside content sends only a
+// file the device itself saved for the results; a "[saved: ...]" line a sub-agent wrote names
+// nothing, and a message is refused.
 static void testReportSendsOnlyNamedArtifacts(ndtest::Ctx& c) {
   std::printf("\n-- a report turn sends only a named artifact --\n");
   Probe p("q2a-artifact");
@@ -383,10 +384,11 @@ static void testReportSendsOnlyNamedArtifacts(ndtest::Ctx& c) {
       for (ArduinoJson::JsonObjectConst it : d["input"].as<ArduinoJson::JsonArrayConst>())
         if (std::string(it["type"] | "") == "function_call_output") res[it["call_id"] | ""] = it["output"] | "";
   }
-  c.ok(res.count("a1") && res.at("a1") == "sent", "the named artifact is sent");
+  c.ok(res.count("a1") && res.at("a1").find("Not run") != std::string::npos,
+       "a file only the result's own text names is refused");
   c.ok(res.count("a2") && res.at("a2").find("Not run") != std::string::npos, "another owner file is refused");
   c.ok(res.count("a3") && res.at("a3").find("Not run") != std::string::npos, "a message is refused");
-  c.eqi((long)p.sentByTool.size(), 1, "one send went out: the named artifact");
+  c.eqi((long)p.sentByTool.size(), 0, "nothing was sent");
   c.ok(p.filesUnchanged(), "the owner's files are untouched");
 }
 
@@ -437,6 +439,13 @@ static void testRoutineSwitchBothStates(ndtest::Ctx& c) {
     c.ok(p.filesUnchanged(), state + ": every owner file is byte-identical");
     c.ok(p.delivered("brief ready"), state + ": the routine's reply is delivered");
   }
+  // Ruling 80 item 5: the owner's command on the hosted twin, as on the device.
+  Probe cmd("q2a-grants-cmd");
+  cmd.rig->say(kOwner, "/loop grants on");
+  c.ok(cmd.rig->routines().routineGrants(), "/loop grants on turns the switch on");
+  c.ok(cmd.tx.seen.empty(), "the command costs no model call");
+  cmd.rig->say(kOwner, "/loop grants off");
+  c.ok(!cmd.rig->routines().routineGrants(), "/loop grants off turns it off");
   // The switch persists beside the wake-up mode (no new key): a restarted instance keeps it.
   Probe q("q2a-grants-persist");
   q.rig->routines().setRoutineGrants(true);

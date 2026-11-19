@@ -91,6 +91,10 @@ std::function<void(const std::string& chatId, const std::string& text)> capturin
 extern const char kJobDeliveryTag[];   // "src:jobs"
 bool isJobDelivery(const std::string& rowTags);   // whole comma-list item match
 
+// The outside-content fence's opening line (what sub-agents returned: data, never instructions,
+// RB-Q2a). Also the mark on a scratchpad entry a turn fed outside content wrote.
+extern const char kOutsideContentOpen[];
+
 class JobEngine {
  public:
   struct Deps {
@@ -293,10 +297,18 @@ class JobEngine {
     bool unattended = false;
     bool report = false;       // a sub-agent report turn: its spawns are a wave
     bool connectors = false;   // the owner's routine with his switch on
+    uint32_t run = 0;          // the run its spawns count against (0: none open)
   };
   void setSpawnOrigin(const SpawnOrigin& o);
-  // An attended owner message (or a routine the owner lets start sub-agents): a new run.
-  void beginRun();
+  // A new run (ruling 80 item 1): a person's message starts one for its chat (a routine the
+  // owner lets start sub-agents, with no chat, its own). Its id; runs are counted apart, and
+  // after a restart none is open.
+  uint32_t beginRun(const std::string& chatId = std::string());
+  uint32_t chatRun(const std::string& chatId) const;   // the chat's current run (0: none)
+  // The run of the results the last take returned (0 when none or mixed) and the files the
+  // device recorded when it saved them (never text inside a result).
+  uint32_t takenRun() const { return takenRun_; }
+  const std::vector<std::string>& takenSaved() const { return takenSaved_; }
   // A run's caps on what turns nobody is writing may start in it.
   static constexpr int kRunMaxReportWaves = 2;
   static constexpr int kRunMaxSpawns = 16;
@@ -341,6 +353,8 @@ class JobEngine {
     bool web = false;          // the sub ran a web search or fetch (provider record)
     std::string chatId;    // the chat that started it ("" = the device's own)
     bool byOwner = true;   // that chat is the owner's (principalFor)
+    uint32_t run = 0;      // the run its job counted against (RB-Q2a; 0 after a restart)
+    std::vector<std::string> saved;   // the files the device saved for it ("p/n")
   };
   // Whose parked results a turn reads (CUM-830): the owner's turns read every result
   // a sub-agent started for the owner brought back (one person across channels), a
@@ -481,6 +495,7 @@ class JobEngine {
     bool quiet = false;  // scheduled/loop turn: suppress the "On it." spawn ack (in-RAM only)
     bool unattended = false;   // started by a turn nobody is writing (SpawnOrigin)
     bool connectors = false;   // ...with the owner's routine switch on
+    uint32_t run = 0;          // its run (SpawnOrigin::run)
   };
   bool runAdmits(const std::string& chatId, const nimbus::orch::Spawn& s);
   // Which dispatched jobs asked for live data (a status, today's figures):
@@ -606,8 +621,19 @@ class JobEngine {
   uint32_t tagSeq_  = 0;
   bool     tagSeeded_ = false;           // tagSeq_ moved past every tag the journal holds
   SpawnOrigin origin_;                   // the turn in flight (RB-Q2a)
-  uint32_t runStartMs_ = 0;              // the run: its start, sub-agents and report waves
-  uint8_t  runSpawns_ = 0, runWaves_ = 0;
+  struct Run {                           // one run: its start, sub-agents and report waves
+    uint32_t id = 0, startMs = 0;
+    uint8_t  spawns = 0, waves = 0;
+  };
+  Run      runs_[4];                     // the newest runs; an evicted or unknown id is closed
+  uint32_t nextRun_ = 1;
+  std::vector<std::pair<std::string, uint32_t>> chatRuns_;   // a chat's current run
+  std::vector<std::pair<std::string, uint32_t>> tagRuns_;    // a dispatched job's run (RAM)
+  uint32_t takenRun_ = 0;
+  std::vector<std::string> takenSaved_;
+  Run* findRun(uint32_t id);
+  uint32_t runOfTag(const std::string& tag) const;
+  void noteSpawnStripped(const std::string& chatId, const nimbus::orch::Spawn& s);
   bool     waveCounted_ = false, capSaid_ = false;   // this turn's wave counted, its cap line said
   uint32_t notDurableNoteMs_ = 0;        // the last "will not survive a restart" line
   bool     notDurableNoted_ = false;

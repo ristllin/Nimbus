@@ -54,10 +54,11 @@ running, how many are queued, how many it can start this turn
 `kMaxActiveInflight` = 4 in flight, draining as each finishes), and that this is
 not a hard total limit. A big fan-out runs over successive waves: start a wave
 now, and when it finishes an automatic synthesis turn lets the head spawn the
-next. The harness bounds that chain (v5.2.0, ruling 76): after the owner's message, report turns
-may start at most 2 further waves, and a run at most 16 sub-agents in 2 hours; a refused wave is
-said in one plain line. A sub-agent a report turn starts runs without the owner's connectors and
-gets no attach, chat context or project. The line then says how each
+next. The harness bounds that chain (v5.2.0, rulings 76 and 80): a person's message starts a run
+for that chat; its report turns may start at most 2 further waves, and a run at most 16 sub-agents
+in 2 hours; a refused wave is said in one plain line; after a restart no run is open. A sub-agent a
+report turn starts runs without the owner's connectors and gets no attach, chat context or project
+(the head is told), so the report is written in the report turn's reply. The line then says how each
 keyed provider that is not paused runs a sub, from one table (`kDeviceBackendSync`,
 `lib/harness/include/nimbus/harness/fabric.h`): Mistral, the custom endpoint,
 Z.ai and the Cumulo router run one at a time inside the device and must finish

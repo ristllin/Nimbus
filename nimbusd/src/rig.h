@@ -489,8 +489,7 @@ class NimbusdRig {
       return true;
     }
     if (v == "loops" || v == "loop" || v == "skill") {
-      record(chat, "Routines and skills are managed on this instance's page, under Assistant. You can also ask "
-                   "the assistant to set one up.");
+      commandRoutines(chat, v, cmd.args);
       return true;
     }
     for (const char* d : {"update", "remind", "fetch", "mcp", "play"}) {
@@ -505,6 +504,21 @@ class NimbusdRig {
     record(chat, (plain ? "There is no /" + v + " command." : std::string("There is no such command.")) +
                      " Send /help for the list, or write without the slash to chat.");
     return true;
+  }
+  // /loop grants on|off (RB-Q2a, ruling 80 item 5; device parity) is the owner's routine switch;
+  // the rest of /loops, /loop and /skill is managed on the instance's page.
+  void commandRoutines(const std::string& chat, const std::string& verb, const std::string& args) {
+    const bool grants = verb == "loop" && (args == "grants on" || args == "grants off");
+    if (!grants) {
+      record(chat, "Routines and skills are managed on this instance's page, under Assistant. You can also ask "
+                   "the assistant to set one up.");
+    } else if (!access_->principalFor(chat).owner) {
+      record(chat, "Only the owner can change what routines may do.");
+    } else {
+      loops_.setRoutineGrants(args == "grants on");
+      record(chat, args == "grants on" ? "Routines may now use your connectors and start sub-agents."
+                                       : "Routines now only read, set their follow-up and reply.");
+    }
   }
   // /compact (device parity): the summary runs on the next engine tick and answers
   // with its own result, on this chat's channel.
