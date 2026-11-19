@@ -80,6 +80,10 @@ void listAdd(LineList& l, uint32_t line, int column = -1) {
   l.lines.push_back(line);
   if (column >= 0) l.columns.push_back(static_cast<uint8_t>(column));
 }
+void spanAdd(LineList& l, uint32_t first, uint32_t last) {
+  if (l.lines.size() < kAidListMax) l.ends.push_back(last);
+  listAdd(l, first);
+}
 
 }  // namespace
 
@@ -165,6 +169,9 @@ std::string checkCsvQuery(const CsvQuery& q) {
       if (trimmed(q.sum[j]) == trimmed(q.sum[i])) return "sum names " + q.sum[i] + " twice";
   }
   if (q.limit < 16) return "limit is at least 16";
+  Dec3 d;
+  if (parseDec3(q.from, d) == NumParse::Rounded || parseDec3(q.to, d) == NumParse::Rounded)
+    return "from and to take at most 3 decimals";
   return "";
 }
 
@@ -258,7 +265,7 @@ struct CsvScanner::Impl {
   }
   bool lineEnd() {
     ++physLine;
-    return endRecord();
+    return endRecord(uint32_t(physLine - 1));
   }
   // The quote state after c (a byte kept in the record).
   void track(char c) {
@@ -284,15 +291,11 @@ struct CsvScanner::Impl {
     last = c;
     if (c == '\0') return fail(path + T::kNul + num(physLine) + ")");
     if (!inRecord) startRecord();
-    if (tooLong) return c != '\n' || lineEnd();
     const bool closing = inQ && pendingQ && c != '"';
     if (c == '\n' && (!inQ || closing)) return lineEnd();
-    if (recLen >= kCsvRecordMax) {
-      tooLong = true;
-      physLine += c == '\n';
-      return true;
-    }
-    rec[recLen++] = c;
+    // Past kCsvRecordMax the bytes are not kept, but the quotes still decide the end.
+    tooLong = tooLong || recLen >= kCsvRecordMax;
+    if (!tooLong) rec[recLen++] = c;
     track(c);
     return true;
   }
@@ -342,8 +345,9 @@ struct CsvScanner::Impl {
   int inRange(std::string_view key) const {
     if (key.empty()) return -1;
     Dec3 k;
-    if (numericRange && parseDec3(key, k) <= NumParse::Rounded)
-      return (fromNum.milli <= k.milli && k.milli <= toNum.milli) ? 1 : 0;
+    const NumParse p = numericRange ? parseDec3(key, k) : NumParse::NotNumber;
+    if (p == NumParse::Rounded) return -1;   // more decimals than the comparison holds
+    if (p == NumParse::Ok) return (fromNum.milli <= k.milli && k.milli <= toNum.milli) ? 1 : 0;
     const std::string_view from = q.from;
     if (!comparable(key, from) || !comparable(key, to)) return -1;
     return (key.substr(0, from.size()) >= from && key.substr(0, to.size()) <= to) ? 1 : 0;
@@ -357,17 +361,17 @@ struct CsvScanner::Impl {
     });
     return n == res.headerFields;
   }
-  bool endRecord() {
+  bool endRecord(uint32_t lastLine) {
     inRecord = false;
     if (!tooLong && recLen && rec[recLen - 1] == '\r') --recLen;
     if (!headerDone) return header();
     if (!tooLong && recLen == 0) return ++res.emptyLines, true;
     ++res.records;
-    if (tooLong) return listAdd(res.tooLong, recLine), true;
+    if (tooLong) return spanAdd(res.tooLong, recLine, lastLine), true;
     std::string_view want[kWanted];
-    if (!fields(want)) return listAdd(res.fieldCount, recLine), true;
+    if (!fields(want)) return spanAdd(res.fieldCount, recLine, lastLine), true;
     const int r = keyIdx >= 0 ? inRange(want[0]) : 1;
-    if (r < 0) listAdd(res.notCompared, recLine);
+    if (r < 0) spanAdd(res.notCompared, recLine, lastLine);
     if (r == 0) ++res.outOfRange;
     if (r <= 0) return true;
     ++res.matched;
@@ -455,7 +459,8 @@ struct CsvScanner::Impl {
   }
 
   bool finish() {
-    if (inRecord && !endRecord()) return false;
+    if (inRecord && inQ && !pendingQ) res.openQuoteLine = recLine;
+    if (inRecord && !endRecord(uint32_t(physLine - (last == '\n' ? 1 : 0)))) return false;   // the last byte's line
     if (!headerDone) return fail(std::string(T::kNoHeader) + "\"");
     const bool torn = res.bytes > 0 && last != '\n';
     res.lines = physLine - 1 + (torn ? 1 : 0);
@@ -479,9 +484,10 @@ CsvScanner::CsvScanner(const CsvQuery& q, const std::string& path) {
   m.q = q;
   m.path = path;
   m.to = m.q.to.empty() ? std::string_view(m.q.from) : std::string_view(m.q.to);
-  m.numericRange = !m.q.column.empty() && parseDec3(m.q.from, m.fromNum) <= NumParse::Rounded &&
-                   parseDec3(m.to, m.toNum) <= NumParse::Rounded;
-  m.bodyCap = std::min<size_t>(q.limit, 1u << 20) + 2 * (kCsvRecordMax + 32);
+  m.numericRange = !m.q.column.empty() && parseDec3(m.q.from, m.fromNum) == NumParse::Ok &&
+                   parseDec3(m.to, m.toNum) == NumParse::Ok;
+  m.q.limit = std::min(q.limit, kCsvShowMax);
+  m.bodyCap = m.q.limit + 2 * (kCsvRecordMax + 32);
   m.rec = static_cast<char*>(workingAlloc(kCsvRecordMax));
   m.cell = m.rec ? static_cast<char*>(workingAlloc(kCsvRecordMax)) : nullptr;
   m.body = m.cell ? static_cast<char*>(workingAlloc(m.bodyCap)) : nullptr;
@@ -568,8 +574,12 @@ std::string groupList(const CsvScanResult& r) {
 
 std::string renderLines(const LineList& l) {
   if (!l.count) return "";
-  std::string out = l.count == 1 ? "line " : "lines ";
-  for (size_t i = 0; i < l.lines.size(); ++i) out += (i ? ", " : "") + num(l.lines[i]);
+  const bool span = l.ends.size() == l.lines.size() && !l.ends.empty() && l.ends[0] > l.lines[0];
+  std::string out = l.count == 1 && !span ? "line " : "lines ";
+  for (size_t i = 0; i < l.lines.size(); ++i) {
+    out += (i ? ", " : "") + num(l.lines[i]);
+    if (i < l.ends.size() && l.ends[i] > l.lines[i]) out += "-" + num(l.ends[i]);
+  }
   if (l.count > l.lines.size()) out += " +" + num(l.count - l.lines.size());
   return out;
 }
@@ -609,6 +619,8 @@ std::string tailFacts(const CsvQuery& q, const CsvScanResult& r) {
   if (r.identicalChecked < r.matched)
     out += "; identical lines checked in the first " + num(r.identicalChecked) + " matching rows only";
   if (r.tornLine) out += "; last line " + num(r.tornLine) + " has no newline (a write may have been cut short)";
+  if (r.openQuoteLine)
+    out += "; the row at line " + num(r.openQuoteLine) + " ends inside a quoted field (a write may have been cut short)";
   return out;
 }
 

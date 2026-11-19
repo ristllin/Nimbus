@@ -351,7 +351,7 @@ struct EditRun {
     const size_t i = index++;
     const bool pick = e.all || (e.line ? long(i) == plan.pick : i == 0);
     if (!pick) return false;
-    if (o.at.size() < kAidListMax) o.at.push_back(uint32_t(out.outLine()));
+    if (o.at.size() < kAidListMax) o.at.push_back(uint32_t(e.newText.empty() ? h.line : out.outLine()));
     ++o.replaced;
     startLine = h.line;
     dropNext = h.whole && takesLineEnd(e) ? h.lineEnd : 0;

@@ -29,6 +29,8 @@ inline constexpr size_t kAidChunk = 4096;
 // The longest CSV record the scan keeps (bytes, line end excluded). A longer record is
 // counted "too long" with its line and takes no part in the match or the sums.
 inline constexpr size_t kCsvRecordMax = 8192;
+// The most bytes of shown rows one read returns (a larger limit is this).
+inline constexpr size_t kCsvShowMax = 1u << 20;
 // Named columns sum may total in one call.
 inline constexpr size_t kCsvSumMax = 16;
 // Line numbers a list in a result names before "+N".
@@ -93,7 +95,8 @@ std::string renderDec3(Dec3 v);
 // sums: the sums always cover every matching row.
 //
 // The range rule, per row key k (the field with spaces trimmed):
-//   - numeric: when from, to and k are all numbers, from <= k <= to as numbers;
+//   - numeric: when from, to and k are all numbers, from <= k <= to as numbers (a bound
+//     with more than 3 decimals is a query error; a key with more is "not compared");
 //   - else by prefix: k is comparable with a bound b when it is at least as long as b,
 //     has b's shape over b's length (a digit where b has a digit, a letter where b has a
 //     letter, the same byte elsewhere) and, when b ends in a digit, does not go on with a
@@ -106,7 +109,7 @@ struct CsvQuery {
   std::string from, to;          // to "" = from
   std::vector<std::string> sum;  // at most kCsvSumMax names, none twice
   size_t skipRows = 0;           // matching rows not shown (read_file offset)
-  size_t limit = 32768;          // bytes of shown lines (read_file limit); the first row of a page is always shown
+  size_t limit = 32768;          // bytes of shown lines (read_file limit, 16 to kCsvShowMax); the first row of a page is always shown
 };
 // "" when the query is well formed, else the error (no file is read).
 std::string checkCsvQuery(const CsvQuery& q);
@@ -126,6 +129,9 @@ struct LineList {
   std::vector<uint32_t> lines;  // at most kAidListMax
   // For notNumber and blank only: the column of each listed line, parallel to lines.
   std::vector<uint8_t> columns;
+  // For records only: the line each listed record ends on, parallel to lines (a quoted
+  // field with line ends, or a quote that never closes, spans several lines).
+  std::vector<uint32_t> ends;
 };
 // One group of matching rows with identical text.
 struct LineGroup {
@@ -154,6 +160,7 @@ struct CsvScanResult {
   size_t identicalGroups = 0;  // all groups found
   size_t identicalChecked = 0; // matching rows checked (< matched: the table was full)
   uint32_t tornLine = 0;       // the last line when the file does not end in a line end
+  uint32_t openQuoteLine = 0;  // the last record's first line when the file ends inside its quoted field
   size_t shownFirst = 0;       // 1-based index of the first matching row shown (0 = none)
   size_t shownLast = 0;
   // header then the shown rows: "L<n> <record>\n" each, record bytes as stored (a quoted
@@ -208,6 +215,8 @@ class CsvScanner {
 //   [; identical lines <g> groups (<l>=<l>=<l>+N, <l>=<l>, ... +N)]
 //   [; identical lines checked in the first <c> matching rows only]
 //   [; last line <l> has no newline (a write may have been cut short)]
+//   [; the row at line <l> ends inside a quoted field (a write may have been cut short)]
+// A record list names a record spanning lines as "<first>-<last>" ("lines 2-22").
 std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r);
 // The whole filtered read result after the binding's head line:
 //   "\n" + body + tail + ("\nnext_offset=<k>" when matching rows remain unshown).
@@ -240,7 +249,8 @@ struct EditOutcome {
   uint64_t oldSize = 0, newSize = 0;
   uint64_t newLines = 0;      // physical lines in the new file
   uint64_t newHash = 0;       // FNV-1a 64 of the new file (blob_store.h's hash)
-  std::vector<uint32_t> at;   // new-file line of each replacement (the first kAidListMax)
+  std::vector<uint32_t> at;   // new-file line where each replacement starts; for a removal
+                              // (new ""), the line it was removed from (the first kAidListMax)
   int64_t shift = 0;          // one replacement: lines after it moved by this many
   uint32_t shiftFrom = 0;     // the first OLD line number that moved (0 = none)
   LineList stillAt;           // matches of old in the new file, new line numbers

@@ -494,6 +494,22 @@ static void test_a_line_picked_correction_is_exact_on_each_domain() {
   }
 }
 
+// From the hostile review: a removal names the line it removed, never a line past the end.
+static void test_a_removal_names_the_line_it_removed() {
+  Card c;
+  c.file = "h\na,1\na,1\n";
+  EditRequest e;
+  e.oldText = "a,1";
+  e.newText = "";
+  e.line = 3;
+  const auto o = run(c, e);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("h\na,1\n", c.file.c_str());
+  TEST_ASSERT_EQUAL_STRING(("replaced 1 in p/t.csv at line 3; file is 6 B (was 10 B), 2 lines, sha8=" +
+                            sha8Hex(fnv64(kFnv64Basis, c.file)) + "; old is still at line 2").c_str(),
+                           renderEdit("p/t.csv", o).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_line_pick_replaces_exactly_that_line_or_fails);
@@ -506,5 +522,6 @@ int main(int, char**) {
   RUN_TEST(test_a_refused_allocation_at_any_point_changes_nothing);
   RUN_TEST(test_a_file_changed_between_the_passes_is_not_written);
   RUN_TEST(test_a_line_picked_correction_is_exact_on_each_domain);
+  RUN_TEST(test_a_removal_names_the_line_it_removed);
   return UNITY_END();
 }

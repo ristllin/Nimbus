@@ -90,7 +90,8 @@ std::string refRender(i128 v) {
 }
 
 struct RefRecord {
-  uint32_t line = 0;
+  uint32_t line = 0, endLine = 0;
+  bool openQuote = false;
   std::string raw;   // record bytes (line end and a trailing CR left out)
   bool tooLong = false;
 };
@@ -128,13 +129,16 @@ struct RefSplitter {
     fieldStart = true;
     const size_t start = i;
     size_t end = f.size();
+    r.endLine = 0;
     for (; i < f.size(); ++i) {
       const char c = f[i];
-      const bool ends = c == '\n' && (r.tooLong || !inQ || (pendingQ && c != '"'));
-      if (ends) { end = i++; ++line; break; }
-      if (r.tooLong) continue;
-      if (i - start >= kCsvRecordMax) { r.tooLong = true; line += c == '\n'; continue; }
+      if (c == '\n' && (!inQ || pendingQ)) { end = i++; r.endLine = line++; break; }
+      if (i - start >= kCsvRecordMax) r.tooLong = true;   // the quotes still decide the end
       keep(c);
+    }
+    if (!r.endLine) {
+      r.endLine = line - (f.back() == '\n' ? 1 : 0);   // the line of the file's last byte
+      r.openQuote = inQ && !pendingQ;
     }
     r.raw = f.substr(start, end - start);
     if (!r.raw.empty() && r.raw.back() == '\r') r.raw.pop_back();
@@ -196,8 +200,9 @@ bool refComparable(const std::string& k, const std::string& b) {
 int refRange(const std::string& key, const std::string& from, const std::string& to) {
   if (key.empty()) return -1;
   i128 kf, kk, kt;
-  bool r;
-  if (refNumber(from, kf, r) && refNumber(to, kt, r) && refNumber(key, kk, r)) return (kf <= kk && kk <= kt) ? 1 : 0;
+  bool rf = false, rt = false, rk = false;
+  if (refNumber(from, kf, rf) && refNumber(to, kt, rt) && !rf && !rt && refNumber(key, kk, rk))
+    return rk ? -1 : (kf <= kk && kk <= kt) ? 1 : 0;
   if (!refComparable(key, from) || !refComparable(key, to)) return -1;
   return (key.compare(0, from.size(), from) >= 0 && key.compare(0, to.size(), to) <= 0) ? 1 : 0;
 }
@@ -215,7 +220,8 @@ struct Ref {
   std::vector<uint32_t> matchedLines;
   std::vector<std::string> matchedRaw;
   std::map<std::string, std::vector<uint32_t>> groups;
-  uint32_t torn = 0;
+  uint32_t torn = 0, openQuote = 0;
+  std::vector<std::pair<uint32_t, uint32_t>> notComparedL, fieldCountL, tooLongL;
 };
 
 // The header's index of name: -1 missing, -2 twice.
@@ -251,11 +257,13 @@ void refCell(RefSum& s, const std::string& cell) {
 // One data record into its bucket.
 void refRecord(Ref& ref, const RefRecord& r, size_t nfields, int key, const std::vector<int>& cols, const CsvQuery& q) {
   ++ref.records;
-  if (r.tooLong) { ++ref.tooLong; return; }
+  const auto span = std::make_pair(r.line, r.endLine);
+  if (r.openQuote) ref.openQuote = r.line;
+  if (r.tooLong) { ++ref.tooLong; ref.tooLongL.push_back(span); return; }
   const auto fs = refFields(r.raw);
-  if (fs.size() != nfields) { ++ref.fieldCount; return; }
+  if (fs.size() != nfields) { ++ref.fieldCount; ref.fieldCountL.push_back(span); return; }
   const int m = key >= 0 ? refRange(fs[size_t(key)], q.from, q.to.empty() ? q.from : q.to) : 1;
-  if (m < 0) ++ref.notCompared;
+  if (m < 0) { ++ref.notCompared; ref.notComparedL.push_back(span); }
   if (m == 0) ++ref.outOfRange;
   if (m <= 0) return;
   ++ref.matched;
@@ -342,7 +350,10 @@ std::string dateOf(int dayOfYear) {
 }
 
 std::string hostileRow(Rng& g, const Domain& d, const std::string& date) {
-  switch (g.below(11)) {
+  switch (g.below(14)) {
+    case 11: return date + ",\"" + std::string(kCsvRecordMax + 9, 'q') + "\n\",1";   // over-long, quoted line end
+    case 12: return date + ",\"stray quote,1";                                        // a quote that never closes
+    case 13: { std::string r = d.row(g, date); return r + "4"; }                        // a fourth decimal or more
     case 0: return "";                                         // an empty line
     case 1: return d.row(g, date) + ",extra";                  // too many fields
     case 2: return date + ",only";                             // too few
@@ -388,6 +399,17 @@ CsvScanOutcome scanWith(const std::string& file, const CsvQuery& q, size_t chunk
   return o;
 }
 
+// The listed records are the first ones of the bucket, each with its line span.
+void checkSpans(const std::vector<std::pair<uint32_t, uint32_t>>& want, const LineList& got, const char* what) {
+  TEST_ASSERT_EQUAL_MESSAGE(want.size(), got.count, what);
+  TEST_ASSERT_EQUAL_MESSAGE(std::min(want.size(), kAidListMax), got.lines.size(), what);
+  TEST_ASSERT_EQUAL_MESSAGE(got.lines.size(), got.ends.size(), what);
+  for (size_t i = 0; i < got.lines.size(); ++i) {
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(want[i].first, got.lines[i], what);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(want[i].second, got.ends[i], what);
+  }
+}
+
 void checkAgainstReference(const std::string& file, const CsvQuery& q, const CsvScanOutcome& o, const char* what) {
   const Ref ref = reference(file, q);
   if (!ref.ok) {
@@ -407,6 +429,10 @@ void checkAgainstReference(const std::string& file, const CsvQuery& q, const Csv
   TEST_ASSERT_EQUAL_MESSAGE(ref.tooLong, r.tooLong.count, what);
   TEST_ASSERT_EQUAL_MESSAGE(ref.empty, r.emptyLines, what);
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(ref.torn, r.tornLine, what);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(ref.openQuote, r.openQuoteLine, what);
+  checkSpans(ref.notComparedL, r.notCompared, what);
+  checkSpans(ref.fieldCountL, r.fieldCount, what);
+  checkSpans(ref.tooLongL, r.tooLong, what);
   // Nothing is dropped silently: every record is in exactly one bucket.
   TEST_ASSERT_EQUAL_MESSAGE(r.records, r.matched + r.outOfRange + r.notCompared.count + r.fieldCount.count + r.tooLong.count,
                             what);
@@ -854,6 +880,63 @@ static void test_a_torn_last_line_is_named_in_the_tail() {
   TEST_ASSERT_FALSE(endsTorn(0, 'x'));
 }
 
+// ---- the hostile review's cases (each was a silent loss or an overflow before the fix) ----
+static void test_review_cases_are_named_not_lost() {
+  CsvQuery q;
+  q.column = "date";
+  q.from = "2026-11-19";
+  q.sum = {"amt"};
+  // A valid quoted field over 8 KB with a line end in it: only that row is too long.
+  std::string f = "date,note,amt\n2026-11-18,\"" + std::string(9000, 'x') + "\n\",5\n";
+  for (int i = 0; i < 5; ++i) f += "2026-11-19,lunch,10\n";
+  f += "2026-11-20,x,3\n";
+  auto o = scanWith(f, q, 4096);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("rows 5 of 7 where date 2026-11-19..2026-11-19; sum amt=50; too long 1 (lines 2-3: over 8192 B); "
+                           "identical lines 1 group (4=5=6=7+1)",
+                           renderCsvTail(q, o.result).c_str());
+  // A quote that never closes: the span it swallowed is named, to the end of the file.
+  f = "date,note,amt\n2026-11-18,\"big one,450\n";
+  for (int i = 0; i < 20; ++i) f += "2026-11-19,lunch,10\n";
+  o = scanWith(f, q, 64);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING(
+      "rows 0 of 1 where date 2026-11-19..2026-11-19; sum amt=0; skipped 1 (lines 2-22: field count is not the header's 3); "
+      "the row at line 2 ends inside a quoted field (a write may have been cut short)",
+      renderCsvTail(q, o.result).c_str());
+  // A write cut inside a quoted field at the very end.
+  f = "date,amt,note\n2026-11-19,5,ok\n2026-11-19,7,\"cut\n";
+  q.sum = {"amt"};
+  o = scanWith(f, q, 4096);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING(
+      "rows 2 of 2 where date 2026-11-19..2026-11-19; sum amt=12; the row at line 3 ends inside a quoted field (a write "
+      "may have been cut short)",
+      renderCsvTail(q, o.result).c_str());
+  // A numeric key with more decimals than the comparison holds is not compared.
+  CsvQuery n;
+  n.column = "w";
+  n.from = "1";
+  n.to = "1.0004";
+  n.sum = {"n"};
+  TEST_ASSERT_EQUAL_STRING("from and to take at most 3 decimals", checkCsvQuery(n).c_str());
+  n.to = "1.001";
+  o = scanWith("w,n\n1.00041,1\n1.0004,1\n1.001,1\n", n, 4096);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("rows 1 of 3 where w 1..1.001; sum n=1; not compared 2 (lines 2, 3: w blank or not like 1)",
+                           renderCsvTail(n, o.result).c_str());
+  // A limit past kCsvShowMax is held to it: the page stays inside its block.
+  CsvQuery big;
+  big.sum = {"amt"};
+  big.limit = 4u << 20;
+  std::string rows = "date,amt\n";
+  while (rows.size() < (3u << 20)) rows += "2026-11-19,10\n";
+  o = scanWith(rows, big, 4096);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_TRUE(o.result.body.size() <= kCsvShowMax + 64);
+  TEST_ASSERT_TRUE(o.result.shownLast < o.result.matched);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scan_agrees_with_the_reference_over_three_domains_and_hostile_rows);
@@ -870,5 +953,6 @@ int main(int, char**) {
   RUN_TEST(test_day_week_and_month_totals_are_exact_on_a_year_file_per_domain);
   RUN_TEST(test_identical_groups_are_named_once_each_and_the_table_limit_is_stated);
   RUN_TEST(test_a_torn_last_line_is_named_in_the_tail);
+  RUN_TEST(test_review_cases_are_named_not_lost);
   return UNITY_END();
 }
