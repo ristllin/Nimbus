@@ -29,7 +29,8 @@ struct Platform;
 //      exchange's, whatever the caller set. A round with tool choice none is a final round.
 //   2. The budget. A body over the head's cap (bodyCap) is never sent: the caller's ladder
 //      climbs a rung (climb(Climb::OverCap)) and the body is rendered again, until it fits
-//      or no rung is left (then ContextRefused with httpStatus 0: nothing was sent).
+//      or no rung is left (then ContextRefused with httpStatus 0: nothing was sent). The climb
+//      is told the body's size and the cap (ClimbAsk).
 //   3. The body check: every JSON string of the body at most 60,000 B and the whole body
 //      valid UTF-8. A wire that breaks it is refused before the send (InvalidArgument):
 //      plain_body.h's writer keeps a wire inside it.
@@ -105,10 +106,18 @@ enum class Climb : uint8_t {
   OverCap = 0,   // the rendered body is over the head's body cap: the next rung
   Refused = 1,   // the provider refused the size: rung 3 (PRD section 7)
 };
+// What the ladder is told: why, and for a body over its cap the body's size and the cap, so a
+// rung that omits frees only what the request needs (ruling 44). A refusal knows no size:
+// bodyBytes is 0 there.
+struct ClimbAsk {
+  Climb why = Climb::OverCap;
+  size_t bodyBytes = 0;   // the rendered body, photos included (0: not known)
+  size_t bodyCap = 0;     // the cap it must fit
+};
 // The caller's ladder: climb one rung by changing the state its RenderInput renders (the
 // stub-through point, the omission span); false when no rung is left. The exchange renders
 // again after every true.
-using ClimbFn = std::function<bool(Climb why)>;
+using ClimbFn = std::function<bool(const ClimbAsk& ask)>;
 
 struct ExchangeDeps {
   HttpTransport* transport = nullptr;

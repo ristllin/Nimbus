@@ -567,7 +567,8 @@ and ledger shape, the photo table per head kind, every split of turns for the la
 - **The output cap** is main's load-aware cap (`output_caps.h`) for the real body inside the
   time the turn has left; the caller's `maxTokens` is never what is sent.
 - **The budget**: a body over the head's cap is never sent; the caller's ladder climbs a rung
-  and the body is rendered again, or the exchange ends with nothing sent.
+  (told the body's size and the cap, `ClimbAsk`) and the body is rendered again, or the exchange
+  ends with nothing sent.
 - **The check**: no body leaves with a string over 60,000 B or with invalid UTF-8.
 - **Errors, by class**: no answer, 5xx and 429 send the same request again after 2 s, then
   8 s (at most two retries, each only when its wait and a request fit the turn's wall clock);
@@ -596,7 +597,8 @@ durability around it and nothing that reads, edits or appends to the model's tex
   stored before the first request. The binding's `TurnSetup` gives the registry, notes, head
   and wire once; the system text and the tools are composed once and kept for every round.
 - **The loop**: render the stored transcript, post it (`runExchange`: retries, the cap and the
-  ladder live there), store what the model said (k, a, c) before anything runs. No call: that
+  ladder live there; rung 3 omits only the oldest turns the body needs to drop, every omissible
+  one only after a provider's size refusal), store what the model said (k, a, c) before anything runs. No call: that
   text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
   runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
   to the bulk file, its stub computed once) before the next request, `afterResult`.

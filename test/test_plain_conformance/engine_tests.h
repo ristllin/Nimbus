@@ -62,10 +62,10 @@ inline std::vector<Shape> shapes() {
       {{sp::say("Hello.")}, {{0, "Hello."}}},
       {{sp::call("read_file", rf), sp::say("It says alpha.")}, {{1, ""}, {0, "It says alpha."}}},
       {{sp::call("read_file", rf, "Let me look."), sp::say("Alpha.")}, {{1, "Let me look."}, {0, "Alpha."}}},
-      {{sp::call("read_file", rf), sp::call("ledger_day", R"({"day":"2026-11-17"})"),
+      {{sp::call("read_file", rf), sp::call("big_read", R"({"tag":"b","bytes":120})"),
         sp::call("read_file", R"({"path":"notes/b.md"})"), sp::say("Three rounds.")},
        {{1, ""}, {1, ""}, {1, ""}, {0, "Three rounds."}}},
-      {{sp::calls({{"read_file", rf, ""}, {"ledger_day", "{}", ""}}), sp::say("Both.")}, {{2, ""}, {0, "Both."}}},
+      {{sp::calls({{"read_file", rf, ""}, {"big_read", R"({"tag":"c","bytes":120})", ""}}), sp::say("Both.")}, {{2, ""}, {0, "Both."}}},
   };
 }
 
@@ -413,7 +413,7 @@ inline void test_every_seam_is_called_at_its_point() {
   TXB_OK(h.beforeDispatch(plain::HookSlot::Policy, [&](const plain::DispatchCtx& c) {
     log.push_back("beforeDispatch " + c.call->name + (c.effect ? " effect" : "") + (c.pure ? " pure" : ""));
     plain::DispatchDecision d;
-    if (c.call->name == "ledger_day") {
+    if (c.call->name == "big_read") {
       d.verdict = plain::DispatchVerdict::Answer;
       d.text = "answered by a hook";
     }
@@ -446,7 +446,7 @@ inline void test_every_seam_is_called_at_its_point() {
     return o;
   }));
   b.model.push(sp::calls({{"read_file", R"({"path":"notes/a.md"})", ""},
-                          {"ledger_day", "{}", ""},
+                          {"big_read", R"({"tag":"d","bytes":120})", ""},
                           {"device_control", R"({"action":"restart"})", ""}}));
   b.model.push(sp::say("Done, I think."));
   b.model.push(sp::say("Read alpha; the restart was refused."));
@@ -456,7 +456,7 @@ inline void test_every_seam_is_called_at_its_point() {
   TXB_OK(b.idle(idle));
   const std::vector<std::string> want = {
       "beforeDispatch read_file pure",   "afterResult read_file stored",
-      "beforeDispatch ledger_day pure",  "afterResult ledger_day stored",
+      "beforeDispatch big_read pure",    "afterResult big_read stored",
       "beforeDispatch device_control effect", "afterResult device_control stored error",
       "beforeDeliver Done, I think.",   // after the one hold the registry asks no handler again
       "afterDeliver Read alpha; the restart was refused. sent", "idleStep"};
@@ -598,6 +598,54 @@ inline void test_a_late_round_gets_only_the_time_left() {
   TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kSoftWallMs + 60000, "the late round ran on a full wall clock");
 }
 
+// ---- the overflow ladder's rung 3 (ruling 44) ------------------------------------------------
+// Ten owner turns on an 85,000 B head: nine of about 7 KB, then one of 27 KB. The last body is
+// over the cap by more than one turn and less than two: rung 3 omits the two oldest turns and
+// sends the other eight, never every omissible turn.
+inline void tenTurns(txb::Battery& b, size_t lastBytes) {
+  for (int i = 0; i < 10; ++i) {
+    const std::string k = std::to_string(i);
+    b.model.push(sp::say("ok " + k));
+    b.advance(60);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("turn " + k + " " + std::string(i == 9 ? lastBytes : 7000, 'w'), out));
+  }
+}
+
+inline void test_rung_three_omits_only_the_turns_the_request_needs() {
+  txb::Battery b;
+  tenTurns(b, 27000);
+  const auto& reqs = b.model.requests();
+  for (size_t i = 0; i + 1 < reqs.size(); ++i)
+    TEST_ASSERT_TRUE_MESSAGE(txb::detail::omittedTurnsNamed(reqs[i].view) < 0, "an earlier request already omitted");
+  TEST_ASSERT_TRUE_MESSAGE(reqs.back().body.size() <= tx::kFloorHeadBodyCap, "the last request is over the cap");
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)txb::detail::omittedTurnsNamed(reqs.back().view), "rung 3 did not omit the fewest turns");
+  for (int i = 2; i < 10; ++i)
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(reqs.back(), "turn " + std::to_string(i) + " w"), "a turn that fitted is not sent");
+  std::vector<tx::Item> items;
+  TXB_OK(b.storedBeforeLastFinal(items));
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(txb::covers(reqs.back().view, b.coverOf(items), why), why.c_str());
+}
+
+// A provider's size refusal says nothing about how much is too much: rung 3 may take the larger
+// step there (every omissible turn), and the request after it is sent once.
+inline void test_a_size_refusal_may_omit_every_omissible_turn() {
+  txb::Battery b;
+  for (int i = 0; i < 9; ++i) {
+    b.model.push(sp::say("ok"));
+    b.advance(60);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("small turn " + std::to_string(i), out));
+  }
+  b.model.push(sp::httpError(413));
+  b.model.push(sp::say("fits now"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("one more", out));
+  TEST_ASSERT_EQUAL_STRING("fits now", out.text.c_str());
+  TEST_ASSERT_EQUAL(4, (int)txb::detail::omittedTurnsNamed(b.model.last().view));
+}
+
 // ---- the sentinel ----------------------------------------------------------------------------
 inline void test_an_empty_engine_answers_a_typed_outcome() {
   plain::PlainEngine e{plain::EngineDeps{}};
@@ -629,6 +677,8 @@ inline void run() {
   RUN_TEST(test_a_result_lost_to_the_card_is_closed_after_a_restart);
   RUN_TEST(test_no_call_starts_past_the_soft_wall);
   RUN_TEST(test_a_late_round_gets_only_the_time_left);
+  RUN_TEST(test_rung_three_omits_only_the_turns_the_request_needs);
+  RUN_TEST(test_a_size_refusal_may_omit_every_omissible_turn);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);
 }
 

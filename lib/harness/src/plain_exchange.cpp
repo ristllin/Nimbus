@@ -211,7 +211,7 @@ class Exchange {
         return Status::success();
       }
       if (bodyLength(http_) <= bodyCap_) break;
-      if (!req_.climb || capClimbs_ >= kMaxCapClimbs || !req_.climb(Climb::OverCap)) {
+      if (!req_.climb || capClimbs_ >= kMaxCapClimbs || !req_.climb(ClimbAsk{Climb::OverCap, bodyLength(http_), bodyCap_})) {
         verdict_ = Verdict{};
         verdict_.err = ExchangeErr::ContextRefused;
         httpStatus_ = 0;
@@ -313,7 +313,7 @@ class Exchange {
   }
 
   bool retryClimb() {
-    if (refusedClimbed_ || !req_.climb || !fits(0) || !req_.climb(Climb::Refused)) return false;
+    if (refusedClimbed_ || !req_.climb || !fits(0) || !req_.climb(ClimbAsk{Climb::Refused, 0, bodyCap_})) return false;
     refusedClimbed_ = true;
     ++out_.climbs;
     return true;

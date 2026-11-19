@@ -39,6 +39,7 @@ struct LadderState {
   int climbsAsked = 0;
   int refusedAsked = 0;
   int maxRungs = 3;
+  std::vector<plain::ClimbAsk> asks;   // what each climb was told
 };
 
 struct TestWire : plain::WireCodec {
@@ -131,8 +132,9 @@ struct Rig {
     req.timeoutMs = 120000;
     req.deadlineMs = 240000;
     req.bodyCap = 60000;
-    req.climb = [this](plain::Climb why) {
-      if (why == plain::Climb::Refused) ++ladder.refusedAsked;
+    req.climb = [this](const plain::ClimbAsk& ask) {
+      ladder.asks.push_back(ask);
+      if (ask.why == plain::Climb::Refused) ++ladder.refusedAsked;
       else ++ladder.climbsAsked;
       if (ladder.rung >= ladder.maxRungs) return false;
       ++ladder.rung;
@@ -566,6 +568,7 @@ static void test_a_context_refusal_climbs_once_and_retries_once() {
     expectOk(rig.run());
     TEST_ASSERT_TRUE_MESSAGE(rig.out.err == ExchangeErr::None, w);
     TEST_ASSERT_EQUAL(1, rig.ladder.refusedAsked);
+    TEST_ASSERT_EQUAL(0, (int)rig.ladder.asks.back().bodyBytes);   // a refusal knows no size
     TEST_ASSERT_EQUAL(2, (int)rig.model.requests().size());
     TEST_ASSERT_TRUE(rig.model.requests()[1].body.size() < rig.model.requests()[0].body.size());
     TEST_ASSERT_EQUAL(1, rig.out.climbs);
@@ -725,6 +728,13 @@ static void test_a_body_over_the_cap_climbs_and_is_never_sent() {
   expectOk(rig.run());
   TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::None);
   TEST_ASSERT_EQUAL(2, rig.ladder.climbsAsked);
+  // Each climb is told the body it must shrink and the cap (ruling 44): over the cap, shrinking.
+  TEST_ASSERT_EQUAL(2, (int)rig.ladder.asks.size());
+  for (const plain::ClimbAsk& a : rig.ladder.asks) {
+    TEST_ASSERT_EQUAL(20000, (int)a.bodyCap);
+    TEST_ASSERT_TRUE(a.bodyBytes > a.bodyCap);
+  }
+  TEST_ASSERT_TRUE(rig.ladder.asks[1].bodyBytes < rig.ladder.asks[0].bodyBytes);
   TEST_ASSERT_TRUE(rig.model.requests()[0].body.size() <= 20000);
   TEST_ASSERT_EQUAL(1, (int)rig.model.requests().size());
 

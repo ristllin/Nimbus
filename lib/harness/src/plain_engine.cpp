@@ -383,7 +383,7 @@ class TurnRun {
     req.render = &r;
     req.deadlineMs = used < wall ? wall - used : 1;
     req.bodyCap = t_.bodyCap;
-    req.climb = [this](Climb why) { return climb(why); };
+    req.climb = [this](const ClimbAsk& ask) { return climb(ask); };
     t_.ex = ExchangeResult{};
     const Status st = runExchange(ExchangeDeps{d_.transport, d_.platform}, req, t_.ex);
     account(t_.ex);
@@ -433,24 +433,34 @@ class TurnRun {
     return st;
   }
 
-  // The overflow ladder (tx::nextRung), one rung per call; false when no rung is left.
-  bool climb(Climb why) {
+  // The overflow ladder (tx::nextRung), one rung per call; false when no rung is left. Rung 3
+  // omits the fewest oldest turns that free what the body is over its cap (and the omission
+  // line's own bytes); a refusal knows no size, so there it omits every omissible turn.
+  bool climb(const ClimbAsk& ask) {
     LadderState& l = t_.ladder;
+    const bool over = ask.why == Climb::OverCap;
     bool climbed = false;
-    if (why == Climb::OverCap && !l.closedThrough && c_.lastClosedQ > c_.head.stub) {
+    if (over && !l.closedThrough && c_.lastClosedQ > c_.head.stub) {
       l.closedThrough = c_.lastClosedQ;   // (1) every closed turn as stubs
       climbed = true;
-    } else if (why == Climb::OverCap && !l.stubThrough && t_.roundStart.size() > 2) {
+    } else if (over && !l.stubThrough && t_.roundStart.size() > 2) {
       l.stubThrough = t_.roundStart[t_.roundStart.size() - 2] - 1;   // (2) bulk older than two rounds
       climbed = true;
     } else if (!l.omitThrough) {
-      climbed = omitOldest();   // (3) one omission line, never the newest 6 owner turns
+      const size_t need = over && ask.bodyBytes > ask.bodyCap ? ask.bodyBytes - ask.bodyCap + kOmissionLineRoom
+                                                             : std::numeric_limits<size_t>::max();
+      climbed = omitOldest(need);   // (3) one omission line, never the newest 6 owner turns
     }
     if (climbed) event("change:ladder");
     return climbed;
   }
+  static constexpr size_t kOmissionLineRoom = 160;   // the line and its block (under 120 B of text)
 
-  bool omitOldest() {
+  // Rung 3: the oldest whole turns that free at least `need` bytes, counted as stored (a stored
+  // line carries its keys and crc, so it is usually a little longer than what it renders). If
+  // that still falls short, the next render is over the cap again and the exchange ends with
+  // the size line: rung 3 is applied once.
+  bool omitOldest(size_t need) {
     std::vector<tx::TurnSpan> spans;
     std::vector<uint64_t> lastQ;
     for (size_t i = 0; i < d_.arena->count(); ++i) {
@@ -466,7 +476,7 @@ class TurnRun {
       lastQ.back() = e.q;
     }
     uint32_t n = 0;
-    if (!tx::omissionSpan(spans, std::numeric_limits<size_t>::max(), n).ok() || n == 0) return false;
+    if (!tx::omissionSpan(spans, need, n).ok() || n == 0) return false;
     std::string dates;
     (void)tx::omissionDates(spans[0].firstAt, spans[n - 1].firstAt, t_.tz, dates);
     if (!tx::omissionLine(n, dates, t_.ladder.omissionLine).ok()) return false;

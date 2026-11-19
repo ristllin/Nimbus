@@ -230,8 +230,12 @@ class Battery {
       const auto* decl = plain::toolDecl(n);
       if (decl) reg.add(decl->name, decl->description, handler, plain::declSchema(*decl, false));
     }
+    // The property suites' record tools, classed here so the class table's rows can change
+    // under them (ruling 41) without changing what the properties test.
     reg.add("ledger_day", "", handler);
+    reg.setClass("ledger_day", orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Pure});
     reg.add("ledger_write", "", handler);
+    reg.setClass("ledger_write", orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Effect});
     reg.add("fetch_url", "", handler);
     reg.add("big_read", "", handler);
     reg.setClass("big_read", orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Pure});
