@@ -723,6 +723,36 @@ def test_a_rebaseline_record_that_does_not_end_at_the_table_fails(tree, isolated
     assert any("does not end at the baseline table" in e for e in errs), errs
 
 
+def test_a_rebaseline_keeps_the_engine2_entries_live(tree, isolated_baseline):
+    # Lane RB-SYNC: a re-baseline re-measures engine 1 only, so the e2 build entries before it stay
+    # in the chain (RBL-0002 superseded PC-0003..PC-0008 and turned the e2 classes RED before this).
+    _e2(tree)
+    _e2_build_entries(tree)
+    merge(tree)
+    assert errors(tree) == []
+    _release_line_growth(tree)
+    regen(tree)
+    cat.rebaseline(tree, "a release line added a notice")
+    assert errors(tree) == []
+    _e2(tree, core=" Grown after the record.")
+    assert any("e2 core: model-facing text changed" in e for e in errors(tree))
+
+
+def test_a_superseded_spec_entry_raises_no_ceiling(tree, plan, isolated_baseline):
+    before = _grow(tree)
+    append_entry(tree, **entry_for(tree, "e1", "tool_descriptions", before, "spec", **SPEC))
+    merge(tree)
+    changes = gate.parse_changes(read(tree, gate.CHANGES))
+    assert gate.spec_allowance(tree, changes).get(("e1", "tool_descriptions"), 0) > 0
+    cat.rebaseline(tree, "a release line arrived")
+    changes = gate.parse_changes(read(tree, gate.CHANGES))
+    assert ("e1", "tool_descriptions") not in gate.spec_allowance(tree, changes)
+    assert errors(tree) == []
+    _grow(tree, text=" and a growth the superseded spec entry must not cover")
+    errs = errors(tree)
+    assert any("e1 tool_descriptions: " in e and "over its ceiling" in e for e in errs), errs
+
+
 # ---------------------------------------------------------------------------
 # Planned work (ruling 18): kind spec, and the release total
 # ---------------------------------------------------------------------------

@@ -256,14 +256,18 @@ def check_entry(root: str, e: dict) -> "tuple[list, tuple | None]":
 
 
 def live_entries(changes: dict) -> list:
-    """The entries after the latest re-baseline's 'supersedes' id: the ones the chain still applies."""
+    """The entries the chain still applies: every engine-2 entry, and the engine-1 entries after the
+    latest re-baseline's 'supersedes' id. A re-baseline re-measures engine 1 only (its table has no e2
+    rows), so it never supersedes an engine-2 entry (lane RB-SYNC: RBL-0002 was the first record
+    made with e2 build entries in the ledger)."""
     if not changes["rebaselines"]:
         return list(changes["entries"])
     last = _first_word(changes["rebaselines"][-1].get("supersedes", ""))
     ids = [e["id"] for e in changes["entries"]]
     if last in ("", "none") or last not in ids:
         return list(changes["entries"])
-    return changes["entries"][ids.index(last) + 1 :]
+    cut = ids.index(last) + 1
+    return [e for i, e in enumerate(changes["entries"]) if i >= cut or e.get("catalog") != "e1"]
 
 
 def rebaseline_errors(changes: dict) -> "list[str]":
@@ -324,9 +328,10 @@ def check_ledger(root: str, changes: dict, current: dict) -> "list[str]":
 
 
 def spec_allowance(root: str, changes: dict) -> dict:
-    """{(catalog, class): bytes} the well-formed spec entries grew a class by: its ceiling rises by that much."""
+    """{(catalog, class): bytes} the well-formed live spec entries grew a class by: its ceiling rises by
+    that much. A spec entry a re-baseline superseded is in the baseline already and raises nothing."""
     out: dict = {}
-    for e in changes["entries"]:
+    for e in live_entries(changes):
         if e.get("kind") != "spec":
             continue
         problems, tr = check_entry(root, e)

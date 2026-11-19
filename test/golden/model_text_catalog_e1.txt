@@ -2,10 +2,10 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=47989 ceiling=47989 entries=542 sha8=faa8207c
-# class device_notes bytes=54203 ceiling=74350 entries=1462 sha8=c415e340
-# class tool_descriptions bytes=23131 ceiling=23055 entries=98 sha8=542ad7ca
-# class tool_results bytes=41962 ceiling=41269 entries=1249 sha8=63debd41
-# class side_prompts bytes=9795 ceiling=8078 entries=170 sha8=fada0e91
+# class device_notes bytes=54203 ceiling=54203 entries=1462 sha8=c415e340
+# class tool_descriptions bytes=23131 ceiling=23131 entries=98 sha8=542ad7ca
+# class tool_results bytes=41962 ceiling=41962 entries=1249 sha8=63debd41
+# class side_prompts bytes=9795 ceiling=9795 entries=170 sha8=fada0e91
 # class skills bytes=23264 ceiling=23264 entries=35 sha8=cef6121d
 system	lib/core/include/nimbus/orch/orch_schema.h	4bbc63be	1005	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. The device checks each claim against this turn's recorded effects and sources and corrects the reply when they disagree. Never invent ids, links, or successes."
 system	lib/core/include/nimbus/orch/orch_schema.h	8947228e	186	"A question for the owner when you need their input; empty string if none. It is appended to your reply as the same message; if the reply already ends with this question, leave ask empty."

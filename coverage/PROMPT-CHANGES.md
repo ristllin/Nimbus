@@ -80,16 +80,16 @@ A `build` or `spec` entry has `prd: section N` in place of `scenario`, `red_at` 
 
 ## Baseline
 
-Measured on rb-main 9b17824d (the latest re-baseline below). The engine-1 ceilings in
+Measured on rb-main 9d26bb84 (the latest re-baseline below). The engine-1 ceilings in
 `gen_model_text_catalog.py` equal these figures; engine 1 only shrinks.
 
 | Catalog | Class | Bytes | sha8 |
 |---|---|---|---|
 | e1 | system | 47989 | faa8207c |
-| e1 | device_notes | 74350 | 5460c809 |
-| e1 | tool_descriptions | 23055 | a62706dc |
-| e1 | tool_results | 41269 | eb3909ce |
-| e1 | side_prompts | 8078 | 14424ae7 |
+| e1 | device_notes | 54203 | c415e340 |
+| e1 | tool_descriptions | 23131 | 542ad7ca |
+| e1 | tool_results | 41962 | 63debd41 |
+| e1 | side_prompts | 9795 | fada0e91 |
 | e1 | skills | 23264 | cef6121d |
 
 ## Imperative baseline
@@ -223,6 +223,17 @@ deleted. Engine 2 has no baseline.
 - e1 side_prompts: 7641 041badf6 -> 8078 14424ae7 (+437 B)
 - e1 skills: 23264 cef6121d -> 23264 cef6121d (+0 B)
 - why: rb-main 9b17824d took the v5.1.2 release line (main d5afa30a). Against 831986f9 only side_prompts moved (+437 B): lane CTXR1 added three owner alerts in lib/harness/src/fold_driver.cpp (older messages unreadable from storage: 175, 82 and 169 B) and the fold blob's guestPaid field (11 B) in lib/core/src/orch_compact.cpp. The rest of v5.1.2 (CTXR2, CTXE, REL512) changed no catalogued text. The v5.1.2 line predates the rule and is the baseline (coordinator, 18 Nov).
+
+### RBL-0002: re-measured on 9d26bb84
+- base: 9d26bb84
+- supersedes: PC-0012
+- e1 system: 47989 faa8207c -> 47989 faa8207c (+0 B)
+- e1 device_notes: 74350 5460c809 -> 54203 c415e340 (-20147 B)
+- e1 tool_descriptions: 23055 a62706dc -> 23131 542ad7ca (+76 B)
+- e1 tool_results: 41269 eb3909ce -> 41962 63debd41 (+693 B)
+- e1 side_prompts: 8078 14424ae7 -> 9795 fada0e91 (+1717 B)
+- e1 skills: 23264 cef6121d -> 23264 cef6121d (+0 B)
+- why: rb-main took the v5.1.2 release line (main a01ef7fb, lane RB-SYNC, merge 9d26bb84). From v5.1.2: side_prompts only, +421 B in 12 entries, all lane CTXR1 (candidates 2 to 6): eleven fold status and owner-alert fragments in lib/harness/src/fold_driver.cpp (the 'due, not started' causes such as the daily cap, the quiet gate, the retry and read waits, the network being down; the slow-read alert 116 B; 'About ' 6 B) and the fold blob's unreadSince field (13 B) in lib/core/src/orch_compact.cpp; no other class has v5.1.2 text in it. The other figures are rb-main's own since RBL-0001, already logged and superseded here: device_notes -20,147 B (PC-0006 claim checks deleted -17,290, PC-0009 reply guard deleted -3,231, PC-0010 -1, PC-0012 truth check +375), tool_descriptions +76 B (PC-0001), tool_results +693 B (PC-0002), side_prompts +1,296 B (PC-0011 truth probe). system and skills unmoved. The v5.1.2 line predates the rule and is the baseline, as for RBL-0001.
 
 ## Changes
 
