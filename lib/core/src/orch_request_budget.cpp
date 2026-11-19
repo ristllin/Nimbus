@@ -232,7 +232,10 @@ void bound(RequestBudget& b, const WireKey& k) {
       {atRatio(kBudgetTargetClampTokens, b.rNomX100), BudgetBound::Clamp},
       {atRatio(b.latencyTokens, b.rNomX100), BudgetBound::Latency},
       {atRatio(b.windowTokens, dense) * 3 / 4, BudgetBound::Window},
-      {b.tierTokens ? atRatio(b.tierTokens, dense) * 9 / 10 : UINT64_MAX, BudgetBound::Tier},
+      // Lane RB-BGb (ruling 83 item 9 (b)): the price tier reads the safe ratio, never the memo. A
+      // dense reading means a request over the tier would bill at the long-context price, which costs
+      // money but does not fail; only the window bound, where a request would not fit, follows the memo.
+      {b.tierTokens ? atRatio(b.tierTokens, b.rSafeX100) * 9 / 10 : UINT64_MAX, BudgetBound::Tier},
   };
   Cand best = cands[0];
   for (const Cand& c : cands)

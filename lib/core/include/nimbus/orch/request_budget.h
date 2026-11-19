@@ -28,7 +28,8 @@
 //            exactly that floor; a head held at v5.1.1 (its live leg failed) gets 85,000;
 //   target   bytes / rNom.
 // A tighten-only memo of observed bytes per token (noteObservedRatio) can only lower the
-// window and tier bounds.
+// window bound (lane RB-BGb: the price tier reads rSafe; a dense request over it bills at the
+// long-context price but does not fail, so it never shrinks the history).
 //
 // The turn's form (lane L of the history fix, 18 Nov 2026). The bytes above are a request BODY's budget, and
 // a head turn fills them only where its prompt goes out split (the history as messages):
@@ -201,8 +202,8 @@ uint32_t predictedPaceMs(size_t bodyBytes);
 
 // ---- the tighten-only memo (RAM, per host and model) ---------------------------------
 // After a 2xx answer the wire reports the text body it sent and the prompt tokens billed
-// (photo tokens taken out). A ratio under the head's rSafe lowers its window and tier
-// bounds from then on; a higher one never raises anything. Bodies under 2,048 prompt
+// (photo tokens taken out). A ratio under the head's rSafe lowers its window bound from then
+// on (a request at the old size would not fit the window); a higher one never raises anything. Bodies under 2,048 prompt
 // tokens are ignored (their JSON framing dominates), and the memo never goes under
 // 1.5 B/token (a malformed usage object cannot shrink a budget to nothing).
 void noteObservedRatio(const std::string& host, const std::string& model, size_t textBytes,
