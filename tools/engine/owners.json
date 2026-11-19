@@ -1653,8 +1653,7 @@
         "tools/release_gate/v520_gate.json",
         "tools/release_gate/check_v520_gate.py",
         "tools/release_gate/test_v520_gate.py",
-        "tools/release_gate/test_owner_regression_assertions.py",
-        "coverage/REFLOOP-RERUN.md"
+        "tools/release_gate/test_owner_regression_assertions.py"
       ],
       "notes": [
         "tools/refloop: the reference loop's stamp in the device's form (ruling 64) and the rig's additions for the validation families (orchestrator note 5 of RB-REC7's task: RB-REC6 does not touch tools/refloop). tests/evals/food_replay: renamed to file_replay. tools/release_gate/test_owner_regression_assertions.py: the host tests of the owner-regression assertions this lane rewrites (ruling 41)."
