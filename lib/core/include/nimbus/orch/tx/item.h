@@ -114,6 +114,22 @@ struct ExchangeFacts {
   uint32_t requestBytes = 0;
   uint32_t ms = 0;
   uint16_t httpStatus = 0;
+  // The request by reference (the dossier, lane RB-E3): with the turn's prompt and manifest
+  // hashes, what plain::rebuildRequest needs to render this request again byte for byte from
+  // the stored items, instead of a copy of the request. bodyHash 0: no reference was recorded
+  // and only the three figures above are stored.
+  uint64_t fromQ = 0;           // the item range the request rendered: every item the engine
+  uint64_t thruQ = 0;           // held, from the oldest resident one to the newest
+  uint32_t items = 0;           // how many items that range held
+  uint64_t stub = 0;            // the stub pointer
+  uint64_t closedThrough = 0;   // the overflow ladder's state (plain::LadderState)
+  uint64_t stubThrough = 0;
+  uint64_t omitThrough = 0;
+  uint32_t maxTokens = 0;       // the output cap the request carried
+  bool toolChoiceNone = false;  // a guard's last round
+  uint32_t bodyHash = 0;        // fnv1a-32 of its path, body and spliced bytes (never a header)
+  std::string effort;           // the reasoning effort it carried ("" = the provider default)
+  std::string omission;         // the ladder's omission line ("" = none)
 };
 
 // The e item: what the turn cost and why it ended.

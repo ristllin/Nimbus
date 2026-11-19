@@ -4,6 +4,7 @@
 // block with no allocation; the crc is computed on the way. The decoder is a cursor over
 // the line with no recursion (a stored line cannot grow the tg_poll stack) and no
 // allocation for keys, numbers or skipped values.
+#include <algorithm>
 #include <cstring>
 
 #include "nimbus/orch/tx/item.h"
@@ -251,6 +252,25 @@ void encodeTurnEnd(Writer& w, const Item& it) {
     putU64(w, x.ms);
     w.put(',');
     putU64(w, x.httpStatus);
+    if (x.bodyHash) {   // the request by reference, by position; trailing defaults are left out
+      const uint64_t nums[] = {x.fromQ, x.thruQ, x.items, x.bodyHash, x.maxTokens, x.stub, x.toolChoiceNone ? 1u : 0u,
+                               x.closedThrough, x.stubThrough, x.omitThrough};
+      constexpr size_t kNums = sizeof(nums) / sizeof(nums[0]);
+      size_t n = !x.omission.empty() || !x.effort.empty() ? kNums : 4;
+      while (n < kNums && std::any_of(nums + n, nums + kNums, [](uint64_t v) { return v != 0; })) ++n;
+      for (size_t i = 0; i < n; ++i) {
+        w.put(',');
+        putU64(w, nums[i]);
+      }
+      if (!x.effort.empty() || !x.omission.empty()) {
+        w.put(',');
+        putStr(w, x.effort.data(), x.effort.size());
+      }
+      if (!x.omission.empty()) {
+        w.put(',');
+        putStr(w, x.omission.data(), x.omission.size());
+      }
+    }
     w.put(']');
   });
   fieldList(w, "ev", e.events, [&](const std::string& s) { putStr(w, s.data(), s.size()); });
@@ -679,6 +699,23 @@ bool readExchange(Cursor& c, ExchangeFacts& x) {
              case 0: return readUnsigned(cc, x.requestBytes);
              case 1: return readUnsigned(cc, x.ms);
              case 2: return readUnsigned(cc, x.httpStatus);
+             case 3: return readUnsigned(cc, x.fromQ);
+             case 4: return readUnsigned(cc, x.thruQ);
+             case 5: return readUnsigned(cc, x.items);
+             case 6: return readUnsigned(cc, x.bodyHash);
+             case 7: return readUnsigned(cc, x.maxTokens);
+             case 8: return readUnsigned(cc, x.stub);
+             case 9: {
+               uint8_t none = 0;
+               if (!readUnsigned(cc, none) || none > 1) return false;
+               x.toolChoiceNone = none == 1;
+               return true;
+             }
+             case 10: return readUnsigned(cc, x.closedThrough);
+             case 11: return readUnsigned(cc, x.stubThrough);
+             case 12: return readUnsigned(cc, x.omitThrough);
+             case 13: return readStr(cc, x.effort);
+             case 14: return readStr(cc, x.omission);
              default: return skipValue(cc);
            }
          }) &&

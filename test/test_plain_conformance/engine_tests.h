@@ -17,6 +17,7 @@
 #include "../support/tx_battery/fixtures.h"
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/props.h"
+#include "nimbus/orch/deliver_text.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/tool_groups.h"
 
@@ -826,8 +827,10 @@ inline void test_a_huge_argument_and_a_huge_reply_keep_the_turn() {
   TXB_OK(b.owner("save a lot", out));
   TEST_ASSERT_EQUAL(1, b.world.runsOf("write_file"));
   TEST_ASSERT_TRUE(out.delivered);
-  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
-  TEST_ASSERT_TRUE_MESSAGE(b.sent[0].text == reply, "the reply was not delivered whole");
+  // Delivered whole as the device's deliver function parts it (RB-E3): every part, in order.
+  const std::vector<std::string> parts = nimbus::orch::telegramParts(reply);
+  TEST_ASSERT_EQUAL(parts.size(), b.sent.size());
+  for (size_t i = 0; i < parts.size(); ++i) TEST_ASSERT_TRUE_MESSAGE(b.sent[i].text == parts[i], "the reply was not delivered whole");
   TEST_ASSERT_EQUAL_STRING("reply", lastEnd(storedOf(b))->end.cause.c_str());
   b.model.push(sp::say("ok"));
   TXB_OK(b.owner("next", out));
@@ -1392,7 +1395,9 @@ struct RefusalShape {
 
 inline std::vector<RefusalShape> refusalShapes() {
   const std::string over = "Past the small-string size: " + std::string(200, 'a');
-  const std::string huge = std::string(13000, 'b') + " END";
+  std::string huge;   // past 12,288 B, three parts and more, no two parts alike
+  for (int i = 0; huge.size() < 13000; ++i) huge += "b" + std::to_string(i) + " ";
+  huge += "END";
   const std::string held = "Held reply " + std::string(100, 'h');
   const std::string fin = "Final reply " + std::string(100, 'f');
   const std::string cut = "Cut reply " + std::string(100, 'c');
@@ -1473,10 +1478,20 @@ inline RefusalRun runRefusal(const RefusalShape& shape, int mode, long k, bool n
   r.dItems = countKind(storedOf(b), tx::ItemKind::Delivery);
   r.afterDeliverCalls = calls;
   r.afterDeliverSent = sent;
-  r.messages = b.sent.size();
+  // A reply counts when every part the deliver function makes of it went out (RB-E3), and a
+  // reply of n parts is n messages: `messages` counts the harness-written ones beside it.
+  size_t replyParts = 0;
+  for (const std::string& reply : shape.replies) {
+    const std::vector<std::string> parts = nimbus::orch::telegramParts(reply);
+    size_t got = 0;
+    for (const std::string& p : parts)
+      got += std::find_if(b.sent.begin(), b.sent.end(), [&p](const txb::SentMessage& m) { return m.text == p; }) != b.sent.end();
+    if (got == parts.size()) ++r.replies;
+    replyParts += got;
+  }
+  r.messages = b.sent.size() - std::min(b.sent.size(), replyParts) + (replyParts ? 1 : 0);
   for (size_t i = 0; i < b.sent.size(); ++i) {
     const std::string& m = b.sent[i].text;
-    r.replies += std::find(shape.replies.begin(), shape.replies.end(), m) != shape.replies.end();
     r.memory += m == texts::device_notes::kNoMemory;
     for (size_t j = 0; j < i; ++j) r.dupes += b.sent[j].text == m;
   }

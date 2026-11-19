@@ -710,6 +710,37 @@ durability around it and nothing that reads, edits or appends to the model's tex
 `test/test_plain_conformance/engine_tests.h` drives scripted turns on each dialect's stand-in
 wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each lands).
 
+### Delivery, the turn-end item and the dossier by reference
+
+`plain_deliver.cpp` (`plain/deliver.h`, lane RB-E3) is the seam between the loop and a chat.
+
+- **Delivery** (`deliverTurn`): the reply goes out as `nimbus::orch::telegramParts` makes it (the
+  markup sanitiser, then the split at 4,000 B, at most 8 parts): the function the device's Telegram
+  send and nimbusd call, so the host suites see the device's bytes. Each part is one
+  `Channel::send`, in order; nothing is added to or removed from the model's text. A reply with no
+  `<` that fits one part goes out as the engine's own string, with no copy, so a refused allocation
+  never costs a short reply. Progress is recorded as each part goes out and a retry starts after
+  `fromPart`. A part the channel refuses ends the reply there. A binding sends each part with
+  `telegramPart` (HTML, plain resend), never through `telegramParts` again.
+- **The status-line class**: after the reply, at most one harness-written message, as its own
+  message, and only under a name of `kAllStatusLines` (the closed list of PRD section 8 item 9); a
+  line under any other name is never sent (`test_delivery_bytes` sweeps the whole table).
+- **The e item** (`turnEndItem`): the turn's facts, bounded so the line always encodes (an e item
+  that cannot be stored leaves its turn open): lists capped at 256 entries with `events:cut` and
+  `exchanges:cut` naming the cut, the oldest references, then the oldest exchanges, shed first when
+  the line would pass 60,000 B. An omission line repeated by later exchanges is kept once.
+- **The dossier by reference**: the e item keeps each request as a reference, not a copy: the
+  turn's prompt and manifest hashes and, per exchange, the item range it rendered (every item the
+  engine held, oldest to newest, with their count), the stub pointer, the ladder's state and
+  omission line, the output cap, tool choice none, the effort and an fnv1a-32 of the path, body and
+  spliced bytes (never a header). `rebuildRequest` copies exactly that range, line for line, from
+  any arena that holds it (the live one, or one filled from the card), renders it through the same
+  wire and checks the hash: the result is the request as sent, byte for byte. It refuses
+  (NotFound) when the system text or tools no longer hash to the stored ones or the items miss any
+  of the range, and (Torn) when the render differs; it never renders less (owner ruling 81). A full
+  arena with nothing closed left to drop sheds the references (`shedReference`, event
+  `dossier:shed`) before it would refuse the e item: they never cost a resident turn.
+
 ### The Anthropic wire: what a request carries
 
 `providers/plain_wire_anthropic.cpp` renders one Messages API request from the stored

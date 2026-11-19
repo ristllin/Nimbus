@@ -163,7 +163,7 @@ class TurnRun {
     it.t = epoch();
     tx::StoreState state = tx::StoreState::Stored;
     Status st = d_.log->store(it, *d_.arena, state);
-    while (arenaFull(st) && dropOldestClosed()) st = d_.log->store(it, *d_.arena, state);   // ruling 60
+    while (arenaFull(st) && (dropOldestClosed() || shedReference(it))) st = d_.log->store(it, *d_.arena, state);   // ruling 60; RB-E3
     if (!st.ok()) {
       t_.storeFailed = true;
       t_.storeErr = st.err;
@@ -561,7 +561,7 @@ class TurnRun {
     t_.end.headRequests += ex.requests;
     if (ex.requests) {
       c_.head.lastReqAt = epoch();
-      t_.end.exchanges.push_back(tx::ExchangeFacts{ex.requestBytes, ex.ms, (uint16_t)ex.httpStatus});
+      t_.end.exchanges.push_back(exchangeFacts(ex));   // with the request by reference (RB-E3)
     }
     const orch::TokenUsage& u = ex.step.usage;
     t_.end.promptTokens += u.promptTokens;

@@ -56,10 +56,6 @@ test_plain_conformance::test_guard_last_round_chat RB-W3
 test_plain_conformance::test_guard_last_round_flat RB-W4
 
 # test_delivery_bytes
-test_delivery_bytes::test_the_reply_is_the_model_text_whatever_it_claims RB-E3
-test_delivery_bytes::test_a_long_reply_is_split_without_loss RB-E3
-test_delivery_bytes::test_a_status_line_is_separate_and_alone RB-E3
-test_delivery_bytes::test_a_failed_turn_sends_exactly_one_line RB-E3
 
 # ruling 56 (lane RB-E1a's review checks): red cases for the lanes that close them
 test_plain_conformance::test_view_fetches_a_long_argument_and_a_long_reply_back RB-N3 ruling:56

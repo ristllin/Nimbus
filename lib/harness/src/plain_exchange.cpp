@@ -233,6 +233,7 @@ class Exchange {
     ++out_.requests;
     out_.requestBytes = (uint32_t)bodyLength(http_);
     out_.maxTokens = in_.maxTokens;
+    recordRequest(in_, http_, out_.ref);   // the dossier keeps this request by reference (RB-E3)
     const bool answered = deps_.transport->exec(http_, resp, err) && resp.status > 0;
     httpStatus_ = answered ? resp.status : 0;
     verdict_ = classify(httpStatus_, resp.body, routed_);

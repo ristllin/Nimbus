@@ -106,6 +106,16 @@ inline tx::Item fullItem(tx::ItemKind kind, uint64_t q, Rng& r, size_t textMax =
   e.microUsd = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
   e.ms = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
   e.exchanges = {tx::ExchangeFacts{1, 2, 3}, tx::ExchangeFacts{static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu)), 0, 429}};
+  tx::ExchangeFacts ref{static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu)), 7, 200};   // a request by reference (RB-E3)
+  ref.fromQ = r.nonzero(UINT64_MAX), ref.thruQ = r.nonzero(UINT64_MAX), ref.stub = r.nonzero(UINT64_MAX);
+  ref.items = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
+  ref.closedThrough = r.nonzero(UINT64_MAX), ref.stubThrough = r.nonzero(UINT64_MAX), ref.omitThrough = r.nonzero(UINT64_MAX);
+  ref.maxTokens = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
+  ref.toolChoiceNone = true;
+  ref.bodyHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
+  ref.effort = anyBytes(r, 8);
+  ref.omission = anyBytes(r, 40);
+  e.exchanges.push_back(ref);
   e.events = {"change:pointer", anyBytes(r, 16)};
   e.promptHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
   e.manifestHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
@@ -166,7 +176,12 @@ inline std::string firstDifference(const tx::Item& a, const tx::Item& b) {
   if (a.end.exchanges.size() != b.end.exchanges.size()) return "end.exchanges";
   for (size_t i = 0; i < a.end.exchanges.size(); ++i) {
     const tx::ExchangeFacts &p = a.end.exchanges[i], &o = b.end.exchanges[i];
-    if (p.requestBytes != o.requestBytes || p.ms != o.ms || p.httpStatus != o.httpStatus) return "end.exchanges";
+    if (p.requestBytes != o.requestBytes || p.ms != o.ms || p.httpStatus != o.httpStatus || p.fromQ != o.fromQ ||
+        p.thruQ != o.thruQ || p.items != o.items || p.stub != o.stub || p.closedThrough != o.closedThrough ||
+        p.stubThrough != o.stubThrough || p.omitThrough != o.omitThrough || p.maxTokens != o.maxTokens ||
+        p.toolChoiceNone != o.toolChoiceNone || p.bodyHash != o.bodyHash || p.effort != o.effort ||
+        p.omission != o.omission)
+      return "end.exchanges[" + std::to_string(i) + "]";
   }
   return "";
 }

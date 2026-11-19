@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/deliver_text.h"
 #include "nimbus/orch/tx/status.h"
 
 // tx_battery/deliver_oracle.h - the bytes a reply must arrive as (lane RB-B0b): the chunks
@@ -10,15 +11,14 @@
 // battery compares what the channel received against it, so the device's bytes are the
 // host's bytes and nothing is appended or rewritten on the way.
 //
-// PLUMBING: lane RB-E3 replaces the body with a call into that function. Until then it
-// answers NotImplemented with its own name, which is the documented reason a
-// test_delivery_bytes case fails when its ignore is removed early.
+// Wired by lane RB-E3: the parts nimbus::orch::telegramParts makes, the function the device's
+// Telegram send (src/agent/telegram.cpp) and nimbusd call. Each part reaches the channel as
+// it is; the Telegram binding turns it into HTML with telegramPart.
 namespace txb {
 
 inline nimbus::orch::tx::Status expectedChunks(const std::string& modelText, std::vector<std::string>& out) {
-  (void)modelText;
-  out.clear();
-  return nimbus::orch::tx::Status::pending("txb::expectedChunks (wire to orch_deliver_text in RB-E3)");
+  out = nimbus::orch::telegramParts(modelText);
+  return nimbus::orch::tx::Status::success();
 }
 
 }  // namespace txb

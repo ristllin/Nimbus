@@ -149,6 +149,7 @@ struct ExchangeResult {
   bool parkHost = false;       // billing or key refused: the caller parks the host
   StatusLine status = StatusLine::None;   // CutAnswer or ProviderError when err != None
   std::string errorLine;       // the one plain line for the owner when err != None
+  nimbus::orch::tx::ExchangeFacts ref;   // the last request sent, by reference (RB-E3, recordRequest)
 };
 
 Status runExchange(const ExchangeDeps& deps, const ExchangeRequest& req, ExchangeResult& out);
