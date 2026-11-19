@@ -26,8 +26,9 @@ import records  # noqa: E402
 class Stamp(unittest.TestCase):
     def test_stamp_carries_year_weekday_and_running_day(self):
         self.assertEqual(records.stamp(datetime(2026, 11, 19, 8, 10)), "[2026-11-19 Thu 08:10] ")
-        self.assertEqual(records.stamp(datetime(2026, 11, 19, 0, 30)),
-                         "[2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00)] ")
+        self.assertEqual(
+            records.stamp(datetime(2026, 11, 19, 0, 30)), "[2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00)] "
+        )
         self.assertEqual(records.running_day(datetime(2026, 11, 19, 3, 59)), "2026-11-18")
         self.assertEqual(records.running_day(datetime(2026, 11, 19, 4, 0)), "2026-11-19")
 
@@ -125,8 +126,9 @@ class WriteCheck(unittest.TestCase):
         e = self.ep({"op": "replace", "old": self.row.split(","), "new": new.split(",")})
         before = self.head + "# replaced: 2026-11-18,x\n" + self.row + "\n"
         self.assertTrue(records.judge_write(e, before, self.head + "# replaced: 2026-11-18,x\n" + new + "\n")["ok"])
-        hist = records.judge_write(e, before, self.head + "# replaced: 2026-11-18,x\n# replaced: " + self.row + "\n"
-                                   + new + "\n")
+        hist = records.judge_write(
+            e, before, self.head + "# replaced: 2026-11-18,x\n# replaced: " + self.row + "\n" + new + "\n"
+        )
         self.assertTrue(hist["ok"])
         self.assertEqual(hist["history_added"], 1)
         lost = records.judge_write(e, before, self.head + new + "\n")
@@ -145,8 +147,15 @@ class TotalsAfterFix(unittest.TestCase):
 
     def test_a_move_changes_both_days(self):
         moved = "2026-11-18" + self.row[10:]
-        e = {"dom": "expenses", "expect": {"op": "replace", "old": self.row.split(","), "new": moved.split(","),
-                                           "appended_in_prior": False}}
+        e = {
+            "dom": "expenses",
+            "expect": {
+                "op": "replace",
+                "old": self.row.split(","),
+                "new": moved.split(","),
+                "appended_in_prior": False,
+            },
+        }
         self.assertTrue(records.totals_after_fix(e, self.head + self.row + "\n", self.head + moved + "\n"))
         self.assertFalse(records.totals_after_fix(e, self.head + self.row + "\n", self.head + self.row + "\n"))
 
@@ -160,8 +169,11 @@ class DryRuns(unittest.TestCase):
         work = Path(tempfile.mkdtemp(prefix="rec6-"))
         recs = []
         for ep in run_records.cell_plan(arm, 6, 10, 6, 6):
-            recs.append(run_records.run_episode("claude-haiku-5-5", arm, ep, os.environ["AIDSERVE"], work,
-                                                prov=scripted_heads.HEADS[kind]()))
+            recs.append(
+                run_records.run_episode(
+                    "claude-haiku-5-5", arm, ep, os.environ["AIDSERVE"], work, prov=scripted_heads.HEADS[kind]()
+                )
+            )
         return recs
 
     def test_every_arm_good_passes(self):
@@ -197,7 +209,9 @@ class DryRuns(unittest.TestCase):
                 self.assertEqual("line" in props["edit_file"], not want_err)
                 run_records.seed(aid, ep, arm)
                 w = run_records.World(aid, arm, "")
-                text, err = w.call("read_file", {"path": "food/log.csv", "column": "date", "from": "2026-11", "sum": ["kcal"]})
+                text, err = w.call(
+                    "read_file", {"path": "food/log.csv", "column": "date", "from": "2026-11", "sum": ["kcal"]}
+                )
                 self.assertEqual(err, want_err, text)
                 self.assertIn("Totals, sums and counts come from a tool result", system)
             finally:
@@ -213,8 +227,10 @@ class DryRuns(unittest.TestCase):
             run_records.seed(aid, ep, "S")
             before = aid.q({"op": "cat", "path": "money/spend.csv"})["bytes"]
             w = run_records.World(aid, "S", "always")
-            for name, args in (("edit_file", {"path": "money/spend.csv", "old": before.split("\n")[1], "new": ""}),
-                               ("append_file", {"path": "money/spend.csv", "text": "x\n"})):
+            for name, args in (
+                ("edit_file", {"path": "money/spend.csv", "old": before.split("\n")[1], "new": ""}),
+                ("append_file", {"path": "money/spend.csv", "text": "x\n"}),
+            ):
                 text, err = w.call(name, args)
                 self.assertTrue(err)
                 self.assertEqual(text, run_records.NO_MEMORY)

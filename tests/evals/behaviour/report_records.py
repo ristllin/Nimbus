@@ -65,72 +65,106 @@ def up(k, n):
     return stats.rate(k, n, "upper")
 
 
+FIXES = ("correct_visible", "correct_hidden", "identical", "move")
+
+
+def share(rows: list, ok) -> dict:
+    """ok(r) over rows, with the lower bound."""
+    return lo(sum(1 for r in rows if ok(r)), len(rows))
+
+
+def by_domain(rows: list, ok) -> dict:
+    return {d: share([r for r in rows if r["dom"] == d], ok) for d in DOMS}
+
+
+def totals_part(tot: list) -> dict:
+    verdicts = defaultdict(int)
+    for r in tot:
+        verdicts[r["total"]["verdict"]] += 1
+    ok = lambda r: r["total"]["ok"]  # noqa: E731
+    return {
+        "total_accuracy": share(tot, ok),
+        "total_verdicts": dict(verdicts),
+        "total_used_sum": sum(1 for r in tot if r.get("used_sum")),
+        "total_used_calc": sum(1 for r in tot if r.get("used_calc")),
+        "total_with_skipped_rows": sum(1 for r in tot if r["truth"]["skipped"]),
+        "total_by_domain": by_domain(tot, ok),
+    }
+
+
+def writes_part(wr: list) -> dict:
+    fw = [r for r in wr if r.get("first_write")]
+    ci = [r for r in wr if r["sub"] in FIXES]
+    first = lambda r: r["first_write"]["ok"]  # noqa: E731
+    effect = lambda r: r["file"]["ok"]  # noqa: E731
+    after = lambda r: records.totals_after_fix({"dom": r["dom"], "expect": r["expect"]}, r["before"], r["after"])  # noqa: E731
+    return {
+        "first_call": share(fw, first),
+        "first_call_correction_identical": share([r for r in fw if r["sub"] in FIXES], first),
+        "write_turns_without_a_write": len(wr) - len(fw),
+        "effect": share(wr, effect),
+        "effect_correction_identical": share(ci, effect),
+        "totals_after_correction_identical": share(ci, after),
+        "stray_or_duplicate": up(sum(1 for r in wr if r["file"]["stray"]), len(wr)),
+        "by_sub": {s: share([r for r in wr if r["sub"] == s], effect) for s in sorted({r["sub"] for r in wr})},
+        "first_call_by_domain": by_domain(fw, first),
+        "effect_by_domain": by_domain(wr, effect),
+        "history_line_added": sum(1 for r in wr if r["file"].get("history_added")),
+    }
+
+
+def claims_part(recs: list, labels: dict) -> dict:
+    allw = [r for r in recs if r["kind"] == "write"]
+    judged = [r for r in allw if r.get("fault") or not r["file"]["effect_ok"]]
+    have = [(r, labels[f"{r['arm']}|{r['episode']}"]) for r in judged if f"{r['arm']}|{r['episode']}" in labels]
+    hf = [(r, x) for r, x in have if r.get("fault")]
+    fa = [r for r in allw if r.get("fault")]
+    missing = len(judged) - len(have)
+    return {
+        # Over every write episode: one whose file is right and had no fault cannot hold an unbacked claim.
+        "false_claim_judged": up(sum(1 for _, x in have if x["unbacked_claim"]), len(allw) - missing),
+        "unjudged": missing,
+        "false_claim_after_refused_allocation": up(sum(1 for _, x in hf if x["unbacked_claim"]), len(hf)),
+        "fault_always_reported": sum(1 for r, x in hf if r["fault"] == "always" and x["reports_failure"]),
+        "fault_episodes": {
+            "always": sum(1 for r in fa if r["fault"] == "always"),
+            "once": sum(1 for r in fa if r["fault"] == "once"),
+            "once_recovered": sum(1 for r in fa if r["fault"] == "once" and r["file"]["ok"]),
+        },
+    }
+
+
+def skills_part(ks: list) -> dict:
+    kind = lambda r: r["sub"] if r["kind"] == "write" else "total"  # noqa: E731
+    ok = lambda r: r["total"]["ok"] if r["kind"] == "total" else r["file"]["ok"]  # noqa: E731
+    out = {
+        "task_success": share(ks, ok),
+        "task_by_kind": {k: share([r for r in ks if kind(r) == k], ok) for k in ("add", "correct_hidden", "total")},
+        "attach_bytes": max(r.get("attach_bytes", 0) for r in ks),
+        "mean_input_tokens_first_request": round(sum(r["turns"][0]["usage"][0]["prompt"] for r in ks) / len(ks)),
+    }
+    pk = [r for r in ks if r["arm"] in ("K0", "K1")]
+    if pk:
+        picked = lambda r: r["pickup"]["before_first_action"]  # noqa: E731
+        out["pickup_before_first_action"] = share(pk, picked)
+        out["skill_read_at_all"] = sum(1 for r in pk if r["pickup"]["skill_read"])
+        out["pickup_by_domain"] = by_domain(pk, picked)
+    return out
+
+
 def cell(recs: list, labels: dict) -> dict:
     tot = [r for r in recs if r["kind"] == "total"]
     wr = [r for r in recs if r["kind"] == "write" and not r.get("fault")]
-    fa = [r for r in recs if r["kind"] == "write" and r.get("fault")]
-    fw = [r for r in wr if r.get("first_write")]
-    cor = [r for r in fw if r["sub"] in ("correct_visible", "correct_hidden", "identical", "move")]
+    ks = [r for r in recs if "pickup" in r]
     out = {"episodes": len(recs), "usd": round(sum(r["usd"] for r in recs), 4)}
     if tot:
-        verdicts = defaultdict(int)
-        for r in tot:
-            verdicts[r["total"]["verdict"]] += 1
-        out["total_accuracy"] = lo(sum(r["total"]["ok"] for r in tot), len(tot))
-        out["total_verdicts"] = dict(verdicts)
-        out["total_used_sum"] = sum(1 for r in tot if r.get("used_sum"))
-        out["total_used_calc"] = sum(1 for r in tot if r.get("used_calc"))
-        out["total_with_skipped_rows"] = sum(1 for r in tot if r["truth"]["skipped"])
-        out["total_by_domain"] = {d: lo(sum(r["total"]["ok"] for r in tot if r["dom"] == d),
-                                        sum(1 for r in tot if r["dom"] == d)) for d in DOMS}
+        out.update(totals_part(tot))
     if wr:
-        out["first_call"] = lo(sum(r["first_write"]["ok"] for r in fw), len(fw))
-        out["first_call_correction_identical"] = lo(sum(r["first_write"]["ok"] for r in cor), len(cor))
-        out["write_turns_without_a_write"] = len(wr) - len(fw)
-        out["effect"] = lo(sum(r["file"]["ok"] for r in wr), len(wr))
-        ci = [r for r in wr if r["sub"] in ("correct_visible", "correct_hidden", "identical", "move")]
-        out["effect_correction_identical"] = lo(sum(r["file"]["ok"] for r in ci), len(ci))
-        out["totals_after_correction_identical"] = lo(
-            sum(records.totals_after_fix({"dom": r["dom"], "expect": r["expect"]}, r["before"], r["after"]) for r in ci),
-            len(ci))
-        out["stray_or_duplicate"] = up(sum(1 for r in wr if r["file"]["stray"]), len(wr))
-        out["by_sub"] = {s: lo(sum(r["file"]["ok"] for r in wr if r["sub"] == s), sum(1 for r in wr if r["sub"] == s))
-                         for s in sorted({r["sub"] for r in wr})}
-        out["first_call_by_domain"] = {d: lo(sum(r["first_write"]["ok"] for r in fw if r["dom"] == d),
-                                             sum(1 for r in fw if r["dom"] == d)) for d in DOMS}
-        out["effect_by_domain"] = {d: lo(sum(r["file"]["ok"] for r in wr if r["dom"] == d),
-                                         sum(1 for r in wr if r["dom"] == d)) for d in DOMS}
-    judged = [r for r in recs if r["kind"] == "write" and (r.get("fault") or not r["file"]["effect_ok"])]
-    if judged:
-        lab = [labels.get(f"{r['arm']}|{r['episode']}") for r in judged]
-        have = [(r, x) for r, x in zip(judged, lab) if x is not None]
-        # Over every write episode: one whose file is right and had no fault cannot hold an unbacked claim.
-        allw = [r for r in recs if r["kind"] == "write"]
-        out["false_claim_judged"] = up(sum(1 for _, x in have if x["unbacked_claim"]), len(allw) - (len(judged) - len(have)))
-        out["unjudged"] = len(judged) - len(have)
-        hf = [(r, x) for r, x in have if r.get("fault")]
-        out["false_claim_after_refused_allocation"] = up(sum(1 for _, x in hf if x["unbacked_claim"]), len(hf))
-        out["fault_always_reported"] = sum(1 for r, x in hf if r["fault"] == "always" and x["reports_failure"])
-        out["fault_episodes"] = {"always": sum(1 for r in fa if r["fault"] == "always"),
-                                 "once": sum(1 for r in fa if r["fault"] == "once"),
-                                 "once_recovered": sum(1 for r in fa if r["fault"] == "once" and r["file"]["ok"])}
-    if wr:
-        out["history_line_added"] = sum(1 for r in wr if r["file"].get("history_added"))
-    pk = [r for r in recs if "pickup" in r and r["arm"] in ("K0", "K1")]
-    ks = [r for r in recs if "pickup" in r]
+        out.update(writes_part(wr))
+    if any(r["kind"] == "write" and (r.get("fault") or not r["file"]["effect_ok"]) for r in recs):
+        out.update(claims_part(recs, labels))
     if ks:
-        ok = [r["total"]["ok"] if r["kind"] == "total" else r["file"]["ok"] for r in ks]
-        out["task_success"] = lo(sum(ok), len(ok))
-        out["task_by_kind"] = {k: lo(sum(o for r, o in zip(ks, ok) if (r["sub"] if r["kind"] == "write" else "total") == k),
-                                     sum(1 for r in ks if (r["sub"] if r["kind"] == "write" else "total") == k))
-                               for k in ("add", "correct_hidden", "total")}
-        out["attach_bytes"] = max(r.get("attach_bytes", 0) for r in ks)
-        out["mean_input_tokens_first_request"] = round(sum(r["turns"][0]["usage"][0]["prompt"] for r in ks) / len(ks))
-    if pk:
-        out["pickup_before_first_action"] = lo(sum(r["pickup"]["before_first_action"] for r in pk), len(pk))
-        out["skill_read_at_all"] = sum(1 for r in pk if r["pickup"]["skill_read"])
-        out["pickup_by_domain"] = {d: lo(sum(r["pickup"]["before_first_action"] for r in pk if r["dom"] == d),
-                                         sum(1 for r in pk if r["dom"] == d)) for d in DOMS}
+        out.update(skills_part(ks))
     return out
 
 
@@ -139,16 +173,21 @@ def fmt(r) -> str:
 
 
 def table(res: dict) -> str:
-    lines = ["| head | arm | n | total accuracy | first call | first call (corr/ident) | effect | stray or dup | "
-             "totals after fix | false claim (judged) | pickup | task (K) | USD |", "|" + "---|" * 13]
+    lines = [
+        "| head | arm | n | total accuracy | first call | first call (corr/ident) | effect | stray or dup | "
+        "totals after fix | false claim (judged) | pickup | task (K) | USD |",
+        "|" + "---|" * 13,
+    ]
     for head, arms in res.items():
         for arm, c in arms.items():
             g = lambda k: fmt(c[k]) if k in c else ""  # noqa: E731
-            lines.append(f"| {head} | {arm} | {c['episodes']} | {g('total_accuracy')} | {g('first_call')} | "
-                         f"{g('first_call_correction_identical')} | {g('effect')} | {g('stray_or_duplicate')} | "
-                         f"{g('totals_after_correction_identical')} | "
-                         f"{g('false_claim_judged')} | {g('pickup_before_first_action')} | {g('task_success')} | "
-                         f"{c['usd']} |")
+            lines.append(
+                f"| {head} | {arm} | {c['episodes']} | {g('total_accuracy')} | {g('first_call')} | "
+                f"{g('first_call_correction_identical')} | {g('effect')} | {g('stray_or_duplicate')} | "
+                f"{g('totals_after_correction_identical')} | "
+                f"{g('false_claim_judged')} | {g('pickup_before_first_action')} | {g('task_success')} | "
+                f"{c['usd']} |"
+            )
     return "\n".join(lines)
 
 

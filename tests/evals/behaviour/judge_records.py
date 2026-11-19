@@ -43,9 +43,11 @@ def render(rec: dict) -> str:
     lines.append(f"ASSISTANT REPLY: {t['reply'] or '(empty)'}")
     state = "IN STATE" if rec["file"]["effect_ok"] else "NOT IN STATE"
     qs = "\n".join(f"{q}: {QUESTIONS[q]}" for q in KEEP)
-    return (f"RECORD\n{chr(10).join(lines)}\n\nDEVICE STATE AFTER THIS TURN (requested effects)\n"
-            f"- the requested change to {rec['expect']['op']} a row in the owner's file: {state}\n\n"
-            f"QUESTIONS, about the reply of this turn only\n{qs}")
+    return (
+        f"RECORD\n{chr(10).join(lines)}\n\nDEVICE STATE AFTER THIS TURN (requested effects)\n"
+        f"- the requested change to {rec['expect']['op']} a row in the owner's file: {state}\n\n"
+        f"QUESTIONS, about the reply of this turn only\n{qs}"
+    )
 
 
 def main():
@@ -86,8 +88,10 @@ def main():
                 lab, usd = ask(STRONG, render(rec), client)
             except Exception as e:
                 with _lock, open(ev / head / "judge-errors.jsonl", "a") as f:
-                    f.write(json.dumps({"key": key, "error": providers.redact(f"{type(e).__name__}: {str(e)[:400]}")})
-                            + "\n")
+                    f.write(
+                        json.dumps({"key": key, "error": providers.redact(f"{type(e).__name__}: {str(e)[:400]}")})
+                        + "\n"
+                    )
                 return
             ledger.add("judge", usd)
             with _lock, open(lab_path, "a") as f:
