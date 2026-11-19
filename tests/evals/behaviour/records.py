@@ -289,9 +289,17 @@ move, remove or total anything in it. The file is mine; never create a second fi
   total again; otherwise tell me which entries are not in the total.
 - Use calc for anything that is not a plain total (what is left, an average, a difference).
 
+## Habits
+- I usually log within an hour of the entry; a message with no time means "now" by the stamp.
+- If I write "same as yesterday", read yesterday's rows and copy the matching one with today's
+  date and time, so the row is mine and not a guess.
+- I sometimes send two entries in one line ("{example.split(',')[2]} and a second one"): one row each.
+- A week is the last 7 days including today unless I name the days. A month so far starts on the 1st.
+
 ## Replies
 - Short and plain. Say a figure once, with its unit. Name entries that were left out.
 - If a tool fails, say it failed and that nothing was changed; never say it was logged.
+- Do not ask me to confirm a plain log; ask only when the entry cannot be written without an answer.
 """
     return body
 

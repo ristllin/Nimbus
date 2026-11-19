@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import records  # noqa: E402
 import stats  # noqa: E402
 
 HEAD_ORDER = ["claude-haiku-5-5", "gpt-5.6-luna", "glm-5.3", "claude-sonnet-5-5"]
@@ -39,6 +40,11 @@ def load(ev: Path, head: str):
         f = ev / head / f"{arm}.jsonl"
         if f.exists():
             recs += [json.loads(x) for x in f.read_text().splitlines() if x.strip()]
+    for r in recs:  # the checks are applied here, to the stored reply and file bytes (records.py)
+        if r["kind"] == "total":
+            r["total"] = records.judge_total(r["turns"][-1]["reply"], r["truth"])
+        else:
+            r["file"] = records.judge_write({"dom": r["dom"], "expect": r["expect"]}, r["before"], r["after"])
     labels = {}
     lp = ev / head / "labels-records.jsonl"
     if lp.exists():
