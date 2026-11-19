@@ -279,29 +279,32 @@ rights so a tool client on the network cannot act as the owner through it, but t
 same code also opens the web chat, which runs as the owner. Treat the code as the
 owner's password.
 
-**The unattended policy** (v5.2.0, `lib/core/src/orch_unattended_policy.cpp`). On top of
-the rule table, a turn nobody is writing runs under its class's row. It may read; it never
-changes a setting, skill or permission, and never writes a file (engine 2's routines may
-write only the paths their own definition lists); only the nightly upkeep writes memory.
-A routine, a reminder, a wakeup and a held note send only through their own reply (held
-through quiet hours) and start no paid work. The sub-agent report may send a file a
-sub-agent made to its own chat and start the next wave of a fan-out (PRD section 6),
-which the job queue and the spend ceiling bound. Messages and files to any other chat stay
-the owner's, writing now (the rule table). An unattended request carries the provider's
-built-ins only, never the owner's connectors, whose calls run on the provider's side. The
-check runs at the registry's access seam on every route (the LAN endpoint and calls from
-other tasks are no turn and are skipped), and a refused call reads one plain "Not run: ..."
-line.
+**The unattended policy** (v5.2.0, `lib/core/src/orch_unattended_policy.cpp`, ruling 76). On top of
+the rule table, a turn nobody is writing runs under its class's row. It never changes a setting, skill or
+permission and never writes a file (engine 2's routines may write only the paths their own definition
+lists); only the nightly upkeep writes memory. A class whose row says no spend makes no paid call: no
+provider built-in rides its request, and a web search or a look at a photo counts as spend. A device
+setting element counts by knob: brightness, theme and sound level are the light and sound; every other knob
+is a setting. A wakeup an unattended turn sets is one hop of a chain: at most 3 hops without an attended
+message, and none from a turn that has seen outside content.
 
-| Class | Read | Write files | Memory | Send (own chat) | Spend | Schedule | Light, sound, speech | Settings |
-|---|---|---|---|---|---|---|---|---|
-| Routine (owner's, approved) | yes | listed paths only (none on v5.2.0) | no | no | no | follow-up wakeup | yes | no |
-| Reminder (owner's /remind) | yes | no | no | no | no | no | yes | no |
-| Wakeup (assistant's, often at the owner's word) | yes | no | no | no | no | next wakeup | yes | no |
-| Self-wakeup (held note) | yes | no | no | no | no | no | no | no |
-| Sub-agent report | yes | no | no | yes | next wave | no | no | no |
-| Nightly upkeep | yes | no | yes | no | no | no | no | no |
-| Update notice | no model call: a fixed string | | | | | | | |
+Sub-agents started by a turn nobody is writing run without the owner's connectors (unless his routine switch
+is on), may not name a connector skill, get no attach of his documents and no chat context, and save into
+none of his projects. The owner's message starts a run: report turns may start at most 2 further waves, and a
+run at most 16 sub-agents in 2 hours; a refused wave is said in one plain line. Sub-agent results reach the
+report turn fenced as outside content, and a turn that has seen outside content sends only a file the
+results name. The owner's routine switch (`/loop grants on|off`, off by default) lets his routines use his
+connectors and start sub-agents (never with an attach).
+
+| Class | Read | Write files | Memory | Scratchpad | Send (own chat) | Spend | Schedule | Light, sound, speech | Settings |
+|---|---|---|---|---|---|---|---|---|---|
+| Routine (owner's) | yes | listed paths only (none on v5.2.0) | no | no | no | only with his switch | follow-up wakeup | no | no |
+| Reminder (owner's /remind) | yes | no | no | no | no | no | no | yes | no |
+| Wakeup (assistant's, often at the owner's word) | yes | no | no | no | no | no | next hop, at most 3 | yes | no |
+| Self-wakeup (held note) | one short request, no tools | | | | | | | | |
+| Sub-agent report | yes | no | no | yes | a named artifact | next wave, run caps | no | no | no |
+| Nightly upkeep | yes | no | yes | yes | no | no | no | no | no |
+| Update notice | no model call: a fixed string | | | | | | | | |
 
 **What is not covered yet** (tracked for the next release):
 

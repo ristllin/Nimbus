@@ -62,6 +62,7 @@ class HostedLoops {
     if (fsutil::readFile(path_, blob)) nimbus::orch::loadLoops(blob, loops_);
     std::string mode;
     askFirst_ = fsutil::readFile(modePath_, mode) && !mode.empty() && mode[0] == '1';
+    routineGrants_ = mode.size() > 1 && mode[1] == '1';   // the owner's routine switch (RB-Q2a)
     // A deadline in the past fires on the next tick only for a one-shot (its moment
     // has come); a recurring routine takes its next slot, with no burst after a restart.
     const uint64_t now = epoch();
@@ -169,7 +170,15 @@ class HostedLoops {
   }
   void setAskFirst(bool on) {
     askFirst_ = on;
-    fsutil::writeFileAtomic(modePath_, on ? "1" : "0");
+    persistMode();
+  }
+  // The owner's routine switch (RB-Q2a, ruling 76 item 7), off by default, the second
+  // character of the wake-up mode file: on lets his routines use his connectors and start
+  // sub-agents.
+  bool routineGrants() const { return routineGrants_; }
+  void setRoutineGrants(bool on) {
+    routineGrants_ = on;
+    persistMode();
   }
   size_t count() const { return loops_.size(); }
   std::string wakeupsJson() const { return nimbus::orch::dumpWakeupsApi(loops_, askFirst_, epoch()); }
@@ -447,6 +456,8 @@ class HostedLoops {
   HostedLoopHooks h_;
   std::string path_, modePath_;
   bool askFirst_ = false;
+  bool routineGrants_ = false;
+  void persistMode() { fsutil::writeFileAtomic(modePath_, std::string(askFirst_ ? "1" : "0") + (routineGrants_ ? "1" : "0")); }
   uint32_t ceilingAlertDay_ = 0;
   uint64_t lastTick_ = 0;
   static constexpr uint32_t tickSec_ = 20;   // the device's sweep

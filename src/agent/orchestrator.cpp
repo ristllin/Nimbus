@@ -1260,6 +1260,7 @@ static TurnEngine::Deps buildTurnDeps() {
     deliver(String(chatId.c_str()), String(text.c_str()));
   };
   d.deliveryNeedsRow = [](const std::string&) { return s_lastDeliveryNeedsRow; };
+  d.routineGrants = [] { return loops::routineGrants(); };   // RB-Q2a, ruling 76 item 7
   d.truth = truthdev::binding();   // RB-G0: the truth check (truth_device.h)
   // The chat's recent effects for its probe: the effect ring (RB-FX), whole only when the
   // ring lives on the card.
@@ -2243,6 +2244,12 @@ void handleMessage(const String& text, const String& fromName, const String& cha
         String action = (sp < 0) ? rest : rest.substring(0, sp);
         String id = (sp < 0) ? String("") : rest.substring(sp + 1); id.trim();
         if (action.length() == 0) { say(selfTag + "Usage: /loops \xC2\xB7 /loop approve|deny|off|on <id>"); return; }
+        if (action == "grants" && (id == "on" || id == "off")) {   // RB-Q2a, ruling 76 item 7
+          loops::setRoutineGrants(id == "on");
+          say(selfTag + (id == "on" ? "Routines may now use your connectors and start sub-agents."
+                                    : "Routines now only read, set their follow-up and reply."));
+          return;
+        }
         String msg;
         if      (action == "approve") msg = loops::approveLoop(id) ? "Approved - it will run on schedule." : "No routine with that ID.";
         else if (action == "deny" || action == "kill" || action == "delete")
@@ -2358,6 +2365,7 @@ void handleMessage(const String& text, const String& fromName, const String& cha
                         "/mcp approve|deny <name> - approve a tool server\n"
                         "/play [track|stop|pause] - play music from the SD card\n"
                         "/loop approve|deny|off|on <id> - manage a routine\n"
+                        "/loop grants on|off - may routines use your connectors and start sub-agents\n"
                         "/skill list|show <id> - see saved skills and what waits for you\n"
                         "/skill approve|deny|delete <id> - decide on the assistant's skill changes\n"
                         "/skill auto on|off - may the assistant approve its own skill changes\n"
@@ -2536,8 +2544,8 @@ bool fileSendForTurn() {
 bool inScheduledTurn() { return g_engine && g_engine->inScheduledTurn(); }
 // Read on the turn task only (the turn's state): a web page's save while a routine runs on
 // tg_poll is not the routine's call.
-nimbus::orch::TurnClass unattendedClass() {
-  return g_engine && telegram::onTurnTask() ? g_engine->unattendedClass() : nimbus::orch::TurnClass::Attended;
+nimbus::orch::UnattendedFacts unattendedFacts() {
+  return g_engine && telegram::onTurnTask() ? g_engine->unattendedFacts() : nimbus::orch::UnattendedFacts();
 }
 
 // Lane J: did the running turn read outside content (a folded-in media row, or
@@ -2564,45 +2572,34 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
                                        ownerReminder, selfWakeup);
 }
 
-// The update notice's chat row (RB-Q2a): the notice itself is a fixed string sent at once
-// by the OTA hook (orch::updateNoticeText, no model call); its row is staged here from that
-// task and written on tg_poll, where the history lives - the same single-producer/consumer
-// char-buffer+flag handoff as the telegram token swap. One slot; the latest stager wins.
+// The update notice (RB-Q2a, ruling 76 item 6): the OTA hook stages its fixed text from its
+// own task (orch::updateNoticeText, no model call); here on tg_poll the owner's chat is
+// resolved, the notice sent and its history row written at once, with no effect tags, so a
+// question right after the update sees it. One slot; the latest stager wins.
 static char          (&s_noticeText)[512] = ::nimbus::psramStatic<char[512]>();   // PSRAM
-static char          s_noticeChat[32] = {};
-static uint32_t      s_noticeStagedAt = 0;   // millis() when staged (owner_first.h quiet window)
 static volatile bool s_noticePending = false;
 static portMUX_TYPE  s_noticeMux = portMUX_INITIALIZER_UNLOCKED;
 
-void stageUpdateNotice(const String& chatId, const String& text) {
+void stageUpdateNotice(const String& text) {
   portENTER_CRITICAL(&s_noticeMux);
   strncpy(s_noticeText, text.c_str(), sizeof(s_noticeText) - 1);
   s_noticeText[sizeof(s_noticeText) - 1] = 0;
-  strncpy(s_noticeChat, chatId.c_str(), sizeof(s_noticeChat) - 1);
-  s_noticeChat[sizeof(s_noticeChat) - 1] = 0;
-  s_noticeStagedAt = millis();
   s_noticePending = true;
   portEXIT_CRITICAL(&s_noticeMux);
 }
 
-// The row yields to the owner (owner_first.h): it is written once two minutes passed since
-// it was staged and since the last turn, never in the middle of an exchange.
 static void drainUpdateNotice() {
   if (!s_noticePending) return;
+  String text;
   portENTER_CRITICAL(&s_noticeMux);
-  const uint32_t stagedAt = s_noticeStagedAt;
+  text = s_noticeText;
+  s_noticePending = false;
   portEXIT_CRITICAL(&s_noticeMux);
-  if (!g_ownerFirst.systemTurnMayStart(telegram::guardStatus().holding, millis(), stagedAt)) return;
-  String text, chat;
-  portENTER_CRITICAL(&s_noticeMux);
-  const bool restaged = s_noticeStagedAt != stagedAt;   // a newer staging waits its own window
-  if (!restaged) {
-    text = s_noticeText;
-    chat = s_noticeChat;
-    s_noticePending = false;
-  }
-  portEXIT_CRITICAL(&s_noticeMux);
-  if (restaged || chat.length() == 0 || !g_engine) return;
+  const String chat = agent::telegram::ownerChat();   // the poll task's own lists
+  if (chat.length() == 0 || !g_engine) return;          // nowhere to deliver - drop quietly
+  if (loops::hasRoutines())   // ruling 76 item 7: the owner learns his routines' new default
+    text += "\nRoutines no longer use your connectors or start sub-agents; /loop grants on allows it.";
+  telegram::send(chat, text, /*block=*/false);
   g_engine->recordNotice(std::string(chat.c_str()), std::string(text.c_str()));
 }
 

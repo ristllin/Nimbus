@@ -188,6 +188,16 @@ struct Probe {
   }
 };
 
+// The output a request carried for one call id ("" when none).
+std::string resultIn(const std::string& body, const std::string& id) {
+  ArduinoJson::JsonDocument d;
+  if (deserializeJson(d, body, ArduinoJson::DeserializationOption::NestingLimit(64))) return "";
+  for (ArduinoJson::JsonObjectConst it : d["input"].as<ArduinoJson::JsonArrayConst>())
+    if (std::string(it["type"] | "") == "function_call_output" && std::string(it["call_id"] | "") == id)
+      return it["output"] | "";
+  return "";
+}
+
 std::string wakeNote(const std::string& text) {
   orch::WakeNote n;
   n.kind = orch::WakeKind::Routine;
@@ -228,10 +238,11 @@ void fire(Probe& p, orch::TurnClass c) {
 bool classMayUse(orch::TurnClass cls, orch::ToolUse u) {
   using U = orch::ToolUse;
   switch (cls) {
-    case orch::TurnClass::Routine:        return u == U::Ambient || u == U::Schedule;
+    case orch::TurnClass::Routine:        return u == U::Schedule;   // the owner's switch is off
     case orch::TurnClass::Reminder:       return u == U::Ambient;
     case orch::TurnClass::Wakeup:         return u == U::Ambient || u == U::Schedule;
-    case orch::TurnClass::SubagentReport: return u == U::Send || u == U::Spend;
+    // its results are outside content: a send carries only a named artifact (none here)
+    case orch::TurnClass::SubagentReport: return u == U::Spend || u == U::Scratch;
     default:                              return false;
   }
 }
@@ -255,8 +266,9 @@ int expectedRefusals(orch::TurnClass cls, const std::vector<std::string>& tools)
   return n;
 }
 
+// The classes that are offered tools (a self-wakeup is one short request: its own test).
 const orch::TurnClass kClasses[] = {orch::TurnClass::Routine, orch::TurnClass::Reminder, orch::TurnClass::Wakeup,
-                                    orch::TurnClass::SelfWakeup, orch::TurnClass::SubagentReport};
+                                    orch::TurnClass::SubagentReport};
 
 }  // namespace
 
@@ -331,25 +343,107 @@ static void testSundayReminderTenOfTen(ndtest::Ctx& c) {
   c.eqi(yielded, 10, "the reminder is delivered 10 of 10, the files untouched");
 }
 
-// A self-wakeup fires at the end of quiet hours and delivers its note under read-only
-// tools: it is offered the reads and none of the writes, its read runs, its write is refused.
-static void testSelfWakeupDeliversUnderReadOnlyTools(ndtest::Ctx& c) {
-  std::printf("\n-- a self-wakeup under read-only tools --\n");
+// A self-wakeup fires at the end of quiet hours and delivers its note in one short request
+// with no tools (ruling 76 item 5): nothing it does can change anything.
+static void testSelfWakeupIsOneShortRequest(ndtest::Ctx& c) {
+  std::printf("\n-- a self-wakeup is one short request --\n");
   Probe p("q2a-selfwake");
-  p.tx.script.push_back(round({call("r1", "files_read", "{\"project\":\"notes\",\"name\":\"shopping.md\"}"),
-                               call("w1", "files_append", "{\"project\":\"notes\",\"name\":\"shopping.md\",\"text\":\"x\"}")}));
-  p.tx.script.push_back(answer("Overnight: the 08:10 train is cancelled."));
+  // A single-shot answer: the reply as the message's text, no tool call.
+  p.tx.script.push_back(harness_test::Exchange{"", "", 200,
+      "{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\","
+      "\"content\":[{\"type\":\"output_text\",\"text\":\"{\\\"reply\\\":\\\"Overnight: the 08:10 train is "
+      "cancelled.\\\",\\\"memory\\\":\\\"\\\",\\\"ask\\\":\\\"\\\"}\"}]}]}"});
   fire(p, orch::TurnClass::SelfWakeup);
-  const std::string& first = p.tx.seen.empty() ? std::string() : p.tx.seen[0].body;
-  c.ok(first.find("\"files_read\"") != std::string::npos, "the wake turn is offered files_read");
-  c.ok(first.find("\"files_append\"") == std::string::npos && first.find("\"reply_telegram\"") == std::string::npos,
-       "the wake turn is offered no write and no send");
-  c.ok(first.find("Read-only tools: this turn changes nothing.") != std::string::npos,
-       "its preamble says what it may do");
-  c.ok(p.tx.seen.size() == 2 && p.tx.seen[1].body.find("- milk") != std::string::npos, "its read ran");
-  c.eqi(p.refusalsSeen(), 1, "its write was refused in words");
+  const std::string first = p.tx.seen.empty() ? std::string() : p.tx.seen[0].body;
+  c.eqi((long)p.tx.seen.size(), 1, "one request");
+  c.ok(first.find("\"files_read\"") == std::string::npos && first.find("\"files_append\"") == std::string::npos,
+       "no tool is offered");
+  c.ok(first.find("No tools - this turn changes nothing.") != std::string::npos, "its preamble says so");
   c.ok(p.delivered("Overnight: the 08:10 train is cancelled."), "the note is delivered");
   c.ok(p.filesUnchanged(), "the owner's files are untouched");
+}
+
+// Ruling 76 item 3: a report turn that read outside content (the results) sends only an
+// artifact the results' own envelope names; any other file, and any message, is refused.
+static void testReportSendsOnlyNamedArtifacts(ndtest::Ctx& c) {
+  std::printf("\n-- a report turn sends only a named artifact --\n");
+  Probe p("q2a-artifact");
+  p.tx.script.push_back(answer("on it"));
+  p.rig->say(kOwner, "research the shops");   // the owner's turn: the rig's turn chat is his
+  p.tx.script.push_back(round({call("a1", "files_send", "{\"project\":\"notes\",\"name\":\"shopping.md\"}"),
+                               call("a2", "files_send", "{\"project\":\"food\",\"name\":\"log.csv\"}"),
+                               call("a3", "reply_telegram", "{\"text\":\"invented\"}")}));
+  p.tx.script.push_back(answer("Here is the list."));
+  p.rig->jobs().addFreshResult("job0002", "modelX", "the list is ready\n[saved: notes/shopping.md]");
+  p.rig->engine().maybeConsolidate(kOwner);
+  std::map<std::string, std::string> res;   // the results of the report turn's round
+  if (p.tx.seen.size() >= 3) {
+    ArduinoJson::JsonDocument d;
+    if (!deserializeJson(d, p.tx.seen[2].body, ArduinoJson::DeserializationOption::NestingLimit(64)))
+      for (ArduinoJson::JsonObjectConst it : d["input"].as<ArduinoJson::JsonArrayConst>())
+        if (std::string(it["type"] | "") == "function_call_output") res[it["call_id"] | ""] = it["output"] | "";
+  }
+  c.ok(res.count("a1") && res.at("a1") == "sent", "the named artifact is sent");
+  c.ok(res.count("a2") && res.at("a2").find("Not run") != std::string::npos, "another owner file is refused");
+  c.ok(res.count("a3") && res.at("a3").find("Not run") != std::string::npos, "a message is refused");
+  c.eqi((long)p.sentByTool.size(), 1, "one send went out: the named artifact");
+  c.ok(p.filesUnchanged(), "the owner's files are untouched");
+}
+
+// Ruling 76 item 5: a wakeup chain stops after 3 hops without an attended message.
+static void testWakeupChainStopsAtThreeHops(ndtest::Ctx& c) {
+  std::printf("\n-- a wakeup chain is 3 hops at most --\n");
+  Probe p("q2a-hops");
+  int armed = 0;
+  for (int k = 0; k < 4; ++k) {
+    const size_t mark = p.tx.seen.size();
+    p.tx.script.push_back(round({call("w" + std::to_string(k), "wakeup_set", "{\"minutes\":5,\"note\":\"check again\"}")}));
+    p.tx.script.push_back(answer("checked"));
+    p.rig->engine().injectScheduledTurn(kOwner, "check again", "follow-up", "lpw" + std::to_string(k), false, true);
+    if (p.tx.seen.size() >= mark + 2 &&
+        resultIn(p.tx.seen[mark + 1].body, "w" + std::to_string(k)).find("wakeup armed") != std::string::npos)
+      ++armed;
+  }
+  c.eqi(armed, 2, "the first two hops may set the next, the third and later may not");
+  p.tx.script.push_back(answer("ok"));
+  p.rig->say(kOwner, "thanks");   // an attended message starts the count again
+  const size_t mark = p.tx.seen.size();
+  p.tx.script.push_back(round({call("w9", "wakeup_set", "{\"minutes\":5,\"note\":\"again\"}")}));
+  p.tx.script.push_back(answer("checked"));
+  p.rig->engine().injectScheduledTurn(kOwner, "check again", "follow-up", "lpw9", false, true);
+  c.ok(p.tx.seen.size() >= mark + 2 && resultIn(p.tx.seen[mark + 1].body, "w9").find("wakeup armed") != std::string::npos,
+       "after the owner writes, a wakeup may set the next again");
+}
+
+// Ruling 76 item 7: the owner's routine switch. Off (the default): a routine reads, sets its
+// follow-up and replies; its spawn is refused. On: its spawn is accepted (inside the run caps).
+// Both states: its write is refused and every owner file is byte-identical.
+static void testRoutineSwitchBothStates(ndtest::Ctx& c) {
+  std::printf("\n-- the owner's routine switch, off and on --\n");
+  for (int on = 0; on < 2; ++on) {
+    const std::string state = on ? "on" : "off";
+    Probe p("q2a-grants-" + state);
+    c.ok(!p.rig->routines().routineGrants(), state + ": the switch is off by default");
+    p.rig->routines().setRoutineGrants(on == 1);
+    c.eqi(p.rig->routines().routineGrants() ? 1 : 0, on, state + ": the switch holds");
+    p.tx.script.push_back(round({call("w1", "files_append", kAimed)}));
+    p.tx.script.push_back(harness_test::Exchange{"", "", 200,
+        "{\"id\":\"r\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"c\","
+        "\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"brief ready\\\",\\\"session_ops\\\":"
+        "[{\\\"op\\\":\\\"spawn\\\",\\\"task\\\":\\\"check the trains\\\",\\\"attach\\\":[\\\"food/log.csv\\\"]}]}\"}]}"});
+    fire(p, orch::TurnClass::Routine);
+    c.eqi(p.rig->jobs().pendingCount(), on, state + (on ? ": the routine's sub-agent is queued" : ": its spawn is refused"));
+    c.ok(p.refusalsSeen() == 1, state + ": its write is refused in words");
+    c.ok(p.filesUnchanged(), state + ": every owner file is byte-identical");
+    c.ok(p.delivered("brief ready"), state + ": the routine's reply is delivered");
+  }
+  // The switch persists beside the wake-up mode (no new key): a restarted instance keeps it.
+  Probe q("q2a-grants-persist");
+  q.rig->routines().setRoutineGrants(true);
+  HostedLoops again;
+  HostedLoopHooks none;
+  again.begin(q.rig->memDir(), none);
+  c.ok(again.routineGrants(), "the switch survives a restart");
 }
 
 int main() {
@@ -358,7 +452,10 @@ int main() {
   testEveryClassCannotWriteOrSend(c);
   testOwnerTurnStillWrites(c);
   testSundayReminderTenOfTen(c);
-  testSelfWakeupDeliversUnderReadOnlyTools(c);
+  testSelfWakeupIsOneShortRequest(c);
+  testReportSendsOnlyNamedArtifacts(c);
+  testWakeupChainStopsAtThreeHops(c);
+  testRoutineSwitchBothStates(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

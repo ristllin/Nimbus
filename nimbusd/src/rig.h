@@ -1951,7 +1951,7 @@ class NimbusdRig {
         reg_, [this] { return eng_ && eng_->inScheduledTurn(); }, [this] { return cur_.chatId; },
         [this](const std::string& name, ArduinoJson::JsonObjectConst args, const orch::ActionCaller& c) {
           if (c.lan || !eng_) return std::string();
-          return orch::unattendedRefusal(eng_->unattendedClass(), name, args);
+          return orch::unattendedRefusal(eng_->unattendedFacts(), name, args);
         });
 
     for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
@@ -2786,6 +2786,7 @@ class NimbusdRig {
       captureOwnerRow(c, t, tag);   // the in-flight row rides [USER], not the window
     };
     d.firstAllowedChat = [] { return std::string("owner"); };
+    d.routineGrants = [this] { return loops_.routineGrants(); };   // RB-Q2a, ruling 76 item 7
     d.journalGc = [] {};
     // Lane POL2: the open-question list observes every completed turn in the
     // owner's chat (raise-once bookkeeping, open_questions.h); a member's turn

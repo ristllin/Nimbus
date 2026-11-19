@@ -15,28 +15,28 @@ constexpr Grant N = Grant::No;
 constexpr Grant Y = Grant::Yes;
 constexpr Grant L = Grant::ListedPaths;
 
-// One row per class. Columns: Read, Write, Memory, Send, Spend, Schedule, Ambient, Control.
-// A routine, a reminder and a wakeup send only through their own reply (held delivery);
-// messages and files to a chat other than the turn's own are the owner's, writing now, in
-// every class (action_rules.h, OwnerAttended).
+// One row per class (ruling 76). Columns: Read, Write, Memory, Send, Spend, Schedule,
+// Ambient, Control, Scratch. A routine, a reminder, a wakeup and a held note send only through
+// their own reply (held delivery); messages and files to a chat other than the turn's own are
+// the owner's, writing now, in every class (action_rules.h, OwnerAttended).
 const UnattendedPolicyRow kPolicy[] = {
-    {TurnClass::Attended, ModelCall::Sub, Output::Reply, {Y, Y, Y, Y, Y, Y, Y, Y}},
-    {TurnClass::UpdateNotice, ModelCall::None, Output::Fixed, {N, N, N, N, N, N, N, N}},
-    // the owner's own routine: may dim the ring at night, speak, set a follow-up wakeup
-    // ("check the flight again in 30 minutes"); writes only to its listed paths
-    {TurnClass::Routine, ModelCall::Sub, Output::Reply, {Y, L, N, N, N, Y, Y, N}},
+    {TurnClass::Attended, ModelCall::Sub, Output::Reply, true, {Y, Y, Y, Y, Y, Y, Y, Y, Y}},
+    {TurnClass::UpdateNotice, ModelCall::None, Output::Fixed, false, {N, N, N, N, N, N, N, N, N}},
+    // the owner's routine reads, sets its follow-up and replies; his switch adds his
+    // connectors and sub-agents (UnattendedFacts::routineGrants); writes only to its listed paths
+    {TurnClass::Routine, ModelCall::Sub, Output::Reply, true, {Y, L, N, N, N, Y, N, N, N}},
     // the owner's own one-time reminder ("lights off at 23:00", or said aloud)
-    {TurnClass::Reminder, ModelCall::Sub, Output::Reply, {Y, N, N, N, N, N, Y, N}},
+    {TurnClass::Reminder, ModelCall::Sub, Output::Reply, true, {Y, N, N, N, N, N, Y, N, N}},
     // a one-time wakeup the assistant set, mostly at the owner's word in chat ("lights off
-    // at 23:00", "remind me at 7, out loud"): the light and speech, and the next wakeup
-    {TurnClass::Wakeup, ModelCall::Sub, Output::Reply, {Y, N, N, N, N, Y, Y, N}},
-    {TurnClass::SelfWakeup, ModelCall::Sub, Output::Reply, {Y, N, N, N, N, N, N, N}},
-    // results arriving (PRD section 6: file, note, schedule and device writes refused): it
-    // may send a file a sub-agent made to its own chat and start the next wave of a
-    // fan-out (bounded by the job queue and the spend ceiling)
-    {TurnClass::SubagentReport, ModelCall::Sub, Output::Reply, {Y, N, N, Y, Y, N, N, N}},
+    // at 23:00", "remind me at 7, out loud"): the light and speech, and the next hop
+    {TurnClass::Wakeup, ModelCall::Sub, Output::Reply, true, {Y, N, N, N, N, Y, Y, N, N}},
+    // a held note: one short request, no tools
+    {TurnClass::SelfWakeup, ModelCall::Sub, Output::Reply, false, {N, N, N, N, N, N, N, N, N}},
+    // results arriving (PRD section 6): its scratchpad (the wave checklist), a named artifact
+    // to its own chat, the next wave inside the run's caps (jobs.h); memory and files closed
+    {TurnClass::SubagentReport, ModelCall::Sub, Output::Reply, true, {Y, N, N, Y, Y, N, N, N, Y}},
     // the nightly upkeep grooms the assistant's own memory and sends nothing
-    {TurnClass::Dream, ModelCall::Sub, Output::Silent, {Y, N, Y, N, N, N, N, N}},
+    {TurnClass::Dream, ModelCall::Sub, Output::Silent, true, {Y, N, Y, N, N, N, N, N, Y}},
 };
 
 // The tool class of each name or argument-narrowed key that is not a plain read, and of the
@@ -69,11 +69,11 @@ const UseRow kUses[] = {
     {"memory.write", U::Memory},
     {"memory.update", U::Memory},
     {"memory.pin", U::Memory},
-    {"memory.scratchpad", U::Memory},
+    {"memory.scratchpad", U::Scratch},
     {"memory.archive", U::Memory},   // a restore writes
     {"openq.edit.change", U::Memory},
     {"image.note", U::Memory},   // records what a photo showed
-    {"turn.scratchpad", U::Memory},
+    {"turn.scratchpad", U::Scratch},
     {"note", U::Memory},
     // messages and files to a chat
     {"reply.telegram", U::Send},
@@ -86,6 +86,9 @@ const UseRow kUses[] = {
     {"session.tell", U::Spend},
     {"turn.spawn", U::Spend},
     {"image.generate", U::Spend},
+    {"image.look", U::Spend},   // a paid vision request
+    {"web.search", U::Spend},   // a paid search
+    {"web_search", U::Spend},
     {"agent_start", U::Spend},
     {"image_generate", U::Spend},
     // routines and wakeups
@@ -99,7 +102,6 @@ const UseRow kUses[] = {
     {"speak", U::Ambient},
     {"device.led", U::Ambient},
     {"device.lights", U::Ambient},
-    {"device.config", U::Ambient},   // each knob still has its own action rule
     {"media.play", U::Ambient},
     {"media.pause", U::Ambient},
     {"media.stop", U::Ambient},
@@ -125,7 +127,6 @@ const UseRow kUses[] = {
     {"read_file", U::Read},
     {"list_files", U::Read},
     {"search", U::Read},
-    {"web_search", U::Read},
     {"view", U::Read},
     {"more", U::Read},   // a router: each tool it reaches is its own dispatch, checked on its own
     {"calc", U::Read},
@@ -151,9 +152,26 @@ ToolUse useOfKey(const std::string& key) {
   return actionRuleRow(key) ? U::Read : U::Control;
 }
 
-// A device action by its kind: light, sound and speech Ambient, the rest Control.
+// A config element by its knobs: brightness, theme and sound level are Ambient, any other
+// knob makes the element a setting (Control).
+ToolUse useOfConfig(const ValidatedAction& va) {
+  static const char* const kAmbient[] = {"ledBrightness", "theme", "sfxLvlN", "sfxLvlO", "sfxVol", "sfxTheme"};
+  size_t n = 0;
+  const ConfigKnob* k = configKnobTable(n);
+  for (size_t i = 0; i < n; ++i) {
+    if (!(va.*(k[i].has))) continue;
+    bool ambient = false;
+    for (const char* a : kAmbient) ambient = ambient || !strcmp(a, k[i].knob);
+    if (!ambient) return U::Control;
+  }
+  return U::Ambient;
+}
+
+// A device action by its kind: light, sound and speech Ambient, config by knob, the rest Control.
 ToolUse useOfDeviceAction(ArduinoJson::JsonVariantConst el) {
-  const char* key = deviceActionKey(validateAction(el).kind);
+  const ValidatedAction va = validateAction(el);
+  if (va.kind == ActionKind::Config) return useOfConfig(va);
+  const char* key = deviceActionKey(va.kind);
   return key && *key ? useOfKey(key) : U::Control;
 }
 
@@ -173,7 +191,8 @@ const char* classNoun(TurnClass c) {
 const char* useNoun(ToolUse u) {
   switch (u) {
     case U::Write:    return "changes to files";
-    case U::Memory:   return "memory and note writes";
+    case U::Memory:
+    case U::Scratch:  return "memory and note writes";
     case U::Send:     return "messages and files to a chat (its reply is what reaches the owner)";
     case U::Spend:    return "paid work such as sub-agents or images";
     case U::Schedule: return "routine and wakeup changes";
@@ -187,16 +206,14 @@ std::string refusalFor(TurnClass c, ToolUse u) {
          " are closed to it. Nothing was changed.";
 }
 
-bool granted(TurnClass c, ToolUse u, bool pathListedNow) {
-  const Grant g = unattendedPolicy(c).grant[(int)u];
-  return g == Grant::Yes || (g == Grant::ListedPaths && pathListedNow);
+void cutField(bool present, ToolUse use, const UnattendedFacts& f, const char* field, int& cut,
+              std::string& refusals) {
+  if (!present || unattendedGranted(f, use)) return;
+  ++cut;
+  refusals += std::string(field) + ": " + refusalFor(f.cls, use) + "\n";
 }
 
-void cutField(bool present, ToolUse use, TurnClass cls, const char* field, int& cut, std::string& refusals) {
-  if (!present || granted(cls, use, false)) return;
-  ++cut;
-  refusals += std::string(field) + ": " + refusalFor(cls, use) + "\n";
-}
+bool isFileSend(const std::string& name) { return name == "files.send" || name == "send"; }
 
 }  // namespace
 
@@ -224,6 +241,7 @@ const char* toolUseSlug(ToolUse u) {
     case U::Schedule: return "schedule";
     case U::Ambient:  return "ambient";
     case U::Control:  return "control";
+    case U::Scratch:  return "scratch";
   }
   return "control";
 }
@@ -276,42 +294,55 @@ bool pathListed(const std::string& path, const std::vector<std::string>& listed)
   return false;
 }
 
-std::string unattendedRefusal(TurnClass cls, const std::string& name, ArduinoJson::JsonObjectConst args,
-                              const std::vector<std::string>& listed) {
-  if (cls == TurnClass::Attended) return std::string();
-  const ToolUse u = toolUseFor(name, args);
-  const bool listedNow = u == U::Write && pathListed(callPath(args), listed);
-  return granted(cls, u, listedNow) ? std::string() : refusalFor(cls, u);
+bool unattendedGranted(const UnattendedFacts& f, ToolUse u, bool pathListedNow) {
+  if (f.cls == TurnClass::Attended) return true;
+  if (u == U::Schedule && (f.outside || f.hops >= kMaxWakeHops)) return false;
+  if (u == U::Spend && f.cls == TurnClass::Routine && f.routineGrants) return true;
+  const Grant g = unattendedPolicy(f.cls).grant[(int)u];
+  return g == Grant::Yes || (g == Grant::ListedPaths && pathListedNow);
 }
 
-bool unattendedMayList(TurnClass cls, const std::string& name, bool hasListedPaths) {
-  if (cls == TurnClass::Attended) return true;
+std::string unattendedRefusal(const UnattendedFacts& f, const std::string& name, ArduinoJson::JsonObjectConst args) {
+  if (f.cls == TurnClass::Attended) return std::string();
+  const ToolUse u = toolUseFor(name, args);
+  const bool listedNow = u == U::Write && f.listed && pathListed(callPath(args), *f.listed);
+  bool ok = unattendedGranted(f, u, listedNow);
+  // Outside content seen: a send carries only a file the results' envelopes name.
+  if (ok && u == U::Send && f.outside)
+    ok = isFileSend(name) && f.artifacts && pathListed(callPath(args), *f.artifacts);
+  return ok ? std::string() : refusalFor(f.cls, u);
+}
+
+bool unattendedMayList(const UnattendedFacts& f, const std::string& name) {
+  if (f.cls == TurnClass::Attended) return true;
+  if (!unattendedPolicy(f.cls).tools) return false;
   // device.control is classed by its action: offered when the light and speech are open
   // (a reboot or a setting through it is still refused at the call).
-  if (name == "device.control" || name == "device_control") return granted(cls, U::Ambient, false);
-  const ToolUse u = toolUseFor(name, ArduinoJson::JsonObjectConst());
-  return granted(cls, u, hasListedPaths);
+  if (name == "device.control" || name == "device_control") return unattendedGranted(f, U::Ambient);
+  return unattendedGranted(f, toolUseFor(name, ArduinoJson::JsonObjectConst()), f.listed && !f.listed->empty());
 }
 
 namespace {
 
 // One end-of-turn field's items, all of one class: kept when granted, else cut with one line.
 template <typename T>
-void cutAll(std::vector<T>& items, ToolUse use, TurnClass cls, const char* field, int& cut, std::string& refusals) {
-  if (items.empty() || granted(cls, use, false)) return;
+void cutAll(std::vector<T>& items, ToolUse use, const UnattendedFacts& f, const char* field, int& cut,
+            std::string& refusals) {
+  if (items.empty() || unattendedGranted(f, use)) return;
   cut += (int)items.size() - 1;
-  cutField(true, use, cls, field, cut, refusals);
+  cutField(true, use, f, field, cut, refusals);
   items.clear();
 }
 
 // Items of mixed classes: each kept or cut by its own class.
 template <typename T, typename UseOf>
-void cutEach(std::vector<T>& items, UseOf useOf, TurnClass cls, const char* field, int& cut, std::string& refusals) {
+void cutEach(std::vector<T>& items, UseOf useOf, const UnattendedFacts& f, const char* field, int& cut,
+             std::string& refusals) {
   std::vector<T> kept;
   for (T& item : items) {
     const ToolUse u = useOf(item);
-    if (granted(cls, u, false)) kept.push_back(std::move(item));
-    else cutField(true, u, cls, field, cut, refusals);
+    if (unattendedGranted(f, u)) kept.push_back(std::move(item));
+    else cutField(true, u, f, field, cut, refusals);
   }
   items.swap(kept);
 }
@@ -329,25 +360,22 @@ ToolUse useOfDeviceJson(const DeviceAction& da) {
 
 }  // namespace
 
-int restrictUnattendedTurn(Turn& t, TurnClass cls, std::string& refusals) {
-  if (cls == TurnClass::Attended) return 0;
+int restrictUnattendedTurn(Turn& t, const UnattendedFacts& f, std::string& refusals) {
+  if (f.cls == TurnClass::Attended) return 0;
   int cut = 0;
-  const bool memory = granted(cls, U::Memory, false);
-  cutField(!t.memory.empty(), U::Memory, cls, "memory", cut, refusals);
-  cutField(t.scratchpad.present, U::Memory, cls, "scratchpad", cut, refusals);
-  if (!memory) {
-    t.memory.clear();
-    t.scratchpad = ScratchUpdate{};
-  }
-  cutAll(t.mem_write, U::Memory, cls, "mem_write", cut, refusals);
-  cutAll(t.spawn, U::Spend, cls, "spawn", cut, refusals);
-  if (!granted(cls, U::Read, false)) {   // a class with no model call reads nothing either
-    cutField(!t.mem_query.empty() || !t.await_.empty(), U::Read, cls, "mem_query", cut, refusals);
+  cutField(!t.memory.empty(), U::Memory, f, "memory", cut, refusals);
+  if (!unattendedGranted(f, U::Memory)) t.memory.clear();
+  cutField(t.scratchpad.present, U::Scratch, f, "scratchpad", cut, refusals);
+  if (!unattendedGranted(f, U::Scratch)) t.scratchpad = ScratchUpdate{};
+  cutAll(t.mem_write, U::Memory, f, "mem_write", cut, refusals);
+  cutAll(t.spawn, U::Spend, f, "spawn", cut, refusals);
+  if (!unattendedGranted(f, U::Read)) {   // a class with no model call reads nothing either
+    cutField(!t.mem_query.empty() || !t.await_.empty(), U::Read, f, "mem_query", cut, refusals);
     t.mem_query.clear();
     t.await_.clear();
   }
-  cutEach(t.session_ops, useOfSessionOp, cls, "session_ops", cut, refusals);
-  cutEach(t.device, useOfDeviceJson, cls, "device", cut, refusals);
+  cutEach(t.session_ops, useOfSessionOp, f, "session_ops", cut, refusals);
+  cutEach(t.device, useOfDeviceJson, f, "device", cut, refusals);
   return cut;
 }
 

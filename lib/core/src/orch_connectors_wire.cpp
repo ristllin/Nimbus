@@ -431,6 +431,7 @@ const char* pdfRouteProvider(const PdfRoute& r) {
 
 void attachOpenAIWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, const BearerFn& bearer,
                       bool builtinsOnly) {
+  if (attachNothing()) return;   // a turn that may not spend: no tool rides it (RB-Q2a)
   builtinsOnly = attachBuiltinsOnly(builtinsOnly);   // someone else's request: no owner connectors (CUM-828)
   for (const ConnectorInfo& c : cs) {
     if (builtinsOnly && c.kind != "builtin") continue;  // cumulo route: built-ins only
@@ -1308,6 +1309,7 @@ const char* studioCardState(const ConnectorInfo& c, const MistralWorkspace& ws, 
 }
 
 void attachMistralWire(JsonDocument& d, const std::vector<ConnectorInfo>& cs, bool builtinsOnly) {
+  if (attachNothing()) return;   // a turn that may not spend: no tool rides it (RB-Q2a)
   builtinsOnly = attachBuiltinsOnly(builtinsOnly);   // someone else's request: no owner connectors (CUM-828)
   // Two shapes, per the Mistral Conversations API (docs.mistral.ai):
   //   hosted built-in TOOL (web_search, code_interpreter, image_generation,
@@ -1353,6 +1355,7 @@ int mistralWireToolCount(const std::vector<ConnectorInfo>& cs) {
 
 void attachAnthropicWire(JsonDocument& agentBody, const std::vector<ConnectorInfo>& cs,
                          const BearerFn& bearer, bool builtinsOnly) {
+  if (attachNothing()) return;   // a turn that may not spend: no tool rides it (RB-Q2a)
   builtinsOnly = attachBuiltinsOnly(builtinsOnly);   // someone else's request: no owner connectors (CUM-828)
   for (const ConnectorInfo& c : cs) {
     // Anthropic has no built-in connector kind here, so a cumulo route (built-ins

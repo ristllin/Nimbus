@@ -124,6 +124,12 @@ String wakeupsJson();
 // on = they land pending for a single owner approval card. Persisted.
 bool wakeupsAskFirst();
 void setWakeupsAskFirst(bool on);
+// The owner's routine switch (RB-Q2a, ruling 76 item 7), off by default, persisted beside the
+// wake-up mode: on lets his routines use his connectors and start sub-agents.
+bool routineGrants();
+void setRoutineGrants(bool on);
+// The owner has at least one recurring routine (not a one-time wakeup, not the upkeep).
+bool hasRoutines();
 
 // --- quiet hours + self-wakeups (owner design, 9/11 Nov) ----------------------
 // Quiet hours end at the owner's setting (local minute of day, default 09:00 =

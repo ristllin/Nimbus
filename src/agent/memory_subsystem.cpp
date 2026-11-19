@@ -1695,7 +1695,7 @@ void begin() {
         return agent::telegram::onTurnTask() ? std::string(orchestrator::currentChat().c_str()) : std::string();
       },
       [](const std::string& name, ArduinoJson::JsonObjectConst args, const nimbus::orch::ActionCaller& c) {
-        return c.lan ? std::string() : nimbus::orch::unattendedRefusal(orchestrator::unattendedClass(), name, args);
+        return c.lan ? std::string() : nimbus::orch::unattendedRefusal(orchestrator::unattendedFacts(), name, args);
       });
 
   alogf("memory: ready (%d vectors, dims=%d, store=%s, cap=%d, archive=%s, embed=%s, web=%s, pending=%d)",

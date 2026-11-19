@@ -284,6 +284,24 @@ class JobEngine {
   // (the claim check) and spawnedOut count accepted spawns, never intents.
   bool enqueueSpawn(const nimbus::orch::Spawn& s, const std::string& chatId, bool quiet = false);
 
+  // Who starts the spawns enqueued from now on (RB-Q2a, ruling 76): the turn engine sets it
+  // at every turn start. A spawn from a turn nobody is writing runs without the owner's
+  // connectors (unless `connectors`: the owner's routine switch), with no attach, no chat
+  // context and no owner project; it counts against the run's caps, and a report turn's
+  // spawns are one wave of the run.
+  struct SpawnOrigin {
+    bool unattended = false;
+    bool report = false;       // a sub-agent report turn: its spawns are a wave
+    bool connectors = false;   // the owner's routine with his switch on
+  };
+  void setSpawnOrigin(const SpawnOrigin& o);
+  // An attended owner message (or a routine the owner lets start sub-agents): a new run.
+  void beginRun();
+  // A run's caps on what turns nobody is writing may start in it.
+  static constexpr int kRunMaxReportWaves = 2;
+  static constexpr int kRunMaxSpawns = 16;
+  static constexpr uint32_t kRunMaxMs = 2u * 3600u * 1000u;
+
   // The JOB parts of the device's pollJobs(): reap, per-completion synthesis
   // clock, one dispatch, loop-closure synthesis, round-robin poll. Returns the
   // active job count (journal count).
@@ -461,7 +479,10 @@ class JobEngine {
     std::string task;
     std::vector<std::string> attach;  // "<project>/<name>" docs to splice at dispatch
     bool quiet = false;  // scheduled/loop turn: suppress the "On it." spawn ack (in-RAM only)
+    bool unattended = false;   // started by a turn nobody is writing (SpawnOrigin)
+    bool connectors = false;   // ...with the owner's routine switch on
   };
+  bool runAdmits(const std::string& chatId, const nimbus::orch::Spawn& s);
   // Which dispatched jobs asked for live data (a status, today's figures):
   // read when the result lands, RAM only (a reboot forgets it: no marker).
   struct LiveTag { char tag[24]; bool live; };
@@ -584,6 +605,10 @@ class JobEngine {
 
   uint32_t tagSeq_  = 0;
   bool     tagSeeded_ = false;           // tagSeq_ moved past every tag the journal holds
+  SpawnOrigin origin_;                   // the turn in flight (RB-Q2a)
+  uint32_t runStartMs_ = 0;              // the run: its start, sub-agents and report waves
+  uint8_t  runSpawns_ = 0, runWaves_ = 0;
+  bool     waveCounted_ = false, capSaid_ = false;   // this turn's wave counted, its cap line said
   uint32_t notDurableNoteMs_ = 0;        // the last "will not survive a restart" line
   bool     notDurableNoted_ = false;
   int      rrIndex_ = 0;                 // round-robin poll cursor

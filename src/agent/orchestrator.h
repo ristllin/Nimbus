@@ -149,13 +149,13 @@ bool fileSendForTurn();
 // so the orchestrator layer carries no OTA dependency. Returns the reply text.
 void setOtaInstallHook(String (*fn)());
 
-// Stage the chat row of the fixed post-update notice (orch::updateNoticeText, RB-Q2a) the
-// OTA hook already sent, from ANY task; written on tg_poll at the top of pollJobs() once
-// the owner is quiet, with no model call. One slot, latest stager wins.
-void stageUpdateNotice(const String& chatId, const String& text);
-// The class of the turn in flight for the unattended policy (Attended outside one, and
-// on any task other than the turn task).
-nimbus::orch::TurnClass unattendedClass();
+// Stage the fixed post-update notice (orch::updateNoticeText, RB-Q2a) from ANY task; on
+// tg_poll at the top of pollJobs() it goes to the owner's chat and into its history at
+// once, with no model call. One slot, latest stager wins.
+void stageUpdateNotice(const String& text);
+// What the unattended policy reads about the turn in flight (a person's turn outside one,
+// and on any task other than the turn task).
+nimbus::orch::UnattendedFacts unattendedFacts();
 
 // Advance background jobs: dispatch at most one queued spawn per cycle (gated by
 // AGENT_MAX_ACTIVE_INFLIGHT + heap), poll at most one due job (round-robin), deliver

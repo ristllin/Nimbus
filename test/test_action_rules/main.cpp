@@ -919,12 +919,12 @@ static void test_device_wiring_of_the_owner_chat_rules() {
                                body.find("store::telegramOwners()") != std::string::npos,
                            body.c_str());
   // The update notice (a fixed string since v5.2.0, lane RB-Q2a) goes to the owner's chat by
-  // the owners list, never merely the first allow-listed chat, which can be a member.
-  const std::string mainSrc = readFile("src/main.cpp");
-  const size_t sys = mainSrc.find("case otaupd::EvValidated:");
+  // the owners list, never merely the first allow-listed chat, which can be a member; the
+  // chat is resolved on the poll task, which owns those lists (ruling 76 item 6).
+  const size_t sys = orch.find("static void drainUpdateNotice() {");
   TEST_ASSERT_TRUE(sys != std::string::npos);
-  const std::string sysBody = mainSrc.substr(sys, mainSrc.find("default: break;", sys) - sys);
-  TEST_ASSERT_TRUE_MESSAGE(sysBody.find("const String owner = agent::telegram::ownerChat();") != std::string::npos, sysBody.c_str());
+  const std::string sysBody = orch.substr(sys, orch.find("\n}\n", sys) - sys);
+  TEST_ASSERT_TRUE_MESSAGE(sysBody.find("const String chat = agent::telegram::ownerChat();") != std::string::npos, sysBody.c_str());
   TEST_ASSERT_TRUE(sysBody.find("firstAllowedChat()") == std::string::npos);
   const std::string files = readFile("src/agent/files_subsystem.cpp");
   const size_t send = files.find("reg.add(\"files.send\"");

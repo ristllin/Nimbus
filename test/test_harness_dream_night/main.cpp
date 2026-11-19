@@ -10,7 +10,6 @@
 
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
-#include "nimbus/orch/unattended_policy.h"   // unattendedMayList - what a wake turn is offered
 #include "nimbus/harness/compose.h"   // loopToolName - the advertised (wire) tool names
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
@@ -582,8 +581,7 @@ static void test_dream_turn_fields_cannot_spawn_or_act() {
 
 // Lane ECHO owner design (9/11 Nov): a self-wakeup record fires ONE short turn
 // whose only job is to re-check and deliver its one note. The preamble carries
-// the note in plain words (never the raw JSON envelope), only read tools are advertised
-// (v5.2.0, the unattended policy, lane RB-Q2a),
+// the note in plain words (never the raw JSON envelope), NO tools are advertised,
 // every tool-bearing field the model still wrote is dropped, and the reply is
 // delivered directly (the wake is at the END of quiet hours, so it captures
 // nothing for a later wake and arms nothing).
@@ -608,16 +606,8 @@ static void test_self_wakeup_turn_is_one_short_toolless_turn() {
   TEST_ASSERT_TRUE(inputs.find("[SELF-WAKEUP]") != std::string::npos);
   TEST_ASSERT_TRUE(inputs.find("06:00 commute brief") != std::string::npos);
   TEST_ASSERT_TRUE(inputs.find("\"selfWakeup\"") == std::string::npos);
-  // Only read tools were advertised to the head (files.read among them).
-  TEST_ASSERT_FALSE(r.advertised.empty());
-  bool readsFile = false;
-  for (const auto& a : r.advertised)
-    for (const char* n : kDeviceTools)
-      if (a == agent::loopToolName(n)) {
-        TEST_ASSERT_TRUE_MESSAGE(orch::unattendedMayList(orch::TurnClass::SelfWakeup, n), n);
-        readsFile = readsFile || std::string(n) == "files.read";
-      }
-  TEST_ASSERT_TRUE(readsFile);
+  // No tools were advertised to the head (one short request: lane RB-Q2a, ruling 76).
+  TEST_ASSERT_TRUE(r.advertised.empty());
   // Nothing the model wrote changed anything.
   TEST_ASSERT_EQUAL(0, r.deviceActions);
   TEST_ASSERT_EQUAL(0, r.spawns);

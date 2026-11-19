@@ -210,6 +210,9 @@ class TurnEngine {
     // re-renders its history; a full reply queue). The fire spoke only once that row
     // is written. Null = every delivery queues its content.
     std::function<bool(const std::string& chatId)> deliveryNeedsRow;
+    // The owner's switch (RB-Q2a, ruling 76 item 7): his routines may use his connectors and
+    // start sub-agents. Null or false: a routine reads, sets its follow-up and replies.
+    std::function<bool()> routineGrants;
     // Attention-event sink (device: attn::Router via g_sinks.event). Nullable.
     std::function<void(const nimbus::attn::Event&)> event;
     // Sound cue, execution-only: "turnstart" (device: sfx TurnStart). Nullable.
@@ -419,7 +422,8 @@ class TurnEngine {
 
   // A message the harness already sent to a chat with no model call (the fixed update
   // notice, RB-Q2a): stored as the chat's assistant row, so later turns know it was said.
-  void recordNotice(const std::string& chatId, const std::string& text) { captureAssistantRow(chatId, text, "reply"); }
+  // Its row carries no effect or skill tags of the turn before it.
+  void recordNotice(const std::string& chatId, const std::string& text);
   // The configured head is not where a turn would run now: it is over its token
   // budget, parked or paused, so the turn fails over to another provider.
   bool headOnFallback() const;
@@ -527,6 +531,8 @@ class TurnEngine {
     if (!scheduledTurn_) return nimbus::orch::TurnClass::Attended;
     return fireClass_ == nimbus::orch::TurnClass::Attended ? nimbus::orch::TurnClass::Routine : fireClass_;
   }
+  // What the unattended policy reads about the turn in flight (ruling 76).
+  nimbus::orch::UnattendedFacts unattendedFacts() const;
   // Lane J: did this turn read outside content (a media row folded in, or an
   // external-tainted tool result)? Read-only, for the device's prefs taint rail.
   bool externalContentSeen() const { return externalContentSeen_; }
@@ -745,6 +751,9 @@ class TurnEngine {
   TurnSource  turnSource_ = TurnSource::Owner;
   // The class of the scheduled fire in flight (injectScheduledTurn); Attended otherwise.
   nimbus::orch::TurnClass fireClass_ = nimbus::orch::TurnClass::Attended;
+  uint8_t wakeHops_ = 0;                   // unattended wakeup fires since the owner last wrote
+  std::vector<std::string> artifacts_;     // files the report turn's results name ([saved: ...])
+  void noteOwnerWrote();                   // an attended owner message: a new run, no hops
 
   nimbus::orch::TokenUsage sessionUsage_;   // running sum of billed tokens since boot
   uint32_t                 turnCount_ = 0;  // non-empty turns since boot

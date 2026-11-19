@@ -26,6 +26,7 @@ namespace orch {
 enum class ConnectorGrant : uint8_t {
   Owner = 0,      // the owner's connectors and the built-ins
   BuiltinsOnly,   // the provider's built-in tools only
+  None,           // nothing: a turn nobody is writing whose class may not spend (RB-Q2a)
 };
 
 // The grant a principal's requests get: the owner's for the owner (an admin, never
@@ -50,8 +51,10 @@ class ConnectorGrantScope {
 // What an attach builder attaches: built-ins only when its route asks for it (the
 // Cumulo router) or the calling task's grant does.
 inline bool attachBuiltinsOnly(bool routeBuiltinsOnly) {
-  return routeBuiltinsOnly || currentConnectorGrant() == ConnectorGrant::BuiltinsOnly;
+  return routeBuiltinsOnly || currentConnectorGrant() != ConnectorGrant::Owner;
 }
+// Nothing at all rides the calling task's requests (ConnectorGrant::None).
+inline bool attachNothing() { return currentConnectorGrant() == ConnectorGrant::None; }
 
 }  // namespace orch
 }  // namespace nimbus

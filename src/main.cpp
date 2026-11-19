@@ -3408,15 +3408,11 @@ static void otaEventHook(int ev, const char* a, const char* b) {
                                                            : String()));
       if (!g_orchMode) break;
       // The owner learns of the update from a fixed string with the release's one-line
-      // note, sent at once: no model call, no tools (RB-Q2a; DIAGNOSIS RC-13: the
-      // model-written post-update turn rewrote a day the owner had just corrected). Its
-      // chat row is staged and written on tg_poll, so later turns know it was said.
-      const String notice(nimbus::orch::updateNoticeText(a ? a : "", std::string(noteTxt.c_str())).c_str());
-      const String owner = agent::telegram::ownerChat();
-      if (owner.length()) {
-        agent::telegram::send(owner, notice, /*block=*/false);
-        agent::orchestrator::stageUpdateNotice(owner, notice);
-      }
+      // note: no model call, no tools (RB-Q2a; DIAGNOSIS RC-13: the model-written
+      // post-update turn rewrote a day the owner had just corrected). Staged as text only:
+      // tg_poll resolves his chat, sends it and writes its history row (ruling 76 item 6).
+      agent::orchestrator::stageUpdateNotice(
+          String(nimbus::orch::updateNoticeText(a ? a : "", std::string(noteTxt.c_str())).c_str()));
       break;
     }
     default: break;

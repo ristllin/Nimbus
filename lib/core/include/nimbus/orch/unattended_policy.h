@@ -27,6 +27,9 @@
 //   - Schedule  creates or cancels a routine or a wakeup
 //   - Ambient   the device's light, sound, music, or speech on its own speaker
 //   - Control   changes settings, skills, people or anything with no row (fail closed)
+//   - Scratch   the assistant's own scratchpad (its working state across a run's turns)
+// Paid calls a turn makes beyond its own request are Spend: a sub-agent, an image, a web
+// search, a look at a photo. A class whose row says no spend gets no provider built-in either.
 // A routine, a reminder, a wakeup and a held note send only through held delivery: their own
 // reply, which the harness delivers (and holds into a self-wakeup during quiet hours). The
 // sub-agent report may also send a sub-agent's file to its own chat and start the next wave
@@ -62,8 +65,8 @@ enum class TurnClass : uint8_t {
 constexpr int kTurnClassCount = 8;
 const char* turnClassSlug(TurnClass c);   // "attended" | "update-notice" | "routine" | ...
 
-enum class ToolUse : uint8_t { Read = 0, Write, Memory, Send, Spend, Schedule, Ambient, Control };
-constexpr int kToolUseCount = 8;
+enum class ToolUse : uint8_t { Read = 0, Write, Memory, Send, Spend, Schedule, Ambient, Control, Scratch };
+constexpr int kToolUseCount = 9;
 const char* toolUseSlug(ToolUse u);   // "read" | "write" | ...
 
 enum class Grant : uint8_t {
@@ -82,7 +85,22 @@ struct UnattendedPolicyRow {
   TurnClass cls;
   ModelCall model;
   Output    output;
+  bool      tools;                  // offered tools at all (a held note is one short request)
   Grant     grant[kToolUseCount];   // indexed by ToolUse
+};
+
+// A wakeup an unattended turn sets is one hop of a chain; after this many hops without an
+// attended message (and from any turn that has seen outside content) none is set.
+constexpr uint8_t kMaxWakeHops = 3;
+
+// What the decision reads about the turn in flight beyond its class (ruling 76).
+struct UnattendedFacts {
+  TurnClass cls = TurnClass::Attended;
+  bool routineGrants = false;   // the owner's switch: his routines may use his connectors and start sub-agents
+  bool outside = false;         // the turn has seen outside content (a result, a web page)
+  uint8_t hops = 0;             // unattended wakeup fires since the owner last wrote
+  const std::vector<std::string>* artifacts = nullptr;   // files the results' envelopes name
+  const std::vector<std::string>* listed = nullptr;      // the routine's own paths (engine 2)
 };
 
 // The row of a class (Attended grants everything: other rules decide for a person's turn).
@@ -106,22 +124,28 @@ std::string callPath(ArduinoJson::JsonObjectConst args);
 // A path with a ".." segment, or an empty one, is never listed.
 bool pathListed(const std::string& path, const std::vector<std::string>& listed);
 
-// The decision for one tool call in a turn of class `cls`: "" when it may run, else the
-// plain refusal the model reads as the call's result. `listed`: the routine's own paths.
-std::string unattendedRefusal(TurnClass cls, const std::string& name, ArduinoJson::JsonObjectConst args,
-                              const std::vector<std::string>& listed = std::vector<std::string>());
+// May a turn with these facts use a tool class at all? The row's grant, plus: an owner's
+// routine with his switch on may spend; a schedule needs fewer than kMaxWakeHops hops and no
+// outside content.
+bool unattendedGranted(const UnattendedFacts& f, ToolUse u, bool pathListedNow = false);
 
-// May a turn of class `cls` be offered `name` at all (its class with no arguments)? A tool
-// whose arguments can narrow it to a read (the standing rules' view) is offered when that
-// read is allowed; its change is refused at the call.
-bool unattendedMayList(TurnClass cls, const std::string& name, bool hasListedPaths = false);
+// The decision for one tool call: "" when it may run, else the plain refusal the model reads
+// as the call's result. A send from an unattended turn that has seen outside content may carry
+// only a file the results' envelopes name (`artifacts`).
+std::string unattendedRefusal(const UnattendedFacts& f, const std::string& name, ArduinoJson::JsonObjectConst args);
+
+// May the turn be offered `name` at all (its class with no arguments)? A tool whose arguments
+// can narrow it (the standing rules' view, device.control's action) is offered when its open
+// use is allowed; the rest is refused at the call.
+bool unattendedMayList(const UnattendedFacts& f, const std::string& name);
 
 // The old engine's end-of-turn fields of an unattended turn, cut to what its row allows:
-// memory, scratchpad and mem_write are Memory; each device[] element by its kind (light,
-// sound and tts Ambient, reboot and model switch Control); spawn and session_ops spawn or
+// memory and mem_write are Memory, scratchpad Scratch; each device[] element by its kind
+// (light, sound and tts Ambient, config by knob, reboot and model switch Control); spawn and
+// session_ops spawn or
 // tell Spend, terminate Control; mem_query, await and ask stay. Returns how many items were
 // cut and appends one line per cut field to `refusals` ("" when nothing was cut).
-int restrictUnattendedTurn(Turn& t, TurnClass cls, std::string& refusals);
+int restrictUnattendedTurn(Turn& t, const UnattendedFacts& f, std::string& refusals);
 
 // The update notice: a fixed string with the version, then the release's one-line note
 // (its first line, at most kUpdateNoteMax bytes on a character boundary) when there is one.

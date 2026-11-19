@@ -91,17 +91,22 @@ static bool persist() {
 // is auto-approved (shipped behavior); on = it lands pending and the owner gets one
 // approval card. Persisted in its own tiny file so the loops.json array shape (and
 // its roundtrip test) is untouched.
+// Its second character is the owner's routine switch (RB-Q2a, ruling 76 item 7: no new NVS
+// key): "1" lets his routines use his connectors and start sub-agents. Off by default.
 static const char* kWakeupModePath = "/data/wakeup_mode";
 static bool g_wakeupsAskFirst = false;
+static bool g_routineGrants = false;
 static void loadWakeupMode() {
   File f = LittleFS.open(kWakeupModePath, FILE_READ);
-  if (!f) { g_wakeupsAskFirst = false; return; }
+  if (!f) { g_wakeupsAskFirst = g_routineGrants = false; return; }
   String s = f.readString();
   f.close();
   g_wakeupsAskFirst = (s.length() > 0 && s[0] == '1');
+  g_routineGrants = (s.length() > 1 && s[1] == '1');
 }
 static void persistWakeupMode() {
-  if (!agent::writeFileAtomic(kWakeupModePath, g_wakeupsAskFirst ? "1" : "0", "wakeup_mode"))
+  const char mode[3] = {g_wakeupsAskFirst ? '1' : '0', g_routineGrants ? '1' : '0', 0};
+  if (!agent::writeFileAtomic(kWakeupModePath, mode, "wakeup_mode"))
     alog("loops: wakeup-mode write failed");
 }
 
@@ -965,6 +970,22 @@ String wakeupsJson() {
 }
 
 bool wakeupsAskFirst() { Lock lk; return g_wakeupsAskFirst; }
+
+bool routineGrants() { Lock lk; return g_routineGrants; }
+
+void setRoutineGrants(bool on) {
+  Lock lk;
+  if (g_routineGrants == on) return;
+  g_routineGrants = on;
+  persistWakeupMode();
+}
+
+bool hasRoutines() {
+  Lock lk;
+  for (const auto& l : g_loops)
+    if (l.sched.kind != orch::SchedKind::Once && !isReservedStd(l.id)) return true;
+  return false;
+}
 
 void setWakeupsAskFirst(bool on) {
   Lock lk;
