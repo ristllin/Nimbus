@@ -83,6 +83,9 @@ struct TurnSetup {
   uint16_t dayStartMin = kDayStartDefaultMin;   // the device's day start (TurnCtx::dayStartMin)
 };
 using TurnSetupFn = std::function<Status(const TurnCtx& turn, TurnSetup& out)>;
+// One delivery (plain/deliver.h); unset: deliverTurn over the channel. A test or a host may
+// put its own here; it keeps deliverTurn's contract (progress recorded per send, fromPart).
+using DeliverFn = std::function<Status(const DeliverInput& in, DeliverOutcome& out)>;
 
 struct EngineDeps {
   const Platform* platform = nullptr;        // nowMs, delayMs and nowEpoch are required
@@ -97,6 +100,7 @@ struct EngineDeps {
   ToolDispatchFn dispatch;
   TurnSetupFn setup;
   nimbus::orch::tx::RecentFilesBlock::Source recentFiles;   // the live file store; null: no list
+  DeliverFn deliver;                         // null: deliverTurn(DeliverDeps{channel, hooks, log})
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before

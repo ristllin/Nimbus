@@ -73,6 +73,11 @@ class Battery {
   // The device's day start the turn setup hands the engine (RB-REC5's setting).
   uint16_t dayStartMin = plain::kDayStartDefaultMin;
   nimbus::orch::Principal who = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+  // The head as the binding gives it (RB-E1b): host and model overrides (empty: the
+  // dialect's), a head through the router, and a delivery of its own (null: deliverTurn).
+  std::string hostOverride, modelOverride;
+  bool routed = false;
+  plain::DeliverFn deliverFn;
 
   // Process state: gone at a power cut, rebuilt by boot().
   agent::Platform platform;
@@ -218,8 +223,10 @@ class Battery {
     c.turn = turn;
     c.trigger = trigger;
     c.dialect = dialect;
-    c.host = hostFor(dialect);
-    c.model = dialect == plain::Dialect::AnthropicMessages ? "claude-sonnet-5-5" : "battery-model";
+    c.host = hostOverride.empty() ? hostFor(dialect) : hostOverride;
+    c.model = !modelOverride.empty()                              ? modelOverride
+              : dialect == plain::Dialect::AnthropicMessages ? "claude-sonnet-5-5"
+                                                             : "battery-model";
     c.profile = tx::Profile::Standard;
     c.startedAt = epoch;
     c.startedMs = ms;
@@ -254,6 +261,7 @@ class Battery {
     out.facts.timeZone = "Europe/London";
     out.dayStartMin = dayStartMin;
     out.head.host = t.host;
+    out.head.routed = routed;
     out.head.key = [] { return std::string("sk-fake-battery"); };
     out.wire = batteryWire(dialect);
     return tx::Status::success();
@@ -281,6 +289,9 @@ class Battery {
     d.files = &files;
     d.chatKey = chatKey;
     d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
+    d.deliver = [this](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
+      return deliverFn ? deliverFn(in, out) : plain::deliverTurn(plain::DeliverDeps{&channel, hooks.get(), log.get()}, in, out);
+    };
     return d;
   }
 

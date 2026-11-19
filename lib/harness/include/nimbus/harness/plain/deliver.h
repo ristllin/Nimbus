@@ -36,15 +36,25 @@ struct DeliverDeps {
   nimbus::orch::tx::TxLog* log = nullptr;
 };
 
+// What one delivery sends. Nothing is copied: the reply and the status line are the
+// engine's own strings, read for the length of the call (a 60 KB reply is never held twice
+// at the point memory is tightest). A retry after a refused allocation passes `fromPart`,
+// the reply parts that already went out: deliverTurn skips them, so nothing is sent twice.
 struct DeliverInput {
   const TurnCtx* turn = nullptr;
-  std::string text;                    // the model's text, exactly as returned
+  const std::string* text = nullptr;   // the model's text, exactly as returned; null or empty: none
+  uint16_t fromPart = 0;               // reply parts already sent (skip them)
   StatusLine status = StatusLine::None;
-  std::string statusText;              // the one status line, separate from the reply
+  const std::string* statusText = nullptr;   // the one status line, separate from the reply
 };
 
+// Progress, recorded the moment each send succeeds (not when the call returns): when a
+// later part throws, the engine reads what already went out and never sends it again.
 struct DeliverOutcome {
-  bool sent = false;
+  bool sent = false;                   // some of the reply went out
+  uint16_t parts = 0;                  // reply parts that went out, in order
+  bool replyDone = false;              // every part of the reply went out
+  bool statusSent = false;             // the status line went out
   std::vector<int64_t> msgIds;
   uint32_t bytes = 0;                  // the delivered bytes (after markup and splitting)
 };

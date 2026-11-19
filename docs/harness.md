@@ -608,9 +608,10 @@ durability around it and nothing that reads, edits or appends to the model's tex
   tool choice none; the soft wall bounds every request, the last round may run to the hard wall.
 - **Endings**: a failed exchange ends the turn with its one plain line; a cut answer is
   delivered with the cut line and its calls are answered "not run"; `beforeDeliver` may hold
-  the reply once (one device item, one more round). Then the superseded reads (x), delivery,
-  the d item, `afterDeliver`, the e item (cause, counts, tokens, per-exchange sizes, change
-  points, prompt and manifest hashes) and head.json.
+  the reply once (one device item, one more round). Then delivery, the d item, `afterDeliver`,
+  the superseded reads (x), the e item (cause, counts, tokens, per-exchange sizes, change
+  points, prompt and manifest hashes) and head.json. A result pairs with the OLDEST open call of
+  its id (the loop and every wire alike).
 - **Through `more`**: every rule keyed on the tool (effect class and intent, outside content and
   taint, the recent-files rebuild, superseded reads) sees a `more` call as the tool it reaches with
   that tool's arguments; the stored c item keeps the model's own call, which the next request
@@ -633,9 +634,19 @@ durability around it and nothing that reads, edits or appends to the model's tex
   (`head()`, `digests()`, `omittedThru()`); before each turn the engine takes its next q from the
   largest of its own, head.nextQ and the arena's last q + 1, so a digest stored between turns
   never collides with the turn's first item.
-- **Storage**: every item goes through `TxLog::store`. An item the card refused stays in RAM;
-  the model sees one device note at the next round boundary and the owner one storage line,
-  once per episode. With no card the chat runs from RAM and no effect tool runs.
+- **Storage**: every item goes through `TxLog::store`, with one exception: the gap note owed for an
+  episode is first shown in RAM (stored like any item, not stored on the card); once storage is
+  back, one more gap note goes to the card only (`TxLog::append`) so the stored transcript names
+  the hole. That card item has no arena twin; its q is taken from the chat's q space, so the card
+  holds a q RAM never had (RB-C2 and RB-X1 must not pair card and arena by q). An item the card
+  refused stays in RAM; the model sees one device note at the next round boundary and the owner
+  one storage line, once per episode. With no card the chat runs from RAM and no effect tool runs.
+- **A full arena** (ruling 60): the loop never calls the summarizer to make room. At turn open
+  (free bytes under the turn's reserve, min(32 KB, a half of the arena)) and between rounds (the
+  arena refused a store) the oldest closed resident turn leaves RAM, with any late result of it;
+  never an item of the open turn. Storage keeps it; one omission line names every dropped turn
+  until a digest covers them; `omittedThru()` rises to the last dropped q, so the compaction
+  driver (idle step only) folds them from storage.
 - **What the owner gets** is decided in one place at the end of a turn: the reply, else a reply
   held before a failed or empty extra round, else one plain line (the limit line when the last
   allowed round only called tools, the provider's line for an empty answer). At most one status
@@ -644,11 +655,17 @@ durability around it and nothing that reads, edits or appends to the model's tex
 - **Exceptions**: a tool handler that throws (anything but a refused allocation) is an error result
   for that one call and the turn goes on; nothing wider is caught.
 - **Memory**: a refused allocation anywhere in the turn is a designed state: the reply in hand
-  (kept before anything is stored) goes out with the memory line, nothing already sent is sent
-  again, then the d item and afterDeliver, the e item and head.json where storage allows; no
-  refusal leaves `runTurn`. An item over the stored line's limit has its own true line (an owner
-  message its own), a full arena the memory line. The d item and afterDeliver run before the
-  superseded-read scan. The turn's state lives on the heap; `runTurn`'s own frame is 240 B on the device
+  (moved out of the exchange before anything is stored, never copied on its way out: delivery
+  reads it by pointer) goes out with the memory line, which was built at boot and needs no
+  allocation; nothing already sent is sent again (delivery records each part as it goes out and a
+  retry starts after it); when the reply's own step is refused again, the memory line goes alone.
+  Then the d item (tried once) and afterDeliver (once, whatever the d item did), the e item and
+  head.json where storage allows; no refusal leaves `runTurn`. An item over the stored line's
+  limit has its own true line (an owner message its own, and one with more parts or update ids
+  than a line holds another), a full arena with nothing left to drop the memory line. The d item
+  and afterDeliver run before the superseded-read scan. Proof: an allocator hook refuses
+  allocation k and every one after it, and every allocation of S bytes or more, over five turn
+  shapes (`test_a_refused_allocation_from_any_point_on_still_reaches_the_owner`). The turn's state lives on the heap; `runTurn`'s own frame is 240 B on the device
   compiler. A refused allocation ends the turn with a status, never an abort.
 
 `test/test_plain_conformance/engine_tests.h` drives scripted turns on each dialect's stand-in

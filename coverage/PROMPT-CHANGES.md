@@ -737,3 +737,12 @@ deleted. Engine 2 has no baseline.
 - lane: RB-REC4
 - prd: section 4 (the plain file tools), as amended by rulings 42 and 47
 - why: lib/core/src/orch_file_aids.cpp and orch_csv_sum.cpp: the edit's texts take the argument's name ("find" on the old engine, "old" on read_file's engine), renderEditLines gives the old engine's reply its line facts ("; at line 3; 8 lines"), and the totals-only tail (engine 1's day total) leaves out the shown clause; a scan that ends short of the stored size says the card read failed. Planned work, not a fix.
+### PC-0080: the owner's line for a message with too many parts (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 1513 -> 1597
+- sha8: 9bcb2662 -> bc2899db
+- lane: RB-E1b
+- prd: section 8.9 (the closed list of harness-written lines: one status line per failure) and ruling 59 item 4 (the memory line only for a full arena or a refused allocation; an item refused as InvalidArgument gets its own true line)
+- why: lib/harness/src/plain_engine.cpp: an owner message with more parts or update ids than one stored line holds (the encoder's 256-item limit) ended with "ran out of memory", which was false and repeated on every resend; it now ends with a line that says what happened and the one next step; planned work, not a fix

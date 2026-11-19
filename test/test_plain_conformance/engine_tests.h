@@ -8,6 +8,7 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <functional>
 #include <new>
 #include <string>
@@ -1072,12 +1073,35 @@ namespace alloc_hook {
 inline bool armed = false;
 inline long refuseAt = -1;
 inline long count = 0;
+inline bool from = false;      // refuse refuseAt and every allocation after it
+inline size_t minBytes = 0;    // refuse every allocation of minBytes or more (0: off)
+inline int paused = 0;         // the test's own bookkeeping (the recording channel) is not refused
 inline void arm(long at) {
   count = 0;
   refuseAt = at;
+  from = false;
+  minBytes = 0;
   armed = true;
 }
+inline void armFrom(long at) {
+  arm(at);
+  from = true;
+}
+inline void armSize(size_t bytes) {
+  arm(-1);
+  minBytes = bytes;
+}
 inline void disarm() { armed = false; }
+inline bool refuse(size_t n) {
+  if (!armed || paused) return false;
+  const long i = count++;
+  if (minBytes) return n >= minBytes;
+  return from ? refuseAt >= 0 && i >= refuseAt : i == refuseAt;
+}
+struct Pause {
+  Pause() { ++paused; }
+  ~Pause() { --paused; }
+};
 }  // namespace alloc_hook
 
 inline void hookTurn(txb::Battery& b, plain::TurnOutcome& out, plain::TurnInput& in, bool& escaped) {
@@ -1202,6 +1226,8 @@ inline void test_a_held_reply_survives_a_cut_or_empty_extra_round() {
     TEST_ASSERT_TRUE(b.sent.size() >= 1);
     TEST_ASSERT_EQUAL_STRING("Logged it.", b.sent[0].text.c_str());
     TEST_ASSERT_TRUE(out.delivered);
+    // The held reply went out: the turn's cause says so (ruling 59 item 5), never "empty".
+    TEST_ASSERT_EQUAL_STRING(mode == 0 ? "cut" : "reply", lastEnd(storedOf(b))->end.cause.c_str());
   }
 }
 
@@ -1342,26 +1368,298 @@ inline void test_the_not_stored_note_renders_once() {
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)n, "the model sees the not-stored note more than once");
 }
 
+// ---- ruling 59: what the narrow check of round three left open (lane RB-E1b) -----------------
+// 1. A refused allocation is a designed state that always ends with the reply the model produced
+// or one plain memory line. The hook refuses "allocation k and every one after it" and "every
+// allocation of S bytes or more" over five turn shapes: a reply past the small-string size after
+// a tool round, a reply past 12,288 B, a held reply, a cut reply, a seam's status line. In every
+// run: nothing leaves runTurn, the owner got the model's reply or exactly one memory line, no
+// message went out twice, and afterDeliver ran once whenever the reply went out.
+struct RefusalShape {
+  const char* name;
+  std::function<void(txb::Battery&)> setup;   // after boot: the scripted answers and the seams
+  std::vector<std::string> replies;           // what the model produced that may go out
+};
+
+inline std::vector<RefusalShape> refusalShapes() {
+  const std::string over = "Past the small-string size: " + std::string(200, 'a');
+  const std::string huge = std::string(13000, 'b') + " END";
+  const std::string held = "Held reply " + std::string(100, 'h');
+  const std::string fin = "Final reply " + std::string(100, 'f');
+  const std::string cut = "Cut reply " + std::string(100, 'c');
+  return {
+      {"a tool round and a reply past the small-string size",
+       [over](txb::Battery& b) {
+         b.world.files["notes/a.md"] = "alpha";
+         b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+         b.model.push(sp::say(over));
+       },
+       {over}},
+      {"a reply past 12,288 B", [huge](txb::Battery& b) { b.model.push(sp::say(huge)); }, {huge}},
+      {"a held reply",
+       [held, fin](txb::Battery& b) {
+         TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [](const plain::DeliverCtx& c) {
+           plain::DeliverDecision d;
+           if (!c.held && !c.cut) {
+             d.verdict = plain::DeliverVerdict::Hold;
+             d.deviceNote = "[device] effects this turn: none, and a note past the small-string size.";
+           }
+           return d;
+         }));
+         b.model.push(sp::say(held));
+         b.model.push(sp::say(fin));
+       },
+       {held, fin}},
+      {"a cut reply", [cut](txb::Battery& b) { b.model.push(sp::cut(cut)); }, {cut}},
+      {"a seam's status line",
+       [over](txb::Battery& b) {
+         TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [](const plain::DeliverCtx&) {
+           plain::DeliverDecision d;
+           d.status = plain::StatusLine::FailedWrite;
+           d.statusText = "Note: the file change in this reply did not go through (a receipt past the small-string size).";
+           return d;
+         }));
+         b.model.push(sp::say(over));
+       },
+       {over}},
+  };
+}
+
+struct RefusalRun {
+  bool escaped = false;
+  long allocations = 0;     // the allocations the hook saw (a counting run: all of the turn's)
+  size_t replies = 0, memory = 0, dupes = 0, messages = 0;
+  int afterDeliverSent = 0, afterDeliverCalls = 0;
+};
+
+// mode 0 counts, 1 refuses allocation k and every one after it, 2 every allocation of k bytes or more.
+inline RefusalRun runRefusal(const RefusalShape& shape, int mode, long k, bool nextTurn) {
+  RefusalRun r;
+  txb::Battery b;
+  TXB_OK(b.boot());
+  int calls = 0, sent = 0;
+  TXB_OK(b.hooks->afterDeliver(plain::HookSlot::Observer, [&calls, &sent](const plain::DeliveredCtx& c) {
+    ++calls;
+    sent += c.sent;
+  }));
+  b.channel.send = [&b](const std::string& chat, const std::string& text) {
+    alloc_hook::Pause p;   // the transport's own memory, not the engine's
+    b.sent.push_back(txb::SentMessage{chat, text});
+    return true;
+  };
+  shape.setup(b);
+  plain::TurnInput in;
+  in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.who = &b.who;
+  in.ctx.host = "api.anthropic.com";
+  in.ctx.model = "claude-sonnet-5-5";
+  in.text = "go";
+  plain::TurnOutcome out;
+  if (mode == 0) alloc_hook::arm(-1);
+  else if (mode == 1) alloc_hook::armFrom(k);
+  else alloc_hook::armSize((size_t)k);
+  hookTurn(b, out, in, r.escaped);
+  r.allocations = alloc_hook::count;
+  alloc_hook::disarm();
+  r.afterDeliverCalls = calls;
+  r.afterDeliverSent = sent;
+  r.messages = b.sent.size();
+  for (size_t i = 0; i < b.sent.size(); ++i) {
+    const std::string& m = b.sent[i].text;
+    r.replies += std::find(shape.replies.begin(), shape.replies.end(), m) != shape.replies.end();
+    r.memory += m == texts::device_notes::kNoMemory;
+    for (size_t j = 0; j < i; ++j) r.dupes += b.sent[j].text == m;
+  }
+  if (nextTurn) {   // the chat goes on: the next turn answers, its request paired
+    b.model.push(sp::say("ok"));
+    in.text = "next";
+    in.ctx.turn = 0;
+    plain::TurnOutcome next;
+    TXB_OK(b.engine->runTurn(in, next));
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(b.model.last().view, why), why.c_str());
+  }
+  return r;
+}
+
+inline void expectOwnerHeard(const RefusalShape& shape, const RefusalRun& r, const char* mode, long k) {
+  char msg[200];
+  std::snprintf(msg, sizeof msg, "%s, refusing %s %ld: replies %u, memory lines %u, messages %u, afterDeliver %d/%d",
+                shape.name, mode, k, (unsigned)r.replies, (unsigned)r.memory, (unsigned)r.messages,
+                r.afterDeliverSent, r.afterDeliverCalls);
+  TEST_ASSERT_FALSE_MESSAGE(r.escaped, msg);
+  TEST_ASSERT_TRUE_MESSAGE(r.replies <= 1 && r.memory <= 1, msg);
+  TEST_ASSERT_TRUE_MESSAGE(r.replies == 1 || r.memory == 1, msg);   // never silent
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)r.dupes, msg);                    // nothing sent twice
+  TEST_ASSERT_TRUE_MESSAGE(r.messages <= 2, msg);
+  if (r.replies) TEST_ASSERT_EQUAL_MESSAGE(1, r.afterDeliverSent, msg);
+  TEST_ASSERT_TRUE_MESSAGE(r.afterDeliverCalls <= 1, msg);
+}
+
+inline void test_a_refused_allocation_from_any_point_on_still_reaches_the_owner() {
+  for (const RefusalShape& shape : refusalShapes()) {
+    const RefusalRun all = runRefusal(shape, 0, -1, false);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)all.replies, shape.name);
+    TEST_ASSERT_TRUE(all.allocations > 50);
+    for (long k = 0; k < all.allocations; ++k) expectOwnerHeard(shape, runRefusal(shape, 1, k, k % 97 == 0), "from", k);
+  }
+}
+
+inline void test_a_refused_large_allocation_still_reaches_the_owner() {
+  for (const RefusalShape& shape : refusalShapes())
+    for (long s : {8L, 16L, 24L, 32L, 48L, 64L, 96L, 128L, 192L, 256L, 384L, 512L, 1024L, 2048L, 4096L, 8192L, 13000L,
+                   16384L, 32768L, 65536L, 131072L})
+      expectOwnerHeard(shape, runRefusal(shape, 2, s, true), "at or over", s);
+}
+
+// 2 and 3. The deliver seam: a refusal after the first part went out sends the rest and the
+// memory line, never the first part again; afterDeliver runs once.
+inline void test_a_refusal_inside_delivery_never_sends_a_part_twice() {
+  txb::Battery b;
+  int calls = 0;
+  b.deliverFn = [&](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
+    const bool first = calls++ == 0;
+    if (in.text && !in.text->empty() && !out.replyDone) {
+      const size_t half = in.text->size() / 2;
+      for (uint16_t part = in.fromPart; part < 2; ++part) {
+        if (first && part == 1) throw std::bad_alloc();   // after the first part went out
+        b.sent.push_back(txb::SentMessage{b.chatKey, part ? in.text->substr(half) : in.text->substr(0, half)});
+        out.sent = true;
+        out.parts = (uint16_t)(part + 1);
+      }
+      out.replyDone = true;
+    }
+    if (in.statusText && !in.statusText->empty() && !out.statusSent) {
+      b.sent.push_back(txb::SentMessage{b.chatKey, *in.statusText});
+      out.statusSent = true;
+    }
+    return tx::Status::success();
+  };
+  TXB_OK(b.boot());
+  int after = 0;
+  TXB_OK(b.hooks->afterDeliver(plain::HookSlot::Observer, [&after](const plain::DeliveredCtx& c) { after += c.sent; }));
+  b.model.push(sp::say("first half|second half"));
+  plain::TurnOutcome out;
+  (void)b.owner("q", out);
+  TEST_ASSERT_EQUAL(3, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("first half|", b.sent[0].text.substr(0, 11).c_str());
+  TEST_ASSERT_EQUAL_STRING("second half", b.sent[1].text.substr(b.sent[1].text.size() - 11).c_str());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent[2].text.c_str());
+  TEST_ASSERT_EQUAL(1, after);
+  TEST_ASSERT_TRUE(out.delivered);
+}
+
+// 2. afterDeliver runs for a reply that went out even when the d item's store is refused.
+inline void test_after_deliver_runs_when_the_d_item_is_refused() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  int after = 0;
+  TXB_OK(b.hooks->afterDeliver(plain::HookSlot::Observer, [&after](const plain::DeliveredCtx& c) { after += c.sent; }));
+  bool armedAtSend = false;
+  b.channel.send = [&](const std::string& chat, const std::string& text) {
+    {
+      alloc_hook::Pause p;
+      b.sent.push_back(txb::SentMessage{chat, text});
+    }
+    if (!armedAtSend) {
+      armedAtSend = true;
+      alloc_hook::armFrom(0);   // everything after the send is refused: the d item first
+    }
+    return true;
+  };
+  b.model.push(sp::say("Sent before the d item."));
+  plain::TurnOutcome out;
+  bool escaped = false;
+  plain::TurnInput in;
+  in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.who = &b.who;
+  in.text = "hi";
+  hookTurn(b, out, in, escaped);
+  alloc_hook::disarm();
+  TEST_ASSERT_FALSE(escaped);
+  TEST_ASSERT_EQUAL(1, after);
+  TEST_ASSERT_EQUAL_STRING("Sent before the d item.", b.sent[0].text.c_str());
+}
+
+// 4. An owner message with more parts than one stored line holds has its own true line.
+inline void test_a_message_with_too_many_parts_gets_its_own_line() {
+  txb::Battery b;
+  std::vector<tx::Part> parts;
+  for (int i = 0; i < 257; ++i) {
+    tx::Part p;
+    p.kind = tx::PartKind::Image;
+    p.ref = "p" + std::to_string(1000 + i);
+    parts.push_back(p);
+  }
+  plain::TurnOutcome out;
+  const tx::Status st = b.owner("look at these", out, parts);
+  TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kTooManyParts, b.sent[0].text.c_str());
+  TEST_ASSERT_TRUE(b.sent[0].text != texts::device_notes::kNoMemory);
+}
+
+// The full arena (rulings 56 and 60): at turn open and between rounds the loop drops the oldest
+// closed resident turns from RAM, names them with the omission line and raises omittedThru;
+// storage keeps them, and the chat keeps answering.
+inline void test_a_chat_that_filled_its_arena_keeps_answering_between_rounds() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.arena->init(16 * 1024, b.platform.allocLarge, b.platform.freeLarge));
+  shortTurns(b, 4);
+  TEST_ASSERT_EQUAL(0, (int)b.engine->omittedThru());
+  for (int i = 0; i < 6; ++i) b.model.push(sp::call("big_read", "{\"tag\":\"m" + std::to_string(i) + "\",\"bytes\":1900}"));
+  b.model.push(sp::say("Read six."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read six", out));
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Read six.", out.text.c_str(), out.statusText.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(b.engine->omittedThru() > 0, "the dropped turns are not named to the compaction driver");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "earlier turns") && bodyHas(b.model.last(), "not shown"),
+                           "the dropped turns are not named in the request");
+  size_t owners = 0;
+  for (const tx::Item& it : storedOf(b)) owners += it.kind == tx::ItemKind::User;
+  TEST_ASSERT_EQUAL_MESSAGE(5, (int)owners, "storage lost a dropped turn");
+  expectPaired(b);
+}
+
 // ---- red cases for other lanes (ruling 56; on test/pending_roster.txt with ruling:56) ---------
 inline void test_a_full_arena_frees_its_oldest_closed_turn() {
-  TXB_WAITS_FOR("PENDING RB-E1b", "RB-E1a");
   txb::Battery b;
   shortTurns(b, 3);
   TXB_OK(b.arena->init(4096, b.platform.allocLarge, b.platform.freeLarge));
   shortTurns(b, 6);   // each turn must still answer: the oldest closed turns give way
   TEST_ASSERT_EQUAL(9, (int)b.sent.size());
+  for (const txb::SentMessage& m : b.sent) TEST_ASSERT_TRUE(m.text != texts::device_notes::kNoMemory);
+  TEST_ASSERT_TRUE_MESSAGE(b.engine->omittedThru() > 0, "the dropped turns are not named to the compaction driver");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "earlier turns"), "the dropped turns are not named in the request");
 }
 
 inline void test_view_fetches_a_long_argument_and_a_long_reply_back() {
   TXB_WAITS_FOR("PENDING RB-N3", "RB-E1a");
   txb::Battery b;
-  b.model.push(sp::call("write_file", "{\"path\":\"notes/l.md\",\"text\":\"" + std::string(5000, 'l') + "\"}"));
-  b.model.push(sp::say(std::string(13000, 'r')));
+  const std::string arg = std::string(5000, 'l') + "-ARG-END", reply = std::string(13000, 'r') + "-REPLY-END";
+  b.model.push(sp::call("write_file", "{\"path\":\"notes/l.md\",\"text\":\"" + arg + "\"}"));
+  b.model.push(sp::say(reply));
   plain::TurnOutcome out;
   TXB_OK(b.owner("save", out));
-  for (const tx::Item& it : storedOf(b))
-    if (it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Assistant)
-      TEST_ASSERT_TRUE_MESSAGE(!it.handle.empty(), "a stubbed argument or reply has no bulk handle for view");
+  // The stubs name what view fetches (ruling 59 item 7: the round trip, not only the handle).
+  std::vector<std::string> ids;
+  for (const tx::Item& it : storedOf(b)) {
+    if (it.kind != tx::ItemKind::Call && it.kind != tx::ItemKind::Assistant) continue;
+    const std::string& x = it.kind == tx::ItemKind::Call ? it.args : it.x;
+    const size_t at = x.find("view id=");
+    if (at == std::string::npos) continue;
+    size_t end = at + 8;
+    while (end < x.size() && x[end] != ']' && x[end] != ' ' && x[end] != '"') ++end;
+    ids.push_back(x.substr(at + 8, end - at - 8));
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)ids.size(), "a stubbed argument or reply names nothing view can fetch");
+  b.model.push(sp::call("view", "{\"id\":\"" + ids[0] + "\"}"));
+  b.model.push(sp::call("view", "{\"id\":\"" + ids[1] + "\"}"));
+  b.model.push(sp::say("ok"));
+  TXB_OK(b.owner("show both back", out));
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), arg), "view did not fetch the long argument back whole");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), reply), "view did not fetch the long reply back whole");
 }
 
 inline void test_a_long_owner_message_goes_to_the_inbox_as_a_file() {
@@ -1397,15 +1695,43 @@ inline void test_guard_inputs_measure_size_and_spend() {
   TEST_ASSERT_TRUE_MESSAGE(out.end.microUsd > 0, "the spend guard has no price");
 }
 
+// Ruling 59 item 7: the head is routed (the router host, HeadEndpoint::routed), so only a
+// correct fix turns it green: a routed request carries the deadline header, a custom endpoint's
+// request does not.
 inline void test_a_routed_head_sends_the_deadline_header() {
   TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a");
-  txb::Battery b(plain::Dialect::Flat);
+  txb::Battery b(plain::Dialect::ChatCompletions);
+  b.routed = true;
+  b.hostOverride = "router.cumulo-nimbus.ai";
+  b.modelOverride = "anthropic/claude-sonnet-5-5";
   b.model.push(sp::say("hi"));
   plain::TurnOutcome out;
   TXB_OK(b.owner("hello", out));
   bool header = false;
   for (const auto& h : b.model.last().req.headers) header |= h.first.find("eadline") != std::string::npos;
   TEST_ASSERT_TRUE_MESSAGE(header, "a routed request carries no deadline header");
+  txb::Battery c(plain::Dialect::Flat);
+  c.model.push(sp::say("hi"));
+  TXB_OK(c.owner("hello", out));
+  for (const auto& h : c.model.last().req.headers)
+    TEST_ASSERT_TRUE_MESSAGE(h.first.find("eadline") == std::string::npos, "a custom endpoint got the router's header");
+}
+
+// Ruling 54 item 4 and 59 item 7: one place splits a routed head's model. TurnCtx::model is the
+// router's selector ('<upstream>/<model>'); the request sends that selector to the router (the
+// router picks the upstream), and the exchange sizes the answer for the upstream it names.
+inline void test_a_routed_head_sends_the_router_model_selector() {
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a");
+  txb::Battery b(plain::Dialect::ChatCompletions);
+  b.routed = true;
+  b.hostOverride = "router.cumulo-nimbus.ai";
+  b.modelOverride = "anthropic/claude-sonnet-5-5";
+  b.model.push(sp::say("hi"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("hello", out));
+  const sp::Recorded& r = b.model.last();
+  TEST_ASSERT_TRUE_MESSAGE(r.req.path.rfind("/router/", 0) == 0, "a routed head's request does not go to the router path");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(r, "\"model\":\"anthropic/claude-sonnet-5-5\""), "the router's selector is not the model sent");
 }
 
 inline void test_the_log_reopens_when_storage_returns() {
@@ -1497,12 +1823,19 @@ inline void run() {
   RUN_TEST(test_unparsable_long_arguments_are_one_stub);
   RUN_TEST(test_an_owner_message_over_the_line_limit_gets_its_own_line);
   RUN_TEST(test_the_not_stored_note_renders_once);
+  RUN_TEST(test_a_refused_allocation_from_any_point_on_still_reaches_the_owner);
+  RUN_TEST(test_a_refused_large_allocation_still_reaches_the_owner);
+  RUN_TEST(test_a_refusal_inside_delivery_never_sends_a_part_twice);
+  RUN_TEST(test_after_deliver_runs_when_the_d_item_is_refused);
+  RUN_TEST(test_a_message_with_too_many_parts_gets_its_own_line);
+  RUN_TEST(test_a_chat_that_filled_its_arena_keeps_answering_between_rounds);
   RUN_TEST(test_a_full_arena_frees_its_oldest_closed_turn);
   RUN_TEST(test_view_fetches_a_long_argument_and_a_long_reply_back);
   RUN_TEST(test_a_long_owner_message_goes_to_the_inbox_as_a_file);
   RUN_TEST(test_signed_thinking_over_the_line_limit_keeps_the_turn);
   RUN_TEST(test_guard_inputs_measure_size_and_spend);
   RUN_TEST(test_a_routed_head_sends_the_deadline_header);
+  RUN_TEST(test_a_routed_head_sends_the_router_model_selector);
   RUN_TEST(test_the_log_reopens_when_storage_returns);
   RUN_TEST(test_the_stamp_carries_the_turns_day_start);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);

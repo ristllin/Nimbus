@@ -14,8 +14,10 @@ keeps the roster honest in both directions:
   in an unknown shape cannot hide a skip, and a crashed suite cannot hide its ignores);
 - against merge-base(HEAD, rb-main) the roster only shrinks: a line that is not in the base
   roster fails (a missing ref fails too: there is no fallback), unless it names the
-  orchestrator ruling that put it there (` ruling:<n>`, ruling 56). The first holder may create
-  the file when the base has none;
+  orchestrator ruling that put it there (` ruling:<n>`, ruling 56) AND that ruling lists the
+  test in tools/release_gate/roster_rulings.txt (ruling 59 item 8: a well-formed number alone
+  is not enough; the orchestrator commits the list). The first holder may create the file when
+  the base has none;
 - static leg: each roster line names a suite under test/ whose sources hold the test name and
   its "PENDING RB-<lane>" message.
 
@@ -39,6 +41,7 @@ import subprocess
 import sys
 
 ROSTER_REL = os.path.join("test", "pending_roster.txt")
+RULINGS_REL = os.path.join("tools", "release_gate", "roster_rulings.txt")
 ABSENT = object()  # the base commit has no roster file
 TAG = "[gate:pending-roster]"
 
@@ -58,6 +61,8 @@ ROSTER_LINE_RE = re.compile(
     r"^(?P<suite>test_[A-Za-z0-9_]+)::(?P<name>[A-Za-z_][A-Za-z0-9_]*) (?P<lane>RB-[A-Za-z0-9]+)"
     r"(?: ruling:(?P<ruling>[1-9][0-9]*))?$"
 )
+# roster_rulings.txt: "<ruling> <suite>::<test>", one allowed test per line, '#' starts a comment.
+RULINGS_LINE_RE = re.compile(r"^(?P<ruling>[1-9][0-9]*) (?P<key>test_[A-Za-z0-9_]+::[A-Za-z_][A-Za-z0-9_]*)$")
 
 
 def parse_native_log(text: str) -> "tuple[dict[str, str], int | None, list[str]]":
@@ -88,10 +93,10 @@ def parse_roster(text: "str | None") -> "tuple[dict[str, str], list[str]]":
     return entries, errs
 
 
-def parse_roster_rulings(text: "str | None") -> "tuple[dict[str, str], set[str], list[str]]":
-    """(test key -> lane, keys whose line names an orchestrator ruling, problems)."""
+def parse_roster_rulings(text: "str | None") -> "tuple[dict[str, str], dict[str, int], list[str]]":
+    """(test key -> lane, key -> the orchestrator ruling its line names, problems)."""
     entries: "dict[str, str]" = {}
-    ruled: "set[str]" = set()
+    ruled: "dict[str, int]" = {}
     errs: "list[str]" = []
     for n, raw in enumerate((text or "").splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
@@ -106,8 +111,24 @@ def parse_roster_rulings(text: "str | None") -> "tuple[dict[str, str], set[str],
             errs.append(f"roster line {n}: {key} is listed twice")
         entries[key] = m.group("lane")
         if m.group("ruling"):
-            ruled.add(key)
+            ruled[key] = int(m.group("ruling"))
     return entries, ruled, errs
+
+
+def parse_rulings(text: "str | None") -> "tuple[dict[int, set[str]], list[str]]":
+    """(ruling -> the test keys it allows, problems) from roster_rulings.txt."""
+    allowed: "dict[int, set[str]]" = {}
+    errs: "list[str]" = []
+    for n, raw in enumerate((text or "").splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = RULINGS_LINE_RE.match(line)
+        if not m:
+            errs.append(f"{RULINGS_REL} line {n} is not '<ruling> <suite>::<test>': {raw.strip()}")
+            continue
+        allowed.setdefault(int(m.group("ruling")), set()).add(m.group("key"))
+    return allowed, errs
 
 
 def equality_problems(ignored: "dict[str, str]", skipped: "int | None", roster: "dict[str, str]") -> "list[str]":
@@ -129,30 +150,57 @@ def equality_problems(ignored: "dict[str, str]", skipped: "int | None", roster: 
     return errs
 
 
-def shrink_problems(roster: "dict[str, str]", base: object, ruled: "set[str] | None" = None) -> "tuple[list[str], str]":
+def shrink_problems(
+    roster: "dict[str, str]",
+    base: object,
+    ruled: "dict[str, int] | None" = None,
+    allowed: "dict[int, set[str]] | None" = None,
+) -> "tuple[list[str], str]":
     """(problems, one report line) for the shrink-only rule against the base roster text. A
-    line that is new against the base passes only when it names an orchestrator ruling."""
+    line that is new against the base passes only when it names an orchestrator ruling that
+    lists it in roster_rulings.txt (`allowed`; None: the tree has no list)."""
     if base is ABSENT:
         return [], f"base has no roster: this tree creates it with {len(roster)} line(s)"
     base_entries, _ = parse_roster(base)  # type: ignore[arg-type]
+    ruled = ruled or {}
     new = [k for k, v in roster.items() if base_entries.get(k) != v]
-    grown = sorted(f"{k} {roster[k]}" for k in new if k not in (ruled or set()))
-    added = sorted(f"{k} {roster[k]}" for k in new if k in (ruled or set()))
+    grown, unlisted, added = split_new(new, roster, ruled, allowed or {})
     errs = [
         f"roster line '{g}' is not in the base roster: the roster can only shrink, or grow by a line that names an "
         "orchestrator ruling (' ruling:<n>')"
         for g in grown
     ]
+    errs += [unlisted_problem(k, roster[k], ruled[k], allowed) for k in unlisted]
     line = f"roster shrank by {len(set(base_entries) - set(roster))} against the base ({len(base_entries)} line(s))"
     if added:
         line += f"; {len(added)} line(s) added under a ruling: " + ", ".join(added)
     return errs, line
 
 
+def split_new(
+    new: "list[str]", roster: "dict[str, str]", ruled: "dict[str, int]", allowed: "dict[int, set[str]]"
+) -> "tuple[list[str], list[str], list[str]]":
+    """(untagged new lines, tagged keys their ruling does not list, tagged lines it lists)."""
+    grown = sorted(f"{k} {roster[k]}" for k in new if k not in ruled)
+    unlisted = sorted(k for k in new if k in ruled and k not in allowed.get(ruled[k], set()))
+    added = sorted(f"{k} {roster[k]}" for k in new if k in ruled and k not in unlisted)
+    return grown, unlisted, added
+
+
+def unlisted_problem(key: str, lane: str, ruling: int, allowed: "dict[int, set[str]] | None") -> str:
+    where = "does not exist in this tree" if allowed is None else f"does not list {key} under ruling {ruling}"
+    return f"roster line '{key} {lane} ruling:{ruling}' names ruling {ruling}, but {RULINGS_REL} {where}"
+
+
 def check(
-    log_text: "str | None", roster_text: "str | None", base: object, require_empty: bool = False
+    log_text: "str | None",
+    roster_text: "str | None",
+    base: object,
+    require_empty: bool = False,
+    allowed: "dict[int, set[str]] | None" = None,
 ) -> "tuple[bool, list[str], list[str]]":
-    """(ok, report lines, failures). log_text None skips the equality leg (static-only runs)."""
+    """(ok, report lines, failures). log_text None skips the equality leg (static-only runs);
+    `allowed` is roster_rulings.txt read (None: the tree has none)."""
     roster, ruled, fails = parse_roster_rulings(roster_text)
     lines: "list[str]" = []
     if log_text is not None:
@@ -160,7 +208,7 @@ def check(
         fails += [f"the native run is not green, so its ignored set is not known: {r}" for r in red[:5]]
         fails += equality_problems(ignored, skipped, roster)
         lines.append(f"native run: {len(ignored)} ignored, {len(roster)} on the roster")
-    errs, line = shrink_problems(roster, base, ruled)
+    errs, line = shrink_problems(roster, base, ruled, allowed)
     fails += errs
     lines.append(line)
     if require_empty and roster:
@@ -252,7 +300,10 @@ def run(argv: "list[str] | None") -> int:
     base, err = base_roster(root, ref)
     if err:
         fails.append(err)
-    _, lines, more = check(log_text, roster_text, base, args.require_empty)
+    rulings_text = read_optional(os.path.join(root, RULINGS_REL))
+    allowed, list_errs = parse_rulings(rulings_text)
+    fails += list_errs
+    _, lines, more = check(log_text, roster_text, base, args.require_empty, None if rulings_text is None else allowed)
     fails += more
     if not args.no_static:
         fails += static_problems(root, parse_roster(roster_text)[0])

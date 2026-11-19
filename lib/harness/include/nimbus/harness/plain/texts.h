@@ -194,6 +194,8 @@ inline constexpr char kNoMemory[] = "The device ran out of memory for this turn 
 // stored line's limit, so the turn stopped there; an owner message over it has its own line.
 inline constexpr char kTooLong[] = "Part of this turn was too long for the device to keep, so it stopped there.";
 inline constexpr char kMessageTooLong[] = "That message is too long for the device to keep. Send it as a file instead.";
+// An owner message with more parts or update ids than one stored line holds (lane RB-E1b).
+inline constexpr char kTooManyParts[] = "That message has too many parts for the device to keep. Send them in smaller groups.";
 // The last allowed round answered with tool calls and no text.
 inline constexpr char kLimitLine[] = "The turn reached its limit before a reply. Ask again to continue.";
 // The tool slug of a long reply's stub ('[stub assistant r<q> ...]').

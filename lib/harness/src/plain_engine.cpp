@@ -39,7 +39,13 @@ struct PlainEngine::ChatState {
   bool storageEpisode = false;         // storage refused an item and has stored none since
   bool noteDue = false;                // a stored gap note is still owed for the last episode
   bool noteShown = false;              // the model has seen the note in this episode (RAM at least)
-  uint64_t droppedThru = 0;            // the restart fill gave up the turns through this q
+  uint64_t droppedThru = 0;            // the newest q given up from RAM (the restart fill, a full arena)
+  // A full arena (ruling 60): the oldest closed turns left RAM (storage keeps them). The
+  // omission line names them until a digest covers them.
+  uint32_t droppedTurns = 0;
+  uint64_t droppedFirstAt = 0, droppedLastAt = 0;   // the first item of the first and last dropped turn
+  // The memory line, built at boot: on a refused allocation it goes out with no allocation.
+  std::string memoryLine;
 };
 
 namespace {
@@ -76,22 +82,27 @@ struct Turn {
   bool fileSetChanged = false;
   bool sawOutside = false;
   bool sawMeta = false;
+  bool dropped = false;                // a full arena gave up closed turns this turn
   GuardTrip trip = GuardTrip::None;
-  bool reply = false;                  // `text` is the model's reply
+  bool reply = false;                  // replyText is the model's reply
   bool answered = false;               // a final answer came back (possibly empty)
   bool emptyRefusal = false;           // that answer was an empty refusal
-  std::string answer;                  // the final answer's text, in hand before it is stored
-  bool sent = false;                   // the reply went out (recorded at the send itself)
-  bool statusSent = false;             // the status line went out
+  // The final answer's text, moved out of the exchange before anything is stored: the reply
+  // is never copied on its way to the owner (ruling 59 item 1).
+  std::string answer;
+  const std::string* replyText = nullptr;   // what goes out: answer, else the held reply
+  DeliverOutcome out;                  // delivery progress, recorded at each send
   bool deliverDone = false;            // delivery finished
-  bool closedDelivery = false;         // the d item and afterDeliver ran
+  bool dAttempted = false;             // the d item was tried (never twice)
+  bool afterRan = false;               // afterDeliver ran (once, whatever the d item did)
   bool endStored = false;              // the e item is stored
+  uint64_t firstQ = 0;                 // the open turn's first own item (a full arena never drops it)
   Err storeErr = Err::None;            // why the arena refused an item (storeFailed)
   const char* storeWhere = "";
   tx::ItemKind refusedKind = tx::ItemKind::User;
-  std::string text;
   StatusLine status = StatusLine::None;
   std::string statusText;
+  const std::string* statusRef = nullptr;   // the line that goes out: statusText or a kept line
   bool parkHost = false, failOver = false;
   std::string cause;
   tx::TurnEndFacts end;
@@ -148,7 +159,8 @@ class TurnRun {
     if (!it.turn) it.turn = t_.ctx.turn;
     it.t = epoch();
     tx::StoreState state = tx::StoreState::Stored;
-    const Status st = d_.log->store(it, *d_.arena, state);
+    Status st = d_.log->store(it, *d_.arena, state);
+    while (arenaFull(st) && dropOldestClosed()) st = d_.log->store(it, *d_.arena, state);   // ruling 60
     if (!st.ok()) {
       t_.storeFailed = true;
       t_.storeErr = st.err;
@@ -174,6 +186,107 @@ class TurnRun {
     return put(h, stored);
   }
 
+  // ---- the full arena (ruling 60) -------------------------------------------------------
+  // The loop never calls the summarizer to make room. At turn open (free bytes under the turn's
+  // reserve) and between rounds (the arena refused a store) the oldest closed resident turn
+  // leaves RAM; storage keeps it, the omission line names it, omittedThru rises to its last q,
+  // and the compaction driver (idle step only) folds it from storage later.
+  static constexpr size_t kTurnArenaReserve = 32 * 1024;
+  size_t arenaReserve() const { return std::min(kTurnArenaReserve, d_.arena->capacity() / 2); }
+  static bool arenaFull(const Status& st) {
+    return st.err == Err::TooLarge && std::strcmp(st.where, "tx::TxArena::append") == 0;
+  }
+
+  // The prefix through the oldest turn's last item, and through any later item of a turn at or
+  // below it (a late "outcome unknown" result): no result is left without its call. Never an
+  // item of the open turn (q at or above firstQ; before the turn stores anything, every resident
+  // item is closed). False when nothing closed is resident.
+  bool dropOldestClosed() {
+    uint32_t through = 0;
+    const size_t end = dropEnd(closedPrefix(through), through);
+    uint64_t lastQ = 0;
+    tx::ArenaEntry e;
+    if (!end || !d_.arena->header(end - 1, e).ok() || !(lastQ = e.q) || !countDropped(end)) return false;
+    if (!d_.arena->dropThrough(lastQ).ok()) return false;
+    c_.droppedThru = std::max(c_.droppedThru, lastQ);
+    t_.dropped = true;
+    nameDropped();
+    return true;
+  }
+  // How many resident items belong to closed turns (a prefix), and the oldest turn's number.
+  size_t closedPrefix(uint32_t& oldest) const {
+    const uint64_t keepFrom = t_.firstQ ? t_.firstQ : c_.nextQ;
+    size_t n = 0;
+    tx::ArenaEntry e;
+    for (; n < d_.arena->count() && d_.arena->header(n, e).ok() && e.q < keepFrom; ++n)
+      if (!oldest) oldest = e.turn;
+    return n;
+  }
+  // The drop's end within the closed prefix: through every item of the turns it covers, growing
+  // while a covered item belongs to a newer turn.
+  size_t dropEnd(size_t n, uint32_t& through) const {
+    size_t end = 0;
+    tx::ArenaEntry e;
+    for (bool grew = n != 0; grew;) {
+      grew = false;
+      for (size_t i = end; i < n; ++i)
+        if (d_.arena->header(i, e).ok() && (!through || (e.turn && e.turn <= through))) end = i + 1;
+      for (size_t i = 0; i < end; ++i) {
+        if (!d_.arena->header(i, e).ok() || e.turn <= through) continue;
+        through = e.turn;
+        grew = true;
+      }
+    }
+    return end;
+  }
+  // The dropped turns' count and dates, for the omission line.
+  bool countDropped(size_t end) {
+    uint32_t last = 0;
+    tx::ArenaEntry e;
+    for (size_t i = 0; i < end; ++i) {
+      if (!d_.arena->header(i, e).ok() || !e.turn || e.turn == last) continue;
+      last = e.turn;
+      ++c_.droppedTurns;
+      if (!c_.droppedFirstAt) c_.droppedFirstAt = e.t;
+      c_.droppedLastAt = e.t;
+    }
+    return true;
+  }
+
+  // The ladder starts from the dropped turns: whole turns through droppedThru are left out (they
+  // are not resident) and the omission line names them; rung 3 adds resident turns to it.
+  void nameDropped() {
+    if (c_.droppedTurns) (void)omit(std::max(t_.ladder.omitThrough, c_.droppedThru));
+  }
+
+  // One omission line for all that is left out through `through`: the dropped turns (no longer
+  // resident) and the resident whole turns at or below it.
+  bool omit(uint64_t through) {
+    uint32_t n = c_.droppedTurns, last = 0;
+    uint64_t first = n ? c_.droppedFirstAt : 0, lastAt = c_.droppedLastAt;
+    tx::ArenaEntry e;
+    for (size_t i = 0; i < d_.arena->count() && d_.arena->header(i, e).ok() && e.q <= through; ++i) {
+      if (!e.turn || e.turn == last) continue;
+      last = e.turn;
+      ++n;
+      if (!first) first = e.t;
+      lastAt = e.t;
+    }
+    std::string dates;
+    (void)tx::omissionDates(first, lastAt, t_.tz, dates);
+    if (!n || !tx::omissionLine(n, dates, t_.ladder.omissionLine).ok()) return false;
+    t_.ladder.omitThrough = through;
+    return true;
+  }
+
+  // At turn open: what earlier drops left out is named, and room is made for this turn.
+  void makeRoom() {
+    if (c_.droppedTurns && c_.head.thru >= c_.droppedThru) c_.droppedTurns = 0;   // a digest names them now
+    nameDropped();
+    while (d_.arena->freeBytes() < arenaReserve() && dropOldestClosed()) {
+    }
+  }
+
   // ---- turn open ----------------------------------------------------------------------
   Status open(const TurnInput& in) {
     t_.ctx = in.ctx;
@@ -182,7 +295,9 @@ class TurnRun {
     t_.ctx.startedAt = epoch();
     t_.ctx.startedMs = t_.startMs = d_.platform->nowMs();
     t_.tz = in.tzMinutes;
+    makeRoom();
     Status st = closeDangling();
+    t_.firstQ = c_.nextQ;
     if (st.ok()) st = storeInput(in);
     if (!st.ok()) return st;
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
@@ -203,6 +318,11 @@ class TurnRun {
   // A turn that cannot start (setup, composition or the wire refused) is closed with one
   // plain line: a binding fault, never a partial request.
   Status fail(const Status& st) {
+    if (st.err == Err::TooLarge) {   // composition's refused allocation (ruling 30): the memory line
+      t_.cause = "memory";
+      setStatusRef(StatusLine::CrashNotice, c_.memoryLine);
+      return st;
+    }
     t_.cause = std::string("setup:") + tx::errSlug(st.err);
     setStatus(StatusLine::ProviderError, exchangeLine(ExchangeErr::Other, providerSlugOf(t_.ctx, t_.setup.head), 0));
     return st;
@@ -455,18 +575,18 @@ class TurnRun {
   // A cut answer: its text is delivered with the cut line; its calls are never run.
   Status cut() {
     ++t_.rounds;
+    t_.answer.swap(t_.ex.step.text);   // in hand before anything is stored, never copied
     t_.cause = "cut";
-    t_.answer = t_.ex.step.text;   // in hand before anything is stored
     setStatus(t_.ex.status, t_.ex.errorLine);
     if (d_.hooks) {   // the truth seam sees a cut answer too; it cannot hold one
       DeliverCtx dc;
       dc.turn = &t_.ctx;
-      dc.text = &t_.ex.step.text;
+      dc.text = &t_.answer;
       dc.held = t_.held;
       dc.cut = true;
       takeStatus(d_.hooks->runBeforeDeliver(dc));
     }
-    Status st = storeAnswer(t_.ex.step, true);
+    Status st = storeAnswer(t_.ex.step, true, t_.answer);
     for (size_t i = 0; st.ok() && i < t_.ex.step.calls.size(); ++i) {
       t_.curCallQ = callQOf(i);
       st = answerUnrun(t_.ex.step.calls[i], texts::tool_results::kNotRunCut);
@@ -583,38 +703,35 @@ class TurnRun {
       if (need != std::numeric_limits<size_t>::max()) need += spans[done].bytes;
     uint32_t n = 0;
     if (!tx::omissionSpan(spans, need, n).ok() || n <= done) return false;
-    std::string dates;
-    (void)tx::omissionDates(spans[0].firstAt, spans[n - 1].firstAt, t_.tz, dates);
-    if (!tx::omissionLine(n, dates, t_.ladder.omissionLine).ok()) return false;
-    t_.ladder.omitThrough = lastQ[n - 1];
-    return true;
+    return omit(lastQ[n - 1]);
   }
 
   // ---- what the model said ----------------------------------------------------------------
   // The reply, after the truth seam: held once, it is stored as an interim text with the
   // device's facts item after it and the loop asks once more.
   Status finalAnswer(const ParsedStep& step) {
+    t_.answer.swap(t_.ex.step.text);   // the reply in hand before anything is stored, never copied
     DeliverDecision dd;
     if (d_.hooks) {
       DeliverCtx dc;
       dc.turn = &t_.ctx;
-      dc.text = &step.text;
+      dc.text = &t_.answer;
       dc.held = t_.held;
       dd = d_.hooks->runBeforeDeliver(dc);
     }
     const bool hold = dd.verdict == DeliverVerdict::Hold && !t_.held;   // at most one hold a turn
     takeStatus(dd);
-    if (hold) {   // the reply in hand before anything is stored
+    if (hold) {
       t_.held = true;
-      t_.heldText = step.text;
+      t_.heldText.swap(t_.answer);
     } else {
       t_.answered = true;
-      t_.answer = step.text;
       t_.emptyRefusal = step.stop == StopReason::Refusal;
       t_.cause = t_.trip == GuardTrip::None ? "reply" : std::string("limit:") + guardTripSlug(t_.trip);
-      if (step.text.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger)) t_.cause = "empty";
+      const bool heldGoesOut = t_.held && !t_.heldText.empty();   // ruling 59 item 5
+      if (t_.answer.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger) && !heldGoesOut) t_.cause = "empty";
     }
-    Status st = storeAnswer(step, !hold);
+    Status st = storeAnswer(step, !hold, hold ? t_.heldText : t_.answer);
     for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {   // the last round still called
       t_.curCallQ = callQOf(i);
       st = answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
@@ -640,8 +757,15 @@ class TurnRun {
   }
   void setStatus(StatusLine s, const std::string& text) {
     if (rank(s) <= rank(t_.status)) return;
+    t_.statusText = text;   // copied first: a refused copy leaves the earlier line whole
     t_.status = s;
-    t_.statusText = text;
+    t_.statusRef = &t_.statusText;
+  }
+  // A line kept outside the turn (the memory line): taken with no allocation.
+  void setStatusRef(StatusLine s, const std::string& kept) noexcept {
+    if (rank(s) <= rank(t_.status)) return;
+    t_.status = s;
+    t_.statusRef = &kept;
   }
   void takeStatus(const DeliverDecision& dd) { setStatus(dd.status, dd.statusText); }
 
@@ -650,8 +774,8 @@ class TurnRun {
   // line: the limit line when the last allowed round only called tools, the provider's line
   // for an empty answer. A routine's empty text stays its silence.
   void settle() {
-    t_.reply = !t_.answer.empty() || (t_.held && !t_.heldText.empty());
-    if (t_.reply) t_.text = !t_.answer.empty() ? t_.answer : t_.heldText;
+    t_.replyText = !t_.answer.empty() ? &t_.answer : t_.held && !t_.heldText.empty() ? &t_.heldText : nullptr;
+    t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
     if (t_.reply || !personTrigger(t_.ctx.trigger)) return;
     if (t_.answered && t_.trip != GuardTrip::None) setStatus(StatusLine::LimitReached, texts::device_notes::kLimitLine);
     else if (t_.answered)
@@ -661,14 +785,15 @@ class TurnRun {
   }
 
   // k, a and c items in the order the model gave them, before any call runs.
-  Status storeAnswer(const ParsedStep& step, bool fin) {
+  Status storeAnswer(const ParsedStep& step, bool fin) { return storeAnswer(step, fin, step.text); }
+  Status storeAnswer(const ParsedStep& step, bool fin, const std::string& text) {
     t_.roundStart.push_back(c_.nextQ);
     Status st = meta(step, 0);
-    if (st.ok() && (!step.text.empty() || step.calls.empty())) {
+    if (st.ok() && (!text.empty() || step.calls.empty())) {
       tx::Item& a = blank(tx::ItemKind::Assistant);
       a.rd = (uint8_t)std::min<uint16_t>(t_.rounds, 255);
       a.fin = fin;
-      st = tierText(step.text, a);   // over tier 1: bulk and a stub; the delivered text stays whole
+      st = tierText(text, a);   // over tier 1: bulk and a stub; the delivered text stays whole
       if (st.ok()) st = put(a);
     }
     t_.callQ.clear();
@@ -994,9 +1119,9 @@ class TurnRun {
   Status close() {
     settle();
     closingFacts();
-    DeliverOutcome sent;
-    deliver(sent);
-    Status st = delivered(sent);   // the d item and afterDeliver, before the scan below allocates
+    deliver();
+    Status st = storeDelivery();   // the d item and afterDeliver, before the scan below allocates
+    afterDeliver();
     if (!t_.storeFailed) supersede();
     if (!t_.storeFailed) st = storeEnd();
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
@@ -1021,33 +1146,44 @@ class TurnRun {
 
   // The arena refused an item: a true line for why. Over the line limit: an owner message has
   // its own line, any other part the too-long line; otherwise the arena is full.
+  // The memory line only for a full arena (nothing closed left to drop); an owner message with
+  // more parts or update ids than a line holds (InvalidArgument from the encoder) has its own
+  // line; anything else the arena refused is a part too long to keep (ruling 59 item 4).
   void refusedLine() {
-    const bool tooLong = t_.storeErr == Err::TooLarge && std::strcmp(t_.storeWhere, "tx::encodeLine") == 0;
-    t_.cause = tooLong ? "too-long" : "memory";
-    if (!tooLong) setStatus(StatusLine::CrashNotice, texts::device_notes::kNoMemory);
-    else if (t_.refusedKind == tx::ItemKind::User) setStatus(StatusLine::CrashNotice, texts::device_notes::kMessageTooLong);
+    if (t_.storeErr == Err::TooLarge && std::strcmp(t_.storeWhere, "tx::TxArena::append") == 0) {
+      t_.cause = "memory";
+      setStatusRef(StatusLine::CrashNotice, c_.memoryLine);
+      return;
+    }
+    const bool user = t_.refusedKind == tx::ItemKind::User;
+    const bool parts = t_.storeErr == Err::InvalidArgument && std::strcmp(t_.storeWhere, "tx::encodeLine") == 0;
+    t_.cause = parts ? "too-many-parts" : "too-long";
+    if (user && parts) setStatus(StatusLine::CrashNotice, texts::device_notes::kTooManyParts);
+    else if (user) setStatus(StatusLine::CrashNotice, texts::device_notes::kMessageTooLong);
     else setStatus(StatusLine::CrashNotice, texts::device_notes::kTooLong);
   }
 
-  // The d item and afterDeliver.
-  Status delivered(const DeliverOutcome& sent) {
-    if (t_.closedDelivery) return Status::success();
-    t_.closedDelivery = true;
-    Status st = Status::success();
-    if (!t_.storeFailed && sent.sent) {
-      tx::Item& dItem = blank(tx::ItemKind::Delivery);
-      dItem.msgIds = sent.msgIds;
-      st = put(dItem);
-    }
-    if (d_.hooks) {
-      DeliveredCtx dc;
-      dc.turn = &t_.ctx;
-      dc.text = &t_.text;
-      dc.msgIds = &sent.msgIds;
-      dc.sent = sent.sent;
-      d_.hooks->runAfterDeliver(dc);
-    }
-    return st;
+  // The d item, tried once: a refusal while it is stored never stores it twice.
+  Status storeDelivery() {
+    if (t_.dAttempted) return Status::success();
+    t_.dAttempted = true;
+    if (t_.storeFailed || !t_.out.sent) return Status::success();
+    tx::Item& dItem = blank(tx::ItemKind::Delivery);
+    dItem.msgIds = t_.out.msgIds;
+    return put(dItem);
+  }
+
+  // afterDeliver, once, whether or not the d item could be stored (ruling 59 item 2).
+  void afterDeliver() {
+    if (t_.afterRan || !d_.hooks) return;
+    t_.afterRan = true;
+    static const std::string kNoText;
+    DeliveredCtx dc;
+    dc.turn = &t_.ctx;
+    dc.text = t_.replyText ? t_.replyText : &kNoText;
+    dc.msgIds = &t_.out.msgIds;
+    dc.sent = t_.out.sent;
+    d_.hooks->runAfterDeliver(dc);
   }
 
   // Rule (4): a successful write supersedes the earlier whole reads it made stale.
@@ -1092,34 +1228,36 @@ class TurnRun {
     }
   }
 
-  // One portable deliver function (RB-E3); until it lands, the channel's send, the reply
-  // first and the status line as its own message.
-  // Each send is recorded the moment it succeeds, so the refusal path never sends it again.
-  void deliver(DeliverOutcome& out) {
-    out.sent = t_.sent;
+  // One portable deliver function (RB-E3's deliverTurn, or the binding's EngineDeps::deliver);
+  // until it lands, the channel's send, the reply first and the status line as its own message.
+  // Nothing is copied: the reply and the line are read where they are. Progress lands in t_.out
+  // the moment each send succeeds, so the refusal path never sends a part again. withText false:
+  // the status line alone (the refusal path, when the reply's own step was refused again).
+  void deliver(bool withText = true) {
     if (t_.deliverDone) return;
     DeliverInput in;
     in.turn = &t_.ctx;
-    if (t_.reply && !t_.sent) in.text = t_.text;
-    if (!t_.statusSent) {
+    if (withText && t_.replyText && !t_.out.replyDone) {
+      in.text = t_.replyText;
+      in.fromPart = t_.out.parts;
+    }
+    if (!t_.out.statusSent && t_.statusRef) {
       in.status = t_.status;
-      in.statusText = t_.statusText;
+      in.statusText = t_.statusRef;
     }
-    const Status st = deliverTurn(DeliverDeps{d_.channel, d_.hooks, d_.log}, in, out);
-    if (!st.notImplemented()) {
-      t_.sent = t_.sent || out.sent;
-      t_.statusSent = t_.deliverDone = true;
-      return;
+    const Status st = d_.deliver ? d_.deliver(in, t_.out) : deliverTurn(DeliverDeps{d_.channel, d_.hooks, d_.log}, in, t_.out);
+    if (st.notImplemented()) sendEach(in);
+    t_.deliverDone = withText;
+  }
+  void sendEach(const DeliverInput& in) {
+    if (!d_.channel || !d_.channel->send) return;
+    if (in.text && !in.text->empty() && d_.channel->send(t_.ctx.chatId, *in.text)) {
+      t_.out.sent = t_.out.replyDone = true;
+      t_.out.parts = 1;
+      t_.out.bytes = (uint32_t)in.text->size();
     }
-    if (d_.channel && d_.channel->send) {
-      if (!in.text.empty() && d_.channel->send(t_.ctx.chatId, in.text)) {
-        t_.sent = true;
-        out.bytes = (uint32_t)in.text.size();
-      }
-      out.sent = t_.sent;
-      if (!in.statusText.empty() && d_.channel->send(t_.ctx.chatId, in.statusText)) t_.statusSent = true;
-    }
-    t_.deliverDone = true;
+    if (in.statusText && !in.statusText->empty() && d_.channel->send(t_.ctx.chatId, *in.statusText))
+      t_.out.statusSent = true;
   }
 
   Status storeEnd() {
@@ -1146,26 +1284,45 @@ class TurnRun {
   void refused() noexcept {
     try {
       settle();
-      if (!t_.deliverDone) {
-        t_.cause = "memory";
-        setStatus(StatusLine::CrashNotice, texts::device_notes::kNoMemory);
-      }
     } catch (const std::bad_alloc&) {
     }
-    DeliverOutcome sent;
+    if (!t_.deliverDone) {   // the memory line, kept since boot: it needs no allocation
+      t_.cause.clear();
+      t_.cause.append("memory");   // within the string's own buffer
+      setStatusRef(StatusLine::CrashNotice, c_.memoryLine);
+    }
+    deliverAfterRefusal();
     try {
-      deliver(sent);
+      (void)storeDelivery();
     } catch (const std::bad_alloc&) {
     }
     try {
-      sent.sent = t_.sent;
-      (void)delivered(sent);
+      afterDeliver();
     } catch (const std::bad_alloc&) {
     }
     try {
       if (!t_.storeFailed && (t_.endStored || storeEnd().ok())) c_.head.openTurn = 0;
       c_.head.nextQ = c_.nextQ;
       if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);
+    } catch (const std::bad_alloc&) {
+    }
+  }
+
+ private:
+  // The reply and the line as far as they had not gone out; when the reply's own step is
+  // refused again, the memory line alone (the status step stands apart from the text step).
+  void deliverAfterRefusal() noexcept {
+    try {
+      deliver();
+      return;
+    } catch (const std::bad_alloc&) {
+    }
+    if (!t_.out.replyDone && !t_.out.statusSent) {
+      t_.status = StatusLine::CrashNotice;
+      t_.statusRef = &c_.memoryLine;
+    }
+    try {
+      deliver(false);
     } catch (const std::bad_alloc&) {
     }
   }
@@ -1196,7 +1353,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   if (!t) {   // not even the turn's state: the owner still hears it (nothing was stored)
     out.status = StatusLine::CrashNotice;
     try {
-      if (deps_.channel && deps_.channel->send) (void)deps_.channel->send(in.ctx.chatId, texts::device_notes::kNoMemory);
+      if (deps_.channel && deps_.channel->send) (void)deps_.channel->send(in.ctx.chatId, chat_->memoryLine);
     } catch (const std::bad_alloc&) {
     }
     return Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
@@ -1215,7 +1372,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   }
   // The plain fields first; the copies that allocate each stand alone (a refusal leaves them
   // empty, never the call).
-  out.delivered = t->sent;
+  out.delivered = t->out.sent;
   out.rounds = t->rounds;
   out.toolCalls = t->end.tools;
   out.headRequests = t->end.headRequests;
@@ -1224,8 +1381,8 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.parkHost = t->parkHost;
   out.failOver = t->failOver;
   try {
-    if (t->reply) out.text = t->text;
-    out.statusText = t->statusText;
+    if (t->replyText) out.text = *t->replyText;
+    if (t->statusRef) out.statusText = *t->statusRef;
     out.end = t->end;
   } catch (const std::bad_alloc&) {
   }
@@ -1244,6 +1401,7 @@ Status PlainEngine::boot(const BootCtx& ctx) {
   try {
     ChatState& c = *chat_;
     c = ChatState{};
+    c.memoryLine = texts::device_notes::kNoMemory;
     Status st = deps_.log->open(c.head);   // Io: no card, the chat runs from RAM
     if (!st.ok() && st.err != Err::Io) return st;
     if (st.ok()) {

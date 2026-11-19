@@ -184,7 +184,8 @@ def test_counter_roster_that_grew_against_the_base_fails():
 def test_a_new_line_that_names_a_ruling_may_grow_the_roster():
     base = "test_tx_prefix::test_prefix_is_stable RB-T3\n"
     roster = base + "test_tx_log::test_torn_tail_dropped RB-T2 ruling:56\n"
-    ok, lines, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=base)
+    allowed = {56: {"test_tx_log::test_torn_tail_dropped"}}
+    ok, lines, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=base, allowed=allowed)
     assert ok, fails
     assert any("added under a ruling" in ln and "test_tx_log::test_torn_tail_dropped" in ln for ln in lines)
 
@@ -404,3 +405,95 @@ def test_marker_names_the_legs_that_did_not_run(tmp_path, capsys):
     assert gate.main(["--root", root, "--static-only", "--no-static"]) == 0
     out = capsys.readouterr().out
     assert "equality leg not run" in out and "static leg not run" in out
+
+
+# --- ruling 59 item 8: a ruled line must be listed under its ruling in roster_rulings.txt ---------
+
+KEY_B = "test_tx_log::test_torn_tail_dropped"
+BASE_A = "test_tx_prefix::test_prefix_is_stable RB-T3\n"
+
+
+def test_a_ruled_line_listed_under_its_ruling_may_grow_the_roster():
+    roster = BASE_A + KEY_B + " RB-T2 ruling:59\n"
+    ok, lines, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=BASE_A, allowed={59: {KEY_B}})
+    assert ok, fails
+    assert any("added under a ruling" in ln for ln in lines)
+
+
+def test_counter_a_ruled_line_not_in_the_list_fails():
+    roster = BASE_A + KEY_B + " RB-T2 ruling:59\n"
+    ok, _, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=BASE_A, allowed={59: set()})
+    assert not ok
+    assert any(KEY_B in f and "roster_rulings.txt" in f for f in fails)
+
+
+def test_counter_a_ruled_line_listed_under_another_ruling_fails():
+    roster = BASE_A + KEY_B + " RB-T2 ruling:3\n"
+    ok, _, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=BASE_A, allowed={59: {KEY_B}})
+    assert not ok
+    assert any(KEY_B in f and "ruling 3" in f for f in fails)
+
+
+def test_counter_a_ruled_line_with_no_list_in_the_tree_fails():
+    roster = BASE_A + KEY_B + " RB-T2 ruling:59\n"
+    ok, _, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=BASE_A, allowed=None)
+    assert not ok
+    assert any(KEY_B in f for f in fails)
+
+
+def test_counter_a_tag_inside_a_comment_is_no_tag():
+    roster = BASE_A + KEY_B + " RB-T2 # ruling:59\n"
+    ok, _, fails = run(native_log([PENDING_A, PENDING_B]), roster, base=BASE_A, allowed={59: {KEY_B}})
+    assert not ok
+    assert any(KEY_B in f and "can only shrink" in f for f in fails)
+
+
+def test_a_listed_ruled_move_to_another_lane_passes_and_an_unlisted_one_fails():
+    base = "test_tx_prefix::test_prefix_is_stable RB-T2\n"
+    moved = "test_tx_prefix::test_prefix_is_stable RB-T3 ruling:59\n"
+    ok, _, fails = run(
+        native_log([PENDING_A]), moved, base=base, allowed={59: {"test_tx_prefix::test_prefix_is_stable"}}
+    )
+    assert ok, fails
+    ok, _, fails = run(native_log([PENDING_A]), moved, base=base, allowed={59: set()})
+    assert not ok
+
+
+def test_a_base_line_needs_no_listing():
+    roster = BASE_A.strip() + " ruling:56\n"
+    ok, _, fails = run(native_log([PENDING_A]), roster, base=roster, allowed={})
+    assert ok, fails
+
+
+@pytest.mark.parametrize(
+    "bad", ["59", "x test_a::test_b", "59 not-a-key", "0 test_a::test_b", "59 test_a::test_b extra"]
+)
+def test_counter_a_malformed_rulings_line_fails(bad):
+    allowed, errs = gate.parse_rulings(bad + "\n")
+    assert errs and "line 1" in errs[0]
+
+
+def test_rulings_file_reads_comments_and_keys():
+    allowed, errs = gate.parse_rulings("# who allows what\n59 test_a::test_b  # a reason\n56 test_c::test_d\n")
+    assert errs == []
+    assert allowed == {59: {"test_a::test_b"}, 56: {"test_c::test_d"}}
+
+
+def test_main_reads_the_list_from_the_tree(tmp_path, capsys):
+    root = make_git_tree(tmp_path, BASE_A, BASE_A + KEY_B + " RB-T2 ruling:59\n")
+    log = write_log(tmp_path, native_log([PENDING_A, PENDING_B]))
+    assert gate.main(["--root", root, "--native-log", log, "--no-static"]) == 1
+    assert "roster_rulings.txt" in capsys.readouterr().out
+    path = os.path.join(root, gate.RULINGS_REL)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("59 " + KEY_B + "\n")
+    assert gate.main(["--root", root, "--native-log", log, "--no-static"]) == 0
+
+
+def test_real_tree_lists_every_ruled_roster_line():
+    roster, ruled, errs = gate.parse_roster_rulings(gate.read_optional(os.path.join(REPO, gate.ROSTER_REL)))
+    allowed, list_errs = gate.parse_rulings(gate.read_optional(os.path.join(REPO, gate.RULINGS_REL)))
+    assert errs == [] and list_errs == []
+    for key, n in ruled.items():
+        assert key in allowed.get(n, set()), f"{key} ruling:{n} is not listed"
