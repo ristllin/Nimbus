@@ -75,7 +75,7 @@ struct PlainRigConfig {
 enum class PlainEnding : uint8_t {
   Reply = 0,    // the model's text went out (a status line may follow it)
   Status = 1,   // no model text went out; the engine's one status line did
-  Silent = 2,   // the engine returned ok and sent nothing (a loop-core gap, see `stated`)
+  Silent = 2,   // the engine returned ok and sent nothing: never expected (ruling 44), stated for the log
   Failed = 3,   // nothing went out: runTurn failed, the host's channel refused, or the rig was busy
 };
 inline const char* plainEndingSlug(PlainEnding e) {

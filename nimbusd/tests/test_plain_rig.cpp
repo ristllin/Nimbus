@@ -235,19 +235,22 @@ void testFailureFaces(ndtest::Ctx& c) {
     c.ok(h.ms - t0 <= plain::kSoftWallMs + 10000, "hung provider: the turn ends by its wall clock");
   }
 
-  // A 200 with no text and no call. The loop core delivers nothing for it today (listed for
-  // RB-E1b, which owns the turn that would end in silence, ruling 44); the rig states it so a
-  // host never reads it as a reply. When the loop gives it a line, this case says "status"
-  // and is updated by that lane.
+  // A 200 with no text and no call: the loop states it with one plain line (RB-E1a's review
+  // fix), never silence and never a crash.
   {
     Host h;
     h.model.push(sp::say(""));
     const nimbusd::PlainTurn t = h.rig->say("say nothing");
     c.ok(t.status.ok(), "empty answer: no crash, runTurn is ok");
-    c.ok(!t.stated.empty(), "empty answer: the outcome is stated (" + t.stated + ")");
-    c.eq(nimbusd::plainEndingSlug(t.ending), "silent", "empty answer: the rig names the silent turn (loop-core gap)");
-    c.ok(!t.out.delivered, "empty answer: the outcome does not claim a delivery");
-    c.eq(h.kinds(), "utae", "empty answer: stored as a final empty a item, no d item");
+    c.eq(nimbusd::plainEndingSlug(t.ending), "status", "empty answer: the turn ends with a status line, not silence");
+    c.eqi((long)t.sent.size(), 1, "empty answer: the owner got exactly one message");
+    c.ok(!t.stated.empty() && !t.sent.empty() && t.stated == t.sent[0] && t.stated == t.out.statusText,
+         "empty answer: it is the engine's plain line");
+    c.ok(t.out.status != plain::StatusLine::None, "empty answer: the line is one of the closed list");
+    c.ok(!t.out.delivered, "empty answer: the outcome does not claim a model reply");
+    h.model.push(sp::say("Here now."));
+    h.ms += 60000;
+    c.eq(h.rig->say("again").stated, "Here now.", "empty answer: the next turn answers");
   }
 }
 

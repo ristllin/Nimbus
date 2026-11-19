@@ -85,7 +85,8 @@ void failureFaces() {
     PlainLab lab;
     lab.model.push(sp::say(""));
     const nimbusd::PlainTurn t = lab.rig->say("hello");
-    check(t.status.ok() && !t.stated.empty() && !t.out.delivered, "an empty answer is stated, never a crash");
+    check(t.status.ok() && t.ending == nimbusd::PlainEnding::Status && t.sent.size() == 1 && !t.stated.empty(),
+          "an empty answer is one plain line, never silence");
   }
 }
 
