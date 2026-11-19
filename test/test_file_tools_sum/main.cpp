@@ -91,7 +91,7 @@ std::string refRender(i128 v) {
 
 struct RefRecord {
   uint32_t line = 0, endLine = 0;
-  bool openQuote = false;
+  bool openQuote = false, comment = false;
   std::string raw;   // record bytes (line end and a trailing CR left out)
   bool tooLong = false;
 };
@@ -121,6 +121,15 @@ struct RefSplitter {
     if (c == '"' && fieldStart) inQ = true;
     fieldStart = false;
   }
+  // A comment line here (first non-blank byte '#'): skip to past its line end, quotes or not.
+  bool skipComment() {
+    const size_t j = f.find_first_not_of(" \t", i);
+    if (j == std::string::npos || f[j] != '#') return false;
+    const size_t nl = f.find('\n', j);
+    i = nl == std::string::npos ? f.size() : nl + 1;
+    ++line;
+    return true;
+  }
   // The next record; i moves past its line end.
   RefRecord next() {
     RefRecord r;
@@ -130,6 +139,10 @@ struct RefSplitter {
     const size_t start = i;
     size_t end = f.size();
     r.endLine = 0;
+    if (skipComment()) {
+      r.comment = true;
+      return r;
+    }
     for (; i < f.size(); ++i) {
       const char c = f[i];
       if (c == '\n' && (!inQ || pendingQ)) { end = i++; r.endLine = line++; break; }
@@ -146,13 +159,24 @@ struct RefSplitter {
   }
 };
 
+std::vector<std::pair<uint32_t, uint32_t>> gRefCommentRuns;   // the last refRecords call's comment runs
+size_t gRefComments = 0;
+
 std::vector<RefRecord> refRecords(const std::string& f, uint64_t& physLines, size_t& emptyLines) {
   std::vector<RefRecord> out;
+  gRefCommentRuns.clear();
+  gRefComments = 0;
   physLines = std::count(f.begin(), f.end(), '\n') + ((!f.empty() && f.back() != '\n') ? 1 : 0);
   emptyLines = 0;
   RefSplitter sp{f};
   while (sp.i < f.size()) {
     RefRecord r = sp.next();
+    if (r.comment) {
+      ++gRefComments;
+      if (!gRefCommentRuns.empty() && gRefCommentRuns.back().second + 1 == r.line) gRefCommentRuns.back().second = r.line;
+      else gRefCommentRuns.push_back({r.line, r.line});
+      continue;
+    }
     const bool empty = r.raw.empty() && !r.tooLong;
     if (empty && !out.empty()) ++emptyLines;
     else out.push_back(r);   // an empty line 1 is the header slot
@@ -221,6 +245,8 @@ struct Ref {
   std::vector<std::string> matchedRaw;
   std::map<std::string, std::vector<uint32_t>> groups;
   uint32_t torn = 0, openQuote = 0;
+  size_t comments = 0;
+  std::vector<std::pair<uint32_t, uint32_t>> commentRuns;
   std::vector<std::pair<uint32_t, uint32_t>> notComparedL, fieldCountL, tooLongL;
 };
 
@@ -276,6 +302,8 @@ void refRecord(Ref& ref, const RefRecord& r, size_t nfields, int key, const std:
 Ref reference(const std::string& f, const CsvQuery& q) {
   Ref ref;
   auto recs = refRecords(f, ref.lines, ref.empty);
+  ref.comments = gRefComments;
+  ref.commentRuns = gRefCommentRuns;
   if (!f.empty() && f.back() != '\n') ref.torn = uint32_t(ref.lines);
   if (recs.empty() || recs[0].raw.empty() || recs[0].tooLong) {
     ref.ok = false;
@@ -349,6 +377,12 @@ std::string dateOf(int dayOfYear) {
   return b;
 }
 
+std::string hostileRow(Rng& g, const Domain& d, const std::string& date);
+// A comment line holding a row, one with an open quote, or another hostile row.
+std::string hostileLine(Rng& g, const Domain& d, const std::string& date) {
+  if (!g.chance(12)) return hostileRow(g, d, date);
+  return g.chance(50) ? "#old: " + d.row(g, date) : "  # note \"with a quote, and a comma";
+}
 std::string hostileRow(Rng& g, const Domain& d, const std::string& date) {
   switch (g.below(14)) {
     case 11: return date + ",\"" + std::string(kCsvRecordMax + 9, 'q') + "\n\",1";   // over-long, quoted line end
@@ -376,7 +410,7 @@ std::string makeFile(Rng& g, const Domain& d, int days, int rowsPerDay, unsigned
     for (int r = 0; r < rowsPerDay; ++r) {
       std::string row;
       if (!recent.empty() && g.chance(8)) row = recent[g.below(recent.size())];   // an identical re-log
-      else if (g.chance(hostilePct)) row = hostileRow(g, d, date);
+      else if (g.chance(hostilePct)) row = hostileLine(g, d, date);
       else row = d.row(g, date);
       recent.push_back(row);
       if (recent.size() > 20) recent.erase(recent.begin());
@@ -433,6 +467,8 @@ void checkAgainstReference(const std::string& file, const CsvQuery& q, const Csv
   checkSpans(ref.notComparedL, r.notCompared, what);
   checkSpans(ref.fieldCountL, r.fieldCount, what);
   checkSpans(ref.tooLongL, r.tooLong, what);
+  TEST_ASSERT_EQUAL_MESSAGE(ref.comments, r.commentLines, what);
+  checkSpans(ref.commentRuns, r.commentSpans, what);
   // Nothing is dropped silently: every record is in exactly one bucket.
   TEST_ASSERT_EQUAL_MESSAGE(r.records, r.matched + r.outOfRange + r.notCompared.count + r.fieldCount.count + r.tooLong.count,
                             what);
@@ -658,8 +694,11 @@ static void test_query_and_file_errors_state_the_fact() {
   o = scanWith("2026-11-19,lunch,5\n2026-11-19,tea,1\n", q, 4096);
   TEST_ASSERT_EQUAL_STRING("column date is not in the header: 2026-11-19,lunch,5", o.error.c_str());
   // Not CSV: prose, and bytes that are not text.
-  o = scanWith("# Notes\nsome words, here\n", q, 4096);
-  TEST_ASSERT_EQUAL_STRING("column date is not in the header: # Notes", o.error.c_str());
+  o = scanWith("Notes\nsome words, here\n", q, 4096);
+  TEST_ASSERT_EQUAL_STRING("column date is not in the header: Notes", o.error.c_str());
+  // A file of comment lines only has no header.
+  o = scanWith("# a\n  # b\n", q, 4096);
+  TEST_ASSERT_EQUAL_STRING("sum and column need a CSV header line; every line is a comment", o.error.c_str());
   std::string bin = "date,amount\n2026-11-19,1\n";
   bin += std::string("\x89PNG\0\0\x01", 7);
   o = scanWith(bin, q, 4096);
@@ -952,6 +991,171 @@ static void test_review_cases_are_named_not_lost() {
   TEST_ASSERT_TRUE(o.result.shownLast < o.result.matched);
 }
 
+// ---- the owner file's shape (ruling 49, rebuild/evidence/OWNER-FILE-SHAPE.md): invented
+// content, the real file's line classes at about its rates, the same form in all three
+// domains: a date, a free-text key, a free-text column, two summed numbers. ---------------
+struct ShapeDomain {
+  const char* header;
+  const char* keys[4];
+  const char* texts[4];   // the free text; [3] carries bare commas when written unquoted
+  int maxA, maxB, dpB;
+};
+const ShapeDomain kShapes[] = {
+    {"date,occasion,item,grams,kcal", {"breakfast", "lunch 12:30", "snack 2", "dinner"},
+     {"oats", "rice bowl", "apple", "toast, butter, jam"}, 400, 900, 0},
+    {"date,when,note,amount,tip", {"morning", "lunch 12:30", "errand 2", "evening"},
+     {"grocer", "train ticket", "books", "cafe, two cups, cake"}, 250, 20, 2},
+    {"date,session,exercise,reps,kg", {"am", "lunch 12:30", "set 2", "pm"},
+     {"squat", "bench press", "row", "rows, cable, slow"}, 12, 180, 1},
+};
+
+struct ShapeCounts {
+  size_t rows = 0, extraFields = 0, emptyCells = 0, comments = 0, blanks = 0;
+};
+
+std::string shapeRow(Rng& g, const ShapeDomain& d, const std::string& date, ShapeCounts& n) {
+  std::string text = d.texts[g.below(4)];
+  const bool commas = text.find(',') != std::string::npos;
+  if (commas && g.chance(40)) {
+    text = "\"" + text + "\"";   // correctly quoted: one field
+  } else if (commas) {
+    ++n.extraFields;            // bare commas: more fields than the header
+  }
+  std::string b = std::to_string(g.below(size_t(d.maxB) + 1));
+  if (d.dpB) b += "." + std::to_string(g.below(10));
+  std::string a = std::to_string(g.below(size_t(d.maxA) + 1));
+  if (!commas || text[0] == '"') {
+    if (g.chance(3)) { (g.chance(50) ? a : b).clear(); ++n.emptyCells; }   // unknown is empty, never 0
+  }
+  ++n.rows;
+  return date + "," + d.keys[g.below(4)] + "," + text + "," + a + "," + b;
+}
+
+std::string shapeFile(Rng& g, const ShapeDomain& d, size_t lines, ShapeCounts& n) {
+  std::string f = std::string(d.header) + "\n";
+  std::vector<std::string> recent;
+  for (size_t i = 0; i < lines; ++i) {
+    const std::string date = dateOf(int(i * 365 / (lines + 1)));
+    if (!recent.empty() && g.chance(13)) {
+      f += (g.chance(50) ? "#was: " : "#gone: ") + recent[g.below(recent.size())] + "\n";   // v5.1.x history
+      ++n.comments;
+      continue;
+    }
+    if (g.chance(1) && i > 3) {
+      f += "\n";   // a stray blank line inside the file
+      ++n.blanks;
+      continue;
+    }
+    ShapeCounts probe;
+    const std::string row = shapeRow(g, d, date, probe);
+    n.rows += probe.rows;
+    n.extraFields += probe.extraFields;
+    n.emptyCells += probe.emptyCells;
+    recent.push_back(row);
+    f += row + "\n";
+  }
+  return f;
+}
+
+CsvQuery shapeQuery(const ShapeDomain& d, const std::string& from, const std::string& to) {
+  const std::string h = d.header;
+  const size_t last = h.rfind(','), prev = h.rfind(',', last - 1);
+  CsvQuery q;
+  q.sum = {h.substr(prev + 1, last - prev - 1), h.substr(last + 1)};   // the two numeric columns
+  if (!from.empty()) {
+    q.column = "date";
+    q.from = from;
+    q.to = to;
+  }
+  return q;
+}
+
+// The stated total covers exactly the rows the result says it covers, and every other row
+// is named by line: rows with more fields than the header and empty summed cells are left
+// out and named, comment lines are counted and never summed. No positional recovery.
+static void test_owner_shaped_files_name_every_row_left_out_of_a_total() {
+  size_t runs = 0;
+  for (uint64_t seed = 1; seed <= 40; ++seed) {
+    for (const ShapeDomain& d : kShapes) {
+      Rng g(seed * 104729 + d.maxA);
+      ShapeCounts n;
+      const std::string file = shapeFile(g, d, 137 + g.below(200), n);
+      // The whole file: the counts are the generated classes, exactly.
+      const CsvQuery all = shapeQuery(d, "", "");
+      const auto o = scanWith(file, all, 1 + g.below(4096));
+      checkAgainstReference(file, all, o, d.header);
+      TEST_ASSERT_EQUAL_MESSAGE(n.comments, o.result.commentLines, d.header);
+      TEST_ASSERT_EQUAL_MESSAGE(n.extraFields, o.result.fieldCount.count, d.header);
+      TEST_ASSERT_EQUAL_MESSAGE(n.blanks, o.result.emptyLines, d.header);
+      TEST_ASSERT_EQUAL_MESSAGE(n.emptyCells, o.result.blankCells.count, d.header);
+      TEST_ASSERT_EQUAL_MESSAGE(n.rows, o.result.records, d.header);
+      TEST_ASSERT_EQUAL_MESSAGE(n.rows - n.extraFields, o.result.matched, d.header);
+      const std::string tail = renderCsvTail(all, o.result);
+      if (n.comments) TEST_ASSERT_TRUE(tail.find(" skipped (lines ") != std::string::npos);
+      if (n.extraFields) TEST_ASSERT_TRUE(tail.find("; skipped ") != std::string::npos);
+      // A day, a week and a month agree with the reference too.
+      for (const auto& q : {shapeQuery(d, dateOf(100), ""), shapeQuery(d, dateOf(100), dateOf(106)), shapeQuery(d, "2026-04", "")}) {
+        checkAgainstReference(file, q, scanWith(file, q, 4096), d.header);
+        ++runs;
+      }
+    }
+  }
+  TEST_ASSERT_TRUE(runs >= 360);
+}
+
+// The year-size case of the shape file (about 300 KB, 2,300 lines) beside the 180 KB one.
+static void test_a_year_of_the_owner_shape_is_exact_in_each_domain() {
+  for (const ShapeDomain& d : kShapes) {
+    Rng g(77 + d.maxB);
+    ShapeCounts n;
+    std::string file = shapeFile(g, d, 2300, n);
+    TEST_ASSERT_TRUE_MESSAGE(file.size() >= 60 * 1024, std::to_string(file.size()).c_str());
+    // Pad the free text to the real file's row size (about 130 B a line), keeping the classes.
+    std::string padded;
+    size_t a = 0;
+    while (a < file.size()) {
+      size_t e = file.find('\n', a);
+      std::string line = file.substr(a, e - a);
+      const size_t c1 = line.find(',', 11);
+      if (!line.empty() && line[0] != '#' && c1 != std::string::npos && line.compare(0, 4, "date") != 0)
+        line.insert(c1 + 1, std::string(90, 'x'));
+      padded += line + "\n";
+      a = e + 1;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(padded.size() >= 250 * 1024 && padded.size() <= 400 * 1024, std::to_string(padded.size()).c_str());
+    Card c;
+    c.file = padded;
+    for (const auto& q : {shapeQuery(d, dateOf(200), ""), shapeQuery(d, dateOf(200), dateOf(206)),
+                          shapeQuery(d, "2026-08", ""), shapeQuery(d, "", "")}) {
+      const auto o = scanCsv(c, padded.size(), "p/t.csv", q);
+      checkAgainstReference(padded, q, o, d.header);
+      TEST_ASSERT_EQUAL(n.comments, o.result.commentLines);
+    }
+  }
+}
+
+// Exact form of the comment clause, and comments never summed nor compared.
+static void test_comment_lines_are_counted_once_and_never_summed() {
+  const std::string f =
+      "# kept by hand\n"
+      "date,occasion,amount\n"
+      "2026-11-19,lunch,5\n"
+      "#was: 2026-11-19,lunch,50\n"
+      "  #gone: 2026-11-19,\"tea, hot\n"
+      "2026-11-19,tea,2\n"
+      "#was: 2026-11-19,tea,20\n";
+  CsvQuery q;
+  q.column = "date";
+  q.from = "2026-11-19";
+  q.sum = {"amount"};
+  const auto o = scanWith(f, q, 3);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING(
+      "\nL2 date,occasion,amount\nL3 2026-11-19,lunch,5\nL6 2026-11-19,tea,2\n"
+      "rows 2 of 2 where date 2026-11-19..2026-11-19; sum amount=7; 4 comment lines skipped (lines 1, 4-5, 7)",
+      renderCsvRead(q, o.result).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scan_agrees_with_the_reference_over_three_domains_and_hostile_rows);
@@ -969,5 +1173,8 @@ int main(int, char**) {
   RUN_TEST(test_identical_groups_are_named_once_each_and_the_table_limit_is_stated);
   RUN_TEST(test_a_torn_last_line_is_named_in_the_tail);
   RUN_TEST(test_review_cases_are_named_not_lost);
+  RUN_TEST(test_owner_shaped_files_name_every_row_left_out_of_a_total);
+  RUN_TEST(test_a_year_of_the_owner_shape_is_exact_in_each_domain);
+  RUN_TEST(test_comment_lines_are_counted_once_and_never_summed);
   return UNITY_END();
 }

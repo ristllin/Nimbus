@@ -558,6 +558,23 @@ static void test_removals_name_their_old_lines() {
   TEST_ASSERT_EQUAL_UINT32(4, o.at[1]);
 }
 
+// A comment line (ruling 49) is still a line: a pick addresses it by number and text.
+static void test_a_line_pick_addresses_a_comment_line() {
+  Card c;
+  c.file = "date,occasion,amount\n2026-11-19,lunch,5\n#was: 2026-11-19,lunch,50\n2026-11-19,tea,2\n#was: 2026-11-19,lunch,50\n";
+  EditRequest e;
+  e.oldText = "#was: 2026-11-19,lunch,50";
+  e.newText = "";
+  e.line = 5;
+  const auto o = run(c, e);
+  TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("date,occasion,amount\n2026-11-19,lunch,5\n#was: 2026-11-19,lunch,50\n2026-11-19,tea,2\n",
+                           c.file.c_str());
+  TEST_ASSERT_EQUAL_STRING(("replaced 1 in p/t.csv at line 5; file is 83 B (was 109 B), 4 lines, sha8=" +
+                            sha8Hex(fnv64(kFnv64Basis, c.file)) + "; old is still at line 3").c_str(),
+                           renderEdit("p/t.csv", o).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_line_pick_replaces_exactly_that_line_or_fails);
@@ -573,5 +590,6 @@ int main(int, char**) {
   RUN_TEST(test_a_removal_names_the_line_it_removed);
   RUN_TEST(test_a_pick_at_a_read_boundary_is_a_whole_line);
   RUN_TEST(test_removals_name_their_old_lines);
+  RUN_TEST(test_a_line_pick_addresses_a_comment_line);
   return UNITY_END();
 }

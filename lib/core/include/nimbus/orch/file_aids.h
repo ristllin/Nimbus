@@ -140,8 +140,11 @@ struct LineGroup {
   std::vector<uint32_t> lines;  // the first kAidGroupLinesMax
 };
 
-// What a scan found. Every data record (a CSV record after line 1 that is not an empty
-// line) is in exactly one of: matched, outOfRange, notCompared, fieldCount, tooLong.
+// What a scan found. A line whose first non-blank byte is '#' is a COMMENT line wherever it
+// stands (ruling 49: a file-format convention, not a domain rule): never a row, never summed,
+// never "not compared", counted once with its runs. The header is the first record that is
+// not a comment. Every data record (a CSV record after the header that is not an empty line)
+// is in exactly one of: matched, outOfRange, notCompared, fieldCount, tooLong.
 struct CsvScanResult {
   uint64_t bytes = 0;          // bytes scanned (the file's size)
   uint64_t lines = 0;          // physical lines in the file
@@ -153,6 +156,8 @@ struct CsvScanResult {
   size_t headerFields = 0;
   LineList tooLong;            // over kCsvRecordMax
   size_t emptyLines = 0;       // empty physical lines outside a quoted field
+  size_t commentLines = 0;     // lines whose first non-blank byte is '#' (never a row, never summed)
+  LineList commentSpans;       // their runs of consecutive lines (count = runs; ends = each run's last line)
   std::vector<CsvColumnSum> sums;  // in sum's order
   LineList blankCells;         // blank sum cells among matching rows (column per line)
   LineList notNumberCells;     // non-number sum cells among matching rows
@@ -206,6 +211,7 @@ class CsvScanner {
 //   rows <m> of <n>[ where <column> <from>..<to>]
 //   [; shown <a>-<b> | ; shown none]                       (only when not every row is shown)
 //   [; sum <name>=<total>[ <name>=<total>...]]
+//   [; <k> comment line(s) skipped (lines <a>-<b>, <c>, ... +N runs)]
 //   [; blank <k> (<col> line <l>, ... +N)]
 //   [; not a number <k> (<col> line <l>, ... +N)]
 //   [; rounded to 3 decimals <k> (<col> line <l>, ...)]
@@ -220,7 +226,7 @@ class CsvScanner {
 // A record list names a record spanning lines as "<first>-<last>" ("lines 2-22").
 std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r);
 // The whole filtered read result after the binding's head line:
-//   "\n" + body + tail + ("\nnext_offset=<k>" when matching rows remain unshown).
+//   "\n" + body (the header line is "L<n> <header>", n its line) + tail + ("\nnext_offset=<k>" when matching rows remain unshown).
 std::string renderCsvRead(const CsvQuery& q, const CsvScanResult& r);
 
 // ---- edit_file with line ----------------------------------------------------------

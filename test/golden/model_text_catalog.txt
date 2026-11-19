@@ -4,7 +4,7 @@
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
 # class device_notes bytes=1153 ceiling=2048 entries=32 sha8=9d5c54e9
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
-# class tool_results bytes=4536 ceiling=6144 entries=336 sha8=b677bd62
+# class tool_results bytes=4639 ceiling=6144 entries=344 sha8=d7e89b35
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
 # class summarizer bytes=654 ceiling=1024 entries=13 sha8=82cd5b54
 # class tool_descriptions bytes=4095 ceiling=10240 entries=46 sha8=85a758ac
@@ -110,7 +110,9 @@ tool_results	lib/core/src/orch_calc.cpp	cdb4ee2a	1	"."
 tool_results	lib/core/src/orch_calc.cpp	e3b0c442	0	""
 tool_results	lib/core/src/orch_calc.cpp	a095aad8	18	"error at position "
 tool_results	lib/core/src/orch_calc.cpp	45822f54	2	": "
-tool_results	lib/core/src/orch_csv_sum.cpp	7d62c2ee	51	"sum and column need a CSV header line; line 1 is: \""
+tool_results	lib/core/src/orch_csv_sum.cpp	054fd162	44	"sum and column need a CSV header line; line "
+tool_results	lib/core/src/orch_csv_sum.cpp	aba13cf9	6	" is: \""
+tool_results	lib/core/src/orch_csv_sum.cpp	16569827	62	"sum and column need a CSV header line; every line is a comment"
 tool_results	lib/core/src/orch_csv_sum.cpp	4e336db0	23	" is not in the header: "
 tool_results	lib/core/src/orch_csv_sum.cpp	f68ca607	25	" is in the header twice: "
 tool_results	lib/core/src/orch_csv_sum.cpp	03375966	33	" is not text (a NUL byte on line "
@@ -135,9 +137,10 @@ tool_results	lib/core/src/orch_csv_sum.cpp	f1945cd6	3	"\ufeff"
 tool_results	lib/core/src/orch_csv_sum.cpp	ba5ec51d	1	")"
 tool_results	lib/core/src/orch_csv_sum.cpp	a52b8864	7	"column "
 tool_results	lib/core/src/orch_csv_sum.cpp	8a331fdd	1	"\""
-tool_results	lib/core/src/orch_csv_sum.cpp	cc5257a1	3	"L1 "
+tool_results	lib/core/src/orch_csv_sum.cpp	c06ff5de	4	"L%u "
 tool_results	lib/core/src/orch_csv_sum.cpp	c06ff5de	4	"L%u "
 tool_results	lib/core/src/orch_csv_sum.cpp	ff9625df	13	"the total of "
+tool_results	lib/core/src/orch_csv_sum.cpp	6b86b273	1	"1"
 tool_results	lib/core/src/orch_csv_sum.cpp	8a331fdd	1	"\""
 tool_results	lib/core/src/orch_csv_sum.cpp	0a07f659	2	", "
 tool_results	lib/core/src/orch_csv_sum.cpp	e3b0c442	0	""
@@ -174,6 +177,11 @@ tool_results	lib/core/src/orch_csv_sum.cpp	4f5a2ada	2	" ("
 tool_results	lib/core/src/orch_csv_sum.cpp	ba5ec51d	1	")"
 tool_results	lib/core/src/orch_csv_sum.cpp	e3b0c442	0	""
 tool_results	lib/core/src/orch_csv_sum.cpp	0a2d3f8f	2	"; "
+tool_results	lib/core/src/orch_csv_sum.cpp	0a2d3f8f	2	"; "
+tool_results	lib/core/src/orch_csv_sum.cpp	1aae2af9	13	" comment line"
+tool_results	lib/core/src/orch_csv_sum.cpp	b420ec78	14	" comment lines"
+tool_results	lib/core/src/orch_csv_sum.cpp	5e5b309b	10	" skipped ("
+tool_results	lib/core/src/orch_csv_sum.cpp	ba5ec51d	1	")"
 tool_results	lib/core/src/orch_csv_sum.cpp	ff71cf74	5	"blank"
 tool_results	lib/core/src/orch_csv_sum.cpp	1eb0cafb	12	"not a number"
 tool_results	lib/core/src/orch_csv_sum.cpp	8b0bb719	21	"rounded to 3 decimals"

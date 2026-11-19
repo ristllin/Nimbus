@@ -16,7 +16,9 @@ namespace {
 
 // Model-facing templates of the scan (tool results; ruling 42's read_file aids).
 namespace T {
-constexpr const char* kNoHeader = "sum and column need a CSV header line; line 1 is: \"";
+constexpr const char* kNoHeader = "sum and column need a CSV header line; line ";
+constexpr const char* kNoHeaderIs = " is: \"";
+constexpr const char* kOnlyComments = "sum and column need a CSV header line; every line is a comment";
 constexpr const char* kNotInHeader = " is not in the header: ";
 constexpr const char* kTwice = " is in the header twice: ";
 constexpr const char* kNul = " is not text (a NUL byte on line ";
@@ -236,6 +238,8 @@ struct CsvScanner::Impl {
   uint64_t physLine = 1;
   uint32_t recLine = 1;
   bool inRecord = false, inQ = false, pendingQ = false, fieldStart = true, tooLong = false;
+  bool leadBlank = true, inComment = false;   // only blanks so far; a '#' line being skipped
+  uint32_t lastComment = 0;
   bool headerDone = false, showFull = false;
   char last = '\n';
 
@@ -266,8 +270,20 @@ struct CsvScanner::Impl {
     inRecord = true;
     recLine = uint32_t(physLine);
     recLen = 0;
-    inQ = pendingQ = tooLong = false;
-    fieldStart = true;
+    inQ = pendingQ = tooLong = inComment = false;
+    fieldStart = leadBlank = true;
+  }
+  // A comment line (first non-blank byte '#'): never a row; counted, its runs named.
+  void comment(uint32_t line) {
+    inRecord = false;
+    ++res.commentLines;
+    LineList& l = res.commentSpans;
+    if (l.count && lastComment + 1 == line) {
+      if (l.lines.size() == l.count) l.ends.back() = line;
+    } else {
+      spanAdd(l, line, line);
+    }
+    lastComment = line;
   }
   bool lineEnd() {
     ++physLine;
@@ -292,11 +308,22 @@ struct CsvScanner::Impl {
     if (c == '"' && fieldStart) inQ = true;
     fieldStart = false;
   }
+  // True when c belongs to a comment line (and is consumed by it).
+  bool commentByte(char c) {
+    if (inComment) {
+      if (c == '\n') comment(uint32_t(physLine++));
+      return true;
+    }
+    if (!leadBlank || c == ' ' || c == '\t' || c == '\n') return false;
+    leadBlank = false;
+    return inComment = c == '#';
+  }
   bool step(char c) {
     ++res.bytes;
     last = c;
     if (c == '\0') return fail(join({path, T::kNul, Num(physLine), ")"}));
     if (!inRecord) startRecord();
+    if (commentByte(c)) return true;
     const bool closing = inQ && pendingQ && c != '"';
     if (c == '\n' && (!inQ || closing)) return lineEnd();
     // Past kCsvRecordMax the bytes are not kept, but the quotes still decide the end.
@@ -330,7 +357,8 @@ struct CsvScanner::Impl {
   bool header() {
     headerDone = true;
     const std::string_view h = withoutBom(rec, recLen);
-    if (h.empty() || tooLong) return fail(join({T::kNoHeader, quoteCut(h, kAidLineOneQuoteMax), "\""}));
+    if (h.empty() || tooLong)
+      return fail(join({T::kNoHeader, Num(recLine), T::kNoHeaderIs, quoteCut(h, kAidLineOneQuoteMax), "\""}));
     int found[kWanted], seen[kWanted] = {};
     for (int& f : found) f = -1;
     locate(h, found, seen);
@@ -339,9 +367,9 @@ struct CsvScanner::Impl {
     sums = q.sum.size();
     for (size_t s = 0; s < sums; ++s) sumIdx[s] = found[s + 1];
     // The header leads every page.
-    std::memcpy(body, "L1 ", 3);
-    std::memcpy(body + 3, h.data(), h.size());
-    bodyLen = 3 + h.size();
+    const int ln = std::snprintf(body, 16, "L%u ", unsigned(recLine));
+    std::memcpy(body + ln, h.data(), h.size());
+    bodyLen = size_t(ln) + h.size();
     body[bodyLen++] = '\n';
     return true;
   }
@@ -465,9 +493,11 @@ struct CsvScanner::Impl {
   }
 
   bool finish() {
+    if (inRecord && inComment) comment(recLine);
     if (inRecord && inQ && !pendingQ) res.openQuoteLine = recLine;
     if (inRecord && !endRecord(uint32_t(physLine - (last == '\n' ? 1 : 0)))) return false;   // the last byte's line
-    if (!headerDone) return fail(std::string(T::kNoHeader) + "\"");
+    if (!headerDone && res.commentLines) return fail(T::kOnlyComments);
+    if (!headerDone) return fail(join({T::kNoHeader, "1", T::kNoHeaderIs, "\""}));
     const bool torn = res.bytes > 0 && last != '\n';
     res.lines = physLine - 1 + (torn ? 1 : 0);
     if (torn) res.tornLine = uint32_t(res.lines);
@@ -640,7 +670,10 @@ std::string countClause(const char* what, size_t n, std::string_view rest = "") 
 
 // Every row or cell that is not plainly in the total, by reason.
 std::string tailFacts(const CsvQuery& q, const CsvScanResult& r) {
-  std::string out = clause("blank", r.blankCells, cellList(r.blankCells, r));
+  std::string out = r.commentLines ? join({"; ", Num(r.commentLines), r.commentLines == 1 ? " comment line" : " comment lines",
+                                           " skipped (", renderLines(r.commentSpans), ")"})
+                                   : std::string();
+  out += clause("blank", r.blankCells, cellList(r.blankCells, r));
   out += clause("not a number", r.notNumberCells, cellList(r.notNumberCells, r));
   out += clause("rounded to 3 decimals", r.roundedCells, cellList(r.roundedCells, r));
   out += clause("not compared", r.notCompared, renderLines(r.notCompared),
