@@ -12,6 +12,7 @@
 #include <set>
 
 #include "nimbus/mem_cap.h"
+#include "nimbus/orch/day_start.h"   // RB-REC5: digestDay is the running day
 #include "nimbus/orch/tx/rules.h"
 
 namespace nimbus {
@@ -405,6 +406,19 @@ Status dayHeader(const std::string& day, std::string& out) {
   Status st = photoWhen(noon, 0, when);   // "Tue 17 Nov 2026 12:00"
   if (!st.ok()) return Status::fail(st.err, "tx::dayHeader");
   out = when.substr(0, when.rfind(' '));
+  return Status::success();
+}
+
+Status digestDay(uint64_t epoch, int16_t tzMinutes, uint16_t dayStartMin, std::string& out) {
+  out.clear();
+  char buf[16];
+  if (!day::runningDate(epoch, tzMinutes, dayStartMin, buf, sizeof buf)) return Status::fail(Err::InvalidArgument, "tx::digestDay");
+  try {
+    out.assign(buf, 10);
+  } catch (const std::bad_alloc&) {   // ruling 30: a refused allocation is a status, never an abort
+    out.clear();
+    return Status::fail(Err::TooLarge, "tx::digestDay");
+  }
   return Status::success();
 }
 

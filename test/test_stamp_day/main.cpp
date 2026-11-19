@@ -9,6 +9,7 @@
 #include <string>
 
 #include "nimbus/orch/day_start.h"
+#include "nimbus/orch/tx/digest.h"
 
 // test_stamp_day - the device's day start and the message stamp built on it (RB-REC5,
 // rulings 11 and 42). By table: every hour around midnight and around the day start, both
@@ -450,6 +451,64 @@ void test_running_date_and_calendar_day_agree_with_the_stamp() {
   }
 }
 
+// ---- digests split at the same boundary -------------------------------------------------------
+
+// Every 10 minutes over both UK DST days, New Year's night and an ordinary night: the digest
+// day of a turn is the day the stamp names (its clause, or its own date), consecutive turns
+// change digest day exactly once a day, at the first stamp with no clause, and the digest's
+// header is that day's.
+void test_a_digest_splits_at_the_same_boundary() {
+  namespace tx = nimbus::orch::tx;
+  useTz(kZones[0]);
+  const uint64_t nights[] = {utc(2026, 3, 28, 20, 0), utc(2026, 10, 24, 20, 0), utc(2026, 12, 31, 20, 0),
+                             utc(2026, 11, 18, 20, 0)};
+  for (uint64_t from : nights) {
+    std::string prevDay;
+    int changes = 0;
+    for (uint64_t t = from; t < from + 48 * 3600; t += 600) {
+      const int32_t off = libOffset((time_t)t);
+      std::string dd;
+      TEST_ASSERT_TRUE(tx::digestDay(t, (int16_t)off, 240, dd).ok());
+      const std::string s = stampOf(t, off, 240);
+      const bool clause = s.size() > day::kPlainBytes;
+      TEST_ASSERT_EQUAL_STRING(clause ? s.substr(day::kPlainBytes + 6, 10).c_str() : s.substr(0, 10).c_str(), dd.c_str());
+      if (!prevDay.empty() && dd != prevDay) {
+        ++changes;
+        TEST_ASSERT_FALSE_MESSAGE(clause, "a digest day starts only where the stamp's clause ends");
+        TEST_ASSERT_EQUAL_STRING(" 04:00", s.substr(14, 6).c_str());
+        std::string head;
+        TEST_ASSERT_TRUE(tx::dayHeader(dd, head).ok());
+        char want[24];
+        struct tm lt;
+        const time_t tt = (time_t)t;
+        localtime_r(&tt, &lt);
+        strftime(want, sizeof want, "%a %e %b %Y", &lt);
+        std::string w = want;
+        const size_t dbl = w.find("  ");
+        if (dbl != std::string::npos) w.erase(dbl, 1);   // %e pads a single digit
+        TEST_ASSERT_EQUAL_STRING(w.c_str(), head.c_str());
+      }
+      prevDay = dd;
+    }
+    TEST_ASSERT_EQUAL_INT(2, changes);   // two day starts in 48 hours, no flapping
+  }
+  // A 00:00 start splits at midnight; no clock is no day.
+  std::string dd;
+  TEST_ASSERT_TRUE(tx::digestDay(kThu0030, 0, 0, dd).ok());
+  TEST_ASSERT_EQUAL_STRING("2026-11-19", dd.c_str());
+  TEST_ASSERT_TRUE(tx::digestDay(5000, 0, 240, dd).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_EQUAL_STRING("", dd.c_str());
+  TEST_ASSERT_TRUE(tx::digestDay(kThu0030, 1200, 240, dd).err == tx::Err::InvalidArgument);
+  // Ruling 30: under a refusing allocator the day still comes back whole (ten bytes, no allocation).
+  std::string held;
+  held.reserve(32);
+  gAllow = 0;
+  const tx::Status st = tx::digestDay(kThu0030, 0, 240, held);
+  gAllow = -1;
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_STRING("2026-11-18", held.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_stamp_at_00_30_names_the_running_day);
@@ -468,5 +527,6 @@ int main(int, char**) {
   RUN_TEST(test_property_the_running_day_is_monotone_with_the_default_start);
   RUN_TEST(test_a_start_inside_a_repeated_hour_is_the_written_limit);
   RUN_TEST(test_running_date_and_calendar_day_agree_with_the_stamp);
+  RUN_TEST(test_a_digest_splits_at_the_same_boundary);
   return UNITY_END();
 }

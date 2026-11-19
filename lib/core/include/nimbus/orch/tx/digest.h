@@ -92,6 +92,12 @@ uint32_t blockCapFor(Profile profile);
 
 // "Tue 17 Nov 2026" for a valid "YYYY-MM-DD" (InvalidArgument otherwise).
 Status dayHeader(const std::string& day, std::string& out);
+// RB-REC5: the day a turn at `epoch` belongs to, "YYYY-MM-DD": the device's running day
+// (orch::day::runningDate, the boundary the message stamp's clause names), so a digest
+// splits where the stamp says the day ends. `tzMinutes` is the offset valid at `epoch`,
+// `dayStartMin` the setting day_starts (04:00 = 240). InvalidArgument (and "") with no
+// clock or an offset beyond +-18 h. No allocation beyond `out`.
+Status digestDay(uint64_t epoch, int16_t tzMinutes, uint16_t dayStartMin, std::string& out);
 // One digest's text: the day header, kDaySep, then `body` on one line (line ends, tabs,
 // control characters, U+2028/2029 and bidi controls become spaces, invalid UTF-8 '?',
 // runs of spaces one). Over kDigestMaxBytes it is cut at the last sentence end that fits,

@@ -359,7 +359,7 @@ a.mdlk{color:var(--teal)}
 <option value="AEST-10AEDT,M10.1.0,M4.1.0/3">Sydney</option>
 </datalist>
 <label>Day starts at <button class=qh type=button aria-expanded=false aria-label="About the day start">?</button></label>
-<p class="hint tip">From midnight until this time, messages and entries still count toward the day before, and daily summaries split here. Default 04:00; 00:00 keeps the calendar day.</p>
+<p class="hint tip">From midnight until this time, messages and entries still count toward the day before. Default 04:00; 00:00 keeps the calendar day.</p>
 <div class=row><input id=day_starts type=time value="04:00"><button id=day_startsSave type=button>Save</button></div>
 <label>Device clock</label>
 <p class="hint tip">Set automatically from the internet once Wi-Fi connects: there is no manual clock. Until it syncs, daily and weekly routines wait.</p>

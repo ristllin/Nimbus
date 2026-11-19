@@ -211,6 +211,7 @@ applies. Only `/api/files/upload` takes a file part; anywhere else one is refuse
 | `orchLoop` | the head tool loop |
 | `orchTrace` | activity recording, on by default: off stops new tool and turn rows (the chat's tool disclosure) |
 | `devName`, `devTz` (`/api/config`) | the name and the time zone (a POSIX string with zone names of 3 to 16 characters, or a zone name such as `Europe/London`; `/api/state` clock and the prompt's clock follow it at once) |
+| `day_starts` (`/api/config`) | the day start, `HH:MM` (blank = `04:00`), as on the device: from midnight until then the prompt's clock line names the day still running; anything else is a 400 with the device's sentence; `GET /api/config` and `/api/state` `clock.day_starts` show it; stored in the instance's `mem/settings.json` (an invalid stored value reads as `04:00`) |
 | `clearConv`, `clearMem`, `convReset` | Clear conversation (a `/clear` boundary: the next turn carries no earlier conversation, the history is kept), erase the running notes, reset provider threads |
 | keys, `orchM_<slug>`, `subM_<slug>`, `tgAllow` | provider keys (the device's own key rule and sentences: spaces around a key are dropped and it is stored without them, and a key with a space, a line break or another hidden character inside, or of a length that provider never issues, is refused; the instance's secrets file holds provider keys only, and a key an earlier build stored with spaces around it loads trimmed and is rewritten trimmed), head and sub-agent model picks, the Telegram allowlist |
 
