@@ -1417,6 +1417,30 @@
         "'release evidence' lives in the program folder, outside this repo"
       ],
       "plan_text": "docs/release-notes/v6.1.0.txt, release evidence"
+    },
+    "RB-REC3": {
+      "stage": "S2",
+      "files": [
+        "lib/harness/include/nimbus/harness/plain/texts.h",
+        "lib/harness/include/nimbus/harness/plain/request.h",
+        "lib/harness/src/plain_request.cpp",
+        "lib/core/src/orch_tool_groups.cpp",
+        "lib/core/src/orch_path_rules.cpp",
+        "lib/core/src/orch_file_tools.cpp",
+        "lib/harness/include/nimbus/harness/plain/truth.h",
+        "lib/core/include/nimbus/orch/effect_ring.h",
+        "lib/core/src/orch_ledger.cpp",
+        "lib/core/include/nimbus/orch/ledger.h",
+        "test/test_ledger/**",
+        "tools/engine/engine2_only.txt",
+        "coverage/PROMPT-CHANGES.md"
+      ],
+      "notes": [
+        "lib/core/src/orch_file_tools.cpp: kOwnerLedger only (the plan text); the reserved-path texts beside it ride the same deletion.",
+        "rebuild/PRD.md and rebuild/PLAN.json are the orchestrator's files outside this repository: the lane edits their text sections only (no lane entry added or removed, ruling 17) and lists every change in its PR_BODY.md.",
+        "plain/truth.h in the plan text names the truth check's effect kinds and receipt line, which live in lib/core/include/nimbus/orch/truth.h and lib/core/src/orch_truth.cpp (RB-G0's files): declared as cross-lane edits."
+      ],
+      "plan_text": "lib/harness plain/texts.h, request.h, plain_request.cpp, orch_tool_groups.cpp, orch_path_rules.cpp, orch_file_tools.cpp (kOwnerLedger only), plain/truth.h, effect_ring.h, orch_ledger.cpp, ledger.h, test_ledger, engine2_only.txt, rebuild/PRD.md, rebuild/PLAN.json, PROMPT-CHANGES"
     }
   }
 }

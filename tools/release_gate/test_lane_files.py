@@ -24,6 +24,10 @@ PLAN = os.environ.get("RB_PLAN_JSON", "/Users/roydarnell/Projects/nimbus-project
 # merged (PLAN-pending.json beside the plan). They are program lanes all the same, so the
 # table may carry their entries while they wait; a lane in both files counts once.
 PLAN_PENDING = os.environ.get("RB_PLAN_PENDING_JSON", os.path.join(os.path.dirname(PLAN), "PLAN-pending.json"))
+# Lanes the orchestrator wrote after ruling 42 (PLAN-future.json, the RB-REC family) wait there
+# too: a waiting lane needs no entry yet, but one that has added its entry (its first commit)
+# is checked like a plan lane, its text against the plan's.
+PLAN_FUTURE = os.environ.get("RB_PLAN_FUTURE_JSON", os.path.join(os.path.dirname(PLAN), "PLAN-future.json"))
 
 
 def owners(**lanes):
@@ -318,11 +322,16 @@ def test_real_owners_table_covers_every_plan_lane():
         pytest.skip(f"the program's PLAN.json is not on this machine ({PLAN}); set RB_PLAN_JSON to check it")
     with open(PLAN, encoding="utf-8") as f:
         plan = json.load(f)
-    if os.path.exists(PLAN_PENDING):
-        with open(PLAN_PENDING, encoding="utf-8") as f:
-            known = {row["id"] for row in plan["lanes"]}
-            plan["lanes"] += [row for row in json.load(f).get("lanes", []) if row["id"] not in known]
-    assert gate.plan_problems(real_owners(), plan) == []
+    table = real_owners()
+    for waiting in (PLAN_PENDING, PLAN_FUTURE):
+        if os.path.exists(waiting):
+            with open(waiting, encoding="utf-8") as f:
+                known = {row["id"] for row in plan["lanes"]}
+                rows = [row for row in json.load(f).get("lanes", []) if row["id"] not in known]
+            if waiting == PLAN_FUTURE:
+                rows = [row for row in rows if row["id"] in table["lanes"]]
+            plan["lanes"] += rows
+    assert gate.plan_problems(table, plan) == []
 
 
 def test_real_owners_hot_files_match_the_prd_order():
