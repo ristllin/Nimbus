@@ -429,6 +429,11 @@ void test_running_date_and_calendar_day_agree_with_the_stamp() {
   TEST_ASSERT_FALSE(day::runningDate(kThu0030, 0, 240, d, 10));   // no room for the NUL
   TEST_ASSERT_EQUAL_INT64(day::calendarDay(kThu0030, 0), day::runningDay(kThu0030, 0, 0));
   TEST_ASSERT_EQUAL_INT64(day::calendarDay(kThu0030, 0) - 1, day::runningDay(kThu0030, 0, 240));
+  // Before 1970 in local time the day number is negative and still floors (never rounds to 0).
+  TEST_ASSERT_EQUAL_INT64(-1, day::runningDay(0, 0, 240));
+  TEST_ASSERT_EQUAL_INT64(-1, day::runningDay(3599, -60, 0));
+  TEST_ASSERT_EQUAL_INT64(0, day::runningDay(3600, -60, 0));
+  TEST_ASSERT_EQUAL_INT64(-2, day::runningDay(0, -1440, 1));
   TEST_ASSERT_TRUE(day::formatDate(0, d, sizeof d));
   TEST_ASSERT_EQUAL_STRING("1970-01-01", d);
   TEST_ASSERT_TRUE(day::formatDate(-1, d, sizeof d));

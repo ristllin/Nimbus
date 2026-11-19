@@ -125,7 +125,7 @@ StampForm stamp(uint64_t epoch, int32_t offsetMin, uint16_t startMin, char* out,
   }
   p += 10;
   *p++ = ' ';
-  std::memcpy(p, kDays + 3 * static_cast<unsigned>(((today % 7) + 7) % 7), 3);
+  std::memcpy(p, kDays + 3 * static_cast<unsigned>(today % 7), 3);   // today > 0: the clock is set
   p += 3;
   *p++ = ' ';
   p = put2(p, minuteOfDay / 60);
@@ -135,10 +135,7 @@ StampForm stamp(uint64_t epoch, int32_t offsetMin, uint16_t startMin, char* out,
   const uint16_t start = startMin % kMinutesPerDay;
   if (minuteOfDay >= start) return StampForm::Full;
   // Before the day start: yesterday is still running. The clause is whole or absent.
-  if (cap < kFullCap || !putDate(p + 6, today - 1)) {
-    *p = '\0';
-    return StampForm::Plain;
-  }
+  if (cap < kFullCap || !putDate(p + 6, today - 1)) return StampForm::Plain;   // p is still the plain end
   std::memcpy(p, " (day ", 6);
   p += 16;
   std::memcpy(p, " until ", 7);
