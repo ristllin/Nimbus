@@ -1,0 +1,5 @@
+{
+  "lane": "RB-Q2a",
+  "allowance_bytes": 9216,
+  "why": "PRD section 10 flash ledger: RB-Q2a about +3 KB. Measured same-tree on esp32s3-cyd, rb-main 550196790 against the lane tip f0508693a, code bytes (firmware.bin minus the docs pack): 5,988,524 -> 5,997,446 (+8,922 B), after one audit cut (-1,360 B: the policy reads a name's class from the already linked action rules instead of linking tool_groups' table). What it is: the policy table, the tool-class rows and refusal text, the argument narrowing and listed-path check for engine 2's routines, the end-of-turn field cut (with its device element parse), the fixed update notice, the access-seam hook; the bounded post-update turn's deletion returns about 1.5 KB of it. Over 2,048 B: needs the orchestrator's ruling (orchestrator notes for RB-Q2a). Rounded up to the next 512 B."
+}
