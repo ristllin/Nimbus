@@ -40,16 +40,28 @@ class BootResume {
     Status st = intents::openTurn(*d_.arena, open);
     if (st.ok()) st = intents::openCalls(*d_.arena, calls);
     if (!st.ok()) return st;
+    const uint8_t made = decide(open, rep);
+    if (!(st = answer(calls, rep.answered)).ok()) return st;
+    if (rep.action == BootAction::None) return Status::success();
+    if (!(st = context(open, made)).ok()) return st;
+    return act(rep, open);
+  }
+
+ private:
+  // The one action, and the write-ahead count of a resume or a send; the resumes already made.
+  uint8_t decide(const intents::OpenTurn& open, ResumeReport& rep) {
     const uint8_t made = std::max<uint8_t>(open.attempts, head_.openTurn == open.turn ? head_.attempts : 0);
+    const bool whole = open.state != intents::TurnState::AnswerStored || wholeAnswer(open);
     rep.turn = open.turn;
-    rep.action = intents::bootAction(open, made, kMaxAutoResumes, open.state != intents::TurnState::AnswerStored || whole(open));
+    rep.action = intents::bootAction(open, made, kMaxAutoResumes, whole);
     if (rep.action == BootAction::SendStored || rep.action == BootAction::Resume) {
       rep.counted = count(open.turn, made);
       if (!rep.counted) rep.action = BootAction::Notice;   // never a resume it cannot count
     }
-    if (!(st = answer(calls, rep.answered)).ok()) return st;
-    if (rep.action == BootAction::None) return Status::success();
-    if (!(st = context(open, made)).ok()) return st;
+    return made;
+  }
+
+  Status act(ResumeReport& rep, const intents::OpenTurn& open) {
     switch (rep.action) {
       case BootAction::Close: return close(kCauseClosed, false);
       case BootAction::SendStored: return sendStored(open);
@@ -60,7 +72,6 @@ class BootResume {
     return Status::success();
   }
 
- private:
   const ResumeDeps& d_;
   tx::HeadState& head_;
   TurnCtx ctx_;
@@ -77,7 +88,7 @@ class BootResume {
   // The stored final answer is the reply itself, not the stub a long reply leaves in the a item
   // (its whole text went to the bulk file, which the a item does not name): the stub's opening
   // as tx::stubText writes it for that q.
-  bool whole(const intents::OpenTurn& open) {
+  bool wholeAnswer(const intents::OpenTurn& open) {
     if (!readAt(open.answerQ)) return false;
     tx::StubFacts f;
     f.tool = texts::device_notes::kAssistantSlug;
