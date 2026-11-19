@@ -84,3 +84,17 @@ def test_the_allowlist_is_the_usage_ledger_only():
         "lib/core/src/orch_usage_ledger.cpp",
         "lib/core/include/nimbus/orch/usage_ledger.h",
     }
+
+
+def test_the_real_tree_has_no_domain_word():
+    assert lint.main(["--root", REPO]) == 0
+
+
+def test_the_lint_is_enforced_where_the_gates_run():
+    """Enforced, not report-only: the pre-commit hook, the CI static gates and run_gate all run it
+    without --report (ruling 42 item 4: enforced once its report is empty)."""
+    for rel in (".pre-commit-config.yaml", ".github/workflows/checks.yml", "tools/release_gate/run_gate.py"):
+        with open(os.path.join(REPO, rel)) as f:
+            text = f.read()
+        assert "check_no_domain_words" in text, rel
+        assert "check_no_domain_words.py --report" not in text, rel

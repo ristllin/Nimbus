@@ -32,6 +32,7 @@ import check_engine_filter
 import check_fold_health
 import check_image_size
 import check_lwip_core_lock
+import check_no_domain_words  # tools/, on the path above
 import check_no_harness_lines
 import check_no_prompt_patch
 import check_ota_preserves_nvs
@@ -172,6 +173,7 @@ def run_host_checks() -> bool:
         ("old engine request ceilings: prompt and tools on the real build (RB-Q3b)", check_prompt_ceiling.main),
         ("fold health: the summary never pauses for good (v5.1.2)", check_fold_health.main),
         ("request budget table: bounds, rounds, no field below v5.1.1 (v5.1.2)", check_budget_table.main),
+        ("no use case named in the core: the domain-words lint (RB-REC1)", lambda argv: check_no_domain_words.main([])),
     ):
         rc = fn([])
         results.append((name, rc == 0))
