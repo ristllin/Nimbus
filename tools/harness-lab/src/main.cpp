@@ -212,6 +212,16 @@ int main(int argc, char** argv) {
     else args.push_back(a);
   }
   if (args.empty()) { usage(); return 2; }
+
+  // ⚠ prism: an unrecognized --role used to fall back to ADMIN silently, so a
+  // typo ("--role=Guest") produced a full-visibility session while the operator
+  // believed they were testing the guest path. Refuse to start instead.
+  if (!lab::LabRig::validRole(opt.role)) {
+    std::fprintf(stderr, "unknown --role=%s (use admin | user | guest | unknown)\n",
+                 opt.role.c_str());
+    return 2;
+  }
+
   if (engine != "1" && engine != "2") {
     std::fprintf(stderr, "unknown --engine=%s (use 1 or 2)\n", engine.c_str());
     return 2;
@@ -221,15 +231,6 @@ int main(int argc, char** argv) {
   if (engine == "2") {
     if (args[0] == "selftest") return lab::cmdPlainSelftest();
     std::fprintf(stderr, "--engine=2 runs only: selftest\n");
-    return 2;
-  }
-
-  // ⚠ prism: an unrecognized --role used to fall back to ADMIN silently, so a
-  // typo ("--role=Guest") produced a full-visibility session while the operator
-  // believed they were testing the guest path. Refuse to start instead.
-  if (!lab::LabRig::validRole(opt.role)) {
-    std::fprintf(stderr, "unknown --role=%s (use admin | user | guest | unknown)\n",
-                 opt.role.c_str());
     return 2;
   }
 

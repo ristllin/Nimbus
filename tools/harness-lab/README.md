@@ -48,6 +48,13 @@ self-test (`nimbus-lab selftest`), the Python tool tests, and the model-id lint
 (`tools/model_id_lint.py`). It is a battery row, so run it after harness changes
 and the lab cannot quietly rot.
 
+`--engine=<1|2>` picks the turn engine; 1, the current engine, is the default and
+every command above runs on it unchanged. `--engine=2 selftest` (also run by
+`make check`) sends one scripted owner text through the plain loop, engine 2,
+using nimbusd's `src/plain_rig.h`, plus a provider that errors, one that hangs and
+an empty answer. It is offline only: until the wires land, engine 2 answers no
+other command, and none falls back to engine 1.
+
 ## Keys
 
 Read from the environment first, then a dotenv file (default

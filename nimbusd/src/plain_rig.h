@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,7 +76,7 @@ enum class PlainEnding : uint8_t {
   Reply = 0,    // the model's text went out (a status line may follow it)
   Status = 1,   // no model text went out; the engine's one status line did
   Silent = 2,   // the engine returned ok and sent nothing (a loop-core gap, see `stated`)
-  Failed = 3,   // runTurn returned a status and sent nothing
+  Failed = 3,   // nothing went out: runTurn failed, the host's channel refused, or the rig was busy
 };
 inline const char* plainEndingSlug(PlainEnding e) {
   switch (e) {
@@ -90,7 +91,8 @@ inline const char* plainEndingSlug(PlainEnding e) {
 struct PlainTurn {
   plain::Status status;               // runTurn's (or boot's) status
   plain::TurnOutcome out;             // the engine's outcome, unchanged
-  std::vector<std::string> sent;      // every message the channel got in this turn, in order
+  std::vector<std::string> sent;      // every message the host's channel took in this turn, in order
+  std::vector<std::string> unsent;    // every message the host's channel refused
   PlainEnding ending = PlainEnding::Failed;
   // Never empty: the reply when one went out, else the status line, else the rig's one line
   // naming why nothing went out (for the host's log; the rig never sends it).
@@ -103,8 +105,10 @@ class PlainRig {
     if (cfg_.chatId.empty()) cfg_.chatId = cfg_.chatKey;
     who_ = nimbus::orch::principalForRole(cfg_.chatId, cfg_.role);
     channel_.send = [this](const std::string& chat, const std::string& text) {
-      sent_.push_back(text);
-      return b_.send ? b_.send(chat, text) : true;
+      const bool ok = b_.send ? b_.send(chat, text) : true;
+      if (ok) sent_.push_back(text);
+      else unsent_.push_back(text);
+      return ok;
     };
     channel_.isAllowed = [this](const std::string& chat) { return chat == cfg_.chatId; };
     channel_.firstAllowedChat = [this] { return cfg_.chatId; };
@@ -123,6 +127,7 @@ class PlainRig {
 
   // Once: the arena, the log over the host's files, the engine and its boot (open the log,
   // fill the arena, the resume seam). InvalidArgument without a required binding.
+  // A refused allocation is a status (ruling 30), never an abort.
   plain::Status boot(bool afterCrash = false) {
     namespace tx = nimbus::orch::tx;
     if (engine_) return plain::Status::fail(tx::Err::Busy, "nimbusd::PlainRig::boot.twice");
@@ -130,34 +135,51 @@ class PlainRig {
     if (!p || !p->nowMs || !p->delayMs || !p->nowEpoch || !p->allocLarge || !p->freeLarge || !b_.transport ||
         !b_.files)
       return plain::Status::fail(tx::Err::InvalidArgument, "nimbusd::PlainRig::boot");
-    std::unique_ptr<tx::TxArena> arena(new tx::TxArena());
-    plain::Status st = arena->init(tx::kActiveChatArenaBytes, p->allocLarge, p->freeLarge);
-    if (!st.ok()) return st;
-    arena_ = std::move(arena);
-    log_.reset(new tx::TxLog(*b_.files, cfg_.chatKey));
-    engine_.reset(new plain::PlainEngine(deps()));
-    st = engine_->boot(plain::BootCtx{p->nowEpoch(), afterCrash});
+    plain::Status st;
+    try {
+      std::unique_ptr<tx::TxArena> arena(new tx::TxArena());
+      st = arena->init(tx::kActiveChatArenaBytes, p->allocLarge, p->freeLarge);
+      if (!st.ok()) return st;
+      arena_ = std::move(arena);
+      log_.reset(new tx::TxLog(*b_.files, cfg_.chatKey));
+      engine_.reset(new plain::PlainEngine(deps()));
+      st = engine_->boot(plain::BootCtx{p->nowEpoch(), afterCrash});
+    } catch (const std::bad_alloc&) {
+      st = plain::Status::fail(tx::Err::TooLarge, "nimbusd::PlainRig::boot.memory");
+    }
     if (!st.ok()) engine_.reset();   // a failed boot leaves the rig unbooted, never half-booted
     return st;
   }
 
   // One owner message through the loop: from the u item to the e item.
+  // One turn at a time: a say from inside a turn (a host send that answers back) is refused.
   PlainTurn say(const std::string& text) {
     PlainTurn t;
-    sent_.clear();
+    if (busy_) {
+      t.status = plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::PlainRig::say.busy");
+      t.stated = "engine 2: a turn is already running on this chat";
+      return t;
+    }
     if (!engine_) {
       t.status = plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "nimbusd::PlainRig::say.before-boot");
       t.stated = "engine 2: the rig is not booted";
       return t;
     }
+    busy_ = true;
+    struct Idle {
+      bool& busy;
+      ~Idle() { busy = false; }
+    } idle{busy_};
+    sent_.clear();
+    unsent_.clear();
     plain::TurnInput in;
     in.ctx = turnCtx();
     in.text = text;
     in.ch = "rig";
     in.tzMinutes = cfg_.tzMinutes;
     t.status = engine_->runTurn(in, t.out);
-    t.sent = std::move(sent_);
-    sent_.clear();
+    t.sent.swap(sent_);
+    t.unsent.swap(unsent_);
     state(t);
     return t;
   }
@@ -229,6 +251,9 @@ class PlainRig {
     } else if (!t.sent.empty()) {
       t.ending = PlainEnding::Status;
       t.stated = t.sent.back();
+    } else if (!t.unsent.empty()) {
+      t.ending = PlainEnding::Failed;
+      t.stated = "engine 2: the host's channel refused " + std::to_string(t.unsent.size()) + " message(s)";
     } else if (t.status.ok()) {
       t.ending = PlainEnding::Silent;
       t.stated = "engine 2: the turn sent nothing (cause " + t.out.end.cause + ")";
@@ -245,7 +270,8 @@ class PlainRig {
   nimbus::orch::ToolRegistry reg_;
   plain::PlainHooks hooks_;
   agent::Channel channel_;
-  std::vector<std::string> sent_;
+  std::vector<std::string> sent_, unsent_;
+  bool busy_ = false;
   std::unique_ptr<nimbus::orch::tx::TxArena> arena_;
   std::unique_ptr<nimbus::orch::tx::TxLog> log_;
   std::unique_ptr<plain::PlainEngine> engine_;

@@ -54,7 +54,7 @@ struct Host {
   }
 
   void reboot() {
-    rig.reset(new nimbusd::PlainRig(config(), nimbusd::PlainRigBindings{&platform, &model, &files, wire, nullptr, nullptr}));
+    rig.reset(new nimbusd::PlainRig(config(), nimbusd::PlainRigBindings{&platform, &model, &files, wire, hostSend, nullptr}));
     if (bindTools) bindTools(*rig);
     booted = rig->boot();
   }
@@ -92,12 +92,11 @@ struct Host {
     for (const tx::Item& it : stored()) k += tx::kindLetter(it.kind);
     return k;
   }
-  const tx::Item* lastEnd() const {
-    static std::vector<tx::Item> keep;
-    keep = stored();
-    const tx::Item* e = nullptr;
-    for (const tx::Item& it : keep)
-      if (it.kind == tx::ItemKind::TurnEnd) e = &it;
+  // The newest e item, by value (a default item with turn 0 when there is none).
+  tx::Item lastEnd() const {
+    tx::Item e;
+    for (const tx::Item& it : stored())
+      if (it.kind == tx::ItemKind::TurnEnd) e = it;
     return e;
   }
 
@@ -108,6 +107,7 @@ struct Host {
   txb::MemFiles files;
   const plain::WireCodec* wire = nullptr;
   std::function<void(nimbusd::PlainRig&)> bindTools;
+  std::function<bool(const std::string&, const std::string&)> hostSend;
   std::unique_ptr<nimbusd::PlainRig> rig;
   plain::Status booted;
 };
@@ -141,9 +141,9 @@ void testTextTurnOnEveryDialect(ndtest::Ctx& c) {
     c.eq(h.kinds(), "utade", tag(d, "the transcript holds u t a d e (RB-E1a's text turn)"));
     const std::vector<tx::Item> items = h.stored();
     c.ok(items.size() == 5 && items[2].fin && items[2].x == "Hello from engine two.", tag(d, "the a item is the final text"));
-    const tx::Item* e = h.lastEnd();
-    c.eq(e ? e->end.cause : "", "reply", tag(d, "the e item's cause is reply"));
-    c.eqi(e ? (long)e->end.headRequests : -1, 1, tag(d, "the e item counts one head request"));
+    const tx::Item e = h.lastEnd();
+    c.eq(e.end.cause, "reply", tag(d, "the e item's cause is reply"));
+    c.eqi((long)e.end.headRequests, 1, tag(d, "the e item counts one head request"));
     std::string why;
     c.ok(h.model.verify(why), tag(d, "the script was used exactly (" + why + ")"));
   }
@@ -176,8 +176,7 @@ void testChatGoesOn(ndtest::Ctx& c) {
   c.eq(h.kinds(), "utadeutadeutxade", "the third turn is appended after a cold open, nothing written twice");
   const std::vector<tx::Item> items = h.stored();
   c.ok(items.size() == 16 && items[12].why == "cold", "the x item is the restart's cold open");
-  const tx::Item* e = h.lastEnd();
-  c.eqi(e ? (long)e->turn : -1, 3, "the rebooted engine numbers the turn 3");
+  c.eqi((long)h.lastEnd().turn, 3, "the rebooted engine numbers the turn 3");
 }
 
 // ---- (c) the failure faces ------------------------------------------------------------------
@@ -195,8 +194,7 @@ void checkOneLine(ndtest::Ctx& c, const Host& h, const nimbusd::PlainTurn& t, co
   c.ok(!t.stated.empty() && !t.sent.empty() && t.stated == t.sent[0] && t.stated == t.out.statusText,
        name + ": it is the engine's plain line");
   c.ok(t.out.status == plain::StatusLine::ProviderError, name + ": the line is the provider-error line");
-  const tx::Item* e = h.lastEnd();
-  c.eq(e ? e->end.cause : "", cause, name + ": the e item names the cause");
+  c.eq(h.lastEnd().end.cause, cause, name + ": the e item names the cause");
 }
 
 void testFailureFaces(ndtest::Ctx& c) {
@@ -268,6 +266,52 @@ void testHostFaults(ndtest::Ctx& c) {
 
   Host h;
   c.ok(h.rig->boot().err == tx::Err::Busy, "a second boot is refused");
+
+  // The host's channel: it gets what the engine sends, to the chat; a send it refuses is
+  // never reported as delivered.
+  {
+    Host s;
+    std::vector<std::string> got;
+    bool refuse = false;
+    s.hostSend = [&](const std::string& chat, const std::string& text) {
+      got.push_back(chat + "|" + text);
+      return !refuse;
+    };
+    s.reboot();
+    s.model.push(sp::say("To the host."));
+    const nimbusd::PlainTurn ok = s.rig->say("hello");
+    c.ok(got.size() == 1 && got[0] == "2001|To the host.", "the host's channel gets the reply, to the chat");
+    c.eq(nimbusd::plainEndingSlug(ok.ending), "reply", "a reply the host took is a reply");
+    refuse = true;
+    s.model.push(sp::say("Lost on the way."));
+    s.ms += 60000;
+    const nimbusd::PlainTurn lost = s.rig->say("again");
+    c.eq(nimbusd::plainEndingSlug(lost.ending), "failed", "a reply the host refused is not a reply");
+    c.ok(lost.sent.empty() && lost.unsent.size() == 1 && lost.unsent[0] == "Lost on the way.",
+         "it is kept as unsent");
+    c.ok(!lost.out.delivered && !lost.stated.empty(), "and the outcome says so");
+    c.ok(s.kinds().find("utae", 5) != std::string::npos, "no d item for a refused send");
+  }
+
+  // One turn at a time: a host send that answers back into the rig is refused, and the outer
+  // turn's record is kept whole.
+  {
+    Host r;
+    nimbusd::PlainTurn inner;
+    r.hostSend = [&](const std::string&, const std::string&) {
+      inner = r.rig->say("from inside");
+      return true;
+    };
+    r.reboot();
+    r.model.push(sp::say("Outer."));
+    const nimbusd::PlainTurn outer = r.rig->say("hello");
+    c.ok(inner.status.err == tx::Err::Busy && !inner.stated.empty(), "a say inside a turn is refused as busy");
+    c.ok(outer.ending == nimbusd::PlainEnding::Reply && outer.sent.size() == 1, "the outer turn is whole");
+    r.hostSend = nullptr;
+    r.model.push(sp::say("Next."));
+    r.ms += 60000;
+    c.eq(r.rig->say("next").stated, "Next.", "the rig takes the next turn after it");
+  }
   nimbusd::PlainRig noFiles(nimbusd::PlainRigConfig{}, nimbusd::PlainRigBindings{&h.platform, &h.model, nullptr});
   c.ok(noFiles.boot().err == tx::Err::InvalidArgument, "boot refuses no storage");
   nimbusd::PlainRig noTransport(nimbusd::PlainRigConfig{}, nimbusd::PlainRigBindings{&h.platform, nullptr, &h.files});
@@ -287,8 +331,7 @@ void testHostFaults(ndtest::Ctx& c) {
       c.eq(nimbusd::plainEndingSlug(tw.ending), "status", tag(d, "no wire yet: one plain line"));
       c.eqi((long)tw.sent.size(), 1, tag(d, "no wire yet: exactly one message"));
       c.ok(w.model.requests().empty(), tag(d, "no wire yet: no request is sent"));
-      const tx::Item* e = w.lastEnd();
-      c.eq(e ? e->end.cause : "", "setup:not-implemented", tag(d, "no wire yet: the e item says why"));
+      c.eq(w.lastEnd().end.cause, "setup:not-implemented", tag(d, "no wire yet: the e item says why"));
     }
   }
 }

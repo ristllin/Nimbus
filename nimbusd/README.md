@@ -83,6 +83,14 @@ make scenarios   # build ./build/nimbusd-scenarios (PAID to run - see below)
 make check       # compile-only anti-rot gate
 ```
 
+Engine 2 (the plain loop) runs on the host through `src/plain_rig.h`: one
+`PlainRig` per chat over the host's platform, transport and transcript storage.
+`tests/test_plain_rig.cpp` runs one scripted text turn on it and the failure faces.
+The daemon itself still answers every turn on the current engine; the per-turn
+engine choice comes later. Headers in `src/` compile only when a `.cpp` includes
+them, so a change that adds a `src/` header also adds a `tests/test_<name>.cpp`
+that includes it.
+
 Host builds need ArduinoJson (populate `.pio/libdeps/native` once with
 `pio test -e native` at the repo root) and a sibling `../solide-drivers` checkout
 (the portable headers). The Docker build fetches both itself.
