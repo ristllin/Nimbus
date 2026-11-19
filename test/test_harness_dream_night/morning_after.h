@@ -71,6 +71,7 @@ struct Rig {
   std::string reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
   std::vector<std::string> instructions, inputs;
   int providerCalls = 0;
+  bool searchOn = true;   // the store answers the earlier-conversation search (off: the counter-test)
   uint32_t billedTokens = 0;
 
   std::string add(const std::string& role, const std::string& text, const std::string& tags) {
@@ -167,6 +168,7 @@ struct Rig {
       return turnTag;
     };
     d.historyMarks = [this](const std::string&) { return marks; };
+    d.searchStore = [this](const nimbus::orch::MsgQuery& q) { return searchOn ? store.query(q) : std::vector<EpisodicMessage>{}; };
     d.noteHistoryShift = [this](const std::string&, const std::string& s) { marks.softStart = s; };
     eng.reset(new agent::TurnEngine(std::move(d)));
   }

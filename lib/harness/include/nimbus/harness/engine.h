@@ -312,6 +312,10 @@ class TurnEngine {
     // read HistoryQuery describes (strictly older than `before`, at most `limit`).
     std::function<std::vector<nimbus::orch::EpisodicMessage>(const std::string& chatId, const HistoryQuery& q)>
         historyRows;
+    // Ruling 90 (RB-Q2b): the stored conversation searched by words, the search memory.episodic
+    // uses (the store's lexical rule, its index only: no card read, no paid call). Null = the
+    // turn carries no earlier-conversation recall.
+    std::function<std::vector<nimbus::orch::EpisodicMessage>(const nimbus::orch::MsgQuery& q)> searchStore;
     // Capture the owner's row (text = what the sender sent, tags = from:, att:,
     // src:, sent:) and return its id: the in-flight turn the window leaves out.
     std::function<std::string(const std::string& chatId, const std::string& text,

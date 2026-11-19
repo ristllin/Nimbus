@@ -23,7 +23,8 @@
 
 #include <algorithm>
 
-#include "morning_after.h"   // RB-Q2b: the morning after a scripted night, both trees
+#include "morning_after.h"
+#include "nimbus/harness/prompt_layout.h"   // RB-Q2b: the morning after a scripted night, both trees
 
 // Lane M, then RB-Q2b - the nightly upkeep and quiet, honest background turns:
 //   - a scripted night makes no model call, bills nothing and still runs decay, prune and
@@ -972,11 +973,50 @@ static void test_morning_after_carries_at_least_rb_main() {
   TEST_ASSERT_FALSE(morning::isDreamWritten("history|user|My sister Ana arrives on the 14th and stays two nights."));
 }
 
+// ---- (RB-Q2b part 2, ruling 90) recall from the stored conversation ---------------------
+// The hard case: on the asking day the day-1 lines are in neither the window nor the summary
+// (the fold anchor sits at the newest row, the summary is empty). The asking request must still
+// carry the owner's own day-1 line verbatim, by code, inside the recall block; with the lookup
+// off it does not (counter-test).
+static std::string askAfterForget(bool searchOn, const std::string& question) {
+  morning::Rig r;
+  r.searchOn = searchOn;
+  morning::evening(r);
+  morning::scriptedNight(r);
+  nimbus::orch::MsgQuery q;
+  q.sessionId = morning::kChat;
+  q.limit = 1;
+  r.marks.thru = r.store.query(q).front().id;   // the fold anchor at the newest row: nothing earlier in the window
+  r.marks.softStart.clear();
+  r.plat.epoch = morning::kMorning;
+  r.reply = "{\"reply\":\"ok\",\"memory\":\"\",\"ask\":\"\"}";
+  r.eng->handleMessage(question, "Roy", morning::kChat);
+  const agent::layout::PromptParts p = agent::layout::split(r.instructions.back());
+  for (const auto& m : p.history)   // the window really holds none of day 1
+    TEST_ASSERT_TRUE_MESSAGE(m.text.find("flights on 12 March") == std::string::npos, m.text.c_str());
+  return p.dyn;
+}
+
+static void test_recall_carries_the_stored_conversation_beyond_the_window() {
+  const char* kQuestion = "When are the flights for the city trip?";
+  const char* kDay1 = "Plan the city trip: flights on 12 March, the hotel near the old town.";
+  const std::string dyn = askAfterForget(true, kQuestion);
+  const size_t at = dyn.find("## RELEVANT MEMORIES");
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, dyn.c_str());
+  const std::string block = dyn.substr(at);
+  TEST_ASSERT_TRUE_MESSAGE(block.find(kDay1) != std::string::npos, block.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(block.find("Mon 26 Oct 2026") != std::string::npos, block.c_str());   // dated
+  // Counter-test: with the lookup off the asking request does not carry it.
+  const std::string off = askAfterForget(false, kQuestion);
+  TEST_ASSERT_TRUE_MESSAGE(off.find(kDay1) == std::string::npos, off.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scripted_night_makes_no_model_turn);
   RUN_TEST(test_night_offers_no_turn_seam);
   RUN_TEST(test_morning_after_carries_at_least_rb_main);
+  RUN_TEST(test_recall_carries_the_stored_conversation_beyond_the_window);
   RUN_TEST(test_quiet_turn_notice_count_zero_on_every_failure_path);
   RUN_TEST(test_quiet_billing_switch_keeps_the_notice_latch_armed);
   RUN_TEST(test_self_wakeup_turn_is_one_short_toolless_turn);
