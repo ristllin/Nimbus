@@ -21,15 +21,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import providers  # noqa: E402
+import records  # noqa: E402
 from judge import QUESTIONS, STRONG, ask  # noqa: E402
 from run import Ledger  # noqa: E402
 
 KEEP = tuple(QUESTIONS)
 _lock = threading.Lock()
-
-
-def needs_judge(rec: dict) -> bool:
-    return rec["kind"] == "write" and (bool(rec.get("fault")) or not rec["file"]["effect_ok"])
 
 
 def render(rec: dict) -> str:
@@ -77,7 +74,7 @@ def main():
             for line in f.read_text().splitlines():
                 rec = json.loads(line)
                 key = f"{rec['arm']}|{rec['episode']}"
-                if needs_judge(rec) and key not in have:
+                if records.needs_label(rec) and key not in have:
                     jobs.append((key, rec))
 
         def work(job):

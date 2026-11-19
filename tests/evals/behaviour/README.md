@@ -107,6 +107,7 @@ for append and write, which take no working block, the core's stated refusal).
 | `records.py` | domains, file generation, the owner's invented skill, episodes, the checks (`judge_total`, `judge_write`, `totals_after_fix`) |
 | `run_records.py` | one cell: episodes through a head, one record per episode with the file bytes before and after |
 | `judge_records.py` | claude-sonnet-5-5 labels the write turns that can hold a false claim (a fault, or a file not as asked) |
+| `judge_totals.py` | claude-sonnet-5-5 decides, for a reply that states the device's partial sum, whether it says rows were left out (the regex in `records.names_left_out` is the fallback) |
 | `report_records.py` | applies the checks to the stored records and prints the tables with exact 95% bounds |
 | `scripted_heads.py` | offline heads for dry runs: `good` and `sloppy` |
 | `aidserve.cpp`, `build_aidserve.sh` | the real tools behind a pipe; built against nimbusd's core objects |
@@ -119,9 +120,11 @@ AIDSERVE=<build dir>/aidserve python3 tests/evals/behaviour/test_records_offline
 python3 tests/evals/behaviour/run_records.py --head claude-haiku-5-5 --arm S --evidence <dir> --env-file <dotenv> \
   --aidserve <build dir>/aidserve --work <scratch> --max-usd 1 --totals 150 --writes 190 --faults 30
 python3 tests/evals/behaviour/judge_records.py --evidence <dir> --env-file <dotenv> --max-usd 1
+python3 tests/evals/behaviour/judge_totals.py --evidence <dir> --env-file <dotenv> --max-usd 1
 python3 tests/evals/behaviour/report_records.py --evidence <dir> --json <out.json>
 ```
 
 Limits: episodes are one owner turn (two with a prior log), not long conversations; the K2 and K3 block is the
 old engine's mechanism carried onto engine 2's shapes (its text names skill_get, which engine 2 does not have);
-the total check reads figures from the reply (a regex finds the number and the words that name a left-out row).
+the total check reads figures from the reply (a regex finds the number, with dates, clock times and line
+references taken out first); whether a partial total names the rows it left out is judged by a model.

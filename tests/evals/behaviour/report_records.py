@@ -42,19 +42,28 @@ def load(ev: Path, head: str):
         f = ev / head / f"{arm}.jsonl"
         if f.exists():
             recs += [json.loads(x) for x in f.read_text().splitlines() if x.strip()]
+    total_labels = read_labels(ev / head / "labels-totals.jsonl")
     for r in recs:  # the checks are applied here, to the stored reply and file bytes (records.py)
         if r["kind"] == "total":
-            r["total"] = records.judge_total(r["turns"][-1]["reply"], r["truth"])
+            truth = records.total_truth(r["episode"], r["dom"])
+            assert {k: truth[k] for k in r["truth"]} == r["truth"], r["episode"]  # the stored truth is rebuilt
+            r["truth"] = truth
+            r["total"] = records.judge_total(r["turns"][-1]["reply"], truth)
+            lab = total_labels.get(f"{r['arm']}|{r['episode']}")
+            if lab is not None and r["total"]["verdict"].startswith("partial"):  # the judge over the regex
+                named = bool(lab["names_left_out"])
+                r["total"] = {"ok": named, "verdict": "partial_named" if named else "partial_silent", "judged": True}
         else:
             r["file"] = records.judge_write({"dom": r["dom"], "expect": r["expect"]}, r["before"], r["after"])
-    labels = {}
-    lp = ev / head / "labels-records.jsonl"
-    if lp.exists():
-        for x in lp.read_text().splitlines():
-            if x.strip():
-                j = json.loads(x)
-                labels[j["key"]] = j["labels"]
-    return recs, labels
+        if "pickup" in r:
+            r["pickup"] = records.pickup(r["turns"][0]["calls"], r["dom"])
+    return recs, read_labels(ev / head / "labels-records.jsonl")
+
+
+def read_labels(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return {j["key"]: j["labels"] for j in (json.loads(x) for x in path.read_text().splitlines() if x.strip())}
 
 
 def lo(k, n):
@@ -85,6 +94,7 @@ def totals_part(tot: list) -> dict:
     return {
         "total_accuracy": share(tot, ok),
         "total_verdicts": dict(verdicts),
+        "total_partial_judged": sum(1 for r in tot if r["total"].get("judged")),
         "total_used_sum": sum(1 for r in tot if r.get("used_sum")),
         "total_used_calc": sum(1 for r in tot if r.get("used_calc")),
         "total_with_skipped_rows": sum(1 for r in tot if r["truth"]["skipped"]),
@@ -117,14 +127,10 @@ def count(rows: list, ok) -> int:
     return sum(1 for r in rows if ok(r))
 
 
-def needs_label(r: dict) -> bool:
-    return r["kind"] == "write" and (bool(r.get("fault")) or not r["file"]["effect_ok"])
-
-
 def claims_part(recs: list, labels: dict) -> dict:
     allw = [r for r in recs if r["kind"] == "write"]
     key = lambda r: f"{r['arm']}|{r['episode']}"  # noqa: E731
-    judged = [r for r in allw if needs_label(r)]
+    judged = [r for r in allw if records.needs_label(r)]
     have = [dict(r, _lab=labels[key(r)]) for r in judged if key(r) in labels]
     hf = [r for r in have if r.get("fault")]
     fa = [r for r in allw if r.get("fault")]
@@ -171,7 +177,7 @@ def cell(recs: list, labels: dict) -> dict:
         out.update(totals_part(tot))
     if wr:
         out.update(writes_part(wr))
-    if any(needs_label(r) for r in recs):
+    if any(records.needs_label(r) for r in recs):
         out.update(claims_part(recs, labels))
     if ks:
         out.update(skills_part(ks))

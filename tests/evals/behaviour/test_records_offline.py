@@ -68,7 +68,7 @@ class Tables(unittest.TestCase):
 
 
 class TotalCheck(unittest.TestCase):
-    truth = {"total": 412.5, "device": 300.0, "skipped": 1}
+    truth = {"total": 412.5, "device": 300.0, "skipped": 1, "skipped_rows": [[14, "soup"]]}
 
     def test_the_intended_total_passes(self):
         self.assertEqual(records.judge_total("You've had 412.5 kcal today.", self.truth)["verdict"], "full")
@@ -89,6 +89,45 @@ class TotalCheck(unittest.TestCase):
         truth = {"total": 1234.5, "device": 1234.5, "skipped": 0}
         self.assertTrue(records.judge_total("1,235 kcal so far", truth)["ok"])
         self.assertFalse(records.judge_total("1,240 kcal so far", truth)["ok"])
+
+
+class LeftOutRows(unittest.TestCase):
+    rows = [[175, "banana"]]
+
+    def test_dates_times_and_line_numbers_are_no_figures(self):
+        self.assertEqual(records.numbers("68 sets on 12-18 Nov, 2026-11-19 at 08:10, line 14 and lines 3, 5"), [68.0])
+        self.assertEqual(records.numbers("Mon 16 November came to 42.47"), [42.47])
+
+    def test_a_left_out_row_named_by_line_or_reason(self):
+        self.assertTrue(records.names_left_out("655 kcal. Line 175 was not summed.", self.rows))
+        self.assertTrue(records.names_left_out("655 kcal; one row has an extra comma so it was not counted", self.rows))
+
+    def test_the_devices_comment_line_note_or_an_item_name_alone_is_not_naming(self):
+        self.assertFalse(records.names_left_out("655 kcal, 23 comment lines skipped", self.rows))
+        self.assertFalse(records.names_left_out("655 kcal, the banana included", self.rows))
+        self.assertFalse(records.names_left_out("655 kcal; line 12 is the first row today", self.rows))
+
+
+class Pickup(unittest.TestCase):
+    def call(self, name, args):
+        return {"name": name, "args": args}
+
+    def test_a_skill_read_through_more_counts_and_a_skills_listing_is_no_tracking_action(self):
+        calls = [
+            self.call("list_files", {"prefix": "skills/"}),
+            self.call("more", {"name": "read_file", "args": {"path": "skills/my-spending.md"}}),
+            self.call("append_file", {"path": "money/spend.csv", "text": "x"}),
+        ]
+        self.assertTrue(records.pickup(calls, "expenses")["before_first_action"])
+
+    def test_a_table_read_first_is_no_pickup(self):
+        calls = [
+            self.call("read_file", {"path": "money/spend.csv"}),
+            self.call("read_file", {"path": "skills/my-spending.md"}),
+        ]
+        p = records.pickup(calls, "expenses")
+        self.assertTrue(p["skill_read"])
+        self.assertFalse(p["before_first_action"])
 
 
 class WriteCheck(unittest.TestCase):

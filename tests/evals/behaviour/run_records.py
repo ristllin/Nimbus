@@ -82,10 +82,7 @@ class Aid:
         shutil.rmtree(self.root, ignore_errors=True)
 
 
-def tool_name(name: str, args) -> str:
-    if name == "more" and isinstance(args, dict) and args.get("name"):
-        return str(args["name"]).split(".")[-1]
-    return name
+tool_name = records.tool_name
 
 
 class World:
@@ -284,28 +281,6 @@ def first_write(calls: list) -> dict | None:
     return None
 
 
-def pickup(calls: list, dom: str) -> dict:
-    """Did the head read its skill before its first tracking action (a call on the table or a listing)?"""
-    sid = records.DOMAINS[dom]["skill_id"]
-    skill_at = track_at = None
-    for k, c in enumerate(calls):
-        t = tool_name(c["name"], c["args"])
-        path = str((c["args"] or {}).get("path", "")) if isinstance(c["args"], dict) else ""
-        if t == "read_file" and path.startswith("skills/") and sid in path and skill_at is None:
-            skill_at = k
-        elif (
-            t in ("read_file", "append_file", "edit_file", "write_file", "list_files")
-            and not path.startswith("skills/")
-            and track_at is None
-        ):
-            track_at = k
-    return {
-        "skill_read": skill_at is not None,
-        "tracked": track_at is not None,
-        "before_first_action": skill_at is not None and (track_at is None or skill_at < track_at),
-    }
-
-
 def prior_items(aid: Aid, ep: dict) -> list:
     """The prior exchange as neutral items; its append runs on the device for a real receipt."""
     neutral = []
@@ -346,7 +321,7 @@ def finish(rec: dict, ep: dict, before: str, after: str):
         rec["first_write"] = None if fw is None else {"name": tool_name(fw["name"], fw["args"]), "ok": not fw["err"]}
         rec["before"], rec["after"] = before, after
     if rec["arm"].startswith("K"):
-        rec["pickup"] = pickup(rec["turns"][0]["calls"], ep["dom"])
+        rec["pickup"] = records.pickup(rec["turns"][0]["calls"], ep["dom"])
 
 
 def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=None) -> dict:
@@ -391,7 +366,7 @@ def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=No
 # ------------------------------------------------------------------ plan and storage
 def cell_plan(arm: str, n_total: int, n_write: int, n_fault: int, n_skill: int) -> list:
     if arm in ("F", "S"):
-        return records.plan(arm, n_total, n_write, n_fault if arm == "S" else 0)
+        return records.plan(n_total, n_write, n_fault if arm == "S" else 0)
     return records.plan_skills(arm, n_skill)
 
 
