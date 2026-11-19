@@ -2495,9 +2495,10 @@ static void test_scheduled_turn_rails_and_fire_outcome() {
   // Empty chatId targets the first allow-listed chat.
   TEST_ASSERT_EQUAL_STRING("1001", r.delivered[0].first.c_str());
   // The scheduled flag was live DURING the provider call and the reboot was
-  // refused inside applyTurn (the ApplyState.scheduledTurn rail).
+  // cut before applyTurn (the unattended policy, lane RB-Q2a; the ApplyState.scheduledTurn
+  // rail stays behind it).
   TEST_ASSERT_TRUE(r.attempts[0].scheduledDuring);
-  TEST_ASSERT_TRUE(LogCapture::contains("reboot-refused(scheduled)"));
+  TEST_ASSERT_TRUE(LogCapture::contains("unattended: 1 end-of-turn item(s) not applied (routine)"));
   TEST_ASSERT_EQUAL(0, (int)r.staged.size());
   TEST_ASSERT_FALSE(r.eng->inScheduledTurn());   // cleared after
   // FireOutcome shape: real tokens + the delivered reply as detail.
@@ -3579,14 +3580,14 @@ static void test_unverified_connector_result_closes_memory_for_that_turn() {
   // End-of-turn mem_write: refused too.
   TEST_ASSERT_EQUAL(0, (int)r.memCalls.size());
 
-  // The next owner turn carries the refusal and stores normally.
+  // The next owner turn stores normally. The synthesis turn's end-of-turn mem_write was cut
+  // by the unattended policy first (lane RB-Q2a: logged, never parked for the owner's turn).
   Rig::Script owner;
   owner.outJson = withWrite;
   r.scripts["anthropic"] = {owner};
   r.scriptIdx.clear();
   r.eng->handleMessage("ok, and remember my week", "", "web");
-  TEST_ASSERT_TRUE(r.attempts.back().inputs.find("[MEMORY] Not stored: this turn carries") !=
-                   std::string::npos);
+  TEST_ASSERT_TRUE(LogCapture::contains("unattended: 1 end-of-turn item(s) not applied (subagent-report)"));
   TEST_ASSERT_EQUAL(1, (int)r.memCalls.size());
   TEST_ASSERT_EQUAL_STRING("memory.write", r.memCalls[0].c_str());
   // A synthesis over a VERIFIED result is unchanged: no provenance sentence.
@@ -5725,12 +5726,14 @@ static void runSecondHalf() {
 // ---- CUM-828 / CUM-830 through the turn engine ---------------------------------------
 
 // Every request a turn makes carries its chat's grant: the owner's connectors for the
-// owner (attended or not), the built-ins only for a member or a guest; the synthesis
-// turn for a member's sub-agent runs under that member, the fold too.
+// owner writing now, the built-ins only for a member or a guest; the synthesis turn for a
+// member's sub-agent runs under that member, the fold too. Since v5.2.0 (lane RB-Q2a) a turn
+// nobody is writing, the owner's routine included, carries the built-ins only: the owner's
+// connectors act on the provider's side, out of the unattended policy's reach.
 static void test_cum828_a_turns_requests_carry_its_chats_grant() {
   struct Case { const char* chat; orch::Role role; bool scheduled; bool owner; };
   const Case cases[] = {{"1001", orch::Role::Admin, false, true}, {"2002", orch::Role::User, false, false},
-                        {"3003", orch::Role::Guest, false, false}, {"1001", orch::Role::Admin, true, true}};
+                        {"3003", orch::Role::Guest, false, false}, {"1001", orch::Role::Admin, true, false}};
   for (const Case& k : cases) {
     Rig r;
     r.roles[k.chat] = k.role;

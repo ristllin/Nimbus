@@ -153,13 +153,21 @@ std::vector<orch::EpisodicMessage> readRows(const std::vector<orch::EpisodicMess
   return out;
 }
 
+// Read-class registry names (tool_groups.h) for the filler tools: an unattended turn (a
+// routine, a synthesis) is offered only what its class may call (unattended_policy.h, lane
+// RB-Q2a), and a read is what every class may call, so the tool bytes reach every shape.
+const char* const kReadToolNames[] = {"read_file", "list_files", "search", "web_search", "view", "calc", "device_status", "ota_status", "selftest", "system_health", "device_log", "agent_list", "file_stat", "read_pdf", "skill_list", "files.read", "files.list", "files.search", "memory.search", "memory.episodic", "web.search", "results.get", "image.look", "loop.list", "device.status", "device.log", "device.selftest", "system.health", "ota.status", "files.stat", "media.list", "tenant.list", "models.list", "docs.list", "docs.read", "docs.search", "skill.list", "skill.get", "results.list"};
+constexpr size_t kReadToolCount = sizeof(kReadToolNames) / sizeof(kReadToolNames[0]);
+
 std::vector<orch::ToolRegistry::Spec> sizedSpecs(size_t totalBytes) {
   std::vector<orch::ToolRegistry::Spec> specs;
   specs.push_back({"memory_search", "search the memory", "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}"});
+  // At least 700 B a tool, and few enough tools to keep each name a distinct read.
+  const size_t per = std::max<size_t>(700, totalBytes / (kReadToolCount - 1));
   size_t have = 0;
-  for (int i = 0; have < totalBytes; i++) {
-    const std::string desc(700, 'd');
-    specs.push_back({"tool_" + std::to_string(i), desc, "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}"});
+  for (size_t i = 0; have < totalBytes && i < kReadToolCount; i++) {
+    const std::string desc(per, 'd');
+    specs.push_back({kReadToolNames[i], desc, "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}"});
     have += desc.size() + 100;
   }
   return specs;

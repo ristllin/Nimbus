@@ -48,6 +48,15 @@ namespace {
 
 namespace orch = nimbus::orch;
 namespace providers = agent::providers;
+
+namespace {
+// Read-class registry names (tool_groups.h) for the filler tools: an unattended turn (a
+// routine, a synthesis) is offered only what its class may call (unattended_policy.h, lane
+// RB-Q2a), and a read is what every class may call, so the tool bytes reach every shape.
+const char* const kReadToolNames[] = {"read_file", "list_files", "search", "web_search", "view", "calc", "device_status", "ota_status", "selftest", "system_health", "device_log", "agent_list", "file_stat", "read_pdf", "skill_list", "files.read", "files.list", "files.search", "memory.search", "memory.episodic", "web.search", "results.get", "image.look", "loop.list", "device.status", "device.log", "device.selftest", "system.health", "ota.status", "files.stat", "media.list", "tenant.list", "models.list", "docs.list", "docs.read", "docs.search", "skill.list", "skill.get", "results.list"};
+constexpr size_t kReadToolCount = sizeof(kReadToolNames) / sizeof(kReadToolNames[0]);
+}  // namespace
+
 using agent::TurnEngine;
 using harness_test::Exchange;
 using harness_test::FakeConfig;
@@ -187,9 +196,12 @@ struct Rig {
       return in;
     };
     d.toolSpecs = [](const orch::Principal&) {
-      std::vector<orch::ToolRegistry::Spec> specs;   // a device-sized tool list (56 tools)
-      for (int i = 0; i < 56; i++)
-        specs.push_back({"tool_" + std::to_string(i), std::string(560, 'd'),
+      // A device-sized tool list (the bytes of 56 tools of 560 B) under read-class names,
+      // which every unattended class is offered (lane RB-Q2a).
+      std::vector<orch::ToolRegistry::Spec> specs;
+      const size_t per = 56 * (560 + 100) / kReadToolCount - 100;
+      for (size_t i = 0; i < kReadToolCount; i++)
+        specs.push_back({kReadToolNames[i], std::string(per, 'd'),
                          "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}"});
       return specs;
     };

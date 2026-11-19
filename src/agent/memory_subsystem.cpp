@@ -1688,8 +1688,8 @@ void begin() {
   // (nimbus/orch/action_rules.h); the name-only rails above stay as defense in depth.
   // RB-Q2a: then what the turn's class may call when nobody is writing it (unattended_policy.h);
   // the LAN endpoint is no turn. The old engine's routines list no paths of their own.
-  nimbus::orch::installActionRules(
-      g_reg, [] { return orchestrator::inScheduledTurn(); },
+  nimbus::orch::installActionRules(g_reg,
+      [] { return orchestrator::inScheduledTurn(); },
       [] {
         // The turn's chat, read on the turn task only (it is the turn task's state).
         return agent::telegram::onTurnTask() ? std::string(orchestrator::currentChat().c_str()) : std::string();

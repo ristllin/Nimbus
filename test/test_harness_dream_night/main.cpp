@@ -10,6 +10,7 @@
 
 #include "../support/fake_config.h"
 #include "../support/fake_platform.h"
+#include "nimbus/orch/unattended_policy.h"   // unattendedMayList - what a wake turn is offered
 #include "nimbus/harness/compose.h"   // loopToolName - the advertised (wire) tool names
 #include "nimbus/harness/dream.h"
 #include "nimbus/harness/engine.h"
@@ -556,10 +557,13 @@ static void test_dream_turn_fields_cannot_spawn_or_act() {
     TEST_ASSERT_EQUAL(0, r.deviceActions);
     TEST_ASSERT_EQUAL(0, (int)r.delivered.size());   // not even "No running session"
   }
-  // Counter-test: the same turn on an ordinary routine spawns.
+  // Counter-test: the same spawn in a turn the owner writes starts. (An ordinary routine no
+  // longer spawns either since v5.2.0: the unattended policy, lane RB-Q2a.)
   Rig n;
   n.outJson = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\",\"spawn\":[{\"task\":\"research x\"}]}";
   n.routineTurn();
+  TEST_ASSERT_EQUAL(0, n.spawns);
+  n.eng->handleMessage("research x", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, n.spawns);
   // restrictTurn on its own.
   orch::Turn t;
@@ -578,7 +582,8 @@ static void test_dream_turn_fields_cannot_spawn_or_act() {
 
 // Lane ECHO owner design (9/11 Nov): a self-wakeup record fires ONE short turn
 // whose only job is to re-check and deliver its one note. The preamble carries
-// the note in plain words (never the raw JSON envelope), NO tools are advertised,
+// the note in plain words (never the raw JSON envelope), only read tools are advertised
+// (v5.2.0, the unattended policy, lane RB-Q2a),
 // every tool-bearing field the model still wrote is dropped, and the reply is
 // delivered directly (the wake is at the END of quiet hours, so it captures
 // nothing for a later wake and arms nothing).
@@ -603,8 +608,16 @@ static void test_self_wakeup_turn_is_one_short_toolless_turn() {
   TEST_ASSERT_TRUE(inputs.find("[SELF-WAKEUP]") != std::string::npos);
   TEST_ASSERT_TRUE(inputs.find("06:00 commute brief") != std::string::npos);
   TEST_ASSERT_TRUE(inputs.find("\"selfWakeup\"") == std::string::npos);
-  // No tools were advertised to the head.
-  TEST_ASSERT_TRUE(r.advertised.empty());
+  // Only read tools were advertised to the head (files.read among them).
+  TEST_ASSERT_FALSE(r.advertised.empty());
+  bool readsFile = false;
+  for (const auto& a : r.advertised)
+    for (const char* n : kDeviceTools)
+      if (a == agent::loopToolName(n)) {
+        TEST_ASSERT_TRUE_MESSAGE(orch::unattendedMayList(orch::TurnClass::SelfWakeup, n), n);
+        readsFile = readsFile || std::string(n) == "files.read";
+      }
+  TEST_ASSERT_TRUE(readsFile);
   // Nothing the model wrote changed anything.
   TEST_ASSERT_EQUAL(0, r.deviceActions);
   TEST_ASSERT_EQUAL(0, r.spawns);
