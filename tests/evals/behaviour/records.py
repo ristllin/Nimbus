@@ -598,9 +598,12 @@ def judge_write(ep: dict, before_text: str, after_text: str) -> dict:
     comments_a = [x for x in raw_a if x.lstrip().startswith("#")]
     header_ok = (raw_a[:1] == raw_b[:1])
     blank_added = max(0, sum(1 for x in raw_a[:-1] if x.strip() == "") - sum(1 for x in raw_b[:-1] if x.strip() == ""))
+    lost_comments, new_comments = multiset_diff(comments_b, comments_a)
+    # A '#' history line the head adds beside a correction follows the file's own convention: it is
+    # no row and no total reads it (ruling 49), so it is counted apart, never as a stray line.
     out = {"removed": removed, "added": added, "blank_added": blank_added, "header_ok": header_ok,
-           "comments_kept": comments_a == comments_b}
-    stray = blank_added + (0 if header_ok else 1) + (0 if comments_a == comments_b else 1)
+           "comments_lost": len(lost_comments), "history_added": len(new_comments)}
+    stray = blank_added + (0 if header_ok else 1) + len(lost_comments)
     if exp["op"] == "add":
         good = [x for x in added if _row_matches(x, exp["row"], header)]
         ok = not removed and len(added) == 1 and len(good) == 1

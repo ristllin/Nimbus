@@ -62,6 +62,7 @@ class Aid:
             self.p.wait(timeout=5)
         except Exception:
             self.p.kill()
+        self.p.stdout.close()
         shutil.rmtree(self.root, ignore_errors=True)
 
 
