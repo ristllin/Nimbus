@@ -120,10 +120,8 @@ class PlainRig {
   nimbus::orch::ToolRegistry& registry() { return reg_; }
   plain::PlainHooks& hooks() { return hooks_; }
   const nimbus::orch::Principal& who() const { return who_; }
-  const PlainRigConfig& config() const { return cfg_; }
+  // The engine after boot (null before): head() and digests() for the compaction driver.
   plain::PlainEngine* engine() { return engine_.get(); }
-  nimbus::orch::tx::TxLog* log() { return log_.get(); }
-  nimbus::orch::tx::TxArena* arena() { return arena_.get(); }
 
   // Once: the arena, the log over the host's files, the engine and its boot (open the log,
   // fill the arena, the resume seam). InvalidArgument without a required binding.
