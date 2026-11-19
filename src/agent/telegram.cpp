@@ -81,6 +81,7 @@ struct PendingReply {
   char    text[4097];   // ONE Telegram message: 4096 chars max + NUL. Long turn
                         // replies / sub-agent results are split into parts of at most
                         // kTelegramPartBytes by send() BEFORE they reach this buffer.
+  bool    answerEnd;    // the last part of the running turn's answer (send(turnAnswer), RB-TS1)
 };                      // (the front part's failed attempts: s_frontTries, lane RB-TS1)
 
 struct InboundMsg {
@@ -2121,6 +2122,7 @@ static void noteCrossed(const std::string& chat, const nimbus::orch::PsString& t
 // turn may use the vector: nimbus/orch/recall_warm.h. Not while paid calls are paused.
 // One TLS session at a time: the held page's keep-alive socket closes first.
 static std::string s_warmedText;   // the held text last embedded (poll task)
+static bool s_warmedThisCycle = false;   // this poll cycle spent its time on that embedding
 
 static void warmHeldText(const std::vector<nimbus::tg::Update>& page) {
   const nimbus::tg::Update* u = nimbus::orch::warmableHeldText(
@@ -2131,6 +2133,7 @@ static void warmHeldText(const std::vector<nimbus::tg::Update>& page) {
   s_warmedText = u->text;
   closePollSocket();
   agent::memory::warmRecall(String(u->text.c_str()));
+  s_warmedThisCycle = true;
 }
 
 // The receive cycle's I/O on this task (nimbus/net/tg_receive.h): one TLS session at a
@@ -2169,7 +2172,6 @@ struct TgIo {
   // loop runs here synchronously. The rendered text lives in PSRAM; one at a time.
   void runTurn(const std::string& from, const std::string& chat, const nimbus::orch::PsString& text, bool) {
     closePollSocket();
-    s_warmedText.clear();   // lane RB-TS1: the next held text is embedded again, even the same words
     noteHistory(text);   // histV2: the turn's source and stored media, for its history row
     // R1: the photos this turn attached go to the head as images (the engine takes
     // them with the turn and frees them when it ends; a turn that never took them, a
@@ -2178,10 +2180,11 @@ struct TgIo {
     noteCrossed(chat, text);
     s_turnMsgId = turnMessageId();   // lane ECHO: the progress line replies to this message
     {
-      const TurnSendWindow sendsAtOnce;   // lane RB-TS1: the reply goes out when queued
+      const TurnSendWindow now;   // RB-TS1: the reply goes out when queued
       if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
     }
     s_turnMsgId = 0;
+    s_warmedText.clear();   // RB-TS1: the next held text is embedded again, even the same words
     agent::vision::dropTurnSet();
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
   }
@@ -2544,7 +2547,13 @@ __attribute__((noinline)) static void drainReplyQueue(bool haveToken) {
   } else {
     nimbus::net::drainTgReplies(
         *reply, s_frontTries, [](PendingReply& r) { return xQueuePeek(g_replyQ, &r, 0) == pdTRUE; },
-        [reply] { xQueueReceive(g_replyQ, reply, 0); },   // the part just peeked (one consumer)
+        [reply](nimbus::net::TgDrainStep why) {
+          // Inside the turn: the last part of its answer is out (or, its answer lost twice,
+          // taken as out), so its message is recorded as answered now (tg_receive.h).
+          if (reply->answerEnd && s_turnWindow && why != nimbus::net::TgDrainStep::GiveUp)
+            g_receiver.noteCurrentAnswered(deviceEpoch());
+          xQueueReceive(g_replyQ, reply, 0);   // the part just peeked (one consumer)
+        },
         [](const PendingReply& r) { return doSendMessage(r.chatId, r.text); }, noteDrainStep);
   }
   if (!uxQueueMessagesWaiting(g_replyQ)) s_frontTries = nimbus::net::TgPartTries();
@@ -2558,8 +2567,11 @@ __attribute__((noinline)) static void drainReplyQueue(bool haveToken) {
 // flight when the turn's code calls send(), and every TLS session of this task opens
 // one at a time (workConnect). Not while this task holds the card lock (the send would
 // hold it across a network request), and never from inside a drain.
+// A part that already failed is retried by the poll loop's cycles, not by every send()
+// of the turn (each attempt would cost a connect timeout inside the turn and use up the
+// part's attempts within seconds).
 static bool sendsInline() {
-  return s_turnWindow && !s_draining && onTurnTask() && g_token.length() > 0 &&
+  return s_turnWindow && !s_draining && s_frontTries.tries == 0 && onTurnTask() && g_token.length() > 0 &&
          !agent::memory::cardLockHeldHere();
 }
 
@@ -2780,6 +2792,15 @@ void pollTask(void*) {
         if (runStagedDirectly)
           g_cb(String(im->from[0] ? im->from : im->chatId), String(im->chatId), String(im->text));
       }
+    }
+
+    // Lane RB-TS1: a cycle that embedded a held text (warmHeldText, about 2 s) goes
+    // straight back to the held page instead of also running the cycle's media, jobs,
+    // notices, replies, archive and pause: the hold's windows run from first sight, so
+    // the page is looked at again on time and the hold ends when it would have.
+    if (s_warmedThisCycle) {
+      s_warmedThisCycle = false;
+      continue;
     }
 
     nimbus::pollwatch::beat("media out");
@@ -3242,38 +3263,57 @@ bool approvePending(const String& chatId, const String& name) {
 void denyPending(const String& chatId) { pendingRemove(chatId.c_str()); }   // session tombstone
 
 // A reply's parts go into the queue together or not at all (lane RB-TS1,
-// nimbus::net::queueTgParts): the producers' lock is held across the room check and the
-// pushes, and the poll task only takes parts out, so the room seen is the room there.
-// `wait` bounds the wait for room; false (nothing queued, logged) when there is none.
+// nimbus::net::queueTgParts): the producers' lock is held across each room check and
+// the pushes after it, and the poll task only takes parts out, so the room seen is the
+// room there. The lock is held only for that (never while waiting for room), so a
+// block=false caller waits at most a few ms for it. `wait` bounds the wait for room;
+// false (nothing queued, logged) when there is none.
 static bool queueReplyParts(const String& chatId, const std::vector<std::string>& parts, TickType_t wait,
-                            PendingReply& r) {
-  if (!g_sendMx || xSemaphoreTake(g_sendMx, pdMS_TO_TICKS(100)) != pdTRUE) {
+                            bool turnAnswer, PendingReply& r) {
+  const TickType_t until = xTaskGetTickCount() + wait;
+  bool ok = false, busy = false;
+  for (;;) {
+    if (!g_sendMx || xSemaphoreTake(g_sendMx, pdMS_TO_TICKS(20)) != pdTRUE) {
+      busy = true;
+      break;
+    }
+    ok = nimbus::net::queueTgParts(
+        parts.size(), [] { return (size_t)uxQueueSpacesAvailable(g_replyQ); },
+        [&](size_t i) {
+          memset(&r, 0, sizeof(r));   // not `r = PendingReply{}`: that temporary would sit on the stack
+          chatId.toCharArray(r.chatId, sizeof(r.chatId));
+          // A part is at most kTelegramPartBytes (4,000 B) plus the overflow note: it fits the slot.
+          snprintf(r.text, sizeof(r.text), "%s", parts[i].c_str());
+          r.answerEnd = turnAnswer && i + 1 == parts.size();
+          return xQueueSend(g_replyQ, &r, 0) == pdTRUE;
+        },
+        [] { return false; });   // no room: the lock is given up below before any wait
+    xSemaphoreGive(g_sendMx);
+    if (ok || (int32_t)(xTaskGetTickCount() - until) >= 0) break;
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  if (busy) {
     alogf("telegram: reply for %s not queued (the queue is busy)", chatId.c_str());
     return false;
   }
-  const TickType_t until = xTaskGetTickCount() + wait;
-  const bool ok = nimbus::net::queueTgParts(
-      parts.size(), [] { return (size_t)uxQueueSpacesAvailable(g_replyQ); },
-      [&](size_t i) {
-        memset(&r, 0, sizeof(r));   // not `r = PendingReply{}`: that temporary would sit on the stack
-        chatId.toCharArray(r.chatId, sizeof(r.chatId));
-        // A part is at most kTelegramPartBytes (4,000 B) plus the overflow note: it fits the slot.
-        snprintf(r.text, sizeof(r.text), "%s", parts[i].c_str());
-        return xQueueSend(g_replyQ, &r, 0) == pdTRUE;
-      },
-      [until] {
-        if ((int32_t)(xTaskGetTickCount() - until) >= 0) return false;
-        vTaskDelay(pdMS_TO_TICKS(5));
-        return true;
-      });
-  xSemaphoreGive(g_sendMx);
   if (!ok)
     alogf("telegram: reply queue full - %u part%s for %s not queued", (unsigned)parts.size(),
           parts.size() == 1 ? "" : "s", chatId.c_str());
   return ok;
 }
 
+static bool s_answerNext = false;   // sendTurnAnswer -> send on the poll task (lane RB-TS1)
+
+bool sendTurnAnswer(const String& chatId, const String& text) {
+  s_answerNext = onTurnTask();
+  const bool queued = send(chatId, text, /*block=*/true);
+  s_answerNext = false;
+  return queued;
+}
+
 bool send(const String& chatId, const String& text, bool block) {
+  const bool turnAnswer = s_answerNext && onTurnTask();   // sendTurnAnswer, this task only
+  s_answerNext = false;   // this text only, not a send its flush might make
   if (!g_replyQ) return false;
   // Archive hook (outbound): the whole text, before it is split into parts.
   if (enabled()) agent::tgarchive::onOutboundText(chatId, text, "send");
@@ -3294,7 +3334,7 @@ bool send(const String& chatId, const String& text, bool block) {
   if (now && uxQueueSpacesAvailable(g_replyQ) < parts.size()) flushOutbound();
   PsramItem<PendingReply> item;   // the queue copies it; PSRAM, not this (often deep) stack
   if (!item.p) return false;
-  const bool queued = queueReplyParts(chatId, parts, now ? 0 : wait, *item.p);
+  const bool queued = queueReplyParts(chatId, parts, now ? 0 : wait, turnAnswer, *item.p);
   if (now) flushOutbound();
   return queued;
 }

@@ -23,9 +23,10 @@ enum class TgSend : uint8_t {
   Refused,      // Telegram answered with a 4xx other than 429: it did not take this text
                 // (for HTML: the entities); nothing was delivered
   NotSent,      // the request never reached Telegram whole (no connection, a short write),
-                // or Telegram answered 429 or 5xx: nothing was delivered, try again later
-  Unconfirmed,  // the request was written whole and no status line came back: the
-                // message may be in the chat
+                // or Telegram answered 429 (it refuses before it sends): try again later
+  Unconfirmed,  // the request was written whole and no status line came back, or a 5xx
+                // came back (a gateway may answer after Telegram took it): the message
+                // may be in the chat
 };
 
 // What the device saw of one POST.
@@ -39,7 +40,8 @@ inline TgSend classifyTgSend(const TgSendSeen& s) {
   if (!s.connected || !s.wroteAll) return TgSend::NotSent;
   if (s.status <= 0) return TgSend::Unconfirmed;
   if (s.status >= 200 && s.status < 300) return TgSend::Ok;
-  if (s.status == 429 || s.status >= 500) return TgSend::NotSent;
+  if (s.status == 429) return TgSend::NotSent;
+  if (s.status >= 500) return TgSend::Unconfirmed;
   return TgSend::Refused;
 }
 
@@ -84,7 +86,7 @@ inline TgDrainStep afterTgSend(TgSend r, TgPartTries& t) {
 // Stops at the first part to retry (the next drain resends it). `tries` belongs to
 // the part at the front; it is reset whenever that part leaves the queue.
 //   peek(Item&) -> bool    the oldest part, left in the queue (false: empty)
-//   pop()                  remove that part
+//   pop(TgDrainStep)       remove that part (Sent, GiveUp or LeaveAsSent: why it leaves)
 //   send(const Item&) -> TgSend
 //   note(const Item&, TgDrainStep, const TgPartTries&)  the log line of a part that did
 //                          not simply go out (called for every step but Sent)
@@ -96,7 +98,7 @@ size_t drainTgReplies(Item& slot, TgPartTries& tries, Peek&& peek, Pop&& pop, Se
     const TgDrainStep step = afterTgSend(send(slot), tries);
     if (step != TgDrainStep::Sent) note(slot, step, tries);
     if (step == TgDrainStep::Retry) break;
-    pop();
+    pop(step);
     tries = TgPartTries();
     ++taken;
   }
@@ -104,11 +106,13 @@ size_t drainTgReplies(Item& slot, TgPartTries& tries, Peek&& peek, Pop&& pop, Se
 }
 
 // A reply's parts go into the queue together or not at all. The caller holds the
-// producers' lock across the room check and the pushes, and the one consumer only
-// takes parts out, so the room it saw is there for every push.
+// producers' lock across each room check and the pushes after it, and the one
+// consumer only takes parts out, so the room it saw is there for every push.
 //   room() -> size_t       free slots now
 //   push(size_t i) -> bool queue part i
-//   wait() -> bool         wait a little for room (false: stop waiting)
+//   wait() -> bool         wait a little for room (false: stop waiting); on the device
+//                          it gives the lock up while it waits, so other producers
+//                          never wait behind a full queue
 inline bool tgPartsFit(size_t room, size_t parts) { return parts <= room; }
 
 template <class Room, class Push, class Wait>

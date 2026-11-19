@@ -80,6 +80,7 @@ struct Msg {
   bool poison = false;       // processing it crashes the device (panic)
   bool turnPoison = false;   // a turn carrying it crashes the device
   bool classifyPoison = false;   // classifying it crashes the device
+  bool answerCrash = false;  // its turn's answer goes out, then the turn's later work crashes
   bool fetchFails = false;   // its download fails (the label says why)
 };
 
@@ -90,6 +91,8 @@ struct World {
   int nextUid = 5000;
   // Device-side facts.
   bool pollOpen = false;
+  bool answerEarly = true;   // the device records a turn as answered when its reply goes out (RB-TS1)
+  int answersSent = 0;       // replies that reached the chat
   int workSessions = 0;      // open non-poll TLS sessions (must stay 0 or 1, never with the poll socket)
   size_t psram = kPollBody, psramPeak = kPollBody;
   // The settings store: the offset key.
@@ -345,6 +348,12 @@ struct Device {
     for (int32_t id : t.uids)
       if (const Msg* m = w.byUid(id))
         if (m->turnPoison) throw Restart{BootKind::Crash};
+    // The reply goes out inside the turn (lane RB-TS1), before its remaining writes.
+    ++w.answersSent;
+    if (w.answerEarly) rx.noteCurrentAnswered(bestEpoch());
+    for (int32_t id : t.uids)
+      if (const Msg* m = w.byUid(id))
+        if (m->answerCrash) throw Restart{BootKind::Crash};
     work(turnMinMs + rng() % (turnMaxMs - turnMinMs + 1));
     maybeRestart();
   }
@@ -636,6 +645,31 @@ static void test_fifteen_october_sequence() {
 // The poison guard: a photo whose processing crashes the device every time. After two
 // crash resets on that page it is acked unprocessed, the owner is told once, and the
 // messages after it run normally.
+// Lane RB-TS1: the reply leaves inside the turn, so a crash in the turn's later work
+// (its history and memory writes) comes after the owner has the answer. The message is
+// recorded as answered when the reply went out: the re-served page is a duplicate, not a
+// second turn and a second answer. Counter: recorded only after the turn returned, the
+// same crash answers twice.
+static void test_a_crash_after_the_answer_never_answers_twice() {
+  for (const bool early : {true, false}) {
+    Run r(91);
+    r.w.answerEarly = early;
+    Msg& m = r.w.send("77", Attachment::Kind::None, "", 1000);
+    m.text = "answered, then a crash #" + std::to_string(m.uid) + "#";
+    m.answerCrash = true;
+    r.go(300000);
+    if (early) {
+      TEST_ASSERT_EQUAL_INT(1, r.restarts);
+      TEST_ASSERT_EQUAL_UINT(1, r.turns.size());
+      TEST_ASSERT_EQUAL_INT(1, r.w.answersSent);
+      TEST_ASSERT_EQUAL_INT(1, r.dupNotices);   // the owner is told the message was already answered
+    } else {
+      TEST_ASSERT_TRUE(r.w.answersSent >= 2);
+    }
+    TEST_ASSERT_FALSE(r.pending());
+  }
+}
+
 static void test_poison_page_acked_after_two_crash_resets() {
   Run r(21);
   Msg& bad = r.w.send("77", Attachment::Kind::Photo, "this one crashes", 1000);
@@ -1184,6 +1218,7 @@ int main(int, char**) {
   RUN_TEST(test_album_lands_in_one_turn);
   RUN_TEST(test_fifteen_october_sequence);
   RUN_TEST(test_poison_page_acked_after_two_crash_resets);
+  RUN_TEST(test_a_crash_after_the_answer_never_answers_twice);
   RUN_TEST(test_reserved_page_after_restarts_costs_one_turn);
   RUN_TEST(test_fresh_device_single_photo);
   RUN_TEST(test_stranger_media_never_runs);

@@ -184,6 +184,17 @@ class TgReceiver {
   // Inside Io::runTurn: the batch bucket that turn renders (its update ids, media
   // segments and voice note), for the history's source and stored-media note.
   size_t currentTurn() const { return current_; }
+
+  // The running turn's answer went out (lane RB-TS1: the device sends a turn's reply as
+  // soon as the turn queues it, before the turn's remaining writes). Its messages are
+  // recorded as answered now, once, so a crash in that remaining work does not run the
+  // turn again on the re-served page and send its answer a second time. Inside runTurn only.
+  void noteCurrentAnswered(uint32_t nowS) {
+    if (inTurn_ && !answeredEarly_ && current_ < batch_.turnCount()) {
+      rememberBucket(current_, nowS);
+      answeredEarly_ = true;
+    }
+  }
   // An update of the page being run, by id (nullptr: not in it). Valid inside the Io
   // calls of a dispatched page (processMedia, runTurn): the words a photo's sender wrote
   // just before it are its context when it has no caption.
@@ -499,9 +510,12 @@ class TgReceiver {
     current_ = i;   // currentTurn(): the bucket the turn below routes (histV2's source)
     orch::PsString text = batch_.render(i);
     if (!command && crossedAnswer(earliestSentAt(i), answeredAt(chat))) text += kCrossedNote;
+    answeredEarly_ = false;
+    inTurn_ = true;
     io.runTurn(from, chat, text, command);
+    inTurn_ = false;
     const uint32_t now = io.bestEpoch();
-    rememberBucket(i, now);
+    if (!answeredEarly_) rememberBucket(i, now);   // recorded once (noteCurrentAnswered)
     noteAnswered(chat, now);
   }
 
@@ -553,6 +567,8 @@ class TgReceiver {
   std::vector<std::pair<int32_t, DupKey>> keys_;
   bool polled_ = true;   // the page came from getUpdates (poison marks apply)
   size_t current_ = 0;   // the bucket of the turn being routed (valid inside runTurn)
+  bool inTurn_ = false;          // io.runTurn is running (noteCurrentAnswered)
+  bool answeredEarly_ = false;   // that turn's messages were recorded when its answer went out
   // When the last few chats' turns returned, for the crossed-answer note (chat by its
   // dupHash; the oldest entry is replaced). RAM only: a restart forgets it.
   struct Answered {

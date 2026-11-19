@@ -929,6 +929,8 @@ static bool orchSendSink(const String& chatId, const String& text) {
     return true;
   }
   if (chatHash(chatId) == g_turnChatHash.load()) g_turnChatSends.fetch_add(1);   // lane QW4
+  // Lane RB-TS1: the answer to the message being handled (its last part sent marks it answered).
+  if (chatHash(chatId) == g_turnChatHash.load()) return agent::telegram::sendTurnAnswer(chatId, text);
   return agent::telegram::send(chatId, text);
 }
 

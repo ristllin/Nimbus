@@ -80,7 +80,7 @@ size_t drainNew(Queue& q, FakeTelegram& tg, TgPartTries& tries, Drained* d = nul
         out = q.q.front();
         return true;
       },
-      [&] { q.q.pop_front(); },
+      [&](TgDrainStep) { q.q.pop_front(); },
       [&](const Item& it) { return sendTgPart([&](bool html) { return tg.post(it.text, html); }); },
       [&](const Item& it, TgDrainStep s, const TgPartTries&) {
         if (d) d->notes.push_back({it.text, s});
@@ -150,7 +150,8 @@ static void test_classify_reads_what_the_post_proved() {
   TEST_ASSERT_EQUAL(TgSend::Refused, classifyTgSend({true, true, 400}));
   TEST_ASSERT_EQUAL(TgSend::Refused, classifyTgSend({true, true, 403}));
   TEST_ASSERT_EQUAL(TgSend::NotSent, classifyTgSend({true, true, 429}));
-  TEST_ASSERT_EQUAL(TgSend::NotSent, classifyTgSend({true, true, 502}));
+  TEST_ASSERT_EQUAL(TgSend::Unconfirmed, classifyTgSend({true, true, 500}));   // a gateway may answer
+  TEST_ASSERT_EQUAL(TgSend::Unconfirmed, classifyTgSend({true, true, 502}));   // after Telegram took it
 }
 
 static void test_plain_follows_only_a_refused_html() {

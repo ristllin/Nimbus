@@ -170,7 +170,14 @@ void   denyPending(const String& chatId);      // drop from pending (session tom
 // reply queue is full so an orchestrator turn doesn't silently drop a reply.
 // Pass block=false for best-effort, latency-sensitive callers (e.g. the main
 // render loop's low-battery ping) that must never stall on a full queue.
+// All of a reply's parts are queued or none (false). Inside a Telegram turn on the
+// poll task the reply is sent at once (lane RB-TS1).
 bool send(const String& chatId, const String& text, bool block = true);
+// send() for the answer to the message the running turn handles (the orchestrator's
+// send sink, lane RB-TS1): once its last part went out inside the turn, the turn's
+// message counts as answered, so a crash in the turn's remaining work never answers
+// it twice. On any other task it is send().
+bool sendTurnAnswer(const String& chatId, const String& text);
 
 // Send a media file (device -> owner) from LittleFS. kind = "document" | "photo" |
 // "voice"; the send is queued and delivered on the poll task (single-TLS safe).

@@ -2176,6 +2176,7 @@ void warmRecall(const String& text) {
     if (g_park.blocked(millis())) return;
   }
   const uint32_t t0 = millis();
+  const std::string madeBy = embedderNow();   // before the call: a pick switched meanwhile is a miss
   String err;
   std::vector<int8_t> v = embedRaw(text, err);   // TLS - NOT under the lock
   noteRecallEmbed(!v.empty(), err);
@@ -2186,7 +2187,7 @@ void warmRecall(const String& text) {
   const uint32_t at = millis();
   {
     Lock g;
-    g_warm.put(std::string(text.c_str()), embedderNow(), std::move(v), at);
+    g_warm.put(std::string(text.c_str()), madeBy, std::move(v), at);
   }
   alogf("memory: recall embedded ahead of its turn in %u ms", (unsigned)(at - t0));
 }
