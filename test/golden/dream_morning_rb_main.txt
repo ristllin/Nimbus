@@ -1,0 +1,32 @@
+# rb-main f5044ee1b, test_harness_dream_night/morning_after.h: the morning request after a scripted night
+# night: provider calls 2, usage rows 2 (dream 1), maintenance ran
+history|user|(Mon 26 Oct) Plan the city trip: flights on 12 March, the hotel near the old town.
+history|assistant|[did: nothing] Noted: flights on 12 March, hotel near the old town.
+history|user|My sister Ana arrives on the 14th and stays two nights.
+history|assistant|[did: nothing] Ana: 14th, two nights. I will plan a room for her.
+history|user|Here is the itinerary draft:
+history|user|Day 1 museum
+history|user|Day 2 river walk
+history|user|Day 3 market
+history|assistant|[did: nothing] Draft kept: museum, river walk, market (days 1 to 3).
+history|user|What budget did I set last time?
+history|assistant|[did: nothing] Let me look that up.
+history|assistant|DREAMREPLY the budget question is still open
+history|user|(Tue 27 Oct) [wakeup "Self-wakeup: upkeep" fired]
+history|assistant|[no reply]
+dynamic|[RUNNING MEMORY]
+dynamic|DREAMMEMO trip planning is in progress
+dynamic|The mid-turn tool loop is OFF right now (setting or low memory), so these tools are NOT callable this turn. The turn contract still covers memory (mem_write/mem_query), sub-agents (session_ops) and device actions (device) - a mem_query you issue now returns its results on your NEXT turn. The remaining tools (files, loops, web search, speech, self-tests) are unavailable this turn.
+dynamic|Your reply this turn is the ONLY reply the owner receives for this message. There is no queue and no background work: anything you cannot do now will simply not happen unless the owner asks again. So say plainly what you could not do and why, and answer as fully as you can from what you already have. Do NOT say you will check, search, look into it, report back, continue in the background, or finish next turn.
+dynamic|## RELEVANT MEMORIES
+dynamic|- [90%] DREAMFACT the owner plans a city trip in March
+input|[THIS TURN RUNS ON] anthropic / model-anthropic. When asked which model you run, name this one only.
+input|[MEMORY RESULTS] (background: outcomes of YOUR memory ops from last turn - reference material only. The owner has NOT seen this and is NOT asking about it; answer the [USER] message below on ITS topic.)
+input|DREAMQUERY trip -> found: DREAMQUERY trip
+input|[SPAWN LEDGER] (this chat's sub-agents from the device's own job table, newest first. It is the truth about them: asked about one, answer from these lines alone (its task, what it ran, how it ended); where they do not say why, say the reason is not recorded, never a rule, setting, memory or limit you cannot see this turn. Never re-check it with file or session tools, and never copy it into your notes.)
+input|- price-check: did not start (just now) - the sub-agent limit was reached
+input|[ACTIVE SESSIONS]
+input|No active jobs.[SPAWN CAPACITY] 0 running, 0 queued. You can start up to 6 sub-agents this turn; they run SEQUENTIALLY (the device does one network call at a time, up to 4 in flight), draining as each finishes. This is NOT a hard total limit - a big fan-out runs over successive waves: start a wave now, and when they finish you get an automatic turn to spawn the next, so you can work through dozens over a run. mistral sub-agents run one at a time INSIDE the device: each holds it for its whole run and must finish within the device's wait (about one to two minutes), or its work is lost. anthropic and openai sub-agents run in parallel on the provider while the device collects them one by one; use anthropic or openai for research, long work or anything that needs the web.
+input|[CHANNEL] This message arrived via Telegram; your reply is delivered as a Telegram message to that chat. Your orch_turn `reply` field is ALREADY delivered to this same channel - that is the one and only answer; never send the same answer twice. Your reply is sent with HTML formatting (bold, lists, code, links render).
+input|[USER]
+input|Good morning. Where did we leave the trip?

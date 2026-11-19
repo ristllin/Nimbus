@@ -21,6 +21,10 @@
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/vector_memory.h"
 
+#include <algorithm>
+
+#include "morning_after.h"   // RB-Q2b: the morning after a scripted night, both trees
+
 // Lane M - quiet, honest background turns. The night pipeline (dream::runNight)
 // driven end to end with fake seams, and the TurnEngine rails a background turn
 // relies on:
@@ -2136,8 +2140,118 @@ static void test_every_failed_loop_record_names_its_cause() {
   TEST_ASSERT_TRUE_MESSAGE(okJson.find("lastErr") == std::string::npos, okJson.c_str());
 }
 
+// ---- (RB-Q2b) the night has no model turn; the morning after is no poorer -------------
+// Owner ruling 81: removing the dream turn must not leave any later head request poorer in
+// earlier conversation. morning_after.h runs one evening, one scripted night and one morning
+// message; the same file ran on rb-main f5044ee1b and its morning request is the golden
+// test/golden/dream_morning_rb_main.txt (PROGRESS.md note 2 lists what the dream produced).
+
+static std::string readText(const char* path) {
+  std::string out;
+  FILE* f = std::fopen(path, "rb");
+  if (!f) return out;
+  char buf[4096];
+  size_t n;
+  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) out.append(buf, n);
+  std::fclose(f);
+  return out;
+}
+
+static std::vector<std::string> goldenLines(const char* path) {
+  std::vector<std::string> v;
+  const std::string t = readText(path);
+  size_t s = 0;
+  while (s < t.size()) {
+    size_t e = t.find('\n', s);
+    if (e == std::string::npos) e = t.size();
+    const std::string l = t.substr(s, e - s);
+    if (!l.empty() && l[0] != '#') v.push_back(l);
+    s = e + 1;
+  }
+  return v;
+}
+
+// Every line of `need` is in `have`, counted (a line twice in `need` must be there twice).
+// Returns the first line missing ("" = all there).
+static std::string firstMissing(const std::vector<std::string>& need, std::vector<std::string> have) {
+  for (const std::string& l : need) {
+    auto it = std::find(have.begin(), have.end(), l);
+    if (it == have.end()) return l;
+    have.erase(it);
+  }
+  return std::string();
+}
+
+static void test_scripted_night_makes_no_model_turn() {
+  morning::Rig r;
+  morning::evening(r);
+  const size_t ownerRows = r.cfg.spendCalls.size();
+  // Counter-test: the rig bills every provider turn, so the zeros below are not vacuous.
+  TEST_ASSERT_EQUAL_INT(4, r.providerCalls);
+  TEST_ASSERT_EQUAL_INT(4, (int)ownerRows);
+  const morning::NightOut n = morning::scriptedNight(r);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, n.providerCalls, "the night asked a provider");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)n.spendRows, "the night put spend in the usage ledger");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)n.dreamSpendRows, "dream tokens in the usage ledger");
+  TEST_ASSERT_TRUE_MESSAGE(n.maintained, "decay, prune and dedup did not run");
+  TEST_ASSERT_TRUE_MESSAGE(n.row.rfind("Nightly dream ", 0) == 0, n.row.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(n.row.find("token") == std::string::npos, n.row.c_str());
+}
+
+static void test_night_offers_no_turn_seam() {
+  // The class, not the instance: no seam of the night can start a model turn, and the
+  // device glue and the engine hold no dream turn of their own.
+  TEST_ASSERT_FALSE(morning::HasTurnSeam<dream::NightDeps>::value);
+  const std::string glue = readText("src/agent/dream_subsystem.cpp");
+  const std::string engine = readText("lib/harness/src/engine.cpp");
+  TEST_ASSERT_FALSE_MESSAGE(glue.empty() || engine.empty(), "source files not found (run from the repo root)");
+  TEST_ASSERT_TRUE_MESSAGE(glue.find("injectScheduledTurn") == std::string::npos, "the dream glue starts a turn");
+  TEST_ASSERT_TRUE_MESSAGE(engine.find("dreamTurn_") == std::string::npos, "the engine keeps a dream turn");
+  TEST_ASSERT_TRUE_MESSAGE(engine.find("dream::") == std::string::npos, "the engine still calls the dream");
+}
+
+static void test_morning_after_carries_at_least_rb_main() {
+  const std::vector<std::string> base =
+      morning::conversationLines(goldenLines("test/golden/dream_morning_rb_main.txt"));
+  TEST_ASSERT_TRUE_MESSAGE(base.size() >= 20, "the rb-main golden is missing or short");
+  morning::Rig r;
+  morning::evening(r);
+  morning::scriptedNight(r);
+  morning::morningTurn(r);
+  const std::vector<std::string> dump = morning::dumpMorning(r);
+  // No dream output reaches the morning: there is no model turn left to write one.
+  for (const std::string& l : dump) TEST_ASSERT_FALSE_MESSAGE(morning::isDreamWritten(l), l.c_str());
+  const std::vector<std::string> mine = morning::conversationLines(dump);
+  const std::string missing = firstMissing(base, mine);
+  TEST_ASSERT_TRUE_MESSAGE(missing.empty(), ("the morning lost: " + missing).c_str());
+  TEST_ASSERT_TRUE(mine.size() >= base.size());
+  // What the dream used to take from the morning (note 2, item 14) is back: the evening's
+  // memory search results and the refused spawn's note.
+  const std::string all = [&mine] { std::string a; for (const auto& l : mine) a += l + "\n"; return a; }();
+  TEST_ASSERT_TRUE_MESSAGE(all.find("trip budget -> found: trip budget") != std::string::npos, all.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(all.find("compare hotel prices for 12 March") != std::string::npos, all.c_str());
+  for (const std::string& l : mine)
+    if (std::find(base.begin(), base.end(), l) == base.end()) std::printf("RBQ2B-MORNING added: %s\n", l.c_str());
+  // Counter-test: the comparison catches a lost line of conversation, in the history and in
+  // the input alike.
+  for (const char* where : {"history|", "input|"}) {
+    std::vector<std::string> poorer = mine;
+    for (auto it = poorer.begin(); it != poorer.end(); ++it)
+      if (it->rfind(where, 0) == 0 && std::find(base.begin(), base.end(), *it) != base.end()) {
+        poorer.erase(it);
+        break;
+      }
+    TEST_ASSERT_FALSE_MESSAGE(firstMissing(base, poorer).empty(), where);
+  }
+  // Counter-test: the exemption is only for dream outputs (an evening line is not one).
+  TEST_ASSERT_FALSE(morning::isDreamWritten("history|user|My sister Ana arrives on the 14th and stays two nights."));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_scripted_night_makes_no_model_turn);
+  RUN_TEST(test_night_offers_no_turn_seam);
+  RUN_TEST(test_morning_after_carries_at_least_rb_main);
   RUN_TEST(test_quiet_turn_notice_count_zero_on_every_failure_path);
   RUN_TEST(test_quiet_dream_contacts_nobody_over_the_matrix);
   RUN_TEST(test_owner_note_is_the_streak_alert_only);
