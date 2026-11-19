@@ -249,6 +249,33 @@ static void test_counter_old_put_back_loses_the_part_on_a_refilled_queue() {
   TEST_ASSERT_FALSE(p0);   // dropped without a log line or a give-up
 }
 
+// One random script: the class problems of the v5.2.0 drain (which == 0) or the old one.
+static std::string runScript(const std::vector<TgSend>& script, bool lands, const std::vector<Item>& queued, int which) {
+  Queue q;
+  for (const auto& it : queued) q.push(it);
+  FakeTelegram tg;
+  tg.script = script;
+  tg.lostLands = lands;
+  TgPartTries tries;
+  Drained d;
+  for (int i = 0; i < 60 && !q.q.empty(); ++i) {
+    if (which == 0) drainNew(q, tg, tries, &d);
+    else drainOld(q, tg);
+  }
+  TEST_ASSERT_TRUE(q.q.empty());
+  std::vector<std::string> dropped;
+  for (const auto& n : d.notes)
+    // Given up, or left as probably delivered after two lost answers (when those
+    // POSTs really were lost, the part is not in the chat: the bound's price).
+    if (n.second == TgDrainStep::GiveUp || n.second == TgDrainStep::LeaveAsSent) dropped.push_back(n.first);
+  return problems(queued, tg, dropped);
+}
+
+static TgSend randomAnswer(std::mt19937& rng) {
+  const int r = (int)(rng() % 10);
+  return r < 5 ? TgSend::Ok : r < 7 ? TgSend::Unconfirmed : r < 8 ? TgSend::Refused : TgSend::NotSent;
+}
+
 // The property over random answers and lost-answer outcomes: the class checks hold for
 // the v5.2.0 drain on every script, and fail for the old one on some.
 static void test_property_random_answers() {
@@ -256,34 +283,12 @@ static void test_property_random_answers() {
   int oldBroken = 0;
   for (int run = 0; run < 400; ++run) {
     std::vector<TgSend> script;
-    for (int i = 0; i < 40; ++i) {
-      const int r = (int)(rng() % 10);
-      script.push_back(r < 5 ? TgSend::Ok : r < 7 ? TgSend::Unconfirmed : r < 8 ? TgSend::Refused : TgSend::NotSent);
-    }
+    for (int i = 0; i < 40; ++i) script.push_back(randomAnswer(rng));
     const bool lands = rng() % 2;
     const std::vector<Item> queued = parts(1 + (int)(rng() % 6));
-    for (int which = 0; which < 2; ++which) {
-      Queue q;
-      for (const auto& it : queued) q.push(it);
-      FakeTelegram tg;
-      tg.script = script;
-      tg.lostLands = lands;
-      TgPartTries tries;
-      Drained d;
-      for (int i = 0; i < 60 && !q.q.empty(); ++i) {
-        if (which == 0) drainNew(q, tg, tries, &d);
-        else drainOld(q, tg);
-      }
-      TEST_ASSERT_TRUE(q.q.empty());
-      std::vector<std::string> dropped;
-      for (const auto& n : d.notes)
-        // Given up, or left as probably delivered after two lost answers (when those
-        // POSTs really were lost, the part is not in the chat: the bound's price).
-        if (n.second == TgDrainStep::GiveUp || n.second == TgDrainStep::LeaveAsSent) dropped.push_back(n.first);
-      const std::string why = problems(queued, tg, dropped);
-      if (which == 0) TEST_ASSERT_TRUE_MESSAGE(why.empty(), why.c_str());
-      else if (!why.empty()) ++oldBroken;
-    }
+    const std::string why = runScript(script, lands, queued, 0);
+    TEST_ASSERT_TRUE_MESSAGE(why.empty(), why.c_str());
+    if (!runScript(script, lands, queued, 1).empty()) ++oldBroken;
   }
   TEST_ASSERT_TRUE(oldBroken > 0);
 }
