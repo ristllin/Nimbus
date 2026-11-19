@@ -321,11 +321,6 @@ class TurnRun {
   // A turn that cannot start (setup, composition or the wire refused) is closed with one
   // plain line: a binding fault, never a partial request.
   Status fail(const Status& st) {
-    if (st.err == Err::TooLarge) {   // composition's refused allocation (ruling 30): the memory line
-      t_.cause = "memory";
-      setStatusRef(StatusLine::CrashNotice, c_.memoryLine);
-      return st;
-    }
     t_.cause = std::string("setup:") + tx::errSlug(st.err);
     setStatus(StatusLine::ProviderError, exchangeLine(ExchangeErr::Other, providerSlugOf(t_.ctx, t_.setup.head), 0));
     return st;

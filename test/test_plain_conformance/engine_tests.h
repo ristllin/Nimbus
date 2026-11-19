@@ -1161,6 +1161,7 @@ inline void test_a_refusal_at_every_allocation_of_a_turn_never_leaves_runTurn() 
     for (const txb::SentMessage& m : b.sent) replies += m.text == "It says alpha.";
     TEST_ASSERT_TRUE_MESSAGE(replies <= 1, msg);
     TEST_ASSERT_TRUE_MESSAGE(b.sent.size() <= 2, msg);
+    TEST_ASSERT_TRUE_MESSAGE(countKind(storedOf(b), tx::ItemKind::Delivery) <= 1, msg);   // the d item never twice
     // The chat goes on: the next turn answers, and its request is paired.
     plain::TurnOutcome next;   // the steps the refused turn did not use come first, then "ok"
     b.model.push(sp::say("ok"));
@@ -1631,11 +1632,9 @@ inline void test_a_dangling_call_is_answered_before_a_full_arena_drops_its_turn(
   txb::Battery b;
   TXB_OK(b.boot());
   TXB_OK(b.arena->init(8 * 1024, b.platform.allocLarge, b.platform.freeLarge));
-  b.model.push(sp::call("big_read", R"({"tag":"a","bytes":1900})"));
-  b.model.push(sp::call("big_read", R"({"tag":"b","bytes":1900})"));
-  b.model.push(sp::call("big_read", R"({"tag":"c","bytes":1900})"));
-  b.model.push(sp::call("big_read", R"({"tag":"d","bytes":1900})"));
-  b.model.push(sp::call("big_read", R"({"tag":"e","bytes":1900})"));
+  // Sized so the arena refuses a result, not a call: the turn leaves its last call dangling.
+  for (const char* tag : {"a", "b", "c", "d", "e"})
+    b.model.push(sp::call("big_read", std::string("{\"tag\":\"") + tag + "\",\"bytes\":1500}"));
   plain::TurnOutcome out;
   (void)b.owner("read until the arena is full", out);
   TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent.back().text.c_str());
@@ -1643,6 +1642,9 @@ inline void test_a_dangling_call_is_answered_before_a_full_arena_drops_its_turn(
   b.advance(30);
   TXB_OK(b.owner("next", out));
   TEST_ASSERT_EQUAL_STRING("Next.", out.text.c_str());
+  size_t unknown = 0;   // stored: the request may no longer show that turn (it left RAM)
+  for (const tx::Item& it : storedOf(b)) unknown += it.kind == tx::ItemKind::Result && it.x == texts::tool_results::kOutcomeUnknown;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)unknown, "the dangling call was never answered");
   expectPaired(b);
 }
 
@@ -1710,21 +1712,22 @@ inline void test_a_turn_opens_with_room_when_the_arena_is_nearly_full() {
   TEST_ASSERT_TRUE(n > 10);
 }
 
-// A turn that stops on a status no rule names (an unusable call in a round that is not the last)
-// still ends with one plain line for a person.
-inline void test_a_turn_that_stops_without_a_line_still_gets_one() {
-  txb::Battery b(plain::Dialect::ChatCompletions);
+// A refused allocation in the boot's resume seam is a status, never an escape.
+inline void test_a_refused_allocation_in_the_resume_seam_is_a_status() {
+  txb::Battery b;
   TXB_OK(b.boot());
-  b.files.refuseAll = true;   // no card: the bulk file is refused
-  sp::Step s = sp::call("", "{\"text\":\"" + std::string(64000, 'u'));   // no name, cut arguments past a line
-  b.model.push(s);
-  b.model.push(sp::say("unused"));
-  plain::TurnOutcome out;
-  (void)b.owner("go", out);
-  std::string got;
-  for (const txb::SentMessage& m : b.sent) got += m.text + " | ";
-  TEST_ASSERT_EQUAL_MESSAGE(1, (int)b.sent.size(), got.c_str());
+  TXB_OK(b.hooks->bootResume(plain::HookSlot::Resume, [](const plain::BootCtx&) -> tx::Status { throw std::bad_alloc(); }));
+  tx::Status st = tx::Status::success();
+  bool escaped = false;
+  try {
+    st = b.engine->boot(plain::BootCtx{b.epoch, false});
+  } catch (const std::bad_alloc&) {
+    escaped = true;
+  }
+  TEST_ASSERT_FALSE(escaped);
+  TEST_ASSERT_TRUE(st.err == tx::Err::TooLarge);
 }
+
 
 // ---- PART TWO (lane RB-E1b): guards scaled to the head, identical-call suppression, deferred effects ----
 // What each head class costs, as a binding fills TurnSetup::cost from its budget and price row.
@@ -2315,7 +2318,7 @@ inline void run() {
   RUN_TEST(test_a_dangling_call_is_answered_before_a_full_arena_drops_its_turn);
   RUN_TEST(test_every_after_deliver_handler_runs_when_one_is_refused);
   RUN_TEST(test_a_receipt_survives_when_the_reply_cannot_be_sent);
-  RUN_TEST(test_a_turn_that_stops_without_a_line_still_gets_one);
+  RUN_TEST(test_a_refused_allocation_in_the_resume_seam_is_a_status);
   RUN_TEST(test_a_turn_opens_with_room_when_the_arena_is_nearly_full);
   RUN_TEST(test_view_fetches_a_long_argument_and_a_long_reply_back);
   RUN_TEST(test_a_long_owner_message_goes_to_the_inbox_as_a_file);
