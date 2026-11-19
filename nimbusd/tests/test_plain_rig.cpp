@@ -13,7 +13,9 @@
 //       dialect whose wire has not landed (one plain line, never a request);
 //   (e) a tool binding registered on the rig is what a call reaches, with the chat's
 //       Principal; arguments that are not an object reach it as an empty object;
-//   (f) the old engine's rig and the plain rig compile in one translation unit.
+//   (f) the old engine's rig and the plain rig compile in one translation unit;
+//   (g) a handler that throws is an error result for that call; a refused allocation in a handler is
+//       one plain line (ruling 56).
 // Offline: scripted provider, virtual clock, no keys.
 #include <algorithm>
 #include <cstdlib>
@@ -353,26 +355,46 @@ void testHostFaults(ndtest::Ctx& c) {
 }
 
 // ---- (e) a tool binding on the rig -----------------------------------------------------------
+// A read_file binding on the rig: records each path and whether the caller was the owner; a
+// missing note fails, and two paths throw (an error, a refused allocation).
+struct ReadBinding {
+  std::vector<std::string> seen;
+  std::vector<bool> asOwner;
+
+  orch::ToolResult handle(ArduinoJson::JsonObjectConst a, const orch::Principal& who) {
+    const std::string path = a["path"] | std::string("<none>");
+    if (path == "notes/throws.md") throw std::runtime_error("handler broke");
+    if (path == "notes/huge.md") throw std::bad_alloc();
+    seen.push_back(path);
+    asOwner.push_back(who.owner);
+    if (path == "notes/missing.md") return orch::ToolResult::fail("no such file: notes/missing.md");
+    return orch::ToolResult::ok("alpha");
+  }
+  void bind(Host& h) {
+    h.bindTools = [this](nimbusd::PlainRig& rig) {
+      const auto* decl = plain::toolDecl("read_file");
+      rig.registry().add(
+          "read_file", decl ? decl->description : "",
+          [this](ArduinoJson::JsonObjectConst a, const orch::Principal& who) { return handle(a, who); },
+          decl ? plain::declSchema(*decl, false) : "{}");
+    };
+    h.reboot();
+  }
+};
+
+bool lastTurnHasFailedResult(const Host& h) {
+  const uint32_t turn = h.lastEnd().turn;
+  bool failed = false;
+  for (const tx::Item& it : h.stored())
+    if (it.kind == tx::ItemKind::Result && it.turn == turn) failed = !it.ok;
+  return failed;
+}
+
 void testToolBinding(ndtest::Ctx& c) {
   std::printf("\n-- (e) a tool registered on the rig is what a call reaches\n");
   Host h;
-  std::vector<std::string> seen;
-  std::vector<bool> asOwner;
-  h.bindTools = [&](nimbusd::PlainRig& rig) {
-    const auto* decl = plain::toolDecl("read_file");
-    rig.registry().add(
-        "read_file", decl ? decl->description : "", [&](ArduinoJson::JsonObjectConst a, const orch::Principal& who) {
-          const std::string path = a["path"] | std::string("<none>");
-          if (path == "notes/throws.md") throw std::runtime_error("handler broke");
-          if (path == "notes/huge.md") throw std::bad_alloc();
-          seen.push_back(path);
-          asOwner.push_back(who.owner);
-          return path == "notes/missing.md" ? orch::ToolResult::fail("no such file: notes/missing.md")
-                                            : orch::ToolResult::ok("alpha");
-        },
-        decl ? plain::declSchema(*decl, false) : "{}");
-  };
-  h.reboot();
+  ReadBinding rb;
+  rb.bind(h);
   h.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
   h.model.push(sp::say("It says alpha."));
   h.model.push(sp::call("read_file", R"(["not","an","object"])"));
@@ -381,34 +403,35 @@ void testToolBinding(ndtest::Ctx& c) {
   h.model.push(sp::say("It is missing."));
   const nimbusd::PlainTurn t = h.rig->say("read my note");
   c.eq(t.stated, "It says alpha.", "the turn answers after the tool round");
-  c.ok(seen.size() >= 1 && seen[0] == "notes/a.md", "the registered handler got the call's arguments");
-  c.ok(!asOwner.empty() && asOwner[0], "with the chat's Principal (the owner)");
+  c.ok(rb.seen.size() >= 1 && rb.seen[0] == "notes/a.md", "the registered handler got the call's arguments");
+  c.ok(!rb.asOwner.empty() && rb.asOwner[0], "with the chat's Principal (the owner)");
   c.ok(h.model.requests().size() >= 2 && has(h.model.requests()[1].body, "alpha"), "the result reached the next request");
   c.ok(t.out.toolCalls == 1, "the outcome counts one call");
   h.ms += 60000;
   const nimbusd::PlainTurn t2 = h.rig->say("again");
   c.eq(t2.stated, "Nothing there.", "a call with arguments that are not an object still ends in a reply");
-  c.ok(seen.size() == 2 && seen[1] == "<none>", "and its handler saw an empty object");
+  c.ok(rb.seen.size() == 2 && rb.seen[1] == "<none>", "and its handler saw an empty object");
   h.ms += 60000;
   c.eq(h.rig->say("and the missing one").stated, "It is missing.", "a tool that fails still ends in a reply");
-  bool errorStored = false;
-  for (const tx::Item& it : h.stored())
-    if (it.kind == tx::ItemKind::Result && it.x.find("no such file: notes/missing.md") != std::string::npos)
-      errorStored = !it.ok;
-  c.ok(errorStored, "and its failure is stored as a failed result, with the handler's error text");
+  c.ok(lastTurnHasFailedResult(h), "and its failure is stored as a failed result, with the handler's error text");
 
-  // A handler that throws: that call gets an error result at the dispatch seam and the turn goes on to the
-  // model's reply (ruling 56). A refused allocation inside a handler ends the turn with one plain line.
+  std::string why;
+  c.ok(h.model.verify(why), "the script was used exactly (" + why + ")");
+}
+
+// A handler that throws: that call gets an error result at the dispatch seam and the turn goes on to
+// the model's reply (ruling 56). A refused allocation inside a handler ends the turn with one plain line.
+void testThrowingHandler(ndtest::Ctx& c) {
+  std::printf("\n-- (g) a handler that throws\n");
+  Host h;
+  ReadBinding rb;
+  rb.bind(h);
   h.model.push(sp::call("read_file", R"({"path":"notes/throws.md"})"));
   h.model.push(sp::say("That one broke."));
-  h.ms += 60000;
   const nimbusd::PlainTurn thrown = h.rig->say("read the broken one");
   c.eq(nimbusd::plainEndingSlug(thrown.ending), "reply", "a throwing handler: the turn still ends with the reply");
   c.eq(thrown.stated, "That one broke.", "a throwing handler: the model saw the error and answered");
-  bool thrownStored = false;
-  for (const tx::Item& it : h.stored())
-    if (it.kind == tx::ItemKind::Result && it.turn == h.lastEnd().turn) thrownStored = !it.ok;
-  c.ok(thrownStored, "a throwing handler: its call is answered with a failed result");
+  c.ok(lastTurnHasFailedResult(h), "a throwing handler: its call is answered with a failed result");
   h.model.push(sp::call("read_file", R"({"path":"notes/huge.md"})"));
   h.ms += 60000;
   const nimbusd::PlainTurn oom = h.rig->say("read the huge one");
@@ -438,6 +461,7 @@ int main() {
   testHostFaults(c);
   testToolBinding(c);
   testBothEnginesCompile(c);
+  testThrowingHandler(c);   // last: on a core that lets a handler throw through, the process ends here
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;
