@@ -11,6 +11,7 @@
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/deliver_text.h"
 
 namespace agent {
@@ -327,7 +328,7 @@ namespace {
 
 std::string elapsedText(uint32_t ms) {
   const uint32_t s = ms / 1000;
-  return s < 120 ? std::to_string(s) + " s" : std::to_string(s / 60) + " min";
+  return s < 120 ? std::to_string(s) + " s" : std::to_string(s / 60) + texts::device_notes::kProgressMinutes;
 }
 
 // A tool's or guard's name as the owner may see it: a short machine name, else nothing.
@@ -341,21 +342,21 @@ std::string safeDetail(const std::string& d) {
 }  // namespace
 
 std::string ProgressReporter::text(const ProgressEvent& e, uint32_t elapsedMs, uint16_t steps) {
-  std::string line = "Still working (" + elapsedText(elapsedMs);
-  if (steps) line += ", step " + std::to_string(steps);
+  std::string line = texts::device_notes::kProgressOpen + elapsedText(elapsedMs);
+  if (steps) line += texts::device_notes::kProgressStep + std::to_string(steps);
   line += "): ";
   const std::string d = safeDetail(e.detail);
   switch (e.kind) {
-    case ProgressKind::ToolRound: line += d.empty() ? "ran a tool." : "ran " + d + "."; break;
-    case ProgressKind::ProviderWait: line += "waiting for the model's answer."; break;
-    case ProgressKind::SoftGuard: line += "taking longer than usual, still making progress."; break;
+    case ProgressKind::ToolRound: line += d.empty() ? std::string(texts::device_notes::kProgressRanTool) : texts::device_notes::kProgressRan + d + "."; break;
+    case ProgressKind::ProviderWait: line += texts::device_notes::kProgressWaiting; break;
+    case ProgressKind::SoftGuard: line += texts::device_notes::kProgressLong; break;
   }
   return line;
 }
 
 std::string ProgressReporter::finalText(uint32_t elapsedMs, uint16_t steps) {
-  std::string line = "Worked " + elapsedText(elapsedMs);
-  if (steps) line += " (" + std::to_string(steps) + (steps == 1 ? " step)" : " steps)");
+  std::string line = texts::device_notes::kProgressDone + elapsedText(elapsedMs);
+  if (steps) line += " (" + std::to_string(steps) + (steps == 1 ? texts::device_notes::kProgressOneStep : texts::device_notes::kProgressSteps);
   return line + ".";
 }
 

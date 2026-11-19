@@ -847,3 +847,12 @@ deleted. Engine 2 has no baseline.
 - lane: RB-REC6
 - prd: section 8 item 8 (the truth probe, measured before it ships), as amended by rulings 9, 41 and 46 (re-measured with a neutral wording on claude-haiku-5-5, replaced only if it qualifies by ruling 9's rule)
 - why: lib/core/include/nimbus/orch/truth.h kProbePrompt and tests/evals/probe/prompt.txt: "adding, editing or removing a ledger row" becomes "adding, editing or removing a row or line in a file" (ruling 41: no text names a use case). Measured on claude-haiku-5-5 in two complete passes of 562 probes with the recent effects shown: ruling 9 qualifies both (claims 96, tp 95, fp 0, precision 1.0 Wilson [0.961, 1.0], recall 0.990 [0.943, 0.998], past-reference false positives 0 of 350, upper 0.85%); tests/evals/measured/probe.json "neutral_wording_rb_rec6". test_plain_request's deferred-phrase allowance goes with it. Planned work, not a fix.
+### PC-0096: progress on a long turn, for the owner (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 1653 -> 1793
+- sha8: d348ef0c -> 4da73e69
+- lane: RB-E3
+- prd: section 8 item 9 (harness-written messages) and owner ruling 82 item 6 (a long turn says it is still working and on what)
+- why: lib/harness/src/plain_deliver.cpp ProgressReporter: the owner's progress line while a long turn runs ("Still working (45 s, step 4): ran read_file.", "waiting for the model's answer.", "taking longer than usual, still making progress.") and its final form ("Worked 74 s (9 steps)."). Owner-facing only: the model never sees it, it is never stored in the transcript; planned work, not a fix

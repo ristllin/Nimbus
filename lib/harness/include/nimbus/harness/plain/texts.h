@@ -206,6 +206,19 @@ inline constexpr char kLimitStopped[] = "This turn stopped at its ";
 inline constexpr char kLimitStoppedEnd[] = " limit. Ask again to continue.";
 // The tool slug of a long reply's stub ('[stub assistant r<q> ...]').
 inline constexpr char kAssistantSlug[] = "assistant";
+// Progress on a long turn, for the owner only (lane RB-E3, owner ruling 82 item 6;
+// plain_deliver.cpp ProgressReporter): "Still working (45 s, step 4): ran read_file." while the
+// turn runs, edited in place where the channel can edit, then "Worked 74 s (9 steps)."
+inline constexpr char kProgressOpen[] = "Still working (";
+inline constexpr char kProgressStep[] = ", step ";
+inline constexpr char kProgressRanTool[] = "ran a tool.";
+inline constexpr char kProgressRan[] = "ran ";
+inline constexpr char kProgressWaiting[] = "waiting for the model's answer.";
+inline constexpr char kProgressLong[] = "taking longer than usual, still making progress.";
+inline constexpr char kProgressDone[] = "Worked ";
+inline constexpr char kProgressSteps[] = " steps)";
+inline constexpr char kProgressOneStep[] = " step)";
+inline constexpr char kProgressMinutes[] = " min";
 }  // namespace device_notes
 
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).
