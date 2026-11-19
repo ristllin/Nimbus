@@ -95,18 +95,20 @@ std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, con
   q.sum = {sumCol};
   q.showRows = false;
   const CsvScanOutcome o = scanCsv(src, size, path, q);
-  if (!o.ok) return join({"[no day total: ", o.error, "]\n"});
-  return renderCsvTail(q, o.result) + "\n";
+  detail::Txt t;
+  if (o.ok) t << std::string_view(renderCsvTail(q, o.result)) << "\n";
+  else t << "[no day total: " << std::string_view(o.error) << "]\n";
+  return std::move(t.s);
 }
 
 bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::string& err) {
-  for (const char* k : {"column", "from", "to"}) {
-    if (a[k].isNull()) continue;
-    if (!a[k].is<const char*>()) return (err = join({k, " is not a string"})).empty();
+  std::string* fields[] = {&q.column, &q.from, &q.to};
+  const char* keys[] = {"column", "from", "to"};
+  for (size_t i = 0; i < 3; ++i) {
+    const ArduinoJson::JsonVariantConst v = a[keys[i]];
+    if (!v.isNull() && !v.is<const char*>()) return (err = std::string(keys[i]) + " is not a string").empty();
+    if (!v.isNull()) *fields[i] = v.as<const char*>();
   }
-  q.column = a["column"] | "";
-  q.from = a["from"] | "";
-  q.to = a["to"] | "";
   if (a["sum"].is<ArduinoJson::JsonArrayConst>()) {
     for (ArduinoJson::JsonVariantConst v : a["sum"].as<ArduinoJson::JsonArrayConst>()) {
       if (!v.is<const char*>()) return (err = "sum is not a list of column names").empty();
@@ -154,14 +156,16 @@ bool edit(AidSource& src, AidSink& sink, uint64_t size, const EditCall& c, Remov
   r.oldName = "find";
   r.trailer = c.header.empty() ? std::string() : historyRowsForKeyedEdit(c.header, c.find, c.replace);
   CapSink capped(sink, c);
-  const EditOutcome o = editFile(src, capped, size, 0, c.project + "/" + c.name, r);
+  const std::string where = c.project + "/" + c.name;
+  const EditOutcome o = editFile(src, capped, size, 0, where, r);
   if (!o.ok) return (reply = o.error).empty();
   EditDecision d;
   d.ok = true;
   d.matches = o.found;
   d.apply = int(o.replaced);
-  reply = renderEditReply(c.project + "/" + c.name, d, size_t(o.newSize)) + renderEditLines(o) +
-          keyedReport(c, r.trailer, memory);
+  reply = renderEditReply(where, d, size_t(o.newSize));
+  reply += renderEditLines(o);
+  reply += keyedReport(c, r.trailer, memory);
   return true;
 }
 
