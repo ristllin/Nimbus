@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import json
 import os
 import re
@@ -601,20 +602,62 @@ def run(root: str, base: "str | None", use_base: bool = True, quiet: bool = Fals
     return errs
 
 
-def release_total_problems(root: str) -> "list[str]":
-    """The v5.2.0 release check (ruling 18, for RB-R1): engine 1's model-facing bytes, all classes
-    together, are lower than the baseline recorded when the gate was introduced."""
+# The release reference (ruling 43): the last RELEASED firmware's engine-1 model-facing bytes,
+# all classes together. v5.1.2 is main a01ef7fb, which had no generator of its own; the figure
+# is the generator of rb-main 4e7f4ac27 (the last one whose list still names every v5.1.2
+# source) over a clean checkout of a01ef7fb:
+#   check_no_prompt_patch.py --measure-release-reference <a01ef7fb tree> --generator <its copy>
+# (sources the rebuild added since, such as orch_truth.cpp, did not exist then and count 0).
+# A release must come in strictly below it. A re-baseline of rb-main never moves it.
+RELEASE_REFERENCE = {
+    "release": "v5.1.2",
+    "sha": "a01ef7fb99eb7ecf01f6f51c60ef628b695f775c",
+    "generator": "rb-main 4e7f4ac27",
+    "bytes": 197695,
+}
+
+
+def tree_e1_total(root: str, gen=None) -> "tuple[int, list[str]]":
+    """Engine 1's model-facing bytes of a tree, all classes, by a generator's source list (this
+    one by default); a listed source the tree does not hold counts 0 and is named, and a tool
+    file the list misses is an error (the figure would be short)."""
+    gen = gen or cat
+    total, missing = 0, []
+    for cls, rel in gen.e1_sources():
+        src = gen._read(root, rel)
+        if src is None:
+            missing.append(rel)
+            continue
+        total += sum(e.size for e in gen._e1_file_entries(cls, rel, src))
+    stray = gen.uncatalogued_tool_files(root)
+    if stray:
+        raise gen.CatalogError("a tool file is in no catalog class of that generator: " + ", ".join(stray))
+    return total, missing
+
+
+def load_generator(path: str):
+    """A generator module from a file (an older copy, for a released tree)."""
+    spec = importlib.util.spec_from_file_location("gen_model_text_catalog_ref", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # dataclasses look their module up while it loads
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def release_total_problems(root: str, reference: "dict | None" = None) -> "list[str]":
+    """The release check (ruling 43, for RB-R1): engine 1's model-facing bytes, all classes
+    together, are strictly lower than the last released firmware's (RELEASE_REFERENCE)."""
+    ref = reference or RELEASE_REFERENCE
     try:
         entries = cat.build_e1(root)
     except cat.CatalogError as e:
         return [str(e)]
     total = sum(e.size for e in entries)
-    baseline = sum(size for size, _sha in cat.E1_BASELINE.values())
-    if total < baseline:
+    if total < ref["bytes"]:
         return []
     return [
-        f"engine 1 holds {total} B of model-facing text, not lower than its baseline {baseline} B "
-        f"(+{total - baseline} B); the release's deletions must outweigh its additions"
+        f"engine 1 holds {total} B of model-facing text, not lower than {ref['release']}'s {ref['bytes']} B "
+        f"(main {ref['sha'][:9]}; +{total - ref['bytes']} B); the release's deletions must outweigh its additions"
     ]
 
 
@@ -625,14 +668,33 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--no-base", action="store_true", help="skip the checks that need git history")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument(
-        "--release", action="store_true", help="the release check only: engine 1's total below its baseline"
+        "--release",
+        action="store_true",
+        help="the release check only: engine 1's total below the last release's (ruling 43)",
     )
+    ap.add_argument(
+        "--measure-release-reference",
+        metavar="TREE",
+        help="print engine 1's total over a clean checkout of a released sha (the reference's source)",
+    )
+    ap.add_argument("--generator", help="with --measure-release-reference: the generator file to use")
     args = ap.parse_args(argv)
+    if args.measure_release_reference:
+        gen = load_generator(args.generator) if args.generator else None
+        total, missing = tree_e1_total(args.measure_release_reference, gen)
+        print(f"engine 1 total {total} B; listed sources not in that tree: {', '.join(missing) or 'none'}")
+        return 0
     if args.release:
         errs = release_total_problems(args.root)
         for e in errs:
             print(f"no-prompt-patch release: {e}")
-        print("PROMPT TOTAL RED" if errs else "PROMPT TOTAL GREEN")
+        total = sum(e.size for e in cat.build_e1(args.root)) if not errs else 0
+        ref = RELEASE_REFERENCE
+        print(
+            "PROMPT TOTAL RED"
+            if errs
+            else f"PROMPT TOTAL GREEN ({total} B < {ref['release']} {ref['bytes']} B, main {ref['sha'][:9]})"
+        )
         return 1 if errs else 0
     base = None if args.no_base else resolve_base(args.root, args.base)
     if args.base and not base:

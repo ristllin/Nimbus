@@ -874,18 +874,48 @@ def test_without_the_plan_file_the_owners_table_names_the_lanes(tree, monkeypatc
     assert "RB-B5" in lanes and "RB-ZZ9" not in lanes
 
 
-def test_the_release_total_above_the_baseline_fails(tree, monkeypatch):
-    monkeypatch.setattr(cat, "E1_BASELINE", {c: (st["bytes"], st["sha8"]) for c, st in stats(tree).items()})
-    _grow(tree)
-    errs = gate.release_total_problems(tree)
-    assert errs and "not lower than its baseline" in errs[0], errs
+# ---- the release check (ruling 43): the last released firmware is the reference ----------------
 
 
-def test_the_release_total_equal_to_the_baseline_fails_and_lower_passes(tree, monkeypatch, capsys):
-    monkeypatch.setattr(cat, "E1_BASELINE", {c: (st["bytes"], st["sha8"]) for c, st in stats(tree).items()})
-    assert gate.release_total_problems(tree)  # equal is not lower
-    path, lit = plain_literal(tree, "skills")
-    edit_literal(tree, path, lit, "x")
-    assert gate.release_total_problems(tree) == []
-    assert gate.main(["--root", tree, "--release"]) == 0
-    assert capsys.readouterr().out.strip().splitlines()[-1] == "PROMPT TOTAL GREEN"
+def test_the_release_reference_is_v512_measured_at_its_main_sha():
+    ref = gate.RELEASE_REFERENCE
+    assert ref["release"] == "v5.1.2" and ref["sha"].startswith("a01ef7fb") and ref["bytes"] == 197695
+
+
+def test_the_release_check_is_strict_against_the_reference(tree, capsys):
+    total = sum(e.size for e in gate.cat.build_e1(tree))
+    for delta, red in ((1, False), (0, True), (-1, True)):
+        ref = dict(gate.RELEASE_REFERENCE, bytes=total + delta)
+        errs = gate.release_total_problems(tree, ref)
+        assert bool(errs) == red, (delta, errs)
+        if red:
+            assert "not lower than v5.1.2's" in errs[0]
+    capsys.readouterr()
+    rc = gate.main(["--root", tree, "--release"])
+    assert rc == (0 if total < gate.RELEASE_REFERENCE["bytes"] else 1)
+    assert (
+        capsys.readouterr().out.strip().splitlines()[-1].startswith("PROMPT TOTAL " + ("GREEN" if rc == 0 else "RED"))
+    )
+
+
+def test_a_rebaseline_never_moves_the_release_reference(tree):
+    # The reference is a recorded figure, not E1_BASELINE: raising the baseline changes nothing.
+    total = sum(e.size for e in gate.cat.build_e1(tree))
+    ref = dict(gate.RELEASE_REFERENCE, bytes=total)
+    saved = dict(gate.cat.E1_BASELINE)
+    try:
+        for k in gate.cat.E1_BASELINE:
+            gate.cat.E1_BASELINE[k] = (10**9, "00000000")
+        assert gate.release_total_problems(tree, ref)
+    finally:
+        gate.cat.E1_BASELINE.clear()
+        gate.cat.E1_BASELINE.update(saved)
+
+
+def test_the_reference_measurement_counts_a_missing_source_as_zero_and_names_it(tree):
+    total, missing = gate.tree_e1_total(tree)
+    assert missing == [] and total == sum(e.size for e in gate.cat.build_e1(tree))
+    victim = sorted(rel for _cls, rel in gate.cat.e1_sources())[0]
+    os.remove(os.path.join(tree, victim))
+    smaller, missing = gate.tree_e1_total(tree)
+    assert missing == [victim] and smaller <= total
