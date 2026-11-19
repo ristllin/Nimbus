@@ -80,8 +80,6 @@ std::vector<StubRow> stubs() {
   static tx::Item item;
   static bool flag;
   return {
-      {"tx::profileMarks", [] { tx::ProfileMarks m; return tx::profileMarks(tx::Profile::Standard, m); }},
-      {"tx::budgetFor", [] { tx::HeadBudget b; return tx::budgetFor(tx::HeadKey{}, tx::Profile::Lean, b); }},
       {"plain::wireFor anthropic", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::AnthropicMessages, w); }},
       {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
       {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},
@@ -341,7 +339,8 @@ static void test_slug_tables_are_whole() {
   const plain::Trigger triggers[] = {plain::Trigger::Owner,       plain::Trigger::Console, plain::Trigger::Routine,
                                      plain::Trigger::AgentResult, plain::Trigger::Notice,  plain::Trigger::Resume};
   assertUniqueSlugs(triggers, plain::triggerSlug, "trigger");
-  const tx::Profile profiles[] = {tx::Profile::Tight, tx::Profile::Lean, tx::Profile::Standard, tx::Profile::Wide};
+  const tx::Profile profiles[] = {tx::Profile::Tight, tx::Profile::Lean, tx::Profile::Standard, tx::Profile::Wide,
+                                 tx::Profile::Full};
   assertUniqueSlugs(profiles, tx::profileSlug, "profile");
   const tx::Err errs[] = {tx::Err::None,     tx::Err::NotImplemented, tx::Err::InvalidArgument,
                           tx::Err::NotStored, tx::Err::NotFound,      tx::Err::Torn,

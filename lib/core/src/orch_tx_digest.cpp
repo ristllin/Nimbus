@@ -392,9 +392,10 @@ uint32_t blockCapFor(Profile profile) {
     case Profile::Tight: return kDigestBlockTight;
     case Profile::Lean: return kDigestBlockLean;
     case Profile::Standard:
-    case Profile::Wide: return kDigestBlockStandard;
+    case Profile::Wide:
+    case Profile::Full: return kDigestBlockStandard;
   }
-  return kDigestBlockLean;
+  return kDigestBlockStandard;   // a damaged value is full's (ruling 83 item 4), never lean's
 }
 
 Status dayHeader(const std::string& day, std::string& out) {

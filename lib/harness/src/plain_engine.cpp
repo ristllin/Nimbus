@@ -398,7 +398,6 @@ class TurnRun {
     key.host = providerSlugOf(t_.ctx, t_.setup.head);
     key.model = t_.ctx.model;
     key.routed = t_.setup.head.routed;
-    key.qualified = t_.setup.qualified;
     tx::HeadBudget b;
     if (!tx::budgetFor(key, t_.ctx.profile, b).ok()) return;   // RB-T4: until then the floor cap
     t_.bodyCap = b.bodyCap;

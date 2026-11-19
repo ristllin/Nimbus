@@ -55,7 +55,7 @@ namespace orch {
 namespace tx {
 
 inline constexpr uint32_t kDigestMaxBytes = 768;
-inline constexpr uint32_t kDigestBlockStandard = 6144;   // standard and wide
+inline constexpr uint32_t kDigestBlockStandard = 6144;   // standard, wide and full
 inline constexpr uint32_t kDigestBlockLean = 4096;
 inline constexpr uint32_t kDigestBlockTight = 2048;
 inline constexpr uint32_t kRecentFilesMaxBytes = 600;

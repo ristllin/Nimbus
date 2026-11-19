@@ -154,7 +154,7 @@ struct TurnCtx {
   std::string host;             // the head answering this turn
   std::string model;
   Dialect dialect = Dialect::AnthropicMessages;
-  nimbus::orch::tx::Profile profile = nimbus::orch::tx::Profile::Standard;
+  nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;   // full (ruling 83)
   uint8_t attempt = 0;
   uint16_t roundNo = 0;         // the round about to run or just run
   uint64_t startedAt = 0;       // epoch seconds; 0 = clock not set
