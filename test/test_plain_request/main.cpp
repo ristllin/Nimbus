@@ -25,6 +25,7 @@
 
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -516,6 +517,57 @@ static void test_no_domain_word_reaches_a_model() {
   });
 }
 
+// Every catalogued text engine 2 can show, not only what composition reads: the whole e2
+// catalog (tool results and errors, device notes, stubs, probe, summarizer) and the e1 rows
+// of the sources engine 2 shares (the truth check's probe, facts item and receipt line; the
+// groups behind more). The goldens are fresh by their own gate (gen_model_text_catalog.py).
+// One deferred phrase: the truth probe's measured prompt says "a ledger row" (ruling 9 holds
+// it byte for byte to tests/evals/probe/prompt.txt; a new measurement changes it). It must
+// still be there, so this allowance is dropped the day the prompt changes.
+namespace {
+bool readAll(const std::string& path, std::string& out);   // below, with the golden test
+}  // namespace
+
+static void test_no_domain_word_in_any_catalogued_text() {
+  const char* kDeferred = "adding, editing or removing a ledger row; ";
+  const std::string shared[] = {"lib/core/src/orch_truth.cpp", "lib/core/include/nimbus/orch/truth.h",
+                                "lib/core/src/orch_tool_groups.cpp"};
+  int scanned = 0, deferred = 0;
+  for (const char* golden : {"test/golden/model_text_catalog.txt", "test/golden/model_text_catalog_e1.txt"}) {
+    std::string all;
+    TEST_ASSERT_TRUE_MESSAGE(readAll(golden, all), golden);
+    const bool e1 = std::strstr(golden, "_e1") != nullptr;
+    size_t at = 0;
+    while (at < all.size()) {
+      size_t end = all.find('\n', at);
+      if (end == std::string::npos) end = all.size();
+      const std::string line = all.substr(at, end - at);
+      at = end + 1;
+      if (line.empty() || line[0] == '#') continue;
+      std::vector<std::string> f;
+      for (size_t a = 0, t; f.size() < 4 && (t = line.find('\t', a)) != std::string::npos; a = t + 1) {
+        f.push_back(line.substr(a, t - a));
+        if (f.size() == 4) f.push_back(line.substr(t + 1));
+      }
+      TEST_ASSERT_EQUAL_MESSAGE(5, (int)f.size(), line.c_str());
+      if (e1 && std::find(std::begin(shared), std::end(shared), f[1]) == std::end(shared)) continue;
+      JsonDocument d;
+      TEST_ASSERT_FALSE_MESSAGE(deserializeJson(d, f[4]), line.c_str());
+      std::string text = d.as<std::string>();
+      const size_t hit = text.find(kDeferred);
+      if (hit != std::string::npos) {
+        text.erase(hit, std::strlen(kDeferred));
+        deferred++;
+      }
+      TEST_ASSERT_EQUAL_STRING_MESSAGE("", domainWordIn(text).c_str(), (f[1] + ": " + text.substr(0, 80)).c_str());
+      scanned++;
+    }
+  }
+  TEST_ASSERT_EQUAL(1, deferred);   // the probe's phrase, once; drop the allowance when it goes
+  TEST_ASSERT_TRUE(scanned > 250);
+  TEST_MESSAGE(("property: " + std::to_string(scanned) + " catalogued texts engine 2 can show, no domain word").c_str());
+}
+
 // ---- a refused allocation (ruling 30) ------------------------------------------------------
 
 namespace {
@@ -908,6 +960,7 @@ int main(int, char**) {
   RUN_TEST(test_registry_and_manifest_agree);
   RUN_TEST(test_one_fixed_pack_in_a_fixed_order);
   RUN_TEST(test_no_domain_word_reaches_a_model);
+  RUN_TEST(test_no_domain_word_in_any_catalogued_text);
   RUN_TEST(test_a_refused_allocation_leaves_no_partial_request);
   RUN_TEST(test_notes_and_skills_clip_at_whole_lines);
   RUN_TEST(test_policy_gates_and_pack_decide_the_array);

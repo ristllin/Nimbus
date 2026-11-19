@@ -483,7 +483,8 @@ deleted. Engine 2 has no baseline.
   (ruling 41, design rebuild/DESIGN-GENERAL-RECORDS.md). The core's food paragraph (kFood, 343 B:
   ledger_write, kcal, macros, basis, ledger_day) and the "food on" switch that showed it are deleted;
   the composed system text loses 345 B (the paragraph and its join) on every head request, and the
-  tools index loses its food line (39 B, the e1 tool_results entry below). Nothing was added.
+  composed tools index loses its food line (39 B with its newline; the group's own catalogued text,
+  20 B, is the e1 tool_results entry PC-0024). Nothing was added.
 
 ### PC-0021: one fixed tool pack: the ledger declarations out, calc in, delete_file behind more
 - catalog: e2

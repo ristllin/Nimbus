@@ -207,7 +207,10 @@ bool lowerName(const std::string& w) {
 
 // Ruling 30: a refused allocation is a designed state, never an abort. The body's outputs
 // are cleared and the call answers TooLarge (tx::digestBlock's rule), so the caller ends the
-// turn with its device line and no partial request leaves.
+// turn with its device line and no partial request leaves. Every build of this file has
+// exceptions on (host, nimbusd, the engine-2 device envs); a build without them would
+// restart on a refusal instead, which loses nothing here (composition stores nothing:
+// ruling 30's addendum accepts that, written down).
 template <class Body, class Clear>
 Status guarded(const char* where, Body&& body, Clear&& clear) {
 #if defined(__cpp_exceptions) || defined(__EXCEPTIONS)
