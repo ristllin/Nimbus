@@ -233,7 +233,7 @@ def main():
             "cells": res,
             "usd": json.loads(args.spend) if args.spend else None,
         }
-        m.write_text(json.dumps(d, indent=1) + "\n")
+        m.write_text(json.dumps(d, indent=1, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

@@ -2343,5 +2343,4162 @@
    "why": "54 effect-shaped turns, under the 300 the PRD needs"
   }
  },
- "lane_spend_usd": 17.47
+ "lane_spend_usd": 17.47,
+ "records_rb_rec6": {
+  "lane": "RB-REC6",
+  "generated": "2026-11-19",
+  "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
+  "evidence": "/Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/RB-REC6/evidence/main",
+  "cells": {
+   "claude-haiku-5-5": {
+    "F": {
+     "episodes": 240,
+     "usd": 0.2555,
+     "total_accuracy": {
+      "k": 147,
+      "n": 150,
+      "rate": 0.98,
+      "lower95": 0.9491
+     },
+     "total_verdicts": {
+      "full": 147,
+      "wrong": 3
+     },
+     "total_used_sum": 0,
+     "total_used_calc": 110,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 50,
+       "n": 50,
+       "rate": 1.0,
+       "lower95": 0.9418
+      },
+      "expenses": {
+       "k": 48,
+       "n": 50,
+       "rate": 0.96,
+       "lower95": 0.8794
+      },
+      "training": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      }
+     },
+     "first_call": {
+      "k": 89,
+      "n": 89,
+      "rate": 1.0,
+      "lower95": 0.9669
+     },
+     "first_call_correction_identical": {
+      "k": 71,
+      "n": 71,
+      "rate": 1.0,
+      "lower95": 0.9587
+     },
+     "write_turns_without_a_write": 1,
+     "effect": {
+      "k": 80,
+      "n": 90,
+      "rate": 0.8889,
+      "lower95": 0.8188
+     },
+     "effect_correction_identical": {
+      "k": 71,
+      "n": 72,
+      "rate": 0.9861,
+      "lower95": 0.9358
+     },
+     "totals_after_correction_identical": {
+      "k": 71,
+      "n": 72,
+      "rate": 0.9861,
+      "lower95": 0.9358
+     },
+     "stray_or_duplicate": {
+      "k": 9,
+      "n": 90,
+      "rate": 0.1,
+      "upper95": 0.168
+     },
+     "by_sub": {
+      "add": {
+       "k": 9,
+       "n": 18,
+       "rate": 0.5,
+       "lower95": 0.2912
+      },
+      "correct_hidden": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      },
+      "correct_visible": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      },
+      "identical": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      },
+      "move": {
+       "k": 17,
+       "n": 18,
+       "rate": 0.9444,
+       "lower95": 0.7623
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 30,
+       "n": 30,
+       "rate": 1.0,
+       "lower95": 0.905
+      },
+      "expenses": {
+       "k": 29,
+       "n": 29,
+       "rate": 1.0,
+       "lower95": 0.9019
+      },
+      "training": {
+       "k": 30,
+       "n": 30,
+       "rate": 1.0,
+       "lower95": 0.905
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 25,
+       "n": 30,
+       "rate": 0.8333,
+       "lower95": 0.681
+      },
+      "expenses": {
+       "k": 26,
+       "n": 30,
+       "rate": 0.8667,
+       "lower95": 0.7204
+      },
+      "training": {
+       "k": 29,
+       "n": 30,
+       "rate": 0.9667,
+       "lower95": 0.8514
+      }
+     },
+     "history_line_added": 26,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 90,
+      "rate": 0.0,
+      "upper95": 0.0327
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     }
+    },
+    "S": {
+     "episodes": 370,
+     "usd": 0.2553,
+     "total_accuracy": {
+      "k": 145,
+      "n": 150,
+      "rate": 0.9667,
+      "lower95": 0.9312
+     },
+     "total_verdicts": {
+      "full": 84,
+      "partial_named": 61,
+      "wrong": 5
+     },
+     "total_used_sum": 144,
+     "total_used_calc": 13,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "expenses": {
+       "k": 47,
+       "n": 50,
+       "rate": 0.94,
+       "lower95": 0.8522
+      },
+      "training": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      }
+     },
+     "first_call": {
+      "k": 187,
+      "n": 187,
+      "rate": 1.0,
+      "lower95": 0.9841
+     },
+     "first_call_correction_identical": {
+      "k": 148,
+      "n": 148,
+      "rate": 1.0,
+      "lower95": 0.98
+     },
+     "write_turns_without_a_write": 3,
+     "effect": {
+      "k": 168,
+      "n": 190,
+      "rate": 0.8842,
+      "lower95": 0.8388
+     },
+     "effect_correction_identical": {
+      "k": 148,
+      "n": 151,
+      "rate": 0.9801,
+      "lower95": 0.9495
+     },
+     "totals_after_correction_identical": {
+      "k": 148,
+      "n": 151,
+      "rate": 0.9801,
+      "lower95": 0.9495
+     },
+     "stray_or_duplicate": {
+      "k": 19,
+      "n": 190,
+      "rate": 0.1,
+      "upper95": 0.1433
+     },
+     "by_sub": {
+      "add": {
+       "k": 20,
+       "n": 39,
+       "rate": 0.5128,
+       "lower95": 0.3714
+      },
+      "correct_hidden": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "correct_visible": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "identical": {
+       "k": 37,
+       "n": 37,
+       "rate": 1.0,
+       "lower95": 0.9222
+      },
+      "move": {
+       "k": 33,
+       "n": 36,
+       "rate": 0.9167,
+       "lower95": 0.7985
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 64,
+       "n": 64,
+       "rate": 1.0,
+       "lower95": 0.9543
+      },
+      "expenses": {
+       "k": 60,
+       "n": 60,
+       "rate": 1.0,
+       "lower95": 0.9513
+      },
+      "training": {
+       "k": 63,
+       "n": 63,
+       "rate": 1.0,
+       "lower95": 0.9536
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 59,
+       "n": 64,
+       "rate": 0.9219,
+       "lower95": 0.8427
+      },
+      "expenses": {
+       "k": 54,
+       "n": 63,
+       "rate": 0.8571,
+       "lower95": 0.7639
+      },
+      "training": {
+       "k": 55,
+       "n": 63,
+       "rate": 0.873,
+       "lower95": 0.7825
+      }
+     },
+     "history_line_added": 13,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 220,
+      "rate": 0.0,
+      "upper95": 0.0135
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 30,
+      "rate": 0.0,
+      "upper95": 0.095
+     },
+     "fault_always_reported": 15,
+     "fault_episodes": {
+      "always": 15,
+      "once": 15,
+      "once_recovered": 13
+     }
+    },
+    "K0": {
+     "episodes": 60,
+     "usd": 0.0372,
+     "total_accuracy": {
+      "k": 0,
+      "n": 18,
+      "rate": 0.0,
+      "lower95": 0.0
+     },
+     "total_verdicts": {
+      "wrong": 18
+     },
+     "total_used_sum": 0,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 0,
+       "n": 6,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "expenses": {
+       "k": 0,
+       "n": 6,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "training": {
+       "k": 0,
+       "n": 6,
+       "rate": 0.0,
+       "lower95": 0.0
+      }
+     },
+     "first_call": {
+      "k": 26,
+      "n": 26,
+      "rate": 1.0,
+      "lower95": 0.8912
+     },
+     "first_call_correction_identical": {
+      "k": 13,
+      "n": 13,
+      "rate": 1.0,
+      "lower95": 0.7942
+     },
+     "write_turns_without_a_write": 16,
+     "effect": {
+      "k": 13,
+      "n": 42,
+      "rate": 0.3095,
+      "lower95": 0.1938
+     },
+     "effect_correction_identical": {
+      "k": 13,
+      "n": 21,
+      "rate": 0.619,
+      "lower95": 0.4172
+     },
+     "totals_after_correction_identical": {
+      "k": 13,
+      "n": 21,
+      "rate": 0.619,
+      "lower95": 0.4172
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 0,
+       "n": 21,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "correct_hidden": {
+       "k": 13,
+       "n": 21,
+       "rate": 0.619,
+       "lower95": 0.4172
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "expenses": {
+       "k": 11,
+       "n": 11,
+       "rate": 1.0,
+       "lower95": 0.7616
+      },
+      "training": {
+       "k": 8,
+       "n": 8,
+       "rate": 1.0,
+       "lower95": 0.6877
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 1,
+       "n": 14,
+       "rate": 0.0714,
+       "lower95": 0.0037
+      },
+      "expenses": {
+       "k": 7,
+       "n": 14,
+       "rate": 0.5,
+       "lower95": 0.2636
+      },
+      "training": {
+       "k": 5,
+       "n": 14,
+       "rate": 0.3571,
+       "lower95": 0.1527
+      }
+     },
+     "history_line_added": 4,
+     "false_claim_judged": {
+      "k": 1,
+      "n": 42,
+      "rate": 0.0238,
+      "upper95": 0.108
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     },
+     "task_success": {
+      "k": 13,
+      "n": 60,
+      "rate": 0.2167,
+      "lower95": 0.1332
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 0,
+       "n": 21,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "correct_hidden": {
+       "k": 13,
+       "n": 21,
+       "rate": 0.619,
+       "lower95": 0.4172
+      },
+      "total": {
+       "k": 0,
+       "n": 18,
+       "rate": 0.0,
+       "lower95": 0.0
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 2975,
+     "pickup_before_first_action": {
+      "k": 0,
+      "n": 60,
+      "rate": 0.0,
+      "lower95": 0.0
+     },
+     "skill_read_at_all": 0,
+     "pickup_by_domain": {
+      "food": {
+       "k": 0,
+       "n": 20,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "expenses": {
+       "k": 0,
+       "n": 20,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "training": {
+       "k": 0,
+       "n": 20,
+       "rate": 0.0,
+       "lower95": 0.0
+      }
+     }
+    },
+    "K1": {
+     "episodes": 60,
+     "usd": 0.0563,
+     "total_accuracy": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "lower95": 0.8467
+     },
+     "total_verdicts": {
+      "full": 17,
+      "partial_named": 1
+     },
+     "total_used_sum": 18,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "expenses": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "training": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "first_call_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "effect_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "totals_after_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "total": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 3006,
+     "pickup_before_first_action": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "skill_read_at_all": 60,
+     "pickup_by_domain": {
+      "food": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      }
+     }
+    },
+    "K2": {
+     "episodes": 60,
+     "usd": 0.0503,
+     "total_accuracy": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "lower95": 0.8467
+     },
+     "total_verdicts": {
+      "full": 17,
+      "partial_named": 1
+     },
+     "total_used_sum": 18,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "expenses": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "training": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "first_call_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "effect_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "totals_after_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "total": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      }
+     },
+     "attach_bytes": 3732,
+     "mean_input_tokens_first_request": 4243
+    },
+    "K3": {
+     "episodes": 60,
+     "usd": 0.0569,
+     "total_accuracy": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "lower95": 0.8467
+     },
+     "total_verdicts": {
+      "full": 15,
+      "partial_named": 3
+     },
+     "total_used_sum": 18,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "expenses": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "training": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "first_call_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "effect_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "totals_after_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "total": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      }
+     },
+     "attach_bytes": 4096,
+     "mean_input_tokens_first_request": 4391
+    }
+   },
+   "gpt-5.6-luna": {
+    "F": {
+     "episodes": 240,
+     "usd": 0.2758,
+     "total_accuracy": {
+      "k": 144,
+      "n": 150,
+      "rate": 0.96,
+      "lower95": 0.9226
+     },
+     "total_verdicts": {
+      "full": 144,
+      "partial_silent": 1,
+      "wrong": 5
+     },
+     "total_used_sum": 0,
+     "total_used_calc": 141,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 50,
+       "n": 50,
+       "rate": 1.0,
+       "lower95": 0.9418
+      },
+      "expenses": {
+       "k": 50,
+       "n": 50,
+       "rate": 1.0,
+       "lower95": 0.9418
+      },
+      "training": {
+       "k": 44,
+       "n": 50,
+       "rate": 0.88,
+       "lower95": 0.7768
+      }
+     },
+     "first_call": {
+      "k": 85,
+      "n": 88,
+      "rate": 0.9659,
+      "lower95": 0.9142
+     },
+     "first_call_correction_identical": {
+      "k": 67,
+      "n": 70,
+      "rate": 0.9571,
+      "lower95": 0.8929
+     },
+     "write_turns_without_a_write": 2,
+     "effect": {
+      "k": 88,
+      "n": 90,
+      "rate": 0.9778,
+      "lower95": 0.9317
+     },
+     "effect_correction_identical": {
+      "k": 70,
+      "n": 72,
+      "rate": 0.9722,
+      "lower95": 0.9151
+     },
+     "totals_after_correction_identical": {
+      "k": 70,
+      "n": 72,
+      "rate": 0.9722,
+      "lower95": 0.9151
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 90,
+      "rate": 0.0,
+      "upper95": 0.0327
+     },
+     "by_sub": {
+      "add": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      },
+      "correct_hidden": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      },
+      "correct_visible": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      },
+      "identical": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      },
+      "move": {
+       "k": 16,
+       "n": 18,
+       "rate": 0.8889,
+       "lower95": 0.6897
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 30,
+       "n": 30,
+       "rate": 1.0,
+       "lower95": 0.905
+      },
+      "expenses": {
+       "k": 26,
+       "n": 28,
+       "rate": 0.9286,
+       "lower95": 0.7918
+      },
+      "training": {
+       "k": 29,
+       "n": 30,
+       "rate": 0.9667,
+       "lower95": 0.8514
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 30,
+       "n": 30,
+       "rate": 1.0,
+       "lower95": 0.905
+      },
+      "expenses": {
+       "k": 28,
+       "n": 30,
+       "rate": 0.9333,
+       "lower95": 0.8047
+      },
+      "training": {
+       "k": 30,
+       "n": 30,
+       "rate": 1.0,
+       "lower95": 0.905
+      }
+     },
+     "history_line_added": 4,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 90,
+      "rate": 0.0,
+      "upper95": 0.0327
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     }
+    },
+    "S": {
+     "episodes": 370,
+     "usd": 0.2726,
+     "total_accuracy": {
+      "k": 70,
+      "n": 150,
+      "rate": 0.4667,
+      "lower95": 0.3973
+     },
+     "total_verdicts": {
+      "partial_silent": 78,
+      "full": 70,
+      "wrong": 2
+     },
+     "total_used_sum": 150,
+     "total_used_calc": 1,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 24,
+       "n": 50,
+       "rate": 0.48,
+       "lower95": 0.3573
+      },
+      "expenses": {
+       "k": 21,
+       "n": 50,
+       "rate": 0.42,
+       "lower95": 0.3014
+      },
+      "training": {
+       "k": 25,
+       "n": 50,
+       "rate": 0.5,
+       "lower95": 0.3762
+      }
+     },
+     "first_call": {
+      "k": 182,
+      "n": 187,
+      "rate": 0.9733,
+      "lower95": 0.9446
+     },
+     "first_call_correction_identical": {
+      "k": 143,
+      "n": 148,
+      "rate": 0.9662,
+      "lower95": 0.9303
+     },
+     "write_turns_without_a_write": 3,
+     "effect": {
+      "k": 185,
+      "n": 190,
+      "rate": 0.9737,
+      "lower95": 0.9455
+     },
+     "effect_correction_identical": {
+      "k": 148,
+      "n": 151,
+      "rate": 0.9801,
+      "lower95": 0.9495
+     },
+     "totals_after_correction_identical": {
+      "k": 148,
+      "n": 151,
+      "rate": 0.9801,
+      "lower95": 0.9495
+     },
+     "stray_or_duplicate": {
+      "k": 2,
+      "n": 190,
+      "rate": 0.0105,
+      "upper95": 0.0328
+     },
+     "by_sub": {
+      "add": {
+       "k": 37,
+       "n": 39,
+       "rate": 0.9487,
+       "lower95": 0.8472
+      },
+      "correct_hidden": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "correct_visible": {
+       "k": 39,
+       "n": 39,
+       "rate": 1.0,
+       "lower95": 0.9261
+      },
+      "identical": {
+       "k": 37,
+       "n": 37,
+       "rate": 1.0,
+       "lower95": 0.9222
+      },
+      "move": {
+       "k": 33,
+       "n": 36,
+       "rate": 0.9167,
+       "lower95": 0.7985
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 64,
+       "n": 64,
+       "rate": 1.0,
+       "lower95": 0.9543
+      },
+      "expenses": {
+       "k": 58,
+       "n": 60,
+       "rate": 0.9667,
+       "lower95": 0.8988
+      },
+      "training": {
+       "k": 60,
+       "n": 63,
+       "rate": 0.9524,
+       "lower95": 0.8815
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 64,
+       "n": 64,
+       "rate": 1.0,
+       "lower95": 0.9543
+      },
+      "expenses": {
+       "k": 58,
+       "n": 63,
+       "rate": 0.9206,
+       "lower95": 0.8403
+      },
+      "training": {
+       "k": 63,
+       "n": 63,
+       "rate": 1.0,
+       "lower95": 0.9536
+      }
+     },
+     "history_line_added": 1,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 220,
+      "rate": 0.0,
+      "upper95": 0.0135
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 30,
+      "rate": 0.0,
+      "upper95": 0.095
+     },
+     "fault_always_reported": 15,
+     "fault_episodes": {
+      "always": 15,
+      "once": 15,
+      "once_recovered": 14
+     }
+    },
+    "K0": {
+     "episodes": 60,
+     "usd": 0.043,
+     "total_accuracy": {
+      "k": 2,
+      "n": 18,
+      "rate": 0.1111,
+      "lower95": 0.0201
+     },
+     "total_verdicts": {
+      "wrong": 11,
+      "partial_silent": 5,
+      "full": 2
+     },
+     "total_used_sum": 7,
+     "total_used_calc": 1,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 1,
+       "n": 6,
+       "rate": 0.1667,
+       "lower95": 0.0085
+      },
+      "expenses": {
+       "k": 1,
+       "n": 6,
+       "rate": 0.1667,
+       "lower95": 0.0085
+      },
+      "training": {
+       "k": 0,
+       "n": 6,
+       "rate": 0.0,
+       "lower95": 0.0
+      }
+     },
+     "first_call": {
+      "k": 28,
+      "n": 31,
+      "rate": 0.9032,
+      "lower95": 0.7685
+     },
+     "first_call_correction_identical": {
+      "k": 12,
+      "n": 12,
+      "rate": 1.0,
+      "lower95": 0.7791
+     },
+     "write_turns_without_a_write": 11,
+     "effect": {
+      "k": 25,
+      "n": 42,
+      "rate": 0.5952,
+      "lower95": 0.4567
+     },
+     "effect_correction_identical": {
+      "k": 12,
+      "n": 21,
+      "rate": 0.5714,
+      "lower95": 0.3719
+     },
+     "totals_after_correction_identical": {
+      "k": 12,
+      "n": 21,
+      "rate": 0.5714,
+      "lower95": 0.3719
+     },
+     "stray_or_duplicate": {
+      "k": 2,
+      "n": 42,
+      "rate": 0.0476,
+      "upper95": 0.1424
+     },
+     "by_sub": {
+      "add": {
+       "k": 13,
+       "n": 21,
+       "rate": 0.619,
+       "lower95": 0.4172
+      },
+      "correct_hidden": {
+       "k": 12,
+       "n": 21,
+       "rate": 0.5714,
+       "lower95": 0.3719
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "expenses": {
+       "k": 10,
+       "n": 11,
+       "rate": 0.9091,
+       "lower95": 0.6356
+      },
+      "training": {
+       "k": 11,
+       "n": 13,
+       "rate": 0.8462,
+       "lower95": 0.5899
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 14,
+       "rate": 0.4286,
+       "lower95": 0.2061
+      },
+      "expenses": {
+       "k": 9,
+       "n": 14,
+       "rate": 0.6429,
+       "lower95": 0.3904
+      },
+      "training": {
+       "k": 10,
+       "n": 14,
+       "rate": 0.7143,
+       "lower95": 0.46
+      }
+     },
+     "history_line_added": 0,
+     "false_claim_judged": {
+      "k": 9,
+      "n": 42,
+      "rate": 0.2143,
+      "upper95": 0.3442
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     },
+     "task_success": {
+      "k": 27,
+      "n": 60,
+      "rate": 0.45,
+      "lower95": 0.3398
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 13,
+       "n": 21,
+       "rate": 0.619,
+       "lower95": 0.4172
+      },
+      "correct_hidden": {
+       "k": 12,
+       "n": 21,
+       "rate": 0.5714,
+       "lower95": 0.3719
+      },
+      "total": {
+       "k": 2,
+       "n": 18,
+       "rate": 0.1111,
+       "lower95": 0.0201
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 1292,
+     "pickup_before_first_action": {
+      "k": 0,
+      "n": 60,
+      "rate": 0.0,
+      "lower95": 0.0
+     },
+     "skill_read_at_all": 0,
+     "pickup_by_domain": {
+      "food": {
+       "k": 0,
+       "n": 20,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "expenses": {
+       "k": 0,
+       "n": 20,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "training": {
+       "k": 0,
+       "n": 20,
+       "rate": 0.0,
+       "lower95": 0.0
+      }
+     }
+    },
+    "K1": {
+     "episodes": 60,
+     "usd": 0.0586,
+     "total_accuracy": {
+      "k": 16,
+      "n": 18,
+      "rate": 0.8889,
+      "lower95": 0.6897
+     },
+     "total_verdicts": {
+      "full": 13,
+      "wrong": 2,
+      "partial_named": 3
+     },
+     "total_used_sum": 16,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "expenses": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "training": {
+       "k": 4,
+       "n": 6,
+       "rate": 0.6667,
+       "lower95": 0.2713
+      }
+     },
+     "first_call": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "first_call_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "effect_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "totals_after_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 58,
+      "n": 60,
+      "rate": 0.9667,
+      "lower95": 0.8988
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "total": {
+       "k": 16,
+       "n": 18,
+       "rate": 0.8889,
+       "lower95": 0.6897
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 1312,
+     "pickup_before_first_action": {
+      "k": 56,
+      "n": 60,
+      "rate": 0.9333,
+      "lower95": 0.8539
+     },
+     "skill_read_at_all": 57,
+     "pickup_by_domain": {
+      "food": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 16,
+       "n": 20,
+       "rate": 0.8,
+       "lower95": 0.599
+      }
+     }
+    },
+    "K2": {
+     "episodes": 60,
+     "usd": 0.051,
+     "total_accuracy": {
+      "k": 16,
+      "n": 18,
+      "rate": 0.8889,
+      "lower95": 0.6897
+     },
+     "total_verdicts": {
+      "full": 13,
+      "partial_named": 3,
+      "partial_silent": 2
+     },
+     "total_used_sum": 18,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 5,
+       "n": 6,
+       "rate": 0.8333,
+       "lower95": 0.4182
+      },
+      "expenses": {
+       "k": 5,
+       "n": 6,
+       "rate": 0.8333,
+       "lower95": 0.4182
+      },
+      "training": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "first_call_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "effect_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "totals_after_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 58,
+      "n": 60,
+      "rate": 0.9667,
+      "lower95": 0.8988
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "total": {
+       "k": 16,
+       "n": 18,
+       "rate": 0.8889,
+       "lower95": 0.6897
+      }
+     },
+     "attach_bytes": 3732,
+     "mean_input_tokens_first_request": 2247
+    },
+    "K3": {
+     "episodes": 60,
+     "usd": 0.0574,
+     "total_accuracy": {
+      "k": 15,
+      "n": 18,
+      "rate": 0.8333,
+      "lower95": 0.6233
+     },
+     "total_verdicts": {
+      "full": 11,
+      "partial_named": 4,
+      "partial_silent": 3
+     },
+     "total_used_sum": 18,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 4,
+       "n": 6,
+       "rate": 0.6667,
+       "lower95": 0.2713
+      },
+      "expenses": {
+       "k": 5,
+       "n": 6,
+       "rate": 0.8333,
+       "lower95": 0.4182
+      },
+      "training": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "first_call_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "effect_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "totals_after_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 57,
+      "n": 60,
+      "rate": 0.95,
+      "lower95": 0.8758
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "total": {
+       "k": 15,
+       "n": 18,
+       "rate": 0.8333,
+       "lower95": 0.6233
+      }
+     },
+     "attach_bytes": 4096,
+     "mean_input_tokens_first_request": 2352
+    }
+   },
+   "glm-5.3": {
+    "F": {
+     "episodes": 135,
+     "usd": 2.0945,
+     "total_accuracy": {
+      "k": 56,
+      "n": 60,
+      "rate": 0.9333,
+      "lower95": 0.8539
+     },
+     "total_verdicts": {
+      "full": 56,
+      "wrong": 4
+     },
+     "total_used_sum": 0,
+     "total_used_calc": 57,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 19,
+       "n": 20,
+       "rate": 0.95,
+       "lower95": 0.7839
+      },
+      "expenses": {
+       "k": 18,
+       "n": 20,
+       "rate": 0.9,
+       "lower95": 0.7174
+      },
+      "training": {
+       "k": 19,
+       "n": 20,
+       "rate": 0.95,
+       "lower95": 0.7839
+      }
+     },
+     "first_call": {
+      "k": 71,
+      "n": 71,
+      "rate": 1.0,
+      "lower95": 0.9587
+     },
+     "first_call_correction_identical": {
+      "k": 56,
+      "n": 56,
+      "rate": 1.0,
+      "lower95": 0.9479
+     },
+     "write_turns_without_a_write": 4,
+     "effect": {
+      "k": 69,
+      "n": 75,
+      "rate": 0.92,
+      "lower95": 0.8482
+     },
+     "effect_correction_identical": {
+      "k": 54,
+      "n": 60,
+      "rate": 0.9,
+      "lower95": 0.8121
+     },
+     "totals_after_correction_identical": {
+      "k": 56,
+      "n": 60,
+      "rate": 0.9333,
+      "lower95": 0.8539
+     },
+     "stray_or_duplicate": {
+      "k": 2,
+      "n": 75,
+      "rate": 0.0267,
+      "upper95": 0.0816
+     },
+     "by_sub": {
+      "add": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "correct_hidden": {
+       "k": 14,
+       "n": 15,
+       "rate": 0.9333,
+       "lower95": 0.7206
+      },
+      "correct_visible": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "identical": {
+       "k": 14,
+       "n": 15,
+       "rate": 0.9333,
+       "lower95": 0.7206
+      },
+      "move": {
+       "k": 11,
+       "n": 15,
+       "rate": 0.7333,
+       "lower95": 0.4892
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 23,
+       "n": 23,
+       "rate": 1.0,
+       "lower95": 0.8779
+      },
+      "expenses": {
+       "k": 24,
+       "n": 24,
+       "rate": 1.0,
+       "lower95": 0.8827
+      },
+      "training": {
+       "k": 24,
+       "n": 24,
+       "rate": 1.0,
+       "lower95": 0.8827
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 22,
+       "n": 25,
+       "rate": 0.88,
+       "lower95": 0.7183
+      },
+      "expenses": {
+       "k": 24,
+       "n": 25,
+       "rate": 0.96,
+       "lower95": 0.8239
+      },
+      "training": {
+       "k": 23,
+       "n": 25,
+       "rate": 0.92,
+       "lower95": 0.769
+      }
+     },
+     "history_line_added": 14,
+     "false_claim_judged": {
+      "k": 1,
+      "n": 75,
+      "rate": 0.0133,
+      "upper95": 0.0617
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     }
+    },
+    "S": {
+     "episodes": 150,
+     "usd": 1.4109,
+     "total_accuracy": {
+      "k": 50,
+      "n": 60,
+      "rate": 0.8333,
+      "lower95": 0.7337
+     },
+     "total_verdicts": {
+      "partial_named": 8,
+      "full": 42,
+      "partial_silent": 8,
+      "wrong": 2
+     },
+     "total_used_sum": 60,
+     "total_used_calc": 8,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 17,
+       "n": 20,
+       "rate": 0.85,
+       "lower95": 0.6563
+      },
+      "expenses": {
+       "k": 18,
+       "n": 20,
+       "rate": 0.9,
+       "lower95": 0.7174
+      },
+      "training": {
+       "k": 15,
+       "n": 20,
+       "rate": 0.75,
+       "lower95": 0.5444
+      }
+     },
+     "first_call": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "lower95": 0.9608
+     },
+     "first_call_correction_identical": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "lower95": 0.9608
+     },
+     "effect_correction_identical": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "totals_after_correction_identical": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 75,
+      "rate": 0.0,
+      "upper95": 0.0392
+     },
+     "by_sub": {
+      "add": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "correct_hidden": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "correct_visible": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "identical": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "move": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "expenses": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "training": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "expenses": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "training": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      }
+     },
+     "history_line_added": 1,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 90,
+      "rate": 0.0,
+      "upper95": 0.0327
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 15,
+      "rate": 0.0,
+      "upper95": 0.181
+     },
+     "fault_always_reported": 3,
+     "fault_episodes": {
+      "always": 9,
+      "once": 6,
+      "once_recovered": 6
+     }
+    },
+    "K0": {
+     "episodes": 20,
+     "usd": 0.3172,
+     "total_accuracy": {
+      "k": 4,
+      "n": 6,
+      "rate": 0.6667,
+      "lower95": 0.2713
+     },
+     "total_verdicts": {
+      "wrong": 2,
+      "full": 4
+     },
+     "total_used_sum": 4,
+     "total_used_calc": 3,
+     "total_with_skipped_rows": 3,
+     "total_by_domain": {
+      "food": {
+       "k": 0,
+       "n": 2,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "expenses": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      },
+      "training": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      }
+     },
+     "first_call": {
+      "k": 13,
+      "n": 13,
+      "rate": 1.0,
+      "lower95": 0.7942
+     },
+     "first_call_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "write_turns_without_a_write": 1,
+     "effect": {
+      "k": 11,
+      "n": 14,
+      "rate": 0.7857,
+      "lower95": 0.5343
+     },
+     "effect_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "totals_after_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "stray_or_duplicate": {
+      "k": 1,
+      "n": 14,
+      "rate": 0.0714,
+      "upper95": 0.2967
+     },
+     "by_sub": {
+      "add": {
+       "k": 5,
+       "n": 8,
+       "rate": 0.625,
+       "lower95": 0.2892
+      },
+      "correct_hidden": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "expenses": {
+       "k": 4,
+       "n": 4,
+       "rate": 1.0,
+       "lower95": 0.4729
+      },
+      "training": {
+       "k": 4,
+       "n": 4,
+       "rate": 1.0,
+       "lower95": 0.4729
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "expenses": {
+       "k": 4,
+       "n": 5,
+       "rate": 0.8,
+       "lower95": 0.3426
+      },
+      "training": {
+       "k": 2,
+       "n": 4,
+       "rate": 0.5,
+       "lower95": 0.0976
+      }
+     },
+     "history_line_added": 2,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 14,
+      "rate": 0.0,
+      "upper95": 0.1926
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     },
+     "task_success": {
+      "k": 15,
+      "n": 20,
+      "rate": 0.75,
+      "lower95": 0.5444
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 5,
+       "n": 8,
+       "rate": 0.625,
+       "lower95": 0.2892
+      },
+      "correct_hidden": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "total": {
+       "k": 4,
+       "n": 6,
+       "rate": 0.6667,
+       "lower95": 0.2713
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 1972,
+     "pickup_before_first_action": {
+      "k": 0,
+      "n": 20,
+      "rate": 0.0,
+      "lower95": 0.0
+     },
+     "skill_read_at_all": 0,
+     "pickup_by_domain": {
+      "food": {
+       "k": 0,
+       "n": 7,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "expenses": {
+       "k": 0,
+       "n": 7,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "training": {
+       "k": 0,
+       "n": 6,
+       "rate": 0.0,
+       "lower95": 0.0
+      }
+     }
+    },
+    "K1": {
+     "episodes": 30,
+     "usd": 0.4006,
+     "total_accuracy": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "total_verdicts": {
+      "full": 9
+     },
+     "total_used_sum": 9,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 5,
+     "total_by_domain": {
+      "food": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "expenses": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "training": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      }
+     },
+     "first_call": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "first_call_correction_identical": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 20,
+      "n": 21,
+      "rate": 0.9524,
+      "lower95": 0.7933
+     },
+     "effect_correction_identical": {
+      "k": 8,
+      "n": 9,
+      "rate": 0.8889,
+      "lower95": 0.5709
+     },
+     "totals_after_correction_identical": {
+      "k": 8,
+      "n": 9,
+      "rate": 0.8889,
+      "lower95": 0.5709
+     },
+     "stray_or_duplicate": {
+      "k": 1,
+      "n": 21,
+      "rate": 0.0476,
+      "upper95": 0.2067
+     },
+     "by_sub": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 8,
+       "n": 9,
+       "rate": 0.8889,
+       "lower95": 0.5709
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "expenses": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 7,
+       "rate": 0.8571,
+       "lower95": 0.4793
+      },
+      "expenses": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "history_line_added": 0,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 21,
+      "rate": 0.0,
+      "upper95": 0.1329
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     },
+     "task_success": {
+      "k": 29,
+      "n": 30,
+      "rate": 0.9667,
+      "lower95": 0.8514
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 8,
+       "n": 9,
+       "rate": 0.8889,
+       "lower95": 0.5709
+      },
+      "total": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 1994,
+     "pickup_before_first_action": {
+      "k": 30,
+      "n": 30,
+      "rate": 1.0,
+      "lower95": 0.905
+     },
+     "skill_read_at_all": 30,
+     "pickup_by_domain": {
+      "food": {
+       "k": 10,
+       "n": 10,
+       "rate": 1.0,
+       "lower95": 0.7411
+      },
+      "expenses": {
+       "k": 10,
+       "n": 10,
+       "rate": 1.0,
+       "lower95": 0.7411
+      },
+      "training": {
+       "k": 10,
+       "n": 10,
+       "rate": 1.0,
+       "lower95": 0.7411
+      }
+     }
+    },
+    "K2": {
+     "episodes": 20,
+     "usd": 0.1917,
+     "total_accuracy": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "total_verdicts": {
+      "full": 6
+     },
+     "total_used_sum": 6,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 3,
+     "total_by_domain": {
+      "food": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      },
+      "expenses": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      },
+      "training": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      }
+     },
+     "first_call": {
+      "k": 14,
+      "n": 14,
+      "rate": 1.0,
+      "lower95": 0.8074
+     },
+     "first_call_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 13,
+      "n": 14,
+      "rate": 0.9286,
+      "lower95": 0.7033
+     },
+     "effect_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "totals_after_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "stray_or_duplicate": {
+      "k": 1,
+      "n": 14,
+      "rate": 0.0714,
+      "upper95": 0.2967
+     },
+     "by_sub": {
+      "add": {
+       "k": 7,
+       "n": 8,
+       "rate": 0.875,
+       "lower95": 0.5293
+      },
+      "correct_hidden": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "expenses": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "training": {
+       "k": 4,
+       "n": 4,
+       "rate": 1.0,
+       "lower95": 0.4729
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 4,
+       "n": 5,
+       "rate": 0.8,
+       "lower95": 0.3426
+      },
+      "expenses": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "training": {
+       "k": 4,
+       "n": 4,
+       "rate": 1.0,
+       "lower95": 0.4729
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 19,
+      "n": 20,
+      "rate": 0.95,
+      "lower95": 0.7839
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 7,
+       "n": 8,
+       "rate": 0.875,
+       "lower95": 0.5293
+      },
+      "correct_hidden": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "total": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "attach_bytes": 3732,
+     "mean_input_tokens_first_request": 2928
+    },
+    "K3": {
+     "episodes": 20,
+     "usd": 0.2354,
+     "total_accuracy": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "total_verdicts": {
+      "full": 6
+     },
+     "total_used_sum": 6,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 3,
+     "total_by_domain": {
+      "food": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      },
+      "expenses": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      },
+      "training": {
+       "k": 2,
+       "n": 2,
+       "rate": 1.0,
+       "lower95": 0.2236
+      }
+     },
+     "first_call": {
+      "k": 14,
+      "n": 14,
+      "rate": 1.0,
+      "lower95": 0.8074
+     },
+     "first_call_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 14,
+      "n": 14,
+      "rate": 1.0,
+      "lower95": 0.8074
+     },
+     "effect_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "totals_after_correction_identical": {
+      "k": 6,
+      "n": 6,
+      "rate": 1.0,
+      "lower95": 0.607
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 14,
+      "rate": 0.0,
+      "upper95": 0.1926
+     },
+     "by_sub": {
+      "add": {
+       "k": 8,
+       "n": 8,
+       "rate": 1.0,
+       "lower95": 0.6877
+      },
+      "correct_hidden": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "expenses": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "training": {
+       "k": 4,
+       "n": 4,
+       "rate": 1.0,
+       "lower95": 0.4729
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "expenses": {
+       "k": 5,
+       "n": 5,
+       "rate": 1.0,
+       "lower95": 0.5493
+      },
+      "training": {
+       "k": 4,
+       "n": 4,
+       "rate": 1.0,
+       "lower95": 0.4729
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 20,
+      "n": 20,
+      "rate": 1.0,
+      "lower95": 0.8609
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 8,
+       "n": 8,
+       "rate": 1.0,
+       "lower95": 0.6877
+      },
+      "correct_hidden": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "total": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "attach_bytes": 4096,
+     "mean_input_tokens_first_request": 3035
+    }
+   },
+   "claude-sonnet-5-5": {
+    "F": {
+     "episodes": 135,
+     "usd": 2.0252,
+     "total_accuracy": {
+      "k": 58,
+      "n": 60,
+      "rate": 0.9667,
+      "lower95": 0.8988
+     },
+     "total_verdicts": {
+      "full": 58,
+      "wrong": 2
+     },
+     "total_used_sum": 0,
+     "total_used_calc": 57,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 19,
+       "n": 20,
+       "rate": 0.95,
+       "lower95": 0.7839
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 19,
+       "n": 20,
+       "rate": 0.95,
+       "lower95": 0.7839
+      }
+     },
+     "first_call": {
+      "k": 73,
+      "n": 75,
+      "rate": 0.9733,
+      "lower95": 0.9184
+     },
+     "first_call_correction_identical": {
+      "k": 58,
+      "n": 60,
+      "rate": 0.9667,
+      "lower95": 0.8988
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "lower95": 0.9608
+     },
+     "effect_correction_identical": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "totals_after_correction_identical": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 75,
+      "rate": 0.0,
+      "upper95": 0.0392
+     },
+     "by_sub": {
+      "add": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "correct_hidden": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "correct_visible": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "identical": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "move": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 23,
+       "n": 25,
+       "rate": 0.92,
+       "lower95": 0.769
+      },
+      "expenses": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "training": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "expenses": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "training": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      }
+     },
+     "history_line_added": 12
+    },
+    "S": {
+     "episodes": 150,
+     "usd": 1.5224,
+     "total_accuracy": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "total_verdicts": {
+      "full": 56,
+      "partial_named": 4
+     },
+     "total_used_sum": 60,
+     "total_used_calc": 16,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      }
+     },
+     "first_call": {
+      "k": 53,
+      "n": 75,
+      "rate": 0.7067,
+      "lower95": 0.6083
+     },
+     "first_call_correction_identical": {
+      "k": 38,
+      "n": 60,
+      "rate": 0.6333,
+      "lower95": 0.5193
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "lower95": 0.9608
+     },
+     "effect_correction_identical": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "totals_after_correction_identical": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 75,
+      "rate": 0.0,
+      "upper95": 0.0392
+     },
+     "by_sub": {
+      "add": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "correct_hidden": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "correct_visible": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "identical": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      },
+      "move": {
+       "k": 15,
+       "n": 15,
+       "rate": 1.0,
+       "lower95": 0.819
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 15,
+       "n": 25,
+       "rate": 0.6,
+       "lower95": 0.4168
+      },
+      "expenses": {
+       "k": 17,
+       "n": 25,
+       "rate": 0.68,
+       "lower95": 0.4964
+      },
+      "training": {
+       "k": 21,
+       "n": 25,
+       "rate": 0.84,
+       "lower95": 0.6704
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "expenses": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      },
+      "training": {
+       "k": 25,
+       "n": 25,
+       "rate": 1.0,
+       "lower95": 0.8871
+      }
+     },
+     "history_line_added": 0,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 90,
+      "rate": 0.0,
+      "upper95": 0.0327
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 15,
+      "rate": 0.0,
+      "upper95": 0.181
+     },
+     "fault_always_reported": 9,
+     "fault_episodes": {
+      "always": 9,
+      "once": 6,
+      "once_recovered": 6
+     }
+    },
+    "K0": {
+     "episodes": 30,
+     "usd": 0.3888,
+     "total_accuracy": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "total_verdicts": {
+      "full": 9
+     },
+     "total_used_sum": 9,
+     "total_used_calc": 3,
+     "total_with_skipped_rows": 5,
+     "total_by_domain": {
+      "food": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "expenses": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "training": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      }
+     },
+     "first_call": {
+      "k": 18,
+      "n": 21,
+      "rate": 0.8571,
+      "lower95": 0.6708
+     },
+     "first_call_correction_identical": {
+      "k": 6,
+      "n": 9,
+      "rate": 0.6667,
+      "lower95": 0.3449
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "effect_correction_identical": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "totals_after_correction_identical": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 21,
+      "rate": 0.0,
+      "upper95": 0.1329
+     },
+     "by_sub": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 7,
+       "rate": 0.8571,
+       "lower95": 0.4793
+      },
+      "expenses": {
+       "k": 5,
+       "n": 7,
+       "rate": 0.7143,
+       "lower95": 0.3413
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "expenses": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 30,
+      "n": 30,
+      "rate": 1.0,
+      "lower95": 0.905
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      },
+      "total": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 2975,
+     "pickup_before_first_action": {
+      "k": 0,
+      "n": 30,
+      "rate": 0.0,
+      "lower95": 0.0
+     },
+     "skill_read_at_all": 0,
+     "pickup_by_domain": {
+      "food": {
+       "k": 0,
+       "n": 10,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "expenses": {
+       "k": 0,
+       "n": 10,
+       "rate": 0.0,
+       "lower95": 0.0
+      },
+      "training": {
+       "k": 0,
+       "n": 10,
+       "rate": 0.0,
+       "lower95": 0.0
+      }
+     }
+    },
+    "K1": {
+     "episodes": 60,
+     "usd": 0.8895,
+     "total_accuracy": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "lower95": 0.8467
+     },
+     "total_verdicts": {
+      "full": 18
+     },
+     "total_used_sum": 18,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 12,
+     "total_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "expenses": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      },
+      "training": {
+       "k": 6,
+       "n": 6,
+       "rate": 1.0,
+       "lower95": 0.607
+      }
+     },
+     "first_call": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "first_call_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 42,
+      "n": 42,
+      "rate": 1.0,
+      "lower95": 0.9312
+     },
+     "effect_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "totals_after_correction_identical": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 42,
+      "rate": 0.0,
+      "upper95": 0.0688
+     },
+     "by_sub": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "expenses": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      },
+      "training": {
+       "k": 14,
+       "n": 14,
+       "rate": 1.0,
+       "lower95": 0.8074
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "correct_hidden": {
+       "k": 21,
+       "n": 21,
+       "rate": 1.0,
+       "lower95": 0.8671
+      },
+      "total": {
+       "k": 18,
+       "n": 18,
+       "rate": 1.0,
+       "lower95": 0.8467
+      }
+     },
+     "attach_bytes": 0,
+     "mean_input_tokens_first_request": 3007,
+     "pickup_before_first_action": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "skill_read_at_all": 60,
+     "pickup_by_domain": {
+      "food": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      }
+     }
+    },
+    "K2": {
+     "episodes": 30,
+     "usd": 0.3426,
+     "total_accuracy": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "total_verdicts": {
+      "full": 9
+     },
+     "total_used_sum": 9,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 5,
+     "total_by_domain": {
+      "food": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "expenses": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "training": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      }
+     },
+     "first_call": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "first_call_correction_identical": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 20,
+      "n": 21,
+      "rate": 0.9524,
+      "lower95": 0.7933
+     },
+     "effect_correction_identical": {
+      "k": 8,
+      "n": 9,
+      "rate": 0.8889,
+      "lower95": 0.5709
+     },
+     "totals_after_correction_identical": {
+      "k": 8,
+      "n": 9,
+      "rate": 0.8889,
+      "lower95": 0.5709
+     },
+     "stray_or_duplicate": {
+      "k": 1,
+      "n": 21,
+      "rate": 0.0476,
+      "upper95": 0.2067
+     },
+     "by_sub": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 8,
+       "n": 9,
+       "rate": 0.8889,
+       "lower95": 0.5709
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "expenses": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 6,
+       "n": 7,
+       "rate": 0.8571,
+       "lower95": 0.4793
+      },
+      "expenses": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "history_line_added": 0,
+     "false_claim_judged": {
+      "k": 0,
+      "n": 21,
+      "rate": 0.0,
+      "upper95": 0.1329
+     },
+     "unjudged": 0,
+     "false_claim_after_refused_allocation": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "upper95": 1.0
+     },
+     "fault_always_reported": 0,
+     "fault_episodes": {
+      "always": 0,
+      "once": 0,
+      "once_recovered": 0
+     },
+     "task_success": {
+      "k": 29,
+      "n": 30,
+      "rate": 0.9667,
+      "lower95": 0.8514
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 8,
+       "n": 9,
+       "rate": 0.8889,
+       "lower95": 0.5709
+      },
+      "total": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      }
+     },
+     "attach_bytes": 3732,
+     "mean_input_tokens_first_request": 4244
+    },
+    "K3": {
+     "episodes": 30,
+     "usd": 0.3967,
+     "total_accuracy": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "total_verdicts": {
+      "full": 9
+     },
+     "total_used_sum": 9,
+     "total_used_calc": 0,
+     "total_with_skipped_rows": 5,
+     "total_by_domain": {
+      "food": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "expenses": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      },
+      "training": {
+       "k": 3,
+       "n": 3,
+       "rate": 1.0,
+       "lower95": 0.3684
+      }
+     },
+     "first_call": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "first_call_correction_identical": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "write_turns_without_a_write": 0,
+     "effect": {
+      "k": 21,
+      "n": 21,
+      "rate": 1.0,
+      "lower95": 0.8671
+     },
+     "effect_correction_identical": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "totals_after_correction_identical": {
+      "k": 9,
+      "n": 9,
+      "rate": 1.0,
+      "lower95": 0.7169
+     },
+     "stray_or_duplicate": {
+      "k": 0,
+      "n": 21,
+      "rate": 0.0,
+      "upper95": 0.1329
+     },
+     "by_sub": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      }
+     },
+     "first_call_by_domain": {
+      "food": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "expenses": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "effect_by_domain": {
+      "food": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "expenses": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      },
+      "training": {
+       "k": 7,
+       "n": 7,
+       "rate": 1.0,
+       "lower95": 0.6518
+      }
+     },
+     "history_line_added": 0,
+     "task_success": {
+      "k": 30,
+      "n": 30,
+      "rate": 1.0,
+      "lower95": 0.905
+     },
+     "task_by_kind": {
+      "add": {
+       "k": 12,
+       "n": 12,
+       "rate": 1.0,
+       "lower95": 0.7791
+      },
+      "correct_hidden": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      },
+      "total": {
+       "k": 9,
+       "n": 9,
+       "rate": 1.0,
+       "lower95": 0.7169
+      }
+     },
+     "attach_bytes": 4096,
+     "mean_input_tokens_first_request": 4392
+    }
+   }
+  },
+  "usd": {
+   "anthropic_heads": 6.4702,
+   "anthropic_judge": 0.7966,
+   "anthropic_probe": 0.1756,
+   "openai": 0.7769,
+   "zai": 4.9596,
+   "note": "heads include pilots and discarded runs"
+  }
+ }
 }
