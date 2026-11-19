@@ -645,6 +645,17 @@ static void test_a_refused_file_reference_is_forgotten_and_sent_once_more() {
   TEST_ASSERT_TRUE(twice.out.err == ExchangeErr::Other);
   TEST_ASSERT_EQUAL(2, (int)twice.model.requests().size());
   expectOnePlainLine(twice.out);
+  // A caller that says yes to anything: only a 400 or a 404 is handed to it.
+  {
+    Rig any;
+    int calls = 0;
+    any.req.refusedRef = [&calls](int, const std::string&) { return ++calls > 0; };
+    any.model.push(sp::httpError(422, gone));
+    any.model.push(sp::say("never asked"));
+    expectOk(any.run());
+    TEST_ASSERT_EQUAL(0, calls);
+    TEST_ASSERT_EQUAL(1, (int)any.model.requests().size());
+  }
   // The caller's no, no caller, another status, another kind of 400: one request.
   for (int k = 0; k < 4; ++k) {
     Rig one;

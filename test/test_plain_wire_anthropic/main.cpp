@@ -1978,6 +1978,17 @@ void test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepte
   EXPECT_API_OK(named, "dropped turns named");
   TEST_ASSERT_TRUE(named.view.messages[0].blocks[0].text == "[3 earlier turns, 16 Nov, not shown]");
   TEST_ASSERT_TRUE(named.req.body.find(th0) == std::string::npos);
+  // The line opens the request, so an assistant item stored before the first owner message (a turn
+  // compaction cut) follows it, as it does after a rung-3 omission of resident turns.
+  txb::Convo cut;
+  cut.openTurn();
+  cut.say("the tail of a cut turn");
+  cut.close();
+  cut.openTurn();
+  cut.owner("next");
+  RENDER_OK(rig, cut, named, dropped);
+  EXPECT_API_OK(named, "line then a cut turn's tail");
+  TEST_ASSERT_TRUE(txb::detail::textIn(named.view, "assistant", "the tail of a cut turn"));
 }
 
 // ---- 13. the framing, measured (ruling 16) --------------------------------------------------------------

@@ -203,6 +203,8 @@ void test_a_cut_malformed_or_error_body_fills_nothing() {
       R"({"type":"message","content":[{"type":"text","text":"a)" "\x01" R"("}]})",                      // raw control byte
       R"({"type":"message","content":[{"type":"text","text":"\ud800"}]})",                                 // lone surrogate
       R"({"type":"message","content":[{"type":"text","text":"\udc00x"}]})",                                // lone low half
+      R"({"type":"message","content":[{"type":"text","text":"\ud800\u0041"}]})",                          // high half, no low
+      R"({"type":"message","content":[],"x":{"a" 1}})",                                                     // a key without its colon
       R"({"type":"message","content":[{"type":"text","text":"\q"}]})",                                     // bad escape
       R"({"type":"message","content":[{"type":"text","text":"\u12"}]})",                                  // short escape
       R"({"type":"message","content":[{"type":"text","text":"a"}]} x)",                                    // trailing bytes
@@ -392,7 +394,8 @@ void test_thinking_is_kept_only_while_the_round_replays_byte_for_byte() {
       {{crossed, t2}, 0},                                        // a signature belongs to thinking,
       {{crossedR, t2}, 0},                                       // data to redacted thinking
       {{t1, R"({"type":"server_tool_use","id":"srv_1","name":"x","input":{}})", t2, call(1)}, 1},
-      {{t1, text(std::string(12289, 'x')), t2, call(1)}, 1},     // text the engine stores as its stub
+      {{t1, text(std::string(12289, 'x')), call(1), t2, call(2)}, 1},   // text the engine stores as its stub
+      {{R"({"type":"thinking","thinking":null,"signature":"s"})", t2, call(1)}, 0},   // a thinking text that is not one
   };
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     std::string body = R"({"type":"message","role":"assistant","content":[)";

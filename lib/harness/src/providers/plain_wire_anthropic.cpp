@@ -1223,8 +1223,7 @@ class AnthropicWire final : public WireCodec {
 #else
     st = parseBody(in, out);
 #endif
-    if (!st.ok()) out = ParsedStep{};
-    return st;
+    return st;   // parseBody fills `out` only once the whole body was read
   }
 };
 
