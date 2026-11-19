@@ -40,9 +40,9 @@ void registerCalcTool(ToolRegistry& reg) {
 }
 
 void alsoReadCalcNames(ToolRegistry& reg) {
-  static_assert(calc::kArgNameCount == 8, "the alias list below names every accepted name");
-  reg.alsoReads(calc::kName, {calc::kArgNames[1], calc::kArgNames[2], calc::kArgNames[3], calc::kArgNames[4],
-                              calc::kArgNames[5], calc::kArgNames[6], calc::kArgNames[7]});
+  // calc::kArgNames after the schema's own, as one comma-separated list (the registry keeps
+  // them that way); test_calc_tool calls with each name and sees no "not read" note.
+  reg.alsoReads(calc::kName, {"expr,input,query,formula,calculation,math,text"});
 }
 
 }  // namespace nimbus::orch

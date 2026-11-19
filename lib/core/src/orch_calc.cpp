@@ -84,8 +84,8 @@ U128 shl(const U128& a, unsigned k) {
 
 bool bitAt(const U128& a, unsigned i) { return ((i >= 64 ? a.hi >> (i - 64) : a.lo >> i) & 1u) != 0; }
 
-// q = a / b, r = a % b, for 0 < b < 2^127 (every divisor here is a value or a gcd of values
-// below 2^124, so r * 2 never leaves 128 bits): shift and subtract, one bit at a time.
+// q = a / b, r = a % b (b nonzero): shift and subtract, one bit at a time. Euclid's gcd
+// divides by a common denominator, which may reach 2^128 - 1.
 void divmod(const U128& a, const U128& b, U128& q, U128& r) {
   if (a.hi == 0 && b.hi == 0) {
     q = u128(a.lo / b.lo);
@@ -95,9 +95,10 @@ void divmod(const U128& a, const U128& b, U128& q, U128& r) {
   q = U128{};
   r = U128{};
   for (unsigned i = bitLength(a); i-- > 0;) {
+    const bool carry = (r.hi >> 63) != 0;   // r * 2 passes 2^128: then it is above b
     r = shl(r, 1);
     r.lo |= bitAt(a, i) ? 1u : 0u;
-    if (cmp(r, b) >= 0) {
+    if (carry || cmp(r, b) >= 0) {
       r = sub(r, b);
       q = i >= 64 ? U128{q.hi | (1ull << (i - 64)), q.lo} : U128{q.hi, q.lo | (1ull << i)};
     }
@@ -128,22 +129,16 @@ uint32_t divSmall(const U128& a, uint32_t d, U128& q) {
   return (uint32_t)rem;
 }
 
-// Binary gcd (a, b not both zero).
+// Euclid's gcd (a, b not both zero). Values below 2^64 take the machine's own division in
+// divmod, so the common case is a few native steps.
 U128 gcd(U128 a, U128 b) {
-  if (isZero(a)) return b;
-  if (isZero(b)) return a;
-  const unsigned za = ctz(a), zb = ctz(b);
-  a = shr(a, za);
   while (!isZero(b)) {
-    b = shr(b, ctz(b));
-    if (cmp(a, b) > 0) {
-      const U128 t = a;
-      a = b;
-      b = t;
-    }
-    b = sub(b, a);
+    U128 q, r;
+    divmod(a, b, q, r);
+    a = b;
+    b = r;
   }
-  return shl(a, za < zb ? za : zb);
+  return a;
 }
 
 // ---- exact fractions ---------------------------------------------------------------------
@@ -394,8 +389,17 @@ class Evaluator {
   size_t i_ = 0;
   Tok cur_;
   unsigned depth_ = 0;
-  Pending ops_[kOpSlots];
-  Val vals_[kValSlots];
+  // Slots are written before they are read (a stack), so they start unconstructed: no
+  // per-call loop fills 77 slots nobody reads.
+  template <typename E, size_t N>
+  union Slots {
+    char none;
+    E at[N];
+    Slots() : none(0) {}
+    E& operator[](size_t i) { return at[i]; }
+  };
+  Slots<Pending, kOpSlots> ops_;
+  Slots<Val, kValSlots> vals_;
   size_t nOps_ = 0, nVals_ = 0;
   Error err_ = Error::None;
   size_t errAt_ = 0, errLen_ = 0;
