@@ -127,6 +127,19 @@ def count(rows: list, ok) -> int:
     return sum(1 for r in rows if ok(r))
 
 
+def ambiguous_part(wr: list) -> dict:
+    """The correction cells with and without the one ambiguous template (records.ambiguous)."""
+    ci = [r for r in wr if r["sub"] in FIXES and not records.ambiguous(r)]
+    after = lambda r: records.totals_after_fix({"dom": r["dom"], "expect": r["expect"]}, r["before"], r["after"])  # noqa: E731
+    return {
+        "totals_after_correction_identical_without_ambiguous": share(ci, after),
+        "first_call_correction_identical_without_ambiguous": share(
+            [r for r in ci if r.get("first_write")], lambda r: r["first_write"]["ok"]
+        ),
+        "ambiguous_episodes": sum(1 for r in wr if r["sub"] in FIXES and records.ambiguous(r)),
+    }
+
+
 def claims_part(recs: list, labels: dict) -> dict:
     allw = [r for r in recs if r["kind"] == "write"]
     key = lambda r: f"{r['arm']}|{r['episode']}"  # noqa: E731
@@ -177,6 +190,7 @@ def cell(recs: list, labels: dict) -> dict:
         out.update(totals_part(tot))
     if wr:
         out.update(writes_part(wr))
+        out.update(ambiguous_part(wr))
     if any(records.needs_label(r) for r in recs):
         out.update(claims_part(recs, labels))
     if ks:
