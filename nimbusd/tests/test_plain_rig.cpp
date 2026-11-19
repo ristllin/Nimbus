@@ -4,6 +4,7 @@
 //   (a) a text turn on every dialect: the scripted answer is the turn's reply, the channel
 //       got it and nothing else, one request, and the transcript holds what the loop core
 //       says a text turn writes (RB-E1a: u t a(fin) d e, cause "reply", one head request);
+//   (a2) the stamp of the owner text follows the day start the host configures (RB-REC5);
 //   (b) the chat goes on: a second turn carries the first, and a rig rebooted over the same
 //       storage carries it too (the host's store, not the rig's RAM);
 //   (c) the failure faces: the provider errors (each class), hangs past the wall clock,
@@ -70,6 +71,7 @@ struct Host {
     c.host = dialect == plain::Dialect::AnthropicMessages ? "api.anthropic.com" : "api.example.test";
     c.model = dialect == plain::Dialect::AnthropicMessages ? "claude-sonnet-5-5" : "scripted-model";
     c.key = [] { return std::string("sk-fake-rig"); };
+    c.dayStartMin = dayStartMin;
     return c;
   }
 
@@ -112,6 +114,7 @@ struct Host {
   const plain::WireCodec* wire = nullptr;
   std::function<void(nimbusd::PlainRig&)> bindTools;
   std::function<bool(const std::string&, const std::string&)> hostSend;
+  uint16_t dayStartMin = plain::kDayStartDefaultMin;
   std::unique_ptr<nimbusd::PlainRig> rig;
   plain::Status booted;
 };
@@ -150,6 +153,29 @@ void testTextTurnOnEveryDialect(ndtest::Ctx& c) {
     c.eqi((long)e.end.headRequests, 1, tag(d, "the e item counts one head request"));
     std::string why;
     c.ok(h.model.verify(why), tag(d, "the script was used exactly (" + why + ")"));
+  }
+}
+
+// ---- (a2) the stamp follows the host's day start --------------------------------------------
+// The rig hands the configured day start to the turn: a message at 00:30 belongs to the day before
+// while the day starts at 04:00, and the stamp says so; with the day starting at midnight it does not.
+void testStampFollowsDayStart(ndtest::Ctx& c) {
+  std::printf("\n-- (a2) the text turn's stamp carries the configured day start\n");
+  for (uint16_t start : {(uint16_t)240, (uint16_t)0}) {
+    Host h;
+    h.dayStartMin = start;
+    h.ms += (11 * 3600 + 28 * 60) * 1000u;   // kEpoch0 is 13:02 UTC: now 00:30 the next day
+    h.reboot();
+    h.model.push(sp::say("Late."));
+    const nimbusd::PlainTurn t = h.rig->say("still up");
+    const std::string& body = h.model.requests().empty() ? std::string() : h.model.last().body;
+    const std::string label = "day start " + std::to_string(start) + ": ";
+    c.eq(t.stated, "Late.", label + "the turn answers");
+    if (start == 240)
+      c.ok(has(body, "[2026-11-18 Wed 00:30 (day 2026-11-17 until 04:00)] still up"),
+           label + "the stamp names the running day and when it ends");
+    else
+      c.ok(has(body, "[2026-11-18 Wed 00:30] still up"), label + "the plain stamp, no running-day clause");
   }
 }
 
@@ -456,6 +482,7 @@ int main() {
   ndtest::Ctx c;
   std::printf("=== engine 2 on the hosted process (lane RB-I1a, offline) ===\n");
   testTextTurnOnEveryDialect(c);
+  testStampFollowsDayStart(c);
   testChatGoesOn(c);
   testFailureFaces(c);
   testHostFaults(c);

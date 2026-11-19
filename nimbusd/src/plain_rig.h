@@ -66,6 +66,9 @@ struct PlainRigConfig {
   nimbus::orch::Role role = nimbus::orch::Role::Admin;   // the person talking (owner by default)
   std::string timeZone = "Europe/London";
   int16_t tzMinutes = 0;                       // local offset from UTC
+  // When the owner's day starts, minutes past midnight (RB-REC5): every message stamp's running-day
+  // clause. nimbusd: orch::day::startOrDefault of the hosted day_starts setting.
+  uint16_t dayStartMin = plain::kDayStartDefaultMin;
   bool qualified = false;                      // the head is qualified on engine 2 (tx::budgetFor)
   int storedRounds = 0;                        // the stored orchLoopRnds (guardLimitsFor)
 };
@@ -200,6 +203,7 @@ class PlainRig {
     out.facts.reg = &reg_;
     out.facts.admin = who_.owner;
     out.facts.timeZone = cfg_.timeZone;
+    out.dayStartMin = cfg_.dayStartMin;
     out.head.host = cfg_.host;
     out.head.effort = cfg_.effort;
     out.head.routed = cfg_.routed;
