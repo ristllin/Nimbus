@@ -432,3 +432,8 @@ def test_counter_main_missing_declared_file_is_red_not_a_traceback(tmp_path, cap
 def test_real_owners_share_the_roster_file():
     # The roster only shrinks (check_pending_roster.py), so every implementing lane may remove its line.
     assert any(r["glob"] == "test/pending_roster.txt" for r in real_owners()["shared"])
+
+
+def test_the_roster_rulings_list_is_protected():
+    """Ruling 79 item 3: no lane can declare an edit of the list of rulings that let the roster grow."""
+    assert "tools/release_gate/roster_rulings.txt" in gate.PROTECTED

@@ -112,6 +112,7 @@ PROTECTED = (
     "tools/engine/owners.json",
     "tools/release_gate/check_lane_files.py",
     "tools/release_gate/check_pending_roster.py",
+    "tools/release_gate/roster_rulings.txt",
     "tools/release_gate/check_image_size.py",
     "tools/release_gate/image_baseline.json",
     "tools/release_gate/image_budget.d/*.json",

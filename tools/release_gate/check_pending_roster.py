@@ -187,6 +187,17 @@ def split_new(
     return grown, unlisted, added
 
 
+def stale_listing_problems(ruled: "dict[str, int]", allowed: "dict[int, set[str]] | None") -> "list[str]":
+    """Ruling 79 item 3: every entry of roster_rulings.txt is a current roster line under that ruling, so
+    a list line whose test left the roster cannot let a later lane park the test again."""
+    return [
+        f"{RULINGS_REL} lists '{n} {key}', which is not a roster line under ruling {n}: remove the list line"
+        for n, keys in sorted((allowed or {}).items())
+        for key in sorted(keys)
+        if ruled.get(key) != n
+    ]
+
+
 def unlisted_problem(key: str, lane: str, ruling: int, allowed: "dict[int, set[str]] | None") -> str:
     where = "does not exist in this tree" if allowed is None else f"does not list {key} under ruling {ruling}"
     return f"roster line '{key} {lane} ruling:{ruling}' names ruling {ruling}, but {RULINGS_REL} {where}"
@@ -209,6 +220,7 @@ def check(
         fails += equality_problems(ignored, skipped, roster)
         lines.append(f"native run: {len(ignored)} ignored, {len(roster)} on the roster")
     errs, line = shrink_problems(roster, base, ruled, allowed)
+    errs += stale_listing_problems(ruled, allowed)
     fails += errs
     lines.append(line)
     if require_empty and roster:

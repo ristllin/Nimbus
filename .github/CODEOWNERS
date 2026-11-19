@@ -36,6 +36,7 @@
 /test/test_budget_governor/                             @ristllin
 /test/test_spend_guard/                                 @ristllin
 /test/pending_roster.txt                                @ristllin
+/tools/release_gate/roster_rulings.txt                  @ristllin
 /tests/evals/refloop/                                   @ristllin
 /tests/evals/owner_regressions/                         @ristllin
 /tools/refloop/                                         @ristllin

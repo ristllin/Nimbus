@@ -497,3 +497,40 @@ def test_real_tree_lists_every_ruled_roster_line():
     assert errs == [] and list_errs == []
     for key, n in ruled.items():
         assert key in allowed.get(n, set()), f"{key} ruling:{n} is not listed"
+
+
+# --- ruling 79 item 3: every list entry is a current roster line under its ruling ------------------
+
+
+def test_counter_a_list_entry_whose_test_left_the_roster_fails():
+    roster = BASE_A.strip() + " ruling:56\n"
+    allowed = {56: {"test_tx_prefix::test_prefix_is_stable", "test_tx_log::test_gone"}}
+    ok, _, fails = run(native_log([PENDING_A]), roster, base=roster, allowed=allowed)
+    assert not ok
+    assert any("test_tx_log::test_gone" in f and "not a roster line" in f for f in fails)
+
+
+def test_counter_a_list_entry_under_another_ruling_than_its_line_fails():
+    roster = BASE_A.strip() + " ruling:56\n"
+    ok, _, fails = run(
+        native_log([PENDING_A]), roster, base=roster, allowed={59: {"test_tx_prefix::test_prefix_is_stable"}}
+    )
+    assert not ok
+    assert any("test_tx_prefix::test_prefix_is_stable" in f and "not a roster line" in f for f in fails)
+
+
+def test_every_list_entry_matching_a_ruled_line_passes():
+    roster = BASE_A.strip() + " ruling:56\n"
+    ok, _, fails = run(
+        native_log([PENDING_A]), roster, base=roster, allowed={56: {"test_tx_prefix::test_prefix_is_stable"}}
+    )
+    assert ok, fails
+
+
+def test_real_tree_lists_only_current_roster_lines():
+    roster, ruled, errs = gate.parse_roster_rulings(gate.read_optional(os.path.join(REPO, gate.ROSTER_REL)))
+    allowed, list_errs = gate.parse_rulings(gate.read_optional(os.path.join(REPO, gate.RULINGS_REL)))
+    assert errs == [] and list_errs == []
+    for n, keys in allowed.items():
+        for key in keys:
+            assert ruled.get(key) == n, f"{n} {key} is listed but is not a roster line under ruling {n}"
