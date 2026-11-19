@@ -79,6 +79,7 @@
 #include "nimbus/orch/provider_slots.h"
 #include "nimbus/orch/provider_park.h"   // PARK? / PARK clear - the one per-provider park (L19-8)
 #include "agent/transport_tls.h"          // LINKX - the device's one provider transport (lane RB-M2)
+#include "nimbus/orch/file_aids_e1.h"     // AIDREAD: the query, as files.read reads it
 #include "agent/files_subsystem.h"       // CARDTIME replace - the file store's whole-file replace
 #include "sys/link_time.h"               // LINKX phase marks, LOGMS serial stamps (lane RB-M2)
 #include <ArduinoJson.h>
@@ -417,10 +418,10 @@ void budgetTest(String arg) {
   reply(String("BUDGET ") + n);
 }
 
-// AIDREAD <project> <name> <column> <from> <to> <sum>: files.read's CSV form through the tool
-// dispatcher on this task (not the web task), so the scan gives the call's card lock up and
-// takes it per 4 KB read; prints the reply's tail line and the longest hold of one read
-// (RB-REC4's bench row: under 150 ms during a filtered read of a 300 KB year file).
+// AIDREAD <project> <name> <column> <from> <to> <sum>: files.read's CSV form run the way the tool
+// runs it (files::tableReadNow: the scan takes the card lock per 4 KB read, never across it);
+// prints the reply's tail line and the longest hold of one read (RB-REC4's bench row: under
+// 150 ms during a filtered read of a 300 KB year file).
 void aidReadCmd(const String& args) {
   char project[33], name[65], column[33], from[24], to[24], sum[65];
   if (sscanf(args.c_str(), "%32s %64s %32s %23s %23s %64s", project, name, column, from, to, sum) != 6) {
@@ -428,29 +429,25 @@ void aidReadCmd(const String& args) {
     return;
   }
   JsonDocument d;
-  d["jsonrpc"] = "2.0";
-  d["id"] = 1;
-  d["method"] = "tools/call";
-  d["params"]["name"] = "files.read";
-  JsonObject a = d["params"]["arguments"].to<JsonObject>();
-  a["project"] = project;
-  a["name"] = name;
-  a["column"] = column;
-  a["from"] = from;
-  a["to"] = to;
-  a["sum"] = sum;
-  std::string req;
-  serializeJson(d, req);
-  const nimbus::orch::Principal owner = nimbus::orch::principalForRole("serial", nimbus::orch::Role::Admin);
+  d["column"] = column;
+  d["from"] = from;
+  d["to"] = to;
+  d["sum"] = sum;
+  nimbus::orch::aids::CsvQuery q;
+  std::string out;
+  if (!nimbus::orch::aids::e1::queryArgs(d.as<JsonObjectConst>(), 0, q, out)) {
+    reply(String("AIDREAD ms=0 ok=0 ") + out.c_str());
+    return;
+  }
   const uint32_t t0 = millis();
-  const std::string resp = agent::memory::handleMcp(req, owner);
+  const bool ok = agent::files::tableReadNow(project, name, q, out);
   const uint32_t ms = millis() - t0;
   uint32_t reads = 0, longestUs = 0;
   agent::files::lastScanStats(reads, longestUs);
-  const size_t at = resp.find("rows ");
-  Serial.printf("AIDREAD ms=%lu reads=%u longest_hold_us=%u resp_bytes=%u\n", (unsigned long)ms, (unsigned)reads,
-                (unsigned)longestUs, (unsigned)resp.size());
-  Serial.printf("AIDREAD tail %s\n", at == std::string::npos ? resp.substr(0, 200).c_str() : resp.substr(at, 240).c_str());
+  const size_t at = out.rfind("\nrows ");
+  Serial.printf("AIDREAD ms=%lu ok=%d reads=%u longest_hold_us=%u reply_bytes=%u\n", (unsigned long)ms, ok ? 1 : 0,
+                (unsigned)reads, (unsigned)longestUs, (unsigned)out.size());
+  Serial.printf("AIDREAD tail %s\n", at == std::string::npos ? out.substr(0, 200).c_str() : out.substr(at + 1, 240).c_str());
 }
 
 // TOOLS?: the tool manifest an owner turn's head gets (the registry's specs for an admin

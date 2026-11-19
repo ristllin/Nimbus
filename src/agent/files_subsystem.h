@@ -1,4 +1,5 @@
 #pragma once
+#include "nimbus/orch/file_aids.h"   // CsvQuery: tableReadNow
 #include <Arduino.h>
 
 #include <FS.h>                            // fs::FS - the streaming save source
@@ -182,6 +183,10 @@ bool removeFile(const std::string& project, const std::string& name);
 // The last files.read scan (the CSV form or the day total): its 4 KB reads and the longest
 // card-lock hold of one read, in microseconds (RB-REC4's bench row reads it: AIDREAD).
 void lastScanStats(uint32_t& reads, uint32_t& longestUs);
+// files.read's CSV form on this task, as the tool runs it (the test console's AIDREAD: the loop
+// task's stack is too small for the whole tool dispatch). out: the reply or the error.
+bool tableReadNow(const std::string& project, const std::string& name, const nimbus::orch::aids::CsvQuery& q,
+                  std::string& out);
 // Delete an entire project (folder) and its files. Returns the count removed,
 // or -1 if the project is unknown/empty. Owner surface only (web Danger action).
 int  removeProject(const std::string& project);

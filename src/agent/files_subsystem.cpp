@@ -1224,6 +1224,13 @@ bool wouldExceedQuota(const nimbus::orch::Principal& who, uint32_t bytes) {
   return (uint64_t)g_store.bytesFor(who.ns) + bytes > q.maxBytes;
 }
 
+bool tableReadNow(const std::string& project, const std::string& name, const nimbus::orch::aids::CsvQuery& q,
+                  std::string& out) {
+  const nimbus::orch::ToolResult r = readTable(project, name, q);
+  out = r.success ? r.output : r.error;
+  return r.success;
+}
+
 void lastScanStats(uint32_t& reads, uint32_t& longestUs) {
   reads = g_scanReads;
   longestUs = g_scanLongestUs;
