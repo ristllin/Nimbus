@@ -77,6 +77,7 @@ class Battery {
   // dialect's), a head through the router, and a delivery of its own (null: deliverTurn).
   std::string hostOverride, modelOverride;
   bool routed = false;
+  bool noHead = false;             // the setup names no model (a binding fault; ruling 89 item 3)
   plain::DeliverFn deliverFn;
   plain::HeadCost cost;            // what the guards scale from (TurnSetup::cost)
   int storedRounds = 0;            // the stored orchLoopRnds (TurnSetup::storedRounds)
@@ -93,6 +94,9 @@ class Battery {
   size_t sends = 0;
   size_t tornCuts = 0;                 // torn cuts so far: each may leave one undecodable line
   plain::TurnInput lastInput;          // the owner message in flight (redelivered after a cut)
+
+  // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
+  plain::TurnCtx headCtx() const { return turnCtx(0, plain::Trigger::Owner); }
 
   void advance(uint32_t seconds) {
     epoch += seconds;
@@ -229,6 +233,7 @@ class Battery {
     c.model = !modelOverride.empty()                              ? modelOverride
               : dialect == plain::Dialect::AnthropicMessages ? "claude-sonnet-5-5"
                                                              : "battery-model";
+    if (noHead) c.model.clear();
     c.profile = tx::Profile::Standard;
     c.startedAt = epoch;
     c.startedMs = ms;

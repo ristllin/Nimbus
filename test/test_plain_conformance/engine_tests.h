@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "../support/tx_battery/fixtures.h"
+#include "nimbus/harness/log.h"
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/props.h"
 #include "nimbus/orch/deliver_text.h"
@@ -605,6 +606,36 @@ inline void test_a_late_round_gets_only_the_time_left() {
   TXB_OK(b.owner("read it", out));
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
   TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kSoftWallMs + 60000, "the late round ran on a full wall clock");
+}
+
+// Ruling 89 item 3: a turn opened without a head (no model in the setup) is refused loudly: a
+// Status error, one plain status line and a log line, and no request is sent. Counter-test: the
+// same owner message with a head is answered.
+inline std::vector<std::string>& headLog() {
+  static std::vector<std::string> v;
+  return v;
+}
+inline void recordHeadLog(const char* line) { headLog().push_back(line); }
+
+inline void test_a_turn_without_a_head_fails_loudly() {
+  agent::hlog::setSink(recordHeadLog);
+  headLog().clear();
+  txb::Battery b;
+  b.noHead = true;
+  b.model.push(sp::say("never sent"));
+  plain::TurnOutcome out;
+  const tx::Status st = b.owner("hello", out);
+  TEST_ASSERT_EQUAL((int)tx::Err::InvalidArgument, (int)st.err);
+  TEST_ASSERT_EQUAL(0, (int)b.model.requests().size());
+  bool logged = false;
+  for (const std::string& l : headLog()) logged |= l.find("no head") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(logged, "no log line for a turn without a head");
+  headLog().clear();
+  txb::Battery ok;
+  ok.model.push(sp::say("hi"));
+  TXB_OK(ok.owner("hello", out));
+  TEST_ASSERT_EQUAL(1, (int)ok.model.requests().size());
+  agent::hlog::setSink(nullptr);
 }
 
 // ---- the overflow ladder's rung 3 (ruling 44) ------------------------------------------------
@@ -1604,6 +1635,8 @@ inline void test_after_deliver_runs_when_the_d_item_is_refused() {
   plain::TurnInput in;
   in.ctx.chatKey = in.ctx.chatId = b.chatKey;
   in.ctx.who = &b.who;
+  in.ctx.host = b.headCtx().host;   // the head, named (ruling 89)
+  in.ctx.model = b.headCtx().model;
   in.text = "hi";
   hookTurn(b, out, in, escaped);
   alloc_hook::disarm();
@@ -2202,6 +2235,8 @@ inline void test_a_retried_turn_starts_with_nothing_seen() {
   plain::TurnInput in;
   in.ctx.chatKey = in.ctx.chatId = b.chatKey;
   in.ctx.who = &b.who;
+  in.ctx.host = b.headCtx().host;   // the head, named (ruling 89)
+  in.ctx.model = b.headCtx().model;
   in.ctx.turn = 7;
   in.text = "read it";
   b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
@@ -2573,6 +2608,7 @@ inline void run() {
   RUN_TEST(test_a_result_lost_to_the_card_is_closed_after_a_restart);
   RUN_TEST(test_no_call_starts_past_the_soft_wall);
   RUN_TEST(test_a_late_round_gets_only_the_time_left);
+  RUN_TEST(test_a_turn_without_a_head_fails_loudly);
   RUN_TEST(test_rung_three_omits_only_the_turns_the_request_needs);
   RUN_TEST(test_a_size_refusal_may_omit_every_omissible_turn);
   RUN_TEST(test_outside_content_through_more_taints_the_turn);

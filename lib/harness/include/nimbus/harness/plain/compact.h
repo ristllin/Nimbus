@@ -152,8 +152,9 @@ struct CompactDeps {
   // The newest q the restart fill gave up for a full arena (TxLog::fill's FillReport::droppedThru;
   // unset or 0: none). A slice that covers such items says so in its input.
   std::function<uint64_t()> omittedThru;
-  // The head the marks and the token due mark are read for (tx::budgetFor). Unset: nothing is
-  // compacted automatically (a manual run still answers).
+  // The head the marks and the token due mark are read for (tx::budgetFor). Required (ruling 89):
+  // installCompaction refuses deps without it, and a driver without it fails every step, each with
+  // InvalidArgument and one log line.
   nimbus::orch::tx::HeadKey headKey;
   uint16_t dayStartMin = kDayStartDefaultMin;
 };

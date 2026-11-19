@@ -10,6 +10,7 @@
 #include <new>
 
 #include "nimbus/harness/channel.h"
+#include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
@@ -308,7 +309,7 @@ class TurnRun {
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
     if (!(st = d_.setup(t_.ctx, t_.setup)).ok()) return fail(st);
     t_.ctx.dayStartMin = t_.setup.dayStartMin;   // the wires stamp every message with it
-    budget();
+    if (!(st = budget()).ok()) return fail(st);
     if (!(st = storeOpen(in)).ok() || !(st = movePointer()).ok()) return st;
     if (!(st = compose()).ok()) return fail(st);
     if (!t_.wire && !(st = wireFor(t_.ctx.dialect, t_.wire)).ok()) return fail(st);
@@ -395,22 +396,28 @@ class TurnRun {
   }
 
   // The head's budget (tx::budgetFor). Never the floor by accident: a key the table cannot read
-  // takes the head's released row (orch::requestBudgetFor), and a floor head is its class.
-  void budget() {
+  // takes the head's released row (orch::requestBudgetFor), and a floor head is its class. A turn
+  // whose setup names no head is a binding fault, refused loudly (ruling 89 item 3).
+  Status budget() {
     tx::HeadKey key;
     key.host = providerSlugOf(t_.ctx, t_.setup.head);
     key.model = t_.ctx.model;
     key.routed = t_.setup.head.routed;
+    if (key.host.empty() || key.model.empty()) {
+      agent::hlog::logf("plain(%s): no head named for the turn: refused", t_.ctx.chatKey.c_str());
+      return Status::fail(Err::InvalidArgument, "plain::PlainEngine::budget.head");
+    }
     tx::HeadBudget b;
     if (tx::budgetFor(key, t_.ctx.profile, b).ok()) {
       t_.bodyCap = b.bodyCap;
       t_.floorHead = b.floorHead;
       t_.ctx.profile = b.profile;
-      return;
+      return Status::success();
     }
     const orch::RequestBudget r = orch::requestBudgetFor(key.host, key.model, key.routed);
     t_.bodyCap = r.wireBodyBytes;
     t_.floorHead = r.bound == orch::BudgetBound::Floor || r.bound == orch::BudgetBound::Held;
+    return Status::success();
   }
   bool floorHead() const { return t_.floorHead; }
 

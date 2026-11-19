@@ -10,6 +10,10 @@
 #include <ArduinoJson.h>
 #include <unity.h>
 
+#include <cstring>
+
+#include "nimbus/harness/log.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -1197,6 +1201,46 @@ void test_a_200_turn_chat_never_drops_below_L_and_keeps_the_block_stable() {
   expectCoveredAcrossRestart(c, "after 200 turns");
 }
 
+// Ruling 89 item 3: a compaction with no head named is never silent. Installing it is refused with a
+// Status naming the head key and one log line; a driver built without one fails its step the same way.
+// Counter-test: the same chat with its head key installs and compacts.
+std::vector<std::string> gLogLines;
+void recordLog(const char* line) { gLogLines.push_back(line); }
+bool logged(const char* what) {
+  for (const std::string& l : gLogLines)
+    if (l.find(what) != std::string::npos) return true;
+  return false;
+}
+
+void test_a_compaction_without_a_head_fails_loudly() {
+  agent::hlog::setSink(recordLog);
+  gLogLines.clear();
+  Chat c;
+  threeDays(c);
+  c.answer([] { return sp::say(kSummary); });
+  c.headKey = tx::HeadKey{};
+  plain::PlainHooks hooks;
+  const plain::Status st = plain::installCompaction(hooks, c.deps());
+  TEST_ASSERT_EQUAL(plain::Err::InvalidArgument, st.err);
+  TEST_ASSERT_NOT_NULL(std::strstr(st.where, "headKey"));
+  TEST_ASSERT_FALSE(hooks.has(plain::Seam::IdleStep, plain::HookSlot::Compaction));
+  TEST_ASSERT_TRUE_MESSAGE(logged("no head"), "no log line for a compaction without a head");
+  gLogLines.clear();
+  plain::CompactDriver driver(c.deps());
+  plain::CompactOutcome out;
+  TEST_ASSERT_EQUAL(plain::Err::InvalidArgument, driver.step(c.idle(), out).err);
+  TEST_ASSERT_TRUE_MESSAGE(logged("no head"), "no log line for a step without a head");
+  // Counter-test: with its head the same chat installs and compacts, and logs no such line.
+  gLogLines.clear();
+  c.headKey = tx::HeadKey{"anthropic", "claude-sonnet-5-5", false};
+  c.profile = c.head.profile = "standard";
+  plain::PlainHooks ok;
+  TEST_ASSERT_TRUE(plain::installCompaction(ok, c.deps()).ok());
+  TEST_ASSERT_TRUE(ok.runIdleStep(c.idle()).worked);
+  TEST_ASSERT_FALSE(logged("no head"));
+  agent::hlog::setSink(nullptr);
+}
+
 void test_the_seam_registers_once_and_reports_work_only_for_a_request() {
   Chat c;
   threeDays(c);
@@ -1530,6 +1574,7 @@ int main(int, char**) {
   RUN_TEST(test_a_refused_allocation_at_every_index_is_a_status);
   RUN_TEST(test_a_manual_run_is_answered_once_bounded_and_never_beside_an_automatic_one);
   RUN_TEST(test_a_200_turn_chat_never_drops_below_L_and_keeps_the_block_stable);
+  RUN_TEST(test_a_compaction_without_a_head_fails_loudly);
   RUN_TEST(test_the_seam_registers_once_and_reports_work_only_for_a_request);
   RUN_TEST(test_a_turn_open_across_a_compaction_stays_one_turn_and_never_wedges);
   RUN_TEST(test_items_the_fill_gave_up_are_named_in_the_input);

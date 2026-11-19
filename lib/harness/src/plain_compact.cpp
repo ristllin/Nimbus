@@ -467,6 +467,14 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
 
 namespace {
 
+// Ruling 89 item 3: with no head named nothing could compact and the overflow ladder would end up
+// hiding whole turns with no digest. That is never silent: a Status the caller sees and one log line.
+bool headNamed(const CompactDeps& d) { return !d.headKey.host.empty() && !d.headKey.model.empty(); }
+Status noHead(const CompactDeps& d, const char* where) {
+  hlog::logf("compact(%s): no head named (CompactDeps::headKey): compaction refused", d.chatKey.c_str());
+  return Status::fail(Err::InvalidArgument, where);
+}
+
 uint32_t calendarDay(uint64_t now, int16_t tz) { return (uint32_t)dayNumber(now, tz, 0); }
 
 // The newest turn's prompt tokens (its e item), 0 when none is resident.
@@ -630,6 +638,7 @@ bool CompactDriver::automaticMayAsk(const IdleCtx& ctx) {
 Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) {
   // The head's marks at its profile (tx::budgetFor). No head named: nothing is compacted, never a
   // fixed smaller profile in its place (ruling 83 item 4).
+  if (!headNamed(d_)) return noHead(d_, "plain::CompactDriver.headKey");
   tx::HeadBudget b;
   Status s = tx::budgetFor(d_.headKey, tx::profileOf(d_.head()->profile), b);
   if (!s.ok()) return s;
@@ -966,6 +975,7 @@ IdleStepFn idleOf(CompactDriver* driver) {
 Status installCompaction(PlainHooks& hooks, const CompactDeps& deps) {
   if (!deps.platform || !deps.transport || !deps.log || !deps.arena)
     return Status::fail(Err::InvalidArgument, "plain::installCompaction");
+  if (!headNamed(deps)) return noHead(deps, "plain::installCompaction.headKey");
   std::shared_ptr<CompactDriver> owned = std::make_shared<CompactDriver>(deps);
   IdleStepFn step = idleOf(owned.get());
   return hooks.idleStep(HookSlot::Compaction, [owned, step](const IdleCtx& ctx) { return step(ctx); });
