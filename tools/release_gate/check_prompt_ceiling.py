@@ -61,7 +61,7 @@ BLESS = "GOLDEN_UPDATE=1 pio test -e native -f test_e1_request_ceiling"
 # can set: on the busy twin the head's budget clips the static block, so text added there shows in
 # prompt_demand while prompt stays put; both are held. A figure over measured + margin needs an allowance file; a figure
 # over its cap needs an orchestrator ruling that changes the cap here.
-MEASURED = {"prompt": 29420, "prompt_demand": 30590, "text": 33841, "tools": 27008, "tools_wire": 33601}
+MEASURED = {"prompt": 29420, "prompt_demand": 30590, "text": 33841, "tools": 25162, "tools_wire": 31708}
 # An allowance over this many bytes for one figure names the orchestrator ruling that grants it.
 ALLOWANCE_RULING_BYTES = 1024
 MARGIN_BYTES = 128

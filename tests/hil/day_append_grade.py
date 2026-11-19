@@ -1,9 +1,11 @@
 """Pure grading of the day-boundary append leg (test_day_boundary_append.py): no device.
 
 The leg replays the shape of 24-25 Oct 2026 on a bench unit set to Europe/London: two
-seeded Saturday rows, a Saturday evening row, a row at 00:20 BST on Sunday (the local day
-is already the 25th), a Sunday morning row at 08:20 GMT (BST ended at 01:00 UTC), a
-correction to that row, then a question about both days' totals. The same leg runs on
+seeded Saturday rows, a Saturday evening row, a row at 00:20 BST on Sunday, a Sunday morning
+row at 08:20 GMT (BST ended at 01:00 UTC), a correction to that row, then a question about
+both days' totals. Each row belongs to the device's running day (RB-REC5, the setting
+day_starts, default 04:00: before it the day still running is yesterday, so the 00:20 row
+is Saturday's; with a 00:00 start it is Sunday's): the expectations follow the setting. The same leg runs on
 three tables with identical expectations (owner ruling 41: food is one validation family
 beside expenses and a training log, never a privileged path). The grade comes from the file
 the device wrote, its copy after every turn, and the final reply.
@@ -14,12 +16,36 @@ from __future__ import annotations
 import csv
 import io
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, NamedTuple
+from zoneinfo import ZoneInfo
 
 SAT, SUN = "2026-10-24", "2026-10-25"
 FIGURES = {"seed": (557, 807), "evening": 990, "night": 35, "morning": 945, "fixed": 910}
-SAT_TOTAL = 557 + 807 + 990  # the seeded rows and the evening row
-SUN_TOTAL = 35 + 910  # the 00:20 row and the corrected morning row
+ZONE = "Europe/London"
+# When each logging turn happens (UTC epoch): 21:10 BST Saturday, 00:20 BST Sunday, 08:20 GMT Sunday.
+WHEN = {"evening": 1792872600, "night": 1792884000, "morning": 1792916400}
+DEFAULT_START = "04:00"
+
+
+def running_date(epoch: int, start: str = DEFAULT_START, zone: str = ZONE) -> str:
+    """The device's running day of `epoch` (lib/core day_start.h runningDay): the local date, one
+    day less while the local time is before the day start."""
+    local = datetime.fromtimestamp(epoch, timezone.utc).astimezone(ZoneInfo(zone))
+    hh, mm = (int(x) for x in start.split(":"))
+    if local.hour * 60 + local.minute < hh * 60 + mm:
+        local -= timedelta(days=1)
+    return local.date().isoformat()
+
+
+def day_totals(start: str = DEFAULT_START) -> Dict[str, float]:
+    """Each day's expected total and row count under a day start: the seeded rows are Saturday's."""
+    out = {SAT: [float(sum(FIGURES["seed"])), 2], SUN: [0.0, 0]}
+    for key, fig in (("evening", FIGURES["evening"]), ("night", FIGURES["night"]), ("morning", FIGURES["fixed"])):
+        day = out.setdefault(running_date(WHEN[key], start), [0.0, 0])
+        day[0] += fig
+        day[1] += 1
+    return {d: (v[0], v[1]) for d, v in out.items()}
 
 
 class Table(NamedTuple):
@@ -107,44 +133,43 @@ def _file_checks(t: Table, after: str, appends: List[tuple]) -> List[Check]:
     ]
 
 
-def _day_checks(t: Table, rows: List[Dict[str, str]]) -> List[Check]:
-    """Each row on its local day, the correction leaving one row, both days' totals exact."""
-    sat, sun = day_rows(rows, SAT), day_rows(rows, SUN)
-    sat_sum, sun_sum = sum(figure(r, t.col) for r in sat), sum(figure(r, t.col) for r in sun)
+def _day_checks(t: Table, rows: List[Dict[str, str]], start: str) -> List[Check]:
+    """Each row on its running day, the correction leaving one row, both days' totals exact."""
+    want = day_totals(start)
     near = lambda r, v: abs(figure(r, t.col) - v) < 0.5  # noqa: E731
-    later = [r for r in rows if r.get("date", "")[:10] > SUN]
-    return [
-        Check("Saturday has 3 rows", len(sat) == 3, f"{len(sat)} rows dated {SAT}"),
-        Check("Saturday total exact", abs(sat_sum - SAT_TOTAL) < 0.5, f"{sat_sum:g} (want {SAT_TOTAL})"),
+    night_day = running_date(WHEN["night"], start)
+    checks = [
         Check(
-            "the 00:20 row on the local day (Sunday)",
-            any(near(r, FIGURES["night"]) for r in sun),
-            f"Sunday figures {[figure(r, t.col) for r in sun]}",
+            f"the 00:20 row on its running day ({night_day})",
+            any(near(r, FIGURES["night"]) for r in day_rows(rows, night_day)),
+            f"figures dated {night_day}: {[figure(r, t.col) for r in day_rows(rows, night_day)]}",
         ),
         Check(
             "the correction left one row",
             not any(near(r, FIGURES["morning"]) for r in rows) and sum(near(r, FIGURES["fixed"]) for r in rows) == 1,
             f"no {FIGURES['morning']} row left, one {FIGURES['fixed']} row",
         ),
-        Check("Sunday has 2 rows", len(sun) == 2, f"{len(sun)} rows dated {SUN}"),
-        Check("Sunday total exact", abs(sun_sum - SUN_TOTAL) < 0.5, f"{sun_sum:g} (want {SUN_TOTAL})"),
-        Check("no row after Sunday", not later, f"{len(later)} later rows"),
     ]
+    for day, (total, count) in sorted(want.items()):
+        got = day_rows(rows, day)
+        got_sum = sum(figure(r, t.col) for r in got)
+        checks.append(Check(f"{day} has {count} rows", len(got) == count, f"{len(got)} rows dated {day}"))
+        checks.append(Check(f"{day} total exact", abs(got_sum - total) < 0.5, f"{got_sum:g} (want {total:g})"))
+    later = [r for r in rows if r.get("date", "")[:10] > SUN]
+    checks.append(Check("no row after Sunday", not later, f"{len(later)} later rows"))
+    return checks
 
 
-def grade(t: Table, after: str, final_reply: str, appends: List[tuple]) -> List[Check]:
-    """`appends`: (file before, file after) of every turn that only added rows."""
+def grade(t: Table, after: str, final_reply: str, appends: List[tuple], start: str = DEFAULT_START) -> List[Check]:
+    """`appends`: (file before, file after) of every turn that only added rows; `start` the device's
+    day_starts setting during the leg."""
     nums = numbers_in(final_reply)
+    want = day_totals(start)
+    sat, sun = int(want[SAT][0]), int(want[SUN][0])
     return (
         _file_checks(t, after, appends)
-        + _day_checks(t, data_rows(after))
-        + [
-            Check(
-                "reply states both totals",
-                SAT_TOTAL in nums and SUN_TOTAL in nums,
-                f"numbers in the reply: {nums[:20]}",
-            )
-        ]
+        + _day_checks(t, data_rows(after), start)
+        + [Check("reply states both totals", sat in nums and sun in nums, f"numbers in the reply: {nums[:20]}")]
     )
 
 

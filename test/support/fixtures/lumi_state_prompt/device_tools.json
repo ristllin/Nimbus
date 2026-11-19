@@ -43,18 +43,13 @@
   },
   {
    "name": "prefs.edit",
-   "description": "Your owner's STANDING RULES: always/never rules and standing defaults they want in EVERY reply whatever the topic (punctuation, tone, length, format, language, units, how to address them, how to log or read their numbers), shown to you every turn under [STANDING RULES]. Would it apply every time, whatever the topic, without the owner reminding you? Then add it here, only when the owner asks in their own words; facts and one-off details go to memory, and a meal or a day's total to the food ledger (a dated one-off fact is refused here). add {text} | replace {id,text} | remove {id} | list.",
+   "description": "Your owner's STANDING RULES: always/never rules and standing defaults they want in EVERY reply whatever the topic (punctuation, tone, length, format, language, units, how to address them, how to log or read their numbers), shown to you every turn under [STANDING RULES]. Would it apply every time, whatever the topic, without the owner reminding you? Then add it here, only when the owner asks in their own words; facts and one-off details go to memory (a dated one-off fact is refused here). add {text} | replace {id,text} | remove {id} | list.",
    "schema": "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"add\",\"replace\",\"remove\",\"list\"]},\"id\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"}},\"required\":[\"action\"]}"
   },
   {
    "name": "openq.edit",
    "description": "The owner's OPEN QUESTIONS: follow-ups the owner left open (a photo to take next time, a thing to check later), shown to you every turn under [OPEN QUESTIONS]. Add one when the owner leaves something open, remove it when it is resolved or they withdraw it. The device marks an item raised once your reply mentions it, and tells you not to raise it again. add {text} | remove {id} | list.",
    "schema": "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"add\",\"remove\",\"list\"]},\"id\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"}},\"required\":[\"action\"]}"
-  },
-  {
-   "name": "food.portions",
-   "description": "Exact amounts for a meal plan, or for using up what is left of the day: give left_kcal (and left_protein), and EVERY food of the meal, the owner's fixed ones included, from the foods the owner said they have (none named: ask what they have instead of calling): its kcal and protein per 100 g, then fixed_g for an amount the owner gave (an approximate one too), else amount_g (required) for the sensible portion you would choose (the proportions are kept and scaled together to fill the kcal left), and unit_g for slices or pieces. Returns each food's amount, kcal and protein and the total. Use it for every plan and every how-much answer instead of adding up yourself, and answer with exactly its amounts; it writes nothing.",
-   "schema": "{\"type\":\"object\",\"properties\":{\"left_kcal\":{\"type\":\"number\"},\"left_protein\":{\"type\":\"number\"},\"foods\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"kcal_100g\":{\"type\":\"number\"},\"protein_100g\":{\"type\":\"number\"},\"amount_g\":{\"type\":\"number\"},\"unit_g\":{\"type\":\"number\"},\"fixed_g\":{\"type\":\"number\"}},\"required\":[\"name\",\"kcal_100g\"]}}},\"required\":[\"left_kcal\",\"foods\"]}"
   },
   {
    "name": "calc",
@@ -198,8 +193,8 @@
   },
   {
    "name": "files.append",
-   "description": "Add rows to a TEXT document (a log, a CSV); creates it when missing (put a CSV's header row first). Up to 4 KB per call. Use it to log a row instead of reading and re-saving the whole file. Without 'key' the rows go on the END and nothing stored is rewritten. For a dated CSV such as a food log (it needs a date column of YYYY-MM-DD dates) pass 'key' (the column that tells one day's rows apart, like meal): a row is its date plus its key, so the same date and key again REPLACES that row (a correction) and other days are never touched; text = the stored header row, then the rows. 'sum' (a numeric column) puts the day totals in the reply. replace: \"all\" only when a refusal says the key names several stored rows that are one item logged twice.",
-   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"key\":{\"type\":\"string\"},\"sum\":{\"type\":\"string\"},\"replace\":{\"type\":\"string\",\"enum\":[\"all\"]}},\"required\":[\"project\",\"name\",\"text\"]}"
+   "description": "Add rows to the END of a TEXT document (a log, a CSV); creates it when missing. Up to 4 KB per call. Only the new rows are written: nothing stored is read back, replaced or rewritten.",
+   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"}},\"required\":[\"project\",\"name\",\"text\"]}"
   },
   {
    "name": "files.edit",
@@ -233,7 +228,7 @@
   },
   {
    "name": "image.note",
-   "description": "Write the record of a photo of this message that you saw: one short line of what matters in it (the dish and portion, the numbers on a label, what the document says). It is what the conversation keeps of the photo; call it with your answer for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label.",
+   "description": "Write the record of a photo of this message that you saw: one short line of what matters in it (what it shows, the numbers on a label, what the document says). It is what the conversation keeps of the photo; call it with your answer for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label.",
    "schema": "{\"type\":\"object\",\"properties\":{\"ref\":{\"type\":\"string\"},\"note\":{\"type\":\"string\"}},\"required\":[\"ref\",\"note\"]}"
   },
   {

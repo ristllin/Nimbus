@@ -9,7 +9,9 @@ training log are equal validation families; ``NIMBUS_DBA_TABLES`` narrows the ru
 
 1. the table is seeded (upload) with two Saturday rows;
 2. 21:10 BST Saturday: a row;
-3. 00:20 BST Sunday (23:20 UTC Saturday): a row - the local day is already the 25th;
+3. 00:20 BST Sunday (23:20 UTC Saturday): a row - with the device's day start at 04:00 (RB-REC5,
+   the setting day_starts, pinned for the leg by NIMBUS_DBA_DAY_START) the day still running is
+   Saturday, so the row is Saturday's; with 00:00 it is Sunday's;
 4. 08:20 GMT Sunday (BST ended at 01:00 UTC): a row;
 5. a correction to that row;
 6. both days' totals asked for.
@@ -17,7 +19,7 @@ training log are equal validation families; ``NIMBUS_DBA_TABLES`` narrows the ru
 Graded (day_append_grade.py) from the file the device wrote (``/api/files/dl``), its copy after
 every turn and the final reply: the seeded rows untouched, every logging turn a pure append
 (each earlier byte kept, rows added: files.append's log line, never a whole-file re-save), one
-row per entry on its local day, the correction leaving one row, both totals exact in the file
+row per entry on its running day, the correction leaving one row, both totals exact in the file
 and in the reply. The files before and after each turn, the replies and the log lines go to
 ``NIMBUS_DBA_EVIDENCE`` (a directory; default: no files written).
 
@@ -49,15 +51,16 @@ LONDON = "GMT0BST,M3.5.0/1,M10.5.0"
 MODEL = os.environ.get("NIMBUS_DBA_MODEL", "claude-haiku-5-5")
 EVIDENCE = os.environ.get("NIMBUS_DBA_EVIDENCE", "")
 TABLES = [d for d in os.environ.get("NIMBUS_DBA_TABLES", ",".join(sorted(dg.TABLES))).split(",") if d]
+DAY_START = os.environ.get("NIMBUS_DBA_DAY_START", dg.DEFAULT_START)
 
 
 def turns(t: dg.Table):
     """(UTC epoch, the owner's message, a pure append turn?) for one table."""
     where, i, col = f"{t.project}/{t.name}", t.items, t.col
     return [
-        (1792872600, f"Add a row to {where}: {i['evening']}, qty 1, {col} 990.", True),
-        (1792884000, f"Add a row to {where}: {i['night']}, qty 1, {col} 35.", True),
-        (1792916400, f"Add a row to {where}: {i['morning']}, qty 1, {col} 945.", True),
+        (dg.WHEN["evening"], f"Add a row to {where}: {i['evening']}, qty 1, {col} 990.", True),
+        (dg.WHEN["night"], f"Add a row to {where}: {i['night']}, qty 1, {col} 35.", True),
+        (dg.WHEN["morning"], f"Add a row to {where}: {i['morning']}, qty 1, {col} 945.", True),
         (
             1792917000,
             f"Correction in {where}: this morning's {i['morning']} row is {col} 910, not 945. Fix that row.",
@@ -109,6 +112,18 @@ def _london(net):
         yield
     finally:
         net.post("/api/config", {"devTz": before}, timeout=10.0)
+
+
+@contextlib.contextmanager
+def _day_start(net, value: str):
+    """The device's day start pinned for the leg (RB-REC5's day_starts); its own value put back after."""
+    before = str((net.get_json("/api/state", timeout=8.0).get("clock") or {}).get("day_starts") or "")
+    r = net.post("/api/config", {"day_starts": value}, timeout=10.0)
+    assert r.status_code == 200, f"day_starts: HTTP {r.status_code}"
+    try:
+        yield
+    finally:
+        net.post("/api/config", {"day_starts": before}, timeout=10.0)
 
 
 @contextlib.contextmanager
@@ -178,20 +193,21 @@ def test_day_boundary_append(device, net, domain):
     t = dg.TABLES[domain]
     kit.MODEL = MODEL
     bench = kit.StormBench(device, net, leg="dba")
-    record = {"model": MODEL, "build": bench.build, "table": domain, "turns": []}
+    record = {"model": MODEL, "build": bench.build, "table": domain, "day_starts": DAY_START, "turns": []}
     with (
         bench.only_provider("anthropic"),
         _anthropic_key(bench),
         bench.spend_room("anthropic"),
         bench.head_model(),
         _london(net),
+        _day_start(net, DAY_START),
         _clock(bench),
     ):
         _seed(net, t)
         _save(f"{t.project}.before.csv", _dump(net, t))
         reply, appends = _run_turns(bench, net, t, record)
     after = _dump(net, t)
-    checks = dg.grade(t, after, reply, appends)
+    checks = dg.grade(t, after, reply, appends, DAY_START)
     record.update({"verdict": dg.verdict(checks), "checks": [c._asdict() for c in checks]})
     _save(f"{t.project}.after.csv", after)
     _save(f"{t.project}.record.json", json.dumps(record, indent=2))
