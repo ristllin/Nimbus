@@ -281,7 +281,8 @@ class TurnRun {
 
   // At turn open: what earlier drops left out is named, and room is made for this turn.
   void makeRoom() {
-    if (c_.droppedTurns && c_.head.thru >= c_.droppedThru) c_.droppedTurns = 0;   // a digest names them now
+    if (c_.droppedTurns && c_.head.thru >= c_.droppedThru)   // a digest names them now
+      c_.droppedTurns = 0, c_.droppedFirstAt = c_.droppedLastAt = 0;
     nameDropped();
     while (d_.arena->freeBytes() < arenaReserve() && dropOldestClosed()) {
     }
@@ -295,8 +296,8 @@ class TurnRun {
     t_.ctx.startedAt = epoch();
     t_.ctx.startedMs = t_.startMs = d_.platform->nowMs();
     t_.tz = in.tzMinutes;
-    makeRoom();
-    Status st = closeDangling();
+    Status st = closeDangling();   // first: a drop never takes a call before its late result is stored
+    if (st.ok()) makeRoom();
     t_.firstQ = c_.nextQ;
     if (st.ok()) st = storeInput(in);
     if (!st.ok()) return st;
@@ -347,6 +348,9 @@ class TurnRun {
             break;
           }
     }
+    // A full arena may drop closed turns while these results are stored, never a call still
+    // waiting for its result: the oldest dangling call bounds the drop until all are answered.
+    if (!open.empty()) t_.firstQ = open.front().q;
     for (const tx::Item& call : open) {
       tx::Item& r = blank(tx::ItemKind::Result);
       r.turn = call.turn;
@@ -357,6 +361,7 @@ class TurnRun {
       Status st = capture(r, r.x, nullptr);
       if (!st.ok()) return st;
     }
+    t_.firstQ = 0;
     return Status::success();
   }
 
@@ -778,7 +783,7 @@ class TurnRun {
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
     if (t_.reply || !personTrigger(t_.ctx.trigger)) return;
     if (t_.answered && t_.trip != GuardTrip::None) setStatus(StatusLine::LimitReached, texts::device_notes::kLimitLine);
-    else if (t_.answered)
+    else if (t_.answered || t_.status == StatusLine::None)   // never silent: an answer the turn could not use
       setStatus(StatusLine::ProviderError,
                 exchangeLine(t_.emptyRefusal ? ExchangeErr::Other : ExchangeErr::Malformed,
                              providerSlugOf(t_.ctx, t_.setup.head), 0));
@@ -1281,7 +1286,8 @@ class TurnRun {
   // already finished; nothing already sent is sent again; then the d item and afterDeliver,
   // the e item and head.json where storage allows. Each step stands alone: a second refusal
   // skips only that step, and nothing here lets a refusal leave.
-  void refused() noexcept {
+  // Only std::bad_alloc is caught here; anything else leaves as it would from the turn.
+  void refused() {
     try {
       settle();
     } catch (const std::bad_alloc&) {
@@ -1311,14 +1317,14 @@ class TurnRun {
  private:
   // The reply and the line as far as they had not gone out; when the reply's own step is
   // refused again, the memory line alone (the status step stands apart from the text step).
-  void deliverAfterRefusal() noexcept {
+  void deliverAfterRefusal() {
     try {
       deliver();
       return;
     } catch (const std::bad_alloc&) {
     }
-    if (!t_.out.replyDone && !t_.out.statusSent) {
-      t_.status = StatusLine::CrashNotice;
+    if (!t_.out.replyDone && !t_.out.statusSent && rank(t_.status) < rank(StatusLine::FailedWrite)) {
+      t_.status = StatusLine::CrashNotice;   // the reply is lost: the memory line, never a weaker one
       t_.statusRef = &c_.memoryLine;
     }
     try {
@@ -1396,36 +1402,48 @@ Status PlainEngine::idle(const IdleCtx& ctx, IdleOutcome& out) {
   return Status::success();
 }
 
+namespace {
+
+// The chat from storage at boot: the log opened (Io: no card, the chat runs from RAM), the arena
+// filled after thru, the next q and the last turn, the digests in force.
+Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
+  c = PlainEngine::ChatState{};
+  c.memoryLine = texts::device_notes::kNoMemory;
+  Status st = deps.log->open(c.head);
+  if (!st.ok() && st.err != Err::Io) return st;
+  if (st.ok()) {
+    tx::FillReport report;
+    if (!(st = deps.log->fill(c.head, *deps.arena, report)).ok()) return st;
+    c.droppedThru = report.droppedThru;
+  }
+  c.nextQ = std::max<uint64_t>(std::max<uint64_t>(c.head.nextQ, deps.arena->lastQ() + 1), 1);
+  for (size_t i = 0; i < deps.arena->count(); ++i) {
+    tx::ArenaEntry e;
+    if (!deps.arena->header(i, e).ok()) continue;
+    c.lastTurn = std::max(c.lastTurn, e.turn);
+    if (e.kind == tx::ItemKind::TurnEnd) c.lastClosedQ = e.q;
+  }
+  if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
+    std::string block;
+    tx::SettleReport rep;
+    (void)tx::settleDigests(*deps.files, deps.chatKey, tx::Profile::Standard, c.live, block, rep);
+  }
+  c.booted = true;
+  return Status::success();
+}
+
+}  // namespace
+
+// A refused allocation anywhere in boot, the resume seam included, is a status.
 Status PlainEngine::boot(const BootCtx& ctx) {
   if (!depsReady(deps_) || !chat_) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::boot");
   try {
-    ChatState& c = *chat_;
-    c = ChatState{};
-    c.memoryLine = texts::device_notes::kNoMemory;
-    Status st = deps_.log->open(c.head);   // Io: no card, the chat runs from RAM
-    if (!st.ok() && st.err != Err::Io) return st;
-    if (st.ok()) {
-      tx::FillReport report;
-      if (!(st = deps_.log->fill(c.head, *deps_.arena, report)).ok()) return st;
-      c.droppedThru = report.droppedThru;
-    }
-    c.nextQ = std::max<uint64_t>(std::max<uint64_t>(c.head.nextQ, deps_.arena->lastQ() + 1), 1);
-    for (size_t i = 0; i < deps_.arena->count(); ++i) {
-      tx::ArenaEntry e;
-      if (!deps_.arena->header(i, e).ok()) continue;
-      c.lastTurn = std::max(c.lastTurn, e.turn);
-      if (e.kind == tx::ItemKind::TurnEnd) c.lastClosedQ = e.q;
-    }
-    if (deps_.files && deps_.log->isOpen() && tx::loadDigests(*deps_.files, deps_.chatKey, c.head, c.live).ok()) {
-      std::string block;
-      tx::SettleReport rep;
-      (void)tx::settleDigests(*deps_.files, deps_.chatKey, tx::Profile::Standard, c.live, block, rep);
-    }
-    c.booted = true;
+    const Status st = loadChat(deps_, *chat_);
+    if (!st.ok()) return st;
+    return deps_.hooks ? deps_.hooks->runBootResume(ctx) : Status::success();
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "plain::PlainEngine::boot.memory");
   }
-  return deps_.hooks ? deps_.hooks->runBootResume(ctx) : Status::success();
 }
 
 }  // namespace plain

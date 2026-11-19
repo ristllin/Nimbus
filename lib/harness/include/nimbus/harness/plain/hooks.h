@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <new>
 #include <string>
 #include <utility>
 #include <vector>
@@ -277,9 +278,19 @@ inline DeliverDecision PlainHooks::runBeforeDeliver(const DeliverCtx& ctx) const
   return out;
 }
 
+// A refused allocation in one handler does not keep the later ones from running (the reply
+// went out: every observer and deferred step hears of it); the refusal is raised after them.
 inline void PlainHooks::runAfterDeliver(const DeliveredCtx& ctx) const {
-  for (const AfterDeliverFn& f : afterDeliver_)
-    if (f) f(ctx);
+  bool refused = false;
+  for (const AfterDeliverFn& f : afterDeliver_) {
+    if (!f) continue;
+    try {
+      f(ctx);
+    } catch (const std::bad_alloc&) {
+      refused = true;
+    }
+  }
+  if (refused) throw std::bad_alloc();
 }
 
 inline IdleOutcome PlainHooks::runIdleStep(const IdleCtx& ctx) const {

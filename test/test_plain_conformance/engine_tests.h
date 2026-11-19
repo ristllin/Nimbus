@@ -1622,6 +1622,80 @@ inline void test_a_chat_that_filled_its_arena_keeps_answering_between_rounds() {
   expectPaired(b);
 }
 
+// ---- the hostile review of part one (two fresh-context reviewers, lane RB-E1b) -----------------
+// A turn that filled the arena and left a call without its result: the next turn answers the
+// call ("outcome unknown") before a full arena drops anything, so storage keeps it paired.
+inline void test_a_dangling_call_is_answered_before_a_full_arena_drops_its_turn() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.arena->init(8 * 1024, b.platform.allocLarge, b.platform.freeLarge));
+  b.model.push(sp::call("big_read", R"({"tag":"a","bytes":1900})"));
+  b.model.push(sp::call("big_read", R"({"tag":"b","bytes":1900})"));
+  b.model.push(sp::call("big_read", R"({"tag":"c","bytes":1900})"));
+  b.model.push(sp::call("big_read", R"({"tag":"d","bytes":1900})"));
+  b.model.push(sp::call("big_read", R"({"tag":"e","bytes":1900})"));
+  plain::TurnOutcome out;
+  (void)b.owner("read until the arena is full", out);
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent.back().text.c_str());
+  b.model.push(sp::say("Next."));
+  b.advance(30);
+  TXB_OK(b.owner("next", out));
+  TEST_ASSERT_EQUAL_STRING("Next.", out.text.c_str());
+  expectPaired(b);
+}
+
+// A refused allocation in one afterDeliver handler does not keep the next from running.
+inline void test_every_after_deliver_handler_runs_when_one_is_refused() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  int second = 0;
+  TXB_OK(b.hooks->afterDeliver(plain::HookSlot::Agents, [](const plain::DeliveredCtx&) { throw std::bad_alloc(); }));
+  TXB_OK(b.hooks->afterDeliver(plain::HookSlot::Observer, [&second](const plain::DeliveredCtx& c) { second += c.sent; }));
+  b.model.push(sp::say("Here."));
+  plain::TurnOutcome out;
+  (void)b.owner("hi", out);
+  TEST_ASSERT_EQUAL(1, second);
+  TEST_ASSERT_EQUAL_STRING("Here.", b.sent[0].text.c_str());
+}
+
+// The reply's send is refused twice: a failed-write receipt is not replaced by the memory line.
+inline void test_a_receipt_survives_when_the_reply_cannot_be_sent() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [](const plain::DeliverCtx&) {
+    plain::DeliverDecision d;
+    d.status = plain::StatusLine::FailedWrite;
+    d.statusText = "receipt line";
+    return d;
+  }));
+  b.channel.send = [&b](const std::string& chat, const std::string& text) {
+    if (text == "Saved it.") throw std::bad_alloc();
+    b.sent.push_back(txb::SentMessage{chat, text});
+    return true;
+  };
+  b.model.push(sp::say("Saved it."));
+  plain::TurnOutcome out;
+  (void)b.owner("save", out);
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("receipt line", b.sent[0].text.c_str());
+}
+
+// A turn that stops on a status no rule names (an unusable call in a round that is not the last)
+// still ends with one plain line for a person.
+inline void test_a_turn_that_stops_without_a_line_still_gets_one() {
+  txb::Battery b(plain::Dialect::ChatCompletions);
+  TXB_OK(b.boot());
+  b.files.refuseAll = true;   // no card: the bulk file is refused
+  sp::Step s = sp::call("", "{\"text\":\"" + std::string(64000, 'u'));   // no name, cut arguments past a line
+  b.model.push(s);
+  b.model.push(sp::say("unused"));
+  plain::TurnOutcome out;
+  (void)b.owner("go", out);
+  std::string got;
+  for (const txb::SentMessage& m : b.sent) got += m.text + " | ";
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)b.sent.size(), got.c_str());
+}
+
 // ---- red cases for other lanes (ruling 56; on test/pending_roster.txt with ruling:56) ---------
 inline void test_a_full_arena_frees_its_oldest_closed_turn() {
   txb::Battery b;
@@ -1830,6 +1904,10 @@ inline void run() {
   RUN_TEST(test_a_message_with_too_many_parts_gets_its_own_line);
   RUN_TEST(test_a_chat_that_filled_its_arena_keeps_answering_between_rounds);
   RUN_TEST(test_a_full_arena_frees_its_oldest_closed_turn);
+  RUN_TEST(test_a_dangling_call_is_answered_before_a_full_arena_drops_its_turn);
+  RUN_TEST(test_every_after_deliver_handler_runs_when_one_is_refused);
+  RUN_TEST(test_a_receipt_survives_when_the_reply_cannot_be_sent);
+  RUN_TEST(test_a_turn_that_stops_without_a_line_still_gets_one);
   RUN_TEST(test_view_fetches_a_long_argument_and_a_long_reply_back);
   RUN_TEST(test_a_long_owner_message_goes_to_the_inbox_as_a_file);
   RUN_TEST(test_signed_thinking_over_the_line_limit_keeps_the_turn);
