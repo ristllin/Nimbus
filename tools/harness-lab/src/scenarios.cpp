@@ -388,6 +388,11 @@ void scSmoke(LabRig& rig, Ctx& c) {
 
 
 // Lane D: albums as one turn (scenarios_albums.cpp).
+// The scenario reporters' check and note, adapted to the Ctx reporter.
+std::function<void(bool, const std::string&)> checkOf(Ctx& c) {
+  return [&c](bool ok, const std::string& w) { c.check(ok, w); };
+}
+std::function<void(const std::string&)> noteOf(Ctx& c) { return [&c](const std::string& w) { c.note(w); }; }
 albums::Report albumsReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
 void scAlbumsOneTurn(LabRig& rig, Ctx& c) { albums::albumsOneTurn(rig, albumsReport(c)); }
 // Lane E: photos to the head as images (scenarios_photos.cpp).

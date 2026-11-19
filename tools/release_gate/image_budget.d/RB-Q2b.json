@@ -1,0 +1,5 @@
+{
+  "lane": "RB-Q2b",
+  "allowance_bytes": -28672,
+  "why": "A promised deletion. PRD section 10 flash ledger: RB-Q2b about -29 KB; the definition of done asks at least 25,000 B smaller on esp32s3-cyd. Same-tree builds, rb-main f5044ee1b (built in the lane's scratch worktree) against the lane tip 886627b7d, firmware.bin: esp32s3-cyd -29,024 B (6,343,872 -> 6,314,848), esp32s3 -29,024, test -29,072, test-cyd -29,120 (evidence/image-delta.txt). What left: the dream's reflection turn (its inputs, retries, streak alert, wake note, boot reconcile and marker), the engine's dream-only branches, the policy's Dream row, the device's memory op counters. The allowance is the smallest delta rounded toward zero to a multiple of 512 B."
+}
