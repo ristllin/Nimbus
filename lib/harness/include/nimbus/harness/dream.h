@@ -113,10 +113,9 @@ std::string buildConversationWindow(const std::vector<nimbus::orch::EpisodicMess
 // Outcome of a night, as the timeline row reports it:
 //   Ran      - maintenance ran tonight;
 //   Skipped  - maintenance had already run this local day, or the clock is not set;
-//   Deferred - not run (the device glue could not allocate the night);
 //   Starved  - deferred by the busy gate until the night window closed.
-enum class DreamOutcome : uint8_t { Ran = 0, Skipped, Deferred, Starved };
-const char* outcomeSlug(DreamOutcome o);   // "ran" | "skipped" | "deferred" | "starved"
+enum class DreamOutcome : uint8_t { Ran = 0, Skipped, Starved };
+const char* outcomeSlug(DreamOutcome o);   // "ran" | "skipped" | "starved"
 
 constexpr uint16_t kWindowEndMinute = 420;   // 07:00 local: the busy gate gives up after this
 // The night window for a slot: 3.5 h from it (07:00 for the default 03:30).

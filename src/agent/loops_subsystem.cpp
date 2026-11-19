@@ -379,6 +379,10 @@ void ensureLoop(const orch::LoopRecord& record, bool reserved) {
       alogf("loops: resumed reserved loop '%s' (paused by failures, not by the owner)",
             have->name.c_str());
     }
+    if (reserved && orch::refreshReservedText(*have, record)) {   // the shipped text, not a stale one
+      persist();
+      alogf("loops: reserved loop '%s' takes this firmware's text", have->name.c_str());
+    }
     return;
   }
   LoopRecord l = record;             // insert fresh: compute the first nextRun

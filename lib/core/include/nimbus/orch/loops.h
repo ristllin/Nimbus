@@ -212,8 +212,9 @@ struct FireOutcome {
   std::string error;     // why the fire's turn failed: the first cause first ("" when ok)
   // Lane M: > 0 asks the scheduler to fire this loop again in that many seconds
   // instead of at its next slot (RAM only). Only a fire whose pre-work is
-  // idempotent may set it - today the dream, which runs maintenance once per
-  // local day and retries a deferred or transiently failed reflection that night.
+  // idempotent may set it - today a one-time wakeup or reminder deferred for memory
+  // (the nightly upkeep, which retried its reflection turn, makes no model call since
+  // v5.2.0).
   uint32_t    retryAfterSec = 0;
   // CUM-826: the fire's turn reached the owner (its answer was delivered, or a tool
   // replied mid-loop) - also when the fire then failed. Such a fire is never run again
@@ -297,6 +298,11 @@ bool breakerTrips(LoopRecord& l, int maxConsecFails, bool reserved);
 // A reserved loop the breaker paused before this rule existed is resumed (enabled,
 // counter clamped). An owner pause is never touched. Returns true when it changed.
 bool reviveReservedLoop(LoopRecord& l, int maxConsecFails);
+// A reserved loop's name and prompt are the firmware's, not the owner's: a stored
+// record takes the shipped ones (capped like any loop) and keeps everything else (its
+// schedule, an owner pause, its counters). True when the record changed. (v5.2.0: the
+// "dream" record of earlier firmware still described a reflection turn.)
+bool refreshReservedText(LoopRecord& stored, const LoopRecord& shipped);
 // Reschedule a due loop WITHOUT counting a fire (the pre-fire idle gate's defer,
 // e.g. the dream loop while the device is busy): nextRun moves strictly after
 // now; firesToday / lastRun / device counters are deliberately untouched, so a

@@ -187,9 +187,8 @@ static void test_console_ping_answers_only_on_the_console_seam() {
 static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
   size_t fires = 0, pumps = 0;
   for (const Source& s : firmware()) {
-    // pumpDrill's call, boxed on the heap off the poll task's stack (lane STACK):
-    // `new orch::FireOutcome(fire(*req))`.
-    const size_t f = countOf(s.code, "dream::fire(") + countOf(s.code, "FireOutcome(fire(*req)");
+    // pumpDrill's call inside dream_subsystem.cpp: `const orch::FireOutcome o = fire();`.
+    const size_t f = countOf(s.code, "dream::fire(") + countOf(s.code, "=fire();");
     const size_t p = countOf(s.code, "dream::pumpDrill(");
     if (f) TEST_ASSERT_TRUE_MESSAGE(s.path == "src/main.cpp" || s.path == "src/agent/dream_subsystem.cpp",
                                     s.path.c_str());
@@ -200,7 +199,7 @@ static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
   TEST_ASSERT_EQUAL(2, fires);   // the loops fire hook (main.cpp) and pumpDrill
   TEST_ASSERT_EQUAL(1, pumps);
   // main.cpp's one fire is the scheduler hook, and the pump sits in pollJobs (tg_poll).
-  TEST_ASSERT_EQUAL(1, countOf(codeOf("src/main.cpp"), "if(agent::dream::isReserved(r.id))returnagent::dream::fire(r);"));
+  TEST_ASSERT_EQUAL(1, countOf(codeOf("src/main.cpp"), "if(agent::dream::isReserved(r.id))returnagent::dream::fire();"));
   const std::string pollJobs =
       between("src/agent/orchestrator.cpp", "intpollJobs(){", "loops::checkDue(");
   TEST_ASSERT_EQUAL(1, countOf(pollJobs, "dream::pumpDrill();"));

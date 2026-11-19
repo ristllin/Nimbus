@@ -588,6 +588,37 @@ static void test_reserved_loop_survives_the_breaker() {
   TEST_ASSERT_FALSE(owner.enabled);
 }
 
+static void test_reserved_record_takes_the_shipped_text() {
+  // A device upgraded from v5.1.2 keeps its stored "dream" record (ensureLoop never
+  // overrides owner state), whose prompt still described a reflection turn. The shipped
+  // name and prompt replace the stored ones; the owner's pause, the schedule and the
+  // counters stay.
+  orch::LoopRecord stored = dream::reservedLoopRecord();
+  stored.prompt = "Nightly maintenance + reflection: memory decay/prune/dedup, then distill yesterday "
+                  "into durable memories. Inputs are built fresh each night; pause with /loop off dream.";
+  stored.enabled = false;
+  stored.pauseReason = orch::PauseReason::Owner;
+  stored.nextRun = 1234;
+  stored.consecFails = 1;
+  const orch::LoopRecord shipped = dream::reservedLoopRecord();
+  TEST_ASSERT_TRUE(orch::refreshReservedText(stored, shipped));
+  TEST_ASSERT_EQUAL_STRING(shipped.prompt.c_str(), stored.prompt.c_str());
+  TEST_ASSERT_TRUE(stored.prompt.find("reflection") == std::string::npos);
+  TEST_ASSERT_FALSE(stored.enabled);
+  TEST_ASSERT_EQUAL((int)orch::PauseReason::Owner, (int)stored.pauseReason);
+  TEST_ASSERT_EQUAL_UINT64(1234, stored.nextRun);
+  TEST_ASSERT_EQUAL(1, (int)stored.consecFails);
+  // Counter-test: an up-to-date record is left alone (no persist on every boot).
+  TEST_ASSERT_FALSE(orch::refreshReservedText(stored, shipped));
+  // Capped like any loop.
+  orch::LoopRecord longer = shipped;
+  longer.name = std::string(80, 'n');
+  longer.prompt = std::string(orch::kLoopPromptMax + 50, 'p');
+  TEST_ASSERT_TRUE(orch::refreshReservedText(stored, longer));
+  TEST_ASSERT_EQUAL(orch::kLoopNameMax, (int)stored.name.size());
+  TEST_ASSERT_EQUAL(orch::kLoopPromptMax, (int)stored.prompt.size());
+}
+
 static void test_gate_starvation_bound() {
   dream::DreamGate g;
   dream::GateInputs in;
@@ -909,8 +940,12 @@ static void test_morning_after_carries_at_least_rb_main() {
   morning::scriptedNight(r);
   morning::morningTurn(r);
   const std::vector<std::string> dump = morning::dumpMorning(r);
-  // No dream output reaches the morning: there is no model turn left to write one.
-  for (const std::string& l : dump) TEST_ASSERT_FALSE_MESSAGE(morning::isDreamWritten(l), l.c_str());
+  // No dream output reaches the morning: there is no model turn left to write one, and
+  // the night's own timeline row stays in the device timeline, out of the head's window.
+  for (const std::string& l : dump) {
+    TEST_ASSERT_FALSE_MESSAGE(morning::isDreamWritten(l), l.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(l.find("Nightly dream") == std::string::npos, l.c_str());
+  }
   const std::vector<std::string> mine = morning::conversationLines(dump);
   const std::string missing = firstMissing(base, mine);
   TEST_ASSERT_TRUE_MESSAGE(missing.empty(), ("the morning lost: " + missing).c_str());
@@ -951,6 +986,7 @@ int main(int, char**) {
   RUN_TEST(test_night_outcome_property);
   RUN_TEST(test_maintenance_once_per_day_and_the_rows);
   RUN_TEST(test_reserved_loop_survives_the_breaker);
+  RUN_TEST(test_reserved_record_takes_the_shipped_text);
   RUN_TEST(test_gate_starvation_bound);
   RUN_TEST(test_dream_state_file_and_earlier_firmware);
   RUN_TEST(test_unmounted_or_refusing_store_never_decays_twice);

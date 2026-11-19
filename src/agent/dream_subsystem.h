@@ -29,13 +29,14 @@ void noteTurnEnd(uint32_t nowMs);
 uint32_t gateDefer(const nimbus::orch::LoopRecord& l);
 
 // The dream FireHook: the pending-memory drain, then the night (maintenance, row).
-// Dispatched from main.cpp's loops fire lambda when r.id is the reserved dream id.
-nimbus::orch::FireOutcome fire(const nimbus::orch::LoopFireRequest& r);
+// Dispatched from main.cpp's loops fire lambda when the record is the reserved dream.
+nimbus::orch::FireOutcome fire();
 
 // The console DREAM drill (test builds). requestDrill only queues a night (any task);
 // pumpDrill runs it on tg_poll between turns (orchestrator::pollJobs) and logs
-// "DREAM fired ok=<0|1> detail=<...>". requestDrill returns false when a drill is
-// already waiting (the two coalesce).
+// "DREAM fired ok=<0|1> detail=<...>". Maintenance runs at most once per local day, so
+// a second drill that day writes a "skipped" row. requestDrill returns false when a
+// drill is already waiting (the two coalesce).
 bool requestDrill();
 void pumpDrill();
 

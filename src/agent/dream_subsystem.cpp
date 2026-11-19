@@ -7,6 +7,7 @@
 #include <string>
 
 #include "../sys/agent_log.h"
+#include "../sys/heap_watch.h"         // Scope - the night's low-water attribution
 #include "agent_config.h"          // ORCH_AUTO_TURN_MIN_HEAP (gate heap floor)
 #include "fs_atomic.h"             // writeFileAtomic - /data/dream.json
 #include "memory_subsystem.h"      // engines + Lock + nowHours + the pending drain
@@ -142,25 +143,24 @@ Status status() {
   return s;
 }
 
-static nimbus::orch::FireOutcome deferredLowMemory(const char* what) {
-  alogf("dream: fire deferred (low memory) - the night's %s could not be allocated", what);
-  nimbus::orch::FireOutcome o;
-  o.deferred = true;   // not a failure: it must not roll the breaker (lane M)
-  o.detail = std::string("deferred: low memory (") + what + ")";
-  return o;
-}
-
-nimbus::orch::FireOutcome fire(const orch::LoopFireRequest&) {
+nimbus::orch::FireOutcome fire() {
   const NightClock clock = nightClock();
   emitStarvedRow();   // a previous night's starved row, if still unwritten
-  if (g_hooks.onDreamStart) g_hooks.onDreamStart(agent::DreamStartEv{clock.epoch});
   g_defersTonight = 0;
 
-  // The night's deps and result live on the heap (lane STACK): the night runs on the
-  // Telegram poll task. nothrow: fire() runs on tg_poll with no bad_alloc handler up the
-  // chain, so a failed box reports a memory defer instead of aborting the device.
+  // The night's seams (five std::function, about 170 B) live on the heap (lane STACK):
+  // the night runs on the Telegram poll task. nothrow: fire() runs on tg_poll with no
+  // bad_alloc handler up the chain, so a failed box defers instead of aborting the device.
   const std::unique_ptr<NightDeps> deps(new (std::nothrow) NightDeps());
-  if (!deps) return deferredLowMemory("deps");
+  if (!deps) {
+    alog("dream: fire deferred (low memory) - the night's seams could not be allocated");
+    nimbus::orch::FireOutcome o;
+    o.deferred = true;   // not a failure: it must not roll the breaker (lane M)
+    o.detail = "deferred: low memory";
+    return o;
+  }
+  const nimbus::heapwatch::Scope night(nimbus::heapwatch::kDream);   // enter and leave pair up
+  if (g_hooks.onDreamStart) g_hooks.onDreamStart(agent::DreamStartEv{clock.epoch});
   NightDeps& d = *deps;
   d.loadState = loadState;
   d.saveState = saveState;
@@ -187,15 +187,14 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest&) {
     alogf("dream: pending memories stored=%d left=%d", drained, memory::pendingCount());
   }
 
-  std::unique_ptr<NightResult> result(new (std::nothrow) NightResult(runNight(d, clock)));
-  if (!result) return deferredLowMemory("result");
-  const NightReport& rep = result->report;
+  const NightResult result = runNight(d, clock);
+  const NightReport& rep = result.report;
   alogf("dream: %s pruned=%d deduped=%d", outcomeSlug(rep.outcome), rep.maint.pruned,
         rep.maint.deduped);
   if (!rep.stateSaved)
     alogf("dream: state not saved (%s) - this boot keeps the day in RAM", rep.stateWhy.c_str());
   publishStatus(rep);
-  return result->fire;
+  return result.fire;
 }
 
 // ---- the console DREAM drill: queued here, run on tg_poll -------------------------
@@ -216,14 +215,8 @@ void pumpDrill() {
   g_drillPending = false;
   portEXIT_CRITICAL(&g_drillMux);
   if (!pending) return;
-  // The request and outcome live on the heap (lane STACK). nothrow: pumpDrill runs on
-  // tg_poll with no bad_alloc handler up the chain.
-  const std::unique_ptr<orch::LoopFireRequest> req(new (std::nothrow) orch::LoopFireRequest());
-  if (!req) { alogf("DREAM drill skipped (low memory) - the request could not be allocated"); return; }
-  req->id = kLoopId;
-  const std::unique_ptr<const orch::FireOutcome> fired(new (std::nothrow) orch::FireOutcome(fire(*req)));
-  if (!fired) { alogf("DREAM drill skipped (low memory) - the outcome could not be allocated"); return; }
-  alogf("DREAM fired ok=%d detail=%s", fired->ok ? 1 : 0, fired->detail.c_str());
+  const orch::FireOutcome o = fire();
+  alogf("DREAM fired ok=%d detail=%s", o.ok ? 1 : 0, o.detail.c_str());
 }
 
 }  // namespace dream

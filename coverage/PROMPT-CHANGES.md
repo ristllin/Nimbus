@@ -933,8 +933,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: side_prompts
 - kind: spec
-- bytes: 9518 -> 7432
-- sha8: 248062e9 -> 3ac2e48d
+- bytes: 9518 -> 7395
+- sha8: 248062e9 -> 68383f73
 - lane: RB-Q2b
 - prd: section 1 (delete-list item 6: decay and prune with no model call)
 - why: the reflection turn's input ([DREAM] instructions, [MEMORY STATS], [YESTERDAY], the memory-down line,
@@ -943,4 +943,4 @@ deleted. Engine 2 has no baseline.
   model call ("Nightly dream ok: maintenance pruned=%d deduped=%d (%d memories)%s", "No model call."), so the
   class gets new, shorter texts. Owner ruling 81: PROGRESS.md note 2 lists what the turn produced and
   test_harness_dream_night::test_morning_after_carries_at_least_rb_main pins that the morning request carries
-  at least rb-main's earlier conversation. Class -2,086 B.
+  at least rb-main's earlier conversation. Class -2,123 B.

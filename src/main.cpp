@@ -2887,7 +2887,7 @@ static void orchestratorBegin() {
         // The reserved dream loop fires the nightly memory upkeep (no model call);
         // r.id rides as "loop:<id>", r.selfWakeup
         // (owner design 9/11 Nov) fires a self-wakeup's one-note turn.
-        if (agent::dream::isReserved(r.id)) return agent::dream::fire(r);
+        if (agent::dream::isReserved(r.id)) return agent::dream::fire();
         return agent::orchestrator::injectScheduledTurn(
             String(r.chatId.c_str()), String(r.prompt.c_str()), String(r.name.c_str()),
             String(r.id.c_str()), /*quietOk=*/false, r.once, r.ownerReminder, r.selfWakeup);
@@ -2913,11 +2913,9 @@ static void orchestratorBegin() {
   {
     agent::Hooks dh;
     dh.onDreamStart = [](const agent::DreamStartEv& e) {
-      nimbus::heapwatch::enter(nimbus::heapwatch::kDream);   // low-water attribution
       agent::alogf("dream: start (epoch=%llu)", (unsigned long long)e.epoch);
     };
     dh.onDreamEnd = [](const agent::DreamEndEv& e) {
-      nimbus::heapwatch::leave(nimbus::heapwatch::kDream);
       agent::alogf("dream: end pruned=%d deduped=%d", e.prunedVectors, e.dedupedVectors);
       // Timeline row - the night's outcome, readable later (memory.episodic, the web).
       if (e.report)
@@ -4549,8 +4547,9 @@ void setup() {
     h.dreamNow = [] () -> String {                                           // DREAM
       if (!g_orchMode) return String("ERR dream: Orchestrator mode only");
       // Queued for the turn task (tg_poll), which logs "DREAM fired ok=..." when the
-      // night ends. Never run here: this is the loop task, whose 8 KB stack cannot
-      // hold a turn (the drill panicked the device when it ran inline).
+      // night ends. Never run here: this is the loop task, whose 8 KB stack cannot hold
+      // the night's embedding drain over TLS (the drill panicked the device when the
+      // night still ran a turn inline).
       if (!agent::dream::requestDrill())
         return String("DREAM already queued (one night runs; its result line follows)");
       return String("DREAM queued (the turn task runs the night; its result line follows)");

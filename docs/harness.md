@@ -246,7 +246,11 @@ a quiet background turn; the next owner turn says it).
   most once per local day, skipped if the clock never synced.
   - **Outcome.** The `ev:dream` row says what happened: `ok` with the maintenance counts,
     `skipped` (maintenance done earlier today, or the clock not set) or `skipped tonight`
-    (the busy gate deferred it until 07:00). The breaker never disables the loop.
+    (the busy gate deferred it until 07:00, so that day has no maintenance; a fire caught
+    up after a restart past 07:00 inside the boot's quiet window ends the same way). The
+    breaker never disables the loop. The stored record takes this firmware's name and
+    prompt at every boot (`orch::refreshReservedText`); the owner's pause and the schedule
+    stay.
   - **Gate.** 10 min quiet + no jobs + heap, deferring 15 min otherwise. Busy defers
     are capped at 12 per night; the heap floor is not.
   - **State.** `/data/dream.json` (LittleFS): the maintenance day. A file earlier firmware
@@ -258,7 +262,8 @@ a quiet background turn; the next owner turn says it).
     failed)`. `/api/state` reports `fsMounted` and the last night (`dream`: `last`,
     `cause`, `stateSaved`, `stateWhy`), and the health report has an internal-storage row.
   - `DREAM` console fires it now. The console replies `DREAM queued`; the night runs on the
-    turn task and logs `DREAM fired ok=<0|1> detail=<...>` when it ends.
+    turn task and logs `DREAM fired ok=<0|1> detail=<...>` when it ends. Maintenance still
+    runs at most once per local day, so a second drill that day writes a `skipped` row.
 - **Self-wakeups.** Nothing is ever held for the owner's next message. When a background
   turn (a routine, a loop, a sub-agent result) has something worth telling the owner during
   quiet hours (22:00 until the owner's quiet-hours-end setting, default 09:00 local), it

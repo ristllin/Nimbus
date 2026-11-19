@@ -212,7 +212,6 @@ const char* outcomeSlug(DreamOutcome o) {
   switch (o) {
     case DreamOutcome::Ran:      return "ran";
     case DreamOutcome::Skipped:  return "skipped";
-    case DreamOutcome::Deferred: return "deferred";
     case DreamOutcome::Starved:  return "starved";
   }
   return "ran";
@@ -310,8 +309,6 @@ std::string renderDreamRow(const NightReport& r, size_t cap) {
   if (r.outcome == DreamOutcome::Starved) {
     snprintf(b, sizeof b, "Nightly dream skipped tonight (%s after %u tries); maintenance not run tonight",
              r.cause == "low-heap" ? "low memory" : "device busy", (unsigned)r.defers);
-  } else if (r.outcome == DreamOutcome::Deferred) {
-    snprintf(b, sizeof b, "Nightly dream deferred (low memory)");
   } else if (r.maint.ran) {
     snprintf(b, sizeof b, "Nightly dream ok: maintenance pruned=%d deduped=%d (%d memories)%s",
              r.maint.pruned, r.maint.deduped, r.maint.vectors, r.maint.persisted ? "" : ", not saved");

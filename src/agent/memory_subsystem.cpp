@@ -2472,8 +2472,8 @@ void drainPendingStep() {
         r.id.c_str(), pendingCount(), (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 }
 
-// Dream phase 1: up to `maxEntries` drain steps within `budgetMs`, so the night's
-// reflection runs over a store that holds the facts queued during the day.
+// The nightly upkeep's first step: up to `maxEntries` drain steps within `budgetMs`, so
+// the facts the day's turns queued are stored before the maintenance runs.
 int drainPendingBurst(int maxEntries, uint32_t budgetMs) {
   const uint32_t t0 = millis();
   int stored = 0;

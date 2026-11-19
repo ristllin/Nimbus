@@ -2007,10 +2007,10 @@ void dispatch(String line) {
     return;
   }
   if (line == "DREAM") {
-    // Force the reserved dream loop's two-phase fire (maintenance + reflection
-    // turn). Queued for the turn task like TURN: the reply is "DREAM queued", and
+    // Fire the reserved nightly upkeep (the pending drain, then maintenance; no model
+    // call). Queued for the turn task like TURN: the reply is "DREAM queued", and
     // "DREAM fired ok=..." follows when the night ends. Test-only affordance for
-    // HIL verification of dreaming.
+    // HIL verification of the upkeep.
     if (s_h.dreamNow) {
       reply(s_h.dreamNow());
     } else {

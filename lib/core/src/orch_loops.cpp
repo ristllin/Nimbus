@@ -328,6 +328,15 @@ bool reviveReservedLoop(LoopRecord& l, int maxConsecFails) {
   return changed;
 }
 
+bool refreshReservedText(LoopRecord& stored, const LoopRecord& shipped) {
+  const std::string name = shipped.name.substr(0, (size_t)kLoopNameMax);
+  const std::string prompt = shipped.prompt.substr(0, (size_t)kLoopPromptMax);
+  if (stored.name == name && stored.prompt == prompt) return false;
+  stored.name = name;
+  stored.prompt = prompt;
+  return true;
+}
+
 void deferLoop(LoopRecord& l, uint64_t nowEpoch, uint32_t deferSec) {
   // Not a fire: firesToday / lastRun / repeat state stay untouched - only the
   // schedule slips. A 0 defer still moves strictly after now (isDue is <=).

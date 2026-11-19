@@ -244,8 +244,20 @@ NightOut scriptedNight(Rig& r) {
     m.persisted = true;
     return m;
   };
-  d.emitRow = [&out](const agent::DreamEndEv& ev) {
-    if (ev.report) out.row = dream::renderDreamRow(*ev.report);
+  // The night's row lands in the device timeline as main.cpp's hook writes it
+  // (captureEvent: the "system" session, a Log row tagged ev:dream).
+  d.emitRow = [&out, &r](const agent::DreamEndEv& ev) {
+    if (!ev.report) return;
+    out.row = dream::renderDreamRow(*ev.report);
+    EpisodicMessage m;
+    m.id = "m" + std::to_string(90000000 + ++r.seq);
+    m.sessionId = "system";
+    m.tsHours = (uint32_t)(r.plat.epoch / 3600);
+    m.role = "system";
+    m.kind = MsgKind::Log;
+    m.text = out.row;
+    m.tags = "ev:dream";
+    r.store.addMessage(m);
   };
   dream::NightClock c;
   c.epoch = kNight;

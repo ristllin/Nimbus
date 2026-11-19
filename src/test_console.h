@@ -169,9 +169,9 @@ struct Hooks {
   // line so HIL can assert menu WORDING and structure over serial - RENDER?
   // only proves WHICH screen shows, goldens only run on the host.
   std::function<String()>                                menuView;
-  // DREAM: force the reserved dream loop to fire NOW (test-only) - runs the
-  // real two-phase path (memory maintenance + reflection turn) so HIL can
-  // verify dreaming without waiting for 03:30. Returns a short summary line.
+  // DREAM: fire the reserved nightly upkeep NOW (test-only) - the real path (the
+  // pending-memory drain, then maintenance; no model call) so HIL can verify it
+  // without waiting for 03:30. Returns a short summary line.
   std::function<String()>                                dreamNow;
   // v3.6.0 fold seams (plan §1f): CTX? one-line fold state (arg = chat, default
   // last-active); COMPACT <chat> stages a manual fold (async - poll CTX?);
