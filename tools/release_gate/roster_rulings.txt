@@ -15,3 +15,9 @@
 # Ruling 59 (the narrow check of round three, carried by RB-E1b).
 59 test_plain_conformance::test_a_routed_head_sends_the_router_model_selector   # item 7: RB-W4's model selector
 59 test_plain_conformance::test_guard_last_round_anthropic                     # waits for RB-W1b once RB-E1b lands
+
+# Ruling 68 (the day start reaches the wires): owner messages inside the night window on every wire.
+68 test_tx_overhead::test_wire_overhead_night_anthropic
+68 test_tx_overhead::test_wire_overhead_night_responses
+68 test_tx_overhead::test_wire_overhead_night_chat
+68 test_tx_overhead::test_wire_overhead_night_flat

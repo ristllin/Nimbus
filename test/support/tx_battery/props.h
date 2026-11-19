@@ -174,6 +174,7 @@ struct CoverInput {
   uint64_t pointer = 0;     // items at or below render bulk and outside results as stubs
   uint64_t thru = 0;        // the newest q a digest covers: older items are the digests' job
   uint32_t openTurn = 0;    // the turn the request belongs to (0 = none open)
+  uint16_t dayStartMin = 240;   // the running day's start (TurnCtx::dayStartMin): the stamps' night clause
 };
 
 enum class Shown : uint8_t { Whole = 0, Stub = 1 };
@@ -367,14 +368,23 @@ inline bool compactedCovers(const sp::RequestView& v, CoverInput in, std::string
 }
 
 // ---- overhead -----------------------------------------------------------------------
+// The stamp an owner message renders with (RB-REC5's tx::messageStamp, exactly): the plain form
+// '[2026-11-17 Tue 13:02]', the night form '[2026-11-18 Wed 00:30 (day 2026-11-17 until 04:00)]'
+// before the day start, '[time unknown]' with no clock. "" when the stamp cannot be made.
+inline std::string stampOf(const tx::Item& u, uint16_t dayStartMin) {
+  char buf[tx::kStampMaxBytes];
+  return tx::messageStamp(u.t, u.tzMinutes, dayStartMin, buf, sizeof buf).ok() ? std::string(buf) : std::string();
+}
+
 // What a request may carry beyond the stored text it shows (PRD section 2, test_tx_overhead:
-// 96 B per owner message, 64 B per photo label). The stored text is counted as the JSON
+// 96 B per owner message with the plain stamp, that is 74 B of framing plus the message's own
+// stamp in whichever of RB-REC5's three forms it takes, and 64 B per photo label). The stored text is counted as the JSON
 // string bytes of each rendered text (owner and assistant text, device notes, call ids,
 // names and arguments, the result text shown, open-turn meta), so a line format's own keys
 // never hide anything. Wire framing of a tool call, a result and an extra text block has its
 // own fixed allowance, and the envelope (model, max_tokens, thinking, tool_choice, cache
 // marks, the system and tools arrays) is 512 B once.
-inline constexpr size_t kOverheadPerOwnerMessage = 96;
+inline constexpr size_t kOverheadPerOwnerMessage = 74;   // beside the stamp's own bytes (stampBytes)
 inline constexpr size_t kOverheadPerPhotoLabel = 64;
 inline constexpr size_t kOverheadPerCall = 96;
 inline constexpr size_t kOverheadPerResult = 80;
@@ -387,6 +397,7 @@ struct OverheadInput {
   size_t systemBytes = 0;
   size_t toolsBytes = 0;
   size_t ownerMessages = 0;
+  size_t stampBytes = 0;    // the owner messages' stamps, each exactly as stampOf makes it
   size_t photoLabels = 0;
   size_t calls = 0;
   size_t results = 0;
@@ -394,7 +405,7 @@ struct OverheadInput {
 };
 
 inline long overheadBound(const OverheadInput& in) {
-  return (long)(kOverheadPerOwnerMessage * in.ownerMessages + kOverheadPerPhotoLabel * in.photoLabels +
+  return (long)(kOverheadPerOwnerMessage * in.ownerMessages + in.stampBytes + kOverheadPerPhotoLabel * in.photoLabels +
                 kOverheadPerCall * in.calls + kOverheadPerResult * in.results + kOverheadPerTextBlock * in.textBlocks +
                 kOverheadEnvelope);
 }
@@ -414,11 +425,10 @@ inline bool overheadWithin(const OverheadInput& in, long& overhead, std::string&
 }
 
 // Every text block of every message is stored text: once the stored texts it contains are
-// taken out (owner and assistant text, device notes, open-turn meta, photo stubs, the
-// omission line), at most a time label of kTimeLabelBytes per owner text is left. A sentence,
-// a reminder or a memory block written around messages is caught however much framing slack
-// the byte bound has.
-inline constexpr size_t kTimeLabelBytes = 24;   // '[Tue 17 Nov 2026 13:02] ' (Ruling 11: the year), spaces not counted
+// taken out (owner and assistant text, each owner text with its own stamp exactly as stampOf
+// makes it, device notes, open-turn meta, photo stubs, the omission line), nothing visible is
+// left. A sentence, a reminder or a memory block written around messages is caught however
+// much framing slack the byte bound has; so is a stamp in any other form.
 
 namespace detail {
 inline size_t visibleBytes(const std::string& s) {
@@ -453,26 +463,27 @@ inline void takeOutOmission(std::string& from) {
 }
 }  // namespace detail
 
-inline bool noUnstoredText(const sp::RequestView& v, const std::vector<tx::Item>& items, std::string& why) {
-  std::vector<std::string> owner, other;
+inline bool noUnstoredText(const sp::RequestView& v, const std::vector<tx::Item>& items, std::string& why,
+                           uint16_t dayStartMin = 240) {
+  std::vector<std::pair<std::string, std::string>> owner;   // text, its stamp
+  std::vector<std::string> other;
   for (const tx::Item& it : items) {
-    if (it.kind == tx::ItemKind::User) owner.push_back(it.x);
+    if (it.kind == tx::ItemKind::User) owner.emplace_back(it.x, stampOf(it, dayStartMin));
     if (it.kind == tx::ItemKind::Assistant || it.kind == tx::ItemKind::DeviceNote || it.kind == tx::ItemKind::RoundMeta)
       other.push_back(it.x);
   }
-  auto longestFirst = [](const std::string& a, const std::string& b) { return a.size() > b.size(); };
-  std::sort(owner.begin(), owner.end(), longestFirst);
-  std::sort(other.begin(), other.end(), longestFirst);
+  std::sort(owner.begin(), owner.end(), [](const auto& a, const auto& b) { return a.first.size() > b.first.size(); });
+  std::sort(other.begin(), other.end(), [](const std::string& a, const std::string& b) { return a.size() > b.size(); });
   for (const sp::Message& m : v.messages)
     for (const sp::Block& b : m.blocks) {
       if (b.kind != sp::BlockKind::Text) continue;
       std::string rest = b.text;
-      size_t owners = 0;
-      for (const std::string& t : owner) owners += detail::takeOut(rest, t);
+      for (const auto& t : owner)
+        if (detail::takeOut(rest, t.first)) detail::takeOut(rest, t.second);
       for (const std::string& t : other) detail::takeOut(rest, t);
       detail::takeOutPattern(rest, "[photo p", "]");
       detail::takeOutOmission(rest);
-      if (detail::visibleBytes(rest) > kTimeLabelBytes * owners) {
+      if (detail::visibleBytes(rest) > 0) {
         why = "a " + m.role + " text block carries " + std::to_string(detail::visibleBytes(rest)) +
               " B that no stored item holds: '" + rest.substr(0, 80) + "'";
         return false;

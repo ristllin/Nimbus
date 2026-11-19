@@ -115,6 +115,7 @@ inline void renderedText(const Convo& c, const CoverInput& in, OverheadInput& ou
     switch (it.kind) {
       case tx::ItemKind::User:
         ++out.ownerMessages;
+        out.stampBytes += jsonStringBytes(stampOf(it, in.dayStartMin)) - 2;   // inside the text's own quotes
         out.itemBytes += jsonStringBytes(it.x);
         for (const tx::Part& p : it.parts) out.photoLabels += p.kind == tx::PartKind::Image;
         break;

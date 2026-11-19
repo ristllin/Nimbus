@@ -37,6 +37,7 @@ txb::OverheadInput day(size_t owners, size_t tools) {
   in.systemBytes = 7000;
   in.toolsBytes = 9000;
   in.ownerMessages = owners;
+  in.stampBytes = owners * 22;   // '[2026-11-17 Tue 13:02]', the plain form
   in.calls = in.results = owners * tools;
   in.textBlocks = owners;
   return in;
@@ -60,6 +61,13 @@ void test_checker_allows_framing_and_rejects_an_injected_block() {
     TEST_ASSERT_FALSE_MESSAGE(txb::overheadWithin(in, over, why), "a 300 B block per message passed");
   }
   // Photos earn their 64 B label, not more.
+  // The night form earns its own 51 B, the no-clock form its 14 B: exactly, nothing looser.
+  in = day(1, 0);
+  in.stampBytes = 51;
+  in.bodyBytes = in.itemBytes + in.systemBytes + in.toolsBytes + 74 + 51 + 48 + 512;
+  TEST_ASSERT_TRUE_MESSAGE(txb::overheadWithin(in, over, why), why.c_str());
+  in.bodyBytes += 1;
+  TEST_ASSERT_FALSE(txb::overheadWithin(in, over, why));
   in = day(1, 0);
   in.photoLabels = 4;
   in.bodyBytes = in.itemBytes + in.systemBytes + in.toolsBytes + 96 + 48 + 4 * 64 + 512;
@@ -104,13 +112,42 @@ void test_checker_finds_text_no_item_holds() {
   }
 }
 
+// The stamps are taken out exactly as RB-REC5 makes them (ruling 68): the night form and the
+// no-clock form pass, any other time label (the old form, a second stamp) is caught.
+void test_checker_takes_out_each_stamp_form_exactly() {
+  const uint64_t night = txb::kT0 + 11 * 3600 + 28 * 60;   // Wed 18 Nov 00:30, before the 04:00 day start
+  for (uint64_t t : {txb::kT0, night, (uint64_t)0}) {
+    tx::Item u;
+    u.kind = tx::ItemKind::User;
+    u.q = 1;
+    u.t = t;
+    u.x = "when is it?";
+    const std::string stamp = txb::stampOf(u, 240);
+    TEST_ASSERT_TRUE(!stamp.empty());
+    sp::RequestView v;
+    v.parsed = true;
+    v.messages.push_back(sp::Message{"user", {sp::detail::textBlock(stamp + " " + u.x)}});
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(v, {u}, why), (stamp + ": " + why).c_str());
+    for (const char* extra : {"[Tue 17 Nov 2026 13:02]", "[2026-11-17 Tue 13:02]", "(day 2026-11-17 until 04:00)"}) {
+      sp::RequestView bad = v;
+      bad.messages[0].blocks[0].text = std::string(extra) + " " + bad.messages[0].blocks[0].text;
+      TEST_ASSERT_FALSE_MESSAGE(txb::noUnstoredText(bad, {u}, why), extra);
+    }
+  }
+}
+
 // ---- wire level ------------------------------------------------------------------------
 size_t base64Bytes(size_t n) { return 4 * ((n + 2) / 3); }
 
-void wireOverhead(plain::Dialect d) {
+// shift: seconds added to every stored time (11 h 28 m puts the day's turns between midnight
+// and the 04:00 day start: every owner stamp takes the night form).
+void wireOverhead(plain::Dialect d, uint64_t shift = 0) {
   txb::RenderFixture fx(d);
   const size_t photo = base64Bytes(fx.photoBytes.begin()->second.size());
-  for (const txb::Snapshot& s : txb::dayOfFourTurns(d)) {
+  for (txb::Snapshot s : txb::dayOfFourTurns(d)) {
+    for (tx::Item& it : s.c.items)
+      if (it.t) it.t += shift;
     txb::Rendered r;
     TXB_OK(txb::renderItems(fx, s.c, 0, r, s.openTurn));
     txb::CoverInput cov;
@@ -148,12 +185,31 @@ void test_wire_overhead_flat() {
   wireOverhead(plain::Dialect::Flat);
 }
 
+// Owner messages inside the night window (ruling 68): the same day of turns at 00:30 to 00:50.
+constexpr uint64_t kNightShift = 11 * 3600 + 28 * 60;
+void test_wire_overhead_night_anthropic() {
+  TXB_WAITS_FOR("PENDING RB-W1a", "RB-T1");
+  wireOverhead(plain::Dialect::AnthropicMessages, kNightShift);
+}
+void test_wire_overhead_night_responses() {
+  TXB_WAITS_FOR("PENDING RB-W2", "RB-T1");
+  wireOverhead(plain::Dialect::OpenAIResponses, kNightShift);
+}
+void test_wire_overhead_night_chat() {
+  TXB_WAITS_FOR("PENDING RB-W3", "RB-T1");
+  wireOverhead(plain::Dialect::ChatCompletions, kNightShift);
+}
+void test_wire_overhead_night_flat() {
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1");
+  wireOverhead(plain::Dialect::Flat, kNightShift);
+}
+
 // ---- engine level ----------------------------------------------------------------------
 // Twelve real turns (tools, outside content, gaps): the last request's framing is bounded
 // and every text in it is stored text.
-void test_engine_requests_stay_within_the_framing() {
-  TXB_WAITS_FOR("PENDING RB-E1a");
+void engineFraming(uint64_t start) {
   txb::Battery b;
+  b.epoch = start;
   b.world.files["notes/boat.md"] = "Nereid II, 9.5 m";
   std::vector<txb::TurnScript> turns;
   for (int i = 0; i < 12; ++i) {
@@ -179,6 +235,17 @@ void test_engine_requests_stay_within_the_framing() {
   TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(last.view, c.items, why), why.c_str());
 }
 
+void test_engine_requests_stay_within_the_framing() {
+  TXB_WAITS_FOR("PENDING RB-E1a");
+  engineFraming(txb::kT0);
+}
+
+// The same turns starting at 23:40: most owner messages fall between midnight and the day start.
+void test_engine_requests_stay_within_the_framing_at_night() {
+  TXB_WAITS_FOR("PENDING RB-E1a");
+  engineFraming(txb::kT0 + 10 * 3600 + 38 * 60);
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -190,6 +257,12 @@ int main(int, char**) {
   RUN_TEST(test_wire_overhead_responses);
   RUN_TEST(test_wire_overhead_chat);
   RUN_TEST(test_wire_overhead_flat);
+  RUN_TEST(test_checker_takes_out_each_stamp_form_exactly);
+  RUN_TEST(test_wire_overhead_night_anthropic);
+  RUN_TEST(test_wire_overhead_night_responses);
+  RUN_TEST(test_wire_overhead_night_chat);
+  RUN_TEST(test_wire_overhead_night_flat);
   RUN_TEST(test_engine_requests_stay_within_the_framing);
+  RUN_TEST(test_engine_requests_stay_within_the_framing_at_night);
   return UNITY_END();
 }
