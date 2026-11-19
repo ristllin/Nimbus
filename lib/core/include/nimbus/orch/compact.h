@@ -92,6 +92,13 @@ struct FoldCtl {
   // survives a reboot and its chat's slot being evicted from the fold blob.
   std::vector<std::string> manualPendingChat;
   std::string fwAtLastFail;    // the firmware that last failed a cycle ("" = none)
+  // Lane CTXR1: per chat, when its fold first met rows the store would not give back (unix
+  // seconds), kept across restarts so the daily alert can come after a day of it. Cleared when
+  // a read gets past them. A few chats at most.
+  std::vector<std::pair<std::string, uint32_t>> unreadSince;
+  uint32_t unreadSinceOf(const std::string& chatId) const;
+  bool setUnreadSince(const std::string& chatId, uint32_t epoch);   // true when it changed
+  bool dropUnreadSince(const std::string& chatId);                  // true when there was one
 
   uint32_t paidOn(uint32_t day) const { return paidDay == day ? paidCount : 0; }
   uint32_t guestPaidOn(uint32_t day) const { return paidDay == day ? guestPaid : 0; }

@@ -6,6 +6,7 @@
 
 #include "nimbus/harness/turn_fit.h"   // what a request gives up when it does not fit
 #include "nimbus/orch/body_budget.h"   // parseBodyBudgetError - the wire budget's refusal
+#include "nimbus/orch/request_budget.h"   // sendFloorCounts - a turn that went at the send floor
 #include "nimbus/orch/budget.h"    // headContextBudget - per-turn caps from the head model's window
 #include "nimbus/orch/compact.h"   // isContextOverflowError - a provider's window refusal
 #include "nimbus/orch/effect_ring.h"   // fx::recordsAsEffect, fx::effectReceipt (lane RB-FX)
@@ -1170,6 +1171,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   tf.chain.clear();
   tf.metered = false;
   tf.switched = false;
+  floorRoundsAtTurn_ = nimbus::orch::sendFloorCounts().floorRounds;
   // Lane DEF: the monthly spend ceiling. While paid calls are paused no turn reaches
   // a provider (recall's embed below included). The owner hears why once per channel
   // from the device's notice pump, so the refused turn itself sends nothing.
@@ -1791,6 +1793,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const orch::SpendSlot* last = tf.spend.lastBilled();
     if (!last && tf.switched) pendingFallbackPath_.clear();
     logContextLine(ci, fit, locals->reqBodyBytes, locals->round0Bytes, chatId);
+    noteFloorTrim(chatId, fit.historyMessagesLeftOut() > 0);
     if (!d_.hooks.onTurnEnd) return;
     TurnEndEv ev;
     ev.ok = okFlag;

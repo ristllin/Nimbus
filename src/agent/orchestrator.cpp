@@ -468,7 +468,10 @@ static uint32_t foldTriggerNow() {
 // message queued nothing. The engine asks it right after a delivery returned
 // (deliveryNeedsRow): the fire then spoke only once that row is written. Turn task.
 static bool s_lastDeliveryNeedsRow = false;
-static bool deliver(const String& chatId, const String& text, bool system = false) {
+// `queuedOut` (optional): whether the reply sink took the message (candidate 5, G4: the daily
+// fold alert is spent only then).
+static bool deliver(const String& chatId, const String& text, bool system = false, bool* queuedOut = nullptr) {
+  if (queuedOut) *queuedOut = false;
   s_lastDeliveryNeedsRow = true;   // until the sink took the content
   // Lane J (D-3): the owner's standing rules can switch on device-enforced
   // output filters. "Never use em dashes" is exactly the kind of rule a model
@@ -501,6 +504,7 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   // page re-renders its history, where captureAssistant records it), never into the
   // legacy single slot or any turn's reply (agent::deliverToWebChat).
   const bool queued = g_sinks.send && g_sinks.send(chatId, body);
+  if (queuedOut) *queuedOut = queued;
   if (g_sinks.send && !queued)
     alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
           (int)body.length(), chatId.c_str());
@@ -2892,18 +2896,29 @@ bool foldStatusJsonFor(const std::string& chatArg, std::string& out) {
 
 // The fold's owner notices. A Telegram chat gets a message; the web chat a history row
 // (its reply slot belongs to the turn being polled, live-caught: an async notice there
-// displaced every later web reply); serial and voice only the log.
-static void foldTell(const std::string& chat, const std::string& text) {
-  if (chat == "web") {
-    memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(text.c_str()), "",
-                           "ev:foldnote");
-    return;
-  }
+// displaced every later web reply); serial and voice only the log. True when it reached a
+// chat a person reads.
+static bool foldSay(const std::string& chat, const std::string& text) {
+  if (chat == "web")
+    return memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(text.c_str()), "",
+                                  "ev:foldnote").length() > 0;
   if (chat == "serial" || chat == "voice") {
     alogf("fold(%s): %s", chat.c_str(), text.c_str());
-    return;
+    return false;
   }
-  deliver(String(chat.c_str()), String(text.c_str()), /*system=*/true);
+  bool queued = false;   // delivered only when the reply sink took it (a null sink or a full queue is not)
+  return deliver(String(chat.c_str()), String(text.c_str()), /*system=*/true, &queued) && queued;
+}
+static void foldTell(const std::string& chat, const std::string& text) { foldSay(chat, text); }
+
+// The owner's Telegram chat the daily alert of the serial console or the screen goes to
+// ("" with no bot token or no owner): the owner-default rule the routines use.
+static std::string foldOwnerTelegram() {
+  const nimbus::orch::DeliveryWorld w =
+      nimbus::orch::deliveryWorld(std::string(store::telegramToken().c_str()),
+                                  std::string(store::telegramAllowlist().c_str()),
+                                  std::string(store::telegramOwners().c_str()));
+  return w.botToken ? w.ownerTelegram : std::string();
 }
 
 // A summary landed (the store is written): the chain reset, then the boundary row.
@@ -2944,12 +2959,12 @@ static agent::FoldSlice legacyFoldSlice(const std::string& chat, size_t cap) {
   return s;
 }
 
-// The owner's chats (the daily alert, the fold's order and the guests' share of the cap):
-// the web chat and the owner's Telegram chat.
+// The owner's chats (the daily alert, the fold's order and the guests' share of the cap).
+// By role, as every rail reads it (bench B11, candidate 2): the device's own surfaces (web,
+// serial, voice) and every Admin chat are the owner's. The serial console counted as a guest
+// once, so after the guests' 6 paid folds of the day its automatic fold never started.
 static bool foldOwnerChat(const std::string& chat) {
-  if (chat == "web") return true;
-  const String owner = agent::telegram::ownerChat();
-  return owner.length() && chat == owner.c_str();
+  return roleOfChat(String(chat.c_str())) == nimbus::orch::Role::Admin;
 }
 
 static agent::FoldDriverHooks foldHooks() {
@@ -2971,15 +2986,12 @@ static agent::FoldDriverHooks foldHooks() {
   h.utcOffsetMin = [](uint32_t epoch) -> int32_t { return agent::utcOffsetAtUnix(epoch); };
   h.folded = foldLanded;
   h.tell = foldTell;
-  // The daily alert is the owner's: their Telegram chat or the web chat; a guest chat's
-  // failing summary is only logged.
+  // The daily alert reaches a chat a person reads, or the day's alert is not spent
+  // (candidate 4, F2): an owner's Telegram chat or the web chat directly; the serial
+  // console's and the screen's through the owner's Telegram chat, else the web chat; a
+  // guest chat's is only logged (agent::foldAlertRoute, host-tested).
   h.alert = [](const std::string& chat, const std::string& text) {
-    if (foldOwnerChat(chat)) {
-      foldTell(chat, text);
-      return true;
-    }
-    alogf("fold(%s): not the owner's chat - the daily alert is logged only", chat.c_str());
-    return false;
+    return agent::foldAlertSend(chat, text, foldOwnerChat(chat), foldOwnerTelegram(), "web", foldSay);
   };
   h.ownerChat = foldOwnerChat;   // the owner's chats fold first; guests share half the cap
   h.changed = [](const std::string& chat) {

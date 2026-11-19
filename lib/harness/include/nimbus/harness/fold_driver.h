@@ -119,6 +119,10 @@ class FoldDriver {
   // A slice that could not read its rows looks again 1 minute out, doubling to 1 hour.
   static constexpr uint32_t kReadWaitFirstMs = 60000;
   static constexpr uint32_t kReadWaitMaxMs = 3600000;
+  // A manual read that goes on (a scan, a read budget) yields this long between its passes, and
+  // is answered after this many of them.
+  static constexpr uint32_t kManualPassMs = 1000;
+  static constexpr uint32_t kManualWaitPasses = 64;
   static uint32_t readWaitMs(uint32_t waits);
 
   FoldDriver(TurnEngine& eng, nimbus::orch::FoldStore& folds, nimbus::orch::FoldCtlIO ctlIO, FoldDriverHooks hooks);
@@ -161,6 +165,7 @@ class FoldDriver {
     uint32_t bytesAtStart = 0, msgsAtStart = 0;
     std::vector<FoldRung> rungs;
     size_t idx = 0;
+    bool inYield = false;   // started in a manual read's yield: it finishes its ladder (G2)
     uint32_t startedMs = 0;
     FoldRungReport bestThin;   // the longest answer that only named too few sections
   };
@@ -171,7 +176,9 @@ class FoldDriver {
   bool pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::string& chat);
   FoldTick sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch, const FoldSlice& s);
   void noteUnread(const std::string& chat, uint32_t nowEpoch, bool unread);
-  std::map<std::string, uint32_t> unreadSince_;   // chat -> epoch its slice first met rows it could not read
+  void endManualWait(const std::string& chat, uint32_t nowMs, SliceState state, bool tooLong);
+  uint32_t manualWaitPasses_ = 0;   // passes the running manual request's read went on without landing
+  uint32_t manualPassUntilMs_ = 0;  // the next pass of that read (the automatic folds go meanwhile)
   FoldTick runRung(uint32_t nowMs, uint32_t nowEpoch);
   FoldTick landed(const FoldRungReport& rep, const std::string& summary, uint32_t nowMs, uint32_t nowEpoch);
   FoldTick cycleFailed(uint32_t nowMs, uint32_t nowEpoch);
@@ -182,6 +189,25 @@ class FoldDriver {
   bool pickManual(uint32_t nowMs, std::string& chat) const;
   bool pickAutomatic(uint32_t nowMs, uint32_t nowEpoch, std::string& chat);
   bool dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch);
+  bool wantsFold(const std::string& chat) const;
+  const char* waitOf(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const;
+  void noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs);
+  void noteGatesClosed(uint32_t nowMs);
+  // "due, not started" lines: one per chat and cause per hour (candidate 4, F1). A fixed table
+  // of a 32-bit hash of chat and cause with its time, no heap (candidate 5, G3); a miss with
+  // every slot inside its hour logs nothing and evicts nothing, apart from one "more chats
+  // held" line an hour.
+  struct NotStartedLine {
+    uint32_t hash = 0;
+    uint32_t ms = 0;
+    bool used = false;
+  };
+  static constexpr size_t kNotStartedLines = 8;
+  static constexpr uint32_t kNotStartedEveryMs = 3600000u;
+  NotStartedLine notStarted_[kNotStartedLines];
+  uint32_t moreHeldMs_ = 0;
+  bool moreHeldLogged_ = false;
+  bool notStartedSlot(uint32_t hash, uint32_t nowMs);
   std::vector<FoldRung> orderedRungs() const;
   bool capReached(uint32_t nowEpoch, const std::string& chat = std::string());
   bool isOwnerChat(const std::string& chat) const { return !hooks_.ownerChat || hooks_.ownerChat(chat); }
@@ -203,11 +229,7 @@ class FoldDriver {
   // A chat whose slice could not read its rows (SliceState Wait/Unread): looks in a row that
   // read nothing new, and the monotonic ms of the next look.
   std::map<std::string, uint32_t> readWaitCount_, readWaitUntilMs_;
-  void clearReadWait(const std::string& chat) {
-    readWaitCount_.erase(chat);
-    readWaitUntilMs_.erase(chat);
-    unreadSince_.erase(chat);
-  }
+  void clearReadWait(const std::string& chat);
   std::map<std::string, std::string> thruDate_;   // chat -> the local date its summary reaches
   // The manual catch-up in progress: what its landed cycles covered so far.
   struct CatchUp {
@@ -230,7 +252,30 @@ class FoldDriver {
   void notePaid(uint32_t nowEpoch, uint32_t n, const std::string& chat);
   uint32_t paidToday(uint32_t nowEpoch) const;
   uint32_t guestPaidToday(uint32_t nowEpoch) const;
-  bool endAutomaticForManual();
+  void endAutomaticForManual();
+  // Candidate 5, G6: an automatic fold after a send-floor cut that left rows before v5.1.1's
+  // tail folds again at once, a few times at most, instead of waiting out the thrash turns.
+  static constexpr uint8_t kFloorChaseFolds = 4;
+  uint8_t floorChase_ = 0;
+  void chaseFloorTail(const std::string& chat, bool manual, const FoldSlice& landed);
+  bool automaticInYield(bool manual) const;
 };
+
+// Where the daily fold alert goes (candidate 4, F2): only to a chat a person reads. An owner's
+// Telegram chat or the web chat is told directly. The serial console's and the screen's
+// alert goes to the owner's Telegram chat (`ownerTelegram`, "" when none is reachable), else
+// the web chat (`webChat`, "" when none), and names where the summary failed. A guest's chat,
+// or no reachable chat, gives target "" (logged only, the day's alert not spent).
+struct FoldAlertRoute {
+  std::string target;
+  std::string text;
+};
+FoldAlertRoute foldAlertRoute(const std::string& chat, bool chatIsOwners, const std::string& ownerTelegram,
+                              const std::string& webChat, const std::string& text);
+// The binding's alert over that route (its FoldDriverHooks::alert calls this): true only when
+// `send` delivered it; otherwise one log line and the day's alert is not spent.
+bool foldAlertSend(const std::string& chat, const std::string& text, bool chatIsOwners,
+                   const std::string& ownerTelegram, const std::string& webChat,
+                   bool (*send)(const std::string& target, const std::string& text));
 
 }  // namespace agent

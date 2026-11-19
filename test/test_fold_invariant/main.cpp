@@ -35,6 +35,7 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/fold_driver.h"
+#include "nimbus/orch/body_budget.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/episodic.h"
@@ -143,7 +144,10 @@ struct FaultStore {
     // The real store (orch_episodic_log.cpp queryAfter): a byte cursor on a store whose index is
     // complete is answered with an empty page and nothing more; while the index is still
     // truncated, the walk past the cold region reads the index from its start.
-    if (byteCur && indexFloor == 0 && !failing) return out;
+    if (byteCur && indexFloor == 0 && !failing) {
+      info.cursorStale = true;
+      return out;
+    }
     if (failing && ringFloor() > from + 1) {
       info.olderExists = true;   // the card is failing and the ring does not reach the cursor
       return out;
@@ -210,6 +214,13 @@ struct Device {
   size_t replyBytes = 2400;
   size_t bootIndexRows = 60;
   size_t backfillRows = 30;
+  // Candidate 4, F5: the DMA pool stays fragmented. Every round goes at the send floor, as the
+  // wire does it (counted, and a head request over 85,000 B refused with the budget's error).
+  bool floorPool = false;
+  bool lastTrimmed = false;     // the last turn left history out (TurnEndEv::trimmedForSize)
+  std::string lastRequest;      // the last head request a host took: instructions and input
+  size_t foldRequestMax = 0;    // the largest fold request sent
+  size_t promptPad = 0;         // working notes in the prompt (a device's prompt is 30-56 KB)
 
   Device(const std::string& h, const std::string& m, bool toolLoop = false) : host(h), model(m) {
     cfg.toolLoop = toolLoop;
@@ -233,9 +244,11 @@ struct Device {
     d.cfg = cfg.contract();
     d.platform = plat.contract();
     d.deliver = [](const std::string&, const std::string&) {};
-    d.composeInputs = [](const std::string&) {
+    d.composeInputs = [this](const std::string&) {
       agent::ComposeInputs in;
       in.devName = "Nimbus";
+      for (size_t i = 0; in.runningMemory.size() < promptPad; i++)
+        in.runningMemory += "- note " + std::to_string(i) + ": the owner tracks meals, walks and the garden.\n";
       return in;
     };
     d.apply.deliver = d.deliver;
@@ -246,10 +259,21 @@ struct Device {
       if (c != "system") folds.noteMessage(c, t.size());
     };
     for (const char* hh : {"openai", "anthropic", "mistral", "cumulo", "zai", "custom"})
-      d.hosts.add(hh, [this](std::string&, const std::string& ins, const std::string& in, std::string& out, std::string&,
-                             const agent::HeadTools*, orch::TokenUsage* u) {
+      d.hosts.add(hh, [this](std::string&, const std::string& ins, const std::string& in, std::string& out,
+                             std::string& err, const agent::HeadTools*, orch::TokenUsage* u) {
+        const bool fold = ins == orch::ORCH_COMPACT_PROMPT;
+        if (floorPool) {
+          orch::noteRoundBudget(true);
+          const size_t size = ins.size() + in.size();
+          if (fold) foldRequestMax = std::max(foldRequestMax, size);
+          if (!fold && size > orch::kLegacyWireBodyBytes) {
+            err = orch::bodyBudgetError(orch::kLegacyWireBodyBytes, size);
+            return false;
+          }
+        }
         if (u) u->responses = 1;
-        if (ins == orch::ORCH_COMPACT_PROMPT) {
+        if (!fold) lastRequest = ins + "\n" + in;
+        if (fold) {
           out = goodSummary(in);
           return true;
         }
@@ -273,12 +297,17 @@ struct Device {
     d.noteHistoryShift = [this](const std::string& c, const std::string& soft) { folds.setSoftStart(c, soft); };
     d.noteHistoryBytes = [this](const std::string& c, size_t bytes) { folds.noteHistoryBytes(c, bytes); };
     d.foldTriggerBytes = [this] { return trigger(); };
+    d.hooks.onTurnEnd = [this](const agent::TurnEndEv& ev) {   // the device's reactive fold
+      lastTrimmed = ev.trimmedForSize;
+      if (ev.trimmedForSize) folds.noteHistoryTrimmed(ev.chatId);
+    };
     eng.reset(new TurnEngine(std::move(d)));
     FoldDriverHooks h;
     h.quiet = [this](bool) { return quiet; };
     h.triggerBytes = [this] { return trigger(); };
     h.foldCycleBytes = [this] { return orch::foldCycleBytes(headCtx()); };
     h.folded = [this](const agent::FoldDone& done) { onLanded(done); };
+    h.tell = [this](const std::string& c, const std::string& text) { told.push_back({c, text}); };
     h.firmware = "5.1.2";
     orch::FoldCtlIO io;
     io.load = [this] { return ctl; };
@@ -303,6 +332,7 @@ struct Device {
     for (const std::string& t : tokensIn(text.substr(0, 16))) tokenRow[t] = id;
   }
   std::map<std::string, std::string> thruSeen;   // chat -> thru after the last step
+  std::vector<std::pair<std::string, std::string>> told;   // (chat, owner notice)
   void onLanded(const agent::FoldDone& done) {
     landed++;
     const uint32_t mark = clearMark[done.chat];
@@ -464,11 +494,17 @@ struct Totals {
 void runSequence(Device& d, uint32_t seed, int steps, Totals& t) {
   Lcg r(seed);
   for (int step = 0; step < steps && d.violations.empty(); step++) randomStep(d, r);
-  // Heal and drain: the card comes back, the backfill finishes, the chat folds forward.
+  // Heal and drain: the card comes back and the chat folds forward. Half the seeds leave the
+  // backfill stalled for good (a capped or stalled index): liveness must not need it.
   d.store.failing = false;
   d.store.unreadable = {0, 0};
   d.quiet = true;
+  if (seed % 2) d.backfillRows = 0;
   d.pump(400, 900);
+  // Liveness (fix review, candidate 2): with a readable store, the rows a shift hid are folded
+  // and a manual request has ended within those passes.
+  if (d.violations.empty() && d.hiddenRows(kMain) > 0) d.violations.push_back("hidden rows still unfolded after the drain");
+  if (d.violations.empty() && !d.drv->ctl().manualPendingChat.empty()) d.violations.push_back("a manual request never ended");
   if (!d.violations.empty()) {
     std::printf("seed %u: %s\n", (unsigned)seed, d.violations.front().c_str());
     const auto& L = LogCapture::lines();
@@ -497,6 +533,80 @@ void runProperty(const std::string& host, const std::string& model, size_t reply
 }
 
 }  // namespace
+
+// Every row of `chat` from before row index `before`, after thru, is in the last request.
+static void assertRowsInRequest(const Device& d, const std::string& chat, size_t before) {
+  const orch::ChatFold f = d.folds.get(chat);
+  for (const auto* m : d.live(chat)) {
+    if ((size_t)(m - d.store.rows.data()) >= before) break;
+    if (!f.thru.empty() && !agent::rowIdAfter(m->id, f.thru)) continue;   // covered by the summary
+    const std::set<std::string> t = tokensIn(m->text.substr(0, 16));
+    if (t.empty()) continue;
+    TEST_ASSERT_TRUE_MESSAGE(d.lastRequest.find(*t.begin()) != std::string::npos,
+                             ("row " + m->id + " (" + *t.begin() + ") is in neither the request nor the summary, thru " +
+                              f.thru).c_str());
+  }
+}
+
+// Candidate 4, F5: on a pool that stays fragmented every round goes at the send floor
+// (85,000 B), and a turn whose history does not fit leaves rows out and makes the fold due.
+// After the fold that follows such a turn, every row is either in the next request or
+// covered by the summary: the fold keeps v5.1.1's tail, not the head's large one that the
+// floor would cut again. The fold's own request fits the floor too.
+static void test_after_a_floor_turn_the_fold_leaves_no_row_unreachable() {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.floorPool = true;
+  d.promptPad = 24000;
+  d.boot();
+  int checked = 0;
+  for (int i = 0; i < 400 && checked < 3; i++) {
+    d.turn(kMain);
+    if (!d.lastTrimmed) continue;
+    const int landed = d.landed;
+    LogCapture::lines().clear();
+    for (int p = 0; p < 20 && d.landed == landed; p++) d.pump(1, 60);
+    if (d.landed == landed)
+      for (const auto& l : LogCapture::lines())
+        if (l.find("fold") != std::string::npos || l.find("history") != std::string::npos) std::printf("  log: %s\n", l.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(d.landed > landed, "the floor turn's fold lands");
+    const size_t before = d.store.rows.size();
+    d.turn(kMain);
+    checked++;
+    assertRowsInRequest(d, kMain, before);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(3, checked, "three floor turns, each with its fold");
+  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.foldRequestMax > 0 && d.foldRequestMax <= orch::kLegacyWireBodyBytes,
+                           std::to_string(d.foldRequestMax).c_str());
+}
+
+// Candidate 5, G6: the pool fragments after a healthy head built its derived-size history (the
+// Lumi case). The first floor turn's fold cannot reach v5.1.1's tail in one slice; the chat
+// stays due until it does, so the next turns hold every row in the request or the summary.
+static void test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutive_folds() {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.promptPad = 52000;   // a device's system prompt and tool schemas: about 20 KB of history fits the floor
+  d.boot();
+  for (int i = 0; i < 120; i++) {   // healthy: the history grows to the derived marks, folds keep the large tail
+    d.turn(kMain);
+    d.pump(1, 60);
+  }
+  d.floorPool = true;
+  int floorTurns = 0;
+  for (int i = 0; i < 40 && !d.lastTrimmed; i++) d.turn(kMain);
+  TEST_ASSERT_TRUE_MESSAGE(d.lastTrimmed, "a turn is cut at the floor");
+  for (int p = 0; p < 12; p++) d.pump(1, 60);   // the folds that follow
+  for (int t = 0; t < 3; t++) {
+    const size_t before = d.store.rows.size();
+    d.turn(kMain);
+    floorTurns += d.lastTrimmed;
+    assertRowsInRequest(d, kMain, before);
+    d.pump(1, 60);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(0, floorTurns, "no later turn is cut");
+  TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("folding again"), "the floor tail is chased");
+  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+}
 
 // The property on a head with room (lane H's derived marks: Sonnet 5.5, 118 KB window).
 static void test_invariant_holds_on_a_head_with_room() { runProperty("anthropic", "claude-sonnet-5-5", 6000, false); }
@@ -710,6 +820,44 @@ static void test_a_backfill_completing_between_passes_never_ends_the_read() {
   }
 }
 
+// Fix review, candidate 2: on a truncated index whose backfill never completes, the real end of
+// a read reached through a byte cursor is the end, not a stale cursor. A Summarize now on a chat
+// whose rows all lie in the cold region, far before its end (the web chat of an owner who uses
+// Telegram), is answered and the slice lands or reaches Nothing; and an automatic fold of
+// another chat runs meanwhile. For a chat with an anchor and for a no-anchor /clear scan.
+static void test_a_manual_read_on_cold_rows_ends_and_never_starves_the_others() {
+  for (int shape = 0; shape < 2; shape++) {
+    Device d("anthropic", "claude-sonnet-5-5");
+    d.quiet = false;
+    const std::string web = "5005";
+    for (int i = 0; i < 12; i++) d.turn(web);
+    if (shape == 0) {   // an anchor at its fourth exchange (the summary took those rows)
+      const std::vector<const orch::EpisodicMessage*> rows = d.live(web);
+      for (size_t i = 0; i <= 7; i++)
+        for (const std::string& t : tokensIn(rows[i]->text.substr(0, 16))) d.covered[web].insert(t);
+      d.folds.applyFold(web, "1. Decisions & preferences\n- web notes.\n", kT0, rows[7]->id);
+    }
+    otherChatRows(d, 600);                     // more than two day files of the cold walk: none of web's
+    for (int i = 0; i < 60; i++) d.turn(kMain);   // the main chat, rows hidden by a shift
+    TEST_ASSERT_TRUE(d.hiddenRows(kMain) > 0);
+    d.bootIndexRows = 200;   // the main chat's rows indexed, web's cold
+    d.backfillRows = 0;      // the backfill stalls for good
+    d.store.coldBudget = 30;
+    d.restart();
+    d.quiet = true;
+    d.drv->requestManual(web);
+    const int landed0 = d.landed;
+    d.pump(200, 60);
+    TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+    TEST_ASSERT_TRUE_MESSAGE(d.drv->ctl().manualPendingChat.empty(), "the manual request ended");
+    bool answered = false;
+    for (const auto& t : d.told) answered = answered || t.first == web;
+    TEST_ASSERT_TRUE_MESSAGE(answered, "and was answered");
+    TEST_ASSERT_TRUE_MESSAGE(d.landed > landed0, "the automatic folds ran");
+    TEST_ASSERT_EQUAL_MESSAGE(0, d.hiddenRows(kMain), "the main chat's hidden rows are folded");
+  }
+}
+
 // ---- the production device's shape on the real SD log store ----------------------------
 namespace {
 struct FakeFs : orch::EpiFs {
@@ -882,6 +1030,135 @@ static void test_production_device_shape_folds_forward_with_no_gap() {
   std::printf("production shape: %u folds to %s\n", (unsigned)done.size(), folds.get(chat).thru.c_str());
 }
 
+// Bench B11 on candidate 2 (d5afa30a): the serial chat, a v5.1.1 plant with about 1,200 rows
+// hidden behind its anchor, an index that stops at its 20,000-row cap (it never completes), and
+// six paid folds already counted that local day. The automatic fold never started: the binding
+// counted the serial console as a guest, and the guests' share of the cap (6) was spent. With
+// the chat counted as the owner's (the device's own surfaces are Admin), the fold starts and
+// works the backlog off over the capped index, each slice starting where the last one ended,
+// the anchor never passing a row no summary took. As a guest, each pass now says why it does
+// not start.
+namespace {
+struct CappedBench {
+  FakeFs fs;
+  orch::AppendLogEpisodicStore log{fs, "/mem/episodic", 512};
+  orch::RowTextOverlay overlay;
+  BlobIO blob;
+  orch::FoldStore folds;
+  std::string ctl;
+  std::vector<agent::FoldDone> done;
+  static constexpr uint32_t kThru = 3000, kSoft = 4200, kRows = 24500;
+  CappedBench() {
+    overlay.bind(&log);
+    const uint32_t hour0 = (uint32_t)(kT0 / 3600) - 20 * 24;
+    for (uint32_t sfx = 1; sfx <= kRows; sfx++) {
+      orch::EpisodicMessage m;
+      m.id = idOf(sfx);
+      m.sessionId = sfx >= 2500 && sfx <= 4300 ? std::string("serial") : std::string("6098532481");
+      m.role = sfx % 2 ? "assistant" : "user";
+      m.kind = orch::MsgKind::Message;
+      m.text = "T" + std::to_string(sfx) + ". " + std::string(sfx % 2 ? 160 : 40, 'x');
+      m.tsHours = hour0 + sfx / 60;   // about 17 days of rows
+      overlay.addMessage(m);
+    }
+    log.hydrate(300, 0);
+    for (int i = 0; i < 100000 && log.backfillStep(); i++) {
+    }
+    TEST_ASSERT_TRUE_MESSAGE(log.hydrateTruncated(), "the index stopped at its cap");
+    folds.begin(&blob);
+    folds.applyFold("serial", "1. Decisions & preferences\n- notes.\n", kT0 - 86400, idOf(kThru));
+    folds.setSoftStart("serial", idOf(kSoft));
+    folds.noteTurn("serial");
+    const uint32_t day = orch::foldLocalDay(kT0, 0);
+    ctl = "paidDay=" + std::to_string(day) + "\npaidCount=6\nguestPaid=6\n";   // six paid folds that day
+  }
+  int run(bool serialIsOwners) {
+    FakePlatform plat;
+    plat.epoch = kT0;
+    FakeConfig cfg;
+    TurnEngine eng(lumiDeps(plat, cfg, overlay, folds));
+    FoldDriverHooks h;
+    h.triggerBytes = [] { return 94464u; };
+    h.foldCycleBytes = [] { return (size_t)35424; };
+    h.folded = [this](const agent::FoldDone& fd) { done.push_back(fd); };
+    h.ownerChat = [serialIsOwners](const std::string& c) { return c != "serial" || serialIsOwners; };
+    orch::FoldCtlIO io;
+    io.load = [this] { return ctl; };
+    io.save = [this](const std::string& t) {
+      ctl = t;
+      return true;
+    };
+    FoldDriver drv(eng, folds, io, h);
+    drv.begin();
+    uint32_t ms = 1000;
+    for (int pass = 0; pass < 240; pass++) {
+      ms += 60000;
+      drv.tick(ms, kT0 + (uint32_t)pass * 60);
+      eng.historyIdleStep();
+      const std::string thru = folds.get("serial").thru;
+      const std::string landedThru = done.empty() ? idOf(kThru) : done.back().slice.thru;
+      TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter(thru, landedThru), "the anchor moved with no summary");
+    }
+    return (int)done.size();
+  }
+};
+}  // namespace
+
+static void test_a_capped_index_still_folds_the_serial_backlog() {
+  {
+    CappedBench b;   // the bench's classification: the serial console as a guest
+    TEST_ASSERT_EQUAL_MESSAGE(0, b.run(false), "a guest past its share does not fold");
+    TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("fold(serial): due, not started - the daily cap's share"),
+                             "and says why");
+  }
+  CappedBench b;
+  const int folds = b.run(true);
+  TEST_ASSERT_TRUE_MESSAGE(folds >= 3, std::to_string(folds).c_str());
+  TEST_ASSERT_FALSE_MESSAGE(agent::rowIdAfter(idOf(CappedBench::kSoft), b.folds.get("serial").thru),
+                            "the backlog is folded over the capped index");
+  std::string prev = idOf(CappedBench::kThru);
+  for (const agent::FoldDone& fd : b.done) {   // each slice starts at the row after the last anchor
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(idOf(orch::epiIdSuffix(prev) + 1).c_str(), fd.slice.firstId.c_str(), "an id gap");
+    prev = fd.slice.thru;
+  }
+}
+
+// The body of the function in src/agent/orchestrator.cpp that starts with `head`.
+static std::string deviceFunctionBody(const char* head) {
+  std::ifstream f("src/agent/orchestrator.cpp");
+  std::stringstream ss;
+  ss << f.rdbuf();
+  const std::string src = ss.str();
+  const size_t at = src.find(head);
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, head);
+  return src.substr(at, src.find("\n}\n", at) - at);
+}
+
+// The device binding counts its own surfaces and every Admin chat as the owner's, by role: no
+// list of chat names that can leave the serial console or voice out (bench B11, candidate 2).
+// Candidate 5, G5: 47d6c0a4's guard restored (roleOfChat reads the tenant table under its lock
+// and NVS, so it is not host-reachable without a larger extraction): the fold's owner predicate
+// is roleOfChat == Admin, and roleOfChat gives web, serial and voice Admin before any row.
+static void test_the_device_owner_predicate_is_by_role() {
+  const std::string body = deviceFunctionBody("static bool foldOwnerChat(const std::string& chat) {");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("roleOfChat(") != std::string::npos && body.find("Role::Admin") != std::string::npos,
+                           "the owner's chats are the Admin ones");
+  const std::string role = deviceFunctionBody("nimbus::orch::Role roleOfChat(const String& chatId) {");
+  TEST_ASSERT_TRUE_MESSAGE(role.find("chatId == \"web\" || chatId == \"serial\" || chatId == \"voice\") return Role::Admin") !=
+                               std::string::npos,
+                           "the device's own surfaces are Admin");
+}
+
+// Candidate 5, G4: the device's alert send reports delivered only when the reply sink took the
+// message (queued); a null sink or a full queue leaves the day unspent. foldSay is device glue
+// over the sink, so the guard reads its source; foldAlertSend's own rule is host-tested in
+// test_fold_driver.
+static void test_the_device_alert_send_counts_only_a_queued_message() {
+  const std::string body = deviceFunctionBody("static bool foldSay(const std::string& chat, const std::string& text) {");
+  TEST_ASSERT_TRUE_MESSAGE(body.find("&queued") != std::string::npos && body.find("&& queued") != std::string::npos,
+                           "a Telegram alert counts only when the reply sink queued it");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_restart_with_hidden_rows_folds_them_first);
@@ -891,8 +1168,14 @@ int main(int, char**) {
   RUN_TEST(test_one_summarize_now_reaches_the_newest_row);
   RUN_TEST(test_no_anchor_on_a_failing_card_backs_off_and_answers);
   RUN_TEST(test_a_backfill_completing_between_passes_never_ends_the_read);
+  RUN_TEST(test_a_manual_read_on_cold_rows_ends_and_never_starves_the_others);
+  RUN_TEST(test_a_capped_index_still_folds_the_serial_backlog);
   RUN_TEST(test_a_read_that_cannot_reach_the_rows_waits_and_retries);
+  RUN_TEST(test_the_device_owner_predicate_is_by_role);
+  RUN_TEST(test_the_device_alert_send_counts_only_a_queued_message);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);
+  RUN_TEST(test_after_a_floor_turn_the_fold_leaves_no_row_unreachable);
+  RUN_TEST(test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutive_folds);
   return UNITY_END();
 }

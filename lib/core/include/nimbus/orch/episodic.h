@@ -138,6 +138,11 @@ struct EpiQueryInfo {
   // A span the card would not give back ("<day>:<from>-<to>", byte offsets in that
   // day-stream; "" = none): its rows are skipped, and the caller names the gap.
   std::string unreadable;
+  // An `after` read from a byte cursor ("day:off") the store no longer serves: its index has
+  // no cold region left, so the cursor names a position that is gone (lane CTXR1). The page
+  // is empty and means nothing; the reader starts again from its anchor id. Never set for an
+  // empty page that is the real end.
+  bool cursorStale = false;
 };
 
 // The lexical.h word match as a yes/no: true when ANY counted word of `needle`

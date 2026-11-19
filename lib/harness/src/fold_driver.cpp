@@ -9,6 +9,7 @@
 
 #include "nimbus/harness/engine.h"
 #include "nimbus/harness/log.h"
+#include "nimbus/orch/loop_delivery.h" // deliveryChannelOf - where the daily alert can go
 #include "nimbus/orch/loops.h"         // civilFromDays - the owner's local dates
 #include "nimbus/orch/wire_limits.h"   // foldDigestCap - the slice beside the summary
 
@@ -192,7 +193,10 @@ FoldTick FoldDriver::tick(uint32_t nowMs, uint32_t nowEpoch) {
     hlog::log("fold: 24 hours with no clock since the first paid request - the daily count restarts");
     clocklessPaid_ = clocklessGuest_ = 0;
   }
-  if (!gatesOpen()) return cycleActive() || !ctl_.manualPendingChat.empty() ? FoldTick::Deferred : FoldTick::Idle;
+  if (!gatesOpen()) {
+    if (!cycleActive()) noteGatesClosed(nowMs);
+    return cycleActive() || !ctl_.manualPendingChat.empty() ? FoldTick::Deferred : FoldTick::Idle;
+  }
   std::string ready;
   if (pickManual(nowMs, ready)) endAutomaticForManual();
   if (!cycleActive()) {
@@ -241,27 +245,95 @@ bool FoldDriver::capReached(uint32_t nowEpoch, const std::string& chat) {
 bool FoldDriver::pickManual(uint32_t nowMs, std::string& chat) const {
   if (ctl_.manualPendingChat.empty()) return false;
   if (manualEnded_ && nowMs - lastManualEndMs_ < kManualCooldownMs) return false;   // one at a time, 2 min apart
+  // Its read waits (fix review, candidate 2): between two passes of a manual read that goes
+  // on, the other chats' automatic folds get their turn.
+  if (manualWaitPasses_ && (int32_t)(manualPassUntilMs_ - nowMs) > 0) return false;
   chat = ctl_.manualPendingChat.front();
   return true;
 }
 
+// The chat has a reason to fold (over the trigger, or rows a shift hid), waits aside.
+bool FoldDriver::wantsFold(const std::string& chat) const {
+  const orch::ChatFold* f = folds_.peek(chat);
+  if (!f) return false;
+  const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
+  const bool hidden = !f->softStart.empty() && (f->thru.empty() || rowIdAfter(f->softStart, f->thru));
+  return hidden || (trigger && orch::bytesAfterThru(*f) >= trigger) || f->msgsSinceFold >= orch::kFoldMsgsThreshold;
+}
+
+// A chat with a reason to fold that this pass does not start, and why (bench B11, candidate 2:
+// the bench saw silence). At most one line per chat and cause per hour (candidate 4, F1): the
+// line is durable, and one key in total let two held chats write a line each on every pass.
+// True when a line for `hash` may go now (its slot taken or renewed).
+bool FoldDriver::notStartedSlot(uint32_t hash, uint32_t nowMs) {
+  NotStartedLine* free = nullptr;
+  for (NotStartedLine& l : notStarted_) {
+    if (l.used && l.hash == hash) {
+      if (nowMs - l.ms < kNotStartedEveryMs) return false;
+      l.ms = nowMs;
+      return true;
+    }
+    if (!free && (!l.used || nowMs - l.ms >= kNotStartedEveryMs)) free = &l;
+  }
+  if (free) {
+    *free = NotStartedLine{hash, nowMs, true};
+    return true;
+  }
+  if (!moreHeldLogged_ || nowMs - moreHeldMs_ >= kNotStartedEveryMs) {
+    moreHeldLogged_ = true;
+    moreHeldMs_ = nowMs;
+    hlog::log("fold: more chats held than the not-started lines track - theirs wait for a free slot");
+  }
+  return false;
+}
+
+void FoldDriver::noteNotStarted(const std::string& chat, const char* why, uint32_t nowMs) {
+  uint32_t h = 2166136261u;   // FNV-1a over chat, a separator and the cause
+  for (const char* p = chat.c_str(); *p; ++p) h = (h ^ (uint8_t)*p) * 16777619u;
+  h = (h ^ (uint8_t)'|') * 16777619u;
+  for (const char* p = why; *p; ++p) h = (h ^ (uint8_t)*p) * 16777619u;
+  if (!notStartedSlot(h, nowMs)) return;
+  hlog::logf("fold(%s): due, not started - %s", chat.c_str(), why);
+}
+
+void FoldDriver::noteGatesClosed(uint32_t nowMs) {
+  for (const std::string& c : folds_.chatIds()) {
+    if (c == "system" || !wantsFold(c)) continue;
+    const bool offline = hooks_.online && !hooks_.online();
+    noteNotStarted(c, offline ? "the network is down" : "a turn in flight, the heap floor or no provider to ask", nowMs);
+    return;
+  }
+}
+
 bool FoldDriver::dueNow(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) {
+  const char* why = waitOf(chat, nowMs, nowEpoch);
+  if (why) {
+    if (wantsFold(chat)) noteNotStarted(chat, why, nowMs);
+    return false;
+  }
+  bool thrash = false;
+  const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
+  if (folds_.evaluateDue(chat, trigger, orch::kFoldMsgsThreshold, nowEpoch, &thrash) != orch::FoldDue::Yes) {
+    if (wantsFold(chat)) noteNotStarted(chat, "its retry wait (next try scheduled)", nowMs);
+    return false;
+  }
+  if (thrash && nowEpoch == 0) ramWaitMs_[chat] = nowMs + orch::kFoldThrashRetryS * 1000u;
+  return true;
+}
+
+// The wait that holds the chat this pass (nullptr = none).
+const char* FoldDriver::waitOf(const std::string& chat, uint32_t nowMs, uint32_t nowEpoch) const {
   const auto w = ramWaitMs_.find(chat);
-  if (w != ramWaitMs_.end() && (int32_t)(w->second - nowMs) > 0) return false;   // no clock: its RAM wait
+  if (w != ramWaitMs_.end() && (int32_t)(w->second - nowMs) > 0) return "its wait (no clock)";
   const auto r = readWaitUntilMs_.find(chat);
-  if (r != readWaitUntilMs_.end() && (int32_t)(r->second - nowMs) > 0) return false;   // its rows' read waits
+  if (r != readWaitUntilMs_.end() && (int32_t)(r->second - nowMs) > 0) return "its rows' read wait";
   // No clock yet: a chat that carries a persisted wait is held a few minutes for the clock,
   // not retried at once on every boot (its wait cannot be read without one).
   if (nowEpoch == 0 && nowMs - firstTickMs_ < FoldDriverHooks::kNoClockGraceMs) {
     const orch::ChatFold* f = folds_.peek(chat);
-    if (f && f->nextTry) return false;
+    if (f && f->nextTry) return "a persisted wait, no clock yet";
   }
-  bool thrash = false;
-  const uint32_t trigger = hooks_.triggerBytes ? hooks_.triggerBytes() : kDefaultTriggerBytes;
-  if (folds_.evaluateDue(chat, trigger, orch::kFoldMsgsThreshold, nowEpoch, &thrash) != orch::FoldDue::Yes)
-    return false;
-  if (thrash && nowEpoch == 0) ramWaitMs_[chat] = nowMs + orch::kFoldThrashRetryS * 1000u;
-  return true;
+  return nullptr;
 }
 
 bool FoldDriver::pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::string& chat) {
@@ -271,7 +343,10 @@ bool FoldDriver::pickFrom(uint32_t nowMs, uint32_t nowEpoch, bool owners, std::s
   }
   for (const std::string& c : folds_.chatIds()) {
     if (c == lastTurnChat_ || c == "system" || isOwnerChat(c) != owners) continue;
-    if (!owners && guestPaidToday(nowEpoch) >= orch::kFoldGuestPaidPerDay) return false;   // their share is spent
+    if (!owners && guestPaidToday(nowEpoch) >= orch::kFoldGuestPaidPerDay) {   // their share is spent
+      if (wantsFold(c)) noteNotStarted(c, "the daily cap's share for chats that are not the owner's", nowMs);
+      continue;
+    }
     if (!dueNow(c, nowMs, nowEpoch)) continue;
     chat = c;
     return true;
@@ -307,8 +382,13 @@ FoldTick FoldDriver::pickChat(uint32_t nowMs, uint32_t nowEpoch, std::string& ch
   overflow = folds_.overflowQueued(chat);
   // A due automatic fold waits for the owner (owner_first.h); an overflow fold is
   // needed by the next turn. Then the device-wide daily cap.
-  if (hooks_.quiet && !hooks_.quiet(overflow)) return FoldTick::Deferred;
-  return capReached(nowEpoch, chat) ? FoldTick::Deferred : FoldTick::Pending;
+  if (hooks_.quiet && !hooks_.quiet(overflow)) {
+    noteNotStarted(chat, "the quiet gate (waits for a quiet moment)", nowMs);
+    return FoldTick::Deferred;
+  }
+  if (!capReached(nowEpoch, chat)) return FoldTick::Pending;
+  noteNotStarted(chat, "the daily cap", nowMs);
+  return FoldTick::Deferred;
 }
 
 // A due fold whose slice read to its bound and found nothing: a manual request is answered
@@ -346,13 +426,23 @@ uint32_t FoldDriver::readWaitMs(uint32_t waits) {
 // what it covered, else the owner is told the rows could not be read.
 // Rows the store keeps refusing (Unread) stay unread, fail-closed: the anchor never passes them.
 // After a day of it the owner hears once a local day, through the alert (fix review E).
+// A read got past the chat's rows (Ready, Nothing, a landed fold) or the chat was cleared: its
+// read waits end, and so does its unread clock (persisted, fold_ctl.txt).
+void FoldDriver::clearReadWait(const std::string& chat) {
+  readWaitCount_.erase(chat);
+  readWaitUntilMs_.erase(chat);
+  if (ctl_.dropUnreadSince(chat)) saveCtl();
+}
+
+// The unread clock survives a Wait pass and a restart (fix review, candidate 2): only a read
+// that gets past the rows ends it. A clock that stepped back before it restarts it.
 void FoldDriver::noteUnread(const std::string& chat, uint32_t nowEpoch, bool unread) {
-  if (!unread) {
-    unreadSince_.erase(chat);
-    return;
+  if (!unread || !nowEpoch) return;   // no clock: no day to count, no alert (as for failed cycles)
+  uint32_t since = ctl_.unreadSinceOf(chat);
+  if (!since || nowEpoch < since) {
+    since = nowEpoch;
+    if (ctl_.setUnreadSince(chat, since)) saveCtl();
   }
-  if (!nowEpoch) return;   // no clock: no day to count, no alert (as for failed cycles)
-  const uint32_t since = unreadSince_.emplace(chat, nowEpoch).first->second;
   if (nowEpoch - since < orch::kFoldAlertAfterS || ctl_.lastAlertDay == today(nowEpoch)) return;
   const std::string text = unreadNotice();
   bool told = false;
@@ -366,30 +456,54 @@ void FoldDriver::noteUnread(const std::string& chat, uint32_t nowEpoch, bool unr
   saveCtl();
 }
 
+namespace {
+// What a manual request that cannot read its rows is told: the truth for each case (rows the
+// store refuses are not a matter of minutes).
+const char* manualWaitAnswer(SliceState state, bool tooLong) {
+  if (state == SliceState::Unread)
+    return "\xE2\x9A\xA0 Some older messages in this chat can't be read from storage right now, so the summary "
+           "can't include them yet. It keeps trying by itself; if this lasts, restart the device.";
+  if (tooLong)
+    return "\xE2\x9A\xA0 Reading this chat's older messages is taking too long right now, so the summary isn't "
+           "finished. Try again later.";
+  return "\xE2\x9A\xA0 Couldn't read this chat's older messages just now. Try again in a few minutes.";
+}
+}  // namespace
+
+// The answer and the end of a manual request whose read stopped.
+void FoldDriver::endManualWait(const std::string& chat, uint32_t nowMs, SliceState state, bool tooLong) {
+  const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
+  if (hooks_.tell) hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span) : manualWaitAnswer(state, tooLong));
+  catchUp_ = CatchUp();
+  endManual(chat, nowMs);
+}
+
 FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch,
                                 const FoldSlice& s) {
   noteUnread(chat, nowEpoch, s.state == SliceState::Unread);
   uint32_t& waits = readWaitCount_[chat];
   if (!s.progressed) waits++;
-  const uint32_t waitMs = readWaitMs(s.progressed ? 0 : waits);
+  // A manual read that goes on yields one pass to the automatic folds, and is answered after
+  // kManualWaitPasses of them instead of being left pending for good.
+  const bool manualGoesOn = manual && s.progressed && s.state != SliceState::Unread;
+  if (manualGoesOn) {
+    manualWaitPasses_++;
+    manualPassUntilMs_ = nowMs + kManualPassMs;
+  }
+  const uint32_t waitMs = manualGoesOn ? kManualPassMs : readWaitMs(s.progressed ? 0 : waits);
   readWaitUntilMs_[chat] = nowMs + waitMs;
   hlog::logf("fold(%s): the slice %s (%s), the anchor stays - next look in %u s", chat.c_str(),
              s.state == SliceState::Unread ? "meets rows the card will not give back" : "waits for its rows",
              s.progressed ? "progress" : std::to_string((unsigned)waits).c_str(), (unsigned)(waitMs / 1000));
-  if (manual && (!s.progressed || s.state == SliceState::Unread)) {
-    const bool caughtUp = catchUp_.chat == chat && catchUp_.span.rows;
-    // The truth for each: rows the store refuses are not a matter of minutes.
-    const char* const why = s.state == SliceState::Unread
-                                ? "\xE2\x9A\xA0 Some older messages in this chat can't be read from storage right now, so "
-                                  "the summary can't include them yet. It keeps trying by itself; if this lasts, restart "
-                                  "the device."
-                                : "\xE2\x9A\xA0 Couldn't read this chat's older messages just now. Try again in a few minutes.";
-    if (hooks_.tell) hooks_.tell(chat, caughtUp ? confirmation(catchUp_.span) : why);
-    catchUp_ = CatchUp();
-    endManual(chat, nowMs);
-  }
+  const bool tooLong = manualGoesOn && manualWaitPasses_ >= kManualWaitPasses;
+  if (manual && (!manualGoesOn || tooLong)) endManualWait(chat, nowMs, s.state, tooLong);
   changed(chat);
   return FoldTick::Deferred;
+}
+
+// An automatic cycle starting between two passes of a manual read that goes on.
+bool FoldDriver::automaticInYield(bool manual) const {
+  return !manual && manualWaitPasses_ && !ctl_.manualPendingChat.empty();
 }
 
 FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
@@ -417,6 +531,7 @@ FoldTick FoldDriver::startCycle(uint32_t nowMs, uint32_t nowEpoch) {
   c.msgsAtStart = f ? f->msgsSinceFold : 0;
   c.rungs = orderedRungs();
   c.startedMs = nowMs;
+  c.inYield = automaticInYield(manual);
   cycle_ = std::move(c);
   hlog::logf("fold(%s): cycle start (%s, %u rungs, %u B digest, %u rows)", chat.c_str(),
              manual ? "manual" : "automatic", (unsigned)cycle_.rungs.size(), (unsigned)cycle_.slice.digest.size(),
@@ -481,6 +596,7 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
   done.model = rep.model;
   done.elapsedMs = nowMs - c.startedMs;
   if (hooks_.folded) hooks_.folded(done);   // then the chain reset and the boundary row
+  chaseFloorTail(c.chat, c.manual, c.slice);
   if (c.manual && !catchUpContinues(c.chat, c.slice)) {
     if (hooks_.tell) hooks_.tell(c.chat, confirmation(catchUp_.span));
     catchUp_ = CatchUp();
@@ -488,6 +604,17 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
   }
   changed(c.chat);
   return FoldTick::Ok;
+}
+
+void FoldDriver::chaseFloorTail(const std::string& chat, bool manual, const FoldSlice& landed) {
+  if (manual || !landed.more || !eng_->floorTrimmed(chat) || floorChase_ >= kFloorChaseFolds) {
+    floorChase_ = 0;
+    return;
+  }
+  floorChase_++;
+  folds_.markOverflow(chat);   // due on the next pass, an overflow fold (no quiet wait)
+  hlog::logf("fold(%s): rows before v5.1.1's tail remain after a send-floor cut - folding again (%u/%u)",
+             chat.c_str(), (unsigned)floorChase_, (unsigned)kFloorChaseFolds);
 }
 
 bool FoldDriver::catchUpContinues(const std::string& chat, const FoldSlice& landed) {
@@ -557,6 +684,7 @@ void FoldDriver::maybeAlert(const std::string& chat, const orch::ChatFold* f, ui
 }
 
 void FoldDriver::endManual(const std::string& chat, uint32_t nowMs) {
+  manualWaitPasses_ = 0;
   ctl_.dropManual(chat);
   saveCtl();
   lastManualEndMs_ = nowMs;
@@ -582,15 +710,17 @@ FoldDriver::Manual FoldDriver::requestManual(const std::string& chat) {
 }
 
 // A manual request waits for no automatic cycle (fold_driver.h): one that is between
-// rungs when a request is ready to start ends uncounted, its failed rungs going last.
-bool FoldDriver::endAutomaticForManual() {
-  if (!cycleActive() || cycle_.manual || ctl_.manualPendingChat.empty()) return false;
+// rungs when a request is ready to start ends uncounted, its failed rungs going last. One
+// that started in a manual read's yield is the read's own gift of time: it finishes its
+// ladder (lands or fails as any cycle does) and the manual starts on the pass after
+// (candidate 5, G2), so no paid answer is thrown away and none lands early.
+void FoldDriver::endAutomaticForManual() {
+  if (!cycleActive() || cycle_.manual || cycle_.inYield || ctl_.manualPendingChat.empty()) return;
   for (size_t i = 0; i < cycle_.idx && i < cycle_.rungs.size(); i++)
     degraded_.insert(rungKey(cycle_.rungs[i].host, cycle_.rungs[i].model));
   hlog::logf("fold(%s): the automatic cycle yields to a manual request at rung %u/%u, uncounted",
              cycle_.chat.c_str(), (unsigned)(cycle_.idx + 1), (unsigned)cycle_.rungs.size());
   cycle_ = Cycle();
-  return true;
 }
 
 void FoldDriver::noteCleared(const std::string& chat) {
@@ -659,6 +789,36 @@ std::string FoldDriver::unreadNotice() {
 std::string FoldDriver::alertNotice(uint32_t sinceEpoch, int32_t utcOffsetMin) {
   return "\xE2\x9A\xA0 This chat's summary hasn't updated since " + localDate(sinceEpoch, utcOffsetMin) +
          ". It keeps retrying on its own; send /compact to try now.";
+}
+
+FoldAlertRoute foldAlertRoute(const std::string& chat, bool chatIsOwners, const std::string& ownerTelegram,
+                              const std::string& webChat, const std::string& text) {
+  FoldAlertRoute r;
+  if (!chatIsOwners) return r;
+  const orch::DeliveryChannel ch = orch::deliveryChannelOf(chat);
+  if (ch != orch::DeliveryChannel::Serial && ch != orch::DeliveryChannel::Voice) {
+    r.target = chat;   // the owner's Telegram chat, or the web chat
+    r.text = text;
+    return r;
+  }
+  r.target = !ownerTelegram.empty() ? ownerTelegram : webChat;
+  if (!r.target.empty()) r.text = std::string("About ") + orch::deliveryChannelLabel(ch) + ": " + text;
+  return r;
+}
+
+bool foldAlertSend(const std::string& chat, const std::string& text, bool chatIsOwners,
+                   const std::string& ownerTelegram, const std::string& webChat,
+                   bool (*send)(const std::string&, const std::string&)) {
+  const FoldAlertRoute r = foldAlertRoute(chat, chatIsOwners, ownerTelegram, webChat, text);
+  if (r.target.empty()) {
+    hlog::logf("fold(%s): the daily alert is logged only (%s), the day's alert not spent", chat.c_str(),
+               chatIsOwners ? "no chat a person reads" : "not the owner's chat");
+    return false;
+  }
+  if (send && send(r.target, r.text)) return true;
+  hlog::logf("fold(%s): the daily alert to %s was not delivered, the day's alert not spent", chat.c_str(),
+             r.target.c_str());
+  return false;
 }
 
 }  // namespace agent

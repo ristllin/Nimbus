@@ -855,7 +855,23 @@ class TurnEngine {
     std::string clearAt;   // the newest /clear the scan met ("" = none)
     bool scanned = false;  // the scan reached the read's bound: the start is known
   };
-  size_t foldKeepBytes(const HistoryBudget& b) const;
+  size_t foldKeepBytes(const HistoryBudget& b, const std::string& chatId) const;
+
+ public:
+  // The chat's last turn left history out at the send floor (candidate 4, F5).
+  bool floorTrimmed(const std::string& chatId) const {
+    for (const std::string& c : floorTrimChats_)
+      if (c == chatId) return true;
+    return false;
+  }
+
+ private:
+  // Candidate 4, F5: chats whose last turn left history out while its rounds went at the send
+  // floor (a fragmented pool). Their next fold keeps v5.1.1's tail, so the window after it fits
+  // the floor; a turn that leaves nothing out takes the chat off. A few chats, RAM only.
+  std::vector<std::string> floorTrimChats_;
+  uint32_t floorRoundsAtTurn_ = 0;   // orch::sendFloorCounts().floorRounds at the turn's start
+  void noteFloorTrim(const std::string& chatId, bool trimmed);
   SliceState foldBounds(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
                         const HistoryOptions& o, bool hidden, FoldBounds& out);
   // What a slice knows before it reads (planFold): the budget, the marks, the bounds, the

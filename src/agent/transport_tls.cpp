@@ -65,6 +65,27 @@ uint32_t shortBoundLeft(uint32_t boundMs, uint32_t startMs) {
   return spent >= boundMs ? 1 : boundMs - spent;
 }
 
+#ifdef NIMBUS_TEST
+// Bench A10 (test images only): which suite each provider host negotiates and where its TLS
+// record buffer sits. esp-aes encrypts a record from that buffer by DMA, and an output buffer
+// that is in PSRAM and not cache-line aligned bounces through one MALLOC_CAP_DMA chunk of
+// min(1,600 B, the record) per record (esp_aes_dma_core.c esp_aes_process_dma_ext_ram):
+// "outMsg=psram+13" on a host means every record of its upload allocates from the DMA pool.
+struct TlsPeek : WiFiClientSecure {
+  static void log(WiFiClientSecure& c, const char* host) {
+    const auto member = &TlsPeek::sslclient;
+    sslclient_context* ctx = (c.*member).get();
+    if (!ctx) return;
+    mbedtls_ssl_context* ssl = &ctx->ssl_ctx;
+    const unsigned char* out = ssl->MBEDTLS_PRIVATE(out_msg);
+    const char* where = esp_ptr_external_ram(out) ? "psram" : (esp_ptr_dma_capable(out) ? "dma" : "internal");
+    alogf("transport: tls %s suite=%s expansion=%d maxOut=%d outMsg=%s+%u", host, mbedtls_ssl_get_ciphersuite(ssl),
+          mbedtls_ssl_get_record_expansion(ssl), mbedtls_ssl_get_max_out_record_payload(ssl), where,
+          (unsigned)((uintptr_t)out & 63));
+  }
+};
+#endif
+
 constexpr size_t kMaxResponseBody = 256 * 1024;
 // The streaming path bounds the RETAINED document instead (the old whole-body path
 // had kMaxResponseBody): nimbus::heapwatch::kMaxRetainedBytes and retainedTooLarge()
@@ -187,6 +208,9 @@ struct TlsIo {
       nimbus::pollwatch::beat("provider connect");
       const int ok = req.tls ? connectHost(tls, req.host.c_str(), req.port)
                              : connectHost(plain, req.host.c_str(), req.port);
+#ifdef NIMBUS_TEST
+      if (ok && req.tls) TlsPeek::log(tls, req.host.c_str());
+#endif
       if (ok) return true;
       close();
       if (a < 2) vTaskDelay(pdMS_TO_TICKS(400));

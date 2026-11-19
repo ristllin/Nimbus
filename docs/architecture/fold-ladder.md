@@ -77,7 +77,11 @@ fold(<chat>): rung i/n <host>/<model> failed -> <kind> (<detail>)
 
 with `<kind>` one of transport, timeout, 4xx, 402 park, 5xx, cut twice, empty, thin.
 A success keeps `fold(<chat>): ok on <host> (...)`; a failed cycle logs
-`fold(<chat>): cycle failed, next try <date time>`.
+`fold(<chat>): cycle failed, next try <date time>`. A chat with a reason to fold that a
+pass does not start logs `fold(<chat>): due, not started - <reason>` at most once an hour
+for each chat and reason (a fixed table of eight hashes of chat and reason with their
+times, no heap), so held chats never flood the durable log; with more chats held than that,
+the others wait for a free slot and one `fold: more chats held ...` line goes out an hour.
 
 **The quality gate** (`foldAnswerThin`): for digests of 8 KB or more, a 2xx answer
 shorter than min(800 B, 30% of the previous summary) or naming fewer than 2 of the
@@ -123,16 +127,16 @@ why (`SliceState`), and only one outcome may give rows up:
 | Ready | a digest to summarize | runs the cycle |
 | Nothing | the read reached the kept tail or the end (and only then) and found nothing worth a summary | restarts the counters; gives up hidden rows only up to where the read reached (`readTo`) |
 | Wait | the rows are not readable yet: the cache has not read far enough to know the kept tail (with rows hidden the slice takes those rows alone instead), a store read budget, a failing card, the scan for the newest `/clear` of a chat with no anchor, a read that stopped short holding nothing to summarize, a stale cursor | Deferred, the store untouched |
-| Unread | the store named a span after the anchor it will not give back | Deferred, the store untouched; after 24 h of it, the owner's daily alert (fail-closed: the anchor never passes the span) |
+| Unread | the store named a span after the anchor it will not give back | Deferred, the store untouched; after 24 h of it (the clock is kept in the control file and ends only when a read gets past the span), the owner's daily alert (fail-closed: the anchor never passes the span) |
 
 So `thru` moves only past rows a landed summary took. A `/clear` anchors the chat at its
 boundary row (device and VN); for a chat cleared before that (no anchor), only a read that
 reached its bound is folded, so nothing before the newest `/clear` is ever summarized. A read
 budget that found none of the chat's rows is resumed from where the store stopped on the next
 pass. Such a cursor is a byte position (`day:off`) that only fits the store state it came from:
-when the store answers it with an empty page and nothing more (its index completed meanwhile),
-or with rows at or before the anchor, it is dropped and the read starts again from the anchor
-(Wait, never the end). The cache's gap probe (one store read a call) treats its own cursor the
+when the store names it stale (`EpiQueryInfo::cursorStale`: its index completed meanwhile), or
+answers it with rows at or before the anchor, it is dropped and the read starts again from the
+anchor (Wait, never the end). An empty page the store does not name stale is the real end. The cache's gap probe (one store read a call) treats its own cursor the
 same way. A cold no-clock day-stream blocks only cursors it could hold rows after. The slice runs inside a `PsramFirstScope` and spills each kept row as it is read: the
 fold runs outside a turn, where a block of 128 B or less would otherwise stay in internal SRAM.
 
@@ -159,9 +163,13 @@ Device-wide, in `/data/fold_ctl.txt` (`nimbus::orch::FoldCtl`; on the VN
 automatic fold requests a local day, every chat together, of which chats that are not the
 owner's spend at most 6; the owner's due chats fold first; 2xx answers and timeouts after
 the upload count, refusals do not), `lastAlertDay` (one owner alert a day, after 24 h of
-failing, sent to the owner's Telegram chat or the web chat, by role on the VN: the first
-Admin chat; another chat's failure is only logged and does not use up the day),
-`manualPendingChat` (up to 4 queued manual requests) and `fwAtLastFail`. Because this
+failing, spent only when it reached a chat a person reads: an owner's Telegram chat or the
+web chat directly; the serial console's and the screen's alert goes to the owner's Telegram
+chat, else the web chat, and names where the summary failed; with neither, or when the
+reply queue did not take the message (no sink, or the queue full), it is logged and the day
+is not spent; by role on the VN: the first Admin chat; a
+guest chat's failure is only logged and does not use up the day),
+`manualPendingChat` (up to 4 queued manual requests), `fwAtLastFail` and `unreadSince` (per chat, when its fold first met rows the store would not give back; a few chats). Because this
 lives outside the per-chat blob, evicting a chat's record (the blob keeps the 16 most
 recently used chats inside 64 KB, about ten with a full summary) never resets the cap
 or loses a request.
@@ -171,12 +179,19 @@ or loses a request.
 `/compact`, `POST /api/fold/run` and the Memory page's **Summarize Now** stage the chat
 (any task), and the pump moves it into `manualPendingChat`. Manual cycles run one at a
 time, two minutes apart, skip the daily cap (they are counted in it) and the quiet wait,
-and take a keep-0 slice. A manual request is a catch-up: while the chat still has rows
+and take a keep-0 slice. A manual read that goes on (a /clear scan, a read budget) yields a pass
+to the automatic folds between its passes and is answered after 64 of them, so one chat that
+reads slowly never holds up the others. A manual request is a catch-up: while the chat still has rows
 the history hides behind the anchor, or its last slice stopped short of the newest row,
 its cycles chain oldest first (at most 64) and one
 confirmation names the whole span. A manual request never waits behind an automatic cycle:
 one that is between rungs when a manual request is ready ends uncounted, its failed
-rungs going last. Every manual request is answered: the confirmation,
+rungs going last. An automatic cycle that started in a manual read's yield is never cut by
+the read: it finishes its ladder (lands or fails as any cycle does) and the manual starts on
+the pass after, so no paid answer is thrown away and none lands early. After a turn cut at
+the send floor, an automatic fold keeps v5.1.1's tail; when its slice stops short of that
+tail, the chat is due again on the next pass (an overflow fold, up to four in a row, logged
+`fold(<chat>): rows before v5.1.1's tail remain after a send-floor cut - folding again`). Every manual request is answered: the confirmation,
 a failure with the next try time, or "Nothing to compact yet."
 
 ## Status
@@ -203,7 +218,8 @@ end.
 | `test_orch_compact` | backoff, thrash wait, legacy lift, firmware reset, rollback round trip (the v5.1.1 parser), no reachable state stays off past 12 h, FoldCtl codec, trigger math, proportional cap |
 | `test_fold_backlog` | a long chat's catch-up, a refill that only waits, a failure that schedules a retry |
 | `test_fold_ladder` | every failure kind at every rung is answered by the next; no (host, model) twice; Large 4 on Small at effort none on the real wire; the matcher fixtures |
-| `test_fold_driver` | Pending per rung, one CycleFailed, the never-lost manual request, keep 0, the device-wide cap, a failing week on five chats, no clock, fresh device, the Lumi blob folding forward with no id gap |
+| `test_fold_driver` | Pending per rung, one CycleFailed, the never-lost manual request, keep 0, the device-wide cap, a failing week on five chats, no clock, fresh device, the Lumi blob folding forward with no id gap, the hourly "due, not started" line, a cycle started in a manual read's yield finishing its ladder, the device alert hook's routing |
+| `test_fold_invariant` | no row is lost to a fold under the store's failure shapes; after a turn cut at the send floor, the fold leaves every row in the next request or the summary |
 | `nimbusd/tests/test_fold_driver_vn` | the VN reaches the same outcomes as the device; the routes |
 | `tools/release_gate/check_fold_health.py` | no reachable pause, fold control present, the blobs round-trip |
 

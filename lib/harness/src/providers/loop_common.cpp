@@ -204,6 +204,7 @@ orch::HeadStepFn resendUnsentOnce(const ResendCtx* ctx) {
     const bool shortAtFailure = memoryShort(pd, *ctx->cfg);
     const Resend verdict = resendVerdict(pd, *ctx->cfg, wire::lastExchange().lowMem);
     if (verdict != Resend::Go) {
+      wire::lastExchange().stayedLow = verdict == Resend::StayedLow;
       hlog::logf("%s: request not sent and the heap did not recover (heap %u) - no resend",
                  ctx->who, heapAt);
       // The error names the reason the resend was refused. After a wait the verdict
@@ -515,6 +516,30 @@ class RoundRecovery {
     return true;
   }
 
+  // Bench A10: an upload that died for memory mid-body (the transport's "body truncated ...
+  // low memory", after the one same-host resend CUM-477 allows) over v5.1.1's 85,000 B: the
+  // turn's requests go at v5.1.1's budget from here on (holdSendFloor, cleared when the loop
+  // ends), the step is rebuilt on it, and the round runs once more (the wire refuses the
+  // big body before a byte leaves, so the controller gives up what does not fit with its
+  // note). Once a turn: a second death at the floor fails the round as before. Never when
+  // the heap stayed low for the whole wait: that is the memory reply.
+  __attribute__((noinline)) bool sendFloorRetry(const std::string& host, const orch::HeadStep& sr) {
+    const wire::LastExchange& x = wire::lastExchange();
+    if (sr.ok || floorTried_ || !x.unsent || !x.lowMem || orch::sendFloorHeld()) return false;
+    // The memory verdict stands (candidate 4, F4): when the wait itself ended StayedLow the
+    // turn ends with the memory reply, as in v5.1.1. A low reading after a resend the wait
+    // allowed is the A10 death the floor is for (candidate 5, G1), so only the verdict counts.
+    if (x.stayedLow) return false;
+    if (orch::budgetLink() != orch::BudgetLink::Device) return false;
+    if (wire::lastRound().load.bodyBytes <= orch::kLegacyWireBodyBytes) return false;   // the floor changes nothing
+    floorTried_ = true;
+    orch::holdSendFloor(true);
+    hlog::logf("fabric: %s upload failed for memory - the turn sends at %u B from here, running the round again",
+               host.c_str(), (unsigned)orch::kLegacyWireBodyBytes);
+    rebuild_();
+    return true;
+  }
+
   // The next attempt at a cut round is told what happened and answers in less room.
   __attribute__((noinline)) void noteCut(const orch::HeadStep& sr) {
     savedCut_.reset(new orch::HeadStep(sr));
@@ -582,9 +607,16 @@ class RoundRecovery {
   // of NewestMessage, and one for a partial clip).
   static constexpr int kSeedFitPasses = 5;
   int seedFits_ = 0;
+  bool floorTried_ = false;   // sendFloorRetry: once a turn
   std::unique_ptr<orch::HeadStep> savedCut_;
   std::string cutNote_;
   std::string heldHost_, heldCause_;
+};
+
+// The turn's send floor (RoundRecovery::sendFloorRetry) lasts until its loop returns, on
+// every path out (an exception included).
+struct SendFloorTurn {
+  ~SendFloorTurn() { orch::holdSendFloor(false); }
 };
 
 void loopHooks(orch::HeadLoopHooks& hooks, const ProviderDeps& pd, const HeadTools& ht, orch::Transcript& tr,
@@ -631,6 +663,7 @@ bool runHostLoop(const HostLoop& loop, const std::string& instructions, const st
   // the Telegram poll task (176 B of recovery state, 164 B of hooks, 148 B of outcome).
   const std::unique_ptr<RoundRecovery> recovery(new RoundRecovery(tr, ht, instructions, inputs));
   RoundRecovery& rec = *recovery;
+  const SendFloorTurn floorTurn;   // a send floor held by this turn ends with it
   // CUM-477: one same-host resend of a request that never left.
   orch::HeadStepFn inner = loop.make(instructions, tr);
   const ResendCtx resend{&pd, &ht.cfg, &inner, who};
@@ -649,6 +682,7 @@ bool runHostLoop(const HostLoop& loop, const std::string& instructions, const st
         return sr;
       }
       if (rec.photoFit(loop.host, sr) || rec.seedFit(loop.host, sr)) continue;   // what the round can give up
+      if (rec.sendFloorRetry(loop.host, sr)) continue;
       // Too big to send: the controller refits and runs it again (head_loop.h).
       size_t budget = 0, size = 0;
       if (orch::parseBodyBudgetError(sr.error, budget, size)) return sr;
@@ -715,6 +749,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
   // On the heap, as in runHostLoop (lane STACK).
   const std::unique_ptr<RoundRecovery> recovery(new RoundRecovery(tr, ht, instructions, inputs));
   RoundRecovery& rec = *recovery;
+  const SendFloorTurn floorTurn;   // a send floor held by this turn ends with it
   // The same-host step-down model once a cut forced it ("" = none). It holds for the rest of
   // the turn: every later build of the Mistral step (a refit's rebuild included) is on it.
   std::string stepDownModel;
@@ -846,6 +881,7 @@ bool runFabricLoop(const ProviderDeps& pd, const std::vector<std::string>& hostL
         return sr;
       }
       if (rec.photoFit(hostList[hostIdx], sr) || rec.seedFit(hostList[hostIdx], sr)) continue;   // what the round can give up
+      if (rec.sendFloorRetry(hostList[hostIdx], sr)) continue;
       // A round too big to SEND never left the device: the controller folds older
       // tool rounds and runs it again (head_loop.h refitToBudget). It is not a host
       // failure and not a cause in the engine's chain (the owner hears the chain's

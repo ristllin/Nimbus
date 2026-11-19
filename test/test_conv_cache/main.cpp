@@ -460,7 +460,11 @@ static void test_a_stale_probe_cursor_is_not_the_end() {
   const ConvCache::ReadFn full = s.reader("c1");
   const ConvCache::ReadFn store = [&](const HistoryQuery& q) {
     const bool byteCur = q.after.find(':') != std::string::npos;
-    if (byteCur) return std::vector<EpisodicMessage>();   // stale or not: none of the chat's rows there
+    if (byteCur && indexComplete) {   // the store's index completed: it names the cursor stale
+      if (q.info) q.info->cursorStale = true;
+      return std::vector<EpisodicMessage>();
+    }
+    if (byteCur) return full(HistoryQuery(q.limit, std::string(), thru));   // the walk goes on and finds them
     if (!q.after.empty() && !indexComplete) {   // the cold walk out of budget
       if (q.info) {
         q.info->newerExists = true;
@@ -513,6 +517,43 @@ static void test_the_gap_probe_reads_once_a_call() {
     TEST_ASSERT_TRUE_MESSAGE(probes <= 1, std::to_string(probes).c_str());
   }
   TEST_ASSERT_TRUE(n >= 3);   // and the walk still goes forward, a read a call
+}
+
+// Fix review, candidate 2: on an index that never completes, the gap probe walks the cold region
+// by byte cursor and reaches its real end (an empty page the store does not name stale). That
+// is the end: the fill completes. It used to be taken for a stale cursor, and the probe started
+// again from thru on every call, for good.
+static void test_the_probe_ends_at_the_real_end_of_a_cold_walk() {
+  Store s;
+  const std::string thru = s.turn("c1", 0);
+  std::string floorId;
+  for (int i = 1; i <= 4; i++) {
+    const std::string last = s.turn("c1", i);
+    if (i == 1) floorId = last;   // the index holds only the rows after it
+  }
+  // The truncated index ends at thru's own day: the fill's backward pages stop short of thru
+  // (an empty page below the newest rows), and the probe after thru walks cold bytes holding
+  // none of the chat's rows, to the real end of the cold region.
+  const ConvCache::ReadFn full = s.reader("c1");
+  const ConvCache::ReadFn store = [&](const HistoryQuery& q) {
+    if (!q.after.empty() && q.info) {
+      if (q.after.find(':') == std::string::npos) {   // from thru: the cold walk's budget runs out
+        q.info->newerExists = true;
+        q.info->nextAfter = "20591:131072";
+      }
+      return std::vector<EpisodicMessage>();   // from the byte cursor: the real end, nothing after
+    }
+    std::vector<EpisodicMessage> rows = full(q);
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [&](const EpisodicMessage& m) { return !agent::rowIdAfter(m.id, floorId); }),
+               rows.end());
+    return rows;
+  };
+  ConvCache cache;
+  ConvCache::View v;
+  for (int i = 0; i < 6 && !v.complete; i++) v = cache.access("c1", thru, kWide, 2, store);
+  TEST_ASSERT_TRUE_MESSAGE(v.complete, "the fill completes at the real end");
+  TEST_ASSERT_EQUAL(6, (int)v.rows.size());   // the rows the index held: the walk said nothing lies below
 }
 
 // A device boot replays the photo records it kept: no cache holds a row yet, so the replay
@@ -816,6 +857,7 @@ int main(int, char**) {
   RUN_TEST(test_a_boot_replay_is_not_journaled);
   RUN_TEST(test_a_stale_probe_cursor_is_not_the_end);
   RUN_TEST(test_the_gap_probe_reads_once_a_call);
+  RUN_TEST(test_the_probe_ends_at_the_real_end_of_a_cold_walk);
   RUN_TEST(test_an_empty_first_page_still_reads_every_newer_row);
   RUN_TEST(test_a_capped_index_still_completes_the_fill);
   RUN_TEST(test_one_card_page_with_the_duplicate_check);

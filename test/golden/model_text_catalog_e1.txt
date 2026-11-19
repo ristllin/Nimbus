@@ -5,7 +5,7 @@
 # class device_notes bytes=54203 ceiling=74350 entries=1462 sha8=c415e340
 # class tool_descriptions bytes=23131 ceiling=23055 entries=98 sha8=542ad7ca
 # class tool_results bytes=41962 ceiling=41269 entries=1249 sha8=63debd41
-# class side_prompts bytes=9374 ceiling=8078 entries=158 sha8=897e5bc2
+# class side_prompts bytes=9795 ceiling=8078 entries=170 sha8=fada0e91
 # class skills bytes=23264 ceiling=23264 entries=35 sha8=cef6121d
 system	lib/core/include/nimbus/orch/orch_schema.h	4bbc63be	1005	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. The device checks each claim against this turn's recorded effects and sources and corrects the reply when they disagree. Never invent ids, links, or successes."
 system	lib/core/include/nimbus/orch/orch_schema.h	8947228e	186	"A question for the owner when you need their input; empty string if none. It is appended to your reply as the same message; if the reply already ends with this question, leave ask empty."
@@ -3382,6 +3382,7 @@ side_prompts	lib/core/src/orch_compact.cpp	34072b76	11	"\nguestPaid="
 side_prompts	lib/core/src/orch_compact.cpp	ce05ed33	14	"\nlastAlertDay="
 side_prompts	lib/core/src/orch_compact.cpp	5a1fdf2a	19	"\nmanualPendingChat="
 side_prompts	lib/core/src/orch_compact.cpp	284c99e8	14	"\nfwAtLastFail="
+side_prompts	lib/core/src/orch_compact.cpp	ed64cd12	13	"\nunreadSince="
 side_prompts	lib/harness/src/dream.cpp	0321803d	139	"the 'dream' loop is reserved firmware maintenance and cannot be deleted; the owner can pause it instead (web Loops tab, or /loop off dream)"
 side_prompts	lib/harness/src/dream.cpp	cf2d5eaf	168	"Nightly maintenance + reflection: memory decay/prune/dedup, then distill yesterday into durable memories. Inputs are built fresh each night; pause with /loop off dream."
 side_prompts	lib/harness/src/dream.cpp	33559d45	48	"(no episodic messages captured in the last day)\n"
@@ -3459,8 +3460,18 @@ side_prompts	lib/harness/src/fold_driver.cpp	06e33acb	30	"Queued. It starts in a
 side_prompts	lib/harness/src/fold_driver.cpp	ea259883	27	"Another summary is running."
 side_prompts	lib/harness/src/fold_driver.cpp	fd42d958	24	"Ready again in a moment."
 side_prompts	lib/harness/src/fold_driver.cpp	2ba1443a	12	"cycle failed"
+side_prompts	lib/harness/src/fold_driver.cpp	65408406	19	"the network is down"
+side_prompts	lib/harness/src/fold_driver.cpp	9c00970e	54	"a turn in flight, the heap floor or no provider to ask"
+side_prompts	lib/harness/src/fold_driver.cpp	db85ec64	35	"its retry wait (next try scheduled)"
+side_prompts	lib/harness/src/fold_driver.cpp	07d3d9c7	19	"its wait (no clock)"
+side_prompts	lib/harness/src/fold_driver.cpp	b337a109	19	"its rows' read wait"
+side_prompts	lib/harness/src/fold_driver.cpp	3ea446d3	30	"a persisted wait, no clock yet"
+side_prompts	lib/harness/src/fold_driver.cpp	ac980b5d	56	"the daily cap's share for chats that are not the owner's"
+side_prompts	lib/harness/src/fold_driver.cpp	26f9e35e	41	"the quiet gate (waits for a quiet moment)"
+side_prompts	lib/harness/src/fold_driver.cpp	e807d260	13	"the daily cap"
 side_prompts	lib/harness/src/fold_driver.cpp	5c4a28c0	23	"Nothing to compact yet."
 side_prompts	lib/harness/src/fold_driver.cpp	a28b64da	175	"\u26a0 Some older messages in this chat can't be read from storage right now, so the summary can't include them yet. It keeps trying by itself; if this lasts, restart the device."
+side_prompts	lib/harness/src/fold_driver.cpp	934a1202	116	"\u26a0 Reading this chat's older messages is taking too long right now, so the summary isn't finished. Try again later."
 side_prompts	lib/harness/src/fold_driver.cpp	020d2c26	82	"\u26a0 Couldn't read this chat's older messages just now. Try again in a few minutes."
 side_prompts	lib/harness/src/fold_driver.cpp	74241f65	3	"in "
 side_prompts	lib/harness/src/fold_driver.cpp	7ec7a438	40	"\u2713 Compacted. Summary updated: covered "
@@ -3475,6 +3486,7 @@ side_prompts	lib/harness/src/fold_driver.cpp	69d77bce	67	"\u26a0 Couldn't update
 side_prompts	lib/harness/src/fold_driver.cpp	4f53c2ac	169	"\u26a0 Some older messages in this chat can't be read from storage, so its summary can't move past them. Restart the device; if this keeps happening, check the memory card."
 side_prompts	lib/harness/src/fold_driver.cpp	d0fbff04	45	"\u26a0 This chat's summary hasn't updated since "
 side_prompts	lib/harness/src/fold_driver.cpp	f08bc006	57	". It keeps retrying on its own; send /compact to try now."
+side_prompts	lib/harness/src/fold_driver.cpp	c381a501	6	"About "
 side_prompts	lib/harness/src/vision_caption.cpp	b4c345c4	381	"You are reading a photo for an assistant that cannot see it. First copy every piece of text in the photo exactly as written (labels, numbers, units, prices, dates, names), one item per line. Then describe what the photo shows in one or two plain sentences. If the sender asked something, say what in the photo answers it. Do not guess at text you cannot read; say it is unreadable."
 side_prompts	lib/harness/src/vision_caption.cpp	99e875cb	164	"Write a short record of this photo for a memory search: one or two plain sentences on what it shows, then any key text or numbers in it copied exactly. No preamble."
 side_prompts	lib/harness/src/vision_caption.cpp	4c9558f9	325	"Say in one line what the photo shows, in your own words, then answer the question below. The question may name what someone guessed is in the photo, and that guess may be wrong: if the photo disagrees, say so and answer from the photo. Copy any text you rely on exactly. If the photo does not show the answer, say so plainly."

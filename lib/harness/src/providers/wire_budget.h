@@ -38,6 +38,7 @@ struct RoundBudget {
   bool routed = false;  // through the Cumulo router
   nimbus::orch::RequestBudget budget;
   bool fragmented = false;   // the DMA pool was under kDmaChunkFloor at round start
+  bool sendFloor = false;    // the budget was lowered to v5.1.1's (request_budget.h atSendFloor)
 };
 
 // A deps bundle whose requests travel through the Cumulo router (wire.h applyRouter).

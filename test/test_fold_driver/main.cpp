@@ -84,6 +84,7 @@ struct Device {
   bool online = true;
   std::set<std::string> guests;   // chats that are not the owner's (empty: every chat is)
   bool ownerAlerts = false;       // the binding's alert: the owner's chats only, says if it told
+  std::function<bool(const std::string&, const std::string&)> alertHook;   // set: the alert hook
   std::string firmware = "5.1.2";
 
   Device() {
@@ -125,6 +126,7 @@ struct Device {
         told.push_back({chat, text});
         return true;
       };
+    if (alertHook) h.alert = alertHook;
     h.firmware = firmware;
     orch::FoldCtlIO io;
     io.load = [this] { return ctlText; };
@@ -141,10 +143,22 @@ struct Device {
   }
 
   uint32_t nothingKept = 0;
-  bool unreadAlways = false;   // every slice meets rows the store will not give back   // > 0: every slice reads to its bound and finds nothing, this much kept
+  bool unreadAlways = false;   // every slice meets rows the store will not give back
+  std::vector<agent::SliceState> stateScript;   // when set: each slice's outcome, in turn
+  size_t stateAt = 0;
+  std::set<std::string> waitChats;   // chats whose every slice read goes on (Wait)   // > 0: every slice reads to its bound and finds nothing, this much kept
   FoldSlice slice(const std::string& chat, size_t cap, bool manual) {
     sliced.push_back({chat, manual});
     FoldSlice s;
+    if (waitChats.count(chat)) {   // this chat's read goes on (a cold walk)
+      s.state = agent::SliceState::Wait;
+      s.progressed = true;
+      return s;
+    }
+    if (!stateScript.empty()) {   // a scripted outcome per slice, in turn
+      s.state = stateScript[stateAt++ % stateScript.size()];
+      return s;
+    }
     if (unreadAlways) {
       s.state = agent::SliceState::Unread;
       return s;
@@ -464,6 +478,62 @@ static void test_the_daily_alert_is_spent_only_when_it_reaches_the_owner() {
   for (const auto& t : d.told) TEST_ASSERT_TRUE(t.first != "guest");
 }
 
+// Candidate 4, F2 (replaces the source grep the review called hollow): the device's alert
+// hook over agent::foldAlertSend, bound as the firmware binds it, driven through the driver.
+// The serial console's (or the screen's) alert goes to the owner's Telegram chat, else the
+// web chat, and names where the summary failed; with neither, or when the send fails, it is
+// logged and the day's alert is not spent. A guest's is logged only.
+namespace {
+bool g_sendOk = true;
+std::vector<std::pair<std::string, std::string>> g_sent;
+bool fakeSend(const std::string& to, const std::string& text) {
+  if (g_sendOk) g_sent.push_back({to, text});
+  return g_sendOk;
+}
+struct AlertCase {
+  std::string ownerTelegram, webChat;
+  bool sendOk;
+  std::string expectTarget;   // "" = none delivered, the day not spent
+};
+}  // namespace
+static void test_the_device_alert_hook_routes_to_a_chat_a_person_reads() {
+  const AlertCase cases[] = {
+      {"111", "web", true, "111"}, {"", "web", true, "web"}, {"", "", true, ""}, {"111", "web", false, ""}};
+  for (const AlertCase& k : cases) {
+    Device d;
+    d.guests = {"guest"};
+    d.thinText = "";
+    std::vector<std::pair<std::string, std::string>>& sent = g_sent;
+    sent.clear();
+    g_sendOk = k.sendOk;
+    const std::set<std::string> owners = {"web", "serial", "voice", "111"};
+    d.alertHook = [owners, k](const std::string& c, const std::string& text) {   // as the firmware binds it
+      return agent::foldAlertSend(c, text, owners.count(c) > 0, k.ownerTelegram, k.webChat, fakeSend);
+    };
+    d.boot();
+    d.backlog("serial", 40);
+    d.folds.noteCycleFailed("serial", kT0 - 30 * 3600);
+    for (uint32_t m = 0; m < 60; m++) d.tick(kT0 + m * 60);
+    TEST_ASSERT_TRUE(LogCapture::contains("fold(serial): cycle failed"));
+    const bool spent = d.drv->ctl().lastAlertDay == orch::foldLocalDay(kT0, 0);
+    if (k.expectTarget.empty()) {
+      TEST_ASSERT_EQUAL(0, (int)sent.size());
+      TEST_ASSERT_FALSE_MESSAGE(spent, "the day's alert is not spent on a log line");
+      TEST_ASSERT_TRUE(LogCapture::contains("fold(serial): the daily alert is logged only"));
+      continue;
+    }
+    TEST_ASSERT_EQUAL(1, (int)sent.size());
+    TEST_ASSERT_EQUAL_STRING(k.expectTarget.c_str(), sent[0].first.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(sent[0].second.find("serial console") != std::string::npos, sent[0].second.c_str());
+    TEST_ASSERT_TRUE(spent);
+  }
+  // The route itself: an owner's Telegram chat or the web chat is told directly; a guest's never.
+  TEST_ASSERT_EQUAL_STRING("222", agent::foldAlertRoute("222", true, "111", "web", "x").target.c_str());
+  TEST_ASSERT_EQUAL_STRING("x", agent::foldAlertRoute("web", true, "111", "web", "x").text.c_str());
+  TEST_ASSERT_EQUAL_STRING("", agent::foldAlertRoute("guest", false, "111", "web", "x").target.c_str());
+  TEST_ASSERT_EQUAL_STRING("111", agent::foldAlertRoute("voice", true, "111", "web", "x").target.c_str());
+}
+
 // A guest chat that refills all day spends at most half the daily cap: the owner's chat,
 // due late in the day, still gets its automatic summary.
 static void test_a_busy_guest_chat_leaves_the_owner_room() {
@@ -524,6 +594,124 @@ static void test_rows_unread_for_a_day_alert_the_owner_once_a_day() {
   }
   TEST_ASSERT_EQUAL_MESSAGE(1, answers, "the manual request is answered with the truth");
   TEST_ASSERT_EQUAL(0, minutes);
+}
+
+// Fix review, candidate 2: the unread clock survives a Wait pass and a restart (it is kept in the
+// fold control file), so on a flaky card that also gives Wait passes and restarts, the alert
+// still comes once a day has passed, and once.
+static void test_the_unread_clock_survives_waits_and_restarts() {
+  Device d;
+  d.boot();
+  d.backlog("c", 40);
+  d.stateScript = {agent::SliceState::Unread, agent::SliceState::Wait, agent::SliceState::Unread};
+  for (uint32_t m = 0; m <= 25u * 60u; m += 10) {
+    if (m == 8u * 60u || m == 16u * 60u) d.reboot();
+    d.plat.ms += 600000;
+    d.drv->tick(d.plat.ms, kT0 + m * 60);
+  }
+  int alerts = 0;
+  for (const auto& t : d.told) alerts += t.second.find("can't move past them") != std::string::npos;
+  TEST_ASSERT_EQUAL_MESSAGE(1, alerts, "one alert after a day of unread rows");
+  TEST_ASSERT_TRUE(d.ctlText.find("unreadSince=c:") != std::string::npos);
+}
+
+// Candidate 4, F1: the "due, not started" line comes at most once an hour for each chat and
+// cause, however many chats are held in the same pass (one key in total let two held chats
+// write a durable line each on every pass).
+static void test_due_not_started_lines_are_bounded_per_chat_and_cause() {
+  Device d;
+  d.failing = false;
+  d.guests = {"g1", "g2"};
+  d.boot();
+  d.backlog("g1", 40);
+  d.backlog("g2", 40, 0x400);
+  d.ctlText = "";
+  // The guests' share of the day is spent.
+  orch::FoldCtl c;
+  c.notePaid(orch::foldLocalDay(kT0, 0), 6, true);
+  d.ctlText = c.encode();
+  d.reboot();
+  LogCapture::lines().clear();
+  for (uint32_t s = 0; s < 2u * 3600u; s += 20) d.tick(kT0 + s);   // two hours, a pass every 20 s
+  int lines = 0;
+  for (const auto& l : LogCapture::lines()) lines += l.find("due, not started") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(lines >= 2 && lines <= 6, std::to_string(lines).c_str());
+}
+
+// Candidate 5, G3: with more chats held than the table has slots (twelve guests past their
+// share, every pass for two hours), the lines stay bounded: a miss while all eight slots are
+// inside their hour logs nothing and evicts nothing, apart from one "more chats held" line
+// an hour.
+static void test_more_held_chats_than_slots_stay_bounded() {
+  Device d;
+  d.failing = false;
+  for (int g = 0; g < 12; g++) d.guests.insert("g" + std::to_string(g));
+  d.boot();
+  for (int g = 0; g < 12; g++) d.backlog("g" + std::to_string(g), 40, 0x100 + g * 0x100);
+  orch::FoldCtl c;
+  c.notePaid(orch::foldLocalDay(kT0, 0), 6, true);   // the guests' share of the day is spent
+  d.ctlText = c.encode();
+  d.reboot();
+  LogCapture::lines().clear();
+  for (uint32_t s = 0; s < 2u * 3600u; s += 20) d.tick(kT0 + s);
+  int lines = 0, more = 0;
+  for (const auto& l : LogCapture::lines()) {
+    lines += l.find("due, not started") != std::string::npos;
+    more += l.find("more chats held") != std::string::npos;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(lines >= 8 && lines <= 2 * 8, std::to_string(lines).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(more >= 1 && more <= 2, std::to_string(more).c_str());
+}
+
+// Candidate 5, G2 (replaces candidate 4's F3, which counted the cycle as failed): an automatic
+// cycle that starts in a manual read's yield is never cut by the read's next pass. It finishes
+// its ladder (lands or fails as any cycle does) and the manual starts on the pass after.
+// (a) a thin first-rung answer of kFoldThinFloor bytes or more does not land after one rung:
+// the ladder goes on; (b) a transient first-rung failure folds on rung 2 with no failed cycle;
+// the manual request still completes; the paid count is exact.
+namespace {
+// Chat "a" has a manual request whose read goes on (Wait, progress) until `readEnds` slices;
+// chat "b" is due. Half-second passes so the yields come between the read's passes.
+void runYield(Device& d, int passes, size_t readEnds) {
+  d.waitChats = {"a"};
+  d.boot();
+  d.backlog("a", 40);
+  d.backlog("b", 40, 0x400);
+  d.drv->requestManual("a");
+  for (int i = 0; i < passes; i++) {
+    if (d.sliced.size() >= readEnds) d.waitChats.clear();
+    d.plat.ms += 500;
+    d.drv->tick(d.plat.ms, kT0 + (uint32_t)i / 2);
+  }
+}
+int doneFor(const Device& d, const std::string& chat) {
+  int n = 0;
+  for (const auto& x : d.done) n += x.chat == chat;
+  return n;
+}
+}  // namespace
+static void test_an_automatic_cycle_in_a_manual_yield_finishes_its_ladder() {
+  for (int shape = 0; shape < 2; shape++) {
+    Device d;
+    const std::vector<agent::FoldRung> rungs = d.eng->foldRungs();
+    d.answering.insert(rungs[1].host + "/" + rungs[1].model);   // rung 2 answers with the sections
+    if (shape == 0) {   // rung 1 answers long but thin (another language)
+      d.thinText = "Resume de la conversation.\n";
+      while (d.thinText.size() < agent::kFoldThinFloor + 200) d.thinText += "- Le proprietaire note ses repas.\n";
+    }
+    runYield(d, 400, 12);
+    TEST_ASSERT_EQUAL_MESSAGE(1, doneFor(d, "b"), "b's cycle lands once");
+    TEST_ASSERT_TRUE_MESSAGE(d.folds.get("b").summary.find(rungs[1].host) != std::string::npos,
+                             "on rung 2, not the thin rung-1 answer");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, d.folds.get("b").failedCycles, "no failed cycle counted");
+    TEST_ASSERT_FALSE(LogCapture::contains("fold(b): cycle failed"));
+    TEST_ASSERT_TRUE_MESSAGE(d.drv->ctl().manualPendingChat.empty(), "the manual request completed");
+    bool answered = false;
+    for (const auto& t : d.told) answered = answered || t.first == "a";
+    TEST_ASSERT_TRUE_MESSAGE(answered, "and was answered");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)d.asked, d.drv->ctl().paidOn(orch::foldLocalDay(kT0, 0)),
+                                     "every paid request is counted, once");
+  }
 }
 
 // A fresh device (no blob, no control file): nothing due, no alert, no wait, no file.
@@ -728,6 +916,11 @@ int main(int, char**) {
   RUN_TEST(test_a_busy_guest_chat_leaves_the_owner_room);
   RUN_TEST(test_a_huge_kept_tail_does_not_skip_every_pass);
   RUN_TEST(test_rows_unread_for_a_day_alert_the_owner_once_a_day);
+  RUN_TEST(test_the_unread_clock_survives_waits_and_restarts);
+  RUN_TEST(test_due_not_started_lines_are_bounded_per_chat_and_cause);
+  RUN_TEST(test_more_held_chats_than_slots_stay_bounded);
+  RUN_TEST(test_an_automatic_cycle_in_a_manual_yield_finishes_its_ladder);
+  RUN_TEST(test_the_device_alert_hook_routes_to_a_chat_a_person_reads);
   RUN_TEST(test_fresh_device_is_idle_and_quiet);
   RUN_TEST(test_new_firmware_restarts_the_wait);
   RUN_TEST(test_lumi_blob_folds_forward_with_no_id_gap);

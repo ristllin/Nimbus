@@ -670,6 +670,36 @@ void FoldCtl::notePaid(uint32_t day, uint32_t n, bool guest) {
   if (guest) guestPaid += n;
 }
 
+constexpr size_t kFoldUnreadSinceMax = 8;
+
+uint32_t FoldCtl::unreadSinceOf(const std::string& chatId) const {
+  for (const auto& u : unreadSince)
+    if (u.first == chatId) return u.second;
+  return 0;
+}
+
+bool FoldCtl::setUnreadSince(const std::string& chatId, uint32_t epoch) {
+  if (!ctlIdOk(chatId) || !epoch) return false;
+  for (auto& u : unreadSince)
+    if (u.first == chatId) {
+      if (u.second == epoch) return false;
+      u.second = epoch;
+      return true;
+    }
+  if (unreadSince.size() >= kFoldUnreadSinceMax) unreadSince.erase(unreadSince.begin());
+  unreadSince.push_back({chatId, epoch});
+  return true;
+}
+
+bool FoldCtl::dropUnreadSince(const std::string& chatId) {
+  for (size_t i = 0; i < unreadSince.size(); i++)
+    if (unreadSince[i].first == chatId) {
+      unreadSince.erase(unreadSince.begin() + (long)i);
+      return true;
+    }
+  return false;
+}
+
 bool FoldCtl::queueManual(const std::string& chatId) {
   if (!ctlIdOk(chatId)) return false;
   for (const std::string& c : manualPendingChat)
@@ -688,13 +718,28 @@ void FoldCtl::dropManual(const std::string& chatId) {
 }
 
 std::string FoldCtl::encode() const {
-  std::string q;
+  std::string q, u;
   for (const std::string& c : manualPendingChat) q += (q.empty() ? "" : ",") + c;
+  for (const auto& e : unreadSince) u += (u.empty() ? "" : ",") + e.first + ":" + std::to_string(e.second);
   return "paidDay=" + std::to_string(paidDay) + "\npaidCount=" + std::to_string(paidCount) +
          "\nguestPaid=" + std::to_string(guestPaid) +
          "\nlastAlertDay=" + std::to_string(lastAlertDay) + "\nmanualPendingChat=" + q +
-         "\nfwAtLastFail=" + ctlText(fwAtLastFail) + "\n";
+         "\nfwAtLastFail=" + ctlText(fwAtLastFail) + (u.empty() ? std::string() : "\nunreadSince=" + u) + "\n";
 }
+
+namespace {
+// "chat:epoch,chat:epoch" (a chat id may itself hold ':' - the epoch is after the last one).
+void decodeUnreadSince(const std::string& v, FoldCtl& c) {
+  for (size_t a = 0; a < v.size();) {
+    const size_t comma = v.find(',', a);
+    const std::string item = v.substr(a, (comma == std::string::npos ? v.size() : comma) - a);
+    const size_t colon = item.rfind(':');
+    if (colon != std::string::npos) c.setUnreadSince(item.substr(0, colon), toU32(item.substr(colon + 1)));
+    if (comma == std::string::npos) break;
+    a = comma + 1;
+  }
+}
+}  // namespace
 
 FoldCtl FoldCtl::decode(const std::string& text) {
   FoldCtl c;
@@ -711,6 +756,7 @@ FoldCtl FoldCtl::decode(const std::string& text) {
     else if (k == "guestPaid") c.guestPaid = toU32(v);
     else if (k == "lastAlertDay") c.lastAlertDay = toU32(v);
     else if (k == "fwAtLastFail") c.fwAtLastFail = ctlText(v);
+    else if (k == "unreadSince") decodeUnreadSince(v, c);
     else if (k == "manualPendingChat")
       for (size_t a = 0; a <= v.size();) {
         const size_t comma = v.find(',', a);

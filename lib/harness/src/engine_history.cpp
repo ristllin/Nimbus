@@ -210,6 +210,20 @@ bool TurnEngine::captureOwnerRow(const std::string& chatId, const std::string& t
 
 // ---- the window and the fold read the conversation cache (lane H) -------------------
 
+void TurnEngine::noteFloorTrim(const std::string& chatId, bool trimmed) {
+  const auto at = std::find(floorTrimChats_.begin(), floorTrimChats_.end(), chatId);
+  const bool floor = trimmed && orch::sendFloorCounts().floorRounds != floorRoundsAtTurn_;
+  if (!floor) {
+    if (at != floorTrimChats_.end()) floorTrimChats_.erase(at);
+    return;
+  }
+  // One line per turn that took the floor and left rows out (never per round).
+  hlog::logf("history(%s): rows left out at the send floor - the next fold keeps v5.1.1's tail", chatId.c_str());
+  if (at != floorTrimChats_.end()) return;
+  if (floorTrimChats_.size() >= 4) floorTrimChats_.erase(floorTrimChats_.begin());
+  floorTrimChats_.push_back(chatId);
+}
+
 HistoryBudget TurnEngine::historyBudgetOf(const nimbus::orch::ContextBudget& cb, const std::string& host,
                                           const std::string& model) const {
   HistoryBudget b;
@@ -226,6 +240,7 @@ HistoryBudget TurnEngine::historyBudgetOf(const nimbus::orch::ContextBudget& cb,
   b.softBytes = cb.historySoftBytes;
   b.keepBytes = cb.historyKeepBytes;
   b.highRows = cb.historyRows;
+  b.floorKeepBytes = cb.v511KeepBytes;
   return b;
 }
 
@@ -361,8 +376,16 @@ std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, cons
 // floor branch). An owner's own trigger below the head's soft mark (Compact at 24 KB on a head
 // that keeps 111 KB) makes the fold due at that trigger, so the tail shrinks in proportion, or
 // every due fold would find nothing beyond the kept history.
-size_t TurnEngine::foldKeepBytes(const HistoryBudget& b) const {
+//
+// Candidate 4, F5: after a turn whose rounds went at the send floor (85,000 B) and left history
+// out, the fold keeps v5.1.1's tail: the head's large tail would not fit the floor either, so
+// its rows would be in neither the next request nor the summary while the pool stays
+// fragmented. Only that fold: the window itself is never held to the floor.
+size_t TurnEngine::foldKeepBytes(const HistoryBudget& b, const std::string& chatId) const {
   if (!b.derived) return b.lowBytes();
+  if (b.floorKeepBytes &&
+      std::find(floorTrimChats_.begin(), floorTrimChats_.end(), chatId) != floorTrimChats_.end())
+    return std::min(b.floorKeepBytes, b.keepBytes);
   const uint32_t trigger = d_.foldTriggerBytes ? d_.foldTriggerBytes() : 0;
   if (trigger && trigger < b.softBytes) return (size_t)((uint64_t)b.keepBytes * trigger / b.softBytes);
   return b.keepBytes;
@@ -390,7 +413,7 @@ SliceState TurnEngine::foldBounds(const std::string& chatId, const HistoryMarks&
   if (hidden) to.startAfter = marks.softStart;   // the tail is never a hidden row
   foldRuns(view.rows, to, 0, rows, repeats);
   const std::vector<HistTurn> tail = historyTurns(rows, to, &repeats);
-  const size_t keep = foldKeepBytes(b);
+  const size_t keep = foldKeepBytes(b, chatId);
   const HistoryBudget day = b.derived ? HistoryBudget() : b;   // v5.1.1 keeps the owner's day too
   const size_t kept = std::max(foldKeptTail(tail, keep, o.utcOffsetMin), dayTailTurns(tail, day, o.utcOffsetMin));
   if (kept > 0 && kept < tail.size()) {
@@ -494,10 +517,10 @@ struct TurnEngine::FoldReadPass {
     return false;
   }
   // A cursor the store's state moved under (lane CTXR1, v5.1.2 fix review): a byte cursor
-  // ("day:off") from an earlier pass that the store, its index now complete, answers with an
-  // empty page and nothing more, or that brings back rows at or before the anchor (the index
+  // ("day:off") from an earlier pass that the store, its index now complete, names stale
+  // (EpiQueryInfo::cursorStale), or that brings back rows at or before the anchor (the index
   // read from the start). Never the end: the stored cursor is dropped and the next pass reads
-  // again from the anchor.
+  // again from the anchor. An empty page the store does not name stale is the real end.
   bool staleCursor() {
     hlog::logf("fold(%s): the read cursor %s no longer fits the store - the read starts again from %s",
                chat.c_str(), cursor.c_str(), start.c_str());
@@ -521,7 +544,7 @@ struct TurnEngine::FoldReadPass {
                  cursor.c_str());
       return stop(FoldRead::End::Wait);
     }
-    if (!info.newerExists && cursor.find(':') != std::string::npos) return staleCursor();
+    if (info.cursorStale) return staleCursor();   // the store says so: never inferred from the shape
     if (!info.newerExists || info.nextAfter.empty()) return stop(FoldRead::End::Last);
     cursor = info.nextAfter;   // the store's read budget stopped first: go on from where it did
     note();

@@ -356,11 +356,44 @@ keep that partial index honest:
   20 ms. No task of its own, no TLS, no NVS and no new on-card format: the index
   is still rebuilt from the day-streams on every boot. The SD log records
   `memory: episodic index complete (N rows, M added in K slices, ...)` when it is
-  done. The index is capped at `kIndexMaxRows` (20,000 rows, about 2 MB of PSRAM);
-  past the cap, or with a record too long to read whole, the index stays marked
-  incomplete and says so. A file that keeps failing to read pauses the backfill,
-  which retries every 5 minutes from where it stopped; the index stays marked
+  done. The index is capped at `kIndexMaxRows` (20,000 rows of 72 B on the device,
+  1.44 MB of PSRAM); past the cap, or with a record too long to read whole, the index
+  stays marked incomplete and says so. A file that keeps failing to read pauses the
+  backfill, which retries every 5 minutes from where it stopped; the index stays marked
   incomplete meanwhile.
+- **The index grows in steps, never by doubling** (v5.1.2, after a bench restart: past
+  16,384 rows the doubling asked for one 2.4 MB block while the old 1.2 MB one was held,
+  under a turn's PSRAM and 20 KB of internal ballast, and the uncaught `std::bad_alloc`
+  restarted the device). Every growth adds at most `kIndexGrowRows` (2,048 rows, about
+  147 KB). At the cap the backfill asks for at most the cap plus the free-slot target
+  ((20,000 + 1,024) x 72 B = 1,513,728 B), and a live append past it asks for its size plus
+  one step (22,048 rows, 1,587,456 B, at 20,000 rows; more as live appends grow the index
+  past the cap over a long uptime, as in v5.1.1). The backfill asks for its slice's
+  room before it reads, decodes or moves anything; a refused reserve leaves the index as it
+  was ("no progress this step"), and after `kBackfillMaxReadErrors` (8) refusals in a row
+  the backfill stops in its existing stalled state (incomplete for this boot; the log line
+  `memory: episodic index incomplete (N rows; memory for its growth was refused 8 times in
+  a row) ...`; the next boot tries again). Each backfill step also tops the index up to at
+  least `kIndexFreeSlots` (1,024) free slots, and so does a live append; a refused top-up
+  changes nothing and is tried again only after 256 more live appends. The top-up fires only
+  once the free slots fall under half that target, so a new device's first 2,048 messages
+  reallocate the index a few dozen times, not once each. The step is
+  min(2,048, the index's size) rows, so a small index never asks for more than v5.1.1's
+  doubling did, and the free-slot target is min(1,024, the size); the backfill only skips its
+  reserve when its slice and those free slots are both already there, and keeps them at the
+  cap too, so it never ends with the index full. A live append whose
+  top-up has failed and whose own step is refused still throws, as in v5.1.1: the device
+  restarts and the boot scan rebuilds the index from the card, where every row already is.
+- **Abort sites that remain** (a refused block still throws out of the store; for the
+  v5.2.0 audit): the live append's step growth (above); the boot scan's vectors and the
+  move of up to `kHydrateMaxRows` rows into the index; the recent ring's copies (live,
+  held and backfill) and the held rows; each index record's two strings; the backfill's
+  temporaries (its rows, ring copies and window); the cold and `after` reads' windows; the
+  retention sweep's hash buffer. A JSON document whose pool is refused while decoding a row
+  reads as a torn line and the row is skipped, and the store's JSON allocator asks for a new
+  block even to shrink one (ArduinoJson does not check that call). Outside this store: the
+  conversation cache's rows, the vector memory's entries, the result store, the transcript,
+  the jobs ledger and the web chat.
 
 `indexComplete()` is the store's honest answer to "does the index hold every row on
 the card". It is false while the backfill runs (or after it stopped short), and

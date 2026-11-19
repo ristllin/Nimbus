@@ -331,6 +331,7 @@ void AppendLogEpisodicStore::addMessage(const EpisodicMessage& m) {
   IdxRec r = recordOf(m);
   r.offset = (uint32_t)off;
   r.len = (uint32_t)line.size();
+  growForLiveRow();
   index_.push_back(r);
   maxIdSuffix_ = std::max(maxIdSuffix_, parseIdSuffix(m.id));
   recent_.push_back(cacheOf(m));
@@ -350,12 +351,55 @@ int AppendLogEpisodicStore::flushHeld(int maxRows) {
     IdxRec r = std::move(h.rec);
     r.offset = (uint32_t)off;
     r.len = (uint32_t)h.line.size();
+    growForLiveRow();
     index_.push_back(std::move(r));
     held_.erase(held_.begin());
     if (unpersisted_ > 0) unpersisted_--;
     written++;
   }
   return written;
+}
+
+// ---- index growth (candidate 6, revised) ------------------------------------
+void AppendLogEpisodicStore::topUpIndex() {
+  // T1: hysteresis, so a small index is not reallocated on every message: the top-up fires
+  // only once the free slots fall under half its target.
+  if (index_.capacity() - index_.size() >= std::max<size_t>(1, freeTarget() / 2) || topUpBackoff_ > 0) return;
+  try {
+    index_.reserve(index_.size() + indexStep());   // strong guarantee: refused, nothing changed
+  } catch (const std::bad_alloc&) {
+    topUpBackoff_ = kTopUpBackoffRows;   // S3: not one failed allocation per message
+  }
+}
+
+void AppendLogEpisodicStore::growForLiveRow() {
+  if (topUpBackoff_ > 0) topUpBackoff_--;
+  topUpIndex();
+  if (index_.size() == index_.capacity()) index_.reserve(index_.size() + indexStep());
+}
+
+// The slice's room plus the slots kept for live appends (S2: the backfill does not eat them).
+// The ask covers the slice (max with the slice's room) and stops where the cap allows.
+bool AppendLogEpisodicStore::backfillRoom(int sliceRows) {
+  const int room = std::min(sliceRows, indexCap_ - (int)index_.size());
+  if (room <= 0) return true;
+  const size_t size = index_.size(), need = (size_t)room + freeTarget();
+  if (index_.capacity() - size >= need) return true;
+  // T2: the cap clamp keeps the free-slot term, so at the cap the backfill never ends with the
+  // index full (the first message after it would need the unguarded step).
+  const size_t want = std::max(size + need, std::min(size + std::max(indexStep(), need), (size_t)indexCap_ + freeTarget()));
+  try {
+    index_.reserve(want);   // strong guarantee: refused, nothing changed
+  } catch (const std::bad_alloc&) {
+    return false;
+  }
+  return true;
+}
+
+bool AppendLogEpisodicStore::backfillRefused() {
+  if (++bfMemRefusals_ < kBackfillMaxReadErrors) return true;   // no progress this step; later
+  bfStats_.stalled = true;   // the existing stop: incomplete for this boot, the device logs it once
+  return false;
 }
 
 bool AppendLogEpisodicStore::indexRowPasses(const MsgQuery& q, const IdxRec& r,
@@ -816,7 +860,10 @@ void AppendLogEpisodicStore::queryAfter(const MsgQuery& q, std::vector<EpisodicM
   // row and must never anchor past rows it did not read), under the cold budget.
   const bool belowIndex = hydrateTruncated_ && (byteCur || (uint64_t)afterSfx + 1 < indexFloorSfx());
   if (belowIndex && !queryAfterCold(q, f, afterSfx, out, info)) return;
-  if (byteCur && !belowIndex) return;   // a cold cursor on a store whose index has no gap left
+  if (byteCur && !belowIndex) {   // a cold cursor on a store whose index has no gap left
+    info.cursorStale = true;
+    return;
+  }
   // Past the cold region every indexed row is newer than the cursor.
   const uint32_t from = belowIndex ? 0 : afterSfx;
   const EpiAfterFilter rest(q, from);
@@ -1328,6 +1375,7 @@ int AppendLogEpisodicStore::hydrate(int maxRows, size_t maxBytes,
 
 // ---- index backfill ---------------------------------------------------------
 void AppendLogEpisodicStore::resetBackfill() {
+  bfMemRefusals_ = 0;
   bfInit_ = false;
   bfDays_.clear();
   bfPos_ = 0;
@@ -1338,10 +1386,16 @@ void AppendLogEpisodicStore::resetBackfill() {
 }
 
 bool AppendLogEpisodicStore::backfillStep(size_t sliceBytes, int sliceRows) {
+  topUpIndex();   // free slots for live appends, also once the backfill is done
   if (!hydrateTruncated_) { bfStats_.complete = true; return false; }
   if (bfStats_.capped || bfStats_.stalled) return false;
   if (sliceBytes == 0) sliceBytes = kBackfillSliceBytes;
   if (sliceRows <= 0) sliceRows = kBackfillSliceRows;
+  // The slice's room first, before anything is read, decoded or moved (the bench crash was
+  // this insert doubling the index under ballast). A refused reserve leaves the vector as it
+  // was: no progress this step, tried again on a later one.
+  if (!backfillRoom(sliceRows)) return backfillRefused();
+  bfMemRefusals_ = 0;
   if (!bfInit_) {
     // Captured once: the walk only ever moves to OLDER days, and days older than
     // the cursor can only disappear (retention), never appear. A day that

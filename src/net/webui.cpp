@@ -48,6 +48,7 @@
 #include "nimbus/docs_pack.h"      // CUM-62: global search over the embedded docs pack
 #include "nimbus/orch/budget.h"    // headContextBudget - "auto (currently N)" effective caps
 #include "nimbus/orch/compact.h"   // modelCtxTokens (window table)
+#include "nimbus/orch/request_budget.h"   // sendFloorCounts - the mem block's floor pair
 #include "nimbus/power/bright_cap.h"          // resilience: simulated mic/speaker faults
 #include "nimbus/power/power_monitor.h"       // battery chemistry + custom curve parse (config)
 #include "nimbus/power/power_policy.h"        // battSettingsLive - CUM-15 class predicate for batt.settingsLive
@@ -708,6 +709,11 @@ static void buildState(String& out) {
   // ever had, in bytes. This is the headroom over a canary overflow - the recurring
   // crash(panic). Watch it: if it approaches 0 the stack needs raising.
   mem["pollStackMin"] = (uint32_t)agent::telegram::pollStackMinFree();
+  {   // rounds since boot, and those sent at the v5.1.1 send floor (candidate 4, F6)
+    const nimbus::orch::SendFloorCounts fc = nimbus::orch::sendFloorCounts();
+    mem["floorRounds"] = fc.floorRounds;
+    mem["rounds"]      = fc.rounds;
+  }
   // The AsyncTCP service task's current free stack (this handler runs ON it, so
   // its own high-water is the relevant number). Confirms the halved 8 KB has room.
   if (TaskHandle_t at = xTaskGetHandle("async_tcp"))
