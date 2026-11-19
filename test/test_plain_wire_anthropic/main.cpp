@@ -700,6 +700,13 @@ txb::CoverInput coverOf(const txb::Convo& c, uint64_t pointer, uint32_t openTurn
   return in;
 }
 
+// The message stamp as tx::messageStamp writes it (RB-REC5: with the device's day start).
+std::string stampOf(uint64_t t, int16_t tz, uint16_t dayStart) {
+  char stamp[tx::kStampMaxBytes];
+  TXB_OK(tx::messageStamp(t, tz, dayStart, stamp, sizeof stamp));
+  return stamp;
+}
+
 // ---- 1. the checker bites ------------------------------------------------------------------------
 agent::HttpRequest reqOf(const std::string& body) {
   agent::HttpRequest r;
@@ -1407,7 +1414,8 @@ void test_photos_follow_the_open_turns_visible_set() {
   EXPECT_API_OK(out, "unreadable photo");
   TEST_ASSERT_EQUAL(0, (int)txb::detail::countImages(out.view));
   TEST_ASSERT_TRUE(txb::detail::textIn(out.view, "user", "[photo pab12cd34 "));
-  // A photo with no text is a message of its own.
+  // A photo with no text and no clock is still a message of its own: the stamp says the time
+  // is unknown (RB-REC5), then the photo.
   txb::Convo only;
   only.openTurn();
   only.items.back().photos = {"pab12cd34"};
@@ -1416,7 +1424,8 @@ void test_photos_follow_the_open_turns_visible_set() {
   RENDER_OK(rig, only, out);
   EXPECT_API_OK(out, "photo only");
   TEST_ASSERT_EQUAL(1, (int)out.view.messages.size());
-  TEST_ASSERT_TRUE(out.view.messages[0].blocks[0].kind == sp::BlockKind::Image);
+  TEST_ASSERT_EQUAL_STRING((stampOf(0, 0, 240) + " ").c_str(), out.view.messages[0].blocks[0].text.c_str());
+  TEST_ASSERT_TRUE(out.view.messages[0].blocks[1].kind == sp::BlockKind::Image);
 }
 
 // ---- 10. thinking ------------------------------------------------------------------------------------
@@ -1666,8 +1675,11 @@ void test_a_new_turn_never_rewrites_the_message_a_turn_ended_with() {
   TEST_ASSERT_EQUAL(first.view.messages.size() + 1, second.view.messages.size());
 }
 
-// The stamp is tx::messageStamp's, then one space, then the stored text.
+// The stamp is tx::messageStamp's with the turn's day start (RB-REC5), then one space, then the
+// stored text: before the day start it names the day still running, after it it does not.
+
 void test_an_owner_message_is_its_stamp_and_its_text() {
+  static_assert(tx::kStampMaxBytes >= 52, "the render's stamp buffer holds the night clause");
   Rig rig;
   txb::Convo c;
   c.openTurn();
@@ -1675,13 +1687,30 @@ void test_an_owner_message_is_its_stamp_and_its_text() {
   c.items.back().tzMinutes = 60;
   Out out;
   RENDER_OK(rig, c, out);
-  char stamp[tx::kStampMaxBytes];
-  TXB_OK(tx::messageStamp(c.items.back().t, 60, stamp, sizeof stamp));
-  TEST_ASSERT_EQUAL_STRING((std::string(stamp) + " hello there").c_str(), out.view.messages[0].blocks[0].text.c_str());
-  // No clock: the text alone.
+  TEST_ASSERT_EQUAL_UINT16(240, rig.fx.turn.dayStartMin);   // the setting's default, 04:00
+  TEST_ASSERT_EQUAL_STRING((stampOf(c.items.back().t, 60, 240) + " hello there").c_str(),
+                           out.view.messages[0].blocks[0].text.c_str());
+  // 2026-11-18 00:30 UTC with the day starting at 04:00: the clause names Tuesday's day.
+  const uint64_t night = 1794961800ULL;   // 2026-11-18 00:30:00 UTC
+  c.items.back().t = night;
+  c.items.back().tzMinutes = 0;
+  RENDER_OK(rig, c, out);
+  EXPECT_API_OK(out, "night stamp");
+  TEST_ASSERT_EQUAL_STRING("[2026-11-18 Wed 00:30 (day 2026-11-17 until 04:00)] hello there",
+                           out.view.messages[0].blocks[0].text.c_str());
+  // 08:10 the same morning: past the day start, no clause.
+  c.items.back().t = night + 7 * 3600 + 40 * 60;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_EQUAL_STRING("[2026-11-18 Wed 08:10] hello there", out.view.messages[0].blocks[0].text.c_str());
+  // Another device's day start moves the clause with it.
+  rig.fx.turn.dayStartMin = 0;
+  c.items.back().t = night;
+  RENDER_OK(rig, c, out);
+  TEST_ASSERT_EQUAL_STRING("[2026-11-18 Wed 00:30] hello there", out.view.messages[0].blocks[0].text.c_str());
+  // No clock: the stamp says so.
   c.items.back().t = 0;
   RENDER_OK(rig, c, out);
-  TEST_ASSERT_EQUAL_STRING("hello there", out.view.messages[0].blocks[0].text.c_str());
+  TEST_ASSERT_EQUAL_STRING((stampOf(0, 0, 0) + " hello there").c_str(), out.view.messages[0].blocks[0].text.c_str());
 }
 
 // Outside content is never sent whole after its turn, not even when no stub was stored.
@@ -1853,6 +1882,12 @@ void test_the_measured_framing_per_block_is_inside_the_battery_allowances() {
   two.owner("again");
   const long owner = overheadOf(rig, two, out) - envelopeAndOwner;
   const long envelope = envelopeAndOwner - owner;
+  // The same message between midnight and the day start (RB-REC5's running-day clause).
+  txb::Convo night = two;
+  night.items.back().t = 1794961800ULL;   // 2026-11-18 00:30 UTC, day start 04:00
+  const long nightOwner = overheadOf(rig, night, out) - envelopeAndOwner;
+  std::string nightWhy;
+  const bool nightLabelOk = txb::noUnstoredText(out.view, night.items, nightWhy);
   // Assistant text is measured where it sits: before the next owner message.
   txb::Convo said = base, said2 = base;
   said.say("words", false);
@@ -1887,10 +1922,10 @@ void test_the_measured_framing_per_block_is_inside_the_battery_allowances() {
   char line[640];
   std::snprintf(line, sizeof line,
                 "measured framing B: envelope %ld (system 3 blocks, 3 tools, tool_choice, 4 points); owner message %ld "
-                "(its 24 B stamp included); assistant text %ld opening a message / %ld joined; call+result "
+                "(its 23 B stamp and space included), %ld between midnight and the day start (time label check %s); assistant text %ld opening a message / %ld joined; call+result "
                 "%ld opening messages / %ld joined; is_error %ld; device note joined %ld; photo by file id %ld "
                 "(file_pab12cd34); photo stub block %ld",
-                envelope, owner, text, textJoined, pair, pairJoined, isError, noteJoined, fileImage, photoStub);
+                envelope, owner, nightOwner, nightLabelOk ? "passes" : "fails", text, textJoined, pair, pairJoined, isError, noteJoined, fileImage, photoStub);
   TEST_MESSAGE(line);
   TEST_ASSERT_TRUE_MESSAGE(envelope <= (long)txb::kOverheadEnvelope, line);
   TEST_ASSERT_TRUE_MESSAGE(owner <= (long)txb::kOverheadPerOwnerMessage, line);

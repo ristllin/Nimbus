@@ -167,13 +167,13 @@ struct Facts {
 };
 
 // Whether a stored item writes a block at all (a blank text or a broken meta item does not).
-bool emitsBlock(const tx::Item& it) {
+bool emitsBlock(const tx::Item& it, uint16_t dayStartMin) {
   switch (it.kind) {
     case tx::ItemKind::User: {
       char stamp[tx::kStampMaxBytes];
       for (const tx::Part& p : it.parts)
         if (p.kind == tx::PartKind::Image) return true;
-      return visible(it.x) || tx::messageStamp(it.t, it.tzMinutes, stamp, sizeof stamp).ok();
+      return visible(it.x) || tx::messageStamp(it.t, it.tzMinutes, dayStartMin, stamp, sizeof stamp).ok();
     }
     case tx::ItemKind::Assistant:
     case tx::ItemKind::DeviceNote:
@@ -222,7 +222,7 @@ Status readFacts(const RenderInput& in, const tx::TxArena& arena, Facts& f) {
     row.turn = it.turn;
     row.kind = it.kind;
     if (it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Result) row.id = it.id;
-    row.emits = emitsBlock(it);
+    row.emits = emitsBlock(it, in.turn->dayStartMin);
     noteFacts(in, it, f);
     f.rows.push_back(std::move(row));
   }
@@ -496,7 +496,7 @@ bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
 // An owner message opens a user message of its own: the stamped text, then its photos.
 void ownerMessage(Render& r, const tx::Item& u) {
   char stamp[tx::kStampMaxBytes];
-  const bool stamped = tx::messageStamp(u.t, u.tzMinutes, stamp, sizeof stamp).ok();
+  const bool stamped = tx::messageStamp(u.t, u.tzMinutes, r.in.turn->dayStartMin, stamp, sizeof stamp).ok();
   bool first = true;
   if (stamped || visible(u.x)) {
     r.m.block(Role::User, u.turn, false).key("type").str("text").key("text").beginStr();
