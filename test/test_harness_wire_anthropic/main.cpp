@@ -511,22 +511,30 @@ static void test_loop_prose_is_the_reply_requests_equal_tool_rounds_plus_one() {
   }
 }
 
-// Counter-tests of the loosened acceptance, with the flag ON: a round with no text and no call
-// is still a stall (one forced final round), and stop_sequence ends a turn like end_turn.
+// Counter-tests of the loosened acceptance, with the flag ON: a round that says nothing (no
+// text, or only white space) or stops for another reason (pause_turn) is still a stall (one
+// forced final round), and stop_sequence ends a turn like end_turn.
 static void test_loop_prose_is_the_reply_keeps_the_empty_stall() {
-  FakeProviderDeps d;
-  d.http.script.push_back({"", "", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"stop_reason\":\"end_turn\"}"});
-  d.http.script.push_back({"", "", 200, finalToolBody()});
-  auto pd = d.contract();
-  FakeProviderDeps::ToolRig rig;
-  d.fillTools(rig);
-  rig.ht.cfg.proseIsReply = true;
-  std::string conv, out, err;
-  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
-                           err.c_str());
-  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());   // the empty round stalled; the final round answered
-  TEST_ASSERT_TRUE(bodyHas(d, 1, "FINAL turn"));
-  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+  const char* const stalls[] = {
+      "{\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"stop_reason\":\"end_turn\"}",
+      "{\"content\":[{\"type\":\"text\",\"text\":\" \\n\\t \"}],\"stop_reason\":\"end_turn\"}",
+      "{\"content\":[{\"type\":\"text\",\"text\":\"Working on it\"}],\"stop_reason\":\"pause_turn\"}",
+  };
+  for (const char* stall : stalls) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, stall});
+    d.http.script.push_back({"", "", 200, finalToolBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
+                             err.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)d.http.seen.size(), stall);   // stalled; the final round answered
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 1, "FINAL turn"), stall);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("{\"reply\":\"done\"}", out.c_str(), stall);
+  }
 
   FakeProviderDeps d2;
   d2.http.script.push_back({"", "", 200,

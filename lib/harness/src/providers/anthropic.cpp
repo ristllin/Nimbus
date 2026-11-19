@@ -1353,8 +1353,10 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
       // the rewrite). Otherwise it is a stall: the controller gives the model one more
       // chance, with the stalled answer echoed back. Prose is the reply only - no device
       // action, memory write or spawn rides it (the engine reads it so).
+      // Text that is only white space says nothing: still a stall on a tool round.
+      const bool says = out.text.find_first_not_of(" \t\r\n") != std::string::npos;
       const bool ended = sr == "end_turn" || sr == "stop_sequence";
-      if (ended && (!allowTools || ht.cfg.proseIsReply)) {
+      if (ended && (!allowTools || (ht.cfg.proseIsReply && says))) {
         out.finished = true;
         out.prose = true;
         out.finalTurn = out.text;

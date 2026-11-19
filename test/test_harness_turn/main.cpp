@@ -507,7 +507,9 @@ struct Rig {
   void recordProseRule(const agent::HeadTools* tools) {
     if (!tools) return;
     proseIsReply.push_back(tools->cfg.proseIsReply ? 1 : 0);
-    if (tools->cfg.validateProseFinal) proseFillerChecks.push_back(tools->cfg.validateProseFinal("Your reply here."));
+    if (!tools->cfg.validateProseFinal) return;
+    proseFillerChecks.push_back(tools->cfg.validateProseFinal("Your reply here."));
+    proseFillerChecks.push_back(tools->cfg.validateProseFinal("The kettle is in the left cupboard."));
   }
 
   // Lane L: a failed attempt that still hands back its (cut) turn.
@@ -2632,9 +2634,10 @@ static void test_rbq4_filler_prose_gets_the_placeholder_round() {
   Rig r;
   r.scripts["anthropic"] = {Rig::Script{}};
   r.eng->handleMessage("go", "Roy", "1001");
-  TEST_ASSERT_FALSE(r.proseFillerChecks.empty());
-  TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(r.proseFillerChecks.back().c_str(), "template filler"),
-                               r.proseFillerChecks.back().c_str());
+  TEST_ASSERT_EQUAL(2, (int)r.proseFillerChecks.size());
+  TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(r.proseFillerChecks[0].c_str(), "template filler"),
+                               r.proseFillerChecks[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("", r.proseFillerChecks[1].c_str());   // a real answer passes
   for (const std::string& fix : r.proseChecks) TEST_ASSERT_EQUAL_STRING("", fix.c_str());
 }
 
