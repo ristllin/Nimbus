@@ -232,7 +232,7 @@ static std::string governorSection() {
   uint32_t month = 202611;
   for (int n = 0; n < 61; n++) {
     GovernorFacts g;
-    governorFactsAt((uint64_t)day * 86400u + 4 * 3600u + 60u, 0, 240, month, spent, true, 20000000ull, g);
+    governorFactsAt((uint64_t)day * 86400u + 4 * 3600u + 60u, 0, 240, SpendFacts{month, spent, true, 20000000ull}, g);
     const GovernorStep st = governorNight(f, g);
     if (n < 5 || st.changed() || n % 10 == 0)
       t += cells({dayMonthText(day), usdText(spent), historyProfileSlug(f.effective()),

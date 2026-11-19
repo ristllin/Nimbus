@@ -66,7 +66,7 @@ struct Sim {
   GovernorStep night() {
     const uint64_t epoch = (uint64_t)day * 86400u + 4 * 3600u + 60u;   // 04:01, just after the day start
     GovernorFacts g;
-    TEST_ASSERT_TRUE(governorFactsAt(epoch, 0, 240, month, spent, ceilingActive, ceiling, g));
+    TEST_ASSERT_TRUE(governorFactsAt(epoch, 0, 240, SpendFacts{month, spent, ceilingActive, ceiling}, g));
     const GovernorStep st = governorNight(file, g);
     if (!st.line.empty() || st.changed()) steps.push_back(st);
     byNight.push_back(file.effective());
@@ -299,9 +299,9 @@ void test_the_virtual_clock_edges() {
   TEST_ASSERT_EQUAL(0, s.file.nObs);
   // No clock: no facts.
   GovernorFacts g;
-  TEST_ASSERT_FALSE(governorFactsAt(1000, 0, 240, 0, 0, true, kCeiling, g));
+  TEST_ASSERT_FALSE(governorFactsAt(1000, 0, 240, SpendFacts{0, 0, true, kCeiling}, g));
   // Between midnight and the day start the running day is still yesterday's.
-  TEST_ASSERT_TRUE(governorFactsAt((uint64_t)s.day * 86400u + 3600u, 0, 240, s.month, 0, true, kCeiling, g));
+  TEST_ASSERT_TRUE(governorFactsAt((uint64_t)s.day * 86400u + 3600u, 0, 240, SpendFacts{s.month, 0, true, kCeiling}, g));
   TEST_ASSERT_EQUAL(s.day - 1, g.runningDay);
   TEST_ASSERT_EQUAL(s.day, g.calendarDay);
 }

@@ -88,10 +88,17 @@ struct GovernorFacts {
   bool ceilingActive = false;  // a ceiling holds (the default 20 USD, or the owner's)
   uint64_t ceilingMicro = 0;
 };
+// The spend store's figures a night reads.
+struct SpendFacts {
+  uint32_t monthKey = 0;
+  uint64_t spentMicro = 0;
+  bool ceilingActive = false;
+  uint64_t ceilingMicro = 0;
+};
 // The facts at `epoch` on a device `offsetMin` east of UTC with its day start at `startMin`,
 // with the spend store's figures. False when the clock is not set.
-bool governorFactsAt(uint64_t epoch, int32_t offsetMin, uint16_t startMin, uint32_t monthKey, uint64_t spentMicro,
-                     bool ceilingActive, uint64_t ceilingMicro, GovernorFacts& out);
+bool governorFactsAt(uint64_t epoch, int32_t offsetMin, uint16_t startMin, const SpendFacts& spend,
+                     GovernorFacts& out);
 
 struct GovernorStep {
   enum class Kind : uint8_t { None = 0, Observed, Down, Up, NothingFits, PinnedOver };

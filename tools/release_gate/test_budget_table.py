@@ -429,20 +429,21 @@ def test_the_repository_table_passes_and_its_header_is_the_one_bound_here():
     assert HEAD in text
     headings = [h for h, _ in G.parse_tables(text)]
     assert [G.norm(h) for h in headings] == list(G.TABLES)
-    rbbg = {"profiles", "floor_heads"}   # lane RB-BG's tables have their own columns
+    rbbg = {"profiles", "floor_heads"}  # lane RB-BG's tables have their own columns
     full = [
-        rows[0]
-        for h, rows in G.parse_tables(text)
-        if not ({"preview", "loop_off"} | rbbg) & set(G.TABLES[G.norm(h)])
+        rows[0] for h, rows in G.parse_tables(text) if not ({"preview", "loop_off"} | rbbg) & set(G.TABLES[G.norm(h)])
     ]
     assert all(
-        set(r) == set(G.COLUMNS) - {"perTurnFloorBytes", "sized_from", "profile", "marks", "left", "branch"} for r in full
+        set(r) == set(G.COLUMNS) - {"perTurnFloorBytes", "sized_from", "profile", "marks", "left", "branch"}
+        for r in full
     )
     assert "| " + " | ".join(LOOP_COLS) + " |" in text  # lane CTXL's loop-off header, column for column
 
 
 PROFILE_HEAD = "| Provider | Model | Profile | H / L | Hist max | Hist soft | Hist keep | Fold step | Rows | Trigger |"
-FLOOR_HEAD = "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |"
+FLOOR_HEAD = (
+    "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |"
+)
 
 
 def _rbbg_problems(tmp_path, heading, head, rows):

@@ -319,6 +319,29 @@ std::string timingRefusal(const String& chat, int64_t msgDate) {
 
 }  // namespace
 
+namespace {
+// The verbs that change nothing (and a refused parse): true with their reply in `out`.
+bool lookReply(const BudgetRequest& req, BudgetAccess access, const String& chatId, Reply& out) {
+  switch (req.verb) {
+    case BudgetVerb::Show:
+      out = reply(nimbus::orch::usageText(view()) + "\n" + agent::budgetprofile::statusLine());
+      return true;
+    case BudgetVerb::Profile:
+      if (!req.target.empty()) return false;
+      out = profileReply(req, access, chatId);   // a look changes nothing
+      return true;
+    case BudgetVerb::Help: out = reply(nimbus::orch::budgetHelpText()); return true;
+    case BudgetVerb::Error: out = reply(req.error); return true;
+    case BudgetVerb::Cancel: {
+      std::lock_guard<std::mutex> lk(g_mx);
+      out = reply(nimbus::orch::cancelText(g_st.confirm.cancel(chatId.c_str())));
+      return true;
+    }
+    default: return false;
+  }
+}
+}  // namespace
+
 Reply handle(const std::string& verb, const std::string& args, const String& chatId, bool owner,
              const nimbus::orch::BudgetMsg& msg) {
   const BudgetAccess access = nimbus::orch::budgetAccessFor(chatId.c_str(), owner, msg.voiceNote);
@@ -330,19 +353,8 @@ Reply handle(const std::string& verb, const std::string& args, const String& cha
   BudgetRequest req;
   if (verb == "usage") req.verb = BudgetVerb::Show;
   else req = nimbus::orch::parseBudgetArgs(args);
-  switch (req.verb) {
-    case BudgetVerb::Show:  return reply(nimbus::orch::usageText(view()) + "\n" + agent::budgetprofile::statusLine());
-    case BudgetVerb::Profile:
-      if (req.target.empty()) return profileReply(req, access, chatId);   // a look changes nothing
-      break;
-    case BudgetVerb::Help:  return reply(nimbus::orch::budgetHelpText());
-    case BudgetVerb::Error: return reply(req.error);
-    case BudgetVerb::Cancel: {
-      std::lock_guard<std::mutex> lk(g_mx);
-      return reply(nimbus::orch::cancelText(g_st.confirm.cancel(chatId.c_str())));
-    }
-    default: break;
-  }
+  Reply look;
+  if (lookReply(req, access, chatId, look)) return look;
   if (access == BudgetAccess::ReadOnly) {
     alogf("budget: a change by voice refused (read-only channel)");
     return reply(nimbus::orch::budgetAccessText(access));

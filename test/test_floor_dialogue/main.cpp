@@ -232,6 +232,12 @@ struct Rig {
   }
 
   Rig(const Head& h, const Shape& s) : head(h) {
+    fixtures(h, s);
+    build(h, s);
+  }
+
+  // The device state, the provider's answers, the twin's skills, rows and recent actions.
+  void fixtures(const Head& h, const Shape& s) {
     providers::clearHostParks();
     plat.epoch = kNow;
     cfg.devName = st["devName"] | "";
@@ -264,7 +270,10 @@ struct Rig {
     history(s);
     for (JsonObjectConst a : st["recentActions"].as<JsonArrayConst>())
       effects.all.push_back({(int64_t)kNow - 60 * (int64_t)(a["minutesAgo"] | 0), a["tool"] | "", a["receipt"] | ""});
+  }
 
+  // The engine, with the twin's inputs and the head's wire.
+  void build(const Head& h, const Shape& s) {
     TurnEngine::Deps d;
     d.cfg = cfg.contract();
     d.platform = plat.contract();
@@ -359,22 +368,8 @@ struct Rig {
   }
   ~Rig() { providers::clearHostParks(); }
 
-  Measured measure() {
-    LogCapture::install();
-    const size_t live = rows.size();
-    eng->handleMessage(st["userText"] | "", "Owner", "1001");
-    TEST_ASSERT_TRUE_MESSAGE(!wire.http.seen.empty(), head.name);
-    Measured m;
-    const std::string& body = wire.http.seen[0].body;
-    m.body = body.size();
-    m.cap = turnBudgetFor(head.host, head.model, true).wireBodyBytes;
-    m.refused = LogCapture::contains(" B budget") || LogCapture::contains("refused the request for its size");
-    m.leftOut = body.find("LEFT OUT TO FIT THIS REQUEST") != std::string::npos;
-    for (size_t i = 0; i < live; i++)
-      if (body.find(rows[i].text) != std::string::npos) {
-        m.dialogue += rows[i].text.size();
-        m.rows++;
-      }
+  // The prompt (system blocks and the turn's input), the summary and the history's own bytes.
+  static void countParts(const std::string& body, Measured& m) {
     JsonDocument doc;
     TEST_ASSERT_TRUE(deserializeJson(doc, body, DeserializationOption::NestingLimit(32)) == DeserializationError::Ok);
     std::string tools;
@@ -405,6 +400,25 @@ struct Rig {
         m.histWire += one.size() + 1;   // and its comma
       }
     }
+  }
+
+  Measured measure() {
+    LogCapture::install();
+    const size_t live = rows.size();
+    eng->handleMessage(st["userText"] | "", "Owner", "1001");
+    TEST_ASSERT_TRUE_MESSAGE(!wire.http.seen.empty(), head.name);
+    Measured m;
+    const std::string& body = wire.http.seen[0].body;
+    m.body = body.size();
+    m.cap = turnBudgetFor(head.host, head.model, true).wireBodyBytes;
+    m.refused = LogCapture::contains(" B budget") || LogCapture::contains("refused the request for its size");
+    m.leftOut = body.find("LEFT OUT TO FIT THIS REQUEST") != std::string::npos;
+    for (size_t i = 0; i < live; i++)
+      if (body.find(rows[i].text) != std::string::npos) {
+        m.dialogue += rows[i].text.size();
+        m.rows++;
+      }
+    countParts(body, m);
     return m;
   }
 };

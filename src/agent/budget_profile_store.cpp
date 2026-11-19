@@ -93,38 +93,48 @@ void load() {
           g_file.pinned ? "chosen by the owner" : g_read == BudgetFileRead::Missing ? "the default" : "the device's");
 }
 
+namespace {
+
+// The facts of tonight from the clock and the spend store; false while either is not ready.
+bool factsNow(nimbus::orch::GovernorFacts& g) {
+  const time_t now = time(nullptr);
+  if (now < nimbus::orch::kCeilingClockValid) return false;
+  const std::string state = agent::spend::stateJson();
+  if (state.empty()) return false;   // a commit holds the spend state: next minute
+  nimbus::orch::LimitsView v;
+  if (!nimbus::orch::limitsViewFromJson(state, v) || !v.loaded) return false;
+  const nimbus::orch::SpendFacts spend{v.monthKey, v.spentMicro, v.active, v.limitMicro};
+  return nimbus::orch::governorFactsAt((uint64_t)now, agent::utcOffsetAtUnix((uint32_t)now),
+                                       agent::store::dayStartMin(), spend, g);
+}
+
+// The night under the lock: stored, installed and owed, or undone when the write fails.
+GovernorStep runNight(const nimbus::orch::GovernorFacts& g) {
+  std::lock_guard<std::mutex> lk(g_mx);
+  if (!g_loaded || g_read == BudgetFileRead::Corrupt) return GovernorStep();   // the owner's next command writes it
+  const BudgetFile before = g_file;
+  const GovernorStep st = nimbus::orch::governorNight(g_file, g);
+  if (st.kind == GovernorStep::Kind::None) return st;   // tonight's run is done
+  if (!saveLocked()) {   // undone: the next minute runs the night again
+    g_file = before;
+    alogf("budget: the governor's night did not store - tried again in a minute");
+    return GovernorStep();
+  }
+  installLocked();
+  if (!st.line.empty()) {
+    g_owed = st.line;
+    g_owedTg = g_owedWeb = true;
+  }
+  return st;
+}
+
+}  // namespace
+
 void tick() {
   load();
-  const time_t now = time(nullptr);
-  if (now < nimbus::orch::kCeilingClockValid) return;
-  const std::string state = agent::spend::stateJson();
-  if (state.empty()) return;   // a commit holds the spend state: next minute
-  nimbus::orch::LimitsView v;
-  if (!nimbus::orch::limitsViewFromJson(state, v) || !v.loaded) return;
   nimbus::orch::GovernorFacts g;
-  if (!nimbus::orch::governorFactsAt((uint64_t)now, agent::utcOffsetAtUnix((uint32_t)now), agent::store::dayStartMin(),
-                                     v.monthKey, v.spentMicro, v.active, v.limitMicro, g))
-    return;
-  GovernorStep st;
-  {
-    std::lock_guard<std::mutex> lk(g_mx);
-    if (!g_loaded || g_read == BudgetFileRead::Corrupt) return;   // the owner's next command writes it
-    if (g_file.night && g.runningDay <= g_file.night && g.runningDay + nimbus::orch::kGovernorObsNights >= g_file.night)
-      return;   // tonight's run is done
-    const BudgetFile before = g_file;
-    st = nimbus::orch::governorNight(g_file, g);
-    if (st.kind == GovernorStep::Kind::None) return;
-    if (!saveLocked()) {   // undone: the next minute runs the night again
-      g_file = before;
-      alogf("budget: the governor's night did not store - tried again in a minute");
-      return;
-    }
-    installLocked();
-    if (!st.line.empty()) {
-      g_owed = st.line;
-      g_owedTg = g_owedWeb = true;
-    }
-  }
+  if (!factsNow(g)) return;
+  const GovernorStep st = runNight(g);
   if (st.changed()) {
     alogf("budget: history profile %s (was %s), by the device", nimbus::orch::historyProfileSlug(st.to),
           nimbus::orch::historyProfileSlug(st.from));

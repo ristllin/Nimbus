@@ -860,60 +860,63 @@ static void test_no_head_below_its_v5_1_2_budget() {
 // taken; a measured floor head's request fits its cap with the measured overhead; the fold
 // trigger never drops under kFoldTriggerMinBytes; the marks are ordered; no profile moves a
 // floor head; a profile never raises a mark over what the head's body gives.
-static void test_every_head_has_a_history_that_fits_under_every_profile() {
+// One head form under one profile: the class's checks (counted in `measured` and `capped`).
+struct ProfileCounts {
   size_t measured = 0, capped = 0, cases = 0;
+};
+static void checkHeadUnderProfile(const RequestBudget& rb, const ContextBudget& own, HistoryProfile p,
+                                  const std::string& what, ProfileCounts& n) {
+  installHistoryProfile(p);
+  const ContextBudget c = deriveRequestContext(rb, {});
+  n.cases++;
+  TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes > 0, what.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(c.floorBranch || c.historyMaxBytes > deriveBudget(rb.v511CtxTokens, {}).historyMaxBytes,
+                           what.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(c.floorBranch && c.floorMeasured, what.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(c, kCompactAtKbDefault) >= kFoldTriggerMinBytes, what.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= c.historySoftBytes && c.historySoftBytes <= c.historyMaxBytes,
+                           what.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes <= own.historyMaxBytes && c.historySoftBytes <= own.historySoftBytes &&
+                               c.historyKeepBytes <= own.historyKeepBytes,
+                           what.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(c.floorBranch || c.foldStepBytes <= foldDigestCap(c.chatSummaryBytes), what.c_str());
+  if (c.floorBranch || c.floorMeasured) {   // a floor head: no profile moves it
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(own.historyMaxBytes, c.historyMaxBytes, what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(own.historyKeepBytes, c.historyKeepBytes, what.c_str());
+  }
+  if (c.floorMeasured) {
+    n.measured++;
+    TEST_ASSERT_FALSE_MESSAGE(rb.flatTurn || rb.flat || !rb.measuredWire, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(rb.wireBodyBytes <= kLegacyWireBodyBytes, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(floorNeed(c, rb) <= rb.wireBodyBytes, what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(48 * 1024, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
+  }
+  if (!c.floorBranch && !c.floorMeasured && c.historySoftBytes < own.historySoftBytes) {
+    n.capped++;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(std::max<size_t>(historyProfileMarks(p).high, kFoldTriggerMinBytes),
+                                     c.historySoftBytes, what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(c.historySoftBytes, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
+  }
+}
+
+static void test_every_head_has_a_history_that_fits_under_every_profile() {
+  ProfileCounts n;
+  BudgetOverrides none;
+  none.noProfile = true;
   for (const BudgetLink link : {BudgetLink::Device, BudgetLink::Server})
     for (const bool lift : {false, true})
       for (const bool loopOn : {false, true})
         for (const Head& h : headsOfEveryForm()) {
           const RequestBudget rb = turnBudgetFor(h.host, h.model, loopOn, link, lift);
-          BudgetOverrides none;
-          none.noProfile = true;
           const ContextBudget own = deriveRequestContext(rb, none);
           for (const HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard,
-                                         HistoryProfile::Wide}) {
-            installHistoryProfile(p);
-            const ContextBudget c = deriveRequestContext(rb, {});
-            const std::string what = nameOf(h) + (loopOn ? " on " : " off ") + historyProfileSlug(p);
-            cases++;
-            TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes > 0, what.c_str());
-            TEST_ASSERT_TRUE_MESSAGE(c.floorBranch || c.historyMaxBytes > deriveBudget(rb.v511CtxTokens, {}).historyMaxBytes,
-                                     what.c_str());
-            TEST_ASSERT_FALSE_MESSAGE(c.floorBranch && c.floorMeasured, what.c_str());
-            TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(c, kCompactAtKbDefault) >= kFoldTriggerMinBytes, what.c_str());
-            TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= c.historySoftBytes && c.historySoftBytes <= c.historyMaxBytes,
-                                     what.c_str());
-            TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes <= own.historyMaxBytes && c.historySoftBytes <= own.historySoftBytes &&
-                                         c.historyKeepBytes <= own.historyKeepBytes,
-                                     what.c_str());
-            TEST_ASSERT_TRUE_MESSAGE(c.floorBranch || c.foldStepBytes <= foldDigestCap(c.chatSummaryBytes),
-                                     (what + " step " + std::to_string(c.foldStepBytes) + " soft " +
-                                      std::to_string(c.historySoftBytes) + " keep " + std::to_string(c.historyKeepBytes) +
-                                      " floor " + std::to_string(c.floorBranch) + std::to_string(c.floorMeasured))
-                                         .c_str());
-            if (c.floorBranch || c.floorMeasured) {   // a floor head: no profile moves it
-              TEST_ASSERT_EQUAL_UINT32_MESSAGE(own.historyMaxBytes, c.historyMaxBytes, what.c_str());
-              TEST_ASSERT_EQUAL_UINT32_MESSAGE(own.historyKeepBytes, c.historyKeepBytes, what.c_str());
-            }
-            if (c.floorMeasured) {
-              measured++;
-              TEST_ASSERT_FALSE_MESSAGE(rb.flatTurn || rb.flat || !rb.measuredWire, what.c_str());
-              TEST_ASSERT_TRUE_MESSAGE(rb.wireBodyBytes <= kLegacyWireBodyBytes, what.c_str());
-              TEST_ASSERT_TRUE_MESSAGE(floorNeed(c, rb) <= rb.wireBodyBytes, what.c_str());
-              TEST_ASSERT_EQUAL_UINT32_MESSAGE(48 * 1024, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
-            }
-            if (!c.floorBranch && !c.floorMeasured && c.historySoftBytes < own.historySoftBytes) {
-              capped++;
-              TEST_ASSERT_EQUAL_UINT32_MESSAGE(std::max<size_t>(historyProfileMarks(p).high, kFoldTriggerMinBytes),
-                                               c.historySoftBytes, what.c_str());
-              TEST_ASSERT_EQUAL_UINT32_MESSAGE(c.historySoftBytes, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
-            }
-          }
+                                         HistoryProfile::Wide})
+            checkHeadUnderProfile(rb, own, p, nameOf(h) + (loopOn ? " on " : " off ") + historyProfileSlug(p), n);
         }
   installHistoryProfile(kDefaultHistoryProfile);
-  TEST_ASSERT_TRUE(cases > 6000);
-  TEST_ASSERT_TRUE(measured > 0);   // the routed Anthropic head at least
-  TEST_ASSERT_TRUE(capped > 0);
+  TEST_ASSERT_TRUE(n.cases > 6000);
+  TEST_ASSERT_TRUE(n.measured > 0);   // the routed Anthropic head at least
+  TEST_ASSERT_TRUE(n.capped > 0);
 }
 
 // The plan's sizes: direct heads default to standard (60,000 / 30,000 B), each profile's

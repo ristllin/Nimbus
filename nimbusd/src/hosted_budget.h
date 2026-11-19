@@ -46,7 +46,7 @@ class HostedBudget {
     nimbus::orch::LimitsView v;
     if (!nimbus::orch::limitsViewFromJson(spendStateJson, v) || !v.loaded) return st;
     nimbus::orch::GovernorFacts g;
-    if (!nimbus::orch::governorFactsAt(epoch, offsetMin, startMin, v.monthKey, v.spentMicro, v.active, v.limitMicro, g))
+    if (!nimbus::orch::governorFactsAt(epoch, offsetMin, startMin, {v.monthKey, v.spentMicro, v.active, v.limitMicro}, g))
       return st;
     std::lock_guard<std::mutex> lk(mu_);
     if (read_ == nimbus::orch::BudgetFileRead::Corrupt) return st;

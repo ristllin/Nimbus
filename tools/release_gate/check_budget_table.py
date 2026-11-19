@@ -531,7 +531,9 @@ def profile_row_problems(row: dict) -> "list[str]":
     trigger; keep at most the due mark; the high water at most 5/4 of it."""
     name, marks = row_name(row), row.get("marks", "")
     m = re.match(r"\s*(\d+)\s*/\s*(\d+)", marks)
-    soft, keep, hmax, trig = (val(row, k) for k in ("historySoftBytes", "historyKeepBytes", "historyMaxBytes", "trigger"))
+    soft, keep, hmax, trig = (
+        val(row, k) for k in ("historySoftBytes", "historyKeepBytes", "historyMaxBytes", "trigger")
+    )
     if not m or None in (soft, keep, hmax, trig) or row.get("profile", "").lower() not in PROFILE_ORDER:
         return [f"{name}: needs profile, H / L, hist max, soft, keep and trigger columns"]
     due = max(int(m.group(1)), TRIGGER_MIN)
@@ -560,38 +562,48 @@ def profile_order_problems(rows: "list[dict]") -> "list[str]":
     return errs
 
 
-def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[str]":
-    """A measured floor head: the window is (bytes - the wire's measured overhead - the summary
-    - the margin - one tool round) in window bytes (Anthropic and OpenAI wires only), the
-    shift at 4/5 of it and the fold's keep at 3/4, and it is more
-    than v5.1.1's window; a head left on v5.1.1's window would have had no more than that."""
-    name = row_name(row)
-    if consts is None:
-        return [f"{name}: the measured floor constants are not readable in budget.h"]
-    nbytes, summ, hmax, soft, keep = (val(row, k) for k in ("bytes", "chatSummaryBytes", "historyMaxBytes",
-                                                             "historySoftBytes", "historyKeepBytes"))  # fmt: skip
-    if None in (nbytes, summ, hmax, soft, keep) or "branch" not in row:
-        return [f"{name}: needs bytes, summary, hist max, soft, keep and branch columns"]
+def floor_room(row: dict, consts: dict, nbytes: float, summ: float) -> int:
+    """The window a measured wire leaves after its overhead, in window bytes (0 elsewhere)."""
     wire = wire_of(row.get("provider", ""), row.get("model", ""))
+    if wire not in ("anthropic", "openai"):  # only the two wires the overhead was measured on
+        return 0
     anthropic = wire == "anthropic"
     fixed = consts["kFloorFixedAnthropicBytes" if anthropic else "kFloorFixedOpenAIBytes"]
     pct = consts["kFloorWirePerWindowAnthropicPct" if anthropic else "kFloorWirePerWindowOpenAIPct"]
     left = nbytes - fixed - summ - consts["kFloorMarginBytes"] - consts["kFloorRoundReserveBytes"]
-    # Only the two wires the overhead was measured on size a floor from it.
-    room = max(0, int(left * 100 // pct)) if wire in ("anthropic", "openai") else 0
-    base = baseline_of(row, old) or {}
-    v511 = base.get("historyMaxBytes", 0)
+    return max(0, int(left * 100 // pct))
+
+
+def measured_problems(name: str, room: int, hmax: float, soft: float, keep: float, v511: int) -> "list[str]":
+    errs = []
+    if abs(hmax - room) > 1:
+        errs.append(f"{name}: hist max {hmax:.0f}, the measured room gives {room}")
+    if abs(soft - room * 4 // 5) > 1 or abs(keep - room * 3 // 4) > 1:
+        errs.append(f"{name}: soft {soft:.0f} and keep {keep:.0f} are not 4/5 and 3/4 of {room}")
+    if v511 and hmax <= v511:
+        errs.append(f"{name}: a measured window {hmax:.0f} no larger than v5.1.1's {v511}")
+    return errs
+
+
+def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[str]":
+    """A measured floor head: the window is (bytes - the wire's measured overhead - the summary
+    - the margin - one tool round) in window bytes (Anthropic and OpenAI wires only), the
+    shift at 4/5 of it and the fold's keep at 3/4, and it is more than v5.1.1's window; a head
+    left on v5.1.1's window would have had no more than that; with the routed lift on, a
+    routed head has room of its own."""
+    name = row_name(row)
+    if consts is None:
+        return [f"{name}: the measured floor constants are not readable in budget.h"]
+    keys = ("bytes", "chatSummaryBytes", "historyMaxBytes", "historySoftBytes", "historyKeepBytes")
+    nbytes, summ, hmax, soft, keep = (val(row, k) for k in keys)
+    if None in (nbytes, summ, hmax, soft, keep) or "branch" not in row:
+        return [f"{name}: needs bytes, summary, hist max, soft, keep and branch columns"]
+    room = floor_room(row, consts, nbytes, summ)
+    v511 = (baseline_of(row, old) or {}).get("historyMaxBytes", 0)
     branch = row["branch"].lower()
     if branch == "measured":
-        errs = []
-        if abs(hmax - room) > 1:
-            errs.append(f"{name}: hist max {hmax:.0f}, the measured room gives {room}")
-        if abs(soft - room * 4 // 5) > 1 or abs(keep - room * 3 // 4) > 1:
-            errs.append(f"{name}: soft {soft:.0f} and keep {keep:.0f} are not 4/5 and 3/4 of {room}")
-        if v511 and hmax <= v511:
-            errs.append(f"{name}: a measured window {hmax:.0f} no larger than v5.1.1's {v511}")
-        return errs
-    if branch == "room":   # the routed lift is on: the head has its model's budget, not the floor
+        return measured_problems(name, room, hmax, soft, keep, v511)
+    if branch == "room":  # the routed lift is on: the head has its model's budget, not the floor
         return [] if nbytes > FLOOR_BYTES else [f"{name}: 'room' at {nbytes:.0f} B, on the floor"]
     if branch.startswith("v5.1.1"):
         if v511 and room > v511:
