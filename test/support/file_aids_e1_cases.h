@@ -10,9 +10,12 @@
 // view above it is RB-REC1's renderTail, unchanged).
 #include <ArduinoJson.h>
 
+#include <cstdio>
 #include <functional>
 #include <map>
+#include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "file_aids_cases.h"
@@ -29,8 +32,98 @@ struct Call {
   const char* args;   // the arguments past project and name
 };
 
+// RB-TR1: the files a continued read is checked on (the class, not one instance): prose of
+// about 40 KB with two- and three-byte characters, a CSV with comment lines and a quoted line
+// end, a file with no last line end, one line of 30 KB, a file over 256 KB, an empty file and a
+// file of one line end. Invented content.
+inline std::string proseFile(size_t target, unsigned seed) {
+  static const char* words[] = {"garden", "caf\xc3\xa9", "rota", "na\xc3\xaf" "ve", "shed", "price \xe2\x82\xac" "4",
+                                "water", "compost", "gate", "key"};
+  std::string out;
+  unsigned r = seed;
+  for (int n = 1; out.size() < target; ++n) {
+    out += "Section " + std::to_string(n) + ".";
+    for (int w = 0; w < 14 + n % 9; ++w) {
+      r = r * 1103515245u + 12345u;
+      out += std::string(" ") + words[(r >> 16) % 10];
+    }
+    out += ".\n";
+  }
+  return out;
+}
+inline std::string oneLine() {   // 30 KB with no line end before its last byte, three-byte characters
+  std::string s(12000, 'a');
+  for (int i = 0; i < 6000; ++i) s += "\xe2\x82\xac";
+  return s + "\n";
+}
+inline std::vector<std::pair<std::string, std::string>> partFiles() {
+  std::string csv = "date,note,amount\n";
+  for (int i = 0; i < 900; ++i) {
+    if (i % 50 == 7) csv += "#was: 2026-11-0" + std::to_string(1 + i % 9) + ",old,1\n";
+    csv += "2026-11-" + std::to_string(10 + i % 20) + ",\"line " + std::to_string(i) + (i % 97 == 3 ? "\nsecond" : "") +
+           "\"," + std::to_string(i % 13) + "." + std::to_string(i % 10) + "\n";
+  }
+  std::string noEnd = proseFile(12000, 7);
+  noEnd.pop_back();
+  return {{"docs/prose.txt", proseFile(40000, 1)},
+          {"log/rows.csv", csv},
+          {"docs/no-end.txt", noEnd},
+          {"docs/one-line.txt", oneLine()},
+          {"docs/big.txt", proseFile(300000, 3)},
+          {"docs/empty.txt", ""},
+          {"docs/blank.txt", "\n"}};
+}
+
+// The class check of a continued read. read(offset) is one files.read result for that offset
+// (0: no offset given). Follows the next part each head names until "end of file". "" when the
+// parts put together are the file byte for byte, every result fits in cap, every head's byte
+// and line numbers are true, and it took at most 2 * size / cap + 2 calls; else what failed.
+inline std::string followParts(const std::function<std::string(uint64_t)>& read, const std::string& file, size_t cap) {
+  static const std::regex head(
+      R"(^bytes (\d+)-(\d+) of (\d+)(, lines (\d+)-(\d+) of (\d+))?; (next part: "offset":(\d+)|end of file)\n)");
+  std::vector<size_t> ends(file.size() + 1, 0);   // ends[i]: line ends in file[0, i)
+  for (size_t i = 0; i < file.size(); ++i) ends[i + 1] = ends[i] + (file[i] == '\n');
+  auto linesBefore = [&](size_t at) { return ends[at]; };
+  const size_t lines = linesBefore(file.size()) + (!file.empty() && file.back() != '\n' ? 1 : 0);
+  std::string joined;
+  uint64_t offset = 0;
+  const size_t most = 2 * file.size() / cap + 2;
+  for (size_t calls = 1; calls <= most; ++calls) {
+    const std::string r = read(offset);
+    char why[160];
+    std::smatch m;
+    if (r.size() > cap) return "a result of " + std::to_string(r.size()) + " B passes the cap";
+    if (!std::regex_search(r, m, head)) return "no part head in: " + r.substr(0, 120);
+    const size_t from = std::stoul(m[1]), to = std::stoul(m[2]), body = m.length(0);
+    if (std::stoul(m[3]) != file.size() || from != joined.size() || to - from != r.size() - body ||
+        file.compare(from, to - from, r, body, std::string::npos) != 0) {
+      std::snprintf(why, sizeof why, "the part %zu-%zu does not hold those bytes of the file (joined %zu)", from, to,
+                    joined.size());
+      return why;
+    }
+    if (m[4].matched && (std::stoul(m[5]) != linesBefore(from) + 1 || std::stoul(m[6]) != linesBefore(to - 1) + 1 ||
+                         std::stoul(m[7]) != lines))
+      return "the line numbers of part " + std::to_string(from) + "-" + std::to_string(to) + " are wrong: " + m.str(0);
+    if (to > from && (static_cast<unsigned char>(r[body]) & 0xC0) == 0x80) return "a part starts inside a character";
+    joined += r.substr(body);
+    if (!m[9].matched) return joined == file ? std::string() : "end of file before the whole file was read";
+    if (std::stoul(m[9]) != to) return "the next part does not start where this one ends";
+    offset = to;
+  }
+  return "more than " + std::to_string(most) + " calls to read " + std::to_string(file.size()) + " B";
+}
+
+inline const char* kProse() {   // 20 KB of prose for the plain read's parts (RB-TR1)
+  static const std::string p = proseFile(20000, 5);
+  return p.c_str();
+}
+
 inline const std::vector<Call>& calls() {
   static const std::vector<Call> c = {
+      {"plain read: the first part names the next", "docs/p.txt", kProse(), "files.read", R"("offset":0)"},
+      {"plain read: the next part, as named", "docs/p.txt", nullptr, "files.read", R"("offset":8082)"},
+      {"plain read: an offset of the model's own, inside a line", "docs/p.txt", nullptr, "files.read", R"("offset":17001)"},
+      {"plain read: past the end", "docs/p.txt", nullptr, "files.read", R"("offset":30000)"},
       {"old shape: a day's total", "log/f.csv", kFood, "files.read", R"("tail":3,"sum":"kcal","date":"2026-11-19")"},
       {"old shape with no tail: the day's total alone", "log/f.csv", nullptr, "files.read",
        R"("sum":"kcal","date":"2026-11-19")"},
@@ -91,6 +184,10 @@ inline std::string deviceCall(MemCard& card, const std::string& path, const Call
   const ArduinoJson::JsonObjectConst a = doc.as<ArduinoJson::JsonObjectConst>();
   std::string out;
   if (std::string(c.tool) == "files.read") {
+    if (aids::e1::readForm(a) == aids::e1::ReadForm::Plain) {   // the part that fits the 8,192 B result
+      const uint64_t offset = a["offset"] | 0u;
+      return aids::e1::readPart(card, card.file.size(), offset, 8192, out) ? "ok " + out : "error " + out;
+    }
     if (aids::e1::readForm(a) == aids::e1::ReadForm::DayTotal) {
       aids::CsvQuery q;   // the sum argument read as the CSV form reads it
       if (!aids::e1::queryArgs(a, 0, q, out)) return "error " + out;

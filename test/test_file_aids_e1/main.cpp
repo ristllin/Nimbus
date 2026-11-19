@@ -210,6 +210,46 @@ static void test_short_reads_and_trailers() {
   TEST_ASSERT_EQUAL_size_t(0, o.stillAt.count);
 }
 
+// RB-TR1: files.read's plain form can be continued to the whole file. Every file of the class
+// (test/support/file_aids_e1_cases.h partFiles), at four result caps: following the next part
+// each head names gives the file byte for byte, each result fits the cap, the line numbers are
+// true. Counter-tests: the read nimbusd gave on 19 Nov (the start of the file whatever the
+// offset, cut at 4 KB) and a head that names no next part both fail the same check.
+static void test_a_plain_read_can_be_continued_to_the_whole_file() {
+  for (const auto& f : aidcases::e1::partFiles()) {
+    MemCard card;
+    card.file = f.second;
+    for (size_t cap : {size_t(512), size_t(4096), size_t(8192), size_t(16384)}) {
+      auto read = [&](uint64_t off) {
+        std::string out;
+        TEST_ASSERT_TRUE(aids::e1::readPart(card, card.file.size(), off, cap, out));
+        return out;
+      };
+      const std::string why = aidcases::e1::followParts(read, f.second, cap);
+      TEST_ASSERT_TRUE_MESSAGE(why.empty(), (f.first + " at cap " + std::to_string(cap) + ": " + why).c_str());
+    }
+  }
+  const std::string text = aidcases::e1::partFiles()[0].second;
+  auto startOnly = [&](uint64_t) { return "bytes 0-4096 of " + std::to_string(text.size()) + "; next part: \"offset\":4096\n" + text.substr(0, 4096); };
+  TEST_ASSERT_FALSE(aidcases::e1::followParts(startOnly, text, 8192).empty());
+  auto noNext = [&](uint64_t off) { return "bytes " + std::to_string(off) + "-" + std::to_string(off + 8000) + " of " + std::to_string(text.size()) + "\n" + text.substr(off, 8000); };
+  TEST_ASSERT_FALSE(aidcases::e1::followParts(noNext, text, 8192).empty());
+}
+
+// RB-TR1: an offset inside a character starts at the next one; past the end is said; a read
+// short of the stored size is the card fault, never a shorter file.
+static void test_a_part_starts_on_a_character_and_says_the_end() {
+  MemCard card;
+  card.file = "ab\xe2\x82\xac" "cd\n";
+  std::string out;
+  TEST_ASSERT_TRUE(aids::e1::readPart(card, card.file.size(), 3, 8192, out));
+  TEST_ASSERT_EQUAL_STRING("bytes 5-8 of 8, lines 1-1 of 1; end of file\ncd\n", out.c_str());
+  TEST_ASSERT_TRUE(aids::e1::readPart(card, card.file.size(), 99, 8192, out));
+  TEST_ASSERT_EQUAL_STRING("bytes 8-8 of 8; end of file\n", out.c_str());
+  TEST_ASSERT_FALSE(aids::e1::readPart(card, card.file.size() + 10, 0, 8192, out));
+  TEST_ASSERT_EQUAL_STRING("the file could not be read - try again", out.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_shared_fixtures_match_the_golden_transcript);
@@ -217,5 +257,7 @@ int main(int, char**) {
   RUN_TEST(test_files_edit_keeps_its_default_and_picks_by_line);
   RUN_TEST(test_the_implicit_day_is_the_running_day);
   RUN_TEST(test_short_reads_and_trailers);
+  RUN_TEST(test_a_plain_read_can_be_continued_to_the_whole_file);
+  RUN_TEST(test_a_part_starts_on_a_character_and_says_the_end);
   return UNITY_END();
 }

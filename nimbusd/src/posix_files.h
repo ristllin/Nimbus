@@ -99,11 +99,12 @@ class PosixFiles {
             R"("required":["project","name"]})");
 
     addOwnerOnly(reg, "files.read",
-            "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
-            "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
-            "reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: "
-            "'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) "
-            "totals them on the device.",
+            "Read a stored TEXT document's content (md/txt/json/csv/log). Large files "
+            "are paged: pass 'offset' to continue from where the previous view ended. "
+            "Pass 'tail' (a row count) to read only the last rows of a log or CSV; with "
+            "'sum' (a numeric column) the tail also reports that column's total for "
+            "today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps "
+            "matching rows; 'sum' (columns, comma-separated) totals them on the device.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return readTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},)"
@@ -190,8 +191,15 @@ class PosixFiles {
       case ReadForm::Table: return tableTool(p, n, body.size(), a);
       case ReadForm::DayTotal: return tailWithTotal(p, n, body, a);
       case ReadForm::Tail: return nimbus::orch::ToolResult::ok(tailOf(n, body, (size_t)a["tail"].as<double>()));
-      default: return nimbus::orch::ToolResult::ok(body);
+      default: break;
     }
+    // The plain form: the part that fits one result, naming the next (file_aids_e1.h readPart).
+    const uint64_t offset = a["offset"].is<float>() && a["offset"].as<double>() > 0 ? uint64_t(a["offset"].as<double>()) : 0;
+    DiskSource src(bytesPath(p, n));
+    std::string out;
+    if (!nimbus::orch::aids::e1::readPart(src, body.size(), offset, resultCap_ ? resultCap_() : kDefaultResultCap, out))
+      return nimbus::orch::ToolResult::fail(out);
+    return nimbus::orch::ToolResult::ok(out);
   }
 
   nimbus::orch::ToolResult tableTool(const std::string& p, const std::string& n, uint64_t size,
@@ -251,6 +259,10 @@ class PosixFiles {
 
   // files.read {sum}'s default day (the rig sets the running day; the calendar date alone).
   void setToday(std::function<std::string()> fn) { today_ = std::move(fn); }
+  // The per-result cap the head loop applies this turn (the rig: the head's derived budget, as
+  // the device's effectiveToolResultCap); a plain read's part fits inside it with its head.
+  void setResultCap(std::function<size_t()> fn) { resultCap_ = std::move(fn); }
+  static constexpr size_t kDefaultResultCap = 8192;   // v5.1.2's per-result budget on large heads
 
   // ---- direct access (scenario seeding + assertions) ----
   void seed(const std::string& path, const std::string& text) {
@@ -681,6 +693,7 @@ class PosixFiles {
   std::string root_;
   nimbus::orch::FileStore store_;
   std::function<std::string()> today_;
+  std::function<size_t()> resultCap_;
   nimbus::orch::aids::e1::RemovedRows removed_;
 };
 

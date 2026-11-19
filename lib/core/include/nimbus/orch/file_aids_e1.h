@@ -39,6 +39,18 @@ bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::
 // shown rows and the tail (renderCsvRead). False with out = the error.
 bool tableRead(AidSource& src, uint64_t size, const std::string& path, const CsvQuery& q, std::string& out);
 
+// files.read's plain form (RB-TR1): the part of a text file from byte `offset` that fits in a
+// result of `cap` bytes, under one head line naming which part it is and how to get the next:
+//   "bytes a-b of n, lines x-y of m; next part: \"offset\":b\n" then bytes [a, b), or
+//   "...; end of file\n" on the last part ("bytes n-n of n; end of file\n" past the end).
+// A part ends at a line end when one falls in its second half, else on a character boundary;
+// an offset inside a character starts at the next one. The file is streamed kAidChunk at a
+// time (any size); `size` is the stored size and a read that ends short of it is the card
+// fault. False with out = the error.
+bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::string& out);
+// The smallest cap readPart takes (a smaller one is raised to it).
+inline constexpr size_t kPartMinCap = 512;
+
 // The rows an edit removed, kept to name those a later re-add skips (one file at a time).
 struct RemovedRows {
   std::string project, name;

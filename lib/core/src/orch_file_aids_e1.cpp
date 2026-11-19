@@ -2,6 +2,9 @@
 // (file_aids_e1.h).
 #include "nimbus/orch/file_aids_e1.h"
 
+#include <algorithm>
+#include <string_view>
+
 #include "nimbus/orch/day_start.h"
 #include "nimbus/orch/file_append.h"   // csvHeaderOf, csvStoredRow, csvDateColumnOf
 
@@ -127,6 +130,100 @@ static bool sumArgs(ArduinoJson::JsonObjectConst a, std::vector<std::string>& su
     sums.push_back(names.substr(at, comma - at));
     at = comma + 1;
   }
+  return true;
+}
+
+namespace {
+
+size_t digits(uint64_t v) {
+  size_t d = 1;
+  while (v >= 10) {
+    v /= 10;
+    ++d;
+  }
+  return d;
+}
+
+// The longest head line readPart writes for a file of `size` bytes: five numbers of at most
+// digits(size + 1) each, the next offset one more.
+size_t headBound(uint64_t size) {
+  static constexpr char kLongest[] = "bytes - of , lines - of ; next part: \"offset\":\n";
+  return sizeof(kLongest) - 1 + 6 * digits(size + 1);
+}
+
+bool isContinuation(char c) { return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
+
+// One pass over the file: its line ends in all and before `from`, and the bytes from `from`
+// (at most `want`). False on a card fault or a read short of `size`.
+struct PartScan {
+  uint64_t newlines = 0, newlinesBefore = 0;
+  char last = '\n';
+  std::string window;
+};
+bool scanForPart(AidSource& src, uint64_t size, uint64_t from, size_t want, PartScan& p) {
+  std::string chunk(kAidChunk, '\0');
+  uint64_t off = 0;
+  for (;;) {
+    size_t got = 0;
+    if (!src.readAt(off, chunk.size(), &chunk[0], got)) return false;
+    for (size_t i = 0; i < got; ++i) {
+      const uint64_t at = off + i;
+      if (chunk[i] == '\n') {
+        ++p.newlines;
+        if (at < from) ++p.newlinesBefore;
+      }
+      if (at >= from && p.window.size() < want) p.window.push_back(chunk[i]);
+    }
+    if (got) p.last = chunk[got - 1];
+    off += got;
+    if (got < chunk.size()) break;
+  }
+  return off >= size;
+}
+
+uint64_t lineEnds(std::string_view s) {
+  uint64_t k = 0;
+  for (char c : s) k += c == '\n';
+  return k;
+}
+
+}  // namespace
+
+bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::string& out) {
+  if (cap < kPartMinCap) cap = kPartMinCap;
+  const uint64_t from0 = std::min(offset, size);
+  const size_t room = cap - headBound(size);
+  PartScan p;
+  // Four bytes more: an offset inside a character moves past its continuation bytes, and the
+  // byte after the part tells whether the cut splits a character.
+  if (!scanForPart(src, size, from0, room + 4, p)) {
+    out = "the file could not be read - try again";
+    return false;
+  }
+  const std::string_view w(p.window);
+  size_t skip = 0;
+  while (skip < 3 && skip < w.size() && isContinuation(w[skip])) ++skip;
+  const uint64_t from = from0 + skip;
+  size_t len = size_t(std::min<uint64_t>(room, size - from));
+  if (from + len < size) {
+    const size_t nl = w.rfind('\n', skip + len - 1);
+    if (nl != std::string_view::npos && nl >= skip + len / 2) len = nl + 1 - skip;
+    else
+      while (len > 0 && isContinuation(w[skip + len])) --len;
+  }
+  const std::string_view part = w.substr(skip, len);
+  const uint64_t to = from + len;
+  detail::Txt t;
+  t << "bytes " << from << "-" << to << " of " << size;
+  if (len) {
+    const uint64_t first = 1 + p.newlinesBefore;
+    t << ", lines " << first << "-" << first + lineEnds(part.substr(0, len - 1)) << " of "
+      << p.newlines + (p.last != '\n' ? 1 : 0);
+  }
+  if (to < size) t << "; next part: \"offset\":" << to << "\n";
+  else t << "; end of file\n";
+  t << part;
+  out = std::move(t.s);
   return true;
 }
 

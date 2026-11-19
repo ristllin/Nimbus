@@ -99,6 +99,40 @@ static void testOldEngineTools(ndtest::Ctx& c, const std::string& repo) {
   ndtest::rmTree(dir);
 }
 
+// RB-TR1: files.read on nimbusd can be continued to the whole file, for every file of the class
+// (aidcases::e1::partFiles), at the default cap and at a set one; the same check as the device's
+// test_a_plain_read_can_be_continued_to_the_whole_file, through the registered tool.
+static void testContinuedRead(ndtest::Ctx& c) {
+  const std::string dir = ndtest::scratchDir("file-aids-parts");
+  ndtest::rmTree(dir);
+  fsutil::mkdirs(dir);
+  PosixFiles files(dir);
+  orch::ToolRegistry reg;
+  files.registerTools(reg);
+  orch::Principal owner = orch::principalForRole("1", orch::Role::Admin);
+  owner.owner = true;
+  size_t cap = PosixFiles::kDefaultResultCap;
+  files.setResultCap([&cap] { return cap; });
+  for (const auto& f : aidcases::e1::partFiles()) {
+    files.seed(f.first, f.second);
+    const std::string project = f.first.substr(0, f.first.find('/')), name = f.first.substr(f.first.find('/') + 1);
+    for (size_t at : {PosixFiles::kDefaultResultCap, size_t(16384)}) {
+      cap = at;
+      auto read = [&](uint64_t off) {
+        ArduinoJson::JsonDocument d;
+        d["project"] = project;
+        d["name"] = name;
+        if (off) d["offset"] = off;
+        const orch::ToolResult r = reg.dispatch("files.read", d.as<ArduinoJson::JsonObjectConst>(), owner);
+        return r.success ? r.output : "error " + r.error;
+      };
+      const std::string why = aidcases::e1::followParts(read, f.second, at);
+      c.ok(why.empty(), (f.first + " read to the end in parts at cap " + std::to_string(at) + (why.empty() ? "" : ": " + why)).c_str());
+    }
+  }
+  ndtest::rmTree(dir);
+}
+
 int main(int argc, char** argv) {
   ndtest::Ctx c;
   c.suite = "hosted_file_aids";
@@ -108,6 +142,7 @@ int main(int argc, char** argv) {
   for (int up = 0; up < 3; ++up) here = here.substr(0, here.find_last_of('/'));
   testSharedFixtures(c, here);
   testOldEngineTools(c, here);
+  testContinuedRead(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   (void)argc;
