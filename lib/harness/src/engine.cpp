@@ -1199,7 +1199,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   tf.chain.clear();
   tf.metered = false;
   tf.switched = false;
-  floorRoundsAtTurn_ = nimbus::orch::sendFloorCounts().floorRounds;
+  floorAtTurn_ = nimbus::orch::sendFloorCounts();
   // Lane DEF: the monthly spend ceiling. While paid calls are paused no turn reaches
   // a provider (recall's embed below included). The owner hears why once per channel
   // from the device's notice pump, so the refused turn itself sends nothing.
@@ -1839,7 +1839,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const orch::SpendSlot* last = tf.spend.lastBilled();
     if (!last && tf.switched) pendingFallbackPath_.clear();
     logContextLine(ci, fit, locals->reqBodyBytes, locals->round0Bytes, chatId);
-    noteFloorTrim(chatId, fit.historyMessagesLeftOut() > 0);
+    noteFloorSend(chatId);
     if (!d_.hooks.onTurnEnd) return;
     TurnEndEv ev;
     ev.ok = okFlag;

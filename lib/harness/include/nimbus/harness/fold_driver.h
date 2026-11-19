@@ -253,11 +253,7 @@ class FoldDriver {
   uint32_t paidToday(uint32_t nowEpoch) const;
   uint32_t guestPaidToday(uint32_t nowEpoch) const;
   void endAutomaticForManual();
-  // Candidate 5, G6: an automatic fold after a send-floor cut that left rows before v5.1.1's
-  // tail folds again at once, a few times at most, instead of waiting out the thrash turns.
-  static constexpr uint8_t kFloorChaseFolds = 4;
-  uint8_t floorChase_ = 0;
-  void chaseFloorTail(const std::string& chat, bool manual, const FoldSlice& landed);
+  FoldTick floorDeferred(const std::string& chat, uint32_t nowMs);
   bool automaticInYield(bool manual) const;
 };
 

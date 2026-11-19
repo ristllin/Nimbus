@@ -210,18 +210,25 @@ bool TurnEngine::captureOwnerRow(const std::string& chatId, const std::string& t
 
 // ---- the window and the fold read the conversation cache (lane H) -------------------
 
-void TurnEngine::noteFloorTrim(const std::string& chatId, bool trimmed) {
-  const auto at = std::find(floorTrimChats_.begin(), floorTrimChats_.end(), chatId);
-  const bool floor = trimmed && orch::sendFloorCounts().floorRounds != floorRoundsAtTurn_;
-  if (!floor) {
-    if (at != floorTrimChats_.end()) floorTrimChats_.erase(at);
+// Lane RB-BGb (ruling 83 item 9 (a)): a turn that sent a round at the send floor defers the
+// chat's automatic fold; a turn whose rounds all went above it ends the deferral. A turn that
+// sent no round (a command, a refused turn) changes nothing.
+void TurnEngine::noteFloorSend(const std::string& chatId) {
+  const orch::SendFloorCounts now = orch::sendFloorCounts();
+  const auto at = std::find(floorChats_.begin(), floorChats_.end(), chatId);
+  if (now.floorRounds == floorAtTurn_.floorRounds) {
+    if (now.rounds != floorAtTurn_.rounds && at != floorChats_.end()) {
+      floorChats_.erase(at);
+      hlog::logf("history(%s): a request went above the send floor - the automatic fold may run", chatId.c_str());
+    }
     return;
   }
-  // One line per turn that took the floor and left rows out (never per round).
-  hlog::logf("history(%s): rows left out at the send floor - the next fold keeps v5.1.1's tail", chatId.c_str());
-  if (at != floorTrimChats_.end()) return;
-  if (floorTrimChats_.size() >= 4) floorTrimChats_.erase(floorTrimChats_.begin());
-  floorTrimChats_.push_back(chatId);
+  if (at != floorChats_.end()) return;
+  // One line when the deferral starts (never per round or per turn).
+  hlog::logf("history(%s): a request went at the send floor - the automatic fold waits for one above it",
+             chatId.c_str());
+  if (floorChats_.size() >= 4) floorChats_.erase(floorChats_.begin());
+  floorChats_.push_back(chatId);
 }
 
 HistoryBudget TurnEngine::historyBudgetOf(const nimbus::orch::ContextBudget& cb, const std::string& host,
@@ -240,7 +247,6 @@ HistoryBudget TurnEngine::historyBudgetOf(const nimbus::orch::ContextBudget& cb,
   b.softBytes = cb.historySoftBytes;
   b.keepBytes = cb.historyKeepBytes;
   b.highRows = cb.historyRows;
-  b.floorKeepBytes = cb.v511KeepBytes;
   // RB-BG (ruling 81): a measured floor head keeps v5.1.1's day floor too: today's turns up to
   // its cap stay in the window and the fold's tail, as on the floor branch.
   if (cb.floorMeasured) b.dayBytes = historyDayBytes(orch::legacyCtxTokens(host, model));
@@ -378,17 +384,10 @@ std::vector<HistMsg> TurnEngine::historyMessages(const std::string& chatId, cons
 // The verbatim tail an automatic fold keeps: the head's keep mark (v5.1.1's low water on the
 // floor branch). An owner's own trigger below the head's soft mark (Compact at 24 KB on a head
 // that keeps 111 KB) makes the fold due at that trigger, so the tail shrinks in proportion, or
-// every due fold would find nothing beyond the kept history.
-//
-// Candidate 4, F5: after a turn whose rounds went at the send floor (85,000 B) and left history
-// out, the fold keeps v5.1.1's tail: the head's large tail would not fit the floor either, so
-// its rows would be in neither the next request nor the summary while the pool stays
-// fragmented. Only that fold: the window itself is never held to the floor.
-size_t TurnEngine::foldKeepBytes(const HistoryBudget& b, const std::string& chatId) const {
+// every due fold would find nothing beyond the kept history. The send floor never shortens it
+// (RB-BGb): a chat at the floor defers its fold instead (deferAtFloor).
+size_t TurnEngine::foldKeepBytes(const HistoryBudget& b) const {
   if (!b.derived) return b.lowBytes();
-  if (b.floorKeepBytes &&
-      std::find(floorTrimChats_.begin(), floorTrimChats_.end(), chatId) != floorTrimChats_.end())
-    return std::min(b.floorKeepBytes, b.keepBytes);
   const uint32_t trigger = d_.foldTriggerBytes ? d_.foldTriggerBytes() : 0;
   if (trigger && trigger < b.softBytes) return (size_t)((uint64_t)b.keepBytes * trigger / b.softBytes);
   return b.keepBytes;
@@ -416,7 +415,7 @@ SliceState TurnEngine::foldBounds(const std::string& chatId, const HistoryMarks&
   if (hidden) to.startAfter = marks.softStart;   // the tail is never a hidden row
   foldRuns(view.rows, to, 0, rows, repeats);
   const std::vector<HistTurn> tail = historyTurns(rows, to, &repeats);
-  const size_t keep = foldKeepBytes(b, chatId);
+  const size_t keep = foldKeepBytes(b);
   const HistoryBudget day = b;   // the owner's day, where the budget has a day floor (dayBytes)
   const size_t kept = std::max(foldKeptTail(tail, keep, o.utcOffsetMin), dayTailTurns(tail, day, o.utcOffsetMin));
   if (kept > 0 && kept < tail.size()) {
@@ -632,6 +631,21 @@ uint32_t bytesAfter(const std::vector<std::pair<uint32_t, uint32_t>>& held, cons
 }
 }  // namespace
 
+// Lane RB-BGb (ruling 83 item 9 (a)): an automatic fold while the chat's requests go at the send
+// floor. Rows a shift hid are in neither the request nor the summary, so they fold, and only
+// they (the read stops at the soft start, every visible row stays). Otherwise the fold waits for
+// a request above the floor: the rows the floor leaves out are named by each request's LEFT OUT
+// note, and the fold that follows keeps the head's full tail.
+SliceState TurnEngine::deferAtFloor(const std::string& chatId, FoldPlan& p) {
+  noteHeld(cachedRows(chatId, p.marks, p.b, false), p.b, p.bounds);
+  if (p.hidden) {
+    p.bounds.stopAt = p.marks.softStart;
+    return SliceState::Ready;
+  }
+  p.s.floorDeferred = true;
+  return SliceState::Wait;
+}
+
 // What the slice knows before it reads: the budget, the marks, the kept tail's bounds and the
 // read's start. p.s.state says whether to read at all.
 void TurnEngine::planFold(const std::string& chatId, bool manual, FoldPlan& p) {
@@ -646,6 +660,7 @@ void TurnEngine::planFold(const std::string& chatId, bool manual, FoldPlan& p) {
   p.hidden = rowIdAfter(p.marks.softStart, p.marks.thru);
   p.s.state = SliceState::Ready;
   if (manual) noteHeld(cachedRows(chatId, p.marks, p.b, false), p.b, p.bounds);   // a manual fold keeps no tail
+  else if (foldDeferredAtFloor(chatId)) p.s.state = deferAtFloor(chatId, p);
   else p.s.state = foldBounds(chatId, p.marks, p.b, p.o, p.hidden, p.bounds);
   p.s.keptBytes = bytesAfter(p.bounds.held, p.marks.thru);
   if (p.s.state != SliceState::Ready) return;

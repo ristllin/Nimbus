@@ -21,6 +21,7 @@
 #include "nimbus/harness/fold_ladder.h"    // FoldResult / FoldRung - the fold's ladder
 #include "nimbus/harness/skill_attach.h"   // AttachPick - the [ACTIVE SKILLS] picks (F1)
 #include "nimbus/orch/owner_prefs.h"     // lane QFIX: renderMemoryRoutingHint
+#include "nimbus/orch/request_budget.h"  // SendFloorCounts - the send floor rounds (RB-BGb)
 #include "nimbus/orch/episodic.h"       // EpisodicMessage (historyRows)
 #include "nimbus/orch/failure_chain.h"  // FailureChain - the turn's causes
 #include "nimbus/orch/fallback_rules.h" // ErrorClass - the pending [FALLBACK] note's class
@@ -855,23 +856,25 @@ class TurnEngine {
     std::string clearAt;   // the newest /clear the scan met ("" = none)
     bool scanned = false;  // the scan reached the read's bound: the start is known
   };
-  size_t foldKeepBytes(const HistoryBudget& b, const std::string& chatId) const;
+  size_t foldKeepBytes(const HistoryBudget& b) const;
 
  public:
-  // The chat's last turn left history out at the send floor (candidate 4, F5).
-  bool floorTrimmed(const std::string& chatId) const {
-    for (const std::string& c : floorTrimChats_)
+  // The chat's automatic fold waits: its last turn sent a round at the send floor (RB-BGb).
+  bool foldDeferredAtFloor(const std::string& chatId) const {
+    for (const std::string& c : floorChats_)
       if (c == chatId) return true;
     return false;
   }
 
  private:
-  // Candidate 4, F5: chats whose last turn left history out while its rounds went at the send
-  // floor (a fragmented pool). Their next fold keeps v5.1.1's tail, so the window after it fits
-  // the floor; a turn that leaves nothing out takes the chat off. A few chats, RAM only.
-  std::vector<std::string> floorTrimChats_;
-  uint32_t floorRoundsAtTurn_ = 0;   // orch::sendFloorCounts().floorRounds at the turn's start
-  void noteFloorTrim(const std::string& chatId, bool trimmed);
+  // Lane RB-BGb (ruling 83 item 9 (a)): chats whose last turn sent a round at the send floor (a
+  // fragmented pool). Their automatic fold waits until a turn's rounds all go above the floor:
+  // a fold now would keep the head's tail, which the floor cuts again, so its oldest rows would
+  // be in neither the request nor the summary. Each floor request names what it leaves out (the
+  // LEFT OUT note). A few chats, RAM only.
+  std::vector<std::string> floorChats_;
+  nimbus::orch::SendFloorCounts floorAtTurn_;   // orch::sendFloorCounts() at the turn's start
+  void noteFloorSend(const std::string& chatId);
   SliceState foldBounds(const std::string& chatId, const HistoryMarks& marks, const HistoryBudget& b,
                         const HistoryOptions& o, bool hidden, FoldBounds& out);
   // What a slice knows before it reads (planFold): the budget, the marks, the bounds, the
@@ -888,6 +891,7 @@ class TurnEngine {
   };
   struct FoldReadPass;
   void planFold(const std::string& chatId, bool manual, FoldPlan& p);
+  SliceState deferAtFloor(const std::string& chatId, FoldPlan& p);
   SliceState foldStart(const std::string& chatId, FoldPlan& p);
   FoldSlice sliceWithoutDigest(const std::string& chatId, FoldPlan& p, const FoldRead& r, bool nothingToSummarize);
   static void noteHeld(const ConvCache::View& view, const HistoryBudget& b, FoldBounds& out);

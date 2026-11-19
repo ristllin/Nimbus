@@ -481,6 +481,7 @@ void FoldDriver::endManualWait(const std::string& chat, uint32_t nowMs, SliceSta
 FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t nowMs, uint32_t nowEpoch,
                                 const FoldSlice& s) {
   noteUnread(chat, nowEpoch, s.state == SliceState::Unread);
+  if (s.floorDeferred) return floorDeferred(chat, nowMs);
   uint32_t& waits = readWaitCount_[chat];
   if (!s.progressed) waits++;
   // A manual read that goes on yields one pass to the automatic folds, and is answered after
@@ -498,6 +499,15 @@ FoldTick FoldDriver::sliceWaits(const std::string& chat, bool manual, uint32_t n
   const bool tooLong = manualGoesOn && manualWaitPasses_ >= kManualWaitPasses;
   if (manual && (!manualGoesOn || tooLong)) endManualWait(chat, nowMs, s.state, tooLong);
   changed(chat);
+  return FoldTick::Deferred;
+}
+
+// Lane RB-BGb: the chat's last request went at the send floor. The fold looks again after the
+// first read wait, never backed off: the turn that goes above the floor lets it run.
+FoldTick FoldDriver::floorDeferred(const std::string& chat, uint32_t nowMs) {
+  readWaitUntilMs_[chat] = nowMs + kReadWaitFirstMs;
+  hlog::logf("fold(%s): deferred - the last request went at the send floor, next look in %u s", chat.c_str(),
+             (unsigned)(kReadWaitFirstMs / 1000));
   return FoldTick::Deferred;
 }
 
@@ -596,7 +606,6 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
   done.model = rep.model;
   done.elapsedMs = nowMs - c.startedMs;
   if (hooks_.folded) hooks_.folded(done);   // then the chain reset and the boundary row
-  chaseFloorTail(c.chat, c.manual, c.slice);
   if (c.manual && !catchUpContinues(c.chat, c.slice)) {
     if (hooks_.tell) hooks_.tell(c.chat, confirmation(catchUp_.span));
     catchUp_ = CatchUp();
@@ -604,17 +613,6 @@ FoldTick FoldDriver::landed(const FoldRungReport& rep, const std::string& summar
   }
   changed(c.chat);
   return FoldTick::Ok;
-}
-
-void FoldDriver::chaseFloorTail(const std::string& chat, bool manual, const FoldSlice& landed) {
-  if (manual || !landed.more || !eng_->floorTrimmed(chat) || floorChase_ >= kFloorChaseFolds) {
-    floorChase_ = 0;
-    return;
-  }
-  floorChase_++;
-  folds_.markOverflow(chat);   // due on the next pass, an overflow fold (no quiet wait)
-  hlog::logf("fold(%s): rows before v5.1.1's tail remain after a send-floor cut - folding again (%u/%u)",
-             chat.c_str(), (unsigned)floorChase_, (unsigned)kFloorChaseFolds);
 }
 
 bool FoldDriver::catchUpContinues(const std::string& chat, const FoldSlice& landed) {

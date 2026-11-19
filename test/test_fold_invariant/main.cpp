@@ -262,8 +262,8 @@ struct Device {
       d.hosts.add(hh, [this](std::string&, const std::string& ins, const std::string& in, std::string& out,
                              std::string& err, const agent::HeadTools*, orch::TokenUsage* u) {
         const bool fold = ins == orch::ORCH_COMPACT_PROMPT;
+        orch::noteRoundBudget(floorPool);   // the wire counts every round (wire_budget.cpp)
         if (floorPool) {
-          orch::noteRoundBudget(true);
           const size_t size = ins.size() + in.size();
           if (fold) foldRequestMax = std::max(foldRequestMax, size);
           if (!fold && size > orch::kLegacyWireBodyBytes) {
@@ -333,8 +333,19 @@ struct Device {
   }
   std::map<std::string, std::string> thruSeen;   // chat -> thru after the last step
   std::vector<std::pair<std::string, std::string>> told;   // (chat, owner notice)
+  // RB-BGb (a): what each landed fold kept after its new anchor, and whether it was manual.
+  struct Landing {
+    bool manual;
+    bool hidden;   // the fold took rows a shift had hidden (its anchor is the soft start)
+    uint32_t keptBytes;
+  };
+  std::vector<Landing> landings;
+
   void onLanded(const agent::FoldDone& done) {
     landed++;
+    const orch::ChatFold now = folds.get(done.chat);
+    landings.push_back({done.manual, !now.softStart.empty() && !agent::rowIdAfter(now.softStart, done.slice.thru),
+                        done.slice.keptBytes});
     const uint32_t mark = clearMark[done.chat];
     const auto seen = thruSeen.find(done.chat);
     if (seen != thruSeen.end() && !seen->second.empty() && !done.slice.firstId.empty() &&
@@ -548,64 +559,133 @@ static void assertRowsInRequest(const Device& d, const std::string& chat, size_t
   }
 }
 
-// Candidate 4, F5: on a pool that stays fragmented every round goes at the send floor
-// (85,000 B), and a turn whose history does not fit leaves rows out and makes the fold due.
-// After the fold that follows such a turn, every row is either in the next request or
-// covered by the summary: the fold keeps v5.1.1's tail, not the head's large one that the
-// floor would cut again. The fold's own request fits the floor too.
-static void test_after_a_floor_turn_the_fold_leaves_no_row_unreachable() {
+// The id a request's LEFT OUT note sends the model back to: memory_episodic "before" (rows
+// before it are read back with the tool). "" when the request left no history out.
+static std::string leftOutBefore(const std::string& request) {
+  size_t at = request.find("[LEFT OUT TO FIT THIS REQUEST]");
+  if (at == std::string::npos) return std::string();
+  at = request.find("\"before\":\"", at);
+  if (at == std::string::npos) return std::string();
+  at += 10;
+  return request.substr(at, request.find('"', at) - at);
+}
+
+// Every live row after thru that existed before the last turn is in its request, or named by
+// its LEFT OUT note (a row before the note's "before" id), or in the window's own left-out span.
+static void assertRowsReachable(const Device& d, const std::string& chat, size_t before) {
+  const orch::ChatFold f = d.folds.get(chat);
+  const std::string named = leftOutBefore(d.lastRequest);
+  const agent::HistoryWindow& w = d.eng->lastHistoryWindow();
+  for (const auto* m : d.live(chat)) {
+    if ((size_t)(m - d.store.rows.data()) >= before) break;
+    if (!f.thru.empty() && !agent::rowIdAfter(m->id, f.thru)) continue;   // covered by the summary
+    if (!named.empty() && agent::rowIdAfter(named, m->id)) continue;     // named by the LEFT OUT note
+    if (Device::inSpan(w.leftOut, m->id)) continue;                       // named by the window's span
+    const std::set<std::string> t = tokensIn(m->text.substr(0, 16));
+    if (t.empty()) continue;
+    TEST_ASSERT_TRUE_MESSAGE(d.lastRequest.find(*t.begin()) != std::string::npos,
+                             ("row " + m->id + " (" + *t.begin() + ") is in neither the request, its LEFT OUT note "
+                              "nor the summary, thru " + f.thru).c_str());
+  }
+}
+
+// Every automatic fold that took visible rows kept the head's full keep (less one turn, the
+// tail keeps whole turns) or the day floor, never v5.1.1's 4,096 B (about 1,600 tokens).
+static void assertFullKeep(const Device& d, size_t from) {
+  const size_t keep = d.headCtx().historyKeepBytes;
+  for (size_t i = from; i < d.landings.size(); i++) {
+    const Device::Landing& l = d.landings[i];
+    if (l.manual || l.hidden) continue;
+    TEST_ASSERT_TRUE_MESSAGE(l.keptBytes + 8192 >= keep,
+                             ("an automatic fold kept " + std::to_string(l.keptBytes) + " B of a " +
+                              std::to_string(keep) + " B keep").c_str());
+  }
+}
+
+// RB-BGb (a), ruling 83 item 9: on a pool that stays fragmented every round goes at the send
+// floor (85,000 B). After any number of floor sends the automatic fold waits for a request above
+// the floor: no automatic fold lands with a shortened tail, each floor request names what it
+// leaves out, and no row is in neither the request nor the summary. When the pool recovers the
+// next fold keeps the head's full keep (59,040 B, about 23,600 tokens on claude-sonnet-5-5).
+static void runFloorProperty(size_t promptPad, int healthyTurns, int floorTurns) {
+  Device d("anthropic", "claude-sonnet-5-5");
+  d.promptPad = promptPad;
+  d.boot();
+  for (int i = 0; i < healthyTurns; i++) {   // a healthy head builds its full-size history first
+    d.turn(kMain);
+    d.pump(1, 60);
+  }
+  const size_t floorFrom = d.landings.size();
+  d.floorPool = true;
+  int trimmed = 0;
+  for (int i = 0; i < floorTurns; i++) {
+    const size_t before = d.store.rows.size();
+    d.turn(kMain);
+    trimmed += d.lastTrimmed;
+    assertRowsReachable(d, kMain, before);
+    d.pump(1, 60);
+  }
+  std::printf("  floor turns that left history out: %d of %d, folds landed at the floor: %u\n", trimmed, floorTurns,
+              (unsigned)(d.landings.size() - floorFrom));
+  assertFullKeep(d, 0);
+  TEST_ASSERT_TRUE_MESSAGE(trimmed > 0, "the floor cuts the history");
+  TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("deferred"), "the deferral is logged");
+  // The pool recovers: the next request goes above the floor, and the fold that follows keeps
+  // the full keep.
+  d.floorPool = false;
+  const size_t at = d.landings.size();
+  d.turn(kMain);
+  // A busy day at the floor may have spent the daily fold cap: the next fold may be tomorrow's.
+  for (int p = 0; p < 200 && d.landings.size() == at; p++) d.pump(1, 600);
+  TEST_ASSERT_TRUE_MESSAGE(d.landings.size() > at, "a fold lands once a request goes above the floor");
+  assertFullKeep(d, at);
+  const size_t before = d.store.rows.size();
+  d.turn(kMain);
+  assertRowsInRequest(d, kMain, before);
+  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+}
+
+static void test_floor_sends_defer_the_fold_and_the_next_fold_keeps_the_full_keep() { runFloorProperty(24000, 0, 160); }
+
+// The Lumi case (candidate 5, G6): the pool fragments after a healthy head built its full-size
+// history, with a device-sized prompt (about 20 KB of history fits the floor).
+static void test_a_pool_that_fragments_late_defers_the_fold_too() { runFloorProperty(52000, 120, 40); }
+
+// Counter-test: a Summarize now on the fragmented pool is never deferred. It lands, its request
+// fits the floor, and the next request holds every row after the new anchor.
+static void test_a_summarize_now_at_the_floor_still_lands() {
   Device d("anthropic", "claude-sonnet-5-5");
   d.floorPool = true;
   d.promptPad = 24000;
   d.boot();
-  int checked = 0;
-  for (int i = 0; i < 400 && checked < 3; i++) {
-    d.turn(kMain);
-    if (!d.lastTrimmed) continue;
-    const int landed = d.landed;
-    LogCapture::lines().clear();
-    for (int p = 0; p < 20 && d.landed == landed; p++) d.pump(1, 60);
-    if (d.landed == landed)
-      for (const auto& l : LogCapture::lines())
-        if (l.find("fold") != std::string::npos || l.find("history") != std::string::npos) std::printf("  log: %s\n", l.c_str());
-    TEST_ASSERT_TRUE_MESSAGE(d.landed > landed, "the floor turn's fold lands");
-    const size_t before = d.store.rows.size();
-    d.turn(kMain);
-    checked++;
-    assertRowsInRequest(d, kMain, before);
-  }
-  TEST_ASSERT_EQUAL_MESSAGE(3, checked, "three floor turns, each with its fold");
-  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+  for (int i = 0; i < 400 && !d.lastTrimmed; i++) d.turn(kMain);
+  TEST_ASSERT_TRUE_MESSAGE(d.lastTrimmed, "a turn is cut at the floor");
+  const int landed = d.landed;
+  d.drv->requestManual(kMain);
+  for (int p = 0; p < 40 && d.landed == landed; p++) d.pump(1, 60);
+  TEST_ASSERT_TRUE_MESSAGE(d.landed > landed, "the manual fold lands");
+  TEST_ASSERT_TRUE_MESSAGE(d.landings.back().manual, "the landing is the manual one");
+  const size_t before = d.store.rows.size();
+  d.turn(kMain);
+  assertRowsInRequest(d, kMain, before);
   TEST_ASSERT_TRUE_MESSAGE(d.foldRequestMax > 0 && d.foldRequestMax <= orch::kLegacyWireBodyBytes,
                            std::to_string(d.foldRequestMax).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
 }
 
-// Candidate 5, G6: the pool fragments after a healthy head built its derived-size history (the
-// Lumi case). The first floor turn's fold cannot reach v5.1.1's tail in one slice; the chat
-// stays due until it does, so the next turns hold every row in the request or the summary.
-static void test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutive_folds() {
+// Counter-test: on a healthy pool nothing is deferred; the automatic folds land and keep the
+// full keep.
+static void test_a_healthy_pool_folds_with_the_full_keep() {
   Device d("anthropic", "claude-sonnet-5-5");
-  d.promptPad = 52000;   // a device's system prompt and tool schemas: about 20 KB of history fits the floor
+  d.promptPad = 24000;
   d.boot();
-  for (int i = 0; i < 120; i++) {   // healthy: the history grows to the derived marks, folds keep the large tail
+  for (int i = 0; i < 120; i++) {
     d.turn(kMain);
     d.pump(1, 60);
   }
-  d.floorPool = true;
-  int floorTurns = 0;
-  for (int i = 0; i < 40 && !d.lastTrimmed; i++) d.turn(kMain);
-  TEST_ASSERT_TRUE_MESSAGE(d.lastTrimmed, "a turn is cut at the floor");
-  for (int p = 0; p < 12; p++) d.pump(1, 60);   // the folds that follow
-  for (int t = 0; t < 3; t++) {
-    const size_t before = d.store.rows.size();
-    d.turn(kMain);
-    floorTurns += d.lastTrimmed;
-    assertRowsInRequest(d, kMain, before);
-    d.pump(1, 60);
-  }
-  TEST_ASSERT_EQUAL_MESSAGE(0, floorTurns, "no later turn is cut");
-  TEST_ASSERT_TRUE_MESSAGE(LogCapture::contains("folding again"), "the floor tail is chased");
-  TEST_ASSERT_TRUE_MESSAGE(d.violations.empty(), d.violations.empty() ? "" : d.violations.front().c_str());
+  TEST_ASSERT_TRUE_MESSAGE(d.landings.size() >= 2, "the automatic folds land");
+  assertFullKeep(d, 0);
+  TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("deferred"), "nothing is deferred");
 }
 
 // The property on a head with room (lane H's derived marks: Sonnet 5.5, 118 KB window).
@@ -1179,7 +1259,9 @@ int main(int, char**) {
   RUN_TEST(test_the_device_alert_send_counts_only_a_queued_message);
   RUN_TEST(test_invariant_holds_on_a_head_with_room);
   RUN_TEST(test_invariant_holds_on_the_floor_branch);
-  RUN_TEST(test_after_a_floor_turn_the_fold_leaves_no_row_unreachable);
-  RUN_TEST(test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutive_folds);
+  RUN_TEST(test_floor_sends_defer_the_fold_and_the_next_fold_keeps_the_full_keep);
+  RUN_TEST(test_a_pool_that_fragments_late_defers_the_fold_too);
+  RUN_TEST(test_a_summarize_now_at_the_floor_still_lands);
+  RUN_TEST(test_a_healthy_pool_folds_with_the_full_keep);
   return UNITY_END();
 }

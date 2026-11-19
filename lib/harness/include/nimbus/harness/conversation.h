@@ -253,7 +253,6 @@ struct HistoryBudget {
   size_t maxBytes = 0;       // historyMaxBytes: past it the oldest turns are hidden
   size_t softBytes = 0;      // historySoftBytes: where a shift lands (and a fold is due)
   size_t keepBytes = 0;      // historyKeepBytes: the newest history a fold keeps verbatim
-  size_t floorKeepBytes = 0; // v5.1.1's keep on this head: a fold after a turn cut at the send floor
   size_t messageCap = 6144;  // historyMessageCap: one half's clip
   size_t lowBytes() const { return highBytes / 2; }
   size_t lowRows() const { return highRows / 2; }
@@ -346,6 +345,8 @@ struct FoldSlice {
   std::string readTo;
   // Wait: this attempt moved the read forward (a scan or a read budget resumes from there).
   bool progressed = false;
+  // Wait: the automatic fold waits for a request above the send floor (RB-BGb), not for rows.
+  bool floorDeferred = false;
   // Ready: the read stopped short of its bound (the cap, the page bound, a span it could not
   // read): rows after `thru` remain for the next fold (a manual catch-up goes on).
   bool more = false;
