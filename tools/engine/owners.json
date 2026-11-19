@@ -1693,6 +1693,36 @@
         "nimbusd/tests/test_budget_memo.cpp"
       ],
       "plan_text": "lib/harness/src/engine_history.cpp, lib/core/src/orch_request_budget.cpp, lib/core/src/orch_budget.cpp, their tests, docs/reference/request-budgets.md (generated)"
+    },
+    "RB-TR1": {
+      "stage": "S1",
+      "files": [
+        "coverage/PROMPT-CHANGES.md",
+        "docs/reference/tool-catalog.md",
+        "docs/turn-anatomy.md",
+        "lib/core/include/nimbus/docs_pack_data.h",
+        "lib/core/include/nimbus/orch/file_aids_e1.h",
+        "lib/core/src/orch_file_aids_e1.cpp",
+        "lib/core/include/nimbus/orch/file_append.h",
+        "lib/core/src/orch_file_append.cpp",
+        "lib/core/src/orch_result_store.cpp",
+        "nimbusd/src/posix_files.h",
+        "nimbusd/src/rig.h",
+        "nimbusd/tests/test_hosted_file_aids.cpp",
+        "nimbusd/tests/test_hosted_files.cpp",
+        "src/agent/files_subsystem.cpp",
+        "test/golden/file_aids_e1_results.txt",
+        "test/golden/model_text_catalog_e1.txt",
+        "test/support/file_aids_e1_cases.h",
+        "test/test_file_aids_e1/**",
+        "test/test_file_append/**",
+        "test/test_orch_result_store/**",
+        "tools/engine/owners.json",
+        "tools/release_gate/prompt_ceiling.d/RB-TR1.json"
+      ],
+      "notes": [
+        "Ruling 86 item 3: files.read can be continued (readPart, both engines), nimbusd's loop caps are the derived budget and it keeps the device's recent-results ring; ledger PC-0118..PC-0121"
+      ]
     }
   }
 }
