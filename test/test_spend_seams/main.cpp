@@ -98,7 +98,7 @@ struct SeamRow {
   nimbus::orch::SpendSeam kind;   // the meter rows of this kind must exist
 };
 
-// The contract. Head turns, routines, wakeups and the dream are refused at the turn
+// The contract. Head turns, routines and wakeups are refused at the turn
 // core before recall's embed; every harness provider request (head rounds, single
 // shots, sub-agent dispatch, the fold) at wire::exchange; vision on the head rides the
 // head turn and its requests.
@@ -109,8 +109,6 @@ const SeamRow kSeams[] = {
      "nimbus::orch::SpendSeam::Routine", false, nimbus::orch::SpendSeam::Routine},
     {"wakeup", "lib/harness/src/engine.cpp", "nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(",
      "nimbus::orch::SpendSeam::Wakeup", false, nimbus::orch::SpendSeam::Wakeup},
-    {"dream", "lib/harness/src/engine.cpp", "nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(",
-     "nimbus::orch::SpendSeam::Dream", false, nimbus::orch::SpendSeam::Dream},
     {"scheduled turn gate", "lib/harness/src/engine.cpp", "nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(",
      "paidCallAllowed(seam)", false, nimbus::orch::SpendSeam::Routine},
     {"fold", "lib/harness/src/engine_fold.cpp", "TurnEngine::FoldResult TurnEngine::runFoldOn(",
@@ -162,7 +160,7 @@ const SeamRow kSeams[] = {
 bool parkInTree() { return exists("src/agent/provider_gate.h"); }
 
 // The meter contract: where each kind of paid call reports what it cost. A turn's
-// requests (head, routine, wakeup, dream, images handed to the head) are metered once by
+// requests (head, routine, wakeup, images handed to the head) are metered once by
 // the turn's spend record and round by round while it runs; everything else at the
 // answer that billed it.
 struct MeterRow {
@@ -181,7 +179,6 @@ const MeterRow kMeters[] = {
     {"images on the head", S::VisionNative, "lib/harness/src/engine.cpp", kRunTurn, "meterSpend(tf.spend"},
     {"routine turn", S::Routine, "lib/harness/src/engine.cpp", "nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(", "runTurn("},
     {"wakeup turn", S::Wakeup, "lib/harness/src/engine.cpp", "nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(", "runTurn("},
-    {"dream turn", S::Dream, "lib/harness/src/engine.cpp", "nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(", "runTurn("},
     {"fold", S::Fold, "lib/harness/src/engine_fold.cpp", "TurnEngine::FoldResult TurnEngine::runFoldOn(", "meterSpend(foldSpend"},
     {"each loop round", S::Wire, "lib/harness/src/providers/loop_common.cpp", "", "notePendingUsage("},
     {"sub-agent tokens (OpenAI, Anthropic)", S::Sub, "lib/harness/src/jobs.cpp", "int JobEngine::pump()", "d_.recordSpawnUsage("},
@@ -322,6 +319,7 @@ static void test_the_table_covers_every_seam_kind() {
       case nimbus::orch::SpendSeam::Stt:
       case nimbus::orch::SpendSeam::Tts:
       case nimbus::orch::SpendSeam::UrlFetch:
+      case nimbus::orch::SpendSeam::Dream:          // retired (RB-Q2b): test_the_retired_dream_seam_has_no_caller
         continue;
       default:
         break;
@@ -406,6 +404,7 @@ static void test_every_gated_seam_is_metered() {
 // meter from a copy of its function is caught (the counter-test).
 static void test_every_seam_kind_has_a_meter_and_removing_one_fails() {
   for (int k = 0; k < nimbus::orch::kSpendSeamCount; ++k) {
+    if (k == (int)nimbus::orch::SpendSeam::Dream) continue;   // retired: no call pays there
     bool has = false;
     for (const MeterRow& m : kMeters) has = has || (int)m.kind == k;
     TEST_ASSERT_TRUE_MESSAGE(has, nimbus::orch::spendSeamSlug((nimbus::orch::SpendSeam)k));
@@ -422,8 +421,23 @@ static void test_every_seam_kind_has_a_meter_and_removing_one_fails() {
   }
 }
 
+// RB-Q2b: the nightly upkeep makes no model call, so the Dream seam (kept in the
+// append-only enum) is retired: nothing in the harness or the device consults or meters it.
+// A caller that appears gets a row in the tables above instead.
+static bool namesDreamSeam(const std::string& src) { return src.find("SpendSeam::Dream") != std::string::npos; }
+static void test_the_retired_dream_seam_has_no_caller() {
+  for (const char* f : {"lib/harness/src/engine.cpp", "lib/harness/src/dream.cpp", "src/agent/dream_subsystem.cpp",
+                        "src/main.cpp", "src/agent/orchestrator.cpp"}) {
+    const std::string src = slurp(f);
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), f);
+    TEST_ASSERT_FALSE_MESSAGE(namesDreamSeam(src), f);
+  }
+  TEST_ASSERT_TRUE(namesDreamSeam("paidCallAllowed(nimbus::orch::SpendSeam::Dream)"));   // counter-test
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_the_retired_dream_seam_has_no_caller);
   RUN_TEST(test_every_paid_seam_consults_the_gate);
   RUN_TEST(test_removing_a_consult_fails_the_checker);
   RUN_TEST(test_the_table_covers_every_seam_kind);

@@ -105,17 +105,14 @@ struct ResultEv {
   std::string reply;    // terminal Done/Error only: the sub-agent's reply text (B5)
   std::string chatId;   // the spawning chat (B5)
 };
-// DREAMING lifecycle (fired by the dream glue around its two phases, not by the
-// TurnEngine): DreamStart before maintenance, DreamEnd after the reflection turn.
+// The nightly upkeep's lifecycle (fired by the dream glue around the night, not by the
+// TurnEngine): DreamStart before maintenance, DreamEnd after it.
 struct DreamStartEv { uint64_t epoch = 0; };
 struct DreamEndEv {
-  bool turnOk = false;     // the reflection turn's FireOutcome.ok
   int prunedVectors = 0;   // removed by pruneExpired in the maintenance phase
   int dedupedVectors = 0;  // removed by deduplicate in the maintenance phase
-  uint32_t tokens = 0;     // real billed spend of the reflection turn (this turn's own)
-  std::string cause;       // FireOutcome.error: the first cause when the turn failed
-  // Lane M: the whole night (outcome, cause, write counts, retry, streak). Borrowed,
-  // valid only during the hook call; renderDreamRow(*report) is the timeline row.
+  // The whole night (outcome, maintenance, state save). Borrowed, valid only during
+  // the hook call; renderDreamRow(*report) is the timeline row.
   const dream::NightReport* report = nullptr;
 };
 // Mid-turn round prose ("thinking") from the head loop (Glass Box A4). Fired

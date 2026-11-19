@@ -234,8 +234,7 @@ class LabRig {
     return cur_;
   }
 
-  // An unattended turn (a routine firing, or the nightly dream stage).
-  // loopId "dream" runs it as the reserved dream (memory-only surface).
+  // An unattended turn (a routine firing).
   orch::FireOutcome scheduled(const std::string& chatId, const std::string& prompt,
                               const std::string& name, bool quietOk = false,
                               const std::string& loopId = "") {
@@ -296,7 +295,6 @@ class LabRig {
     journal_ = j;
     buildEngine();
   }
-  const orch::MemOpCounters& memOps() const { return memOps_; }
   orch::EpisodicStore& episodic() { return *epi_; }
   // The settings-storage state the device.status stand-in reports (L19-9),
   // through the same portable builder the device uses. Fresh by default; a
@@ -436,7 +434,6 @@ class LabRig {
     mc.scratch = &scratch_;
     mc.cfg = &memCfg_;
     mc.episodic = epi_.get();
-    mc.ops = &memOps_;   // what memory writes did (the dream's honest outcome)
     mc.nowHours = [] { return nowHoursLab(); };
     // CUM-435: the Embedder seam now threads the failure cause; the rig logs its
     // own embed errors to stderr, so clear err here (empty vector still signals
@@ -1066,7 +1063,6 @@ class LabRig {
   orch::VectorMemory vec_;
   std::vector<std::string> fieldCalls_;
   orch::Scratchpad   scratch_;
-  orch::MemOpCounters memOps_;
   orch::MemConfig    memCfg_;
   std::unique_ptr<orch::EpisodicStore> epi_;
   orch::ToolRegistry reg_;

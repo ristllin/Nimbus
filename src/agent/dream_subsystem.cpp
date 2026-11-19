@@ -3,58 +3,26 @@
 #include <LittleFS.h>
 #include <time.h>
 
+#include <memory>   // unique_ptr: the night state off the poll task stack (lane STACK)
 #include <string>
 
 #include "../sys/agent_log.h"
-#include "adapters/embeddings.h"   // available() - can memory writes land tonight?
 #include "agent_config.h"          // ORCH_AUTO_TURN_MIN_HEAP (gate heap floor)
 #include "fs_atomic.h"             // writeFileAtomic - /data/dream.json
-#include "loops_subsystem.h"       // applyInterruptedOutcome - the loop side of the reconcile
-#include "memory_subsystem.h"      // engines + Lock + stats + nowHours + opCounters
-#include "orchestrator.h"
-#include "store.h"                 // the legacy NVS quiet-night baseline (read only)
-#include "nimbus/harness/turn_progress.h"   // progressAllowedForSource - person-started turns
-#include <memory>   // unique_ptr: the night state off the poll task stack (lane STACK)
+#include "memory_subsystem.h"      // engines + Lock + nowHours + the pending drain
+#include "orchestrator.h"          // activeJobCount - the gate
 
 namespace agent {
 namespace dream {
 
 namespace orch = nimbus::orch;
 
-// The sessions that belong to the device's owner: the token/physically-
-// authenticated local surfaces plus every Telegram chat with the owner role,
-// plus "system" (device events - nobody's words).
-static std::vector<std::string> ownerSessionIds() {
-  std::vector<std::string> ids{"web", "serial", "voice", "system"};
-  String owners = store::telegramOwners();
-  int start = 0;
-  while (start < (int)owners.length()) {
-    int end = owners.indexOf(',', start);
-    if (end < 0) end = owners.length();
-    String one = owners.substring(start, end);
-    one.trim();
-    if (one.length()) ids.push_back(std::string(one.c_str()));
-    start = end + 1;
-  }
-  // An empty owner list means the FIRST allow-list entry is the owner (the
-  // single-account default the rest of the firmware uses).
-  if (ids.size() == 4) {
-    String first = orchestrator::firstAllowedChat();
-    if (first.length()) ids.push_back(std::string(first.c_str()));
-  }
-  return ids;
-}
-
 static agent::Hooks g_hooks;             // only onDreamStart/onDreamEnd used
-static AlertSink    g_alert;             // the owner message for a failing streak
 static DreamGate    g_gateCfg;
 static volatile uint32_t g_lastTurnEndMs = 0;   // 0 = no turn since boot
 // Busy defers taken this local night (RAM; reset at a fire and at the day roll).
 static uint8_t  g_defersTonight = 0;
 static uint32_t g_deferDay = 0;
-static bool     g_firing = false;        // the dream's own turn is running
-static std::string g_pendingAlert;       // sent at the next owner turn, never at night
-static uint64_t g_pendingAt = 0;         // epoch the pending alert was set at (0 = none)
 // A starved night's row, decided in the gate. The gate runs under the loops lock and
 // the timeline write takes the memory lock - the opposite order to loop.create (memory
 // lock, then loops lock) - so the row is written later, from tg_poll with no loops lock
@@ -70,7 +38,7 @@ static void emitRow(const agent::DreamEndEv& ev) {
 static void emitStarvedRow() {
   if (!g_starvedPending) return;
   g_starvedPending = false;
-  emitRow(dreamEndEvent(g_starved, false));
+  emitRow(dreamEndEvent(g_starved));
 }
 
 // ---- dream state: /data/dream.json (LittleFS), never NVS -------------------------
@@ -81,21 +49,15 @@ static DreamMemo g_memo;
 
 static bool loadState(DreamState& st) {
   File f = flashMounted() ? LittleFS.open(kStatePath, FILE_READ) : File();
-  if (f) {
-    // A torn or foreign file larger than the state can be is never read into RAM.
-    String s;
-    if (f.size() <= kStateFileMax) s = f.readString();
-    f.close();
-    if (loadDreamState(std::string(s.c_str(), s.length()), st)) return true;
-    alog("dream: state file unreadable - starting fresh");
-    st = DreamState{};
-    return false;
-  }
-  // First night on this firmware: migrate the quiet-night baseline from the legacy
-  // NVS key (read once; it is never written again - NVS is full on real devices).
-  st = stateFromLegacyHash(std::string(store::dreamScratchHash().c_str()));
-  if (st.scrHash) alog("dream: quiet-night baseline migrated from NVS");
-  return true;
+  if (!f) return false;   // first night on this device: maintenance runs tonight
+  // A torn or foreign file larger than the state can be is never read into RAM.
+  String s;
+  if (f.size() <= kStateFileMax) s = f.readString();
+  f.close();
+  if (loadDreamState(std::string(s.c_str(), s.length()), st)) return true;
+  alog("dream: state file unreadable - starting fresh");
+  st = DreamState{};
+  return false;
 }
 
 static bool saveState(const DreamState& st) {
@@ -116,26 +78,14 @@ static NightClock nightClock() {
   return c;
 }
 
-void begin(const agent::Hooks& hooks, AlertSink alert) {
+void begin(const agent::Hooks& hooks) {
   g_hooks = hooks;
-  g_alert = std::move(alert);
   g_gateCfg.minHeap = ORCH_AUTO_TURN_MIN_HEAP;  // device-authoritative floor
 }
 
-void noteTurnEnd(uint32_t nowMs, agent::TurnSource src) {
+void noteTurnEnd(uint32_t nowMs) {
   g_lastTurnEndMs = nowMs ? nowMs : 1;
-  if (!g_firing) emitStarvedRow();
-  // A failing streak is told when the owner is next around, never by a 04:00
-  // message: only on a turn a person started (a routine ending at 05:00 must not
-  // push it out unprompted). Lane ECHO owner design (9/11 Nov): the upkeep's note
-  // is NOT held here at all - fire() arms it as ONE self-wakeup due at the end of
-  // quiet hours, which re-checks it at wake time and says when it was noticed.
-  if (g_firing || !g_alert || g_pendingAlert.empty()) return;
-  if (!nimbus::harness::progressAllowedForSource(src)) return;   // keep holding
-  const std::string msg = ownerNoteText(g_pendingAlert);
-  g_pendingAlert.clear();
-  g_pendingAt = 0;
-  g_alert(msg);
+  emitStarvedRow();
 }
 
 uint32_t gateDefer(const orch::LoopRecord& l) {
@@ -150,13 +100,13 @@ uint32_t gateDefer(const orch::LoopRecord& l) {
   in.defersTonight = g_defersTonight;
   GateResult r = evaluateGate(g_gateCfg, in);
   if (!r.deferSec) return 0;
-  // The night window closed with the device still not idle: no reflection tonight,
-  // said once in the timeline; the loop waits for tomorrow's slot.
+  // The night window closed with the device still not idle: no upkeep tonight, said
+  // once in the timeline; the loop waits for tomorrow's slot.
   if (c.synced && c.minuteOfDay >= windowEndFor(l.sched.minuteOfDay)) {
     g_starved = NightReport{};
     g_starved.outcome = DreamOutcome::Starved;
     g_starved.cause = r.why ? r.why : "busy";
-    g_starved.attempt = g_defersTonight;
+    g_starved.defers = g_defersTonight;
     g_starvedPending = true;   // written outside this lock (emitStarvedRow)
     alogf("dream: skipped tonight (%s after %u defers)", g_starved.cause.c_str(),
           (unsigned)g_defersTonight);
@@ -178,11 +128,8 @@ static void publishStatus(const NightReport& rep) {
   s.known = true;
   s.last = outcomeSlug(rep.outcome);
   strlcpy(s.cause, rep.cause.c_str(), sizeof s.cause);
-  strlcpy(s.err, rep.error.c_str(), sizeof s.err);
   s.stateSaved = rep.stateSaved;
   strlcpy(s.stateWhy, rep.stateWhy.c_str(), sizeof s.stateWhy);
-  s.attempts = rep.attempt;
-  s.streak = rep.streak;
   portENTER_CRITICAL(&g_statusMux);
   g_status = s;
   portEXIT_CRITICAL(&g_statusMux);
@@ -195,35 +142,33 @@ Status status() {
   return s;
 }
 
-nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
-  // The reserved record's slot is fixed (03:30; loops are paused or resumed, never
-  // rescheduled), so NightClock's default slot is the one the window counts from.
+static nimbus::orch::FireOutcome deferredLowMemory(const char* what) {
+  alogf("dream: fire deferred (low memory) - the night's %s could not be allocated", what);
+  nimbus::orch::FireOutcome o;
+  o.deferred = true;   // not a failure: it must not roll the breaker (lane M)
+  o.detail = std::string("deferred: low memory (") + what + ")";
+  return o;
+}
+
+nimbus::orch::FireOutcome fire(const orch::LoopFireRequest&) {
   const NightClock clock = nightClock();
   emitStarvedRow();   // a previous night's starved row, if still unwritten
   if (g_hooks.onDreamStart) g_hooks.onDreamStart(agent::DreamStartEv{clock.epoch});
   g_defersTonight = 0;
 
-  // The night's deps (196 B of hooks) and its result (304 B) live on the heap (lane
-  // STACK): a dream runs as a turn on the Telegram poll task, whose stack Lumi nearly
-  // exhausted on 8 Nov 2026. nothrow: fire() runs on tg_poll with no bad_alloc handler
-  // up the chain (pollTask -> pollJobs -> checkDue/pumpDrill), so a failed box reports
-  // a memory defer instead of aborting the device.
+  // The night's deps and result live on the heap (lane STACK): the night runs on the
+  // Telegram poll task. nothrow: fire() runs on tg_poll with no bad_alloc handler up the
+  // chain, so a failed box reports a memory defer instead of aborting the device.
   const std::unique_ptr<NightDeps> deps(new (std::nothrow) NightDeps());
-  if (!deps) {
-    alogf("dream: fire deferred (low memory) - the night's deps could not be allocated");
-    nimbus::orch::FireOutcome o;
-    o.deferred = true;   // not a failure: it must not roll the breaker (lane M)
-    o.detail = "deferred: low memory (deps)";
-    return o;
-  }
+  if (!deps) return deferredLowMemory("deps");
   NightDeps& d = *deps;
   d.loadState = loadState;
   d.saveState = saveState;
   d.storeReady = flashMounted;
   d.memo = &g_memo;
-  // Phase 1 under the memory Lock (recursive; shared with the web/MCP task), never
-  // held across the network turn. Release C2: windowed dedup - the full O(n^2 dims)
-  // scan at the 5000-entry cap blocks turns and the web under the lock.
+  // Under the memory Lock (recursive; shared with the web/MCP task). Release C2:
+  // windowed dedup - the full O(n^2 dims) scan at the 5000-entry cap blocks turns and
+  // the web under the lock.
   d.maintain = [] {
     memory::Lock lk;
     MaintResult m = maintainVectors(memory::vectors(), memory::config().decayFactor,
@@ -232,205 +177,53 @@ nimbus::orch::FireOutcome fire(const orch::LoopFireRequest& r, bool force) {
           m.deduped, m.vectors, m.persisted ? "" : " NOT saved");
     return m;
   };
-  // The owner's last 24 h of conversation, minus captured job-engine output and
-  // /clear markers. v3.7.0 (prism R2, "namespace laundering"): limited to the owner's
-  // OWN surfaces plus the device timeline - a guest's private conversation must
-  // never be absorbed into the owner's memories overnight.
-  d.yesterday = [] {
-    memory::Lock lk;
-    return readYesterday(memory::episodic(), memory::nowHours(), ownerSessionIds());
-  };
-  d.scratchBlock = [] {
-    memory::Lock lk;
-    std::string out;
-    memory::scratchpad().appendPromptBlock(out);
-    return out;
-  };
-  d.scratchHash = [] {
-    memory::Lock lk;
-    return orch::fnv64(memory::scratchpad().serialize());
-  };
-  d.stats = [] {
-    memory::Stats s = memory::stats();
-    MemStats m;
-    m.vectors = s.vectorCount;
-    m.scratchItems = s.scratchItems;
-    m.episodicMsgs = s.episodicMsgs;
-    return m;
-  };
-  d.embeddingsUp = [] { return embeddings::available(); };
-  d.memOps = [] { return memory::opCounters(); };
-  d.emitRow = emitRow;   // the row, from inside the night, on every exit
-  // An ordinary scheduled turn: the same rails (reboot/loop.create refused, LoopCaps
-  // metered as "loop:dream"), memory tools only, and quiet - an empty reply and every
-  // engine notice stay off the owner's phone at night.
-  d.injectTurn = [&r](const std::string& inputs) {
-    return orchestrator::injectScheduledTurn(String(r.chatId.c_str()), String(inputs.c_str()),
-                                             String(r.name.c_str()), String(r.id.c_str()),
-                                             /*quietOk=*/true);
-  };
+  d.emitRow = emitRow;
 
-  // Memory writes queued during an embedding outage: store up to 10 (30 s budget)
-  // before the night, so the reflection runs over a store that already holds them.
-  // Outside the memory Lock (each step embeds over TLS); a parked embedder skips it.
+  // Memory writes the day's turns queued during an embedding outage: store up to 10
+  // (30 s budget) before the maintenance. Outside the memory Lock (each step embeds over
+  // TLS); a parked embedder skips it.
   if (memory::pendingCount() > 0) {
     const int drained = memory::drainPendingBurst(10, 30000);
     alogf("dream: pending memories stored=%d left=%d", drained, memory::pendingCount());
   }
-  const memory::WriteOutcomes writesBefore = memory::writeOutcomes();
 
-  g_firing = true;
-  // nothrow, and the allocation runs BEFORE runNight: a failed box means no night
-  // happened at all, so g_firing is cleared and a defer is reported - never an
-  // uncaught bad_alloc on tg_poll with g_firing stuck true.
-  std::unique_ptr<NightResult> result(new (std::nothrow) NightResult(runNight(d, clock, force)));
-  g_firing = false;
-  if (!result) {
-    alogf("dream: fire deferred (low memory) - the night's result could not be allocated");
-    nimbus::orch::FireOutcome o;
-    o.deferred = true;
-    o.detail = "deferred: low memory (result)";
-    return o;
-  }
-  NightResult& night = *result;
-
-  // The night's memory writes by outcome: "ok" never hides a write that was only
-  // queued or was not stored (14 Oct: 6 of 6 failed under "Nightly dream ok"). The
-  // owner-facing row carries the same counts via the MemOpCounters seam.
-  {
-    const memory::WriteOutcomes after = memory::writeOutcomes();
-    const int st = after.stored - writesBefore.stored, qu = after.queued - writesBefore.queued,
-              rf = after.refused - writesBefore.refused;
-    if (st || qu || rf)
-      alogf("dream: memory writes stored=%d queued=%d refused=%d (pending=%d)", st, qu, rf,
-            memory::pendingCount());
-  }
-  const NightReport& rep = night.report;
-  alogf("dream: %s%s%s tokens=%u attempt=%u retry=%us streak=%u", outcomeSlug(rep.outcome),
-        rep.cause.empty() ? "" : " cause=", rep.cause.c_str(), (unsigned)rep.tokens,
-        (unsigned)rep.attempt, (unsigned)rep.retryAfterSec, (unsigned)rep.streak);
+  std::unique_ptr<NightResult> result(new (std::nothrow) NightResult(runNight(d, clock)));
+  if (!result) return deferredLowMemory("result");
+  const NightReport& rep = result->report;
+  alogf("dream: %s pruned=%d deduped=%d", outcomeSlug(rep.outcome), rep.maint.pruned,
+        rep.maint.deduped);
   if (!rep.stateSaved)
-    alogf("dream: state not saved (%s) - this boot keeps the count in RAM", rep.stateWhy.c_str());
-  if (rep.alert) {
-    g_pendingAlert = streakAlertText(rep);
-    g_pendingAt = clock.epoch;
-  }
-  // Lane ECHO owner design (9/11 Nov): the night's wake note (the reflection's
-  // reply when it said something worth telling, else the firmware-worded upkeep
-  // facts) is NEVER held for the owner's next message - it arms ONE self-wakeup
-  // due at the end of quiet hours (at most one pending per kind; the wake turn
-  // re-checks it before sending). Outside quiet hours armSelfWakeupNote returns
-  // "" and the note simply does not go out at night.
-  if (!rep.wake.text.empty()) {
-    const std::string wid = loops::armSelfWakeupNote(rep.wake);
-    if (!wid.empty())
-      alogf("dream: wake note (%u B) armed as self-wakeup %s, due at the end of quiet hours",
-            (unsigned)rep.wake.text.size(), wid.c_str());
-    else
-      alogf("dream: wake note (%u B) not armed (not quiet hours, or a %s self-wakeup is pending)",
-            (unsigned)rep.wake.text.size(), orch::wakeKindSlug(rep.wake.kind));
-  }
+    alogf("dream: state not saved (%s) - this boot keeps the day in RAM", rep.stateWhy.c_str());
   publishStatus(rep);
-  return night.fire;
+  return result->fire;
 }
 
 // ---- the console DREAM drill: queued here, run on tg_poll -------------------------
 static portMUX_TYPE g_drillMux = portMUX_INITIALIZER_UNLOCKED;
 static bool g_drillPending = false;
-static char g_drillChat[48] = {};
 
-bool requestDrill(const std::string& chatId) {
+bool requestDrill() {
   portENTER_CRITICAL(&g_drillMux);
   const bool fresh = !g_drillPending;
-  if (fresh) {
-    strlcpy(g_drillChat, chatId.c_str(), sizeof g_drillChat);
-    g_drillPending = true;
-  }
+  g_drillPending = true;
   portEXIT_CRITICAL(&g_drillMux);
   return fresh;
 }
 
 void pumpDrill() {
-  char chat[sizeof g_drillChat];
   portENTER_CRITICAL(&g_drillMux);
   const bool pending = g_drillPending;
   g_drillPending = false;
-  memcpy(chat, g_drillChat, sizeof chat);
   portEXIT_CRITICAL(&g_drillMux);
   if (!pending) return;
-  // The record, request and outcome live on the heap (lane STACK): the night runs as a
-  // turn below this frame on the Telegram poll task. 432 B of locals otherwise.
-  // nothrow: pumpDrill runs on tg_poll with no bad_alloc handler up the chain, so a
-  // failed box skips the drill with a log line instead of aborting the device.
-  const std::unique_ptr<const orch::LoopRecord> record(
-      new (std::nothrow) orch::LoopRecord(reservedLoopRecord()));
-  if (!record) { alogf("DREAM drill skipped (low memory) - the record could not be allocated"); return; }
-  const orch::LoopRecord& rec = *record;
-  const std::unique_ptr<orch::LoopFireRequest> fireReq(new (std::nothrow) orch::LoopFireRequest());
-  if (!fireReq) { alogf("DREAM drill skipped (low memory) - the request could not be allocated"); return; }
-  orch::LoopFireRequest& req = *fireReq;
-  req.id = rec.id;
-  req.name = rec.name;
-  req.prompt = rec.prompt;
-  req.chatId = chat;
-  const std::unique_ptr<const orch::FireOutcome> fired(
-      new (std::nothrow) orch::FireOutcome(fire(req, /*force=*/true)));
+  // The request and outcome live on the heap (lane STACK). nothrow: pumpDrill runs on
+  // tg_poll with no bad_alloc handler up the chain.
+  const std::unique_ptr<orch::LoopFireRequest> req(new (std::nothrow) orch::LoopFireRequest());
+  if (!req) { alogf("DREAM drill skipped (low memory) - the request could not be allocated"); return; }
+  req->id = kLoopId;
+  const std::unique_ptr<const orch::FireOutcome> fired(new (std::nothrow) orch::FireOutcome(fire(*req)));
   if (!fired) { alogf("DREAM drill skipped (low memory) - the outcome could not be allocated"); return; }
-  const orch::FireOutcome& o = *fired;
-  alogf("DREAM fired ok=%d detail=%s", o.ok ? 1 : 0, o.detail.c_str());
-}
-
-// ---- the boot reconcile: a night the restart cut short (L19-31) ------------------
-// The decisions (when it may run, stale and torn markers, save-first, the bounded
-// retry) are the pure BootReconcile (dream.h, host-tested); this binds its seams.
-static BootReconcile g_boot;   // one reconcile per boot (tg_poll only)
-
-static void publishInterrupted(const NightReport& rep) {
-  alogf("dream: interrupted night reconciled - attempt %u of %u, the device restarted "
-        "during the reflection%s",
-        (unsigned)rep.attempt, (unsigned)kMaxAttempts,
-        rep.retryAfterSec ? ", retry scheduled" : ", no retry inside the window");
-  publishStatus(rep);
-  if (rep.alert) {
-    g_pendingAlert = streakAlertText(rep);
-    g_pendingAt = nightClock().epoch;
-  }
-  emitRow(dreamEndEvent(rep, false));
-}
-
-static const BootDeps& bootDeps() {
-  static BootDeps d;
-  if (d.loadState) return d;
-  d.storeReady = flashMounted;
-  d.clockSynced = memory::clockSynced;
-  // The row goes to the episodic store and the loop side to loops.json: both are
-  // read at boot before the turn task starts, so this holds from the first pass.
-  d.sinksReady = [] { return memory::storageResolved() && loops::ready(); };
-  d.loadState = loadState;
-  d.saveState = saveState;
-  d.loopLastRun = [] { return loops::lastRunOf(kLoopId); };
-  d.applyLoop = [](const NightReport& rep) {
-    loops::applyInterruptedOutcome(kLoopId, rep.retryAfterSec, (uint64_t)time(nullptr));
-  };
-  d.publish = publishInterrupted;
-  d.memo = &g_memo;
-  return d;
-}
-
-void pumpBootReconcile() {
-  if (g_boot.done) return;
-  switch (g_boot.pump(bootDeps(), nightClock())) {
-    case BootStep::Stale:
-      alog("dream: an in-flight marker older than the routine's last run was cleared "
-           "(that night is already on record)");
-      break;
-    case BootStep::GaveUp:
-      alog("dream: interrupted night NOT reconciled this boot (the state save keeps "
-           "failing); the marker stays on disk");
-      break;
-    default:
-      break;   // waiting, clean, reconciled (published above) or a save to retry
-  }
+  alogf("DREAM fired ok=%d detail=%s", fired->ok ? 1 : 0, fired->detail.c_str());
 }
 
 }  // namespace dream

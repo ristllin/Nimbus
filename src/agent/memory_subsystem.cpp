@@ -83,7 +83,6 @@ using namespace nimbus::orch;
 
 namespace {
 VectorMemory          g_vec;
-MemOpCounters         g_memOps;         // memory.write/update outcomes since boot (lane M; RAM only)
 // Cold store for TTL-expired memories (CUM-225). SD-only: attached as g_vec's prune
 // sink and exposed to the model ONLY when a card is present, so a card-less device
 // drops entries at TTL exactly as before. Lives in PSRAM like the live set.
@@ -252,9 +251,6 @@ const char* kPendSdPath  = "/mem/pending_embed.bin";
 const char* kPendLfsPath = "/data/pendemb.bin";
 bool        g_pendOnLfs  = false;   // the newest durable copy is the LittleFS fallback
 uint32_t    g_lastDrainMs = 0;
-// Every memory.write / memory.update outcome since boot (RAM only): the dream's
-// end line reports the night's counts from the delta.
-WriteOutcomes g_outcomes;
 constexpr uint32_t kDrainEveryMs = 20000;   // at most one drain step per 20 s
 constexpr uint32_t kDrainBootGraceMs = 60000;   // none in the first minute: let the boot settle
 #ifdef NIMBUS_TEST
@@ -1136,9 +1132,8 @@ void begin() {
   };
   ctx.nowHours = [] { return nowHours(); };
   ctx.persistScratch = [] { return persistScratchpad(); };   // the tool reports a RAM-only save
-  ctx.ops = &g_memOps;   // what writes did, for the nightly dream's honest outcome (lane M)
-  // FAULT memory: writes are refused in the tool itself, so the refusal is counted
-  // (the dream's row) on the MCP and the mem_write paths alike.
+  // FAULT memory: writes are refused in the tool itself, on the MCP and the mem_write
+  // paths alike.
   ctx.writable = [] { return !nimbus::fault::active(nimbus::fault::MEMORY); };
   // Memory writes survive an embedding outage: the queue, its durable sidecar and
   // the park memo (lane P). The queue loads after the vectors so a crash replay
@@ -1156,7 +1151,7 @@ void begin() {
     if (kind != nimbus::orch::EmbedFail::OutOfCredit) return;
     // One plain notice per billing episode, shared with the chat head's notice so
     // the same provider refusing chat and embeddings makes ONE message. A
-    // background turn (dream, routine) never pings; the next owner turn may.
+    // background turn (a routine) never pings; the next owner turn may.
     if (orchestrator::inScheduledTurn()) return;
     const String prov = store::embedProvider();
     if (!nimbus::orch::billingNoticeDue(prov.c_str())) return;
@@ -1167,11 +1162,6 @@ void begin() {
     const std::string words = nimbus::orch::billingNotice(prov.c_str(), status, "") +
         " Memories shared meanwhile are kept on the device and stored once it works again.";
     agent::telegram::send(owner, String(words.c_str()), /*block=*/false);
-  };
-  ctx.onWriteOutcome = [](const char* code) {
-    if (!strcmp(code, nimbus::orch::kMemOutcomeStored)) g_outcomes.stored++;
-    else if (!strcmp(code, nimbus::orch::kMemOutcomeQueued)) g_outcomes.queued++;
-    else if (!strcmp(code, nimbus::orch::kMemOutcomeRefused)) g_outcomes.refused++;
   };
   // Lane J: an every-reply mem_write item (standing:true) routes to the owner's
   // standing rules instead of the vector store; the prefs context carries the
@@ -2278,11 +2268,6 @@ nimbus::orch::RecallOut recallFor(const String& queryText, int k,
   return res;
 }
 
-nimbus::orch::MemOpCounters opCounters() {
-  Lock g;
-  return g_memOps;
-}
-
 bool persistVectors() {
   Lock g;
   if (g_haveSd) g_vecOwed = true;   // cleared below once the blob is on the card
@@ -2417,8 +2402,6 @@ std::string queueFact(const std::string& content, const std::string& ns, float i
   }
   return "not queued";
 }
-
-WriteOutcomes writeOutcomes() { Lock g; return g_outcomes; }
 
 std::string pendingNotes(const std::string& ns) { Lock g; return g_pending.takeNotes(ns); }
 

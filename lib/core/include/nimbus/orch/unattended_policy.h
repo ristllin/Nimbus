@@ -60,9 +60,9 @@ enum class TurnClass : uint8_t {
   Wakeup,           // a one-time wakeup the assistant set for itself (wakeup.set)
   SelfWakeup,       // a note held through quiet hours, delivered at their end
   SubagentReport,   // sub-agent results arriving (the synthesis turn)
-  Dream,            // the nightly upkeep (memory only; RB-Q2b removes its model turn)
 };
-constexpr int kTurnClassCount = 8;
+// The nightly upkeep is not a class: it makes no model call (RB-Q2b).
+constexpr int kTurnClassCount = 7;
 const char* turnClassSlug(TurnClass c);   // "attended" | "update-notice" | "routine" | ...
 
 enum class ToolUse : uint8_t { Read = 0, Write, Memory, Send, Spend, Schedule, Ambient, Control, Scratch };
@@ -78,7 +78,6 @@ enum class ModelCall : uint8_t { None = 0, Sub };   // the update notice calls n
 enum class Output : uint8_t {
   Fixed = 0,   // a fixed string the harness writes
   Reply,       // the turn's own reply, delivered by the harness (held in quiet hours)
-  Silent,      // nothing is sent
 };
 
 struct UnattendedPolicyRow {
@@ -109,7 +108,7 @@ const UnattendedPolicyRow& unattendedPolicy(TurnClass c);
 const UnattendedPolicyRow* unattendedPolicyTable(size_t& count);
 
 // The class of a scheduled fire, from the old engine's fire flags.
-TurnClass fireClass(bool dream, bool selfWakeup, bool ownerReminder, bool once);
+TurnClass fireClass(bool selfWakeup, bool ownerReminder, bool once);
 
 // The tool class of one call. `name` is the registry name (dotted, "files.append") or an
 // engine-2 name ("append_file"); the arguments narrow a few tools (a change to the standing

@@ -1772,10 +1772,7 @@ static TurnEngine::Deps buildTurnDeps() {
     // reply into ev.wakeReply - never delivered at night, never held for the
     // owner's next message. Arm ONE self-wakeup for the end of quiet hours; the
     // kind comes from the turn's source (the class rule in turn_progress.h), the
-    // one-pending-per-kind bound lives in orch::armSelfWakeup. The dream's own
-    // glue arms the upkeep kind from the night's report (it also covers the
-    // firmware-worded upkeep facts when the reflection said nothing); the bound
-    // makes a second arm of the same kind a no-op.
+    // one-pending-per-kind bound lives in orch::armSelfWakeup.
     if (!ev.wakeReply.empty()) {
       nimbus::orch::WakeKind kind;
       if (nimbus::harness::wakeKindForSource(ev.source, ev.attribution, kind)) {
@@ -1793,7 +1790,7 @@ static TurnEngine::Deps buildTurnDeps() {
                 src, wid.c_str(), nimbus::orch::wakeKindSlug(kind));
       }
     }
-    dream::noteTurnEnd(millis(), ev.source);   // DREAMING idle gate: quiet clock + streak alert
+    dream::noteTurnEnd(millis());   // the nightly upkeep's idle gate: its quiet clock
     // v3.6.0 fold accounting: one persist per turn + the reactive overflow path.
     if (!ev.chatId.empty() && ev.chatId != "system") {
       if (g_foldDriver) g_foldDriver->noteTurnChat(ev.chatId);
@@ -3029,8 +3026,6 @@ int pollJobs() {
   drainStaged();      // apply web-staged directive/memory edits between turns
   drainTerminates();  // apply web/MCP-staged session.terminate on the journal's writer task
   drainUpdateNotice();  // the fixed post-update notice - tg_poll only
-  dream::pumpBootReconcile();  // a night the restart cut short: reconcile it before
-                               // the tick can fire anything (tg_poll only; L19-31)
   dream::pumpDrill(); // a queued console DREAM drill - tg_poll only, never the loop task
 
   // Local Loops tick - fire at most one due scheduled loop. Internally 20 s-gated

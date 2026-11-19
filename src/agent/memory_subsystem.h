@@ -8,7 +8,7 @@
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/mem_config.h"
 #include "nimbus/orch/retention.h"   // RetentionStatus (pruneRetention's outcome)
-#include "nimbus/orch/memory_tools.h"   // MemOpCounters (lane M)
+#include "nimbus/orch/memory_tools.h"
 #include "nimbus/orch/scratchpad.h"
 #include "nimbus/orch/memory_tools.h"   // RecallOut
 #include "nimbus/orch/tool_registry.h"
@@ -289,8 +289,6 @@ void warmRecall(const String& text);
 // Returns false when nothing durable was written (flash floor or write error);
 // the pending-embed drain then keeps its entry queued.
 bool persistVectors();
-// What memory.write / memory.update did since boot (RAM, monotonic; lane M).
-nimbus::orch::MemOpCounters opCounters();
 void persistArchive();    // TTL-expired cold store -> SD /mem/archive.bin (dirty-gated, SD-only)
 // Returns false when the save did not land (the notes then live in RAM only until
 // restart); the failure is in the persist ledger (a route's SaveScope answers 507)
@@ -480,9 +478,6 @@ struct Stats {
 // The pending-embed queue: facts written while the embedder was failing, kept on
 // the card (else LittleFS) and stored once embeddings work again.
 bool persistPending();        // durable write of the queue; false = not durable
-// memory.write / memory.update outcomes since boot (RAM only; the drain counts too).
-struct WriteOutcomes { int stored = 0, queued = 0, refused = 0; };
-WriteOutcomes writeOutcomes();
 int  pendingCount();
 // Lane CTX: keep `content` as a memory of namespace `ns` with no embedding call now: it
 // joins this queue (stored when the drain next embeds; keyword recall finds it

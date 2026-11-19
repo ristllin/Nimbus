@@ -38,7 +38,6 @@
 #include "nimbus/orch/usage_ledger.h"    // ledgerDelta - a spend slot in ledger tokens
 
 #include "nimbus/harness/conversation.h"   // histV2: historyTurns / fitHistory / foldSlice
-#include "nimbus/harness/dream.h"      // the dream turn's memory-only surface (lane M)
 #include "nimbus/orch/self_wakeup.h"   // parseWakeNote / wakeKindSlug / restrictSelfWakeupTurn (owner design)
 #include "nimbus/harness/turn_progress.h"   // backgroundSource - every non-person turn source
 #include "nimbus/harness/turn_inbox.h"     // histV2: what the channel says the sender sent
@@ -487,10 +486,10 @@ void ProviderHosts::noteFailed(const std::string& host, const std::string& err) 
 bool TurnEngine::deliver(const std::string& chatId, const std::string& text, bool modelText) {
   // Every ENGINE notice (failure replies, provider-switch and budget notices) goes
   // through here; a turn's own reply goes through ApplyDeps. A quiet background turn
-  // (the nightly dream, the post-update awareness turn) has nobody waiting for it,
-  // so its notices are held: the owner was being woken at 03:30 by "That didn't
-  // finish ... ask again to retry" for a turn nobody asked for. Its outcome is
-  // recorded where the owner reads it later (the dream row, FireOutcome.error).
+  // (a quiet routine) has nobody waiting for it, so its notices are held: the owner
+  // was being woken at 03:30 by "That didn't finish ... ask again to retry" for a turn
+  // nobody asked for. Its outcome is recorded where the owner reads it later (the
+  // routine's lastErr, FireOutcome.error).
   if (holdingNotices()) {
     ++quietNoticesHeld_;
     hlog::logf("quiet turn: notice held, not sent (%.96s)", text.c_str());
@@ -1315,18 +1314,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                         s.name == "session.list" || s.name == "session.terminate";
                                }),
                 specs.end());
-  // The nightly dream reads and writes memory, nothing else (lane M): no files,
-  // sessions, web, routines or replies at 03:30. The same `specs` feed the prompt's
-  // tool list and the loop's callable set, and the dispatch below refuses any other
-  // name the model calls anyway.
-  const bool memoryOnly = dreamTurn_;
-  startTruth(chatId, userText, memoryOnly);   // RB-G0
-  if (memoryOnly)
-    specs.erase(std::remove_if(specs.begin(), specs.end(),
-                               [](const orch::ToolRegistry::Spec& s) {
-                                 return !dream::toolAllowed(s.name);
-                               }),
-                specs.end());
+  startTruth(chatId, userText);   // RB-G0
   // RB-Q2a: an unattended turn is offered only the tools its class may call
   // (unattended_policy.h); the registry's access seam refuses any other call in plain
   // words. A self-wakeup (owner design, 9/11 Nov) re-checks its note under read-only tools.
@@ -1579,7 +1567,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     headTools.onStepError = [this](const std::string& h, const std::string& e) {
       facts().chain.note(h, e);
     };
-    headTools.dispatch = [this, nameMap, loopDispatched, mcp, loopWho, memoryOnly](const orch::HeadToolCall& call)
+    headTools.dispatch = [this, nameMap, loopDispatched, mcp, loopWho](const orch::HeadToolCall& call)
         -> orch::HeadToolResult {
       if (d_.hooks.onToolCall) d_.hooks.onToolCall(call);   // observer-only
       orch::HeadToolResult r;
@@ -1594,14 +1582,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       // Resolve the advertised (sanitized) name back to the registry name.
       auto it = nameMap->find(call.name);
       const std::string& regName = (it != nameMap->end()) ? it->second : call.name;
-      // A memory-only turn (the dream) never runs a tool outside its allowlist, even
-      // one the model names without it being advertised.
-      if (memoryOnly && !dream::toolAllowed(regName)) {
-        r.isError = true;
-        r.output = regName + " is not available in this background turn (memory tools only)";
-        hlog::logf("dream: refused tool %s (memory tools only)", regName.c_str());
-        return done(r);
-      }
       // CUM-536: a turn carrying an unverified connector result stores nothing in
       // long-term memory (unverifiedStoreRefusal).
       if (unverifiedTurn_) {
@@ -2558,10 +2538,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   st.effects             = &turnFx_;
   const size_t fxMark = turnFx_.size();   // lane RB-FX: what apply records after this
   bool spawned = false;
-  if (memoryOnly) {
-    const int dropped = dream::restrictTurn(turn);
-    if (dropped) hlog::logf("dream: dropped %d device/session item(s) (memory only)", dropped);
-  }
   {   // RB-Q2a: the end-of-turn fields of an unattended turn, cut to its class's row
     const orch::UnattendedFacts uf = unattendedFacts();
     // A scratchpad entry from a turn that saw outside content is marked as outside content, so
@@ -2594,35 +2570,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   const bool captureWakeReply =
       !selfWakeupTurn_ && nimbus::harness::backgroundSource(turnSource_) &&
       d_.hooks.quietHoursNow && d_.hooks.quietHoursNow();
-  if (memoryOnly) {
-    // The nightly dream messages nobody while it runs (PG4; unit L, 21 Oct: its
-    // "memory was unavailable tonight" summary went to Telegram). Its reply, ask and
-    // correction lines are never sent and never held for later delivery either
-    // (lane ECHO review, 11 Nov: a held note reached the owner hours later, out of
-    // context) - during quiet hours the reply is captured for the end-of-quiet
-    // self-wakeup (wakeReply_), outside quiet hours it is simply not sent. Its
-    // sound, attention and completion cues stay off; deliver() already holds its
-    // engine notices.
-    // On the heap (lane STACK): a 468 B copy of the apply hooks.
-    const std::unique_ptr<agent::ApplyDeps> heldDeps(new agent::ApplyDeps(d_.apply));
-    agent::ApplyDeps& held = *heldDeps;
-    held.deliver = [this, captureWakeReply](const std::string&, const std::string& text) {
-      if (text.empty()) return;
-      if (captureWakeReply) {
-        wakeReply_ += wakeReply_.empty() ? text : ("\n\n" + text);
-        hlog::logf("quiet hours: reply captured for the end-of-quiet self-wakeup (%.96s)",
-                   text.c_str());
-      } else {
-        hlog::logf("quiet turn: reply not sent (%.96s)", text.c_str());
-      }
-    };
-    held.emitAsk = nullptr;
-    held.fire = nullptr;
-    held.turnComplete = nullptr;
-    held.speak = nullptr;
-    held.captureAssistant = nullptr;
-    agent::applyTurn(turn, chatId, held, st, spawned);
-  } else {
+  {
     ApplyCapture capture(this, !turn.reply.empty());
     AnswerMark answered(d_.apply, spoke_, d_.deliveryNeedsRow);
     // Capture-instead-of-deliver during quiet hours: the wrapper sits OUTSIDE
@@ -2698,11 +2646,10 @@ __attribute__((noinline)) void TurnEngine::truthRescue(bool& ok, std::string& ou
   truthRescued_ = true;
 }
 
-__attribute__((noinline)) void TurnEngine::startTruth(const std::string& chatId, const std::string& userText,
-                                                      bool memoryOnly) {
+__attribute__((noinline)) void TurnEngine::startTruth(const std::string& chatId, const std::string& userText) {
   try {
     if (!truth_) truth_.reset(new orch::truth::TurnCheck());
-    truth_->reset(memoryOnly ? nullptr : d_.truth, chatId, userText);
+    truth_->reset(d_.truth, chatId, userText);
   } catch (...) {
     truth_.reset();
   }
@@ -3091,11 +3038,10 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
                (unsigned)largestFreeBlock(), (unsigned)t_.turnMinLargestBlock);
     return o;
   }
-  // Lane DEF: at the monthly spend ceiling a routine, a wakeup or the dream is not a
-  // fire (deferred: no daily fire burned, no failure breaker rolled) and dials nothing.
-  const nimbus::orch::SpendSeam seam = dream::isReserved(loopId) ? nimbus::orch::SpendSeam::Dream
-                                      : (once || ownerReminder) ? nimbus::orch::SpendSeam::Wakeup
-                                                                : nimbus::orch::SpendSeam::Routine;
+  // Lane DEF: at the monthly spend ceiling a routine or a wakeup is not a fire
+  // (deferred: no daily fire burned, no failure breaker rolled) and dials nothing.
+  const nimbus::orch::SpendSeam seam = (once || ownerReminder) ? nimbus::orch::SpendSeam::Wakeup
+                                                               : nimbus::orch::SpendSeam::Routine;
   if (!nimbus::orch::paidCallAllowed(seam)) {
     o.deferred = true;
     o.detail = "deferred: monthly spend ceiling reached";
@@ -3118,7 +3064,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
   selfWakeupTurn_ = selfWakeup;
-  fireClass_ = nimbus::orch::fireClass(dream::isReserved(loopId), selfWakeup, ownerReminder, once);
+  fireClass_ = nimbus::orch::fireClass(selfWakeup, ownerReminder, once);
   if (fireClass_ == orch::TurnClass::Wakeup && wakeHops_ < 0xFF) ++wakeHops_;   // one hop of a chain
   routineRun_ = fireClass_ == orch::TurnClass::Routine && d_.routineGrants && d_.routineGrants() && d_.jobs
                     ? d_.jobs->beginRun()   // the owner's standing grant: the routine's own run
@@ -3160,8 +3106,8 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
         "wakeup.set if the work needs one). There is no new owner message. Your note "
         "when you set it:\n\n"
     : quietOk
-      // A quiet loop (the dream) succeeds by saying nothing: telling it to "reply to
-      // the owner" contradicted its own instructions (lane M). The 22 Oct amendment
+      // A quiet loop succeeds by saying nothing: telling it to "reply to the owner"
+      // contradicted its own instructions (lane M). The 22 Oct amendment
       // (SILENT-ROUTINE-COST) makes the two cases explicit: when silence is right,
       // and when a short reply is expected.
       ? "\n[SCHEDULED LOOP]\nYour recurring task \"" + name + "\" is firing on its schedule. "
@@ -3194,10 +3140,9 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
             preamble + prompt + where;
   const std::string& userTextForTurn = selfWakeup ? wakeNote.text : prompt;
   unverifiedTurn_ = false;   // a scheduled turn reads no fresh results
-  dreamTurn_ = dream::isReserved(loopId);
   // This fire reports its OWN spend and cause: a turn that fails before any billed
-  // round must not carry the previous turn's tokens into the loop caps and the dream
-  // row (the 18 Oct dream reported 37,771 tokens it never spent).
+  // round must not carry the previous turn's tokens into the loop caps and the
+  // routine's record (the 18 Oct dream reported 37,771 tokens it never spent).
   lastTurnUsage_ = {};
   if (ownerReminder)
     setTrigger("[reminder fired]", "remind:" + loopId);
@@ -3229,7 +3174,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
-  dreamTurn_ = false;
   selfWakeupTurn_ = false;
   fireClass_ = nimbus::orch::TurnClass::Attended;
   attribution_ = "turn";                       // back to the owner default
@@ -3256,7 +3200,6 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   triggerPending_ = false;
   scheduledTurn_ = false;
   quietTurn_ = false;
-  dreamTurn_ = false;
   selfWakeupTurn_ = false;
   fireClass_ = nimbus::orch::TurnClass::Attended;
   turnSource_ = TurnSource::Owner;
@@ -3462,7 +3405,6 @@ std::string TurnEngine::turnLabel() const {
     case TurnSource::Serial:    return "serial console message";
     case TurnSource::Synthesis: return "sub-agent results synthesis";
     case TurnSource::Loop:
-      if (attribution_ == "loop:dream") return "nightly dream";
       return loopName_.empty() ? std::string("routine") : "routine '" + loopName_ + "'";
   }
   return "owner message";

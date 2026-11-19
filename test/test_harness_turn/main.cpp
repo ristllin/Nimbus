@@ -1946,7 +1946,7 @@ static void test_billing_notice_latch_is_shared_and_kept_by_quiet_turns() {
   refused.ok = false;
   refused.err = kBillingRefusals[0];
   q.scripts["anthropic"] = {refused};
-  const orch::FireOutcome night = q.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
+  const orch::FireOutcome night = q.eng->injectScheduledTurn("1001", "tidy the notes", "Tidy", "Q1", true);
   TEST_ASSERT_TRUE(night.ok);
   TEST_ASSERT_EQUAL(0, q.countDelivered("out of credit"));   // nothing at night
   TEST_ASSERT_TRUE(q.eng->quietNoticesHeld() >= 1);
@@ -5125,7 +5125,7 @@ static void test_scheduled_failure_reports_cause_and_own_spend() {
   for (const char* h : {"anthropic", "openai", "mistral"}) r.scripts[h] = {billedThenDead};
   r.scripts["openai"][0].usageOnFail = false;   // the alternates billed nothing
   r.scripts["mistral"][0].usageOnFail = false;
-  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "tidy the notes", "Tidy", "Q1", true);
   TEST_ASSERT_FALSE(o.ok);
   // anthropic billed its one attempt; nothing else. An unreadable body is never sent
   // twice to the same host (lane K's rule), the alternates are still tried.
@@ -5136,10 +5136,10 @@ static void test_scheduled_failure_reports_cause_and_own_spend() {
   // The failed turn's spend reached the ledger, under the host that billed it.
   const auto& rec = r.cfg.recorded.back();
   TEST_ASSERT_EQUAL_STRING("anthropic", rec.host.c_str());
-  TEST_ASSERT_EQUAL_STRING("loop:dream", rec.tag.c_str());
+  TEST_ASSERT_EQUAL_STRING("loop:Q1", rec.tag.c_str());
   TEST_ASSERT_EQUAL(7000, (int)rec.in);
-  TEST_ASSERT_EQUAL_STRING("dream", agent::turnSourceSlug(r.hookEnds.back().source,
-                                                          r.hookEnds.back().attribution));
+  TEST_ASSERT_EQUAL_STRING("loop", agent::turnSourceSlug(r.hookEnds.back().source,
+                                                         r.hookEnds.back().attribution));
 }
 
 // The [FALLBACK] note says whose turn switched, when, the whole path and why; the
@@ -5148,17 +5148,17 @@ static void test_fallback_note_names_previous_turn_and_reason() {
   Rig r;
   r.cfg.midFail = true;
   r.fabricVisits = {{50, 10, "messages HTTP 503: overloaded"}, {100, 20, ""}};
-  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
+  const orch::FireOutcome o = r.eng->injectScheduledTurn("1001", "tidy the notes", "Tidy", "Q1", true);
   TEST_ASSERT_TRUE(o.ok);
-  const size_t dreamFabric = r.fabricCalls.size();
-  TEST_ASSERT_EQUAL(1, (int)dreamFabric);
+  const size_t quietFabric = r.fabricCalls.size();
+  TEST_ASSERT_EQUAL(1, (int)quietFabric);
   r.fabricVisits.clear();
   r.cfg.midFail = false;
   TEST_ASSERT_TRUE(r.eng->runTurn("", "1001", "next"));   // consumes nothing yet: runTurn
-  r.eng->handleMessage("did the dream work?", "Roy", "1001");
+  r.eng->handleMessage("did the tidy-up work?", "Roy", "1001");
   const std::string& in = r.attempts.back().inputs;
   TEST_ASSERT_NOT_NULL_MESSAGE(
-      std::strstr(in.c_str(), "[FALLBACK - previous turn (nightly dream"), in.c_str());
+      std::strstr(in.c_str(), "[FALLBACK - previous turn (routine 'Tidy'"), in.c_str());
   TEST_ASSERT_NOT_NULL(std::strstr(in.c_str(), "anthropic -> openai (server_error)"));
   TEST_ASSERT_NULL(std::strstr(in.c_str(), "[FALLBACK] switched"));
   r.eng->handleMessage("and now?", "Roy", "1001");
@@ -5451,13 +5451,13 @@ static void test_spend_ceiling_refuses_an_owner_turn_before_recall() {
   TEST_ASSERT_FALSE(r.eng->turnInFlight());
 }
 
-// A routine, a wakeup and the dream are deferred (no daily fire burned, no failure
-// breaker rolled) and dial nothing; the fold waits too.
+// A routine, a wakeup and a quiet routine are deferred (no daily fire burned, no
+// failure breaker rolled) and dial nothing; the fold waits too.
 static void test_spend_ceiling_defers_scheduled_turns_and_the_fold() {
   Rig r;
   FreezeScope frozen(true);
   struct Case { const char* id; bool quiet, once; } cases[] = {
-      {"lp1", false, false}, {"lp2", false, true}, {"dream", true, false}};
+      {"lp1", false, false}, {"lp2", false, true}, {"Q1", true, false}};
   for (const Case& c : cases) {
     orch::FireOutcome o = r.eng->injectScheduledTurn("", "do the task", "task", c.id, c.quiet, c.once);
     TEST_ASSERT_TRUE(o.deferred);

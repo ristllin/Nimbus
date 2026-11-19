@@ -36,9 +36,8 @@ void tearDown() {}
 
 namespace {
 
-const TurnClass kUnattended[] = {TurnClass::UpdateNotice, TurnClass::Routine,        TurnClass::Reminder,
-                                 TurnClass::Wakeup,       TurnClass::SelfWakeup,     TurnClass::SubagentReport,
-                                 TurnClass::Dream};
+const TurnClass kUnattended[] = {TurnClass::UpdateNotice, TurnClass::Routine,    TurnClass::Reminder,
+                                 TurnClass::Wakeup,       TurnClass::SelfWakeup, TurnClass::SubagentReport};
 
 // A call's arguments from JSON text (the document outlives the view for the test).
 struct Args {
@@ -103,7 +102,7 @@ static void test_one_row_per_class() {
 
 // The rules every unattended row keeps (ruling 76), written here from the ruling, not read
 // from the table: no class changes a setting or a file (a routine only on its listed paths),
-// only the upkeep writes memory, only the report and the upkeep their scratchpad; only the
+// none writes memory, only the report its scratchpad; only the
 // report sends (a named artifact, its own chat) and spends (the next wave); a held note and the
 // notice get no tools; a reminder and a wakeup may set the light or speak; a routine and a
 // wakeup may set a follow-up wakeup.
@@ -111,7 +110,7 @@ static void test_every_unattended_row_keeps_the_rules() {
   for (TurnClass c : kUnattended) {
     const UnattendedPolicyRow& r = unattendedPolicy(c);
     const char* slug = turnClassSlug(c);
-    const bool report = c == TurnClass::SubagentReport, dream = c == TurnClass::Dream;
+    const bool report = c == TurnClass::SubagentReport;
     const bool toolless = c == TurnClass::UpdateNotice || c == TurnClass::SelfWakeup;
     auto is = [&](ToolUse u, bool yes) {
       TEST_ASSERT_EQUAL_MESSAGE(yes ? (int)Grant::Yes : (int)Grant::No, (int)r.grant[(int)u], slug);
@@ -121,8 +120,8 @@ static void test_every_unattended_row_keeps_the_rules() {
     is(ToolUse::Control, false);
     TEST_ASSERT_EQUAL_MESSAGE(c == TurnClass::Routine ? (int)Grant::ListedPaths : (int)Grant::No,
                               (int)r.grant[(int)ToolUse::Write], slug);
-    is(ToolUse::Memory, dream);
-    is(ToolUse::Scratch, dream || report);
+    is(ToolUse::Memory, false);
+    is(ToolUse::Scratch, report);
     is(ToolUse::Send, report);
     is(ToolUse::Spend, report);
     is(ToolUse::Ambient, c == TurnClass::Reminder || c == TurnClass::Wakeup);
@@ -169,13 +168,12 @@ static void test_a_tainted_send_carries_only_a_named_artifact() {
 }
 
 static void test_fire_flags_map_to_one_class() {
-  TEST_ASSERT_EQUAL((int)TurnClass::Routine, (int)fireClass(false, false, false, false));
-  TEST_ASSERT_EQUAL((int)TurnClass::Wakeup, (int)fireClass(false, false, false, true));
-  TEST_ASSERT_EQUAL((int)TurnClass::Reminder, (int)fireClass(false, false, true, true));
-  TEST_ASSERT_EQUAL((int)TurnClass::SelfWakeup, (int)fireClass(false, true, false, true));
-  TEST_ASSERT_EQUAL((int)TurnClass::Dream, (int)fireClass(true, false, false, false));
-  for (int bits = 0; bits < 16; ++bits)   // never a person's turn, whatever the flags
-    TEST_ASSERT_TRUE(fireClass(bits & 1, bits & 2, bits & 4, bits & 8) != TurnClass::Attended);
+  TEST_ASSERT_EQUAL((int)TurnClass::Routine, (int)fireClass(false, false, false));
+  TEST_ASSERT_EQUAL((int)TurnClass::Wakeup, (int)fireClass(false, false, true));
+  TEST_ASSERT_EQUAL((int)TurnClass::Reminder, (int)fireClass(false, true, true));
+  TEST_ASSERT_EQUAL((int)TurnClass::SelfWakeup, (int)fireClass(true, false, true));
+  for (int bits = 0; bits < 8; ++bits)   // never a person's turn, whatever the flags
+    TEST_ASSERT_TRUE(fireClass(bits & 1, bits & 2, bits & 4) != TurnClass::Attended);
 }
 
 // ---- the tool classes ------------------------------------------------------------------
@@ -273,8 +271,8 @@ static void test_every_class_refuses_writes_and_sends_in_plain_words() {
   TEST_ASSERT_FALSE(refusal(TurnClass::SelfWakeup, "wakeup.set").empty());
   TEST_ASSERT_TRUE(refusal(TurnClass::SubagentReport, "session.spawn").empty());
   TEST_ASSERT_FALSE(refusal(TurnClass::SubagentReport, "files.append").empty());
-  TEST_ASSERT_TRUE(refusal(TurnClass::Dream, "memory.write").empty());
-  TEST_ASSERT_FALSE(refusal(TurnClass::Routine, "memory.write").empty());
+  // No unattended class writes long-term memory (the nightly upkeep is no turn: RB-Q2b).
+  for (TurnClass c : kUnattended) TEST_ASSERT_FALSE(refusal(c, "memory.write").empty());
 }
 
 // A routine writes only to the paths its own definition lists; nothing else does, and a
@@ -359,8 +357,8 @@ static Turn fullTurn() {
 struct Kept {
   bool memory, scratch, light, report, reads;
   explicit Kept(TurnClass c)
-      : memory(c == TurnClass::Dream),
-        scratch(c == TurnClass::Dream || c == TurnClass::SubagentReport),
+      : memory(false),
+        scratch(c == TurnClass::SubagentReport),
         light(c == TurnClass::Reminder || c == TurnClass::Wakeup),
         report(c == TurnClass::SubagentReport),   // may start the next wave
         reads(c != TurnClass::UpdateNotice && c != TurnClass::SelfWakeup) {}

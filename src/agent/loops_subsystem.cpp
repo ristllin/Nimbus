@@ -15,7 +15,6 @@
 #include "memory_subsystem.h"     // memory::clockSynced - the strict "clock is real" test
 #include "fs_atomic.h"            // writeFileAtomic - loops.json tmp + rename, with a verdict
 #include "nimbus/store/moved_store.h"   // FailureLog - one refused-write line a minute
-#include "nimbus/harness/dream.h"           // applyInterruptedToLoop - the dream's boot reconcile
 #include "nimbus/orch/loop_delivery.h"   // resolveDelivery - where a fire delivers (CUM-505)
 #include "nimbus/orch/self_wakeup.h"      // armSelfWakeup / wakeupRecheck - the owner design (9/11 Nov)
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError - a ceiling defer (lane DEF)
@@ -423,24 +422,6 @@ void setOriginHook(OriginHook origin) {
 }
 
 bool firing() { return s_firing; }
-
-bool applyInterruptedOutcome(const String& id, uint32_t retryAfterSec, uint64_t nowEpoch) {
-  Lock lk;
-  LoopRecord* l = findById(std::string(id.c_str()));
-  if (!l) return false;
-  // The decision lives in the host-tested core; this seam only holds the lock.
-  agent::dream::applyInterruptedToLoop(*l, nowEpoch, retryAfterSec);
-  persist();
-  return true;
-}
-
-bool ready() { return g_loaded; }
-
-uint64_t lastRunOf(const String& id) {
-  Lock lk;
-  const LoopRecord* l = findById(std::string(id.c_str()));
-  return l ? l->lastRun : 0;
-}
 
 // ---- the tick --------------------------------------------------------------
 void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {

@@ -158,7 +158,7 @@ permanently-broken `web.search` ship, so each scenario asserts an outcome.
 | `tool-loop` | a multi-round loop where round 2 depends on round 1's result |
 | `continuity` | the chat still remembers three turns later |
 | `scheduled` | an unattended routine turn - the news-briefing path |
-| `dream` | a quiet consolidation turn is allowed to say nothing |
+| `quiet-routine` | a quiet consolidation routine is allowed to say nothing |
 | `parity` | every keyed provider handles a plain turn and a tool turn |
 | `skills-e2e` | a read skill attaches across turns ([ACTIVE SKILLS] in the follow-ups' INPUT), edits stage as SKILL.next.md with the live file untouched, the owner's skill survives a delete request, and a new save passes the lint |
 | `ovf-overflow` | a request swollen past the model's real window: the provider really refuses, the turn trims, retries once and answers |

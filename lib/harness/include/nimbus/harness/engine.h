@@ -397,12 +397,9 @@ class TurnEngine {
   // Run a Local Loops scheduled turn (mirrors the auto-synthesis turn but with
   // a [SCHEDULED LOOP] preamble; recall runs for the prompt). loopId (optional,
   // additive) feeds the spend-attribution tag "loop:<id>"; empty => "loop".
-  // quietOk (additive; the DREAM loop): an all-empty turn delivers nothing -
+  // quietOk (additive; a quiet routine): an all-empty turn delivers nothing -
   // the bare "Done." fallback is suppressed (ApplyState.quietFallback), and every
-  // engine notice is held. The reserved dream goes further: its own reply, ask and
-  // correction lines are never sent and never held for later delivery either
-  // (lane ECHO review, 11 Nov: a held note reached the owner hours later, out of
-  // context) - the upkeep's owner note is firmware-worded only (dream::upkeepNoteText).
+  // engine notice is held. (The nightly dream is not a turn: it makes no model call.)
   // once (W20): a self-set single wakeup - renders a [WAKEUP] preamble instead
   // (calling a one-shot the model armed for itself a "recurring task" is a lie
   // the honesty rails would then have to argue with). ownerReminder (W22): the
@@ -556,7 +553,7 @@ class TurnEngine {
   void noteSpoke() { spoke_ = true; }
 
   // The last turn's billed total, on EVERY exit (a failed turn's spend too): a
-  // scheduled fire and the dream report their own spend, never a previous turn's.
+  // scheduled fire reports its own spend, never a previous turn's.
   nimbus::orch::TokenUsage lastTurnUsage() const { return lastTurnUsage_; }
   // The effect ledger of the current (or last) turn: what it really did.
   const nimbus::orch::TurnEffects& turnEffects() const { return turnFx_; }
@@ -710,8 +707,7 @@ class TurnEngine {
   volatile bool turnTelegram_ = true;   // CUM-523: this turn's one Telegram sample (read cross-task)
   volatile bool turnFileSend_ = true;   // CUM-523: and whether files.send can deliver on it
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
-  bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
-  bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
+  bool quietTurn_ = false;              // a quiet routine: suppress the bare-"Done." fallback this turn
   bool selfWakeupTurn_ = false;         // a self-wakeup record is firing: read-only tools, one short turn
   // Lane ECHO (owner design, 9/11 Nov): a background turn's reply captured during
   // quiet hours instead of delivered at night - rides TurnEndEv.wakeReply so the
@@ -790,7 +786,7 @@ class TurnEngine {
   // dream's unlabelled note was read by the next owner turn as about itself.
   std::string pendingFallbackPath_;    // "anthropic -> openai -> mistral" ("" = none)
   nimbus::orch::ErrorClass pendingFallbackReason_ = nimbus::orch::ErrorClass::None;
-  std::string pendingFallbackWhose_;   // "nightly dream", "routine 'X'", ...
+  std::string pendingFallbackWhose_;   // "routine 'X'", "owner message", ...
   uint32_t    pendingFallbackMs_ = 0;  // nowMs() when it was recorded
   std::string loopName_;               // the scheduled turn in flight (its routine name)
 
@@ -939,7 +935,7 @@ class TurnEngine {
   // Meter `spend` under `tag` through BudgetConfig::recordSpend (or, unwired, each
   // slot through recordTokens) - the one way spend reaches a ledger.
   void meterSpend(const nimbus::orch::TurnSpend& spend, const std::string& tag);
-  // The model-facing label of the turn in flight ("nightly dream", ...).
+  // The model-facing label of the turn in flight ("routine 'X'", ...).
   std::string turnLabel() const;
   // Lane S: this turn's effect ledger (turn_effects.h). The turn state holds it: runTurn
   // resets it and records the fresh results and every head tool call, apply records the
@@ -954,7 +950,7 @@ class TurnEngine {
   std::string truthHeld_;  // the answer a hold replaced, until the turn ends
   bool truthRescued_ = false;   // the held answer ended the turn (its round gave none)
   void truthRescue(bool& ok, std::string& outJson);
-  void startTruth(const std::string& chatId, const std::string& userText, bool memoryOnly);
+  void startTruth(const std::string& chatId, const std::string& userText);
   void noteTruthEffect(const std::string& tool, bool isError, const std::string& output);
   std::string truthAtFinal(const std::string& finalTurn, bool prose, const std::string& host);
   void truthFinishAndSend(const std::string& chatId, const std::string& reply, const std::string& host,

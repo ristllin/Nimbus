@@ -7,7 +7,6 @@
 #include <string>
 #include <vector>
 
-#include "dream_scenarios.h"
 #include "nimbus/harness/websearch.h"
 #include "scenarios_turn_record.h"
 #include "scenarios_albums.h"
@@ -230,14 +229,14 @@ void scScheduledTurn(LabRig& rig, Ctx& c) {
   c.check(!failedSearch, "no web.search failure inside the routine");
 }
 
-// 9. The quiet (dream-style) consolidation turn: it must be allowed to say
-//    nothing without that counting as a failure.
+// 9. A quiet routine (a consolidation task): it must be allowed to say nothing
+//    without that counting as a failure.
 void scQuietTurn(LabRig& rig, Ctx& c) {
   auto r = rig.scheduled("lab",
                          "Review what you learned today and store at most one durable "
                          "insight with memory.write. If there is nothing worth keeping, "
                          "reply with nothing at all.",
-                         "dream", /*quietOk=*/true);
+                         "quiet-routine", /*quietOk=*/true);
   const auto& t = rig.turns().back();
   showTurn(t);
   c.check(r.ok, "the quiet turn completed");
@@ -387,13 +386,6 @@ void scSmoke(LabRig& rig, Ctx& c) {
          std::to_string(rig.totalIn()) + " in / " + std::to_string(rig.totalOut()) + " out tokens");
 }
 
-// The live dream legs (dream_scenarios.cpp), adapted to the Ctx reporter.
-Check checkOf(Ctx& c) { return [&c](bool ok, const std::string& w) { c.check(ok, w); }; }
-Note noteOf(Ctx& c) { return [&c](const std::string& w) { c.note(w); }; }
-void scDreamDistill(LabRig& rig, Ctx& c) { dreamDistill(rig, checkOf(c), noteOf(c)); }
-void scDreamQuiet(LabRig& rig, Ctx& c) { dreamQuiet(rig, checkOf(c), noteOf(c)); }
-void scDreamBadKey(LabRig& rig, Ctx& c) { dreamBadKey(rig, checkOf(c), noteOf(c)); }
-void scDreamNoEmbed(LabRig& rig, Ctx& c) { dreamNoEmbed(rig, checkOf(c), noteOf(c)); }
 
 // Lane D: albums as one turn (scenarios_albums.cpp).
 albums::Report albumsReport(Ctx& c) { return {checkOf(c), noteOf(c)}; }
@@ -474,11 +466,7 @@ const Scenario kScenarios[] = {
     {"tool-loop",     "multi-round loop where round 2 depends on round 1",         scToolLoopDepth, false},
     {"continuity",    "the chat still remembers three turns later",                scMultiTurnContinuity, false},
     {"scheduled",     "an unattended routine turn (the news-briefing path)",       scScheduledTurn, true},
-    {"dream",         "a quiet consolidation turn may say nothing",                scQuietTurn, false},
-    {"dream-distill", "the shipping night: a day becomes memories, a changed fact is updated", scDreamDistill, false},
-    {"dream-quiet",   "a quiet night skips the paid turn (zero chat calls)",       scDreamQuiet, false},
-    {"dream-badkey",  "a refused key fails the night quietly, no retry, no spend ($0)", scDreamBadKey, false},
-    {"dream-noembed", "embeddings down: degraded, and the turn skips memory calls", scDreamNoEmbed, false},
+    {"quiet-routine", "a quiet consolidation routine may say nothing",             scQuietTurn, false},
     {"degraded",      "a memory-degraded turn admits it, and promises nothing",   scDegradedHonesty, false, true},
     {"github-setup",  "an owner GitHub-setup answer routes to the web page, not the repo", scGithubSetupAudience, false},
     {"parity",        "every keyed provider handles plain + tool turns",           scProviderParity, false},

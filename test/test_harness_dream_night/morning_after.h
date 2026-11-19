@@ -253,12 +253,25 @@ NightOut scriptedNight(Rig& r) {
   c.minuteOfDay = 210;
   c.synced = true;
   if constexpr (HasTurnSeam<Deps>::value) {
-    d.yesterday = [&r] {
-      return dream::readYesterday(r.store, (uint32_t)(r.plat.epoch / 3600), {kChat, "system"});
+    // Every name below goes through `d`, so this branch compiles only where the seams
+    // exist. Yesterday: the owner's last 24 h of conversation (dream_subsystem's read).
+    d.yesterday = [&r, &d] {
+      nimbus::orch::MsgQuery q;
+      const uint32_t now = (uint32_t)(r.plat.epoch / 3600);
+      q.sinceHours = now > 24 ? now - 24 : 0;
+      q.limit = 48;
+      q.sessionAllow = {kChat, "system"};
+      q.haveKind = true;
+      q.kind = MsgKind::Message;
+      const std::vector<EpisodicMessage> rows = r.store.query(q);
+      decltype(d.yesterday()) y;
+      y.empty = rows.empty();
+      y.digest = dream::buildEpisodicDigest(rows);
+      return y;
     };
     d.scratchBlock = [] { return std::string(); };
     d.scratchHash = [] { return (uint64_t)1; };
-    d.stats = [] { return dream::MemStats{}; };
+    d.stats = [&d] { return decltype(d.stats()){}; };
     d.embeddingsUp = [] { return true; };
     d.memOps = [] { return nimbus::orch::MemOpCounters{}; };
     d.injectTurn = [&r](const std::string& in) {
@@ -312,20 +325,38 @@ inline bool isDreamWritten(const std::string& line) {
   return false;
 }
 
-// The lines of a dump that are earlier conversation: every line except a dream output, and
-// except the assistant lines that answer a dream-written owner-side history line (the reply
-// row of the dream's own trigger or self-wakeup exchange).
+// A section header of the per-turn block or the input ("## RELEVANT MEMORIES",
+// "[MEMORY RESULTS] ...").
+inline bool isHeader(const std::string& l) {
+  return l.rfind("dynamic|## ", 0) == 0 || l.rfind("dynamic|[", 0) == 0 || l.rfind("input|[", 0) == 0;
+}
+
+// The lines of a dump that are earlier conversation: every line except a dream output,
+// except the assistant lines that answer a dream-written owner-side history line (the
+// reply row of the dream's own trigger or self-wakeup exchange), and except a section
+// header whose every line is a dream output (the recall header over the dream's fact).
 inline std::vector<std::string> conversationLines(const std::vector<std::string>& dump) {
-  std::vector<std::string> out;
+  std::vector<bool> dream(dump.size(), false);
   bool answeringDream = false;
-  for (const std::string& l : dump) {
+  for (size_t i = 0; i < dump.size(); ++i) {
+    const std::string& l = dump[i];
     const bool user = l.rfind("history|user|", 0) == 0;
     const bool assistant = l.rfind("history|assistant|", 0) == 0;
     if (user) answeringDream = isDreamWritten(l);
     else if (!assistant) answeringDream = false;
-    const bool dream = isDreamWritten(l) || (assistant && answeringDream);
-    if (!dream) out.push_back(l);
+    dream[i] = isDreamWritten(l) || (assistant && answeringDream);
   }
+  for (size_t i = 0; i < dump.size(); ++i) {
+    if (!isHeader(dump[i])) continue;
+    const std::string where = dump[i].substr(0, dump[i].find('|') + 1);
+    size_t j = i + 1, body = 0, written = 0;
+    for (; j < dump.size() && !isHeader(dump[j]) && dump[j].rfind(where, 0) == 0; ++j, ++body)
+      if (dream[j]) ++written;
+    if (body > 0 && written == body) dream[i] = true;
+  }
+  std::vector<std::string> out;
+  for (size_t i = 0; i < dump.size(); ++i)
+    if (!dream[i]) out.push_back(dump[i]);
   return out;
 }
 

@@ -1,6 +1,6 @@
 // Class guards from the unit L bench finding (program-2026-10-18, lane M).
 //
-// The console DREAM drill ran the nightly dream - a full model turn - on the Arduino
+// The console DREAM drill ran the nightly dream - then a full model turn - on the Arduino
 // loop task, whose 8 KB stack cannot hold one: the device panicked with a stack-canary
 // fault 0.1 s after "dream: start", so "DREAM fired" never printed. The same run logged
 // "File system is not mounted" every second or two: the sound-effects SD sync used the
@@ -185,34 +185,25 @@ static void test_console_ping_answers_only_on_the_console_seam() {
 }
 
 static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
-  size_t fires = 0, pumps = 0, reconciles = 0;
+  size_t fires = 0, pumps = 0;
   for (const Source& s : firmware()) {
-    // pumpDrill's call: `o = fire(req, ...)`, or boxed on the heap off the poll task's
-    // stack (lane STACK): `new orch::FireOutcome(fire(req, ...))`.
-    const size_t f = countOf(s.code, "dream::fire(") + countOf(s.code, "=fire(req,") +
-                     countOf(s.code, "FireOutcome(fire(req,");
+    // pumpDrill's call, boxed on the heap off the poll task's stack (lane STACK):
+    // `new orch::FireOutcome(fire(*req))`.
+    const size_t f = countOf(s.code, "dream::fire(") + countOf(s.code, "FireOutcome(fire(*req)");
     const size_t p = countOf(s.code, "dream::pumpDrill(");
-    const size_t rb = countOf(s.code, "dream::pumpBootReconcile(");
     if (f) TEST_ASSERT_TRUE_MESSAGE(s.path == "src/main.cpp" || s.path == "src/agent/dream_subsystem.cpp",
                                     s.path.c_str());
-    if (p || rb) TEST_ASSERT_EQUAL_STRING("src/agent/orchestrator.cpp", s.path.c_str());
+    if (p) TEST_ASSERT_EQUAL_STRING("src/agent/orchestrator.cpp", s.path.c_str());
     fires += f;
     pumps += p;
-    reconciles += rb;
   }
   TEST_ASSERT_EQUAL(2, fires);   // the loops fire hook (main.cpp) and pumpDrill
   TEST_ASSERT_EQUAL(1, pumps);
-  TEST_ASSERT_EQUAL(1, reconciles);   // the boot reconcile: once, on the turn task
   // main.cpp's one fire is the scheduler hook, and the pump sits in pollJobs (tg_poll).
   TEST_ASSERT_EQUAL(1, countOf(codeOf("src/main.cpp"), "if(agent::dream::isReserved(r.id))returnagent::dream::fire(r);"));
   const std::string pollJobs =
       between("src/agent/orchestrator.cpp", "intpollJobs(){", "loops::checkDue(");
   TEST_ASSERT_EQUAL(1, countOf(pollJobs, "dream::pumpDrill();"));
-  // The boot reconcile runs before the drill pump and the tick, so the retry it
-  // schedules can fire the same pass and a night interrupted by a restart is
-  // reconciled before anything else fires the dream.
-  TEST_ASSERT_EQUAL(1, countOf(pollJobs, "dream::pumpBootReconcile();"));
-  TEST_ASSERT_TRUE(pollJobs.find("dream::pumpBootReconcile();") < pollJobs.find("dream::pumpDrill();"));
 }
 
 // Lane STACK review (fix pass): the scheduler's fire path runs on tg_poll

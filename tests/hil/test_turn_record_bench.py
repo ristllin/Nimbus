@@ -255,6 +255,9 @@ def _provfault(device, arg: str) -> str:
 
 
 def test_b1_failure_provenance(device):
+    # v5.2.0 (RB-Q2b): the nightly dream makes no model call, so the DREAM drill can no
+    # longer carry a forced head failure; this leg needs another scheduled-turn driver.
+    pytest.skip("the DREAM drill runs no model turn since v5.2.0 (RB-Q2b); B1 needs a routine driver")
     ip, tok = ip_tok_or_skip("turn record B1")
     s = make_session(tok)
     require_orchestrator(s, ip, "turn record B1")

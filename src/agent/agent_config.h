@@ -228,7 +228,6 @@ static_assert(ORCH_TURN_MIN_LARGEST_BLOCK == nimbus::cloud::kRelayHeapFloorLarge
 #define AKEY_CLOUD_CRED     "cloudCred"     // cloud device credential (bearer, cloud-minted; wiped on unpair)
 #define AKEY_CLOUD_HOST     "cloudHost"     // relay host (default app.cumulo-nimbus.ai)
 #define AKEY_CLOUD_NAME     "cloudName"     // paired device display name (for the web status line)
-#define AKEY_DREAM_SCRATCH  "dreamScrHash"   // fnv64 of the scratchpad after the last dream (hex)
 #define AKEY_CUSTOM_BASE    "custBase"
 #define AKEY_CUSTOM_KEY     "custKey"
 #define AKEY_ZAI_KEY        "zaiKey"      // Z.ai (GLM) token (Z_AI_TOKEN)

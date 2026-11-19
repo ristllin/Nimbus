@@ -185,7 +185,7 @@ enum class SpendSeam : uint8_t {
   ImageGen,        // image generation
   UrlFetch,        // the url_fetch safety scan
   Search,          // web search
-  Dream,           // the nightly dream
+  Dream,           // retired (v5.2.0, RB-Q2b): the nightly upkeep makes no paid call
   Routine,         // a scheduled routine
   Wakeup,          // a one-time wakeup or reminder
   Fold,            // the compaction fold

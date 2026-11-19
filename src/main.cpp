@@ -141,7 +141,6 @@
 #include "sfx/music.h"              // CUM-40 music player (media.* tools + /play)
 #include "nimbus/orch/caps.h"        // spawn capacity constants -> device.status (W11)
 #include "nimbus/orch/fetch_policy.h"  // fetchPolicyName -> device.status (W18)
-#include "nimbus/orch/failure_rows.h"  // dreamRowText - the dream timeline row (lane T)
 #include "nimbus/orch/storage_state.h"  // storageStateJson -> device.status (L19-9)
 #include "sys/config_nvs.h"
 #include "test_console.h"  // no-op inline stubs unless -DNIMBUS_TEST (env:test)
@@ -2885,8 +2884,8 @@ static void orchestratorBegin() {
   // tg_poll; chatAllowed = fire-time allowlist re-check; alert = owner ping.
   agent::loops::begin(
       [](const nimbus::orch::LoopFireRequest& r) -> nimbus::orch::FireOutcome {
-        // DREAMING: the reserved dream loop fires through its own two-phase path
-        // (maintenance + reflection turn); r.id rides as "loop:<id>", r.selfWakeup
+        // The reserved dream loop fires the nightly memory upkeep (no model call);
+        // r.id rides as "loop:<id>", r.selfWakeup
         // (owner design 9/11 Nov) fires a self-wakeup's one-note turn.
         if (agent::dream::isReserved(r.id)) return agent::dream::fire(r);
         return agent::orchestrator::injectScheduledTurn(
@@ -2906,12 +2905,11 @@ static void orchestratorBegin() {
         if (owner.length()) agent::telegram::send(owner, String(msg.c_str()), /*block=*/false);
       });
 
-  // DREAMING - the reserved nightly maintenance + reflection loop (owner-visible
-  // "dream", daily 03:30 local). Ensured every boot (insert-if-missing; a
-  // persisted owner pause survives), reserved (pause-only, never deletable from
-  // any surface), and idle-gated at fire time (busy device => defer +15 min
-  // WITHOUT consuming a fire). Fires under all the ordinary LoopCaps +
-  // scheduled-turn rails.
+  // The reserved nightly memory upkeep (owner-visible "dream", daily 03:30 local):
+  // decay, prune and dedup of long-term memories, no model call. Ensured every boot
+  // (insert-if-missing; a persisted owner pause survives), reserved (pause-only, never
+  // deletable from any surface), and idle-gated at fire time (busy device => defer
+  // +15 min WITHOUT consuming a fire).
   {
     agent::Hooks dh;
     dh.onDreamStart = [](const agent::DreamStartEv& e) {
@@ -2920,24 +2918,12 @@ static void orchestratorBegin() {
     };
     dh.onDreamEnd = [](const agent::DreamEndEv& e) {
       nimbus::heapwatch::leave(nimbus::heapwatch::kDream);
-      agent::alogf("dream: end %s pruned=%d deduped=%d tokens=%u",
-                   e.turnOk ? "ok" : "FAIL", e.prunedVectors, e.dedupedVectors,
-                   (unsigned)e.tokens);
-      // Timeline row - dream outcomes used to vanish into the 1280 B RAM log.
-      // The dream glue supplies the whole night (lane M): outcome, cause, write
-      // counts, retry and the reflection's own spend, labelled. A rig that fires
-      // onDreamEnd without the night gets lane T's row (the cause, the spend and
-      // the maintenance counters) - the same honest floor the row always had.
-      const std::string row =
-          e.report ? agent::dream::renderDreamRow(*e.report)
-                   : nimbus::orch::dreamRowText(e.turnOk, e.cause, e.tokens,
-                                                e.prunedVectors, e.dedupedVectors);
-      agent::memory::captureEvent("dream", String(row.c_str()));
+      agent::alogf("dream: end pruned=%d deduped=%d", e.prunedVectors, e.dedupedVectors);
+      // Timeline row - the night's outcome, readable later (memory.episodic, the web).
+      if (e.report)
+        agent::memory::captureEvent("dream", String(agent::dream::renderDreamRow(*e.report).c_str()));
     };
-    agent::dream::begin(dh, [](const std::string& msg) {
-      String owner = agent::orchestrator::firstAllowedChat();
-      if (owner.length()) agent::telegram::send(owner, String(msg.c_str()), /*block=*/false);
-    });
+    agent::dream::begin(dh);
   }
   agent::loops::ensureLoop(agent::dream::reservedLoopRecord());
   agent::loops::setFireGate(
@@ -4565,7 +4551,7 @@ void setup() {
       // Queued for the turn task (tg_poll), which logs "DREAM fired ok=..." when the
       // night ends. Never run here: this is the loop task, whose 8 KB stack cannot
       // hold a turn (the drill panicked the device when it ran inline).
-      if (!agent::dream::requestDrill(std::string(agent::orchestrator::firstAllowedChat().c_str())))
+      if (!agent::dream::requestDrill())
         return String("DREAM already queued (one night runs; its result line follows)");
       return String("DREAM queued (the turn task runs the night; its result line follows)");
     };

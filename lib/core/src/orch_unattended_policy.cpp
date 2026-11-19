@@ -35,8 +35,6 @@ const UnattendedPolicyRow kPolicy[] = {
     // results arriving (PRD section 6): its scratchpad (the wave checklist), a named artifact
     // to its own chat, the next wave inside the run's caps (jobs.h); memory and files closed
     {TurnClass::SubagentReport, ModelCall::Sub, Output::Reply, true, {Y, N, N, Y, Y, N, N, N, Y}},
-    // the nightly upkeep grooms the assistant's own memory and sends nothing
-    {TurnClass::Dream, ModelCall::Sub, Output::Silent, true, {Y, N, Y, N, N, N, N, N, Y}},
 };
 
 // The tool class of each name or argument-narrowed key that is not a plain read, and of the
@@ -182,7 +180,6 @@ const char* classNoun(TurnClass c) {
     case TurnClass::Wakeup:         return "a wakeup";
     case TurnClass::SelfWakeup:     return "a held note";
     case TurnClass::SubagentReport: return "a sub-agent report";
-    case TurnClass::Dream:          return "the nightly upkeep";
     default:                        return "a routine";   // Routine (Attended is never refused)
   }
 }
@@ -233,7 +230,6 @@ const char* turnClassSlug(TurnClass c) {
     case TurnClass::Wakeup:         return "wakeup";
     case TurnClass::SelfWakeup:     return "self-wakeup";
     case TurnClass::SubagentReport: return "subagent-report";
-    case TurnClass::Dream:          return "dream";
   }
   return "routine";
 }
@@ -264,8 +260,7 @@ const UnattendedPolicyRow* unattendedPolicyTable(size_t& count) {
   return kPolicy;
 }
 
-TurnClass fireClass(bool dream, bool selfWakeup, bool ownerReminder, bool once) {
-  if (dream) return TurnClass::Dream;
+TurnClass fireClass(bool selfWakeup, bool ownerReminder, bool once) {
   if (selfWakeup) return TurnClass::SelfWakeup;
   if (ownerReminder) return TurnClass::Reminder;
   if (once) return TurnClass::Wakeup;

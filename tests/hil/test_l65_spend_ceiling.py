@@ -269,10 +269,11 @@ def test_2_every_seam_refuses_with_zero_requests(board):
     )
     wk = _mcp_as_owner("wakeup.set", {"minutes": 2, "note": "l65 wakeup"})
     try:
-        # The DREAM drill (the nightly dream's scheduled path).
+        # The DREAM drill: since v5.2.0 (RB-Q2b) the night makes no paid call, so it runs
+        # its maintenance while paid calls are paused, and no request leaves the device.
         device.send("DREAM")
         log += _lines(device, 30.0)
-        assert "scheduled dream refused" in log, log[-800:]
+        assert "DREAM fired ok=1" in log, log[-800:]
         # A voice note, when the bench clip is on the card (L57's prerequisite).
         if "ERR" not in _console(device, "FSTAT /voice_bench.wav", "FSTAT", timeout=10.0):
             device.send("AUDIOINJECT /voice_bench.wav")

@@ -54,7 +54,10 @@ def _internal_free(storm) -> int:
     return int(m.group(3))
 
 
-DREAM_DONE_RE = re.compile(r"dream: \S+.* tokens=\d+|dream: skipped tonight|dream: not idle")
+# v5.2.0 (RB-Q2b): "dream: <outcome> pruned=<n> deduped=<n>"; earlier images ended "tokens=<n>".
+DREAM_DONE_RE = re.compile(
+    r"dream: (?:ran|skipped|deferred|starved) pruned=|dream: \S+.* tokens=\d+|dream: skipped tonight|dream: not idle"
+)
 
 
 def _dream(storm, timeout: float = 420.0) -> str:

@@ -1,83 +1,20 @@
-"""Host checks for the L58 dream legs' stream readers (no device).
+"""Host checks for the L58 nightly-upkeep legs' stream readers (no device).
 
-The bench run on unit L (21 Oct) failed leg 4 with "panic during boot" right after
-``PANIC arm=turn``: the leg called wait_ready straight after DREAM, and wait_ready
-fails on any panic marker, so it read the panic the leg had armed as a boot failure
-while the next boot came up and ran. These pin the reader on canned serial lines:
-the armed panic's report is read past to the ROM ``rst:`` banner, the boot scan only
-starts after it, and a drill the panic never reached fails.
-
-Legs 1 and 2 failed "no ev:dream row was written" because the row reader stopped at
-the EPIQ summary line, before any row, and read 48-character previews: the reader
-now takes the counted rows whole (EPIQ --full), newest first.
+Legs 1 and 2 of lane M once failed "no ev:dream row was written" because the row
+reader stopped at the EPIQ summary line, before any row, and read 48-character
+previews: the reader takes the counted rows whole (EPIQ --full), newest first. Since
+v5.2.0 (lane RB-Q2b) the night makes no model call: the judges below read a drill's
+window and its newest row, each with a counter-case.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from device import BootError, Device, DeviceError, ExpectTimeout
-from test_l58_dream_quiet import (
-    SilentConsole,
-    _await_armed_panic_reboot,
-    _dream_rows,
-    night_writes,
-    refused_night_reason,
-)
+from device import Device
+from test_l58_dream_quiet import _dream_rows, night_made_no_turn, night_row_ok
 
 pytestmark = pytest.mark.host
-
-PANIC = "Guru Meditation Error: Core  0 panic'ed (StoreProhibited). Exception was unhandled."
-ARMED_REPORT = [
-    "[agent] orchestrator: turn host=anthropic (conv=0 heap=30880)",
-    PANIC,
-    "Core  0 register dump:",
-    "PC      : 0x421c9772  PS      : 0x00060a30  A0      : 0x822dbba9",
-    "Backtrace: 0x421c976f:0x3fcf1d50 0x422dbba3:0x3fcf1d70 0x421cb23a:0x3fcf1d90",
-    "Rebooting...",
-]
-NEXT_BOOT = [
-    "rst:0xc (RTC_SW_CPU_RST),boot:0x8 (SPI_FAST_FLASH_BOOT)",
-    "[agent] boot: n=120 fw=v4.5.13 reason=crash(panic)(0x0c) prev=n119/80s/turn-routine",
-    "[agent] crash: fp=42603dfb new=1 this-reset=1 task=tg_poll pc=0x421c9772 cause=29(StoreProhibited)",
-    "[agent] crash-why: StoreProhibited in tg_poll: a write to an invalid address (0x00000000)",
-    "orch: done",
-    "READY mode=1 ip=192.168.50.61",
-]
-
-
-def _canned(lines):
-    dev = Device(port="/dev/null-host-test")
-    dev._pushback = list(lines)
-    return dev
-
-
-def test_the_armed_panic_is_read_past_before_the_boot_scan():
-    dev = _canned(ARMED_REPORT + NEXT_BOOT)
-    assert _await_armed_panic_reboot(dev, panic_timeout=1.0) == PANIC
-    assert dev._pushback == []  # the boot was read through READY
-
-
-def test_the_old_flow_reads_the_armed_panic_as_a_boot_failure():
-    """Counter-test: the same stream handed straight to wait_ready is the bench failure."""
-    dev = _canned(ARMED_REPORT + NEXT_BOOT)
-    with pytest.raises(BootError, match="panic during boot"):
-        dev.wait_ready(timeout=1.0)
-
-
-def test_a_drill_the_panic_never_reached_fails():
-    dev = _canned(["DREAM fired ok=1 detail=(dream d20747: ran a1 pruned=0 deduped=0)"])
-    with pytest.raises(DeviceError):
-        _await_armed_panic_reboot(dev, panic_timeout=1.0)
-
-
-def test_a_second_panic_in_the_next_boot_still_fails():
-    """Reading past the armed panic never hides a real one: a panic after the rst:
-    banner is a boot failure."""
-    boot_panic = NEXT_BOOT[:2] + [PANIC] + NEXT_BOOT[2:]
-    dev = _canned(ARMED_REPORT + boot_panic)
-    with pytest.raises(BootError, match="panic during boot"):
-        _await_armed_panic_reboot(dev, panic_timeout=1.0)
 
 
 class _Console:
@@ -103,11 +40,8 @@ def _console(reply):
     return dev
 
 
-FAILED_ROW = (
-    "Nightly dream FAILED (network: anthropic could not be reached; mistral and openai also failed), "
-    "no retry tonight; 0 of 0 memories stored (0 new, 0 updated, 0 queued, 0 failed); spent 0 tokens; "
-    "maintenance done earlier today"
-)
+OK_ROW = "Nightly dream ok: maintenance pruned=0 deduped=1 (412 memories)"
+# A row v5.1.2 wrote before the update: still read, newest first.
 OLDER_ROW = "Nightly dream ok: 2 of 2 memories stored (2 new, 0 updated, 0 queued, 0 failed); spent 1295 tokens"
 
 
@@ -116,15 +50,14 @@ def test_the_dream_rows_are_read_whole_and_newest_first():
     dev = _console(
         [
             "EPIQ rows=3 ms=41 files=2 bytes=1880 older=1 next=m0000002a",
-            f"m00000031 {FAILED_ROW}",
+            f"m00000031 {OK_ROW}",
             "[agent] telegram: getUpdates 401 - bot token rejected (revoked or invalid)",
             f"m0000002f {OLDER_ROW}",
-            "m0000002b Nightly dream skipped (quiet day); maintenance pruned=0 deduped=0",
+            "m0000002b Nightly dream skipped (maintenance done earlier today)",
         ]
     )
     rows = _dream_rows(dev)
-    assert rows[0] == FAILED_ROW  # newest first, whole: the counts are past 48 characters
-    assert "memories stored" in rows[0] and "failed)" in rows[0]
+    assert rows[0] == OK_ROW  # newest first, whole
     assert rows[1] == OLDER_ROW
     assert len(rows) == 3
 
@@ -134,62 +67,17 @@ def test_no_rows_reads_as_none():
     assert _dream_rows(dev) == []
 
 
-# ---- a console that stays silent after the armed panic's reset -------------------
-ROM_ONLY = ["rst:0xc (RTC_SW_CPU_RST),boot:0x2b (SPI_FAST_FLASH_BOOT)", "entry 0x403c88b8"]
+def test_a_window_with_no_turn_passes_and_a_turn_or_a_send_fails():
+    quiet = "[agent] dream: start\n[agent] dream: maintenance - decayed, pruned=0 deduped=1 (412 vectors)\n"
+    assert night_made_no_turn(quiet) is None
+    turn = quiet + "[agent] orchestrator: turn host=anthropic (conv=0 heap=30880)\n"
+    assert "model turn" in night_made_no_turn(turn)
+    assert "Telegram" in night_made_no_turn(quiet + "[agent] telegram: send chat=1001 (88 B)\n")
 
 
-class _BootNet:
-    """GET /api/state as a board that has rebooted into boot ``n`` answers it."""
-
-    def __init__(self, n: int):
-        self.n = n
-
-    def get_json(self, path, ip=None, timeout=5.0):
-        assert path == "/api/state"
-        return {"boot": {"n": self.n}}
-
-
-def _silent_after_rom():
-    dev = _canned(ARMED_REPORT + ROM_ONLY)
-
-    def silent(timeout=20.0, max_total=None):
-        dev._pushback.clear()
-        raise ExpectTimeout("READY beacon", ROM_ONLY)
-
-    dev.wait_ready = silent
-    return dev
-
-
-def test_a_silent_console_after_the_reset_is_the_host_link_when_the_lan_sees_a_new_boot():
-    """Unit L, 22 Oct 2026: the crash boot ran and reconciled the night while the host
-    saw nothing past the ROM "entry" line. The leg reads the verdict over HTTP."""
-    with pytest.raises(SilentConsole) as got:
-        _await_armed_panic_reboot(
-            _silent_after_rom(), panic_timeout=1.0, net=_BootNet(376), ip="192.0.2.1", before_n=375
-        )
-    assert got.value.panic_line == PANIC
-
-
-def test_a_silent_console_with_no_lan_check_still_fails():
-    with pytest.raises(ExpectTimeout):
-        _await_armed_panic_reboot(_silent_after_rom(), panic_timeout=1.0)
-
-
-# ---- the degraded-night leg's judgement ---------------------------------------------
-OK_NONE = "Nightly dream ok: 0 of 0 memories stored (0 new, 0 updated, 0 queued, 0 failed), scratchpad groomed"
-DEGRADED_2 = (
-    "Nightly dream degraded (memory writes failed): 0 of 2 memories stored (0 new, 0 updated, 0 queued, 2 failed)"
-)
-
-
-def test_the_nights_writes_are_read_from_the_drill_window():
-    window = "[agent] dream: start\n[agent] dream: memory writes stored=0 queued=0 refused=2 (pending=0)\n"
-    assert night_writes(window) == (0, 0, 2)
-    assert night_writes("[agent] dream: end ok pruned=0 deduped=0 tokens=1681") == (0, 0, 0)
-
-
-def test_refused_writes_need_a_degraded_row_with_their_count():
-    assert refused_night_reason(DEGRADED_2, 2) is None
-    assert "under an ok row" in refused_night_reason(OK_NONE, 2)  # the release-run reading, with writes
-    assert "failed count" in refused_night_reason(DEGRADED_2, 3)
-    assert "must read degraded" in refused_night_reason("Nightly dream FAILED (network: x), no retry tonight", 1)
+def test_the_newest_row_must_be_an_upkeep_row_with_no_spend():
+    assert night_row_ok(OK_ROW) is None
+    assert night_row_ok("Nightly dream skipped (maintenance done earlier today)") is None
+    assert "spend" in night_row_ok(OLDER_ROW)  # the reflection's row (v5.1.2) reads as a failure here
+    assert "neither ran" in night_row_ok("Nightly dream skipped (clock not set)")
+    assert "not an ev:dream row" in night_row_ok("Conversation compacted: 1200 B")
