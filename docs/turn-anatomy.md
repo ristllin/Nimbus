@@ -546,9 +546,11 @@ Every clip in a turn is a **view**, not a loss. The full text of a clamped tool
 result or an overflowed sub-agent result lands in a PSRAM ring, and the model can
 widen the view on demand:
 
-- `results.get(tag, offset?)` - returns a bounded page (`bytes 0-8192 of 51234`)
-  of the stored result; page on with `offset`. Unknown tags point at
-  `memory.episodic`, which holds the durable copy on SD.
+- `results.get(tag, offset?)` - returns a bounded page of the stored result whose head
+  names the next part (`bytes 0-8128 of 51234; next part: "offset":8128`, or `; end of
+  result`). A result over 64 KB keeps its first 64 KB and ends saying how long it was.
+  Unknown tags point at `memory.episodic`, which holds the durable copy on SD. The hosted
+  daemon keeps the same ring (RB-TR1), so its cuts name `results.get` too.
 - `results.list` - tag / kind / name / size for everything currently fetchable.
 
 Tags are `r<n>` for tool-result spills and `sub:<jobtag>` for sub-agent results.

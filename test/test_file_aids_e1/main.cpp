@@ -247,7 +247,7 @@ static void test_a_part_starts_on_a_character_and_says_the_end() {
   TEST_ASSERT_TRUE(aids::e1::readPart(card, card.file.size(), 99, 8192, out));
   TEST_ASSERT_EQUAL_STRING("bytes 8-8 of 8; end of file\n", out.c_str());
   TEST_ASSERT_FALSE(aids::e1::readPart(card, card.file.size() + 10, 0, 8192, out));
-  TEST_ASSERT_EQUAL_STRING("the file could not be read - try again", out.c_str());
+  TEST_ASSERT_EQUAL_STRING("the card read failed; nothing was shown", out.c_str());
 }
 
 int main(int, char**) {

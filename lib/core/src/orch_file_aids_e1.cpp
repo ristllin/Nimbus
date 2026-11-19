@@ -197,7 +197,7 @@ bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::s
   // Four bytes more: an offset inside a character moves past its continuation bytes, and the
   // byte after the part tells whether the cut splits a character.
   if (!scanForPart(src, size, from0, room + 4, p)) {
-    out = "the file could not be read - try again";
+    out = "the card read failed; nothing was shown";
     return false;
   }
   const std::string_view w(p.window);

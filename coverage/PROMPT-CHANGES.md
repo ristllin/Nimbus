@@ -875,3 +875,23 @@ deleted. Engine 2 has no baseline.
 - lane: RB-X1
 - prd: section 7 ("Crash safety": an intent with no result is shown as outcome unknown and never re-run; an effect tool does not run if its intent cannot be stored)
 - why: lib/harness/src/plain_resume.cpp: at boot every stored call with no stored result gets one result and is never run again. A call whose intent is stored keeps kOutcomeUnknown (it may have taken effect); a call with no intent (an effect that never started, by the write-ahead rule, or a pure or read call) gets kRestartedBeforeRun, a fact (it changed nothing), no order. Without it the model is told a call that did nothing may have done something, and an owner's request is dropped; planned work, not a fix
+
+### PC-0118: the hosted files.read declares the device's paged read
+- catalog: e1
+- class: tool_descriptions
+- kind: spec
+- bytes: 22131 -> 22246
+- sha8: 56b90134 -> 29ec726f
+- lane: RB-TR1
+- prd: section 4 (the file tools), as amended by ruling 86 item 3 (a read can be continued)
+- why: nimbusd/src/posix_files.h: the hosted files.read takes the device's description word for word ("Read a stored TEXT document's content (md/txt/json/csv/log). Large files are paged: pass 'offset' to continue from where the previous view ended. ..."), because its offset now works as the device's does (before, nimbusd returned the whole file whatever the offset and its loop cut it at 4,096 B). The device's declaration is unchanged. A tool change, not added text: the declaration says what the tool now does.
+
+### PC-0119: a cut result names its part and how to get the rest (files.read, the tail view, results.get)
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 35337 -> 35633
+- sha8: 11be73d9 -> 626c8a09
+- lane: RB-TR1
+- prd: section 4 (the file tools), as amended by ruling 86 item 3 and ruling 82 (quality first)
+- why: lib/core/src/orch_file_aids_e1.cpp readPart: files.read's plain form on both engines heads its part "bytes a-b of n, lines x-y of m; next part: \"offset\":b" or "; end of file" (was the device's "bytes a-b of n" with no next argument, and nimbusd's whole file); lib/core/src/orch_file_append.cpp renderTail: "earlier rows not shown: bytes 0-<n>, read them with \"offset\":0"; lib/core/src/orch_result_store.cpp: results.get's head names its next part or "end of result", and an entry over 64 KB ends "[the result was N B; only these first bytes are kept]"; src/agent/files_subsystem.cpp: the plain read's "changed while it was read; nothing was shown", and readPart's own card fault "the card read failed; nothing was shown" (a fact, no order). The device's 8192 - 64 page and its 256 KB whole-file read go (the part streams, any size). Planned work, not a fix.

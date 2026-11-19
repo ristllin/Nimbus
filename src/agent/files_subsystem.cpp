@@ -946,7 +946,7 @@ static bool scanCsvFile(const std::string& project, const std::string& name, con
   noteScan(partAt ? "read" : sums ? "day total" : "scan", project, name, src);
   memory::Lock g;
   if (g_indexGen == gen) return ok;
-  out = where + (partAt ? " changed while it was read; read it again" : kChangedUnderRead);
+  out = where + (partAt ? " changed while it was read; nothing was shown" : kChangedUnderRead);
   return false;
 }
 

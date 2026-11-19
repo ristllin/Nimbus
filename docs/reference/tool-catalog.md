@@ -365,6 +365,13 @@ Notes:
   control bytes. On a Virtual Nimbus any text file reads, whatever its extension; an
   image, audio or binary file is refused the same way.
   It is **allowed in scheduled turns**.
+- `files.read` without `tail`, `sum` or `column` returns the part of the file that fits one
+  tool result (the head's per-result budget: 8,192 B on Sonnet and Haiku) under one head
+  line: `bytes 0-8082 of 20065, lines 1-63 of 156; next part: "offset":8082`, or
+  `...; end of file` on the last part. A part ends at a line end when one falls in its
+  second half; a file of any size reads to its end this way (the device streams it 4 KB per
+  card hold). The tail view names the rows it leaves out (`bytes 0-<n>, read them with
+  "offset":0`), and `results.get` pages a clamped result the same way (`next part`).
 - `artifact.save` overwrites the same `project`+`name`, refuses a write onto
   another person's file, and counts against the caller's file-storage quota.
 - `files.append` writes only the new rows (line ends normalized, a final line end
