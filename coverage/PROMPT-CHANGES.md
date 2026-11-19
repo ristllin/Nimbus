@@ -761,8 +761,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 4765 -> 4898
-- sha8: bda3f014 -> 8ee90b89
+- bytes: 4780 -> 4913
+- sha8: 4b66c10b -> 887d1856
 - lane: RB-E1b
 - prd: section 1 ("Identical-call suppression: inside one turn only, only for tools declared pure, only while the earlier result is still shown whole and no write has succeeded since")
 - why: lib/harness/src/plain_guards.cpp: a pure call that repeats an earlier call of the same turn is not run again; its result states that fact and that the earlier result above still holds (a fact, no order); planned work, not a fix
