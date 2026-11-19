@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -290,8 +291,8 @@ class Battery {
   }
 
   // The world's tools as the registry would run them: a `more` call runs the tool it names
-  // with its arguments (the registry's router, without its listings), and delete_file
-  // removes a world file.
+  // with its arguments (the registry's router, without its listings), delete_file removes a
+  // world file, and throw_tool throws (a handler's own exception).
   plain::ToolOutput dispatch(const plain::ToolCall& c, const plain::TurnCtx& t) {
     if (c.name == "more") {
       JsonDocument a;
@@ -305,6 +306,7 @@ class Battery {
       o.name = c.name;
       return o;
     }
+    if (c.name == "throw_tool") throw std::out_of_range("a tool handler that throws");
     if (c.name == "delete_file") {
       JsonDocument a;
       deserializeJson(a, c.argsJson);

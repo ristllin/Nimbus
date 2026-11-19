@@ -597,8 +597,8 @@ durability around it and nothing that reads, edits or appends to the model's tex
   stored before the first request. The binding's `TurnSetup` gives the registry, notes, head
   and wire once; the system text and the tools are composed once and kept for every round.
 - **The loop**: render the stored transcript, post it (`runExchange`: retries, the cap and the
-  ladder live there; rung 3 omits only the oldest turns the body needs to drop, sized by what
-  each turn renders, and climbs again while still over; every omissible one only after a
+  ladder live there; rung 2 follows the open turn's rounds, rung 3 omits only the oldest turns
+  the body needs to drop, sized by what each turn renders, and climbs again while still over; every omissible one only after a
   provider's size refusal), store what the model said (k, a, c) before anything runs. No call: that
   text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
   runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
@@ -629,8 +629,18 @@ durability around it and nothing that reads, edits or appends to the model's tex
 - **Storage**: every item goes through `TxLog::store`. An item the card refused stays in RAM;
   the model sees one device note at the next round boundary and the owner one storage line,
   once per episode. With no card the chat runs from RAM and no effect tool runs.
-- **Memory**: an item the arena refuses, or a refused allocation, ends the turn with one plain
-  line (or the reply already in hand) and the e item where storage allows; delivery runs before the
+- **What the owner gets** is decided in one place at the end of a turn: the reply, else a reply
+  held before a failed or empty extra round, else one plain line (the limit line when the last
+  allowed round only called tools, the provider's line for an empty answer). At most one status
+  line, by precedence: a failed-write receipt is never replaced; then the device's own failure;
+  then the turn's end (provider, cut, limit); then the storage line.
+- **Exceptions**: a tool handler that throws (anything but a refused allocation) is an error result
+  for that one call and the turn goes on; nothing wider is caught.
+- **Memory**: a refused allocation anywhere in the turn is a designed state: the reply in hand
+  (kept before anything is stored) goes out with the memory line, nothing already sent is sent
+  again, then the d item and afterDeliver, the e item and head.json where storage allows; no
+  refusal leaves `runTurn`. An item over the stored line's limit has its own true line (an owner
+  message its own), a full arena the memory line. The d item and afterDeliver run before the
   superseded-read scan. The turn's state lives on the heap; `runTurn`'s own frame is 240 B on the device
   compiler. A refused allocation ends the turn with a status, never an abort.
 

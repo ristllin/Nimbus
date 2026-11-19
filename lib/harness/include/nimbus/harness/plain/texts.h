@@ -190,6 +190,14 @@ inline constexpr char kStorageLine[] = "Storage refused part of this conversatio
 // The device's memory refused this turn (an allocation, or the conversation's own memory):
 // what was already stored stays, nothing more of the turn is kept.
 inline constexpr char kNoMemory[] = "The device ran out of memory for this turn and stopped. Send the message again.";
+// One part of the turn (signed thinking, a reply or arguments past every tier) was over the
+// stored line's limit, so the turn stopped there; an owner message over it has its own line.
+inline constexpr char kTooLong[] = "Part of this turn was too long for the device to keep, so it stopped there.";
+inline constexpr char kMessageTooLong[] = "That message is too long for the device to keep. Send it as a file instead.";
+// The last allowed round answered with tool calls and no text.
+inline constexpr char kLimitLine[] = "The turn reached its limit before a reply. Ask again to continue.";
+// The tool slug of a long reply's stub ('[stub assistant r<q> ...]').
+inline constexpr char kAssistantSlug[] = "assistant";
 }  // namespace device_notes
 
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).
@@ -202,6 +210,8 @@ inline constexpr char kNotRunLimit[] = "not run: the turn reached its limit";
 // A stored call with no stored result (the turn stopped while it ran), closed at the next turn open.
 inline constexpr char kOutcomeUnknown[] =
     "outcome unknown: the device stopped while this call ran; it may or may not have taken effect";
+// A tool handler threw (not a refused allocation): that one call failed, the turn goes on.
+inline constexpr char kToolFailed[] = "failed: the tool stopped with an internal error";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3): its system text and the

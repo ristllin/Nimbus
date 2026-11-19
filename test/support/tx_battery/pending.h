@@ -141,6 +141,11 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
       {"RB-C1", [] { std::string s; return tx::chatsumMirror({}, 0, s); }},
       {"RB-C2", probeCompaction},
       {"RB-RL", probeRails},
+      // Lanes with no seam in this tree yet (ruling 56's red cases): the lane replaces its row
+      // with a probe of the body it writes when it lands.
+      {"RB-N3", [] { return tx::Status::pending("RB-N3 view of a long argument or reply"); }},
+      {"RB-TG1", [] { return tx::Status::pending("RB-TG1 inbox file for a long owner message"); }},
+      {"RB-I3", [] { return tx::Status::pending("RB-I3 reopen of the log when storage returns"); }},
   };
   for (const Row& r : rows)
     if (lane == r.lane) {

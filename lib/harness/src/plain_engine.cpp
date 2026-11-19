@@ -4,6 +4,7 @@
 #include "nimbus/harness/plain/engine.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <new>
@@ -76,8 +77,17 @@ struct Turn {
   bool sawMeta = false;
   GuardTrip trip = GuardTrip::None;
   bool reply = false;                  // `text` is the model's reply
-  bool sent = false;                   // the reply went out
+  bool answered = false;               // a final answer came back (possibly empty)
+  bool emptyRefusal = false;           // that answer was an empty refusal
+  std::string answer;                  // the final answer's text, in hand before it is stored
+  bool sent = false;                   // the reply went out (recorded at the send itself)
+  bool statusSent = false;             // the status line went out
+  bool deliverDone = false;            // delivery finished
+  bool closedDelivery = false;         // the d item and afterDeliver ran
   bool endStored = false;              // the e item is stored
+  Err storeErr = Err::None;            // why the arena refused an item (storeFailed)
+  const char* storeWhere = "";
+  tx::ItemKind refusedKind = tx::ItemKind::User;
   std::string text;
   StatusLine status = StatusLine::None;
   std::string statusText;
@@ -104,7 +114,7 @@ class TurnRun {
       if (!st.ok() || t_.ex.err != ExchangeErr::None) break;               // failed or cut: ended
       const ParsedStep& step = t_.ex.step;
       if (step.calls.empty() || t_.lastRound) {                            // no call: the text is the reply
-        if (!(st = finalAnswer(step)).ok() || !t_.held || t_.reply) break;
+        if (!(st = finalAnswer(step)).ok() || t_.answered) break;
         continue;                                                          // held once: one more round
       }
       if ((st = storeAnswer(step, false)).ok()) st = runCalls(step);       // each result stored in turn
@@ -140,6 +150,9 @@ class TurnRun {
     const Status st = d_.log->store(it, *d_.arena, state);
     if (!st.ok()) {
       t_.storeFailed = true;
+      t_.storeErr = st.err;
+      t_.storeWhere = st.where;
+      t_.refusedKind = it.kind;
       return st;
     }
     const bool ok = state == tx::StoreState::Stored;
@@ -189,8 +202,7 @@ class TurnRun {
   // plain line: a binding fault, never a partial request.
   Status fail(const Status& st) {
     t_.cause = std::string("setup:") + tx::errSlug(st.err);
-    t_.status = StatusLine::ProviderError;
-    t_.statusText = exchangeLine(ExchangeErr::Other, providerSlugOf(t_.ctx, t_.setup.head), 0);
+    setStatus(StatusLine::ProviderError, exchangeLine(ExchangeErr::Other, providerSlugOf(t_.ctx, t_.setup.head), 0));
     return st;
   }
 
@@ -207,7 +219,7 @@ class TurnRun {
       if (!d_.arena->get(i, it).ok()) continue;
       if (it.kind == tx::ItemKind::Call) open.push_back(it);
       else
-        for (size_t k = open.size(); k-- > 0;)   // the newest open call of that id
+        for (size_t k = 0; k < open.size(); ++k)   // the oldest open call of that id, as the wire pairs
           if (open[k].id == it.id) {
             open.erase(open.begin() + (long)k);
             break;
@@ -347,12 +359,21 @@ class TurnRun {
     t_.ctx.roundNo = t_.rounds;
     // The gap note: shown once when an episode starts, and owed until one is stored, so the
     // stored transcript names the hole once storage is back.
-    if (c_.noteDue && (!c_.noteShown || !c_.storageEpisode)) {
+    if (c_.noteDue && !c_.noteShown) {   // the model sees it once, in RAM if need be
       bool stored = false;
       Status st = note(texts::device_notes::kNotStored, tx::NoteClass::Gap, &stored);
       if (!st.ok()) return st;
       c_.noteShown = true;
       c_.noteDue = !stored;
+    } else if (c_.noteDue && !c_.storageEpisode) {   // storage is back: the owed note to storage only
+      tx::Item& h = blank(tx::ItemKind::DeviceNote);
+      h.x = texts::device_notes::kNotStored;
+      h.note = tx::NoteClass::Gap;
+      h.q = c_.nextQ++;
+      h.turn = t_.ctx.turn;
+      h.t = epoch();
+      tx::StoreState state = tx::StoreState::NotStored;
+      if (d_.log->append(h, state).ok() && state == tx::StoreState::Stored) c_.noteDue = false;
     }
     if (t_.lastRound) return Status::success();
     GuardState g;
@@ -421,14 +442,10 @@ class TurnRun {
 
   // Nothing came from the model: the exchange's one plain line ends the turn.
   Status failed(ExchangeErr err, const Status& st) {
-    if (t_.held) {   // the reply the model gave before the hold is never lost
-      t_.reply = true;
-      t_.text = t_.heldText;
-    }
-    t_.cause = std::string("provider:") + exchangeErrSlug(err);
-    t_.status = StatusLine::ProviderError;
-    t_.statusText = t_.ex.errorLine.empty() ? exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0)
-                                            : t_.ex.errorLine;
+    t_.cause = std::string("provider:") + exchangeErrSlug(err);   // a held reply goes out: settle()
+    setStatus(StatusLine::ProviderError, t_.ex.errorLine.empty()
+                                             ? exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0)
+                                             : t_.ex.errorLine);
     if (err != t_.ex.err) t_.ex.err = err;
     return st;
   }
@@ -437,23 +454,21 @@ class TurnRun {
   Status cut() {
     ++t_.rounds;
     t_.cause = "cut";
-    t_.status = t_.ex.status;
-    t_.statusText = t_.ex.errorLine;
+    t_.answer = t_.ex.step.text;   // in hand before anything is stored
+    setStatus(t_.ex.status, t_.ex.errorLine);
     if (d_.hooks) {   // the truth seam sees a cut answer too; it cannot hold one
       DeliverCtx dc;
       dc.turn = &t_.ctx;
       dc.text = &t_.ex.step.text;
       dc.held = t_.held;
       dc.cut = true;
-      (void)d_.hooks->runBeforeDeliver(dc);
+      takeStatus(d_.hooks->runBeforeDeliver(dc));
     }
     Status st = storeAnswer(t_.ex.step, true);
     for (size_t i = 0; st.ok() && i < t_.ex.step.calls.size(); ++i) {
       t_.curCallQ = callQOf(i);
       st = answerUnrun(t_.ex.step.calls[i], texts::tool_results::kNotRunCut);
     }
-    t_.reply = st.ok();
-    t_.text = t_.ex.step.text;
     return st;
   }
 
@@ -469,8 +484,8 @@ class TurnRun {
     if (over && !l.closedThrough && closedBulkAbovePointer()) {
       l.closedThrough = c_.lastClosedQ;   // (1) every closed turn as stubs
       climbed = true;
-    } else if (over && !l.stubThrough && t_.roundStart.size() > 2) {
-      l.stubThrough = t_.roundStart[t_.roundStart.size() - 2] - 1;   // (2) bulk older than two rounds
+    } else if (over && openBulkBelow(rungTwoThrough())) {
+      l.stubThrough = rungTwoThrough();   // (2) this turn's bulk older than the newest two rounds
       climbed = true;
     } else {
       const size_t need = over && ask.bodyBytes > ask.bodyCap ? ask.bodyBytes - ask.bodyCap + kOmissionLineRoom
@@ -481,6 +496,24 @@ class TurnRun {
     return climbed;
   }
   static constexpr size_t kOmissionLineRoom = 160;   // the line and its block (under 120 B of text)
+
+  // Rung 2's line: the item before the newest two rounds of the open turn (0: none yet).
+  uint64_t rungTwoThrough() const {
+    const size_t n = t_.roundStart.size();
+    return n > 2 ? t_.roundStart[n - 2] - 1 : 0;
+  }
+  // Open-turn bulk still whole between rung 2's line and `through`: what rung 2 would stub now.
+  bool openBulkBelow(uint64_t through) const {
+    if (through <= t_.ladder.stubThrough) return false;
+    tx::Item& it = t_.read;
+    for (size_t i = 0; i < d_.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || e.kind != tx::ItemKind::Result || e.turn != t_.ctx.turn) continue;
+      if (e.q <= t_.ladder.stubThrough || e.q > through) continue;
+      if (d_.arena->get(i, it).ok() && it.cls == tx::ResultClass::Bulk) return true;
+    }
+    return false;
+  }
 
   // Tier-2 bulk of a closed turn shown whole above the pointer: what rung 1 would stub.
   bool closedBulkAbovePointer() const {
@@ -559,38 +592,61 @@ class TurnRun {
       dd = d_.hooks->runBeforeDeliver(dc);
     }
     const bool hold = dd.verdict == DeliverVerdict::Hold && !t_.held;   // at most one hold a turn
+    takeStatus(dd);
+    if (hold) {   // the reply in hand before anything is stored
+      t_.held = true;
+      t_.heldText = step.text;
+    } else {
+      t_.answered = true;
+      t_.answer = step.text;
+      t_.emptyRefusal = step.stop == StopReason::Refusal;
+      t_.cause = t_.trip == GuardTrip::None ? "reply" : std::string("limit:") + guardTripSlug(t_.trip);
+      if (step.text.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger)) t_.cause = "empty";
+    }
     Status st = storeAnswer(step, !hold);
     for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {   // the last round still called
       t_.curCallQ = callQOf(i);
       st = answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
     }
     if (!st.ok()) return st;
-    takeStatus(dd);
-    if (hold) {
-      t_.held = true;
-      t_.heldText = step.text;
-      event("hold");
-      return note(dd.deviceNote, tx::NoteClass::Notice);
-    }
-    t_.reply = true;
-    t_.text = step.text;
-    t_.cause = t_.trip == GuardTrip::None ? "reply" : std::string("limit:") + guardTripSlug(t_.trip);
-    if (step.text.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger)) {
-      // Nothing to deliver (empty content, thinking only, a refusal): a person waiting gets
-      // one plain line, never silence. A routine's empty text stays its silence.
-      t_.cause = "empty";
-      t_.status = StatusLine::ProviderError;
-      t_.statusText = exchangeLine(step.stop == StopReason::Refusal ? ExchangeErr::Other : ExchangeErr::Malformed,
-                                   providerSlugOf(t_.ctx, t_.setup.head), 0);
-    }
-    return Status::success();
+    if (!hold) return Status::success();
+    event("hold");
+    return note(dd.deviceNote, tx::NoteClass::Notice);
   }
 
-  // A status line a seam asked for (the failed-write receipt), when the turn has none.
-  void takeStatus(const DeliverDecision& dd) {
-    if (dd.status == StatusLine::None || t_.status != StatusLine::None) return;
-    t_.status = dd.status;
-    t_.statusText = dd.statusText;
+  // At most one status line a turn, by precedence: a failed-write receipt (a seam's) is never
+  // replaced; then the device's own failure (memory, a part too long); then the turn's end (a
+  // provider line, the cut line, the limit line); then the storage line. Equal ranks keep the
+  // first.
+  static int rank(StatusLine s) {
+    switch (s) {
+      case StatusLine::None: return 0;
+      case StatusLine::FailedWrite: return 4;
+      case StatusLine::CrashNotice: return 3;
+      case StatusLine::StorageState: return 1;
+      default: return 2;
+    }
+  }
+  void setStatus(StatusLine s, const std::string& text) {
+    if (rank(s) <= rank(t_.status)) return;
+    t_.status = s;
+    t_.statusText = text;
+  }
+  void takeStatus(const DeliverDecision& dd) { setStatus(dd.status, dd.statusText); }
+
+  // What the owner gets, decided in one place (close and the refusal path): the model's reply
+  // if there is one, else the reply held before a failed or empty extra round, else a plain
+  // line: the limit line when the last allowed round only called tools, the provider's line
+  // for an empty answer. A routine's empty text stays its silence.
+  void settle() {
+    t_.reply = !t_.answer.empty() || (t_.held && !t_.heldText.empty());
+    if (t_.reply) t_.text = !t_.answer.empty() ? t_.answer : t_.heldText;
+    if (t_.reply || !personTrigger(t_.ctx.trigger)) return;
+    if (t_.answered && t_.trip != GuardTrip::None) setStatus(StatusLine::LimitReached, texts::device_notes::kLimitLine);
+    else if (t_.answered)
+      setStatus(StatusLine::ProviderError,
+                exchangeLine(t_.emptyRefusal ? ExchangeErr::Other : ExchangeErr::Malformed,
+                             providerSlugOf(t_.ctx, t_.setup.head), 0));
   }
 
   // k, a and c items in the order the model gave them, before any call runs.
@@ -610,7 +666,7 @@ class TurnRun {
       tx::Item& c = blank(tx::ItemKind::Call);
       c.id = step.calls[i].id;
       c.n = step.calls[i].name;
-      if (!(st = tierArgs(step.calls[i].argsJson, c.args)).ok()) break;
+      if (!(st = tierArgs(c.n, step.calls[i].argsJson, c.args)).ok()) break;
       c.eff = viewOf(step.calls[i]).cls.effect == orch::EffectClass::Effect;
       c.rd = a_round();
       st = put(c);
@@ -623,36 +679,67 @@ class TurnRun {
   uint8_t a_round() const { return (uint8_t)std::min<uint16_t>(t_.rounds, 255); }
   uint64_t callQOf(size_t i) const { return i < t_.callQ.size() ? t_.callQ[i] : 0; }
 
-  // Tier 1 for a call's arguments (PRD section 2): a string argument over kTier1CallArgs is
-  // stored as its long-argument stub, and the whole arguments go to the bulk file once. The
-  // call itself runs with the model's arguments; later requests show the stub.
-  Status tierArgs(const std::string& args, std::string& out) {
+  // Tier 1 for a call's arguments (PRD section 2): over kTier1CallArgs, each long string
+  // argument is stored as its long-argument stub (arguments that do not parse, cut by the
+  // output limit, as one stub) and the whole arguments go to the bulk file first. When the
+  // bulk file refuses, the arguments stay inline if their line fits, else the stub makes no
+  // promise of view. The call itself runs with the model's arguments.
+  Status tierArgs(const std::string& name, const std::string& args, std::string& out) {
     out = args;
     if (args.size() <= tx::kTier1CallArgs) return Status::success();
     ArduinoJson::JsonDocument doc;
-    if (deserializeJson(doc, args, ArduinoJson::DeserializationOption::NestingLimit(64))) return Status::success();
-    if (!stubLongStrings(doc.as<ArduinoJson::JsonVariant>())) return Status::success();
+    const bool parsed = !deserializeJson(doc, args, ArduinoJson::DeserializationOption::NestingLimit(64));
+    if (parsed && !hasLongString(doc.as<ArduinoJson::JsonVariantConst>())) return Status::success();
+    std::string handle;
+    const bool kept = d_.log->appendBulk(t_.ctx.turn, args, handle).ok();
+    if (!kept && args.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();   // inline whole
+    if (!parsed) return longStub(name, args, kept, out);
+    stubLongStrings(name, doc.as<ArduinoJson::JsonVariant>(), kept);
     out.clear();
     serializeJson(doc, out);
-    std::string handle;
-    (void)d_.log->appendBulk(t_.ctx.turn, args, handle);   // the full arguments, for view
     return Status::success();
   }
-  bool stubLongStrings(ArduinoJson::JsonVariant v) {
-    bool changed = false;
-    if (v.is<ArduinoJson::JsonObject>()) {
-      for (ArduinoJson::JsonPair kv : v.as<ArduinoJson::JsonObject>()) changed |= stubLongStrings(kv.value());
-    } else if (v.is<ArduinoJson::JsonArray>()) {
-      for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) changed |= stubLongStrings(e);
+  static constexpr size_t kLineRoom = 1024;   // a line's keys and crc beside its text
+
+  static bool hasLongString(ArduinoJson::JsonVariantConst v) {
+    if (v.is<ArduinoJson::JsonObjectConst>()) {
+      for (ArduinoJson::JsonPairConst kv : v.as<ArduinoJson::JsonObjectConst>())
+        if (hasLongString(kv.value())) return true;
+    } else if (v.is<ArduinoJson::JsonArrayConst>()) {
+      for (ArduinoJson::JsonVariantConst e : v.as<ArduinoJson::JsonArrayConst>())
+        if (hasLongString(e)) return true;
     } else if (v.is<const char*>()) {
-      const std::string str = v.as<const char*>();
-      std::string stub;
-      if (str.size() <= tx::kTier1CallArgs || !tx::longArgStub((uint32_t)str.size(), hex8(str), c_.nextQ, stub).ok())
-        return false;
-      v.set(stub);
-      return true;
+      return std::strlen(v.as<const char*>()) > tx::kTier1CallArgs;
     }
-    return changed;
+    return false;
+  }
+  void stubLongStrings(const std::string& name, ArduinoJson::JsonVariant v, bool kept) {
+    if (v.is<ArduinoJson::JsonObject>()) {
+      for (ArduinoJson::JsonPair kv : v.as<ArduinoJson::JsonObject>()) stubLongStrings(name, kv.value(), kept);
+    } else if (v.is<ArduinoJson::JsonArray>()) {
+      for (ArduinoJson::JsonVariant e : v.as<ArduinoJson::JsonArray>()) stubLongStrings(name, e, kept);
+    } else if (v.is<const char*>() && std::strlen(v.as<const char*>()) > tx::kTier1CallArgs) {
+      std::string stub;
+      if (longStub(name, v.as<const char*>(), kept, stub).ok()) v.set(stub);
+    }
+  }
+  // A long text's stub: with the bulk file kept, the long-argument stub (view); without it,
+  // the internal stub's no-card form, which promises nothing.
+  Status longStub(const std::string& name, const std::string& text, bool kept, std::string& out) {
+    if (kept) return tx::longArgStub((uint32_t)text.size(), hex8(text), c_.nextQ, out);
+    return stubOf(name, text, false, out);
+  }
+  Status stubOf(const std::string& tool, const std::string& text, bool kept, std::string& out) {
+    tx::StubFacts& f = renew(t_.stub);
+    f.tool = tool;
+    f.q = c_.nextQ;
+    f.bytes = (uint32_t)text.size();
+    f.lines = 1 + (uint32_t)std::count(text.begin(), text.end(), '\n');
+    (void)tx::stubTime(epoch(), t_.tz, f.hhmm);
+    f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
+    f.cls = tx::ResultClass::Bulk;
+    f.noCard = !kept;
+    return tx::stubText(f, out);
   }
   static std::string hex8(const std::string& s) {
     static const char kHex[] = "0123456789abcdef";
@@ -663,24 +750,14 @@ class TurnRun {
   }
 
   // Tier 1 for assistant text: over kTier1AssistantText it goes to the bulk file and the a
-  // item holds its stub (computed once, like a result's).
+  // item holds its stub; when the bulk file refuses, the text stays inline if its line fits.
   Status tierText(const std::string& text, tx::Item& a) {
-    if (text.size() <= tx::kTier1AssistantText) {
-      a.x = text;
-      return Status::success();
-    }
+    a.x = text;
+    if (text.size() <= tx::kTier1AssistantText) return Status::success();
     std::string handle;
     const bool kept = d_.log->appendBulk(t_.ctx.turn, text, handle).ok();
-    tx::StubFacts& f = renew(t_.stub);
-    f.tool = "reply";
-    f.q = c_.nextQ;
-    f.bytes = (uint32_t)text.size();
-    f.lines = 1 + (uint32_t)std::count(text.begin(), text.end(), '\n');
-    (void)tx::stubTime(epoch(), t_.tz, f.hhmm);
-    f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
-    f.cls = tx::ResultClass::Bulk;
-    f.noCard = !kept;
-    return tx::stubText(f, a.x);
+    if (!kept && text.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();
+    return stubOf(texts::device_notes::kAssistantSlug, text, kept, a.x);
   }
 
   Status meta(const ParsedStep& step, uint16_t beforeCall) {
@@ -787,7 +864,7 @@ class TurnRun {
         if (!st.ok()) return st;
       }
       if (recorded) {
-        out = d_.dispatch(call, t_.ctx);
+        dispatchOne(call, out);
         ++t_.end.tools;
       } else {
         out.text = texts::tool_results::kNotRunUnrecorded;
@@ -798,6 +875,21 @@ class TurnRun {
     out.name = call.name;
     out.outside |= outsideByClass(view);
     return storeResult(call, out, view);
+  }
+
+  // One dispatch. A handler that throws (anything but a refused allocation, which is the
+  // turn's designed state) is an error result for this one call; the turn goes on. Nothing
+  // wider is caught.
+  void dispatchOne(const ToolCall& call, ToolOutput& out) {
+    try {
+      out = d_.dispatch(call, t_.ctx);
+    } catch (const std::bad_alloc&) {
+      throw;
+    } catch (const std::exception&) {
+      out = ToolOutput{};
+      out.isError = true;
+      out.text = texts::tool_results::kToolFailed;
+    }
   }
 
   Status answerUnrun(const ToolCall& call, const char* why) {
@@ -889,12 +981,12 @@ class TurnRun {
   // Delivery first: nothing that allocates much (the superseded-read scan) runs before the
   // reply in hand has gone out.
   Status close() {
+    settle();
     closingFacts();
     DeliverOutcome sent;
     deliver(sent);
-    t_.sent = sent.sent;
+    Status st = delivered(sent);   // the d item and afterDeliver, before the scan below allocates
     if (!t_.storeFailed) supersede();
-    Status st = delivered(sent);
     if (!t_.storeFailed) st = storeEnd();
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
     c_.head.nextQ = c_.nextQ;
@@ -904,14 +996,9 @@ class TurnRun {
 
   // The turn's status line, the superseded reads and the change points, before delivery.
   void closingFacts() {
-    if (t_.cause.empty() || t_.storeFailed) t_.cause = t_.storeFailed ? "memory" : "stopped";
-    if (t_.storeFailed) {   // the arena refused: nothing of this turn from here on was kept
-      t_.status = StatusLine::CrashNotice;
-      t_.statusText = texts::device_notes::kNoMemory;
-    } else if (t_.storageLineDue && t_.status == StatusLine::None) {
-      t_.status = StatusLine::StorageState;
-      t_.statusText = texts::device_notes::kStorageLine;
-    }
+    if (t_.cause.empty()) t_.cause = "stopped";
+    if (t_.storeFailed) refusedLine();
+    else if (t_.storageLineDue) setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
     if (t_.sawOutside) event("change:outside");
     if (t_.sawMeta) event("change:thinking");   // closed-turn thinking is not replayed (ruling 13)
     if (d_.recentFiles && t_.fileSetChanged) {
@@ -921,8 +1008,20 @@ class TurnRun {
     }
   }
 
+  // The arena refused an item: a true line for why. Over the line limit: an owner message has
+  // its own line, any other part the too-long line; otherwise the arena is full.
+  void refusedLine() {
+    const bool tooLong = t_.storeErr == Err::TooLarge && std::strcmp(t_.storeWhere, "tx::encodeLine") == 0;
+    t_.cause = tooLong ? "too-long" : "memory";
+    if (!tooLong) setStatus(StatusLine::CrashNotice, texts::device_notes::kNoMemory);
+    else if (t_.refusedKind == tx::ItemKind::User) setStatus(StatusLine::CrashNotice, texts::device_notes::kMessageTooLong);
+    else setStatus(StatusLine::CrashNotice, texts::device_notes::kTooLong);
+  }
+
   // The d item and afterDeliver.
   Status delivered(const DeliverOutcome& sent) {
+    if (t_.closedDelivery) return Status::success();
+    t_.closedDelivery = true;
     Status st = Status::success();
     if (!t_.storeFailed && sent.sent) {
       tx::Item& dItem = blank(tx::ItemKind::Delivery);
@@ -962,38 +1061,54 @@ class TurnRun {
   }
 
   // Earlier calls through a router, and their results, as the tools they reached.
+  // A result is the oldest open call's of its id, as the wire pairs them.
   void resolveRouted(std::vector<tx::Item>& items) const {
-    std::vector<std::pair<std::string, std::string>> names;   // call id -> target name
+    std::vector<std::pair<std::string, std::string>> open;   // call id -> the name it reached
     for (tx::Item& it : items) {
       if (it.kind == tx::ItemKind::Call) {
         const CallView v = viewOf(it.n, it.args);
-        if (v.name == it.n) continue;
-        names.emplace_back(it.id, v.name);
+        open.emplace_back(it.id, v.name);
         it.n = v.name;
         it.args = v.args;
       } else if (it.kind == tx::ItemKind::Result) {
-        for (const auto& kv : names)
-          if (kv.first == it.id) it.n = kv.second;
+        for (size_t k = 0; k < open.size(); ++k)
+          if (open[k].first == it.id) {
+            it.n = open[k].second;
+            open.erase(open.begin() + (long)k);
+            break;
+          }
       }
     }
   }
 
   // One portable deliver function (RB-E3); until it lands, the channel's send, the reply
   // first and the status line as its own message.
+  // Each send is recorded the moment it succeeds, so the refusal path never sends it again.
   void deliver(DeliverOutcome& out) {
+    out.sent = t_.sent;
+    if (t_.deliverDone) return;
     DeliverInput in;
     in.turn = &t_.ctx;
-    if (t_.reply) in.text = t_.text;
-    in.status = t_.status;
-    in.statusText = t_.statusText;
-    const Status st = deliverTurn(DeliverDeps{d_.channel, d_.hooks, d_.log}, in, out);
-    if (!st.notImplemented() || !d_.channel || !d_.channel->send) return;
-    out = DeliverOutcome{};
-    if (!in.text.empty() && d_.channel->send(t_.ctx.chatId, in.text)) {
-      out.sent = true;
-      out.bytes = (uint32_t)in.text.size();
+    if (t_.reply && !t_.sent) in.text = t_.text;
+    if (!t_.statusSent) {
+      in.status = t_.status;
+      in.statusText = t_.statusText;
     }
-    if (!in.statusText.empty()) (void)d_.channel->send(t_.ctx.chatId, in.statusText);
+    const Status st = deliverTurn(DeliverDeps{d_.channel, d_.hooks, d_.log}, in, out);
+    if (!st.notImplemented()) {
+      t_.sent = t_.sent || out.sent;
+      t_.statusSent = t_.deliverDone = true;
+      return;
+    }
+    if (d_.channel && d_.channel->send) {
+      if (!in.text.empty() && d_.channel->send(t_.ctx.chatId, in.text)) {
+        t_.sent = true;
+        out.bytes = (uint32_t)in.text.size();
+      }
+      out.sent = t_.sent;
+      if (!in.statusText.empty() && d_.channel->send(t_.ctx.chatId, in.statusText)) t_.statusSent = true;
+    }
+    t_.deliverDone = true;
   }
 
   Status storeEnd() {
@@ -1012,23 +1127,30 @@ class TurnRun {
   }
 
  public:
-  // A refused allocation stopped the turn (ruling 30): the owner gets the reply already in
-  // hand, or one plain line, and the turn is closed where storage allows. Each step stands
-  // alone: a second refusal skips only that step.
-  void refused() {
-    if (!t_.sent) {
-      const bool reply = t_.reply && !t_.text.empty();
-      t_.reply = reply;
-      t_.status = reply ? StatusLine::None : StatusLine::CrashNotice;
-      t_.statusText = reply ? std::string() : std::string(texts::device_notes::kNoMemory);
-      try {
-        DeliverOutcome sent;
-        deliver(sent);
-        t_.sent = sent.sent;
-      } catch (const std::bad_alloc&) {
+  // A refused allocation stopped the turn (ruling 30), a designed state: the owner gets the
+  // reply in hand (the answer, else the held reply) and the memory line, unless delivery had
+  // already finished; nothing already sent is sent again; then the d item and afterDeliver,
+  // the e item and head.json where storage allows. Each step stands alone: a second refusal
+  // skips only that step, and nothing here lets a refusal leave.
+  void refused() noexcept {
+    try {
+      settle();
+      if (!t_.deliverDone) {
+        t_.cause = "memory";
+        setStatus(StatusLine::CrashNotice, texts::device_notes::kNoMemory);
       }
+    } catch (const std::bad_alloc&) {
     }
-    t_.cause = "memory";
+    DeliverOutcome sent;
+    try {
+      deliver(sent);
+    } catch (const std::bad_alloc&) {
+    }
+    try {
+      sent.sent = t_.sent;
+      (void)delivered(sent);
+    } catch (const std::bad_alloc&) {
+    }
     try {
       if (!t_.storeFailed && (t_.endStored || storeEnd().ok())) c_.head.openTurn = 0;
       c_.head.nextQ = c_.nextQ;
@@ -1060,8 +1182,11 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   if (!depsReady(deps_) || !chat_ || !chat_->booted) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn");
   std::unique_ptr<Turn> t(new (std::nothrow) Turn());
   if (!t) {   // not even the turn's state: the owner still hears it (nothing was stored)
-    if (deps_.channel && deps_.channel->send) (void)deps_.channel->send(in.ctx.chatId, texts::device_notes::kNoMemory);
     out.status = StatusLine::CrashNotice;
+    try {
+      if (deps_.channel && deps_.channel->send) (void)deps_.channel->send(in.ctx.chatId, texts::device_notes::kNoMemory);
+    } catch (const std::bad_alloc&) {
+    }
     return Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
   }
   Status st = Status::success();
@@ -1073,17 +1198,22 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
     TurnRun(deps_, *chat_, *t).refused();
     st = Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
   }
+  // The plain fields first; the copies that allocate each stand alone (a refusal leaves them
+  // empty, never the call).
   out.delivered = t->sent;
-  out.text = t->reply ? t->text : std::string();
   out.rounds = t->rounds;
   out.toolCalls = t->end.tools;
   out.headRequests = t->end.headRequests;
   out.trip = t->trip;
   out.status = t->status;
-  out.statusText = t->statusText;
   out.parkHost = t->parkHost;
   out.failOver = t->failOver;
-  out.end = t->end;
+  try {
+    if (t->reply) out.text = t->text;
+    out.statusText = t->statusText;
+    out.end = t->end;
+  } catch (const std::bad_alloc&) {
+  }
   return st;
 }
 

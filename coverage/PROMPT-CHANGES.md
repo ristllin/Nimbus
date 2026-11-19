@@ -637,18 +637,18 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: device_notes
 - kind: build
-- bytes: 646 -> 929
-- sha8: 88688fc7 -> 8a236d11
+- bytes: 646 -> 1153
+- sha8: 88688fc7 -> 9d5c54e9
 - lane: RB-E1a
 - prd: section 1 step 5 (on a guard trip one item '[device] limit reached (rounds|time|spend|size)') and section 2 ("No card": a failed append puts the item in a not-stored state, the model sees one device line, the owner one line per episode)
-- why: lib/harness/src/plain_engine.cpp: the frame of the guard's limit item (the slug is guardTripSlug), the one device note the model sees when storage refused part of the conversation, the owner's storage-state line, and the owner's line when the device's memory refused the turn (an allocation, or the conversation's arena: ruling 30's designed state ends with a plain line), both on section 8.9's closed list; planned work, not a fix
+- why: lib/harness/src/plain_engine.cpp: the frame of the guard's limit item (the slug is guardTripSlug), the one device note the model sees when storage refused part of the conversation, the owner's storage-state line, and the owner's line when the device's memory refused the turn (an allocation, or the conversation's arena: ruling 30's designed state ends with a plain line), the owner's lines when a part of the turn, or the owner's message, was over the stored line's limit, the owner's line when the last allowed round only called tools (ruling 56 item 3), all on section 8.9's closed list, and the tool slug of a long reply's stub ('assistant'); planned work, not a fix
 
 ### PC-0027: the plain loop's results for a call that did not run (engine 2)
 - catalog: e2
 - class: tool_results
 - kind: build
-- bytes: 1936 -> 2132
-- sha8: bfe0657b -> d0a1303d
+- bytes: 1936 -> 2179
+- sha8: bfe0657b -> 743e2ca0
 - lane: RB-E1a
 - prd: section 7 (cut tool arguments are never dispatched; an effect tool whose intent cannot be stored returns 'not run: could not record the action first'; an intent with no result is shown as outcome unknown and never re-run)
-- why: lib/harness/src/plain_engine.cpp answers a call it did not run with one fact: the answer was cut, the intent could not be recorded, the turn reached its limit (a call in the last round with tool choice none), or the turn stopped while the call ran (closed at the next turn open, so every request stays paired); planned work, not a fix
+- why: lib/harness/src/plain_engine.cpp answers a call it did not run with one fact: the answer was cut, the intent could not be recorded, the turn reached its limit (a call in the last round with tool choice none), or the turn stopped while the call ran (closed at the next turn open, so every request stays paired); and the error result of a call whose tool handler threw (ruling 56 item 2); planned work, not a fix

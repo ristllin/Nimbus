@@ -781,11 +781,15 @@ inline void test_rung_three_sizes_turns_by_what_they_render() {
 inline void test_an_item_the_arena_refuses_ends_the_turn_with_a_true_line() {
   txb::Battery b;
   plain::TurnOutcome out;
-  const tx::Status st = b.owner(std::string(70000, 'x'), out);
+  TXB_OK(b.boot());
+  // A full arena: the conversation's own memory refuses the turn's items.
+  TXB_OK(b.arena->init(128, b.platform.allocLarge, b.platform.freeLarge));
+  const tx::Status st = b.owner("hello there, a normal message", out);
   TEST_ASSERT_FALSE(st.ok());
   TEST_ASSERT_EQUAL(0, (int)b.model.requests().size());
   TEST_ASSERT_EQUAL(1, (int)b.sent.size());
   TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent[0].text.c_str());
+  TXB_OK(b.arena->init(tx::kActiveChatArenaBytes, b.platform.allocLarge, b.platform.freeLarge));
   b.model.push(sp::say("Hi."));
   b.advance(30);
   TXB_OK(b.owner("hello", out));
@@ -811,7 +815,8 @@ inline void test_a_long_argument_is_stored_as_its_stub() {
 
 inline void test_a_huge_argument_and_a_huge_reply_keep_the_turn() {
   txb::Battery b;
-  b.model.push(sp::call("write_file", "{\"path\":\"notes/huge.md\",\"text\":\"" + std::string(70000, 'h') + "\"}"));
+  // 63 KB: over the stored line's limit and under the 65,535 B string the JSON parsers read.
+  b.model.push(sp::call("write_file", "{\"path\":\"notes/huge.md\",\"text\":\"" + std::string(63000, 'h') + "\"}"));
   const std::string reply = std::string(61000, 'r') + " END";
   b.model.push(sp::say(reply));
   plain::TurnOutcome out;
@@ -824,7 +829,7 @@ inline void test_a_huge_argument_and_a_huge_reply_keep_the_turn() {
   b.model.push(sp::say("ok"));
   TXB_OK(b.owner("next", out));
   TEST_ASSERT_TRUE(b.model.last().body.find(" END") == std::string::npos);   // the reply is a stub now
-  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[stub reply r"));
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[stub assistant r"));
 }
 
 // I: results pair with their call by q, not by id: a dialect that reuses ids still gets each
@@ -889,7 +894,16 @@ inline void test_a_held_reply_survives_a_failed_extra_round() {
   TXB_OK(b.owner("log it", out));
   TEST_ASSERT_EQUAL(2, (int)b.sent.size());
   TEST_ASSERT_EQUAL_STRING("Logged it.", b.sent[0].text.c_str());
+  TEST_ASSERT_EQUAL_STRING(out.statusText.c_str(), b.sent[1].text.c_str());
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
+  const std::vector<tx::Item> items = storedOf(b);
+  TEST_ASSERT_EQUAL_STRING("provider:server", lastEnd(items)->end.cause.c_str());
+  // One a item: the held reply, stored as interim text when it was held (fin false); the d item
+  // records that it went out.
+  TEST_ASSERT_EQUAL(1, (int)countKind(items, tx::ItemKind::Assistant));
+  for (const tx::Item& it : items)
+    if (it.kind == tx::ItemKind::Assistant) TEST_ASSERT_FALSE(it.fin);
+  TEST_ASSERT_EQUAL(1, (int)countKind(items, tx::ItemKind::Delivery));
 }
 
 // L: a status line a seam asks for is sent after the reply; a cut answer is shown to the seam.
@@ -947,8 +961,10 @@ inline void test_a_refused_send_still_delivers_the_reply_in_hand() {
   b.model.push(sp::say("The answer."));
   plain::TurnOutcome out;
   (void)b.owner("q", out);
-  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  // The refused send is retried by the refusal path, with the memory line after it.
+  TEST_ASSERT_EQUAL(2, (int)b.sent.size());
   TEST_ASSERT_EQUAL_STRING("The answer.", b.sent[0].text.c_str());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent[1].text.c_str());
 }
 
 inline size_t ladderEvents(txb::Battery& b) {
@@ -989,6 +1005,362 @@ inline void test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows
     TEST_ASSERT_EQUAL_STRING_MESSAGE("Read both.", out.text.c_str(), out.statusText.c_str());
     TEST_ASSERT_TRUE(ladderEvents(b) >= 2);
   }
+}
+
+// ---- ruling 56: the check of the review fixes --------------------------------------------------
+// 1. The allocator hook (ruling 30 and 56): a refusal at every allocation of a whole turn (a
+// tool round and a reply), from before the first request to the copy-out of the outcome. No
+// std::bad_alloc leaves runTurn, nothing is sent twice, and the next turn answers paired.
+namespace alloc_hook {
+inline bool armed = false;
+inline long refuseAt = -1;
+inline long count = 0;
+inline void arm(long at) {
+  count = 0;
+  refuseAt = at;
+  armed = true;
+}
+inline void disarm() { armed = false; }
+}  // namespace alloc_hook
+
+inline void hookTurn(txb::Battery& b, plain::TurnOutcome& out, plain::TurnInput& in, bool& escaped) {
+  escaped = false;
+  try {
+    (void)b.engine->runTurn(in, out);
+  } catch (const std::bad_alloc&) {
+    escaped = true;
+  }
+}
+
+inline void test_a_refusal_at_every_allocation_of_a_turn_never_leaves_runTurn() {
+  // How many allocations a whole turn makes.
+  long total = 0;
+  {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    TXB_OK(b.boot());
+    b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+    b.model.push(sp::say("It says alpha."));
+    plain::TurnInput in;
+    in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+    in.ctx.who = &b.who;
+    in.ctx.host = "api.anthropic.com";
+    in.ctx.model = "claude-sonnet-5-5";
+    in.text = "what does a say?";
+    plain::TurnOutcome out;
+    bool escaped = false;
+    alloc_hook::arm(-1);
+    hookTurn(b, out, in, escaped);
+    total = alloc_hook::count;
+    alloc_hook::disarm();
+    TEST_ASSERT_EQUAL_STRING("It says alpha.", out.text.c_str());
+  }
+  TEST_ASSERT_TRUE(total > 50);
+  for (long k = 0; k < total; ++k) {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    TXB_OK(b.boot());
+    b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+    b.model.push(sp::say("It says alpha."));
+    plain::TurnInput in;
+    in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+    in.ctx.who = &b.who;
+    in.ctx.host = "api.anthropic.com";
+    in.ctx.model = "claude-sonnet-5-5";
+    in.text = "what does a say?";
+    plain::TurnOutcome out;
+    bool escaped = false;
+    alloc_hook::arm(k);
+    hookTurn(b, out, in, escaped);
+    alloc_hook::disarm();
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "a refusal at allocation %ld of %ld", k, total);
+    TEST_ASSERT_FALSE_MESSAGE(escaped, msg);
+    size_t replies = 0;
+    for (const txb::SentMessage& m : b.sent) replies += m.text == "It says alpha.";
+    TEST_ASSERT_TRUE_MESSAGE(replies <= 1, msg);
+    TEST_ASSERT_TRUE_MESSAGE(b.sent.size() <= 2, msg);
+    // The chat goes on: the next turn answers, and its request is paired.
+    plain::TurnOutcome next;   // the steps the refused turn did not use come first, then "ok"
+    b.model.push(sp::say("ok"));
+    in.text = "next";
+    in.ctx.turn = 0;
+    TXB_OK(b.engine->runTurn(in, next));
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(b.model.last().view, why), (std::string(msg) + ": " + why).c_str());
+  }
+}
+
+// 2. A tool handler that throws is an error result for that one call; the turn goes on.
+inline void test_a_throwing_tool_is_one_failed_call() {
+  txb::Battery b;
+  b.world.files["notes/a.md"] = "alpha";
+  b.model.push(sp::calls({{"throw_tool", "{}", ""}, {"read_file", R"({"path":"notes/a.md"})", ""}}));
+  b.model.push(sp::say("One failed, a says alpha."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("try both", out));
+  TEST_ASSERT_EQUAL_STRING("One failed, a says alpha.", out.text.c_str());
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), texts::tool_results::kToolFailed));
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "alpha"));
+  expectPaired(b);
+}
+
+// 3. One place decides what the owner gets.
+inline void test_the_last_round_with_only_calls_ends_with_the_limit_line() {
+  txb::Battery b;
+  b.world.files["notes/a.md"] = "alpha";
+  b.model.respondWith([](const sp::Recorded& r, size_t) {
+    return sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(r.step) + "}");
+  });
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("keep reading", out));
+  TEST_ASSERT_EQUAL_STRING("none", b.model.last().view.toolChoice.c_str());
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kLimitLine, b.sent[0].text.c_str());
+  TEST_ASSERT_TRUE(out.status == plain::StatusLine::LimitReached);
+  TEST_ASSERT_EQUAL_STRING("limit:rounds", lastEnd(storedOf(b))->end.cause.c_str());
+}
+
+inline void holdOnce(txb::Battery& b) {
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [](const plain::DeliverCtx& c) {
+    plain::DeliverDecision d;
+    if (!c.held && !c.cut) {
+      d.verdict = plain::DeliverVerdict::Hold;
+      d.deviceNote = "[device] effects this turn: none.";
+    }
+    return d;
+  }));
+}
+
+inline void test_a_held_reply_survives_a_cut_or_empty_extra_round() {
+  for (int mode = 0; mode < 2; ++mode) {
+    txb::Battery b;
+    holdOnce(b);
+    b.model.push(sp::say("Logged it."));
+    if (mode == 0) b.model.respondWith([](const sp::Recorded&, size_t) { return sp::cut(""); });
+    else b.model.push(sp::say(""));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("log it", out));
+    TEST_ASSERT_TRUE(b.sent.size() >= 1);
+    TEST_ASSERT_EQUAL_STRING("Logged it.", b.sent[0].text.c_str());
+    TEST_ASSERT_TRUE(out.delivered);
+  }
+}
+
+inline void test_a_failed_write_receipt_is_never_replaced_by_a_weaker_line() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [](const plain::DeliverCtx&) {
+    plain::DeliverDecision d;
+    d.status = plain::StatusLine::FailedWrite;
+    d.statusText = "receipt line";
+    return d;
+  }));
+  b.model.push(sp::say(""));   // an empty answer would have the provider's line
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("save it", out));
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("receipt line", b.sent[0].text.c_str());
+  TEST_ASSERT_TRUE(out.status == plain::StatusLine::FailedWrite);
+}
+
+// 4. Rung 2 follows the rounds of the open turn before rung 3 omits any history.
+inline void test_rung_two_advances_before_history_is_omitted() {
+  txb::Battery b;
+  shortTurns(b, 8);
+  for (int i = 0; i < 6; ++i) b.model.push(sp::call("big_read", "{\"tag\":\"r" + std::to_string(i) + "\",\"bytes\":20000}"));
+  b.model.push(sp::say("Read six."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read six big ones", out));
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Read six.", out.text.c_str(), out.statusText.c_str());
+  for (const auto& r : b.model.requests())
+    TEST_ASSERT_TRUE_MESSAGE(txb::detail::omittedTurnsNamed(r.view) < 0, "history omitted while open-turn bulk could be stubbed");
+}
+
+// 5. Tier rules: a refused bulk write, nested strings, the bulk file read back, unparsable
+// arguments.
+inline const tx::Item* lastCall(const std::vector<tx::Item>& items) {
+  const tx::Item* c = nullptr;
+  for (const tx::Item& it : items)
+    if (it.kind == tx::ItemKind::Call) c = &it;
+  return c;
+}
+
+inline void test_a_refused_bulk_write_never_promises_view() {
+  for (size_t bytes : {12000u, 63000u}) {
+    txb::Battery b;
+    TXB_OK(b.boot());
+    const std::string arg = std::string(bytes, 'v');
+    b.model.push(sp::call("write_file", "{\"path\":\"notes/v.md\",\"text\":\"" + arg + "\"}"));
+    b.model.push(sp::say("Saved."));
+    // The first bulk append (the arguments) is refused; item lines start with {"k":.
+    b.files.refuseWhen = [](const char* d, size_t n) { return n > 11000 && std::string(d, std::min<size_t>(n, 8)).find("\"k\"") == std::string::npos; };
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("save", out));
+    b.files.refuseWhen = nullptr;
+    const std::vector<tx::Item> items = storedOf(b);
+    const tx::Item* c = lastCall(items);
+    TEST_ASSERT_NOT_NULL(c);
+    if (bytes == 12000u) {
+      TEST_ASSERT_TRUE_MESSAGE(c->args.find(arg) != std::string::npos, "a refused bulk write lost arguments that fit inline");
+    } else {
+      TEST_ASSERT_TRUE_MESSAGE(c->args.find("view id=") == std::string::npos, "a stub promises view of a bulk write that was refused");
+      TEST_ASSERT_TRUE(c->args.find("[stub ") != std::string::npos);
+    }
+    TEST_ASSERT_EQUAL_STRING("Saved.", out.text.c_str());
+  }
+}
+
+inline void test_nested_long_strings_are_stubbed_and_the_bulk_holds_the_whole() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  const std::string a1 = std::string(2000, 'x') + "-NESTED-1", a2 = std::string(3000, 'y') + "-NESTED-2";
+  const std::string args = "{\"path\":\"notes/n.md\",\"parts\":[\"" + a1 + "\",{\"deep\":\"" + a2 + "\"}]}";
+  // Cut at the c line's append: the bulk file must already hold the whole arguments.
+  b.files.killWhen = [](const char* d, size_t n) { return std::string(d, n).find("\"k\":\"c\"") != std::string::npos; };
+  b.model.push(sp::call("append_file", args));
+  plain::TurnOutcome out;
+  (void)b.owner("append", out);
+  TEST_ASSERT_TRUE(b.killed);
+  bool whole = false;
+  for (const auto& kv : b.files.files) whole |= kv.first.find(".txb") != std::string::npos && kv.second.find(args) != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(whole, "the bulk file does not hold the whole arguments before the c line");
+  txb::Battery k;
+  k.model.push(sp::call("append_file", args));
+  k.model.push(sp::say("ok"));
+  TXB_OK(k.owner("append", out));
+  const std::vector<tx::Item> items = storedOf(k);
+  const tx::Item* c = lastCall(items);
+  TEST_ASSERT_NOT_NULL(c);
+  TEST_ASSERT_TRUE_MESSAGE(c->args.find("-NESTED-1") == std::string::npos && c->args.find("-NESTED-2") == std::string::npos,
+                           "a nested long string is stored whole");
+  TEST_ASSERT_TRUE(c->args.find("notes/n.md") != std::string::npos);
+}
+
+inline void test_unparsable_long_arguments_are_one_stub() {
+  txb::Battery b(plain::Dialect::ChatCompletions);
+  sp::Step s = sp::call("write_file", "{\"path\":\"notes/h.md\",\"text\":\"" + std::string(63000, 'h'));   // cut JSON
+  b.model.push(s);
+  b.model.push(sp::say("It was cut."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("write it", out));
+  TEST_ASSERT_EQUAL_STRING("It was cut.", out.text.c_str());
+  const std::vector<tx::Item> items = storedOf(b);
+  const tx::Item* c = lastCall(items);
+  TEST_ASSERT_NOT_NULL(c);
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)c->args.rfind("[stub ", 0), "unparsable long arguments are not one stub");
+  TEST_ASSERT_EQUAL(0, b.world.runsOf("write_file"));
+}
+
+// 6. An owner message over the line limit: its own true line, not "out of memory".
+inline void test_an_owner_message_over_the_line_limit_gets_its_own_line() {
+  txb::Battery b;
+  plain::TurnOutcome out;
+  const tx::Status st = b.owner(std::string(70000, 'x'), out);
+  TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kMessageTooLong, b.sent[0].text.c_str());
+}
+
+// 8. The not-stored note renders once, also after storage returns.
+inline void test_the_not_stored_note_renders_once() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  b.world.files["notes/a.md"] = "alpha";
+  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [&b](const plain::DispatchCtx&) {
+    b.files.refuseAll = !b.files.refuseAll;
+    return plain::DispatchDecision{};
+  }));
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));   // refused: the episode starts
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));   // stored: storage is back
+  b.model.push(sp::say("done"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read twice", out));
+  const std::string& body = b.model.last().body;
+  size_t n = 0;
+  for (size_t at = body.find(texts::device_notes::kNotStored); at != std::string::npos;
+       at = body.find(texts::device_notes::kNotStored, at + 1))
+    ++n;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)n, "the model sees the not-stored note more than once");
+}
+
+// ---- red cases for other lanes (ruling 56; on test/pending_roster.txt with ruling:56) ---------
+inline void test_a_full_arena_frees_its_oldest_closed_turn() {
+  TXB_WAITS_FOR("PENDING RB-E1b", "RB-E1a");
+  txb::Battery b;
+  shortTurns(b, 3);
+  TXB_OK(b.arena->init(4096, b.platform.allocLarge, b.platform.freeLarge));
+  shortTurns(b, 6);   // each turn must still answer: the oldest closed turns give way
+  TEST_ASSERT_EQUAL(9, (int)b.sent.size());
+}
+
+inline void test_view_fetches_a_long_argument_and_a_long_reply_back() {
+  TXB_WAITS_FOR("PENDING RB-N3", "RB-E1a");
+  txb::Battery b;
+  b.model.push(sp::call("write_file", "{\"path\":\"notes/l.md\",\"text\":\"" + std::string(5000, 'l') + "\"}"));
+  b.model.push(sp::say(std::string(13000, 'r')));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("save", out));
+  for (const tx::Item& it : storedOf(b))
+    if (it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Assistant)
+      TEST_ASSERT_TRUE_MESSAGE(!it.handle.empty(), "a stubbed argument or reply has no bulk handle for view");
+}
+
+inline void test_a_long_owner_message_goes_to_the_inbox_as_a_file() {
+  TXB_WAITS_FOR("PENDING RB-TG1", "RB-E1a");
+  txb::Battery b;
+  b.model.push(sp::say("Read the file."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner(std::string(70000, 'p'), out));
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "inbox/"));
+}
+
+inline void test_signed_thinking_over_the_line_limit_keeps_the_turn() {
+  TXB_WAITS_FOR("PENDING RB-W1b", "RB-E1a");
+  txb::Battery b;
+  sp::Step s = sp::call("read_file", R"({"path":"notes/a.md"})");
+  s.thinking = std::string(63000, 't');
+  b.model.push(s);
+  b.model.push(sp::say("done"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("think hard", out));
+  TEST_ASSERT_EQUAL_STRING("done", out.text.c_str());
+}
+
+inline void test_guard_inputs_measure_size_and_spend() {
+  TXB_WAITS_FOR("PENDING RB-E1b", "RB-E1a");
+  txb::Battery b;
+  sp::Step s = sp::say("hi");
+  s.usage.cacheRead = 9000;
+  b.model.push(s);
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("hello", out));
+  TEST_ASSERT_TRUE_MESSAGE(out.end.promptTokens >= 9000, "the size guard does not count cached prompt tokens");
+  TEST_ASSERT_TRUE_MESSAGE(out.end.microUsd > 0, "the spend guard has no price");
+}
+
+inline void test_a_routed_head_sends_the_deadline_header() {
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-E1a");
+  txb::Battery b(plain::Dialect::Flat);
+  b.model.push(sp::say("hi"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("hello", out));
+  bool header = false;
+  for (const auto& h : b.model.last().req.headers) header |= h.first.find("eadline") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(header, "a routed request carries no deadline header");
+}
+
+inline void test_the_log_reopens_when_storage_returns() {
+  TXB_WAITS_FOR("PENDING RB-I3", "RB-E1a");
+  txb::Battery b;
+  b.files.refuseAll = true;
+  TXB_OK(b.boot());
+  b.files.refuseAll = false;
+  b.model.push(sp::say("hi"));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("hello", out));
+  TEST_ASSERT_TRUE_MESSAGE(!storedOf(b).empty(), "storage came back and nothing was stored");
 }
 
 // ---- the sentinel ----------------------------------------------------------------------------
@@ -1040,6 +1412,24 @@ inline void run() {
   RUN_TEST(test_more_resolution_edges);
   RUN_TEST(test_a_refused_send_still_delivers_the_reply_in_hand);
   RUN_TEST(test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows);
+  RUN_TEST(test_a_refusal_at_every_allocation_of_a_turn_never_leaves_runTurn);
+  RUN_TEST(test_a_throwing_tool_is_one_failed_call);
+  RUN_TEST(test_the_last_round_with_only_calls_ends_with_the_limit_line);
+  RUN_TEST(test_a_held_reply_survives_a_cut_or_empty_extra_round);
+  RUN_TEST(test_a_failed_write_receipt_is_never_replaced_by_a_weaker_line);
+  RUN_TEST(test_rung_two_advances_before_history_is_omitted);
+  RUN_TEST(test_a_refused_bulk_write_never_promises_view);
+  RUN_TEST(test_nested_long_strings_are_stubbed_and_the_bulk_holds_the_whole);
+  RUN_TEST(test_unparsable_long_arguments_are_one_stub);
+  RUN_TEST(test_an_owner_message_over_the_line_limit_gets_its_own_line);
+  RUN_TEST(test_the_not_stored_note_renders_once);
+  RUN_TEST(test_a_full_arena_frees_its_oldest_closed_turn);
+  RUN_TEST(test_view_fetches_a_long_argument_and_a_long_reply_back);
+  RUN_TEST(test_a_long_owner_message_goes_to_the_inbox_as_a_file);
+  RUN_TEST(test_signed_thinking_over_the_line_limit_keeps_the_turn);
+  RUN_TEST(test_guard_inputs_measure_size_and_spend);
+  RUN_TEST(test_a_routed_head_sends_the_deadline_header);
+  RUN_TEST(test_the_log_reopens_when_storage_returns);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);
 }
 
