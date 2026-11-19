@@ -46,7 +46,6 @@ struct RequestFacts {
   std::string digestBlock;     // tx::digestBlock
   std::string recentFiles;     // tx::recentFilesList
   std::string timeZone;        // IANA name ("Europe/London"); "" when not set
-  bool food = false;           // not read (ruling 41): removed in the next commit
   bool admin = false;          // the person is the owner
   bool shortHost = false;      // the head host answers within 60 s (write_file 4,096 B)
 };
