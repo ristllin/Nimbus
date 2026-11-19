@@ -591,6 +591,51 @@ void test_floor_dialogue_table() {
   setRoutedBudgetLiftForTest(-1);
 }
 
+
+// RB-BGb (c), RB-BG's own note: on a busy day the day floor keeps today whole up to its 16,384 B
+// cap (about 4,100 tokens), which on a routed head at the 85,000 B floor can be more than the
+// request's measured room, so round 0 goes over the floor into the refit. Measured on the busy
+// twin, every day size from 10 to 60 exchanges today, recall on and off, the three routed heads
+// (the count is printed; evidence/c-busy-day-measure.log). Every such round is refit to fit,
+// never refused to the owner; nothing of the turn's own is there at round 0, so the refit gives
+// up the context in the protocol's order, recalled memories before any of today's turns; and
+// what it gave up is named in the request that went (the LEFT OUT note, rows and the call to
+// read them back). The day floor itself is not shortened: the refit keeps every turn that fits,
+// a smaller static cap would carry less (owner, 19 Nov: never less history by default).
+void test_a_busy_day_over_the_floor_is_refit_and_named() {
+  setRoutedBudgetLiftForTest(0);
+  int cases = 0, over = 0;
+  std::string which;
+  for (int hi = 4; hi < 7; hi++)
+    for (int turns = 10; turns <= 60; turns += 2)
+      for (int recall = 0; recall < 2; recall++) {
+        const Shape s{"busy-today", turns, true, recall == 1};
+        Rig r(kHeads[hi], s);
+        const Measured m = r.measure();
+        cases++;
+        const std::string what = std::string(kHeads[hi].name) + " turns=" + std::to_string(turns) +
+                                 " recall=" + std::to_string(recall);
+        TEST_ASSERT_TRUE_MESSAGE(m.body <= kLegacyWireBodyBytes, what.c_str());
+        TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("nothing left to fold"), what.c_str());
+        if (!LogCapture::contains("over the 85000 B budget")) continue;
+        over++;
+        which += (which.empty() ? "" : "; ") + what;
+        const std::string& sent = r.wire.http.seen.back().body;
+        TEST_ASSERT_TRUE_MESSAGE(m.leftOut, (what + ": the refit names what it left out").c_str());
+        const bool today = sent.find("of today's earlier conversation message(s)") != std::string::npos;
+        if (today) TEST_ASSERT_TRUE_MESSAGE(sent.find("memory_episodic") != std::string::npos, what.c_str());
+        if (today && recall)
+          TEST_ASSERT_TRUE_MESSAGE(sent.find("recalled memory item(s)") != std::string::npos,
+                                   (what + ": recall goes before today's turns").c_str());
+      }
+  char line[1536];
+  std::snprintf(line, sizeof line, "busy day on routed heads: %d of %d round-0 requests over the floor, refit (%s)", over,
+                cases, which.c_str());
+  TEST_MESSAGE(line);
+  TEST_ASSERT_TRUE_MESSAGE(over > 0, "the sweep reaches the band over the floor");
+  setRoutedBudgetLiftForTest(-1);
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -599,5 +644,6 @@ int main(int, char**) {
   RUN_TEST(test_a_floor_head_carries_its_measured_room);
   RUN_TEST(test_the_routed_lift_in_both_states);
   RUN_TEST(test_floor_dialogue_table);
+  RUN_TEST(test_a_busy_day_over_the_floor_is_refit_and_named);
   return UNITY_END();
 }
