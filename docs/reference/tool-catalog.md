@@ -247,8 +247,8 @@ ride the never-dropped part of every owner-facing prompt as `[STANDING RULES]`.
 
 Notes:
 - Owner-only: a member or guest turn never sees the tool or the rules.
-- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis, the
-  dream) for every action except `list`.
+- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis) for
+  every action except `list`.
 - A turn that already read outside content can only add, and its rule waits as
   pending until the owner approves it (`/prefs approve <id>` or the web page).
 - The owner sees every change in a line the device writes itself, over Telegram.
@@ -278,8 +278,8 @@ and removed when the owner's message pairs a drop cue with the subject.
 
 Notes:
 - Owner-only: a member or guest turn never sees the tool or the list.
-- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis, the
-  dream): a routine must not plant follow-ups on the owner.
+- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis): a
+  routine must not plant follow-ups on the owner.
 - A turn that already read outside content cannot change the list at all: an
   open item is the owner's, not something a web page may shape.
 - The list stays small on purpose (at most 5 items, 160 bytes each); a full

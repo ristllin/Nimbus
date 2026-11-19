@@ -7,7 +7,7 @@
 # contract, counted in tools_raw); tools_wire = the tools array as serialized. prompt_demand = the prompt
 # when the owner sets the largest context budget (56,000 B): nothing is clipped, so text added to the
 # budget-bound static block shows here even where the head's budget hides it in prompt.
-measure turn=owner_text prompt=29420 system=23941 input=5479 history=4421 text=33841 tools=25506 registry_tools=56 tools_raw=29503 tools_wire=32097 body=66712 prompt_demand=30590
+measure turn=owner_text prompt=29420 system=23941 input=5479 history=4421 text=33841 tools=25506 registry_tools=56 tools_raw=29503 tools_wire=32097 body=66712 prompt_demand=30569
 group name=always tools=21 raw=10200
 group name=device tools=6 raw=4267
 group name=docs tools=3 raw=884

@@ -189,8 +189,9 @@ results turn could move the main model or stop sub-agents.
   admin at all, so a newly onboarded owner is the owner from the first message and
   position on the allowlist never makes anyone else one. The owner-only commands
   (`/model`, `/budget`, `/update`, `/mcp`, ...) read the same role.
-- **Unattended**: nobody is writing this turn right now. Routines, wakeups, the
-  nightly dream and the turn that summarizes sub-agent results are unattended (the
+- **Unattended**: nobody is writing this turn right now. Routines, wakeups and the
+  turn that summarizes sub-agent results are unattended (the nightly memory upkeep
+  makes no model call at all, since v5.2.0; the
   post-update notice is a fixed string, no turn at all, since v5.2.0). A routine and a
   wakeup run on the owner's chat; a results summary runs on the chat that started the
   sub-agents, under that chat's role, so the role alone cannot tell the owner's
@@ -282,7 +283,8 @@ owner's password.
 **The unattended policy** (v5.2.0, `lib/core/src/orch_unattended_policy.cpp`, ruling 76). On top of
 the rule table, a turn nobody is writing runs under its class's row. It never changes a setting, skill or
 permission and never writes a file (engine 2's routines may write only the paths their own definition
-lists); only the nightly upkeep writes memory. A class whose row says no spend makes no paid call: no
+lists) and never writes memory (the nightly memory upkeep is no turn: it makes no model call). A class
+whose row says no spend makes no paid call: no
 provider built-in rides its request, and a web search or a look at a photo counts as spend. A device
 setting element counts by knob: brightness, theme and sound level are the light and sound; every other knob
 is a setting. A wakeup an unattended turn sets is one hop of a chain: at most 3 hops without an attended
@@ -309,7 +311,6 @@ routines in both states.
 | Wakeup (assistant's, often at the owner's word) | yes | no | no | no | no | no | next hop, at most 3 | yes | no |
 | Self-wakeup (held note) | one short request, no tools | | | | | | | | |
 | Sub-agent report | yes | no | no | yes | a named artifact | next wave, run caps | no | no | no |
-| Nightly upkeep | yes | no | yes | yes | no | no | no | no | no |
 | Update notice | no model call: a fixed string | | | | | | | | |
 
 **What is not covered yet** (tracked for the next release):

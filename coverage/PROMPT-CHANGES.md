@@ -894,3 +894,53 @@ deleted. Engine 2 has no baseline.
 - lane: RB-H81
 - prd: section 9 (the migration), as amended by rulings 81 to 84 (ruling 84 item 6: when the rewrite of digest 0 is unset or refused, the old summary is carried verbatim, fenced and dated as the old summary; the fence says its paths and totals may be stale)
 - why: lib/core/include/nimbus/orch/tx/migrate.h migrate_text: the fence of the carried old summary ("[the earlier engine's summary, as of <when>; its file paths and totals may be out of date] ", "[the earlier engine's summary, continued] ", " [end of the earlier engine's summary]", " [the earlier engine's summary goes on in <path>]", " [the earlier engine's summary is cut here]"). Before, the old summary left the conversation (exported only) and only an anchor note named it, which lowered history by itself (owner ruling 81). Planned work, not a fix.
+### PC-0100: the mistral sub cap no longer names the nightly dream
+- catalog: e1
+- class: system
+- kind: spec
+- bytes: 43823 -> 43781
+- sha8: e31f6c20 -> 035ecd2c
+- lane: RB-Q2b
+- prd: section 1 (delete-list item 6: the dream model turn is off in v5.2.0)
+- why: the night makes no model call any more, so "this is not a limit on your own turns or the nightly dream"
+  names a turn that no longer exists; both variants now say "not a limit on your own turns". Removal only
+  (-21 B each); kind spec because the shortened string is a new text to the gate.
+
+### PC-0101: the dream turn's refusal line and label go; the setup copy names no dream model
+- catalog: e1
+- class: device_notes
+- kind: spec
+- bytes: 54793 -> 54700
+- sha8: 37e631c4 -> eadd9cad
+- lane: RB-Q2b
+- prd: section 1 (delete-list item 6: the dream model turn is off in v5.2.0)
+- why: engine.cpp's memory-only refusal (" is not available in this background turn (memory tools only)", 61 B)
+  and the turn label "nightly dream" (13 B) served only the dream turn. The setup copy said the cheapest model
+  runs "routines and the nightly dream"; the upkeep runs no model, so it says "routines" (-19 B). Class -93 B.
+
+### PC-0102: the policy's noun for the nightly upkeep goes with its row
+- catalog: e1
+- class: tool_results
+- kind: remove
+- bytes: 35738 -> 35720
+- sha8: ba6b2b74 -> 06ea09d5
+- lane: RB-Q2b
+- prd: section 6 (one table of unattended turn classes; the dream class has no turn left)
+- why: TurnClass::Dream and its row leave the unattended policy (RB-Q2a's note to this lane), and with them the
+  refusal noun "the nightly upkeep" (18 B). Removal only.
+
+### PC-0103: the [DREAM] reflection prompt goes; the upkeep's row reports maintenance only
+- catalog: e1
+- class: side_prompts
+- kind: spec
+- bytes: 9518 -> 7432
+- sha8: 248062e9 -> 3ac2e48d
+- lane: RB-Q2b
+- prd: section 1 (delete-list item 6: decay and prune with no model call)
+- why: the reflection turn's input ([DREAM] instructions, [MEMORY STATS], [YESTERDAY], the memory-down line,
+  the re-cap note) is deleted with the turn, as are its cause rules, write counts, retry, streak and upkeep-note
+  texts. The timeline row and the reserved record's documentation prompt are rewritten for an upkeep with no
+  model call ("Nightly dream ok: maintenance pruned=%d deduped=%d (%d memories)%s", "No model call."), so the
+  class gets new, shorter texts. Owner ruling 81: PROGRESS.md note 2 lists what the turn produced and
+  test_harness_dream_night::test_morning_after_carries_at_least_rb_main pins that the morning request carries
+  at least rb-main's earlier conversation. Class -2,086 B.

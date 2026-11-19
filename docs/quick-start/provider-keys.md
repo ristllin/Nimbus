@@ -43,8 +43,8 @@ You can add more providers later. You only need one to finish setup.
 
 Each provider starts on cost-conscious models: its standard model for the assistant
 (Claude Sonnet 5 on Anthropic, the mini class on OpenAI, Mistral Medium, GLM-5.3 on
-Z.ai) and its cheapest model for helpers, photo captions, routines and the nightly
-dream (Claude Haiku 5.5, the nano class, Mistral Small, GLM-5.3 Flash). Stronger
+Z.ai) and its cheapest model for helpers, photo captions and routines (Claude
+Haiku 5.5, the nano class, Mistral Small, GLM-5.3 Flash). Stronger
 models are listed with their prices under **Assistant > Models**.
 
 Paid calls also pause once a month's estimated spend across all your providers

@@ -77,7 +77,7 @@ left it in the same browser, never past a required step that is not done yet.
 
 The **Add an AI provider** step and the last step of the wizard say what the device
 starts with: the provider's standard model for the assistant, its cheapest model for
-helpers, photo captions, routines and the nightly dream, and a **monthly spend
+helpers, photo captions and routines, and a **monthly spend
 ceiling of 20 USD** across all providers, after which paid calls pause until you
 raise it (**Assistant > Usage**) or the month ends. The ceiling starts counting once
 the device clock has synced with the internet, usually within a minute of joining

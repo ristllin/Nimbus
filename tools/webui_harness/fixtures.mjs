@@ -18,7 +18,7 @@ export const CEILING = {
 export const STATE = {
   spend: CEILING,
   setupDefaults:
-    "Each provider starts on a standard model for the assistant and its cheapest model for helpers, photo captions, routines and the nightly dream. Paid AI calls pause once a month's estimated spend reaches $20.00. Change models on Assistant > Models and the ceiling on Assistant > Usage.",
+    "Each provider starts on a standard model for the assistant and its cheapest model for helpers, photo captions and routines. Paid AI calls pause once a month's estimated spend reaches $20.00. Change models on Assistant > Models and the ceiling on Assistant > Usage.",
   fw: 'v4.3.0-pre', build: 'n1-harness', mode: 1, jobs: 2,
   heap: 120 * 1024, heapTotal: 300 * 1024, heapMin: 90 * 1024,
   psramFree: 6.2 * 1048576, psramTotal: 8 * 1048576,

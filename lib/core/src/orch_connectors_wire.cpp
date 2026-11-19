@@ -1777,7 +1777,7 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
   // AGENTS.md). Emitted only for the providers that are actually keyed.
   if (misUp && (oaiUp || antUp)) {
     out += "HOW LONG A SUB MAY RUN: a spawned mistral sub-agent is capped at ~60 "
-           "SECONDS (this is not a limit on your own turns or the nightly dream) - its "
+           "SECONDS (this is not a limit on your own turns) - its "
            "API is synchronous, so the device cannot wait past that and the sub's "
            "work is LOST, not delayed. Keep mistral subs to ONE focused lookup. "
            "For anything longer - a multi-source sweep, reading several pages, "
@@ -1786,8 +1786,8 @@ std::string catalogText(const std::vector<ConnectorInfo>& cs, const ProviderStat
     out += ", which run asynchronously and may take minutes.\n";
   } else if (misUp) {
     out += "HOW LONG A SUB MAY RUN: a spawned mistral sub-agent is capped at ~60 "
-           "SECONDS (its API is synchronous; this is not a limit on your own turns or "
-           "the nightly dream) and its work is LOST past that, so keep each sub "
+           "SECONDS (its API is synchronous; this is not a limit on your own turns) "
+           "and its work is LOST past that, so keep each sub "
            "to ONE focused lookup and split a big ask across several waves.\n";
   }
 

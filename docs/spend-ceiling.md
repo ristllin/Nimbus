@@ -43,7 +43,7 @@ Everything that calls a paid model:
 | Helpers (sub-agents) | Not started. A helper still running on a provider's side (OpenAI, Anthropic) is stopped, what it uses until it stops counts, and its result is not delivered; one message names the helpers being stopped. Raising the ceiling does not restart them. A helper that ran inside its one request (Mistral, Z.ai, Cumulo Nimbus, a custom endpoint) had already finished and keeps its result. Stopping a helper yourself always works. |
 | Photos and images | Not described or generated. |
 | Voice | Dictation and spoken replies are off. |
-| Routines and the nightly dream | Skipped for as long as the pause lasts. They are not counted as runs and they are not switched off; the Routines list shows them as skipped. |
+| Routines | Skipped for as long as the pause lasts. They are not counted as runs and they are not switched off; the Routines list shows them as skipped. |
 | Reminders and wakeups | Kept. Each one runs a few minutes after paid calls resume. |
 | Web search, memory search by meaning | Off. Memory is kept, and searching it by keyword still works. |
 | Screening of guests' messages | Off. A guest's message gets a short line that it could not be processed. |
@@ -60,7 +60,7 @@ paused; pressing **Verify** yourself still sends it.
 
 Everything that calls a paid model or service counts toward the ceiling:
 
-- replies to your messages, routines, reminders, wakeups and the nightly dream;
+- replies to your messages, routines, reminders and wakeups;
 - helpers (sub-agents) on every provider, including the web searches they run;
 - memory: saving a memory and searching it by meaning;
 - photo descriptions, speech to text, spoken replies, generated images;
@@ -230,7 +230,7 @@ tells you once a day when a provider's spend passes 5 USD or three times its usu
 A new setup uses each provider's standard model for the assistant and its cheapest
 model for everything that runs in the background:
 
-| Provider | The assistant | Helpers, photo captions, routines and the dream |
+| Provider | The assistant | Helpers, photo captions and routines |
 |---|---|---|
 | Anthropic | Claude Sonnet 5 (`claude-sonnet-5`) | Claude Haiku 5.5 (`claude-haiku-5-5`) |
 | OpenAI | the mini class (`gpt-5.6-luna`) | the nano class (`gpt-6-luna`) |
@@ -240,7 +240,7 @@ model for everything that runs in the background:
 
 The stronger models stay one click away: **Assistant > Models** lists every model a
 provider offers, with its price, and you can pick any of them for the assistant or
-for helpers. Routines, reminders, wakeups and the nightly dream always run on the
+for helpers. Routines, reminders and wakeups always run on the
 cheapest model with light reasoning, whatever the assistant runs on: nobody waits on
 them, and a routine that has nothing to say still pays for its thinking.
 

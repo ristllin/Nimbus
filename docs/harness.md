@@ -134,7 +134,7 @@ splits by its upstream once the router bills cached tokens at their own rate, be
 `kRoutedBudgetLift`). A failed turn keeps a bounded
 failure chain (at most three hosts, each host's first error and its attempt count,
 160 bytes each): the owner notice names the first cause, and the turn-end row, the
-error timeline row, the dream row, the routine record (`lastErr`) and
+error timeline row, the routine record (`lastErr`) and
 `device.status.lastFail` all carry it. The next turn's `[FALLBACK]` note says whose
 turn switched, how long ago, the whole provider path and why.
 
@@ -234,79 +234,43 @@ a quiet background turn; the next owner turn says it).
   history within its idle watch (every 30 s), and the output is never any turn's
   reply nor the legacy single-slot `GET /api/chat` reply (either would hand it to
   the owner's next message). A loop turn never fabricates a "Done.".
-- **Dreaming**: a reserved, undeletable (pause-only) daily loop at 03:30 local
-  (the device timezone - Settings → Mode & identity). The whole night is one pure
-  pipeline, `dream::runNight` (`lib/harness/src/dream.cpp`, host-tested); the device
-  glue only binds its seams. Stage 1 (no LLM): vector decay + expiry prune +
-  windowed dedup + persist, at most once per local day, skipped entirely if the
-  clock never synced. Stage 2: one quiet reflection turn over yesterday's episodic
-  digest (the owner's conversation only: captured job-engine output and /clear
-  markers are left out, as in every model-facing conversation read; the read
-  pages past them, up to 192 rows) - distill up to 7 durable facts (0 is correct on
-  a quiet day), groom the scratchpad, stay silent unless something needs the owner.
-  The reflection sees and can call the memory tools only (`memory.write`, `update`,
-  `search`, `pin`, `scratchpad`, `episodic`); its orch_turn `device`, `spawn`,
-  `await` and `session_ops` fields are dropped. When embeddings are unavailable the
-  turn is told so and does not try memory calls. On a provably quiet night (empty
-  24 h digest AND the scratchpad unchanged since the last dream) the paid stage-2
-  turn is skipped; stage 1 still runs.
-  - **Outcome.** The `ev:dream` row says what happened: `ok` only when the turn ran
-    and every memory write landed (with counts), `skipped`, `deferred`, `FAILED`
-    (with the cause and the write counts), `degraded` (writes failed or memory was
-    unavailable) or `skipped tonight` (deferred until the window closed).
-  - **Retries.** A deferred or transiently failed reflection (low memory, timeout,
-    network, rate limit, provider 5xx) retries 15 min later, up to 3 attempts, until
-    07:00; key, credit, budget and parse failures wait for the next night. The
-    breaker never disables the dream; after 3 failed nights in a row (then every 7)
-    the owner is told once, at their next conversation, never at night.
-  - **Quiet.** The dream messages nobody while it runs: its failure, provider-switch
-    and billing notices are held, and so are its own reply, question and correction
-    lines, with no sound or attention cue. Nothing is ever held for the owner's next
-    message. Instead, when the night (or any background turn: a routine, a loop, a
-    sub-agent result) has something worth telling the owner during quiet hours
-    (22:00 until the owner's quiet-hours-end setting, default 09:00 local), it arms
-    ONE self-wakeup through the routines scheduler: a one-time loop record, created
-    without approval, at most one pending per kind, due at the end of quiet hours
-    (within 24 h), listed with the routines and cancellable like any of them, gone
-    after it fires, and persisted so it survives a restart. Its only job is one
-    short turn with no tools that change anything: at wake time the note is
-    re-checked - dropped when stale (its window passed, e.g. a brief about delays
-    that ended) or already delivered by a routine - otherwise sent in plain words
-    saying what it is and when it was noticed ("Noticed at HH:MM:"). The upkeep's
-    firmware-worded facts (storage not saved, memory writes failed) ride the same
-    path when the reflection itself said nothing. The failing-streak alert is the
-    one thing still told at the owner's next conversation, never at night.
-  - **A night the restart cut short.** The reflection turn writes an in-flight
-    marker (night, attempt, start time) into `/data/dream.json` before it starts and
-    clears it with its outcome. A boot that finds the marker without an outcome
-    reconciles it: the night's verdict is fail ("the device restarted during this
-    run"), one timeline row says the dream was interrupted, the failing-night streak
-    and the routine's failure count move exactly once (the routine record's
-    `lastErr` names the restart, never an older night's cause), and the interrupted attempt
-    is one of the bounded retries - the routine runs again inside the night's window
-    while it is still before 07:00 local. The reconcile waits until internal storage
-    is mounted, the clock is set and the timeline and routine records are up. A state
-    file that is torn, not JSON or larger than the state can be holds no marker
-    (nothing is invented for it), a day stamp dated after today reads as never, and a
-    marker older than the routine's last run (a later fire, on this firmware or
-    another, already recorded that night) is cleared with no row and no count; one
-    started before the clock was set has no comparable time and is reconciled.
+- **The nightly memory upkeep** (the "dream" loop): a reserved, undeletable (pause-only)
+  daily loop at 03:30 local (the device timezone - Settings → Mode & identity). It makes no
+  model call (v5.2.0, lane RB-Q2b: the reflection turn that wrote memories, the running
+  summary and the scratchpad from yesterday's conversation is gone, and with it every token
+  the night spent; the conversation itself is untouched, and the head's own turns still
+  write memories, the running summary and the scratchpad). The night is one pure pipeline,
+  `dream::runNight` (`lib/harness/src/dream.cpp`, host-tested); the device glue only binds
+  its seams. First, memory writes the day's turns queued during an embedding outage are
+  stored (up to 10, 30 s). Then vector decay + expiry prune + windowed dedup + persist, at
+  most once per local day, skipped if the clock never synced.
+  - **Outcome.** The `ev:dream` row says what happened: `ok` with the maintenance counts,
+    `skipped` (maintenance done earlier today, or the clock not set) or `skipped tonight`
+    (the busy gate deferred it until 07:00). The breaker never disables the loop.
   - **Gate.** 10 min quiet + no jobs + heap, deferring 15 min otherwise. Busy defers
     are capped at 12 per night; the heap floor is not.
-  - **State.** `/data/dream.json` (LittleFS): the maintenance day, the quiet-night
-    baseline, tonight's attempts, the failing-night streak and, while a reflection
-    runs, its in-flight marker. The legacy NVS key
-    `dreamScrHash` is read once to migrate and never written. The file is read once
-    per boot; after that RAM holds the state and each save is for the next boot, so a
-    file area that is not mounted or refuses writes cannot reset the attempt count,
-    rerun maintenance or hide the streak. Such a night is not written at all when the
-    file area is not mounted, and its row ends `state not saved (storage not mounted)`
-    or `(storage write failed)`. `/api/state` reports `fsMounted` and the last night
-    (`dream`), and the health report has an internal-storage row.
-  - `DREAM` console forces it, including through the quiet-night skip. The console
-    replies `DREAM queued`; the night runs on the turn task and logs
-    `DREAM fired ok=<0|1> detail=<...>` when it ends.
-- **Quiet background turns** (the dream): every
+  - **State.** `/data/dream.json` (LittleFS): the maintenance day. A file earlier firmware
+    wrote (attempts, streak, the quiet-night hash, an in-flight marker) loads with those
+    fields ignored. The file is read once per boot; after that RAM holds the day and each
+    save is for the next boot, so a file area that is not mounted or refuses writes cannot
+    rerun maintenance. Such a night is not written at all when the file area is not
+    mounted, and its row ends `state not saved (storage not mounted)` or `(storage write
+    failed)`. `/api/state` reports `fsMounted` and the last night (`dream`: `last`,
+    `cause`, `stateSaved`, `stateWhy`), and the health report has an internal-storage row.
+  - `DREAM` console fires it now. The console replies `DREAM queued`; the night runs on the
+    turn task and logs `DREAM fired ok=<0|1> detail=<...>` when it ends.
+- **Self-wakeups.** Nothing is ever held for the owner's next message. When a background
+  turn (a routine, a loop, a sub-agent result) has something worth telling the owner during
+  quiet hours (22:00 until the owner's quiet-hours-end setting, default 09:00 local), it
+  arms ONE self-wakeup through the routines scheduler: a one-time loop record, created
+  without approval, at most one pending per kind, due at the end of quiet hours (within
+  24 h), listed with the routines and cancellable like any of them, gone after it fires,
+  and persisted so it survives a restart. Its only job is one short turn with no tools that
+  change anything: at wake time the note is re-checked - dropped when stale (its window
+  passed, e.g. a brief about delays that ended) or already delivered by a routine -
+  otherwise sent in plain words saying what it is and when it was noticed ("Noticed at
+  HH:MM:").
+- **Quiet background turns** (a quiet routine): every
   engine notice - failure replies, provider-switch and budget notices - is held
   back and logged instead of sent; the outcome is recorded where the owner reads
   it later (the timeline row, the routine's last error). A turn's own reply still
@@ -324,13 +288,13 @@ a quiet background turn; the next owner turn says it).
   (the turn task is single by design).
 - **The unattended policy** (`nimbus/orch/unattended_policy.h`, v5.2.0, ruling 76): one table,
   one row per class of turn nobody asked for (routine, owner reminder, the assistant's own wakeup,
-  self-wakeup, sub-agent report, the nightly upkeep, the update notice), says which classes of tool it
+  self-wakeup, sub-agent report, the update notice), says which classes of tool it
   may call; `docs/security.md` has the table. A refused call is answered with one plain "Not run: ..."
   line at the registry's access seam on every route; the turn is offered only what its row allows; its
   end-of-turn fields are cut to the row (logged); its requests carry the provider's built-ins only where
   the row may spend and nothing where it may not. Sub-agents such a turn starts carry no owner connector,
   attach, chat context or project, inside a run's caps (`JobEngine::setSpawnOrigin`, `beginRun`).
-- **Unattended-turn rails** (routines, wakeups, the dream, sub-agent results
+- **Unattended-turn rails** (routines, wakeups, sub-agent results
   synthesis alike): the caller rule table
   (`nimbus/orch/action_rules.h`) refuses them every owner-attended action - the main
   model, `reboot`, the voice, provider-routing, safety-override and device-name

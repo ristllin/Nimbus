@@ -330,7 +330,7 @@ chat notice for the same provider. One queued fact is stored per step: on the
 Telegram task between its own work (never inside a turn, not in the first minute
 after a restart, at most every 20 seconds, and only with enough free memory for
 the call), up to 10 at the start
-of the nightly dream, and the queue persists across restarts. A fact that waits
+of the nightly memory upkeep, and the queue persists across restarts. A fact that waits
 past a role change is stored under the new role, and a member who loses access
 loses their queued facts too. Erasing storage clears the queue. Saving a new
 embedding model (even with a reset of the stored vectors) keeps it: the facts
@@ -812,8 +812,8 @@ ride the never-dropped part of every owner-facing prompt as `[STANDING RULES]`.
 
 Notes:
 - Owner-only: a member or guest turn never sees the tool or the rules.
-- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis, the
-  dream) for every action except `list`.
+- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis) for
+  every action except `list`.
 - A turn that already read outside content can only add, and its rule waits as
   pending until the owner approves it (`/prefs approve <id>` or the web page).
 - The owner sees every change in a line the device writes itself, over Telegram.
@@ -840,8 +840,8 @@ and removed when the owner's message pairs a drop cue with the subject.
 
 Notes:
 - Owner-only: a member or guest turn never sees the tool or the list.
-- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis, the
-  dream): a routine must not plant follow-ups on the owner.
+- Refused in unattended turns (a routine, a wakeup, sub-agent synthesis): a
+  routine must not plant follow-ups on the owner.
 - A turn that already read outside content cannot change the list at all: an
   open item is the owner's, not something a web page may shape.
 - The list stays small on purpose (at most 5 items, 160 bytes each); a full
@@ -5186,7 +5186,7 @@ control. This page explains both, in plain words.)NIMBUSDOC"},
 | Helpers (sub-agents) | Not started. A helper still running on a provider's side (OpenAI, Anthropic) is stopped, what it uses until it stops counts, and its result is not delivered; one message names the helpers being stopped. Raising the ceiling does not restart them. A helper that ran inside its one request (Mistral, Z.ai, Cumulo Nimbus, a custom endpoint) had already finished and keeps its result. Stopping a helper yourself always works. |
 | Photos and images | Not described or generated. |
 | Voice | Dictation and spoken replies are off. |
-| Routines and the nightly dream | Skipped for as long as the pause lasts. They are not counted as runs and they are not switched off; the Routines list shows them as skipped. |
+| Routines | Skipped for as long as the pause lasts. They are not counted as runs and they are not switched off; the Routines list shows them as skipped. |
 | Reminders and wakeups | Kept. Each one runs a few minutes after paid calls resume. |
 | Web search, memory search by meaning | Off. Memory is kept, and searching it by keyword still works. |
 | Screening of guests' messages | Off. A guest's message gets a short line that it could not be processed. |
@@ -5201,7 +5201,7 @@ paused; pressing **Verify** yourself still sends it.)NIMBUSDOC"},
   {"spend-ceiling#what-counts", "What counts",
    R"NIMBUSDOC(Everything that calls a paid model or service counts toward the ceiling:
 
-- replies to your messages, routines, reminders, wakeups and the nightly dream;
+- replies to your messages, routines, reminders and wakeups;
 - helpers (sub-agents) on every provider, including the web searches they run;
 - memory: saving a memory and searching it by meaning;
 - photo descriptions, speech to text, spoken replies, generated images;
@@ -5355,7 +5355,7 @@ tells you once a day when a provider's spend passes 5 USD or three times its usu
    R"NIMBUSDOC(A new setup uses each provider's standard model for the assistant and its cheapest
 model for everything that runs in the background:
 
-| Provider | The assistant | Helpers, photo captions, routines and the dream |
+| Provider | The assistant | Helpers, photo captions and routines |
 | Anthropic | Claude Sonnet 5 (`claude-sonnet-5`) | Claude Haiku 5.5 (`claude-haiku-5-5`) |
 | OpenAI | the mini class (`gpt-5.6-luna`) | the nano class (`gpt-6-luna`) |
 | Mistral | Mistral Medium (`mistral-medium-latest`) | Mistral Small (`mistral-small-latest`) |
@@ -5364,7 +5364,7 @@ model for everything that runs in the background:
 
 The stronger models stay one click away: **Assistant > Models** lists every model a
 provider offers, with its price, and you can pick any of them for the assistant or
-for helpers. Routines, reminders, wakeups and the nightly dream always run on the
+for helpers. Routines, reminders and wakeups always run on the
 cheapest model with light reasoning, whatever the assistant runs on: nobody waits on
 them, and a routine that has nothing to say still pays for its thinking.
 

@@ -388,7 +388,7 @@ std::string noticeText(SpendCeiling::Notice kind, const CeilingFacts& f) {
 
 std::string setupDefaultsText(uint64_t limitMicro) {
   return "Each provider starts on a standard model for the assistant and its cheapest model for "
-         "helpers, photo captions, routines and the nightly dream. Paid AI calls pause once a "
+         "helpers, photo captions and routines. Paid AI calls pause once a "
          "month's estimated spend reaches " + formatUsd(limitMicro) +
          ". Change models on Assistant > Models and the ceiling on Assistant > Usage.";
 }

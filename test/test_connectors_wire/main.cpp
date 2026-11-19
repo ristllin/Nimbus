@@ -726,9 +726,9 @@ static void test_mistral_60s_cap_is_disclosed_and_routes_elsewhere() {
                            "must not route to a provider with no key");
   TEST_ASSERT_TRUE(t2.find("waves") != std::string::npos);
   // The cap is a sub-agent fact: on 18 Oct the head blamed it for its own
-  // failed dream. Both variants scope it.
+  // failed night. Both variants scope it.
   for (const std::string* s : {&t, &t2})
-    TEST_ASSERT_TRUE(s->find("not a limit on your own turns or the nightly dream") != std::string::npos);
+    TEST_ASSERT_TRUE(s->find("not a limit on your own turns)") != std::string::npos);
 }
 
 // The device cannot render a PDF, but a sub CAN and the firmware captures the

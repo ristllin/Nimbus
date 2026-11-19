@@ -338,7 +338,7 @@ chat notice for the same provider. One queued fact is stored per step: on the
 Telegram task between its own work (never inside a turn, not in the first minute
 after a restart, at most every 20 seconds, and only with enough free memory for
 the call), up to 10 at the start
-of the nightly dream, and the queue persists across restarts. A fact that waits
+of the nightly memory upkeep, and the queue persists across restarts. A fact that waits
 past a role change is stored under the new role, and a member who loses access
 loses their queued facts too. Erasing storage clears the queue. Saving a new
 embedding model (even with a reset of the stored vectors) keeps it: the facts
