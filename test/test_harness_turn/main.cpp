@@ -138,6 +138,10 @@ struct Rig {
   // loop turn (the fake provider bypasses the real loop, so the loop-level behavior
   // is covered in test_orch_head_loop; this asserts the engine wires the hook).
   std::vector<std::string> proseChecks;
+  // RB-Q4: HeadTools.cfg.proseIsReply per loop call (1 on, 0 off), and what the prose check says
+  // about template filler.
+  std::vector<int> proseIsReply;
+  std::vector<std::string> proseFillerChecks;
   std::vector<std::pair<std::string, std::string>> assistantRows;   // ApplyDeps.captureAssistant: (chat, text)
   std::vector<std::array<std::string, 3>> effects;   // lane RB-FX: Hooks::onEffect (chat, tool, receipt)
   // RB-Q3a: a RAM effects ring behind the engine's recent-actions source (empty unless a test
@@ -499,6 +503,13 @@ struct Rig {
         "Pat, you have a blue Brompton - I saved it to memory (recall m0a811a23)."));
   }
 
+  // RB-Q4: the loop flag and the filler check on prose, per loop call.
+  void recordProseRule(const agent::HeadTools* tools) {
+    if (!tools) return;
+    proseIsReply.push_back(tools->cfg.proseIsReply ? 1 : 0);
+    if (tools->cfg.validateProseFinal) proseFillerChecks.push_back(tools->cfg.validateProseFinal("Your reply here."));
+  }
+
   // Lane L: a failed attempt that still hands back its (cut) turn.
   static void keepPartial(const Script& s, std::string& out) {
     if (s.partialOnFail) out = s.outJson;
@@ -615,6 +626,7 @@ struct Rig {
       }
       recordFinalCheck(tools, s);
       recordProseCheck(tools);
+      recordProseRule(tools);
       if (onProviderCall) onProviderCall();
       // Like the adapters: the echo is captured on the HTTP 200, before the turn is
       // known to parse, so a failed attempt can carry one too.
@@ -2574,8 +2586,9 @@ static void test_pol2_openq_observer_skips_scheduled_turns() {
 
 // A prose final answer is delivered as written: the engine wires no word check on prose since
 // the reply guard's plumbing check went (v5.2.0, lane RB-Q1c; it sent back replies that named
-// the owner's own files). The one hook left on prose is the truth check (RB-G0), which reads no
-// words and, with no binding, never sends a reply back. The loop keeps the hook
+// the owner's own files). The hooks left on prose are the template-filler check (RB-Q4: a whole
+// reply that is filler, never a claim) and the truth check (RB-G0), which reads no words and,
+// with no binding, never sends a reply back. The loop keeps the hook
 // (test_orch_head_loop).
 static void test_no_prose_check_is_wired() {
   Rig r;
@@ -2583,6 +2596,36 @@ static void test_no_prose_check_is_wired() {
   r.eng->handleMessage("go", "Roy", "1001");
   for (const std::string& fix : r.proseChecks) TEST_ASSERT_EQUAL_STRING("", fix.c_str());
   TEST_ASSERT_EQUAL(0, r.truth.opens);
+}
+
+// RB-Q4: on an owner's turn a prose answer is the reply on every round (the loop flag is on);
+// on the nightly dream it is not, because the dream's product is the end-of-turn fields
+// (mem_write, memory), so a prose answer there is still wrapped. Counter-test in one: the flag
+// is per turn, not a sticky engine state.
+static void test_rbq4_prose_is_the_reply_on_owner_turns_not_on_the_dream() {
+  Rig r;
+  r.scripts["anthropic"] = {Rig::Script{}};
+  r.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_FALSE(r.proseIsReply.empty());
+  TEST_ASSERT_EQUAL(1, r.proseIsReply.back());
+  const orch::FireOutcome night = r.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
+  TEST_ASSERT_TRUE_MESSAGE(night.ok, night.error.c_str());
+  TEST_ASSERT_EQUAL(0, r.proseIsReply.back());
+  r.eng->handleMessage("and again", "Roy", "1001");
+  TEST_ASSERT_EQUAL(1, r.proseIsReply.back());
+}
+
+// RB-Q4: a prose answer is no longer wrapped into an orch_turn first, so the template-filler
+// check that ran on the wrapped turn now runs on the prose itself (one correction round), and
+// a real answer passes it (counter-test: the leak prose above gets no correction).
+static void test_rbq4_filler_prose_gets_the_placeholder_round() {
+  Rig r;
+  r.scripts["anthropic"] = {Rig::Script{}};
+  r.eng->handleMessage("go", "Roy", "1001");
+  TEST_ASSERT_FALSE(r.proseFillerChecks.empty());
+  TEST_ASSERT_NOT_NULL_MESSAGE(std::strstr(r.proseFillerChecks.back().c_str(), "template filler"),
+                               r.proseFillerChecks.back().c_str());
+  for (const std::string& fix : r.proseChecks) TEST_ASSERT_EQUAL_STRING("", fix.c_str());
 }
 
 // W20: a Once wakeup gets the honest [WAKEUP] preamble - "recurring task" would
@@ -5684,6 +5727,8 @@ static void runSecondHalf() {
   RUN_TEST(test_scheduled_turn_rails_and_fire_outcome);
   RUN_TEST(test_pol2_openq_observer_skips_scheduled_turns);
   RUN_TEST(test_no_prose_check_is_wired);
+  RUN_TEST(test_rbq4_prose_is_the_reply_on_owner_turns_not_on_the_dream);
+  RUN_TEST(test_rbq4_filler_prose_gets_the_placeholder_round);
   RUN_TEST(test_once_wakeup_gets_wakeup_preamble_not_recurring);
   RUN_TEST(test_owner_reminder_gets_reminder_framing_not_wakeup);
   RUN_TEST(test_cum523_telegramless_wakeup_has_no_telegram_leg);

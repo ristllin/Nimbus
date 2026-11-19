@@ -1346,15 +1346,20 @@ nimbus::orch::HeadStepFn antLoopStep(const ProviderDeps& pd,
         return out;
       }
       if (out.finished || !out.toolCalls.empty() || out.text.empty()) return out;
-      // Text only. On a tool round it is a stall (the controller gives the model
-      // one more chance, with the stalled answer echoed back). On the forced final
-      // round it IS the answer: delivered as prose (the engine reads it as the
-      // reply only - no device action, memory write or spawn rides it).
-      if (!allowTools && (sr == "end_turn" || sr == "stop_sequence")) {
+      // Text only, ended normally. On the forced final round it IS the answer. On a tool
+      // round it is the answer too when the turn says so (HeadLoopConfig::proseIsReply,
+      // RB-Q4: the reference loop's rule; without it a second request only re-wrapped the
+      // same answer in orch_turn on 40% of Sonnet and 49% of Haiku turns, and the owner got
+      // the rewrite). Otherwise it is a stall: the controller gives the model one more
+      // chance, with the stalled answer echoed back. Prose is the reply only - no device
+      // action, memory write or spawn rides it (the engine reads it so).
+      const bool ended = sr == "end_turn" || sr == "stop_sequence";
+      if (ended && (!allowTools || ht.cfg.proseIsReply)) {
         out.finished = true;
         out.prose = true;
         out.finalTurn = out.text;
-        hlog::logf("orchTurn(ant-loop): final round answered in prose (%u B)",
+        hlog::logf(allowTools ? "orchTurn(ant-loop): round answered in prose (%u B), the reply"
+                              : "orchTurn(ant-loop): final round answered in prose (%u B)",
                    (unsigned)out.text.size());
       }
       return out;

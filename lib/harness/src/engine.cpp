@@ -1745,9 +1745,16 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     };
     // RB-G0: a prose final answer is the owner-facing reply too: the truth check holds on the
     // prose itself, with the same one-round budget.
-    headTools.cfg.validateProseFinal = [this, &host](const std::string& prose) {
+    // RB-Q4: template filler is checked on prose too, now that a prose answer is no longer
+    // wrapped into an orch_turn (where the check above ran) before it ends the turn.
+    headTools.cfg.validateProseFinal = [this, &host, &userText](const std::string& prose) {
+      if (isPlaceholderReply(prose, userText)) return std::string(kPlaceholderCorrection);
       return truthAtFinal(prose, true, host);
     };
+    // RB-Q4: a text answer that ended normally is the reply on every round (requests = tool
+    // rounds + 1). Not on the nightly dream: its product is the end-of-turn fields (mem_write,
+    // memory), which only an orch_turn carries, so its prose is still wrapped.
+    headTools.cfg.proseIsReply = !memoryOnly;
     headTools.cfg.maxRounds          = roundsNow;   // user-tunable (P6); the prompt states the same cap
     headTools.cfg.deadlineMs         =
         (uint32_t)(d_.cfg.loop.deadlineS ? d_.cfg.loop.deadlineS() : 600) * 1000U;

@@ -240,6 +240,34 @@ static void test_loop_forced_final_tool_choice() {
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"function\",\"name\":\"orch_turn\"}"));
 }
 
+// RB-Q4 pin: HeadLoopConfig::proseIsReply changes only the Anthropic wire. On the Responses
+// wire a prose round (tool_choice required makes it rare) with the flag on runs exactly as with
+// it off: the same requests, byte for byte, and the same answer.
+static void test_rbq4_prose_flag_leaves_the_responses_wire_unchanged() {
+  const std::string prose =
+      "{\"id\":\"resp_p\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"just prose\"}]}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5}}";
+  std::vector<std::string> bodies[2];
+  std::string outs[2];
+  for (int on = 0; on < 2; ++on) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "", 200, toolCallBody("resp_1")});
+    d.http.script.push_back({"", "", 200, prose});
+    d.http.script.push_back({"", "", 200, finalCallBody("resp_2")});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = on != 0;
+    std::string conv, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnOpenAI(pd, conv, "S", "U", outs[on], err, &rig.ht, nullptr),
+                             err.c_str());
+    for (const auto& r : d.http.seen) bodies[on].push_back(r.body);
+  }
+  TEST_ASSERT_EQUAL(3, (int)bodies[1].size());
+  TEST_ASSERT_TRUE(bodies[0] == bodies[1]);
+  TEST_ASSERT_EQUAL_STRING(outs[0].c_str(), outs[1].c_str());
+}
+
 // Glass Box A4 (OpenAI reasoning capture): a REASONING model requests a summary
 // ("reasoning":{"summary":"auto"}) and a returned reasoning item's summary text
 // flows to HeadTools.onRoundText (round-tagged). A non-reasoning model must NOT
@@ -1463,6 +1491,7 @@ int main(int, char**) {
   RUN_TEST(test_loop_round_shapes_and_pairing);
   RUN_TEST(test_loop_tool_error_encoded_in_output);
   RUN_TEST(test_loop_forced_final_tool_choice);
+  RUN_TEST(test_rbq4_prose_flag_leaves_the_responses_wire_unchanged);
   RUN_TEST(test_loop_reasoning_summary_capture);
   RUN_TEST(test_loop_no_reasoning_param_on_chat_model);
   RUN_TEST(test_loop_no_reasoning_param_on_gpt5_chat_variant);

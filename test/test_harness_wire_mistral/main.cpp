@@ -448,6 +448,30 @@ static void test_loop_stall_forces_named_final() {
   TEST_ASSERT_FALSE(bodyHas(d, 1, "just prose"));
 }
 
+// RB-Q4 pin: HeadLoopConfig::proseIsReply changes only the Anthropic wire. On chat completions
+// a prose round with the flag on is the same stall as with it off: the same requests, byte for
+// byte, and the same answer.
+static void test_rbq4_prose_flag_leaves_the_chat_wire_unchanged() {
+  std::vector<std::string> bodies[2];
+  std::string outs[2];
+  for (int on = 0; on < 2; ++on) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseBody()});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = on != 0;
+    std::string conv, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", outs[on], err, &rig.ht, nullptr),
+                             err.c_str());
+    for (const auto& r : d.http.seen) bodies[on].push_back(r.body);
+  }
+  TEST_ASSERT_EQUAL(2, (int)bodies[1].size());
+  TEST_ASSERT_TRUE(bodies[0] == bodies[1]);
+  TEST_ASSERT_EQUAL_STRING(outs[0].c_str(), outs[1].c_str());
+}
+
 // CUM-557: a reasoning model's loop round whose content is a chunk list (thinking,
 // then text) still yields its prose: the text chunks reach the round observer.
 static void test_loop_chunk_list_prose_reads() {
@@ -2084,6 +2108,7 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);
   RUN_TEST(test_loop_stall_forces_named_final);
+  RUN_TEST(test_rbq4_prose_flag_leaves_the_chat_wire_unchanged);
   RUN_TEST(test_loop_orch_turn_schema_without_descriptions);
   RUN_TEST(test_loop_long_arguments_fold);
   RUN_TEST(test_loop_chunk_list_prose_reads);

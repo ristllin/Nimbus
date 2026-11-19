@@ -240,6 +240,13 @@ struct HeadLoopConfig {
   // an orch_turn call whose arguments ARE JSON ({"reply": ...}), so every
   // provider's replay stays well-formed. Null => prose is delivered as before.
   std::function<std::string(const std::string& prose)> validateProseFinal;
+  // RB-Q4: a round that ends normally with text and no tool call IS the turn's reply, on every
+  // round (the reference loop's rule), not a stall that costs a second request only to wrap the
+  // same answer in orch_turn. Read by the wires that can tell a normal end from a stop for
+  // another reason (Anthropic: stop_reason end_turn or stop_sequence); every other wire keeps
+  // its own rule. The engine sets it on every turn except the nightly dream, whose product is
+  // the end-of-turn fields. False => the stall path, byte-identical to before.
+  bool proseIsReply = false;
 };
 
 // One final-answer check: "" when the turn is fine, else the correction text.

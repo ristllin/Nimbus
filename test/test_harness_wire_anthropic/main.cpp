@@ -452,8 +452,9 @@ static void test_loop_stall_echoed_on_the_unforced_final_round() {
 }
 
 // The final round answered in prose: delivered, never "tool budget reached
-// without a final answer". A prose round on a TOOL round is still a stall (the
-// counter-test for the loosened acceptance).
+// without a final answer". With HeadLoopConfig::proseIsReply off (the default, and the
+// dream's turn), a prose round on a TOOL round is still a stall (the counter-test for
+// RB-Q4's acceptance below).
 static void test_loop_prose_final_accepted_only_on_the_final_round() {
   FakeProviderDeps d;
   d.http.script.push_back({"", "", 200,
@@ -470,6 +471,102 @@ static void test_loop_prose_final_accepted_only_on_the_final_round() {
   TEST_ASSERT_EQUAL_STRING("Here is my answer.", out.c_str());
   TEST_ASSERT_EQUAL(0, (int)rig.dispatched.size());
   TEST_ASSERT_TRUE(LogCapture::contains("final round answered in prose"));
+}
+
+// RB-Q4: with HeadLoopConfig::proseIsReply (the engine sets it on every turn but the dream), a
+// round that ends normally (end_turn) with text and no tool call IS the reply, on every round:
+// requests == tool rounds + 1, never a second request only to wrap the answer in orch_turn.
+// The class, over 0 to 3 tool rounds before the answer: no request carries the nudge or the
+// FINAL notice, nothing is dispatched after the answer, and the answer is delivered as written.
+static std::string toolRoundBody(int i) {
+  const std::string id = "tu_r" + std::to_string(i);
+  return "{\"content\":[{\"type\":\"tool_use\",\"id\":\"" + id + "\",\"name\":\"memory_search\","
+         "\"input\":{\"q\":\"tea\"}}],\"stop_reason\":\"tool_use\","
+         "\"usage\":{\"input_tokens\":50,\"output_tokens\":10}}";
+}
+static void test_loop_prose_is_the_reply_requests_equal_tool_rounds_plus_one() {
+  for (int k = 0; k <= 3; ++k) {
+    FakeProviderDeps d;
+    for (int i = 0; i < k; ++i) d.http.script.push_back({"", "", 200, toolRoundBody(i)});
+    d.http.script.push_back({"", "", 200,
+        "{\"content\":[{\"type\":\"text\",\"text\":\"Here is my answer.\"}],\"stop_reason\":\"end_turn\"}"});
+    // A second answer in the script: a wrap request would take it, and the test sees it.
+    d.http.script.push_back({"", "", 200, finalToolBody()});
+    auto pd = d.contract();
+    pd.orchModel = [](const char*) { return std::string("claude-sonnet-5-5"); };
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    const std::string label = "tool rounds " + std::to_string(k);
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
+                             (label + ": " + err).c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(k + 1, (int)d.http.seen.size(), label.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(k, (int)rig.dispatched.size(), label.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Here is my answer.", out.c_str(), label.c_str());
+    for (size_t i = 0; i < d.http.seen.size(); ++i) {
+      TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, i, "Now call orch_turn"), label.c_str());
+      TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, i, "FINAL turn"), label.c_str());
+    }
+  }
+}
+
+// Counter-tests of the loosened acceptance, with the flag ON: a round with no text and no call
+// is still a stall (one forced final round), and stop_sequence ends a turn like end_turn.
+static void test_loop_prose_is_the_reply_keeps_the_empty_stall() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200, "{\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"stop_reason\":\"end_turn\"}"});
+  d.http.script.push_back({"", "", 200, finalToolBody()});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.ht.cfg.proseIsReply = true;
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());   // the empty round stalled; the final round answered
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "FINAL turn"));
+  TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+
+  FakeProviderDeps d2;
+  d2.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"Stopped here.\"}],\"stop_reason\":\"stop_sequence\"}"});
+  auto pd2 = d2.contract();
+  FakeProviderDeps::ToolRig rig2;
+  d2.fillTools(rig2);
+  rig2.ht.cfg.proseIsReply = true;
+  std::string conv2, out2, err2;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd2, conv2, "S", "U", out2, err2, &rig2.ht, nullptr),
+                           err2.c_str());
+  TEST_ASSERT_EQUAL(1, (int)d2.http.seen.size());
+  TEST_ASSERT_EQUAL_STRING("Stopped here.", out2.c_str());
+}
+
+// The prose reply still gets the loop's one correction round (validateProseFinal): the rejected
+// prose goes back wrapped as an orch_turn call with its result, and the next answer is the reply.
+static void test_loop_prose_is_the_reply_keeps_its_one_correction() {
+  FakeProviderDeps d;
+  d.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"first draft\"}],\"stop_reason\":\"end_turn\"}"});
+  d.http.script.push_back({"", "", 200,
+      "{\"content\":[{\"type\":\"text\",\"text\":\"second answer\"}],\"stop_reason\":\"end_turn\"}"});
+  auto pd = d.contract();
+  FakeProviderDeps::ToolRig rig;
+  d.fillTools(rig);
+  rig.ht.cfg.proseIsReply = true;
+  int asked = 0;
+  rig.ht.cfg.validateProseFinal = [&asked](const std::string& prose) {
+    ++asked;
+    return prose == "first draft" ? std::string("[CHECK] not yet") : std::string();
+  };
+  std::string conv, out, err;
+  TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnAnthropic(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
+                           err.c_str());
+  TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+  TEST_ASSERT_EQUAL(1, asked);   // one correction a turn: the second answer is not checked again
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "[CHECK] not yet"));
+  TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_use_id\":\"orchcheck\""));
+  TEST_ASSERT_EQUAL_STRING("second answer", out.c_str());
 }
 
 // A cut round is retried ONCE in the step with a body that differs (more room,
@@ -1911,6 +2008,9 @@ int main(int, char**) {
   RUN_TEST(test_loop_replay_folds_with_hysteresis_over_budget);
   RUN_TEST(test_loop_stall_echoed_on_the_unforced_final_round);
   RUN_TEST(test_loop_prose_final_accepted_only_on_the_final_round);
+  RUN_TEST(test_loop_prose_is_the_reply_requests_equal_tool_rounds_plus_one);
+  RUN_TEST(test_loop_prose_is_the_reply_keeps_the_empty_stall);
+  RUN_TEST(test_loop_prose_is_the_reply_keeps_its_one_correction);
   RUN_TEST(test_loop_max_tokens_cut_retries_then_fails_loud);
   RUN_TEST(test_loop_sibling_after_orch_turn_is_dispatched_once);
   RUN_TEST(test_loop_step_carries_sibling_after_orch_turn);
