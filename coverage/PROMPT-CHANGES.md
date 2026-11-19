@@ -48,7 +48,8 @@ python3 tools/release_gate/check_no_prompt_patch.py && python3 tools/release_gat
 
 It regenerates the golden, rewrites `E1_BASELINE` (the engine-1 ceilings) and the baseline table,
 and appends a record under **Re-baselines** with each class's old and new bytes and sha8, the
-commit, and the entries it supersedes. With a git base, the gate accepts a moved baseline only
+commit, and the entries it supersedes (engine-1 entries only: a record re-measures engine 1, so every
+engine-2 entry stays in the chain). With a git base, the gate accepts a moved baseline only
 with such a record added in the same change and starting at the base's baseline; merged records
 are never edited. If the imperative lint then flags a template the release line added, that row
 is added to the imperative baseline in the same commit and named in the record's why.
