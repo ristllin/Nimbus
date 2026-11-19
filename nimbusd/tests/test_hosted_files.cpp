@@ -27,6 +27,7 @@
 #include <ctime>
 #include <string>
 
+#include "../../test/support/file_aids_e1_cases.h"
 #include "engine_thread.h"
 #include "nimbus/orch/turn_effects.h"
 #include "reply_buffer.h"
@@ -355,6 +356,42 @@ static void testBinaryReadIsRefused(ndtest::Ctx& c) {
   c.ok(web.call("GET", "/api/files/dl?project=chat&name=photo.png").body == png, "the download still has its bytes");
 }
 
+static void testReadsReachTheWholeFile(ndtest::Ctx& c) {
+  std::printf("  -- (j) RB-TR1: a 40 KB file is read whole in parts; a cut names results.get --\n");
+  Config cfg;
+  NimbusdRig rig(cfg, opts("hf-j"));
+  Web web(rig);
+  // The loop's clamp is the head's derived budget (the device's), never a fixed 4,096 B.
+  c.eqi(rig.loopResultCapSetting(), 0, "the loop takes the derived per-result budget (no fixed cap)");
+  c.eqi(rig.loopTotalCapSetting(), 0, "the loop takes the derived per-turn total (no fixed cap)");
+  const size_t cap = rig.toolResultCap();
+  c.ok(cap >= 8192, ("the per-result cap is at least v5.1.2's 8,192 B: " + std::to_string(cap)).c_str());
+  const std::string text = aidcases::e1::proseFile(40000, 11);
+  web.call("POST", "/api/files/upload?project=docs&name=handbook.txt", multipart("handbook.txt", text));
+  nimbus::orch::Principal owner = nimbus::orch::principalForRole("1", nimbus::orch::Role::Admin);
+  owner.owner = true;
+  auto call = [&](const char* tool, ArduinoJson::JsonDocument& d) {
+    const nimbus::orch::ToolResult r = rig.registry().dispatch(tool, d.as<ArduinoJson::JsonObjectConst>(), owner);
+    return r.success ? r.output : "error " + r.error;
+  };
+  auto read = [&](uint64_t off) {
+    ArduinoJson::JsonDocument d;
+    d["project"] = "docs";
+    d["name"] = "handbook.txt";
+    if (off) d["offset"] = off;
+    return call("files.read", d);
+  };
+  const std::string why = aidcases::e1::followParts(read, text, cap);
+  c.ok(why.empty(), ("files.read reaches the whole 40 KB file in parts" + (why.empty() ? "" : ": " + why)).c_str());
+  // A result the loop clamps is kept whole: results.get pages it to its end.
+  c.ok(rig.registry().has("results.get") && rig.registry().has("results.list"), "results.get and results.list are tools");
+  const std::string tag = rig.spillForTest("memory_search", text);
+  ArduinoJson::JsonDocument g;
+  g["tag"] = tag;
+  const std::string page = call("results.get", g);
+  c.ok(has(page, "bytes 0-") && has(page, "of 40") && has(page, "next part: \"offset\":"), ("the ring pages the spilled result: " + page.substr(0, 80)).c_str());
+}
+
 int main() {
   ndtest::Ctx c;
   std::printf("=== hosted files + not-yet-hosted surfaces (CUM-543, offline) ===\n");
@@ -368,6 +405,7 @@ int main() {
   testByteQuotaEvictsCopiesFirst(c);
   testListingsArePaged(c);
   testBinaryReadIsRefused(c);
+  testReadsReachTheWholeFile(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

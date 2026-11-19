@@ -217,9 +217,68 @@ static void test_offset_aligns_to_utf8_boundary() {
                            "window starts on a continuation byte");
 }
 
+// RB-TR1: a stored result can be read to its end by following the next part each page names,
+// at every cap; a result the ring clips ends saying how long it was. Counter-test: a page head
+// that names no next part fails the walk.
+static std::string walk(ToolRegistry& reg, const std::string& tag, std::string& joined) {
+  size_t offset = 0;
+  for (int calls = 0; calls < 200; ++calls) {
+    ArduinoJson::JsonDocument d;
+    d["tag"] = tag;
+    if (offset) d["offset"] = offset;
+    auto r = reg.dispatch("results.get", d.as<ArduinoJson::JsonObjectConst>(), admin());
+    if (!r.success) return r.error;
+    const size_t nl = r.output.find('\n');
+    const std::string head = r.output.substr(0, nl);
+    joined += r.output.substr(nl + 1);
+    if (head.find("; end of result") != std::string::npos) return "";
+    static const std::string kNext = "next part: \"offset\":";
+    const size_t at = head.find(kNext);
+    if (at == std::string::npos) return "no next part named: " + head;
+    offset = std::stoul(head.substr(at + kNext.size()));
+  }
+  return "no end";
+}
+static void test_a_stored_result_is_read_to_its_end() {
+  for (size_t cap : {size_t(2048), size_t(8192)}) {
+    for (size_t n : {size_t(16), size_t(8000), size_t(60000), size_t(70000)}) {
+      ResultStore s;
+      std::string text;
+      for (size_t i = 0; text.size() < n; ++i) text += "row " + std::to_string(i) + " \xE2\x82\xAC\n";
+      text.resize(n);
+      while (!text.empty() && ((unsigned char)text.back() & 0xC0) != 0 && ((unsigned char)text.back() & 0xC0) != 0x40) text.pop_back();
+      s.put("tool", "t", text, 0);
+      ToolRegistry reg;
+      ResultHandlers h;
+      h.get = [&s](const std::string& tag, size_t off, size_t maxB, std::string& out, size_t& total,
+                   const Principal& w) { return s.get(tag, off, maxB, out, total, w); };
+      h.viewCap = [cap] { return cap; };
+      registerResultTools(reg, h);
+      std::string joined;
+      const std::string why = walk(reg, "r1", joined);
+      TEST_ASSERT_TRUE_MESSAGE(why.empty(), why.c_str());
+      if (text.size() <= ResultStore::kEntryMax) {
+        TEST_ASSERT_TRUE(joined == text);
+      } else {
+        const std::string says = "[the result was " + std::to_string(text.size()) + " B; only these first bytes are kept]";
+        TEST_ASSERT_TRUE(joined.size() <= ResultStore::kEntryMax);
+        TEST_ASSERT_TRUE(joined.compare(joined.size() - says.size(), says.size(), says) == 0);
+        TEST_ASSERT_TRUE(text.compare(0, joined.size() - says.size() - 1, joined, 0, joined.size() - says.size() - 1) == 0);
+      }
+    }
+  }  // Counter-test: v5.1.2's head ("bytes a-b of n", no next part) does not walk to the end.
+  ToolRegistry old;
+  old.add("results.get", "", [](ArduinoJson::JsonObjectConst, const Principal&) {
+    return ToolResult::ok("bytes 0-10 of 20\n0123456789");
+  }, R"({"type":"object"})");
+  std::string joined;
+  TEST_ASSERT_FALSE(walk(old, "r1", joined).empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_put_get_roundtrip);
+  RUN_TEST(test_a_stored_result_is_read_to_its_end);
   RUN_TEST(test_get_pagination);
   RUN_TEST(test_slot_ring_eviction);
   RUN_TEST(test_byte_ring_eviction);

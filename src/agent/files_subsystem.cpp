@@ -23,7 +23,7 @@
 #include "orchestrator.h"                // firstAllowedChat - the owner notice target
 #include "agent/orchestrator.h"          // turnInFlight, isChatAllowed, firstAllowedChat
 #include "agent/telegram.h"              // sendMedia (files.send)
-#include "nimbus/utf8.h"              // utf8CapLen (files.read paging), utf8Window (snippets)
+#include "nimbus/utf8.h"              // utf8Window (snippets)
 #include "nimbus/orch/blob_store.h"      // BlobHasher (streamed content hash)
 #include "nimbus/orch/episodic.h"     // textMatchScore (files.search)
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
@@ -918,11 +918,13 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
 }
 
 // One scan with the card lock per 4 KB read, the tool call's lock given up meanwhile: the
-// day total of sums (sums non-null) or the CSV form of q, into out. A write that lands during
-// the scan (g_indexGen) makes the answer the error, never a total over a file that moved.
+// day total of sums (sums non-null), the plain read's part at *partAt (RB-TR1), or the CSV
+// form of q, into out. A write that lands during the scan (g_indexGen) makes the answer the
+// error, never a total or a part of a file that moved.
 static const char kChangedUnderRead[] = " changed while it was read; nothing was totalled";
 static bool scanCsvFile(const std::string& project, const std::string& name, const nimbus::orch::aids::CsvQuery* q,
-                        const std::vector<std::string>* sums, const std::string& day, std::string& out) {
+                        const std::vector<std::string>* sums, const std::string& day, std::string& out,
+                        const uint64_t* partAt = nullptr) {
   uint32_t gen = 0;
   size_t size = 0;
   {
@@ -934,14 +936,17 @@ static bool scanCsvFile(const std::string& project, const std::string& name, con
   const std::string where = project + "/" + name;
   SdSource src(pathOf(project, name), true);
   bool ok = true;
+  // The part fits the result the head loop carries this turn (store.cpp effectiveToolResultCap).
+  const size_t cap = partAt ? (size_t)store::effectiveToolResultCap() : 0;
   memory::withCardReleased([&] {
-    if (sums) out = nimbus::orch::aids::e1::dayTotal(src, size, where, *sums, day);
+    if (partAt) ok = nimbus::orch::aids::e1::readPart(src, size, *partAt, cap, out);
+    else if (sums) out = nimbus::orch::aids::e1::dayTotal(src, size, where, *sums, day);
     else ok = nimbus::orch::aids::e1::tableRead(src, size, where, *q, out);
   });
-  noteScan(sums ? "day total" : "scan", project, name, src);
+  noteScan(partAt ? "read" : sums ? "day total" : "scan", project, name, src);
   memory::Lock g;
   if (g_indexGen == gen) return ok;
-  out = where + kChangedUnderRead;
+  out = where + (partAt ? " changed while it was read; read it again" : kChangedUnderRead);
   return false;
 }
 
@@ -1752,36 +1757,23 @@ void registerTools() {
             if (!textDocName(name))
               return nimbus::orch::ToolResult::fail(
                   "binary or non-text document - use files.share / the web viewer");
-            const size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
+            const size_t offset = a["offset"].is<float>() && a["offset"].as<double>() > 0 ? (size_t)a["offset"].as<double>() : 0;
             const nimbus::orch::aids::e1::ReadForm form = nimbus::orch::aids::e1::readForm(a);
             if (form != nimbus::orch::aids::e1::ReadForm::Plain) return readForms(a, form, project, name, offset);
-            // Whole-file read through PSRAM, then a bounded UTF-8-safe window -
-            // page size leaves header room inside the loop's per-result clamp
-            // (the results.get viewCap rule).
+            // A text name is a claim, not proof: the head of the file answers, the same rule
+            // as the hosted files.read (a card or memory fault is said, never an empty file).
             bool readOk = false;
-            std::string text = readWhole(project, name, 256 * 1024, &readOk);
-            if (!readOk)   // a card or memory fault is said, never shown as an empty file
-              return nimbus::orch::ToolResult::fail("the file could not be read - try again");
-            // A text name is a claim, not proof: the same rule as the hosted files.read.
-            if (!nimbus::orch::fileReadableAsText(name, text))
+            const std::string head = readWhole(project, name, nimbus::orch::kTextSniffBytes, &readOk);
+            if (!readOk) return nimbus::orch::ToolResult::fail("the file could not be read - try again");
+            if (!nimbus::orch::fileReadableAsText(name, head))
               return nimbus::orch::ToolResult::fail(nimbus::orch::kNotTextRefusal);
-            const size_t total = text.size();
-            if (offset >= total && total > 0)
-              return nimbus::orch::ToolResult::ok(
-                  "bytes " + std::to_string((unsigned)total) + "-" +
-                  std::to_string((unsigned)total) + " of " +
-                  std::to_string((unsigned)total) + "\n");
-            size_t off = offset;
-            while (off < total && ((unsigned char)text[off] & 0xC0) == 0x80) ++off;
-            const size_t view = 8192 - 64;
-            size_t end = off + view;
-            if (end > total) end = total;
-            int keep = nimbus::utf8CapLen(text.c_str() + off, (int)(total - off),
-                                          (int)(end - off));
-            std::string head = "bytes " + std::to_string((unsigned)off) + "-" +
-                               std::to_string((unsigned)(off + (size_t)keep)) + " of " +
-                               std::to_string((unsigned)total) + "\n";
-            return nimbus::orch::ToolResult::ok(head + text.substr(off, (size_t)keep));
+            // The part that fits the result this turn carries, streamed 4 KB per card hold, any
+            // size; its head names the part and the next offset (file_aids_e1.h readPart).
+            std::string out;
+            const uint64_t at = offset;
+            if (!scanCsvFile(project, name, nullptr, nullptr, std::string(), out, &at))
+              return nimbus::orch::ToolResult::fail(out);
+            return nimbus::orch::ToolResult::ok(out);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
   // Content search: the head asks "which of my saved docs mention X" without

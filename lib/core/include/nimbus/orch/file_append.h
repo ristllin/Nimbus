@@ -77,6 +77,8 @@ struct TailView {
   bool earlier = false;            // rows above these exist and are not shown
   bool lastCut = false;            // the file does not end in a line end: the
                                    // last row is incomplete (cut mid-write)
+  size_t firstAt = 0;              // the file byte the first shown row starts at (RB-TR1:
+                                   // the reply names bytes 0 to it as the rows not shown)
 };
 TailView tailRows(const std::string& window, size_t windowStart, size_t n);
 

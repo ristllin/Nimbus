@@ -36,10 +36,13 @@ std::string ResultStore::put(const char* kind, const std::string& name,
   en.tag = (en.kind == "sub" && !safeTag.empty()) ? ("sub:" + safeTag)
                                                   : ("r" + std::to_string(++seq_));
   // Entry clip (UTF-8-safe). The full durable copy is the episodic row - this
-  // ring serves the LIVE fetches, so a 64 KB view is plenty.
+  // ring serves the LIVE fetches, so a 64 KB view is plenty. A clipped entry ends
+  // saying so (RB-TR1: a cut result always says it is cut), inside kEntryMax.
   if (fullText.size() > kEntryMax) {
-    int keep = utf8CapLen(fullText.c_str(), (int)fullText.size(), (int)kEntryMax);
-    en.text = fullText.substr(0, (size_t)keep);
+    const std::string note = "\n[the result was " + std::to_string((unsigned)fullText.size()) +
+                             " B; only these first bytes are kept]";
+    int keep = utf8CapLen(fullText.c_str(), (int)fullText.size(), (int)(kEntryMax - note.size()));
+    en.text = fullText.substr(0, (size_t)keep) + note;
   } else {
     en.text = fullText;
   }
@@ -118,9 +121,13 @@ void registerResultTools(ToolRegistry& reg, const ResultHandlers& h) {
               return ToolResult::fail("'" + tag +
                                       "' is not in the recent-results ring - try "
                                       "memory.episodic with text '" + tag + "'");
-            std::string head = "bytes " + std::to_string((unsigned)offset) + "-" +
-                               std::to_string((unsigned)(offset + out.size())) + " of " +
-                               std::to_string((unsigned)total) + "\n";
+            // RB-TR1: the head names the next part's exact argument, or the end.
+            const size_t to = std::min(offset, total) + out.size();
+            std::string head = "bytes " + std::to_string((unsigned)std::min(offset, total)) + "-" +
+                               std::to_string((unsigned)to) + " of " + std::to_string((unsigned)total) +
+                               (to < total ? "; next part: \"offset\":" + std::to_string((unsigned)to)
+                                           : std::string("; end of result")) +
+                               "\n";
             return ToolResult::ok(head + out);
           },
           R"({"type":"object","properties":{"tag":{"type":"string"},)"

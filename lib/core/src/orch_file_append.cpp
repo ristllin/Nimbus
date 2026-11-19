@@ -78,9 +78,11 @@ TailView tailRows(const std::string& window, size_t windowStart, size_t n) {
     v.earlier = true;
   }
   std::vector<std::string> all;
+  std::vector<size_t> starts;
   size_t pos = begin;
   while (pos < window.size()) {
     size_t nl = window.find('\n', pos);
+    starts.push_back(pos);
     if (nl == std::string::npos) {
       all.push_back(window.substr(pos));
       v.lastCut = true;
@@ -93,6 +95,7 @@ TailView tailRows(const std::string& window, size_t windowStart, size_t n) {
     v.earlier = true;
     all.erase(all.begin(), all.end() - (long)n);
   }
+  v.firstAt = windowStart + (all.empty() ? std::min(begin, window.size()) : starts[starts.size() - all.size()]);
   v.rows = std::move(all);
   return v;
 }
@@ -101,7 +104,10 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
                        const std::string& headerRow) {
   std::string out = "last " + std::to_string(v.rows.size()) + " row" + (v.rows.size() == 1 ? "" : "s") +
                     " of " + name + " (" + std::to_string((unsigned)fileBytes) + " B" +
-                    (v.earlier ? "; earlier rows not shown" : "; the whole file") + ")\n";
+                    (v.earlier ? "; earlier rows not shown: bytes 0-" + std::to_string((unsigned)v.firstAt) +
+                                     ", read them with \"offset\":0"
+                               : std::string("; the whole file")) +
+                    ")\n";
   if (!headerRow.empty() && v.earlier) out += "header: " + headerRow + "\n";
   for (const auto& r : v.rows) out += r + "\n";
   // A CSV's last row without a line end is complete when it is well-formed (a

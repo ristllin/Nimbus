@@ -119,6 +119,15 @@ static void test_tail_returns_exactly_the_last_n_rows() {
         TEST_ASSERT_EQUAL_STRING(rows[rows.size() - want + k].c_str(), v.rows[k].c_str());
       TEST_ASSERT_EQUAL(want < rows.size(), v.earlier);
       TEST_ASSERT_FALSE(v.lastCut);
+      // RB-TR1: the byte the first shown row starts at, so the reply can name the rest.
+      size_t firstAt = 0;
+      for (size_t k = 0; k < rows.size() - want; k++) firstAt += rows[k].size() + 1;
+      TEST_ASSERT_EQUAL_UINT32((uint32_t)firstAt, (uint32_t)v.firstAt);
+      if (v.earlier) {
+        const std::string shown = renderTail(v, "log.csv", file.size(), "");
+        const std::string says = "earlier rows not shown: bytes 0-" + std::to_string(firstAt) + ", read them with \"offset\":0";
+        TEST_ASSERT_TRUE_MESSAGE(shown.find(says) != std::string::npos, shown.substr(0, 160).c_str());
+      }
     }
   }
 }
