@@ -136,7 +136,27 @@ static void testCutSwapStep() {
   if (testCutArmed(TestCut::Swap) && g_cutOps++ == g_cutAt) testCutNow("swap", g_cutAt);
 }
 #define CUT_SWAP_STEP() testCutSwapStep()
+
+// ALLOCREFUSE heap (files_subsystem.h): a window around files.append's plan in which the first heap block of at
+// least g_heapMin bytes asked for on that task is refused. operator new below is the test image's only one.
+namespace {
+volatile bool g_heapArmed = false, g_heapWindow = false;
+volatile size_t g_heapMin = 4096;
+volatile long g_heapRefused = 0;
+TaskHandle_t g_heapTask = nullptr;
+struct HeapRefuseWindow {
+  HeapRefuseWindow() {
+    if (!g_heapArmed) return;
+    g_heapArmed = false;
+    g_heapTask = xTaskGetCurrentTaskHandle();
+    g_heapWindow = true;
+  }
+  ~HeapRefuseWindow() { g_heapWindow = false; }
+};
+}  // namespace
+#define HEAP_REFUSE_WINDOW() HeapRefuseWindow heapRefuseWindow_
 #else
+#define HEAP_REFUSE_WINDOW() ((void)0)
 #define CUT_SWAP_STEP() ((void)0)
 #endif
 
@@ -1153,7 +1173,10 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
   char last = '\0';
   if (!fileEnd(path, g_store.find(a.project, a.name) != nullptr, size, last))
     return ToolResult::fail("the card read failed - nothing was added; try again");
-  const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last);
+  const nimbus::orch::AppendPlan plan = [&] {
+    HEAP_REFUSE_WINDOW();   // test builds: ALLOCREFUSE heap refuses a block inside the plan only
+    return nimbus::orch::planAppend(a.text, size, last);
+  }();
   if (!plan.ok) return ToolResult::fail(plan.err);
   const std::string note =
       fileKindIsCsv(a.name) ? nimbus::orch::csvWidthNote(size ? firstRowOf(path) : std::string(), plan.bytes) : "";
@@ -2358,6 +2381,11 @@ bool fetchDeny(uint32_t id)    { std::lock_guard<std::mutex> lk(g_fetchMx); retu
 int  fetchPendingCount()       { std::lock_guard<std::mutex> lk(g_fetchMx); return g_fetchQ.pendingCount(); }
 
 #ifdef NIMBUS_TEST
+void testArmHeapRefuse(size_t minBytes) {   // ALLOCREFUSE heap (files_subsystem.h)
+  g_heapMin = minBytes;
+  g_heapArmed = true;
+}
+long testHeapRefused() { return g_heapRefused; }
 void testArmCut(TestCut where, uint32_t at) {   // CUTARM (files_subsystem.h)
   g_cutAt = at;
   g_cutOps = 0;
@@ -2366,3 +2394,23 @@ void testArmCut(TestCut where, uint32_t at) {   // CUTARM (files_subsystem.h)
 #endif
 
 }  // namespace agent::files
+
+#ifdef NIMBUS_TEST
+// The test image's global operator new (ALLOCREFUSE heap): the default behavior (malloc, std::bad_alloc on a
+// refusal) plus the armed window above. A production image keeps the library's own.
+void* operator new(std::size_t n) {
+  if (agent::files::g_heapWindow && n >= agent::files::g_heapMin && xTaskGetCurrentTaskHandle() == agent::files::g_heapTask) {
+    agent::files::g_heapWindow = false;
+    agent::files::g_heapRefused = agent::files::g_heapRefused + 1;
+    throw std::bad_alloc();
+  }
+  void* p = std::malloc(n ? n : 1);
+  if (!p) throw std::bad_alloc();
+  return p;
+}
+void* operator new[](std::size_t n) { return operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+#endif

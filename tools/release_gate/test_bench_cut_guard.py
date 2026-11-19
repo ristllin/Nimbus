@@ -14,9 +14,14 @@ import re
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 SOURCES = ("src/agent/files_subsystem.h", "src/agent/files_subsystem.cpp")
-HOOK = re.compile(r"testArmCut|testCutArmed|testCutNow|testCutSwapStep|TestCut::|g_cut(Where|At|Ops)|CUT_SWAP_STEP")
+HOOK = re.compile(
+    r"testArmCut|testCutArmed|testCutNow|testCutSwapStep|TestCut::|g_cut(Where|At|Ops)|CUT_SWAP_STEP"
+    r"|testArmHeapRefuse|testHeapRefused|HeapRefuseWindow|HEAP_REFUSE_WINDOW|g_heap(Armed|Window|Min|Refused|Task)|operator new"
+)
 # Allowed outside a NIMBUS_TEST region: the swap step macro's call sites and its production no-op definition.
-CALL_SITE = re.compile(r"^\s*(CUT_SWAP_STEP\(\);|#define CUT_SWAP_STEP\(\) \(\(void\)0\))\s*$")
+CALL_SITE = re.compile(
+    r"^\s*(CUT_SWAP_STEP\(\);|HEAP_REFUSE_WINDOW\(\);.*|#define (CUT_SWAP_STEP|HEAP_REFUSE_WINDOW)\(\) \(\(void\)0\))\s*$"
+)
 PRODUCTION_ENVS = ("esp32s3", "esp32s3-cyd")
 MARKERS = (b"CUTARM", b"ALLOCREFUSE", b"CUT %s at")
 
@@ -48,7 +53,13 @@ def leaks(text: str) -> list:
 
 def no_op_in_production(text: str) -> bool:
     """CUT_SWAP_STEP() has an #else branch that defines it as ((void)0)."""
-    return re.search(r"#else\s*\n\s*#define CUT_SWAP_STEP\(\) \(\(void\)0\)", text) is not None
+    return no_op(text, "CUT_SWAP_STEP")
+
+
+def no_op(text: str, macro: str) -> bool:
+    """`macro()` is defined as ((void)0) in an #else branch (beside other no-op macros)."""
+    pat = rf"#else\s*\n(?:\s*#define \w+\(\) \(\(void\)0\)\s*\n)*?\s*#define {macro}\(\) \(\(void\)0\)"
+    return re.search(pat, text) is not None
 
 
 def env_flags(env: str) -> str:
@@ -63,7 +74,9 @@ def test_every_hook_line_is_test_only():
         text = open(os.path.join(REPO, path), encoding="utf-8").read()
         assert HOOK.search(text), f"{path} names no hook: this test is reading the wrong files"
         assert leaks(text) == [], f"{path}: hook outside NIMBUS_TEST: {leaks(text)}"
-    assert no_op_in_production(open(os.path.join(REPO, SOURCES[1]), encoding="utf-8").read())
+    text = open(os.path.join(REPO, SOURCES[1]), encoding="utf-8").read()
+    assert no_op_in_production(text)
+    assert no_op(text, "HEAP_REFUSE_WINDOW")
 
 
 def test_the_production_envs_never_define_nimbus_test():

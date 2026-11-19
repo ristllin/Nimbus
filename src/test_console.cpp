@@ -2822,13 +2822,20 @@ void dispatch(String line) {
     return;
   }
   if (line.startsWith("ALLOCREFUSE")) {
-    // ALLOCREFUSE <n> [min bytes] | off | ? (lane RB-REC7 bench, ruling 87): the working allocator
+    // ALLOCREFUSE <n> [min bytes] | heap [min bytes] | off | ? (lane RB-REC7 bench, ruling 87): the working allocator
     // (psram_alloc.h) refuses the n-th block of at least <min bytes> (default 1024) asked for from now, once,
     // then serves as the device's PSRAM hooks do. The file aids must end such a call with no change.
     String rest = line.length() > 11 ? line.substring(12) : String("?");
     rest.trim();
     if (rest == "?") {
-      Serial.printf("ALLOCREFUSE armed=%ld seen=%ld refused=%ld\n", s_refuseAt, s_refuseSeen, s_refused);
+      Serial.printf("ALLOCREFUSE armed=%ld seen=%ld refused=%ld heap=%ld\n", s_refuseAt, s_refuseSeen, s_refused,
+                    agent::files::testHeapRefused());
+      return;
+    }
+    if (rest.startsWith("heap")) {   // ALLOCREFUSE heap [min bytes]: the next files.append's plan (files_subsystem.h)
+      const long minB = rest.length() > 5 ? rest.substring(5).toInt() : 4096;
+      agent::files::testArmHeapRefuse((size_t)(minB > 0 ? minB : 4096));
+      reply(String("ALLOCREFUSE armed heap min ") + (minB > 0 ? minB : 4096));
       return;
     }
     if (rest == "off") {

@@ -33,6 +33,11 @@ namespace agent::files {
 // (0-based) of the next whole-file swap. None disarms.
 enum class TestCut : uint8_t { None, Append, Part, Swap };
 void testArmCut(TestCut where, uint32_t at);
+// ALLOCREFUSE heap (test builds only): the next files.append's plan has its first heap block of at least
+// `minBytes` refused (operator new throws std::bad_alloc on that task, inside that window only). The working
+// allocator half of ALLOCREFUSE lives in the test console. Returns how many were refused so far.
+void testArmHeapRefuse(size_t minBytes);
+long testHeapRefused();
 #endif
 
 // Mount/scan the store (call AFTER memory::begin resolved the SD tier). Loads
