@@ -124,6 +124,13 @@ void test_day_header_carries_the_year() {
   TEST_ASSERT_EQUAL_STRING("Fri 1 Jan 2027", s.c_str());
   TXB_OK(tx::dayHeader("2028-02-29", s));
   TEST_ASSERT_EQUAL_STRING("Tue 29 Feb 2028", s.c_str());
+  // RB-REC5: a date is a date whether or not a clock was set at its noon.
+  const char* const early[][2] = {{"1970-01-01", "Thu 1 Jan 1970"}, {"1999-05-05", "Wed 5 May 1999"},
+                                  {"2001-09-08", "Sat 8 Sep 2001"}, {"2100-03-01", "Mon 1 Mar 2100"}};
+  for (const auto& e : early) {
+    TXB_OK(tx::dayHeader(e[0], s));
+    TEST_ASSERT_EQUAL_STRING(e[1], s.c_str());
+  }
   for (const char* bad : {"", "2026-11", "2026-13-01", "2026-02-30", "2027-02-29", "26-11-17", "2026/11/17",
                           "2026-11-1x", "2026-00-10", "2026-11-00"})
     TEST_ASSERT_TRUE_MESSAGE(tx::dayHeader(bad, s).err == tx::Err::InvalidArgument, bad);

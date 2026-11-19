@@ -401,11 +401,14 @@ Status dayHeader(const std::string& day, std::string& out) {
   out.clear();
   int y = 0, m = 0, d = 0;
   if (!parseDay(day, y, m, d)) return Status::fail(Err::InvalidArgument, "tx::dayHeader");
-  const uint64_t noon = (uint64_t)daysFromCivil(y, m, d) * 86400u + 43200u;
-  std::string when;
-  Status st = photoWhen(noon, 0, when);   // "Tue 17 Nov 2026 12:00"
-  if (!st.ok()) return Status::fail(st.err, "tx::dayHeader");
-  out = when.substr(0, when.rfind(' '));
+  // From the date itself, not through photoWhen: a day is a date whether or not a clock was
+  // set at its noon (RB-REC5: photoWhen dates nothing before the clock-valid line).
+  static const char kWd[] = "ThuFriSatSunMonTueWed";   // day 0 (1970-01-01) was a Thursday
+  static const char kMo[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  const int64_t n = daysFromCivil(y, m, d);
+  char buf[24];
+  std::snprintf(buf, sizeof buf, "%.3s %d %.3s %d", kWd + 3 * (n % 7), d, kMo + 3 * (m - 1), y);
+  out = buf;
   return Status::success();
 }
 

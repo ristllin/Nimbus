@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -73,6 +74,7 @@ struct Rig {
   bool wireStart = true;
   std::string now = "set";   // what the host's composeInputs says (empty = clock unsynced)
   std::string sent;          // instructions + inputs of the last request
+  std::function<int32_t(uint32_t)> zone;   // set: the offset at an instant (else offsetMin)
   std::unique_ptr<TurnEngine> eng;
 
   Rig() {
@@ -86,7 +88,7 @@ struct Rig {
       out = "{\"reply\":\"noted\",\"memory\":\"\",\"ask\":\"\"}";
       return true;
     });
-    d.utcOffsetAt = [this](uint32_t) { return offsetMin; };
+    d.utcOffsetAt = [this](uint32_t u) { return zone ? zone(u) : offsetMin; };
     d.utcOffsetMin = [this] { return offsetMin; };
     d.dayStartMin = [this] { return wireStart ? startMin : day::kDefaultStartMin; };
     d.composeInputs = [this](const std::string&) {
@@ -174,6 +176,38 @@ void test_no_clock_on_engine_1_is_the_unknown_line() {
   TEST_ASSERT_TRUE(s2.find("Current time: 01:23 ZON.") != std::string::npos);
 }
 
+// The engine asks for the offset valid at the turn's own instant: across both UK DST changes
+// (offsets from the C library under a POSIX TZ), the stamp is the shared one at that offset.
+void test_engine_1_uses_the_offset_of_the_turns_instant() {
+  setenv("TZ", "GMT0BST,M3.5.0/1,M10.5.0/2", 1);
+  tzset();
+  auto libOffset = [](uint32_t u) {
+    const time_t t = (time_t)u;
+    struct tm lt;
+    localtime_r(&t, &lt);
+    return (int32_t)(lt.tm_gmtoff / 60);
+  };
+  Rig r;
+  r.zone = libOffset;
+  struct Row {
+    uint64_t epoch;
+    const char* want;
+  } rows[] = {
+      {utc(2026, 3, 29, 0, 59), "2026-03-29 Sun 00:59 (day 2026-03-28 until 04:00)"},
+      {utc(2026, 3, 29, 1, 0), "2026-03-29 Sun 02:00 (day 2026-03-28 until 04:00)"},
+      {utc(2026, 3, 29, 3, 0), "2026-03-29 Sun 04:00"},
+      {utc(2026, 10, 25, 0, 30), "2026-10-25 Sun 01:30 (day 2026-10-24 until 04:00)"},
+      {utc(2026, 10, 25, 1, 30), "2026-10-25 Sun 01:30 (day 2026-10-24 until 04:00)"},
+      {utc(2026, 10, 25, 4, 0), "2026-10-25 Sun 04:00"},
+  };
+  for (const Row& row : rows) {
+    r.offsetMin = libOffset((uint32_t)row.epoch);   // the host's now string only
+    TEST_ASSERT_EQUAL_STRING(row.want, clockLine(r.turnAt(row.epoch, "hi")).c_str());
+  }
+  unsetenv("TZ");
+  tzset();
+}
+
 // An unwired day start is the default, 04:00.
 void test_an_unwired_day_start_is_04_00() {
   Rig r;
@@ -238,6 +272,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_engine_1_and_engine_2_carry_the_same_stamp_bytes);
   RUN_TEST(test_no_clock_on_engine_1_is_the_unknown_line);
+  RUN_TEST(test_engine_1_uses_the_offset_of_the_turns_instant);
   RUN_TEST(test_an_unwired_day_start_is_04_00);
   RUN_TEST(test_late_entries_in_three_domains_read_as_the_running_day);
   RUN_TEST(test_counter_without_the_clause_the_late_entry_lands_on_the_next_day);

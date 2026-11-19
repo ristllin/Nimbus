@@ -397,9 +397,8 @@ A day on the device does not have to end at midnight. **Day starts at**
 04:00) says when it does. From midnight until that time, every message the
 assistant reads is stamped with the day that is still running, for example
 "2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00)", so something you log at
-half past midnight counts toward the evening before. On the plain engine the
-day-by-day digests of older conversation split at the same time too. 00:00
-keeps the calendar day. The
+half past midnight counts toward the evening before. 00:00 keeps the calendar
+day. The
 setting lives on the web page only (there is no device menu row), and a hosted
 Nimbus has the same field.
 

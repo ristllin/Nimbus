@@ -28,7 +28,7 @@ constexpr char kSettingKey[] = "day_starts";
 constexpr uint16_t kDefaultStartMin = 4 * 60;   // 04:00
 constexpr uint16_t kMinutesPerDay = 24 * 60;
 // Below this the clock was never set (a device before SNTP counts from 1970): no date.
-// The same line as history_rows.h kClockValidHours.
+// history_rows.h kClockValidHours is the same line rounded up to a whole hour (800 s later).
 constexpr uint64_t kClockValidEpoch = 1000000000ULL;
 // The last second a four-digit year can show (9999-12-31 23:59:59 UTC).
 constexpr uint64_t kLastEpoch = 253402300799ULL;
