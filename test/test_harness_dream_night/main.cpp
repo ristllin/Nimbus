@@ -24,6 +24,7 @@
 #include <algorithm>
 
 #include "morning_after.h"
+#include "nimbus/harness/conversation.h"
 #include "nimbus/harness/prompt_layout.h"   // RB-Q2b: the morning after a scripted night, both trees
 
 // Lane M, then RB-Q2b - the nightly upkeep and quiet, honest background turns:
@@ -1011,12 +1012,42 @@ static void test_recall_carries_the_stored_conversation_beyond_the_window() {
   TEST_ASSERT_TRUE_MESSAGE(off.find(kDay1) == std::string::npos, off.c_str());
 }
 
+static void test_recall_never_repeats_the_window_and_follows_the_recall_gate() {
+  // Without the forget the day-1 lines are still in the window: recall adds none of them.
+  morning::Rig r;
+  morning::evening(r);
+  morning::scriptedNight(r);
+  r.plat.epoch = morning::kMorning;
+  r.eng->handleMessage("When are the flights for the city trip?", "Roy", morning::kChat);
+  const std::string dyn = agent::layout::split(r.instructions.back()).dyn;
+  TEST_ASSERT_TRUE_MESSAGE(dyn.find(agent::kEarlierLabel) == std::string::npos, dyn.c_str());
+  TEST_ASSERT_EQUAL(0, (int)r.eng->lastEarlierLines());
+  // A held note (a self-wakeup: no tools, no paid recall) carries none either, even beyond the window.
+  morning::Rig w;
+  morning::evening(w);
+  nimbus::orch::MsgQuery q;
+  q.sessionId = morning::kChat;
+  q.limit = 1;
+  w.marks.thru = w.store.query(q).front().id;
+  nimbus::orch::WakeNote note;
+  note.text = "the flights for the city trip";
+  w.eng->injectScheduledTurn(morning::kChat, nimbus::orch::dumpWakeNote(note), "Self-wakeup: routine", "sw1", false,
+                             true, false, true);
+  TEST_ASSERT_TRUE(w.inputs.back().find(agent::kEarlierLabel) == std::string::npos);
+  TEST_ASSERT_TRUE(agent::layout::split(w.instructions.back()).dyn.find(agent::kEarlierLabel) == std::string::npos);
+  // Counter-test: the owner's own turn on that same chat does carry it.
+  w.eng->handleMessage("When are the flights for the city trip?", "Roy", morning::kChat);
+  TEST_ASSERT_TRUE(agent::layout::split(w.instructions.back()).dyn.find(agent::kEarlierLabel) != std::string::npos);
+  TEST_ASSERT_TRUE(w.eng->lastEarlierLines() >= 1);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_scripted_night_makes_no_model_turn);
   RUN_TEST(test_night_offers_no_turn_seam);
   RUN_TEST(test_morning_after_carries_at_least_rb_main);
   RUN_TEST(test_recall_carries_the_stored_conversation_beyond_the_window);
+  RUN_TEST(test_recall_never_repeats_the_window_and_follows_the_recall_gate);
   RUN_TEST(test_quiet_turn_notice_count_zero_on_every_failure_path);
   RUN_TEST(test_quiet_billing_switch_keeps_the_notice_latch_armed);
   RUN_TEST(test_self_wakeup_turn_is_one_short_toolless_turn);

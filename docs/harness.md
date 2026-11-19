@@ -239,7 +239,12 @@ a quiet background turn; the next owner turn says it).
   model call (v5.2.0, lane RB-Q2b: the reflection turn that wrote memories, the running
   summary and the scratchpad from yesterday's conversation is gone, and with it every token
   the night spent; the conversation itself is untouched, and the head's own turns still
-  write memories, the running summary and the scratchpad). The night is one pure pipeline,
+  write memories, the running summary and the scratchpad). What the reflection used to copy into memory facts is
+  read by code instead (ruling 90): at turn open, beside memory recall, the store's word search (the one
+  `memory.episodic` uses, its index only: no card read, no paid call) finds the owner's own earlier lines of the
+  chat for the new message; up to 3 (320 B each) that are older than the history window and not in the summary
+  ride the recall block verbatim and dated, inside the recall budget, gated like recall
+  (`TurnEngine::earlierRecall`, `agent::earlierBullets`). The night is one pure pipeline,
   `dream::runNight` (`lib/harness/src/dream.cpp`, host-tested); the device glue only binds
   its seams. First, memory writes the day's turns queued during an embedding outage are
   stored (up to 10, 30 s). Then vector decay + expiry prune + windowed dedup + persist, at

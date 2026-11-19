@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -9,6 +10,7 @@
 #include "nimbus/harness/conversation.h"
 #include "nimbus/harness/dream.h"   // buildConversationWindow - the legacy window (skills: suffix)
 #include "nimbus/harness/jobs.h"   // kJobDeliveryTag / isJobDelivery
+#include "nimbus/mem_cap.h"
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"       // capSummary / buildCompactInputs (L19-27)
 #include "nimbus/orch/episodic.h"
@@ -811,6 +813,97 @@ static void test_hist_late_label_from_the_receive_path() {
   TEST_ASSERT_EQUAL(1, (int)count(w, "a parcel on the doorstep"));
 }
 
+// ---- ruling 90 (RB-Q2b): recall from the stored conversation, the pure selection --------
+static EpisodicMessage erow(const char* id, const char* role, const std::string& text, uint32_t hour,
+                            const std::string& tags = "", MsgKind kind = MsgKind::Message) {
+  EpisodicMessage m;
+  m.id = id;
+  m.sessionId = "1001";
+  m.role = role;
+  m.text = text;
+  m.tsHours = hour;
+  m.tags = tags;
+  m.kind = kind;
+  return m;
+}
+
+static void test_earlier_bullets_keep_only_the_owners_own_lines() {
+  const uint32_t h = 1792972800u / 3600 + 18;   // Mon 26 Oct 2026 18:00 UTC
+  const std::vector<EpisodicMessage> rows = {
+      erow("m00000009", "assistant", "Noted: the plumber Darek quoted 640 GBP.", h),       // a reply: never
+      erow("m00000008", "tool", "job result: Darek", h, agent::kJobDeliveryTag),            // job delivery: never
+      erow("m00000007", "user", "Darek quoted 640 GBP for the bathroom.", h),
+      erow("m00000006", "user", "a photo of the tiles", h, "", MsgKind::Image),             // not a message row
+      erow("m00000005", "user", "Darek is coming on Tuesday.", h),
+      erow("m00000004", "user", "Darek parks in bay 14.", h),
+      erow("m00000003", "user", "Darek brings his own ladder.", h),   // past the cap of 3
+  };
+  const std::vector<std::string> b = agent::earlierBullets(rows, "", "", 0);
+  TEST_ASSERT_EQUAL(3, (int)b.size());
+  TEST_ASSERT_EQUAL_STRING("[said earlier in this chat, Mon 26 Oct 2026 18:00] Darek quoted 640 GBP for the bathroom.",
+                           b[0].c_str());
+  for (const auto& x : b) {
+    TEST_ASSERT_TRUE(x.find("Noted:") == std::string::npos && x.find("job result") == std::string::npos);
+    TEST_ASSERT_TRUE(x.find("photo") == std::string::npos);
+  }
+  // Before the newest /clear: gone (the owner started afresh).
+  TEST_ASSERT_EQUAL(1, (int)agent::earlierBullets(rows, "", "m00000005", 0).size());
+  // The summary already carries a line whose every counted word it holds; another line it lacks stays.
+  const std::vector<std::string> s =
+      agent::earlierBullets(rows, "Summary: Darek quoted 640 GBP for the bathroom job.", "", 0);
+  TEST_ASSERT_EQUAL(3, (int)s.size());
+  TEST_ASSERT_TRUE(s[0].find("Tuesday") != std::string::npos);
+}
+
+static void test_earlier_bullets_are_clipped_one_line_and_utf8_safe() {
+  std::string longText = "Darek\nsaid:\t";
+  while (longText.size() < 2000) longText += "\xD7\xA9\xD7\x9C\xD7\x95\xD7\x9D ";   // two-byte letters
+  const std::vector<std::string> b =
+      agent::earlierBullets({erow("m00000002", "user", longText, 500000)}, "", "", 0);
+  TEST_ASSERT_EQUAL(1, (int)b.size());
+  TEST_ASSERT_TRUE(b[0].find('\n') == std::string::npos && b[0].find('\t') == std::string::npos);
+  const size_t at = b[0].find("] ");
+  TEST_ASSERT_TRUE(b[0].size() - at - 2 <= agent::kEarlierSnippetBytes);
+  TEST_ASSERT_EQUAL((int)b[0].size(), nimbus::utf8CapLen(b[0].c_str(), (int)b[0].size(), (int)b[0].size()));
+}
+
+static void test_earlier_query_searches_this_chat_only_and_skips_common_words() {
+  const MsgQuery q = agent::earlierQuery("1001", "who is the plumber", "m00000040");
+  TEST_ASSERT_EQUAL(agent::kEarlierCandidates, q.limit);
+  TEST_ASSERT_EQUAL_STRING("1001", q.sessionId.c_str());
+  TEST_ASSERT_EQUAL(1, (int)q.sessionAllow.size());
+  TEST_ASSERT_FALSE(q.coldScan);   // the index only: no card read at turn open
+  TEST_ASSERT_EQUAL_STRING("m00000040", q.before.c_str());
+  TEST_ASSERT_EQUAL(0, agent::earlierQuery("1001", "what is it", "").limit);   // common words only
+  TEST_ASSERT_EQUAL(0, agent::earlierQuery("", "plumber", "").limit);
+}
+
+// The search's time on a card-sized store: 5,000 indexed rows (the boot scan's bound is smaller).
+static void test_earlier_search_time_on_a_card_sized_store() {
+  InMemoryEpisodicStore st(6000);
+  for (int i = 0; i < 5000; ++i) {
+    EpisodicMessage m;
+    char id[16];
+    snprintf(id, sizeof id, "m%08x", (unsigned)(i + 1));
+    m.id = id;
+    m.sessionId = i % 3 ? "1001" : "2002";
+    m.role = i % 2 ? "user" : "assistant";
+    m.kind = MsgKind::Message;
+    m.tsHours = 490000 + (uint32_t)i / 20;
+    m.text = "row " + std::to_string(i) + " about the weekly shopping list, the car service and the garden fence";
+    if (i == 137) m.text = "Darek quoted 640 GBP for the bathroom.";
+    st.addMessage(m);
+  }
+  const MsgQuery q = agent::earlierQuery("1001", "What did the plumber Darek quote?", "m00001388");
+  const auto t0 = std::chrono::steady_clock::now();
+  std::vector<EpisodicMessage> rows;
+  for (int k = 0; k < 20; ++k) rows = st.query(q);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 20;
+  std::printf("RBQ2B-RECALL search over 5000 rows: %.2f ms (host), %zu rows\n", ms, rows.size());
+  const std::vector<std::string> b = agent::earlierBullets(rows, "", "", 0);
+  TEST_ASSERT_TRUE(!b.empty() && b[0].find("Darek quoted 640 GBP") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_window_empty_after_clear_nonempty_before);
@@ -839,6 +932,10 @@ int main(int, char**) {
   RUN_TEST(test_hist_replay_golden);
   RUN_TEST(test_anchored_fold_input_keeps_a_cut_summary_whole);
   RUN_TEST(test_hist_late_label_from_the_receive_path);
+  RUN_TEST(test_earlier_bullets_keep_only_the_owners_own_lines);
+  RUN_TEST(test_earlier_bullets_are_clipped_one_line_and_utf8_safe);
+  RUN_TEST(test_earlier_query_searches_this_chat_only_and_skips_common_words);
+  RUN_TEST(test_earlier_search_time_on_a_card_sized_store);
   UNITY_END();
   return 0;
 }

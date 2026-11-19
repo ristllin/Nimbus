@@ -944,3 +944,17 @@ deleted. Engine 2 has no baseline.
   class gets new, shorter texts. Owner ruling 81: PROGRESS.md note 2 lists what the turn produced and
   test_harness_dream_night::test_morning_after_carries_at_least_rb_main pins that the morning request carries
   at least rb-main's earlier conversation. Class -2,123 B.
+
+### PC-0104: recall carries the owner's own earlier lines of the chat, labelled as such
+- catalog: e1
+- class: device_notes
+- kind: spec
+- bytes: 54700 -> 54725
+- sha8: eadd9cad -> 34c49472
+- lane: RB-Q2b
+- prd: section 2 (the transcript: what the request carries of earlier conversation; ruling 90)
+- why: ruling 90. With the nightly reflection gone, the turn's recall also carries, by code, up to three of the owner's
+  own earlier lines of this chat that the store's word search finds for the new message, older than the history
+  window and not already in the summary, verbatim and dated, as RELEVANT MEMORIES bullets inside the recall budget.
+  The one new text is the bullet's label "said earlier in this chat" (25 B), a fact about where the line comes from,
+  not an instruction. Measured by DREAM-AB2 (PR_BODY.md).

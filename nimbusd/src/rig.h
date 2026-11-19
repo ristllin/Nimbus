@@ -3445,6 +3445,8 @@ class NimbusdRig {
     d.captureUserRow = [this](const std::string& c, const std::string& t, const std::string& tags) {
       return captureOwnerRow(c, t, tags);
     };
+    // Ruling 90 (RB-Q2b): the store's word search for the earlier-conversation recall (index only).
+    d.searchStore = [this](const orch::MsgQuery& q) { return overlay_.query(q); };
     d.historyRows = [this](const std::string& c, const agent::HistoryQuery& hq) {
       orch::MsgQuery q;
       q.sessionId = c;

@@ -1469,6 +1469,12 @@ static TurnEngine::Deps buildTurnDeps() {
     { memory::Lock lk; rows = memory::episodic().query(q, hq.info); }   // ring-served when it can
     return rows;
   };
+  // Ruling 90 (RB-Q2b): the store's word search for the earlier-conversation recall (index only).
+  d.searchStore = [](const nimbus::orch::MsgQuery& q) {
+    std::vector<nimbus::orch::EpisodicMessage> rows;
+    { memory::Lock lk; rows = memory::episodic().query(q); }
+    return rows;
+  };
   // A seedless turn's trigger row joins the turn by its turn: tag.
   d.captureTrigger = [](const std::string& chatId, const std::string& text, const std::string& tags) {
     memory::captureMessage(chatId.c_str(), "system", orch::MsgKind::Message, String(text.c_str()), "",

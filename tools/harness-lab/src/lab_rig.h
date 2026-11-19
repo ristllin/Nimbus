@@ -965,6 +965,7 @@ class LabRig {
   // The device's history seams over the lab's store (engine.h, histV2).
   void wireHistory(agent::TurnEngine::Deps& d) {
     d.histV2 = [this] { return opt_.histV2; };
+    d.searchStore = [this](const orch::MsgQuery& q) { return episodic().query(q); };   // ruling 90
     d.historyRows = [this](const std::string& chat, const agent::HistoryQuery& hq) {
       orch::MsgQuery q;
       q.sessionId = chat;

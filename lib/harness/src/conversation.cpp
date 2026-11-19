@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 
 #include "nimbus/harness/dream.h"   // buildEpisodicDigest - the window's line renderer
 #include "nimbus/harness/jobs.h"    // isJobDelivery - captured job rows are not conversation
 #include "nimbus/mem_cap.h"         // utf8CapLen - every clip is UTF-8 safe
 #include "nimbus/orch/blob_store.h" // blobHashOf - a media row's blob ref
 #include "nimbus/orch/caps.h"       // kRecentTurnsMax
+#include "nimbus/orch/lexical.h"    // lexShape, lexParse, lexCoverage - recall from the stored conversation
 #include "nimbus/orch/loops.h"      // civilFromDays - day markers
 
 namespace agent {
@@ -965,6 +967,68 @@ std::string localTimeLabel(uint32_t unixSec, int32_t utcOffsetMin) {
   snprintf(buf, sizeof(buf), "%s %d %s %02d:%02d", nimbus::orch::wdayAbbr(c.wday), c.day,
            nimbus::orch::monthAbbr(c.month), mins / 60, mins % 60);
   return buf;
+}
+
+// ---- recall from the stored conversation (ruling 90, RB-Q2b) ------------------------------
+
+const char kEarlierLabel[] = "said earlier in this chat";
+
+nimbus::orch::MsgQuery earlierQuery(const std::string& chatId, const std::string& text, const std::string& before) {
+  nimbus::orch::MsgQuery q;
+  q.limit = 0;   // 0 = no search (the caller skips it)
+  const nimbus::orch::LexShape shape = nimbus::orch::lexShape(text);
+  if (chatId.empty() || shape == nimbus::orch::LexShape::NoWords || shape == nimbus::orch::LexShape::CommonOnly)
+    return q;
+  q.sessionId = chatId;
+  q.sessionAllow = {chatId};   // the read boundary: this chat, nothing else
+  q.haveKind = true;
+  q.kind = MsgKind::Message;
+  q.textContains = text;
+  q.before = before;
+  q.limit = kEarlierCandidates;
+  return q;
+}
+
+namespace {
+// "Mon 26 Oct 2026 18:00" from the row's stored second (at: tag), else its hour.
+std::string earlierWhen(const EpisodicMessage& m, int32_t utcOffsetMin) {
+  uint32_t unix = (uint32_t)strtoul(tagValue(m.tags, kAtTag).c_str(), nullptr, 10);
+  if (!unix) unix = m.tsHours * 3600u;
+  const int64_t local = (int64_t)unix + (int64_t)utcOffsetMin * 60;
+  if (!unix || local < 0) return std::string();
+  const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays((uint32_t)(local / 86400));
+  const int mins = (int)(local % 86400 / 60);
+  char buf[40];
+  snprintf(buf, sizeof(buf), "%s %d %s %d %02d:%02d", nimbus::orch::wdayAbbr(c.wday), c.day,
+           nimbus::orch::monthAbbr(c.month), c.year, mins / 60, mins % 60);
+  return buf;
+}
+
+// The row's text on one line, clipped UTF-8 safe when long.
+std::string earlierText(const std::string& text) {
+  std::string t;
+  t.reserve(text.size());
+  for (char c : text) t += (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+  if (t.size() <= kEarlierSnippetBytes) return t;
+  t.resize((size_t)nimbus::utf8CapLen(t.c_str(), (int)t.size(), (int)kEarlierSnippetBytes - 3));
+  return t + "...";
+}
+}  // namespace
+
+std::vector<std::string> earlierBullets(const std::vector<EpisodicMessage>& rows, const std::string& summary,
+                                        const std::string& clearedThrough, int32_t utcOffsetMin) {
+  std::vector<std::string> out;
+  for (const EpisodicMessage& m : rows) {
+    if (out.size() >= kEarlierSnippets) break;
+    if (m.role != "user" || m.kind != MsgKind::Message || isClearBoundary(m) || isJobDelivery(m.tags)) continue;
+    if (!clearedThrough.empty() && !rowIdAfter(m.id, clearedThrough)) continue;   // before a /clear: gone
+    // The summary already carries it when every counted word of the row is in it.
+    const nimbus::orch::LexQuery own = nimbus::orch::lexParse(m.text);
+    if (own.count && !summary.empty() && nimbus::orch::lexCoverage(summary, own) >= own.count) continue;
+    const std::string when = earlierWhen(m, utcOffsetMin);
+    out.push_back(std::string("[") + kEarlierLabel + (when.empty() ? "" : ", " + when) + "] " + earlierText(m.text));
+  }
+  return out;
 }
 
 const char kCoverageHeader[] = "[CONVERSATION COVERAGE]";

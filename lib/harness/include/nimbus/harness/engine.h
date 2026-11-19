@@ -581,6 +581,9 @@ class TurnEngine {
   // The window the turn in flight (or the last one) sent: kept turns, the shift, and the
   // live rows after thru it does not carry (HistoryWindow::leftOut).
   const HistoryWindow& lastHistoryWindow() const { return lastWindow_; }
+  // The last turn's earlier-conversation recall: lines added and the search's wall time.
+  uint32_t lastEarlierLines() const { return earlierLines_; }
+  uint32_t lastEarlierMs() const { return earlierMs_; }
   // Engine notices a quiet background turn held back since boot (never delivered).
   uint32_t quietNoticesHeld() const { return quietNoticesHeld_; }
   nimbus::orch::TokenUsage sessionUsage() const { return sessionUsage_; }
@@ -904,6 +907,7 @@ class TurnEngine {
   ConvCache convCache_;
   HistoryReadStats histRead_;
   HistoryWindow lastWindow_;
+  uint32_t earlierLines_ = 0, earlierMs_ = 0;   // ruling 90: the last turn's earlier-conversation recall
   // The turn's budget line (lane H): "budget: <host>/<model> window <W>K target <T>K tok (<B> KB)
   // hist <max>/<soft>/<keep> KB (auto|owner)"; returns the request's body budget.
   uint32_t logBudgetLine(const std::string& host, const std::string& model, const nimbus::orch::ContextBudget& b,
@@ -955,6 +959,10 @@ class TurnEngine {
   bool truthRescued_ = false;   // the held answer ended the turn (its round gave none)
   void truthRescue(bool& ok, std::string& outJson);
   void startTruth(const std::string& chatId, const std::string& userText);
+  // Ruling 90 (RB-Q2b): this turn's earlier-conversation recall (conversation.h earlierBullets),
+  // appended to `into` after the memory facts. Reads the store's index only; no paid call.
+  void earlierRecall(const std::string& chatId, const std::string& text, const std::string& summary,
+                     std::vector<std::string>& into);
   void noteTruthEffect(const std::string& tool, bool isError, const std::string& output);
   std::string truthAtFinal(const std::string& finalTurn, bool prose, const std::string& host);
   void truthFinishAndSend(const std::string& chatId, const std::string& reply, const std::string& host,

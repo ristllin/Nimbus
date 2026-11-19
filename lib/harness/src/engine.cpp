@@ -1268,9 +1268,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // advertised one capability set and judged by another (W14).
   const orch::Principal turnWho = d_.apply.whoFor(chatId);
   orch::RecallOut recall;
-  if (!userText.empty() && freeHeap() >= t_.recallMinHeap && d_.recall &&
-      orch::unattendedPolicy(unattendedClass()).tools)   // a held note makes no paid recall (ruling 80)   // a channel's note never steers recall
-    recall = d_.recall(userText.substr(0, nimbus::net::withoutCrossedNote(userText.data(), userText.size())), turnWho);
+  // A held note makes no paid recall (ruling 80), and the conversation recall below follows the
+  // same gate (ruling 90); a channel's note never steers either.
+  const bool recallGate = !userText.empty() && freeHeap() >= t_.recallMinHeap &&
+                          orch::unattendedPolicy(unattendedClass()).tools;
+  const std::string recallText =
+      recallGate ? userText.substr(0, nimbus::net::withoutCrossedNote(userText.data(), userText.size())) : std::string();
+  if (recallGate && d_.recall) recall = d_.recall(recallText, turnWho);
   const std::vector<std::string>& recalled = recall.hits;
   const uint32_t heapAfterRecall = freeHeap();
   turnMem().gate.phase("recall", heapAfterRecall, largestFreeBlock());
@@ -1428,6 +1432,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     ci.tools.push_back(orch::ToolInfo{loopToolName(s.name), s.description});
   }
   ci.recalled = recalled;
+  if (recallGate) earlierRecall(chatId, recallText, ci.chatSummary, ci.recalled);   // ruling 90, after the facts
   // R5: the model lists move behind models.list when the head can call it: the
   // CONFIG's tool loop is on (toolsOnWire - the same cached-manifest property
   // as the capability list, never this turn's heap gate), the tool is

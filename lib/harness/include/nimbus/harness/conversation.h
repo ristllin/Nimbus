@@ -366,6 +366,30 @@ FoldSlice foldSlice(const std::vector<HistTurn>& turns, size_t keepBytes, size_t
 // "Sat 15 Nov 09:12" at `unixSec` in a zone `utcOffsetMin` east of UTC; "" for 0 (no clock).
 std::string localTimeLabel(uint32_t unixSec, int32_t utcOffsetMin);
 
+// ---- recall from the stored conversation (ruling 90, RB-Q2b) ------------------------------
+// What the nightly reflection used to copy into memory facts, read by code instead: at turn
+// open, beside memory recall, the owner's own earlier lines of this chat that the store's
+// word search finds for the new message, older than the history window and not already
+// carried by the summary. Verbatim (line breaks flattened, clipped UTF-8 safe), dated, at most
+// kEarlierSnippets of kEarlierSnippetBytes each. They ride the RELEVANT MEMORIES block as
+// bullets after the memory facts, so the recall budget (recallBytes) bounds them and drops
+// them first.
+inline constexpr size_t kEarlierSnippets = 3;
+inline constexpr size_t kEarlierSnippetBytes = 320;
+inline constexpr int kEarlierCandidates = 12;   // rows the search returns, best match first
+extern const char kEarlierLabel[];   // "said earlier in this chat"
+// The search for one turn: the chat's own message rows holding any counted word of `text`
+// (the store's lexical rule, the one memory.episodic uses), strictly older than `before`,
+// indexed rows only (no card read). Empty `text`, or one of only common words: no search.
+nimbus::orch::MsgQuery earlierQuery(const std::string& chatId, const std::string& text, const std::string& before);
+// The bullets from the search's rows (best match first). Kept: the owner's own message rows
+// (role "user": never a reply, a tool output or a job delivery), newer than the newest /clear
+// boundary among `rows`' ids `clearedThrough` ("" = none), whose counted words are not all in
+// `summary` already. Each: "[said earlier in this chat, Mon 26 Oct 2026 18:00] <text>".
+std::vector<std::string> earlierBullets(const std::vector<nimbus::orch::EpisodicMessage>& rows,
+                                        const std::string& summary, const std::string& clearedThrough,
+                                        int32_t utcOffsetMin);
+
 // Lane H: the seed's coverage line - what of the conversation after the summary the request
 // does not carry (`span`, the window's HistoryWindow::leftOut) and, when the summary is more
 // than a day old, its age. "" while everything after thru is in the request and the summary
