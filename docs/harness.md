@@ -871,6 +871,36 @@ content cap (12,000 B), the swap shares the commit hold with the index entry upd
 the index rewrite has a hold of its own. No hold carries the room check, the write, the
 rename and the index rewrite together, which is what took `files::saveText` to 162 ms.
 
+### General file aids (library)
+
+Tracking of any kind lives in ordinary CSV files the owner keeps. Three general aids make
+that reliable on small models; they are one library for both engines and nimbusd
+(`lib/core/include/nimbus/orch/file_aids.h`), and the bindings only move bytes, so every host
+gives the same result text for the same file:
+
+- A CSV scan behind `read_file` `column`/`from`/`to`/`sum`. A row matches when its field is in
+  the range (numbers compare as numbers; otherwise by prefix, so `2026-11-19` is a day,
+  `2026-11` a month, and a key of another form is "not compared", never quietly out of range).
+  The named columns are totalled as exact decimals (int64 thousandths, half away from zero
+  past three places; past the int64 range is an error, never a partial total). The result
+  shows the header and the matching rows as `L<n> <row>`, then one tail line: `rows <m> of
+  <n>`, the sums, and every row or cell left out of a total by reason with its lines (blank,
+  not a number, rounded, not compared, a field count unlike the header's, too long, empty
+  lines, identical-line groups, a torn last line, a row cut inside a quoted field).
+- A line pick behind `edit_file` `line`: the match that starts at that line and covers whole
+  lines is the one replaced, so a stale number fails with the current match lines and never
+  touches another row. Every result names the lines it changed, the lines that moved and where
+  `old` still occurs. A removal (`new` empty) takes its line end.
+- The facts an append states: a newline is written first when the file does not end in one,
+  and an appended line identical to one of the file's last 64 lines is named (`; identical to
+  line 41`); it is still appended.
+
+No size cap: the scan and the edit read 4 KB per card call (one lock hold each) in bounded
+working memory from `workingAlloc`; a refused block ends the call with a plain error and
+changes nothing, and an edit swaps its part file in only when the second pass saw the file the
+first pass planned on (`test/test_file_tools_sum`, `test_file_edit_line`,
+`test_file_append_facts`).
+
 ## Extension points
 
 - **New provider backend**: subclass `ManagedAgentAdapter` + one
