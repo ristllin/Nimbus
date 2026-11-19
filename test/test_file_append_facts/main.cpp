@@ -138,8 +138,8 @@ static void test_a_tail_that_starts_mid_line_never_compares_the_cut_line() {
   const std::string row = "2026-11-19,cafe,misc,3.50";
   const size_t need = kAppendTailBytes - row.size() - 1;
   std::string z;
-  const size_t k = need / 101;
-  for (size_t i = 0; i < k; ++i) z += std::string(i == 0 ? 100 + need % 101 : 100, 'y') + "\n";
+  const size_t k = need / 1001;   // a few long lines: the cut line is inside the 64-line window
+  for (size_t i = 0; i < k; ++i) z += std::string(i == 0 ? 1000 + need % 1001 : 1000, 'y') + "\n";
   const std::string f = "h\nPREFIX" + row + "\n" + z;
   bool whole = false;
   const std::string tail = tailOf(f, whole);
@@ -151,7 +151,7 @@ static void test_a_tail_that_starts_mid_line_never_compares_the_cut_line() {
   TEST_ASSERT_EQUAL_STRING("", appendFacts(f, true, f.size(), lines, row + "\n").note.c_str());
   // And a whole line in the tail is compared.
   TEST_ASSERT_EQUAL_STRING(("; identical to line " + std::to_string(lines) + "").c_str(),
-                           appendFacts(tail, whole, f.size(), lines, std::string(100, 'y') + "\n").note.c_str());
+                           appendFacts(tail, whole, f.size(), lines, std::string(1000, 'y') + "\n").note.c_str());
 }
 
 static void test_shared_list_and_hash_rules() {

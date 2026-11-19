@@ -17,7 +17,9 @@
 //     written.
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -510,6 +512,52 @@ static void test_a_removal_names_the_line_it_removed() {
                            renderEdit("p/t.csv", o).c_str());
 }
 
+// A whole-line match that ends exactly at a 4 KB read boundary, with its line end in the
+// next read (LF and CRLF): still a whole line.
+static void test_a_pick_at_a_read_boundary_is_a_whole_line() {
+  for (const char* end : {"\n", "\r\n"}) {
+    for (size_t shift = 0; shift < 3; ++shift) {
+      const std::string row = "2026-11-19,cafe,misc,3.50";
+      std::string f = "h\n";
+      while (f.size() + 40 < kAidChunk - shift - row.size()) f += "2026-11-18,rail,misc,2.00\n";
+      f += std::string(kAidChunk - shift - row.size() - f.size() - 1, 'y') + "\n";
+      const uint32_t line = uint32_t(std::count(f.begin(), f.end(), '\n') + 1);
+      f += row + end + "2026-11-20,x,y,1" + end;
+      TEST_ASSERT_EQUAL(kAidChunk - shift, f.find(row) + row.size());
+      Card c;
+      c.file = f;
+      EditRequest e;
+      e.oldText = row;
+      e.newText = "2026-11-19,cafe,misc,4.50";
+      e.line = line;
+      const auto o = run(c, e);
+      TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+      e.newText = "";
+      e.oldText = "2026-11-19,cafe,misc,4.50";
+      TEST_ASSERT_TRUE(run(c, e).ok);
+      TEST_ASSERT_TRUE(c.file.find(std::string("4.50")) == std::string::npos);
+      TEST_ASSERT_EQUAL(0, c.file.compare(c.file.size() - std::string("2026-11-20,x,y,1").size() - std::strlen(end),
+                                          std::string::npos, std::string("2026-11-20,x,y,1") + end));
+    }
+  }
+}
+
+// Removals with all=true name the lines they were removed from, in the old numbering.
+static void test_removals_name_their_old_lines() {
+  Card c;
+  c.file = "h\nx\ny\nx\nz\n";
+  EditRequest e;
+  e.oldText = "x";
+  e.newText = "";
+  e.all = true;
+  const auto o = run(c, e);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL_STRING("h\ny\nz\n", c.file.c_str());
+  TEST_ASSERT_EQUAL(2, o.at.size());
+  TEST_ASSERT_EQUAL_UINT32(2, o.at[0]);
+  TEST_ASSERT_EQUAL_UINT32(4, o.at[1]);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_line_pick_replaces_exactly_that_line_or_fails);
@@ -523,5 +571,7 @@ int main(int, char**) {
   RUN_TEST(test_a_file_changed_between_the_passes_is_not_written);
   RUN_TEST(test_a_line_picked_correction_is_exact_on_each_domain);
   RUN_TEST(test_a_removal_names_the_line_it_removed);
+  RUN_TEST(test_a_pick_at_a_read_boundary_is_a_whole_line);
+  RUN_TEST(test_removals_name_their_old_lines);
   return UNITY_END();
 }

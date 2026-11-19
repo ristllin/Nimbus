@@ -725,6 +725,14 @@ static void test_day_week_month_ranges_and_incomparable_keys_are_counted() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE(c.total, renderDec3(o.result.sums[0].total).c_str(), c.from);
     TEST_ASSERT_EQUAL_MESSAGE(c.notCompared, o.result.notCompared.count, c.from);
   }
+  // A bound that ends inside a digit run is not a prefix of a longer number: "2026-11-1"
+  // (a day typed short) does not quietly take in the 10th to the 19th.
+  q.from = "2026-11-1";
+  q.to = "";
+  const auto shortDay = scanWith(file, q, 5);
+  TEST_ASSERT_TRUE(shortDay.ok);
+  TEST_ASSERT_EQUAL_STRING("256", renderDec3(shortDay.result.sums[0].total).c_str());   // 2026-11-1 itself
+  TEST_ASSERT_EQUAL(11, shortDay.result.notCompared.count);   // every full date, and the other forms
   // Numbers compare as numbers when both bounds and the key are numbers.
   const std::string nums = "id,amount\n5,1\n7,2\n12.5,4\n20,8\n100,16\nabc,32\n";
   q.column = "amount";
@@ -925,6 +933,13 @@ static void test_review_cases_are_named_not_lost() {
   TEST_ASSERT_TRUE(o.ok);
   TEST_ASSERT_EQUAL_STRING("rows 1 of 3 where w 1..1.001; sum n=1; not compared 2 (lines 2, 3: w blank or not like 1)",
                            renderCsvTail(n, o.result).c_str());
+  // Read by prefix, 1.5004 would sit between 1 and 2; it is not compared instead.
+  n.from = "1";
+  n.to = "2";
+  o = scanWith("w,n\n1.5004,1\n1.5,1\n", n, 4096);
+  TEST_ASSERT_TRUE(o.ok);
+  TEST_ASSERT_EQUAL(1, o.result.matched);
+  TEST_ASSERT_EQUAL(1, o.result.notCompared.count);
   // A limit past kCsvShowMax is held to it: the page stays inside its block.
   CsvQuery big;
   big.sum = {"amt"};
