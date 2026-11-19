@@ -1824,8 +1824,10 @@ that says sub-agents started were deleted in v5.2.0 (lane RB-Q1b). The truth che
 ([turn anatomy](../turn-anatomy.md#the-truth-check)) is the last final check: on a head in
 enforce mode, a reply its probe says claims a stored change no effect backs gets the round,
 with a device item that lists what the device did. At most one correction round runs per turn, shared by all of
-them, never on the forced final round, never for a cut answer and never for a prose
-answer. The one exception is filler: it gets one more tool-less round on the forced
+them, never on the forced final round and never for a cut answer. A prose answer (on the
+Anthropic wire any round that ends with text and no call, `HeadLoopConfig::proseIsReply`) is
+not an `orch_turn`: it gets the filler check and the truth check from the same one round
+(`validateProseFinal`), and nothing else. The one exception is filler: it gets one more tool-less round on the forced
 final round as well
 (`HeadLoopConfig::forcedFinalCheck`), and is never delivered.)NIMBUSDOC"},
   {"turn-contract#contract-shape", "Contract shape",
