@@ -802,6 +802,84 @@ void test_a_dry_run_writes_nothing_asks_nothing_and_shows_no_content() {
   TEST_ASSERT_EQUAL(r.toImport, out.imported);
 }
 
+// One owner message and hundreds of replies (routines, proactive messages): the budget still
+// holds, the newest replies are imported and the rest named; and with no owner row at all.
+void test_the_budget_holds_for_one_huge_turn_and_for_replies_alone() {
+  for (int owner = 0; owner < 2; ++owner) {
+    World w;
+    std::mt19937 r(3);
+    uint64_t t = kMonthStart + 8 * kHour;
+    if (owner) w.old.add(kChat, t, "user", "message", "start the daily notes");
+    for (int i = 0; i < 400; ++i, t += 600) w.old.add(kChat, t, "assistant", "message", words(r, 1500));
+    const tx::MigrationOutcome out = w.done("huge turn");
+    TEST_ASSERT_TRUE(out.imported > 10 && out.named > 300);
+    size_t bytes = 0;
+    for (const tx::Item& it : w.items()) {
+      std::string line;
+      tx::Item c = it;
+      if (it.kind == tx::ItemKind::Assistant && tx::encodeLine(c, line).ok()) bytes += line.size();
+    }
+    TEST_ASSERT_TRUE(bytes <= tx::kImportBudgetBytes);
+    expectAccounted(w.old, w.files, 0, out.hi, "huge turn");
+    tx::TxLog log(w.files, kChatKey);
+    tx::HeadState head;
+    TEST_ASSERT_TRUE(log.open(head).ok());
+    tx::TxArena arena;
+    TEST_ASSERT_TRUE(arena.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
+    tx::FillReport rep;
+    TEST_ASSERT_TRUE(log.fill(head, arena, rep).ok());
+    TEST_ASSERT_EQUAL(0, rep.dropped);
+  }
+}
+
+// A step refused half way, then RAM items arrive before the next call (an engine run RAM-only):
+// the plan's q's are taken, so what is left goes after them; no stored q at or below RAM's.
+void test_a_resumed_plan_never_takes_a_q_ram_holds() {
+  for (long cut = 0; cut < 6; ++cut) {
+    World w;
+    fill(w, Small{62, 160, 2500});
+    w.files.refuseAppend = cut;
+    tx::MigrationOutcome out;
+    (void)w.run(out);
+    w.files.clearFaults();
+    const uint64_t stored = w.items().empty() ? 0 : w.items().back().q;
+    tx::TxArena arena;
+    TEST_ASSERT_TRUE(arena.init(64 * 1024, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
+    tx::Item it;
+    it.kind = tx::ItemKind::User;
+    it.x = "E2 kept in RAM";
+    it.q = stored + 3;
+    TEST_ASSERT_TRUE(arena.append(it).ok());
+    w.arena = &arena;
+    out = w.done("ram");
+    for (const tx::Item& x : w.items()) TEST_ASSERT_TRUE(x.q <= stored || x.q > it.q);
+    expectAccounted(w.old, w.files, w.m.thru, out.hi, "ram", true);
+  }
+}
+
+// The zone changes between the plan and its items (a refused write, then a start in a new zone):
+// the items are the plan's, so digest 0 stays and the anchor is the one planned.
+void test_a_zone_change_between_plan_and_items_changes_nothing_stored() {
+  World a;
+  fill(a, Small{63, 160, 2500});
+  a.done("zone 0");
+  World w;
+  fill(w, Small{63, 160, 2500});
+  w.files.refuseAppend = 1;   // digest 0's s item
+  tx::MigrationOutcome out;
+  TEST_ASSERT_FALSE(w.run(out).ok());
+  w.files.clearFaults();
+  tx::MigrateDeps d = w.deps();
+  d.tzMinutes = 60;
+  TEST_ASSERT_TRUE(tx::migrate(d, out).ok());
+  TEST_ASSERT_TRUE(out.digest0);
+  TEST_ASSERT_FALSE(out.overtaken);
+  // digest 0 and its anchor were planned in zone 0; the rows batch is planned after the change
+  const std::vector<tx::Item> want = a.items(), got = w.items();
+  TEST_ASSERT_TRUE(sameItems({want[0], want[1]}, {got[0], got[1]}));
+  TEST_ASSERT_EQUAL((int)tx::ItemKind::Digest, (int)got[1].kind);
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -828,5 +906,8 @@ int main(int, char**) {
   RUN_TEST(test_a_refused_allocation_is_a_status_and_the_next_call_finishes);
   RUN_TEST(test_every_q_is_above_the_log_and_the_arena);
   RUN_TEST(test_a_dry_run_writes_nothing_asks_nothing_and_shows_no_content);
+  RUN_TEST(test_the_budget_holds_for_one_huge_turn_and_for_replies_alone);
+  RUN_TEST(test_a_resumed_plan_never_takes_a_q_ram_holds);
+  RUN_TEST(test_a_zone_change_between_plan_and_items_changes_nothing_stored);
   return UNITY_END();
 }

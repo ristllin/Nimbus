@@ -76,8 +76,12 @@ struct World {
       exchange(old, rng, clock);
     }
   }
-  // Engine 2 answers one message: its rows carry "e2", its items go to the log.
-  void engine2(const std::string& text) {
+  // Engine 2 starts (the migration first, as the binding does) and answers one message: its rows
+  // carry "e2", its items go to the log. `store` false: the engine stores without migrating first
+  // (a binding that broke the contract).
+  tx::MigrationOutcome engine2(const std::string& text, bool migrateFirst = true) {
+    tx::MigrationOutcome started;
+    if (migrateFirst) started = resume("engine 2 start");
     clock += 900;
     const uint64_t row = old.add(kChat, clock, "user", "message", "E2 " + text, "e2");
     old.add(kChat, clock, "assistant", "message", "E2 reply to " + text, "e2");
@@ -100,6 +104,7 @@ struct World {
     head.nextQ += 3;
     head.mHi = std::max(head.mHi, row);
     TEST_ASSERT_TRUE(log.writeHead(head).ok());
+    return started;
   }
   uint32_t notes() {
     uint32_t n = 0;
@@ -124,8 +129,7 @@ void test_a_second_migration_is_a_reentry_that_imports_only_the_other_engines_ro
   const uint32_t notes = w.notes();
   w.engine2("how is the boat");
   w.engine1(5);
-  w.engine2("and the garden");
-  const tx::MigrationOutcome out = w.done("reentry");
+  const tx::MigrationOutcome out = w.engine2("and the garden");   // its start imports the five
   TEST_ASSERT_TRUE(out.reentry);
   TEST_ASSERT_TRUE(out.digest0);   // the first migration's, kept
   TEST_ASSERT_EQUAL(1, w.asks);    // never asked again
@@ -139,6 +143,8 @@ void test_a_second_migration_is_a_reentry_that_imports_only_the_other_engines_ro
     if (importNoteText(items[i])) note = i;
   TEST_ASSERT_TRUE(items[note].x.find("answered by the earlier engine; their tool work is not shown.") != std::string::npos);
   TEST_ASSERT_TRUE(note > 0 && items[note - 1].kind == tx::ItemKind::TurnEnd && items[note - 1].end.cause == "reply");
+  TEST_ASSERT_TRUE(startsWith(items.back().x, "E2 reply to and the garden") || items.back().kind == tx::ItemKind::TurnEnd);
+  TEST_ASSERT_EQUAL(0, w.done("nothing new").items);
 }
 
 void test_migrating_twice_in_a_row_changes_nothing() {
@@ -238,10 +244,12 @@ void test_a_batch_overtaken_by_the_engine_loses_and_doubles_nothing() {
     } catch (const txb::Killed&) {
     }
     w.files.clearFaults();
-    w.engine2("stored before the migration finished");
+    w.engine2("stored before the migration finished", false);
     const tx::MigrationOutcome out = w.done("overtaken");
     TEST_ASSERT_TRUE(out.overtaken);
-    expectAccounted(w.old, w.files, w.m.thru, out.hi, "overtaken");
+    expectAccounted(w.old, w.files, w.m.thru, out.hi, "overtaken", true);
+    TEST_ASSERT_EQUAL(0, w.done("after overtaken").items);
+    expectAccounted(w.old, w.files, w.m.thru, out.hi, "overtaken again", true);
   }
 }
 
@@ -249,7 +257,7 @@ void test_items_without_a_marker_are_a_reentry_from_the_newest_mirrored_row() {
   World w;
   w.engine1(0);
   w.old.add(kChat, w.clock, "user", "message", "an old message");
-  w.engine2("engine 2 ran here without a migration");
+  w.engine2("engine 2 ran here without a migration", false);
   bool re = false;
   TEST_ASSERT_TRUE(tx::isReentry(w.files, kChatKey, re).ok());
   TEST_ASSERT_TRUE(re);
@@ -265,6 +273,74 @@ void test_items_without_a_marker_are_a_reentry_from_the_newest_mirrored_row() {
   TEST_ASSERT_TRUE(tx::isReentry(empty, kChatKey, re).ok());
   TEST_ASSERT_FALSE(re);
   TEST_ASSERT_EQUAL((int)tx::Err::InvalidArgument, (int)tx::isReentry(empty, "Bad/Key", re).err);
+}
+
+// The marker lost after a finished migration (card damage, a manual delete): the log says how far
+// the rows go, so nothing is imported twice, the assistant replies after the newest owner row and
+// the rows under the old pointer included.
+void test_a_lost_marker_never_imports_a_row_twice() {
+  for (int lose = 0; lose < 3; ++lose) {
+    World w;
+    w.rng.seed(8);
+    w.m = month(w.old, 8, 400, 6, 3, 5, 800);
+    w.clock = w.m.lastT + kHour;
+    w.old.add(kChat, w.clock, "user", "message", "the last question");
+    w.old.add(kChat, w.clock, "assistant", "message", "the first reply");
+    w.old.add(kChat, w.clock, "assistant", "message", "the second reply");
+    if (lose == 2) w.files.killAtAppend = 2;   // the batch's note: digest 0 and the anchor stored
+    w.resume("first");
+    std::string path;
+    TEST_ASSERT_TRUE(tx::migratedPath(kChatKey, path).ok());
+    w.files.files.erase(path);
+    w.files.files.erase(path + ".tmp");
+    if (lose == 1) {
+      std::string head;
+      TEST_ASSERT_TRUE(tx::headPath(kChatKey, head).ok());
+      w.files.files.erase(head);
+    }
+    w.engine1(3);
+    const tx::MigrationOutcome out = w.done("marker lost");
+    TEST_ASSERT_TRUE(out.reentry);
+    expectAccounted(w.old, w.files, w.m.thru, out.hi, "marker lost");
+    TEST_ASSERT_EQUAL(1, w.asks);
+  }
+}
+
+// Digest 0's anchor stored, its s item not, and the engine stored before the migration went on:
+// digest 0 follows the engine's items covering the anchor alone; one anchor, nothing hidden.
+void test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing() {
+  World w;
+  w.rng.seed(9);
+  w.m = month(w.old, 9, 300, 5, 3, 4, 700);
+  w.clock = w.m.lastT + kHour;
+  w.files.killAtAppend = 1;   // digest 0's s item
+  try {
+    tx::MigrationOutcome o;
+    (void)tx::migrate(w.deps(), o);
+    TEST_FAIL_MESSAGE("not cut");
+  } catch (const txb::Killed&) {
+  }
+  w.files.clearFaults();
+  w.engine2("before the digest", false);
+  const tx::MigrationOutcome out = w.done("overtaken digest 0");
+  TEST_ASSERT_TRUE(out.overtaken);
+  TEST_ASSERT_TRUE(out.digest0);
+  TEST_ASSERT_EQUAL(1, w.asks);
+  expectAccounted(w.old, w.files, w.m.thru, out.hi, "overtaken digest 0", true);
+  const std::vector<tx::Item> items = stored(w.files);
+  uint64_t anchorQ = 0, e2Q = 0;
+  for (const tx::Item& it : items) {
+    if (it.kind == tx::ItemKind::DeviceNote && it.x.find("was kept") != std::string::npos) anchorQ = it.q;
+    if (it.kind == tx::ItemKind::User && startsWith(it.x, "E2 ")) e2Q = it.q;
+    if (it.kind == tx::ItemKind::Digest) {
+      TEST_ASSERT_EQUAL_UINT64(anchorQ, it.thru);
+      TEST_ASSERT_TRUE(it.q > e2Q && e2Q > anchorQ);
+    }
+  }
+  tx::TxLog log(w.files, kChatKey);
+  tx::HeadState head;
+  TEST_ASSERT_TRUE(log.open(head).ok());
+  TEST_ASSERT_EQUAL_UINT64(anchorQ, head.thru);   // engine 2's turn stays shown
 }
 
 void test_engines_taking_turns_never_lose_double_or_reorder_a_row() {
@@ -304,6 +380,8 @@ int main(int, char**) {
   RUN_TEST(test_a_long_absence_is_imported_within_the_budget_and_the_rest_named);
   RUN_TEST(test_a_batch_overtaken_by_the_engine_loses_and_doubles_nothing);
   RUN_TEST(test_items_without_a_marker_are_a_reentry_from_the_newest_mirrored_row);
+  RUN_TEST(test_a_lost_marker_never_imports_a_row_twice);
+  RUN_TEST(test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing);
   RUN_TEST(test_engines_taking_turns_never_lose_double_or_reorder_a_row);
   return UNITY_END();
 }

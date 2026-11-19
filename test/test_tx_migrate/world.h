@@ -331,7 +331,17 @@ bool importNoteText(const tx::Item& it) {
 // when at or below the old pointer, else named by an import note or imported as a text item
 // (u with m = its id, or a with its text). Items engine 2 stored itself ("E2 " text) are passed
 // over. No q twice, q rising, every imported turn closed.
-void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t hi, const char* when) {
+// How many turns a note says were imported ("[device] 3 turns between ..."), 0 when none.
+uint32_t turnsIn(const std::string& note) {
+  const size_t k = note.find(" turn");
+  if (k == std::string::npos || note.compare(0, 9, "[device] ") != 0) return 0;
+  return (uint32_t)std::strtoul(note.substr(9, k - 9).c_str(), nullptr, 10);
+}
+
+// `overtaken`: the binding broke the contract (the engine stored before Done): the note's turn
+// count and the order against engine 2's items are not promised then; nothing lost or doubled is.
+void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t hi, const char* when,
+                     bool overtaken = false) {
   char msg[320];
   std::vector<tx::DayRow> expect;
   {
@@ -355,7 +365,25 @@ void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t h
   std::set<uint64_t> ms;
   std::map<uint32_t, bool> open;
   uint32_t anchors = 0;
+  uint64_t lastM = 0;          // owner rows (engine 2's and imported) in row order
+  int64_t claimed = -1;        // the open note's turn count
+  std::set<uint32_t> under;    // turns imported under it
+  auto closeNote = [&]() {
+    if (claimed >= 0 && !overtaken) {
+      std::snprintf(msg, sizeof msg, "%s: a note claims %d turns, %u are under it", when, (int)claimed,
+                    (unsigned)under.size());
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)claimed, under.size(), msg);
+    }
+    claimed = -1;
+    under.clear();
+  };
   for (const tx::Item& it : items) {
+    if (it.kind == tx::ItemKind::User && it.m) {
+      std::snprintf(msg, sizeof msg, "%s: owner row m%llx after m%llx", when, (unsigned long long)it.m,
+                    (unsigned long long)lastM);
+      if (!overtaken) TEST_ASSERT_TRUE_MESSAGE(it.m > lastM, msg);
+      lastM = std::max(lastM, it.m);
+    }
     std::snprintf(msg, sizeof msg, "%s: q%llu after q%llu", when, (unsigned long long)it.q, (unsigned long long)prevQ);
     TEST_ASSERT_TRUE_MESSAGE(it.q > prevQ, msg);
     prevQ = it.q;
@@ -364,6 +392,8 @@ void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t h
       continue;
     }
     if (importNoteText(it)) {
+      closeNote();
+      claimed = turnsIn(it.x);
       const uint32_t n = namedIn(it.x);
       std::snprintf(msg, sizeof msg, "%s: note names %u rows, %u left", when, n, (unsigned)(expect.size() - next));
       TEST_ASSERT_TRUE_MESSAGE(next + n <= expect.size(), msg);
@@ -371,7 +401,11 @@ void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t h
       continue;
     }
     if (it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant) {
-      if (startsWith(it.x, "E2 ")) continue;
+      if (startsWith(it.x, "E2 ")) {
+        closeNote();
+        continue;
+      }
+      under.insert(it.turn);
       std::snprintf(msg, sizeof msg, "%s: item q%llu (%c) has no row left", when, (unsigned long long)it.q,
                     (char)it.kind);
       TEST_ASSERT_TRUE_MESSAGE(next < expect.size(), msg);
@@ -389,6 +423,7 @@ void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t h
     }
     if (it.kind == tx::ItemKind::TurnEnd) open[it.turn] = false;
   }
+  closeNote();
   std::snprintf(msg, sizeof msg, "%s: %u of %u rows accounted", when, (unsigned)next, (unsigned)expect.size());
   TEST_ASSERT_EQUAL_UINT32_MESSAGE(expect.size(), next, msg);
   for (const auto& kv : open) {
@@ -396,6 +431,14 @@ void expectAccounted(OldStore& s, txb::MemFiles& f, uint64_t oldThru, uint64_t h
     TEST_ASSERT_FALSE_MESSAGE(kv.second, msg);
   }
   if (oldThru) TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, anchors, "one anchor for the rows under the old pointer");
+  // head.json's m_hi is the newest owner row mirrored (the re-entry comparator)
+  tx::TxLog log(f, kChatKey);
+  tx::HeadState head;
+  if (!items.empty() && log.open(head).ok()) {
+    std::snprintf(msg, sizeof msg, "%s: m_hi %llu, newest mirrored %llu", when, (unsigned long long)head.mHi,
+                  (unsigned long long)lastM);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(lastM, head.mHi, msg);
+  }
 }
 
 }  // namespace mg

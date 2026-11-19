@@ -337,10 +337,13 @@ struct D0Plan {
   bool accepted = false;  // digest 0 follows it
   bool exported = false;
   Digest0Verdict verdict = Digest0Verdict::NoSummary;
-  uint64_t q0 = 0;
+  bool anchorStored = false;   // the anchor is stored; the plan is the digest alone (after an overtaking)
+  uint64_t q0 = 0;             // the anchor's q
+  uint64_t sq = 0;             // digest 0's q (q0 + 1 unless the anchor was stored before an overtaking)
   uint32_t seg = 1;
   uint64_t off = 0;
   uint64_t at = 0;
+  int16_t tz = 0;
   std::string text, day, path;
 };
 
@@ -402,6 +405,9 @@ std::string encodeMarker(const Marker& m) {
     num(s, "d0exp", m.d0.exported);
     num(s, "d0ver", (uint64_t)m.d0.verdict);
     num(s, "d0q", m.d0.q0);
+    num(s, "d0sq", m.d0.sq);
+    num(s, "d0as", m.d0.anchorStored);
+    num(s, "d0tz", (uint64_t)(int64_t)m.d0.tz);
     num(s, "d0seg", m.d0.seg);
     num(s, "d0off", m.d0.off);
     num(s, "d0at", m.d0.at);
@@ -461,6 +467,9 @@ bool decodeMarker(const std::string& text, Marker& m) {
     d.exported = u("d0exp") != 0;
     d.verdict = (Digest0Verdict)std::min<uint64_t>(u("d0ver"), (uint64_t)Digest0Verdict::Text);
     d.q0 = u("d0q");
+    d.sq = u("d0sq");
+    d.anchorStored = u("d0as") != 0;
+    d.tz = (int16_t)(int64_t)u("d0tz");
     d.seg = (uint32_t)u("d0seg");
     d.off = u("d0off");
     d.at = u("d0at");
@@ -694,7 +703,7 @@ struct Run {
 
   std::string anchorText() const {
     std::string s = mt::kDevice;
-    const std::string w = when(m.d0.at, d.tzMinutes);
+    const std::string w = when(m.d0.at, m.d0.tz);
     s += w.empty() ? std::string(mt::kEarlierUndated) : std::string(mt::kEarlierThrough) + w;
     s += mt::kEarlierKept;
     if (!m.d0.accepted && !d.fold.summary.empty())
@@ -757,6 +766,8 @@ struct Run {
       out.exported = p.exported;
     }
     p.q0 = nextQ();
+    p.sq = p.q0 + 1;
+    p.tz = d.tzMinutes;
     p.seg = log.segment();
     p.off = log.segmentBytes();
     p.have = true;
@@ -767,6 +778,10 @@ struct Run {
   void digest0Items(std::vector<Item>& items) const {
     items.clear();
     if (!m.d0.anchor) return;
+    if (m.d0.anchorStored) {
+      if (m.d0.accepted) items.push_back(digest0Item());
+      return;
+    }
     Item h;
     h.q = m.d0.q0;
     h.kind = ItemKind::DeviceNote;
@@ -774,10 +789,13 @@ struct Run {
     h.t = m.d0.at;
     h.x = anchorText();
     items.push_back(h);
-    if (!m.d0.accepted) return;
+    if (m.d0.accepted) items.push_back(digest0Item());
+  }
+  Item digest0Item() const {
     Item sItem;
-    DigestEntry e{m.d0.day, m.d0.text, m.d0.q0 + 1, m.d0.q0};
-    if (digestItem(e, 0, m.d0.at, sItem).ok()) items.push_back(sItem);
+    DigestEntry e{m.d0.day, m.d0.text, m.d0.sq, m.d0.q0};
+    if (!digestItem(e, 0, m.d0.at, sItem).ok()) sItem = Item{};   // checked when planned: never here
+    return sItem;
   }
 
   // ---- applying a planned step ----
@@ -820,7 +838,7 @@ struct Run {
       a.result = Applied::Overtaken;
       return false;
     }
-    if (log.lastQ() >= a.q) {
+    if (log.lastQ() >= a.q || (d.arena && d.arena->lastQ() >= a.q)) {   // another writer took this q
       a.result = Applied::Overtaken;
       return false;
     }
@@ -833,15 +851,18 @@ struct Run {
     return true;
   }
 
-  Status applyDigest0(bool& overtaken) {
+  Status applyDigest0(bool& overtaken, bool& anchorStored) {
     overtaken = false;
     std::vector<Item> items;
     digest0Items(items);
     Apply a(*d.files, d.chatKey);
-    Status s = applyStart(a, m.d0.seg, m.d0.off, m.d0.q0);
+    Status s = applyStart(a, m.d0.seg, m.d0.off, items.empty() ? m.d0.q0 : items.front().q);
     if (!s.ok()) return s;
-    for (const Item& it : items)
+    anchorStored = m.d0.anchorStored;
+    for (const Item& it : items) {
       if (!applyItem(a, it)) break;
+      anchorStored |= it.kind == ItemKind::DeviceNote;
+    }
     if (a.result == Applied::Overtaken) {
       overtaken = true;
       return Status::success();
@@ -849,7 +870,7 @@ struct Run {
     if (!a.status.ok()) return a.status;
     if (m.d0.accepted) {   // the swap's order: the s line is stored; thru moves, settle, head
       head.thru = std::max<uint64_t>(head.thru, m.d0.q0);
-      std::vector<DigestEntry> live{DigestEntry{m.d0.day, m.d0.text, m.d0.q0 + 1, m.d0.q0}};
+      std::vector<DigestEntry> live{DigestEntry{m.d0.day, m.d0.text, m.d0.sq, m.d0.q0}};
       std::string block;
       SettleReport rep;
       (void)settleDigests(*d.files, d.chatKey, Profile::Standard, live, block, rep);
@@ -860,21 +881,21 @@ struct Run {
   }
 
   // ---- the rows batch ----
-  uint32_t maxTurn() {
-    uint32_t t = 0;
+  Status maxTurn(uint32_t& t) {
+    t = 0;
     LineCursor cur(*d.files, d.chatKey);
-    if (cur.start(head.thruSeg, head.thruOffset).ok()) {
-      std::string line;
-      LineHeader h;
-      bool have = true;
-      while (cur.next(line, h, have).ok() && have) t = std::max(t, h.turn);
-    }
+    Status s = cur.start(head.thruSeg, head.thruOffset);
+    std::string line;
+    LineHeader h;
+    for (bool have = true; s.ok() && have;)
+      if ((s = cur.next(line, h, have)).ok() && have) t = std::max(t, h.turn);
+    if (!s.ok()) return s;
     if (d.arena)
       for (size_t i = 0; i < d.arena->count(); ++i) {
         ArenaEntry e;
         if (d.arena->header(i, e).ok()) t = std::max(t, e.turn);
       }
-    return t;
+    return Status::success();
   }
 
   // The plan for rows lo < id <= hi: what fits the budget (newest first, whole turns), the rest
@@ -891,18 +912,20 @@ struct Run {
       rowItem(r, 1, 1, d.tzMinutes, it);
       return encodeLine(it, line).ok() ? line.size() : 0;
     };
-    uint64_t total = 0, rows = 0, lastOwner = 0;
+    uint64_t total = 0, rows = 0, lastOwner = 0, lastRow = 0;
     Status s = eachRow(lo, hi, [&](const DayRow& r) {
       if (!importable(r)) return;
       total += cost(r);
       ++rows;
+      lastRow = r.id;
       if (r.role == RowRole::Owner) lastOwner = r.id;
     });
     if (!s.ok()) return s;
     any = rows > 0;
     if (!any) return Status::success();
     // Walk forward: a row is named while the rows from it on are over the budget, and after that
-    // until the next owner row (a turn is imported whole); never past the newest turn's start.
+    // until the next owner row (a turn is imported whole) when one is left; the newest row is
+    // always imported.
     uint64_t before = 0;
     bool importing = false;
     bool firstSeen = false;
@@ -911,8 +934,8 @@ struct Run {
       const uint64_t c = cost(r);
       if (!importing) {
         const bool fits = total - before <= d.importBudget;
-        const bool turnStart = r.role == RowRole::Owner || !firstSeen;
-        if ((fits && turnStart) || r.id == lastOwner) importing = true;
+        const bool turnStart = r.role == RowRole::Owner || !firstSeen || r.id > lastOwner;
+        if ((fits && turnStart) || r.id == lastRow) importing = true;
       }
       firstSeen = true;
       before += c;
@@ -929,8 +952,7 @@ struct Run {
     });
     if (!s.ok()) return s;
     p.q0 = nextQ();
-    p.turnBase = maxTurn();
-    return Status::success();
+    return maxTurn(p.turnBase);
   }
 
   struct Matched {
@@ -947,10 +969,12 @@ struct Run {
     if (!s.ok()) return s;
     BatchBuilder b(m.plan);
     bool going = true;
+    uint64_t maxM = 0;
     auto emit = [&](const Item& it, uint64_t row) {
       const uint32_t before = out.items;
       going = applyItem(a, it);
       if (!going) return false;
+      if (it.kind == ItemKind::User) maxM = std::max(maxM, it.m);
       if (out.items == before) {   // already stored: remember how far the stored part reaches
         if (it.kind == ItemKind::DeviceNote) got.note = true;
         if (row) got.row = row;
@@ -983,6 +1007,7 @@ struct Run {
     }
     if (!a.status.ok()) return a.status;
     head.nextQ = nextQ();
+    head.mHi = std::max(head.mHi, maxM);   // head.json's m_hi: the newest row mirrored
     (void)log.writeHead(head);
     return Status::success();
   }
@@ -992,7 +1017,19 @@ struct Run {
   // after it.
   Status settleOvertaken(const Matched& got) {
     out.overtaken = true;
-    if (got.open) {
+    if (got.note) out.named += m.plan.named;
+    bool closed = false;
+    if (got.open) {   // a refused marker save after an earlier pass appended it: not twice
+      LineCursor cur(*d.files, d.chatKey);
+      Status s = cur.start(m.seg, m.off);
+      std::string line;
+      LineHeader h, last;
+      for (bool have = true; s.ok() && have;)
+        if ((s = cur.next(line, h, have)).ok() && have) last = h;
+      if (!s.ok()) return s;
+      closed = last.kind == ItemKind::TurnEnd && last.turn == got.turn && last.q > m.plan.q0;
+    }
+    if (got.open && !closed) {
       Item e;
       e.q = nextQ();
       e.kind = ItemKind::TurnEnd;
@@ -1054,16 +1091,29 @@ struct Run {
       m.step = MigrationStep::Digest0;
       if (!(s = planDigest0()).ok()) return s;
     }
-    bool overtaken = false;
-    if (!(s = applyDigest0(overtaken)).ok()) return s;
+    bool overtaken = false, anchorStored = false;
+    if (!(s = applyDigest0(overtaken, anchorStored)).ok()) return s;
+    if (overtaken && anchorStored && m.d0.accepted && head.thru < m.d0.q0) {
+      // the anchor is stored before the other writer's items: digest 0 follows them, covering the
+      // anchor alone (thru stays the anchor's q, so nothing after it is hidden)
+      out.overtaken = true;
+      m.d0.anchorStored = true;
+      m.d0.sq = nextQ();
+      m.d0.seg = log.segment();
+      m.d0.off = log.segmentBytes();
+      if (!(s = save()).ok()) return s;
+      return digest0Step();
+    }
     if (overtaken) {   // never a digest over items it did not summarize: the old summary is named
       out.overtaken = true;
+      m.d0.anchorStored = false;
       m.d0.accepted = false;
       if (!d.fold.summary.empty() && !m.d0.exported) {
         m.d0.path = exportPath(m.d0.at);
         m.d0.exported = d.exportText && d.exportText(m.d0.path, d.fold.summary);
       }
       m.d0.q0 = nextQ();
+      m.d0.sq = m.d0.q0 + 1;
       m.d0.seg = log.segment();
       m.d0.off = log.segmentBytes();
       if (!(s = save()).ok()) return s;
@@ -1074,16 +1124,67 @@ struct Run {
     return save();
   }
 
+  // A log with items and no marker (lost, or engine 2 ran here without a migration): hi is the
+  // newest mirrored owner row (never below the old pointer), then past it the assistant rows the
+  // log already holds as the a items after that owner row.
+  Status fallbackHi(uint64_t& hi) {
+    std::vector<uint32_t> segs;
+    Status s = segmentList(*d.files, d.chatKey, segs);
+    if (!s.ok()) return s;
+    uint64_t lastM = 0;
+    std::vector<std::string> tail;
+    bool after = false;
+    if (!segs.empty()) {
+      LineCursor cur(*d.files, d.chatKey);
+      if (!(s = cur.start(segs.front(), 0)).ok()) return s;
+      std::string line;
+      LineHeader h;
+      Item it;
+      for (bool have = true; have;) {
+        if (!(s = cur.next(line, h, have)).ok()) return s;
+        if (!have || (h.kind != ItemKind::User && h.kind != ItemKind::Assistant)) continue;
+        if (!decodeLine(line.data(), line.size(), it).ok()) continue;
+        if (it.kind == ItemKind::User) {
+          after = it.m && it.m >= lastM;
+          if (after) {
+            lastM = it.m;
+            tail.clear();
+          }
+        } else if (after) {
+          tail.push_back(it.x);
+        }
+      }
+    }
+    hi = std::max(lastM, d.fold.thru);
+    std::vector<DayRow> page;
+    size_t j = 0;
+    for (uint64_t from = hi;;) {
+      bool end = false;
+      page.clear();
+      if (!(s = d.rows->read(from, 0, kRowPage, page, end)).ok()) return s;
+      for (const DayRow& r : page) {
+        from = r.id;
+        if (!importable(r)) continue;
+        Item it;
+        rowItem(r, 1, 1, d.tzMinutes, it);
+        if (r.role == RowRole::Owner || j >= tail.size() || tail[j] != it.x) return Status::success();
+        ++j;
+        hi = r.id;
+      }
+      if (end || page.empty()) return Status::success();
+    }
+  }
+
   Status go() {
     const bool had = readMarker(*d.files, d.chatKey, m);
     Status s = log.open(head);
     if (!s.ok()) return s;
     if (!had) {
       m = Marker{};
-      if (log.lastQ() > 0) {   // items without a marker: engine 2 ran here; only rows since are new
+      if (log.lastQ() > 0) {   // items without a marker: only rows since are new
         m.reentry = true;
-        m.hi = head.mHi;
         m.step = MigrationStep::Done;
+        if (!(s = fallbackHi(m.hi)).ok()) return s;
       }
     }
     out.reentry = m.reentry;
@@ -1163,7 +1264,8 @@ Status dryRun(const MigrateDeps& d, MigrationReport& r) {
     Status s = isReentry(*d.files, d.chatKey, re);
     if (!s.ok()) return s;
     r.reentry = re;
-    if (re && readMarker(*d.files, d.chatKey, run.m) == false) run.m.hi = 0;   // items, no marker
+    const bool marked = readMarker(*d.files, d.chatKey, run.m);
+    if (re && !marked && !(s = run.fallbackHi(run.m.hi)).ok()) return s;
     uint64_t newest = 0;
     if (!(s = d.rows->newest(newest)).ok()) return s;
     const OldFold& f = d.fold;
@@ -1197,7 +1299,7 @@ Status dryRun(const MigrateDeps& d, MigrationReport& r) {
     });
     if (!s.ok()) return s;
     r.days = (uint32_t)days.size();
-    const uint64_t lo = re ? run.m.hi : f.thru;
+    const uint64_t lo = re ? run.m.hi : std::max(run.m.hi, f.thru);
     ImportPlan p;
     bool any = false;
     if (newest > lo) {
