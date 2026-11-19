@@ -394,6 +394,26 @@ class Transcript(unittest.TestCase):
         self.assertEqual(len(rec["compactions"]), 1)
         self.assertTrue(all(tx._turn_time(it["turn"]) >= T0 - 2 * 86400 - 3600 for it in tx.items if it["q"] > tx.thru))
 
+    def test_budget_inputs_reads_the_request_at_the_due_mark_and_after(self):
+        """Lane RB-T4: per compaction, the last request before it and the first after it."""
+        import budget_inputs
+
+        u = lambda p: {"usage": {"prompt": p}}  # noqa: E731
+        run = {
+            "shape": "x",
+            "requests": [
+                dict(u(90_000), turn=1),
+                dict(u(95_500), turn=2),
+                dict(u(69_000), turn=3),
+                dict(u(70_000), turn=3),
+            ],
+            "compactions": [{"at": 0, "turns": 9, "digests": 2, "before_turn": 3}],
+        }
+        self.assertEqual(
+            budget_inputs.due_and_after(run),
+            [{"shape": "x", "turn": 3, "before": 95_500, "after": 69_000, "turns": 9, "digests": 2}],
+        )
+
     def test_digest_block_keeps_under_its_cap(self):
         tx = refloop.E2Transcript("tight")
         tx.seed([], [(f"day {k}", "d" * 700) for k in range(10)])

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """budget_inputs - the measured inputs of engine 2's per-head budget table (lane RB-T4).
 
-  budget_inputs.py --m0b <RB-M0b evidence dir> --arm <full-arm evidence dir> --out tests/evals/measured/transcript_budget.json
+  budget_inputs.py --m0b <RB-M0b evidence dir> --arm <full-arm evidence dir>... --out tests/evals/measured/transcript_budget.json
 
 Reads only numbers: the usage and body sizes of RB-M0b's replays (e2-aged/, e2/) and of the measured
 full arm (run_replay.py --profile full --aged), the link and card timings of RB-M2
@@ -138,8 +138,14 @@ def blended_classes(runs: list, c5: float) -> dict:
     return out
 
 
-def full_arm(arm: Path, c5: float, per_day: float) -> dict:
-    runs = [r for r in runs_in(arm) if r["profile"] == "full"]
+def full_arm(arms: list, c5: float, per_day: float) -> dict:
+    """The full arm's runs, one per shape: a later evidence dir replaces an earlier one's run of a shape."""
+    by_shape = {}
+    for arm in arms:
+        for r in runs_in(arm):
+            if r["profile"] == "full":
+                by_shape[r["shape"]] = r
+    runs = [by_shape[k] for k in sorted(by_shape)]
     prof = report.e2_profile(runs, c5, per_day)
     reqs = [q["usage"]["prompt"] for r in runs for q in r["requests"]]
     points = [p for r in runs for p in due_and_after(r)]
@@ -191,6 +197,7 @@ def build(a) -> dict:
         "wire_fit": wire_fit(m0b),
         "next_request_growth": growth(runs_in(a.m0b / "e2-aged")),
         "full_arm": full_arm(a.arm, c5, per_day),
+        "full_arm_dirs": [p.name for p in a.arm],
         "link": link(json.loads((MEASURED / "link.json").read_text())),
     }
 
@@ -198,7 +205,7 @@ def build(a) -> dict:
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--m0b", required=True, type=Path)
-    ap.add_argument("--arm", required=True, type=Path)
+    ap.add_argument("--arm", required=True, type=Path, nargs="+", help="evidence dirs, later ones win per shape")
     ap.add_argument("--out", required=True, type=Path)
     a = ap.parse_args()
     a.out.write_text(json.dumps(build(a), indent=1) + "\n")
