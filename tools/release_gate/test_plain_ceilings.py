@@ -110,7 +110,11 @@ def test_a_missing_or_malformed_line_is_red(tmp_path):
     assert any("role=guest host=60s" in e for e in gate.run(root))
     # One fixed pack (ruling 41): a line that names a pack again is malformed, not a new key.
     root_p = make_tree(tmp_path / "p")
-    edit(root_p, gate.GOLDEN, lambda t: t.replace("measure role=owner host=120s", "measure role=owner pack=extra host=120s", 1))
+    edit(
+        root_p,
+        gate.GOLDEN,
+        lambda t: t.replace("measure role=owner host=120s", "measure role=owner pack=extra host=120s", 1),
+    )
     assert any("malformed" in e for e in gate.run(root_p))
     root2 = make_tree(tmp_path / "m")
     edit(root2, gate.GOLDEN, lambda t: t.replace(" tools=14", " tools=fourteen", 1))
