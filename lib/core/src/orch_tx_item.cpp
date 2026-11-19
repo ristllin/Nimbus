@@ -692,6 +692,30 @@ bool readPart(Cursor& c, Part& p) {
          haveKind;
 }
 
+// The request by reference, by position after the three figures (RB-E3).
+bool readExchangeRef(Cursor& cc, int n, ExchangeFacts& x) {
+  switch (n) {
+    case 3: return readUnsigned(cc, x.fromQ);
+    case 4: return readUnsigned(cc, x.thruQ);
+    case 5: return readUnsigned(cc, x.items);
+    case 6: return readUnsigned(cc, x.bodyHash);
+    case 7: return readUnsigned(cc, x.maxTokens);
+    case 8: return readUnsigned(cc, x.stub);
+    case 9: {
+      uint8_t none = 0;
+      if (!readUnsigned(cc, none) || none > 1) return false;
+      x.toolChoiceNone = none == 1;
+      return true;
+    }
+    case 10: return readUnsigned(cc, x.closedThrough);
+    case 11: return readUnsigned(cc, x.stubThrough);
+    case 12: return readUnsigned(cc, x.omitThrough);
+    case 13: return readStr(cc, x.effort);
+    case 14: return readStr(cc, x.omission);
+    default: return skipValue(cc);
+  }
+}
+
 bool readExchange(Cursor& c, ExchangeFacts& x) {
   int n = 0;
   return readArray(c, [&](Cursor& cc) {
@@ -699,24 +723,7 @@ bool readExchange(Cursor& c, ExchangeFacts& x) {
              case 0: return readUnsigned(cc, x.requestBytes);
              case 1: return readUnsigned(cc, x.ms);
              case 2: return readUnsigned(cc, x.httpStatus);
-             case 3: return readUnsigned(cc, x.fromQ);
-             case 4: return readUnsigned(cc, x.thruQ);
-             case 5: return readUnsigned(cc, x.items);
-             case 6: return readUnsigned(cc, x.bodyHash);
-             case 7: return readUnsigned(cc, x.maxTokens);
-             case 8: return readUnsigned(cc, x.stub);
-             case 9: {
-               uint8_t none = 0;
-               if (!readUnsigned(cc, none) || none > 1) return false;
-               x.toolChoiceNone = none == 1;
-               return true;
-             }
-             case 10: return readUnsigned(cc, x.closedThrough);
-             case 11: return readUnsigned(cc, x.stubThrough);
-             case 12: return readUnsigned(cc, x.omitThrough);
-             case 13: return readStr(cc, x.effort);
-             case 14: return readStr(cc, x.omission);
-             default: return skipValue(cc);
+             default: return readExchangeRef(cc, n - 1, x);
            }
          }) &&
          n >= 3;

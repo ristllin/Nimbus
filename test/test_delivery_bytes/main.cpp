@@ -398,47 +398,52 @@ void test_the_turn_end_item_keeps_the_facts() {
 
 // An e item that cannot be stored leaves its turn open: whatever the facts, it encodes, keeps
 // the newest exchanges and says what it left out.
+tx::TurnEndFacts boundFacts(size_t events, size_t exchanges, size_t omission) {
+  tx::TurnEndFacts f;
+  f.cause = "reply";
+  for (size_t i = 0; i < events; ++i) f.events.push_back("change:event-" + std::to_string(i));
+  for (size_t i = 0; i < exchanges; ++i) {
+    tx::ExchangeFacts x{(uint32_t)i, 1, 200};
+    x.fromQ = 1, x.thruQ = 100 + i, x.items = 100, x.bodyHash = 1 + (uint32_t)i, x.effort = "medium";
+    x.omission = std::string(omission, 'o');
+    f.exchanges.push_back(x);
+  }
+  return f;
+}
+
+bool has(const std::vector<std::string>& v, const char* s) { return std::find(v.begin(), v.end(), s) != v.end(); }
+bool isMarker(const std::string& ev) { return ev == "events:cut" || ev == "exchanges:cut" || ev == "dossier:shed"; }
+
+// One bounded e item: within the caps, every cut named, the facts' own events kept in order.
+void expectBounded(const tx::Item& e, size_t events, size_t exchanges, size_t omission) {
+  size_t refs = 0;
+  for (const tx::ExchangeFacts& x : e.end.exchanges) refs += x.bodyHash != 0;
+  TEST_ASSERT_TRUE(e.end.events.size() <= tx::kMaxListItems);
+  TEST_ASSERT_TRUE(e.end.exchanges.size() <= tx::kMaxListItems);
+  const bool saysExchanges = has(e.end.events, "exchanges:cut"), saysShed = has(e.end.events, "dossier:shed");
+  if (events > tx::kMaxListItems) TEST_ASSERT_TRUE_MESSAGE(has(e.end.events, "events:cut"), "a cut event list does not say so");
+  TEST_ASSERT_EQUAL_MESSAGE(e.end.exchanges.size() < exchanges, saysExchanges, "exchanges:cut does not match a removal");
+  if (refs < e.end.exchanges.size()) TEST_ASSERT_TRUE_MESSAGE(saysShed, "shed references are not named");
+  if (exchanges) TEST_ASSERT_EQUAL_MESSAGE(exchanges - 1, e.end.exchanges.back().requestBytes, "the newest exchange left");
+  for (size_t i = 0; i < e.end.events.size() && i < events; ++i)
+    if (!isMarker(e.end.events[i]))
+      TEST_ASSERT_EQUAL_STRING(("change:event-" + std::to_string(i)).c_str(), e.end.events[i].c_str());
+  if (events + 3 <= tx::kMaxListItems) TEST_ASSERT_EQUAL(events + saysExchanges + saysShed, e.end.events.size());
+  if (exchanges <= 16 && !omission) TEST_ASSERT_EQUAL(exchanges, e.end.exchanges.size());
+}
+
 void test_the_turn_end_item_always_encodes() {
   plain::TurnCtx turn;
   turn.turn = 7;
   for (size_t events : {0u, 255u, 256u, 257u, 1000u})
     for (size_t exchanges : {0u, 16u, 256u, 300u})
       for (size_t omission : {0u, 1024u}) {
-        tx::TurnEndFacts f;
-        f.cause = "reply";
-        for (size_t i = 0; i < events; ++i) f.events.push_back("change:event-" + std::to_string(i));
-        for (size_t i = 0; i < exchanges; ++i) {
-          tx::ExchangeFacts x{(uint32_t)i, 1, 200};
-          x.fromQ = 1, x.thruQ = 100 + i, x.items = 100, x.bodyHash = 1 + (uint32_t)i, x.effort = "medium";
-          x.omission = std::string(omission, 'o');
-          f.exchanges.push_back(x);
-        }
         tx::Item e = blankEnd();
-        TXB_OK(plain::turnEndItem(turn, f, e));
+        TXB_OK(plain::turnEndItem(turn, boundFacts(events, exchanges, omission), e));
         std::string line;
         e.q = e.t = UINT64_MAX;   // the widest the store may give it
         TXB_OK(tx::encodeLine(e, line));
-        size_t refs = 0;
-        for (const tx::ExchangeFacts& x : e.end.exchanges) refs += x.bodyHash != 0;
-        TEST_ASSERT_TRUE(e.end.events.size() <= tx::kMaxListItems);
-        TEST_ASSERT_TRUE(e.end.exchanges.size() <= tx::kMaxListItems);
-        bool saysEvents = false, saysExchanges = false;
-        for (const std::string& ev : e.end.events) {
-          saysEvents |= ev == "events:cut";
-          saysExchanges |= ev == "exchanges:cut";
-        }
-        if (events > tx::kMaxListItems) TEST_ASSERT_TRUE_MESSAGE(saysEvents, "a cut event list does not say so");
-        if (e.end.exchanges.size() < exchanges) TEST_ASSERT_TRUE_MESSAGE(saysExchanges, "cut exchanges are not named");
-        if (e.end.exchanges.size() == exchanges) TEST_ASSERT_FALSE_MESSAGE(saysExchanges, "no exchange was removed");
-        const bool saysShed = std::find(e.end.events.begin(), e.end.events.end(), "dossier:shed") != e.end.events.end();
-        if (refs < e.end.exchanges.size()) TEST_ASSERT_TRUE_MESSAGE(saysShed, "shed references are not named");
-        if (exchanges) TEST_ASSERT_EQUAL_MESSAGE(exchanges - 1, e.end.exchanges.back().requestBytes, "the newest exchange left");
-        // What was kept is the facts' own, in order, from the first.
-        for (size_t i = 0; i < e.end.events.size() && i < events; ++i)
-          if (e.end.events[i] != "events:cut" && e.end.events[i] != "exchanges:cut" && e.end.events[i] != "dossier:shed")
-            TEST_ASSERT_EQUAL_STRING(("change:event-" + std::to_string(i)).c_str(), e.end.events[i].c_str());
-        if (events + 3 <= tx::kMaxListItems) TEST_ASSERT_EQUAL(events + saysExchanges + saysShed, e.end.events.size());
-        if (exchanges <= 16 && !omission) TEST_ASSERT_EQUAL(exchanges, e.end.exchanges.size());
+        expectBounded(e, events, exchanges, omission);
       }
 }
 
@@ -620,6 +625,25 @@ void test_a_reference_never_covers_less_than_the_engine_held() {
     }
   }
   TEST_ASSERT_EQUAL(6, (int)turnsSeen);
+}
+
+// A chat of six turns, some with a tool round (for the refusal cases below).
+void sixTurns(txb::Battery& b) {
+  for (int i = 0; i < 6; ++i) {
+    if (i % 2) b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+    b.model.push(sp::say("reply " + std::to_string(i)));
+    b.advance(600);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("owner message number " + std::to_string(i) + " about the boat", out));
+  }
+}
+
+// Ruling 81, the refusals: a rebuild given less, or a reference made to say less, never renders.
+void test_a_rebuild_given_less_refuses() {
+  TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
+  txb::Battery b;
+  sixTurns(b);
+  Rebuilder rb(b);
   // Given less than the range, the rebuild refuses: the first owner message left out.
   uint64_t firstOwner = 0;
   for (const tx::Item& it : rb.stored)
@@ -934,6 +958,7 @@ int main(int, char**) {
   RUN_TEST(test_a_request_is_rebuilt_byte_for_byte_from_its_reference);
   RUN_TEST(test_a_request_with_an_omission_is_rebuilt_byte_for_byte);
   RUN_TEST(test_a_reference_never_covers_less_than_the_engine_held);
+  RUN_TEST(test_a_rebuild_given_less_refuses);
   RUN_TEST(test_the_reference_is_read_from_what_was_rendered);
   RUN_TEST(test_a_full_arena_sheds_references_before_the_turn_end_item);
   RUN_TEST(test_a_repeated_omission_line_is_kept_once);

@@ -123,32 +123,42 @@ bool dropOldestExchange(std::vector<tx::ExchangeFacts>& xs) {
 }  // namespace
 
 // ---- delivery --------------------------------------------------------------------------------
+namespace {
+
+// The reply, as far as an earlier attempt did not send it.
+Status sendReply(const DeliverDeps& deps, const std::string& chat, const DeliverInput& in, DeliverOutcome& out) {
+  Status st = Status::success();
+  if (onePart(*in.text)) {   // the reply as it is: nothing allocated on the way out
+    if (!blank(*in.text)) st = sendPart(deps, chat, *in.text, 0, in.fromPart, out);
+  } else {   // the device's own function: the sanitiser, then the split and the part bound
+    const std::vector<std::string> parts = nimbus::orch::telegramParts(*in.text);
+    for (size_t i = 0; st.ok() && i < parts.size(); ++i) st = sendPart(deps, chat, parts[i], i, in.fromPart, out);
+  }
+  if (st.ok()) out.replyDone = true;
+  return st;
+}
+
+// The one status line, as its own message (a line over one part: its first part).
+Status sendStatus(const DeliverDeps& deps, const std::string& chat, const std::string& line, DeliverOutcome& out) {
+  const bool sent = line.size() <= nimbus::orch::kTelegramPartBytes
+                        ? deps.channel->send(chat, line)
+                        : deps.channel->send(chat, nimbus::orch::splitDeliverable(line).front());
+  if (!sent) return Status::fail(Err::Io, "plain::deliverTurn.status");
+  out.statusSent = true;
+  return Status::success();
+}
+
+}  // namespace
+
 Status deliverTurn(const DeliverDeps& deps, const DeliverInput& in, DeliverOutcome& out) {
   if (!deps.channel || !deps.channel->send || !in.turn) return Status::fail(Err::InvalidArgument, "plain::deliverTurn");
   const std::string& chat = in.turn->chatId;
   Status st = Status::success();
-  if (in.text && !out.replyDone) {
-    if (onePart(*in.text)) {   // the reply as it is: nothing allocated on the way out
-      if (!blank(*in.text)) st = sendPart(deps, chat, *in.text, 0, in.fromPart, out);
-    } else {   // the device's own function: the sanitiser, then the split and the part bound
-      const std::vector<std::string> parts = nimbus::orch::telegramParts(*in.text);
-      for (size_t i = 0; st.ok() && i < parts.size(); ++i) st = sendPart(deps, chat, parts[i], i, in.fromPart, out);
-    }
-    if (st.ok()) out.replyDone = true;
-  }
+  if (in.text && !out.replyDone) st = sendReply(deps, chat, in, out);
   if (!in.statusText || blank(*in.statusText) || out.statusSent) return st;   // no empty message
   if (!listed(in.status)) return Status::fail(Err::InvalidArgument, "plain::deliverTurn.unlisted");
-  const std::string& line = *in.statusText;
-  bool sent = false;
-  if (line.size() <= nimbus::orch::kTelegramPartBytes) {
-    sent = deps.channel->send(chat, line);
-  } else {   // one message, never two: its first part
-    const std::vector<std::string> head = nimbus::orch::splitDeliverable(line);
-    sent = deps.channel->send(chat, head.front());
-  }
-  if (sent) out.statusSent = true;
-  else st = Status::fail(Err::Io, "plain::deliverTurn.status");
-  return st;
+  const Status line = sendStatus(deps, chat, *in.statusText, out);
+  return st.ok() ? line : st;
 }
 
 // ---- the e item --------------------------------------------------------------------------------
@@ -260,51 +270,78 @@ tx::ExchangeFacts exchangeFacts(const ExchangeResult& ex) {
   return f;
 }
 
-Status rebuildRequest(const RebuildInput& in, HttpRequest& out) {
-  if (!in.end || !in.turn || !in.head || !in.wire || !in.system || !in.tools || !in.items ||
-      in.exchange >= in.end->exchanges.size() || !in.end->exchanges[in.exchange].bodyHash)
-    return Status::fail(Err::InvalidArgument, "plain::rebuildRequest");
-  const tx::ExchangeFacts& ref = in.end->exchanges[in.exchange];
-  if (promptHashOf(*in.system) != in.end->promptHash) return Status::fail(Err::NotFound, "plain::rebuildRequest.prompt");
-  if (manifestHashOf(*in.tools) != in.end->manifestHash) return Status::fail(Err::NotFound, "plain::rebuildRequest.manifest");
+namespace {
 
-  // The range, line for line as stored, into a block of its own: exactly the items the request
-  // rendered, never fewer (owner ruling 81).
-  size_t bytes = tx::kArenaMinBytes, n = 0;
+bool rebuildInputs(const RebuildInput& in) {
+  return in.end && in.turn && in.head && in.wire && in.system && in.tools && in.items &&
+         in.exchange < in.end->exchanges.size() && in.end->exchanges[in.exchange].bodyHash;
+}
+
+bool inRange(const tx::ArenaEntry& h, const tx::ExchangeFacts& ref) { return h.q >= ref.fromQ && h.q <= ref.thruQ; }
+
+// How many items of `items` fall in the range, and the block bytes they need.
+size_t countRange(const tx::TxArena& items, const tx::ExchangeFacts& ref, size_t& bytes) {
+  size_t n = 0;
+  bytes = tx::kArenaMinBytes;
   tx::ArenaEntry h;
-  for (size_t i = 0; i < in.items->count(); ++i)
-    if (in.items->header(i, h).ok() && h.q >= ref.fromQ && h.q <= ref.thruQ) {
+  for (size_t i = 0; i < items.count(); ++i)
+    if (items.header(i, h).ok() && inRange(h, ref)) {
       bytes += tx::recordBytes(h.lineBytes);
       ++n;
     }
+  return n;
+}
+
+// The range, line for line as stored, into a block of its own: exactly the items the request
+// rendered, never fewer (owner ruling 81). NotFound when `items` misses any of it.
+Status copyRange(const RebuildInput& in, const tx::ExchangeFacts& ref, tx::TxArena& range) {
+  size_t bytes = 0;
+  const size_t n = countRange(*in.items, ref, bytes);
   if (n != ref.items) return Status::fail(Err::NotFound, "plain::rebuildRequest.items");
-  tx::TxArena range;
+  tx::ArenaEntry h;
   Status st = in.alloc ? range.init(bytes, in.alloc, in.release)
                        : range.init(bytes, [](size_t k) { return std::malloc(k); }, [](void* p) { std::free(p); });
-  if (!st.ok()) return st;
   for (size_t i = 0; st.ok() && i < in.items->count(); ++i) {
     const char* line = nullptr;
     size_t len = 0;
-    if (!(st = in.items->header(i, h)).ok() || h.q < ref.fromQ || h.q > ref.thruQ) continue;
+    if (!(st = in.items->header(i, h)).ok() || !inRange(h, ref)) continue;
     if ((st = in.items->line(i, line, len)).ok()) st = range.appendLine(line, len);
   }
-  if (!st.ok()) return st;
+  if (!st.ok() || !n) return st;
   tx::ArenaEntry first, last;
-  if (n && (!range.header(0, first).ok() || !range.header(n - 1, last).ok() || first.q != ref.fromQ ||
-            last.q != ref.thruQ))
+  if (!range.header(0, first).ok() || !range.header(n - 1, last).ok() || first.q != ref.fromQ || last.q != ref.thruQ)
     return Status::fail(Err::NotFound, "plain::rebuildRequest.range");
+  return Status::success();
+}
 
-  TurnCtx turn = *in.turn;
-  turn.roundNo = static_cast<uint16_t>(in.exchange);
-  HeadEndpoint head = *in.head;
-  head.effort = ref.effort;
+// The ladder as the request had it; an omission line kept once is read from the exchange before.
+LadderState ladderOf(const tx::TurnEndFacts& end, size_t exchange) {
+  const tx::ExchangeFacts& ref = end.exchanges[exchange];
   LadderState ladder;
   ladder.closedThrough = ref.closedThrough;
   ladder.stubThrough = ref.stubThrough;
   ladder.omitThrough = ref.omitThrough;
   ladder.omissionLine = ref.omission;
-  for (size_t i = in.exchange; ladder.omitThrough && ladder.omissionLine.empty() && i-- > 0;)
-    ladder.omissionLine = in.end->exchanges[i].omission;   // kept once, on the first that carried it
+  for (size_t i = exchange; ladder.omitThrough && ladder.omissionLine.empty() && i-- > 0;)
+    ladder.omissionLine = end.exchanges[i].omission;
+  return ladder;
+}
+
+}  // namespace
+
+Status rebuildRequest(const RebuildInput& in, HttpRequest& out) {
+  if (!rebuildInputs(in)) return Status::fail(Err::InvalidArgument, "plain::rebuildRequest");
+  const tx::ExchangeFacts& ref = in.end->exchanges[in.exchange];
+  if (promptHashOf(*in.system) != in.end->promptHash) return Status::fail(Err::NotFound, "plain::rebuildRequest.prompt");
+  if (manifestHashOf(*in.tools) != in.end->manifestHash) return Status::fail(Err::NotFound, "plain::rebuildRequest.manifest");
+  tx::TxArena range;
+  Status st = copyRange(in, ref, range);
+  if (!st.ok()) return st;
+  TurnCtx turn = *in.turn;
+  turn.roundNo = static_cast<uint16_t>(in.exchange);
+  HeadEndpoint head = *in.head;
+  head.effort = ref.effort;
+  const LadderState ladder = ladderOf(*in.end, in.exchange);
   RenderInput r;
   r.turn = &turn;
   r.head = &head;

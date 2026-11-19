@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "nimbus/orch/tx/item.h"
@@ -153,6 +154,13 @@ inline tx::Item project(const tx::Item& in) {
   return o;
 }
 
+inline bool sameExchange(const tx::ExchangeFacts& p, const tx::ExchangeFacts& o) {
+  return std::tie(p.requestBytes, p.ms, p.httpStatus, p.fromQ, p.thruQ, p.items, p.stub, p.closedThrough, p.stubThrough,
+                  p.omitThrough, p.maxTokens, p.toolChoiceNone, p.bodyHash, p.effort, p.omission) ==
+         std::tie(o.requestBytes, o.ms, o.httpStatus, o.fromQ, o.thruQ, o.items, o.stub, o.closedThrough, o.stubThrough,
+                  o.omitThrough, o.maxTokens, o.toolChoiceNone, o.bodyHash, o.effort, o.omission);
+}
+
 // "" when every field of a and b is equal; else the first field that differs.
 inline std::string firstDifference(const tx::Item& a, const tx::Item& b) {
 #define TXGEN_SAME(f) \
@@ -176,12 +184,7 @@ inline std::string firstDifference(const tx::Item& a, const tx::Item& b) {
   if (a.end.exchanges.size() != b.end.exchanges.size()) return "end.exchanges";
   for (size_t i = 0; i < a.end.exchanges.size(); ++i) {
     const tx::ExchangeFacts &p = a.end.exchanges[i], &o = b.end.exchanges[i];
-    if (p.requestBytes != o.requestBytes || p.ms != o.ms || p.httpStatus != o.httpStatus || p.fromQ != o.fromQ ||
-        p.thruQ != o.thruQ || p.items != o.items || p.stub != o.stub || p.closedThrough != o.closedThrough ||
-        p.stubThrough != o.stubThrough || p.omitThrough != o.omitThrough || p.maxTokens != o.maxTokens ||
-        p.toolChoiceNone != o.toolChoiceNone || p.bodyHash != o.bodyHash || p.effort != o.effort ||
-        p.omission != o.omission)
-      return "end.exchanges[" + std::to_string(i) + "]";
+    if (!sameExchange(p, o)) return "end.exchanges[" + std::to_string(i) + "]";
   }
   return "";
 }
