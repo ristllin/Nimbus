@@ -40,9 +40,7 @@ void registerCalcTool(ToolRegistry& reg) {
 }
 
 void alsoReadCalcNames(ToolRegistry& reg) {
-  // calc::kArgNames after the schema's own, as one comma-separated list (the registry keeps
-  // them that way); test_calc_tool calls with each name and sees no "not read" note.
-  reg.alsoReads(calc::kName, {"expr,input,query,formula,calculation,math,text"});
+  for (size_t i = 1; i < calc::kArgNameCount; i++) reg.alsoReads(calc::kName, {calc::kArgNames[i]});
 }
 
 }  // namespace nimbus::orch

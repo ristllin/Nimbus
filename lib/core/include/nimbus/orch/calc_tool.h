@@ -24,9 +24,9 @@ const char* calcSchema();
 // Registers "calc" with calcToolCall under calcDescription() and calcSchema(), and the
 // aliases as read arguments.
 void registerCalcTool(ToolRegistry& reg);
-// Marks calc::kArgNames beyond the schema's own as read arguments of a registered "calc"
-// (engine 2 calls it after registering texts.h's declaration), so the registry adds no
-// "not read" note for them.
+// Marks calc::kArgNames beyond the schema's own as read arguments of a registered "calc", so
+// the registry adds no "not read" note for them. registerCalcTool calls it; an engine-2
+// registration made from texts.h's row must call it after its add().
 void alsoReadCalcNames(ToolRegistry& reg);
 
 }  // namespace nimbus::orch

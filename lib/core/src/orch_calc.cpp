@@ -7,6 +7,7 @@
 #include "nimbus/orch/calc.h"
 
 #include <cstring>
+#include <new>
 
 namespace nimbus::orch::calc {
 namespace {
@@ -84,8 +85,9 @@ U128 shl(const U128& a, unsigned k) {
 
 bool bitAt(const U128& a, unsigned i) { return ((i >= 64 ? a.hi >> (i - 64) : a.lo >> i) & 1u) != 0; }
 
-// q = a / b, r = a % b (b nonzero): shift and subtract, one bit at a time. Euclid's gcd
-// divides by a common denominator, which may reach 2^128 - 1.
+// q = a / b, r = a % b (b nonzero): shift and subtract, one bit at a time. Before the shift
+// at bit i, r is at most a >> (i + 1), which is below 2^127, so r * 2 + 1 never leaves 128
+// bits, whatever b is (a divisor near 2^128 included).
 void divmod(const U128& a, const U128& b, U128& q, U128& r) {
   if (a.hi == 0 && b.hi == 0) {
     q = u128(a.lo / b.lo);
@@ -95,10 +97,9 @@ void divmod(const U128& a, const U128& b, U128& q, U128& r) {
   q = U128{};
   r = U128{};
   for (unsigned i = bitLength(a); i-- > 0;) {
-    const bool carry = (r.hi >> 63) != 0;   // r * 2 passes 2^128: then it is above b
     r = shl(r, 1);
     r.lo |= bitAt(a, i) ? 1u : 0u;
-    if (carry || cmp(r, b) >= 0) {
+    if (cmp(r, b) >= 0) {
       r = sub(r, b);
       q = i >= 64 ? U128{q.hi | (1ull << (i - 64)), q.lo} : U128{q.hi, q.lo | (1ull << i)};
     }
@@ -389,14 +390,13 @@ class Evaluator {
   size_t i_ = 0;
   Tok cur_;
   unsigned depth_ = 0;
-  // Slots are written before they are read (a stack), so they start unconstructed: no
-  // per-call loop fills 77 slots nobody reads.
+  // A stack's slots start as raw storage (no per-call loop fills 77 slots nobody reads); a
+  // push constructs its slot in place, and only pushed slots are ever read.
   template <typename E, size_t N>
-  union Slots {
-    char none;
-    E at[N];
-    Slots() : none(0) {}
-    E& operator[](size_t i) { return at[i]; }
+  struct Slots {
+    alignas(E) unsigned char raw[N * sizeof(E)];
+    E& operator[](size_t i) { return *std::launder(reinterpret_cast<E*>(raw) + i); }
+    void push(size_t& n, const E& e) { new (raw + n++ * sizeof(E)) E(e); }
   };
   Slots<Pending, kOpSlots> ops_;
   Slots<Val, kValSlots> vals_;
@@ -471,7 +471,7 @@ bool Evaluator::operand() {
       case T::LParen:
         if (depth_ == kMaxDepth) return fail(Error::TooDeep, cur_.at);
         depth_++;
-        ops_[nOps_++] = Pending{T::LParen, neg, cur_.at, from};
+        ops_.push(nOps_, Pending{T::LParen, neg, cur_.at, from});
         if (!advance()) return false;
         continue;
       case T::Percent: return fail(Error::PercentPlacement, cur_.at);
@@ -495,7 +495,7 @@ bool Evaluator::literal(bool neg, bool anySign, uint16_t from) {
     if (!advance()) return false;
   }
   if (neg) v.q = negated(v.q);
-  vals_[nVals_++] = v;
+  vals_.push(nVals_, v);
   return true;
 }
 
@@ -545,7 +545,7 @@ bool Evaluator::binary() {
   const Val& left = vals_[nVals_ - 1];
   if (op.t == T::Of && !isPercent(left.kind)) return fail(Error::OfPlacement, op.at);
   if (prec == 1 && left.kind != Kind::Plain) return fail(Error::UnclearPercent, left.at);
-  ops_[nOps_++] = Pending{op.t, false, op.at, 0};
+  ops_.push(nOps_, Pending{op.t, false, op.at, 0});
   return advance() && operand();
 }
 
