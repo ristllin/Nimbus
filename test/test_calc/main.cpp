@@ -298,6 +298,12 @@ void test_nesting_is_bounded() {
       TEST_ASSERT_EQUAL(depth, r.position);
     }
   }
+  // The input that fills both fixed stacks: at every level a pending +, * and 'of' with their
+  // left operands, on all kMaxDepth + 1 levels (43 operators and marks, 34 values).
+  std::string full;
+  for (unsigned i = 0; i < calc::kMaxDepth; i++) full += "1+2*5%of(";
+  full += "1+2*5%of 1" + std::string(calc::kMaxDepth, ')');
+  TEST_ASSERT_EQUAL_STRING("= 1.11111111111", run(full).c_str());
   // Signs and 'of' chains do not nest: a long run of them is fine.
   std::string signs(200, '-');
   TEST_ASSERT_EQUAL_STRING("= 3", run(signs + "3").c_str());
