@@ -128,8 +128,13 @@ class WireCodec {
   virtual Status parse(const HttpResponse& in, ParsedStep& out) const = 0;
 };
 
-// The wire of a dialect. NotImplemented until that dialect's lane merges.
+// The wire of a dialect. NotImplemented until that dialect's wire is COMPLETE (render and
+// parse): the engine only ever gets a wire that can read its own answers.
 Status wireFor(Dialect dialect, const WireCodec*& out);
+// The render half of a dialect, for the property suites and the parse lane: answers as soon
+// as the render has landed (a complete wire answers here too). Its parse may still answer
+// NotImplemented (Anthropic: render RB-W1a, parse RB-W1b). The engine never uses it.
+Status renderWireFor(Dialect dialect, const WireCodec*& out);
 
 }  // namespace plain
 }  // namespace agent

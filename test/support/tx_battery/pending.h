@@ -60,14 +60,16 @@ struct NullFiles : tx::TxFiles {
   bool list(const std::string&, std::vector<std::string>&) override { return false; }
 };
 
+// A wire lane's sentinel is its render (plain::renderWireFor): the wire-level properties
+// render only. The parse lane's is probeParse, through wireFor (a complete wire).
 inline tx::Status probeWire(plain::Dialect d) {
   const plain::WireCodec* w = nullptr;
-  return plain::wireFor(d, w);
+  return plain::renderWireFor(d, w);
 }
 
 inline tx::Status probeParse() {
   const plain::WireCodec* w = nullptr;
-  tx::Status st = plain::wireFor(plain::Dialect::AnthropicMessages, w);
+  tx::Status st = plain::wireFor(plain::Dialect::AnthropicMessages, w);   // complete only with the parse
   if (!st.ok() || !w) return st.ok() ? tx::Status::pending("plain::wireFor anthropic") : st;
   agent::HttpResponse resp;
   resp.status = 200;

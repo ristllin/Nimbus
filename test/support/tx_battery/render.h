@@ -71,8 +71,8 @@ inline tx::Status renderItems(const RenderFixture& fx, const Convo& c, uint64_t 
   for (const tx::Item& it : c.items)
     if (!(st = arena.append(it)).ok()) return st;
   const plain::WireCodec* wire = nullptr;
-  if (!(st = plain::wireFor(fx.dialect, wire)).ok()) return st;
-  if (!wire) return tx::Status::fail(tx::Err::NotFound, "txb::renderItems: wireFor gave no codec");
+  if (!(st = plain::renderWireFor(fx.dialect, wire)).ok()) return st;   // render only: no parse needed
+  if (!wire) return tx::Status::fail(tx::Err::NotFound, "txb::renderItems: renderWireFor gave no codec");
   plain::TurnCtx turn = fx.turn;
   turn.turn = openTurn ? openTurn : c.turn;
   plain::RenderInput in;

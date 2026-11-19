@@ -90,8 +90,7 @@ constexpr const char* kMark = ",\"cache_control\":{\"type\":\"ephemeral\"}";
 // ---- the rig -----------------------------------------------------------------------------------
 struct Opts {
   uint64_t pointer = 0;
-  uint64_t ladder = 0;
-  uint32_t omit = 0;
+  plain::LadderState ladder;   // the engine's overflow ladder (RenderInput::ladder)
   bool none = false;
   uint32_t maxTokens = 4096;
   bool inlinePhotos = false;
@@ -135,8 +134,7 @@ struct Rig {
     in.tools = &fx.tools;
     in.items = &arena;
     in.stubPointer = o.pointer;
-    in.ladderStubThrough = o.ladder;
-    in.omitTurns = o.omit;
+    in.ladder = &o.ladder;
     in.toolChoiceNone = o.none;
     in.maxTokens = o.maxTokens;
     const auto* bulk = &c.bulk;
@@ -164,7 +162,7 @@ struct Rig {
   tx::Status renderArena(const txb::Convo& c, const tx::TxArena& arena, Out& out, const Opts& o,
                          uint32_t openTurn) const {
     const plain::WireCodec* wire = nullptr;
-    tx::Status st = plain::wireFor(plain::Dialect::AnthropicMessages, wire);
+    tx::Status st = plain::renderWireFor(plain::Dialect::AnthropicMessages, wire);
     if (!st.ok()) return st;
     plain::TurnCtx turn;
     const plain::RenderInput in = input(c, arena, o, turn, openTurn);
@@ -848,7 +846,7 @@ void test_the_same_transcript_and_facts_give_the_same_bytes() {
     turn.tainted = true;
     turn.trigger = plain::Trigger::Routine;
     const plain::WireCodec* w = nullptr;
-    TXB_OK(plain::wireFor(plain::Dialect::AnthropicMessages, w));
+    TXB_OK(plain::renderWireFor(plain::Dialect::AnthropicMessages, w));
     agent::HttpRequest req;
     TXB_OK(w->render(in, req));
     TEST_ASSERT_TRUE_MESSAGE(agent::materializeBody(req) == a.body, (ctx + ": a non-fact moved the bytes").c_str());
@@ -1150,15 +1148,15 @@ void test_stubs_photo_stubs_and_the_omission_line_are_the_rules_texts() {
   c.nextRound();
   Out out;
   Opts o;
-  o.omit = 2;
-  o.ladder = c.q - 1;   // rung 2: this turn's bulk up to here
-  o.pointer = 0;
+  // Rung 3 as the engine writes it: turns 1 and 2 (7 items each) and tx::omissionLine's text.
+  std::string dates, line;
+  TXB_OK(tx::omissionDates(c.items[0].t, c.items[13].t, 0, dates));
+  TXB_OK(tx::omissionLine(2, dates, line));
+  o.ladder.omitThrough = c.items[13].q;
+  o.ladder.omissionLine = line;
+  o.ladder.stubThrough = c.q - 1;   // rung 2: this turn's bulk up to here
   RENDER_OK(rig, c, out, o);
   EXPECT_API_OK(out, "rules texts");
-  // The omission line, as tx::omissionLine writes it, first.
-  std::string dates, line;
-  TXB_OK(tx::omissionDates(c.items[0].t, c.items[13].t, 0, dates));   // turns 1 and 2, 7 items each
-  TXB_OK(tx::omissionLine(2, dates, line));
   TEST_ASSERT_EQUAL_STRING(line.c_str(), out.view.messages[0].blocks[0].text.c_str());
   TEST_ASSERT_TRUE(out.body.find("ask 1:") == std::string::npos && out.body.find("ask 2:") == std::string::npos);
   TEST_ASSERT_TRUE(out.body.find("ask 3:") != std::string::npos);
@@ -1174,27 +1172,122 @@ void test_stubs_photo_stubs_and_the_omission_line_are_the_rules_texts() {
     if (it.kind != tx::ItemKind::Result || it.turn != c.turn) continue;
     const auto blocks = txb::detail::blocksOf(out.view, sp::BlockKind::ToolResult, it.id);
     TEST_ASSERT_EQUAL(1, (int)blocks.size());
-    TEST_ASSERT_EQUAL_STRING((it.q <= o.ladder ? it.st : c.bulk[it.handle]).c_str(), blocks[0]->text.c_str());
+    TEST_ASSERT_EQUAL_STRING((it.q <= o.ladder.stubThrough ? it.st : c.bulk[it.handle]).c_str(), blocks[0]->text.c_str());
   }
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(out.view, c.items, why), why.c_str());
   // The open turn is never omitted, however many turns the ladder asks for.
-  o.omit = 99;
+  TXB_OK(tx::omissionLine(4, dates, o.ladder.omissionLine));
+  o.ladder.omitThrough = c.q;
   RENDER_OK(rig, c, out, o);
   EXPECT_API_OK(out, "omit all");
-  TEST_ASSERT_TRUE(out.body.find("ask 5: now") != std::string::npos);
+  TEST_ASSERT_TRUE(out.body.find("ask 5: now") != std::string::npos && out.body.find("ask 4:") == std::string::npos);
   TEST_ASSERT_TRUE(out.view.messages[0].blocks[0].text.rfind("[4 earlier turns, ", 0) == 0);
+  // No line from the engine: nothing is left out (never silently).
+  o.ladder.omissionLine.clear();
+  RENDER_OK(rig, c, out, o);
+  TEST_ASSERT_TRUE(out.body.find("ask 1:") != std::string::npos);
   // Over random transcripts: every text block is stored text or a rules text.
   for (unsigned seed = 1; seed <= 150; ++seed) {
     Rig r;
     const txb::Convo d = randomConvo(seed, r);
     Opts p;
-    p.omit = seed % 3;
+    if (seed % 3) {
+      p.ladder.omitThrough = d.q / 3;
+      TXB_OK(tx::omissionLine(seed % 3, "", p.ladder.omissionLine));
+    }
+    p.ladder.closedThrough = seed % 5 ? 0 : d.q / 2;
     p.pointer = seed % 2 ? d.q / 2 : 0;
     RENDER_OK(r, d, out, p);
     EXPECT_API_OK(out, "texts seed " + std::to_string(seed));
     why.clear();
     TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(out.view, d.items, why), why.c_str());
+  }
+}
+
+// ---- 8b. the overflow ladder (RenderInput::ladder, the engine's LadderState) --------------------
+// Each rung changes the rendered bytes, makes the body smaller, and never leaves a tool_use
+// without its tool_result (or a result without its call); calls are never stubbed.
+void expectCallsWhole(const Out& out, const txb::Convo& c, const std::string& ctx) {
+  for (const sp::Message& m : out.view.messages)
+    for (const sp::Block& b : m.blocks)
+      if (b.kind == sp::BlockKind::ToolCall)
+        for (const tx::Item& it : c.items)
+          if (it.kind == tx::ItemKind::Call && it.id == b.id)
+            TEST_ASSERT_EQUAL_STRING_MESSAGE(it.args.c_str(), b.args.c_str(), ctx.c_str());
+}
+
+void test_each_rung_of_the_ladder_changes_the_bytes_and_keeps_every_pair() {
+  Rig rig;
+  txb::Convo c;
+  std::vector<uint64_t> turnEnd;
+  for (int t = 0; t < 3; ++t) {
+    c.advance(3600);
+    c.openTurn();
+    c.owner("ask " + std::to_string(c.turn) + ": read");
+    const std::string id = c.call("read_file", R"({"path":"a"})");
+    c.bulkResult(id, "read_file", txb::payload("CLOSED" + std::to_string(t), 6000));
+    c.nextRound();
+    c.say("read it");
+    c.close();
+    turnEnd.push_back(c.q);
+  }
+  c.advance(60);
+  c.openTurn();
+  c.owner("ask 4: now");
+  std::vector<uint64_t> roundResult;
+  for (int r = 0; r < 3; ++r) {
+    const std::string id = c.call("read_file", R"({"path":"b"})");
+    roundResult.push_back(c.bulkResult(id, "read_file", txb::payload("OPEN" + std::to_string(r), 6000)));
+    c.nextRound();
+  }
+  Out none, r1, r2, r3;
+  RENDER_OK(rig, c, none);
+  Opts o;
+  o.ladder.closedThrough = turnEnd.back();   // rung 1: every closed turn stubbed
+  RENDER_OK(rig, c, r1, o);
+  o.ladder.stubThrough = roundResult[0];     // rung 2: this turn's bulk older than two rounds
+  RENDER_OK(rig, c, r2, o);
+  std::string line;
+  TXB_OK(tx::omissionLine(2, "", line));
+  o.ladder.omitThrough = turnEnd[1];         // rung 3: the two oldest turns
+  o.ladder.omissionLine = line;
+  RENDER_OK(rig, c, r3, o);
+  const Out* steps[] = {&none, &r1, &r2, &r3};
+  for (int i = 1; i < 4; ++i) {
+    const std::string ctx = "rung " + std::to_string(i);
+    EXPECT_API_OK(*steps[i], ctx);
+    TEST_ASSERT_TRUE_MESSAGE(steps[i]->body.size() < steps[i - 1]->body.size(), (ctx + " did not shrink the body").c_str());
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(steps[i]->view, why), (ctx + ": " + why).c_str());
+    expectCallsWhole(*steps[i], c, ctx);
+  }
+  TEST_ASSERT_TRUE(none.body.find("CLOSED0\\nrow") != std::string::npos && r1.body.find("CLOSED0\\nrow") == std::string::npos);
+  TEST_ASSERT_TRUE(r1.body.find("OPEN0\\nrow") != std::string::npos && r2.body.find("OPEN0\\nrow") == std::string::npos);
+  TEST_ASSERT_TRUE(r2.body.find("OPEN2\\nrow") != std::string::npos);   // the newest rounds stay whole
+  TEST_ASSERT_TRUE(r3.body.find("ask 1:") == std::string::npos && r3.body.find("ask 2:") == std::string::npos);
+  TEST_ASSERT_TRUE(r3.body.find("ask 3:") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING(line.c_str(), r3.view.messages[0].blocks[0].text.c_str());
+  // Any rung at any point of random transcripts, broken ones too: valid and paired.
+  for (unsigned seed = 1; seed <= 200; ++seed) {
+    Rig r;
+    GenOpts go;
+    go.broken = seed % 2;
+    const txb::Convo d = randomConvo(seed, r, go);
+    std::mt19937 rng(seed);
+    Opts p;
+    p.ladder.closedThrough = rng() % (d.q + 1);
+    p.ladder.stubThrough = rng() % (d.q + 1);
+    if (rng() % 2) {
+      p.ladder.omitThrough = rng() % (d.q + 1);
+      TXB_OK(tx::omissionLine(1 + rng() % 5, "", p.ladder.omissionLine));
+    }
+    Out out;
+    RENDER_OK(r, d, out, p);
+    const std::string ctx = "ladder seed " + std::to_string(seed);
+    EXPECT_API_OK(out, ctx);
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(out.view, why), (ctx + ": " + why).c_str());
   }
 }
 
@@ -1388,13 +1481,20 @@ void test_the_envelope_carries_the_facts_and_no_orch_turn() {
   TEST_ASSERT_EQUAL(tx::Err::InvalidArgument, rig.render(c, out).err);
   TEST_ASSERT_TRUE(out.req.body.empty());
   const plain::WireCodec* w = nullptr;
-  TXB_OK(plain::wireFor(plain::Dialect::AnthropicMessages, w));
+  TXB_OK(plain::renderWireFor(plain::Dialect::AnthropicMessages, w));
   TEST_ASSERT_TRUE(w->dialect() == plain::Dialect::AnthropicMessages);
   agent::HttpRequest req;
   TEST_ASSERT_EQUAL(tx::Err::InvalidArgument, w->render(plain::RenderInput{}, req).err);
-  // The parse half is RB-W1b's.
+  // The parse half is RB-W1b's: until it lands the engine gets no Anthropic wire at all
+  // (wireFor answers only for a complete wire), only the render half answers.
   plain::ParsedStep step;
-  TEST_ASSERT_TRUE(w->parse(agent::HttpResponse{}, step).notImplemented());
+  agent::HttpResponse resp;
+  resp.status = 200;
+  resp.body = "{}";
+  TEST_ASSERT_TRUE(w->parse(resp, step).notImplemented());
+  const plain::WireCodec* engineWire = nullptr;
+  TEST_ASSERT_TRUE(plain::wireFor(plain::Dialect::AnthropicMessages, engineWire).notImplemented());
+  TEST_ASSERT_NULL(engineWire);
 }
 
 // ---- 12. a refused allocation (ruling 30) ------------------------------------------------------------
@@ -1407,7 +1507,7 @@ void test_a_refused_allocation_at_every_site_answers_a_status() {
   plain::TurnCtx turn;
   const plain::RenderInput in = rig.input(c, arena, Opts(), turn, 0);
   const plain::WireCodec* w = nullptr;
-  TXB_OK(plain::wireFor(plain::Dialect::AnthropicMessages, w));
+  TXB_OK(plain::renderWireFor(plain::Dialect::AnthropicMessages, w));
   agent::HttpRequest good;
   TXB_OK(w->render(in, good));
   int refused = 0;
@@ -1458,6 +1558,14 @@ void test_pointer_moves_superseded_reads_and_thru_come_from_the_stored_items() {
   c.move(c.q - 2, "superseded", {readQ});   // and the receipt was superseded
   c.owner("ask 2: again");
   Out out;
+  Out rung1;
+  txb::Convo plainTurns = c;
+  plainTurns.items.erase(plainTurns.items.end() - 3, plainTurns.items.end());   // no x items, no owner yet
+  plainTurns.owner("ask 2: again");
+  Opts r1;
+  r1.ladder.closedThrough = bulkQ;   // rung 1 stubs closed turns as the pointer would
+  RENDER_OK(rig, plainTurns, rung1, r1);
+  TEST_ASSERT_TRUE(rung1.body.find("OLDBULK\nrow") == std::string::npos);
   RENDER_OK(rig, c, out);   // RenderInput::stubPointer stays 0: the stored move counts
   EXPECT_API_OK(out, "stored moves");
   for (const tx::Item& it : c.items)
@@ -1739,6 +1847,7 @@ int main(int, char**) {
   RUN_TEST(test_no_string_passes_the_guard_and_every_body_is_valid_utf8);
   RUN_TEST(test_a_cut_or_broken_call_renders_as_an_empty_object);
   RUN_TEST(test_stubs_photo_stubs_and_the_omission_line_are_the_rules_texts);
+  RUN_TEST(test_each_rung_of_the_ladder_changes_the_bytes_and_keeps_every_pair);
   RUN_TEST(test_photos_follow_the_open_turns_visible_set);
   RUN_TEST(test_signed_thinking_rides_the_open_turn_only);
   RUN_TEST(test_the_envelope_carries_the_facts_and_no_orch_turn);

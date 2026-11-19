@@ -656,8 +656,10 @@ wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each l
 
 ### The Anthropic wire: what a request carries
 
-`providers/plain_wire_anthropic.cpp` (`wireFor(Dialect::AnthropicMessages)`) renders one
-Messages API request from the stored transcript; the response half is RB-W1b's. Render is a
+`providers/plain_wire_anthropic.cpp` renders one Messages API request from the stored
+transcript; the response half is RB-W1b's. Until it lands `renderWireFor` hands out the render
+half (the property suites use it) and `wireFor`, which the engine uses, answers only for a
+complete wire. Render is a
 pure function of `RenderInput`: the same items and facts give the same bytes every time and
 after a restart.
 
@@ -683,11 +685,12 @@ after a restart.
 - **Four cache points**: the end of the notes block (the core when there are no notes), the
   end of the system, the last block of the previous turn and the moving last block; never on
   a thinking block. Bytes before a point do not change when a later item is appended.
-- **Stubs and the ladder**: results render whole or as their stored stub by `tx::showResult`
-  (the pointer is the higher of `RenderInput::stubPointer` and the newest `x` item's;
-  `ladderStubThrough` is rung 2), and `omitTurns` replaces the oldest whole turns after
-  `thru` with `tx::omissionLine` (rung 3; never the open turn). The wire writes no text of
-  its own.
+- **Stubs and the ladder**: results render whole or as their stored stub by `tx::showResult`.
+  The pointer is the highest of `RenderInput::stubPointer`, the newest `x` item's and the
+  engine's `LadderState::closedThrough` (rung 1); `stubThrough` is rung 2; rung 3 leaves out
+  every whole turn after `thru` whose items are all at or below `omitThrough` (never the open
+  turn) and sends `omissionLine` (the engine's `tx::omissionLine` text) in their place, only
+  when that line is set. The wire writes no text of its own.
 - A refused allocation answers `TooLarge` with nothing rendered (ruling 30).
 
 `test/test_plain_wire_anthropic` checks every body against a strict local model of the

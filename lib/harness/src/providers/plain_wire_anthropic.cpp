@@ -37,9 +37,11 @@
 // previous turn and the moving last block. Thinking blocks never carry one. A point is a
 // marker only: the bytes before it do not change when a later item is appended.
 //
-// The ladder (exchange.h): RenderInput::stubPointer and the newest x item's pointer
-// (rung 1 and the stored moves), ladderStubThrough (rung 2), omitTurns (rung 3: the
-// oldest whole turns after thru render as tx::omissionLine).
+// The ladder (RenderInput::ladder, the engine's LadderState): rung 1 closedThrough raises the
+// pointer (with stubPointer and the newest x item's), rung 2 stubThrough is
+// tx::ShowFacts::ladderStubThrough, rung 3 leaves out every whole turn after thru whose items
+// are all at or below omitThrough (never the open turn) and sends omissionLine, the engine's
+// tx::omissionLine text, in their place.
 //
 // Every model-facing text this file sends is stored text or a rules-lane text
 // (orch_tx_rules.cpp): the wire adds no prose of its own.
@@ -160,10 +162,8 @@ struct Facts {
   uint64_t pointer = 0;               // max(input pointer, newest x item's)
   std::vector<uint64_t> superseded;   // every x item's sup, sorted, unique
   std::vector<std::string> photos;    // the open turn's visible photo refs (its t item)
-  int16_t tz = 0;                     // the newest owner message's zone (the omission dates)
   size_t estimate = 0;                // body bytes to reserve once
   std::vector<uint32_t> omitted;      // turns the omission line stands for, oldest first
-  uint64_t omitFirstAt = 0, omitLastAt = 0;
 };
 
 // Whether a stored item writes a block at all (a blank text or a broken meta item does not).
@@ -198,9 +198,6 @@ void noteFacts(const RenderInput& in, const tx::Item& it, Facts& f) {
     case tx::ItemKind::TurnOpen:
       if (it.turn == in.turn->turn) f.photos = it.photos;
       break;
-    case tx::ItemKind::User:
-      f.tz = it.tzMinutes;
-      break;
     default:
       break;
   }
@@ -211,7 +208,7 @@ void noteFacts(const RenderInput& in, const tx::Item& it, Facts& f) {
 Status readFacts(const RenderInput& in, const tx::TxArena& arena, Facts& f) {
   const size_t n = arena.count();
   f.rows.reserve(n);
-  f.pointer = in.stubPointer;
+  f.pointer = std::max(in.stubPointer, in.ladder ? in.ladder->closedThrough : 0);
   tx::Item it;
   for (size_t i = 0; i < n; ++i) {
     Row row;
@@ -234,19 +231,19 @@ Status readFacts(const RenderInput& in, const tx::TxArena& arena, Facts& f) {
   return Status::success();
 }
 
-// Rung 3: the oldest `omitTurns` whole turns after thru, never the open turn.
+// Rung 3: every whole turn after thru whose items are all at or below omitThrough, never the
+// open turn; only when the engine wrote the line that stands in their place.
 void chooseOmitted(const RenderInput& in, Facts& f) {
-  if (!in.omitTurns) return;
+  if (!in.ladder || !in.ladder->omitThrough || in.ladder->omissionLine.empty()) return;
+  std::vector<std::pair<uint32_t, uint64_t>> last;   // turn -> its newest q, in first-seen order
   for (const Row& r : f.rows) {
     if (r.q <= f.thru || r.q == 0) continue;
-    if (r.turn == in.turn->turn) break;
-    if (std::find(f.omitted.begin(), f.omitted.end(), r.turn) == f.omitted.end()) {
-      if (f.omitted.size() == in.omitTurns) break;
-      f.omitted.push_back(r.turn);
-    }
-    if (r.t && !f.omitFirstAt) f.omitFirstAt = r.t;
-    if (r.t) f.omitLastAt = r.t;
+    auto it = std::find_if(last.begin(), last.end(), [&r](const std::pair<uint32_t, uint64_t>& t) { return t.first == r.turn; });
+    if (it == last.end()) last.push_back({r.turn, r.q});
+    else it->second = std::max(it->second, r.q);
   }
+  for (const auto& t : last)
+    if (t.first != in.turn->turn && t.second <= in.ladder->omitThrough) f.omitted.push_back(t.first);
 }
 
 bool omittedTurn(const Facts& f, uint32_t turn) {
@@ -516,7 +513,7 @@ void resultBlock(Render& r, const tx::Item& it, const Row& row) {
   sf.pointer = r.f.pointer;
   sf.openTurn = r.in.turn->turn;
   sf.superseded = &r.f.superseded;
-  sf.ladderStubThrough = r.in.ladderStubThrough;
+  sf.ladderStubThrough = r.in.ladder ? r.in.ladder->stubThrough : 0;
   tx::ShowAs as = tx::ShowAs::Stub;
   if (!tx::showResult(it, sf, as).ok()) as = tx::ShowAs::Stub;
   std::string text;
@@ -568,11 +565,7 @@ void itemBlocks(Render& r, const tx::Item& it, const Row& row) {
 }
 
 void omissionBlock(Render& r) {
-  if (r.f.omitted.empty()) return;
-  std::string dates, line;
-  if (!tx::omissionDates(r.f.omitFirstAt, r.f.omitLastAt, r.f.tz, dates).ok()) dates.clear();
-  if (!tx::omissionLine((uint32_t)r.f.omitted.size(), dates, line).ok()) return;
-  textBlock(r, Role::User, 0, false, line, Over::Refuse);
+  if (!r.f.omitted.empty()) textBlock(r, Role::User, 0, false, r.in.ladder->omissionLine, Over::Refuse);
 }
 
 // The system blocks; the offsets of their two points.
