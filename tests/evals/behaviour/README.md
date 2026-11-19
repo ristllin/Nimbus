@@ -77,3 +77,51 @@ claude-haiku-5-5 and gpt-5.6-luna, 0.005 on claude-sonnet-5-5 and 0.009 on gpt-5
   samples: the bounds are optimistic about variance across templates.
 - The judge is a model. Every turn whose effect is missing or whose tools failed, which is where false
   claims and interim stops live, is judged by claude-sonnet-5-5.
+
+# The general-records arms (lane RB-REC6)
+
+Under ruling 42 tracking of any kind is an ordinary CSV file and the plain file tools. These arms measure
+that, in three domains of equal weight (food, expenses, training) with invented content carrying the
+owner file's real-row classes at about his rates (ruling 49: about 11% of rows with more fields than the
+header, 3% with an empty summed cell, stray blank lines, about 12% `#` history lines). The numbers are in
+`tests/evals/measured/behaviour.json` under `records_rb_rec6`; the decisions they feed are in the lane's
+REPORT.md.
+
+| Arm | What the head gets |
+|---|---|
+| F | files only: read_file and edit_file as declared before RB-REC4 (no column/from/to/sum, no line); the model sums |
+| S | rb-main's declarations: read_file column/from/to/sum, edit_file line |
+| K0 | S tools, a fresh chat, no skill and no note naming the table |
+| K1 | K0 plus the owner's skill (about 3.5 KB with front matter) in the skills index |
+| K2 | the same skill marked `inject: context`: the old engine's `[ACTIVE SKILLS]` block rides the owner's message |
+| K3 | K2 with two user skills attached at once (one 4,096 B block, the second cut) |
+
+The tools, the system text and every file tool, calc and `more` answer are the REAL engine-2 code:
+`aidserve.cpp` runs FileTools over nimbusd's PosixFileToolsIo, `plain::composeSystem`, `plain::toolManifest`
+and `agent::skillsAttachText` behind a JSON-lines pipe, one process per episode. A refused allocation is
+the real `not enough memory for this call; nothing changed` (the call under a refusing working allocator;
+for append and write, which take no working block, the core's stated refusal).
+
+| File | What it is |
+|---|---|
+| `records.py` | domains, file generation, the owner's invented skill, episodes, the checks (`judge_total`, `judge_write`, `totals_after_fix`) |
+| `run_records.py` | one cell: episodes through a head, one record per episode with the file bytes before and after |
+| `judge_records.py` | claude-sonnet-5-5 labels the write turns that can hold a false claim (a fault, or a file not as asked) |
+| `report_records.py` | applies the checks to the stored records and prints the tables with exact 95% bounds |
+| `scripted_heads.py` | offline heads for dry runs: `good` and `sloppy` |
+| `aidserve.cpp`, `build_aidserve.sh` | the real tools behind a pipe; built against nimbusd's core objects |
+
+```bash
+python3 tests/evals/behaviour/test_records_offline.py                       # free: checks, both sides
+tests/evals/behaviour/build_aidserve.sh <build dir> [ArduinoJson src dir]     # offline build
+AIDSERVE=<build dir>/aidserve python3 tests/evals/behaviour/test_records_offline.py   # + every arm, scripted
+# PAID, one cell:
+python3 tests/evals/behaviour/run_records.py --head claude-haiku-5-5 --arm S --evidence <dir> --env-file <dotenv> \
+  --aidserve <build dir>/aidserve --work <scratch> --max-usd 1 --totals 150 --writes 190 --faults 30
+python3 tests/evals/behaviour/judge_records.py --evidence <dir> --env-file <dotenv> --max-usd 1
+python3 tests/evals/behaviour/report_records.py --evidence <dir> --json <out.json>
+```
+
+Limits: episodes are one owner turn (two with a prior log), not long conversations; the K2 and K3 block is the
+old engine's mechanism carried onto engine 2's shapes (its text names skill_get, which engine 2 does not have);
+the total check reads figures from the reply (a regex finds the number and the words that name a left-out row).
