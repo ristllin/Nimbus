@@ -8,6 +8,8 @@
 
 #include "nimbus/orch/tx/item.h"
 
+#include "nimbus/orch/day_start.h"
+
 namespace nimbus {
 namespace orch {
 namespace tx {
@@ -863,67 +865,19 @@ Status checkLine(const char* data, size_t len, LineHeader& out) {
   return Status::success();
 }
 
-// ==== the message stamp (Ruling 11) ======================================================
+// ==== the message stamp (Ruling 11, RB-REC5) ==============================================
 
-namespace {
-
-// Days since 1970-01-01 to a civil date (H. Hinnant's algorithm, proleptic Gregorian).
-void civilFromDays(int64_t z, int64_t& y, unsigned& m, unsigned& d) {
-  z += 719468;
-  const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  d = doy - (153 * mp + 2) / 5 + 1;
-  m = mp < 10 ? mp + 3 : mp - 9;
-  y = static_cast<int64_t>(yoe) + era * 400 + (m <= 2);
-}
-
-char* putNum(char* p, unsigned v, int width) {
-  char buf[10];
-  int n = 0;
-  do {
-    buf[n++] = static_cast<char>('0' + v % 10);
-    v /= 10;
-  } while (v);
-  while (n < width) buf[n++] = '0';
-  while (n) *p++ = buf[--n];
-  return p;
-}
-
-}  // namespace
-
-Status messageStamp(uint64_t epoch, int16_t tzMinutes, char* out, size_t cap) {
-  static const char kDays[] = "SunMonTueWedThuFriSat";
-  static const char kMonths[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
-  const uint64_t kLastSecondOf9999 = 253402300799ULL;
-  if (!out || cap < kStampMaxBytes || !epoch || epoch > kLastSecondOf9999) return Status::fail(Err::InvalidArgument, "tx::messageStamp");
-  const int64_t local = static_cast<int64_t>(epoch) + int64_t(tzMinutes) * 60;
-  const int64_t days = (local >= 0 ? local : local - 86399) / 86400;
-  const unsigned secs = static_cast<unsigned>(local - days * 86400);
-  int64_t y = 0;
-  unsigned m = 0, d = 0;
-  civilFromDays(days, y, m, d);
-  if (y < 1 || y > 9999) return Status::fail(Err::InvalidArgument, "tx::messageStamp");
-  const unsigned wd = static_cast<unsigned>(((days % 7) + 11) % 7);   // 1970-01-01 was a Thursday
-  char* p = out;
-  *p++ = '[';
-  std::memcpy(p, kDays + 3 * wd, 3);
-  p += 3;
-  *p++ = ' ';
-  p = putNum(p, d, 1);
-  *p++ = ' ';
-  std::memcpy(p, kMonths + 3 * (m - 1), 3);
-  p += 3;
-  *p++ = ' ';
-  p = putNum(p, static_cast<unsigned>(y), 1);
-  *p++ = ' ';
-  p = putNum(p, secs / 3600, 2);
-  *p++ = ':';
-  p = putNum(p, secs / 60 % 60, 2);
-  *p++ = ']';
-  *p = '\0';
+Status messageStamp(uint64_t epoch, int16_t tzMinutes, uint16_t dayStartMin, char* out, size_t cap) {
+  if (!out || cap < kStampMaxBytes) return Status::fail(Err::InvalidArgument, "tx::messageStamp");
+  out[0] = '[';
+  const day::StampForm f = day::stamp(epoch, tzMinutes, dayStartMin, out + 1, cap - 2);
+  if (f == day::StampForm::None) {
+    out[0] = '\0';
+    return Status::fail(Err::InvalidArgument, "tx::messageStamp");
+  }
+  const size_t n = std::strlen(out);
+  out[n] = ']';
+  out[n + 1] = '\0';
   return Status::success();
 }
 

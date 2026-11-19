@@ -121,12 +121,14 @@ Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::str
 Status photoStub(const std::string& ref8, const std::string& when, std::string& out);
 
 // Ruling 11 (the year in every stamp) for the rules' time texts, from stored epochs:
-//  stubTime     -> "13:02"                  (StubFacts::hhmm; epoch 0 -> "" and ok)
-//  photoWhen    -> "Tue 17 Nov 2026 13:02"  (photoStub's when; epoch 0 -> "" and ok)
+// An epoch from before the clock was set (under day_start.h kClockValidEpoch, 0 included)
+// is no date: "" and ok, never an invented 1970 one.
+//  stubTime     -> "13:02"                  (StubFacts::hhmm; no clock -> "" and ok)
+//  photoWhen    -> "Tue 17 Nov 2026 13:02"  (photoStub's when; no clock -> "" and ok)
 //  omissionDates-> "17 Nov 2026", "15-16 Nov 2026", "30 Nov-2 Dec 2026",
-//                  "31 Dec 2026-1 Jan 2027"; a first of 0 (stored before the clock was
-//                  set) reads as last, both 0 give "" and ok; InvalidArgument for last
-//                  before first
+//                  "31 Dec 2026-1 Jan 2027"; a first with no clock (stored before the
+//                  clock was set) reads as last, both give "" and ok; InvalidArgument for
+//                  last before first
 Status stubTime(uint64_t epoch, int16_t tzMinutes, std::string& out);
 Status photoWhen(uint64_t epoch, int16_t tzMinutes, std::string& out);
 Status omissionDates(uint64_t firstEpoch, uint64_t lastEpoch, int16_t tzMinutes, std::string& out);

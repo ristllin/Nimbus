@@ -677,6 +677,19 @@ void test_rules_stamps_carry_the_year() {
   TEST_ASSERT_EQUAL_STRING("Tue 17 Nov 2026 14:02", s.c_str());
   TXB_OK(tx::photoWhen(0, 0, s));
   TEST_ASSERT_EQUAL_STRING("", s.c_str());
+  // RB-REC5: a time from before the clock was set is no date, never 1970.
+  for (uint64_t unset : {1ULL, 3600ULL, 999999999ULL}) {
+    TXB_OK(tx::photoWhen(unset, 0, s));
+    TEST_ASSERT_EQUAL_STRING("", s.c_str());
+    TXB_OK(tx::stubTime(unset, 0, s));
+    TEST_ASSERT_EQUAL_STRING("", s.c_str());
+    TXB_OK(tx::omissionDates(unset, txb::kT0, 0, s));
+    TEST_ASSERT_EQUAL_STRING("17 Nov 2026", s.c_str());
+  }
+  TXB_OK(tx::photoWhen(1798761540ULL, 0, s));   // a single-digit day has no leading zero
+  TEST_ASSERT_EQUAL_STRING("Thu 31 Dec 2026 23:59", s.c_str());
+  TXB_OK(tx::photoWhen(1798761540ULL, 60, s));
+  TEST_ASSERT_EQUAL_STRING("Fri 1 Jan 2027 00:59", s.c_str());
   TXB_OK(tx::stubTime(txb::kT0, 0, s));
   TEST_ASSERT_EQUAL_STRING("13:02", s.c_str());
   const uint64_t day = 86400;

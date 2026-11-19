@@ -244,13 +244,17 @@ struct LineHeader {
 };
 Status checkLine(const char* data, size_t len, LineHeader& out);
 
-// The send-time stamp every rendered message carries (Ruling 11: with the year):
-// "[Tue 17 Nov 2026 13:02]" for `epoch` seconds at `tzMinutes` east of UTC; the day of
-// the month has no leading zero, the clock is 24 h. Writes a NUL-terminated string of at
-// most kStampMaxBytes - 1 characters. InvalidArgument when the clock was not set
-// (epoch 0) or `cap` is under kStampMaxBytes. No allocation.
-inline constexpr size_t kStampMaxBytes = 32;
-Status messageStamp(uint64_t epoch, int16_t tzMinutes, char* out, size_t cap);
+// The send-time stamp every rendered message carries (Ruling 11, RB-REC5): orch::day::stamp
+// (day_start.h, the one function engine 1 uses too) in brackets, for `epoch` seconds at
+// `tzMinutes` east of UTC (the offset valid at that time) and the device's day start:
+//   "[2026-11-17 Tue 13:02]"                                at or after the day start
+//   "[2026-11-18 Wed 00:30 (day 2026-11-17 until 04:00)]"   before it
+//   "[time unknown]"                                        the clock was never set
+// The year and the weekday are always there. Writes a NUL-terminated string of at most
+// kStampMaxBytes - 1 characters. InvalidArgument (and "") when `cap` is under
+// kStampMaxBytes or the offset is beyond +-18 h. No allocation.
+inline constexpr size_t kStampMaxBytes = 52;
+Status messageStamp(uint64_t epoch, int16_t tzMinutes, uint16_t dayStartMin, char* out, size_t cap);
 
 }  // namespace tx
 }  // namespace orch

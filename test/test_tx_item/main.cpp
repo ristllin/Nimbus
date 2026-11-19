@@ -434,45 +434,55 @@ void test_typed_errors() {
   TEST_ASSERT_TRUE(tx::checkLine(nullptr, 0, h).err == tx::Err::InvalidArgument);
 }
 
-// Ruling 11: every stamp carries the year, at the owner's offset, across a year end, a
-// leap day and both signs of the offset.
+// Ruling 11 and RB-REC5: every stamp carries the year and the weekday, at the owner's offset,
+// across a year end, a leap day and both signs of the offset; before the day start it names
+// the day still running; with no clock it says so (orch::day::stamp in brackets; the shared
+// function's own suite is test_stamp_day).
 void test_message_stamp_carries_the_year() {
   struct Row {
     uint64_t epoch;
     int16_t tz;
+    uint16_t start;
     const char* want;
   } rows[] = {
-      {1794920520ULL, 0, "[Tue 17 Nov 2026 13:02]"},
-      {1794920520ULL, 60, "[Tue 17 Nov 2026 14:02]"},
-      {1798761540ULL, 0, "[Thu 31 Dec 2026 23:59]"},
-      {1798761540ULL, 60, "[Fri 1 Jan 2027 00:59]"},
-      {1798761540ULL, -720, "[Thu 31 Dec 2026 11:59]"},
-      {1835395200ULL, 0, "[Tue 29 Feb 2028 00:00]"},
-      {1ULL, -60, "[Wed 31 Dec 1969 23:00]"},
+      {1794920520ULL, 0, 240, "[2026-11-17 Tue 13:02]"},
+      {1794920520ULL, 60, 240, "[2026-11-17 Tue 14:02]"},
+      {1798761540ULL, 0, 240, "[2026-12-31 Thu 23:59]"},
+      {1798761540ULL, 60, 240, "[2027-01-01 Fri 00:59 (day 2026-12-31 until 04:00)]"},
+      {1798761540ULL, 60, 0, "[2027-01-01 Fri 00:59]"},
+      {1798761540ULL, -720, 240, "[2026-12-31 Thu 11:59]"},
+      {1835395200ULL, 0, 240, "[2028-02-29 Tue 00:00 (day 2028-02-28 until 04:00)]"},
+      {1ULL, -60, 240, "[time unknown]"},
+      {0ULL, 0, 240, "[time unknown]"},
   };
   for (const Row& row : rows) {
     char out[tx::kStampMaxBytes];
-    TEST_ASSERT_TRUE(tx::messageStamp(row.epoch, row.tz, out, sizeof out).ok());
+    TEST_ASSERT_TRUE(tx::messageStamp(row.epoch, row.tz, row.start, out, sizeof out).ok());
     TEST_ASSERT_EQUAL_STRING(row.want, out);
   }
-  char out[tx::kStampMaxBytes];
-  TEST_ASSERT_TRUE(tx::messageStamp(0, 0, out, sizeof out).err == tx::Err::InvalidArgument);
-  TEST_ASSERT_TRUE(tx::messageStamp(1, 0, out, 8).err == tx::Err::InvalidArgument);
+  char out[tx::kStampMaxBytes] = "x";
+  TEST_ASSERT_TRUE(tx::messageStamp(1794920520ULL, 0, 240, out, 8).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::messageStamp(1794920520ULL, 0, 240, nullptr, 64).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(tx::messageStamp(1794920520ULL, 1200, 240, out, sizeof out).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_EQUAL_STRING("", out);
+  // The longest stamp fills the buffer exactly.
+  TEST_ASSERT_TRUE(tx::messageStamp(1798761540ULL, 60, 240, out, sizeof out).ok());
+  TEST_ASSERT_EQUAL_UINT32(tx::kStampMaxBytes - 1, std::strlen(out));
 }
 
-// The stamp against an independent calendar walk, every day of 1970 to 2100 at noon.
+// The stamp against an independent calendar walk, every day of 2002 to 2100 at noon.
 void test_message_stamp_matches_a_calendar_walk() {
   static const char* days[] = {"Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"};
-  static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
   uint64_t day = 0;
   for (int y = 1970; y <= 2100; ++y) {
     const bool leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
     const int lengths[] = {31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     for (int m = 0; m < 12; ++m) {
       for (int d = 1; d <= lengths[m]; ++d, ++day) {
+        if (y < 2002) continue;
         char want[40], out[tx::kStampMaxBytes];
-        std::snprintf(want, sizeof want, "[%s %d %s %d 12:00]", days[day % 7], d, months[m], y);
-        TEST_ASSERT_TRUE(tx::messageStamp(day * 86400 + 43200, 0, out, sizeof out).ok());
+        std::snprintf(want, sizeof want, "[%04d-%02d-%02d %s 12:00]", y, m + 1, d, days[day % 7]);
+        TEST_ASSERT_TRUE(tx::messageStamp(day * 86400 + 43200, 0, 240, out, sizeof out).ok());
         TEST_ASSERT_EQUAL_STRING(want, out);
       }
     }

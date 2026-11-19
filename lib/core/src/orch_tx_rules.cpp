@@ -4,6 +4,8 @@
 // same request. The model-facing templates of these rules are the k* strings below.
 #include "nimbus/orch/tx/rules.h"
 
+#include "nimbus/orch/day_start.h"
+
 #include <ArduinoJson.h>
 
 #include <algorithm>
@@ -148,23 +150,21 @@ bool isRef(const std::string& s) {
 
 // ---- stamps (Ruling 11) -----------------------------------------------------------------------
 
-// The fields of messageStamp's "[Tue 17 Nov 2026 13:02]".
+// The fields of "Tue 17 Nov 2026 13:02" (photoWhen, the digest day header and omissions),
+// read from the shared stamp's calendar (day_start.h) at a 00:00 day start.
 struct StampParts {
   std::string wday, day, mon, year, hhmm;
 };
 Status stampParts(uint64_t epoch, int16_t tz, StampParts& p, const char* where) {
-  char buf[kStampMaxBytes];
-  if (!messageStamp(epoch, tz, buf, sizeof buf).ok()) return Status::fail(Err::InvalidArgument, where);
-  std::string s(buf);
-  if (s.size() < 3) return Status::fail(Err::InvalidArgument, where);
-  s = s.substr(1, s.size() - 2);
-  std::string* f[] = {&p.wday, &p.day, &p.mon, &p.year, &p.hhmm};
-  size_t at = 0;
-  for (std::string* field : f) {
-    const size_t sp = s.find(' ', at);
-    *field = s.substr(at, sp == std::string::npos ? std::string::npos : sp - at);
-    at = sp == std::string::npos ? s.size() : sp + 1;
-  }
+  static const char kMonths[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  char buf[day::kPlainCap];   // "2026-11-17 Tue 13:02"
+  if (day::stamp(epoch, tz, 0, buf, sizeof buf) != day::StampForm::Full) return Status::fail(Err::InvalidArgument, where);
+  const int mon = (buf[5] - '0') * 10 + (buf[6] - '0');
+  p.year.assign(buf, 4);
+  p.mon.assign(kMonths + 3 * (mon - 1), 3);
+  p.day.assign(buf[8] == '0' ? buf + 9 : buf + 8, buf + 10);
+  p.wday.assign(buf + 11, 3);
+  p.hhmm.assign(buf + 15, 5);
   return Status::success();
 }
 
@@ -331,7 +331,7 @@ Status photoStub(const std::string& ref8, const std::string& when, std::string& 
 
 Status stubTime(uint64_t epoch, int16_t tz, std::string& out) {
   out.clear();
-  if (epoch == 0) return Status::success();
+  if (!day::clockSet(epoch)) return Status::success();
   StampParts p;
   Status st = stampParts(epoch, tz, p, "tx::stubTime");
   if (st.ok()) out = p.hhmm;
@@ -340,7 +340,7 @@ Status stubTime(uint64_t epoch, int16_t tz, std::string& out) {
 
 Status photoWhen(uint64_t epoch, int16_t tz, std::string& out) {
   out.clear();
-  if (epoch == 0) return Status::success();
+  if (!day::clockSet(epoch)) return Status::success();
   StampParts p;
   Status st = stampParts(epoch, tz, p, "tx::photoWhen");
   if (st.ok()) out = p.wday + " " + p.day + " " + p.mon + " " + p.year + " " + p.hhmm;
@@ -349,8 +349,8 @@ Status photoWhen(uint64_t epoch, int16_t tz, std::string& out) {
 
 Status omissionDates(uint64_t first, uint64_t last, int16_t tz, std::string& out) {
   out.clear();
-  if (first == 0) first = last;   // turns stored before the clock was set
-  if (last == 0) return Status::success();
+  if (!day::clockSet(first)) first = last;   // turns stored before the clock was set
+  if (!day::clockSet(last)) return Status::success();
   if (last < first) return Status::fail(Err::InvalidArgument, "tx::omissionDates");
   StampParts a, b;
   Status st = stampParts(first, tz, a, "tx::omissionDates");

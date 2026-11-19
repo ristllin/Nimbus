@@ -467,7 +467,12 @@ whole. Strings are kept byte for byte (renderers repair UTF-8), with control byt
 escaped so a line never holds a raw newline. Readers skip keys they do not know, so the
 format only grows. `checkLine` reads a line's kind, `q`, turn and time without decoding
 its text, for the restart fill and for scans. `messageStamp` writes the send-time stamp
-every rendered message carries, with the year (`[Tue 17 Nov 2026 13:02]`).
+every rendered message carries, with the year and the weekday (`[2026-11-17 Tue 13:02]`),
+from the device's one stamp function (`orch::day::stamp`, `day_start.h`, which engine 1's
+per-turn clock line uses too). Between midnight and the device's day start (setting
+`day_starts`, default 04:00) it also names the day still running:
+`[2026-11-18 Wed 00:30 (day 2026-11-17 until 04:00)]`. With no clock it says
+`[time unknown]`, never a 1970 date.
 
 `TxArena` (`orch_tx_arena.cpp`) is the RAM side of one chat: a single block from the
 allocator it is given (PSRAM on the device, 384 KB for a chat), records of a 32-byte
