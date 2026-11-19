@@ -337,10 +337,7 @@ struct EditRun : FindSink {
     plan.fileLines = rawLine - 1 + (plan.bytes && in.prev != '\n' ? 1 : 0);
     o.oldSize = plan.bytes;
     if (hash && hash != plan.hash) return fail(path + T::kChanged);
-    const bool firstN = countMode();
-    const uint64_t k = e.all ? plan.count : firstN ? std::min<uint64_t>(e.count, plan.count) : 1;
-    const uint64_t taken = e.all ? plan.takeAll : e.line ? plan.takePick : firstN ? plan.takeCount : plan.takeFirst;
-    plan.newSize = plan.bytes + k * e.newText.size() - k * e.oldText.size() - taken + e.trailer.size();
+    plan.newSize = newSize();
     o.found = plan.count;
     o.error = planError(path, e, plan);
     if (o.error.empty() && !sink.admit(plan.newSize, plan.count))
@@ -400,6 +397,13 @@ struct EditRun : FindSink {
   }
 
   bool countMode() const { return !e.all && !e.line && e.count > 0; }
+  // The size the edit leaves: k replacements, the line ends removals take, the trailer.
+  uint64_t newSize() const {
+    const bool firstN = countMode();
+    const uint64_t k = e.all ? plan.count : firstN ? std::min<uint64_t>(e.count, plan.count) : 1;
+    const uint64_t taken = e.all ? plan.takeAll : e.line ? plan.takePick : firstN ? plan.takeCount : plan.takeFirst;
+    return plan.bytes + k * e.newText.size() - k * e.oldText.size() - taken + e.trailer.size();
+  }
   void shiftAfter() {
     const uint64_t oldNl = countNl(e.oldText) + (tookEnd ? 1 : 0);
     const bool endsNl = tookEnd || e.oldText.back() == '\n';

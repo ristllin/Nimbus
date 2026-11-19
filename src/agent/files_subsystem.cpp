@@ -1148,11 +1148,10 @@ struct SdEditSink : nimbus::orch::aids::AidSink {
 // 'count', 'all', or the whole-line match at 'line' - streamed in two passes under one Lock,
 // into the part file and swapped in. The reply keeps its head ("edited p/n: replaced A of B
 // match(es)", which the claim check reads) and gains the current line numbers.
-static nimbus::orch::ToolResult editDoc(const std::string& project, const std::string& name,
-                                        const std::string& find, const std::string& replace,
-                                        const nimbus::orch::EditPolicy& pol, uint32_t line,
-                                        const nimbus::orch::Principal& who) {
+static nimbus::orch::ToolResult editDoc(nimbus::orch::aids::e1::EditCall& call, const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
+  const std::string &project = call.project, &name = call.name, &find = call.find, &replace = call.replace;
+  const nimbus::orch::EditPolicy& pol = call.pol;
   if (const std::string bad = editPrecheck(project, name, find, replace, pol); !bad.empty())
     return ToolResult::fail(bad);
   memory::Lock g;
@@ -1173,13 +1172,6 @@ static nimbus::orch::ToolResult editDoc(const std::string& project, const std::s
     const nimbus::orch::EditDecision d = nimbus::orch::decideEdit(find.size(), replace.size(), pol, matches);
     return d.ok ? ToolResult::ok(nimbus::orch::renderEditNoChange(where, d)) : ToolResult::fail(d.err);
   }
-  nimbus::orch::aids::e1::EditCall call;
-  call.project = project;
-  call.name = name;
-  call.find = find;
-  call.replace = replace;
-  call.pol = pol;
-  call.line = line;
   // The header of a CSV, for the keyed-CSV report and its history rows.
   call.header = nimbus::orch::isCsvName(name) ? firstRowOf(path) : std::string();
   SdEditSink sink(project, name, who, size);
@@ -1840,14 +1832,17 @@ void registerTools() {
           "numbers. An edit to a keyed CSV also names the rows it removed, added or changed. "
           "Max 2 KB find, 4 KB replacement, 200 matches per call, 1 MB file.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
-            nimbus::orch::EditPolicy pol;
-            pol.all = a["all"].as<bool>();
-            if (a["count"].is<int>()) pol.count = a["count"].as<int>();
-            const uint32_t line = a["line"].is<unsigned>() ? a["line"].as<unsigned>() : 0;
-            if (!a["line"].isNull() && !line)
+            nimbus::orch::aids::e1::EditCall call;
+            call.project = argStr(a, "project");
+            call.name = argStr(a, "name");
+            call.find = argStr(a, "find");
+            call.replace = argStr(a, "replace");
+            call.pol.all = a["all"].as<bool>();
+            if (a["count"].is<int>()) call.pol.count = a["count"].as<int>();
+            call.line = a["line"].is<unsigned>() ? a["line"].as<unsigned>() : 0;
+            if (!a["line"].isNull() && !call.line)
               return nimbus::orch::ToolResult::fail("line is a whole number, 1 or more");
-            return editDoc(argStr(a, "project"), argStr(a, "name"), argStr(a, "find"),
-                          argStr(a, "replace"), pol, line, who);
+            return editDoc(call, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"},"line":{"type":"integer"}},"required":["project","name","find"]})");
 
