@@ -766,34 +766,13 @@ class JsonReader {
         return true;
       }
       if (c < 0x20) return false;   // a raw control byte: not JSON
-      if (c != '\\') {
-        const size_t from = i_;
-        while (i_ < s_.size() && s_[i_] != '"' && s_[i_] != '\\' && (unsigned char)s_[i_] >= 0x20) ++i_;
-        if (out) out->append(s_, from, i_ - from);
+      if (c == '\\') {
+        if (!escape(out)) return false;
         continue;
       }
-      if (++i_ >= s_.size()) return false;
-      const char e = s_[i_++];
-      if (e == 'u') {
-        long code = 0;
-        if (!hex4(code)) return false;
-        if (code >= 0xD800 && code <= 0xDBFF) {   // a high surrogate needs its low half
-          long low = 0;
-          if (!(i_ + 1 < s_.size() && s_[i_] == '\\' && s_[i_ + 1] == 'u')) return false;
-          i_ += 2;
-          if (!hex4(low) || low < 0xDC00 || low > 0xDFFF) return false;
-          code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
-        } else if (code >= 0xDC00 && code <= 0xDFFF) {
-          return false;   // a lone low surrogate
-        }
-        if (out) putUtf8(*out, code);
-        continue;
-      }
-      const char* kEsc = "\"\\/bfnrt";
-      const char* kOut = "\"\\/\b\f\n\r\t";
-      const char* hit = e ? std::strchr(kEsc, e) : nullptr;
-      if (!hit) return false;
-      if (out) out->push_back(kOut[hit - kEsc]);
+      const size_t from = i_;
+      while (i_ < s_.size() && s_[i_] != '"' && s_[i_] != '\\' && (unsigned char)s_[i_] >= 0x20) ++i_;
+      if (out) out->append(s_, from, i_ - from);
     }
   }
 
@@ -819,45 +798,14 @@ class JsonReader {
   // nesting): one bit per open container, object or array. peak() is the deepest nesting it met,
   // counted from where it started.
   bool skip() {
-    uint64_t objects = 0;   // bit k: container k is an object
-    uint8_t open = 0;
+    Open o;
     peak_ = 0;
     for (;;) {
-      ws();
-      if (i_ >= s_.size()) return false;
-      const char c = s_[i_];
       bool closed = false;   // a value just ended
-      if (c == '{' || c == '[') {
-        if (depth_ + open + 1 > kParseDepth) return false;
-        ++i_;
-        objects = (objects << 1) | (c == '{' ? 1u : 0u);
-        if (++open > peak_) peak_ = open;
-        if (eat(c == '{' ? '}' : ']')) {
-          --open;
-          objects >>= 1;
-          closed = true;
-        } else if (c == '{' && !(peek('"') && str(nullptr) && eat(':'))) {
-          return false;
-        }
-      } else {
-        const bool ok = c == '"' ? str(nullptr)
-                        : (c == '-' || (c >= '0' && c <= '9')) ? skipNumber()
-                                                                : (literal("true") || literal("false") || literal("null"));
-        if (!ok) return false;
-        closed = true;
-      }
+      if (!skipOne(o, closed)) return false;
       while (closed) {   // after a value: the end, a comma and the next value, or a close
-        if (!open) return true;
-        const bool obj = objects & 1u;
-        if (eat(',')) {
-          if (obj && !(peek('"') && str(nullptr) && eat(':'))) return false;
-          closed = false;
-        } else if (eat(obj ? '}' : ']')) {
-          --open;
-          objects >>= 1;
-        } else {
-          return false;
-        }
+        if (!o.n) return true;
+        if (!afterValue(o, closed)) return false;
       }
     }
   }
@@ -888,6 +836,73 @@ class JsonReader {
   }
 
  private:
+  struct Open {
+    uint64_t objects = 0;   // bit k: open container k is an object
+    uint8_t n = 0;          // open containers
+  };
+  // One value or the start of a container (its first key read for an object).
+  bool skipOne(Open& o, bool& closed) {
+    ws();
+    if (i_ >= s_.size()) return false;
+    const char c = s_[i_];
+    if (c != '{' && c != '[') {
+      closed = c == '"' ? str(nullptr) : (c == '-' || (c >= '0' && c <= '9')) ? skipNumber() : anyLiteral();
+      return closed;
+    }
+    if (depth_ + o.n + 1 > kParseDepth) return false;
+    ++i_;
+    o.objects = (o.objects << 1) | (c == '{' ? 1u : 0u);
+    if (++o.n > peak_) peak_ = o.n;
+    if (eat(c == '{' ? '}' : ']')) {
+      close(o);
+      closed = true;
+      return true;
+    }
+    return c != '{' || keyAndColon();
+  }
+  // After a value inside a container: a comma (and the next key) or the container's close.
+  bool afterValue(Open& o, bool& closed) {
+    const bool obj = o.objects & 1u;
+    if (eat(',')) {
+      closed = false;
+      return !obj || keyAndColon();
+    }
+    if (!eat(obj ? '}' : ']')) return false;
+    close(o);
+    return true;
+  }
+  static void close(Open& o) {
+    --o.n;
+    o.objects >>= 1;
+  }
+  bool keyAndColon() { return peek('"') && str(nullptr) && eat(':'); }
+  bool anyLiteral() { return literal("true") || literal("false") || literal("null"); }
+  // One escape, its backslash at i_: the JSON set, or \u with four hex digits (a surrogate pair).
+  bool escape(std::string* out) {
+    if (++i_ >= s_.size()) return false;
+    const char e = s_[i_++];
+    if (e == 'u') return unicodeEscape(out);
+    const char* kEsc = "\"\\/bfnrt";
+    const char* kOut = "\"\\/\b\f\n\r\t";
+    const char* hit = e ? std::strchr(kEsc, e) : nullptr;
+    if (!hit) return false;
+    if (out) out->push_back(kOut[hit - kEsc]);
+    return true;
+  }
+  bool unicodeEscape(std::string* out) {
+    long code = 0;
+    if (!hex4(code)) return false;
+    if (code >= 0xDC00 && code <= 0xDFFF) return false;   // a lone low surrogate
+    if (code >= 0xD800 && code <= 0xDBFF) {   // a high surrogate needs its low half
+      long low = 0;
+      if (!(i_ + 1 < s_.size() && s_[i_] == '\\' && s_[i_ + 1] == 'u')) return false;
+      i_ += 2;
+      if (!hex4(low) || low < 0xDC00 || low > 0xDFFF) return false;
+      code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+    }
+    if (out) putUtf8(*out, code);
+    return true;
+  }
   bool literal(const char* w) {
     const size_t n = std::strlen(w);
     if (s_.compare(i_, n, w) != 0) return false;
@@ -899,21 +914,19 @@ class JsonReader {
     while (i_ < s_.size() && s_[i_] >= '0' && s_[i_] <= '9') ++i_;
     return i_ > d;
   }
+  bool at(char c) const { return i_ < s_.size() && s_[i_] == c; }
   bool skipNumber() {
-    if (i_ < s_.size() && s_[i_] == '-') ++i_;
+    if (at('-')) ++i_;
     const size_t intAt = i_;
     if (!digits()) return false;
     if (s_[intAt] == '0' && i_ - intAt > 1) return false;   // no leading zero
-    if (i_ < s_.size() && s_[i_] == '.') {
-      ++i_;
-      if (!digits()) return false;
-    }
-    if (i_ < s_.size() && (s_[i_] == 'e' || s_[i_] == 'E')) {
-      ++i_;
-      if (i_ < s_.size() && (s_[i_] == '+' || s_[i_] == '-')) ++i_;
-      if (!digits()) return false;
-    }
-    return true;
+    if (at('.') && (++i_, !digits())) return false;
+    return !(at('e') || at('E')) || exponent();
+  }
+  bool exponent() {
+    ++i_;
+    if (at('+') || at('-')) ++i_;
+    return digits();
   }
   bool hex4(long& code) {
     if (i_ + 4 > s_.size()) return false;
@@ -978,40 +991,51 @@ bool runnableInput(const std::string& body, size_t from, size_t to, uint8_t peak
 }
 
 // Each field of a block once; a known field of the wrong type fails the body.
+// The index of `key` in `fields` (n when none); false when a known field comes twice.
+bool fieldOnce(const std::string& key, const char* const* fields, uint32_t n, uint32_t& seen, uint32_t& k) {
+  for (k = 0; k < n && key != fields[k]; ++k) {
+  }
+  if (k == n) return true;
+  if (seen & (1u << k)) return false;   // a field given twice is not one answer
+  seen |= 1u << k;
+  return true;
+}
+
+bool inputField(JsonReader& j, Block& b) {
+  b.inputObject = j.peek('{');
+  b.inputFrom = j.at();
+  if (!j.skip()) return false;
+  b.inputTo = j.at();
+  b.inputRunnable = b.inputObject && runnableInput(j.body(), b.inputFrom, b.inputTo, j.peak());
+  return true;
+}
+
+// A string field whose only fact is whether it is empty.
+bool nonEmpty(JsonReader& j, bool& out) {
+  std::string scratch;
+  if (!j.str(&scratch)) return false;
+  out = !scratch.empty();
+  return true;
+}
+
 bool blockField(JsonReader& j, const std::string& key, Block& b) {
   static const char* const kFields[] = {"type", "text", "id", "name", "input", "thinking", "signature", "data"};
-  for (uint32_t k = 0; k < sizeof(kFields) / sizeof(kFields[0]); ++k) {
-    if (key != kFields[k]) continue;
-    if (b.seen & (1u << k)) return false;
-    b.seen |= 1u << k;
-    std::string scratch;
-    switch (k) {
-      case 0: return j.str(&b.type);
-      case 1: return j.str(&b.text);
-      case 2: return j.str(&b.id);
-      case 3: return j.str(&b.name);
-      case 4:
-        b.inputObject = j.peek('{');
-        b.inputFrom = j.at();
-        if (!j.skip()) return false;
-        b.inputTo = j.at();
-        b.inputRunnable = b.inputObject && runnableInput(j.body(), b.inputFrom, b.inputTo, j.peak());
-        return true;
-      case 5:
-        if (!j.peek('"')) return j.skip();   // read as not a thinking text below
-        b.thinkingText = true;
-        return j.str(nullptr);
-      case 6:
-        if (!j.str(&scratch)) return false;
-        b.signature = !scratch.empty();
-        return true;
-      default:
-        if (!j.str(&scratch)) return false;
-        b.data = !scratch.empty();
-        return true;
-    }
+  uint32_t k = 0;
+  if (!fieldOnce(key, kFields, 8, b.seen, k)) return false;
+  switch (k) {
+    case 0: return j.str(&b.type);
+    case 1: return j.str(&b.text);
+    case 2: return j.str(&b.id);
+    case 3: return j.str(&b.name);
+    case 4: return inputField(j, b);
+    case 5:
+      if (!j.peek('"')) return j.skip();   // read as not a thinking text below
+      b.thinkingText = true;
+      return j.str(nullptr);
+    case 6: return nonEmpty(j, b.signature);
+    case 7: return nonEmpty(j, b.data);
+    default: return j.skip();
   }
-  return j.skip();
 }
 
 // Whether one opaque block fits the k item that stores it (the line limit, newline included).
@@ -1071,44 +1095,51 @@ bool stopDetails(JsonReader& j, Answer& a) {
   return ok;
 }
 
+bool contentField(JsonReader& j, Answer& a) {
+  a.content = true;
+  return j.array([&j, &a] {
+    Block b;
+    j.ws();
+    b.from = j.at();
+    if (!j.object([&j, &b](const std::string& f) { return blockField(j, f, b); })) return false;
+    b.to = j.at();
+    a.blocks.push_back(std::move(b));
+    return true;
+  });
+}
+
+bool usageObject(JsonReader& j, Answer& a) {
+  if (!j.peek('{')) return j.skip();   // null: no usage given (every count 0)
+  uint32_t seen = 0;
+  return j.object([&j, &a, &seen](const std::string& f) { return usageField(j, f, a.usage, seen); });
+}
+
+// A string field compared with the one value it must hold; `same` says whether it did.
+bool expect(JsonReader& j, const char* want, bool& same) {
+  std::string v;
+  if (!j.str(&v)) return false;
+  same = v == want;
+  return true;
+}
+
 bool topField(JsonReader& j, const std::string& key, Answer& a) {
   static const char* const kFields[] = {"type", "content", "stop_reason", "stop_details", "usage", "model", "role"};
-  for (uint32_t k = 0; k < sizeof(kFields) / sizeof(kFields[0]); ++k) {
-    if (key != kFields[k]) continue;
-    if (a.seen & (1u << k)) return false;   // a field given twice is not one answer
-    a.seen |= 1u << k;
-    std::string type;
-    switch (k) {
-      case 0:
-        if (!j.str(&type)) return false;
-        a.isMessage = type == "message";
-        return true;
-      case 1:
-        a.content = true;
-        return j.array([&j, &a] {
-          Block b;
-          j.ws();
-          b.from = j.at();
-          if (!j.object([&j, &b](const std::string& f) { return blockField(j, f, b); })) return false;
-          b.to = j.at();
-          a.blocks.push_back(std::move(b));
-          return true;
-        });
-      case 2: return j.peek('"') ? j.str(&a.stop) : j.skip();   // null: no stop named
-      case 3: return stopDetails(j, a);
-      case 4: {   // null: no usage given (every count 0)
-        if (!j.peek('{')) return j.skip();
-        uint32_t seen = 0;
-        return j.object([&j, &a, &seen](const std::string& f) { return usageField(j, f, a.usage, seen); });
-      }
-      case 5: return j.peek('"') ? j.str(&a.model) : j.skip();
-      default:
-        if (!j.str(&type)) return false;
-        a.notAssistant = type != "assistant";
-        return true;
-    }
+  uint32_t k = 0;
+  if (!fieldOnce(key, kFields, 7, a.seen, k)) return false;
+  bool assistant = true;
+  switch (k) {
+    case 0: return expect(j, "message", a.isMessage);
+    case 1: return contentField(j, a);
+    case 2: return j.peek('"') ? j.str(&a.stop) : j.skip();   // null: no stop named
+    case 3: return stopDetails(j, a);
+    case 4: return usageObject(j, a);
+    case 5: return j.peek('"') ? j.str(&a.model) : j.skip();
+    case 6:
+      if (!expect(j, "assistant", assistant)) return false;
+      a.notAssistant = !assistant;
+      return true;
+    default: return j.skip();
   }
-  return j.skip();
 }
 
 StopReason stopOf(const std::string& s) {
@@ -1128,46 +1159,61 @@ StopReason stopOf(const std::string& s) {
 // text block, text after a call or after thinking that preceded it, text the engine stores as
 // its stub, a block of a type not replayed, a thinking block not kept) ends the run: no later
 // thinking block of the answer is kept. Leaving out a trailing run is accepted by the API.
-void stepOf(const std::string& body, const Answer& a, ParsedStep& step) {
-  step.stop = stopOf(a.stop);
+struct Replay {
   bool replayed = true;   // every block so far comes back byte for byte
   bool sawText = false;
-  for (const Block& b : a.blocks) {
-    if (b.type == "text") {
-      replayed = replayed && !sawText && step.calls.empty();
-      step.text += b.text;
-      sawText = true;
-      replayed = replayed && step.text.size() <= tx::kTier1AssistantText;
-    } else if (b.type == "tool_use") {
-      ToolCall c;
-      c.id = b.id;
-      c.name = b.name;
-      // Only an answer that stops to call runs its calls: a cut one may hold cut arguments,
-      // any other stop (none, a refusal, a pause, one not known) is not asking.
-      c.complete = b.inputRunnable && step.stop == StopReason::ToolUse;
-      c.argsJson = b.inputObject ? body.substr(b.inputFrom, b.inputTo - b.inputFrom) : std::string("{}");
-      step.calls.push_back(std::move(c));
-    } else if (b.type == "thinking" || b.type == "redacted_thinking") {
-      const bool signedBlock = b.type == "thinking" ? b.thinkingText && b.signature : b.data;
-      MetaPart m;
-      m.beforeCall = (uint16_t)std::min<size_t>(step.calls.size(), UINT16_MAX);
-      replayed = replayed && signedBlock && !(sawText && step.calls.empty());
-      if (replayed) m.bytes = body.substr(b.from, b.to - b.from);
-      replayed = replayed && fitsALine(m.bytes);
-      if (replayed) step.meta.push_back(std::move(m));
-    } else {
-      replayed = false;   // a block the round does not store
-    }
-  }
-  if (step.stop == StopReason::Refusal) {
-    step.calls.clear();   // a refused answer runs nothing
-    step.refusal = a.refusal.empty() ? a.stop : a.refusal;
-  }
+};
+
+void textOf(const Block& b, Replay& r, ParsedStep& step) {
+  r.replayed = r.replayed && !r.sawText && step.calls.empty();
+  step.text += b.text;
+  r.sawText = true;
+  r.replayed = r.replayed && step.text.size() <= tx::kTier1AssistantText;
+}
+
+void callOf(const std::string& body, const Block& b, ParsedStep& step) {
+  ToolCall c;
+  c.id = b.id;
+  c.name = b.name;
+  // Only an answer that stops to call runs its calls: a cut one may hold cut arguments, any
+  // other stop (none, a refusal, a pause, one not known) is not asking.
+  c.complete = b.inputRunnable && step.stop == StopReason::ToolUse;
+  c.argsJson = b.inputObject ? body.substr(b.inputFrom, b.inputTo - b.inputFrom) : std::string("{}");
+  step.calls.push_back(std::move(c));
+}
+
+void thinkingOf(const std::string& body, const Block& b, Replay& r, ParsedStep& step) {
+  const bool signedBlock = b.type == "thinking" ? b.thinkingText && b.signature : b.data;
+  MetaPart m;
+  m.beforeCall = (uint16_t)std::min<size_t>(step.calls.size(), UINT16_MAX);
+  r.replayed = r.replayed && signedBlock && !(r.sawText && step.calls.empty());
+  if (r.replayed) m.bytes = body.substr(b.from, b.to - b.from);
+  r.replayed = r.replayed && fitsALine(m.bytes);
+  if (r.replayed) step.meta.push_back(std::move(m));
+}
+
+void usageOf(const Answer& a, ParsedStep& step) {
   step.usage = a.usage;
   step.usage.responses = 1;
   step.usage.servedModel = a.model;
   const uint64_t whole = (uint64_t)a.usage.promptTokens + a.usage.cacheReadTokens + a.usage.cacheWriteTokens;
   step.usage.maxRequestIn = (uint32_t)std::min<uint64_t>(whole, UINT32_MAX);
+}
+
+void stepOf(const std::string& body, const Answer& a, ParsedStep& step) {
+  step.stop = stopOf(a.stop);
+  Replay r;
+  for (const Block& b : a.blocks) {
+    if (b.type == "text") textOf(b, r, step);
+    else if (b.type == "tool_use") callOf(body, b, step);
+    else if (b.type == "thinking" || b.type == "redacted_thinking") thinkingOf(body, b, r, step);
+    else r.replayed = false;   // a block the round does not store
+  }
+  if (step.stop == StopReason::Refusal) {
+    step.calls.clear();   // a refused answer runs nothing
+    step.refusal = a.refusal.empty() ? a.stop : a.refusal;
+  }
+  usageOf(a, step);
 }
 
 Status parseBody(const HttpResponse& in, ParsedStep& out) {
