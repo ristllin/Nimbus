@@ -82,7 +82,6 @@ struct Turn {
   bool fileSetChanged = false;
   bool sawOutside = false;
   bool sawMeta = false;
-  bool dropped = false;                // a full arena gave up closed turns this turn
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
   GuardTrip trip = GuardTrip::None;
@@ -208,10 +207,10 @@ class TurnRun {
     const size_t end = dropEnd(closedPrefix(through), through);
     uint64_t lastQ = 0;
     tx::ArenaEntry e;
-    if (!end || !d_.arena->header(end - 1, e).ok() || !(lastQ = e.q) || !countDropped(end)) return false;
+    if (!end || !d_.arena->header(end - 1, e).ok() || !(lastQ = e.q)) return false;
+    countDropped(end);   // before the drop: it reads the items' headers
     if (!d_.arena->dropThrough(lastQ).ok()) return false;
     c_.droppedThru = std::max(c_.droppedThru, lastQ);
-    t_.dropped = true;
     nameDropped();
     return true;
   }
@@ -242,7 +241,7 @@ class TurnRun {
     return end;
   }
   // The dropped turns' count and dates, for the omission line.
-  bool countDropped(size_t end) {
+  void countDropped(size_t end) {
     uint32_t last = 0;
     tx::ArenaEntry e;
     for (size_t i = 0; i < end; ++i) {
@@ -252,7 +251,6 @@ class TurnRun {
       if (!c_.droppedFirstAt) c_.droppedFirstAt = e.t;
       c_.droppedLastAt = e.t;
     }
-    return true;
   }
 
   // The ladder starts from the dropped turns: whole turns through droppedThru are left out (they
@@ -283,8 +281,10 @@ class TurnRun {
 
   // At turn open: what earlier drops left out is named, and room is made for this turn.
   void makeRoom() {
-    if (c_.droppedTurns && c_.head.thru >= c_.droppedThru)   // a digest names them now
-      c_.droppedTurns = 0, c_.droppedFirstAt = c_.droppedLastAt = 0;
+    if (c_.droppedTurns && c_.head.thru >= c_.droppedThru) {   // a digest names them now
+      c_.droppedTurns = 0;
+      c_.droppedFirstAt = c_.droppedLastAt = 0;
+    }
     nameDropped();
     while (d_.arena->freeBytes() < arenaReserve() && dropOldestClosed()) {
     }
