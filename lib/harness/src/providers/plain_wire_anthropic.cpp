@@ -237,7 +237,7 @@ void chooseOmitted(const RenderInput& in, Facts& f) {
   if (!in.ladder || !in.ladder->omitThrough || in.ladder->omissionLine.empty()) return;
   std::vector<std::pair<uint32_t, uint64_t>> last;   // turn -> its newest q, in first-seen order
   for (const Row& r : f.rows) {
-    if (r.q <= f.thru || r.q == 0) continue;
+    if (r.q <= f.thru || r.q == 0 || r.turn == 0) continue;   // turn 0 is never a whole turn to omit
     auto it = std::find_if(last.begin(), last.end(), [&r](const std::pair<uint32_t, uint64_t>& t) { return t.first == r.turn; });
     if (it == last.end()) last.push_back({r.turn, r.q});
     else it->second = std::max(it->second, r.q);

@@ -1265,6 +1265,47 @@ void test_each_rung_of_the_ladder_changes_the_bytes_and_keeps_every_pair() {
   TEST_ASSERT_TRUE(r3.body.find("ask 1:") == std::string::npos && r3.body.find("ask 2:") == std::string::npos);
   TEST_ASSERT_TRUE(r3.body.find("ask 3:") != std::string::npos);
   TEST_ASSERT_EQUAL_STRING(line.c_str(), r3.view.messages[0].blocks[0].text.c_str());
+  // The engine climbs again while over its cap: rung 2 advances round by round and rung 3 turn
+  // by turn; every further step renders other, smaller bytes, still valid and paired.
+  Opts step;
+  std::string prev = none.body;
+  for (uint64_t through : {roundResult[0], roundResult[1]}) {
+    step.ladder.stubThrough = through;
+    Out o2;
+    RENDER_OK(rig, c, o2, step);
+    TEST_ASSERT_TRUE_MESSAGE(o2.body.size() < prev.size(), "a further rung 2 step changed nothing");
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(o2.view, why), why.c_str());
+    prev = o2.body;
+  }
+  for (uint32_t n = 1; n <= 3; ++n) {
+    step.ladder.omitThrough = turnEnd[n - 1];
+    TXB_OK(tx::omissionLine(n, "", step.ladder.omissionLine));
+    Out o3;
+    RENDER_OK(rig, c, o3, step);
+    EXPECT_API_OK(o3, "rung 3 step " + std::to_string(n));
+    TEST_ASSERT_TRUE_MESSAGE(o3.body.size() < prev.size(), "a further rung 3 step changed nothing");
+    TEST_ASSERT_TRUE(o3.body.find("ask " + std::to_string(n) + ":") == std::string::npos);
+    prev = o3.body;
+  }
+  // Turn 0 items (stored outside any turn) are never left out as a turn.
+  txb::Convo zero;
+  zero.note("[device] before any turn");
+  for (const tx::Item& it0 : c.items) {
+    tx::Item copy = it0;
+    copy.q += 1;
+    zero.items.push_back(copy);
+  }
+  zero.q = c.q + 1;
+  zero.turn = c.turn;
+  zero.bulk = c.bulk;
+  Opts zo;
+  zo.ladder.omitThrough = turnEnd[0] + 1;
+  TXB_OK(tx::omissionLine(1, "", zo.ladder.omissionLine));
+  Out zout;
+  RENDER_OK(rig, zero, zout, zo);
+  EXPECT_API_OK(zout, "turn 0");
+  TEST_ASSERT_TRUE(zout.body.find("before any turn") != std::string::npos && zout.body.find("ask 1:") == std::string::npos);
   // Any rung at any point of random transcripts, broken ones too: valid and paired.
   for (unsigned seed = 1; seed <= 200; ++seed) {
     Rig r;
