@@ -66,7 +66,7 @@ namespace {
 bool rawStartsWith(const std::string& s, const char* p) { return s.rfind(p, 0) == 0; }
 constexpr const char* kRouterRefusedWord = "router_refused";
 
-// The status portion of an "HTTP ..." token. A billing refusal (the ONE table
+// The status part of an "HTTP ..." token. A billing refusal (the ONE table
 // shared with the chat head, billing_refusal.h) is OutOfCredit; a 429 without a
 // billing token is RateLimited; a known router code maps to its own class;
 // anything else is ProviderError carrying ONLY the numeric status.

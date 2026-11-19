@@ -355,6 +355,31 @@ static void test_the_whole_text_line_names_the_day_and_zone() {
   TEST_ASSERT_TRUE(csvDayTotalLine(file, "kg", "", "GMT").find("clock is not set") != std::string::npos);
 }
 
+// An older keyed call names what the append does not take, the same words for every table,
+// and is written as nothing (the binding returns it before planning).
+static void test_old_keyed_arguments_are_named_not_merged() {
+  TEST_ASSERT_EQUAL_STRING("", appendArgsError({}).c_str());
+  TEST_ASSERT_EQUAL_STRING("files.append takes project, name and text; key is not an argument of it, and nothing was added",
+                           appendArgsError({"key"}).c_str());
+  TEST_ASSERT_TRUE(appendArgsError({"key", "sum", "replace"}).find("key, sum, replace are not an argument") !=
+                   std::string::npos);
+}
+
+// A row of another width than the header lands as sent and the reply says so, the same on
+// every table; a new file's own first line is its header.
+static void test_a_row_of_another_width_lands_and_is_said() {
+  for (const Domain& d : kDomains) {
+    const std::string h = d.header;
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("", csvWidthNote(h, std::string(d.row) + "\n").c_str(), d.name);
+    const std::string note = csvWidthNote(h, std::string(d.row) + "\n2026-11-19,x\n2026-11-19,12:40,a, b,1,2\n");
+    TEST_ASSERT_TRUE_MESSAGE(note.find("2 rows have a field count other than the header's 5") != std::string::npos,
+                             note.c_str());
+    TEST_ASSERT_EQUAL_STRING("", csvWidthNote("", h + "\n" + d.row + "\n").c_str());
+    TEST_ASSERT_TRUE(csvWidthNote("", h + "\n2026-11-19,x\n").find("1 row has") != std::string::npos);
+    TEST_ASSERT_EQUAL_STRING("", csvWidthNote(h, "\n" + std::string(d.row) + "\n#note\n").c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_append_never_rewrites_a_stored_byte);
@@ -370,5 +395,7 @@ int main(int, char**) {
   RUN_TEST(test_quoted_commas_and_thousands);
   RUN_TEST(test_days_across_midnight);
   RUN_TEST(test_the_whole_text_line_names_the_day_and_zone);
+  RUN_TEST(test_old_keyed_arguments_are_named_not_merged);
+  RUN_TEST(test_a_row_of_another_width_lands_and_is_said);
   return UNITY_END();
 }

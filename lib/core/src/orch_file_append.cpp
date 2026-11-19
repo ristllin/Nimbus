@@ -59,6 +59,14 @@ AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte) 
   }
 }
 
+std::string appendArgsError(const std::vector<std::string>& named) {
+  std::string list;
+  for (const std::string& a : named) list += (list.empty() ? "" : ", ") + a;
+  if (list.empty()) return std::string();
+  return "files.append takes project, name and text; " + list + (named.size() == 1 ? " is" : " are") +
+         " not an argument of it, and nothing was added";
+}
+
 TailView tailRows(const std::string& window, size_t windowStart, size_t n) {
   TailView v;
   if (n == 0) n = kTailDefaultRows;
@@ -124,7 +132,7 @@ std::string lowered(const std::string& s) {
 bool sameText(const std::string& a, const std::string& b) { return lowered(a) == lowered(b); }
 
 // A key value as identity compares it: no case, no spaces around it (a quoted
-// " lunch " and lunch are one key).
+// " travel " and travel are one key).
 std::string keyText(const std::string& s) {
   size_t b = 0, e = s.size();
   while (b < e && (s[b] == ' ' || s[b] == '\t')) b++;
@@ -503,6 +511,31 @@ std::string csvDayTotalLine(const std::string& fileText, const std::string& sumC
 }
 
 std::vector<std::string> csvHeaderOf(const std::string& row) { return csvFields(withoutBom(row)); }
+
+std::string csvWidthNote(const std::string& stored, const std::string& appended) {
+  // A new file: its own first line is the header.
+  size_t p = 0;
+  std::string header = stored;
+  if (header.empty()) {
+    p = appended.find('\n');
+    if (p == std::string::npos) return std::string();
+    header = appended.substr(0, p++);
+  }
+  if (isBlankRow(header)) return std::string();
+  const size_t width = csvHeaderOf(header).size();
+  int off = 0;
+  while (p < appended.size()) {
+    size_t nl = appended.find('\n', p);
+    if (nl == std::string::npos) nl = appended.size();
+    const std::string row = appended.substr(p, nl - p);
+    p = nl + 1;
+    if (isBlankRow(row) || isCommentRow(row)) continue;
+    if (csvFields(row, nullptr, width).size() != width) off++;
+  }
+  if (off == 0) return std::string();
+  return "; " + std::to_string(off) + (off == 1 ? " row has" : " rows have") + " a field count other than the header's " +
+         std::to_string((unsigned)width) + " and counts in no day total";
+}
 
 std::vector<std::string> csvStoredRow(const std::string& row, const std::vector<std::string>& header) {
   bool quotes = true;

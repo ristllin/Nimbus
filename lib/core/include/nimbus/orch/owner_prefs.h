@@ -1,8 +1,8 @@
 #pragma once
 // owner_prefs - the owner's standing rules: short "always / never" rules and
 // standing defaults the owner gave once and wants applied in EVERY later reply,
-// on every channel, without a reminder ("never use em dashes", "meat weights I
-// give are raw", "my usual drink is a flat white unless I say otherwise").
+// on every channel, without a reminder ("never use em dashes", "use metric
+// units", "my usual seat is the window unless I say otherwise").
 //
 // Why a store of its own: vector memory is recalled by topic, so a rule that
 // applies to every topic is almost never recalled (no message is ABOUT it); the

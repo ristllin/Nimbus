@@ -119,18 +119,18 @@ static void testTraversalRefused(ndtest::Ctx& c) {
 }
 
 // RB-REC1 (owner ruling 41): the hosted files.append is the device's pure append, the same
-// for a food log, an expenses log and a training log: the rows go on the end as sent (an older
-// keyed call too, whose key is named as not read), nothing stored is rewritten, and the tail's
-// day total adds up the rows of the day.
+// for a food log, an expenses log and a training log: the rows go on the end as sent, nothing
+// stored is rewritten, an older keyed call is one error naming its arguments and writes nothing,
+// a row of another width is said in the reply, and the tail's day total adds up the day's rows.
 static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
   std::printf("  -- three tables append alike, the same receipt --\n");
   struct Table {
-    const char *project, *name, *header, *row, *col, *total;
+    const char *project, *name, *header, *row, *col, *counted;
   };
   const Table tables[] = {
-      {"food", "food-log.csv", "date,time,item,qty,kcal", ",12:40,soup,1,300", "kcal", "600 from 2 rows"},
-      {"money", "expenses.csv", "date,time,item,qty,amount", ",12:40,train,1,24.5", "amount", "49 from 2 rows"},
-      {"gym", "training.csv", "date,time,item,qty,kg", ",12:40,squat,5,80", "kg", "160 from 2 rows"},
+      {"food", "food-log.csv", "date,time,item,qty,kcal", ",12:40,soup,1,300", "kcal", "600 counted from 2 rows"},
+      {"money", "expenses.csv", "date,time,item,qty,amount", ",12:40,train,1,24.5", "amount", "49 counted from 2 rows"},
+      {"gym", "training.csv", "date,time,item,qty,kg", ",12:40,squat,5,80", "kg", "160 counted from 2 rows"},
   };
   for (const Table& t : tables) {
     const std::string dir = ndtest::scratchDir(std::string("hf-tbl-") + t.project);
@@ -151,14 +151,22 @@ static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
     const std::string where = std::string("{\"project\":\"") + t.project + "\",\"name\":\"" + t.name + "\"";
     const auto first = call("files.append", where + ",\"text\":\"" + t.header + "\\n" + row + "\"}");
     c.ok(first.success && has(first.output, "appended 2 rows"), std::string("the first append lands: ") + t.name);
-    // An older keyed call: the rows land as sent, the key is named as not read, nothing is replaced.
+    // An older keyed call: one error naming its arguments, nothing written.
     const auto keyed = call("files.append", where + ",\"key\":\"item\",\"sum\":\"" + t.col + "\",\"text\":\"" + row + "\"}");
-    c.ok(keyed.success && has(keyed.output, "appended 1 row") && has(keyed.output, "not read: "),
-         std::string("a keyed call appends as sent: ") + keyed.output);
+    c.ok(!keyed.success && has(keyed.error, "key, sum are not an argument of it") && !has(keyed.error, "not read"),
+         std::string("a keyed call is refused by name: ") + keyed.error);
+    const auto again = call("files.append", where + ",\"text\":\"" + row + "\"}");
+    c.ok(again.success && has(again.output, "appended 1 row") && !has(again.output, "field count"),
+         std::string("a plain append lands: ") + again.output);
+    const auto narrow = call("files.append", where + ",\"text\":\"" + today + ",x\"}");
+    c.ok(narrow.success && has(narrow.output, "1 row has a field count other than the header's 5"),
+         std::string("a narrow row lands and is said: ") + narrow.output);
     const std::string body = files.get(std::string(t.project) + "/" + t.name);
-    c.ok(body == std::string(t.header) + "\n" + row + "\n" + row + "\n", std::string("byte for byte, the row twice: ") + t.name);
+    c.ok(body == std::string(t.header) + "\n" + row + "\n" + row + "\n" + today + ",x\n",
+         std::string("byte for byte, the rows as sent: ") + t.name);
     const auto tail = call("files.read", where + ",\"tail\":5,\"sum\":\"" + t.col + "\"}");
-    c.ok(has(tail.output, t.total), std::string("the day total adds up both rows: ") + tail.output);
+    c.ok(has(tail.output, "not known") && has(tail.output, t.counted),
+         std::string("the day total adds up both rows and says the narrow one is unread: ") + tail.output);
   }
 }
 

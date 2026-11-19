@@ -77,6 +77,7 @@ class LabFiles {
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
+    reg.alsoReads("files.append", {"key", "sum", "replace"});   // read to be refused by name
   }
 
   void registerDelete(nimbus::orch::ToolRegistry& reg) {
@@ -152,6 +153,10 @@ class LabFiles {
   // The device's pure append (owner ruling 41): the rows go on the end, whatever the file holds.
   nimbus::orch::ToolResult appendTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
     const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
+    std::vector<std::string> old;
+    for (const char* k : nimbus::orch::kAppendOldArgs)
+      if (!a[k].isNull()) old.push_back(k);
+    if (!old.empty()) return nimbus::orch::ToolResult::fail(nimbus::orch::appendArgsError(old));
     if (p.empty() || n.empty() || t.empty())
       return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
     return appendPlain(p, n, t);
@@ -173,10 +178,11 @@ class LabFiles {
   nimbus::orch::ToolResult appendPlain(const std::string& p, const std::string& n,
                                        const std::string& t) {
     const std::string path = p + "/" + n;
-    const nimbus::orch::AppendPlan plan =
-        nimbus::orch::planAppend(t, files_[path].size(), files_[path].empty() ? '\0' : files_[path].back());
+    const auto it = files_.find(path);   // a refused append creates no entry
+    const std::string cur = it == files_.end() ? std::string() : it->second;
+    const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(t, cur.size(), cur.empty() ? '\0' : cur.back());
     if (!plan.ok) return nimbus::orch::ToolResult::fail(plan.err);
-    files_[path] += plan.bytes;
+    files_[path] = cur + plan.bytes;
     return nimbus::orch::ToolResult::ok(
         "appended " + std::to_string(plan.rows) +
         (plan.rows == 1 ? " row" : " rows") + " to " + p + "/" + n + " (now " +

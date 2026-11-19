@@ -31,6 +31,12 @@ def test_whole_tokens_and_identifier_parts_match():
         "Nutrition facts",
         "520 kJ",
         "meals.csv",
+        "kCal",
+        "KCAL",
+        "kcals",
+        "a lunch row",
+        "the dish and portion",
+        "raw meat weights",
     ):
         assert lint.line_hits(line), line
 
@@ -56,7 +62,7 @@ def test_a_hit_in_scope_fails_and_report_mode_passes(tmp_path, capsys):
 
 
 def test_every_scoped_directory_is_scanned(tmp_path):
-    for top in ("lib/core", "lib/harness", "src", "nimbusd/src"):
+    for top in ("lib/core", "lib/harness", "src", "nimbusd/src", "include/web"):
         root = _tree(tmp_path / top.replace("/", "_"), {top + "/x.h": "// kcal\n"})
         assert lint.main(["--root", root]) == 1, top
 
@@ -64,6 +70,12 @@ def test_every_scoped_directory_is_scanned(tmp_path):
 def test_the_generated_docs_pack_is_in_scope(tmp_path):
     root = _tree(tmp_path, {"lib/core/include/nimbus/docs_pack_data.h": 'R"(a meal)"\n'})
     assert lint.main(["--root", root]) == 1
+
+
+def test_the_generated_model_text_catalogs_are_in_scope(tmp_path):
+    for rel in lint.SCOPE_FILES:
+        root = _tree(tmp_path / rel.replace("/", "_"), {rel: "tool_descriptions\tx\t00000000\t9\t\"a snack\"\n"})
+        assert lint.main(["--root", root]) == 1, rel
 
 
 def test_tests_and_out_of_scope_trees_are_not_scanned(tmp_path):

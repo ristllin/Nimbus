@@ -851,6 +851,9 @@ static void test_ctx_dated_facts_are_classified() {
                            "Treat workout-watch calorie figures as gross, not free food",
                            "Roy's birthday is 3 March", "Remind me on 30 Oct to book the dentist",
                            "The meeting on 16 Oct was moved",   // dated, but no figure
+                           // a date that bounds a rule, and a year beside a month (the review's cases)
+                           "Until 31 December 2026 I'm on holiday", "Until 31 Dec, keep replies under 100 words",
+                           "Starting 2 Nov, reply in British English with at most 3 bullets",
                            // rules that name today or a figure (the review's counter-examples)
                            "Show the day's calorie total for today after each meal I log",
                            "Report protein for today in grams, not kcal", "Keep today's meal plan under 2000 kcal",

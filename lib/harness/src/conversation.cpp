@@ -234,7 +234,7 @@ uint32_t placedSecond(const EpisodicMessage& m, bool* stamped = nullptr) {
 // kRepeatWindowSec apart and on the same local day (each time under its own offset);
 // without them, in the same hour, and only when that hour holds no local midnight
 // (a half-hour zone's does), since a row without a time keeps only its hour. A habitual
-// "dinner 600" sent yesterday and again today stays two messages under their own days.
+// "gym 600" sent yesterday and again today stays two messages under their own days.
 bool closeRepeat(uint32_t secA, uint32_t secB, uint32_t hourA, uint32_t hourB, const OffsetAt& zoneAt) {
   if (secA && secB) {
     const uint32_t gap = secA > secB ? secA - secB : secB - secA;

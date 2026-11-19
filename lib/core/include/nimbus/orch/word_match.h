@@ -21,7 +21,7 @@ inline bool isWordChar(char c) {
 }
 
 // `phrase` occurs in the lowercase text `s` as whole words: no letter or digit
-// touches it. A phrase that ends in ':' ("breakfast:") needs no boundary after it.
+// touches it. A phrase that ends in ':' ("note:") needs no boundary after it.
 inline bool hasPhrase(const std::string& s, const std::string& phrase) {
   if (phrase.empty()) return false;
   const bool open = phrase.back() == ':';

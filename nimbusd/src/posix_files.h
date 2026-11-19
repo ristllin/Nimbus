@@ -7,6 +7,7 @@
 #include <ctime>
 #include <new>
 #include <string>
+#include <vector>
 
 #include "posix_platform.h"
 #include "nimbus/orch/file_append.h"
@@ -108,6 +109,10 @@ class PosixFiles {
             "replaced or rewritten.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
               const std::string p = str(a, "project"), n = str(a, "name"), t = str(a, "text");
+              std::vector<std::string> old;
+              for (const char* k : nimbus::orch::kAppendOldArgs)
+                if (!a[k].isNull()) old.push_back(k);
+              if (!old.empty()) return nimbus::orch::ToolResult::fail(nimbus::orch::appendArgsError(old));
               if (p.empty() || n.empty())
                 return nimbus::orch::ToolResult::fail("need 'project', 'name' and 'text'");
               std::string err, note;
@@ -117,6 +122,7 @@ class PosixFiles {
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"text":{"type":"string"}},)"
             R"("required":["project","name","text"]})");
+    reg.alsoReads("files.append", {"key", "sum", "replace"});   // read to be refused by name
 
     addOwnerOnly(reg, "files.delete",
             "Delete a stored file for good: the bytes and the index entry both go. "
@@ -338,6 +344,20 @@ class PosixFiles {
     return true;
   }
 
+  // A stored file's first line (at most 512 B): a CSV's header, for the append's width fact.
+  static std::string firstLine(const std::string& path) {
+    char buf[512];
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return std::string();
+    const size_t got = std::fread(buf, 1, sizeof buf, f);
+    std::fclose(f);
+    std::string row(buf, got);
+    const size_t nl = row.find('\n');
+    if (nl != std::string::npos) row.resize(nl);
+    if (!row.empty() && row.back() == '\r') row.pop_back();
+    return row;
+  }
+
   // The file's size and last byte: all a pure append reads of what is stored. False when
   // a file the index lists cannot be opened or read (the append then writes nothing).
   static bool fileEnd(const std::string& path, bool listed, size_t& size, char& last) {
@@ -412,7 +432,8 @@ class PosixFiles {
     const std::string index = indexPath(), dump = next.dump();
     std::string done = "appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " + p +
                        "/" + n + " (now " + std::to_string(e.bytes) + " bytes)" +
-                       (plan.repairedCut ? "; its last row had no line end, so the new rows start on a fresh line" : "");
+                       (plan.repairedCut ? "; its last row had no line end, so the new rows start on a fresh line" : "") +
+                       (nimbus::orch::isCsvName(n) ? nimbus::orch::csvWidthNote(size ? firstLine(path) : "", plan.bytes) : "");
     std::string shortWrite = "write failed - nothing was added";
     // The first byte lands here; nothing below allocates before the bytes are known whole.
     FILE* f = std::fopen(path.c_str(), "ab");

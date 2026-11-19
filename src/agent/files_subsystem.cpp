@@ -997,11 +997,12 @@ static std::string rewriteHistoryOf(const std::string& path, const std::string& 
 // files.append's arguments.
 struct AppendArgs {
   std::string project, name, text;
+  std::vector<std::string> oldArgs;   // an older key, sum or replace the call carries (refused)
 };
 
 // The plain append's bytes on the end of the file. Caller holds memory::Lock.
 static nimbus::orch::ToolResult appendBytes(const AppendArgs& a, size_t size, const nimbus::orch::AppendPlan& plan,
-                                            const nimbus::orch::Principal& who) {
+                                            const nimbus::orch::Principal& who, const std::string& note) {
   using nimbus::orch::ToolResult;
   const std::string refusal = appendRefusal(a.project, a.name, plan.bytes.size(), size + plan.bytes.size(), who);
   if (!refusal.empty()) return ToolResult::fail(refusalForHead(refusal));
@@ -1022,7 +1023,7 @@ static nimbus::orch::ToolResult appendBytes(const AppendArgs& a, size_t size, co
   const char* closed = plan.repairedCut ? "; its last row had no line end, so the new rows start on a fresh line" : "";
   return ToolResult::ok("appended " + std::to_string(plan.rows) + (plan.rows == 1 ? " row" : " rows") + " to " +
                         a.project + "/" + a.name + " (now " + std::to_string((unsigned)(size + n)) + " bytes)" +
-                        closed);
+                        closed + note);
 }
 
 // files.append: the new rows go on the END of a text document (created when missing);
@@ -1030,6 +1031,7 @@ static nimbus::orch::ToolResult appendBytes(const AppendArgs& a, size_t size, co
 // the file is called or holds - a pure append on every path (owner ruling 41).
 static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
+  if (!a.oldArgs.empty()) return ToolResult::fail(nimbus::orch::appendArgsError(a.oldArgs));
   if (a.project.empty() || a.name.empty() || a.text.empty())
     return ToolResult::fail("need 'project', 'name' and 'text'");
   if (!textDocName(a.name))
@@ -1044,7 +1046,9 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
     return ToolResult::fail("the card read failed - nothing was added; try again");
   const nimbus::orch::AppendPlan plan = nimbus::orch::planAppend(a.text, size, last);
   if (!plan.ok) return ToolResult::fail(plan.err);
-  return appendBytes(a, size, plan, who);
+  const std::string note =
+      fileKindIsCsv(a.name) ? nimbus::orch::csvWidthNote(size ? firstRowOf(path) : std::string(), plan.bytes) : "";
+  return appendBytes(a, size, plan, who, note);
 }
 
 // files.edit (v4.6.2): the surgical edit of a stored TEXT document. The only
@@ -1884,9 +1888,12 @@ void registerTools() {
             args.project = argStr(a, "project");
             args.name = argStr(a, "name");
             args.text = argStr(a, "text");
+            for (const char* k : nimbus::orch::kAppendOldArgs)
+              if (!a[k].isNull()) args.oldArgs.push_back(k);
             return appendRows(args, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
+  reg.alsoReads("files.append", {"key", "sum", "replace"});   // read to be refused by name
 
   reg.add("files.edit",
           "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole "
@@ -2111,7 +2118,7 @@ void registerTools() {
   // the final answer it costs no extra round.
   reg.add("image.note",
           "Write the record of a photo of this message that you saw: one short line of what "
-          "matters in it (the dish and portion, the numbers on a label, what the document "
+          "matters in it (what it shows, the numbers on a label, what the document "
           "says). It is what the conversation keeps of the photo; call it with your answer "
           "for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {

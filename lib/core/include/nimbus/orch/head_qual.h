@@ -23,7 +23,7 @@ namespace orch {
 namespace headqual {
 
 // A release line. E1 is the old engine from v5.2.0 on (the guard deletions, the
-// ledger tool, the prompt diet); E2 is the plain engine (v5.9.0 and v6).
+// ledger tool, the prompt cut); E2 is the plain engine (v5.9.0 and v6).
 enum class Line : uint8_t { E1 = 0, E2 = 1 };
 const char* lineSlug(Line l);                       // "e1" / "e2"
 bool lineFromSlug(const char* s, Line& out);        // false on anything else

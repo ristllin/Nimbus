@@ -50,8 +50,8 @@ safety/moderation/access). Editable only by the human (web UI / provisioning).
 
 ### 1.1b Standing rules
 
-The owner's short always/never rules ("never use em dashes", "meat weights I
-give are raw"), stored in one small file on the internal flash
+The owner's short always/never rules ("never use em dashes", "always use
+metric units"), stored in one small file on the internal flash
 (`/data/prefs.txt`, at most 12 rules, 240 characters each, 1,200 characters of
 rule text together, zero NVS keys) and rendered into the never-dropped part of
 every owner-facing prompt as `[STANDING RULES]`, right under the directive.

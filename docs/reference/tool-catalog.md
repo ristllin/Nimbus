@@ -370,10 +370,12 @@ Notes:
 - `files.append` writes only the new rows (line ends normalized, a final line end
   added) on every path: no row is merged, replaced, refused or set aside, whatever
   the file holds (owner ruling 41: every table the owner keeps appends alike). When the file's last row has no line end, the new rows start on a
-  fresh line and the reply says so. A correction is a `files.edit` of the row. An
-  argument the tool does not take (an older `key`, `sum` or `replace`) is named as
-  not read, and the rows are appended as sent. It follows the same ownership and
-  quota rules as `artifact.save`.
+  fresh line and the reply says so. A correction is a `files.edit` of the row. A call
+  that carries an older `key`, `sum` or `replace` is one error naming them, and
+  nothing is written (a correction never lands as a second row). On a CSV, a row
+  whose field count differs from the header's still lands, and the reply says how
+  many such rows there are (they count in no day total). It follows the same
+  ownership and quota rules as `artifact.save`.
 - `files.read {tail, sum, date}` gives one day's total of a numeric column: the rows
   whose date column (by its name: `date`, `day`, or a name holding date, day or time,
   else the first column of `YYYY-MM-DD` dates) holds that day, today by default in the

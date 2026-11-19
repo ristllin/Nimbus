@@ -54,8 +54,8 @@ box, with a "Revert to default" affordance. Injected below the platform rules an
 identity, delimited as owner preferences (it shapes style, never overrides
 safety/moderation/access). Editable only by the human (web UI / provisioning).)NIMBUSDOC"},
   {"orchestrator-world#1-cognitive-tiers-1-1b-standing-rules", "1. Cognitive tiers - 1.1b Standing rules",
-   R"NIMBUSDOC(The owner's short always/never rules ("never use em dashes", "meat weights I
-give are raw"), stored in one small file on the internal flash
+   R"NIMBUSDOC(The owner's short always/never rules ("never use em dashes", "always use
+metric units"), stored in one small file on the internal flash
 (`/data/prefs.txt`, at most 12 rules, 240 characters each, 1,200 characters of
 rule text together, zero NVS keys) and rendered into the never-dropped part of
 every owner-facing prompt as `[STANDING RULES]`, right under the directive.
@@ -924,10 +924,12 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 - `files.append` writes only the new rows (line ends normalized, a final line end
   added) on every path: no row is merged, replaced, refused or set aside, whatever
   the file holds (owner ruling 41: every table the owner keeps appends alike). When the file's last row has no line end, the new rows start on a
-  fresh line and the reply says so. A correction is a `files.edit` of the row. An
-  argument the tool does not take (an older `key`, `sum` or `replace`) is named as
-  not read, and the rows are appended as sent. It follows the same ownership and
-  quota rules as `artifact.save`.
+  fresh line and the reply says so. A correction is a `files.edit` of the row. A call
+  that carries an older `key`, `sum` or `replace` is one error naming them, and
+  nothing is written (a correction never lands as a second row). On a CSV, a row
+  whose field count differs from the header's still lands, and the reply says how
+  many such rows there are (they count in no day total). It follows the same
+  ownership and quota rules as `artifact.save`.
 - `files.read {tail, sum, date}` gives one day's total of a numeric column: the rows
   whose date column (by its name: `date`, `day`, or a name holding date, day or time,
   else the first column of `YYYY-MM-DD` dates) holds that day, today by default in the
@@ -955,11 +957,11 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
   returns the last complete rows, oldest first, plus a CSV's header row when it
   is not among them; an incomplete last row is reported, not hidden.
 - `files.share` is owner-controlled and read-only; guests cannot share.
-- `files.send` is a turn-output tool - refused from the LAN `/mcp` path. A file
-  another person owns is invisible: the refusal deliberately matches "not found"
-  so its existence is not disclosed. The call answers "queued <project>/<name> for)NIMBUSDOC"},
+- `files.send` is a turn-output tool - refused from the LAN `/mcp` path. A file)NIMBUSDOC"},
   {"tool-catalog#files-artifact-save-durable-artifact-store-5", "`files.*` & `artifact.save` - durable artifact store (5/5)",
-   R"NIMBUSDOC(  Telegram delivery"; the upload runs on the next Telegram poll, and if it fails the chat
+   R"NIMBUSDOC(  another person owns is invisible: the refusal deliberately matches "not found"
+  so its existence is not disclosed. The call answers "queued <project>/<name> for
+  Telegram delivery"; the upload runs on the next Telegram poll, and if it fails the chat
   gets "Couldn't send <name>. It's saved under Files."
 - `image.generate` uses OpenAI **gpt-image-1**, which returns the image inline
   (the dall-e models hand back a URL the device cannot re-fetch). The image is

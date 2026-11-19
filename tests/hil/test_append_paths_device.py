@@ -9,8 +9,8 @@ test build's tool route (``/api/test/astool``, as the owner) and reads the file 
    as it was; the new rows start on a fresh line and the reply says so;
 2. a CSV whose last row is cut (fewer fields than the header) is never set aside or rewritten:
    the row stays as it was, the new rows start on a fresh line;
-3. a food log, an expenses log and a training log take the same older keyed call alike: the
-   rows land as sent (the key is named as not read), the stored rows are untouched, and the
+3. a food log, an expenses log and a training log take the same older keyed call alike: one
+   error naming its arguments, nothing written; a plain append of the same row lands, and the
    day total of files.read {tail, sum} counts every row;
 4. a date column named "when" keeps two days' rows apart in the day total;
 5. no date column: the rows are appended, and the day total says there is no date column.
@@ -116,8 +116,10 @@ def test_three_tables_take_an_older_keyed_call_alike(name, header, row, col):
     _save(name, f"{header}\n{row}\n")
     reply, err = _append(name, row, key="item", sum=col, replace="all")
     print(f"append paths 3 {name}: {reply!r}")
-    assert not err, reply
-    assert "appended 1 row" in reply and "not read" in reply
+    assert err and "not an argument" in reply, reply
+    assert _dump(name) == f"{header}\n{row}\n"
+    reply, err = _append(name, row)
+    assert not err and "appended 1 row" in reply, reply
     assert _dump(name) == f"{header}\n{row}\n{row}\n"
     assert f"{col} on 2026-10-24: 600 from 2 rows" in _tail(name, col, "2026-10-24")
 

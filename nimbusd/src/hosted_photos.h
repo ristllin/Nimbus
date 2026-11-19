@@ -142,8 +142,8 @@ class HostedPhotos {
             },
             R"({"type":"object","properties":{"ref":{"type":"string"},"question":{"type":"string"}},"required":["ref","question"]})");
     reg.add("image.note",
-            "Write the record of a photo of this message that you saw: one short line of what matters in it (the "
-            "dish and portion, the numbers on a label, what the document says). It is what the conversation keeps "
+            "Write the record of a photo of this message that you saw: one short line of what matters in it (what "
+            "it shows, the numbers on a label, what the document says). It is what the conversation keeps "
             "of the photo; call it with your answer for every photo you see. ref = the 16 hex characters in its "
             "[image ... ref=...] label.",
             [](ArduinoJson::JsonObjectConst a, const Principal&) -> ToolResult {

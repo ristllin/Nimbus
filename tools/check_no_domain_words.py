@@ -6,10 +6,11 @@ scenarios, not built-ins, so no firmware code, tool text, error string, prompt o
 docs page in the scanned scope may name one of them.
 
 Scope: lib/core, lib/harness, src, nimbusd (its tests excepted: tests carry the three
-validation domains on purpose) and the generated docs pack (lib/core/include/nimbus/docs_pack_data.h
-sits inside lib/core). Matching is by whole token: identifiers are split on underscores
+validation domains on purpose), the web UI fragments (include/web), the generated docs pack
+(lib/core/include/nimbus/docs_pack_data.h sits inside lib/core) and the generated catalogs of
+model-facing text (test/golden/model_text_catalog*.txt). Matching is by whole token: identifiers are split on underscores
 and case changes (foodLedger -> food, ledger; FOOD_LOG -> food, log), so "themeAlertHue"
-or "centsPerKCalls" never match. "ledger" is not a domain word (it names the usage and
+or "centsPerKCalls" never match; the whole token is also read, so "kCal" or "KCAL" does. "ledger" is not a domain word (it names the usage and
 spend ledgers all over the core), and neither is "macro" (it names the C preprocessor's
 macros all over the core).
 
@@ -38,11 +39,32 @@ WORDS = frozenset(
         "proteins",
         "nutrition",
         "nutritional",
+        "nutrient",
+        "nutrients",
         "kj",
+        "kcals",
+        "carb",
+        "carbs",
+        "breakfast",
+        "breakfasts",
+        "lunch",
+        "lunches",
+        "dinner",
+        "dinners",
+        "snack",
+        "snacks",
+        "dish",
+        "dishes",
+        "portion",
+        "portions",
+        "meat",
+        "diet",
     }
 )
 
-SCOPE = ("lib/core", "lib/harness", "src", "nimbusd")
+SCOPE = ("lib/core", "lib/harness", "src", "nimbusd", "include/web")
+# Generated files a model or the owner reads, scanned as they are committed.
+SCOPE_FILES = ("test/golden/model_text_catalog_e1.txt", "test/golden/model_text_catalog.txt")
 # Paths (relative, "/"-separated) never scanned. Tests hold the validation domains by design.
 EXCLUDE_PREFIXES = ("nimbusd/tests/",)
 # A name collision, not a use case: the usage ledger tracks spend (ruling 42 item 4).
@@ -57,10 +79,8 @@ def tokens(text: str):
     """Whole tokens of a line, identifiers split on underscores and case changes, lower-cased."""
     for m in _TOKEN.finditer(text):
         word = m.group(0)
-        # "kJ" is its own unit token; the case split would cut it in two.
-        if word in ("kJ", "KJ", "kj"):
-            yield "kj"
-            continue
+        # The whole token too, so a case split never hides a word ("kCal", "KCAL", "kJ").
+        yield word.lower()
         for part in _PART.findall(word):
             yield part.lower()
 
@@ -70,6 +90,9 @@ def line_hits(line: str) -> list[str]:
 
 
 def scanned_files(root: str):
+    for rel in SCOPE_FILES:
+        if os.path.isfile(os.path.join(root, rel)):
+            yield rel
     for top in SCOPE:
         base = os.path.join(root, top)
         for dirpath, dirnames, filenames in os.walk(base):

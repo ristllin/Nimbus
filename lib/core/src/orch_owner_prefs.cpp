@@ -605,7 +605,7 @@ const char* const kStrongBehavior[] = {
     "em dashes", "em-dash",  "em-dashes", "dash",     "dashes",    "bullet",   "bullets",
     "bullet points", "language", "english", "assistant", "you",    "your",     "log",
     "logs",     "logging",   "logged",    "treat",    "interpret", "assume",   "count as",
-    "weight",   "weights",   "portion",   "portions", "units",     "metric",   "imperial",
+    "weight",   "weights",   "units",     "metric",   "imperial",
     "remind me", "notify me",
 };
 // Weak behavior markers: count only in a request or an imperative ("Never use
@@ -634,14 +634,6 @@ bool startsWithStanding(const std::string& s) {
   return false;
 }
 
-// A pinned memory about how to read the owner's quantities ("meat weights are
-// raw") is a standing default even without "always".
-bool quantityConvention(const std::string& s) {
-  static const char* const kState[] = {"raw", "cooked", "uncooked"};
-  static const char* const kQty[] = {"weight", "weights", "grams", "gram", "portion", "portions"};
-  return anyOf(s, kState) && anyOf(s, kQty);
-}
-
 bool isRule(const std::string& s, const std::string& dev) {
   const bool devNamed = !dev.empty() && hasPhrase(s, dev.c_str());
   if (anyOf(s, kStandingMarkers)) {
@@ -664,9 +656,10 @@ const char* const kMonthWords[] = {"jan",      "feb",     "mar",      "apr",    
 // "had", "weighed"): "show today's total after each entry" is a rule.
 const char* const kDayWords[] = {"today", "yesterday", "tonight", "this morning", "this evening",
                                  "this afternoon", "last night", "earlier today"};
-const char* const kReported[] = {"had", "ate", "eaten", "was", "were", "closed at", "came to", "weighed",
-                                 "weigh-in", "provided", "logged", "drank", "slept", "measured", "total",
-                                 "totals"};
+const char* const kReported[] = {"had",      "was",    "were",   "closed at", "came to", "weighed", "weigh-in",
+                                 "provided", "logged", "slept",  "measured",  "total",   "totals"};
+// A date that bounds a rule is not the date of a fact ("until 31 Dec, keep replies short").
+const char* const kTimeLimited[] = {"until", "till", "through", "starting"};
 // A recurring instruction is not a one-off fact, even with today in it.
 const char* const kRecurring[] = {"every", "daily", "weekly", "each day", "each morning", "each evening",
                                   "after each"};
@@ -733,7 +726,8 @@ bool isDated(const std::string& s) {
 }
 
 // A figure that is not part of a date: a token with a digit, after the YYYY-MM-DD dates are
-// taken out and leaving the day of the month beside a month name ("16 oct") aside.
+// taken out, leaving the day of the month beside a month name ("16 oct") and the year after
+// a month name ("31 december 2026", "oct 2026") aside.
 bool hasFigure(const std::string& s) {
   std::string rest = s;
   for (size_t i = 0; i + 10 <= rest.size(); i++)
@@ -743,9 +737,10 @@ bool hasFigure(const std::string& s) {
   const std::vector<std::string> tok = wordTokens(rest);
   for (size_t i = 0; i < tok.size(); i++) {
     if (tok[i].find_first_of("0123456789") == std::string::npos) continue;
-    const bool dayOfMonth = isDayNumber(tok[i]) && ((i > 0 && isMonthWord(tok[i - 1])) ||
-                                                    (i + 1 < tok.size() && isMonthWord(tok[i + 1])));
-    if (!dayOfMonth) return true;
+    const bool nearMonth = (i > 0 && isMonthWord(tok[i - 1])) || (i + 1 < tok.size() && isMonthWord(tok[i + 1]));
+    const bool year = tok[i].size() == 4 && allDigitsN(tok[i], 0, 4) && i > 0 &&
+                      (isMonthWord(tok[i - 1]) || (isDayNumber(tok[i - 1]) && i > 1 && isMonthWord(tok[i - 2])));
+    if (!(isDayNumber(tok[i]) && nearMonth) && !year) return true;
   }
   return false;
 }
@@ -762,7 +757,8 @@ bool startsImperative(const std::string& s) {
 
 DatedKind datedKindOf(const std::string& text) {
   const std::string s = collapseSpaces(lowerAscii(sanitizePrefText(text)));
-  if (!isDated(s) || startsImperative(s) || anyOf(s, kStandingMarkers) || anyOf(s, kRecurring))
+  if (!isDated(s) || startsImperative(s) || anyOf(s, kStandingMarkers) || anyOf(s, kRecurring) ||
+      anyOf(s, kTimeLimited))
     return DatedKind::None;
   return hasFigure(s) ? DatedKind::Fact : DatedKind::None;
 }
@@ -800,8 +796,7 @@ std::vector<std::string> pickSeedRules(const std::vector<SeedCandidate>& in, con
   for (const SeedCandidate& c : in) {
     const std::string s = lowerAscii(sanitizePrefText(c.text));
     if (datedKindOf(c.text) != DatedKind::None) continue;   // lane CTX: a dated fact is never a rule
-    if (looksLikeStandingRule(c.text, devName) || (c.pinned && quantityConvention(s)))
-      picked.push_back(&c);
+    if (looksLikeStandingRule(c.text, devName)) picked.push_back(&c);
   }
   std::stable_sort(picked.begin(), picked.end(), [](const SeedCandidate* a, const SeedCandidate* b) {
     if (a->pinned != b->pinned) return a->pinned;
@@ -862,8 +857,8 @@ bool ruleDaysMatch(RuleDays days, int dayOfWeek) {
 // The veto subject of a rule: the words its asking/mentioning marker governs.
 // The marker must govern the subject (the veto is the words AFTER it), the
 // "about" lead-in is part of the asking, and a prepositional tail narrows the
-// topic to its head ("never discuss politics at dinner" vetoes politics, not
-// every dinner routine). "" when the rule carries no veto shape.
+// topic to its head ("never discuss politics at work" vetoes politics, not
+// every work routine). "" when the rule carries no veto shape.
 std::vector<std::string> ruleVetoWords(const std::string& rule) {
   const std::string r = collapseSpaces(lowerAscii(sanitizePrefText(rule)));
   size_t at = std::string::npos;

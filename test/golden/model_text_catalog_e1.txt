@@ -3,8 +3,8 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43823 ceiling=47989 entries=411 sha8=e31f6c20
 # class device_notes bytes=54036 ceiling=54203 entries=1457 sha8=692e97dd
-# class tool_descriptions bytes=21642 ceiling=23131 entries=98 sha8=fa07c64d
-# class tool_results bytes=34475 ceiling=41962 entries=1055 sha8=45d24948
+# class tool_descriptions bytes=21628 ceiling=23131 entries=98 sha8=7249ee6c
+# class tool_results bytes=34654 ceiling=41962 entries=1063 sha8=53933cdf
 # class side_prompts bytes=9507 ceiling=9795 entries=170 sha8=63c24ee1
 # class skills bytes=8773 ceiling=23264 entries=26 sha8=3ef5d5db
 system	lib/core/include/nimbus/orch/orch_schema.h	955fc9b7	884	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. Never invent ids, links, or successes."
@@ -1909,7 +1909,7 @@ tool_descriptions	nimbusd/src/hosted_loops.h	88c0b19b	525	"Schedule a recurring 
 tool_descriptions	nimbusd/src/hosted_loops.h	f3a8fa9b	106	"List all scheduled loops with status: schedule, next run, last result, enabled, and whether it's approved."
 tool_descriptions	nimbusd/src/hosted_loops.h	aa8ea589	43	"Cancel (delete) a scheduled loop by its id."
 tool_descriptions	nimbusd/src/hosted_photos.h	0d833e64	322	"View a photo sent earlier yourself: it comes back to you as an image. ref = the 16 hex characters in its [image ... ref=...] label in the conversation; question = what you want to check in it (used only when you cannot see images). Use it whenever the photo's note or your earlier reply does not answer what you are asked."
-tool_descriptions	nimbusd/src/hosted_photos.h	54573a0e	326	"Write the record of a photo of this message that you saw: one short line of what matters in it (the dish and portion, the numbers on a label, what the document says). It is what the conversation keeps of the photo; call it with your answer for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label."
+tool_descriptions	nimbusd/src/hosted_photos.h	04bbb7ac	319	"Write the record of a photo of this message that you saw: one short line of what matters in it (what it shows, the numbers on a label, what the document says). It is what the conversation keeps of the photo; call it with your answer for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label."
 tool_descriptions	nimbusd/src/hosted_skills.h	2e5fb16a	157	"List the skills (task playbooks and knowledge capsules) with their status: approved, waiting for the owner's approval, or an edit waiting on an approved one."
 tool_descriptions	nimbusd/src/hosted_skills.h	c916eb19	252	"Read a skill - a task playbook or knowledge capsule - by id from the [SKILLS] index. Read the matching one BEFORE starting (or refusing) a task it covers. Once read it stays attached to this chat's next turns ([ACTIVE SKILLS]), so do not read it again."
 tool_descriptions	nimbusd/src/hosted_skills.h	b5a9b94a	149	"Save or update a skill - a task playbook stored on this instance. id: a-z0-9-_ max 23 chars. md: the SKILL.md text. Front matter keys you may write: "
@@ -1936,7 +1936,7 @@ tool_descriptions	src/agent/files_subsystem.cpp	16ad68fd	180	"Share one of your 
 tool_descriptions	src/agent/files_subsystem.cpp	07548ff6	397	"Download a document from an https URL into the file store (project/name), governed by the owner's URL-download policy: it may need per-URL owner approval or an automatic safety scan, and can be turned off. The download runs in the BACKGROUND - report the honest status this tool returns; NEVER claim the file exists until files.list shows it. Per-file size cap applies (device.status files.maxMB)."
 tool_descriptions	src/agent/files_subsystem.cpp	f3c07919	146	"Send a stored file to the owner on Telegram - images go as a photo (inline preview), other files as a document. Omit chat_id for the current chat."
 tool_descriptions	src/agent/files_subsystem.cpp	5ee11032	400	"View a photo sent earlier yourself: it comes back to you as an image. ref = the 16 hex characters in its [image ... ref=...] label in the conversation; question = what you want to check in it, asked openly (\"what is on the plate?\"), never naming what you think it shows (used only when you cannot see images). Use it whenever the photo's note or your earlier reply does not answer what you are asked."
-tool_descriptions	src/agent/files_subsystem.cpp	54573a0e	326	"Write the record of a photo of this message that you saw: one short line of what matters in it (the dish and portion, the numbers on a label, what the document says). It is what the conversation keeps of the photo; call it with your answer for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label."
+tool_descriptions	src/agent/files_subsystem.cpp	04bbb7ac	319	"Write the record of a photo of this message that you saw: one short line of what matters in it (what it shows, the numbers on a label, what the document says). It is what the conversation keeps of the photo; call it with your answer for every photo you see. ref = the 16 hex characters in its [image ... ref=...] label."
 tool_descriptions	src/agent/files_subsystem.cpp	682e4cb6	270	"Generate an image from a text prompt and save it as a PNG in the durable store. Returns the saved project/name, which says how the owner gets it. Set describe true to also get a vision read-back of the result (an extra provider call). Needs an OpenAI key and an SD card."
 tool_descriptions	src/agent/memory_subsystem.cpp	6afc2380	495	"Schedule ONE future wakeup for yourself - no owner approval needed. In `minutes` from now (2 min .. 7 days) you get a single automatic turn carrying your `note`, then the wakeup is gone. Use it to follow up on something you started ('check whether the sub-agent's report landed'), not for recurring work (that is loop.create, which the owner approves). You may set another when it fires; at most 4 armed at once, and wakeup turns spend the same daily budget as routines. Cancel with loop.cancel."
 tool_descriptions	src/agent/memory_subsystem.cpp	88c0b19b	525	"Schedule a recurring or timed task ('local loop') that fires as a FUTURE orchestrator turn. Use for RECURRING work: reminders, digests, nightly upkeep. For a one-time follow-up for yourself use wakeup.set instead (no approval needed). schedule is either {kind:'interval', every_seconds:N} (>=300) or {kind:'daily'|'weekly', at:'HH:MM' 24h, days:['mon','wed',...] for weekly}. chat_id (optional) must be an allow-listed chat. A loop YOU create is saved but stays PENDING until the owner approves it, then it fires on schedule."
@@ -2006,6 +2006,10 @@ tool_results	lib/core/src/orch_calc.cpp	a095aad8	18	"error at position "
 tool_results	lib/core/src/orch_file_append.cpp	b2047d87	36	"need 'text': one or more rows to add"
 tool_results	lib/core/src/orch_file_append.cpp	cb6ca1d2	35	"text too large for one append (max "
 tool_results	lib/core/src/orch_file_append.cpp	7917432a	29	" B) - add fewer rows per call"
+tool_results	lib/core/src/orch_file_append.cpp	3d2e60bd	43	"files.append takes project, name and text; "
+tool_results	lib/core/src/orch_file_append.cpp	a8bdfde1	3	" is"
+tool_results	lib/core/src/orch_file_append.cpp	2cd01b8b	4	" are"
+tool_results	lib/core/src/orch_file_append.cpp	15200805	45	" not an argument of it, and nothing was added"
 tool_results	lib/core/src/orch_file_append.cpp	e941e737	5	"last "
 tool_results	lib/core/src/orch_file_append.cpp	98bd37a2	4	" row"
 tool_results	lib/core/src/orch_file_append.cpp	a4282e4b	4	" of "
@@ -2025,6 +2029,10 @@ tool_results	lib/core/src/orch_file_append.cpp	54f403e0	27	"the device clock is 
 tool_results	lib/core/src/orch_file_append.cpp	e700ffa2	24	"the file has no column '"
 tool_results	lib/core/src/orch_file_append.cpp	52a358cf	27	"the file has no date column"
 tool_results	lib/core/src/orch_file_append.cpp	ad480b09	15	"[no day total: "
+tool_results	lib/core/src/orch_file_append.cpp	cfacc407	8	" row has"
+tool_results	lib/core/src/orch_file_append.cpp	7e42d74e	10	" rows have"
+tool_results	lib/core/src/orch_file_append.cpp	19594319	39	" a field count other than the header's "
+tool_results	lib/core/src/orch_file_append.cpp	88df8171	27	" and counts in no day total"
 tool_results	lib/core/src/orch_file_append.cpp	2ec8d1e9	24	"UTC, no time zone is set"
 tool_results	lib/core/src/orch_file_append.cpp	617acaf6	8	"today's "
 tool_results	lib/core/src/orch_file_append.cpp	0f580db4	4	" on "

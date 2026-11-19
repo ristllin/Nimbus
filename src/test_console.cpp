@@ -813,7 +813,7 @@ constexpr const char* kLinkTimeDir = "/mem/rbm2";
 // A filler that tokenizes like prose (about 4 B a token), never one repeated byte, and
 // holds no character JSON would escape.
 void linkTimeFiller(std::string& out, size_t n, uint32_t seed) {
-  static const char* const kWords[] = {"the",     "owner",  "logged", "a",       "lunch",   "with",   "rice",
+  static const char* const kWords[] = {"the",     "owner",  "logged", "a",       "note",    "with",   "rice",
                                        "and",     "beans",  "at",     "noon",    "then",    "asked",  "for",
                                        "day",     "total",  "of",     "sugar",   "grams",   "walked", "morning",
                                        "coffee",  "label",  "photo",  "remind",  "garden",  "rain",   "kitchen",

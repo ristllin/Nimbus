@@ -164,9 +164,9 @@ void testFaultChain() {
   check(echo.seen.size() == 2, "the injected request never reached the network");
 }
 
-// The lab's files.append is the device's pure append (owner ruling 41): an older keyed call
-// appends its rows as sent and replaces nothing, the same on a food, an expenses and a
-// training table, and the receipt is a landed log row that replaced nothing.
+// The lab's files.append is the device's pure append (owner ruling 41), the same on a food, an
+// expenses and a training table: a row lands as sent (a landed log row that replaced nothing),
+// and an older keyed call is one error that names the argument and writes nothing.
 void testAppendIsPlain() {
   std::puts("plain append");
   namespace orch = nimbus::orch;
@@ -194,13 +194,14 @@ void testAppendIsPlain() {
       deserializeJson(out, reg.handleRpc(in, orch::principalForRole("owner", orch::Role::Admin)));
       return std::string(out["result"]["content"][0]["text"] | "");
     };
-    const std::string first = append(false), again = append(true);
+    const std::string first = append(false), keyed = append(true), again = append(false);
     orch::TurnEffects fx;
     orch::recordToolEffect(fx, orch::FxKind::FileWrite, false, again, orch::kFxLogRow);
     check(!fx.anyOk(orch::FxKind::FileReplace), ("an append replaced nothing: " + again).c_str());
     check(fx.anyOkWith(orch::FxKind::FileWrite, orch::kFxLogRow), "an append is a landed log row");
+    check(keyed.find("key is not an argument") != std::string::npos, ("a keyed call is named: " + keyed).c_str());
     check(files.get(std::string(t[0]) + "/" + t[1]) == std::string(t[2]) + t[2],
-          ("byte for byte, the same row twice: " + std::string(t[1])).c_str());
+          ("byte for byte, the row twice and nothing from the keyed call: " + std::string(t[1])).c_str());
   }
 }
 

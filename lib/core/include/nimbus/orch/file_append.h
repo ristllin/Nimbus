@@ -53,6 +53,19 @@ inline bool isCsvName(const std::string& name) {
 }
 
 AppendPlan planAppend(const std::string& text, size_t fileBytes, char lastByte);
+
+// The one error of a files.append call that carries an argument the pure append does not
+// take (an older `key`, `sum` or `replace`, of any value): it names them and nothing is
+// written, so a correction meant as a replace never lands as a second row. "" when the call
+// carries none. `named` lists the argument names the call carries.
+std::string appendArgsError(const std::vector<std::string>& named);
+inline constexpr const char* kAppendOldArgs[] = {"key", "sum", "replace"};
+
+// A fact for the reply of an append to a CSV: how many of the appended rows have a field
+// count other than the header's (such a row counts in no day total). `stored` is the file's
+// first line ("" for a new file: the appended text's own first line is then the header). ""
+// when every row fits. The rows land either way: this only says so.
+std::string csvWidthNote(const std::string& stored, const std::string& appended);
 // The error a refused allocation gives (planAppend and every append binding).
 inline constexpr const char kAppendNoMemory[] = "out of memory";   // short: no allocation to say it
 
