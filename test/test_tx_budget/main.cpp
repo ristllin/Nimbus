@@ -15,6 +15,7 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -318,7 +319,15 @@ ArenaUse fillTo(size_t resident, size_t owner, size_t reply, int tools, size_t r
   return ArenaUse{a.usedBytes(), agent::plain::residentBytes(a, 0), false};
 }
 
+size_t arenaNeedAtFull(bool print);
+
 void test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth() {
+  TEST_ASSERT_TRUE_MESSAGE(arenaNeedAtFull(true) <= tx::kActiveChatArenaBytes, "the arena does not hold the largest head at full");
+}
+
+// The most arena the largest default (the head with the highest due mark, plus one request's growth
+// on its wire) takes over four turn mixes.
+size_t arenaNeedAtFull(bool print) {
   // The largest default: the head with the highest due mark, plus one request's growth on its wire.
   uint32_t high = 0, growth = 0;
   std::string who;
@@ -341,16 +350,72 @@ void test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth() {
     char line[200];
     std::snprintf(line, sizeof line, "%s at full (H %u + growth %u B), %s turns: arena %zu of %zu B", who.c_str(), high,
                   growth, m.name, u.used, tx::kActiveChatArenaBytes);
-    TEST_MESSAGE(line);
+    if (print) TEST_MESSAGE(line);
     need = std::max(need, u.used);
   }
-  TEST_ASSERT_TRUE_MESSAGE(need <= tx::kActiveChatArenaBytes, "the arena does not hold the largest head at full");
+  return need;
 }
 
 // ---- 6. the generated table ------------------------------------------------------------------
 
+// ---- 7. measured figures against their rows (ruling 83 item 7, amended DoD item 9) --------------
+
+// A measured figure contradicts its row when it is more than 15% away from it.
+bool contradicts(double measured, double row) { return row <= 0 || std::fabs(measured - row) > 0.15 * row; }
+
+void test_the_contradiction_checker_is_15_percent_either_side() {
+  TEST_ASSERT_FALSE(contradicts(96000, 96000));
+  TEST_ASSERT_FALSE(contradicts(96000 * 1.15, 96000));
+  TEST_ASSERT_FALSE(contradicts(96000 * 0.85, 96000));
+  TEST_ASSERT_TRUE(contradicts(96000 * 1.151, 96000));
+  TEST_ASSERT_TRUE(contradicts(96000 * 0.849, 96000));
+  TEST_ASSERT_TRUE(contradicts(1, 0));
+}
+
+void test_no_measured_figure_contradicts_its_row() {
+  const JsonDocument& m = budgettable::measured();
+  // The wire ratio and the growth reserve in the code are the measured ones.
+  TEST_ASSERT_EQUAL_INT((int)tx::kAnthropicBodyMilliBytesPerToken, m["wire_fit"]["milli_bytes_per_token"] | 0);
+  TEST_ASSERT_EQUAL_INT(tx::kAnthropicBodyInterceptBytes, m["wire_fit"]["intercept_bytes"] | 0);
+  const uint32_t grew = std::max<uint32_t>(m["next_request_growth"]["in_turn_max"] | 0u, m["next_request_growth"]["turn_to_turn_max"] | 0u);
+  TEST_ASSERT_TRUE(grew > 0 && tx::kNextRequestReserveTokens >= grew && tx::kNextRequestReserveTokens < grew + 1000);
+  // claude-sonnet-5-5 at full: the requests the arm sent at the due mark and just after a compaction.
+  const tx::HeadBudget b = direct("anthropic", "claude-sonnet-5-5");
+  JsonArrayConst points = m["full_arm"]["compactions"];
+  TEST_ASSERT_TRUE_MESSAGE(points.size() > 0, "the full arm never reached the due mark");
+  uint32_t lowestAfter = UINT32_MAX;
+  for (JsonObjectConst p : points) {
+    const uint32_t before = p["before"] | 0u, after = p["after"] | 0u;
+    TEST_ASSERT_FALSE_MESSAGE(contradicts(before, b.tokens.due), ("at the due mark: " + std::to_string(before)).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(before >= 90000 && before <= 105000, std::to_string(before).c_str());
+    lowestAfter = std::min(lowestAfter, after);
+  }
+  TEST_ASSERT_FALSE_MESSAGE(contradicts(lowestAfter, b.tokens.keep), ("after a compaction: " + std::to_string(lowestAfter)).c_str());
+  // The cost formula reproduces the measured Sonnet turn.
+  const budgettable::CostBlocks c = budgettable::costOf(budgettable::heads()[0]);
+  const double measuredTurn = (m["full_arm"]["blended_turn_usd"] | 0.0) + (m["full_arm"]["background_usd_per_turn"] | 0.0);
+  TEST_ASSERT_FALSE_MESSAGE(contradicts(c.turnUsd(), measuredTurn), "USD a turn");
+}
+
+// PRD section 2: the cost sums every block. Each is present (the measured input covers the fixed part
+// and the digest block), and taking any one out changes the month.
+void test_every_block_is_in_the_sum() {
+  for (const budgettable::Head& h : budgettable::heads()) {
+    const budgettable::CostBlocks c = budgettable::costOf(h);
+    TEST_ASSERT_TRUE_MESSAGE(c.fixedTokens > 0 && c.digestTokens > 0 && c.conversationTokens > 0, h.name);
+    const double month = c.monthUsd(12);
+    double budgettable::CostBlocks::*usd[] = {&budgettable::CostBlocks::inputUsd, &budgettable::CostBlocks::outputUsd,
+                                              &budgettable::CostBlocks::backgroundUsd, &budgettable::CostBlocks::otherUsdMonth};
+    for (auto f : usd) {
+      budgettable::CostBlocks less = c;
+      less.*f = 0;
+      TEST_ASSERT_TRUE_MESSAGE(less.monthUsd(12) < month, h.name);
+    }
+  }
+}
+
 void test_the_generated_table_is_this_codes_output() {
-  const std::string want = budgettable::render();
+  const std::string want = budgettable::render(arenaNeedAtFull(false));
   const char* path = "docs/reference/transcript-budgets.md";
   if (std::getenv("GOLDEN_UPDATE")) {
     std::ofstream(path) << want;
@@ -373,6 +438,9 @@ int main() {
   RUN_TEST(test_an_owner_choice_lowers_only_the_marks_and_never_raises_them);
   RUN_TEST(test_the_digest_block_at_full_holds_every_released_summary);
   RUN_TEST(test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth);
+  RUN_TEST(test_the_contradiction_checker_is_15_percent_either_side);
+  RUN_TEST(test_no_measured_figure_contradicts_its_row);
+  RUN_TEST(test_every_block_is_in_the_sum);
   RUN_TEST(test_the_generated_table_is_this_codes_output);
   return UNITY_END();
 }

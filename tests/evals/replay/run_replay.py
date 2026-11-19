@@ -237,7 +237,9 @@ def compact(head: Head, tx: E2Transcript, now: float, rec: dict, requests: int =
             return  # not accepted: the old state stays
         digests.append((day, text))
     tx.apply_digests(done_turns, digests)
-    rec["compactions"].append({"at": now, "turns": len(done_turns), "digests": len(digests), "resident": tx.resident()})
+    rec["compactions"].append(
+        {"at": now, "turns": len(done_turns), "digests": len(digests), "resident": tx.resident(), "before_turn": len(rec["turns"]) + 1}
+    )
 
 
 def warm_shape(shape: dict, n: int, gap_s: int = WARM_GAP_S) -> dict:

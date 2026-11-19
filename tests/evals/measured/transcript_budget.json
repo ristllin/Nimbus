@@ -1,0 +1,110 @@
+{
+ "lane": "RB-T4",
+ "about": "Measured inputs of engine 2's per-head budget (tx/budget.h); test_tx_budget renders the table.",
+ "cold_share_5m": 0.5655,
+ "turns_per_day": 9.73,
+ "other_services_usd_month": 1.2,
+ "wire_fit": {
+  "wire": "anthropic-messages",
+  "model": "claude-sonnet-5-5",
+  "requests": 396,
+  "milli_bytes_per_token": 2993,
+  "intercept_bytes": -7358,
+  "tokens_range": [
+   5454,
+   63885
+  ]
+ },
+ "next_request_growth": {
+  "turns": 244,
+  "in_turn_max": 3774,
+  "turn_to_turn_max": 3414
+ },
+ "full_arm": {
+  "model": "claude-sonnet-5-5",
+  "shapes": [
+   "day-2026-10-30",
+   "day-2026-11-04",
+   "days-2026-11-15-17"
+  ],
+  "turns": 61,
+  "requests": 104,
+  "requests_per_turn": 1.7,
+  "prompt_tokens_per_request_mean": 87308,
+  "prompt_tokens_per_request_max": 95390,
+  "compactions": [
+   {
+    "shape": "days-2026-11-15-17",
+    "turn": 25,
+    "before": 93953,
+    "after": 92020,
+    "turns": 18,
+    "digests": 2
+   },
+   {
+    "shape": "days-2026-11-15-17",
+    "turn": 30,
+    "before": 94153,
+    "after": 92018,
+    "turns": 20,
+    "digests": 2
+   }
+  ],
+  "turn_classes_blended": {
+   "fresh": 5,
+   "read": 95566,
+   "write": 53281,
+   "output": 398
+  },
+  "cold_turn_usd": 0.22863,
+  "warm_turn_usd": 0.020574,
+  "blended_turn_usd": 0.13823,
+  "background_usd_per_turn": 2.8e-05,
+  "warm_first_request_cached_share_mean": 0.9915,
+  "checks_passed": {
+   "k": 41,
+   "n": 41
+  },
+  "seconds": {
+   "chat": {
+    "n": 19,
+    "p50": 2.66,
+    "p90": 3.73
+   },
+   "tools": {
+    "n": 29,
+    "p50": 4.19,
+    "p90": 5.91
+   },
+   "photo": {
+    "n": 13,
+    "p50": 6.04,
+    "p90": 9.92
+   }
+  },
+  "request_seconds": {
+   "cold_first": {
+    "n": 38,
+    "p50": 2.56
+   },
+   "warm": {
+    "n": 66,
+    "p50": 1.95
+   }
+  },
+  "billed_usd": 2.3413
+ },
+ "link": {
+  "bench": {
+   "connect_ms": 1228,
+   "upload_Bps": 238558
+  },
+  "production": {
+   "connect_ms": 1500,
+   "upload_Bps": 70000
+  },
+  "card_read_ms_per_130kb": 82.5,
+  "bench_arrival_over_hold_ms": 2624.0,
+  "bench_result_to_send_ms": 2527.0
+ }
+}
