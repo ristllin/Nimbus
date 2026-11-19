@@ -157,14 +157,29 @@ class Unit:
         from device import Device
 
         self.dev = Device(port=self.port).open()
-        self.dev.wait_console_ready(40)
+        self._ready()
+
+    def _ready(self, timeout: float = 45.0) -> bool:
+        """PING until the full console answers (not the boot pump), bounded however busy the log stream is."""
+        end = time.time() + timeout
+        while time.time() < end:
+            self.dev.send("PING")
+            until = min(end, time.time() + 1.5)
+            while time.time() < until:
+                ln = self.dev._readline(until)
+                if ln is None:
+                    break
+                if "PONG" in ln and "boot console" not in ln:
+                    return True
+        record("console.log", "the full console did not answer PING")
+        return False
 
     def reattach(self) -> None:
         """After the unit died (a cut) or was flashed: the USB node re-enumerates."""
         if self.dev is None:
             return self.attach()
         self.dev.reopen_after_reenumerate()
-        self.dev.wait_console_ready(40)
+        self._ready()
 
     def detach(self) -> None:
         if self.dev is not None:
