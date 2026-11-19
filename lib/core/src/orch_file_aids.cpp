@@ -18,11 +18,11 @@ namespace {
 
 // Model-facing templates of the edit (tool results; ruling 42's edit_file line).
 namespace T {
-constexpr const char* kNotIn = "old is not in ";
-constexpr const char* kManyA = "old is in ";
+constexpr const char* kNotIn = " is not in ";
+constexpr const char* kManyA = " is in ";
 constexpr const char* kManyB = "; line picks one, all=true replaces all";
 constexpr const char* kNoMatchOn = "no match on line ";
-constexpr const char* kPartOf = "old is part of line ";
+constexpr const char* kPartOf = " is part of line ";
 constexpr const char* kChangedSince = " changed since sha8=";
 constexpr const char* kChanged = " changed during the edit; nothing written";
 constexpr const char* kCardRead = "card read failed";
@@ -251,7 +251,7 @@ struct Plan {
   std::string quote;       // the picked line's text (for the part-of error)
   uint64_t bytes = 0, hash = 0, fileLines = 0;
   uint64_t pickLine = 0;
-  uint64_t takeAll = 0, takeFirst = 0, takePick = 0;   // line-end bytes a removal takes
+  uint64_t takeAll = 0, takeFirst = 0, takePick = 0, takeCount = 0;   // line-end bytes a removal takes
   uint64_t newSize = 0;                                 // the size the edit leaves, exactly
 };
 
@@ -263,13 +263,13 @@ bool takesLineEnd(const EditRequest& e) {
 std::string planError(const std::string& path, const EditRequest& e, const Plan& p) {
   if (!e.ifSha8.empty() && sha8Hex(p.hash) != e.ifSha8)
     return join({path, T::kChangedSince, e.ifSha8, " (now ", sha8Hex(p.hash), "); nothing written"});
-  if (!p.count) return join({T::kNotIn, path, " (", Num(p.bytes), " B)"});
+  if (!p.count) return join({e.oldName, T::kNotIn, path, " (", Num(p.bytes), " B)"});
   if (e.line && p.pick < 0 && p.onLine)
-    return join({T::kPartOf, Num(e.line), ", not the whole line; line ", Num(e.line), " is: ",
+    return join({e.oldName, T::kPartOf, Num(e.line), ", not the whole line; line ", Num(e.line), " is: ",
                  quoteCut(p.quote, kAidQuoteMax)});
   if (e.line && p.pick < 0) return join({T::kNoMatchOn, Num(e.line), "; matches at ", renderLines(p.lines)});
-  if (!e.line && !e.all && p.count > 1)
-    return join({T::kManyA, path, " ", Num(p.count), " times, at ", renderLines(p.lines), T::kManyB});
+  if (!e.line && !e.all && !e.count && p.count > 1)
+    return join({e.oldName, T::kManyA, path, " ", Num(p.count), " times, at ", renderLines(p.lines), T::kManyB});
   if (e.maxSize && p.newSize > e.maxSize)
     return join({path, " would be ", Num(p.newSize), " B; an edit here leaves files up to ", Num(e.maxSize), " B"});
   return "";
@@ -315,6 +315,7 @@ struct EditRun : FindSink {
     plan.onLine |= here;
     plan.takeAll += take;
     if (!plan.count) plan.takeFirst = take;
+    if (plan.count < e.count) plan.takeCount += take;
     if (here && h.lineStart && h.whole) plan.pick = long(plan.count), plan.takePick = take;
     listAdd(plan.lines, uint32_t(h.line));
     ++plan.count;
@@ -329,11 +330,13 @@ struct EditRun : FindSink {
     plan.fileLines = rawLine - 1 + (plan.bytes && in.prev != '\n' ? 1 : 0);
     o.oldSize = plan.bytes;
     if (hash && hash != plan.hash) return fail(path + T::kChanged);
-    const uint64_t k = e.all ? plan.count : 1;
-    const uint64_t taken = e.all ? plan.takeAll : (e.line ? plan.takePick : plan.takeFirst);
-    plan.newSize = plan.bytes + k * e.newText.size() - k * e.oldText.size() - taken;
+    const bool firstN = countMode();
+    const uint64_t k = e.all ? plan.count : firstN ? std::min<uint64_t>(e.count, plan.count) : 1;
+    const uint64_t taken = e.all ? plan.takeAll : e.line ? plan.takePick : firstN ? plan.takeCount : plan.takeFirst;
+    plan.newSize = plan.bytes + k * e.newText.size() - k * e.oldText.size() - taken + e.trailer.size();
+    o.found = plan.count;
     o.error = planError(path, e, plan);
-    if (o.error.empty() && !sink.admit(plan.newSize))
+    if (o.error.empty() && !sink.admit(plan.newSize, plan.count))
       o.error = sink.refusal().empty() ? std::string(T::kCardWrite) : sink.refusal();
     return o.error.empty();
   }
@@ -351,7 +354,7 @@ struct EditRun : FindSink {
   bool match(const Hit& h) override {
     if (!out) return noteMatch(h);
     const size_t i = index++;
-    const bool pick = e.all || (e.line ? long(i) == plan.pick : i == 0);
+    const bool pick = e.all || (e.line ? long(i) == plan.pick : countMode() ? i < e.count : i == 0);
     if (!pick) return false;
     if (o.at.size() < kAidListMax) o.at.push_back(uint32_t(e.newText.empty() ? h.line : out->lines));
     ++o.replaced;
@@ -373,6 +376,7 @@ struct EditRun : FindSink {
     out = &w;
     Read r;
     const bool read = pass(src, in, r, *this);
+    if (read && !e.trailer.empty()) w.put(e.trailer.data(), e.trailer.size());
     const bool wrote = read && w.flush(true);
     std::string err = writeError(read, wrote, r);
     if (err.empty() && !sink.partSwap()) err = sink.refusal().empty() ? std::string(T::kCardWrite) : sink.refusal();
@@ -388,6 +392,7 @@ struct EditRun : FindSink {
     return true;
   }
 
+  bool countMode() const { return !e.all && !e.line && e.count > 0; }
   void shiftAfter() {
     const uint64_t oldNl = countNl(e.oldText) + (tookEnd ? 1 : 0);
     const bool endsNl = tookEnd || e.oldText.back() == '\n';
@@ -404,23 +409,43 @@ EditOutcome editFile(AidSource& src, AidSink& sink, uint64_t size, uint64_t hash
                      const EditRequest& e) {
   (void)size;
   EditRun run(src, sink, path, e);
+  run.o.oldName = e.oldName;
   run.o.error = checkEdit(e);
   if (run.o.error.empty() && run.alloc() && run.planPass(hash) && run.writePass()) run.o.ok = true;
   return std::move(run.o);
 }
 
-std::string renderEdit(const std::string& path, const EditOutcome& o) {
-  if (!o.ok) return o.error;
+namespace {
+
+LineList atLines(const EditOutcome& o) {
   LineList at;
   at.count = o.replaced;
   at.lines = o.at;
-  std::string s = join({"replaced ", Num(o.replaced), " in ", path, " at ", renderLines(at), "; file is ", Num(o.newSize),
-                        " B (was ", Num(o.oldSize), " B), ", Num(o.newLines), " lines, sha8=", sha8Hex(o.newHash)});
+  return at;
+}
+
+// What moved and where old still is: the tail of both renderings.
+std::string moveFacts(const EditOutcome& o) {
+  std::string s;
   if (o.shiftFrom)
     s += join({"; lines that were ", Num(o.shiftFrom), " and later are now ", Num(uint64_t(o.shift < 0 ? -o.shift : o.shift)),
                o.shift < 0 ? " lower" : " higher"});
-  if (o.stillAt.count) s += join({"; old is still at ", renderLines(o.stillAt)});
+  if (o.stillAt.count) s += join({"; ", o.oldName, " is still at ", renderLines(o.stillAt)});
   return s;
+}
+
+}  // namespace
+
+std::string renderEdit(const std::string& path, const EditOutcome& o) {
+  if (!o.ok) return o.error;
+  return join({"replaced ", Num(o.replaced), " in ", path, " at ", renderLines(atLines(o)), "; file is ",
+               Num(o.newSize), " B (was ", Num(o.oldSize), " B), ", Num(o.newLines), " lines, sha8=",
+               sha8Hex(o.newHash)}) +
+         moveFacts(o);
+}
+
+std::string renderEditLines(const EditOutcome& o) {
+  return join({"; at ", renderLines(atLines(o)), "; ", Num(o.newLines), " lines"}) + moveFacts(o);
 }
 
 // ---- append_file facts --------------------------------------------------------------

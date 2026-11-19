@@ -860,7 +860,7 @@ struct EditSink : aids::AidSink {
   void partDiscard() override {
     io.locked([&] { io.partDiscard(sp.project, sp.name); });
   }
-  bool admit(uint64_t newSize) override {
+  bool admit(uint64_t newSize, size_t) override {
     bool ok = false;
     return io.locked([&] { ok = check(newSize, err); }) && ok;
   }

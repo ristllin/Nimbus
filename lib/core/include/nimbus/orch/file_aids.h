@@ -76,8 +76,9 @@ class AidSink {
   virtual void partDiscard() = 0;
   // Before any part write: may the edit leave a file of newSize bytes (the exact size pass
   // 1 computed)? A binding checks ownership, quota and room here. False: refusal() says why.
-  virtual bool admit(uint64_t newSize) {
+  virtual bool admit(uint64_t newSize, size_t matches) {
     (void)newSize;
+    (void)matches;
     return true;
   }
   // Why the last admit or partSwap refused, when it was not a card fault (a binding's
@@ -262,6 +263,11 @@ struct EditRequest {
   uint32_t line = 0;      // 0 = no pick
   std::string ifSha8;     // "" = no check; else 8 lowercase hex (sha8Of)
   uint64_t maxSize = 0;   // 0 = none; else the largest file the edit may leave (checked before any write)
+  // Engine 1's files.edit (file_aids_e1.h): count > 0 with no all and no line replaces the
+  // first `count` matches (its documented default is the first match, never an error).
+  uint32_t count = 0;
+  std::string trailer;            // bytes the new file gains at its end (engine 1's history rows)
+  const char* oldName = "old";    // the argument's name in the texts ("find" on engine 1)
 };
 // "" when the request is well formed (old not empty, old != new, line with no all).
 std::string checkEdit(const EditRequest& e);
@@ -278,6 +284,8 @@ struct EditOutcome {
   int64_t shift = 0;          // one replacement: lines after it moved by this many
   uint32_t shiftFrom = 0;     // the first OLD line number that moved (0 = none)
   LineList stillAt;           // matches of old in the new file, new line numbers
+  size_t found = 0;           // matches in the file before the edit
+  const char* oldName = "old";
 };
 
 // Edit the file of `size` bytes with hash `hash` (FNV-1a 64; 0 unknown): pass 1 reads
@@ -286,6 +294,11 @@ struct EditOutcome {
 // changed between the passes. A fault or refusal at any step leaves the old file.
 EditOutcome editFile(AidSource& src, AidSink& sink, uint64_t size, uint64_t hash, const std::string& path,
                      const EditRequest& e);
+
+// The line facts of an edit that landed (engine 1 appends them to its own reply head):
+//   "; at line(s) <l>, ...; <n> lines[; lines that were <s> and later are now <d> lower|higher]
+//   [; <old> is still at line(s) <l>, ...]"
+std::string renderEditLines(const EditOutcome& o);
 
 // The edit result, one line:
 //   replaced <k> in <path> at line <l>[, <l>... +N]; file is <M> B (was <N> B), <n> lines,
