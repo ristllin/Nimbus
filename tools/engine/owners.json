@@ -1619,6 +1619,25 @@
         "src/agent/memory_subsystem.cpp and .h: withCardReleased only (the scans hold the card lock per 4 KB read); nimbusd/src/rig.h: files.read's running day only; test_file_edit: its source pins follow the edit into the shared core; nimbusd/tests/test_hosted_files.cpp: RB-REC1's day-total check reads the shared scan's tail."
       ],
       "plan_text": "orch_file_tools.cpp, orch_file_edit.cpp, orch_csv_sum.cpp (new, about 3.5 KB), plain/texts.h (read_file and edit_file declarations), nimbusd posix_files.h, docs/plain/tables.md, tests test_file_tools_sum, test_file_edit_line, test_file_append_facts"
+    },
+    "RB-E1c": {
+      "stage": "S2",
+      "files": [
+        "lib/harness/src/plain_engine.cpp",
+        "lib/harness/src/plain_guards.cpp",
+        "lib/harness/include/nimbus/harness/plain/engine.h",
+        "lib/harness/include/nimbus/harness/plain/guards.h",
+        "test/test_plain_conformance/**",
+        "test/support/tx_battery/**",
+        "tools/release_gate/roster_rulings.txt",
+        "tools/release_gate/check_lane_files.py",
+        "tools/release_gate/test_lane_files.py",
+        "tools/release_gate/check_pending_roster.py",
+        "tools/release_gate/test_pending_roster.py",
+        ".github/CODEOWNERS",
+        "docs/harness.md"
+      ],
+      "plan_text": "lib/harness/src/plain_engine.cpp, lib/harness/src/plain_guards.cpp, their headers under plain/, test/test_plain_conformance, test/support/tx_battery, tools/release_gate/roster_rulings.txt, tools/release_gate/check_lane_files.py (PROTECTED list only), .github/CODEOWNERS (one line), docs/harness.md"
     }
   }
 }
