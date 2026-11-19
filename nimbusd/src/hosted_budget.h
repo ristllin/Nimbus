@@ -3,24 +3,25 @@
 #include <string>
 
 #include "posix_fs.h"                    // fsutil::readFile, writeFileAtomic
+#include "nimbus/harness/log.h"          // agent::hlog
 #include "nimbus/orch/budget_command.h"  // limitsViewFromJson - the ceiling's state, the device's shape
 #include "nimbus/orch/budget_governor.h"
 #include "nimbus/orch/spend_ceiling.h"   // NoticeChannel
-#include "nimbus/harness/log.h"          // agent::hlog
 
-// hosted_budget - the history profile and its governor on a Virtual Nimbus (lane RB-BG,
-// parity with the device's src/agent/budget_profile_store.cpp; the rules are lib/core's
-// nimbus/orch/budget_governor.h).
+// hosted_budget - the owner's history profile and the nightly spending advice on a Virtual
+// Nimbus (lane RB-BG, parity with the device's src/agent/budget_profile_store.cpp; the rules are
+// lib/core's nimbus/orch/budget_governor.h).
 //
 // One file on the instance volume, <memDir>/budget.json, written whole through a temporary
-// file and a rename; a missing or unreadable file reads as the default profile (standard),
-// and status() says so. The constructor installs the profile every head's context is derived
-// under. night() runs from the engine thread's idle tick (the rig's spendTick) against the
-// instance's spend ceiling state: on the first tick after the instance's day start it runs
-// the governor's night, stores the file, installs a new profile, logs it, and owes the owner
-// one line on the web chat and on Telegram (take(), from the rig's spendNotice, as the
-// ceiling's notices go). A corrupt file keeps the governor off (a pin that still reads is kept). The hosted instance
-// has no /budget command: pin() and unpin() are the seam a later settings field uses.
+// file and a rename; a missing or unreadable file reads as full (the default: each head's own
+// marks, as released v5.1.2), and status() says so. The constructor installs the profile every
+// head's context is derived under. night() runs from the engine thread's idle tick (the rig's
+// spendTick) against the instance's spend ceiling state; it never changes the profile (owner
+// ruling 81). When the month is on course past 0.9 of the ceiling it logs the advice and owes
+// the owner one line, once a month, on the web chat and on Telegram (take(), from the rig's
+// spendNotice, as the ceiling's notices go). A corrupt file keeps the advice off (an owner's
+// profile that still reads is kept). The hosted instance has no /budget command: choose() is
+// the seam a later settings field uses.
 //
 // Thread-safe: the engine thread ticks, the HTTP thread may read the status.
 namespace nimbusd {
@@ -35,39 +36,36 @@ class HostedBudget {
     nimbus::orch::installHistoryProfile(file_.effective());
   }
 
-  // One governor night at `epoch` (the instance's day start `startMin`, `offsetMin` east of
-  // UTC) against `spendStateJson` (SpendCeilingVn::stateJson). A step that stores is installed,
-  // logged and owed to the owner on both channels (take()); a night whose write fails is undone
-  // and runs again on the next tick. Nothing runs while the file reads as corrupt. Returns the
-  // step (Kind::None when nothing ran).
-  nimbus::orch::GovernorStep night(uint64_t epoch, int32_t offsetMin, uint16_t startMin,
+  // One night at `epoch` (the instance's day start `startMin`, `offsetMin` east of UTC) against
+  // `spendStateJson` (SpendCeilingVn::stateJson). A night whose write fails is undone and runs
+  // again on the next tick. Returns the night's advice (Kind::None when nothing ran).
+  nimbus::orch::BudgetAdvice night(uint64_t epoch, int32_t offsetMin, uint16_t startMin,
                                    const std::string& spendStateJson) {
-    nimbus::orch::GovernorStep st;
+    nimbus::orch::BudgetAdvice a;
     nimbus::orch::LimitsView v;
-    if (!nimbus::orch::limitsViewFromJson(spendStateJson, v) || !v.loaded) return st;
+    if (!nimbus::orch::limitsViewFromJson(spendStateJson, v) || !v.loaded) return a;
     nimbus::orch::GovernorFacts g;
     if (!nimbus::orch::governorFactsAt(epoch, offsetMin, startMin, {v.monthKey, v.spentMicro, v.active, v.limitMicro}, g))
-      return st;
+      return a;
     std::lock_guard<std::mutex> lk(mu_);
-    if (read_ == nimbus::orch::BudgetFileRead::Corrupt) return st;
+    if (read_ == nimbus::orch::BudgetFileRead::Corrupt) return a;
     const nimbus::orch::BudgetFile before = file_;
-    st = nimbus::orch::governorNight(file_, g);
-    if (st.kind == nimbus::orch::GovernorStep::Kind::None) return st;
+    a = nimbus::orch::governorNight(file_, g);
+    if (a.kind == nimbus::orch::BudgetAdvice::Kind::None) return a;
     if (!saveLocked()) {
       file_ = before;
-      agent::hlog::logf("budget: the governor's night did not store - tried again on the next tick");
-      return nimbus::orch::GovernorStep();
+      agent::hlog::logf("budget: the spending advice's night did not store - tried again on the next tick");
+      return nimbus::orch::BudgetAdvice();
     }
-    nimbus::orch::installHistoryProfile(file_.effective());
-    if (st.changed()) agent::hlog::logf("budget: %s", st.record.c_str());
-    if (!st.line.empty()) {
-      owed_ = st.line;
+    if (!a.line.empty()) {
+      agent::hlog::logf("budget: %s", a.record.c_str());
+      owed_ = a.line;
       owedTg_ = owedWeb_ = true;
     }
-    return st;
+    return a;
   }
 
-  // The owner's line a step owes on `ch` (Telegram or the web chat); true once, then it is
+  // The owner's line the advice owes on `ch` (Telegram or the web chat); true once, then it is
   // marked delivered (the rig records it in that chat as it does the ceiling's notices).
   bool take(nimbus::orch::NoticeChannel ch, std::string& text) {
     std::lock_guard<std::mutex> lk(mu_);
@@ -90,21 +88,18 @@ class HostedBudget {
     std::lock_guard<std::mutex> lk(mu_);
     return read_;
   }
-  // The owner's choice (pinned), and back to the governor; false when it did not store
-  // (nothing changed).
-  bool pin(nimbus::orch::HistoryProfile p, int64_t day) {
+  // The owner's choice; false when it did not store (nothing changed).
+  bool choose(nimbus::orch::HistoryProfile p, int64_t day) {
     std::lock_guard<std::mutex> lk(mu_);
-    if (file_.pinned && file_.pinnedProfile == p && read_ != nimbus::orch::BudgetFileRead::Corrupt) return true;
+    if (file_.profile == p && read_ != nimbus::orch::BudgetFileRead::Corrupt) return true;
     const nimbus::orch::BudgetFile before = file_;
-    nimbus::orch::pinProfile(file_, p, day);
-    return commitLocked(before);
-  }
-  bool unpin(int64_t day) {
-    std::lock_guard<std::mutex> lk(mu_);
-    if (!file_.pinned && read_ != nimbus::orch::BudgetFileRead::Corrupt) return true;
-    const nimbus::orch::BudgetFile before = file_;
-    nimbus::orch::unpinProfile(file_, day);
-    return commitLocked(before);
+    nimbus::orch::chooseProfile(file_, p, day);
+    if (!saveLocked()) {
+      file_ = before;
+      return false;
+    }
+    nimbus::orch::installHistoryProfile(file_.effective());
+    return true;
   }
 
  private:
@@ -112,14 +107,6 @@ class HostedBudget {
     const bool ok = fsutil::writeFileAtomic(path_, nimbus::orch::budgetFileJson(file_));
     if (ok) read_ = nimbus::orch::BudgetFileRead::Ok;
     return ok;
-  }
-  bool commitLocked(const nimbus::orch::BudgetFile& before) {
-    if (!saveLocked()) {
-      file_ = before;
-      return false;
-    }
-    nimbus::orch::installHistoryProfile(file_.effective());
-    return true;
   }
 
   std::string path_;

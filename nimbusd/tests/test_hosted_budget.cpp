@@ -1,11 +1,11 @@
-// test_hosted_budget - the history profile and its governor on a Virtual Nimbus (lane RB-BG):
-// the same file and rules as the device (lib/core budget_governor.h), the instance's spend
-// ceiling as its facts. Offline:
-//   * no file and a corrupt file read as the default profile (standard) and say so;
-//   * a pinned profile survives a restart and is installed for every head's context;
-//   * a month of overspend steps the instance down once three nights are observed, the
-//     profile every head derives under follows, and the step's line is returned for the web
-//     chat; the same night twice does nothing; a pinned profile is never moved;
+// test_hosted_budget - the owner's history profile and the nightly spending advice on a Virtual
+// Nimbus (lane RB-BG, owner ruling 81): the same file and rules as the device (lib/core
+// budget_governor.h), the instance's spend ceiling as its facts. Offline:
+//   * no file and a corrupt file read as full (the default) and say so; a corrupt file is never
+//     overwritten by the advice, and a profile its own field still names is kept;
+//   * the owner's profile survives a restart and is installed for every head's context;
+//   * a month of overspend never changes the profile: the owner is told once (web chat and
+//     Telegram, each once), and the same night twice does nothing;
 //   * the instance's 20 USD default ceiling is read from SpendCeilingVn's state, never written.
 #include <cstdio>
 #include <string>
@@ -46,74 +46,68 @@ int main() {
   {
     HostedBudget b(path);
     t.ok(b.readState() == orch::BudgetFileRead::Missing, "no file: missing");
-    t.ok(b.effective() == orch::HistoryProfile::Standard, "no file: the default profile");
-    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Standard, "the default is installed");
+    t.ok(b.effective() == orch::HistoryProfile::Full, "no file: full, the default");
+    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Full, "the default is installed");
     t.ok(b.status().find("the default") != std::string::npos, "the status says it is the default");
   }
   fsutil::writeFileAtomic(path, "{not json");
   {
     HostedBudget b(path);
-    // A corrupt file keeps the governor off: overspend nights change nothing and write nothing.
     for (unsigned d = 1; d <= 10; d++) b.night(epochOf(2026, 11, d), 0, 240, stateJson(d * 150, 202611));
     std::string text;
-    t.ok(fsutil::readFile(path, text) && text == "{not json", "a corrupt file is not overwritten by the governor");
+    t.ok(fsutil::readFile(path, text) && text == "{not json", "a corrupt file is not overwritten by the advice");
+    t.ok(b.status().find("could not be read") != std::string::npos, "and the status says so");
   }
-  fsutil::writeFileAtomic(path, "{\"v\":1,\"pinned\":\"tight\",\"governed\":\"bogus\"}");
+  fsutil::writeFileAtomic(path, "{\"v\":1,\"profile\":\"small\",\"night\":-4}");
   {
     HostedBudget b(path);
-    t.ok(b.readState() == orch::BudgetFileRead::Corrupt && b.effective() == orch::HistoryProfile::Tight,
-         "a pin whose own field reads is kept from a damaged file");
-  }
-  fsutil::writeFileAtomic(path, "{not json");
-  {
-    HostedBudget b(path);
-    t.ok(b.readState() == orch::BudgetFileRead::Corrupt, "a corrupt file reads as corrupt");
-    t.ok(b.effective() == orch::HistoryProfile::Standard, "a corrupt file reads as the default");
-    t.ok(b.status().find("could not be read") != std::string::npos, "and says so");
-    t.ok(b.pin(orch::HistoryProfile::Wide, 20776), "a pin stores");
-    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Wide, "and is installed");
+    t.ok(b.readState() == orch::BudgetFileRead::Corrupt && b.effective() == orch::HistoryProfile::Small,
+         "the owner's profile a damaged file still names is kept");
+    t.ok(b.choose(orch::HistoryProfile::Medium, 20776), "a choice stores");
+    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Medium, "and is installed");
   }
   {
     HostedBudget b(path);   // a restart
-    t.ok(b.readState() == orch::BudgetFileRead::Ok && b.effective() == orch::HistoryProfile::Wide,
-         "the pinned profile survives a restart");
-    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Wide, "and is installed at start");
-    // A month of overspend: a pinned profile never moves.
-    for (unsigned d = 1; d <= 20; d++) b.night(epochOf(2026, 11, d), 0, 240, stateJson(d * 150, 202611));
-    t.ok(b.effective() == orch::HistoryProfile::Wide, "a pinned profile is never moved");
-    t.ok(b.unpin(20777), "auto stores");
-    t.ok(b.effective() == orch::HistoryProfile::Standard, "auto hands it back at standard");
+    t.ok(b.readState() == orch::BudgetFileRead::Ok && b.effective() == orch::HistoryProfile::Medium,
+         "the owner's profile survives a restart");
+    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Medium, "and is installed at start");
+    t.ok(b.choose(orch::HistoryProfile::Full, 20777), "back to the default");
   }
   {
     ndtest::rmTree(dir);
     fsutil::mkdirs(dir);
     HostedBudget b(path);
-    // 0.70 USD a day at standard against the instance's 20 USD default ceiling.
-    orch::GovernorStep st;
-    unsigned downNight = 0;
-    for (unsigned d = 1; d <= 10 && !st.changed(); d++) {
-      st = b.night(epochOf(2026, 11, d), 0, 240, stateJson((d - 1) * 70, 202611));
-      if (st.changed()) downNight = d;
+    // 0.72 USD a day on full against the instance's 20 USD default ceiling.
+    orch::BudgetAdvice told;
+    unsigned toldNight = 0, advices = 0;
+    for (unsigned d = 1; d <= 30; d++) {
+      const orch::BudgetAdvice a = b.night(epochOf(2026, 11, d), 0, 240, stateJson((d - 1) * 72, 202611));
+      if (a.kind != orch::BudgetAdvice::Kind::Advice) continue;
+      advices++;
+      if (!toldNight) {
+        toldNight = d;
+        told = a;
+      }
     }
-    std::string web, tg, again2;
-    t.ok(st.changed() && !st.line.empty(), "a month of overspend steps down");
-    t.ok(b.take(orch::NoticeChannel::Web, web) && web == st.line, "the web chat is owed the step's line");
-    t.ok(b.take(orch::NoticeChannel::Telegram, tg) && tg == st.line, "and Telegram's owner chat");
-    t.ok(!b.take(orch::NoticeChannel::Web, again2), "each once");
-    t.eqi(downNight, 4, "once three nights are observed");
-    t.ok(st.to == orch::HistoryProfile::Lean, "to the largest profile that fits");
-    t.ok(!st.record.empty(), "with a record line");
-    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Lean, "every head derives under it now");
+    t.eqi(advices, 1, "a month of overspend: the owner is told once");
+    t.eqi(toldNight, 4, "once three nights are observed");
+    t.ok(b.effective() == orch::HistoryProfile::Full, "the profile never moves");
+    t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Full, "every head keeps the default");
     const orch::ContextBudget c = orch::headContextBudget("anthropic", "claude-sonnet-5-5", true, {});
-    t.eqi((long)c.historySoftBytes, 40000, "the direct head's fold is due at lean's 40,000 B");
-    t.ok(b.night(epochOf(2026, 11, downNight), 0, 240, stateJson(400, 202611)).kind == orch::GovernorStep::Kind::None,
+    t.eqi((long)c.historySoftBytes, 94464, "the direct head keeps v5.1.2's fold mark");
+    t.ok(told.fits && told.line.find("/budget profile") != std::string::npos, "the line names the profile that fits");
+    std::string web, tg, again2;
+    t.ok(b.take(orch::NoticeChannel::Web, web) && web == told.line, "the web chat is owed the line");
+    t.ok(b.take(orch::NoticeChannel::Telegram, tg) && tg == told.line, "and Telegram's owner chat");
+    t.ok(!b.take(orch::NoticeChannel::Web, again2), "each once");
+    t.ok(b.night(epochOf(2026, 11, 30), 0, 240, stateJson(2200, 202611)).kind == orch::BudgetAdvice::Kind::None,
          "the same night twice: nothing");
-    HostedBudget again(path);
-    t.ok(again.effective() == orch::HistoryProfile::Lean, "the governor's step survives a restart");
-    t.ok(again.status().find("set by the device") != std::string::npos, "the status names the device's step");
-    // No ceiling (only provider limits): quiet nights, back up one step after seven.
-    for (unsigned d = 1; d <= 9; d++) again.night(epochOf(2026, 12, d), 0, 240, stateJson(d * 500, 202612, false));
-    t.ok(again.effective() == orch::HistoryProfile::Standard, "no ceiling: back to standard after seven quiet nights");
+    // No ceiling (only provider limits): quiet.
+    unsigned quiet = 0;
+    for (unsigned d = 1; d <= 20; d++)
+      quiet += b.night(epochOf(2026, 12, d), 0, 240, stateJson(d * 500, 202612, false)).kind ==
+               orch::BudgetAdvice::Kind::Advice;
+    t.eqi(quiet, 0, "no ceiling: nothing said");
   }
   orch::installHistoryProfile(orch::kDefaultHistoryProfile);
   ndtest::rmTree(dir);

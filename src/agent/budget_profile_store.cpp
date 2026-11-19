@@ -6,7 +6,7 @@
 #include <ctime>
 #include <mutex>
 
-#include "budget_command.h"   // recordDeviceChange - the Usage page's change record
+#include "budget_command.h"   // recordDeviceNote - the Usage page's record
 #include "fs_atomic.h"
 #include "spend_ceiling_store.h"
 #include "store.h"
@@ -24,7 +24,7 @@ namespace {
 
 using nimbus::orch::BudgetFile;
 using nimbus::orch::BudgetFileRead;
-using nimbus::orch::GovernorStep;
+using nimbus::orch::BudgetAdvice;
 
 constexpr const char* kPath = "/data/budget.json";
 constexpr size_t kMax = 2048;   // a longer file is not ours
@@ -33,7 +33,7 @@ std::mutex g_mx;   // the poll task writes; the web task reads the status line
 BudgetFile g_file;
 BudgetFileRead g_read = BudgetFileRead::Missing;
 bool g_loaded = false;
-std::string g_owed;          // the owner's line a step owes
+std::string g_owed;          // the owner's line the advice owes
 bool g_owedTg = false, g_owedWeb = false;
 
 // Caller holds g_mx.
@@ -84,13 +84,14 @@ void load() {
   g_loaded = true;
   g_read = nimbus::orch::parseBudgetFile(readText(), g_file);
   installLocked();
+  const bool chosen = g_file.profile != nimbus::orch::kDefaultHistoryProfile;
   if (g_read == BudgetFileRead::Corrupt)
-    alogf("budget: /data/budget.json could not be read - history profile %s (%s), the governor waits for "
+    alogf("budget: /data/budget.json could not be read - history profile %s (%s), the advice waits for "
           "/budget profile", nimbus::orch::historyProfileSlug(g_file.effective()),
-          g_file.pinned ? "the owner's pin" : "the default");
+          chosen ? "the owner's choice" : "the default");
   else
     alogf("budget: history profile %s (%s)", nimbus::orch::historyProfileSlug(g_file.effective()),
-          g_file.pinned ? "chosen by the owner" : g_read == BudgetFileRead::Missing ? "the default" : "the device's");
+          chosen ? "chosen by the owner" : "the default");
 }
 
 namespace {
@@ -108,24 +109,24 @@ bool factsNow(nimbus::orch::GovernorFacts& g) {
                                        agent::store::dayStartMin(), spend, g);
 }
 
-// The night under the lock: stored, installed and owed, or undone when the write fails.
-GovernorStep runNight(const nimbus::orch::GovernorFacts& g) {
+// The night under the lock: stored and owed, or undone when the write fails. It never changes
+// the profile (owner ruling 81).
+BudgetAdvice runNight(const nimbus::orch::GovernorFacts& g) {
   std::lock_guard<std::mutex> lk(g_mx);
-  if (!g_loaded || g_read == BudgetFileRead::Corrupt) return GovernorStep();   // the owner's next command writes it
+  if (!g_loaded || g_read == BudgetFileRead::Corrupt) return BudgetAdvice();   // the owner's next command writes it
   const BudgetFile before = g_file;
-  const GovernorStep st = nimbus::orch::governorNight(g_file, g);
-  if (st.kind == GovernorStep::Kind::None) return st;   // tonight's run is done
+  const BudgetAdvice a = nimbus::orch::governorNight(g_file, g);
+  if (a.kind == BudgetAdvice::Kind::None) return a;   // tonight's run is done
   if (!saveLocked()) {   // undone: the next minute runs the night again
     g_file = before;
-    alogf("budget: the governor's night did not store - tried again in a minute");
-    return GovernorStep();
+    alogf("budget: the spending advice's night did not store - tried again in a minute");
+    return BudgetAdvice();
   }
-  installLocked();
-  if (!st.line.empty()) {
-    g_owed = st.line;
+  if (!a.line.empty()) {
+    g_owed = a.line;
     g_owedTg = g_owedWeb = true;
   }
-  return st;
+  return a;
 }
 
 }  // namespace
@@ -134,15 +135,11 @@ void tick() {
   load();
   nimbus::orch::GovernorFacts g;
   if (!factsNow(g)) return;
-  const GovernorStep st = runNight(g);
-  if (st.changed()) {
-    alogf("budget: history profile %s (was %s), by the device", nimbus::orch::historyProfileSlug(st.to),
-          nimbus::orch::historyProfileSlug(st.from));
-    agent::budget::recordDeviceChange(st.record);
-  } else if (!st.line.empty()) {
-    alogf("budget: the owner is told the month is on course past the ceiling (%s)",
-          nimbus::orch::usdText(st.projectedMicro).c_str());
-  }
+  const BudgetAdvice a = runNight(g);
+  if (a.kind != BudgetAdvice::Kind::Advice) return;
+  alogf("budget: the owner is told the month is on course past the ceiling (%s; %s)",
+        nimbus::orch::usdText(a.projectedMicro).c_str(), a.fits ? nimbus::orch::historyProfileSlug(a.fit) : "no fit");
+  agent::budget::recordDeviceNote(a.record);
 }
 
 std::string statusLine() {
@@ -156,24 +153,21 @@ std::string command(const std::string& arg, bool& changed, std::string& record) 
   std::lock_guard<std::mutex> lk(g_mx);
   if (arg.empty()) return nimbus::orch::profileReplyText(g_file, arg, true);
   nimbus::orch::HistoryProfile p = nimbus::orch::kDefaultHistoryProfile;
-  if (arg != "auto" && !nimbus::orch::parseHistoryProfile(arg, p)) return nimbus::orch::profileReplyText(g_file, arg, false);
-  // Nothing to change (and a corrupt file still gets written: the owner's command is what
-  // brings the governor back).
+  if (!nimbus::orch::parseHistoryProfile(arg, p)) return nimbus::orch::profileReplyText(g_file, arg, false);
+  // Nothing to change (a corrupt file still gets written: the owner's command brings the
+  // advice back).
   if (!nimbus::orch::profileCommandChanges(g_file, arg) && g_read != BudgetFileRead::Corrupt)
     return nimbus::orch::profileStatusText(g_file, g_read);
   const BudgetFile before = g_file;
-  const bool wasPinned = g_file.pinned;
-  if (arg == "auto") nimbus::orch::unpinProfile(g_file, today());
-  else nimbus::orch::pinProfile(g_file, p, today());
+  nimbus::orch::chooseProfile(g_file, p, today());
   if (!saveLocked()) {
     g_file = before;   // nothing changed: the reply says so
     return "The profile could not be stored, so nothing changed. Try again in a moment.";
   }
   installLocked();
   changed = true;
-  record = std::string("History profile ") + nimbus::orch::historyProfileSlug(g_file.effective()) + " (was " +
-           nimbus::orch::historyProfileSlug(before.effective()) + (wasPinned ? ", chosen" : "") + "), " +
-           (g_file.pinned ? "chosen by the owner" : "the device chooses again");
+  record = std::string("History profile ") + nimbus::orch::historyProfileSlug(g_file.profile) + " (was " +
+           nimbus::orch::historyProfileSlug(before.profile) + "), chosen by the owner";
   return nimbus::orch::profileReplyText(g_file, arg, true);
 }
 

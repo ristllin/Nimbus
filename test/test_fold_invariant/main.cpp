@@ -553,13 +553,6 @@ static void assertRowsInRequest(const Device& d, const std::string& chat, size_t
 // After the fold that follows such a turn, every row is either in the next request or
 // covered by the summary: the fold keeps v5.1.1's tail, not the head's large one that the
 // floor would cut again. The fold's own request fits the floor too.
-// RB-BG: a scenario built on a head's own large marks runs on the wide profile (Sonnet 5.5's
-// derived marks sit under its caps), restoring the default after.
-struct ProfileScope {
-  ProfileScope() { nimbus::orch::installHistoryProfile(nimbus::orch::HistoryProfile::Wide); }
-  ~ProfileScope() { nimbus::orch::installHistoryProfile(nimbus::orch::kDefaultHistoryProfile); }
-};
-
 static void test_after_a_floor_turn_the_fold_leaves_no_row_unreachable() {
   Device d("anthropic", "claude-sonnet-5-5");
   d.floorPool = true;
@@ -591,7 +584,6 @@ static void test_after_a_floor_turn_the_fold_leaves_no_row_unreachable() {
 // Lumi case). The first floor turn's fold cannot reach v5.1.1's tail in one slice; the chat
 // stays due until it does, so the next turns hold every row in the request or the summary.
 static void test_a_pool_that_fragments_late_reaches_the_floor_tail_in_consecutive_folds() {
-  const ProfileScope wide;   // RB-BG: Sonnet's own derived marks (under the wide caps), as v5.1.2 ran them
   Device d("anthropic", "claude-sonnet-5-5");
   d.promptPad = 52000;   // a device's system prompt and tool schemas: about 20 KB of history fits the floor
   d.boot();
@@ -753,7 +745,6 @@ static void test_steady_state_folds_come_before_any_shift() {
 // CTXR1: the step that makes a rollback to v5.1.1 safe, docs/compaction.md). A long window
 // with nothing hidden used to fold one digest cap per press.
 static void test_one_summarize_now_reaches_the_newest_row() {
-  const ProfileScope wide;   // RB-BG: Sonnet's own derived marks (under the wide caps), as v5.1.2 ran them
   Device d("anthropic", "claude-sonnet-5-5");
   d.replyBytes = 1500;
   d.quiet = false;   // no automatic fold meanwhile

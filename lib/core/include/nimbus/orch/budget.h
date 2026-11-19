@@ -100,25 +100,28 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov);
 ContextBudget headContextBudget(const std::string& host, const std::string& model, bool loopOn,
                                 const BudgetOverrides& ov);
 
-// ---- lane RB-BG: the history profile of a direct head -------------------------------
-// The profile caps a head's history marks (PRD section 2): compaction (the fold) is due at H
-// and keeps L; the window's high water is 5/4 of H. A head whose derived marks are smaller
-// keeps its own (a profile never raises a mark), the floor heads are never capped by it, and
-// no mark goes under the head's v5.1.1 value. The slugs are stored in /data/budget.json and
-// match engine 2's tx::Profile (tx/budget.h): frozen.
-enum class HistoryProfile : uint8_t { Tight = 0, Lean = 1, Standard = 2, Wide = 3 };
-inline constexpr HistoryProfile kDefaultHistoryProfile = HistoryProfile::Standard;
+// ---- lane RB-BG: the history profile -------------------------------------------------
+// Owner ruling 81: no default of any head carries less conversation than released v5.1.2. The
+// default profile, full, is each head's own marks exactly as v5.1.2 derives them (no cap). The
+// smaller ones exist only as the owner's explicit choice (/budget profile <name>): each caps a
+// direct head's history marks (compaction, the fold, is due at H and keeps L; the window's high
+// water is 5/4 of H). A head whose own marks are smaller keeps its own (a profile never raises a
+// mark), a floor head is never capped by one, and no mark goes under the head's v5.1.1 value.
+// The slugs are stored in /data/budget.json: frozen.
+enum class HistoryProfile : uint8_t { Tiny = 0, Small = 1, Medium = 2, Large = 3, Full = 4 };
+inline constexpr HistoryProfile kDefaultHistoryProfile = HistoryProfile::Full;
 struct HistoryProfileMarks {
-  uint32_t high = 0;   // H: the fold is due here (the soft mark)
+  uint32_t high = 0;   // H: the fold is due here (the soft mark); 0 = no cap (full)
   uint32_t low = 0;    // L: the fold keeps this much
 };
-HistoryProfileMarks historyProfileMarks(HistoryProfile p);   // tight 24,000/12,000 ... wide 100,000/50,000
-const char* historyProfileSlug(HistoryProfile p);             // "tight" | "lean" | "standard" | "wide"
+// tiny 24,000/12,000, small 40,000/20,000, medium 60,000/30,000, large 100,000/50,000, full no cap.
+HistoryProfileMarks historyProfileMarks(HistoryProfile p);
+const char* historyProfileSlug(HistoryProfile p);   // "tiny" | "small" | "medium" | "large" | "full"
 // The profile a typed or stored word names (case-insensitive); false for anything else.
 bool parseHistoryProfile(const std::string& word, HistoryProfile& out);
 // The profile every head's context is derived under in this process (the device's
-// budget_profile_store and nimbusd's hosted_budget install it from /data/budget.json: the
-// owner's pinned choice, else the governor's). kDefaultHistoryProfile until installed.
+// budget_profile_store and nimbusd's hosted_budget install the owner's choice from
+// /data/budget.json). kDefaultHistoryProfile (full) until installed.
 void installHistoryProfile(HistoryProfile p);
 HistoryProfile installedHistoryProfile();
 
@@ -128,8 +131,8 @@ HistoryProfile installedHistoryProfile();
 // them). Everything but the history messages and the summary's text: the system blocks, the
 // turn's input message (recall, recent actions, the coverage line), the summary's framing and
 // acknowledgement, the tools array and the envelope.
-inline constexpr size_t kFloorFixedAnthropicBytes = 62720;   // measured 62,702 B (after RB-REC1)
-inline constexpr size_t kFloorFixedOpenAIBytes = 64704;      // measured 64,642 B (after RB-REC1)
+inline constexpr size_t kFloorFixedAnthropicBytes = 62912;   // measured 62,862 B (rb-main d740777c2)
+inline constexpr size_t kFloorFixedOpenAIBytes = 64832;      // measured 64,802 B (rb-main d740777c2)
 // Held back for what the measure does not size: day labels, a longer stamp, JSON escapes, and
 // one small tool round (a call and its result) before the wire's refit has to drop anything.
 inline constexpr size_t kFloorMarginBytes = 512;

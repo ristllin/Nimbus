@@ -119,13 +119,14 @@ void deriveHistory(ContextBudget& b, size_t historyMax) {
   b.floorBranch = false;
 }
 
-// Lane RB-BG: the history profile caps a direct head's marks. The fold is due at
-// min(soft, H) and keeps min(keep, L) (never less than one fold's digest can take), and the
-// window's high water is 5/4 of the due mark. A head with smaller marks keeps its own. The
-// due mark never goes under kFoldTriggerMinBytes (RULINGS-v3 item 3): tight's 24,000 B reads
-// as 24,576 B.
+// Lane RB-BG: an owner's smaller profile caps a direct head's marks (full, the default, caps
+// nothing: ruling 81). The fold is due at min(soft, H) and keeps min(keep, L) (never less than
+// one fold's digest can take), and the window's high water is 5/4 of the due mark. A head with
+// smaller marks keeps its own. The due mark never goes under kFoldTriggerMinBytes (RULINGS-v3
+// item 3): tiny's 24,000 B reads as 24,576 B.
 void capToProfile(ContextBudget& b, HistoryProfile p) {
   const HistoryProfileMarks m = historyProfileMarks(p);
+  if (!m.high) return;
   const size_t soft = std::max<size_t>(m.high, kFoldTriggerMinBytes);
   if (b.historySoftBytes <= soft) return;
   const size_t digest = foldDigestCap(b.chatSummaryBytes);
@@ -181,30 +182,32 @@ std::atomic<uint8_t>& profileSlot() {
 
 HistoryProfileMarks historyProfileMarks(HistoryProfile p) {
   switch (p) {
-    case HistoryProfile::Tight: return {24000, 12000};
-    case HistoryProfile::Lean: return {40000, 20000};
-    case HistoryProfile::Wide: return {100000, 50000};
-    case HistoryProfile::Standard: break;
+    case HistoryProfile::Tiny: return {24000, 12000};
+    case HistoryProfile::Small: return {40000, 20000};
+    case HistoryProfile::Medium: return {60000, 30000};
+    case HistoryProfile::Large: return {100000, 50000};
+    case HistoryProfile::Full: break;
   }
-  return {60000, 30000};
+  return {0, 0};
 }
 
 const char* historyProfileSlug(HistoryProfile p) {
   switch (p) {
-    case HistoryProfile::Tight: return "tight";
-    case HistoryProfile::Lean: return "lean";
-    case HistoryProfile::Wide: return "wide";
-    case HistoryProfile::Standard: break;
+    case HistoryProfile::Tiny: return "tiny";
+    case HistoryProfile::Small: return "small";
+    case HistoryProfile::Medium: return "medium";
+    case HistoryProfile::Large: return "large";
+    case HistoryProfile::Full: break;
   }
-  return "standard";
+  return "full";
 }
 
 bool parseHistoryProfile(const std::string& word, HistoryProfile& out) {
   std::string w;
   for (char c : word) w += (char)std::tolower((unsigned char)c);
-  for (HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard, HistoryProfile::Wide})
-    if (w == historyProfileSlug(p)) {
-      out = p;
+  for (uint8_t i = 0; i <= (uint8_t)HistoryProfile::Full; i++)
+    if (w == historyProfileSlug((HistoryProfile)i)) {
+      out = (HistoryProfile)i;
       return true;
     }
   return false;
@@ -213,7 +216,7 @@ bool parseHistoryProfile(const std::string& word, HistoryProfile& out) {
 void installHistoryProfile(HistoryProfile p) { profileSlot().store((uint8_t)p); }
 HistoryProfile installedHistoryProfile() {
   const uint8_t v = profileSlot().load();
-  return v <= (uint8_t)HistoryProfile::Wide ? (HistoryProfile)v : kDefaultHistoryProfile;
+  return v <= (uint8_t)HistoryProfile::Full ? (HistoryProfile)v : kDefaultHistoryProfile;
 }
 
 ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverrides& ov) {

@@ -151,7 +151,7 @@ void recordRow(const char* src, const std::string& what) {
     alogf("budget: the change record did not store (the change itself did)");
 }
 
-// Lane RB-BG: /budget profile [<name>|auto]. A change applies at once (it moves no limit, so
+// Lane RB-BG: /budget profile [<name>]. A change applies at once (it moves no limit, so
 // it needs no confirm), only from a channel with full access and under the same timing rule
 // as a limit change (no clock, or a late message, changes nothing).
 Reply profileReply(const BudgetRequest& req, BudgetAccess access, const String& chat) {
@@ -390,7 +390,7 @@ void noteTurnEnd(const std::string& host, const std::string& model, const std::s
   g_st.last.atMs = nowMs();
 }
 
-void recordDeviceChange(const std::string& text) {
+void recordDeviceNote(const std::string& text) {
   if (!text.empty()) recordRow("device", text);
 }
 

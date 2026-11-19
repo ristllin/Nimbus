@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
-#include "hosted_budget.h"   // lane RB-BG: the history profile and its governor
+#include "hosted_budget.h"   // lane RB-BG: the owner's history profile and the spending advice
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "connectors_store.h"
@@ -396,7 +396,7 @@ class NimbusdRig {
   }
   void spendNotice(nimbus::orch::NoticeChannel ch, const std::string& chat) {
     std::string text;
-    if (budget_->take(ch, text)) record(chat, text);   // lane RB-BG: the governor's line, as the ceiling's
+    if (budget_->take(ch, text)) record(chat, text);   // lane RB-BG: the spending advice (as the ceiling's notices)
     const auto k = ceiling_->nextNotice(ch, text);
     if (k == SpendCeilingVn::Kind::None) return;
     record(chat, text);

@@ -460,28 +460,31 @@ def _rbbg_problems(tmp_path, heading, head, rows):
 
 def test_lane_rbbg_profile_rows_hold_the_profile(tmp_path):
     good = [
-        "| openai | gpt-5.6 | tight | 24000 / 12000 | 30720 | 24576 | 12000 | 12576 | 160 | 24576 |",
-        "| openai | gpt-5.6 | standard | 60000 / 30000 | 75000 | 60000 | 30000 | 30000 | 390 | 60000 |",
+        "| openai | gpt-5.6 | tiny | 24000 / 12000 | 30720 | 24576 | 12000 | 12576 | 160 | 24576 |",
+        "| openai | gpt-5.6 | medium | 60000 / 30000 | 75000 | 60000 | 30000 | 30000 | 390 | 60000 |",
+        "| openai | gpt-5.6 | full | the head's own (default) | 206080 | 164864 | 111072 | 53792 | 1073 | 164864 |",
     ]
     assert _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, good) == []
-    over = ["| openai | gpt-5.6 | standard | 60000 / 30000 | 80000 | 64000 | 30000 | 34000 | 416 | 64000 |"]
+    over = ["| openai | gpt-5.6 | medium | 60000 / 30000 | 80000 | 64000 | 30000 | 34000 | 416 | 64000 |"]
     assert any("outside" in e for e in _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, over))
-    under24 = ["| openai | gpt-5.6 | tight | 24000 / 12000 | 30000 | 24000 | 12000 | 12000 | 156 | 24000 |"]
+    under24 = ["| openai | gpt-5.6 | tiny | 24000 / 12000 | 30000 | 24000 | 12000 | 12000 | 156 | 24000 |"]
     assert _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, under24)
-    falls = [good[1], "| openai | gpt-5.6 | wide | 100000 / 50000 | 70000 | 56000 | 28000 | 28000 | 364 | 56000 |"]
+    falls = [good[1], "| openai | gpt-5.6 | large | 100000 / 50000 | 70000 | 56000 | 28000 | 28000 | 364 | 56000 |"]
+    fullbad = ["| openai | gpt-5.6 | full | 60000 / 30000 | 75000 | 60000 | 30000 | 30000 | 390 | 60000 |"]
+    assert any("default" in e for e in _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, fullbad))
     assert any("falls" in e for e in _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, falls))
 
 
 def test_lane_rbbg_floor_rows_follow_the_measured_overhead(tmp_path):
-    good = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 13020 | 10416 | 9765 | measured |"]
+    good = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15432 | 12860 | 10288 | 9645 | measured |"]
     assert _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, good) == []
-    wide = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 20000 | 16000 | 16000 | measured |"]
+    wide = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15432 | 20000 | 16000 | 16000 | measured |"]
     assert any("measured room" in e for e in _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, wide))
     lifted = ["| cumulo | anthropic/claude-sonnet-5-5 | 250000 | 6144 | 0 | 75000 | 60000 | 30000 | room |"]
     assert _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, lifted) == []
     floored = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 0 | 75000 | 60000 | 30000 | room |"]
     assert any("on the floor" in e for e in _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, floored))
-    starved = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 8192 | 4096 | 4096 | v5.1.1 window |"]
+    starved = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15432 | 8192 | 4096 | 4096 | v5.1.1 window |"]
     v511 = {("anthropic", "claude-sonnet-5-5"): {"historyMaxBytes": 8192}}
     text = "## Floor heads\n\n" + FLOOR_HEAD + "\n|---|---|---|---|---|---|---|---|---|\n" + starved[0] + "\n"
     rs = G.parse_tables(text)[0][1]

@@ -34,8 +34,9 @@ test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
   8. the release shape: while kRoutedBudgetLift is false in request_budget.h (v5.1.2 ships
      that way, RULINGS-v3), every routed head sits on the 85,000 B floor.
 
-  9. lane RB-BG: the history profiles (a direct head's fold due at no more than its profile's H,
-     never under 24 KB, as its trigger; a larger profile never gives a smaller mark) and the
+  9. lane RB-BG: the history profiles (full, the default, marked as such and the head's own marks;
+     under an owner's smaller profile a direct head's fold is due at no more than its H, never
+     under 24 KB, as its trigger; a larger profile never gives a smaller mark) and the
      floor heads (a measured floor head's window is the body less the measured overhead of
      its wire, the summary, the margin and one tool round, in window bytes, with the shift at
      4/5 and the keep at 3/4, and
@@ -505,7 +506,7 @@ def baseline_of(row: dict, old: dict) -> "dict | None":
 
 
 # Lane RB-BG: the profile order and the measured floor's constants (budget.h).
-PROFILE_ORDER = ("tight", "lean", "standard", "wide")
+PROFILE_ORDER = ("tiny", "small", "medium", "large", "full")
 
 
 def floor_constants(header_path: str) -> "dict | None":
@@ -526,11 +527,22 @@ def floor_constants(header_path: str) -> "dict | None":
     return out
 
 
+def full_row_problems(row: dict, name: str, marks: str) -> "list[str]":
+    """Full, the default: marked as such, and its trigger is the head's own soft mark."""
+    soft, trig = val(row, "historySoftBytes"), val(row, "trigger")
+    if soft is None or trig is None or "(default)" not in marks:
+        return [f"{name} (full): needs hist soft and trigger columns, and full marked as the default"]
+    return [] if abs(trig - soft) <= 1 else [f"{name} (full): trigger {trig:.0f} is not the soft mark {soft:.0f}"]
+
+
 def profile_row_problems(row: dict) -> "list[str]":
-    """A direct head under a profile: the due mark is at most H (never under 24 KB) and is the
-    trigger; keep at most the due mark; the high water at most 5/4 of it."""
+    """A direct head under a profile: the due mark is the trigger; under an owner's smaller
+    profile it is at most H (never under 24 KB), keep at most the due mark and the high water
+    at most 5/4 of it. Full, the default, is the head's own marks (owner ruling 81)."""
     name, marks = row_name(row), row.get("marks", "")
     m = re.match(r"\s*(\d+)\s*/\s*(\d+)", marks)
+    if row.get("profile", "").lower() == "full":
+        return full_row_problems(row, name, marks)
     soft, keep, hmax, trig = (
         val(row, k) for k in ("historySoftBytes", "historyKeepBytes", "historyMaxBytes", "trigger")
     )

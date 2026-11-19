@@ -59,7 +59,7 @@
 #include "agent/orchestrator.h"
 #include "agent/prefs_subsystem.h"   // lane J: standing rules (seed + store)
 #include "agent/spend_ceiling_store.h"        // lane DEF: the monthly spend ceiling (gate, notices)
-#include "agent/budget_profile_store.h"       // lane RB-BG: the history profile and its governor
+#include "agent/budget_profile_store.h"       // lane RB-BG: the owner's history profile and the spending advice
 #include "agent/degraded_device.h"            // lane DEGRADE: what the device runs degraded on (strip, details, /api/state)
 #include "nimbus/harness/config.h"   // agent::voiceFallbackChatOf - where a spoken reply may fall back to
 #include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
@@ -978,7 +978,7 @@ static void spendNoticePump() {
     }
     agent::spend::delivered(NoticeChannel::Web, k);
   }
-  // Lane RB-BG: a governor step's one line, as the ceiling's notices go: Telegram's owner chat
+  // Lane RB-BG: the spending advice's one line, as the ceiling's notices go: Telegram's owner chat
   // (owed until the reply queue takes it) and the web chat (its history and an open page).
   const std::string step = agent::budgetprofile::nextNotice(/*telegram=*/true);
   const String stepOwner = !step.empty() && agent::telegram::enabled() ? agent::telegram::ownerChat() : String();
@@ -1097,7 +1097,7 @@ static int orchTick() {
     if ((int32_t)(now - s_spendTickAt) >= 0) {
       s_spendTickAt = now + 60000;
       agent::spend::tick();
-      agent::budgetprofile::tick();   // lane RB-BG: the governor's night (writes /data/budget.json)
+      agent::budgetprofile::tick();   // lane RB-BG: the spending advice's night (writes /data/budget.json)
     }
     spendNoticePump();
   }

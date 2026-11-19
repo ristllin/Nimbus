@@ -48,9 +48,9 @@ void noteMessage(const String& chatId, const nimbus::orch::Command& cmd);
 void noteTurnEnd(const std::string& host, const std::string& model, const std::string& requestedHost,
                  const char* src, bool ok);
 
-// Lane RB-BG: a change the device made by itself (the history profile's governor) joins the
-// durable log and the Usage page's change record, source "device". Poll task only.
-void recordDeviceChange(const std::string& text);
+// Lane RB-BG: a line the device told the owner by itself (the nightly spending advice) joins the
+// Usage page's record, source "device". Poll task only.
+void recordDeviceNote(const std::string& text);
 
 // The newest 3 applied changes for the Usage page, newest first:
 // [{"t":<epoch s, 0 = clock unset>,"src":"telegram"|"web"|"serial","text":".."}].

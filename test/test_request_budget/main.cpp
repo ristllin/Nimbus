@@ -755,7 +755,7 @@ static void test_a_loop_on_turn_is_the_request_budget_unchanged() {
 // body budget their wires keep.
 static void test_the_loop_off_figures_for_the_main_heads() {
   struct Row { const char* host; const char* model; uint32_t body; size_t histMax; size_t onMax; };
-  for (const Row& r : {Row{"mistral", "mistral-large-4-0", 360000, 5242, 75000},
+  for (const Row& r : {Row{"mistral", "mistral-large-4-0", 360000, 5242, 206080},
                        Row{"mistral", "mistral-medium-latest", 151000, 5242, 39002},
                        Row{"zai", "glm-5.3", 188000, 4096, 70528}}) {
     const RequestBudget rb = turnBudgetFor(r.host, r.model, false);
@@ -808,15 +808,16 @@ static bool profileMark(const char* field) {
   return false;
 }
 
-// No head goes below its v5.1.2 budget (the orchestrator's standing ruling): field by field
-// against budgets_v5_1_2.json (every recorded model, the routed and custom heads, the server
-// link's main heads), under every profile. The body budget is unchanged; a history mark may
-// sit under v5.1.2's only on a direct head the profile caps, and then it is that profile's.
+// No head's default goes below its v5.1.2 budget (owner ruling 81): field by field against
+// budgets_v5_1_2.json (every recorded model, the routed and custom heads, the server link's main
+// heads). Under the default profile (full) every field, history max, fold mark and keep included,
+// is at least v5.1.2's. Under an owner's smaller choice a history mark may sit under v5.1.2's
+// only on a direct head that profile caps, and then it is that profile's.
 static void test_no_head_below_its_v5_1_2_budget() {
   const auto& rows = v512Rows();
   TEST_ASSERT_TRUE(rows.size() > 200);
-  for (const HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard,
-                                 HistoryProfile::Wide}) {
+  for (const HistoryProfile p : {HistoryProfile::Tiny, HistoryProfile::Small, HistoryProfile::Medium, HistoryProfile::Large,
+                                 HistoryProfile::Full}) {
     installHistoryProfile(p);
     for (const auto& kv : rows) {
       JsonObjectConst r = kv.second;
@@ -836,7 +837,8 @@ static void test_no_head_below_its_v5_1_2_budget() {
                              c.historyKeepBytes, c.foldSliceBytes, c.historyRows, foldTriggerBytes(c, kCompactAtKbDefault)};
       const HistoryProfileMarks m = historyProfileMarks(p);
       const size_t due = std::max<size_t>(m.high, kFoldTriggerMinBytes);
-      const bool capped = !c.floorBranch && !c.floorMeasured && c.historySoftBytes == due;
+      // Owner ruling 81: under the default (full) nothing is capped, every field is at least v5.1.2's.
+      const bool capped = p != kDefaultHistoryProfile && !c.floorBranch && !c.floorMeasured && c.historySoftBytes == due;
       for (size_t i = 0; i < sizeof(have) / sizeof(have[0]); i++) {
         const size_t was = (size_t)(r[kFields[i]] | 0u);
         if (capped && profileMark(kFields[i])) continue;
@@ -909,8 +911,8 @@ static void test_every_head_has_a_history_that_fits_under_every_profile() {
         for (const Head& h : headsOfEveryForm()) {
           const RequestBudget rb = turnBudgetFor(h.host, h.model, loopOn, link, lift);
           const ContextBudget own = deriveRequestContext(rb, none);
-          for (const HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard,
-                                         HistoryProfile::Wide})
+          for (const HistoryProfile p : {HistoryProfile::Tiny, HistoryProfile::Small, HistoryProfile::Medium,
+                                         HistoryProfile::Large, HistoryProfile::Full})
             checkHeadUnderProfile(rb, own, p, nameOf(h) + (loopOn ? " on " : " off ") + historyProfileSlug(p), n);
         }
   installHistoryProfile(kDefaultHistoryProfile);
@@ -919,19 +921,29 @@ static void test_every_head_has_a_history_that_fits_under_every_profile() {
   TEST_ASSERT_TRUE(n.capped > 0);
 }
 
-// The plan's sizes: direct heads default to standard (60,000 / 30,000 B), each profile's
-// marks, and the order tight < lean < standard < wide on every field of a large head.
+// The default is full: each head's own v5.1.2 marks (owner ruling 81: Sonnet 118,080 / 94,464 /
+// 59,040, gpt-5.6 206,080 / 164,864 / 111,072). Each smaller profile's marks, as an owner's
+// choice, and the order tiny < small < medium < large <= full on every field of a large head.
 static void test_the_profile_figures() {
-  TEST_ASSERT_TRUE(installedHistoryProfile() == HistoryProfile::Standard);
+  TEST_ASSERT_TRUE(installedHistoryProfile() == HistoryProfile::Full);
+  TEST_ASSERT_TRUE(kDefaultHistoryProfile == HistoryProfile::Full);
   const ContextBudget son = headContextBudget("anthropic", "claude-sonnet-5-5", true, {});
-  TEST_ASSERT_EQUAL_UINT32(60000, son.historySoftBytes);
-  TEST_ASSERT_EQUAL_UINT32(30000, son.historyKeepBytes);
-  TEST_ASSERT_EQUAL_UINT32(75000, son.historyMaxBytes);
-  TEST_ASSERT_EQUAL_UINT32(60000, foldTriggerBytes(son, kCompactAtKbDefault));
-  const struct { HistoryProfile p; uint32_t h, l; } kWant[] = {{HistoryProfile::Tight, 24000, 12000},
-                                                               {HistoryProfile::Lean, 40000, 20000},
-                                                               {HistoryProfile::Standard, 60000, 30000},
-                                                               {HistoryProfile::Wide, 100000, 50000}};
+  TEST_ASSERT_EQUAL_UINT32(118080, son.historyMaxBytes);
+  TEST_ASSERT_EQUAL_UINT32(94464, son.historySoftBytes);
+  TEST_ASSERT_EQUAL_UINT32(59040, son.historyKeepBytes);
+  TEST_ASSERT_EQUAL_UINT32(94464, foldTriggerBytes(son, kCompactAtKbDefault));
+  const ContextBudget gpt = headContextBudget("openai", "gpt-5.6", true, {});
+  TEST_ASSERT_EQUAL_UINT32(206080, gpt.historyMaxBytes);
+  TEST_ASSERT_EQUAL_UINT32(164864, gpt.historySoftBytes);
+  TEST_ASSERT_EQUAL_UINT32(111072, gpt.historyKeepBytes);
+  BudgetOverrides own;
+  own.noProfile = true;
+  TEST_ASSERT_EQUAL_UINT32(deriveRequestContext(requestBudgetFor("openai", "gpt-5.6", false), own).historyMaxBytes,
+                           gpt.historyMaxBytes);
+  const struct { HistoryProfile p; uint32_t h, l; } kWant[] = {{HistoryProfile::Tiny, 24000, 12000},
+                                                               {HistoryProfile::Small, 40000, 20000},
+                                                               {HistoryProfile::Medium, 60000, 30000},
+                                                               {HistoryProfile::Large, 100000, 50000}};
   size_t prevSoft = 0, prevKeep = 0, prevMax = 0;
   for (const auto& w : kWant) {
     TEST_ASSERT_EQUAL_UINT32(w.h, historyProfileMarks(w.p).high);
@@ -940,17 +952,21 @@ static void test_the_profile_figures() {
     TEST_ASSERT_TRUE(parseHistoryProfile(historyProfileSlug(w.p), back) && back == w.p);
     installHistoryProfile(w.p);
     const ContextBudget c = headContextBudget("openai", "gpt-5.6", true, {});
-    TEST_ASSERT_EQUAL_UINT32(std::max<uint32_t>(w.h, kFoldTriggerMinBytes), c.historySoftBytes);   // tight: 24 KB
+    TEST_ASSERT_EQUAL_UINT32(std::max<uint32_t>(w.h, kFoldTriggerMinBytes), c.historySoftBytes);   // tiny: 24 KB
     TEST_ASSERT_EQUAL_UINT32(w.l, c.historyKeepBytes);
     TEST_ASSERT_TRUE(c.historySoftBytes > prevSoft && c.historyKeepBytes > prevKeep && c.historyMaxBytes > prevMax);
     prevSoft = c.historySoftBytes;
     prevKeep = c.historyKeepBytes;
     prevMax = c.historyMaxBytes;
   }
+  TEST_ASSERT_TRUE(gpt.historySoftBytes > prevSoft && gpt.historyMaxBytes > prevMax);   // full over large
+  TEST_ASSERT_EQUAL_UINT32(0, historyProfileMarks(HistoryProfile::Full).high);
   installHistoryProfile(kDefaultHistoryProfile);
   HistoryProfile x;
   TEST_ASSERT_FALSE(parseHistoryProfile("huge", x));
-  TEST_ASSERT_TRUE(parseHistoryProfile("LEAN", x) && x == HistoryProfile::Lean);
+  TEST_ASSERT_FALSE(parseHistoryProfile("standard", x));   // no "standard" smaller than what shipped
+  TEST_ASSERT_TRUE(parseHistoryProfile("MEDIUM", x) && x == HistoryProfile::Medium);
+  TEST_ASSERT_TRUE(parseHistoryProfile("full", x) && x == HistoryProfile::Full);
 }
 
 // Folds a day at the floor for `days` of `turns` exchanges of `ex` B: the fold driver's real rule
@@ -1024,7 +1040,7 @@ static void test_a_fortnight_at_the_measured_floor() {
 
 // The measured floor's formula on constructed budgets (mutation survivors): each measured wire's
 // own overhead and ratio; a body at or under the overhead, a flat turn, a flat wire or an
-// unmeasured wire keeps the floor branch; under tight, a larger compactAtKB never folds earlier.
+// unmeasured wire keeps the floor branch; under tiny, a larger compactAtKB never folds earlier.
 static void test_the_measured_floor_formula_on_its_edges() {
   const RequestBudget base = requestBudgetFor("cumulo", "anthropic/claude-sonnet-5-5", true, BudgetLink::Device, false);
   TEST_ASSERT_EQUAL(1, base.measuredWire);
@@ -1053,7 +1069,7 @@ static void test_the_measured_floor_formula_on_its_edges() {
   RequestBudget un = base;
   un.measuredWire = 0;
   TEST_ASSERT_TRUE(deriveRequestContext(un, {}).floorBranch);
-  installHistoryProfile(HistoryProfile::Tight);
+  installHistoryProfile(HistoryProfile::Tiny);
   const ContextBudget t = headContextBudget("anthropic", "claude-sonnet-5-5", true, {});
   for (const uint32_t kb : {48u, 64u, 100u, 200u})
     TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(t, kb) >= foldTriggerBytes(t, kCompactAtKbDefault), std::to_string(kb).c_str());

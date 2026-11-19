@@ -10,7 +10,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/router_route.h"
 #include "../../lib/harness/src/providers/wire_budget.h"   // the wire's own round load and cap
-#include "nimbus/orch/budget_governor.h"   // lane RB-BG: the governor section
+#include "nimbus/orch/budget_governor.h"   // lane RB-BG: the spending advice section
 #include "nimbus/orch/loops.h"             // daysFromCivil
 
 // The adapter a head's requests go out on, and the model it sends there.
@@ -144,24 +144,25 @@ static std::string loopOffTable() {
 static std::string profilesSection() {
   std::string t =
       "\n## History profiles\n\n"
-      "A profile caps a direct head's history marks; it never raises one and never moves a head at the floor.\n"
-      "The fold is due at min(the head's soft mark, H) and keeps min(its keep mark, L) (never less than one\n"
-      "fold can take); the window's high water is 5/4 of the due mark; no due mark goes under 24 KB, so\n"
-      "tight's 24,000 B reads as 24,576 B. Standard is the default. The owner pins one with\n"
-      "`/budget profile <name>` (stored in /data/budget.json); otherwise the spend governor may step a device\n"
-      "down from standard when a month's spending is on course past 0.9 of its ceiling, and back up after\n"
-      "seven quiet nights (The governor, below).\n\n"
+      "The default profile, full, is each head's own marks exactly as v5.1.2 derives them: no default carries\n"
+      "less conversation than v5.1.2 (owner ruling 81). The smaller profiles exist only as the owner's\n"
+      "choice (`/budget profile <name>`, stored in /data/budget.json, in force until he changes it); nothing\n"
+      "changes the profile by itself. A smaller profile caps a direct head's marks; it never raises one and\n"
+      "never moves a head at the floor. The fold is due at min(the head's soft mark, H) and keeps min(its\n"
+      "keep mark, L) (never less than one fold can take); the window's high water is 5/4 of the due mark; no\n"
+      "due mark goes under 24 KB, so tiny's 24,000 B reads as 24,576 B.\n\n"
       "| Provider | Model | Profile | H / L | Hist max | Hist soft | Hist keep | Fold step | Rows | Trigger |\n" +
       separator(10);
   for (const Head& h : {Head{"anthropic", "claude-sonnet-5-5"}, Head{"anthropic", "claude-haiku-5-5"},
                         Head{"openai", "gpt-5.6"}, Head{"openai", "gpt-5.6-luna"}, Head{"zai", "glm-5.3"},
                         Head{"mistral", "mistral-large-4-0"}})
-    for (const HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard,
-                                   HistoryProfile::Wide}) {
+    for (const HistoryProfile p : {HistoryProfile::Full, HistoryProfile::Large, HistoryProfile::Medium,
+                                   HistoryProfile::Small, HistoryProfile::Tiny}) {
       installHistoryProfile(p);
       const ContextBudget c = deriveRequestContext(requestBudgetFor(h.host, h.model, false, BudgetLink::Device), {});
       const HistoryProfileMarks m = historyProfileMarks(p);
-      t += cells({h.host, h.model, historyProfileSlug(p), num(m.high) + " / " + num(m.low), num(c.historyMaxBytes),
+      const std::string hl = m.high ? num(m.high) + " / " + num(m.low) : std::string("the head's own (default)");
+      t += cells({h.host, h.model, historyProfileSlug(p), hl, num(c.historyMaxBytes),
                   num(c.historySoftBytes), num(c.historyKeepBytes), num(c.foldStepBytes), num(c.historyRows),
                   num(foldTriggerBytes(c, kCompactAtKbDefault))});
     }
@@ -202,30 +203,24 @@ static std::string floorSection() {
   return t;
 }
 
-// Lane RB-BG: the governor's rule and one simulated month on its virtual clock (0.70 USD a day at
-// standard against the 20 USD default ceiling, then 0.30 USD a day from December).
+// Lane RB-BG: the spending advice and one simulated month on its virtual clock (0.70 USD a day on
+// the default profile against the 20 USD default ceiling, then 0.30 USD a day from December).
 static std::string governorSection() {
   std::string t =
-      "\n## The governor\n\n"
-      "Nightly at the device's day start (lib/core `budget_governor.h`; nimbusd runs the same rule):\n\n"
+      "\n## The spending advice\n\n"
+      "Nightly at the device's day start (lib/core `budget_governor.h`; nimbusd runs the same rule). Nothing\n"
+      "changes the profile by itself (owner ruling 81):\n\n"
       "1. It projects the month: the spend so far plus the mean of the last seven observed nights (at least\n"
-      "   three, all under the profile in force) times each profile's measured cost ratio (tight " +
-      num(profileCostPermille(HistoryProfile::Tight)) + ", lean " + num(profileCostPermille(HistoryProfile::Lean)) +
-      ", standard 1000,\n   wide " + num(profileCostPermille(HistoryProfile::Wide)) +
-      " thousandths, from tests/evals/measured/cost.json) times the days left.\n"
-      "2. Down, at once and as far as needed: the profile in force projects over 0.9 of the ceiling, so it\n"
-      "   takes the largest smaller profile projecting at most 0.9; if none does, tight, with one plain line\n"
-      "   naming the date the ceiling is reached at that rate.\n"
-      "3. Up, one step at a time and never above standard: seven observed nights in a row in which a whole\n"
-      "   month at the next larger profile's rate projects under 0.7 of the ceiling.\n"
-      "4. Every change starts the observations again. No ceiling (turned off by the owner, or only provider\n"
-      "   limits) is a quiet night. A pinned profile is never moved, only warned about once a month. The\n"
-      "   governor never writes the ceiling.\n"
-      "5. 0.9 / 0.7 is wider than the swing a constant rate makes between months (31 / 28), so a constant\n"
-      "   rate never moves the profile both ways; a step down is undone no sooner than nine nights later.\n\n"
-      "Every step is one line to the owner (Telegram and the web chat), a row in the Usage page's change\n"
-      "record, a durable log line, and the /usage status line.\n\n"
-      "| Night | Spent this month | Profile | Step |\n" + separator(4);
+      "   three, all under the profile in force) times the days left.\n"
+      "2. Over 0.9 of the ceiling it tells the owner, once that month (Telegram, the web chat, the Usage\n"
+      "   page's record, the durable log): the projection, the date the ceiling is reached at that rate,\n"
+      "   and the largest smaller profile that would fit, by each profile's measured cost ratio (tiny " +
+      num(profileCostPermille(HistoryProfile::Tiny)) + ", small " + num(profileCostPermille(HistoryProfile::Small)) +
+      ",\n   medium 1000, large " + num(profileCostPermille(HistoryProfile::Large)) +
+      " thousandths, from tests/evals/measured/cost.json; full is counted at large's\n   ratio), or that none would. The owner decides.\n"
+      "3. No ceiling (turned off by the owner, or only provider limits) is a quiet night. It never writes the\n"
+      "   ceiling and never changes the profile.\n\n"
+      "| Night | Spent this month | Profile | Told the owner |\n" + separator(4);
   BudgetFile f;
   int64_t day = daysFromCivil(2026, 11, 1);
   uint64_t spent = 0;
@@ -233,10 +228,11 @@ static std::string governorSection() {
   for (int n = 0; n < 61; n++) {
     GovernorFacts g;
     governorFactsAt((uint64_t)day * 86400u + 4 * 3600u + 60u, 0, 240, SpendFacts{month, spent, true, 20000000ull}, g);
-    const GovernorStep st = governorNight(f, g);
-    if (n < 5 || st.changed() || n % 10 == 0)
+    const BudgetAdvice a = governorNight(f, g);
+    const bool told = a.kind == BudgetAdvice::Kind::Advice;
+    if (n < 5 || told || n % 10 == 0)
       t += cells({dayMonthText(day), usdText(spent), historyProfileSlug(f.effective()),
-                  st.changed() ? std::string(historyProfileSlug(st.from)) + " to " + historyProfileSlug(st.to) : "-"});
+                  told ? std::string("yes: ") + (a.fits ? historyProfileSlug(a.fit) : "nothing") + " would fit" : "-"});
     const double usd = (n < 30 ? 0.70 : 0.30) * profileCostPermille(f.effective()) / 1000.0;
     spent += (uint64_t)(usd * 1000000.0 + 0.5);
     day++;
@@ -263,9 +259,9 @@ static std::string budgetTableDoc() {
       "85,000 B (or 0.85 of a tiny window). Bound names which one decided. Target is bytes over rNom, in tokens.\n"
       "Read window is in seconds, prefill and decode in tokens per second (decode at the target's context),\n"
       "and every other figure in bytes. No figure is below the head's v5.1.1 value. The history marks (Hist\n"
-      "max, soft, keep, Fold step, Rows, Trigger) are shown under the default history profile, standard: a\n"
-      "direct head's fold is due at no more than 60,000 B and keeps no more than 30,000 B (see History\n"
-      "profiles below). A split-prompt head at the 85,000 B floor sizes its history from the measured\n"
+      "max, soft, keep, Fold step, Rows, Trigger) are shown under the default history profile, full: each\n"
+      "head's own marks, as v5.1.2 derives them (smaller profiles are the owner's choice: History profiles\n"
+      "below). A split-prompt head at the 85,000 B floor sizes its history from the measured\n"
       "overhead of the old engine's request (see Floor heads below); any other head at the floor keeps the\n"
       "v5.1.1 history window and its 48 KB fold trigger. Caps are the first attempt and the retry of a\n"
       "final round at the budget as the wire sends them (a routed round counts its second upload, and a first\n"

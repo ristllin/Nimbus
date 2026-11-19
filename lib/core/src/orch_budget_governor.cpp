@@ -18,11 +18,7 @@ namespace orch {
 
 namespace {
 
-HistoryProfile smaller(HistoryProfile p) { return p == HistoryProfile::Tight ? p : (HistoryProfile)((uint8_t)p - 1); }
-HistoryProfile larger(HistoryProfile p) { return p == HistoryProfile::Wide ? p : (HistoryProfile)((uint8_t)p + 1); }
 const char* slug(HistoryProfile p) { return historyProfileSlug(p); }
-
-const char* const kSetBy[] = {"default", "owner", "device"};   // ProfileSetBy, in order
 
 uint8_t daysIn(int year, int month) {
   static const uint8_t kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -35,11 +31,8 @@ uint8_t daysIn(int year, int month) {
 // no product here wraps on a 32-bit target.
 constexpr uint64_t kMicroCap = 1000000000000000ull;
 uint64_t capped(uint64_t v) { return v < kMicroCap ? v : kMicroCap; }
-bool over(uint64_t projected, uint64_t ceiling, uint32_t permille) {
-  return capped(projected) * 1000 > capped(ceiling) * permille;
-}
-bool under(uint64_t projected, uint64_t ceiling, uint32_t permille) {
-  return capped(projected) * 1000 < capped(ceiling) * permille;
+bool over(uint64_t projected, uint64_t ceiling) {
+  return capped(projected) * 1000 > capped(ceiling) * kGovernorAdvicePermille;
 }
 
 // The mean nightly spend observed, micro-USD (0 under kGovernorMinObs nights).
@@ -83,15 +76,6 @@ void observe(BudgetFile& f, const GovernorFacts& g) {
   }
 }
 
-void change(BudgetFile& f, GovernorStep& st, HistoryProfile to, const GovernorFacts& g) {
-  st.to = to;
-  f.governed = to;
-  f.setBy = ProfileSetBy::Governor;
-  f.setDay = g.calendarDay;
-  f.nObs = 0;
-  f.quiet = 0;
-}
-
 std::string fmt(const char* f, ...) {
   char b[480];
   va_list ap;
@@ -112,14 +96,28 @@ struct Usd {
 std::string clampClause(int64_t clampDay, uint64_t projected, const GovernorFacts& g) {
   if (g.spentMicro >= g.ceilingMicro) return " The ceiling is already reached: paid replies pause until it resets.";
   if (clampDay)
-    return " At this rate the ceiling is reached on " + dayMonthText(clampDay) +
-           " and paid replies pause until it resets.";
+    return " At this rate it is reached on " + dayMonthText(clampDay) + " and paid replies pause until it resets.";
   return fmt(" At this rate the month ends at about %s, just under it.", Usd(projected).s);
 }
 
-std::string recordLine(const GovernorStep& st, const GovernorFacts& g) {
-  return fmt("History profile %s (was %s), by the device: on course for %s of %s", slug(st.to), slug(st.from),
-             Usd(st.projectedMicro).s, Usd(g.ceilingMicro).s);
+// The largest profile smaller than the one in force that keeps the month under 0.9 of the
+// ceiling; false when none does.
+bool largestFit(const BudgetFile& f, const GovernorFacts& g, HistoryProfile& out) {
+  for (int i = (int)f.effective() - 1; i >= 0; i--)
+    if (!over(projectedMonthMicro(f, g, (HistoryProfile)i), g.ceilingMicro)) {
+      out = (HistoryProfile)i;
+      return true;
+    }
+  return false;
+}
+
+std::string fitClause(const BudgetAdvice& a) {
+  if (a.fits)
+    return fmt(" A shorter conversation history would fit: send /budget profile %s if you want it (it stays until you "
+               "change it); nothing changes otherwise.", slug(a.fit));
+  if (a.profile == HistoryProfile::Tiny) return " Nothing changes unless you raise the ceiling.";
+  return " Even the shortest conversation history (tiny) would not keep it under; nothing changes unless you raise "
+         "the ceiling or choose a profile.";
 }
 
 // ---- the file's reader: the shape budgetFileJson writes, whitespace allowed ----------------
@@ -172,8 +170,8 @@ bool profileField(const std::string& t, const char* key, HistoryProfile& out) {
 }  // namespace
 
 uint32_t profileCostPermille(HistoryProfile p) {
-  static const uint16_t kPermille[] = {578, 793, 1000, 1448};   // tight, lean, standard, wide
-  return (uint8_t)p <= (uint8_t)HistoryProfile::Wide ? kPermille[(uint8_t)p] : 1000;
+  static const uint16_t kPermille[] = {578, 793, 1000, 1448, 1448};   // tiny, small, medium, large, full
+  return (uint8_t)p <= (uint8_t)HistoryProfile::Full ? kPermille[(uint8_t)p] : 1448;
 }
 
 // ---- the file -------------------------------------------------------------------------
@@ -184,17 +182,6 @@ namespace {
 bool wholeObject(const std::string& text) {
   const size_t first = text.find_first_not_of(" \n\r\t"), last = text.find_last_not_of(" \n\r\t");
   return first != std::string::npos && text[first] == '{' && text[last] == '}';
-}
-
-bool setByField(const std::string& text, ProfileSetBy& out) {
-  std::string by;
-  if (!stringField(text, "by", by)) return false;
-  for (uint8_t i = 0; i < 3; i++)
-    if (by == kSetBy[i]) {
-      out = (ProfileSetBy)i;
-      return true;
-    }
-  return false;
 }
 
 // "obs": [n, n, ...], at most seven; absent = none.
@@ -217,17 +204,15 @@ bool obsField(const std::string& text, BudgetFile& f) {
 
 // The numbers, each in its range.
 bool numberFields(const std::string& text, BudgetFile& f) {
-  int64_t v = 0, set = 0, night = 0, month = 0, snap = 0, quiet = 0, warned = 0;
+  int64_t v = 0, set = 0, night = 0, month = 0, snap = 0, warned = 0;
   if (!(numberField(text, "v", 1, 1, v) && v == 1 && numberField(text, "set", 0, INT32_MAX, set) &&
         numberField(text, "night", 0, INT32_MAX, night) && numberField(text, "month", 0, 999912, month) &&
-        numberField(text, "snap", 0, INT64_MAX, snap) && numberField(text, "quiet", 0, kGovernorQuietNights, quiet) &&
-        numberField(text, "warned", 0, 999912, warned)))
+        numberField(text, "snap", 0, INT64_MAX, snap) && numberField(text, "warned", 0, 999912, warned)))
     return false;
   f.setDay = set;
   f.night = night;
   f.month = (uint32_t)month;
   f.snapMicro = (uint64_t)snap;
-  f.quiet = (uint8_t)quiet;
   f.warnedMonth = (uint32_t)warned;
   return true;
 }
@@ -237,15 +222,11 @@ bool numberFields(const std::string& text, BudgetFile& f) {
 BudgetFileRead parseBudgetFile(const std::string& text, BudgetFile& out) {
   out = BudgetFile();
   if (text.empty()) return BudgetFileRead::Missing;
-  // The owner's choice is kept even when the rest does not read: a pin is never lost to a
-  // damaged field (the governor stays off while the file reads as corrupt).
-  std::string pinned;
-  const bool pinRead = stringField(text, "pinned", pinned);
-  if (pinRead && parseHistoryProfile(pinned, out.pinnedProfile)) out.pinned = true;
+  // The owner's choice is kept even when the rest does not read: it is never lost to a damaged
+  // field (the advice stays off while the file reads as corrupt).
+  const bool profileRead = profileField(text, "profile", out.profile);
   BudgetFile f = out;
-  const bool ok = wholeObject(text) && pinRead && (pinned.empty() || f.pinned) &&
-                  profileField(text, "governed", f.governed) && setByField(text, f.setBy) && numberFields(text, f) &&
-                  obsField(text, f);
+  const bool ok = wholeObject(text) && profileRead && numberFields(text, f) && obsField(text, f);
   if (!ok) return BudgetFileRead::Corrupt;
   out = f;
   return BudgetFileRead::Ok;
@@ -255,11 +236,10 @@ std::string budgetFileJson(const BudgetFile& f) {
   std::string obs;
   for (uint8_t i = 0; i < f.nObs && i < kGovernorObsNights; i++)
     obs += (i ? "," : "") + std::to_string((unsigned long long)f.obs[i]);
-  return fmt("{\"v\":1,\"pinned\":\"%s\",\"governed\":\"%s\",\"by\":\"%s\",\"set\":%lld,\"night\":%lld,\"month\":%lu,"
-             "\"snap\":%llu,\"obs\":[%s],\"quiet\":%u,\"warned\":%lu}",
-             f.pinned ? slug(f.pinnedProfile) : "", slug(f.governed), kSetBy[(uint8_t)f.setBy % 3],
-             (long long)f.setDay, (long long)f.night, (unsigned long)f.month, (unsigned long long)f.snapMicro,
-             obs.c_str(), (unsigned)f.quiet, (unsigned long)f.warnedMonth);
+  return fmt("{\"v\":1,\"profile\":\"%s\",\"set\":%lld,\"night\":%lld,\"month\":%lu,\"snap\":%llu,\"obs\":[%s],"
+             "\"warned\":%lu}",
+             slug(f.profile), (long long)f.setDay, (long long)f.night, (unsigned long)f.month,
+             (unsigned long long)f.snapMicro, obs.c_str(), (unsigned long)f.warnedMonth);
 }
 
 // ---- the facts and the night ----------------------------------------------------------
@@ -287,139 +267,47 @@ uint64_t projectedMonthMicro(const BudgetFile& f, const GovernorFacts& g, Histor
   return addSatMicro(g.spentMicro, capped(rateUnder(f, p)) * daysLeft(g));
 }
 
-namespace {
-
-// The owner's pinned profile: never moved, warned about once a month.
-void pinnedNight(BudgetFile& f, const GovernorFacts& g, bool ceiling, GovernorStep& st) {
-  f.quiet = 0;
-  if (!ceiling || f.nObs < kGovernorMinObs) return;
-  const HistoryProfile cur = f.effective();
-  st.projectedMicro = projectedMonthMicro(f, g, cur);
-  if (!over(st.projectedMicro, g.ceilingMicro, kGovernorDownPermille) || f.warnedMonth == g.monthKey) return;
-  f.warnedMonth = g.monthKey;
-  st.kind = GovernorStep::Kind::PinnedOver;
-  st.clampDay = clampDayAt(g, rateUnder(f, cur));
-  st.line = fmt("Your chosen conversation history (%s) is on course for %s this month against the %s ceiling.",
-                slug(cur), Usd(st.projectedMicro).s, Usd(g.ceilingMicro).s) +
-            clampClause(st.clampDay, st.projectedMicro, g) + " Send /budget profile auto to let the device shorten it.";
-}
-
-// No ceiling to protect: a quiet night, one step back up after seven.
-void noCeilingNight(BudgetFile& f, const GovernorFacts& g, GovernorStep& st) {
-  const HistoryProfile cur = f.effective();
-  if (cur >= kDefaultHistoryProfile) {
-    f.quiet = 0;
-    return;
-  }
-  if (++f.quiet < kGovernorQuietNights) return;
-  change(f, st, larger(cur), g);
-  st.kind = GovernorStep::Kind::Up;
-  st.line = fmt("Replies carry a longer conversation history again (%s, was %s): no spending ceiling applies now.",
-                slug(st.to), slug(st.from));
-  st.record = fmt("History profile %s (was %s), by the device: no ceiling applies", slug(st.to), slug(st.from));
-}
-
-// Over 0.9 of the ceiling: the largest smaller profile that fits, else tight and the clamp date.
-void stepDown(BudgetFile& f, const GovernorFacts& g, uint64_t projCur, GovernorStep& st) {
-  const HistoryProfile cur = f.effective();
-  f.quiet = 0;
-  for (HistoryProfile q = cur; q != HistoryProfile::Tight;) {
-    q = smaller(q);
-    const uint64_t p = projectedMonthMicro(f, g, q);
-    if (over(p, g.ceilingMicro, kGovernorDownPermille)) continue;
-    st.projectedMicro = p;
-    change(f, st, q, g);
-    st.kind = GovernorStep::Kind::Down;
-    st.line = fmt("Spending this month is on course for %s against the %s ceiling, so replies now carry a shorter "
-                  "conversation history (%s, was %s). Send /budget profile %s to keep the longer one.",
-                  Usd(projCur).s, Usd(g.ceilingMicro).s, slug(q), slug(st.from), slug(st.from));
-    st.record = recordLine(st, g);
-    return;
-  }
-  st.projectedMicro = projectedMonthMicro(f, g, HistoryProfile::Tight);
-  st.clampDay = clampDayAt(g, rateUnder(f, HistoryProfile::Tight));
-  if (cur == HistoryProfile::Tight && f.warnedMonth == g.monthKey) return;
-  f.warnedMonth = g.monthKey;
-  if (cur != HistoryProfile::Tight) change(f, st, HistoryProfile::Tight, g);
-  st.kind = GovernorStep::Kind::NothingFits;
-  st.line = fmt("Spending this month is on course for %s against the %s ceiling even with the shortest "
-                "conversation history (tight%s%s).",
-                Usd(st.projectedMicro).s, Usd(g.ceilingMicro).s, st.changed() ? ", was " : "",
-                st.changed() ? slug(st.from) : "") +
-            clampClause(st.clampDay, st.projectedMicro, g);
-  if (st.changed()) st.record = recordLine(st, g);
-}
-
-// Under standard and quiet: one step up after seven nights. The step up asks what a whole month
-// at the larger profile's rate would cost, not what is left of this one: near a month's end the
-// spend so far (under the smaller profile) would make any profile look quiet.
-void stepUp(BudgetFile& f, const GovernorFacts& g, GovernorStep& st) {
-  const HistoryProfile cur = f.effective();
-  if (cur >= kDefaultHistoryProfile) {   // never above standard by itself
-    f.quiet = 0;
-    return;
-  }
-  const HistoryProfile next = larger(cur);
-  const uint64_t projNext = capped(rateUnder(f, next)) * g.daysInMonth;
-  f.quiet = under(projNext, g.ceilingMicro, kGovernorUpPermille) ? (uint8_t)(f.quiet + 1) : 0;
-  if (f.quiet < kGovernorQuietNights) return;
-  st.projectedMicro = projNext;
-  change(f, st, next, g);
-  st.kind = GovernorStep::Kind::Up;
-  st.line = fmt("Spending has stayed well under the %s ceiling for 7 nights, so replies carry a longer conversation "
-                "history again (%s, was %s).",
-                Usd(g.ceilingMicro).s, slug(next), slug(st.from));
-  st.record = recordLine(st, g);
-}
-
-}  // namespace
-
-GovernorStep governorNight(BudgetFile& f, const GovernorFacts& g) {
-  GovernorStep st;
-  st.from = st.to = f.effective();
-  if (g.runningDay <= 0) return st;
+BudgetAdvice governorNight(BudgetFile& f, const GovernorFacts& g) {
+  BudgetAdvice a;
+  a.profile = f.effective();
+  if (g.runningDay <= 0) return a;
   if (f.night && g.runningDay + kGovernorObsNights < f.night) {
     // The clock was far ahead when the last night ran (a bad time sync, then the right one):
     // start again from tonight rather than wait for that day to come round.
     f.night = 0;
     f.nObs = 0;
-    f.quiet = 0;
   }
-  if (f.night && g.runningDay <= f.night) return st;   // ran tonight, or the clock went back a little
+  if (f.night && g.runningDay <= f.night) return a;   // ran tonight, or the clock went back a little
   observe(f, g);
   f.night = g.runningDay;
   f.month = g.monthKey;
   f.snapMicro = g.spentMicro;
-  st.kind = GovernorStep::Kind::Observed;
+  a.kind = BudgetAdvice::Kind::Observed;
   const bool ceiling = g.ceilingActive && g.ceilingMicro > 0;
-  if (f.pinned) pinnedNight(f, g, ceiling, st);
-  else if (!ceiling) noCeilingNight(f, g, st);
-  else if (f.nObs < kGovernorMinObs) {}   // still observing the profile in force
-  else if (const uint64_t projCur = projectedMonthMicro(f, g, f.effective());
-           over(projCur, g.ceilingMicro, kGovernorDownPermille))
-    stepDown(f, g, projCur, st);
-  else stepUp(f, g, st);
-  return st;
+  if (!ceiling || f.nObs < kGovernorMinObs || f.warnedMonth == g.monthKey) return a;
+  a.projectedMicro = projectedMonthMicro(f, g, a.profile);
+  if (!over(a.projectedMicro, g.ceilingMicro)) return a;
+  f.warnedMonth = g.monthKey;   // once a month
+  a.kind = BudgetAdvice::Kind::Advice;
+  a.clampDay = clampDayAt(g, rateUnder(f, a.profile));
+  a.fits = largestFit(f, g, a.fit);
+  a.line = fmt("Spending this month is on course for %s against the %s ceiling.", Usd(a.projectedMicro).s,
+               Usd(g.ceilingMicro).s) +
+           clampClause(a.clampDay, a.projectedMicro, g) + fitClause(a);
+  a.record = fmt("On course for %s of the %s ceiling: the owner was told (%s%s)", Usd(a.projectedMicro).s,
+                 Usd(g.ceilingMicro).s, a.fits ? slug(a.fit) : "no profile", a.fits ? " would fit" : " fits");
+  return a;
 }
 
-void pinProfile(BudgetFile& f, HistoryProfile p, int64_t day) {
-  f.pinned = true;
-  f.pinnedProfile = p;
-  f.setBy = ProfileSetBy::Owner;
+void chooseProfile(BudgetFile& f, HistoryProfile p, int64_t day) {
+  f.profile = p;
   f.setDay = day;
-  f.nObs = 0;
-  f.quiet = 0;
-  f.warnedMonth = 0;
+  f.nObs = 0;   // the rate under the new profile is observed afresh
 }
 
-void unpinProfile(BudgetFile& f, int64_t day) {
-  f.pinned = false;
-  f.governed = kDefaultHistoryProfile;
-  f.setBy = ProfileSetBy::Owner;
-  f.setDay = day;
-  f.nObs = 0;
-  f.quiet = 0;
-  f.warnedMonth = 0;
+bool profileCommandChanges(const BudgetFile& f, const std::string& arg) {
+  HistoryProfile p;
+  return parseHistoryProfile(arg, p) && p != f.profile;
 }
 
 // ---- words ----------------------------------------------------------------------------
@@ -436,42 +324,27 @@ std::string dayMonthText(int64_t calendarDay) {
 }
 
 std::string profileStatusText(const BudgetFile& f, BudgetFileRead read) {
-  const char* now = slug(f.effective());
+  const bool chosen = f.profile != kDefaultHistoryProfile;
   if (read == BudgetFileRead::Corrupt)
-    return fmt("Conversation history: %s. The budget settings file could not be read, so %s applies and the device "
-               "does not adjust it; send /budget profile <name> or /budget profile auto to write it again.",
-               now, f.pinned ? "your chosen profile" : "the default");
-  if (f.pinned)
-    return fmt("Conversation history: %s, chosen by you. The device does not change it; send /budget profile auto "
-               "to let it adjust for spending.", now);
-  if (f.setBy == ProfileSetBy::Governor) {
-    const std::string when = f.setDay ? " on " + dayMonthText(f.setDay) : std::string();
-    if (f.governed < kDefaultHistoryProfile)
-      return fmt("Conversation history: %s, set by the device%s because the month's spending was on course past the "
-                 "ceiling. Send /budget profile %s to keep the longer one.",
-                 now, when.c_str(), slug(kDefaultHistoryProfile));
-    return fmt("Conversation history: %s, set back by the device%s.", now, when.c_str());
-  }
-  return fmt("Conversation history: %s (the default%s). The device shortens it if a month's spending heads past the "
-             "ceiling.", now, read == BudgetFileRead::Missing ? "; no budget settings saved yet" : "");
+    return fmt("Conversation history: %s. The budget settings file could not be read, so %s applies and the "
+               "spending advice is off; send /budget profile <name> to write it again.",
+               slug(f.profile), chosen ? "your chosen profile" : "the default");
+  if (!chosen) return "Conversation history: full (the default: as much as the model carries).";
+  const std::string when = f.setDay ? " on " + dayMonthText(f.setDay) : std::string();
+  return fmt("Conversation history: %s, chosen by you%s. Send /budget profile full for the default.", slug(f.profile),
+             when.c_str());
 }
 
 std::string profileReplyText(const BudgetFile& f, const std::string& arg, bool ok) {
-  if (!ok) return "Unknown profile. Use /budget profile tight, lean, standard, wide or auto.";
+  if (!ok) return "Unknown profile. Use /budget profile tiny, small, medium, large or full (the default).";
   if (arg.empty())
     return profileStatusText(f, BudgetFileRead::Ok) +
-           "\nChoose one with /budget profile tight, lean, standard or wide, or /budget profile auto.";
-  if (arg == "auto")
-    return fmt("The device now chooses the conversation history: %s for now, shorter if a month's spending heads "
-               "past the ceiling.", slug(f.effective()));
-  return fmt("Conversation history set to %s and kept there: the device will not change it. Send /budget profile "
-             "auto to let it adjust for spending again.", slug(f.effective()));
-}
-
-bool profileCommandChanges(const BudgetFile& f, const std::string& arg) {
-  if (arg == "auto") return f.pinned;
-  HistoryProfile p;
-  return parseHistoryProfile(arg, p) && !(f.pinned && f.pinnedProfile == p);
+           "\nChoose one with /budget profile tiny, small, medium, large or full (the default).";
+  if (f.profile == kDefaultHistoryProfile)
+    return "Conversation history is back to full, the default: replies carry as much of the conversation as the "
+           "model allows.";
+  return fmt("Conversation history set to %s: replies carry less of the conversation and cost less. It stays until "
+             "you change it; send /budget profile full for the default.", slug(f.profile));
 }
 
 }  // namespace orch
