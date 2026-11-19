@@ -326,12 +326,11 @@ struct Turn {
 
 std::string typeOf(JsonObjectConst b) { return b["type"] | ""; }
 
-// An assistant turn: thinking before anything else; its call ids.
+// An assistant turn: not thinking alone (interleaved thinking keeps its place); its call ids.
 bool assistantTurn(const Turn& t, size_t i, C& c, std::vector<std::string>& calls) {
   bool other = false;
   for (JsonObjectConst b : t.blocks) {
     const bool th = typeOf(b) == "thinking" || typeOf(b) == "redacted_thinking";
-    if (th && other) return c.fail("turn " + std::to_string(i) + ": thinking after other blocks");
     other = other || !th;
     if (typeOf(b) == "tool_use") calls.push_back(b["id"] | "");
   }
@@ -746,8 +745,6 @@ void test_the_checker_accepts_the_documented_shape_and_rejects_what_the_api_refu
       {R"("input_schema":{"type":"object"})", R"("input_schema":{"type":"string"})"},     // schema
       {R"("system":[{"type":"text")", R"("system":[{"type":"image")"},                     // system block
       {R"("max_tokens":10,)", R"("max_tokens":10,"temperature_x":1,)"},                    // unknown key
-      {R"({"type":"thinking","thinking":"t","signature":"s"},{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}})",
-       R"({"type":"tool_use","id":"toolu_1","name":"read_file","input":{}},{"type":"thinking","thinking":"t","signature":"s"})"},  // thinking after a call
       {R"({"type":"thinking","thinking":"t","signature":"s"})", R"({"type":"thinking","thinking":"t","signature":"s","cache_control":{"type":"ephemeral"}})"},
       {R"("tools":[{"name":"read_file","description":"d","input_schema":{"type":"object"}}],"tool_choice":{"type":"auto"},)", ""},  // tool blocks without tools
       {R"({"type":"text","text":"hi"})", R"({"type":"image","source":{"type":"base64","media_type":"image/tiff","data":"AAAA"}})"},
@@ -1397,6 +1394,27 @@ void test_signed_thinking_rides_the_open_turn_only() {
   EXPECT_API_OK(out, "open thinking");
   TEST_ASSERT_TRUE(out.req.body.find(th) != std::string::npos);
   TEST_ASSERT_TRUE(out.view.messages[1].blocks[0].kind == sp::BlockKind::Thinking);
+  // Interleaved thinking keeps its stored place: k(T0) c(A) k(T1) c(B) goes out as T0 A T1 B.
+  txb::Convo il;
+  il.openTurn();
+  il.owner("ask 1:");
+  il.add(tx::ItemKind::RoundMeta).x = R"({"type":"thinking","thinking":"T0","signature":"s0"})";
+  const std::string ca = il.call("read_file", R"({"path":"A"})");
+  il.add(tx::ItemKind::RoundMeta).x = R"({"type":"thinking","thinking":"T1","signature":"s1"})";
+  const std::string cb = il.call("read_file", R"({"path":"B"})");
+  il.add(tx::ItemKind::RoundMeta).x = R"({"type":"thinking","thinking":"T2","signature":"s2"})";
+  il.receipt(ca, "read_file", "a");
+  il.receipt(cb, "read_file", "b");
+  il.nextRound();
+  Out ilOut;
+  RENDER_OK(rig, il, ilOut);
+  EXPECT_API_OK(ilOut, "interleaved");
+  const auto& blocks = ilOut.view.messages[1].blocks;
+  TEST_ASSERT_EQUAL(5, (int)blocks.size());
+  const char* want[] = {"T0", "A", "T1", "B", "T2"};
+  for (int k = 0; k < 5; ++k)
+    TEST_ASSERT_EQUAL_STRING(want[k], blocks[k].kind == sp::BlockKind::Thinking ? blocks[k].text.c_str()
+                                                                                 : blocks[k].args.substr(9, 1).c_str());
   // Pretty-printed or with a broken signature block: written compact, or left out.
   c.add(tx::ItemKind::RoundMeta).x = "{ \"type\": \"thinking\",\n \"thinking\": \"x\", \"signature\": \"s\" }";
   c.add(tx::ItemKind::RoundMeta).x = "{\"type\":\"thinking\"";
@@ -1679,7 +1697,7 @@ void test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes() {
   TEST_ASSERT_TRUE(out.view.messages[1].blocks[0].kind == sp::BlockKind::Thinking);
   TEST_ASSERT_EQUAL(4, (int)out.view.messages[1].blocks.size());   // thinking and three calls, no blank text
   TEST_ASSERT_EQUAL_MESSAGE(3, (int)out.view.messages[2].blocks.size(), out.body.c_str());
-  // A result answers the latest open call of its id, in its own turn only.
+  // A result answers the earliest open call of its id, in its own turn only.
   txb::Convo two;
   two.openTurn();
   two.owner("ask 1:");
@@ -1692,7 +1710,19 @@ void test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes() {
   RENDER_OK(rig, two, out);
   EXPECT_API_OK(out, "latest call");
   TEST_ASSERT_EQUAL(1, (int)out.view.messages[1].blocks.size());
-  TEST_ASSERT_EQUAL_STRING(R"({"n":2})", out.view.messages[1].blocks[0].args.c_str());
+  TEST_ASSERT_EQUAL_STRING(R"({"n":1})", out.view.messages[1].blocks[0].args.c_str());
+  // Two calls of one round sharing an id get their two results in order.
+  two.receipt("toolu_x", "read_file", "second result");
+  RENDER_OK(rig, two, out);
+  EXPECT_API_OK(out, "two same-id calls");
+  TEST_ASSERT_EQUAL(2, (int)out.view.messages[1].blocks.size());
+  for (int k = 0; k < 2; ++k) {
+    const sp::Block& call = out.view.messages[1].blocks[k];
+    const auto res = txb::detail::blocksOf(out.view, sp::BlockKind::ToolResult, call.id);
+    TEST_ASSERT_EQUAL(1, (int)res.size());
+    TEST_ASSERT_EQUAL_STRING(k == 0 ? R"({"n":1})" : R"({"n":2})", call.args.c_str());
+    TEST_ASSERT_EQUAL_STRING(k == 0 ? "one result" : "second result", res[0]->text.c_str());
+  }
   txb::Convo late;
   late.openTurn();
   late.owner("ask 1:");
@@ -1744,6 +1774,18 @@ void test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes() {
   RENDER_OK(rig, r, out);
   EXPECT_API_OK(out, "reused ids");
   for (int turn = 0; turn < 3; ++turn) TEST_ASSERT_TRUE(out.body.find("RESULT-" + std::to_string(turn)) != std::string::npos);
+}
+
+// ---- 12c. open: thinking under a ladder rung (RB-W1b settles it live) ------------------------------
+// Between two renders of one turn a rung changes bytes BEFORE the open turn's signed thinking
+// (rung 1 and 2 stub earlier results, rung 3 replaces earlier turns with the omission line). A
+// provider that binds preserved thinking to its prefix may refuse that request; dropping the
+// thinking may be refused while a tool round with thinking is open. RB-W1b sends the request
+// live, implements what the API accepts in sendOpenTurnThinking (plain_wire_anthropic.cpp) and
+// replaces this body with the offline rule it measured.
+void test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider() {
+  TXB_WAITS_FOR("PENDING RB-W1b");
+  TEST_FAIL_MESSAGE("RB-W1b: settle with a live conformance request and replace this body with the accepted rule");
 }
 
 // ---- 13. the framing, measured (ruling 16) --------------------------------------------------------------
@@ -1857,6 +1899,7 @@ int main(int, char**) {
   RUN_TEST(test_an_owner_message_is_its_stamp_and_its_text);
   RUN_TEST(test_outside_content_without_a_stub_is_never_sent_whole);
   RUN_TEST(test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes);
+  RUN_TEST(test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider);
   RUN_TEST(test_the_measured_framing_per_block_is_inside_the_battery_allowances);
   return UNITY_END();
 }

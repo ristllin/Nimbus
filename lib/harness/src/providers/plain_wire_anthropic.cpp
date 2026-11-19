@@ -270,10 +270,11 @@ struct Pairs {
     sent.push_back(r.wid);
     calls.push_back(Open{r.id, r.turn, row, false});
   }
-  // A result answers the latest unanswered call of its id in its own turn; any other is
-  // left out (an orphan, a second result).
+  // A result answers the earliest unanswered call of its id in its own turn (two calls of one
+  // round sharing an id get their results in order); any other is left out (an orphan, a
+  // second result).
   void result(Row& r, std::vector<Row>& rows) {
-    for (size_t i = calls.size(); i-- > 0;) {
+    for (size_t i = 0; i < calls.size(); ++i) {
       Open& c = calls[i];
       if (c.answered || c.id != r.id || c.turn != r.turn) continue;
       c.answered = true;
@@ -289,6 +290,16 @@ bool assistantKind(tx::ItemKind k) {
   return k == tx::ItemKind::Assistant || k == tx::ItemKind::RoundMeta || k == tx::ItemKind::Call;
 }
 
+// Whether the open turn's signed thinking is sent. OPEN QUESTION, settled by RB-W1b with a live
+// conformance request: between two renders of one turn the ladder (rungs 1 to 3) can change
+// bytes BEFORE the stored thinking; a provider that binds preserved thinking to its prefix may
+// refuse that request, and dropping the thinking may itself be refused while a tool round with
+// thinking is open. Today: always sent. This is the one place to change.
+bool sendOpenTurnThinking(const RenderInput& in) {
+  (void)in;
+  return true;
+}
+
 // What is rendered, and the pairing: a call with its one result. Assistant items before the
 // first user item after thru (a turn cut by compaction) are not sent: the request opens with
 // the user's turn.
@@ -301,7 +312,7 @@ void chooseRows(const RenderInput& in, Facts& f) {
     if (assistantKind(r.kind) && !userSeen) continue;
     if (userKind(r.kind)) r.keep = userSeen = true;
     else if (r.kind == tx::ItemKind::Assistant) r.keep = true;
-    else if (r.kind == tx::ItemKind::RoundMeta) r.keep = r.turn == in.turn->turn;
+    else if (r.kind == tx::ItemKind::RoundMeta) r.keep = r.turn == in.turn->turn && sendOpenTurnThinking(in);
     else if (r.kind == tx::ItemKind::Call) pairs.call(r, i);
     else if (r.kind == tx::ItemKind::Result) pairs.result(r, f.rows);
   }
@@ -327,9 +338,10 @@ size_t nextWhileWaiting(const Facts& f, const std::vector<size_t>& queue, const 
   return first;   // unreachable: every kept call has its result later
 }
 
-// In each run of one turn's assistant items (one message), signed thinking goes first, as
-// the API wants it; a run of thinking alone (its round's calls all left out) is not sent.
-void arrangeThinking(const Facts& f, std::vector<size_t>& order) {
+// Signed thinking goes back exactly where it was stored (before the text, between calls, after
+// the last call: wire.h MetaPart), in q order; only a run of one turn's assistant items made of
+// thinking alone (its round's calls all left out) is not sent.
+void dropThinkingAlone(const Facts& f, std::vector<size_t>& order) {
   std::vector<size_t> out;
   out.reserve(order.size());
   for (size_t i = 0; i < order.size();) {
@@ -342,9 +354,7 @@ void arrangeThinking(const Facts& f, std::vector<size_t>& order) {
     }
     bool said = false;
     for (size_t k = i; k < j; ++k) said = said || f.rows[order[k]].kind != tx::ItemKind::RoundMeta;
-    for (int pass = 0; said && pass < 2; ++pass)
-      for (size_t k = i; k < j; ++k)
-        if ((f.rows[order[k]].kind == tx::ItemKind::RoundMeta) == (pass == 0)) out.push_back(order[k]);
+    if (said) out.insert(out.end(), order.begin() + (long)i, order.begin() + (long)j);
     i = j;
   }
   order.swap(out);
@@ -378,7 +388,7 @@ std::vector<size_t> sendOrder(const Facts& f) {
     done[pick] = true;
     order.push_back(queue[pick]);
   }
-  arrangeThinking(f, order);
+  dropThinkingAlone(f, order);
   // The request ends with the user's turn (the API takes no assistant prefill): assistant
   // text or meta left last by a round whose calls were all left out is not sent.
   while (!order.empty() && assistantKind(f.rows[order.back()].kind)) order.pop_back();
