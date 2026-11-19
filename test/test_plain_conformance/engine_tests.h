@@ -7,6 +7,7 @@
 // seam at its point, a refused allocation.
 #include <unity.h>
 
+#include <algorithm>
 #include <new>
 #include <string>
 #include <vector>
@@ -117,6 +118,9 @@ inline void test_a_tool_less_reply_is_one_request_and_one_message() {
   for (const tx::Item& it : items) kinds += tx::kindLetter(it.kind);
   TEST_ASSERT_EQUAL_STRING("utade", kinds.c_str());
   TEST_ASSERT_TRUE(items[2].fin);
+  // The request offers the registered always-on tools, composed for the turn.
+  const auto& tools = b.model.last().view.tools;
+  TEST_ASSERT_TRUE_MESSAGE(std::find(tools.begin(), tools.end(), "read_file") != tools.end(), "no tools offered");
   TEST_ASSERT_EQUAL_STRING("reply", lastEnd(items)->end.cause.c_str());
   TEST_ASSERT_EQUAL(1, (int)lastEnd(items)->end.headRequests);
   // The owner message is in the request before any model call, stamped with its time.
@@ -575,6 +579,25 @@ inline void test_no_call_starts_past_the_soft_wall() {
   expectPaired(b);
 }
 
+// A round that starts late (a 200 s tool round first) gets only the wall clock that is left:
+// a provider that then hangs cannot keep the turn past its walls.
+inline void test_a_late_round_gets_only_the_time_left() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [&b](const plain::DispatchCtx&) {
+    b.ms += 200000;
+    return plain::DispatchDecision{};
+  }));
+  b.world.files["notes/a.md"] = "alpha";
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.respondWith([](const sp::Recorded&, size_t) { return sp::transportCut(60000); });
+  const uint32_t t0 = b.ms;
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read it", out));
+  TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
+  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kSoftWallMs + 60000, "the late round ran on a full wall clock");
+}
+
 // ---- the sentinel ----------------------------------------------------------------------------
 inline void test_an_empty_engine_answers_a_typed_outcome() {
   plain::PlainEngine e{plain::EngineDeps{}};
@@ -605,6 +628,7 @@ inline void run() {
   RUN_TEST(test_an_effect_through_more_needs_its_intent);
   RUN_TEST(test_a_result_lost_to_the_card_is_closed_after_a_restart);
   RUN_TEST(test_no_call_starts_past_the_soft_wall);
+  RUN_TEST(test_a_late_round_gets_only_the_time_left);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);
 }
 
