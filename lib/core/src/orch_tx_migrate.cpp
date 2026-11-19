@@ -158,7 +158,6 @@ bool hasPathLikeToken(const std::string& text) {
     while (e > s && trimmable(text[e - 1])) --e;
     if (e <= s) continue;
     const std::string tok = text.substr(s, e - s);
-    if (tok.find("://") != std::string::npos) return true;
     for (size_t k = 0; k < tok.size(); ++k) {
       if (tok[k] != '/' && tok[k] != '\\') continue;
       const bool before = k > 0, after = k + 1 < tok.size();
@@ -748,8 +747,10 @@ struct Run {
           DigestEntry e{a.day, a.text, 2, 1};
           Item it;
           DigestEntry back;
+          std::string header;
           const bool valid = digestItem(e, 0, 1, it).ok() && digestOf(it, back).ok() && a.text.size() <= kDigestMaxBytes &&
-                             !hasPathLikeToken(a.text);
+                             !hasPathLikeToken(a.text) && dayHeader(a.day, header).ok() &&
+                             a.text.compare(0, header.size() + 2, header + digest_text::kDaySep) == 0;
           if (!valid) p.verdict = Digest0Verdict::Text;
         }
         if (p.verdict == Digest0Verdict::Accepted) {
@@ -844,7 +845,6 @@ struct Run {
     }
     StoreState st = StoreState::NotStored;
     a.status = log.appendLine(a.mine.data(), a.mine.size(), st);
-    if (a.status.ok() && st != StoreState::Stored) a.status = Status::fail(Err::NotStored, "tx::migrate append");
     if (!a.status.ok()) return false;
     ++a.q;
     ++out.items;

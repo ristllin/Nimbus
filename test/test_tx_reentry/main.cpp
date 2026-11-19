@@ -282,12 +282,13 @@ void test_a_lost_marker_never_imports_a_row_twice() {
   for (int lose = 0; lose < 3; ++lose) {
     World w;
     w.rng.seed(8);
-    w.m = month(w.old, 8, 400, 6, 3, 5, 800);
+    w.m = month(w.old, 8, 400, 6, lose == 2 ? 6 : 3, 0, 800);   // 2: every row under the old pointer
     w.clock = w.m.lastT + kHour;
-    w.old.add(kChat, w.clock, "user", "message", "the last question");
-    w.old.add(kChat, w.clock, "assistant", "message", "the first reply");
-    w.old.add(kChat, w.clock, "assistant", "message", "the second reply");
-    if (lose == 2) w.files.killAtAppend = 2;   // the batch's note: digest 0 and the anchor stored
+    if (lose != 2) {
+      w.old.add(kChat, w.clock, "user", "message", "the last question");
+      w.old.add(kChat, w.clock, "assistant", "message", "the first reply");
+      w.old.add(kChat, w.clock, "assistant", "message", "the second reply");
+    }
     w.resume("first");
     std::string path;
     TEST_ASSERT_TRUE(tx::migratedPath(kChatKey, path).ok());
@@ -343,6 +344,39 @@ void test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing() {
   TEST_ASSERT_EQUAL_UINT64(anchorQ, head.thru);   // engine 2's turn stays shown
 }
 
+// The overtaken batch closes the turn it left open; a refused marker save after that never makes
+// a second closing item.
+void test_an_overtaken_batch_closes_its_open_turn_once() {
+  World w;
+  firstMigration(w, 12);
+  w.engine1(4);
+  const size_t a0 = w.files.appends;
+  w.files.killAtAppend = (long)(a0 + 2);   // note and the first owner row stored, its reply not
+  try {
+    tx::MigrationOutcome o;
+    (void)tx::migrate(w.deps(), o);
+  } catch (const txb::Killed&) {
+  }
+  w.files.clearFaults();
+  w.engine2("stored early", false);
+  w.files.refuseRename = true;
+  tx::MigrationOutcome o;
+  const tx::Status st = tx::migrate(w.deps(), o);
+  TEST_ASSERT_FALSE(st.ok());
+  TEST_ASSERT_TRUE(o.overtaken);
+  w.files.clearFaults();
+  std::string path;
+  TEST_ASSERT_TRUE(tx::migratedPath(kChatKey, path).ok());
+  w.files.files.erase(path + ".tmp");   // its temp was not written whole either: the old plan is read again
+  const tx::MigrationOutcome out = w.done("closed once");
+  TEST_ASSERT_TRUE(out.overtaken);
+  std::map<uint32_t, int> ends;
+  for (const tx::Item& it : stored(w.files))
+    if (it.kind == tx::ItemKind::TurnEnd) ++ends[it.turn];
+  for (const auto& kv : ends) TEST_ASSERT_EQUAL_MESSAGE(1, kv.second, "a turn closed twice");
+  expectAccounted(w.old, w.files, w.m.thru, out.hi, "closed once", true);
+}
+
 void test_engines_taking_turns_never_lose_double_or_reorder_a_row() {
   for (uint32_t seed = 1; seed <= 12; ++seed) {
     World w;
@@ -382,6 +416,7 @@ int main(int, char**) {
   RUN_TEST(test_items_without_a_marker_are_a_reentry_from_the_newest_mirrored_row);
   RUN_TEST(test_a_lost_marker_never_imports_a_row_twice);
   RUN_TEST(test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing);
+  RUN_TEST(test_an_overtaken_batch_closes_its_open_turn_once);
   RUN_TEST(test_engines_taking_turns_never_lose_double_or_reorder_a_row);
   return UNITY_END();
 }

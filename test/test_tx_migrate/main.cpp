@@ -147,10 +147,10 @@ void test_figures_leave_out_dates_and_keep_quantities() {
 
 void test_path_like_tokens_are_found_and_prose_is_not() {
   for (const char* p : {"see notes/boat.md", "the file boat.md", "/data/x", "C:\\tmp", "https://example.test/a",
-                        "(food.csv)", "photo.jpeg.", "logs/2026"})
+                        "(food.csv)", "photo.jpeg.", "logs/2026", "/data", "www.example.com"})
     TEST_ASSERT_TRUE_MESSAGE(tx::hasPathLikeToken(p), p);
   for (const char* p : {"half 1/2 a cup", "e.g. a walk", "end of it. Next day", "a.m. and p.m.", "U.S. trip", "",
-                        "it costs 3.50 now", "mid-day. Then"})
+                        "it costs 3.50 now", "mid-day. Then", "it ended.Then we", "costs 3.50kg"})
     TEST_ASSERT_FALSE_MESSAGE(tx::hasPathLikeToken(p), p);
   TEST_ASSERT_TRUE(tx::hasPathLikeToken("and/or"));   // a slash between words reads as a path: refused, safe side
 }
@@ -586,6 +586,10 @@ void test_rows_between_the_pointers_over_the_budget_are_named() {
       TEST_ASSERT_EQUAL(out.named, namedIn(it.x));
     }
   TEST_ASSERT_EQUAL(1, notes);
+  // a turn is imported whole: the first imported row is an owner message
+  const std::vector<tx::Item> items = w.items();
+  for (size_t i = 0; i + 1 < items.size(); ++i)
+    if (importNoteText(items[i])) TEST_ASSERT_EQUAL((int)tx::ItemKind::User, (int)items[i + 1].kind);
 }
 
 // ---- interruptions --------------------------------------------------------------------------
@@ -650,7 +654,7 @@ void test_a_power_cut_at_every_write_resumes_to_the_same_store() {
       const tx::MigrationOutcome out = resume(w, 4, msg);
       expectAccounted(w.old, w.files, w.m.thru, out.hi, msg);
       TEST_ASSERT_TRUE_MESSAGE(sameItems(want, w.items()), msg);
-      TEST_ASSERT_TRUE_MESSAGE(w.answers.asks <= (int)tx::kDigest0Tries, msg);
+      TEST_ASSERT_TRUE_MESSAGE(w.answers.asks == 1, msg);   // the newest marker (its temp) is read first
     }
   }
 }
@@ -880,6 +884,158 @@ void test_a_zone_change_between_plan_and_items_changes_nothing_stored() {
   TEST_ASSERT_EQUAL((int)tx::ItemKind::Digest, (int)got[1].kind);
 }
 
+void test_rows_with_no_text_or_long_text_and_the_batch_rules() {
+  World w;
+  w.old.add(kChat, kMonthStart + 8 * kHour, "user", "message", "");
+  w.old.add(kChat, kMonthStart + 8 * kHour, "user", "message", std::string(13000, 'x'));
+  w.old.add(kChat, kMonthStart + 9 * kHour, "assistant", "message", "");
+  w.old.add(kChat, kMonthStart + 9 * kHour, "assistant", "message", "fine");
+  const tx::MigrationOutcome out = w.done("texts");
+  TEST_ASSERT_EQUAL(2, out.imported);
+  TEST_ASSERT_EQUAL(0, out.named);
+  for (const tx::Item& it : w.items())
+    if (it.kind == tx::ItemKind::User) TEST_ASSERT_EQUAL(tx::kTier1OwnerText, it.x.size());
+  expectAccounted(w.old, w.files, 0, out.hi, "texts");
+  // a budget smaller than any row still imports the newest
+  World v;
+  for (int i = 0; i < 5; ++i) v.old.add(kChat, kMonthStart + (8 + i) * kHour, "user", "message", "message " + std::to_string(i));
+  v.budget = 10;
+  const tx::MigrationOutcome o = v.done("tiny budget");
+  TEST_ASSERT_EQUAL(1, o.imported);
+  TEST_ASSERT_EQUAL(4, o.named);
+  // the batch builder: rows at or below cut, above hi, ours and tool rows give no item
+  tx::ImportPlan p;
+  p.q0 = 10, p.lo = 0, p.cut = 2, p.hi = 6, p.turns = 1, p.imported = 2;
+  tx::BatchBuilder b(p);
+  std::vector<tx::DayRow> rows(7);
+  for (size_t i = 0; i < rows.size(); ++i) {
+    rows[i].id = i + 1;
+    rows[i].t = kMonthStart;
+    rows[i].role = i % 2 ? tx::RowRole::Assistant : tx::RowRole::Owner;
+    rows[i].text = "row " + std::to_string(i + 1);
+  }
+  rows[3].ours = true;
+  rows[4].role = tx::RowRole::Tool;
+  std::vector<uint64_t> got;
+  std::vector<uint64_t> qs;
+  TEST_ASSERT_TRUE(b.feed(rows, true, [&](const tx::Item& it, uint64_t row) {
+                      if (row) got.push_back(row);
+                      qs.push_back(it.q);
+                      return true;
+                    }).ok());
+  TEST_ASSERT_TRUE((got == std::vector<uint64_t>{3, 6}));
+  TEST_ASSERT_EQUAL_UINT64(10, qs.front());
+  for (size_t i = 1; i < qs.size(); ++i) TEST_ASSERT_EQUAL_UINT64(qs[i - 1] + 1, qs[i]);
+}
+
+// A source that answers rows out of order or outside the range is refused, not trusted.
+void test_a_source_out_of_order_is_refused() {
+  struct Bad : tx::RowSource {
+    tx::Status read(uint64_t, uint64_t, size_t, std::vector<tx::DayRow>& out, bool& end) override {
+      out.assign(2, tx::DayRow{});
+      out[0].id = 9, out[1].id = 5;
+      out[0].role = out[1].role = tx::RowRole::Owner;
+      out[0].text = out[1].text = "x";
+      end = true;
+      return tx::Status::success();
+    }
+    tx::Status newest(uint64_t& id) override {
+      id = 9;
+      return tx::Status::success();
+    }
+  } bad;
+  World w;
+  tx::MigrateDeps d = w.deps();
+  d.rows = &bad;
+  tx::MigrationOutcome out;
+  TEST_ASSERT_EQUAL((int)tx::Err::InvalidArgument, (int)tx::migrate(d, out).err);
+  TEST_ASSERT_EQUAL(0, w.items().size());
+}
+
+// A damaged marker is not trusted (its crc): the log says how far the rows go.
+void test_a_damaged_marker_is_not_trusted() {
+  World w;
+  fill(w, Small{64, 160, 1u << 30});
+  const tx::MigrationOutcome first = w.done("first");
+  std::string path;
+  TEST_ASSERT_TRUE(tx::migratedPath(kChatKey, path).ok());
+  std::string& m = w.files.files[path];
+  const size_t k = m.find("\"hi\":");
+  TEST_ASSERT_TRUE(k != std::string::npos);
+  m[k + 5] = '1';   // hi now names an early row
+  w.old.add(kChat, kMonthStart + 20 * kDay, "user", "message", "a new message");
+  const tx::MigrationOutcome out = w.done("damaged");
+  TEST_ASSERT_EQUAL(1, out.imported);
+  expectAccounted(w.old, w.files, w.m.thru, out.hi, "damaged");
+  (void)first;
+}
+
+// The digest-0 call cut by a power loss every time: two asks in all, then the omission line.
+void test_a_power_cut_during_every_ask_still_finishes() {
+  World w;
+  fill(w, Small{65, 160, 2500});
+  int calls = 0;
+  tx::MigrateDeps d = w.deps();
+  d.digest0 = [&calls](const tx::Digest0Ask&, tx::Digest0Answer&) -> tx::Status {
+    ++calls;
+    throw txb::Killed{"during the ask"};
+  };
+  tx::MigrationOutcome out;
+  bool fin = false;
+  for (int i = 0; i < 6 && !fin; ++i) {
+    try {
+      fin = tx::migrate(d, out).ok() && out.step == tx::MigrationStep::Done;
+    } catch (const txb::Killed&) {
+    }
+  }
+  TEST_ASSERT_TRUE(fin);
+  TEST_ASSERT_EQUAL(2, calls);
+  TEST_ASSERT_FALSE(out.digest0);
+  expectDigest0(w, false, "cut asks");
+}
+
+void test_an_answer_that_is_no_valid_digest_is_not_taken() {
+  World w;
+  fill(w, Small{66, 160, 2500});
+  tx::MigrateDeps d = w.deps();
+  d.digest0 = [](const tx::Digest0Ask&, tx::Digest0Answer& a) {
+    a.summary = kGood;
+    a.text = kGood;   // no day header
+    a.day = "2026-10-20";
+    return tx::Status::success();
+  };
+  tx::MigrationOutcome out;
+  TEST_ASSERT_TRUE(tx::migrate(d, out).ok());
+  TEST_ASSERT_EQUAL((int)tx::Digest0Verdict::Text, (int)out.verdict);
+  expectDigest0(w, false, "invalid text");
+}
+
+// A line stored twice (a replay wrote the same q again): the resumed plan keeps the first and goes on.
+void test_a_q_stored_twice_does_not_stop_a_resumed_plan() {
+  World ref;
+  fill(ref, Small{67, 200, 3000});
+  ref.done("ref");
+  for (long k = 3; k < 6; ++k) {
+    World w;
+    fill(w, Small{67, 200, 3000});
+    w.files.killAtAppend = k;
+    try {
+      tx::MigrationOutcome o;
+      (void)w.run(o);
+    } catch (const txb::Killed&) {
+    }
+    w.files.clearFaults();
+    std::string dir;
+    TEST_ASSERT_TRUE(tx::txDir(kChatKey, dir).ok());
+    std::string& seg = w.files.files[w.files.segments(dir).back()];
+    const size_t end = seg.rfind('\n', seg.size() - 2);
+    seg += seg.substr(end + 1);   // the last whole line again
+    const tx::MigrationOutcome out = w.done("twice");
+    TEST_ASSERT_FALSE(out.overtaken);
+    TEST_ASSERT_TRUE(sameItems(ref.items(), w.items()));
+  }
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -909,5 +1065,11 @@ int main(int, char**) {
   RUN_TEST(test_the_budget_holds_for_one_huge_turn_and_for_replies_alone);
   RUN_TEST(test_a_resumed_plan_never_takes_a_q_ram_holds);
   RUN_TEST(test_a_zone_change_between_plan_and_items_changes_nothing_stored);
+  RUN_TEST(test_rows_with_no_text_or_long_text_and_the_batch_rules);
+  RUN_TEST(test_a_source_out_of_order_is_refused);
+  RUN_TEST(test_a_damaged_marker_is_not_trusted);
+  RUN_TEST(test_a_power_cut_during_every_ask_still_finishes);
+  RUN_TEST(test_an_answer_that_is_no_valid_digest_is_not_taken);
+  RUN_TEST(test_a_q_stored_twice_does_not_stop_a_resumed_plan);
   return UNITY_END();
 }
