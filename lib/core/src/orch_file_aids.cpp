@@ -272,6 +272,20 @@ bool takesLineEnd(const EditRequest& e) {
   return e.newText.empty() && e.oldText.back() != '\n' && c != '\n' && c != '\r';
 }
 
+// A line pick that found no match to replace on that line: there several times (a part of
+// it, ruling 88), there only as part of an old with a line end, or not there at all.
+void pickError(Txt& t, const EditRequest& e, const Plan& p) {
+  const uint64_t l = e.line;
+  if (p.part >= 0)
+    t << e.oldName << T::kOnLine << l << " " << uint64_t(p.onLineCount) << " times; line " << l << " is: "
+      << std::string_view(quoteCut(p.quote, kAidQuoteMax));
+  else if (p.onLine)
+    t << e.oldName << T::kPartOf << l << ", not the whole line; line " << l << " is: "
+      << std::string_view(quoteCut(p.quote, kAidQuoteMax));
+  else
+    t << T::kNoMatchOn << l << "; matches at " << std::string_view(renderLines(p.lines));
+}
+
 std::string planError(const std::string& path, const EditRequest& e, const Plan& p) {
   Txt t;
   const std::string_view where = path;
@@ -280,14 +294,8 @@ std::string planError(const std::string& path, const EditRequest& e, const Plan&
       << "); nothing written";
   else if (!p.count)
     t << e.oldName << T::kNotIn << where << " (" << p.bytes << " B)";
-  else if (e.line && p.pick < 0 && p.part >= 0)
-    t << e.oldName << T::kOnLine << uint64_t(e.line) << " " << uint64_t(p.onLineCount) << " times; line "
-      << uint64_t(e.line) << " is: " << std::string_view(quoteCut(p.quote, kAidQuoteMax));
-  else if (e.line && p.pick < 0 && p.onLine)
-    t << e.oldName << T::kPartOf << uint64_t(e.line) << ", not the whole line; line " << uint64_t(e.line) << " is: "
-      << std::string_view(quoteCut(p.quote, kAidQuoteMax));
   else if (e.line && p.pick < 0)
-    t << T::kNoMatchOn << uint64_t(e.line) << "; matches at " << std::string_view(renderLines(p.lines));
+    pickError(t, e, p);
   else if (!e.line && !e.all && !e.count && p.count > 1)
     t << e.oldName << T::kManyA << where << " " << uint64_t(p.count) << " times, at "
       << std::string_view(renderLines(p.lines)) << T::kManyB;
