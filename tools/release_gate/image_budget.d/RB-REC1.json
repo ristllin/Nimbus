@@ -1,0 +1,5 @@
+{
+  "lane": "RB-REC1",
+  "allowance_bytes": -102400,
+  "why": "A promised deletion. PRD section 10 flash ledger: RB-REC1 -41,000 B or better (an estimate made before RB-Q3a). Same-tree builds, rb-main 4e7f4ac27 (its own build in the lane's scratch worktree) against the lane's tip on RB-REC3's tip 0fb78d73e (RB-REC3 measured -111 B), code bytes (firmware.bin minus the docs pack): esp32s3-cyd -105,165, esp32s3 -104,973, test -105,453, test-cyd -105,501; the docs pack -6,835 B apart (evidence/image-delta-1.txt). The allowance is the smallest, rounded toward zero to a multiple of 512 B less a margin for the review fixes; it holds against the recorded baseline a911c901 as well (RB-Q3a's -28.5 KB and RB-SYNC's +7.7 KB sit between them)."
+}
