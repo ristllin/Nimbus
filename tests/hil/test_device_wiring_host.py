@@ -81,7 +81,8 @@ def files_read_faults(files_cpp: str) -> list:
         faults.append("files.read with tail does not refuse in the shared words")
     at = files_cpp.find('reg.add("files.read"')
     whole = files_cpp[at : files_cpp.find("reg.add(", at + 10)] if at >= 0 else ""
-    if not before(whole, "fileReadableAsText(name, text)", "utf8CapLen("):
+    # RB-TR1: the plain read sniffs the file's head, then streams the part (scanCsvFile).
+    if not before(whole, "fileReadableAsText(name, head)", "scanCsvFile("):
         faults.append("files.read shows a binary file")
     return faults
 
@@ -93,7 +94,7 @@ def test_every_files_read_branch_asks_the_rule():
 def test_the_files_read_guard_sees_the_tail_branch_skip_the_rule():
     source = (
         "static nimbus::orch::ToolResult readTail(int a) {\n  auto v = tailRows(w);\n}\n"
-        'reg.add("files.read", [] { fileReadableAsText(name, text); utf8CapLen(p); });\nreg.add("x");\n'
+        'reg.add("files.read", [] { fileReadableAsText(name, head); scanCsvFile(p); });\nreg.add("x");\n'
     )
     assert files_read_faults(source)[0] == "files.read with tail shows a binary file"
 

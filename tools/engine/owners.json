@@ -1718,8 +1718,10 @@
         "test/test_file_append/**",
         "test/test_orch_result_store/**",
         "tools/engine/owners.json",
-        "tools/release_gate/prompt_ceiling.d/RB-TR1.json"
+        "tools/release_gate/prompt_ceiling.d/RB-TR1.json",
+        "tests/hil/test_device_wiring_host.py"
       ],
+      "plan_text": "the old engine's file read path (src/agent/files_subsystem.cpp and its header), the shared file aids in lib/core that it calls, nimbusd's PosixFiles parity, the tool declaration with its prompt-ledger entries, their tests (test_file_aids_e1 and goldens), docs",
       "notes": [
         "Ruling 86 item 3: files.read can be continued (readPart, both engines), nimbusd's loop caps are the derived budget and it keeps the device's recent-results ring; ledger PC-0118..PC-0121"
       ]

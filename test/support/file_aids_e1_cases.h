@@ -80,6 +80,22 @@ inline std::vector<std::pair<std::string, std::string>> partFiles() {
           {"docs/blank.txt", "\n"}};
 }
 
+// One part checked against the file: "" when its head's byte and line numbers are true and its
+// body is those bytes of the file, starting where the parts before it ended.
+inline std::string checkPart(const std::smatch& m, const std::string& r, const std::string& file,
+                             const std::vector<size_t>& ends, size_t joined) {
+  const size_t from = std::stoul(m[1]), to = std::stoul(m[2]), body = m.length(0);
+  const size_t lines = ends[file.size()] + (!file.empty() && file.back() != '\n' ? 1 : 0);
+  if (std::stoul(m[3]) != file.size() || from != joined || to - from != r.size() - body ||
+      file.compare(from, to - from, r, body, std::string::npos) != 0)
+    return "the part " + std::to_string(from) + "-" + std::to_string(to) + " does not hold those bytes of the file";
+  const bool linesTrue = !m[4].matched || (std::stoul(m[5]) == ends[from] + 1 &&
+                                           std::stoul(m[6]) == ends[to - 1] + 1 && std::stoul(m[7]) == lines);
+  if (!linesTrue) return "the line numbers are wrong: " + m.str(0);
+  if (to > from && (static_cast<unsigned char>(r[body]) & 0xC0) == 0x80) return "a part starts inside a character";
+  return std::string();
+}
+
 // The class check of a continued read. read(offset) is one files.read result for that offset
 // (0: no offset given). Follows the next part each head names until "end of file". "" when the
 // parts put together are the file byte for byte, every result fits in cap, every head's byte
@@ -89,32 +105,19 @@ inline std::string followParts(const std::function<std::string(uint64_t)>& read,
       R"(^bytes (\d+)-(\d+) of (\d+)(, lines (\d+)-(\d+) of (\d+))?; (next part: "offset":(\d+)|end of file)\n)");
   std::vector<size_t> ends(file.size() + 1, 0);   // ends[i]: line ends in file[0, i)
   for (size_t i = 0; i < file.size(); ++i) ends[i + 1] = ends[i] + (file[i] == '\n');
-  auto linesBefore = [&](size_t at) { return ends[at]; };
-  const size_t lines = linesBefore(file.size()) + (!file.empty() && file.back() != '\n' ? 1 : 0);
   std::string joined;
   uint64_t offset = 0;
   const size_t most = 2 * file.size() / cap + 2;
   for (size_t calls = 1; calls <= most; ++calls) {
     const std::string r = read(offset);
-    char why[160];
     std::smatch m;
     if (r.size() > cap) return "a result of " + std::to_string(r.size()) + " B passes the cap";
     if (!std::regex_search(r, m, head)) return "no part head in: " + r.substr(0, 120);
-    const size_t from = std::stoul(m[1]), to = std::stoul(m[2]), body = m.length(0);
-    if (std::stoul(m[3]) != file.size() || from != joined.size() || to - from != r.size() - body ||
-        file.compare(from, to - from, r, body, std::string::npos) != 0) {
-      std::snprintf(why, sizeof why, "the part %zu-%zu does not hold those bytes of the file (joined %zu)", from, to,
-                    joined.size());
-      return why;
-    }
-    if (m[4].matched && (std::stoul(m[5]) != linesBefore(from) + 1 || std::stoul(m[6]) != linesBefore(to - 1) + 1 ||
-                         std::stoul(m[7]) != lines))
-      return "the line numbers of part " + std::to_string(from) + "-" + std::to_string(to) + " are wrong: " + m.str(0);
-    if (to > from && (static_cast<unsigned char>(r[body]) & 0xC0) == 0x80) return "a part starts inside a character";
-    joined += r.substr(body);
+    if (const std::string bad = checkPart(m, r, file, ends, joined.size()); !bad.empty()) return bad;
+    joined += r.substr(m.length(0));
     if (!m[9].matched) return joined == file ? std::string() : "end of file before the whole file was read";
-    if (std::stoul(m[9]) != to) return "the next part does not start where this one ends";
-    offset = to;
+    if (std::stoul(m[9]) != std::stoul(m[2])) return "the next part does not start where this one ends";
+    offset = std::stoul(m[9]);
   }
   return "more than " + std::to_string(most) + " calls to read " + std::to_string(file.size()) + " B";
 }

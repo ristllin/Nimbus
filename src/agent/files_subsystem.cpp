@@ -922,9 +922,17 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
 // form of q, into out. A write that lands during the scan (g_indexGen) makes the answer the
 // error, never a total or a part of a file that moved.
 static const char kChangedUnderRead[] = " changed while it was read; nothing was totalled";
-static bool scanCsvFile(const std::string& project, const std::string& name, const nimbus::orch::aids::CsvQuery* q,
-                        const std::vector<std::string>* sums, const std::string& day, std::string& out,
-                        const uint64_t* partAt = nullptr) {
+struct ScanAsk {   // exactly one of q, sums (with day) or partAt
+  const nimbus::orch::aids::CsvQuery* q = nullptr;
+  const std::vector<std::string>* sums = nullptr;
+  std::string day;
+  const uint64_t* partAt = nullptr;
+};
+static bool scanCsvFile(const std::string& project, const std::string& name, const ScanAsk& ask, std::string& out) {
+  const nimbus::orch::aids::CsvQuery* q = ask.q;
+  const std::vector<std::string>* sums = ask.sums;
+  const std::string& day = ask.day;
+  const uint64_t* partAt = ask.partAt;
   uint32_t gen = 0;
   size_t size = 0;
   {
@@ -956,7 +964,10 @@ static std::string dayTotalLine(const std::string& project, const std::string& n
   if (!dayArg.empty() && nimbus::orch::isoDayOf(dayArg) != dayArg)
     return "[no day total: 'date' must be YYYY-MM-DD]\n";
   std::string line;
-  if (!scanCsvFile(project, name, nullptr, &sums, dayArg.empty() ? runningDay() : dayArg, line))
+  ScanAsk ask;
+  ask.sums = &sums;
+  ask.day = dayArg.empty() ? runningDay() : dayArg;
+  if (!scanCsvFile(project, name, ask, line))
     line = "[no day total: " + line + "]\n";
   return line;
 }
@@ -966,7 +977,9 @@ static std::string dayTotalLine(const std::string& project, const std::string& n
 static nimbus::orch::ToolResult readTable(const std::string& project, const std::string& name,
                                           const nimbus::orch::aids::CsvQuery& q) {
   std::string out;
-  return scanCsvFile(project, name, &q, nullptr, std::string(), out) ? nimbus::orch::ToolResult::ok(out)
+  ScanAsk ask;
+  ask.q = &q;
+  return scanCsvFile(project, name, ask, out) ? nimbus::orch::ToolResult::ok(out)
                                                                       : nimbus::orch::ToolResult::fail(out);
 }
 
@@ -1771,7 +1784,9 @@ void registerTools() {
             // The part that fits the result this turn carries, streamed 4 KB per card hold, any
             // size; its head names the part and the next offset (file_aids_e1.h readPart).
             std::string out;
-            if (!scanCsvFile(project, name, nullptr, nullptr, std::string(), out, &at))
+            ScanAsk ask;
+            ask.partAt = &at;
+            if (!scanCsvFile(project, name, ask, out))
               return nimbus::orch::ToolResult::fail(out);
             return nimbus::orch::ToolResult::ok(out);
           },
