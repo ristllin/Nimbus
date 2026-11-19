@@ -439,7 +439,8 @@ inline void test_every_seam_is_called_at_its_point() {
   TXB_OK(h.afterDeliver(plain::HookSlot::Observer, [&](const plain::DeliveredCtx& c) {
     log.push_back("afterDeliver " + *c.text + (c.sent ? " sent" : ""));
   }));
-  TXB_OK(h.idleStep(plain::HookSlot::Compaction, [&](const plain::IdleCtx&) {
+  // Compaction holds its own slot now (RB-C2); the idle seam's later slot is free.
+  TXB_OK(h.idleStep(plain::HookSlot::ShadowProbe, [&](const plain::IdleCtx&) {
     log.push_back("idleStep");
     plain::IdleOutcome o;
     o.worked = true;
@@ -471,7 +472,7 @@ inline void test_every_seam_is_called_at_its_point() {
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[device] effects this turn: none."));
   TEST_ASSERT_EQUAL_STRING("Read alpha; the restart was refused.", out.text.c_str());
   TEST_ASSERT_EQUAL(1, (int)b.sent.size());
-  TEST_ASSERT_TRUE(idle.worked && idle.by == plain::HookSlot::Compaction);
+  TEST_ASSERT_TRUE(idle.worked && idle.by == plain::HookSlot::ShadowProbe);
   expectPaired(b);
 }
 

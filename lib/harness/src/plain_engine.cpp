@@ -39,6 +39,7 @@ struct PlainEngine::ChatState {
   bool storageEpisode = false;         // storage refused an item and has stored none since
   bool noteDue = false;                // a stored gap note is still owed for the last episode
   bool noteShown = false;              // the model has seen the note in this episode (RAM at least)
+  uint64_t droppedThru = 0;            // the restart fill gave up the turns through this q
 };
 
 namespace {
@@ -1176,6 +1177,7 @@ PlainEngine::~PlainEngine() = default;
 
 tx::HeadState* PlainEngine::head() { return chat_ && chat_->booted ? &chat_->head : nullptr; }
 std::vector<tx::DigestEntry>* PlainEngine::digests() { return chat_ && chat_->booted ? &chat_->live : nullptr; }
+uint64_t PlainEngine::omittedThru() const { return chat_ && chat_->booted ? chat_->droppedThru : 0; }
 
 Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out = TurnOutcome{};
@@ -1189,6 +1191,9 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
     }
     return Status::fail(Err::TooLarge, "plain::PlainEngine::runTurn.memory");
   }
+  // Items stored between turns (the compaction driver's digests) take their q from head.nextQ:
+  // the turn's first item comes after them.
+  chat_->nextQ = std::max({chat_->nextQ, chat_->head.nextQ, deps_.arena->lastQ() + 1});
   Status st = Status::success();
   try {
     st = TurnRun(deps_, *chat_, *t).run(in);
@@ -1234,6 +1239,7 @@ Status PlainEngine::boot(const BootCtx& ctx) {
     if (st.ok()) {
       tx::FillReport report;
       if (!(st = deps_.log->fill(c.head, *deps_.arena, report)).ok()) return st;
+      c.droppedThru = report.droppedThru;
     }
     c.nextQ = std::max<uint64_t>(std::max<uint64_t>(c.head.nextQ, deps_.arena->lastQ() + 1), 1);
     for (size_t i = 0; i < deps_.arena->count(); ++i) {

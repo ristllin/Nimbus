@@ -144,10 +144,14 @@ class PlainEngine {
 
   const EngineDeps& deps() const { return deps_; }
   // The chat's head state, shared with the compaction driver (RB-C2), which moves thru and
-  // writes it; the engine writes it at every turn close. Null before boot.
+  // nextQ and writes it; the engine writes it at every turn close and takes its next q from
+  // max(its own, head.nextQ, the arena's last q + 1) before each turn. Null before boot.
   nimbus::orch::tx::HeadState* head();
   // The digests in force (RB-C2 replaces them after a compaction; the next turn shows them).
   std::vector<nimbus::orch::tx::DigestEntry>* digests();
+  // The newest q the restart fill gave up (stored, not resident; 0: none): the compaction
+  // driver's CompactDeps::omittedThru.
+  uint64_t omittedThru() const;
 
   struct ChatState;   // the chat between turns (plain_engine.cpp)
 

@@ -79,6 +79,7 @@ class Battery {
   std::unique_ptr<tx::TxLog> log;
   std::unique_ptr<plain::PlainHooks> hooks;
   std::unique_ptr<plain::PlainEngine> engine;
+  std::string compactCtl, chatsum;     // RB-C2's small files (they survive a power cut)
   uint32_t turnNo = 0;
   size_t sends = 0;
   size_t tornCuts = 0;                 // torn cuts so far: each may leave one undecodable line
@@ -286,7 +287,7 @@ class Battery {
   void install() {
     (void)plain::installSuppression(*hooks);
     (void)plain::installResume(*hooks, plain::ResumeDeps{log.get()});
-    (void)plain::installCompaction(*hooks, plain::CompactDeps{&platform, &model, log.get(), arena.get()});
+    (void)plain::installCompaction(*hooks, compactDeps());
     (void)plain::installRails(*hooks, plain::RailsDeps{});
   }
 
@@ -320,6 +321,40 @@ class Battery {
       return o;
     }
     return world.dispatch(c, t);
+  }
+
+  // The compaction driver (RB-C2): the engine's head, digests and restart omission, read when it
+  // runs; one rung, the dialect's wire on the head host; its control record and the chatsum
+  // mirror in RAM (they outlive a power cut like storage does).
+  plain::CompactDeps compactDeps() {
+    plain::CompactDeps d{&platform, &model, log.get(), arena.get()};
+    d.files = &files;
+    d.chatKey = chatKey;
+    d.chatId = chatKey;
+    d.head = [this] { return engine ? engine->head() : nullptr; };
+    d.digests = [this] { return engine ? engine->digests() : nullptr; };
+    d.omittedThru = [this] { return engine ? engine->omittedThru() : uint64_t(0); };
+    d.rungs = [this](std::vector<plain::SummarizerRung>& out) {
+      plain::SummarizerRung r;
+      r.wire = batteryWire(dialect);
+      r.dialect = dialect;
+      r.host = dialect == plain::Dialect::AnthropicMessages ? "anthropic" : "battery";
+      r.model = dialect == plain::Dialect::AnthropicMessages ? "claude-haiku-5-5" : "battery-model";
+      r.endpoint.host = hostFor(dialect);
+      r.endpoint.key = [] { return std::string("sk-fake-battery"); };
+      out.assign(1, r);
+    };
+    d.ctl.load = [this] { return compactCtl; };
+    d.ctl.save = [this](const std::string& t) {
+      compactCtl = t;
+      return true;
+    };
+    d.chatsum.load = [this] { return chatsum; };
+    d.chatsum.save = [this](const std::string& t) {
+      chatsum = t;
+      return true;
+    };
+    return d;
   }
 
   bool onSend(const std::string& chat, const std::string& text) {

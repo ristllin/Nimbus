@@ -18,7 +18,6 @@ test_tx_pairing::test_wire_pairing_responses RB-W2
 test_tx_pairing::test_wire_pairing_chat RB-W3
 test_tx_pairing::test_wire_pairing_flat RB-W4
 test_tx_pairing::test_a_suppressed_repeat_is_still_paired RB-E1b
-test_tx_pairing::test_compaction_moves_a_call_with_its_result RB-C2
 test_tx_pairing::test_pairs_survive_a_cut_at_every_append RB-X1
 
 # test_tx_coverage
@@ -27,8 +26,6 @@ test_tx_coverage::test_wire_coverage_responses RB-W2
 test_tx_coverage::test_wire_coverage_chat RB-W3
 test_tx_coverage::test_wire_coverage_flat RB-W4
 test_tx_coverage::test_a_floor_head_names_what_the_ladder_omits RB-W3
-test_tx_coverage::test_compaction_covers_every_row RB-C2
-test_tx_coverage::test_a_failed_compaction_leaves_every_row_covered RB-C2
 
 # test_tx_stub_rule
 

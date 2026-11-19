@@ -626,6 +626,10 @@ durability around it and nothing that reads, edits or appends to the model's tex
   fails is delivered with the failure's line.
 - **Nothing to deliver**: an answer with no text and no call (empty content, a refusal) gets the
   exchange's plain line for a person; a routine's empty text stays its silence.
+- **Compaction** (RB-C2) shares the engine's head state, digests and restart omission
+  (`head()`, `digests()`, `omittedThru()`); before each turn the engine takes its next q from the
+  largest of its own, head.nextQ and the arena's last q + 1, so a digest stored between turns
+  never collides with the turn's first item.
 - **Storage**: every item goes through `TxLog::store`. An item the card refused stays in RAM;
   the model sees one device note at the next round boundary and the owner one storage line,
   once per episode. With no card the chat runs from RAM and no effect tool runs.
