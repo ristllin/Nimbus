@@ -1,0 +1,6 @@
+{
+  "lane": "RB-BG",
+  "allowance_bytes": 18432,
+  "envs": {"esp32s3": 18432, "esp32s3-cyd": 18432, "test": 18432, "test-cyd": 18432},
+  "why": "Over the 6,144 B a lane may take without a ruling (ruling 39 planned +5 KB): asks for one (PR_BODY.md). Same-tree builds of esp32s3-cyd: base 726f61612 (lanes/RB-BG/scratch/base) 6,418,624 B, lane tip 29ab68cd3 6,437,056 B: +18,432 B, docs pack unchanged. By symbol (nm, tip against base): the governor and its words (orch_budget_governor.cpp) about 6.2 KB of code (governorNight 1,966, parseBudgetFile with its small reader 1,527, budgetFileJson 670, the status and reply words 900, facts and projection 900); the device store, the /budget profile command and the change record (budget_profile_store.cpp, budget_command.cpp) about 4.2 KB; the owner notice pump in main.cpp about 0.4 KB; the measured floor and the profile cap in deriveRequestContext 0.3 KB; the /budget profile parse 0.5 KB; the rest is the owner copy and log strings (about 5.5 KB). Cut from +23,520 B by snprintf words and a reader of the file's own shape in place of ArduinoJson."
+}
