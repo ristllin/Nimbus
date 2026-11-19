@@ -501,7 +501,8 @@ AppendFacts appendFacts(std::string_view tail, bool tailIsWhole, uint64_t fileSi
     }
     facts += (shown++ ? ", " : "") + factText(known, total == 1, fileLines + 1 + k, back, k);
   }
-  if (!facts.empty()) a.note += join({"; ", facts, more ? " +" : "", more ? std::string_view(Num(more)) : ""});
+  if (!facts.empty()) a.note += join({"; ", facts});
+  if (more) a.note += join({" +", Num(more)});
   return a;
 }
 
