@@ -1,5 +1,5 @@
 {
   "lane": "RB-REC4",
   "allowance_bytes": 23552,
-  "why": "Ruling 47: the general file aids on the old engine (the shared CSV scan with exact totals, the streamed edit with its line pick, file_aids_e1's files.read and files.edit), at most 23,552 B on esp32s3-cyd against the replaced edit code. Same-tree builds, lane/RB-REC1 7ea7eadda (its own build in the lane's scratch worktree) against the lane's tip, code bytes (firmware.bin minus the docs pack): esp32s3-cyd +23,370 B (the shared aids +29,889 B of objects; RB-REC1's CsvDayTally, the old edit passes and TextEditStream leave the image); the docs pack +1,142 B apart (tables and the tool catalog)."
+  "why": "Ruling 47: the general file aids on the old engine (the shared CSV scan with exact totals, the streamed edit with its line pick, file_aids_e1's files.read and files.edit), at most 23,552 B on esp32s3-cyd against the replaced edit code. Same-tree builds, lane/RB-REC1 5edefb72e (its own build in the lane's scratch worktree) against the lane's tip, code bytes (firmware.bin minus the docs pack): esp32s3-cyd +23,514 B (the shared aids +29,889 B of objects; RB-REC1's CsvDayTally, the old edit passes and TextEditStream leave the image); the docs pack +1,142 B apart (tables and the tool catalog)."
 }
