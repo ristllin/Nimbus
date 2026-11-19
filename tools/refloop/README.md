@@ -59,7 +59,9 @@ through its environment.
 
 One file. The loop itself is `run_turn`:
 
-1. append what the owner sent (text, and photos as native image parts), stamped with the time;
+1. append what the owner sent (text, and photos as native image parts), stamped with the time in the
+   device's own form (`[2026-11-19 Thu 08:10]`, with `(day 2026-11-18 until 04:00)` before the day start;
+   `message_stamp`, ruling 64), so both arms see the same stamp;
 2. call the model with the whole history, the fixed system prompt and the tool list;
 3. append the answer exactly as served (text, thinking blocks with their signatures, tool calls);
 4. no tool call: that text is the reply. Otherwise run each call over MCP, append the results, go to 2.

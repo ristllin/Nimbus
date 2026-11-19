@@ -678,12 +678,25 @@ class TimeTest(unittest.TestCase):
         before = conv.stamp("x")
         conv.advance(7 * 86400)
         week = datetime.now(LONDON).timestamp() + 7 * 86400
-        self.assertEqual(conv.stamp("x")[:16], datetime.fromtimestamp(week, LONDON).strftime("[%a %d %b %Y"))
+        self.assertEqual(conv.stamp("x")[:15], datetime.fromtimestamp(week, LONDON).strftime("[%Y-%m-%d %a"))
         self.assertNotEqual(conv.stamp("x"), before)
         with self.assertRaises(ValueError):
             conv.advance(-1)
         later = refloop.Conversation([], clock_offset_s=7 * 86400)  # a new conversation starts on the same clock
         self.assertIn(datetime.fromtimestamp(week, LONDON).strftime("%A %d %B %Y"), later.system)
+
+    def test_the_reference_loop_stamp_is_the_device_stamp(self):
+        # Ruling 64: arm B's message stamp has RB-REC5's forms byte for byte (lib/core day_start.h),
+        # so both arms see the same stamp: year, weekday, and the day clause before the day start.
+        at = lambda *a: datetime(*a, tzinfo=LONDON)  # noqa: E731
+        self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 8, 10)), "[2026-11-19 Thu 08:10]")
+        self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 0, 30)), "[2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00)]")
+        self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 4, 0)), "[2026-11-19 Thu 04:00]")
+        self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 3, 59)), "[2026-11-19 Thu 03:59 (day 2026-11-18 until 04:00)]")
+        self.assertEqual(refloop.message_stamp(at(2026, 3, 1, 0, 5)), "[2026-03-01 Sun 00:05 (day 2026-02-28 until 04:00)]")
+        self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 0, 30), day_start_min=0), "[2026-11-19 Thu 00:30]")
+        conv = refloop.Conversation([], chat_key="k")
+        self.assertRegex(conv.stamp("hello"), r"^\[\d{4}-\d\d-\d\d [A-Z][a-z]{2} \d\d:\d\d( \(day \d{4}-\d\d-\d\d until 04:00\))?\] hello$")
 
     def test_a_saved_transcript_keeps_its_clock_and_an_old_one_loads_at_zero(self):
         with tempfile.TemporaryDirectory() as tmp:

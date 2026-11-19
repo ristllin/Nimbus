@@ -231,6 +231,25 @@ def provider_for(model: str, **kw):
     return (Anthropic if model.startswith("claude") else OpenAI)(model, **kw)
 
 
+DAY_STARTS_MIN = 4 * 60  # the device's "day starts at" default (lib/core day_start.h)
+
+
+def message_stamp(when: datetime, day_start_min: int = DAY_STARTS_MIN) -> str:
+    """The device's message stamp (RB-REC5, ruling 64), so both arms see the same bytes.
+
+    "[2026-11-19 Thu 08:10]" at or after the day start; "[2026-11-19 Thu 00:30 (day 2026-11-18
+    until 04:00)]" before it, where the running day is still yesterday. Weekday names are the
+    C locale's, as on the device.
+    """
+    days = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    plain = f"{when:%Y-%m-%d} {days[when.weekday()]} {when:%H:%M}"
+    minute = when.hour * 60 + when.minute
+    if day_start_min and minute < day_start_min:
+        running = (when - timedelta(days=1)).strftime("%Y-%m-%d")
+        plain += f" (day {running} until {day_start_min // 60:02d}:{day_start_min % 60:02d})"
+    return f"[{plain}]"
+
+
 # ----------------------------------------------------------------- conversation
 class Conversation:
     """The state of one conversation: system prompt, tool list and messages, saved after every step.
@@ -266,7 +285,7 @@ class Conversation:
         self.save()
 
     def stamp(self, text: str) -> str:
-        return self.now().strftime("[%a %d %b %Y %H:%M] ") + text
+        return f"{message_stamp(self.now())} {text}"
 
     def save(self):
         if self.path:
