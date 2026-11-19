@@ -744,12 +744,21 @@ static void test_the_device_and_the_daemon_send_through_the_deliver_function() {
                            "the drain must send the deliver function's part");
   TEST_ASSERT_TRUE_MESSAGE(impl.find("tgHtml(") == std::string::npos && impl.find("cleanReplyMarkup(") == std::string::npos,
                            "the send seam converts only through the deliver function");
-  // A part that failed is retried before the parts after it (they carry no number).
-  const std::string poll = bodyOf(dev, "void pollTask(void*) {");
-  TEST_ASSERT_TRUE_MESSAGE(poll.find("xQueueSendToFront(g_replyQ, reply, 0)") != std::string::npos,
-                           "the drain must put a failed part back at the front of the reply queue");
-  TEST_ASSERT_TRUE_MESSAGE(poll.find("xQueueSend(g_replyQ, reply, 0)") == std::string::npos,
+  // A part that failed is retried before the parts after it (they carry no number). Since
+  // lane RB-TS1 the part never leaves the front: the drain peeks at it and takes it off only
+  // when it is done with (nimbus::net::drainTgReplies, test_tg_reply_drain), and the poll
+  // loop and the turn's reply both use that one drain.
+  const std::string drain = bodyOf(dev, "__attribute__((noinline)) static void drainReplyQueue(bool haveToken) {");
+  TEST_ASSERT_TRUE_MESSAGE(drain.find("nimbus::net::drainTgReplies(") != std::string::npos &&
+                               drain.find("xQueuePeek(g_replyQ, &r, 0)") != std::string::npos,
+                           "the drain must send the part at the front without taking it off first");
+  TEST_ASSERT_TRUE_MESSAGE(drain.find("xQueueSend(g_replyQ") == std::string::npos &&
+                               drain.find("xQueueSendToBack(g_replyQ") == std::string::npos,
                            "a failed part sent to the back would arrive after the parts it precedes");
+  const std::string poll = bodyOf(dev, "void pollTask(void*) {");
+  TEST_ASSERT_TRUE_MESSAGE(poll.find("drainReplyQueue(haveToken)") != std::string::npos &&
+                               poll.find("xQueueReceive(g_replyQ") == std::string::npos,
+                           "the poll loop must drain replies through the one drain");
   const std::string hosted = slurp("nimbusd/src/telegram.h");
   TEST_ASSERT_FALSE_MESSAGE(hosted.empty(), "nimbusd/src/telegram.h not readable");
   TEST_ASSERT_TRUE_MESSAGE(hosted.find("nimbus::orch::deliverText(") != std::string::npos,

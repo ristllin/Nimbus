@@ -250,7 +250,6 @@ _MILESTONES = (
     ("dispatch_ms", None, "start_ms", lambda s: s.startswith("telegram: settle dispatch")),
     ("start_ms", None, None, lambda s: s.startswith(TURN_START)),
     ("end_ms", "start_ms", None, lambda s: s.startswith(TURN_END)),
-    ("send_ms", "end_ms", None, lambda s: s.startswith(SEND_OK)),
 )
 
 
@@ -280,6 +279,10 @@ def itemize_turn(lines: Sequence[Stamped], head_host: str = "api.anthropic.com")
     for ln in lines:
         _note_milestone(t, ln)
         _note_head_exchange(t, ln, head_host)
+    # The reply's send: the first send ok at or after the model's result. Since lane RB-TS1
+    # the reply goes out inside the turn, before its turn end line; before it, after it.
+    if t.result_ms is not None:
+        t.send_ms = next((ln.ms for ln in lines if ln.ms >= t.result_ms and ln.text.startswith(SEND_OK)), None)
     if t.arrival_ms is not None and t.start_ms is not None:
         t.arrival_segments = _segments(lines, t.arrival_ms, t.start_ms)
     if t.result_ms is not None and t.send_ms is not None:
@@ -393,6 +396,26 @@ def test_itemize_turn_splits_arrival_and_send_path():
     assert sum(s.ms for s in t.arrival_segments) == 8600
     assert sum(s.ms for s in t.send_segments) == 4500
     assert [s.ms for s in t.send_segments] == [200, 1800, 2500]
+    assert t.send_segments[-1].ends_at == "telegram: send ok"
+
+
+def test_a_reply_sent_inside_the_turn_is_its_send():
+    lines = parse_stamped(
+        [
+            "[agent @15275] telegram: settle hold (injected, re-poll 0)",
+            "[agent @21515] telegram: settle dispatch (injected) n=1 after 6053 ms (quiet)",
+            "[agent @24849] orchestrator: turn host=anthropic (conv=0 heap=35780)",
+            "[agent @29022] transport: heaptrace api.anthropic.com/v1/messages body=63260 pre=1/1 conn=1/1 "
+            "wrote=1/1 done=1/1 fail=none af=0 min=1 at=25589 ms=3432 wms=290 pms=0",
+            "[agent @29166] orchestrator: turn -> {}",
+            "[agent @29800] telegram: send ok to [redacted]",
+            "[agent @30985] turn spend: ok owner",
+            "[agent @31026] turn end: ok host=anthropic",
+            "[agent @32395] telegram: send ok to [redacted]",
+        ]
+    )
+    t = itemize_turn(lines)
+    assert t.result_ms == 29021 and t.send_ms == 29800 and t.result_to_send == 779
     assert t.send_segments[-1].ends_at == "telegram: send ok"
 
 
@@ -781,7 +804,7 @@ def plan_turns(b: Bench, n: int, out: str) -> None:
         b.say(
             f"TURNS restored: hasTg={o.get('hasTg')} head={o.get('orchHost')} tgAllow={'set' if o.get('tgAllow') else 'empty'}"
         )
-    with open(os.path.join(out, "turns.raw.log"), "w") as f:
+    with open(os.path.join(out, "turns.raw.log"), "a") as f:  # a hold may run the plan more than once
         f.write("\n".join(b.redact(x) for x in raw) + "\n")
 
 

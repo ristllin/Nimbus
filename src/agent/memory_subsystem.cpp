@@ -700,6 +700,8 @@ void noteNetworkStart(uintptr_t caller) {
   alogf("memory: a network request started while holding the card lock (caller 0x%08x)", (unsigned)caller);
 }
 
+bool cardLockHeldHere() { return ownsCardLock(); }
+
 WebGuardStats webGuardStats() {
   portENTER_CRITICAL(&g_loopGuardMux);
   WebGuardStats s = g_webGuard;

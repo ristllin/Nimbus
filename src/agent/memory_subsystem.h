@@ -155,6 +155,10 @@ WebGuardStats webGuardStats();
 // boot (the caller's return address, for addr2line). The request still runs.
 void noteNetworkStart(uintptr_t caller);
 
+// True when the calling task holds the card lock (any depth). Lane RB-TS1: the Telegram
+// task sends a turn's reply at once only when it does not (no network under the lock).
+bool cardLockHeldHere();
+
 // Loop guard counters (test console LOOPGUARD?, the HIL stall leg).
 struct LoopGuardStats {
   uint32_t watchedBlockingTakes = 0;   // blocking lock() calls on a watched task (a bug)

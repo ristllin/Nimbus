@@ -46,6 +46,7 @@
 #include "nimbus/net/telegram_auth.h" // nimbus::net::TelegramAuthFailDetector (host-tested)
 #include "nimbus/net/tg_poll_sched.h" // CUM-462 idle waits yield to local turns (host-tested)
 #include "nimbus/net/tg_backoff.h"    // getUpdates backoff + retry_after (host-tested)
+#include "nimbus/net/tg_reply_drain.h" // lane RB-TS1: the reply queue's send rules (host-tested)
 #include "adapters/http_multipart.h"  // media send (sendDocument/Photo/Voice)
 #include "nimbus/net/tg_receipt.h"     // Telegram's answer -> a delivery receipt (host-tested)
 
@@ -56,6 +57,7 @@
 #include <LittleFS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>   // g_sendMx: the reply queue's producers (lane RB-TS1)
 #include <esp_heap_caps.h>   // MALLOC_CAP_SPIRAM - queue storage on PSRAM (docs/memory-model.md)
 #include <esp_attr.h>        // RTC_NOINIT_ATTR - the storm breakers' record
 #include <esp_app_desc.h>    // the running image's ELF hash: the guard record's build id
@@ -77,8 +79,7 @@ struct PendingReply {
   char    text[4097];   // ONE Telegram message: 4096 chars max + NUL. Long turn
                         // replies / sub-agent results are split into parts of at most
                         // kTelegramPartBytes by send() BEFORE they reach this buffer.
-  uint8_t tries;        // resend attempts so far (transient TLS failures)
-};
+};                      // (the front part's failed attempts: s_frontTries, lane RB-TS1)
 
 struct InboundMsg {
   char chatId[32];
@@ -237,6 +238,17 @@ volatile bool   g_authRejected = false;
 volatile int    g_activeJobs = 0;
 volatile bool   g_running = false;
 QueueHandle_t   g_replyQ   = nullptr;
+SemaphoreHandle_t g_sendMx = nullptr;   // the reply queue's producers (send(), lane RB-TS1)
+// The receive cycle's turn is running on this task (TgIo::runTurn): its reply is sent at
+// once (sendsInline, lane RB-TS1).
+static bool s_turnWindow = false;
+struct TurnSendWindow {
+  const bool was = s_turnWindow;
+  TurnSendWindow() { s_turnWindow = true; }
+  ~TurnSendWindow() { s_turnWindow = was; }
+  TurnSendWindow(const TurnSendWindow&) = delete;
+  TurnSendWindow& operator=(const TurnSendWindow&) = delete;
+};
 QueueHandle_t   g_inboundQ = nullptr;
 
 // Worst (smallest) free stack the tg_poll task has ever had, in bytes. Updated
@@ -533,18 +545,21 @@ static size_t urlEncodedLen(const char* s) {
 
 // Write `s` url-encoded to the socket in small stack-buffered chunks (avoids a
 // large contiguous String alloc on the fragmented heap).
-static void writeUrlEncoded(WiFiClientSecure& sc, const char* s) {
+// Returns the bytes the socket took (the caller compares it with urlEncodedLen).
+static size_t writeUrlEncoded(WiFiClientSecure& sc, const char* s) {
   static const char* hexd = "0123456789ABCDEF";
   char buf[96];
   int bi = 0;
+  size_t wrote = 0;
   for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
     unsigned char c = *p;
-    if (bi > (int)sizeof(buf) - 3) { sc.write((const uint8_t*)buf, bi); bi = 0; }
+    if (bi > (int)sizeof(buf) - 3) { wrote += sc.write((const uint8_t*)buf, bi); bi = 0; }
     if (c == ' ')        { buf[bi++] = '+'; }
     else if (urlSafe(c)) { buf[bi++] = (char)c; }
     else { buf[bi++] = '%'; buf[bi++] = hexd[(c >> 4) & 0xF]; buf[bi++] = hexd[c & 0xF]; }
   }
-  if (bi) sc.write((const uint8_t*)buf, bi);
+  if (bi) wrote += sc.write((const uint8_t*)buf, bi);
+  return wrote;
 }
 
 // Open TLS to api.telegram.org. Retries the handshake: rapid alternating-host
@@ -1232,10 +1247,16 @@ static void sendFileStoreNotice() {
 // One raw sendMessage POST. htmlMode adds parse_mode=HTML (the text must then
 // already BE converted HTML). replyTo > 0 adds reply_to_message_id (lane ECHO:
 // the turn's progress line answers the owner's message, so it has context).
-// Returns Telegram's ok verdict.
-static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode, int64_t replyTo = 0) {
+// Returns Telegram's ok verdict; `proved` gets what the POST proved (lane RB-TS1,
+// tg_reply_drain.h): delivered, refused, not sent, or written with its answer lost.
+static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode, int64_t replyTo,
+                             nimbus::net::TgSend& proved) {
+  nimbus::net::TgSendSeen seen;
+  proved = nimbus::net::classifyTgSend(seen);
   WiFiClientSecure sc;   // workConnect frees the single arena first (never 2 resident TLS sessions)
   if (!workConnect(sc)) { alog("telegram: send connect fail"); return false; }
+  seen.connected = true;
+  proved = nimbus::net::classifyTgSend(seen);
 
   char prefix[96];
   int prefixLen;
@@ -1246,7 +1267,8 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
     prefixLen = snprintf(prefix, sizeof(prefix), "chat_id=%s%s&text=", chatId,
                          htmlMode ? "&parse_mode=HTML" : "");
   if (prefixLen <= 0 || (size_t)prefixLen >= sizeof(prefix)) { tlsClose(sc); return false; }
-  size_t bodyLen = (size_t)prefixLen + urlEncodedLen(text);
+  const size_t textLen = urlEncodedLen(text);
+  size_t bodyLen = (size_t)prefixLen + textLen;
 
   char req[256];
   snprintf(req, sizeof(req),
@@ -1256,20 +1278,25 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
     "Content-Length: %u\r\n"
     "Connection: close\r\n\r\n",
     g_token.c_str(), (unsigned)bodyLen);
-  sc.print(req);
-  sc.print(prefix);
-  writeUrlEncoded(sc, text);
+  const size_t reqLen = strlen(req);
+  seen.wroteAll = sc.print(req) == reqLen && sc.print(prefix) == (size_t)prefixLen &&
+                  writeUrlEncoded(sc, text) == textLen;
+  proved = nimbus::net::classifyTgSend(seen);
+  if (!seen.wroteAll) { tlsClose(sc); return false; }   // a short request: Telegram took nothing
 
   uint32_t deadline = millis() + 10000;
   char line[MAX_LINE];
   readLine(sc, line, sizeof(line), deadline);   // status line
+  seen.status = httpStatusCode(line);
+  proved = nimbus::net::classifyTgSend(seen);
   skipHeaders(sc, deadline);
   char* resp = ensureApiResp();
-  if (!resp) { tlsClose(sc); return false; }
+  if (!resp) { tlsClose(sc); return proved == nimbus::net::TgSend::Ok; }
   readBody(sc, resp, 512, deadline);
   tlsClose(sc);
 
-  return strstr(resp, "\"ok\":true") != nullptr;
+  // A 2xx status is the proof; the body's "ok":true says the same when it was read.
+  return proved == nimbus::net::TgSend::Ok;
 }
 
 // One Telegram message out, as the deliver function makes it (lane RB-Q1c,
@@ -1279,19 +1306,31 @@ static bool doSendMessageRaw(const char* chatId, const char* text, bool htmlMode
 // else). FALLBACK: if Telegram rejects the entities, the same part is resent plain.
 // Formatting may degrade; the text never does. Nothing is removed from or added to
 // the part here: the reply guard's sentence deletion at this seam is gone (v5.2.0).
-static bool doSendMessageImpl(const char* chatId, const char* part, int64_t replyTo) {
+// Lane RB-TS1: only a REFUSED HTML part is resent plain (nimbus::net::sendTgPart). A part
+// that did not reach Telegram is not resent here (the queue's drain retries it later),
+// and one whose answer was lost may already be in the chat, so it gets no plain copy.
+static bool doSendMessageImpl(const char* chatId, const char* part, int64_t replyTo,
+                              nimbus::net::TgSend* proved = nullptr) {
   const nimbus::orch::TelegramPart p = nimbus::orch::telegramPart(part ? part : "");
-  bool ok = doSendMessageRaw(chatId, p.html.c_str(), /*htmlMode=*/true, replyTo);
-  if (!ok) {
-    alogf("telegram: html send rejected - resending plain to %s", chatId);
-    ok = doSendMessageRaw(chatId, p.plain.c_str(), /*htmlMode=*/false, replyTo);
-  }
-  alogf("telegram: send %s to %s", ok ? "ok" : "FAIL", chatId);
+  const nimbus::net::TgSend r = nimbus::net::sendTgPart([&](bool html) {
+    nimbus::net::TgSend one = nimbus::net::TgSend::NotSent;
+    if (!html) alogf("telegram: html send rejected - resending plain to %s", chatId);
+    doSendMessageRaw(chatId, html ? p.html.c_str() : p.plain.c_str(), html, replyTo, one);
+    return one;
+  });
+  if (proved) *proved = r;
+  const bool ok = r == nimbus::net::TgSend::Ok;
+  alogf("telegram: send %s to %s", ok ? "ok" : r == nimbus::net::TgSend::Unconfirmed ? "UNCONFIRMED (answer lost)" : "FAIL",
+        chatId);
   return ok;
 }
 
 // Delivery only: the reply-queue drain calls this for parts send() already made.
-bool doSendMessage(const char* chatId, const char* text) { return doSendMessageImpl(chatId, text, 0); }
+static nimbus::net::TgSend doSendMessage(const char* chatId, const char* text) {
+  nimbus::net::TgSend proved = nimbus::net::TgSend::NotSent;
+  doSendMessageImpl(chatId, text, 0, &proved);
+  return proved;
+}
 
 // A notice the poll task sends at once, bypassing the reply queue (the voice note path).
 // Archived like every outbound send, and delivered as every reply is: the deliver
@@ -2115,7 +2154,10 @@ struct TgIo {
     agent::vision::offerTurnSet(String(chat.c_str()), String(text.c_str()));
     noteCrossed(chat, text);
     s_turnMsgId = turnMessageId();   // lane ECHO: the progress line replies to this message
-    if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
+    {
+      const TurnSendWindow sendsAtOnce;   // lane RB-TS1: the reply goes out when queued
+      if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
+    }
     s_turnMsgId = 0;
     agent::vision::dropTurnSet();
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
@@ -2445,6 +2487,64 @@ __attribute__((noinline)) static void runTestStall() {   // noinline: the stall 
 }
 #endif
 
+// ---- the reply queue's drain (lane RB-TS1) ----------------------------------
+// One drain, used at the bottom of the poll loop and inside a turn right after the
+// turn queued its reply (flushOutbound). The rules are nimbus::net::drainTgReplies:
+// the part stays in the queue while it is sent (peek, then take it off), a part that
+// did not reach Telegram stays in front and is retried by the next drain, a part
+// whose answer was lost is sent at most twice. Poll task only: the queue has this
+// one consumer, so the front part and its attempts below are never raced.
+static nimbus::net::TgPartTries s_frontTries;   // the attempts of the part at the front
+static bool s_draining = false;                 // a drain runs on this task (no nested one)
+
+static void noteDrainStep(const PendingReply& r, nimbus::net::TgDrainStep step, const nimbus::net::TgPartTries& t) {
+  using nimbus::net::TgDrainStep;
+  if (step == TgDrainStep::Retry)
+    alogf("telegram: send retry %u for %s", (unsigned)t.tries, r.chatId);
+  else if (step == TgDrainStep::LeaveAsSent)
+    alogf("telegram: no answer to %u sends of one part for %s - not sent again", (unsigned)t.unconfirmed, r.chatId);
+  else if (step == TgDrainStep::GiveUp)
+    alogf("telegram: one part for %s dropped after %u failed sends", r.chatId, (unsigned)t.tries);
+}
+
+// Send what waits in the reply queue, oldest first. Without a token the queue is
+// drained and discarded: the send sink mirrored every reply to serial already.
+__attribute__((noinline)) static void drainReplyQueue(bool haveToken) {
+  PendingReply* reply = ensureReplyStage();
+  if (!reply || !g_replyQ || s_draining) return;   // no slot: the replies wait for the next cycle
+  s_draining = true;
+  if (!haveToken) {
+    while (xQueueReceive(g_replyQ, reply, 0) == pdTRUE) {}
+  } else {
+    nimbus::net::drainTgReplies(
+        *reply, s_frontTries, [](PendingReply& r) { return xQueuePeek(g_replyQ, &r, 0) == pdTRUE; },
+        [reply] { xQueueReceive(g_replyQ, reply, 0); },   // the part just peeked (one consumer)
+        [](const PendingReply& r) { return doSendMessage(r.chatId, r.text); }, noteDrainStep);
+  }
+  if (!uxQueueMessagesWaiting(g_replyQ)) s_frontTries = nimbus::net::TgPartTries();
+  s_draining = false;
+}
+
+// A turn's reply goes out as soon as the turn queued it (lane RB-TS1), not after the
+// turn's history, memory, usage and summary writes: those took 1.7 s on the bench and
+// the owner waited for them (coverage/LINK-2026-11.md section 4). The window is the
+// receive cycle's turn (TgIo::runTurn) on this task: there no provider request is in
+// flight when the turn's code calls send(), and every TLS session of this task opens
+// one at a time (workConnect). Not while this task holds the card lock (the send would
+// hold it across a network request), and never from inside a drain.
+static bool sendsInline() {
+  return s_turnWindow && !s_draining && onTurnTask() && g_token.length() > 0 &&
+         !agent::memory::cardLockHeldHere();
+}
+
+// What the turn queued for the owner, in the order the loop bottom sends it: the media
+// file first, then the reply parts.
+static void flushOutbound() {
+  nimbus::pollwatch::beat("replies");
+  drainMedia();
+  drainReplyQueue(true);
+}
+
 // ---- pollTask ---------------------------------------------------------------
 
 // Check connectivity by IP - WiFi.status() can stay at 0 (WL_IDLE_STATUS) if the
@@ -2692,18 +2792,10 @@ void pollTask(void*) {
     // Drain reply queue. With a token, deliver to Telegram (retry a few times on a
     // transient TLS failure). Without a token the reply was already mirrored to
     // serial by the send sink, so drain-and-discard to keep the queue from backing up.
+    // A part that failed stays at the FRONT (lane RB-Q1c: the parts of a long reply carry
+    // no number); the drain stops there and the next cycle retries it (lane RB-TS1).
     nimbus::pollwatch::beat("replies");
-    PendingReply* reply = ensureReplyStage();
-    while (reply && xQueueReceive(g_replyQ, reply, 0) == pdTRUE) {
-      if (!haveToken) continue;
-      if (!doSendMessage(reply->chatId, reply->text) && ++reply->tries < 6) {
-        alogf("telegram: send retry %u for %s", reply->tries, reply->chatId);
-        // To the FRONT: the parts of a long reply carry no number, so a part that failed is
-        // retried before the parts after it, never sent after them (lane RB-Q1c).
-        xQueueSendToFront(g_replyQ, reply, 0);
-        break;   // don't hot-loop; let WiFi settle (heap recovers as TIME_WAIT drains)
-      }
-    }
+    drainReplyQueue(haveToken);
 
     // Telegram archive: queued outbound items, unfinished media downloads (on this
     // task's single TLS session, after the replies above went out), storage pressure.
@@ -2824,6 +2916,7 @@ void begin(const String& token, const String& allowlist, MessageCallback cb) {
   // for a task-only (no-ISR) queue on the reply path where PSRAM latency is moot.
   // See docs/memory-model.md. Deleted with vQueueDeleteWithCaps in stop().
   g_replyQ    = xQueueCreateWithCaps(REPLY_QUEUE_DEPTH, sizeof(PendingReply), MALLOC_CAP_SPIRAM);
+  if (!g_sendMx) g_sendMx = xSemaphoreCreateMutex();
   g_inboundQ  = xQueueCreateWithCaps(INBOUND_QUEUE_DEPTH, sizeof(InboundMsg), MALLOC_CAP_SPIRAM);
   // The inbound drain slot (PSRAM) up front, before the task starts: the idle waits
   // end early only for a message the drain can take (localTurnWaiting, CUM-462), so
@@ -3122,6 +3215,38 @@ bool approvePending(const String& chatId, const String& name) {
 
 void denyPending(const String& chatId) { pendingRemove(chatId.c_str()); }   // session tombstone
 
+// A reply's parts go into the queue together or not at all (lane RB-TS1,
+// nimbus::net::queueTgParts): the producers' lock is held across the room check and the
+// pushes, and the poll task only takes parts out, so the room seen is the room there.
+// `wait` bounds the wait for room; false (nothing queued, logged) when there is none.
+static bool queueReplyParts(const String& chatId, const std::vector<std::string>& parts, TickType_t wait,
+                            PendingReply& r) {
+  if (!g_sendMx || xSemaphoreTake(g_sendMx, pdMS_TO_TICKS(100)) != pdTRUE) {
+    alogf("telegram: reply for %s not queued (the queue is busy)", chatId.c_str());
+    return false;
+  }
+  const TickType_t until = xTaskGetTickCount() + wait;
+  const bool ok = nimbus::net::queueTgParts(
+      parts.size(), [] { return (size_t)uxQueueSpacesAvailable(g_replyQ); },
+      [&](size_t i) {
+        memset(&r, 0, sizeof(r));   // not `r = PendingReply{}`: that temporary would sit on the stack
+        chatId.toCharArray(r.chatId, sizeof(r.chatId));
+        // A part is at most kTelegramPartBytes (4,000 B) plus the overflow note: it fits the slot.
+        snprintf(r.text, sizeof(r.text), "%s", parts[i].c_str());
+        return xQueueSend(g_replyQ, &r, 0) == pdTRUE;
+      },
+      [until] {
+        if ((int32_t)(xTaskGetTickCount() - until) >= 0) return false;
+        vTaskDelay(pdMS_TO_TICKS(5));
+        return true;
+      });
+  xSemaphoreGive(g_sendMx);
+  if (!ok)
+    alogf("telegram: reply queue full - %u part%s for %s not queued", (unsigned)parts.size(),
+          parts.size() == 1 ? "" : "s", chatId.c_str());
+  return ok;
+}
+
 bool send(const String& chatId, const String& text, bool block) {
   if (!g_replyQ) return false;
   // Archive hook (outbound): the whole text, before it is split into parts.
@@ -3135,17 +3260,17 @@ bool send(const String& chatId, const String& text, bool block) {
   // (the last one says so when the reply needed more); nimbusd sends the same parts.
   // Nothing to send is no message.
   const std::vector<std::string> parts = nimbus::orch::telegramParts(text.c_str());
+  if (parts.empty()) return true;
+  // Lane RB-TS1: inside a turn on this task the reply goes out now (sendsInline). This
+  // task is the queue's one consumer, so a full queue is made room for by sending,
+  // not by waiting.
+  const bool now = sendsInline();
+  if (now && uxQueueSpacesAvailable(g_replyQ) < parts.size()) flushOutbound();
   PsramItem<PendingReply> item;   // the queue copies it; PSRAM, not this (often deep) stack
   if (!item.p) return false;
-  PendingReply& r = *item.p;
-  for (const std::string& part : parts) {
-    memset(&r, 0, sizeof(r));   // not `r = PendingReply{}`: that temporary would sit on the stack
-    chatId.toCharArray(r.chatId, sizeof(r.chatId));
-    // A part is at most kTelegramPartBytes (4,000 B) plus the overflow note: it fits the slot.
-    snprintf(r.text, sizeof(r.text), "%s", part.c_str());
-    if (xQueueSend(g_replyQ, &r, wait) != pdTRUE) return false;
-  }
-  return true;
+  const bool queued = queueReplyParts(chatId, parts, now ? 0 : wait, *item.p);
+  if (now) flushOutbound();
+  return queued;
 }
 
 // ⚠ UNSAFE while tg_poll is live: this deletes g_replyQ but does NOT join the
