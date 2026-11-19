@@ -43,7 +43,9 @@ def aggregate(cells: list) -> dict:
         if all("checks" in c[side] for c in cells):
             passed, total = (sum(c[side]["checks"][n] for c in cells) for n in (0, 1))
             out[side]["check_rate"] = passed / total if total else None
-        out[side].update({k: _stat(cells, side, k) for k in ("latency_mean_s", "requests_per_turn", "input_tokens_per_turn")})
+        out[side].update(
+            {k: _stat(cells, side, k) for k in ("latency_mean_s", "requests_per_turn", "input_tokens_per_turn")}
+        )
     out["prefers"] = {k: sum(c["judge_prefers"].get(k, 0) for c in cells) for k in ("A", "B", "split")}
     return out
 
@@ -113,7 +115,11 @@ def per_scenario(before: dict, after: dict, ids: list) -> list:
         for h in HEADS:
             b, a = cells_of(before, h, [sid]), cells_of(after, h, [sid])
             fb = f"{b[0]['win']}/{b[0]['tie']}/{b[0]['loss']}" if b else "-"
-            fa = f"{a[0]['win']}/{a[0]['tie']}/{a[0]['loss']}, {_f(a[0]['A']['composite'], '.2f')} / {_f(a[0]['B']['composite'], '.2f')}" if a else "not run"
+            fa = (
+                f"{a[0]['win']}/{a[0]['tie']}/{a[0]['loss']}, {_f(a[0]['A']['composite'], '.2f')} / {_f(a[0]['B']['composite'], '.2f')}"
+                if a
+                else "not run"
+            )
             cells.append(f"{fb} -> {fa}")
         lines.append(f"| {sid} | " + " | ".join(cells) + " |")
     return lines

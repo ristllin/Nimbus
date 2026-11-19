@@ -72,8 +72,17 @@ def corpus_cases() -> list:
             continue
         header = c["file"].split("\n", 1)[0].split(",")
         sums = [h for h in header if h in ("kcal", "protein_g")]
-        out.append({"id": c["id"], "kind": "sum", "seen": c["seen"], "file": c["file"], "column": header[0],
-                    "from": c["day"], "sum": sums})
+        out.append(
+            {
+                "id": c["id"],
+                "kind": "sum",
+                "seen": c["seen"],
+                "file": c["file"],
+                "column": header[0],
+                "from": c["day"],
+                "sum": sums,
+            }
+        )
     return out
 
 
@@ -87,26 +96,95 @@ def domain_cases() -> list:
         lines = plain.split("\n")
         row = lines[8]  # a clean row of the 15-row day
         out += [
-            {"id": f"{name}-day", "kind": "sum", "seen": "a 15-row day, 2 rows with bare commas, 1 unknown cell",
-             "file": plain, "column": "date", "from": day, "sum": list(dom.sum_cols)},
-            {"id": f"{name}-day-dirty", "kind": "sum", "seen": "the same with a comment line and stray blank lines",
-             "file": dirty, "column": "date", "from": day, "sum": list(dom.sum_cols)},
-            {"id": f"{name}-two-days", "kind": "sum", "seen": "both days as a range",
-             "file": plain, "column": "date", "from": FIXED_DAYS["{D-2}"], "to": day, "sum": list(dom.sum_cols)},
-            {"id": f"{name}-relog", "kind": "append", "seen": "the same row logged again",
-             "file": plain, "text": row + "\n"},
-            {"id": f"{name}-torn", "kind": "append", "seen": "a file cut mid-row by a power loss",
-             "file": plain + lines[8][:9], "text": row + "\n"},
-            {"id": f"{name}-dup-pick", "kind": "edit", "seen": "two identical rows; remove the second by line",
-             "file": plain + row + "\n", "old": row, "new": "", "line": len(lines)},
-            {"id": f"{name}-stale-line", "kind": "edit", "seen": "a line number that now names another row",
-             "file": plain, "old": row, "new": row.replace(day, day[:-1] + "9"), "line": 10},
-            {"id": f"{name}-move-day", "kind": "edit", "seen": "a row moved to the day before",
-             "file": plain, "old": row, "new": row.replace(day, FIXED_DAYS["{D-2}"]), "line": 9},
-            {"id": f"{name}-refused-edit", "kind": "edit", "seen": "an edit under a refusing allocator",
-             "file": plain, "old": row, "new": row + "x", "line": 9, "refuse_at": 1},
-            {"id": f"{name}-refused-sum", "kind": "sum", "seen": "a day total under a refusing allocator",
-             "file": plain, "column": "date", "from": day, "sum": list(dom.sum_cols), "refuse_at": 1},
+            {
+                "id": f"{name}-day",
+                "kind": "sum",
+                "seen": "a 15-row day, 2 rows with bare commas, 1 unknown cell",
+                "file": plain,
+                "column": "date",
+                "from": day,
+                "sum": list(dom.sum_cols),
+            },
+            {
+                "id": f"{name}-day-dirty",
+                "kind": "sum",
+                "seen": "the same with a comment line and stray blank lines",
+                "file": dirty,
+                "column": "date",
+                "from": day,
+                "sum": list(dom.sum_cols),
+            },
+            {
+                "id": f"{name}-two-days",
+                "kind": "sum",
+                "seen": "both days as a range",
+                "file": plain,
+                "column": "date",
+                "from": FIXED_DAYS["{D-2}"],
+                "to": day,
+                "sum": list(dom.sum_cols),
+            },
+            {
+                "id": f"{name}-relog",
+                "kind": "append",
+                "seen": "the same row logged again",
+                "file": plain,
+                "text": row + "\n",
+            },
+            {
+                "id": f"{name}-torn",
+                "kind": "append",
+                "seen": "a file cut mid-row by a power loss",
+                "file": plain + lines[8][:9],
+                "text": row + "\n",
+            },
+            {
+                "id": f"{name}-dup-pick",
+                "kind": "edit",
+                "seen": "two identical rows; remove the second by line",
+                "file": plain + row + "\n",
+                "old": row,
+                "new": "",
+                "line": len(lines),
+            },
+            {
+                "id": f"{name}-stale-line",
+                "kind": "edit",
+                "seen": "a line number that now names another row",
+                "file": plain,
+                "old": row,
+                "new": row.replace(day, day[:-1] + "9"),
+                "line": 10,
+            },
+            {
+                "id": f"{name}-move-day",
+                "kind": "edit",
+                "seen": "a row moved to the day before",
+                "file": plain,
+                "old": row,
+                "new": row.replace(day, FIXED_DAYS["{D-2}"]),
+                "line": 9,
+            },
+            {
+                "id": f"{name}-refused-edit",
+                "kind": "edit",
+                "seen": "an edit under a refusing allocator",
+                "file": plain,
+                "old": row,
+                "new": row + "x",
+                "line": 9,
+                "refuse_at": 1,
+            },
+            {
+                "id": f"{name}-refused-sum",
+                "kind": "sum",
+                "seen": "a day total under a refusing allocator",
+                "file": plain,
+                "column": "date",
+                "from": day,
+                "sum": list(dom.sum_cols),
+                "refuse_at": 1,
+            },
         ]
     return out
 
@@ -126,51 +204,56 @@ def _dec(cell: str):
         return "nan"
 
 
+def _same_shape(a: str, b: str) -> bool:
+    """A digit where b has a digit, a letter where b has a letter, the same byte elsewhere."""
+    return all((x.isdigit() and y.isdigit()) or (x.isalpha() and y.isalpha()) or x == y for x, y in zip(a, b))
+
+
 def _in_range(key: str, lo: str, hi: str):
     """True, False, or None (not compared): the prefix rule of file_aids.h for date-like keys."""
     key = key.strip()
     if not key or len(key) < len(lo):
         return None
-    shape = lambda a, b: all((x.isdigit() and y.isdigit()) or (x.isalpha() and y.isalpha()) or x == y for x, y in zip(a, b))  # noqa: E731
-    if not shape(key, lo) or (lo[-1].isdigit() and len(key) > len(lo) and key[len(lo)].isdigit()):
+    if not _same_shape(key, lo) or (lo[-1].isdigit() and len(key) > len(lo) and key[len(lo)].isdigit()):
         return None
     return lo <= key[: len(lo)] and key[: len(hi)] <= hi
 
 
-def oracle_sum(c: dict) -> dict:
-    """Sums over the rows a total may cover, and the day's rows it must name instead."""
-    lines = c["file"].split("\n")
-    header, want = None, {s: Decimal(0) for s in c["sum"]}
-    field_count, blank, nan = [], [], []
-    for n, line in enumerate(lines, 1):
-        if n == len(lines) and line == "":
-            break
-        if not line.strip() and header is not None:
-            continue
-        if line.lstrip().startswith("#"):
+def _records(text: str):
+    """(line number, cells) of every CSV record after the header; comment and empty lines are no records."""
+    header = None
+    for n, line in enumerate(text.split("\n"), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
         cells = next(csv.reader(io.StringIO(line)))
         if header is None:
             header = cells
             continue
-        key = cells[header.index(c["column"])] if len(cells) > header.index(c["column"]) else ""
-        hit = _in_range(key, c["from"], c.get("to") or c["from"])
-        if hit is False:
-            continue
-        if len(cells) != len(header):
-            field_count.append(n)
-            continue
-        if hit is None:
-            continue
-        for s in c["sum"]:
-            v = _dec(cells[header.index(s)])
-            if v == "blank":
-                blank.append(n)
-            elif v == "nan":
-                nan.append(n)
-            else:
-                want[s] += v
-    return {"sums": want, "field_count": field_count, "blank": sorted(set(blank)), "not_number": sorted(set(nan))}
+        yield header, n, cells
+
+
+def oracle_sum(c: dict) -> dict:
+    """Sums over the rows a total may cover, and the day's rows it must name instead."""
+    want = {s: Decimal(0) for s in c["sum"]}
+    named = {"field_count": [], "blank": [], "nan": []}
+    for header, n, cells in _records(c["file"]):
+        at = header.index(c["column"])
+        hit = _in_range(cells[at] if len(cells) > at else "", c["from"], c.get("to") or c["from"])
+        if hit is not False and len(cells) != len(header):
+            named["field_count"].append(n)
+        elif hit:
+            for s in c["sum"]:
+                v = _dec(cells[header.index(s)])
+                if isinstance(v, Decimal):
+                    want[s] += v
+                else:
+                    named[v].append(n)
+    return {
+        "sums": want,
+        "field_count": named["field_count"],
+        "blank": sorted(set(named["blank"])),
+        "not_number": sorted(set(named["nan"])),
+    }
 
 
 def grade_sum(c: dict, r: dict) -> tuple:
@@ -196,9 +279,9 @@ def grade_edit(c: dict, r: dict) -> tuple:
     picked = c["line"] - 1
     if 0 <= picked < len(lines) and lines[picked] == c["old"]:
         if c["new"] == "":
-            want = "\n".join(lines[:picked] + lines[picked + 1:])
+            want = "\n".join(lines[:picked] + lines[picked + 1 :])
         else:
-            want = "\n".join(lines[:picked] + [c["new"]] + lines[picked + 1:])
+            want = "\n".join(lines[:picked] + [c["new"]] + lines[picked + 1 :])
         ok = r.get("ok") and r.get("file") == want
         return ok, r.get("result", "")
     ok = not r.get("ok") and not r.get("changed") and "line" in r.get("result", "")
@@ -233,7 +316,7 @@ def table(after: list, before: list | None) -> list:
     out = [head, "|" + "---|" * (head.count("|") - 1)]
     prior = {r["id"]: r for r in before or []}
     for r in after:
-        cell = ("PASS" if r["ok"] else "MISS")
+        cell = "PASS" if r["ok"] else "MISS"
         extra = f" {'PASS' if prior[r['id']]['ok'] else 'MISS'} |" if before else ""
         out.append(f"| {r['id']} | {r['seen']} | {cell} |{extra} {str(r['said'])[:140].replace('|', '/')} |")
     return out
@@ -254,7 +337,10 @@ def main(argv=None) -> int:
         before = grade(cases, run(build(args.before.resolve(), Path(tmp) / "before"), cases)) if args.before else None
     print("\n".join(table(after, before)))
     missed = [r["id"] for r in after if not r["ok"]]
-    print(f"\n{len(after) - len(missed)} of {len(after)} cases pass" + (f"; missed: {', '.join(missed)}" if missed else ""))
+    print(
+        f"\n{len(after) - len(missed)} of {len(after)} cases pass"
+        + (f"; missed: {', '.join(missed)}" if missed else "")
+    )
     return 1 if missed else 0
 
 

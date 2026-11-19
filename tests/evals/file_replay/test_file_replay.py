@@ -67,6 +67,7 @@ class CounterTest(unittest.TestCase):
     def test_a_total_that_silently_misses_a_named_row(self):
         def drop(r):
             r["field_count"] = {"count": 1, "lines": r["field_count"]["lines"][:1]}
+
         for d in ("food", "expenses", "training"):
             self.miss(f"{d}-day", drop)
 
@@ -78,13 +79,16 @@ class CounterTest(unittest.TestCase):
         def bump(r):
             name = next(iter(r["sums"]))
             r["sums"][name] = str(replay.Decimal(r["sums"][name]) + 1)
+
         self.miss("expenses-day", bump)
 
     def test_an_append_written_twice(self):
         self.miss("training-relog", lambda r: r.update(file=r["file"] + case("training-relog")["text"]))
 
     def test_a_torn_tail_not_fenced(self):
-        self.miss("food-torn", lambda r: r.update(fence=False, file=case("food-torn")["file"] + case("food-torn")["text"]))
+        self.miss(
+            "food-torn", lambda r: r.update(fence=False, file=case("food-torn")["file"] + case("food-torn")["text"])
+        )
 
     def test_an_identical_line_not_named(self):
         self.miss("food-relog", lambda r: r.update(note=""))

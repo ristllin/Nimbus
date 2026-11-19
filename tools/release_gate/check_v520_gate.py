@@ -18,40 +18,67 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA = os.path.join(REPO, "tools", "release_gate", "v520_gate.json")
 REQUIRED = (
-    "file-first-call", "file-totals", "no-stray-or-duplicate-lines", "refloop-day-scenarios", "families-parity",
-    "owner-regressions", "file-replay", "no-false-claims", "hedge-rate", "domain-words-lint", "free-flash",
-    "cut-during-append", "cut-during-edit", "round-trip-one-row", "rollback-up-down-up", "refused-allocation",
+    "file-first-call",
+    "file-totals",
+    "no-stray-or-duplicate-lines",
+    "refloop-day-scenarios",
+    "families-parity",
+    "owner-regressions",
+    "file-replay",
+    "no-false-claims",
+    "hedge-rate",
+    "domain-words-lint",
+    "free-flash",
+    "cut-during-append",
+    "cut-during-edit",
+    "round-trip-one-row",
+    "rollback-up-down-up",
+    "refused-allocation",
     "history-never-reduced",
 )
 # Where a gate is run from: none of them may run the food coach eval again.
 GATE_SOURCES = (".github/workflows", "tools/release_gate")
 
 
-def problems(data: dict, repo: str = REPO) -> list:
-    out = []
-    ids = [r.get("id") for r in data.get("rows", [])]
-    out += [f"required row {r} is missing" for r in REQUIRED if r not in ids]
+def row_problems(rows: list, repo: str) -> list:
+    ids = [r.get("id") for r in rows]
+    out = [f"required row {r} is missing" for r in REQUIRED if r not in ids]
     out += [f"row {i} is listed twice" for i in sorted({i for i in ids if ids.count(i) > 1})]
-    for row in data.get("rows", []):
-        if not row.get("what") or not row.get("measure"):
-            out.append(f"row {row.get('id')} has no what or no measure")
-        out += [f"row {row.get('id')} names {p}, which is not in the tree" for p in row.get("paths", [])
-                if not os.path.exists(os.path.join(repo, p))]
-    for gone in data.get("removed", []):
-        path = gone.get("path")
-        if path and path != "tests/evals/food_coach" and os.path.exists(os.path.join(repo, path)):
-            out.append(f"removed gate {gone['gate']} is back at {path}")
+    out += [f"row {r.get('id')} has no what or no measure" for r in rows if not r.get("what") or not r.get("measure")]
+    out += [
+        f"row {r.get('id')} names {p}, which is not in the tree"
+        for r in rows
+        for p in r.get("paths", [])
+        if not os.path.exists(os.path.join(repo, p))
+    ]
+    return out
+
+
+def removed_problems(removed: list, repo: str) -> list:
+    """A removed gate's path back in the tree (the food coach eval stays, as a user-content example)."""
+    return [
+        f"removed gate {g['gate']} is back at {g['path']}"
+        for g in removed
+        if g.get("path") and g["path"] != "tests/evals/food_coach" and os.path.exists(os.path.join(repo, g["path"]))
+    ]
+
+
+def gate_sources(repo: str):
+    """The scripts and workflows a gate runs from (their tests and this check's own data left out)."""
     for top in GATE_SOURCES:
         for root, _, names in os.walk(os.path.join(repo, top)):
             for name in names:
-                path = os.path.join(root, name)
-                if path == DATA or not name.endswith((".py", ".yml", ".yaml", ".sh")) or name.startswith("test_"):
-                    continue
-                if name == os.path.basename(__file__):
-                    continue
-                with open(path, encoding="utf-8", errors="replace") as fh:
-                    if "evals/food_coach" in fh.read():
-                        out.append(f"{os.path.relpath(path, repo)} still runs the food coach eval")
+                if name.endswith((".py", ".yml", ".yaml", ".sh")) and not name.startswith("test_"):
+                    if name != os.path.basename(__file__):
+                        yield os.path.join(root, name)
+
+
+def problems(data: dict, repo: str = REPO) -> list:
+    out = row_problems(data.get("rows", []), repo) + removed_problems(data.get("removed", []), repo)
+    for path in gate_sources(repo):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            if "evals/food_coach" in fh.read():
+                out.append(f"{os.path.relpath(path, repo)} still runs the food coach eval")
     return out
 
 

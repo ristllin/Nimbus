@@ -23,8 +23,11 @@ spec.loader.exec_module(A)
 FOOD = {"tracking": {"path": "food/food-log.csv", "key": "date", "text": "items", "value": "kcal", "unit": "kcal"}}
 MONEY = {"tracking": {"path": "money/spending.csv", "key": "date", "text": "*", "value": "amount", "unit": ""}}
 SETS = {"tracking": {"path": "gym/sets.csv", "key": "date", "text": "*", "value": "reps", "unit": "reps"}}
-HEADERS = {"food/food-log.csv": "date,meal,items,kcal,protein_g\n", "money/spending.csv": "date,category,note,amount,paid_with\n",
-           "gym/sets.csv": "date,exercise,note,reps,kg\n"}
+HEADERS = {
+    "food/food-log.csv": "date,meal,items,kcal,protein_g\n",
+    "money/spending.csv": "date,category,note,amount,paid_with\n",
+    "gym/sets.csv": "date,exercise,note,reps,kg\n",
+}
 
 
 def tfile(sc, *rows, reply=""):
@@ -84,11 +87,20 @@ def test_the_same_checks_hold_in_three_domains():
 
 
 def test_a_day_total_equals_the_device_sum_and_names_what_it_leaves_out():
-    day = ["2026-11-05,coffee,kiosk,2.40,card", "2026-11-05,lunch,bakery: pasty, juice,6.75,card",
-           "2026-11-05,bus,ticket,2.80,cash", "2026-11-04,books,atlas,6.00,cash"]
+    day = [
+        "2026-11-05,coffee,kiosk,2.40,card",
+        "2026-11-05,lunch,bakery: pasty, juice,6.75,card",
+        "2026-11-05,bus,ticket,2.80,cash",
+        "2026-11-04,books,atlas,6.00,cash",
+    ]
     t = lambda reply: tfile(MONEY, *day, reply=reply)  # noqa: E731
     params = {"date": "2026-11-05"}
-    assert check("file_day_total", MONEY, t("You spent 5.20 today; line 3 (bakery) has an extra comma, so it is not in it."), **params)
+    assert check(
+        "file_day_total",
+        MONEY,
+        t("You spent 5.20 today; line 3 (bakery) has an extra comma, so it is not in it."),
+        **params,
+    )
     assert not check("file_day_total", MONEY, t("You spent 5.20 today."), **params)  # silently partial: FAIL
     assert not check("file_day_total", MONEY, t("Your total today is 11.95."), **params)  # not the device sum
     assert check("file_day_total", MONEY, t("Your total today is 11.95."), full=11.95, **params)  # read in full

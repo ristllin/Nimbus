@@ -34,9 +34,28 @@ sys.path.insert(0, str(RIG))
 
 def cmd_run(args) -> int:
     dirs = [str(FAMILIES / d) for d in args.domains.split(",")]
-    cmd = [sys.executable, str(RIG / "compare.py"), "run", "--evidence", str(args.evidence), "--env-file", args.env_file,
-           "--models", args.models, "--reps", str(args.reps), "--arms", args.arms, "--parallel", str(args.parallel),
-           "--max-usd", str(args.max_usd), "--no-judge", "--scenarios", *dirs]
+    cmd = [
+        sys.executable,
+        str(RIG / "compare.py"),
+        "run",
+        "--evidence",
+        str(args.evidence),
+        "--env-file",
+        args.env_file,
+        "--models",
+        args.models,
+        "--reps",
+        str(args.reps),
+        "--arms",
+        args.arms,
+        "--parallel",
+        str(args.parallel),
+        "--max-usd",
+        str(args.max_usd),
+        "--no-judge",
+        "--scenarios",
+        *dirs,
+    ]
     if args.only:
         cmd += ["--only", args.only]
     return subprocess.call(cmd)
@@ -55,45 +74,63 @@ def collect(evidence: Path) -> list:
             continue
         rec = json.loads(rec_path.read_text())
         checks = grade.run_checks(by_id[sid], rec)
-        rows.append({
-            "model": model, "domain": sid.split("-", 1)[0], "scenario": sid, "rep": arm_dir.parent.name,
-            "arm": arm_dir.name, "passed": sum(c["pass"] for c in checks), "total": len(checks),
-            "failed": [f"{c['turn']}:{c['check']} {c['seen'][:120]}" for c in checks if not c["pass"]],
-            "error": rec.get("error", ""), "cost": rec.get("cost_usd", 0.0),
-        })
+        rows.append(
+            {
+                "model": model,
+                "domain": sid.split("-", 1)[0],
+                "scenario": sid,
+                "rep": arm_dir.parent.name,
+                "arm": arm_dir.name,
+                "passed": sum(c["pass"] for c in checks),
+                "total": len(checks),
+                "failed": [f"{c['turn']}:{c['check']} {c['seen'][:120]}" for c in checks if not c["pass"]],
+                "error": rec.get("error", ""),
+                "cost": rec.get("cost_usd", 0.0),
+            }
+        )
     return rows
+
+
+def arm_cell(rows: list) -> dict | None:
+    """Checks passed and run, and how many runs had every check green, over one arm's runs."""
+    if not rows:
+        return None
+    p, t = sum(r["passed"] for r in rows), sum(r["total"] for r in rows)
+    green = sum(r["passed"] == r["total"] for r in rows)
+    return {"passed": p, "total": t, "rate": p / max(t, 1), "green": green, "runs": len(rows)}
 
 
 def verdicts(rows: list) -> list:
     out = []
     for model in sorted({r["model"] for r in rows}):
         for dom in DOMAINS:
-            cell = {}
-            for arm in ("A", "B", "X"):
-                rs = [r for r in rows if r["model"] == model and r["domain"] == dom and r["arm"] == arm]
-                if rs:
-                    p, t = sum(r["passed"] for r in rs), sum(r["total"] for r in rs)
-                    cell[arm] = {"passed": p, "total": t, "rate": p / max(t, 1), "green": sum(r["passed"] == r["total"] for r in rs),
-                                 "runs": len(rs)}
+            mine = [r for r in rows if r["model"] == model and r["domain"] == dom]
+            cell = {arm: c for arm in ("A", "B", "X") if (c := arm_cell([r for r in mine if r["arm"] == arm]))}
             if not cell:
                 continue
-            parity = None
-            if "A" in cell and "B" in cell:
-                parity = cell["A"]["rate"] >= cell["B"]["rate"] - 0.05
-            counter = None if "X" not in cell else cell["X"]["green"] < cell["X"]["runs"]
+            parity = cell["A"]["rate"] >= cell["B"]["rate"] - 0.05 if "A" in cell and "B" in cell else None
+            counter = cell["X"]["green"] < cell["X"]["runs"] if "X" in cell else None
             out.append({"model": model, "domain": dom, "cell": cell, "parity": parity, "counter_red": counter})
     return out
 
 
 def table(rows: list) -> str:
-    lines = ["| head | domain | harness A: checks, scenarios all green | loop B | counter arm X (appends twice) | parity |",
-             "|---|---|---|---|---|---|"]
+    lines = [
+        "| head | domain | harness A: checks, scenarios all green | loop B | counter arm X (appends twice) | parity |",
+        "|---|---|---|---|---|---|",
+    ]
     fmt = lambda c: f"{c['passed']}/{c['total']} ({c['rate']:.0%}), {c['green']}/{c['runs']}" if c else "not run"  # noqa: E731
     for v in verdicts(rows):
         c = v["cell"]
         par = "not run" if v["parity"] is None else ("GREEN" if v["parity"] else "RED")
-        xr = "" if v["counter_red"] is None else (" RED as it must be" if v["counter_red"] else " GREEN: the suite cannot see it")
-        lines.append(f"| {v['model']} | {v['domain']} | {fmt(c.get('A'))} | {fmt(c.get('B'))} | {fmt(c.get('X'))}{xr} | {par} |")
+        xr = (
+            ""
+            if v["counter_red"] is None
+            else (" RED as it must be" if v["counter_red"] else " GREEN: the suite cannot see it")
+        )
+        lines.append(
+            f"| {v['model']} | {v['domain']} | {fmt(c.get('A'))} | {fmt(c.get('B'))} | {fmt(c.get('X'))}{xr} | {par} |"
+        )
     lines += ["", "Failed checks:", ""]
     for r in sorted(rows, key=lambda r: (r["model"], r["arm"], r["scenario"], r["rep"])):
         for f in r["failed"]:

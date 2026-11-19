@@ -61,25 +61,45 @@ def _meter(i: int) -> bytes:
 # The three validation domains' photo sources (RB-REC7 families): invented, one per domain.
 FAMILY_PHOTOS = {
     "pack_label": (
-        ["NORDIC SEEDED CRISPBREAD", "Nutrition per pack (2 slices)", "Energy        190 kcal", "Protein       6.2 g",
-         "Carbohydrate  27 g", "Fat           5.1 g"],
+        [
+            "NORDIC SEEDED CRISPBREAD",
+            "Nutrition per pack (2 slices)",
+            "Energy        190 kcal",
+            "Protein       6.2 g",
+            "Carbohydrate  27 g",
+            "Fat           5.1 g",
+        ],
         "A food pack label: seeded crispbread, per pack of 2 slices 190 kcal, protein 6.2 g, carbohydrate 27 g, fat 5.1 g",
     ),
     "cafe_receipt": (
-        ["THE COPPER KETTLE CAFE", "Table 4", "Soup of the day         5.60", "Sparkling water         1.90",
-         "Service                 0.75", "TOTAL                   8.25", "Paid: card"],
+        [
+            "THE COPPER KETTLE CAFE",
+            "Table 4",
+            "Soup of the day         5.60",
+            "Sparkling water         1.90",
+            "Service                 0.75",
+            "TOTAL                   8.25",
+            "Paid: card",
+        ],
         "A cafe receipt: soup of the day 5.60, sparkling water 1.90, service 0.75, total 8.25, paid by card",
     ),
     "gym_board": (
-        ["TODAY - PULL DAY", "Romanian deadlift  3 x 8   65 kg", "Chin-up            3 x 6   bodyweight",
-         "Cable row          3 x 10  45 kg"],
+        [
+            "TODAY - PULL DAY",
+            "Romanian deadlift  3 x 8   65 kg",
+            "Chin-up            3 x 6   bodyweight",
+            "Cable row          3 x 10  45 kg",
+        ],
         "A gym whiteboard: Romanian deadlift 3 sets of 8 at 65 kg; chin-up 3 sets of 6 at bodyweight; "
         "cable row 3 sets of 10 at 45 kg",
     ),
 }
 
 PHOTOS = {
-    **{name: {"make": (lambda lines=lines: _card(lines)), "truth": truth} for name, (lines, truth) in FAMILY_PHOTOS.items()},
+    **{
+        name: {"make": (lambda lines=lines: _card(lines)), "truth": truth}
+        for name, (lines, truth) in FAMILY_PHOTOS.items()
+    },
     "receipt": {
         "make": lambda: _card(RECEIPT_LINES),
         "truth": "A shop receipt: " + "; ".join(RECEIPT_LINES),

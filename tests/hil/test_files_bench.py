@@ -80,12 +80,16 @@ def after_edit(old: bytes, new: bytes, after: bytes) -> str:
 def rows_rewritten(before: bytes, after: bytes) -> list:
     """Lines of `before` that are not byte-identical, in order, at the start of `after` (an append keeps them)."""
     old, now = before.split(b"\n"), after.split(b"\n")
-    return [i + 1 for i, line in enumerate(old[:-1] if before.endswith(b"\n") else old) if i >= len(now) or now[i] != line]
+    return [
+        i + 1 for i, line in enumerate(old[:-1] if before.endswith(b"\n") else old) if i >= len(now) or now[i] != line
+    ]
 
 
 def csv_rows(n: int, start: int = 0) -> bytes:
     """Rows in the shape of the validation families (an invented expense log)."""
-    return "".join(f"2026-11-{1 + (i % 28):02d},item{i},note {i},{i % 97}.{i % 10}0,card\n" for i in range(start, start + n)).encode()
+    return "".join(
+        f"2026-11-{1 + (i % 28):02d},item{i},note {i},{i % 97}.{i % 10}0,card\n" for i in range(start, start + n)
+    ).encode()
 
 
 HEADER = b"date,category,note,amount,paid_with\n"
@@ -181,7 +185,9 @@ def test_cut_during_append_leaves_old_whole_or_a_fenced_torn_tail(device, api):
         assert state != "mixed", f"cut {n}: the file is neither old, whole nor a torn tail of the append"
         if state == "torn":
             seen = _call(api, "files.read", {"name": name, "tail": 2})
-            assert "newline" in seen or "cut short" in seen, f"cut {n}: the read does not name the torn tail: {seen[:200]}"
+            assert "newline" in seen or "cut short" in seen, (
+                f"cut {n}: the read does not name the torn tail: {seen[:200]}"
+            )
             row = b"2026-11-19,after,the cut,1.00,card\n"
             result = _call(api, "files.append", {"name": name, "text": row.decode()})
             assert fenced(after, row, _file(api, name), result), f"cut {n}: the next append did not fence the tail"
@@ -196,7 +202,9 @@ def test_cut_during_edit_leaves_old_or_new_never_mixed(device, api):
         old = HEADER + csv_rows(20000)
         new = old.replace(b"item0,", b"edited0,", 1)
         assert api.upload(PROJECT, name, old).code == 200
-        _cut_during(device, api, lambda: _call(api, "files.edit", {"name": name, "find": "item0,", "replace": "edited0,"}))
+        _cut_during(
+            device, api, lambda: _call(api, "files.edit", {"name": name, "find": "item0,", "replace": "edited0,"})
+        )
         state = after_edit(old, new, _file(api, name))
         outcomes.append(state)
         assert state != "mixed", f"cut {n}: the file is a mix of the old and the new one"
@@ -237,7 +245,11 @@ def test_refused_allocation_changes_nothing_and_says_so(device, api):
 
 @pytest.mark.hil
 def test_up_down_up_keeps_engine_two_rows(request, device, api):
-    images = request.config.getoption("--rollback-images", default=None) if hasattr(request.config, "getoption") else None
+    images = (
+        request.config.getoption("--rollback-images", default=None) if hasattr(request.config, "getoption") else None
+    )
     if not images:
-        pytest.skip("BLOCKED: pass --rollback-images DIR holding candidate.bin, v5.1.1.bin and v5.1.2.bin (released images)")
+        pytest.skip(
+            "BLOCKED: pass --rollback-images DIR holding candidate.bin, v5.1.1.bin and v5.1.2.bin (released images)"
+        )
     pytest.skip("BLOCKED: the flash steps of the rollback leg are run by RB-R1's release bench, not in this session")

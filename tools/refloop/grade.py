@@ -86,7 +86,9 @@ def _one_file(arg: dict, state: dict) -> str | None:
 def _day_lines(arg: dict, state: dict) -> list:
     """The file's rows dated arg['day'] (first field starts with it; comment lines are no rows)."""
     body = _one_file(arg, state) or ""
-    return [ln for ln in body.split("\n") if ln.split(",", 1)[0].strip().startswith(arg["day"]) and ln.strip()[:1] != "#"]
+    return [
+        ln for ln in body.split("\n") if ln.split(",", 1)[0].strip().startswith(arg["day"]) and ln.strip()[:1] != "#"
+    ]
 
 
 def _day_rows(arg: dict, state: dict) -> tuple:

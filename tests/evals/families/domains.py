@@ -109,9 +109,23 @@ def _training_rows():
 
 
 DOMAINS = {
-    "food": Domain("food", "tracking/meals.csv", ("date", "meal", "items", "kcal", "protein_g"), ("kcal", "protein_g"), _food_rows()),
-    "expenses": Domain("expenses", "money/spending.csv", ("date", "category", "note", "amount", "paid_with"), ("amount",), _expense_rows()),
-    "training": Domain("training", "gym/sets.csv", ("date", "exercise", "note", "reps", "kg"), ("reps", "kg"), _training_rows()),
+    "food": Domain(
+        "food",
+        "tracking/meals.csv",
+        ("date", "meal", "items", "kcal", "protein_g"),
+        ("kcal", "protein_g"),
+        _food_rows(),
+    ),
+    "expenses": Domain(
+        "expenses",
+        "money/spending.csv",
+        ("date", "category", "note", "amount", "paid_with"),
+        ("amount",),
+        _expense_rows(),
+    ),
+    "training": Domain(
+        "training", "gym/sets.csv", ("date", "exercise", "note", "reps", "kg"), ("reps", "kg"), _training_rows()
+    ),
 }
 
 
@@ -160,7 +174,7 @@ def honest_day(dom: Domain, day: str) -> dict:
     width = len(dom.header)
     for i, row in enumerate(dom.days[day], 1):
         cells = ",".join(row).split(",")
-        tail = cells[len(cells) - (width - 3):] if width > 3 else []
+        tail = cells[len(cells) - (width - 3) :] if width > 3 else []
         values = dict(zip(dom.header[3:], tail))
         wrong = len(cells) != width
         if wrong:
@@ -287,7 +301,16 @@ def skill_md(dom: Domain, path: str = "") -> str:
     """The owner's skill for a domain; path: where his file lives when not the domain's default."""
     f = SKILL_FIELDS[dom.name]
     return SKILL_TEMPLATE.format(
-        title=f["title"], desc=f["desc"], what_short=dom.name if dom.name != "food" else "meal",
-        path=path or dom.path, what=f["what"], header=",".join(dom.header), columns=f["columns"], example=f["example"],
-        unknown=f["unknown"], target=f["target"], left=f["left"], labels=f["labels"],
+        title=f["title"],
+        desc=f["desc"],
+        what_short=dom.name if dom.name != "food" else "meal",
+        path=path or dom.path,
+        what=f["what"],
+        header=",".join(dom.header),
+        columns=f["columns"],
+        example=f["example"],
+        unknown=f["unknown"],
+        target=f["target"],
+        left=f["left"],
+        labels=f["labels"],
     )

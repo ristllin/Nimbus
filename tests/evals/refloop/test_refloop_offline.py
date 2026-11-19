@@ -752,13 +752,22 @@ class TimeTest(unittest.TestCase):
         # so both arms see the same stamp: year, weekday, and the day clause before the day start.
         at = lambda *a: datetime(*a, tzinfo=LONDON)  # noqa: E731
         self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 8, 10)), "[2026-11-19 Thu 08:10]")
-        self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 0, 30)), "[2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00)]")
+        self.assertEqual(
+            refloop.message_stamp(at(2026, 11, 19, 0, 30)), "[2026-11-19 Thu 00:30 (day 2026-11-18 until 04:00)]"
+        )
         self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 4, 0)), "[2026-11-19 Thu 04:00]")
-        self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 3, 59)), "[2026-11-19 Thu 03:59 (day 2026-11-18 until 04:00)]")
-        self.assertEqual(refloop.message_stamp(at(2026, 3, 1, 0, 5)), "[2026-03-01 Sun 00:05 (day 2026-02-28 until 04:00)]")
+        self.assertEqual(
+            refloop.message_stamp(at(2026, 11, 19, 3, 59)), "[2026-11-19 Thu 03:59 (day 2026-11-18 until 04:00)]"
+        )
+        self.assertEqual(
+            refloop.message_stamp(at(2026, 3, 1, 0, 5)), "[2026-03-01 Sun 00:05 (day 2026-02-28 until 04:00)]"
+        )
         self.assertEqual(refloop.message_stamp(at(2026, 11, 19, 0, 30), day_start_min=0), "[2026-11-19 Thu 00:30]")
         conv = refloop.Conversation([], chat_key="k")
-        self.assertRegex(conv.stamp("hello"), r"^\[\d{4}-\d\d-\d\d [A-Z][a-z]{2} \d\d:\d\d( \(day \d{4}-\d\d-\d\d until 04:00\))?\] hello$")
+        self.assertRegex(
+            conv.stamp("hello"),
+            r"^\[\d{4}-\d\d-\d\d [A-Z][a-z]{2} \d\d:\d\d( \(day \d{4}-\d\d-\d\d until 04:00\))?\] hello$",
+        )
 
     def test_a_saved_transcript_keeps_its_clock_and_an_old_one_loads_at_zero(self):
         with tempfile.TemporaryDirectory() as tmp:

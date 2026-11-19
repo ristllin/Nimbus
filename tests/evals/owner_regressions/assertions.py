@@ -376,8 +376,11 @@ def file_row_value_ne(sc: dict, t: dict, params: dict):
     params['col']), readable or not: a wrong figure in a row with a wrong field count is still in
     the file."""
     col, bad_v = params.get("col") or tracking(sc, params)["value"], params.get("value")
-    bad = [r["raw"] for r in _text_hits(sc, t, params, params.get("text", ""))
-           if (num(r.get(col)) == bad_v if r["ok"] else re.search(rf"(?<![\d.]){bad_v:g}(?![\d.])", r["raw"]))]
+    bad = [
+        r["raw"]
+        for r in _text_hits(sc, t, params, params.get("text", ""))
+        if (num(r.get(col)) == bad_v if r["ok"] else re.search(rf"(?<![\d.]){bad_v:g}(?![\d.])", r["raw"]))
+    ]
     return not bad, f"wrong row present: {bad}" if bad else f"no {params.get('text')!r} row at {bad_v:g}"
 
 
@@ -419,7 +422,9 @@ def _stated(reply: str, unit: str) -> tuple:
     cur = r"[£$€]?\s*"
     strong = re.findall(rf"total[^.\n]{{0,60}}?{cur}{fig}{u}", reply, re.IGNORECASE)
     weak = re.findall(rf"\b(?:so far|today|day|spent)\b[^.\n]{{0,60}}?{cur}{fig}{u}", reply, re.IGNORECASE)
-    weak += re.findall(rf"{cur}{fig}{u}[^.\n]{{0,40}}?\b(?:so far today|today so far|for today|today)\b", reply, re.IGNORECASE)
+    weak += re.findall(
+        rf"{cur}{fig}{u}[^.\n]{{0,40}}?\b(?:so far today|today so far|for today|today)\b", reply, re.IGNORECASE
+    )
     clean = lambda xs: [v for v in (num(x) for x in xs) if v is not None]  # noqa: E731
     return clean(strong), clean(weak)
 
@@ -447,14 +452,21 @@ def file_day_total(sc: dict, t: dict, params: dict):
     strong, weak = _stated(r, tr.get("unit", ""))
     stated = strong + weak
     full = params.get("full")  # the figure over every row as written, when the rows say it plainly
-    if full is not None and any(abs(v - float(full)) <= 0.005 for v in stated):
+    if full is not None and _says(stated, float(full)):
         return True, f"the full figure {float(full):g} stated (stated {stated})"
-    if params.get("require_stated", True) and not any(abs(v - expected) <= 0.005 for v in stated):
+    return _total_verdict(r, strong, stated, expected, unread, params.get("require_stated", True))
+
+
+def _says(figures: list, value: float) -> bool:
+    return any(abs(v - value) <= 0.005 for v in figures)
+
+
+def _total_verdict(reply: str, strong: list, stated: list, expected: float, unread: list, require: bool) -> tuple:
+    if require and not _says(stated, expected):
         return False, f"no day figure stated matching the device sum {expected:g} (stated {stated})"
-    bad = [v for v in strong if abs(v - expected) > 0.005]
-    if bad:
+    if [v for v in strong if abs(v - expected) > 0.005]:
         return False, f"reply totals {strong} != device sum {expected:g}"
-    if unread and any(abs(v - expected) <= 0.005 for v in stated) and not any(_names(r, u) for u in unread):
+    if unread and _says(stated, expected) and not any(_names(reply, u) for u in unread):
         return False, f"total {expected:g} leaves out lines {[u['line'] for u in unread]} and the reply does not say so"
     return True, f"day figure stated {stated} == device sum {expected:g}"
 

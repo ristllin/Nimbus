@@ -75,20 +75,27 @@ def load_scenarios(only: str | None = None) -> list:
     return out
 
 
+STEP_NEEDS = {"sub": "name", "scheduled": "text"}  # a step kind and the field it cannot do without
+
+
+def step_errors(st: dict) -> list:
+    do = st.get("do")
+    if do not in ("say", "sub", "row", "file", "pref", "scheduled", "skill"):
+        return [f"unknown step {do!r}"]
+    if do in STEP_NEEDS and not st.get(STEP_NEEDS[do]):
+        return [f"{do} step missing {STEP_NEEDS[do]}"]
+    if do == "skill" and st.get("domain") not in DOMAINS.DOMAINS:
+        return [f"skill step names no known domain ({sorted(DOMAINS.DOMAINS)})"]
+    return []
+
+
 def check_scenario(sc: dict) -> list:
     """The problems one scenario file has (empty when it is well formed)."""
     errs = [f"missing {key}" for key in ("id", "rows", "title", "steps", "assertions") if not sc.get(key)]
     if not sc.get("id", "").startswith("lc-"):
         errs.append("id must start with lc-")
     for st in sc.get("steps", []):
-        if st.get("do") not in ("say", "sub", "row", "file", "pref", "scheduled", "skill"):
-            errs.append(f"unknown step {st.get('do')!r}")
-        if st.get("do") == "sub" and not st.get("name"):
-            errs.append("sub step missing name")
-        if st.get("do") == "scheduled" and not st.get("text"):
-            errs.append("scheduled step missing text")
-        if st.get("do") == "skill" and st.get("domain") not in DOMAINS.DOMAINS:
-            errs.append(f"skill step names no known domain ({sorted(DOMAINS.DOMAINS)})")
+        errs += step_errors(st)
     for a in sc.get("assertions", []):
         aid = a["id"] if isinstance(a, dict) else a
         if aid not in A.known_ids():
