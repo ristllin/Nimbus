@@ -78,17 +78,10 @@ std::vector<StubRow> stubs() {
   using std::string;
   static string s;
   static tx::Item item;
-  static tx::HeadState head;
-  static std::vector<tx::Item> items;
-  static std::vector<tx::DayRow> rows;
   static bool flag;
   return {
       {"tx::profileMarks", [] { tx::ProfileMarks m; return tx::profileMarks(tx::Profile::Standard, m); }},
       {"tx::budgetFor", [] { tx::HeadBudget b; return tx::budgetFor(tx::HeadKey{}, tx::Profile::Lean, b); }},
-      {"tx::dryRun", [] { tx::MigrationReport r; return tx::dryRun(gFiles, "1001", rows, r); }},
-      {"tx::migrateStep", [] { tx::MigrationState m; return tx::migrateStep(gFiles, "1001", rows, m); }},
-      {"tx::isReentry", [] { return tx::isReentry(gFiles, "1001", flag); }},
-      {"tx::reentryItems", [] { return tx::reentryItems(head, rows, items); }},
       {"plain::wireFor anthropic", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::AnthropicMessages, w); }},
       {"plain::wireFor responses", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::OpenAIResponses, w); }},
       {"plain::wireFor chat", [] { const plain::WireCodec* w; return plain::wireFor(plain::Dialect::ChatCompletions, w); }},

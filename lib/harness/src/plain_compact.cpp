@@ -753,22 +753,26 @@ Status answerOf(const ExchangeResult& r, bool cut, const SlicePlan& plan, std::s
 
 }  // namespace
 
-Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out) {
+namespace {
+
+// One summarizer exchange on one rung (the driver's attempt and a migration's digest 0).
+Status askRung(const CompactDeps& d, const SummarizerRung& rung, const SlicePlan& plan, uint64_t now,
+               std::string& summary, uint8_t& requests, bool& parked) {
   const WireCodec* wire = rung.wire;
   Status s = wire ? Status::success() : wireFor(rung.dialect, wire);
   if (!s.ok() || !wire) return s.ok() ? Status::fail(Err::NotFound, "plain::CompactDriver::ask") : s;
   tx::TxArena arena;
-  if (!(s = messageArena(*d_.platform, plan, now, arena)).ok()) return s;
+  if (!(s = messageArena(*d.platform, plan, now, arena)).ok()) return s;
   TurnCtx turn;
-  turn.chatKey = d_.chatKey;
-  turn.chatId = d_.chatId;
+  turn.chatKey = d.chatKey;
+  turn.chatId = d.chatId;
   turn.turn = 1;
   turn.trigger = Trigger::Notice;
   turn.host = rung.host;
   turn.model = rung.model;
   turn.dialect = rung.dialect;
   turn.startedAt = now;
-  turn.startedMs = d_.platform->nowMs ? d_.platform->nowMs() : 0;
+  turn.startedMs = d.platform->nowMs ? d.platform->nowMs() : 0;
   SystemBlocks system;
   system.core = st::kPrompt;
   const std::vector<ToolSpec> tools;
@@ -786,10 +790,16 @@ Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uin
   req.timeoutMs = kCompactRequestMs;
   req.deadlineMs = kCompactRequestMs;
   ExchangeResult r;
-  s = runExchange(ExchangeDeps{d_.transport, d_.platform}, req, r);
-  out.requests = r.requests;
-  out.parked = r.parkHost;
-  return s.ok() ? answerOf(r, capped.cut, plan, out.summary) : s;
+  s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
+  requests = r.requests;
+  parked = r.parkHost;
+  return s.ok() ? answerOf(r, capped.cut, plan, summary) : s;
+}
+
+}  // namespace
+
+Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out) {
+  return askRung(d_, rung, plan, now, out.summary, out.requests, out.parked);
 }
 
 // The swap. The s line goes to storage first (log.appendLine), so a full arena never refuses a
@@ -845,6 +855,90 @@ Status CompactDriver::swap(const SlicePlan& plan, const std::string& summary, ui
 Status compactSlice(const CompactDeps& deps, const IdleCtx& ctx, CompactOutcome& out) {
   CompactDriver driver(deps);
   return driver.step(ctx, out);
+}
+
+// ---- digest 0 of a migration (tx/migrate.h) -----------------------------------------------------
+
+namespace {
+
+// The old summary as the assistant text of one closed turn at `at`, in an arena of its own: planSlice
+// then renders it as the compaction input rules render any turn.
+Status summaryArena(const Platform& p, const tx::Digest0Ask& ask, tx::TxArena& arena) {
+  auto alloc = p.allocLarge ? p.allocLarge : [](size_t n) { return std::malloc(n); };
+  auto release = p.freeLarge ? p.freeLarge : [](void* q) { std::free(q); };
+  tx::Item a;
+  a.q = 1;
+  a.turn = 1;
+  a.kind = tx::ItemKind::Assistant;
+  a.t = ask.at;
+  a.x = ask.summary;
+  a.fin = true;
+  tx::Item e;
+  e.q = 2;
+  e.turn = 1;
+  e.kind = tx::ItemKind::TurnEnd;
+  e.t = ask.at;
+  e.end.cause = "import";
+  Status s;
+  for (size_t grow : {size_t(2), size_t(6)}) {
+    if (!arena.init(ask.summary.size() * grow + 4096, alloc, release).ok())
+      return Status::fail(Err::TooLarge, "plain::digest0Answer");
+    arena.clear();
+    if ((s = arena.append(a)).ok()) return arena.append(e);
+    if (s.err != Err::TooLarge) break;
+  }
+  return s;
+}
+
+Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0Answer& out) {
+  std::vector<SummarizerRung> rungs;
+  if (d.rungs) d.rungs(rungs);
+  if (rungs.empty()) return Status::fail(Err::NotFound, "plain::digest0Answer");
+  if (ask.summary.empty() || !ask.at) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
+  const SummarizerRung& rung = rungs[std::min<size_t>(ask.attempt, rungs.size() - 1)];
+  tx::TxArena arena;
+  Status s = summaryArena(*d.platform, ask, arena);
+  if (!s.ok()) return s;
+  SliceRules rules;
+  rules.now = ask.at + 2 * 86400;   // the turn is never "today" for the day rule
+  rules.tzMinutes = ask.tzMinutes;
+  rules.dayStartMin = ask.dayStartMin;
+  rules.high = 1;
+  rules.low = 0;
+  rules.manual = true;
+  SlicePlan plan;
+  if (!(s = planSlice(arena, 0, rules, plan)).ok()) return s;
+  if (!plan.thru) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
+  uint8_t requests = 0;
+  bool parked = false;
+  std::string summary;
+  s = askRung(d, rung, plan, ask.now ? ask.now : rules.now, summary, requests, parked);
+  if (parked && d.park) d.park(rung);
+  if (!s.ok()) return s;
+  if (!(s = digestFor(plan, summary, out.text)).ok()) return s;
+  out.summary = summary;
+  out.day = plan.day;
+  return Status::success();
+}
+
+}  // namespace
+
+Status digest0Answer(const CompactDeps& deps, const tx::Digest0Ask& ask, tx::Digest0Answer& out) {
+  out = tx::Digest0Answer{};
+  if (!deps.platform || !deps.transport) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
+  PsramFirstScope scope;
+  try {
+    Status s = digest0Run(deps, ask, out);
+    if (!s.ok()) out = tx::Digest0Answer{};
+    return s;
+  } catch (const std::bad_alloc&) {
+    out = tx::Digest0Answer{};
+    return Status::fail(Err::TooLarge, "plain::digest0Answer");
+  }
+}
+
+tx::Digest0Fn digest0Asker(CompactDeps deps) {
+  return [deps](const tx::Digest0Ask& ask, tx::Digest0Answer& out) { return digest0Answer(deps, ask, out); };
 }
 
 namespace {

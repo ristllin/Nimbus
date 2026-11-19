@@ -10,6 +10,7 @@
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/digest.h"
+#include "nimbus/orch/tx/migrate.h"
 
 namespace agent {
 class HttpTransport;
@@ -244,6 +245,17 @@ class CompactDriver {
   uint32_t windowStartMs_ = 0;
   uint8_t windowAsks_ = 0;
 };
+
+// Digest 0 of a migration (lane RB-MG1a, tx/migrate.h): the binding's tx::Digest0Fn. The old
+// summary becomes the assistant text of one closed turn at ask.at in an arena of its own, planSlice
+// builds the summarizer input from it under the compaction input rules, and one exchange asks
+// rung ask.attempt of deps.rungs (the last rung past the end) with texts::summarizer::kPrompt and
+// the driver's acceptance (not cut, not thin). out.text is the digest the swap would store
+// (digestText, frame tags made inert). NotFound with no rung; TooLarge for a refused allocation
+// (under the PSRAM-first scope). Uses deps.platform, transport, rungs and park only.
+Status digest0Answer(const CompactDeps& deps, const nimbus::orch::tx::Digest0Ask& ask,
+                     nimbus::orch::tx::Digest0Answer& out);
+nimbus::orch::tx::Digest0Fn digest0Asker(CompactDeps deps);
 
 // One step of a driver with fresh RAM state (persisted control only).
 Status compactSlice(const CompactDeps& deps, const IdleCtx& ctx, CompactOutcome& out);
