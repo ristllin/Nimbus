@@ -128,8 +128,8 @@ HistoryProfile installedHistoryProfile();
 // them). Everything but the history messages and the summary's text: the system blocks, the
 // turn's input message (recall, recent actions, the coverage line), the summary's framing and
 // acknowledgement, the tools array and the envelope.
-inline constexpr size_t kFloorFixedAnthropicBytes = 64768;   // measured 64,652 B
-inline constexpr size_t kFloorFixedOpenAIBytes = 66688;      // measured 66,566 B
+inline constexpr size_t kFloorFixedAnthropicBytes = 62720;   // measured 62,702 B (after RB-REC1)
+inline constexpr size_t kFloorFixedOpenAIBytes = 64704;      // measured 64,642 B (after RB-REC1)
 // Held back for what the measure does not size: day labels, a longer stamp, JSON escapes, and
 // one small tool round (a call and its result) before the wire's refit has to drop anything.
 inline constexpr size_t kFloorMarginBytes = 512;

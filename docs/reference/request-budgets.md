@@ -251,7 +251,7 @@ rate, and the custom endpoint keeps the floor on its flat wire.
 | Provider | Model | Window | Source | Bound | Target | Bytes | rNom | rSafe | Read window | Prefill | Decode | minFinal | System cap | Tool result | Recall | Replay | Summary | Message cap | Hist max | Hist soft | Hist keep | Fold step | Fold slice | Rows | Trigger | Caps healthy | Caps fragmented |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | cumulo | openai/gpt-5.6 | 272000 | table | floor | 23611 | 85000 | 3.6 | 2.5 | 90 | 25000 | 50 | 3000 | 44564 | 11141 | 44564 | 24576 | 5570 | 6144 | 11141 | 5570 | 5570 | 89128 | 89128 | 64 | 49152 | none | none |
-| cumulo | anthropic/claude-sonnet-5-5 | 1000000 | listed | floor | 34000 | 85000 | 2.5 | 2.0 | 90 | 60000 | 75 | 3000 | 32768 | 8192 | 32768 | 16384 | 4096 | 6144 | 11313 | 9050 | 8484 | 566 | 65536 | 64 | 49152 | 4809 / 6412 | 4347 / 5797 |
+| cumulo | anthropic/claude-sonnet-5-5 | 1000000 | listed | floor | 34000 | 85000 | 2.5 | 2.0 | 90 | 60000 | 75 | 3000 | 32768 | 8192 | 32768 | 16384 | 4096 | 6144 | 13020 | 10416 | 9765 | 651 | 65536 | 67 | 49152 | 4809 / 6412 | 4347 / 5797 |
 | cumulo | mistral/mistral-large-4-0 | 1048576 | listed | floor | 23611 | 85000 | 3.6 | 2.5 | 60 | 9000 | 50 | 1500 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 41943 | 64 | 49152 | 2004 / 2672 | 1696 / 2262 |
 | cumulo | zai/glm-5.3 | 917504 | table | floor | 25757 | 85000 | 3.3 | 2.5 | 50 | 9000 | 55 | 1600 | 32768 | 8192 | 16384 | 24576 | 4096 | 6144 | 4096 | 2048 | 2048 | 32768 | 32768 | 64 | 49152 | 1782 / 2376 | 1600 / - |
 | cumulo | gpt-5.6 | 272000 | table | floor | 23611 | 85000 | 3.6 | 2.5 | 90 | 25000 | 50 | 3000 | 44564 | 11141 | 44564 | 24576 | 5570 | 6144 | 11141 | 5570 | 5570 | 89128 | 89128 | 64 | 49152 | none | none |
@@ -349,8 +349,8 @@ seven quiet nights (The governor, below).
 A head whose turn is a split prompt (the history as messages) at the 85,000 B floor, a routed head
 above all, sizes its history from the measured overhead of the old engine's request: the system
 blocks, the turn's input message, the tools array and the envelope of one owner turn of the synthetic
-busy twin, which test_floor_dialogue measures on the real build (64768 B on the
-Anthropic wire, 66688 B on OpenAI's), plus the summary at its cap, a 512 B margin and 2048 B for one small tool round. What is
+busy twin, which test_floor_dialogue measures on the real build (62720 B on the
+Anthropic wire, 64704 B on OpenAI's), plus the summary at its cap, a 512 B margin and 2048 B for one small tool round. What is
 left is the window's high water in window bytes (the wire spends 120 and 130 B for every 100 B of
 window on the 17 Nov shape). A shift lands at 4/5 of it and the fold that follows keeps 3/4, so the
 request carries between 3/4 and all of the room (v5.1.1's window fell to half at a shift); the fold
@@ -360,11 +360,11 @@ window exactly (the floor branch), and so does a head on a wire whose overhead i
 
 | Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |
 |---|---|---|---|---|---|---|---|---|
-| cumulo | openai/gpt-5.6 | 85000 | 5570 | 10182 | 11141 | 5570 | 5570 | v5.1.1 window |
-| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 13576 | 11313 | 9050 | 8484 | measured |
+| cumulo | openai/gpt-5.6 | 85000 | 5570 | 12166 | 11141 | 5570 | 5570 | v5.1.1 window |
+| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 13020 | 10416 | 9765 | measured |
 | cumulo | mistral/mistral-large-4-0 | 85000 | 4096 | not measured | 5242 | 2621 | 2621 | v5.1.1 window |
 | cumulo | zai/glm-5.3 | 85000 | 4096 | not measured | 4096 | 2048 | 2048 | v5.1.1 window |
-| cumulo | gpt-5.6 | 85000 | 5570 | 10182 | 11141 | 5570 | 5570 | v5.1.1 window |
+| cumulo | gpt-5.6 | 85000 | 5570 | 12166 | 11141 | 5570 | 5570 | v5.1.1 window |
 
 ## The governor
 

@@ -220,7 +220,7 @@ struct Rig {
     const uint32_t start = s.today ? now - now % 86400u + 60u : now - now % 86400u - 86400u + 6u * 3600u;
     const uint32_t step = s.today ? (uint32_t)((now - now % 86400u + 60u > now ? 60u : (now % 86400u - 120u)) /
                                                (uint32_t)(s.turns + 1))
-                                  : 400u;
+                                  : 250u;
     for (int i = 0; i < s.turns; i++) {
       const uint32_t at = start + (uint32_t)i * step;
       char lead[32];
