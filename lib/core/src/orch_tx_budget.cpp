@@ -105,7 +105,7 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   // Elsewhere the released body is the limit (a window or a read window at the dense ratio, the
   // floor): the aim is what it carries at the wire's ratio, and never under v5.1.2's own target.
   b.tokens.aim = std::max(std::min(b.tokens.aim, tokensIn(w, b.bodyCap)), r.targetTokens);
-  b.tokens.due = b.tokens.aim - kNextRequestReserveTokens;
+  b.tokens.due = b.tokens.aim - nextRequestReserve(b.tokens.aim);
   b.tokens.keep = (uint32_t)((uint64_t)b.tokens.aim * kKeepPercent / 100);
   const uint32_t around = kFixedOverheadCeiling + kFullDigestAndFilesBytes;
   const uint32_t foldMark = (uint32_t)std::min(c.foldTriggerBytes, std::max(c.historyMaxBytes, c.historySoftBytes));

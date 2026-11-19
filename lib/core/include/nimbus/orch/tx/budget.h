@@ -57,6 +57,13 @@ inline constexpr uint32_t kKeepPercent = 70;               // compaction keeps a
 // 4 Nov shapes, claude-sonnet-5-5, 244 turns) grew at most 3,774 tokens inside a turn and 3,414
 // from one turn's first request to the next; rounded up to 1,000.
 inline constexpr uint32_t kNextRequestReserveTokens = 4000;
+// The reserve a head's due mark keeps under its aim: kNextRequestReserveTokens, or on a head whose
+// aim is too small for it (a tiny window) half the room between the keep and the aim, so the due
+// mark always sits between them.
+inline constexpr uint32_t nextRequestReserve(uint32_t aim) {
+  const uint32_t half = (aim - aim * kKeepPercent / 100) / 2;
+  return half < kNextRequestReserveTokens ? half : kNextRequestReserveTokens;
+}
 // The Anthropic Messages wire's body bytes per prompt token, MEASURED (RB-M0b's replays, 396
 // photo-free claude-sonnet-5-5 requests, least squares): body = 2.993 x tokens - 7,358 B. Every
 // other wire uses v5.1.2's released nominal ratio (RequestBudget::rNomX100): not measured.

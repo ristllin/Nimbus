@@ -485,7 +485,7 @@ per-turn clock line uses too). Between midnight and the device's day start (sett
 `[time unknown]`, never a 1970 date.
 
 `TxArena` (`orch_tx_arena.cpp`) is the RAM side of one chat: a single block from the
-allocator it is given (PSRAM on the device, 384 KB for a chat), records of a 32-byte
+allocator it is given (PSRAM on the device, 576 KB for a chat, sized to the full profile), records of a 32-byte
 header and the stored line growing up, a table of 4-byte offsets growing down. Appends,
 the restart fill (`appendLine`), lookups by `q`, reads of a line and dropping the items a
 compaction folded all work inside that block: `test/test_tx_arena` counts every

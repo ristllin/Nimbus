@@ -15,6 +15,8 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <string>
@@ -23,6 +25,8 @@
 #include "../support/recorded_models.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/orch/request_budget.h"
+#include "nimbus/harness/plain/compact.h"
+#include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/item.h"
@@ -173,7 +177,10 @@ void test_the_aim_is_tokens_due_before_it_and_keeps_70_percent() {
     const std::string what = v.link + ":" + v.host + "/" + v.model;
     TEST_ASSERT_TRUE_MESSAGE(b.tokens.aim <= tx::kAimClampTokens, what.c_str());
     TEST_ASSERT_TRUE_MESSAGE(b.tokens.aim >= r.targetTokens, what.c_str());   // never lower than v5.1.2 aimed
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.tokens.aim - tx::kNextRequestReserveTokens, b.tokens.due, what.c_str());
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.tokens.aim - tx::nextRequestReserve(b.tokens.aim), b.tokens.due, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(b.tokens.keep < b.tokens.due && b.tokens.due < b.tokens.aim, what.c_str());
+    // No mark is past what the body carries (an underflow would show here).
+    TEST_ASSERT_TRUE_MESSAGE(b.marks.high <= b.bodyCap, what.c_str());
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.tokens.aim * tx::kKeepPercent / 100, b.tokens.keep, what.c_str());
     // The body carries the aim on the head's wire: the request at the aim fits.
     TEST_ASSERT_TRUE_MESSAGE(tx::bodyBytesFor(b, b.tokens.aim) <= b.bodyCap, what.c_str());
@@ -263,6 +270,83 @@ void test_the_digest_block_at_full_holds_every_released_summary() {
   TEST_ASSERT_EQUAL_UINT32(tx::blockCapFor(tx::Profile::Full), tx::blockCapFor((tx::Profile)9));
 }
 
+// ---- 5b. the arena is sized to full (ruling 83 item 8) ------------------------------------------
+
+// Arena bytes a transcript takes once its resident (plain::residentBytes) reaches `resident`, built
+// of turns of the given shape: a t item, the owner's text, `tools` calls with receipts of
+// `receipt` bytes, the reply, the e item.
+struct ArenaUse {
+  size_t used = 0, resident = 0;
+  bool refused = false;
+};
+ArenaUse fillTo(size_t resident, size_t owner, size_t reply, int tools, size_t receipt) {
+  tx::TxArena a;
+  TEST_ASSERT_TRUE(a.init(tx::kActiveChatArenaBytes * 2, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
+  uint64_t q = 0;
+  uint32_t turn = 0;
+  auto put = [&](tx::Item it) {
+    it.q = ++q, it.turn = turn, it.t = 1795000000 + q;
+    const tx::Status st = a.append(it);
+    TEST_ASSERT_TRUE_MESSAGE(st.ok(), (std::string(tx::errSlug(st.err)) + " at " + st.where + " used " + std::to_string(a.usedBytes()) + " resident " + std::to_string(agent::plain::residentBytes(a, 0)) + " kind " +
+                                       std::to_string((int)it.kind)).c_str());
+  };
+  while (agent::plain::residentBytes(a, 0) < resident) {
+    ++turn;
+    tx::Item t;
+    t.kind = tx::ItemKind::TurnOpen, t.profile = "full", t.head = "openai/gpt-5.6-luna";
+    put(t);
+    tx::Item u;
+    u.kind = tx::ItemKind::User, u.x = std::string(owner, 'o'), u.m = turn;
+    put(u);
+    for (int k = 0; k < tools; ++k) {
+      tx::Item c;
+      c.kind = tx::ItemKind::Call, c.id = "call_" + std::to_string(q), c.n = "read_file";
+      c.args = R"({"path":"notes/day.md","offset":0})";
+      put(c);
+      tx::Item r;
+      r.kind = tx::ItemKind::Result, r.id = c.id, r.n = c.n, r.x = std::string(receipt, 'f');
+      r.bytes = (uint32_t)receipt;
+      put(r);
+    }
+    tx::Item as;
+    as.kind = tx::ItemKind::Assistant, as.x = std::string(reply, 'a'), as.fin = true;
+    put(as);
+    tx::Item e;
+    e.kind = tx::ItemKind::TurnEnd, e.end.cause = "reply", e.end.promptTokens = 90000;
+    put(e);
+  }
+  return ArenaUse{a.usedBytes(), agent::plain::residentBytes(a, 0), false};
+}
+
+void test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth() {
+  // The largest default: the head with the highest due mark, plus one request's growth on its wire.
+  uint32_t high = 0, growth = 0;
+  std::string who;
+  for (const V512& v : v512()) {
+    const tx::HeadBudget b = full(v);
+    if (v.link != "device" || b.marks.high <= high) continue;
+    high = b.marks.high, who = v.host + "/" + v.model;
+    growth = tx::bodyBytesFor(b, tx::kNextRequestReserveTokens + 1000) - tx::bodyBytesFor(b, 1000);
+  }
+  struct Mix {
+    const char* name;
+    size_t owner, reply;
+    int tools;
+    size_t receipt;
+  } mixes[] = {{"chat", 300, 900, 0, 0}, {"one tool", 250, 500, 1, 1200}, {"three tools", 200, 400, 3, 2048},
+               {"short turns", 60, 120, 1, 200}};
+  size_t need = 0;
+  for (const Mix& m : mixes) {
+    const ArenaUse u = fillTo(high + growth, m.owner, m.reply, m.tools, m.receipt);
+    char line[200];
+    std::snprintf(line, sizeof line, "%s at full (H %u + growth %u B), %s turns: arena %zu of %zu B", who.c_str(), high,
+                  growth, m.name, u.used, tx::kActiveChatArenaBytes);
+    TEST_MESSAGE(line);
+    need = std::max(need, u.used);
+  }
+  TEST_ASSERT_TRUE_MESSAGE(need <= tx::kActiveChatArenaBytes, "the arena does not hold the largest head at full");
+}
+
 // ---- 6. the generated table ------------------------------------------------------------------
 
 void test_the_generated_table_is_this_codes_output() {
@@ -288,6 +372,7 @@ int main() {
   RUN_TEST(test_both_routed_rows_behind_the_one_switch);
   RUN_TEST(test_an_owner_choice_lowers_only_the_marks_and_never_raises_them);
   RUN_TEST(test_the_digest_block_at_full_holds_every_released_summary);
+  RUN_TEST(test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth);
   RUN_TEST(test_the_generated_table_is_this_codes_output);
   return UNITY_END();
 }

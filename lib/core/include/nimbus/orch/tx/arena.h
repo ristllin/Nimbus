@@ -8,7 +8,7 @@
 
 // tx/arena.h - TxArena, the RAM side of one chat's transcript (PRD section 2): one flat
 // PSRAM block of encoded items, each behind a 32-byte header, with no std::string per
-// item. 384 KB for the active chat; the device keeps 3 chats resident, least recently
+// item. 576 KB for the active chat; the device keeps 3 chats resident, least recently
 // used first out (TxArenaPool). The arena gets its memory through the allocator it is
 // given, so the same code runs on the host with malloc and on the device with heap_caps
 // PSRAM (Platform::allocLarge).
@@ -30,7 +30,10 @@ namespace tx {
 
 inline constexpr size_t kArenaHeaderBytes = 32;
 inline constexpr size_t kArenaSlotBytes = 4;
-inline constexpr size_t kActiveChatArenaBytes = 384 * 1024;
+// Sized to the default profile, full (ruling 83 item 8; lane RB-T4): the largest head's due mark
+// (gpt-5.6-luna, 320,000 B) plus one request's growth takes up to 514,496 B of arena on short chat
+// turns (test_tx_budget); 576 KB keeps a 12% margin. Three resident chats: 1,728 KB of PSRAM.
+inline constexpr size_t kActiveChatArenaBytes = 576 * 1024;
 inline constexpr size_t kResidentChats = 3;
 inline constexpr size_t kArenaMinBytes = 64;
 

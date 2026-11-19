@@ -117,7 +117,7 @@ void expectHolds(const tx::TxArena& a, const std::vector<tx::Item>& items) {
 void setUp() {}
 void tearDown() {}
 
-// 1,000 items of every kind in the active chat's 384 KB: each comes back byte for byte,
+// 1,000 items of every kind in the active chat's arena: each comes back byte for byte,
 // in q order, and the block holds nothing but their records.
 void test_a_thousand_items_in_one_arena() {
   Seam seam;
