@@ -14,11 +14,11 @@
 // from a person (the firmware-update notice, a routine such as a check-in, a reminder, a
 // wakeup, a sub-agent report, the nightly upkeep) ran as full model turns with every tool.
 // On 8 Nov the post-update turn rewrote eight rows of a day the owner had just corrected; on
-// 14 Nov it logged a breakfast again; a check-in re-logged a banana. None of them was asked.
+// 14 Nov it added a row again; a check-in added another. None of them was asked.
 //
 // One table, one row per class of unattended turn, decides which classes of tool the turn
 // may call, which model it runs on and how its output reaches the owner. It names tool
-// classes, never a use case: a food log, an expenses sheet and a notes file are all "files".
+// classes, never a use case: every file the owner keeps is a "file".
 //   - Read      changes nothing (a file or memory read, a search, a status)
 //   - Write     changes a file the owner keeps (write, append, edit, delete, download)
 //   - Memory    changes the assistant's own memory, notes or scratchpad

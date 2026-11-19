@@ -784,8 +784,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: tool_results
 - kind: spec
-- bytes: 42579 -> 42987
-- sha8: 5bbb2cef -> f0ca3992
+- bytes: 34654 -> 35062
+- sha8: 53933cdf -> 0b401b28
 - lane: RB-Q2a
 - prd: section 6 (one table, keyed by turn source, decides tools, model, context and output)
 - why: a call an unattended turn may not make is refused before its handler runs with one plain line the model
