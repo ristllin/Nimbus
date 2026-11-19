@@ -1336,6 +1336,64 @@ void test_each_rung_of_the_ladder_changes_the_bytes_and_keeps_every_pair() {
   }
 }
 
+// The loop sizes rung 3 by a lower bound of what each item renders (plain_engine.cpp
+// renderedBytes: the text each item shows, no framing). On this wire, leaving out a run of whole
+// turns frees at least that bound, so one climb is enough. (Stored states this wire renders
+// shorter than their text, so a second climb may follow: arguments that are not one compact JSON
+// object, blank text, a superseded receipt, unpaired items, bulk past the 60,000 B guard.)
+size_t loopLowerBound(const tx::Item& it, uint16_t dayStart) {
+  char stamp[tx::kStampMaxBytes];
+  switch (it.kind) {
+    case tx::ItemKind::User:
+      return it.x.size() + (tx::messageStamp(it.t, it.tzMinutes, dayStart, stamp, sizeof stamp).ok() ? std::strlen(stamp) : 0);
+    case tx::ItemKind::Assistant:
+    case tx::ItemKind::DeviceNote:
+      return it.x.size();
+    case tx::ItemKind::Call:
+      return it.id.size() + it.n.size() + it.args.size();
+    case tx::ItemKind::Result:
+      if (it.cls == tx::ResultClass::Outside) return it.st.size();
+      return it.cls == tx::ResultClass::Receipt || it.handle.empty() ? it.x.size() : it.bytes;
+    default:
+      return 0;
+  }
+}
+
+void test_omitting_whole_turns_frees_at_least_the_loops_lower_bound() {
+  size_t checked = 0;
+  for (unsigned seed = 1; seed <= 150; ++seed) {
+    Rig rig;
+    GenOpts go;
+    go.closedTurns = 2 + seed % 4;
+    const txb::Convo c = randomConvo(seed, rig, go);
+    Out full;
+    RENDER_OK(rig, c, full);
+    std::vector<uint32_t> turns;
+    for (const tx::Item& it : c.items)
+      if (it.turn != c.turn && (turns.empty() || turns.back() != it.turn)) turns.push_back(it.turn);
+    for (size_t n = 1; n <= turns.size(); ++n) {
+      uint64_t through = 0;
+      size_t bound = 0;
+      for (const tx::Item& it : c.items)
+        if (it.turn <= turns[n - 1]) {
+          through = std::max(through, it.q);
+          bound += loopLowerBound(it, rig.fx.turn.dayStartMin);
+        }
+      Opts o;
+      o.ladder.omitThrough = through;
+      TXB_OK(tx::omissionLine((uint32_t)n, "", o.ladder.omissionLine));
+      Out cut;
+      RENDER_OK(rig, c, cut, o);
+      const long freed = (long)full.body.size() - (long)cut.body.size() + (long)o.ladder.omissionLine.size();
+      ++checked;
+      TEST_ASSERT_TRUE_MESSAGE(freed >= (long)bound, ("seed " + std::to_string(seed) + " omitting " + std::to_string(n) +
+                                                      " turns freed " + std::to_string(freed) + " B, under the loop's bound " +
+                                                      std::to_string(bound)).c_str());
+    }
+  }
+  TEST_ASSERT_TRUE(checked > 300);
+}
+
 // ---- 9. photos -------------------------------------------------------------------------------------
 // Five owner turns, photos arriving on the first and the fourth; the visible set of each turn
 // comes from tx::visiblePhotos at its open (the t item records it). Every photo part renders
@@ -1966,6 +2024,7 @@ int main(int, char**) {
   RUN_TEST(test_a_cut_or_broken_call_renders_as_an_empty_object);
   RUN_TEST(test_stubs_photo_stubs_and_the_omission_line_are_the_rules_texts);
   RUN_TEST(test_each_rung_of_the_ladder_changes_the_bytes_and_keeps_every_pair);
+  RUN_TEST(test_omitting_whole_turns_frees_at_least_the_loops_lower_bound);
   RUN_TEST(test_photos_follow_the_open_turns_visible_set);
   RUN_TEST(test_signed_thinking_rides_the_open_turn_only);
   RUN_TEST(test_the_envelope_carries_the_facts_and_no_orch_turn);
