@@ -14,50 +14,50 @@ Tokens are the unit, as the provider counts them (owner ruling 82). A head's req
 | gpt-5.6-luna direct | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 | 6,744 | 12,288 | 45,000 | no | 164,864 / 111,072 |
 | glm-5.3 direct (Z.ai), device | 56,969 | 52,969 | 39,878 | latency | 188,000 | 149,000 | 106,000 | 6,744 | 12,288 | 23,500 | no | 56,422 / 35,264 |
 | glm-5.3 direct (Z.ai), Virtual Nimbus | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 | 6,744 | 12,288 | 41,250 | no | 145,664 / 91,872 |
-| routed default (cumulo gpt-5.6), lift off | 23,611 | 20,069 | 16,527 | floor | 85,000 | 47,000 | 34,000 | 6,744 | 12,288 | 11,141 | yes | 11,141 / 5,570 |
+| routed default (cumulo gpt-5.6), lift off | 23,611 | 20,069 | 16,527 | floor | 85,000 | 49,152 | 34,000 | 6,744 | 12,288 | 11,141 | yes | 49,152 / 5,570 |
 | routed default (cumulo gpt-5.6), lift on | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 | 6,744 | 12,288 | 45,000 | no | 164,864 / 111,072 |
-| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 34,000 | 30,000 | 23,800 | floor | 85,000 | 49,000 | 34,000 | 6,744 | 12,288 | 10,625 | yes | 8,192 / 4,096 |
+| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 34,000 | 30,000 | 23,800 | floor | 85,000 | 49,152 | 34,000 | 6,744 | 12,288 | 10,625 | yes | 49,152 / 4,096 |
 | routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift on | 100,000 | 96,000 | 70,000 | clamp | 250,000 | 214,000 | 149,000 | 6,744 | 12,288 | 31,250 | no | 94,464 / 59,040 |
 | mistral-large-4-0 direct, ASSUMED (held) | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 | 6,744 | 12,288 | 45,000 | no | 164,864 / 111,072 |
-| paid custom endpoint (gpt-5.6-luna id) | 28,333 | 24,333 | 19,833 | floor | 85,000 | 47,000 | 34,000 | 6,744 | 12,288 | 11,141 | yes | 11,141 / 5,570 |
+| paid custom endpoint (gpt-5.6-luna id) | 28,333 | 24,333 | 19,833 | floor | 85,000 | 49,152 | 34,000 | 6,744 | 12,288 | 11,141 | yes | 49,152 / 5,570 |
 
 ## Cost of a turn at full (reported, never a pass condition)
 
-claude-sonnet-5-5 is measured: the full arm (61 turns, 104 requests, 1.70 requests a turn, a mean request of 87,308 tokens, billed 2.34 USD). Every other row is derived: the arm's tokens a turn by price class (fresh input, cache reads, cache writes, output; a cold and a warm opening blended at the measured cold share 0.5655), the input scaled by the head's (due + keep) over Sonnet's, priced at the head's built-in price row (model_price_defaults.h), plus the measured digest requests a turn and 1.2 USD a month of other services (search, speech, transcription; the PRD's figure, not measured). Month: 30 days.
+claude-sonnet-5-5 is measured: the full arm (61 turns, 105 requests, 1.72 requests a turn, a mean request of 85,607 tokens, billed 1.70 USD). Every other row is derived: the arm's tokens a turn by price class (fresh input, cache reads, cache writes, output; a cold and a warm opening blended at the measured cold share 0.5655), the input scaled by the head's (due + keep) over Sonnet's, priced at the head's built-in price row (model_price_defaults.h), plus the measured digest requests a turn and 1.2 USD a month of other services (search, speech, transcription; the PRD's figure, not measured). Month: 30 days.
 
 | Head class | Mean request (tokens) | Fixed + digest (tokens) | USD a turn | Month at 12 a day | Month at 9.73 a day | Turns a month inside 20 USD | Cache |
 |---|---|---|---|---|---|---|---|
-| claude-sonnet-5-5 direct (opus-5-5, fable-5-1 alike) | 87,308 | 8,412 | 0.1468 | 54.0 | 44.0 | 128 | reads and 5-minute writes billed |
-| claude-haiku-5-5 direct | 78,367 | 8,412 | 0.0071 | 3.7 | 3.3 | 2,661 | reads and 5-minute writes billed |
-| gpt-5.6 direct | 87,308 | 6,993 | 0.3262 | 118.6 | 96.4 | 57 | reads discounted, no write premium |
-| gpt-5.6-luna direct | 87,308 | 6,993 | 0.0131 | 5.9 | 5.0 | 1,437 | reads discounted, no write premium |
-| glm-5.3 direct (Z.ai), device | 48,833 | 7,629 | 0.0574 | 21.9 | 18.0 | 327 | reads at the row's rate (assumed) |
-| glm-5.3 direct (Z.ai), Virtual Nimbus | 87,308 | 7,629 | 0.1012 | 37.6 | 30.7 | 185 | reads at the row's rate (assumed) |
-| routed default (cumulo gpt-5.6), lift off | 19,248 | 6,993 | 0.1760 | 64.6 | 52.6 | 106 | no cache discount assumed |
-| routed default (cumulo gpt-5.6), lift on | 87,308 | 6,993 | 0.7562 | 273.4 | 221.9 | 24 | no cache discount assumed |
-| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 28,296 | 10,070 | 0.1005 | 37.4 | 30.5 | 187 | no cache discount assumed |
-| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift on | 87,308 | 10,070 | 0.3017 | 109.8 | 89.3 | 62 | no cache discount assumed |
-| mistral-large-4-0 direct, ASSUMED (held) | 87,308 | 6,993 | 0.3001 | 109.2 | 88.8 | 62 | no cache discount assumed |
-| paid custom endpoint (gpt-5.6-luna id) | 23,229 | 8,392 | 0.4160 | 150.9 | 122.6 | 45 | no cache discount assumed |
+| claude-sonnet-5-5 direct (opus-5-5, fable-5-1 alike) | 85,607 | 8,412 | 0.1393 | 51.4 | 41.9 | 134 | reads and 5-minute writes billed |
+| claude-haiku-5-5 direct | 76,840 | 8,412 | 0.0067 | 3.6 | 3.2 | 2,785 | reads and 5-minute writes billed |
+| gpt-5.6 direct | 85,607 | 6,993 | 0.3116 | 113.4 | 92.1 | 60 | reads discounted, no write premium |
+| gpt-5.6-luna direct | 85,607 | 6,993 | 0.0125 | 5.7 | 4.8 | 1,503 | reads discounted, no write premium |
+| glm-5.3 direct (Z.ai), device | 47,882 | 7,629 | 0.0552 | 21.1 | 17.3 | 340 | reads at the row's rate (assumed) |
+| glm-5.3 direct (Z.ai), Virtual Nimbus | 85,607 | 7,629 | 0.0974 | 36.3 | 29.6 | 193 | reads at the row's rate (assumed) |
+| routed default (cumulo gpt-5.6), lift off | 18,873 | 6,993 | 0.1739 | 63.8 | 52.0 | 108 | no cache discount assumed |
+| routed default (cumulo gpt-5.6), lift on | 85,607 | 6,993 | 0.7482 | 270.6 | 219.6 | 25 | no cache discount assumed |
+| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 27,745 | 10,070 | 0.0994 | 37.0 | 30.2 | 189 | no cache discount assumed |
+| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift on | 85,607 | 10,070 | 0.2986 | 108.7 | 88.3 | 62 | no cache discount assumed |
+| mistral-large-4-0 direct, ASSUMED (held) | 85,607 | 6,993 | 0.2970 | 108.1 | 87.9 | 63 | no cache discount assumed |
+| paid custom endpoint (gpt-5.6-luna id) | 22,777 | 8,392 | 0.4111 | 149.2 | 121.2 | 45 | no cache discount assumed |
 
 ## Latency at full (reported, ruling 82 item 5)
 
-A request at the due mark on the head's wire, through the production link (connect 1.50 s, 70,000 B/s: Lumi's own logs) and the bench link (connect 1.23 s, 238,558 B/s: RB-M2). Provider time is the full arm's (claude-sonnet-5-5: a cold first request p50 2.56 s, a warm round p50 1.95 s, a photo turn p50 6.04 s). A chat turn is the arrival over the hold, the 2 s hold, one cold request and the send path; a one-tool turn adds a warm round; a photo turn takes the arm's photo turn. Today's paths: 3.6 s arrival and 4.5 s send on Lumi; RB-TS1's targets: 1.0 s and 0.7 s (ruling 19). The figure times 1.2 is shown as the reported ceiling; no figure here gates a release or shrinks a window.
+A request at the due mark on the head's wire, through the production link (connect 1.50 s, 70,000 B/s: Lumi's own logs) and the bench link (connect 1.23 s, 238,558 B/s: RB-M2). Provider time is the full arm's (claude-sonnet-5-5: a cold first request p50 2.35 s, a warm round p50 1.74 s, a photo turn p50 4.98 s). A chat turn is the arrival over the hold, the 2 s hold, one cold request and the send path; a one-tool turn adds a warm round; a photo turn takes the arm's photo turn. Today's paths: 3.6 s arrival and 4.5 s send on Lumi; RB-TS1's targets: 1.0 s and 0.7 s (ruling 19). The figure times 1.2 is shown as the reported ceiling; no figure here gates a release or shrinks a window.
 
 | Head class | Body at due (B) | Link production / bench (s) | Chat today / cut (s) | One-tool today / cut (s) | Photo today / cut (s) | Reported ceilings chat / tool / photo, cut (s) |
 |---|---|---|---|---|---|---|
-| claude-sonnet-5-5 direct (opus-5-5, fable-5-1 alike) | 279,970 | 5.5 / 2.4 | 18.2 / 11.8 | 25.6 / 19.2 | 21.6 / 15.2 | 15 / 24 / 19 |
-| claude-haiku-5-5 direct | 250,040 | 5.1 / 2.3 | 17.7 / 11.3 | 24.8 / 18.4 | 21.2 / 14.8 | 14 / 23 / 18 |
-| gpt-5.6 direct | 345,600 | 6.4 / 2.7 | 19.1 / 12.7 | 27.5 / 21.1 | 22.6 / 16.2 | 16 / 26 / 20 |
-| gpt-5.6-luna direct | 345,600 | 6.4 / 2.7 | 19.1 / 12.7 | 27.5 / 21.1 | 22.6 / 16.2 | 16 / 26 / 20 |
-| glm-5.3 direct (Z.ai), device | 174,797 | 4.0 / 2.0 | 16.7 / 10.3 | 22.6 / 16.2 | 20.1 / 13.7 | 13 / 20 / 17 |
-| glm-5.3 direct (Z.ai), Virtual Nimbus | 316,800 | 6.0 / 2.6 | 18.7 / 12.3 | 26.7 / 20.3 | 22.2 / 15.8 | 15 / 25 / 19 |
-| routed default (cumulo gpt-5.6), lift off | 72,248 | 2.5 / 1.5 | 15.2 / 8.8 | 19.7 / 13.3 | 18.7 / 12.3 | 11 / 16 / 15 |
-| routed default (cumulo gpt-5.6), lift on | 345,600 | 6.4 / 2.7 | 19.1 / 12.7 | 27.5 / 21.1 | 22.6 / 16.2 | 16 / 26 / 20 |
-| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 75,000 | 2.6 / 1.5 | 15.2 / 8.8 | 19.8 / 13.4 | 18.7 / 12.3 | 11 / 17 / 15 |
-| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift on | 240,000 | 4.9 / 2.2 | 17.6 / 11.2 | 24.5 / 18.1 | 21.1 / 14.7 | 14 / 22 / 18 |
-| mistral-large-4-0 direct, ASSUMED (held) | 345,600 | 6.4 / 2.7 | 19.1 / 12.7 | 27.5 / 21.1 | 22.6 / 16.2 | 16 / 26 / 20 |
-| paid custom endpoint (gpt-5.6-luna id) | 72,999 | 2.5 / 1.5 | 15.2 / 8.8 | 19.7 / 13.3 | 18.7 / 12.3 | 11 / 16 / 15 |
+| claude-sonnet-5-5 direct (opus-5-5, fable-5-1 alike) | 279,970 | 5.5 / 2.4 | 17.9 / 11.5 | 25.2 / 18.8 | 20.6 / 14.2 | 14 / 23 / 18 |
+| claude-haiku-5-5 direct | 250,040 | 5.1 / 2.3 | 17.5 / 11.1 | 24.3 / 17.9 | 20.2 / 13.8 | 14 / 22 / 17 |
+| gpt-5.6 direct | 345,600 | 6.4 / 2.7 | 18.9 / 12.5 | 27.1 / 20.7 | 21.5 / 15.1 | 15 / 25 / 19 |
+| gpt-5.6-luna direct | 345,600 | 6.4 / 2.7 | 18.9 / 12.5 | 27.1 / 20.7 | 21.5 / 15.1 | 15 / 25 / 19 |
+| glm-5.3 direct (Z.ai), device | 174,797 | 4.0 / 2.0 | 16.4 / 10.0 | 22.2 / 15.8 | 19.1 / 12.7 | 13 / 19 / 16 |
+| glm-5.3 direct (Z.ai), Virtual Nimbus | 316,800 | 6.0 / 2.6 | 18.5 / 12.1 | 26.2 / 19.8 | 21.1 / 14.7 | 15 / 24 / 18 |
+| routed default (cumulo gpt-5.6), lift off | 72,248 | 2.5 / 1.5 | 15.0 / 8.6 | 19.3 / 12.9 | 17.6 / 11.2 | 11 / 16 / 14 |
+| routed default (cumulo gpt-5.6), lift on | 345,600 | 6.4 / 2.7 | 18.9 / 12.5 | 27.1 / 20.7 | 21.5 / 15.1 | 15 / 25 / 19 |
+| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift off | 75,000 | 2.6 / 1.5 | 15.0 / 8.6 | 19.3 / 12.9 | 17.7 / 11.3 | 11 / 16 / 14 |
+| routed Sonnet (cumulo anthropic/claude-sonnet-5-5), lift on | 240,000 | 4.9 / 2.2 | 17.4 / 11.0 | 24.0 / 17.6 | 20.0 / 13.6 | 14 / 22 / 17 |
+| mistral-large-4-0 direct, ASSUMED (held) | 345,600 | 6.4 / 2.7 | 18.9 / 12.5 | 27.1 / 20.7 | 21.5 / 15.1 | 15 / 25 / 19 |
+| paid custom endpoint (gpt-5.6-luna id) | 72,999 | 2.5 / 1.5 | 15.0 / 8.6 | 19.3 / 12.9 | 17.6 / 11.2 | 11 / 16 / 14 |
 
 ## Arena and restart fill at full
 
@@ -229,17 +229,17 @@ Every head of budgets_v5_1_2.json (the released v5.1.2 rows), at full, routed li
 | device | openai | gpt-6-astra | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
 | device | openai | gpt-4o-mini-search-preview | 66,666 | 62,666 | 46,666 | window | 240,000 | 200,000 | 142,000 |
 | device | openai | gpt-6-sol | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
-| device | mistral | codestral-2508 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
-| device | mistral | codestral-latest | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
-| device | mistral | mistral-code-latest | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
-| device | mistral | mistral-code-fim-latest | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
+| device | mistral | codestral-2508 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
+| device | mistral | codestral-latest | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
+| device | mistral | mistral-code-latest | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
+| device | mistral | mistral-code-fim-latest | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
 | device | mistral | glm-5-2 | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 |
 | device | mistral | zai-glm-5-2 | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 |
 | device | mistral | zai-glm-5-3 | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 |
 | device | mistral | zai-glm-5 | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 |
 | device | mistral | zai-glm-latest | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 |
-| device | mistral | labs-leanstral-1-5-1 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
-| device | mistral | labs-leanstral-1-5 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
+| device | mistral | labs-leanstral-1-5-1 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
+| device | mistral | labs-leanstral-1-5 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
 | device | mistral | ministral-14b-2512 | 48,709 | 44,709 | 34,096 | latency | 151,000 | 113,000 | 80,000 |
 | device | mistral | ministral-14b-latest | 48,709 | 44,709 | 34,096 | latency | 151,000 | 113,000 | 80,000 |
 | device | mistral | ministral-3b-2512 | 48,709 | 44,709 | 34,096 | latency | 151,000 | 113,000 | 80,000 |
@@ -248,7 +248,7 @@ Every head of budgets_v5_1_2.json (the released v5.1.2 rows), at full, routed li
 | device | mistral | ministral-8b-latest | 48,709 | 44,709 | 34,096 | latency | 151,000 | 113,000 | 80,000 |
 | device | mistral | mistral-large-4 | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
 | device | mistral | mistral-large-4-0 | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
-| device | mistral | mistral-large-2512 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
+| device | mistral | mistral-large-2512 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
 | device | mistral | mistral-large-latest | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
 | device | mistral | mistral-medium-latest | 48,709 | 44,709 | 34,096 | latency | 151,000 | 113,000 | 80,000 |
 | device | mistral | mistral-medium | 48,709 | 44,709 | 34,096 | latency | 151,000 | 113,000 | 80,000 |
@@ -269,7 +269,7 @@ Every head of budgets_v5_1_2.json (the released v5.1.2 rows), at full, routed li
 | device | mistral | codestral-embed-2505 | 5,615 | 4,773 | 3,930 | floor | 17,408 | 5,242 | 2,621 |
 | device | mistral | mistral-embed-2312 | 5,615 | 4,773 | 3,930 | floor | 17,408 | 5,242 | 2,621 |
 | device | mistral | mistral-embed | 5,615 | 4,773 | 3,930 | floor | 17,408 | 5,242 | 2,621 |
-| device | mistral | mistral-moderation-2603 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 47,000 | 34,000 |
+| device | mistral | mistral-moderation-2603 | 27,419 | 23,419 | 19,193 | floor | 85,000 | 49,152 | 34,000 |
 | device | mistral | mistral-ocr-2512 | 11,230 | 9,546 | 7,861 | floor | 34,816 | 5,242 | 2,621 |
 | device | mistral | mistral-ocr-3-0 | 11,230 | 9,546 | 7,861 | floor | 34,816 | 5,242 | 2,621 |
 | device | mistral | mistral-ocr-3 | 11,230 | 9,546 | 7,861 | floor | 34,816 | 5,242 | 2,621 |
@@ -294,13 +294,13 @@ Every head of budgets_v5_1_2.json (the released v5.1.2 rows), at full, routed li
 | device | zai | glm-5.3 | 56,969 | 52,969 | 39,878 | latency | 188,000 | 149,000 | 106,000 |
 | device | zai | glm-5.3-flash | 56,969 | 52,969 | 39,878 | latency | 188,000 | 149,000 | 106,000 |
 | device | zai | glm-5.3-flashx | 56,969 | 52,969 | 39,878 | latency | 188,000 | 149,000 | 106,000 |
-| device | cumulo | openai/gpt-5.6 | 23,611 | 20,069 | 16,527 | floor | 85,000 | 47,000 | 34,000 |
-| device | cumulo | anthropic/claude-sonnet-5-5 | 34,000 | 30,000 | 23,800 | floor | 85,000 | 49,000 | 34,000 |
-| device | cumulo | mistral/mistral-large-4-0 | 23,611 | 20,069 | 16,527 | floor | 85,000 | 47,000 | 34,000 |
-| device | cumulo | zai/glm-5.3 | 25,757 | 21,893 | 18,029 | floor | 85,000 | 47,000 | 34,000 |
-| device | cumulo | gpt-5.6 | 23,611 | 20,069 | 16,527 | floor | 85,000 | 47,000 | 34,000 |
-| device | custom | gpt-5.6-luna | 28,333 | 24,333 | 19,833 | floor | 85,000 | 47,000 | 34,000 |
-| device | custom | llama-3-70b | 28,333 | 24,333 | 19,833 | floor | 85,000 | 47,000 | 34,000 |
+| device | cumulo | openai/gpt-5.6 | 23,611 | 20,069 | 16,527 | floor | 85,000 | 49,152 | 34,000 |
+| device | cumulo | anthropic/claude-sonnet-5-5 | 34,000 | 30,000 | 23,800 | floor | 85,000 | 49,152 | 34,000 |
+| device | cumulo | mistral/mistral-large-4-0 | 23,611 | 20,069 | 16,527 | floor | 85,000 | 49,152 | 34,000 |
+| device | cumulo | zai/glm-5.3 | 25,757 | 21,893 | 18,029 | floor | 85,000 | 49,152 | 34,000 |
+| device | cumulo | gpt-5.6 | 23,611 | 20,069 | 16,527 | floor | 85,000 | 49,152 | 34,000 |
+| device | custom | gpt-5.6-luna | 28,333 | 24,333 | 19,833 | floor | 85,000 | 49,152 | 34,000 |
+| device | custom | llama-3-70b | 28,333 | 24,333 | 19,833 | floor | 85,000 | 49,152 | 34,000 |
 | server | mistral | mistral-large-4-0 | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
 | server | mistral | mistral-medium-latest | 55,806 | 51,806 | 39,064 | latency | 173,000 | 135,000 | 95,000 |
 | server | openai | gpt-5.6-luna | 100,000 | 96,000 | 70,000 | clamp | 360,000 | 320,000 | 226,000 |
@@ -309,4 +309,4 @@ Every head of budgets_v5_1_2.json (the released v5.1.2 rows), at full, routed li
 | server | anthropic | claude-haiku-5-5 | 90,000 | 86,000 | 63,000 | tier | 263,000 | 224,000 | 156,000 |
 | server | anthropic | claude-opus-5-5 | 100,000 | 96,000 | 70,000 | clamp | 292,000 | 254,000 | 176,000 |
 | server | zai | glm-5.3 | 100,000 | 96,000 | 70,000 | clamp | 330,000 | 291,000 | 205,000 |
-| server | custom | gpt-5.6-luna | 28,333 | 24,333 | 19,833 | floor | 85,000 | 47,000 | 34,000 |
+| server | custom | gpt-5.6-luna | 28,333 | 24,333 | 19,833 | floor | 85,000 | 49,152 | 34,000 |

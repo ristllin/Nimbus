@@ -95,7 +95,7 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   HeadBudget b;
   const WireRatio w = wireOf(r, head);
   const ContextBudget c = deriveRequestContext(r, {});   // v5.1.2's own marks: the floors
-  b.profile = profileOf(profileSlug(requested));
+  b.profile = (uint8_t)requested <= (uint8_t)Profile::Full ? requested : kDefaultProfile;
   b.floorHead = r.bound == BudgetBound::Floor || r.bound == BudgetBound::Held;
   b.bodyMilliBytesPerToken = w.milli;
   b.bodyInterceptBytes = w.intercept;
@@ -109,9 +109,14 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   // floor): the aim is what it carries at the wire's ratio, and never under v5.1.2's own target.
   b.tokens.aim = std::max(std::min(b.tokens.aim, tokensIn(w, b.bodyCap)), r.targetTokens);
   b.tokens.due = b.tokens.aim - nextRequestReserve(b.tokens.aim);
-  b.tokens.keep = (uint32_t)((uint64_t)b.tokens.aim * kKeepPercent / 100);
   const uint32_t around = kFixedOverheadCeiling + kFullDigestAndFilesBytes;
-  const uint32_t foldMark = (uint32_t)std::min(c.foldTriggerBytes, std::max(c.historyMaxBytes, c.historySoftBytes));
+  b.tokens.keep = (uint32_t)((uint64_t)b.tokens.aim * kKeepPercent / 100);
+  // v5.1.2's fold mark: its trigger, which a floor row counts in raw bytes since the last fold (49,152 B).
+  // Where that trigger does not fit beside the fixed part and the digest block of the head's own body (a
+  // tiny window), what the released window carried stands in for it.
+  const uint32_t foldMark = c.foldTriggerBytes + around <= b.bodyCap
+                                ? (uint32_t)c.foldTriggerBytes
+                                : (uint32_t)std::max(c.historyMaxBytes, c.historySoftBytes);
   ProfileMarks full;
   full.high = std::max(roundDown(bytesAt(w, b.tokens.due) - std::min(around, bytesAt(w, b.tokens.due)), 1000), foldMark);
   full.low = std::max(roundDown(bytesAt(w, b.tokens.keep) - std::min(around, bytesAt(w, b.tokens.keep)), 1000),

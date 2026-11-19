@@ -78,10 +78,18 @@ const std::vector<V512>& v512() {
 BudgetLink linkOf(const V512& v) { return v.link == "server" ? BudgetLink::Server : BudgetLink::Device; }
 tx::HeadKey keyOf(const V512& v) { return tx::HeadKey{v.host, v.model, v.host == "cumulo"}; }
 
-// The fold mark v5.1.2 compared against: its trigger, or on a floor row (whose 49,152 B trigger
-// counts raw bytes since the last fold of a window that carries at most historyMaxBytes) what the
-// window carries.
-uint32_t foldMark(const V512& v) { return std::min(v.trigger, std::max(v.histMax, v.soft)); }
+// The fold mark v5.1.2 compared against: its trigger (a floor row's counts raw bytes since the last
+// fold), unless the trigger does not fit beside the fixed part and the digest block of the released
+// body (a tiny window): then what the released window carried.
+uint32_t foldMark(const V512& v) {
+  return v.trigger + tx::kFixedOverheadCeiling + tx::kFullDigestAndFilesBytes <= v.body ? v.trigger
+                                                                                         : std::max(v.histMax, v.soft);
+}
+
+// 85,000 B only where v5.1.2 itself is at 85,000 B.
+bool floorByAccident(const tx::HeadBudget& b, const V512& v) {
+  return b.bodyCap == tx::kFloorHeadBodyCap && v.body != tx::kFloorHeadBodyCap;
+}
 
 // Empty when `b` carries at least the released row; else the first field that is short.
 std::string shortOf(const tx::HeadBudget& b, const V512& v) {
@@ -155,9 +163,17 @@ void test_the_row_checker_catches_one_byte_short_in_every_field() {
     TEST_ASSERT_FALSE(shortOf(b, v).empty());
     *f += 1;
   }
-  // A floor row's fold mark is what its window carries, not the raw 49,152 B trigger.
-  v.histMax = 11141, v.soft = 5570, v.trigger = 49152;
-  TEST_ASSERT_EQUAL_UINT32(11141, foldMark(v));
+  // A floor row's fold mark is its 49,152 B trigger; a tiny window's is what its window carried.
+  v.body = 85000, v.histMax = 11141, v.soft = 5570, v.trigger = 49152;
+  TEST_ASSERT_EQUAL_UINT32(49152, foldMark(v));
+  v.body = 8000, v.histMax = 4096, v.soft = 2048;
+  TEST_ASSERT_EQUAL_UINT32(4096, foldMark(v));
+  // The floor-by-accident checker: an 85,000 B body only where the released row is 85,000 B.
+  b.bodyCap = tx::kFloorHeadBodyCap;
+  v.body = 360000;
+  TEST_ASSERT_TRUE(floorByAccident(b, v));
+  v.body = tx::kFloorHeadBodyCap;
+  TEST_ASSERT_FALSE(floorByAccident(b, v));
 }
 
 void test_no_head_default_is_under_its_v5_1_2_row() {
@@ -167,7 +183,17 @@ void test_no_head_default_is_under_its_v5_1_2_row() {
     TEST_ASSERT_TRUE_MESSAGE(shortOf(b, v).empty(), what.c_str());
     TEST_ASSERT_EQUAL_MESSAGE((int)tx::Profile::Full, (int)b.profile, what.c_str());
     // 85,000 B only where v5.1.2 itself is at 85,000 B.
-    if (b.bodyCap == tx::kFloorHeadBodyCap) TEST_ASSERT_EQUAL_UINT32_MESSAGE(tx::kFloorHeadBodyCap, v.body, what.c_str());
+    TEST_ASSERT_FALSE_MESSAGE(floorByAccident(b, v), what.c_str());
+  }
+}
+
+// The engine keeps owner and assistant text inline up to its tier-1 caps and a stored result inline up to
+// kBulkWholeMax when there is no bulk storage: each at least the largest released row.
+void test_the_engines_inline_caps_hold_every_released_row() {
+  for (const V512& v : v512()) {
+    TEST_ASSERT_TRUE(tx::kTier1OwnerText >= v.messageCap && tx::kTier1AssistantText >= v.messageCap);
+    TEST_ASSERT_TRUE(tx::kInlineMessageCap >= v.messageCap);
+    TEST_ASSERT_TRUE(tx::kBulkWholeMax >= v.toolResult);
   }
 }
 
@@ -185,8 +211,6 @@ void test_the_aim_is_tokens_due_before_it_and_keeps_70_percent() {
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.tokens.aim * tx::kKeepPercent / 100, b.tokens.keep, what.c_str());
     // The body carries the aim on the head's wire: the request at the aim fits.
     TEST_ASSERT_TRUE_MESSAGE(tx::bodyBytesFor(b, b.tokens.aim) <= b.bodyCap, what.c_str());
-    // The stored marks are the token marks on that wire, less the fixed part and the digest block,
-    // unless a released floor lifted them.
     TEST_ASSERT_TRUE_MESSAGE(b.marks.low < b.marks.high, what.c_str());
   }
 }
@@ -387,12 +411,17 @@ void test_no_measured_figure_contradicts_its_row() {
   for (JsonObjectConst p : points) {
     const uint32_t before = p["before"] | 0u, after = p["after"] | 0u;
     TEST_ASSERT_FALSE_MESSAGE(contradicts(before, b.tokens.due), ("at the due mark: " + std::to_string(before)).c_str());
-    TEST_ASSERT_TRUE_MESSAGE(before >= 90000 && before <= 105000, std::to_string(before).c_str());
+    // The owner's band for a request at the due mark (ruling 82: around 100,000 tokens).
+    TEST_ASSERT_TRUE_MESSAGE(before >= 90000 && before <= 105000 && before <= b.tokens.aim, std::to_string(before).c_str());
     lowestAfter = std::min(lowestAfter, after);
   }
   TEST_ASSERT_FALSE_MESSAGE(contradicts(lowestAfter, b.tokens.keep), ("after a compaction: " + std::to_string(lowestAfter)).c_str());
   // The cost formula reproduces the measured Sonnet turn.
-  const budgettable::CostBlocks c = budgettable::costOf(budgettable::heads()[0]);
+  const budgettable::Head* sonnet = nullptr;
+  for (const budgettable::Head& h : budgettable::heads())
+    if (std::string(h.host) == "anthropic" && std::string(h.model) == "claude-sonnet-5-5") sonnet = &h;
+  TEST_ASSERT_NOT_NULL(sonnet);
+  const budgettable::CostBlocks c = budgettable::costOf(*sonnet);
   const double measuredTurn = (m["full_arm"]["blended_turn_usd"] | 0.0) + (m["full_arm"]["background_usd_per_turn"] | 0.0);
   TEST_ASSERT_FALSE_MESSAGE(contradicts(c.turnUsd(), measuredTurn), "USD a turn");
 }
@@ -432,6 +461,7 @@ int main() {
   RUN_TEST(test_the_smaller_profiles_are_fixed_and_full_is_per_head);
   RUN_TEST(test_the_row_checker_catches_one_byte_short_in_every_field);
   RUN_TEST(test_no_head_default_is_under_its_v5_1_2_row);
+  RUN_TEST(test_the_engines_inline_caps_hold_every_released_row);
   RUN_TEST(test_the_aim_is_tokens_due_before_it_and_keeps_70_percent);
   RUN_TEST(test_the_named_head_classes);
   RUN_TEST(test_both_routed_rows_behind_the_one_switch);
