@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
-# class device_notes bytes=1652 ceiling=2048 entries=57 sha8=68c61711
+# class device_notes bytes=1653 ceiling=2048 entries=58 sha8=d348ef0c
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
 # class tool_results bytes=4913 ceiling=6144 entries=365 sha8=887d1856
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
@@ -84,7 +84,8 @@ device_notes	lib/harness/include/nimbus/harness/plain/texts.h	5c6a161f	79	"The d
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	af2d1e9e	75	"Part of this turn was too long for the device to keep, so it stopped there."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	72572032	75	"That message is too long for the device to keep. Send it as a file instead."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	51a7c403	84	"That message has too many parts for the device to keep. Send them in smaller groups."
-device_notes	lib/harness/include/nimbus/harness/plain/texts.h	f7b8a7f6	65	"The turn reached its limit before a reply. Ask again to continue."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	50078ce6	21	"The turn reached its "
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	d0d7624f	45	" limit before a reply. Ask again to continue."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	b8505ec4	25	"This turn stopped at its "
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	dedc0cf6	30	" limit. Ask again to continue."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	a39a7ffa	9	"assistant"

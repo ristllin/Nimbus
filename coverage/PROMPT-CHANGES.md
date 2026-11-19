@@ -827,3 +827,13 @@ deleted. Engine 2 has no baseline.
   exactly those things in that turn; it now says what is open and closed there, so no reply claims a save that
   was dropped. Round 3 (ruling 80 item 5): its report steps no longer start an attached final-report sub-agent
   or re-spawn it; the head writes the report in its reply from the results and files.read. Class -522 B.
+
+### PC-0083: the calls-only limit line names its guard (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 1652 -> 1653
+- sha8: 68c61711 -> d348ef0c
+- lane: RB-E1c
+- prd: section 1 step 5 (one status line per guard: limit reached) and ruling 79 item 4 (the calls-only limit line names its guard; a time trip does not end with a provider line)
+- why: lib/harness/src/plain_engine.cpp: the owner's line when a guard's last round ended with calls only, or failed, now names the guard by its slug between two fragments ("The turn reached its <slug> limit before a reply. Ask again to continue."); planned work, not a fix

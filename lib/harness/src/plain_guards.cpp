@@ -11,6 +11,7 @@
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/tool_groups.h"
+#include "nimbus/orch/tx/item.h"
 
 namespace agent {
 namespace plain {
@@ -69,27 +70,46 @@ namespace {
 // whole and no effect has been tried since, is answered with a pointer to it instead of running.
 struct Suppression {
   struct Seen {
-    std::string key;   // the tool it reached, then its arguments as parsed and written again
-    uint64_t q = 0;    // its stored result
+    std::string key;    // the tool it reached, then its arguments as parsed and written again
+    uint64_t q = 0;     // its stored result
+    bool bulk = false;  // over tier 1: ladder rung 2 may stub it once it is older than the newest two rounds
   };
+  // One turn's attempt: a retry of the turn (same number, next attempt, a fresh open) starts clean.
   std::string chat;
   uint32_t turn = 0;
+  uint8_t attempt = 0;
+  uint32_t startedMs = 0;
   std::vector<Seen> seen;
   const ToolCall* pending = nullptr;   // the pure call that was let run, until its result lands
   std::string pendingKey;
 
-  static std::string keyOf(const ToolCall& c) {
-    ArduinoJson::JsonDocument doc;
+  static std::string keyOf(const ToolCall& c, const ArduinoJson::JsonDocument& doc, bool parsed) {
     std::string args;
-    if (deserializeJson(doc, c.argsJson, ArduinoJson::DeserializationOption::NestingLimit(64))) args = c.argsJson;
+    if (!parsed) args = c.argsJson;
     else serializeJson(doc, args);
     return c.name + '\n' + args;
   }
 
+  // Arguments that name a span measured back from now (since_hours, before_days, recent, ...): the same
+  // call later in the turn may answer differently, so it is never answered from an earlier one.
+  static bool relativeToNow(const ArduinoJson::JsonDocument& doc) {
+    static const char* const kWords[] = {"since", "before", "after", "ago", "recent", "latest", "now",
+                                         "minutes", "hours", "days", "today"};
+    if (!doc.is<ArduinoJson::JsonObjectConst>()) return false;
+    for (ArduinoJson::JsonPairConst kv : doc.as<ArduinoJson::JsonObjectConst>()) {
+      const std::string k = kv.key().c_str();
+      for (const char* w : kWords)
+        if (k.find(w) != std::string::npos) return true;
+    }
+    return false;
+  }
+
   void sync(const TurnCtx& t) {
-    if (t.turn == turn && t.chatKey == chat) return;
+    if (t.turn == turn && t.chatKey == chat && t.attempt == attempt && t.startedMs == startedMs) return;
     chat = t.chatKey;
     turn = t.turn;
+    attempt = t.attempt;
+    startedMs = t.startedMs;
     seen.clear();
     pending = nullptr;
   }
@@ -99,15 +119,17 @@ struct Suppression {
     pending = nullptr;
     if (!ctx.turn || !ctx.call) return d;
     sync(*ctx.turn);
-    if (ctx.effect) {   // a write may change what an earlier read showed: nothing is answered after it
+    if (!ctx.pure) {   // a write, a poll, the clock, the web: the world may have moved, nothing earlier answers
       seen.clear();
       return d;
     }
-    if (!ctx.pure) return d;   // only declared-pure tools (never the web, the clock or the device)
     const ToolCall& target = ctx.target ? *ctx.target : *ctx.call;
-    std::string key = keyOf(target);
+    ArduinoJson::JsonDocument doc;
+    const bool parsed = !deserializeJson(doc, target.argsJson, ArduinoJson::DeserializationOption::NestingLimit(64));
+    if (parsed && relativeToNow(doc)) return d;
+    std::string key = keyOf(target, doc, parsed);
     for (const Seen& s : seen)
-      if (s.key == key && s.q > ctx.stubThrough) {   // shown whole in this request
+      if (s.key == key && (!s.bulk || s.q > ctx.stubThrough)) {   // whole after this round's ladder step
         d.verdict = DispatchVerdict::Answer;
         d.text = texts::tool_results::kSameAsEarlier;
         return d;
@@ -121,7 +143,7 @@ struct Suppression {
     if (!pending || ctx.call != pending || !ctx.output) return;
     pending = nullptr;
     if (ctx.output->isError || ctx.output->outside) return;   // only a whole internal result answers a repeat
-    seen.push_back(Seen{std::move(pendingKey), ctx.q});
+    seen.push_back(Seen{std::move(pendingKey), ctx.q, ctx.output->text.size() > nimbus::orch::tx::kTier1Receipt});
   }
 };
 

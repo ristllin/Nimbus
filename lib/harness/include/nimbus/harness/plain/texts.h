@@ -197,7 +197,9 @@ inline constexpr char kMessageTooLong[] = "That message is too long for the devi
 // An owner message with more parts or update ids than one stored line holds (lane RB-E1b).
 inline constexpr char kTooManyParts[] = "That message has too many parts for the device to keep. Send them in smaller groups.";
 // The last allowed round answered with tool calls and no text.
-inline constexpr char kLimitLine[] = "The turn reached its limit before a reply. Ask again to continue.";
+// The guard's slug (guardTripSlug) sits between the two (lane RB-E1c, ruling 79).
+inline constexpr char kLimitLine[] = "The turn reached its ";
+inline constexpr char kLimitLineEnd[] = " limit before a reply. Ask again to continue.";
 // A guard stopped the turn and its last round's text was delivered: the guard, by its slug
 // (guardTripSlug), between these two (lane RB-E1b).
 inline constexpr char kLimitStopped[] = "This turn stopped at its ";

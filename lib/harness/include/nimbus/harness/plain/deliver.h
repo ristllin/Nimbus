@@ -50,6 +50,9 @@ struct DeliverInput {
 
 // Progress, recorded the moment each send succeeds (not when the call returns): when a
 // later part throws, the engine reads what already went out and never sends it again.
+// `out` carries the progress of every earlier attempt of this turn's delivery: deliverTurn never
+// resets it (no `out = DeliverOutcome{}`); it adds to msgIds, parts and bytes and only sets the
+// flags, so a retry with fromPart keeps part 1's message id and its sent state (ruling 79).
 struct DeliverOutcome {
   bool sent = false;                   // some of the reply went out
   uint16_t parts = 0;                  // reply parts that went out, in order

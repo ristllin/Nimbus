@@ -1162,6 +1162,12 @@ inline void test_a_refusal_at_every_allocation_of_a_turn_never_leaves_runTurn() 
     TEST_ASSERT_TRUE_MESSAGE(replies <= 1, msg);
     TEST_ASSERT_TRUE_MESSAGE(b.sent.size() <= 2, msg);
     TEST_ASSERT_TRUE_MESSAGE(countKind(storedOf(b), tx::ItemKind::Delivery) <= 1, msg);   // the d item never twice
+    size_t ends = 0;   // and the e item at most once in RAM (ruling 79 item 4)
+    for (size_t i = 0; i < b.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      ends += b.arena->header(i, e).ok() && e.kind == tx::ItemKind::TurnEnd;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(ends <= 1, msg);
     // The chat goes on: the next turn answers, and its request is paired.
     plain::TurnOutcome next;   // the steps the refused turn did not use come first, then "ok"
     b.model.push(sp::say("ok"));
@@ -1198,7 +1204,9 @@ inline void test_the_last_round_with_only_calls_ends_with_the_limit_line() {
   TXB_OK(b.owner("keep reading", out));
   TEST_ASSERT_EQUAL_STRING("none", b.model.last().view.toolChoice.c_str());
   TEST_ASSERT_EQUAL(1, (int)b.sent.size());
-  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kLimitLine, b.sent[0].text.c_str());
+  // The line names the guard that stopped the turn (ruling 79 item 4).
+  const std::string line = std::string(texts::device_notes::kLimitLine) + "rounds" + texts::device_notes::kLimitLineEnd;
+  TEST_ASSERT_EQUAL_STRING(line.c_str(), b.sent[0].text.c_str());
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::LimitReached);
   TEST_ASSERT_EQUAL_STRING("limit:rounds", lastEnd(storedOf(b))->end.cause.c_str());
 }
@@ -1599,6 +1607,9 @@ inline void test_a_message_with_too_many_parts_gets_its_own_line() {
   TEST_ASSERT_FALSE(st.ok());
   TEST_ASSERT_EQUAL(1, (int)b.sent.size());
   TEST_ASSERT_EQUAL_STRING(texts::device_notes::kTooManyParts, b.sent[0].text.c_str());
+  // No e item can be stored (the arena refused the turn's first item): the cause reaches the binding
+  // through TurnOutcome::end (documented in docs/harness.md).
+  TEST_ASSERT_EQUAL_STRING("too-many-parts", out.end.cause.c_str());
   TEST_ASSERT_TRUE(b.sent[0].text != texts::device_notes::kNoMemory);
 }
 
@@ -2102,6 +2113,217 @@ inline void test_a_deferred_effect_runs_after_the_turn_is_closed() {
   TEST_ASSERT_EQUAL(0, (int)out.deferred.mask);
 }
 
+// ---- ruling 79: the open items of RB-E1b's pre-merge check (lane RB-E1c) ------------------------
+// 1. An exchange that reports no usage at all must not leave the size and spend guards blind: a
+// floor from the request bytes, priced at the input rate, and an event that says usage was missing.
+inline std::vector<std::string> lastEvents(txb::Battery& b) {
+  const std::vector<tx::Item> items = storedOf(b);
+  const tx::Item* e = lastEnd(items);
+  return e ? e->end.events : std::vector<std::string>{};
+}
+inline void test_zero_usage_still_feeds_the_size_and_spend_guards() {
+  sp::Usage none;
+  none.input = none.output = none.cacheRead = none.cacheWrite = 0;
+  for (int guard = 0; guard < 2; ++guard) {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    if (guard == 0) b.cost.inMicroPerM = 1000000000ull;   // 1,000 USD per 1M: one request passes 0.50 USD
+    else b.cost.targetTokens = b.cost.requestTokensAtTrigger = 100;   // a size cap of 1,600 tokens
+    b.model.respondWith([none](const sp::Recorded& r, size_t) {
+      sp::Step s = untilNone(r, 0);
+      s.usage = none;
+      return s;
+    });
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("keep reading", out));
+    TEST_ASSERT_TRUE_MESSAGE(out.trip == (guard ? plain::GuardTrip::Size : plain::GuardTrip::Spend),
+                             guard ? "the size guard is blind to an answer with no usage" : "the spend guard is blind to an answer with no usage");
+    const std::vector<std::string> ev = lastEvents(b);
+    TEST_ASSERT_TRUE_MESSAGE(std::find(ev.begin(), ev.end(), "usage:missing") != ev.end(), "no event says usage was missing");
+  }
+}
+
+// 2. Suppression. A call that is not pure (a poll, the clock) clears what was seen: it is how the model
+// waits for the world.
+inline void test_a_call_that_is_not_pure_clears_suppression() {
+  txb::Battery b;
+  b.world.files["notes/a.md"] = "alpha";
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::call("clock_now", "{}"));
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::say("Read twice."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read, wait, read", out));
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)dispatchedOf(b, "read_file"), "a read after a poll was answered from before it");
+}
+
+// A call whose arguments are relative to now is never answered from an earlier one (through more too).
+inline void test_a_call_relative_to_now_is_never_suppressed() {
+  for (int viaMore = 0; viaMore < 2; ++viaMore) {
+    txb::Battery b;
+    withMore(b);
+    const std::string args = R"({"tag":"recent","bytes":200,"since_hours":1})";
+    const std::string routed = std::string(R"({"name":"big_read","args":)") + args + "}";
+    b.model.push(viaMore ? sp::call("more", routed) : sp::call("big_read", args));
+    b.model.push(viaMore ? sp::call("more", routed) : sp::call("big_read", args));
+    b.model.push(sp::say("Twice."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("the last hour twice", out));
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)dispatchedOf(b, "big_read"), viaMore ? "through more" : "direct");
+  }
+}
+
+// A retry of a turn (the same turn number, the next attempt) starts with nothing seen.
+inline void test_a_retried_turn_starts_with_nothing_seen() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  b.world.files["notes/a.md"] = "alpha";
+  plain::TurnInput in;
+  in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.who = &b.who;
+  in.ctx.turn = 7;
+  in.text = "read it";
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::httpError(500));
+  plain::TurnOutcome out;
+  (void)b.engine->runTurn(in, out);
+  b.world.files["notes/a.md"] = "alpha, changed outside the turn";
+  in.ctx.attempt = 1;
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::say("Changed."));
+  b.advance(5);
+  TXB_OK(b.engine->runTurn(in, out));
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)dispatchedOf(b, "read_file"), "the retry was answered from the failed attempt");
+}
+
+// Only a result that stays whole after this round's ladder step answers a repeat: a receipt always
+// (rung 2 never stubs one), a bulk result only while it is inside the newest two rounds.
+inline void test_a_bulk_result_older_than_two_rounds_never_answers_a_repeat() {
+  txb::Battery b;
+  b.world.files["notes/a.md"] = "alpha";
+  b.world.files["notes/b.md"] = "beta";
+  const std::string bulk = R"({"tag":"bulk","bytes":3000})";
+  b.model.push(sp::call("big_read", bulk));
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
+  b.model.push(sp::call("read_file", R"({"path":"notes/b.md"})"));
+  b.model.push(sp::call("big_read", bulk));                        // three rounds back: may be a stub after this round
+  b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));   // a receipt, three rounds back: still whole
+  b.model.push(sp::say("Done."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("read around", out));
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)dispatchedOf(b, "big_read"), "a bulk result that may be stubbed answered a repeat");
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)dispatchedOf(b, "read_file"), "a receipt that stays whole did not answer its repeat");
+}
+
+// 4. A round of parallel calls is never split by a full-arena drop: a result never stays resident
+// without its call, and a turn is counted once in the omission line.
+inline void test_a_full_arena_never_splits_a_round_of_parallel_calls() {
+  // Pairs of reads, the first of each pair at sizes from 100 B to 1,400 B, until the arena refuses a
+  // result: at some sizes the pair's first result is stored and the second refused, so the second
+  // call dangles and the next turn must answer it in an arena with almost no room.
+  for (int first = 100; first <= 1400; first += 50) {
+    txb::Battery b;
+    TXB_OK(b.boot());
+    TXB_OK(b.arena->init(9 * 1024, b.platform.allocLarge, b.platform.freeLarge));
+    shortTurns(b, 2);
+    b.model.respondWith([first](const sp::Recorded& r, size_t) {
+      const std::string k = std::to_string(r.step);
+      return sp::calls({{"big_read", "{\"tag\":\"p" + k + "a\",\"bytes\":" + std::to_string(first) + "}", ""},
+                        {"big_read", "{\"tag\":\"p" + k + "b\",\"bytes\":1500}", ""}});
+    });
+    plain::TurnOutcome out;
+    (void)b.owner("read in pairs", out);
+    b.model.respondWith([](const sp::Recorded&, size_t) { return sp::say("Next."); });
+    b.advance(30);
+    (void)b.owner("next", out);
+    char msg[64];
+    std::snprintf(msg, sizeof msg, "first result %d B", first);
+    std::string why;
+    for (const auto& r : b.model.requests()) TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(r.view, why), (std::string(msg) + ": " + why).c_str());
+    std::vector<std::string> calls;   // every resident result has its call resident
+    for (size_t i = 0; i < b.arena->count(); ++i) {
+      tx::Item it;
+      if (!b.arena->get(i, it).ok()) continue;
+      if (it.kind == tx::ItemKind::Call) calls.push_back(it.id);
+      if (it.kind == tx::ItemKind::Result)
+        TEST_ASSERT_TRUE_MESSAGE(std::find(calls.begin(), calls.end(), it.id) != calls.end(), msg);
+    }
+  }
+}
+
+// No hold is taken on the last round: a guard trip runs exactly one more request.
+inline void test_no_hold_on_the_last_round() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  b.world.files["notes/a.md"] = "alpha";
+  TXB_OK(b.hooks->beforeDeliver(plain::HookSlot::Truth, [](const plain::DeliverCtx& c) {
+    plain::DeliverDecision d;
+    if (!c.held && !c.cut) {
+      d.verdict = plain::DeliverVerdict::Hold;
+      d.deviceNote = "[device] effects this turn: none.";
+    }
+    return d;
+  }));
+  b.model.respondWith([](const sp::Recorded& r, size_t) { return untilNone(r, 0); });
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("keep reading", out));
+  TEST_ASSERT_EQUAL_MESSAGE(plain::kDefaultRounds + 1, (int)b.model.requests().size(), "a hold on the last round sent one more request");
+  TEST_ASSERT_EQUAL_STRING("Stopped at the limit.", out.text.c_str());
+}
+
+// A time trip whose last round fails ends with the limit line naming time, not a provider line.
+inline void test_a_time_trip_whose_last_round_fails_ends_with_the_limit_line() {
+  txb::Battery b;
+  b.world.files["notes/a.md"] = "alpha";
+  b.model.respondWith([](const sp::Recorded& r, size_t) {
+    if (r.view.toolChoice == "none") return sp::transportCut(200000);
+    return untilNone(r, 70000);
+  });
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("keep reading slowly", out));
+  TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Time);
+  TEST_ASSERT_TRUE_MESSAGE(out.status == plain::StatusLine::LimitReached, out.statusText.c_str());
+  const std::string line = std::string(texts::device_notes::kLimitLine) + "time" + texts::device_notes::kLimitLineEnd;
+  TEST_ASSERT_EQUAL_STRING(line.c_str(), b.sent.back().text.c_str());
+  TEST_ASSERT_EQUAL_STRING("limit:time", lastEnd(storedOf(b))->end.cause.c_str());
+}
+
+// A deferred effect only for a result the card stored, and its argument copied before its bit is set.
+inline void test_a_deferred_effect_needs_a_stored_result() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  b.files.refuseWhen = [](const char* d, size_t n) {
+    const std::string line(d, n);
+    return line.find("\"k\":\"r\"") != std::string::npos && line.find("scheduled") != std::string::npos;
+  };
+  b.model.push(sp::call("device_control", R"({"action":"restart"})"));
+  b.model.push(sp::say("Restarting."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("restart", out));
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)out.deferred.mask, "a restart was reported for a result the card did not keep");
+}
+
+inline void test_a_deferred_argument_is_never_reported_empty() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  const std::string head = "a-head-name-well-past-the-small-string-size-of-any-library";
+  TXB_OK(b.hooks->afterDeliver(plain::HookSlot::Observer, [](const plain::DeliveredCtx&) { alloc_hook::armFrom(0); }));
+  b.model.push(sp::call("device_control", "{\"action\":\"head\",\"to\":\"" + head + "\"}"));
+  b.model.push(sp::say("Switching after this."));
+  plain::TurnInput in;
+  in.ctx.chatKey = in.ctx.chatId = b.chatKey;
+  in.ctx.who = &b.who;
+  in.text = "switch heads";
+  plain::TurnOutcome out;
+  bool escaped = false;
+  hookTurn(b, out, in, escaped);
+  alloc_hook::disarm();
+  TEST_ASSERT_FALSE(escaped);
+  TEST_ASSERT_TRUE_MESSAGE(!out.deferred.has(plain::Deferred::HeadSwitch) ||
+                               out.deferred.arg[(size_t)plain::Deferred::HeadSwitch] == head,
+                           "a head switch was reported without its head");
+}
+
 // ---- red cases for other lanes (ruling 56; on test/pending_roster.txt with ruling:56) ---------
 inline void test_a_full_arena_frees_its_oldest_closed_turn() {
   txb::Battery b;
@@ -2266,6 +2488,39 @@ inline void test_the_stamp_carries_the_turns_day_start() {
   }
 }
 
+// Ruling 79 item 4: `out` carries the progress of earlier attempts. deliverTurn called again after a
+// refused allocation, with fromPart, adds to it and never resets it (RB-E3's body).
+inline void test_deliver_turn_adds_to_the_progress_of_an_earlier_attempt() {
+  TXB_WAITS_FOR("PENDING RB-E3", "RB-E1a");
+  agent::Channel ch;
+  std::vector<std::string> sent;
+  int sends = 0;
+  ch.send = [&](const std::string&, const std::string& text) {
+    if (sends++ == 1) throw std::bad_alloc();   // the second part, on the first attempt
+    sent.push_back(text);
+    return true;
+  };
+  ch.isAllowed = [](const std::string&) { return true; };
+  plain::TurnCtx turn;
+  turn.chatId = turn.chatKey = "1001";
+  const std::string reply = std::string(4500, 'a') + " " + std::string(4500, 'b');   // two parts
+  plain::DeliverInput in;
+  in.turn = &turn;
+  in.text = &reply;
+  plain::DeliverOutcome out;
+  try {
+    (void)plain::deliverTurn(plain::DeliverDeps{&ch, nullptr, nullptr}, in, out);
+  } catch (const std::bad_alloc&) {
+  }
+  TEST_ASSERT_TRUE(out.sent);
+  TEST_ASSERT_EQUAL(1, (int)out.parts);
+  in.fromPart = out.parts;
+  TXB_OK(plain::deliverTurn(plain::DeliverDeps{&ch, nullptr, nullptr}, in, out));
+  TEST_ASSERT_TRUE(out.sent && out.replyDone);
+  TEST_ASSERT_EQUAL(2, (int)out.parts);
+  TEST_ASSERT_EQUAL_MESSAGE(2, (int)sent.size(), "a part went out twice");
+}
+
 // ---- the sentinel ----------------------------------------------------------------------------
 inline void test_an_empty_engine_answers_a_typed_outcome() {
   plain::PlainEngine e{plain::EngineDeps{}};
@@ -2334,6 +2589,16 @@ inline void run() {
   RUN_TEST(test_a_message_with_too_many_parts_gets_its_own_line);
   RUN_TEST(test_a_chat_that_filled_its_arena_keeps_answering_between_rounds);
   RUN_TEST(test_a_full_arena_frees_its_oldest_closed_turn);
+  RUN_TEST(test_zero_usage_still_feeds_the_size_and_spend_guards);
+  RUN_TEST(test_a_call_that_is_not_pure_clears_suppression);
+  RUN_TEST(test_a_call_relative_to_now_is_never_suppressed);
+  RUN_TEST(test_a_retried_turn_starts_with_nothing_seen);
+  RUN_TEST(test_a_bulk_result_older_than_two_rounds_never_answers_a_repeat);
+  RUN_TEST(test_a_full_arena_never_splits_a_round_of_parallel_calls);
+  RUN_TEST(test_no_hold_on_the_last_round);
+  RUN_TEST(test_a_time_trip_whose_last_round_fails_ends_with_the_limit_line);
+  RUN_TEST(test_a_deferred_effect_needs_a_stored_result);
+  RUN_TEST(test_a_deferred_argument_is_never_reported_empty);
   RUN_TEST(test_an_8_round_turn_and_a_12_call_correction_complete_on_every_head_class);
   RUN_TEST(test_each_guard_gives_one_item_and_one_last_round);
   RUN_TEST(test_guard_limits_scale_with_the_head);
@@ -2355,6 +2620,7 @@ inline void run() {
   RUN_TEST(test_a_routed_head_sends_the_router_model_selector);
   RUN_TEST(test_the_log_reopens_when_storage_returns);
   RUN_TEST(test_the_stamp_carries_the_turns_day_start);
+  RUN_TEST(test_deliver_turn_adds_to_the_progress_of_an_earlier_attempt);
   RUN_TEST(test_an_empty_engine_answers_a_typed_outcome);
 }
 

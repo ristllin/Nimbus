@@ -624,16 +624,23 @@ durability around it and nothing that reads, edits or appends to the model's tex
   none; its text is delivered with one status line naming the guard, and a last round that only
   called tools ends with the limit line instead. The soft wall bounds every request, the last
   round may run to the hard wall. A head with no rates is not priced: the spend guard measures
-  nothing there (the e item's USD stays 0), rounds, time and size still bound the turn.
+  nothing there (the e item's USD stays 0), rounds, time and size still bound the turn. An answer
+  that reports no usage at all still counts toward size and spend: a floor of the request's bytes
+  over 3.5 at the input rate, with the event `usage:missing`. The last round takes no hold. A guard's
+  last round that ends with calls only, or fails, ends with the limit line naming the guard
+  ("The turn reached its <slug> limit before a reply."), cause `limit:<slug>`.
 - **Identical-call suppression** (`installSuppression`, HookSlot::Suppression): inside one turn,
   a call to a pure tool (by the class of the tool a `more` call reaches) with the same arguments
   as an earlier successful call is answered "not run again ..." instead of running, while that
-  earlier result is still shown whole (above rung 2's line) and no effect has been tried since.
-  Never across turns, never for a tool that is not pure (the web, the clock, the device,
-  connectors), never from an error or outside result.
+  earlier result stays whole after this round's ladder step (a receipt always; a bulk result only
+  while it is inside the newest two rounds) and no call that is not pure has been made since (a
+  write, a poll, the clock: the world may have moved). Never across turns or attempts of a turn,
+  never for a call whose arguments are relative to now (since, before, recent, hours, days, ...),
+  never for a tool that is not pure, never from an error or outside result.
 - **Deferred effects**: a tool asks for a restart, an install or a head switch by setting
   `ToolOutput::deferred` (and `deferredArg`); the loop never acts on it. It is reported in
-  `TurnOutcome::deferred` when the call's result was stored as a success, and the binding runs
+  `TurnOutcome::deferred` when the call's result was stored on the card as a success (its bit set
+  only once its argument is copied), and the binding runs
   them in `Deferred` order (head switch, install, restart) after `runTurn` returns, the reply
   delivered and the d and e items stored.
 - **Endings**: a failed exchange ends the turn with its one plain line; a cut answer is
@@ -692,7 +699,9 @@ durability around it and nothing that reads, edits or appends to the model's tex
   Then the d item (tried once) and afterDeliver (once, whatever the d item did), the e item and
   head.json where storage allows; no refusal leaves `runTurn`. An item over the stored line's
   limit has its own true line (an owner message its own, and one with more parts or update ids
-  than a line holds another), a full arena with nothing left to drop the memory line. The d item
+  than a line holds another, cause `too-many-parts`, reported in `TurnOutcome::end.cause` since no e
+  item can be stored), a full arena with nothing left to drop the memory line. The e item is tried
+  once, also on the refusal path. A drop bounded by a dangling call keeps that call's whole turn. The d item
   and afterDeliver run before the superseded-read scan. Proof: an allocator hook refuses
   allocation k and every one after it, and every allocation of S bytes or more, over five turn
   shapes (`test_a_refused_allocation_from_any_point_on_still_reaches_the_owner`). The turn's state lives on the heap; `runTurn`'s own frame is 240 B on the device

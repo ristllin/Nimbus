@@ -142,8 +142,12 @@ size_t base64Bytes(size_t n) { return 4 * ((n + 2) / 3); }
 
 // shift: seconds added to every stored time (11 h 28 m puts the day's turns between midnight
 // and the 04:00 day start: every owner stamp takes the night form).
-void wireOverhead(plain::Dialect d, uint64_t shift = 0) {
+constexpr uint64_t kNightShiftS = 11 * 3600 + 28 * 60;   // the day's turns at 00:30 to 00:50
+// dayStartMin: the turn's day start, on the wire's TurnCtx and on the checkers alike (ruling 79: a wire
+// that stamps with a fixed 04:00 fails at any other day start).
+void wireOverhead(plain::Dialect d, uint64_t shift = 0, uint16_t dayStartMin = 240) {
   txb::RenderFixture fx(d);
+  fx.turn.dayStartMin = dayStartMin;
   const size_t photo = base64Bytes(fx.photoBytes.begin()->second.size());
   for (txb::Snapshot s : txb::dayOfFourTurns(d)) {
     for (tx::Item& it : s.c.items)
@@ -154,6 +158,7 @@ void wireOverhead(plain::Dialect d, uint64_t shift = 0) {
     cov.items = &s.c.items;
     cov.bulk = &s.c.bulk;
     cov.openTurn = s.openTurn;
+    cov.dayStartMin = dayStartMin;
     txb::OverheadInput in;
     txb::renderedText(s.c, cov, in);
     // A file reference carries no pixels in the body; an inline photo carries its base64.
@@ -164,8 +169,12 @@ void wireOverhead(plain::Dialect d, uint64_t shift = 0) {
     long over = 0;
     std::string why;
     TEST_ASSERT_TRUE_MESSAGE(txb::overheadWithin(in, over, why), (s.name + ": " + why).c_str());
-    TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(r.view, s.c.items, why), (s.name + ": " + why).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(txb::noUnstoredText(r.view, s.c.items, why, dayStartMin), (s.name + ": " + why).c_str());
   }
+}
+// The night window at the default day start, and at two others (00:00: every stamp plain; 05:00).
+void wireOverheadAtNight(plain::Dialect d) {
+  for (uint16_t ds : {(uint16_t)240, (uint16_t)0, (uint16_t)300}) wireOverhead(d, kNightShiftS, ds);
 }
 
 void test_wire_overhead_anthropic() {
@@ -186,22 +195,21 @@ void test_wire_overhead_flat() {
 }
 
 // Owner messages inside the night window (ruling 68): the same day of turns at 00:30 to 00:50.
-constexpr uint64_t kNightShift = 11 * 3600 + 28 * 60;
 void test_wire_overhead_night_anthropic() {
   TXB_WAITS_FOR("PENDING RB-W1a", "RB-T1");
-  wireOverhead(plain::Dialect::AnthropicMessages, kNightShift);
+  wireOverheadAtNight(plain::Dialect::AnthropicMessages);
 }
 void test_wire_overhead_night_responses() {
   TXB_WAITS_FOR("PENDING RB-W2", "RB-T1");
-  wireOverhead(plain::Dialect::OpenAIResponses, kNightShift);
+  wireOverheadAtNight(plain::Dialect::OpenAIResponses);
 }
 void test_wire_overhead_night_chat() {
   TXB_WAITS_FOR("PENDING RB-W3", "RB-T1");
-  wireOverhead(plain::Dialect::ChatCompletions, kNightShift);
+  wireOverheadAtNight(plain::Dialect::ChatCompletions);
 }
 void test_wire_overhead_night_flat() {
   TXB_WAITS_FOR("PENDING RB-W4", "RB-T1");
-  wireOverhead(plain::Dialect::Flat, kNightShift);
+  wireOverheadAtNight(plain::Dialect::Flat);
 }
 
 // ---- engine level ----------------------------------------------------------------------

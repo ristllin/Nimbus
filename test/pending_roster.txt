@@ -72,3 +72,6 @@ test_plain_conformance::test_the_log_reopens_when_storage_returns RB-I3 ruling:5
 test_plain_wire_anthropic::test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider RB-W1b ruling:56
 # ruling 59 (lane RB-E1b, the narrow check of round three): red cases for the lanes that close them
 test_plain_conformance::test_a_routed_head_sends_the_router_model_selector RB-W4 ruling:59
+
+# ruling 79 (lane RB-E1c): red cases for the lanes that close them
+test_plain_conformance::test_deliver_turn_adds_to_the_progress_of_an_earlier_attempt RB-E3 ruling:79

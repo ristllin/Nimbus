@@ -44,6 +44,7 @@ struct PlainEngine::ChatState {
   // omission line names them until a digest covers them.
   uint32_t droppedTurns = 0;
   uint64_t droppedFirstAt = 0, droppedLastAt = 0;   // the first item of the first and last dropped turn
+  uint32_t lastDroppedTurn = 0;        // the newest turn a drop reached (counted once)
   // The memory line, built at boot: on a refused allocation it goes out with no allocation.
   std::string memoryLine;
 };
@@ -97,6 +98,7 @@ struct Turn {
   bool dAttempted = false;             // the d item was tried (never twice)
   bool afterRan = false;               // afterDeliver ran (once, whatever the d item did)
   bool endStored = false;              // the e item is stored
+  bool endAttempted = false;           // the e item was tried (never twice)
   uint64_t firstQ = 0;                 // the open turn's first own item (a full arena never drops it)
   Err storeErr = Err::None;            // why the arena refused an item (storeFailed)
   const char* storeWhere = "";
@@ -242,11 +244,10 @@ class TurnRun {
   }
   // The dropped turns' count and dates, for the omission line.
   void countDropped(size_t end) {
-    uint32_t last = 0;
     tx::ArenaEntry e;
     for (size_t i = 0; i < end; ++i) {
-      if (!d_.arena->header(i, e).ok() || !e.turn || e.turn == last) continue;
-      last = e.turn;
+      if (!d_.arena->header(i, e).ok() || !e.turn || e.turn == c_.lastDroppedTurn) continue;
+      c_.lastDroppedTurn = e.turn;   // kept across drops: a turn left in two drops counts once
       ++c_.droppedTurns;
       if (!c_.droppedFirstAt) c_.droppedFirstAt = e.t;
       c_.droppedLastAt = e.t;
@@ -347,7 +348,7 @@ class TurnRun {
     }
     // A full arena may drop closed turns while these results are stored, never a call still
     // waiting for its result: the oldest dangling call bounds the drop until all are answered.
-    if (!open.empty()) t_.firstQ = open.front().q;
+    if (!open.empty()) t_.firstQ = firstQOfTurn(open.front().turn);
     for (const tx::Item& call : open) {
       tx::Item& r = blank(tx::ItemKind::Result);
       r.turn = call.turn;
@@ -360,6 +361,15 @@ class TurnRun {
     }
     t_.firstQ = 0;
     return Status::success();
+  }
+
+  // The first resident item of a turn: a drop bounded by a dangling call keeps that call's whole turn,
+  // so a round of parallel calls is never split (ruling 79 item 4).
+  uint64_t firstQOfTurn(uint32_t turn) const {
+    tx::ArenaEntry e;
+    for (size_t i = 0; i < d_.arena->count(); ++i)
+      if (d_.arena->header(i, e).ok() && e.turn == turn) return e.q;
+    return c_.nextQ;
   }
 
   // The owner message (u) before any model call; another trigger's text as its device note.
@@ -558,10 +568,17 @@ class TurnRun {
     t_.end.outputTokens += u.completionTokens;
     t_.end.cacheReadTokens += u.cacheReadTokens;
     t_.end.cacheWriteTokens += u.cacheWriteTokens;
-    // The guards' inputs: size counts every prompt token (cached ones too); spend prices them.
-    const uint64_t size = (uint64_t)t_.sizeTokens + u.promptTokens + u.cacheReadTokens + u.cacheWriteTokens;
+    // The guards' inputs: size counts every prompt token (cached ones too); spend prices them. An
+    // answer that reports no usage at all still counts: a floor from the request's bytes (about 3.5 B
+    // a token, kDefaultRequestTokens' rule) at the input rate, named by an event (ruling 79 item 1).
+    RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens};
+    const bool answered = ex.requests && (ex.err == ExchangeErr::None || ex.err == ExchangeErr::Cut);
+    if (answered && !rt.prompt && !rt.output && !rt.cacheRead && !rt.cacheWrite) {
+      rt.prompt = (uint32_t)std::min<uint64_t>((uint64_t)ex.requestBytes * 2 / 7, UINT32_MAX);
+      event("usage:missing");
+    }
+    const uint64_t size = (uint64_t)t_.sizeTokens + rt.prompt + rt.cacheRead + rt.cacheWrite;
     t_.sizeTokens = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
-    const RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens};
     t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
     t_.parkHost |= ex.parkHost;
     t_.failOver |= ex.failOver;
@@ -569,6 +586,12 @@ class TurnRun {
 
   // Nothing came from the model: the exchange's one plain line ends the turn.
   Status failed(ExchangeErr err, const Status& st) {
+    if (t_.lastRound && t_.trip != GuardTrip::None) {   // the guard stopped the turn, not the provider
+      t_.cause = std::string("limit:") + guardTripSlug(t_.trip);
+      setStatus(StatusLine::LimitReached, limitLine());
+      if (err != t_.ex.err) t_.ex.err = err;
+      return st;
+    }
     t_.cause = std::string("provider:") + exchangeErrSlug(err);   // a held reply goes out: settle()
     setStatus(StatusLine::ProviderError, t_.ex.errorLine.empty()
                                              ? exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0)
@@ -724,7 +747,8 @@ class TurnRun {
       dc.held = t_.held;
       dd = d_.hooks->runBeforeDeliver(dc);
     }
-    const bool hold = dd.verdict == DeliverVerdict::Hold && !t_.held;   // at most one hold a turn
+    // At most one hold a turn, and none on a guard's last round: a hold asks one more request.
+    const bool hold = dd.verdict == DeliverVerdict::Hold && !t_.held && !t_.lastRound;
     takeStatus(dd);
     if (hold) {
       t_.held = true;
@@ -732,9 +756,7 @@ class TurnRun {
     } else {
       t_.answered = true;
       t_.emptyRefusal = step.stop == StopReason::Refusal;
-      t_.cause = t_.trip == GuardTrip::None ? "reply" : std::string("limit:") + guardTripSlug(t_.trip);
-      const bool heldGoesOut = t_.held && !t_.heldText.empty();   // ruling 59 item 5
-      if (t_.answer.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger) && !heldGoesOut) t_.cause = "empty";
+      answerCause(step);
     }
     Status st = storeAnswer(step, !hold, hold ? t_.heldText : t_.answer);
     for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {   // the last round still called
@@ -745,6 +767,14 @@ class TurnRun {
     if (!hold) return Status::success();
     event("hold");
     return note(dd.deviceNote, tx::NoteClass::Notice);
+  }
+
+  // The final answer's cause: the reply, the guard that ended the turn, or an empty answer a person
+  // gets a plain line for (a held reply that goes out is a reply: ruling 59 item 5).
+  void answerCause(const ParsedStep& step) {
+    t_.cause = t_.trip == GuardTrip::None ? "reply" : std::string("limit:") + guardTripSlug(t_.trip);
+    const bool heldGoesOut = t_.held && !t_.heldText.empty();
+    if (t_.answer.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger) && !heldGoesOut) t_.cause = "empty";
   }
 
   // At most one status line a turn, by precedence: a failed-write receipt (a seam's) is never
@@ -773,6 +803,10 @@ class TurnRun {
     t_.statusRef = &kept;
   }
   void takeStatus(const DeliverDecision& dd) { setStatus(dd.status, dd.statusText); }
+  // The line for a turn a guard ended before a reply: it names the guard (ruling 79 item 4).
+  std::string limitLine() const {
+    return std::string(texts::device_notes::kLimitLine) + guardTripSlug(t_.trip) + texts::device_notes::kLimitLineEnd;
+  }
 
   // What the owner gets, decided in one place (close and the refusal path): the model's reply
   // if there is one, else the reply held before a failed or empty extra round, else a plain
@@ -785,7 +819,7 @@ class TurnRun {
       setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +
                                               texts::device_notes::kLimitStoppedEnd);
     if (t_.reply || !personTrigger(t_.ctx.trigger)) return;
-    if (t_.answered && t_.trip != GuardTrip::None) setStatus(StatusLine::LimitReached, texts::device_notes::kLimitLine);
+    if (t_.answered && t_.trip != GuardTrip::None) setStatus(StatusLine::LimitReached, limitLine());
     else if (t_.answered || t_.status == StatusLine::None)   // never silent: an answer the turn could not use
       setStatus(StatusLine::ProviderError,
                 exchangeLine(t_.emptyRefusal ? ExchangeErr::Other : ExchangeErr::Malformed,
@@ -998,7 +1032,7 @@ class TurnRun {
       dc.target = routed ? &target : nullptr;
       dc.pure = cls.effect == orch::EffectClass::Pure;
       dc.effect = cls.effect == orch::EffectClass::Effect;
-      dc.stubThrough = t_.ladder.stubThrough;
+      dc.stubThrough = std::max(t_.ladder.stubThrough, rungTwoThrough());   // as rung 2 may stand after this round
       dd = d_.hooks->runBeforeDispatch(dc);
     }
     ToolOutput out;
@@ -1072,7 +1106,7 @@ class TurnRun {
       t_.ctx.tainted = true;   // the request now carries an outside result whole
     }
     if (r.ok && orch::tx::changesFileSet(view.name)) t_.fileSetChanged = true;
-    if (r.ok && out.deferred != Deferred::None) {   // run by the binding once the turn is closed
+    if (r.ok && stored && out.deferred != Deferred::None) {   // a stored success only; run once the turn is closed
       const size_t kind = static_cast<size_t>(out.deferred);
       if (kind < kDeferredKinds) {
         t_.deferred.arg[kind] = out.deferredArg;
@@ -1286,6 +1320,8 @@ class TurnRun {
   }
 
   Status storeEnd() {
+    if (t_.endAttempted) return t_.endStored ? Status::success() : Status::fail(Err::NotStored, "plain::storeEnd");
+    t_.endAttempted = true;   // tried once: a refusal inside the store never leaves two e items
     t_.end.cause = t_.cause;
     t_.end.rounds = t_.rounds;
     t_.end.ms = elapsedMs();
@@ -1327,7 +1363,7 @@ class TurnRun {
     } catch (const std::bad_alloc&) {
     }
     try {
-      if (!t_.storeFailed && (t_.endStored || storeEnd().ok())) c_.head.openTurn = 0;
+      if (!t_.storeFailed && storeEnd().ok()) c_.head.openTurn = 0;
       c_.head.nextQ = c_.nextQ;
       if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);
     } catch (const std::bad_alloc&) {
@@ -1406,12 +1442,20 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.status = t->status;
   out.parkHost = t->parkHost;
   out.failOver = t->failOver;
-  out.deferred.mask = t->deferred.mask;
+  // A deferred effect's bit is set only once its argument is copied: never a head switch without its head.
+  for (size_t k = 0; k < kDeferredKinds; ++k) {
+    if (!((t->deferred.mask >> k) & 1u)) continue;
+    try {
+      out.deferred.arg[k] = t->deferred.arg[k];
+      out.deferred.mask |= (uint8_t)(1u << k);
+    } catch (const std::bad_alloc&) {
+    }
+  }
   try {
     if (t->replyText) out.text = *t->replyText;
     if (t->statusRef) out.statusText = *t->statusRef;
-    for (size_t k = 0; k < kDeferredKinds; ++k) out.deferred.arg[k] = t->deferred.arg[k];
     out.end = t->end;
+    out.end.cause = t->cause;   // also when no e item could be stored
   } catch (const std::bad_alloc&) {
   }
   return st;
