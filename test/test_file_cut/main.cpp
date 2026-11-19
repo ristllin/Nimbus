@@ -9,7 +9,8 @@
 #include "nimbus/orch/file_append.h"
 #include "nimbus/orch/file_swap.h"
 
-// test_file_cut (lane RB-REC7, ruling 87): a write torn at EVERY byte offset of the block it was writing, the
+// test_file_cut (lane RB-REC7, ruling 87): a write torn at EVERY byte offset of the block it was writing (and,
+// for the swap, at every card operation; a torn note or a half-done rename is not modelled here), the
 // host half of the bench's cut legs (tests/hil/test_files_bench.py; the bench itself cannot switch USB power).
 //   - files.append: the file is the old one plus a prefix of the appended bytes. Whatever the prefix, the rows
 //     before it are byte-identical, a read names a torn tail, and the next append fences it (a line end before
@@ -191,13 +192,37 @@ static void test_an_edit_cut_at_every_swap_operation_leaves_old_or_new() {
   }
 }
 
-// Counter-test: a card that rewrites the stored file in place (no part, no swap), cut at each byte, leaves a mix
-// that is neither the old nor the new file: the class rule the sweeps assert is one a regression to it would break.
+// Counter-test: a card that rewrites the stored file IN PLACE (no part file, no swap), run through the same edit
+// and the same byte sweep, leaves a mix that is neither the old nor the new file. The class rule the sweeps above
+// assert is one a regression to an in-place write would break.
+struct InPlaceCard : CutCard {
+  size_t at = 0;
+  bool partWrite(std::string_view b, bool first) override {
+    if (cut) return false;
+    std::string& f = files[kDst];
+    if (first) at = 0;
+    for (char c : b) {
+      if (cutByte >= 0 && long(at) >= cutByte) {
+        cut = true;
+        return false;
+      }
+      if (at < f.size()) f[at] = c; else f.push_back(c);
+      at++;
+    }
+    return true;
+  }
+  bool partSwap() override { return !cut; }
+  void partDiscard() override {}
+};
+
 static void test_counter_an_in_place_rewrite_leaves_a_mix() {
-  TEST_ASSERT_EQUAL(kOld.size(), kNew.size());
   int mixes = 0;
-  for (size_t k = 0; k <= kNew.size(); k++) {
-    const std::string got = kNew.substr(0, k) + kOld.substr(k);   // the first k bytes rewritten, then the power went
+  for (long k = 0; k <= long(kNew.size()); k++) {
+    InPlaceCard c;
+    c.cutByte = k;
+    edit(c);
+    c.reboot();
+    const std::string& got = c.files[kDst];
     mixes += got != kOld && got != kNew;
   }
   TEST_ASSERT_TRUE(mixes > 0);

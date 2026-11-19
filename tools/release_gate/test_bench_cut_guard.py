@@ -22,7 +22,7 @@ HOOK = re.compile(
 CALL_SITE = re.compile(
     r"^\s*(CUT_SWAP_STEP\(\);|HEAP_REFUSE_WINDOW\(\);.*|#define (CUT_SWAP_STEP|HEAP_REFUSE_WINDOW)\(\) \(\(void\)0\))\s*$"
 )
-PRODUCTION_ENVS = ("esp32s3", "esp32s3-cyd")
+PRODUCTION_ENVS = ("esp32s3", "esp32s3-cyd", "esp32s3-cyd-35", "esp32s3-cyd-40")  # the shipped images
 MARKERS = (b"CUTARM", b"ALLOCREFUSE", b"CUT %s at")
 
 
@@ -63,10 +63,26 @@ def no_op(text: str, macro: str) -> bool:
 
 
 def env_flags(env: str) -> str:
-    text = open(os.path.join(REPO, "platformio.ini"), encoding="utf-8").read()
-    m = re.search(rf"^\[env:{re.escape(env)}\]\n(.*?)(?=^\[)", text, re.M | re.S)
-    assert m, env
-    return m.group(1)
+    """An env's build flags with what it extends and every ${section.key} it names resolved."""
+    import configparser
+
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    cp.read(os.path.join(REPO, "platformio.ini"), encoding="utf-8")
+
+    def section(name: str) -> str:
+        return name if cp.has_section(name) else f"env:{name}"
+
+    def flags(sec: str, seen=()) -> str:
+        assert sec not in seen, f"extends loop at {sec}"
+        own = cp.get(sec, "build_flags", fallback="")
+        parent = cp.get(sec, "extends", fallback="")
+        text = own + " " + (flags(section(parent.strip()), (*seen, sec)) if parent.strip() else "")
+        for ref in re.findall(r"\$\{([\w:-]+)\.([\w_]+)\}", own):
+            text += " " + cp.get(section(ref[0]), ref[1], fallback="")
+        return text
+
+    assert cp.has_section(f"env:{env}"), env
+    return flags(f"env:{env}")
 
 
 def test_every_hook_line_is_test_only():
