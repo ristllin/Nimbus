@@ -308,6 +308,31 @@ Notes:
 - The list stays small on purpose (at most 5 items, 160 bytes each); a full
   list refuses an add until something is resolved or withdrawn.
 
+## `calc` - exact arithmetic
+
+Registered by `registerCalcTool()` (`lib/core/src/orch_calc_tool.cpp`) on the device and
+on Virtual Nimbus, always on (not behind `more`), with the same description, schema and
+result bytes as engine 2's tool. One expression in (at most 256 bytes): numbers with
+decimals, `+ - * /` (also `×`, `÷`, `−`), parentheses, unary signs and percent. The
+arithmetic is exact (reduced fractions of 128-bit integers), so `0.1+0.2` is `0.3`. The
+full contract is `lib/core/include/nimbus/orch/calc.h`.
+
+| Tool | Description (as registered) | Arguments | State |
+|---|---|---|---|
+| `calc` | Exact decimal arithmetic on one expression: + - * / ( ), 15% of 80, 80+15%. | `expression` (string, **required**, at most 256 B; also read as `expr`, `input`, `query`, `formula`, `calculation`, `math`, `text`) | live |
+
+Notes:
+- The result is one line: `= 687.5` (exact, up to 12 decimal places), `= 0.333333
+  (rounded to 6 decimal places)`, or `error at position N: <reason>` (a failed call).
+- Percent: `15%` is 0.15, `15% of 80` is 12, `80+15%` is 92 and `80-15%` is 68 (a bare
+  percent after `+` or `-` is that share of the running total), `(15%)` is 0.15; any
+  other percent added or subtracted is refused as unclear.
+- Numbers: `1,234.56` and `1.234,56` are 1234.56, `1,234,567` is 1234567, a single `.`
+  is a decimal point, `1,5` is 1.5; `1,234` is refused (1234 or 1.234).
+- Division by zero, a value past the exact range, an unknown word and a malformed
+  number are errors that name the position, never a figure. It writes nothing and reads
+  no outside content; every caller may use it.
+
 ## `docs.*` - the device's own documentation
 
 Registered by the memory subsystem (`src/agent/memory_subsystem.cpp`; portable
