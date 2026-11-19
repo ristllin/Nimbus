@@ -1769,7 +1769,10 @@ the shape, so `<think>...</think>{json}` is a turn, never prose with raw JSON in
 it. The engine then runs `cleanReplyMarkup()` on the reply and the ask, the
 salvaged text and the fold summary, and the send seam runs it again: reasoning,
 tool-call markup and wrapper tags never reach a channel, while unknown `<word>`
-content and code stay byte-exact.)NIMBUSDOC"},
+content and code stay byte-exact.
+The reply also loses a leading `[did: ...]` label (`stripHistoryLabel()`): the history
+puts that label before each past reply, and a head answering in prose can copy it. A label
+anywhere else, or a reply that is only the label, is left as written.)NIMBUSDOC"},
   {"turn-contract#an-envelope-carried-inside-prose", "An envelope carried inside prose",
    R"NIMBUSDOC(A prose reply that carries a turn envelope - a fenced or bare JSON object with a
 string `reply` and at least two other orch_turn fields - delivers only the
