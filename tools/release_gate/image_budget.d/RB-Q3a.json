@@ -1,5 +1,5 @@
 {
   "lane": "RB-Q3a",
-  "allowance_bytes": -23040,
-  "why": "A promised deletion. PRD section 10 flash ledger: RB-Q3a about -10 KB. Measured in the lane's tree, base lane/RB-FX 58b4b5a6 against tip 7f8093dd (battery RB-Q3a-2), code bytes (firmware.bin minus the docs pack): esp32s3-cyd 5,980,302 -> 5,956,648 (-23,654), esp32s3 5,945,166 -> 5,921,816 (-23,350), test 6,099,710 -> 6,075,960 (-23,750), test-cyd 6,134,686 -> 6,110,920 (-23,766); the docs pack 416,002 -> 415,192 B apart. The allowance is the smallest of the four, rounded toward zero to a multiple of 512 B. RB-Q3a merges after RB-FX, so the baseline it is checked against then holds RB-FX's +12 KB."
+  "allowance_bytes": -19968,
+  "why": "A promised deletion. PRD section 10 flash ledger: RB-Q3a about -10 KB. Same-tree builds in the lane's tree, rb-main a911c901 against tip 41d6f425 (battery RB-Q3a-3), code bytes (firmware.bin minus the docs pack): esp32s3-cyd 6,009,105 -> 5,980,614 (-28,491), esp32s3 5,973,985 -> 5,945,558 (-28,427), test 6,128,385 -> 6,099,862 (-28,523), test-cyd 6,163,313 -> 6,134,806 (-28,507); the docs pack 417,439 -> 416,618 B apart. The recorded image baseline predates RB-SYNC's +7,680 B, so against it the tip reads -20,923 / -20,891 / -20,235 / -20,267 B; the allowance is the smallest of those, rounded toward zero to a multiple of 512 B, so it holds against today's baseline and against one re-recorded at a911c901."
 }

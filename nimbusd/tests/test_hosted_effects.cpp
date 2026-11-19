@@ -167,8 +167,9 @@ static void testNoVolume(ndtest::Ctx& c) {
   ndtest::rmTree(ndtest::scratchDir("fx-f"));
 }
 
-// A hosted turn: the head calls files_append, then answers. The write lands in the ring of
-// the turn's chat with its result; a memory_search turn records nothing.
+// A hosted turn: the head calls files_append, then answers. A write that lands joins the ring
+// of the turn's chat with its result; a write that fails does not (RB-Q3a, ruling 40: only
+// effects that happened); a memory_search turn records nothing.
 static void testHostedTurnRecordsItsEffects(ndtest::Ctx& c) {
   std::printf("\n-- a hosted turn records its effects --\n");
   for (const char* k : {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "MISTRAL_API_KEY", "TAVILY_API_KEY", "CUMULO_API_KEY",
@@ -179,11 +180,13 @@ static void testHostedTurnRecordsItsEffects(ndtest::Ctx& c) {
     const char* tool;
     const char* args;
     bool recorded;
+    bool seed;   // the file exists, so the append lands (a fresh volume refuses it)
   };
-  const Case cases[] = {{"files_append", "{\\\"project\\\":\\\"notes\\\",\\\"name\\\":\\\"log.txt\\\",\\\"text\\\":\\\"x\\\"}", true},
-                        {"memory_search", "{\\\"query\\\":\\\"x\\\"}", false}};
+  const Case cases[] = {{"files_append", "{\\\"project\\\":\\\"notes\\\",\\\"name\\\":\\\"log.txt\\\",\\\"text\\\":\\\"x\\\"}", true, true},
+                        {"files_append", "{\\\"project\\\":\\\"notes\\\",\\\"name\\\":\\\"log.txt\\\",\\\"text\\\":\\\"x\\\"}", false, false},
+                        {"memory_search", "{\\\"query\\\":\\\"x\\\"}", false, false}};
   for (const Case& k : cases) {
-    const std::string tag = std::string("fx-g-") + k.tool;
+    const std::string tag = std::string("fx-g-") + k.tool + (k.seed ? "-seeded" : "");
     const std::string dir = freshDir(tag);
     harness_test::FakeHttpTransport tx;
     tx.script.push_back(harness_test::Exchange{"", "", 200,
@@ -199,6 +202,7 @@ static void testHostedTurnRecordsItsEffects(ndtest::Ctx& c) {
     o.embedDims = 64;
     o.toolLoop = true;
     NimbusdRig rig(cfg, o, &tx);
+    if (k.seed) rig.files().seed("notes/log.txt", "a\n");
     rig.say("owner", "please do it");
     std::string rings;
     if (DIR* d = ::opendir((dir + "/mem/fx").c_str())) {
@@ -210,7 +214,8 @@ static void testHostedTurnRecordsItsEffects(ndtest::Ctx& c) {
       ::closedir(d);
     }
     const bool hasWrite = rings.find("\tfiles.append\t") != std::string::npos;
-    c.ok(hasWrite == k.recorded, std::string(k.tool) + (k.recorded ? ": recorded in the chat's ring" : ": not recorded"));
+    c.ok(hasWrite == k.recorded, std::string(k.tool) + (k.seed ? " (lands)" : "") +
+                                     (k.recorded ? ": recorded in the chat's ring" : ": not recorded"));
     c.ok(rings.find("memory.search") == std::string::npos, std::string(k.tool) + ": no lookup in any ring");
     ndtest::rmTree(ndtest::scratchDir(tag));
   }
