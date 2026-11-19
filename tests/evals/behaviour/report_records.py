@@ -158,6 +158,8 @@ def main():
     ap.add_argument("--json", default="")
     ap.add_argument("--md", default="")
     ap.add_argument("--heads", default="")
+    ap.add_argument("--measured", default="", help="merge the cells into this behaviour.json under records_rb_rec6")
+    ap.add_argument("--spend", default="", help="a JSON object of USD per provider for the record")
     args = ap.parse_args()
     ev = Path(args.evidence)
     heads = args.heads.split(",") if args.heads else [h for h in HEAD_ORDER if (ev / h).is_dir()]
@@ -171,6 +173,18 @@ def main():
         Path(args.json).write_text(json.dumps(res, indent=1) + "\n")
     if args.md:
         Path(args.md).write_text(md + "\n")
+    if args.measured:
+        m = Path(args.measured)
+        d = json.loads(m.read_text())
+        d["records_rb_rec6"] = {
+            "lane": "RB-REC6",
+            "generated": __import__("datetime").date.today().isoformat(),
+            "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
+            "evidence": str(ev),
+            "cells": res,
+            "usd": json.loads(args.spend) if args.spend else None,
+        }
+        m.write_text(json.dumps(d, indent=1) + "\n")
 
 
 if __name__ == "__main__":
