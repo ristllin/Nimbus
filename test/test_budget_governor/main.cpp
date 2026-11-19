@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../support/recorded_models.h"   // readFixture
+#include "nimbus/orch/budget_command.h"   // parseBudgetArgs: /budget profile
 #include "nimbus/orch/budget_governor.h"
 #include "nimbus/orch/day_start.h"
 #include "nimbus/orch/loops.h"
@@ -76,7 +77,7 @@ struct Sim {
   }
 };
 
-bool hasEmDash(const std::string& s) { return s.find("\xE2\x80\x94") != std::string::npos; }
+bool hasEmDash(const std::string& s) { return s.find("\xE2\x80\x94") != std::string::npos; } // em-dash-ok: the test looks for the banned bytes
 
 void assertVisible(const GovernorStep& st) {
   // Every step it takes is visible: a line for the owner and a record for the Usage page.
@@ -382,6 +383,28 @@ void test_pin_and_auto() {
   TEST_ASSERT_EQUAL_STRING("$0.01", usdText(5000).c_str());
 }
 
+// /budget profile: show, a profile (any case), auto; anything else is an error, and a profile
+// command never keeps a waiting limit change (it is not a confirm, a cancel or a new change).
+void test_the_profile_command_parse() {
+  BudgetRequest r = parseBudgetArgs("profile");
+  TEST_ASSERT_TRUE(r.verb == BudgetVerb::Profile && r.target.empty());
+  r = parseBudgetArgs("profile WIDE");
+  TEST_ASSERT_TRUE(r.verb == BudgetVerb::Profile && r.target == "wide");
+  r = parseBudgetArgs("Profile auto");
+  TEST_ASSERT_TRUE(r.verb == BudgetVerb::Profile && r.target == "auto");
+  for (const char* bad : {"profile huge", "profile lean now", "profile 5"}) {
+    r = parseBudgetArgs(bad);
+    TEST_ASSERT_TRUE_MESSAGE(r.verb == BudgetVerb::Error, bad);
+    TEST_ASSERT_TRUE(r.error.find("/budget profile") != std::string::npos);
+  }
+  Command c;
+  c.isCommand = true;
+  c.verb = "budget";
+  c.args = "profile lean";
+  TEST_ASSERT_FALSE(budgetKeepsWaiting(c));
+  TEST_ASSERT_TRUE(runsWhilePaused("/budget profile lean"));
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -396,5 +419,6 @@ int main(int, char**) {
   RUN_TEST(test_the_file_round_trips_and_a_bad_file_reads_as_the_default);
   RUN_TEST(test_the_cost_ratios_are_the_measured_ones);
   RUN_TEST(test_pin_and_auto);
+  RUN_TEST(test_the_profile_command_parse);
   return UNITY_END();
 }

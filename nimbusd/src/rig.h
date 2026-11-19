@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
+#include "hosted_budget.h"   // lane RB-BG: the history profile and its governor
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "connectors_store.h"
@@ -247,6 +248,7 @@ class NimbusdRig {
     ceiling_.reset(new SpendCeilingVn(memDir() + "/spend_ceiling.txt", hadState,
                                       cfg_.has("TELEGRAM_BOT_TOKEN")));
     ceiling_->install();
+    budget_.reset(new HostedBudget(memDir() + "/budget.json"));   // lane RB-BG: before any turn
     loadSettings();   // the owner's settings from the app (CUM-543), else the env defaults
     // Telegram trust (CUM-459): the device model, durable on the instance volume.
     access_.reset(new TelegramAccess(memDir()));
@@ -384,6 +386,8 @@ class NimbusdRig {
   void spendTick() {
     ceiling_->tick();
     if (eng_) ceiling_->setHeadModel(modelFor(eng_->headHost()));
+    const std::string step = budget_->night(vclock::epoch32(), hostedOffsetAt(vclock::epoch32()), nimbus::orch::day::startOrDefault(settings_.get().dayStarts.c_str()), ceiling_->stateJson());   // lane RB-BG
+    if (!step.empty()) record(kWebChatId, step);   // lane RB-BG: the governor's line, as the ceiling's notices
     spendNotice(nimbus::orch::NoticeChannel::Web, kWebChatId);
     if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_) {
       const std::string allow = access_->allowCsv();
@@ -3632,6 +3636,7 @@ class NimbusdRig {
   Config cfg_;
   Options opt_;
   std::unique_ptr<SpendCeilingVn> ceiling_;   // lane DEF: before the engine (its config reads it)
+  std::unique_ptr<HostedBudget> budget_;       // lane RB-BG: the history profile (after the ceiling)
   std::once_flag effectsOnce_;                 // lane RB-FX: before the engine (its hook writes it)
   std::unique_ptr<HostedEffects> effects_;
   std::unique_ptr<agent::RingRecentActions> recentFx_;   // lane RB-Q3a: reads effects_

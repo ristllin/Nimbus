@@ -322,6 +322,7 @@ std::string budgetHelpText() {
          "/budget all <USD> - set the overall monthly ceiling\n"
          "/budget <provider> off - remove a provider's limit\n"
          "/budget confirm - apply the change just proposed (within " + minutesText() + "); /budget cancel drops it\n"
+         "/budget profile <tight|lean|standard|wide|auto> - how much of the conversation replies carry\n"
          "Providers: " + providers + ". A raise above " + formatUsd(BudgetBounds::kNoForceMaxMicro) + ", or to more than " +
          std::to_string(BudgetBounds::kMaxRaiseFactor) + " times the limit, needs the word force after the amount; "
          "the reply says when a change needs it for another reason.";

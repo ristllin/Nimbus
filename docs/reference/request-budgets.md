@@ -315,7 +315,7 @@ fold can take); the window's high water is 5/4 of the due mark; no due mark goes
 tight's 24,000 B reads as 24,576 B. Standard is the default. The owner pins one with
 `/budget profile <name>` (stored in /data/budget.json); otherwise the spend governor may step a device
 down from standard when a month's spending is on course past 0.9 of its ceiling, and back up after
-seven quiet nights (docs/reference/budget-governor.md).
+seven quiet nights (The governor, below).
 
 | Provider | Model | Profile | H / L | Hist max | Hist soft | Hist keep | Fold step | Rows | Trigger |
 |---|---|---|---|---|---|---|---|---|---|
@@ -362,3 +362,39 @@ leaves no more than v5.1.1's window, the head keeps v5.1.1's window exactly (the
 | cumulo | mistral/mistral-large-4-0 | 85000 | 4096 | 13704 | 10541 | 9486 | 8432 | measured |
 | cumulo | zai/glm-5.3 | 85000 | 4096 | 13704 | 10541 | 9486 | 8432 | measured |
 | cumulo | gpt-5.6 | 85000 | 5570 | 12230 | 11141 | 5570 | 5570 | v5.1.1 window |
+
+## The governor
+
+Nightly at the device's day start (lib/core `budget_governor.h`; nimbusd runs the same rule):
+
+1. It projects the month: the spend so far plus the mean of the last seven observed nights (at least
+   three, all under the profile in force) times each profile's measured cost ratio (tight 578, lean 793, standard 1000,
+   wide 1448 thousandths, from tests/evals/measured/cost.json) times the days left.
+2. Down, at once and as far as needed: the profile in force projects over 0.9 of the ceiling, so it
+   takes the largest smaller profile projecting at most 0.9; if none does, tight, with one plain line
+   naming the date the ceiling is reached at that rate.
+3. Up, one step at a time and never above standard: seven observed nights in a row in which a whole
+   month at the next larger profile's rate projects under 0.7 of the ceiling.
+4. Every change starts the observations again. No ceiling (turned off by the owner, or only provider
+   limits) is a quiet night. A pinned profile is never moved, only warned about once a month. The
+   governor never writes the ceiling.
+5. 0.9 / 0.7 is wider than the swing a constant rate makes between months (31 / 28), so a constant
+   rate never moves the profile both ways; a step down is undone no sooner than nine nights later.
+
+Every step is one line to the owner (Telegram and the web chat), a row in the Usage page's change
+record, a durable log line, and the /usage status line.
+
+| Night | Spent this month | Profile | Step |
+|---|---|---|---|
+| 1 November | $0.00 | standard | - |
+| 2 November | $0.70 | standard | - |
+| 3 November | $1.40 | standard | - |
+| 4 November | $2.10 | lean | standard to lean |
+| 5 November | $2.66 | lean | - |
+| 11 November | $5.99 | lean | - |
+| 21 November | $11.54 | lean | - |
+| 1 December | $0.00 | lean | - |
+| 11 December | $2.38 | lean | - |
+| 12 December | $2.62 | standard | lean to standard |
+| 21 December | $5.32 | standard | - |
+| 31 December | $8.32 | standard | - |

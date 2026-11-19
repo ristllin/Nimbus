@@ -8,6 +8,7 @@
 #include <ctime>
 #include <mutex>
 
+#include "budget_profile_store.h"   // lane RB-BG: /budget profile, the /usage line
 #include "fs_atomic.h"
 #include "nimbus/orch/budget_command.h"
 #include "nimbus/orch/provider_park.h"
@@ -126,20 +127,45 @@ const char* channelLabel(const String& chat) {
 // One applied change: the durable device log, the Usage page's record (written outside
 // the record's lock, so the web task never waits on the flash write; only this task
 // writes the file).
+void recordRow(const char* src, const std::string& what);
+
 void recordChange(const BudgetPlan& p, const String& chat) {
   const std::string what = nimbus::orch::changeSummary(p);
   alogf("budget: %s, from %s (confirmed by the owner)", what.c_str(), channelSlug(chat));
+  recordRow(channelSlug(chat), what);
+}
+
+// One row of the change record (the Usage page's newest three), written outside the
+// record's lock.
+void recordRow(const char* src, const std::string& what) {
   const time_t now = time(nullptr);
   std::string blob;
   {
     std::lock_guard<std::mutex> lk(g_logMx);
     loadLogLocked();
-    pushRowLocked(now >= nimbus::orch::kCeilingClockValid ? (uint32_t)now : 0, channelSlug(chat), what.c_str());
+    pushRowLocked(now >= nimbus::orch::kCeilingClockValid ? (uint32_t)now : 0, src, what.c_str());
     blob = logBlobLocked();
   }
   LittleFS.mkdir("/data");
   if (!agent::writeFileAtomic(kLogPath, blob, "budget_log"))
     alogf("budget: the change record did not store (the change itself did)");
+}
+
+// Lane RB-BG: /budget profile [<name>|auto]. A change applies at once (it moves no limit, so
+// it needs no confirm), only from a channel with full access and under the same timing rule
+// as a limit change (no clock, or a late message, changes nothing).
+Reply profileReply(const BudgetRequest& req, BudgetAccess access, const String& chat) {
+  if (!req.target.empty() && access == BudgetAccess::ReadOnly) {
+    alogf("budget: a profile change by voice refused (read-only channel)");
+    return reply(nimbus::orch::budgetAccessText(access));
+  }
+  bool changed = false;
+  std::string record;
+  const std::string text = agent::budgetprofile::command(req.target, changed, record);
+  if (!changed) return reply(text);
+  alogf("budget: %s, from %s", record.c_str(), channelSlug(chat));
+  recordRow(channelSlug(chat), record);
+  return reply(text, std::string("Changed from ") + channelLabel(chat) + ": " + record + ".");
 }
 
 // ---- the state ----------------------------------------------------------------------
@@ -305,7 +331,10 @@ Reply handle(const std::string& verb, const std::string& args, const String& cha
   if (verb == "usage") req.verb = BudgetVerb::Show;
   else req = nimbus::orch::parseBudgetArgs(args);
   switch (req.verb) {
-    case BudgetVerb::Show:  return reply(nimbus::orch::usageText(view()));
+    case BudgetVerb::Show:  return reply(nimbus::orch::usageText(view()) + "\n" + agent::budgetprofile::statusLine());
+    case BudgetVerb::Profile:
+      if (req.target.empty()) return profileReply(req, access, chatId);   // a look changes nothing
+      break;
     case BudgetVerb::Help:  return reply(nimbus::orch::budgetHelpText());
     case BudgetVerb::Error: return reply(req.error);
     case BudgetVerb::Cancel: {
@@ -320,6 +349,7 @@ Reply handle(const std::string& verb, const std::string& args, const String& cha
   }
   const std::string late = timingRefusal(chatId, msg.date);
   if (!late.empty()) return reply(late);
+  if (req.verb == BudgetVerb::Profile) return profileReply(req, access, chatId);
   return req.verb == BudgetVerb::Confirm ? confirm(chatId, msg.date) : propose(chatId, req, msg.date);
 }
 
@@ -346,6 +376,10 @@ void noteTurnEnd(const std::string& host, const std::string& model, const std::s
   g_st.last.model = model;
   g_st.last.requested = requestedHost;
   g_st.last.atMs = nowMs();
+}
+
+void recordDeviceChange(const std::string& text) {
+  if (!text.empty()) recordRow("device", text);
 }
 
 std::string changesJson() {

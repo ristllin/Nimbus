@@ -104,7 +104,9 @@ bool runsWhilePaused(const std::string& text);
 
 // ---- the parse -------------------------------------------------------------------
 
-enum class BudgetVerb : uint8_t { Show, Set, Off, Confirm, Cancel, Help, Error };
+// Profile (lane RB-BG): "/budget profile [tight|lean|standard|wide|auto]", target "" (show),
+// "auto" or the profile's slug.
+enum class BudgetVerb : uint8_t { Show, Set, Off, Confirm, Cancel, Help, Error, Profile };
 
 struct BudgetRequest {
   BudgetVerb  verb = BudgetVerb::Error;
@@ -114,7 +116,8 @@ struct BudgetRequest {
   std::string error;       // Error: what was wrong, in plain words
 };
 
-// The arguments after "/budget": "" -> Show; "confirm", "cancel", "help"; "<target>
+// The arguments after "/budget": "" -> Show; "confirm", "cancel", "help"; "profile [<name>|auto]"
+// -> Profile; "<target>
 // <amount> [usd] [force]" -> Set; "<target> off [force]" -> Off; anything else -> Error.
 BudgetRequest parseBudgetArgs(const std::string& args);
 

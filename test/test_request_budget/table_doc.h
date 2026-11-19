@@ -10,6 +10,8 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/router_route.h"
 #include "../../lib/harness/src/providers/wire_budget.h"   // the wire's own round load and cap
+#include "nimbus/orch/budget_governor.h"   // lane RB-BG: the governor section
+#include "nimbus/orch/loops.h"             // daysFromCivil
 
 // The adapter a head's requests go out on, and the model it sends there.
 struct Wire {
@@ -148,7 +150,7 @@ static std::string profilesSection() {
       "tight's 24,000 B reads as 24,576 B. Standard is the default. The owner pins one with\n"
       "`/budget profile <name>` (stored in /data/budget.json); otherwise the spend governor may step a device\n"
       "down from standard when a month's spending is on course past 0.9 of its ceiling, and back up after\n"
-      "seven quiet nights (docs/reference/budget-governor.md).\n\n"
+      "seven quiet nights (The governor, below).\n\n"
       "| Provider | Model | Profile | H / L | Hist max | Hist soft | Hist keep | Fold step | Rows | Trigger |\n" +
       separator(10);
   for (const Head& h : {Head{"anthropic", "claude-sonnet-5-5"}, Head{"anthropic", "claude-haiku-5-5"},
@@ -192,6 +194,53 @@ static std::string floorSection() {
     t += cells({h.host, h.model, num(rb.wireBodyBytes), num(c.chatSummaryBytes), std::to_string(left),
                 num(c.historyMaxBytes), num(c.historySoftBytes), num(c.historyKeepBytes),
                 c.floorMeasured ? "measured" : c.floorBranch ? "v5.1.1 window" : "room"});
+  }
+  return t;
+}
+
+// Lane RB-BG: the governor's rule and one simulated month on its virtual clock (0.70 USD a day at
+// standard against the 20 USD default ceiling, then 0.30 USD a day from December).
+static std::string governorSection() {
+  std::string t =
+      "\n## The governor\n\n"
+      "Nightly at the device's day start (lib/core `budget_governor.h`; nimbusd runs the same rule):\n\n"
+      "1. It projects the month: the spend so far plus the mean of the last seven observed nights (at least\n"
+      "   three, all under the profile in force) times each profile's measured cost ratio (tight " +
+      num(profileCostPermille(HistoryProfile::Tight)) + ", lean " + num(profileCostPermille(HistoryProfile::Lean)) +
+      ", standard 1000,\n   wide " + num(profileCostPermille(HistoryProfile::Wide)) +
+      " thousandths, from tests/evals/measured/cost.json) times the days left.\n"
+      "2. Down, at once and as far as needed: the profile in force projects over 0.9 of the ceiling, so it\n"
+      "   takes the largest smaller profile projecting at most 0.9; if none does, tight, with one plain line\n"
+      "   naming the date the ceiling is reached at that rate.\n"
+      "3. Up, one step at a time and never above standard: seven observed nights in a row in which a whole\n"
+      "   month at the next larger profile's rate projects under 0.7 of the ceiling.\n"
+      "4. Every change starts the observations again. No ceiling (turned off by the owner, or only provider\n"
+      "   limits) is a quiet night. A pinned profile is never moved, only warned about once a month. The\n"
+      "   governor never writes the ceiling.\n"
+      "5. 0.9 / 0.7 is wider than the swing a constant rate makes between months (31 / 28), so a constant\n"
+      "   rate never moves the profile both ways; a step down is undone no sooner than nine nights later.\n\n"
+      "Every step is one line to the owner (Telegram and the web chat), a row in the Usage page's change\n"
+      "record, a durable log line, and the /usage status line.\n\n"
+      "| Night | Spent this month | Profile | Step |\n" + separator(4);
+  BudgetFile f;
+  int64_t day = daysFromCivil(2026, 11, 1);
+  uint64_t spent = 0;
+  uint32_t month = 202611;
+  for (int n = 0; n < 61; n++) {
+    GovernorFacts g;
+    governorFactsAt((uint64_t)day * 86400u + 4 * 3600u + 60u, 0, 240, month, spent, true, 20000000ull, g);
+    const GovernorStep st = governorNight(f, g);
+    if (n < 5 || st.changed() || n % 10 == 0)
+      t += cells({dayMonthText(day), usdText(spent), historyProfileSlug(f.effective()),
+                  st.changed() ? std::string(historyProfileSlug(st.from)) + " to " + historyProfileSlug(st.to) : "-"});
+    const double usd = (n < 30 ? 0.70 : 0.30) * profileCostPermille(f.effective()) / 1000.0;
+    spent += (uint64_t)(usd * 1000000.0 + 0.5);
+    day++;
+    const CivilTime c = civilFromDays((uint32_t)day);
+    if ((uint32_t)(c.year * 100 + c.month) != month) {
+      month = (uint32_t)(c.year * 100 + c.month);
+      spent = 0;
+    }
   }
   return t;
 }
@@ -245,5 +294,6 @@ static std::string budgetTableDoc() {
   md += loopOffTable();
   md += profilesSection();
   md += floorSection();
+  md += governorSection();
   return md;
 }

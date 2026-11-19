@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdio>
 
+#include "nimbus/orch/budget.h"          // HistoryProfile (lane RB-BG: /budget profile)
 #include "nimbus/orch/provider_caps.h"   // providerName
 #include "nimbus/orch/provider_slots.h"
 
@@ -116,6 +117,19 @@ bool keywordOf(const std::vector<std::string>& w, BudgetRequest& r) {
   else if (k == "help") r.verb = BudgetVerb::Help;
   else return false;
   return true;
+}
+
+// Lane RB-BG: "profile [<name>|auto]": the history profile (no confirm: it moves no limit).
+BudgetRequest profileOf(const std::vector<std::string>& w) {
+  BudgetRequest r;
+  r.verb = BudgetVerb::Profile;
+  if (w.size() == 1) return r;
+  HistoryProfile p;
+  const std::string k = lower(w[1]);
+  if (w.size() == 2 && k == "auto") r.target = k;
+  else if (w.size() == 2 && parseHistoryProfile(k, p)) r.target = historyProfileSlug(p);
+  else return errorOf("Unknown profile. Use /budget profile tight, lean, standard, wide or auto.");
+  return r;
 }
 
 constexpr const char* kAllOff = "The overall ceiling can be turned off only on the device's web page (Assistant > "
@@ -349,6 +363,7 @@ BudgetRequest parseBudgetArgs(const std::string& args) {
     return r;
   }
   if (keywordOf(w, r)) return r;
+  if (lower(w[0]) == "profile") return profileOf(w);
   r.target = budgetTargetSlug(w[0]);
   if (r.target.empty()) return errorOf("There is no provider called " + quoted(w[0]) + ". Use " + targetsText() + ".");
   if (w.size() == 1)

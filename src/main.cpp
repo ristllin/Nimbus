@@ -59,6 +59,7 @@
 #include "agent/orchestrator.h"
 #include "agent/prefs_subsystem.h"   // lane J: standing rules (seed + store)
 #include "agent/spend_ceiling_store.h"        // lane DEF: the monthly spend ceiling (gate, notices)
+#include "agent/budget_profile_store.h"       // lane RB-BG: the history profile and its governor
 #include "agent/degraded_device.h"            // lane DEGRADE: what the device runs degraded on (strip, details, /api/state)
 #include "nimbus/harness/config.h"   // agent::voiceFallbackChatOf - where a spoken reply may fall back to
 #include "nimbus/harness/jobs.h"   // agent::keyFromTag - ring keys derive from session tags (CUM-243 reaper)
@@ -977,6 +978,15 @@ static void spendNoticePump() {
     }
     agent::spend::delivered(NoticeChannel::Web, k);
   }
+  // Lane RB-BG: a governor step's one line, to the owner's chat and the web chat's history.
+  const std::string step = agent::budgetprofile::nextNotice();
+  if (!step.empty()) {
+    const String owner = agent::telegram::enabled() ? agent::telegram::ownerChat() : String();
+    if (owner.length()) agent::telegram::send(owner, String(step.c_str()), /*block=*/false);
+    agent::memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(step.c_str()), "",
+                                  "ev:budget");
+    agent::budgetprofile::noticeDelivered();
+  }
 }
 
 // The chat a spoken reply falls back to when the speaker cannot play it: the chat the turn is
@@ -1080,6 +1090,7 @@ static int orchTick() {
     if ((int32_t)(now - s_spendTickAt) >= 0) {
       s_spendTickAt = now + 60000;
       agent::spend::tick();
+      agent::budgetprofile::tick();   // lane RB-BG: the governor's night (writes /data/budget.json)
     }
     spendNoticePump();
   }
@@ -4313,6 +4324,7 @@ void setup() {
   // Lane DEF: the paid-call gate answers from the monthly spend ceiling before any
   // turn can start (orchestratorBegin starts the poll task).
   agent::spend::install();
+  if (g_orchMode) agent::budgetprofile::load();   // lane RB-BG: the profile before any turn
   if (g_orchMode) orchestratorBeginOffLoopTask();
   // After a crash boot, tell the owner in plain words (and name the request that was
   // cut short), at once when they were waiting on it, else at their next turn; the
