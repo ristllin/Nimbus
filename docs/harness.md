@@ -616,6 +616,14 @@ durability around it and nothing that reads, edits or appends to the model's tex
   that tool's arguments; the stored c item keeps the model's own call, which the next request
   renders and the result pairs with. A router call that reaches nothing knowable reads as outside
   and as an effect.
+- **Tier 1 at capture**: a string argument over 1,024 B is stored as its long-argument stub (the
+  call runs with the whole argument; the whole arguments go to the bulk file), assistant text
+  over 12,288 B is stored as a stub with the text in the bulk file while the delivered reply stays
+  whole. Results pair with their calls by the call's q, never by id alone.
+- **The truth seam**: `beforeDeliver` asks every handler, also on a held turn and on a cut answer;
+  the loop takes a Hold at most once a turn and never on a cut, and sends a handler's status line
+  (the failed-write receipt) when the turn has none of its own. A held reply whose extra round
+  fails is delivered with the failure's line.
 - **Nothing to deliver**: an answer with no text and no call (empty content, a refusal) gets the
   exchange's plain line for a person; a routine's empty text stays its silence.
 - **Storage**: every item goes through `TxLog::store`. An item the card refused stays in RAM;
