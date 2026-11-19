@@ -539,3 +539,17 @@ deleted. Engine 2 has no baseline.
   engine-2 rows ledger_write, ledger_day, ledger_target and food_portions are deleted (ruling 42
   item 1); the tools index loses its food line and more's group list its food name. Nothing was
   added.
+
+### PC-0025: how to work: totals come from a tool result (the general line of the redesign)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1342 -> 1416
+- sha8: 0124d4bf -> f79606ba
+- lane: RB-REC3
+- prd: section 4 (System prompt, how to work; ruling 42 and rebuild/DESIGN-GENERAL-RECORDS.md design section 5)
+- why: the redesign's one general line, specified there byte for byte (74 B): " Totals, sums and counts come
+  from a tool result, not your own arithmetic." It replaces the deleted food paragraph's "Totals come from
+  ledger_day and ledger results" for every use case, and pairs with the tools that give such figures
+  (calc, and RB-REC4's read_file sum). It names no tool, so every caller sees it. Planned work from the
+  design, not a fix; RB-REC6 measures it with the three families.
