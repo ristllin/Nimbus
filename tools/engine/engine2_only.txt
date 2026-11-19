@@ -17,11 +17,6 @@ lib/core/src/orch_tx_log.cpp
 lib/core/src/orch_tx_migrate.cpp
 lib/core/src/orch_tx_rules.cpp
 
-# The ledger store (RB-L1a) is not linked by anything yet; its unwind tables alone cost an
-# engine-1 image about 3.7 KB. RB-L1b removes this line when ledger_write links it (its
-# image allowance covers it then).
-lib/core/src/orch_ledger.cpp
-
 
 lib/harness/src/plain_agents.cpp
 lib/harness/src/plain_compact.cpp
