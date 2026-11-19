@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -306,5 +307,20 @@ std::string renderLines(const LineList& l);
 uint64_t fnv64(uint64_t hash, std::string_view bytes);
 inline constexpr uint64_t kFnv64Basis = 1469598103934665603ULL;
 std::string sha8Hex(uint64_t hash);  // 8 lowercase hex of the high 32 bits, as sha8Of ("unknown" for 0)
+
+// ---- text building (shared by the renderers; out of line to keep call sites small) ---
+namespace detail {
+// The parts, one after the other.
+std::string join(std::initializer_list<std::string_view> parts);
+// A number as text, held in place for one expression.
+struct Num {
+  explicit Num(uint64_t v);
+  operator std::string_view() const { return std::string_view(b, n); }
+  char b[24];
+  size_t n;
+};
+// At most n bytes of s, cut before a UTF-8 continuation byte, with " ..." when cut.
+std::string quoteCut(std::string_view s, size_t n);
+}  // namespace detail
 
 }  // namespace nimbus::orch::aids

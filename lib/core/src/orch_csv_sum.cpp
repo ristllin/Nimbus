@@ -51,14 +51,10 @@ std::string_view trimmed(std::string_view s) {
   return s;
 }
 
-std::string num(uint64_t v) { return std::to_string(v); }
-
-// At most n bytes of s, cut before a UTF-8 continuation byte, with " ..." when cut.
-std::string quoteCut(std::string_view s, size_t n) {
-  if (s.size() <= n) return std::string(s);
-  while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
-  return std::string(s.substr(0, n)) + " ...";
-}
+std::string num(uint64_t v) { return std::string(detail::Num(v)); }
+using detail::join;
+using detail::Num;
+using detail::quoteCut;
 
 int shapeOf(char c) {
   if (isDigit(c)) return 256;
@@ -299,7 +295,7 @@ struct CsvScanner::Impl {
   bool step(char c) {
     ++res.bytes;
     last = c;
-    if (c == '\0') return fail(path + T::kNul + num(physLine) + ")");
+    if (c == '\0') return fail(join({path, T::kNul, Num(physLine), ")"}));
     if (!inRecord) startRecord();
     const bool closing = inQ && pendingQ && c != '"';
     if (c == '\n' && (!inQ || closing)) return lineEnd();
@@ -327,14 +323,14 @@ struct CsvScanner::Impl {
     for (size_t w = 0; w <= q.sum.size(); ++w) {
       const std::string_view name = w == 0 ? trimmed(q.column) : trimmed(q.sum[w - 1]);
       if (name.empty()) continue;
-      if (seen[w] != 1) return fail("column " + std::string(name) + (seen[w] ? T::kTwice : T::kNotInHeader) + quote);
+      if (seen[w] != 1) return fail(join({"column ", name, seen[w] ? T::kTwice : T::kNotInHeader, quote}));
     }
     return true;
   }
   bool header() {
     headerDone = true;
     const std::string_view h = withoutBom(rec, recLen);
-    if (h.empty() || tooLong) return fail(T::kNoHeader + quoteCut(h, kAidLineOneQuoteMax) + "\"");
+    if (h.empty() || tooLong) return fail(join({T::kNoHeader, quoteCut(h, kAidLineOneQuoteMax), "\""}));
     int found[kWanted], seen[kWanted] = {};
     for (int& f : found) f = -1;
     locate(h, found, seen);
@@ -560,11 +556,9 @@ namespace {
 
 std::string cellList(const LineList& l, const CsvScanResult& r) {
   std::string out;
-  for (size_t i = 0; i < l.lines.size(); ++i) {
-    if (i) out += ", ";
-    out += r.sums[l.columns[i]].name + " line " + num(l.lines[i]);
-  }
-  if (l.count > l.lines.size()) out += " +" + num(l.count - l.lines.size());
+  for (size_t i = 0; i < l.lines.size(); ++i)
+    out += join({i ? ", " : "", r.sums[l.columns[i]].name, " line ", Num(l.lines[i])});
+  if (l.count > l.lines.size()) out += join({" +", Num(l.count - l.lines.size())});
   return out;
 }
 
@@ -572,25 +566,53 @@ std::string groupList(const CsvScanResult& r) {
   std::string out;
   for (size_t i = 0; i < r.identical.size(); ++i) {
     const LineGroup& g = r.identical[i];
-    if (i) out += ", ";
-    for (size_t k = 0; k < g.lines.size(); ++k) out += (k ? "=" : "") + num(g.lines[k]);
-    if (g.count > g.lines.size()) out += "+" + num(g.count - g.lines.size());
+    for (size_t k = 0; k < g.lines.size(); ++k) out += join({k ? "=" : (i ? ", " : ""), Num(g.lines[k])});
+    if (g.count > g.lines.size()) out += join({"+", Num(g.count - g.lines.size())});
   }
-  if (r.identicalGroups > r.identical.size()) out += " +" + num(r.identicalGroups - r.identical.size());
+  if (r.identicalGroups > r.identical.size()) out += join({" +", Num(r.identicalGroups - r.identical.size())});
   return out;
 }
 
 }  // namespace
+
+namespace detail {
+
+std::string join(std::initializer_list<std::string_view> parts) {
+  size_t n = 0;
+  for (auto p : parts) n += p.size();
+  std::string out;
+  out.reserve(n);
+  for (auto p : parts) out.append(p.data(), p.size());
+  return out;
+}
+
+Num::Num(uint64_t v) {
+  char t[24];
+  size_t k = 0;
+  do {
+    t[k++] = char('0' + v % 10);
+    v /= 10;
+  } while (v);
+  for (n = 0; n < k; ++n) b[n] = t[k - 1 - n];
+}
+
+std::string quoteCut(std::string_view s, size_t n) {
+  if (s.size() <= n) return std::string(s);
+  while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
+  return join({s.substr(0, n), " ..."});
+}
+
+}  // namespace detail
 
 std::string renderLines(const LineList& l) {
   if (!l.count) return "";
   const bool span = l.ends.size() == l.lines.size() && !l.ends.empty() && l.ends[0] > l.lines[0];
   std::string out = l.count == 1 && !span ? "line " : "lines ";
   for (size_t i = 0; i < l.lines.size(); ++i) {
-    out += (i ? ", " : "") + num(l.lines[i]);
-    if (i < l.ends.size() && l.ends[i] > l.lines[i]) out += "-" + num(l.ends[i]);
+    out += join({i ? ", " : "", Num(l.lines[i])});
+    if (i < l.ends.size() && l.ends[i] > l.lines[i]) out += join({"-", Num(l.ends[i])});
   }
-  if (l.count > l.lines.size()) out += " +" + num(l.count - l.lines.size());
+  if (l.count > l.lines.size()) out += join({" +", Num(l.count - l.lines.size())});
   return out;
 }
 
@@ -598,18 +620,22 @@ namespace {
 
 // The row counts: rows, the range, what is shown, the sums.
 std::string tailCounts(const CsvQuery& q, const CsvScanResult& r) {
-  std::string out = "rows " + num(r.matched) + " of " + num(r.records);
-  if (!q.column.empty()) out += " where " + q.column + " " + q.from + ".." + (q.to.empty() ? q.from : q.to);
+  std::string out = join({"rows ", Num(r.matched), " of ", Num(r.records)});
+  if (!q.column.empty()) out += join({" where ", q.column, " ", q.from, "..", q.to.empty() ? q.from : q.to});
   if (!r.shownFirst && r.matched) out += "; shown none";
-  else if (r.shownFirst > 1 || r.shownLast < r.matched) out += "; shown " + num(r.shownFirst) + "-" + num(r.shownLast);
+  else if (r.shownFirst > 1 || r.shownLast < r.matched) out += join({"; shown ", Num(r.shownFirst), "-", Num(r.shownLast)});
   if (r.sums.empty()) return out;
   out += "; sum";
-  for (const auto& s : r.sums) out += " " + s.name + "=" + renderDec3(s.total);
+  for (const auto& s : r.sums) out += join({" ", s.name, "=", renderDec3(s.total)});
   return out;
 }
 
-std::string clause(const char* what, const LineList& l, const std::string& list) {
-  return l.count ? std::string("; ") + what + " " + num(l.count) + " (" + list + ")" : std::string();
+std::string clause(const char* what, const LineList& l, std::string_view list, std::string_view why = "") {
+  return l.count ? join({"; ", what, " ", Num(l.count), " (", list, why, ")"}) : std::string();
+}
+
+std::string countClause(const char* what, size_t n, std::string_view rest = "") {
+  return n ? join({"; ", what, Num(n), rest}) : std::string();
 }
 
 // Every row or cell that is not plainly in the total, by reason.
@@ -617,20 +643,18 @@ std::string tailFacts(const CsvQuery& q, const CsvScanResult& r) {
   std::string out = clause("blank", r.blankCells, cellList(r.blankCells, r));
   out += clause("not a number", r.notNumberCells, cellList(r.notNumberCells, r));
   out += clause("rounded to 3 decimals", r.roundedCells, cellList(r.roundedCells, r));
-  out += clause("not compared", r.notCompared,
-                renderLines(r.notCompared) + ": " + q.column + " blank or not like " + q.from);
-  out += clause("skipped", r.fieldCount,
-                renderLines(r.fieldCount) + ": field count is not the header's " + num(r.headerFields));
-  out += clause("too long", r.tooLong, renderLines(r.tooLong) + ": over " + num(kCsvRecordMax) + " B");
-  if (r.emptyLines) out += "; empty lines " + num(r.emptyLines);
-  if (r.identicalGroups)
-    out += "; identical lines " + num(r.identicalGroups) + (r.identicalGroups == 1 ? " group (" : " groups (") +
-           groupList(r) + ")";
+  out += clause("not compared", r.notCompared, renderLines(r.notCompared),
+                join({": ", q.column, " blank or not like ", q.from}));
+  out += clause("skipped", r.fieldCount, renderLines(r.fieldCount),
+                join({": field count is not the header's ", Num(r.headerFields)}));
+  out += clause("too long", r.tooLong, renderLines(r.tooLong), join({": over ", Num(kCsvRecordMax), " B"}));
+  out += countClause("empty lines ", r.emptyLines);
+  out += countClause("identical lines ", r.identicalGroups,
+                     join({r.identicalGroups == 1 ? " group (" : " groups (", groupList(r), ")"}));
   if (r.identicalChecked < r.matched)
-    out += "; identical lines checked in the first " + num(r.identicalChecked) + " matching rows only";
-  if (r.tornLine) out += "; last line " + num(r.tornLine) + " has no newline (a write may have been cut short)";
-  if (r.openQuoteLine)
-    out += "; the row at line " + num(r.openQuoteLine) + " ends inside a quoted field (a write may have been cut short)";
+    out += countClause("identical lines checked in the first ", r.identicalChecked, " matching rows only");
+  out += countClause("last line ", r.tornLine, " has no newline (a write may have been cut short)");
+  out += countClause("the row at line ", r.openQuoteLine, " ends inside a quoted field (a write may have been cut short)");
   return out;
 }
 
@@ -640,7 +664,7 @@ std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r) { return ta
 
 std::string renderCsvRead(const CsvQuery& q, const CsvScanResult& r) {
   std::string out = "\n" + r.body + renderCsvTail(q, r);
-  if (r.shownFirst && r.shownLast < r.matched) out += "\nnext_offset=" + num(r.shownLast);
+  if (r.shownFirst && r.shownLast < r.matched) out += join({"\nnext_offset=", Num(r.shownLast)});
   return out;
 }
 

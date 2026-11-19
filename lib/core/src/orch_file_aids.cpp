@@ -30,18 +30,14 @@ constexpr const char* kCardWrite = "card write failed; nothing changed";
 constexpr const char* kFence = "; added a newline before the text";
 }  // namespace T
 
-std::string num(uint64_t v) { return std::to_string(v); }
+using detail::join;
+using detail::Num;
+using detail::quoteCut;
 
 size_t countNl(std::string_view s) {
   size_t n = 0;
   for (char c : s) n += c == '\n';
   return n;
-}
-
-std::string quoteCut(std::string_view s, size_t n) {
-  if (s.size() <= n) return std::string(s);
-  while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
-  return std::string(s.substr(0, n)) + " ...";
 }
 
 void listAdd(LineList& l, uint32_t line) {
@@ -57,9 +53,16 @@ struct Hit {
   size_t lineEnd;    // the line end right after it (0, 1 "\n" or 2 "\r\n") when whole
 };
 
+// Where a finder's bytes and matches go.
+struct FindSink {
+  virtual ~FindSink() = default;
+  virtual void raw(const char*, size_t) {}           // each chunk as read
+  virtual void bytes(const char*, size_t) {}         // settled bytes (not part of a replaced match)
+  virtual bool match(const Hit&) { return false; }   // true: replaced (the sink emitted the new text)
+};
+
 // A streaming non-overlapping matcher over a window of carry + one chunk (Horspool).
-// run() settles every byte that can no longer start a match and reports each match;
-// onMatch returns true to replace it (the caller emits the replacement).
+// run() settles every byte that can no longer start a match and reports each match.
 struct Finder {
   std::string_view pat;
   size_t skip[256];
@@ -83,7 +86,6 @@ struct Finder {
     line = 1;
   }
   char* room() { return w + len; }
-  size_t roomSize() const { return cap - len; }
 
   // The line end at e, right after a match: its length (0 at the end of the file, 1 "\n"
   // or a last "\r", 2 "\r\n"), or -1 when e is not at a line end.
@@ -106,17 +108,13 @@ struct Finder {
     h.lineEnd = k > 0 ? size_t(k) : 0;
     return h;
   }
-
-  // Settle w[a..b): onBytes sees them and the line moves on.
-  template <class Bytes>
-  void settle(size_t a, size_t b, Bytes& onBytes) {
+  // Settle w[a..b): the sink sees them and the line moves on.
+  void settle(size_t a, size_t b, FindSink& out) {
     if (b <= a) return;
-    onBytes(w + a, b - a);
-    for (size_t i = a; i < b; ++i) line += w[i] == '\n';
+    out.bytes(w + a, b - a);
+    line += countNl(std::string_view(w + a, b - a));
   }
-
-  template <class Bytes, class Match>
-  void run(bool eof, Bytes& onBytes, Match& onMatch) {
+  void run(bool eof, FindSink& out) {
     const size_t m = pat.size();
     const size_t lim = eof ? len : (len >= 2 ? len - 2 : 0);
     size_t p = 0, q = 0;
@@ -125,14 +123,13 @@ struct Finder {
         q += skip[static_cast<unsigned char>(w[q + m - 1])];
         continue;
       }
-      settle(p, q, onBytes);
-      const Hit h = describe(q, eof);
-      if (!onMatch(h)) onBytes(w + q, m);
+      settle(p, q, out);
+      if (!out.match(describe(q, eof))) out.bytes(w + q, m);
       line += countNl(pat);
       p = q = q + m;
     }
     const size_t keep = eof ? len : std::min(q, len);
-    settle(p, keep, onBytes);
+    settle(p, keep, out);
     if (keep) prev = w[keep - 1];
     std::memmove(w, w + keep, len - keep);
     len -= keep;
@@ -144,21 +141,19 @@ struct Read {
   uint64_t bytes = 0, hash = kFnv64Basis;
 };
 
-// Read the whole file through the finder: feed(chunk) for every chunk read (before
-// matching), then run. False: a card fault.
-template <class Feed, class Bytes, class Match>
-bool pass(AidSource& src, Finder& f, Read& r, Feed& feed, Bytes& onBytes, Match& onMatch) {
+// Read the whole file through the finder into the sink. False: a card fault.
+bool pass(AidSource& src, Finder& f, Read& r, FindSink& out) {
   f.reset();
   r = Read();
   for (;;) {
     size_t got = 0;
     if (!src.readAt(r.bytes, kAidChunk, f.room(), got)) return false;
-    feed(f.room(), got);
+    out.raw(f.room(), got);
     r.hash = fnv64(r.hash, std::string_view(f.room(), got));
     f.len += got;
     r.bytes += got;
     const bool eof = got < kAidChunk;
-    f.run(eof, onBytes, onMatch);
+    f.run(eof, out);
     if (eof) return true;
   }
 }
@@ -170,6 +165,15 @@ bool isHex8(const std::string& s) {
   return true;
 }
 
+// Old in the new file: every match's line.
+struct StillAt : FindSink {
+  LineList lines;
+  bool match(const Hit& h) override {
+    listAdd(lines, uint32_t(h.line));
+    return false;
+  }
+};
+
 // The part file writer: kAidChunk writes, each written chunk counted for the result.
 struct Out {
   AidSink& sink;
@@ -179,27 +183,16 @@ struct Out {
   bool first = true, failed = false;
   uint64_t bytes = 0, hash = kFnv64Basis, lines = 1;
   char last = '\n';
-  LineList stillAt;
-  uint64_t outLine() const { return lines; }
+  StillAt still;
 
   bool flush(bool eof) {
     if (failed) return false;
-    if (len || first) {
-      if (!sink.partWrite(std::string_view(buf, len), first)) {
-        failed = true;
-        return false;
-      }
-      first = false;
-    }
+    if ((len || first) && !sink.partWrite(std::string_view(buf, len), first)) return !(failed = true);
+    first = false;
     std::memcpy(count.room(), buf, len);
     count.len += len;
     len = 0;
-    auto none = [](const char*, size_t) {};
-    auto seen = [&](const Hit& h) {
-      listAdd(stillAt, uint32_t(h.line));
-      return false;
-    };
-    count.run(eof, none, seen);
+    count.run(eof, still);
     return true;
   }
   void put(const char* p, size_t n) {
@@ -207,7 +200,7 @@ struct Out {
       const size_t k = std::min(n, kAidChunk - len);
       std::memcpy(buf + len, p, k);
       hash = fnv64(hash, std::string_view(p, k));
-      for (size_t i = 0; i < k; ++i) lines += p[i] == '\n';
+      lines += countNl(std::string_view(p, k));
       bytes += k;
       last = p[k - 1];
       len += k;
@@ -264,38 +257,32 @@ bool takesLineEnd(const EditRequest& e) {
 
 std::string planError(const std::string& path, const EditRequest& e, const Plan& p) {
   if (!e.ifSha8.empty() && sha8Hex(p.hash) != e.ifSha8)
-    return path + T::kChangedSince + e.ifSha8 + " (now " + sha8Hex(p.hash) + "); nothing written";
-  if (!p.count) return T::kNotIn + path + " (" + num(p.bytes) + " B)";
-  if (e.line && p.pick < 0) {
-    if (p.onLine)
-      return T::kPartOf + num(e.line) + ", not the whole line; line " + num(e.line) + " is: " +
-             quoteCut(p.quote, kAidQuoteMax);
-    return T::kNoMatchOn + num(e.line) + "; matches at " + renderLines(p.lines);
-  }
-  if (!e.line && !e.all && p.count > 1) {
-    std::string at = renderLines(p.lines);
-    return T::kManyA + path + " " + num(p.count) + " times, at " + at + T::kManyB;
-  }
+    return join({path, T::kChangedSince, e.ifSha8, " (now ", sha8Hex(p.hash), "); nothing written"});
+  if (!p.count) return join({T::kNotIn, path, " (", Num(p.bytes), " B)"});
+  if (e.line && p.pick < 0 && p.onLine)
+    return join({T::kPartOf, Num(e.line), ", not the whole line; line ", Num(e.line), " is: ",
+                 quoteCut(p.quote, kAidQuoteMax)});
+  if (e.line && p.pick < 0) return join({T::kNoMatchOn, Num(e.line), "; matches at ", renderLines(p.lines)});
+  if (!e.line && !e.all && p.count > 1)
+    return join({T::kManyA, path, " ", Num(p.count), " times, at ", renderLines(p.lines), T::kManyB});
   return "";
 }
 
-}  // namespace
-
-namespace {
-
-// One edit: the two passes and the swap.
-struct EditRun {
+// One edit: the two passes and the swap. As the finder's sink it is pass 1 (plan) or
+// pass 2 (write).
+struct EditRun : FindSink {
   AidSource& src;
   AidSink& sink;
   const std::string& path;
   const EditRequest& e;
   Finder in, outCount;
   char* buf = nullptr;
+  Out* out = nullptr;   // set during pass 2
   Plan plan;
   EditOutcome o;
 
   EditRun(AidSource& s, AidSink& k, const std::string& p, const EditRequest& r) : src(s), sink(k), path(p), e(r) {}
-  ~EditRun() { workingFree(buf); }
+  ~EditRun() override { workingFree(buf); }
   bool fail(std::string err) {
     o.error = std::move(err);
     return false;
@@ -308,7 +295,8 @@ struct EditRun {
   // Pass 1: every match, the pick, the picked line's text.
   uint64_t rawLine = 1;
   size_t quoted = 0;
-  void quoteFeed(const char* p, size_t n) {
+  void raw(const char* p, size_t n) override {
+    if (out) return;
     for (size_t i = 0; i < n; ++i) {
       if (rawLine == e.line && p[i] != '\n' && quoted++ < kAidQuoteMax + 4) plan.quote += p[i];
       rawLine += p[i] == '\n';
@@ -323,11 +311,8 @@ struct EditRun {
     return false;
   }
   bool planPass(uint64_t hash) {
-    auto feed = [&](const char* p, size_t n) { quoteFeed(p, n); };
-    auto none = [](const char*, size_t) {};
-    auto match = [&](const Hit& h) { return noteMatch(h); };
     Read r;
-    if (!pass(src, in, r, feed, none, match)) return fail(T::kCardRead);
+    if (!pass(src, in, r, *this)) return fail(T::kCardRead);
     plan.bytes = r.bytes;
     plan.hash = r.hash;
     if (!plan.quote.empty() && plan.quote.back() == '\r') plan.quote.pop_back();
@@ -342,21 +327,23 @@ struct EditRun {
   size_t index = 0, dropNext = 0;
   uint64_t startLine = 0;
   bool tookEnd = false;
-  void keep(Out& out, const char* p, size_t n) {
+  void bytes(const char* p, size_t n) override {
+    if (!out) return;
     const size_t d = std::min(n, dropNext);
     dropNext -= d;
-    out.put(p + d, n - d);
+    out->put(p + d, n - d);
   }
-  bool replaceAt(Out& out, const Hit& h) {
+  bool match(const Hit& h) override {
+    if (!out) return noteMatch(h);
     const size_t i = index++;
     const bool pick = e.all || (e.line ? long(i) == plan.pick : i == 0);
     if (!pick) return false;
-    if (o.at.size() < kAidListMax) o.at.push_back(uint32_t(e.newText.empty() ? h.line : out.outLine()));
+    if (o.at.size() < kAidListMax) o.at.push_back(uint32_t(e.newText.empty() ? h.line : out->lines));
     ++o.replaced;
     startLine = h.line;
     dropNext = h.whole && takesLineEnd(e) ? h.lineEnd : 0;
     tookEnd = dropNext > 0;
-    out.put(e.newText.data(), e.newText.size());
+    out->put(e.newText.data(), e.newText.size());
     return true;
   }
   // The error after pass 2, "" when the part may be swapped in.
@@ -367,23 +354,21 @@ struct EditRun {
     return "";
   }
   bool writePass() {
-    Out out{sink, outCount, buf};
-    auto feed = [](const char*, size_t) {};
-    auto bytes = [&](const char* p, size_t n) { keep(out, p, n); };
-    auto match = [&](const Hit& h) { return replaceAt(out, h); };
+    Out w{sink, outCount, buf};
+    out = &w;
     Read r;
-    const bool read = pass(src, in, r, feed, bytes, match);
-    const bool wrote = read && out.flush(true);
+    const bool read = pass(src, in, r, *this);
+    const bool wrote = read && w.flush(true);
     std::string err = writeError(read, wrote, r);
     if (err.empty() && !sink.partSwap()) err = T::kCardWrite;
     if (!err.empty()) {
       sink.partDiscard();
       return fail(err);
     }
-    o.newSize = out.bytes;
-    o.newHash = out.hash;
-    o.newLines = out.lines - 1 + (out.bytes && out.last != '\n' ? 1 : 0);
-    o.stillAt = out.stillAt;
+    o.newSize = w.bytes;
+    o.newHash = w.hash;
+    o.newLines = w.lines - 1 + (w.bytes && w.last != '\n' ? 1 : 0);
+    o.stillAt = w.still.lines;
     if (o.replaced == 1) shiftAfter();
     return true;
   }
@@ -414,14 +399,12 @@ std::string renderEdit(const std::string& path, const EditOutcome& o) {
   LineList at;
   at.count = o.replaced;
   at.lines = o.at;
-  std::string s = "replaced " + num(o.replaced) + " in " + path + " at " + renderLines(at) + "; file is " +
-                  num(o.newSize) + " B (was " + num(o.oldSize) + " B), " + num(o.newLines) + " lines, sha8=" +
-                  sha8Hex(o.newHash);
-  if (o.shiftFrom) {
-    const uint64_t d = uint64_t(o.shift < 0 ? -o.shift : o.shift);
-    s += "; lines that were " + num(o.shiftFrom) + " and later are now " + num(d) + (o.shift < 0 ? " lower" : " higher");
-  }
-  if (o.stillAt.count) s += "; old is still at " + renderLines(o.stillAt);
+  std::string s = join({"replaced ", Num(o.replaced), " in ", path, " at ", renderLines(at), "; file is ", Num(o.newSize),
+                        " B (was ", Num(o.oldSize), " B), ", Num(o.newLines), " lines, sha8=", sha8Hex(o.newHash)});
+  if (o.shiftFrom)
+    s += join({"; lines that were ", Num(o.shiftFrom), " and later are now ", Num(uint64_t(o.shift < 0 ? -o.shift : o.shift)),
+               o.shift < 0 ? " lower" : " higher"});
+  if (o.stillAt.count) s += join({"; old is still at ", renderLines(o.stillAt)});
   return s;
 }
 
@@ -476,9 +459,9 @@ uint64_t nearestIdentical(std::string_view text, size_t start, size_t k, std::st
 // One fact: "identical to line 41", "line 214 is identical to line 41", or with the line
 // count unknown "the line 2 above it" and "appended line 2 is ...".
 std::string factText(bool known, bool single, uint64_t me, uint64_t back, size_t k) {
-  const std::string where = known ? "line " + num(me - back) : "the line " + num(back) + " above it";
-  if (single) return "identical to " + where;
-  return (known ? "line " + num(me) : "appended line " + num(k + 1)) + " is identical to " + where;
+  const std::string where = known ? join({"line ", Num(me - back)}) : join({"the line ", Num(back), " above it"});
+  if (single) return join({"identical to ", where});
+  return join({known ? "line " : "appended line ", Num(known ? me : k + 1), " is identical to ", where});
 }
 
 std::string_view noCr(std::string_view s) {
@@ -518,7 +501,7 @@ AppendFacts appendFacts(std::string_view tail, bool tailIsWhole, uint64_t fileSi
     }
     facts += (shown++ ? ", " : "") + factText(known, total == 1, fileLines + 1 + k, back, k);
   }
-  if (!facts.empty()) a.note += "; " + facts + (more ? " +" + num(more) : "");
+  if (!facts.empty()) a.note += join({"; ", facts, more ? " +" : "", more ? std::string_view(Num(more)) : ""});
   return a;
 }
 
