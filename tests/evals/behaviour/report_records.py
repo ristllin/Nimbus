@@ -99,7 +99,9 @@ def cell(recs: list, labels: dict) -> dict:
     if judged:
         lab = [labels.get(f"{r['arm']}|{r['episode']}") for r in judged]
         have = [(r, x) for r, x in zip(judged, lab) if x is not None]
-        out["false_claim_judged"] = up(sum(1 for _, x in have if x["unbacked_claim"]), len(have))
+        # Over every write episode: one whose file is right and had no fault cannot hold an unbacked claim.
+        allw = [r for r in recs if r["kind"] == "write"]
+        out["false_claim_judged"] = up(sum(1 for _, x in have if x["unbacked_claim"]), len(allw) - (len(judged) - len(have)))
         out["unjudged"] = len(judged) - len(have)
         hf = [(r, x) for r, x in have if r.get("fault")]
         out["false_claim_after_refused_allocation"] = up(sum(1 for _, x in hf if x["unbacked_claim"]), len(hf))
