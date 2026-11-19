@@ -48,7 +48,9 @@ CACHE_5M_S, CACHE_1H_S = 300, 3600
 WARM_GAP_S = 45  # the warm follow-up arm: owner turns this far apart (under the 270 s cold open)
 IDLE_COMPACT_S = 120  # compaction runs only after this much quiet
 SLICE_MAX = 24_000
-SUMMARY_REQUESTS_PER_IDLE = 2
+SUMMARY_REQUESTS_PER_IDLE = 2  # plain_compact: kCompactRequestsPerWindow
+COMPACT_WINDOW_S = 3600  # kCompactWindowS: a new idle window an hour
+COMPACT_PAID_PER_DAY = 6  # kCompactPaidPerDay
 SUMMARIZER = "claude-haiku-5-5"
 VARIANT = "L1uy"
 # model -> (input, output, cache read, 5-minute write, 1-hour write), USD per million tokens.
@@ -210,13 +212,22 @@ def epoch_of(local: str) -> float:
     return datetime.strptime(local, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ).timestamp()
 
 
-def compact(head: Head, tx: E2Transcript, now: float, rec: dict):
-    """Idle compaction: at most two summarizer requests, one per local day of the slice."""
+def idle_requests(gap_s: float, paid_today: int) -> int:
+    """Summarizer requests an idle gap allows, as the engine's driver paces them: one window per hour
+    of quiet after IDLE_COMPACT_S, SUMMARY_REQUESTS_PER_IDLE each, at most COMPACT_PAID_PER_DAY a day."""
+    if gap_s < IDLE_COMPACT_S:
+        return 0
+    windows = 1 + int((gap_s - IDLE_COMPACT_S) // COMPACT_WINDOW_S)
+    return max(0, min(windows * SUMMARY_REQUESTS_PER_IDLE, COMPACT_PAID_PER_DAY - paid_today))
+
+
+def compact(head: Head, tx: E2Transcript, now: float, rec: dict, requests: int = SUMMARY_REQUESTS_PER_IDLE):
+    """Idle compaction: at most `requests` summarizer requests, one per local day of the slice."""
     turns = tx.compaction_slice(now)
-    if not turns:
+    if not turns or requests <= 0:
         return
     by_day = tx.slice_text(turns)
-    days = list(by_day)[:SUMMARY_REQUESTS_PER_IDLE]
+    days = list(by_day)[:requests]
     done_turns = [t for t in turns if any(d in tx.slice_text([t]) for d in days)]
     digests = []
     for day in days:
@@ -255,6 +266,7 @@ class Replay:
         self.w = World(now=datetime.fromtimestamp(self.start, TZ), fail={}, variant=VARIANT)
         self.tools = manifest.tools_for(VARIANT)
         self.vnow = self.start
+        self.paid = {}  # summarizer requests paid per local day (the engine's daily cap)
         self.rec = {
             "shape": cfg.shape,
             "profile": cfg.profile,
@@ -272,7 +284,10 @@ class Replay:
         for n, t in enumerate(self.turns):
             at = self.start + t["at_s"]
             if n and at - self.vnow >= IDLE_COMPACT_S:
-                compact(self.head, self.tx, self.vnow + IDLE_COMPACT_S, self.rec)
+                day = datetime.fromtimestamp(self.vnow, TZ).strftime("%Y-%m-%d")
+                asked = len(self.rec["background"])
+                compact(self.head, self.tx, self.vnow + IDLE_COMPACT_S, self.rec, idle_requests(at - self.vnow, self.paid.get(day, 0)))
+                self.paid[day] = self.paid.get(day, 0) + len(self.rec["background"]) - asked
             self.vnow = max(self.vnow, at)
             self.rec["turns"].append(self.turn(n + 1, t))
             self.save()

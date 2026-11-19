@@ -343,6 +343,17 @@ class Transcript(unittest.TestCase):
         std.note_prompt(10**6)
         self.assertIsNone(std.due_tokens)
 
+    def test_an_idle_gap_allows_the_engines_summarizer_requests(self):
+        """Lane RB-T4: as plain_compact's driver does, an idle gap opens one window an hour, each of at
+        most two summarizer requests, and a day pays for at most six."""
+        f = run_replay.idle_requests
+        self.assertEqual(f(130, 0), 2)
+        self.assertEqual(f(3600 + 130, 0), 4)
+        self.assertEqual(f(10 * 3600, 0), 6)
+        self.assertEqual(f(10 * 3600, 5), 1)
+        self.assertEqual(f(10 * 3600, 6), 0)
+        self.assertEqual(f(60, 0), 0)
+
     def test_digest_block_keeps_under_its_cap(self):
         tx = refloop.E2Transcript("tight")
         tx.seed([], [(f"day {k}", "d" * 700) for k in range(10)])
