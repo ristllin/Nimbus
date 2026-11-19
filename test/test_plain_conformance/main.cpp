@@ -16,6 +16,7 @@
 #include "../support/tx_battery/fixtures.h"
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/props.h"
+#include "engine_tests.h"
 
 namespace tx = nimbus::orch::tx;
 namespace plain = agent::plain;
@@ -198,5 +199,6 @@ int main(int, char**) {
   RUN_TEST(test_guard_last_round_responses);
   RUN_TEST(test_guard_last_round_chat);
   RUN_TEST(test_guard_last_round_flat);
+  engine_tests::run();
   return UNITY_END();
 }
