@@ -32,7 +32,7 @@ import records  # noqa: E402
 import stats  # noqa: E402
 
 HEAD_ORDER = ["claude-haiku-5-5", "gpt-5.6-luna", "glm-5.3", "claude-sonnet-5-5"]
-ARMS = ("F", "S", "Sp", "Sq", "K0", "K1", "K2", "K3")
+ARMS = ("F", "S", "Sp", "Sq", "Spq", "K0", "K1", "K2", "K3")
 DOMS = ("food", "expenses", "training")
 
 

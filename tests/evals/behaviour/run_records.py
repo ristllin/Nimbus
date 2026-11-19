@@ -89,7 +89,8 @@ tool_name = records.tool_name
 # Candidate wordings of the sum clause, measured as arms before any is built (ruling 88 asks that the
 # figure and its coverage be one statement; these are two stronger forms of the same facts):
 #   Sp  the clause says "partial" when it leaves rows out: "sum kcal=655 (partial: 3 of 4 rows; ...)";
-#   Sq  the tail is followed by the rows not in the sums, as stored ("not in the sums, as stored: L175 ...").
+#   Sq  the tail is followed by the rows not in the sums, as stored ("not in the sums, as stored: L175 ...");
+#   Spq both.
 LEFT_OUT_RE = re.compile(
     r"\b(?:line|lines) ([\d, +-]+?) \((?:field count|blank\)|not a number|over |\w+ blank or not like)"
 )
@@ -119,7 +120,7 @@ def _quoted(world, args, text):
     return text + ("\nnot in the sums, as stored: " + " | ".join(rows) if rows else "")
 
 
-SUM_VARIANTS = {"Sp": _partial, "Sq": _quoted}
+SUM_VARIANTS = {"Sp": _partial, "Sq": _quoted, "Spq": lambda w, a, t: _quoted(w, a, _partial(w, a, t))}
 
 
 class World:
@@ -215,7 +216,7 @@ class World:
 # ------------------------------------------------------------------ requests
 def compose(aid: Aid, ep: dict, arm: str, head: str) -> tuple:
     dom = ep["dom"]
-    notes = records.note_lines(dom) if arm in ("F", "S", "Sp", "Sq") else records.note_lines(dom)[:2]
+    notes = records.note_lines(dom) if arm in ("F", "S", "Sp", "Sq", "Spq") else records.note_lines(dom)[:2]
     skills = ""
     sid = records.DOMAINS[dom]["skill_id"]
     if arm == "K1":
@@ -404,7 +405,7 @@ def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=No
 
 # ------------------------------------------------------------------ plan and storage
 def cell_plan(arm: str, n_total: int, n_write: int, n_fault: int, n_skill: int) -> list:
-    if arm in ("F", "S", "Sp", "Sq"):
+    if arm in ("F", "S", "Sp", "Sq", "Spq"):
         return records.plan(n_total, n_write, n_fault if arm == "S" else 0)
     return records.plan_skills(arm, n_skill)
 
@@ -412,7 +413,7 @@ def cell_plan(arm: str, n_total: int, n_write: int, n_fault: int, n_skill: int) 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--head", required=True)
-    ap.add_argument("--arm", required=True, choices=["F", "S", "Sp", "Sq", "K0", "K1", "K2", "K3"])
+    ap.add_argument("--arm", required=True, choices=["F", "S", "Sp", "Sq", "Spq", "K0", "K1", "K2", "K3"])
     ap.add_argument("--evidence", required=True)
     ap.add_argument("--env-file", default="")
     ap.add_argument("--aidserve", required=True)
