@@ -1428,7 +1428,7 @@ inline std::vector<RefusalShape> refusalShapes() {
 struct RefusalRun {
   bool escaped = false;
   long allocations = 0;     // the allocations the hook saw (a counting run: all of the turn's)
-  size_t replies = 0, memory = 0, dupes = 0, messages = 0;
+  size_t replies = 0, memory = 0, dupes = 0, messages = 0, dItems = 0;
   int afterDeliverSent = 0, afterDeliverCalls = 0;
 };
 
@@ -1461,6 +1461,7 @@ inline RefusalRun runRefusal(const RefusalShape& shape, int mode, long k, bool n
   hookTurn(b, out, in, r.escaped);
   r.allocations = alloc_hook::count;
   alloc_hook::disarm();
+  r.dItems = countKind(storedOf(b), tx::ItemKind::Delivery);
   r.afterDeliverCalls = calls;
   r.afterDeliverSent = sent;
   r.messages = b.sent.size();
@@ -1494,6 +1495,7 @@ inline void expectOwnerHeard(const RefusalShape& shape, const RefusalRun& r, con
   TEST_ASSERT_TRUE_MESSAGE(r.messages <= 2, msg);
   if (r.replies) TEST_ASSERT_EQUAL_MESSAGE(1, r.afterDeliverSent, msg);
   TEST_ASSERT_TRUE_MESSAGE(r.afterDeliverCalls <= 1, msg);
+  TEST_ASSERT_TRUE_MESSAGE(r.dItems <= 1, msg);   // the d item is never stored twice
 }
 
 inline void test_a_refused_allocation_from_any_point_on_still_reaches_the_owner() {
@@ -1678,6 +1680,34 @@ inline void test_a_receipt_survives_when_the_reply_cannot_be_sent() {
   (void)b.owner("save", out);
   TEST_ASSERT_EQUAL(1, (int)b.sent.size());
   TEST_ASSERT_EQUAL_STRING("receipt line", b.sent[0].text.c_str());
+  // With no receipt, a reply that can never be sent leaves the memory line alone.
+  b.hooks->clear();
+  b.sent.clear();
+  b.model.push(sp::say("Saved it."));
+  b.advance(30);
+  (void)b.owner("save again", out);
+  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
+  TEST_ASSERT_EQUAL_STRING(texts::device_notes::kNoMemory, b.sent[0].text.c_str());
+}
+
+// At turn open a full arena makes room before the first request (free bytes under the reserve):
+// the first request already names what left RAM.
+inline void test_a_turn_opens_with_room_when_the_arena_is_nearly_full() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  TXB_OK(b.arena->init(64 * 1024, b.platform.allocLarge, b.platform.freeLarge));
+  int n = 0;
+  // Each turn opens with at least the 32 KB reserve free; the last one ends just under it.
+  for (; b.arena->freeBytes() >= 32 * 1024 && n < 200; ++n) shortTurns(b, 1);
+  TEST_ASSERT_EQUAL(0, (int)b.engine->omittedThru());
+  const size_t first = b.model.requests().size();
+  b.model.push(sp::say("Room."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("one more", out));
+  TEST_ASSERT_EQUAL_STRING("Room.", out.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(b.engine->omittedThru() > 0, "the turn opened without making room");
+  TEST_ASSERT_TRUE(bodyHas(b.model.requests()[first], "earlier turns"));
+  TEST_ASSERT_TRUE(n > 10);
 }
 
 // A turn that stops on a status no rule names (an unusable call in a round that is not the last)
@@ -1908,6 +1938,7 @@ inline void run() {
   RUN_TEST(test_every_after_deliver_handler_runs_when_one_is_refused);
   RUN_TEST(test_a_receipt_survives_when_the_reply_cannot_be_sent);
   RUN_TEST(test_a_turn_that_stops_without_a_line_still_gets_one);
+  RUN_TEST(test_a_turn_opens_with_room_when_the_arena_is_nearly_full);
   RUN_TEST(test_view_fetches_a_long_argument_and_a_long_reply_back);
   RUN_TEST(test_a_long_owner_message_goes_to_the_inbox_as_a_file);
   RUN_TEST(test_signed_thinking_over_the_line_limit_keeps_the_turn);
