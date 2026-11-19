@@ -73,37 +73,36 @@ struct RefEdit {
   std::string file;
   size_t replaced = 0;
 };
+// The matches an edit replaces (empty: the edit is an error).
+std::vector<size_t> refPicks(const std::string& f, const EditRequest& e) {
+  const auto ms = matchesOf(f, e.oldText);
+  if (e.all) return ms;
+  if (!e.line) return ms.size() == 1 ? ms : std::vector<size_t>();
+  std::vector<size_t> pick;
+  for (size_t p : ms)
+    if (lineAt(f, p) == e.line && wholeLineAt(f, p, e.oldText.size())) pick.push_back(p);
+  return pick.size() == 1 ? pick : std::vector<size_t>();
+}
+// Where the bytes a replacement at p takes end: old, and for a removal of whole lines
+// the line end after it.
+size_t refTakenEnd(const std::string& f, const EditRequest& e, size_t p) {
+  size_t end = p + e.oldText.size();
+  const bool removal = e.newText.empty() && wholeLineAt(f, p, e.oldText.size()) && e.oldText.back() != '\n';
+  if (!removal || end >= f.size()) return end;
+  if (f.compare(end, 2, "\r\n") == 0) return end + 2;
+  return end + (f[end] == '\n' || (f[end] == '\r' && end + 1 == f.size()));
+}
 RefEdit reference(const std::string& f, const EditRequest& e) {
   RefEdit r;
-  const auto ms = matchesOf(f, e.oldText);
-  std::vector<size_t> pick;
-  if (e.line) {
-    for (size_t p : ms)
-      if (lineAt(f, p) == e.line && wholeLineAt(f, p, e.oldText.size())) pick.push_back(p);
-    if (pick.size() != 1) return r;
-  } else if (e.all) {
-    pick = ms;
-  } else {
-    if (ms.size() != 1) return r;
-    pick = ms;
-  }
+  const auto pick = refPicks(f, e);
   if (pick.empty()) return r;
-  std::string out;
   size_t at = 0;
   for (size_t p : pick) {
-    out += f.substr(at, p - at);
-    out += e.newText;
-    size_t end = p + e.oldText.size();
-    if (e.newText.empty() && wholeLineAt(f, p, e.oldText.size()) && e.oldText.back() != '\n') {
-      if (end < f.size() && f[end] == '\r' && end + 1 < f.size() && f[end + 1] == '\n') end += 2;
-      else if (end < f.size() && f[end] == '\n') end += 1;
-      else if (end + 1 == f.size() && f[end] == '\r') end += 1;
-    }
-    at = end;
+    r.file += f.substr(at, p - at) + e.newText;
+    at = refTakenEnd(f, e, p);
   }
-  out += f.substr(at);
+  r.file += f.substr(at);
   r.ok = true;
-  r.file = out;
   r.replaced = pick.size();
   return r;
 }

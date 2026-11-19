@@ -84,46 +84,57 @@ void listAdd(LineList& l, uint32_t line, int column = -1) {
 }  // namespace
 
 // ---- exact decimals ---------------------------------------------------------------
-NumParse parseDec3(std::string_view cell, Dec3& out) {
-  out.milli = 0;
-  const std::string_view s = trimmed(cell);
-  if (s.empty()) return NumParse::Blank;
-  size_t i = 0;
-  bool neg = false;
-  if (s[0] == '+' || s[0] == '-') neg = s[i++] == '-';
+namespace {
+
+constexpr uint64_t kDecMax = uint64_t(INT64_MAX);
+
+// The digits of a number as they come: thousandths, the fourth decimal for rounding.
+struct DecDigits {
   uint64_t v = 0;
   size_t digits = 0, frac = 0;
   bool point = false, roundUp = false, rounded = false;
-  constexpr uint64_t kMax = uint64_t(INT64_MAX);
-  for (; i < s.size(); ++i) {
-    const char c = s[i];
-    if (c == '.' && !point) {
-      point = true;
-      continue;
-    }
-    if (!isDigit(c)) return NumParse::NotNumber;
+
+  bool mulAdd(uint64_t d) {
+    if (v > (kDecMax - d) / 10) return false;
+    v = v * 10 + d;
+    return true;
+  }
+  // False: not a number.
+  bool take(char c) {
+    if (c == '.' && !point) return point = true;
+    if (!isDigit(c)) return false;
     ++digits;
     if (point && frac >= 3) {
-      if (frac == 3) roundUp = c >= '5';
+      if (frac++ == 3) roundUp = c >= '5';
       rounded = true;
-      ++frac;
-      continue;
+      return true;
     }
     frac += point;
-    if (v > (kMax - uint64_t(c - '0')) / 10) return NumParse::NotNumber;
-    v = v * 10 + uint64_t(c - '0');
+    return mulAdd(uint64_t(c - '0'));
   }
-  if (!digits) return NumParse::NotNumber;
-  for (; frac < 3; ++frac) {
-    if (v > kMax / 10) return NumParse::NotNumber;
-    v *= 10;
+  bool finish() {
+    for (; frac < 3; ++frac)
+      if (!mulAdd(0)) return false;
+    if (roundUp && v == kDecMax) return false;
+    v += roundUp;
+    return digits > 0;
   }
-  if (roundUp) {
-    if (v == kMax) return NumParse::NotNumber;
-    ++v;
-  }
-  out.milli = neg ? -int64_t(v) : int64_t(v);
-  return rounded ? NumParse::Rounded : NumParse::Ok;
+};
+
+}  // namespace
+
+NumParse parseDec3(std::string_view cell, Dec3& out) {
+  out.milli = 0;
+  std::string_view s = trimmed(cell);
+  if (s.empty()) return NumParse::Blank;
+  const bool neg = s[0] == '-';
+  if (s[0] == '+' || s[0] == '-') s.remove_prefix(1);
+  DecDigits d;
+  for (char c : s)
+    if (!d.take(c)) return NumParse::NotNumber;
+  if (!d.finish()) return NumParse::NotNumber;
+  out.milli = neg ? -int64_t(d.v) : int64_t(d.v);
+  return d.rounded ? NumParse::Rounded : NumParse::Ok;
 }
 
 std::string renderDec3(Dec3 d) {
@@ -131,7 +142,7 @@ std::string renderDec3(Dec3 d) {
   const uint64_t v = neg ? uint64_t(0) - uint64_t(d.milli) : uint64_t(d.milli);
   std::string out = neg ? "-" : "";
   out += num(v / 1000);
-  unsigned f = unsigned(v % 1000);
+  const unsigned f = unsigned(v % 1000);
   if (f) {
     char b[8];
     std::snprintf(b, sizeof b, ".%03u", f);
@@ -157,8 +168,48 @@ std::string checkCsvQuery(const CsvQuery& q) {
   return "";
 }
 
+namespace {
+
+// The fields of a record (raw bytes), decoded and trimmed, by the documented rule: fn(i,
+// value) for each; returns the field count. cell is scratch for the decoded values.
+template <class Fn>
+size_t eachField(const char* r, size_t n, char* cell, Fn&& fn) {
+  size_t count = 0, start = 0, len = 0;
+  bool inQ = false, fieldStart = true;
+  for (size_t i = 0; i < n; ++i) {
+    const char c = r[i];
+    if (inQ && c == '"') {
+      inQ = i + 1 < n && r[i + 1] == '"';
+      if (inQ) cell[start + len++] = r[i++];
+      continue;
+    }
+    if (!inQ && c == ',') {
+      fn(count++, trimmed(std::string_view(cell + start, len)));
+      start += len;
+      len = 0;
+      fieldStart = true;
+      continue;
+    }
+    if (!inQ && c == '"' && fieldStart) inQ = true;
+    else cell[start + len++] = c;
+    fieldStart = false;
+  }
+  fn(count++, trimmed(std::string_view(cell + start, len)));
+  return count;
+}
+
+std::string_view withoutBom(const char* p, size_t n) {
+  std::string_view h(p, n);
+  if (h.size() >= 3 && h.compare(0, 3, "\xEF\xBB\xBF") == 0) h.remove_prefix(3);
+  return h;
+}
+
+}  // namespace
+
 // ---- the scanner --------------------------------------------------------------------
 struct CsvScanner::Impl {
+  CsvScanResult& res;
+  std::string& err;
   CsvQuery q;
   std::string path;
   std::string_view to;
@@ -183,12 +234,235 @@ struct CsvScanner::Impl {
   DupBlock* blocks[kDupBlocks] = {};
   size_t dupCount = 0;
 
+  Impl(CsvScanResult& r, std::string& e) : res(r), err(e) {}
   ~Impl() {
     workingFree(rec);
     workingFree(cell);
     workingFree(body);
     workingFree(buckets);
     for (DupBlock* b : blocks) workingFree(b);
+  }
+
+  bool fail(std::string e) {
+    err = std::move(e);
+    return false;
+  }
+
+  // ---- bytes to records ----
+  void startRecord() {
+    inRecord = true;
+    recLine = uint32_t(physLine);
+    recLen = 0;
+    inQ = pendingQ = tooLong = false;
+    fieldStart = true;
+  }
+  bool lineEnd() {
+    ++physLine;
+    return endRecord();
+  }
+  // The quote state after c (a byte kept in the record).
+  void track(char c) {
+    if (inQ && !pendingQ) {
+      pendingQ = c == '"';
+      physLine += c == '\n';
+      return;
+    }
+    if (inQ) {
+      pendingQ = false;
+      if (c == '"') return;
+      inQ = false;
+    }
+    if (c == ',') {
+      fieldStart = true;
+      return;
+    }
+    if (c == '"' && fieldStart) inQ = true;
+    fieldStart = false;
+  }
+  bool step(char c) {
+    ++res.bytes;
+    last = c;
+    if (c == '\0') return fail(path + T::kNul + num(physLine) + ")");
+    if (!inRecord) startRecord();
+    if (tooLong) return c != '\n' || lineEnd();
+    const bool closing = inQ && pendingQ && c != '"';
+    if (c == '\n' && (!inQ || closing)) return lineEnd();
+    if (recLen >= kCsvRecordMax) {
+      tooLong = true;
+      physLine += c == '\n';
+      return true;
+    }
+    rec[recLen++] = c;
+    track(c);
+    return true;
+  }
+
+  // ---- the header ----
+  void locate(std::string_view h, int* found, int* seen) {
+    const std::string_view col = trimmed(q.column);
+    res.headerFields = eachField(h.data(), h.size(), cell, [&](size_t i, std::string_view name) {
+      for (size_t w = 0; w <= q.sum.size(); ++w) {
+        const std::string_view want = w == 0 ? col : trimmed(q.sum[w - 1]);
+        if (want.empty() || name != want) continue;
+        found[w] = int(i);
+        ++seen[w];
+      }
+    });
+  }
+  bool checkNames(std::string_view h, const int* seen) {
+    const std::string quote = quoteCut(h, kAidHeaderQuoteMax);
+    for (size_t w = 0; w <= q.sum.size(); ++w) {
+      const std::string_view name = w == 0 ? trimmed(q.column) : trimmed(q.sum[w - 1]);
+      if (name.empty()) continue;
+      if (seen[w] != 1) return fail("column " + std::string(name) + (seen[w] ? T::kTwice : T::kNotInHeader) + quote);
+    }
+    return true;
+  }
+  bool header() {
+    headerDone = true;
+    const std::string_view h = withoutBom(rec, recLen);
+    if (h.empty() || tooLong) return fail(T::kNoHeader + quoteCut(h, kAidLineOneQuoteMax) + "\"");
+    int found[kWanted], seen[kWanted] = {};
+    for (int& f : found) f = -1;
+    locate(h, found, seen);
+    if (!checkNames(h, seen)) return false;
+    keyIdx = found[0];
+    sums = q.sum.size();
+    for (size_t s = 0; s < sums; ++s) sumIdx[s] = found[s + 1];
+    // The header leads every page.
+    std::memcpy(body, "L1 ", 3);
+    std::memcpy(body + 3, h.data(), h.size());
+    bodyLen = 3 + h.size();
+    body[bodyLen++] = '\n';
+    return true;
+  }
+
+  // ---- one data record ----
+  // 1 match, 0 out of range, -1 not compared.
+  int inRange(std::string_view key) const {
+    if (key.empty()) return -1;
+    Dec3 k;
+    if (numericRange && parseDec3(key, k) <= NumParse::Rounded)
+      return (fromNum.milli <= k.milli && k.milli <= toNum.milli) ? 1 : 0;
+    const std::string_view from = q.from;
+    if (!comparable(key, from) || !comparable(key, to)) return -1;
+    return (key.substr(0, from.size()) >= from && key.substr(0, to.size()) <= to) ? 1 : 0;
+  }
+  // Put the wanted fields in want (key at 0, sums after); false: field count differs.
+  bool fields(std::string_view* want) {
+    const size_t n = eachField(rec, recLen, cell, [&](size_t i, std::string_view v) {
+      if (int(i) == keyIdx) want[0] = v;
+      for (size_t s = 0; s < sums; ++s)
+        if (int(i) == sumIdx[s]) want[s + 1] = v;
+    });
+    return n == res.headerFields;
+  }
+  bool endRecord() {
+    inRecord = false;
+    if (!tooLong && recLen && rec[recLen - 1] == '\r') --recLen;
+    if (!headerDone) return header();
+    if (!tooLong && recLen == 0) return ++res.emptyLines, true;
+    ++res.records;
+    if (tooLong) return listAdd(res.tooLong, recLine), true;
+    std::string_view want[kWanted];
+    if (!fields(want)) return listAdd(res.fieldCount, recLine), true;
+    const int r = keyIdx >= 0 ? inRange(want[0]) : 1;
+    if (r < 0) listAdd(res.notCompared, recLine);
+    if (r == 0) ++res.outOfRange;
+    if (r <= 0) return true;
+    ++res.matched;
+    show();
+    return remember() && addSums(want + 1);
+  }
+
+  void show() {
+    if (res.matched <= q.skipRows || showFull) return;
+    char lead[16];
+    const int ln = std::snprintf(lead, sizeof lead, "L%u ", unsigned(recLine));
+    const size_t need = size_t(ln) + recLen + 1;
+    if (res.shownFirst && bodyLen + need > q.limit) {
+      showFull = true;
+      return;
+    }
+    std::memcpy(body + bodyLen, lead, size_t(ln));
+    std::memcpy(body + bodyLen + size_t(ln), rec, recLen);
+    bodyLen += need;
+    body[bodyLen - 1] = '\n';
+    if (!res.shownFirst) res.shownFirst = res.matched;
+    res.shownLast = res.matched;
+  }
+
+  // ---- identical lines ----
+  DupEntry& entry(size_t i) { return blocks[i / kDupBlock]->e[i % kDupBlock]; }
+  uint16_t& groupSize(size_t i) { return blocks[i / kDupBlock]->n[i % kDupBlock]; }
+  bool tableRoom() {
+    if (!buckets) {
+      buckets = static_cast<uint16_t*>(workingAlloc(kDupBuckets * sizeof(uint16_t)));
+      if (!buckets) return false;
+      for (size_t i = 0; i < kDupBuckets; ++i) buckets[i] = kNone;
+    }
+    DupBlock*& blk = blocks[dupCount / kDupBlock];
+    if (!blk) blk = static_cast<DupBlock*>(workingAlloc(sizeof(DupBlock)));
+    return blk != nullptr;
+  }
+  bool remember() {
+    if (dupCount >= kCsvIdenticalMax) return true;
+    if (!tableRoom()) return fail(kAidNoMemory);
+    const uint64_t h = fnv64(kFnv64Basis, std::string_view(rec, recLen));
+    uint16_t& head = buckets[h % kDupBuckets];
+    const uint16_t at = uint16_t(dupCount);
+    uint16_t group = at;
+    for (uint16_t e = head; e != kNone && group == at; e = entry(e).next)
+      if (entry(e).hash == h) group = entry(e).group;
+    entry(at) = {h, recLine, head, group};
+    head = at;
+    groupSize(at) = 1;
+    if (group != at) ++groupSize(group);
+    res.identicalChecked = ++dupCount;
+    return true;
+  }
+  void collectGroups() {
+    for (size_t i = 0; i < dupCount; ++i) {
+      if (entry(i).group != i || groupSize(i) < 2) continue;
+      ++res.identicalGroups;
+      if (res.identical.size() >= kAidListMax) continue;
+      LineGroup g;
+      g.count = groupSize(i);
+      for (size_t j = i; j < dupCount && g.lines.size() < kAidGroupLinesMax; ++j)
+        if (entry(j).group == i) g.lines.push_back(entry(j).line);
+      res.identical.push_back(std::move(g));
+    }
+  }
+
+  // ---- totals ----
+  bool addSums(const std::string_view* cells) {
+    for (size_t s = 0; s < sums; ++s) {
+      CsvColumnSum& col = res.sums[s];
+      Dec3 v;
+      const NumParse p = parseDec3(cells[s], v);
+      if (p == NumParse::Blank || p == NumParse::NotNumber) {
+        ++(p == NumParse::Blank ? col.blank : col.notNumber);
+        listAdd(p == NumParse::Blank ? res.blankCells : res.notNumberCells, recLine, int(s));
+        continue;
+      }
+      if (p == NumParse::Rounded) listAdd(res.roundedCells, recLine, int(s));
+      col.rounded += p == NumParse::Rounded;
+      ++col.numbers;
+      if (__builtin_add_overflow(col.total.milli, v.milli, &col.total.milli) || col.total.milli == INT64_MIN)
+        return fail("the total of " + col.name + T::kPastRange);
+    }
+    return true;
+  }
+
+  bool finish() {
+    if (inRecord && !endRecord()) return false;
+    if (!headerDone) return fail(std::string(T::kNoHeader) + "\"");
+    const bool torn = res.bytes > 0 && last != '\n';
+    res.lines = physLine - 1 + (torn ? 1 : 0);
+    if (torn) res.tornLine = uint32_t(res.lines);
+    collectGroups();
+    res.body.assign(body, bodyLen);
+    return true;
   }
 };
 
@@ -200,7 +474,7 @@ CsvScanner::CsvScanner(const CsvQuery& q, const std::string& path) {
     err_ = kAidNoMemory;
     return;
   }
-  impl_ = new (mem) Impl();
+  impl_ = new (mem) Impl(res_, err_);
   Impl& m = *impl_;
   m.q = q;
   m.path = path;
@@ -224,328 +498,14 @@ CsvScanner::~CsvScanner() {
   workingFree(impl_);
 }
 
-namespace {
-
-// The fields of a record (raw bytes), decoded and trimmed, by the documented rule. fn(i,
-// value) for each; returns the field count. cell is scratch for the decoded values.
-template <class Fn>
-size_t eachField(const char* r, size_t n, char* cell, Fn&& fn) {
-  size_t count = 0, start = 0, len = 0;
-  bool inQ = false, fieldStart = true;
-  auto done = [&]() {
-    fn(count, trimmed(std::string_view(cell + start, len)));
-    ++count;
-    start += len;
-    len = 0;
-  };
-  for (size_t i = 0; i < n; ++i) {
-    const char c = r[i];
-    if (inQ) {
-      if (c == '"') {
-        if (i + 1 < n && r[i + 1] == '"') {
-          cell[start + len++] = '"';
-          ++i;
-          continue;
-        }
-        inQ = false;
-        continue;
-      }
-      cell[start + len++] = c;
-      continue;
-    }
-    if (c == ',') {
-      done();
-      fieldStart = true;
-      continue;
-    }
-    if (c == '"' && fieldStart) {
-      inQ = true;
-      fieldStart = false;
-      continue;
-    }
-    fieldStart = false;
-    cell[start + len++] = c;
-  }
-  done();
-  return count;
-}
-
-}  // namespace
-
 bool CsvScanner::feed(const char* data, size_t len) {
   if (!err_.empty() || !impl_) return false;
-  Impl& m = *impl_;
-  for (size_t i = 0; i < len; ++i) {
-    const char c = data[i];
-    ++res_.bytes;
-    m.last = c;
-    if (c == '\0') {
-      err_ = m.path + T::kNul + num(m.physLine) + ")";
-      return false;
-    }
-    if (!m.inRecord) {
-      m.inRecord = true;
-      m.recLine = uint32_t(m.physLine);
-      m.recLen = 0;
-      m.inQ = m.pendingQ = m.tooLong = false;
-      m.fieldStart = true;
-    }
-    if (m.tooLong) {
-      if (c == '\n') {
-        ++m.physLine;
-        if (!endRecord()) return false;
-      }
-      continue;
-    }
-    const bool closing = m.inQ && m.pendingQ && c != '"';
-    if (c == '\n' && (!m.inQ || closing)) {
-      ++m.physLine;
-      if (!endRecord()) return false;
-      continue;
-    }
-    if (m.recLen >= kCsvRecordMax) {
-      m.tooLong = true;
-      m.physLine += c == '\n';
-      continue;
-    }
-    m.rec[m.recLen++] = c;
-    if (m.inQ) {
-      if (m.pendingQ) {
-        m.pendingQ = false;
-        if (c == '"') continue;
-        m.inQ = false;
-      } else {
-        if (c == '"') m.pendingQ = true;
-        m.physLine += c == '\n';
-        continue;
-      }
-    }
-    if (c == ',') {
-      m.fieldStart = true;
-    } else {
-      if (c == '"' && m.fieldStart) m.inQ = true;
-      m.fieldStart = false;
-    }
-  }
+  for (size_t i = 0; i < len; ++i)
+    if (!impl_->step(data[i])) return false;
   return true;
 }
 
-bool CsvScanner::finish() {
-  if (!err_.empty() || !impl_) return false;
-  Impl& m = *impl_;
-  if (m.inRecord && !endRecord()) return false;
-  if (!m.headerDone) {
-    err_ = std::string(T::kNoHeader) + "\"";
-    return false;
-  }
-  res_.lines = m.physLine - 1 + (res_.bytes > 0 && m.last != '\n' ? 1 : 0);
-  if (res_.bytes > 0 && m.last != '\n') res_.tornLine = uint32_t(res_.lines);
-  collectGroups();
-  res_.body.assign(m.body, m.bodyLen);
-  return true;
-}
-
-bool CsvScanner::header() {
-  Impl& m = *impl_;
-  m.headerDone = true;
-  std::string_view h(m.rec, m.recLen);
-  if (h.size() >= 3 && h.compare(0, 3, "\xEF\xBB\xBF") == 0) h.remove_prefix(3);
-  if (h.empty() || m.tooLong) {
-    err_ = T::kNoHeader + quoteCut(h, kAidLineOneQuoteMax) + "\"";
-    return false;
-  }
-  const std::string_view col = trimmed(m.q.column);
-  int found[kWanted];
-  int seen[kWanted] = {};
-  for (int& f : found) f = -1;
-  const size_t n = eachField(h.data(), h.size(), m.cell, [&](size_t i, std::string_view name) {
-    if (!col.empty() && name == col) {
-      found[0] = int(i);
-      ++seen[0];
-    }
-    for (size_t s = 0; s < m.q.sum.size(); ++s)
-      if (name == trimmed(m.q.sum[s])) {
-        found[s + 1] = int(i);
-        ++seen[s + 1];
-      }
-  });
-  res_.headerFields = n;
-  const std::string quote = quoteCut(h, kAidHeaderQuoteMax);
-  for (size_t w = 0; w <= m.q.sum.size(); ++w) {
-    const std::string_view name = w == 0 ? col : trimmed(m.q.sum[w - 1]);
-    if (w == 0 && col.empty()) continue;
-    if (seen[w] == 0) err_ = "column " + std::string(name) + T::kNotInHeader + quote;
-    if (seen[w] > 1) err_ = "column " + std::string(name) + T::kTwice + quote;
-    if (!err_.empty()) return false;
-  }
-  m.keyIdx = found[0];
-  m.sums = m.q.sum.size();
-  for (size_t s = 0; s < m.sums; ++s) m.sumIdx[s] = found[s + 1];
-  // The header leads every page.
-  const std::string lead = "L1 ";
-  std::memcpy(m.body, lead.data(), lead.size());
-  std::memcpy(m.body + lead.size(), h.data(), h.size());
-  m.bodyLen = lead.size() + h.size();
-  m.body[m.bodyLen++] = '\n';
-  return true;
-}
-
-bool CsvScanner::endRecord() {
-  Impl& m = *impl_;
-  m.inRecord = false;
-  if (!m.tooLong && m.recLen && m.rec[m.recLen - 1] == '\r') --m.recLen;
-  if (!m.headerDone) return header();
-  if (!m.tooLong && m.recLen == 0) {
-    ++res_.emptyLines;
-    return true;
-  }
-  ++res_.records;
-  if (m.tooLong) {
-    listAdd(res_.tooLong, m.recLine);
-    return true;
-  }
-  // The wanted fields: the key at slot 0, the sums after it.
-  std::string_view want[kWanted];
-  const size_t n = eachField(m.rec, m.recLen, m.cell, [&](size_t i, std::string_view v) {
-    if (int(i) == m.keyIdx) want[0] = v;
-    for (size_t s = 0; s < m.sums; ++s)
-      if (int(i) == m.sumIdx[s]) want[s + 1] = v;
-  });
-  if (n != res_.headerFields) {
-    listAdd(res_.fieldCount, m.recLine);
-    return true;
-  }
-  if (m.keyIdx >= 0) {
-    const int r = inRange(want[0]);
-    if (r < 0) {
-      listAdd(res_.notCompared, m.recLine);
-      return true;
-    }
-    if (r == 0) {
-      ++res_.outOfRange;
-      return true;
-    }
-  }
-  ++res_.matched;
-  show();
-  if (!remember()) return false;
-  return addSums(want + 1);
-}
-
-int CsvScanner::inRange(std::string_view key) const {
-  const Impl& m = *impl_;
-  if (key.empty()) return -1;
-  Dec3 k;
-  if (m.numericRange && parseDec3(key, k) <= NumParse::Rounded)
-    return (m.fromNum.milli <= k.milli && k.milli <= m.toNum.milli) ? 1 : 0;
-  const std::string_view from = m.q.from;
-  if (!comparable(key, from) || !comparable(key, m.to)) return -1;
-  return (key.substr(0, from.size()) >= from && key.substr(0, m.to.size()) <= m.to) ? 1 : 0;
-}
-
-void CsvScanner::show() {
-  Impl& m = *impl_;
-  if (res_.matched <= m.q.skipRows || m.showFull) return;
-  char lead[16];
-  const int ln = std::snprintf(lead, sizeof lead, "L%u ", unsigned(m.recLine));
-  const size_t need = size_t(ln) + m.recLen + 1;
-  if (res_.shownFirst && m.bodyLen + need > m.q.limit) {
-    m.showFull = true;
-    return;
-  }
-  std::memcpy(m.body + m.bodyLen, lead, size_t(ln));
-  std::memcpy(m.body + m.bodyLen + size_t(ln), m.rec, m.recLen);
-  m.bodyLen += need;
-  m.body[m.bodyLen - 1] = '\n';
-  if (!res_.shownFirst) res_.shownFirst = res_.matched;
-  res_.shownLast = res_.matched;
-}
-
-bool CsvScanner::remember() {
-  Impl& m = *impl_;
-  if (m.dupCount >= kCsvIdenticalMax) return true;
-  if (!m.buckets) {
-    m.buckets = static_cast<uint16_t*>(workingAlloc(kDupBuckets * sizeof(uint16_t)));
-    if (!m.buckets) {
-      err_ = kAidNoMemory;
-      return false;
-    }
-    for (size_t i = 0; i < kDupBuckets; ++i) m.buckets[i] = kNone;
-  }
-  const size_t at = m.dupCount;
-  DupBlock*& blk = m.blocks[at / kDupBlock];
-  if (!blk) {
-    blk = static_cast<DupBlock*>(workingAlloc(sizeof(DupBlock)));
-    if (!blk) {
-      err_ = kAidNoMemory;
-      return false;
-    }
-  }
-  const uint64_t h = fnv64(kFnv64Basis, std::string_view(m.rec, m.recLen));
-  uint16_t& head = m.buckets[h % kDupBuckets];
-  uint16_t group = uint16_t(at);
-  for (uint16_t e = head; e != kNone;) {
-    const DupEntry& d = m.blocks[e / kDupBlock]->e[e % kDupBlock];
-    if (d.hash == h) {
-      group = d.group;
-      break;
-    }
-    e = d.next;
-  }
-  DupEntry& me = blk->e[at % kDupBlock];
-  me = {h, m.recLine, head, group};
-  head = uint16_t(at);
-  blk->n[at % kDupBlock] = 1;
-  if (group != at) ++m.blocks[group / kDupBlock]->n[group % kDupBlock];
-  ++m.dupCount;
-  res_.identicalChecked = m.dupCount;
-  return true;
-}
-
-bool CsvScanner::addSums(const std::string_view* cells) {
-  Impl& m = *impl_;
-  for (size_t s = 0; s < m.sums; ++s) {
-    CsvColumnSum& col = res_.sums[s];
-    Dec3 v;
-    const NumParse p = parseDec3(cells[s], v);
-    if (p == NumParse::Blank) {
-      ++col.blank;
-      listAdd(res_.blankCells, m.recLine, int(s));
-      continue;
-    }
-    if (p == NumParse::NotNumber) {
-      ++col.notNumber;
-      listAdd(res_.notNumberCells, m.recLine, int(s));
-      continue;
-    }
-    if (p == NumParse::Rounded) {
-      ++col.rounded;
-      listAdd(res_.roundedCells, m.recLine, int(s));
-    }
-    ++col.numbers;
-    if (__builtin_add_overflow(col.total.milli, v.milli, &col.total.milli) || col.total.milli == INT64_MIN) {
-      err_ = "the total of " + col.name + T::kPastRange;
-      return false;
-    }
-  }
-  return true;
-}
-
-void CsvScanner::collectGroups() {
-  Impl& m = *impl_;
-  auto entry = [&](size_t i) -> DupEntry& { return m.blocks[i / kDupBlock]->e[i % kDupBlock]; };
-  auto size = [&](size_t i) { return m.blocks[i / kDupBlock]->n[i % kDupBlock]; };
-  for (size_t i = 0; i < m.dupCount; ++i) {
-    if (entry(i).group != i || size(i) < 2) continue;
-    ++res_.identicalGroups;
-    if (res_.identical.size() >= kAidListMax) continue;
-    LineGroup g;
-    g.count = size(i);
-    for (size_t j = i; j < m.dupCount && g.lines.size() < kAidGroupLinesMax; ++j)
-      if (entry(j).group == i) g.lines.push_back(entry(j).line);
-    res_.identical.push_back(std::move(g));
-  }
-}
+bool CsvScanner::finish() { return err_.empty() && impl_ && impl_->finish(); }
 
 // ---- the driver ---------------------------------------------------------------------
 CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, const CsvQuery& q) {
@@ -614,29 +574,34 @@ std::string renderLines(const LineList& l) {
   return out;
 }
 
-std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r) {
+namespace {
+
+// The row counts: rows, the range, what is shown, the sums.
+std::string tailCounts(const CsvQuery& q, const CsvScanResult& r) {
   std::string out = "rows " + num(r.matched) + " of " + num(r.records);
-  const std::string& to = q.to.empty() ? q.from : q.to;
-  if (!q.column.empty()) out += " where " + q.column + " " + q.from + ".." + to;
+  if (!q.column.empty()) out += " where " + q.column + " " + q.from + ".." + (q.to.empty() ? q.from : q.to);
   if (!r.shownFirst && r.matched) out += "; shown none";
   else if (r.shownFirst > 1 || r.shownLast < r.matched) out += "; shown " + num(r.shownFirst) + "-" + num(r.shownLast);
-  if (!r.sums.empty()) {
-    out += "; sum";
-    for (const auto& s : r.sums) out += " " + s.name + "=" + renderDec3(s.total);
-  }
-  if (r.blankCells.count) out += "; blank " + num(r.blankCells.count) + " (" + cellList(r.blankCells, r) + ")";
-  if (r.notNumberCells.count)
-    out += "; not a number " + num(r.notNumberCells.count) + " (" + cellList(r.notNumberCells, r) + ")";
-  if (r.roundedCells.count)
-    out += "; rounded to 3 decimals " + num(r.roundedCells.count) + " (" + cellList(r.roundedCells, r) + ")";
-  if (r.notCompared.count)
-    out += "; not compared " + num(r.notCompared.count) + " (" + renderLines(r.notCompared) + ": " + q.column +
-           " blank or not like " + q.from + ")";
-  if (r.fieldCount.count)
-    out += "; skipped " + num(r.fieldCount.count) + " (" + renderLines(r.fieldCount) +
-           ": field count is not the header's " + num(r.headerFields) + ")";
-  if (r.tooLong.count)
-    out += "; too long " + num(r.tooLong.count) + " (" + renderLines(r.tooLong) + ": over " + num(kCsvRecordMax) + " B)";
+  if (r.sums.empty()) return out;
+  out += "; sum";
+  for (const auto& s : r.sums) out += " " + s.name + "=" + renderDec3(s.total);
+  return out;
+}
+
+std::string clause(const char* what, const LineList& l, const std::string& list) {
+  return l.count ? std::string("; ") + what + " " + num(l.count) + " (" + list + ")" : std::string();
+}
+
+// Every row or cell that is not plainly in the total, by reason.
+std::string tailFacts(const CsvQuery& q, const CsvScanResult& r) {
+  std::string out = clause("blank", r.blankCells, cellList(r.blankCells, r));
+  out += clause("not a number", r.notNumberCells, cellList(r.notNumberCells, r));
+  out += clause("rounded to 3 decimals", r.roundedCells, cellList(r.roundedCells, r));
+  out += clause("not compared", r.notCompared,
+                renderLines(r.notCompared) + ": " + q.column + " blank or not like " + q.from);
+  out += clause("skipped", r.fieldCount,
+                renderLines(r.fieldCount) + ": field count is not the header's " + num(r.headerFields));
+  out += clause("too long", r.tooLong, renderLines(r.tooLong) + ": over " + num(kCsvRecordMax) + " B");
   if (r.emptyLines) out += "; empty lines " + num(r.emptyLines);
   if (r.identicalGroups)
     out += "; identical lines " + num(r.identicalGroups) + (r.identicalGroups == 1 ? " group (" : " groups (") +
@@ -646,6 +611,10 @@ std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r) {
   if (r.tornLine) out += "; last line " + num(r.tornLine) + " has no newline (a write may have been cut short)";
   return out;
 }
+
+}  // namespace
+
+std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r) { return tailCounts(q, r) + tailFacts(q, r); }
 
 std::string renderCsvRead(const CsvQuery& q, const CsvScanResult& r) {
   std::string out = "\n" + r.body + renderCsvTail(q, r);

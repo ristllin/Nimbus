@@ -189,13 +189,6 @@ class CsvScanner {
 
  private:
   struct Impl;
-  bool header();
-  bool endRecord();
-  int inRange(std::string_view key) const;
-  void show();
-  bool remember();
-  bool addSums(const std::string_view* cells);
-  void collectGroups();
   Impl* impl_ = nullptr;
   std::string err_;
   CsvScanResult res_;

@@ -49,26 +49,24 @@ std::string trim(const std::string& s) {
 
 // A number per the documented grammar, as exact thousandths with half-away rounding;
 // false when it is not one. rounded: a fourth decimal or more.
-bool refNumber(const std::string& raw, i128& milli, bool& rounded) {
-  const std::string s = trim(raw);
+bool refSplit(const std::string& s, bool& neg, std::string& ip, std::string& fp) {
   size_t i = 0;
-  bool neg = false;
+  neg = false;
   if (i < s.size() && (s[i] == '+' || s[i] == '-')) neg = s[i++] == '-';
-  std::string ip, fp;
   while (i < s.size() && isdigit((unsigned char)s[i])) ip += s[i++];
-  if (i < s.size() && s[i] == '.') {
-    ++i;
-    while (i < s.size() && isdigit((unsigned char)s[i])) fp += s[i++];
-  }
-  if (i != s.size() || (ip.empty() && fp.empty())) return false;
+  if (i < s.size() && s[i] == '.')
+    for (++i; i < s.size() && isdigit((unsigned char)s[i]);) fp += s[i++];
+  return i == s.size() && !(ip.empty() && fp.empty());
+}
+bool refNumber(const std::string& raw, i128& milli, bool& rounded) {
+  bool neg;
+  std::string ip, fp;
+  if (!refSplit(trim(raw), neg, ip, fp)) return false;
   i128 v = 0;
-  for (char c : ip) {
-    v = v * 10 + (c - '0');
-    if (v > (i128)INT64_MAX) return false;
-  }
+  for (char c : ip) v = std::min<i128>(v * 10 + (c - '0'), (i128)INT64_MAX + 1);
   for (size_t k = 0; k < 3; ++k) v = v * 10 + (k < fp.size() ? fp[k] - '0' : 0);
   rounded = fp.size() > 3;
-  if (rounded && fp[3] >= '5') v += 1;
+  v += rounded && fp[3] >= '5';
   if (v > (i128)INT64_MAX) return false;
   milli = neg ? -v : v;
   return true;
@@ -100,58 +98,60 @@ struct RefRecord {
 // Records by the documented rule: a quote opens a quoted field only at a field's start;
 // inside, "" is a quote and " closes; a line end outside quotes ends the record; a record
 // longer than kCsvRecordMax ends at the next line end, quotes or not.
-std::vector<RefRecord> refRecords(const std::string& f, uint64_t& physLines, size_t& emptyLines) {
-  std::vector<RefRecord> out;
-  physLines = 0;
-  emptyLines = 0;
-  for (char c : f) physLines += c == '\n';
-  if (!f.empty() && f.back() != '\n') ++physLines;
+struct RefSplitter {
+  const std::string& f;
   size_t i = 0;
   uint32_t line = 1;
-  while (i < f.size()) {
+  bool inQ = false, fieldStart = true, pendingQ = false;
+
+  // Quote state after a kept byte c.
+  void keep(char c) {
+    if (inQ && !pendingQ) {
+      pendingQ = c == '"';
+      line += c == '\n';
+      return;
+    }
+    if (inQ) {
+      pendingQ = false;
+      if (c == '"') return;
+      inQ = false;
+    }
+    if (c == ',') { fieldStart = true; return; }
+    if (c == '"' && fieldStart) inQ = true;
+    fieldStart = false;
+  }
+  // The next record; i moves past its line end.
+  RefRecord next() {
     RefRecord r;
     r.line = line;
-    bool inQ = false, fieldStart = true, pendingQ = false;
-    size_t start = i;
-    bool ended = false;
+    inQ = pendingQ = false;
+    fieldStart = true;
+    const size_t start = i;
+    size_t end = f.size();
     for (; i < f.size(); ++i) {
       const char c = f[i];
-      if (r.tooLong) {
-        if (c == '\n') { ++line; ++i; ended = true; break; }
-        continue;
-      }
-      const bool closing = inQ && pendingQ && c != '"';
-      if (c == '\n' && (!inQ || closing)) { ++line; ++i; ended = true; break; }
-      if (i - start >= kCsvRecordMax) {   // one byte past the longest record kept
-        r.tooLong = true;
-        if (c == '\n') ++line;
-        continue;
-      }
-      if (inQ) {
-        if (pendingQ) {
-          pendingQ = false;
-          if (c == '"') continue;
-          inQ = false;
-        } else {
-          if (c == '"') { pendingQ = true; continue; }
-          if (c == '\n') ++line;
-          continue;
-        }
-      }
-      if (c == ',') { fieldStart = true; continue; }
-      if (c == '"' && fieldStart) { inQ = true; fieldStart = false; continue; }
-      fieldStart = false;
+      const bool ends = c == '\n' && (r.tooLong || !inQ || (pendingQ && c != '"'));
+      if (ends) { end = i++; ++line; break; }
+      if (r.tooLong) continue;
+      if (i - start >= kCsvRecordMax) { r.tooLong = true; line += c == '\n'; continue; }
+      keep(c);
     }
-    size_t end = ended ? i - 1 : i;
-    std::string raw = f.substr(start, end - start);
-    if (!raw.empty() && raw.back() == '\r') raw.pop_back();
-    r.raw = raw;
-    if (raw.empty() && !r.tooLong) {
-      if (!out.empty()) ++emptyLines;
-      else out.push_back(r);   // an empty line 1 is the header slot
-      continue;
-    }
-    out.push_back(r);
+    r.raw = f.substr(start, end - start);
+    if (!r.raw.empty() && r.raw.back() == '\r') r.raw.pop_back();
+    return r;
+  }
+};
+
+std::vector<RefRecord> refRecords(const std::string& f, uint64_t& physLines, size_t& emptyLines) {
+  std::vector<RefRecord> out;
+  physLines = std::count(f.begin(), f.end(), '\n') + ((!f.empty() && f.back() != '\n') ? 1 : 0);
+  emptyLines = 0;
+  RefSplitter sp{f};
+  while (sp.i < f.size()) {
+    RefRecord r = sp.next();
+    const bool empty = r.raw.empty() && !r.tooLong;
+    if (empty && !out.empty()) ++emptyLines;
+    else out.push_back(r);   // an empty line 1 is the header slot
   }
   return out;
 }
@@ -218,13 +218,58 @@ struct Ref {
   uint32_t torn = 0;
 };
 
+// The header's index of name: -1 missing, -2 twice.
+int refIndex(const std::vector<std::string>& names, const std::string& n) {
+  int at = -1;
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (names[i] != n) continue;
+    if (at >= 0) return -2;
+    at = int(i);
+  }
+  return at;
+}
+
+// Resolve the key and sum columns; false with ref's error set.
+bool refColumns(Ref& ref, const std::vector<std::string>& names, const CsvQuery& q, int& key, std::vector<int>& cols) {
+  key = q.column.empty() ? -1 : refIndex(names, q.column);
+  if (!q.column.empty() && key < 0) { ref.errorStart = "column " + q.column + " is"; return ref.ok = false; }
+  for (const auto& s : q.sum) {
+    cols.push_back(refIndex(names, s));
+    if (cols.back() < 0) { ref.errorStart = "column " + s + " is"; return ref.ok = false; }
+  }
+  return true;
+}
+
+void refCell(RefSum& s, const std::string& cell) {
+  i128 v;
+  bool rounded = false;
+  if (cell.empty()) ++s.blank;
+  else if (!refNumber(cell, v, rounded)) ++s.notNumber;
+  else { s.total += v; ++s.numbers; s.rounded += rounded; }
+}
+
+// One data record into its bucket.
+void refRecord(Ref& ref, const RefRecord& r, size_t nfields, int key, const std::vector<int>& cols, const CsvQuery& q) {
+  ++ref.records;
+  if (r.tooLong) { ++ref.tooLong; return; }
+  const auto fs = refFields(r.raw);
+  if (fs.size() != nfields) { ++ref.fieldCount; return; }
+  const int m = key >= 0 ? refRange(fs[size_t(key)], q.from, q.to.empty() ? q.from : q.to) : 1;
+  if (m < 0) ++ref.notCompared;
+  if (m == 0) ++ref.outOfRange;
+  if (m <= 0) return;
+  ++ref.matched;
+  ref.matchedLines.push_back(r.line);
+  ref.matchedRaw.push_back(r.raw);
+  ref.groups[r.raw].push_back(r.line);
+  for (size_t c = 0; c < cols.size(); ++c) refCell(ref.sums[c], fs[size_t(cols[c])]);
+}
+
 Ref reference(const std::string& f, const CsvQuery& q) {
   Ref ref;
-  size_t empty = 0;
-  auto recs = refRecords(f, ref.lines, empty);
-  ref.empty = empty;
+  auto recs = refRecords(f, ref.lines, ref.empty);
   if (!f.empty() && f.back() != '\n') ref.torn = uint32_t(ref.lines);
-  if (recs.empty() || recs[0].raw.empty() || recs[0].tooLong || recs[0].line != 1) {
+  if (recs.empty() || recs[0].raw.empty() || recs[0].tooLong) {
     ref.ok = false;
     ref.errorStart = "sum and column need a CSV header line";
     return ref;
@@ -232,52 +277,11 @@ Ref reference(const std::string& f, const CsvQuery& q) {
   std::string hdr = recs[0].raw;
   if (hdr.compare(0, 3, "\xEF\xBB\xBF") == 0) hdr = hdr.substr(3);
   const auto names = refFields(hdr);
-  auto indexOf = [&](const std::string& n) {
-    int at = -1;
-    for (size_t i = 0; i < names.size(); ++i)
-      if (names[i] == n) { if (at >= 0) return -2; at = int(i); }
-    return at;
-  };
   int key = -1;
-  if (!q.column.empty()) {
-    key = indexOf(q.column);
-    if (key < 0) { ref.ok = false; ref.errorStart = "column " + q.column + " is"; return ref; }
-  }
   std::vector<int> cols;
-  for (const auto& s : q.sum) {
-    int c = indexOf(s);
-    if (c < 0) { ref.ok = false; ref.errorStart = "column " + s + " is"; return ref; }
-    cols.push_back(c);
-  }
+  if (!refColumns(ref, names, q, key, cols)) return ref;
   ref.sums.resize(cols.size());
-  const std::string to = q.to.empty() ? q.from : q.to;
-  for (size_t i = 1; i < recs.size(); ++i) {
-    const auto& r = recs[i];
-    ++ref.records;
-    if (r.tooLong) { ++ref.tooLong; continue; }
-    const auto fs = refFields(r.raw);
-    if (fs.size() != names.size()) { ++ref.fieldCount; continue; }
-    if (key >= 0) {
-      const int m = refRange(fs[size_t(key)], q.from, to);
-      if (m < 0) { ++ref.notCompared; continue; }
-      if (m == 0) { ++ref.outOfRange; continue; }
-    }
-    ++ref.matched;
-    ref.matchedLines.push_back(r.line);
-    ref.matchedRaw.push_back(r.raw);
-    ref.groups[r.raw].push_back(r.line);
-    for (size_t c = 0; c < cols.size(); ++c) {
-      const std::string cell = fs[size_t(cols[c])];
-      RefSum& s = ref.sums[c];
-      if (cell.empty()) { ++s.blank; continue; }
-      i128 v;
-      bool rounded = false;
-      if (!refNumber(cell, v, rounded)) { ++s.notNumber; continue; }
-      s.total += v;
-      ++s.numbers;
-      s.rounded += rounded;
-    }
-  }
+  for (size_t i = 1; i < recs.size(); ++i) refRecord(ref, recs[i], names.size(), key, cols, q);
   for (const auto& s : ref.sums)
     if (s.total > (i128)INT64_MAX || s.total < -(i128)INT64_MAX) { ref.ok = false; ref.errorStart = "the total of"; }
   return ref;

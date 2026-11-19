@@ -41,47 +41,39 @@ std::string noCr(std::string s) {
   return s;
 }
 
+// The nearest earlier line identical to window[me-1]: the appended ones, then the
+// file's last 64 lines. 0 for none.
+size_t refNearest(const std::vector<std::string>& window, size_t me, size_t fileLines) {
+  const std::string& row = window[me - 1];
+  for (size_t lineNo = me - 1; lineNo >= 1; --lineNo) {
+    if (lineNo <= fileLines && lineNo + kAppendTailLines <= fileLines) break;
+    if (window[lineNo - 1] == row) return lineNo;
+  }
+  return 0;
+}
+
+std::string refFact(bool known, bool single, size_t me, size_t hit, size_t k) {
+  const std::string where = known ? "line " + std::to_string(hit) : "the line " + std::to_string(me - hit) + " above it";
+  if (single) return "identical to " + where;
+  return (known ? "line " + std::to_string(me) : "appended line " + std::to_string(k + 1)) + " is identical to " + where;
+}
+
 // The reference note for a whole file and a text.
 std::string referenceNote(const std::string& file, const std::string& text, bool linesKnown) {
-  std::string note;
-  const bool fence = !file.empty() && file.back() != '\n';
-  if (fence) note += "; added a newline before the text";
-  std::vector<std::string> lines = splitLines(file);
-  const size_t fileLines = lines.size();
-  for (auto& l : lines) l = noCr(l);
+  std::string note = (!file.empty() && file.back() != '\n') ? "; added a newline before the text" : "";
+  std::vector<std::string> window = splitLines(file);
+  const size_t fileLines = window.size();
+  for (auto& l : window) l = noCr(l);
   const auto add = splitLines(text);
   std::vector<std::string> facts;
-  size_t more = 0;
-  std::vector<std::string> window = lines;   // with each appended line added as it lands
-  const size_t firstNew = fileLines + 1;
   for (size_t k = 0; k < add.size(); ++k) {
-    const std::string row = noCr(add[k]);
-    const size_t me = firstNew + k;
-    if (!row.empty()) {
-      // nearest identical among the file's last 64 lines and the appended ones before it
-      size_t hit = 0;
-      for (size_t j = window.size(); j-- > 0;) {
-        const size_t lineNo = j + 1;
-        if (lineNo + kAppendTailLines <= fileLines && lineNo <= fileLines) break;
-        if (window[j] == row) { hit = lineNo; break; }
-      }
-      if (hit) {
-        std::string where = linesKnown ? "line " + std::to_string(hit) : "the line " + std::to_string(me - hit) + " above it";
-        if (add.size() == 1) facts.push_back("identical to " + where);
-        else {
-          const std::string who = linesKnown ? "line " + std::to_string(me) : "appended line " + std::to_string(k + 1);
-          facts.push_back(who + " is identical to " + where);
-        }
-      }
-    }
-    window.push_back(row);
+    window.push_back(noCr(add[k]));
+    const size_t me = fileLines + 1 + k;
+    const size_t hit = window.back().empty() ? 0 : refNearest(window, me, fileLines);
+    if (hit) facts.push_back(refFact(linesKnown, add.size() == 1, me, hit, k));
   }
-  if (!facts.empty()) {
-    note += "; ";
-    for (size_t i = 0; i < facts.size() && i < kAidListMax; ++i) note += (i ? ", " : "") + facts[i];
-    if (facts.size() > kAidListMax) note += " +" + std::to_string(facts.size() - kAidListMax);
-  }
-  (void)more;
+  for (size_t i = 0; i < facts.size() && i < kAidListMax; ++i) note += (i ? ", " : "; ") + facts[i];
+  if (facts.size() > kAidListMax) note += " +" + std::to_string(facts.size() - kAidListMax);
   return note;
 }
 
