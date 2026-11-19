@@ -417,6 +417,42 @@ void budgetTest(String arg) {
   reply(String("BUDGET ") + n);
 }
 
+// AIDREAD <project> <name> <column> <from> <to> <sum>: files.read's CSV form through the tool
+// dispatcher on this task (not the web task), so the scan gives the call's card lock up and
+// takes it per 4 KB read; prints the reply's tail line and the longest hold of one read
+// (RB-REC4's bench row: under 150 ms during a filtered read of a 300 KB year file).
+void aidReadCmd(const String& args) {
+  char project[33], name[65], column[33], from[24], to[24], sum[65];
+  if (sscanf(args.c_str(), "%32s %64s %32s %23s %23s %64s", project, name, column, from, to, sum) != 6) {
+    reply("AIDREAD usage: AIDREAD <project> <name> <column> <from> <to> <sum>");
+    return;
+  }
+  JsonDocument d;
+  d["jsonrpc"] = "2.0";
+  d["id"] = 1;
+  d["method"] = "tools/call";
+  d["params"]["name"] = "files.read";
+  JsonObject a = d["params"]["arguments"].to<JsonObject>();
+  a["project"] = project;
+  a["name"] = name;
+  a["column"] = column;
+  a["from"] = from;
+  a["to"] = to;
+  a["sum"] = sum;
+  std::string req;
+  serializeJson(d, req);
+  const nimbus::orch::Principal owner = nimbus::orch::principalForRole("serial", nimbus::orch::Role::Admin);
+  const uint32_t t0 = millis();
+  const std::string resp = agent::memory::handleMcp(req, owner);
+  const uint32_t ms = millis() - t0;
+  uint32_t reads = 0, longestUs = 0;
+  agent::files::lastScanStats(reads, longestUs);
+  const size_t at = resp.find("rows ");
+  Serial.printf("AIDREAD ms=%lu reads=%u longest_hold_us=%u resp_bytes=%u\n", (unsigned long)ms, (unsigned)reads,
+                (unsigned)longestUs, (unsigned)resp.size());
+  Serial.printf("AIDREAD tail %s\n", at == std::string::npos ? resp.substr(0, 200).c_str() : resp.substr(at, 240).c_str());
+}
+
 // TOOLS?: the tool manifest an owner turn's head gets (the registry's specs for an admin
 // chat, minus the tools the loop never advertises, under their wire names), one JSON
 // object per line between TOOLS BEGIN and TOOLS END, chunked for the shared serial.
@@ -2655,6 +2691,7 @@ void dispatch(String line) {
   }
   if (line.startsWith("LINKX ")) { linkTimeCmd(line.substring(6)); return; }
   if (line.startsWith("CARDTIME ")) { cardTimeCmd(line.substring(9)); return; }
+  if (line.startsWith("AIDREAD ")) { aidReadCmd(line.substring(8)); return; }
   if (line == "LOGMS on" || line == "LOGMS off") {
     nimbus::linkTime::linkTimeLogMs = (line == "LOGMS on");
     Serial.printf("LOGMS %s now=%lu\n", nimbus::linkTime::linkTimeLogMs ? "on" : "off", (unsigned long)millis());

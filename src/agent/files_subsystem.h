@@ -179,6 +179,9 @@ std::string persistSubResult(const std::string& project, const std::string& name
                              const std::string& tag, const std::string& text,
                              const std::string& ownerNs);
 bool removeFile(const std::string& project, const std::string& name);
+// The last files.read scan (the CSV form or the day total): its 4 KB reads and the longest
+// card-lock hold of one read, in microseconds (RB-REC4's bench row reads it: AIDREAD).
+void lastScanStats(uint32_t& reads, uint32_t& longestUs);
 // Delete an entire project (folder) and its files. Returns the count removed,
 // or -1 if the project is unknown/empty. Owner surface only (web Danger action).
 int  removeProject(const std::string& project);

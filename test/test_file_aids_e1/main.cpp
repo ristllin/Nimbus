@@ -156,10 +156,41 @@ static void test_files_edit_keeps_its_default_and_picks_by_line() {
   TEST_ASSERT_EQUAL_STRING("find is not in log/x.txt (38 B)", reply.c_str());
 }
 
+// The day a files.read {sum} with no date totals is the running day (RB-REC5's day_starts): at
+// 00:30 with the day starting at 04:00 it is still yesterday; with 00:00 it is today. An explicit
+// date is taken as given. Three kinds of file, each with rows on both days.
+static void test_the_implicit_day_is_the_running_day() {
+  const uint64_t at0030 = 1795134600;   // 2026-11-20 00:30 UTC
+  TEST_ASSERT_EQUAL_STRING("2026-11-19", aids::e1::runningDate(at0030, 0, 240).c_str());
+  TEST_ASSERT_EQUAL_STRING("2026-11-20", aids::e1::runningDate(at0030, 0, 0).c_str());
+  TEST_ASSERT_EQUAL_STRING("2026-11-19", aids::e1::runningDate(at0030 + 3600, 60, 240).c_str());   // 02:30 at +01:00
+  TEST_ASSERT_EQUAL_STRING("2026-11-20", aids::e1::runningDate(at0030 + 4 * 3600, 0, 240).c_str());   // 04:30
+  TEST_ASSERT_EQUAL_STRING("", aids::e1::runningDate(1000, 0, 240).c_str());                          // no clock
+  const struct {
+    const char* header;
+    const char* col;
+    const char* late;   // logged at 00:20 on the 20th: the 19th's running day
+  } files[] = {{"date,occasion,item,grams,kcal", "kcal", "2026-11-19,late,toast,40,120"},
+               {"date,when,note,amount,tip", "amount", "2026-11-19,late,taxi,18.50,2"},
+               {"date,session,exercise,reps,kg", "kg", "2026-11-19,late,squat,5,100"}};
+  for (const auto& f : files) {
+    MemCard card;
+    card.file = std::string(f.header) + "\n2026-11-19,a,x,1,10\n" + f.late + "\n2026-11-20,b,y,1,7\n";
+    for (uint16_t start : {uint16_t(240), uint16_t(0)}) {
+      const std::string day = aids::e1::runningDate(at0030, 0, start);
+      const std::string line = aids::e1::dayTotal(card, card.file.size(), "log/x.csv", f.col, day);
+      const bool yesterday = start == 240;
+      TEST_ASSERT_TRUE_MESSAGE(line.find(yesterday ? "rows 2 of 3 where date 2026-11-19..2026-11-19" : "rows 1 of 3 where date 2026-11-20..2026-11-20") == 0,
+                               line.c_str());
+    }
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_shared_fixtures_match_the_golden_transcript);
   RUN_TEST(test_old_and_new_shape_give_the_same_day_total);
   RUN_TEST(test_files_edit_keeps_its_default_and_picks_by_line);
+  RUN_TEST(test_the_implicit_day_is_the_running_day);
   return UNITY_END();
 }

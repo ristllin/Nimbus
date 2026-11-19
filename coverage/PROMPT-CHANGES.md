@@ -723,8 +723,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: tool_results
 - kind: spec
-- bytes: 34654 -> 34779
-- sha8: 53933cdf -> cbb1ae9f
+- bytes: 34654 -> 34788
+- sha8: 53933cdf -> 02b62617
 - lane: RB-REC4
 - prd: section 4 (the file tools), as amended by rulings 42, 47, 49 and 62
 - why: lib/core/src/orch_file_aids_e1.cpp joins E1_SOURCES (the day total's "no day total" lines, the argument errors, the keyed-CSV report's history line moved from files_subsystem.cpp); files_subsystem.cpp loses the old day-total and edit-pass texts (the over-1 MB day total, the short-write and row-too-long lines) and gains the line argument's error. The totals' tail and the edit's line facts are the shared core's (e2 catalog, PC-0032 and PC-0036). Planned work, not a fix.
@@ -733,8 +733,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 4765 -> 4772
-- sha8: bda3f014 -> 0f827e9f
+- bytes: 4765 -> 4779
+- sha8: bda3f014 -> 2d556baa
 - lane: RB-REC4
 - prd: section 4 (the plain file tools), as amended by rulings 42 and 47
 - why: lib/core/src/orch_file_aids.cpp and orch_csv_sum.cpp: the edit's texts take the argument's name ("find" on the old engine, "old" on read_file's engine), renderEditLines gives the old engine's reply its line facts ("; at line 3; 8 lines"), and the totals-only tail (engine 1's day total) leaves out the shown clause. Planned work, not a fix.

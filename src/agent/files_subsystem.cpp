@@ -780,6 +780,15 @@ struct SdSource : nimbus::orch::aids::AidSource {
   }
 };
 
+// The last scan's figures, for lastScanStats (the bench row).
+static uint32_t g_scanReads = 0, g_scanLongestUs = 0;
+static void noteScan(const char* what, const std::string& project, const std::string& name, const SdSource& src) {
+  g_scanReads = src.reads;
+  g_scanLongestUs = src.longestUs;
+  alogf("files: %s %s/%s in %u reads, longest hold %u ms", what, project.c_str(), name.c_str(), (unsigned)src.reads,
+        (unsigned)(src.longestUs / 1000));
+}
+
 // The day files.read {sum} totals when the call names none: the running day (day_start.h:
 // before the device's "day starts at" time it is still yesterday), else the log's day.
 static std::string runningDay() {
@@ -800,8 +809,7 @@ static std::string dayTotalLine(const std::string& project, const std::string& n
   memory::withCardReleased([&] {
     line = nimbus::orch::aids::e1::dayTotal(src, 0, project + "/" + name, sumCol, day);
   });
-  alogf("files: day total %s/%s in %u reads, longest hold %u ms", project.c_str(), name.c_str(),
-        (unsigned)src.reads, (unsigned)(src.longestUs / 1000));
+  noteScan("day total", project, name, src);
   return line;
 }
 
@@ -813,8 +821,7 @@ static nimbus::orch::ToolResult readTable(const std::string& project, const std:
   std::string out;
   bool ok = false;
   memory::withCardReleased([&] { ok = nimbus::orch::aids::e1::tableRead(src, 0, project + "/" + name, q, out); });
-  alogf("files: scan %s/%s in %u reads, longest hold %u ms", project.c_str(), name.c_str(), (unsigned)src.reads,
-        (unsigned)(src.longestUs / 1000));
+  noteScan("scan", project, name, src);
   return ok ? nimbus::orch::ToolResult::ok(out) : nimbus::orch::ToolResult::fail(out);
 }
 
@@ -1223,6 +1230,11 @@ bool wouldExceedQuota(const nimbus::orch::Principal& who, uint32_t bytes) {
   const auto q = nimbus::orch::effectiveQuota(who.role, who.quota);
   if (!q.maxBytes) return false;             // unquotaed (admin)
   return (uint64_t)g_store.bytesFor(who.ns) + bytes > q.maxBytes;
+}
+
+void lastScanStats(uint32_t& reads, uint32_t& longestUs) {
+  reads = g_scanReads;
+  longestUs = g_scanLongestUs;
 }
 
 bool removeFile(const std::string& project, const std::string& name) {

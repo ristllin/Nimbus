@@ -225,7 +225,8 @@ std::string_view withoutBom(const char* p, size_t n) {
 struct CsvScanner::Impl {
   CsvScanResult& res;
   std::string& err;
-  CsvQuery q;
+  const CsvQuery& q;   // the caller's, alive for the scan (file_aids.h)
+  size_t limit = 0;    // q.limit held to kCsvShowMax
   std::string path;
   std::string_view to;
   bool numericRange = false;
@@ -251,7 +252,7 @@ struct CsvScanner::Impl {
   DupBlock* blocks[kDupBlocks] = {};
   size_t dupCount = 0;
 
-  Impl(CsvScanResult& r, std::string& e) : res(r), err(e) {}
+  Impl(CsvScanResult& r, std::string& e, const CsvQuery& query) : res(r), err(e), q(query) {}
   ~Impl() {
     workingFree(rec);
     workingFree(cell);
@@ -432,7 +433,7 @@ struct CsvScanner::Impl {
     char lead[16];
     const int ln = std::snprintf(lead, sizeof lead, "L%u ", unsigned(recLine));
     const size_t need = size_t(ln) + recLen + 1;
-    if (res.shownFirst && bodyLen + need > q.limit) {
+    if (res.shownFirst && bodyLen + need > limit) {
       showFull = true;
       return;
     }
@@ -521,7 +522,8 @@ struct CsvScanner::Impl {
   }
 };
 
-CsvScanner::CsvScanner(const CsvQuery& q, const std::string& path) {
+CsvScanner::CsvScanner(const CsvQuery& q, const std::string& path, CsvScanResult* into)
+    : res_(into ? *into : own_) {
   err_ = checkCsvQuery(q);
   if (!err_.empty()) return;
   void* mem = workingAlloc(sizeof(Impl));
@@ -529,15 +531,14 @@ CsvScanner::CsvScanner(const CsvQuery& q, const std::string& path) {
     err_ = kAidNoMemory;
     return;
   }
-  impl_ = new (mem) Impl(res_, err_);
+  impl_ = new (mem) Impl(res_, err_, q);
   Impl& m = *impl_;
-  m.q = q;
   m.path = path;
-  m.to = m.q.to.empty() ? std::string_view(m.q.from) : std::string_view(m.q.to);
-  m.numericRange = !m.q.column.empty() && parseDec3(m.q.from, m.fromNum) == NumParse::Ok &&
+  m.to = q.to.empty() ? std::string_view(q.from) : std::string_view(q.to);
+  m.numericRange = !q.column.empty() && parseDec3(q.from, m.fromNum) == NumParse::Ok &&
                    parseDec3(m.to, m.toNum) == NumParse::Ok;
-  m.q.limit = std::min(q.limit, kCsvShowMax);
-  m.bodyCap = m.q.limit + 2 * (kCsvRecordMax + 32);
+  m.limit = std::min(q.limit, kCsvShowMax);
+  m.bodyCap = m.limit + 2 * (kCsvRecordMax + 32);
   m.rec = static_cast<char*>(workingAlloc(kCsvRecordMax));
   m.cell = m.rec ? static_cast<char*>(workingAlloc(kCsvRecordMax)) : nullptr;
   m.body = m.cell ? static_cast<char*>(workingAlloc(m.bodyCap)) : nullptr;
@@ -567,7 +568,7 @@ bool CsvScanner::finish() { return err_.empty() && impl_ && impl_->finish(); }
 CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, const CsvQuery& q) {
   (void)size;
   CsvScanOutcome o;
-  CsvScanner s(q, path);
+  CsvScanner s(q, path, &o.result);
   char* chunk = s.error().empty() ? static_cast<char*>(workingAlloc(kAidChunk)) : nullptr;
   if (!s.error().empty() || !chunk) {
     o.error = s.error().empty() ? kAidNoMemory : s.error();
@@ -588,7 +589,6 @@ CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, c
   workingFree(chunk);
   if (ok && s.finish()) {
     o.ok = true;
-    o.result = std::move(s.result());
   } else if (o.error.empty()) {
     o.error = s.error();
   }
@@ -596,38 +596,12 @@ CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, c
 }
 
 // ---- rendering ----------------------------------------------------------------------
-namespace {
-
-std::string cellList(const LineList& l, const CsvScanResult& r) {
-  std::string out;
-  for (size_t i = 0; i < l.lines.size(); ++i)
-    out += join({i ? ", " : "", r.sums[l.columns[i]].name, " line ", Num(l.lines[i])});
-  if (l.count > l.lines.size()) out += join({" +", Num(l.count - l.lines.size())});
-  return out;
-}
-
-std::string groupList(const CsvScanResult& r) {
-  std::string out;
-  for (size_t i = 0; i < r.identical.size(); ++i) {
-    const LineGroup& g = r.identical[i];
-    for (size_t k = 0; k < g.lines.size(); ++k) out += join({k ? "=" : (i ? ", " : ""), Num(g.lines[k])});
-    if (g.count > g.lines.size()) out += join({"+", Num(g.count - g.lines.size())});
-  }
-  if (r.identicalGroups > r.identical.size()) out += join({" +", Num(r.identicalGroups - r.identical.size())});
-  return out;
-}
-
-}  // namespace
-
 namespace detail {
 
 std::string join(std::initializer_list<std::string_view> parts) {
-  size_t n = 0;
-  for (auto p : parts) n += p.size();
-  std::string out;
-  out.reserve(n);
-  for (auto p : parts) out.append(p.data(), p.size());
-  return out;
+  Txt t;
+  for (auto p : parts) t << p;
+  return std::move(t.s);
 }
 
 Num::Num(uint64_t v) {
@@ -640,6 +614,20 @@ Num::Num(uint64_t v) {
   for (n = 0; n < k; ++n) b[n] = t[k - 1 - n];
 }
 
+Txt& Txt::operator<<(const char* p) {
+  s += p;
+  return *this;
+}
+Txt& Txt::operator<<(std::string_view v) {
+  s.append(v.data(), v.size());
+  return *this;
+}
+Txt& Txt::operator<<(uint64_t v) {
+  const Num n(v);
+  s.append(n.b, n.n);
+  return *this;
+}
+
 std::string quoteCut(std::string_view s, size_t n) {
   if (s.size() <= n) return std::string(s);
   while (n > 0 && (static_cast<unsigned char>(s[n]) & 0xC0) == 0x80) --n;
@@ -648,76 +636,131 @@ std::string quoteCut(std::string_view s, size_t n) {
 
 }  // namespace detail
 
-std::string renderLines(const LineList& l) {
-  if (!l.count) return "";
-  const bool span = l.ends.size() == l.lines.size() && !l.ends.empty() && l.ends[0] > l.lines[0];
-  std::string out = l.count == 1 && !span ? "line " : "lines ";
-  for (size_t i = 0; i < l.lines.size(); ++i) {
-    out += join({i ? ", " : "", Num(l.lines[i])});
-    if (i < l.ends.size() && l.ends[i] > l.lines[i]) out += join({"-", Num(l.ends[i])});
-  }
-  if (l.count > l.lines.size()) out += join({" +", Num(l.count - l.lines.size())});
-  return out;
-}
-
 namespace {
 
+using detail::Txt;
+
+// " +N" when a list names fewer than it counts.
+void more(Txt& t, size_t count, size_t named) {
+  if (count > named) t << " +" << uint64_t(count - named);
+}
+
+void linesInto(Txt& t, const LineList& l) {
+  const bool span = l.ends.size() == l.lines.size() && !l.ends.empty() && l.ends[0] > l.lines[0];
+  t << (l.count == 1 && !span ? "line " : "lines ");
+  for (size_t i = 0; i < l.lines.size(); ++i) {
+    t << (i ? ", " : "") << uint64_t(l.lines[i]);
+    if (i < l.ends.size() && l.ends[i] > l.lines[i]) t << "-" << uint64_t(l.ends[i]);
+  }
+  more(t, l.count, l.lines.size());
+}
+
+void cellsInto(Txt& t, const LineList& l, const CsvScanResult& r) {
+  for (size_t i = 0; i < l.lines.size(); ++i)
+    t << (i ? ", " : "") << std::string_view(r.sums[l.columns[i]].name) << " line " << uint64_t(l.lines[i]);
+  more(t, l.count, l.lines.size());
+}
+
+void groupsInto(Txt& t, const CsvScanResult& r) {
+  for (size_t i = 0; i < r.identical.size(); ++i) {
+    const LineGroup& g = r.identical[i];
+    for (size_t k = 0; k < g.lines.size(); ++k) t << (k ? "=" : (i ? ", " : "")) << uint64_t(g.lines[k]);
+    if (g.count > g.lines.size()) t << "+" << uint64_t(g.count - g.lines.size());
+  }
+  more(t, r.identicalGroups, r.identical.size());
+}
+
 // The row counts: rows, the range, what is shown, the sums.
-std::string tailCounts(const CsvQuery& q, const CsvScanResult& r) {
-  std::string out = join({"rows ", Num(r.matched), " of ", Num(r.records)});
-  if (!q.column.empty()) out += join({" where ", q.column, " ", q.from, "..", q.to.empty() ? q.from : q.to});
+void countsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
+  t << "rows " << uint64_t(r.matched) << " of " << uint64_t(r.records);
+  if (!q.column.empty())
+    t << " where " << std::string_view(q.column) << " " << std::string_view(q.from) << ".."
+      << std::string_view(q.to.empty() ? q.from : q.to);
   const bool partial = r.shownFirst > 1 || r.shownLast < r.matched;
-  if (q.showRows && !r.shownFirst && r.matched) out += "; shown none";
-  else if (q.showRows && partial) out += join({"; shown ", Num(r.shownFirst), "-", Num(r.shownLast)});
-  if (r.sums.empty()) return out;
-  out += "; sum";
-  for (const auto& s : r.sums) out += join({" ", s.name, "=", renderDec3(s.total)});
-  return out;
+  if (q.showRows && !r.shownFirst && r.matched) t << "; shown none";
+  else if (q.showRows && partial) t << "; shown " << uint64_t(r.shownFirst) << "-" << uint64_t(r.shownLast);
+  if (r.sums.empty()) return;
+  t << "; sum";
+  for (const auto& s : r.sums) t << " " << std::string_view(s.name) << "=" << std::string_view(renderDec3(s.total));
 }
 
-std::string clause(const char* what, const LineList& l, std::string_view list, std::string_view why = "") {
-  return l.count ? join({"; ", what, " ", Num(l.count), " (", list, why, ")"}) : std::string();
+// "; <what> <k> (" when the list has rows; false when it has none.
+bool open(Txt& t, const char* what, size_t count) {
+  if (count) t << "; " << what << " " << uint64_t(count) << " (";
+  return count > 0;
 }
 
-std::string countClause(const char* what, size_t n, std::string_view rest = "") {
-  return n ? join({"; ", what, Num(n), rest}) : std::string();
+// The lists of rows and cells left out of a total, by reason.
+void listsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
+  if (r.commentLines) {
+    t << "; " << uint64_t(r.commentLines) << (r.commentLines == 1 ? " comment line" : " comment lines") << " skipped (";
+    linesInto(t, r.commentSpans);
+    t << ")";
+  }
+  const struct {
+    const char* what;
+    const LineList& l;
+  } cells[] = {{"blank", r.blankCells}, {"not a number", r.notNumberCells}, {"rounded to 3 decimals", r.roundedCells}};
+  for (const auto& c : cells)
+    if (open(t, c.what, c.l.count)) cellsInto(t, c.l, r), t << ")";
+  if (open(t, "not compared", r.notCompared.count)) {
+    linesInto(t, r.notCompared);
+    t << ": " << std::string_view(q.column) << " blank or not like " << std::string_view(q.from) << ")";
+  }
+  if (open(t, "skipped", r.fieldCount.count)) {
+    linesInto(t, r.fieldCount);
+    t << ": field count is not the header's " << uint64_t(r.headerFields) << ")";
+  }
 }
 
-// Every row or cell that is not plainly in the total, by reason.
-std::string tailFacts(const CsvQuery& q, const CsvScanResult& r) {
-  std::string out = r.commentLines ? join({"; ", Num(r.commentLines), r.commentLines == 1 ? " comment line" : " comment lines",
-                                           " skipped (", renderLines(r.commentSpans), ")"})
-                                   : std::string();
-  out += clause("blank", r.blankCells, cellList(r.blankCells, r));
-  out += clause("not a number", r.notNumberCells, cellList(r.notNumberCells, r));
-  out += clause("rounded to 3 decimals", r.roundedCells, cellList(r.roundedCells, r));
-  out += clause("not compared", r.notCompared, renderLines(r.notCompared),
-                join({": ", q.column, " blank or not like ", q.from}));
-  out += clause("skipped", r.fieldCount, renderLines(r.fieldCount),
-                join({": field count is not the header's ", Num(r.headerFields)}));
+// Every other fact a total depends on.
+void factsInto(Txt& t, const CsvScanResult& r) {
   if (r.fieldCountOutside)
-    out += join({"; ", Num(r.fieldCountOutside), r.fieldCountOutside == 1 ? " other row outside the range has"
-                                                                          : " other rows outside the range have",
-                 " a wrong field count"});
-  out += clause("too long", r.tooLong, renderLines(r.tooLong), join({": over ", Num(kCsvRecordMax), " B"}));
-  out += countClause("empty lines ", r.emptyLines);
-  out += countClause("identical lines ", r.identicalGroups,
-                     join({r.identicalGroups == 1 ? " group (" : " groups (", groupList(r), ")"}));
+    t << "; " << uint64_t(r.fieldCountOutside)
+      << (r.fieldCountOutside == 1 ? " other row outside the range has" : " other rows outside the range have")
+      << " a wrong field count";
+  if (open(t, "too long", r.tooLong.count)) {
+    linesInto(t, r.tooLong);
+    t << ": over " << uint64_t(kCsvRecordMax) << " B)";
+  }
+  if (r.emptyLines) t << "; empty lines " << uint64_t(r.emptyLines);
+  if (r.identicalGroups) {
+    t << "; identical lines " << uint64_t(r.identicalGroups) << (r.identicalGroups == 1 ? " group (" : " groups (");
+    groupsInto(t, r);
+    t << ")";
+  }
   if (r.identicalChecked < r.matched)
-    out += countClause("identical lines checked in the first ", r.identicalChecked, " matching rows only");
-  out += countClause("last line ", r.tornLine, " has no newline (a write may have been cut short)");
-  out += countClause("the row at line ", r.openQuoteLine, " ends inside a quoted field (a write may have been cut short)");
-  return out;
+    t << "; identical lines checked in the first " << uint64_t(r.identicalChecked) << " matching rows only";
+  if (r.tornLine) t << "; last line " << uint64_t(r.tornLine) << " has no newline (a write may have been cut short)";
+  if (r.openQuoteLine)
+    t << "; the row at line " << uint64_t(r.openQuoteLine) << " ends inside a quoted field (a write may have been cut short)";
 }
 
 }  // namespace
 
-std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r) { return tailCounts(q, r) + tailFacts(q, r); }
+std::string renderLines(const LineList& l) {
+  if (!l.count) return "";
+  Txt t;
+  linesInto(t, l);
+  return std::move(t.s);
+}
+
+std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r) {
+  Txt t;
+  countsInto(t, q, r);
+  listsInto(t, q, r);
+  factsInto(t, r);
+  return std::move(t.s);
+}
 
 std::string renderCsvRead(const CsvQuery& q, const CsvScanResult& r) {
-  std::string out = "\n" + r.body + renderCsvTail(q, r);
-  if (r.shownFirst && r.shownLast < r.matched) out += join({"\nnext_offset=", Num(r.shownLast)});
-  return out;
+  Txt t;
+  t << "\n" << std::string_view(r.body);
+  countsInto(t, q, r);
+  listsInto(t, q, r);
+  factsInto(t, r);
+  if (r.shownFirst && r.shownLast < r.matched) t << "\nnext_offset=" << uint64_t(r.shownLast);
+  return std::move(t.s);
 }
 
 }  // namespace nimbus::orch::aids

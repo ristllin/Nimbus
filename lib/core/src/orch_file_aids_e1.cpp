@@ -136,7 +136,10 @@ bool tableRead(AidSource& src, uint64_t size, const std::string& path, const Csv
     out = o.error;
     return false;
   }
-  out = join({path, " size=", Num(o.result.bytes), " lines=", Num(o.result.lines)}) + renderCsvRead(q, o.result);
+  detail::Txt t;
+  t << std::string_view(path) << " size=" << o.result.bytes << " lines=" << o.result.lines
+    << std::string_view(renderCsvRead(q, o.result));
+  out = std::move(t.s);
   return true;
 }
 

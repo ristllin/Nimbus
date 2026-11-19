@@ -31,6 +31,7 @@ constexpr const char* kFence = "; added a newline before the text";
 }  // namespace T
 
 using detail::join;
+using detail::Txt;
 using detail::Num;
 using detail::quoteCut;
 
@@ -261,18 +262,24 @@ bool takesLineEnd(const EditRequest& e) {
 }
 
 std::string planError(const std::string& path, const EditRequest& e, const Plan& p) {
+  Txt t;
+  const std::string_view where = path;
   if (!e.ifSha8.empty() && sha8Hex(p.hash) != e.ifSha8)
-    return join({path, T::kChangedSince, e.ifSha8, " (now ", sha8Hex(p.hash), "); nothing written"});
-  if (!p.count) return join({e.oldName, T::kNotIn, path, " (", Num(p.bytes), " B)"});
-  if (e.line && p.pick < 0 && p.onLine)
-    return join({e.oldName, T::kPartOf, Num(e.line), ", not the whole line; line ", Num(e.line), " is: ",
-                 quoteCut(p.quote, kAidQuoteMax)});
-  if (e.line && p.pick < 0) return join({T::kNoMatchOn, Num(e.line), "; matches at ", renderLines(p.lines)});
-  if (!e.line && !e.all && !e.count && p.count > 1)
-    return join({e.oldName, T::kManyA, path, " ", Num(p.count), " times, at ", renderLines(p.lines), T::kManyB});
-  if (e.maxSize && p.newSize > e.maxSize)
-    return join({path, " would be ", Num(p.newSize), " B; an edit here leaves files up to ", Num(e.maxSize), " B"});
-  return "";
+    t << where << T::kChangedSince << std::string_view(e.ifSha8) << " (now " << std::string_view(sha8Hex(p.hash))
+      << "); nothing written";
+  else if (!p.count)
+    t << e.oldName << T::kNotIn << where << " (" << p.bytes << " B)";
+  else if (e.line && p.pick < 0 && p.onLine)
+    t << e.oldName << T::kPartOf << uint64_t(e.line) << ", not the whole line; line " << uint64_t(e.line) << " is: "
+      << std::string_view(quoteCut(p.quote, kAidQuoteMax));
+  else if (e.line && p.pick < 0)
+    t << T::kNoMatchOn << uint64_t(e.line) << "; matches at " << std::string_view(renderLines(p.lines));
+  else if (!e.line && !e.all && !e.count && p.count > 1)
+    t << e.oldName << T::kManyA << where << " " << uint64_t(p.count) << " times, at "
+      << std::string_view(renderLines(p.lines)) << T::kManyB;
+  else if (e.maxSize && p.newSize > e.maxSize)
+    t << where << " would be " << p.newSize << " B; an edit here leaves files up to " << e.maxSize << " B";
+  return std::move(t.s);
 }
 
 // One edit: the two passes and the swap. As the finder's sink it is pass 1 (plan) or
@@ -425,23 +432,23 @@ LineList atLines(const EditOutcome& o) {
 }
 
 // What moved and where old still is: the tail of both renderings.
-std::string moveFacts(const EditOutcome& o) {
-  std::string s;
+void moveFacts(Txt& t, const EditOutcome& o) {
   if (o.shiftFrom)
-    s += join({"; lines that were ", Num(o.shiftFrom), " and later are now ", Num(uint64_t(o.shift < 0 ? -o.shift : o.shift)),
-               o.shift < 0 ? " lower" : " higher"});
-  if (o.stillAt.count) s += join({"; ", o.oldName, " is still at ", renderLines(o.stillAt)});
-  return s;
+    t << "; lines that were " << uint64_t(o.shiftFrom) << " and later are now "
+      << uint64_t(o.shift < 0 ? -o.shift : o.shift) << (o.shift < 0 ? " lower" : " higher");
+  if (o.stillAt.count) t << "; " << o.oldName << " is still at " << std::string_view(renderLines(o.stillAt));
 }
 
 }  // namespace
 
 std::string renderEdit(const std::string& path, const EditOutcome& o) {
   if (!o.ok) return o.error;
-  return join({"replaced ", Num(o.replaced), " in ", path, " at ", renderLines(atLines(o)), "; file is ",
-               Num(o.newSize), " B (was ", Num(o.oldSize), " B), ", Num(o.newLines), " lines, sha8=",
-               sha8Hex(o.newHash)}) +
-         moveFacts(o);
+  Txt t;
+  t << "replaced " << uint64_t(o.replaced) << " in " << std::string_view(path) << " at "
+    << std::string_view(renderLines(atLines(o))) << "; file is " << o.newSize << " B (was " << o.oldSize << " B), "
+    << o.newLines << " lines, sha8=" << std::string_view(sha8Hex(o.newHash));
+  moveFacts(t, o);
+  return std::move(t.s);
 }
 
 bool countMatches(AidSource& src, std::string_view old, size_t& matches) {
@@ -461,7 +468,10 @@ bool countMatches(AidSource& src, std::string_view old, size_t& matches) {
 }
 
 std::string renderEditLines(const EditOutcome& o) {
-  return join({"; at ", renderLines(atLines(o)), "; ", Num(o.newLines), " lines"}) + moveFacts(o);
+  Txt t;
+  t << "; at " << std::string_view(renderLines(atLines(o))) << "; " << o.newLines << " lines";
+  moveFacts(t, o);
+  return std::move(t.s);
 }
 
 // ---- append_file facts --------------------------------------------------------------
@@ -515,9 +525,12 @@ uint64_t nearestIdentical(std::string_view text, size_t start, size_t k, std::st
 // One fact: "identical to line 41", "line 214 is identical to line 41", or with the line
 // count unknown "the line 2 above it" and "appended line 2 is ...".
 std::string factText(bool known, bool single, uint64_t me, uint64_t back, size_t k) {
-  const std::string where = known ? join({"line ", Num(me - back)}) : join({"the line ", Num(back), " above it"});
-  if (single) return join({"identical to ", where});
-  return join({known ? "line " : "appended line ", Num(known ? me : k + 1), " is identical to ", where});
+  Txt t;
+  if (single) t << "identical to ";
+  else t << (known ? "line " : "appended line ") << uint64_t(known ? me : k + 1) << " is identical to ";
+  if (known) t << "line " << uint64_t(me - back);
+  else t << "the line " << back << " above it";
+  return std::move(t.s);
 }
 
 std::string_view noCr(std::string_view s) {
@@ -557,8 +570,11 @@ AppendFacts appendFacts(std::string_view tail, bool tailIsWhole, uint64_t fileSi
     }
     facts += (shown++ ? ", " : "") + factText(known, total == 1, fileLines + 1 + k, back, k);
   }
-  if (!facts.empty()) a.note += join({"; ", facts});
-  if (more) a.note += join({" +", Num(more)});
+  Txt t;
+  t << std::string_view(a.note);
+  if (!facts.empty()) t << "; " << std::string_view(facts);
+  if (more) t << " +" << uint64_t(more);
+  a.note = std::move(t.s);
   return a;
 }
 

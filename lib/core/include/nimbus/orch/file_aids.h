@@ -191,7 +191,8 @@ struct CsvScanResult {
   std::string body;
 };
 
-// The outcome of a scan: ok and the result, or the error (no partial sums, ever).
+// The outcome of a scan: ok and the result, or the error (no partial sums, ever: with !ok the
+// result is not a total and is never shown).
 struct CsvScanOutcome {
   bool ok = false;
   std::string error;
@@ -206,7 +207,9 @@ CsvScanOutcome scanCsv(AidSource& src, uint64_t size, const std::string& path, c
 // chunkings and prove the result never depends on them).
 class CsvScanner {
  public:
-  explicit CsvScanner(const CsvQuery& q, const std::string& path);
+  // q must outlive the scanner (it is read, not copied). into: where the result is built
+  // (nullptr: the scanner's own); it means nothing after a false from feed or finish.
+  explicit CsvScanner(const CsvQuery& q, const std::string& path, CsvScanResult* into = nullptr);
   ~CsvScanner();
   CsvScanner(const CsvScanner&) = delete;
   CsvScanner& operator=(const CsvScanner&) = delete;
@@ -221,7 +224,8 @@ class CsvScanner {
   struct Impl;
   Impl* impl_ = nullptr;
   std::string err_;
-  CsvScanResult res_;
+  CsvScanResult own_;
+  CsvScanResult& res_;
 };
 
 // The tail read_file prints after the shown rows, one line (no line end):
@@ -363,6 +367,13 @@ struct Num {
 };
 // At most n bytes of s, cut before a UTF-8 continuation byte, with " ..." when cut.
 std::string quoteCut(std::string_view s, size_t n);
+// Text built by appending (out of line, so each call site stays one call per piece).
+struct Txt {
+  std::string s;
+  Txt& operator<<(const char* p);
+  Txt& operator<<(std::string_view v);
+  Txt& operator<<(uint64_t v);
+};
 }  // namespace detail
 
 }  // namespace nimbus::orch::aids
