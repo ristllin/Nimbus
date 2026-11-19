@@ -159,7 +159,7 @@ static LittleFsMemoryStore   g_memStore;
 static LittleFsFoldStoreIO      g_foldIO;
 static nimbus::orch::FoldStore  g_folds;
 // An auto fold and the staged system turn wait for the owner (owner_first.h): onTurnEnd
-// and pollJobs feed it, compactTick and drainSystemTurn ask it, tg_poll only.
+// and pollJobs feed it, compactTick and drainUpdateNotice ask it, tg_poll only.
 static nimbus::orch::OwnerFirstGate g_ownerFirst;
 // Hold-to-talk message lifecycle (CUM-456) - see voiceMessages() in the header.
 static std::atomic<uint32_t> s_voiceHandled{0};
@@ -2534,6 +2534,11 @@ bool fileSendForTurn() {
   return telegramDeliverable(std::string());   // outside a turn: a chat is allowlisted
 }
 bool inScheduledTurn() { return g_engine && g_engine->inScheduledTurn(); }
+// Read on the turn task only (the turn's state): a web page's save while a routine runs on
+// tg_poll is not the routine's call.
+nimbus::orch::TurnClass unattendedClass() {
+  return g_engine && telegram::onTurnTask() ? g_engine->unattendedClass() : nimbus::orch::TurnClass::Attended;
+}
 
 // Lane J: did the running turn read outside content (a folded-in media row, or
 // an external-tainted tool result)? The standing rules' taint rail reads it: a
@@ -2559,78 +2564,46 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
                                        ownerReminder, selfWakeup);
 }
 
-// Staged system turn (Glass Box A2): set from any task (the OTA hook fires in
-// its own task context, where a synchronous LLM turn would trip the watchdog),
-// drained here on tg_poll - the same single-producer/consumer char-buffer+flag
-// handoff as the telegram token swap. One slot; the latest stager wins.
-static char          (&s_sysTurnPrompt)[512] = ::nimbus::psramStatic<char[512]>();   // PSRAM
-static char          s_sysTurnName[32] = {};
-static uint32_t      s_sysTurnStagedAt = 0;   // millis() when staged (owner_first.h quiet window)
-static volatile bool s_sysTurnPending = false;
-static portMUX_TYPE  s_sysTurnMux = portMUX_INITIALIZER_UNLOCKED;
+// The update notice's chat row (RB-Q2a): the notice itself is a fixed string sent at once
+// by the OTA hook (orch::updateNoticeText, no model call); its row is staged here from that
+// task and written on tg_poll, where the history lives - the same single-producer/consumer
+// char-buffer+flag handoff as the telegram token swap. One slot; the latest stager wins.
+static char          (&s_noticeText)[512] = ::nimbus::psramStatic<char[512]>();   // PSRAM
+static char          s_noticeChat[32] = {};
+static uint32_t      s_noticeStagedAt = 0;   // millis() when staged (owner_first.h quiet window)
+static volatile bool s_noticePending = false;
+static portMUX_TYPE  s_noticeMux = portMUX_INITIALIZER_UNLOCKED;
 
-void stageSystemTurn(const String& prompt, const String& name) {
-  portENTER_CRITICAL(&s_sysTurnMux);
-  strncpy(s_sysTurnPrompt, prompt.c_str(), sizeof(s_sysTurnPrompt) - 1);
-  s_sysTurnPrompt[sizeof(s_sysTurnPrompt) - 1] = 0;
-  strncpy(s_sysTurnName, name.c_str(), sizeof(s_sysTurnName) - 1);
-  s_sysTurnName[sizeof(s_sysTurnName) - 1] = 0;
-  s_sysTurnStagedAt = millis();
-  s_sysTurnPending = true;
-  portEXIT_CRITICAL(&s_sysTurnMux);
+void stageUpdateNotice(const String& chatId, const String& text) {
+  portENTER_CRITICAL(&s_noticeMux);
+  strncpy(s_noticeText, text.c_str(), sizeof(s_noticeText) - 1);
+  s_noticeText[sizeof(s_noticeText) - 1] = 0;
+  strncpy(s_noticeChat, chatId.c_str(), sizeof(s_noticeChat) - 1);
+  s_noticeChat[sizeof(s_noticeChat) - 1] = 0;
+  s_noticeStagedAt = millis();
+  s_noticePending = true;
+  portEXIT_CRITICAL(&s_noticeMux);
 }
 
-// L24: a system turn deferred for memory is staged again and tried after this long,
-// never dropped (the post-update awareness turn runs once memory allows). A turn
-// staged meanwhile is newer and wins the slot (the deferred one is not put back over it).
-static constexpr uint32_t kSysTurnRetryMs = 60000;
-static bool     s_sysTurnWaiting = false;
-static uint32_t s_sysTurnDeferredAt = 0;
-
-static void restageSystemTurn(const String& prompt, const String& name) {
-  portENTER_CRITICAL(&s_sysTurnMux);
-  if (!s_sysTurnPending) {
-    strncpy(s_sysTurnPrompt, prompt.c_str(), sizeof(s_sysTurnPrompt) - 1);
-    s_sysTurnPrompt[sizeof(s_sysTurnPrompt) - 1] = 0;
-    strncpy(s_sysTurnName, name.c_str(), sizeof(s_sysTurnName) - 1);
-    s_sysTurnName[sizeof(s_sysTurnName) - 1] = 0;
-    s_sysTurnPending = true;   // keeps its original staging time: the same turn, not a newer one
-  }
-  portEXIT_CRITICAL(&s_sysTurnMux);
-}
-
-// The staged turn yields to the owner (owner_first.h): it stays staged until two
-// minutes passed since it was staged and since the last turn. It then runs bounded (TurnBounds: two tool rounds, a small
-// tool-output budget, single-shot on a fallback head), never the owner's 8-round loop.
-static void drainSystemTurn() {
-  if (!s_sysTurnPending) return;
-  if (s_sysTurnWaiting && millis() - s_sysTurnDeferredAt < kSysTurnRetryMs) return;   // wrap-safe
-  portENTER_CRITICAL(&s_sysTurnMux);
-  const uint32_t stagedAt = s_sysTurnStagedAt;
-  portEXIT_CRITICAL(&s_sysTurnMux);
+// The row yields to the owner (owner_first.h): it is written once two minutes passed since
+// it was staged and since the last turn, never in the middle of an exchange.
+static void drainUpdateNotice() {
+  if (!s_noticePending) return;
+  portENTER_CRITICAL(&s_noticeMux);
+  const uint32_t stagedAt = s_noticeStagedAt;
+  portEXIT_CRITICAL(&s_noticeMux);
   if (!g_ownerFirst.systemTurnMayStart(telegram::guardStatus().holding, millis(), stagedAt)) return;
-  s_sysTurnWaiting = false;
-  String prompt, name;
-  portENTER_CRITICAL(&s_sysTurnMux);
-  const bool restaged = s_sysTurnStagedAt != stagedAt;   // a newer staging waits its own window
+  String text, chat;
+  portENTER_CRITICAL(&s_noticeMux);
+  const bool restaged = s_noticeStagedAt != stagedAt;   // a newer staging waits its own window
   if (!restaged) {
-    prompt = s_sysTurnPrompt; name = s_sysTurnName;
-    s_sysTurnPending = false;
+    text = s_noticeText;
+    chat = s_noticeChat;
+    s_noticePending = false;
   }
-  portEXIT_CRITICAL(&s_sysTurnMux);
-  if (restaged) return;
-  // The owner's chat by the owners list (the post-update turn is the owner's), not
-  // merely the first allow-listed chat, which can be a member (CUM-813 review).
-  String chat = agent::telegram::ownerChat();
-  if (chat.length() == 0 || !g_engine) return;   // nowhere to deliver - drop quietly
-  const nimbus::orch::FireOutcome o =
-      g_engine->injectBoundedTurn(std::string(chat.c_str()), std::string(prompt.c_str()),
-                                  std::string(name.c_str()), agent::TurnEngine::TurnBounds{});
-  if (o.deferred && o.error.empty()) {   // a memory defer (a spend-ceiling one names its error)
-    s_sysTurnWaiting = true;
-    s_sysTurnDeferredAt = millis();
-    restageSystemTurn(prompt, name);
-  }
+  portEXIT_CRITICAL(&s_noticeMux);
+  if (restaged || chat.length() == 0 || !g_engine) return;
+  g_engine->recordNotice(std::string(chat.c_str()), std::string(text.c_str()));
 }
 
 #ifdef NIMBUS_TEST
@@ -3058,7 +3031,7 @@ int pollJobs() {
   if (!g_fabric || !g_jobs) return 0;
   drainStaged();      // apply web-staged directive/memory edits between turns
   drainTerminates();  // apply web/MCP-staged session.terminate on the journal's writer task
-  drainSystemTurn();  // post-OTA (etc.) unattended awareness turn - tg_poll only
+  drainUpdateNotice();  // the fixed post-update notice - tg_poll only
   dream::pumpBootReconcile();  // a night the restart cut short: reconcile it before
                                // the tick can fire anything (tg_poll only; L19-31)
   dream::pumpDrill(); // a queued console DREAM drill - tg_poll only, never the loop task

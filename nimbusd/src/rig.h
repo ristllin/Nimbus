@@ -1946,8 +1946,13 @@ class NimbusdRig {
     buildRoutinesAndSkills();
     // Who may call what (CUM-813), at the dispatch seam every route shares: the device's
     // one rule table, read with this turn's chat and whether anyone is attending it.
+    // RB-Q2a: then what the turn's class may call when nobody is writing it (unattended_policy.h).
     orch::installActionRules(
-        reg_, [this] { return eng_ && eng_->inScheduledTurn(); }, [this] { return cur_.chatId; });
+        reg_, [this] { return eng_ && eng_->inScheduledTurn(); }, [this] { return cur_.chatId; },
+        [this](const std::string& name, ArduinoJson::JsonObjectConst args, const orch::ActionCaller& c) {
+          if (c.lan || !eng_) return std::string();
+          return orch::unattendedRefusal(eng_->unattendedClass(), name, args);
+        });
 
     for (const auto& s : reg_.toolSpecs()) toolNames_.push_back(s.name);
   }

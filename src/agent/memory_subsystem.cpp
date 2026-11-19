@@ -1686,10 +1686,17 @@ void begin() {
   // the LAN /mcp endpoint, the test seams), in both modes, is checked against the one
   // rule table for the dispatch Principal and the turn's unattended flag
   // (nimbus/orch/action_rules.h); the name-only rails above stay as defense in depth.
-  nimbus::orch::installActionRules(g_reg, [] { return orchestrator::inScheduledTurn(); }, [] {
-    // The turn's chat, read on the turn task only (it is the turn task's state).
-    return agent::telegram::onTurnTask() ? std::string(orchestrator::currentChat().c_str()) : std::string();
-  });
+  // RB-Q2a: then what the turn's class may call when nobody is writing it (unattended_policy.h);
+  // the LAN endpoint is no turn. The old engine's routines list no paths of their own.
+  nimbus::orch::installActionRules(
+      g_reg, [] { return orchestrator::inScheduledTurn(); },
+      [] {
+        // The turn's chat, read on the turn task only (it is the turn task's state).
+        return agent::telegram::onTurnTask() ? std::string(orchestrator::currentChat().c_str()) : std::string();
+      },
+      [](const std::string& name, ArduinoJson::JsonObjectConst args, const nimbus::orch::ActionCaller& c) {
+        return c.lan ? std::string() : nimbus::orch::unattendedRefusal(orchestrator::unattendedClass(), name, args);
+      });
 
   alogf("memory: ready (%d vectors, dims=%d, store=%s, cap=%d, archive=%s, embed=%s, web=%s, pending=%d)",
         g_vec.size(), g_vec.dims(), g_haveSd ? "SD /mem" : "flash /data (no SD)",

@@ -29,6 +29,7 @@
 #include "nimbus/orch/turn_spend.h"     // TurnSpend - the turn's per-host spend
 #include "nimbus/orch/tool_registry.h"  // ToolRegistry::Spec (toolSpecs closure)
 #include "nimbus/orch/truth.h"          // truth::Binding, TurnCheck - the truth check (RB-G0)
+#include "nimbus/orch/unattended_policy.h"   // TurnClass - what an unattended turn may do (RB-Q2a)
 
 // engine - the TURN ORCHESTRATION, lifted from src/agent/orchestrator.cpp
 // (Stage G, the final lift). One TurnEngine owns the full turn pipeline: the
@@ -404,8 +405,9 @@ class TurnEngine {
   // one-shot was set by the OWNER via /remind - [REMINDER] framing, since "you
   // scheduled this for yourself" would be false. selfWakeup (owner design,
   // 9/11 Nov): a self-wakeup record (id prefix "sw") - renders a [SELF-WAKEUP]
-  // preamble carrying the note, one short turn, NO tools at all (nothing this
+  // preamble carrying the note, one short turn under read-only tools (nothing this
   // turn does may change anything); the note is re-checked before it is sent.
+  // Every fire runs under the unattended policy of its class (unattended_policy.h).
   nimbus::orch::FireOutcome injectScheduledTurn(const std::string& chatId,
                                                 const std::string& prompt,
                                                 const std::string& name,
@@ -415,17 +417,9 @@ class TurnEngine {
                                                 bool ownerReminder = false,
                                                 bool selfWakeup = false);
 
-  // A quiet system turn held to tighter bounds than the owner's loop config (the
-  // post-update awareness turn, v4.6.1): at most `maxRounds` tool rounds, a small
-  // tool-output budget (each later request grows by at most that much), and no
-  // tool loop at all (single-shot) while the head is on a fallback provider.
-  struct TurnBounds {
-    int maxRounds = 2;
-    size_t maxToolBytes = 4096;     // the whole turn's tool output
-    size_t maxResultBytes = 2048;   // one tool result
-  };
-  nimbus::orch::FireOutcome injectBoundedTurn(const std::string& chatId, const std::string& prompt,
-                                              const std::string& name, const TurnBounds& bounds);
+  // A message the harness already sent to a chat with no model call (the fixed update
+  // notice, RB-Q2a): stored as the chat's assistant row, so later turns know it was said.
+  void recordNotice(const std::string& chatId, const std::string& text) { captureAssistantRow(chatId, text, "reply"); }
   // The configured head is not where a turn would run now: it is over its token
   // budget, parked or paused, so the turn fails over to another provider.
   bool headOnFallback() const;
@@ -525,6 +519,14 @@ class TurnEngine {
   bool turnInFlight() const { return turnInFlight_; }
   uint32_t headJobKey() const { return keyFromTag("head"); }
   bool inScheduledTurn() const { return scheduledTurn_; }
+  // The class of the turn in flight for the unattended policy (RB-Q2a): Attended for a
+  // person's turn, else the fire's class or SubagentReport. A scheduled turn whose class
+  // was never set reads as a Routine (fail closed).
+  nimbus::orch::TurnClass unattendedClass() const {
+    if (turnSource_ == TurnSource::Synthesis) return nimbus::orch::TurnClass::SubagentReport;
+    if (!scheduledTurn_) return nimbus::orch::TurnClass::Attended;
+    return fireClass_ == nimbus::orch::TurnClass::Attended ? nimbus::orch::TurnClass::Routine : fireClass_;
+  }
   // Lane J: did this turn read outside content (a media row folded in, or an
   // external-tainted tool result)? Read-only, for the device's prefs taint rail.
   bool externalContentSeen() const { return externalContentSeen_; }
@@ -703,7 +705,7 @@ class TurnEngine {
   bool scheduledTurn_ = false;          // a Local Loops / synthesis (unattended) turn is running
   bool quietTurn_ = false;              // dream: suppress the bare-"Done." fallback this turn
   bool dreamTurn_ = false;              // the reserved dream loop: memory-only surface (lane M)
-  bool selfWakeupTurn_ = false;         // a self-wakeup record is firing: no tools, one short turn
+  bool selfWakeupTurn_ = false;         // a self-wakeup record is firing: read-only tools, one short turn
   // Lane ECHO (owner design, 9/11 Nov): a background turn's reply captured during
   // quiet hours instead of delivered at night - rides TurnEndEv.wakeReply so the
   // onTurnEnd glue arms ONE self-wakeup for the end of quiet hours.
@@ -741,9 +743,8 @@ class TurnEngine {
   // injectScheduledTurn "loop:<id>") and reset to the owner default after.
   std::string attribution_ = "turn";
   TurnSource  turnSource_ = TurnSource::Owner;
-  // The bounds of the turn in flight (injectBoundedTurn); null for every other turn.
-  const TurnBounds* bounds_ = nullptr;
-  bool boundedSingleShot() const { return bounds_ && headOnFallback(); }
+  // The class of the scheduled fire in flight (injectScheduledTurn); Attended otherwise.
+  nimbus::orch::TurnClass fireClass_ = nimbus::orch::TurnClass::Attended;
 
   nimbus::orch::TokenUsage sessionUsage_;   // running sum of billed tokens since boot
   uint32_t                 turnCount_ = 0;  // non-empty turns since boot

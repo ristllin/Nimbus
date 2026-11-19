@@ -655,7 +655,6 @@ void TurnEngine::setHeadArc(bool lit) {
 // corrupted by recall's transient dip; the out-of-band callers below pass live
 // heap, which is fine - they are describing capability, not gating a turn.
 bool TurnEngine::loopActiveAt(uint32_t heap) const {
-  if (boundedSingleShot()) return false;   // a bounded turn on a fallback head: no loop
   // +2000 (was +6000): a tool round's INTERNAL cost is a few hundred bytes (the
   // body/JSON are PSRAM-routed), so the old 34 KB gate silently dropped the loop to
   // single-shot on basically every turn in the 28-34 KB band. See docs/memory-model.md.
@@ -669,11 +668,6 @@ bool TurnEngine::headOnFallback() const {
   if (host.empty()) return false;
   return (d_.cfg.budget.overBudget && d_.cfg.budget.overBudget(host)) || d_.hosts.isParked(host);
 }
-
-namespace {
-// The tighter of a configured cap and a bound (0 = unlimited on either side).
-size_t tighterCap(size_t cfg, size_t bound) { return (bound && (!cfg || bound < cfg)) ? bound : cfg; }
-}  // namespace
 
 // CUM-536: what a tool call gets on a turn that stores nothing in long-term
 // memory, "" when the call stores nothing. memory.update stores new content too
@@ -1157,8 +1151,13 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   curChat_ = chatId;   // reply.speak / reply.telegram default target for this turn
   // Every request this turn makes carries the connectors its chat may use (CUM-828):
   // the owner's for the owner, the provider's built-ins only for anyone else - a
-  // member's, a guest's, and the synthesis turn that reads a member's sub-agent.
-  const nimbus::orch::ConnectorGrantScope grant(nimbus::orch::connectorGrantFor(d_.apply.whoFor(chatId)));
+  // member's, a guest's, and the synthesis turn that reads a member's sub-agent. A turn
+  // nobody is writing (a routine, a wakeup, a report) carries the built-ins only (RB-Q2a):
+  // the owner's connectors act with his sign-ins on the provider's side, out of the
+  // device's reach, so the unattended policy could not refuse a mail sent through them.
+  const nimbus::orch::ConnectorGrantScope grant(unattendedClass() != orch::TurnClass::Attended
+                                                    ? nimbus::orch::ConnectorGrant::BuiltinsOnly
+                                                    : nimbus::orch::connectorGrantFor(d_.apply.whoFor(chatId)));
   // F1 (lane I): this turn's skills start from what buildDynamicContext
   // attached (buildDynamicContext runs just before runTurn); a mid-loop
   // skill.get adds its id through noteSkillUsed.
@@ -1310,10 +1309,21 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
                                  return !dream::toolAllowed(s.name);
                                }),
                 specs.end());
-  // A self-wakeup (owner design, 9/11 Nov) is one short turn whose only job is to
-  // re-check and deliver its one note: NO tools at all - nothing it does may
-  // change anything.
-  if (selfWakeupTurn_) specs.clear();
+  // RB-Q2a: an unattended turn is offered only the tools its class may call
+  // (unattended_policy.h); the registry's access seam refuses any other call in plain
+  // words. A self-wakeup (owner design, 9/11 Nov) re-checks its note under read-only tools.
+  // A withheld tool keeps its name on the loop's map, so a call to it anyway reaches that
+  // seam and reads the refusal, never an "unknown tool" that names it as callable.
+  const orch::TurnClass turnClass = unattendedClass();
+  std::vector<std::string> withheld;
+  if (turnClass != orch::TurnClass::Attended)
+    specs.erase(std::remove_if(specs.begin(), specs.end(),
+                               [turnClass, &withheld](const orch::ToolRegistry::Spec& s) {
+                                 if (orch::unattendedMayList(turnClass, s.name)) return false;
+                                 withheld.push_back(s.name);
+                                 return true;
+                               }),
+                specs.end());
   turnMem().gate.phase("specs", freeHeap(), largestFreeBlock());
   // Pick the host BEFORE composing: the context budget is derived from the head
   // model's window (owner ask 2026-08-05 - caps derive from the context length
@@ -1391,8 +1401,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // (a cached-manifest property), never this turn's heap gate.
   ci.toolsOnWire = d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn();
   ci.loopRounds = d_.cfg.loop.rounds ? d_.cfg.loop.rounds() : kLoopRoundsDefault;
-  int roundsNow = ci.loopRounds;
-  if (bounds_) roundsNow = std::min(roundsNow, bounds_->maxRounds);   // a bounded turn's cap
+  const int roundsNow = ci.loopRounds;
   // A chat line takes the rounds it needs within the turn's round budget and wall clock, like
   // any other turn: the 2-round cap on plain conversational turns (and the word list that
   // told chat from work, asksForWork) was deleted in v5.2.0 (lane RB-Q1c; DIAGNOSIS RC-14:
@@ -1494,11 +1503,8 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
   // the model why, rather than risk a mid-loop OOM. The ~2x round floor margin
   // keeps this rare on the SD-mounted firmware (~30 KB at turn time).
   if (d_.cfg.loop.toolLoopOn && d_.cfg.loop.toolLoopOn() && !loopOnThisTurn) {
-    if (boundedSingleShot())
-      hlog::logf("orchestrator: tool-loop OFF - a bounded turn on a fallback head runs single-shot");
-    else
-      hlog::logf("orchestrator: tool-loop DEFERRED - low entry heap %u (single-shot this turn)",
-                 (unsigned)heapAtEntry);
+    hlog::logf("orchestrator: tool-loop DEFERRED - low entry heap %u (single-shot this turn)",
+               (unsigned)heapAtEntry);
   }
   if (loopOnThisTurn) {
     // Advertise only tools that are LIVE on this fabric, under the SANITIZED names
@@ -1512,6 +1518,7 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
       (*nameMap)[adv] = s.name;
       headTools.specs.push_back(orch::ToolRegistry::Spec{adv, s.description, s.schemaJson});
     }
+    for (const std::string& n : withheld) nameMap->emplace(loopToolName(n), n);   // RB-Q2a: refused, not unknown
     auto mcp = d_.mcpDispatch;
     // v3.7.0: mid-turn tool calls run under the TURN's principal - same chat
     // namespace and owner status the turn's applyTurn writes use, so a member's
@@ -1732,10 +1739,6 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     // legacy constants so their pins stay meaningful.
     headTools.cfg.maxToolResultBytes = d_.cfg.loop.resultCap ? budget.toolResultBytes : 4096;
     headTools.cfg.maxTotalToolBytes  = d_.cfg.loop.totalCap ? budget.toolTotalBytes : 24576;
-    if (bounds_) {   // a bounded turn takes the tighter byte caps (its rounds are in ci.loopRounds)
-      headTools.cfg.maxTotalToolBytes = tighterCap(headTools.cfg.maxTotalToolBytes, bounds_->maxToolBytes);
-      headTools.cfg.maxToolResultBytes = tighterCap(headTools.cfg.maxToolResultBytes, bounds_->maxResultBytes);
-    }
     if (d_.spillResult)
       headTools.spill = [this, loopWho](const orch::HeadToolResult& full) {
         return d_.spillResult(full.name, full.output, loopWho.ns);
@@ -2530,6 +2533,15 @@ bool TurnEngine::runTurn(const std::string& inputs, const std::string& chatId,
     const int dropped = dream::restrictTurn(turn);
     if (dropped) hlog::logf("dream: dropped %d device/session item(s) (memory only)", dropped);
   }
+  {   // RB-Q2a: the end-of-turn fields of an unattended turn, cut to its class's row
+    std::string refused;
+    const int cut = nimbus::orch::restrictUnattendedTurn(turn, unattendedClass(), refused);
+    // Logged, not parked for the chat's next turn: that turn may be the owner's, which
+    // would read the refusal as its own failure and redo what the policy refused.
+    if (cut)
+      hlog::logf("unattended: %d end-of-turn item(s) not applied (%s): %.240s", cut,
+                 nimbus::orch::turnClassSlug(unattendedClass()), refused.c_str());
+  }
   if (selfWakeupTurn_) {
     const int dropped = nimbus::orch::restrictSelfWakeupTurn(turn);
     if (dropped) hlog::logf("self-wakeup: dropped %d tool item(s) (no tools on a wake turn)", dropped);
@@ -3003,14 +3015,6 @@ void TurnEngine::handleMessage(const std::string& text, const std::string& fromN
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------
 
-nimbus::orch::FireOutcome TurnEngine::injectBoundedTurn(const std::string& chatId, const std::string& prompt,
-                                                        const std::string& name, const TurnBounds& bounds) {
-  bounds_ = &bounds;
-  const nimbus::orch::FireOutcome o = injectScheduledTurn(chatId, prompt, name, "system", /*quietOk=*/true);
-  bounds_ = nullptr;
-  return o;
-}
-
 nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& chatId,
                                                           const std::string& prompt,
                                                           const std::string& name,
@@ -3070,6 +3074,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   scheduledTurn_ = true;
   quietTurn_ = quietOk;
   selfWakeupTurn_ = selfWakeup;
+  fireClass_ = nimbus::orch::fireClass(dream::isReserved(loopId), selfWakeup, ownerReminder, once);
   attribution_ = loopId.empty() ? "loop" : ("loop:" + loopId);   // spend attribution
   turnSource_ = TurnSource::Loop;
   loopName_ = name;   // the [FALLBACK] note names the routine a switch happened in
@@ -3081,7 +3086,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   // honest framing: the model set it FOR ITSELF, it fires exactly once, and the
   // note is the context it asked to have restored.
   // A self-wakeup (owner design, 9/11 Nov) fires ONE short turn whose only job is
-  // to re-check and deliver the one note it was armed with - no tools, nothing
+  // to re-check and deliver the one note it was armed with - read-only tools, nothing
   // it does may change anything. The record's prompt is the note envelope; the
   // note text is rendered here, never the raw JSON.
   nimbus::orch::WakeNote wakeNote;
@@ -3094,7 +3099,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
             "stale (its time has passed, e.g. a brief about delays that ended) or was "
             "already delivered, reply with nothing at all; otherwise deliver it to the "
             "owner in plain words, saying what it is and when it was noticed. One short "
-            "reply. No tools - this turn changes nothing.\n\nThe note:\n\n" +
+            "reply. Read-only tools: this turn changes nothing.\n\nThe note:\n\n" +
             (noteParsed ? wakeNote.text : prompt) + "\n\n"
     : ownerReminder
       ? "\n[REMINDER]\nThe owner set a one-time reminder for this moment (with "
@@ -3178,6 +3183,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   quietTurn_ = false;
   dreamTurn_ = false;
   selfWakeupTurn_ = false;
+  fireClass_ = nimbus::orch::TurnClass::Attended;
   attribution_ = "turn";                       // back to the owner default
   turnSource_ = TurnSource::Owner;
   loopName_.clear();
@@ -3204,6 +3210,7 @@ nimbus::orch::FireOutcome TurnEngine::injectScheduledTurn(const std::string& cha
   quietTurn_ = false;
   dreamTurn_ = false;
   selfWakeupTurn_ = false;
+  fireClass_ = nimbus::orch::TurnClass::Attended;
   turnSource_ = TurnSource::Owner;
   nimbus::orch::FireOutcome o;
   o.answered = spoke_;

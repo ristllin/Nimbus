@@ -130,11 +130,17 @@ std::string configKnobKey(const char* knob);   // "device.config.<knob>"
 bool sessionVisible(const SessionInfo& s, const ActionCaller& c);
 std::vector<SessionInfo> visibleSessions(const std::vector<SessionInfo>& all, const ActionCaller& c);
 
+// A rule read after the caller's own, for a call the table allows: "" lets it run, else
+// the refusal. The unattended policy (unattended_policy.h, lane RB-Q2a) is one.
+using ExtraActionRule =
+    std::function<std::string(const std::string& name, ArduinoJson::JsonObjectConst args, const ActionCaller& c)>;
+
 // The dispatch seam: every tool call through `reg` is checked against the table
 // for the dispatch Principal, `unattended()` (null = attended) and `turnChat()` (the
-// chat the turn in flight runs for; null = unknown), on every route.
+// chat the turn in flight runs for; null = unknown), then against `extra` (null = none),
+// on every route.
 void installActionRules(ToolRegistry& reg, std::function<bool()> unattended,
-                        std::function<std::string()> turnChat = nullptr);
+                        std::function<std::string()> turnChat = nullptr, ExtraActionRule extra = nullptr);
 
 }  // namespace orch
 }  // namespace nimbus

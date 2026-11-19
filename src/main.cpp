@@ -3396,7 +3396,7 @@ static void otaEventHook(int ev, const char* a, const char* b) {
       break;
     case otaupd::EvValidated: {   // post-update boot proved healthy
       // Release notes were persisted ACROSS the install reboot ("ver|notes") -
-      // consume them once so the timeline row + the model's awareness turn carry
+      // consume them once so the timeline row and the owner's notice carry
       // WHAT changed, not just the version number.
       String notes = agent::store::otaPendingNotes();
       String noteTxt;
@@ -3407,19 +3407,16 @@ static void otaEventHook(int ev, const char* a, const char* b) {
                                          (noteTxt.length() ? (String(". Notes: ") + noteTxt)
                                                            : String()));
       if (!g_orchMode) break;
-      String owner = agent::orchestrator::firstAllowedChat();
-      if (owner.length())
-        agent::telegram::send(owner, String("Updated to ") + a + " \xE2\x9C\x93", /*block=*/false);
-      // Unattended awareness turn (Glass Box A2): the model learns it was
-      // updated + what changed, and decides what (if anything) to tell the
-      // owner. Staged - drained on tg_poll (a turn here in the tick's task
-      // context would trip the watchdog); quietOk so silence is a valid outcome.
-      String prompt = String("[FIRMWARE UPDATED] This device just updated to ") + a +
-                      " and the new firmware passed its health check.";
-      if (noteTxt.length()) prompt += String(" Release notes: ") + noteTxt;
-      prompt += " Note anything durable to memory; only message the owner if the "
-                "changes matter to them.";
-      agent::orchestrator::stageSystemTurn(prompt, "firmware-update");
+      // The owner learns of the update from a fixed string with the release's one-line
+      // note, sent at once: no model call, no tools (RB-Q2a; DIAGNOSIS RC-13: the
+      // model-written post-update turn rewrote a day the owner had just corrected). Its
+      // chat row is staged and written on tg_poll, so later turns know it was said.
+      const String notice(nimbus::orch::updateNoticeText(a ? a : "", std::string(noteTxt.c_str())).c_str());
+      const String owner = agent::telegram::ownerChat();
+      if (owner.length()) {
+        agent::telegram::send(owner, notice, /*block=*/false);
+        agent::orchestrator::stageUpdateNotice(owner, notice);
+      }
       break;
     }
     default: break;

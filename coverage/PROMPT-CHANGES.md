@@ -766,3 +766,29 @@ deleted. Engine 2 has no baseline.
 - lane: RB-E1b
 - prd: section 1 ("Identical-call suppression: inside one turn only, only for tools declared pure, only while the earlier result is still shown whole and no write has succeeded since")
 - why: lib/harness/src/plain_guards.cpp: a pure call that repeats an earlier call of the same turn is not run again; its result states that fact and that the earlier result above still holds (a fact, no order); planned work, not a fix
+### PC-0073: the post-update prompt goes; the self-wakeup preamble says the turn has read-only tools
+- catalog: e1
+- class: device_notes
+- kind: spec
+- bytes: 54036 -> 53835
+- sha8: 692e97dd -> 7df1bd2b
+- lane: RB-Q2a
+- prd: section 6 (unattended turns: the update notice is a fixed string with no model call; self-wakeups run
+  under the policy table with read-only tools)
+- why: DIAGNOSIS RC-13. The model-written post-update turn (src/main.cpp, 207 B of prompt) is deleted: the
+  notice is a fixed string. The self-wakeup preamble said "No tools"; it now runs under read-only tools and says
+  so (+6 B). The reminder preamble is unchanged (a reminder may still set the light or speak; what the policy
+  refuses reads as a refusal at the call). The class shrinks by 201 B.
+
+### PC-0074: the unattended policy's refusal line (lib/core/src/orch_unattended_policy.cpp)
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 41942 -> 42350
+- sha8: df517712 -> fb170270
+- lane: RB-Q2a
+- prd: section 6 (one table, keyed by turn source, decides tools, model, context and output)
+- why: a call an unattended turn may not make is refused before its handler runs with one plain line the model
+  reads ("Not run: a routine runs with nobody writing, and changes to files are closed to it. Nothing was
+  changed."): the class nouns, the tool class nouns and the frame (397 B), stated as facts, plus the fixed update notice's "Updated to " (11 B),
+  which moved here from src/main.cpp. Never a silent drop. Planned work (ruling 18).

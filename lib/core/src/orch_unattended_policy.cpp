@@ -1,0 +1,356 @@
+#include "nimbus/orch/unattended_policy.h"
+
+#include <cstring>
+
+#include "nimbus/orch/action_rules.h"     // toolActionKey: the argument-narrowed key of a call
+#include "nimbus/orch/device_actions.h"   // validateAction: the kind of a device[] element
+#include "nimbus/orch/tool_groups.h"      // toolClassFor: the registration class of a name
+
+namespace nimbus {
+namespace orch {
+
+namespace {
+
+using U = ToolUse;
+constexpr Grant N = Grant::No;
+constexpr Grant Y = Grant::Yes;
+constexpr Grant L = Grant::ListedPaths;
+
+// One row per class. Columns: Read, Write, Memory, Send, Spend, Schedule, Ambient, Control.
+// A routine, a reminder and a wakeup send only through their own reply (held delivery);
+// messages and files to a chat other than the turn's own are the owner's, writing now, in
+// every class (action_rules.h, OwnerAttended).
+const UnattendedPolicyRow kPolicy[] = {
+    {TurnClass::Attended, ModelCall::Sub, Output::Reply, {Y, Y, Y, Y, Y, Y, Y, Y}},
+    {TurnClass::UpdateNotice, ModelCall::None, Output::Fixed, {N, N, N, N, N, N, N, N}},
+    // the owner's own routine: may dim the ring at night, speak, set a follow-up wakeup
+    // ("check the flight again in 30 minutes"); writes only to its listed paths
+    {TurnClass::Routine, ModelCall::Sub, Output::Reply, {Y, L, N, N, N, Y, Y, N}},
+    // the owner's own one-time reminder ("lights off at 23:00", or said aloud)
+    {TurnClass::Reminder, ModelCall::Sub, Output::Reply, {Y, N, N, N, N, N, Y, N}},
+    // a one-time wakeup the assistant set, mostly at the owner's word in chat ("lights off
+    // at 23:00", "remind me at 7, out loud"): the light and speech, and the next wakeup
+    {TurnClass::Wakeup, ModelCall::Sub, Output::Reply, {Y, N, N, N, N, Y, Y, N}},
+    {TurnClass::SelfWakeup, ModelCall::Sub, Output::Reply, {Y, N, N, N, N, N, N, N}},
+    // results arriving (PRD section 6: file, note, schedule and device writes refused): it
+    // may send a file a sub-agent made to its own chat and start the next wave of a
+    // fan-out (bounded by the job queue and the spend ceiling)
+    {TurnClass::SubagentReport, ModelCall::Sub, Output::Reply, {Y, N, N, Y, Y, N, N, N}},
+    // the nightly upkeep grooms the assistant's own memory and sends nothing
+    {TurnClass::Dream, ModelCall::Sub, Output::Silent, {Y, N, Y, N, N, N, N, N}},
+};
+
+// The tool class of each name or argument-narrowed key that is not a plain read. A name
+// with no row reads by its registration class: pure or read is Read, an effect Control.
+struct UseRow {
+  const char* key;
+  ToolUse use;
+};
+const UseRow kUses[] = {
+    // files the owner keeps (engine 1, then engine 2)
+    {"files.append", U::Write},
+    {"files.edit", U::Write},
+    {"files.delete", U::Write},
+    {"files.fetch", U::Write},   // saves a download as a file
+    {"files.pdf", U::Write},
+    {"artifact.save", U::Write},
+    {"write_file", U::Write},
+    {"append_file", U::Write},
+    {"edit_file", U::Write},
+    {"delete_file", U::Write},
+    {"move_file", U::Write},
+    {"fetch_url", U::Write},
+    {"pdf_write", U::Write},
+    {"ledger_write", U::Write},
+    {"ledger_target", U::Write},
+    // the assistant's own memory and notes
+    {"memory.write", U::Memory},
+    {"memory.update", U::Memory},
+    {"memory.pin", U::Memory},
+    {"memory.scratchpad", U::Memory},
+    {"memory.archive", U::Memory},   // a restore writes
+    {"openq.edit.change", U::Memory},
+    {"image.note", U::Memory},   // records what a photo showed
+    {"turn.scratchpad", U::Memory},
+    {"note", U::Memory},
+    // messages and files to a chat
+    {"reply.telegram", U::Send},
+    {"reply.telegram.other_chat", U::Send},
+    {"files.send", U::Send},
+    {"files.send.other_chat", U::Send},
+    {"send", U::Send},
+    // paid work beyond the turn
+    {"session.spawn", U::Spend},
+    {"session.tell", U::Spend},
+    {"turn.spawn", U::Spend},
+    {"image.generate", U::Spend},
+    {"agent_start", U::Spend},
+    {"image_generate", U::Spend},
+    // routines and wakeups
+    {"loop.create", U::Schedule},
+    {"loop.cancel", U::Schedule},
+    {"wakeup.set", U::Schedule},
+    {"schedule", U::Schedule},
+    // the device's light, sound, music and speech on its own speaker (a reminder said aloud)
+    {"reply.speak", U::Ambient},
+    {"device.tts", U::Ambient},
+    {"speak", U::Ambient},
+    {"device.led", U::Ambient},
+    {"device.lights", U::Ambient},
+    {"device.config", U::Ambient},   // each knob still has its own action rule
+    {"media.play", U::Ambient},
+    {"media.pause", U::Ambient},
+    {"media.stop", U::Ambient},
+    {"device.selftest.audible", U::Ambient},
+    // settings, skills, people, the head
+    {"device.reboot", U::Control},
+    {"device.orch_model", U::Control},
+    {"prefs.edit.change", U::Control},
+    {"memory.config.update", U::Control},
+    {"models.list.refresh", U::Control},
+    {"skill.save", U::Control},
+    {"skill.delete", U::Control},
+    {"skill_save", U::Control},
+    {"skill_delete", U::Control},
+    {"tenant.set_role", U::Control},
+    {"tenant.set_quota", U::Control},
+    {"session.terminate", U::Control},
+    {"agent_stop", U::Control},
+    {"files.share", U::Control},   // makes a file readable by everyone who talks to the device
+    {"files.share.owner", U::Control},
+    {"share_file", U::Control},
+    // reads whose registration class is an effect only because a verb narrows them
+    {"prefs.edit", U::Read},
+    {"openq.edit", U::Read},
+    {"memory.config", U::Read},
+};
+
+const UseRow* useRow(const std::string& key) {
+  for (const UseRow& r : kUses)
+    if (key == r.key) return &r;
+  return nullptr;
+}
+
+ToolUse useOfKey(const std::string& key) {
+  if (const UseRow* r = useRow(key)) return r->use;
+  return toolClassFor(key).effect == EffectClass::Effect ? U::Control : U::Read;
+}
+
+// A device action by its kind: light, sound and speech Ambient, the rest Control.
+ToolUse useOfDeviceAction(ArduinoJson::JsonVariantConst el) {
+  const char* key = deviceActionKey(validateAction(el).kind);
+  return key && *key ? useOfKey(key) : U::Control;
+}
+
+const char* classNoun(TurnClass c) {
+  switch (c) {
+    case TurnClass::UpdateNotice:   return "the update notice";
+    case TurnClass::Reminder:       return "a reminder";
+    case TurnClass::Wakeup:         return "a wakeup";
+    case TurnClass::SelfWakeup:     return "a held note";
+    case TurnClass::SubagentReport: return "a sub-agent report";
+    case TurnClass::Dream:          return "the nightly upkeep";
+    default:                        return "a routine";   // Routine (Attended is never refused)
+  }
+}
+
+// What a tool class does, as the noun the refusal names.
+const char* useNoun(ToolUse u) {
+  switch (u) {
+    case U::Write:    return "changes to files";
+    case U::Memory:   return "memory and note writes";
+    case U::Send:     return "messages and files to a chat (its reply is what reaches the owner)";
+    case U::Spend:    return "paid work such as sub-agents or images";
+    case U::Schedule: return "routine and wakeup changes";
+    case U::Ambient:  return "the light, sound and speech";
+    default:          return "settings, skills and permissions";   // Control (a Read is never refused)
+  }
+}
+
+std::string refusalFor(TurnClass c, ToolUse u) {
+  return std::string("Not run: ") + classNoun(c) + " runs with nobody writing, and " + useNoun(u) +
+         " are closed to it. Nothing was changed.";
+}
+
+bool granted(TurnClass c, ToolUse u, bool pathListedNow) {
+  const Grant g = unattendedPolicy(c).grant[(int)u];
+  return g == Grant::Yes || (g == Grant::ListedPaths && pathListedNow);
+}
+
+void cutField(bool present, ToolUse use, TurnClass cls, const char* field, int& cut, std::string& refusals) {
+  if (!present || granted(cls, use, false)) return;
+  ++cut;
+  refusals += std::string(field) + ": " + refusalFor(cls, use) + "\n";
+}
+
+}  // namespace
+
+const char* turnClassSlug(TurnClass c) {
+  switch (c) {
+    case TurnClass::Attended:       return "attended";
+    case TurnClass::UpdateNotice:   return "update-notice";
+    case TurnClass::Routine:        return "routine";
+    case TurnClass::Reminder:       return "reminder";
+    case TurnClass::Wakeup:         return "wakeup";
+    case TurnClass::SelfWakeup:     return "self-wakeup";
+    case TurnClass::SubagentReport: return "subagent-report";
+    case TurnClass::Dream:          return "dream";
+  }
+  return "routine";
+}
+
+const char* toolUseSlug(ToolUse u) {
+  switch (u) {
+    case U::Read:     return "read";
+    case U::Write:    return "write";
+    case U::Memory:   return "memory";
+    case U::Send:     return "send";
+    case U::Spend:    return "spend";
+    case U::Schedule: return "schedule";
+    case U::Ambient:  return "ambient";
+    case U::Control:  return "control";
+  }
+  return "control";
+}
+
+const UnattendedPolicyRow& unattendedPolicy(TurnClass c) {
+  for (const UnattendedPolicyRow& r : kPolicy)
+    if (r.cls == c) return r;
+  return kPolicy[(int)TurnClass::UpdateNotice];   // an unknown class grants nothing
+}
+
+const UnattendedPolicyRow* unattendedPolicyTable(size_t& count) {
+  count = sizeof(kPolicy) / sizeof(kPolicy[0]);
+  return kPolicy;
+}
+
+TurnClass fireClass(bool dream, bool selfWakeup, bool ownerReminder, bool once) {
+  if (dream) return TurnClass::Dream;
+  if (selfWakeup) return TurnClass::SelfWakeup;
+  if (ownerReminder) return TurnClass::Reminder;
+  if (once) return TurnClass::Wakeup;
+  return TurnClass::Routine;
+}
+
+ToolUse toolUseFor(const std::string& name, ArduinoJson::JsonObjectConst args) {
+  if (name == "device.control" || name == "device_control") {
+    if (!args["action"].is<ArduinoJson::JsonObjectConst>()) return U::Control;
+    return useOfDeviceAction(args["action"]);
+  }
+  // The narrowed key (a change to the standing rules, an audible self test, a refresh);
+  // the send narrowing (another chat) stays Send. No caller facts: a class, not a verdict.
+  return useOfKey(toolActionKey(name, args, ActionCaller{}));
+}
+
+std::string callPath(ArduinoJson::JsonObjectConst args) {
+  if (args["path"].is<const char*>()) return args["path"].as<const char*>();
+  const char* name = args["name"].is<const char*>() ? args["name"].as<const char*>() : "";
+  if (args["project"].is<const char*>() && *name) return std::string(args["project"].as<const char*>()) + "/" + name;
+  return name;
+}
+
+bool pathListed(const std::string& path, const std::vector<std::string>& listed) {
+  if (path.empty()) return false;
+  const std::string p = path[0] == '/' ? path.substr(1) : path;
+  if (p.empty() || p.find("..") != std::string::npos) return false;
+  for (const std::string& raw : listed) {
+    const std::string e = !raw.empty() && raw[0] == '/' ? raw.substr(1) : raw;
+    if (e.empty()) continue;
+    if (e.back() == '/' ? p.compare(0, e.size(), e) == 0 : p == e) return true;
+  }
+  return false;
+}
+
+std::string unattendedRefusal(TurnClass cls, const std::string& name, ArduinoJson::JsonObjectConst args,
+                              const std::vector<std::string>& listed) {
+  if (cls == TurnClass::Attended) return std::string();
+  const ToolUse u = toolUseFor(name, args);
+  const bool listedNow = u == U::Write && pathListed(callPath(args), listed);
+  return granted(cls, u, listedNow) ? std::string() : refusalFor(cls, u);
+}
+
+bool unattendedMayList(TurnClass cls, const std::string& name, bool hasListedPaths) {
+  if (cls == TurnClass::Attended) return true;
+  // device.control is classed by its action: offered when the light and speech are open
+  // (a reboot or a setting through it is still refused at the call).
+  if (name == "device.control" || name == "device_control") return granted(cls, U::Ambient, false);
+  const ToolUse u = toolUseFor(name, ArduinoJson::JsonObjectConst());
+  return granted(cls, u, hasListedPaths);
+}
+
+namespace {
+
+// One end-of-turn field's items, all of one class: kept when granted, else cut with one line.
+template <typename T>
+void cutAll(std::vector<T>& items, ToolUse use, TurnClass cls, const char* field, int& cut, std::string& refusals) {
+  if (items.empty() || granted(cls, use, false)) return;
+  cut += (int)items.size() - 1;
+  cutField(true, use, cls, field, cut, refusals);
+  items.clear();
+}
+
+// Items of mixed classes: each kept or cut by its own class.
+template <typename T, typename UseOf>
+void cutEach(std::vector<T>& items, UseOf useOf, TurnClass cls, const char* field, int& cut, std::string& refusals) {
+  std::vector<T> kept;
+  for (T& item : items) {
+    const ToolUse u = useOf(item);
+    if (granted(cls, u, false)) kept.push_back(std::move(item));
+    else cutField(true, u, cls, field, cut, refusals);
+  }
+  items.swap(kept);
+}
+
+ToolUse useOfSessionOp(const SessionOp& op) {
+  if (op.op == "spawn" || op.op == "tell") return U::Spend;
+  return op.op == "terminate" ? U::Control : U::Read;
+}
+
+ToolUse useOfDeviceJson(const DeviceAction& da) {
+  ArduinoJson::JsonDocument doc;
+  if (deserializeJson(doc, da.json)) return U::Control;
+  return useOfDeviceAction(doc.as<ArduinoJson::JsonVariantConst>());
+}
+
+}  // namespace
+
+int restrictUnattendedTurn(Turn& t, TurnClass cls, std::string& refusals) {
+  if (cls == TurnClass::Attended) return 0;
+  int cut = 0;
+  const bool memory = granted(cls, U::Memory, false);
+  cutField(!t.memory.empty(), U::Memory, cls, "memory", cut, refusals);
+  cutField(t.scratchpad.present, U::Memory, cls, "scratchpad", cut, refusals);
+  if (!memory) {
+    t.memory.clear();
+    t.scratchpad = ScratchUpdate{};
+  }
+  cutAll(t.mem_write, U::Memory, cls, "mem_write", cut, refusals);
+  cutAll(t.spawn, U::Spend, cls, "spawn", cut, refusals);
+  if (!granted(cls, U::Read, false)) {   // a class with no model call reads nothing either
+    cutField(!t.mem_query.empty() || !t.await_.empty(), U::Read, cls, "mem_query", cut, refusals);
+    t.mem_query.clear();
+    t.await_.clear();
+  }
+  cutEach(t.session_ops, useOfSessionOp, cls, "session_ops", cut, refusals);
+  cutEach(t.device, useOfDeviceJson, cls, "device", cut, refusals);
+  return cut;
+}
+
+std::string updateNoticeText(const std::string& version, const std::string& notes) {
+  std::string text = "Updated to " + version + " \xE2\x9C\x93";   // the check mark the notice always had
+  size_t end = notes.find_first_of("\r\n");
+  std::string line = notes.substr(0, end);
+  while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
+  size_t start = line.find_first_not_of(" \t");
+  if (start == std::string::npos) return text;
+  line = line.substr(start);
+  if (line.size() > kUpdateNoteMax) {
+    size_t cut = kUpdateNoteMax;
+    while (cut > 0 && ((unsigned char)line[cut] & 0xC0) == 0x80) --cut;   // never inside a character
+    line = line.substr(0, cut);
+  }
+  return text + "\n" + line;
+}
+
+}  // namespace orch
+}  // namespace nimbus

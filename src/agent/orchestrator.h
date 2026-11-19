@@ -13,6 +13,7 @@
 #include "nimbus/orch/token_usage.h"  // TokenUsage - Phase 0 cost seam (lastTurnUsage)
 #include "nimbus/orch/loops.h"        // FireOutcome - Local Loops scheduled-turn result
 #include "nimbus/orch/head_switch.h"  // HeadPause - what holds a provider off
+#include "nimbus/orch/unattended_policy.h"  // TurnClass - the unattended policy (RB-Q2a)
 
 // orchestrator - the Head-Orchestrator-v2 turn loop for Nimbus, ported from
 // Nuage-Solide src/agent/orchestrator.{h,cpp}. Single-task by design: handleMessage()
@@ -148,11 +149,13 @@ bool fileSendForTurn();
 // so the orchestrator layer carries no OTA dependency. Returns the reply text.
 void setOtaInstallHook(String (*fn)());
 
-// Stage an unattended SYSTEM turn (e.g. the post-firmware-update awareness turn)
-// from ANY task; drained on tg_poll at the top of pollJobs() via
-// injectScheduledTurn (quietOk - the model may stay silent). One slot, latest
-// stager wins; targets the first allow-listed chat.
-void stageSystemTurn(const String& prompt, const String& name);
+// Stage the chat row of the fixed post-update notice (orch::updateNoticeText, RB-Q2a) the
+// OTA hook already sent, from ANY task; written on tg_poll at the top of pollJobs() once
+// the owner is quiet, with no model call. One slot, latest stager wins.
+void stageUpdateNotice(const String& chatId, const String& text);
+// The class of the turn in flight for the unattended policy (Attended outside one, and
+// on any task other than the turn task).
+nimbus::orch::TurnClass unattendedClass();
 
 // Advance background jobs: dispatch at most one queued spawn per cycle (gated by
 // AGENT_MAX_ACTIVE_INFLIGHT + heap), poll at most one due job (round-robin), deliver

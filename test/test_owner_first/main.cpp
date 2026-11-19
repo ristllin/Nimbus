@@ -21,9 +21,8 @@
 //
 // Part 1 drives the REAL gate (owner_first.h) with a model of the tg_poll cycle in
 // pollTask order: Telegram poll (an owner turn when a message waits), then the pump
-// (staged system turn, then the fold pump), then the pause. Part 2 drives the REAL
-// engine: a bounded turn runs at most two tool rounds with a small tool budget, and
-// single-shot while the head is on a fallback provider.
+// (staged system turn, then the fold pump), then the pause. Since v5.2.0 (lane RB-Q2a)
+// the staged work is the fixed update notice, with no model call; the gate is unchanged.
 
 using agent::JobEngine;
 using agent::TurnEngine;
@@ -317,178 +316,11 @@ static void test_gate_rules() {
   TEST_ASSERT_TRUE(w.systemTurnMayStart(false, 0xFFFFFF00u + q, 0xFFFFFF00u));
 }
 
-// ---- part 2: the bounded turn in the engine ----------------------------------------
-namespace {
-const char* kQuietTurn = "{\"reply\":\"\",\"memory\":\"\",\"ask\":\"\"}";
-
-struct MiniRig {
-  FakePlatform plat;
-  FakeConfig cfg;
-  std::set<std::string> parked;
-  struct Call {
-    std::string host;
-    bool tools = false;
-    int maxRounds = -1;
-    size_t totalBytes = 0, resultBytes = 0;
-    std::string instructions;
-    int requests = 0;          // runLoop: model requests the real loop controller made
-    size_t replayBytes = 0;    // ...and the most replayed tool bytes any of them carried
-  };
-  bool runLoop = false;   // the host drives the real loop controller with the engine's caps
-
-  // A model that always asks for one more tool with a 3 KB result until its tools
-  // are taken away, run through runHeadLoop with the config the engine handed over.
-  static void driveLoop(const agent::HeadTools& t, Call& c) {
-    nimbus::orch::Transcript tr;
-    tr.addUser("[FIRMWARE UPDATED]");
-    nimbus::orch::HeadLoopHooks h;
-    h.nowMs = [] { return 1000u; };
-    h.transcript = &tr;
-    h.dispatch = [](const nimbus::orch::HeadToolCall& call) {
-      nimbus::orch::HeadToolResult r;
-      r.id = call.id;
-      r.name = call.name;
-      r.output = std::string(3000, 'n');
-      return r;
-    };
-    h.step = [&c, &tr](bool allowTools, const std::vector<nimbus::orch::HeadToolResult>&, uint32_t,
-                       const std::string&) {
-      c.requests++;
-      c.replayBytes = std::max(c.replayBytes, tr.toolBytes());
-      nimbus::orch::HeadStep st;
-      if (!allowTools) {
-        st.finished = true;
-        st.finalTurn = "{\"reply\":\"\"}";
-        return st;
-      }
-      st.toolCalls.push_back({"c" + std::to_string(c.requests), "memory_search", "{}"});
-      return st;
-    };
-    nimbus::orch::runHeadLoop(t.cfg, h);
-  }
-  std::vector<Call> calls;
-  std::vector<std::string> delivered;
-  std::unique_ptr<JobEngine> jobs;
-  std::unique_ptr<TurnEngine> eng;
-
-  MiniRig() {
-    JobEngine::Deps jd;
-    jd.principalFor = [](const std::string& chat) {   // this rig's chats are the owner's
-      return nimbus::orch::principalForRole(chat, nimbus::orch::Role::Admin);
-    };
-    jd.platform = plat.contract();
-    jd.deliver = [this](const std::string&, const std::string& t) { delivered.push_back(t); };
-    jobs.reset(new JobEngine(std::move(jd)));
-    TurnEngine::Deps d;
-    d.cfg = cfg.contract();
-    d.platform = plat.contract();
-    d.jobs = jobs.get();
-    d.deliver = [this](const std::string&, const std::string& t) { delivered.push_back(t); };
-    d.composeInputs = [](const std::string&) { return agent::ComposeInputs{}; };
-    d.firstAllowedChat = [] { return std::string("1001"); };
-    d.apply.deliver = d.deliver;
-    d.apply.principalFor = [](const std::string& chat) {
-      nimbus::orch::Principal p;
-      p.ns = nimbus::orch::nsForChat(chat, false);
-      return p;
-    };
-    d.hosts.parked = [this](const std::string& h, agent::providers::HostPark*) { return parked.count(h) > 0; };
-    for (const char* h : {"openai", "anthropic", "mistral"}) {
-      const std::string host = h;
-      d.hosts.add(host, [this, host](std::string&, const std::string& ins, const std::string&, std::string& out,
-                                     std::string&, const agent::HeadTools* t, nimbus::orch::TokenUsage*) {
-        Call c;
-        c.host = host;
-        c.tools = t != nullptr;
-        if (t) {
-          c.maxRounds = t->cfg.maxRounds;
-          c.totalBytes = t->cfg.maxTotalToolBytes;
-          c.resultBytes = t->cfg.maxToolResultBytes;
-          if (runLoop) driveLoop(*t, c);
-        }
-        c.instructions = ins;
-        calls.push_back(c);
-        out = kQuietTurn;
-        return true;
-      });
-    }
-    eng.reset(new TurnEngine(std::move(d)));
-  }
-  nimbus::orch::FireOutcome bounded() {
-    return eng->injectBoundedTurn("1001", "[FIRMWARE UPDATED] v4.6.1", "firmware-update", TurnEngine::TurnBounds{});
-  }
-};
-}  // namespace
-
-// A healthy head: the loop runs, at most two rounds, a 4 KB tool budget, 2 KB per
-// result - never the owner's configured loop (12 rounds, 24 KB here; 8 on Lumi).
-static void test_bounded_turn_never_runs_the_owner_loop() {
-  MiniRig r;
-  const nimbus::orch::FireOutcome o = r.bounded();
-  TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_INT(1, (int)r.calls.size());
-  TEST_ASSERT_TRUE(r.calls[0].tools);
-  TEST_ASSERT_EQUAL_INT(2, r.calls[0].maxRounds);
-  TEST_ASSERT_EQUAL_UINT32(4096, (uint32_t)r.calls[0].totalBytes);
-  TEST_ASSERT_EQUAL_UINT32(2048, (uint32_t)r.calls[0].resultBytes);
-  // The prompt states the same cap the loop runs (CUM-514's rule).
-  TEST_ASSERT_TRUE(r.calls[0].instructions.find("several rounds (at most 2)") != std::string::npos);
-  TEST_ASSERT_EQUAL_INT(0, (int)r.delivered.size());   // quiet: silence is a valid outcome
-  // The bounds end with the turn: the next scheduled turn has the configured loop.
-  r.eng->injectScheduledTurn("1001", "check the weather", "morning");
-  TEST_ASSERT_EQUAL_INT(12, r.calls.back().maxRounds);
-  TEST_ASSERT_EQUAL_UINT32(24576, (uint32_t)r.calls.back().totalBytes);
-  // An owner who tuned the loop below the bound keeps the tighter value.
-  MiniRig small;
-  small.cfg.rounds = 1;
-  small.cfg.totalCap = 2048;
-  small.bounded();
-  TEST_ASSERT_EQUAL_INT(1, small.calls[0].maxRounds);
-  TEST_ASSERT_EQUAL_UINT32(2048, (uint32_t)small.calls[0].totalBytes);
-}
-
-// The token bound, end to end: the engine's bounded caps through the REAL loop
-// controller, against a model that would loop forever. At most three requests (two
-// tool rounds, then the forced answer), and no request replays more than two
-// clamped results - so every request is the base prompt plus a few KB, where the
-// v4.6.0 turn sent eight ever-growing requests (166,975 input tokens on Lumi). An
-// owner turn under the same model runs the configured loop, the counter-case.
-static void test_bounded_turn_token_bound_through_the_loop() {
-  MiniRig r;
-  r.runLoop = true;
-  r.bounded();
-  TEST_ASSERT_EQUAL_INT(3, r.calls[0].requests);
-  TEST_ASSERT_TRUE(r.calls[0].replayBytes <= 2 * (2048 + 64));
-  // An owner turn under the same model is not bounded: a plain chat line runs the
-  // configured loop like any other turn (the 2-round plain-chat cap went in v5.2.0, lane
-  // RB-Q1c), so this never-satisfied model gets more than the bounded turn's 3 requests.
-  r.eng->handleMessage("hi", "Roy", "1001");
-  TEST_ASSERT_TRUE(r.calls.back().requests > 3);
-  r.jobs->addFreshResult("job0000", "modelX", "findings");
-  r.eng->handleMessage("and the results?", "Roy", "1001");
-  TEST_ASSERT_TRUE(r.calls.back().requests > 3);   // a work turn keeps the configured loop
-}
-
-// On a fallback head (the configured head over its token budget, or parked or
-// paused) the bounded turn is single-shot: no tool loop, and the prompt says so.
-// An owner turn in the same state keeps its loop.
-static void test_bounded_turn_on_a_fallback_is_single_shot() {
-  for (int how = 0; how < 2; how++) {
-    MiniRig r;
-    if (how == 0) r.cfg.overBudgetHosts = {"anthropic"};   // Lumi: "anthropic over token budget"
-    else r.parked = {"anthropic"};                          // Lumi: "anthropic paused"
-    TEST_ASSERT_TRUE(r.eng->headOnFallback());
-    r.bounded();
-    TEST_ASSERT_FALSE_MESSAGE(r.calls.empty(), how ? "parked" : "over budget");
-    TEST_ASSERT_FALSE_MESSAGE(r.calls.back().tools, how ? "parked" : "over budget");
-    TEST_ASSERT_TRUE(r.calls.back().host != "anthropic");
-    TEST_ASSERT_TRUE(r.calls.back().instructions.find("tool loop is OFF") != std::string::npos);
-    r.eng->handleMessage("hi", "Roy", "1001");
-    TEST_ASSERT_TRUE(r.calls.back().tools);
-  }
-  MiniRig healthy;
-  TEST_ASSERT_FALSE(healthy.eng->headOnFallback());
-}
+// ---- part 2: the post-update turn is gone ------------------------------------------
+// The bounded awareness turn (v4.6.1) was deleted in v5.2.0 (lane RB-Q2a): the update
+// notice is a fixed string with no model call, delivered once this gate lets it start
+// (test_unattended_policy proves no provider request). The gate rules above still decide
+// when it goes out.
 
 // The idle re-check of a parked provider is one more blocking request on the task that reads
 // the owner's messages: it waits for a quiet moment and for a held album, and no bound forces it.
@@ -521,9 +353,6 @@ int main(int, char**) {
   RUN_TEST(test_owner_conversation_never_waits_behind_a_fold);
   RUN_TEST(test_brisk_conversation_gets_its_fold_within_the_bound);
   RUN_TEST(test_gate_rules);
-  RUN_TEST(test_bounded_turn_never_runs_the_owner_loop);
-  RUN_TEST(test_bounded_turn_on_a_fallback_is_single_shot);
   RUN_TEST(test_the_idle_recheck_waits_for_the_owner);
-  RUN_TEST(test_bounded_turn_token_bound_through_the_loop);
   return UNITY_END();
 }

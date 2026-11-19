@@ -2,9 +2,9 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43823 ceiling=47989 entries=411 sha8=e31f6c20
-# class device_notes bytes=54036 ceiling=54203 entries=1457 sha8=692e97dd
+# class device_notes bytes=53835 ceiling=54203 entries=1452 sha8=7df1bd2b
 # class tool_descriptions bytes=22131 ceiling=23131 entries=99 sha8=56b90134
-# class tool_results bytes=34929 ceiling=41962 entries=1076 sha8=49b44107
+# class tool_results bytes=35337 ceiling=41962 entries=1094 sha8=11be73d9
 # class side_prompts bytes=9507 ceiling=9795 entries=170 sha8=63c24ee1
 # class skills bytes=8773 ceiling=23264 entries=26 sha8=3ef5d5db
 system	lib/core/include/nimbus/orch/orch_schema.h	955fc9b7	884	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. Never invent ids, links, or successes."
@@ -1065,7 +1065,7 @@ device_notes	lib/harness/src/engine.cpp	65984bce	20	"deferred: low memory"
 device_notes	lib/harness/src/engine.cpp	1609a90d	39	"deferred: monthly spend ceiling reached"
 device_notes	lib/harness/src/engine.cpp	2323d1e2	27	"\n[SELF-WAKEUP]\nA note from "
 device_notes	lib/harness/src/engine.cpp	0694288a	17	"a background turn"
-device_notes	lib/harness/src/engine.cpp	50c76768	354	" is due now (quiet hours have ended). Re-check it before sending: if it is stale (its time has passed, e.g. a brief about delays that ended) or was already delivered, reply with nothing at all; otherwise deliver it to the owner in plain words, saying what it is and when it was noticed. One short reply. No tools - this turn changes nothing.\n\nThe note:\n\n"
+device_notes	lib/harness/src/engine.cpp	faaac164	360	" is due now (quiet hours have ended). Re-check it before sending: if it is stale (its time has passed, e.g. a brief about delays that ended) or was already delivered, reply with nothing at all; otherwise deliver it to the owner in plain words, saying what it is and when it was noticed. One short reply. Read-only tools: this turn changes nothing.\n\nThe note:\n\n"
 device_notes	lib/harness/src/engine.cpp	c4ad9e16	262	"\n[REMINDER]\nThe owner set a one-time reminder for this moment (with /remind) and it just fired. Deliver the reminder to them now - do what it asks if it's an action, otherwise just remind them plainly. There is no new owner message; this is the note they left:\n\n"
 device_notes	lib/harness/src/engine.cpp	ff626001	32	"\n[WAKEUP]\nYour one-time wakeup \""
 device_notes	lib/harness/src/engine.cpp	5980b9cf	204	"\" just fired - you scheduled it for yourself and it has now retired (it will not fire again; set another with wakeup.set if the work needs one). There is no new owner message. Your note when you set it:\n\n"
@@ -1737,11 +1737,6 @@ device_notes	src/main.cpp	66913d98	35	"Update committed - restarting into "
 device_notes	src/main.cpp	ba3cc24c	11	"Updated to "
 device_notes	src/main.cpp	64d78c07	19	" - verified healthy"
 device_notes	src/main.cpp	4a42d48c	9	". Notes: "
-device_notes	src/main.cpp	ba3cc24c	11	"Updated to "
-device_notes	src/main.cpp	9ec81c78	47	"[FIRMWARE UPDATED] This device just updated to "
-device_notes	src/main.cpp	fc5b0c6a	46	" and the new firmware passed its health check."
-device_notes	src/main.cpp	279ee4ac	16	" Release notes: "
-device_notes	src/main.cpp	a303f4cb	87	" Note anything durable to memory; only message the owner if the changes matter to them."
 device_notes	src/main.cpp	78374bd3	11	"Installing "
 device_notes	src/main.cpp	b5cdd4e3	29	". Keep the device powered on."
 device_notes	src/main.cpp	4e3d0677	30	"Update verified. Restarting..."
@@ -2513,6 +2508,24 @@ tool_results	lib/core/src/orch_tool_registry.cpp	a258e6c0	17	"missing tool name"
 tool_results	lib/core/src/orch_tool_registry.cpp	2d8e73c6	16	"method not found"
 tool_results	lib/core/src/orch_turn.cpp	7fc0e974	32	"top-level value is not an object"
 tool_results	lib/core/src/orch_turn.cpp	74572a52	22	"reply must be a string"
+tool_results	lib/core/src/orch_unattended_policy.cpp	1a5b11f7	17	"the update notice"
+tool_results	lib/core/src/orch_unattended_policy.cpp	e099fed8	10	"a reminder"
+tool_results	lib/core/src/orch_unattended_policy.cpp	19696840	8	"a wakeup"
+tool_results	lib/core/src/orch_unattended_policy.cpp	f1254ea7	11	"a held note"
+tool_results	lib/core/src/orch_unattended_policy.cpp	0dd2c6b0	18	"a sub-agent report"
+tool_results	lib/core/src/orch_unattended_policy.cpp	d98684b2	18	"the nightly upkeep"
+tool_results	lib/core/src/orch_unattended_policy.cpp	ce5e3e7f	9	"a routine"
+tool_results	lib/core/src/orch_unattended_policy.cpp	e3a1473b	16	"changes to files"
+tool_results	lib/core/src/orch_unattended_policy.cpp	5a8fd33d	22	"memory and note writes"
+tool_results	lib/core/src/orch_unattended_policy.cpp	09db7779	66	"messages and files to a chat (its reply is what reaches the owner)"
+tool_results	lib/core/src/orch_unattended_policy.cpp	96453ef2	38	"paid work such as sub-agents or images"
+tool_results	lib/core/src/orch_unattended_policy.cpp	2848c728	26	"routine and wakeup changes"
+tool_results	lib/core/src/orch_unattended_policy.cpp	10678241	27	"the light, sound and speech"
+tool_results	lib/core/src/orch_unattended_policy.cpp	183aac6d	32	"settings, skills and permissions"
+tool_results	lib/core/src/orch_unattended_policy.cpp	385ee16d	9	"Not run: "
+tool_results	lib/core/src/orch_unattended_policy.cpp	c40baab2	31	" runs with nobody writing, and "
+tool_results	lib/core/src/orch_unattended_policy.cpp	71e1e6a2	39	" are closed to it. Nothing was changed."
+tool_results	lib/core/src/orch_unattended_policy.cpp	ba3cc24c	11	"Updated to "
 tool_results	lib/harness/src/skill_store.cpp	3329691a	47	"inject must be spawn, context or both (it was '"
 tool_results	lib/harness/src/skill_store.cpp	ed79a1ff	40	"'); put the description in desc: instead"
 tool_results	lib/harness/src/skill_store.cpp	fc27a814	29	"unknown front-matter key(s): "

@@ -326,16 +326,17 @@ const ConfigKnob* configKnobTable(size_t& count) {
 std::string configKnobKey(const char* knob) { return std::string("device.config.") + (knob ? knob : ""); }
 
 void installActionRules(ToolRegistry& reg, std::function<bool()> unattended,
-                        std::function<std::string()> turnChat) {
-  reg.setAccessResolver([unattended, turnChat](const std::string& name, ArduinoJson::JsonObjectConst args,
-                                               const Principal& who) -> ToolRegistry::Verdict {
+                        std::function<std::string()> turnChat, ExtraActionRule extra) {
+  reg.setAccessResolver([unattended, turnChat, extra](const std::string& name, ArduinoJson::JsonObjectConst args,
+                                                      const Principal& who) -> ToolRegistry::Verdict {
     ActionCaller c = actionCaller(who, unattended && unattended());
     // The owner's own chat matters only to the two tools that name a target, and the
     // turn's chat is read only for them (never for the LAN, never ambiently on every call).
     if (!c.lan && c.chat.empty() && turnChat && (name == "reply.telegram" || name == "files.send"))
       c.chat = turnChat();
     const std::string key = toolActionKey(name, args, c);
-    const std::string why = actionRefusal(key, c);
+    std::string why = actionRefusal(key, c);
+    if (why.empty() && extra) why = extra(name, args, c);
     return why.empty() ? ToolRegistry::Verdict::allow() : ToolRegistry::Verdict::deny(why);
   });
 }

@@ -190,9 +190,9 @@ results turn could move the main model or stop sub-agents.
   position on the allowlist never makes anyone else one. The owner-only commands
   (`/model`, `/budget`, `/update`, `/mcp`, ...) read the same role.
 - **Unattended**: nobody is writing this turn right now. Routines, wakeups, the
-  nightly dream, the turn that summarizes sub-agent results, and the device's own
-  post-update turn are unattended. A routine, a wakeup and the post-update turn run
-  on the owner's chat; a results summary runs on the chat that started the
+  nightly dream and the turn that summarizes sub-agent results are unattended (the
+  post-update notice is a fixed string, no turn at all, since v5.2.0). A routine and a
+  wakeup run on the owner's chat; a results summary runs on the chat that started the
   sub-agents, under that chat's role, so the role alone cannot tell the owner's
   automatic turns apart from the owner.
 - **LAN**: the call came over `POST /mcp`.
@@ -279,6 +279,30 @@ rights so a tool client on the network cannot act as the owner through it, but t
 same code also opens the web chat, which runs as the owner. Treat the code as the
 owner's password.
 
+**The unattended policy** (v5.2.0, `lib/core/src/orch_unattended_policy.cpp`). On top of
+the rule table, a turn nobody is writing runs under its class's row. It may read; it never
+changes a setting, skill or permission, and never writes a file (engine 2's routines may
+write only the paths their own definition lists); only the nightly upkeep writes memory.
+A routine, a reminder, a wakeup and a held note send only through their own reply (held
+through quiet hours) and start no paid work. The sub-agent report may send a file a
+sub-agent made to its own chat and start the next wave of a fan-out (PRD section 6),
+which the job queue and the spend ceiling bound. Messages and files to any other chat stay
+the owner's, writing now (the rule table). An unattended request carries the provider's
+built-ins only, never the owner's connectors, whose calls run on the provider's side. The
+check runs at the registry's access seam on every route (the LAN endpoint and calls from
+other tasks are no turn and are skipped), and a refused call reads one plain "Not run: ..."
+line.
+
+| Class | Read | Write files | Memory | Send (own chat) | Spend | Schedule | Light, sound, speech | Settings |
+|---|---|---|---|---|---|---|---|---|
+| Routine (owner's, approved) | yes | listed paths only (none on v5.2.0) | no | no | no | follow-up wakeup | yes | no |
+| Reminder (owner's /remind) | yes | no | no | no | no | no | yes | no |
+| Wakeup (assistant's, often at the owner's word) | yes | no | no | no | no | next wakeup | yes | no |
+| Self-wakeup (held note) | yes | no | no | no | no | no | no | no |
+| Sub-agent report | yes | no | no | yes | next wave | no | no | no |
+| Nightly upkeep | yes | no | yes | no | no | no | no | no |
+| Update notice | no model call: a fixed string | | | | | | | |
+
 **What is not covered yet** (tracked for the next release):
 
 - "Owner, attended" proves the owner is writing, not that an instruction came from
@@ -288,9 +312,6 @@ owner's password.
   actions do not yet.
 - Members and guests spend the owner's provider budget on their own turns (chat,
   `web.search`, images, sub-agents), within the spend ceilings.
-- The unattended column does not tell an owner's routine from a summary of the
-  owner's own sub-agents fed by outside text, so such a summary keeps the owner's
-  everyday actions (the ring, the speaker, music, a wakeup, the scratchpad).
 - A Mistral head conversation pins the connectors it started with: a chat whose role
   changes keeps its open conversation's connectors until that conversation is reset.
 - A routine that runs on the web chat or voice and names the owner's Telegram chat

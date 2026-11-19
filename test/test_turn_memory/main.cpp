@@ -730,15 +730,10 @@ static void test_a_memory_deferred_one_shot_retries_soon() {
 
 // F2 (v4.6.1 review): a failed allocation in the head loop after round 1 billed (and
 // its reply.telegram told the owner) is no memory refusal. The fire is not deferred
-// with an empty error (drainSystemTurn would restage the post-update turn, a routine
-// would fire again, a one-shot would retry: the owner messaged twice, round 1 billed
-// twice), and round 1's usage is metered once. Counter-test: a throw before any
-// provider request still defers, with nothing billed.
-static orch::FireOutcome fireScheduledOrBounded(Rig& r, bool bounded) {
-  if (bounded) return r.eng->injectBoundedTurn("1001", "[FIRMWARE UPDATED] v4.6.1", "firmware-update",
-                                               TurnEngine::TurnBounds{});
-  return r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1");
-}
+// with an empty error (a routine would fire again, a one-shot would retry: the owner
+// messaged twice, round 1 billed twice), and round 1's usage is metered once.
+// Counter-test: a throw before any provider request still defers, with nothing billed.
+static orch::FireOutcome fireScheduled(Rig& r) { return r.eng->injectScheduledTurn("1001", "say hi", "Morning", "lp1"); }
 
 static int meteredPromptTokens(const Rig& r) {
   int billed = 0;
@@ -747,14 +742,14 @@ static int meteredPromptTokens(const Rig& r) {
 }
 
 static void test_a_failed_allocation_after_a_billed_round_is_not_a_defer() {
-  for (int bounded = 0; bounded < 2; ++bounded) {
+  {
     for (int replies = 0; replies < 2; ++replies) {
       char why[48];
-      std::snprintf(why, sizeof why, "bounded=%d replies=%d", bounded, replies);
+      std::snprintf(why, sizeof why, "replies=%d", replies);
       Rig r;
       r.billThenThrow = true;
       r.roundReplies = replies == 1;
-      const orch::FireOutcome o = fireScheduledOrBounded(r, bounded == 1);
+      const orch::FireOutcome o = fireScheduled(r);
       TEST_ASSERT_FALSE_MESSAGE(r.billThenThrow, why);   // the host was asked and threw
       TEST_ASSERT_FALSE_MESSAGE(o.ok, why);
       TEST_ASSERT_FALSE_MESSAGE(o.deferred, why);
@@ -772,7 +767,7 @@ static void test_a_failed_allocation_after_a_billed_round_is_not_a_defer() {
     }
     Rig early;   // before any provider request: still a defer, nothing billed
     early.throwAt = "context";
-    const orch::FireOutcome d = fireScheduledOrBounded(early, bounded == 1);
+    const orch::FireOutcome d = fireScheduled(early);
     TEST_ASSERT_TRUE(early.throwAt.empty());
     TEST_ASSERT_TRUE(d.deferred);
     TEST_ASSERT_TRUE(d.error.empty());
@@ -1092,16 +1087,6 @@ static void test_a_failed_reply_row_does_not_send_the_short_reply_twice() {
   TEST_ASSERT_EQUAL(0, PsramFirstScope::depth());
 }
 
-// The post-update system turn deferred for memory is staged again, never dropped,
-// and a newer staged turn is not overwritten by it (device seam, source guard).
-static void test_a_memory_deferred_system_turn_is_staged_again() {
-  const std::string orch = readSource("src/agent/orchestrator.cpp");
-  TEST_ASSERT_TRUE(orch.find("if (o.deferred && o.error.empty()) {") != std::string::npos);
-  TEST_ASSERT_TRUE(orch.find("restageSystemTurn(prompt, name);") != std::string::npos);
-  TEST_ASSERT_TRUE(orch.find("if (!s_sysTurnPending) {") != std::string::npos);
-  TEST_ASSERT_TRUE(orch.find("millis() - s_sysTurnDeferredAt < kSysTurnRetryMs") != std::string::npos);
-}
-
 // ---- the device seams (source guards) ------------------------------------------------
 
 // The switch restores exactly the boot's spill limit, and the boot still sets it.
@@ -1152,7 +1137,6 @@ int main() {
   RUN_TEST(test_speech_is_an_answer_only_when_heard);
   RUN_TEST(test_device_hand_overs_note_the_spoke);
   RUN_TEST(test_a_failed_reply_row_does_not_send_the_short_reply_twice);
-  RUN_TEST(test_a_memory_deferred_system_turn_is_staged_again);
   RUN_TEST(test_psram_first_restores_the_boot_spill_limit);
   RUN_TEST(test_psram_first_scopes_overlap_across_tasks);
   return UNITY_END();

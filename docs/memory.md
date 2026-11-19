@@ -225,11 +225,7 @@ buffers (freed a few ms after its connection closes) or work beside the turn (a 
 page being served), is sampled again up to five times, 200 ms apart. Still under it,
 the turn ends with one reply, "I'm short of memory right now. Please try again in a
 minute.", recorded in the chat history, and no provider request; a routine's fire is
-deferred instead (no message; a one-shot reminder retries in two minutes). The
-post-update awareness turn retries after one minute at the earliest when it was
-deferred before it began, and after two minutes when it ended for memory once begun
-(at its provider request, or a failed allocation in its setup): the owner-first quiet
-window counts that turn's end like any other. What the turn had already taken from its queues
+deferred instead (no message; a one-shot reminder retries in two minutes). What the turn had already taken from its queues
 (sub-agent results, the last turn's memory results, spawn notes) is put back for the
 next turn, so a synthesis turn waits and synthesizes later rather than handing the
 owner a raw dump. A failed C++ allocation in a turn ends it the same way instead of
@@ -237,8 +233,8 @@ aborting, and nothing it held stays taken: the TLS work slot, the card lock, the
 store's upload slot and the mutexes on the turn's path are held by scope guards. Once
 the turn has asked a provider, a failed allocation is no longer a deferral: a round may
 already have billed and run tools (a Telegram reply sent, a memory written), so a
-routine's or the awareness turn's fire counts as a failure, never a memory deferral
-(the awareness turn is not staged again), and the rounds it billed are metered. A fire
+routine's fire counts as a failure, never a memory deferral, and the rounds it billed
+are metered. A fire
 whose turn handed the model's words to the owner before it failed (its reply, a cut
 reply it salvaged, a Telegram message, file or voice note a tool sent, speech that
 played; for a routine's delivery to the web chat, whose history is the only copy, once

@@ -306,22 +306,39 @@ a quiet background turn; the next owner turn says it).
   - `DREAM` console forces it, including through the quiet-night skip. The console
     replies `DREAM queued`; the night runs on the turn task and logs
     `DREAM fired ok=<0|1> detail=<...>` when it ends.
-- **Quiet background turns** (the dream, the post-update awareness turn): every
+- **Quiet background turns** (the dream): every
   engine notice - failure replies, provider-switch and budget notices - is held
   back and logged instead of sent; the outcome is recorded where the owner reads
   it later (the timeline row, the routine's last error). A turn's own reply still
   delivers if the model decides the owner must see it.
-- **The post-update awareness turn is bounded and waits for the owner**
-  (`TurnEngine::injectBoundedTurn`, `nimbus/orch/owner_first.h`): at most two
-  tool rounds and a 4 KB tool-output budget, and single-shot (no tool loop)
-  while the head runs on a fallback provider. It starts only after two minutes
+- **The update notice is a fixed string; its chat row waits for the owner**
+  (`nimbus/orch/unattended_policy.h` `updateNoticeText`, `TurnEngine::recordNotice`,
+  `nimbus/orch/owner_first.h`): "Updated to <version>" and the release's one-line
+  note, sent at once with no model call and no tools (v5.2.0, lane RB-Q2a: the
+  model-written post-update turn rewrote a day the owner had just corrected). Its
+  assistant row, so later turns know it was said, is written only after two minutes
   with no turn and two minutes after it was staged; an automatic fold also waits
   for two quiet minutes, but at most 6 turns or 10 minutes, then starts right
   after a reply went out (a fold a context overflow queued runs at once). A
   message that arrives while either is already running waits for it to finish
   (the turn task is single by design).
+- **The unattended policy** (`nimbus/orch/unattended_policy.h`, v5.2.0): one table,
+  one row per class of turn nobody asked for (routine, owner reminder, the
+  assistant's own wakeup, self-wakeup, sub-agent report, the nightly upkeep, the
+  update notice), says which classes of tool it may call. Every class reads; none
+  changes a setting, and none writes a file (engine 2's routines may write the
+  paths their definition lists); only the upkeep writes memory. A routine, a
+  reminder, a wakeup and a held note send only through their own reply (held
+  through quiet hours) and start no paid work; the sub-agent report may send a
+  sub-agent's file to its own chat and start the next wave. A routine, a reminder
+  and a wakeup may set the light or speak; a routine and a wakeup may set a
+  follow-up wakeup. A refused call is answered with one plain "Not run: ..." line
+  the model reads, at the registry's access seam on every route; the turn is
+  offered only what its row allows; refused end-of-turn fields are logged; and an
+  unattended request carries the provider's built-ins only, never the owner's
+  connectors.
 - **Unattended-turn rails** (routines, wakeups, the dream, sub-agent results
-  synthesis, the post-update system turn alike): the caller rule table
+  synthesis alike): the caller rule table
   (`nimbus/orch/action_rules.h`) refuses them every owner-attended action - the main
   model, `reboot`, the voice, provider-routing, safety-override and device-name
   knobs, routines, skills, people, standing-rule changes, stopping sub-agents and the

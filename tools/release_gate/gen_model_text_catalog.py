@@ -108,6 +108,7 @@ E1_SOURCES = {
         "lib/core/src/orch_session_tools.cpp",
         "lib/core/src/orch_tool_groups.cpp",
         "lib/core/src/orch_tool_registry.cpp",
+        "lib/core/src/orch_unattended_policy.cpp",
         "lib/harness/src/skill_store.cpp",
         "lib/harness/src/websearch.cpp",
         "nimbusd/src/hosted_loops.h",
