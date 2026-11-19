@@ -79,6 +79,7 @@ class World:
         self.aid, self.arm, self.fault = aid, arm, fault
         self.fault_hits = 0
         self.notes: dict = {}
+        self.reminders: list = []
 
     def call(self, name: str, args) -> tuple:
         if not isinstance(args, dict):
@@ -113,8 +114,17 @@ class World:
             return f"stored note {key}: {val[:300]} (pinned {bool(args.get('pin'))})", False
         if name == "search":
             return "0 results", False
-        if name == "schedule":
-            return "stored reminder s1", False
+        if name == "schedule":  # this device has no reminders or routines until one is created
+            op = args.get("op")
+            if op == "create":
+                self.reminders.append(dict(args))
+                return f"stored {args.get('kind', 'reminder')} s{len(self.reminders)} at {args.get('when', '')}", False
+            if op == "list":
+                if not self.reminders:
+                    return "no reminders or routines", False
+                return "\n".join(f"s{k} {r.get('when', '')} {r.get('text', '')}" for k, r in
+                                 enumerate(self.reminders, 1)), False
+            return f"no reminder or routine with id {args.get('id', '')}", True
         return f"{name}: done", False
 
 
