@@ -19,6 +19,3 @@
 68 test_tx_overhead::test_wire_overhead_night_responses
 68 test_tx_overhead::test_wire_overhead_night_chat
 68 test_tx_overhead::test_wire_overhead_night_flat
-
-# Ruling 79 (RB-E1b's pre-merge check, carried by RB-E1c).
-79 test_plain_conformance::test_deliver_turn_adds_to_the_progress_of_an_earlier_attempt   # item 4: deliverTurn keeps earlier progress (RB-E3)
