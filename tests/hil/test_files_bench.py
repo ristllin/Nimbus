@@ -319,7 +319,15 @@ def _call(api, name: str, args: dict, timeout: float = 60.0) -> str:
 
 
 def _file(api, name: str) -> bytes:
-    r = api.download(PROJECT, name)
+    """The stored bytes. A unit still busy with its boot (503, or no answer) is waited out for up to 2 minutes;
+    any other answer is no file."""
+    for _ in range(24):
+        r = api.download(PROJECT, name)
+        if r.code not in (0, 503):
+            break
+        time.sleep(5)
+    if r.code != 200:
+        record("download.log", f"{name}: HTTP {r.code}")
     return r.body if r.code == 200 else b""
 
 
