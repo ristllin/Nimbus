@@ -8,6 +8,7 @@
 #include <unity.h>
 
 #include <algorithm>
+#include <functional>
 #include <new>
 #include <string>
 #include <vector>
@@ -984,6 +985,61 @@ inline void shortTurns(txb::Battery& b, int n) {
   }
 }
 
+// Rung 3's estimate is never above what the stand-in wire renders, for every kind of item a
+// closed turn holds (the file tools' receipts, an error result, an outside result's stub, a call
+// whose long argument is stored as its stub, a plain chat): sized by it, the omission frees what
+// the body is over in one climb. An estimate above the real bytes (stored lines: keys, a stub
+// copy beside a receipt) omits too few turns and needs a second climb (rb-main 6180ffd8d).
+inline void test_rung_three_estimate_never_exceeds_the_rendered_bytes_of_any_item_kind() {
+  struct Kind {
+    const char* name;
+    std::function<void(txb::Battery&, int)> turn;
+  };
+  const std::string body(600, 's');
+  const std::vector<Kind> kinds = {
+      {"chat", [&](txb::Battery& b, int i) { b.model.push(sp::say("ok " + std::to_string(i))); }},
+      {"a file receipt",
+       [&](txb::Battery& b, int i) {
+         b.model.push(sp::call("read_file", R"({"path":"notes/r.md"})"));
+         b.model.push(sp::say("read " + std::to_string(i)));
+       }},
+      {"an error result",
+       [&](txb::Battery& b, int i) {
+         b.model.push(sp::call("read_file", "{\"path\":\"notes/missing-" + std::to_string(i) + ".md\"}"));
+         b.model.push(sp::say("missing " + std::to_string(i)));
+       }},
+      {"an outside result",
+       [&](txb::Battery& b, int i) {
+         b.model.push(sp::call("web_search", "{\"q\":\"w" + std::to_string(i) + "\",\"bytes\":3000}"));
+         b.model.push(sp::say("searched " + std::to_string(i)));
+       }},
+      {"a long argument",
+       [&](txb::Battery& b, int i) {
+         b.model.push(sp::call("write_file", "{\"path\":\"notes/w" + std::to_string(i) + ".md\",\"text\":\"" +
+                                                 std::string(1500, 'w') + "\"}"));
+         b.model.push(sp::say("wrote " + std::to_string(i)));
+       }},
+  };
+  for (const Kind& k : kinds) {
+    txb::Battery b;
+    b.world.files["notes/r.md"] = std::string(900, 'r');
+    // History up to just under the cap, so no request before the big read climbs.
+    for (int i = 0; i < 400 && (b.model.requests().empty() || b.model.last().body.size() < 80000); ++i) {
+      k.turn(b, i);
+      b.advance(60);
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("turn " + std::to_string(i) + " " + body, out));
+      TEST_ASSERT_EQUAL_MESSAGE(0, (int)ladderEvents(b), k.name);
+    }
+    b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));
+    b.model.push(sp::say("Read it."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read the big one", out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Read it.", out.text.c_str(), k.name);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)ladderEvents(b), k.name);
+  }
+}
+
 inline void test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows() {
   {
     txb::Battery b;
@@ -1429,6 +1485,7 @@ inline void run() {
   RUN_TEST(test_more_resolution_edges);
   RUN_TEST(test_a_refused_send_still_delivers_the_reply_in_hand);
   RUN_TEST(test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows);
+  RUN_TEST(test_rung_three_estimate_never_exceeds_the_rendered_bytes_of_any_item_kind);
   RUN_TEST(test_a_refusal_at_every_allocation_of_a_turn_never_leaves_runTurn);
   RUN_TEST(test_a_throwing_tool_is_one_failed_call);
   RUN_TEST(test_the_last_round_with_only_calls_ends_with_the_limit_line);

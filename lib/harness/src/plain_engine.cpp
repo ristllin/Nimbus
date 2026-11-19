@@ -529,27 +529,36 @@ class TurnRun {
     return false;
   }
 
-  // What one stored item adds to the request, about: its text for what renders (an owner or
-  // assistant text, a call, a device note), a result as it shows (whole receipt, or its stub
-  // when stubbed or outside), nothing for the items no wire renders (t, i, x, d, e, s; k of a
-  // closed turn). Rung 3 sizes its omission with it.
+  // What one stored item adds to the request, at least: the text it shows, with no wire's
+  // framing (an owner text with its stamp, an assistant text, a device note, a call's id, name
+  // and arguments, a result as it shows: its stub when stubbed or outside, else the receipt or
+  // the whole bulk), nothing for the items no wire renders (t, i, x, d, e, s; k of a closed
+  // turn). Rung 3 sizes its omission with it: a lower bound on every wire, so the turns it omits
+  // always free what the body is over (framing and JSON escapes only add), and never a sum of
+  // stored lines, whose keys and stub copies count bytes the request does not carry.
   size_t renderedBytes(size_t index, const tx::ArenaEntry& e) const {
-    switch (e.kind) {
-      case tx::ItemKind::User:
-      case tx::ItemKind::Assistant:
-      case tx::ItemKind::Call:
-      case tx::ItemKind::DeviceNote:
-        return e.lineBytes;
-      case tx::ItemKind::Result: {
-        tx::Item& r = t_.read;
-        if (!d_.arena->get(index, r).ok()) return e.lineBytes;
-        const bool stub = r.cls == tx::ResultClass::Outside ||
-                          (r.cls == tx::ResultClass::Bulk && (r.q <= c_.head.stub || r.q <= t_.ladder.closedThrough));
-        return stub || r.cls == tx::ResultClass::Receipt ? e.lineBytes : r.bytes;
-      }
-      default:
-        return 0;
-    }
+    if (!rendersText(e.kind)) return 0;
+    tx::Item& it = t_.read;
+    if (!d_.arena->get(index, it).ok()) return 0;
+    if (e.kind == tx::ItemKind::User) return it.x.size() + stampBytes(it);
+    if (e.kind == tx::ItemKind::Call) return it.id.size() + it.n.size() + it.args.size();
+    if (e.kind == tx::ItemKind::Result) return shownBytes(it);
+    return it.x.size();
+  }
+  static bool rendersText(tx::ItemKind k) {
+    return k == tx::ItemKind::User || k == tx::ItemKind::Assistant || k == tx::ItemKind::Call ||
+           k == tx::ItemKind::DeviceNote || k == tx::ItemKind::Result;
+  }
+  size_t stampBytes(const tx::Item& u) const {
+    char stamp[tx::kStampMaxBytes];
+    return tx::messageStamp(u.t, u.tzMinutes, t_.ctx.dayStartMin, stamp, sizeof stamp).ok() ? std::strlen(stamp) : 0;
+  }
+  // A result as it shows: its stub when stubbed or outside, else the receipt or the whole bulk.
+  size_t shownBytes(const tx::Item& r) const {
+    const bool stub = r.cls == tx::ResultClass::Outside ||
+                      (r.cls == tx::ResultClass::Bulk && (r.q <= c_.head.stub || r.q <= t_.ladder.closedThrough));
+    if (stub) return r.st.size();
+    return r.cls == tx::ResultClass::Receipt || r.handle.empty() ? r.x.size() : r.bytes;
   }
 
   // Rung 3: the oldest whole turns that free at least `need` more bytes than the turns it
