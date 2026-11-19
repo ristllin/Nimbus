@@ -93,6 +93,7 @@ const sidebars = {
         'reference/turn-contract',
         'reference/capabilities-matrix',
         'reference/request-budgets',
+        'reference/transcript-budgets',
         'reference/tools-and-commands',
         'reference/changelog',
       ],

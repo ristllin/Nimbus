@@ -75,6 +75,7 @@ const PAGES = [
   ['reference/turn-contract.md', 'reference/turn-contract.md', 'Turn contract', 'Turn contract'],
   ['reference/capabilities-matrix.md', 'reference/capabilities-matrix.md', 'Provider capability matrix', 'Capability matrix'],
   ['reference/request-budgets.md', 'reference/request-budgets.md', 'Request budgets per model', 'Request budgets'],
+  ['reference/transcript-budgets.md', 'reference/transcript-budgets.md', 'Transcript budgets per head (engine 2)', 'Transcript budgets'],
   ['tools-and-commands.md', 'reference/tools-and-commands.md', 'Tools & Commands', 'Tools & commands'],
   ['changelog.md', 'reference/changelog.md', 'Changelog', 'Changelog'],
   // Forking & Contributing

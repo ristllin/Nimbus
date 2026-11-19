@@ -873,8 +873,8 @@ bytes on purpose adds `tools/release_gate/prompt_ceiling.d/<lane>.json` (`lane`,
 what keeps a long conversation in the request without the old summary. A compaction
 writes one digest per local day as an s item, one line of at most 768 B that starts with
 the device's day header (`digestText`: "Tue 17 Nov 2026: ..."). The digest block is the
-newest digests that fit the profile's cap (tight 2,048, lean 4,096, standard and wide
-6,144 B), oldest first, one per line (`digestBlock`). It is a pure function of the
+newest digests that fit the profile's cap (full, the default, and standard and wide 6,144 B;
+the owner's smaller tight 2,048 and lean 4,096), oldest first, one per line (`digestBlock`). It is a pure function of the
 digests: it stays byte-identical until a compaction appends a digest at its end, and
 only a move to the archive changes its start.
 
@@ -905,12 +905,16 @@ idle seam's Compaction slot by `installCompaction`): at most one summarizer exch
 its swap. It never runs while an owner message waits.
 
 When: the bytes after thru (owner, assistant, call, result and device-note lines) are
-above H, the last turn reported prompt tokens at or above 0.8 of the head's target, or it
-is 03:00 to 05:00 local with resident above 0.8 H; an automatic step also needs 120 s of
+above H, the last turn reported prompt tokens at or above the head's due mark in tokens
+(`tx::budgetFor`: the aim, about 100,000 tokens, less the next request's growth; see
+[transcript budgets](reference/transcript-budgets.md)), or it is 03:00 to 05:00 local with
+resident above 0.8 H. The marks are the head's (`CompactDeps::headKey`) at its stored
+profile, full when none is stored; with no head named nothing is compacted automatically; an automatic step also needs 120 s of
 quiet and a request left in its idle window (two per window; a window ends at a turn or
 after an hour). What (`planSlice`): whole turns from thru forward, all of one local day
 (the day starts at 04:00 by default), at most 24 KB of summarizer input, and only while
-what stays after the slice is at least L. Never a turn of the owner's current day (unless
+what stays after the slice is at least L and holds at least the head's v5.1.2 keep of owner
+and assistant text (at full; owner ruling 81). Never a turn of the owner's current day (unless
 that day alone is above H, then only its oldest half), never the newest six owner turns,
 and never a turn after an open turn, an intent with no result or a running agent job: thru
 never jumps over a turn.
