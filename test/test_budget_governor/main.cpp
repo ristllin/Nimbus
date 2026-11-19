@@ -364,6 +364,29 @@ void test_the_profile_command() {
   TEST_ASSERT_EQUAL_STRING("$0.01", usdText(5000).c_str());
 }
 
+// Mutation survivors: the advice waits for three observed nights even when the month is already
+// past the line, and a profile the owner chooses is observed afresh (the nights under the old one
+// would overstate the new one's spending and tell him again for nothing).
+void test_the_advice_waits_and_a_choice_is_observed_afresh() {
+  Sim early(2026, 11, 1);
+  early.night();
+  early.spent = 19 * kUsd;   // a heavy first day
+  early.live();
+  early.live();
+  TEST_ASSERT_EQUAL(0, (int)early.told.size());   // two nights observed: not yet
+  early.live();
+  TEST_ASSERT_EQUAL(1, (int)early.told.size());
+  Sim s(2026, 11, 1);
+  s.baseUsdPerDay = 0.5;
+  s.night();
+  s.run(28);   // told in November on full
+  TEST_ASSERT_EQUAL(1, (int)s.told.size());
+  chooseProfile(s.file, HistoryProfile::Medium, s.day);   // on 29 November
+  TEST_ASSERT_EQUAL(0, s.file.nObs);
+  s.run(31);   // December on medium: 15.5 USD, under the line
+  TEST_ASSERT_EQUAL(1, (int)s.told.size());
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -376,5 +399,6 @@ int main(int, char**) {
   RUN_TEST(test_the_file_round_trips_and_a_bad_file_reads_as_the_default);
   RUN_TEST(test_the_cost_ratios_are_the_measured_ones);
   RUN_TEST(test_the_profile_command);
+  RUN_TEST(test_the_advice_waits_and_a_choice_is_observed_afresh);
   return UNITY_END();
 }
