@@ -140,31 +140,31 @@ void capToProfile(ContextBudget& b, HistoryProfile p) {
   b.foldTriggerBytes = soft;
 }
 
-// Lane RB-BG: a split-prompt head at the floor. What the body leaves after the measured fixed
-// overhead and the summary at its cap, in window bytes (the window counts rendered turn lines,
-// the wire adds each message's framing). 0 when nothing is left.
+// Lane RB-BG: a split-prompt head at the floor on a measured wire (Anthropic Messages, OpenAI
+// Responses). What the body leaves after the measured fixed overhead, the summary at its cap,
+// the margin and one small tool round, in window bytes (the window counts rendered turn lines,
+// the wire adds each message's framing). 0 when nothing is left or the wire is not measured.
 size_t floorRoomWindowBytes(const RequestBudget& rb, size_t summaryBytes) {
-  // The sending wire: Anthropic's v5.1.1 replay cap is 16,384 B, every other wire's 24,576 B.
-  const bool anthropic = rb.v511ReplayBytes == 16384;
+  if (!rb.measuredWire) return 0;   // a wire whose overhead nobody measured keeps v5.1.1's window
+  const bool anthropic = rb.measuredWire == 1;
   const size_t fixed = (anthropic ? kFloorFixedAnthropicBytes : kFloorFixedOpenAIBytes) + summaryBytes +
-                       kFloorMarginBytes;
+                       kFloorMarginBytes + kFloorRoundReserveBytes;
   if (rb.wireBodyBytes <= fixed) return 0;
   const unsigned pct = anthropic ? kFloorWirePerWindowAnthropicPct : kFloorWirePerWindowOpenAIPct;
   return (size_t)((uint64_t)(rb.wireBodyBytes - fixed) * 100 / pct);
 }
 
 // The marks of a measured floor head: the fold-before-shift window up to `room`, a shift
-// landing at 4/5 of it (a fold is then due, for the rows it hid), the fold keeping the same 4/5
-// (it takes the rows the shift hid), and
+// landing at 4/5 of it (a fold is then due, for the rows it hid), the fold keeping 3/4, and
 // v5.1.1's fold trigger (`v511Trigger`, never under kFoldTriggerMinBytes). A floor head's
-// conversation then stays between 4/5 and all of the room: v5.1.1's window fell to half of a
+// conversation then stays between 3/4 and all of the room: v5.1.1's window fell to half of a
 // smaller one at every shift (the 17 Nov device carried one exchange of 516 B). One fold runs
-// for about a fifth of the room of new conversation (v5.1.1: half of its 8 KB window).
+// for about a quarter of the room of new conversation (v5.1.1: half of its 8 KB window).
 void deriveFloorHistory(ContextBudget& b, size_t room, size_t v511Trigger) {
   b.historyMaxBytes = room;
   b.recentConvBytes = room;
   b.historySoftBytes = room * 4 / 5;
-  b.historyKeepBytes = room * 4 / 5;
+  b.historyKeepBytes = room * 3 / 4;
   b.foldStepBytes = b.historySoftBytes - b.historyKeepBytes;
   b.historyRows = std::max<size_t>(64, room / 192);
   b.foldTriggerBytes = v511Trigger;
@@ -262,7 +262,9 @@ size_t foldTriggerBytes(const ContextBudget& b, uint32_t compactAtKB) {
   if (b.floorBranch || b.floorMeasured) return (size_t)compactAtKB * kKB;
   if (compactAtKB == kCompactAtKbDefault) return b.historySoftBytes;
   const size_t lo = 8 * kKB;
-  const size_t hi = b.historyMaxBytes > 2 * lo ? b.historyMaxBytes - lo : lo;
+  // Never under the soft mark from above (RB-BG: under the tight profile max - 8 KB sits under
+  // the due mark, so a setting above the default would fold earlier than the default).
+  const size_t hi = std::max(b.historyMaxBytes > 2 * lo ? b.historyMaxBytes - lo : lo, b.historySoftBytes);
   return std::min(std::max((size_t)compactAtKB * kKB, lo), hi);
 }
 

@@ -289,6 +289,14 @@ void test_the_virtual_clock_edges() {
   TEST_ASSERT_EQUAL(5, s.file.nObs);
   s.run(1);
   TEST_ASSERT_EQUAL(6, s.file.nObs);
+  // A night that ran on a clock four years ahead (a bad sync, then the right time): the next
+  // night starts again from the real day instead of waiting four years.
+  s.file.night = s.day + 4 * 365;
+  s.file.nObs = 6;
+  const GovernorStep reset = s.night();
+  TEST_ASSERT_TRUE(reset.kind != GovernorStep::Kind::None);
+  TEST_ASSERT_EQUAL(s.day, s.file.night);
+  TEST_ASSERT_EQUAL(0, s.file.nObs);
   // No clock: no facts.
   GovernorFacts g;
   TEST_ASSERT_FALSE(governorFactsAt(1000, 0, 240, 0, 0, true, kCeiling, g));
@@ -335,6 +343,18 @@ void test_the_file_round_trips_and_a_bad_file_reads_as_the_default() {
       "{\"v\":1,\"pinned\":\"\",\"governed\":\"lean\",\"by\":\"device\",\"quiet\":99}",
       "{\"v\":1,\"pinned\":\"\",\"governed\":\"lean\",\"by\":\"device\",\"night\":-4}",
   };
+  // A damaged file whose pin still reads keeps the owner's pin (the device keeps the governor
+  // off until the owner's next /budget profile).
+  BudgetFile kept;
+  TEST_ASSERT_TRUE(parseBudgetFile("{\"v\":1,\"pinned\":\"tight\",\"governed\":\"bogus\",\"by\":\"owner\"}", kept) ==
+                   BudgetFileRead::Corrupt);
+  TEST_ASSERT_TRUE(kept.pinned && kept.effective() == HistoryProfile::Tight);
+  TEST_ASSERT_TRUE(profileStatusText(kept, BudgetFileRead::Corrupt).find("your chosen profile") != std::string::npos);
+  // Whitespace a hand edit adds still reads.
+  BudgetFile spaced;
+  TEST_ASSERT_TRUE(parseBudgetFile(" { \"v\": 1, \"pinned\": \"\", \"governed\": \"lean\", \"by\": \"device\", "
+                                   "\"obs\": [ 1, 2 ] }\n", spaced) == BudgetFileRead::Ok);
+  TEST_ASSERT_TRUE(spaced.governed == HistoryProfile::Lean && spaced.nObs == 2 && spaced.obs[1] == 2);
   for (const char* bad : kBad) {
     BudgetFile x;
     x.pinned = true;   // whatever it held before
@@ -379,6 +399,11 @@ void test_pin_and_auto() {
   TEST_ASSERT_TRUE(s.file.effective() < HistoryProfile::Standard);
   TEST_ASSERT_TRUE(profileStatusText(s.file, BudgetFileRead::Ok).find("set by the device") != std::string::npos);
   TEST_ASSERT_TRUE(profileReplyText(s.file, "x", false).find("Unknown profile") != std::string::npos);
+  // A command that changes nothing writes nothing.
+  BudgetFile p;
+  TEST_ASSERT_TRUE(profileCommandChanges(p, "lean") && !profileCommandChanges(p, "auto"));
+  pinProfile(p, HistoryProfile::Lean, 1);
+  TEST_ASSERT_TRUE(!profileCommandChanges(p, "lean") && profileCommandChanges(p, "wide") && profileCommandChanges(p, "auto"));
   TEST_ASSERT_EQUAL_STRING("$23.10", usdText(23100000).c_str());
   TEST_ASSERT_EQUAL_STRING("$0.01", usdText(5000).c_str());
 }

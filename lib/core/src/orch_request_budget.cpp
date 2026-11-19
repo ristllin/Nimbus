@@ -206,6 +206,7 @@ RequestBudget rates(const std::string& host, const std::string& model, const Wir
   b.windowTokens = headWindowTokens(host, model);
   b.v511CtxTokens = legacyCtxTokens(host, model);
   b.v511ReplayBytes = v511Replay(k.host);
+  b.measuredWire = k.host == "anthropic" ? 1 : k.host == "openai" ? 2 : 0;   // lane RB-BG
   b.rNomX100 = (uint16_t)ratioNomX100(k);
   b.rSafeX100 = (uint16_t)ratioSafeX100(k);
   b.roundMs = routed ? std::min(socketMs(k.host), kRoutedReadWindowMs) : socketMs(k.host);

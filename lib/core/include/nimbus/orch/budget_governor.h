@@ -12,8 +12,10 @@
 // (nimbusd/src/hosted_budget.h) keep the file and feed it the facts.
 //
 // The file, /data/budget.json (never NVS): the owner's pinned profile, if any, and the
-// governor's own state. A missing or unreadable file reads as the default profile (standard),
-// unpinned, and the owner's status says so; the next write replaces it.
+// governor's own state. A missing file reads as the default profile (standard), unpinned. An
+// unreadable one reads as the default too, except that a pin whose own field still reads is
+// kept; the governor does not run on it and the owner's status says so, until the owner's next
+// /budget profile writes the file again.
 //
 // The rule, nightly at the device's day start:
 //   1. Project the month: what it spent so far plus the mean of the last seven observed nights
@@ -25,7 +27,8 @@
 //   3. Up, one step at a time and never above standard (wide is the owner's): seven
 //      observed nights in a row in which a whole month at the next larger profile's rate
 //      projects under 0.7 of the ceiling. Any other night starts the count again.
-//   4. Every change starts the observations again (three nights before the next decision). No
+//   4. Every change starts the observations again (three nights before the next decision); so
+//      does a clock found more than seven days behind the last night run (a bad sync undone). No
 //      ceiling (the owner turned it off, or only provider limits are set) is a quiet night. A
 //      pinned profile is never moved: the governor only warns, once a month, when it projects
 //      over 0.9 of the ceiling. The governor never writes the ceiling.
@@ -129,6 +132,9 @@ std::string profileStatusText(const BudgetFile& f, BudgetFileRead read);
 // The reply to /budget profile (`arg` "" = show, "auto", or a profile slug); `ok` false when
 // the word is none of these.
 std::string profileReplyText(const BudgetFile& f, const std::string& arg, bool ok);
+// Whether /budget profile `arg` ("auto" or a slug) changes anything: pinning the profile already
+// pinned, or auto while nothing is pinned, is answered with the status and writes nothing.
+bool profileCommandChanges(const BudgetFile& f, const std::string& arg);
 
 }  // namespace orch
 }  // namespace nimbus

@@ -978,14 +978,21 @@ static void spendNoticePump() {
     }
     agent::spend::delivered(NoticeChannel::Web, k);
   }
-  // Lane RB-BG: a governor step's one line, to the owner's chat and the web chat's history.
-  const std::string step = agent::budgetprofile::nextNotice();
-  if (!step.empty()) {
-    const String owner = agent::telegram::enabled() ? agent::telegram::ownerChat() : String();
-    if (owner.length()) agent::telegram::send(owner, String(step.c_str()), /*block=*/false);
-    agent::memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(step.c_str()), "",
+  // Lane RB-BG: a governor step's one line, as the ceiling's notices go: Telegram's owner chat
+  // (owed until the reply queue takes it) and the web chat (its history and an open page).
+  const std::string step = agent::budgetprofile::nextNotice(/*telegram=*/true);
+  const String stepOwner = !step.empty() && agent::telegram::enabled() ? agent::telegram::ownerChat() : String();
+  if (stepOwner.length() && agent::telegram::send(stepOwner, String(step.c_str()), /*block=*/false))
+    agent::budgetprofile::noticeDelivered(/*telegram=*/true);
+  const std::string stepWeb = agent::budgetprofile::nextNotice(/*telegram=*/false);
+  if (!stepWeb.empty()) {
+    agent::memory::captureMessage("web", "assistant", nimbus::orch::MsgKind::Message, String(stepWeb.c_str()), "",
                                   "ev:budget");
-    agent::budgetprofile::noticeDelivered();
+    {
+      std::lock_guard<std::mutex> lk(g_webChatMx);
+      agent::deliverToWebChat(g_webChat, stepWeb, /*routine=*/true);
+    }
+    agent::budgetprofile::noticeDelivered(/*telegram=*/false);
   }
 }
 

@@ -105,6 +105,9 @@ struct RequestBudget {
   BudgetLink link = BudgetLink::Device;
   uint32_t v511CtxTokens = 0;    // v5.1.1's window for the head (legacyCtxTokens): the no-shrink baseline
   uint32_t v511ReplayBytes = 0;  // the sending wire's v5.1.1 replay cap (Anthropic 16,384, else 24,576)
+  // Lane RB-BG: the split wire whose request overhead test_floor_dialogue measures (budget.h
+  // kFloorFixed*Bytes): 1 Anthropic Messages, 2 OpenAI Responses, 0 any other.
+  uint8_t measuredWire = 0;
   // Lane L: the form the head's turn goes out in (see the header): one prompt string under
   // kFlatPromptBytes, not a split prompt under wireBodyBytes. Only turnBudgetFor sets it.
   // (`flat` above is the wire: a custom endpoint has no other form and sits on the floor; a

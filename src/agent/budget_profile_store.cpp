@@ -33,17 +33,41 @@ std::mutex g_mx;   // the poll task writes; the web task reads the status line
 BudgetFile g_file;
 BudgetFileRead g_read = BudgetFileRead::Missing;
 bool g_loaded = false;
-std::string g_owed;   // the owner's line a step owes
+std::string g_owed;          // the owner's line a step owes
+bool g_owedTg = false, g_owedWeb = false;
 
 // Caller holds g_mx.
 void installLocked() { nimbus::orch::installHistoryProfile(g_file.effective()); }
 
-// Caller holds g_mx. A failed write keeps the RAM state (the profile in force) and says so.
+// Caller holds g_mx.
 bool saveLocked() {
   LittleFS.mkdir("/data");
   const bool ok = agent::writeFileAtomic(kPath, nimbus::orch::budgetFileJson(g_file), "budget_json");
   if (ok) g_read = BudgetFileRead::Ok;
   return ok;
+}
+
+// The file's text: "" when there is none, "?" when it is there but does not read (three tries,
+// as the spend store reads its file: a transient open failure is not a missing file).
+std::string readText() {
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (!LittleFS.exists(kPath)) {
+      if (attempt == 2) return std::string();
+      delay(20);
+      continue;
+    }
+    File f = LittleFS.open(kPath, "r");
+    if (f && f.size() <= kMax) {
+      const String body = f.readString();
+      f.close();
+      if (body.length()) return body.c_str();
+    } else if (f) {
+      f.close();
+      return "?";   // larger than any file this code writes: not ours
+    }
+    delay(20);
+  }
+  return "?";
 }
 
 int64_t today() {
@@ -58,18 +82,12 @@ void load() {
   std::lock_guard<std::mutex> lk(g_mx);
   if (g_loaded || !agent::flashMounted()) return;
   g_loaded = true;
-  std::string text;
-  if (LittleFS.exists(kPath)) {
-    File f = LittleFS.open(kPath, "r");
-    if (f && f.size() <= kMax) text = f.readString().c_str();
-    else text = "?";   // unreadable or not ours: corrupt
-    if (f) f.close();
-  }
-  g_read = nimbus::orch::parseBudgetFile(text, g_file);
+  g_read = nimbus::orch::parseBudgetFile(readText(), g_file);
   installLocked();
   if (g_read == BudgetFileRead::Corrupt)
-    alogf("budget: /data/budget.json could not be read - the default history profile (%s) applies",
-          nimbus::orch::historyProfileSlug(g_file.effective()));
+    alogf("budget: /data/budget.json could not be read - history profile %s (%s), the governor waits for "
+          "/budget profile", nimbus::orch::historyProfileSlug(g_file.effective()),
+          g_file.pinned ? "the owner's pin" : "the default");
   else
     alogf("budget: history profile %s (%s)", nimbus::orch::historyProfileSlug(g_file.effective()),
           g_file.pinned ? "chosen by the owner" : g_read == BudgetFileRead::Missing ? "the default" : "the device's");
@@ -90,12 +108,22 @@ void tick() {
   GovernorStep st;
   {
     std::lock_guard<std::mutex> lk(g_mx);
-    if (!g_loaded) return;
-    if (g.runningDay <= g_file.night && g_file.night) return;   // tonight's run is done
+    if (!g_loaded || g_read == BudgetFileRead::Corrupt) return;   // the owner's next command writes it
+    if (g_file.night && g.runningDay <= g_file.night && g.runningDay + nimbus::orch::kGovernorObsNights >= g_file.night)
+      return;   // tonight's run is done
+    const BudgetFile before = g_file;
     st = nimbus::orch::governorNight(g_file, g);
+    if (st.kind == GovernorStep::Kind::None) return;
+    if (!saveLocked()) {   // undone: the next minute runs the night again
+      g_file = before;
+      alogf("budget: the governor's night did not store - tried again in a minute");
+      return;
+    }
     installLocked();
-    if (!saveLocked()) alogf("budget: the governor's night did not store (the profile in force stays)");
-    if (!st.line.empty()) g_owed = st.line;
+    if (!st.line.empty()) {
+      g_owed = st.line;
+      g_owedTg = g_owedWeb = true;
+    }
   }
   if (st.changed()) {
     alogf("budget: history profile %s (was %s), by the device", nimbus::orch::historyProfileSlug(st.to),
@@ -117,16 +145,16 @@ std::string command(const std::string& arg, bool& changed, std::string& record) 
   load();
   std::lock_guard<std::mutex> lk(g_mx);
   if (arg.empty()) return nimbus::orch::profileReplyText(g_file, arg, true);
-  const nimbus::orch::HistoryProfile was = g_file.effective();
-  const bool wasPinned = g_file.pinned;
+  nimbus::orch::HistoryProfile p = nimbus::orch::kDefaultHistoryProfile;
+  if (arg != "auto" && !nimbus::orch::parseHistoryProfile(arg, p)) return nimbus::orch::profileReplyText(g_file, arg, false);
+  // Nothing to change (and a corrupt file still gets written: the owner's command is what
+  // brings the governor back).
+  if (!nimbus::orch::profileCommandChanges(g_file, arg) && g_read != BudgetFileRead::Corrupt)
+    return nimbus::orch::profileStatusText(g_file, g_read);
   const BudgetFile before = g_file;
-  if (arg == "auto") {
-    nimbus::orch::unpinProfile(g_file, today());
-  } else {
-    nimbus::orch::HistoryProfile p;
-    if (!nimbus::orch::parseHistoryProfile(arg, p)) return nimbus::orch::profileReplyText(g_file, arg, false);
-    nimbus::orch::pinProfile(g_file, p, today());
-  }
+  const bool wasPinned = g_file.pinned;
+  if (arg == "auto") nimbus::orch::unpinProfile(g_file, today());
+  else nimbus::orch::pinProfile(g_file, p, today());
   if (!saveLocked()) {
     g_file = before;   // nothing changed: the reply says so
     return "The profile could not be stored, so nothing changed. Try again in a moment.";
@@ -134,19 +162,19 @@ std::string command(const std::string& arg, bool& changed, std::string& record) 
   installLocked();
   changed = true;
   record = std::string("History profile ") + nimbus::orch::historyProfileSlug(g_file.effective()) + " (was " +
-           nimbus::orch::historyProfileSlug(was) + (wasPinned ? ", chosen" : "") + "), " +
+           nimbus::orch::historyProfileSlug(before.effective()) + (wasPinned ? ", chosen" : "") + "), " +
            (g_file.pinned ? "chosen by the owner" : "the device chooses again");
   return nimbus::orch::profileReplyText(g_file, arg, true);
 }
 
-std::string nextNotice() {
+std::string nextNotice(bool telegram) {
   std::lock_guard<std::mutex> lk(g_mx);
-  return g_owed;
+  return (telegram ? g_owedTg : g_owedWeb) ? g_owed : std::string();
 }
 
-void noticeDelivered() {
+void noticeDelivered(bool telegram) {
   std::lock_guard<std::mutex> lk(g_mx);
-  g_owed.clear();
+  (telegram ? g_owedTg : g_owedWeb) = false;
 }
 
 }  // namespace budgetprofile

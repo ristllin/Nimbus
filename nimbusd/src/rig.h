@@ -386,8 +386,7 @@ class NimbusdRig {
   void spendTick() {
     ceiling_->tick();
     if (eng_) ceiling_->setHeadModel(modelFor(eng_->headHost()));
-    const std::string step = budget_->night(vclock::epoch32(), hostedOffsetAt(vclock::epoch32()), nimbus::orch::day::startOrDefault(settings_.get().dayStarts.c_str()), ceiling_->stateJson());   // lane RB-BG
-    if (!step.empty()) record(kWebChatId, step);   // lane RB-BG: the governor's line, as the ceiling's notices
+    budget_->night(vclock::epoch32(), hostedOffsetAt(vclock::epoch32()), nimbus::orch::day::startOrDefault(settings_.get().dayStarts.c_str()), ceiling_->stateJson());   // lane RB-BG
     spendNotice(nimbus::orch::NoticeChannel::Web, kWebChatId);
     if (cfg_.has("TELEGRAM_BOT_TOKEN") && access_) {
       const std::string allow = access_->allowCsv();
@@ -397,6 +396,7 @@ class NimbusdRig {
   }
   void spendNotice(nimbus::orch::NoticeChannel ch, const std::string& chat) {
     std::string text;
+    if (budget_->take(ch, text)) record(chat, text);   // lane RB-BG: the governor's line, as the ceiling's
     const auto k = ceiling_->nextNotice(ch, text);
     if (k == SpendCeilingVn::Kind::None) return;
     record(chat, text);

@@ -130,8 +130,10 @@ HistoryProfile installedHistoryProfile();
 // acknowledgement, the tools array and the envelope.
 inline constexpr size_t kFloorFixedAnthropicBytes = 64768;   // measured 64,652 B
 inline constexpr size_t kFloorFixedOpenAIBytes = 66688;      // measured 66,566 B
-// Held back for what the measure does not size: day labels, a longer stamp, JSON escapes.
+// Held back for what the measure does not size: day labels, a longer stamp, JSON escapes, and
+// one small tool round (a call and its result) before the wire's refit has to drop anything.
 inline constexpr size_t kFloorMarginBytes = 512;
+inline constexpr size_t kFloorRoundReserveBytes = 2048;
 // Wire bytes per 100 B of the history window (renderTurnLines) on the 17 Nov shape: a message's
 // JSON framing over the window's own labels (measured 118 and 127; owner messages are short,
 // median 12 B, so the framing is a large share).

@@ -618,10 +618,11 @@ static void test_the_form_of_every_head_turn() {
 // Lane RB-BG: what a measured floor head's request needs at its high water: the measured
 // fixed overhead of its wire, the summary at its cap, the margin, and the window in wire bytes.
 static uint64_t floorNeed(const ContextBudget& c, const RequestBudget& rb) {
-  const bool anthropic = rb.v511ReplayBytes == 16384;
+  const bool anthropic = rb.measuredWire == 1;
   const uint64_t fixed = anthropic ? kFloorFixedAnthropicBytes : kFloorFixedOpenAIBytes;
   const unsigned pct = anthropic ? kFloorWirePerWindowAnthropicPct : kFloorWirePerWindowOpenAIPct;
-  return fixed + c.chatSummaryBytes + kFloorMarginBytes + (uint64_t)c.historyMaxBytes * pct / 100;
+  return fixed + c.chatSummaryBytes + kFloorMarginBytes + kFloorRoundReserveBytes +
+         (uint64_t)c.historyMaxBytes * pct / 100;
 }
 
 // How far over the real cap of its form one head's turn budget puts the history (0: it fits).
@@ -889,7 +890,7 @@ static void test_every_head_has_a_history_that_fits_under_every_profile() {
             }
             if (c.floorMeasured) {
               measured++;
-              TEST_ASSERT_FALSE_MESSAGE(rb.flatTurn || rb.flat, what.c_str());
+              TEST_ASSERT_FALSE_MESSAGE(rb.flatTurn || rb.flat || !rb.measuredWire, what.c_str());
               TEST_ASSERT_TRUE_MESSAGE(rb.wireBodyBytes <= kLegacyWireBodyBytes, what.c_str());
               TEST_ASSERT_TRUE_MESSAGE(floorNeed(c, rb) <= rb.wireBodyBytes, what.c_str());
               TEST_ASSERT_EQUAL_UINT32_MESSAGE(48 * 1024, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
@@ -974,8 +975,8 @@ static FloorDays foldDays(size_t high, size_t keep, size_t trigger, size_t cycle
 
 // A simulated fortnight at the measured floor. On the owner's pace (about 10 exchanges of 600 B
 // a day) it folds at most four times a day and on average at most once a day more than v5.1.2's
-// floor window did on the same head (each fold is small: about a fifth of the room),
-// and the request never falls back under 4/5 of the measured room once the first fold landed
+// floor window did on the same head (each fold is small: about a quarter of the room),
+// and the request never falls back under 3/4 of the measured room once the first fold landed
 // (v5.1.2: half of an 8 KB window). On a day ten times heavier than the owner's busiest the
 // daily cap holds and the next two ordinary days work the backlog off.
 static void test_a_fortnight_at_the_measured_floor() {

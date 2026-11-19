@@ -37,7 +37,8 @@ test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
   9. lane RB-BG: the history profiles (a direct head's fold due at no more than its profile's H,
      never under 24 KB, as its trigger; a larger profile never gives a smaller mark) and the
      floor heads (a measured floor head's window is the body less the measured overhead of
-     its wire, the summary and the margin, in window bytes, with shift and keep at 4/5, and
+     its wire, the summary, the margin and one tool round, in window bytes, with the shift at
+     4/5 and the keep at 3/4, and
      larger than v5.1.1's; a head left on v5.1.1's window had no more room than that).
 
 Every table of the file with a model column is read, by its section heading (TABLES):
@@ -516,7 +517,8 @@ def floor_constants(header_path: str) -> "dict | None":
         return None
     out = {}
     for name in ("kFloorFixedAnthropicBytes", "kFloorFixedOpenAIBytes", "kFloorMarginBytes",
-                 "kFloorWirePerWindowAnthropicPct", "kFloorWirePerWindowOpenAIPct"):  # fmt: skip
+                 "kFloorRoundReserveBytes", "kFloorWirePerWindowAnthropicPct",
+                 "kFloorWirePerWindowOpenAIPct"):  # fmt: skip
         m = re.search(r"\b" + name + r"\s*=\s*(\d+)", text)
         if not m:
             return None
@@ -560,7 +562,8 @@ def profile_order_problems(rows: "list[dict]") -> "list[str]":
 
 def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[str]":
     """A measured floor head: the window is (bytes - the wire's measured overhead - the summary
-    - the margin) in window bytes, the shift and the fold keep at 4/5 of it, and it is more
+    - the margin - one tool round) in window bytes (Anthropic and OpenAI wires only), the
+    shift at 4/5 of it and the fold's keep at 3/4, and it is more
     than v5.1.1's window; a head left on v5.1.1's window would have had no more than that."""
     name = row_name(row)
     if consts is None:
@@ -569,11 +572,13 @@ def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[st
                                                              "historySoftBytes", "historyKeepBytes"))  # fmt: skip
     if None in (nbytes, summ, hmax, soft, keep) or "branch" not in row:
         return [f"{name}: needs bytes, summary, hist max, soft, keep and branch columns"]
-    anthropic = wire_of(row.get("provider", ""), row.get("model", "")) == "anthropic"
+    wire = wire_of(row.get("provider", ""), row.get("model", ""))
+    anthropic = wire == "anthropic"
     fixed = consts["kFloorFixedAnthropicBytes" if anthropic else "kFloorFixedOpenAIBytes"]
     pct = consts["kFloorWirePerWindowAnthropicPct" if anthropic else "kFloorWirePerWindowOpenAIPct"]
-    left = nbytes - fixed - summ - consts["kFloorMarginBytes"]
-    room = max(0, int(left * 100 // pct))
+    left = nbytes - fixed - summ - consts["kFloorMarginBytes"] - consts["kFloorRoundReserveBytes"]
+    # Only the two wires the overhead was measured on size a floor from it.
+    room = max(0, int(left * 100 // pct)) if wire in ("anthropic", "openai") else 0
     base = baseline_of(row, old) or {}
     v511 = base.get("historyMaxBytes", 0)
     branch = row["branch"].lower()
@@ -581,8 +586,8 @@ def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[st
         errs = []
         if abs(hmax - room) > 1:
             errs.append(f"{name}: hist max {hmax:.0f}, the measured room gives {room}")
-        if abs(soft - room * 4 // 5) > 1 or abs(keep - room * 4 // 5) > 1:
-            errs.append(f"{name}: soft {soft:.0f} and keep {keep:.0f} are not 4/5 of {room}")
+        if abs(soft - room * 4 // 5) > 1 or abs(keep - room * 3 // 4) > 1:
+            errs.append(f"{name}: soft {soft:.0f} and keep {keep:.0f} are not 4/5 and 3/4 of {room}")
         if v511 and hmax <= v511:
             errs.append(f"{name}: a measured window {hmax:.0f} no larger than v5.1.1's {v511}")
         return errs

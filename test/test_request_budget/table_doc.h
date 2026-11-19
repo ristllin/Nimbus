@@ -177,22 +177,25 @@ static std::string floorSection() {
       "above all, sizes its history from the measured overhead of the old engine's request: the system\n"
       "blocks, the turn's input message, the tools array and the envelope of one owner turn of the synthetic\n"
       "busy twin, which test_floor_dialogue measures on the real build (" + num(kFloorFixedAnthropicBytes) +
-      " B on the\nAnthropic wire, " + num(kFloorFixedOpenAIBytes) + " B on the others), plus the summary at its cap and a " +
-      num(kFloorMarginBytes) + " B margin. What is\nleft is the window's high water in window bytes (the wire spends " +
+      " B on the\nAnthropic wire, " + num(kFloorFixedOpenAIBytes) + " B on OpenAI's), plus the summary at its cap, a " +
+      num(kFloorMarginBytes) + " B margin and " + num(kFloorRoundReserveBytes) +
+      " B for one small tool round. What is\nleft is the window's high water in window bytes (the wire spends " +
       num(kFloorWirePerWindowAnthropicPct) + " and " + num(kFloorWirePerWindowOpenAIPct) +
-      " B for every 100 B of\nwindow on the 17 Nov shape). A shift lands at 4/5 of it and the fold that follows keeps that 4/5\n"
-      "(it takes the rows the shift hid), so the request carries between 4/5 and all of the room; the fold\n"
+      " B for every 100 B of\nwindow on the 17 Nov shape). A shift lands at 4/5 of it and the fold that follows keeps 3/4, so the\n"
+      "request carries between 3/4 and all of the room (v5.1.1's window fell to half at a shift); the fold\n"
       "trigger stays v5.1.1's 48 KB. Where that leaves no more than v5.1.1's window, the head keeps v5.1.1's\n"
-      "window exactly (the floor branch).\n\n"
+      "window exactly (the floor branch), and so does a head on a wire whose overhead is not measured\n"
+      "(Mistral, Z.ai and the other router upstreams).\n\n"
       "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |\n" +
       separator(9);
   for (const Head& h : kRouted) {
     const RequestBudget rb = turnBudgetFor(h.host, h.model, true, BudgetLink::Device, kRoutedBudgetLift);
     const ContextBudget c = deriveRequestContext(rb, {});
-    const bool anthropic = rb.v511ReplayBytes == 16384;
+    const bool anthropic = rb.measuredWire == 1;
     const long left = (long)rb.wireBodyBytes - (long)(anthropic ? kFloorFixedAnthropicBytes : kFloorFixedOpenAIBytes) -
-                      (long)c.chatSummaryBytes - (long)kFloorMarginBytes;
-    t += cells({h.host, h.model, num(rb.wireBodyBytes), num(c.chatSummaryBytes), std::to_string(left),
+                      (long)c.chatSummaryBytes - (long)kFloorMarginBytes - (long)kFloorRoundReserveBytes;
+    t += cells({h.host, h.model, num(rb.wireBodyBytes), num(c.chatSummaryBytes),
+                rb.measuredWire ? std::to_string(left) : std::string("not measured"),
                 num(c.historyMaxBytes), num(c.historySoftBytes), num(c.historyKeepBytes),
                 c.floorMeasured ? "measured" : c.floorBranch ? "v5.1.1 window" : "room"});
   }

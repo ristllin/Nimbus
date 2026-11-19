@@ -53,6 +53,20 @@ int main() {
   fsutil::writeFileAtomic(path, "{not json");
   {
     HostedBudget b(path);
+    // A corrupt file keeps the governor off: overspend nights change nothing and write nothing.
+    for (unsigned d = 1; d <= 10; d++) b.night(epochOf(2026, 11, d), 0, 240, stateJson(d * 150, 202611));
+    std::string text;
+    t.ok(fsutil::readFile(path, text) && text == "{not json", "a corrupt file is not overwritten by the governor");
+  }
+  fsutil::writeFileAtomic(path, "{\"v\":1,\"pinned\":\"tight\",\"governed\":\"bogus\"}");
+  {
+    HostedBudget b(path);
+    t.ok(b.readState() == orch::BudgetFileRead::Corrupt && b.effective() == orch::HistoryProfile::Tight,
+         "a pin whose own field reads is kept from a damaged file");
+  }
+  fsutil::writeFileAtomic(path, "{not json");
+  {
+    HostedBudget b(path);
     t.ok(b.readState() == orch::BudgetFileRead::Corrupt, "a corrupt file reads as corrupt");
     t.ok(b.effective() == orch::HistoryProfile::Standard, "a corrupt file reads as the default");
     t.ok(b.status().find("could not be read") != std::string::npos, "and says so");
@@ -75,21 +89,25 @@ int main() {
     fsutil::mkdirs(dir);
     HostedBudget b(path);
     // 0.70 USD a day at standard against the instance's 20 USD default ceiling.
-    std::string line;
     orch::GovernorStep st;
     unsigned downNight = 0;
-    for (unsigned d = 1; d <= 10 && line.empty(); d++) {
-      line = b.night(epochOf(2026, 11, d), 0, 240, stateJson((d - 1) * 70, 202611), &st);
-      if (!line.empty()) downNight = d;
+    for (unsigned d = 1; d <= 10 && !st.changed(); d++) {
+      st = b.night(epochOf(2026, 11, d), 0, 240, stateJson((d - 1) * 70, 202611));
+      if (st.changed()) downNight = d;
     }
-    t.ok(!line.empty() && st.changed(), "a month of overspend steps down");
+    std::string web, tg, again2;
+    t.ok(st.changed() && !st.line.empty(), "a month of overspend steps down");
+    t.ok(b.take(orch::NoticeChannel::Web, web) && web == st.line, "the web chat is owed the step's line");
+    t.ok(b.take(orch::NoticeChannel::Telegram, tg) && tg == st.line, "and Telegram's owner chat");
+    t.ok(!b.take(orch::NoticeChannel::Web, again2), "each once");
     t.eqi(downNight, 4, "once three nights are observed");
     t.ok(st.to == orch::HistoryProfile::Lean, "to the largest profile that fits");
     t.ok(!st.record.empty(), "with a record line");
     t.ok(orch::installedHistoryProfile() == orch::HistoryProfile::Lean, "every head derives under it now");
     const orch::ContextBudget c = orch::headContextBudget("anthropic", "claude-sonnet-5-5", true, {});
     t.eqi((long)c.historySoftBytes, 40000, "the direct head's fold is due at lean's 40,000 B");
-    t.ok(b.night(epochOf(2026, 11, downNight), 0, 240, stateJson(400, 202611)).empty(), "the same night twice: nothing");
+    t.ok(b.night(epochOf(2026, 11, downNight), 0, 240, stateJson(400, 202611)).kind == orch::GovernorStep::Kind::None,
+         "the same night twice: nothing");
     HostedBudget again(path);
     t.ok(again.effective() == orch::HistoryProfile::Lean, "the governor's step survives a restart");
     t.ok(again.status().find("set by the device") != std::string::npos, "the status names the device's step");

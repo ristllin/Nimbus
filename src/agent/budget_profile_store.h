@@ -12,8 +12,11 @@
 // load() once the file area is mounted, before any turn (it installs the profile every
 // head's context is derived under). tick() once a minute from the Telegram poll task: on the
 // first tick after the device's day start it runs the governor's night against the spend
-// store's figures; a step installs the new profile, writes the file, logs a durable line,
-// adds a row to the Usage page's change record and owes the owner one line (nextNotice).
+// store's figures; a step that stores installs the new profile, logs a durable line, adds a
+// row to the Usage page's change record and owes the owner one line (nextNotice). A night
+// whose file write fails is undone and tried again the next minute. While the file reads as
+// corrupt the governor does not run (the status says so) until the owner's next /budget
+// profile writes it again; a pin whose own field still reads is kept.
 namespace agent {
 namespace budgetprofile {
 
@@ -27,9 +30,11 @@ std::string statusLine();
 // file changed; `record` is the change record's line for an applied change.
 std::string command(const std::string& arg, bool& changed, std::string& record);
 
-// The owner's line a governor step owes ("" = none), and the mark that it was delivered.
-std::string nextNotice();
-void noticeDelivered();
+// The owner's line a governor step owes on Telegram (`telegram`) or in the web chat ("" =
+// none), and the mark that the channel took it. Each channel keeps it owed until then; a newer
+// step's line replaces an older one still owed.
+std::string nextNotice(bool telegram);
+void noticeDelivered(bool telegram);
 
 }  // namespace budgetprofile
 }  // namespace agent
