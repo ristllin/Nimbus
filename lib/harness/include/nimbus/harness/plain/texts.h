@@ -179,11 +179,27 @@ inline constexpr char kCompactDone[] = "Summarized the earlier turns into day di
 inline constexpr char kCompactNothing[] = "Nothing to compact yet.";
 inline constexpr char kCompactFailed[] = "The summary failed; the device tries again by itself.";
 inline constexpr char kCompactNoClock[] = "The summary waits until the clock is set.";
+// The loop's own lines (lane RB-E1a, plain_engine.cpp). A guard trip's item, which the model
+// sees before its last round: the open, then guardTripSlug, then the close.
+inline constexpr char kLimitReached[] = "[device] limit reached (";
+inline constexpr char kLimitReachedEnd[] = ")";
+// Storage refused an item: the model is told once per episode, the owner once.
+inline constexpr char kNotStored[] =
+    "[device] storage refused part of this conversation: it is kept in memory until the device restarts.";
+inline constexpr char kStorageLine[] = "Storage refused part of this conversation; it is kept until the device restarts.";
 }  // namespace device_notes
 
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).
 namespace stubs {}
-namespace tool_results {}
+namespace tool_results {
+// The results the loop itself gives a call that did not run (lane RB-E1a, plain_engine.cpp).
+inline constexpr char kNotRunCut[] = "not run: the answer was cut";
+inline constexpr char kNotRunUnrecorded[] = "not run: could not record the action first";
+inline constexpr char kNotRunLimit[] = "not run: the turn reached its limit";
+// A stored call with no stored result (the turn stopped while it ran), closed at the next turn open.
+inline constexpr char kOutcomeUnknown[] =
+    "outcome unknown: the device stopped while this call ran; it may or may not have taken effect";
+}  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3): its system text and the
 // pieces of its one user message. The input carries owner and assistant text verbatim, one

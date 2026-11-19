@@ -16,8 +16,10 @@
 #include "nimbus/harness/plain/resume.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/tx/arena.h"
+#include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/log.h"
 #include "props.h"
+#include "stub_wire.h"
 #include "world.h"
 
 // tx_battery/driver.h - one chat run through the plain engine for the battery (lane RB-B0b):
@@ -46,6 +48,7 @@ class Battery {
     channel.isAllowed = [](const std::string&) { return true; };
     channel.firstAllowedChat = [this] { return chatKey; };
     model.clock = &ms;
+    registerTools();
   }
 
   plain::Dialect dialect;
@@ -61,6 +64,10 @@ class Battery {
   bool killed = false;
   std::string killedAt;
   std::vector<uint32_t> requestTurn;   // the turn of every recorded request
+  // What composition reads (RB-E1a): the world's tools as the registry declares them, the
+  // owner's Principal, and the wire (the dialect's real one once it lands, else txb::StubWire).
+  nimbus::orch::ToolRegistry reg;
+  nimbus::orch::Principal who = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
 
   // Process state: gone at a power cut, rebuilt by boot().
   agent::Platform platform;
@@ -69,7 +76,6 @@ class Battery {
   std::unique_ptr<tx::TxLog> log;
   std::unique_ptr<plain::PlainHooks> hooks;
   std::unique_ptr<plain::PlainEngine> engine;
-  tx::HeadState head;
   uint32_t turnNo = 0;
   size_t sends = 0;
   size_t tornCuts = 0;                 // torn cuts so far: each may leave one undecodable line
@@ -86,8 +92,7 @@ class Battery {
     arena.reset(new tx::TxArena());
     tx::Status st = arena->init(tx::kActiveChatArenaBytes, platform.allocLarge, platform.freeLarge);
     if (!st.ok()) return st;
-    log.reset(new tx::TxLog(files, chatKey));
-    if (!(st = guarded([&] { return log->open(head); })).ok()) return st;
+    log.reset(new tx::TxLog(files, chatKey));   // the engine opens and fills it at boot
     hooks.reset(new plain::PlainHooks());
     install();
     engine.reset(new plain::PlainEngine(deps()));
@@ -212,7 +217,35 @@ class Battery {
     c.profile = tx::Profile::Standard;
     c.startedAt = epoch;
     c.startedMs = ms;
+    c.who = &who;
     return c;
+  }
+
+  // The world's tools: the always-on ones by their declarations, the battery's own with the
+  // class the properties need (big_read is an internal pure read, device_control an effect).
+  void registerTools() {
+    namespace orch = nimbus::orch;
+    auto handler = [](ArduinoJson::JsonObjectConst, const orch::Principal&) { return orch::ToolResult::ok(""); };
+    for (const char* n : {"read_file", "write_file", "append_file", "web_search"}) {
+      const auto* decl = plain::toolDecl(n);
+      if (decl) reg.add(decl->name, decl->description, handler, plain::declSchema(*decl, false));
+    }
+    reg.add("ledger_day", "", handler);
+    reg.add("ledger_write", "", handler);
+    reg.add("fetch_url", "", handler);
+    reg.add("big_read", "", handler);
+    reg.setClass("big_read", orch::ToolClass{"", orch::Taint::Internal, orch::EffectClass::Pure});
+    reg.add("device_control", "", handler);
+  }
+
+  tx::Status setup(const plain::TurnCtx& t, plain::TurnSetup& out) {
+    out.facts.reg = &reg;
+    out.facts.admin = true;
+    out.facts.timeZone = "Europe/London";
+    out.head.host = t.host;
+    out.head.key = [] { return std::string("sk-fake-battery"); };
+    out.wire = batteryWire(dialect);
+    return tx::Status::success();
   }
   static const char* hostFor(plain::Dialect d) {
     switch (d) {
@@ -233,6 +266,9 @@ class Battery {
     d.log = log.get();
     d.arena = arena.get();
     d.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return world.dispatch(c, t); };
+    d.files = &files;
+    d.chatKey = chatKey;
+    d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
     return d;
   }
 

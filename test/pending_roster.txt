@@ -11,20 +11,12 @@ test_tx_prefix::test_wire_prefix_anthropic RB-W1a
 test_tx_prefix::test_wire_prefix_responses RB-W2
 test_tx_prefix::test_wire_prefix_chat RB-W3
 test_tx_prefix::test_wire_prefix_flat RB-W4
-test_tx_prefix::test_rounds_inside_a_turn_extend RB-E1a
-test_tx_prefix::test_warm_turns_extend RB-E1a
-test_tx_prefix::test_a_cold_open_breaks_only_at_a_named_point RB-E1a
-test_tx_prefix::test_outside_content_leaves_at_a_named_point RB-E1a
-test_tx_prefix::test_a_superseded_read_leaves_at_a_named_point RB-E1a
-test_tx_prefix::test_a_mixed_day_breaks_only_at_named_points RB-E1a
 
 # test_tx_pairing
 test_tx_pairing::test_wire_pairing_anthropic RB-W1a
 test_tx_pairing::test_wire_pairing_responses RB-W2
 test_tx_pairing::test_wire_pairing_chat RB-W3
 test_tx_pairing::test_wire_pairing_flat RB-W4
-test_tx_pairing::test_parallel_and_sequential_calls_have_one_result_each RB-E1a
-test_tx_pairing::test_a_cut_call_is_never_dispatched_nor_left_dangling RB-E1a
 test_tx_pairing::test_a_suppressed_repeat_is_still_paired RB-E1b
 test_tx_pairing::test_compaction_moves_a_call_with_its_result RB-C2
 test_tx_pairing::test_pairs_survive_a_cut_at_every_append RB-X1
@@ -34,8 +26,6 @@ test_tx_coverage::test_wire_coverage_anthropic RB-W1a
 test_tx_coverage::test_wire_coverage_responses RB-W2
 test_tx_coverage::test_wire_coverage_chat RB-W3
 test_tx_coverage::test_wire_coverage_flat RB-W4
-test_tx_coverage::test_the_last_request_covers_a_long_conversation RB-E1a
-test_tx_coverage::test_a_direct_head_never_omits RB-E1a
 test_tx_coverage::test_a_floor_head_names_what_the_ladder_omits RB-W3
 test_tx_coverage::test_compaction_covers_every_row RB-C2
 test_tx_coverage::test_a_failed_compaction_leaves_every_row_covered RB-C2
@@ -59,7 +49,6 @@ test_tx_overhead::test_wire_overhead_anthropic RB-W1a
 test_tx_overhead::test_wire_overhead_responses RB-W2
 test_tx_overhead::test_wire_overhead_chat RB-W3
 test_tx_overhead::test_wire_overhead_flat RB-W4
-test_tx_overhead::test_engine_requests_stay_within_the_framing RB-E1a
 
 # test_plain_conformance
 test_plain_conformance::test_loop_shape_anthropic RB-E1a

@@ -633,3 +633,22 @@ deleted. Engine 2 has no baseline.
 - lane: RB-REC8
 - prd: section 4 (the tools), as ruling 42 item 3 adds a general calc tool, always on
 - why: lib/core/src/orch_calc.cpp, listed in E2_EXTRA_SOURCES, so every literal of the file counts: the result line ("= ", " (rounded to 6 decimal places)"), "error at position N: " and the 18 error reasons, each a fact about the expression with its position, plus the operator and word tokens it reads
+### PC-0026: the plain loop's own device lines (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 646 -> 850
+- sha8: 88688fc7 -> 09b77780
+- lane: RB-E1a
+- prd: section 1 step 5 (on a guard trip one item '[device] limit reached (rounds|time|spend|size)') and section 2 ("No card": a failed append puts the item in a not-stored state, the model sees one device line, the owner one line per episode)
+- why: lib/harness/src/plain_engine.cpp: the frame of the guard's limit item (the slug is guardTripSlug), the one device note the model sees when storage refused part of the conversation, and the owner's storage-state line (section 8.9's closed list); planned work, not a fix
+
+### PC-0027: the plain loop's results for a call that did not run (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 1936 -> 2132
+- sha8: bfe0657b -> d0a1303d
+- lane: RB-E1a
+- prd: section 7 (cut tool arguments are never dispatched; an effect tool whose intent cannot be stored returns 'not run: could not record the action first'; an intent with no result is shown as outcome unknown and never re-run)
+- why: lib/harness/src/plain_engine.cpp answers a call it did not run with one fact: the answer was cut, the intent could not be recorded, the turn reached its limit (a call in the last round with tool choice none), or the turn stopped while the call ran (closed at the next turn open, so every request stays paired); planned work, not a fix

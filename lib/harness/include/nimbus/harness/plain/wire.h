@@ -61,6 +61,17 @@ struct PhotoBytes {
 };
 using PhotoFn = std::function<Status(const std::string& ref, PhotoBytes& out)>;
 
+// The overflow ladder's state for one request (PRD section 2, "Overflow ladder"; tx::nextRung),
+// owned by the engine and changed by its climb between two renders of the same request, so a
+// wire reads it through RenderInput::ladder. All zero: no rung applied.
+struct LadderState {
+  uint64_t closedThrough = 0;   // rung 1: render as if the stub pointer were max(stubPointer, this)
+  uint64_t stubThrough = 0;     // rung 2: tx::ShowFacts::ladderStubThrough (open-turn bulk)
+  uint64_t omitThrough = 0;     // rung 3: whole turns whose items are all at or below this q are
+                                // left out, and omissionLine stands in their place as user text
+  std::string omissionLine;     // tx::omissionLine's text (set together with omitThrough)
+};
+
 struct RenderInput {
   const TurnCtx* turn = nullptr;
   const HeadEndpoint* head = nullptr;
@@ -72,6 +83,7 @@ struct RenderInput {
   uint32_t maxTokens = 0;                             // the output cap for this request
   BulkReadFn bulk;                                    // whole bulk results of the open turn
   PhotoFn photo;                                      // pixels of the visible photos
+  const LadderState* ladder = nullptr;                // the overflow ladder (null: no rung)
 };
 
 // Why the model stopped.
