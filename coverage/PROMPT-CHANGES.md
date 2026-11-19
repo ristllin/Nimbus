@@ -647,8 +647,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: tool_results
 - kind: build
-- bytes: 1936 -> 2179
-- sha8: bfe0657b -> 743e2ca0
+- bytes: 2635 -> 2878
+- sha8: 614181ca -> f40838d1
 - lane: RB-E1a
 - prd: section 7 (cut tool arguments are never dispatched; an effect tool whose intent cannot be stored returns 'not run: could not record the action first'; an intent with no result is shown as outcome unknown and never re-run)
 - why: lib/harness/src/plain_engine.cpp answers a call it did not run with one fact: the answer was cut, the intent could not be recorded, the turn reached its limit (a call in the last round with tool choice none), or the turn stopped while the call ran (closed at the next turn open, so every request stays paired); and the error result of a call whose tool handler threw (ruling 56 item 2); planned work, not a fix
