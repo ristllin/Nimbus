@@ -189,13 +189,13 @@ def test_a_field_under_v511_fails(tmp_path):
     models = [v511_model(r["provider"], r["model"]) for r in ROWS.values()]
     models[1]["toolResultBytes"] = 9000  # Sonnet's derived 8,192 would shrink it
     t, v = write(tmp_path, clean_rows(), models)
-    assert any("toolResultBytes 8192 under its v5.1.1 value 9000" in e for e in G.problems(t, v))
+    assert any("toolResultBytes 8192 under its v5.1.2 value 9000" in e for e in G.problems(t, v))
 
 
 def test_a_recorded_model_with_no_row_fails(tmp_path):
     models = [v511_model(r["provider"], r["model"]) for r in ROWS.values()] + [v511_model("zai", "glm-5.3")]
     t, v = write(tmp_path, clean_rows(), models)
-    assert "zai/glm-5.3: in budgets_v5_1_1.json, no row in the table" in G.problems(t, v)
+    assert "zai/glm-5.3: in budgets_v5_1_2.json, no row in the table" in G.problems(t, v)
 
 
 def test_missing_inputs_and_columns_fail_loudly(tmp_path):
@@ -250,7 +250,7 @@ def test_a_routed_head_is_held_to_its_upstreams_v511_row(tmp_path):
                  more=section("Routed heads and the custom endpoint", [one_row(ROUTED, **{"Tool result": 4096})]))  # fmt: skip
     errs = G.problems(t, v, lift_header(tmp_path, "false"))
     assert any(
-        "cumulo/anthropic/claude-sonnet-5-5: toolResultBytes 4096 under its v5.1.1 value 8192" in e for e in errs
+        "cumulo/anthropic/claude-sonnet-5-5: toolResultBytes 4096 under its v5.1.2 value 8192" in e for e in errs
     )
 
 
@@ -380,7 +380,7 @@ def test_a_loop_off_table_at_v511s_window_passes(tmp_path):
         ({"Hist soft": 3000}, "historySoftBytes 3000, v5.1.1"),
         ({"Rows": 1073}, "historyRows 1073, v5.1.1"),
         ({"Trigger": 164864}, "fold trigger 164864"),
-        ({"Recall": 2048}, "recallBytes 2048 under its v5.1.1"),
+        ({"Recall": 2048}, "recallBytes 2048 under its v5.1.2"),
         ({"Bytes": 250000}, "250000 B here"),
     ],
 )  # fmt: skip
@@ -490,6 +490,28 @@ def test_lane_rbbg_floor_rows_follow_the_measured_overhead(tmp_path):
     rs = G.parse_tables(text)[0][1]
     errs = G.floor_head_problems(rs[0], G.floor_constants(G.CONTEXT_HEADER), v511)
     assert any("although the measured room" in e for e in errs)
+
+
+def test_sonnet_lowered_under_v512_turns_the_gate_red(tmp_path):
+    # Owner ruling 81, audit blocker 11: the real table against the real v5.1.2 reference, with one
+    # head's history max lowered to 100,000 B (v5.1.2: 118,080 B), fails the gate.
+    with open(G.TABLE, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    head = next(line for line in lines if line.startswith("| Provider | Model | Window"))
+    col = [c.strip() for c in head.strip("|").split("|")].index("Hist max")
+    done = False
+    for i, line in enumerate(lines):
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if not done and len(cells) > col and cells[:2] == ["anthropic", "claude-sonnet-5-5"]:
+            cells[col] = "100000"
+            lines[i] = "| " + " | ".join(cells) + " |"
+            done = True
+    assert done
+    t = tmp_path / "budgets.md"
+    t.write_text("\n".join(lines), encoding="utf-8")
+    assert G.problems(str(t), G.V512) != [] and any(
+        "historyMaxBytes 100000 under its v5.1.2 value 118080" in e for e in G.problems(str(t), G.V512)
+    )
 
 
 def test_the_release_ships_with_the_routed_lift_off():

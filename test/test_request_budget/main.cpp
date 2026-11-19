@@ -821,6 +821,7 @@ static void test_no_head_below_its_v5_1_2_budget() {
     installHistoryProfile(p);
     for (const auto& kv : rows) {
       JsonObjectConst r = kv.second;
+      if (std::string(r["link"] | "") == "device-loop-off") continue;   // the loop-off form: the test below
       const BudgetLink link = std::string(r["link"] | "") == "server" ? BudgetLink::Server : BudgetLink::Device;
       const std::string host = r["provider"] | "", model = r["id"] | "";
       const RequestBudget rb = requestBudgetFor(host, model, host == "cumulo", link);
@@ -856,6 +857,57 @@ static void test_no_head_below_its_v5_1_2_budget() {
     }
   }
   installHistoryProfile(kDefaultHistoryProfile);
+}
+
+// v5.1.2's fold trigger for a compactAtKB setting, from its row: 0 off; a floor-branch head (the
+// 48 KB trigger, a window of at most 16 KB) reads the setting as KB; the default is the soft mark;
+// any other setting is clamped to [8 KB, max - 8 KB] (budget.h foldTriggerBytes at a01ef7fb).
+static size_t v512Trigger(JsonObjectConst r, uint32_t kb) {
+  if (!kb) return 0;
+  const size_t max = r["historyMaxBytes"] | 0u, trig = r["foldTriggerBytes"] | 0u;
+  if (trig == 48 * 1024 && max <= 16384) return (size_t)kb * 1024;
+  if (kb == kCompactAtKbDefault) return r["historySoftBytes"] | 0u;
+  const size_t lo = 8192, hi = max > 2 * lo ? max - lo : lo;
+  return std::min(std::max((size_t)kb * 1024, lo), hi);
+}
+
+// Audit code item (ruling 81): under the default profile (full), in every form a turn goes out in
+// (the tool loop on and off, the flat-turn heads included), no field is under its v5.1.2 row, and
+// the fold trigger at compactAtKB 0, 32, 48 and 96 is at least v5.1.2's.
+static void test_the_default_is_never_under_v5_1_2_in_any_form() {
+  TEST_ASSERT_TRUE(installedHistoryProfile() == kDefaultHistoryProfile);
+  setRoutedBudgetLiftForTest(0);   // v5.1.2's routed floor
+  const char* const kFields[] = {"systemPromptBytes", "toolResultBytes", "recallBytes", "replayBytes",
+                                 "chatSummaryBytes", "historyMessageCap", "historyMaxBytes", "historySoftBytes",
+                                 "historyKeepBytes", "foldSliceBytes", "historyRows"};
+  size_t forms = 0, loopOff = 0;
+  for (const auto& kv : v512Rows()) {
+    JsonObjectConst r = kv.second;
+    const std::string link = r["link"] | "";
+    const std::string host = r["provider"] | "", model = r["id"] | "";
+    const BudgetLink bl = link == "server" ? BudgetLink::Server : BudgetLink::Device;
+    const bool off = link == "device-loop-off";
+    loopOff += off;
+    for (const bool loopOn : {true, false}) {
+      if (off && loopOn) continue;   // that row is the loop-off form only
+      const RequestBudget rb = turnBudgetFor(host, model, loopOn, bl, false);
+      if (!off && !loopOn && rb.flatTurn) continue;   // a flat loop-off turn has its own row
+      const ContextBudget c = deriveRequestContext(rb, {});
+      const std::string what = kv.first + (loopOn ? " loop on" : " loop off");
+      forms++;
+      const size_t have[] = {(size_t)c.systemPromptBytes, c.toolResultBytes, c.recallBytes, c.replayBytes,
+                             c.chatSummaryBytes, c.historyMessageCap, c.historyMaxBytes, c.historySoftBytes,
+                             c.historyKeepBytes, c.foldSliceBytes, c.historyRows};
+      for (size_t i = 0; i < sizeof(have) / sizeof(have[0]); i++)
+        TEST_ASSERT_TRUE_MESSAGE(have[i] >= (size_t)(r[kFields[i]] | 0u), (what + " " + kFields[i]).c_str());
+      for (const uint32_t kb : {0u, 32u, 48u, 96u})
+        TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(c, kb) >= v512Trigger(r, kb),
+                                 (what + " trigger at " + std::to_string(kb) + " KB").c_str());
+    }
+  }
+  setRoutedBudgetLiftForTest(-1);
+  TEST_ASSERT_TRUE_MESSAGE(forms > 380, std::to_string(forms).c_str());   // 393 on the recorded lists
+  TEST_ASSERT_TRUE(loopOff >= 6);
 }
 
 // The class over every head and form: the history budget is positive or the floor branch is
@@ -1116,6 +1168,7 @@ int main(int, char**) {
   RUN_TEST(test_the_loop_off_figures_for_the_main_heads);
   RUN_TEST(test_every_id_that_means_large_4_gets_its_row);
   RUN_TEST(test_no_head_below_its_v5_1_2_budget);
+  RUN_TEST(test_the_default_is_never_under_v5_1_2_in_any_form);
   RUN_TEST(test_every_head_has_a_history_that_fits_under_every_profile);
   RUN_TEST(test_the_profile_figures);
   RUN_TEST(test_a_fortnight_at_the_measured_floor);

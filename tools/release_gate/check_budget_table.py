@@ -6,7 +6,7 @@ request budget from one formula and writes docs/reference/request-budgets.md fro
 golden test_request_budget re-blesses). Lane P0 recorded every model's v5.1.1 budget in
 test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
 
-  1. coverage: a model in budgets_v5_1_1.json with no row in the table;
+  1. coverage: a recorded model in budgets_v5_1_2.json with no row in the table;
   2. bounds (plan v3 protocols, RULINGS-v3): a target over 100,000 tokens; a target over
      0.75 x window x rSafe / rNom (a head at the floor excepted); bytes under the floor
      min(85,000, 0.85 x window x rSafe); a custom endpoint off the 85,000 B floor;
@@ -15,8 +15,9 @@ test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
      minFinal / decode floor must fit the read window. A head at the floor is exempt: the
      floor is v5.1.1's budget, which no head goes under (RULINGS-v3), and its rounds fit
      through the load-aware caps (lane B's test_output_caps), not through minFinal;
-  4. no field below v5.1.1: every budget field the table shows is at least that model's
-     budgets_v5_1_1.json value (RULINGS: no field shrinks);
+  4. no field below v5.1.2 (owner ruling 81): every budget field the table shows is at least that
+     model's budgets_v5_1_2.json value (released v5.1.2's figures; a Virtual Nimbus row against its server
+     row, a loop-off row against its loop-off row);
   5. the derived fields agree with the protocol: system cap max(32,768, 12%) at most 56,000;
      tool result max(8,192, 3%) at most 16,384; recall 3% in 4,096-12,288; replay 15% in
      16,384-65,536 and never under the sending wire's v5.1.1 cap (16,384 on the Anthropic
@@ -75,7 +76,11 @@ TABLE = os.path.join(REPO, "docs", "reference", "request-budgets.md")
 BUDGET_HEADER = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "request_budget.h")
 CONTEXT_HEADER = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "budget.h")
 WIRE_LIMITS = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "wire_limits.h")
-V511 = os.path.join(REPO, "test", "support", "fixtures", "budgets_v5_1_1.json")
+# The no-shrink reference (owner ruling 81, audit blocker 11): released v5.1.2's own figures for every head
+# (lane RB-BG: rows by link: "device" the device's tool-loop-on budget, "server" a Virtual Nimbus's, and
+# "device-loop-off" the flat loop-off turns). A row without a link is a device row.
+V512 = os.path.join(REPO, "test", "support", "fixtures", "budgets_v5_1_2.json")
+V511 = V512  # the name the callers and tests use
 
 TARGET_CLAMP = 100_000
 FLOOR_BYTES = 85_000
@@ -353,7 +358,7 @@ def shrink_problems(row: dict, old: dict) -> "list[str]":
         if field == "chatSummaryBytes" and floor is not None:
             floor = min(floor, CHAT_SUMMARY_MAX)
         if got is not None and floor is not None and got < floor:
-            errs.append(f"{row_name(row)}: {field} {got:.0f} under its v5.1.1 value {old[field]}")
+            errs.append(f"{row_name(row)}: {field} {got:.0f} under its v5.1.2 value {old[field]}")
     got = val(row, "chatSummaryBytes")
     if got is not None and got > CHAT_SUMMARY_MAX:
         errs.append(f"{row_name(row)}: chatSummaryBytes {got:.0f} over the {CHAT_SUMMARY_MAX} B the fold store keeps")
@@ -657,7 +662,15 @@ def table_problems(
     errs = []
     if profile.get("coverage"):
         have = {(r.get("provider", ""), r.get("model", "")) for r in rows}
-        errs += [f"{p}/{m}: in budgets_v5_1_1.json, no row in the table" for (p, m) in old if (p, m) not in have]
+        want = [
+            k for k in old if k[0] not in ("cumulo", "custom")
+        ]  # recorded models; routed and custom have their table
+        errs += [f"{p}/{m}: in budgets_v5_1_2.json, no row in the table" for (p, m) in want if (p, m) not in have]
+    base = (ctx or {}).get("by_link", {})
+    if profile.get("server"):
+        old = {**old, **base.get("server", {})}
+    elif profile.get("loop_off"):
+        old = {**old, **base.get("device-loop-off", {})}
     for row in rows:
         errs += [f"[{heading}] {e}" for e in row_problems(row, profile, old, lift, ctx)]
     if profile.get("profiles"):
@@ -672,18 +685,21 @@ def problems(
     limits_path: str = WIRE_LIMITS,
     context_path: str = CONTEXT_HEADER,
 ) -> "list[str]":
-    for p, what in ((table_path, "the budget table"), (v511_path, "the v5.1.1 budgets")):
+    for p, what in ((table_path, "the budget table"), (v511_path, "the v5.1.2 budgets")):
         if not os.path.exists(p):
             return [f"{what} {os.path.relpath(p, REPO)} does not exist"]
     with open(table_path, encoding="utf-8") as f:
         tables = parse_tables(f.read())
+    by_link: "dict[str, dict]" = {}
     with open(v511_path, encoding="utf-8") as f:
-        old = {(m["provider"], m["id"]): m for m in json.load(f)["models"]}
+        for m in json.load(f)["models"]:
+            by_link.setdefault(m.get("link", "device"), {})[(m["provider"], m["id"])] = m
+    old = by_link.get("device", {})
     if not tables:
         return [f"{os.path.relpath(table_path, REPO)} has no table with a model column"]
     errs = []
     if not any(TABLES.get(norm(h), {}).get("coverage") for h, _ in tables):
-        errs.append("no 'Every recorded model' table: coverage of budgets_v5_1_1.json is unchecked")
+        errs.append("no 'Every recorded model' table: coverage of budgets_v5_1_2.json is unchecked")
     lift = routed_lift(header_path)
     # The loop-off table names device heads of the tables above: their Bytes must agree (a
     # Virtual Nimbus row is a server's budget, not the device's).
@@ -695,7 +711,7 @@ def problems(
     ]
     ctx = {"flat": flat_prompt_bytes(header_path, limits_path),
            "bytes": {(r.get("provider", ""), r.get("model", "")): val(r, "bytes") for r in sized},
-           "floor": floor_constants(context_path)}  # fmt: skip
+           "floor": floor_constants(context_path), "by_link": by_link}  # fmt: skip
     for heading, rows in tables:
         errs += table_problems(heading, rows, old, lift, ctx)
     return errs
@@ -704,7 +720,7 @@ def problems(
 def main(argv: "list[str] | None" = None) -> int:
     ap = argparse.ArgumentParser(description="Request budget table release gate (v5.1.2)")
     ap.add_argument("--table", default=TABLE)
-    ap.add_argument("--v511", default=V511)
+    ap.add_argument("--v512", "--v511", dest="v511", default=V512, help="budgets_v5_1_2.json (the no-shrink reference)")
     ap.add_argument("--budget-header", default=BUDGET_HEADER, help="request_budget.h (kRoutedBudgetLift)")
     args = ap.parse_args(argv)
     errs = problems(args.table, args.v511, args.budget_header)
@@ -715,7 +731,7 @@ def main(argv: "list[str] | None" = None) -> int:
         return 1
     print(
         "PASS budget table: every head of every table inside its bounds, its rounds and caps inside its window, "
-        "no field below v5.1.1, routed heads on the floor, loop-off heads at v5.1.1's window"
+        "no field below v5.1.2, routed heads on the floor, loop-off heads at v5.1.1's window"
     )
     return 0
 
