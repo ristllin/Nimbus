@@ -180,8 +180,13 @@ class Unit:
         """After the unit died (a cut) or was flashed: the USB node re-enumerates."""
         if self.dev is None:
             return self.attach()
-        self.dev.reopen_after_reenumerate()
-        if not self._ready():
+        try:
+            self.dev.reopen_after_reenumerate()
+            ready = self._ready()
+        except Exception as e:  # noqa: BLE001 - a stale CDC endpoint after the panic: the guarded bus reset
+            record("console.log", f"reattach: {type(e).__name__}")
+            ready = False
+        if not ready:
             self.recover()
 
     def detach(self) -> None:
