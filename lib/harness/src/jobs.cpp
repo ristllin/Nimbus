@@ -572,7 +572,7 @@ static bool wordAt(const std::string& s, size_t& i, const char* w) {
   return true;
 }
 
-static void defangFenceClose(std::string& s) {
+static __attribute__((noinline)) void defangFenceClose(std::string& s) {
   for (size_t at = s.find('['); at != std::string::npos; at = s.find('[', at + 1)) {
     size_t i = at + 1;
     if (wordAt(s, i, "end") && wordAt(s, i, "outside")) s[at] = '(';
@@ -607,7 +607,8 @@ static std::string freshSeedBody(const std::vector<JobEngine::FreshResult>& take
   // RB-Q2a (ruling 76 item 3): what the sub-agents returned is fenced as outside content, and a
   // result cannot close the fence itself. Lower case, so the fit's block finder (a line that
   // opens "[" and a capital) still reads the fence as part of this block.
-  b += std::string(kOutsideContentOpen) + "\n";
+  b += kOutsideContentOpen;
+  b += '\n';
   for (const auto& f : taken) {
     // Provenance on every result (lane S): how many tools the sub ran, so the
     // head can tell a looked-up answer from the model's own guess.
@@ -628,7 +629,8 @@ static std::string freshSeedBody(const std::vector<JobEngine::FreshResult>& take
   if (stubbed)
     b += "(" + std::to_string(stubbed) +
          " result(s) summarized - fetch full text with results.get)\n";
-  return b + "[end outside content]\n";
+  b += "[end outside content]\n";
+  return b;
 }
 
 // Take the parked results in `scope` (every one when null), rendered as the seed; the
@@ -1081,10 +1083,13 @@ bool JobEngine::runAdmits(const std::string& chatId, const orch::Spawn& s) {
 void JobEngine::noteSpawnStripped(const std::string& chatId, const orch::Spawn& s) {
   SpawnNotes* n = spawnNotesFor(chatId, false);
   if (!n || n->folded) return;
-  const std::string line = "- '" + (s.name.empty() ? nimbus::orch::foldLine("", s.task, 40) : s.name) +
-                           "' started without its attached documents and project: a turn nobody is "
-                           "writing cannot give a sub-agent the owner's files\n";
-  if (n->text.size() + line.size() <= kSpawnNotesMax) n->text += line;
+  static const char kLine[] =
+      "' started without its attached documents and project: a turn nobody is writing cannot give a "
+      "sub-agent the owner's files\n";
+  if (n->text.size() + s.name.size() + sizeof(kLine) + 3 > kSpawnNotesMax) return;
+  n->text += "- '";
+  n->text += s.name.empty() ? std::string("a sub-agent") : s.name;
+  n->text += kLine;
 }
 
 bool JobEngine::enqueueSpawn(const orch::Spawn& s, const std::string& chatId, bool quiet) {

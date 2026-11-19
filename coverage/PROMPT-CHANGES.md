@@ -797,8 +797,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: device_notes
 - kind: spec
-- bytes: 53835 -> 54782
-- sha8: 7df1bd2b -> 9b026f48
+- bytes: 53835 -> 54793
+- sha8: 7df1bd2b -> 37e631c4
 - lane: RB-Q2a
 - prd: section 6 (unattended turns, routines and sub-agents; ruling 76 items 2, 3, 4, 5 and 7)
 - why: the security review of RB-Q2a (evidence/security-review-1.json) upheld two blockers and three majors,
@@ -812,7 +812,7 @@ deleted. Engine 2 has no baseline.
   ("[saved: ", "[end outside") are read by the catalog as text (32 B). Round 3 (ruling 80): the head hears in
   one line when a spawn lost its attach and project (jobs.cpp, about 140 B), the hosted twin answers
   `/loop grants on|off` as the device does (rig.h, about 160 B), the fence close is matched word by word
-  and the scratchpad mark reuses the fence's opening line (no new text). Class +947 B.
+  and the scratchpad mark reuses the fence's opening line (no new text). Class +958 B.
 
 ### PC-0076: the deep-research playbook says what the automatic report turn may do
 - catalog: e1

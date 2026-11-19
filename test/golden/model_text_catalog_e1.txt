@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43823 ceiling=47989 entries=411 sha8=e31f6c20
-# class device_notes bytes=54782 ceiling=54203 entries=1467 sha8=9b026f48
+# class device_notes bytes=54793 ceiling=54203 entries=1468 sha8=37e631c4
 # class tool_descriptions bytes=22131 ceiling=23131 entries=99 sha8=56b90134
 # class tool_results bytes=35337 ceiling=41962 entries=1094 sha8=11be73d9
 # class side_prompts bytes=9507 ceiling=9795 entries=170 sha8=63c24ee1
@@ -1181,6 +1181,7 @@ device_notes	lib/harness/src/jobs.cpp	604594b3	17	"(done, no output)"
 device_notes	lib/harness/src/jobs.cpp	882e57c3	51	"this run reached its limit for automatic follow-ups"
 device_notes	lib/harness/src/jobs.cpp	6a1ff683	125	"The work stopped here: a run starts at most 2 automatic follow-up waves (16 sub-agents, 2 hours). Send a message to continue."
 device_notes	lib/harness/src/jobs.cpp	05f33df6	121	"' started without its attached documents and project: a turn nobody is writing cannot give a sub-agent the owner's files\n"
+device_notes	lib/harness/src/jobs.cpp	be1afcd2	11	"a sub-agent"
 device_notes	lib/harness/src/jobs.cpp	7c675e7b	26	"it was sent without a task"
 device_notes	lib/harness/src/jobs.cpp	2a8a583f	85	"My spawn queue is full - I couldn't take that one. Ask again once some agents finish."
 device_notes	lib/harness/src/jobs.cpp	bfc657eb	25	"the spawn queue is full ("

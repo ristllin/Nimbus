@@ -202,15 +202,22 @@ const char* useNoun(ToolUse u) {
 }
 
 std::string refusalFor(TurnClass c, ToolUse u) {
-  return std::string("Not run: ") + classNoun(c) + " runs with nobody writing, and " + useNoun(u) +
-         " are closed to it. Nothing was changed.";
+  std::string r = "Not run: ";
+  r += classNoun(c);
+  r += " runs with nobody writing, and ";
+  r += useNoun(u);
+  r += " are closed to it. Nothing was changed.";
+  return r;
 }
 
 void cutField(bool present, ToolUse use, const UnattendedFacts& f, const char* field, int& cut,
               std::string& refusals) {
   if (!present || unattendedGranted(f, use)) return;
   ++cut;
-  refusals += std::string(field) + ": " + refusalFor(f.cls, use) + "\n";
+  refusals += field;
+  refusals += ": ";
+  refusals += refusalFor(f.cls, use);
+  refusals += '\n';
 }
 
 bool isFileSend(const std::string& name) { return name == "files.send" || name == "send"; }
@@ -276,12 +283,13 @@ ToolUse toolUseFor(const std::string& name, ArduinoJson::JsonObjectConst args) {
 }
 
 std::string callPath(const std::string& tool, ArduinoJson::JsonObjectConst args) {
-  const char* name = args["name"].is<const char*>() ? args["name"].as<const char*>() : "";
-  if (tool.find('.') != std::string::npos) {   // the old engine's file tools
-    if (args["project"].is<const char*>() && *name) return std::string(args["project"].as<const char*>()) + "/" + name;
-    return name;
+  const char* name = args["name"] | "";
+  if (tool.find('.') == std::string::npos) {   // engine 2's tools read `path`
+    const char* path = args["path"] | "";
+    return *path ? path : name;
   }
-  return args["path"].is<const char*>() ? args["path"].as<const char*>() : name;
+  const char* project = args["project"] | "";   // the old engine's file tools
+  return *project && *name ? std::string(project) + "/" + name : std::string(name);
 }
 
 bool pathListed(const std::string& path, const std::vector<std::string>& listed) {
@@ -354,10 +362,25 @@ ToolUse useOfSessionOp(const SessionOp& op) {
   return op.op == "terminate" ? U::Control : U::Read;
 }
 
+// An end-of-turn device element by its serialized JSON, with no parse: its "type"; a config
+// element is Ambient only when every key with a value is "type" or a brightness, theme or sound
+// knob. Any other "key": in the text, a string's own included, only makes it stricter.
 ToolUse useOfDeviceJson(const DeviceAction& da) {
-  ArduinoJson::JsonDocument doc;
-  if (deserializeJson(doc, da.json.c_str())) return U::Control;
-  return useOfDeviceAction(doc.as<ArduinoJson::JsonVariantConst>());
+  static const char* const kAmbientKeys[] = {"type", "ledBrightness", "theme", "sfxLvlN", "sfxLvlO", "sfxVol", "sfxTheme"};
+  const std::string& j = da.json;
+  const size_t t = j.find("\"type\":\"");
+  if (t == std::string::npos) return U::Control;
+  const std::string kind = j.substr(t + 8, j.find('"', t + 8) - (t + 8));
+  if (kind == "led" || kind == "lights" || kind == "tts") return U::Ambient;
+  if (kind != "config") return U::Control;
+  for (size_t c = j.find("\":"); c != std::string::npos; c = j.find("\":", c + 2)) {
+    if (j.compare(c + 2, 4, "null") == 0) continue;
+    const size_t k = j.rfind('"', c - 1) + 1;
+    bool ambient = false;
+    for (const char* a : kAmbientKeys) ambient = ambient || j.compare(k, c - k, a) == 0;
+    if (!ambient) return U::Control;
+  }
+  return U::Ambient;
 }
 
 }  // namespace
@@ -383,18 +406,16 @@ int restrictUnattendedTurn(Turn& t, const UnattendedFacts& f, std::string& refus
 
 std::string updateNoticeText(const std::string& version, const std::string& notes) {
   std::string text = "Updated to " + version + " \xE2\x9C\x93";   // the check mark the notice always had
-  size_t end = notes.find_first_of("\r\n");
-  std::string line = notes.substr(0, end);
-  while (!line.empty() && (line.back() == ' ' || line.back() == '\t')) line.pop_back();
-  size_t start = line.find_first_not_of(" \t");
-  if (start == std::string::npos) return text;
-  line = line.substr(start);
-  if (line.size() > kUpdateNoteMax) {
-    size_t cut = kUpdateNoteMax;
-    while (cut > 0 && ((unsigned char)line[cut] & 0xC0) == 0x80) --cut;   // never inside a character
-    line = line.substr(0, cut);
+  size_t b = 0, e = notes.find_first_of("\r\n");
+  if (e == std::string::npos) e = notes.size();
+  while (b < e && (notes[b] == ' ' || notes[b] == '\t')) ++b;
+  while (e > b && (notes[e - 1] == ' ' || notes[e - 1] == '\t')) --e;
+  if (b == e) return text;
+  if (e - b > kUpdateNoteMax) {
+    e = b + kUpdateNoteMax;
+    while (e > b && ((unsigned char)notes[e] & 0xC0) == 0x80) --e;   // never inside a character
   }
-  return text + "\n" + line;
+  return text.append(1, '\n').append(notes, b, e - b);
 }
 
 }  // namespace orch
