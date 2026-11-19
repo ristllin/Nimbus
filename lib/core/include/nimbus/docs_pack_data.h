@@ -98,9 +98,8 @@ removed when the owner pairs a drop cue with it ("forget the skyr label"). The
 model adds one with `openq.edit` when the owner leaves something open, and
 never from an unattended turn or a turn that read outside content.)NIMBUSDOC"},
   {"orchestrator-world#1-cognitive-tiers-1-1d-tables-the-owner-keeps-and-recent-actions", "1. Cognitive tiers - 1.1d Tables the owner keeps, and recent actions",
-   R"NIMBUSDOC(Nimbus has no built-in table for any one use case (owner ruling 41): a food log, an
-expenses log or a training log is an ordinary CSV file the owner keeps in any project,
-written with the file tools. `files.append` only appends: the rows go on the end of the
+   R"NIMBUSDOC(Nimbus has no built-in table for any one use case (owner ruling 41): whatever the owner
+tracks is an ordinary CSV file he keeps in any project, written with the file tools. `files.append` only appends: the rows go on the end of the
 file as sent, nothing stored is read back, replaced or rewritten, and a file whose last
 line has no line end gets one before the new rows. A correction is a `files.edit` of
 the row. `files.read` with `tail` reads the end of the file, and with `sum` (a numeric
@@ -924,8 +923,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
   another person's file, and counts against the caller's file-storage quota.
 - `files.append` writes only the new rows (line ends normalized, a final line end
   added) on every path: no row is merged, replaced, refused or set aside, whatever
-  the file holds (owner ruling 41: a food log, an expenses log and a training log
-  append alike). When the file's last row has no line end, the new rows start on a
+  the file holds (owner ruling 41: every table the owner keeps appends alike). When the file's last row has no line end, the new rows start on a
   fresh line and the reply says so. A correction is a `files.edit` of the row. An
   argument the tool does not take (an older `key`, `sum` or `replace`) is named as
   not read, and the rows are appended as sent. It follows the same ownership and

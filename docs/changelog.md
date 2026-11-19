@@ -6,6 +6,14 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## v5.2.0 (draft, not released) - Every log is a plain file, and adding a row only adds it
+
+A draft of the notes for the next release; the release lane completes it.
+
+- **Adding rows only adds them.** `files.append` puts the rows on the end of the file as they were sent, whatever the file is called or holds. It no longer merges a row with a stored one that has the same date and label, never refuses a row, never sets a row aside and never rewrites a stored line. A correction is an edit of the row. Your files are unchanged by the update.
+- **No built-in support for one kind of log.** Nimbus is a general assistant: a food log, an expenses log and a training log are all ordinary files you keep, read and total the same way. The food checks, the food targets block, the portion calculator and the one-time meal-log fold are gone; your own habits (columns, targets, how you read a label) live in your own note and skill.
+- **Known limit when going back to v5.1.2.** v5.1.2 still merges a newly logged row with a stored row of the same date and meal label in a food log, as it always did. Rows that v5.2.0 appended stay as they are when you go back, but a row you log on v5.1.2 afterwards can replace one of them if it reuses its date and label. Copy the file first if you plan to go back and keep logging there.
+
 ## v5.1.1 - A renamed model keeps your choice, and a gone model says what answers now
 
 A small fix release on top of v5.1.0, with one change.

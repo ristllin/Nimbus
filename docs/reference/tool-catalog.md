@@ -369,8 +369,7 @@ Notes:
   another person's file, and counts against the caller's file-storage quota.
 - `files.append` writes only the new rows (line ends normalized, a final line end
   added) on every path: no row is merged, replaced, refused or set aside, whatever
-  the file holds (owner ruling 41: a food log, an expenses log and a training log
-  append alike). When the file's last row has no line end, the new rows start on a
+  the file holds (owner ruling 41: every table the owner keeps appends alike). When the file's last row has no line end, the new rows start on a
   fresh line and the reply says so. A correction is a `files.edit` of the row. An
   argument the tool does not take (an older `key`, `sum` or `replace`) is named as
   not read, and the rows are appended as sent. It follows the same ownership and

@@ -98,9 +98,8 @@ never from an unattended turn or a turn that read outside content.
 
 ### 1.1d Tables the owner keeps, and recent actions
 
-Nimbus has no built-in table for any one use case (owner ruling 41): a food log, an
-expenses log or a training log is an ordinary CSV file the owner keeps in any project,
-written with the file tools. `files.append` only appends: the rows go on the end of the
+Nimbus has no built-in table for any one use case (owner ruling 41): whatever the owner
+tracks is an ordinary CSV file he keeps in any project, written with the file tools. `files.append` only appends: the rows go on the end of the
 file as sent, nothing stored is read back, replaced or rewritten, and a file whose last
 line has no line end gets one before the new rows. A correction is a `files.edit` of
 the row. `files.read` with `tail` reads the end of the file, and with `sum` (a numeric

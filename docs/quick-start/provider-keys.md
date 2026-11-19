@@ -128,12 +128,12 @@ Strong at conversation and reasoning.
 
 ## Picking a model for daily use
 
-Measured on one script of everyday jobs: memory, files, a food plan, web lookups, helpers
+Measured on one script of everyday jobs: memory, files, a plan with figures, web lookups, helpers
 and a long answer.
 
 - **Mistral Large 4** and **GLM-5.3** handle daily use. A very long answer on GLM is
   limited to about 1,800 words, because Z.ai closes a request after 60 seconds.
-- **GLM-5.3 Flash** and **Mistral Medium** handle most of it for less, and slip on food
+- **GLM-5.3 Flash** and **Mistral Medium** handle most of it for less, and slip on
   arithmetic more often.
 - **Mistral Small** suits helpers and quick chat. As the main assistant it can say a file
   was changed without changing it, and the assistant tells you so when you pick it.
