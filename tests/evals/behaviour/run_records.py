@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,42 @@ class Aid:
 tool_name = records.tool_name
 
 
+# Candidate wordings of the sum clause, measured as arms before any is built (ruling 88 asks that the
+# figure and its coverage be one statement; these are two stronger forms of the same facts):
+#   Sp  the clause says "partial" when it leaves rows out: "sum kcal=655 (partial: 3 of 4 rows; ...)";
+#   Sq  the tail is followed by the rows not in the sums, as stored ("not in the sums, as stored: L175 ...").
+LEFT_OUT_RE = re.compile(
+    r"\b(?:line|lines) ([\d, +-]+?) \((?:field count|blank\)|not a number|over |\w+ blank or not like)"
+)
+
+
+def _partial(world, args, text):
+    return re.sub(
+        r"\(([0-9]+) of ([0-9]+) rows?",
+        lambda m: m.group(0) if m.group(1) == m.group(2) else f"(partial: {m.group(1)} of {m.group(2)} rows",
+        text,
+    )
+
+
+def _quoted(world, args, text):
+    if "; sum " not in text or "not in it: " not in text:
+        return text
+    nums = []
+    for m in LEFT_OUT_RE.finditer(text):
+        for part in m.group(1).split(","):
+            part = part.strip().split("-")[0].lstrip("+")
+            if part.isdigit() and int(part) not in nums and not m.group(0).startswith("lines " + "+"):
+                nums.append(int(part))
+    path = (args.get("args") or args).get("path", "")
+    body = world.aid.q({"op": "cat", "path": path}).get("bytes") or ""
+    lines = body.split("\n")
+    rows = [f"L{n} {lines[n - 1][:160]}" for n in sorted(nums)[:8] if 0 < n <= len(lines)]
+    return text + ("\nnot in the sums, as stored: " + " | ".join(rows) if rows else "")
+
+
+SUM_VARIANTS = {"Sp": _partial, "Sq": _quoted}
+
+
 class World:
     """The device for one episode: the real file tools, faults, and small stand-ins for the rest."""
 
@@ -146,6 +183,8 @@ class World:
         text = r["text"]
         if self.arm == "F" and target == "edit_file" and not r["ok"]:
             text = text.replace("; line picks one, all=true replaces all", "; all=true replaces all")
+        if self.arm in SUM_VARIANTS and target == "read_file" and r["ok"]:
+            text = SUM_VARIANTS[self.arm](self, args, text)
         return text, not r["ok"]
 
     def _note(self, args: dict) -> tuple:
@@ -176,7 +215,7 @@ class World:
 # ------------------------------------------------------------------ requests
 def compose(aid: Aid, ep: dict, arm: str, head: str) -> tuple:
     dom = ep["dom"]
-    notes = records.note_lines(dom) if arm in ("F", "S") else records.note_lines(dom)[:2]
+    notes = records.note_lines(dom) if arm in ("F", "S", "Sp", "Sq") else records.note_lines(dom)[:2]
     skills = ""
     sid = records.DOMAINS[dom]["skill_id"]
     if arm == "K1":
@@ -365,7 +404,7 @@ def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=No
 
 # ------------------------------------------------------------------ plan and storage
 def cell_plan(arm: str, n_total: int, n_write: int, n_fault: int, n_skill: int) -> list:
-    if arm in ("F", "S"):
+    if arm in ("F", "S", "Sp", "Sq"):
         return records.plan(n_total, n_write, n_fault if arm == "S" else 0)
     return records.plan_skills(arm, n_skill)
 
@@ -373,7 +412,7 @@ def cell_plan(arm: str, n_total: int, n_write: int, n_fault: int, n_skill: int) 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--head", required=True)
-    ap.add_argument("--arm", required=True, choices=["F", "S", "K0", "K1", "K2", "K3"])
+    ap.add_argument("--arm", required=True, choices=["F", "S", "Sp", "Sq", "K0", "K1", "K2", "K3"])
     ap.add_argument("--evidence", required=True)
     ap.add_argument("--env-file", default="")
     ap.add_argument("--aidserve", required=True)
