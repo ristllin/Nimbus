@@ -7,6 +7,7 @@
 # (tools/release_gate/check_engine_filter.py fails otherwise, and on an entry that does not exist).
 # A lane that adds an engine-2 source adds its line here in the same commit.
 
+lib/core/src/orch_calc.cpp
 lib/core/src/orch_file_tools.cpp
 lib/core/src/orch_path_rules.cpp
 lib/core/src/orch_tx_arena.cpp

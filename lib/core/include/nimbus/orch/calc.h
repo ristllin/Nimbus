@@ -55,8 +55,8 @@
 // The error reasons, exactly (Error, then the text after "error at position N: "):
 //   Empty             empty expression
 //   TooLong           longer than 256 bytes
-//   BadChar           unexpected 'X'            (X the character; control bytes and broken
-//                                                UTF-8 read "unexpected byte")
+//   BadChar           unexpected 'X'            (X a printable ASCII character; any other
+//                                                byte or character reads "unexpected character")
 //   UnknownWord       unknown word 'W': use numbers, + - * / ( ) % and of
 //                                               (W at most 12 bytes)
 //   Unsupported       'X' is not supported: use + - * / ( ) %
@@ -69,7 +69,7 @@
 //   BadNumber         number not understood: use digits with one '.' for decimals
 //   UnclearNumber     'T' could be A or B: write one of them
 //                     (T the number as typed, A its thousands reading, B its decimal
-//                     reading; T longer than 24 bytes reads "this number")
+//                     reading; T is at most 7 bytes)
 //   PercentPlacement  '%' must follow a number
 //   OfPlacement       'of' must follow a percent, as in 15% of 80
 //   UnclearPercent    unclear percent: write N% of X, or put it in parentheses
