@@ -11,11 +11,15 @@
 //   {"op":"skill","id":"my-log","body":".."}             -> {"ok":true}   (read_file skills/<id>.md)
 //   {"op":"call","tool":"read_file","args":{..},"refuse":false}
 //       -> {"ok":bool,"text":".."}   (FileTools through the registry, as the device dispatches;
+//          read_file, write_file, append_file, edit_file, list_files and calc are the real handlers;
 //          refuse=true installs a working allocator that refuses every allocation for this call)
 //   {"op":"cat","path":"log/x.csv"}                      -> {"bytes":".."} or {"bytes":null}
+//   {"op":"attach","skills":[{"id","rev","body"}]}      -> {"text":".."}  (the old engine's [ACTIVE SKILLS]
+//          block for skills marked inject: context, agent::skillsAttachText, sorted by id, 4,096 B)
 // Built by tests/evals/behaviour/build_aidserve.sh against nimbusd's core objects.
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <iostream>
 #include <map>
@@ -23,6 +27,8 @@
 
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/harness/skill_attach.h"
+#include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/file_aids.h"
 #include "nimbus/orch/file_tools.h"
 #include "nimbus/orch/psram_alloc.h"
@@ -123,6 +129,13 @@ int main(int argc, char** argv) {
     const auto* d = plain::toolDecl(t);
     return FileToolDecl{d->description, plain::declSchema(*d, false)};
   });
+  // calc: the real handler under engine 2's declaration (as an engine-2 binding registers it).
+  {
+    const auto* d = plain::toolDecl("calc");
+    reg.add(d->name, d->description, [](JsonObjectConst a, const Principal&) { return calcToolCall(a); },
+            plain::declSchema(*d, false));
+    alsoReadCalcNames(reg);
+  }
   // Every other always-on tool and the groups, so composition sees the device's pack.
   for (const td::ToolDecl& d : td::kTools) {
     const std::string name = d.name;
@@ -198,6 +211,20 @@ int main(int argc, char** argv) {
     } else if (op == "skill") {
       io.skills[in["id"] | ""] = in["body"] | "";
       out["ok"] = true;
+    } else if (op == "attach") {
+      // The old engine's [ACTIVE SKILLS] block for skills marked inject: context (agent::skillsAttachText).
+      std::vector<agent::AttachPick> picks;
+      std::map<std::string, std::string> bodies;
+      for (JsonObjectConst k : in["skills"].as<ArduinoJson::JsonArrayConst>()) {
+        agent::AttachPick p;
+        p.id = k["id"] | "";
+        p.rev = k["rev"] | 1;
+        p.pinned = true;
+        picks.push_back(p);
+        bodies[p.id] = k["body"] | "";
+      }
+      std::sort(picks.begin(), picks.end(), [](const agent::AttachPick& a, const agent::AttachPick& b) { return a.id < b.id; });
+      out["text"] = agent::skillsAttachText(picks, [&](const std::string& id) { return bodies[id]; });
     } else if (op == "call") {
       const std::string tool = in["tool"] | "";
       const bool refuse = in["refuse"] | false;
