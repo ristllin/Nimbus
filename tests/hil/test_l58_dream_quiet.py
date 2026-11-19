@@ -95,7 +95,6 @@ def _drill(dev: Device, timeout: float = 120.0) -> str:
     return window
 
 
-
 def _health_row(health: dict, key: str) -> dict:
     for row in health.get("components", []):
         if row.get("key") == key:

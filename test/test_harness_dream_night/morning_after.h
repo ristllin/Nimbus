@@ -335,25 +335,36 @@ inline bool isHeader(const std::string& l) {
 // except the assistant lines that answer a dream-written owner-side history line (the
 // reply row of the dream's own trigger or self-wakeup exchange), and except a section
 // header whose every line is a dream output (the recall header over the dream's fact).
-inline std::vector<std::string> conversationLines(const std::vector<std::string>& dump) {
+// Marks every dream output, and the assistant lines answering a dream-written owner-side
+// history line.
+inline std::vector<bool> markDreamLines(const std::vector<std::string>& dump) {
   std::vector<bool> dream(dump.size(), false);
   bool answeringDream = false;
   for (size_t i = 0; i < dump.size(); ++i) {
     const std::string& l = dump[i];
-    const bool user = l.rfind("history|user|", 0) == 0;
     const bool assistant = l.rfind("history|assistant|", 0) == 0;
-    if (user) answeringDream = isDreamWritten(l);
+    if (l.rfind("history|user|", 0) == 0) answeringDream = isDreamWritten(l);
     else if (!assistant) answeringDream = false;
     dream[i] = isDreamWritten(l) || (assistant && answeringDream);
   }
+  return dream;
+}
+
+// Marks a section header whose every line is already marked.
+inline void markDreamHeaders(const std::vector<std::string>& dump, std::vector<bool>& dream) {
   for (size_t i = 0; i < dump.size(); ++i) {
     if (!isHeader(dump[i])) continue;
     const std::string where = dump[i].substr(0, dump[i].find('|') + 1);
-    size_t j = i + 1, body = 0, written = 0;
-    for (; j < dump.size() && !isHeader(dump[j]) && dump[j].rfind(where, 0) == 0; ++j, ++body)
+    size_t body = 0, written = 0;
+    for (size_t j = i + 1; j < dump.size() && !isHeader(dump[j]) && dump[j].rfind(where, 0) == 0; ++j, ++body)
       if (dream[j]) ++written;
     if (body > 0 && written == body) dream[i] = true;
   }
+}
+
+inline std::vector<std::string> conversationLines(const std::vector<std::string>& dump) {
+  std::vector<bool> dream = markDreamLines(dump);
+  markDreamHeaders(dump, dream);
   std::vector<std::string> out;
   for (size_t i = 0; i < dump.size(); ++i)
     if (!dream[i]) out.push_back(dump[i]);
