@@ -591,6 +591,8 @@ def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[st
         if v511 and hmax <= v511:
             errs.append(f"{name}: a measured window {hmax:.0f} no larger than v5.1.1's {v511}")
         return errs
+    if branch == "room":   # the routed lift is on: the head has its model's budget, not the floor
+        return [] if nbytes > FLOOR_BYTES else [f"{name}: 'room' at {nbytes:.0f} B, on the floor"]
     if branch.startswith("v5.1.1"):
         if v511 and room > v511:
             return [f"{name}: left on v5.1.1's window {v511} although the measured room gives {room}"]

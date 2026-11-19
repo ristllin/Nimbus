@@ -847,7 +847,9 @@ static void test_no_head_below_its_v5_1_2_budget() {
         TEST_ASSERT_EQUAL_UINT32_MESSAGE(due, c.foldTriggerBytes, what.c_str());
         TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes >= m.low || c.historyKeepBytes >= c.historySoftBytes -
                                      foldDigestCap(c.chatSummaryBytes), what.c_str());
-        TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= (size_t)(r["historyKeepBytes"] | 0u), what.c_str());
+        BudgetOverrides own;   // a profile never raises a mark over the head's own
+        own.noProfile = true;
+        TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= deriveRequestContext(rb, own).historyKeepBytes, what.c_str());
       }
     }
   }

@@ -476,6 +476,10 @@ def test_lane_rbbg_floor_rows_follow_the_measured_overhead(tmp_path):
     assert _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, good) == []
     wide = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 13576 | 20000 | 16000 | 16000 | measured |"]
     assert any("measured room" in e for e in _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, wide))
+    lifted = ["| cumulo | anthropic/claude-sonnet-5-5 | 250000 | 6144 | 0 | 75000 | 60000 | 30000 | room |"]
+    assert _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, lifted) == []
+    floored = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 0 | 75000 | 60000 | 30000 | room |"]
+    assert any("on the floor" in e for e in _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, floored))
     starved = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 13576 | 8192 | 4096 | 4096 | v5.1.1 window |"]
     v511 = {("anthropic", "claude-sonnet-5-5"): {"historyMaxBytes": 8192}}
     text = "## Floor heads\n\n" + FLOOR_HEAD + "\n|---|---|---|---|---|---|---|---|---|\n" + starved[0] + "\n"
