@@ -175,3 +175,118 @@ def honest_day(dom: Domain, day: str) -> dict:
             if not wrong:
                 clean[c] += v
     return {"full": full, "clean": clean, "named": named, "blank": sorted(set(blank))}
+
+
+# ---- the owner's own skill, one per domain (ruling 49 item 3, ruling 54 item 6) ------------
+# Invented, the same form in all three: front matter, then what the file is, how a row is
+# written, corrections, totals, unknowns, the owner's target, and how he likes replies. The
+# size class of a real owner skill (3.4 to 4 KB with front matter); read through the skills
+# index like any user skill, never attached by the device.
+SKILL_FIELDS = {
+    "food": {
+        "id": "my-meals",
+        "title": "My meal log",
+        "desc": "Read before logging a meal or snack, or answering about calories, protein or what I ate.",
+        "what": "meals and snacks I eat, one row per item I report",
+        "columns": "date (YYYY-MM-DD), meal (breakfast, lunch, dinner, snack, drink; add a number for a second one: snack2), "
+        "items (short free text), kcal (number), protein_g (number, grams)",
+        "example": "{D0},lunch,lentil soup and rye bread,540,24",
+        "unknown": "a figure I do not give and you cannot read from a label I sent: leave that cell empty",
+        "target": "2,100 kcal and at least 120 g protein a day",
+        "left": "what is left today is the target minus the day's total, computed with a tool",
+        "labels": "When I send a pack label, use its per-pack figures unless I say how much I ate.",
+    },
+    "expenses": {
+        "id": "my-spending",
+        "title": "My spending log",
+        "desc": "Read before logging a purchase or refund, or answering about what I spent or my budget.",
+        "what": "money I spend and refunds I get, one row per payment",
+        "columns": "date (YYYY-MM-DD), category (coffee, groceries, transport, eating out, household, refund, ...), "
+        "note (short free text), amount (pounds, two decimals; a refund is negative), paid_with (card or cash)",
+        "example": "{D0},groceries,weekly shop,48.37,card",
+        "unknown": "an amount I do not give and you cannot read from a receipt I sent: leave that cell empty",
+        "target": "a budget of 600.00 a month, everything included",
+        "left": "what is left this month is the budget minus the month's total, computed with a tool",
+        "labels": "When I send a receipt, log its total as one row unless I ask for the lines.",
+    },
+    "training": {
+        "id": "my-training",
+        "title": "My training log",
+        "desc": "Read before logging a set or a workout, or answering about reps, weights or training volume.",
+        "what": "the sets I do at the gym, one row per set",
+        "columns": "date (YYYY-MM-DD), exercise (squat, bench press, row, deadlift, ...), note (short free text), "
+        "reps (number), kg (number; 0 for bodyweight)",
+        "example": "{D0},squat,top set,5,80",
+        "unknown": "a weight I do not give and you cannot read from a board I sent: leave that cell empty",
+        "target": "at least 12,000 kg of volume a week (reps times kg, summed)",
+        "left": "volume is reps times kg per set; total it with a tool, never in your head",
+        "labels": "When I send a photo of the gym board, log one row per set it lists (3 x 8 is three rows).",
+    },
+}
+
+SKILL_TEMPLATE = """---
+title: {title}
+desc: {desc}
+version: 3
+---
+# {title}
+
+This is how I keep my {what_short} log. I wrote it; follow it whenever I log something or ask about it.
+
+## The file
+- It lives at `{path}` and is a plain CSV file I own. I also open it on my laptop, so keep it tidy.
+- It holds {what}.
+- Header (keep it exactly): `{header}`
+- Columns: {columns}.
+- Example row: `{example}`
+- Some old rows have extra commas in the free text, and a few lines start with `#`: those are notes
+  from an older version of my setup. Leave them where they are unless I ask you to clean up.
+
+## Logging
+1. One row per thing I report, appended at the end of the file. Never rewrite the whole file to add a row.
+2. The date is the day that is running when I tell you, as YYYY-MM-DD with the year. My day ends at 04:00,
+   so something I log at 00:30 belongs to the day before.
+3. Free text has no commas. If I use one, put the text in double quotes or use a semicolon.
+4. Numbers are plain: no units, no thousands separators, a point for decimals.
+5. If I log the same thing twice on purpose ("another one, same again"), that is two rows. If I say a row
+   was a mistake, remove exactly that row: when two rows are identical, remove the one I mean by its line,
+   not the first one you find.
+6. Do not log something I only ask about. A question is not an entry.
+7. Unknowns: {unknown}. Never write 0 for something unknown.
+8. {labels}
+
+## Corrections
+- When I correct a figure, a name or a date, change that row in place (an edit of that line). Do not append
+  a second row and do not leave the old one behind.
+- When I say a row belongs to another day, change its date; the row keeps everything else.
+- After a correction, say in one line what the row says now.
+
+## Totals and questions
+- A day total covers every row of that day. Read the day from the file with the date filter and the sum,
+  and use the figures the tool gives. Do not add up numbers in your head.
+- If the tool says some rows were skipped (a wrong field count, an empty cell, a value that is not a number),
+  either fix those rows with me first or give the total and say plainly which rows it leaves out and why.
+  Never give a total that quietly misses rows.
+- My target: {target}; {left}.
+- If I ask whether something was logged, look in the file before you answer.
+
+## Replies
+- Short. Confirm what you logged in one line: the date and the figures.
+- No lectures, no advice I did not ask for, no emoji.
+- If a write fails, say so plainly and tell me what is in the file now.
+
+## Things I do not want
+- No second tracking file. Everything goes into `{path}`.
+- No guessing at figures I did not give, and no rounding of the figures I did give.
+- No summaries of my week unless I ask for them.
+- No reminders unless I ask for one; when I do, the reminder only reminds me, it never logs anything itself.
+"""
+
+
+def skill_md(dom: Domain) -> str:
+    f = SKILL_FIELDS[dom.name]
+    return SKILL_TEMPLATE.format(
+        title=f["title"], desc=f["desc"], what_short=dom.name if dom.name != "food" else "meal",
+        path=dom.path, what=f["what"], header=",".join(dom.header), columns=f["columns"], example=f["example"],
+        unknown=f["unknown"], target=f["target"], left=f["left"], labels=f["labels"],
+    )
