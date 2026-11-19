@@ -65,7 +65,7 @@ struct FindSink {
 // run() settles every byte that can no longer start a match and reports each match.
 struct Finder {
   std::string_view pat;
-  size_t skip[256];
+  size_t* skip = nullptr;  // the Horspool shifts (256), in the window's block, off the stack
   char* w = nullptr;
   size_t cap = 0, len = 0;
   char prev = '\n';      // the byte before w[0]; '\n' at the start of the file
@@ -74,12 +74,14 @@ struct Finder {
   bool init(std::string_view p) {
     pat = p;
     cap = p.size() + 2 + kAidChunk;
-    w = static_cast<char*>(workingAlloc(cap));
-    for (size_t& s : skip) s = p.size();
+    skip = static_cast<size_t*>(workingAlloc(256 * sizeof(size_t) + cap));
+    if (!skip) return false;
+    w = reinterpret_cast<char*>(skip + 256);
+    for (size_t i = 0; i < 256; ++i) skip[i] = p.size();
     for (size_t i = 0; i + 1 < p.size(); ++i) skip[static_cast<unsigned char>(p[i])] = p.size() - 1 - i;
-    return w != nullptr;
+    return true;
   }
-  ~Finder() { workingFree(w); }
+  ~Finder() { workingFree(skip); }
   void reset() {
     len = 0;
     prev = '\n';
