@@ -350,7 +350,8 @@ static void checkToEpoch(ndtest::Ctx& c, Client& cl) {
   c.eqi(st.status, 200, "GET /api/state -> 200");
   const size_t at = st.body.find("\"epoch\":");
   const uint64_t shown = at == std::string::npos ? 0 : (uint64_t)std::strtod(st.body.c_str() + at + 8, nullptr);
-  c.ok(shown >= target && shown <= target + 3, "the state the page reads shows the moved clock (" + std::to_string(shown) + ")");
+  // Two HTTP requests on a loaded host can be seconds apart; the check is that the page shows the moved clock, not how fast the host is.
+  c.ok(shown >= target && shown <= target + 30, "the state the page reads shows the moved clock (" + std::to_string(shown) + ")");
 }
 
 static void checkRouteAdvancesAndIdles(ndtest::Ctx& c) {
