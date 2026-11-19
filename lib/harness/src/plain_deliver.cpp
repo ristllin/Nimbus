@@ -88,8 +88,6 @@ void setEvents(const std::vector<std::string>& all, size_t keep, bool exchangesC
   if (exchangesCut) out.emplace_back("exchanges:cut");
 }
 
-// One exchange gives up its reference first (its three figures stay); then the oldest exchange
-// leaves. False when nothing is left to give up.
 // An omission line kept once moves on to the next exchange that read it from this one.
 void handOnOmission(std::vector<tx::ExchangeFacts>& xs, size_t i) {
   if (i + 1 < xs.size() && xs[i + 1].omitThrough && xs[i + 1].omission.empty()) xs[i + 1].omission.swap(xs[i].omission);
@@ -106,6 +104,8 @@ bool shedOneReference(std::vector<tx::ExchangeFacts>& xs) {
   return false;
 }
 
+// One exchange gives up its reference first (its three figures stay); then the oldest exchange
+// leaves. False when nothing is left to give up.
 bool shedOneExchange(std::vector<tx::ExchangeFacts>& xs) {
   if (shedOneReference(xs)) return true;
   if (xs.empty()) return false;
@@ -169,8 +169,10 @@ Status turnEndItem(const TurnCtx& turn, const tx::TurnEndFacts& facts, tx::Item&
       exchangesCut = true;
     } else if (keep) {
       keep /= 2;
-    } else {
+    } else if (!e.cause.empty()) {
       e.cause.clear();   // nothing else is left that could be long
+    } else {
+      return Status::fail(Err::InvalidArgument, "plain::turnEndItem.encode");   // nothing left to shed
     }
     setEvents(events, keep, exchangesCut, e.events);
   }
