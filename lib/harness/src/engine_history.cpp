@@ -266,7 +266,7 @@ constexpr size_t kCacheMaxRows = 4096;
 static ConvCache::Bound cacheBound(const HistoryBudget& b) {
   ConvCache::Bound c;
   if (b.derived) {
-    c.bytes = b.maxBytes + b.maxBytes / 4;
+    c.bytes = std::max<size_t>(b.maxBytes + b.maxBytes / 4, 256 * 1024);   // RB-BG: a small window still reads past one long input
     c.rows = kCacheMaxRows;
   } else {
     c.rows = 2 * historyReadRows(b);

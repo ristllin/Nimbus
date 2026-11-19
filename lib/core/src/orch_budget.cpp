@@ -1,6 +1,8 @@
 #include "nimbus/orch/budget.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 
 #include "nimbus/orch/compact.h"       // kChatSummaryMax - what the fold store keeps
 #include "nimbus/orch/model_window.h"   // kCtxDefaultTokens - the window table
@@ -117,7 +119,101 @@ void deriveHistory(ContextBudget& b, size_t historyMax) {
   b.floorBranch = false;
 }
 
+// Lane RB-BG: the history profile caps a direct head's marks. The fold is due at
+// min(soft, H) and keeps min(keep, L) (never less than one fold's digest can take), and the
+// window's high water is 5/4 of the due mark. A head with smaller marks keeps its own. The
+// due mark never goes under kFoldTriggerMinBytes (RULINGS-v3 item 3): tight's 24,000 B reads
+// as 24,576 B.
+void capToProfile(ContextBudget& b, HistoryProfile p) {
+  const HistoryProfileMarks m = historyProfileMarks(p);
+  const size_t soft = std::max<size_t>(m.high, kFoldTriggerMinBytes);
+  if (b.historySoftBytes <= soft) return;
+  const size_t digest = foldDigestCap(b.chatSummaryBytes);
+  const size_t keep = std::max<size_t>(std::min<size_t>(b.historyKeepBytes, m.low), soft > digest ? soft - digest : 0);
+  const size_t max = std::min<size_t>(b.historyMaxBytes, soft + soft / 4);
+  b.historyMaxBytes = max;
+  b.recentConvBytes = max;
+  b.historySoftBytes = soft;
+  b.historyKeepBytes = keep;
+  b.foldStepBytes = soft - keep;
+  b.historyRows = std::max<size_t>(64, max / 192);
+  b.foldTriggerBytes = soft;
+}
+
+// Lane RB-BG: a split-prompt head at the floor. What the body leaves after the measured fixed
+// overhead and the summary at its cap, in window bytes (the window counts rendered turn lines,
+// the wire adds each message's framing). 0 when nothing is left.
+size_t floorRoomWindowBytes(const RequestBudget& rb, size_t summaryBytes) {
+  // The sending wire: Anthropic's v5.1.1 replay cap is 16,384 B, every other wire's 24,576 B.
+  const bool anthropic = rb.v511ReplayBytes == 16384;
+  const size_t fixed = (anthropic ? kFloorFixedAnthropicBytes : kFloorFixedOpenAIBytes) + summaryBytes +
+                       kFloorMarginBytes;
+  if (rb.wireBodyBytes <= fixed) return 0;
+  const unsigned pct = anthropic ? kFloorWirePerWindowAnthropicPct : kFloorWirePerWindowOpenAIPct;
+  return (size_t)((uint64_t)(rb.wireBodyBytes - fixed) * 100 / pct);
+}
+
+// The marks of a measured floor head: the fold-before-shift window up to `room`, a shift
+// landing at 9/10 of it (a fold is then due, for the rows it hid), the fold keeping 4/5, and
+// v5.1.1's fold trigger (`v511Trigger`, never under kFoldTriggerMinBytes). A floor head's
+// conversation then stays between 4/5 and all of the room: v5.1.1's window fell to half of a
+// smaller one at every shift (the 17 Nov device carried one exchange of 516 B). One fold runs
+// for about a fifth of the room of new conversation (v5.1.1: half of its 8 KB window).
+void deriveFloorHistory(ContextBudget& b, size_t room, size_t v511Trigger) {
+  b.historyMaxBytes = room;
+  b.recentConvBytes = room;
+  b.historySoftBytes = room * 9 / 10;
+  b.historyKeepBytes = room * 4 / 5;
+  b.foldStepBytes = b.historySoftBytes - b.historyKeepBytes;
+  b.historyRows = std::max<size_t>(64, room / 192);
+  b.foldTriggerBytes = v511Trigger;
+  b.floorBranch = false;
+  b.floorMeasured = true;
+}
+
+std::atomic<uint8_t>& profileSlot() {
+  static std::atomic<uint8_t> slot{(uint8_t)kDefaultHistoryProfile};
+  return slot;
+}
+
 }  // namespace
+
+HistoryProfileMarks historyProfileMarks(HistoryProfile p) {
+  switch (p) {
+    case HistoryProfile::Tight: return {24000, 12000};
+    case HistoryProfile::Lean: return {40000, 20000};
+    case HistoryProfile::Wide: return {100000, 50000};
+    case HistoryProfile::Standard: break;
+  }
+  return {60000, 30000};
+}
+
+const char* historyProfileSlug(HistoryProfile p) {
+  switch (p) {
+    case HistoryProfile::Tight: return "tight";
+    case HistoryProfile::Lean: return "lean";
+    case HistoryProfile::Wide: return "wide";
+    case HistoryProfile::Standard: break;
+  }
+  return "standard";
+}
+
+bool parseHistoryProfile(const std::string& word, HistoryProfile& out) {
+  std::string w;
+  for (char c : word) w += (char)std::tolower((unsigned char)c);
+  for (HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard, HistoryProfile::Wide})
+    if (w == historyProfileSlug(p)) {
+      out = p;
+      return true;
+    }
+  return false;
+}
+
+void installHistoryProfile(HistoryProfile p) { profileSlot().store((uint8_t)p); }
+HistoryProfile installedHistoryProfile() {
+  const uint8_t v = profileSlot().load();
+  return v <= (uint8_t)HistoryProfile::Wide ? (HistoryProfile)v : kDefaultHistoryProfile;
+}
 
 ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverrides& ov) {
   const ContextBudget old = deriveBudget(rb.v511CtxTokens, ov);   // v5.1.1, owner overrides applied
@@ -143,7 +239,15 @@ ContextBudget deriveRequestContext(const RequestBudget& rb, const BudgetOverride
   // The floor branch (RULINGS-v3 item 3): no more room than v5.1.1's window, or a trigger
   // under kFoldTriggerMinBytes - the history stays exactly v5.1.1's (old's fields).
   const bool room = historyMax > (int64_t)old.historyMaxBytes && historyMax * 4 / 5 >= (int64_t)kFoldTriggerMinBytes;
-  if (room) deriveHistory(b, (size_t)historyMax);
+  if (room) {
+    deriveHistory(b, (size_t)historyMax);
+    if (!ov.noProfile) capToProfile(b, installedHistoryProfile());
+  } else if (!rb.flatTurn && !rb.flat && rb.wireBodyBytes <= kLegacyWireBodyBytes) {
+    // Lane RB-BG: a split-prompt turn at the floor sizes its history from the measured overhead
+    // when that gives more than v5.1.1's window; otherwise the floor branch stands.
+    const size_t floorRoom = floorRoomWindowBytes(rb, b.chatSummaryBytes);
+    if (floorRoom > old.historyMaxBytes) deriveFloorHistory(b, floorRoom, old.foldTriggerBytes);
+  }
   b.foldSliceBytes = std::max(old.foldSliceBytes, b.foldStepBytes);
   return b;
 }
@@ -154,7 +258,7 @@ size_t foldCycleBytes(const ContextBudget& b) {
 
 size_t foldTriggerBytes(const ContextBudget& b, uint32_t compactAtKB) {
   if (compactAtKB == 0) return 0;
-  if (b.floorBranch) return (size_t)compactAtKB * kKB;
+  if (b.floorBranch || b.floorMeasured) return (size_t)compactAtKB * kKB;
   if (compactAtKB == kCompactAtKbDefault) return b.historySoftBytes;
   const size_t lo = 8 * kKB;
   const size_t hi = b.historyMaxBytes > 2 * lo ? b.historyMaxBytes - lo : lo;

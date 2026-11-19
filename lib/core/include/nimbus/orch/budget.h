@@ -71,6 +71,11 @@ struct ContextBudget {
   // compactAtKB trigger). deriveBudget leaves both at v5.1.1's.
   size_t   foldTriggerBytes = 48 * 1024;
   bool     floorBranch = true;
+  // Lane RB-BG: a split-prompt head at the 85,000 B floor (routed, held) whose history marks
+  // come from the MEASURED overhead of the old engine's request (kFloorFixed*Bytes) rather than
+  // v5.1.1's window: the window is the fold-before-shift one (as a head with room), and the fold
+  // trigger stays v5.1.1's 48 KB compactAtKB reading. floorBranch is false when this is set.
+  bool     floorMeasured = false;
 };
 
 // 0 == "auto/derive". Non-zero == owner override, wins verbatim then clamps.
@@ -78,6 +83,9 @@ struct BudgetOverrides {
   int maxContextBytes = 0;  // MemConfig.maxContextBytes (0 = auto)
   int toolResultCap = 0;    // NVS orchLoopRCap (0 = key absent = auto)
   int toolTotalCap = 0;     // NVS orchLoopTCap (0 = key absent = auto)
+  // Lane RB-BG: the history marks as the head's body derives them, with no profile cap (tests
+  // of the window's mechanics on a large head, and the generated table's uncapped column).
+  bool noProfile = false;
 };
 
 // Derive every allocation from the window. ctxTokens==0 falls back to the
@@ -91,6 +99,44 @@ ContextBudget deriveBudget(uint32_t ctxTokens, const BudgetOverrides& ov);
 // tool-loop setting, with no default: every consumer says which form it sizes.
 ContextBudget headContextBudget(const std::string& host, const std::string& model, bool loopOn,
                                 const BudgetOverrides& ov);
+
+// ---- lane RB-BG: the history profile of a direct head -------------------------------
+// The profile caps a head's history marks (PRD section 2): compaction (the fold) is due at H
+// and keeps L; the window's high water is 5/4 of H. A head whose derived marks are smaller
+// keeps its own (a profile never raises a mark), the floor heads are never capped by it, and
+// no mark goes under the head's v5.1.1 value. The slugs are stored in /data/budget.json and
+// match engine 2's tx::Profile (tx/budget.h): frozen.
+enum class HistoryProfile : uint8_t { Tight = 0, Lean = 1, Standard = 2, Wide = 3 };
+inline constexpr HistoryProfile kDefaultHistoryProfile = HistoryProfile::Standard;
+struct HistoryProfileMarks {
+  uint32_t high = 0;   // H: the fold is due here (the soft mark)
+  uint32_t low = 0;    // L: the fold keeps this much
+};
+HistoryProfileMarks historyProfileMarks(HistoryProfile p);   // tight 24,000/12,000 ... wide 100,000/50,000
+const char* historyProfileSlug(HistoryProfile p);             // "tight" | "lean" | "standard" | "wide"
+// The profile a typed or stored word names (case-insensitive); false for anything else.
+bool parseHistoryProfile(const std::string& word, HistoryProfile& out);
+// The profile every head's context is derived under in this process (the device's
+// budget_profile_store and nimbusd's hosted_budget install it from /data/budget.json: the
+// owner's pinned choice, else the governor's). kDefaultHistoryProfile until installed.
+void installHistoryProfile(HistoryProfile p);
+HistoryProfile installedHistoryProfile();
+
+// The measured overhead a floor head's history is sized from (RB-Q3b's synthetic busy twin, one
+// owner text turn of the old engine through the real adapters on a Cumulo head, history hidden
+// behind a shift: test_floor_dialogue pins the figures and fails when the request grows past
+// them). Everything but the history messages and the summary's text: the system blocks, the
+// turn's input message (recall, recent actions, the coverage line), the summary's framing and
+// acknowledgement, the tools array and the envelope.
+inline constexpr size_t kFloorFixedAnthropicBytes = 64768;   // measured 64,652 B
+inline constexpr size_t kFloorFixedOpenAIBytes = 66688;      // measured 66,566 B
+// Held back for what the measure does not size: day labels, a longer stamp, JSON escapes.
+inline constexpr size_t kFloorMarginBytes = 512;
+// Wire bytes per 100 B of the history window (renderTurnLines) on the 17 Nov shape: a message's
+// JSON framing over the window's own labels (measured 118 and 127; owner messages are short,
+// median 12 B, so the framing is a large share).
+inline constexpr unsigned kFloorWirePerWindowAnthropicPct = 120;
+inline constexpr unsigned kFloorWirePerWindowOpenAIPct = 130;
 
 // ---- lane B: every field from the one request budget (plan v3 protocols) -------------
 // The stored compactAtKB default (store.cpp): it means "derived".

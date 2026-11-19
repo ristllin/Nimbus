@@ -33,6 +33,7 @@ using namespace nimbus::orch;
 namespace providers = agent::providers;
 
 void setUp() {
+  installHistoryProfile(kDefaultHistoryProfile);
   installListedCtxLookup(&recorded::listedLookup);
   clearObservedRatios();
   installBudgetLink(BudgetLink::Device);
@@ -401,7 +402,9 @@ static void test_a_fortnight_on_every_head_works_off_its_backlog() {
 
 // The derived figures for the heads the plan quotes (replay at least the wire's v5.1.1 cap).
 static void test_the_derived_fields_for_the_main_heads() {
-  const ContextBudget l4 = deriveRequestContext(requestBudgetFor("mistral", "mistral-large-4-0", false), {});
+  BudgetOverrides uncapped;
+  uncapped.noProfile = true;   // lane B's formula itself; the profile caps are test_profile_*
+  const ContextBudget l4 = deriveRequestContext(requestBudgetFor("mistral", "mistral-large-4-0", false), uncapped);
   TEST_ASSERT_EQUAL_INT(43200, l4.systemPromptBytes);
   TEST_ASSERT_EQUAL_UINT32(54000, l4.replayBytes);
   TEST_ASSERT_EQUAL_UINT32(6144, l4.chatSummaryBytes);
@@ -412,7 +415,7 @@ static void test_the_derived_fields_for_the_main_heads() {
   TEST_ASSERT_EQUAL_UINT32(foldDigestCap(6144), l4.foldStepBytes);
   TEST_ASSERT_EQUAL_UINT32(164864, l4.foldTriggerBytes);
   TEST_ASSERT_FALSE(l4.floorBranch);
-  const ContextBudget son = deriveRequestContext(requestBudgetFor("anthropic", "claude-sonnet-5-5", false), {});
+  const ContextBudget son = deriveRequestContext(requestBudgetFor("anthropic", "claude-sonnet-5-5", false), uncapped);
   TEST_ASSERT_EQUAL_INT(32768, son.systemPromptBytes);
   TEST_ASSERT_EQUAL_UINT32(8192, son.toolResultBytes);
   TEST_ASSERT_EQUAL_UINT32(37500, son.replayBytes);
@@ -431,7 +434,9 @@ static void test_the_derived_fields_for_the_main_heads() {
 // [8 KB, max - 8 KB]; the floor branch reads it as v5.1.1 does. Owner overrides of the
 // system, result and total caps win verbatim, as in deriveBudget.
 static void test_owner_settings() {
-  const ContextBudget l4 = deriveRequestContext(requestBudgetFor("mistral", "mistral-large-4-0", false), {});
+  BudgetOverrides uncapped;
+  uncapped.noProfile = true;
+  const ContextBudget l4 = deriveRequestContext(requestBudgetFor("mistral", "mistral-large-4-0", false), uncapped);
   TEST_ASSERT_EQUAL_UINT32(0, foldTriggerBytes(l4, 0));
   TEST_ASSERT_EQUAL_UINT32(l4.historySoftBytes, foldTriggerBytes(l4, kCompactAtKbDefault));
   TEST_ASSERT_EQUAL_UINT32(96 * 1024, foldTriggerBytes(l4, 96));
@@ -610,6 +615,15 @@ static void test_the_form_of_every_head_turn() {
     TEST_ASSERT_FALSE_MESSAGE(requestBudgetFor(h.host, h.model, h.routed).flatTurn, nameOf(h).c_str());
 }
 
+// Lane RB-BG: what a measured floor head's request needs at its high water: the measured
+// fixed overhead of its wire, the summary at its cap, the margin, and the window in wire bytes.
+static uint64_t floorNeed(const ContextBudget& c, const RequestBudget& rb) {
+  const bool anthropic = rb.v511ReplayBytes == 16384;
+  const uint64_t fixed = anthropic ? kFloorFixedAnthropicBytes : kFloorFixedOpenAIBytes;
+  const unsigned pct = anthropic ? kFloorWirePerWindowAnthropicPct : kFloorWirePerWindowOpenAIPct;
+  return fixed + c.chatSummaryBytes + kFloorMarginBytes + (uint64_t)c.historyMaxBytes * pct / 100;
+}
+
 // How far over the real cap of its form one head's turn budget puts the history (0: it fits).
 // The cap is the wire's: the body budget for a split prompt, the flat prompt budget for one
 // string. Derived marks: beside the history the formula counts overheadOf. The floor branch
@@ -624,7 +638,9 @@ static uint64_t historyOverTheCap(const Head& h, bool loopOn, BudgetLink link, b
   const bool flat = flatOnTheWire(h, loopOn);
   const uint64_t cap = flat ? kFlatPromptBytes : rb.wireBodyBytes;
   uint64_t need = 0;
-  if (!c.floorBranch)
+  if (c.floorMeasured)   // lane RB-BG: the measured overhead, the window in wire bytes
+    need = floorNeed(c, rb);
+  else if (!c.floorBranch)
     need = c.historyMaxBytes + overheadOf(c, cap);
   else if (flat && rb.wireBodyBytes >= kFlatPromptBytes)   // the string is the cap (a tiny window's body is smaller)
     need = std::max(c.historyMaxBytes, agent::historyDayBytes(rb.v511CtxTokens)) + (24 + 8) * 1024ull + c.chatSummaryBytes;
@@ -710,7 +726,10 @@ static void test_a_loop_on_turn_is_the_request_budget_unchanged() {
         TEST_ASSERT_EQUAL_MESSAGE((int)a.bound, (int)t.bound, what.c_str());
         TEST_ASSERT_EQUAL_MESSAGE(a.routed, t.routed, what.c_str());
         flatOn += t.flatTurn;
-        if (t.flatTurn && a.wireBodyBytes > kLegacyWireBodyBytes) {   // the lifted compat upstream
+        // A flat turn (custom, a compat upstream) is sized from its one string: the floor branch.
+        // Lane RB-BG: the request budget alone names no form, so at the floor it reads as a split
+        // prompt and gets the measured floor marks; the turn never does (test_a_flat_turn_*).
+        if (t.flatTurn) {
           TEST_ASSERT_TRUE_MESSAGE(deriveRequestContext(t, {}).floorBranch, what.c_str());
           continue;
         }
@@ -732,7 +751,7 @@ static void test_a_loop_on_turn_is_the_request_budget_unchanged() {
 // body budget their wires keep.
 static void test_the_loop_off_figures_for_the_main_heads() {
   struct Row { const char* host; const char* model; uint32_t body; size_t histMax; size_t onMax; };
-  for (const Row& r : {Row{"mistral", "mistral-large-4-0", 360000, 5242, 206080},
+  for (const Row& r : {Row{"mistral", "mistral-large-4-0", 360000, 5242, 75000},
                        Row{"mistral", "mistral-medium-latest", 151000, 5242, 39002},
                        Row{"zai", "glm-5.3", 188000, 4096, 70528}}) {
     const RequestBudget rb = turnBudgetFor(r.host, r.model, false);
@@ -761,6 +780,233 @@ static void test_the_loop_off_figures_for_the_main_heads() {
   // After the routed lift a loop-off routed Large 4 would have the room on its body, not in its string.
   const RequestBudget lifted = turnBudgetFor("cumulo", "mistral/mistral-large-4-0", false, BudgetLink::Device, true);
   TEST_ASSERT_TRUE(lifted.wireBodyBytes > kLegacyWireBodyBytes && deriveRequestContext(lifted, {}).floorBranch);
+}
+
+
+// ---- lane RB-BG: the measured floor, the profiles, no head under v5.1.2 ----------------------
+
+static JsonDocument g_v512;
+static std::map<std::string, JsonObjectConst> g_v512Rows;
+static const std::map<std::string, JsonObjectConst>& v512Rows() {
+  if (g_v512Rows.empty()) {
+    TEST_ASSERT_FALSE(deserializeJson(g_v512, recorded::readFixture("test/support/fixtures/budgets_v5_1_2.json")));
+    for (JsonObjectConst r : g_v512["models"].as<JsonArrayConst>())
+      g_v512Rows[std::string(r["link"] | "") + ":" + (r["provider"] | "") + "/" + (r["id"] | "")] = r;
+  }
+  return g_v512Rows;
+}
+
+// The history marks a profile may lower on a direct head (it never raises one).
+static bool profileMark(const char* field) {
+  for (const char* f : {"historyMaxBytes", "historySoftBytes", "historyKeepBytes", "foldStepBytes", "historyRows",
+                        "foldTriggerBytes", "foldSliceBytes"})
+    if (std::string(f) == field) return true;
+  return false;
+}
+
+// No head goes below its v5.1.2 budget (the orchestrator's standing ruling): field by field
+// against budgets_v5_1_2.json (every recorded model, the routed and custom heads, the server
+// link's main heads), under every profile. The body budget is unchanged; a history mark may
+// sit under v5.1.2's only on a direct head the profile caps, and then it is that profile's.
+static void test_no_head_below_its_v5_1_2_budget() {
+  const auto& rows = v512Rows();
+  TEST_ASSERT_TRUE(rows.size() > 200);
+  for (const HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard,
+                                 HistoryProfile::Wide}) {
+    installHistoryProfile(p);
+    for (const auto& kv : rows) {
+      JsonObjectConst r = kv.second;
+      const BudgetLink link = std::string(r["link"] | "") == "server" ? BudgetLink::Server : BudgetLink::Device;
+      const std::string host = r["provider"] | "", model = r["id"] | "";
+      const RequestBudget rb = requestBudgetFor(host, model, host == "cumulo", link);
+      const ContextBudget c = deriveRequestContext(rb, {});
+      const std::string what = kv.first + " " + historyProfileSlug(p);
+      TEST_ASSERT_EQUAL_UINT32_MESSAGE(r["wireBodyBytes"] | 0u, rb.wireBodyBytes, what.c_str());
+      const char* const kFields[] = {"systemPromptBytes", "toolResultBytes", "recallBytes", "replayBytes",
+                                     "chatSummaryBytes", "historyMessageCap", "historyMaxBytes", "historySoftBytes",
+                                     "historyKeepBytes", "foldSliceBytes", "historyRows", "foldTriggerBytes"};
+      const size_t have[] = {(size_t)c.systemPromptBytes, c.toolResultBytes, c.recallBytes, c.replayBytes,
+                             c.chatSummaryBytes, c.historyMessageCap, c.historyMaxBytes, c.historySoftBytes,
+                             c.historyKeepBytes, c.foldSliceBytes, c.historyRows, foldTriggerBytes(c, kCompactAtKbDefault)};
+      const HistoryProfileMarks m = historyProfileMarks(p);
+      const size_t due = std::max<size_t>(m.high, kFoldTriggerMinBytes);
+      const bool capped = !c.floorBranch && !c.floorMeasured && c.historySoftBytes == due;
+      for (size_t i = 0; i < sizeof(have) / sizeof(have[0]); i++) {
+        const size_t was = (size_t)(r[kFields[i]] | 0u);
+        if (capped && profileMark(kFields[i])) continue;
+        TEST_ASSERT_TRUE_MESSAGE(have[i] >= was, (what + " " + kFields[i] + " " + std::to_string(have[i]) + " < " +
+                                                  std::to_string(was)).c_str());
+      }
+      if (capped) {   // the profile's own marks, and never under v5.1.1's
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(due, c.foldTriggerBytes, what.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes >= m.low || c.historyKeepBytes >= c.historySoftBytes -
+                                     foldDigestCap(c.chatSummaryBytes), what.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= (size_t)(r["historyKeepBytes"] | 0u), what.c_str());
+      }
+    }
+  }
+  installHistoryProfile(kDefaultHistoryProfile);
+}
+
+// The class over every head and form: the history budget is positive or the floor branch is
+// taken; a measured floor head's request fits its cap with the measured overhead; the fold
+// trigger never drops under kFoldTriggerMinBytes; the marks are ordered; no profile moves a
+// floor head; a profile never raises a mark over what the head's body gives.
+static void test_every_head_has_a_history_that_fits_under_every_profile() {
+  size_t measured = 0, capped = 0, cases = 0;
+  for (const BudgetLink link : {BudgetLink::Device, BudgetLink::Server})
+    for (const bool lift : {false, true})
+      for (const bool loopOn : {false, true})
+        for (const Head& h : headsOfEveryForm()) {
+          const RequestBudget rb = turnBudgetFor(h.host, h.model, loopOn, link, lift);
+          BudgetOverrides none;
+          none.noProfile = true;
+          const ContextBudget own = deriveRequestContext(rb, none);
+          for (const HistoryProfile p : {HistoryProfile::Tight, HistoryProfile::Lean, HistoryProfile::Standard,
+                                         HistoryProfile::Wide}) {
+            installHistoryProfile(p);
+            const ContextBudget c = deriveRequestContext(rb, {});
+            const std::string what = nameOf(h) + (loopOn ? " on " : " off ") + historyProfileSlug(p);
+            cases++;
+            TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes > 0, what.c_str());
+            TEST_ASSERT_TRUE_MESSAGE(c.floorBranch || c.historyMaxBytes > deriveBudget(rb.v511CtxTokens, {}).historyMaxBytes,
+                                     what.c_str());
+            TEST_ASSERT_FALSE_MESSAGE(c.floorBranch && c.floorMeasured, what.c_str());
+            TEST_ASSERT_TRUE_MESSAGE(foldTriggerBytes(c, kCompactAtKbDefault) >= kFoldTriggerMinBytes, what.c_str());
+            TEST_ASSERT_TRUE_MESSAGE(c.historyKeepBytes <= c.historySoftBytes && c.historySoftBytes <= c.historyMaxBytes,
+                                     what.c_str());
+            TEST_ASSERT_TRUE_MESSAGE(c.historyMaxBytes <= own.historyMaxBytes && c.historySoftBytes <= own.historySoftBytes &&
+                                         c.historyKeepBytes <= own.historyKeepBytes,
+                                     what.c_str());
+            TEST_ASSERT_TRUE_MESSAGE(c.floorBranch || c.foldStepBytes <= foldDigestCap(c.chatSummaryBytes),
+                                     (what + " step " + std::to_string(c.foldStepBytes) + " soft " +
+                                      std::to_string(c.historySoftBytes) + " keep " + std::to_string(c.historyKeepBytes) +
+                                      " floor " + std::to_string(c.floorBranch) + std::to_string(c.floorMeasured))
+                                         .c_str());
+            if (c.floorBranch || c.floorMeasured) {   // a floor head: no profile moves it
+              TEST_ASSERT_EQUAL_UINT32_MESSAGE(own.historyMaxBytes, c.historyMaxBytes, what.c_str());
+              TEST_ASSERT_EQUAL_UINT32_MESSAGE(own.historyKeepBytes, c.historyKeepBytes, what.c_str());
+            }
+            if (c.floorMeasured) {
+              measured++;
+              TEST_ASSERT_FALSE_MESSAGE(rb.flatTurn || rb.flat, what.c_str());
+              TEST_ASSERT_TRUE_MESSAGE(rb.wireBodyBytes <= kLegacyWireBodyBytes, what.c_str());
+              TEST_ASSERT_TRUE_MESSAGE(floorNeed(c, rb) <= rb.wireBodyBytes, what.c_str());
+              TEST_ASSERT_EQUAL_UINT32_MESSAGE(48 * 1024, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
+            }
+            if (!c.floorBranch && !c.floorMeasured && c.historySoftBytes < own.historySoftBytes) {
+              capped++;
+              TEST_ASSERT_EQUAL_UINT32_MESSAGE(std::max<size_t>(historyProfileMarks(p).high, kFoldTriggerMinBytes),
+                                               c.historySoftBytes, what.c_str());
+              TEST_ASSERT_EQUAL_UINT32_MESSAGE(c.historySoftBytes, foldTriggerBytes(c, kCompactAtKbDefault), what.c_str());
+            }
+          }
+        }
+  installHistoryProfile(kDefaultHistoryProfile);
+  TEST_ASSERT_TRUE(cases > 6000);
+  TEST_ASSERT_TRUE(measured > 0);   // the routed Anthropic head at least
+  TEST_ASSERT_TRUE(capped > 0);
+}
+
+// The plan's sizes: direct heads default to standard (60,000 / 30,000 B), each profile's
+// marks, and the order tight < lean < standard < wide on every field of a large head.
+static void test_the_profile_figures() {
+  TEST_ASSERT_TRUE(installedHistoryProfile() == HistoryProfile::Standard);
+  const ContextBudget son = headContextBudget("anthropic", "claude-sonnet-5-5", true, {});
+  TEST_ASSERT_EQUAL_UINT32(60000, son.historySoftBytes);
+  TEST_ASSERT_EQUAL_UINT32(30000, son.historyKeepBytes);
+  TEST_ASSERT_EQUAL_UINT32(75000, son.historyMaxBytes);
+  TEST_ASSERT_EQUAL_UINT32(60000, foldTriggerBytes(son, kCompactAtKbDefault));
+  const struct { HistoryProfile p; uint32_t h, l; } kWant[] = {{HistoryProfile::Tight, 24000, 12000},
+                                                               {HistoryProfile::Lean, 40000, 20000},
+                                                               {HistoryProfile::Standard, 60000, 30000},
+                                                               {HistoryProfile::Wide, 100000, 50000}};
+  size_t prevSoft = 0, prevKeep = 0, prevMax = 0;
+  for (const auto& w : kWant) {
+    TEST_ASSERT_EQUAL_UINT32(w.h, historyProfileMarks(w.p).high);
+    TEST_ASSERT_EQUAL_UINT32(w.l, historyProfileMarks(w.p).low);
+    HistoryProfile back;
+    TEST_ASSERT_TRUE(parseHistoryProfile(historyProfileSlug(w.p), back) && back == w.p);
+    installHistoryProfile(w.p);
+    const ContextBudget c = headContextBudget("openai", "gpt-5.6", true, {});
+    TEST_ASSERT_EQUAL_UINT32(std::max<uint32_t>(w.h, kFoldTriggerMinBytes), c.historySoftBytes);   // tight: 24 KB
+    TEST_ASSERT_EQUAL_UINT32(w.l, c.historyKeepBytes);
+    TEST_ASSERT_TRUE(c.historySoftBytes > prevSoft && c.historyKeepBytes > prevKeep && c.historyMaxBytes > prevMax);
+    prevSoft = c.historySoftBytes;
+    prevKeep = c.historyKeepBytes;
+    prevMax = c.historyMaxBytes;
+  }
+  installHistoryProfile(kDefaultHistoryProfile);
+  HistoryProfile x;
+  TEST_ASSERT_FALSE(parseHistoryProfile("huge", x));
+  TEST_ASSERT_TRUE(parseHistoryProfile("LEAN", x) && x == HistoryProfile::Lean);
+}
+
+// Folds a day at the floor for `days` of `turns` exchanges of `ex` B: the fold driver's real rule
+// (due when a shift hid rows, the window past `high`, or the bytes after thru at `trigger`; it
+// takes everything but the kept tail, at most `cycle`, whole exchanges, 12 paid folds a day).
+struct FloorDays {
+  std::vector<int> folds;
+  std::vector<size_t> after;   // window bytes after thru at each day's end
+  size_t minCarried = SIZE_MAX;   // the least the request carried after the first fold
+};
+static FloorDays foldDays(size_t high, size_t keep, size_t trigger, size_t cycle, const std::vector<std::pair<int, size_t>>& days) {
+  FloorDays out;
+  size_t after = 0;
+  bool folded = false;
+  for (const auto& d : days) {
+    int folds = 0;
+    for (int t = 0; t < d.first; t++) {
+      after += d.second;
+      if (folded) out.minCarried = std::min(out.minCarried, std::min(after, high));
+      if (!(after > high || after >= trigger) || folds >= 12) continue;
+      const size_t take = std::min(cycle, after > keep ? after - keep : 0) / d.second * d.second;
+      if (!take) continue;
+      after -= take;
+      folds++;
+      folded = true;
+    }
+    out.folds.push_back(folds);
+    out.after.push_back(after);
+  }
+  return out;
+}
+
+// A simulated fortnight at the measured floor. On the owner's pace (about 10 exchanges of 600 B
+// a day) it folds at most four times a day and on average at most once a day more than v5.1.2's
+// floor window did on the same head (each fold is small: about a fifth of the room),
+// and the request never falls back under 4/5 of the measured room once the first fold landed
+// (v5.1.2: half of an 8 KB window). On a day ten times heavier than the owner's busiest the
+// daily cap holds and the next two ordinary days work the backlog off.
+static void test_a_fortnight_at_the_measured_floor() {
+  size_t heads = 0;
+  for (const Head& h : kRouted) {
+    const RequestBudget rb = turnBudgetFor(h.host, h.model, true);
+    const ContextBudget c = deriveRequestContext(rb, {});
+    if (!c.floorMeasured) continue;
+    heads++;
+    const ContextBudget old = deriveBudget(rb.v511CtxTokens, {});
+    const size_t cycle = foldCycleBytes(c), trigger = foldTriggerBytes(c, kCompactAtKbDefault);
+    const std::vector<std::pair<int, size_t>> owner(14, {10, 600});
+    const FloorDays now = foldDays(c.historyMaxBytes, c.historyKeepBytes, trigger, cycle, owner);
+    const FloorDays was = foldDays(old.recentConvBytes, old.recentConvBytes / 2, 48 * 1024, foldCycleBytes(old), owner);
+    int nowTotal = 0, wasTotal = 0;
+    for (size_t d = 0; d < owner.size(); d++) {
+      nowTotal += now.folds[d];
+      wasTotal += was.folds[d];
+      TEST_ASSERT_TRUE_MESSAGE(now.folds[d] <= 4, (nameOf(h) + " day " + std::to_string(d)).c_str());
+    }
+    TEST_ASSERT_TRUE_MESSAGE(nowTotal <= wasTotal + (int)owner.size(), nameOf(h).c_str());   // one more a day at most
+    TEST_ASSERT_TRUE_MESSAGE(now.minCarried + 600 >= c.historyKeepBytes, nameOf(h).c_str());
+    TEST_ASSERT_TRUE_MESSAGE(now.minCarried > was.minCarried, nameOf(h).c_str());
+    std::vector<std::pair<int, size_t>> heavy(owner);
+    heavy[3] = {160, 3072};
+    const FloorDays h3 = foldDays(c.historyMaxBytes, c.historyKeepBytes, trigger, cycle, heavy);
+    TEST_ASSERT_TRUE_MESSAGE(h3.folds[3] <= 12, nameOf(h).c_str());
+    for (size_t d = 6; d < heavy.size(); d++)
+      TEST_ASSERT_TRUE_MESSAGE(h3.after[d] <= c.historyMaxBytes, (nameOf(h) + " backlog day " + std::to_string(d)).c_str());
+  }
+  TEST_ASSERT_TRUE(heads > 0);
 }
 
 // ---- the generated table (table_doc.h, included above) ---------------------------------------
@@ -802,6 +1048,10 @@ int main(int, char**) {
   RUN_TEST(test_a_loop_on_turn_is_the_request_budget_unchanged);
   RUN_TEST(test_the_loop_off_figures_for_the_main_heads);
   RUN_TEST(test_every_id_that_means_large_4_gets_its_row);
+  RUN_TEST(test_no_head_below_its_v5_1_2_budget);
+  RUN_TEST(test_every_head_has_a_history_that_fits_under_every_profile);
+  RUN_TEST(test_the_profile_figures);
+  RUN_TEST(test_a_fortnight_at_the_measured_floor);
   RUN_TEST(test_the_generated_table_is_current);
   return UNITY_END();
 }

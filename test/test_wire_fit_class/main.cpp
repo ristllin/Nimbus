@@ -701,7 +701,7 @@ static void test_a_heap_gated_single_shot_keeps_the_head_s_standing_marks() {
   TEST_ASSERT_FALSE(r.wire.http.seen.empty());
   const std::string& body = r.wire.http.seen[0].body;
   TEST_ASSERT_TRUE(LogCapture::contains("tool-loop DEFERRED"));
-  TEST_ASSERT_TRUE(LogCapture::contains(" hist 201/161/108 KB"));    // the head's derived marks
+  TEST_ASSERT_TRUE(LogCapture::contains(" hist 73/58/29 KB"));      // the head's marks (RB-BG: the standard profile)
   TEST_ASSERT_FALSE(LogCapture::contains("overflow shift"));
   TEST_ASSERT_TRUE(r.marks.softStart.empty());
   TEST_ASSERT_TRUE(body.find(kFlatHistoryHeader) != std::string::npos);   // it did go out flat

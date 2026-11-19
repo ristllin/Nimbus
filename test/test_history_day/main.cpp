@@ -236,7 +236,9 @@ static void test_local_day_start() {
 namespace {
 // A head with room: lane B's derived marks for Mistral Large 4 (360 KB, history 206/165/111 KB).
 agent::HistoryBudget derivedBudget(uint32_t dayStart = kDay) {
-  const ContextBudget cb = deriveRequestContext(requestBudgetFor("mistral", "mistral-large-4-0", false), {});
+  BudgetOverrides uncapped;
+  uncapped.noProfile = true;   // RB-BG: the window's mechanics on the head's own marks, no profile cap
+  const ContextBudget cb = deriveRequestContext(requestBudgetFor("mistral", "mistral-large-4-0", false), uncapped);
   agent::HistoryBudget b;
   b.highBytes = cb.recentConvBytes;
   b.highRows = cb.historyRows;
