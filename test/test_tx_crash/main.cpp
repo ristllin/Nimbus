@@ -297,6 +297,18 @@ bool resumedRequestSays(const txb::Battery& b, size_t from, const std::string& t
   return b.model.requests().size() > from && b.model.requests()[from].body.find(text) != std::string::npos;
 }
 
+// The rule, written out a second time on its own: one resume and one boot send at most.
+intents::BootAction expectedAction(const intents::OpenTurn& t, uint8_t attempts, bool whole) {
+  using S = intents::TurnState;
+  using A = intents::BootAction;
+  const bool left = attempts < plain::kMaxAutoResumes || (t.resumedAnswer && attempts == plain::kMaxAutoResumes);
+  if (t.state == S::Closed) return A::None;
+  if (t.state == S::Delivered) return A::Close;
+  if (t.state == S::AnswerStored) return whole && left ? A::SendStored : t.person ? A::Notice : A::Close;
+  if (!t.person) return A::Close;
+  return attempts >= plain::kMaxAutoResumes ? A::Notice : A::Resume;
+}
+
 // The boot's one action, over the whole class: every state, person or not, every attempt count
 // up to past the limit, a whole or a stubbed stored answer.
 void test_the_boot_action_over_every_turn_state() {
@@ -313,13 +325,7 @@ void test_the_boot_action_over_every_turn_state() {
             t.person = person;
             t.resumedAnswer = resumed;
             const A got = intents::bootAction(t, attempts, plain::kMaxAutoResumes, whole);
-            const bool left = attempts < plain::kMaxAutoResumes || (resumed && attempts == plain::kMaxAutoResumes);
-            A want = A::Resume;
-            if (st == S::Closed) want = A::None;
-            else if (st == S::Delivered) want = A::Close;
-            else if (st == S::AnswerStored) want = whole && left ? A::SendStored : person ? A::Notice : A::Close;
-            else if (!person) want = A::Close;
-            else if (attempts >= plain::kMaxAutoResumes) want = A::Notice;
+            const A want = expectedAction(t, attempts, whole);
             const std::string label = std::string(intents::turnStateSlug(st)) + (person ? " person" : " unattended") +
                                       " attempts " + std::to_string(attempts) + (whole ? " whole" : " stub") +
                                       (resumed ? " resumed" : "");

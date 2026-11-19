@@ -769,16 +769,23 @@ the next request leaves. At boot, after the engine filled the arena from the car
 |---|---|
 | its e item | nothing |
 | its d item, no e item | close it: the e item only (cause `resume:closed`) |
-| a turn no person started (a routine, an agent report, a notice) | close it, never resumed |
-| the final answer (a, fin), no d item | send it with no model call, then d and e (cause and event `resume:sent-stored`) |
-| no final answer | one automatic resume: trigger `resume`, the same turn number, attempt + 1, through the engine's own `runTurn` |
-| one resume already made, or the stored answer is only its stub | the plain crash notice (`nimbus::orch::crashNotice`) as the one status line, then the e item (cause `resume:notice`) |
+| the final answer (a, fin), no d item, an attempt left | send it with no model call, then d and e (cause and event `resume:sent-stored`); any turn, a routine's included |
+| no final answer, a turn no person started (a routine, an agent report, a notice) | close it, never resumed |
+| no final answer, a person's turn | one automatic resume: trigger `resume`, the same turn number, attempt + 1, through the engine's own `runTurn` (tainted when the turn already read outside content; its own items are never dropped to make room) |
+| no attempt left, or the stored answer is only its stub | a person's turn: the plain crash notice (`nimbus::orch::crashNotice`) as the one status line, then the e item (cause `resume:notice`); any other: close it |
+
+An attempt is left while fewer than one was made, or when exactly one was made and the stored
+answer is that resume's own: at most one resume and one boot send per turn, then the notice.
 
 - **The counter is written ahead**: before a resume or a send the attempt goes to head.json
   (`open_turn`, `attempts`), so a cut inside the resume itself is counted and the next boot
   sends the notice. When head.json cannot be written the boot sends the notice: never a resume
-  it cannot count. The RTC record is not used (a power cut empties it) and its layout is
-  unchanged.
+  it cannot count. A boot send the channel refused (nothing reached the owner) gives its attempt
+  back and leaves the turn open; so does a refused notice: a later boot tries again. The RTC
+  record is not used (a power cut empties it) and its layout is unchanged.
+- **Little room**: with under 4 KB free in the arena after the fill, the boot stores no result in
+  it (the engine's own turn open answers the open calls, dropping and naming closed turns as it
+  does) and its d and e items go to the card only.
 - **Twice, named**: the boot cannot tell a cut just before the send from one just after it when
   the d item did not reach the card. A reply that went out just before such a cut goes out again;
   the e item's event `resume:sent-stored` names every boot send.
