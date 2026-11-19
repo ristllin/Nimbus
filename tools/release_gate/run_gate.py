@@ -37,6 +37,7 @@ import check_no_prompt_patch
 import check_ota_preserves_nvs
 import check_owner_regressions
 import check_plain_ceilings
+import check_prompt_ceiling
 import check_release_notes
 import check_sram_staging
 import check_static_dram
@@ -168,6 +169,7 @@ def run_host_checks() -> bool:
         ("no reply-check line in a device image (RB-Q1b)", check_no_harness_lines.main),
         ("tool results state facts, not orders (RB-B5)", check_tool_result_imperatives.main),
         ("plain engine request ceilings: system, core, tools, catalog (RB-E2)", check_plain_ceilings.main),
+        ("old engine request ceilings: prompt and tools on the real build (RB-Q3b)", check_prompt_ceiling.main),
         ("fold health: the summary never pauses for good (v5.1.2)", check_fold_health.main),
         ("request budget table: bounds, rounds, no field below v5.1.1 (v5.1.2)", check_budget_table.main),
     ):

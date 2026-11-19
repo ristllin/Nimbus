@@ -708,6 +708,26 @@ tool and caller class). A group's listing is at most 2,048 B; the tools index
 unknown name gets back the callable names, at most 640 B. The before-dispatch seam reads
 `callClass` or `moreTarget` to see the tool a `more` call reaches.
 
+#### The old engine's request ceiling (RB-Q3b)
+
+The old engine keeps every tool in its tools array in v5.2.0. RB-Q3b measured hiding sixteen admin
+tools behind `more` (2,400 live episodes on claude-haiku-5-5 and gpt-5.6-luna): only two groups met
+the 95% first-call bar, so ruling 65 kept the manifest as it is; the parity runner measures `more`
+for engine 2.
+
+The request's weight is held by `tools/release_gate/check_prompt_ceiling.py`: the native suite
+`test_e1_request_ceiling` sends an owner text turn of a synthetic twin of a busy owner device
+(`test/support/fixtures/lumi_state_prompt`) through the real engine and Anthropic adapter and
+pins the figures in `test/golden/e1_request_ceiling.txt`. The gate holds five of them at the
+measured figure plus 128 B: prompt (the system blocks and the per-turn input), prompt_demand (the
+same at the largest context budget an owner can set, where nothing is clipped), text (prompt and
+history), tools (registry tool declarations) and tools_wire (the tools array as sent); the prompt
+also stays under its 30 KB cap. It proves every description and
+schema in the fixture's `device_tools.json` matches the source's `add(` argument exactly (literals
+fixed, run-time pieces as holes) and that every tool the device registers is held. A lane that adds
+bytes on purpose adds `tools/release_gate/prompt_ceiling.d/<lane>.json` (`lane`, `why`, and
+`<figure>_bytes` for each figure it grows; over 1,024 B a `ruling`) in the same commit.
+
 ### Digests, their archive, recent files and the chatsum mirror
 
 `lib/core/include/nimbus/orch/tx/digest.h` (body `orch_tx_digest.cpp`, lane RB-C1) holds

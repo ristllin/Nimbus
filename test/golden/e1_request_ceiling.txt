@@ -4,14 +4,15 @@
 # prompt = the system prompt the device composes: the system blocks plus the per-turn input message (the
 # conversation history rides apart: history); text = prompt + history. tools: name +
 # description + schema of every registry tool in tools[] (the final-answer tool orch_turn is the reply
-# contract, counted in tools_raw); tools_wire = the tools array as serialized.
-measure turn=owner_text prompt=29409 system=23941 input=5468 history=4421 text=33830 tools=27008 registry_tools=56 tools_raw=31005 tools_wire=33601 body=68205
-group name=always tools=20 raw=10566
+# contract, counted in tools_raw); tools_wire = the tools array as serialized. prompt_demand = the prompt
+# when the owner sets the largest context budget (56,000 B): nothing is clipped, so text added to the
+# budget-bound static block shows here even where the head's budget hides it in prompt.
+measure turn=owner_text prompt=29420 system=23941 input=5479 history=4421 text=33841 tools=27008 registry_tools=56 tools_raw=31005 tools_wire=33601 body=68216 prompt_demand=30590
+group name=always tools=21 raw=11702
 group name=device tools=6 raw=4267
 group name=docs tools=3 raw=884
 group name=files_admin tools=5 raw=1986
 group name=final tools=1 raw=3997
-group name=food tools=1 raw=1136
 group name=media tools=6 raw=1375
 group name=memory tools=7 raw=3285
 group name=models tools=1 raw=1084
@@ -28,7 +29,7 @@ tool name=memory.episodic group=always raw=1211 sent=1
 tool name=memory.archive group=memory raw=781 sent=1
 tool name=prefs.edit group=always raw=773 sent=1
 tool name=openq.edit group=memory raw=557 sent=1
-tool name=food.portions group=food raw=1136 sent=1
+tool name=food.portions group=always raw=1136 sent=1
 tool name=results.get group=always raw=314 sent=1
 tool name=results.list group=memory raw=127 sent=1
 tool name=web.search group=always raw=227 sent=1

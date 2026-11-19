@@ -27,6 +27,10 @@
     {
       "glob": "tools/release_gate/tg_poll_stack.d/{lane}.json",
       "why": "The tg_poll stack ratchet has a named path row per lane (PRD section 10)."
+    },
+    {
+      "glob": "tools/release_gate/prompt_ceiling.d/{lane}.json",
+      "why": "Every lane that adds bytes to the old engine's request carries its own ceiling allowance (check_prompt_ceiling.py, RB-Q3b; ruling 65)."
     }
   ],
   "hot_files": {
