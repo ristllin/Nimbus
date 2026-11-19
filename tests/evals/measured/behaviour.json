@@ -2364,6 +2364,7 @@
       "full": 147,
       "wrong": 3
      },
+     "total_partial_judged": 0,
      "total_used_sum": 0,
      "total_used_calc": 110,
      "total_with_skipped_rows": 79,
@@ -2521,16 +2522,18 @@
      "episodes": 370,
      "usd": 0.2553,
      "total_accuracy": {
-      "k": 145,
+      "k": 144,
       "n": 150,
-      "rate": 0.9667,
-      "lower95": 0.9312
+      "rate": 0.96,
+      "lower95": 0.9226
      },
      "total_verdicts": {
       "full": 84,
-      "partial_named": 61,
-      "wrong": 5
+      "partial_named": 60,
+      "wrong": 5,
+      "partial_silent": 1
      },
+     "total_partial_judged": 61,
      "total_used_sum": 144,
      "total_used_calc": 13,
      "total_with_skipped_rows": 79,
@@ -2548,10 +2551,10 @@
        "lower95": 0.8522
       },
       "training": {
-       "k": 49,
+       "k": 48,
        "n": 50,
-       "rate": 0.98,
-       "lower95": 0.9086
+       "rate": 0.96,
+       "lower95": 0.8794
       }
      },
      "first_call": {
@@ -2696,6 +2699,7 @@
      "total_verdicts": {
       "wrong": 18
      },
+     "total_partial_judged": 0,
      "total_used_sum": 0,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -2899,6 +2903,7 @@
       "full": 17,
       "partial_named": 1
      },
+     "total_partial_judged": 1,
      "total_used_sum": 18,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -3083,6 +3088,7 @@
       "full": 17,
       "partial_named": 1
      },
+     "total_partial_judged": 1,
      "total_used_sum": 18,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -3240,6 +3246,7 @@
       "full": 15,
       "partial_named": 3
      },
+     "total_partial_judged": 3,
      "total_used_sum": 18,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -3400,6 +3407,7 @@
       "partial_silent": 1,
       "wrong": 5
      },
+     "total_partial_judged": 1,
      "total_used_sum": 0,
      "total_used_calc": 141,
      "total_with_skipped_rows": 79,
@@ -3567,6 +3575,7 @@
       "full": 70,
       "wrong": 2
      },
+     "total_partial_judged": 78,
      "total_used_sum": 150,
      "total_used_calc": 1,
      "total_with_skipped_rows": 79,
@@ -3734,6 +3743,7 @@
       "partial_silent": 5,
       "full": 2
      },
+     "total_partial_judged": 5,
      "total_used_sum": 7,
      "total_used_calc": 1,
      "total_with_skipped_rows": 12,
@@ -3928,16 +3938,18 @@
      "episodes": 60,
      "usd": 0.0586,
      "total_accuracy": {
-      "k": 16,
+      "k": 15,
       "n": 18,
-      "rate": 0.8889,
-      "lower95": 0.6897
+      "rate": 0.8333,
+      "lower95": 0.6233
      },
      "total_verdicts": {
       "full": 13,
       "wrong": 2,
-      "partial_named": 3
+      "partial_silent": 1,
+      "partial_named": 2
      },
+     "total_partial_judged": 3,
      "total_used_sum": 16,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -3955,10 +3967,10 @@
        "lower95": 0.607
       },
       "training": {
-       "k": 4,
+       "k": 3,
        "n": 6,
-       "rate": 0.6667,
-       "lower95": 0.2713
+       "rate": 0.5,
+       "lower95": 0.1532
       }
      },
      "first_call": {
@@ -4054,10 +4066,10 @@
      },
      "history_line_added": 0,
      "task_success": {
-      "k": 58,
+      "k": 57,
       "n": 60,
-      "rate": 0.9667,
-      "lower95": 0.8988
+      "rate": 0.95,
+      "lower95": 0.8758
      },
      "task_by_kind": {
       "add": {
@@ -4073,10 +4085,10 @@
        "lower95": 0.8671
       },
       "total": {
-       "k": 16,
+       "k": 15,
        "n": 18,
-       "rate": 0.8889,
-       "lower95": 0.6897
+       "rate": 0.8333,
+       "lower95": 0.6233
       }
      },
      "attach_bytes": 0,
@@ -4123,6 +4135,7 @@
       "partial_named": 3,
       "partial_silent": 2
      },
+     "total_partial_judged": 5,
      "total_used_sum": 18,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -4271,16 +4284,17 @@
      "episodes": 60,
      "usd": 0.0574,
      "total_accuracy": {
-      "k": 15,
+      "k": 14,
       "n": 18,
-      "rate": 0.8333,
-      "lower95": 0.6233
+      "rate": 0.7778,
+      "lower95": 0.5611
      },
      "total_verdicts": {
       "full": 11,
-      "partial_named": 4,
-      "partial_silent": 3
+      "partial_named": 3,
+      "partial_silent": 4
      },
+     "total_partial_judged": 7,
      "total_used_sum": 18,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -4298,10 +4312,10 @@
        "lower95": 0.4182
       },
       "training": {
-       "k": 6,
+       "k": 5,
        "n": 6,
-       "rate": 1.0,
-       "lower95": 0.607
+       "rate": 0.8333,
+       "lower95": 0.4182
       }
      },
      "first_call": {
@@ -4397,10 +4411,10 @@
      },
      "history_line_added": 0,
      "task_success": {
-      "k": 57,
+      "k": 56,
       "n": 60,
-      "rate": 0.95,
-      "lower95": 0.8758
+      "rate": 0.9333,
+      "lower95": 0.8539
      },
      "task_by_kind": {
       "add": {
@@ -4416,10 +4430,10 @@
        "lower95": 0.8671
       },
       "total": {
-       "k": 15,
+       "k": 14,
        "n": 18,
-       "rate": 0.8333,
-       "lower95": 0.6233
+       "rate": 0.7778,
+       "lower95": 0.5611
       }
      },
      "attach_bytes": 4096,
@@ -4440,6 +4454,7 @@
       "full": 56,
       "wrong": 4
      },
+     "total_partial_judged": 0,
      "total_used_sum": 0,
      "total_used_calc": 57,
      "total_with_skipped_rows": 28,
@@ -4597,32 +4612,33 @@
      "episodes": 150,
      "usd": 1.4109,
      "total_accuracy": {
-      "k": 50,
+      "k": 48,
       "n": 60,
-      "rate": 0.8333,
-      "lower95": 0.7337
+      "rate": 0.8,
+      "lower95": 0.6962
      },
      "total_verdicts": {
-      "partial_named": 8,
+      "partial_named": 6,
       "full": 42,
-      "partial_silent": 8,
+      "partial_silent": 10,
       "wrong": 2
      },
+     "total_partial_judged": 16,
      "total_used_sum": 60,
      "total_used_calc": 8,
      "total_with_skipped_rows": 28,
      "total_by_domain": {
       "food": {
+       "k": 16,
+       "n": 20,
+       "rate": 0.8,
+       "lower95": 0.599
+      },
+      "expenses": {
        "k": 17,
        "n": 20,
        "rate": 0.85,
        "lower95": 0.6563
-      },
-      "expenses": {
-       "k": 18,
-       "n": 20,
-       "rate": 0.9,
-       "lower95": 0.7174
       },
       "training": {
        "k": 15,
@@ -4774,6 +4790,7 @@
       "wrong": 2,
       "full": 4
      },
+     "total_partial_judged": 0,
      "total_used_sum": 4,
      "total_used_calc": 3,
      "total_with_skipped_rows": 3,
@@ -4976,6 +4993,7 @@
      "total_verdicts": {
       "full": 9
      },
+     "total_partial_judged": 0,
      "total_used_sum": 9,
      "total_used_calc": 0,
      "total_with_skipped_rows": 5,
@@ -5178,6 +5196,7 @@
      "total_verdicts": {
       "full": 6
      },
+     "total_partial_judged": 0,
      "total_used_sum": 6,
      "total_used_calc": 0,
      "total_with_skipped_rows": 3,
@@ -5334,6 +5353,7 @@
      "total_verdicts": {
       "full": 6
      },
+     "total_partial_judged": 0,
      "total_used_sum": 6,
      "total_used_calc": 0,
      "total_with_skipped_rows": 3,
@@ -5493,6 +5513,7 @@
       "full": 58,
       "wrong": 2
      },
+     "total_partial_judged": 0,
      "total_used_sum": 0,
      "total_used_calc": 57,
      "total_with_skipped_rows": 28,
@@ -5631,15 +5652,17 @@
      "episodes": 150,
      "usd": 1.5224,
      "total_accuracy": {
-      "k": 60,
+      "k": 59,
       "n": 60,
-      "rate": 1.0,
-      "lower95": 0.9513
+      "rate": 0.9833,
+      "lower95": 0.9234
      },
      "total_verdicts": {
       "full": 56,
-      "partial_named": 4
+      "partial_named": 3,
+      "partial_silent": 1
      },
+     "total_partial_judged": 4,
      "total_used_sum": 60,
      "total_used_calc": 16,
      "total_with_skipped_rows": 28,
@@ -5657,10 +5680,10 @@
        "lower95": 0.8609
       },
       "training": {
-       "k": 20,
+       "k": 19,
        "n": 20,
-       "rate": 1.0,
-       "lower95": 0.8609
+       "rate": 0.95,
+       "lower95": 0.7839
       }
      },
      "first_call": {
@@ -5805,6 +5828,7 @@
      "total_verdicts": {
       "full": 9
      },
+     "total_partial_judged": 0,
      "total_used_sum": 9,
      "total_used_calc": 3,
      "total_with_skipped_rows": 5,
@@ -5988,6 +6012,7 @@
      "total_verdicts": {
       "full": 18
      },
+     "total_partial_judged": 0,
      "total_used_sum": 18,
      "total_used_calc": 0,
      "total_with_skipped_rows": 12,
@@ -6171,6 +6196,7 @@
      "total_verdicts": {
       "full": 9
      },
+     "total_partial_judged": 0,
      "total_used_sum": 9,
      "total_used_calc": 0,
      "total_with_skipped_rows": 5,
@@ -6346,6 +6372,7 @@
      "total_verdicts": {
       "full": 9
      },
+     "total_partial_judged": 0,
      "total_used_sum": 9,
      "total_used_calc": 0,
      "total_with_skipped_rows": 5,
@@ -6493,12 +6520,12 @@
    }
   },
   "usd": {
-   "anthropic_heads": 6.4702,
-   "anthropic_judge": 0.7966,
-   "anthropic_probe": 0.1756,
-   "openai": 0.7769,
-   "zai": 4.9596,
-   "note": "heads include pilots and discarded runs"
+   "anthropic_heads_usd": 6.4702,
+   "anthropic_judges_usd": 1.2059,
+   "anthropic_probe_usd": 0.1756,
+   "openai_usd": 0.7769,
+   "zai_usd": 4.9596,
+   "note": "heads include the pilots and the discarded runs; judges are the claim judge and the totals judge"
   }
  }
 }
