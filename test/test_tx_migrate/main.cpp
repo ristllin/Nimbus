@@ -903,6 +903,17 @@ void test_rows_with_no_text_or_long_text_and_the_batch_rules() {
   const tx::MigrationOutcome o = v.done("tiny budget");
   TEST_ASSERT_EQUAL(1, o.imported);
   TEST_ASSERT_EQUAL(4, o.named);
+  // the budget is reached inside a turn: that turn is named whole, the import starts at the next owner row
+  World u;
+  u.old.add(kChat, kMonthStart + 8 * kHour, "user", "message", std::string(3000, 'q'));
+  u.old.add(kChat, kMonthStart + 8 * kHour, "assistant", "message", "short reply");
+  u.old.add(kChat, kMonthStart + 9 * kHour, "user", "message", "next question");
+  u.old.add(kChat, kMonthStart + 9 * kHour, "assistant", "message", "next reply");
+  u.budget = 600;
+  const tx::MigrationOutcome uo = u.done("inside a turn");
+  TEST_ASSERT_EQUAL(2, uo.named);
+  TEST_ASSERT_EQUAL(2, uo.imported);
+  expectAccounted(u.old, u.files, 0, uo.hi, "inside a turn");
   // the batch builder: rows at or below cut, above hi, ours and tool rows give no item
   tx::ImportPlan p;
   p.q0 = 10, p.lo = 0, p.cut = 2, p.hi = 6, p.turns = 1, p.imported = 2;
