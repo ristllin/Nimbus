@@ -154,7 +154,8 @@ size_t floorRoomWindowBytes(const RequestBudget& rb, size_t summaryBytes) {
 }
 
 // The marks of a measured floor head: the fold-before-shift window up to `room`, a shift
-// landing at 9/10 of it (a fold is then due, for the rows it hid), the fold keeping 4/5, and
+// landing at 4/5 of it (a fold is then due, for the rows it hid), the fold keeping the same 4/5
+// (it takes the rows the shift hid), and
 // v5.1.1's fold trigger (`v511Trigger`, never under kFoldTriggerMinBytes). A floor head's
 // conversation then stays between 4/5 and all of the room: v5.1.1's window fell to half of a
 // smaller one at every shift (the 17 Nov device carried one exchange of 516 B). One fold runs
@@ -162,7 +163,7 @@ size_t floorRoomWindowBytes(const RequestBudget& rb, size_t summaryBytes) {
 void deriveFloorHistory(ContextBudget& b, size_t room, size_t v511Trigger) {
   b.historyMaxBytes = room;
   b.recentConvBytes = room;
-  b.historySoftBytes = room * 9 / 10;
+  b.historySoftBytes = room * 4 / 5;
   b.historyKeepBytes = room * 4 / 5;
   b.foldStepBytes = b.historySoftBytes - b.historyKeepBytes;
   b.historyRows = std::max<size_t>(64, room / 192);

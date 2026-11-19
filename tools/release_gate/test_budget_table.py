@@ -429,9 +429,59 @@ def test_the_repository_table_passes_and_its_header_is_the_one_bound_here():
     assert HEAD in text
     headings = [h for h, _ in G.parse_tables(text)]
     assert [G.norm(h) for h in headings] == list(G.TABLES)
-    full = [rows[0] for h, rows in G.parse_tables(text) if not ({"preview", "loop_off"} & set(G.TABLES[G.norm(h)]))]
-    assert all(set(r) == set(G.COLUMNS) - {"perTurnFloorBytes", "sized_from"} for r in full)
+    rbbg = {"profiles", "floor_heads"}   # lane RB-BG's tables have their own columns
+    full = [
+        rows[0]
+        for h, rows in G.parse_tables(text)
+        if not ({"preview", "loop_off"} | rbbg) & set(G.TABLES[G.norm(h)])
+    ]
+    assert all(
+        set(r) == set(G.COLUMNS) - {"perTurnFloorBytes", "sized_from", "profile", "marks", "left", "branch"} for r in full
+    )
     assert "| " + " | ".join(LOOP_COLS) + " |" in text  # lane CTXL's loop-off header, column for column
+
+
+PROFILE_HEAD = "| Provider | Model | Profile | H / L | Hist max | Hist soft | Hist keep | Fold step | Rows | Trigger |"
+FLOOR_HEAD = "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |"
+
+
+def _rbbg_problems(tmp_path, heading, head, rows):
+    text = "## " + heading + "\n\n" + head + "\n" + "|---" * head.count("|") + "|\n" + "\n".join(rows) + "\n"
+    p = tmp_path / "t.md"
+    p.write_text(text)
+    rs = G.parse_tables(text)[0][1]
+    prof = G.TABLES[G.norm(heading)]
+    errs = [e for r in rs for e in G.row_problems(r, prof, {}, False, {"floor": G.floor_constants(G.CONTEXT_HEADER)})]
+    if prof.get("profiles"):
+        errs += G.profile_order_problems(rs)
+    return errs
+
+
+def test_lane_rbbg_profile_rows_hold_the_profile(tmp_path):
+    good = [
+        "| openai | gpt-5.6 | tight | 24000 / 12000 | 30720 | 24576 | 12000 | 12576 | 160 | 24576 |",
+        "| openai | gpt-5.6 | standard | 60000 / 30000 | 75000 | 60000 | 30000 | 30000 | 390 | 60000 |",
+    ]
+    assert _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, good) == []
+    over = ["| openai | gpt-5.6 | standard | 60000 / 30000 | 80000 | 64000 | 30000 | 34000 | 416 | 64000 |"]
+    assert any("outside" in e for e in _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, over))
+    under24 = ["| openai | gpt-5.6 | tight | 24000 / 12000 | 30000 | 24000 | 12000 | 12000 | 156 | 24000 |"]
+    assert _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, under24)
+    falls = [good[1], "| openai | gpt-5.6 | wide | 100000 / 50000 | 70000 | 56000 | 28000 | 28000 | 364 | 56000 |"]
+    assert any("falls" in e for e in _rbbg_problems(tmp_path, "History profiles", PROFILE_HEAD, falls))
+
+
+def test_lane_rbbg_floor_rows_follow_the_measured_overhead(tmp_path):
+    good = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 13020 | 10416 | 10416 | measured |"]
+    assert _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, good) == []
+    wide = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 20000 | 16000 | 16000 | measured |"]
+    assert any("measured room" in e for e in _rbbg_problems(tmp_path, "Floor heads", FLOOR_HEAD, wide))
+    starved = ["| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 8192 | 4096 | 4096 | v5.1.1 window |"]
+    v511 = {("anthropic", "claude-sonnet-5-5"): {"historyMaxBytes": 8192}}
+    text = "## Floor heads\n\n" + FLOOR_HEAD + "\n|---|---|---|---|---|---|---|---|---|\n" + starved[0] + "\n"
+    rs = G.parse_tables(text)[0][1]
+    errs = G.floor_head_problems(rs[0], G.floor_constants(G.CONTEXT_HEADER), v511)
+    assert any("although the measured room" in e for e in errs)
 
 
 def test_the_release_ships_with_the_routed_lift_off():

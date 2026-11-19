@@ -148,6 +148,14 @@ NON_MODEL_FILES: dict = {
     # kTelegramMaxParts parts (moved byte for byte from src/agent/telegram.cpp send()); it goes
     # to the chat, never into a request (history keeps the engine's reply, not the parts).
     "lib/core/src/orch_deliver_text.cpp": "owner-facing send seam: the overflow line only, never sent to a model",
+    # RB-BG: the history profile's governor and the /budget profile store. Their literals are the
+    # owner's /usage and /budget replies, the governor's one-line notice (sent to the owner's chat
+    # and kept in the web chat's history like the spend ceiling's notices) and the Usage page's
+    # change record; none is system text, a tool description or a tool result.
+    "lib/core/src/orch_budget_governor.cpp": "RB-BG: owner-facing /usage and /budget profile replies and the "
+    "governor's owner notice, never system text, a tool or a tool result",
+    "src/agent/budget_profile_store.cpp": "RB-BG: the /budget profile reply when the file does not store, owner "
+    "copy, never sent to a model",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the

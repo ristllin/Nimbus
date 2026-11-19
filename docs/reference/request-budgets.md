@@ -177,17 +177,17 @@ One row per model the recorded provider lists name (`test/support/fixtures/model
 | openai | gpt-6-astra | 922000 | table | clamp | 100000 | 360000 | 3.6 | 2.5 | 120 | 25000 | 50 | 3000 | 56000 | 37765 | 56000 | 54000 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 131072 | 390 | 60000 | none | none |
 | openai | gpt-4o-mini-search-preview | 128000 | table | window | 66666 | 240000 | 3.6 | 2.5 | 120 | 25000 | 50 | 3000 | 32768 | 8192 | 20971 | 36000 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | none | none |
 | openai | gpt-6-sol | 922000 | table | clamp | 100000 | 360000 | 3.6 | 2.5 | 120 | 25000 | 50 | 3000 | 56000 | 37765 | 56000 | 54000 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 131072 | 390 | 60000 | none | none |
-| mistral | codestral-2508 | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
-| mistral | codestral-latest | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
-| mistral | mistral-code-latest | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
-| mistral | mistral-code-fim-latest | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | codestral-2508 | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | codestral-latest | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | mistral-code-latest | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | mistral-code-fim-latest | 256000 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | glm-5-2 | 1048576 | listed | clamp | 100000 | 330000 | 3.3 | 2.5 | 60 | 9000 | 48 | 1500 | 39600 | 9900 | 20971 | 49500 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1536 / 2048 | 1500 / - |
 | mistral | zai-glm-5-2 | 1048576 | listed | clamp | 100000 | 330000 | 3.3 | 2.5 | 60 | 9000 | 48 | 1500 | 39600 | 9900 | 20971 | 49500 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1536 / 2048 | 1500 / - |
 | mistral | zai-glm-5-3 | 1048576 | listed | clamp | 100000 | 330000 | 3.3 | 2.5 | 60 | 9000 | 48 | 1500 | 39600 | 9900 | 20971 | 49500 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1536 / 2048 | 1500 / - |
 | mistral | zai-glm-5 | 1048576 | listed | clamp | 100000 | 330000 | 3.3 | 2.5 | 60 | 9000 | 48 | 1500 | 39600 | 9900 | 20971 | 49500 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1536 / 2048 | 1500 / - |
 | mistral | zai-glm-latest | 1048576 | listed | clamp | 100000 | 330000 | 3.3 | 2.5 | 60 | 9000 | 48 | 1500 | 39600 | 9900 | 20971 | 49500 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1536 / 2048 | 1500 / - |
-| mistral | labs-leanstral-1-5-1 | 262144 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
-| mistral | labs-leanstral-1-5 | 262144 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | labs-leanstral-1-5-1 | 262144 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | labs-leanstral-1-5 | 262144 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | ministral-14b-2512 | 262144 | listed | latency | 48709 | 151000 | 3.1 | 2.5 | 60 | 2500 | 98 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 39002 | 31201 | 19501 | 11700 | 41943 | 203 | 31201 | 3000 / 3612 | 3000 / - |
 | mistral | ministral-14b-latest | 262144 | listed | latency | 48709 | 151000 | 3.1 | 2.5 | 60 | 2500 | 98 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 39002 | 31201 | 19501 | 11700 | 41943 | 203 | 31201 | 3000 / 3612 | 3000 / - |
 | mistral | ministral-3b-2512 | 131072 | listed | latency | 48709 | 151000 | 3.1 | 2.5 | 60 | 2500 | 98 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 39002 | 31201 | 19501 | 11700 | 41943 | 203 | 31201 | 3000 / 3612 | 3000 / - |
@@ -196,7 +196,7 @@ One row per model the recorded provider lists name (`test/support/fixtures/model
 | mistral | ministral-8b-latest | 262144 | listed | latency | 48709 | 151000 | 3.1 | 2.5 | 60 | 2500 | 98 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 39002 | 31201 | 19501 | 11700 | 41943 | 203 | 31201 | 3000 / 3612 | 3000 / - |
 | mistral | mistral-large-4 | 1048576 | listed | clamp | 100000 | 360000 | 3.6 | 2.5 | 60 | 9000 | 50 | 1500 | 43200 | 10800 | 20971 | 54000 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1584 / 2112 | 1500 / - |
 | mistral | mistral-large-4-0 | 1048576 | listed | clamp | 100000 | 360000 | 3.6 | 2.5 | 60 | 9000 | 50 | 1500 | 43200 | 10800 | 20971 | 54000 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1584 / 2112 | 1500 / - |
-| mistral | mistral-large-2512 | 262144 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | mistral-large-2512 | 262144 | listed | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | mistral-large-latest | 1048576 | listed | clamp | 100000 | 360000 | 3.6 | 2.5 | 60 | 9000 | 50 | 1500 | 43200 | 10800 | 20971 | 54000 | 6144 | 12288 | 75000 | 60000 | 30000 | 30000 | 41943 | 390 | 60000 | 1584 / 2112 | 1500 / - |
 | mistral | mistral-medium-latest | 262144 | listed | latency | 48709 | 151000 | 3.1 | 2.5 | 60 | 2500 | 98 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 39002 | 31201 | 19501 | 11700 | 41943 | 203 | 31201 | 3000 / 3612 | 3000 / - |
 | mistral | mistral-medium | 262144 | listed | latency | 48709 | 151000 | 3.1 | 2.5 | 60 | 2500 | 98 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 39002 | 31201 | 19501 | 11700 | 41943 | 203 | 31201 | 3000 / 3612 | 3000 / - |
@@ -217,7 +217,7 @@ One row per model the recorded provider lists name (`test/support/fixtures/model
 | mistral | codestral-embed-2505 | 8192 | listed | floor | 5615 | 17408 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | mistral-embed-2312 | 8192 | listed | floor | 5615 | 17408 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | mistral-embed | 8192 | listed | floor | 5615 | 17408 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
-| mistral | mistral-moderation-2603 | 131072 | table | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
+| mistral | mistral-moderation-2603 | 131072 | table | floor | 27419 | 85000 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | mistral-ocr-2512 | 16384 | table | floor | 11230 | 34816 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | mistral-ocr-3-0 | 16384 | table | floor | 11230 | 34816 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
 | mistral | mistral-ocr-3 | 16384 | table | floor | 11230 | 34816 | 3.1 | 2.5 | 60 | 2500 | 55 | 3000 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 5242 | 2621 | 2621 | 41943 | 41943 | 64 | 49152 | 3000 / - | 3000 / - |
@@ -251,9 +251,9 @@ rate, and the custom endpoint keeps the floor on its flat wire.
 | Provider | Model | Window | Source | Bound | Target | Bytes | rNom | rSafe | Read window | Prefill | Decode | minFinal | System cap | Tool result | Recall | Replay | Summary | Message cap | Hist max | Hist soft | Hist keep | Fold step | Fold slice | Rows | Trigger | Caps healthy | Caps fragmented |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | cumulo | openai/gpt-5.6 | 272000 | table | floor | 23611 | 85000 | 3.6 | 2.5 | 90 | 25000 | 50 | 3000 | 44564 | 11141 | 44564 | 24576 | 5570 | 6144 | 11141 | 5570 | 5570 | 89128 | 89128 | 64 | 49152 | none | none |
-| cumulo | anthropic/claude-sonnet-5-5 | 1000000 | listed | floor | 34000 | 85000 | 2.5 | 2.0 | 90 | 60000 | 75 | 3000 | 32768 | 8192 | 32768 | 16384 | 4096 | 6144 | 13020 | 11718 | 10416 | 1302 | 65536 | 67 | 49152 | 4809 / 6412 | 4347 / 5797 |
-| cumulo | mistral/mistral-large-4-0 | 1048576 | listed | floor | 23611 | 85000 | 3.6 | 2.5 | 60 | 9000 | 50 | 1500 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 41943 | 64 | 49152 | 2004 / 2672 | 1696 / 2262 |
-| cumulo | zai/glm-5.3 | 917504 | table | floor | 25757 | 85000 | 3.3 | 2.5 | 50 | 9000 | 55 | 1600 | 32768 | 8192 | 16384 | 24576 | 4096 | 6144 | 10541 | 9486 | 8432 | 1054 | 32768 | 64 | 49152 | 1782 / 2376 | 1600 / - |
+| cumulo | anthropic/claude-sonnet-5-5 | 1000000 | listed | floor | 34000 | 85000 | 2.5 | 2.0 | 90 | 60000 | 75 | 3000 | 32768 | 8192 | 32768 | 16384 | 4096 | 6144 | 13020 | 10416 | 10416 | 0 | 65536 | 67 | 49152 | 4809 / 6412 | 4347 / 5797 |
+| cumulo | mistral/mistral-large-4-0 | 1048576 | listed | floor | 23611 | 85000 | 3.6 | 2.5 | 60 | 9000 | 50 | 1500 | 32768 | 8192 | 20971 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 41943 | 64 | 49152 | 2004 / 2672 | 1696 / 2262 |
+| cumulo | zai/glm-5.3 | 917504 | table | floor | 25757 | 85000 | 3.3 | 2.5 | 50 | 9000 | 55 | 1600 | 32768 | 8192 | 16384 | 24576 | 4096 | 6144 | 10541 | 8432 | 8432 | 0 | 32768 | 64 | 49152 | 1782 / 2376 | 1600 / - |
 | cumulo | gpt-5.6 | 272000 | table | floor | 23611 | 85000 | 3.6 | 2.5 | 90 | 25000 | 50 | 3000 | 44564 | 11141 | 44564 | 24576 | 5570 | 6144 | 11141 | 5570 | 5570 | 89128 | 89128 | 64 | 49152 | none | none |
 | custom | gpt-5.6-luna | 272000 | table | floor | 28333 | 85000 | 3.0 | 2.5 | 120 | 1000 | 50 | 3000 | 44564 | 11141 | 44564 | 24576 | 5570 | 6144 | 11141 | 5570 | 5570 | 89128 | 89128 | 64 | 49152 | none | none |
 | custom | llama-3-70b | 100000 | table | floor | 28333 | 85000 | 3.0 | 2.5 | 120 | 1000 | 50 | 3000 | 32768 | 8192 | 16384 | 24576 | 4096 | 6144 | 4096 | 2048 | 2048 | 32768 | 32768 | 64 | 49152 | none | none |
@@ -349,18 +349,20 @@ seven quiet nights (The governor, below).
 A head whose turn is a split prompt (the history as messages) at the 85,000 B floor, a routed head
 above all, sizes its history from the measured overhead of the old engine's request: the system
 blocks, the turn's input message, the tools array and the envelope of one owner turn of the synthetic
-busy twin (test_floor_dialogue measures it on the real build: 64768 B on the Anthropic wire, 66688 B on the others), plus the summary at its
-cap and a 512 B margin. What is left is the window's high water in window bytes
-(the wire spends 120 and 130 B for every 100 B of window on the 17 Nov shape). A shift lands at 9/10 of it and a fold keeps 4/5, so
-the request carries between 4/5 and all of the room; the fold trigger stays v5.1.1's 48 KB. Where that
-leaves no more than v5.1.1's window, the head keeps v5.1.1's window exactly (the floor branch).
+busy twin, which test_floor_dialogue measures on the real build (64768 B on the
+Anthropic wire, 66688 B on the others), plus the summary at its cap and a 512 B margin. What is
+left is the window's high water in window bytes (the wire spends 120 and 130 B for every 100 B of
+window on the 17 Nov shape). A shift lands at 4/5 of it and the fold that follows keeps that 4/5
+(it takes the rows the shift hid), so the request carries between 4/5 and all of the room; the fold
+trigger stays v5.1.1's 48 KB. Where that leaves no more than v5.1.1's window, the head keeps v5.1.1's
+window exactly (the floor branch).
 
 | Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |
 |---|---|---|---|---|---|---|---|---|
 | cumulo | openai/gpt-5.6 | 85000 | 5570 | 12230 | 11141 | 5570 | 5570 | v5.1.1 window |
-| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 13020 | 11718 | 10416 | measured |
-| cumulo | mistral/mistral-large-4-0 | 85000 | 4096 | 13704 | 10541 | 9486 | 8432 | measured |
-| cumulo | zai/glm-5.3 | 85000 | 4096 | 13704 | 10541 | 9486 | 8432 | measured |
+| cumulo | anthropic/claude-sonnet-5-5 | 85000 | 4096 | 15624 | 13020 | 10416 | 10416 | measured |
+| cumulo | mistral/mistral-large-4-0 | 85000 | 4096 | 13704 | 10541 | 8432 | 8432 | measured |
+| cumulo | zai/glm-5.3 | 85000 | 4096 | 13704 | 10541 | 8432 | 8432 | measured |
 | cumulo | gpt-5.6 | 85000 | 5570 | 12230 | 11141 | 5570 | 5570 | v5.1.1 window |
 
 ## The governor

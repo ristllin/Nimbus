@@ -176,13 +176,14 @@ static std::string floorSection() {
       "A head whose turn is a split prompt (the history as messages) at the 85,000 B floor, a routed head\n"
       "above all, sizes its history from the measured overhead of the old engine's request: the system\n"
       "blocks, the turn's input message, the tools array and the envelope of one owner turn of the synthetic\n"
-      "busy twin (test_floor_dialogue measures it on the real build: " + num(kFloorFixedAnthropicBytes) +
-      " B on the Anthropic wire, " + num(kFloorFixedOpenAIBytes) + " B on the others), plus the summary at its\n"
-      "cap and a " + num(kFloorMarginBytes) + " B margin. What is left is the window's high water in window bytes\n"
-      "(the wire spends " + num(kFloorWirePerWindowAnthropicPct) + " and " + num(kFloorWirePerWindowOpenAIPct) +
-      " B for every 100 B of window on the 17 Nov shape). A shift lands at 9/10 of it and a fold keeps 4/5, so\n"
-      "the request carries between 4/5 and all of the room; the fold trigger stays v5.1.1's 48 KB. Where that\n"
-      "leaves no more than v5.1.1's window, the head keeps v5.1.1's window exactly (the floor branch).\n\n"
+      "busy twin, which test_floor_dialogue measures on the real build (" + num(kFloorFixedAnthropicBytes) +
+      " B on the\nAnthropic wire, " + num(kFloorFixedOpenAIBytes) + " B on the others), plus the summary at its cap and a " +
+      num(kFloorMarginBytes) + " B margin. What is\nleft is the window's high water in window bytes (the wire spends " +
+      num(kFloorWirePerWindowAnthropicPct) + " and " + num(kFloorWirePerWindowOpenAIPct) +
+      " B for every 100 B of\nwindow on the 17 Nov shape). A shift lands at 4/5 of it and the fold that follows keeps that 4/5\n"
+      "(it takes the rows the shift hid), so the request carries between 4/5 and all of the room; the fold\n"
+      "trigger stays v5.1.1's 48 KB. Where that leaves no more than v5.1.1's window, the head keeps v5.1.1's\n"
+      "window exactly (the floor branch).\n\n"
       "| Provider | Model | Bytes | Summary | Left after the overhead | Hist max | Hist soft | Hist keep | Branch |\n" +
       separator(9);
   for (const Head& h : kRouted) {

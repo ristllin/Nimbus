@@ -430,7 +430,7 @@ std::string row(const Head& h, const Shape& s, const Measured& m) {
 // Every request fits its head's body budget; a measured floor head is never refused at round 0
 // on the twin (its overhead constants hold the real request); the constants are no more than
 // 2 KB over what the build measures (so a shrinking request gives its room back to the
-// conversation); and the routed Anthropic head carries at least 10,000 B of dialogue on every
+// conversation); and the routed Anthropic head carries at least 9,000 B of dialogue on every
 // shape (v5.1.2: 2,979 B after a shift).
 void test_a_floor_head_carries_its_measured_room() {
   size_t measuredHeads = 0;
@@ -449,7 +449,7 @@ void test_a_floor_head_carries_its_measured_room() {
       const size_t constant = anthropic ? kFloorFixedAnthropicBytes : kFloorFixedOpenAIBytes;
       TEST_ASSERT_TRUE_MESSAGE(fixed <= constant, (what + " fixed " + std::to_string(fixed)).c_str());
       if (s.recall) TEST_ASSERT_TRUE_MESSAGE(fixed + 2048 >= constant, (what + " fixed " + std::to_string(fixed)).c_str());
-      if (anthropic) TEST_ASSERT_TRUE_MESSAGE(m.dialogue >= 10000, (what + " " + std::to_string(m.dialogue)).c_str());
+      if (anthropic) TEST_ASSERT_TRUE_MESSAGE(m.dialogue >= 9000, (what + " " + std::to_string(m.dialogue)).c_str());
     }
   TEST_ASSERT_TRUE(measuredHeads > 0);
 }

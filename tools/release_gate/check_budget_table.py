@@ -34,6 +34,12 @@ test/support/fixtures/budgets_v5_1_1.json. This gate reads both and fails on:
   8. the release shape: while kRoutedBudgetLift is false in request_budget.h (v5.1.2 ships
      that way, RULINGS-v3), every routed head sits on the 85,000 B floor.
 
+  9. lane RB-BG: the history profiles (a direct head's fold due at no more than its profile's H,
+     never under 24 KB, as its trigger; a larger profile never gives a smaller mark) and the
+     floor heads (a measured floor head's window is the body less the measured overhead of
+     its wire, the summary and the margin, in window bytes, with shift and keep at 4/5, and
+     larger than v5.1.1's; a head left on v5.1.1's window had no more room than that).
+
 Every table of the file with a model column is read, by its section heading (TABLES):
 every recorded model (all of the above, and coverage), the routed heads and the custom
 endpoint (all of the above; a routed head is compared with its upstream's v5.1.1 row), the
@@ -65,6 +71,7 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TABLE = os.path.join(REPO, "docs", "reference", "request-budgets.md")
 BUDGET_HEADER = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "request_budget.h")
+CONTEXT_HEADER = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "budget.h")
 WIRE_LIMITS = os.path.join(REPO, "lib", "core", "include", "nimbus", "orch", "wire_limits.h")
 V511 = os.path.join(REPO, "test", "support", "fixtures", "budgets_v5_1_1.json")
 
@@ -86,6 +93,8 @@ TABLES = {
     "routed heads once the router meters cached tokens": {"preview": True},
     "virtual nimbus": {"server": True},
     "with the tool loop off": {"loop_off": True},
+    "history profiles": {"profiles": True},
+    "floor heads": {"floor_heads": True},
 }
 # Wires whose loop-off turn is one prompt string (custom.cpp, mistral.cpp, zai): a routed head
 # goes out on its upstream's wire (wire_of).
@@ -122,6 +131,10 @@ COLUMNS = {
     "bound": ("bound",),
     "sized_from": ("sized from",),
     "trigger": ("trigger", "fold trigger"),
+    "profile": ("profile",),
+    "marks": ("h l", "h / l"),
+    "left": ("left after the overhead",),
+    "branch": ("branch",),
     "caps_healthy": ("caps healthy",),
     "caps_fragmented": ("caps fragmented",),
 }
@@ -490,9 +503,103 @@ def baseline_of(row: dict, old: dict) -> "dict | None":
     return old[pick] if pick else None
 
 
+# Lane RB-BG: the profile order and the measured floor's constants (budget.h).
+PROFILE_ORDER = ("tight", "lean", "standard", "wide")
+
+
+def floor_constants(header_path: str) -> "dict | None":
+    """kFloorFixed*Bytes, kFloorMarginBytes and kFloorWirePerWindow*Pct from budget.h."""
+    try:
+        with open(header_path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    out = {}
+    for name in ("kFloorFixedAnthropicBytes", "kFloorFixedOpenAIBytes", "kFloorMarginBytes",
+                 "kFloorWirePerWindowAnthropicPct", "kFloorWirePerWindowOpenAIPct"):  # fmt: skip
+        m = re.search(r"\b" + name + r"\s*=\s*(\d+)", text)
+        if not m:
+            return None
+        out[name] = int(m.group(1))
+    return out
+
+
+def profile_row_problems(row: dict) -> "list[str]":
+    """A direct head under a profile: the due mark is at most H (never under 24 KB) and is the
+    trigger; keep at most the due mark; the high water at most 5/4 of it."""
+    name, marks = row_name(row), row.get("marks", "")
+    m = re.match(r"\s*(\d+)\s*/\s*(\d+)", marks)
+    soft, keep, hmax, trig = (val(row, k) for k in ("historySoftBytes", "historyKeepBytes", "historyMaxBytes", "trigger"))
+    if not m or None in (soft, keep, hmax, trig) or row.get("profile", "").lower() not in PROFILE_ORDER:
+        return [f"{name}: needs profile, H / L, hist max, soft, keep and trigger columns"]
+    due = max(int(m.group(1)), TRIGGER_MIN)
+    errs = []
+    if soft > due or soft < TRIGGER_MIN:
+        errs.append(f"{name} ({row['profile']}): hist soft {soft:.0f} outside [{TRIGGER_MIN}, {due}]")
+    if abs(trig - soft) > 1:
+        errs.append(f"{name} ({row['profile']}): trigger {trig:.0f} is not the soft mark {soft:.0f}")
+    if keep > soft or hmax > soft * 5 / 4 + 1 and soft == due:
+        errs.append(f"{name} ({row['profile']}): keep {keep:.0f} or max {hmax:.0f} out of the profile's shape")
+    return errs
+
+
+def profile_order_problems(rows: "list[dict]") -> "list[str]":
+    """Per model, a larger profile never gives a smaller mark."""
+    errs, by = [], {}
+    for r in rows:
+        by.setdefault((r.get("provider", ""), r.get("model", "")), []).append(r)
+    for key, rs in by.items():
+        rs = sorted(rs, key=lambda r: PROFILE_ORDER.index(r.get("profile", "").lower())
+                    if r.get("profile", "").lower() in PROFILE_ORDER else 0)  # fmt: skip
+        for a, b in zip(rs, rs[1:]):
+            for f in ("historyMaxBytes", "historySoftBytes", "historyKeepBytes"):
+                if (val(b, f) or 0) < (val(a, f) or 0):
+                    errs.append(f"{key[0]}/{key[1]}: {f} falls from {a['profile']} to {b['profile']}")
+    return errs
+
+
+def floor_head_problems(row: dict, consts: "dict | None", old: dict) -> "list[str]":
+    """A measured floor head: the window is (bytes - the wire's measured overhead - the summary
+    - the margin) in window bytes, the shift and the fold keep at 4/5 of it, and it is more
+    than v5.1.1's window; a head left on v5.1.1's window would have had no more than that."""
+    name = row_name(row)
+    if consts is None:
+        return [f"{name}: the measured floor constants are not readable in budget.h"]
+    nbytes, summ, hmax, soft, keep = (val(row, k) for k in ("bytes", "chatSummaryBytes", "historyMaxBytes",
+                                                             "historySoftBytes", "historyKeepBytes"))  # fmt: skip
+    if None in (nbytes, summ, hmax, soft, keep) or "branch" not in row:
+        return [f"{name}: needs bytes, summary, hist max, soft, keep and branch columns"]
+    anthropic = wire_of(row.get("provider", ""), row.get("model", "")) == "anthropic"
+    fixed = consts["kFloorFixedAnthropicBytes" if anthropic else "kFloorFixedOpenAIBytes"]
+    pct = consts["kFloorWirePerWindowAnthropicPct" if anthropic else "kFloorWirePerWindowOpenAIPct"]
+    left = nbytes - fixed - summ - consts["kFloorMarginBytes"]
+    room = max(0, int(left * 100 // pct))
+    base = baseline_of(row, old) or {}
+    v511 = base.get("historyMaxBytes", 0)
+    branch = row["branch"].lower()
+    if branch == "measured":
+        errs = []
+        if abs(hmax - room) > 1:
+            errs.append(f"{name}: hist max {hmax:.0f}, the measured room gives {room}")
+        if abs(soft - room * 4 // 5) > 1 or abs(keep - room * 4 // 5) > 1:
+            errs.append(f"{name}: soft {soft:.0f} and keep {keep:.0f} are not 4/5 of {room}")
+        if v511 and hmax <= v511:
+            errs.append(f"{name}: a measured window {hmax:.0f} no larger than v5.1.1's {v511}")
+        return errs
+    if branch.startswith("v5.1.1"):
+        if v511 and room > v511:
+            return [f"{name}: left on v5.1.1's window {v511} although the measured room gives {room}"]
+        return []
+    return [f"{name}: branch '{row['branch']}' is neither measured nor v5.1.1's window"]
+
+
 def row_problems(row: dict, profile: dict, old: dict, lift: "bool | None", ctx: "dict | None" = None) -> "list[str]":
     if profile.get("preview"):
         return preview_problems(row)
+    if profile.get("profiles"):
+        return profile_row_problems(row)
+    if profile.get("floor_heads"):
+        return floor_head_problems(row, (ctx or {}).get("floor"), old)
     if profile.get("loop_off"):
         ctx = ctx or {}
         main = ctx.get("bytes", {}).get((row.get("provider", ""), row.get("model", "")))
@@ -522,11 +629,17 @@ def table_problems(
         errs += [f"{p}/{m}: in budgets_v5_1_1.json, no row in the table" for (p, m) in old if (p, m) not in have]
     for row in rows:
         errs += [f"[{heading}] {e}" for e in row_problems(row, profile, old, lift, ctx)]
+    if profile.get("profiles"):
+        errs += [f"[{heading}] {e}" for e in profile_order_problems(rows)]
     return errs
 
 
 def problems(
-    table_path: str, v511_path: str, header_path: str = BUDGET_HEADER, limits_path: str = WIRE_LIMITS
+    table_path: str,
+    v511_path: str,
+    header_path: str = BUDGET_HEADER,
+    limits_path: str = WIRE_LIMITS,
+    context_path: str = CONTEXT_HEADER,
 ) -> "list[str]":
     for p, what in ((table_path, "the budget table"), (v511_path, "the v5.1.1 budgets")):
         if not os.path.exists(p):
@@ -544,10 +657,14 @@ def problems(
     # The loop-off table names device heads of the tables above: their Bytes must agree (a
     # Virtual Nimbus row is a server's budget, not the device's).
     sized = [
-        r for h, rs in tables if not ({"preview", "loop_off", "server"} & set(TABLES.get(norm(h), {}))) for r in rs
+        r
+        for h, rs in tables
+        if not ({"preview", "loop_off", "server", "profiles", "floor_heads"} & set(TABLES.get(norm(h), {})))
+        for r in rs
     ]
     ctx = {"flat": flat_prompt_bytes(header_path, limits_path),
-           "bytes": {(r.get("provider", ""), r.get("model", "")): val(r, "bytes") for r in sized}}  # fmt: skip
+           "bytes": {(r.get("provider", ""), r.get("model", "")): val(r, "bytes") for r in sized},
+           "floor": floor_constants(context_path)}  # fmt: skip
     for heading, rows in tables:
         errs += table_problems(heading, rows, old, lift, ctx)
     return errs
