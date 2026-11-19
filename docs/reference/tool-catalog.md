@@ -236,27 +236,6 @@ Nothing is attached by keyword: since v5.2.0 the food playbooks (`food-log`, `fo
 are gone, and an approved stored skill about food is read from the `[SKILLS]` index like
 any other.
 
-## `food.*` - the portion calculator
-
-Registered by `registerFoodTools()` (`lib/core/src/orch_food_portions.cpp`). The model
-picks the foods and their proportions; the device does the arithmetic. The free foods
-are scaled together and rounded to whole units (`unit_g`) or 5 g steps, so the total
-lands at 95 to 100 percent of `left_kcal`, never over it unless the fixed amounts alone
-are; when whole units cannot land in that band the reply says so. Figures no food has
-(`left_kcal` over 20,000, `kcal_100g` over 1,000, `protein_100g` over 100, an amount
-over 5,000 g) are refused.
-
-| Tool | Description (as registered) | Arguments | State |
-|---|---|---|---|
-| `food.portions` | Exact amounts for a meal plan, or for using up what is left of the day: every food of the meal (from the foods the owner said they have; with none named the model asks instead) with its kcal and protein per 100 g, the owner's amounts as `fixed_g` (an approximate one too), the others with the portion the model would choose (`amount_g`, kept as proportions and scaled together). Returns each food's amount, kcal and protein, the total, and the answer in one sentence. Writes nothing. | `left_kcal` (number, **required**), `left_protein` (number), `foods` (array, **required**, at most 12: `name`, `kcal_100g` (both required), `protein_100g`, `amount_g`, `unit_g`, `fixed_g`) | live |
-
-Notes:
-- The total lands within 95 to 105 percent of `left_kcal` whenever whole units allow:
-  weighed foods move in 5 g steps, a food with `unit_g` in whole slices or pieces.
-- Fixed amounts stay exact. A weighed free food with no `amount_g` is refused with
-  its name (equal shares made piles of salad); a food counted in units starts from
-  one unit.
-
 ## `prefs.*` - the owner's standing rules
 
 Registered by `registerPrefsTools()` (`lib/core/src/orch_prefs_tools.cpp`) over

@@ -27,7 +27,6 @@
 #include "nimbus/orch/food_figures.h"
 #include "nimbus/orch/food_label.h"
 #include "nimbus/orch/food_ledger.h"
-#include "nimbus/orch/food_portions.h"
 #include "nimbus/orch/ledger_migrate.h"
 #include "nimbus/orch/loop_delivery.h"
 #include "nimbus/orch/loops.h"
@@ -213,21 +212,6 @@ void test_oir_03_second_read_disagreement_surfaced() {
   TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "4.3"));
   TEST_ASSERT_NOT_NULL(strstr(note.c_str(), "never averaged"));
   TEST_ASSERT_TRUE(secondReadNote(head, head, "openai").empty());
-}
-
-// OIR-12: a gram amount converts through kcal-per-100 g, never counts as kcal
-// (350 g at 68 kcal/100 g is 238 kcal, not 350).
-void test_oir_12_grams_convert_through_kcal100() {
-  PortionFood boba;
-  boba.name = "boba tea";
-  boba.kcal100 = 68;
-  boba.fixedG = 350;
-  const PortionPlan p = sizePortions({boba}, 1000);
-  TEST_ASSERT_TRUE_MESSAGE(p.ok, p.err.c_str());
-  TEST_ASSERT_EQUAL_INT(1, (int)p.lines.size());
-  TEST_ASSERT_EQUAL_FLOAT(350, p.lines[0].grams);
-  TEST_ASSERT_EQUAL_FLOAT(238, p.lines[0].kcal);
-  TEST_ASSERT_TRUE(p.lines[0].kcal < 300);   // never the gram figure itself
 }
 
 // OIR-14: yesterday's rows never enter today's total (465, not 2,989).
@@ -874,7 +858,6 @@ int main(int argc, char** argv) {
 #endif
   RUN_TEST(test_oir_09_total_includes_every_row);
   RUN_TEST(test_oir_10_target_needs_source);
-  RUN_TEST(test_oir_12_grams_convert_through_kcal100);
   RUN_TEST(test_oir_14_day_rollover);
   RUN_TEST(test_oir_15_label_cross_column);
   RUN_TEST(test_oir_16_near_match_is_not_a_food_match);

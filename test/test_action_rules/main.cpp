@@ -187,7 +187,6 @@ const Expect kExpect[] = {
     {"docs.list", kOpen},
     {"docs.read", kOpen},
     {"docs.search", kOpen},
-    {"food.portions", kOpen},
     {"loop.create", kOwnerNow},
     {"loop.cancel", kOwnerNow},
     {"loop.list", kOwner},

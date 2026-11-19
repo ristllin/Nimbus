@@ -28,9 +28,6 @@ const ToolTaintRow kRows[] = {
     // the owner's open questions (lib/core/src/orch_openq_tools.cpp): the same
     // durable-save backing
     {"openq.edit", T::Internal, E::MemWrite},
-    // the portion calculator (lib/core/src/orch_food_portions.cpp): arithmetic over the
-    // model's own arguments, nothing stored or fetched
-    {"food.portions", T::Internal, E::Read},
     // calc (lib/core/src/orch_calc_tool.cpp): exact arithmetic on its own argument, nothing
     // stored or fetched
     {"calc", T::Internal, E::Read},

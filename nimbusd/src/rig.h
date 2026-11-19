@@ -19,7 +19,6 @@
 
 #include "spend_ceiling_vn.h"   // lane DEF: the monthly spend ceiling (R7: hosted too)
 #include "nimbus/orch/food_ledger.h"     // scanFoodLedger - the VN ledger (CUM-840)
-#include "nimbus/orch/food_portions.h"   // food.portions
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "connectors_store.h"
@@ -1928,7 +1927,6 @@ class NimbusdRig {
     memCtx_ = mc;
     orch::registerCalcTool(reg_);   // RB-REC8: calc, always on, as the device registers it
     orch::registerMemoryTools(reg_, mc);
-    orch::registerFoodTools(reg_);   // the food playbook's portion calculator (as the device)
     // Lane POL2 (hosted parity): the owner's standing rules and open questions,
     // the same tools and rails the device runs - owner only, never from an
     // unattended turn, outside content means pending (prefs_tools.h).

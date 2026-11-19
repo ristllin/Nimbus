@@ -349,7 +349,7 @@ static void test_scoping_holds_through_more_for_every_tool() {
       },
       checked);
   TEST_ASSERT_EQUAL_MESSAGE(0, bad, "a tool was reachable through more that its caller may not call");
-  TEST_ASSERT_TRUE(checked >= 61 * kClasses * 2);
+  TEST_ASSERT_TRUE(checked >= 60 * kClasses * 2);   // 60 registered tools since food.portions left (RB-REC1)
   TEST_MESSAGE(("property: " + std::to_string(checked) +
                 " calls (every registered tool x every caller class x admin-only on and off), none wider than direct")
                    .c_str());

@@ -6,7 +6,6 @@
 #include <esp_littlefs.h>    // esp_littlefs_format_partition - the scrub's empty FS
 #include <esp_partition.h>   // esp_partition_erase_range - the scrub erases every block
 
-#include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/reset_plan.h"   // scrubChunk: the erase plan (host-tested)
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 
@@ -1186,7 +1185,6 @@ void begin() {
   registerMemoryTools(g_reg, ctx);
   nimbus::orch::registerPrefsTools(g_reg, prefs::context());
   nimbus::orch::registerOpenQTools(g_reg, prefs::openQContext());   // lane POL2: openq.edit
-  nimbus::orch::registerFoodTools(g_reg);   // lane CTX: food.portions (a plan's arithmetic)
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
   // session.* tools for external MCP clients. list + terminate are live over the

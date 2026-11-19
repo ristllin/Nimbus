@@ -23,7 +23,6 @@
 #include "nimbus/docs_pack.h"
 #include "nimbus/orch/embedding.h"
 #include "nimbus/orch/connectors_wire.h"   // lane CONN: the rig's connector attach + catalog
-#include "nimbus/orch/food_portions.h"   // lane CTX: food.portions
 #include "nimbus/orch/effect_ring.h"   // RB-Q3a: the recent-actions ring
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
 #include "nimbus/orch/episodic.h"
@@ -448,7 +447,6 @@ class LabRig {
     prefs_.bindStanding(mc);   // lane J: mem_write standing:true -> the rules
     orch::registerMemoryTools(reg_, mc);
     prefs_.registerTools(reg_);   // lane J: prefs.edit, registered as the device does
-    orch::registerFoodTools(reg_);   // lane CTX: food.portions, as the device registers it
 
     // Split by tool group so each registration (and its lambda) stays inside the
     // complexity gate. Registration order is preserved (it drives toolNames_).

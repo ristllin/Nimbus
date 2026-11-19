@@ -115,7 +115,6 @@ const ToolClassRow kRows[] = {
     {"media.play", "media", EC::Effect},
     {"media.pause", "media", EC::Effect},
     {"media.stop", "media", EC::Effect},
-    {"food.portions", "", EC::Read},   // engine 1 only; RB-REC1 deletes it with its tool
     {"tenant.list", "people", EC::Read},
     {"tenant.set_role", "people", EC::Effect},
     {"tenant.set_quota", "people", EC::Effect},
