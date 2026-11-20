@@ -326,13 +326,9 @@ class TurnRun {
     if (st.ok()) st = storeInput(in);
     if (!st.ok()) return st;
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
-    if (!(st = d_.setup(t_.ctx, t_.setup)).ok()) return fail(st);
-    t_.ctx.dayStartMin = t_.setup.dayStartMin;   // the wires stamp every message with it
-    if (!(st = budget()).ok()) return fail(st);
+    if (!(st = d_.setup(t_.ctx, t_.setup)).ok() || !(st = sized()).ok()) return fail(st);
     if (!(st = storeOpen(in)).ok() || !(st = movePointer()).ok()) return st;
-    if (!(st = compose()).ok()) return fail(st);
-    if (!t_.wire && !(st = wireFor(t_.ctx.dialect, t_.wire)).ok()) return fail(st);
-    if (!t_.wire) return fail(Status::fail(Err::NotFound, "plain::wireFor"));
+    if (!(st = compose()).ok() || !(st = wired()).ok()) return fail(st);
     clampLimits();
     return Status::success();
   }
@@ -424,6 +420,20 @@ class TurnRun {
   // a known API host, else its dialect (one log line: lane RB-T4b). A turn whose setup names no host
   // or no model is a binding fault, refused loudly (rulings 89 item 3 and 91), never sized as a custom
   // floor head. budgetFor fails only on such a key, so there is no other fallback.
+  // The turn's wire: the setup's, else the dialect's.
+  Status wired() {
+    if (t_.wire) return Status::success();
+    const Status st = wireFor(t_.ctx.dialect, t_.wire);
+    if (!st.ok()) return st;
+    return t_.wire ? Status::success() : Status::fail(Err::NotFound, "plain::wireFor");
+  }
+
+  // After the setup: the day start the wires stamp every message with, then the head's budget.
+  Status sized() {
+    t_.ctx.dayStartMin = t_.setup.dayStartMin;
+    return budget();
+  }
+
   Status budget() {
     bool byDialect = false;
     tx::HeadKey key;

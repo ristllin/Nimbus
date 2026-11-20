@@ -167,16 +167,20 @@ class Exchange {
     }
     window_ = req_.timeoutMs ? req_.timeoutMs : orch::readWindowMsFor(capHost_, model_, routed_);
     tableHost_ = capTableHost(capHost_, in->turn->dialect);
-    // No cap given: the head's full body (tx::budgetFor), the one fallback figure the turn path uses too;
-    // never the 85,000 B floor by accident (ruling 83) and never a head the setup did not name (ruling 91).
+    return capOf(*in);
+  }
+
+  // The body cap: the caller's, or with none given the head's full body (tx::budgetFor), the one
+  // fallback figure the turn path uses too; never the 85,000 B floor by accident (ruling 83) and never
+  // a head the setup did not name (ruling 91).
+  Status capOf(const RenderInput& in) {
     bodyCap_ = req_.bodyCap;
-    if (!bodyCap_) {
-      orch::tx::HeadBudget b;
-      const orch::tx::HeadKey key{slug_, in->turn->model, in->head->routed};
-      if (slug_.empty() || !orch::tx::budgetFor(key, orch::tx::kDefaultProfile, b).ok())
-        return Status::fail(Err::InvalidArgument, "plain::runExchange.head");
-      bodyCap_ = b.bodyCap;
-    }
+    if (bodyCap_) return Status::success();
+    orch::tx::HeadBudget b;
+    const orch::tx::HeadKey key{slug_, in.turn->model, in.head->routed};
+    if (slug_.empty() || !orch::tx::budgetFor(key, orch::tx::kDefaultProfile, b).ok())
+      return Status::fail(Err::InvalidArgument, "plain::runExchange.head");
+    bodyCap_ = b.bodyCap;
     return Status::success();
   }
 
@@ -405,28 +409,35 @@ ExchangeErr classifyAnswer(int status, const std::string& body, bool routed) {
   return classify(status, body, routed).err;
 }
 
-std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDialect) {
-  if (byDialect) *byDialect = false;
-  for (const char* s : kSlugs)
-    if (turn.host == s) return s;
-  const std::string h = lower(head.host.empty() ? turn.host : head.host);
+namespace {
+// The provider of a known API host, else empty.
+std::string knownHostSlug(const std::string& host) {
+  const std::string h = lower(host);
   if (h == "api.anthropic.com") return "anthropic";
   if (h == "api.openai.com") return "openai";
   if (h == "api.mistral.ai") return "mistral";
   if (h == "api.z.ai" || h == "open.bigmodel.cn") return "zai";
-  if (h.empty()) return "";   // nothing names the head
-  if (head.routed) return "cumulo";
-  switch (turn.dialect) {
-    case Dialect::AnthropicMessages:
-      if (byDialect) *byDialect = true;
-      return "anthropic";
-    case Dialect::OpenAIResponses:
-      if (byDialect) *byDialect = true;
-      return "openai";
-    case Dialect::ChatCompletions:
-    case Dialect::Flat: break;
-  }
+  return "";
+}
+// The provider a dialect speaks for: native dialects name theirs, a compatible one is a custom endpoint.
+const char* dialectProvider(Dialect d) {
+  if (d == Dialect::AnthropicMessages) return "anthropic";
+  if (d == Dialect::OpenAIResponses) return "openai";
   return "custom";
+}
+}  // namespace
+
+std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDialect) {
+  if (byDialect) *byDialect = false;
+  for (const char* s : kSlugs)
+    if (turn.host == s) return s;
+  const std::string host = head.host.empty() ? turn.host : head.host;
+  const std::string known = knownHostSlug(host);
+  if (!known.empty() || host.empty()) return known;   // a known host, or nothing names the head
+  if (head.routed) return "cumulo";
+  const std::string slug = dialectProvider(turn.dialect);
+  if (byDialect) *byDialect = slug != "custom";
+  return slug;
 }
 
 std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) {
