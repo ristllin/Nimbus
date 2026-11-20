@@ -13,6 +13,7 @@
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/turn_memory.h"
@@ -247,11 +248,11 @@ struct Unit {
 
 // What one decoded item says about its turn.
 void noteItem(const tx::Item& it, Unit& u) {
+  u.tainted |= itemOutside(it);   // one item rule (RB-RL: plain/rails.h)
   switch (it.kind) {
     case tx::ItemKind::User:
       u.owner = u.content = true;
       u.text += it.x.size();
-      for (const tx::Part& p : it.parts) u.tainted |= p.kind == tx::PartKind::File;
       break;
     case tx::ItemKind::Assistant:
       u.content = true;
@@ -259,10 +260,8 @@ void noteItem(const tx::Item& it, Unit& u) {
       break;
     case tx::ItemKind::Intent: u.intents.push_back(it.id); break;
     case tx::ItemKind::Result:
-      u.tainted |= it.cls == tx::ResultClass::Outside;
       u.intents.erase(std::remove(u.intents.begin(), u.intents.end(), it.id), u.intents.end());
       break;
-    case tx::ItemKind::DeviceNote: u.tainted |= it.note == tx::NoteClass::Agent; break;
     default: break;
   }
 }

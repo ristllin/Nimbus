@@ -12,6 +12,7 @@
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/rails.h"   // the item taint rule (RB-RL)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/tool_groups.h"
@@ -397,6 +398,7 @@ class TurnRun {
 
   // The owner message (u) before any model call; another trigger's text as its device note.
   Status storeInput(const TurnInput& in) {
+    t_.ctx.tainted = t_.ctx.tainted || inputOutside(t_.ctx.trigger, in.parts);   // a report or a document (RB-RL)
     if (in.text.empty() && in.parts.empty()) return Status::success();
     const Trigger tr = t_.ctx.trigger;
     if (tr == Trigger::Routine) return note(in.text, tx::NoteClass::Routine);
@@ -1098,8 +1100,10 @@ class TurnRun {
   // Outside content by class: a tool with a taint row that says so, a tool nothing classes at
   // all, or a router call that reaches nothing knowable (each reads as outside). The engine-2
   // names have class rows but no taint rows yet: their own result says whether it is outside
-  // (ToolOutput::outside).
+  // (ToolOutput::outside). A read of a device-written folder (inbox/, agents/) is outside whatever
+  // its class (RB-RL: plain/rails.h).
   static bool outsideByClass(const CallView& v) {
+    if (readsOutsidePath(v.name, v.args)) return true;
     if (v.cls.taint != orch::Taint::External) return false;
     return v.unresolved || orch::toolTaintRow(v.name) != nullptr || orch::toolClassRow(v.name) == nullptr;
   }

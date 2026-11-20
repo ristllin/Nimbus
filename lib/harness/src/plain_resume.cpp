@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include "nimbus/harness/plain/deliver.h"
+#include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/turn_journal.h"
 #include "nimbus/orch/tx/arena.h"
@@ -174,8 +175,8 @@ class BootResume {
   bool readOutside(uint32_t turn) {
     for (size_t i = 0; i < d_.arena->count(); ++i) {
       tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || e.turn != turn || e.kind != tx::ItemKind::Result) continue;
-      if (d_.arena->get(i, item_).ok() && item_.cls == tx::ResultClass::Outside) return true;
+      if (!d_.arena->header(i, e).ok() || e.turn != turn) continue;
+      if (d_.arena->get(i, item_).ok() && itemOutside(item_)) return true;   // one item rule (RB-RL)
     }
     return false;
   }

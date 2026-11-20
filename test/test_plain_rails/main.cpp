@@ -12,6 +12,7 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
@@ -366,7 +367,9 @@ void test_a_tainted_turn_cannot_send_to_another_chat() {
   TEST_ASSERT_EQUAL(6, (int)res.size());
   for (size_t i = 1; i < res.size(); ++i) {
     TEST_ASSERT_FALSE(res[i].ok);
-    TEST_ASSERT_EQUAL_STRING(texts::tool_results::kRailRefused, res[i].x.c_str());
+    // a connector's call is classed outside even when refused: its result is kept as a bulk
+    if (res[i].cls == tx::ResultClass::Outside) TEST_ASSERT_EQUAL(std::strlen(texts::tool_results::kRailRefused), res[i].bytes);
+    else TEST_ASSERT_EQUAL_STRING(texts::tool_results::kRailRefused, res[i].x.c_str());
   }
 }
 
