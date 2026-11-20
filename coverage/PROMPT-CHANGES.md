@@ -870,8 +870,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 4913 -> 4990
-- sha8: 887d1856 -> d76661ac
+- bytes: 5065 -> 5142
+- sha8: 432650f6 -> b8921b23
 - lane: RB-X1
 - prd: section 7 ("Crash safety": an intent with no result is shown as outcome unknown and never re-run; an effect tool does not run if its intent cannot be stored)
 - why: lib/harness/src/plain_resume.cpp: at boot every stored call with no stored result gets one result and is never run again. A call whose intent is stored keeps kOutcomeUnknown (it may have taken effect); a call with no intent (an effect that never started, by the write-ahead rule, or a pure or read call) gets kRestartedBeforeRun, a fact (it changed nothing), no order. Without it the model is told a call that did nothing may have done something, and an owner's request is dropped; planned work, not a fix
