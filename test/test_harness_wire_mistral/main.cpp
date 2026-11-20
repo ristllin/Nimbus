@@ -422,10 +422,26 @@ static void test_loop_long_arguments_fold() {
   std::string conv, out, err;
   TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
   TEST_ASSERT_EQUAL(3, (int)d.http.seen.size());
-  TEST_ASSERT_TRUE(d.http.seen[1].body.find(big) != std::string::npos);    // under budget: replayed whole
-  TEST_ASSERT_TRUE(d.http.seen[2].body.find(big) == std::string::npos);    // over: folded to one line
-  TEST_ASSERT_TRUE(bodyHas(d, 2, "- round 0: memory_search"));
+  // Lane RB-BGb part 2 (ruling 93 item 3): the request has room, so the 30 KB argument rides
+  // every later round (on v5.1.2 the fixed 24 KB replay folded it).
+  TEST_ASSERT_TRUE(d.http.seen[1].body.find(big) != std::string::npos);
+  TEST_ASSERT_TRUE(d.http.seen[2].body.find(big) != std::string::npos);
   TEST_ASSERT_TRUE(bodyHas(d, 2, "\"tool_call_id\":\"tcsmall00\""));      // the newest round, whole
+  // Over a small body budget it folds instead (stubbed: the call already ran).
+  FakeProviderDeps s;
+  s.http.script = {{"", "/v1/chat/completions", 200,
+                    chatToolCallBody("memory_search", "tcbig0000", "{\"q\":\"" + big + "\"}")},
+                   {"", "/v1/chat/completions", 200, chatToolCallBody("memory_search", "tcsmall00")},
+                   {"", "/v1/chat/completions", 200, chatFinalBody()}};
+  auto spd = s.contract();
+  FakeProviderDeps::ToolRig srig;
+  s.fillTools(srig);
+  providers::setTestBudgetOverride(32000);
+  std::string sconv, sout, serr;
+  const bool sok = providers::orchTurnMistral(spd, sconv, "S", "U", sout, serr, &srig.ht, nullptr);
+  providers::setTestBudgetOverride(0);
+  TEST_ASSERT_TRUE_MESSAGE(sok, serr.c_str());
+  TEST_ASSERT_TRUE(s.http.seen.back().body.find(big) == std::string::npos);
 }
 
 // A stalled round (prose, no tool_calls) forces the final round. On

@@ -244,11 +244,17 @@ size_t Transcript::foldOldestFor(size_t want) {
 size_t Transcript::clipNewestTo(size_t cap) {
   if (replayBytes_ <= cap) return 0;
   const int newest = newestRound();
-  size_t newestResults = 0;
+  size_t newestResults = 0, results = 0;
   for (const auto& it : e_)
-    if (it.kind == TranscriptItem::Kind::ToolResult && it.round == newest) newestResults += it.text.size();
+    if (it.kind == TranscriptItem::Kind::ToolResult && it.round == newest) {
+      newestResults += it.text.size();
+      results++;
+    }
   const size_t others = replayBytes_ - newestResults;
-  size_t room = cap > others ? cap - others : 0;
+  // Each cut or withheld result carries its note (up to about 160 B): reserved first, so the
+  // replay lands under `cap` with them and the refit needs no prompt rung for the notes.
+  const size_t notes = results * 160;
+  size_t room = cap > others + notes ? cap - others - notes : 0;
   const size_t before = replayBytes_;
   for (auto& it : e_) {
     if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;

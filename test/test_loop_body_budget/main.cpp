@@ -304,12 +304,15 @@ static void test_real_case_refit_shape() {
   TEST_ASSERT_EQUAL_INT_MESSAGE(1, refused, msg);
   // Rounds 0, 1 and 2 - no extra provider request spent on the refit.
   TEST_ASSERT_EQUAL_INT_MESSAGE(3, (int)sent.size(), msg);
-  // The newest round's results the model has not seen yet are never clipped:
-  // all five round 1 results come back whole.
-  int newestResults = 0;
+  // Lane RB-BGb part 2 (ruling 93 item 3): the turn's own bulk goes before the prompt's
+  // context. The older round folds, then the newest round's results are cut to what fits
+  // (each cut says so), and no prompt rung fires.
+  int cut = 0;
   for (const auto& it : tr.entries())
-    if (it.kind == nimbus::orch::TranscriptItem::Kind::ToolResult && it.text.size() == 1290) newestResults++;
-  TEST_ASSERT_EQUAL_INT_MESSAGE(5, newestResults, "the newest round was clipped");
+    if (it.kind == nimbus::orch::TranscriptItem::Kind::ToolResult && (it.text.find("[cut") != std::string::npos || it.text.find("[not shown") != std::string::npos))
+      cut++;
+  TEST_ASSERT_TRUE_MESSAGE(cut > 0, "the newest round's results were cut, named");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, (int)fitFreed, "no prompt rung fired");
 }
 
 // One big write (merge review): an executed call whose ARGUMENTS are the oversize

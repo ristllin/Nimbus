@@ -361,7 +361,7 @@ static std::string messagesWithoutCachePoints(const std::string& body) {
   serializeJson(msgs, out);
   return out;
 }
-static void test_loop_replay_folds_with_hysteresis_over_budget() {
+static void test_loop_replay_with_room_is_append_only() {
   FakeProviderDeps d;
   for (int i = 1; i <= 5; i++) {
     std::string body = "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_" + std::to_string(i) +
@@ -401,16 +401,17 @@ static void test_loop_replay_folds_with_hysteresis_over_budget() {
     prev.pop_back();   // drop the closing ']' - the next request continues the array
     if (next.compare(0, prev.size(), prev) != 0) rewrites++;
   }
-  // 5 results of ~7 KB against the 16 KB budget: folds at rounds 3 and 5 only
-  // (the T6 bound is ceil((35 - 16) / 8) + 1 = 4), never one per round.
-  TEST_ASSERT_EQUAL(2, rewrites);
+  // Lane RB-BGb part 2 (ruling 93 item 3): 5 results of ~7 KB (about 35 KB) fit the 85,000 B
+  // body, so the replay is append-only to the end: no round rewrites an earlier one (on
+  // v5.1.2 the fixed 16 KB replay folded at rounds 3 and 5).
+  TEST_ASSERT_EQUAL(0, rewrites);
   const std::string& b = d.http.seen.back().body;
   TEST_ASSERT_TRUE(b.find("TAILMARK4") != std::string::npos);   // the newest result, whole
   TEST_ASSERT_TRUE(b.find("[not shown") == std::string::npos);
   TEST_ASSERT_TRUE(b.find("[cut:") == std::string::npos);
-  TEST_ASSERT_TRUE(b.find("EARLIER TOOL ROUNDS OF THIS TURN") != std::string::npos);
+  TEST_ASSERT_TRUE(b.find("EARLIER TOOL ROUNDS OF THIS TURN") == std::string::npos);   // nothing folded
   providers::setTestBudgetOverride(0);
-  TEST_ASSERT_TRUE(b.find("- round 0: memory_search") != std::string::npos);
+  for (int i = 0; i < 5; i++) TEST_ASSERT_TRUE(b.find("TAILMARK" + std::to_string(i)) != std::string::npos);
   TEST_ASSERT_TRUE(bodyHas(d, 5, "USER"));
   for (int i = 1; i <= 5; i++) {
     const std::string id = "tu_" + std::to_string(i);
@@ -2013,7 +2014,7 @@ int main(int, char**) {
   RUN_TEST(test_loop_echoes_assistant_with_tool_use);
   RUN_TEST(test_loop_replays_thinking_blocks_unchanged);
   RUN_TEST(test_orch_turn_tool_requires_only_reply);
-  RUN_TEST(test_loop_replay_folds_with_hysteresis_over_budget);
+  RUN_TEST(test_loop_replay_with_room_is_append_only);
   RUN_TEST(test_loop_stall_echoed_on_the_unforced_final_round);
   RUN_TEST(test_loop_prose_final_accepted_only_on_the_final_round);
   RUN_TEST(test_loop_prose_is_the_reply_requests_equal_tool_rounds_plus_one);
