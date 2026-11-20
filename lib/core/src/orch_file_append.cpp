@@ -121,7 +121,7 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
 }
 
 namespace {
-// ---- the CSV helpers of the day total and the row reader ---------------------
+// ---- the CSV helpers of the row reader -------------------------------------------
 
 constexpr size_t kMaxColumns = 64;   // a log's header; a wider one is not a log
 
@@ -136,15 +136,6 @@ std::string lowered(const std::string& s) {
 }
 
 bool sameText(const std::string& a, const std::string& b) { return lowered(a) == lowered(b); }
-
-// A key value as identity compares it: no case, no spaces around it (a quoted
-// " travel " and travel are one key).
-std::string keyText(const std::string& s) {
-  size_t b = 0, e = s.size();
-  while (b < e && (s[b] == ' ' || s[b] == '\t')) b++;
-  while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t')) e--;
-  return lowered(s.substr(b, e - b));
-}
 
 // One quoted field from `p` (just past the opening quote) to just past the
 // closing one; false when it never closes.
@@ -175,7 +166,7 @@ size_t closingParen(const std::string& row, size_t open) {
 
 // An unquoted field from `p` up to the next separator. A comma inside a balanced pair of
 // parentheses stays in the field: files written before v5.2.0 hold rows like "tea (no sugar,
-// oat milk)", and a split there would leave that row out of every total. An unbalanced '(' shields nothing, so a cut row still reads short, and `parens`
+// oat milk)", and a split there would misread that row. An unbalanced '(' shields nothing, so a cut row still reads short, and `parens`
 // goes false: the row scans for a close at most once in vain, so a row of open parentheses
 // costs linear time.
 void readPlainField(const std::string& row, size_t& p, std::string& field, bool& parens) {
@@ -334,18 +325,6 @@ std::vector<std::string> rowFields(const std::string& row, bool* quotes, const s
   return csvFields(row, quotes, header.size());
 }
 
-// A row that states a total ("daily total") instead of an entry.
-bool statesTotal(const std::vector<std::string>& f, int dateIdx, int sumIdx) {
-  for (size_t c = 0; c < f.size(); c++) {
-    if ((int)c == dateIdx || (int)c == sumIdx) continue;
-    const std::string cell = keyText(f[c]);
-    for (const char* word : {"total", "totals", "subtotal", "day total", "daily total", "grand total", "running total",
-                             "total so far", "today total", "todays total", "today's total"})
-      if (cell == word) return true;
-  }
-  return false;
-}
-
 // A final row that had no line end: is it PROVABLY cut by a power loss? Only
 // then: a quote left open, fewer fields than the header, or no plain number in
 // the sum column or in a column that holds one in the row before. A well-formed
@@ -375,39 +354,6 @@ bool isBlankRow(const std::string& row) {
 // The header as written, without a UTF-8 byte order mark (a hand-edited file).
 std::string withoutBom(const std::string& row) {
   return row.compare(0, 3, "\xEF\xBB\xBF") == 0 ? row.substr(3) : row;
-}
-
-bool sameHeader(const std::vector<std::string>& a, const std::vector<std::string>& b) {
-  if (a.size() != b.size()) return false;
-  for (size_t i = 0; i < a.size(); i++)
-    if (!sameText(a[i], b[i])) return false;
-  return true;
-}
-
-// Count one row into `d` when it is dated d.date. Counted: a row of the header's width whose
-// sum field reads as a number. Not counted, and said: a row whose columns cannot be trusted
-// (`unread`), a row that states a total (`totalRows`).
-void tallyInto(DayTotal& d, const std::vector<std::string>& f, const std::vector<std::string>& header, int dateIdx,
-               int sumIdx) {
-  if (dateIdx < 0 || sumIdx < 0 || f.size() <= (size_t)dateIdx) return;
-  if (isoDay(f[(size_t)dateIdx]) != d.date) return;
-  if (statesTotal(f, dateIdx, sumIdx)) {
-    d.totalRows++;
-    return;
-  }
-  double v = 0;
-  if (f.size() != header.size() || !figureOf(f[(size_t)sumIdx], v)) {
-    d.unread++;
-    return;
-  }
-  d.total += v;
-  d.rows++;
-}
-
-std::string numText(double v) {
-  char buf[40];
-  std::snprintf(buf, sizeof buf, "%.10g", v);
-  return buf;
 }
 
 }  // namespace
@@ -453,69 +399,6 @@ bool RowSplitter::end() {
   return ok_;
 }
 
-CsvDayTally::CsvDayTally(const std::string& sumCol, const std::string& day)
-    : sumCol_(sumCol), day_(day) {
-  t_.date = day;
-}
-
-void CsvDayTally::readHeader(const std::string& row) {
-  if (isBlankRow(row)) return;   // blank lines above the header
-  sawHeader_ = true;
-  header_ = csvFields(withoutBom(row));
-  width_ = header_.size();
-  sumIdx_ = sumCol_.empty() ? -1 : columnIndex(header_, sumCol_);
-}
-
-// The row's day; the first data row settles which column holds it.
-std::string CsvDayTally::rowDay(const std::vector<std::string>& f) {
-  if (dateIdx_ < 0) dateIdx_ = csvDateColumnOf(header_, {f});
-  return dateIdx_ >= 0 && f.size() > (size_t)dateIdx_ ? isoDay(f[(size_t)dateIdx_]) : std::string();
-}
-
-void CsvDayTally::feed(const std::string& row, bool complete) {
-  if (!sawHeader_) return readHeader(row);
-  if (sumIdx_ < 0 || day_.empty() || isCommentRow(row) || isBlankRow(row)) return;
-  bool quotes = true;
-  const std::vector<std::string> f = rowFields(row, &quotes, header_);
-  if (!complete && provablyCut(f, quotes, width_, prev_, sumIdx_)) return;   // a cut row never counts
-  if (sameHeader(f, header_)) return;   // the header pasted again mid-file: never a row
-  if (f.size() == width_) prev_ = f;
-  const std::string day = rowDay(f);
-  if (day.empty()) {
-    undated_++;
-    return;
-  }
-  tallyInto(t_, f, header_, dateIdx_, sumIdx_);
-}
-
-bool CsvDayTally::ok() const {
-  // A file with no data rows yet still has a known zero total when its header
-  // could date rows; once rows are read, a date column was found in them.
-  return sawHeader_ && sumIdx_ >= 0 && !day_.empty() && (dateIdx_ >= 0 || dateColumnByName(header_) >= 0);
-}
-
-std::string CsvDayTally::whyNot() const {
-  if (day_.empty()) return "the device clock is not set";
-  if (sumIdx_ < 0) return "the file has no column '" + sumCol_ + "'";
-  if (dateIdx_ < 0 && dateColumnByName(header_) < 0) return "the file has no date column";
-  return std::string();
-}
-
-std::string csvDayTotalLine(const std::string& fileText, const std::string& sumCol, const std::string& today,
-                            const std::string& zone) {
-  CsvDayTally tally(sumCol, today);
-  RowSplitter rows([&](const std::string& row, bool complete) {
-    tally.feed(row, complete);
-    return true;
-  });
-  rows.push(fileText.data(), fileText.size());
-  rows.end();
-  if (!tally.ok()) return "[no day total: " + tally.whyNot() + "]\n";
-  std::string line = renderDayTotal(tally.total(), sumCol, true, zone) + "\n";
-  if (tally.undated() > 0) line += renderUndated(tally.undated()) + "\n";
-  return line;
-}
-
 std::vector<std::string> csvHeaderOf(const std::string& row) { return csvFields(withoutBom(row)); }
 
 std::string csvWidthNote(const std::string& stored, const std::string& appended) {
@@ -540,7 +423,7 @@ std::string csvWidthNote(const std::string& stored, const std::string& appended)
   }
   if (off == 0) return std::string();
   return "; " + std::to_string(off) + (off == 1 ? " row has" : " rows have") + " a field count other than the header's " +
-         std::to_string((unsigned)width) + " and counts in no day total";
+         std::to_string((unsigned)width);
 }
 
 std::vector<std::string> csvStoredRow(const std::string& row, const std::vector<std::string>& header) {
@@ -594,35 +477,6 @@ LogDay logDayOf(time_t now, bool tzSet) {
   std::strftime(zone, sizeof zone, "%Z", &lt);
   d.zone = zone;
   return d;
-}
-
-// ---- the reply ------------------------------------------------------------------
-
-std::string renderDayTotal(const DayTotal& d, const std::string& sumCol, bool isToday,
-                           const std::string& zoneAt) {
-  std::string out = isToday ? "today's " + sumCol + " (" + d.date + (zoneAt.empty() ? "" : ", " + zoneAt) + "): "
-                            : sumCol + " on " + d.date + ": ";
-  const std::string rowsWord = std::to_string(d.rows) + (d.rows == 1 ? " row" : " rows");
-  if (d.unread > 0) {
-    // No figure that looks like the day's: what was read, and that the rest was not.
-    out += "not known - " + numText(d.total) + " counted from " + rowsWord + ", but " + std::to_string(d.unread) +
-           (d.unread == 1 ? " more row" : " more rows") + " dated " + d.date + (d.unread == 1 ? " has" : " have") +
-           " no readable '" + sumCol + "' (not a number, or its columns are shifted); fix " +
-           (d.unread == 1 ? "it" : "them") + " with files.edit before stating a total";
-  } else {
-    out += numText(d.total);
-    if (d.rows == 0) out += " - no rows are dated " + d.date;
-    else out += " from " + rowsWord;
-  }
-  if (d.totalRows > 0)
-    out += "; " + std::to_string(d.totalRows) + (d.totalRows == 1 ? " total row is" : " total rows are") +
-           " not counted (the device adds up the rows itself)";
-  return out;
-}
-
-std::string renderUndated(int rows) {
-  return "[" + std::to_string(rows) + (rows == 1 ? " row has" : " rows have") +
-         " no YYYY-MM-DD date and count toward no day's total]";
 }
 
 }  // namespace nimbus::orch

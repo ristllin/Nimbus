@@ -7,8 +7,8 @@
 #include <vector>
 
 // file_aids - the general aids that make tracking in plain CSV files reliable on small
-// models (ruling 42): a read that filters rows by a column range and totals named
-// columns on the device, an edit that picks one of several matches by line number, the
+// models (ruling 42): a read that filters rows by a column range (it totals nothing: ruling
+// 95 removed sum), an edit that picks one of several matches by line number, the
 // facts an append states, and the torn-tail note. Shared by both engines and nimbusd: the
 // bindings move bytes, this library decides and renders, so every host gives
 // byte-identical results on the same file.
@@ -20,7 +20,7 @@
 // Nothing is dropped silently: every row the scan read is matched, out of range, or
 // counted under a named reason with its line numbers.
 //
-// Portable, Arduino-free, host-tested (test_file_tools_sum, test_file_edit_line,
+// Portable, Arduino-free, host-tested (test_file_tools_csv, test_file_edit_line,
 // test_file_append_facts). Engine-2 only until phase 2 links it into both engines.
 namespace nimbus::orch::aids {
 
@@ -28,12 +28,10 @@ namespace nimbus::orch::aids {
 // Bytes per AidSource read (and per AidSink part write): one card-lock hold each.
 inline constexpr size_t kAidChunk = 4096;
 // The longest CSV record the scan keeps (bytes, line end excluded). A longer record is
-// counted "too long" with its line and takes no part in the match or the sums.
+// counted "too long" with its line and takes no part in the match.
 inline constexpr size_t kCsvRecordMax = 8192;
 // The most bytes of shown rows one read returns (a larger limit is this).
 inline constexpr size_t kCsvShowMax = 1u << 20;
-// Named columns sum may total in one call.
-inline constexpr size_t kCsvSumMax = 16;
 // Line numbers a list in a result names before "+N".
 inline constexpr size_t kAidListMax = 8;
 // Line numbers one identical-line group names before "+N".
@@ -99,11 +97,11 @@ NumParse parseDec3(std::string_view cell, Dec3& out);
 // "24.3", "310", "-0.5", "0.125": trailing zeros and a bare point dropped; never "-0".
 std::string renderDec3(Dec3 v);
 
-// ---- read_file column/from/to/sum -------------------------------------------------
+// ---- read_file column/from/to ------------------------------------------------------
 // The query. column names a header field; a row matches when its field is in from..to
-// (to defaults to from); sum names header fields to total over every matching row (with
-// no column, every data row matches). skipRows and limit page the rows shown, never the
-// sums: the sums always cover every matching row.
+// (to defaults to from). skipRows and limit page the rows shown. A selected row that does
+// not parse (a wrong field count, a key not compared) is shown beside the matching rows in
+// file order and named in the tail; it is no matching row and does not move the paging.
 //
 // The range rule, per row key k (the field with spaces trimmed):
 //   - numeric: when from, to and k are all numbers, from <= k <= to as numbers (a bound
@@ -118,29 +116,16 @@ std::string renderDec3(Dec3 v);
 struct CsvQuery {
   std::string column;            // "" = no filter
   std::string from, to;          // to "" = from
-  std::vector<std::string> sum;  // at most kCsvSumMax names, none twice
   size_t skipRows = 0;           // matching rows not shown (read_file offset)
-  size_t limit = 32768;          // bytes of shown lines (read_file limit, 16 to kCsvShowMax); the first row of a page is always shown
-  bool showRows = true;          // false: totals only (engine 1's day total); no row shown, no "shown" clause
+  size_t limit = 32768;          // bytes of shown lines (read_file limit past the page floor, at most kCsvShowMax); the first row of a page is always shown
 };
 // "" when the query is well formed, else the error (no file is read).
 std::string checkCsvQuery(const CsvQuery& q);
 
-// One column's total.
-struct CsvColumnSum {
-  std::string name;
-  Dec3 total;
-  size_t numbers = 0;   // cells that entered the total
-  size_t rounded = 0;   // of those, cells with more than 3 decimals
-  size_t blank = 0;     // blank cells (not in the total)
-  size_t notNumber = 0; // cells that are not numbers (not in the total)
-};
 // The line numbers a reason names (the first kAidListMax) and the full count.
 struct LineList {
   size_t count = 0;
   std::vector<uint32_t> lines;  // at most kAidListMax
-  // For notNumber and blank only: the column of each listed line, parallel to lines.
-  std::vector<uint8_t> columns;
   // For records only: the line each listed record ends on, parallel to lines (a quoted
   // field with line ends, or a quote that never closes, spans several lines).
   std::vector<uint32_t> ends;
@@ -152,7 +137,7 @@ struct LineGroup {
 };
 
 // What a scan found. A line whose first non-blank byte is '#' is a COMMENT line wherever it
-// stands (ruling 49: a file-format convention, not a domain rule): never a row, never summed,
+// stands (ruling 49: a file-format convention, not a domain rule): never a row,
 // never "not compared", counted once with its runs. The header is the first record that is
 // not a comment. Every data record (a CSV record after the header that is not an empty line)
 // is in exactly one of: matched, outOfRange, notCompared, fieldCount, fieldCountOutside,
@@ -173,12 +158,8 @@ struct CsvScanResult {
   LineList tooLong;            // over kCsvRecordMax
   size_t emptyLines = 0;       // empty physical lines outside a quoted field
   size_t fieldCountOutside = 0;  // rows with a wrong field count whose key is plainly out of range
-  size_t commentLines = 0;     // lines whose first non-blank byte is '#' (never a row, never summed)
+  size_t commentLines = 0;     // lines whose first non-blank byte is '#' (never a row)
   LineList commentSpans;       // their runs of consecutive lines (count = runs; ends = each run's last line)
-  std::vector<CsvColumnSum> sums;  // in sum's order
-  LineList blankCells;         // blank sum cells among matching rows (column per line)
-  LineList notNumberCells;     // non-number sum cells among matching rows
-  LineList roundedCells;       // cells rounded to 3 decimals
   std::vector<LineGroup> identical;  // the first kAidListMax groups, in first-line order
   size_t identicalGroups = 0;  // all groups found
   size_t identicalChecked = 0; // matching rows checked (< matched: the table was full)
@@ -186,13 +167,13 @@ struct CsvScanResult {
   uint32_t openQuoteLine = 0;  // the last record's first line when the file ends inside its quoted field
   size_t shownFirst = 0;       // 1-based index of the first matching row shown (0 = none)
   size_t shownLast = 0;
-  // header then the shown rows: "L<n> <record>\n" each, record bytes as stored (a quoted
+  // header then the shown rows (matching rows and the selected rows that do not parse, in file
+  // order): "L<n> <record>\n" each, record bytes as stored (a quoted
   // field's line ends kept, the record's own line end and a header BOM left out)
   std::string body;
 };
 
-// The outcome of a scan: ok and the result, or the error (no partial sums, ever: with !ok the
-// result is not a total and is never shown).
+// The outcome of a scan: ok and the result, or the error (with !ok nothing is shown).
 struct CsvScanOutcome {
   bool ok = false;
   std::string error;
@@ -215,7 +196,7 @@ class CsvScanner {
   CsvScanner(const CsvScanner&) = delete;
   CsvScanner& operator=(const CsvScanner&) = delete;
   // False with error() set: a refused block, a bad query, no header, an unknown column,
-  // a NUL byte, a total past the int64 range. Stop feeding after false.
+  // a NUL byte. Stop feeding after false.
   bool feed(const char* data, size_t len);
   bool finish();
   const std::string& error() const { return err_; }
@@ -232,19 +213,11 @@ class CsvScanner {
 // The tail read_file prints after the shown rows, one line (no line end):
 //   rows <m> of <n>[ where <column> <from>..<to>]
 //   [; shown <a>-<b> | ; shown none]                       (only when not every row is shown)
-//   [; sum <name>=<total> (<k> of <n> rows[; not in it: <lines> (<why>), ...])]   (each column; ruling 88)
 //   [; <k> comment line(s) skipped (lines <a>-<b>, <c>, ... +N runs)]
-//   [; blank <k> (<col> line <l>, ... +N)]                  (without sum; with it, in each sum clause)
-//   [; not a number <k> (<col> line <l>, ... +N)]           (likewise)
-//   [; rounded to 3 decimals <k> (<col> line <l>, ...)]
-//   [; not compared <k> (lines <l>, ... +N: <column> blank or not like <from>)]   (likewise)
-//   [; skipped <k> (lines <l>, ... +N: field count is not the header's <h>)]      (likewise)
+//   [; not compared <k> (lines <l>, ... +N: <column> blank or not like <from>)]
+//   [; skipped <k> (lines <l>, ... +N: field count is not the header's <h>)]
 //   [; <k> other row(s) outside the range have a wrong field count]
-//   [; too long <k> (lines <l>, ... +N: over 8192 B)]                             (likewise)
-// In a sum clause k is the cells that entered the total and n the matching rows plus every
-// row the range may hold that the scan could not place or read (a wrong field count, a key
-// not compared, a row too long); each of those, and the column's blank and not-a-number
-// cells, is named in the clause with its reason: one statement of fact, never an order.
+//   [; too long <k> (lines <l>, ... +N: over 8192 B)]
 //   [; empty lines <k>]
 //   [; identical lines <g> groups (<l>=<l>=<l>+N, <l>=<l>, ... +N)]
 //   [; identical lines checked in the first <c> matching rows only]

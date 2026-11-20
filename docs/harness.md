@@ -1265,7 +1265,7 @@ gives the same result text for the same file:
 No size cap: the scan and the edit read 4 KB per card call (one lock hold each) in bounded
 working memory from `workingAlloc`; a refused block ends the call with a plain error and
 changes nothing, and an edit swaps its part file in only when the second pass saw the file the
-first pass planned on (`test/test_file_tools_sum`, `test_file_edit_line`,
+first pass planned on (`test/test_file_tools_csv`, `test_file_edit_line`,
 `test_file_append_facts`).
 
 The old engine's `files.read` and `files.edit` (device and nimbusd) run the same scan and

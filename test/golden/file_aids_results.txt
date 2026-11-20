@@ -1,10 +1,11 @@
-== food day total
+== food day rows
 ok log/food.csv size=291 lines=9 sha8=c5b9150c
 L1 date,occasion,item,grams,kcal
 L3 2026-11-19,breakfast,oats,60,230
 L5 2026-11-19,lunch 12:30,"rice, beans",250,410
+L6 2026-11-19,lunch 12:30,toast, butter, jam,80,260
 L7 2026-11-19,snack 2,apple,150,
-rows 3 of 6 where date 2026-11-19..2026-11-19; sum grams=460 (3 of 4 rows; not in it: line 6 (field count is not the header's 5)); sum kcal=640 (2 of 4 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
+rows 3 of 6 where date 2026-11-19..2026-11-19; 1 comment line skipped (line 4); skipped 1 (line 6: field count is not the header's 5); empty lines 1
 -- log/food.csv
 date,occasion,item,grams,kcal
 2026-11-18,dinner,soup,300,180
@@ -16,14 +17,15 @@ date,occasion,item,grams,kcal
 
 2026-11-20,breakfast,oats,60,230
 
-== expense month total
+== expense month rows
 ok log/expense.csv size=304 lines=8 sha8=d7d39246
 L1 date,when,note,amount,tip
 L3 2026-11-02,morning,grocer,31.15,0
 L5 2026-11-14,lunch 12:30,"cafe, two cups",7.40,1
+L6 2026-11-14,lunch 12:30,cafe, two cups, cake,11.20,1.5
 L7 2026-11-19,errand 2,train ticket,,0
 L8 2026-11-30,evening,books,12.00,0
-rows 4 of 6 where date 2026-11..2026-11; sum amount=50.55 (3 of 5 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); sum tip=1 (4 of 5 rows; not in it: line 6 (field count is not the header's 5)); 1 comment line skipped (line 4)
+rows 4 of 6 where date 2026-11..2026-11; 1 comment line skipped (line 4); skipped 1 (line 6: field count is not the header's 5)
 -- log/expense.csv
 date,when,note,amount,tip
 2026-10-31,evening,books,24.90,0
@@ -34,14 +36,15 @@ date,when,note,amount,tip
 2026-11-19,errand 2,train ticket,,0
 2026-11-30,evening,books,12.00,0
 
-== training week total
+== training week rows
 ok log/training.csv size=245 lines=8 sha8=539b629a
 L1 date,session,exercise,reps,kg
 L2 2026-11-13,am,squat,5,100
 L3 2026-11-13,am,squat,5,100
 L5 2026-11-15,pm,"rows, cable",12,40.5
+L6 2026-11-17,pm,rows, cable, slow,12,40
 L7 2026-11-19,set 2,bench press,8,
-rows 4 of 6 where date 2026-11-13..2026-11-19; sum reps=30 (4 of 5 rows; not in it: line 6 (field count is not the header's 5)); sum kg=240.5 (3 of 5 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); identical lines 1 group (2=3)
+rows 4 of 6 where date 2026-11-13..2026-11-19; 1 comment line skipped (line 4); skipped 1 (line 6: field count is not the header's 5); identical lines 1 group (2=3)
 -- log/training.csv
 date,session,exercise,reps,kg
 2026-11-13,am,squat,5,100
@@ -52,12 +55,29 @@ date,session,exercise,reps,kg
 2026-11-19,set 2,bench press,8,
 2026-11-20,am,squat,5,105
 
-== every row, paged
-ok log/food2.csv size=291 lines=9 sha8=c5b9150c
+== a total asked with sum (ruling 95: not an argument)
+error read_file takes path, offset, limit, column, from, to; not read: sum
+(not read: sum: this tool has no such argument)
+-- log/food7.csv
+date,occasion,item,grams,kcal
+2026-11-18,dinner,soup,300,180
+2026-11-19,breakfast,oats,60,230
+#was: 2026-11-19,breakfast,oats,40,150
+2026-11-19,lunch 12:30,"rice, beans",250,410
+2026-11-19,lunch 12:30,toast, butter, jam,80,260
+2026-11-19,snack 2,apple,150,
+
+2026-11-20,breakfast,oats,60,230
+
+== every row, a limit under the page floor
+ok log/food2.csv size=291 lines=9 sha8=c5b9150c (limit 2048 B here)
 L1 date,occasion,item,grams,kcal
 L3 2026-11-19,breakfast,oats,60,230
-rows 5 of 6; shown 2-2; sum kcal=1050 (4 of 6 rows; not in it: line 6 (field count is not the header's 5), line 7 (blank)); 1 comment line skipped (line 4); empty lines 1
-next_offset=2
+L5 2026-11-19,lunch 12:30,"rice, beans",250,410
+L6 2026-11-19,lunch 12:30,toast, butter, jam,80,260
+L7 2026-11-19,snack 2,apple,150,
+L9 2026-11-20,breakfast,oats,60,230
+rows 5 of 6 where date 2026-11-18..2026-11-20; shown 2-5; 1 comment line skipped (line 4); skipped 1 (line 6: field count is not the header's 5); empty lines 1
 -- log/food2.csv
 date,occasion,item,grams,kcal
 2026-11-18,dinner,soup,300,180
@@ -83,7 +103,7 @@ date,occasion,item,grams,kcal
 2026-11-20,breakfast,oats,60,230
 
 == comment lines only
-error sum and column need a CSV header line; every line is a comment
+error column needs a CSV header line; every line is a comment
 -- log/notes.csv
 # a
 #b

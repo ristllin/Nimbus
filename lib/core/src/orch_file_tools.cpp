@@ -25,7 +25,6 @@ const char kMissingArg[] = "{} is missing; {} takes {}";
 const char kNotString[] = "{} is not a string";
 const char kNotCount[] = "{} is not a whole number, 0 or more";
 const char kNotBool[] = "{} is not true or false";
-const char kNotNames[] = "sum is not a list of column names";
 const char kNotLine[] = "line is not a whole number, 1 or more";
 const char kIfExists[] = "if_exists is fail or replace";
 const char kPath[] = "path \"{}\" is not project/name (two parts, no leading /, no . or ..)";
@@ -47,7 +46,6 @@ const char kTooLongMore[] = "; append_file adds more";
 const char kQuota[] = "{} B of files would pass your {} B";
 const char kRoom[] = "file store full: {}";
 const char kPastEnd[] = "offset {} is past the end (size={})";
-const char kLimitMin[] = "limit is at least {}";
 const char kNotText[] = "{} is not text ({})";
 const char kPdf[] = "{} is a PDF; its text is not readable yet";
 const char kBinary[] = "binary data";
@@ -87,7 +85,7 @@ namespace R = texts::tool_results;
 using ArduinoJson::JsonObjectConst;
 using ArduinoJson::JsonVariantConst;
 
-const std::vector<const char*> kReadArgs = {"path", "offset", "limit", "column", "from", "to", "sum"};
+const std::vector<const char*> kReadArgs = {"path", "offset", "limit", "column", "from", "to"};
 const std::vector<const char*> kWriteArgs = {"path", "content", "if_exists"};
 const std::vector<const char*> kAppendArgs = {"path", "text"};
 const std::vector<const char*> kEditArgs = {"path", "old", "new", "all", "line"};
@@ -166,18 +164,6 @@ struct ArgReader {
       return false;
     }
     out = v.as<uint64_t>();
-    return true;
-  }
-  // A list of strings (sum's column names).
-  bool names(const char* key, std::vector<std::string>& out, bool& given) {
-    JsonVariantConst v = a[key];
-    given = !v.isNull();
-    if (!given) return true;
-    if (!v.is<ArduinoJson::JsonArrayConst>()) return (err = R::kNotNames).empty();
-    for (JsonVariantConst e : v.as<ArduinoJson::JsonArrayConst>()) {
-      if (!e.is<const char*>()) return (err = R::kNotNames).empty();
-      out.emplace_back(e.as<const char*>());
-    }
     return true;
   }
   bool flag(const char* key, bool& out) {
@@ -417,7 +403,7 @@ ToolResult FileTools::readSkill(const Target& t, size_t offset, size_t limit) {
 
 namespace {
 
-// read_file's arguments; table: column, from, to or sum was given.
+// read_file's arguments; table: column, from or to was given.
 struct ReadCall {
   std::string path;
   uint64_t offset = 0, limit = 0;
@@ -427,12 +413,11 @@ struct ReadCall {
 
 bool readArgs(JsonObjectConst args, ReadCall& c, std::string& err) {
   ArgReader in{args, "read_file", kReadArgs, ""};
-  bool col = false, from = false, to = false, sum = false;
+  bool col = false, from = false, to = false;
   const bool ok = in.str("path", true, c.path) && in.count("offset", c.offset, c.hasOffset) &&
                   in.count("limit", c.limit, c.hasLimit) && in.str("column", false, c.q.column, &col) &&
-                  in.str("from", false, c.q.from, &from) && in.str("to", false, c.q.to, &to) &&
-                  in.names("sum", c.q.sum, sum);
-  c.table = col || from || to || sum;
+                  in.str("from", false, c.q.from, &from) && in.str("to", false, c.q.to, &to);
+  c.table = col || from || to;
   err = in.err;
   return ok;
 }
@@ -446,10 +431,12 @@ ToolResult FileTools::read(JsonObjectConst args, const Principal& who) {
   t.tool = "read_file";
   if (!onlyKnown(args, t.tool, kReadArgs, err) || !readArgs(args, c, err) || !resolve(args, t, err))
     return ToolResult::fail(err);
-  if (c.hasLimit && c.limit < kFileReadMinLimit) return ToolResult::fail(fill(R::kLimitMin, {num(kFileReadMinLimit)}));
   if (!callerReads(who)) return ToolResult::fail(R::kNoCaller);
-  const size_t eff = size_t(c.hasLimit ? std::min<uint64_t>(c.limit, cfg_.readCap) : cfg_.readCap);
-  const std::string note = c.hasLimit && c.limit > cfg_.readCap ? fill(R::kLimitNote, {num(cfg_.readCap)}) : "";
+  // Ruling 95: a page has a floor. A limit under kFileReadFloor is raised to it, a limit over
+  // readCap held to it, and the head says which limit the page used.
+  const uint64_t asked = c.hasLimit ? c.limit : cfg_.readCap;
+  const size_t eff = size_t(std::min<uint64_t>(std::max<uint64_t>(asked, kFileReadFloor), cfg_.readCap));
+  const std::string note = c.hasLimit && eff != c.limit ? fill(R::kLimitNote, {num(eff)}) : "";
   const size_t offset = size_t(std::min<uint64_t>(c.offset, SIZE_MAX / 2));
   if (c.table) {
     c.q.skipRows = offset;

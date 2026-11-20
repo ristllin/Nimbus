@@ -1,4 +1,5 @@
-// orch_csv_sum - the CSV scan behind read_file column/from/to/sum (file_aids.h).
+// orch_csv_sum - the CSV scan behind read_file column/from/to (file_aids.h). It totals nothing:
+// ruling 95 removed sum (a figure over part of the rows was read as the whole total).
 //
 // One pass, byte by byte, over chunks of any size: the record splitter keeps at most one
 // record (kCsvRecordMax) and the shown page; the identical-line table grows in fixed
@@ -16,13 +17,12 @@ namespace {
 
 // Model-facing templates of the scan (tool results; ruling 42's read_file aids).
 namespace T {
-constexpr const char* kNoHeader = "sum and column need a CSV header line; line ";
+constexpr const char* kNoHeader = "column needs a CSV header line; line ";
 constexpr const char* kNoHeaderIs = " is: \"";
-constexpr const char* kOnlyComments = "sum and column need a CSV header line; every line is a comment";
+constexpr const char* kOnlyComments = "column needs a CSV header line; every line is a comment";
 constexpr const char* kNotInHeader = " is not in the header: ";
 constexpr const char* kTwice = " is in the header twice: ";
 constexpr const char* kNul = " is not text (a NUL byte on line ";
-constexpr const char* kPastRange = " is past the exact range; nothing summed";
 constexpr const char* kCardRead = "card read failed";
 }  // namespace T
 
@@ -30,7 +30,6 @@ constexpr size_t kDupBlock = 512;
 constexpr size_t kDupBlocks = kCsvIdenticalMax / kDupBlock;
 constexpr size_t kDupBuckets = 1024;
 constexpr uint16_t kNone = 0xFFFF;
-constexpr size_t kWanted = kCsvSumMax + 1;  // the key and the sums
 
 struct DupEntry {
   uint64_t hash;
@@ -72,11 +71,9 @@ bool comparable(std::string_view k, std::string_view b) {
   return !(!b.empty() && isDigit(b.back()) && k.size() > b.size() && isDigit(k[b.size()]));
 }
 
-void listAdd(LineList& l, uint32_t line, int column = -1) {
+void listAdd(LineList& l, uint32_t line) {
   ++l.count;
-  if (l.lines.size() >= kAidListMax) return;
-  l.lines.push_back(line);
-  if (column >= 0) l.columns.push_back(static_cast<uint8_t>(column));
+  if (l.lines.size() < kAidListMax) l.lines.push_back(line);
 }
 void spanAdd(LineList& l, uint32_t first, uint32_t last) {
   if (l.lines.size() < kAidListMax) l.ends.push_back(last);
@@ -156,26 +153,9 @@ std::string renderDec3(Dec3 d) {
 }
 
 // ---- the query ----------------------------------------------------------------------
-namespace {
-
-std::string checkSumNames(const std::vector<std::string>& sum) {
-  if (sum.size() > kCsvSumMax) return "sum takes at most " + num(kCsvSumMax) + " columns";
-  for (size_t i = 0; i < sum.size(); ++i) {
-    if (trimmed(sum[i]).empty()) return "sum has an empty column name";
-    for (size_t j = 0; j < i; ++j)
-      if (trimmed(sum[j]) == trimmed(sum[i])) return "sum names " + sum[i] + " twice";
-  }
-  return "";
-}
-
-}  // namespace
-
 std::string checkCsvQuery(const CsvQuery& q) {
-  if (q.column.empty() && q.sum.empty()) return "column or sum is needed";
-  if (!q.column.empty() && q.from.empty()) return "column needs from";
-  if (q.column.empty() && (!q.from.empty() || !q.to.empty())) return "from and to need column";
-  const std::string names = checkSumNames(q.sum);
-  if (!names.empty()) return names;
+  if (q.column.empty()) return "column is needed";
+  if (q.from.empty()) return "column needs from";
   if (q.limit < 16) return "limit is at least 16";
   Dec3 d;
   if (parseDec3(q.from, d) == NumParse::Rounded || parseDec3(q.to, d) == NumParse::Rounded)
@@ -245,8 +225,6 @@ struct CsvScanner::Impl {
   char last = '\n';
 
   int keyIdx = -1;
-  int sumIdx[kCsvSumMax];
-  size_t sums = 0;
 
   uint16_t* buckets = nullptr;
   DupBlock* blocks[kDupBlocks] = {};
@@ -340,38 +318,29 @@ struct CsvScanner::Impl {
   }
 
   // ---- the header ----
-  void locate(std::string_view h, int* found, int* seen) {
+  // The key column's index in the header, and how many times the header names it.
+  void locate(std::string_view h, int& found, int& seen) {
     const std::string_view col = trimmed(q.column);
     res.headerFields = eachField(h.data(), h.size(), cell, [&](size_t i, std::string_view name) {
-      for (size_t w = 0; w <= q.sum.size(); ++w) {
-        const std::string_view want = w == 0 ? col : trimmed(q.sum[w - 1]);
-        if (want.empty() || name != want) continue;
-        found[w] = int(i);
-        ++seen[w];
-      }
+      if (name != col) return;
+      found = int(i);
+      ++seen;
     });
   }
-  bool checkNames(std::string_view h, const int* seen) {
+  bool checkName(std::string_view h, int seen) {
+    if (seen == 1) return true;
     const std::string quote = quoteCut(h, kAidHeaderQuoteMax);
-    for (size_t w = 0; w <= q.sum.size(); ++w) {
-      const std::string_view name = w == 0 ? trimmed(q.column) : trimmed(q.sum[w - 1]);
-      if (name.empty()) continue;
-      if (seen[w] != 1) return fail(join({"column ", name, seen[w] ? T::kTwice : T::kNotInHeader, quote}));
-    }
-    return true;
+    return fail(join({"column ", trimmed(q.column), seen ? T::kTwice : T::kNotInHeader, quote}));
   }
   bool header() {
     headerDone = true;
     const std::string_view h = withoutBom(rec, recLen);
     if (h.empty() || tooLong)
       return fail(join({T::kNoHeader, Num(recLine), T::kNoHeaderIs, quoteCut(h, kAidLineOneQuoteMax), "\""}));
-    int found[kWanted], seen[kWanted] = {};
-    for (int& f : found) f = -1;
+    int found = -1, seen = 0;
     locate(h, found, seen);
-    if (!checkNames(h, seen)) return false;
-    keyIdx = found[0];
-    sums = q.sum.size();
-    for (size_t s = 0; s < sums; ++s) sumIdx[s] = found[s + 1];
+    if (!checkName(h, seen)) return false;
+    keyIdx = found;
     // The header leads every page.
     const int ln = std::snprintf(body, 16, "L%u ", unsigned(recLine));
     std::memcpy(body + ln, h.data(), h.size());
@@ -392,12 +361,10 @@ struct CsvScanner::Impl {
     if (!comparable(key, from) || !comparable(key, to)) return -1;
     return (key.substr(0, from.size()) >= from && key.substr(0, to.size()) <= to) ? 1 : 0;
   }
-  // Put the wanted fields in want (key at 0, sums after); false: field count differs.
-  bool fields(std::string_view* want) {
+  // Put the key field in key; false: field count differs.
+  bool fields(std::string_view& key) {
     const size_t n = eachField(rec, recLen, cell, [&](size_t i, std::string_view v) {
-      if (int(i) == keyIdx) want[0] = v;
-      for (size_t s = 0; s < sums; ++s)
-        if (int(i) == sumIdx[s]) want[s + 1] = v;
+      if (int(i) == keyIdx) key = v;
     });
     return n == res.headerFields;
   }
@@ -408,41 +375,51 @@ struct CsvScanner::Impl {
     if (!tooLong && recLen == 0) return ++res.emptyLines, true;
     ++res.records;
     if (tooLong) return spanAdd(res.tooLong, recLine, lastLine), true;
-    std::string_view want[kWanted];
-    const bool counted = fields(want);
-    const int r = keyIdx >= 0 ? inRange(want[0]) : 1;
+    std::string_view key;
+    const bool counted = fields(key);
+    const int r = keyIdx >= 0 ? inRange(key) : 1;
     if (!counted) return badCount(r, lastLine);
-    if (r < 0) spanAdd(res.notCompared, recLine, lastLine);
+    if (r < 0) spanAdd(res.notCompared, recLine, lastLine), showSelected();
     if (r == 0) ++res.outOfRange;
     if (r <= 0) return true;
     ++res.matched;
     show();
-    return remember() && addSums(want + 1);
+    return remember();
   }
   // A row whose field count differs from the header's. Another day's (its key plainly out of
   // range) is counted only; one in range, not comparable or spanning lines (it may hold other
   // rows) is named by line.
   bool badCount(int r, uint32_t lastLine) {
     if (r == 0 && lastLine == recLine) ++res.fieldCountOutside;
-    else spanAdd(res.fieldCount, recLine, lastLine);
+    else spanAdd(res.fieldCount, recLine, lastLine), showSelected();
     return true;
   }
 
-  void show() {
-    if (!q.showRows || res.matched <= q.skipRows || showFull) return;
+  bool append(bool matching) {
     char lead[16];
     const int ln = std::snprintf(lead, sizeof lead, "L%u ", unsigned(recLine));
     const size_t need = size_t(ln) + recLen + 1;
-    if (res.shownFirst && bodyLen + need > limit) {
-      showFull = true;
-      return;
+    if (bodyLen + need > limit && (!matching || res.shownFirst)) {
+      showFull = showFull || matching;
+      return false;
     }
     std::memcpy(body + bodyLen, lead, size_t(ln));
     std::memcpy(body + bodyLen + size_t(ln), rec, recLen);
     bodyLen += need;
     body[bodyLen - 1] = '\n';
+    return true;
+  }
+  void show() {
+    if (res.matched <= q.skipRows || showFull || !append(true)) return;
     if (!res.shownFirst) res.shownFirst = res.matched;
     res.shownLast = res.matched;
+  }
+  // Ruling 95: a selected row that does not parse (a wrong field count, a key not compared) is
+  // a row of the result, in file order, named by line in the tail as before. It is no matching
+  // row and never pushes one off a page (append(false) never ends the page).
+  void showSelected() {
+    if (res.matched < q.skipRows || showFull || tooLong) return;
+    append(false);
   }
 
   // ---- identical lines ----
@@ -487,26 +464,6 @@ struct CsvScanner::Impl {
     }
   }
 
-  // ---- totals ----
-  bool addSums(const std::string_view* cells) {
-    for (size_t s = 0; s < sums; ++s) {
-      CsvColumnSum& col = res.sums[s];
-      Dec3 v;
-      const NumParse p = parseDec3(cells[s], v);
-      if (p == NumParse::Blank || p == NumParse::NotNumber) {
-        ++(p == NumParse::Blank ? col.blank : col.notNumber);
-        listAdd(p == NumParse::Blank ? res.blankCells : res.notNumberCells, recLine, int(s));
-        continue;
-      }
-      if (p == NumParse::Rounded) listAdd(res.roundedCells, recLine, int(s));
-      col.rounded += p == NumParse::Rounded;
-      ++col.numbers;
-      if (__builtin_add_overflow(col.total.milli, v.milli, &col.total.milli) || col.total.milli == INT64_MIN)
-        return fail("the total of " + col.name + T::kPastRange);
-    }
-    return true;
-  }
-
   bool finish() {
     if (inRecord && inComment) comment(recLine);
     if (inRecord && inQ && !pendingQ) res.openQuoteLine = recLine;
@@ -543,10 +500,6 @@ CsvScanner::CsvScanner(const CsvQuery& q, const std::string& path, CsvScanResult
   m.cell = m.rec ? static_cast<char*>(workingAlloc(kCsvRecordMax)) : nullptr;
   m.body = m.cell ? static_cast<char*>(workingAlloc(m.bodyCap)) : nullptr;
   if (!m.body) err_ = kAidNoMemory;
-  for (const auto& s : q.sum) {
-    res_.sums.emplace_back();
-    res_.sums.back().name = std::string(trimmed(s));
-  }
 }
 
 CsvScanner::~CsvScanner() {
@@ -663,12 +616,6 @@ void linesInto(Txt& t, const LineList& l) {
   more(t, l.count, l.lines.size());
 }
 
-void cellsInto(Txt& t, const LineList& l, const CsvScanResult& r) {
-  for (size_t i = 0; i < l.lines.size(); ++i)
-    t << (i ? ", " : "") << std::string_view(r.sums[l.columns[i]].name) << " line " << uint64_t(l.lines[i]);
-  more(t, l.count, l.lines.size());
-}
-
 void groupsInto(Txt& t, const CsvScanResult& r) {
   for (size_t i = 0; i < r.identical.size(); ++i) {
     const LineGroup& g = r.identical[i];
@@ -678,68 +625,15 @@ void groupsInto(Txt& t, const CsvScanResult& r) {
   more(t, r.identicalGroups, r.identical.size());
 }
 
-// One column's cells of a reason (blank, not a number) as a line list: the lines of that
-// column the list names, and that column's full count.
-LineList cellsOf(const LineList& l, size_t col, size_t count) {
-  LineList out;
-  out.count = count;
-  for (size_t i = 0; i < l.lines.size(); ++i)
-    if (i < l.columns.size() && l.columns[i] == col) out.lines.push_back(l.lines[i]);
-  return out;
-}
-
-// ", " before every item but the first of a "not in it" list.
-void item(Txt& t, bool& first, const LineList& l) {
-  t << (first ? "; not in it: " : ", ");
-  first = false;
-  linesInto(t, l);
-}
-
-// Ruling 88: a figure and what it covers are one statement of fact:
-//   "; sum <name>=<total> (<k> of <n> rows[; not in it: <lines> (<why>), ...])"
-// k is the cells that entered the total; n the matching rows plus every row the range may
-// hold that the scan could not place or read (a wrong field count, a key not compared, a row
-// too long), each of them named here with its reason, as are the column's blank and
-// not-a-number cells.
-void sumInto(Txt& t, const CsvQuery& q, const CsvScanResult& r, size_t i) {
-  const CsvColumnSum& s = r.sums[i];
-  const uint64_t n = r.matched + r.fieldCount.count + r.notCompared.count + r.tooLong.count;
-  t << "; sum " << std::string_view(s.name) << "=" << std::string_view(renderDec3(s.total)) << " ("
-    << uint64_t(s.numbers) << " of " << n << (n == 1 ? " row" : " rows");
-  bool first = true;
-  if (r.fieldCount.count) {
-    item(t, first, r.fieldCount);
-    t << " (field count is not the header's " << uint64_t(r.headerFields) << ")";
-  }
-  if (r.notCompared.count) {
-    item(t, first, r.notCompared);
-    t << " (" << std::string_view(q.column) << " blank or not like " << std::string_view(q.from) << ")";
-  }
-  if (r.tooLong.count) {
-    item(t, first, r.tooLong);
-    t << " (over " << uint64_t(kCsvRecordMax) << " B)";
-  }
-  if (s.blank) {
-    item(t, first, cellsOf(r.blankCells, i, s.blank));
-    t << " (blank)";
-  }
-  if (s.notNumber) {
-    item(t, first, cellsOf(r.notNumberCells, i, s.notNumber));
-    t << " (not a number)";
-  }
-  t << ")";
-}
-
-// The row counts: rows, the range, what is shown, the sums.
+// The row counts: rows, the range, what is shown.
 void countsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
   t << "rows " << uint64_t(r.matched) << " of " << uint64_t(r.records);
   if (!q.column.empty())
     t << " where " << std::string_view(q.column) << " " << std::string_view(q.from) << ".."
       << std::string_view(q.to.empty() ? q.from : q.to);
   const bool partial = r.shownFirst > 1 || r.shownLast < r.matched;
-  if (q.showRows && !r.shownFirst && r.matched) t << "; shown none";
-  else if (q.showRows && partial) t << "; shown " << uint64_t(r.shownFirst) << "-" << uint64_t(r.shownLast);
-  for (size_t i = 0; i < r.sums.size(); ++i) sumInto(t, q, r, i);
+  if (!r.shownFirst && r.matched) t << "; shown none";
+  else if (partial) t << "; shown " << uint64_t(r.shownFirst) << "-" << uint64_t(r.shownLast);
 }
 
 // "; <what> <k> (" when the list has rows; false when it has none.
@@ -748,23 +642,13 @@ bool open(Txt& t, const char* what, size_t count) {
   return count > 0;
 }
 
-// The lists of rows and cells left out of a total, by reason.
+// The rows of the selection that are not matching rows, by reason.
 void listsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
   if (r.commentLines) {
     t << "; " << uint64_t(r.commentLines) << (r.commentLines == 1 ? " comment line" : " comment lines") << " skipped (";
     linesInto(t, r.commentSpans);
     t << ")";
   }
-  const bool summed = !r.sums.empty();   // then blank, not a number, not compared, skipped and too long are in each sum
-  const struct {
-    const char* what;
-    const LineList& l;
-  } cells[] = {{"blank", summed ? LineList() : r.blankCells},
-               {"not a number", summed ? LineList() : r.notNumberCells},
-               {"rounded to 3 decimals", r.roundedCells}};
-  for (const auto& c : cells)
-    if (open(t, c.what, c.l.count)) cellsInto(t, c.l, r), t << ")";
-  if (summed) return;
   if (open(t, "not compared", r.notCompared.count)) {
     linesInto(t, r.notCompared);
     t << ": " << std::string_view(q.column) << " blank or not like " << std::string_view(q.from) << ")";
@@ -775,13 +659,13 @@ void listsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
   }
 }
 
-// Every other fact a total depends on.
+// Every other fact about the selection.
 void factsInto(Txt& t, const CsvScanResult& r) {
   if (r.fieldCountOutside)
     t << "; " << uint64_t(r.fieldCountOutside)
       << (r.fieldCountOutside == 1 ? " other row outside the range has" : " other rows outside the range have")
       << " a wrong field count";
-  if (r.sums.empty() && open(t, "too long", r.tooLong.count)) {
+  if (open(t, "too long", r.tooLong.count)) {
     linesInto(t, r.tooLong);
     t << ": over " << uint64_t(kCsvRecordMax) << " B)";
   }

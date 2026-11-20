@@ -181,7 +181,7 @@ FileToolDecl measuredDecl(const char* tool, size_t cap) {
   const std::string t = tool;
   if (t == "read_file")
     return {"Read a file by path (project/name) with exact paging.",
-            R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"sum":{"type":"array","items":{"type":"string"}}},"required":["path"]})"};
+            R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["path"]})"};
   if (t == "write_file")
     return {"Create or replace a file (project/name).",
             R"({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string","maxLength":)" +
@@ -307,7 +307,8 @@ std::string followPages(Rig& rig, const std::string& file, const std::string& pa
     TEST_ASSERT_TRUE_MESSAGE(p.ok, path.c_str());
     TEST_ASSERT_EQUAL(int(off), int(p.a));
     TEST_ASSERT_EQUAL(int(file.size()), int(p.size));
-    const size_t cap = limit ? std::min(limit, rig.cfg.readCap) : rig.cfg.readCap;
+    // The page floor (ruling 95): a limit under kFileReadFloor reads as kFileReadFloor.
+    const size_t cap = limit ? std::min(std::max(limit, kFileReadFloor), rig.cfg.readCap) : rig.cfg.readCap;
     TEST_ASSERT_TRUE_MESSAGE(p.content.size() <= cap, p.header.c_str());
     out += p.content;
     if (!p.more) break;
@@ -341,7 +342,8 @@ static void test_following_next_offset_rebuilds_every_file_at_every_budget() {
       const std::string name = "f" + std::to_string(i) + ".txt";
       seed(rig.io, "notes", name, corpus[i]);
       for (size_t limit : {size_t(0), size_t(16), cap / 3 + 16, cap + 1000}) {
-        if (corpus[i].size() / std::max<size_t>(std::min(limit ? limit : cap, cap), 1) > 400) continue;   // keep it fast
+        const size_t page = std::min(limit ? std::max(limit, kFileReadFloor) : cap, cap);
+        if (corpus[i].size() / std::max<size_t>(page, 1) > 400) continue;   // keep it fast
         int pages = 0;
         const std::string rebuilt = followPages(rig, corpus[i], "notes/" + name, limit, pages);
         TEST_ASSERT_TRUE_MESSAGE(rebuilt == corpus[i], ("byte for byte: " + name + " cap " + std::to_string(cap)).c_str());
@@ -390,17 +392,49 @@ static void test_read_states_size_lines_and_sha8() {
   const ToolResult b = r2.call("read_file", R"({"path":"notes/big.txt","limit":5000})");
   TEST_ASSERT_TRUE(b.success);
   TEST_ASSERT_TRUE_MESSAGE(b.output.find("bytes 0-100 (limit 100 B here)") != std::string::npos, b.output.c_str());
-  // Past the end, at the end, a tiny limit.
+  // Past the end, at the end.
   TEST_ASSERT_FALSE(rig.call("read_file", R"({"path":"notes/a.md","offset":14})").success);
   const ReadPage end = parseRead(rig.call("read_file", R"({"path":"notes/a.md","offset":13})"));
   TEST_ASSERT_TRUE(end.ok && end.content.empty() && !end.more);
-  TEST_ASSERT_FALSE(rig.call("read_file", R"({"path":"notes/a.md","limit":15})").success);
   // Over the line-count size, lines are not counted.
   FileToolsConfig lc;
   lc.lineCountMax = 10;
   Rig r3(lc);
   seed(r3.io, "notes", "a.md", body);
   TEST_ASSERT_TRUE(r3.call("read_file", R"({"path":"notes/a.md"})").output.find(" lines=? ") != std::string::npos);
+}
+
+// Ruling 95, the page floor: a limit under kFileReadFloor (2,048 B) is raised to it on every
+// read, plain or filtered, and the head says the page used 2048; a limit over the floor is
+// honoured as asked, with no note.
+static void test_a_limit_under_the_floor_returns_a_full_floor_page_and_says_so() {
+  Rig rig;
+  std::string text;
+  for (int i = 0; text.size() < 6000; i++) text += "line " + std::to_string(i) + " of a long note\n";
+  seed(rig.io, "notes", "long.txt", text);
+  for (const char* lim : {"0", "16", "150", "2047"}) {
+    const ToolResult r = rig.call("read_file", std::string(R"({"path":"notes/long.txt","limit":)") + lim + "}");
+    TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
+    const ReadPage p = parseRead(r);
+    TEST_ASSERT_TRUE_MESSAGE(p.content.size() > kFileReadFloor / 2 && p.content.size() <= kFileReadFloor, r.output.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(r.output.find(" (limit 2048 B here)\n") != std::string::npos, r.output.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(p.more && p.next == p.b, r.output.c_str());
+  }
+  // The counter-test: a limit over the floor is honoured, and no note is added.
+  const ToolResult over = rig.call("read_file", R"({"path":"notes/long.txt","limit":3000})");
+  const ReadPage q = parseRead(over);
+  TEST_ASSERT_TRUE_MESSAGE(q.content.size() > 1500 && q.content.size() <= 3000, over.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(q.content.size() > kFileReadFloor, over.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(over.output.find("(limit ") == std::string::npos, over.output.c_str());
+  // A filtered read has the same floor: a limit of 150 shows 2,048 B of matching rows.
+  std::string csv = "date,item,amount\n";
+  for (int i = 0; i < 200; i++) csv += "2026-11-19,item number " + std::to_string(i) + ",1\n";
+  seed(rig.io, "log", "big.csv", csv);
+  const ToolResult f = rig.call("read_file", R"({"path":"log/big.csv","column":"date","from":"2026-11-19","limit":150})");
+  TEST_ASSERT_TRUE_MESSAGE(f.success, f.error.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(f.output.find(" (limit 2048 B here)\n") != std::string::npos, f.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(f.output.find("\nL40 ") != std::string::npos, f.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(f.output.find("\nnext_offset=") != std::string::npos, f.output.c_str());
 }
 
 static void test_read_refuses_by_kind_never_by_guess() {
@@ -494,7 +528,7 @@ struct ToolCase {
   std::vector<const char*> accepted;
 };
 const std::vector<ToolCase> kTools = {
-    {"read_file", R"("path":"notes/a.md")", {"path", "offset", "limit", "column", "from", "to", "sum"}},
+    {"read_file", R"("path":"notes/a.md")", {"path", "offset", "limit", "column", "from", "to"}},
     {"write_file", R"("path":"notes/new.md","content":"hi")", {"path", "content", "if_exists"}},
     {"append_file", R"("path":"notes/a.md","text":"more")", {"path", "text"}},
     {"edit_file", R"("path":"notes/a.md","old":"hello","new":"bye")", {"path", "old", "new", "all", "line"}},
@@ -505,7 +539,7 @@ const std::vector<ToolCase> kTools = {
 static void test_an_unknown_argument_is_an_error_naming_the_accepted_ones() {
   int checked = 0;
   for (const ToolCase& t : kTools) {
-    for (const char* extra : {"foo", "save_to", "key", "mode", "append", "row", "Path", "content_b64", "replace"}) {
+    for (const char* extra : {"foo", "save_to", "key", "mode", "append", "row", "Path", "content_b64", "replace", "sum"}) {
       if (std::find(t.accepted.begin(), t.accepted.end(), std::string(extra)) != t.accepted.end()) continue;
       Rig rig;
       seed(rig.io, "notes", "a.md", "hello world\n");
@@ -1108,40 +1142,42 @@ const char* kLog =
     "2026-11-20,breakfast,oats,1,2\n";
 }  // namespace
 
-static void test_read_file_filters_and_totals_csv_rows() {
+// Ruling 95: read_file totals nothing. A request for a total gets the rows and never a figure;
+// a call that still sends sum is refused as an unknown argument, and reads nothing.
+static void test_read_file_filters_csv_rows_and_totals_nothing() {
   Rig rig;
   seed(rig.io, "log", "2026.csv", kLog);
-  const ToolResult r =
-      rig.call("read_file", R"({"path":"log/2026.csv","column":"date","from":"2026-11-19","sum":["amount","qty"]})");
+  const ToolResult r = rig.call("read_file", R"({"path":"log/2026.csv","column":"date","from":"2026-11-19"})");
   TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
   TEST_ASSERT_EQUAL_STRING(
       ("log/2026.csv size=" + std::to_string(std::strlen(kLog)) + " lines=9 sha8=" +
        blobHash(kLog).substr(0, 8) +
-       "\nL2 date,occasion,note,qty,amount\nL4 2026-11-19,lunch,\"rice, beans\",2,7.25\nL7 2026-11-19,tea,green,1,\n"
-       "L8 2026-11-19,tea,green,1,\n"
-       "rows 3 of 6 where date 2026-11-19..2026-11-19; sum amount=7.25 (1 of 4 rows; not in it: line 5 (field count is "
-       "not the header's 5), lines 7, 8 (blank)); sum qty=4 (3 of 4 rows; not in it: line 5 (field count is not the "
-       "header's 5)); 2 comment lines skipped (lines 1, 6); identical lines 1 group (7=8)")
+       "\nL2 date,occasion,note,qty,amount\nL4 2026-11-19,lunch,\"rice, beans\",2,7.25\n"
+       "L5 2026-11-19,lunch,rice, beans,2,7.25\nL7 2026-11-19,tea,green,1,\nL8 2026-11-19,tea,green,1,\n"
+       "rows 3 of 6 where date 2026-11-19..2026-11-19; 2 comment lines skipped (lines 1, 6); skipped 1 (line 5: field "
+       "count is not the header's 5); identical lines 1 group (7=8)")
           .c_str(),
       r.output.c_str());
+  // Rows, never a figure: no sum clause, no total, no computed value.
+  for (const char* word : {"sum", "total", "14.5", "21.75"})
+    TEST_ASSERT_TRUE_MESSAGE(r.output.find(word) == std::string::npos, r.output.c_str());
   // Every read is 4 KB per hold, one card op each.
   for (const auto& h : rig.io.holds) {
     TEST_ASSERT_TRUE(h.size() <= 1);
     for (const Op& o : h)
       if (o.kind == 'r') TEST_ASSERT_TRUE(o.bytes <= aids::kAidChunk);
   }
+  // A call that still sends sum: refused the way every unknown argument is, nothing read.
+  const ToolResult old = rig.call("read_file", R"({"path":"log/2026.csv","column":"date","from":"2026-11-19","sum":["amount"]})");
+  TEST_ASSERT_FALSE(old.success);
+  TEST_ASSERT_TRUE_MESSAGE(old.error.find("sum") != std::string::npos, old.error.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(old.error.find("column, from, to") != std::string::npos, old.error.c_str());
   // The errors state the fact and read nothing more.
-  TEST_ASSERT_EQUAL_STRING("sum is not a list of column names",
-                           rig.call("read_file", R"({"path":"log/2026.csv","sum":"amount"})").error.c_str());
   TEST_ASSERT_EQUAL_STRING("column needs from", rig.call("read_file", R"({"path":"log/2026.csv","column":"date"})").error.c_str());
   TEST_ASSERT_EQUAL_STRING("column day is not in the header: date,occasion,note,qty,amount",
                            rig.call("read_file", R"({"path":"log/2026.csv","column":"day","from":"x"})").error.c_str());
-  TEST_ASSERT_EQUAL_STRING("no file log/none.csv", rig.call("read_file", R"({"path":"log/none.csv","sum":["a"]})").error.c_str());
-  // offset pages the shown rows (never the sums); next_offset follows the rows.
-  const ToolResult p = rig.call("read_file", R"({"path":"log/2026.csv","sum":["amount"],"limit":16})");
-  TEST_ASSERT_TRUE(p.success);
-  TEST_ASSERT_TRUE_MESSAGE(p.output.find("sum amount=13.75") != std::string::npos, p.output.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(p.output.find("\nnext_offset=1") != std::string::npos, p.output.c_str());
+  TEST_ASSERT_EQUAL_STRING("no file log/none.csv",
+                           rig.call("read_file", R"({"path":"log/none.csv","column":"a","from":"x"})").error.c_str());
 }
 
 static void test_edit_file_line_picks_one_of_identical_rows() {
@@ -1187,9 +1223,9 @@ static void test_append_file_states_the_fence_and_identical_lines() {
   TEST_ASSERT_TRUE(cardOf(rig.io, "log/2026.csv") == "date,amount\n2026-11-19,5\n2026-11-19,6\n2026-11-19,5\n");
 }
 
-static void test_a_refused_allocation_in_a_sum_or_a_line_edit_changes_nothing() {
+static void test_a_refused_allocation_in_a_filtered_read_or_a_line_edit_changes_nothing() {
   for (int tool = 0; tool < 2; ++tool) {
-    const char* call = tool == 0 ? R"({"path":"log/2026.csv","sum":["amount"]})"
+    const char* call = tool == 0 ? R"({"path":"log/2026.csv","column":"date","from":"2026-11-19"})"
                                  : R"({"path":"log/2026.csv","old":"2026-11-19,tea,green,1,","new":"","line":8})";
     const char* name = tool == 0 ? "read_file" : "edit_file";
     long need = 0;
@@ -1252,6 +1288,7 @@ int main() {
   RUN_TEST(test_following_next_offset_rebuilds_every_file_at_every_budget);
   RUN_TEST(test_page_cut_rule);
   RUN_TEST(test_read_states_size_lines_and_sha8);
+  RUN_TEST(test_a_limit_under_the_floor_returns_a_full_floor_page_and_says_so);
   RUN_TEST(test_read_refuses_by_kind_never_by_guess);
   RUN_TEST(test_append_only_appends);
   RUN_TEST(test_append_reports_lines);
@@ -1270,10 +1307,10 @@ int main() {
   RUN_TEST(test_the_hold_model_catches_the_old_whole_file_save);
   RUN_TEST(test_a_card_fault_at_every_step_leaves_old_or_new);
   RUN_TEST(test_registration_states_the_accepted_arguments);
-  RUN_TEST(test_read_file_filters_and_totals_csv_rows);
+  RUN_TEST(test_read_file_filters_csv_rows_and_totals_nothing);
   RUN_TEST(test_edit_file_line_picks_one_of_identical_rows);
   RUN_TEST(test_append_file_states_the_fence_and_identical_lines);
-  RUN_TEST(test_a_refused_allocation_in_a_sum_or_a_line_edit_changes_nothing);
+  RUN_TEST(test_a_refused_allocation_in_a_filtered_read_or_a_line_edit_changes_nothing);
   RUN_TEST(test_shared_fixtures_match_the_golden_transcript);
   return UNITY_END();
 }

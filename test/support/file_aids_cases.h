@@ -5,7 +5,7 @@
 // equal test/golden/file_aids_results.txt byte for byte, so both hosts give the same results.
 //
 // Three equal domains (a food log, an expense log, a training log) in the owner file's shape
-// (ruling 49: comment lines, rows with more fields than the header, empty summed cells, a
+// (ruling 49: comment lines, rows with more fields than the header, empty cells, a
 // stray blank line, a free-text key), with invented content.
 #include <ArduinoJson.h>
 
@@ -58,17 +58,20 @@ inline const char* kTraining =
 
 inline const std::vector<Case>& cases() {
   static const std::vector<Case> c = {
-      {"food day total", "log/food.csv", kFood, "read_file",
-       R"({"path":"log/food.csv","column":"date","from":"2026-11-19","sum":["grams","kcal"]})"},
-      {"expense month total", "log/expense.csv", kExpense, "read_file",
-       R"({"path":"log/expense.csv","column":"date","from":"2026-11","sum":["amount","tip"]})"},
-      {"training week total", "log/training.csv", kTraining, "read_file",
-       R"({"path":"log/training.csv","column":"date","from":"2026-11-13","to":"2026-11-19","sum":["reps","kg"]})"},
-      {"every row, paged", "log/food2.csv", kFood, "read_file",
-       R"({"path":"log/food2.csv","sum":["kcal"],"limit":16,"offset":1})"},
+      {"food day rows", "log/food.csv", kFood, "read_file",
+       R"({"path":"log/food.csv","column":"date","from":"2026-11-19"})"},
+      {"expense month rows", "log/expense.csv", kExpense, "read_file",
+       R"({"path":"log/expense.csv","column":"date","from":"2026-11"})"},
+      {"training week rows", "log/training.csv", kTraining, "read_file",
+       R"({"path":"log/training.csv","column":"date","from":"2026-11-13","to":"2026-11-19"})"},
+      {"a total asked with sum (ruling 95: not an argument)", "log/food7.csv", kFood, "read_file",
+       R"({"path":"log/food7.csv","column":"date","from":"2026-11-19","sum":["kcal"]})"},
+      {"every row, a limit under the page floor", "log/food2.csv", kFood, "read_file",
+       R"({"path":"log/food2.csv","column":"date","from":"2026-11-18","to":"2026-11-20","limit":16,"offset":1})"},
       {"an unknown column", "log/food3.csv", kFood, "read_file",
        R"({"path":"log/food3.csv","column":"day","from":"2026-11-19"})"},
-      {"comment lines only", "log/notes.csv", "# a\n#b\n", "read_file", R"({"path":"log/notes.csv","sum":["kcal"]})"},
+      {"comment lines only", "log/notes.csv", "# a\n#b\n", "read_file",
+       R"({"path":"log/notes.csv","column":"date","from":"2026-11-19"})"},
       {"a torn last line", "log/torn.csv", "date,amount\n2026-11-19,5\n2026-11-19,3", "read_file",
        R"({"path":"log/torn.csv"})"},
       {"identical rows: the match lines", "log/training2.csv", kTraining, "edit_file",

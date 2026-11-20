@@ -83,9 +83,7 @@ static void testOldEngineTools(ndtest::Ctx& c, const std::string& repo) {
         ArduinoJson::JsonDocument d;
         deserializeJson(d, "{\"project\":\"" + project + "\",\"name\":\"" + name + "\"," + k.args + "}");
         const orch::ToolResult r = reg.dispatch(k.tool, d.as<ArduinoJson::JsonObjectConst>(), owner);
-        if (!r.success) return "error " + r.error;
-        const bool tail = std::string(k.args).find("\"tail\"") != std::string::npos;
-        return "ok " + (tail ? aidcases::e1::dayTotalPart(r.output) : r.output);
+        return r.success ? "ok " + r.output : "error " + r.error;
       },
       [&](const std::string& path) { return files.get(path); });
   const std::string want = readAll(repo + "/test/golden/file_aids_e1_results.txt");

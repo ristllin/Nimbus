@@ -80,17 +80,29 @@ struct FoldIO : FoldStoreIO {
 
 const char* kLedgerHeader = "date,meal,items,kcal,protein_g\n";
 
-// The device's day total of files.read {tail, sum} (file_append.h CsvDayTally) over a whole text.
+// The day's rows of a whole text added up here, in the test (ruling 95 removed the device's
+// sum: the head reads the rows and adds them with calc). The rows are read with the device's
+// own CSV reader (file_append.h csvHeaderOf, csvStoredRow, isoDayOf), so a row the device
+// would misread fails the check.
 bool dayTotalOf(const std::string& file, const std::string& col, const std::string& day, double& out) {
-  CsvDayTally tally(col, day);
-  RowSplitter rows([&](const std::string& r, bool complete) {
-    tally.feed(r, complete);
+  std::vector<std::string> header;
+  int at = -1;
+  out = 0;
+  RowSplitter rows([&](const std::string& r, bool) {
+    if (header.empty()) {
+      header = csvHeaderOf(r);
+      for (size_t i = 0; i < header.size(); i++)
+        if (header[i] == col) at = (int)i;
+      return true;
+    }
+    const std::vector<std::string> f = csvStoredRow(r, header);
+    double v = 0;
+    if (at >= 0 && f.size() == header.size() && isoDayOf(f[0]) == day && csvFigure(f[(size_t)at], v)) out += v;
     return true;
   });
   rows.push(file.data(), file.size());
   rows.end();
-  out = tally.total().total;
-  return tally.ok();
+  return at >= 0;
 }
 
 // files.append on a whole text: the plan's bytes on the end (file_append.h planAppend).
@@ -114,7 +126,7 @@ void test_oir_01_routine_fire_request_carries_prompt() {
   TEST_ASSERT_EQUAL_STRING(l.prompt.c_str(), fr.prompt.c_str());
 }
 
-// OIR-05: the device's day total sums every row of the day (1,611), never the model's 1,461.
+// OIR-05: every row of the day is stored and they add up to 1,611, never the model's 1,461.
 void test_oir_05_day_total_receipt() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-10-28,breakfast,oats,120,8\n"
@@ -242,7 +254,7 @@ void test_oir_25_body_budget_roundtrip() {
   TEST_ASSERT_EQUAL_size_t(90519, size);
 }
 
-// OIR-27: the built-in day sum over a five-row day is the hand sum (1,878), never 256.
+// OIR-27: the five rows of the day add up to the hand sum (1,878), never 256.
 void test_oir_27_day_sum_receipt_multirow() {
   const std::string ex = std::string(kLedgerHeader) +
                          "2026-11-04,breakfast,skyr and granola,533,32.5\n"

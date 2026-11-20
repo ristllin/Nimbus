@@ -12,30 +12,23 @@
 // 2b, rulings 47, 49 and 62). The device (files_subsystem.cpp) and nimbusd (posix_files.h)
 // move bytes through AidSource/AidSink and call these, so both give the same reply bytes.
 //
-// files.read keeps its call shape {tail, sum (one column), date} and gains the general one
-// beside it {column, from, to, sum (a list), offset, limit}; both run the one CSV scan
-// (comment lines skipped and counted, a wrong-field-count row placed by its key, every row
-// left out named by line), so the same day gives the same total either way.
+// files.read keeps {tail} and its paged read and has the general selection {column, from, to,
+// offset} on the one CSV scan (comment lines skipped and counted, a wrong-field-count row
+// shown and named by line). It totals nothing: ruling 95 removed sum (and the {tail, sum,
+// date} day total with it).
 namespace nimbus::orch::aids::e1 {
 
-// Which form a files.read call takes: column, from or to -> Table; else sum -> DayTotal (with
-// the tail view above it when tail is given); else tail -> Tail; else the plain paged read.
-enum class ReadForm : uint8_t { Plain, Tail, DayTotal, Table };
+// Which form a files.read call takes: column, from or to -> Table; else tail -> Tail; else the
+// plain paged read.
+enum class ReadForm : uint8_t { Plain, Tail, Table };
 ReadForm readForm(ArduinoJson::JsonObjectConst a);
 
-// files.read {sum, date}: the day's total of the sum columns, as the scan's tail line ("rows m
-// of n where <date column> D..D; sum <col>=<v>; ..."), then "\n". The date column is the
-// header's (csvDateColumnOf over the file's first rows). Errors read "[no day total: ...]\n".
-std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, const std::vector<std::string>& sums,
-                     const std::string& day);
-
-// The general form's arguments: column, from, to (strings), sum (a list of column names, or
-// one string of names separated by commas), offset (matching rows not shown); the page holds
-// kE1PageBytes of rows. False with err (a wrong type, or checkCsvQuery's error).
+// The general form's arguments: column, from, to (strings), offset (matching rows not shown);
+// the page holds kE1PageBytes of rows. False with err (a wrong type, or checkCsvQuery's error).
 inline constexpr size_t kE1PageBytes = 8192 - 64;
 bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::string& err);
 
-// files.read {column, from, to, sum[], offset, limit}: "<path> size=<B> lines=<n>", then the
+// files.read {column, from, to, offset}: "<path> size=<B> lines=<n>", then the
 // shown rows and the tail (renderCsvRead). False with out = the error.
 bool tableRead(AidSource& src, uint64_t size, const std::string& path, const CsvQuery& q, std::string& out);
 
@@ -76,8 +69,5 @@ struct EditCall {
 // (its admit); this checks files.edit's own caps first. reply: "edited p/n: replaced A of B
 // match(es) (now N bytes)" + renderEditLines + the keyed-CSV row report; or the error (false).
 bool edit(AidSource& src, AidSink& sink, uint64_t size, const EditCall& c, RemovedRows& memory, std::string& reply);
-
-// "YYYY-MM-DD" of the running day (day_start.h) for `epoch` at `offsetMin`, "" with no clock.
-std::string runningDate(uint64_t epoch, int32_t offsetMin, uint16_t startMin);
 
 }  // namespace nimbus::orch::aids::e1

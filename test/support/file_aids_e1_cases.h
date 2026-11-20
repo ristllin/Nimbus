@@ -6,8 +6,8 @@
 // transcripts must equal test/golden/file_aids_e1_results.txt byte for byte.
 //
 // The files are test/support/file_aids_cases.h's three equal domains in the owner file's
-// shape (ruling 49). files.read {tail, sum, date} is compared on its day-total line (the tail
-// view above it is RB-REC1's renderTail, unchanged).
+// shape (ruling 49). files.read totals nothing (ruling 95 removed sum): its CSV form keeps the
+// matching rows.
 #include <ArduinoJson.h>
 
 #include <cstdio>
@@ -133,17 +133,11 @@ inline const std::vector<Call>& calls() {
       {"plain read: the next part, as named", "docs/p.txt", nullptr, "files.read", R"("offset":8082)"},
       {"plain read: an offset of the model's own, inside a line", "docs/p.txt", nullptr, "files.read", R"("offset":17001)"},
       {"plain read: past the end", "docs/p.txt", nullptr, "files.read", R"("offset":30000)"},
-      {"old shape: a day's total", "log/f.csv", kFood, "files.read", R"("tail":3,"sum":"kcal","date":"2026-11-19")"},
-      {"old shape with no tail: the day's total alone", "log/f.csv", nullptr, "files.read",
-       R"("sum":"kcal","date":"2026-11-19")"},
-      {"new shape: the same day", "log/f.csv", nullptr, "files.read", R"("column":"date","from":"2026-11-19","sum":"kcal")"},
-      {"new shape: two columns", "log/f.csv", nullptr, "files.read",
-       R"("column":"date","from":"2026-11-19","sum":"grams,kcal")"},
-      {"new shape: a week, paged", "log/t.csv", kTraining, "files.read",
-       R"("column":"date","from":"2026-11-13","to":"2026-11-19","sum":["reps","kg"],"offset":1)"},
-      {"new shape: a month", "log/e.csv", kExpense, "files.read", R"("column":"date","from":"2026-11","sum":"amount,tip")"},
-      {"old shape: the month's day with an empty cell", "log/e.csv", nullptr, "files.read",
-       R"("tail":2,"sum":"amount","date":"2026-11-19")"},
+      {"a day's rows", "log/f.csv", kFood, "files.read", R"("column":"date","from":"2026-11-19")"},
+      {"a week, paged", "log/t.csv", kTraining, "files.read",
+       R"("column":"date","from":"2026-11-13","to":"2026-11-19","offset":1)"},
+      {"a month", "log/e.csv", kExpense, "files.read", R"("column":"date","from":"2026-11")"},
+      {"a day with an empty cell", "log/e.csv", nullptr, "files.read", R"("column":"date","from":"2026-11-19")"},
       {"an unknown column", "log/e.csv", nullptr, "files.read", R"("column":"day","from":"2026-11-19")"},
       {"identical rows: the first by default", "log/t.csv", nullptr, "files.edit",
        R"("find":"2026-11-13,am,squat,5,100","replace":"2026-11-13,am,squat,5,110")"},
@@ -183,8 +177,8 @@ struct MemCard : nimbus::orch::aids::AidSource, nimbus::orch::aids::AidSink {
   void partDiscard() override { part.clear(); }
 };
 
-// One call the way the device's files_subsystem.cpp makes it: files.read's CSV form or its
-// day total, files.edit's precheck, no-op and shared edit. "ok <text>" or "error <text>".
+// One call the way the device's files_subsystem.cpp makes it: files.read's CSV form,
+// files.edit's precheck, no-op and shared edit. "ok <text>" or "error <text>".
 inline std::string deviceCall(MemCard& card, const std::string& path, const Call& c,
                               nimbus::orch::aids::e1::RemovedRows& memory) {
   using namespace nimbus::orch;
@@ -196,11 +190,6 @@ inline std::string deviceCall(MemCard& card, const std::string& path, const Call
     if (aids::e1::readForm(a) == aids::e1::ReadForm::Plain) {   // the part that fits the 8,192 B result
       const uint64_t offset = a["offset"] | 0u;
       return aids::e1::readPart(card, card.file.size(), offset, 8192, out) ? "ok " + out : "error " + out;
-    }
-    if (aids::e1::readForm(a) == aids::e1::ReadForm::DayTotal) {
-      aids::CsvQuery q;   // the sum argument read as the CSV form reads it
-      if (!aids::e1::queryArgs(a, 0, q, out)) return "error " + out;
-      return "ok " + aids::e1::dayTotal(card, card.file.size(), path, q.sum, a["date"] | "");
     }
     aids::CsvQuery q;
     const size_t offset = a["offset"] | 0;
@@ -220,13 +209,6 @@ inline std::string deviceCall(MemCard& card, const std::string& path, const Call
   if (editChangesNothing(call.find, call.replace)) return "error no-op case not in the fixtures";
   if (isCsvName(call.name)) call.header = card.file.substr(0, card.file.find('\n'));
   return aids::e1::edit(card, card, card.file.size(), call, memory, out) ? "ok " + out : "error " + out;
-}
-
-// The day-total line of a files.read {tail, sum} reply: what follows the tail view.
-inline std::string dayTotalPart(const std::string& reply) {
-  if (reply.size() < 2) return reply;
-  const size_t nl = reply.rfind('\n', reply.size() - 2);
-  return nl == std::string::npos ? reply : reply.substr(nl + 1);
 }
 
 // The transcript: for each call, its reply and the file after it.

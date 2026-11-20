@@ -31,10 +31,13 @@ void logAt(std::string& file, const std::string& rows) {
   file += p.bytes;
 }
 
-// The day total line of files.read {tail, sum} at `now` (today), as the device words it.
-std::string todayLine(const std::string& file, const char* col, time_t now, bool tzSet) {
-  const LogDay d = logDayOf(now, tzSet);
-  return csvDayTotalLine(file, col, d.date, d.zone);
+// The rows of `file` dated `day` (ruling 95 removed the device's day total; the head reads
+// these rows and adds them with calc).
+int rowsOf(const std::string& file, const std::string& day) {
+  int n = 0;
+  for (size_t p = file.find('\n'); p != std::string::npos && p + 1 < file.size(); p = file.find('\n', p + 1))
+    if (isoDayOf(file.substr(p + 1, 10)) == day) n++;
+  return n;
 }
 }  // namespace
 
@@ -85,8 +88,8 @@ static void test_no_timezone_is_utc_and_says_so() {
 
 // The 24-25 Oct 2026 shape, replayed through files.append at the device's local day on a food
 // log, an expenses log and a training log with identical expectations: rows across a London
-// midnight land on their local day, the 00:30 row is the 25th's, and each day's total counts its
-// own rows only, whatever the table holds.
+// midnight land on their local day, the 00:30 row is the 25th's, and each day holds its own
+// rows only, whatever the table holds.
 static void test_replay_24_25_oct_across_a_london_midnight() {
   useTz(kLondon);
   const char* tables[][2] = {{"date,time,item,qty,kcal", "kcal"},
@@ -96,30 +99,33 @@ static void test_replay_24_25_oct_across_a_london_midnight() {
     std::string file = std::string(t[0]) + "\n";
     logAt(file, "2026-10-24,08:29,a,1,557\n2026-10-24,12:36,b,1,807\n");
     logAt(file, "2026-10-24,21:57,c,1,990");
-    TEST_ASSERT_EQUAL_STRING(("today's " + std::string(t[1]) + " (2026-10-24, BST): 2354 from 3 rows\n").c_str(),
-                             todayLine(file, t[1], 1792861020, true).c_str());
+    TEST_ASSERT_EQUAL_STRING("2026-10-24", logDayOf(1792861020, true).date.c_str());
+    TEST_ASSERT_EQUAL_STRING("BST", logDayOf(1792861020, true).zone.c_str());
+    TEST_ASSERT_EQUAL_INT(3, rowsOf(file, "2026-10-24"));
     // 00:30 BST on Sunday (23:30 UTC on Saturday): the local day is already the 25th.
     TEST_ASSERT_EQUAL_STRING("2026-10-25", logDayOf(1792884600, true).date.c_str());
     logAt(file, "2026-10-25,00:30,d,1,35\n");
     logAt(file, "2026-10-25,08:19,e,1,910\n");
-    TEST_ASSERT_EQUAL_STRING(("today's " + std::string(t[1]) + " (2026-10-25, GMT): 945 from 2 rows\n").c_str(),
-                             todayLine(file, t[1], 1792916340, true).c_str());
+    TEST_ASSERT_EQUAL_STRING("2026-10-25", logDayOf(1792916340, true).date.c_str());
+    TEST_ASSERT_EQUAL_STRING("GMT", logDayOf(1792916340, true).zone.c_str());
+    TEST_ASSERT_EQUAL_INT(2, rowsOf(file, "2026-10-25"));
     // Yesterday is untouched by today's rows.
-    TEST_ASSERT_EQUAL_STRING(("today's " + std::string(t[1]) + " (2026-10-24, GMT): 2354 from 3 rows\n").c_str(),
-                             csvDayTotalLine(file, t[1], "2026-10-24", "GMT").c_str());
+    TEST_ASSERT_EQUAL_INT(3, rowsOf(file, "2026-10-24"));
   }
 }
 
 // The counter-case: the same 00:30 row on a device with no time zone. Its "today" is still the
-// 24th (UTC), and the total line names the zone, so the mismatch is visible, never a silent
+// 24th (UTC), and the log's day names the zone, so the mismatch is visible, never a silent
 // wrong day. The row itself is appended as sent (no refusal).
 static void test_a_utc_device_names_its_day_visibly() {
   useTz("UTC0");
   std::string file = "date,time,item,qty,amount\n";
   logAt(file, "2026-10-25,00:30,d,1,35\n");
   TEST_ASSERT_EQUAL_STRING("date,time,item,qty,amount\n2026-10-25,00:30,d,1,35\n", file.c_str());
-  const std::string line = todayLine(file, "amount", 1792884600, false);
-  TEST_ASSERT_TRUE_MESSAGE(line.find("(2026-10-24, UTC, no time zone is set): 0") != std::string::npos, line.c_str());
+  const LogDay d = logDayOf(1792884600, false);
+  TEST_ASSERT_EQUAL_STRING("2026-10-24", d.date.c_str());
+  TEST_ASSERT_EQUAL_STRING("UTC, no time zone is set", d.zone.c_str());
+  TEST_ASSERT_EQUAL_INT(0, rowsOf(file, d.date));
 }
 
 int main(int, char**) {

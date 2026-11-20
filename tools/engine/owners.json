@@ -1620,7 +1620,7 @@
         "test/test_file_edit_line/**",
         "test/test_file_store_scale/**",
         "test/test_file_tools/**",
-        "test/test_file_tools_sum/**",
+        "test/test_file_tools_csv/**",
         "test/test_store_full/**",
         "tools/engine/engine2_only.txt",
         "tools/release_gate/gen_model_text_catalog.py"
@@ -1629,7 +1629,7 @@
         "Phase 1: the shared core (file_aids.h, orch_csv_sum.cpp, orch_file_aids.cpp) and its suites; phase 2a: the plain file tools' bindings (orch_file_tools.cpp), the read_file and edit_file declarations in plain/texts.h, nimbusd parity (posix_file_tools.h); part 2b: the old engine's files.read and files.edit (files_subsystem.cpp, posix_files.h, file_aids_e1.h) on the shared aids, rulings 47, 49 and 62.",
         "src/agent/memory_subsystem.cpp and .h: withCardReleased only (the scans hold the card lock per 4 KB read); nimbusd/src/rig.h: files.read's running day only; test_file_edit: its source pins follow the edit into the shared core; nimbusd/tests/test_hosted_files.cpp: RB-REC1's day-total check reads the shared scan's tail."
       ],
-      "plan_text": "orch_file_tools.cpp, orch_file_edit.cpp, orch_csv_sum.cpp (new, about 3.5 KB), plain/texts.h (read_file and edit_file declarations), nimbusd posix_files.h, docs/plain/tables.md, tests test_file_tools_sum, test_file_edit_line, test_file_append_facts"
+      "plan_text": "orch_file_tools.cpp, orch_file_edit.cpp, orch_csv_sum.cpp (new, about 3.5 KB), plain/texts.h (read_file and edit_file declarations), nimbusd posix_files.h, docs/plain/tables.md, tests test_file_tools_csv, test_file_edit_line, test_file_append_facts"
     },
     "RB-E1c": {
       "stage": "S2",

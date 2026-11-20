@@ -100,13 +100,10 @@ class PosixFiles {
 
     addOwnerOnly(reg, "files.read",
             "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
-            "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
-            "reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: "
-            "'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) "
-            "totals them on the device.",
+            "last rows of a log or CSV. CSV: 'column' with 'from'/'to' keeps matching rows.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return readTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},)"
+            R"("name":{"type":"string"},"tail":{"type":"number"},)"
             R"("column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"offset":{"type":"number"}},"required":["project","name"]})");
 
     // The device's files.edit on the shared edit (file_aids_e1.h): the same reply bytes.
@@ -179,7 +176,7 @@ class PosixFiles {
   }
 
   // files.read: the text of a stored file, or the rule's refusal (file_store.h); the CSV
-  // form and the day total through the shared scan (file_aids_e1.h), as on the device.
+  // form through the shared scan (file_aids_e1.h), as on the device.
   nimbus::orch::ToolResult readTool(ArduinoJson::JsonObjectConst a) {
     const std::string p = str(a, "project"), n = str(a, "name");
     std::string body;
@@ -188,7 +185,6 @@ class PosixFiles {
     using nimbus::orch::aids::e1::ReadForm;
     switch (nimbus::orch::aids::e1::readForm(a)) {
       case ReadForm::Table: return tableTool(p, n, body.size(), a);
-      case ReadForm::DayTotal: return tailWithTotal(p, n, body, a);
       case ReadForm::Tail: return nimbus::orch::ToolResult::ok(tailOf(n, body, (size_t)a["tail"].as<double>()));
       default: break;
     }
@@ -256,8 +252,6 @@ class PosixFiles {
     return nimbus::orch::ToolResult::ok(reply);
   }
 
-  // files.read {sum}'s default day (the rig sets the running day; the calendar date alone).
-  void setToday(std::function<std::string()> fn) { today_ = std::move(fn); }
   // The per-result cap the head loop applies this turn (the rig: the head's derived budget, as
   // the device's effectiveToolResultCap); a plain read's part fits inside it with its head.
   void setResultCap(std::function<size_t()> fn) { resultCap_ = std::move(fn); }
@@ -573,15 +567,6 @@ class PosixFiles {
     return nimbus::orch::ToolResult::ok(note);
   }
 
-  // The device's day (the day total of files.read {tail, sum}).
-  static std::string todayStr() {
-    const nimbus::orch::LocalDate d = nimbus::orch::localDateOf(vclock::now());
-    if (!d.valid()) return std::string();
-    char buf[16];
-    std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", d.year, d.month, d.day);
-    return buf;
-  }
-
   // A text document by its name, the device's textDocName rule.
   static bool textDoc(std::string name) {
     for (char& ch : name) ch = char(std::tolower((unsigned char)ch));
@@ -590,25 +575,6 @@ class PosixFiles {
       if (name.size() >= k && name.compare(name.size() - k, k, ext) == 0) return true;
     }
     return false;
-  }
-
-  // files.read {sum, date}: the day's total of the sum columns by the shared scan
-  // (file_aids_e1.h dayTotal), under the tail view when 'tail' is given, as the device gives it.
-  nimbus::orch::ToolResult tailWithTotal(const std::string& p, const std::string& n, const std::string& body,
-                                         ArduinoJson::JsonObjectConst a) {
-    const bool tail = a["tail"].is<float>() && a["tail"].as<double>() >= 1;
-    std::string text = tail ? tailOf(n, body, (size_t)a["tail"].as<double>()) : std::string();
-    nimbus::orch::aids::CsvQuery q;   // the sum argument read as the CSV form reads it
-    std::string err;
-    if (!nimbus::orch::aids::e1::queryArgs(a, 0, q, err)) return nimbus::orch::ToolResult::fail(err);
-    const std::vector<std::string>& sums = q.sum;
-    const std::string date = str(a, "date");
-    if (!date.empty() && nimbus::orch::isoDayOf(date) != date)
-      return nimbus::orch::ToolResult::ok(text + "[no day total: 'date' must be YYYY-MM-DD]\n");
-    std::string day = date.empty() && today_ ? today_() : date;
-    if (day.empty()) day = todayStr();
-    DiskSource src(bytesPath(p, n));
-    return nimbus::orch::ToolResult::ok(text + nimbus::orch::aids::e1::dayTotal(src, body.size(), p + "/" + n, sums, day));
   }
 
   // The stored file as the shared aids read it: pread, 4 KB a call.
@@ -691,7 +657,6 @@ class PosixFiles {
 
   std::string root_;
   nimbus::orch::FileStore store_;
-  std::function<std::string()> today_;
   std::function<size_t()> resultCap_;
   nimbus::orch::aids::e1::RemovedRows removed_;
 };

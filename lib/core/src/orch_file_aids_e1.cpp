@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <string_view>
 
-#include "nimbus/orch/day_start.h"
 #include "nimbus/orch/file_append.h"   // csvHeaderOf, csvStoredRow, csvDateColumnOf
 
 namespace nimbus::orch::aids::e1 {
@@ -14,28 +13,6 @@ namespace {
 
 using detail::join;
 using detail::Num;
-
-// The file's header and its first data rows (comment and empty lines left out), from its
-// first read: what csvDateColumnOf needs to name the date column.
-bool firstRows(AidSource& src, std::vector<std::string>& header, std::vector<std::vector<std::string>>& rows) {
-  std::string head(kAidChunk, '\0');
-  size_t got = 0;
-  if (!src.readAt(0, head.size(), &head[0], got)) return false;
-  head.resize(got);
-  size_t at = 0;
-  while (at < head.size() && rows.size() < 8) {
-    const size_t nl = head.find('\n', at);
-    if (nl == std::string::npos) break;
-    std::string line = head.substr(at, nl - at);
-    at = nl + 1;
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    const size_t first = line.find_first_not_of(" \t");
-    if (first == std::string::npos || line[first] == '#') continue;
-    if (header.empty()) header = csvHeaderOf(line);
-    else if (std::vector<std::string> r = csvStoredRow(line, header); !r.empty()) rows.push_back(std::move(r));
-  }
-  return true;
-}
 
 // The keyed-CSV row report of files.edit (unchanged rules, file_edit.h): rows removed, added
 // or changed, the history rows kept, and the removals a later re-add skipped.
@@ -78,59 +55,10 @@ struct CapSink : AidSink {
 
 }  // namespace
 
-std::string runningDate(uint64_t epoch, int32_t offsetMin, uint16_t startMin) {
-  char d[12];
-  if (!day::clockSet(epoch) || !day::formatDate(day::runningDay(epoch, offsetMin, startMin), d, sizeof d))
-    return std::string();
-  return d;
-}
-
-std::string dayTotal(AidSource& src, uint64_t size, const std::string& path, const std::vector<std::string>& sums,
-                     const std::string& day) {
-  std::vector<std::string> header;
-  std::vector<std::vector<std::string>> rows;
-  if (!firstRows(src, header, rows)) return "[no day total: card read failed]\n";
-  const int dc = csvDateColumnOf(header, rows);
-  if (dc < 0) return "[no day total: the header names no date column]\n";
-  CsvQuery q;
-  q.column = header[size_t(dc)];
-  q.from = day;
-  q.sum = sums;
-  q.showRows = false;
-  if (const std::string bad = checkCsvQuery(q); !bad.empty()) return "[no day total: " + bad + "]\n";
-  const CsvScanOutcome o = scanCsv(src, size, path, q);
-  detail::Txt t;
-  if (o.ok) t << std::string_view(renderCsvTail(q, o.result)) << "\n";
-  else t << "[no day total: " << std::string_view(o.error) << "]\n";
-  return std::move(t.s);
-}
-
 ReadForm readForm(ArduinoJson::JsonObjectConst a) {
   if (!a["column"].isNull() || !a["from"].isNull() || !a["to"].isNull()) return ReadForm::Table;
-  if (!a["sum"].isNull()) return ReadForm::DayTotal;
   const ArduinoJson::JsonVariantConst tail = a["tail"];
   return tail.is<float>() && tail.as<double>() >= 1 ? ReadForm::Tail : ReadForm::Plain;
-}
-
-// sum: a list of column names, or one string of names separated by commas. False with err.
-static bool sumArgs(ArduinoJson::JsonObjectConst a, std::vector<std::string>& sums, std::string& err) {
-  const ArduinoJson::JsonVariantConst v = a["sum"];
-  if (v.is<ArduinoJson::JsonArrayConst>()) {
-    for (ArduinoJson::JsonVariantConst x : v.as<ArduinoJson::JsonArrayConst>()) {
-      if (!x.is<const char*>()) return (err = "sum is not a list of column names").empty();
-      sums.emplace_back(x.as<const char*>());
-    }
-    return true;
-  }
-  if (v.isNull()) return true;
-  if (!v.is<const char*>()) return (err = "sum is not a list of column names").empty();
-  const std::string names = v.as<const char*>();   // one string: names separated by commas
-  for (size_t at = 0; at <= names.size();) {
-    const size_t comma = std::min(names.find(',', at), names.size());
-    sums.push_back(names.substr(at, comma - at));
-    at = comma + 1;
-  }
-  return true;
 }
 
 namespace {
@@ -254,7 +182,6 @@ bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::
     if (!v.isNull() && !v.is<const char*>()) return (err = std::string(keys[i]) + " is not a string").empty();
     if (!v.isNull()) *fields[i] = v.as<const char*>();
   }
-  if (!sumArgs(a, q.sum, err)) return false;
   q.skipRows = offset;
   q.limit = kE1PageBytes;
   err = checkCsvQuery(q);

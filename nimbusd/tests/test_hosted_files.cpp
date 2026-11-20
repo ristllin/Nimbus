@@ -122,16 +122,17 @@ static void testTraversalRefused(ndtest::Ctx& c) {
 // RB-REC1 (owner ruling 41): the hosted files.append is the device's pure append, the same
 // for a food log, an expenses log and a training log: the rows go on the end as sent, nothing
 // stored is rewritten, an older keyed call is one error naming its arguments and writes nothing,
-// a row of another width is said in the reply, and the tail's day total adds up the day's rows.
+// a row of another width is said in the reply, and a day's read shows the day's rows and never
+// a figure (ruling 95 removed sum; a call that still sends it is told it was not read).
 static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
   std::printf("  -- three tables append alike, the same receipt --\n");
   struct Table {
     const char *project, *name, *header, *row, *col, *counted;
   };
   const Table tables[] = {
-      {"food", "food-log.csv", "date,time,item,qty,kcal", ",12:40,soup,1,300", "kcal", "sum kcal=600"},
-      {"money", "expenses.csv", "date,time,item,qty,amount", ",12:40,train,1,24.5", "amount", "sum amount=49"},
-      {"gym", "training.csv", "date,time,item,qty,kg", ",12:40,squat,5,80", "kg", "sum kg=160"},
+      {"food", "food-log.csv", "date,time,item,qty,kcal", ",12:40,soup,1,300", "kcal", "=600"},
+      {"money", "expenses.csv", "date,time,item,qty,amount", ",12:40,train,1,24.5", "amount", "=49"},
+      {"gym", "training.csv", "date,time,item,qty,kg", ",12:40,squat,5,80", "kg", "=160"},
   };
   for (const Table& t : tables) {
     const std::string dir = ndtest::scratchDir(std::string("hf-tbl-") + t.project);
@@ -165,10 +166,14 @@ static void testThreeTablesAppendAlike(ndtest::Ctx& c) {
     const std::string body = files.get(std::string(t.project) + "/" + t.name);
     c.ok(body == std::string(t.header) + "\n" + row + "\n" + row + "\n" + today + ",x\n",
          std::string("byte for byte, the rows as sent: ") + t.name);
-    const auto tail = call("files.read", where + ",\"tail\":5,\"sum\":\"" + t.col + "\"}");
-    c.ok(has(tail.output, "(2 of 3 rows; not in it: line 4 (field count is not the header's 5))") &&
-             has(tail.output, t.counted),
-         std::string("the day total adds up both rows and says the narrow one is unread: ") + tail.output);
+    const auto day = call("files.read", where + ",\"column\":\"date\",\"from\":\"" + today + "\"}");
+    c.ok(day.success && has(day.output, "\nL2 " + row + "\n") && has(day.output, "\nL3 " + row + "\n") &&
+             has(day.output, "line 4: field count is not the header's 5") && !has(day.output, "sum") &&
+             !has(day.output, t.counted),
+         std::string("a day's read shows both rows, names the narrow one, and totals nothing: ") + day.output);
+    const auto old = call("files.read", where + ",\"tail\":5,\"sum\":\"" + t.col + "\"}");
+    c.ok(old.success && has(old.output, "not read: sum") && !has(old.output, t.counted),
+         std::string("a call that still sends sum is told it was not read: ") + old.output);
   }
 }
 

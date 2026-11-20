@@ -80,8 +80,8 @@ struct ToolDecl {
 inline constexpr ToolDecl kTools[] = {
     {"read_file",
      "Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; "
-     "next_offset when more remains. CSV: column with from/to keeps matching rows; sum totals named columns.",
-     R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"sum":{"type":"array","items":{"type":"string"}}},"required":["path"]})",
+     "next_offset when more remains. CSV: column with from/to keeps matching rows.",
+     R"({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["path"]})",
      nullptr},
     {"write_file",
      "Create or replace a file (project/name). if_exists: fail (default) or replace. Returns the stored path, size "

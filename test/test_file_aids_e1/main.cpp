@@ -4,10 +4,10 @@
 //   - the shared fixtures (test/support/file_aids_e1_cases.h), run the way the device's
 //     files_subsystem.cpp runs them, give test/golden/file_aids_e1_results.txt byte for byte;
 //     nimbusd's PosixFiles tools must give the same bytes (test_hosted_file_aids);
-//   - the old call shape {tail, sum, date} and the general one {column, from, sum} give the same
-//     total for every day of owner-shaped files in three equal domains (a food log, an expense
-//     log, a training log: comment lines, rows with more fields than the header, empty summed
-//     cells, a stray blank line, a free-text key);
+//   - files.read totals nothing (ruling 95): a day's read of owner-shaped files in three equal
+//     domains (a food log, an expense log, a training log: comment lines, rows with more fields
+//     than the header, empty cells, a stray blank line, a free-text key) shows every row of that
+//     day, by line, and no other, and never a figure;
 //   - files.edit's default stays the first match; count, all and line pick as documented;
 //     every result names the current lines.
 #include <unity.h>
@@ -37,15 +37,6 @@ std::string readFile(const char* path) {
   for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) out.append(buf, n);
   std::fclose(f);
   return out;
-}
-
-// "sum <col>=<v>" out of a tail line.
-std::string sumOf(const std::string& tail, const std::string& col) {
-  const std::string key = " " + col + "=";
-  const size_t at = tail.find(key, tail.find("; sum"));
-  if (at == std::string::npos) return "?";
-  const size_t from = at + key.size();
-  return tail.substr(from, tail.find_first_of(" ;\n", from) - from);
 }
 
 struct Shape {
@@ -101,7 +92,7 @@ static void test_shared_fixtures_match_the_golden_transcript() {
                                    "GOLDEN_UPDATE=1 pio test -e native -f test_file_aids_e1, then read the diff");
 }
 
-static void test_old_and_new_shape_give_the_same_day_total() {
+static void test_a_days_read_shows_every_row_of_the_day_and_no_figure() {
   size_t days = 0;
   for (const Shape& s : kShapes) {
     Rng g(31 + s.col[0]);
@@ -114,17 +105,24 @@ static void test_old_and_new_shape_give_the_same_day_total() {
     }
     for (int d = 0; d < 28; ++d) {
       const std::string day = dateOf(d);
-      const std::string old = aids::e1::dayTotal(card, card.file.size(), "log/x.csv", {s.col}, day);
       aids::CsvQuery q;
       q.column = "date";
       q.from = day;
-      q.sum = {s.col};
       std::string now;
       TEST_ASSERT_TRUE(aids::e1::tableRead(card, card.file.size(), "log/x.csv", q, now));
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(sumOf(now, s.col).c_str(), sumOf(old, s.col).c_str(), day.c_str());
-      // The rows left out are named the same way in both.
-      const std::string tail = now.substr(now.rfind("\nrows ") + 1);
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(tail.c_str(), (old.substr(0, old.size() - 1)).c_str(), day.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(now.find("sum") == std::string::npos && now.find("total") == std::string::npos, now.c_str());
+      // Every stored line of the day is shown by its line number; no line of another day is.
+      size_t line = 1, at = 0, want = 0, shown = 0;
+      for (size_t nl; (nl = card.file.find('\n', at)) != std::string::npos; at = nl + 1, ++line) {
+        const std::string row = card.file.substr(at, nl - at);
+        const bool ofDay = row.compare(0, day.size(), day) == 0;
+        const bool there = now.find("\nL" + std::to_string(line) + " " + row + "\n") != std::string::npos;
+        if (line > 1 && there) ++shown;
+        if (!ofDay) continue;
+        ++want;
+        TEST_ASSERT_TRUE_MESSAGE(there, (day + " line " + std::to_string(line) + ": " + now).c_str());
+      }
+      TEST_ASSERT_EQUAL_MESSAGE(want, shown, day.c_str());
       ++days;
     }
   }
@@ -156,36 +154,6 @@ static void test_files_edit_keeps_its_default_and_picks_by_line() {
   TEST_ASSERT_EQUAL_STRING("find is not in log/x.txt (38 B)", reply.c_str());
 }
 
-// The day a files.read {sum} with no date totals is the running day (RB-REC5's day_starts): at
-// 00:30 with the day starting at 04:00 it is still yesterday; with 00:00 it is today. An explicit
-// date is taken as given. Three kinds of file, each with rows on both days.
-static void test_the_implicit_day_is_the_running_day() {
-  const uint64_t at0030 = 1795134600;   // 2026-11-20 00:30 UTC
-  TEST_ASSERT_EQUAL_STRING("2026-11-19", aids::e1::runningDate(at0030, 0, 240).c_str());
-  TEST_ASSERT_EQUAL_STRING("2026-11-20", aids::e1::runningDate(at0030, 0, 0).c_str());
-  TEST_ASSERT_EQUAL_STRING("2026-11-19", aids::e1::runningDate(at0030 + 3600, 60, 240).c_str());   // 02:30 at +01:00
-  TEST_ASSERT_EQUAL_STRING("2026-11-20", aids::e1::runningDate(at0030 + 4 * 3600, 0, 240).c_str());   // 04:30
-  TEST_ASSERT_EQUAL_STRING("", aids::e1::runningDate(1000, 0, 240).c_str());                          // no clock
-  const struct {
-    const char* header;
-    const char* col;
-    const char* late;   // logged at 00:20 on the 20th: the 19th's running day
-  } files[] = {{"date,occasion,item,grams,kcal", "kcal", "2026-11-19,late,toast,40,120"},
-               {"date,when,note,amount,tip", "amount", "2026-11-19,late,taxi,18.50,2"},
-               {"date,session,exercise,reps,kg", "kg", "2026-11-19,late,squat,5,100"}};
-  for (const auto& f : files) {
-    MemCard card;
-    card.file = std::string(f.header) + "\n2026-11-19,a,x,1,10\n" + f.late + "\n2026-11-20,b,y,1,7\n";
-    for (uint16_t start : {uint16_t(240), uint16_t(0)}) {
-      const std::string day = aids::e1::runningDate(at0030, 0, start);
-      const std::string line = aids::e1::dayTotal(card, card.file.size(), "log/x.csv", {f.col}, day);
-      const bool yesterday = start == 240;
-      TEST_ASSERT_TRUE_MESSAGE(line.find(yesterday ? "rows 2 of 3 where date 2026-11-19..2026-11-19" : "rows 1 of 3 where date 2026-11-20..2026-11-20") == 0,
-                               line.c_str());
-    }
-  }
-}
-
 // Review cases: a source that ends short of the size it was given is a card fault, never a
 // shorter file; history rows ride after the last row on a line of their own (a file with no
 // last newline gains one) and never count as the find text still in the file.
@@ -194,7 +162,8 @@ static void test_short_reads_and_trailers() {
   card.file = "date,amount\n2026-11-19,7\n";
   std::string out;
   aids::CsvQuery q;
-  q.sum = {"amount"};
+  q.column = "date";
+  q.from = "2026-11-19";
   TEST_ASSERT_FALSE(aids::e1::tableRead(card, card.file.size() + 100, "log/x.csv", q, out));
   TEST_ASSERT_TRUE_MESSAGE(aids::e1::tableRead(card, card.file.size(), "log/x.csv", q, out), out.c_str());
 
@@ -276,9 +245,8 @@ static void test_a_part_starts_on_a_character_and_says_the_end() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_shared_fixtures_match_the_golden_transcript);
-  RUN_TEST(test_old_and_new_shape_give_the_same_day_total);
+  RUN_TEST(test_a_days_read_shows_every_row_of_the_day_and_no_figure);
   RUN_TEST(test_files_edit_keeps_its_default_and_picks_by_line);
-  RUN_TEST(test_the_implicit_day_is_the_running_day);
   RUN_TEST(test_short_reads_and_trailers);
   RUN_TEST(test_a_plain_read_can_be_continued_to_the_whole_file);
   RUN_TEST(test_a_part_starts_on_a_character_and_says_the_end);

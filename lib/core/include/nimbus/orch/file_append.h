@@ -19,9 +19,6 @@ namespace nimbus::orch {
 
 // One append call carries at most this much text (a few rows, never a file).
 inline constexpr size_t kAppendMaxBytes = 4096;
-// The largest stored file a day total streams (about 20,000 rows): the pass holds the
-// store lock, so a bigger file gets no total instead of stalling every other card user.
-inline constexpr size_t kDayTotalMaxBytes = 1024 * 1024;
 // The tail view: default and maximum row counts, and the window read from the
 // end of the file (it fits one tool result with room for the header lines).
 inline constexpr size_t kTailDefaultRows = 20;
@@ -62,7 +59,7 @@ std::string appendArgsError(const std::vector<std::string>& named);
 inline constexpr const char* kAppendOldArgs[] = {"key", "sum", "replace"};
 
 // A fact for the reply of an append to a CSV: how many of the appended rows have a field
-// count other than the header's (such a row counts in no day total). `stored` is the file's
+// count other than the header's (a column filter cannot compare such a row). `stored` is the file's
 // first line ("" for a new file: the appended text's own first line is then the header). ""
 // when every row fits. The rows land either way: this only says so.
 std::string csvWidthNote(const std::string& stored, const std::string& appended);
@@ -88,68 +85,27 @@ std::string renderTail(const TailView& v, const std::string& name, size_t fileBy
                        const std::string& headerRow);
 
 
-// ---- reading a CSV and the day total ---------------------------------------------
+// ---- reading a CSV ---------------------------------------------------------------
 // Fields follow CSV quoting: "chicken, rice" is one field, "" inside quotes is a quote; a
 // comma inside a balanced pair of parentheses is also part of its field ("tea (no sugar,
-// oat milk)", as files written before v5.2.0 hold such rows). A stored row whose field
-// count differs from its header's is never read for a figure: it is counted as unread and
-// the total says so. A row that states a total ("total", "daily total") is never summed. A
-// row starting with '#' is a comment. No key and no item word decides anything here: the
-// device adds up the figures of the rows dated the day, nothing more.
-
-// One day's total of the sum column.
-struct DayTotal {
-  std::string date;   // YYYY-MM-DD
-  double total = 0;
-  int rows = 0;       // rows dated `date` that were counted
-  int unread = 0;     // rows dated `date` whose sum field is not a plain number
-  int totalRows = 0;  // rows dated `date` that state a total ("total", "daily total"): never summed
-};
+// oat milk)", as files written before v5.2.0 hold such rows). A row starting with '#' is a
+// comment. Nothing here totals a column (ruling 95 removed the day total with sum).
 
 // The columns of a CSV's header row (no byte order mark, spaces trimmed).
 std::vector<std::string> csvHeaderOf(const std::string& row);
-// The columns of a stored row as `header` names them, read the way the day total reads
+// The columns of a stored row as `header` names them, read the way the row reader reads
 // it. Empty when its columns cannot be trusted (a broken quote, wider than the header).
 std::vector<std::string> csvStoredRow(const std::string& row, const std::vector<std::string>& header);
-// A cell read as the day total reads a figure: a plain number or a quoted "1,045".
+// A cell read as a figure: a plain number or a quoted "1,045".
 bool csvFigure(const std::string& cell, double& out);
 
 // The date column of a header given some of its rows: by name (date, day, or a
 // name holding date, day or time) when that column holds YYYY-MM-DD dates in
 // those rows, else the first column that does; -1 = none. The one rule the
-// day total and the files.edit row diff share, so the two can never
+// column filter and the files.edit row diff share, so the two can never
 // disagree on which column is the date.
 int csvDateColumnOf(const std::vector<std::string>& header,
                     const std::vector<std::vector<std::string>>& rows);
-
-// One day's total as a stream (the files.read tail view): feed every row of the
-// file in order, header first.
-class CsvDayTally {
- public:
-  CsvDayTally(const std::string& sumCol, const std::string& day);
-  void feed(const std::string& row, bool complete);
-  // The header names a date column and the sum column (else whyNot() says which).
-  bool ok() const;
-  std::string whyNot() const;
-  const DayTotal& total() const { return t_; }
-  int undated() const { return undated_; }   // data rows with no YYYY-MM-DD date
-
- private:
-  void readHeader(const std::string& row);
-  std::string rowDay(const std::vector<std::string>& f);
-  std::string sumCol_, day_;
-  std::vector<std::string> header_, prev_;
-  int dateIdx_ = -1, sumIdx_ = -1;
-  size_t width_ = 0;
-  bool sawHeader_ = false;
-  int undated_ = 0;
-  DayTotal t_;
-};
-
-// One day's total as the reply states it, over a whole text (nimbusd, the lab): the same
-// words as the device's files.read {tail, sum}.
-std::string csvDayTotalLine(const std::string& fileText, const std::string& sumCol, const std::string& today,
-                            const std::string& zone);
 
 // Rows out of bytes read in chunks: push() each chunk, then end(). Each complete
 // row (its line end, and a CR before it, stripped) goes to onRow(row, true); a
@@ -193,17 +149,11 @@ bool csvLastRowCut(const std::string& header, const std::string& prev, const std
 // set) in the process time zone, which the device sets from its time-zone
 // setting, and the zone's name for the reply ("BST", "GMT"). `tzSet` false = no
 // time zone is set and the device runs on UTC: the zone then says so, so the
-// owner can see which day boundary a total uses.
+// owner can see which day boundary the log uses.
 struct LogDay {
   std::string date;
   std::string zone;
 };
 LogDay logDayOf(time_t now, bool tzSet);
-
-// The reply line. `zone` names the day's time zone ("GMT", "UTC, no time zone is set").
-std::string renderDayTotal(const DayTotal& d, const std::string& sumCol, bool isToday,
-                           const std::string& zone);
-// "[N rows have no YYYY-MM-DD date and count toward no day's total]"
-std::string renderUndated(int rows);
 
 }  // namespace nimbus::orch

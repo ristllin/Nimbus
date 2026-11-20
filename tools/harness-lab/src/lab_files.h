@@ -54,14 +54,12 @@ class LabFiles {
   void registerRead(nimbus::orch::ToolRegistry& reg) {
     reg.add("files.read",
             "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
-            "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
-            "reports that column's total for today.",
+            "last rows of a log or CSV.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
               return readTool(a, who);
             },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
-            R"("name":{"type":"string"},"tail":{"type":"number"},)"
-            R"("sum":{"type":"string"}},"required":["project","name"]})");
+            R"("name":{"type":"string"},"tail":{"type":"number"}},"required":["project","name"]})");
   }
 
   void registerAppend(nimbus::orch::ToolRegistry& reg) {
@@ -142,10 +140,7 @@ class LabFiles {
       std::string header;
       const size_t eol = file.find('\n');
       if (eol != std::string::npos) header = file.substr(0, eol);
-      std::string text = nimbus::orch::renderTail(v, n, file.size(), header);
-      const std::string sum = str(a, "sum");
-      if (!sum.empty()) text += nimbus::orch::csvDayTotalLine(it->second, sum, todayStr(), nimbus::orch::logDayOf(std::time(nullptr), true).zone);
-      return nimbus::orch::ToolResult::ok(text);
+      return nimbus::orch::ToolResult::ok(nimbus::orch::renderTail(v, n, file.size(), header));
     }
     return nimbus::orch::ToolResult::ok(it->second);
   }
@@ -189,17 +184,6 @@ class LabFiles {
         std::to_string(files_[path].size()) + " bytes)");
   }
 
-
-  // The lab's "today" (the same device rule the tail view's day total uses).
-  static std::string todayStr() {
-    const time_t now = std::time(nullptr);
-    std::tm loc{};
-    if (!localtime_r(&now, &loc)) return std::string();
-    char buf[16];
-    std::snprintf(buf, sizeof buf, "%04d-%02d-%02d", loc.tm_year + 1900, loc.tm_mon + 1,
-                  loc.tm_mday);
-    return buf;
-  }
 
   void seed(const std::string& path, const std::string& text) { files_[path] = text; }
   // Every stored file (path -> text), for eval drivers that dump the final state.

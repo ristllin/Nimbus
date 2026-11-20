@@ -274,53 +274,21 @@ static void test_a_refused_allocation_plans_nothing_and_keeps_every_byte() {
   }
 }
 
-// ---- the day total (files.read {tail, sum}) ------------------------------------------
-static DayTotal tallyOf(const std::string& file, const std::string& col, const std::string& day) {
-  CsvDayTally tally(col, day);
-  RowSplitter rows([&](const std::string& r, bool c) { tally.feed(r, c); return true; });
-  rows.push(file.data(), file.size());
-  rows.end();
-  return tally.total();
-}
-
-// The same rows give the same total on every table: identical rows count twice (two coffees
-// bought, two meals, two sets), a row of another day never counts, a row that states a total
-// never counts, a row whose field count is not the header's is unread and the total says
-// "not known", and a pasted header is no row. No item word or column name changes a figure.
-static void test_three_tables_total_alike() {
-  for (const Domain& d : kDomains) {
-    const std::string h = std::string(d.header) + "\n";
-    const std::string file = h + d.row + "\n" + d.row + "\n" + "2026-11-18,23:50,x,1,100\n" + h +
-                             "2026-11-19,23:59,total,,999\n";
-    const DayTotal t = tallyOf(file, d.col, "2026-11-19");
-    const double one = tallyOf(h + d.row + "\n", d.col, "2026-11-19").total;
-    TEST_ASSERT_EQUAL_INT_MESSAGE(2, t.rows, d.name);
-    TEST_ASSERT_TRUE_MESSAGE(t.total > 2 * one - 0.001 && t.total < 2 * one + 0.001, d.name);
-    TEST_ASSERT_EQUAL_INT(1, t.totalRows);
-    TEST_ASSERT_EQUAL_INT(0, t.unread);
-    // a bare comma in a stored row: never guessed back into a field
-    const DayTotal w = tallyOf(h + "2026-11-19,12:40,a, b,1,50\n", d.col, "2026-11-19");
-    TEST_ASSERT_EQUAL_INT_MESSAGE(1, w.unread, d.name);
-    TEST_ASSERT_TRUE(renderDayTotal(w, d.col, true, "GMT").find("not known") != std::string::npos);
-    // a narrow row: unread, never a figure from the wrong column
-    TEST_ASSERT_EQUAL_INT(1, tallyOf(h + "2026-11-19,12:40,50\n", d.col, "2026-11-19").unread);
-  }
+// ---- reading stored rows (ruling 95 removed the day total; the reader stays) ----------
+static std::vector<std::string> rowOf(const std::string& header, const std::string& row) {
+  return csvStoredRow(row, csvHeaderOf(header));
 }
 
 // A comma inside a balanced pair of parentheses stays in its field (rows written before
-// v5.2.0 hold them); an unbalanced one splits, and the row is unread, not swallowed.
+// v5.2.0 hold them); an unbalanced one splits, and the row reads wider, not swallowed.
 static void test_a_comma_inside_parentheses_stays_in_its_field() {
-  const std::string h = "date,item,amount\n";
-  DayTotal t = tallyOf(h + "2026-10-29,tea (no sugar, oat milk),3\n2026-10-29,soup (a, b (c, d)),4\n", "amount",
-                       "2026-10-29");
-  TEST_ASSERT_EQUAL(2, t.rows);
-  TEST_ASSERT_EQUAL(0, t.unread);
-  TEST_ASSERT_EQUAL_INT(7, (int)t.total);
-  t = tallyOf(h + "2026-10-29,rice (white, cooked,4\n", "amount", "2026-10-29");
-  TEST_ASSERT_EQUAL(1, t.unread);
+  const std::string h = "date,item,amount";
+  TEST_ASSERT_EQUAL(3, rowOf(h, "2026-10-29,tea (no sugar, oat milk),3").size());
+  TEST_ASSERT_EQUAL_STRING("soup (a, b (c, d))", rowOf(h, "2026-10-29,soup (a, b (c, d)),4")[1].c_str());
+  TEST_ASSERT_NOT_EQUAL(3, rowOf(h, "2026-10-29,rice (white, cooked,4").size());
   std::string opens = "2026-10-29,";
   for (int i = 0; i < 4000; i++) opens += "(,";
-  TEST_ASSERT_EQUAL(1, tallyOf(h + opens + "\n", "amount", "2026-10-29").unread);
+  TEST_ASSERT_NOT_EQUAL(3, rowOf(h, opens).size());
   // One rule for a CSV name across the device, nimbusd and the lab.
   TEST_ASSERT_TRUE(isCsvName("log.csv"));
   TEST_ASSERT_TRUE(isCsvName("Log.CSV"));
@@ -331,37 +299,14 @@ static void test_a_comma_inside_parentheses_stays_in_its_field() {
 }
 
 static void test_quoted_commas_and_thousands() {
-  const std::string file =
-      "date,item,amount\n"
-      "2026-10-28,\"rent, utilities, \"\"misc\"\"\",\"1,045\"\n"
-      "2026-10-28,\"tea, black\",5\n";
-  const DayTotal t = tallyOf(file, "amount", "2026-10-28");
-  TEST_ASSERT_EQUAL_INT(1050, (int)t.total);
-  TEST_ASSERT_EQUAL_INT(2, t.rows);
-  TEST_ASSERT_EQUAL_INT(0, t.unread);
-}
-
-// Days across midnight: the row's own date decides, in every format a row carries it.
-static void test_days_across_midnight() {
-  const std::string file =
-      "timestamp,item,amount\n"
-      "2026-10-31 23:58,toast,120\n"
-      "2026-10-31T23:59:30,tea,5\n"
-      "2026-11-01 00:01,apple,52\n"
-      "2026-11-01T00:30:00,tea,5\n";
-  TEST_ASSERT_EQUAL_INT(125, (int)tallyOf(file, "amount", "2026-10-31").total);
-  TEST_ASSERT_EQUAL_INT(57, (int)tallyOf(file, "amount", "2026-11-01").total);
-  TEST_ASSERT_EQUAL_INT(0, (int)tallyOf(file, "amount", "2026-11-02").total);
-}
-
-// The whole-text line (nimbusd, the lab) is the device's stream, word for word.
-static void test_the_whole_text_line_names_the_day_and_zone() {
-  const std::string file = "date,item,kg\n2026-10-25,squat,80\n2026-10-25,row,60\n2026-10-24,curl,20\n";
-  const std::string line = csvDayTotalLine(file, "kg", "2026-10-25", "GMT");
-  TEST_ASSERT_EQUAL_STRING("today's kg (2026-10-25, GMT): 140 from 2 rows\n", line.c_str());
-  TEST_ASSERT_TRUE(csvDayTotalLine(file, "amount", "2026-10-25", "GMT").find("[no day total: the file has no column 'amount'") == 0);
-  TEST_ASSERT_TRUE(csvDayTotalLine("item,kg\nsquat,80\n", "kg", "2026-10-25", "GMT").find("no date column") != std::string::npos);
-  TEST_ASSERT_TRUE(csvDayTotalLine(file, "kg", "", "GMT").find("clock is not set") != std::string::npos);
+  const std::string h = "date,item,amount";
+  const std::vector<std::string> f = rowOf(h, "2026-10-28,\"rent, utilities, \"\"misc\"\"\"\",\"1,045\"");
+  TEST_ASSERT_EQUAL(3, f.size());
+  TEST_ASSERT_EQUAL_STRING("rent, utilities, \"misc\"", f[1].c_str());
+  double v = 0;
+  TEST_ASSERT_TRUE(csvFigure(f[2], v));
+  TEST_ASSERT_EQUAL_INT(1045, (int)v);
+  TEST_ASSERT_FALSE(csvFigure("1,04", v));
 }
 
 // An older keyed call names what the append does not take, the same words for every table,
@@ -399,11 +344,8 @@ int main(int, char**) {
   RUN_TEST(test_three_tables_append_alike_on_every_path);
   RUN_TEST(test_three_tables_get_the_same_plain_errors);
   RUN_TEST(test_a_refused_allocation_plans_nothing_and_keeps_every_byte);
-  RUN_TEST(test_three_tables_total_alike);
   RUN_TEST(test_a_comma_inside_parentheses_stays_in_its_field);
   RUN_TEST(test_quoted_commas_and_thousands);
-  RUN_TEST(test_days_across_midnight);
-  RUN_TEST(test_the_whole_text_line_names_the_day_and_zone);
   RUN_TEST(test_old_keyed_arguments_are_named_not_merged);
   RUN_TEST(test_a_row_of_another_width_lands_and_is_said);
   return UNITY_END();

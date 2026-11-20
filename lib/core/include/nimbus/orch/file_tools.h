@@ -43,7 +43,9 @@ namespace nimbus::orch {
 inline constexpr size_t kFileReadSlice = 8192;
 inline constexpr size_t kFileWriteSlice = 4096;
 // The smallest read_file limit.
-inline constexpr size_t kFileReadMinLimit = 16;
+// The page floor (ruling 95): a read's limit under this is raised to it, so no read returns
+// a uselessly small page (a 150 B page of a table holds a row or two).
+inline constexpr size_t kFileReadFloor = 2048;
 
 struct FileToolsConfig {
   // write_file content, append_file text, and edit_file old and new, per call: 12,000 B

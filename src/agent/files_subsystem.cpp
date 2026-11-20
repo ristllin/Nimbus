@@ -846,15 +846,6 @@ static void noteScan(const char* what, const std::string& project, const std::st
         (unsigned)(src.longestUs / 1000));
 }
 
-// The day files.read {sum} totals when the call names none: the running day (day_start.h:
-// before the device's "day starts at" time it is still yesterday), else the log's day.
-static std::string runningDay() {
-  const uint32_t now = (uint32_t)time(nullptr);
-  const std::string d = nimbus::orch::aids::e1::runningDate(now, agent::utcOffsetAtUnix(now), store::dayStartMin());
-  return d.empty() ? logDay().date : d;
-}
-
-
 // A CSV's header row for the tail view: the window's first line when the window
 // is the whole file, else the file's own first line (read from its start).
 static std::string csvHeader(File& f, const std::string& window, size_t start) {
@@ -918,20 +909,15 @@ static nimbus::orch::ToolResult readTail(const std::string& project, const std::
 }
 
 // One scan with the card lock per 4 KB read, the tool call's lock given up meanwhile: the
-// day total of sums (sums non-null), the plain read's part at *partAt (RB-TR1), or the CSV
-// form of q, into out. A write that lands during the scan (g_indexGen) makes the answer the
-// error, never a total or a part of a file that moved.
-static const char kChangedUnderRead[] = " changed while it was read; nothing was totalled";
-struct ScanAsk {   // exactly one of q, sums (with day) or partAt
+// plain read's part at *partAt (RB-TR1) or the CSV form of q, into out. A write that lands
+// during the scan (g_indexGen) makes the answer the error, never rows of a file that moved.
+static const char kChangedUnderRead[] = " changed while it was read; nothing was shown";
+struct ScanAsk {   // exactly one of q or partAt
   const nimbus::orch::aids::CsvQuery* q = nullptr;
-  const std::vector<std::string>* sums = nullptr;
-  std::string day;
   const uint64_t* partAt = nullptr;
 };
 static bool scanCsvFile(const std::string& project, const std::string& name, const ScanAsk& ask, std::string& out) {
   const nimbus::orch::aids::CsvQuery* q = ask.q;
-  const std::vector<std::string>* sums = ask.sums;
-  const std::string& day = ask.day;
   const uint64_t* partAt = ask.partAt;
   uint32_t gen = 0;
   size_t size = 0;
@@ -948,32 +934,17 @@ static bool scanCsvFile(const std::string& project, const std::string& name, con
   const size_t cap = partAt ? (size_t)store::effectiveToolResultCap() : 0;
   memory::withCardReleased([&] {
     if (partAt) ok = nimbus::orch::aids::e1::readPart(src, size, *partAt, cap, out);
-    else if (sums) out = nimbus::orch::aids::e1::dayTotal(src, size, where, *sums, day);
     else ok = nimbus::orch::aids::e1::tableRead(src, size, where, *q, out);
   });
-  noteScan(partAt ? "read" : sums ? "day total" : "scan", project, name, src);
+  noteScan(partAt ? "read" : "scan", project, name, src);
   memory::Lock g;
   if (g_indexGen == gen) return ok;
-  out = where + (partAt ? " changed while it was read; nothing was shown" : kChangedUnderRead);
+  out = where + kChangedUnderRead;
   return false;
 }
 
-// files.read {sum, date}: the day's total of the sum columns by the shared scan, 4 KB per hold.
-static std::string dayTotalLine(const std::string& project, const std::string& name,
-                                const std::vector<std::string>& sums, const std::string& dayArg) {
-  if (!dayArg.empty() && nimbus::orch::isoDayOf(dayArg) != dayArg)
-    return "[no day total: 'date' must be YYYY-MM-DD]\n";
-  std::string line;
-  ScanAsk ask;
-  ask.sums = &sums;
-  ask.day = dayArg.empty() ? runningDay() : dayArg;
-  if (!scanCsvFile(project, name, ask, line))
-    line = "[no day total: " + line + "]\n";
-  return line;
-}
-
-// files.read {column, from, to, sum, offset, limit}: CSV rows filtered by a column range and
-// named columns totalled on the device, every row left out named by line (file_aids_e1.h).
+// files.read {column, from, to, offset}: CSV rows selected by a column range (file_aids_e1.h).
+// Nothing is totalled (ruling 95).
 static nimbus::orch::ToolResult readTable(const std::string& project, const std::string& name,
                                           const nimbus::orch::aids::CsvQuery& q) {
   std::string out;
@@ -983,9 +954,7 @@ static nimbus::orch::ToolResult readTable(const std::string& project, const std:
                                                                       : nimbus::orch::ToolResult::fail(out);
 }
 
-// files.read's other forms (file_aids_e1.h readForm): the CSV form; the day total of the sum
-// columns (on the running day unless 'date' names one), under the tail view when 'tail' is
-// given; the tail view alone.
+// files.read's other forms (file_aids_e1.h readForm): the CSV form; the tail view.
 static nimbus::orch::ToolResult readForms(ArduinoJson::JsonObjectConst a, nimbus::orch::aids::e1::ReadForm form,
                                           const std::string& project, const std::string& name, size_t offset) {
   using nimbus::orch::aids::e1::ReadForm;
@@ -995,14 +964,7 @@ static nimbus::orch::ToolResult readForms(ArduinoJson::JsonObjectConst a, nimbus
     if (!nimbus::orch::aids::e1::queryArgs(a, offset, q, err)) return nimbus::orch::ToolResult::fail(err);
     return readTable(project, name, q);
   }
-  const size_t tail = a["tail"].is<float>() && a["tail"].as<double>() >= 1 ? (size_t)a["tail"].as<double>() : 0;
-  nimbus::orch::ToolResult r = tail ? readTail(project, name, tail) : nimbus::orch::ToolResult::ok("");
-  if (form != ReadForm::DayTotal || !r.success) return r;
-  nimbus::orch::aids::CsvQuery q;   // the sum argument read as the CSV form reads it
-  if (!nimbus::orch::aids::e1::queryArgs(a, 0, q, err)) return nimbus::orch::ToolResult::fail(err);
-  // The day total rides the same reply, so a log row never costs a second read.
-  r.output += dayTotalLine(project, name, q.sum, a["date"] | "");
-  return r;
+  return readTail(project, name, (size_t)a["tail"].as<double>());
 }
 
 // The quota refusal of every assistant write that would pass the caller's share.
@@ -1749,10 +1711,8 @@ void registerTools() {
   reg.add("files.read",
           "Read a stored TEXT document's content (md/txt/json/csv/log). Large files "
           "are paged: pass 'offset' to continue from where the previous view ended. "
-          "Pass 'tail' (a row count) to read only the last rows of a log or CSV; with "
-          "'sum' (a numeric column) the tail also reports that column's total for "
-          "today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps "
-          "matching rows; 'sum' (columns, comma-separated) totals them on the device.",
+          "Pass 'tail' (a row count) to read only the last rows of a log or CSV. CSV: "
+          "'column' with 'from'/'to' keeps matching rows.",
           [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
             const std::string project = argStr(a, "project"), name = argStr(a, "name");
             if (project.empty() || name.empty())
@@ -1790,7 +1750,7 @@ void registerTools() {
               return nimbus::orch::ToolResult::fail(out);
             return nimbus::orch::ToolResult::ok(out);
           },
-          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
+          R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
