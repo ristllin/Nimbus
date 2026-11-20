@@ -3,7 +3,7 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43823 ceiling=47989 entries=411 sha8=e31f6c20
 # class device_notes bytes=54793 ceiling=54203 entries=1468 sha8=37e631c4
-# class tool_descriptions bytes=22246 ceiling=23131 entries=99 sha8=29ec726f
+# class tool_descriptions bytes=22131 ceiling=23131 entries=99 sha8=56b90134
 # class tool_results bytes=35738 ceiling=41962 entries=1109 sha8=ba6b2b74
 # class side_prompts bytes=9518 ceiling=9795 entries=170 sha8=248062e9
 # class skills bytes=8251 ceiling=23264 entries=26 sha8=6fae894e
@@ -1928,7 +1928,7 @@ tool_descriptions	nimbusd/src/hosted_skills.h	40c5a43c	263	". Saving a NEW skill
 tool_descriptions	nimbusd/src/hosted_skills.h	d84cfd5c	134	"Delete a skill capsule YOU authored (created_by: agent). Owner-made skills can only be deleted by the owner (web UI or /skill delete)."
 tool_descriptions	nimbusd/src/posix_files.h	379c087c	253	"List stored files. Optional 'project' narrows to one project. Returns one 'project/name (N bytes)' per line. Lane FSCAP: the listing is bounded per call - 'limit' (default 1000, max 2000) entries after 'offset'; the reply says how many there are in all."
 tool_descriptions	nimbusd/src/posix_files.h	7daaccee	79	"Save a text file under a project. Overwrites an existing file of the same name."
-tool_descriptions	nimbusd/src/posix_files.h	3cec3264	438	"Read a stored TEXT document's content (md/txt/json/csv/log). Large files are paged: pass 'offset' to continue from where the previous view ended. Pass 'tail' (a row count) to read only the last rows of a log or CSV; with 'sum' (a numeric column) the tail also reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) totals them on the device."
+tool_descriptions	nimbusd/src/posix_files.h	fe4fceb0	323	"Read a stored file's contents. Pass 'tail' (a row count) to read only the last rows of a log or CSV; with 'sum' (a numeric column) the tail also reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) totals them on the device."
 tool_descriptions	nimbusd/src/posix_files.h	036d890d	304	"Edit a saved TEXT document surgically: find an exact text span and replace it. Replaces the FIRST match by default; 'all': true replaces every match, 'count' the first N; 'line' picks the match that is the whole of that line. An empty 'replace' deletes the span. The reply gives the current line numbers."
 tool_descriptions	nimbusd/src/posix_files.h	44de499a	183	"Add rows to the END of a TEXT document (a log, a CSV); creates it when missing. Up to 4 KB per call. Only the new rows are written: nothing stored is read back, replaced or rewritten."
 tool_descriptions	nimbusd/src/posix_files.h	a8d50306	96	"Delete a stored file for good: the bytes and the index entry both go. Pass 'project' and 'name'."

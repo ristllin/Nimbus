@@ -876,16 +876,6 @@ deleted. Engine 2 has no baseline.
 - prd: section 7 ("Crash safety": an intent with no result is shown as outcome unknown and never re-run; an effect tool does not run if its intent cannot be stored)
 - why: lib/harness/src/plain_resume.cpp: at boot every stored call with no stored result gets one result and is never run again. A call whose intent is stored keeps kOutcomeUnknown (it may have taken effect); a call with no intent (an effect that never started, by the write-ahead rule, or a pure or read call) gets kRestartedBeforeRun, a fact (it changed nothing), no order. Without it the model is told a call that did nothing may have done something, and an owner's request is dropped; planned work, not a fix
 
-### PC-0118: the hosted files.read declares the device's paged read
-- catalog: e1
-- class: tool_descriptions
-- kind: spec
-- bytes: 22131 -> 22246
-- sha8: 56b90134 -> 29ec726f
-- lane: RB-TR1
-- prd: section 4 (the file tools), as amended by ruling 86 item 3 (a read can be continued)
-- why: nimbusd/src/posix_files.h: the hosted files.read takes the device's description word for word ("Read a stored TEXT document's content (md/txt/json/csv/log). Large files are paged: pass 'offset' to continue from where the previous view ended. ..."), because its offset now works as the device's does (before, nimbusd returned the whole file whatever the offset and its loop cut it at 4,096 B). The device's declaration is unchanged. A tool change, not added text: the declaration says what the tool now does.
-
 ### PC-0119: a cut result names its part and how to get the rest (files.read, the tail view, results.get)
 - catalog: e1
 - class: tool_results

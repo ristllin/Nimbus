@@ -99,12 +99,11 @@ class PosixFiles {
             R"("required":["project","name"]})");
 
     addOwnerOnly(reg, "files.read",
-            "Read a stored TEXT document's content (md/txt/json/csv/log). Large files "
-            "are paged: pass 'offset' to continue from where the previous view ended. "
-            "Pass 'tail' (a row count) to read only the last rows of a log or CSV; with "
-            "'sum' (a numeric column) the tail also reports that column's total for "
-            "today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps "
-            "matching rows; 'sum' (columns, comma-separated) totals them on the device.",
+            "Read a stored file's contents. Pass 'tail' (a row count) to read only the "
+            "last rows of a log or CSV; with 'sum' (a numeric column) the tail also "
+            "reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: "
+            "'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) "
+            "totals them on the device.",
             [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) { return readTool(a); },
             R"({"type":"object","properties":{"project":{"type":"string"},)"
             R"("name":{"type":"string"},"tail":{"type":"number"},"sum":{"type":"string"},"date":{"type":"string"},)"

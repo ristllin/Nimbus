@@ -3,5 +3,5 @@
   "ruling": "Ruling 86 item 3",
   "tools_bytes": 0,
   "tools_wire_bytes": 0,
-  "why": "A read can be continued and a result is carried up to the head's budget. The device's declarations are unchanged (files.read already says 'pass offset to continue'; results.get and results.list were already registered), so the device request is unchanged: test_e1_request_ceiling measures tools 25,506 B and tools_wire 32,097 B as before. The hosted daemon's files.read takes the device's description word for word and it registers the device's results.get and results.list (PC-0118); those are not in the device request this gate measures."
+  "why": "A read can be continued and a result is carried up to the head's budget. The device's declarations are unchanged (files.read already says 'pass offset to continue'; results.get and results.list were already registered), so the device request is unchanged: test_e1_request_ceiling measures the same tools and wire bytes as rb-main. The hosted daemon registers the device's results.get and results.list; its files.read declaration is unchanged (PC-0118 was withdrawn after the v5.2.0 table: the longer description moved Haiku's file formatting in tool-chain)."
 }
