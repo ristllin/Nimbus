@@ -101,36 +101,56 @@ def strip_comments(text: str) -> str:
     out: List[str] = []
     i, n = 0, len(text)
     while i < n:
-        c = text[i]
-        two = text[i:i + 2]
-        if two == "//":
-            j = text.find("\n", i)
-            i = n if j < 0 else j
-        elif two == "/*":
-            j = text.find("*/", i + 2)
-            j = n if j < 0 else j + 2
-            out.append(blank(text[i:j]))
-            i = j
-        elif c == "R" and text[i + 1:i + 2] == '"' and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")):
-            m = RAW_OPEN.match(text, i)
-            j = n
-            if m:
-                k = text.find(")" + m.group(1) + '"', m.end())
-                j = n if k < 0 else k + len(m.group(1)) + 2
-            out.append(blank(text[i:j]))
-            i = j
-        elif c in "\"'" and not (c == "'" and i > 0 and text[i - 1].isalnum()):
-            j = i + 1
-            while j < n and text[j] != c and text[j] != "\n":
-                j += 2 if text[j] == "\\" else 1
-            j = min(j + 1, n)
-            # An include's own "file.h" is kept: the directive is read from this output.
-            out.append(text[i:j] if text[i:j].endswith(c) and "\n" not in text[i:j] and is_include_tail(out) else blank(text[i:j]))
-            i = j
-        else:
-            out.append(c)
+        j, keep = token_end(text, i, out)
+        if j is None:
+            out.append(text[i])
             i += 1
+            continue
+        out.append(text[i:j] if keep else blank(text[i:j]))
+        i = j
     return "".join(out)
+
+
+def token_end(text: str, i: int, out: List[str]) -> Tuple[Optional[int], bool]:
+    """(end, keep) of a comment or literal starting at i; (None, True) for plain code."""
+    two = text[i : i + 2]
+    if two == "//":
+        j = text.find("\n", i)
+        return (len(text) if j < 0 else j), False
+    if two == "/*":
+        j = text.find("*/", i + 2)
+        return (len(text) if j < 0 else j + 2), False
+    if is_raw_open(text, i):
+        return raw_end(text, i), False
+    c = text[i]
+    if c == '"' or (c == "'" and not (i > 0 and text[i - 1].isalnum())):
+        j = quoted_end(text, i)
+        # An include's own "file.h" is kept: the directive is read from this output.
+        chunk = text[i:j]
+        return j, chunk.endswith(c) and "\n" not in chunk and is_include_tail(out)
+    return None, True
+
+
+def is_raw_open(text: str, i: int) -> bool:
+    if text[i : i + 2] != 'R"':
+        return False
+    return i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")
+
+
+def raw_end(text: str, i: int) -> int:
+    m = RAW_OPEN.match(text, i)
+    if not m:
+        return len(text)
+    k = text.find(")" + m.group(1) + '"', m.end())
+    return len(text) if k < 0 else k + len(m.group(1)) + 2
+
+
+def quoted_end(text: str, i: int) -> int:
+    """One past the closing quote of the literal opening at i (or the end of its line)."""
+    c, j, n = text[i], i + 1, len(text)
+    while j < n and text[j] != c and text[j] != "\n":
+        j += 2 if text[j] == "\\" else 1
+    return min(j + 1, n)
 
 
 def blank(chunk: str) -> str:
@@ -143,7 +163,7 @@ def is_include_tail(out: List[str]) -> bool:
     for piece in reversed(out):
         k = piece.rfind("\n")
         if k >= 0:
-            tail.append(piece[k + 1:])
+            tail.append(piece[k + 1 :])
             break
         tail.append(piece)
     return bool(INCLUDE_LINE.match("".join(reversed(tail))))
@@ -306,7 +326,11 @@ def check(root: str, scan: Scan, decisions: Dict[str, str], problems: List[str])
     e1_only = read_engine1_only(root) | {p for p, d in decisions.items() if d == "engine1_only"}
     for rel in sorted(e1_only):
         stem, ext = os.path.splitext(rel)
-        if ext in (".cpp", ".cc", ".c") and os.path.isfile(os.path.join(root, stem + ".h")) and stem + ".h" not in e1_only:
+        if (
+            ext in (".cpp", ".cc", ".c")
+            and os.path.isfile(os.path.join(root, stem + ".h"))
+            and stem + ".h" not in e1_only
+        ):
             problems.append(f"{rel} is engine1_only but its header {stem}.h is not")
     for rel, hit in sorted(scan.listing().items()):
         if rel in e1_only:
