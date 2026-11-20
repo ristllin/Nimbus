@@ -51,7 +51,13 @@ class ResultStore {
   // caller may not read it - an unreadable tag is indistinguishable from a
   // missing one, so the ring cannot be probed for other tenants' tags.
   bool get(const std::string& tag, size_t offset, size_t maxBytes, std::string& out,
-           size_t& total, const Principal& who) const;
+           size_t& total, const Principal& who) const {
+    return getAt(tag, offset, maxBytes, out, total, who);
+  }
+  // The same, offset in and out: an offset inside a character moves on to the next one, and
+  // offset says where the view really starts (RB-TR1: the page's head names it).
+  bool getAt(const std::string& tag, size_t& offset, size_t maxBytes, std::string& out,
+             size_t& total, const Principal& who) const;
   // One line per VISIBLE slot (same boundary as get), newest last.
   std::string list(const Principal& who) const;
   size_t count() const { return e_.size(); }
@@ -66,7 +72,9 @@ class ResultStore {
 // Device wiring (SessionHandlers pattern): the tools route through these so the
 // device can take the memory Lock around the shared instance.
 struct ResultHandlers {
-  std::function<bool(const std::string& tag, size_t offset, size_t maxBytes,
+  // offset in, and out the start the view really has (an offset inside a character moves on
+  // to the next one; RB-TR1: the page's head names that start).
+  std::function<bool(const std::string& tag, size_t& offset, size_t maxBytes,
                      std::string& out, size_t& total, const Principal& who)> get;
   std::function<std::string(const Principal& who)> list;
   // The effective per-tool-result clamp for THIS turn (device: the derived

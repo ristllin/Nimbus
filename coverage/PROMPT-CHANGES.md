@@ -890,8 +890,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: tool_results
 - kind: spec
-- bytes: 35337 -> 35633
-- sha8: 11be73d9 -> 626c8a09
+- bytes: 35337 -> 35738
+- sha8: 11be73d9 -> ba6b2b74
 - lane: RB-TR1
 - prd: section 4 (the file tools), as amended by ruling 86 item 3 and ruling 82 (quality first)
-- why: lib/core/src/orch_file_aids_e1.cpp readPart: files.read's plain form on both engines heads its part "bytes a-b of n, lines x-y of m; next part: \"offset\":b" or "; end of file" (was the device's "bytes a-b of n" with no next argument, and nimbusd's whole file); lib/core/src/orch_file_append.cpp renderTail: "earlier rows not shown: bytes 0-<n>, read them with \"offset\":0"; lib/core/src/orch_result_store.cpp: results.get's head names its next part or "end of result", and an entry over 64 KB ends "[the result was N B; only these first bytes are kept]"; src/agent/files_subsystem.cpp: the plain read's "changed while it was read; nothing was shown", and readPart's own card fault "the card read failed; nothing was shown" (a fact, no order). The device's 8192 - 64 page and its 256 KB whole-file read go (the part streams, any size). Planned work, not a fix.
+- why: lib/core/src/orch_file_aids_e1.cpp readPart: files.read's plain form on both engines heads its part "bytes a-b of n, lines x-y of m; next part: \"offset\":b" or "; end of file" (was the device's "bytes a-b of n" with no next argument, and nimbusd's whole file); lib/core/src/orch_file_append.cpp renderTail: "earlier rows not shown: bytes 0-<n>, read them with \"offset\":0"; lib/core/src/orch_result_store.cpp: results.get's head names its next part or "end of result", and an entry over 64 KB ends "[the result was N B; only these first bytes are kept]"; src/agent/files_subsystem.cpp: the plain read's "changed while it was read; nothing was shown", and readPart's own card fault "the card read failed; nothing was shown" (a fact, no order). An offset inside a character starts the part (files.read) or page (results.get) at the next character, and the head says so: ("offset":X was inside a character). The device's 8192 - 64 page and its 256 KB whole-file read go (the part streams, any size). Planned work, not a fix.

@@ -64,7 +64,7 @@ std::string ResultStore::put(const char* kind, const std::string& name,
   return e_.back().tag;
 }
 
-bool ResultStore::get(const std::string& tag, size_t offset, size_t maxBytes,
+bool ResultStore::getAt(const std::string& tag, size_t& offset, size_t maxBytes,
                       std::string& out, size_t& total, const Principal& who) const {
   for (const auto& en : e_) {
     if (en.tag != tag) continue;
@@ -107,13 +107,15 @@ void registerResultTools(ToolRegistry& reg, const ResultHandlers& h) {
             if (!h.get) return ToolResult::fail("results not supported on this device");
             std::string tag = a["tag"].is<const char*>() ? a["tag"].as<const char*>() : "";
             if (tag.empty()) return ToolResult::fail("missing 'tag'");
-            size_t offset = a["offset"].is<float>() ? (size_t)a["offset"].as<double>() : 0;
+            const double asked = a["offset"].is<float>() ? a["offset"].as<double>() : 0;
+            size_t offset = asked > 0 ? (asked < 4294967295.0 ? (size_t)asked : (size_t)-1) : 0;   // never wraps
+            const size_t askedAt = offset;
             // ⚠ The page must fit inside the loop's per-result clamp TOGETHER with
             // the header, or the loop clips the tail off the payload while the
             // header still claims the full window - the model then pages past
             // bytes it never saw (prism 2026-08-05, CRITICAL). Reserve the header.
             const size_t cap = h.viewCap ? h.viewCap() : 2048;
-            const size_t kHeaderMax = 64;
+            const size_t kHeaderMax = 128;   // the head, with its next part and an offset's move
             const size_t view = cap > kHeaderMax * 2 ? cap - kHeaderMax : cap / 2;
             std::string out;
             size_t total = 0;
@@ -123,8 +125,12 @@ void registerResultTools(ToolRegistry& reg, const ResultHandlers& h) {
                                       "memory.episodic with text '" + tag + "'");
             // RB-TR1: the head names the next part's exact argument, or the end.
             const size_t to = std::min(offset, total) + out.size();
+            // An offset inside a character starts at the next one, and the head says so.
+            const std::string moved = offset != askedAt && askedAt < total
+                                          ? " (\"offset\":" + std::to_string((unsigned)askedAt) + " was inside a character)"
+                                          : std::string();
             std::string head = "bytes " + std::to_string((unsigned)std::min(offset, total)) + "-" +
-                               std::to_string((unsigned)to) + " of " + std::to_string((unsigned)total) +
+                               std::to_string((unsigned)to) + " of " + std::to_string((unsigned)total) + moved +
                                (to < total ? "; next part: \"offset\":" + std::to_string((unsigned)to)
                                            : std::string("; end of result")) +
                                "\n";

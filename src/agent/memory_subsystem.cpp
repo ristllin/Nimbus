@@ -1214,7 +1214,7 @@ void begin() {
   // the ring's own mutex (readers include this AsyncTCP /mcp task).
   {
     nimbus::orch::ResultHandlers rh;
-    rh.get = [](const std::string& tag, size_t off, size_t maxB, std::string& out, size_t& total,
+    rh.get = [](const std::string& tag, size_t& off, size_t maxB, std::string& out, size_t& total,
                 const nimbus::orch::Principal& who) {
       return orchestrator::resultsGet(tag, off, maxB, out, total, who);
     };

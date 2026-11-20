@@ -207,7 +207,7 @@ void stageTerminate(const std::string& id);
 std::string resultsPut(const char* kind, const std::string& name, const std::string& fullText,
                        const std::string& jobTag = std::string(),
                        const std::string& ns = std::string());
-bool resultsGet(const std::string& tag, size_t offset, size_t maxBytes, std::string& out,
+bool resultsGet(const std::string& tag, size_t& offset, size_t maxBytes, std::string& out,
                 size_t& total, const nimbus::orch::Principal& who);
 std::string resultsList(const nimbus::orch::Principal& who);
 

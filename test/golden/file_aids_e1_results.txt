@@ -223,7 +223,7 @@ Section 155. compost shed café compost naïve gate shed water shed price €4 p
 Section 156. water key café price €4 naïve compost café key water key garden shed café café naïve garden gate.
 
 == plain read: the next part, as named
-ok bytes 8082-16175 of 20065, lines 64-125 of 156; next part: "offset":16175
+ok bytes 8082-16010 of 20065, lines 64-124 of 156; next part: "offset":16010
 Section 64. rota gate compost garden naïve shed shed key compost naïve naïve gate key rota rota.
 Section 65. price €4 café rota naïve naïve café price €4 gate price €4 shed water water rota naïve gate water.
 Section 66. naïve water compost naïve price €4 garden key gate compost café price €4 café key gate rota compost café.
@@ -285,7 +285,6 @@ Section 121. water café shed water compost key garden garden café compost naï
 Section 122. naïve naïve garden water shed water gate price €4 water price €4 garden naïve garden garden café price €4 price €4 price €4 compost.
 Section 123. water rota key rota price €4 café compost shed price €4 naïve garden shed compost shed gate compost garden compost compost shed.
 Section 124. rota price €4 café key garden café garden price €4 price €4 water shed compost water key rota price €4 café water shed naïve water.
-Section 125. gate rota water naïve compost café price €4 compost gate shed café garden café price €4 café shed price €4 compost gate compost garden rota.
 
 -- docs/p.txt
 Section 1. price €4 price €4 water compost café rota shed price €4 garden gate compost shed café compost café.

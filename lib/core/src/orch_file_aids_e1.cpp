@@ -144,11 +144,14 @@ size_t digits(uint64_t v) {
   return d;
 }
 
-// The longest head line readPart writes for a file of `size` bytes: seven numbers (a, b, n,
-// x, y, m and the next offset) of at most digits(size + 1) each.
-size_t headBound(uint64_t size) {
+// The longest head line readPart writes for a file of `size` bytes: seven numbers (a, b, n, x,
+// y, m and the next offset) of at most digits(size + 1) each, and with an offset given, the note
+// that it was inside a character (one number more).
+size_t headBound(uint64_t size, bool offsetGiven) {
   static constexpr char kLongest[] = "bytes - of , lines - of ; next part: \"offset\":\n";
-  return sizeof(kLongest) - 1 + 7 * digits(size + 1);
+  static constexpr char kMoved[] = " (\"offset\": was inside a character)";
+  const size_t d = digits(size + 1);
+  return sizeof(kLongest) - 1 + 7 * d + (offsetGiven ? sizeof(kMoved) - 1 + d : 0);
 }
 
 bool isContinuation(char c) { return (static_cast<unsigned char>(c) & 0xC0) == 0x80; }
@@ -192,7 +195,7 @@ uint64_t lineEnds(std::string_view s) {
 bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::string& out) {
   if (cap < kPartMinCap) cap = kPartMinCap;
   const uint64_t from0 = std::min(offset, size);
-  const size_t room = cap - headBound(size);
+  const size_t room = cap - headBound(size, offset > 0);
   PartScan p;
   // Four bytes more: an offset inside a character moves past its continuation bytes, and the
   // byte after the part tells whether the cut splits a character.
@@ -219,6 +222,7 @@ bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::s
   const uint64_t to = from + len;
   detail::Txt t;
   t << "bytes " << from << "-" << to << " of " << size;
+  if (skip) t << " (\"offset\":" << from0 << " was inside a character)";   // the part starts at the next one
   if (len) {
     const uint64_t first = 1 + p.newlinesBefore;
     t << ", lines " << first << "-" << first + lineEnds(part.substr(0, len - 1)) << " of "

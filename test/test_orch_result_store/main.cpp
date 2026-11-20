@@ -95,8 +95,8 @@ static void test_registered_tools() {
   s.put("tool", "memory_search", "stored text here", 7);
   ToolRegistry reg;
   ResultHandlers h;
-  h.get = [&s](const std::string& tag, size_t off, size_t maxB, std::string& out,
-               size_t& total, const Principal& w) { return s.get(tag, off, maxB, out, total, w); };
+  h.get = [&s](const std::string& tag, size_t& off, size_t maxB, std::string& out,
+               size_t& total, const Principal& w) { return s.getAt(tag, off, maxB, out, total, w); };
   h.list = [&s](const Principal& w) { return s.list(w); };
   registerResultTools(reg, h);
 
@@ -184,8 +184,8 @@ static void test_page_plus_header_fits_the_clamp() {
   s.put("tool", "web_search", std::string(60000, 'z'), 0, "", tenant("c1").ns);
   ToolRegistry reg;
   ResultHandlers h;
-  h.get = [&s](const std::string& tag, size_t off, size_t maxB, std::string& out,
-               size_t& total, const Principal& w) { return s.get(tag, off, maxB, out, total, w); };
+  h.get = [&s](const std::string& tag, size_t& off, size_t maxB, std::string& out,
+               size_t& total, const Principal& w) { return s.getAt(tag, off, maxB, out, total, w); };
   h.list = [&s](const Principal& w) { return s.list(w); };
   const size_t clamp = 8192;                 // the derived per-result cap
   h.viewCap = [clamp] { return clamp; };
@@ -250,8 +250,8 @@ static void test_a_stored_result_is_read_to_its_end() {
       s.put("tool", "t", text, 0);
       ToolRegistry reg;
       ResultHandlers h;
-      h.get = [&s](const std::string& tag, size_t off, size_t maxB, std::string& out, size_t& total,
-                   const Principal& w) { return s.get(tag, off, maxB, out, total, w); };
+      h.get = [&s](const std::string& tag, size_t& off, size_t maxB, std::string& out, size_t& total,
+                   const Principal& w) { return s.getAt(tag, off, maxB, out, total, w); };
       h.viewCap = [cap] { return cap; };
       registerResultTools(reg, h);
       std::string joined;
@@ -275,10 +275,34 @@ static void test_a_stored_result_is_read_to_its_end() {
   TEST_ASSERT_FALSE(walk(old, "r1", joined).empty());
 }
 
+// RB-TR1: an offset inside a character starts the page at the next character, and the head
+// names that start and says the offset moved; following its next part loses and repeats nothing.
+static void test_an_offset_inside_a_character_is_snapped_and_said() {
+  ResultStore s;
+  std::string txt;
+  for (int i = 0; i < 100; i++) txt += "\xE2\x82\xAC";   // 3-byte chars
+  s.put("tool", "t", txt, 0);
+  ToolRegistry reg;
+  ResultHandlers h;
+  h.get = [&s](const std::string& tag, size_t& off, size_t maxB, std::string& out, size_t& total,
+               const Principal& w) { return s.getAt(tag, off, maxB, out, total, w); };
+  h.viewCap = [] { return size_t(2048); };
+  registerResultTools(reg, h);
+  ArduinoJson::JsonDocument d;
+  d["tag"] = "r1";
+  d["offset"] = 1;
+  auto r = reg.dispatch("results.get", d.as<ArduinoJson::JsonObjectConst>(), admin());
+  TEST_ASSERT_TRUE(r.success);
+  TEST_ASSERT_TRUE_MESSAGE(r.output.find("bytes 3-300 of 300 (\"offset\":1 was inside a character); end of result\n") == 0,
+                           r.output.substr(0, 120).c_str());
+  TEST_ASSERT_EQUAL_UINT32(297, (uint32_t)(r.output.size() - (r.output.find('\n') + 1)));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_put_get_roundtrip);
   RUN_TEST(test_a_stored_result_is_read_to_its_end);
+  RUN_TEST(test_an_offset_inside_a_character_is_snapped_and_said);
   RUN_TEST(test_get_pagination);
   RUN_TEST(test_slot_ring_eviction);
   RUN_TEST(test_byte_ring_eviction);

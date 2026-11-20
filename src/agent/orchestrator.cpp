@@ -3255,10 +3255,10 @@ std::string resultsPut(const char* kind, const std::string& name, const std::str
   return g_results.put(kind, name, fullText, millis(), jobTag, ns);
 }
 
-bool resultsGet(const std::string& tag, size_t offset, size_t maxBytes, std::string& out,
+bool resultsGet(const std::string& tag, size_t& offset, size_t maxBytes, std::string& out,
                 size_t& total, const nimbus::orch::Principal& who) {
   MuxHold hold(g_resultsMux);
-  return g_results.get(tag, offset, maxBytes, out, total, who);
+  return g_results.getAt(tag, offset, maxBytes, out, total, who);
 }
 
 std::string resultsList(const nimbus::orch::Principal& who) {

@@ -1972,10 +1972,10 @@ class NimbusdRig {
     // clamps is kept whole in the device's recent-results ring, so its cut names results.get.
     files_->setResultCap([this] { return toolResultCapNow(); });
     orch::ResultHandlers rh;
-    rh.get = [this](const std::string& tag, size_t off, size_t maxBytes, std::string& out, size_t& total,
+    rh.get = [this](const std::string& tag, size_t& off, size_t maxBytes, std::string& out, size_t& total,
                     const orch::Principal& who) {
       std::lock_guard<std::mutex> l(resultsMu_);
-      return results_.get(tag, off, maxBytes, out, total, who);
+      return results_.getAt(tag, off, maxBytes, out, total, who);
     };
     rh.list = [this](const orch::Principal& who) {
       std::lock_guard<std::mutex> l(resultsMu_);

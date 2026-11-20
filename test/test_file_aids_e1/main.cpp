@@ -243,7 +243,8 @@ static void test_a_part_starts_on_a_character_and_says_the_end() {
   card.file = "ab\xe2\x82\xac" "cd\n";
   std::string out;
   TEST_ASSERT_TRUE(aids::e1::readPart(card, card.file.size(), 3, 8192, out));
-  TEST_ASSERT_EQUAL_STRING("bytes 5-8 of 8, lines 1-1 of 1; end of file\ncd\n", out.c_str());
+  TEST_ASSERT_EQUAL_STRING("bytes 5-8 of 8 (\"offset\":3 was inside a character), lines 1-1 of 1; end of file\ncd\n",
+                           out.c_str());
   TEST_ASSERT_TRUE(aids::e1::readPart(card, card.file.size(), 99, 8192, out));
   TEST_ASSERT_EQUAL_STRING("bytes 8-8 of 8; end of file\n", out.c_str());
   // A run of bytes that are no character: every part still moves on, and the read ends.
