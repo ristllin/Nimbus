@@ -123,12 +123,13 @@ void test_a_long_reply_is_split_without_loss() {
   TEST_ASSERT_TRUE_MESSAGE(visible(joined) == visible(longText), "a split lost or added bytes");
 }
 
-// A guard trip: the last round's text, then at most one status line, as its own message.
+// A guard trip: the last round's text, then at most one status line, as its own message. An owner
+// turn that keeps progressing reaches the hard round guard (64; lane RB-X3, ruling 84 item 2).
 void test_a_status_line_is_separate_and_alone() {
   TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
   txb::Battery b;
   b.world.files["notes/a.md"] = "alpha";
-  for (int i = 0; i < plain::kDefaultRounds; ++i)
+  for (int i = 0; i < plain::kHardRounds; ++i)
     b.model.push(sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(i) + "}"));
   b.model.push(sp::say("I read it sixteen times; it says alpha."));
   plain::TurnOutcome out;
@@ -545,13 +546,13 @@ void test_a_request_is_rebuilt_byte_for_byte_from_its_reference() {
   b.model.push(sp::say("It says alpha, and the big one is read."));
   TXB_OK(b.owner("read both", out));
   b.advance(60);
-  for (int i = 0; i < plain::kDefaultRounds; ++i)
+  for (int i = 0; i < plain::kHardRounds; ++i)   // an owner turn that progresses: the hard round guard (RB-X3)
     b.model.push(sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(i) + "}"));
   b.model.push(sp::say("I read it sixteen times."));
   TXB_OK(b.owner("keep reading", out));
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::LimitReached);
   const size_t n = rebuildEveryRequest(b);
-  TEST_ASSERT_EQUAL(1 + 3 + plain::kDefaultRounds + 1, (int)n);
+  TEST_ASSERT_EQUAL(1 + 3 + plain::kHardRounds + 1, (int)n);
   // The guard's last round carried tool choice none, and its reference says so.
   std::vector<tx::Item> items;
   TXB_OK(b.stored(items));

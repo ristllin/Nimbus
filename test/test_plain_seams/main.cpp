@@ -339,7 +339,7 @@ static void test_slug_tables_are_whole() {
                           tx::Err::TooLarge,  tx::Err::Io,            tx::Err::Busy};
   assertUniqueSlugs(errs, tx::errSlug, "err");
   const plain::GuardTrip trips[] = {plain::GuardTrip::None, plain::GuardTrip::Rounds, plain::GuardTrip::Time,
-                                    plain::GuardTrip::Spend, plain::GuardTrip::Size};
+                                    plain::GuardTrip::Spend, plain::GuardTrip::Size, plain::GuardTrip::Loop};
   assertUniqueSlugs(trips, plain::guardTripSlug, "guard trip");
 }
 
