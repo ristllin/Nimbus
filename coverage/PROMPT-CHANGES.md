@@ -958,3 +958,12 @@ deleted. Engine 2 has no baseline.
   window and not already in the summary, verbatim and dated, as RELEVANT MEMORIES bullets inside the recall budget.
   The one new text is the bullet's label "said earlier in this chat" (25 B), a fact about where the line comes from,
   not an instruction. Measured by DREAM-AB2 (PR_BODY.md).
+### PC-0131: a routine's output is a labelled device note in the owner's transcript and in its own state (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 2044 -> 2046
+- sha8: 58ccec10 -> 4dc07601
+- lane: RB-U1a
+- prd: section 6 ("The delivered text is appended to the owner's transcript as '[routine <name> 06:00] ...'"), as amended by owner ruling 81 (it reaches his transcript whole) and ruling 11 (every stamp carries the year); ruling 98 item 3 (the lane that adds to device_notes frees bytes first)
+- why: lib/harness/src/plain_unattended.cpp routineNoteText: kRoutineNote "[routine " opens the one device note a routine's output becomes, then its name and tx::messageStamp's stamp ("[routine Morning brief 2026-11-17 Tue 06:00] <text>"); the same line shows the routine its own last outputs (its state). A held note's later send keeps the stamp of when it was made. The stop line after a limit reuses kLimitStopped/kLimitStoppedEnd (no new bytes). To make room, kProgressLong (owner-facing only: the progress line is never stored or shown to a model) reads "slower than usual, still making progress." (-7 B). No instruction is added; planned work, not a fix.

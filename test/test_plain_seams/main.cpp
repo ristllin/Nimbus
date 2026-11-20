@@ -87,8 +87,6 @@ std::vector<StubRow> stubs() {
       {"plain::installRails", [] { return plain::installRails(gHooks, {}); }},
       {"plain::photoAllowed", [] { return plain::photoAllowed(gTurn, {}, flag); }},
       {"plain::installMedia", [] { return plain::installMedia(gHooks, {}); }},
-      {"plain::installUnattended", [] { return plain::installUnattended(gHooks, {}); }},
-      {"plain::routineChatKey", [] { return plain::routineChatKey("r1", s); }},
       {"plain::agentReportPath", [] { return plain::agentReportPath("a7", "trip", s); }},
       {"plain::installAgents", [] { return plain::installAgents(gHooks, {}); }},
       {"plain::installTruth", [] { return plain::installTruth(gHooks, {}); }},
