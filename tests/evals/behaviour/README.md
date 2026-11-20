@@ -91,6 +91,8 @@ REPORT.md.
 |---|---|
 | F | files only: read_file and edit_file as declared before RB-REC4 (no column/from/to/sum, no line); the model sums |
 | S | rb-main's declarations: read_file column/from/to/sum, edit_file line |
+| Sp, Sq, Spq | S with the sum clause rewritten by the rig (candidate wordings, rulings 88 and 92) |
+| Sn | the selection without sum (ruling 94): read_file without `sum`; run with `--aidserve` built from `lanes/RB-REC6/evidence/part4/orch_csv_sum.sn.cpp` (a selected row that does not parse is a row of the result) |
 | K0 | S tools, a fresh chat, no skill and no note naming the table |
 | K1 | K0 plus the owner's skill (about 3.5 KB with front matter) in the skills index |
 | K2 | the same skill marked `inject: context`: the old engine's `[ACTIVE SKILLS]` block rides the owner's message |
