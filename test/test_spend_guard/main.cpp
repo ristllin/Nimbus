@@ -653,6 +653,13 @@ static void test_15_ordinary_turns_in_an_hour_do_not_pause_and_more_than_20_in_1
     for (int i = 0; i < kTurnRateMaxTurns; ++i)   // /resume clears the window: 20 more at once run
       TEST_ASSERT_TRUE_MESSAGE(r.admit(false, now + 20 * 60 * 1000 + 1 + i).run, "after /resume the turns run");
     TEST_ASSERT_FALSE(r.admit(false, now + 20 * 60 * 1000 + 100).run);
+    // /resume right after a pause clears the window at once: 20 more inside the same ten minutes run.
+    ChatBreaker q;
+    uint32_t t2 = 9000;
+    for (int i = 0; i < kTurnRateMaxTurns; ++i, t2 += 1000) TEST_ASSERT_TRUE(q.admit(false, t2).run);
+    TEST_ASSERT_FALSE(q.admit(false, t2).run);
+    TEST_ASSERT_TRUE(q.resume());
+    for (int i = 0; i < kTurnRateMaxTurns; ++i) TEST_ASSERT_TRUE_MESSAGE(q.admit(false, t2 + 1 + i).run, "/resume left the window full");
   }
   // Counter: turns spread so that no ten minutes hold more than 20 never pause (the window rolls).
   ChatBreaker s;
