@@ -2066,9 +2066,7 @@ static void bootGuard() {
         g_resetReason, (unsigned)g_guard.tries(), (unsigned)g_guard.dupDrops());
 }
 
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 static void noteHistory(const nimbus::orch::PsString& text);
-#endif
 
 // The typing indicator while a plain text is held (tg_settle.h HoldTyping: at its first
 // sight, again when Telegram's action lapses), sent on the open keep-alive poll socket:
@@ -2180,9 +2178,7 @@ struct TgIo {
   // loop runs here synchronously. The rendered text lives in PSRAM; one at a time.
   void runTurn(const std::string& from, const std::string& chat, const nimbus::orch::PsString& text, bool) {
     closePollSocket();
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
     noteHistory(text);   // histV2: the turn's source and stored media, for its history row
-#endif
     // R1: the photos this turn attached go to the head as images (the engine takes
     // them with the turn and frees them when it ends; a turn that never took them, a
     // command or a refusal, frees them here).
@@ -2238,13 +2234,13 @@ static uint32_t heldRepollMs(uint32_t normalMs) {
   return ms;
 }
 
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // histV2 (lib/harness turn_inbox.h): what the turn about to run hands its history row -
 // its source (the bucket's newest update id and message count, so a re-served page is
 // captured once), the refs of the media rows its items left (album order) and what the
 // sender sent with each stored item cut back to its label (the media row keeps the
 // description). Noted just before the turn is routed; the engine takes it at capture.
 static void noteHistory(const nimbus::orch::PsString& text) {
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   const std::string voiceRef = s_voiceRef;
   s_voiceRef[0] = 0;
   if (!agent::history::v2Enabled()) return;
@@ -2263,8 +2259,10 @@ static void noteHistory(const nimbus::orch::PsString& text) {
   const size_t sent = nimbus::net::withoutCrossedNote(routed.c_str(), routed.size());
   if (in.said.empty() && sent != routed.size()) in.said = routed.substr(0, sent);
   agent::history::noteInbound(in, routed);
-}
+#else
+  (void)text;   // engine 2 has no histV2 note
 #endif
+}
 
 static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
                             int& retryAfterS) {
