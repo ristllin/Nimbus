@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/status.h"
 
@@ -55,6 +56,21 @@ inline const char* moveWhySlug(MoveWhy w) {
     case MoveWhy::ToolFold: return "tools";
   }
   return "cold";
+}
+
+// ---- the profile a chat stores (lane RB-H81, ruling 91 blockers/F9 and T4-ADV-04) ---------------
+// head.profile and the t item's profile carry a pin marker: a smaller profile is the owner's choice
+// only when he pinned it (TurnCtx::profile is his pinned choice or the default, full), and a slug
+// with no marker, such as the "standard" engine 2 wrote by default before RB-T4, is no choice at
+// all: it reads as full. Compaction, the boot settle and the migration read the stored slug through
+// profileOfHead, the same way the turn sets it through headProfileSlug.
+inline constexpr char kPinnedProfilePrefix[] = "pin:";
+inline std::string headProfileSlug(Profile p) {
+  return p == kDefaultProfile ? std::string(profileSlug(p)) : std::string(kPinnedProfilePrefix) + profileSlug(p);
+}
+inline Profile profileOfHead(const std::string& stored) {
+  const size_t n = sizeof(kPinnedProfilePrefix) - 1;
+  return stored.compare(0, n, kPinnedProfilePrefix) == 0 ? profileOf(stored.substr(n)) : kDefaultProfile;
 }
 
 // ---- the pointer ---------------------------------------------------------------------

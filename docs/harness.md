@@ -983,8 +983,11 @@ reads and writes in each provider's meaning, never the turn's sum) reached the h
 tokens (`tx::budgetFor`: the aim, about 100,000 tokens, less the next request's growth; see
 [transcript budgets](reference/transcript-budgets.md)), or `/compact` asks. No hour makes it due:
 the night fold under H is gone (owner ruling 81, ruling 83 item 8); a quiet hour only runs a
-compaction that is already due. The marks are the head's (`CompactDeps::headKey`) at its stored
-profile, full when none is stored; with no head named nothing is compacted automatically; an automatic step also needs 120 s of
+compaction that is already due. The marks are those of the head that answered the newest turn (its t item, read at every step;
+`CompactDeps::headKey` when none is resident) at the stored profile: a smaller profile counts only
+with its pin marker (`pin:<slug>`, written when TurnCtx::profile is the owner's smaller choice;
+`tx::headProfileSlug`, `tx::profileOfHead`), and any other slug, an unmarked `standard` from the
+old default included, reads as full; with no head named nothing is compacted automatically; an automatic step also needs 120 s of
 quiet and a request left in its idle window (two per window; a window ends at a turn or
 after an hour). What (`planSlice`): whole turns from thru forward, all of one local day
 (the day starts at 04:00 by default), at most 24 KB of summarizer input, and only while

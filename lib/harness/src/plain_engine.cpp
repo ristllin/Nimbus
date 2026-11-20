@@ -444,7 +444,7 @@ class TurnRun {
     tx::Item& t = blank(tx::ItemKind::TurnOpen);
     t.trigger = triggerSlug(t_.ctx.trigger);
     t.head = t_.ctx.host + "/" + t_.ctx.model;
-    t.profile = tx::profileSlug(t_.ctx.profile);
+    t.profile = tx::headProfileSlug(t_.ctx.profile);   // a smaller profile is the owner's pin (RB-H81)
     t.attempt = t_.ctx.attempt;
     for (const tx::Part& p : in.parts)
       if (p.kind == tx::PartKind::Image) t.photos.push_back(p.ref);
@@ -1571,7 +1571,7 @@ Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
   if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
     std::string block;
     tx::SettleReport rep;
-    (void)tx::settleDigests(*deps.files, deps.chatKey, tx::profileOf(c.head.profile), c.live, block, rep);
+    (void)tx::settleDigests(*deps.files, deps.chatKey, tx::profileOfHead(c.head.profile), c.live, block, rep);
   }
   c.booted = true;
   return Status::success();

@@ -131,7 +131,8 @@ struct Chat {
   uint32_t turn = 0;
   uint64_t maxThru = 0;
   bool jobRuns = false;
-  std::string profile = "standard";
+  std::string profile = "pin:standard";   // the owner pinned standard (RB-H81: an unmarked slug reads as full)
+  std::string tHead;                      // the t items' "host/model" ("" = none named)
   tx::HeadKey headKey{"anthropic", "claude-sonnet-5-5", false};   // the head the marks are read for
 
   Chat() {
@@ -207,6 +208,7 @@ struct Chat {
     tx::Item t;
     t.kind = tx::ItemKind::TurnOpen;
     t.profile = profile;
+    t.head = tHead;
     store(t);
     tx::Item u;
     u.kind = tx::ItemKind::User;
@@ -905,7 +907,7 @@ void test_nothing_due_under_H_at_night_or_by_day_and_the_prompt_trigger() {
     n.day(-2, over ? 21 : 15, 3000, "a");   // about 50 KB (over 0.8 H, under H) or about 70 KB (over H)
     n.day(0, 6, 200, "b");
     tx::HeadBudget nb;
-    TEST_ASSERT_TRUE(tx::budgetFor(n.headKey, tx::profileOf(n.head.profile), nb).ok());
+    TEST_ASSERT_TRUE(tx::budgetFor(n.headKey, tx::profileOfHead(n.head.profile), nb).ok());
     const size_t resident = plain::residentBytes(*n.arena, n.head.thru);
     TEST_ASSERT_TRUE_MESSAGE(resident * 5 > (size_t)nb.marks.high * 4, "the night case must sit above 0.8 H");
     TEST_ASSERT_EQUAL_MESSAGE(over, resident > nb.marks.high, "the over case must sit above H, the other at or under it");
@@ -1290,7 +1292,7 @@ void test_a_compaction_without_a_head_fails_loudly() {
   // Counter-test: with its head the same chat installs and compacts, and logs no such line.
   gLogLines.clear();
   c.headKey = tx::HeadKey{"anthropic", "claude-sonnet-5-5", false};
-  c.profile = c.head.profile = "standard";
+  c.profile = c.head.profile = "pin:standard";
   plain::PlainHooks ok;
   TEST_ASSERT_TRUE(plain::installCompaction(ok, c.deps()).ok());
   TEST_ASSERT_TRUE(ok.runIdleStep(c.idle()).worked);
@@ -1607,15 +1609,15 @@ void test_the_days_count_holds_and_only_rises() {
 }
 
 // Ruling 83 item 4: an empty or unknown profile reads as full, never as a smaller one; a smaller
-// profile applies only when it is the one stored (the owner's pinned choice).
+// profile applies only when it is the one stored with the pin marker (the owner's pinned choice).
 void test_a_head_with_no_profile_reads_as_full_and_live_ahead_of_thru_stores_nothing() {
-  for (const char* stored : {"", "unknown", "lean"}) {
+  for (const char* stored : {"", "unknown", "lean", "pin:lean"}) {
     Chat c;
     c.day(-2, 14, 3000, "a");   // about 46 KB: over lean's H, far under full's
     c.day(0, 6, 200, "b");
     c.head.profile = stored;
     c.answer([] { return sp::say(kSummary); });
-    TEST_ASSERT_EQUAL_MESSAGE(std::string(stored) == "lean", c.step().ran, stored);
+    TEST_ASSERT_EQUAL_MESSAGE(std::string(stored) == "pin:lean", c.step().ran, stored);
   }
   Chat d;
   threeDays(d);
@@ -1928,6 +1930,52 @@ void test_turns_that_left_ram_are_summarized_from_the_card() {
   }
 }
 
+// Ruling 91 blockers/F9, T4-ADV-04: a profile slug is the owner's choice only when it carries the
+// pin marker. A head.json holding "standard" with no marker (engine 2's old default) compacts at
+// the head's full marks; "pin:standard" at standard's. Resident sits over standard's H and under
+// Sonnet's full H.
+void test_only_a_pinned_slug_is_an_owners_smaller_profile() {
+  for (bool pinned : {false, true}) {
+    Chat c;
+    c.profile = c.head.profile = pinned ? "pin:standard" : "standard";
+    c.driver.reset(new plain::CompactDriver(c.deps()));
+    c.day(-3, 12, 3000, "a");
+    c.day(-2, 12, 3000, "b");
+    c.day(0, 6, 1000, "c");
+    c.answer([] { return sp::say(kSummary); });
+    TEST_ASSERT_EQUAL(tx::Profile::Standard, tx::profileOfHead("pin:standard"));
+    TEST_ASSERT_EQUAL(tx::Profile::Full, tx::profileOfHead("standard"));
+    TEST_ASSERT_EQUAL_STRING("pin:lean", tx::headProfileSlug(tx::Profile::Lean).c_str());
+    TEST_ASSERT_EQUAL_STRING("full", tx::headProfileSlug(tx::Profile::Full).c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(pinned, c.step().ran, pinned ? "the owner's pin is honored" : "an unmarked slug compacted at a profile nobody chose");
+  }
+}
+
+// Ruling 91 blockers/F5: compaction reads the head that answered the newest turn at every step,
+// not the head the driver was installed with. Installed on Haiku, the chat's turns are answered by
+// Sonnet: at full, resident between Haiku's due mark and Sonnet's is not due. The counter-case:
+// the same turns answered by Haiku are due.
+void test_compaction_reads_the_answering_head_at_every_step() {
+  const tx::HeadKey haiku{"anthropic", "claude-haiku-5-5", false}, sonnet{"anthropic", "claude-sonnet-5-5", false};
+  tx::HeadBudget hb, sb;
+  TEST_ASSERT_TRUE(tx::budgetFor(haiku, tx::Profile::Full, hb).ok());
+  TEST_ASSERT_TRUE(tx::budgetFor(sonnet, tx::Profile::Full, sb).ok());
+  TEST_ASSERT_TRUE(hb.marks.high < sb.marks.high);
+  for (bool bySonnet : {true, false}) {
+    Chat c;
+    c.profile = c.head.profile = "full";
+    c.headKey = haiku;
+    c.tHead = bySonnet ? "api.anthropic.com/claude-sonnet-5-5" : "anthropic/claude-haiku-5-5";
+    c.driver.reset(new plain::CompactDriver(c.deps()));
+    for (int d = -40; plain::residentBytes(*c.arena, c.head.thru) <= hb.marks.high + 4000; ++d) c.day(d, 3, 3000, "d" + std::to_string(d));
+    c.day(1, 6, 400, "today");
+    c.now += 3600;
+    TEST_ASSERT_TRUE(plain::residentBytes(*c.arena, c.head.thru) < sb.marks.high);
+    c.answer([] { return sp::say(kSummary); });
+    TEST_ASSERT_EQUAL_MESSAGE(!bySonnet, c.step().ran, bySonnet ? "compacted at the installed head's marks" : "Haiku's due mark passed");
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -1952,6 +2000,8 @@ int main(int, char**) {
   RUN_TEST(test_a_slice_held_by_the_text_floor_folds_the_tools_not_the_dialogue);
   RUN_TEST(test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest);
   RUN_TEST(test_turns_that_left_ram_are_summarized_from_the_card);
+  RUN_TEST(test_only_a_pinned_slug_is_an_owners_smaller_profile);
+  RUN_TEST(test_compaction_reads_the_answering_head_at_every_step);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);
   RUN_TEST(test_a_refused_store_leaves_thru_and_the_retry_stores_once);

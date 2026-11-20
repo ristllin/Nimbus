@@ -1005,7 +1005,7 @@ struct Run {
       head.thru = std::max<uint64_t>(head.thru, live.back().thru);
       std::string block;
       SettleReport rep;
-      (void)settleDigests(*d.files, d.chatKey, profileOf(head.profile), live, block, rep);   // the head's profile, else full
+      (void)settleDigests(*d.files, d.chatKey, profileOfHead(head.profile), live, block, rep);   // the owner's pinned profile, else full
     }
     stampProfile();
     head.nextQ = nextQ();

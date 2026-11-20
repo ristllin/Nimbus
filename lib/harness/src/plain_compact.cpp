@@ -594,6 +594,30 @@ Status noHead(const CompactDeps& d, const char* where) {
 
 uint32_t calendarDay(uint64_t now, int16_t tz) { return (uint32_t)dayNumber(now, tz, 0); }
 
+// The head that answered the newest resident turn (its t item's "host/model"), read at every step
+// (ruling 91 blockers/F5): the marks follow a head switched in the chat without a new driver. The
+// host is read as the engine reads it (providerSlugOf: a slug, or an endpoint host such as
+// api.anthropic.com); the installed head stands when no t item is resident or the t item names its
+// model (its routing is known only there).
+tx::HeadKey answeringHead(const tx::TxArena& arena, const tx::HeadKey& installed) {
+  tx::Item it;
+  for (size_t i = arena.count(); i-- > 0;) {
+    tx::ArenaEntry e;
+    if (!arena.header(i, e).ok() || e.kind != tx::ItemKind::TurnOpen || !arena.get(i, it).ok()) continue;
+    const size_t slash = it.head.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= it.head.size()) return installed;
+    TurnCtx t;
+    t.host = it.head.substr(0, slash);
+    HeadEndpoint ep;
+    ep.host = t.host;
+    tx::HeadKey k{providerSlugOf(t, ep), it.head.substr(slash + 1), false};
+    if (k.model == installed.model && (k.host == installed.host || k.host == "custom")) return installed;
+    k.routed = k.host == "cumulo";
+    return k;
+  }
+  return installed;
+}
+
 // The whole prompt of the newest turn's last request (its e item's lastPromptTokens), 0 when none
 // is resident. Never the turn's summed promptTokens: a two-request turn on an OpenAI wire would read
 // twice its size, and a cached Anthropic request would read only its uncached part (T4-ADV-01).
@@ -756,7 +780,7 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   // fixed smaller profile in its place (ruling 83 item 4).
   if (!headNamed(d_)) return noHead(d_, "plain::CompactDriver.headKey");
   tx::HeadBudget b;
-  Status s = tx::budgetFor(d_.headKey, tx::profileOf(d_.head()->profile), b);
+  Status s = tx::budgetFor(answeringHead(*d_.arena, d_.headKey), tx::profileOfHead(d_.head()->profile), b);
   if (!s.ok()) return s;
   const tx::ProfileMarks marks = b.marks;
   SliceRules rules;
@@ -1104,7 +1128,7 @@ Status CompactDriver::swap(const SlicePlan& plan, const std::string& summary, ui
   out.thru = head.thru;
   std::string block;
   tx::SettleReport rep;
-  (void)tx::settleDigests(*d_.files, d_.chatKey, tx::profileOf(head.profile), live, block, rep);
+  (void)tx::settleDigests(*d_.files, d_.chatKey, tx::profileOfHead(head.profile), live, block, rep);
   (void)d_.log->writeHead(head);   // a cache: a refusal is rebuilt from the s item
   if (!d_.chatsum.load || !d_.chatsum.save) return Status::success();
   const std::string blob = d_.chatsum.load();
