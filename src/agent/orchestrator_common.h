@@ -50,6 +50,12 @@ bool telegramDeliverable(const std::string& chatId);    // HarnessConfig::telegr
 // The moderation gate (CUM-69): role and switch gate, then classify and decide.
 nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const String& chatId,
                                      const String& text);
+// Every outbound reply's seam: the owner's output filters, the outbound screen, the send
+// sink. `system` marks device-authored copy; false ONLY when the screen suppressed it.
+bool deliver(const String& chatId, const String& text, bool system = false, bool* queuedOut = nullptr);
+// CUM-826: the last deliver() on this task queued no content of its own (the engine's
+// deliveryNeedsRow reads it right after a delivery returned). Turn task.
+extern bool s_lastDeliveryNeedsRow;
 
 }  // namespace orchestrator
 }  // namespace agent

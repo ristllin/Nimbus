@@ -162,7 +162,7 @@ static char g_turnTag[24] = {};
 // row then carries its path, so the chat knows a dossier exists without probing.
 static bool g_turnDossier = false;
 // Append the live turn tag to a row's tags, if we're inside a turn.
-static String withTurnTag(const char* base) {
+String withTurnTag(const char* base) {
   String t(base);
   if (g_turnTag[0]) { if (t.length()) t += ","; t += g_turnTag; }
   return t;
@@ -274,67 +274,6 @@ static nimbus::orch::ContextBudget headRequestContext() {
 // keeps fits it).
 static uint32_t foldTriggerNow() {
   return (uint32_t)nimbus::orch::foldTriggerBytes(headRequestContext(), store::compactAtKB());
-}
-
-// ---- delivery helpers -------------------------------------------------------
-
-// `system` marks GENUINE device-authored deterministic copy (command replies,
-// confirmations, the inbound-block notice) - an out-of-band provenance signal set by
-// the emitting call site, never inferred from the text. It is the ONLY thing that
-// exempts a reply from the outbound screen. Everything guest-steerable - a model
-// reply, a job result - is delivered with system=false (the default) and always
-// screened. (CUM-275: the old exemption keyed on text.startsWith(deviceName), which
-// a guest could prompt-inject the model into reproducing.)
-// Returns false ONLY when the outbound screen suppressed the message (a full reply
-// queue is logged, not "undelivered": the message still belongs in the history).
-// CUM-826: whether the last deliver() on this task queued no content of its own, so the
-// chat's history row is the owner's only copy: a routine's delivery to the web chat is
-// async (the open page re-renders its history), and a full reply queue or a suppressed
-// message queued nothing. The engine asks it right after a delivery returned
-// (deliveryNeedsRow): the fire then spoke only once that row is written. Turn task.
-static bool s_lastDeliveryNeedsRow = false;
-// `queuedOut` (optional): whether the reply sink took the message (candidate 5, G4: the daily
-// fold alert is spent only then).
-static bool deliver(const String& chatId, const String& text, bool system = false, bool* queuedOut = nullptr) {
-  if (queuedOut) *queuedOut = false;
-  s_lastDeliveryNeedsRow = true;   // until the sink took the content
-  // Lane J (D-3): the owner's standing rules can switch on device-enforced
-  // output filters. "Never use em dashes" is exactly the kind of rule a model
-  // slips on in long formatted replies, so the rule ALSO strips them here, at
-  // the one seam every outbound reply crosses (Telegram, web chat, voice) -
-  // after the model, before the owner. Owner-facing turns only; device copy is
-  // exempt (it never carries one anyway).
-  String body = text;
-  const uint32_t filterMask = prefs::filtersForRole(roleOfChat(chatId) == nimbus::orch::Role::Admin);
-  if (!system && filterMask)
-    body = String(nimbus::orch::applyOutputFilters(std::string(text.c_str()), filterMask).c_str());
-  // Gate 2 (outbound to guests, fail-open): when the owner turns it on, a reply to
-  // a non-admin chat is screened; a flagged reply is suppressed (a classifier
-  // outage fails open, so an outage never silences the assistant). Admin/web/serial
-  // /voice resolve to Admin and are never screened (gateApplies returns Allow fast,
-  // no classifier call). Runs on the delivering task, same TLS-slot discipline as
-  // the fetch scan. Genuine device system copy is exempt so we never pay a classifier
-  // call to screen our own known-safe strings - but only on provenance, not content.
-  if (!nimbus::orch::outboundExempt(system) &&
-      moderateGate(nimbus::orch::ModGate::OutboundReply, chatId, body) == nimbus::orch::ModAction::Block) {
-    alogf("moderation: outbound reply to %s suppressed (flagged)", chatId.c_str());
-    return false;
-  }
-  // The send sink enqueues onto a bounded reply queue and returns false if it was
-  // still full after its short block. The queue is now sized for a full turn's burst
-  // (see REPLY_QUEUE_DEPTH), but if it ever overflows anyway, log it rather than drop
-  // the owner's message silently - a dropped reply is otherwise invisible.
-  // A routine's output to the web chat (CUM-505) goes through the sink like any
-  // other: orchSendSink hands it to the web chat book as an ASYNC delivery (the open
-  // page re-renders its history, where captureAssistant records it), never into the
-  // legacy single slot or any turn's reply (agent::deliverToWebChat).
-  const bool queued = g_sinks.send && g_sinks.send(chatId, body);
-  if (queuedOut) *queuedOut = queued;
-  if (g_sinks.send && !queued)
-    alogf("orchestrator: reply queue full - dropped %d-byte message to %s",
-          (int)body.length(), chatId.c_str());
-  s_lastDeliveryNeedsRow = !queued || (chatId == "web" && loops::firing());
-  return true;
 }
 
 // hostForPrompt moved to the harness (agent::hostForPrompt over ProviderConfig,
@@ -2214,103 +2153,6 @@ void handleMessage(const String& text, const String& fromName, const String& cha
 // speaker (loopback-verified working); reply.telegram delivers text to a chat.
 String currentChat() { return g_engine ? String(g_engine->currentChat().c_str()) : String(); }
 
-// How long reply.speak waits for the sound task to open the speaker: a short event
-// clip or a sync step ahead of it in the queue, and a paused music track handing back
-// the speaker, all fit.
-static constexpr uint32_t kSpeakStartWaitMs = 10000;
-
-bool speakOnDevice(const String& text, bool capture, String* why) {
-  auto fail = [why](const String& w) {
-    if (why) *why = w;
-    return false;
-  };
-  if (text.length() == 0) return fail("nothing to say");
-  if (nimbus::fault::active(nimbus::fault::SPEAKER)) return fail("the speaker is marked faulty");
-  const size_t chars = nimbus::orch::textChars(std::string(text.c_str()));
-  if (chars > nimbus::orch::kSpeakMaxChars) return fail(nimbus::orch::speakTooLongText(chars).c_str());
-  // Synthesize in the format the CONFIGURED provider actually emits, then play it
-  // on the speaker (I2S TX, independent of the mic). OpenAI -> WAV (played directly);
-  // Mistral/Voxtral -> MP3 (decoded by the vendored minimp3). This is the field-bug
-  // fix: the old path forced "wav", but a Mistral-only device can't make WAV, so
-  // synth returned 0 and the device NEVER spoke. speakerTtsFormat() is host-tested.
-  bool mp3 = false;
-  // Use the EFFECTIVE provider (accounts for a key-driven fallback to the other
-  // provider), so the format we synthesize matches the provider that will voice it.
-  const char* fmt = core::speakerTtsFormat(std::string(agent::tts::activeProvider().c_str()), &mp3);
-  const char* path = mp3 ? "/reply.mp3" : "/reply.wav";
-  String ttsWhy;
-  size_t n = agent::tts::synthesizeToFile(text, path, fmt, nullptr, &ttsWhy);
-  if (!n) return fail(String("text-to-speech failed: ") + ttsWhy);
-  // QUEUE the playback on the sfx task - never play inline. This runs on
-  // tg_poll inside a tool round; the synth fetch above is bounded (~4 s) but
-  // fetch + an 8 s clip held the tool dispatch locks past loopTask's 8 s
-  // watchdog budget: task_wdt abort, observed in the field as "the harness
-  // reset itself" on 'count to ten out loud'. Then wait (bounded, on this task,
-  // which no watchdog watches) for the sfx task to open the speaker: a clip is
-  // spoken only once it is playing, never when it was merely queued (22 Oct).
-  const uint32_t ticket = ::sfx::speakReply(mp3);
-  if (!ticket) {
-    alogf("speak: could not queue %s (%u bytes) - sfx queue full/off?", path, (unsigned)n);
-    return fail("the sound queue is full or off");
-  }
-  String playWhy;
-  if (!::sfx::awaitReplyStart(ticket, kSpeakStartWaitMs, &playWhy)) {
-    alogf("speak: %s", nimbus::sfx::speakerFailText(playWhy.c_str()).c_str());
-    return fail(playWhy);
-  }
-  noteTurnSpoke();   // CUM-826: the owner hears it (before the history row, which can fail)
-  // Capture spoken output so a voice-only reply is still in history ("what did you
-  // just say?" works on stateless hosts once device history reads these rows). Skip
-  // when the caller already records it (the tts device action captures in apply.cpp),
-  // so the same utterance is not written to history twice.
-  if (capture) memory::captureMessage(currentChat().c_str(), "assistant",
-                                      orch::MsgKind::Message, text, "",
-                                      withTurnTag("via:speaker"));
-  return true;
-}
-
-bool sendToChat(const String& chatId, const String& text, bool asVoice, std::string* result) {
-  String cur = currentChat();
-  String cid = chatId.length() ? chatId : cur;
-  // serial/voice/web aren't Telegram-deliverable channels.
-  if (cid.length() == 0 || cid == "serial" || cid == "voice" || cid == "web") return false;
-  if (text.length() == 0) return false;
-  // SECURITY (prism): the model must not be able to exfiltrate to an arbitrary
-  // chat. Only the CURRENT turn's chat (implicit) or an ALLOWLISTED chat may be
-  // messaged - the allowlist is the Telegram auth boundary, inbound AND outbound.
-  if (cid != cur && !chatAllowed(cid)) return false;
-  if (asVoice) {
-    // Telegram, never the speaker (22 Oct: the speaker went first and failed silently,
-    // and the tool still said "sent"). The result is the receipt or why nothing arrived.
-    const voicereply::Outcome o = voicereply::deliver(cid, text);
-    if (result) *result = o.toolText;
-    if (o.notesSent > 0) {
-      // Noted before the history row (which can fail): a voice note reached the owner
-      // (the current chat or an allowlisted one), so the fire spoke (CUM-826).
-      noteTurnSpoke();
-      if (cid == cur && g_engine) g_engine->noteToolReplied(std::string(o.spokenText.c_str()));
-      // Capture what reached the TARGET chat to its history.
-      memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, o.spokenText, "",
-                             withTurnTag("via:telegram"));
-    }
-    return o.delivered;
-  }
-  const bool sent = g_sinks.send && g_sinks.send(cid, text);
-  // The current turn's chat already got a real answer mid-loop - remember it so
-  // applyTurn doesn't append a contentless "Done." as a second message.
-  if (sent) {
-    // Queued for the owner (the current chat or an allowlisted one): the fire spoke
-    // (CUM-826), noted before the history row, which can fail.
-    noteTurnSpoke();
-    if (cid == cur && g_engine) g_engine->noteToolReplied(std::string(text.c_str()));
-    // reply.telegram output was invisible to history - capture it (to the TARGET
-    // chat, so a cross-chat send lands in the right conversation).
-    memory::captureMessage(cid.c_str(), "assistant", orch::MsgKind::Message, text, "",
-                           withTurnTag("via:telegram"));
-  }
-  return sent;
-}
-
 void noteTurnSpoke() {
   if (g_engine) g_engine->noteSpoke();
 }
@@ -2688,10 +2530,11 @@ int pollJobs() {
 
 bool turnInFlight()   { return g_engine && g_engine->turnInFlight(); }
 
-// The engine seam the common half calls (orchestrator_common.h): ring arcs.
+// The engine seam the common half calls (engine_api.h): ring arcs and the reply sinks.
 bool engineRunning() { return g_engine != nullptr; }
 bool engineReapStuckTurn(uint32_t nowMs) { return g_engine && g_engine->reapStuckTurn(nowMs); }
 void engineSetHeadArc(bool on) { g_engine->setHeadArc(on); }
+void engineNoteToolReplied(const std::string& text) { g_engine->noteToolReplied(text); }
 
 String memorySnapshot() { return String(g_memEcho); }
 
@@ -2746,24 +2589,6 @@ void requestMemoryClear() {
 }
 
 void noteConfigChanged() { g_cfgReloadReq = true; }
-
-String sessionsJson() {
-  // AsyncTCP task: read the cross-task snapshot, NOT g_journal (single-writer on
-  // tg_poll - a direct read here would race pump()). std::string fields are copied
-  // into the doc, so the local `snap` staying alive through serializeJson is enough.
-  auto snap = sessionInfosSnapshot();
-  JsonDocument d;
-  JsonArray a = d.to<JsonArray>();
-  for (const auto& s : snap) {
-    JsonObject o = a.add<JsonObject>();
-    o["tag"]      = s.id;
-    o["backend"]  = s.provider;
-    o["model"]    = s.model;
-    o["category"] = s.title;
-    o["state"]    = s.state;
-  }
-  String out; serializeJson(d, out); return out;
-}
 
 // Phase 0 token seam: the real provider token usage of the most recently
 // completed turn. Local Loops reads this right after injectScheduledTurn() to

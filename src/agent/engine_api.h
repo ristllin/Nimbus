@@ -75,10 +75,6 @@ uint32_t                 turnCount();      // non-empty turns since boot
 // read Chat; the catalog, the PDF route and the spawn advice read Spawn (CUM-821).
 nimbus::orch::HeadPause providerPause(const std::string& p, nimbus::orch::PaidSeam seam);
 bool   toolRidesLoop(const std::string& name);   // P7: is this registry tool loop-callable now?
-// JSON session list for the web UI, from the common half's snapshot (sessionInfosSnapshot).
-// Defined in the engine seam for image bytes only: its ArduinoJson serializer copies are
-// already in the old engine's object file (about 1.1 KB more in the common half, measured).
-String sessionsJson();
 
 // ---- last-turn data ---------------------------------------------------------
 
@@ -158,6 +154,13 @@ void   noteConfigChanged();  // stage a directive (sysPrompt) reload from NVS
 bool engineRunning();                      // the engine exists (begin() has run)
 bool engineReapStuckTurn(uint32_t nowMs);  // the engine's stuck-turn reaper fired
 void engineSetHeadArc(bool on);            // light or clear the head's ring arc
+// The reply sinks (speakOnDevice, sendToChat): a history row's tags with the id of the turn in
+// flight appended ("turn:<row id>", so the chat groups a reply with its turn); the base
+// alone outside a turn. Turn task.
+String withTurnTag(const char* base);
+// sendToChat answered the turn in flight's own chat mid-loop, so the turn appends no
+// contentless "Done." (called only while engineRunning()).
+void engineNoteToolReplied(const std::string& text);
 
 }  // namespace orchestrator
 }  // namespace agent
