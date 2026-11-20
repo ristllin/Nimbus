@@ -43,6 +43,8 @@ TOOL_GROUPS_CPP = REPO / "lib" / "core" / "src" / "orch_tool_groups.cpp"
 RIG_TZ = "Europe/London"
 LABEL_MODEL = "claude-sonnet-5-5"  # not an engine's probe model: the grader is not the check
 OWNER_KINDS = ("say", "burst")
+# The head's request paths on every wire the rig captures (Messages, Responses, chat completions).
+HEAD_PATH_ENDS = ("/v1/messages", "/v1/responses", "/chat/completions")
 
 
 # ---------------------------------------------------------------- what the device writes
@@ -108,7 +110,7 @@ def split_exchanges(rows: list, head_model: str, prompt: str) -> dict:
         cell = out.setdefault(turn, {"head": [], "probe": [], "other": []})
         if is_probe(r, prompt):
             cell["probe"].append(r)
-        elif r.get("model") == head_model and r.get("path") in ("/v1/messages", "/v1/responses"):
+        elif r.get("model") == head_model and str(r.get("path", "")).endswith(HEAD_PATH_ENDS):
             cell["head"].append(r)
         elif r.get("method", "POST") == "POST":
             cell["other"].append(r)
@@ -153,11 +155,23 @@ def turn_flags(rec: dict, cell: dict, labels: dict, shapes: dict) -> dict:
         "false_claim": bool(unbacked) and not receipt,
         "receipt": receipt,
         "held": bool(truth.get("held")) or held_in(head, shapes["facts"]),
-        "interim_stop": bool(rec.get("timed_out")) or (last is not None and asks_for_tools(last)) or not head,
-        "probe_requests": int(end.get("probe_requests", truth.get("probes", len(probes)))),
+        "interim_stop": bool(rec.get("timed_out")) or (last is not None and asks_for_tools(last)),
+        "probe_requests": _count(end.get("probe_requests"), _count(truth.get("probes"), len(probes))),
         "head_requests": len(head),
         "cold": bool(rec.get("cold_transition")),
     }
+
+
+def _count(value, fallback: int) -> int:
+    """A stored count, or the fallback when the arm stores none (absent or null)."""
+    return fallback if value is None else int(value)
+
+
+def tool_name(t: dict) -> str:
+    """The tool a recorded call reached: a `more` call names its target in its arguments."""
+    name = t.get("name") or ""
+    args = t.get("args") if isinstance(t.get("args"), dict) else {}
+    return args.get("name") or name if name == "more" else name
 
 
 def shapes_now() -> dict:
@@ -226,9 +240,9 @@ def label_items(turns: list, effects: set) -> list:
         if rec.get("kind") not in OWNER_KINDS:
             continue
         now = [
-            {"tool": t["name"], "ok": not t.get("is_error"), "receipt": (t.get("result") or "").split("\n")[0]}
+            {"tool": tool_name(t), "ok": not t.get("is_error"), "receipt": (t.get("result") or "").split("\n")[0]}
             for t in rec.get("tools", [])
-            if t.get("name") in effects
+            if tool_name(t) in effects
         ]
         reply = "\n\n".join(rec.get("replies", []))
         if reply.strip():

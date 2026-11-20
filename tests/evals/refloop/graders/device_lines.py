@@ -56,25 +56,31 @@ def notice_re() -> re.Pattern:
     return re.compile(m.group(1))
 
 
+def progress_shape() -> re.Pattern:
+    """A progress line: its first words, then the elapsed time ("Still working (45 s", "Worked 74 s").
+    A reply that only starts with the same word ("Worked as expected") is not one."""
+    return re.compile("^(?:" + "|".join(re.escape(p) for p in progress_prefixes()) + r")\d+ (?:s|min)\b")
+
+
 def shapes_now() -> dict:
-    return {**false_claim.shapes_now(), "progress": progress_prefixes(), "notice": notice_re()}
+    return {**false_claim.shapes_now(), "progress": progress_shape(), "notice": notice_re()}
 
 
 def line_flags(rec: dict, shapes: dict) -> dict:
     """Device lines and status lines of one owner turn."""
     if "status_line" in rec:
         device = 0 if rec["status_line"] in ("", "none", None) else 1
-        status = int(rec.get("progress_lines", 0))
+        status = int(rec.get("progress_lines") or 0)
     else:
         rows = list(rec.get("notices", [])) + list(rec.get("replies", []))
-        status = sum(1 for t in rows if (t or "").startswith(shapes["progress"]))
+        status = sum(1 for t in rows if shapes["progress"].match(t or ""))
         device = sum(
             1
             for t in rows
-            if not (t or "").startswith(shapes["progress"])
+            if not shapes["progress"].match(t or "")
             and (shapes["notice"].match(t or "") or shapes["receipt"].match(t or ""))
         )
-        device += sum(1 for t in rec.get("device_rows", []) if not (t or "").startswith(shapes["progress"]))
+        device += sum(1 for t in rec.get("device_rows", []) if not shapes["progress"].match(t or ""))
     return {"device_line": device > 0, "device_lines": device, "status_lines": status}
 
 

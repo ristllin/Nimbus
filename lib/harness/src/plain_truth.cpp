@@ -41,6 +41,9 @@ constexpr KindRow kKinds[] = {
     {"pdf_write", Kind::File},    {"image_generate", Kind::File}, {"note", Kind::Memory},
     {"skill_save", Kind::Memory}, {"skill_delete", Kind::Memory}, {"schedule", Kind::Routine},
     {"send", Kind::Send},         {"device_control", Kind::Setting}, {"speak", Kind::Read},
+    {"share_file", Kind::Setting}, {"agent_start", Kind::Other},  {"agent_stop", Kind::Other},
+    // A `more` call that reached no tool (a listing, an unknown or refused name) ran nothing.
+    {nimbus::orch::kMoreTool, Kind::Read},
 };
 }  // namespace
 
@@ -239,14 +242,28 @@ class Binding {
     const std::string item = check_.atFinal(reply, canHold);
     if (item.empty()) return close(reply, true, &out);
     report_.held = true;
+    heldReply_ = reply;
     out.verdict = DeliverVerdict::Hold;
     out.deviceNote = item;
     showWait(turn);
   }
 
+  // The held round answered (or, from the engine's failure path, the held reply itself goes out:
+  // then the round gave nothing).
   void heldRound(const TurnCtx& turn, const std::string& reply, DeliverDecision& out) {
     noteNew(turn);   // what the held round itself did
-    close(reply, !reply.empty(), &out);
+    check_.taint(turn.tainted);
+    close(reply, !reply.empty() && reply != heldReply_, &out);
+  }
+
+  // Counters holds uint32_t fields only (orch_truth.cpp asserts it): added field by field.
+  static void addCounters(truth::Counters& into, const truth::Counters& add) {
+    constexpr size_t n = sizeof(truth::Counters) / sizeof(uint32_t);
+    uint32_t a[n], b[n];
+    std::memcpy(a, &into, sizeof a);
+    std::memcpy(b, &add, sizeof b);
+    for (size_t i = 0; i < n; ++i) a[i] += b[i];
+    std::memcpy(&into, a, sizeof a);
   }
 
   // The turn's check, opened from the transcript.
@@ -256,6 +273,7 @@ class Binding {
     finished_ = false;
     report_ = TruthReport{};
     report_.turn = turn.turn;
+    heldReply_.clear();
     HeadEndpoint e;
     e.host = turn.host;
     host_ = providerSlugOf(turn, e);
@@ -278,7 +296,8 @@ class Binding {
     t.ringKnown = recent(turn.turn, read, t.recent);
     report_.ringKnown = t.ringKnown;
     check_.reset(nullptr, turn.chatId, read.owner);
-    check_.start(std::move(t), counted(), &h.c);
+    turnCounters_ = truth::Counters{};
+    check_.start(std::move(t), counted(), &turnCounters_);
     report_.mode = check_.mode();
   }
 
@@ -376,6 +395,7 @@ class Binding {
   void end() {
     open_ = false;
     truth::HeadState& h = state_->head(key_, start_);
+    addCounters(h.c, turnCounters_);
     (void)truth::nextMode(h, d_.allowShadow);
     if (d_.save) d_.save(*state_);
     if (opened_ && d_.progress && d_.progress->isOpen()) d_.progress->close(nowMs());
@@ -402,7 +422,8 @@ class Binding {
   truth::State* state_;
   truth::TurnCheck check_;
   TruthReport report_;
-  std::string host_, key_;
+  std::string host_, key_, heldReply_;
+  truth::Counters turnCounters_;   // this turn's counts, added to the head's at the end (no pointer kept)
   Truth start_ = Truth::ReceiptOnly;
   uint32_t turn_ = 0, probes_ = 0;
   int64_t nowEpoch_ = 0;

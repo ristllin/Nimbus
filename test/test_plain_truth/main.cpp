@@ -472,6 +472,39 @@ void test_a_held_reply_goes_out_when_the_round_fails() {
   TEST_ASSERT_EQUAL(1, (int)r.state.heads[0].c.retryFailed);   // the check closed after delivery
 }
 
+// A failed write whose held round then fails: the held reply goes out with the receipt it owes, never
+// poorer than the same turn with no hold (the receipt outranks the provider's line).
+void test_a_failed_held_round_still_sends_the_receipt() {
+  Rig r;
+  r.probe.answers = {truth::Verdict::Yes};
+  r.b.model.push(sp::call("append_file", R"({"path":"notes/a.md","text":"eggs"})"));
+  r.b.model.push(sp::say("Added eggs."));
+  r.b.model.respondWith([](const sp::Recorded&, size_t) { return sp::httpError(500); });
+  plain::TurnOutcome out;
+  TEST_ASSERT_TRUE(r.b.owner("add eggs", out).ok());
+  TEST_ASSERT_EQUAL(2, (int)r.b.sent.size());
+  TEST_ASSERT_EQUAL_STRING("Added eggs.", r.b.sent[0].text.c_str());
+  TEST_ASSERT_EQUAL_STRING("Note: the file change in this reply did not go through (unknown tool append_file)",
+                           r.b.sent[1].text.c_str());
+  TEST_ASSERT_TRUE(out.status == plain::StatusLine::FailedWrite);
+  TEST_ASSERT_TRUE(r.reports.back().receipt);
+  TEST_ASSERT_EQUAL(1, (int)r.probe.users.size());   // the probe already said the reply claims success
+}
+
+// A `more` call that reached no tool ran nothing: a refused name never earns a receipt beside the
+// true reply of the write that followed it.
+void test_a_refused_router_call_is_no_failed_write() {
+  Rig r;
+  r.mode = plain::TruthMode::ReceiptOnly;
+  r.b.model.push(sp::call("more", R"({"name":"writ_file","args":{}})"));
+  r.b.model.push(sp::call("write_file", R"({"path":"notes/a.md","text":"milk"})"));
+  r.b.model.push(sp::say("Saved it."));
+  plain::TurnOutcome out;
+  TEST_ASSERT_TRUE(r.b.owner("save milk", out).ok());
+  TEST_ASSERT_EQUAL(1, (int)r.b.sent.size());
+  TEST_ASSERT_FALSE(r.reports.back().receipt);
+}
+
 // Counter: a turn that is not held shows no line; a failed write on a receipt-only head sends one
 // receipt after the reply, never instead of it, and asks no probe.
 void test_receipt_only_failed_write_sends_one_receipt_after_the_reply() {
@@ -590,6 +623,8 @@ int main(int, char**) {
   RUN_TEST(test_held_round_effects_join_once);
   RUN_TEST(test_a_held_turn_shows_a_status_line_and_one_answer);
   RUN_TEST(test_a_held_reply_goes_out_when_the_round_fails);
+  RUN_TEST(test_a_failed_held_round_still_sends_the_receipt);
+  RUN_TEST(test_a_refused_router_call_is_no_failed_write);
   RUN_TEST(test_receipt_only_failed_write_sends_one_receipt_after_the_reply);
   RUN_TEST(test_shadow_probes_from_the_idle_step_only);
   RUN_TEST(test_a_probe_request_is_never_conversation);

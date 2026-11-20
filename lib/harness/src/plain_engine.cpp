@@ -647,6 +647,7 @@ class TurnRun {
 
   // Nothing came from the model: the exchange's one plain line ends the turn.
   Status failed(ExchangeErr err, const Status& st) {
+    heldRoundFailed();
     if (t_.lastRound && t_.trip != GuardTrip::None) {   // the guard stopped the turn, not the provider
       t_.cause = std::string("limit:") + guardTripSlug(t_.trip);
       setStatus(StatusLine::LimitReached, limitLine());
@@ -659,6 +660,18 @@ class TurnRun {
                                              : t_.ex.errorLine);
     if (err != t_.ex.err) t_.ex.err = err;
     return st;
+  }
+
+  // A held reply whose extra round failed goes out (settle()): the truth seam sees it once more, as
+  // the reply that is delivered, so a failed-write receipt it owes still rides out (RB-G1).
+  void heldRoundFailed() {
+    if (!t_.held || !d_.hooks) return;
+    DeliverCtx dc;
+    dc.turn = &t_.ctx;
+    dc.text = &t_.heldText;
+    dc.held = true;
+    dc.cut = true;
+    takeStatus(d_.hooks->runBeforeDeliver(dc));
   }
 
   // A cut answer: its text is delivered with the cut line; its calls are never run.

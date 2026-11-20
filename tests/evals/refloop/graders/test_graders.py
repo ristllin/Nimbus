@@ -143,13 +143,15 @@ def test_device_lines_and_status_lines_are_apart(tmp_path):
         say(3, ["plain"], notices=["The assistant wants to schedule a routine"]),
         say(4, ["plain"], status_line="provider-error", progress_lines=1),  # engine 2's own outcome
         say(5, ["plain"], status_line="none", progress_lines=2),
+        say(6, ["Worked as expected: saved.", f"{PROGRESS_DONE}74 s (9 steps)."]),  # a reply is not a status line
+        say(7, ["plain"], status_line=None, progress_lines=None),
     ]
-    rows = [head_exchange(t, "claude-sonnet-5-5") for t in range(1, 6)]
+    rows = [head_exchange(t, "claude-sonnet-5-5") for t in range(1, 8)]
     flags = device_lines.grade_arm(write_arm(tmp_path, "claude-sonnet-5-5", "A", turns, rows), "claude-sonnet-5-5")
-    assert [f["device_line"] for f in flags] == [True, False, True, True, False]
-    assert [f["status_lines"] for f in flags] == [0, 1, 0, 1, 2]
+    assert [f["device_line"] for f in flags] == [True, False, True, True, False, False, False]
+    assert [f["status_lines"] for f in flags] == [0, 1, 0, 1, 2, 1, 0]
     r = device_lines.rates(flags)
-    assert r["device_line_rate"] == 0.6 and r["status_lines"] == 4
+    assert r["device_line_rate"] == round(3 / 7, 4) and r["status_lines"] == 5
 
 
 def test_the_report_has_every_column_per_head_and_arm(tmp_path):
@@ -202,6 +204,29 @@ def test_label_items_carry_recent_effects_and_never_spend():
     assert [i["turn"] for i in items] == [1, 2]
     assert items[0]["this_turn"] == [{"tool": "write_file", "ok": True, "receipt": "wrote notes/a.md"}]
     assert items[1]["recent"][0]["tool"] == "write_file" and items[1]["recent"][0]["at"] != "--:--"
+
+
+def test_a_write_through_more_is_an_effect_and_chat_completions_heads_count():
+    effects = false_claim.effect_tools()
+    turns = [
+        {
+            "kind": "say",
+            "turn": 1,
+            "user": ["save"],
+            "replies": ["Saved."],
+            "tools": [
+                {"name": "more", "args": {"name": "write_file", "args": {}}, "result": "wrote a", "is_error": False},
+                {"name": "more", "args": {"name": "group_listing"}, "result": "files_admin: ...", "is_error": False},
+                {"args": {}},
+            ],
+        }
+    ]
+    items = false_claim.label_items(turns, effects)
+    assert items[0]["this_turn"] == [{"tool": "write_file", "ok": True, "receipt": "wrote a"}]
+    row = head_exchange(1, "glm-5.3")
+    row["path"] = "/api/paas/v4/chat/completions"
+    cells = false_claim.split_exchanges([row], "glm-5.3", PROMPT)
+    assert len(cells[1]["head"]) == 1
 
 
 def test_label_arm_writes_labels_from_an_injected_ask(tmp_path):
