@@ -224,7 +224,7 @@ class DryRuns(unittest.TestCase):
                     self.assertTrue(r["file"]["ok"], (arm, r["episode"], r["file"]))
                 if arm == "K1":
                     self.assertTrue(r["pickup"]["before_first_action"], r["episode"])
-                if arm == "S" and r["kind"] == "total":   # the selection, never sum (ruling 95)
+                if arm == "S" and r["kind"] == "total":  # the selection, never sum (ruling 95)
                     self.assertFalse(r["used_sum"])
                     calls = r["turns"][-1]["calls"]
                     self.assertTrue(any(isinstance(c["args"], dict) and c["args"].get("column") for c in calls))
@@ -246,7 +246,7 @@ class DryRuns(unittest.TestCase):
             try:
                 system, tools = run_records.compose(aid, ep, arm, "claude-haiku-5-5")
                 props = {t["name"]: t["schema"]["properties"] for t in tools}
-                self.assertNotIn("sum", props["read_file"])   # ruling 95: no arm has sum
+                self.assertNotIn("sum", props["read_file"])  # ruling 95: no arm has sum
                 self.assertEqual("column" in props["read_file"], not want_err)
                 self.assertEqual("line" in props["edit_file"], not want_err)
                 run_records.seed(aid, ep, arm)
@@ -254,7 +254,7 @@ class DryRuns(unittest.TestCase):
                 text, err = w.call(
                     "read_file", {"path": "food/log.csv", "column": "date", "from": "2026-11", "sum": ["kcal"]}
                 )
-                self.assertTrue(err, text)   # sum is an unknown argument on every arm
+                self.assertTrue(err, text)  # sum is an unknown argument on every arm
                 self.assertIn("Totals, sums and counts come from a tool result", system)
             finally:
                 aid.close()

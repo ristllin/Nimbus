@@ -403,13 +403,17 @@ struct CsvScanner::Impl {
     if (inRecord && !endRecord(uint32_t(physLine - (last == '\n' ? 1 : 0)))) return false;   // the last byte's line
     if (!headerDone && res.commentLines) return fail(T::kOnlyComments);
     if (!headerDone) return fail(join({T::kNoHeader, "1", T::kNoHeaderIs, "\""}));
+    closePart();
+    return true;
+  }
+  // The file's line count and the part's ends once every byte is read.
+  void closePart() {
     const bool torn = res.bytes > 0 && last != '\n';
     res.lines = physLine - 1 + (torn ? 1 : 0);
     if (torn) res.tornLine = uint32_t(res.lines);
     if (!partOpen) res.partFrom = res.bytes, res.partFromLine = uint32_t(res.lines + 1);
     if (!res.more) res.partTo = res.bytes, res.partToLine = uint32_t(res.lines);
     res.body.assign(body, bodyLen);
-    return true;
   }
 };
 

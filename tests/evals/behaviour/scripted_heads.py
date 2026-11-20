@@ -97,7 +97,7 @@ def _context(owner: str, tools: list) -> Ctx:
         owner=owner,
         body=owner[owner.index("] ", m.start()) + 2 :],
         day=m.group(4) or m.group(1),
-        has_sum="column" in props,   # the file aids are declared (the selection; sum since ruling 95 is gone)
+        has_sum="column" in props,  # the file aids are declared (the selection; sum since ruling 95 is gone)
     )
 
 
