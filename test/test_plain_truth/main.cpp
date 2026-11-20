@@ -111,8 +111,10 @@ bool anyRequestHas(const txb::Battery& b, const std::string& part) {
 
 void test_the_probe_reads_recent_receipts_from_the_transcript() {
   Rig r;
-  r.b.model.push(sp::call("write_file", R"({"path":"notes/a.md","text":"milk"})"));
+  r.b.model.push(sp::calls({{"append_file", R"({"path":"notes/b.md","text":"x"})", ""},
+                            {"write_file", R"({"path":"notes/a.md","text":"milk"})", ""}}));
   r.b.model.push(sp::say("Saved it to notes/a.md."));
+  r.b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})"));
   r.b.model.push(sp::say("Yes, I saved it to notes/a.md earlier."));
   plain::TurnOutcome out;
   TEST_ASSERT_TRUE(r.b.owner("save milk to my notes", out).ok());
@@ -120,11 +122,14 @@ void test_the_probe_reads_recent_receipts_from_the_transcript() {
   TEST_ASSERT_TRUE(r.b.owner("did you save it?", out).ok());
   TEST_ASSERT_EQUAL(2, (int)r.probe.users.size());
   // Turn 1: its own effect is this turn's, from the stored c and r items.
-  TEST_ASSERT_TRUE(contains(r.probe.users[0], "<effects_this_turn>\n- write_file ok: wrote notes/a.md"));
+  TEST_ASSERT_TRUE(contains(r.probe.users[0], "<effects_this_turn>\n- append_file FAILED: unknown tool append_file\n- write_file ok: wrote notes/a.md"));
   TEST_ASSERT_TRUE(contains(r.probe.users[0], "<recent_effects>\n(none)"));
   // Turn 2: the same receipt is a recent one, with its time, and this turn has none.
   TEST_ASSERT_TRUE(contains(r.probe.users[1], "<effects_this_turn>\n(none)"));
   TEST_ASSERT_TRUE_MESSAGE(contains(r.probe.users[1], "write_file: wrote notes/a.md"), r.probe.users[1].c_str());
+  // A read is no effect; a failed effect backs nothing, so it is never a recent receipt.
+  TEST_ASSERT_FALSE(contains(r.probe.users[1], "read_file"));
+  TEST_ASSERT_FALSE(contains(r.probe.users[1], "append_file"));
   TEST_ASSERT_TRUE(contains(r.probe.users[1], "<owner_message>\ndid you save it?\n</owner_message>"));
   TEST_ASSERT_TRUE(r.reports.back().ringKnown);
   TEST_ASSERT_TRUE(r.reports.back().mode == truth::Truth::Enforce);
@@ -236,6 +241,22 @@ void test_recent_receipts_from_the_card() {
   TEST_ASSERT_TRUE(plain::recentFromLog(r.b.files, r.b.chatKey)(1u << 30, 1, got, whole));
   TEST_ASSERT_EQUAL(1, (int)got.size());
   TEST_ASSERT_FALSE(got[0].ok);
+  // A second segment: reading one segment back does not reach the first, so the list is not whole.
+  std::string seg2, line;
+  TEST_ASSERT_TRUE(tx::segmentPath(r.b.chatKey, 2, seg2).ok());
+  tx::Item c;
+  c.kind = tx::ItemKind::Call;
+  c.q = 900;
+  c.turn = 9;
+  c.n = "write_file";
+  c.eff = true;
+  TEST_ASSERT_TRUE(tx::encodeLine(c, line).ok());
+  r.b.files.files[seg2] = line;
+  TEST_ASSERT_TRUE(plain::recentFromLog(r.b.files, r.b.chatKey, 1)(1u << 30, 50, got, whole));
+  TEST_ASSERT_FALSE(whole);
+  TEST_ASSERT_TRUE(plain::recentFromLog(r.b.files, r.b.chatKey, 2)(1u << 30, 50, got, whole));
+  TEST_ASSERT_TRUE(whole);
+  TEST_ASSERT_EQUAL(2, (int)got.size());
 }
 
 // Every tool of the class table: an effect tool has a receipt kind (speech changes nothing
@@ -358,6 +379,42 @@ void test_no_second_hold_no_hold_on_a_cut_or_last_round() {
   }
 }
 
+// A guard's last round cannot be held by the engine, and the check knows it (DeliverCtx::last): it
+// counts no hold and reports none.
+void test_the_last_round_is_never_held_and_never_counted_as_held() {
+  Rig r;
+  r.b.world.files["notes/a.md"] = "alpha";
+  r.probe.answers = std::vector<truth::Verdict>(4, truth::Verdict::Yes);
+  r.b.model.respondWith([](const sp::Recorded& q, size_t) {
+    return q.view.toolChoice == "none" ? sp::say("Saved it.")
+                                       : sp::call("read_file", "{\"path\":\"notes/a.md\",\"offset\":" + std::to_string(q.step) + "}");
+  });
+  plain::TurnOutcome out;
+  TEST_ASSERT_TRUE(r.b.owner("keep reading", out).ok());
+  TEST_ASSERT_EQUAL_STRING("Saved it.", out.text.c_str());
+  TEST_ASSERT_EQUAL(1, (int)r.probe.users.size());
+  TEST_ASSERT_FALSE(r.reports.back().held);
+  TEST_ASSERT_EQUAL(0, (int)r.state.heads[0].c.holds);
+  TEST_ASSERT_EQUAL(0, (int)r.state.heads[0].c.retryFailed);
+}
+
+// The held round's own effects join this turn's once; the effects before the hold are not noted again.
+void test_held_round_effects_join_once() {
+  Rig r;
+  r.probe.answers = {truth::Verdict::Yes, truth::Verdict::Yes};
+  r.b.model.push(sp::call("write_file", R"({"path":"notes/a.md","text":"milk"})"));
+  r.b.model.push(sp::say("Saved milk and eggs."));
+  r.b.model.push(sp::call("append_file", R"({"path":"notes/a.md","text":"eggs"})"));
+  r.b.model.push(sp::say("Saved both."));
+  plain::TurnOutcome out;
+  TEST_ASSERT_TRUE(r.b.owner("save milk and eggs", out).ok());
+  TEST_ASSERT_EQUAL(2, (int)r.probe.users.size());
+  const std::string& u = r.probe.users[1];
+  TEST_ASSERT_TRUE_MESSAGE(contains(u, "<effects_this_turn>\n- write_file ok: wrote notes/a.md\n- append_file FAILED: "
+                                       "unknown tool append_file\n</effects_this_turn>"), u.c_str());
+  TEST_ASSERT_TRUE(r.reports.back().receipt);
+}
+
 // ---- 3. a held turn shows a status line and delivers one honest answer ---------------------------
 
 struct Lines {
@@ -412,6 +469,7 @@ void test_a_held_reply_goes_out_when_the_round_fails() {
   TEST_ASSERT_EQUAL_STRING("Saved it.", r.b.sent[0].text.c_str());
   TEST_ASSERT_TRUE(r.reports.back().held);
   TEST_ASSERT_FALSE(r.reports.back().retried);
+  TEST_ASSERT_EQUAL(1, (int)r.state.heads[0].c.retryFailed);   // the check closed after delivery
 }
 
 // Counter: a turn that is not held shows no line; a failed write on a receipt-only head sends one
@@ -528,6 +586,8 @@ int main(int, char**) {
   RUN_TEST(test_every_effect_tool_has_a_receipt_kind);
   RUN_TEST(test_enforce_holds_before_delivery);
   RUN_TEST(test_no_second_hold_no_hold_on_a_cut_or_last_round);
+  RUN_TEST(test_the_last_round_is_never_held_and_never_counted_as_held);
+  RUN_TEST(test_held_round_effects_join_once);
   RUN_TEST(test_a_held_turn_shows_a_status_line_and_one_answer);
   RUN_TEST(test_a_held_reply_goes_out_when_the_round_fails);
   RUN_TEST(test_receipt_only_failed_write_sends_one_receipt_after_the_reply);
