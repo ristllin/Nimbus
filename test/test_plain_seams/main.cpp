@@ -89,7 +89,6 @@ std::vector<StubRow> stubs() {
       {"plain::installMedia", [] { return plain::installMedia(gHooks, {}); }},
       {"plain::agentReportPath", [] { return plain::agentReportPath("a7", "trip", s); }},
       {"plain::installAgents", [] { return plain::installAgents(gHooks, {}); }},
-      {"plain::installTruth", [] { return plain::installTruth(gHooks, {}); }},
       {"plain::documentRoute", [] { plain::DocRoute r; return plain::documentRoute(gTurn, "inbox/1-a.pdf", "application/pdf", r); }},
   };
 }

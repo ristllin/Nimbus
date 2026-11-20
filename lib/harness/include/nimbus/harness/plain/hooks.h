@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -116,6 +117,7 @@ struct DeliverCtx {
   const std::string* text = nullptr;   // the reply; nothing may rewrite it
   bool held = false;                   // this turn already held once: a Hold is not taken
   bool cut = false;                    // a cut answer: no further round, a Hold is not taken
+  bool last = false;                   // a guard's last round: no further round, a Hold is not taken
 };
 struct DeliverDecision {
   DeliverVerdict verdict = DeliverVerdict::Deliver;
@@ -124,6 +126,9 @@ struct DeliverDecision {
   // truth check's failed-write receipt); taken only when the turn has none of its own.
   StatusLine status = StatusLine::None;
   std::string statusText;
+  // Side requests this handler sent for the reply (the truth probe): the e item's probeRequests,
+  // their own column; never head requests, never the conversation's tokens or marks.
+  uint8_t probes = 0;
   HookSlot by = HookSlot::None;
 };
 
@@ -176,7 +181,7 @@ class PlainHooks {
   // What the engine calls. beforeDispatch: slot order, the first verdict other than
   // Run decides. afterResult and afterDeliver: every handler, slot order.
   // beforeDeliver: every handler in slot order (held and cut turns included); the first
-  // Hold decides the verdict and the first status line rides along. The engine takes a Hold
+  // Hold decides the verdict, the first status line rides along and the probes add up. The engine takes a Hold
   // at most once a turn and never on a cut answer.
   // idleStep: slot order, stops at the first handler that worked; nothing runs while
   // ctx.ownerWaiting. bootResume: every handler; the first failure is returned after all ran.
@@ -271,6 +276,7 @@ inline DeliverDecision PlainHooks::runBeforeDeliver(const DeliverCtx& ctx) const
   for (size_t i = 0; i < kHookSlotCount; ++i) {
     if (!beforeDeliver_[i]) continue;
     DeliverDecision d = beforeDeliver_[i](ctx);
+    out.probes = (uint8_t)std::min<unsigned>(255u, (unsigned)out.probes + d.probes);
     if (out.status == StatusLine::None && d.status != StatusLine::None) {
       out.status = d.status;
       out.statusText = std::move(d.statusText);

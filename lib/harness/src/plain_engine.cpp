@@ -807,6 +807,7 @@ class TurnRun {
       dc.turn = &t_.ctx;
       dc.text = &t_.answer;
       dc.held = t_.held;
+      dc.last = t_.lastRound;
       dd = d_.hooks->runBeforeDeliver(dc);
     }
     // At most one hold a turn, and none on a guard's last round: a hold asks one more request.
@@ -864,7 +865,10 @@ class TurnRun {
     t_.status = s;
     t_.statusRef = &kept;
   }
-  void takeStatus(const DeliverDecision& dd) { setStatus(dd.status, dd.statusText); }
+  void takeStatus(const DeliverDecision& dd) {
+    t_.end.probeRequests = (uint16_t)std::min<unsigned>(UINT16_MAX, (unsigned)t_.end.probeRequests + dd.probes);
+    setStatus(dd.status, dd.statusText);
+  }
   // The line for a turn a guard ended before a reply: it names the guard (ruling 79 item 4).
   std::string limitLine() const {
     return std::string(texts::device_notes::kLimitLine) + guardTripSlug(t_.trip) + texts::device_notes::kLimitLineEnd;
