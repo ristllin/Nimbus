@@ -222,11 +222,11 @@ class World:
 
 # ------------------------------------------------------------------ requests
 def sn_read_file(t: dict) -> dict:
-    """rb-main's read_file declaration with sum taken out (arm Sn)."""
+    """rb-main's read_file declaration with sum taken out (arm Sn). Since ruling 95 the tip has no
+    sum, so arm S is the final form and this is the tip's declaration unchanged."""
     schema = json.loads(t["schema"])
-    schema["properties"].pop("sum")
+    schema["properties"].pop("sum", None)
     desc = t["description"].replace("; sum totals named columns.", ".")
-    assert desc != t["description"]
     return {"name": "read_file", "description": desc, "schema": schema}
 
 
