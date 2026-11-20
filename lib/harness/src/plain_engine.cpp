@@ -1582,6 +1582,12 @@ Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
 // A refused allocation anywhere in boot, the resume seam included, is a status.
 Status PlainEngine::boot(const BootCtx& ctx) {
   if (!depsReady(deps_) || !chat_) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::boot");
+  // Ruling 91 blockers/F6: no compaction installed is never silent.
+  if (!deps_.noCompaction && (!deps_.hooks || !deps_.hooks->has(Seam::IdleStep, HookSlot::Compaction))) {
+    hlog::logf("plain(%s): no compaction installed (HookSlot::Compaction): boot refused", deps_.chatKey.c_str());
+    return Status::fail(Err::InvalidArgument, "plain::PlainEngine::boot.compaction");
+  }
+  if (deps_.noCompaction) hlog::logf("plain(%s): no compaction, by the binding: %s", deps_.chatKey.c_str(), deps_.noCompaction);
   try {
     const Status st = loadChat(deps_, *chat_);
     if (!st.ok()) return st;

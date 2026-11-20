@@ -150,6 +150,11 @@ inline std::string pathPointer(const std::string& path) { return "read_file path
 // photo ref without its 'p' (1 to 16 letters or digits); when is photoWhen's text (empty when
 // the clock was not set: the field is left out). InvalidArgument for a bad ref.
 Status photoStub(const std::string& ref8, const std::string& when, std::string& out);
+// The same with the photo's note (tx::Part::note, lane RB-H81, ruling 84 item 5): '[photo
+// p<ref8> <when>: <note>; not shown: view id=p<ref8>]', the note on one line, at most
+// kPhotoNoteMax, '[' and ']' as '(' and ')' so it cannot close the stub. An empty note gives the
+// stub above.
+Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out);
 
 // Ruling 11 (the year in every stamp) for the rules' time texts, from stored epochs:
 // An epoch from before the clock was set (under day_start.h kClockValidEpoch, 0 included)

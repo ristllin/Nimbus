@@ -945,6 +945,14 @@ chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the ne
 digests that fit 4,096 B as its summary, the counters, failure count and pause at 0, and
 a row pointer ("m%08x") that never moves back; other chats' records stay byte for byte.
 
+### Photo notes in the later-turn stub (lane RB-H81)
+
+No note-writing tool comes back on engine 2. A photo part may carry a note (`tx::Part::note`, at
+most 270 B): the head's note a migration carried over (a photo row whose ref the binding gives,
+`DayRow::photoRef`) or a blind host's transcription. Once the photo leaves view its stub keeps the
+note and the view pointer: `[photo p<ref8> <when>: <note>; not shown: view id=p<ref8>]`
+(`tx::photoStub` with a note). The summarizer sees the note beside the photo marker.
+
 ### Long call arguments (lane RB-H81)
 
 A call's string argument over 1,024 B is whole while its own turn is open, up to the head's
@@ -988,8 +996,12 @@ compaction that is already due. The marks are those of the head that answered th
 with its pin marker (`pin:<slug>`, written when TurnCtx::profile is the owner's smaller choice;
 `tx::headProfileSlug`, `tx::profileOfHead`), and any other slug, an unmarked `standard` from the
 old default included, reads as full; with no head named nothing is compacted automatically; an automatic step also needs 120 s of
-quiet and a request left in its idle window (two per window; a window ends at a turn or
-after an hour). What (`planSlice`): whole turns from thru forward, all of one local day
+quiet and a request left in its idle window (four per window; a window ends at a turn or
+after an hour). Once due, it runs on slice by slice until what stays is at L (ruling 82 item 4:
+due at the aim, keeps about 70% of it), so a due-to-keep cycle (about four slices on Sonnet or
+luna at full) completes in one quiet spell (ruling 91 T4-ADV-05). An engine with no compaction
+installed refuses to boot, with one log line, unless its binding names why
+(`EngineDeps::noCompaction`; ruling 91 blockers/F6). What (`planSlice`): whole turns from thru forward, all of one local day
 (the day starts at 04:00 by default), at most 24 KB of summarizer input, and only while
 what stays after the slice is at least L and holds at least the head's v5.1.2 keep of owner
 and assistant text (at full; owner ruling 81). Never a turn of the owner's current day (unless
@@ -1016,7 +1028,8 @@ result's bytes or a device note. A turn that read outside content has its assist
 inside the `<data>` frame, and its digest is stored inside the frame, so the block shows
 it framed. The rungs come from the binding: the head host's small model twice, then each
 other keyed provider in the owner's order, waiting 10 min, 30 min, 2 h, then 6 h after each
-failure; at most six attempts start a day on the device (`/data/compact_ctl.txt`, written
+failure; at most 48 attempts start a day on the device (a runaway guard over three chats' cycles,
+not a cost cap: ruling 82 item 5) (`/data/compact_ctl.txt`, written
 before the request), each capped at 2,048 output tokens (the digest block at full, ruling 89
 item 4) and 45 s; a cut answer is asked once more in the same attempt with 8,192 tokens of room,
 and a cut is never stored. An answer is taken only

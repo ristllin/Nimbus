@@ -21,7 +21,7 @@
 // Strings are stored byte for byte (renderers repair UTF-8; capture never rewrites);
 // '"', '\\' and control bytes are escaped, so a line never holds a raw newline.
 // Keys (short, per kind):
-//   all  k q turn t            u  x tz ch src m parts[{k img|file|voice, ref, mime, b}]
+//   all  k q turn t            u  x tz ch src m parts[{k img|file|voice, ref, mime, b, n}]
 //   t  tr hd pf at ph          a  x rd fin hdl        c  id n args eff rd st
 //   i  id n                    r  id n ok cls x hdl b l st
 //   k  x rd                    h  x cls (note class)  s  x day thru ext
@@ -107,7 +107,12 @@ struct Part {
   std::string ref;    // photo ref "p<ref8>", or a file path "project/name"
   std::string mime;   // "image/jpeg", "text/csv", ...
   uint32_t bytes = 0;
+  // A photo's note, at most kPhotoNoteMax (lane RB-H81, ruling 84 item 5): the head's note a
+  // migration carried over (v5.1.2's kImageNoteMax) or a blind host's transcription. The later-turn
+  // photo stub shows it; no tool writes it.
+  std::string note;
 };
+inline constexpr size_t kPhotoNoteMax = 270;
 
 // One exchange of a turn, for the e item's per-exchange sizes and timings.
 struct ExchangeFacts {

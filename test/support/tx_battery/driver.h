@@ -328,6 +328,9 @@ class Battery {
     d.files = &files;
     d.chatKey = chatKey;
     d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
+    // Compaction is installed (install()); with no head named it cannot be (RB-T4's refusal), and the
+    // battery names that case rather than let boot refuse it (ruling 91 blockers/F6, RB-H81).
+    if (noHead) d.noCompaction = "battery: a turn setup that names no head";
     d.deliver = [this](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
       return deliverFn ? deliverFn(in, out) : plain::deliverTurn(plain::DeliverDeps{&channel, hooks.get(), log.get()}, in, out);
     };

@@ -841,10 +841,31 @@ void test_rules_long_arguments_are_whole_only_in_their_open_turn() {
   TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 4, 99).c_str());
 }
 
+
+// RB-H81 (DoD 5, ruling 84 item 5): a photo stub keeps its view pointer, and carries the photo's note
+// (a migrated v5.1.2 note or a blind host's transcription, at most kPhotoNoteMax) on one line that
+// cannot close the stub; with no note it is the plain stub.
+void test_rules_a_photo_stub_carries_its_note_and_its_view_pointer() {
+  std::string out;
+  TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", "", out).ok());
+  std::string plain;
+  TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", plain).ok());
+  TEST_ASSERT_EQUAL_STRING(plain.c_str(), out.c_str());
+  TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", "A receipt: [total] 12.40\nfor bread", out).ok());
+  TEST_ASSERT_EQUAL_STRING("[photo pa1b2c3d4 Tue 17 Nov 2026 13:02: A receipt: (total) 12.40 for bread; not shown: view id=pa1b2c3d4]",
+                           out.c_str());
+  const std::string longNote(600, 'n');
+  TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "", longNote, out).ok());
+  TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax, 'n')) != std::string::npos);
+  TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax + 1, 'n')) == std::string::npos);
+  TEST_ASSERT_TRUE(out.find("view id=pa1b2c3d4]") != std::string::npos);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rules_long_text_keeps_the_cap_then_points_at_the_rest);
   RUN_TEST(test_rules_long_arguments_are_whole_only_in_their_open_turn);
+  RUN_TEST(test_rules_a_photo_stub_carries_its_note_and_its_view_pointer);
   RUN_TEST(test_checker_rejects_wrong_internal_stubs);
   RUN_TEST(test_checker_rejects_leaking_outside_stubs);
   RUN_TEST(test_internal_stub_has_the_prd_shape);

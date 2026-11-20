@@ -322,6 +322,12 @@ void rowItem(const DayRow& r, uint64_t q, uint32_t turn, int16_t tz, Item& it) {
     it.tzMinutes = tz;
     it.m = r.id;
     clipUtf8(it.x, kTier1OwnerText);
+    if (r.photo && r.photoRef.size() > 1 && r.photoRef[0] == 'p') {   // the photo and its note (RB-H81)
+      Part p{PartKind::Image, r.photoRef, "image/jpeg", 0, r.text};
+      clipUtf8(p.note, kPhotoNoteMax);
+      if (p.note.size() == r.text.size()) it.x.clear();   // the note holds it all: not twice
+      it.parts.push_back(p);
+    }
   } else {
     it.kind = ItemKind::Assistant;
     it.fin = true;

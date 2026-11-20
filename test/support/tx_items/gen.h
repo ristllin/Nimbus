@@ -66,7 +66,7 @@ inline tx::Item fullItem(tx::ItemKind kind, uint64_t q, Rng& r, size_t textMax =
   it.ch = word(r, 8);
   it.src = {r.nonzero(UINT64_MAX - 1), r.nonzero(1000)};
   it.m = r.nonzero(UINT64_MAX - 1);
-  it.parts = {tx::Part{tx::PartKind::Image, "p" + word(r, 8), "image/jpeg", static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu))},
+  it.parts = {tx::Part{tx::PartKind::Image, "p" + word(r, 8), "image/jpeg", static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu)), anyBytes(r, 40)},
               tx::Part{tx::PartKind::File, anyBytes(r, 20), "", 0},
               tx::Part{tx::PartKind::Voice, "", anyBytes(r, 10), 7}};
   it.trigger = word(r, 10);
@@ -180,7 +180,7 @@ inline std::string firstDifference(const tx::Item& a, const tx::Item& b) {
   if (a.parts.size() != b.parts.size()) return "parts";
   for (size_t i = 0; i < a.parts.size(); ++i) {
     const tx::Part &p = a.parts[i], &o = b.parts[i];
-    if (p.kind != o.kind || p.ref != o.ref || p.mime != o.mime || p.bytes != o.bytes) return "parts[" + std::to_string(i) + "]";
+    if (p.kind != o.kind || p.ref != o.ref || p.mime != o.mime || p.bytes != o.bytes || p.note != o.note) return "parts[" + std::to_string(i) + "]";
   }
   if (a.end.exchanges.size() != b.end.exchanges.size()) return "end.exchanges";
   for (size_t i = 0; i < a.end.exchanges.size(); ++i) {

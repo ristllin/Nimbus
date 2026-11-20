@@ -177,11 +177,63 @@ inline void test_text_written_beside_a_call_is_delivered_when_the_last_round_is_
   }
 }
 
+// Ruling 91 blockers/F6: a binding that never installs compaction is refused at boot, loudly (a
+// Status and one log line), unless it names why; the battery's engine, which installs it, boots.
+inline void test_an_engine_with_no_compaction_installed_refuses_to_boot() {
+  txb::Battery b;
+  TXB_OK(b.boot());   // installs compaction
+  TEST_ASSERT_TRUE(b.hooks->has(plain::Seam::IdleStep, plain::HookSlot::Compaction));
+  plain::PlainHooks none;
+  plain::EngineDeps d;   // the battery's own bindings, with hooks that hold no compaction
+  d.platform = &b.platform;
+  d.transport = &b.model;
+  d.log = b.log.get();
+  d.arena = b.arena.get();
+  d.files = &b.files;
+  d.chatKey = b.chatKey;
+  d.dispatch = [](const plain::ToolCall&, const plain::TurnCtx&) { return plain::ToolOutput{}; };
+  d.hooks = &none;
+  plain::PlainEngine bare(d);
+  const tx::Status st = bare.boot(plain::BootCtx{b.epoch, false});
+  TEST_ASSERT_EQUAL((int)tx::Err::InvalidArgument, (int)st.err);
+  TEST_ASSERT_EQUAL_STRING("plain::PlainEngine::boot.compaction", st.where);
+  d.noCompaction = "h81_tests: the opt-out names itself";
+  plain::PlainEngine named(d);
+  TXB_OK(named.boot(plain::BootCtx{b.epoch, false}));
+}
+
+// DoD 5 (ruling 84 item 5): no note-writing tool comes back; a photo's note (a migrated v5.1.2 note
+// or a blind host's transcription, on the owner message's part) survives in the later-turn photo
+// stub with its working view pointer. The photo arrives with its note; two turns later its request
+// shows the stub with the note and the pointer. The counter-case: a photo with no note shows the
+// plain stub.
+inline void test_a_photo_note_survives_in_the_later_turn_stub() {
+  for (bool noted : {true, false}) {
+    txb::Battery b;
+    tx::Part p{tx::PartKind::Image, "pa1b2c3d4", "image/jpeg", 90000};
+    if (noted) p.note = "A handwritten shopping list: eggs, flour, two lemons.";
+    b.model.push(sp::say("I see the list."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("what is this", out, {p}));
+    for (int k = 0; k < 3; ++k) {
+      b.advance(3 * 3600);   // past every photo's time in view
+      b.model.push(sp::say("ok"));
+      TXB_OK(b.owner("and now " + std::to_string(k), out));
+    }
+    const std::string& body = b.model.requests().back().body;
+    TEST_ASSERT_TRUE_MESSAGE(body.find("view id=pa1b2c3d4") != std::string::npos, "the photo stub lost its view pointer");
+    TEST_ASSERT_EQUAL_MESSAGE(noted, body.find("two lemons") != std::string::npos,
+                              noted ? "the photo's note did not survive in its stub" : "a note appeared from nowhere");
+  }
+}
+
 inline void run() {
   RUN_TEST(test_the_turn_end_keeps_the_last_request_whole_prompt);
   RUN_TEST(test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer);
   RUN_TEST(test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after);
   RUN_TEST(test_text_written_beside_a_call_is_delivered_when_the_last_round_is_empty);
+  RUN_TEST(test_an_engine_with_no_compaction_installed_refuses_to_boot);
+  RUN_TEST(test_a_photo_note_survives_in_the_later_turn_stub);
 }
 
 }  // namespace h81_tests

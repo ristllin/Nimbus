@@ -82,7 +82,11 @@ namespace plain {
 
 inline constexpr uint32_t kCompactQuietS = 120;
 inline constexpr uint32_t kCompactSliceMaxBytes = 24576;
-inline constexpr uint8_t kCompactRequestsPerWindow = 2;
+// Sized so one due-to-keep cycle completes (ruling 91 T4-ADV-05; ruling 82 item 5: a cost bound never
+// makes the answer worse): a cycle on Sonnet or luna at full is about four slices, so one quiet spell
+// holds one, and the daily count is a runaway guard over three chats' cycles a few times a day,
+// not a cost cap (failures still wait 10 min, 30 min, 2 h, 6 h).
+inline constexpr uint8_t kCompactRequestsPerWindow = 4;
 inline constexpr uint32_t kCompactRequestMs = 45000;
 // The summarizer's output cap is sized to the digest block at full (6,144 B at 3 B a token), not to
 // one digest line: a head that writes long, or thinks first, has room to finish (ruling 89 item 4).
@@ -90,7 +94,7 @@ inline constexpr uint32_t kCompactRequestMs = 45000;
 // never stored and never asked again at the same cap.
 inline constexpr uint16_t kSummarizerMaxTokens = 2048;
 inline constexpr uint16_t kSummarizerRetryMaxTokens = 8192;
-inline constexpr uint32_t kCompactPaidPerDay = 6;
+inline constexpr uint32_t kCompactPaidPerDay = 48;
 inline constexpr uint32_t kCompactHeadTries = 2;           // failures on rung 1 before the ladder
 inline constexpr uint32_t kCompactWaitS[] = {600, 1800, 7200, 21600};
 inline constexpr uint32_t kCompactWindowS = 3600;          // an idle window ends at a turn or after this
@@ -263,6 +267,9 @@ class CompactDriver {
   Status foldTools(const SliceRules& rules, CompactOutcome& out);
   Status planDropped(const IdleCtx& ctx, uint64_t omitted, SlicePlan& plan, bool& read);
   SliceRules rules_;   // the last planIfDue's rules (the tool fold reads them)
+  // A compaction that became due runs on, slice by slice, until what stays is at L (ruling 82
+  // item 4: due at the aim, keeps about 70% of it), not one slice under H each turn.
+  bool cycle_ = false;
   bool held(const IdleCtx& ctx, const CompactCtl::Chat& chat);
   Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out);
   void settle(const SummarizerRung& rung, const SlicePlan& plan, uint32_t fails, uint64_t now, const Status& s,

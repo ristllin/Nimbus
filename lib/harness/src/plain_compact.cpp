@@ -215,7 +215,7 @@ size_t shownBytes(const tx::Item& it, const ShowState& s) {
   switch (it.kind) {
     case tx::ItemKind::User:
       n += it.x.size() + kStampBytes;
-      for (const tx::Part& p : it.parts) n += p.kind == tx::PartKind::Image ? kPhotoShownBytes : p.ref.size() + kStampBytes;
+      for (const tx::Part& p : it.parts) n += (p.kind == tx::PartKind::Image ? kPhotoShownBytes : p.ref.size() + kStampBytes) + p.note.size();
       return n;
     case tx::ItemKind::Assistant:
     case tx::ItemKind::DeviceNote: return n + it.x.size();
@@ -404,7 +404,7 @@ void renderItem(const tx::Item& it, bool tainted, int16_t tz, std::string& out) 
     case tx::ItemKind::User:
       out += "[" + hhmm + "]" + st::kOwner + it.x;
       for (const tx::Part& p : it.parts)
-        if (p.kind == tx::PartKind::Image) out += st::kPhoto;
+        if (p.kind == tx::PartKind::Image) out += st::kPhoto + (p.note.empty() ? std::string() : " " + p.note);
       out += "\n";
       break;
     case tx::ItemKind::Assistant:
@@ -817,7 +817,9 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   // The arena's room is the one real limit besides the request (ruling 91 table/F1): a compaction is
   // due before the engine would have to drop whole turns from RAM with no digest.
   const bool room = rules.arenaFree < rules.arenaRoom;
-  due = manual_ || plan.resident > marks.high || hot || room;
+  if (plan.resident > marks.high || hot || room) cycle_ = true;   // due: run on down to L
+  due = manual_ || cycle_;
+  if (cycle_ && !plan.thru && (!plan.textHeld || plan.resident <= marks.low)) cycle_ = false;   // L reached, or nothing more may go
   return Status::success();
 }
 

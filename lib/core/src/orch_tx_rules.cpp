@@ -317,6 +317,24 @@ Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::str
   return Status::success();
 }
 
+Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out) {
+  if (note.empty()) return photoStub(ref8, when, out);
+  if (!isRef(ref8)) {
+    out.clear();
+    return Status::fail(Err::InvalidArgument, "tx::photoStub");
+  }
+  std::string s = "[photo p" + ref8;
+  if (!when.empty()) {
+    s += ' ';
+    appendLine(s, when, 40, true);
+  }
+  s += ": ";
+  appendLine(s, note, kPhotoNoteMax, true);
+  s += "; not shown: view id=p" + ref8 + "]";
+  out.swap(s);
+  return Status::success();
+}
+
 Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out) {
   if (!cap) {
     out.clear();

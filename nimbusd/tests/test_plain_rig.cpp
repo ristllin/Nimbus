@@ -72,6 +72,7 @@ struct Host {
     c.model = dialect == plain::Dialect::AnthropicMessages ? "claude-sonnet-5-5" : "scripted-model";
     c.key = [] { return std::string("sk-fake-rig"); };
     c.dayStartMin = dayStartMin;
+    c.noCompaction = "test_plain_rig: the loop's own cases (the hosted compaction is RB-I2's)";
     return c;
   }
 
@@ -360,6 +361,13 @@ void testHostFaults(ndtest::Ctx& c) {
   c.ok(noFiles.boot().err == tx::Err::InvalidArgument, "boot refuses no storage");
   nimbusd::PlainRig noTransport(nimbusd::PlainRigConfig{}, nimbusd::PlainRigBindings{&h.platform, nullptr, &h.files});
   c.ok(noTransport.boot().err == tx::Err::InvalidArgument, "boot refuses no transport");
+  {   // ruling 91 blockers/F6: every binding present but no compaction installed and none opted out
+    Host k;
+    nimbusd::PlainRigConfig cfg = k.config();
+    cfg.noCompaction = nullptr;
+    nimbusd::PlainRig bare(cfg, nimbusd::PlainRigBindings{&k.platform, &k.model, &k.files});
+    c.ok(bare.boot().err == tx::Err::InvalidArgument, "boot refuses a chat with no compaction installed");
+  }
 
   // No wire given: the rig asks wireFor. Until the dialect's wire lane lands that is one
   // plain line and no request; after, it is the model's reply.

@@ -152,7 +152,7 @@ class StubWire : public plain::WireCodec {
       if (p.kind == tx::PartKind::Image && in.photo && in.photo(p.ref, pb).ok() && !pb.fileId.empty())
         out.push_back(Piece{Role::User, 'i', pb.fileId, "", "", "", false});
       else
-        out.push_back(Piece{Role::User, 'u', "[photo " + p.ref + " not shown: view id=" + p.ref + "]", "", "", "", false});
+        out.push_back(Piece{Role::User, 'u', "[photo " + p.ref + (p.note.empty() ? "" : ": " + p.note + ";") + " not shown: view id=" + p.ref + "]", "", "", "", false});
     }
   }
 

@@ -117,6 +117,10 @@ struct DayRow {
   uint64_t t = 0;         // epoch seconds (the day stream keeps hours: tsHours * 3600); 0 = unknown
   RowRole role = RowRole::Other;
   bool photo = false;     // an image row: its text is the photo's description
+  // The photo's ref ("p<ref8>", the content-hash blob) when the binding knows it (RB-H81): the row
+  // becomes an owner message with the photo as its part and the description as the part's note,
+  // so the later-turn stub carries it with a view pointer (ruling 84 item 5).
+  std::string photoRef;
   bool ours = false;      // engine 2 wrote it (tag "e2"): never imported
   std::string text;
 };

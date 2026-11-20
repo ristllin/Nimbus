@@ -488,7 +488,7 @@ bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
   if (p.ref.size() < 2 || p.ref[0] != 'p') return false;
   std::string when, stub;
   if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
-  if (!tx::photoStub(p.ref.substr(1), when, stub).ok()) return false;
+  if (!tx::photoStub(p.ref.substr(1), when, p.note, stub).ok()) return false;   // its note kept (RB-H81)
   textBlock(r, Role::User, u.turn, join, stub, Over::Refuse);
   return true;
 }

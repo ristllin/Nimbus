@@ -205,6 +205,7 @@ void encodeUser(Writer& w, const Item& it) {
     fieldStr(w, "ref", p.ref);
     fieldStr(w, "mime", p.mime);
     fieldU64(w, "b", p.bytes);
+    fieldStr(w, "n", p.note);   // a photo's note (RB-H81)
     w.put('}');
   });
 }
@@ -690,6 +691,7 @@ bool readPart(Cursor& c, Part& p) {
            if (!std::strcmp(key, "ref")) return readStr(cc, p.ref);
            if (!std::strcmp(key, "mime")) return readStr(cc, p.mime);
            if (!std::strcmp(key, "b")) return readUnsigned(cc, p.bytes);
+           if (!std::strcmp(key, "n")) return readStr(cc, p.note);
            return skipValue(cc);
          }) &&
          haveKind;

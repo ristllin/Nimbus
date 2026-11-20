@@ -71,6 +71,9 @@ struct PlainRigConfig {
   uint16_t dayStartMin = plain::kDayStartDefaultMin;
   bool qualified = false;                      // the head is qualified on engine 2 (tx::budgetFor)
   int storedRounds = 0;                        // the stored orchLoopRnds (guardLimitsFor)
+  // Boot refuses a chat with no compaction installed on hooks() (ruling 91 blockers/F6) unless this
+  // names why (plain::EngineDeps::noCompaction). RB-I2 installs the hosted compaction here.
+  const char* noCompaction = nullptr;
 };
 
 // How a turn ended, from the host's side. The engine decides every owner-facing byte; the
@@ -241,6 +244,7 @@ class PlainRig {
     d.chatKey = cfg_.chatKey;
     d.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return dispatchCall(c, t); };
     d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
+    d.noCompaction = cfg_.noCompaction;
     return d;
   }
 

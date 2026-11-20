@@ -101,6 +101,11 @@ struct EngineDeps {
   TurnSetupFn setup;
   nimbus::orch::tx::RecentFilesBlock::Source recentFiles;   // the live file store; null: no list
   DeliverFn deliver;                         // null: deliverTurn(DeliverDeps{channel, hooks, log})
+  // Ruling 91 blockers/F6 (lane RB-H81): boot refuses, with one log line, when no compaction is
+  // installed on the idle seam (HookSlot::Compaction): without it the overflow ladder and the
+  // full-arena drop would take old turns with no digest. A binding that compacts no chat on
+  // purpose (a test of something else, a rig before its compaction lane) says so here, by name.
+  const char* noCompaction = nullptr;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before

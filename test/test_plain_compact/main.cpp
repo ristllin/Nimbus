@@ -876,7 +876,7 @@ void test_owner_first_quiet_window_and_no_clock_gates() {
   TEST_ASSERT_TRUE(c.driver->step(ctx, out).ok());
   TEST_ASSERT_FALSE(out.ran);
   TEST_ASSERT_EQUAL(0, (int)c.model.requests().size());
-  // Two requests per idle window; a turn opens a new window.
+  // kCompactRequestsPerWindow requests per idle window; a turn opens a new window.
   c.day(-2, 0, 0, "x");
   Chat big;
   big.day(-5, 12, 3000, "a");
@@ -885,8 +885,8 @@ void test_owner_first_quiet_window_and_no_clock_gates() {
   big.day(0, 6, 3000, "d");
   big.answer([] { return sp::say(kSummary); });
   int ran = 0;
-  for (int i = 0; i < 6; ++i) ran += big.step().ran;
-  TEST_ASSERT_EQUAL(2, ran);
+  for (int i = 0; i < 2 * plain::kCompactRequestsPerWindow; ++i) ran += big.step().ran;
+  TEST_ASSERT_EQUAL(plain::kCompactRequestsPerWindow, ran);
   big.now += 60;
   big.chat("new turn", "ok");
   TEST_ASSERT_TRUE(big.step().ran);
@@ -1564,7 +1564,8 @@ void test_today_over_H_gives_only_its_oldest_half() {
 // a stale record from another writer never lowers what this driver counted.
 void test_the_days_count_holds_and_only_rises() {
   const std::function<std::string(int64_t)> record = [](int64_t dayOff) {
-    return "compact v1\nday " + std::to_string((kNoon + 3 * 3600) / kDay + dayOff) + " 6\n";
+    return "compact v1\nday " + std::to_string((kNoon + 3 * 3600) / kDay + dayOff) + " " +
+           std::to_string(plain::kCompactPaidPerDay) + "\n";
   };
   for (int64_t off : {0, 1, -1}) {
     Chat c;
@@ -1976,6 +1977,50 @@ void test_compaction_reads_the_answering_head_at_every_step() {
   }
 }
 
+// Ruling 91 T4-ADV-05 (ruling 82 item 5: a cost bound never makes the answer worse): the
+// throughput limits are sized so a due compaction completes. Two busy Sonnet chats at full on one
+// device (one shared control record), each past its due mark by a whole due-to-keep cycle: within
+// one day of ordinary quiet spells both are back at their keep. The daily count stays a runaway
+// guard, and failures still wait (test_a_failing_week_spends_at_most_the_cap_a_day_and_recovers_the_next).
+void test_two_busy_chats_each_complete_a_due_to_keep_cycle_in_a_day() {
+  const tx::HeadKey sonnet{"anthropic", "claude-sonnet-5-5", false};
+  tx::HeadBudget b;
+  TEST_ASSERT_TRUE(tx::budgetFor(sonnet, tx::Profile::Full, b).ok());
+  std::string shared;
+  std::unique_ptr<Chat> chats[2];
+  for (int k = 0; k < 2; ++k) {
+    chats[k].reset(new Chat());
+    Chat& c = *chats[k];
+    c.chatKey = k ? "c2" : "c1";
+    c.profile = c.head.profile = "full";
+    c.headKey = sonnet;
+    c.boot();
+    for (int d = -30; plain::residentBytes(*c.arena, c.head.thru) <= b.marks.high + (b.marks.high - b.marks.low); ++d)
+      c.day(d, 8, 3000, c.chatKey + "d" + std::to_string(d));
+    c.day(1, 6, 400, "today");
+    int n = 0;
+    c.answer([&n, k] { return sp::say(std::string(kSummary) + " Chat " + std::to_string(k) + " part " + std::to_string(++n) + "."); });
+    plain::CompactDeps d = c.deps();
+    d.ctl.load = [&shared] { return shared; };
+    d.ctl.save = [&shared](const std::string& t) { shared = t; return true; };
+    c.driver.reset(new plain::CompactDriver(d));
+  }
+  // A day: the owner talks in each chat every two hours; each quiet spell is one idle window.
+  for (int spell = 0; spell < 10; ++spell) {
+    for (std::unique_ptr<Chat>& c : chats) {
+      c->now += 7200;
+      c->chat("still here " + std::to_string(spell), "ok");
+      gClock += 600000;
+      for (int s = 0; s < 8; ++s) c->step();
+    }
+  }
+  for (std::unique_ptr<Chat>& c : chats) {
+    const size_t resident = plain::residentBytes(*c->arena, c->head.thru);
+    const std::string why = c->chatKey + " is at " + std::to_string(resident) + " B after a day, its keep is " + std::to_string(b.marks.low);
+    TEST_ASSERT_TRUE_MESSAGE(resident <= b.marks.low + plain::kCompactSliceMaxBytes, why.c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -2002,6 +2047,7 @@ int main(int, char**) {
   RUN_TEST(test_turns_that_left_ram_are_summarized_from_the_card);
   RUN_TEST(test_only_a_pinned_slug_is_an_owners_smaller_profile);
   RUN_TEST(test_compaction_reads_the_answering_head_at_every_step);
+  RUN_TEST(test_two_busy_chats_each_complete_a_due_to_keep_cycle_in_a_day);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);
   RUN_TEST(test_a_refused_store_leaves_thru_and_the_retry_stores_once);

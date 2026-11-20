@@ -1159,11 +1159,55 @@ void test_a_full_old_summary_is_carried_in_parts_that_fit_the_block() {
   TEST_ASSERT_TRUE_MESSAGE(joined.find("goes on in export-pre-v2/summary-") != std::string::npos, "the cut is not named");
 }
 
+
+// RB-H81 (DoD 5, ruling 84 item 5): a migrated photo row whose ref the binding knows becomes an
+// owner message with the photo as its part and v5.1.2's note (at most kPhotoNoteMax) as the
+// part's note, so the later-turn stub carries both the note and a working view pointer. The
+// counter-case: with no ref the description stays the message's text, as before.
+void test_a_migrated_photo_keeps_its_note_on_its_part() {
+  for (bool ref : {true, false}) {
+    tx::ImportPlan plan;
+    plan.q0 = 1;
+    plan.hi = 100;
+    tx::DayRow row;
+    row.id = 10;
+    row.t = kMonthStart + 9 * kHour;
+    row.role = tx::RowRole::Owner;
+    row.photo = true;
+    row.text = "A handwritten shopping list: eggs, flour, two lemons.";
+    if (ref) row.photoRef = "pa1b2c3d4";
+    std::vector<tx::Item> items;
+    tx::BatchBuilder b(plan);
+    TEST_ASSERT_TRUE(b.feed({row}, true, [&](const tx::Item& it, uint64_t) {
+                        items.push_back(it);
+                        return true;
+                      }).ok());
+    const tx::Item* u = nullptr;
+    for (const tx::Item& it : items)
+      if (it.kind == tx::ItemKind::User) u = &it;
+    TEST_ASSERT_NOT_NULL(u);
+    if (!ref) {
+      TEST_ASSERT_EQUAL_STRING(row.text.c_str(), u->x.c_str());
+      TEST_ASSERT_TRUE(u->parts.empty());
+      continue;
+    }
+    TEST_ASSERT_EQUAL(1, (int)u->parts.size());
+    TEST_ASSERT_EQUAL_STRING("pa1b2c3d4", u->parts[0].ref.c_str());
+    TEST_ASSERT_EQUAL_STRING(row.text.c_str(), u->parts[0].note.c_str());
+    TEST_ASSERT_TRUE(u->x.empty());
+    std::string line;
+    tx::Item back;
+    TEST_ASSERT_TRUE(tx::encodeLine(*u, line).ok() && tx::decodeLine(line.data(), line.size(), back).ok());
+    TEST_ASSERT_EQUAL_STRING(row.text.c_str(), back.parts.at(0).note.c_str());
+  }
+}
+
 int main(int, char**) {
   gPlatform.nowMs = [] { return gClock; };
   gPlatform.delayMs = [](uint32_t ms) { gClock += ms; };
   gPlatform.nowEpoch = [] { return (uint64_t)0; };
   UNITY_BEGIN();
+  RUN_TEST(test_a_migrated_photo_keeps_its_note_on_its_part);
   RUN_TEST(test_the_import_budget_is_each_heads_full_due_mark);
   RUN_TEST(test_a_full_old_summary_is_carried_in_parts_that_fit_the_block);
   RUN_TEST(test_figures_leave_out_dates_and_keep_quantities);
