@@ -82,7 +82,10 @@ void test_a_routine_request_holds_zero_owner_bytes_and_only_its_allowed_tools() 
     for (const std::string& n : allowed) offered = offered || (rig.reg.has(n) && rig.reg.classOf(n).alwaysOn());
     scriptRoutine(rig, r, "routine answer " + hexOf(r, 6), offered);
     plain::FireReport rep;
+    rig.world.ran.clear();
     TEST_ASSERT_TRUE_MESSAGE(rig.fire(f, rep).ok(), rep.status.where);
+    for (const std::string& t : rig.world.ran)   // a call to any other tool never runs
+      TEST_ASSERT_TRUE_MESSAGE(std::find(allowed.begin(), allowed.end(), t) != allowed.end(), t.c_str());
     TEST_ASSERT_EQUAL(offered ? 2 : 1, (int)rig.routineModel.requests().size());
     for (const auto& req : rig.routineModel.requests()) {
       TEST_ASSERT_TRUE(contains(req.body, f.def.instruction));
@@ -159,6 +162,26 @@ void test_the_routine_key_is_its_own_and_never_a_chat() {
     TEST_ASSERT_TRUE(k.empty());
   }
   for (const char* chat : {"1001", "-1001234", "routine", "routine-"}) TEST_ASSERT_FALSE(plain::isRoutineChat(chat));
+}
+
+// A tool the policy allows a routine but its definition does not name is refused, never run; and
+// after outside content (a search) the routine may not schedule (RB-Q2a: no wakeup chain from a page).
+void test_a_routine_runs_only_its_own_tools_and_outside_content_closes_schedule() {
+  Rig rig;
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  std::mt19937 r(31);
+  plain::RoutineFire f = makeFire(r, rig.epoch);
+  f.def.tools = {"read_file", "web_search", "schedule"};
+  f.grants = true;
+  rig.routineModel.push(sp::call("list_files", "{\"path\":\"\"}"));
+  rig.routineModel.push(sp::call("schedule", "{\"op\":\"list\"}"));
+  rig.routineModel.push(sp::call("web_search", "{\"q\":\"news\"}"));
+  rig.routineModel.push(sp::call("schedule", "{\"op\":\"create\",\"kind\":\"routine\"}"));
+  rig.routineModel.push(sp::say("done"));
+  plain::FireReport rep;
+  TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
+  const std::vector<std::string> want = {"schedule", "web_search"};
+  TEST_ASSERT_TRUE_MESSAGE(rig.world.ran == want, "list_files and the schedule after the search never ran");
 }
 
 // ---- 2. the whole append (ruling 81) ---------------------------------------------------------
@@ -582,6 +605,7 @@ int main(int, char**) {
   RUN_TEST(test_counter_the_owners_engine_carries_his_transcript_and_every_tool);
   RUN_TEST(test_the_policy_row_cuts_the_definition_fail_closed);
   RUN_TEST(test_the_routine_key_is_its_own_and_never_a_chat);
+  RUN_TEST(test_a_routine_runs_only_its_own_tools_and_outside_content_closes_schedule);
   RUN_TEST(test_a_routine_output_reaches_the_owners_transcript_whole);
   RUN_TEST(test_the_note_label_names_the_routine_with_the_year);
   RUN_TEST(test_a_quiet_hours_note_is_held_and_sent_as_stored_when_they_end);
