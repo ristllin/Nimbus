@@ -299,11 +299,17 @@ inline void test_a_hard_guard_stops_honestly_and_the_owners_yes_continues_from_t
   TEST_ASSERT_TRUE_MESSAGE(bodyHas(c.model.requests()[4], "[stub big_read"), "the counter case kept the bulk whole");
 }
 
-// The calls-only last round ends with the limit line, which asks the same one question.
+// The owner's line after a guard stop, for every guard: one question whether to go on, never an
+// order to ask again.
 inline void test_the_limit_line_asks_one_question() {
-  const std::string l = std::string(texts::device_notes::kLimitLine) + "rounds" + texts::device_notes::kLimitLineEnd;
-  TEST_ASSERT_EQUAL(1, (int)std::count(l.begin(), l.end(), '?'));
-  TEST_ASSERT_TRUE(l.find("Ask again") == std::string::npos);
+  for (plain::GuardTrip g : {plain::GuardTrip::Rounds, plain::GuardTrip::Time, plain::GuardTrip::Spend,
+                             plain::GuardTrip::Size, plain::GuardTrip::Loop}) {
+    const std::string l = stoppedLine(g);
+    TEST_ASSERT_EQUAL(1, (int)std::count(l.begin(), l.end(), '?'));
+    TEST_ASSERT_TRUE(l.back() == '?');
+    TEST_ASSERT_TRUE(l.find("Ask again") == std::string::npos);
+    TEST_ASSERT_TRUE(l.find(plain::guardTripSlug(g)) != std::string::npos);
+  }
 }
 
 // ---- unattended turns keep today's limits ------------------------------------------------------

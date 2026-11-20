@@ -955,7 +955,7 @@ class TurnRun {
   }
   // The line for a turn a guard ended before a reply: it names the guard (ruling 79 item 4).
   std::string limitLine() const {
-    return std::string(texts::device_notes::kLimitLine) + guardTripSlug(t_.trip) + texts::device_notes::kLimitLineEnd;
+    return std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) + texts::device_notes::kLimitStoppedEnd;
   }
 
   // What the owner gets, decided in one place (close and the refusal path): the model's reply

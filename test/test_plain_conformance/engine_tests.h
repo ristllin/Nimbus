@@ -1283,7 +1283,7 @@ inline void test_the_last_round_with_only_calls_ends_with_the_limit_line() {
   TEST_ASSERT_EQUAL_STRING("none", b.model.last().view.toolChoice.c_str());
   TEST_ASSERT_EQUAL(1, (int)b.sent.size());
   // The line names the guard that stopped the turn (ruling 79 item 4).
-  const std::string line = std::string(texts::device_notes::kLimitLine) + "rounds" + texts::device_notes::kLimitLineEnd;
+  const std::string line = std::string(texts::device_notes::kLimitStopped) + "rounds" + texts::device_notes::kLimitStoppedEnd;
   TEST_ASSERT_EQUAL_STRING(line.c_str(), b.sent[0].text.c_str());
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::LimitReached);
   TEST_ASSERT_EQUAL_STRING("limit:rounds", lastEnd(storedOf(b))->end.cause.c_str());
@@ -2395,7 +2395,7 @@ inline void test_a_time_trip_whose_last_round_fails_ends_with_the_limit_line() {
   TXB_OK(b.owner("keep reading slowly", out));
   TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Time);
   TEST_ASSERT_TRUE_MESSAGE(out.status == plain::StatusLine::LimitReached, out.statusText.c_str());
-  const std::string line = std::string(texts::device_notes::kLimitLine) + "time" + texts::device_notes::kLimitLineEnd;
+  const std::string line = std::string(texts::device_notes::kLimitStopped) + "time" + texts::device_notes::kLimitStoppedEnd;
   TEST_ASSERT_EQUAL_STRING(line.c_str(), b.sent.back().text.c_str());
   TEST_ASSERT_EQUAL_STRING("limit:time", lastEnd(storedOf(b))->end.cause.c_str());
 }
