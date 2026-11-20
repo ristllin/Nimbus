@@ -479,10 +479,9 @@ struct Fire {
     }
     JsonDocument a;
     if (deserializeJson(a, tc.argsJson) || !a.is<JsonObject>()) a.to<JsonObject>();
-    orch::UnattendedFacts facts = routineFacts(fire, c.turn->tainted);
-    // A backslash may separate folders on the card's file system: such a path is never a listed one.
-    if (orch::callPath(tc.name, a.as<JsonObjectConst>()).find('\\') != std::string::npos) facts.listed = nullptr;
-    const std::string r = orch::unattendedRefusal(facts, tc.name, a.as<JsonObjectConst>());
+    // A write reaches a listed path only (orch::pathListed refuses any path holding "..", so no
+    // separator, '/' or '\\', can climb out of a listed folder).
+    const std::string r = orch::unattendedRefusal(routineFacts(fire, c.turn->tainted), tc.name, a.as<JsonObjectConst>());
     if (!r.empty()) {
       d.verdict = DispatchVerdict::Refuse;
       d.text = r;

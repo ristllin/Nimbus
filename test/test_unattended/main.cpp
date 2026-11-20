@@ -199,7 +199,7 @@ void test_more_never_reaches_past_the_routine() {
   rig.routineModel.push(sp::call("more", "{\"name\":\"write_file\",\"args\":{\"path\":\"secret.md\",\"content\":\"W\"}}"));
   rig.routineModel.push(sp::call("more", "{\"name\":\"write_file\",\"args\":{\"path\":\"out/a.md\",\"content\":\"W\"}}"));
   rig.routineModel.push(sp::call("more", "{}"));
-  // A backslash may separate folders on the card: "out/..\\secret.md" is never under out/.
+  // A backslash may separate folders on the card: "out/..\\secret.md" is never under out/ (pathListed).
   rig.routineModel.push(sp::call("write_file", "{\"path\":\"out/..\\\\secret.md\",\"content\":\"W\"}"));
   rig.routineModel.push(sp::say("done"));
   plain::FireReport rep;
