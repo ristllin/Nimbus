@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43781 ceiling=47989 entries=411 sha8=035ecd2c
-# class device_notes bytes=54846 ceiling=54203 entries=1472 sha8=92df283f
+# class device_notes bytes=54883 ceiling=54203 entries=1474 sha8=adc4f144
 # class tool_descriptions bytes=22131 ceiling=23131 entries=99 sha8=56b90134
 # class tool_results bytes=35720 ceiling=41962 entries=1108 sha8=06ea09d5
 # class side_prompts bytes=7395 ceiling=9795 entries=117 sha8=68383f73
@@ -709,6 +709,8 @@ device_notes	lib/core/src/orch_transcript.cpp	81982051	22	"; results.get {\"tag\
 device_notes	lib/core/src/orch_transcript.cpp	c983f25d	8	"- round "
 device_notes	lib/core/src/orch_transcript.cpp	338ea5e4	8	": (said)"
 device_notes	lib/core/src/orch_transcript.cpp	2fcc8709	31	" bytes; this call already ran\"}"
+device_notes	lib/core/src/orch_transcript.cpp	788ab9ba	33	"fetch the rest with results.get(\""
+device_notes	lib/core/src/orch_transcript.cpp	a4282e4b	4	" of "
 device_notes	lib/core/src/orch_transcript.cpp	d6370bbd	7	"[user] "
 device_notes	lib/core/src/orch_transcript.cpp	2c2e4a65	12	"[assistant] "
 device_notes	lib/core/src/orch_transcript.cpp	55a8c435	7	"[tool] "

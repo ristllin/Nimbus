@@ -236,6 +236,80 @@ static void test_render_brief_marks_errors() {
   TEST_ASSERT_TRUE(b.find("(error)") != std::string::npos);
 }
 
+// ---- RB-BGb part 2: the refit's in-turn rungs name what they keep ---------------------------
+static std::string seedOf(const Transcript& t) {
+  for (const auto& it : t.entries())
+    if (it.kind == TranscriptItem::Kind::User) return it.text;
+  return std::string();
+}
+
+// A result the loop's clamp already kept whole names that tag when it folds; it is not kept again.
+static void test_a_fold_reuses_the_clamps_tag() {
+  Transcript t;
+  int spills = 0;
+  t.setSpill([&](const std::string&, const std::string&) { return "r" + std::to_string(++spills + 10); });
+  t.addUser("read it");
+  t.addToolCall(call("a", "files_read", "{}"), 0, "anthropic");
+  t.addToolResult(res("a", "files_read", std::string(3000, 'x') + "…[truncated 3000 of 9000 B - fetch the rest with results.get(\"r4\")]"), 0);
+  t.addToolCall(call("b", "files_read", "{}"), 1, "anthropic");
+  t.addToolResult(res("b", "files_read", std::string(3000, 'y')), 1);
+  TEST_ASSERT_TRUE(t.foldOldestFor(1000) > 0);
+  TEST_ASSERT_EQUAL(0, spills);
+  TEST_ASSERT_TRUE(seedOf(t).find("results.get {\"tag\":\"r4\"}") != std::string::npos);
+}
+
+// A result the fold line shows whole (200 B or less) takes no ring slot and names no tag.
+static void test_a_short_result_folds_with_no_tag() {
+  Transcript t;
+  int spills = 0;
+  t.setSpill([&](const std::string&, const std::string&) { return "r" + std::to_string(++spills); });
+  t.addUser("look");
+  t.addToolCall(call("a", "memory_search", "{}"), 0, "anthropic");
+  t.addToolResult(res("a", "memory_search", "two hits"), 0);
+  t.addToolCall(call("b", "memory_search", "{}"), 1, "anthropic");
+  t.addToolResult(res("b", "memory_search", std::string(500, 'z')), 1);
+  t.foldOldestFor(1);
+  TEST_ASSERT_EQUAL(0, spills);
+  TEST_ASSERT_TRUE(seedOf(t).find("{\"tag\"") == std::string::npos);
+}
+
+// A result cut twice keeps its tag and names the whole result's size and the right offset.
+static void test_a_second_cut_names_the_whole_size() {
+  Transcript t;
+  int spills = 0;
+  t.setSpill([&](const std::string&, const std::string&) { return "r" + std::to_string(++spills); });
+  t.addUser("read it");
+  t.addToolCall(call("a", "files_read", "{}"), 0, "anthropic");
+  t.addToolResult(res("a", "files_read", std::string(9000, 'x')), 0);
+  t.clipNewestTo(5000);
+  t.clipNewestTo(2000);
+  TEST_ASSERT_EQUAL(1, spills);
+  std::string cut;
+  for (const auto& it : t.entries())
+    if (it.kind == TranscriptItem::Kind::ToolResult) cut = it.text;
+  TEST_ASSERT_TRUE_MESSAGE(cut.find(" of 9000; the rest: results.get {\"tag\":\"r1\"") != std::string::npos, cut.c_str());
+  const size_t shown = cut.find("\n[cut");
+  TEST_ASSERT_TRUE_MESSAGE(cut.find("\"offset\":" + std::to_string(shown) + "}") != std::string::npos, cut.c_str());
+  TEST_ASSERT_TRUE(t.toolBytes() <= 2000 + 64);
+}
+
+// The fold frees what it is asked for net of the lines it adds to the seeded message.
+static void test_the_fold_counts_its_own_lines() {
+  Transcript t;
+  t.addUser("go");
+  for (int i = 0; i < 4; i++) {
+    const std::string id = "c" + std::to_string(i);
+    t.addToolCall(call(id.c_str(), "memory_search", "{}"), i, "anthropic");
+    t.addToolResult(res(id.c_str(), "memory_search", std::string(300, 'a')), i);
+  }
+  const size_t before = t.toolBytes() + seedOf(t).size();
+  const size_t freed = t.foldOldestFor(400);
+  TEST_ASSERT_EQUAL(before - (t.toolBytes() + seedOf(t).size()), freed);
+  bool newest = false;   // the newest round is never folded
+  for (const auto& it : t.entries()) newest = newest || (it.kind == TranscriptItem::Kind::ToolResult && it.round == 3);
+  TEST_ASSERT_TRUE(newest);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_append_and_tool_bytes);
@@ -248,5 +322,9 @@ int main(int, char**) {
   RUN_TEST(test_trim_noop_under_budget);
   RUN_TEST(test_render_brief_bounded_and_marked);
   RUN_TEST(test_render_brief_marks_errors);
+  RUN_TEST(test_a_fold_reuses_the_clamps_tag);
+  RUN_TEST(test_a_short_result_folds_with_no_tag);
+  RUN_TEST(test_a_second_cut_names_the_whole_size);
+  RUN_TEST(test_the_fold_counts_its_own_lines);
   return UNITY_END();
 }

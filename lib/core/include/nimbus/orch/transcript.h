@@ -83,11 +83,8 @@ class Transcript {
   // A call and its result fold together or not at all (an unanswered tool_use
   // 400s on Anthropic). Returns the replay bytes reclaimed.
   size_t trimToolOutputs(size_t maxTotalToolBytes);
-  // The budget refit's second rung: fold older rounds down to half `cap` and
-  // NEVER clip the newest round, whatever the byte accounting says (trimToolOutputs
-  // skips its clip only when the fold lands the replay exactly on the cap; a host
-  // whose accounting sits a byte over would clip the results the model has not seen
-  // yet one rung early). Clipping the newest round is the third rung's last resort.
+  // Fold older rounds down to half `cap`, never the newest round (v5.1.2's refit rung; the
+  // refit now uses foldOldestFor, which folds only what it needs).
   size_t foldOlderRounds(size_t cap);
   // Lane RB-BGb part 2 (ruling 93 item 3): the body-budget refit's in-turn rungs. Fold the
   // oldest rounds (never the newest) until `want` replay bytes are freed, no further: each
@@ -124,6 +121,8 @@ class Transcript {
   size_t replayBytes_ = 0;
   TurnImages* images_ = nullptr;
   std::function<std::string(const std::string&, const std::string&)> spill_;
+  static constexpr size_t kNoteBytes = 180;   // a cut's or a withheld result's note, at most
+  size_t seedBytes() const;
   std::map<std::string, std::string> keptTags_;   // "<result id>#<round>" -> its results.get tag
   std::string keepWhole(const std::string& id, const std::string& name, const std::string& text);
   int newestRound() const;

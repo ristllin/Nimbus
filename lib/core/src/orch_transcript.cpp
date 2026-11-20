@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include <cstdlib>
+
 #include "nimbus/mem_cap.h"  // utf8CapLen - every clip is UTF-8-safe
 
 namespace nimbus {
@@ -86,11 +88,12 @@ namespace {
 // The newest result clipped to `room` bytes: its head plus a visible "[cut: ...]"
 // marker, or a "[not shown: ...]" note when too little room is left for a useful
 // head. The whole replacement fits `room` whenever a head is kept.
-std::string clipToRoom(const std::string& text, size_t room, const std::string& tag = std::string()) {
+constexpr const char kCutHead[] = "\n[cut to fit this request: bytes 0-";
+std::string clipToRoom(const std::string& text, size_t room, const std::string& tag = std::string(), size_t total = 0) {
   if (!tag.empty()) {   // RB-BGb: the cut names the bytes shown and the exact read of the rest
-    const std::string head = "\n[cut to fit this request: bytes 0-";
-    const std::string mid = " of " + std::to_string((unsigned)text.size()) + "; the rest: results.get {\"tag\":\"" + tag +
-                            "\",\"offset\":";
+    const std::string head = kCutHead;
+    const std::string mid = " of " + std::to_string((unsigned)(total ? total : text.size())) +
+                            "; the rest: results.get {\"tag\":\"" + tag + "\",\"offset\":";
     const size_t overhead = head.size() + mid.size() + 2 * 7 + 3;
     const int keep = room > overhead ? utf8CapLen(text.c_str(), (int)text.size(), (int)(room - overhead)) : 0;
     const std::string n = std::to_string(keep);
@@ -141,7 +144,9 @@ std::string foldRoundLine(const std::vector<const TranscriptItem*>& items, int r
       }
     const std::string label = "- round " + std::to_string(round) + ": " + it->name + " " +
                               foldLine("", it->text, 60) + (err ? " -> error" : " ->");
-    const std::string tag = keep && !err ? keep(it->id + "#" + std::to_string(round), it->name, result) : std::string();
+    // A result the line shows whole (200 B or less) needs no tag (and no ring slot).
+    const std::string tag = keep && !err && bytes > 200 ? keep(it->id + "#" + std::to_string(round), it->name, result)
+                                                        : std::string();
     out += foldLine(label, result, 200) + " (" + std::to_string((unsigned)bytes) + " B" +
            (tag.empty() ? std::string() : "; results.get {\"tag\":\"" + tag + "\"}") + ")\n";
   }
@@ -228,6 +233,13 @@ size_t Transcript::trimToolOutputs(size_t maxTotalToolBytes) {
 std::string Transcript::keepWhole(const std::string& id, const std::string& name, const std::string& text) {
   const auto was = keptTags_.find(id);   // cut earlier: its whole text is already kept
   if (was != keptTags_.end()) return was->second;
+  // The loop's clamp kept the whole result already and its marker names the tag: that one.
+  const std::string clamp = "fetch the rest with results.get(\"";
+  const size_t at = text.rfind(clamp);
+  if (at != std::string::npos) {
+    const size_t from = at + clamp.size(), to = text.find('"', from);
+    if (to != std::string::npos && to > from) return keptTags_[id] = text.substr(from, to - from);
+  }
   // Never a results.* read again: it would push a near copy into the ring (clampResult's rule).
   if (!spill_ || text.empty() || name.rfind("results", 0) == 0) return std::string();
   const std::string tag = spill_(name, text);
@@ -235,34 +247,70 @@ std::string Transcript::keepWhole(const std::string& id, const std::string& name
   return tag;
 }
 
+size_t Transcript::seedBytes() const {
+  size_t n = 0;
+  for (const auto& it : e_)
+    if (it.kind == TranscriptItem::Kind::User) n += it.text.size();
+  return n;
+}
+
 size_t Transcript::foldOldestFor(size_t want) {
-  const size_t before = replayBytes_;
-  foldOldRounds(newestRound(), want < replayBytes_ ? replayBytes_ - want : 0);
-  return before - replayBytes_;
+  // One round at a time, oldest first, until `want` bytes are freed net of the lines the fold
+  // adds to the seeded message (they ride the request too). Never the newest round.
+  const int newest = newestRound();
+  const size_t before = replayBytes_ + seedBytes();
+  size_t net = 0;
+  while (net < want && replayBytes_ > 0) {
+    const size_t was = replayBytes_;
+    foldOldRounds(newest, replayBytes_ - 1);   // the oldest round left before the newest
+    if (replayBytes_ == was) break;            // only the newest round is left
+    const size_t now = replayBytes_ + seedBytes();
+    net = before > now ? before - now : 0;
+  }
+  return net;
 }
 
 size_t Transcript::clipNewestTo(size_t cap) {
   if (replayBytes_ <= cap) return 0;
   const int newest = newestRound();
-  size_t newestResults = 0, results = 0;
+  size_t newestResults = 0;
   for (const auto& it : e_)
-    if (it.kind == TranscriptItem::Kind::ToolResult && it.round == newest) {
-      newestResults += it.text.size();
-      results++;
-    }
+    if (it.kind == TranscriptItem::Kind::ToolResult && it.round == newest) newestResults += it.text.size();
   const size_t others = replayBytes_ - newestResults;
-  // Each cut or withheld result carries its note (up to about 160 B): reserved first, so the
-  // replay lands under `cap` with them and the refit needs no prompt rung for the notes.
-  const size_t notes = results * 160;
-  size_t room = cap > others + notes ? cap - others - notes : 0;
+  // A cut keeps its note inside the room it is given; a result left too little room for a part
+  // is replaced by a note alone, which can pass its room. Those notes are reserved first (about
+  // 180 B each), so the replay lands under `cap` and the refit needs no prompt rung for them.
+  const auto noteOnly = [&](size_t reserve) {
+    size_t r = cap > others + reserve ? cap - others - reserve : 0, n = 0;
+    for (const auto& it : e_) {
+      if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;
+      if (it.text.size() <= r) r -= it.text.size();
+      else if (r > kNoteBytes + 256) r = 0;
+      else n++;
+    }
+    return n;
+  };
+  const size_t notes = noteOnly(0);
+  const size_t reserve = noteOnly(notes * kNoteBytes) * kNoteBytes;
+  size_t room = cap > others + reserve ? cap - others - reserve : 0;
   const size_t before = replayBytes_;
   for (auto& it : e_) {
     if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;
     if (it.text.size() > room) {
       std::string tag;
       for (const auto& call : e_)
-        if (call.kind == TranscriptItem::Kind::ToolUse && call.id == it.id && call.round == newest) tag = keepWhole(it.id + "#" + std::to_string(newest), call.name, it.text);
-      std::string next = clipToRoom(it.text, room, tag);
+        if (call.kind == TranscriptItem::Kind::ToolUse && call.id == it.id && call.round == newest)
+          tag = keepWhole(it.id + "#" + std::to_string(newest), call.name, it.text);
+      // Cut before: cut again from what it showed, and name the whole result's size.
+      std::string shown = it.text;
+      size_t total = 0;
+      const size_t mark = shown.rfind(kCutHead);
+      if (!tag.empty() && mark != std::string::npos) {
+        const size_t of = shown.find(" of ", mark);
+        total = of == std::string::npos ? 0 : (size_t)std::strtoul(shown.c_str() + of + 4, nullptr, 10);
+        shown.resize(mark);
+      }
+      std::string next = clipToRoom(shown, room, tag, total);
       if (next.size() < it.text.size()) {
         replayBytes_ -= it.text.size() - next.size();
         it.text = std::move(next);

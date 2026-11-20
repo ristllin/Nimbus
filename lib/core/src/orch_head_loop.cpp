@@ -251,12 +251,12 @@ namespace {
 // Room kept under the body budget after a refit: folded rounds leave a stub line
 // each in the seeded message (only then the full slack), and the wire escapes
 // what remains.
-// RB-BGb part 2: 2 KB, not 4 KB: the fold now takes only what the request needs, a whole round
+// RB-BGb part 2: 1 KB, not 4 KB: the fold now takes only what the request needs (net of its lines), a whole round
 // at a time, so a large slack folds one round more than the overshoot asks for.
-constexpr size_t kBudgetRefitSlack = 2048;
+constexpr size_t kBudgetRefitSlack = 1024;
 constexpr size_t kBudgetClipSlack = 512;
-// Refits per round: big arguments, older rounds, older history, the newest round's clip,
-// each rung of the prompt ladder (turn_fit.h), and a few for a rung whose estimate fell short
+// Refits per round: big arguments, older rounds, the newest round's cut, each rung of the
+// prompt ladder (turn_fit.h), and a few for a rung whose estimate fell short
 // (stub lines that ate the room a fold made). Each is one body build, and none of them
 // sends anything.
 constexpr int kBudgetRefits = 14;
@@ -331,10 +331,11 @@ size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size
   size_t freed = 0;
   for (int rung = 0; rung < kBudgetRefits; ++rung) {
     const size_t remaining = want > freed ? want - freed : 1;
-    // The replay the re-run needs, from the refusal's own figures: the same target whatever
-    // the earlier rungs of this cycle freed (RB-BGb part 2: the newest round's cut comes after
-    // the older rounds' fold in one cycle, so the target must not move with it).
-    const size_t cap = have > want ? have - want : 1;
+    // The replay the re-run needs: what is replayed now less what is still to free (every rung
+    // reports what it freed net of what it added, so this lands on the refusal's target).
+    (void)have;
+    const size_t now = tr.toolBytes();
+    const size_t cap = now > remaining ? now - remaining : 1;
     const char* rungWhat = "";
     const size_t got = refitOneRung(tr, hooks, remaining, cap, rungWhat);
     if (got && what.find(rungWhat) == std::string::npos) {

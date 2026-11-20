@@ -97,6 +97,7 @@ static void test_no_request_carries_less_than_the_v512_replay() {
       const nimbus::orch::ContextBudget cb = nimbus::orch::headContextBudget(h.host, h.model, true, {});
       const size_t v512 = cb.replayBytes;   // the wire's fixed replay before this lane
       const size_t budget = nimbus::orch::turnBudgetFor(h.host, h.model, true).wireBodyBytes;
+      LogCapture::install();
       Rig rig(h, cb.historyMaxBytes * (size_t)q / 4);
       const Result r = rig.run();
       for (size_t b = 1; b < r.bodies.size(); b++) {
