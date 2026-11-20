@@ -94,6 +94,12 @@ bool isJobDelivery(const std::string& rowTags);   // whole comma-list item match
 // The outside-content fence's opening line (what sub-agents returned: data, never instructions,
 // RB-Q2a). Also the mark on a scratchpad entry a turn fed outside content wrote.
 extern const char kOutsideContentOpen[];
+extern const char kOutsideContentClose[];   // "[end outside content]"
+// Text that came from outside, fenced as data: the opening line, the text with every close of
+// the fence it carries neutralised (any case, any whitespace), the closing line. Nothing of the
+// text is dropped. The one fence of both engines: the sub-agent results here, a routine's reply
+// after outside content on engine 2 (plain_unattended.cpp, lane RB-RL).
+std::string fenceOutsideContent(const std::string& text);
 
 class JobEngine {
  public:

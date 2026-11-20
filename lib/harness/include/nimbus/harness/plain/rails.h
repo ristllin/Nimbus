@@ -16,9 +16,11 @@
 // Outside-content taint is a property of each item (itemOutside): a result of class
 // Outside (the web, a fetched page, a connector, an unknown tool, a device-written path), a
 // document the owner sent (a File part of his message: his own typed text never taints), a
-// sub-agent's report (the Agent device note). A turn is tainted while its request carries
-// such an item whole (TurnCtx::tainted: the engine sets it when it stores the turn's input and
-// when it stores an outside result; a resumed turn keeps it). An outside result shows whole
+// sub-agent's report (the Agent device note), a routine's reply after outside content (a Routine
+// device note the device fenced with jobs.h fenceOutsideContent). A turn is tainted while its request carries
+// such an item whole (TurnCtx::tainted: the engine sets it when it stores the turn's input, when
+// an outside item was stored since the last closed turn, and when it stores an outside result; a
+// resumed turn keeps it). An outside result shows whole
 // only inside its own turn: from the next turn on the request carries its stub, which names it
 // and how to view it (tx::showResult), never its bytes; owner and assistant text are never
 // removed (ruling 81).
@@ -70,7 +72,8 @@ const RailRow* taintExemptions(size_t& count);
 
 // ---- taint, one rule for every item ------------------------------------------------------
 // Is this stored item outside content: a Result of class Outside, a User item with a File
-// part (a document the owner sent), an Agent device note (a sub-agent's report)?
+// part (a document the owner sent), an Agent device note (a sub-agent's report), a Routine
+// device note carrying the outside-content fence (a routine's reply after outside content)?
 bool itemOutside(const nimbus::orch::tx::Item& it);
 // Does a turn's input taint it from the start: a sub-agent's report (Trigger::AgentResult)
 // or a document part in the owner's message? Photos and voice do not; typed text never does.

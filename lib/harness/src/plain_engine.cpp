@@ -396,9 +396,22 @@ class TurnRun {
     return c_.nextQ;
   }
 
+  // An outside item stored since the last closed turn (a routine's reply after outside content,
+  // appended between turns): this turn is the first whose request carries it, so it is tainted, as
+  // the turn a sub-agent's report arrives in is (lane RB-RL: plain/rails.h itemOutside).
+  bool outsideSinceLastTurn() const {
+    tx::Item& it = t_.read;
+    for (size_t i = 0; i < d_.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || e.q <= c_.lastClosedQ || e.kind != tx::ItemKind::DeviceNote) continue;
+      if (d_.arena->get(i, it).ok() && itemOutside(it)) return true;
+    }
+    return false;
+  }
+
   // The owner message (u) before any model call; another trigger's text as its device note.
   Status storeInput(const TurnInput& in) {
-    t_.ctx.tainted = t_.ctx.tainted || inputOutside(t_.ctx.trigger, in.parts);   // a report or a document (RB-RL)
+    t_.ctx.tainted = t_.ctx.tainted || inputOutside(t_.ctx.trigger, in.parts) || outsideSinceLastTurn();   // RB-RL
     if (in.text.empty() && in.parts.empty()) return Status::success();
     const Trigger tr = t_.ctx.trigger;
     if (tr == Trigger::Routine) return note(in.text, tx::NoteClass::Routine);

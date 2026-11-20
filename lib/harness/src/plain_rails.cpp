@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <string>
 
+#include "nimbus/harness/jobs.h"   // kOutsideContentOpen: the one fence (RB-Q2a)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/action_rules.h"   // actionRuleRow
 #include "nimbus/orch/path_rules.h"
@@ -136,7 +137,9 @@ const RailRow* taintExemptions(size_t& count) {
 bool itemOutside(const tx::Item& it) {
   switch (it.kind) {
     case tx::ItemKind::Result: return it.cls == tx::ResultClass::Outside;
-    case tx::ItemKind::DeviceNote: return it.note == tx::NoteClass::Agent;
+    case tx::ItemKind::DeviceNote:   // a sub-agent's report; a routine's reply the device fenced as outside
+      return it.note == tx::NoteClass::Agent ||
+             (it.note == tx::NoteClass::Routine && it.x.find(agent::kOutsideContentOpen) != std::string::npos);
     case tx::ItemKind::User:
       for (const tx::Part& p : it.parts)
         if (p.kind == tx::PartKind::File) return true;
