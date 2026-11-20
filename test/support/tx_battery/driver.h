@@ -79,6 +79,9 @@ class Battery {
   std::string hostOverride, modelOverride;
   bool routed = false;
   bool noHead = false;             // the setup names no model (a binding fault; ruling 89 item 3)
+  // The profile every turn asks for: the default, full (ruling 91, blockers/F8). A case that tests an
+  // owner's smaller choice names it here.
+  tx::Profile profile = tx::kDefaultProfile;
   bool noHost = false;             // the setup names no host either way (a binding fault; ruling 91, F2)
   plain::DeliverFn deliverFn;
   plain::HeadCost cost;            // what the guards scale from (TurnSetup::cost)
@@ -264,7 +267,7 @@ class Battery {
                                                              : "battery-model";
     if (noHead) c.model.clear();
     if (noHost) c.host.clear();
-    c.profile = tx::Profile::Standard;
+    c.profile = profile;
     c.startedAt = epoch;
     c.startedMs = ms;
     c.who = &who;

@@ -205,14 +205,19 @@ void answerSummariesWith(txb::Battery& b, std::function<sp::Step()> step) {
   b.model.respondWith([step](const sp::Recorded&, size_t) { return step(); });
 }
 
-std::vector<txb::TurnScript> threeDays() {
+// Three days of turns whose stored lines pass the battery head's due mark H at its profile (full
+// by default; ruling 91, blockers/F8): the compaction is due by the head's own marks.
+std::vector<txb::TurnScript> threeDays(const txb::Battery& b) {
+  tx::HeadBudget head;
+  TXB_OK(tx::budgetFor(b.headKey(), b.profile, head));
+  const size_t ask = head.marks.high / 25;
   std::vector<txb::TurnScript> turns;
   for (int day = 0; day < 3; ++day)
     for (int i = 0; i < 10; ++i) {
       const std::string k = std::to_string(day) + "." + std::to_string(i);
-      turns.push_back(i == 0 ? txb::withTool(86400, "day " + k + std::string(3000, 'd'), "read_file",
+      turns.push_back(i == 0 ? txb::withTool(86400, "day " + k + std::string(ask, 'd'), "read_file",
                                              R"({"path":"notes/boat.md"})", "boat " + k)
-                             : txb::chat(60, "ask " + k + std::string(3000, 'a'), "reply " + k));
+                             : txb::chat(60, "ask " + k + std::string(ask, 'a'), "reply " + k));
     }
   return turns;
 }
@@ -222,11 +227,11 @@ void test_compaction_covers_every_row() {
   TXB_WAITS_FOR("PENDING RB-C2", "RB-E1a");
   txb::Battery b;
   b.world.files["notes/boat.md"] = "Nereid II";
-  TXB_OK(txb::runTurns(b, threeDays()));
+  TXB_OK(txb::runTurns(b, threeDays(b)));
   answerSummariesWith(b, [] { return sp::say(txb::kDigest); });
   plain::IdleOutcome out;
   TXB_OK(b.idle(out));
-  TEST_ASSERT_TRUE_MESSAGE(out.worked, "90 KB resident above H=60,000 B and no compaction ran");
+  TEST_ASSERT_TRUE_MESSAGE(out.worked, "resident above the head's H at full and no compaction ran");
   b.model.respondWith(nullptr);
   TXB_OK(txb::runTurns(b, {txb::chat(60, "what did we talk about?", "the boat")}));
   std::vector<tx::Item> items;
@@ -234,6 +239,17 @@ void test_compaction_covers_every_row() {
   size_t digests = 0;
   for (const tx::Item& it : items) digests += it.kind == tx::ItemKind::Digest;
   TEST_ASSERT_TRUE_MESSAGE(digests > 0, "the compaction stored no digest");
+  // At full every compaction leaves at least the head's v5.1.2 keep of owner and assistant text.
+  uint64_t thru = 0;
+  for (const tx::Item& it : items)
+    if (it.kind == tx::ItemKind::Digest) thru = std::max(thru, it.thru);
+  size_t text = 0;
+  for (const tx::Item& it : items)
+    if (it.q > thru && (it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant)) text += it.x.size();
+  tx::HeadBudget head;
+  TXB_OK(tx::budgetFor(b.headKey(), b.profile, head));
+  TEST_ASSERT_EQUAL((int)tx::Profile::Full, (int)b.profile);
+  TEST_ASSERT_TRUE_MESSAGE(text >= head.releasedKeep, "a compaction at full left less text than v5.1.2's keep");
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(txb::itemsPaired(items, why), why.c_str());
   expectLastRequestCovers(b);
@@ -246,7 +262,7 @@ void test_a_failed_compaction_leaves_every_row_covered() {
   for (int mode = 0; mode < 4; ++mode) {
     txb::Battery b;
     b.world.files["notes/boat.md"] = "Nereid II";
-    TXB_OK(txb::runTurns(b, threeDays()));
+    TXB_OK(txb::runTurns(b, threeDays(b)));
     if (mode == 0) answerSummariesWith(b, [] { return sp::transportCut(45000); });
     if (mode == 1) answerSummariesWith(b, [] { return sp::say("Talked."); });
     if (mode == 2) answerSummariesWith(b, [] { return sp::httpError(400); });

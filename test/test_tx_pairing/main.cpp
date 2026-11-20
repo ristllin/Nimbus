@@ -183,9 +183,12 @@ void test_a_suppressed_repeat_is_still_paired() {
 void test_compaction_moves_a_call_with_its_result() {
   TXB_WAITS_FOR("PENDING RB-C2", "RB-E1a");
   txb::Battery b;
+  tx::HeadBudget head;   // past the battery head's H at its profile (full by default; ruling 91, blockers/F8)
+  TXB_OK(tx::budgetFor(b.headKey(), b.profile, head));
+  const size_t ask = head.marks.high / 20;
   std::vector<txb::TurnScript> turns;
   for (int i = 0; i < 24; ++i)
-    turns.push_back(txb::withTool(i % 8 == 0 ? 86400 : 60, "turn " + std::to_string(i) + std::string(3000, 'p'),
+    turns.push_back(txb::withTool(i % 8 == 0 ? 86400 : 60, "turn " + std::to_string(i) + std::string(ask, 'p'),
                                   "ledger_day", R"({"day":"2026-11-17"})", "ok " + std::to_string(i)));
   TXB_OK(txb::runTurns(b, turns));
   b.model.respondWith([](const sp::Recorded&, size_t) { return sp::say(txb::kDigest); });
