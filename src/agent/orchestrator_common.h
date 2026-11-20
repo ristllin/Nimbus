@@ -1,10 +1,9 @@
 #pragma once
 // orchestrator_common.h - PRIVATE to the device seam: what orchestrator_common.cpp (the
-// engine-neutral half: job glue, ring arcs, voice, job status getters, reply sinks)
-// and orchestrator.cpp (the old engine's half) share. Not for any other file: the public
-// surface stays orchestrator.h, unchanged for its callers (lane RB-SEAM1a, no behavior
-// change). Both files include this header, so every shared object is declared once and
-// type-checked against its one definition.
+// engine-neutral half) and an engine seam (orchestrator_e1.cpp, the old engine's) share
+// beyond orchestrator.h and engine_api.h. Not for any other file (lanes RB-SEAM1a and
+// RB-SEAM1b, no behavior change). Both files include this header, so every shared object
+// is declared once and type-checked against its one definition.
 #include "orchestrator.h"
 
 #include <freertos/FreeRTOS.h>
@@ -21,7 +20,7 @@ namespace agent {
 namespace orchestrator {
 
 // ---- module state (orchestrator_common.cpp) -------------------------------------
-extern HeavyFabric* g_fabric;   // set by begin() (orchestrator.cpp)
+extern HeavyFabric* g_fabric;   // set by begin() (the engine seam)
 extern Sinks        g_sinks;    // set by begin()
 extern JobEngine*   g_jobs;     // constructed in begin()
 // The sub-agent journal, in PSRAM (psramObject; its declaration in orchestrator_common.cpp
@@ -34,7 +33,7 @@ extern uint32_t g_attnHoldMs;      // latched AttnHoldMs; begin() hands it to th
 
 // ---- voice (orchestrator_common.cpp) ----------------------------------------------
 // Hold-to-talk message lifecycle (CUM-456): written by handleMessage and the turn end
-// (orchestrator.cpp), read by voiceMessages().
+// (the engine seam), read by voiceMessages().
 extern std::atomic<uint32_t> s_voiceHandled;
 extern std::atomic<bool>     s_voiceOk;
 extern bool                  s_inVoiceMessage;   // tg_poll only

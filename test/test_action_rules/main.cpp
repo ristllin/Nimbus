@@ -904,9 +904,10 @@ static void test_files_send_without_a_chat_resolves_before_the_check() {
 // allow-listed one.
 static void test_device_wiring_of_the_owner_chat_rules() {
   const std::string orch = readFile("src/agent/orchestrator_e1.cpp");
-  const size_t role = orch.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
+  const std::string common = readFile("src/agent/orchestrator_common.cpp");   // the tenant table (RB-SEAM1b)
+  const size_t role = common.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
   TEST_ASSERT_TRUE(role != std::string::npos);
-  const std::string body = orch.substr(role, orch.find("\n}\n", role) - role);
+  const std::string body = common.substr(role, common.find("\n}\n", role) - role);
   TEST_ASSERT_TRUE_MESSAGE(body.find("tableHasAdmin = g_tenants.adminCount() > 0;") != std::string::npos, body.c_str());
   // The no-row fallback resolves the Telegram owner rule from NVS (thread-safe), never
   // from telegram's poll-task-owned g_owners/g_allowlist Strings: roleOfChat also runs on

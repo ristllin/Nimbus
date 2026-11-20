@@ -88,6 +88,7 @@ E1_SOURCES = {
         "lib/harness/src/turn_contract.cpp",
         "lib/harness/src/turn_memory.cpp",
         "nimbusd/src/rig.h",
+        "src/agent/orchestrator_common.cpp",  # RB-SEAM1b: the engine-neutral half of the device seam
         "src/agent/orchestrator_e1.cpp",
         "src/main.cpp",
     ),

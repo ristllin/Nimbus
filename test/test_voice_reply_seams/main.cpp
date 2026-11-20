@@ -83,7 +83,7 @@ static bool before(const std::string& s, const char* a, const char* b) {
 }
 
 static void test_a_telegram_voice_request_never_reaches_the_speaker() {
-  const std::string orch = code("src/agent/orchestrator_e1.cpp");
+  const std::string orch = code("src/agent/orchestrator_common.cpp");   // the reply sinks (RB-SEAM1b)
   const std::string send = bodyOf(orch, "bool sendToChat(const String& chatId, const String& text, bool asVoice,");
   TEST_ASSERT_TRUE(send.find("voicereply::deliver(") != std::string::npos);
   TEST_ASSERT_EQUAL_size_t(0, count(send, "g_sinks.speak"));
@@ -157,7 +157,7 @@ static void test_a_clip_is_used_only_when_whole() {
 }
 
 static void test_spoken_only_after_the_speaker_opened() {
-  const std::string orch = code("src/agent/orchestrator_e1.cpp");
+  const std::string orch = code("src/agent/orchestrator_common.cpp");   // the reply sinks (RB-SEAM1b)
   const std::string speak = bodyOf(orch, "bool speakOnDevice(const String& text, bool capture, String* why) {");
   TEST_ASSERT_TRUE(before(speak, "::sfx::speakReply(", "::sfx::awaitReplyStart("));
   TEST_ASSERT_TRUE(before(speak, "::sfx::awaitReplyStart(", "return true;"));

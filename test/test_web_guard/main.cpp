@@ -477,7 +477,8 @@ static std::vector<std::string> universePaths() {
   std::vector<std::string> out = {
       "src/agent/memory_subsystem.cpp", "src/agent/files_subsystem.cpp", "src/agent/skills.cpp",
       "src/agent/prefs_subsystem.cpp", "src/agent/safety_activity_store.cpp", "src/agent/tg_archive.cpp",
-      "src/agent/loops_subsystem.cpp", "src/agent/orchestrator_e1.cpp", "src/agent/telegram.cpp",
+      "src/agent/loops_subsystem.cpp", "src/agent/orchestrator_e1.cpp", "src/agent/orchestrator_common.cpp",
+      "src/agent/telegram.cpp",
       "src/agent/store.cpp", "src/agent/health.cpp", "src/agent/dream_subsystem.cpp",
       "src/agent/connectors.cpp", "src/agent/spend_ceiling_store.cpp", "src/agent/provider_verify.cpp",
       "src/agent/model_refresh.cpp", "src/agent/device_log_tool.cpp", "src/agent/adapters/embeddings.cpp",
@@ -619,6 +620,7 @@ static std::string networkSeamIn(const std::string& text) {
 static void test_every_network_tool_runs_outside_the_dispatch_lock() {
   const char* const kToolFiles[] = {"src/agent/memory_subsystem.cpp", "src/agent/files_subsystem.cpp",
                                     "src/agent/pdf_tool.cpp",         "src/agent/orchestrator_e1.cpp",
+                                    "src/agent/orchestrator_common.cpp",
                                     "src/agent/loops_subsystem.cpp",  "src/agent/skills.cpp",
                                     "src/agent/model_refresh.cpp",    "src/agent/device_log_tool.cpp",
                                     "src/main.cpp",                   "src/sfx/music.cpp",

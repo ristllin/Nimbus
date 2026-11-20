@@ -30,7 +30,6 @@
 #include "degraded_device.h"            // lane DEGRADE: the served-by memory behind the degraded line
 #include "connectors.h"                 // per-provider connector catalog + attach
 #include "nimbus/orch/action_rules.h"   // who may run each tool and device action (CUM-813)
-#include "nimbus/orch/loop_delivery.h"  // telegramOwnerOf: the owner rule from NVS lists (host-tested)
 #include "model_refresh.h"   // R5: the orch_model miss answer
 #include "provider_verify.h"            // queueWorkspaceProbeIfStale() at boot (CUM-537)
 #include "nimbus/orch/connectors_wire.h" // portable attach*Wire (builtinsOnly cumulo route)
@@ -40,16 +39,10 @@
 #include "budget_command.h"             // lane BUD: /usage, /budget, /model (the spending commands)
 #include "../sys/ota_update.h"          // RB-OTA2: /ota, the owner's update channel switch
 #include "effect_ring_device.h"         // lane RB-FX: each chat's recent effects on the card
-#include "nimbus/orch/no_dash.h"         // applyOutputFilters (the delivery seam filter)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
 #include "nimbus/orch/moderation.h"     // portable gate decision core (fail-open/closed, admin-exempt)
 #include "nimbus/orch/media.h"          // CUM-40 validMusicName (for /play)
 #include "../sfx/music.h"               // CUM-40 music player control (/play)
-#include "adapters/audio_tts.h"         // spoken replies (TTS -> Telegram audio / device speaker)
-#include "nimbus/tts_catalog.h"         // core::speakerTtsFormat - provider -> speaker format (host-tested)
-#include "nimbus/orch/voice_notes.h"     // kSpeakMaxChars - the speaker clip cap (host-tested)
-#include "nimbus/speaker_reply.h"       // speakerFailText - the speaker's honest failure (host-tested)
-#include "voice_reply.h"                // reply.telegram voice:true - Telegram with a receipt
 #include "adapters/provider_file_fetch.h"  // captureProviderFile - v4.1 code_interpreter file capture
 #include "pdf_tool.h"                        // files.pdf - the device PDF writer
 #include <solide/audio.h>               // reply.speak - play WAV on the device speaker (P6)
@@ -80,7 +73,6 @@
 #include "nimbus/harness/fold_driver.h" // FoldDriver - the one fold driver (lane F: never a permanent pause)
 #include <map>
 #include <mutex>
-#include "nimbus/orch/result_store.h"   // recent-results ring (results.get/list)
 #include "nimbus/orch/caps.h"
 #include "nimbus/orch/compact.h"        // modelCtxTokens (window table)
 #include "nimbus/orch/owner_first.h"    // OwnerFirstGate - background work waits for the owner
@@ -121,6 +113,9 @@
 // sinks, NVS/PSRAM surfaces, the Telegram /loops owner-command intercept, the
 // web-staged mailbox, the /api/lastturn PSRAM blob, deps builders, and thin
 // public-API forwards (the agent::orchestrator:: surface is unchanged).
+// It is the old engine's seam (lane RB-SEAM1b): it defines the calls of engine_api.h and is
+// the only device file that includes nimbus/harness/engine.h; the engine-neutral half lives
+// in orchestrator_common.cpp.
 
 namespace agent {
 namespace orchestrator {

@@ -29,13 +29,13 @@
 #include "nimbus/fault.h"               // the speaker fault (reply.speak)
 #include "../sfx/sound_fx.h"            // speakReply / awaitReplyStart (reply.speak)
 
-// orchestrator_common - the engine-neutral half of the device seam (lane RB-SEAM1a, no
-// behavior change): job glue, ring arcs, voice, the job status getters and the reply
-// sinks' allowlist and moderation gate, moved here from orchestrator.cpp so a second
-// engine can be bound beside the old one. orchestrator.cpp keeps the old engine's half
-// (and, for now, code a host test pins there by path, or code whose move would cost
-// image bytes in per-file template copies); what the two share is declared in
-// orchestrator_common.h. The public surface is orchestrator.h, unchanged.
+// orchestrator_common - the engine-neutral half of the device seam (lanes RB-SEAM1a and
+// RB-SEAM1b, no behavior change): job glue, ring arcs, voice, the tenant table, the session
+// snapshot and staged terminates, the status getters, the reply sinks and the results ring,
+// moved here from the old engine's seam so a second engine can be bound beside it. It
+// defines every call orchestrator.h itself declares; an engine seam (orchestrator_e1.cpp)
+// defines the calls of engine_api.h, and the two share orchestrator_common.h.
+// test/test_engine_api_seam pins the split.
 
 namespace agent {
 namespace orchestrator {
@@ -43,7 +43,7 @@ namespace orchestrator {
 namespace orch = nimbus::orch;
 namespace attn = nimbus::attn;
 
-// ---- module state shared with orchestrator.cpp ---------------------------------
+// ---- module state shared with the engine seam ------------------------------------
 HeavyFabric* g_fabric = nullptr;
 Sinks        g_sinks;
 // The portable sub-agent job machinery (spawn queue / dispatch gate / round-robin

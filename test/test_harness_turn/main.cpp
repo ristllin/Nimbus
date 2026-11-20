@@ -5933,7 +5933,7 @@ static void test_the_empty_answer_correction_is_wired_with_its_exclusions() {
 // lists (the same one approvePending uses on the web task).
 static void test_roleofchat_reads_the_owner_rule_from_nvs_not_the_poll_tasks_strings() {
   std::string src;
-  FILE* f = std::fopen("src/agent/orchestrator_e1.cpp", "rb");
+  FILE* f = std::fopen("src/agent/orchestrator_common.cpp", "rb");   // the tenant table (RB-SEAM1b)
   TEST_ASSERT_NOT_NULL(f);
   char buf[4096];
   size_t n;

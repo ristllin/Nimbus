@@ -427,7 +427,7 @@ static void test_every_seam_kind_has_a_meter_and_removing_one_fails() {
 static bool namesDreamSeam(const std::string& src) { return src.find("SpendSeam::Dream") != std::string::npos; }
 static void test_the_retired_dream_seam_has_no_caller() {
   for (const char* f : {"lib/harness/src/engine.cpp", "lib/harness/src/dream.cpp", "src/agent/dream_subsystem.cpp",
-                        "src/main.cpp", "src/agent/orchestrator_e1.cpp"}) {
+                        "src/main.cpp", "src/agent/orchestrator_e1.cpp", "src/agent/orchestrator_common.cpp"}) {
     const std::string src = slurp(f);
     TEST_ASSERT_FALSE_MESSAGE(src.empty(), f);
     TEST_ASSERT_FALSE_MESSAGE(namesDreamSeam(src), f);
