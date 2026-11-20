@@ -80,6 +80,7 @@ struct Turn {
   bool lastRound = false;              // a guard tripped: this request goes with tool choice none
   bool held = false;                   // beforeDeliver held the reply once
   std::string heldText;                // the held reply: delivered if the extra round fails
+  std::string interim;                 // text the model wrote beside its calls this turn (RB-H81)
   std::vector<uint64_t> callQ;         // the q of each call of the round being run (pairing)
   uint64_t curCallQ = 0;               // the q of the call whose result is being stored
   bool storeFailed = false;            // the arena refused an item: the turn ends
@@ -137,6 +138,7 @@ class TurnRun {
         if (!(st = finalAnswer(step)).ok() || t_.answered) break;
         continue;                                                          // held once: one more round
       }
+      if (!step.text.empty()) keepInterim(step.text);                      // delivered if no reply follows
       if ((st = storeAnswer(step, false)).ok()) st = runCalls(step);       // each result stored in turn
     }
     const Status closed = close();
@@ -144,6 +146,13 @@ class TurnRun {
   }
 
  private:
+  // Text the model already wrote in this turn beside its calls: when the last round answers with
+  // nothing, it is the reply, never lost behind a provider line (RB-W1b's report, lane RB-H81).
+  void keepInterim(const std::string& text) {
+    if (!t_.interim.empty()) t_.interim += "\n\n";
+    t_.interim += text;
+  }
+
   // ---- storage --------------------------------------------------------------------------
   uint64_t epoch() const { return d_.platform->nowEpoch ? d_.platform->nowEpoch() : 0; }
   uint32_t elapsedMs() const { return d_.platform->nowMs() - t_.startMs; }
@@ -803,7 +812,7 @@ class TurnRun {
   // gets a plain line for (a held reply that goes out is a reply: ruling 59 item 5).
   void answerCause(const ParsedStep& step) {
     t_.cause = t_.trip == GuardTrip::None ? "reply" : std::string("limit:") + guardTripSlug(t_.trip);
-    const bool heldGoesOut = t_.held && !t_.heldText.empty();
+    const bool heldGoesOut = (t_.held && !t_.heldText.empty()) || !t_.interim.empty();
     if (t_.answer.empty() && step.calls.empty() && personTrigger(t_.ctx.trigger) && !heldGoesOut) t_.cause = "empty";
   }
 
@@ -843,7 +852,10 @@ class TurnRun {
   // line: the limit line when the last allowed round only called tools, the provider's line
   // for an empty answer. A routine's empty text stays its silence.
   void settle() {
-    t_.replyText = !t_.answer.empty() ? &t_.answer : t_.held && !t_.heldText.empty() ? &t_.heldText : nullptr;
+    t_.replyText = !t_.answer.empty()                 ? &t_.answer
+                   : t_.held && !t_.heldText.empty() ? &t_.heldText
+                   : t_.answered && !t_.interim.empty() ? &t_.interim   // the last round said nothing
+                                                        : nullptr;
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
     if (t_.reply && t_.trip != GuardTrip::None && personTrigger(t_.ctx.trigger))   // the guard that stopped it
       setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +

@@ -153,10 +153,35 @@ inline void test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after
   }
 }
 
+// Coordinator note 12 (RB-W1b's report): a tool round with text, then a last round that answers
+// with nothing (an empty end_turn). The text the model already wrote is the reply: delivered, the
+// turn's cause is the reply, and no provider line goes out. The counter-case: with no text in any
+// round the owner still gets the plain line, never silence.
+inline void test_text_written_beside_a_call_is_delivered_when_the_last_round_is_empty() {
+  for (bool said : {true, false}) {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    b.model.push(sp::call("read_file", R"({"path":"notes/a.md"})", said ? "The note says alpha." : ""));
+    b.model.push(sp::say(""));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("what does a say", out));
+    std::string sent;
+    for (const txb::SentMessage& m : b.sent) sent += m.text + "\n";
+    if (!said) {
+      TEST_ASSERT_TRUE_MESSAGE(!b.sent.empty(), "an empty turn went out silent");
+      continue;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(sent.find("The note says alpha.") != std::string::npos, "the text the model wrote was not delivered");
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)b.sent.size(), sent.c_str());
+    TEST_ASSERT_EQUAL_STRING("reply", lastEnd(storedOf(b))->end.cause.c_str());
+  }
+}
+
 inline void run() {
   RUN_TEST(test_the_turn_end_keeps_the_last_request_whole_prompt);
   RUN_TEST(test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer);
   RUN_TEST(test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after);
+  RUN_TEST(test_text_written_beside_a_call_is_delivered_when_the_last_round_is_empty);
 }
 
 }  // namespace h81_tests
