@@ -79,6 +79,62 @@ std::string when(uint64_t epoch, int16_t tz) {
   return out;
 }
 
+// Where to cut `s` to at most `cap` bytes: after the last sentence end, else at the last space,
+// in the second half of the room; else on a character.
+size_t cutAt(const std::string& s, size_t cap) {
+  if (s.size() <= cap) return s.size();
+  size_t at = s.rfind(". ", cap - 1);
+  if (at != std::string::npos && at + 1 > cap / 2) return at + 1;
+  at = s.rfind(' ', cap);
+  if (at != std::string::npos && at > cap / 2) return at;
+  size_t n = cap;
+  while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) --n;
+  return n;
+}
+
+// The old summary carried as digest 0 (ruling 84 item 6, lane RB-H81): its first
+// kOldSummaryMaxBytes, verbatim, as digest texts of `day` (each within kDigestMaxBytes) that fit
+// the full digest block together. The first part opens the fence, dated `asOf` and saying its
+// paths and totals may be out of date; the last closes it, or, when not all of it fits (or only
+// one part may be stored), says where the rest is (`path`, the export file; empty: it is closed).
+// Empty when no part can be built.
+std::vector<std::string> oldSummaryParts(const std::string& summary, const std::string& day, const std::string& asOf,
+                                         const std::string& path, bool onePart) {
+  namespace m = migrate_text;
+  std::string header, text = summary;
+  if (!dayHeader(day, header).ok() || summary.empty()) return {};
+  text.resize(cutAt(text, kOldSummaryMaxBytes));
+  const size_t lead = header.size() + sizeof(digest_text::kDaySep) - 1;
+  const std::string cutClose = path.empty() ? std::string(m::kOldClose) : m::kOldCut + path + m::kOldCutEnd;
+  const size_t closeRoom = std::max(cutClose.size(), sizeof(m::kOldClose) - 1);
+  std::vector<std::string> parts;
+  for (int round = 0; round < 16; ++round) {
+    parts.clear();
+    size_t at = 0, total = 0;
+    while (at < text.size()) {
+      const std::string prefix = parts.empty() ? m::kOldOpen + asOf + m::kOldStale : std::string(m::kOldMore);
+      if (lead + prefix.size() + closeRoom + 16 > kDigestMaxBytes) return {};
+      const size_t room = kDigestMaxBytes - lead - prefix.size() - closeRoom;
+      const size_t take = cutAt(text.substr(at), room);
+      if (!take) return {};
+      std::string body = prefix + text.substr(at, take);
+      at += take;
+      const bool last = at >= text.size() || onePart;
+      if (last) body += at >= text.size() && text.size() == summary.size() ? std::string(m::kOldClose) : cutClose;
+      std::string out;
+      if (!digestText(day, body, out).ok()) return {};
+      total += out.size() + 1;
+      parts.push_back(out);
+      if (last) break;
+    }
+    if (total <= blockCapFor(Profile::Full) + 1) return parts;
+    const size_t over = total - blockCapFor(Profile::Full) + 64;
+    if (text.size() <= over) return {};
+    text.resize(cutAt(text, text.size() - over));
+  }
+  return {};
+}
+
 const char* const kMonths[] = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"};
 
 // Is the word of letters ending just before `end` (or starting at `start`) a month name?
@@ -362,6 +418,8 @@ struct D0Plan {
   bool anchor = false;    // an anchor note is written
   bool accepted = false;  // digest 0 follows it
   bool exported = false;
+  bool carried = false;   // no rewrite taken: the old summary itself is digest 0 (RB-H81)
+  bool onePart = false;   // carried after another writer's items: its first part only
   Digest0Verdict verdict = Digest0Verdict::NoSummary;
   bool anchorStored = false;   // the anchor is stored; the plan is the digest alone (after an overtaking)
   uint64_t q0 = 0;             // the anchor's q
@@ -429,6 +487,8 @@ std::string encodeMarker(const Marker& m) {
     num(s, "d0anc", m.d0.anchor);
     num(s, "d0acc", m.d0.accepted);
     num(s, "d0exp", m.d0.exported);
+    num(s, "d0car", m.d0.carried);
+    num(s, "d0one", m.d0.onePart);
     num(s, "d0ver", (uint64_t)m.d0.verdict);
     num(s, "d0q", m.d0.q0);
     num(s, "d0sq", m.d0.sq);
@@ -491,6 +551,8 @@ bool decodeMarker(const std::string& text, Marker& m) {
     d.anchor = u("d0anc") != 0;
     d.accepted = u("d0acc") != 0;
     d.exported = u("d0exp") != 0;
+    d.carried = u("d0car") != 0;
+    d.onePart = u("d0one") != 0;
     d.verdict = (Digest0Verdict)std::min<uint64_t>(u("d0ver"), (uint64_t)Digest0Verdict::Text);
     d.q0 = u("d0q");
     d.sq = u("d0sq");
@@ -732,8 +794,8 @@ struct Run {
     const std::string w = when(m.d0.at, m.d0.tz);
     s += w.empty() ? std::string(mt::kEarlierUndated) : std::string(mt::kEarlierThrough) + w;
     s += mt::kEarlierKept;
-    if (!m.d0.accepted && !d.fold.summary.empty())
-      s += m.d0.exported ? std::string(mt::kSummarySaved) + m.d0.path + mt::kEnd : std::string(mt::kSummaryNotSaved);
+    if (!m.d0.accepted && !d.fold.summary.empty() && m.d0.exported) s += std::string(mt::kSummarySaved) + m.d0.path + mt::kEnd;
+    else if (!m.d0.accepted && !m.d0.carried && !d.fold.summary.empty()) s += mt::kSummaryNotSaved;
     return s;
   }
 
@@ -803,13 +865,16 @@ struct Run {
     p = D0Plan{};
     const bool summary = !d.fold.summary.empty();
     p.at = c.lastT ? c.lastT : d.fold.foldEpoch ? d.fold.foldEpoch : d.now;
+    p.tz = d.tzMinutes;
     p.anchor = c.rows > 0 || summary;
     p.verdict = summary ? Digest0Verdict::Asked : Digest0Verdict::NoSummary;
     if (p.anchor && summary && d.digest0 && p.at && !(s = askDigest0(daysCovered(c))).ok()) return s;
-    if (p.anchor && summary && !p.accepted) {
+    if (p.anchor && summary && !p.accepted) {   // the old summary: exported (an extra) and carried
       p.path = exportPath(p.at);
       p.exported = d.exportText && d.exportText(p.path, d.fold.summary);
       out.exported = p.exported;
+      p.day = dayString(p.at, d.tzMinutes, d.dayStartMin);
+      p.carried = p.at && !carriedParts(p).empty();
     }
     p.q0 = nextQ();
     p.sq = p.q0 + 1;
@@ -820,28 +885,50 @@ struct Run {
     return save();
   }
 
-  // The items of the planned digest-0 step: the anchor note, then digest 0 when accepted.
+  // The old summary's digest parts for a plan (a pure function of the fold and the plan).
+  std::vector<std::string> carriedParts(const D0Plan& p) const {
+    return oldSummaryParts(d.fold.summary, p.day, when(d.fold.foldEpoch ? d.fold.foldEpoch : p.at, p.tz),
+                           p.exported ? p.path : std::string(), p.onePart);
+  }
+  // Digest 0 as live entries: the accepted rewrite, or the carried parts (part k at sq + k, covering
+  // the anchor and the parts before it).
+  std::vector<DigestEntry> digest0Entries() const {
+    if (m.d0.accepted) return {DigestEntry{m.d0.day, m.d0.text, m.d0.sq, m.d0.q0}};
+    std::vector<DigestEntry> out;
+    if (!m.d0.carried) return out;
+    uint64_t thru = m.d0.q0;
+    for (const std::string& text : carriedParts(m.d0)) {
+      const uint64_t q = m.d0.sq + out.size();
+      out.push_back(DigestEntry{m.d0.day, text, q, thru});
+      thru = q;
+    }
+    return out;
+  }
+  // The items of the planned digest-0 step: the anchor note, then digest 0 (rewrite or carried).
   void digest0Items(std::vector<Item>& items) const {
     items.clear();
     if (!m.d0.anchor) return;
-    if (m.d0.anchorStored) {
-      if (m.d0.accepted) items.push_back(digest0Item());
-      return;
+    const bool digest = m.d0.accepted || m.d0.carried;
+    if (!m.d0.anchorStored) {
+      Item h;
+      h.q = m.d0.q0;
+      h.kind = ItemKind::DeviceNote;
+      h.note = digest ? NoteClass::Notice : NoteClass::Omit;
+      h.t = m.d0.at;
+      h.x = anchorText();
+      items.push_back(h);
     }
-    Item h;
-    h.q = m.d0.q0;
-    h.kind = ItemKind::DeviceNote;
-    h.note = m.d0.accepted ? NoteClass::Notice : NoteClass::Omit;
-    h.t = m.d0.at;
-    h.x = anchorText();
-    items.push_back(h);
-    if (m.d0.accepted) items.push_back(digest0Item());
+    for (const DigestEntry& e : digest0Entries()) {
+      Item sItem;
+      if (!digestItem(e, 0, m.d0.at, sItem).ok()) continue;   // checked when planned: never here
+      items.push_back(sItem);
+    }
   }
-  Item digest0Item() const {
-    Item sItem;
-    DigestEntry e{m.d0.day, m.d0.text, m.d0.sq, m.d0.q0};
-    if (!digestItem(e, 0, m.d0.at, sItem).ok()) sItem = Item{};   // checked when planned: never here
-    return sItem;
+
+  // A migrated chat starts at the head's default profile (owner ruling 81, ruling 83 item 4); a slug
+  // already there (an owner's pin, a re-entry) stays.
+  void stampProfile() {
+    if (head.profile.empty()) head.profile = profileSlug(kDefaultProfile);
   }
 
   // ---- applying a planned step ----
@@ -913,13 +1000,14 @@ struct Run {
       return Status::success();
     }
     if (!a.status.ok()) return a.status;
-    if (m.d0.accepted) {   // the swap's order: the s line is stored; thru moves, settle, head
-      head.thru = std::max<uint64_t>(head.thru, m.d0.q0);
-      std::vector<DigestEntry> live{DigestEntry{m.d0.day, m.d0.text, m.d0.sq, m.d0.q0}};
+    std::vector<DigestEntry> live = digest0Entries();
+    if (!live.empty()) {   // the swap's order: the s lines are stored; thru moves, settle, head
+      head.thru = std::max<uint64_t>(head.thru, live.back().thru);
       std::string block;
       SettleReport rep;
       (void)settleDigests(*d.files, d.chatKey, profileOf(head.profile), live, block, rep);   // the head's profile, else full
     }
+    stampProfile();
     head.nextQ = nextQ();
     (void)log.writeHead(head);   // a cache: a refusal is rebuilt from the items
     return Status::success();
@@ -942,6 +1030,9 @@ struct Run {
       }
     return Status::success();
   }
+
+  // The import budget: the binding's, else the head's (importBudgetFor), never a fixed figure.
+  size_t budget() const { return d.importBudget ? d.importBudget : importBudgetFor(d.head, d.arena ? d.arena->capacity() : kActiveChatArenaBytes); }
 
   // The stored line bytes a row would take (the import budget's measure).
   size_t rowCost(const DayRow& r) {
@@ -1007,7 +1098,7 @@ struct Run {
     Status s = totals(lo, hi, t);
     any = s.ok() && t.rows > 0;
     if (!any) return s;
-    Cutter cut{t, d.importBudget};
+    Cutter cut{t, budget()};
     s = eachRow(lo, hi, [&](const DayRow& r) {
       if (importable(r)) count(p, r, cut.imports(r, rowCost(r)));
     });
@@ -1070,6 +1161,7 @@ struct Run {
     if (!(s = feedRows(b, emit, going)).ok()) return s;
     overtaken = a.result == Applied::Overtaken;
     if (overtaken || !a.status.ok()) return a.status;
+    stampProfile();
     head.nextQ = nextQ();
     head.mHi = std::max(head.mHi, maxM);   // head.json's m_hi: the newest row mirrored
     (void)log.writeHead(head);
@@ -1157,11 +1249,12 @@ struct Run {
     }
     bool overtaken = false, anchorStored = false;
     if (!(s = applyDigest0(overtaken, anchorStored)).ok()) return s;
-    if (overtaken && anchorStored && m.d0.accepted && head.thru < m.d0.q0) {
+    if (overtaken && anchorStored && (m.d0.accepted || m.d0.carried) && head.thru < m.d0.q0) {
       // the anchor is stored before the other writer's items: digest 0 follows them, covering the
       // anchor alone (thru stays the anchor's q, so nothing after it is hidden)
       out.overtaken = true;
       m.d0.anchorStored = true;
+      m.d0.onePart = m.d0.carried;   // a second part would cover the other writer's items
       m.d0.sq = nextQ();
       m.d0.seg = log.segment();
       m.d0.off = log.segmentBytes();
@@ -1183,7 +1276,7 @@ struct Run {
       if (!(s = save()).ok()) return s;
       return digest0Step();
     }
-    m.d0Done = m.d0.accepted;
+    m.d0Done = m.d0.accepted || m.d0.carried;
     m.step = MigrationStep::Rows;
     return save();
   }
@@ -1259,6 +1352,7 @@ struct Run {
     }
     if (!(s = rowsStep()).ok()) return s;
     out.digest0 = m.d0Done;
+    out.carried = m.d0Done && m.d0.carried && !m.d0.accepted;
     out.verdict = m.d0.have ? m.d0.verdict : Digest0Verdict::NoSummary;
     out.exported = m.d0.exported;
     out.hi = m.hi;
@@ -1267,9 +1361,18 @@ struct Run {
   }
 };
 
-bool depsOk(const MigrateDeps& d) { return d.files && d.rows && chatKeyOk(d.chatKey); }
+// The import needs a budget: the binding's, or a named head's (owner ruling 81: never a fixed one).
+bool depsOk(const MigrateDeps& d) {
+  return d.files && d.rows && chatKeyOk(d.chatKey) && (d.importBudget || importBudgetFor(d.head, kActiveChatArenaBytes));
+}
 
 }  // namespace
+
+size_t importBudgetFor(const HeadKey& head, size_t arenaBytes) {
+  HeadBudget b;
+  if (head.host.empty() || head.model.empty() || !budgetFor(head, Profile::Full, b).ok()) return 0;
+  return std::min<size_t>(b.marks.high, arenaBytes - arenaBytes / 4);
+}
 
 Status migrate(const MigrateDeps& deps, MigrationOutcome& out) {
   out = MigrationOutcome{};

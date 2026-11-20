@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
-# class device_notes bytes=1793 ceiling=2048 entries=68 sha8=4da73e69
+# class device_notes bytes=2001 ceiling=2048 entries=74 sha8=61b9a56d
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
 # class tool_results bytes=5142 ceiling=6144 entries=385 sha8=b8921b23
 # class probe bytes=0 ceiling=1024 entries=0 sha8=e3b0c442
@@ -53,6 +53,12 @@ device_notes	lib/core/include/nimbus/orch/tx/migrate.h	442350c7	8	" before "
 device_notes	lib/core/include/nimbus/orch/tx/migrate.h	a147107d	30	" not shown: search finds them."
 device_notes	lib/core/include/nimbus/orch/tx/migrate.h	a8bdfde1	3	" is"
 device_notes	lib/core/include/nimbus/orch/tx/migrate.h	2cd01b8b	4	" are"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	5fe4c98d	37	"[the earlier engine's summary, as of "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	00a45b7a	48	"; its file paths and totals may be out of date] "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	ffc09c70	42	"[the earlier engine's summary, continued] "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	9f160f57	38	" [end of the earlier engine's summary]"
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	5cf62227	42	" [the earlier engine's summary goes on in "
+device_notes	lib/core/include/nimbus/orch/tx/migrate.h	cfae0d42	1	"]"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	c6ce8486	10	"No reply: "
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	29769472	46	" could not be reached. Send the message again."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	efc69d8c	19	" had a server error"

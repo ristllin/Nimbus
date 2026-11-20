@@ -1038,13 +1038,20 @@ the chat's FoldStore record (`OldFold`: the summary and its two pointers).
   is one small-model call through the compaction driver (`plain::digest0Asker`: the old summary
   as one closed turn, its input built by `planSlice`, the summarizer text, the driver's own
   acceptance). It is kept only when it holds no path-like token, no figure that a tool row of
-  those rows holds and no owner row does, and at most 768 B per day covered. Otherwise the old
-  summary is exported to `export-pre-v2/summary-<day>-<chatKey>.md` and the anchor note stands
-  in as the omission line, naming that file. Digest 0 is asked at most twice in all.
+  those rows holds and no owner row does, and at most 768 B per day covered. Otherwise (no
+  summarizer bound, two failed asks, or an answer refused) the old summary itself is digest 0
+  (ruling 84 item 6, lane RB-H81): verbatim, at most 6,144 B (v5.1.2's summary cap), fenced and
+  dated as the earlier engine's summary whose file paths and totals may be out of date, in digest
+  parts of its day that fit the full digest block (what does not fit is named with the export
+  file's path). It is also exported to `export-pre-v2/summary-<day>-<chatKey>.md`, an extra and
+  never a replacement. Digest 0 is asked at most twice in all. The migration writes the head's
+  default profile slug (`full`) to head.json when none is there.
 - After the pointer: one import batch. Owner and assistant rows become text items (u with the
   row id in m, a), one turn per owner message, closed by an e item; tool, trace and log rows
-  are not replayed. The newest rows that fit the import budget (60,000 B by default) are
-  imported and the older ones are named in the batch's note. The rows between the two old
+  are not replayed. The newest rows that fit the import budget are imported (per head,
+  `tx::importBudgetFor`: the head's full due mark H, clamped only by three quarters of the arena
+  the restart fill reads it into; never a fixed figure, owner ruling 81; a migration with neither
+  a head nor a budget is refused) and the older ones are named in the batch's note. The rows between the two old
   pointers are the oldest after thru, so the compaction driver folds them first.
 - The re-entry rule: `migrated.json` records the newest row accounted for. A later start
   imports only the rows after it that engine 2 did not write (its own day-stream rows carry

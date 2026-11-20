@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "nimbus/orch/tx/arena.h"
+#include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/log.h"
 #include "nimbus/orch/tx/status.h"
@@ -22,13 +23,17 @@
 //          a tool result (a figure in a tool row of those rows that no owner row holds) and at
 //          most kDigestMaxBytes per day covered. It covers one anchor note (an h item naming the
 //          earlier conversation), so the block shows the digest and not the note.
-//       -> otherwise the old summary is exported to export-pre-v2/summary-<day>-<chatKey>.md
-//          (ExportFn) and the anchor note stands in, naming that file: the omission line.
+//       -> otherwise (digest 0 unset, refused or not accepted) the old summary itself is carried
+//          as digest 0 (ruling 84 item 6, lane RB-H81): verbatim, at most kOldSummaryMaxBytes
+//          (v5.1.2's summary cap), fenced and dated as the earlier engine's summary whose paths
+//          and totals may be stale, in digest parts of its day that fit the full digest block
+//          (each part covers the anchor and the parts before it). It is also exported to
+//          export-pre-v2/summary-<day>-<chatKey>.md (ExportFn), an extra, never a replacement.
 //   rows after the pointer (the rows between the two old pointers first, then the rest)
 //       -> one import batch: one device note, then the owner and assistant rows as text
 //          items (u with m = the row id, a), one turn per owner row, closed by an e item;
 //          tool, trace and log rows are not replayed. The newest rows that fit importBudget
-//          are imported; the older ones are named in the same note ("The M earlier messages
+//          (per head: importBudgetFor, at least the head's full due mark) are imported; the older ones are named in the same note ("The M earlier messages
 //          before <t> are not shown: search finds them"). Imported rows between the pointers
 //          are the oldest after thru, so the compaction driver folds them first.
 //
@@ -61,8 +66,8 @@ namespace nimbus {
 namespace orch {
 namespace tx {
 
-inline constexpr size_t kImportBudgetBytes = 60000;   // stored line bytes of the imported u, a items
 inline constexpr uint32_t kDigest0Tries = 2;          // asks of digest 0, every start together
+inline constexpr size_t kOldSummaryMaxBytes = 6144;   // v5.1.2's summary cap: the most carried as digest 0
 inline constexpr size_t kRowPage = 64;                // rows per RowSource::read
 inline constexpr size_t kMarkerMaxBytes = 8192;       // migrated.json with its crc tail
 inline constexpr const char* kExportDir = "export-pre-v2";
@@ -91,6 +96,13 @@ inline constexpr char kNamedBefore[] = " before ";
 inline constexpr char kNamedNotShown[] = " not shown: search finds them.";
 inline constexpr char kIs[] = " is";
 inline constexpr char kAre[] = " are";
+// The fence of the old summary carried as digest 0 (RB-H81, ruling 84 item 6).
+inline constexpr char kOldOpen[] = "[the earlier engine's summary, as of ";
+inline constexpr char kOldStale[] = "; its file paths and totals may be out of date] ";
+inline constexpr char kOldMore[] = "[the earlier engine's summary, continued] ";
+inline constexpr char kOldClose[] = " [end of the earlier engine's summary]";
+inline constexpr char kOldCut[] = " [the earlier engine's summary goes on in ";
+inline constexpr char kOldCutEnd[] = "]";
 }  // namespace migrate_text
 
 // ---- the old store, as the binding reads it ---------------------------------------------
@@ -179,9 +191,19 @@ struct MigrateDeps {
   uint64_t now = 0;          // epoch seconds (0: the clock is not set)
   int16_t tzMinutes = 0;
   uint16_t dayStartMin = 240;
-  size_t importBudget = kImportBudgetBytes;
+  // The chat's head (RB-H81): sizes the import. Required unless importBudget is set.
+  HeadKey head;
+  // Stored line bytes of the imported u and a items; 0: importBudgetFor(head, the arena), never a
+  // fixed figure (owner ruling 81).
+  size_t importBudget = 0;
   const TxArena* arena = nullptr;   // RAM items not stored yet: every q stays above them
 };
+
+// The import budget of a head (owner ruling 81, ruling 83 item 8): its full due mark H
+// (budgetFor(head, Full).marks.high), clamped only by the arena the restart fill reads it into,
+// less a quarter kept for compaction's room (a fit, stated: at 589,824 B that is 442,368 B, over
+// every head's H today). 0 when the head is not named.
+size_t importBudgetFor(const HeadKey& head, size_t arenaBytes);
 
 enum class MigrationStep : uint8_t { NotStarted = 0, Digest0 = 1, Rows = 2, Done = 3 };
 const char* migrationStepSlug(MigrationStep s);
@@ -189,7 +211,8 @@ const char* migrationStepSlug(MigrationStep s);
 struct MigrationOutcome {
   MigrationStep step = MigrationStep::NotStarted;   // Done when this call finished
   bool reentry = false;            // a marker was there: only rows since were looked at
-  bool digest0 = false;            // digest 0 is stored
+  bool digest0 = false;            // digest 0 is stored (a rewrite, or the old summary carried)
+  bool carried = false;            // digest 0 is the old summary itself, fenced (no rewrite taken)
   Digest0Verdict verdict = Digest0Verdict::NoSummary;
   bool exported = false;           // the old summary went to its export file
   uint32_t asks = 0;               // digest-0 calls this call made

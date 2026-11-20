@@ -83,7 +83,8 @@ struct World {
   Answers answers;
   std::map<std::string, std::string> exported;
   bool refuseExport = false;
-  size_t budget = tx::kImportBudgetBytes;
+  tx::HeadKey head{"anthropic", "claude-sonnet-5-5", false};   // the import is sized per head (RB-H81)
+  size_t budget = 0;                                            // 0: importBudgetFor(head)
   const tx::TxArena* arena = nullptr;
 
   World() { src.reset(new StoreSource(old, kChat)); }
@@ -101,6 +102,7 @@ struct World {
     };
     d.now = kMonthStart + 40 * kDay;
     d.importBudget = budget;
+    d.head = head;
     d.arena = arena;
     return d;
   }
@@ -197,18 +199,63 @@ void test_the_note_names_turns_and_omitted_rows() {
 
 // ---- a month ----------------------------------------------------------------------------------
 
-void expectDigest0(World& w, bool accepted, const char* when) {
+// The old summary carried as digest 0 (ruling 84 item 6, RB-H81): its parts follow the anchor, each
+// covering it and the parts before; together they hold the summary verbatim (whitespace made one
+// line), fenced and dated, in the full digest block; head.thru is the last part's thru.
+void expectCarried(World& w, const char* when) {
+  const std::vector<tx::Item> items = w.items();
+  const tx::Item& anchor = items[0];
+  const std::vector<tx::Item> ds = w.digests();
+  TEST_ASSERT_TRUE_MESSAGE(!ds.empty(), when);
+  TEST_ASSERT_EQUAL_MESSAGE((int)tx::NoteClass::Notice, (int)anchor.note, when);
+  uint64_t thru = anchor.q;
+  std::string joined;
+  size_t block = 0;
+  for (size_t i = 0; i < ds.size(); ++i) {
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(thru, ds[i].thru, when);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(anchor.q + 1 + i, ds[i].q, when);
+    thru = ds[i].q;
+    joined += ds[i].x + "\n";
+    block += ds[i].x.size() + 1;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(block <= tx::blockCapFor(tx::Profile::Full) + 1, when);
+  TEST_ASSERT_TRUE_MESSAGE(ds.front().x.find(tx::migrate_text::kOldOpen) != std::string::npos, when);
+  TEST_ASSERT_TRUE_MESSAGE(ds.front().x.find("may be out of date") != std::string::npos, when);
+  TEST_ASSERT_TRUE_MESSAGE(ds.back().x.find("[end of the earlier engine's summary]") != std::string::npos ||
+                               ds.back().x.find("goes on in") != std::string::npos,
+                           when);
+  // every word of the old summary is there, in order
+  const std::string summary = w.deps().fold.summary;
+  size_t at = 0, from = 0;
+  while (from < summary.size()) {
+    size_t sp = summary.find_first_of(" \n", from);
+    const std::string word = summary.substr(from, sp == std::string::npos ? std::string::npos : sp - from);
+    from = sp == std::string::npos ? summary.size() : sp + 1;
+    if (word.empty()) continue;
+    const size_t f = joined.find(word, at);
+    if (f == std::string::npos && joined.find("goes on in") != std::string::npos) break;   // cut, named
+    TEST_ASSERT_TRUE_MESSAGE(f != std::string::npos, (std::string(when) + ": lost the word " + word).c_str());
+    at = f + word.size();
+  }
+  tx::TxLog log(w.files, kChatKey);
+  tx::HeadState head;
+  TEST_ASSERT_TRUE(log.open(head).ok());
+  TEST_ASSERT_EQUAL_UINT64_MESSAGE(ds.back().thru, head.thru, when);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("full", head.profile.c_str(), when);
+  std::vector<tx::DigestEntry> live;
+  TEST_ASSERT_TRUE(tx::loadDigests(w.files, kChatKey, head, live).ok());
+  TEST_ASSERT_EQUAL_MESSAGE(ds.size(), live.size(), when);
+}
+
+// rewrite: digest 0 is the accepted rewrite; else the old summary is carried.
+void expectDigest0(World& w, bool rewrite, const char* when) {
   const std::vector<tx::Item> items = w.items();
   TEST_ASSERT_TRUE_MESSAGE(!items.empty(), when);
   const tx::Item& anchor = items[0];
   TEST_ASSERT_EQUAL_MESSAGE((int)tx::ItemKind::DeviceNote, (int)anchor.kind, when);
   TEST_ASSERT_TRUE_MESSAGE(anchor.x.find("was kept by the earlier engine") != std::string::npos, when);
   const std::vector<tx::Item> ds = w.digests();
-  if (!accepted) {
-    TEST_ASSERT_EQUAL_MESSAGE(0, ds.size(), when);
-    TEST_ASSERT_EQUAL_MESSAGE((int)tx::NoteClass::Omit, (int)anchor.note, when);
-    return;
-  }
+  if (!rewrite) return expectCarried(w, when);
   TEST_ASSERT_EQUAL_MESSAGE(1, ds.size(), when);
   TEST_ASSERT_EQUAL_UINT64_MESSAGE(anchor.q, ds[0].thru, when);
   TEST_ASSERT_EQUAL_UINT64_MESSAGE(anchor.q + 1, ds[0].q, when);
@@ -240,8 +287,12 @@ void test_a_month_migrates_every_row_once() {
   TEST_ASSERT_TRUE(out.digest0);
   TEST_ASSERT_EQUAL(1, w.answers.asks);
   TEST_ASSERT_FALSE(out.reentry);
-  TEST_ASSERT_TRUE(out.named > 0);   // rows past the budget are named, the newest imported
-  TEST_ASSERT_TRUE(gPeak - base < 256 * 1024);   // pages, not the store
+  // Pages, not the store. The fake card is heap too: what the migration wrote to it (each file's
+  // string may hold twice its size while it grows) is not the migration's working memory.
+  size_t written = 0;
+  for (const auto& kv : w.files.files)
+    if (kv.first.find("/mem/tx/") == 0) written += kv.second.size();
+  TEST_ASSERT_TRUE(gPeak - base < 256 * 1024 + 2 * written);
   expectDigest0(w, true, "month");
   expectAccounted(w.old, w.files, w.m.thru, out.hi, "month");
   TEST_ASSERT_TRUE_MESSAGE(before == w.old.snapshot(), "the old store was written");
@@ -254,7 +305,15 @@ void test_a_month_migrates_every_row_once() {
     if ((it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant) && tx::encodeLine(c, line).ok())
       bytes += line.size();
   }
-  TEST_ASSERT_TRUE(bytes <= tx::kImportBudgetBytes + 4096);
+  // The head's full due mark of rows is imported when the store has it (owner ruling 81: never the
+  // fixed 60,000 B); rows past it are named.
+  const size_t budget = tx::importBudgetFor(w.head, tx::kActiveChatArenaBytes);
+  tx::HeadBudget hb;
+  TEST_ASSERT_TRUE(tx::budgetFor(w.head, tx::Profile::Full, hb).ok());
+  TEST_ASSERT_EQUAL_UINT32(hb.marks.high, budget);
+  TEST_ASSERT_TRUE(budget > 200000);
+  TEST_ASSERT_TRUE(bytes <= budget + 4096);
+  TEST_ASSERT_TRUE_MESSAGE(out.named == 0 || bytes + 8192 >= budget, "rows were named while the budget had room");
   // the restart fill takes it whole
   tx::TxLog log(w.files, kChatKey);
   tx::HeadState head;
@@ -325,14 +384,14 @@ void test_digest0_not_accepted_exports_the_old_text_and_names_it() {
       w.refuseExport = refuse;
       const tx::MigrationOutcome out = w.done(c.name);
       TEST_ASSERT_EQUAL_MESSAGE((int)c.verdict, (int)out.verdict, c.name);
-      TEST_ASSERT_FALSE(out.digest0);
+      TEST_ASSERT_TRUE(out.digest0 && out.carried);   // the old summary itself, fenced (RB-H81)
       TEST_ASSERT_EQUAL(1, w.answers.asks);
       expectDigest0(w, false, c.name);
       const std::string anchor = w.items()[0].x;
       const std::string path = "export-pre-v2/summary-" + dayString(w.deps().fold.foldEpoch) + "-" + kChatKey + ".md";
       if (refuse) {
-        TEST_ASSERT_TRUE(w.exported.empty());
-        TEST_ASSERT_TRUE(anchor.find("Its old summary was not saved.") != std::string::npos);
+        TEST_ASSERT_TRUE(w.exported.empty());   // the export is an extra: the summary is carried anyway
+        TEST_ASSERT_TRUE(anchor.find("was not saved") == std::string::npos);
       } else {
         TEST_ASSERT_EQUAL(1, w.exported.size());
         TEST_ASSERT_EQUAL_STRING(w.deps().fold.summary.c_str(), w.exported[path].c_str());
@@ -367,7 +426,7 @@ void test_owner_figures_are_the_owners() {
   x.old.fold("## Facts\nweight 82.5", t2, 0, kMonthStart + kDay);
   x.answers.texts = {"The weight was 82.5 and row 4411 was written."};
   const tx::MigrationOutcome out = x.done("tool figure");
-  TEST_ASSERT_FALSE(out.digest0);
+  TEST_ASSERT_TRUE(out.carried);   // not the rewrite: the old summary itself, fenced
   TEST_ASSERT_EQUAL((int)tx::Digest0Verdict::Figure, (int)out.verdict);
 }
 
@@ -378,6 +437,7 @@ void test_digest0_is_asked_at_most_twice_then_the_old_text_is_named() {
   tx::MigrationOutcome out = w.done("two failures");
   TEST_ASSERT_EQUAL(2, w.answers.asks);
   TEST_ASSERT_EQUAL((int)tx::Digest0Verdict::Asked, (int)out.verdict);
+  TEST_ASSERT_TRUE(out.carried);
   expectDigest0(w, false, "two failures");
   expectAccounted(w.old, w.files, w.m.thru, out.hi, "two failures");
   // one failure, then an answer
@@ -394,8 +454,9 @@ void test_digest0_is_asked_at_most_twice_then_the_old_text_is_named() {
   tx::MigrateDeps d = y.deps();
   d.digest0 = nullptr;
   TEST_ASSERT_TRUE(tx::migrate(d, out).ok());
-  TEST_ASSERT_FALSE(out.digest0);
+  TEST_ASSERT_TRUE(out.digest0 && out.carried);   // digest 0 unset: the old summary is carried
   TEST_ASSERT_EQUAL(1, y.exported.size());
+  expectDigest0(y, false, "no summarizer");
 }
 
 // A minimal Anthropic-shaped wire for the scripted provider (as test_plain_compact's).
@@ -519,7 +580,8 @@ void test_the_drivers_acceptance_holds_for_digest0() {
     tx::MigrationOutcome out;
     TEST_ASSERT_TRUE(tx::migrate(d, out).ok());
     TEST_ASSERT_EQUAL(2, out.asks);
-    TEST_ASSERT_EQUAL(kind == 3, out.digest0);
+    TEST_ASSERT_TRUE(out.digest0);
+    TEST_ASSERT_EQUAL(kind != 3, out.carried);
     const std::vector<sp::Recorded>& reqs = drv.model.requests();
     TEST_ASSERT_TRUE(reqs.size() >= 2);
     TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", reqs.back().view.model.c_str());
@@ -816,14 +878,16 @@ void test_the_budget_holds_for_one_huge_turn_and_for_replies_alone() {
     if (owner) w.old.add(kChat, t, "user", "message", "start the daily notes");
     for (int i = 0; i < 400; ++i, t += 600) w.old.add(kChat, t, "assistant", "message", words(r, 1500));
     const tx::MigrationOutcome out = w.done("huge turn");
-    TEST_ASSERT_TRUE(out.imported > 10 && out.named > 300);
+    TEST_ASSERT_TRUE(out.imported > 100 && out.named > 0);   // Sonnet's due mark of 1,500 B replies
     size_t bytes = 0;
     for (const tx::Item& it : w.items()) {
       std::string line;
       tx::Item c = it;
       if (it.kind == tx::ItemKind::Assistant && tx::encodeLine(c, line).ok()) bytes += line.size();
     }
-    TEST_ASSERT_TRUE(bytes <= tx::kImportBudgetBytes);
+    const size_t budget = tx::importBudgetFor(w.head, tx::kActiveChatArenaBytes);
+    TEST_ASSERT_TRUE(bytes <= budget);
+    TEST_ASSERT_TRUE_MESSAGE(bytes + 4096 >= budget, "the import stopped short of the head's due mark");
     expectAccounted(w.old, w.files, 0, out.hi, "huge turn");
     tx::TxLog log(w.files, kChatKey);
     tx::HeadState head;
@@ -1001,7 +1065,7 @@ void test_a_power_cut_during_every_ask_still_finishes() {
   }
   TEST_ASSERT_TRUE(fin);
   TEST_ASSERT_EQUAL(2, calls);
-  TEST_ASSERT_FALSE(out.digest0);
+  TEST_ASSERT_TRUE(out.carried);
   expectDigest0(w, false, "cut asks");
 }
 
@@ -1049,11 +1113,57 @@ void test_a_q_stored_twice_does_not_stop_a_resumed_plan() {
 
 }  // namespace
 
+
+// RB-H81 (owner ruling 81, ruling 83 item 8): the import is sized per head, never the fixed
+// 60,000 B: at least the head's full due mark (clamped only by the arena the restart fill reads it
+// into), and a migration with neither a head nor a budget is refused loudly.
+void test_the_import_budget_is_each_heads_full_due_mark() {
+  const tx::HeadKey heads[] = {{"anthropic", "claude-sonnet-5-5", false}, {"anthropic", "claude-haiku-5-5", false},
+                               {"openai", "gpt-5.6-luna", false},         {"zai", "glm-5.3", false},
+                               {"cumulo", "gpt-5.6", true},               {"custom", "llama-3-70b", false}};
+  for (const tx::HeadKey& k : heads) {
+    tx::HeadBudget b;
+    TEST_ASSERT_TRUE(tx::budgetFor(k, tx::Profile::Full, b).ok());
+    const size_t budget = tx::importBudgetFor(k, tx::kActiveChatArenaBytes);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.marks.high, budget, k.model.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(budget >= b.releasedFold, k.model.c_str());
+  }
+  TEST_ASSERT_EQUAL_UINT32(1000, tx::importBudgetFor(heads[2], 1333));   // the arena's fit, stated
+  World w;
+  w.m = month(w.old, {3, 300, 5, 0, 0, 0});
+  w.head = tx::HeadKey{};
+  tx::MigrationOutcome out;
+  TEST_ASSERT_EQUAL((int)tx::Err::InvalidArgument, (int)w.run(out).err);
+  w.budget = 9000;   // a binding's own figure still works
+  w.done("explicit budget");
+}
+
+// Ruling 84 item 6: an old summary of v5.1.2's full 6,144 B with no rewrite taken is carried in
+// parts that fit the full digest block; what does not fit is named with the export file's path.
+void test_a_full_old_summary_is_carried_in_parts_that_fit_the_block() {
+  World w;
+  w.m = month(w.old, {5, 300, 5, 3, 0, 900});
+  std::string big;
+  for (int i = 0; big.size() < tx::kOldSummaryMaxBytes; ++i)
+    big += "The person kept note " + std::to_string(i) + " about the garden and the boat. ";
+  w.old.fold(big, w.m.thru, 0, kMonthStart + kDay);
+  w.answers.fail = {true, true};
+  const tx::MigrationOutcome out = w.done("full summary");
+  TEST_ASSERT_TRUE(out.carried);
+  TEST_ASSERT_TRUE(w.digests().size() >= 8);
+  expectCarried(w, "full summary");
+  std::string joined;
+  for (const tx::Item& d : w.digests()) joined += d.x;
+  TEST_ASSERT_TRUE_MESSAGE(joined.find("goes on in export-pre-v2/summary-") != std::string::npos, "the cut is not named");
+}
+
 int main(int, char**) {
   gPlatform.nowMs = [] { return gClock; };
   gPlatform.delayMs = [](uint32_t ms) { gClock += ms; };
   gPlatform.nowEpoch = [] { return (uint64_t)0; };
   UNITY_BEGIN();
+  RUN_TEST(test_the_import_budget_is_each_heads_full_due_mark);
+  RUN_TEST(test_a_full_old_summary_is_carried_in_parts_that_fit_the_block);
   RUN_TEST(test_figures_leave_out_dates_and_keep_quantities);
   RUN_TEST(test_path_like_tokens_are_found_and_prose_is_not);
   RUN_TEST(test_digest0_rule_is_768_bytes_per_day_no_path_no_tool_figure);
