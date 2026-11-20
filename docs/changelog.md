@@ -28,6 +28,7 @@ docs/release-notes/v5.2.0.txt.
 - **The day starts when you say.** Every message stamp carries the year and weekday, and between midnight and "day starts at" (Settings, default 04:00) it names the day still running.
 - **Telegram answers sooner.** Model result to Telegram send p50 2.7 s to 0.8 s; a message's wait after the settle hold p50 2.2 s to 0.4 s (bench, 12 turns).
 - **`/ota candidate` and `/ota stable`** switch the update channel from the owner's chat (`/ota` shows it).
+- **Mistral heads stay held for this release.** Measured on 20 Nov with mistral-medium-latest (the default Mistral head) against the simple loop on the same model: 2 wins, 12 ties, 18 losses over 32 repetitions, totals right 38 of 52. A device with a Mistral key is not updated automatically; it can be updated by hand from the web page or with /update.
 - **Not exercised on the bench: a physical power cut.** The cut legs stop a write at a chosen byte with a console panic (the bench cannot switch USB power), and a host test tears the same writes at every byte offset: an append leaves the old file plus a fenced tail, an edit the old or the new file, never a mix.
 
 ## v5.1.1 - A renamed model keeps your choice, and a gone model says what answers now
