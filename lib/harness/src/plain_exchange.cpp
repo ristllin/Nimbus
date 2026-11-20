@@ -104,6 +104,12 @@ const char* providerName(const std::string& slug) {
 
 uint32_t minU(uint32_t a, uint32_t b) { return a < b ? a : b; }
 
+// The host whose output-cap table a request reads: a custom host that speaks the Messages API
+// reads Anthropic's (that API requires max_tokens, and the custom row has none; RB-W1b).
+std::string capTableHost(const std::string& capHost, Dialect dialect) {
+  return capHost == "custom" && dialect == Dialect::AnthropicMessages ? std::string("anthropic") : capHost;
+}
+
 // The state of one exchange: its requests, waits and retries.
 class Exchange {
  public:
@@ -160,9 +166,7 @@ class Exchange {
       model_ = route.model;
     }
     window_ = req_.timeoutMs ? req_.timeoutMs : orch::readWindowMsFor(capHost_, model_, routed_);
-    // A custom host that speaks the Messages API takes its output cap from Anthropic's table: that
-    // API requires max_tokens, and the custom row has none (RB-W1b).
-    tableHost_ = capHost_ == "custom" && in->turn->dialect == Dialect::AnthropicMessages ? "anthropic" : capHost_;
+    tableHost_ = capTableHost(capHost_, in->turn->dialect);
     // No cap given: the head's released row, never the 85,000 B floor by accident (ruling 83).
     bodyCap_ = req_.bodyCap ? req_.bodyCap : orch::requestBudgetFor(slug_, in->turn->model, routed_).wireBodyBytes;
     return Status::success();
