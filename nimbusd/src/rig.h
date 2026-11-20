@@ -21,7 +21,6 @@
 #include "hosted_budget.h"   // lane RB-BG: the owner's history profile and the spending advice
 #include "nimbus/orch/spend_guard.h"   // lane QW4: sentWithoutAnswer - a sent embedding counts
 #include "nimbus/orch/calc_tool.h"   // RB-REC8: calc
-#include "nimbus/orch/result_store.h"   // RB-TR1: the device's recent-results ring (results.get/list)
 #include "connectors_store.h"
 #include "daemon_config.h"
 #include "daemon_http.h"
@@ -610,12 +609,11 @@ class NimbusdRig {
   uint32_t turnCount() const { return carriedTurns_ + eng_->turnCount(); }
   orch::TokenUsage lastTurnUsage() const { return lastUsage_; }
   orch::ToolRegistry& registry() { return reg_; }
-  // RB-TR1: the per-result clamp this turn applies, the loop's own setting (0: derived, as on
-  // the device), and the spill a clamped result takes (the device's resultsPut).
+  // RB-TR1: the per-result clamp this turn applies and the loop's own setting (0: derived, as on
+  // the device).
   size_t toolResultCap() { return toolResultCapNow(); }
   int loopResultCapSetting() { return config().loop.resultCap(); }
   int loopTotalCapSetting() { return config().loop.totalCap(); }
-  std::string spillForTest(const std::string& name, const std::string& text) { return resultsPut(name, text, ""); }
   orch::VectorMemory& vectors() { return vec_; }
   orch::Scratchpad& scratchpad() { return scratch_; }
   orch::MemConfig& memConfig() { return memCfg_; }
@@ -1968,21 +1966,8 @@ class NimbusdRig {
     registerDocsTools();
     registerDeviceStatusTool();
     files_->registerTools(reg_);
-    // RB-TR1: a plain read's part fits the result this turn carries, and a result the loop
-    // clamps is kept whole in the device's recent-results ring, so its cut names results.get.
+    // RB-TR1: a plain read's part fits the result this turn carries.
     files_->setResultCap([this] { return toolResultCapNow(); });
-    orch::ResultHandlers rh;
-    rh.get = [this](const std::string& tag, size_t& off, size_t maxBytes, std::string& out, size_t& total,
-                    const orch::Principal& who) {
-      std::lock_guard<std::mutex> l(resultsMu_);
-      return results_.getAt(tag, off, maxBytes, out, total, who);
-    };
-    rh.list = [this](const orch::Principal& who) {
-      std::lock_guard<std::mutex> l(resultsMu_);
-      return results_.list(who);
-    };
-    rh.viewCap = [this] { return toolResultCapNow(); };
-    orch::registerResultTools(reg_, rh);
     buildRoutinesAndSkills();
     // Who may call what (CUM-813), at the dispatch seam every route shares: the device's
     // one rule table, read with this turn's chat and whether anyone is attending it.
@@ -2776,9 +2761,6 @@ class NimbusdRig {
 
     agent::TurnEngine::Deps d;
     d.cfg = config();
-    d.spillResult = [this](const std::string& name, const std::string& fullText, const std::string& ns) {
-      return resultsPut(name, fullText, ns);
-    };
     d.platform = makePosixPlatform(&mem_);
     d.jobs = jobs_.get();
     d.deliver = [this](const std::string& c, const std::string& t) { send(c, t); };
@@ -3615,11 +3597,6 @@ class NimbusdRig {
     if (!eng_) return PosixFiles::kDefaultResultCap;
     return headRequestContext().toolResultBytes;
   }
-  // A clamped result, kept whole (the device's resultsPut): its tag for the cut's results.get.
-  std::string resultsPut(const std::string& name, const std::string& fullText, const std::string& ns) {
-    std::lock_guard<std::mutex> l(resultsMu_);
-    return results_.put("tool", name, fullText, vclock::steadyMs(), std::string(), ns);
-  }
   // The head's request context (lane B, on the Server link: no upload or pacing terms), in
   // the form its turn goes out in (lane L: the Tool use setting).
   orch::ContextBudget headRequestContext() {
@@ -3726,8 +3703,6 @@ class NimbusdRig {
   orch::RowTextOverlay overlay_;   // reads of epi_, with a photo row's settled text
   std::unique_ptr<HostedPhotos> photos_;
   std::unique_ptr<PosixFiles> files_;
-  orch::ResultStore results_;   // RB-TR1: clamped results, whole (results.get)
-  std::mutex resultsMu_;        // the engine thread puts, the MCP thread may get
   orch::ToolRegistry reg_;
   std::vector<std::string> toolNames_;
   // Lane POL2: the owner's standing rules and open questions, the same portable

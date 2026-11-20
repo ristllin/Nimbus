@@ -357,7 +357,7 @@ static void testBinaryReadIsRefused(ndtest::Ctx& c) {
 }
 
 static void testReadsReachTheWholeFile(ndtest::Ctx& c) {
-  std::printf("  -- (j) RB-TR1: a 40 KB file is read whole in parts; a cut names results.get --\n");
+  std::printf("  -- (j) RB-TR1: a 40 KB file is read whole in parts at the derived per-result cap --\n");
   Config cfg;
   NimbusdRig rig(cfg, opts("hf-j"));
   Web web(rig);
@@ -383,13 +383,6 @@ static void testReadsReachTheWholeFile(ndtest::Ctx& c) {
   };
   const std::string why = aidcases::e1::followParts(read, text, cap);
   c.ok(why.empty(), ("files.read reaches the whole 40 KB file in parts" + (why.empty() ? "" : ": " + why)).c_str());
-  // A result the loop clamps is kept whole: results.get pages it to its end.
-  c.ok(rig.registry().has("results.get") && rig.registry().has("results.list"), "results.get and results.list are tools");
-  const std::string tag = rig.spillForTest("memory_search", text);
-  ArduinoJson::JsonDocument g;
-  g["tag"] = tag;
-  const std::string page = call("results.get", g);
-  c.ok(has(page, "bytes 0-") && has(page, "of 40") && has(page, "next part: \"offset\":"), ("the ring pages the spilled result: " + page.substr(0, 80)).c_str());
 }
 
 int main() {
