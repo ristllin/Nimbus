@@ -190,6 +190,19 @@ uint64_t lineEnds(std::string_view s) {
   return k;
 }
 
+// How much of the window after `skip` the part takes, at most `full` bytes: all of it when
+// that reaches the end, else up to a line end in its second half, else up to a character
+// boundary. Bytes that are no character at all (a run of continuation bytes) go as they are
+// (the wire repairs what is not UTF-8), so a read always reaches the end.
+size_t partLength(std::string_view w, size_t skip, size_t full, bool toEnd) {
+  if (toEnd || full == 0) return full;
+  const size_t nl = w.rfind('\n', skip + full - 1);
+  if (nl != std::string_view::npos && nl >= skip + full / 2) return nl + 1 - skip;
+  size_t len = full;
+  while (len > 0 && isContinuation(w[skip + len])) --len;
+  return len ? len : full;
+}
+
 }  // namespace
 
 bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::string& out) {
@@ -207,17 +220,7 @@ bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::s
   size_t skip = 0;
   while (skip < 3 && skip < w.size() && isContinuation(w[skip])) ++skip;
   const uint64_t from = from0 + skip;
-  const size_t full = size_t(std::min<uint64_t>(room, size - from));
-  size_t len = full;
-  if (from + len < size) {
-    const size_t nl = w.rfind('\n', skip + len - 1);
-    if (nl != std::string_view::npos && nl >= skip + len / 2) len = nl + 1 - skip;
-    else
-      while (len > 0 && isContinuation(w[skip + len])) --len;
-    // Bytes that are no character at all (a run of continuation bytes): the part takes them
-    // as they are (the wire repairs what is not UTF-8), so a read always reaches the end.
-    if (len == 0) len = full;
-  }
+  const size_t len = partLength(w, skip, size_t(std::min<uint64_t>(room, size - from)), from + room >= size);
   const std::string_view part = w.substr(skip, len);
   const uint64_t to = from + len;
   detail::Txt t;
