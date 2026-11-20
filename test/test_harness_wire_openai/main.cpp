@@ -240,9 +240,9 @@ static void test_loop_forced_final_tool_choice() {
   TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"function\",\"name\":\"orch_turn\"}"));
 }
 
-// RB-Q4 pin: HeadLoopConfig::proseIsReply changes only the Anthropic wire. On the Responses
-// wire a prose round (tool_choice required makes it rare) with the flag on runs exactly as with
-// it off: the same requests, byte for byte, and the same answer.
+// RB-Q4 and RB-Q4b pin: HeadLoopConfig::proseIsReply changes nothing on the Responses wire (the captures show
+// about no discarded prose there: tool_choice required makes a prose round rare). With the flag on a prose round
+// runs exactly as with it off: the same requests, byte for byte, and the same answer.
 static void test_rbq4_prose_flag_leaves_the_responses_wire_unchanged() {
   const std::string prose =
       "{\"id\":\"resp_p\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\","

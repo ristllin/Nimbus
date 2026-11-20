@@ -522,10 +522,15 @@ static bool misLoopBody(const ProviderDeps& pd, const nimbus::orch::Transcript& 
     if (!seedChatUserMessage(msgs, p, a.imgs, err)) return false;
   }
   if (!putChatTools(pd, req["tools"].to<JsonArray>(), a.ht, kMistralDialect, false, err)) return false;
-  if (a.allowTools) {
+  if (a.allowTools && a.ht->cfg.proseIsReply) {
+    // RB-Q4b: on a person's turn an answer in prose is the reply (misProseIsTheReply), so a tool round does not
+    // force a tool. Under "any" mistral-medium wrote its answer into a tool call's name, made needless calc calls
+    // and put text beside orch_turn (RB-R1's candidate run: tool calls a turn 1.09 against the loop's 0.46).
+    req["tool_choice"] = "auto";
+  } else if (a.allowTools) {
     // "any": chat-completions' force-a-tool value (the Conversations API's
     // "required" dialect does NOT apply here). The model must call SOME tool
-    // every round; orch_turn is the only exit.
+    // every round; orch_turn is the only exit. Unattended turns and the dream keep it.
     req["tool_choice"] = "any";
   } else {
     // Forced final: chat-completions DOES accept the named-function object
@@ -554,6 +559,20 @@ static std::string withReplyField(const std::string& args) {
     return args;
   d["reply"] = "";
   return serializeBody(d);
+}
+
+// RB-Q4b: on a person's turn (proseIsReply) a tool round answered in text that finished normally IS the reply, as
+// on the Anthropic wire (RB-Q4): requests = tool rounds + 1. Text that is only white space, a round cut at the
+// length limit (readChatRound already failed it) and every round of an unattended turn stay a stall.
+static void misProseIsTheReply(const JsonDocument& resp, bool allowTools, bool proseIsReply,
+                               nimbus::orch::HeadStep& out) {
+  if (!allowTools || !proseIsReply || out.finished || !out.toolCalls.empty()) return;
+  if (out.text.find_first_not_of(" \t\r\n") == std::string::npos) return;
+  if (std::strcmp(resp["choices"][0]["finish_reason"] | "", "stop") != 0) return;
+  out.finished = true;
+  out.prose = true;
+  out.finalTurn = out.text;
+  hlog::logf("orchTurn(mistral-loop): round answered in prose (%u B), the reply", (unsigned)out.text.size());
 }
 
 // A long answer in the round's text, with only a pointer or a digest of it in orch_turn:
@@ -736,7 +755,10 @@ nimbus::orch::HeadStepFn misLoopStep(const ProviderDeps& pd,
       wire::addRoundUsage(resp["usage"].as<ArduinoJson::JsonObjectConst>(), usage, rb, textBytes, photoTok);
       orch::captureServedModel(usage, resp.as<ArduinoJson::JsonVariantConst>());
       std::string cutWhy;
-      if (readChatRound(resp, out, cutWhy, kMistralDialect)) return out;   // finished, a tool round, or prose (stall)
+      if (readChatRound(resp, out, cutWhy, kMistralDialect)) {   // finished, a tool round, or prose
+        misProseIsTheReply(resp, allowTools, ht.cfg.proseIsReply, out);
+        return out;
+      }
       if (attempt == 0 && cap.hasRetry()) {
         hlog::logf("orchTurn(mistral-loop): cut (%s) at %u tokens - one retry with %u",
                    cutWhy.c_str(), (unsigned)maxTokens, (unsigned)cap.retryTokens);

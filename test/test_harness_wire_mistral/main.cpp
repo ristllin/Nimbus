@@ -464,28 +464,102 @@ static void test_loop_stall_forces_named_final() {
   TEST_ASSERT_FALSE(bodyHas(d, 1, "just prose"));
 }
 
-// RB-Q4 pin: HeadLoopConfig::proseIsReply changes only the Anthropic wire. On chat completions
-// a prose round with the flag on is the same stall as with it off: the same requests, byte for
-// byte, and the same answer.
-static void test_rbq4_prose_flag_leaves_the_chat_wire_unchanged() {
-  std::vector<std::string> bodies[2];
-  std::string outs[2];
-  for (int on = 0; on < 2; ++on) {
+// RB-Q4b: on a person's turn (HeadLoopConfig::proseIsReply) the Mistral wire does what RB-Q4 made the Anthropic
+// wire do. A tool round no longer forces a tool (tool_choice "auto", not "any": under "any" the model's answer came
+// out as a tool call's name, a needless calc call, or text beside orch_turn), and a text answer that finished
+// normally ("stop") IS the reply on every round: requests == tool rounds + 1. The class, over 0 to 3 tool rounds.
+static std::string chatProseStopBody(const char* text) {
+  return std::string("{\"choices\":[{\"message\":{\"content\":\"") + text +
+         "\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5}}";
+}
+static void test_rbq4b_prose_is_the_reply_requests_equal_tool_rounds_plus_one() {
+  for (int k = 0; k <= 3; ++k) {
     FakeProviderDeps d;
-    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseBody()});
+    for (int i = 0; i < k; ++i) {
+      const std::string id = "tcround0" + std::to_string(i);
+      d.http.script.push_back({"", "/v1/chat/completions", 200, chatToolCallBody("memory_search", id.c_str())});
+    }
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseStopBody("Here is my answer.")});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});   // a re-ask would take this
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    const std::string label = "tool rounds " + std::to_string(k);
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr),
+                             (label + ": " + err).c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(k + 1, (int)d.http.seen.size(), label.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(k, (int)rig.dispatched.size(), label.c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Here is my answer.", out.c_str(), label.c_str());
+    for (size_t i = 0; i < d.http.seen.size(); ++i) {
+      TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, i, "\"tool_choice\":\"auto\""), label.c_str());
+      TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, i, "\"tool_choice\":\"any\""), label.c_str());
+      TEST_ASSERT_FALSE_MESSAGE(bodyHas(d, i, "\"tool_choice\":{"), label.c_str());   // never a forced final
+    }
+  }
+}
+
+// Counter-tests. Flag off (an unattended turn, the dream): every request byte-identical to before ("any", the
+// stall, the forced final naming orch_turn). Flag on: a round that says nothing (no text, white space) is still a
+// stall, and a round cut at the length limit is still a cut, never a reply.
+static void test_rbq4b_flag_off_and_the_rounds_that_are_no_answer() {
+  {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseStopBody("just prose")});
     d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
     auto pd = d.contract();
     FakeProviderDeps::ToolRig rig;
     d.fillTools(rig);
-    rig.ht.cfg.proseIsReply = on != 0;
-    std::string conv, err;
-    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", outs[on], err, &rig.ht, nullptr),
-                             err.c_str());
-    for (const auto& r : d.http.seen) bodies[on].push_back(r.body);
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 0, "\"tool_choice\":\"any\""));
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"function\""));
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
   }
-  TEST_ASSERT_EQUAL(2, (int)bodies[1].size());
-  TEST_ASSERT_TRUE(bodies[0] == bodies[1]);
-  TEST_ASSERT_EQUAL_STRING(outs[0].c_str(), outs[1].c_str());
+  for (const char* text : {"", " \\n\\t "}) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseStopBody(text)});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)d.http.seen.size(), text);   // stalled, then the forced final
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"function\""), text);
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+  }
+  {   // a text-only round that stopped for another reason is no answer either
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200,
+        "{\"choices\":[{\"message\":{\"content\":\"partial\"},\"finish_reason\":\"error\"}],"
+        "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5}}"});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatFinalBody()});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"done\"}", out.c_str());
+  }
+  {
+    FakeProviderDeps d;
+    const std::string cut = "{\"choices\":[{\"message\":{\"content\":\"Here is my ans\"},\"finish_reason\":\"length\"}],"
+                            "\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":5}}";
+    for (int i = 0; i < 4; ++i) d.http.script.push_back({"", "/v1/chat/completions", 200, cut});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
+    TEST_ASSERT_NOT_EQUAL(0, (int)err.size());
+  }
 }
 
 // CUM-557: a reasoning model's loop round whose content is a chunk list (thinking,
@@ -2124,7 +2198,8 @@ int main(int, char**) {
   RUN_TEST(test_error_mapping);
   RUN_TEST(test_loop_chat_completions_stateless);
   RUN_TEST(test_loop_stall_forces_named_final);
-  RUN_TEST(test_rbq4_prose_flag_leaves_the_chat_wire_unchanged);
+  RUN_TEST(test_rbq4b_prose_is_the_reply_requests_equal_tool_rounds_plus_one);
+  RUN_TEST(test_rbq4b_flag_off_and_the_rounds_that_are_no_answer);
   RUN_TEST(test_loop_orch_turn_schema_without_descriptions);
   RUN_TEST(test_loop_long_arguments_fold);
   RUN_TEST(test_loop_chunk_list_prose_reads);
