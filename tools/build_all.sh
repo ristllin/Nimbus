@@ -19,6 +19,16 @@
 #                                       default - this is the ONLY thing that
 #                                       compiles it)
 #   test  (esp32s3 + -DNIMBUS_TEST)     the HIL serial test-affordances layer
+#   esp32s3-cyd                         the Freenove CYD product image (engine 1)
+#   esp32s3-e2, esp32s3-cyd-e2,         the engine-2 images (lane RB-I0): each is its
+#   esp32s3-cyd-35-e2, esp32s3-cyd-40-e2, engine-1 twin built with custom_nimbus_engine = 2
+#   test-e2, test-cyd-e2                and -DNIMBUS_ENGINE=2 (never both engines in one image)
+#
+# After the matrix, the engine gates run on what it built (PRD section 10, L0): every map
+# links one engine (check_engine_filter.py), no engine-2 ELF defines an engine-1 symbol
+# (check_elf_symbols.py --engine1-absent), no old-engine tool registers on engine 2
+# (list_tool_registrations.py --check), and the engine-2 images keep the tg_poll stack floor
+# and their static-DRAM ceilings.
 #
 # The two flag-only targets reuse an existing env and inject the extra define via
 # PLATFORMIO_BUILD_FLAGS (appended to that env's build_flags for this run only),
@@ -57,7 +67,15 @@ MATRIX=(
   "esp32s3+fuelgauge|esp32s3|-DNIMBUS_HAS_FUEL_GAUGE"
   "esp32s3+battadc|esp32s3|-DNIMBUS_HAS_BATTERY_ADC"
   "esp32s3+test|test|"
+  "esp32s3-cyd|esp32s3-cyd|"
+  "esp32s3-e2|esp32s3-e2|"
+  "esp32s3-cyd-e2|esp32s3-cyd-e2|"
+  "esp32s3-cyd-35-e2|esp32s3-cyd-35-e2|"
+  "esp32s3-cyd-40-e2|esp32s3-cyd-40-e2|"
+  "test-e2|test-e2|"
+  "test-cyd-e2|test-cyd-e2|"
 )
+E2_ENVS=(esp32s3-e2 esp32s3-cyd-e2 esp32s3-cyd-35-e2 esp32s3-cyd-40-e2 test-e2 test-cyd-e2)
 
 pass=0
 fail=0
@@ -137,6 +155,30 @@ fi
 # under 64 KB of headroom; prints every env's headroom, production included.
 echo "== image-size gate (every built env vs its app partition) =="
 python3 tools/release_gate/check_image_size.py || { echo "== image-size gate FAILED ==" >&2; exit 1; }
+
+# The engine gates (lane RB-I0). Each runs bare; a failure fails the matrix.
+gate() {
+  local label=$1; shift
+  printf '  [ .. ] %-20s\n' "$label"
+  if "$@"; then
+    printf '  [ OK ] %-20s\n' "$label"
+    pass=$((pass + 1))
+  else
+    printf '  [FAIL] %-20s\n' "$label"
+    fail=$((fail + 1))
+    failed_labels+=("$label")
+  fi
+}
+echo "== engine gates (engine-1 and engine-2 images) =="
+gate "engine-filter maps" python3 tools/release_gate/check_engine_filter.py \
+  --require-maps esp32s3 esp32s3-cyd test "${E2_ENVS[@]}"
+gate "e2 tool registrations" python3 tools/engine/list_tool_registrations.py --check
+for env in "${E2_ENVS[@]}"; do
+  gate "e1-absent $env" python3 tools/release_gate/check_elf_symbols.py --engine1-absent \
+    --elf ".pio/build/$env/firmware.elf"
+done
+gate "tg_poll stack" python3 tools/release_gate/check_tg_poll_stack.py --quiet
+gate "static DRAM" python3 tools/release_gate/check_static_dram.py
 
 echo "== matrix: $pass passed, $fail failed =="
 if [ $fail -ne 0 ]; then

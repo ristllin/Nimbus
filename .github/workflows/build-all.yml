@@ -2,7 +2,8 @@ name: build-all
 
 # The full compile matrix (tools/build_all.sh): every environment and flag path
 # the fast PR gate never builds - notifierdbg, provision, the fuel-gauge and
-# battery-ADC flag rows, the test-console env, plus the harness-lab link check.
+# battery-ADC flag rows, the test-console env, the six engine-2 envs (lane RB-I0)
+# and the engine gates on them, plus the harness-lab link check.
 # Exists because matrix-only rows rotted red on main unseen: no workflow ran
 # build_all.sh, so nothing caught it (CUM-466; the rot itself was CUM-458).
 #
@@ -30,6 +31,14 @@ on:
       - 'platformio.ini'
       - 'tools/build_all.sh'
       - 'tools/harness-lab/**'
+      - 'tools/engine/**'
+      - 'tools/engine_filter.py'
+      - 'tools/release_gate/check_engine_filter.py'
+      - 'tools/release_gate/check_elf_symbols.py'
+      - 'tools/release_gate/check_tg_poll_stack.py'
+      - 'tools/release_gate/tg_poll_stack.json'
+      - 'tools/release_gate/tg_poll_stack.d/**'
+      - 'tools/release_gate/static_dram_ceilings.json'
       - '.github/workflows/build-all.yml'
   push:
     branches: [main]
@@ -40,6 +49,14 @@ on:
       - 'platformio.ini'
       - 'tools/build_all.sh'
       - 'tools/harness-lab/**'
+      - 'tools/engine/**'
+      - 'tools/engine_filter.py'
+      - 'tools/release_gate/check_engine_filter.py'
+      - 'tools/release_gate/check_elf_symbols.py'
+      - 'tools/release_gate/check_tg_poll_stack.py'
+      - 'tools/release_gate/tg_poll_stack.json'
+      - 'tools/release_gate/tg_poll_stack.d/**'
+      - 'tools/release_gate/static_dram_ceilings.json'
       - '.github/workflows/build-all.yml'
   schedule:
     # Weekly anti-rot sweep on main. Not at the top of the hour - that is when
@@ -62,7 +79,8 @@ jobs:
     runs-on: ubuntu-latest
     # Warm-cache runs finish well inside this; the bound exists so a hung
     # toolchain download fails loudly instead of idling to the 6 h default.
-    timeout-minutes: 120
+    # Lane RB-I0 added seven device builds (esp32s3-cyd and the six engine-2 envs).
+    timeout-minutes: 180
     steps:
       # The native row and harness-lab consume ../solide-drivers as a sibling
       # checkout - recreate that layout inside the workspace (same shape as

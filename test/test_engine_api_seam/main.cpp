@@ -1,8 +1,11 @@
 // test_engine_api_seam - the device seam's split (lane RB-SEAM1b, PRD section 10), as a class
 // over the sources (comments stripped), so a call that lands on the wrong side fails here:
-//   - every call src/agent/engine_api.h declares is defined in the old engine's seam
-//     (src/agent/orchestrator_e1.cpp) and never in the engine-neutral half
-//     (src/agent/orchestrator_common.cpp): a second engine's seam implements exactly that list;
+//   - every call src/agent/engine_api.h declares is defined in EACH engine seam (the old engine's
+//     src/agent/orchestrator_e1.cpp and the plain engine's src/agent/orchestrator_plain.cpp, RB-I0;
+//     a device image links exactly one) and never in the engine-neutral half
+//     (src/agent/orchestrator_common.cpp);
+//   - every call src/agent/engine_tools.h declares is defined in each engine's tool file
+//     (tools_e1.cpp, tools_plain.cpp, RB-I0);
 //   - every call src/agent/orchestrator.h itself declares is defined in the common half and
 //     never in an engine seam, so both engines share one tenant table, session snapshot,
 //     results ring and set of reply sinks;
@@ -23,6 +26,10 @@ static const char* const kApi = "src/agent/engine_api.h";
 static const char* const kPublic = "src/agent/orchestrator.h";
 static const char* const kCommon = "src/agent/orchestrator_common.cpp";
 static const char* const kEngine1 = "src/agent/orchestrator_e1.cpp";
+// Every engine seam an env links (RB-I0: the engine-2 envs link orchestrator_plain.cpp).
+static const char* const kSeams[] = {"src/agent/orchestrator_e1.cpp", "src/agent/orchestrator_plain.cpp"};
+static const char* const kToolsApi = "src/agent/engine_tools.h";
+static const char* const kToolFiles[] = {"src/agent/tools_e1.cpp", "src/agent/tools_plain.cpp"};
 static const char* const kEngineHeader = "nimbus/harness/engine.h";
 
 static std::string readFile(const std::string& path) {
@@ -215,11 +222,28 @@ static void test_every_engine_call_is_defined_in_the_engine_seam_only() {
                             "lastTurnUsage", "lastTurnDebugPs", "lastFailJson", "foldStatusJsonFor", "foldStatusText",
                             "stageManualFold", "requestConvClear", "requestConvReset"})
     TEST_ASSERT_TRUE_MESSAGE(api.count(named) == 1, named);
-  const std::string e1 = code(kEngine1);
   const std::string common = code(kCommon);
-  for (const std::string& fn : api) {
-    TEST_ASSERT_TRUE_MESSAGE(definesFunction(e1, fn), (fn + " is not defined in " + kEngine1).c_str());
+  for (const char* seam : kSeams) {
+    const std::string src = code(seam);
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), seam);
+    for (const std::string& fn : api)
+      TEST_ASSERT_TRUE_MESSAGE(definesFunction(src, fn), (fn + " is not defined in " + seam).c_str());
+  }
+  for (const std::string& fn : api)
     TEST_ASSERT_FALSE_MESSAGE(definesFunction(common, fn), (fn + " is defined in the common half").c_str());
+}
+
+// engine_tools.h's hooks (the tool families an engine registers): each engine's tool file defines
+// every one, so memory::begin and model_refresh::begin link on both engines.
+static void test_every_tool_family_hook_is_defined_for_each_engine() {
+  const std::set<std::string> hooks = declaredFunctions(code(kToolsApi));
+  for (const char* named : {"registerMemoryFamilies", "registerModelsFamily"})
+    TEST_ASSERT_TRUE_MESSAGE(hooks.count(named) == 1, named);
+  for (const char* file : kToolFiles) {
+    const std::string src = code(file);
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), file);
+    for (const std::string& fn : hooks)
+      TEST_ASSERT_TRUE_MESSAGE(definesFunction(src, fn), (fn + " is not defined in " + file).c_str());
   }
 }
 
@@ -229,12 +253,12 @@ static void test_every_public_call_is_defined_in_the_common_half_only() {
   const std::set<std::string> own = declaredFunctions(pub);
   const std::set<std::string> api = declaredFunctions(code(kApi));
   TEST_ASSERT_TRUE(own.size() >= 30);
-  const std::string e1 = code(kEngine1);
   const std::string common = code(kCommon);
   for (const std::string& fn : own) {
     TEST_ASSERT_TRUE_MESSAGE(api.count(fn) == 0, (fn + " is declared in both headers").c_str());
     TEST_ASSERT_TRUE_MESSAGE(definesFunction(common, fn), (fn + " is not defined in " + kCommon).c_str());
-    TEST_ASSERT_FALSE_MESSAGE(definesFunction(e1, fn), (fn + " is defined in the engine seam").c_str());
+    for (const char* seam : kSeams)
+      TEST_ASSERT_FALSE_MESSAGE(definesFunction(code(seam), fn), (fn + " is defined in " + seam).c_str());
   }
 }
 
@@ -257,6 +281,7 @@ int main(int, char**) {
   RUN_TEST(test_the_definition_scanner_finds_bodies_not_calls_or_declarations);
   RUN_TEST(test_the_include_scanner_ignores_comments);
   RUN_TEST(test_every_engine_call_is_defined_in_the_engine_seam_only);
+  RUN_TEST(test_every_tool_family_hook_is_defined_for_each_engine);
   RUN_TEST(test_every_public_call_is_defined_in_the_common_half_only);
   RUN_TEST(test_only_the_engine_seam_includes_the_old_engine);
   return UNITY_END();

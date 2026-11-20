@@ -51,6 +51,13 @@ images share one config. The config is tg_poll_stack.json plus each fragment in
 tg_poll_stack.d/ (one file per lane, merged in name order; a fragment only adds rows).
 A release's last lane folds the fragments into the config and removes them (v5.1.2: lane
 F's fold paths and lane H's history paths), so two releases' fragments never pile up.
+
+Engines (lane RB-I0). An image builds engine 1 or engine 2 (platformio.ini's
+custom_nimbus_engine of the env whose .pio/build/<env>/ holds the ELF, or --engine). A `paths`
+row names the engine it measures with "engine" (default 1: every row written before engine 2
+measures the old engine's turn); only the rows of the image's engine are checked, so an
+engine-2 image is never failed for not reaching TurnEngine, and an engine-1 image is checked
+exactly as before. tg_poll_stack.d/RB-E2.json adds the engine-2 envs and rows.
 """
 
 from __future__ import annotations
@@ -1888,8 +1895,37 @@ def render(v: dict, elf: str, chain_rows: int = 60) -> str:
     return "\n".join(lines)
 
 
-def check(elf: str, cfg: dict, report: "str | None" = None, quiet: bool = False, sources: "str | None" = None) -> bool:
-    model, _ = analyse_elf(elf, cfg, sources)
+def engine_of(elf: str, root: str = REPO) -> int:
+    """The engine an image builds: its env's custom_nimbus_engine (1 when the ELF is not in a
+    .pio/build/<env>/ of a known env)."""
+    env = os.path.basename(os.path.dirname(os.path.abspath(elf)))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import check_engine_filter  # noqa: E402  (platformio.ini resolved as PlatformIO does)
+
+    ini = check_engine_filter.PioIni(os.path.join(root, "platformio.ini"))
+    if env not in ini.device_envs():
+        return 1
+    return ini.engine(env)
+
+
+def for_engine(cfg: dict, engine: int) -> dict:
+    """The config with only the `paths` rows of `engine` (a row's "engine", default 1)."""
+    out = dict(cfg)
+    out["paths"] = [r for r in cfg.get("paths", []) if r.get("engine", 1) == engine]
+    return out
+
+
+def check(
+    elf: str,
+    cfg: dict,
+    report: "str | None" = None,
+    quiet: bool = False,
+    sources: "str | None" = None,
+    engine: "int | None" = None,
+) -> bool:
+    engine = engine_of(elf) if engine is None else engine
+    print(f"tg_poll stack: {elf} builds engine {engine}")
+    model, _ = analyse_elf(elf, for_engine(cfg, engine), sources)
     v = verdict(model)
     text = render(v, elf)
     if report:
@@ -1919,6 +1955,7 @@ def main(argv: "list[str] | None" = None) -> int:
         help="a checkout of the commit the ELF was built from, read for its source lines "
         "(default: this checkout; needed for an image older than the working tree)",
     )
+    ap.add_argument("--engine", type=int, choices=(1, 2), help="the image's engine (default: from its env)")
     args = ap.parse_args(argv)
     try:
         cfg = load_config(args.config)
@@ -1936,7 +1973,7 @@ def main(argv: "list[str] | None" = None) -> int:
     ok = True
     for elf in elfs:
         try:
-            ok = check(elf, cfg, args.report, args.quiet, args.sources) and ok
+            ok = check(elf, cfg, args.report, args.quiet, args.sources, args.engine) and ok
         except (OSError, ValueError, RuntimeError) as e:
             print(f"FAIL tg_poll stack: {elf}: {e}")
             ok = False

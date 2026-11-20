@@ -1,0 +1,79 @@
+{
+  "about": "Lane RB-I0: the engine-2 images (the *-e2 envs) on the same tg_poll budget. Rows here carry \"engine\": 2, so they are checked only on an engine-2 image, and the engine-1 rows (no \"engine\", default 1) only on an engine-1 image. The floor is the same 4,096 B (PRD section 10: at least 4,096 B on engine 2, target 6,000 B). RB-I1/RB-I2 add the engine's own paths (turn, head round, tool calls, compaction) when they bind it.",
+  "envs": [
+    "esp32s3-cyd-e2",
+    "esp32s3-e2",
+    "esp32s3-cyd-35-e2",
+    "esp32s3-cyd-40-e2",
+    "test-cyd-e2",
+    "test-e2"
+  ],
+  "paths": [
+    {
+      "name": "engine 2: a message answered (the stub seam's handleMessage)",
+      "engine": 2,
+      "through": [
+        "^agent::orchestrator::handleMessage\\("
+      ],
+      "_why": "orchOnMessage -> the engine seam's handleMessage: on the RB-I0 stub the history rows and the fixed line's delivery; RB-I1/RB-I2 replace it with the engine's turn"
+    },
+    {
+      "name": "engine 2: the seam's pump (pollJobs)",
+      "engine": 2,
+      "through": [
+        "^agent::orchestrator::pollJobs\\("
+      ],
+      "_why": "orchTick -> pollJobs: the staged terminates, the update notice's send and the session snapshot"
+    },
+    {
+      "name": "engine 2: voice note (STT)",
+      "engine": 2,
+      "through": [
+        "^agent::stt::transcribe\\("
+      ],
+      "_why": "the same engine-neutral path as the engine-1 row \"voice note (STT)\", measured on the engine-2 image"
+    },
+    {
+      "name": "engine 2: media download",
+      "engine": 2,
+      "through": [
+        "^agent::telegram::\\(anonymous namespace\\)::(fetchToLfs|downloadToLfs|processMedia)\\("
+      ],
+      "_why": "the same engine-neutral path as the engine-1 row \"media download\", measured on the engine-2 image"
+    },
+    {
+      "name": "engine 2: OTA check or install, staged on the poll task",
+      "engine": 2,
+      "through": [
+        "^otaupd::runOnPoll\\(",
+        "^otaupd::checkRun\\("
+      ],
+      "_why": "the same engine-neutral path as the engine-1 row \"OTA check or install, staged on the poll task\", measured on the engine-2 image"
+    },
+    {
+      "name": "engine 2: OTA install",
+      "engine": 2,
+      "through": [
+        "^otaupd::installRun\\(",
+        "^otaupd::dlSink\\("
+      ],
+      "_why": "the same engine-neutral path as the engine-1 row \"OTA install\", measured on the engine-2 image"
+    },
+    {
+      "name": "engine 2: Telegram archive",
+      "engine": 2,
+      "through": [
+        "^agent::tgarchive::"
+      ],
+      "_why": "the same engine-neutral path as the engine-1 row \"Telegram archive\", measured on the engine-2 image"
+    },
+    {
+      "name": "engine 2: reply send",
+      "engine": 2,
+      "through": [
+        "doSendMessage"
+      ],
+      "_why": "the same engine-neutral path as the engine-1 row \"reply send\", measured on the engine-2 image"
+    }
+  ]
+}
