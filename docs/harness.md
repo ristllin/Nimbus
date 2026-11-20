@@ -945,6 +945,16 @@ chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the ne
 digests that fit 4,096 B as its summary, the counters, failure count and pause at 0, and
 a row pointer ("m%08x") that never moves back; other chats' records stay byte for byte.
 
+### Long call arguments (lane RB-H81)
+
+A call's string argument over 1,024 B is whole while its own turn is open, up to the head's
+bulk-whole bound (`tx::HeadBudget::bulkWholeCap`, 36,500 B on Sonnet): the c item keeps the
+model's arguments and, in `st`, their stub form (each long string as
+`[stub <N>B sha:<sha8>: view id=r<q>]`). From the close of the turn, or at ladder rung 2, every
+wire shows the stub form (`tx::shownArgs`); the turn's e item names the change
+(`change:long-args`). An argument over the bound is its stub form at once. The whole arguments
+go to the bulk file first.
+
 ### Long replies and pastes (lane RB-H81)
 
 An assistant text over the inline limit keeps at least the head's v5.1.2 message cap inline

@@ -823,9 +823,28 @@ void test_rules_long_text_keeps_the_cap_then_points_at_the_rest() {
   TEST_ASSERT_FALSE(tx::longTextHead("x", 0, "", out).ok());
 }
 
+
+// RB-H81: a long argument shows whole while its own turn is open, as its stub from the close of the
+// turn or at ladder rung 2; a call with no stub form always shows its arguments.
+void test_rules_long_arguments_are_whole_only_in_their_open_turn() {
+  tx::Item c;
+  c.kind = tx::ItemKind::Call;
+  c.q = 10;
+  c.turn = 3;
+  c.args = "{\"text\":\"whole\"}";
+  c.st = "{\"text\":\"[stub 5000B sha:0123abcd: view id=r10]\"}";
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 3, 0).c_str());
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 3, 9).c_str());
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, 3, 10).c_str());   // rung 2
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, 4, 0).c_str());    // the turn closed
+  c.st.clear();
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 4, 99).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rules_long_text_keeps_the_cap_then_points_at_the_rest);
+  RUN_TEST(test_rules_long_arguments_are_whole_only_in_their_open_turn);
   RUN_TEST(test_checker_rejects_wrong_internal_stubs);
   RUN_TEST(test_checker_rejects_leaking_outside_stubs);
   RUN_TEST(test_internal_stub_has_the_prd_shape);

@@ -850,7 +850,11 @@ inline void test_a_long_argument_is_stored_as_its_stub() {
   plain::TurnOutcome out;
   TXB_OK(b.owner("save it", out));
   TEST_ASSERT_EQUAL_STRING(big.c_str(), b.world.files["notes/big.md"].c_str());   // ran whole
-  TEST_ASSERT_TRUE_MESSAGE(!bodyHas(b.model.last(), "-ARG-TAIL"), "the long argument is re-sent whole");
+  // Amended by rulings 81 to 83 (RB-H81): whole while its own turn is open, its stub from the close.
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "-ARG-TAIL"), "the open turn lost its own argument");
+  b.model.push(sp::say("ok"));
+  TXB_OK(b.owner("next", out));
+  TEST_ASSERT_TRUE_MESSAGE(!bodyHas(b.model.last(), "-ARG-TAIL"), "a closed turn's long argument is re-sent whole");
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[stub 12009B sha:"));
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), "notes/big.md"));   // the short argument stays
 }
@@ -1377,9 +1381,12 @@ inline void test_nested_long_strings_are_stubbed_and_the_bulk_holds_the_whole() 
   const std::vector<tx::Item> items = storedOf(k);
   const tx::Item* c = lastCall(items);
   TEST_ASSERT_NOT_NULL(c);
-  TEST_ASSERT_TRUE_MESSAGE(c->args.find("-NESTED-1") == std::string::npos && c->args.find("-NESTED-2") == std::string::npos,
-                           "a nested long string is stored whole");
-  TEST_ASSERT_TRUE(c->args.find("notes/n.md") != std::string::npos);
+  // Amended (RB-H81): args keep the whole for the open turn; st holds every nested long string as
+  // its stub, shown from the close of the turn.
+  TEST_ASSERT_TRUE_MESSAGE(c->st.find("-NESTED-1") == std::string::npos && c->st.find("-NESTED-2") == std::string::npos,
+                           "a nested long string is whole in the stub form");
+  TEST_ASSERT_TRUE(c->args == args);
+  TEST_ASSERT_TRUE(c->st.find("notes/n.md") != std::string::npos);
 }
 
 inline void test_unparsable_long_arguments_are_one_stub() {

@@ -219,7 +219,7 @@ size_t shownBytes(const tx::Item& it, const ShowState& s) {
       return n;
     case tx::ItemKind::Assistant:
     case tx::ItemKind::DeviceNote: return n + it.x.size();
-    case tx::ItemKind::Call: return n + it.id.size() + it.n.size() + it.args.size();
+    case tx::ItemKind::Call: return n + it.id.size() + it.n.size() + tx::shownArgs(it, 0, 0).size();   // between turns
     case tx::ItemKind::Result:
       if (!shownWhole(it, s)) return n + it.id.size() + it.st.size();
       return n + it.id.size() + (it.cls == tx::ResultClass::Receipt || it.handle.empty() ? it.x.size() : it.bytes);

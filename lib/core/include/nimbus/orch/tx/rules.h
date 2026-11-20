@@ -183,6 +183,16 @@ struct ShowFacts {
 // an unsorted superseded list.
 Status showResult(const Item& result, const ShowFacts& facts, ShowAs& out);
 
+// A call's arguments as a request shows them (PRD section 2 tier 2 as amended by rulings 81 to 83;
+// lane RB-H81): a string argument over 1,024 B is whole while its own turn is open (the c item
+// keeps the model's arguments in args, bounded like tier-2 bulk) and its stub form (st: each long
+// string as its long-argument stub) from the close of the turn or at ladder rung 2 (the call at or
+// below ladderStubThrough). A call with no stub form shows its args. Pure.
+inline const std::string& shownArgs(const Item& call, uint32_t openTurn, uint64_t ladderStubThrough) {
+  const bool stub = call.turn != openTurn || call.q <= ladderStubThrough;
+  return stub && !call.st.empty() ? call.st : call.args;
+}
+
 // ---- photos ------------------------------------------------------------------------------------
 
 // How photos reach a head. Floor heads (85,000 B: routed, custom, unqualified) are Inline.

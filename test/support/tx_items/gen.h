@@ -139,7 +139,7 @@ inline tx::Item project(const tx::Item& in) {
       o.trigger = in.trigger, o.head = in.head, o.profile = in.profile, o.attempt = in.attempt, o.photos = in.photos;
       break;
     case tx::ItemKind::Assistant: o.x = in.x, o.rd = in.rd, o.fin = in.fin, o.handle = in.handle; break;
-    case tx::ItemKind::Call: o.id = in.id, o.n = in.n, o.args = in.args, o.eff = in.eff, o.rd = in.rd; break;
+    case tx::ItemKind::Call: o.id = in.id, o.n = in.n, o.args = in.args, o.eff = in.eff, o.rd = in.rd, o.st = in.st; break;
     case tx::ItemKind::Intent: o.id = in.id, o.n = in.n; break;
     case tx::ItemKind::Result:
       o.id = in.id, o.n = in.n, o.ok = in.ok, o.cls = in.cls, o.x = in.x, o.handle = in.handle, o.bytes = in.bytes,

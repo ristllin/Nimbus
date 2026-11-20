@@ -183,9 +183,11 @@ class StubWire : public plain::WireCodec {
       case tx::ItemKind::RoundMeta:
         if (it.turn == in.turn->turn && jsonObject(it.x)) out.push_back(Piece{Role::Assistant, 'k', it.x, "", "", "", false});
         return plain::Status::success();
-      case tx::ItemKind::Call:
-        out.push_back(Piece{Role::Assistant, 'c', "", it.id, it.n, jsonObject(it.args) ? it.args : "{}", false});
+      case tx::ItemKind::Call: {   // the long-argument rule of the real wires (tx::shownArgs, RB-H81)
+        const std::string& args = tx::shownArgs(it, in.turn->turn, in.ladder ? in.ladder->stubThrough : 0);
+        out.push_back(Piece{Role::Assistant, 'c', "", it.id, it.n, jsonObject(args) ? args : "{}", false});
         return plain::Status::success();
+      }
       case tx::ItemKind::Result:
         return resultPiece(in, it, show, out);
       default:

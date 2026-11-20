@@ -292,6 +292,7 @@ void encodeRoundKinds(Writer& w, const Item& it) {
       fieldStr(w, "n", it.n);
       fieldStr(w, "args", it.args);
       fieldFlag(w, "eff", it.eff);
+      fieldStr(w, "st", it.st);   // long arguments: their stub form, shown once the turn closed (RB-H81)
       fieldU64(w, "rd", it.rd);
       return;
     case ItemKind::Intent:
@@ -794,7 +795,7 @@ const FieldRule kFields[] = {
     TX_STR("hdl", A | R, handle),
     TX_NUM("b", R, bytes),
     TX_NUM("l", R, lines),
-    TX_STR("st", R, st),
+    TX_STR("st", C | R, st),
     TX_STR("day", S, day),
     TX_NUM("thru", S, thru),
     TX_BOOL("ext", S, ext),

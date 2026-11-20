@@ -540,7 +540,8 @@ void resultBlock(Render& r, const tx::Item& it, const Row& row) {
 void callBlock(Render& r, const tx::Item& it, const Row& row) {
   r.m.block(Role::Assistant, it.turn, true).key("type").str("tool_use").key("id").str(row.wid);
   r.w.key("name").str(wireName(it.n)).key("input");
-  if (oneObject(it.args)) r.w.raw(it.args);
+  const std::string& args = tx::shownArgs(it, r.in.turn->turn, r.in.ladder ? r.in.ladder->stubThrough : 0);   // RB-H81
+  if (oneObject(args)) r.w.raw(args);
   else r.w.beginObject().endObject();   // a cut or broken call, a long-argument stub
   r.m.close(it.turn, true);
   r.m.setResults(false);

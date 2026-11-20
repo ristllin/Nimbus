@@ -22,7 +22,7 @@
 // '"', '\\' and control bytes are escaped, so a line never holds a raw newline.
 // Keys (short, per kind):
 //   all  k q turn t            u  x tz ch src m parts[{k img|file|voice, ref, mime, b}]
-//   t  tr hd pf at ph          a  x rd fin hdl        c  id n args eff rd
+//   t  tr hd pf at ph          a  x rd fin hdl        c  id n args eff rd st
 //   i  id n                    r  id n ok cls x hdl b l st
 //   k  x rd                    h  x cls (note class)  s  x day thru ext
 //   x  stub why sup            d  ids                 e  cause rds tools hr pr pt ot cr cw usd ms
@@ -194,7 +194,8 @@ struct Item {
                                    // lives (b/<turn>.txb + offset)
   uint32_t bytes = 0;              // r: payload size
   uint32_t lines = 0;              // r: payload lines
-  std::string st;                  // r: the stub text, computed once at capture (<= 400 B)
+  std::string st;                  // r: the stub text, computed once at capture (<= 400 B); c: the
+                                   // arguments with each long string as its stub (tx::shownArgs)
 
   // h
   NoteClass note = NoteClass::Unknown;

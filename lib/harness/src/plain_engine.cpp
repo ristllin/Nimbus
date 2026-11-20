@@ -67,6 +67,7 @@ struct Turn {
   uint32_t bodyCap = 0;                // the head's body cap (budget()); 0 only before it runs
   bool floorHead = false;              // the head's class (tx::HeadBudget::floorHead)
   uint32_t messageCap = tx::kInlineMessageCap;   // text kept inline (tx::HeadBudget::messageCap)
+  uint32_t bulkWholeCap = tx::kBulkWholeMax;     // tier 2 whole in its own turn (tx::HeadBudget::bulkWholeCap)
   GuardLimits limits;
   LadderState ladder;
   RenderInput render;
@@ -86,6 +87,7 @@ struct Turn {
   bool fileSetChanged = false;
   bool sawOutside = false;
   bool sawMeta = false;
+  bool longArgs = false;               // a call kept a long argument whole: its stub shows from the close
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
   GuardTrip trip = GuardTrip::None;
@@ -418,6 +420,7 @@ class TurnRun {
       t_.bodyCap = b.bodyCap;
       t_.floorHead = b.floorHead;
       t_.messageCap = std::max<uint32_t>(b.messageCap, tx::kInlineMessageCap);
+      if (b.bulkWholeCap) t_.bulkWholeCap = b.bulkWholeCap;
       t_.ctx.profile = b.profile;
       return Status::success();
     }
@@ -684,9 +687,10 @@ class TurnRun {
     tx::Item& it = t_.read;
     for (size_t i = 0; i < d_.arena->count(); ++i) {
       tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || e.kind != tx::ItemKind::Result || e.turn != t_.ctx.turn) continue;
-      if (e.q <= t_.ladder.stubThrough || e.q > through) continue;
-      if (d_.arena->get(i, it).ok() && it.cls == tx::ResultClass::Bulk) return true;
+      if (!d_.arena->header(i, e).ok() || e.turn != t_.ctx.turn) continue;
+      if (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call) continue;
+      if (e.q <= t_.ladder.stubThrough || e.q > through || !d_.arena->get(i, it).ok()) continue;
+      if (e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk) return true;   // RB-H81: long arguments too
     }
     return false;
   }
@@ -715,7 +719,7 @@ class TurnRun {
     tx::Item& it = t_.read;
     if (!d_.arena->get(index, it).ok()) return 0;
     if (e.kind == tx::ItemKind::User) return it.x.size() + stampBytes(it);
-    if (e.kind == tx::ItemKind::Call) return it.id.size() + it.n.size() + it.args.size();
+    if (e.kind == tx::ItemKind::Call) return it.id.size() + it.n.size() + tx::shownArgs(it, t_.ctx.turn, t_.ladder.stubThrough).size();
     if (e.kind == tx::ItemKind::Result) return shownBytes(it);
     return it.x.size();
   }
@@ -870,7 +874,8 @@ class TurnRun {
       tx::Item& c = blank(tx::ItemKind::Call);
       c.id = step.calls[i].id;
       c.n = step.calls[i].name;
-      if (!(st = tierArgs(c.n, step.calls[i].argsJson, c.args)).ok()) break;
+      if (!(st = tierArgs(c.n, step.calls[i].argsJson, c.args, c.st)).ok()) break;
+      t_.longArgs |= !c.st.empty();
       c.eff = viewOf(step.calls[i]).cls.effect == orch::EffectClass::Effect;
       c.rd = a_round();
       st = put(c);
@@ -883,13 +888,18 @@ class TurnRun {
   uint8_t a_round() const { return (uint8_t)std::min<uint16_t>(t_.rounds, 255); }
   uint64_t callQOf(size_t i) const { return i < t_.callQ.size() ? t_.callQ[i] : 0; }
 
-  // Tier 1 for a call's arguments (PRD section 2): over kTier1CallArgs, each long string
-  // argument is stored as its long-argument stub (arguments that do not parse, cut by the
-  // output limit, as one stub) and the whole arguments go to the bulk file first. When the
-  // bulk file refuses, the arguments stay inline if their line fits, else the stub makes no
-  // promise of view. The call itself runs with the model's arguments.
-  Status tierArgs(const std::string& name, const std::string& args, std::string& out) {
+  // Tier 2 for a call's arguments (PRD section 2 as amended by rulings 81 to 83): a string argument
+  // over kTier1CallArgs is whole while its own turn is open, bounded like tier-2 bulk (the head's
+  // bulkWholeCap), and shows as its long-argument stub from the close of the turn or at ladder
+  // rung 2 (tx::shownArgs): the c item keeps the model's arguments in `out` and their stub form in
+  // `stub`. The whole arguments go to the bulk file first (the stub's view pointer). Over the
+  // bound, or when the line would not hold both, `out` is the stub form (arguments that do not
+  // parse, cut by the output limit, as one stub). When the bulk file refuses, the arguments stay
+  // inline whole if their line fits, else the stub makes no promise of view. The call itself runs
+  // with the model's arguments.
+  Status tierArgs(const std::string& name, const std::string& args, std::string& out, std::string& stub) {
     out = args;
+    stub.clear();
     if (args.size() <= tx::kTier1CallArgs) return Status::success();
     ArduinoJson::JsonDocument doc;
     const bool parsed = !deserializeJson(doc, args, ArduinoJson::DeserializationOption::NestingLimit(64));
@@ -897,10 +907,16 @@ class TurnRun {
     std::string handle;
     const bool kept = d_.log->appendBulk(t_.ctx.turn, args, handle).ok();
     if (!kept && args.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();   // inline whole
-    if (!parsed) return longStub(name, args, kept, out);
-    stubLongStrings(name, doc.as<ArduinoJson::JsonVariant>(), kept);
-    out.clear();
-    serializeJson(doc, out);
+    std::string stubbed;
+    if (!parsed) {
+      if (!longStub(name, args, kept, stubbed).ok()) return Status::fail(Err::InvalidArgument, "plain::tierArgs");
+    } else {
+      stubLongStrings(name, doc.as<ArduinoJson::JsonVariant>(), kept);
+      serializeJson(doc, stubbed);
+    }
+    const bool whole = args.size() <= t_.bulkWholeCap && args.size() + stubbed.size() + kLineRoom <= tx::kMaxLineBytes;
+    if (whole) stub.swap(stubbed);   // whole in its open turn, the stub from its close
+    else out.swap(stubbed);          // over the bound: the stub at once
     return Status::success();
   }
   static constexpr size_t kLineRoom = 1024;   // a line's keys and crc beside its text
@@ -1227,6 +1243,7 @@ class TurnRun {
     else if (t_.storageLineDue) setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
     if (t_.sawOutside) event("change:outside");
     if (t_.sawMeta) event("change:thinking");   // closed-turn thinking is not replayed (ruling 13)
+    if (t_.longArgs) event("change:long-args");   // its long arguments show as stubs from now (RB-H81)
     if (d_.recentFiles && t_.fileSetChanged) {
       const std::string before = c_.recent.text();
       (void)c_.recent.atClose(true, d_.recentFiles, t_.tz);

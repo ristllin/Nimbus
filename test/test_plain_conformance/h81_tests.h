@@ -120,9 +120,43 @@ inline void test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer()
     }
 }
 
+// DoD item 3 (ruling 83 item 8): a call's long string argument is whole while its own turn is open,
+// bounded like tier-2 bulk, and shows as its stub from the close of the turn. A two-round turn: the
+// second request still carries the first round's 5,000 B argument whole; the next turn's request
+// shows its stub. The counter-case: an argument over the head's bulk-whole bound is a stub at once.
+inline void test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after() {
+  for (size_t bytes : {(size_t)5000, (size_t)40000}) {
+    txb::Battery b;
+    tx::HeadBudget hb;
+    TEST_ASSERT_TRUE(tx::budgetFor(b.headKey(), tx::Profile::Full, hb).ok());
+    const bool overBound = bytes > hb.bulkWholeCap;
+    std::string text;
+    for (int i = 0; text.size() < bytes; ++i) text += "para " + std::to_string(i) + ". ";
+    text.resize(bytes);
+    text.replace(bytes - 10, 4, "TAIL");
+    b.model.push(sp::call("write_file", "{\"path\":\"notes/long.md\",\"text\":\"" + text + "\"}"));
+    b.model.push(sp::say("Saved."));
+    b.model.push(sp::say("Fine."));
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("save this", out));
+    TEST_ASSERT_EQUAL(1, b.world.runsOf("write_file"));
+    const size_t n = b.model.requests().size();
+    const std::string& second = b.model.requests()[n - 1].body;   // the same turn's second round
+    TEST_ASSERT_EQUAL_MESSAGE(!overBound, second.find("TAIL") != std::string::npos,
+                              overBound ? "an argument over the bound must be a stub at once" : "the open turn lost its own argument");
+    TEST_ASSERT_TRUE_MESSAGE(overBound || second.find("[stub ") == std::string::npos, "a stub inside its own open turn");
+    b.advance(30);
+    TXB_OK(b.owner("thanks", out));
+    const std::string& next = b.model.requests().back().body;
+    TEST_ASSERT_TRUE_MESSAGE(next.find("TAIL") == std::string::npos, "a closed turn's long argument must show as its stub");
+    TEST_ASSERT_TRUE_MESSAGE(next.find("B sha:") != std::string::npos, "the closed turn's stub is missing");
+  }
+}
+
 inline void run() {
   RUN_TEST(test_the_turn_end_keeps_the_last_request_whole_prompt);
   RUN_TEST(test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer);
+  RUN_TEST(test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after);
 }
 
 }  // namespace h81_tests
