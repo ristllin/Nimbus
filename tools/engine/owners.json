@@ -1743,6 +1743,21 @@
         "test/test_plain_wire_anthropic/**"
       ],
       "plan_text": "lib/harness/src/plain_compact.cpp and its header (the due rule only), lib/core/src/orch_tx_migrate.cpp and tx/migrate.h, lib/harness/src/plain_engine.cpp (tierArgs and tierText only), lib/core/include/nimbus/orch/tx/rules.h, the photo stub render in lib/harness/src/providers/plain_wire_anthropic.cpp, their tests"
+    },
+    "RB-T4b": {
+      "stage": "S2",
+      "files": [
+        "lib/core/src/orch_tx_budget.cpp",
+        "lib/core/include/nimbus/orch/tx/budget.h",
+        "test/test_tx_budget/**",
+        "docs/reference/transcript-budgets.md",
+        "lib/harness/src/plain_exchange.cpp",
+        "lib/harness/src/plain_engine.cpp",
+        "test/support/tx_battery/driver.h",
+        "nimbusd/src/plain_rig.h",
+        "lib/harness/include/nimbus/harness/plain/engine.h"
+      ],
+      "plan_text": "lib/core/src/orch_tx_budget.cpp, include/nimbus/orch/tx/budget.h, test/test_tx_budget, docs/reference/transcript-budgets.md (generated), the host resolution in lib/harness/src/plain_exchange.cpp (providerSlugOf) and its caller in plain_engine.cpp budget(), test/support/tx_battery/driver.h (the default profile and the head key), comments in nimbusd/src/plain_rig.h and plain/engine.h"
     }
   }
 }
