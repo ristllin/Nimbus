@@ -1028,8 +1028,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: tool_results
 - kind: spec
-- bytes: 35738 -> 34815
-- sha8: ba6b2b74 -> aa4a4c37
+- bytes: 35720 -> 34797
+- sha8: 06ea09d5 -> 6811ed04
 - lane: RB-REC6
 - prd: section 4 (the plain file tools), as amended by rulings 95 and 97
 - why: lib/core/src/orch_file_aids_e1.cpp, lib/core/src/orch_file_append.cpp and src/agent/files_subsystem.cpp lose the day-total line and its errors (the running day, the date column, the clock not set, past the size a total streams); the shared scan texts change as PC-0077 says; a selection (files.read column/from/to) gives RB-TR1's part head ("bytes a-b of n, lines x-y of m; next part: ..." or "; end of file") and the rows as stored, its offset a file byte as a plain read's (ruling 97). Planned work, not a fix.
