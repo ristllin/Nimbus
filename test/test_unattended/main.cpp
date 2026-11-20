@@ -62,9 +62,10 @@ std::vector<std::string> fillOwner(Rig& rig, std::mt19937& r) {
 }
 
 // A routine model that calls one generated tool, then answers.
-void scriptRoutine(Rig& rig, std::mt19937& r, const std::string& answer) {
+// A model offered no tools makes no call (the wire refuses a call in a request with no tools).
+void scriptRoutine(Rig& rig, std::mt19937& r, const std::string& answer, bool offered) {
   const std::string tool = kAnyTool[r() % 12];
-  rig.routineModel.push(sp::call(tool, "{\"path\":\"routine-out/x.md\",\"content\":\"c\",\"text\":\"t\",\"q\":\"news\"}"));
+  if (offered) rig.routineModel.push(sp::call(tool, "{\"path\":\"routine-out/x.md\",\"content\":\"c\",\"text\":\"t\",\"q\":\"news\"}"));
   rig.routineModel.push(sp::say(answer));
 }
 
@@ -77,10 +78,12 @@ void test_a_routine_request_holds_zero_owner_bytes_and_only_its_allowed_tools() 
     const std::vector<std::string> marks = fillOwner(rig, r);
     const plain::RoutineFire f = makeFire(r, rig.epoch);
     const std::vector<std::string> allowed = plain::routineTools(f);
-    scriptRoutine(rig, r, "routine answer " + hexOf(r, 6));
+    bool offered = false;
+    for (const std::string& n : allowed) offered = offered || (rig.reg.has(n) && rig.reg.classOf(n).alwaysOn());
+    scriptRoutine(rig, r, "routine answer " + hexOf(r, 6), offered);
     plain::FireReport rep;
     TEST_ASSERT_TRUE_MESSAGE(rig.fire(f, rep).ok(), rep.status.where);
-    TEST_ASSERT_EQUAL(2, (int)rig.routineModel.requests().size());
+    TEST_ASSERT_EQUAL(offered ? 2 : 1, (int)rig.routineModel.requests().size());
     for (const auto& req : rig.routineModel.requests()) {
       TEST_ASSERT_TRUE(contains(req.body, f.def.instruction));
       for (const std::string& m : marks) TEST_ASSERT_FALSE_MESSAGE(contains(req.body, m), m.c_str());
@@ -196,7 +199,7 @@ void test_a_routine_output_reaches_the_owners_transcript_whole() {
 
 void test_the_note_label_names_the_routine_with_the_year() {
   const std::string t = plain::routineNoteText("Morning\nbrief", kNoon - 6 * 3600, 0, plain::kDayStartDefaultMin, "hi");
-  TEST_ASSERT_EQUAL_STRING("[routine Morning brief Tue 17 Nov 2026 06:00] hi", t.c_str());
+  TEST_ASSERT_EQUAL_STRING("[routine Morning brief 2026-11-17 Tue 06:00] hi", t.c_str());
 }
 
 // ---- 3. held delivery --------------------------------------------------------------------

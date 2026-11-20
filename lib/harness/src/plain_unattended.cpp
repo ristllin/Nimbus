@@ -158,7 +158,9 @@ std::string encodeRoutineState(const std::vector<RoutineOutput>& last) {
     JsonDocument d;
     d["at"] = o.at;
     d["text"] = o.text;
-    serializeJson(d, out);
+    std::string line;
+    serializeJson(d, line);
+    out += line;
     out += '\n';
   }
   return out;
@@ -513,8 +515,8 @@ struct Fire {
     if (!st.ok()) return st;
     allowed = routineTools(fire);
     if (!(st = routineRegistry(*deps.reg, fire, reg)).ok()) return st;
-    ArenaAllocFn alloc = deps.platform->allocLarge ? deps.platform->allocLarge : [](size_t n) { return std::malloc(n); };
-    ArenaFreeFn release = deps.platform->freeLarge ? deps.platform->freeLarge : [](void* p) { std::free(p); };
+    tx::ArenaAllocFn alloc = deps.platform->allocLarge ? deps.platform->allocLarge : [](size_t n) { return std::malloc(n); };
+    tx::ArenaFreeFn release = deps.platform->freeLarge ? deps.platform->freeLarge : [](void* p) { std::free(p); };
     if (!(st = arena.init(deps.arenaBytes, alloc, release)).ok()) return st;
     log.reset(new tx::TxLog(*deps.files, key));
     if (deps.moreHooks) deps.moreHooks(hooks);
