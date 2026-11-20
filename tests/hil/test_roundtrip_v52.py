@@ -27,6 +27,7 @@ A leg that cannot run FAILS with "BLOCKED: ...": the row never passes by a skip.
 from __future__ import annotations
 
 import os
+import re
 import time
 import urllib.parse
 
@@ -81,9 +82,12 @@ def turns_for(image: str) -> list:
     ]
 
 
+AGE = re.compile(r"\s*\[added [^\]]*\]")  # "[added today]" / "[added 9 days ago]": relative, not the rule
+
+
 def rule_lines(prefs: str) -> list:
     """The rule lines of a /prefs answer, without the header (it names the version) or the footer."""
-    return [ln for ln in prefs.splitlines() if ln.startswith("(p")]
+    return [AGE.sub("", ln) for ln in prefs.splitlines() if ln.startswith("(p")]
 
 
 def rows_kept(before: bytes, after: bytes) -> bool:
@@ -103,7 +107,8 @@ def test_ten_turns_and_the_classes_they_cover():
 def test_rule_lines_ignore_the_version_header():
     a = "Nimbus · v5.1.2: Standing rules (2):\n(p1) one [added today]\n(p2) two\nAdd: /prefs add <rule>."
     b = "Nimbus · v5.2.0: Standing rules (2):\n(p1) one [added today]\n(p2) two\nAdd: /prefs add <rule>."
-    assert rule_lines(a) == rule_lines(b) == ["(p1) one [added today]", "(p2) two"]
+    assert rule_lines(a) == rule_lines(b) == ["(p1) one", "(p2) two"]
+    assert rule_lines(a) == rule_lines(a.replace("[added today]", "[added 1 day ago]"))
     assert rule_lines(a) != rule_lines(b.replace("(p2) two\n", ""))
 
 
@@ -166,6 +171,7 @@ class Trip:
         self.files: dict = {}
         self.rules: list = []
         self.prefs = ""
+        self.candidate_build = ""
         self.lines: list = []
 
 
@@ -181,14 +187,16 @@ def _seed(api: bd.Api) -> Trip:
         f"candidate seeded {TABLE} {len(seed)} B sha8 {sha8(seed)}; rule ok={rule.ok}; /prefs {prefs[:600]!r}",
     )
     assert "English" in prefs, f"the seeded rule is not in /prefs: {prefs[:300]!r}"
-    return Trip(seed)
+    trip = Trip(seed)
+    trip.candidate_build = str(api.state().get("build") or "")
+    return trip
 
 
 def _old_turn(api: bd.Api, old: str, kind: str, want: str, trip: Trip) -> None:
     if kind == "row":
         now = _file(api, TABLE)
         assert rows_kept(trip.table, now), f"{old}: the append rewrote a row"
-        assert want.encode() in now, f"{old}: the row did not land"
+        assert now[len(trip.table) :] == (want + "\n").encode(), f"{old}: the append added more or less than the row"
         trip.table = now
     elif kind == "file":
         body = _file(api, want)
@@ -206,7 +214,8 @@ def _old_turn(api: bd.Api, old: str, kind: str, want: str, trip: Trip) -> None:
 
 def _old_image(unit: Unit, image: str, old: str, trip: Trip) -> None:
     """Flash one released image, check the table came through with no write, answer its five turns."""
-    unit.flash(image, old)
+    st = unit.flash(image, old)
+    assert st.get("build") != trip.candidate_build, f"{old}: the unit still runs the candidate ({st.get('build')})"
     unit.rezero(old, console=False)  # a released image has no test console; the API sets and reads back
     assert _file(unit.api, TABLE) == trip.table, f"{old}: the table changed with no write"
     for kind, text, want in turns_for(old):
@@ -230,7 +239,8 @@ def _owner_line_kept(api: bd.Api, word: str) -> None:
 def _up_again(unit: Unit, image: str, trip: Trip) -> None:
     """The candidate again: every file, rule and owner line the old images left is there, byte for byte."""
     api = unit.api
-    unit.flash(image, "candidate")
+    st = unit.flash(image, "candidate")
+    assert st.get("build") == trip.candidate_build, f"the candidate did not come back: {st.get('build')}"
     unit.attach()
     unit.rezero("candidate again")
     unit.detach()
@@ -253,8 +263,10 @@ def _up_again(unit: Unit, image: str, trip: Trip) -> None:
     last = _turn(api, f"How many rows below the header does {PROJECT}/{TABLE} have now? Reply with the number only.")
     record("roundtrip.log", f"candidate turn: ok={last.ok} reply {last.reply[:200]!r}")
     assert last.ok, last.error
-    n = trip.table.count(b"\n") - 1
-    assert str(n) in last.reply, f"the candidate counted the table wrong: {last.reply[:120]!r} (want {n})"
+    n = len(trip.table.splitlines()) - 1
+    assert re.search(rf"(?<!\d){n}(?!\d)", last.reply), (
+        f"the candidate counted the table wrong: {last.reply[:120]!r} (want {n})"
+    )
 
 
 @pytest.mark.hil
@@ -273,5 +285,8 @@ def test_round_trip_through_v511_and_v512_loses_nothing(request, unit):
             _old_image(unit, imgs[old], old, trip)
         _up_again(unit, imgs["candidate"], trip)
     finally:
-        unit.api.post_form("/api/orch", {"orchHost": head_before})
-        record("roundtrip.log", f"head put back to {head_before}; evidence {EVIDENCE}")
+        try:
+            unit.api.post_form("/api/orch", {"orchHost": head_before})
+            record("roundtrip.log", f"head put back to {head_before}; evidence {EVIDENCE}")
+        except Exception as e:  # noqa: BLE001 - never hide the leg's own failure behind the clean-up
+            record("roundtrip.log", f"head not put back ({type(e).__name__}); set it to {head_before} by hand")
