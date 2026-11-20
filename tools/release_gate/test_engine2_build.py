@@ -126,7 +126,12 @@ class RegistrationTreeTests(unittest.TestCase):
         self.assertEqual(bad, [])
         # The counter-check: the scanner does see the old registrations (memory, files, device, media).
         files = {r[0] for r in rows if r[3] == "guarded"}
-        for rel in ("src/agent/memory_subsystem.cpp", "src/agent/files_subsystem.cpp", "src/main.cpp", "src/sfx/music.cpp"):
+        for rel in (
+            "src/agent/memory_subsystem.cpp",
+            "src/agent/files_subsystem.cpp",
+            "src/main.cpp",
+            "src/sfx/music.cpp",
+        ):
             self.assertIn(rel, files)
 
 

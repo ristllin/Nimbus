@@ -83,7 +83,9 @@ def strong_globals(nm_text: str) -> Set[str]:
 
 
 def nm_strong(nm: str, obj: str) -> Set[str]:
-    return strong_globals(subprocess.run([nm, "--defined-only", obj], capture_output=True, text=True, check=True).stdout)
+    return strong_globals(
+        subprocess.run([nm, "--defined-only", obj], capture_output=True, text=True, check=True).stdout
+    )
 
 
 def seam_interface(root: str, env: str, nm: str) -> Set[str]:

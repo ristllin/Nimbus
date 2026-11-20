@@ -69,6 +69,7 @@ def engine1_absent(argv: "list[str]") -> int:
         rc |= check_elf_symbols.main(["--engine1-absent", "--elf", elf])
     return rc
 
+
 HARDWARE_BATTERY = """\
 HARDWARE (bench, --allow-hardware; paste the real output):
   # solide_s3 and freenove_s3 (Freenove CYD), per board family. The legs below drive the test console, which only
