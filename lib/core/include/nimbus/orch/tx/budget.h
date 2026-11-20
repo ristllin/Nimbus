@@ -76,6 +76,16 @@ inline constexpr uint32_t kFullDigestAndFilesBytes = kFullDigestBlockBytes + 600
 // Tier 1 text kept inline (item.h kTier1OwnerText / kTier1AssistantText).
 inline constexpr uint32_t kInlineMessageCap = 12288;
 
+// The arena a chat needs at a head's budget (ruling 91, T4-ADV-02). Measured in test_tx_budget on real
+// engine turns: every stored item (t, u, calls, intents, results, a, d and a fully populated e) takes
+// arena, only u, a, c, r and device notes count as resident; arena used = rate x resident, at most
+// 2.6272 B a resident byte (a chat of very short turns), 2.4288 with effect calls, 1.6560 with terse tool
+// rounds, 1.4092 for plain chat. The figure here is the worst mix plus 5%, so the full-arena drop cannot
+// fire while the resident is under the due mark H plus one request's growth.
+inline constexpr uint32_t kArenaMilliBytesPerResidentByte = 2760;
+inline constexpr uint32_t kTurnOpenArenaReserve = 32 * 1024;   // plain_engine.cpp kTurnArenaReserve
+inline constexpr uint32_t kArenaStep = 64 * 1024;
+
 struct ProfileMarks {
   uint32_t high = 0;   // H: compaction is due above it (stored bytes since thru)
   uint32_t low = 0;    // L: compaction keeps this much
@@ -130,6 +140,11 @@ HeadBudget budgetFromRow(const RequestBudget& row, const HeadKey& head, Profile 
 
 // Body bytes of a request of `tokens` on the head's wire (the ratio budgetFor used).
 uint32_t bodyBytesFor(const HeadBudget& b, uint32_t tokens);
+// The arena a chat of this head needs so the full-arena drop never fires under its due mark: the due
+// mark H plus one request's growth, at the measured worst arena rate, plus the turn-open reserve,
+// rounded up to kArenaStep. A binding sizes a chat's arena with it (or with kActiveChatArenaBytes,
+// which holds every default head).
+uint32_t arenaBytesFor(const HeadBudget& b);
 
 }  // namespace tx
 }  // namespace orch

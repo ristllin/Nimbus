@@ -170,6 +170,12 @@ Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out) {
   return Status::success();
 }
 
+uint32_t arenaBytesFor(const HeadBudget& b) {
+  const uint64_t growth = bodyBytesFor(b, kNextRequestReserveTokens + 1000) - bodyBytesFor(b, 1000);
+  const uint64_t need = ((uint64_t)b.marks.high + growth) * kArenaMilliBytesPerResidentByte / 1000 + kTurnOpenArenaReserve;
+  return (uint32_t)((need + kArenaStep - 1) / kArenaStep * kArenaStep);
+}
+
 uint32_t bodyBytesFor(const HeadBudget& b, uint32_t tokens) {
   return bytesAt(WireRatio{b.bodyMilliBytesPerToken, b.bodyInterceptBytes}, tokens);
 }

@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -34,8 +35,12 @@
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/rules.h"
 #include "budget_table.h"
+#include "../support/tx_battery/driver.h"
+#include "../support/tx_battery/fixtures.h"
+#include "../support/tx_battery/pending.h"
 
 namespace tx = nimbus::orch::tx;
+namespace sp = harness_test::scripted;
 using nimbus::orch::BudgetLink;
 using nimbus::orch::RequestBudget;
 using nimbus::orch::requestBudgetFor;
@@ -338,89 +343,141 @@ void test_the_digest_block_at_full_holds_every_released_summary() {
   TEST_ASSERT_EQUAL_UINT32(tx::blockCapFor(tx::Profile::Full), tx::blockCapFor((tx::Profile)9));
 }
 
-// ---- 5b. the arena is sized to full (ruling 83 item 8) ------------------------------------------
+// ---- 5b. the arena is sized to full (ruling 83 item 8; ruling 91, T4-ADV-02) ----------------------
 
-// Arena bytes a transcript takes once its resident (plain::residentBytes) reaches `resident`, built
-// of turns of the given shape: a t item, the owner's text, `tools` calls with receipts of
-// `receipt` bytes, the reply, the e item.
-struct ArenaUse {
-  size_t used = 0, resident = 0;
-  bool refused = false;
+// The engine drops the oldest closed turns at turn open once free arena falls under this reserve
+// (plain_engine.cpp kTurnArenaReserve). The arena holds a head at full only if, with the due mark H
+// and one request's growth resident, at least this much stays free.
+constexpr size_t kTurnOpenReserve = 32 * 1024;
+
+// A turn of each mix, run through the real engine (scripted provider): every item it stores (t, u,
+// calls, intents, results, a, d, a fully populated e) takes arena space; only u, a, c, r and device
+// notes count as resident.
+struct Mix {
+  const char* name;
+  std::function<txb::TurnScript(int)> turn;
 };
-ArenaUse fillTo(size_t resident, size_t owner, size_t reply, int tools, size_t receipt) {
-  tx::TxArena a;
-  TEST_ASSERT_TRUE(a.init(tx::kActiveChatArenaBytes * 2, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
-  uint64_t q = 0;
-  uint32_t turn = 0;
-  auto put = [&](tx::Item it) {
-    it.q = ++q, it.turn = turn, it.t = 1795000000 + q;
-    const tx::Status st = a.append(it);
-    TEST_ASSERT_TRUE_MESSAGE(st.ok(), (std::string(tx::errSlug(st.err)) + " at " + st.where + " used " + std::to_string(a.usedBytes()) + " resident " + std::to_string(agent::plain::residentBytes(a, 0)) + " kind " +
-                                       std::to_string((int)it.kind)).c_str());
+const std::vector<Mix>& mixes() {
+  static const std::vector<Mix> m = {
+      {"chat", [](int i) { return txb::chat(60, "ask " + std::to_string(i) + std::string(300, 'o'), std::string(900, 'r')); }},
+      {"short", [](int i) { return txb::chat(60, "q" + std::to_string(i) + std::string(55, 'o'), std::string(120, 'r')); }},
+      {"terse tools",
+       [](int i) {
+         return txb::TurnScript{60,
+                                "go" + std::to_string(i % 10),
+                                {sp::call("read_file", R"({"path":"notes/a.md"})"), sp::call("read_file", R"({"path":"notes/b.md"})"),
+                                 sp::call("read_file", R"({"path":"notes/c.md"})"), sp::say("ok, done")}};
+       }},
+      {"effects",
+       [](int i) {
+         return txb::TurnScript{60,
+                                "note " + std::to_string(i),
+                                {sp::call("write_file", "{\"path\":\"notes/n" + std::to_string(i) + ".md\",\"text\":\"x\"}"),
+                                 sp::say("saved")}};
+       }},
   };
-  while (agent::plain::residentBytes(a, 0) < resident) {
-    ++turn;
-    tx::Item t;
-    t.kind = tx::ItemKind::TurnOpen, t.profile = "full", t.head = "openai/gpt-5.6-luna";
-    put(t);
-    tx::Item u;
-    u.kind = tx::ItemKind::User, u.x = std::string(owner, 'o'), u.m = turn;
-    put(u);
-    for (int k = 0; k < tools; ++k) {
-      tx::Item c;
-      c.kind = tx::ItemKind::Call, c.id = "call_" + std::to_string(q), c.n = "read_file";
-      c.args = R"({"path":"notes/day.md","offset":0})";
-      put(c);
-      tx::Item r;
-      r.kind = tx::ItemKind::Result, r.id = c.id, r.n = c.n, r.x = std::string(receipt, 'f');
-      r.bytes = (uint32_t)receipt;
-      put(r);
-    }
-    tx::Item as;
-    as.kind = tx::ItemKind::Assistant, as.x = std::string(reply, 'a'), as.fin = true;
-    put(as);
-    tx::Item e;
-    e.kind = tx::ItemKind::TurnEnd, e.end.cause = "reply", e.end.promptTokens = 90000;
-    put(e);
+  return m;
+}
+
+void seedWorld(txb::Battery& b) {
+  for (const char* f : {"notes/a.md", "notes/b.md", "notes/c.md"}) b.world.files[f] = std::string(50, 'f');
+}
+
+// Arena bytes per resident byte of a mix, measured on real engine turns: (base, rate) with
+// used = base + rate x resident, over turns 10 to 70 of a chat in a large arena.
+struct ArenaRate {
+  double base = 0, rate = 0;
+  double need(size_t resident) const { return base + rate * resident; }
+};
+ArenaRate measureOnce(const Mix& m) {
+  txb::Battery b;
+  seedWorld(b);
+  TXB_OK(b.boot());
+  TXB_OK(b.arena->init(tx::kActiveChatArenaBytes * 2, b.platform.allocLarge, b.platform.freeLarge));
+  size_t u0 = 0, r0 = 0;
+  for (int i = 0; i < 70; ++i) {
+    TXB_OK(txb::runTurns(b, {m.turn(i)}));
+    if (i == 9) u0 = b.arena->usedBytes(), r0 = agent::plain::residentBytes(*b.arena, 0);
   }
-  return ArenaUse{a.usedBytes(), agent::plain::residentBytes(a, 0), false};
+  const size_t u1 = b.arena->usedBytes(), r1 = agent::plain::residentBytes(*b.arena, 0);
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)b.engine->omittedThru(), m.name);
+  ArenaRate a;
+  a.rate = double(u1 - u0) / double(r1 - r0);
+  a.base = double(u1) - a.rate * double(r1);
+  return a;
 }
 
-size_t arenaNeedAtFull(bool print);
-
-void test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth() {
-  TEST_ASSERT_TRUE_MESSAGE(arenaNeedAtFull(true) <= tx::kActiveChatArenaBytes, "the arena does not hold the largest head at full");
+// Measured once per mix per run (the generated table reads it too).
+ArenaRate measure(const Mix& m) {
+  static std::map<std::string, ArenaRate> cache;
+  auto it = cache.find(m.name);
+  if (it == cache.end()) it = cache.emplace(m.name, measureOnce(m)).first;
+  return it->second;
 }
 
-// The most arena the largest default (the head with the highest due mark, plus one request's growth
-// on its wire) takes over four turn mixes.
-size_t arenaNeedAtFull(bool print) {
-  // The largest default: the head with the highest due mark, plus one request's growth on its wire.
+// The largest default on a device: the head with the highest due mark, and one request's growth.
+size_t largestResident(std::string* who) {
   uint32_t high = 0, growth = 0;
-  std::string who;
   for (const V512& v : v512()) {
     const tx::HeadBudget b = full(v);
     if (v.link != "device" || b.marks.high <= high) continue;
-    high = b.marks.high, who = v.host + "/" + v.model;
+    high = b.marks.high;
+    if (who) *who = v.host + "/" + v.model;
     growth = tx::bodyBytesFor(b, tx::kNextRequestReserveTokens + 1000) - tx::bodyBytesFor(b, 1000);
   }
-  struct Mix {
-    const char* name;
-    size_t owner, reply;
-    int tools;
-    size_t receipt;
-  } mixes[] = {{"chat", 300, 900, 0, 0}, {"one tool", 250, 500, 1, 1200}, {"three tools", 200, 400, 3, 2048},
-               {"short turns", 60, 120, 1, 200}};
+  return (size_t)high + growth;
+}
+
+// The model is the engine's: at a predicted capacity a real chat reaches the resident with no drop,
+// and at 85% of it the engine drops (counter-test), both through the engine's own reserve.
+void test_the_arena_model_predicts_the_engines_drop() {
+  const size_t resident = 40000;
+  for (const Mix& m : mixes()) {
+    const ArenaRate a = measure(m);
+    for (double scale : {1.03, 0.85}) {
+      txb::Battery b;
+      seedWorld(b);
+      TXB_OK(b.boot());
+      const size_t cap = (size_t)((a.need(resident) + kTurnOpenReserve) * scale);
+      TXB_OK(b.arena->init(cap, b.platform.allocLarge, b.platform.freeLarge));
+      for (int i = 0; agent::plain::residentBytes(*b.arena, b.engine->head()->thru) < resident && i < 2000; ++i)
+        TXB_OK(txb::runTurns(b, {m.turn(i)}));
+      const bool dropped = b.engine->omittedThru() > 0;
+      TEST_ASSERT_EQUAL_MESSAGE(scale < 1, dropped, m.name);
+    }
+  }
+}
+
+size_t arenaNeedAtFull(bool print) {
+  std::string who;
+  const size_t resident = largestResident(&who);
   size_t need = 0;
-  for (const Mix& m : mixes) {
-    const ArenaUse u = fillTo(high + growth, m.owner, m.reply, m.tools, m.receipt);
-    char line[200];
-    std::snprintf(line, sizeof line, "%s at full (H %u + growth %u B), %s turns: arena %zu of %zu B", who.c_str(), high,
-                  growth, m.name, u.used, tx::kActiveChatArenaBytes);
+  for (const Mix& m : mixes()) {
+    const ArenaRate a = measure(m);
+    const size_t n = (size_t)std::ceil(a.need(resident)) + kTurnOpenReserve;
+    char line[240];
+    std::snprintf(line, sizeof line, "%s at full (%zu B resident at H plus growth), %s turns: %zu B of arena with the %zu B reserve (rate %.4f)",
+                  who.c_str(), resident, m.name, n, kTurnOpenReserve, a.rate);
     if (print) TEST_MESSAGE(line);
-    need = std::max(need, u.used);
+    need = std::max(need, n);
   }
   return need;
+}
+
+// The arena holds every default head at full (ruling 91, T4-ADV-02): the rate in the code is at least
+// every measured mix's, tx::arenaBytesFor covers the measured need of the largest head, and the
+// built-in arena holds every device row's figure.
+void test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth() {
+  TEST_ASSERT_EQUAL_UINT32(kTurnOpenReserve, tx::kTurnOpenArenaReserve);
+  for (const Mix& m : mixes())
+    TEST_ASSERT_TRUE_MESSAGE(measure(m).rate * 1000 <= tx::kArenaMilliBytesPerResidentByte, m.name);
+  const size_t need = arenaNeedAtFull(true);
+  uint32_t most = 0;
+  for (const V512& v : v512())
+    if (v.link == "device") most = std::max(most, tx::arenaBytesFor(full(v)));
+  TEST_ASSERT_TRUE_MESSAGE(need <= most, ("arenaBytesFor is under the measured need " + std::to_string(need)).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(most <= tx::kActiveChatArenaBytes,
+                           ("the arena does not hold the largest head at full: needs " + std::to_string(most)).c_str());
 }
 
 // ---- 5c. no comment says qualification sizes the window (ruling 91, blockers/F12) -------------
@@ -537,6 +594,7 @@ int main() {
   RUN_TEST(test_both_routed_rows_behind_the_one_switch);
   RUN_TEST(test_an_owner_choice_lowers_only_the_marks_and_never_raises_them);
   RUN_TEST(test_the_digest_block_at_full_holds_every_released_summary);
+  RUN_TEST(test_the_arena_model_predicts_the_engines_drop);
   RUN_TEST(test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth);
   RUN_TEST(test_the_contradiction_checker_is_15_percent_either_side);
   RUN_TEST(test_no_measured_figure_contradicts_its_row);
