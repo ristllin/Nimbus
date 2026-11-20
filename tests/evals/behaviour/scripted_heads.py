@@ -97,7 +97,7 @@ def _context(owner: str, tools: list) -> Ctx:
         owner=owner,
         body=owner[owner.index("] ", m.start()) + 2 :],
         day=m.group(4) or m.group(1),
-        has_sum="sum" in props,
+        has_sum="column" in props,   # the file aids are declared (the selection; sum since ruling 95 is gone)
     )
 
 
@@ -185,8 +185,8 @@ class Scripted:
         lo, hi = self._range(c.body, c.day)
         use_sum = c.has_sum and not self.sloppy
         if not c.calls:
-            if use_sum:
-                return self._call("read_file", {"path": c.path, "column": "date", "from": lo, "to": hi, "sum": [col]})
+            if use_sum:  # the selection (ruling 97: a plain read of the rows)
+                return self._call("read_file", {"path": c.path, "column": "date", "from": lo, "to": hi})
             return self._call("read_file", {"path": c.path})
         text = c.results[-1]["text"]
         if use_sum and f"sum {col}=" in text:
