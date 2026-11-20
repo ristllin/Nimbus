@@ -1036,8 +1036,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 5142 -> 5514
-- sha8: b8921b23 -> ae4b175a
+- bytes: 4174 -> 4546
+- sha8: 3665fe56 -> a3248afa
 - lane: RB-RL
 - prd: section 8 (Safety rails, item 1: in a tainted turn note, skill_save and routine create or update go to pending; send to another chat, device configuration, tenant changes and agent_stop are refused with the reason)
 - why: lib/harness/src/plain_rails.cpp: a call the one exemption table (kTaintExemptions) sends to pending is kept by the binding's approval store and not run: kRailPending says so and why; a pending call nothing could keep is refused with kRailNoPending; a call the table refuses or does not name gets kRailRefused. Each states what happened to the call and why (the turn read outside content), never an order. Planned work, not a fix.
