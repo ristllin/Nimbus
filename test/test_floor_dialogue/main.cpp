@@ -198,6 +198,11 @@ struct Rig {
   std::unique_ptr<TurnEngine> eng;
   Head head;
   int seq = 0;
+  // RB-BGb part 2: tool rounds before the answer, each returning `toolResult` bytes (0 = the
+  // twin's plain text turn, as the table measures it).
+  int toolRounds = 0;
+  size_t toolResult = 6000;
+  int kept = 0;
 
   std::string addRow(uint32_t at, const char* role, const std::string& text, const std::string& tags) {
     EpisodicMessage m;
@@ -231,7 +236,7 @@ struct Rig {
     }
   }
 
-  Rig(const Head& h, const Shape& s) : head(h) {
+  Rig(const Head& h, const Shape& s, int rounds = 0) : head(h), toolRounds(rounds) {
     fixtures(h, s);
     build(h, s);
   }
@@ -257,6 +262,17 @@ struct Rig {
         "{\"id\":\"r2\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_f\","
         "\"name\":\"orch_turn\",\"arguments\":\"{\\\"reply\\\":\\\"ok\\\"}\"}]}";
     const bool anthropicWire = std::string(h.model).find("claude") != std::string::npos;
+    for (int i = 0; i < toolRounds; i++) {
+      const std::string id = "tu_" + std::to_string(i);
+      const std::string q = "{\"query\":\"week " + std::to_string(i) + "\"}";
+      wire.http.script.push_back(Exchange{
+          "", "", 200,
+          anthropicWire ? "{\"content\":[{\"type\":\"tool_use\",\"id\":\"" + id +
+                              "\",\"name\":\"memory_search\",\"input\":" + q + "}],\"stop_reason\":\"tool_use\"}"
+                        : "{\"id\":\"r" + std::to_string(i) + "\",\"status\":\"completed\",\"output\":[{\"type\":"
+                          "\"function_call\",\"call_id\":\"call_" + std::to_string(i) +
+                              "\",\"name\":\"memory_search\",\"arguments\":\"{\\\"query\\\":\\\"week\\\"}\"}]}"});
+    }
     for (int i = 0; i < 8; i++) wire.http.script.push_back(Exchange{"", "", 200, anthropicWire ? anth : oai});
     pad.setActiveTask(st["scratchpad"]["active"] | "");
     for (JsonVariantConst v : st["scratchpad"]["short"].as<JsonArrayConst>()) pad.add(Tier::Short, v.as<const char*>());
@@ -333,6 +349,15 @@ struct Rig {
       return catalogText(cs, ps);
     };
     d.recentActions = &effects;
+    d.mcpDispatch = [this](const std::string&, const Principal&) {
+      std::string text = "found:";
+      for (int i = 0; text.size() < toolResult; i++) text += " entry " + std::to_string(i) + " about the week";
+      return "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + text +
+             "\"}]}}";
+    };
+    d.spillResult = [this](const std::string&, const std::string&, const std::string&) {
+      return "r" + std::to_string(++kept);
+    };
     d.histV2 = [] { return true; };
     d.historyRows = [this](const std::string& c, const agent::HistoryQuery& hq) {
       MsgQuery q;
@@ -636,6 +661,72 @@ void test_a_busy_day_over_the_floor_is_refit_and_named() {
   setRoutedBudgetLiftForTest(-1);
 }
 
+
+// RB-BGb part 2 (ruling 93 item 3): the same busy day with three tool rounds of about 1,500
+// tokens (6,000 B) each before the answer, on the three routed heads at the floor. A later
+// round that does not fit gives up the turn's own bulk first (the replayed rounds, then the
+// newest round's results cut to a part); the prompt's context (recall, older days, today's
+// turns last) goes only in a refusal where the turn's bulk had nothing more to give. Counted
+// and printed (evidence/p2-busy-day-later-rounds.log).
+void test_a_busy_day_later_round_gives_up_the_turns_bulk_first() {
+  setRoutedBudgetLiftForTest(0);
+  int runs = 0, laterOver = 0, inTurnOnly = 0, withContext = 0, todayCut = 0;
+  for (int hi = 4; hi < 7; hi++)
+    for (int turns = 10; turns <= 60; turns += 2)
+      for (int recall = 0; recall < 2; recall++) {
+        const Shape s{"busy-today", turns, true, recall == 1};
+        Rig r(kHeads[hi], s, 3);
+        LogCapture::install();
+        r.eng->handleMessage(r.st["userText"] | "", "Owner", "1001");
+        runs++;
+        const std::string what = std::string(kHeads[hi].name) + " turns=" + std::to_string(turns) +
+                                 " recall=" + std::to_string(recall);
+        for (const auto& sent : r.wire.http.seen)
+          TEST_ASSERT_TRUE_MESSAGE(sent.body.size() <= kLegacyWireBodyBytes, what.c_str());
+        TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("nothing left to fold"), what.c_str());
+        bool over = false, context = false;
+        for (const auto& l : LogCapture::lines()) {
+          if (l.rfind("headloop: round ", 0) != 0 || l.find(" B over the ") == std::string::npos) continue;
+          if (l.rfind("headloop: round 0 ", 0) == 0) continue;
+          over = true;
+          const bool bulk = l.find("the replayed tool rounds") != std::string::npos ||
+                            l.find("the newest round's results") != std::string::npos;
+          const bool ctx = l.find("the prompt's context") != std::string::npos ||
+                           l.find("the prompt and input") != std::string::npos;
+          context = context || ctx;
+          if (ctx && bulk)
+            TEST_ASSERT_TRUE_MESSAGE(l.find("the prompt") > std::min(l.find("the replayed tool rounds"), l.find("the newest round's results")),
+                                     (what + ": " + l).c_str());
+          // A refusal that gave up context gave up the turn's bulk first, in that refusal or an
+          // earlier one of the same round.
+          if (ctx && !bulk) {
+            const std::string round = l.substr(0, l.find(" body "));
+            bool earlier = false;
+            for (const auto& e : LogCapture::lines()) {
+              if (&e == &l) break;
+              earlier = earlier || (e.rfind(round + " ", 0) == 0 && e.find("tool rounds") != std::string::npos) ||
+                        (e.rfind(round + " ", 0) == 0 && e.find("newest round's results") != std::string::npos);
+            }
+            TEST_ASSERT_TRUE_MESSAGE(earlier || r.wire.http.seen.back().body.find("[cut to fit this request") !=
+                                                    std::string::npos,
+                                     (what + ": " + l).c_str());
+          }
+        }
+        if (!over) continue;
+        laterOver++;
+        (context ? withContext : inTurnOnly)++;
+        const bool cut = r.wire.http.seen.back().body.find("of today's earlier conversation message(s)") != std::string::npos;
+        todayCut += cut;
+      }
+  char line[256];
+  std::snprintf(line, sizeof line,
+                "busy day, 3 tool rounds, routed heads: %d of %d turns had a later round over the floor; %d gave up "
+                "only the turn's own bulk, %d also context; %d answers left today's turns out",
+                laterOver, runs, inTurnOnly, withContext, todayCut);
+  TEST_MESSAGE(line);
+  setRoutedBudgetLiftForTest(-1);
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -645,5 +736,6 @@ int main(int, char**) {
   RUN_TEST(test_the_routed_lift_in_both_states);
   RUN_TEST(test_floor_dialogue_table);
   RUN_TEST(test_a_busy_day_over_the_floor_is_refit_and_named);
+  RUN_TEST(test_a_busy_day_later_round_gives_up_the_turns_bulk_first);
   return UNITY_END();
 }
