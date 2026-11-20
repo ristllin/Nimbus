@@ -103,13 +103,15 @@ Each renderer speaks its provider's dialect from the same record:
   a tool call - a prose-only (stalled) round is never echoed, because a trailing
   assistant message plus forced `tool_choice` is a hard 400. With `proseIsReply` on (every
   turn but the dream) a prose-only round that ended normally is not a stall: it is the reply. The replay is the
-  same on every loop wire: append-only under the replay budget (every replayed
-  byte counts: arguments, prose, results), so each round reads the previous
-  request from the provider cache; past it the oldest whole rounds fold into one
-  line each in the seeded message, down to half the budget (one rewrite per
-  half-budget of new results), and a newest round alone over the budget is cut
-  with a visible note (the `tool_use`↔`tool_result` pairing an unanswered
-  `tool_use` would 400 on is never broken). See "The cacheable prefix" in
+  same on every loop wire: append-only while the request fits its body budget
+  (every replayed byte counts: arguments, prose, results), so each round reads
+  the previous request from the provider cache. A round over the body budget is
+  refit before it is sent (lane RB-BGb): the oldest whole rounds fold into one
+  line each in the seeded message, only as many as the overshoot needs, each
+  naming its `results.get` tag; then the newest round's result is cut to a part
+  that names the read of the rest; only then the prompt's context (the
+  `tool_use`↔`tool_result` pairing an unanswered `tool_use` would 400 on is never
+  broken). See "The cacheable prefix" in
   [turn-anatomy.md](turn-anatomy.md).
 - **OpenAI** (`renderOaiInput`, `openai.cpp`) sends the full Responses `input[]`
   with `store:false` every round - the user seed, then per round the reasoning

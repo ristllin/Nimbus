@@ -141,9 +141,11 @@ turn:
     block).
 - **Within a turn.** Each tool round's request starts with the previous round's
   request: tool results already sent are never rewritten, so a round reads the
-  last one from the cache. Over the replay budget (16 KB on Anthropic, 24 KB on
-  OpenAI and Mistral) the newest result is cut with a visible `[cut: ...]` note,
-  or withheld with a `[not shown: ...]` note when no room is left.
+  last one from the cache. A round over the request's body budget folds the
+  oldest rounds the model has read, only as many as it needs, each line naming
+  its `results.get` tag, then cuts the newest result to a part that names the
+  read of the rest (`[cut to fit this request: ...]`); the prompt's context goes
+  only after that (lane RB-BGb).
 - **Checked by tests.** `test/test_prompt_layout` composes many turns that differ
   only in per-turn content and asserts the static and shelf parts, and each
   provider's cached request segments, are byte-identical; a counter-test puts a

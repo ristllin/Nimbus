@@ -22,6 +22,13 @@ final round at the budget as the wire sends them (a routed round counts its seco
 attempt never goes under the host's minimum final), on a healthy and on a fragmented heap (none: the
 host sends no output cap).
 
+Replay changed meaning in v5.2.0 (lane RB-BGb, ruling 93 item 3). It was the most of a turn's own tool
+traffic (calls, results, prose) a request carried before older rounds folded (about 15,000 tokens,
+37,500 B, on claude-sonnet-5-5). It is now the least: a request carries the turn's tool traffic up to
+what its body has free after the prompt, the history and the summary, and older rounds fold only when
+the request would otherwise not fit, each named with its results.get tag. The history max still
+reserves this figure for the turn's tool traffic.
+
 ## Every recorded model
 
 One row per model the recorded provider lists name (`test/support/fixtures/models_2026-10` and
