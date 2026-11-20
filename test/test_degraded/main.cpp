@@ -1057,7 +1057,7 @@ static void test_device_wiring() {
 // std::mutex on ESP-IDF is a pthread mutex whose FreeRTOS semaphore is created at its FIRST
 // lock (pthread_mutex_init_if_static), from internal RAM, and a failed allocation there
 // aborts. Allocating the State object does not create it. The repo's pattern (main.cpp
-// g_webChatMx, orchestrator.cpp g_turnOwnerMx) is to lock and unlock once in setup(), while
+// g_webChatMx, orchestrator_e1.cpp g_turnOwnerMx) is to lock and unlock once in setup(), while
 // memory is plentiful. The first lock of these two would otherwise be the main-loop tick at
 // about 15 s uptime, or the turn task's noteTurn, or an /api/state on the AsyncTCP task.
 // The class: EVERY mutex the module owns is locked once in begin().

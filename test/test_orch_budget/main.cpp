@@ -164,8 +164,8 @@ static int countOf(const std::string& hay, const std::string& needle) {
 }
 static void test_orchestrator_sizes_off_one_head_budget() {
   const std::string src = stripLineComments(readFile("src/agent/orchestrator_e1.cpp"));
-  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headContextBudget("), "a second budget read in orchestrator.cpp");
-  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(src, "deriveBudget("), "a budget derived around the seam in orchestrator.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headContextBudget("), "a second budget read in orchestrator_e1.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(src, "deriveBudget("), "a budget derived around the seam in orchestrator_e1.cpp");
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "resolvedOrchHost()"), "a size sited off the store's head guess");
   const size_t helper = src.find("ContextBudget headBudget()");
   TEST_ASSERT_TRUE(helper != std::string::npos);
