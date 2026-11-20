@@ -63,6 +63,11 @@ struct Files {
       return inner.name.empty() ? plain::ToolOutput{c.id, c.name, "a listing"} : dispatch(inner);
     }
     ran.push_back(c.name);
+    return run(c);
+  }
+
+ private:
+  plain::ToolOutput run(const plain::ToolCall& c) {
     JsonDocument a;
     deserializeJson(a, c.argsJson);
     const std::string path = a["path"] | "";
@@ -80,12 +85,7 @@ struct Files {
       files[path] += a["text"] | "";
       o.text = "appended " + path;
     } else if (c.name == "edit_file") {
-      auto it = files.find(path);
-      const std::string from = a["old"] | "", to = a["new"] | "";
-      const size_t at = it == files.end() || from.empty() ? std::string::npos : it->second.find(from);
-      o.isError = at == std::string::npos;
-      if (!o.isError) it->second.replace(at, from.size(), to);
-      o.text = o.isError ? "no match" : "edited " + path;
+      edit(path, a["old"] | "", a["new"] | "", o);
     } else if (c.name == "delete_file") {
       o.isError = files.erase(path) == 0;
       o.text = o.isError ? "no such file" : "deleted " + path;
@@ -96,6 +96,14 @@ struct Files {
       o.text = "done";
     }
     return o;
+  }
+
+  void edit(const std::string& path, const std::string& from, const std::string& to, plain::ToolOutput& o) {
+    auto it = files.find(path);
+    const size_t at = it == files.end() || from.empty() ? std::string::npos : it->second.find(from);
+    o.isError = at == std::string::npos;
+    if (!o.isError) it->second.replace(at, from.size(), to);
+    o.text = o.isError ? "no match" : "edited " + path;
   }
 };
 
