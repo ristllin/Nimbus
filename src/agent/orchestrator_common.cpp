@@ -2,7 +2,6 @@
 
 #include <atomic>
 
-#include "../sys/agent_log.h"
 #include "store.h"
 #include "telegram.h"                   // telegram::enabled - telegramDeliverable
 #include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
@@ -13,17 +12,16 @@
 #include "nimbus/orch/voice_notes.h"     // cutForSpeech (ttsAnnounce)
 
 // orchestrator_common - the engine-neutral half of the device seam (lane RB-SEAM1a, no
-// behaviour change): job glue, ring arcs, voice, the job status getters and the reply
+// behavior change): job glue, ring arcs, voice, the job status getters and the reply
 // sinks' allowlist and moderation gate, moved here from orchestrator.cpp so a second
 // engine can be bound beside the old one. orchestrator.cpp keeps the old engine's half
-// (and, for now, what a host test pins there by path or what would cost image bytes to
-// move: lanes/RB-SEAM1a/PR_BODY.md lists both); what the two share is declared in
+// (and, for now, code a host test pins there by path, or code whose move would cost
+// image bytes in per-file template copies); what the two share is declared in
 // orchestrator_common.h. The public surface is orchestrator.h, unchanged.
 
 namespace agent {
 namespace orchestrator {
 
-namespace orch = nimbus::orch;
 namespace attn = nimbus::attn;
 
 // ---- module state shared with orchestrator.cpp ---------------------------------
@@ -51,8 +49,8 @@ bool                  s_inVoiceMessage = false;   // tg_poll only
 // ---- attention-event helpers (the plan §3.6 integration seam) ---------------
 // keyFromTag / ringStatusFor / emitJobState / emitJobCleared live in the portable
 // JobEngine; the head-turn Running/Offline arc + the stuck-turn reaper live in
-// the portable TurnEngine. emitAsk stays: it's turn-application, not job
-// machinery, and rides the device ApplyDeps.
+// the portable TurnEngine (reached through the engine seam below). emitAsk is
+// turn-application, not job machinery, and rides the device ApplyDeps.
 
 void emitAsk() {
   if (!g_sinks.event) return;

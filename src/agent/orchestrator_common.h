@@ -2,13 +2,10 @@
 // orchestrator_common.h - PRIVATE to the device seam: what orchestrator_common.cpp (the
 // engine-neutral half: job glue, ring arcs, voice, job status getters, reply sinks)
 // and orchestrator.cpp (the old engine's half) share. Not for any other file: the public
-// surface stays orchestrator.h, unchanged for its callers (lane RB-SEAM1a, no behaviour
+// surface stays orchestrator.h, unchanged for its callers (lane RB-SEAM1a, no behavior
 // change). Both files include this header, so every shared object is declared once and
 // type-checked against its one definition.
 #include "orchestrator.h"
-
-#include <freertos/FreeRTOS.h>
-#include <freertos/semphr.h>
 
 #include <atomic>
 #include <string>

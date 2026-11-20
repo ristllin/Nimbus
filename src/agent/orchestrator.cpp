@@ -42,8 +42,6 @@
 #include "effect_ring_device.h"         // lane RB-FX: each chat's recent effects on the card
 #include "nimbus/orch/no_dash.h"         // applyOutputFilters (the delivery seam filter)
 #include "memory_subsystem.h"           // memory::registry/scratchpad/vectors (live World)
-#include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
-#include "safety_activity_store.h"       // CUM-215 Safety activity log + scoped allowlist (record/allow)
 #include "nimbus/orch/moderation.h"     // portable gate decision core (fail-open/closed, admin-exempt)
 #include "nimbus/orch/media.h"          // CUM-40 validMusicName (for /play)
 #include "../sfx/music.h"               // CUM-40 music player control (/play)
