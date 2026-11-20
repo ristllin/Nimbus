@@ -904,7 +904,10 @@
         "lib/core/include/nimbus/orch/spend_guard.h",
         "test/test_spend_guard/**"
       ],
-      "plan_text": "lib/core/src/orch_spend_guard.cpp, include/nimbus/orch/spend_guard.h, test/test_spend_guard"
+      "plan_text": "lib/core/src/orch_spend_guard.cpp, include/nimbus/orch/spend_guard.h, test/test_spend_guard",
+      "notes": [
+        "Ruling 84 items 1 and 2, ruling 85 item 2: the soft guards in lib/harness/src/plain_guards.cpp and the guard table are a declared cross-lane edit (no entry here)"
+      ]
     },
     "RB-C1": {
       "stage": "S2",
