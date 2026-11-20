@@ -1725,6 +1725,24 @@
       "notes": [
         "Ruling 86 item 3: files.read can be continued (readPart, both engines), nimbusd's loop caps are the derived budget and it keeps the device's recent-results ring; ledger PC-0118..PC-0121"
       ]
+    },
+    "RB-H81": {
+      "stage": "S2",
+      "files": [
+        "lib/harness/src/plain_compact.cpp",
+        "lib/harness/include/nimbus/harness/plain/compact.h",
+        "lib/core/src/orch_tx_migrate.cpp",
+        "lib/core/include/nimbus/orch/tx/migrate.h",
+        "lib/harness/src/plain_engine.cpp",
+        "lib/core/include/nimbus/orch/tx/rules.h",
+        "lib/harness/src/providers/plain_wire_anthropic.cpp",
+        "test/test_plain_compact/**",
+        "test/test_tx_migrate/**",
+        "test/test_tx_stub_rule/**",
+        "test/test_plain_conformance/**",
+        "test/test_plain_wire_anthropic/**"
+      ],
+      "plan_text": "lib/harness/src/plain_compact.cpp and its header (the due rule only), lib/core/src/orch_tx_migrate.cpp and tx/migrate.h, lib/harness/src/plain_engine.cpp (tierArgs and tierText only), lib/core/include/nimbus/orch/tx/rules.h, the photo stub render in lib/harness/src/providers/plain_wire_anthropic.cpp, their tests"
     }
   }
 }
