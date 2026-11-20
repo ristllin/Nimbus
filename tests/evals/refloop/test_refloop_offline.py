@@ -606,6 +606,35 @@ class WireTest(unittest.TestCase):
         )
         self.assertEqual(forced["forced_final"], 1)
 
+    def test_a_chat_completions_tool_round_is_no_discarded_answer(self):
+        # RB-Q4b: the Chat Completions wire (Mistral, Z.ai) carries its calls in choices[0].message.tool_calls. A
+        # tool round followed by the next request is the loop working, never a discarded answer; a text-only
+        # round followed by another request is one. Both shapes, so the reader cannot pass by ignoring the wire.
+        owner = {"role": "user", "content": "Current time: 22:30 GMT.\n[USER]\nhi"}
+
+        def chat(content, calls=()):
+            msg = {"content": content}
+            if calls:
+                msg["tool_calls"] = [{"id": f"c{i}", "function": {"name": n, "arguments": "{}"}} for i, n in enumerate(calls)]
+            return {"choices": [{"message": msg, "finish_reason": "tool_calls" if calls else "stop"}]}
+
+        tool_turn = mechanisms.scan_turn(
+            [
+                {"status": 200, "request": {"messages": [owner]}, "response": chat("", ["calc"])},
+                {"status": 200, "request": {"messages": [owner]}, "response": chat("", ["orch_turn"])},
+            ],
+            {"reply": "4"},
+        )
+        self.assertEqual(tool_turn["discarded_answers"], 0)
+        redone = mechanisms.scan_turn(
+            [
+                {"status": 200, "request": {"messages": [owner]}, "response": chat("The answer is 4.")},
+                {"status": 200, "request": {"messages": [owner]}, "response": chat("", ["orch_turn"])},
+            ],
+            {"reply": "4"},
+        )
+        self.assertEqual(redone["discarded_answers"], 1)
+
     def test_the_daemon_notices_are_not_the_assistants_replies(self):
         rows = [
             "The assistant wants to schedule 'Vitamin D reminder'. Approve it under Assistant > Routines, or ignore this and it never runs.",

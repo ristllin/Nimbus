@@ -818,6 +818,25 @@ static void test_zai_text_on_a_tool_round_is_the_answer() {
   TEST_ASSERT_EQUAL(1, (int)r.d.http.seen.size());
 }
 
+// RB-Q4b pin: the Z.ai wire already takes text as the answer on every round, so HeadLoopConfig::proseIsReply
+// changes nothing there: the same requests, byte for byte, and the same answer with the flag on and off.
+static void test_rbq4b_prose_flag_leaves_the_zai_wire_unchanged() {
+  std::vector<std::string> bodies[2];
+  std::string outs[2];
+  for (int on = 0; on < 2; ++on) {
+    ZaiRig r;
+    r.ht.cfg.proseIsReply = on != 0;
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, toolCallBody("memory.search", "{\\\"q\\\":\\\"cat\\\"}")});
+    r.d.http.script.push_back({"api.z.ai", kPath, 200, chatBody("It is called Pixel.")});
+    std::string err;
+    TEST_ASSERT_TRUE_MESSAGE(r.run(outs[on], err), err.c_str());
+    for (const auto& q : r.d.http.seen) bodies[on].push_back(q.body);
+  }
+  TEST_ASSERT_EQUAL(2, (int)bodies[1].size());
+  TEST_ASSERT_TRUE(bodies[0] == bodies[1]);
+  TEST_ASSERT_EQUAL_STRING(outs[0].c_str(), outs[1].c_str());
+}
+
 // An orch_turn with no reply field reads as an empty reply, not an unreadable answer.
 static void test_zai_final_with_no_reply_field_is_an_empty_reply() {
   ZaiRig r;
@@ -1100,6 +1119,7 @@ int main(int, char**) {
   RUN_TEST(test_zai_head_runs_the_tool_loop);
   RUN_TEST(test_zai_forced_final_offers_only_the_terminal);
   RUN_TEST(test_zai_text_on_a_tool_round_is_the_answer);
+  RUN_TEST(test_rbq4b_prose_flag_leaves_the_zai_wire_unchanged);
   RUN_TEST(test_zai_final_with_no_reply_field_is_an_empty_reply);
   RUN_TEST(test_zai_forced_final_text_is_the_answer);
   RUN_TEST(test_zai_cut_round_retries_with_room_then_fails_as_cut);

@@ -107,10 +107,15 @@ def _owner_block_index(items: list) -> int:
 
 
 def _has_tool_call(response) -> bool:
+    """A tool call in the response, on every wire: Anthropic content, Responses output, Chat Completions tool_calls."""
     if not isinstance(response, dict):
         return False
     blocks = (response.get("content") or []) + (response.get("output") or [])
-    return any(isinstance(b, dict) and b.get("type") in ("tool_use", "function_call") for b in blocks)
+    if any(isinstance(b, dict) and b.get("type") in ("tool_use", "function_call") for b in blocks):
+        return True
+    choices = response.get("choices") or []
+    message = (choices[0].get("message") or {}) if choices and isinstance(choices[0], dict) else {}
+    return bool(message.get("tool_calls"))
 
 
 # ------------------------------------------------------------------ one turn
