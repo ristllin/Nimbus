@@ -625,6 +625,16 @@ static void test_15_ordinary_turns_in_an_hour_do_not_pause_and_more_than_20_in_1
       b.spent(false, h.blended, now);
     }
     TEST_ASSERT_FALSE_MESSAGE(b.paused(), h.name);
+    // Person messages in between are never counted: 20 unattended turns and 10 owner messages in ten
+    // minutes, and the 21st unattended turn pauses (the 20 alone count).
+    ChatBreaker mix;
+    uint32_t t = 7000;
+    for (int i = 0; i < kTurnRateMaxTurns; ++i, t += 10000) {
+      TEST_ASSERT_TRUE(mix.admit(false, t).run);
+      if (i % 2) TEST_ASSERT_TRUE(mix.admit(true, t + 5000).run);
+    }
+    TEST_ASSERT_EQUAL(kTurnRateMaxTurns, mix.windowTurns(t));
+    TEST_ASSERT_FALSE(mix.admit(false, t).run);
     ChatBreaker r;
     r.setSpendCap(h.cap);
     now = 5000;
@@ -640,7 +650,9 @@ static void test_15_ordinary_turns_in_an_hour_do_not_pause_and_more_than_20_in_1
     TEST_ASSERT_TRUE(r.resume());
     TEST_ASSERT_FALSE(r.paused());
     TEST_ASSERT_FALSE(r.resume());
-    TEST_ASSERT_TRUE_MESSAGE(r.admit(false, now + 20 * 60 * 1000 + 1).run, "after /resume the turns run");
+    for (int i = 0; i < kTurnRateMaxTurns; ++i)   // /resume clears the window: 20 more at once run
+      TEST_ASSERT_TRUE_MESSAGE(r.admit(false, now + 20 * 60 * 1000 + 1 + i).run, "after /resume the turns run");
+    TEST_ASSERT_FALSE(r.admit(false, now + 20 * 60 * 1000 + 100).run);
   }
   // Counter: turns spread so that no ten minutes hold more than 20 never pause (the window rolls).
   ChatBreaker s;

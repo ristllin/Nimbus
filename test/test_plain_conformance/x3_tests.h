@@ -289,6 +289,21 @@ inline void test_a_turn_not_progressing_at_a_soft_check_stops_honestly() {
   TEST_ASSERT_EQUAL(1, (int)countEvent(lastEnd(storedOf(b)), "soft:time"));
 }
 
+// A stall that would outlast every read window: each attempt hangs until the transport's own timeout
+// (the request's timeoutMs, as the device's transport ends a read), at most 300 s. The exchange ends
+// inside kExchangeMaxMs on an attended turn, though its time limit is 1,020 s (ruling 85 item 3).
+inline void test_a_stall_ends_inside_450_s_on_an_attended_turn() {
+  txb::Battery b;
+  b.model.respondWith([](const sp::Recorded& r, size_t) { return sp::transportCut(std::min<uint32_t>(r.req.timeoutMs, 300000)); });
+  const uint32_t t0 = b.ms;
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("hello?", out));
+  TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
+  char msg[80];
+  std::snprintf(msg, sizeof msg, "the stall ran %u s", (unsigned)((b.ms - t0) / 1000));
+  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kExchangeMaxMs, msg);
+}
+
 // ---- the honest stop and the owner's yes ---------------------------------------------------------
 // The spend guard stops a turn of large reads; the owner says yes and the next turn continues from
 // the log: its request carries the stopped turn's results whole. Counter: after a turn that ended
@@ -497,9 +512,9 @@ inline void test_the_soft_check_and_the_loop_rule() {
   TEST_ASSERT_EQUAL(2 * plain::kSoftWallMs, m.nextMs);
   // One long round past two intervals: the next check is the next interval after now, not now.
   m.noteCall("read_file", "{\"o\":1}", false, false, "beta");
-  s.elapsedMs = 2 * plain::kSoftWallMs + 30000;
+  s.elapsedMs = 3 * plain::kSoftWallMs + 30000;
   TEST_ASSERT_TRUE(plain::checkSoftGuards(l, s, m, which) == plain::SoftCheck::GoOn);
-  TEST_ASSERT_EQUAL(3 * plain::kSoftWallMs, m.nextMs);
+  TEST_ASSERT_EQUAL(4 * plain::kSoftWallMs, m.nextMs);
   // Unattended: never a soft check.
   plain::GuardLimits u;
   TXB_OK(plain::guardLimitsFor(0, plain::HeadCost{}, false, u));
@@ -547,6 +562,7 @@ inline void run() {
   RUN_TEST(test_a_progressing_turn_past_240_s_shows_a_status_line_and_goes_on);
   RUN_TEST(test_a_progressing_turn_ends_honestly_inside_1200_s);
   RUN_TEST(test_a_turn_not_progressing_at_a_soft_check_stops_honestly);
+  RUN_TEST(test_a_stall_ends_inside_450_s_on_an_attended_turn);
   RUN_TEST(test_a_hard_guard_stops_honestly_and_the_owners_yes_continues_from_the_log);
   RUN_TEST(test_the_stopped_turn_stays_whole_until_a_turn_finishes);
   RUN_TEST(test_the_limit_line_asks_one_question);
