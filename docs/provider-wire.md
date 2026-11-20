@@ -34,7 +34,7 @@ channel:
 |---|---|---|---|
 | **OpenAI** (Responses API) | `text.format` `json_schema`, `strict:true`. The compaction fold is plain text: the fold prompt as `instructions`, the conversation as `input`, no format, no tools or connectors, `store:false`, reasoning effort low | `orch_turn` function tool, `strict:true` parameters | **Yes**, both channels - the model cannot emit an out-of-schema `orch_turn` |
 | **Anthropic** (Messages API) | the `orch_turn` tool with `tool_choice:auto` - never forced (Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced `tool_choice` with a 400); a prose answer is delivered as the reply. The compaction fold offers no tool: its reply is the summary | `orch_turn` offered alongside the registry tools (`tool_choice:auto`); a round that ends normally (`end_turn`, `stop_sequence`) with text and no call is the reply on any round, so a turn costs its tool rounds plus one request (`HeadLoopConfig::proseIsReply`; the nightly dream keeps the old stall path, since its product is the `orch_turn` fields) | **No** - the strict-grammar budget rejects a schema this size, so descriptions are stripped and the schema is advisory; its top-level `required` list is just `reply` and the tool description says to OMIT fields the turn is not using (the device parser treats every other field as optional), so the head stops re-emitting unchanged fields as empty values. The device parser + validator are the enforcement |
-| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true`. The compaction fold is a plain chat completion with no format: its reply is the summary | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round) | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
+| **Mistral** | Conversations API, `response_format.json_schema`, `strict:true`. The compaction fold is a plain chat completion with no format: its reply is the summary | chat/completions, `orch_turn` function tool (no `strict` flag; the schema's shapes only - the field descriptions ride the prompt, so 10 KB of them no longer ride every round); on a person's turn `tool_choice:"auto"` and a text answer that stopped normally is the reply (RB-Q4b), on an unattended turn `"any"` | single-shot **yes**; loop **advisory** - the device parser + validator enforce it |
 | **Z.ai** (direct, or Cumulo with the zai upstream) | chat/completions, `response_format:{type:"json_object"}` + a JSON-only instruction | chat/completions, `orch_turn` function tool with `tool_choice:"required"`; the forced final round offers only `orch_turn` | **No** - Z.ai answers `json_schema` requests with plain Markdown, so a single shot asks for `json_object`; the loop's schema is advisory. A reply that is still prose is delivered as the reply (nothing else rides it) |
 | **Custom** (LAN / proxy) | chat/completions, `response_format.json_schema`, `strict:true` (schema-less retry on 400) | none (single-shot head) | when the backend supports it |
 
@@ -202,18 +202,24 @@ serves:
   the send, any body with a dropped string, a string over the guard, or invalid
   UTF-8, naming the tool the text came from. The system prompt and the user seed
   are never clipped silently - the caps that build them sit below the guard.
-- **Tool choice per round**: OpenAI and Mistral FORCE a tool on tool-allowed
-  rounds - OpenAI `tool_choice:"required"`, Mistral chat/completions
-  `tool_choice:"any"` - so the model always calls a registry tool or the
-  terminal `orch_turn`, and a prose-only stall round cannot occur. Their FINAL
-  round (a cap tripped) pins `orch_turn` through the named-function object.
-  Anthropic uses `tool_choice:auto` on EVERY round, the final round and the
-  single shot included: Sonnet 5.5, Opus 5.5 and Fable 5.1 answer a forced
-  `tool_choice` with a 400. A text-only reply on an Anthropic tool round is still
-  a stall; on the final round after it, the stalled answer rides back as an
-  assistant message plus a user nudge, so the final turn keeps it, and a final
-  round answered in prose is delivered as the reply only (no device action,
-  memory write or spawn rides prose).
+- **Tool choice per round**: OpenAI FORCES a tool on tool-allowed rounds
+  (`tool_choice:"required"`), and so does Mistral chat/completions
+  (`tool_choice:"any"`) on an unattended turn, so the model calls a registry tool
+  or the terminal `orch_turn`. Their FINAL round (a cap tripped) pins `orch_turn`
+  through the named-function object. On a person's turn Mistral asks with
+  `tool_choice:"auto"` (RB-Q4b): under "any" mistral-medium wrote its answer into
+  a tool call's name or made needless calls. Anthropic uses `tool_choice:auto` on
+  EVERY round, the final round and the single shot included: Sonnet 5.5, Opus 5.5
+  and Fable 5.1 answer a forced `tool_choice` with a 400.
+- **A text-only round** (`HeadLoopConfig::proseIsReply`, set on a person's turn):
+  on Anthropic (`end_turn`, `stop_sequence`) and Mistral (`finish_reason:"stop"`)
+  a round that answers in text that is not only white space, with no call, is the
+  reply on any round, so a turn costs its tool rounds plus one request. Z.ai has
+  taken text as the answer on every round since 1 Nov. Otherwise (an unattended
+  turn, the dream, an empty round) it is a stall: on Anthropic the final round
+  after it gets the stalled answer back plus a user nudge, so the final turn keeps
+  it. A prose answer is delivered as the reply only (no device action, memory write
+  or spawn rides prose).
 - **Output budget and completeness**: one table (`output_caps.h`) gives each
   adapter and round kind (tool round, final round, single shot, fold) its largest
   `max_tokens` and its reasoning effort: Anthropic 8,192 (12,000 on the retry) with
