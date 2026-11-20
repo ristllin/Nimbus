@@ -6,7 +6,8 @@
 #include <algorithm>
 #include <cctype>
 
-#include "nimbus/orch/budget.h"   // deriveRequestContext - the released history marks (the floors)
+#include "nimbus/orch/budget.h"
+#include "nimbus/orch/router_route.h"   // resolveRouterRoute - a routed head's upstream wire   // deriveRequestContext - the released history marks (the floors)
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/rules.h"
 
@@ -34,9 +35,27 @@ struct WireRatio {
   uint32_t milli = 0;
   int32_t intercept = 0;
 };
-WireRatio wireOf(const RequestBudget& r, const HeadKey& head) {
-  if (!r.routed && lower(head.host) == "anthropic") return {kAnthropicBodyMilliBytesPerToken, kAnthropicBodyInterceptBytes};
+// The wire a head's request goes out on: a routed head's is its upstream's (the router relays the
+// native body, orch_router_route.cpp headRunsToolLoop).
+std::string upstreamOf(const HeadKey& head) {
+  const std::string h = lower(head.host);
+  return h == "cumulo" ? resolveRouterRoute(lower(head.model)).upstream : h;
+}
+
+// The measured ratio applies where the body may rise to carry the aim (a clamp or tier bound) on the
+// Anthropic Messages wire, direct or routed; everywhere else the released nominal ratio, as v5.1.2
+// sized that row (and the table marks those token figures nominal).
+WireRatio wireOf(const RequestBudget& r, const HeadKey& head, AimBound bound) {
+  if (upstreamOf(head) == "anthropic" && (bound == AimBound::Clamp || bound == AimBound::Tier))
+    return {kAnthropicBodyMilliBytesPerToken, kAnthropicBodyInterceptBytes};
   return {(uint32_t)r.rNomX100 * 10u, 0};
+}
+
+// Routed means what the key says (lane RB-T4b): a routed head named by its upstream's slug is the
+// router's head "<upstream>/<model>".
+HeadKey routedKey(const HeadKey& head) {
+  if (!head.routed || lower(head.host) == "cumulo") return head;
+  return HeadKey{"cumulo", lower(head.host) + "/" + head.model, true};
 }
 
 uint32_t bytesAt(const WireRatio& w, uint32_t tokens) {
@@ -93,7 +112,8 @@ Status profileMarks(Profile p, ProfileMarks& out) {
 
 HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile requested) {
   HeadBudget b;
-  const WireRatio w = wireOf(r, head);
+  aimOf(r, b.tokens.aim, b.bound);
+  const WireRatio w = wireOf(r, head, b.bound);
   BudgetOverrides released;
   released.noProfile = true;   // the head's own v5.1.2 marks, whatever engine 1's history profile is
   const ContextBudget c = deriveRequestContext(r, released);   // the floors
@@ -101,7 +121,6 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   b.floorHead = r.bound == BudgetBound::Floor || r.bound == BudgetBound::Held;
   b.bodyMilliBytesPerToken = w.milli;
   b.bodyInterceptBytes = w.intercept;
-  aimOf(r, b.tokens.aim, b.bound);
   b.bodyCap = r.wireBodyBytes;
   // Where the released bytes stood for the 100,000-token clamp or the price tier at a nominal
   // ratio, the measured ratio sets the bytes that carry the same tokens.
@@ -139,13 +158,15 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
 
 Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift, HeadBudget& out) {
   if (head.host.empty() || head.model.empty()) return Status::fail(Err::InvalidArgument, "tx::budgetFor");
-  out = budgetFromRow(turnBudgetFor(head.host, head.model, kToolLoopOn, link, routedLift), head, requested);
+  const HeadKey key = routedKey(head);
+  out = budgetFromRow(turnBudgetFor(key.host, key.model, kToolLoopOn, link, routedLift), key, requested);
   return Status::success();
 }
 
 Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out) {
   if (head.host.empty() || head.model.empty()) return Status::fail(Err::InvalidArgument, "tx::budgetFor");
-  out = budgetFromRow(turnBudgetFor(head.host, head.model, kToolLoopOn), head, requested);
+  const HeadKey key = routedKey(head);
+  out = budgetFromRow(turnBudgetFor(key.host, key.model, kToolLoopOn), key, requested);
   return Status::success();
 }
 

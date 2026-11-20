@@ -274,6 +274,35 @@ void test_both_routed_rows_behind_the_one_switch() {
     TEST_ASSERT_TRUE_MESSAGE(on.bodyCap >= lifted.wireBodyBytes, m);
     TEST_ASSERT_TRUE_MESSAGE(on.tokens.aim > off.tokens.aim && on.marks.high > off.marks.high, m);
   }
+  // The lifted rows are pinned (ruling 91, table/F2): a routed head with the lift on carries what the
+  // same head carries direct; routed Sonnet runs the native Anthropic wire, so its body rises the same.
+  const struct {
+    const char* routed;
+    const char* host;
+    const char* model;
+  } lifts[] = {{"anthropic/claude-sonnet-5-5", "anthropic", "claude-sonnet-5-5"},
+               {"openai/gpt-5.6", "openai", "gpt-5.6"},
+               {"gpt-5.6", "openai", "gpt-5.6"}};
+  for (const auto& l : lifts) {
+    const tx::HeadBudget on = direct("cumulo", l.routed, true, true), same = direct(l.host, l.model);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(same.bodyCap, on.bodyCap, l.routed);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(same.tokens.aim, on.tokens.aim, l.routed);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(same.tokens.due, on.tokens.due, l.routed);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(same.tokens.keep, on.tokens.keep, l.routed);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(same.marks.high, on.marks.high, l.routed);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(same.marks.low, on.marks.low, l.routed);
+  }
+  // Routed means what the head key says (ruling 91, blockers/F7): a routed head named by its upstream's
+  // slug is the router's row, never the direct one.
+  for (bool lift : {false, true}) {
+    const tx::HeadBudget bySlug = direct("anthropic", "claude-sonnet-5-5", true, lift);
+    const tx::HeadBudget byRouter = direct("cumulo", "anthropic/claude-sonnet-5-5", true, lift);
+    TEST_ASSERT_EQUAL_UINT32(byRouter.bodyCap, bySlug.bodyCap);
+    TEST_ASSERT_EQUAL(byRouter.floorHead, bySlug.floorHead);
+    TEST_ASSERT_EQUAL_UINT32(byRouter.tokens.aim, bySlug.tokens.aim);
+    TEST_ASSERT_EQUAL_UINT32(byRouter.marks.high, bySlug.marks.high);
+  }
+  TEST_ASSERT_TRUE(direct("anthropic", "claude-sonnet-5-5", true, false).floorHead);
   // The installed form follows the one switch (off until RB-CUV reports).
   tx::HeadBudget installed;
   TEST_ASSERT_TRUE(tx::budgetFor(tx::HeadKey{"cumulo", "gpt-5.6", true}, tx::Profile::Full, installed).ok());
