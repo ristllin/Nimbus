@@ -1670,6 +1670,29 @@
         "tools/refloop: the reference loop's stamp in the device's form (ruling 64) and the rig's additions for the validation families (orchestrator note 5 of RB-REC7's task: RB-REC6 does not touch tools/refloop). tests/evals/food_replay: renamed to file_replay. tools/release_gate/test_owner_regression_assertions.py: the host tests of the owner-regression assertions this lane rewrites (ruling 41)."
       ],
       "plan_text": "tests/evals/owner_regressions, tests/evals/refloop, tests/evals/file_replay, tests/evals/food_coach (gate removal only), tests/hil/test_files_bench.py (replaces test_ledger_bench.py), RB-R1 gate config"
+    },
+    "RB-BGb": {
+      "stage": "S1",
+      "files": [
+        "lib/core/src/orch_budget.cpp",
+        "lib/core/src/orch_budget_governor.cpp",
+        "lib/core/include/nimbus/orch/budget_governor.h",
+        "test/test_budget_governor/**",
+        "test/test_request_budget/**",
+        "docs/reference/request-budgets.md",
+        "lib/core/src/orch_budget_command.cpp",
+        "src/agent/budget_command.cpp",
+        "src/agent/budget_profile_store.cpp",
+        "nimbusd/src/hosted_budget.h",
+        "nimbusd/tests/test_hosted_budget.cpp",
+        "nimbusd/src/rig.h",
+        "lib/harness/src/engine_history.cpp",
+        "lib/core/src/orch_request_budget.cpp",
+        "test/test_fold_invariant/**",
+        "nimbusd/tests/test_fold_floor.cpp",
+        "nimbusd/tests/test_budget_memo.cpp"
+      ],
+      "plan_text": "lib/harness/src/engine_history.cpp, lib/core/src/orch_request_budget.cpp, lib/core/src/orch_budget.cpp, their tests, docs/reference/request-budgets.md (generated)"
     }
   }
 }
