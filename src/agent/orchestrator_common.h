@@ -47,17 +47,5 @@ extern SemaphoreHandle_t g_sessMux;   // guards the session snapshot; created in
 void refreshSessionSnapshot();
 void drainTerminates();
 
-// ---- tenants (orchestrator_common.cpp) ------------------------------------------
-// The tenant table and its recursive mutex. roleOfChat (orchestrator.cpp) reads the
-// table under TenantLock; every other access is a tenant* accessor in the common file.
-extern nimbus::orch::TenantStore g_tenants;
-extern SemaphoreHandle_t g_tenantMux;
-struct TenantLock {
-  TenantLock() { xSemaphoreTakeRecursive(g_tenantMux, portMAX_DELAY); }
-  ~TenantLock() { xSemaphoreGiveRecursive(g_tenantMux); }
-  TenantLock(const TenantLock&) = delete;
-  TenantLock& operator=(const TenantLock&) = delete;
-};
-
 }  // namespace orchestrator
 }  // namespace agent
