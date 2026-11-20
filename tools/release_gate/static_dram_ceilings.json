@@ -8,11 +8,11 @@
   },
   "engine2_about": "Engine-2 images (lane RB-I0), checked by check_static_dram.py like the shipped variants but kept apart from them: release.yml ships none yet (RB-FLIP adds a shipped e2 variant to `variants` when it ships). baseline: the engine-2 stub seam's measurement (20 Nov 2026, lane RB-I0 tip). ceiling: baseline + 2048 B, the shipped rows' bound; a lane that binds the engine and needs more raises it with the bench heap A/B, as for a shipped variant.",
   "engine2": {
-    "nimbus-tft-e2": {"env": "esp32s3-e2", "baseline": 87235, "ceiling": 89283},
-    "freenove-28-e2": {"env": "esp32s3-cyd-e2", "baseline": 87315, "ceiling": 89363},
-    "freenove-35-e2": {"env": "esp32s3-cyd-35-e2", "baseline": 87315, "ceiling": 89363},
-    "freenove-40-e2": {"env": "esp32s3-cyd-40-e2", "baseline": 87315, "ceiling": 89363},
-    "test-e2": {"env": "test-e2", "baseline": 90051, "ceiling": 92099},
-    "test-cyd-e2": {"env": "test-cyd-e2", "baseline": 90131, "ceiling": 92179}
+    "nimbus-tft-e2": {"env": "esp32s3-e2", "baseline": 86731, "ceiling": 88779},
+    "freenove-28-e2": {"env": "esp32s3-cyd-e2", "baseline": 86811, "ceiling": 88859},
+    "freenove-35-e2": {"env": "esp32s3-cyd-35-e2", "baseline": 86811, "ceiling": 88859},
+    "freenove-40-e2": {"env": "esp32s3-cyd-40-e2", "baseline": 86811, "ceiling": 88859},
+    "test-e2": {"env": "test-e2", "baseline": 89547, "ceiling": 91595},
+    "test-cyd-e2": {"env": "test-cyd-e2", "baseline": 89627, "ceiling": 91675}
   }
 }
