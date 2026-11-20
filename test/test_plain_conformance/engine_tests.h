@@ -1300,11 +1300,17 @@ inline void test_a_failed_write_receipt_is_never_replaced_by_a_weaker_line() {
 inline void test_rung_two_advances_before_history_is_omitted() {
   txb::Battery b;
   shortTurns(b, 8);
-  for (int i = 0; i < 6; ++i) b.model.push(sp::call("big_read", "{\"tag\":\"r" + std::to_string(i) + "\",\"bytes\":20000}"));
-  b.model.push(sp::say("Read six."));
+  // Enough open-turn bulk to pass the head's full body (tx::budgetFor), so the ladder must climb.
+  tx::HeadBudget head;
+  TXB_OK(tx::budgetFor(b.headKey(), tx::Profile::Full, head));
+  const int reads = (int)(head.bodyCap / 40000) + 2;
+  for (int i = 0; i < reads; ++i)
+    b.model.push(sp::call("big_read", "{\"tag\":\"r" + std::to_string(i) + "\",\"bytes\":40000}"));
+  b.model.push(sp::say("Read them."));
   plain::TurnOutcome out;
-  TXB_OK(b.owner("read six big ones", out));
-  TEST_ASSERT_EQUAL_STRING_MESSAGE("Read six.", out.text.c_str(), out.statusText.c_str());
+  TXB_OK(b.owner("read the big ones", out));
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("Read them.", out.text.c_str(), out.statusText.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(ladderEvents(b) >= 1, "the ladder never climbed: the case does not test rung 2");
   for (const auto& r : b.model.requests())
     TEST_ASSERT_TRUE_MESSAGE(txb::detail::omittedTurnsNamed(r.view) < 0, "history omitted while open-turn bulk could be stubbed");
 }

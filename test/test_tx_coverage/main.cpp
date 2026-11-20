@@ -192,6 +192,7 @@ void test_a_direct_head_never_omits() {
 void test_a_floor_head_names_what_the_ladder_omits() {
   TXB_WAITS_FOR("PENDING RB-W3", "RB-E1a");
   txb::Battery b(plain::Dialect::ChatCompletions);
+  b.hostOverride = "custom";   // a floor head by its class (tx::budgetFor), never by a default (RB-T4)
   TXB_OK(txb::runTurns(b, longChat(40, 4000)));
   bool omitted = false;
   for (const auto& r : b.model.requests()) omitted |= txb::detail::omittedTurnsNamed(r.view) > 0;

@@ -564,11 +564,16 @@ void test_a_request_is_rebuilt_byte_for_byte_from_its_reference() {
 void test_a_request_with_an_omission_is_rebuilt_byte_for_byte() {
   TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
   txb::Battery b;
-  for (int i = 0; i < 65; ++i) {
+  // Enough stored turns that the battery head's full body (tx::budgetFor; 292,000 B on
+  // claude-sonnet-5-5) is passed and rung 3 must omit the oldest of them.
+  tx::HeadBudget head;
+  TXB_OK(tx::budgetFor(b.headKey(), tx::Profile::Full, head));
+  const size_t turnBytes = 5000, turns = head.bodyCap / turnBytes + 8;
+  for (size_t i = 0; i < turns; ++i) {
     b.model.push(sp::say("ok " + std::to_string(i)));
     b.advance(60);
     plain::TurnOutcome o;
-    TXB_OK(b.owner("short turn " + std::to_string(i) + " " + std::string(600, 's'), o));
+    TXB_OK(b.owner("long turn " + std::to_string(i) + " " + std::string(turnBytes, 's'), o));
   }
   b.world.files["notes/a.md"] = "alpha";
   b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));

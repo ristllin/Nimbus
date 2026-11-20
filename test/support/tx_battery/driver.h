@@ -12,6 +12,7 @@
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/engine.h"
+#include "nimbus/harness/plain/exchange.h"   // providerSlugOf: the budget key (RB-T4)
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/resume.h"
@@ -97,6 +98,14 @@ class Battery {
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
   plain::TurnCtx headCtx() const { return turnCtx(0, plain::Trigger::Owner); }
+  // The budget key of that head as the engine forms it (its provider slug, not the endpoint host).
+  tx::HeadKey headKey() const {
+    const plain::TurnCtx c = headCtx();
+    plain::HeadEndpoint e;
+    e.host = c.host;
+    e.routed = routed;
+    return tx::HeadKey{plain::providerSlugOf(c, e), c.model, routed};
+  }
 
   void advance(uint32_t seconds) {
     epoch += seconds;
@@ -356,8 +365,7 @@ class Battery {
     d.files = &files;
     d.chatKey = chatKey;
     d.chatId = chatKey;
-    const plain::TurnCtx head = turnCtx(0, plain::Trigger::Owner);   // the head the marks are read for (RB-T4)
-    d.headKey = tx::HeadKey{head.host, head.model, routed};
+    d.headKey = headKey();   // the head the marks are read for (RB-T4)
     d.head = [this] { return engine ? engine->head() : nullptr; };
     d.digests = [this] { return engine ? engine->digests() : nullptr; };
     d.omittedThru = [this] { return engine ? engine->omittedThru() : uint64_t(0); };
