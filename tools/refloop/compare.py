@@ -50,6 +50,9 @@ MODELS = {
     # The firmware's Mistral head and sub defaults (lib/core/include/nimbus/orch/model_defaults.h); the harness sends
     # no effort field on the Mistral wire (lane RB-R1, ruling 102).
     "mistral-medium-latest": {"head": "mistral", "effort": None, "sub_model": "mistral-small-latest"},
+    # Large 4 (ruling 104): the harness sends reasoning_effort "low" (mistralHeadEffort; it refuses "none"), so the
+    # loop sends the same; the sub default stays mistral-small-latest.
+    "mistral-large-latest": {"head": "mistral", "effort": "low", "sub_model": "mistral-small-latest"},
 }
 
 

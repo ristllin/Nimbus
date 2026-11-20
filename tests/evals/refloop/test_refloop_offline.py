@@ -26,6 +26,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO / "tools" / "refloop"))
 
 import arms  # noqa: E402
+import compare  # noqa: E402
 import costs  # noqa: E402
 import fixtures  # noqa: E402
 import grade  # noqa: E402
@@ -1037,6 +1038,31 @@ class MistralWireTest(unittest.TestCase):
         self.assertAlmostEqual(costs.cost_usd("mistral-medium-latest", usage), 9.0)
         self.assertAlmostEqual(costs.cost_usd("mistral-small-latest", usage), 0.8)
         self.assertGreater(costs.cost_usd("mistral-unknown-model", usage), 0.0)
+
+
+    def test_the_loop_sends_the_mistral_effort_the_harness_sends(self):
+        # RB-Q4b (ruling 104): Large 4 refuses effort "none" and the harness sends "low" (mistralHeadEffort); the
+        # loop mirrors the harness's effort on every wire, so it sends the same reasoning_effort, and none when the
+        # harness sends none (Medium). Large 4 is a rig model priced from the firmware row (2 / 6 USD per 1M).
+        sent = []
+
+        class FakeCompletions:
+            def create(self, **kw):
+                sent.append(kw)
+                msg = type("M", (), {"to_dict": lambda self: {"role": "assistant", "content": "hi"}})()
+                choice = type("C", (), {"message": msg, "finish_reason": "stop"})()
+                return type("R", (), {"choices": [choice], "usage": None})()
+
+        conv = type("Conv", (), {"system": "S", "messages": [{"role": "user", "content": "hi"}], "specs": []})()
+        for effort, expected in (("low", {"reasoning_effort": "low"}), (None, None)):
+            head = refloop.MistralChat("mistral-large-latest", effort=effort, api_key="x")
+            head.client = type("Cl", (), {"chat": type("Ch", (), {"completions": FakeCompletions()})()})()
+            head.step(conv)
+            self.assertEqual(sent[-1].get("extra_body"), expected)
+        self.assertEqual(compare.MODELS["mistral-large-latest"]["effort"], "low")
+        self.assertEqual(compare.MODELS["mistral-large-latest"]["sub_model"], "mistral-small-latest")
+        usage = {"input": 1_000_000, "cached": 0, "cache_write": 0, "output": 1_000_000}
+        self.assertAlmostEqual(costs.cost_usd("mistral-large-latest", usage), 8.0)
 
 
 if __name__ == "__main__":

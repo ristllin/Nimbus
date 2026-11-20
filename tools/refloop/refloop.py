@@ -244,13 +244,14 @@ def _content_text(content) -> str:
 class MistralChat:
     """A Mistral head over its Chat Completions API (lane RB-R1, ruling 102), stateless like the OpenAI arm: the loop
     owns the whole history. The wire the harness itself uses for Mistral (lib/harness/src/providers/mistral.cpp:
-    non-streamed /v1/chat/completions with tools); no effort field, as the harness sends none."""
+    non-streamed /v1/chat/completions with tools). The effort is the one the harness sends for the model
+    (mistralHeadEffort: "low" for Large 4, none for Medium), as reasoning_effort, or no field at all."""
 
     def __init__(self, model: str, effort: str | None = None, api_key: str | None = None, base_url: str | None = None):
         import openai  # the Chat Completions client; Mistral's endpoint takes the same body
 
         self.client = openai.OpenAI(api_key=api_key, base_url=base_url or "https://api.mistral.ai/v1")
-        self.model = model
+        self.model, self.effort = model, effort
 
     def user(self, text: str, images=()) -> list:
         parts = [{"type": "image_url", "image_url": f"data:{mt};base64,{b64}"} for mt, b64 in images]
@@ -268,6 +269,7 @@ class MistralChat:
                 }
                 for s in conv.specs
             ],
+            extra_body={"reasoning_effort": self.effort} if self.effort else None,
         )
         msg = r.choices[0].message.to_dict()
         msg = {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls") and v is not None}
