@@ -39,6 +39,12 @@ PROJECT = "rt52"
 TABLE = "table.csv"
 HEADER = b"date,item,qty,note\n"
 OLD = ("v5.1.1", "v5.1.2")
+# Two rules that cannot conflict, so no image has a reason to merge or replace the other one (on the first bench run
+# v5.1.2's head rightly replaced v5.1.1's "sign replies with <word>" rule with its own, since the two contradicted).
+RULES = {
+    "v5.1.1": "Make this a standing rule: in answers about the bench, give lengths in metres (tag v511rule).",
+    "v5.1.2": "Make this a standing rule: in answers about the bench, write dates as YYYY-MM-DD (tag v512rule).",
+}
 
 
 # ---- the pure checks (host) ---------------------------------------------------------------------------------
@@ -59,7 +65,7 @@ def turns_for(image: str) -> list:
         ),
         (
             "rule",
-            f"Make this a standing rule: always sign replies about the bench with the word {tag}rule.",
+            RULES[image],
             f"{tag}rule",
         ),
         (
@@ -75,6 +81,11 @@ def turns_for(image: str) -> list:
     ]
 
 
+def rule_lines(prefs: str) -> list:
+    """The rule lines of a /prefs answer, without the header (it names the version) or the footer."""
+    return [ln for ln in prefs.splitlines() if ln.startswith("(p")]
+
+
 def rows_kept(before: bytes, after: bytes) -> bool:
     """Every line of `before` is in `after` at the same place, byte for byte; `after` only adds lines at the end."""
     return after.startswith(before)
@@ -87,6 +98,13 @@ def test_ten_turns_and_the_classes_they_cover():
     assert {"row", "file", "rule", "line"} <= kinds
     words = [w for _, _, w in turns]
     assert len(set(words)) == len(words), "every turn's code word is unique"
+
+
+def test_rule_lines_ignore_the_version_header():
+    a = "Nimbus · v5.1.2: Standing rules (2):\n(p1) one [added today]\n(p2) two\nAdd: /prefs add <rule>."
+    b = "Nimbus · v5.2.0: Standing rules (2):\n(p1) one [added today]\n(p2) two\nAdd: /prefs add <rule>."
+    assert rule_lines(a) == rule_lines(b) == ["(p1) one [added today]", "(p2) two"]
+    assert rule_lines(a) != rule_lines(b.replace("(p2) two\n", ""))
 
 
 def test_rows_kept_is_byte_exact():
@@ -147,6 +165,7 @@ class Trip:
         self.table = table
         self.files: dict = {}
         self.rules: list = []
+        self.prefs = ""
         self.lines: list = []
 
 
@@ -180,6 +199,7 @@ def _old_turn(api: bd.Api, old: str, kind: str, want: str, trip: Trip) -> None:
         record("roundtrip.log", f"{old} /prefs: {prefs[:600]!r}")
         assert want in prefs, f"{old}: the rule is not in /prefs"
         trip.rules.append(want)
+        trip.prefs = prefs
     else:
         trip.lines.append(want)
 
@@ -224,6 +244,7 @@ def _up_again(unit: Unit, image: str, trip: Trip) -> None:
     prefs = _command(api, "/prefs")
     record("roundtrip.log", f"candidate /prefs after: {prefs[:800]!r}")
     assert "English" in prefs, "the rule seeded before the trip is gone"
+    assert rule_lines(prefs) == rule_lines(trip.prefs), "the standing rules changed across the update"
     for w in trip.rules:
         assert w in prefs, f"the rule {w} added on an old image is gone"
     for w in trip.lines:
