@@ -1041,3 +1041,22 @@ deleted. Engine 2 has no baseline.
 - lane: RB-RL
 - prd: section 8 (Safety rails, item 1: in a tainted turn note, skill_save and routine create or update go to pending; send to another chat, device configuration, tenant changes and agent_stop are refused with the reason)
 - why: lib/harness/src/plain_rails.cpp: a call the one exemption table (kTaintExemptions) sends to pending is kept by the binding's approval store and not run: kRailPending says so and why; a pending call nothing could keep is refused with kRailNoPending; a call the table refuses or does not name gets kRailRefused. Each states what happened to the call and why (the turn read outside content), never an order. Planned work, not a fix.
+### PC-0125: the owner's line after a guard stop asks the one question whether to go on (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 2046 -> 1986
+- sha8: 4dc07601 -> 29a09154
+- lane: RB-X3
+- prd: section 1 step 5 (the guards), as amended by rulings 81 to 85 (ruling 84 item 2: the turn ends with what is done, what is left and one question whether to go on; the owner's yes opens a turn that continues from the log)
+- why: lib/harness/include/nimbus/harness/plain/texts.h: one owner line for every guard stop, "This turn stopped at its <slug> limit. Go on from where it stopped?" (kLimitStopped, kLimitStoppedEnd), also when the last round answered with calls only (kLimitLine and kLimitLineEnd, "The turn reached its <slug> limit before a reply. Ask again to continue.", are gone; plain_engine.cpp limitLine). Owner-facing only, never in a request. The next attended turn keeps the stopped turn whole (plain_engine.cpp pointerLimit), so a yes continues from the log. It also frees the bytes the next entry needs (ruling 98 item 3: the class was at 2,046 of 2,048 B after PC-0131). Planned work, not a fix.
+
+### PC-0126: a guard's last round says what is done and what is left (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 1986 -> 2040
+- sha8: 29a09154 -> 9371985c
+- lane: RB-X3
+- prd: section 1 step 5 (the guards), as amended by rulings 81 to 85 (ruling 84 item 2: no guard ends a turn with a silently poorer answer; at a hard guard, the spend guard or a loop the last round's delivered text states what is done and what is left)
+- why: lib/harness/include/nimbus/harness/plain/texts.h kLimitReachedEnd, the close of the guard trip's device item the model sees before its last round: "[device] limit reached (<slug>): no tool runs now; say what is done and what is left." (was "[device] limit reached (<slug>)"). The new slug "loop" (three tool rounds in a row with no progressing call) rides the same item. A routine or agent report that reaches its limit ends the same way, naming what is unfinished (ruling 84 item 9). Planned work, not a fix.

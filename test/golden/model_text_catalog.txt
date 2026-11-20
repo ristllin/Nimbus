@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
-# class device_notes bytes=2046 ceiling=2048 entries=76 sha8=4dc07601
+# class device_notes bytes=2040 ceiling=2048 entries=74 sha8=9371985c
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
 # class tool_results bytes=4546 ceiling=6144 entries=301 sha8=a3248afa
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
@@ -84,17 +84,15 @@ device_notes	lib/harness/include/nimbus/harness/plain/texts.h	5c4a28c0	23	"Nothi
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	e0127ffd	53	"The summary failed; the device tries again by itself."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	f5a2b27b	41	"The summary waits until the clock is set."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	cee20507	24	"[device] limit reached ("
-device_notes	lib/harness/include/nimbus/harness/plain/texts.h	ba5ec51d	1	")"
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	f71fec9c	55	"): no tool runs now; say what is done and what is left."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	df899193	99	"[device] storage refused part of this conversation: it is kept in memory until the device restarts."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	2d44ce0b	80	"Storage refused part of this conversation; it is kept until the device restarts."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	5c6a161f	79	"The device ran out of memory for this turn and stopped. Send the message again."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	af2d1e9e	75	"Part of this turn was too long for the device to keep, so it stopped there."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	72572032	75	"That message is too long for the device to keep. Send it as a file instead."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	51a7c403	84	"That message has too many parts for the device to keep. Send them in smaller groups."
-device_notes	lib/harness/include/nimbus/harness/plain/texts.h	50078ce6	21	"The turn reached its "
-device_notes	lib/harness/include/nimbus/harness/plain/texts.h	d0d7624f	45	" limit before a reply. Ask again to continue."
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	b8505ec4	25	"This turn stopped at its "
-device_notes	lib/harness/include/nimbus/harness/plain/texts.h	dedc0cf6	30	" limit. Ask again to continue."
+device_notes	lib/harness/include/nimbus/harness/plain/texts.h	961e6fbf	36	" limit. Go on from where it stopped?"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	a39a7ffa	9	"assistant"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	385f7962	15	"Still working ("
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	d35f5f14	7	", step "
