@@ -356,7 +356,10 @@ static void test_hold_seams() {
   const size_t gate = fetch.find("if (!g_archivedPage.repeat(offset,");
   TEST_ASSERT_TRUE(gate != std::string::npos && gate < fetch.find("agent::tgarchive::onInboundPage("));
   const std::string eng = readCode("lib/harness/src/engine.cpp");
-  TEST_ASSERT_TRUE(eng.find("recall = d_.recall(userText.substr(0, nimbus::net::withoutCrossedNote(") != std::string::npos);
+  // The recall text (memory recall and, ruling 90, the conversation recall) drops the crossed note.
+  TEST_ASSERT_TRUE(eng.find("userText.substr(0, nimbus::net::withoutCrossedNote(") != std::string::npos);
+  TEST_ASSERT_TRUE(eng.find("recall = d_.recall(recallText, turnWho)") != std::string::npos);
+  TEST_ASSERT_TRUE(eng.find("earlierRecall(chatId, recallText,") != std::string::npos);
   TEST_ASSERT_TRUE(eng.find("recall = d_.recall(userText, turnWho)") == std::string::npos);
 }
 
