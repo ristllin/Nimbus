@@ -194,8 +194,12 @@ Status qualifiedTargets(const std::vector<HeadTarget>& ladder, nimbus::orch::hea
 // (ExchangeErr::None for a 2xx; Transport for status 0). A routed answer that names a
 // reason of the router contract is classed by that reason, never by its status.
 ExchangeErr classifyAnswer(int status, const std::string& body, bool routed);
-// The provider slug of a turn's head for the caps and the lines: TurnCtx::host when it is a
-// slug of the qualification table, else from the endpoint's host.
+// The provider slug of a turn's head (lane RB-T4b): TurnCtx::host when it is a slug, else a known API
+// host (the endpoint's, else the turn's), else "cumulo" when routed, else the configured dialect
+// (Anthropic Messages: "anthropic", OpenAI Responses: "openai", a compatible dialect: "custom";
+// `byDialect` is set then). Empty when the turn names no host and the endpoint none: nothing to size.
+std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDialect = nullptr);
+// The same for the caps and the lines.
 std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head);
 // The owner's plain line for an exchange that ended with `err` (empty for None).
 std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus);

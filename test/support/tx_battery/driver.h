@@ -79,6 +79,7 @@ class Battery {
   std::string hostOverride, modelOverride;
   bool routed = false;
   bool noHead = false;             // the setup names no model (a binding fault; ruling 89 item 3)
+  bool noHost = false;             // the setup names no host either way (a binding fault; ruling 91, F2)
   plain::DeliverFn deliverFn;
   plain::HeadCost cost;            // what the guards scale from (TurnSetup::cost)
   int storedRounds = 0;            // the stored orchLoopRnds (TurnSetup::storedRounds)
@@ -262,6 +263,7 @@ class Battery {
               : dialect == plain::Dialect::AnthropicMessages ? "claude-sonnet-5-5"
                                                              : "battery-model";
     if (noHead) c.model.clear();
+    if (noHost) c.host.clear();
     c.profile = tx::Profile::Standard;
     c.startedAt = epoch;
     c.startedMs = ms;

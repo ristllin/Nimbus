@@ -639,6 +639,26 @@ inline void test_a_turn_without_a_head_fails_loudly() {
   bool logged = false;
   for (const std::string& l : headLog()) logged |= l.find("no head") != std::string::npos;
   TEST_ASSERT_TRUE_MESSAGE(logged, "no log line for a turn without a head");
+  // Ruling 91 (blockers/F2): a setup that names no host is refused the same way, never sized as a
+  // custom floor head.
+  headLog().clear();
+  txb::Battery nohost;
+  nohost.noHost = true;
+  nohost.model.push(sp::say("never sent"));
+  TEST_ASSERT_EQUAL((int)tx::Err::InvalidArgument, (int)nohost.owner("hello", out).err);
+  TEST_ASSERT_EQUAL(0, (int)nohost.model.requests().size());
+  logged = false;
+  for (const std::string& l : headLog()) logged |= l.find("no head") != std::string::npos;
+  TEST_ASSERT_TRUE_MESSAGE(logged, "no log line for a turn without a host");
+  // An unknown endpoint host on a native dialect is sized by the dialect, with one log line.
+  headLog().clear();
+  txb::Battery proxy;
+  proxy.hostOverride = "127.0.0.1";
+  proxy.model.push(sp::say("hi"));
+  TXB_OK(proxy.owner("hello", out));
+  size_t lines = 0;
+  for (const std::string& l : headLog()) lines += l.find("sized by its dialect") != std::string::npos;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)lines, "an unknown host was sized without one line");
   headLog().clear();
   txb::Battery ok;
   ok.model.push(sp::say("hi"));

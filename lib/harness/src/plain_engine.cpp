@@ -420,30 +420,29 @@ class TurnRun {
     return st;
   }
 
-  // The head's budget (tx::budgetFor). Never the floor by accident: a key the table cannot read
-  // takes the head's released row (orch::requestBudgetFor), and a floor head is its class. A turn
-  // whose setup names no head is a binding fault, refused loudly (ruling 89 item 3).
+  // The head's budget (tx::budgetFor). The head is what the setup configured: its provider slug, else
+  // a known API host, else its dialect (one log line: lane RB-T4b). A turn whose setup names no host
+  // or no model is a binding fault, refused loudly (rulings 89 item 3 and 91), never sized as a custom
+  // floor head. budgetFor fails only on such a key, so there is no other fallback.
   Status budget() {
+    bool byDialect = false;
     tx::HeadKey key;
-    key.host = providerSlugOf(t_.ctx, t_.setup.head);
+    key.host = headSlugOf(t_.ctx, t_.setup.head, &byDialect);
     key.model = t_.ctx.model;
     key.routed = t_.setup.head.routed;
-    if (key.host.empty() || key.model.empty()) {
+    tx::HeadBudget b;
+    if (key.host.empty() || key.model.empty() || !tx::budgetFor(key, t_.ctx.profile, b).ok()) {
       agent::hlog::logf("plain(%s): no head named for the turn: refused", t_.ctx.chatKey.c_str());
       return Status::fail(Err::InvalidArgument, "plain::PlainEngine::budget.head");
     }
-    tx::HeadBudget b;
-    if (tx::budgetFor(key, t_.ctx.profile, b).ok()) {
-      t_.bodyCap = b.bodyCap;
-      t_.floorHead = b.floorHead;
-      t_.messageCap = std::max<uint32_t>(b.messageCap, tx::kInlineMessageCap);
-      if (b.bulkWholeCap) t_.bulkWholeCap = b.bulkWholeCap;
-      t_.ctx.profile = b.profile;
-      return Status::success();
-    }
-    const orch::RequestBudget r = orch::requestBudgetFor(key.host, key.model, key.routed);
-    t_.bodyCap = r.wireBodyBytes;
-    t_.floorHead = r.bound == orch::BudgetBound::Floor || r.bound == orch::BudgetBound::Held;
+    if (byDialect)
+      agent::hlog::logf("plain(%s): host %s is not a known provider: sized by its dialect as %s", t_.ctx.chatKey.c_str(),
+                        (t_.setup.head.host.empty() ? t_.ctx.host : t_.setup.head.host).c_str(), key.host.c_str());
+    t_.bodyCap = b.bodyCap;
+    t_.floorHead = b.floorHead;
+    t_.messageCap = std::max<uint32_t>(b.messageCap, tx::kInlineMessageCap);
+    if (b.bulkWholeCap) t_.bulkWholeCap = b.bulkWholeCap;
+    t_.ctx.profile = b.profile;
     return Status::success();
   }
   bool floorHead() const { return t_.floorHead; }

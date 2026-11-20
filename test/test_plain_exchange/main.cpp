@@ -827,11 +827,15 @@ static void test_a_body_over_the_cap_climbs_and_is_never_sent() {
   TEST_ASSERT_EQUAL(0, never.out.httpStatus);
   expectOnePlainLine(never.out);
 
-  // No cap given: the head's released row holds (claude-sonnet-5-5: 250,000 B), never the 85,000 B
-  // floor by accident (ruling 83 item 4). A 100 KB body goes out; one over the row is refused.
-  const uint32_t row = nimbus::orch::requestBudgetFor("anthropic", "claude-sonnet-5-5", false).wireBodyBytes;
-  TEST_ASSERT_TRUE(row > nimbus::orch::tx::kFloorHeadBodyCap);
-  for (int copies : {2, (int)(row / 50000) + 1}) {
+  // No cap given: the head's full body (tx::budgetFor at full; claude-sonnet-5-5: 292,000 B), the one
+  // fallback figure the turn path also uses (ruling 91, blockers/F11), never the 85,000 B floor or the
+  // released 250,000 B. 250,000 B goes out; one over the full body is refused.
+  nimbus::orch::tx::HeadBudget full;
+  TEST_ASSERT_TRUE(nimbus::orch::tx::budgetFor(nimbus::orch::tx::HeadKey{"anthropic", "claude-sonnet-5-5", false},
+                                               nimbus::orch::tx::Profile::Full, full).ok());
+  const uint32_t row = full.bodyCap;
+  TEST_ASSERT_TRUE(row > nimbus::orch::requestBudgetFor("anthropic", "claude-sonnet-5-5", false).wireBodyBytes);
+  for (int copies : {5, (int)(row / 50000) + 1}) {
     Rig floor;
     floor.wire.text = std::string(50000, 'y');
     floor.wire.copies = copies;
@@ -967,7 +971,40 @@ static void test_provider_slug_of_a_head() {
   TEST_ASSERT_EQUAL_STRING("cumulo", plain::providerSlugOf(t, h).c_str());
   h.routed = false;
   h.host = "192.168.1.9";
+  t.dialect = plain::Dialect::Flat;   // a custom endpoint is configured with a compatible dialect
   TEST_ASSERT_EQUAL_STRING("custom", plain::providerSlugOf(t, h).c_str());
+  t.dialect = plain::Dialect::ChatCompletions;
+  TEST_ASSERT_EQUAL_STRING("custom", plain::providerSlugOf(t, h).c_str());
+}
+
+// Lane RB-T4b (ruling 91, blockers/F2 and T4-ADV-08): the configured provider or dialect decides the
+// head's provider; an unknown endpoint host never makes a native head a custom floor head, and a
+// turn that names no host at all resolves to nothing (the engine refuses it).
+static void test_the_dialect_decides_an_unknown_host_and_nothing_named_is_nothing() {
+  plain::TurnCtx t;
+  plain::HeadEndpoint h;
+  bool byDialect = false;
+  h.host = "127.0.0.1";   // a proxy for an Anthropic key
+  t.dialect = plain::Dialect::AnthropicMessages;
+  TEST_ASSERT_EQUAL_STRING("anthropic", plain::headSlugOf(t, h, &byDialect).c_str());
+  TEST_ASSERT_TRUE(byDialect);
+  t.dialect = plain::Dialect::OpenAIResponses;
+  TEST_ASSERT_EQUAL_STRING("openai", plain::headSlugOf(t, h, &byDialect).c_str());
+  TEST_ASSERT_TRUE(byDialect);
+  // Counter-tests: a named slug or a known host is not a fallback.
+  h.host = "api.anthropic.com";
+  TEST_ASSERT_EQUAL_STRING("anthropic", plain::headSlugOf(t, h, &byDialect).c_str());
+  TEST_ASSERT_FALSE(byDialect);
+  t.host = "zai";
+  TEST_ASSERT_EQUAL_STRING("zai", plain::headSlugOf(t, h, &byDialect).c_str());
+  TEST_ASSERT_FALSE(byDialect);
+  // Nothing named: no host on the turn and none on the endpoint, whatever the dialect.
+  t.host.clear();
+  h.host.clear();
+  for (plain::Dialect d : plain::kAllDialects) {
+    t.dialect = d;
+    TEST_ASSERT_EQUAL_STRING("", plain::headSlugOf(t, h, &byDialect).c_str());
+  }
 }
 
 // A fallback answers only a fresh attempt with no effect run and the head parked, and only
@@ -1111,6 +1148,7 @@ int main(int, char**) {
   RUN_TEST(test_a_routed_head_follows_the_refusal_contract);
   RUN_TEST(test_every_error_class_has_one_plain_line);
   RUN_TEST(test_provider_slug_of_a_head);
+  RUN_TEST(test_the_dialect_decides_an_unknown_host_and_nothing_named_is_nothing);
   RUN_TEST(test_a_fallback_the_table_does_not_qualify_is_skipped);
   RUN_TEST(test_an_escaped_body_passes_the_check);
   RUN_TEST(test_a_cut_retry_always_has_more_room);

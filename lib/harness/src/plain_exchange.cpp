@@ -167,8 +167,16 @@ class Exchange {
     }
     window_ = req_.timeoutMs ? req_.timeoutMs : orch::readWindowMsFor(capHost_, model_, routed_);
     tableHost_ = capTableHost(capHost_, in->turn->dialect);
-    // No cap given: the head's released row, never the 85,000 B floor by accident (ruling 83).
-    bodyCap_ = req_.bodyCap ? req_.bodyCap : orch::requestBudgetFor(slug_, in->turn->model, routed_).wireBodyBytes;
+    // No cap given: the head's full body (tx::budgetFor), the one fallback figure the turn path uses too;
+    // never the 85,000 B floor by accident (ruling 83) and never a head the setup did not name (ruling 91).
+    bodyCap_ = req_.bodyCap;
+    if (!bodyCap_) {
+      orch::tx::HeadBudget b;
+      const orch::tx::HeadKey key{slug_, in->turn->model, in->head->routed};
+      if (slug_.empty() || !orch::tx::budgetFor(key, orch::tx::kDefaultProfile, b).ok())
+        return Status::fail(Err::InvalidArgument, "plain::runExchange.head");
+      bodyCap_ = b.bodyCap;
+    }
     return Status::success();
   }
 
@@ -397,16 +405,31 @@ ExchangeErr classifyAnswer(int status, const std::string& body, bool routed) {
   return classify(status, body, routed).err;
 }
 
-std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) {
+std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDialect) {
+  if (byDialect) *byDialect = false;
   for (const char* s : kSlugs)
     if (turn.host == s) return s;
-  const std::string h = lower(head.host);
+  const std::string h = lower(head.host.empty() ? turn.host : head.host);
   if (h == "api.anthropic.com") return "anthropic";
   if (h == "api.openai.com") return "openai";
   if (h == "api.mistral.ai") return "mistral";
   if (h == "api.z.ai" || h == "open.bigmodel.cn") return "zai";
-  return head.routed ? "cumulo" : "custom";
+  if (h.empty()) return "";   // nothing names the head
+  if (head.routed) return "cumulo";
+  switch (turn.dialect) {
+    case Dialect::AnthropicMessages:
+      if (byDialect) *byDialect = true;
+      return "anthropic";
+    case Dialect::OpenAIResponses:
+      if (byDialect) *byDialect = true;
+      return "openai";
+    case Dialect::ChatCompletions:
+    case Dialect::Flat: break;
+  }
+  return "custom";
 }
+
+std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) { return headSlugOf(turn, head); }
 
 // The owner's line for a failed exchange (texts.h device_notes): what happened, then the
 // one next step; no provider text (a provider's message is outside content and stays in the log).
