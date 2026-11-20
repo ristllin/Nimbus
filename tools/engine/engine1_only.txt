@@ -1,0 +1,41 @@
+# Engine-1 sources: compiled for the host (pio test -e native, nimbusd, harness-lab) and for
+# engine-1 device envs only. tools/engine_filter.py drops every file listed here from an
+# engine-2 device build (the *-e2 envs, custom_nimbus_engine = 2), so an engine-2 image links
+# no object of the old engine; tools/engine/e1_symbols.txt lists their symbols and
+# tools/release_gate/check_elf_symbols.py --engine1-absent proves none is in an engine-2 ELF.
+#
+# One repo-relative source path per line; '#' starts a comment. A source is listed when only the
+# old engine uses it: the device seam and glue RB-SEAM2 marked engine1_only (guard_files.txt),
+# and the library sources behind the old-engine headers (list_engine1_includes.py ENGINE1_HEADERS).
+# tools/release_gate/check_engine_filter.py fails on an entry that does not exist, that is also
+# on engine2_only.txt, or that an engine-2 map still loads.
+
+# The device seam and glue (RB-SEAM1b, RB-SEAM2).
+src/agent/orchestrator_e1.cpp
+src/agent/tools_e1.cpp
+src/agent/dream_subsystem.cpp
+src/agent/skills.cpp
+src/net/web_skills.cpp
+
+# lib/harness: the old turn engine and its prompt machinery.
+lib/harness/src/apply.cpp
+lib/harness/src/builtin_skills.cpp
+lib/harness/src/compose.cpp
+lib/harness/src/conv_cache.cpp
+lib/harness/src/conversation.cpp
+lib/harness/src/dream.cpp
+lib/harness/src/engine.cpp
+lib/harness/src/engine_fold.cpp
+lib/harness/src/engine_history.cpp
+lib/harness/src/fold_driver.cpp
+lib/harness/src/prompt_layout.cpp
+lib/harness/src/skill_attach.cpp
+lib/harness/src/skill_store.cpp
+lib/harness/src/turn_contract.cpp
+lib/harness/src/turn_fit.cpp
+lib/harness/src/turn_inbox.cpp
+lib/harness/src/turn_progress.cpp
+
+# lib/core: the engine-1 tool sources whose headers are engine 1 only.
+lib/core/src/orch_file_aids_e1.cpp
+lib/core/src/orch_session_tools.cpp
