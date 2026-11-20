@@ -160,6 +160,9 @@ class Exchange {
       model_ = route.model;
     }
     window_ = req_.timeoutMs ? req_.timeoutMs : orch::readWindowMsFor(capHost_, model_, routed_);
+    // A custom host that speaks the Messages API takes its output cap from Anthropic's table: that
+    // API requires max_tokens, and the custom row has none (RB-W1b).
+    tableHost_ = capHost_ == "custom" && in->turn->dialect == Dialect::AnthropicMessages ? "anthropic" : capHost_;
     // No cap given: the head's released row, never the 85,000 B floor by accident (ruling 83).
     bodyCap_ = req_.bodyCap ? req_.bodyCap : orch::requestBudgetFor(slug_, in->turn->model, routed_).wireBodyBytes;
     return Status::success();
@@ -180,7 +183,7 @@ class Exchange {
   // or the router's clamp.
   Status renderFitted() {
     if (cutRetried_ && *cutEffort_) head_.effort = cutEffort_;
-    const providers::OutputCap table = providers::tableCap(capHost_, model_, kind());
+    const providers::OutputCap table = providers::tableCap(tableHost_, model_, kind());
     Status st = renderAt(table.maxTokens);
     if (!st.ok()) return st;
     providers::RoundLoad load;
@@ -188,7 +191,7 @@ class Exchange {
     load.imageBytes = load.bodyBytes - http_.body.size();
     load.routed = routed_;
     load.fragmented = deps_.platform->largestFreeBlock && providers::heapFragmented(deps_.platform->largestFreeBlock());
-    cap_ = providers::outputCapFor(capHost_, model_, kind(), minU(window_, remaining()), load);
+    cap_ = providers::outputCapFor(tableHost_, model_, kind(), minU(window_, remaining()), load);
     // the cut retry takes the retry cap of this request's own fit (the time left now)
     uint32_t tokens = cutRetried_ ? cap_.retryTokens : cap_.maxTokens;
     if (routerCap_ && (!tokens || routerCap_ < tokens)) tokens = routerCap_;
@@ -359,7 +362,7 @@ class Exchange {
   ExchangeResult& out_;
   RenderInput in_;
   HeadEndpoint head_;
-  std::string slug_, capHost_, model_;
+  std::string slug_, capHost_, tableHost_, model_;
   bool routed_ = false;
   uint32_t t0_ = 0, window_ = 0, bodyCap_ = 0;
   providers::OutputCap cap_;

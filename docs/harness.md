@@ -588,7 +588,8 @@ and ledger shape, the photo table per head kind, every split of turns for the la
   request is not sent); a 400 or 404 refusing a file the request named (an expired or unknown
   photo id) is handed to the caller's `refusedRef`, which forgets the id
   (`imageparts::forgetRefusedFileId`) and has the same state rendered and sent once more, the
-  photo inline or as its stub line; anything else is one plain line. A routed head follows the router's
+  photo inline or as its stub line; anything else is one plain line. A custom host that speaks
+  the Messages API takes its output cap from Anthropic's table (that API requires `max_tokens`). A routed head follows the router's
   refusal contract, and a routed 401 to 403 that names no reason never parks the router. A retry renders the same stored state, so it
   never runs a tool again.
 - **Who may answer instead** (`pickFallback`, `qualifiedTargets`): a fallback host answers

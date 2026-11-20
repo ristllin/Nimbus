@@ -453,6 +453,27 @@ static void test_a_plain_answer_is_one_request() {
 
 // The output cap is main's load-aware cap for the real body: sent on a capped host, it
 // shrinks when the turn has less time left, and an uncapped host sends none.
+// A custom host that speaks the Messages API sends an output cap (the API requires max_tokens):
+// Anthropic's table for its model; another dialect's custom host keeps its own (none).
+static void test_a_custom_messages_host_sends_an_output_cap() {
+  Rig custom("custom");
+  custom.model.push(sp::say("ok"));
+  expectOk(custom.run());
+  TEST_ASSERT_TRUE(custom.out.err == ExchangeErr::None);
+  TEST_ASSERT_TRUE(custom.sentMaxTokens(0) > 0);
+  Rig anthropic;
+  anthropic.model.push(sp::say("ok"));
+  expectOk(anthropic.run());
+  TEST_ASSERT_EQUAL(anthropic.sentMaxTokens(0), custom.sentMaxTokens(0));
+  Rig chat("custom");
+  chat.turn.dialect = plain::Dialect::ChatCompletions;
+  chat.model = sp::ScriptedProvider{sp::Dialect::Chat};
+  chat.model.clock = &gClock;
+  chat.model.push(sp::say("ok"));
+  expectOk(chat.run());
+  TEST_ASSERT_EQUAL(0, (int)chat.out.maxTokens);
+}
+
 static void test_the_output_cap_fits_the_body_and_the_time() {
   Rig full;
   full.model.push(sp::say("a"));
@@ -1079,6 +1100,7 @@ int main(int, char**) {
   RUN_TEST(test_a_context_refusal_climbs_once_and_retries_once);
   RUN_TEST(test_a_key_or_billing_refusal_parks_and_is_never_retried);
   RUN_TEST(test_other_answers_are_one_plain_line);
+  RUN_TEST(test_a_custom_messages_host_sends_an_output_cap);
   RUN_TEST(test_a_refused_file_reference_is_forgotten_and_sent_once_more);
   RUN_TEST(test_a_cut_answer_retries_once_then_is_delivered_with_its_line);
   RUN_TEST(test_cut_arguments_are_never_returned_for_dispatch);
