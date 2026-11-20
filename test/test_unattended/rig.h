@@ -18,6 +18,7 @@
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/unattended.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/log.h"
@@ -48,6 +49,19 @@ struct Files {
   std::vector<std::string> ran;   // tool names, in order
 
   plain::ToolOutput dispatch(const plain::ToolCall& c) {
+    if (c.name == "more") {   // the device's router: it runs the tool it names against the whole registry
+      JsonDocument a;
+      deserializeJson(a, c.argsJson);
+      ran.push_back(c.name);
+      plain::ToolCall inner = c;
+      inner.name = a["name"] | "";
+      inner.argsJson = "{}";
+      if (a["args"].is<JsonObjectConst>()) {
+        inner.argsJson.clear();
+        serializeJson(a["args"], inner.argsJson);
+      }
+      return inner.name.empty() ? plain::ToolOutput{c.id, c.name, "a listing"} : dispatch(inner);
+    }
     ran.push_back(c.name);
     JsonDocument a;
     deserializeJson(a, c.argsJson);
@@ -95,7 +109,7 @@ class Rig {
     platform.allocLarge = [](size_t n) { return std::malloc(n); };
     platform.freeLarge = [](void* p) { std::free(p); };
     channel.send = [this](const std::string& chat, const std::string& text) {
-      if (refuseSends) return false;
+      if (refuseSends || (refuseIf && refuseIf(text))) return false;
       sent.push_back(Sent{chat, text});
       return true;
     };
@@ -112,6 +126,7 @@ class Rig {
   agent::Channel channel;
   std::vector<Sent> sent;
   bool refuseSends = false;
+  std::function<bool(const std::string&)> refuseIf;   // the channel refuses a message it matches
   txb::MemFiles card;
   Files world;
   orch::ToolRegistry reg;
@@ -241,6 +256,7 @@ class Rig {
       if (d) reg.add(d->name, d->description, handler, plain::declSchema(*d, false));
     }
     reg.add("delete_file", "Delete a file by path.", handler);
+    orch::registerMore(reg);
   }
 
   tx::Status setup(const plain::TurnCtx& t, plain::TurnSetup& out, bool routine) {

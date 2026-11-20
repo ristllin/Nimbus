@@ -121,20 +121,18 @@ std::vector<std::string> routineTools(const RoutineFire& f) {
   const orch::UnattendedFacts facts = routineFacts(f);
   std::vector<std::string> out;
   for (const std::string& n : named)
-    if (!n.empty() && !listedName(out, n) && orch::unattendedMayList(facts, n)) out.push_back(n);
+    if (!n.empty() && n != orch::kMoreTool && !listedName(out, n) && orch::unattendedMayList(facts, n)) out.push_back(n);
   return out;
 }
 
 Status routineRegistry(const orch::ToolRegistry& base, const RoutineFire& f, orch::ToolRegistry& out) {
   try {
     const std::vector<std::string> allowed = routineTools(f);
-    bool behindMore = false;
-    for (const std::string& n : allowed) behindMore = behindMore || (base.has(n) && !base.classOf(n).alwaysOn());
     out = base;
-    for (const orch::ToolInfo& t : base.manifest()) {
-      const bool keep = listedName(allowed, t.name) || (behindMore && t.name == orch::kMoreTool);
-      if (!keep) out.remove(t.name);
-    }
+    // `more` never stays: a copy's `more` still reaches the base registry (tool_groups.h
+    // registerMore), so a routine is offered only always-on tools it names.
+    for (const orch::ToolInfo& t : base.manifest())
+      if (!listedName(allowed, t.name) || base.isRouter(t.name) || t.name == orch::kMoreTool) out.remove(t.name);
     return Status::success();
   } catch (const std::bad_alloc&) {
     out = orch::ToolRegistry();
@@ -232,7 +230,7 @@ bool inQuiet(const QuietHours& q, uint64_t now, int16_t tzMinutes) {
 }
 
 // ---- the outbox -------------------------------------------------------------------------
-uint64_t HeldNote::key() const { return fnv64(text); }
+uint64_t HeldNote::key() const { return fnv64(routine + '\n' + stop + '\n' + text); }
 
 const HeldNote* HeldStore::find(const std::string& id) const {
   for (const HeldNote& n : notes_)
@@ -251,6 +249,7 @@ void noteToJson(const HeldNote& n, JsonObject o) {
   o["exp"] = n.expires;
   o["x"] = n.text;
   if (!n.stop.empty()) o["stop"] = n.stop;
+  if (n.outside) o["o"] = true;
   o["s"] = static_cast<int>(n.state);
 }
 
@@ -264,6 +263,7 @@ bool noteFromJson(JsonObjectConst o, HeldNote& n) {
   n.expires = o["exp"] | static_cast<uint64_t>(0);
   n.text = o["x"].as<const char*>();
   n.stop = o["stop"] | "";
+  n.outside = o["o"] | false;
   const int s = o["s"] | 1;
   n.state = s == 2 ? HeldState::Sent : HeldState::Ready;   // a Pending note's fire is gone
   return !n.id.empty();
@@ -286,8 +286,8 @@ Status HeldStore::load() {
     HeldNote n;
     if (noteFromJson(o, n) && notes_.size() < kHeldNotesMax) notes_.push_back(n);
   }
-  for (JsonVariantConst k : d["keys"].as<JsonArrayConst>())
-    if (k.is<const char*>()) keys_.push_back(std::strtoull(k.as<const char*>(), nullptr, 16));
+  for (JsonObjectConst k : d["keys"].as<JsonArrayConst>())
+    if (k["k"].is<const char*>()) keys_.push_back(Delivered{std::strtoull(k["k"].as<const char*>(), nullptr, 16), k["t"] | (uint64_t)0});
   return Status::success();
 }
 
@@ -298,7 +298,11 @@ Status HeldStore::save() {
   JsonArray notes = d["notes"].to<JsonArray>();
   for (const HeldNote& n : notes_) noteToJson(n, notes.add<JsonObject>());
   JsonArray keys = d["keys"].to<JsonArray>();
-  for (uint64_t k : keys_) keys.add(hex64(k));
+  for (const Delivered& k : keys_) {
+    JsonObject o = keys.add<JsonObject>();
+    o["k"] = hex64(k.key);
+    o["t"] = k.at;
+  }
   std::string out;
   serializeJson(d, out);
   return file_.save(out) ? Status::success() : Status::fail(Err::Io, "plain::HeldStore::save");
@@ -322,13 +326,28 @@ Status HeldStore::remove(const std::string& id) {
   return notes_.size() == before ? Status::fail(Err::NotFound, "plain::HeldStore::remove") : save();
 }
 
-Status HeldStore::delivered(uint64_t key) {
-  keys_.push_back(key);
+Status HeldStore::done(const std::string& id, uint64_t key, uint64_t at) {
+  notes_.erase(std::remove_if(notes_.begin(), notes_.end(), [&](const HeldNote& n) { return n.id == id; }),
+               notes_.end());
+  keys_.push_back(Delivered{key, at});
   while (keys_.size() > kDeliveredKeysMax) keys_.erase(keys_.begin());
   return save();
 }
 
-bool HeldStore::wasDelivered(uint64_t key) const { return std::find(keys_.begin(), keys_.end(), key) != keys_.end(); }
+bool HeldStore::wasDelivered(const HeldNote& n) const {
+  const uint64_t k = n.key();
+  return std::any_of(keys_.begin(), keys_.end(), [&](const Delivered& d) { return d.key == k && d.at >= n.at; });
+}
+
+bool HeldStore::dropExpired(uint64_t now) {
+  const size_t before = notes_.size();
+  notes_.erase(std::remove_if(notes_.begin(), notes_.end(),
+                              [&](const HeldNote& n) { return n.state != HeldState::Sent && n.expires <= now; }),
+               notes_.end());
+  if (notes_.size() == before) return false;
+  (void)save();
+  return true;
+}
 
 // ---- the owner's transcript -------------------------------------------------------------
 namespace {
@@ -371,7 +390,8 @@ Status appendOwnerNote(PlainEngine& owner, const std::string& note, uint64_t at)
   Status out = st;
   if (!st.ok() && st.err == Err::TooLarge) {   // the arena is full: the card keeps it, the next fill brings it
     tx::StoreState s2 = tx::StoreState::NotStored;
-    if (log->append(it, s2).ok() && s2 == tx::StoreState::Stored) out = Status::fail(Err::TooLarge, "plain::appendOwnerNote.arena");
+    const bool onCard = log->append(it, s2).ok() && s2 == tx::StoreState::Stored;
+    out = onCard ? Status::fail(Err::TooLarge, "plain::appendOwnerNote.arena") : Status::fail(Err::Io, "plain::appendOwnerNote");
   }
   if (st.ok() || out.err == Err::TooLarge) head->nextQ = it.q + 1;
   if (log->isOpen()) (void)log->writeHead(*head);
@@ -379,7 +399,7 @@ Status appendOwnerNote(PlainEngine& owner, const std::string& note, uint64_t at)
 }
 
 // ---- delivery of one note ---------------------------------------------------------------
-Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& id, int16_t tzMinutes,
+Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& id, uint64_t now, int16_t tzMinutes,
                    uint16_t dayStartMin) {
   const HeldNote* found = held.find(id);
   if (!found) return Status::fail(Err::NotFound, "plain::deliverHeld");
@@ -400,14 +420,14 @@ Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& i
     }
     DeliverOutcome o;
     (void)owner.deliver(in, o);
-    if (!o.sent && !o.statusSent) return Status::fail(Err::Io, "plain::deliverHeld.send");   // stays; tried again
+    // The text is the note: it must have gone (a stop line alone, when there is no text). Stays; tried again.
+    if (n.text.empty() ? !o.statusSent : !o.sent) return Status::fail(Err::Io, "plain::deliverHeld.send");
     n.state = HeldState::Sent;   // never sent twice: what is owed now is the append
     (void)held.put(n);
   }
   const Status st = owner.append(heldNoteText(n, tzMinutes, dayStartMin), n.at);
   if (!st.ok() && st.err != Err::TooLarge) return st;   // owed: the idle step appends it later
-  (void)held.delivered(n.key());
-  (void)held.remove(n.id);
+  (void)held.done(n.id, n.key(), now);
   return Status::success();
 }
 
@@ -419,6 +439,7 @@ namespace {
 Status freshStart(tx::TxLog& log, uint32_t& turn) {
   tx::HeadState h;
   Status st = log.open(h);
+  if (st.err == Err::Io) return Status::success();   // no card: the engine runs from RAM, nothing older to load
   if (!st.ok()) return st;
   const uint64_t last = std::max(h.nextQ, log.lastQ() + 1) - 1;
   turn = static_cast<uint32_t>(std::min<uint64_t>(last + 1, UINT32_MAX));
@@ -442,7 +463,6 @@ struct Fire {
   std::unique_ptr<PlainEngine> engine;
   HeldNote note;
   bool captured = false;
-  bool storedNote = false;
 
   std::string noteId() const { return fire.def.id + "-" + std::to_string(fire.fireAt); }
 
@@ -450,14 +470,19 @@ struct Fire {
     DispatchDecision d;
     if (!c.call || !c.turn) return d;
     const ToolCall& tc = c.target ? *c.target : *c.call;
-    if (!listedName(allowed, tc.name) && !(tc.name == orch::kMoreTool && reg.has(orch::kMoreTool))) {
+    // A router call is refused whatever it names: its target is resolved against this fire's
+    // registry, but the router itself would run against the device's whole one.
+    if (!listedName(allowed, c.call->name) || !listedName(allowed, tc.name)) {
       d.verdict = DispatchVerdict::Refuse;
       d.text = reg.unknownToolText(tc.name, c.turn->who ? *c.turn->who : orch::Principal());
       return d;
     }
     JsonDocument a;
     if (deserializeJson(a, tc.argsJson) || !a.is<JsonObject>()) a.to<JsonObject>();
-    const std::string r = orch::unattendedRefusal(routineFacts(fire, c.turn->tainted), tc.name, a.as<JsonObjectConst>());
+    orch::UnattendedFacts facts = routineFacts(fire, c.turn->tainted);
+    // A backslash may separate folders on the card's file system: such a path is never a listed one.
+    if (orch::callPath(tc.name, a.as<JsonObjectConst>()).find('\\') != std::string::npos) facts.listed = nullptr;
+    const std::string r = orch::unattendedRefusal(facts, tc.name, a.as<JsonObjectConst>());
     if (!r.empty()) {
       d.verdict = DispatchVerdict::Refuse;
       d.text = r;
@@ -477,7 +502,7 @@ struct Fire {
       note.expires = fire.fireAt + (fire.def.holdS ? fire.def.holdS : kHeldNoteExpiryS);
       note.text = *in.text;
       note.state = HeldState::Pending;
-      storedNote = deps.held->put(note).ok();
+      (void)deps.held->put(note);   // durable before the turn closes; finish() puts it again, final
       out.sent = out.replyDone = true;
       out.parts = 1;
       out.bytes = static_cast<uint32_t>(in.text->size());
@@ -542,18 +567,22 @@ FireResult finish(Fire& f, const TurnOutcome& o, uint64_t now, FireReport& out) 
     f.note.expires = f.fire.fireAt + (f.fire.def.holdS ? f.fire.def.holdS : kHeldNoteExpiryS);
   }
   if (tripped) f.note.stop = guardTripSlug(o.trip);
+  f.note.outside = std::find(o.end.events.begin(), o.end.events.end(), "change:outside") != o.end.events.end();
   f.note.state = HeldState::Ready;
   out.noteId = f.note.id;
-  const bool held = f.deps.held->put(f.note).ok();
-  if (held && inQuiet(f.deps.quiet, now, f.deps.tzMinutes)) return FireResult::Held;
-  if (!held) hlog::logf("routines: %s: the outbox refused the note; it goes now", f.key.c_str());
-  if (!held) {   // never lost: sent at once, outside the outbox
+  (void)f.deps.held->dropExpired(now);   // room for this one before the outbox counts as full
+  const Status put = f.deps.held->put(f.note);
+  if (put.ok() && inQuiet(f.deps.quiet, now, f.deps.tzMinutes)) return FireResult::Held;
+  // The outbox refused it: never lost, it goes now, quiet hours or not. Storage refused the save:
+  // the note is in the outbox's memory and goes through it. The outbox is full: on its own.
+  if (!put.ok()) hlog::logf("routines: %s: the outbox refused the note; it goes now", f.key.c_str());
+  if (put.err == Err::TooLarge) {
     HeldStore once(HeldFile{[] { return std::string(); }, [](const std::string&) { return true; }});
     (void)once.put(f.note);
-    out.status = deliverHeld(once, f.deps.owner, f.note.id, f.deps.tzMinutes, f.deps.head.dayStartMin);
+    out.status = deliverHeld(once, f.deps.owner, f.note.id, now, f.deps.tzMinutes, f.deps.head.dayStartMin);
     return out.status.ok() ? FireResult::Sent : FireResult::Failed;
   }
-  out.status = deliverHeld(*f.deps.held, f.deps.owner, f.note.id, f.deps.tzMinutes, f.deps.head.dayStartMin);
+  out.status = deliverHeld(*f.deps.held, f.deps.owner, f.note.id, now, f.deps.tzMinutes, f.deps.head.dayStartMin);
   return out.status.ok() ? FireResult::Sent : FireResult::Held;
 }
 
@@ -603,17 +632,17 @@ namespace {
 // One unit of the outbox's work, oldest first: drop, finish an append, or send.
 bool outboxStep(const UnattendedDeps& d, const IdleCtx& c) {
   for (const HeldNote& n : d.held->notes()) {
-    if (n.state != HeldState::Sent && (n.expires <= c.now || d.held->wasDelivered(n.key()))) {
+    if (n.state != HeldState::Sent && (n.expires <= c.now || d.held->wasDelivered(n))) {
       hlog::logf("routines: held note %s dropped (%s)", n.id.c_str(), n.expires <= c.now ? "expired" : "delivered");
       (void)d.held->remove(n.id);
       return true;
     }
     const bool mine = n.chatId.empty() || n.chatId == d.owner.chatId;
     if (!mine) continue;
+    // Worked only when it went: a channel that keeps refusing never starves the later idle slots.
     if (n.state == HeldState::Sent || !inQuiet(d.quiet, c.now, c.tzMinutes)) {
       const std::string id = n.id;
-      (void)deliverHeld(*d.held, d.owner, id, c.tzMinutes, d.dayStartMin);
-      return true;
+      if (deliverHeld(*d.held, d.owner, id, c.now, c.tzMinutes, d.dayStartMin).ok()) return true;
     }
   }
   return false;

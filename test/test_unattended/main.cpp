@@ -42,6 +42,8 @@ plain::RoutineFire makeFire(std::mt19937& r, uint64_t at) {
 }
 
 bool contains(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
+void seedFiles(Files& w);
+void loopForever(Rig& rig, const std::string& lastText, uint32_t takesMs = 1000);
 
 // The owner's chat, filled with marked messages, replies and tool work.
 std::vector<std::string> fillOwner(Rig& rig, std::mt19937& r) {
@@ -184,6 +186,29 @@ void test_a_routine_runs_only_its_own_tools_and_outside_content_closes_schedule(
   TEST_ASSERT_TRUE_MESSAGE(rig.world.ran == want, "list_files and the schedule after the search never ran");
 }
 
+// The router `more` is never offered and never runs: through it a call would reach the device's
+// whole registry (a write to an unlisted path, a listing of every tool).
+void test_more_never_reaches_past_the_routine() {
+  Rig rig;
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  seedFiles(rig.world);
+  std::mt19937 r(37);
+  plain::RoutineFire f = makeFire(r, rig.epoch);
+  f.def.tools = {"read_file", "more", "delete_file", "write_file"};
+  f.def.paths = {"out/"};
+  rig.routineModel.push(sp::call("more", "{\"name\":\"write_file\",\"args\":{\"path\":\"secret.md\",\"content\":\"W\"}}"));
+  rig.routineModel.push(sp::call("more", "{\"name\":\"write_file\",\"args\":{\"path\":\"out/a.md\",\"content\":\"W\"}}"));
+  rig.routineModel.push(sp::call("more", "{}"));
+  rig.routineModel.push(sp::say("done"));
+  plain::FireReport rep;
+  TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
+  TEST_ASSERT_EQUAL_STRING("S", rig.world.files["secret.md"].c_str());
+  TEST_ASSERT_EQUAL(0, (int)rig.world.files.count("out/a.md"));
+  TEST_ASSERT_TRUE(rig.world.ran.empty());
+  for (const auto& req : rig.routineModel.requests())
+    TEST_ASSERT_TRUE(std::find(req.view.tools.begin(), req.view.tools.end(), "more") == req.view.tools.end());
+}
+
 // ---- 2. the whole append (ruling 81) ---------------------------------------------------------
 void test_a_routine_output_reaches_the_owners_transcript_whole() {
   const size_t lengths[] = {1, 17, 4000, 4001, 12288, 12289, 20000, 30000};
@@ -304,6 +329,56 @@ void test_an_already_delivered_note_is_not_sent_again() {
 
 // A cut after the send and before the append: the boot keeps the note as Sent, the idle step
 // appends it and never sends it again. A fire cut before it finished (Pending) is Ready at boot.
+// "Already delivered" is this note going out again, never a later day's note that reads the same,
+// and a stop-only note is its own.
+void test_the_same_text_on_another_day_is_still_sent() {
+  Rig rig;
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  std::mt19937 r(39);
+  plain::RoutineFire f = makeFire(r, rig.epoch);
+  rig.routineModel.push(sp::say("nothing new"));
+  plain::FireReport rep;
+  TEST_ASSERT_TRUE(rig.fire(f, rep).ok());   // noon: sent
+  TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
+  rig.epoch = kNoon + 11 * 3600;   // 23:00: held
+  f.fireAt = rig.epoch;
+  rig.routineModel.push(sp::say("nothing new"));
+  TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
+  TEST_ASSERT_EQUAL((int)plain::FireResult::Held, (int)rep.result);
+  rig.epoch = kNoon + 21 * 3600 + 60;
+  plain::IdleOutcome io;
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_EQUAL(2, (int)rig.sent.size());
+  // Two routines that say the same thing in one night are two notes.
+  plain::HeldNote a, b;
+  a.routine = "lp000001";
+  b.routine = "lp000002";
+  a.text = b.text = "same";
+  TEST_ASSERT_TRUE(a.key() != b.key());
+  b.routine = a.routine;
+  b.stop = "rounds";
+  TEST_ASSERT_TRUE(a.key() != b.key());
+}
+
+// The text is the note: a channel that took only the stop line leaves the note to send again.
+void test_a_note_whose_text_did_not_go_is_not_marked_sent() {
+  Rig rig;
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  loopForever(rig, "half done");
+  rig.refuseIf = [](const std::string& t) { return t == "half done"; };
+  std::mt19937 r(41);
+  plain::FireReport rep;
+  (void)rig.fire(makeFire(r, rig.epoch), rep);
+  TEST_ASSERT_EQUAL(1, (int)rig.held->notes().size());
+  TEST_ASSERT_EQUAL((int)plain::HeldState::Ready, (int)rig.held->notes()[0].state);
+  TEST_ASSERT_TRUE(rig.ownerNotes().empty());
+  rig.refuseIf = nullptr;
+  plain::IdleOutcome io;
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_TRUE(rig.held->notes().empty());
+  TEST_ASSERT_EQUAL(1, (int)rig.ownerNotes().size());
+}
+
 void test_the_outbox_survives_a_restart_and_never_sends_twice() {
   Rig rig;
   rig.epoch = kNoon + 21 * 3600 + 60;
@@ -345,11 +420,51 @@ void test_a_refused_send_keeps_the_note() {
   TEST_ASSERT_EQUAL((int)plain::FireResult::Held, (int)rep.result);
   TEST_ASSERT_EQUAL(1, (int)rig.held->notes().size());
   TEST_ASSERT_TRUE(rig.ownerNotes().empty());
-  rig.refuseSends = false;
   plain::IdleOutcome io;
+  TEST_ASSERT_TRUE(rig.idle(io).ok());
+  TEST_ASSERT_FALSE_MESSAGE(io.worked, "a refused send is no work done: the later idle slots still run");
+  rig.refuseSends = false;
   TEST_ASSERT_TRUE(rig.idle(io).ok());
   TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
   TEST_ASSERT_EQUAL(1, (int)rig.ownerNotes().size());
+}
+
+// A full outbox never loses a note: the next one goes at once, quiet hours or not.
+void test_a_full_outbox_sends_rather_than_loses() {
+  Rig rig;
+  rig.epoch = kNoon + 11 * 3600;
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  std::mt19937 r(33);
+  plain::FireReport rep;
+  for (size_t i = 0; i <= plain::kHeldNotesMax; ++i) {
+    rig.routineModel.push(sp::say("night note " + std::to_string(i)));
+    plain::RoutineFire f = makeFire(r, rig.epoch + i);
+    TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
+    TEST_ASSERT_EQUAL((int)(i < plain::kHeldNotesMax ? plain::FireResult::Held : plain::FireResult::Sent), (int)rep.result);
+  }
+  TEST_ASSERT_EQUAL(1, (int)rig.sent.size());
+  TEST_ASSERT_EQUAL((int)plain::kHeldNotesMax, (int)rig.held->notes().size());
+}
+
+// A fire that read outside content says so on its note (for the rails, RB-RL).
+void test_a_note_after_outside_content_is_marked() {
+  Rig rig;
+  rig.epoch = kNoon + 11 * 3600;
+  TEST_ASSERT_TRUE(rig.boot().ok());
+  std::mt19937 r(35);
+  plain::RoutineFire f = makeFire(r, rig.epoch);
+  f.def.tools = {"web_search"};
+  f.grants = true;
+  rig.routineModel.push(sp::call("web_search", "{\"q\":\"news\"}"));
+  rig.routineModel.push(sp::say("the news"));
+  plain::FireReport rep;
+  TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
+  TEST_ASSERT_TRUE(rig.held->find(rep.noteId)->outside);
+  f.fireAt += 60;
+  f.def.tools = {"read_file"};
+  rig.routineModel.push(sp::say("no outside"));
+  TEST_ASSERT_TRUE(rig.fire(f, rep).ok());
+  TEST_ASSERT_FALSE(rig.held->find(rep.noteId)->outside);
 }
 
 void test_counter_outside_quiet_hours_the_note_goes_at_once() {
@@ -411,11 +526,11 @@ void test_silence_reaches_nobody() {
 // ---- 4. writes (property) -------------------------------------------------------------------
 const char* const kPaths[] = {"notes/a.md",        "notes/sub/b.md", "notesX/c.md",   "secret.md",
                               "notes/../secret.md", "/secret.md",     "NOTES/a.md",    "log.csv",
-                              "log.csv.bak",        "notes",          "notes/./a.md",  "x/../notes/a.md"};
+                              "log.csv.bak",        "notes",          "notes/./a.md",  "x/../notes/a.md", "notes/..\\secret.md"};
 const char* const kListed[] = {"notes/", "log.csv", "notes/a.md", "x/", "other/"};
 
 bool listedByDef(const std::string& path, const std::vector<std::string>& listed) {
-  if (path.empty() || contains("/" + path + "/", "/../")) return false;
+  if (path.empty() || contains("/" + path + "/", "/../") || contains(path, "\\")) return false;
   for (const std::string& l : listed) {
     if (l == path) return true;
     if (!l.empty() && l.back() == '/' && path.compare(0, l.size(), l) == 0 && path.size() > l.size()) return true;
@@ -446,7 +561,7 @@ void test_a_routine_cannot_write_outside_its_definition() {
     std::vector<sp::Call> calls;
     std::vector<std::string> aimed;
     for (int i = 0, n = 1 + (int)(r() % 6); i < n; ++i) {
-      const std::string p = kPaths[r() % 12];
+      const std::string p = kPaths[r() % 13];
       const char* tool = f.def.tools[r() % 4].c_str();
       aimed.push_back(p);
       calls.push_back(sp::Call{tool, "{\"path\":\"" + p + "\",\"content\":\"W\",\"text\":\"W\",\"old\":\"A\",\"new\":\"W\"}", ""});
@@ -467,7 +582,8 @@ void test_a_routine_cannot_write_outside_its_definition() {
         TEST_ASSERT_TRUE_MESSAGE(rig.world.files.count(kv.first), ("deleted outside the definition: " + kv.first).c_str());
     // A listed path is reached: the policy allows what the definition lists.
     for (size_t i = 0; i < aimed.size(); ++i)
-      if (listedByDef(aimed[i], f.def.paths) && calls[i].name == "write_file")
+      if (listedByDef(aimed[i], f.def.paths) && calls[i].name == "write_file" &&
+          std::count(aimed.begin(), aimed.end(), aimed[i]) == 1)   // no other call aimed at it
         TEST_ASSERT_EQUAL_STRING("W", rig.world.files[aimed[i]].c_str());
   }
 }
@@ -485,7 +601,7 @@ void test_counter_the_owners_turn_writes_the_same_file() {
 
 // ---- 5. limits (ruling 84 item 9) ----------------------------------------------------------
 // A routine that never stops calling tools.
-void loopForever(Rig& rig, const std::string& lastText, uint32_t takesMs = 1000) {
+void loopForever(Rig& rig, const std::string& lastText, uint32_t takesMs) {
   rig.routineModel.respondWith([lastText, takesMs](const sp::Recorded& req, size_t i) {
     sp::Step s = req.view.toolChoice == "none" ? sp::say(lastText)
                                                : sp::call("read_file", "{\"path\":\"p" + std::to_string(i) + ".md\"}");
@@ -546,7 +662,10 @@ void test_a_routine_that_reaches_its_spend_limit_ends_honestly() {
   plain::FireReport rep;
   TEST_ASSERT_TRUE(rig.fire(makeFire(r, rig.epoch), rep).ok());
   TEST_ASSERT_TRUE((int)rig.routineModel.requests().size() < plain::kRoutineRounds + 1);
-  TEST_ASSERT_TRUE(rep.outcome.end.microUsd <= plain::kRoutineMaxMicroUsd + 20000);
+  TEST_ASSERT_TRUE(rep.outcome.end.microUsd >= plain::kRoutineMaxMicroUsd);   // it stopped for spend
+  // A request costs 13,500 micro-USD here: the trip is seen at the round boundary after the cap is
+  // reached, then the one last round with no tools: at most two requests past it.
+  TEST_ASSERT_TRUE(rep.outcome.end.microUsd <= plain::kRoutineMaxMicroUsd + 2 * 13500);
   expectHonestStop(rig, rep, "spend", "spent enough");
 }
 
@@ -605,14 +724,19 @@ int main(int, char**) {
   RUN_TEST(test_counter_the_owners_engine_carries_his_transcript_and_every_tool);
   RUN_TEST(test_the_policy_row_cuts_the_definition_fail_closed);
   RUN_TEST(test_the_routine_key_is_its_own_and_never_a_chat);
+  RUN_TEST(test_more_never_reaches_past_the_routine);
   RUN_TEST(test_a_routine_runs_only_its_own_tools_and_outside_content_closes_schedule);
   RUN_TEST(test_a_routine_output_reaches_the_owners_transcript_whole);
   RUN_TEST(test_the_note_label_names_the_routine_with_the_year);
   RUN_TEST(test_a_quiet_hours_note_is_held_and_sent_as_stored_when_they_end);
   RUN_TEST(test_an_expired_note_is_dropped_unsent);
   RUN_TEST(test_an_already_delivered_note_is_not_sent_again);
+  RUN_TEST(test_the_same_text_on_another_day_is_still_sent);
+  RUN_TEST(test_a_note_whose_text_did_not_go_is_not_marked_sent);
   RUN_TEST(test_the_outbox_survives_a_restart_and_never_sends_twice);
   RUN_TEST(test_a_refused_send_keeps_the_note);
+  RUN_TEST(test_a_full_outbox_sends_rather_than_loses);
+  RUN_TEST(test_a_note_after_outside_content_is_marked);
   RUN_TEST(test_counter_outside_quiet_hours_the_note_goes_at_once);
   RUN_TEST(test_a_due_fire_runs_from_the_idle_step);
   RUN_TEST(test_silence_reaches_nobody);

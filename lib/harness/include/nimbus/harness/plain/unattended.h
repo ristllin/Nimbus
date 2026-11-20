@@ -103,8 +103,9 @@ nimbus::orch::UnattendedFacts routineFacts(const RoutineFire& f, bool outside = 
 // row lets a routine be offered at all, in the definition's order, each once.
 std::vector<std::string> routineTools(const RoutineFire& f);
 // The registry a fire's request is composed from: `base` with every tool that is not in
-// routineTools removed (`more` too, unless a listed tool is not always on). Handlers, classes,
-// gates, policies and the access rule are the base's. Copied per fire.
+// routineTools removed, and `more` always (a copy's router still reaches the base registry, so a
+// routine is offered only the always-on tools it names). Handlers, classes, gates, policies and
+// the access rule are the base's. Copied per fire.
 Status routineRegistry(const nimbus::orch::ToolRegistry& base, const RoutineFire& f, nimbus::orch::ToolRegistry& out);
 // The routine's own bounds as the engine takes them.
 TurnCeiling routineCeiling();
@@ -142,8 +143,9 @@ struct HeldNote {
   uint64_t expires = 0;     // epoch seconds; past it the note is dropped unsent
   std::string text;         // the routine's reply, exactly as the model wrote it
   std::string stop;         // the guard slug when the fire stopped at a limit ("" when it did not)
+  bool outside = false;     // the fire read outside content (its e item's change:outside): for the rails
   HeldState state = HeldState::Pending;
-  uint64_t key() const;     // fnv1a-64 of text: "already delivered"
+  uint64_t key() const;     // fnv1a-64 of routine, stop and text: "already delivered"
 };
 
 // Where the outbox lives (the binding's file, for example /mem/routines/held.json).
@@ -163,9 +165,12 @@ class HeldStore {
   // of them is this one (the caller reports it; the outbox never drops a note to make room).
   Status put(const HeldNote& n);
   Status remove(const std::string& id);
-  // Remember a delivered text's key (the newest kDeliveredKeysMax are kept).
-  Status delivered(uint64_t key);
-  bool wasDelivered(uint64_t key) const;
+  // A note went out at `at`: removed and its key remembered (the newest kDeliveredKeysMax), one save.
+  Status done(const std::string& id, uint64_t key, uint64_t at);
+  // Was the same note (routine, stop and text) delivered at or after it was made?
+  bool wasDelivered(const HeldNote& n) const;
+  // Drop the notes past their expiry that were never sent (true when one was dropped).
+  bool dropExpired(uint64_t now);
   const std::vector<HeldNote>& notes() const { return notes_; }
   const HeldNote* find(const std::string& id) const;
 
@@ -173,7 +178,10 @@ class HeldStore {
   Status save();
   HeldFile file_;
   std::vector<HeldNote> notes_;
-  std::vector<uint64_t> keys_;
+  struct Delivered {
+    uint64_t key = 0, at = 0;
+  };
+  std::vector<Delivered> keys_;
 };
 
 // How a note reaches the owner: his chat's delivery (deliverTurn over the channel, or the
@@ -240,7 +248,7 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
 // Send one Ready note now: its reply and, after a limit, the stop line (the status-line class
 // LimitReached), then the append. Sent marks it before the append; a note already Sent is only
 // appended. Removed from the outbox at the end and its key remembered.
-Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& id, int16_t tzMinutes,
+Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& id, uint64_t now, int16_t tzMinutes,
                    uint16_t dayStartMin);
 // What reaches the owner's transcript for a note: routineNoteText of its text, then on a new line
 // the stop line when it stopped at a limit.
