@@ -209,17 +209,17 @@ class Unit:
         return ""
 
     def recover(self) -> None:
-        """The guarded bus reset (tools/usb_reset.py: this board only, the forbidden one skipped by its serial; a
-        wedged board shows no serial), then a fresh console session. The board restarts: the caller re-arms."""
+        """The guarded bus reset (tools/usb_reset.py: every forbidden board is taken out by its serial; a wedged board
+        shows none), then a fresh console session. The board restarts: the caller re-arms."""
         import subprocess
 
         self.detach()
-        forbidden = os.environ.get("NIMBUS_FORBIDDEN_MAC", "28:84:85:42:18:FC")
+        # --all with --anonymous-ok: usb_reset.py takes every forbidden board out by its serial (tools/bench_guard.py
+        # holds the list; no MAC is named here), so what is left is this board, wedged and showing no serial.
         cmd = [
             os.environ.get("NIMBUS_PY", "python3"),
             os.path.join(REPO, "tools", "usb_reset.py"),
-            "--skip",
-            forbidden,
+            "--all",
             "--anonymous-ok",
         ]
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
