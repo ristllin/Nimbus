@@ -270,6 +270,40 @@ size_t Transcript::foldOldestFor(size_t want) {
   return net;
 }
 
+// How many of the newest round's results would end as a note alone (too little room left for a
+// part) when the room is `room`: a cut keeps its note inside its room, a note alone can pass it.
+size_t Transcript::notesAlone(int newest, size_t room) const {
+  size_t n = 0;
+  for (const auto& it : e_) {
+    if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;
+    if (it.text.size() <= room) room -= it.text.size();
+    else if (room > kNoteBytes + 256) room = 0;
+    else n++;
+  }
+  return n;
+}
+
+// One of the newest round's results cut to `room`, naming its tag; a result cut before is cut
+// again from what it showed and still names the whole result's size.
+void Transcript::cutToRoom(TranscriptItem& it, int newest, size_t room) {
+  std::string tag;
+  for (const auto& call : e_)
+    if (call.kind == TranscriptItem::Kind::ToolUse && call.id == it.id && call.round == newest)
+      tag = keepWhole(it.id + "#" + std::to_string(newest), call.name, it.text);
+  std::string shown = it.text;
+  size_t total = 0;
+  const size_t mark = shown.rfind(kCutHead);
+  if (!tag.empty() && mark != std::string::npos) {
+    const size_t of = shown.find(" of ", mark);
+    total = of == std::string::npos ? 0 : (size_t)std::strtoul(shown.c_str() + of + 4, nullptr, 10);
+    shown.resize(mark);
+  }
+  std::string next = clipToRoom(shown, room, tag, total);
+  if (next.size() >= it.text.size()) return;
+  replayBytes_ -= it.text.size() - next.size();
+  it.text = std::move(next);
+}
+
 size_t Transcript::clipNewestTo(size_t cap) {
   if (replayBytes_ <= cap) return 0;
   const int newest = newestRound();
@@ -277,45 +311,15 @@ size_t Transcript::clipNewestTo(size_t cap) {
   for (const auto& it : e_)
     if (it.kind == TranscriptItem::Kind::ToolResult && it.round == newest) newestResults += it.text.size();
   const size_t others = replayBytes_ - newestResults;
-  // A cut keeps its note inside the room it is given; a result left too little room for a part
-  // is replaced by a note alone, which can pass its room. Those notes are reserved first (about
-  // 180 B each), so the replay lands under `cap` and the refit needs no prompt rung for them.
-  const auto noteOnly = [&](size_t reserve) {
-    size_t r = cap > others + reserve ? cap - others - reserve : 0, n = 0;
-    for (const auto& it : e_) {
-      if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;
-      if (it.text.size() <= r) r -= it.text.size();
-      else if (r > kNoteBytes + 256) r = 0;
-      else n++;
-    }
-    return n;
-  };
-  const size_t notes = noteOnly(0);
-  const size_t reserve = noteOnly(notes * kNoteBytes) * kNoteBytes;
-  size_t room = cap > others + reserve ? cap - others - reserve : 0;
+  const auto roomFor = [&](size_t reserve) { return cap > others + reserve ? cap - others - reserve : 0; };
+  // The notes alone are reserved first (about 180 B each), so the replay lands under `cap` and
+  // the refit needs no prompt rung for them.
+  const size_t reserve = notesAlone(newest, roomFor(notesAlone(newest, roomFor(0)) * kNoteBytes)) * kNoteBytes;
+  size_t room = roomFor(reserve);
   const size_t before = replayBytes_;
   for (auto& it : e_) {
     if (it.kind != TranscriptItem::Kind::ToolResult || it.round != newest) continue;
-    if (it.text.size() > room) {
-      std::string tag;
-      for (const auto& call : e_)
-        if (call.kind == TranscriptItem::Kind::ToolUse && call.id == it.id && call.round == newest)
-          tag = keepWhole(it.id + "#" + std::to_string(newest), call.name, it.text);
-      // Cut before: cut again from what it showed, and name the whole result's size.
-      std::string shown = it.text;
-      size_t total = 0;
-      const size_t mark = shown.rfind(kCutHead);
-      if (!tag.empty() && mark != std::string::npos) {
-        const size_t of = shown.find(" of ", mark);
-        total = of == std::string::npos ? 0 : (size_t)std::strtoul(shown.c_str() + of + 4, nullptr, 10);
-        shown.resize(mark);
-      }
-      std::string next = clipToRoom(shown, room, tag, total);
-      if (next.size() < it.text.size()) {
-        replayBytes_ -= it.text.size() - next.size();
-        it.text = std::move(next);
-      }
-    }
+    if (it.text.size() > room) cutToRoom(it, newest, room);
     room -= std::min(room, it.text.size());
   }
   return before - replayBytes_;

@@ -668,6 +668,39 @@ void test_a_busy_day_over_the_floor_is_refit_and_named() {
 // newest round's results cut to a part); the prompt's context (recall, older days, today's
 // turns last) goes only in a refusal where the turn's bulk had nothing more to give. Counted
 // and printed (evidence/p2-busy-day-later-rounds.log).
+// Did a refit line name the turn's own bulk, or the prompt's context?
+bool namesBulk(const std::string& l) {
+  return l.find("the replayed tool rounds") != std::string::npos ||
+         l.find("the newest round's results") != std::string::npos;
+}
+bool namesContext(const std::string& l) {
+  return l.find("the prompt's context") != std::string::npos || l.find("the prompt and input") != std::string::npos;
+}
+
+// One turn's later-round refits: each that gave up context gave up the turn's bulk first (before
+// it in the same line, or in an earlier refusal of that round). Sets `over` and `context`.
+void checkLaterRounds(const std::string& what, const std::string& lastBody, bool& over, bool& context) {
+  const auto& lines = LogCapture::lines();
+  for (size_t k = 0; k < lines.size(); k++) {
+    const std::string& l = lines[k];
+    if (l.rfind("headloop: round ", 0) != 0 || l.find(" B over the ") == std::string::npos) continue;
+    if (l.rfind("headloop: round 0 ", 0) == 0) continue;
+    over = true;
+    if (!namesContext(l)) continue;
+    context = true;
+    if (namesBulk(l)) {
+      TEST_ASSERT_TRUE_MESSAGE(l.find("the prompt") > std::min(l.find("the replayed tool rounds"),
+                                                               l.find("the newest round's results")),
+                               (what + ": " + l).c_str());
+      continue;
+    }
+    const std::string round = l.substr(0, l.find(" body ")) + " ";
+    bool earlier = lastBody.find("[cut to fit this request") != std::string::npos;
+    for (size_t e = 0; e < k && !earlier; e++) earlier = lines[e].rfind(round, 0) == 0 && namesBulk(lines[e]);
+    TEST_ASSERT_TRUE_MESSAGE(earlier, (what + ": " + l).c_str());
+  }
+}
+
 void test_a_busy_day_later_round_gives_up_the_turns_bulk_first() {
   setRoutedBudgetLiftForTest(0);
   int runs = 0, laterOver = 0, inTurnOnly = 0, withContext = 0, todayCut = 0;
@@ -684,39 +717,13 @@ void test_a_busy_day_later_round_gives_up_the_turns_bulk_first() {
         for (const auto& sent : r.wire.http.seen)
           TEST_ASSERT_TRUE_MESSAGE(sent.body.size() <= kLegacyWireBodyBytes, what.c_str());
         TEST_ASSERT_FALSE_MESSAGE(LogCapture::contains("nothing left to fold"), what.c_str());
+        const std::string& last = r.wire.http.seen.back().body;
         bool over = false, context = false;
-        for (const auto& l : LogCapture::lines()) {
-          if (l.rfind("headloop: round ", 0) != 0 || l.find(" B over the ") == std::string::npos) continue;
-          if (l.rfind("headloop: round 0 ", 0) == 0) continue;
-          over = true;
-          const bool bulk = l.find("the replayed tool rounds") != std::string::npos ||
-                            l.find("the newest round's results") != std::string::npos;
-          const bool ctx = l.find("the prompt's context") != std::string::npos ||
-                           l.find("the prompt and input") != std::string::npos;
-          context = context || ctx;
-          if (ctx && bulk)
-            TEST_ASSERT_TRUE_MESSAGE(l.find("the prompt") > std::min(l.find("the replayed tool rounds"), l.find("the newest round's results")),
-                                     (what + ": " + l).c_str());
-          // A refusal that gave up context gave up the turn's bulk first, in that refusal or an
-          // earlier one of the same round.
-          if (ctx && !bulk) {
-            const std::string round = l.substr(0, l.find(" body "));
-            bool earlier = false;
-            for (const auto& e : LogCapture::lines()) {
-              if (&e == &l) break;
-              earlier = earlier || (e.rfind(round + " ", 0) == 0 && e.find("tool rounds") != std::string::npos) ||
-                        (e.rfind(round + " ", 0) == 0 && e.find("newest round's results") != std::string::npos);
-            }
-            TEST_ASSERT_TRUE_MESSAGE(earlier || r.wire.http.seen.back().body.find("[cut to fit this request") !=
-                                                    std::string::npos,
-                                     (what + ": " + l).c_str());
-          }
-        }
+        checkLaterRounds(what, last, over, context);
         if (!over) continue;
         laterOver++;
         (context ? withContext : inTurnOnly)++;
-        const bool cut = r.wire.http.seen.back().body.find("of today's earlier conversation message(s)") != std::string::npos;
-        todayCut += cut;
+        todayCut += last.find("of today's earlier conversation message(s)") != std::string::npos;
       }
   char line[256];
   std::snprintf(line, sizeof line,

@@ -123,6 +123,8 @@ class Transcript {
   std::function<std::string(const std::string&, const std::string&)> spill_;
   static constexpr size_t kNoteBytes = 180;   // a cut's or a withheld result's note, at most
   size_t seedBytes() const;
+  size_t notesAlone(int newest, size_t room) const;
+  void cutToRoom(TranscriptItem& it, int newest, size_t room);
   std::map<std::string, std::string> keptTags_;   // "<result id>#<round>" -> its results.get tag
   std::string keepWhole(const std::string& id, const std::string& name, const std::string& text);
   int newestRound() const;
