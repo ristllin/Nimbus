@@ -7093,5 +7093,182 @@
    "zai_usd": 0.9283,
    "note": "ruling 88 re-measure on the tip with the coverage clause and the line part pick; Sp, Sq, Spq are candidate wordings applied in the rig, not built"
   }
+ },
+ "records_rb_rec6_part3": {
+  "lane": "RB-REC6",
+  "generated": "2026-11-20",
+  "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
+  "evidence": "/Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/RB-REC6/evidence/part3/main",
+  "cells": {
+   "claude-haiku-5-5": {
+    "S": {
+     "episodes": 150,
+     "usd": 0.1105,
+     "total_accuracy": {
+      "k": 137,
+      "n": 150,
+      "rate": 0.9133,
+      "lower95": 0.8657
+     },
+     "total_verdicts": {
+      "full": 132,
+      "wrong": 12,
+      "partial_named": 5,
+      "partial_silent": 1
+     },
+     "total_partial_judged": 6,
+     "total_used_sum": 145,
+     "total_used_calc": 53,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "expenses": {
+       "k": 47,
+       "n": 50,
+       "rate": 0.94,
+       "lower95": 0.8522
+      },
+      "training": {
+       "k": 41,
+       "n": 50,
+       "rate": 0.82,
+       "lower95": 0.7069
+      }
+     }
+    }
+   },
+   "gpt-5.6-luna": {
+    "S": {
+     "episodes": 150,
+     "usd": 0.197,
+     "total_accuracy": {
+      "k": 132,
+      "n": 150,
+      "rate": 0.88,
+      "lower95": 0.8273
+     },
+     "total_verdicts": {
+      "full": 132,
+      "wrong": 16,
+      "partial_silent": 2
+     },
+     "total_partial_judged": 2,
+     "total_used_sum": 150,
+     "total_used_calc": 86,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 47,
+       "n": 50,
+       "rate": 0.94,
+       "lower95": 0.8522
+      },
+      "expenses": {
+       "k": 43,
+       "n": 50,
+       "rate": 0.86,
+       "lower95": 0.7531
+      },
+      "training": {
+       "k": 42,
+       "n": 50,
+       "rate": 0.84,
+       "lower95": 0.7298
+      }
+     }
+    }
+   },
+   "glm-5.3": {
+    "S": {
+     "episodes": 60,
+     "usd": 0.692,
+     "total_accuracy": {
+      "k": 52,
+      "n": 60,
+      "rate": 0.8667,
+      "lower95": 0.7723
+     },
+     "total_verdicts": {
+      "full": 52,
+      "wrong": 8
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 60,
+     "total_used_calc": 20,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 17,
+       "n": 20,
+       "rate": 0.85,
+       "lower95": 0.6563
+      },
+      "expenses": {
+       "k": 18,
+       "n": 20,
+       "rate": 0.9,
+       "lower95": 0.7174
+      },
+      "training": {
+       "k": 17,
+       "n": 20,
+       "rate": 0.85,
+       "lower95": 0.6563
+      }
+     }
+    }
+   },
+   "claude-sonnet-5-5": {
+    "S": {
+     "episodes": 60,
+     "usd": 0.8444,
+     "total_accuracy": {
+      "k": 60,
+      "n": 60,
+      "rate": 1.0,
+      "lower95": 0.9513
+     },
+     "total_verdicts": {
+      "full": 60
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 60,
+     "total_used_calc": 31,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      }
+     }
+    }
+   }
+  },
+  "usd": {
+   "openai_usd": 0.197,
+   "zai_usd": 0.692,
+   "anthropic_heads_usd": 0.9549,
+   "anthropic_judge_usd": 0.019,
+   "note": "ruling 92: the never-partial sum, measured on the lane tip cff6ce596 and reverted (adoption rule failed)"
+  }
  }
 }
