@@ -562,17 +562,25 @@ static std::string withReplyField(const std::string& args) {
 }
 
 // RB-Q4b: on a person's turn (proseIsReply) a tool round answered in text that finished normally IS the reply, as
-// on the Anthropic wire (RB-Q4): requests = tool rounds + 1. Text that is only white space, a round cut at the
-// length limit (readChatRound already failed it) and every round of an unattended turn stay a stall.
+// on the Anthropic wire (RB-Q4): requests = tool rounds + 1. On the forced final round it is the reply on any turn. Text that is only white space, a round cut at the
+// length limit (readChatRound already failed it), a round that only thought, and every round of an unattended turn
+// stay a stall.
 static void misProseIsTheReply(const JsonDocument& resp, bool allowTools, bool proseIsReply,
                                nimbus::orch::HeadStep& out) {
-  if (!allowTools || !proseIsReply || out.finished || !out.toolCalls.empty()) return;
+  // The forced final round takes a text answer on every turn, as the Anthropic wire does: there is no later round
+  // to ask, and refusing it ended the turn with "tool budget reached without a final answer".
+  if ((allowTools && !proseIsReply) || out.finished || !out.toolCalls.empty()) return;
   if (out.text.find_first_not_of(" \t\r\n") == std::string::npos) return;
   if (std::strcmp(resp["choices"][0]["finish_reason"] | "", "stop") != 0) return;
+  // A text that is one whole turn object runs as that turn, as on the Z.ai wire (zaiFinishFromText), so the
+  // final-answer checks see it as one; anything else is prose and only ever the reply.
+  bool whole = false;
+  const std::string obj = nimbus::orch::leadingJsonObject(out.text, &whole);
   out.finished = true;
-  out.prose = true;
-  out.finalTurn = out.text;
-  hlog::logf("orchTurn(mistral-loop): round answered in prose (%u B), the reply", (unsigned)out.text.size());
+  out.prose = !whole;
+  out.finalTurn = whole ? obj : out.text;
+  hlog::logf("orchTurn(mistral-loop): round answered in %s (%u B), the reply", whole ? "a turn object" : "prose",
+             (unsigned)out.text.size());
 }
 
 // A long answer in the round's text, with only a pointer or a digest of it in orch_turn:

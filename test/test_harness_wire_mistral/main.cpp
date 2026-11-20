@@ -500,6 +500,99 @@ static void test_rbq4b_prose_is_the_reply_requests_equal_tool_rounds_plus_one() 
   }
 }
 
+// RB-Q4b review: the shapes beside a text-only round, flag on. Text beside a tool call is still a tool round; a
+// reasoning model's chunk list gives only its text (thinking never reaches the reply) and a round that only thought
+// is a stall; a text that is one whole turn object runs as that turn (not as prose), as on the Z.ai wire; a prose
+// answer the final check sends back gets its correction round asked with "auto" too.
+static void test_rbq4b_the_shapes_beside_a_text_round() {
+  {   // text beside a tool call
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200,
+        "{\"choices\":[{\"message\":{\"content\":\"Let me look.\",\"tool_calls\":[{\"id\":\"tcabc0001\",\"function\":"
+        "{\"name\":\"memory_search\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}"});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseStopBody("Found it.")});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL(1, (int)rig.dispatched.size());
+    TEST_ASSERT_EQUAL_STRING("Found it.", out.c_str());
+  }
+  {   // thinking then text: the text only; thinking alone: a stall
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200,
+        "{\"choices\":[{\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":"
+        "\"private plan\"}]}]},\"finish_reason\":\"stop\"}]}"});
+    d.http.script.push_back({"", "/v1/chat/completions", 200,
+        "{\"choices\":[{\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":"
+        "\"private plan\"}]},{\"type\":\"text\",\"text\":\"The answer.\"}]},\"finish_reason\":\"stop\"}]}"});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());   // the thinking-only round stalled
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"function\""));   // the forced final round
+    TEST_ASSERT_EQUAL_STRING("The answer.", out.c_str());   // its text answer is the reply, thinking left out
+  }
+  {   // a whole turn object as text runs as a turn
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200,
+        "{\"choices\":[{\"message\":{\"content\":\"{\\\"reply\\\":\\\"hi\\\",\\\"ask\\\":\\\"which day?\\\"}\"},"
+        "\"finish_reason\":\"stop\"}]}"});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    int proseChecked = 0;
+    rig.ht.cfg.validateProseFinal = [&proseChecked](const std::string&) { ++proseChecked; return std::string(); };
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL_STRING("{\"reply\":\"hi\",\"ask\":\"which day?\"}", out.c_str());
+    TEST_ASSERT_EQUAL(0, proseChecked);   // a turn, so the prose check does not read it as reply text
+  }
+  {   // the correction round after a prose answer is asked with "auto"
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseStopBody("first draft")});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseStopBody("second answer")});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.proseIsReply = true;
+    rig.ht.cfg.validateProseFinal = [](const std::string& p) {
+      return p == "first draft" ? std::string("[CHECK] not yet") : std::string();
+    };
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_EQUAL(2, (int)d.http.seen.size());
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "[CHECK] not yet"));
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":\"auto\""));
+    TEST_ASSERT_EQUAL_STRING("second answer", out.c_str());
+  }
+}
+
+// The forced final round takes a text answer on every turn (flag off too), as the Anthropic wire does: there is no
+// later round, and refusing it ended the turn with "tool budget reached without a final answer".
+static void test_rbq4b_forced_final_text_is_the_answer_on_any_turn() {
+  for (int on = 0; on < 2; ++on) {
+    FakeProviderDeps d;
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatToolCallBody("memory_search", "tcforced01")});
+    d.http.script.push_back({"", "/v1/chat/completions", 200, chatProseStopBody("What I found.")});
+    auto pd = d.contract();
+    FakeProviderDeps::ToolRig rig;
+    d.fillTools(rig);
+    rig.ht.cfg.maxRounds = 1;   // the second round is the forced final
+    rig.ht.cfg.proseIsReply = on != 0;
+    std::string conv, out, err;
+    TEST_ASSERT_TRUE_MESSAGE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr), err.c_str());
+    TEST_ASSERT_TRUE(bodyHas(d, 1, "\"tool_choice\":{\"type\":\"function\""));
+    TEST_ASSERT_EQUAL_STRING("What I found.", out.c_str());
+  }
+}
+
 // Counter-tests. Flag off (an unattended turn, the dream): every request byte-identical to before ("any", the
 // stall, the forced final naming orch_turn). Flag on: a round that says nothing (no text, white space) is still a
 // stall, and a round cut at the length limit is still a cut, never a reply.
@@ -559,6 +652,7 @@ static void test_rbq4b_flag_off_and_the_rounds_that_are_no_answer() {
     std::string conv, out, err;
     TEST_ASSERT_FALSE(providers::orchTurnMistral(pd, conv, "S", "U", out, err, &rig.ht, nullptr));
     TEST_ASSERT_NOT_EQUAL(0, (int)err.size());
+    TEST_ASSERT_TRUE(out.find("Here is my ans") == std::string::npos || out.find("cut") != std::string::npos);
   }
 }
 
@@ -2200,6 +2294,8 @@ int main(int, char**) {
   RUN_TEST(test_loop_stall_forces_named_final);
   RUN_TEST(test_rbq4b_prose_is_the_reply_requests_equal_tool_rounds_plus_one);
   RUN_TEST(test_rbq4b_flag_off_and_the_rounds_that_are_no_answer);
+  RUN_TEST(test_rbq4b_the_shapes_beside_a_text_round);
+  RUN_TEST(test_rbq4b_forced_final_text_is_the_answer_on_any_turn);
   RUN_TEST(test_loop_orch_turn_schema_without_descriptions);
   RUN_TEST(test_loop_long_arguments_fold);
   RUN_TEST(test_loop_chunk_list_prose_reads);
