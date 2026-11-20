@@ -143,15 +143,14 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   full.low = std::max(roundDown(bytesAt(w, b.tokens.keep) - std::min(around, bytesAt(w, b.tokens.keep)), 1000),
                       (uint32_t)c.historyKeepBytes);
   b.marks = full;
+  // Where a released floor lifted H above the token due (a floor row's 49,152 B trigger), the token due
+  // rises with it, never past the aim, so the two triggers agree (ruling 91, table/F8).
+  b.tokens.due = std::max(b.tokens.due, std::min(b.tokens.aim - 1, tokensIn(w, full.high + around)));
   b.releasedFold = foldMark;
   b.releasedKeep = (uint32_t)c.historyKeepBytes;
   ProfileMarks chosen;
   if (profileMarks(b.profile, chosen).ok())   // an owner's smaller profile lowers the marks only
     b.marks = {std::min(chosen.high, full.high), std::min(chosen.low, full.low)};
-  b.bulkWholeCap = std::max(std::min(kBulkWholeMax, b.bodyCap / 8), (uint32_t)c.toolResultBytes);
-  b.warmBulk = b.floorHead ? kWarmBulkBytesFloor : kWarmBulkBytes;
-  b.digestBlock = std::max(blockCapFor(b.profile) + kRecentFilesMaxBytes,
-                           b.profile == Profile::Full ? (uint32_t)c.chatSummaryBytes + kRecentFilesMaxBytes : 0u);
   b.messageCap = std::max(kInlineMessageCap, (uint32_t)c.historyMessageCap);
   return b;
 }

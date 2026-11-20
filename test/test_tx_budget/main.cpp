@@ -22,6 +22,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "../support/recorded_models.h"
@@ -106,9 +107,8 @@ std::string shortOf(const tx::HeadBudget& b, const V512& v) {
   const F fs[] = {{"body", b.bodyCap, v.body},
                   {"due mark", b.marks.high, foldMark(v)},
                   {"keep", b.marks.low, v.keep},
-                  {"digest block", b.digestBlock, v.summary},
-                  {"message cap", b.messageCap, v.messageCap},
-                  {"bulk whole", b.bulkWholeCap, v.toolResult}};
+                  {"digest block", tx::blockCapFor(b.profile), v.summary},
+                  {"message cap", b.messageCap, v.messageCap}};
   for (const F& f : fs)
     if (f.have < f.was) return std::string(f.name) + " " + std::to_string(f.have) + " < " + std::to_string(f.was);
   return "";
@@ -161,9 +161,9 @@ void test_the_row_checker_catches_one_byte_short_in_every_field() {
   v.body = 250000, v.summary = 6144, v.messageCap = 12288, v.histMax = 118080, v.soft = 94464, v.keep = 59040,
   v.trigger = 94464, v.toolResult = 8192;
   tx::HeadBudget b;
-  b.bodyCap = 250000, b.marks = {94464, 59040}, b.digestBlock = 6144, b.messageCap = 12288, b.bulkWholeCap = 8192;
+  b.bodyCap = 250000, b.marks = {94464, 59040}, b.messageCap = 12288;
   TEST_ASSERT_EQUAL_STRING("", shortOf(b, v).c_str());
-  uint32_t* fields[] = {&b.bodyCap, &b.marks.high, &b.marks.low, &b.digestBlock, &b.messageCap, &b.bulkWholeCap};
+  uint32_t* fields[] = {&b.bodyCap, &b.marks.high, &b.marks.low, &b.messageCap};
   for (uint32_t* f : fields) {
     *f -= 1;
     TEST_ASSERT_FALSE(shortOf(b, v).empty());
@@ -223,7 +223,7 @@ void test_the_aim_is_tokens_due_before_it_and_keeps_70_percent() {
     const std::string what = v.link + ":" + v.host + "/" + v.model;
     TEST_ASSERT_TRUE_MESSAGE(b.tokens.aim <= tx::kAimClampTokens, what.c_str());
     TEST_ASSERT_TRUE_MESSAGE(b.tokens.aim >= r.targetTokens, what.c_str());   // never lower than v5.1.2 aimed
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(b.tokens.aim - tx::nextRequestReserve(b.tokens.aim), b.tokens.due, what.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(b.tokens.due >= b.tokens.aim - tx::nextRequestReserve(b.tokens.aim), what.c_str());
     TEST_ASSERT_TRUE_MESSAGE(b.tokens.keep < b.tokens.due && b.tokens.due < b.tokens.aim, what.c_str());
     // No mark is past what the body carries (an underflow would show here).
     TEST_ASSERT_TRUE_MESSAGE(b.marks.high <= b.bodyCap, what.c_str());
@@ -231,6 +231,11 @@ void test_the_aim_is_tokens_due_before_it_and_keeps_70_percent() {
     // The body carries the aim on the head's wire: the request at the aim fits.
     TEST_ASSERT_TRUE_MESSAGE(tx::bodyBytesFor(b, b.tokens.aim) <= b.bodyCap, what.c_str());
     TEST_ASSERT_TRUE_MESSAGE(b.marks.low < b.marks.high, what.c_str());
+    // The two triggers agree (ruling 91, table/F8): the token due mark is a request that carries at
+    // least H of stored lines beside the fixed part and the digest block, unless that passes the aim.
+    const uint32_t around = tx::kFixedOverheadCeiling + tx::kFullDigestAndFilesBytes;
+    const uint32_t atDue = tx::bodyBytesFor(b, b.tokens.due), atAim = tx::bodyBytesFor(b, b.tokens.aim);
+    TEST_ASSERT_TRUE_MESSAGE(atDue + 4 >= std::min(b.marks.high + around, atAim), (what + " token due under H").c_str());
   }
 }
 
@@ -241,7 +246,6 @@ void test_the_named_head_classes() {
   TEST_ASSERT_EQUAL_UINT32(70000, b.tokens.keep);
   TEST_ASSERT_EQUAL((int)tx::AimBound::Clamp, (int)b.bound);
   TEST_ASSERT_FALSE(b.floorHead);
-  TEST_ASSERT_EQUAL_UINT32(tx::kWarmBulkBytes, b.warmBulk);
   b = direct("anthropic", "claude-haiku-5-5");   // its price tier is 100,000 tokens
   TEST_ASSERT_EQUAL_UINT32(90000, b.tokens.aim);
   TEST_ASSERT_EQUAL((int)tx::AimBound::Tier, (int)b.bound);
@@ -255,7 +259,6 @@ void test_the_named_head_classes() {
   b = direct("cumulo", "gpt-5.6", true);
   TEST_ASSERT_TRUE(b.floorHead);
   TEST_ASSERT_EQUAL_UINT32(tx::kFloorHeadBodyCap, b.bodyCap);
-  TEST_ASSERT_EQUAL_UINT32(tx::kWarmBulkBytesFloor, b.warmBulk);
   b = direct("custom", "llama-3-70b");
   TEST_ASSERT_TRUE(b.floorHead);
   // A held (unqualified) head gets its full budget: qualification never sizes the window.
@@ -480,6 +483,33 @@ void test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth() {
                            ("the arena does not hold the largest head at full: needs " + std::to_string(most)).c_str());
 }
 
+// ---- 5d. no dead field (ruling 91, T4-ADV-06) -------------------------------------------------
+// A HeadBudget field is one the engine reads or none at all: digest block, warm bulk and bulk-whole
+// caps are the engine's own (blockCapFor, kWarmBulkBytes/kWarmBulkBytesFloor by floorHead,
+// kBulkWholeMax), tested against every released row above. messageCap stays: RB-H81 reads it.
+template <typename T, typename = void>
+struct HasDigestBlock : std::false_type {};
+template <typename T>
+struct HasDigestBlock<T, std::void_t<decltype(&T::digestBlock)>> : std::true_type {};
+template <typename T, typename = void>
+struct HasWarmBulk : std::false_type {};
+template <typename T>
+struct HasWarmBulk<T, std::void_t<decltype(&T::warmBulk)>> : std::true_type {};
+template <typename T, typename = void>
+struct HasBulkWholeCap : std::false_type {};
+template <typename T>
+struct HasBulkWholeCap<T, std::void_t<decltype(&T::bulkWholeCap)>> : std::true_type {};
+struct AllThree {
+  uint32_t digestBlock, warmBulk, bulkWholeCap;
+};
+
+void test_no_head_budget_field_is_dead() {
+  TEST_ASSERT_TRUE(HasDigestBlock<AllThree>::value && HasWarmBulk<AllThree>::value && HasBulkWholeCap<AllThree>::value);
+  TEST_ASSERT_FALSE(HasDigestBlock<tx::HeadBudget>::value);
+  TEST_ASSERT_FALSE(HasWarmBulk<tx::HeadBudget>::value);
+  TEST_ASSERT_FALSE(HasBulkWholeCap<tx::HeadBudget>::value);
+}
+
 // ---- 5c. no comment says qualification sizes the window (ruling 91, blockers/F12) -------------
 
 // Lines of `path` that tie qualification to the budget (a "qualified" line that names budgetFor).
@@ -599,6 +629,7 @@ int main() {
   RUN_TEST(test_the_contradiction_checker_is_15_percent_either_side);
   RUN_TEST(test_no_measured_figure_contradicts_its_row);
   RUN_TEST(test_every_block_is_in_the_sum);
+  RUN_TEST(test_no_head_budget_field_is_dead);
   RUN_TEST(test_no_comment_says_qualification_sizes_the_window);
   RUN_TEST(test_the_generated_table_is_this_codes_output);
   return UNITY_END();
