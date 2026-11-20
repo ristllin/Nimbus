@@ -346,6 +346,84 @@ void test_the_digest_block_at_full_holds_every_released_summary() {
   TEST_ASSERT_EQUAL_UINT32(tx::blockCapFor(tx::Profile::Full), tx::blockCapFor((tx::Profile)9));
 }
 
+// ---- 5a. engine 2's own rows never shrink (ruling 91, table/F7) ---------------------------------
+// test/test_tx_budget/rows_engine2.json holds every head's full budget as lane RB-T4b left it (the
+// released rows on both links, routed lift off, and the head classes of the table, lifted rows
+// included). A change may raise a figure; a cut of any of them fails here, not only a cut under v5.1.2.
+// TX_BUDGET_ROWS_UPDATE=1 rewrites the fixture: only for a raise, read in review.
+constexpr const char* kRowsFixture = "test/test_tx_budget/rows_engine2.json";
+
+struct Row2 {
+  std::string key;
+  tx::HeadKey head;
+  BudgetLink link;
+  bool lift;
+};
+std::vector<Row2> rows2() {
+  std::vector<Row2> out;
+  for (const V512& v : v512())
+    out.push_back({v.link + ":" + v.host + "/" + v.model, keyOf(v), linkOf(v), false});
+  for (const budgettable::Head& h : budgettable::heads())
+    out.push_back({std::string("class:") + h.name, tx::HeadKey{h.host, h.model, h.routed}, h.link, h.lift});
+  return out;
+}
+const char* const kRowFields[] = {"aim", "due", "keep", "body", "high", "low"};
+std::vector<uint32_t> fieldsOf(const tx::HeadBudget& b) {
+  return {b.tokens.aim, b.tokens.due, b.tokens.keep, b.bodyCap, b.marks.high, b.marks.low};
+}
+// Empty when `now` holds every field of `was`; else the first field that is cut.
+std::string cutOf(const std::vector<uint32_t>& now, const std::vector<uint32_t>& was) {
+  for (size_t i = 0; i < was.size(); ++i)
+    if (now[i] < was[i]) return std::string(kRowFields[i]) + " " + std::to_string(now[i]) + " < " + std::to_string(was[i]);
+  return "";
+}
+
+void test_the_row_cut_checker_catches_one_unit_in_every_field() {
+  const std::vector<uint32_t> was = {100000, 96000, 70000, 292000, 254000, 176000};
+  TEST_ASSERT_EQUAL_STRING("", cutOf(was, was).c_str());
+  for (size_t i = 0; i < was.size(); ++i) {
+    std::vector<uint32_t> now = was;
+    now[i] -= 1;
+    TEST_ASSERT_FALSE_MESSAGE(cutOf(now, was).empty(), kRowFields[i]);
+    now[i] += 2;
+    TEST_ASSERT_TRUE(cutOf(now, was).empty());   // a raise passes
+  }
+}
+
+void test_no_engine2_row_is_cut() {
+  if (std::getenv("TX_BUDGET_ROWS_UPDATE")) {
+    JsonDocument out;
+    out["about"] = "Engine 2's full budget per head (tx::budgetFor), lane RB-T4b: the floor test_tx_budget holds every "
+                   "figure to (ruling 91, table/F7). Fields: aim, due, keep (tokens), body, high, low (bytes).";
+    JsonObject rows = out["rows"].to<JsonObject>();
+    for (const Row2& r : rows2()) {
+      tx::HeadBudget b;
+      TEST_ASSERT_TRUE(tx::budgetFor(r.head, tx::Profile::Full, r.link, r.lift, b).ok());
+      JsonArray a = rows[r.key].to<JsonArray>();
+      for (uint32_t f : fieldsOf(b)) a.add(f);
+    }
+    std::string text;
+    serializeJsonPretty(out, text);
+    std::ofstream(kRowsFixture) << text << "\n";
+  }
+  JsonDocument doc;
+  TEST_ASSERT_FALSE(deserializeJson(doc, recorded::readFixture(kRowsFixture)));
+  JsonObjectConst rows = doc["rows"];
+  size_t checked = 0;
+  for (const Row2& r : rows2()) {
+    JsonArrayConst was = rows[r.key];
+    TEST_ASSERT_FALSE_MESSAGE(was.isNull(), ("no fixture row for " + r.key).c_str());
+    std::vector<uint32_t> w;
+    for (JsonVariantConst f : was) w.push_back(f.as<uint32_t>());
+    tx::HeadBudget b;
+    TEST_ASSERT_TRUE(tx::budgetFor(r.head, tx::Profile::Full, r.link, r.lift, b).ok());
+    const std::string cut = cutOf(fieldsOf(b), w);
+    TEST_ASSERT_TRUE_MESSAGE(cut.empty(), (r.key + ": " + cut).c_str());
+    ++checked;
+  }
+  TEST_ASSERT_TRUE(checked >= 248);
+}
+
 // ---- 5b. the arena is sized to full (ruling 83 item 8; ruling 91, T4-ADV-02) ----------------------
 
 // The engine drops the oldest closed turns at turn open once free arena falls under this reserve
@@ -624,6 +702,8 @@ int main() {
   RUN_TEST(test_both_routed_rows_behind_the_one_switch);
   RUN_TEST(test_an_owner_choice_lowers_only_the_marks_and_never_raises_them);
   RUN_TEST(test_the_digest_block_at_full_holds_every_released_summary);
+  RUN_TEST(test_the_row_cut_checker_catches_one_unit_in_every_field);
+  RUN_TEST(test_no_engine2_row_is_cut);
   RUN_TEST(test_the_arena_model_predicts_the_engines_drop);
   RUN_TEST(test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth);
   RUN_TEST(test_the_contradiction_checker_is_15_percent_either_side);
