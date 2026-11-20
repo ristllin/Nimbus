@@ -979,7 +979,10 @@ what a request renders is at L (`planToolFold`; one x item, why `tools`, lists t
 keeps its view pointer). The arena's room is the one real limit besides the request: while it
 has under 128 KB (or a quarter of it) free, a compaction is due and a slice may leave under L and
 under the text keep, until it has freed twice that room, with one log line naming the text kept;
-so the engine never has to drop whole turns from RAM with no digest.
+so the engine never has to drop whole turns from RAM with no digest. Turns that did leave RAM (a
+full arena's drop while compaction could not run, the restart fill's give-up) are sliced first:
+read back from the card (at most 96 KB a step) and summarized like a manual run, one day and one
+input at a time; only when the card cannot be read does the slice merely name them.
 
 The summarizer gets owner and assistant text verbatim with the local time and one
 bracketed line per tool result that names the tool and nothing else (`[file change]`,

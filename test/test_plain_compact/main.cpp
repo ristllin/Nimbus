@@ -1867,6 +1867,38 @@ void test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest() {
     }
 }
 
+// Ruling 91 table/F1: turns that left RAM (a full arena's drop, the restart fill's give-up) are
+// read back from the card for their slice, so their digest summarizes what they said, never only
+// "not loaded". The counter-case: with no card to read, the slice still names them.
+void test_turns_that_left_ram_are_summarized_from_the_card() {
+  for (bool card : {true, false}) {
+    Chat c;
+    threeDays(c);
+    uint64_t lastOfDayOne = 0;
+    for (const tx::Item& it : c.stored())
+      if (it.kind == tx::ItemKind::TurnEnd && it.x.empty() && it.turn == 12) lastOfDayOne = it.q;
+    TEST_ASSERT_TRUE(lastOfDayOne > 0);
+    TEST_ASSERT_TRUE(c.arena->dropThrough(lastOfDayOne).ok());   // day one left RAM, as a drop leaves it
+    plain::CompactDeps d = c.deps();
+    d.omittedThru = [lastOfDayOne] { return lastOfDayOne; };
+    if (!card) d.files = nullptr;
+    c.driver.reset(new plain::CompactDriver(d));
+    c.answer([] { return sp::say(kSummary); });
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
+    const std::string& body = c.model.last().body;
+    const bool named = body.find(plain::texts::summarizer::kNotLoaded) != std::string::npos;
+    const bool said = body.find("d1 ask 0 ") != std::string::npos && body.find("d1 reply 5 ") != std::string::npos;
+    TEST_ASSERT_EQUAL_MESSAGE(card, said, card ? "the dropped day must be summarized from the card" : "nothing to read");
+    TEST_ASSERT_EQUAL_MESSAGE(!card, named, card ? "a day read back is not 'not loaded'" : "a day not read must be named");
+    if (!card) continue;
+    TEST_ASSERT_TRUE(c.head.thru < lastOfDayOne);   // one slice holds at most 24 KB of input
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
+    TEST_ASSERT_TRUE(c.model.last().body.find("d1 reply 11 ") != std::string::npos);
+    TEST_ASSERT_EQUAL_UINT64_MESSAGE(lastOfDayOne, c.head.thru, "the second slice reads back the rest of the day");
+    expectCoveredAcrossRestart(c, "after a read-back");
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -1890,6 +1922,7 @@ int main(int, char**) {
   RUN_TEST(test_the_marks_measure_what_a_request_renders);
   RUN_TEST(test_a_slice_held_by_the_text_floor_folds_the_tools_not_the_dialogue);
   RUN_TEST(test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest);
+  RUN_TEST(test_turns_that_left_ram_are_summarized_from_the_card);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);
   RUN_TEST(test_a_refused_store_leaves_thru_and_the_retry_stores_once);

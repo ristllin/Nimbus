@@ -360,6 +360,7 @@ size_t todayFrom(const std::vector<Unit>& units, const SliceRules& r, const std:
 
 // The first unit a slice may not reach.
 size_t protectedFrom(const std::vector<Unit>& units, const SliceRules& r, const std::string& today) {
+  if (r.readBack) return heldFrom(units, r);
   return std::min(heldFrom(units, r), std::min(newestOwnersFrom(units), todayFrom(units, r, today)));
 }
 
@@ -770,6 +771,18 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   rules.arenaRoom = std::min(kCompactArenaRoomBytes, d_.arena->capacity() / 4);
   rules_ = rules;
   if (!(s = planSlice(*d_.arena, d_.head()->thru, rules, plan)).ok()) return s;
+  const uint64_t omitted = rules.omittedThru;
+  if (omitted > d_.head()->thru) {   // what left RAM is folded first, from the card
+    SlicePlan back;
+    bool read = false;
+    if (!(s = planDropped(ctx, omitted, back, read)).ok()) return s;
+    if (read) {
+      back.resident = plan.resident;
+      plan = std::move(back);
+      due = true;
+      return Status::success();
+    }
+  }
   // The hot trigger in real tokens: the last request reached the due mark (the aim less the next
   // request's growth), so the next one would pass the aim.
   const bool hot = lastPromptTokens(*d_.arena) >= b.tokens.due;
@@ -780,6 +793,72 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   const bool room = rules.arenaFree < rules.arenaRoom;
   due = manual_ || plan.resident > marks.high || hot || room;
   return Status::success();
+}
+
+namespace {
+
+// The stored lines with thru < q <= upTo, read back from the segments from thru's offset into
+// `arena` (at most its capacity; the oldest first): the turns a full arena or the restart fill
+// gave up, so their digest summarizes them (ruling 91 table/F1: never "not loaded" when the card
+// still holds them). False when the card did not answer or nothing was read.
+bool readBack(tx::TxFiles& files, const std::string& chatKey, const tx::HeadState& head, uint64_t upTo,
+              tx::TxArena& arena) {
+  std::string dir;
+  std::vector<std::string> names;
+  if (!tx::txDir(chatKey, dir).ok() || !files.list(dir, names)) return false;
+  std::vector<uint32_t> segs;
+  for (const std::string& n : names) {
+    uint32_t k = 0;
+    if (n.size() == 16 && n.compare(0, 4, "seg-") == 0 && n.compare(10, 6, ".jsonl") == 0 &&
+        std::sscanf(n.c_str() + 4, "%6u", &k) == 1 && k >= head.thruSeg)
+      segs.push_back(k);
+  }
+  std::sort(segs.begin(), segs.end());
+  std::string buf, chunk(tx::kFillSliceBytes, '\0'), path;
+  for (uint32_t seg : segs) {
+    if (!tx::segmentPath(chatKey, seg, path).ok()) return false;
+    size_t off = seg == head.thruSeg ? head.thruOffset : 0, got = 0;
+    buf.clear();
+    for (;;) {
+      if (!files.readAt(path, off, &chunk[0], chunk.size(), got)) return false;
+      if (!got) break;
+      off += got;
+      buf.append(chunk.data(), got);
+      size_t at = 0;
+      for (size_t nl; (nl = buf.find('\n', at)) != std::string::npos; at = nl + 1) {
+        tx::LineHeader h;
+        if (!tx::checkLine(buf.data() + at, nl + 1 - at, h).ok() || h.q <= head.thru) continue;
+        if (h.q > upTo) return arena.count() > 0;
+        if (!arena.appendLine(buf.data() + at, nl + 1 - at).ok()) return arena.count() > 0;
+      }
+      buf.erase(0, at);
+    }
+  }
+  return arena.count() > 0;
+}
+
+}  // namespace
+
+// Turns stored but no longer resident (a full arena's drop, the restart fill's give-up) come first:
+// they are read back from the card and sliced as a manual run would (they are out of every request
+// already, so neither L nor the text keep holds them), one day and one input at a time.
+Status CompactDriver::planDropped(const IdleCtx& ctx, uint64_t omitted, SlicePlan& plan, bool& read) {
+  read = false;
+  if (!d_.files || omitted <= d_.head()->thru) return Status::success();
+  auto alloc = d_.platform->allocLarge ? d_.platform->allocLarge : [](size_t n) { return std::malloc(n); };
+  auto release = d_.platform->freeLarge ? d_.platform->freeLarge : [](void* q) { std::free(q); };
+  tx::TxArena back;   // the plan keeps only the input text: freed when this returns
+  if (!back.init(kCompactReadBackBytes, alloc, release).ok()) return Status::fail(Err::TooLarge, "plain::planDropped");
+  if (!readBack(*d_.files, d_.chatKey, *d_.head(), omitted, back)) return Status::success();
+  SliceRules r = rules_;
+  r.now = ctx.now;
+  r.manual = true;
+  r.readBack = true;
+  r.omittedThru = 0;
+  r.arenaRoom = 0;
+  const Status s = planSlice(back, d_.head()->thru, r, plan);
+  read = s.ok() && plan.thru;
+  return s;
 }
 
 // The tool fold, stored as one x item per kMaxListItems results (the pointer unchanged): code only,

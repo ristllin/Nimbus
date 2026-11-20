@@ -96,6 +96,8 @@ inline constexpr size_t kCompactCtlChats = 8;              // chats whose backof
 // The arena room compaction keeps (or a quarter of the arena, the smaller): under it a compaction is
 // due, so the engine never has to drop whole turns from RAM with no digest (ruling 91 table/F1).
 inline constexpr size_t kCompactArenaRoomBytes = 128 * 1024;
+// The most of the stored-but-not-resident turns one step reads back from the card (PSRAM).
+inline constexpr size_t kCompactReadBackBytes = 96 * 1024;
 
 // One rung of the summarizer ladder.
 struct SummarizerRung {
@@ -178,6 +180,9 @@ struct SliceRules {
   // arenaRoom a slice may leave less than L and less than keepText, until the slice has freed
   // enough for 2 x arenaRoom free; never a turn the rules above protect. 0: not applied.
   size_t arenaFree = 0, arenaRoom = 0;
+  // The arena holds turns RAM gave up, read back from the card: older than every resident turn, so
+  // neither the current day nor the newest owner turns protect them (an open turn still does).
+  bool readBack = false;
 };
 struct SlicePlan {
   uint64_t thru = 0;             // the last q the slice covers (0: nothing to summarize)
@@ -250,6 +255,7 @@ class CompactDriver {
   bool automaticMayAsk(const IdleCtx& ctx);
   Status planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due);
   Status foldTools(const SliceRules& rules, CompactOutcome& out);
+  Status planDropped(const IdleCtx& ctx, uint64_t omitted, SlicePlan& plan, bool& read);
   SliceRules rules_;   // the last planIfDue's rules (the tool fold reads them)
   bool held(const IdleCtx& ctx, const CompactCtl::Chat& chat);
   Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out);
