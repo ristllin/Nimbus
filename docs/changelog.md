@@ -6,6 +6,12 @@ ships as a signed image on the public
 repository; a device in Orchestrator mode sees it on its daily check and
 installs it when you approve ([how updates work](ota.md)).
 
+## Unreleased (draft) - Mistral answers like Claude
+
+A draft of the notes for the release after v5.2.0; the release lane completes it.
+
+- **Mistral answers in one request, in its own words.** On a Mistral head, your turn no longer forces the model to call a tool every round: an answer it writes as plain text is the reply as written, as on Claude since v5.2.0. Background turns (routines, reminders, sub-agent reports) work as before.
+
 ## v5.2.0 (draft, not released) - Every log is a plain file, and adding a row only adds it
 
 A draft of the notes for the next release; the release lane completes it.
