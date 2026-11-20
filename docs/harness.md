@@ -1010,6 +1010,12 @@ no reply for words.
 - **Outside bytes leave after their turn.** An outside result shows whole only inside its own
   turn; the next turn's request carries its stub, which names it and its `view id=r<q>`
   (`tx::showResult`). Owner and assistant text are never removed (ruling 81).
+- **A routine's reply after outside content** (RB-U1a's `HeldNote::outside`) enters the owner's
+  transcript whole inside the same fence the sub-agent results use (`fenceOutsideContent` in
+  `jobs.h`: the opening line, the text with any close of the fence neutralised, the closing line).
+  Such a note is outside content by the item rule, and the owner's next turn, the first whose
+  request carries it, opens tainted, as the turn a sub-agent's report arrives in does. A routine
+  that read nothing outside appends plain text and taints nothing.
 - **One table decides a tainted turn.** Each call (a `more` call as the tool it reaches) is
   classed by the unattended policy's `toolUseFor` and matched against `kTaintExemptions`,
   first row wins, and a call no row names is refused:
