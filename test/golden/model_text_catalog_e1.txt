@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43781 ceiling=47989 entries=411 sha8=035ecd2c
-# class device_notes bytes=54883 ceiling=54203 entries=1474 sha8=adc4f144
+# class device_notes bytes=54884 ceiling=54203 entries=1474 sha8=645e6e2a
 # class tool_descriptions bytes=22131 ceiling=23131 entries=99 sha8=56b90134
 # class tool_results bytes=35720 ceiling=41962 entries=1108 sha8=06ea09d5
 # class side_prompts bytes=7395 ceiling=9795 entries=117 sha8=68383f73
@@ -696,7 +696,7 @@ device_notes	lib/core/src/orch_spend_ceiling.cpp	7e5192a0	183	"Each provider sta
 device_notes	lib/core/src/orch_spend_ceiling.cpp	066cb7e4	75	". Change models on Assistant > Models and the ceiling on Assistant > Usage."
 device_notes	lib/core/src/orch_transcript.cpp	7abf7ef8	35	"\n[cut to fit this request: bytes 0-"
 device_notes	lib/core/src/orch_transcript.cpp	a4282e4b	4	" of "
-device_notes	lib/core/src/orch_transcript.cpp	15c64779	32	"; the rest: results.get {\"tag\":\""
+device_notes	lib/core/src/orch_transcript.cpp	ebe46b08	33	"; next part: results.get {\"tag\":\""
 device_notes	lib/core/src/orch_transcript.cpp	d549035f	67	"\n[cut: this turn's tool-output budget is spent - showing the first "
 device_notes	lib/core/src/orch_transcript.cpp	a4282e4b	4	" of "
 device_notes	lib/core/src/orch_transcript.cpp	c45cb334	59	" B. Ask for a smaller slice, or finish with what you have.]"
