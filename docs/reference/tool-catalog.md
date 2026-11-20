@@ -385,12 +385,13 @@ Notes:
   many such rows there are. It follows the same
   ownership and quota rules as `artifact.save`.
 - `files.read {column, from, to}` reads a CSV through the shared scan
-  (docs/plain/tables.md): the header and the matching rows with their line numbers
-  (`L5 ...`), then one line such as `rows 3 of 6 where date 2026-11-19..2026-11-19; skipped 1
-  (line 6: field count is not the header's 5)` that names every row left out by line and
-  reason (a field count unlike the header's, not compared, too long); a line whose first
-  non-blank character is `#` is a comment and is counted, never shown as a row. `offset`
-  pages the rows shown; the scan holds the card lock per 4 KB read, never across it. There
+  (docs/plain/tables.md) and looks exactly like a plain read of the selected rows (ruling 97):
+  the same part head (`bytes a-b of n, lines x-y of m; next part: "offset":b` or `; end of
+  file`), then the header (in the part that holds it) and the rows as stored, in file order.
+  A row is left out only when its key reads and is out of range; a row that does not parse
+  (a wrong field count, a key of another form, a blank key) is kept like any other. A line
+  whose first non-blank character is `#` is a comment, never shown as a row. `offset` is a
+  file byte, as a plain read's; the scan holds the card lock per 4 KB read, never across it. There
   is no `sum` or `date` (ruling 95: a figure over part of the rows was read as the whole
   total); a call that still sends them is told they were not read.
 - A whole-file write (`artifact.save`, an upload) never removes

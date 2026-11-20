@@ -66,7 +66,7 @@ inline const std::vector<Case>& cases() {
        R"({"path":"log/training.csv","column":"date","from":"2026-11-13","to":"2026-11-19"})"},
       {"a total asked with sum (ruling 95: not an argument)", "log/food7.csv", kFood, "read_file",
        R"({"path":"log/food7.csv","column":"date","from":"2026-11-19","sum":["kcal"]})"},
-      {"every row, a limit under the page floor", "log/food2.csv", kFood, "read_file",
+      {"every row from an offset inside line 1, a limit under the page floor", "log/food2.csv", kFood, "read_file",
        R"({"path":"log/food2.csv","column":"date","from":"2026-11-18","to":"2026-11-20","limit":16,"offset":1})"},
       {"an unknown column", "log/food3.csv", kFood, "read_file",
        R"({"path":"log/food3.csv","column":"day","from":"2026-11-19"})"},

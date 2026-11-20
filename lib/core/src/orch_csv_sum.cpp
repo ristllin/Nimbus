@@ -1,9 +1,9 @@
-// orch_csv_sum - the CSV scan behind read_file column/from/to (file_aids.h). It totals nothing:
-// ruling 95 removed sum (a figure over part of the rows was read as the whole total).
+// orch_csv_sum - the CSV scan behind read_file column/from/to (file_aids.h). It totals nothing
+// (ruling 95) and its result is a plain read of the selected rows (ruling 97): the rows as
+// stored, in file order, and nothing said about the others.
 //
 // One pass, byte by byte, over chunks of any size: the record splitter keeps at most one
-// record (kCsvRecordMax) and the shown page; the identical-line table grows in fixed
-// blocks up to kCsvIdenticalMax rows. Every block comes from workingAlloc and is checked.
+// record (kCsvRecordMax) and the shown part. Every block comes from workingAlloc and is checked.
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -25,22 +25,6 @@ constexpr const char* kTwice = " is in the header twice: ";
 constexpr const char* kNul = " is not text (a NUL byte on line ";
 constexpr const char* kCardRead = "card read failed";
 }  // namespace T
-
-constexpr size_t kDupBlock = 512;
-constexpr size_t kDupBlocks = kCsvIdenticalMax / kDupBlock;
-constexpr size_t kDupBuckets = 1024;
-constexpr uint16_t kNone = 0xFFFF;
-
-struct DupEntry {
-  uint64_t hash;
-  uint32_t line;
-  uint16_t next;   // the next entry in this bucket
-  uint16_t group;  // the group's first entry
-};
-struct DupBlock {
-  DupEntry e[kDupBlock];
-  uint16_t n[kDupBlock];  // a group's size, kept on its first entry
-};
 
 bool isSpace(char c) { return c == ' ' || c == '\t'; }
 bool isDigit(char c) { return c >= '0' && c <= '9'; }
@@ -216,27 +200,23 @@ struct CsvScanner::Impl {
   char* cell = nullptr;  // decoded wanted fields (kCsvRecordMax)
   char* body = nullptr;
   size_t recLen = 0, bodyLen = 0, bodyCap = 0;
+  uint64_t recStart = 0;   // the current record's first byte
+  bool partOpen = false;   // a record at or past q.fromByte has started
   uint64_t physLine = 1;
   uint32_t recLine = 1;
   bool inRecord = false, inQ = false, pendingQ = false, fieldStart = true, tooLong = false;
   bool leadBlank = true, inComment = false;   // only blanks so far; a '#' line being skipped
   uint32_t lastComment = 0;
-  bool headerDone = false, showFull = false;
+  bool headerDone = false, showFull = false, shownRow = false;
   char last = '\n';
 
   int keyIdx = -1;
-
-  uint16_t* buckets = nullptr;
-  DupBlock* blocks[kDupBlocks] = {};
-  size_t dupCount = 0;
 
   Impl(CsvScanResult& r, std::string& e, const CsvQuery& query) : res(r), err(e), q(query) {}
   ~Impl() {
     workingFree(rec);
     workingFree(cell);
     workingFree(body);
-    workingFree(buckets);
-    for (DupBlock* b : blocks) workingFree(b);
   }
 
   bool fail(std::string e) {
@@ -248,6 +228,12 @@ struct CsvScanner::Impl {
   void startRecord() {
     inRecord = true;
     recLine = uint32_t(physLine);
+    recStart = res.bytes - 1;
+    if (!partOpen && recStart >= q.fromByte) {   // the part starts at the first line at or past the offset
+      partOpen = true;
+      res.partFrom = recStart;
+      res.partFromLine = recLine;
+    }
     recLen = 0;
     inQ = pendingQ = tooLong = inComment = false;
     fieldStart = leadBlank = true;
@@ -341,10 +327,9 @@ struct CsvScanner::Impl {
     locate(h, found, seen);
     if (!checkName(h, seen)) return false;
     keyIdx = found;
-    // The header leads every page.
-    const int ln = std::snprintf(body, 16, "L%u ", unsigned(recLine));
-    std::memcpy(body + ln, h.data(), h.size());
-    bodyLen = size_t(ln) + h.size();
+    if (recStart < q.fromByte) return true;   // the header is shown in the part that holds it
+    std::memcpy(body, h.data(), h.size());
+    bodyLen = h.size();
     body[bodyLen++] = '\n';
     return true;
   }
@@ -374,94 +359,42 @@ struct CsvScanner::Impl {
     if (!headerDone) return header();
     if (!tooLong && recLen == 0) return ++res.emptyLines, true;
     ++res.records;
-    if (tooLong) return spanAdd(res.tooLong, recLine, lastLine), true;
+    if (tooLong) return spanAdd(res.tooLong, recLine, lastLine), show(), true;
     std::string_view key;
     const bool counted = fields(key);
     const int r = keyIdx >= 0 ? inRange(key) : 1;
     if (!counted) return badCount(r, lastLine);
-    if (r < 0) spanAdd(res.notCompared, recLine, lastLine), showSelected();
+    if (r < 0) spanAdd(res.notCompared, recLine, lastLine), show();
     if (r == 0) ++res.outOfRange;
     if (r <= 0) return true;
     ++res.matched;
     show();
-    return remember();
+    return true;
   }
-  // A row whose field count differs from the header's. Another day's (its key plainly out of
-  // range) is counted only; one in range, not comparable or spanning lines (it may hold other
-  // rows) is named by line.
+  // A row whose field count differs from the header's: placed by its key like any row. Plainly
+  // out of range on one line it is left out like any row of another day; in range, not
+  // comparable, or spanning lines (it may hold other rows) it is kept (ruling 97).
   bool badCount(int r, uint32_t lastLine) {
     if (r == 0 && lastLine == recLine) ++res.fieldCountOutside;
-    else spanAdd(res.fieldCount, recLine, lastLine), showSelected();
+    else spanAdd(res.fieldCount, recLine, lastLine), show();
     return true;
   }
 
-  bool append(bool matching) {
-    char lead[16];
-    const int ln = std::snprintf(lead, sizeof lead, "L%u ", unsigned(recLine));
-    const size_t need = size_t(ln) + recLen + 1;
-    if (bodyLen + need > limit && (!matching || res.shownFirst)) {
-      showFull = showFull || matching;
-      return false;
-    }
-    std::memcpy(body + bodyLen, lead, size_t(ln));
-    std::memcpy(body + bodyLen + size_t(ln), rec, recLen);
-    bodyLen += need;
-    body[bodyLen - 1] = '\n';
-    return true;
-  }
+  // A kept record into the part, as stored (its first kCsvRecordMax bytes when it is longer).
+  // The part's first row is always shown; a row that does not fit ends the part before it.
   void show() {
-    if (res.matched <= q.skipRows || showFull || !append(true)) return;
-    if (!res.shownFirst) res.shownFirst = res.matched;
-    res.shownLast = res.matched;
-  }
-  // Ruling 95: a selected row that does not parse (a wrong field count, a key not compared) is
-  // a row of the result, in file order, named by line in the tail as before. It is no matching
-  // row and never pushes one off a page (append(false) never ends the page).
-  void showSelected() {
-    if (res.matched < q.skipRows || showFull || tooLong) return;
-    append(false);
-  }
-
-  // ---- identical lines ----
-  DupEntry& entry(size_t i) { return blocks[i / kDupBlock]->e[i % kDupBlock]; }
-  uint16_t& groupSize(size_t i) { return blocks[i / kDupBlock]->n[i % kDupBlock]; }
-  bool tableRoom() {
-    if (!buckets) {
-      buckets = static_cast<uint16_t*>(workingAlloc(kDupBuckets * sizeof(uint16_t)));
-      if (!buckets) return false;
-      for (size_t i = 0; i < kDupBuckets; ++i) buckets[i] = kNone;
+    if (recStart < q.fromByte || showFull) return;
+    if (shownRow && bodyLen + recLen + 1 > limit) {
+      showFull = res.more = true;
+      res.partTo = recStart;
+      res.partToLine = recLine - 1;
+      return;
     }
-    DupBlock*& blk = blocks[dupCount / kDupBlock];
-    if (!blk) blk = static_cast<DupBlock*>(workingAlloc(sizeof(DupBlock)));
-    return blk != nullptr;
-  }
-  bool remember() {
-    if (dupCount >= kCsvIdenticalMax) return true;
-    if (!tableRoom()) return fail(kAidNoMemory);
-    const uint64_t h = fnv64(kFnv64Basis, std::string_view(rec, recLen));
-    uint16_t& head = buckets[h % kDupBuckets];
-    const uint16_t at = uint16_t(dupCount);
-    uint16_t group = at;
-    for (uint16_t e = head; e != kNone && group == at; e = entry(e).next)
-      if (entry(e).hash == h) group = entry(e).group;
-    entry(at) = {h, recLine, head, group};
-    head = at;
-    groupSize(at) = 1;
-    if (group != at) ++groupSize(group);
-    res.identicalChecked = ++dupCount;
-    return true;
-  }
-  void collectGroups() {
-    for (size_t i = 0; i < dupCount; ++i) {
-      if (entry(i).group != i || groupSize(i) < 2) continue;
-      ++res.identicalGroups;
-      if (res.identical.size() >= kAidListMax) continue;
-      LineGroup g;
-      g.count = groupSize(i);
-      for (size_t j = i; j < dupCount && g.lines.size() < kAidGroupLinesMax; ++j)
-        if (entry(j).group == i) g.lines.push_back(entry(j).line);
-      res.identical.push_back(std::move(g));
-    }
+    std::memcpy(body + bodyLen, rec, recLen);
+    bodyLen += recLen;
+    body[bodyLen++] = '\n';
+    shownRow = true;
+    ++res.shown;
   }
 
   bool finish() {
@@ -473,7 +406,8 @@ struct CsvScanner::Impl {
     const bool torn = res.bytes > 0 && last != '\n';
     res.lines = physLine - 1 + (torn ? 1 : 0);
     if (torn) res.tornLine = uint32_t(res.lines);
-    collectGroups();
+    if (!partOpen) res.partFrom = res.bytes, res.partFromLine = uint32_t(res.lines + 1);
+    if (!res.more) res.partTo = res.bytes, res.partToLine = uint32_t(res.lines);
     res.body.assign(body, bodyLen);
     return true;
   }
@@ -616,96 +550,12 @@ void linesInto(Txt& t, const LineList& l) {
   more(t, l.count, l.lines.size());
 }
 
-void groupsInto(Txt& t, const CsvScanResult& r) {
-  for (size_t i = 0; i < r.identical.size(); ++i) {
-    const LineGroup& g = r.identical[i];
-    for (size_t k = 0; k < g.lines.size(); ++k) t << (k ? "=" : (i ? ", " : "")) << uint64_t(g.lines[k]);
-    if (g.count > g.lines.size()) t << "+" << uint64_t(g.count - g.lines.size());
-  }
-  more(t, r.identicalGroups, r.identical.size());
-}
-
-// The row counts: rows, the range, what is shown.
-void countsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
-  t << "rows " << uint64_t(r.matched) << " of " << uint64_t(r.records);
-  if (!q.column.empty())
-    t << " where " << std::string_view(q.column) << " " << std::string_view(q.from) << ".."
-      << std::string_view(q.to.empty() ? q.from : q.to);
-  const bool partial = r.shownFirst > 1 || r.shownLast < r.matched;
-  if (!r.shownFirst && r.matched) t << "; shown none";
-  else if (partial) t << "; shown " << uint64_t(r.shownFirst) << "-" << uint64_t(r.shownLast);
-}
-
-// "; <what> <k> (" when the list has rows; false when it has none.
-bool open(Txt& t, const char* what, size_t count) {
-  if (count) t << "; " << what << " " << uint64_t(count) << " (";
-  return count > 0;
-}
-
-// The rows of the selection that are not matching rows, by reason.
-void listsInto(Txt& t, const CsvQuery& q, const CsvScanResult& r) {
-  if (r.commentLines) {
-    t << "; " << uint64_t(r.commentLines) << (r.commentLines == 1 ? " comment line" : " comment lines") << " skipped (";
-    linesInto(t, r.commentSpans);
-    t << ")";
-  }
-  if (open(t, "not compared", r.notCompared.count)) {
-    linesInto(t, r.notCompared);
-    t << ": " << std::string_view(q.column) << " blank or not like " << std::string_view(q.from) << ")";
-  }
-  if (open(t, "skipped", r.fieldCount.count)) {
-    linesInto(t, r.fieldCount);
-    t << ": field count is not the header's " << uint64_t(r.headerFields) << ")";
-  }
-}
-
-// Every other fact about the selection.
-void factsInto(Txt& t, const CsvScanResult& r) {
-  if (r.fieldCountOutside)
-    t << "; " << uint64_t(r.fieldCountOutside)
-      << (r.fieldCountOutside == 1 ? " other row outside the range has" : " other rows outside the range have")
-      << " a wrong field count";
-  if (open(t, "too long", r.tooLong.count)) {
-    linesInto(t, r.tooLong);
-    t << ": over " << uint64_t(kCsvRecordMax) << " B)";
-  }
-  if (r.emptyLines) t << "; empty lines " << uint64_t(r.emptyLines);
-  if (r.identicalGroups) {
-    t << "; identical lines " << uint64_t(r.identicalGroups) << (r.identicalGroups == 1 ? " group (" : " groups (");
-    groupsInto(t, r);
-    t << ")";
-  }
-  if (r.identicalChecked < r.matched)
-    t << "; identical lines checked in the first " << uint64_t(r.identicalChecked) << " matching rows only";
-  if (r.tornLine) t << "; last line " << uint64_t(r.tornLine) << " has no newline (a write may have been cut short)";
-  if (r.openQuoteLine)
-    t << "; the row at line " << uint64_t(r.openQuoteLine) << " ends inside a quoted field (a write may have been cut short)";
-}
-
 }  // namespace
 
 std::string renderLines(const LineList& l) {
   if (!l.count) return "";
   Txt t;
   linesInto(t, l);
-  return std::move(t.s);
-}
-
-std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r) {
-  Txt t;
-  countsInto(t, q, r);
-  listsInto(t, q, r);
-  factsInto(t, r);
-  return std::move(t.s);
-}
-
-std::string renderCsvRead(const CsvQuery& q, const CsvScanResult& r) {
-  Txt t;
-  t << "\n" << std::string_view(r.body);
-  countsInto(t, q, r);
-  listsInto(t, q, r);
-  factsInto(t, r);
-  if (r.shownFirst && r.shownLast < r.matched) t << "\nnext_offset=" << uint64_t(r.shownLast);
   return std::move(t.s);
 }
 

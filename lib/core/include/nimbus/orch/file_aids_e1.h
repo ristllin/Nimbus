@@ -23,13 +23,23 @@ namespace nimbus::orch::aids::e1 {
 enum class ReadForm : uint8_t { Plain, Tail, Table };
 ReadForm readForm(ArduinoJson::JsonObjectConst a);
 
-// The general form's arguments: column, from, to (strings), offset (matching rows not shown);
-// the page holds kE1PageBytes of rows. False with err (a wrong type, or checkCsvQuery's error).
+// The general form's arguments: column, from, to (strings), offset (a file byte, as a plain
+// read's); the part holds kE1PageBytes of rows. False with err (a wrong type, or checkCsvQuery's error).
 inline constexpr size_t kE1PageBytes = 8192 - 64;
 bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::string& err);
 
-// files.read {column, from, to, offset}: "<path> size=<B> lines=<n>", then the
-// shown rows and the tail (renderCsvRead). False with out = the error.
+// files.read {column, from, to, offset} (ruling 97): the same part head as a plain read
+// (partHeadInto), then the header (in the part that holds it) and the selected rows as stored
+// (file_aids.h CsvQuery). False with out = the error.
+// The part head of every files.read, plain or a selection (RB-TR1's form). firstLine 0: no
+// lines clause (an empty part). movedFrom: the asked offset when it fell inside a character.
+struct PartHead {
+  uint64_t from, to, size;
+  uint64_t firstLine, lastLine, lines;
+  bool more;
+};
+void partHeadInto(detail::Txt& t, const PartHead& h, const uint64_t* movedFrom);
+
 bool tableRead(AidSource& src, uint64_t size, const std::string& path, const CsvQuery& q, std::string& out);
 
 // files.read's plain form (RB-TR1): the part of a text file from byte `offset` that fits in a

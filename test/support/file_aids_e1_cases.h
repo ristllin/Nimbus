@@ -134,7 +134,7 @@ inline const std::vector<Call>& calls() {
       {"plain read: an offset of the model's own, inside a line", "docs/p.txt", nullptr, "files.read", R"("offset":17001)"},
       {"plain read: past the end", "docs/p.txt", nullptr, "files.read", R"("offset":30000)"},
       {"a day's rows", "log/f.csv", kFood, "files.read", R"("column":"date","from":"2026-11-19")"},
-      {"a week, paged", "log/t.csv", kTraining, "files.read",
+      {"a week, from an offset inside line 1", "log/t.csv", kTraining, "files.read",
        R"("column":"date","from":"2026-11-13","to":"2026-11-19","offset":1)"},
       {"a month", "log/e.csv", kExpense, "files.read", R"("column":"date","from":"2026-11")"},
       {"a day with an empty cell", "log/e.csv", nullptr, "files.read", R"("column":"date","from":"2026-11-19")"},

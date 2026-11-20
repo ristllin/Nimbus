@@ -1251,11 +1251,14 @@ gives the same result text for the same file:
   the range (numbers compare as exact decimals; otherwise by prefix, so `2026-11-19` is a day,
   `2026-11` a month, and a key of another form is "not compared", never quietly out of range).
   It totals nothing: ruling 95 removed `sum` (a figure over part of the rows was read as the
-  whole total), so the model adds the rows with `calc`. The result shows the header and the
-  matching rows as `L<n> <row>` (a selected row that does not parse is shown in file order
-  too), then one tail line: `rows <m> of <n>` and every row left out by reason with its lines
-  (not compared, a field count unlike the header's, too long, comment lines, empty lines,
-  identical-line groups, a torn last line, a row cut inside a quoted field).
+  whole total), so the model adds the rows with `calc`. The result is a plain read of the
+  selected rows (ruling 97): the same head as a plain read of the file (its bytes a-b), the
+  header in the part that holds it and the rows as stored, in file order, and `next_offset`
+  (a file byte) when a selected row follows; nothing is said about the other rows. A row is
+  left out only when its key reads and is out of range on one line; a row that does not parse
+  (a wrong field count, a key of another form or blank, a record over 8 KB, shown as its first
+  8,192 B) is kept, since dropping it silently was the old trap. Comment and empty lines are
+  never rows.
 - A line pick behind `edit_file` `line`: the match that starts at that line and covers whole
   lines is the one replaced, so a stale number fails with the current match lines and never
   touches another row. Every result names the lines it changed, the lines that moved and where

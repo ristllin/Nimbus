@@ -4,10 +4,11 @@
 //   - the shared fixtures (test/support/file_aids_e1_cases.h), run the way the device's
 //     files_subsystem.cpp runs them, give test/golden/file_aids_e1_results.txt byte for byte;
 //     nimbusd's PosixFiles tools must give the same bytes (test_hosted_file_aids);
-//   - files.read totals nothing (ruling 95): a day's read of owner-shaped files in three equal
-//     domains (a food log, an expense log, a training log: comment lines, rows with more fields
-//     than the header, empty cells, a stray blank line, a free-text key) shows every row of that
-//     day, by line, and no other, and never a figure;
+//   - files.read totals nothing (ruling 95) and a selection is a plain read of its rows (ruling
+//     97): a day's read of owner-shaped files in three equal domains (a food log, an expense
+//     log, a training log: comment lines, rows with more fields than the header, empty cells, a
+//     stray blank line, a free-text key) is the plain read's head, the header and every row of
+//     that day as stored, and no other, and never a figure;
 //   - files.edit's default stays the first match; count, all and line pick as documented;
 //     every result names the current lines.
 #include <unity.h>
@@ -111,18 +112,14 @@ static void test_a_days_read_shows_every_row_of_the_day_and_no_figure() {
       std::string now;
       TEST_ASSERT_TRUE(aids::e1::tableRead(card, card.file.size(), "log/x.csv", q, now));
       TEST_ASSERT_TRUE_MESSAGE(now.find("sum") == std::string::npos && now.find("total") == std::string::npos, now.c_str());
-      // Every stored line of the day is shown by its line number; no line of another day is.
-      size_t line = 1, at = 0, want = 0, shown = 0;
-      for (size_t nl; (nl = card.file.find('\n', at)) != std::string::npos; at = nl + 1, ++line) {
-        const std::string row = card.file.substr(at, nl - at);
-        const bool ofDay = row.compare(0, day.size(), day) == 0;
-        const bool there = now.find("\nL" + std::to_string(line) + " " + row + "\n") != std::string::npos;
-        if (line > 1 && there) ++shown;
-        if (!ofDay) continue;
-        ++want;
-        TEST_ASSERT_TRUE_MESSAGE(there, (day + " line " + std::to_string(line) + ": " + now).c_str());
-      }
-      TEST_ASSERT_EQUAL_MESSAGE(want, shown, day.c_str());
+      // Ruling 97: after the plain read's head, exactly the header and every stored row of the
+      // day as stored, in file order (a row of another field count among them); nothing else.
+      std::string want = std::string(s.header) + "\n";
+      for (size_t at = card.file.find('\n') + 1, nl; (nl = card.file.find('\n', at)) != std::string::npos; at = nl + 1)
+        if (card.file.compare(at, day.size(), day) == 0) want += card.file.substr(at, nl + 1 - at);
+      const std::string head = "bytes 0-" + std::to_string(card.file.size()) + " of " + std::to_string(card.file.size()) +
+                               ", lines 1-301 of 301; end of file\n";
+      TEST_ASSERT_EQUAL_STRING_MESSAGE((head + want).c_str(), now.c_str(), day.c_str());
       ++days;
     }
   }

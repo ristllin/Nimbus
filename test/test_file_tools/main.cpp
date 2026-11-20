@@ -433,7 +433,7 @@ static void test_a_limit_under_the_floor_returns_a_full_floor_page_and_says_so()
   const ToolResult f = rig.call("read_file", R"({"path":"log/big.csv","column":"date","from":"2026-11-19","limit":150})");
   TEST_ASSERT_TRUE_MESSAGE(f.success, f.error.c_str());
   TEST_ASSERT_TRUE_MESSAGE(f.output.find(" (limit 2048 B here)\n") != std::string::npos, f.output.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(f.output.find("\nL40 ") != std::string::npos, f.output.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(f.output.find("\n2026-11-19,item number 60,1\n") != std::string::npos, f.output.c_str());
   TEST_ASSERT_TRUE_MESSAGE(f.output.find("\nnext_offset=") != std::string::npos, f.output.c_str());
 }
 
@@ -1143,7 +1143,10 @@ const char* kLog =
 }  // namespace
 
 // Ruling 95: read_file totals nothing. A request for a total gets the rows and never a figure;
-// a call that still sends sum is refused as an unknown argument, and reads nothing.
+// a call that still sends sum is refused as an unknown argument, and reads nothing. Ruling 97
+// (red first): the selection is a plain read of the selected rows: the same head as a plain
+// read, the rows as stored (the malformed line 5 among them), no line numbers, and no word
+// about rows; the counter-test below reads the same file plainly and gets the same head form.
 static void test_read_file_filters_csv_rows_and_totals_nothing() {
   Rig rig;
   seed(rig.io, "log", "2026.csv", kLog);
@@ -1152,15 +1155,19 @@ static void test_read_file_filters_csv_rows_and_totals_nothing() {
   TEST_ASSERT_EQUAL_STRING(
       ("log/2026.csv size=" + std::to_string(std::strlen(kLog)) + " lines=9 sha8=" +
        blobHash(kLog).substr(0, 8) +
-       "\nL2 date,occasion,note,qty,amount\nL4 2026-11-19,lunch,\"rice, beans\",2,7.25\n"
-       "L5 2026-11-19,lunch,rice, beans,2,7.25\nL7 2026-11-19,tea,green,1,\nL8 2026-11-19,tea,green,1,\n"
-       "rows 3 of 6 where date 2026-11-19..2026-11-19; 2 comment lines skipped (lines 1, 6); skipped 1 (line 5: field "
-       "count is not the header's 5); identical lines 1 group (7=8)")
+       " bytes 0-" + std::to_string(std::strlen(kLog)) +
+       "\ndate,occasion,note,qty,amount\n2026-11-19,lunch,\"rice, beans\",2,7.25\n"
+       "2026-11-19,lunch,rice, beans,2,7.25\n2026-11-19,tea,green,1,\n2026-11-19,tea,green,1,\n")
           .c_str(),
       r.output.c_str());
-  // Rows, never a figure: no sum clause, no total, no computed value.
-  for (const char* word : {"sum", "total", "14.5", "21.75"})
+  // Rows, never a figure, and nothing said about rows: no sum clause, no total, no computed
+  // value, none of the words of the old tail.
+  for (const char* word : {"sum", "total", "14.5", "21.75", "skipped", "left out", "not counted", "not summed",
+                           "field count", "not compared", "rows "})
     TEST_ASSERT_TRUE_MESSAGE(r.output.find(word) == std::string::npos, r.output.c_str());
+  // The counter-test: a plain read of the file has the same head form.
+  const ToolResult plain = rig.call("read_file", R"({"path":"log/2026.csv"})");
+  TEST_ASSERT_EQUAL(0, int(plain.output.find(r.output.substr(0, r.output.find('\n')))));
   // Every read is 4 KB per hold, one card op each.
   for (const auto& h : rig.io.holds) {
     TEST_ASSERT_TRUE(h.size() <= 1);

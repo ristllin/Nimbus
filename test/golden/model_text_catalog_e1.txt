@@ -4,7 +4,7 @@
 # class system bytes=43781 ceiling=47989 entries=411 sha8=035ecd2c
 # class device_notes bytes=54884 ceiling=54203 entries=1474 sha8=645e6e2a
 # class tool_descriptions bytes=21789 ceiling=23131 entries=99 sha8=62a30ab5
-# class tool_results bytes=34810 ceiling=41962 entries=1061 sha8=414ae416
+# class tool_results bytes=34797 ceiling=41962 entries=1059 sha8=6811ed04
 # class side_prompts bytes=7395 ceiling=9795 entries=117 sha8=68383f73
 # class skills bytes=8251 ceiling=23264 entries=26 sha8=6fae894e
 system	lib/core/include/nimbus/orch/orch_schema.h	955fc9b7	884	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. Never invent ids, links, or successes."
@@ -2024,7 +2024,6 @@ tool_results	lib/core/src/orch_calc.cpp	a095aad8	18	"error at position "
 tool_results	lib/core/src/orch_file_aids_e1.cpp	9ab7c775	91	"\nthe removed and changed rows are kept in the file as history rows (#removed: / #replaced:)"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	8269d81f	47	"bytes - of , lines - of ; next part: \"offset\":\n"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	21ac2c10	35	" (\"offset\": was inside a character)"
-tool_results	lib/core/src/orch_file_aids_e1.cpp	fc620034	39	"the card read failed; nothing was shown"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	8a126d0b	6	"bytes "
 tool_results	lib/core/src/orch_file_aids_e1.cpp	a4282e4b	4	" of "
 tool_results	lib/core/src/orch_file_aids_e1.cpp	c76101af	11	" (\"offset\":"
@@ -2033,9 +2032,8 @@ tool_results	lib/core/src/orch_file_aids_e1.cpp	08fe2899	8	", lines "
 tool_results	lib/core/src/orch_file_aids_e1.cpp	a4282e4b	4	" of "
 tool_results	lib/core/src/orch_file_aids_e1.cpp	4f3e3696	22	"; next part: \"offset\":"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	718d77ac	14	"; end of file\n"
+tool_results	lib/core/src/orch_file_aids_e1.cpp	fc620034	39	"the card read failed; nothing was shown"
 tool_results	lib/core/src/orch_file_aids_e1.cpp	793d0b99	16	" is not a string"
-tool_results	lib/core/src/orch_file_aids_e1.cpp	4f801993	6	" size="
-tool_results	lib/core/src/orch_file_aids_e1.cpp	61022fdb	7	" lines="
 tool_results	lib/core/src/orch_file_append.cpp	b2047d87	36	"need 'text': one or more rows to add"
 tool_results	lib/core/src/orch_file_append.cpp	cb6ca1d2	35	"text too large for one append (max "
 tool_results	lib/core/src/orch_file_append.cpp	7917432a	29	" B) - add fewer rows per call"

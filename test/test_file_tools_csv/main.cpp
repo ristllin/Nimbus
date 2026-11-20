@@ -1,5 +1,6 @@
-// read_file column/from/to (file_aids.h): the CSV scan. It totals nothing: ruling 95 removed
-// sum (a figure over part of the rows was read as the whole total); the head reads the rows.
+// read_file column/from/to (file_aids.h): the CSV scan. It totals nothing (ruling 95) and its
+// result is a plain read of the selected rows (ruling 97): the header and the kept rows as
+// stored, in file order, and nothing said about the others.
 //
 // Class rules proven here, each over generated classes rather than one instance:
 //   - the scan agrees with an independent whole-file reference (its own RFC 4180 parser,
@@ -10,7 +11,8 @@
 //   - every data record is accounted for exactly once (matched, out of range, not
 //     compared, skipped, too long): nothing is dropped silently;
 //   - the result never depends on how the file is cut into chunks (1 B to 4 KB);
-//   - following next_offset shows every matching row exactly once;
+//   - the shown rows are exactly the kept rows as stored (every row but one whose key reads and
+//     is out of range), and following the parts shows each exactly once at every limit;
 //   - a several-megabyte file is read in 4 KB reads with bounded working memory;
 //   - a refused allocation at any point is the no-memory error, never a partial result.
 #include <unity.h>
@@ -235,9 +237,7 @@ struct Ref {
   uint64_t lines = 0;
   size_t records = 0, matched = 0, outOfRange = 0, notCompared = 0, fieldCount = 0, tooLong = 0, empty = 0;
   size_t fieldCountOutside = 0;
-  std::vector<uint32_t> matchedLines;
-  std::vector<std::string> matchedRaw;
-  std::map<std::string, std::vector<uint32_t>> groups;
+  std::string kept;   // the header and the kept rows as stored, "<row>\n" each
   uint32_t torn = 0, openQuote = 0;
   size_t comments = 0;
   std::vector<std::pair<uint32_t, uint32_t>> commentRuns;
@@ -267,18 +267,16 @@ void refRecord(Ref& ref, const RefRecord& r, size_t nfields, int key, const CsvQ
   ++ref.records;
   const auto span = std::make_pair(r.line, r.endLine);
   if (r.openQuote) ref.openQuote = r.line;
-  if (r.tooLong) { ++ref.tooLong; ref.tooLongL.push_back(span); return; }
+  if (r.tooLong) { ++ref.tooLong; ref.tooLongL.push_back(span); ref.kept += r.raw.substr(0, kCsvRecordMax) + "\n"; return; }
   const auto fs = refFields(r.raw);
   const int m = key < 0 ? 1 : size_t(key) < fs.size() ? refRange(fs[size_t(key)], q.from, q.to.empty() ? q.from : q.to) : -1;
   if (fs.size() != nfields && m == 0 && r.line == r.endLine) { ++ref.fieldCountOutside; return; }
-  if (fs.size() != nfields) { ++ref.fieldCount; ref.fieldCountL.push_back(span); return; }
-  if (m < 0) { ++ref.notCompared; ref.notComparedL.push_back(span); }
+  if (fs.size() != nfields) { ++ref.fieldCount; ref.fieldCountL.push_back(span); ref.kept += r.raw + "\n"; return; }
+  if (m < 0) { ++ref.notCompared; ref.notComparedL.push_back(span); ref.kept += r.raw + "\n"; }
   if (m == 0) ++ref.outOfRange;
   if (m <= 0) return;
   ++ref.matched;
-  ref.matchedLines.push_back(r.line);
-  ref.matchedRaw.push_back(r.raw);
-  ref.groups[r.raw].push_back(r.line);
+  ref.kept += r.raw + "\n";
 }
 
 Ref reference(const std::string& f, const CsvQuery& q) {
@@ -297,6 +295,7 @@ Ref reference(const std::string& f, const CsvQuery& q) {
   const auto names = refFields(hdr);
   int key = -1;
   if (!refColumns(ref, names, q, key)) return ref;
+  ref.kept = hdr + "\n";
   for (size_t i = 1; i < recs.size(); ++i) refRecord(ref, recs[i], names.size(), key, q);
   return ref;
 }
@@ -452,18 +451,28 @@ void checkAgainstReference(const std::string& file, const CsvQuery& q, const Csv
   TEST_ASSERT_EQUAL_MESSAGE(r.records, r.matched + r.outOfRange + r.notCompared.count + r.fieldCount.count +
                                            r.fieldCountOutside + r.tooLong.count,
                             what);
-  size_t groups = 0;
-  for (const auto& kv : ref.groups) groups += kv.second.size() > 1;
-  if (r.identicalChecked == r.matched) TEST_ASSERT_EQUAL_MESSAGE(groups, r.identicalGroups, what);
-  // The groups named are real: their lines hold the same text.
-  for (const auto& gr : r.identical) {
-    TEST_ASSERT_TRUE_MESSAGE(gr.count >= 2, what);
-    const auto it = std::find(ref.matchedLines.begin(), ref.matchedLines.end(), gr.lines[0]);
-    TEST_ASSERT_TRUE_MESSAGE(it != ref.matchedLines.end(), what);
-    const std::string& text = ref.matchedRaw[size_t(it - ref.matchedLines.begin())];
-    TEST_ASSERT_EQUAL_MESSAGE(ref.groups.at(text).size(), gr.count, what);
-    for (size_t k = 0; k < gr.lines.size(); ++k) TEST_ASSERT_EQUAL_UINT32_MESSAGE(ref.groups.at(text)[k], gr.lines[k], what);
-  }
+  // The result is the kept rows as stored, whole when the part reaches the end (ruling 97).
+  if (q.fromByte == 0 && !r.more) TEST_ASSERT_EQUAL_STRING_MESSAGE(ref.kept.c_str(), r.body.c_str(), what);
+}
+
+// The scan's own record of what it read (no result renders it): the tests' view of the counts.
+std::string facts(const CsvScanResult& r) {
+  std::string t = "matched " + std::to_string(r.matched) + " of " + std::to_string(r.records);
+  if (r.notCompared.count) t += "; not compared " + renderLines(r.notCompared);
+  if (r.fieldCount.count) t += "; field count " + renderLines(r.fieldCount);
+  if (r.fieldCountOutside) t += "; field count outside " + std::to_string(r.fieldCountOutside);
+  if (r.tooLong.count) t += "; too long " + renderLines(r.tooLong);
+  if (r.commentLines) t += "; comments " + renderLines(r.commentSpans);
+  if (r.emptyLines) t += "; empty " + std::to_string(r.emptyLines);
+  if (r.tornLine) t += "; torn " + std::to_string(r.tornLine);
+  if (r.openQuoteLine) t += "; open quote " + std::to_string(r.openQuoteLine);
+  return t;
+}
+
+// The words a selection's result never holds (ruling 97).
+void noWordsAboutRows(const std::string& text) {
+  for (const char* w : {"skipped", "left out", "not counted", "not summed", "not compared", "field count", "rows "})
+    TEST_ASSERT_TRUE_MESSAGE(text.find(w) == std::string::npos, (std::string(w) + " in " + text).c_str());
 }
 
 CsvQuery dayQuery(const Domain& d, const std::string& from, const std::string& to) {
@@ -514,11 +523,11 @@ static void test_the_result_never_depends_on_the_chunking() {
     const CsvQuery q = dayQuery(d, dateOf(303), dateOf(309));
     const auto base = scanWith(file, q, file.size() + 1);
     TEST_ASSERT_TRUE(base.ok);
-    const std::string want = renderCsvRead(q, base.result);
+    const std::string want = base.result.body + facts(base.result);
     for (size_t c = 1; c < 600; c += 1 + c / 8) {
       const auto o = scanWith(file, q, c);
       TEST_ASSERT_TRUE(o.ok);
-      TEST_ASSERT_EQUAL_STRING(want.c_str(), renderCsvRead(q, o.result).c_str());
+      TEST_ASSERT_EQUAL_STRING(want.c_str(), (o.result.body + facts(o.result)).c_str());
     }
   }
 }
@@ -541,21 +550,30 @@ static void test_the_filtered_read_has_its_exact_format() {
   q.from = "2026-11-19";
   const auto o = scanWith(file, q, 4096);
   TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
+  // The header and the kept rows as stored: a row whose date does not read (line 6) and a row
+  // of another field count (line 8) are kept like any other; only lines 2 and 10 (plainly
+  // another day) are not shown. No line numbers, no sentence about the rows.
   TEST_ASSERT_EQUAL_STRING(
-      "\nL1 date,time,item,qty,amount\n"
-      "L3 2026-11-19,08:10,\"b, c\",2,10.5\n"
-      "L4 2026-11-19,12:00,d,,3.25\n"
-      "L5 2026-11-19,12:00,d,,3.25\n"
-      "L6 19/11/2026,13:00,e,1,4\n"
-      "L7 2026-11-19,14:00,f,x,1\n"
-      "L8 2026-11-19,15:00,g\n"
-      "rows 4 of 8 where date 2026-11-19..2026-11-19; not compared 1 (line 6: date blank or not like 2026-11-19); "
-      "skipped 1 (line 8: field count is not the header's 5); empty lines 1; identical lines 1 group (4=5)",
-      renderCsvRead(q, o.result).c_str());
+      "date,time,item,qty,amount\n"
+      "2026-11-19,08:10,\"b, c\",2,10.5\n"
+      "2026-11-19,12:00,d,,3.25\n"
+      "2026-11-19,12:00,d,,3.25\n"
+      "19/11/2026,13:00,e,1,4\n"
+      "2026-11-19,14:00,f,x,1\n"
+      "2026-11-19,15:00,g\n",
+      o.result.body.c_str());
+  noWordsAboutRows(o.result.body);
+  TEST_ASSERT_FALSE(o.result.more);
+  TEST_ASSERT_EQUAL_UINT64(0, o.result.partFrom);
+  TEST_ASSERT_EQUAL_UINT64(file.size(), o.result.partTo);
+  TEST_ASSERT_EQUAL_UINT32(1, o.result.partFromLine);
+  TEST_ASSERT_EQUAL_UINT32(10, o.result.partToLine);
 }
 
-// The rows a day's read leaves out are named by line with the reason, as facts.
-static void test_the_rows_left_out_are_named_by_line() {
+// Ruling 97 red first: a selection holding one malformed row returns it as stored, and the
+// result says nothing about rows; the counter-test: a row plainly of another day, even a
+// malformed one, is not shown.
+static void test_a_malformed_row_in_the_selection_is_returned_as_stored() {
   const std::string file =
       "date,time,item,qty,amount\n"
       "2026-11-19,08:00,a,1,2.5\n"
@@ -568,38 +586,42 @@ static void test_the_rows_left_out_are_named_by_line() {
   auto o = scanWith(file, q, 4096);
   TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
   TEST_ASSERT_EQUAL_STRING(
-      "rows 2 of 4 where date 2026-11-19..2026-11-19; skipped 1 (line 3: field count is not the header's 5)",
-      renderCsvTail(q, o.result).c_str());
+      "date,time,item,qty,amount\n2026-11-19,08:00,a,1,2.5\n2026-11-19,09:00,b, c,1,4\n2026-11-19,10:00,d,,3\n",
+      o.result.body.c_str());
+  noWordsAboutRows(o.result.body);
   q.from = "2026-11-20";
   o = scanWith(file, q, 4096);
-  TEST_ASSERT_EQUAL_STRING("rows 1 of 4 where date 2026-11-20..2026-11-20; 1 other row outside the range has a wrong field count", renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("date,time,item,qty,amount\n2026-11-20,11:00,e,1,9\n", o.result.body.c_str());
 }
 
-static void test_next_offset_shows_every_row_once() {
+// Following the parts (offset = the last part's end, a file byte, as a plain read) shows every
+// kept row exactly once, in order, at every limit; each part moves forward and starts on a line.
+static void test_the_parts_show_every_kept_row_once() {
   Rng g(77);
   for (const Domain& d : domains()) {
     const std::string file = makeFile(g, d, 30, 15, 10, false);
     CsvQuery q = dayQuery(d, dateOf(305).substr(0, 7), "");
+    q.limit = kCsvShowMax;
     const auto whole = scanWith(file, q, 4096);
     TEST_ASSERT_TRUE(whole.ok);
+    TEST_ASSERT_FALSE(whole.result.more);
     for (size_t limit : {16u, 100u, 700u, 4096u}) {
-      std::set<std::string> seen;
-      size_t shown = 0;
-      q.skipRows = 0;
+      std::string joined;
+      q.fromByte = 0;
       q.limit = limit;
       for (int page = 0; page < 100000; ++page) {
         const auto o = scanWith(file, q, 4096);
         TEST_ASSERT_TRUE(o.ok);
-        const std::string text = renderCsvRead(q, o.result);
-        TEST_ASSERT_TRUE(o.result.shownLast >= o.result.shownFirst);
-        if (o.result.shownFirst) shown += o.result.shownLast - o.result.shownFirst + 1;
-        const size_t at = text.find("\nnext_offset=");
-        if (at == std::string::npos) break;
-        const size_t next = std::stoul(text.substr(at + 13));
-        TEST_ASSERT_TRUE(next > q.skipRows);   // progress on every page
-        q.skipRows = next;
+        const CsvScanResult& r = o.result;
+        TEST_ASSERT_TRUE(r.partFrom == 0 || file[size_t(r.partFrom) - 1] == '\n');
+        TEST_ASSERT_TRUE(r.partFrom >= q.fromByte && r.partTo >= r.partFrom);
+        TEST_ASSERT_TRUE(r.shown >= 1 || !r.more);   // a part's first row is always shown
+        joined += r.body;
+        if (!r.more) break;
+        TEST_ASSERT_TRUE(r.partTo > q.fromByte);   // progress on every part
+        q.fromByte = r.partTo;
       }
-      TEST_ASSERT_EQUAL(whole.result.matched, shown);
+      TEST_ASSERT_EQUAL_STRING(whole.result.body.c_str(), joined.c_str());
     }
   }
 }
@@ -765,7 +787,6 @@ static void test_a_refused_allocation_at_any_point_is_the_no_memory_error() {
   Rng g(31);
   size_t refusals = 0;
   for (const Domain& d : domains()) {
-    // Enough rows for the identical-line table to grow several blocks.
     const std::string file = makeFile(g, d, 60, 15, 10, true);
     const CsvQuery q = dayQuery(d, "2026", "");
     long calls = 0;
@@ -845,39 +866,13 @@ static void test_day_week_and_month_reads_agree_on_a_year_file_per_domain() {
   }
 }
 
-static void test_identical_groups_are_named_once_each_and_the_table_limit_is_stated() {
-  std::string f = "date,amount\n";
-  for (int i = 0; i < 3; ++i) f += "2026-11-19,5\n";
-  f += "2026-11-19,6\n2026-11-19,6\n";
-  CsvQuery q;
-  q.column = "date";
-  q.from = "2026";
-  auto o = scanWith(f, q, 4096);
-  TEST_ASSERT_EQUAL(2, o.result.identicalGroups);
-  TEST_ASSERT_EQUAL_STRING("rows 5 of 5 where date 2026..2026; identical lines 2 groups (2=3=4, 5=6)",
-                           renderCsvTail(q, o.result).c_str());
-  // Past the table, the result says how far it checked.
-  std::string big = "id,amount\n";
-  for (size_t i = 0; i < kCsvIdenticalMax + 10; ++i) big += std::to_string(i) + ",1\n";
-  big += "0,1\n";
-  q.column = "id";
-  q.from = "0";
-  q.to = "1000000";
-  o = scanWith(big, q, 4096);
-  TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL(kCsvIdenticalMax, o.result.identicalChecked);
-  const std::string tail = renderCsvTail(q, o.result);
-  TEST_ASSERT_TRUE(tail.find("; identical lines checked in the first 8192 matching rows only") != std::string::npos);
-}
-
-static void test_a_torn_last_line_is_named_in_the_tail() {
+static void test_a_torn_last_line_is_recorded() {
   CsvQuery q;
   q.column = "date";
   q.from = "2026";
   const auto o = scanWith("date,amount\n2026-11-19,5\n2026-11-19,3", q, 4096);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING("rows 2 of 2 where date 2026..2026; last line 3 has no newline (a write may have been cut short)",
-                           renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 2 of 2; torn 3", facts(o.result).c_str());
   TEST_ASSERT_TRUE(endsTorn(3, '3'));
   TEST_ASSERT_FALSE(endsTorn(3, '\n'));
   TEST_ASSERT_FALSE(endsTorn(0, 'x'));
@@ -894,26 +889,18 @@ static void test_review_cases_are_named_not_lost() {
   f += "2026-11-20,x,3\n";
   auto o = scanWith(f, q, 4096);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING("rows 5 of 7 where date 2026-11-19..2026-11-19; too long 1 (lines 2-3: over 8192 B); identical lines 1 "
-                           "group (4=5=6=7+1)",
-                           renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 5 of 7; too long lines 2-3", facts(o.result).c_str());
   // A quote that never closes: the span it swallowed is named, to the end of the file.
   f = "date,note,amt\n2026-11-18,\"big one,450\n";
   for (int i = 0; i < 20; ++i) f += "2026-11-19,lunch,10\n";
   o = scanWith(f, q, 64);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING(
-      "rows 0 of 1 where date 2026-11-19..2026-11-19; skipped 1 (lines 2-22: field count is not the header's 3); "
-      "the row at line 2 ends inside a quoted field (a write may have been cut short)",
-      renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 0 of 1; field count lines 2-22; open quote 2", facts(o.result).c_str());
   // A write cut inside a quoted field at the very end.
   f = "date,amt,note\n2026-11-19,5,ok\n2026-11-19,7,\"cut\n";
   o = scanWith(f, q, 4096);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING(
-      "rows 2 of 2 where date 2026-11-19..2026-11-19; the row at line 3 ends inside a quoted field (a write "
-      "may have been cut short)",
-      renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 2 of 2; open quote 3", facts(o.result).c_str());
   // A numeric key with more decimals than the comparison holds is not compared.
   CsvQuery n;
   n.column = "w";
@@ -923,8 +910,7 @@ static void test_review_cases_are_named_not_lost() {
   n.to = "1.001";
   o = scanWith("w,n\n1.00041,1\n1.0004,1\n1.001,1\n", n, 4096);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING("rows 1 of 3 where w 1..1.001; not compared 2 (lines 2, 3: w blank or not like 1)",
-                           renderCsvTail(n, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 1 of 3; not compared lines 2, 3", facts(o.result).c_str());
   // Read by prefix, 1.5004 would sit between 1 and 2; it is not compared instead.
   n.from = "1";
   n.to = "2";
@@ -942,7 +928,7 @@ static void test_review_cases_are_named_not_lost() {
   o = scanWith(rows, big, 4096);
   TEST_ASSERT_TRUE(o.ok);
   TEST_ASSERT_TRUE(o.result.body.size() <= kCsvShowMax + 64);
-  TEST_ASSERT_TRUE(o.result.shownLast < o.result.matched);
+  TEST_ASSERT_TRUE(o.result.more && o.result.partTo < rows.size());
 }
 
 // ---- the owner file's shape (ruling 49, rebuild/evidence/OWNER-FILE-SHAPE.md): invented
@@ -1038,9 +1024,7 @@ static void test_owner_shaped_files_name_every_row_left_out() {
       TEST_ASSERT_EQUAL_MESSAGE(n.blanks, o.result.emptyLines, d.header);
       TEST_ASSERT_EQUAL_MESSAGE(n.rows, o.result.records, d.header);
       TEST_ASSERT_EQUAL_MESSAGE(n.rows - n.extraFields, o.result.matched, d.header);
-      const std::string tail = renderCsvTail(all, o.result);
-      if (n.comments) TEST_ASSERT_TRUE(tail.find(" skipped (lines ") != std::string::npos);
-      if (n.extraFields) TEST_ASSERT_TRUE(tail.find("field count is not the header's") != std::string::npos);
+      noWordsAboutRows(o.result.body);
       // A day, a week and a month agree with the reference too.
       for (const auto& q : {shapeQuery(d, dateOf(100), ""), shapeQuery(d, dateOf(100), dateOf(106)), shapeQuery(d, "2026-04", "")}) {
         checkAgainstReference(file, q, scanWith(file, q, 4096), d.header);
@@ -1097,10 +1081,7 @@ static void test_comment_lines_are_counted_once_and_never_shown() {
   q.from = "2026-11-19";
   const auto o = scanWith(f, q, 3);
   TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
-  TEST_ASSERT_EQUAL_STRING(
-      "\nL2 date,occasion,amount\nL3 2026-11-19,lunch,5\nL6 2026-11-19,tea,2\n"
-      "rows 2 of 2 where date 2026-11-19..2026-11-19; 4 comment lines skipped (lines 1, 4-5, 7)",
-      renderCsvRead(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("date,occasion,amount\n2026-11-19,lunch,5\n2026-11-19,tea,2\n", o.result.body.c_str());
 }
 
 // Stack review P: a day's result never lists another day's rows with a wrong field count; it
@@ -1118,15 +1099,10 @@ static void test_bad_rows_of_other_days_are_counted_not_listed() {
   q.from = "2026-11-19";
   auto o = scanWith(f, q, 7);
   TEST_ASSERT_TRUE(o.ok);
-  TEST_ASSERT_EQUAL_STRING(
-      "rows 2 of 5 where date 2026-11-19..2026-11-19; 3 other rows outside the range have a wrong field count",
-      renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 2 of 5; field count outside 3", facts(o.result).c_str());
   q.from = "2026-11-20";
   o = scanWith(f, q, 7);
-  TEST_ASSERT_EQUAL_STRING(
-      "rows 0 of 5 where date 2026-11-20..2026-11-20; skipped 1 (line 5: field count is not the header's 5); 2 other "
-      "rows outside the range have a wrong field count",
-      renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 0 of 5; field count line 5; field count outside 2", facts(o.result).c_str());
   // On the owner file's shape, a day with no bad row has no skipped clause.
   for (const ShapeDomain& d : kShapes) {
     Rng g(5150 + d.maxA);
@@ -1139,7 +1115,7 @@ static void test_bad_rows_of_other_days_are_counted_not_listed() {
       checkAgainstReference(file, dq, r, d.header);
       if (r.result.fieldCount.count == 0) {
         ++clean;
-        TEST_ASSERT_TRUE(renderCsvTail(dq, r.result).find("field count is not the header's") == std::string::npos);
+        noWordsAboutRows(r.result.body);
       }
     }
     TEST_ASSERT_TRUE(clean > 100);
@@ -1153,10 +1129,10 @@ static void test_a_bom_before_a_leading_comment_line() {
   q.from = "2026";
   const auto o = scanWith("\xEF\xBB\xBF# notes\ndate,amount\n2026-11-19,5\n", q, 1);
   TEST_ASSERT_TRUE_MESSAGE(o.ok, o.error.c_str());
-  TEST_ASSERT_EQUAL_STRING("rows 1 of 1 where date 2026..2026; 1 comment line skipped (line 1)", renderCsvTail(q, o.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("matched 1 of 1; comments line 1", facts(o.result).c_str());
   const auto h = scanWith("\xEF\xBB\xBF" "date,amount\n2026-11-19,5\n", q, 2);
   TEST_ASSERT_TRUE_MESSAGE(h.ok, h.error.c_str());
-  TEST_ASSERT_EQUAL_STRING("\nL1 date,amount\nL2 2026-11-19,5\nrows 1 of 1 where date 2026..2026", renderCsvRead(q, h.result).c_str());
+  TEST_ASSERT_EQUAL_STRING("date,amount\n2026-11-19,5\n", h.result.body.c_str());
 }
 
 int main(int, char**) {
@@ -1164,8 +1140,8 @@ int main(int, char**) {
   RUN_TEST(test_scan_agrees_with_the_reference_over_three_domains_and_hostile_rows);
   RUN_TEST(test_the_result_never_depends_on_the_chunking);
   RUN_TEST(test_the_filtered_read_has_its_exact_format);
-  RUN_TEST(test_the_rows_left_out_are_named_by_line);
-  RUN_TEST(test_next_offset_shows_every_row_once);
+  RUN_TEST(test_a_malformed_row_in_the_selection_is_returned_as_stored);
+  RUN_TEST(test_the_parts_show_every_kept_row_once);
   RUN_TEST(test_decimals_are_exact_and_round_half_away_from_zero);
   RUN_TEST(test_query_and_file_errors_state_the_fact);
   RUN_TEST(test_day_week_month_ranges_and_incomparable_keys_are_counted);
@@ -1173,8 +1149,7 @@ int main(int, char**) {
   RUN_TEST(test_a_refused_allocation_at_any_point_is_the_no_memory_error);
   RUN_TEST(test_a_card_fault_is_an_error_never_a_partial_result);
   RUN_TEST(test_day_week_and_month_reads_agree_on_a_year_file_per_domain);
-  RUN_TEST(test_identical_groups_are_named_once_each_and_the_table_limit_is_stated);
-  RUN_TEST(test_a_torn_last_line_is_named_in_the_tail);
+  RUN_TEST(test_a_torn_last_line_is_recorded);
   RUN_TEST(test_review_cases_are_named_not_lost);
   RUN_TEST(test_owner_shaped_files_name_every_row_left_out);
   RUN_TEST(test_a_year_of_the_owner_shape_is_exact_in_each_domain);

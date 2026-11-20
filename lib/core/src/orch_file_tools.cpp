@@ -55,7 +55,6 @@ const char kChanged[] = "{} changed during the edit; nothing written";
 const char kAfter[] = "after: {} is not listed";
 // results
 const char kReadHead[] = "{} size={} lines={} sha8={} bytes {}-{}";
-const char kTableHead[] = "{} size={} lines={} sha8={}";
 const char kTornNote[] = "; {}";
 const char kLimitNote[] = " (limit {} B here)";
 const char kAskedNote[] = " (asked \"{}\")";
@@ -439,7 +438,7 @@ ToolResult FileTools::read(JsonObjectConst args, const Principal& who) {
   const std::string note = c.hasLimit && eff != c.limit ? fill(R::kLimitNote, {num(eff)}) : "";
   const size_t offset = size_t(std::min<uint64_t>(c.offset, SIZE_MAX / 2));
   if (c.table) {
-    c.q.skipRows = offset;
+    c.q.fromByte = c.offset;
     c.q.limit = eff;
     err = aids::checkCsvQuery(c.q);
     return err.empty() ? readTable(t, who, c.q, note) : ToolResult::fail(err);
@@ -529,8 +528,9 @@ struct TextSource : aids::AidSource {
 
 }  // namespace
 
-// read_file with column/from/to/sum: the CSV scan, then "<path> size=.. lines=.. sha8=.." and
-// the shown rows with the totals' tail (file_aids.h's renderCsvRead).
+// read_file with column/from/to (ruling 97): the CSV scan, then exactly a plain read's page of
+// the selected rows: the same head (the part's file bytes a-b), the header in the part that
+// holds it and the selected rows as stored, and next_offset=<b> when a selected row follows.
 ToolResult FileTools::readTable(Target& t, const Principal& who, const aids::CsvQuery& q, const std::string& note) {
   std::string err, path = t.path(), body;
   uint64_t size = 0, hash = 0;
@@ -551,9 +551,14 @@ ToolResult FileTools::readTable(Target& t, const Principal& who, const aids::Csv
     hash = t.entry.hash ? t.entry.hash : src.hash;
   }
   if (!o.ok) return ToolResult::fail(o.error);
-  std::string line = fill(R::kTableHead, {path, num(o.result.bytes), num(o.result.lines), sha8Of(hash)}) + note;
+  const aids::CsvScanResult& r = o.result;
+  if (q.fromByte > r.bytes) return ToolResult::fail(fill(R::kPastEnd, {num(q.fromByte), num(r.bytes)}));
+  std::string line = readHeader(path, r.bytes, num(r.lines), hash, r.partFrom, r.partTo) + note;
   if (t.sp.changed) line += fill(R::kAskedNote, {shown(t.asked)});
-  return ToolResult::ok(line + aids::renderCsvRead(q, o.result));
+  if (r.tornLine) line += fill(R::kTornNote, {aids::kTornTail});
+  std::string out = line + "\n" + r.body;
+  if (r.more) out += fill(R::kNextOffset, {num(r.partTo)});
+  return ToolResult::ok(out);
 }
 
 // ---- writes ----------------------------------------------------------------------------

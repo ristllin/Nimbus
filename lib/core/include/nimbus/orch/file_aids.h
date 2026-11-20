@@ -7,8 +7,8 @@
 #include <vector>
 
 // file_aids - the general aids that make tracking in plain CSV files reliable on small
-// models (ruling 42): a read that filters rows by a column range (it totals nothing: ruling
-// 95 removed sum), an edit that picks one of several matches by line number, the
+// models (ruling 42): a read that selects rows by a column range (a plain read of those rows:
+// it totals nothing and says nothing about the rest, rulings 95 and 97), an edit that picks one of several matches by line number, the
 // facts an append states, and the torn-tail note. Shared by both engines and nimbusd: the
 // bindings move bytes, this library decides and renders, so every host gives
 // byte-identical results on the same file.
@@ -17,8 +17,8 @@
 // AidSource (one card-lock hold per call), so a file of any size is read in bounded
 // memory. Every working block comes from workingAlloc (psram_alloc.h) and is checked: a
 // refused allocation, at any point, ends the call with kAidNoMemory and changes nothing.
-// Nothing is dropped silently: every row the scan read is matched, out of range, or
-// counted under a named reason with its line numbers.
+// Nothing is dropped silently: a selection leaves out only rows whose key reads and is out of
+// range; every other row is shown as stored.
 //
 // Portable, Arduino-free, host-tested (test_file_tools_csv, test_file_edit_line,
 // test_file_append_facts). Engine-2 only until phase 2 links it into both engines.
@@ -27,17 +27,13 @@ namespace nimbus::orch::aids {
 // ---- limits -------------------------------------------------------------------------
 // Bytes per AidSource read (and per AidSink part write): one card-lock hold each.
 inline constexpr size_t kAidChunk = 4096;
-// The longest CSV record the scan keeps (bytes, line end excluded). A longer record is
-// counted "too long" with its line and takes no part in the match.
+// The longest CSV record the scan keeps (bytes, line end excluded). A longer record takes no
+// part in the match and is shown as its first kCsvRecordMax bytes (it is kept).
 inline constexpr size_t kCsvRecordMax = 8192;
 // The most bytes of shown rows one read returns (a larger limit is this).
 inline constexpr size_t kCsvShowMax = 1u << 20;
 // Line numbers a list in a result names before "+N".
 inline constexpr size_t kAidListMax = 8;
-// Line numbers one identical-line group names before "+N".
-inline constexpr size_t kAidGroupLinesMax = 4;
-// Matching rows checked for identical lines; past this the result says so.
-inline constexpr size_t kCsvIdenticalMax = 8192;
 // The text of a line quoted in an edit error (bytes, cut on a UTF-8 boundary).
 inline constexpr size_t kAidQuoteMax = 120;
 // The header quoted in an unknown-column error, and line 1 in a no-header error.
@@ -99,9 +95,15 @@ std::string renderDec3(Dec3 v);
 
 // ---- read_file column/from/to ------------------------------------------------------
 // The query. column names a header field; a row matches when its field is in from..to
-// (to defaults to from). skipRows and limit page the rows shown. A selected row that does
-// not parse (a wrong field count, a key not compared) is shown beside the matching rows in
-// file order and named in the tail; it is no matching row and does not move the paging.
+// (to defaults to from). The result is a plain read of the selected rows (ruling 97): the
+// header and the selected rows as stored, in file order, one per line, and nothing about the
+// rows left out. A row is left out only when its key reads and is out of range (and it is one
+// line); every other row (a key that does not read, a blank key, a wrong field count, a
+// record too long to hold) is kept, since leaving it out silently is the old trap. Comment
+// lines ('#' first) and empty lines are no rows and are never shown. Paging is by file
+// byte, as a plain read: fromByte is the read's offset (the part starts at the first line
+// at or past it) and the part ends before the first kept row that does not fit in limit
+// (the part's first row is always shown).
 //
 // The range rule, per row key k (the field with spaces trimmed):
 //   - numeric: when from, to and k are all numbers, from <= k <= to as numbers (a bound
@@ -112,11 +114,11 @@ std::string renderDec3(Dec3 v);
 //     digit; it matches when cut to the length of from it is >= from and cut to the length
 //     of to it is <= to (bytes). So from=to="2026-11-19" is one day, "2026-11" a month,
 //     2026-11-13..2026-11-19 a week, and "19/11/2026", "2026-11-1" against a day, or a
-//     blank key, is "not compared" (counted with its line), never quietly out of range.
+//     blank key, is "not compared" (kept, with its line in the scan's lists), never quietly out of range.
 struct CsvQuery {
   std::string column;            // "" = no filter
   std::string from, to;          // to "" = from
-  size_t skipRows = 0;           // matching rows not shown (read_file offset)
+  uint64_t fromByte = 0;         // the read's offset (a file byte)
   size_t limit = 32768;          // bytes of shown lines (read_file limit past the page floor, at most kCsvShowMax); the first row of a page is always shown
 };
 // "" when the query is well formed, else the error (no file is read).
@@ -130,11 +132,6 @@ struct LineList {
   // field with line ends, or a quote that never closes, spans several lines).
   std::vector<uint32_t> ends;
 };
-// One group of matching rows with identical text.
-struct LineGroup {
-  size_t count = 0;
-  std::vector<uint32_t> lines;  // the first kAidGroupLinesMax
-};
 
 // What a scan found. A line whose first non-blank byte is '#' is a COMMENT line wherever it
 // stands (ruling 49: a file-format convention, not a domain rule): never a row,
@@ -144,8 +141,8 @@ struct LineGroup {
 // tooLong. A row whose field count differs from the header's is still placed by its key (the
 // field at the header's key index): plainly out of range, it is only counted
 // (fieldCountOutside, no line list) unless it spans several lines (a quote that swallowed
-// rows); in range or not comparable, it is named by line
-// (fieldCount), so a day's result never lists bad rows of other days.
+// rows); in range or not comparable, it is kept and listed (fieldCount). The counts and lists
+// are the scan's own record for its tests (every record in one bucket); no result renders them.
 struct CsvScanResult {
   uint64_t bytes = 0;          // bytes scanned (the file's size)
   uint64_t lines = 0;          // physical lines in the file
@@ -160,16 +157,17 @@ struct CsvScanResult {
   size_t fieldCountOutside = 0;  // rows with a wrong field count whose key is plainly out of range
   size_t commentLines = 0;     // lines whose first non-blank byte is '#' (never a row)
   LineList commentSpans;       // their runs of consecutive lines (count = runs; ends = each run's last line)
-  std::vector<LineGroup> identical;  // the first kAidListMax groups, in first-line order
-  size_t identicalGroups = 0;  // all groups found
-  size_t identicalChecked = 0; // matching rows checked (< matched: the table was full)
   uint32_t tornLine = 0;       // the last line when the file does not end in a line end
   uint32_t openQuoteLine = 0;  // the last record's first line when the file ends inside its quoted field
-  size_t shownFirst = 0;       // 1-based index of the first matching row shown (0 = none)
-  size_t shownLast = 0;
-  // header then the shown rows (matching rows and the selected rows that do not parse, in file
-  // order): "L<n> <record>\n" each, record bytes as stored (a quoted
-  // field's line ends kept, the record's own line end and a header BOM left out)
+  // The part: file bytes partFrom..partTo (lines partFromLine..partToLine); more = a kept row
+  // follows partTo. shown = data rows in the part.
+  uint64_t partFrom = 0, partTo = 0;
+  uint32_t partFromLine = 0, partToLine = 0;
+  bool more = false;
+  size_t shown = 0;
+  // The header (when the part holds it) then the kept rows, "<record>\n" each, record bytes
+  // as stored (a quoted field's line ends kept, the record's own line end, a CR before it and
+  // a header BOM left out).
   std::string body;
 };
 
@@ -209,25 +207,6 @@ class CsvScanner {
   CsvScanResult own_;
   CsvScanResult& res_;
 };
-
-// The tail read_file prints after the shown rows, one line (no line end):
-//   rows <m> of <n>[ where <column> <from>..<to>]
-//   [; shown <a>-<b> | ; shown none]                       (only when not every row is shown)
-//   [; <k> comment line(s) skipped (lines <a>-<b>, <c>, ... +N runs)]
-//   [; not compared <k> (lines <l>, ... +N: <column> blank or not like <from>)]
-//   [; skipped <k> (lines <l>, ... +N: field count is not the header's <h>)]
-//   [; <k> other row(s) outside the range have a wrong field count]
-//   [; too long <k> (lines <l>, ... +N: over 8192 B)]
-//   [; empty lines <k>]
-//   [; identical lines <g> groups (<l>=<l>=<l>+N, <l>=<l>, ... +N)]
-//   [; identical lines checked in the first <c> matching rows only]
-//   [; last line <l> has no newline (a write may have been cut short)]
-//   [; the row at line <l> ends inside a quoted field (a write may have been cut short)]
-// A record list names a record spanning lines as "<first>-<last>" ("lines 2-22").
-std::string renderCsvTail(const CsvQuery& q, const CsvScanResult& r);
-// The whole filtered read result after the binding's head line:
-//   "\n" + body (the header line is "L<n> <header>", n its line) + tail + ("\nnext_offset=<k>" when matching rows remain unshown).
-std::string renderCsvRead(const CsvQuery& q, const CsvScanResult& r);
 
 // ---- edit_file with line ----------------------------------------------------------
 // Exact find and replace, streamed. Matches are found left to right without overlap.

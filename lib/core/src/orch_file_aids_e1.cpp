@@ -133,6 +133,17 @@ size_t partLength(std::string_view w, size_t skip, size_t full, bool toEnd) {
 
 }  // namespace
 
+// The part head every files.read gives, plain or a selection (RB-TR1's form):
+//   bytes <a>-<b> of <n>[ ("offset":<k> was inside a character)][, lines <x>-<y> of <m>]
+//   ; next part: "offset":<b>   or   ; end of file
+void partHeadInto(detail::Txt& t, const PartHead& h, const uint64_t* movedFrom) {
+  t << "bytes " << h.from << "-" << h.to << " of " << h.size;
+  if (movedFrom) t << " (\"offset\":" << *movedFrom << " was inside a character)";   // the part starts at the next one
+  if (h.firstLine) t << ", lines " << h.firstLine << "-" << h.lastLine << " of " << h.lines;
+  if (h.more) t << "; next part: \"offset\":" << h.to << "\n";
+  else t << "; end of file\n";
+}
+
 bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::string& out) {
   if (cap < kPartMinCap) cap = kPartMinCap;
   const uint64_t from0 = std::min(offset, size);
@@ -152,15 +163,12 @@ bool readPart(AidSource& src, uint64_t size, uint64_t offset, size_t cap, std::s
   const std::string_view part = w.substr(skip, len);
   const uint64_t to = from + len;
   detail::Txt t;
-  t << "bytes " << from << "-" << to << " of " << size;
-  if (skip) t << " (\"offset\":" << from0 << " was inside a character)";   // the part starts at the next one
+  PartHead h{from, to, size, 0, 0, p.newlines + (p.last != '\n' ? 1 : 0), to < size};
   if (len) {
-    const uint64_t first = 1 + p.newlinesBefore;
-    t << ", lines " << first << "-" << first + lineEnds(part.substr(0, len - 1)) << " of "
-      << p.newlines + (p.last != '\n' ? 1 : 0);
+    h.firstLine = 1 + p.newlinesBefore;
+    h.lastLine = h.firstLine + lineEnds(part.substr(0, len - 1));
   }
-  if (to < size) t << "; next part: \"offset\":" << to << "\n";
-  else t << "; end of file\n";
+  partHeadInto(t, h, skip ? &from0 : nullptr);
   t << part;
   out = std::move(t.s);
   return true;
@@ -182,7 +190,7 @@ bool queryArgs(ArduinoJson::JsonObjectConst a, size_t offset, CsvQuery& q, std::
     if (!v.isNull() && !v.is<const char*>()) return (err = std::string(keys[i]) + " is not a string").empty();
     if (!v.isNull()) *fields[i] = v.as<const char*>();
   }
-  q.skipRows = offset;
+  q.fromByte = offset;
   q.limit = kE1PageBytes;
   err = checkCsvQuery(q);
   return err.empty();
@@ -196,9 +204,13 @@ bool tableRead(AidSource& src, uint64_t size, const std::string& path, const Csv
     out = o.error;
     return false;
   }
+  // Ruling 97: the same part head as a plain read, then the selected rows as stored.
+  const CsvScanResult& r = o.result;
   detail::Txt t;
-  t << std::string_view(path) << " size=" << o.result.bytes << " lines=" << o.result.lines
-    << std::string_view(renderCsvRead(q, o.result));
+  PartHead h{r.partFrom, r.partTo, r.bytes, 0, 0, r.lines, r.more};
+  if (r.partTo > r.partFrom) h.firstLine = r.partFromLine, h.lastLine = r.partToLine;
+  partHeadInto(t, h, nullptr);
+  t << std::string_view(r.body);
   out = std::move(t.s);
   return true;
 }
