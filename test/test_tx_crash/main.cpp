@@ -675,21 +675,40 @@ void test_the_resumed_t_item_counts_when_head_json_is_lost() {
   TEST_ASSERT_EQUAL_STRING("notice", intents::bootActionSlug(b.resumeReports.back().action));
 }
 
-// A reply over the stored line's tier went to the bulk file and the a item holds its stub: the
-// boot never sends the stub as the reply; the owner gets the plain crash notice.
-void test_a_stored_answer_kept_only_as_its_stub_is_never_sent() {
+// A reply over the head's message cap keeps its head inline and names its whole text in the bulk
+// file (the a item's handle; lane RB-H81, as RB-X1's known limit asked): a 30,000 B reply stored
+// and not sent is sent whole, once, at the next boot, with no model call. The counter-case: when
+// the bulk file cannot give the whole back, the head is never sent as the reply; the owner gets
+// the plain crash notice.
+void test_a_long_stored_answer_is_sent_whole_from_its_bulk_handle() {
   TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
-  txb::Battery b;
-  std::string longReply = "Here is the plan. ";
-  while (longReply.size() < 14000) longReply += "Step and detail, line by line.\n";
-  sanity(b, "ledger_write", kWrite, longReply);
-  b.killBeforeSend = 0;
-  runCut(b, {txb::TurnScript{30, "plan it", {}}});
-  TEST_ASSERT_TRUE(b.killed);
-  TXB_OK(b.restartAfterCut());
-  TEST_ASSERT_EQUAL_STRING("notice", intents::bootActionSlug(b.resumeReports.back().action));
-  TEST_ASSERT_EQUAL(1, (int)b.sent.size());
-  TEST_ASSERT_TRUE_MESSAGE(b.sent[0].text.find("[stub") == std::string::npos, "the stub went out as the reply");
+  for (bool bulkLost : {false, true}) {
+    txb::Battery b;
+    std::string longReply = "Here is the plan. ";
+    while (longReply.size() < 30000) longReply += "Step and detail, line by line.\n";
+    longReply += "THE END";
+    sanity(b, "ledger_write", kWrite, longReply);
+    b.killBeforeSend = 0;
+    runCut(b, {txb::TurnScript{30, "plan it", {}}});
+    TEST_ASSERT_TRUE(b.killed);
+    if (bulkLost)
+      for (auto& kv : b.files.files)
+        if (kv.first.find(".txb") != std::string::npos) kv.second.clear();
+    const size_t requests = b.model.requests().size();
+    TXB_OK(b.restartAfterCut());
+    TEST_ASSERT_EQUAL(requests, b.model.requests().size());   // no model call
+    std::string sent;
+    for (const txb::SentMessage& m : b.sent) sent += m.text;
+    if (bulkLost) {
+      TEST_ASSERT_EQUAL_STRING("notice", intents::bootActionSlug(b.resumeReports.back().action));
+      TEST_ASSERT_TRUE_MESSAGE(sent.find("[text continues:") == std::string::npos, "the head went out as the reply");
+      continue;
+    }
+    TEST_ASSERT_EQUAL_STRING("send-stored", intents::bootActionSlug(b.resumeReports.back().action));
+    TEST_ASSERT_TRUE_MESSAGE(sent.find("THE END") != std::string::npos, "the owner did not get the whole reply");
+    TEST_ASSERT_EQUAL_MESSAGE(sent.find("THE END"), sent.rfind("THE END"), "the reply went out twice");
+    TEST_ASSERT_TRUE(sent.find("[text continues:") == std::string::npos);
+  }
 }
 
 }  // namespace
@@ -720,6 +739,6 @@ int main(int, char**) {
   RUN_TEST(test_a_routines_stored_answer_is_sent_not_lost);
   RUN_TEST(test_a_refused_boot_send_is_tried_again_at_the_next_boot);
   RUN_TEST(test_the_resumed_t_item_counts_when_head_json_is_lost);
-  RUN_TEST(test_a_stored_answer_kept_only_as_its_stub_is_never_sent);
+  RUN_TEST(test_a_long_stored_answer_is_sent_whole_from_its_bulk_handle);
   return UNITY_END();
 }

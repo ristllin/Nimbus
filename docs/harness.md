@@ -961,7 +961,8 @@ An assistant text over the inline limit keeps at least the head's v5.1.2 message
 (`tx::HeadBudget::messageCap`, never under 12,288 B), cut on a character, then one line
 `[text continues: <N>B more: view id=r<q>]` (`tx::longTextHead`, `rules.h`). The whole text goes
 to the bulk file first and the a item names it by its handle (`hdl`), so a later view and a resume
-after a crash read the whole. A saved owner paste takes the same form with
+after a crash read the whole (`plain_resume.cpp` sends a stored, unsent long reply whole from it,
+and the crash notice when the bulk file cannot give it back; never the head as the reply). A saved owner paste takes the same form with
 `read_file path=<path>` (`tx::pathPointer`); the binding that saves it uses the head's message cap,
 never the first 4,096 B. With no storage card the text stays whole when its line fits, else the
 line says the rest was not kept. The owner always gets the whole reply.

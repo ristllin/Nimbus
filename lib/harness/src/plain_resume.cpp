@@ -87,11 +87,14 @@ class BootResume {
     return q && d_.arena->find(q, i).ok() && d_.arena->get(i, item_).ok();
   }
 
-  // The stored final answer is the reply itself, not the stub a long reply leaves in the a item
-  // (its whole text went to the bulk file, which the a item does not name): the stub's opening
-  // as tx::stubText writes it for that q.
+  // The stored final answer can be sent whole: a long reply's a item names its whole text in the
+  // bulk file (handle; lane RB-H81) and that payload reads back; any other a item is the reply
+  // itself unless it is the stub an older engine left (the stub's opening as tx::stubText writes
+  // it for that q). The head a long reply keeps inline is never sent as the reply.
   bool wholeAnswer(const intents::OpenTurn& open) {
     if (!readAt(open.answerQ)) return false;
+    std::string whole;
+    if (!item_.handle.empty()) return d_.log->readBulk(item_.handle, 0, tx::kBulkMaxBytes, whole).ok();
     tx::StubFacts f;
     f.tool = texts::device_notes::kAssistantSlug;
     f.q = open.answerQ;
@@ -197,7 +200,9 @@ class BootResume {
 
   Status sendStored(const intents::OpenTurn& open) {
     if (!readAt(open.answerQ)) return Status::fail(Err::NotFound, "plain::resume.answer");
-    const std::string text = item_.x;
+    std::string text = item_.x;   // a long reply: its whole text from the bulk file (RB-H81)
+    if (!item_.handle.empty() && !d_.log->readBulk(item_.handle, 0, tx::kBulkMaxBytes, text).ok())
+      return Status::fail(Err::NotFound, "plain::resume.answer");
     DeliverInput in;
     in.turn = &ctx_;
     in.text = &text;
