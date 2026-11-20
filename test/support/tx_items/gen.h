@@ -120,6 +120,7 @@ inline tx::Item fullItem(tx::ItemKind kind, uint64_t q, Rng& r, size_t textMax =
   e.events = {"change:pointer", anyBytes(r, 16)};
   e.promptHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
   e.manifestHash = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));
+  e.lastPromptTokens = static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu));   // RB-H81
   return it;
 }
 
@@ -137,7 +138,7 @@ inline tx::Item project(const tx::Item& in) {
     case tx::ItemKind::TurnOpen:
       o.trigger = in.trigger, o.head = in.head, o.profile = in.profile, o.attempt = in.attempt, o.photos = in.photos;
       break;
-    case tx::ItemKind::Assistant: o.x = in.x, o.rd = in.rd, o.fin = in.fin; break;
+    case tx::ItemKind::Assistant: o.x = in.x, o.rd = in.rd, o.fin = in.fin, o.handle = in.handle; break;
     case tx::ItemKind::Call: o.id = in.id, o.n = in.n, o.args = in.args, o.eff = in.eff, o.rd = in.rd; break;
     case tx::ItemKind::Intent: o.id = in.id, o.n = in.n; break;
     case tx::ItemKind::Result:
@@ -174,7 +175,7 @@ inline std::string firstDifference(const tx::Item& a, const tx::Item& b) {
   TXGEN_SAME(end.rounds) TXGEN_SAME(end.tools) TXGEN_SAME(end.headRequests) TXGEN_SAME(end.probeRequests)
   TXGEN_SAME(end.promptTokens) TXGEN_SAME(end.outputTokens) TXGEN_SAME(end.cacheReadTokens)
   TXGEN_SAME(end.cacheWriteTokens) TXGEN_SAME(end.microUsd) TXGEN_SAME(end.ms) TXGEN_SAME(end.events)
-  TXGEN_SAME(end.promptHash) TXGEN_SAME(end.manifestHash)
+  TXGEN_SAME(end.promptHash) TXGEN_SAME(end.manifestHash) TXGEN_SAME(end.lastPromptTokens)
 #undef TXGEN_SAME
   if (a.parts.size() != b.parts.size()) return "parts";
   for (size_t i = 0; i < a.parts.size(); ++i) {

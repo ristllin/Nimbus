@@ -285,6 +285,7 @@ void encodeRoundKinds(Writer& w, const Item& it) {
       fieldStr(w, "x", it.x);
       fieldU64(w, "rd", it.rd);
       fieldFlag(w, "fin", it.fin);
+      fieldStr(w, "hdl", it.handle);   // a text over the message cap: where its whole is (RB-H81)
       return;
     case ItemKind::Call:
       fieldStr(w, "id", it.id);
@@ -719,15 +720,19 @@ bool readExchangeRef(Cursor& cc, int n, ExchangeFacts& x) {
 
 bool readExchange(Cursor& c, ExchangeFacts& x) {
   int n = 0;
-  return readArray(c, [&](Cursor& cc) {
-           switch (n++) {
-             case 0: return readUnsigned(cc, x.requestBytes);
-             case 1: return readUnsigned(cc, x.ms);
-             case 2: return readUnsigned(cc, x.httpStatus);
-             default: return readExchangeRef(cc, n - 1, x);
-           }
-         }) &&
-         n >= 3;
+  const bool ok = readArray(c, [&](Cursor& cc) {
+                    switch (n++) {
+                      case 0: return readUnsigned(cc, x.requestBytes);
+                      case 1: return readUnsigned(cc, x.ms);
+                      case 2: return readUnsigned(cc, x.httpStatus);
+                      default: return readExchangeRef(cc, n - 1, x);
+                    }
+                  }) &&
+                  n >= 3;
+  // bodyHash 0 means no reference was recorded (the encoder writes none): a line that says
+  // otherwise reads as the three figures alone, so it re-encodes to what it decodes to.
+  if (ok && !x.bodyHash) x = ExchangeFacts{x.requestBytes, x.ms, x.httpStatus};
+  return ok;
 }
 
 template <class T, class One>
@@ -786,7 +791,7 @@ const FieldRule kFields[] = {
     TX_BOOL("ok", R, ok),
     {"cls", R, [](Cursor& c, Decoding& d) { return readSlug<ResultClass>(c, d.it.cls, resultClassSlug, 3, &kOutside); }},
     {"cls", H, [](Cursor& c, Decoding& d) { return readSlug<NoteClass>(c, d.it.note, noteClassSlug, kNoteClasses, &kUnknownNote); }},
-    TX_STR("hdl", R, handle),
+    TX_STR("hdl", A | R, handle),
     TX_NUM("b", R, bytes),
     TX_NUM("l", R, lines),
     TX_STR("st", R, st),
@@ -847,7 +852,7 @@ void clearItem(Item& it) {
   e.cause.clear(), e.exchanges.clear(), e.events.clear();
   e.rounds = e.tools = e.headRequests = e.probeRequests = 0;
   e.promptTokens = e.outputTokens = e.cacheReadTokens = e.cacheWriteTokens = 0;
-  e.microUsd = e.ms = e.promptHash = e.manifestHash = 0;
+  e.microUsd = e.ms = e.promptHash = e.manifestHash = e.lastPromptTokens = 0;
 }
 
 // The 8 lowercase hex digits the encoder writes (an upper-case digit is not ours: torn).

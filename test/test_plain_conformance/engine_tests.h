@@ -872,8 +872,10 @@ inline void test_a_huge_argument_and_a_huge_reply_keep_the_turn() {
   TEST_ASSERT_EQUAL_STRING("reply", lastEnd(storedOf(b))->end.cause.c_str());
   b.model.push(sp::say("ok"));
   TXB_OK(b.owner("next", out));
-  TEST_ASSERT_TRUE(b.model.last().body.find(" END") == std::string::npos);   // the reply is a stub now
-  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[stub assistant r"));
+  // The reply keeps the head's message cap inline, then points at the whole (RB-H81, ruling 91 F1).
+  TEST_ASSERT_TRUE(b.model.last().body.find(" END") == std::string::npos);
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), std::string(12000, 'r')));
+  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[text continues: "));
 }
 
 // I: results pair with their call by q, not by id: a dialect that reuses ids still gets each

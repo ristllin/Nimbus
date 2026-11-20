@@ -59,6 +59,70 @@ inline void test_the_turn_end_keeps_the_last_request_whole_prompt() {
   }
 }
 
-inline void run() { RUN_TEST(test_the_turn_end_keeps_the_last_request_whole_prompt); }
+
+// A long text with markers: "NEAR" just before byte `near`, "PAST" past the message cap.
+inline std::string longReply(size_t bytes) {
+  std::string s;
+  for (int i = 0; s.size() < bytes; ++i) s += "line " + std::to_string(i) + " of the long answer.\n";
+  s.resize(bytes);
+  s.replace(12288 - 40, 4, "NEAR");
+  if (bytes > 20000) s.replace(20000, 4, "PAST");
+  return s;
+}
+
+// Ruling 91 blockers/F1, DoD item 4: a reply over the inline limit keeps at least the head's v5.1.2
+// message cap inline (HeadBudget::messageCap: 12,288 B on Sonnet, never under it on a floor head)
+// and then a view pointer to the whole, which the a item names by its bulk handle; the owner gets
+// the whole reply. Tested at 12,289 B and 30,000 B on Sonnet direct and on a floor head (custom).
+// The counter-case: a reply at the cap stays whole with no pointer.
+inline void test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer() {
+  for (bool floor : {false, true})
+    for (size_t bytes : {(size_t)12288, (size_t)12289, (size_t)30000}) {
+      txb::Battery b;
+      if (floor) b.hostOverride = "custom";
+      tx::HeadBudget hb;
+      TEST_ASSERT_TRUE(tx::budgetFor(b.headKey(), tx::Profile::Full, hb).ok());
+      TEST_ASSERT_TRUE(hb.messageCap >= 12288);
+      const std::string reply = longReply(bytes);
+      b.model.push(sp::say(reply));
+      b.model.push(sp::say("Short."));
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("write it out", out));
+      TEST_ASSERT_TRUE_MESSAGE(out.delivered, "the reply was not delivered");
+      std::string sent;
+      for (const txb::SentMessage& m : b.sent) sent += m.text;
+      TEST_ASSERT_TRUE_MESSAGE(sent.find(reply.substr(bytes - 60)) != std::string::npos, "the owner did not get the whole reply");
+      const std::vector<tx::Item> items = storedOf(b);
+      const tx::Item* a = nullptr;
+      for (const tx::Item& it : items)
+        if (it.kind == tx::ItemKind::Assistant && it.fin) a = &it;
+      TEST_ASSERT_NOT_NULL(a);
+      if (bytes <= hb.messageCap) {
+        TEST_ASSERT_EQUAL_STRING_MESSAGE(reply.c_str(), a->x.c_str(), "a reply at the cap must stay whole");
+        TEST_ASSERT_TRUE(a->handle.empty());
+        continue;
+      }
+      char why[160];
+      std::snprintf(why, sizeof why, "%s %zu B: the stored reply keeps %zu B", floor ? "floor" : "sonnet", bytes, a->x.size());
+      TEST_ASSERT_TRUE_MESSAGE(a->x.compare(0, hb.messageCap - 3, reply, 0, hb.messageCap - 3) == 0, why);
+      TEST_ASSERT_TRUE_MESSAGE(a->x.find(tx::viewPointer(a->q)) != std::string::npos, "no view pointer to the rest");
+      TEST_ASSERT_FALSE_MESSAGE(a->handle.empty(), "the a item does not name where the whole is");
+      std::string whole;
+      tx::TxLog reader(b.files, b.chatKey);
+      TEST_ASSERT_TRUE(reader.readBulk(a->handle, 0, tx::kBulkMaxBytes, whole).ok());
+      TEST_ASSERT_TRUE_MESSAGE(whole == reply, "the handle does not read back the whole reply");
+      // The next turn's request carries the first messageCap bytes of it, not a 200 B preview.
+      plain::TurnOutcome next;
+      TXB_OK(b.owner("thanks", next));
+      const sp::Recorded& req = b.model.requests().back();
+      TEST_ASSERT_TRUE_MESSAGE(req.body.find("NEAR") != std::string::npos, "the next request lost the reply's first 12 KB");
+      if (bytes > 20000) TEST_ASSERT_TRUE(req.body.find("PAST") == std::string::npos);
+    }
+}
+
+inline void run() {
+  RUN_TEST(test_the_turn_end_keeps_the_last_request_whole_prompt);
+  RUN_TEST(test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer);
+}
 
 }  // namespace h81_tests

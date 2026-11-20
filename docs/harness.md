@@ -945,6 +945,17 @@ chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the ne
 digests that fit 4,096 B as its summary, the counters, failure count and pause at 0, and
 a row pointer ("m%08x") that never moves back; other chats' records stay byte for byte.
 
+### Long replies and pastes (lane RB-H81)
+
+An assistant text over the inline limit keeps at least the head's v5.1.2 message cap inline
+(`tx::HeadBudget::messageCap`, never under 12,288 B), cut on a character, then one line
+`[text continues: <N>B more: view id=r<q>]` (`tx::longTextHead`, `rules.h`). The whole text goes
+to the bulk file first and the a item names it by its handle (`hdl`), so a later view and a resume
+after a crash read the whole. A saved owner paste takes the same form with
+`read_file path=<path>` (`tx::pathPointer`); the binding that saves it uses the head's message cap,
+never the first 4,096 B. With no storage card the text stays whole when its line fits, else the
+line says the rest was not kept. The owner always gets the whole reply.
+
 ### Compaction: when, the summarizer, the swap
 
 `lib/harness/include/nimbus/harness/plain/compact.h` (body `plain_compact.cpp`, lane

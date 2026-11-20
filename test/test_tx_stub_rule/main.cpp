@@ -804,8 +804,28 @@ void test_rules_show_result_needs_a_sorted_list() {
 
 }  // namespace
 
+
+// RB-H81 (rulings 81 to 83): a long text keeps its first `cap` bytes whole, cut on a character,
+// then names the rest and where it is; at or under the cap it is returned untouched.
+void test_rules_long_text_keeps_the_cap_then_points_at_the_rest() {
+  std::string out;
+  TEST_ASSERT_TRUE(tx::longTextHead("short", 12288, tx::viewPointer(7), out).ok());
+  TEST_ASSERT_EQUAL_STRING("short", out.c_str());
+  std::string text(12287, 'a');
+  text += "\xc3\xa9";   // a two-byte character across the cap
+  text += std::string(100, 'b');
+  TEST_ASSERT_TRUE(tx::longTextHead(text, 12288, tx::viewPointer(42), out).ok());
+  TEST_ASSERT_EQUAL_STRING((std::string(12287, 'a') + "\n[text continues: 102B more: view id=r42]").c_str(), out.c_str());
+  TEST_ASSERT_TRUE(tx::longTextHead(std::string(7000, 'p'), 6144, tx::pathPointer("inbox/991.txt"), out).ok());
+  TEST_ASSERT_EQUAL_STRING((std::string(6144, 'p') + "\n[text continues: 856B more: read_file path=inbox/991.txt]").c_str(), out.c_str());
+  TEST_ASSERT_TRUE(tx::longTextHead(std::string(7000, 'p'), 6144, "", out).ok());
+  TEST_ASSERT_TRUE(out.find("not kept: no storage card]") != std::string::npos);
+  TEST_ASSERT_FALSE(tx::longTextHead("x", 0, "", out).ok());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
+  RUN_TEST(test_rules_long_text_keeps_the_cap_then_points_at_the_rest);
   RUN_TEST(test_checker_rejects_wrong_internal_stubs);
   RUN_TEST(test_checker_rejects_leaking_outside_stubs);
   RUN_TEST(test_internal_stub_has_the_prd_shape);

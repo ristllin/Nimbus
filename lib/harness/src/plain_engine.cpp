@@ -66,6 +66,7 @@ struct Turn {
   const WireCodec* wire = nullptr;
   uint32_t bodyCap = 0;                // the head's body cap (budget()); 0 only before it runs
   bool floorHead = false;              // the head's class (tx::HeadBudget::floorHead)
+  uint32_t messageCap = tx::kInlineMessageCap;   // text kept inline (tx::HeadBudget::messageCap)
   GuardLimits limits;
   LadderState ladder;
   RenderInput render;
@@ -416,6 +417,7 @@ class TurnRun {
     if (tx::budgetFor(key, t_.ctx.profile, b).ok()) {
       t_.bodyCap = b.bodyCap;
       t_.floorHead = b.floorHead;
+      t_.messageCap = std::max<uint32_t>(b.messageCap, tx::kInlineMessageCap);
       t_.ctx.profile = b.profile;
       return Status::success();
     }
@@ -951,15 +953,20 @@ class TurnRun {
     return out;
   }
 
-  // Tier 1 for assistant text: over kTier1AssistantText it goes to the bulk file and the a
-  // item holds its stub; when the bulk file refuses, the text stays inline if its line fits.
+  // Tier 1 for assistant text (owner rulings 81 to 83): whole up to the head's v5.1.2 message cap
+  // (tx::HeadBudget::messageCap, never under 12,288 B). Over it the whole goes to the bulk file
+  // first, the a item names it (handle: a later view and a resume after a crash read the whole) and
+  // keeps the first messageCap bytes with a line pointing at the rest (tx::longTextHead), never a
+  // 200 B preview. When the bulk file refuses, the text stays whole if its line fits, else the
+  // head says the rest was not kept. The delivered text stays whole.
   Status tierText(const std::string& text, tx::Item& a) {
     a.x = text;
-    if (text.size() <= tx::kTier1AssistantText) return Status::success();
-    std::string handle;
-    const bool kept = d_.log->appendBulk(t_.ctx.turn, text, handle).ok();
+    const size_t cap = std::max<size_t>(tx::kTier1AssistantText, t_.messageCap);
+    if (text.size() <= cap) return Status::success();
+    const bool kept = d_.log->appendBulk(t_.ctx.turn, text, a.handle).ok();
+    if (!kept) a.handle.clear();
     if (!kept && text.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();
-    return stubOf(texts::device_notes::kAssistantSlug, text, kept, a.x);
+    return tx::longTextHead(text, cap, kept ? tx::viewPointer(c_.nextQ) : std::string(), a.x);
   }
 
   Status meta(const ParsedStep& step, uint16_t beforeCall) {

@@ -118,6 +118,18 @@ Status stubText(const StubFacts& facts, std::string& out);
 // A long call argument: '[stub <bytes>B sha:<sha8>: view id=r<q>]'. InvalidArgument for q 0
 // or a sha8 that is not 8 hex characters.
 Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out);
+// Long text kept inline (owner rulings 81 to 83, PRD section 2 tier 1 as amended; lane RB-H81): an
+// assistant text or a saved owner paste over the inline limit keeps its first `cap` bytes (the
+// head's v5.1.2 message cap at least: tx::HeadBudget::messageCap), cut on a character, then on its
+// own line '[text continues: <rest>B more: <where>]'. `where` is the pointer to the saved whole:
+// 'view id=r<q>' for a text in the bulk file, 'read_file path=<path>' for a saved paste; empty, the
+// whole was not kept: 'not kept: no storage card'. Text at or under `cap` is returned whole.
+// InvalidArgument for a cap of 0.
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out);
+// The pointers longTextHead names.
+inline std::string viewPointer(uint64_t q) { return "view id=r" + std::to_string(q); }
+inline std::string pathPointer(const std::string& path) { return "read_file path=" + path; }
+
 // A photo out of view: '[photo p<ref8> <when> not shown: view id=p<ref8>]'. ref8 is the
 // photo ref without its 'p' (1 to 16 letters or digits); when is photoWhen's text (empty when
 // the clock was not set: the field is left out). InvalidArgument for a bad ref.

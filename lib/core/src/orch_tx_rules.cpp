@@ -28,6 +28,9 @@ constexpr const char kNoCardOutside[] = "full result not kept: no storage card";
 constexpr const char kNoClock[] = "--:--";
 constexpr const char kOmissionMid[] = " earlier turns, ";
 constexpr const char kOmissionTail[] = ", not shown: search finds them]";
+constexpr const char kTextContinues[] = "\n[text continues: ";
+constexpr const char kTextMore[] = "B more: ";
+constexpr const char kTextNotKept[] = "not kept: no storage card";
 
 // ---- one-line UTF-8 text -------------------------------------------------------------------
 
@@ -311,6 +314,27 @@ Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::str
   out.clear();
   if (q == 0 || !isHex8(sha8)) return Status::fail(Err::InvalidArgument, "tx::longArgStub");
   out = std::string(kStubOpen) + std::to_string(bytes) + "B sha:" + sha8 + ": view id=r" + std::to_string(q) + "]";
+  return Status::success();
+}
+
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out) {
+  if (!cap) {
+    out.clear();
+    return Status::fail(Err::InvalidArgument, "tx::longTextHead");
+  }
+  if (text.size() <= cap) {
+    out = text;
+    return Status::success();
+  }
+  size_t n = cap;   // on a character: never a sequence cut in two
+  while (n > 0 && ((unsigned char)text[n] & 0xC0) == 0x80) --n;
+  std::string s = text.substr(0, n);
+  s += kTextContinues;
+  s += std::to_string(text.size() - n);
+  s += kTextMore;
+  s += where.empty() ? std::string(kTextNotKept) : where;
+  s += ']';
+  out.swap(s);
   return Status::success();
 }
 
