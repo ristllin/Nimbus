@@ -1,0 +1,11 @@
+{
+  "lane": "RB-SEAM2",
+  "allowance_bytes": 512,
+  "envs": {
+    "esp32s3": 512,
+    "esp32s3-cyd": 512,
+    "test": 512,
+    "test-cyd": 512
+  },
+  "why": "PRD section 10: an engine-1 image moves by at most 512 B per S2 lane. Same-tree builds on rb-main 25071b78f (lanes/RB-SEAM2/scratch/base) against the lane tip: esp32s3-cyd 6,337,744 -> 6,337,968 B (+224), esp32s3 +224, test +208, test-cyd +208 (lanes/RB-SEAM2/evidence/image-delta.txt); docs pack unchanged. No behavior change: the engine-1 guards (+0: every loaded section equal, .flash.text byte identical, measured in a second tree against its own base), utcOffsetAt through engine_api.h for budget_profile_store.cpp (+32: a 16 B forwarding function and its literal), tools_e1.cpp with the memory, prefs, openq and models registration calls (+192: a second object file's unwind table and literal pool, the prefs contexts built in the new function)."
+}
