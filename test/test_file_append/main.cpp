@@ -300,7 +300,7 @@ static void test_a_comma_inside_parentheses_stays_in_its_field() {
 
 static void test_quoted_commas_and_thousands() {
   const std::string h = "date,item,amount";
-  const std::vector<std::string> f = rowOf(h, "2026-10-28,\"rent, utilities, \"\"misc\"\"\"\",\"1,045\"");
+  const std::vector<std::string> f = rowOf(h, "2026-10-28,\"rent, utilities, \"\"misc\"\"\",\"1,045\"");
   TEST_ASSERT_EQUAL(3, f.size());
   TEST_ASSERT_EQUAL_STRING("rent, utilities, \"misc\"", f[1].c_str());
   double v = 0;
