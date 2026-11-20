@@ -279,6 +279,60 @@ static void drainStaged() {
   }
 }
 
+// ---- sub-agent journal: cross-task snapshot + staged terminate (prism F24) ---
+// The sub-agent journal (g_journal) is SINGLE-WRITER on the tg_poll task - pump()
+// update/markSeen/gc it every cycle. External MCP clients reach session.list and
+// session.terminate on the AsyncTCP web task, which must NEVER touch the journal
+// concurrently (a poll firing mid-request could tear a record / corrupt job state).
+// So, mirroring loops:: web-staging and the g_memEcho model:
+//   * READS  (session.list, sessionsJson) go through a snapshot rebuilt on tg_poll
+//     after each pump(), copied out under a short mutex - never the journal;
+//   * WRITES (session.terminate) are STAGED from the web task and drained on
+//     tg_poll (terminate becomes async - the remote cancel is best-effort anyway).
+// The turn's OWN session_ops[] terminate stays synchronous: it runs on tg_poll via
+// d.cancelSession -> cancel(), already the journal's writer task, so it's untouched.
+static SemaphoreHandle_t        g_sessMux = nullptr;   // guards g_sessSnapshot
+// A FreeRTOS mutex held for one scope and given back on every path out, an exception
+// included (a turn catches std::bad_alloc, L24). A null mutex holds nothing.
+struct MuxHold {
+  SemaphoreHandle_t m;
+  explicit MuxHold(SemaphoreHandle_t mux) : m(mux) {
+    if (m) xSemaphoreTake(m, portMAX_DELAY);
+  }
+  ~MuxHold() {
+    if (m) xSemaphoreGive(m);
+  }
+  MuxHold(const MuxHold&) = delete;
+  MuxHold& operator=(const MuxHold&) = delete;
+};
+static std::vector<nimbus::orch::SessionInfo> g_sessSnapshot;
+static portMUX_TYPE             g_termSpin = portMUX_INITIALIZER_UNLOCKED;
+static std::vector<std::string> g_termQueue;           // guarded by g_termSpin
+
+// Rebuild the AsyncTCP-readable snapshot from the journal. Called ONLY on tg_poll
+// (same task as pump), so the sessionInfos() journal read is race-free; the vector
+// is built outside the lock and swapped in (O(1), no alloc while the mutex is held).
+static void refreshSessionSnapshot() {
+  std::vector<nimbus::orch::SessionInfo> fresh =
+      g_jobs ? g_jobs->sessionInfos() : std::vector<nimbus::orch::SessionInfo>{};
+  MuxHold hold(g_sessMux);
+  g_sessSnapshot.swap(fresh);
+}
+
+// Apply web-staged terminates on tg_poll (the journal's single writer). Swap the
+// queue out under the spinlock (O(1)), then cancel() each outside it. A bad/stale
+// id is a harmless no-op (the job already finished between staging and draining).
+static void drainTerminates() {
+  std::vector<std::string> work;
+  portENTER_CRITICAL(&g_termSpin);
+  work.swap(g_termQueue);
+  portEXIT_CRITICAL(&g_termSpin);
+  for (const std::string& id : work) {
+    bool ok = g_jobs && g_jobs->cancel(id.c_str());
+    alogf("orchestrator: staged terminate %s -> %s", id.c_str(), ok ? "cancelled" : "not found");
+  }
+}
+
 // ---- moderation gates (CUM-69) ---------------------------------------------
 // The portable decision core (lib/core/orch_moderation) owns the fail-open/closed
 // policy + admin exemption; the device adapter runs the classifier. Every gate is
@@ -2999,6 +3053,28 @@ String sessionsJson() {
   String out; serializeJson(d, out); return out;
 }
 
+// tg_poll ONLY (the journal's writer task) - used by composeInputs on the turn.
+// AsyncTCP/MCP callers must use sessionInfosSnapshot() instead.
+std::vector<nimbus::orch::SessionInfo> sessionInfos() {
+  return g_jobs ? g_jobs->sessionInfos() : std::vector<nimbus::orch::SessionInfo>{};
+}
+
+// Cross-task-safe read of the session snapshot (see refreshSessionSnapshot).
+std::vector<nimbus::orch::SessionInfo> sessionInfosSnapshot() {
+  std::vector<nimbus::orch::SessionInfo> out;
+  MuxHold hold(g_sessMux);   // the copy allocates: given back on every path out (L24)
+  out = g_sessSnapshot;
+  return out;
+}
+
+bool sessionKnown(const std::string& id) {
+  MuxHold hold(g_sessMux);
+  for (const auto& s : g_sessSnapshot)
+    if (s.id == id) return true;
+  return false;
+}
+
+
 // ---- recent-results ring (results.get/list) ---------------------------------
 // Own mutex (same pattern as g_sessMux): writers are tg_poll (clamp spill /
 // fresh-result overflow), readers include the AsyncTCP /mcp task.
@@ -3021,6 +3097,13 @@ std::string resultsList(const nimbus::orch::Principal& who) {
   MuxHold hold(g_resultsMux);
   return g_results.list(who);
 }
+
+void stageTerminate(const std::string& id) {
+  portENTER_CRITICAL(&g_termSpin);
+  g_termQueue.push_back(id);   // bounded (kAgentMaxJobs); drained on tg_poll
+  portEXIT_CRITICAL(&g_termSpin);
+}
+
 
 // Phase 0 token seam: the real provider token usage of the most recently
 // completed turn. Local Loops reads this right after injectScheduledTurn() to

@@ -30,23 +30,6 @@ extern JobEngine*   g_jobs;     // constructed in begin()
 extern nimbus::orch::Journal& g_journal;
 
 // ---- job glue (orchestrator_common.cpp) -------------------------------------------
-// A FreeRTOS mutex held for one scope and given back on every path out, an exception
-// included (a turn catches std::bad_alloc, L24). A null mutex holds nothing.
-struct MuxHold {
-  SemaphoreHandle_t m;
-  explicit MuxHold(SemaphoreHandle_t mux) : m(mux) {
-    if (m) xSemaphoreTake(m, portMAX_DELAY);
-  }
-  ~MuxHold() {
-    if (m) xSemaphoreGive(m);
-  }
-  MuxHold(const MuxHold&) = delete;
-  MuxHold& operator=(const MuxHold&) = delete;
-};
-extern SemaphoreHandle_t g_sessMux;   // guards the session snapshot; created in begin()
-// tg_poll only: mirror the journal for cross-task readers; apply web-staged terminates.
-void refreshSessionSnapshot();
-void drainTerminates();
 
 // ---- ring arcs (orchestrator_common.cpp) -----------------------------------------
 void emitAsk();                    // raise the "needs you" ask on the attention Router
