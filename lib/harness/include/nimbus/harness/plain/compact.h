@@ -83,7 +83,12 @@ inline constexpr uint32_t kCompactQuietS = 120;
 inline constexpr uint32_t kCompactSliceMaxBytes = 24576;
 inline constexpr uint8_t kCompactRequestsPerWindow = 2;
 inline constexpr uint32_t kCompactRequestMs = 45000;
-inline constexpr uint16_t kSummarizerMaxTokens = 400;
+// The summarizer's output cap is sized to the digest block at full (6,144 B at 3 B a token), not to
+// one digest line: a head that writes long, or thinks first, has room to finish (ruling 89 item 4).
+// A cut answer is asked once more, in the same attempt, with kSummarizerRetryMaxTokens; a cut is
+// never stored and never asked again at the same cap.
+inline constexpr uint16_t kSummarizerMaxTokens = 2048;
+inline constexpr uint16_t kSummarizerRetryMaxTokens = 8192;
 inline constexpr uint32_t kCompactPaidPerDay = 6;
 inline constexpr uint32_t kCompactHeadTries = 2;           // failures on rung 1 before the ladder
 inline constexpr uint32_t kCompactWaitS[] = {600, 1800, 7200, 21600};

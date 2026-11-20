@@ -286,6 +286,11 @@ struct Chat {
     model.respondWith([f](const sp::Recorded&, size_t) { return f(); });
   }
 
+  size_t digestsStored() {
+    size_t n = 0;
+    for (const tx::Item& it : stored()) n += it.kind == tx::ItemKind::Digest;
+    return n;
+  }
   // Every stored item of the chat, decoded, in q order.
   std::vector<tx::Item> stored() {
     std::vector<tx::Item> out;
@@ -689,7 +694,7 @@ void test_a_turn_that_read_outside_content_is_framed_and_so_is_its_digest() {
   TEST_ASSERT_TRUE(u.live.back().text.find("<data>") == std::string::npos);
 }
 
-void test_the_request_is_the_summarizer_text_capped_at_400_tokens_under_the_psram_scope() {
+void test_the_request_is_the_summarizer_text_capped_at_its_block_under_the_psram_scope() {
   Chat c;
   threeDays(c);
   ScopeProbe probe;
@@ -1457,14 +1462,38 @@ void test_a_turn_stamped_in_the_future_does_not_stall_compaction() {
 }
 
 // A cut answer is one paid request, never asked again at the same cap.
-void test_a_cut_answer_is_not_asked_again() {
+// Ruling 89 item 4: a cut summary is asked once more with room to finish, never at the same cap,
+// and never stored cut: an answer cut at both caps fails the attempt with two requests.
+void test_a_cut_answer_is_asked_once_more_with_room_and_never_stored_cut() {
   Chat c;
   threeDays(c);
   c.answer([] { return sp::cut(kSummary); });
   const plain::CompactOutcome out = c.step();
   TEST_ASSERT_EQUAL(plain::CompactStep::Failed, out.step);
-  TEST_ASSERT_EQUAL(1, (int)out.requests);
-  TEST_ASSERT_EQUAL(1, (int)c.model.requests().size());
+  TEST_ASSERT_EQUAL(2, (int)out.requests);
+  TEST_ASSERT_EQUAL(2, (int)c.model.requests().size());
+  TEST_ASSERT_EQUAL_UINT32(plain::kSummarizerMaxTokens, c.model.requests()[0].view.maxTokens);
+  TEST_ASSERT_EQUAL_UINT32(plain::kSummarizerRetryMaxTokens, c.model.requests()[1].view.maxTokens);
+  TEST_ASSERT_EQUAL(0, (int)c.digestsStored());
+}
+
+// Ruling 89 item 4 (RB-T4's arm: Haiku summarizing one 1,240-token day hit a 400-token cap three
+// times in a row). A scripted head that needs 600 output tokens for its summary of a 1,240-token
+// day finishes in one request; one that needs 3,000 finishes in the retry; each stores one digest.
+void test_a_summary_that_needs_room_finishes_within_its_attempt() {
+  for (uint32_t need : {600u, 3000u}) {
+    Chat c;
+    c.day(-2, 4, 1240 * 3 / 4, "d1");   // about 1,240 tokens of day
+    c.day(-1, 12, 3000, "d2");
+    c.day(0, 12, 3000, "d3");
+    c.model.respondWith([need](const sp::Recorded& r, size_t) {
+      return r.view.maxTokens >= need ? sp::say(kSummary) : sp::cut(std::string(kSummary).substr(0, 40));
+    });
+    const plain::CompactOutcome out = c.step();
+    const std::string why = std::to_string(need) + " tokens needed";
+    TEST_ASSERT_EQUAL_MESSAGE(plain::CompactStep::Stored, out.step, why.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(need <= plain::kSummarizerMaxTokens ? 1 : 2, (int)out.requests, why.c_str());
+  }
 }
 
 // ---- cases the mutation pass asked for --------------------------------------------------------
@@ -1910,7 +1939,7 @@ int main(int, char**) {
   RUN_TEST(test_a_slice_is_one_day_within_24k_and_leaves_at_least_L);
   RUN_TEST(test_the_input_holds_no_argument_result_or_outside_byte);
   RUN_TEST(test_a_turn_that_read_outside_content_is_framed_and_so_is_its_digest);
-  RUN_TEST(test_the_request_is_the_summarizer_text_capped_at_400_tokens_under_the_psram_scope);
+  RUN_TEST(test_the_request_is_the_summarizer_text_capped_at_its_block_under_the_psram_scope);
   RUN_TEST(test_a_stored_digest_moves_thru_mirrors_chatsum_and_drops_the_arena);
   RUN_TEST(test_a_digest_takes_a_q_above_everything_resident);
   RUN_TEST(test_every_failed_answer_leaves_everything_as_it_was);
@@ -1935,7 +1964,8 @@ int main(int, char**) {
   RUN_TEST(test_items_the_fill_gave_up_are_named_in_the_input);
   RUN_TEST(test_the_cap_and_the_waits_survive_a_refused_save_a_bad_clock_and_repeated_manual_runs);
   RUN_TEST(test_a_turn_stamped_in_the_future_does_not_stall_compaction);
-  RUN_TEST(test_a_cut_answer_is_not_asked_again);
+  RUN_TEST(test_a_cut_answer_is_asked_once_more_with_room_and_never_stored_cut);
+  RUN_TEST(test_a_summary_that_needs_room_finishes_within_its_attempt);
   RUN_TEST(test_the_record_keeps_at_most_eight_chats_and_the_slice_reads_every_result_kind);
   RUN_TEST(test_today_over_H_gives_only_its_oldest_half);
   RUN_TEST(test_the_days_count_holds_and_only_rises);

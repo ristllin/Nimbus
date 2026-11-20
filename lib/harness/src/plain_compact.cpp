@@ -608,18 +608,19 @@ uint32_t lastPromptTokens(const tx::TxArena& arena) {
 }
 
 // The rung's wire with the summarizer's output cap: the exchange picks a cap per request and
-// this wire holds it at kSummarizerMaxTokens.
+// this wire holds it at `cap` (kSummarizerMaxTokens, then kSummarizerRetryMaxTokens).
 class CappedWire : public WireCodec {
  public:
-  explicit CappedWire(const WireCodec& inner) : inner_(inner) {}
+  CappedWire(const WireCodec& inner, uint16_t cap) : inner_(inner), cap_(cap) {}
   Dialect dialect() const override { return inner_.dialect(); }
   Status render(const RenderInput& in, HttpRequest& out) const override {
     RenderInput capped = in;
-    if (!capped.maxTokens || capped.maxTokens > kSummarizerMaxTokens) capped.maxTokens = kSummarizerMaxTokens;
+    capped.maxTokens = cap_;
     return inner_.render(capped, out);
   }
   // A cut answer is read as a plain stop and remembered: the exchange would ask again at its own
-  // retry cap, which this wire holds at the same 400 tokens, so the retry could only be cut again.
+  // retry cap, which this wire holds at the same cap, so the retry could only be cut again; the
+  // driver asks once more itself, with more room.
   Status parse(const HttpResponse& in, ParsedStep& out) const override {
     const Status s = inner_.parse(in, out);
     if (s.ok() && out.stop == StopReason::MaxTokens) {
@@ -632,6 +633,7 @@ class CappedWire : public WireCodec {
 
  private:
   const WireCodec& inner_;
+  uint16_t cap_;
 };
 
 // The digest body: the summary, framed when its slice read outside content, made to fit
@@ -1031,18 +1033,24 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const SlicePlan
   in.system = &system;
   in.tools = &tools;
   in.items = &arena;
-  in.maxTokens = kSummarizerMaxTokens;
-  CappedWire capped(*wire);
-  ExchangeRequest req;
-  req.wire = &capped;
-  req.render = &in;
-  req.timeoutMs = kCompactRequestMs;
-  req.deadlineMs = kCompactRequestMs;
-  ExchangeResult r;
-  s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
-  ans.requests = r.requests;
-  ans.parked = r.parkHost;
-  return s.ok() ? answerOf(r, capped.cut, plan, ans.summary) : s;
+  // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut.
+  for (uint16_t cap : {kSummarizerMaxTokens, kSummarizerRetryMaxTokens}) {
+    in.maxTokens = cap;
+    CappedWire capped(*wire, cap);
+    ExchangeRequest req;
+    req.wire = &capped;
+    req.render = &in;
+    req.timeoutMs = kCompactRequestMs;
+    req.deadlineMs = kCompactRequestMs;
+    ExchangeResult r;
+    s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
+    ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);
+    ans.parked |= r.parkHost;
+    if (!s.ok()) return s;
+    const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
+    if (!cut || cap == kSummarizerRetryMaxTokens) return answerOf(r, cut, plan, ans.summary);
+  }
+  return Status::fail(Err::Io, "plain::CompactDriver::ask");
 }
 
 }  // namespace

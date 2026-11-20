@@ -1014,7 +1014,9 @@ inside the `<data>` frame, and its digest is stored inside the frame, so the blo
 it framed. The rungs come from the binding: the head host's small model twice, then each
 other keyed provider in the owner's order, waiting 10 min, 30 min, 2 h, then 6 h after each
 failure; at most six attempts start a day on the device (`/data/compact_ctl.txt`, written
-before the request), each capped at 400 output tokens and 45 s. An answer is taken only
+before the request), each capped at 2,048 output tokens (the digest block at full, ruling 89
+item 4) and 45 s; a cut answer is asked once more in the same attempt with 8,192 tokens of room,
+and a cut is never stored. An answer is taken only
 when it was not cut and holds at least 120 B for an input of 2 KB or more; otherwise only
 the failure count changes. There is no pause state.
 

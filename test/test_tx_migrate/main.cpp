@@ -579,12 +579,14 @@ void test_the_drivers_acceptance_holds_for_digest0() {
     d.digest0 = plain::digest0Asker(drv.deps());
     tx::MigrationOutcome out;
     TEST_ASSERT_TRUE(tx::migrate(d, out).ok());
-    TEST_ASSERT_EQUAL(2, out.asks);
+    // A cut answer is asked once more with room inside the same ask (ruling 89 item 4, RB-H81):
+    // cut then whole finishes on the first ask, on the first rung.
+    TEST_ASSERT_EQUAL(kind == 3 ? 1 : 2, out.asks);
     TEST_ASSERT_TRUE(out.digest0);
     TEST_ASSERT_EQUAL(kind != 3, out.carried);
     const std::vector<sp::Recorded>& reqs = drv.model.requests();
     TEST_ASSERT_TRUE(reqs.size() >= 2);
-    TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", reqs.back().view.model.c_str());
+    TEST_ASSERT_EQUAL_STRING(kind == 3 ? "claude-haiku-5-5" : "gpt-5.6-luna", reqs.back().view.model.c_str());
     expectDigest0(w, kind == 3, "acceptance");
     expectAccounted(w.old, w.files, w.m.thru, out.hi, "acceptance");
   }
