@@ -115,7 +115,6 @@ bool   reconcileHeadArc(uint32_t nowMs);  // W6: keep the head arc lit while chi
 uint32_t ringBackstopFires();  // CUM-11: times a belt-and-braces backstop cleared a stuck arc (soak target: 0)
 void   noteRingBackstopFired();  // called by the other ring backstops (attention watchdog, working ceiling)
 String jobsSummary();        // human-readable job list (for /jobs)
-String sessionsJson();       // JSON session list for the web UI (reads the snapshot)
 // Typed session list for the running-sessions digest (nimbus::orch::SessionInfo).
 // Reads the journal DIRECTLY - call ONLY from the tg_poll/turn task (composeInputs).
 std::vector<nimbus::orch::SessionInfo> sessionInfos();

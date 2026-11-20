@@ -7,6 +7,9 @@
 // type-checked against its one definition.
 #include "orchestrator.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>   // SemaphoreHandle_t (the session snapshot)
+
 #include <atomic>
 #include <string>
 
@@ -17,12 +20,12 @@
 namespace agent {
 namespace orchestrator {
 
-// ---- module state (orchestrator_common.cpp, except g_journal) -------------------
+// ---- module state (orchestrator_common.cpp) -------------------------------------
 extern HeavyFabric* g_fabric;   // set by begin() (orchestrator.cpp)
 extern Sinks        g_sinks;    // set by begin()
 extern JobEngine*   g_jobs;     // constructed in begin()
-// The sub-agent journal: defined in orchestrator.cpp, in PSRAM (psramObject; its
-// declaration there is pinned by tests/hil/test_psram_statics_host.py).
+// The sub-agent journal, in PSRAM (psramObject; its declaration in orchestrator_common.cpp
+// is pinned by tests/hil/test_psram_statics_host.py).
 extern nimbus::orch::Journal& g_journal;
 
 // ---- ring arcs (orchestrator_common.cpp) -----------------------------------------
@@ -35,6 +38,11 @@ extern uint32_t g_attnHoldMs;      // latched AttnHoldMs; begin() hands it to th
 extern std::atomic<uint32_t> s_voiceHandled;
 extern std::atomic<bool>     s_voiceOk;
 extern bool                  s_inVoiceMessage;   // tg_poll only
+
+// ---- the session snapshot and staged terminates (orchestrator_common.cpp) ---------
+extern SemaphoreHandle_t g_sessMux;   // guards the snapshot; begin() creates it
+void refreshSessionSnapshot();        // tg_poll only: after begin() and each pump()
+void drainTerminates();               // tg_poll only: the staged session.terminate calls
 
 // ---- reply sinks (orchestrator_common.cpp) ----------------------------------------
 bool chatAllowed(const String& cid);                    // in the persisted Telegram allowlist

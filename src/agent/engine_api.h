@@ -75,6 +75,10 @@ uint32_t                 turnCount();      // non-empty turns since boot
 // read Chat; the catalog, the PDF route and the spawn advice read Spawn (CUM-821).
 nimbus::orch::HeadPause providerPause(const std::string& p, nimbus::orch::PaidSeam seam);
 bool   toolRidesLoop(const std::string& name);   // P7: is this registry tool loop-callable now?
+// JSON session list for the web UI, from the common half's snapshot (sessionInfosSnapshot).
+// Defined in the engine seam for image bytes only: its ArduinoJson serializer copies are
+// already in the old engine's object file (about 1.1 KB more in the common half, measured).
+String sessionsJson();
 
 // ---- last-turn data ---------------------------------------------------------
 
