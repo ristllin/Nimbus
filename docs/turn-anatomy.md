@@ -549,8 +549,9 @@ widen the view on demand:
 - `results.get(tag, offset?)` - returns a bounded page of the stored result whose head
   names the next part (`bytes 0-8128 of 51234; next part: "offset":8128`, or `; end of
   result`). A result over 64 KB keeps its first 64 KB and ends saying how long it was.
-  Unknown tags point at `memory.episodic`, which holds the durable copy on SD. The hosted
-  daemon keeps the same ring (RB-TR1), so its cuts name `results.get` too.
+  An offset inside a character starts at the next one and the head says so. Unknown tags
+  point at `memory.episodic`, which holds the durable copy on SD. The hosted daemon keeps no
+  ring: a result it clamps ends "...[truncated]".
 - `results.list` - tag / kind / name / size for everything currently fetchable.
 
 Tags are `r<n>` for tool-result spills and `sub:<jobtag>` for sub-agent results.

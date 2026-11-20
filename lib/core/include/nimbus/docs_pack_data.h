@@ -924,8 +924,9 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
   line: `bytes 0-8082 of 20065, lines 1-63 of 156; next part: "offset":8082`, or
   `...; end of file` on the last part. A part ends at a line end when one falls in its
   second half; a file of any size reads to its end this way (the device streams it 4 KB per
-  card hold). The tail view names the rows it leaves out (`bytes 0-<n>, read them with
-  "offset":0`), and `results.get` pages a clamped result the same way (`next part`).
+  card hold). An offset inside a character starts at the next one, and the head says so. The
+  tail view names the rows it leaves out (`bytes 0-<n>, read them with "offset":0`), and on
+  the device `results.get` pages a clamped result the same way (`next part`).
 - `artifact.save` overwrites the same `project`+`name`, refuses a write onto
   another person's file, and counts against the caller's file-storage quota.
 - `files.append` writes only the new rows (line ends normalized, a final line end
@@ -952,11 +953,11 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 - A whole-file write (`artifact.save`, an upload) never removes
   the stored copy before the new one is in place: the old copy is kept as a
   backup until the new one lands, a failure puts it back, and a power cut in
-  between is repaired at the next start. If even the put-back fails, every
-  write to that file is refused ("an earlier file replace is not finished -
-  restart the device") until the backup is restored, and a backup larger than)NIMBUSDOC"},
+  between is repaired at the next start. If even the put-back fails, every)NIMBUSDOC"},
   {"tool-catalog#files-artifact-save-durable-artifact-store-5", "`files.*` & `artifact.save` - durable artifact store (5/5)",
-   R"NIMBUSDOC(  the file it would leave is kept as `<name>.recovered`, never deleted.
+   R"NIMBUSDOC(  write to that file is refused ("an earlier file replace is not finished -
+  restart the device") until the backup is restored, and a backup larger than
+  the file it would leave is kept as `<name>.recovered`, never deleted.
 - `files.edit` changes only the matched spans; every other byte keeps its exact
   position, so a CSV's rows stay rows. With `line` it changes only that line: the match that
   starts it and covers whole lines, or an exact part of it when the find text is on that line
@@ -4957,8 +4958,9 @@ widen the view on demand:
 - `results.get(tag, offset?)` - returns a bounded page of the stored result whose head
   names the next part (`bytes 0-8128 of 51234; next part: "offset":8128`, or `; end of
   result`). A result over 64 KB keeps its first 64 KB and ends saying how long it was.
-  Unknown tags point at `memory.episodic`, which holds the durable copy on SD. The hosted
-  daemon keeps the same ring (RB-TR1), so its cuts name `results.get` too.
+  An offset inside a character starts at the next one and the head says so. Unknown tags
+  point at `memory.episodic`, which holds the durable copy on SD. The hosted daemon keeps no
+  ring: a result it clamps ends "...[truncated]".
 - `results.list` - tag / kind / name / size for everything currently fetchable.
 
 Tags are `r<n>` for tool-result spills and `sub:<jobtag>` for sub-agent results.

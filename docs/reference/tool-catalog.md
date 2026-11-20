@@ -370,8 +370,9 @@ Notes:
   line: `bytes 0-8082 of 20065, lines 1-63 of 156; next part: "offset":8082`, or
   `...; end of file` on the last part. A part ends at a line end when one falls in its
   second half; a file of any size reads to its end this way (the device streams it 4 KB per
-  card hold). The tail view names the rows it leaves out (`bytes 0-<n>, read them with
-  "offset":0`), and `results.get` pages a clamped result the same way (`next part`).
+  card hold). An offset inside a character starts at the next one, and the head says so. The
+  tail view names the rows it leaves out (`bytes 0-<n>, read them with "offset":0`), and on
+  the device `results.get` pages a clamped result the same way (`next part`).
 - `artifact.save` overwrites the same `project`+`name`, refuses a write onto
   another person's file, and counts against the caller's file-storage quota.
 - `files.append` writes only the new rows (line ends normalized, a final line end
