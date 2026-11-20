@@ -5,14 +5,19 @@
 #include "../sys/agent_log.h"
 #include "store.h"
 #include "telegram.h"                   // telegram::enabled - telegramDeliverable
+#include "adapters/moderation.h"        // CUM-69 device classifier (behind the gate decision core)
+#include "safety_activity_store.h"       // CUM-215 Safety activity log + scoped allowlist (record/allow)
+#include "nimbus/orch/moderation.h"     // portable gate decision core (fail-open/closed, admin-exempt)
 #include "nimbus/harness/config.h"      // telegramDeliverableFor (host-tested)
 #include "nimbus/harness/head_arc.h"    // portable head-arc reconciler (W6)
 #include "nimbus/orch/voice_notes.h"     // cutForSpeech (ttsAnnounce)
 
 // orchestrator_common - the engine-neutral half of the device seam (lane RB-SEAM1a, no
-// behaviour change): tenants, job glue, ring arcs, voice, status getters and reply sinks,
-// moved here from orchestrator.cpp so a second engine can be bound beside the old one.
-// orchestrator.cpp keeps the old engine's half; what the two share is declared in
+// behaviour change): job glue, ring arcs, voice, the job status getters and the reply
+// sinks' allowlist and moderation gate, moved here from orchestrator.cpp so a second
+// engine can be bound beside the old one. orchestrator.cpp keeps the old engine's half
+// (and, for now, what a host test pins there by path or what would cost image bytes to
+// move: lanes/RB-SEAM1a/PR_BODY.md lists both); what the two share is declared in
 // orchestrator_common.h. The public surface is orchestrator.h, unchanged.
 
 namespace agent {
@@ -28,7 +33,7 @@ Sinks        g_sinks;
 // poll / fresh results / reap scheduler) - constructed in begin(), Stage F lift.
 JobEngine*   g_jobs = nullptr;
 
-
+// ---- job glue and its status getters -------------------------------------------
 
 bool cancel(const char* tagOrJobId) {
   return g_jobs && g_jobs->cancel(tagOrJobId);
@@ -37,32 +42,8 @@ bool cancel(const char* tagOrJobId) {
 int  activeJobCount() { return g_journal.count(); }
 int  pendingSpawnCount() { return g_jobs ? g_jobs->pendingCount() : 0; }   // queued, not yet dispatched
 
-static const char* stateStr(orch::JobState s) {
-  switch (s) {
-    case orch::JobState::Queued:     return "queued";
-    case orch::JobState::Running:    return "running";
-    case orch::JobState::NeedsInput: return "needs_input";
-    case orch::JobState::Done:       return "done";
-    case orch::JobState::Error:      return "error";
-    case orch::JobState::Cancelled:  return "cancelled";
-    default:                         return "unknown";
-  }
-}
-
-String jobsSummary() {
-  int n = g_journal.count();
-  if (n == 0) return "No active jobs.";
-  String s;
-  for (int i = 0; i < n; i++) {
-    orch::JobRecord rec;
-    if (!g_journal.get(i, rec)) continue;
-    s += String(rec.tag) + " (" + rec.backend + "/" + rec.model + ") " +
-         rec.category + " [" + stateStr(rec.state) + "]\n";
-  }
-  return s;
-}
-
-
+// ---- voice -----------------------------------------------------------------------
+// Hold-to-talk message lifecycle (CUM-456) - see voiceMessages() in the header.
 std::atomic<uint32_t> s_voiceHandled{0};
 std::atomic<bool>     s_voiceOk{false};
 bool                  s_inVoiceMessage = false;   // tg_poll only
@@ -95,7 +76,6 @@ void clearAsk() {
 // setAttnHoldMs can fire from applyConfig BEFORE begin() constructs the engine.
 uint32_t g_attnHoldMs = 300000;  // 5 min default, mirrors the Param preset
 
-
 // Speak a short confirmation of a job result aloud (opt-in via store::ttsEnabled).
 // LIVE-GATED + BENCH-BROKEN: the audio path is unverified here (no key, broken
 // bench audio). Compile-clean; the sink is nullable and no-ops when unset.
@@ -112,6 +92,7 @@ static void ttsAnnounce(const String& text) {
   g_sinks.speak(String(), snippet);   // no chat: the owner chat if the speaker cannot play it
 }
 
+// ---- reply sinks: who a reply may reach -----------------------------------------
 
 // CUM-523: HarnessConfig::telegramDeliverable on this device - the portable
 // agent::telegramDeliverableFor rule (config.h, host-tested) over the live bot,
@@ -136,7 +117,6 @@ bool chatAllowed(const String& cid) {
   return false;
 }
 
-
 String firstAllowedChat() {
   String al = store::telegramAllowlist();
   int e = al.indexOf(','); if (e < 0) e = al.length();
@@ -144,6 +124,8 @@ String firstAllowedChat() {
   return t;
 }
 bool isChatAllowed(const String& cid) { return chatAllowed(cid); }
+
+// ---- ring arcs ---------------------------------------------------------------------
 
 uint32_t headJobKey() { return keyFromTag("head"); }
 
@@ -206,13 +188,61 @@ void setAttnHoldMs(uint32_t ms) {   // fed from Param::AttnHoldMs
   if (g_jobs) g_jobs->setAttnHoldMs(ms);
 }
 
-
 // Hold-to-talk (CUM-456): the count is read first (acquire), so a reader that sees
 // a finished message also sees its ok.
 void voiceMessages(uint32_t* handled, bool* lastOk) {
   const uint32_t n = s_voiceHandled.load(std::memory_order_acquire);
   if (handled) *handled = n;
   if (lastOk) *lastOk = s_voiceOk.load(std::memory_order_relaxed);
+}
+
+// ---- moderation gates (CUM-69) ---------------------------------------------
+// The portable decision core (lib/core/orch_moderation) owns the fail-open/closed
+// policy + admin exemption; the device adapter runs the classifier. Every gate is
+// owner opt-in (default off) so with the switches off NO classifier call is made
+// and the turn path is byte-identical to before.
+
+static nimbus::orch::ModConfig modConfig() {
+  nimbus::orch::ModConfig c;
+  c.inbound   = store::modInbound();
+  c.outbound  = store::modOutbound();
+  c.injection = store::modInjection();
+  return c;
+}
+
+// Run one gate: apply the role/switch gate; if it applies, classify + decide. The
+// outbound gate can run while a turn holds the single TLS slot, so it uses a SHORT
+// acquire timeout (skips = fail-open if busy) rather than stalling the reply; the
+// inbound gate runs pre-turn with the slot free, so it waits the full window.
+nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const String& chatId,
+                                     const String& text) {
+  using namespace nimbus::orch;
+  ModConfig cfg = modConfig();
+  Role role = roleOfChat(chatId);
+  if (!gateApplies(gate, role, cfg)) return ModAction::Allow;
+  const uint32_t acquireMs = (gate == ModGate::OutboundReply) ? 250u : 15000u;
+  ClassifierVerdict v = agent::moderation::classify(std::string(text.c_str()), gate, acquireMs);
+  ModAction a = decide(gate, v);
+  // Safety ACTIVITY surface (CUM-215): a text gate that blocks is a scanner verdict
+  // the owner can review. Consult the owner's SCOPED allowlist first: an approved
+  // sender/pattern turns the block into a real unblock (never a global off switch);
+  // otherwise the verdict is recorded to the bounded activity log for the Safety tab.
+  if (a == ModAction::Block) {
+    const std::string s(chatId.c_str()), tx(text.c_str());
+    const std::string src = modGateName(gate);   // inbound | outbound: the gate binding
+    // The classifier returns no sub-category, so the rule is the coarse moderation
+    // class (kCoarseModerationRule); the granular gate name goes to `source`. The
+    // owner can unblock this sender or this exact content, but not "this type" (that
+    // would be the whole gate - forbidden by contentClassApprovable). The allow-rule is
+    // bound to this gate's source, so an inbound approval never quiets the outbound gate.
+    if (agent::safety::allowed(kCoarseModerationRule, s, src, tx)) return ModAction::Allow;
+    // Record ONLY a genuine classifier flag. A fail-closed Error (no key / outage) also
+    // returns Block here, but it is the absence of a verdict, not flagged content: do not
+    // persist unscreened guest text as "blocked" or make it reportable (CUM-215).
+    if (blockIsScannerVerdict(v))
+      agent::safety::record(SafetyVerdict::Blocked, kCoarseModerationRule, "telegram", s, src, tx);
+  }
+  return a;
 }
 
 }  // namespace orchestrator

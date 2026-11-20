@@ -333,57 +333,6 @@ static void drainTerminates() {
   }
 }
 
-// ---- moderation gates (CUM-69) ---------------------------------------------
-// The portable decision core (lib/core/orch_moderation) owns the fail-open/closed
-// policy + admin exemption; the device adapter runs the classifier. Every gate is
-// owner opt-in (default off) so with the switches off NO classifier call is made
-// and the turn path is byte-identical to before.
-
-nimbus::orch::Role roleOfChat(const String& chatId);   // fwd (defined below)
-
-static nimbus::orch::ModConfig modConfig() {
-  nimbus::orch::ModConfig c;
-  c.inbound   = store::modInbound();
-  c.outbound  = store::modOutbound();
-  c.injection = store::modInjection();
-  return c;
-}
-
-// Run one gate: apply the role/switch gate; if it applies, classify + decide. The
-// outbound gate can run while a turn holds the single TLS slot, so it uses a SHORT
-// acquire timeout (skips = fail-open if busy) rather than stalling the reply; the
-// inbound gate runs pre-turn with the slot free, so it waits the full window.
-static nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const String& chatId,
-                                            const String& text) {
-  using namespace nimbus::orch;
-  ModConfig cfg = modConfig();
-  Role role = roleOfChat(chatId);
-  if (!gateApplies(gate, role, cfg)) return ModAction::Allow;
-  const uint32_t acquireMs = (gate == ModGate::OutboundReply) ? 250u : 15000u;
-  ClassifierVerdict v = agent::moderation::classify(std::string(text.c_str()), gate, acquireMs);
-  ModAction a = decide(gate, v);
-  // Safety ACTIVITY surface (CUM-215): a text gate that blocks is a scanner verdict
-  // the owner can review. Consult the owner's SCOPED allowlist first: an approved
-  // sender/pattern turns the block into a real unblock (never a global off switch);
-  // otherwise the verdict is recorded to the bounded activity log for the Safety tab.
-  if (a == ModAction::Block) {
-    const std::string s(chatId.c_str()), tx(text.c_str());
-    const std::string src = modGateName(gate);   // inbound | outbound: the gate binding
-    // The classifier returns no sub-category, so the rule is the coarse moderation
-    // class (kCoarseModerationRule); the granular gate name goes to `source`. The
-    // owner can unblock this sender or this exact content, but not "this type" (that
-    // would be the whole gate - forbidden by contentClassApprovable). The allow-rule is
-    // bound to this gate's source, so an inbound approval never quiets the outbound gate.
-    if (agent::safety::allowed(kCoarseModerationRule, s, src, tx)) return ModAction::Allow;
-    // Record ONLY a genuine classifier flag. A fail-closed Error (no key / outage) also
-    // returns Block here, but it is the absence of a verdict, not flagged content: do not
-    // persist unscreened guest text as "blocked" or make it reportable (CUM-215).
-    if (blockIsScannerVerdict(v))
-      agent::safety::record(SafetyVerdict::Blocked, kCoarseModerationRule, "telegram", s, src, tx);
-  }
-  return a;
-}
-
 // The ONE head-window budget for every per-turn size that follows the head model
 // (the RECENT CONVERSATION window, the sub-agent brief, the fold slice): sized for
 // the head the ENGINE will run (headHost: the router fallback included), never a
@@ -485,7 +434,6 @@ static bool providerHasKey(const String& p) {
   if (p == "cumulo")    return store::hasCumuloKey();
   return false;
 }
-
 
 // CUM-486: the ONE model-choice derivation (nimbus::orch::effectiveModelChoices:
 // the model store's short list first - every verify fetches the provider's list,
@@ -2981,6 +2929,32 @@ bool turnInFlight()   { return g_engine && g_engine->turnInFlight(); }
 bool engineRunning() { return g_engine != nullptr; }
 bool engineReapStuckTurn(uint32_t nowMs) { return g_engine && g_engine->reapStuckTurn(nowMs); }
 void engineSetHeadArc(bool on) { g_engine->setHeadArc(on); }
+
+static const char* stateStr(orch::JobState s) {
+  switch (s) {
+    case orch::JobState::Queued:     return "queued";
+    case orch::JobState::Running:    return "running";
+    case orch::JobState::NeedsInput: return "needs_input";
+    case orch::JobState::Done:       return "done";
+    case orch::JobState::Error:      return "error";
+    case orch::JobState::Cancelled:  return "cancelled";
+    default:                         return "unknown";
+  }
+}
+
+String jobsSummary() {
+  int n = g_journal.count();
+  if (n == 0) return "No active jobs.";
+  String s;
+  for (int i = 0; i < n; i++) {
+    orch::JobRecord rec;
+    if (!g_journal.get(i, rec)) continue;
+    s += String(rec.tag) + " (" + rec.backend + "/" + rec.model + ") " +
+         rec.category + " [" + stateStr(rec.state) + "]\n";
+  }
+  return s;
+}
+
 String memorySnapshot() { return String(g_memEcho); }
 
 String lastInstructions() {
@@ -3074,7 +3048,6 @@ bool sessionKnown(const std::string& id) {
   return false;
 }
 
-
 // ---- recent-results ring (results.get/list) ---------------------------------
 // Own mutex (same pattern as g_sessMux): writers are tg_poll (clamp spill /
 // fresh-result overflow), readers include the AsyncTCP /mcp task.
@@ -3104,14 +3077,12 @@ void stageTerminate(const std::string& id) {
   portEXIT_CRITICAL(&g_termSpin);
 }
 
-
 // Phase 0 token seam: the real provider token usage of the most recently
 // completed turn. Local Loops reads this right after injectScheduledTurn() to
 // meter true billed spend against its per-loop + daily cost caps.
 nimbus::orch::TokenUsage lastTurnUsage() {
   return g_engine ? g_engine->lastTurnUsage() : nimbus::orch::TokenUsage{};
 }
-
 
 nimbus::orch::TokenUsage sessionUsage() {
   return g_engine ? g_engine->sessionUsage() : nimbus::orch::TokenUsage{};
