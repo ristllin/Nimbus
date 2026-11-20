@@ -993,3 +993,42 @@ deleted. Engine 2 has no baseline.
   1,536 B for exactly this text. The facts item of a hold and the probe's section frame are the same functions
   of lib/core/src/orch_truth.cpp the e1 catalog already gates (PC-0012, frozen class device_notes); the binding
   adds no text of its own. Planned work (ruling 18), not a fix.
+### PC-0077: read_file totals nothing and pages no smaller than 2,048 B (engine 2 results)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 5065 -> 4664
+- sha8: 432650f6 -> 8a81a5ad
+- lane: RB-REC6
+- prd: section 4 (the plain file tools), as amended by ruling 95 (RB-REC6's measurement: a figure over part of the rows was read as the whole total; the selection without sum is the form measured)
+- why: lib/core/src/orch_csv_sum.cpp loses every sum text (the sum clauses, the blank, not-a-number and rounded lists, the past-the-exact-range error, the sum name checks); "column or sum is needed" becomes "column is needed", and "sum and column need a CSV header line" becomes "column needs a CSV header line". lib/core/src/orch_file_tools.cpp drops "sum is not a list of column names" and "limit is at least {}": a limit under 2,048 B is raised to 2,048 B and the head says so with the existing " (limit {} B here)". lib/core/src/orch_file_append.cpp: the width note drops "and counts in no day total" (there is no day total). Both engines and nimbusd render through these files. Planned work, not a fix.
+
+### PC-0078: the read_file declaration has no sum (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4368 -> 4293
+- sha8: 6e063370 -> 76f76e0b
+- lane: RB-REC6
+- prd: section 4 (the plain file tools), as amended by ruling 95
+- why: lib/harness/include/nimbus/harness/plain/texts.h: read_file's description drops "; sum totals named columns" and its schema drops the sum property. A call that still sends sum is refused the way every unknown argument is. Planned work, not a fix.
+
+### PC-0079: files.read has no sum and no date (engine 1)
+- catalog: e1
+- class: tool_descriptions
+- kind: spec
+- bytes: 22131 -> 21789
+- sha8: 56b90134 -> 62a30ab5
+- lane: RB-REC6
+- prd: section 4 (the plain file tools), as amended by ruling 95
+- why: src/agent/files_subsystem.cpp, nimbusd/src/posix_files.h and tools/harness-lab/src/lab_files.h: files.read's description and schema drop sum and date (the day total); tail and the CSV form column/from/to stay. A call that still sends sum gets the registry's "(not read: sum ...)" fact line. Planned work, not a fix.
+
+### PC-0124: files.read results total nothing (engine 1)
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 35337 -> 34472
+- sha8: 11be73d9 -> 350c7577
+- lane: RB-REC6
+- prd: section 4 (the plain file tools), as amended by ruling 95
+- why: lib/core/src/orch_file_aids_e1.cpp, lib/core/src/orch_file_append.cpp and src/agent/files_subsystem.cpp lose the day-total line and its errors (the running day, the date column, the clock not set, past the size a total streams); the shared scan texts change as PC-0077 says. Planned work, not a fix.

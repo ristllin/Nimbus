@@ -344,7 +344,7 @@ absent when no SD card is present. Reads honor per-person visibility (RBAC
 |---|---|---|---|
 | `files.list` | List the device's durable artifact store: projects and files. | `project` (string, optional filter) | live |
 | `files.stat` | Metadata for one stored file: size, kind, created time, provider file id. | `project` (**required**), `name` (**required**) | live |
-| `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV, and with `sum` a day's total of that column. CSV: `column` with `from`/`to` keeps the matching rows and `sum` totals named columns on the device. | `project` (**required**), `name` (**required**), `offset` (number; with `column`, matching rows not shown), `tail` (number of rows, max 200), `sum` (optional, a numeric column; with `column`, columns separated by commas), `date` (optional, `YYYY-MM-DD`; default the running day), `column`, `from`, `to` (optional, a header column and its range) | live |
+| `files.read` | Read a stored TEXT document's content, paged; with `tail`, only the last rows of a log or CSV. CSV: `column` with `from`/`to` keeps the matching rows. It totals nothing (ruling 95): the model adds the rows with `calc`. | `project` (**required**), `name` (**required**), `offset` (number; with `column`, matching rows not shown), `tail` (number of rows, max 200), `column`, `from`, `to` (optional, a header column and its range) | live |
 | `files.search` | Search the CONTENT of saved text documents for words; returns the best matches with a snippet, ranked by how many of the words each document holds, then by how often they occur. | `query` (**required**), `project` (optional filter) | live |
 | `files.append` | Add rows to the END of a text document (a log, a CSV); creates it when missing. Only the new rows are written: nothing stored is read back, replaced or rewritten. Up to 4 KB per call. | `project` (**required**), `name` (**required**, a text extension), `text` (**required**, max 4 KB per call) | live |
 | `files.edit` | Edit a saved text document surgically: find an exact text span (a phrase, or a whole line's text) and replace it - instead of reading and re-saving the whole file. Replaces the first match by default; `all: true` for every match, `count` for the first N, `line` the match that is the whole of that line. The reply says how many matches were found and replaced and gives the current line numbers; a no-match changes nothing, and a replacement identical to the find text says no change. An edit to a keyed CSV (a log with a date and a key column) also names the rows it removed, added or changed, and a later re-add that skips a removed row is named too. A file over 1 MB is refused. | `project` (**required**), `name` (**required**, a text extension), `find` (**required**, max 2 KB), `replace` (optional, max 4 KB; empty deletes the span), `all` (boolean, default false), `count` (integer, default 1, max 200), `line` (integer: the whole-line match at that line) | live |
@@ -382,20 +382,17 @@ Notes:
   that carries an older `key`, `sum` or `replace` is one error naming them, and
   nothing is written (a correction never lands as a second row). On a CSV, a row
   whose field count differs from the header's still lands, and the reply says how
-  many such rows there are (they count in no day total). It follows the same
+  many such rows there are. It follows the same
   ownership and quota rules as `artifact.save`.
-- `files.read {tail, sum, date}` gives one day's total of a numeric column through the
-  shared CSV scan (docs/plain/tables.md): the rows whose date column (by its name:
-  `date`, `day`, or a name holding date, day or time, else the first column of
-  `YYYY-MM-DD` dates) holds that day, the running day by default (before the device's
-  "day starts at" time it is still yesterday). The line reads like the general form's
-  tail: `rows 3 of 6 where date 2026-11-19..2026-11-19; sum amount=24.3 (2 of 3 rows; not in
-  it: line 7 (blank))`: each figure says in the same clause how many rows of how many it
-  covers and names every row or cell left out of it by line and reason (blank, not a number,
-  a field count unlike the header's, not compared); a line whose first non-blank character is `#` is a comment
-  and is counted, never summed. `files.read {column, from, to, sum}` is the general form:
-  the matching rows with their line numbers (`L5 ...`), the same tail, `offset` pages the
-  rows shown, never the sums; the scan holds the card lock per 4 KB read, never across it.
+- `files.read {column, from, to}` reads a CSV through the shared scan
+  (docs/plain/tables.md): the header and the matching rows with their line numbers
+  (`L5 ...`), then one line such as `rows 3 of 6 where date 2026-11-19..2026-11-19; skipped 1
+  (line 6: field count is not the header's 5)` that names every row left out by line and
+  reason (a field count unlike the header's, not compared, too long); a line whose first
+  non-blank character is `#` is a comment and is counted, never shown as a row. `offset`
+  pages the rows shown; the scan holds the card lock per 4 KB read, never across it. There
+  is no `sum` or `date` (ruling 95: a figure over part of the rows was read as the whole
+  total); a call that still sends them is told they were not read.
 - A whole-file write (`artifact.save`, an upload) never removes
   the stored copy before the new one is in place: the old copy is kept as a
   backup until the new one lands, a failure puts it back, and a power cut in

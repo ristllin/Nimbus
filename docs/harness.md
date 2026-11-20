@@ -1212,7 +1212,9 @@ Each does what its name says:
 
 - `read_file(path, offset, limit)` returns `<path> size=<B> lines=<n> sha8=<8 hex> bytes <a>-<b>`,
   a line break, exactly bytes `a` to `b`, and `next_offset=<b>` on its own line when more
-  remains. Following `next_offset` rebuilds the file byte for byte at every read cap; a cut
+  remains. A `limit` under 2,048 B (`kFileReadFloor`) reads as 2,048 B, filtered or plain,
+  and the head says so (`(limit 2048 B here)`); a limit over the read cap is held to the cap
+  the same way. Following `next_offset` rebuilds the file byte for byte at every read cap; a cut
   falls after a line end when one sits in the page's second half, else on a UTF-8 boundary.
 - `write_file(path, content, if_exists)` creates a file; an existing one is replaced only with
   `if_exists=replace`. `append_file(path, text)` only appends. `edit_file(path, old, new, all)`
@@ -1245,15 +1247,15 @@ that reliable on small models; they are one library for both engines and nimbusd
 (`lib/core/include/nimbus/orch/file_aids.h`), and the bindings only move bytes, so every host
 gives the same result text for the same file:
 
-- A CSV scan behind `read_file` `column`/`from`/`to`/`sum`. A row matches when its field is in
-  the range (numbers compare as numbers; otherwise by prefix, so `2026-11-19` is a day,
+- A CSV scan behind `read_file` `column`/`from`/`to`. A row matches when its field is in
+  the range (numbers compare as exact decimals; otherwise by prefix, so `2026-11-19` is a day,
   `2026-11` a month, and a key of another form is "not compared", never quietly out of range).
-  The named columns are totalled as exact decimals (int64 thousandths, half away from zero
-  past three places; past the int64 range is an error, never a partial total). The result
-  shows the header and the matching rows as `L<n> <row>`, then one tail line: `rows <m> of
-  <n>`, the sums, and every row or cell left out of a total by reason with its lines (blank,
-  not a number, rounded, not compared, a field count unlike the header's, too long, empty
-  lines, identical-line groups, a torn last line, a row cut inside a quoted field).
+  It totals nothing: ruling 95 removed `sum` (a figure over part of the rows was read as the
+  whole total), so the model adds the rows with `calc`. The result shows the header and the
+  matching rows as `L<n> <row>` (a selected row that does not parse is shown in file order
+  too), then one tail line: `rows <m> of <n>` and every row left out by reason with its lines
+  (not compared, a field count unlike the header's, too long, comment lines, empty lines,
+  identical-line groups, a torn last line, a row cut inside a quoted field).
 - A line pick behind `edit_file` `line`: the match that starts at that line and covers whole
   lines is the one replaced, so a stale number fails with the current match lines and never
   touches another row. Every result names the lines it changed, the lines that moved and where
@@ -1269,8 +1271,8 @@ first pass planned on (`test/test_file_tools_csv`, `test_file_edit_line`,
 `test_file_append_facts`).
 
 The old engine's `files.read` and `files.edit` (device and nimbusd) run the same scan and
-edit (`file_aids_e1.h`): `files.read` keeps `tail`, `sum` and `date` (the day total, on the
-running day by default) and gains `column`, `from`, `to`; `files.edit` keeps its first-match
+edit (`file_aids_e1.h`): `files.read` keeps `tail` and gains `column`, `from`, `to` (no
+`sum`, no day total; a call that still sends `sum` is told it was not read); `files.edit` keeps its first-match
 default, `count` and `all`, and gains `line` and the current line numbers. On the device the
 scan gives the tool call's card lock up and takes it per 4 KB read
 (`memory::withCardReleased`); the shared fixtures give `test/golden/file_aids_e1_results.txt`

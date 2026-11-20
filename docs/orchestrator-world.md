@@ -102,10 +102,9 @@ Nimbus has no built-in table for any one use case (owner ruling 41): whatever th
 tracks is an ordinary CSV file he keeps in any project, written with the file tools. `files.append` only appends: the rows go on the end of the
 file as sent, nothing stored is read back, replaced or rewritten, and a file whose last
 line has no line end gets one before the new rows. A correction is a `files.edit` of
-the row. `files.read` with `tail` reads the end of the file, and with `sum` (a numeric
-column) adds that column over the rows dated today (or `date`): a row that states a
-total is not counted, a row whose columns cannot be read leaves the total "not known"
-until it is fixed, and rows with no YYYY-MM-DD date are counted apart. No table rides
+the row. `files.read` with `tail` reads the end of the file, and with `column`, `from`
+and `to` the matching rows. No tool totals a column (ruling 95): the model reads the rows
+and adds them with `calc`. No table rides
 the prompt: the model reads a file with a tool when a turn needs it, and the owner's
 own habits (columns, targets, how he reads labels) live in his own note and skill.
 

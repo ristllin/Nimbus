@@ -178,8 +178,8 @@
   },
   {
    "name": "files.read",
-   "description": "Read a stored TEXT document's content (md/txt/json/csv/log). Large files are paged: pass 'offset' to continue from where the previous view ended. Pass 'tail' (a row count) to read only the last rows of a log or CSV; with 'sum' (a numeric column) the tail also reports that column's total for today, or for 'date' (YYYY-MM-DD). CSV: 'column' with 'from'/'to' keeps matching rows; 'sum' (columns, comma-separated) totals them on the device.",
-   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"offset\":{\"type\":\"number\"},\"tail\":{\"type\":\"number\"},\"sum\":{\"type\":\"string\"},\"date\":{\"type\":\"string\"},\"column\":{\"type\":\"string\"},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"project\",\"name\"]}"
+   "description": "Read a stored TEXT document's content (md/txt/json/csv/log). Large files are paged: pass 'offset' to continue from where the previous view ended. Pass 'tail' (a row count) to read only the last rows of a log or CSV. CSV: 'column' with 'from'/'to' keeps matching rows.",
+   "schema": "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"},\"offset\":{\"type\":\"number\"},\"tail\":{\"type\":\"number\"},\"column\":{\"type\":\"string\"},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"project\",\"name\"]}"
   },
   {
    "name": "files.search",
