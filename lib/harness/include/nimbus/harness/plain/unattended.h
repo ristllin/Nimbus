@@ -251,7 +251,9 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
 Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& id, uint64_t now, int16_t tzMinutes,
                    uint16_t dayStartMin);
 // What reaches the owner's transcript for a note: routineNoteText of its text, then on a new line
-// the stop line when it stopped at a limit.
+// the stop line when it stopped at a limit. A note whose fire read outside content (outside) has its
+// text whole inside the outside-content fence (jobs.h fenceOutsideContent; lane RB-RL), so it taints
+// the owner's next turn (plain/rails.h itemOutside).
 std::string heldNoteText(const HeldNote& n, int16_t tzMinutes, uint16_t dayStartMin);
 
 // The owner engine's side, registered once at boot in HookSlot::Routines: bootResume loads the

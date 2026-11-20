@@ -9,6 +9,7 @@
 #include <memory>
 #include <new>
 
+#include "nimbus/harness/jobs.h"   // fenceOutsideContent: the one fence (RB-Q2a)
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/plain/texts.h"
@@ -215,10 +216,13 @@ std::string routineInputText(const RoutineFire& f, int16_t tzMinutes, uint16_t d
   return out;
 }
 
+// A reply written after the fire read outside content enters the owner's transcript whole inside the
+// one outside-content fence (jobs.h, RB-Q2a's), so his later turns read it as data (lane RB-RL).
 std::string heldNoteText(const HeldNote& n, int16_t tzMinutes, uint16_t dayStartMin) {
-  if (n.stop.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, n.text);
-  if (n.text.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, stopLine(n.stop));
-  return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, n.text) + '\n' + stopLine(n.stop);
+  const std::string text = n.outside && !n.text.empty() ? fenceOutsideContent(n.text) : n.text;
+  if (n.stop.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, text);
+  if (text.empty()) return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, stopLine(n.stop));
+  return routineNoteText(n.name, n.at, tzMinutes, dayStartMin, text) + '\n' + stopLine(n.stop);
 }
 
 bool inQuiet(const QuietHours& q, uint64_t now, int16_t tzMinutes) {
