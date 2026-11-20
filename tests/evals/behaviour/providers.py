@@ -22,6 +22,9 @@ PRICES = {
     "gpt-5.6-luna": (0.20, 1.20, 0.02, 0.20),
     "gpt-5.6": (5.00, 30.00, 0.50, 6.25),
     "glm-5.3": (1.40, 4.40, 0.26, 1.40),
+    # Lane RB-R1 (ruling 102): the firmware's own row for mistral-medium (model_price_defaults.h, 1.5 / 7.5 USD per
+    # 1M; cache read 0.1x and write 1.25x, that table's default share), not a provider quote.
+    "mistral-medium-latest": (1.50, 7.50, 0.15, 1.875),
 }
 HAIKU_LONG = (0.50, 2.50, 0.05, 0.625)
 MAX_TOKENS = 16000
@@ -203,7 +206,8 @@ class OpenAIResponses:
 
 
 class ChatCompletions:
-    """Z.ai glm-5.3 over its OpenAI-compatible chat completions path (/api/paas/v4)."""
+    """Z.ai glm-5.3 over its OpenAI-compatible chat completions path (/api/paas/v4); Mistral over its own
+    /v1/chat/completions (lane RB-R1, ruling 102)."""
 
     wire = "chat"
 
@@ -279,10 +283,13 @@ HEADS = {
     "gpt-5.6-luna": lambda: OpenAIResponses("gpt-5.6-luna"),
     "gpt-5.6": lambda: OpenAIResponses("gpt-5.6"),
     "glm-5.3": lambda: ChatCompletions("glm-5.3"),
+    "mistral-medium-latest": lambda: ChatCompletions(
+        "mistral-medium-latest", base_url="https://api.mistral.ai/v1", key_env="MISTRAL_API_KEY"
+    ),
 }
 
 
-KEY_ENVS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "Z_AI_TOKEN")
+KEY_ENVS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "Z_AI_TOKEN", "MISTRAL_API_KEY")
 
 
 def redact(text: str) -> str:
@@ -295,8 +302,14 @@ def redact(text: str) -> str:
 
 
 def load_env(path: str):
-    """Put the provider keys this eval uses into os.environ; values never leave the process."""
+    """Put the provider keys this eval uses into os.environ; values never leave the process. Several files may be
+    joined by commas: the FIRST file that names a key wins it (as an exported variable would)."""
     wanted = set(KEY_ENVS)
+    for one in [p for p in path.split(",") if p]:
+        _load_one(one, wanted)
+
+
+def _load_one(path: str, wanted: set):
     with open(path) as f:
         for line in f:
             s = line.strip()
