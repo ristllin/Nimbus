@@ -139,7 +139,7 @@ src/agent/files_subsystem.cpp:agent::files::saveBytes
 src/sfx/sound_fx.cpp:sfx::rescan
 src/agent/adapters/b64_stream.h:agent::b64decodeToFile
 src/agent/adapters/provider_file_fetch.cpp:agent::safeName
-src/agent/orchestrator_e1.cpp:agent::orchestrator::sendToChat
+src/agent/orchestrator_common.cpp:agent::orchestrator::sendToChat
 test/test_orch_rbac/main.cpp:test_role_permissions_matrix
 src/net/web_files.cpp:nimbus::net::contentTypeFor
 lib/harness/src/compose.cpp:agent::composeInstructions

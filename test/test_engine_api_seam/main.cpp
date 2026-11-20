@@ -80,9 +80,22 @@ static std::string trim(const std::string& s) {
   return s.substr(a, b - a);
 }
 
+// The function a namespace-level statement declares ("" when it declares none): the name
+// right before its first '(', unless it is a `using` alias.
+static std::string declaredName(const std::string& stmt) {
+  const std::string s = trim(stmt);
+  const size_t paren = s.find('(');
+  if (paren == std::string::npos || s.rfind("using ", 0) == 0) return std::string();
+  size_t e = paren;
+  while (e > 0 && s[e - 1] == ' ') --e;
+  size_t b = e;
+  while (b > 0 && isIdent(s[b - 1])) --b;
+  return s.substr(b, e - b);
+}
+
 // The names of the functions a header declares at namespace depth `depth` (2 for
-// agent::orchestrator), from comment-stripped text: each statement there that holds a '(' and
-// is not a `using` alias. Preprocessor lines are skipped (an #ifdef'd declaration counts).
+// agent::orchestrator), from comment-stripped text. Preprocessor lines are skipped (an
+// #ifdef'd declaration counts).
 static std::set<std::string> declaredFunctions(const std::string& src, int depth = 2) {
   std::set<std::string> out;
   int d = 0;
@@ -90,68 +103,62 @@ static std::set<std::string> declaredFunctions(const std::string& src, int depth
   for (size_t i = 0; i < src.size(); ++i) {
     const char c = src[i];
     if (c == '#' && (i == 0 || src[i - 1] == '\n')) {   // a preprocessor line
-      const size_t e = src.find('\n', i);
-      if (e == std::string::npos) break;
-      i = e;
+      i = src.find('\n', i);
+      if (i == std::string::npos) break;
       continue;
     }
-    if (c == '{') {
-      ++d;
+    if (c == '{' || c == '}') {
+      d += c == '{' ? 1 : -1;
       stmt.clear();
-      continue;
-    }
-    if (c == '}') {
-      --d;
+    } else if (d == depth && c == ';') {
+      const std::string name = declaredName(stmt);
+      if (!name.empty()) out.insert(name);
       stmt.clear();
-      continue;
-    }
-    if (d != depth) continue;
-    if (c != ';') {
+    } else if (d == depth) {
       stmt += c;
-      continue;
     }
-    const std::string s = trim(stmt);
-    stmt.clear();
-    const size_t paren = s.find('(');
-    if (paren == std::string::npos || s.rfind("using ", 0) == 0) continue;
-    size_t e = paren;
-    while (e > 0 && s[e - 1] == ' ') --e;
-    size_t b = e;
-    while (b > 0 && isIdent(s[b - 1])) --b;
-    if (b < e) out.insert(s.substr(b, e - b));
   }
   return out;
 }
 
-// Whether comment-stripped `src` DEFINES a free function `name`: a line that starts in column
-// 0 names it after a return type (not after `::`, so a member is not it), and its parameter
-// list closes into a body.
+static size_t skipBlanks(const std::string& src, size_t p) {
+  while (p < src.size() && (src[p] == ' ' || src[p] == '\n')) ++p;
+  return p;
+}
+
+// From the '(' at `p`: the parameter list closes and a body opens (an optional `const` between).
+static bool closesIntoBody(const std::string& src, size_t p) {
+  int open = 0;
+  for (; p < src.size(); ++p) {
+    if (src[p] == ';' || src[p] == '{') return false;
+    if (src[p] == '(') ++open;
+    if (src[p] == ')' && --open == 0) break;
+  }
+  if (p >= src.size()) return false;
+  p = skipBlanks(src, p + 1);
+  if (src.compare(p, 5, "const") == 0) p = skipBlanks(src, p + 5);
+  return p < src.size() && src[p] == '{';
+}
+
+// `name` at `at` on a column-0 line [line, end) is a definition's name: after a return type
+// (not after `::`, so a member is not it), followed by its parameter list and a body.
+static bool definesAt(const std::string& src, size_t line, size_t at, const std::string& name) {
+  if (at == line || isIdent(src[at - 1]) || src[at - 1] == ':') return false;
+  size_t p = at + name.size();
+  while (p < src.size() && src[p] == ' ') ++p;
+  return p < src.size() && src[p] == '(' && closesIntoBody(src, p);
+}
+
+// Whether comment-stripped `src` DEFINES a free function `name`, on a line that starts in
+// column 0 (a call inside a body is indented).
 static bool definesFunction(const std::string& src, const std::string& name) {
-  size_t line = 0;
-  while (line < src.size()) {
+  for (size_t line = 0; line < src.size();) {
     const size_t eol = src.find('\n', line);
     const size_t end = eol == std::string::npos ? src.size() : eol;
     const char first = src[line];
-    if (line < end && first != ' ' && first != '\t' && first != '#' && first != '}') {
-      for (size_t at = src.find(name, line); at != std::string::npos && at < end; at = src.find(name, at + 1)) {
-        if (at == line || isIdent(src[at - 1]) || src[at - 1] == ':') continue;
-        size_t p = at + name.size();
-        while (p < src.size() && src[p] == ' ') ++p;
-        if (p >= src.size() || src[p] != '(') continue;
-        int open = 0;
-        for (; p < src.size(); ++p) {
-          if (src[p] == '(') ++open;
-          if (src[p] == ')' && --open == 0) break;
-          if (src[p] == ';' || src[p] == '{') break;
-        }
-        if (p >= src.size() || src[p] != ')') continue;
-        ++p;
-        while (p < src.size() && (src[p] == ' ' || src[p] == '\n')) ++p;
-        if (src.compare(p, 5, "const") == 0) p += 5;
-        while (p < src.size() && (src[p] == ' ' || src[p] == '\n')) ++p;
-        if (p < src.size() && src[p] == '{') return true;
-      }
-    }
+    const bool candidate = line < end && first != ' ' && first != '\t' && first != '#' && first != '}';
+    for (size_t at = src.find(name, line); candidate && at != std::string::npos && at < end; at = src.find(name, at + 1))
+      if (definesAt(src, line, at, name)) return true;
     if (eol == std::string::npos) break;
     line = eol + 1;
   }
