@@ -1,0 +1,11 @@
+{
+  "lane": "RB-Q4",
+  "allowance_bytes": 512,
+  "envs": {
+    "esp32s3": 512,
+    "esp32s3-cyd": 512,
+    "test": 512,
+    "test-cyd": 512
+  },
+  "why": "Ruling 10: a lane with no flash ledger figure has 512 B. Same-tree builds of esp32s3-cyd on rb-main ca1ab53c4 (lanes/RB-Q4/scratch/base-ca1ab53c4, 6,363,424 B) against the lane tip c1f05d709 (6,364,368 B): code +475 B, docs pack +469 B counted apart. The prose-is-the-reply rule on the Anthropic wire, the filler check on prose and stripHistoryLabel."
+}
