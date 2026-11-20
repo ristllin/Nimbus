@@ -156,7 +156,7 @@ class Exchange {
     in_ = *in;
     head_ = *in->head;
     in_.head = &head_;
-    slug_ = providerSlugOf(*in->turn, *in->head);
+    slug_ = headSlugOf(*in->turn, *in->head);
     capHost_ = slug_;
     model_ = in->turn->model;
     routed_ = in->head->routed || slug_ == "cumulo";
@@ -429,7 +429,11 @@ std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDi
   return "custom";
 }
 
-std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) { return headSlugOf(turn, head); }
+std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) {
+  bool byDialect = false;
+  const std::string s = headSlugOf(turn, head, &byDialect);
+  return byDialect ? "custom" : s;   // a line never names a provider the endpoint is not
+}
 
 // The owner's line for a failed exchange (texts.h device_notes): what happened, then the
 // one next step; no provider text (a provider's message is outside content and stays in the log).

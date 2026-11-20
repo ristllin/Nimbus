@@ -115,7 +115,7 @@ struct HeadBudget {
   TokenMarks tokens;             // at full; an owner's smaller profile lowers `marks`, not the aim
   AimBound bound = AimBound::Clamp;
   bool floorHead = false;        // the class: routed with the lift off, custom, a v5.1.2 floor row
-  uint32_t messageCap = 0;   // read by the engine at capture (RB-H81, ruling 91 item 1)       // owner and assistant text kept inline, bytes
+  uint32_t messageCap = 0;       // owner and assistant text kept inline, bytes (RB-H81 wires it: ruling 91 item 1)
   uint32_t releasedFold = 0;     // v5.1.2's fold mark for this head (owner and assistant text)
   uint32_t releasedKeep = 0;     // v5.1.2's keep: a compaction leaves at least this much text
   uint32_t bodyMilliBytesPerToken = 0;   // the wire ratio the byte marks were derived with (x1000)

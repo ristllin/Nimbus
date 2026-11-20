@@ -6,8 +6,8 @@
 #include <algorithm>
 #include <cctype>
 
-#include "nimbus/orch/budget.h"
-#include "nimbus/orch/router_route.h"   // resolveRouterRoute - a routed head's upstream wire   // deriveRequestContext - the released history marks (the floors)
+#include "nimbus/orch/budget.h"   // deriveRequestContext - the released history marks (the floors)
+#include "nimbus/orch/router_route.h"   // resolveRouterRoute - a routed head's upstream wire
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/rules.h"
 

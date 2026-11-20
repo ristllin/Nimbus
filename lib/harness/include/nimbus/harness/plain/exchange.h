@@ -195,11 +195,13 @@ Status qualifiedTargets(const std::vector<HeadTarget>& ladder, nimbus::orch::hea
 // reason of the router contract is classed by that reason, never by its status.
 ExchangeErr classifyAnswer(int status, const std::string& body, bool routed);
 // The provider slug of a turn's head (lane RB-T4b): TurnCtx::host when it is a slug, else a known API
-// host (the endpoint's, else the turn's), else "cumulo" when routed, else the configured dialect
-// (Anthropic Messages: "anthropic", OpenAI Responses: "openai", a compatible dialect: "custom";
-// `byDialect` is set then). Empty when the turn names no host and the endpoint none: nothing to size.
+// host (the endpoint's, else the turn's), else "cumulo" when routed, else the configured dialect:
+// Anthropic Messages "anthropic" and OpenAI Responses "openai" (`byDialect` set: a fallback the engine
+// logs), a compatible dialect "custom" (what a custom endpoint is configured as). Empty when the turn
+// names no host and the endpoint none: nothing to size. The budget and the exchange's caps read it.
 std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDialect = nullptr);
-// The same for the caps and the lines.
+// The provider an owner's line names: headSlugOf, but "custom" where only the dialect named it (a
+// proxy is not the provider).
 std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head);
 // The owner's plain line for an exchange that ended with `err` (empty for None).
 std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus);

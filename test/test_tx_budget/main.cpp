@@ -421,7 +421,7 @@ void test_no_engine2_row_is_cut() {
     TEST_ASSERT_TRUE_MESSAGE(cut.empty(), (r.key + ": " + cut).c_str());
     ++checked;
   }
-  TEST_ASSERT_TRUE(checked >= 248);
+  TEST_ASSERT_EQUAL((int)(v512().size() + budgettable::heads().size()), (int)checked);
 }
 
 // ---- 5b. the arena is sized to full (ruling 83 item 8; ruling 91, T4-ADV-02) ----------------------

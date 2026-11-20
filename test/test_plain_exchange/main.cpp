@@ -998,6 +998,21 @@ static void test_the_dialect_decides_an_unknown_host_and_nothing_named_is_nothin
   t.host = "zai";
   TEST_ASSERT_EQUAL_STRING("zai", plain::headSlugOf(t, h, &byDialect).c_str());
   TEST_ASSERT_FALSE(byDialect);
+  // An owner's line never names the provider a proxy is not.
+  t.host.clear();
+  h.host = "127.0.0.1";
+  t.dialect = plain::Dialect::AnthropicMessages;
+  TEST_ASSERT_EQUAL_STRING("custom", plain::providerSlugOf(t, h).c_str());
+  // A known API host on the turn when the endpoint names none.
+  h.host.clear();
+  t.host = "api.openai.com";
+  TEST_ASSERT_EQUAL_STRING("openai", plain::headSlugOf(t, h, &byDialect).c_str());
+  TEST_ASSERT_FALSE(byDialect);
+  // Routed with nothing named is still nothing: the router is not a guess.
+  t.host.clear();
+  h.routed = true;
+  TEST_ASSERT_EQUAL_STRING("", plain::headSlugOf(t, h, &byDialect).c_str());
+  h.routed = false;
   // Nothing named: no host on the turn and none on the endpoint, whatever the dialect.
   t.host.clear();
   h.host.clear();
