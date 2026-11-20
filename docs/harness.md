@@ -972,6 +972,15 @@ that day alone is above H, then only its oldest half), never the newest six owne
 and never a turn after an open turn, an intent with no result or a running agent job: thru
 never jumps over a turn.
 
+Tools never eat the dialogue (owner ruling 81, ruling 91 table/F1). When a due slice is held
+only by the text keep (a tool-heavy chat whose text is under v5.1.2's keep), no request is sent:
+the results of the oldest closed turns render as their stubs from then on, oldest first, until
+what a request renders is at L (`planToolFold`; one x item, why `tools`, lists them; each stub
+keeps its view pointer). The arena's room is the one real limit besides the request: while it
+has under 128 KB (or a quarter of it) free, a compaction is due and a slice may leave under L and
+under the text keep, until it has freed twice that room, with one log line naming the text kept;
+so the engine never has to drop whole turns from RAM with no digest.
+
 The summarizer gets owner and assistant text verbatim with the local time and one
 bracketed line per tool result that names the tool and nothing else (`[file change]`,
 `[file work]`, `[outside content read]`, `[<tool> done]`); never a call's arguments, a

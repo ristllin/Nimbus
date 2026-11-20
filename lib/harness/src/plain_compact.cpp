@@ -138,6 +138,7 @@ const char* compactStepSlug(CompactStep s) {
     case CompactStep::Failed: return "failed";
     case CompactStep::Stored: return "stored";
     case CompactStep::Refused: return "refused";
+    case CompactStep::ToolsFolded: return "tools";
   }
   return "idle";
 }
@@ -473,12 +474,23 @@ void assignDays(std::vector<Unit>& units, const SliceRules& r) {
     if (units[i - 1].day.empty()) units[i - 1].day = units[i].day;
 }
 
+// The arena is short of its room and this slice has not yet freed enough for twice it.
+bool pressed(const SliceRules& r, const SlicePlan& plan) {
+  return r.arenaRoom && r.arenaFree < r.arenaRoom && r.arenaFree + plan.freed < 2 * r.arenaRoom;
+}
+
 // May a turn with text join the slice: its day, and what stays after it at least L, with at least
-// the head's v5.1.2 keep of owner and assistant text (owner ruling 81).
-bool joins(const Unit& u, const SliceRules& r, const SlicePlan& plan) {
+// the head's v5.1.2 keep of owner and assistant text (owner ruling 81). The arena's room is the one
+// real limit that may take a slice under them (ruling 91 table/F1): never silently, the plan says so.
+bool joins(const Unit& u, const SliceRules& r, SlicePlan& plan) {
   if (!u.content) return true;
   if (u.day.empty() || (!plan.day.empty() && u.day != plan.day)) return false;
-  return r.manual || (plan.rest - u.bytes >= r.low && plan.restText >= u.text + r.keepText);
+  if (r.manual) return true;
+  const bool keepsL = plan.rest >= u.bytes && plan.rest - u.bytes >= r.low;
+  if (keepsL && plan.restText >= u.text + r.keepText) return true;
+  if (pressed(r, plan)) return plan.belowKeep = true;
+  if (!plan.turns && keepsL) plan.textHeld = true;
+  return false;
 }
 
 void take(const Unit& u, std::string& text, uint64_t row, SlicePlan& out) {
@@ -489,6 +501,7 @@ void take(const Unit& u, std::string& text, uint64_t row, SlicePlan& out) {
   }
   out.input += text;
   out.lastRow = row;
+  out.freed += u.stored;
   out.rest -= u.bytes;
   out.restText -= u.text;
   out.thru = u.lastQ;
@@ -523,11 +536,45 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
   }
   if (!out.turns) {   // device items alone are never a slice: they go with the next turn
     const size_t resident = out.resident, text = out.restText;
+    const bool held = out.textHeld;
     out = SlicePlan{};
     out.resident = out.rest = resident;
     out.restText = text;
+    out.textHeld = held;
   } else if (r.omittedThru > thru) {   // stored items the arena could not hold: named, never silent
     out.input.insert(0, std::string(st::kNotLoaded) + "\n");
+  }
+  return Status::success();
+}
+
+Status planToolFold(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, std::vector<uint64_t>& sup,
+                    size_t& saved) {
+  sup.clear();
+  saved = 0;
+  if (!r.now || !r.high || r.low > r.high) return Status::fail(Err::InvalidArgument, "plain::planToolFold");
+  std::vector<Unit> units;
+  Status s = scanUnits(arena, thru, units);
+  if (!s.ok()) return s;
+  assignDays(units, r);
+  size_t rest = 0;
+  for (const Unit& u : units) rest += u.bytes;
+  ShowState show;
+  if (!(s = showState(arena, show)).ok()) return s;
+  const size_t stop = protectedFrom(units, r, localDay(r.now, r.tzMinutes, r.dayStartMin));
+  tx::Item it;
+  for (size_t i = 0; i < stop && rest - saved > r.low; ++i) {
+    if (!units[i].closed) break;   // thru never jumps a turn; nor does a fold
+    for (size_t k = units[i].first; k <= units[i].last && rest - saved > r.low; ++k) {
+      tx::ArenaEntry e;
+      if (!(s = arena.header(k, e)).ok()) return s;
+      if (e.q <= thru || e.kind != tx::ItemKind::Result) continue;
+      if (!(s = arena.get(k, it)).ok()) return s;
+      if (!shownWhole(it, show) || it.st.empty()) continue;   // already a stub, or none to show
+      const size_t whole = shownBytes(it, show), stub = kItemFramingBytes + it.id.size() + it.st.size();
+      if (whole <= stub) continue;
+      saved += whole - stub;
+      sup.push_back(it.q);
+    }
   }
   return Status::success();
 }
@@ -677,6 +724,7 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   Status s = planIfDue(ctx, plan, due);
   if (!s.ok() && manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
   if (!s.ok() || !due) return s;
+  if (!plan.thru && plan.textHeld && !manual_) return foldTools(rules_, out);
   if (!plan.thru) {
     out.step = CompactStep::Nothing;
     if (manual_) endManual(manualStored_ ? texts::device_notes::kCompactDone : texts::device_notes::kCompactNothing);
@@ -718,13 +766,49 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   rules.manual = manual_;
   rules.jobRunning = d_.jobRunning;
   rules.omittedThru = d_.omittedThru ? d_.omittedThru() : 0;
+  rules.arenaFree = d_.arena->freeBytes();
+  rules.arenaRoom = std::min(kCompactArenaRoomBytes, d_.arena->capacity() / 4);
+  rules_ = rules;
   if (!(s = planSlice(*d_.arena, d_.head()->thru, rules, plan)).ok()) return s;
   // The hot trigger in real tokens: the last request reached the due mark (the aim less the next
   // request's growth), so the next one would pass the aim.
   const bool hot = lastPromptTokens(*d_.arena) >= b.tokens.due;
   // No hour makes a compaction due (owner ruling 81, ruling 83 item 8): the night fold under H fit no
   // request. Quiet hours only run one that is due by the marks.
-  due = manual_ || plan.resident > marks.high || hot;
+  // The arena's room is the one real limit besides the request (ruling 91 table/F1): a compaction is
+  // due before the engine would have to drop whole turns from RAM with no digest.
+  const bool room = rules.arenaFree < rules.arenaRoom;
+  due = manual_ || plan.resident > marks.high || hot || room;
+  return Status::success();
+}
+
+// The tool fold, stored as one x item per kMaxListItems results (the pointer unchanged): code only,
+// no request, no daily count. TooLarge only for a refused allocation.
+Status CompactDriver::foldTools(const SliceRules& rules, CompactOutcome& out) {
+  tx::HeadState& head = *d_.head();
+  std::vector<uint64_t> sup;
+  size_t saved = 0;
+  Status s = planToolFold(*d_.arena, head.thru, rules, sup, saved);
+  if (!s.ok() || sup.empty()) {
+    if (s.ok()) out.step = CompactStep::Nothing;
+    return s;
+  }
+  for (size_t at = 0; at < sup.size(); at += tx::kMaxListItems) {
+    tx::Item x;
+    x.kind = tx::ItemKind::PointerMove;
+    x.q = std::max<uint64_t>({head.nextQ, d_.arena->lastQ() + 1, d_.log->lastQ() + 1});
+    x.t = d_.platform->nowEpoch ? d_.platform->nowEpoch() : 0;
+    x.stub = head.stub;
+    x.why = tx::moveWhySlug(tx::MoveWhy::ToolFold);
+    x.sup.assign(sup.begin() + (long)at, sup.begin() + (long)std::min(sup.size(), at + tx::kMaxListItems));
+    tx::StoreState state = tx::StoreState::NotStored;
+    if (!(s = d_.log->store(x, *d_.arena, state)).ok()) return s.err == Err::TooLarge ? Status::success() : s;
+    head.nextQ = x.q + 1;
+  }
+  (void)d_.log->writeHead(head);
+  out.step = CompactStep::ToolsFolded;
+  hlog::logf("compact(%s): text under the v5.1.2 keep: %u results of the oldest turns now show as stubs (%u B)",
+             d_.chatKey.c_str(), (unsigned)sup.size(), (unsigned)saved);
   return Status::success();
 }
 
@@ -767,6 +851,9 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   out.requests = asked.requests;
   out.ran = asked.requests > 0;
   if (asked.parked && d_.park) d_.park(rung);
+  if (s.ok() && plan.belowKeep)
+    hlog::logf("compact(%s): the arena has %u B free: this slice leaves under the v5.1.2 text keep (%u B kept)",
+               d_.chatKey.c_str(), (unsigned)d_.arena->freeBytes(), (unsigned)(plan.restText));
   if (s.ok()) s = swap(plan, asked.summary, ctx.now, out);
   settle(rung, plan, before.fails, ctx.now, s, out);
   return s.err == Err::TooLarge ? s : Status::success();

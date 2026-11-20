@@ -93,6 +93,9 @@ inline constexpr uint32_t kCompactThinFloor = 120;
 inline constexpr uint32_t kCompactThinSlice = 2048;
 // kDayStartDefaultMin (04:00) lives in plain/turn.h: TurnCtx carries the day start too.
 inline constexpr size_t kCompactCtlChats = 8;              // chats whose backoff the control file keeps
+// The arena room compaction keeps (or a quarter of the arena, the smaller): under it a compaction is
+// due, so the engine never has to drop whole turns from RAM with no digest (ruling 91 table/F1).
+inline constexpr size_t kCompactArenaRoomBytes = 128 * 1024;
 
 // One rung of the summarizer ladder.
 struct SummarizerRung {
@@ -171,6 +174,10 @@ struct SliceRules {
   bool manual = false;           // take all the rules allow, ignoring L
   std::function<bool(uint32_t turn)> jobRunning;
   uint64_t omittedThru = 0;      // items up to this q are stored but not resident (CompactDeps)
+  // The arena's own room, a real limit (ruling 91 table/F1): while its free bytes are under
+  // arenaRoom a slice may leave less than L and less than keepText, until the slice has freed
+  // enough for 2 x arenaRoom free; never a turn the rules above protect. 0: not applied.
+  size_t arenaFree = 0, arenaRoom = 0;
 };
 struct SlicePlan {
   uint64_t thru = 0;             // the last q the slice covers (0: nothing to summarize)
@@ -182,7 +189,18 @@ struct SlicePlan {
   size_t rest = 0;               // bytes after the new thru
   size_t restText = 0;           // owner and assistant text after the new thru
   uint64_t lastRow = 0;          // the newest u.m in the slice (the chatsum row pointer)
+  size_t freed = 0;              // arena bytes the slice's items hold (what the swap frees)
+  bool textHeld = false;         // the oldest turn may not go only because of keepText
+  bool belowKeep = false;        // the slice leaves under L or keepText: the arena's room asked
 };
+// The tool fold (ruling 91 table/F1; owner ruling 81: tools must not eat the dialogue). When a due
+// slice is held only by the text floor, the results of the oldest closed turns (before the
+// protected ones) render as their stubs instead, oldest first, until what a request renders of
+// the transcript is at L: an x item (why "tools") lists them in sup, stored like any change point.
+// The owner and assistant text stays verbatim; each stub keeps its view pointer. `sup` empty:
+// nothing whole is left to fold. InvalidArgument without a clock or marks.
+Status planToolFold(const nimbus::orch::tx::TxArena& arena, uint64_t thru, const SliceRules& rules,
+                    std::vector<uint64_t>& sup, size_t& saved);
 // The local day of `epoch`, where a day starts at dayStartMin past midnight: "YYYY-MM-DD".
 std::string localDay(uint64_t epoch, int16_t tzMinutes, uint16_t dayStartMin);
 // Bytes a request renders of the transcript after `thru` (the unit of H and L, ruling 91 table/F6):
@@ -203,6 +221,7 @@ enum class CompactStep : uint8_t {
   Failed,       // asked, and the answer was not taken: everything as it was
   Stored,       // a digest is stored and thru moved
   Refused,      // the answer was taken, but storage refused the digest: thru unmoved
+  ToolsFolded,  // no request: the oldest closed turns' results now render as stubs (planToolFold)
 };
 const char* compactStepSlug(CompactStep s);
 
@@ -230,6 +249,8 @@ class CompactDriver {
   Status run(const IdleCtx& ctx, CompactOutcome& out);
   bool automaticMayAsk(const IdleCtx& ctx);
   Status planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due);
+  Status foldTools(const SliceRules& rules, CompactOutcome& out);
+  SliceRules rules_;   // the last planIfDue's rules (the tool fold reads them)
   bool held(const IdleCtx& ctx, const CompactCtl::Chat& chat);
   Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out);
   void settle(const SummarizerRung& rung, const SlicePlan& plan, uint32_t fails, uint64_t now, const Status& s,

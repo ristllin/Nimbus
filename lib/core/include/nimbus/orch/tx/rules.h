@@ -43,13 +43,16 @@ inline constexpr size_t kArrivalPhotosMax = 4;        // the arrival turn (ladde
 inline constexpr size_t kOmissionDatesMaxBytes = 64;
 
 // Why the pointer moved (x.why). Slugs frozen: stored and counted as change points.
-enum class MoveWhy : uint8_t { ColdOpen = 0, WarmBulk = 1, Outside = 2, Superseded = 3 };
+// ToolFold (lane RB-H81): compaction's tool fold, whose sup lists the results of the oldest closed
+// turns that render as their stubs from then on (owner and assistant text stays verbatim).
+enum class MoveWhy : uint8_t { ColdOpen = 0, WarmBulk = 1, Outside = 2, Superseded = 3, ToolFold = 4 };
 inline const char* moveWhySlug(MoveWhy w) {
   switch (w) {
     case MoveWhy::ColdOpen: return "cold";
     case MoveWhy::WarmBulk: return "bulk";
     case MoveWhy::Outside: return "outside";
     case MoveWhy::Superseded: return "superseded";
+    case MoveWhy::ToolFold: return "tools";
   }
   return "cold";
 }

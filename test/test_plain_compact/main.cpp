@@ -1764,6 +1764,109 @@ void test_the_marks_measure_what_a_request_renders() {
   }
 }
 
+namespace {
+size_t textOf(const Chat& c) { return keptText(c); }
+bool hasToolFold(Chat& c) {
+  for (const tx::Item& it : c.stored())
+    if (it.kind == tx::ItemKind::PointerMove && it.why == "tools" && !it.sup.empty()) return true;
+  return false;
+}
+}  // namespace
+
+// Ruling 91 table/F1 (owner ruling 81: tools must not eat the dialogue). A tool-heavy chat on
+// Sonnet at full: its request passes the due mark while its owner and assistant text is far under
+// v5.1.2's keep, so no slice may go. The results of the oldest closed turns then render as their
+// stubs (one x item, why "tools"; no request), the text stays verbatim, and what a request renders
+// falls to L. The counter-case: a text-heavy chat over H compacts as before, with no tool fold.
+void test_a_slice_held_by_the_text_floor_folds_the_tools_not_the_dialogue() {
+  const tx::HeadKey sonnet{"anthropic", "claude-sonnet-5-5", false};
+  tx::HeadBudget b;
+  TEST_ASSERT_TRUE(tx::budgetFor(sonnet, tx::Profile::Full, b).ok());
+  for (bool toolHeavy : {true, false}) {
+    Chat c;
+    c.profile = c.head.profile = "full";
+    c.headKey = sonnet;
+    c.driver.reset(new plain::CompactDriver(c.deps()));
+    const Mix heavy{"three tools", 200, 400, 3, 2048, 0, false}, text{"text", 3000, 3000, 0, 0, 0, false};
+    int n = 0;
+    for (int d = -8; plain::residentBytes(*c.arena, c.head.thru) <= b.marks.high; ++d) {
+      c.now = kNoon - 3 * 3600 + (int64_t)d * kDay;
+      for (int k = 0; k < 6; ++k, c.now += 120) mixTurn(c, toolHeavy ? heavy : text, "t" + std::to_string(++n));
+    }
+    c.now = kNoon + 3600;
+    for (int k = 0; k < 6; ++k, c.now += 120) mixTurn(c, toolHeavy ? heavy : text, "today" + std::to_string(k));
+    c.answer([] { return sp::say(kSummary); });
+    const size_t textBefore = textOf(c);
+    const plain::CompactOutcome out = c.step();
+    if (!toolHeavy) {
+      TEST_ASSERT_EQUAL_STRING("stored", plain::compactStepSlug(out.step));
+      TEST_ASSERT_FALSE(hasToolFold(c));
+      continue;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(textBefore < b.releasedKeep, "the tool-heavy chat must hold less text than v5.1.2's keep");
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("tools", plain::compactStepSlug(out.step), "a text-held due slice must fold the tools");
+    TEST_ASSERT_FALSE(out.ran);
+    TEST_ASSERT_TRUE(hasToolFold(c));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(textBefore, textOf(c), "the dialogue must stay verbatim");
+    const size_t after = plain::residentBytes(*c.arena, c.head.thru);
+    TEST_ASSERT_TRUE_MESSAGE(after <= b.marks.low + 8192, "the fold must bring the request down to L");
+    const size_t shown = renderedConversation(c);
+    TEST_ASSERT_TRUE_MESSAGE(shown * 10 <= after * 11 && after * 10 <= shown * 11, "the wire must render the fold's stubs");
+    expectCoveredAcrossRestart(c, "after a tool fold");
+    TEST_ASSERT_TRUE_MESSAGE(plain::residentBytes(*c.arena, c.head.thru) <= b.marks.low + 8192, "the fold must survive a restart");
+  }
+}
+
+// Ruling 91 table/F1: tool-heavy chats on Sonnet and luna run far past the arena. Compaction keeps
+// the arena's room, so the engine never has to drop whole turns from RAM (a store the arena refused
+// fails this test): every stored item is resident or under a digest. A slice may leave less than
+// v5.1.2's text keep only while the arena is short of its room (the one real limit besides the
+// request), never otherwise.
+void test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest() {
+  const tx::HeadKey heads[] = {{"anthropic", "claude-sonnet-5-5", false}, {"openai", "gpt-5.6-luna", false}};
+  const Mix mixes[] = {{"text 200", 100, 100, 1, 2048, 0, false}, {"three tools", 200, 400, 3, 2048, 0, false}};
+  for (const tx::HeadKey& k : heads)
+    for (const Mix& m : mixes) {
+      tx::HeadBudget b;
+      TEST_ASSERT_TRUE(tx::budgetFor(k, tx::Profile::Full, b).ok());
+      Chat c;
+      c.profile = c.head.profile = "full";
+      c.headKey = k;
+      c.driver.reset(new plain::CompactDriver(c.deps()));
+      int n = 0, stored = 0;
+      c.answer([&n] { return sp::say(std::string(kSummary) + " Part " + std::to_string(++n) + "."); });
+      size_t total = 0;
+      for (int d = -40; d <= 0; ++d) {
+        c.now = kNoon - 3 * 3600 + (int64_t)d * kDay;
+        for (int t = 0; t < 12; ++t, c.now += 120) {
+          char why[160];
+          std::snprintf(why, sizeof why, "%s %s day %d: the arena has %zu B free at a turn open", k.model.c_str(), m.name, d,
+                        c.arena->freeBytes());
+          TEST_ASSERT_TRUE_MESSAGE(c.arena->freeBytes() >= 32 * 1024, why);
+          const size_t before = c.arena->usedBytes();
+          mixTurn(c, m, "d" + std::to_string(d) + "t" + std::to_string(t));
+          total += c.arena->usedBytes() - before;
+        }
+        c.now += 4 * 3600;
+        for (int s = 0; s < 6; ++s) {
+          gClock += 3600000;
+          c.now += 600;
+          const size_t freeBefore = c.arena->freeBytes();
+          if (c.step().step != plain::CompactStep::Stored) continue;
+          ++stored;
+          if (keptText(c) < b.releasedKeep) {
+            const std::string why = k.model + " " + m.name + ": a slice left " + std::to_string(keptText(c)) +
+                                    " B of text with " + std::to_string(freeBefore) + " B of arena free";
+            TEST_ASSERT_TRUE_MESSAGE(freeBefore < plain::kCompactArenaRoomBytes, why.c_str());
+          }
+        }
+      }
+      TEST_ASSERT_TRUE_MESSAGE(total > 2 * tx::kActiveChatArenaBytes, "the chat must run far past the arena");
+      TEST_ASSERT_TRUE(stored > 0);
+      expectCoveredAcrossRestart(c, (k.model + " " + m.name).c_str());
+    }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -1785,6 +1888,8 @@ int main(int, char**) {
   RUN_TEST(test_nothing_due_under_H_at_night_or_by_day_and_the_prompt_trigger);
   RUN_TEST(test_the_hot_trigger_reads_the_last_request_whole_prompt_never_the_turn_sum);
   RUN_TEST(test_the_marks_measure_what_a_request_renders);
+  RUN_TEST(test_a_slice_held_by_the_text_floor_folds_the_tools_not_the_dialogue);
+  RUN_TEST(test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);
   RUN_TEST(test_a_refused_store_leaves_thru_and_the_retry_stores_once);
