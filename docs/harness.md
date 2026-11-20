@@ -592,22 +592,42 @@ durability around it and nothing that reads, edits or appends to the model's tex
   text is the reply. Each call: `beforeDispatch`, an intent item for an effect tool (the tool
   runs only when the intent is stored), one dispatch, the result stored (tier 1 inline, tier 2
   to the bulk file, its stub computed once) before the next request, `afterResult`.
-- **Limits** (`plain/guards.h`, `plain_guards.cpp`): the only guards, scaled to the head from
-  `TurnSetup::storedRounds` and `TurnSetup::cost`: 16 rounds (a stored orchLoopRnds of 8 or less
-  reads as 16, 9 to 32 is honoured); 240 s soft wall clock; prompt tokens summed over the turn's
-  rounds, cached ones included, at most max(4 x the head's target, 16 x its request size at the
-  profile trigger; 24,000 tokens when the head does not say); spend, priced per request from the
-  head's rates (cache rates default to 0.1x and 1.25x of the input rate), at most max(0.50 USD,
-  16 warm requests plus one cold). Checked in that order at each round boundary; a trip writes one
-  `[device] limit reached (rounds|time|spend|size)` item and sends one last round with tool choice
-  none; its text is delivered with one status line naming the guard, and a last round that only
-  called tools ends with the limit line instead. The soft wall bounds every request, the last
-  round may run to the hard wall. A head with no rates is not priced: the spend guard measures
-  nothing there (the e item's USD stays 0), rounds, time and size still bound the turn. An answer
-  that reports no usage at all still counts toward size and spend: a floor of the request's bytes
-  over 3.5 at the input rate, with the event `usage:missing`. The last round takes no hold. A guard's
-  last round that ends with calls only, or fails, ends with the limit line naming the guard
-  ("The turn reached its <slug> limit before a reply."), cause `limit:<slug>`.
+- **Limits** (`plain/guards.h`, `plain_guards.cpp`; lanes RB-E1b and RB-X3): the only guards,
+  scaled to the head from `TurnSetup::storedRounds` and `TurnSetup::cost` (the binding fills it
+  with `guardCostFor(budget, rates)` at the profile in force, full by default). Guards stop
+  runaways, never honest work (owner ruling 82 item 5, ruling 84 items 2 and 9).
+  - Unattended turns (no person's message started them: a routine, an agent report, a notice)
+    keep today's limits: 16 rounds (a stored orchLoopRnds of 8 or less reads as 16, 9 to 32 is
+    honoured), the time guard at 240 s with the last round inside 420 s.
+  - Attended turns (`personTrigger`: owner, console, resume): those 16 rounds and 240 s are soft,
+    checked again every 16 rounds and every 240 s. At a soft check a turn that is progressing goes
+    on (event `soft:rounds` or `soft:time`, and a `ProgressKind::SoftGuard` event through
+    `EngineDeps::progress`, the status-line class); one that is not stops there. The hard guards
+    are 64 rounds and the time guard at 1,020 s, so the last round ends inside 1,200 s.
+  - Progressing (`GuardProgress`): since the last check at least one call that suppression did
+    not answer and that did not fail with the same error text as the previous attempt of the same
+    call (tool and arguments) in this turn, or text beside the calls the turn had not written
+    before. A loop: three tool rounds in a row without such a call; it trips at once, on every
+    turn.
+  - Size: prompt tokens summed over the turn's rounds, cached ones included, at most max(4 x the
+    head's aim, R x its request at the due mark; 24,000 tokens when the head does not say). Spend,
+    priced per request from the head's rates (cache rates default to 0.1x and 1.25x of the input
+    rate), at most max(0.50 USD, R warm requests plus one cold). R is 64 on an attended turn and
+    16 on an unattended one. A head with no rates is not priced: the spend guard measures nothing
+    there (the e item's USD stays 0). An answer that reports no usage at all still counts toward
+    size and spend: a floor of the request's bytes over 3.5 at the input rate, with the event
+    `usage:missing`.
+  - Checked at each round boundary in the order loop, rounds, time, spend, size, then the soft
+    check. A trip is the honest stop: one `[device] limit reached (<slug>): no tool runs now; say
+    what is done and what is left.` item (slugs rounds, time, spend, size, loop), one last round
+    with tool choice none, its text delivered; on an attended turn the owner's line asks the one
+    question, "This turn stopped at its <slug> limit. Go on from where it stopped?", also when the
+    last round only called tools or failed (cause `limit:<slug>`). The next attended turn
+    continues from the log: the stub pointer does not move past the turn before the stopped one,
+    so its results stay whole. The last round takes no hold.
+  - The time limit bounds every request and no call starts past it; the last round may run to the
+    turn's hard wall. One exchange, its retries included, ends inside 450 s (`kExchangeMaxMs`): a
+    hung read is a stall, not honest work (ruling 85 item 3).
 - **Identical-call suppression** (`installSuppression`, HookSlot::Suppression): inside one turn,
   a call to a pure tool (by the class of the tool a `more` call reaches) with the same arguments
   as an earlier successful call is answered "not run again ..." instead of running, while that
@@ -727,8 +747,9 @@ wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each l
   turn. Progress lines are their own class: they go through the binding's `ProgressDeps`, never
   through `deliverTurn`, are never stored as transcript items, never count as the answer or as
   the one status line after a turn, and never shorten a turn's work. `installProgress` ticks on
-  each tool result and closes after delivery; the engine ticks the provider wait and a soft guard
-  reached while the turn still progresses.
+  each tool result and closes after delivery; the engine reports the provider wait before each
+  request and a soft guard a progressing turn passed through `EngineDeps::progress`; a soft guard
+  is shown at once where the line is edited in place.
 
 ### The truth check on engine 2 (lane RB-G1)
 
