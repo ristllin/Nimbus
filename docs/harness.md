@@ -953,7 +953,9 @@ outgrows its budget. `CompactDriver::step` is one unit of idle work (registered 
 idle seam's Compaction slot by `installCompaction`): at most one summarizer exchange and
 its swap. It never runs while an owner message waits.
 
-When: the bytes after thru (owner, assistant, call, result and device-note lines) are
+When: the bytes a request renders of the transcript after thru (each owner, assistant, call,
+result and device-note item as it shows, a result whole or as its stub, plus its wire framing;
+not the stored lines, which also hold each result's stub and only a bulk result's handle) are
 above H, the whole prompt of the last turn's last request (the e item's `lp`: input plus cache
 reads and writes in each provider's meaning, never the turn's sum) reached the head's due mark in
 tokens (`tx::budgetFor`: the aim, about 100,000 tokens, less the next request's growth; see

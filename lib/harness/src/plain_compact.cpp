@@ -166,13 +166,74 @@ bool rendered(tx::ItemKind k) {
          k == tx::ItemKind::Result || k == tx::ItemKind::DeviceNote;
 }
 
+// ---- what a request renders (ruling 91 table/F1, F6) ---------------------------------------------
+// The marks H and L are request bytes (tx::budgetFor: the head's due and keep in tokens on its wire,
+// less the fixed part and the digest block), so the transcript is measured as a request renders it,
+// not as it is stored: a stored result line also holds its stub (up to 400 B) and a bulk result
+// stores a handle where the request shows the whole. Each rendered item counts its text as shown
+// plus kItemFramingBytes of wire framing (role, type, ids, quotes: about what a stored line's keys
+// take, so a text-only chat measures as it did); a photo counts its stub line (its pixels reach the
+// hot trigger in real tokens); items no request renders (t, i, k of a closed turn, x, d, e, s)
+// count nothing.
+constexpr size_t kItemFramingBytes = 64;
+constexpr size_t kStampBytes = 24;           // "[2026-11-17 Tue 13:02] "
+constexpr size_t kPhotoShownBytes = 96;      // '[photo p<ref8> <when> not shown: view id=p<ref8>]'
+
+// The stub rule's facts over the resident items: the pointer (the newest x item's stub) and every x
+// item's superseded list, sorted.
+struct ShowState {
+  uint64_t pointer = 0;
+  std::vector<uint64_t> superseded;
+};
+Status showState(const tx::TxArena& arena, ShowState& out) {
+  out = ShowState{};
+  tx::Item it;
+  for (size_t i = 0; i < arena.count(); ++i) {
+    tx::ArenaEntry e;
+    Status s = arena.header(i, e);
+    if (!s.ok()) return s;
+    if (e.kind != tx::ItemKind::PointerMove) continue;
+    if (!(s = arena.get(i, it)).ok()) return s;
+    out.pointer = std::max(out.pointer, it.stub);
+    out.superseded.insert(out.superseded.end(), it.sup.begin(), it.sup.end());
+  }
+  std::sort(out.superseded.begin(), out.superseded.end());
+  out.superseded.erase(std::unique(out.superseded.begin(), out.superseded.end()), out.superseded.end());
+  return Status::success();
+}
+bool shownWhole(const tx::Item& r, const ShowState& s) {
+  tx::ShowFacts f;
+  f.pointer = s.pointer;
+  f.superseded = &s.superseded;
+  tx::ShowAs as = tx::ShowAs::Stub;
+  return tx::showResult(r, f, as).ok() && as == tx::ShowAs::Whole;
+}
+// What one decoded item adds to a request between turns (no turn open).
+size_t shownBytes(const tx::Item& it, const ShowState& s) {
+  size_t n = kItemFramingBytes;
+  switch (it.kind) {
+    case tx::ItemKind::User:
+      n += it.x.size() + kStampBytes;
+      for (const tx::Part& p : it.parts) n += p.kind == tx::PartKind::Image ? kPhotoShownBytes : p.ref.size() + kStampBytes;
+      return n;
+    case tx::ItemKind::Assistant:
+    case tx::ItemKind::DeviceNote: return n + it.x.size();
+    case tx::ItemKind::Call: return n + it.id.size() + it.n.size() + it.args.size();
+    case tx::ItemKind::Result:
+      if (!shownWhole(it, s)) return n + it.id.size() + it.st.size();
+      return n + it.id.size() + (it.cls == tx::ResultClass::Receipt || it.handle.empty() ? it.x.size() : it.bytes);
+    default: return 0;
+  }
+}
+
 // One turn's run of items, in q order.
 struct Unit {
   size_t first = 0, last = 0;   // arena indexes
   uint32_t turn = 0;
   uint64_t lastQ = 0;
   uint64_t at = 0;              // epoch of its first clocked item
-  size_t bytes = 0;
+  size_t bytes = 0;             // what a request renders of it (shownBytes)
+  size_t stored = 0;            // what it holds of the arena (lines and headers)
   size_t text = 0;              // owner and assistant text (v5.1.2's unit: what its window counted)
   bool owner = false;           // has a u item
   bool content = false;         // has a u or an a item
@@ -218,6 +279,7 @@ void joinTurn(std::vector<Unit>& units) {
   for (size_t i = k; i < units.size(); ++i) {
     const Unit& u = units[i];
     head.bytes += u.bytes;
+    head.stored += u.stored;
     head.text += u.text;
     head.owner |= u.owner;
     head.content |= u.content;
@@ -231,6 +293,9 @@ void joinTurn(std::vector<Unit>& units) {
 }
 
 Status scanUnits(const tx::TxArena& arena, uint64_t thru, std::vector<Unit>& units) {
+  ShowState show;
+  Status ss = showState(arena, show);
+  if (!ss.ok()) return ss;
   tx::Item it;
   for (size_t i = 0; i < arena.count(); ++i) {
     tx::ArenaEntry e;
@@ -249,10 +314,11 @@ Status scanUnits(const tx::TxArena& arena, uint64_t thru, std::vector<Unit>& uni
     u.last = i;
     u.lastQ = e.q;
     if (!u.at) u.at = e.t;
-    if (rendered(e.kind)) u.bytes += e.lineBytes;
+    u.stored += tx::recordBytes(e.lineBytes);
     u.closed |= e.kind == tx::ItemKind::TurnEnd;
     if (!decoded(e.kind)) continue;
     if (!(s = arena.get(i, it)).ok()) return s;
+    u.bytes += shownBytes(it, show);
     noteItem(it, u);
   }
   for (Unit& u : units) u.openIntent = !u.intents.empty();
@@ -381,10 +447,13 @@ Status renderUnit(const tx::TxArena& arena, const Unit& u, int16_t tz, std::stri
 }  // namespace
 
 size_t residentBytes(const tx::TxArena& arena, uint64_t thru) {
+  ShowState show;
+  if (!showState(arena, show).ok()) return 0;
   size_t n = 0;
+  tx::Item it;
   for (size_t i = 0; i < arena.count(); ++i) {
     tx::ArenaEntry e;
-    if (arena.header(i, e).ok() && e.q > thru && rendered(e.kind)) n += e.lineBytes;
+    if (arena.header(i, e).ok() && e.q > thru && rendered(e.kind) && arena.get(i, it).ok()) n += shownBytes(it, show);
   }
   return n;
 }

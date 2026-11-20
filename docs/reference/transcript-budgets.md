@@ -61,7 +61,7 @@ A request at the due mark on the head's wire, through the production link (conne
 
 ## Arena and restart fill at full
 
-The arena of the active chat is 589,824 B (tx/arena.h). The largest head at full (gpt-5.6-luna: due mark H plus one request's growth) takes up to 514,496 B of it, by turn mix, in test_tx_budget. Read back after a restart at RB-M2's measured card rate (82.5 ms per 130 KB in 8 KB slices) that is about 319 ms of card time, inside the 3 s gate: the fill stays one sequential read. With no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.
+The arena of the active chat is 589,824 B (tx/arena.h). The largest head at full (gpt-5.6-luna: due mark H plus one request's growth) takes up to 557,696 B of it, by turn mix, in test_tx_budget. Read back after a restart at RB-M2's measured card rate (82.5 ms per 130 KB in 8 KB slices) that is about 346 ms of card time, inside the 3 s gate: the fill stays one sequential read. With no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.
 
 ## The owner's smaller profiles
 

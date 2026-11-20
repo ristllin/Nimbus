@@ -185,8 +185,11 @@ struct SlicePlan {
 };
 // The local day of `epoch`, where a day starts at dayStartMin past midnight: "YYYY-MM-DD".
 std::string localDay(uint64_t epoch, int16_t tzMinutes, uint16_t dayStartMin);
-// Bytes the transcript keeps after `thru`: the stored lines of owner, assistant, call, result
-// and device-note items (what a request renders, stubs included).
+// Bytes a request renders of the transcript after `thru` (the unit of H and L, ruling 91 table/F6):
+// each owner, assistant, call, result and device-note item's text as it shows (a result whole or
+// as its stub by the stub rule, a whole bulk result at its payload size, a photo as its stub line)
+// plus kItemFramingBytes of wire framing. Not the stored lines: a result line also holds its stub
+// and a bulk line only a handle. Photo pixels are counted by the hot trigger in real tokens.
 size_t residentBytes(const nimbus::orch::tx::TxArena& arena, uint64_t thru);
 // The slice the next compaction takes (see above). InvalidArgument without a clock or marks.
 Status planSlice(const nimbus::orch::tx::TxArena& arena, uint64_t thru, const SliceRules& rules, SlicePlan& out);

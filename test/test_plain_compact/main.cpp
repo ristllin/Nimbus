@@ -36,6 +36,7 @@
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/log.h"
+#include "nimbus/orch/tx/rules.h"
 
 namespace sp = harness_test::scripted;
 namespace plain = agent::plain;
@@ -1600,6 +1601,169 @@ void test_a_head_with_no_profile_reads_as_full_and_live_ahead_of_thru_stores_not
   TEST_ASSERT_EQUAL_UINT64(0, d.head.thru);
 }
 
+// ---- what a request renders (lane RB-H81, ruling 91 table/F1 and F6) ----------------------------
+
+namespace {
+
+// One turn as the engine stores it: the t item, the owner message (a photo part when asked), the
+// calls with their results (each result's stub computed at capture, as plain_engine's capture
+// does; a bulk result with its payload in the bulk file), the reply and the e item.
+struct Mix {
+  const char* name;
+  size_t owner, reply;
+  int tools;
+  size_t receipt;          // each receipt's bytes (tier 1: at most 2,048)
+  size_t bulk;             // one tier-2 result of this size (0: none)
+  bool photo;
+};
+const Mix kMixes[] = {
+    {"chat", 300, 900, 0, 0, 0, false},           {"one tool", 250, 500, 1, 1200, 0, false},
+    {"three tools", 200, 400, 3, 2048, 0, false}, {"short turns", 60, 120, 1, 200, 0, false},
+    {"bulk", 200, 400, 1, 600, 20000, false},     {"photos", 200, 400, 0, 0, 0, true},
+};
+
+void mixTurn(Chat& c, const Mix& m, const std::string& tag) {
+  ++c.turn;
+  tx::Item t;
+  t.kind = tx::ItemKind::TurnOpen;
+  t.profile = c.profile;
+  c.store(t);
+  tx::Item u;
+  u.kind = tx::ItemKind::User;
+  u.x = tag + " " + std::string(m.owner, 'o');
+  u.m = 100 + c.turn;
+  if (m.photo) u.parts.push_back(tx::Part{tx::PartKind::Image, "p" + std::to_string(10000000 + c.turn), "image/jpeg", 90000});
+  c.store(u);
+  auto result = [&](int k, size_t bytes, bool bulk) {
+    tx::Item call;
+    call.kind = tx::ItemKind::Call;
+    call.id = "toolu_" + std::to_string(c.turn) + "_" + std::to_string(k);
+    call.n = "read_file";
+    call.args = R"({"path":"notes/day.md","offset":0})";
+    c.store(call);
+    const std::string text(bytes, 'f');
+    tx::Item r;
+    r.kind = tx::ItemKind::Result;
+    r.id = call.id;
+    r.n = call.n;
+    r.q = c.head.nextQ;
+    r.bytes = (uint32_t)bytes;
+    r.lines = 1;
+    if (bulk) {
+      r.cls = tx::ResultClass::Bulk;
+      TEST_ASSERT_TRUE(c.log->appendBulk(c.turn, text, r.handle).ok());
+    } else {
+      r.x = text;
+    }
+    tx::StubFacts f;
+    f.tool = r.n;
+    f.q = r.q;
+    f.bytes = r.bytes;
+    f.lines = 1;
+    f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
+    f.args = call.args;
+    f.cls = r.cls;
+    TEST_ASSERT_TRUE(tx::stubText(f, r.st).ok());
+    c.store(r);
+  };
+  for (int k = 0; k < m.tools; ++k) result(k, m.receipt, false);
+  if (m.bulk) result(m.tools, m.bulk, true);
+  tx::Item a;
+  a.kind = tx::ItemKind::Assistant;
+  a.x = tag + " " + std::string(m.reply, 'r');
+  a.fin = true;
+  c.store(a);
+  tx::Item e;
+  e.kind = tx::ItemKind::TurnEnd;
+  e.end.cause = "reply";
+  c.store(e);
+}
+
+// The conversation part of the request the real Anthropic wire renders from the chat now: its
+// body (splices included) less the body of the same request with one owner byte.
+size_t renderedConversation(Chat& c) {
+  const plain::WireCodec* w = nullptr;
+  TEST_ASSERT_TRUE(plain::renderWireFor(plain::Dialect::AnthropicMessages, w).ok());
+  plain::TurnCtx t;
+  t.chatKey = c.chatKey;
+  t.chatId = "1001";
+  t.turn = c.turn + 1;
+  t.host = "anthropic";
+  t.model = "claude-sonnet-5-5";
+  plain::HeadEndpoint h;
+  h.host = "api.anthropic.com";
+  h.key = [] { return std::string("test-key"); };
+  plain::SystemBlocks sys;
+  sys.core = "core";
+  const std::vector<plain::ToolSpec> tools{{"read_file", "Read a file.", R"({"type":"object","properties":{}})"}};
+  tx::TxLog* log = c.log.get();
+  auto bodyOf = [&](const tx::TxArena& items) {
+    plain::RenderInput in;
+    in.turn = &t;
+    in.head = &h;
+    in.system = &sys;
+    in.tools = &tools;
+    in.items = &items;
+    in.stubPointer = c.head.stub;
+    in.maxTokens = 1000;
+    in.bulk = [log](const std::string& handle, std::string& out) { return log->readBulk(handle, 0, tx::kBulkMaxBytes, out); };
+    agent::HttpRequest r;
+    const plain::Status st = w->render(in, r);
+    TEST_ASSERT_TRUE_MESSAGE(st.ok(), st.where);
+    return agent::bodyLength(r);
+  };
+  tx::TxArena one;   // a request needs a message: one owner byte stands for "no conversation"
+  TEST_ASSERT_TRUE(one.init(4096, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }).ok());
+  tx::Item u;
+  u.q = 1;
+  u.turn = 1;
+  u.kind = tx::ItemKind::User;
+  u.x = "x";
+  TEST_ASSERT_TRUE(one.append(u).ok());
+  return bodyOf(*c.arena) - bodyOf(one);
+}
+
+// The parts of a request that are not the conversation, as budgetFor sizes them: the fixed ceiling
+// (system and tools) and the digest block with the recent-files list.
+size_t fixedRequestBytes(const tx::HeadBudget& b) { return tx::kFixedOverheadCeiling + b.digestBlock; }
+
+uint32_t tokensOf(const tx::HeadBudget& b, size_t bodyBytes) {
+  const int64_t net = (int64_t)bodyBytes - b.bodyInterceptBytes;
+  return (uint32_t)(net <= 0 ? 0 : net * 1000 / (int64_t)b.bodyMilliBytesPerToken);
+}
+
+}  // namespace
+
+// Ruling 91 table/F6: the due rule is stated in what a request renders. On every turn mix (chat,
+// tools, short turns, whole bulk, photos) the measure compaction compares with H is within 10% of
+// the conversation the real Anthropic wire renders, and when it first passes H on Sonnet the
+// request (its fixed part, the digest block and that conversation) is within 10% of the due mark
+// in tokens. Stored lines overcount receipts (each line also holds its stub) and undercount whole
+// bulk (the line holds a handle): they are not the unit.
+void test_the_marks_measure_what_a_request_renders() {
+  const tx::HeadKey sonnet{"anthropic", "claude-sonnet-5-5", false};
+  tx::HeadBudget b;
+  TEST_ASSERT_TRUE(tx::budgetFor(sonnet, tx::Profile::Full, b).ok());
+  for (const Mix& m : kMixes) {
+    Chat c;
+    c.profile = c.head.profile = "full";
+    c.headKey = sonnet;
+    c.driver.reset(new plain::CompactDriver(c.deps()));
+    int n = 0;
+    while (plain::residentBytes(*c.arena, c.head.thru) <= b.marks.high) {
+      c.now += 60;
+      mixTurn(c, m, "turn " + std::to_string(++n));
+    }
+    const size_t measured = plain::residentBytes(*c.arena, c.head.thru), shown = renderedConversation(c);
+    char why[200];
+    std::snprintf(why, sizeof why, "%s: compaction measures %zu B, the wire renders %zu B", m.name, measured, shown);
+    TEST_ASSERT_TRUE_MESSAGE(measured * 10 <= shown * 11 && shown * 10 <= measured * 11, why);
+    const uint32_t tokens = tokensOf(b, fixedRequestBytes(b) + shown);
+    std::snprintf(why, sizeof why, "%s: the request at the trigger is %u tokens, the due mark %u", m.name, tokens, b.tokens.due);
+    TEST_ASSERT_TRUE_MESSAGE(tokens * 10 >= b.tokens.due * 9 && tokens * 10 <= b.tokens.due * 11, why);
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -1620,6 +1784,7 @@ int main(int, char**) {
   RUN_TEST(test_owner_first_quiet_window_and_no_clock_gates);
   RUN_TEST(test_nothing_due_under_H_at_night_or_by_day_and_the_prompt_trigger);
   RUN_TEST(test_the_hot_trigger_reads_the_last_request_whole_prompt_never_the_turn_sum);
+  RUN_TEST(test_the_marks_measure_what_a_request_renders);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);
   RUN_TEST(test_a_refused_store_leaves_thru_and_the_retry_stores_once);
