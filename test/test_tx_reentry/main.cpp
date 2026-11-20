@@ -43,6 +43,7 @@ struct World {
     };
     d.exportText = [](const std::string&, const std::string&) { return true; };
     d.now = clock;
+    d.head = tx::HeadKey{"anthropic", "claude-sonnet-5-5", false};   // the import is sized per head (RB-H81)
     return d;
   }
   tx::MigrationOutcome done(const char* when) {
@@ -216,7 +217,9 @@ void test_a_cut_at_every_write_of_a_reentry_resumes_exactly_once() {
 void test_a_long_absence_is_imported_within_the_budget_and_the_rest_named() {
   World w;
   firstMigration(w, 6);
-  w.engine1(400);   // a week back on the earlier engine
+  // Weeks back on the earlier engine: past the head's due mark (RB-H81: the import is sized per
+  // head; Sonnet's H, not a fixed 60,000 B), so the oldest are named.
+  w.engine1(4000);
   const tx::MigrationOutcome out = w.done("absence");
   TEST_ASSERT_TRUE(out.named > 0 && out.imported > 0);
   expectAccounted(w.old, w.files, w.m.thru, out.hi, "absence");
