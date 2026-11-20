@@ -26,6 +26,7 @@ namespace orch = nimbus::orch;
 
 constexpr int kParts = 5;
 constexpr size_t kPartBytes = 7800;
+constexpr size_t kPromptPad = 30000;
 constexpr uint64_t kNow = 1795113600ull + 15 * 3600;
 
 // Part i of the file: lines that each carry a token "P<i>L<n>." the checks look for.
@@ -73,6 +74,7 @@ struct Rig {
   int seq = 0;
   int dispatched = 0;
   std::string reply;
+  std::vector<std::string> kept;   // the results ring: what results.get would read back
 
   std::string addRow(uint32_t at, const char* role, const std::string& text, const std::string& tags) {
     orch::EpisodicMessage m;
@@ -146,6 +148,9 @@ struct Rig {
     d.composeInputs = [](const std::string&) {
       agent::ComposeInputs in;
       in.devName = "Nimbus";
+      // A device's prompt: working notes to about kPromptPad (a device's is 30 to 56 KB).
+      for (size_t i = 0; in.runningMemory.size() < kPromptPad; i++)
+        in.runningMemory += "- note " + std::to_string(i) + ": the owner keeps lists of things to do.\n";
       in.speakerRole = "admin";
       in.speakerLabel = "Owner";
       return in;
@@ -161,6 +166,10 @@ struct Rig {
       const int i = at == std::string::npos ? 0 : (int)(std::strtoul(req.c_str() + at + 9, nullptr, 10) / kPartBytes);
       return "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + esc(part(i)) +
              "\"}]}}";
+    };
+    d.spillResult = [this](const std::string&, const std::string& text, const std::string&) {
+      kept.push_back(text);
+      return "r" + std::to_string(kept.size());
     };
     d.histV2 = [] { return true; };
     d.historyRows = [this](const std::string& c, const agent::HistoryQuery& q) {

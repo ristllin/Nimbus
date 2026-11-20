@@ -75,8 +75,10 @@ inline uint32_t headCeilingMs(bool routed, uint32_t hostCeilingMs) {
   return routed && hostCeilingMs > kRoutedRoundCeilingMs ? kRoutedRoundCeilingMs : hostCeilingMs;
 }
 
-// The replayed tool results a wire keeps (Transcript::trimToolOutputs): the derived
-// replay, never under the wire's own v5.1.1 figure (no field shrinks).
+// The replayed tool traffic a wire lets through before it folds (Transcript::trimToolOutputs):
+// the request's whole body budget (lane RB-BGb part 2: the body budget decides, and the head
+// loop's refit folds only what does not fit), never under the derived replay or the wire's own
+// v5.1.1 figure (no field shrinks).
 size_t replayBytesFor(const RoundBudget& rb, size_t v511Bytes);
 
 // ---- the round's load ----------------------------------------------------------------

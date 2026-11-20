@@ -44,7 +44,11 @@ std::unique_ptr<const RoundBudget> newRoundBudget(const ProviderDeps& pd, const 
 
 size_t replayBytesFor(const RoundBudget& rb, size_t v511Bytes) {
   const size_t derived = nimbus::orch::deriveRequestContext(rb.budget, nimbus::orch::BudgetOverrides()).replayBytes;
-  return std::max(v511Bytes, derived);
+  // Lane RB-BGb part 2 (ruling 93 item 3): the replay is bounded by what the request has free,
+  // not by a fixed share of it. The wire folds nothing before the body budget says the request
+  // does not fit; then the head loop's refit gives up the turn's own bulk first, only as much as
+  // it needs (orch_head_loop.cpp refitOneRung). Never under v5.1.2's figure for the head.
+  return std::max({v511Bytes, derived, (size_t)rb.budget.wireBodyBytes});
 }
 
 uint32_t textTokens(const RoundBudget& rb, size_t textBytes) {

@@ -905,6 +905,13 @@ struct EdgeRig {
   int round = 0;
   std::vector<size_t> sizes;         // each request's size (sent or refused)
   std::string newestSeenWhole;       // the newest round's result, as the request carried it
+  std::vector<std::string> kept;     // the results ring (spill)
+  std::string newestCarried() const {
+    std::string last;
+    for (const auto& it : tr.entries())
+      if (it.kind == TranscriptItem::Kind::ToolResult) last = it.text;
+    return last;
+  }
 
   size_t prompt() const { return recall + olderDays + today + newestExchange; }
   HeadLoopHooks hooks() {
@@ -926,6 +933,10 @@ struct EdgeRig {
       return r;
     };
     h.nowMs = [] { return 0u; };
+    h.spill = [this](const HeadToolResult& full) {
+      kept.push_back(full.output);
+      return "r" + std::to_string(kept.size());
+    };
     h.fitPrompt = [this](size_t want, FitScope scope) -> size_t {
       // The give-up order's prompt rungs, one per call (Context / NextRung).
       if (scope == FitScope::Context || scope == FitScope::NextRung) {
@@ -941,11 +952,13 @@ struct EdgeRig {
 };
 }  // namespace
 
-// At round 2 the request is over its budget: the transcript's own rungs go first (the older
-// round the model has read is folded), then the prompt's context in order (recall, history
-// before today) - and the newest round, whose results the model has not read, arrives whole.
-static void test_round2_keeps_the_newest_unread_round_and_gives_up_older_history() {
+// Lane RB-BGb part 2 (ruling 93 item 3): at round 2 the request is over its budget. The turn's
+// own bulk goes first, only as much as needed: the older round the model has read is folded
+// (its line names its results.get tag), then the newest result is cut to a part that names the
+// read of the rest. No prompt rung fires: recall, older days and today's turns all stay.
+static void test_round2_gives_up_the_turns_own_bulk_before_any_context() {
   EdgeRig r;
+  r.tr.addUser("the owner's message");
   r.resultBytes = {9000, 14000};
   HeadLoopConfig cfg;
   cfg.maxRounds = 4;
@@ -953,12 +966,51 @@ static void test_round2_keeps_the_newest_unread_round_and_gives_up_older_history
   cfg.maxTotalToolBytes = 0;
   const HeadOutcome out = runHeadLoop(cfg, r.hooks());
   TEST_ASSERT_TRUE(out.ok);
-  TEST_ASSERT_TRUE_MESSAGE(!r.gave.empty() && r.gave[0] == "recall", "recall goes before any history");
-  bool olderWent = false;
-  for (const auto& g : r.gave) olderWent = olderWent || g == "older days";
-  TEST_ASSERT_TRUE(olderWent);
-  TEST_ASSERT_EQUAL_MESSAGE(14000, (int)r.newestSeenWhole.size(), "the unread newest round reaches the model whole");
-  TEST_ASSERT_TRUE(r.today > 0);   // today's turns stayed: older history was enough
+  TEST_ASSERT_TRUE_MESSAGE(r.gave.empty(), r.gave.empty() ? "" : r.gave.front().c_str());
+  TEST_ASSERT_TRUE(r.recall > 0 && r.olderDays > 0 && r.today > 0);
+  std::string seed;
+  for (const auto& it : r.tr.entries())
+    if (it.kind == TranscriptItem::Kind::User) seed = it.text;
+  TEST_ASSERT_TRUE_MESSAGE(seed.find("results.get {\"tag\":\"r1\"}") != std::string::npos, seed.c_str());
+  const std::string newest = r.newestCarried();
+  TEST_ASSERT_TRUE_MESSAGE(newest.size() < 14000, "the newest result is cut");
+  TEST_ASSERT_TRUE_MESSAGE(newest.find("of 14000; the rest: results.get {\"tag\":\"r2\",\"offset\":") != std::string::npos,
+                           newest.substr(newest.size() > 160 ? newest.size() - 160 : 0).c_str());
+  TEST_ASSERT_EQUAL(14000, (int)r.kept.back().size());   // the whole result is in the ring
+}
+
+// When the turn's own bulk is not enough, the prompt's context goes in its order: recalled
+// memories, then older days, and today's turns last; none of them before the newest result was
+// cut.
+static void test_context_goes_only_after_the_turns_own_bulk_and_today_last() {
+  EdgeRig r;
+  r.budget = r.prompt() - 15000;   // the prompt alone is over: in-turn bulk cannot cover it
+  r.resultBytes = {9000, 14000};
+  HeadLoopConfig cfg;
+  cfg.maxRounds = 4;
+  cfg.maxToolResultBytes = 0;
+  cfg.maxTotalToolBytes = 0;
+  const HeadOutcome out = runHeadLoop(cfg, r.hooks());
+  TEST_ASSERT_TRUE(out.ok);
+  TEST_ASSERT_TRUE_MESSAGE(r.gave.size() >= 2 && r.gave[0] == "recall" && r.gave[1] == "older days", "recall, then older days");
+  for (size_t i = 0; i + 1 < r.gave.size(); i++)
+    TEST_ASSERT_TRUE_MESSAGE(r.gave[i] != "today", "today's turns go last");
+}
+
+// Counter-test: a request with room folds nothing and cuts nothing.
+static void test_a_request_with_room_carries_every_round_whole() {
+  EdgeRig r;
+  r.budget = r.prompt() + 30000;
+  r.resultBytes = {9000, 14000};
+  HeadLoopConfig cfg;
+  cfg.maxRounds = 4;
+  cfg.maxToolResultBytes = 0;
+  cfg.maxTotalToolBytes = 0;
+  const HeadOutcome out = runHeadLoop(cfg, r.hooks());
+  TEST_ASSERT_TRUE(out.ok);
+  TEST_ASSERT_TRUE(r.kept.empty());
+  TEST_ASSERT_EQUAL(14000, (int)r.newestSeenWhole.size());
+  TEST_ASSERT_TRUE(r.gave.empty());
 }
 
 // Seven rounds at the edge of the budget: every refusal is answered by the transcript's own
@@ -987,7 +1039,9 @@ int main(int, char**) {
   RUN_TEST(test_prose_final_is_never_checked);
   RUN_TEST(test_prose_final_check_corrects_plumbing_once);
   RUN_TEST(test_final_checks_chain_into_one_correction);
-  RUN_TEST(test_round2_keeps_the_newest_unread_round_and_gives_up_older_history);
+  RUN_TEST(test_round2_gives_up_the_turns_own_bulk_before_any_context);
+  RUN_TEST(test_context_goes_only_after_the_turns_own_bulk_and_today_last);
+  RUN_TEST(test_a_request_with_room_carries_every_round_whole);
   RUN_TEST(test_seven_rounds_at_the_edge_fire_no_history_rung);
   RUN_TEST(test_cum506_siblings_of_the_final_turn_run_before_any_reply);
   RUN_TEST(test_g1_all_write_siblings_accept_the_final_turn);

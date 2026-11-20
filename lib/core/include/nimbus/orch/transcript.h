@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -88,6 +89,20 @@ class Transcript {
   // whose accounting sits a byte over would clip the results the model has not seen
   // yet one rung early). Clipping the newest round is the third rung's last resort.
   size_t foldOlderRounds(size_t cap);
+  // Lane RB-BGb part 2 (ruling 93 item 3): the body-budget refit's in-turn rungs. Fold the
+  // oldest rounds (never the newest) until `want` replay bytes are freed, no further: each
+  // folded round leaves its line in the seeded message, with the results.get tag of each
+  // result when a spill is set. Returns the replay bytes reclaimed.
+  size_t foldOldestFor(size_t want);
+  // Cut the newest round's results so the replay is at most `cap`: each keeps its head and
+  // says which bytes it shows and how to read the rest (results.get with the tag and offset
+  // when a spill is set). Returns the replay bytes reclaimed.
+  size_t clipNewestTo(size_t cap);
+  // Where a folded or cut result is kept whole so the model can read it back: returns its
+  // results.get tag ("" = not kept). Set by the head loop from its spill hook.
+  void setSpill(std::function<std::string(const std::string& name, const std::string& text)> spill) {
+    spill_ = std::move(spill);
+  }
   // The heading the folded lines sit under in the seeded message.
   static const char kFoldNote[];
 
@@ -108,6 +123,9 @@ class Transcript {
   std::vector<TranscriptItem, WorkingAllocator<TranscriptItem>> e_;
   size_t replayBytes_ = 0;
   TurnImages* images_ = nullptr;
+  std::function<std::string(const std::string&, const std::string&)> spill_;
+  std::map<std::string, std::string> keptTags_;   // "<result id>#<round>" -> its results.get tag
+  std::string keepWhole(const std::string& id, const std::string& name, const std::string& text);
   int newestRound() const;
   void foldOldRounds(int newest, size_t lowWater);
   void clipNewest(int newest, size_t cap);

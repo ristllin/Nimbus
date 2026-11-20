@@ -262,6 +262,8 @@ constexpr int kBudgetRefits = 14;
 constexpr size_t kArgStubOver = 512;
 
 // What a prompt-side refit rung is called in the log line.
+constexpr const char* kRefitRounds = "the replayed tool rounds";
+constexpr const char* kRefitNewest = "the newest round's results";
 constexpr const char* kRefitContext = "the prompt's context";
 constexpr const char* kRefitPrompt = "the prompt and input";
 
@@ -277,35 +279,25 @@ size_t newestRoundBytes(const Transcript& tr) {
 }
 
 // A round the provider refused to SEND because its body outgrew the wire budget
-// (body_budget.h): nothing left the device and nothing was billed, so the loop
-// shrinks what it replays and runs the same round again, least informative first:
-// the arguments of calls that already ran (one big write is otherwise unfittable:
-// the model knows what it wrote and its result says what happened), then the older
-// tool rounds folded to one-line stubs, then - only when nothing else frees room -
-// the newest round's results clipped (why it matters: body_budget.h). True when
-// something was reclaimed and a re-run can fit.
-// The next rung of the ladder that gives anything up; `what` names it for the log.
-size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t cap, size_t newest,
-                    const char*& what) {
-  what = "the replayed tool rounds";
+// (body_budget.h): nothing left the device and nothing was billed, so the loop shrinks what
+// it replays and runs the same round again. Lane RB-BGb part 2 (ruling 93 item 3): the
+// turn's own bulk goes first, and only as much as the request needs: the arguments of calls
+// that already ran (the model knows what it wrote), then the oldest rounds folded to one line
+// each with the results.get tag of each result, then the newest round's results cut to a
+// part that names the read of the rest; only then the prompt's context, one rung at a time
+// (turn_fit.h: recalled memories, the skills, older days, and today's turns last). True when
+// something was reclaimed and a re-run can fit. `what` names the rung for the log.
+size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t cap, const char*& what) {
+  what = kRefitRounds;
   size_t freed = tr.stubArguments(kArgStubOver);
-  // Tool rounds the model has already read go before the owner's earlier messages. Where the
-  // cap would reach into the newest round, foldOlderRounds(newest) folds every older round and
-  // never clips the newest: the fold lands the replay exactly on the cap, but a host whose
-  // byte accounting sits one byte over must not clip the results the model has not seen yet (a
-  // CI run clipped |end7| that way) - a still-over re-run refuses again and the third rung clips
-  // with the honest last-resort cap. Where the cap holds the newest round whole, trimToolOutputs
-  // folds older rounds and clips nothing.
-  if (freed == 0) freed = cap < newest ? tr.foldOlderRounds(newest) : tr.trimToolOutputs(cap);
+  if (freed == 0) freed = tr.foldOldestFor(want);
   if (freed) return freed;
-  // Round 0, or nothing left to fold: the prompt's context, one rung at a time (recall, the
-  // skills, history before today, today's beyond the newest exchange) before any result the
-  // model has not read (Lumi, 1 Nov: 90519 B at round 0 with 0 B to fold).
+  what = kRefitNewest;
+  if ((freed = tr.clipNewestTo(cap)) != 0) return freed;
   if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::Context)) != 0) {
     what = kRefitContext;
     return freed;
   }
-  if ((freed = tr.trimToolOutputs(cap)) != 0) return freed;
   if (hooks.fitPrompt && (freed = hooks.fitPrompt(want, FitScope::NextRung)) != 0) what = kRefitPrompt;
   return freed;
 }
@@ -323,7 +315,7 @@ size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, siz
 //   for got clipped that way while history still had turns to give. A prompt
 //   rung still gives up only one rung per refusal, and the next body build says
 //   whether it was enough (dropNewestHistory's own rule).
-// - `have` and `newest` stay the REFUSAL's own figures for the whole cycle, not
+// - `have` and `want` stay the REFUSAL's own figures for the whole cycle, not
 //   re-derived per rung: the cap they derive is the one the re-run checks
 //   against, and re-deriving it mid-cycle (before any body build) lets the
 //   last-resort clip of the newest round fire on a fold the re-run would have
@@ -333,14 +325,16 @@ size_t refitOneRung(Transcript& tr, const HeadLoopHooks& hooks, size_t want, siz
 //   that cost).
 // `what` names every rung that gave, in order: the log line is the record of
 // what the fold took, not just its last rung.
-size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t have,
-                   size_t newest, std::string& what) {
+size_t refitEnough(Transcript& tr, const HeadLoopHooks& hooks, size_t want, size_t have, std::string& what) {
   size_t freed = 0;
   for (int rung = 0; rung < kBudgetRefits; ++rung) {
     const size_t remaining = want > freed ? want - freed : 1;
-    const size_t cap = have > remaining ? have - remaining : 1;   // trimToolOutputs(0) means no cap
+    // The replay the re-run needs, from the refusal's own figures: the same target whatever
+    // the earlier rungs of this cycle freed (RB-BGb part 2: the newest round's cut comes after
+    // the older rounds' fold in one cycle, so the target must not move with it).
+    const size_t cap = have > want ? have - want : 1;
     const char* rungWhat = "";
-    const size_t got = refitOneRung(tr, hooks, remaining, cap, newest, rungWhat);
+    const size_t got = refitOneRung(tr, hooks, remaining, cap, rungWhat);
     if (got && what.find(rungWhat) == std::string::npos) {
       if (!what.empty()) what += " then ";
       what += rungWhat;
@@ -365,7 +359,7 @@ __attribute__((noinline)) bool refitToBudget(const HeadStep& sr, const HeadLoopH
   const size_t newest = newestRoundBytes(tr);
   const size_t want = (size - budget) + (have > newest ? kBudgetRefitSlack : kBudgetClipSlack);
   std::string what;
-  const size_t freed = refitEnough(tr, hooks, want, have, newest, what);
+  const size_t freed = refitEnough(tr, hooks, want, have, what);
   if (hooks.log)
     hooks.log("headloop: round " + std::to_string(round) + " body " + std::to_string(size) + " B over the " +
               std::to_string(budget) + " B budget - folded " + std::to_string(freed) + " B of " + what +
@@ -385,19 +379,20 @@ HeadStep stepWithRefit(const HeadLoopHooks& hooks, bool allowTools, const std::v
 
 size_t trimForOverflow(Transcript& tr, size_t want, const std::function<size_t(size_t, FitScope)>& fitPrompt,
                        const std::function<size_t()>& dropImages) {
+  // Lane RB-BGb part 2: the turn's own bulk first (arguments, the oldest rounds, the newest
+  // round's results cut to a part), then the context's rungs in order, the photos, the ladder.
   size_t freed = tr.stubArguments(kArgStubOver);
-  const size_t newest = newestRoundBytes(tr);
-  if (freed < want) freed += tr.foldOlderRounds(newest);
+  if (freed < want) freed += tr.foldOldestFor(want - freed);
+  if (freed < want) {
+    const size_t have = tr.toolBytes();
+    const size_t rest = want - freed;
+    freed += tr.clipNewestTo(have > rest ? have - rest : 0);
+  }
   for (size_t got = 1; freed < want && fitPrompt && got != 0;) {   // the context's rungs, in order
     got = fitPrompt(want - freed, FitScope::Context);
     freed += got;
   }
   if (freed < want && dropImages) freed += dropImages();
-  if (freed < want) {
-    const size_t have = tr.toolBytes();
-    const size_t rest = want - freed;
-    freed += tr.trimToolOutputs(have > rest ? have - rest : 1);
-  }
   if (freed < want && fitPrompt) freed += fitPrompt(want - freed, FitScope::Ladder);
   return freed;
 }
@@ -442,8 +437,28 @@ __attribute__((noinline)) void sendProseBack(const HeadStep& sr, const std::stri
 }
 }  // namespace
 
+namespace {
+// RB-BGb part 2: a folded or cut result is kept whole in the results ring for the loop's life.
+struct TranscriptSpill {
+  Transcript* tr;
+  TranscriptSpill(const HeadLoopHooks& hooks) : tr(hooks.transcript) {
+    if (!tr || !hooks.spill) return;
+    tr->setSpill([&hooks](const std::string& name, const std::string& text) {
+      HeadToolResult r;
+      r.name = name;
+      r.output = text;
+      return hooks.spill(r);
+    });
+  }
+  ~TranscriptSpill() {
+    if (tr) tr->setSpill(nullptr);
+  }
+};
+}  // namespace
+
 HeadOutcome runHeadLoop(const HeadLoopConfig& cfg, const HeadLoopHooks& hooks) {
   HeadOutcome out;
+  const TranscriptSpill keepWhole(hooks);
   const uint32_t start = hooks.nowMs ? hooks.nowMs() : 0;
   std::vector<HeadToolResult> prior;  // empty on the first step
   std::vector<std::string> lastTools;   // the calls the previous round dispatched (progress)
