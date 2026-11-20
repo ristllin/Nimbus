@@ -17,13 +17,14 @@
 // Outside (the web, a fetched page, a connector, an unknown tool, a device-written path), a
 // document the owner sent (a File part of his message: his own typed text never taints), a
 // sub-agent's report (the Agent device note), a routine's reply after outside content (a Routine
-// device note the device fenced with jobs.h fenceOutsideContent). A turn is tainted while its request carries
-// such an item whole (TurnCtx::tainted: the engine sets it when it stores the turn's input, when
-// an outside item was stored since the last closed turn, and when it stores an outside result; a
-// resumed turn keeps it). An outside result shows whole
-// only inside its own turn: from the next turn on the request carries its stub, which names it
-// and how to view it (tx::showResult), never its bytes; owner and assistant text are never
-// removed (ruling 81).
+// device note the device fenced with jobs.h fenceOutsideContent). A turn is tainted while its
+// request carries an outside result whole, and when it is the first turn whose request carries an
+// outside note (a report, a fenced routine reply; TurnCtx::tainted, set by the engine when it
+// stores the turn's input, when an outside item was stored since the last closed turn, and when it
+// stores an outside result; a resumed turn keeps it). A note is kept whole (ruling 81): later
+// turns read it inside its fence, as data. An outside result shows whole only inside its own turn:
+// from the next turn on the request carries its stub, which names it and how to view it
+// (tx::showResult), never its bytes; owner and assistant text are never removed (ruling 81).
 //
 // In a tainted turn every call is judged by ONE named table, kTaintExemptions (read with
 // taintExemptions): the call's class is RB-Q2a's toolUseFor (a `more` call is the tool it
