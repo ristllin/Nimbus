@@ -1,12 +1,12 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner host=120s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4879 longest_description=203
-measure role=owner host=60s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4878 longest_description=203
-measure role=member host=120s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4879 longest_description=203
-measure role=member host=60s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4878 longest_description=203
-measure role=guest host=120s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=2009 longest_description=203
-measure role=guest host=60s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=2009 longest_description=203
+measure role=owner host=120s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4804 longest_description=186
+measure role=owner host=60s core=1651 index=373 notes=5075 system=6728 digests=6700 tools=14 tools_bytes=4803 longest_description=186
+measure role=member host=120s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4804 longest_description=186
+measure role=member host=60s core=1520 index=215 notes=1038 system=2560 digests=6700 tools=14 tools_bytes=4803 longest_description=186
+measure role=guest host=120s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=1934 longest_description=177
+measure role=guest host=60s core=1328 index=65 notes=1038 system=2368 digests=6700 tools=7 tools_bytes=1934 longest_description=177
 == core (owner, 120s, claude-sonnet-5-5, Europe/London)
 You are Nimbus, a personal assistant on a small device, working for one person, the owner, who reaches you over Telegram. Replies are Telegram messages: short and plain.
 
@@ -38,8 +38,8 @@ skills/skill-4.md: when the person plans thing number 4
 skills/skill-5.md: when the person plans thing number 5
 skills/skill-6.md: when the person p
 == tools
-203 256 read_file: Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; next_offset when more remains. CSV: column with from/to keeps matching rows; sum totals named columns.
-  {"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"},"sum":{"type":"array","items":{"type":"string"}}},"required":["path"]}
+177 207 read_file: Read a file by path (project/name) with exact paging: returns size, lines, sha8 and the bytes shown; next_offset when more remains. CSV: column with from/to keeps matching rows.
+  {"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["path"]}
 118 189 write_file: Create or replace a file (project/name). if_exists: fail (default) or replace. Returns the stored path, size and sha8.
   {"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string","maxLength":12000},"if_exists":{"type":"string","enum":["fail","replace"]}},"required":["path","content"]}
 124 109 append_file: Add text to the end of a file (project/name), creating it if missing. It only appends. Returns bytes added and the new size.
