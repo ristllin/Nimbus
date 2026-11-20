@@ -1,0 +1,11 @@
+{
+  "lane": "RB-Q4b",
+  "allowance_bytes": 512,
+  "envs": {
+    "esp32s3": 512,
+    "esp32s3-cyd": 512,
+    "test": 512,
+    "test-cyd": 512
+  },
+  "why": "Ruling 10: a lane with no flash ledger figure has 512 B. Same-tree builds of esp32s3-cyd on rb-main 710dce663 (lanes/RB-Q4b/scratch/before, 6,337,968 B) against the lane's battery build of 6a96456c0 (6,338,480 B; the tip differs only by a Python format commit): +512 B, docs pack unchanged. The Mistral wire's tool_choice switch and misProseIsTheReply."
+}
