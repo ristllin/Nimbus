@@ -63,17 +63,9 @@ A request at the due mark on the head's wire, through the production link (conne
 
 ## Arena and restart fill at full
 
-The arena of a chat is sized by its head (`tx::arenaBytesFor`), at most 1,769,472 B (tx/arena.h, gpt-5.6-luna). Measured on real engine turns in test_tx_budget, for gpt-5.6-luna at full: the arena it takes with its due mark H plus one request's growth resident, and the owner and assistant text the largest arena alone keeps against the head's v5.1.2 keep (111,072 B). Where text is under 9% of what renders, the arena, not the marks, bounds the text kept: compaction then folds with a summary and a log line (RB-H81's arena-room trigger), never a silent drop.
+A chat's arena is sized by its head (`tx::arenaBytesFor`): gpt-5.6-luna 1,769,472 B, claude-sonnet-5-5 1,048,576 B; the built-in arena (tx/arena.h) is 1,769,472 B, the largest. It is the larger of two needs, measured on real engine turns in test_tx_budget (every item the engine stores): no full-arena drop under the due mark H plus one request's growth, at 3.86 B of arena per rendered byte (the worst measured mix, effect calls, plus 5%), and the head's v5.1.2 owner and assistant text keep held by the arena alone in any mix of at least 9% text, at 15.39 B of arena per text byte (a 2 KB tool result a turn, plus 5%), plus the 32 KB turn-open reserve. Under 9% text (terse tool rounds, effect calls) the arena, not the marks, bounds the text kept; compaction then folds with a summary and a log line (RB-H81's arena-room trigger, its room at least 128 KB and an eighth of a large arena), never a silent drop.
 
-| Turn mix | Text share | Arena per rendered byte | Arena per text byte | Arena at H plus growth (B) | Text the largest arena alone keeps (B) | Held to the v5.1.2 keep |
-|---|---|---|---|---|---|---|
-| chat | 88.8% | 1.43 | 1.62 | 512,299 | 1,075,187 | yes |
-| short | 53.9% | 2.80 | 5.19 | 968,932 | 334,560 | yes |
-| terse tools | 1.3% | 2.77 | 218.10 | 959,584 | 7,963 | no: summary and log line |
-| tool heavy | 9.6% | 1.41 | 14.65 | 505,375 | 118,520 | yes |
-| effects | 3.2% | 3.67 | 116.30 | 1,260,803 | 14,933 | no: summary and log line |
-
-Read back after a restart at RB-M2's measured card rate (82.5 ms per 130 KB in 8 KB slices), the largest need (1,260,803 B) is about 781 ms of card time, inside the 3 s gate: the fill stays one sequential read. With no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.
+Read back after a restart at RB-M2's measured card rate (82.5 ms per 130 KB in 8 KB slices), the largest arena is about 1097 ms of card time, inside the 3 s gate: the fill stays one sequential read. With no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.
 
 ## The owner's smaller profiles
 

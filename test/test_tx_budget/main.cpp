@@ -715,16 +715,7 @@ void test_every_block_is_in_the_sum() {
 }
 
 void test_the_generated_table_is_this_codes_output() {
-  std::string mixRows;
-  const size_t resident = largestResident(nullptr);
-  for (const Mix& m : mixes()) {
-    const ArenaRate a = measure(m);
-    const double kept = (tx::kActiveChatArenaBytes - kTurnOpenReserve) / a.perText;
-    mixRows += budgettable::fmt("| %s | %.1f%% | %.2f | %.2f | %s | %s | %s |\n", m.name, a.textShare * 100, a.rate, a.perText,
-                                budgettable::num(std::ceil(a.need(resident)) + kTurnOpenReserve).c_str(),
-                                budgettable::num(kept).c_str(), kept >= 111072 ? "yes" : "no: summary and log line");
-  }
-  const std::string want = budgettable::render(arenaNeedAtFull(false), mixRows);
+  const std::string want = budgettable::render();
   const char* path = "docs/reference/transcript-budgets.md";
   if (std::getenv("GOLDEN_UPDATE")) {
     std::ofstream(path) << want;

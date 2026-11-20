@@ -290,25 +290,32 @@ inline std::string latencySection() {
 }
 
 // The resident of the largest head after a restart, read from the card (RB-M2's 130 KB sequential read).
-inline std::string restartSection(size_t arenaNeed, const std::string& mixRows) {
+// Only figures of the code here (the rates in tx/budget.h are the measured worst plus 5%; test_tx_budget
+// holds them to the measurement), so the table changes with the code and not with each item's bytes.
+inline std::string restartSection() {
   const JsonDocument& m = measured();
-  const double ms = arenaNeed * (m["link"]["card_read_ms_per_130kb"] | 0.0) / (130.0 * 1024);
+  tx::HeadBudget luna, sonnet;
+  TEST_ASSERT_TRUE(tx::budgetFor(tx::HeadKey{"openai", "gpt-5.6-luna", false}, tx::Profile::Full, BudgetLink::Device, false, luna).ok());
+  TEST_ASSERT_TRUE(tx::budgetFor(tx::HeadKey{"anthropic", "claude-sonnet-5-5", false}, tx::Profile::Full, BudgetLink::Device, false, sonnet).ok());
+  const uint32_t need = tx::arenaBytesFor(luna);
+  const double ms = need * (m["link"]["card_read_ms_per_130kb"] | 0.0) / (130.0 * 1024);
   return fmt(
       "## Arena and restart fill at full\n\n"
-      "The arena of a chat is sized by its head (`tx::arenaBytesFor`), at most %s B (tx/arena.h, gpt-5.6-luna). "
-      "Measured on real engine turns in test_tx_budget, for gpt-5.6-luna at full: the arena it takes with its "
-      "due mark H plus one request's growth resident, and the owner and assistant text the largest arena alone "
-      "keeps against the head's v5.1.2 keep (111,072 B). Where text is under %u%% of what renders, the arena, "
-      "not the marks, bounds the text kept: compaction then folds with a summary and a log line (RB-H81's "
-      "arena-room trigger), never a silent drop.\n\n"
-      "| Turn mix | Text share | Arena per rendered byte | Arena per text byte | Arena at H plus growth (B) "
-      "| Text the largest arena alone keeps (B) | Held to the v5.1.2 keep |\n|---|---|---|---|---|---|---|\n%s\n"
+      "A chat's arena is sized by its head (`tx::arenaBytesFor`): gpt-5.6-luna %s B, claude-sonnet-5-5 %s B; the "
+      "built-in arena (tx/arena.h) is %s B, the largest. It is the larger of two needs, measured on real engine "
+      "turns in test_tx_budget (every item the engine stores): no full-arena drop under the due mark H plus one "
+      "request's growth, at %.2f B of arena per rendered byte (the worst measured mix, effect calls, plus 5%%), "
+      "and the head's v5.1.2 owner and assistant text keep held by the arena alone in any mix of at least %u%% "
+      "text, at %.2f B of arena per text byte (a 2 KB tool result a turn, plus 5%%), plus the 32 KB turn-open "
+      "reserve. Under %u%% text (terse tool rounds, effect calls) the arena, not the marks, bounds the text kept; "
+      "compaction then folds with a summary and a log line (RB-H81's arena-room trigger, its room at least "
+      "128 KB and an eighth of a large arena), never a silent drop.\n\n"
       "Read back after a restart at RB-M2's measured card rate (%.1f ms per 130 KB in 8 KB slices), the largest "
-      "need (%s B) is about %.0f ms of card time, inside the 3 s gate: the fill stays one sequential read. With "
-      "no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the "
-      "same arena.\n\n",
-      num(tx::kActiveChatArenaBytes).c_str(), tx::kArenaTextShareFloorPercent, mixRows.c_str(),
-      (double)(m["link"]["card_read_ms_per_130kb"] | 0.0), num(arenaNeed).c_str(), ms);
+      "arena is about %.0f ms of card time, inside the 3 s gate: the fill stays one sequential read. With no card, "
+      "v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.\n\n",
+      num(need).c_str(), num(tx::arenaBytesFor(sonnet)).c_str(), num(tx::kActiveChatArenaBytes).c_str(),
+      tx::kArenaMilliBytesPerResidentByte / 1000.0, tx::kArenaTextShareFloorPercent, tx::kArenaMilliBytesPerTextByte / 1000.0,
+      tx::kArenaTextShareFloorPercent, (double)(m["link"]["card_read_ms_per_130kb"] | 0.0), ms);
 }
 
 inline std::string profilesSection() {
@@ -386,8 +393,8 @@ inline std::string intro() {
       num(tx::kFullDigestAndFilesBytes).c_str());
 }
 
-inline std::string render(size_t arenaNeed, const std::string& mixRows) {
-  return intro() + headsSection() + costSection() + latencySection() + restartSection(arenaNeed, mixRows) + profilesSection() +
+inline std::string render() {
+  return intro() + headsSection() + costSection() + latencySection() + restartSection() + profilesSection() +
          everyHeadSection();
 }
 
