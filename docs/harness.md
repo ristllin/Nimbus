@@ -359,6 +359,25 @@ device dependency arrives through a contract at construction. `lib/core` never
 includes `lib/harness`. Model-visible strings live in the harness (or below)
 and are golden-pinned - never device-side.
 
+## The device seam's files
+
+The device glue between `agent::orchestrator::` and the engine is split in three, with
+no behavior change (lanes RB-SEAM1a and RB-SEAM1b), so a second engine can be bound beside
+the old one:
+
+- `src/agent/orchestrator.h` is the one header the device's other files include. It
+  declares the engine-neutral calls and includes `src/agent/engine_api.h`.
+- `src/agent/orchestrator_common.cpp` defines every call `orchestrator.h` itself declares:
+  job glue, ring arcs, voice, the tenant table, the session snapshot and staged terminates,
+  the status getters, the reply sinks and the recent-results ring.
+- `src/agent/engine_api.h` lists the calls an engine seam defines: turn entry, status for
+  the web, last-turn data, the fold status, clearing the conversation, and the few calls
+  the common half asks of the engine. `src/agent/orchestrator_e1.cpp` defines them for the
+  old engine and is the only device file that includes `nimbus/harness/engine.h`.
+- `src/agent/orchestrator_common.h` is private to the two `.cpp` files.
+
+`test/test_engine_api_seam` pins the split.
+
 ## The contract set
 
 | Contract | Header | Device impl | Test fake |

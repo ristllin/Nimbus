@@ -14,7 +14,8 @@
 //                            defines the same calls; a device image links exactly one seam.
 // test/test_engine_api_seam pins the split: every call here is defined in the engine seam and
 // never in the common half; every call orchestrator.h declares is defined in the common half.
-// The signatures are the ones orchestrator.h always had (the callers did not change).
+// The callers' calls keep the signatures orchestrator.h always had; the last section is the
+// seam's own (what the common half asks of the engine).
 #include "orchestrator.h"   // Sinks, HeavyFabric and the orch value types (it includes this file)
 
 #include <stddef.h>
