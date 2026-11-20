@@ -166,6 +166,11 @@ static void test_orchestrator_sizes_off_one_head_budget() {
   const std::string src = stripLineComments(readFile("src/agent/orchestrator_e1.cpp"));
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "headContextBudget("), "a second budget read in orchestrator_e1.cpp");
   TEST_ASSERT_EQUAL_MESSAGE(0, countOf(src, "deriveBudget("), "a budget derived around the seam in orchestrator_e1.cpp");
+  // The engine-neutral half of the device seam (RB-SEAM1b) sizes nothing off the head.
+  const std::string common = stripLineComments(readFile("src/agent/orchestrator_common.cpp"));
+  TEST_ASSERT_FALSE(common.empty());
+  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(common, "headContextBudget("), "a budget read in orchestrator_common.cpp");
+  TEST_ASSERT_EQUAL_MESSAGE(0, countOf(common, "deriveBudget("), "a budget derived in orchestrator_common.cpp");
   TEST_ASSERT_EQUAL_MESSAGE(1, countOf(src, "resolvedOrchHost()"), "a size sited off the store's head guess");
   const size_t helper = src.find("ContextBudget headBudget()");
   TEST_ASSERT_TRUE(helper != std::string::npos);
