@@ -1341,6 +1341,31 @@ void test_the_mirror_carries_the_summary_in_whole_lines() {
   TEST_ASSERT_TRUE(linesOf(m).back() == v[1].text);
 }
 
+
+// Review fixes (lane RB-C3): an id dropped in a pass is never lent to an add of the same pass, and a
+// Files line matches its own path only, never a longer path that starts the same way.
+void test_ids_are_not_reused_in_a_pass_and_files_match_exactly() {
+  tx::Summary s = sampleSummary();
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("-P6\n-O5\n+O A new item.\n=O5 Should not land.\n").edits, nullptr,
+                               left, unread));
+  TEST_ASSERT_EQUAL(2u, unread);   // -P6 (the device's line) and =O5 (gone)
+  const tx::SummaryLine* added = lineOf(s, 7);
+  TEST_ASSERT_NOT_NULL(added);
+  TEST_ASSERT_TRUE(added->text == "A new item.");
+  TEST_ASSERT_NULL(lineOf(s, 5));
+  tx::Summary f;
+  left.clear();
+  tx::noteSummaryFile(f, "notes/a (copy)", "", false, left);
+  tx::noteSummaryFile(f, "notes/a", "Tue 17 Nov 2026 13:02", false, left);
+  TEST_ASSERT_EQUAL(2u, f.lines.size());
+  TEST_ASSERT_TRUE(left.empty());
+  tx::noteSummaryFile(f, "notes/a", "", true, left);
+  TEST_ASSERT_EQUAL(1u, f.lines.size());
+  TEST_ASSERT_TRUE(f.lines[0].text == "notes/a (copy)");
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -1378,5 +1403,6 @@ int main(int, char**) {
   RUN_TEST(test_a_summary_is_valid_up_to_its_hard_cap_only);
   RUN_TEST(test_a_restart_stops_at_the_newest_summary);
   RUN_TEST(test_the_mirror_carries_the_summary_in_whole_lines);
+  RUN_TEST(test_ids_are_not_reused_in_a_pass_and_files_match_exactly);
   return UNITY_END();
 }

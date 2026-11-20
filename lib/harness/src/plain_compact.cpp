@@ -350,7 +350,7 @@ size_t newestOwnersFrom(const std::vector<Unit>& units, const SliceRules& r) {
     from = i;
     if (units[i].owner && ++owners == tx::kNewestOwnerTurnsKept) return i;
   }
-  return units.size();
+  return owners ? from : units.size();   // fewer than six, all fitting: every one stays
 }
 
 // The first unit a slice may not reach.
@@ -1041,7 +1041,7 @@ bool CompactDriver::held(const IdleCtx& ctx, const CompactCtl::Chat& chat) {
 }
 
 // One attempt: the daily cap and this chat's wait, one rung, one exchange, the swap.
-Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out, bool prepare) {
+Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out, bool prepareOnly) {
   loadCtl();
   const CompactCtl::Chat before = ctl_.chat(d_.chatKey);
   out.step = CompactStep::Waiting;
@@ -1068,8 +1068,8 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
     hlog::logf("compact(%s): the arena has %u B free: this slice leaves under the v5.1.2 text keep (%u B kept)",
                d_.chatKey.c_str(), (unsigned)d_.arena->freeBytes(), (unsigned)(plan.restText));
   std::string text;
-  if (s.ok()) s = merge(plan, asked.summary, ctx.now, text);
-  if (s.ok() && prepare) keepPending(plan, text, out);
+  if (s.ok()) s = merge(plan, asked.summary, text);
+  if (s.ok() && prepareOnly) keepPending(plan, text, out);
   else if (s.ok()) s = swap(plan, text, ctx.now, out);
   settle(rung, plan, before.fails, ctx.now, s, out);
   return s.err == Err::TooLarge ? s : Status::success();
@@ -1270,11 +1270,17 @@ namespace {
 // are made inert first, so no summary line opens or closes a frame.
 std::string framedLine(const std::string& clean) { return std::string(st::kFrameOpen) + inert(clean) + st::kFrameClose; }
 std::string inertLine(const std::string& clean) { return inert(clean); }
+bool framedIn(const tx::Summary& s, uint32_t id) {
+  for (const tx::SummaryLine& l : s.lines)
+    if (l.id == id) return l.text.compare(0, sizeof(st::kFrameOpen) - 1, st::kFrameOpen) == 0;
+  return true;   // no such line: applySummaryEdits counts it unread
+}
 
 }  // namespace
 
 bool CompactDriver::pendingValid() const {
-  return !pending_.text.empty() && pending_.baseThru == d_.head()->thru && pending_.thru > d_.head()->thru;
+  return !pending_.text.empty() && pending_.baseThru == d_.head()->thru && pending_.thru > d_.head()->thru &&
+         pending_.thru <= d_.arena->lastQ();
 }
 
 Status CompactDriver::baseFor(tx::Summary& base, std::string& baseText, std::string& legacy) const {
@@ -1306,8 +1312,7 @@ Status CompactDriver::messageFor(const SlicePlan& plan, std::string& sofar, std:
 
 // The answer's changes applied to the summary so far in code (never a rewrite), the device's Files
 // lines, the head's budget; every line that left goes to the archive before anything is kept.
-Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, uint64_t now, std::string& text) {
-  (void)now;
+Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, std::string& text) {
   tx::Summary sum;
   std::string baseText, legacy;
   Status s = baseFor(sum, baseText, legacy);
@@ -1319,9 +1324,15 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, ui
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver.changes");
   }
   std::vector<tx::SummaryLine> left;
-  size_t unread = 0;
-  if (!(s = tx::applySummaryEdits(sum, edits.edits, plan.tainted ? framedLine : inertLine, left, unread)).ok()) return s;
+  size_t unread = 0, held = 0;
+  std::vector<tx::SummaryEdit> taken;
+  for (const tx::SummaryEdit& e : edits.edits)   // a slice that read outside content rewrites only framed lines
+    if (plan.tainted && e.op != tx::SummaryOp::Add && !framedIn(sum, e.id)) ++held;
+    else taken.push_back(e);
+  if (!(s = tx::applySummaryEdits(sum, taken, plan.tainted ? framedLine : inertLine, left, unread)).ok()) return s;
+  unread += held;
   for (const FileNote& f : plan.files) {
+    if (f.path.find_first_of("<>") != std::string::npos) continue;   // never a frame tag in the system text
     std::string when;
     if (!tx::photoWhen(f.at, tz_, when).ok()) when.clear();
     tx::noteSummaryFile(sum, f.path, when, f.deleted, left);
@@ -1330,6 +1341,8 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, ui
   if (!(s = tx::fitSummary(sum, cap, left)).ok() || !(s = tx::encodeSummary(sum, text)).ok()) return s;
   if (unread + edits.unread)
     hlog::logf("compact(%s): %u lines of the answer were not changes", d_.chatKey.c_str(), (unsigned)(unread + edits.unread));
+  if (!left.empty() && !d_.files)   // no card: nothing can hold them; the conversation itself is not stored either
+    hlog::logf("compact(%s): %u summary lines left with no storage to archive them", d_.chatKey.c_str(), (unsigned)left.size());
   if (left.empty() || !d_.files) return Status::success();
   s = tx::archiveSummaryLines(*d_.files, d_.chatKey, plan.day, left);
   if (!s.ok()) hlog::logf("compact(%s): %u summary lines could not be archived: not taken", d_.chatKey.c_str(), (unsigned)left.size());

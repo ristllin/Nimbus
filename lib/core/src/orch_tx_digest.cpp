@@ -741,6 +741,12 @@ bool idAt(const std::string& s, size_t at, uint32_t& id, size_t& end) {
   return end > at && id != 0 && (end == s.size() || s[end] < '0' || s[end] > '9');
 }
 
+// photoWhen's text ("Tue 17 Nov 2026 13:02"): a weekday, a day number, and a time at the end.
+bool looksLikeWhen(const std::string& w) {
+  const size_t n = w.size();
+  return n >= 15 && w[3] == ' ' && w[4] >= '0' && w[4] <= '9' && w[n - 3] == ':' && w[n - 1] >= '0' && w[n - 1] <= '9';
+}
+
 bool validLine(const SummaryLine& l) {
   return l.id != 0 && (size_t)l.section < kSummarySections && l.text.size() <= kSummaryLineMaxBytes &&
          cleanLine(l.text);
@@ -769,7 +775,10 @@ bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
   if (at + 1 < raw.size() && raw[at] == '*' && raw[at + 1] == ' ') at += 2;
   const std::string line = raw.substr(at);
   if (line.empty()) return false;
-  if (line == "=") return none = true, false;
+  if (line == "=") {
+    none = true;
+    return false;
+  }
   const char op = line[0];
   if ((op != '+' && op != '=' && op != '-') || line.size() < 2 || !sectionOf(line[1], e.section)) return false;
   size_t end = 2;
@@ -825,7 +834,7 @@ Status encodeLines(const Summary& s, std::string& out) {
 }
 }  // namespace
 
-Status encodeSummary(const Summary& s, std::string& out) {
+static Status encodeSummaryBody(const Summary& s, std::string& out) {
   const Status st = encodeLines(s, out);
   if (!st.ok()) return st;
   if (out.size() > kSummaryMaxBytes) {
@@ -835,7 +844,7 @@ Status encodeSummary(const Summary& s, std::string& out) {
   return Status::success();
 }
 
-Status parseSummary(const std::string& text, Summary& out) {
+static Status parseSummaryBody(const std::string& text, Summary& out) {
   out = Summary{};
   if (!validSummaryText(text)) return Status::fail(Err::InvalidArgument, "tx::parseSummary");
   int section = -1;
@@ -894,6 +903,7 @@ Status applySummaryEdits(Summary& s, const std::vector<SummaryEdit>& edits, Summ
                          std::vector<SummaryLine>& left, size_t& unread) {
   unread = 0;
   const size_t frameBytes = frame ? frame(std::string()).size() : 0;
+  uint32_t next = s.nextId();   // monotonic in this pass: a line dropped here never lends its id to an add
   for (const SummaryEdit& e : edits) {
     std::string text = summaryLineText(e.text, kSummaryLineMaxBytes - frameBytes);
     if (!text.empty() && frame) text = frame(text);
@@ -907,7 +917,7 @@ Status applySummaryEdits(Summary& s, const std::vector<SummaryEdit>& edits, Summ
     if (e.op == SummaryOp::Add) {
       bool twice = false;
       for (const SummaryLine& o : s.lines) twice |= o.section == e.section && o.text == text;
-      if (!twice) s.lines.insert(s.lines.begin() + (long)insertAt(s, e.section), SummaryLine{e.section, s.nextId(), text});
+      if (!twice) s.lines.insert(s.lines.begin() + (long)insertAt(s, e.section), SummaryLine{e.section, next++, text});
       continue;
     }
     left.push_back(*l);
@@ -926,8 +936,11 @@ void noteSummaryFile(Summary& s, const std::string& path, const std::string& whe
   uint32_t id = 0;
   for (size_t i = 0; i < s.lines.size(); ++i) {
     const SummaryLine& l = s.lines[i];
-    const bool same = l.section == SummarySection::Files &&
-                      (l.text == path || l.text.compare(0, path.size() + 2, path + digest_text::kWhenOpen) == 0);
+    // The path alone, or the path and one time suffix: never a longer path that starts the same way.
+    const std::string open = path + digest_text::kWhenOpen;
+    const bool timed = l.text.compare(0, open.size(), open) == 0 && l.text.back() == digest_text::kWhenClose[0] &&
+                       looksLikeWhen(l.text.substr(open.size(), l.text.size() - open.size() - 1));
+    const bool same = l.section == SummarySection::Files && (l.text == path || timed);
     if (!same) continue;
     id = l.id;
     left.push_back(l);
@@ -940,7 +953,7 @@ void noteSummaryFile(Summary& s, const std::string& path, const std::string& whe
                  SummaryLine{SummarySection::Files, id ? id : s.nextId(), text});
 }
 
-Status fitSummary(Summary& s, size_t capBytes, std::vector<SummaryLine>& left) {
+static Status fitSummaryBody(Summary& s, size_t capBytes, std::vector<SummaryLine>& left) {
   std::string text;
   const size_t cap = std::min<size_t>(capBytes, kSummaryMaxBytes);
   for (;;) {
@@ -975,6 +988,18 @@ Status archiveSummaryLines(TxFiles& files, const std::string& chatKey, const std
     if (!st.ok()) return st;
   }
   return Status::success();
+}
+
+Status encodeSummary(const Summary& s, std::string& out) {
+  return guarded("tx::encodeSummary: memory", [&] { return encodeSummaryBody(s, out); }, [&] { out.clear(); });
+}
+
+Status parseSummary(const std::string& text, Summary& out) {
+  return guarded("tx::parseSummary: memory", [&] { return parseSummaryBody(text, out); }, [&] { out = Summary{}; });
+}
+
+Status fitSummary(Summary& s, size_t capBytes, std::vector<SummaryLine>& left) {
+  return guarded("tx::fitSummary: memory", [&] { return fitSummaryBody(s, capBytes, left); }, [&] {  });
 }
 
 uint64_t rowThru(const std::vector<Item>& items, uint64_t thru) {

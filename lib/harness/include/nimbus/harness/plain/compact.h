@@ -300,7 +300,7 @@ class CompactDriver {
   bool manualPending() const { return manual_; }
   const CompactCtl& control() const { return ctl_; }
   // The summary prepared ahead of time, not yet swapped in ("" when none is valid), and the last q it covers.
-  const std::string& pendingSummary() const { return pending_.text; }
+  std::string pendingSummary() const { return pendingValid() ? pending_.text : std::string(); }
   uint64_t pendingThru() const { return pending_.thru; }
 
  private:
@@ -324,7 +324,7 @@ class CompactDriver {
     spentHotQ_ = hotQ_;
   }
   bool held(const IdleCtx& ctx, const CompactCtl::Chat& chat);
-  Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out, bool prepare = false);
+  Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out, bool prepareOnly = false);
   // The summary ahead of time (ruling 106 item 3), and its swap at the due mark.
   struct Pending {
     std::string text;            // the encoded summary
@@ -342,7 +342,7 @@ class CompactDriver {
   // The summary the next update builds on: the pending one, else the newest in force; the day digests
   // older than any summary are passed as dated lines.
   Status baseFor(nimbus::orch::tx::Summary& base, std::string& baseText, std::string& legacy) const;
-  Status merge(const SlicePlan& plan, const std::string& answer, uint64_t now, std::string& text);
+  Status merge(const SlicePlan& plan, const std::string& answer, std::string& text);
   Status archiveLegacy();
   void keepPending(const SlicePlan& plan, const std::string& text, CompactOutcome& out);
   // The summary so far (the request's system text beside the prompt) and the one user message.
