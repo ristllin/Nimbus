@@ -1758,6 +1758,21 @@
         "lib/harness/include/nimbus/harness/plain/engine.h"
       ],
       "plan_text": "lib/core/src/orch_tx_budget.cpp, include/nimbus/orch/tx/budget.h, test/test_tx_budget, docs/reference/transcript-budgets.md (generated), the host resolution in lib/harness/src/plain_exchange.cpp (providerSlugOf) and its caller in plain_engine.cpp budget(), test/support/tx_battery/driver.h (the default profile and the head key), comments in nimbusd/src/plain_rig.h and plain/engine.h"
+    },
+    "RB-Q4b": {
+      "stage": "S1",
+      "files": [
+        "lib/core/src/orch_head_loop.cpp",
+        "lib/harness/src/providers/mistral.cpp",
+        "lib/harness/src/providers/openai.cpp",
+        "lib/harness/src/providers/custom.cpp",
+        "lib/harness/src/engine.cpp",
+        "test/test_harness_wire_mistral/**",
+        "test/test_harness_wire_openai/**",
+        "test/test_harness_wire_custom/**",
+        "test/test_harness_wire_anthropic/**"
+      ],
+      "plan_text": "lib/core/src/orch_head_loop.cpp (the prose rule per wire), lib/harness/src/providers/mistral.cpp and the other providers' discard and re-ask paths, lib/harness/src/engine.cpp (the call site RB-Q4 added), their tests, the wire-pinning tests RB-Q4 added"
     }
   }
 }
