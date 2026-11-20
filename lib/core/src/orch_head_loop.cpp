@@ -251,7 +251,9 @@ namespace {
 // Room kept under the body budget after a refit: folded rounds leave a stub line
 // each in the seeded message (only then the full slack), and the wire escapes
 // what remains.
-constexpr size_t kBudgetRefitSlack = 4096;
+// RB-BGb part 2: 2 KB, not 4 KB: the fold now takes only what the request needs, a whole round
+// at a time, so a large slack folds one round more than the overshoot asks for.
+constexpr size_t kBudgetRefitSlack = 2048;
 constexpr size_t kBudgetClipSlack = 512;
 // Refits per round: big arguments, older rounds, older history, the newest round's clip,
 // each rung of the prompt ladder (turn_fit.h), and a few for a rung whose estimate fell short

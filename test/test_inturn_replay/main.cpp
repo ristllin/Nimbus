@@ -3,6 +3,9 @@
 // the request would otherwise not fit; a fold is named and reachable (results.get).
 #include <unity.h>
 
+#include <cstdlib>
+#include <fstream>
+#include <map>
 #include <string>
 
 #include "../support/inturn_replay_case.h"
@@ -62,9 +65,76 @@ static void test_a_floor_head_folds_and_says_so() {
   }
 }
 
+// The property (ruling 93 item 3): no request carries less of the turn's tool traffic than
+// v5.1.2's replay figure for its head, or all of it when there is less, unless the request had no
+// room for one more part. Every head the rig drives, histories from empty to full.
+// v5.1.2's own carry on the same turns, recorded once from rb-main 8db879b4c's engine files
+// (INTURN_RECORD=1 writes it; evidence/p2-v512-record.log): "<model> <q> <request> <parts>".
+static const char kV512Carry[] = "test/golden/inturn_replay_v512.txt";
+
+static std::map<std::string, int> v512Carry() {
+  std::map<std::string, int> m;
+  std::ifstream f(kV512Carry);
+  std::string model;
+  int q, b, parts;
+  while (f >> model >> q >> b >> parts) m[model + " " + std::to_string(q) + " " + std::to_string(b)] = parts;
+  return m;
+}
+
+static void test_no_request_carries_less_than_the_v512_replay() {
+  const char* rec = std::getenv("INTURN_RECORD");
+  const bool record = rec && std::string(rec) == "1";
+  std::ofstream out;
+  if (record) out.open(kV512Carry);
+  const std::map<std::string, int> old = v512Carry();
+  TEST_ASSERT_TRUE_MESSAGE(record || !old.empty(), kV512Carry);
+  const Head heads[] = {{"anthropic", "claude-sonnet-5-5"}, {"anthropic", "claude-haiku-5-5"},
+                        {"cumulo", "anthropic/claude-sonnet-5-5"}, {"cumulo", "anthropic/claude-haiku-5-5"}};
+  int requests = 0, short_ = 0, partsNow = 0, partsThen = 0;
+  nimbus::orch::setRoutedBudgetLiftForTest(0);
+  for (const Head& h : heads)
+    for (int q = 0; q <= 4; q++) {
+      const nimbus::orch::ContextBudget cb = nimbus::orch::headContextBudget(h.host, h.model, true, {});
+      const size_t v512 = cb.replayBytes;   // the wire's fixed replay before this lane
+      const size_t budget = nimbus::orch::turnBudgetFor(h.host, h.model, true).wireBodyBytes;
+      Rig rig(h, cb.historyMaxBytes * (size_t)q / 4);
+      const Result r = rig.run();
+      for (size_t b = 1; b < r.bodies.size(); b++) {
+        requests++;
+        const size_t produced = std::min<size_t>(b, kParts) * kPartBytes;
+        const size_t carried = partsIn(r.bodies[b]).size() * kPartBytes;
+        const std::string what = std::string(h.model) + " history " + std::to_string(q) + "/4 request " +
+                                 std::to_string(b) + ": carried " + std::to_string(carried) + " of " +
+                                 std::to_string(produced) + " (v5.1.2 replay " + std::to_string(v512) + ")";
+        TEST_ASSERT_TRUE_MESSAGE(r.bodies[b].size() <= budget, what.c_str());
+        const int parts = (int)partsIn(r.bodies[b]).size();
+        const std::string key = std::string(h.model) + " " + std::to_string(q) + " " + std::to_string(b);
+        if (record) {
+          out << key << " " << parts << "\n";
+          continue;
+        }
+        const auto was = old.find(key);
+        TEST_ASSERT_TRUE_MESSAGE(was != old.end(), (key + " missing from the v5.1.2 record").c_str());
+        partsNow += parts;
+        partsThen += was->second;
+        TEST_ASSERT_TRUE_MESSAGE(parts >= was->second, (what + ", v5.1.2 carried " + std::to_string(was->second) + " parts").c_str());
+        if (carried >= std::min(produced, v512) - kPartBytes) continue;   // whole parts: one part's grain
+        short_++;
+        TEST_ASSERT_TRUE_MESSAGE(r.bodies[b].size() + kPartBytes > budget, what.c_str());
+      }
+    }
+  char line[256];
+  std::snprintf(line, sizeof line,
+                "%d requests, %d under the v5.1.2 replay (each with no room for one more part); parts carried %d "
+                "against v5.1.2's %d",
+                requests, short_, partsNow, partsThen);
+  TEST_MESSAGE(line);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_head_with_room_keeps_every_part_until_the_answer);
   RUN_TEST(test_a_floor_head_folds_and_says_so);
+  RUN_TEST(test_no_request_carries_less_than_the_v512_replay);
   return UNITY_END();
 }
