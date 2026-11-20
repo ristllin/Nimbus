@@ -29,18 +29,25 @@ struct HeadState;
 // 2. The newest turn, by what is stored (intents::bootAction):
 //    - its e item is stored: nothing;
 //    - its d item is stored: the e item only (no send, no model call);
-//    - a turn no person started (a routine, an agent report, a notice): the e item only;
-//    - the final answer is stored and whole: it is sent with no model call, then d and e. The
-//      boot cannot know whether a cut fell before or inside the earlier send, so a reply that
-//      went out just before the cut goes out twice; the e item names it ("resume:sent-stored");
-//    - no final answer: one automatic resume, a turn with trigger Resume, the same turn
-//      number and attempt + 1, through the engine's own runTurn, from everything stored (owner
-//      ruling 81: the request carries every item of the log);
-//    - one resume was already made (or the stored answer is not whole): the plain crash
-//      notice (nimbus::orch::crashNotice) as the one status line, then the e item.
+//    - the final answer is stored and whole, an attempt left: it is sent with no model call, then
+//      d and e (any turn, a routine's included). The boot cannot know whether a cut fell before or
+//      inside the earlier send, so a reply that went out just before the cut goes out twice; the e
+//      item names it ("resume:sent-stored");
+//    - no final answer, a turn no person started (a routine, an agent report, a notice): the e item
+//      only, never resumed;
+//    - no final answer, a person's turn: one automatic resume, a turn with trigger Resume, the same
+//      turn number and attempt + 1, through the engine's own runTurn, from everything stored (owner
+//      ruling 81: the request carries every item of the log), tainted when the turn already read
+//      outside content;
+//    - no attempt left (one resume made, and one boot send after it for the resumed run's own
+//      answer), or the stored answer is only its stub: the plain crash notice
+//      (nimbus::orch::crashNotice) as the one status line for a person's turn, then the e item.
 //    Before a resume or a send the attempt is written to head.json (the write-ahead counter):
 //    a cut inside the resume itself is counted, so the next boot sends the notice. When the
-//    counter cannot be written, the seam sends the notice instead: never a second resume.
+//    counter cannot be written, the seam sends the notice instead: never an attempt it cannot
+//    count. A send or a notice the channel refused leaves the turn open (the attempt given
+//    back): a later boot tries again. With under 4 KB free in the arena the seam stores no result
+//    (the engine's turn open answers them) and its d and e items go to the card only.
 // The RTC record is not read or written (its layout is unchanged): a power cut, the commonest
 // cut, empties it, so the count lives on the card. Restart, install and head switch run after
 // the reply is sent and the turn is closed (TurnOutcome::deferred), so a restart they cause
