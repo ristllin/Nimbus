@@ -972,8 +972,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e1
 - class: device_notes
 - kind: spec
-- bytes: 54793 -> 54952
-- sha8: 37e631c4 -> 7e0ed345
+- bytes: 54725 -> 54884
+- sha8: 34c49472 -> 645e6e2a
 - lane: RB-BGb
 - prd: section 2 (the transcript), as amended by ruling 93 item 3 (the in-turn replay budget is what the request has free; a fold happens only when the request would otherwise not fit, and what was folded is named and reachable)
 - why: lib/core/src/orch_transcript.cpp: a folded round's line ends with `results.get {"tag":"rN"}` for each result over 200 B kept whole in the results ring (a result the loop's clamp kept names that tag), and the fold heading says so (it said to call the tool again); the newest round's result cut to fit ends with `[cut to fit this request: bytes 0-k of n; next part: results.get {"tag":"rN","offset":k}]`, RB-TR1's part head form (PC-0119) with the results.get pointer. lib/core/src/orch_head_loop.cpp: the refit log names its new rung ("the newest round's results"). Text without a tag (no results ring) is as before. Planned work, not a fix.
