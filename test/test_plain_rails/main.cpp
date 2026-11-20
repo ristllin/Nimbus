@@ -72,6 +72,7 @@ const Probe kProbes[] = {
     {"schedule", R"({"op":"create","kind":"reminder","when":"07:00","text":"Train at 07:15"})", A, -1},
     {"schedule", R"({"kind":"reminder","when":"07:00","text":"Train at 07:15"})", A, -1},
     {"schedule", R"({"op":"update","kind":"reminder","id":"r3","when":"07:10","text":"Train at 07:25"})", P, -1},   // the id may name a routine
+    {"schedule", R"({"op":"update","kind":"reminder","when":"07:10","text":"Train at 07:25"})", P, -1},
     {"schedule", R"({"op":"create","kind":"reminder","when":"07:00","text":"x","chat_id":"2002"})", R, -1},
     {"schedule", R"({"op":"create","kind":"reminder","when":"07:00","text":""})", P, -1},
     {"schedule", R"({"op":"create","kind":"reminder","when":"07:00","text":"x","instruction":"look it up"})", P, -1},
