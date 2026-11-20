@@ -13,6 +13,7 @@
 namespace agent {
 namespace pdf_tool {
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 namespace {
 
 std::string arg(ArduinoJson::JsonObjectConst a, const char* k) {
@@ -70,6 +71,7 @@ void registerTool(nimbus::orch::ToolRegistry& reg) {
   reg.setGate("files.pdf", [] { return files::available(); },
               "no SD card: the device cannot keep a PDF");
 }
+#endif
 
 bool available() { return files::available(); }
 

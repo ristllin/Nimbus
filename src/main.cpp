@@ -3134,6 +3134,7 @@ static nimbus::hw::SelfTestInputs buildSelfTestInputs() {
   return in;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 // Register the orchestrator's device-introspection tools on the shared registry
 // (auto-advertised to the head tool-loop + reachable over /mcp). device.status
 // is a silent snapshot; device.selftest runs the health check, gating the
@@ -3349,6 +3350,7 @@ static void registerDeviceTools() {
           },
           R"({"type":"object","properties":{"audible":{"type":"boolean"}},"required":[]})");
 }
+#endif
 
 // ---- OTA wiring: owner notify + install UX + auto-install idle snapshot -----
 // The OTA module (src/sys/ota_update) is hook-injected like loops_subsystem so
@@ -4252,7 +4254,9 @@ void setup() {
   // orchestrator tools (memory::begin() ran inside beginWeb, so the registry
   // exists). Order-independent of the tool loop; also exposed over /mcp.
   nimbus::hw::setInputsProvider(buildSelfTestInputs);
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
   registerDeviceTools();
+#endif
   // R5: models.list and the model-list refresh queue, Orchestrator only (the head
   // and the web UI are its users; a refresh needs the verify task's heap).
   if (g_orchMode) agent::model_refresh::begin();
@@ -4263,7 +4267,12 @@ void setup() {
   ::sfx::begin(g_orchMode);
   // Music player (CUM-40): the media.* tools + /play are Orchestrator features, and
   // its dedicated task should not compete for Notifier mode's tight internal SRAM.
-  if (g_orchMode) { music::begin(); music::registerTools(); }
+  if (g_orchMode) {
+    music::begin();
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
+    music::registerTools();
+#endif
+  }
   g_router.setEventTap(&sfxEventTap);
   // Screensaver idle clock: threshold from NVS (default 60 min, 0 = off); boot
   // counts as activity so a freshly powered device never saver-jumps early.

@@ -1008,6 +1008,7 @@ bool discover(const String& serverName, const UrlParts& u, const String& bearer,
 // the AsyncTCP /mcp reader also touches under that Lock).
 void registerToolsLocked(ToolRegistry& reg, const String& slug, const std::vector<mc::ToolDef>& tools) {
   reg.removeByPrefix(prefixOf(slug));   // clear any stale set before re-adding
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
   for (const auto& t : tools) {
     std::string regName = mc::namespacedTool(std::string(slug.c_str()), t.name);
     std::string s = slug.c_str();
@@ -1017,6 +1018,9 @@ void registerToolsLocked(ToolRegistry& reg, const String& slug, const std::vecto
             [s, tn](ArduinoJson::JsonObjectConst a, const Principal& who) { return callTool(s, tn, a, who); },
             t.inputSchemaJson);
   }
+#else
+  (void)tools;
+#endif
 }
 
 }  // namespace

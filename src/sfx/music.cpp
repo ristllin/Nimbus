@@ -502,6 +502,7 @@ static std::string withVolumeCue(std::string status) {
   return status;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 // ---- media.* tools ---------------------------------------------------------
 
 static std::string argStr(ArduinoJson::JsonObjectConst a, const char* k) {
@@ -555,5 +556,6 @@ void registerTools() {
             return nimbus::orch::ToolResult::ok(std::string(j.c_str()));
           }, R"({"type":"object","properties":{}})");
 }
+#endif
 
 }  // namespace music

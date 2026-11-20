@@ -341,7 +341,9 @@ void jsonEscapeInto(String& out, std::string_view s) {
   }
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools();   // fwd (bottom)
+#endif
 
 }  // namespace
 
@@ -352,7 +354,9 @@ void begin() {
   primeFetchLock();
   if (!memory::haveSd()) {
     alogf("files: no SD - artifact store absent");
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
     registerTools();   // tools exist but answer honestly ("no SD card")
+#endif
     return;
   }
   fs::FS& fs = memory::dataFs();
@@ -413,7 +417,9 @@ void begin() {
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
   registerTools();
+#endif
 }
 
 bool available() { return g_begun && memory::haveSd(); }
@@ -1654,6 +1660,7 @@ void runScanFetch(nimbus::orch::FetchReq req) {
 }  // namespace
 
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools() {
   auto& reg = memory::registry();
 
@@ -2258,6 +2265,7 @@ void registerTools() {
           },
           R"({"type":"object","properties":{"prompt":{"type":"string"},"project":{"type":"string"},"name":{"type":"string"},"size":{"type":"string"},"quality":{"type":"string","enum":["low","medium","high"]},"model":{"type":"string"},"describe":{"type":"boolean"}},"required":["prompt"]})");
 }
+#endif
 
 }  // namespace
 

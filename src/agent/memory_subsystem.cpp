@@ -83,7 +83,9 @@ extern TaskHandle_t loopTaskHandle;
 namespace agent {
 namespace memory {
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 static void registerTenantTools();   // v3.7.0 admin-by-conversation (defined below)
+#endif
 static void loadPending();           // the pending-embed queue (defined below)
 
 using namespace nimbus::orch;
@@ -1178,7 +1180,9 @@ void begin() {
     return nimbus::orch::prefsSaveStanding(prefs::context(), text, who, handled);
   };
   g_ctx = ctx;
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
   nimbus::orch::registerCalcTool(g_reg);   // RB-REC8: calc, always on (ruling 42 item 3)
+#endif
   tools::registerMemoryFamilies(g_reg, ctx);   // memory.*, prefs.edit, openq.edit (tools_e1.cpp)
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
@@ -1205,6 +1209,7 @@ void begin() {
   registerSessionTools(g_reg, sh);
 #endif
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
   // results.get / results.list - the recent-results ring (Context Fabric Stage 1:
   // a clipped tool result or overflowed sub-agent result is a VIEW; the full text
   // stays fetchable). Handlers route through orchestrator:: accessors, which take
@@ -1242,6 +1247,7 @@ void begin() {
     wd.recordCall = [] { agent::store::recordProviderCall("tavily"); };
     agent::websearch::registerWebSearchTool(g_reg, wd);
   }
+#endif
   // CUM-508: every provider-gated tool (nimbus/orch/tool_gates.h) is listed
   // exactly while its key is present - evaluated live on each listing and call,
   // so adding or removing a key never needs a restart. image.generate registers
@@ -1256,6 +1262,7 @@ void begin() {
     return false;
   });
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
   // Local Loops - schedule recurring/timed tasks that fire as future turns. A loop
   // the MODEL creates is stored PENDING until the owner approves it (prism: defuses
   // prompt-injection persistence). A scheduled turn can't create loops (fork-bomb guard).
@@ -1667,6 +1674,7 @@ void begin() {
   // loops; SAME refusal string the handler carried. Default-allow otherwise, so
   // behavior is identical outside scheduled turns.
   registerTenantTools();   // fwd-declared above
+#endif
 
   g_reg.setPolicyResolver([](const std::string& name) -> ToolRegistry::Verdict {
     if (name == "loop.create" && orchestrator::inScheduledTurn())
@@ -1715,6 +1723,7 @@ void begin() {
 // "make Y a guest"). These are ADMIN-only at DISPATCH: hiding a tool from the
 // advertisement is not a boundary, so each handler re-checks the caller's role
 // and the policy resolver additionally refuses them in scheduled turns.
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 static void registerTenantTools() {
   using nimbus::orch::Role;
   auto adminOnly = [](const nimbus::orch::Principal& who) -> bool {
@@ -1799,6 +1808,7 @@ static void registerTenantTools() {
                         "tenant.list", "tenant.set_role", "tenant.set_quota"})
     g_reg.setAdminOnly(n);
 }
+#endif
 
 // Effective SD presence: the real mount AND not simulated-lost by a resilience
 // fault (FAULT sd). Every DEGRADED-path decision (capacity cap, the LittleFS
