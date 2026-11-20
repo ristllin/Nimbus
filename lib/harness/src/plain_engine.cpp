@@ -593,6 +593,10 @@ class TurnRun {
     // a token, kDefaultRequestTokens' rule) at the input rate, named by an event (ruling 79 item 1).
     RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens};
     const bool answered = ex.requests && (ex.err == ExchangeErr::None || ex.err == ExchangeErr::Cut);
+    // Compaction's hot trigger reads the last answered request's whole prompt, never the turn's sum
+    // (ruling 91 T4-ADV-01): maxRequestIn is input plus cache in every provider's meaning; a wire
+    // that reports no whole prompt leaves its input count.
+    if (answered && (u.maxRequestIn || u.promptTokens)) t_.end.lastPromptTokens = u.maxRequestIn ? u.maxRequestIn : u.promptTokens;
     if (answered && !rt.prompt && !rt.output && !rt.cacheRead && !rt.cacheWrite) {
       rt.prompt = (uint32_t)std::min<uint64_t>((uint64_t)ex.requestBytes * 2 / 7, UINT32_MAX);
       event("usage:missing");

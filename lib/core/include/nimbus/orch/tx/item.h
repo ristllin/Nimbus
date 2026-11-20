@@ -26,7 +26,7 @@
 //   i  id n                    r  id n ok cls x hdl b l st
 //   k  x rd                    h  x cls (note class)  s  x day thru ext
 //   x  stub why sup            d  ids                 e  cause rds tools hr pr pt ot cr cw usd ms
-//                                                        ex[[b,ms,st]] ev[] ph mh
+//                                                        ex[[b,ms,st]] ev[] ph mh lp
 // Decoding skips keys it does not know and keys another kind writes (the format only
 // grows), answers Torn for a framing or crc failure (a cut, a glued line, a flipped byte)
 // and InvalidArgument for a whole line it cannot read (k not first, an unknown kind
@@ -139,11 +139,16 @@ struct TurnEndFacts {
   uint16_t tools = 0;
   uint16_t headRequests = 0;
   uint16_t probeRequests = 0;   // truth probe requests, their own column
-  uint32_t promptTokens = 0;
+  uint32_t promptTokens = 0;     // every request of the turn summed, in the provider's own meaning
   uint32_t outputTokens = 0;
   uint32_t cacheReadTokens = 0;
   uint32_t cacheWriteTokens = 0;
   uint32_t microUsd = 0;        // spend in millionths of a USD
+  // The whole prompt of the turn's last answered request (orch::TokenUsage::maxRequestIn: input
+  // plus cache reads and writes, whatever each provider leaves in or out of its input count);
+  // 0 when no request was answered or the line predates it. Compaction's hot trigger reads this,
+  // never the summed promptTokens (lane RB-H81, ruling 91 T4-ADV-01).
+  uint32_t lastPromptTokens = 0;
   uint32_t ms = 0;
   std::vector<ExchangeFacts> exchanges;
   std::vector<std::string> events;   // change points and guard events, by slug

@@ -909,7 +909,7 @@ void test_nothing_due_under_H_and_the_night_and_prompt_triggers() {
     p.day(0, 6, 1000, "b");
     tx::Item e;
     e.kind = tx::ItemKind::TurnEnd;
-    e.end.promptTokens = tokens;
+    e.end.lastPromptTokens = tokens;
     p.store(e);
     p.answer([] { return sp::say(kSummary); });
     TEST_ASSERT_EQUAL(tokens >= b.tokens.due, p.step().ran);
@@ -924,6 +924,45 @@ void test_nothing_due_under_H_and_the_night_and_prompt_triggers() {
   plain::CompactOutcome out;
   TEST_ASSERT_FALSE(none.driver->step(none.idle(), out).ok());
   TEST_ASSERT_FALSE(out.ran);
+}
+
+// Ruling 91 T4-ADV-01: the hot trigger compares the whole prompt of the turn's LAST request (input
+// plus cache reads and writes, in each provider's meaning) with the due mark, never the turn's
+// summed prompt tokens. Two OpenAI-shaped requests at 0.76 of due each sum past it while no request
+// came near it: not due. A cached Anthropic request at due reports 2,000 uncached tokens: due.
+void test_the_hot_trigger_reads_the_last_request_whole_prompt_never_the_turn_sum() {
+  const tx::HeadKey luna{"openai", "gpt-5.6-luna", false};
+  tx::HeadBudget b;
+  TEST_ASSERT_TRUE(tx::budgetFor(luna, tx::Profile::Full, b).ok());
+  const uint32_t req = b.tokens.due * 76 / 100;
+  struct Case {
+    uint32_t summed, last;
+    bool due;
+    const char* what;
+  };
+  const Case cases[] = {
+      {2 * req, req, false, "two requests at 0.76 of due: their sum passes due, no request did"},
+      {2000, b.tokens.due, true, "a cached request at due (2,000 uncached tokens) is due"},
+      {3 * b.tokens.due, b.tokens.due - 1, false, "one token under due is not due, whatever the turn summed"},
+      {0, b.tokens.due, true, "the last request alone decides"},
+  };
+  for (const Case& k : cases) {
+    Chat c;
+    c.profile = c.head.profile = "full";
+    c.headKey = luna;
+    c.driver.reset(new plain::CompactDriver(c.deps()));
+    c.day(-2, 50, 5000, "a");   // all text: past luna's v5.1.2 keep and L, under H
+    c.day(0, 6, 1000, "b");
+    tx::Item e;
+    e.kind = tx::ItemKind::TurnEnd;
+    e.end.promptTokens = k.summed;
+    e.end.lastPromptTokens = k.last;
+    c.store(e);
+    c.answer([] { return sp::say(kSummary); });
+    const size_t resident = plain::residentBytes(*c.arena, c.head.thru);
+    TEST_ASSERT_TRUE_MESSAGE(resident < b.marks.high && resident > b.marks.low + 30000, "resident must sit between L and H");
+    TEST_ASSERT_EQUAL_MESSAGE(k.due, c.step().ran, k.what);
+  }
 }
 
 // Owner ruling 81, ruling 83 items 2 and 3: on every head class at its default (full) profile, the
@@ -975,7 +1014,7 @@ void test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class() 
         }
         tx::Item e;   // the day's last request reached the due mark: compaction is due
         e.kind = tx::ItemKind::TurnEnd;
-        e.end.promptTokens = b.tokens.due;
+        e.end.lastPromptTokens = b.tokens.due;
         c.store(e);
         c.now += 3600;
         gClock += 3600000;
@@ -1568,6 +1607,7 @@ int main(int, char**) {
   RUN_TEST(test_a_failing_week_spends_at_most_the_cap_a_day_and_recovers_the_next);
   RUN_TEST(test_owner_first_quiet_window_and_no_clock_gates);
   RUN_TEST(test_nothing_due_under_H_and_the_night_and_prompt_triggers);
+  RUN_TEST(test_the_hot_trigger_reads_the_last_request_whole_prompt_never_the_turn_sum);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);
   RUN_TEST(test_a_refused_store_leaves_thru_and_the_retry_stores_once);

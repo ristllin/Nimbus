@@ -477,13 +477,15 @@ Status noHead(const CompactDeps& d, const char* where) {
 
 uint32_t calendarDay(uint64_t now, int16_t tz) { return (uint32_t)dayNumber(now, tz, 0); }
 
-// The newest turn's prompt tokens (its e item), 0 when none is resident.
+// The whole prompt of the newest turn's last request (its e item's lastPromptTokens), 0 when none
+// is resident. Never the turn's summed promptTokens: a two-request turn on an OpenAI wire would read
+// twice its size, and a cached Anthropic request would read only its uncached part (T4-ADV-01).
 uint32_t lastPromptTokens(const tx::TxArena& arena) {
   for (size_t i = arena.count(); i-- > 0;) {
     tx::ArenaEntry e;
     if (!arena.header(i, e).ok() || e.kind != tx::ItemKind::TurnEnd) continue;
     tx::Item it;
-    return arena.get(i, it).ok() ? it.end.promptTokens : 0;
+    return arena.get(i, it).ok() ? it.end.lastPromptTokens : 0;
   }
   return 0;
 }

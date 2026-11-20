@@ -954,8 +954,9 @@ idle seam's Compaction slot by `installCompaction`): at most one summarizer exch
 its swap. It never runs while an owner message waits.
 
 When: the bytes after thru (owner, assistant, call, result and device-note lines) are
-above H, the last turn reported prompt tokens at or above the head's due mark in tokens
-(`tx::budgetFor`: the aim, about 100,000 tokens, less the next request's growth; see
+above H, the whole prompt of the last turn's last request (the e item's `lp`: input plus cache
+reads and writes in each provider's meaning, never the turn's sum) reached the head's due mark in
+tokens (`tx::budgetFor`: the aim, about 100,000 tokens, less the next request's growth; see
 [transcript budgets](reference/transcript-budgets.md)), or it is 03:00 to 05:00 local with
 resident above 0.8 H. The marks are the head's (`CompactDeps::headKey`) at its stored
 profile, full when none is stored; with no head named nothing is compacted automatically; an automatic step also needs 120 s of

@@ -276,6 +276,7 @@ void encodeTurnEnd(Writer& w, const Item& it) {
   fieldList(w, "ev", e.events, [&](const std::string& s) { putStr(w, s.data(), s.size()); });
   fieldU64(w, "ph", e.promptHash);
   fieldU64(w, "mh", e.manifestHash);
+  fieldU64(w, "lp", e.lastPromptTokens);
 }
 
 void encodeRoundKinds(Writer& w, const Item& it) {
@@ -811,6 +812,7 @@ const FieldRule kFields[] = {
     TX_LIST("ev", E, end.events, readStr),
     TX_NUM("ph", E, end.promptHash),
     TX_NUM("mh", E, end.manifestHash),
+    TX_NUM("lp", E, end.lastPromptTokens),
 };
 
 #undef TX_STR

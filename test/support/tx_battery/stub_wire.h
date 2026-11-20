@@ -333,6 +333,9 @@ class StubWire : public plain::WireCodec {
     out.usage.promptTokens = includesCache && in >= out.usage.cacheReadTokens ? in - out.usage.cacheReadTokens : in;
     out.usage.completionTokens = u["output_tokens"] | (u["completion_tokens"] | 0u);
     out.usage.responses = 1;
+    // The request's whole prompt, as orch::tokenUsageFromJson gives it (RB-H81: the hot trigger).
+    const uint64_t whole = includesCache ? in : (uint64_t)in + out.usage.cacheReadTokens + out.usage.cacheWriteTokens;
+    out.usage.maxRequestIn = whole > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)whole;
   }
 
   static plain::Status parseAnthropic(const JsonDocument& doc, plain::ParsedStep& out) {
