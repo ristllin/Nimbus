@@ -423,6 +423,32 @@ size_t arenaNeedAtFull(bool print) {
   return need;
 }
 
+// ---- 5c. no comment says qualification sizes the window (ruling 91, blockers/F12) -------------
+
+// Lines of `path` that tie qualification to the budget (a "qualified" line that names budgetFor).
+std::vector<std::string> qualificationSizes(const char* path) {
+  std::vector<std::string> out;
+  std::ifstream f(path);
+  TEST_ASSERT_TRUE_MESSAGE(f.good(), path);
+  for (std::string line; std::getline(f, line);)
+    if (line.find("qualified") != std::string::npos && line.find("budgetFor") != std::string::npos) out.push_back(line);
+  return out;
+}
+
+void test_no_comment_says_qualification_sizes_the_window() {
+  const std::string bad = "  bool qualified = false;   // the head is qualified on engine 2 (tx::budgetFor)";
+  {
+    std::ofstream("test_tx_budget_probe.txt") << bad << "\n";   // counter-test: the scan sees one
+    TEST_ASSERT_EQUAL(1, (int)qualificationSizes("test_tx_budget_probe.txt").size());
+    std::remove("test_tx_budget_probe.txt");
+  }
+  for (const char* f : {"lib/harness/include/nimbus/harness/plain/engine.h", "nimbusd/src/plain_rig.h",
+                        "lib/core/include/nimbus/orch/tx/budget.h", "lib/core/include/nimbus/orch/head_qual.h"}) {
+    const std::vector<std::string> hits = qualificationSizes(f);
+    TEST_ASSERT_TRUE_MESSAGE(hits.empty(), (std::string(f) + ": " + (hits.empty() ? "" : hits[0])).c_str());
+  }
+}
+
 // ---- 6. the generated table ------------------------------------------------------------------
 
 // ---- 7. measured figures against their rows (ruling 83 item 7, amended DoD item 9) --------------
@@ -515,6 +541,7 @@ int main() {
   RUN_TEST(test_the_contradiction_checker_is_15_percent_either_side);
   RUN_TEST(test_no_measured_figure_contradicts_its_row);
   RUN_TEST(test_every_block_is_in_the_sum);
+  RUN_TEST(test_no_comment_says_qualification_sizes_the_window);
   RUN_TEST(test_the_generated_table_is_this_codes_output);
   return UNITY_END();
 }

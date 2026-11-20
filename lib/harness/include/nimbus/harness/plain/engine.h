@@ -100,7 +100,7 @@ struct TurnSetup {
   PhotoFn photo;                     // pixels of the visible photos (may be empty)
   int storedRounds = 0;              // the stored orchLoopRnds (guardLimitsFor)
   HeadCost cost;                     // what the spend and size guards scale from (RB-E1b)
-  bool qualified = false;            // the head is qualified on engine 2 (tx::budgetFor)
+  bool qualified = false;            // qualified on engine 2: routing and truth mode only, never the window
   uint16_t dayStartMin = kDayStartDefaultMin;   // the device's day start (TurnCtx::dayStartMin)
   TurnCeiling ceiling;               // an unattended turn's own bounds (RB-U1a); none by default
 };

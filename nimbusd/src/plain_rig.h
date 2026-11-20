@@ -69,7 +69,7 @@ struct PlainRigConfig {
   // When the owner's day starts, minutes past midnight (RB-REC5): every message stamp's running-day
   // clause. nimbusd: orch::day::startOrDefault of the hosted day_starts setting.
   uint16_t dayStartMin = plain::kDayStartDefaultMin;
-  bool qualified = false;                      // the head is qualified on engine 2 (tx::budgetFor)
+  bool qualified = false;                      // qualified on engine 2: routing and truth mode only, never the window
   int storedRounds = 0;                        // the stored orchLoopRnds (guardLimitsFor)
   // Boot refuses a chat with no compaction installed on hooks() (ruling 91 blockers/F6) unless this
   // names why (plain::EngineDeps::noCompaction). RB-I2 installs the hosted compaction here.
