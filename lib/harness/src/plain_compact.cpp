@@ -838,7 +838,7 @@ SliceRules CompactDriver::rulesFor(const IdleCtx& ctx, const tx::HeadBudget& b) 
   rules.jobRunning = d_.jobRunning;
   rules.omittedThru = d_.omittedThru ? d_.omittedThru() : 0;
   rules.arenaFree = d_.arena->freeBytes();
-  rules.arenaRoom = std::min(kCompactArenaRoomBytes, d_.arena->capacity() / 4);
+  rules.arenaRoom = compactArenaRoom(d_.arena->capacity());
   return rules;
 }
 

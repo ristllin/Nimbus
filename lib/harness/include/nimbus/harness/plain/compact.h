@@ -106,6 +106,14 @@ inline constexpr size_t kCompactCtlChats = 8;              // chats whose backof
 // The arena room compaction keeps (or a quarter of the arena, the smaller): under it a compaction is
 // due, so the engine never has to drop whole turns from RAM with no digest (ruling 91 table/F1).
 inline constexpr size_t kCompactArenaRoomBytes = 128 * 1024;
+// The room a compaction keeps free in an arena of `capacity`: at least kCompactArenaRoomBytes, an
+// eighth of a large arena (a busy day of tool rounds stores more than 128 KB between two idle spells:
+// lane RB-T4b), never more than a quarter of a small one.
+inline size_t compactArenaRoom(size_t capacity) {
+  const size_t eighth = capacity / 8, quarter = capacity / 4;
+  const size_t room = eighth > kCompactArenaRoomBytes ? eighth : kCompactArenaRoomBytes;
+  return room < quarter ? room : quarter;
+}
 // The most of the stored-but-not-resident turns one step reads back from the card (PSRAM).
 inline constexpr size_t kCompactReadBackBytes = 96 * 1024;
 

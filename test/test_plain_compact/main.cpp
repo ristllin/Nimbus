@@ -1757,7 +1757,9 @@ size_t renderedConversation(Chat& c) {
 
 // The parts of a request that are not the conversation, as budgetFor sizes them: the fixed ceiling
 // (system and tools) and the digest block with the recent-files list.
-size_t fixedRequestBytes(const tx::HeadBudget& b) { return tx::kFixedOverheadCeiling + b.digestBlock; }
+size_t fixedRequestBytes(const tx::HeadBudget& b) {
+  return tx::kFixedOverheadCeiling + tx::blockCapFor(b.profile) + tx::kRecentFilesMaxBytes;   // the digest block and the files list
+}
 
 uint32_t tokensOf(const tx::HeadBudget& b, size_t bodyBytes) {
   const int64_t net = (int64_t)bodyBytes - b.bodyInterceptBytes;
@@ -1849,6 +1851,15 @@ void test_a_slice_held_by_the_text_floor_folds_the_tools_not_the_dialogue() {
   }
 }
 
+// The arena room scales with a large arena (lane RB-T4b): 128 KB up to 1 MB, an eighth above it, a
+// quarter of a small arena at most.
+void test_the_arena_room_scales_with_the_arena() {
+  TEST_ASSERT_EQUAL_UINT32(4096, (uint32_t)plain::compactArenaRoom(16 * 1024));
+  TEST_ASSERT_EQUAL_UINT32(128 * 1024, (uint32_t)plain::compactArenaRoom(576 * 1024));
+  TEST_ASSERT_EQUAL_UINT32(128 * 1024, (uint32_t)plain::compactArenaRoom(1024 * 1024));
+  TEST_ASSERT_EQUAL_UINT32(1728 * 1024 / 8, (uint32_t)plain::compactArenaRoom(1728 * 1024));
+}
+
 // Ruling 91 table/F1: tool-heavy chats on Sonnet and luna run far past the arena. Compaction keeps
 // the arena's room, so the engine never has to drop whole turns from RAM (a store the arena refused
 // fails this test): every stored item is resident or under a digest. A slice may leave less than
@@ -1868,7 +1879,8 @@ void test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest() {
       int n = 0, stored = 0;
       c.answer([&n] { return sp::say(std::string(kSummary) + " Part " + std::to_string(++n) + "."); });
       size_t total = 0;
-      for (int d = -40; d <= 0; ++d) {
+      // As many days as it takes to run far past the arena, whatever its size (RB-T4b sizes it by head).
+      for (int d = -400; d <= 0 && total <= 2 * tx::kActiveChatArenaBytes + 65536; ++d) {
         c.now = kNoon - 3 * 3600 + (int64_t)d * kDay;
         for (int t = 0; t < 12; ++t, c.now += 120) {
           char why[160];
@@ -1889,7 +1901,7 @@ void test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest() {
           if (keptText(c) < b.releasedKeep) {
             const std::string why = k.model + " " + m.name + ": a slice left " + std::to_string(keptText(c)) +
                                     " B of text with " + std::to_string(freeBefore) + " B of arena free";
-            TEST_ASSERT_TRUE_MESSAGE(freeBefore < plain::kCompactArenaRoomBytes, why.c_str());
+            TEST_ASSERT_TRUE_MESSAGE(freeBefore < plain::compactArenaRoom(c.arena->capacity()), why.c_str());
           }
         }
       }
@@ -2090,6 +2102,7 @@ int main(int, char**) {
   RUN_TEST(test_the_hot_trigger_reads_the_last_request_whole_prompt_never_the_turn_sum);
   RUN_TEST(test_the_marks_measure_what_a_request_renders);
   RUN_TEST(test_a_slice_held_by_the_text_floor_folds_the_tools_not_the_dialogue);
+  RUN_TEST(test_the_arena_room_scales_with_the_arena);
   RUN_TEST(test_tool_heavy_chats_past_the_arena_never_lose_a_turn_without_a_digest);
   RUN_TEST(test_turns_that_left_ram_are_summarized_from_the_card);
   RUN_TEST(test_only_a_pinned_slug_is_an_owners_smaller_profile);
