@@ -1346,12 +1346,13 @@ void test_the_mirror_carries_the_summary_in_whole_lines() {
 // Files line matches its own path only, never a longer path that starts the same way.
 void test_ids_are_not_reused_in_a_pass_and_files_match_exactly() {
   tx::Summary s = sampleSummary();
+  s.lines.pop_back();   // no Files line: O5 holds the highest id
   std::vector<tx::SummaryLine> left;
   size_t unread = 0;
   TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("-P6\n-O5\n+O A new item.\n=O5 Should not land.\n").edits, nullptr,
                                left, unread));
-  TEST_ASSERT_EQUAL(2u, unread);   // -P6 (the device's line) and =O5 (gone)
-  const tx::SummaryLine* added = lineOf(s, 7);
+  TEST_ASSERT_EQUAL(2u, unread);   // -P6 (no such line) and =O5 (dropped in this pass)
+  const tx::SummaryLine* added = lineOf(s, 6);
   TEST_ASSERT_NOT_NULL(added);
   TEST_ASSERT_TRUE(added->text == "A new item.");
   TEST_ASSERT_NULL(lineOf(s, 5));

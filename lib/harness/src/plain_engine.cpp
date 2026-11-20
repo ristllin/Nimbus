@@ -496,6 +496,7 @@ class TurnRun {
     // The summary's s item took a q past everything stored: this turn's next items go after it.
     c_.nextQ = std::max({c_.nextQ, c_.head.nextQ, d_.arena->lastQ() + 1});
     event("change:compaction");
+    event(urgency == Urgency::IfDue ? "compact:open" : "compact:turn");   // where it ran (lane RB-C3)
     return true;
   }
 

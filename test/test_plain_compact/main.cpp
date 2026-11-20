@@ -2592,16 +2592,18 @@ void test_messages_right_after_the_mark_are_compacted_first_never_left_out() {
   TEST_ASSERT_TRUE(last.view.system().find(plain::texts::core::kDigests) != std::string::npos);
   std::vector<tx::Item> items;
   TXB_OK(b.stored(items));
-  size_t compacted = 0, waited = 0, summaries = 0;
+  size_t compacted = 0, waited = 0, summaries = 0, atOpen = 0;
   for (const tx::Item& it : items) {
     summaries += it.kind == tx::ItemKind::Digest;
     if (it.kind != tx::ItemKind::TurnEnd) continue;
     for (const std::string& e : it.end.events) {
       compacted += e == "change:compaction";
       waited += e == "wait:summary";
+      atOpen += e == "compact:open";
     }
   }
   TEST_ASSERT_TRUE(compacted > 0 && waited >= compacted && summaries >= compacted);
+  TEST_ASSERT_EQUAL_MESSAGE(compacted, atOpen, "compaction ran at the due mark at turn open, not at the body cap");
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(txb::itemsPaired(items, why), why.c_str());
 }
