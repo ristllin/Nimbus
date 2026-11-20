@@ -1032,3 +1032,12 @@ deleted. Engine 2 has no baseline.
 - lane: RB-REC6
 - prd: section 4 (the plain file tools), as amended by rulings 95 and 97
 - why: lib/core/src/orch_file_aids_e1.cpp, lib/core/src/orch_file_append.cpp and src/agent/files_subsystem.cpp lose the day-total line and its errors (the running day, the date column, the clock not set, past the size a total streams); the shared scan texts change as PC-0077 says; a selection (files.read column/from/to) gives RB-TR1's part head ("bytes a-b of n, lines x-y of m; next part: ..." or "; end of file") and the rows as stored, its offset a file byte as a plain read's (ruling 97). Planned work, not a fix.
+### PC-0128: the rails' three results for a call a tainted turn may not make as it is (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 5142 -> 5514
+- sha8: b8921b23 -> ae4b175a
+- lane: RB-RL
+- prd: section 8 (Safety rails, item 1: in a tainted turn note, skill_save and routine create or update go to pending; send to another chat, device configuration, tenant changes and agent_stop are refused with the reason)
+- why: lib/harness/src/plain_rails.cpp: a call the one exemption table (kTaintExemptions) sends to pending is kept by the binding's approval store and not run: kRailPending says so and why; a pending call nothing could keep is refused with kRailNoPending; a call the table refuses or does not name gets kRailRefused. Each states what happened to the call and why (the turn read outside content), never an order. Planned work, not a fix.

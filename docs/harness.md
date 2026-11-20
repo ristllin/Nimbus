@@ -993,6 +993,45 @@ fixed, run-time pieces as holes) and that every tool the device registers is hel
 bytes on purpose adds `tools/release_gate/prompt_ceiling.d/<lane>.json` (`lane`, `why`, and
 `<figure>_bytes` for each figure it grows; over 1,024 B a `ruling`) in the same commit.
 
+### The rails: tainted turns and the one exemption table (lane RB-RL)
+
+`lib/harness/src/plain_rails.cpp` (`plain/rails.h`) is the PRD section 8.1 rail on engine 2,
+registered with `installRails(hooks, deps)` in `HookSlot::Rails` (before suppression). It reads
+no reply for words.
+
+- **Taint is a property of each item** (`itemOutside`): a result of class outside, an owner
+  message with a document part (`PartKind::File`; photos, voice and his typed text never
+  taint), a sub-agent's report (the `agent` device note). The engine opens a turn tainted
+  when its input carries one (`inputOutside`), sets the flag when an outside result is
+  stored, and a resumed turn reads every item of its turn with the same rule; compaction's
+  data frame uses it too. A read of a device-written folder whose content came from outside
+  (`inbox/`, `agents/`, any letter case; `readsOutsidePath`) stores an outside result whatever
+  the tool's class.
+- **Outside bytes leave after their turn.** An outside result shows whole only inside its own
+  turn; the next turn's request carries its stub, which names it and its `view id=r<q>`
+  (`tx::showResult`). Owner and assistant text are never removed (ruling 81).
+- **One table decides a tainted turn.** Each call (a `more` call as the tool it reaches) is
+  classed by the unattended policy's `toolUseFor` and matched against `kTaintExemptions`,
+  first row wins, and a call no row names is refused:
+
+| Class | Tool | Arguments | Verdict |
+|---|---|---|---|
+| read | more | a listing | allow |
+| read | more | a call whose target is unknown | refuse |
+| read, write, spend, ambient | any | any | allow |
+| send | any | this chat only (no other `chat_id`; keys kind, path, ref, text, caption) | allow |
+| schedule | schedule | `op: list` | allow |
+| schedule | schedule | a fixed-text reminder to this chat | allow |
+| schedule | schedule | any other create or update to this chat | pending |
+| memory, scratch | any | any | pending |
+| control | skill_save | any | pending |
+| anything else | | | refuse |
+
+  Pending never runs the tool: the binding's `RailsDeps::pending` keeps the call for the
+  owner's approval and the model reads `kRailPending`; with no store, or a store that fails,
+  the call is refused (`kRailNoPending`). A refusal reads `kRailRefused`. An untainted turn
+  is never touched by the rails.
+
 ### Digests, their archive, recent files and the chatsum mirror
 
 `lib/core/include/nimbus/orch/tx/digest.h` (body `orch_tx_digest.cpp`, lane RB-C1) holds
