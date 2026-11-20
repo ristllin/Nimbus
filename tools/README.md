@@ -55,7 +55,7 @@ a generated file.
 | Tool | Role |
 |---|---|
 | **⚠ `git_version.py`** | PlatformIO `extra_scripts` - injects `git describe` as `NIMBUS_FW_BUILD`. Runs on **every** build (platformio.ini). |
-| **⚠ `engine_filter.py`** | PlatformIO `extra_scripts` in `[s3]` - a device env builds one engine (`custom_nimbus_engine`, 1 when absent) and drops the other engine's sources listed in `tools/engine/` (`engine2_only.txt` today). Every new engine-2 source gets its line there; `release_gate/check_engine_filter.py` enforces it. Tests: `test_engine_filter.py`. |
+| **⚠ `engine_filter.py`** | PlatformIO `extra_scripts` in `[s3]` - a device env builds one engine (`custom_nimbus_engine`, 1 when absent) and drops the other engine's sources listed in `tools/engine/` (`engine2_only.txt` for an engine-1 env, `engine1_only.txt` for the `*-e2` envs). Every new engine-2 source gets its line there; `release_gate/check_engine_filter.py` enforces it. Tests: `test_engine_filter.py`. |
 | **⚠ `make_manifest.py`** | Signs the OTA release manifest (release.yml). Message byte-identical to `nimbus::ota::buildSigMessage()`. |
 | **⚠ `release/make_webflash_manifest.py`** | Builds the web-flasher manifest (release.yml). |
 | **⚠ `release/check_known_patterns.sh`** | Pre-commit leak gate (private `ops/leak_patterns.txt`; warns-and-passes for public contributors). |

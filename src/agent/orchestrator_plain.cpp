@@ -83,9 +83,9 @@ void handleMessage(const String& text, const String& fromName, const String& cha
     String tags;
     if (fromName.length()) tags = "from:" + fromName;
     memory::captureMessage(chatId.c_str(), "user", nimbus::orch::MsgKind::Message, text, "", tags);
+    // Device copy (system provenance), like engine 1's command replies: the web sink records it in the
+    // web chat's history; no assistant row of the engine's is written (no engine answered).
     const bool sent = deliver(chatId, String(kStubLine), /*system=*/true);
-    if (sent)
-      memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message, String(kStubLine));
     if (voice) s_voiceOk.store(sent, std::memory_order_relaxed);
     ++s_turns;
     s_turnChat = String();

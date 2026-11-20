@@ -1,0 +1,5 @@
+{
+  "lane": "RB-I0",
+  "allowance_bytes": 0,
+  "why": "RB-I0 adds the six engine-2 envs and their stub seam; the engine-1 images do not move. Same tree, rb-main 710dce663 against the lane tip, every engine-1 env (esp32s3, esp32s3-cyd, esp32s3-cyd-35, esp32s3-cyd-40, test, test-cyd): firmware.bin delta 0 B, every loaded section the same size, the same symbol names and sizes (the tool-registration guards preprocess to the same code on engine 1; orchestrator_plain.cpp and tools_plain.cpp are on engine2_only.txt). The e2 envs print NOT GATED until the orchestrator's --record-baseline at the merge records them."
+}

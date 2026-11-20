@@ -157,6 +157,12 @@ NON_MODEL_FILES: dict = {
     "governor's owner notice, never system text, a tool or a tool result",
     "src/agent/budget_profile_store.cpp": "RB-BG: the /budget profile reply when the file does not store, owner "
     "copy, never sent to a model",
+    # RB-I0: the engine-2 stub seam answers every message with one fixed line, delivered as device copy
+    # (system provenance) like engine 1's command replies; its other literals are the CTX? status line and
+    # a routine's refusal reason. The stub calls no model; RB-I1/RB-I2 replace the file's text with the
+    # engine's (texts.h).
+    "src/agent/orchestrator_plain.cpp": "RB-I0: the engine-2 stub's fixed owner-facing line, its fold status line "
+    "and its no-routines reason, device copy; the stub calls no model",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the
