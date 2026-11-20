@@ -263,7 +263,7 @@ void testFailureFaces(ndtest::Ctx& c) {
     const uint32_t t0 = h.ms;
     const nimbusd::PlainTurn t = h.rig->say("hello?");
     checkOneLine(c, h, t, "hung provider", "provider:transport");
-    c.ok(h.ms - t0 <= plain::kSoftWallMs + 10000, "hung provider: the turn ends by its wall clock");
+    c.ok(h.ms - t0 <= plain::kExchangeMaxMs, "hung provider: the turn ends inside the stall bound");
   }
 
   // A 200 with no text and no call: the loop states it with one plain line (RB-E1a's review
