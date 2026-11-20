@@ -993,7 +993,6 @@ deleted. Engine 2 has no baseline.
   1,536 B for exactly this text. The facts item of a hold and the probe's section frame are the same functions
   of lib/core/src/orch_truth.cpp the e1 catalog already gates (PC-0012, frozen class device_notes); the binding
   adds no text of its own. Planned work (ruling 18), not a fix.
-### PC-0077: read_file totals nothing and pages no smaller than 2,048 B (engine 2 results)
 ### PC-0077: read_file totals nothing, pages no smaller than 2,048 B, and a selection is a plain read (engine 2 results)
 - catalog: e2
 - class: tool_results
