@@ -29,11 +29,11 @@ static void test_a_head_with_room_keeps_every_part_until_the_answer() {
   const size_t half = nimbus::orch::headContextBudget("anthropic", "claude-sonnet-5-5", true, {}).historyMaxBytes / 2;
   Rig rig({"anthropic", "claude-sonnet-5-5"}, half);
   const Result r = rig.run();
-  TEST_ASSERT_EQUAL_MESSAGE(kParts, r.dispatched, "every part was read");
-  TEST_ASSERT_TRUE_MESSAGE(r.bodies.size() >= (size_t)kParts + 1, "a request after the last part");
+  TEST_ASSERT_EQUAL_MESSAGE(partCount(), r.dispatched, "every part was read");
+  TEST_ASSERT_TRUE_MESSAGE(r.bodies.size() >= (size_t)partCount() + 1, "a request after the last part");
   for (size_t b = 1; b < r.bodies.size(); b++) {
     const std::vector<int> in = partsIn(r.bodies[b]);
-    const int want = (int)std::min<size_t>(b, kParts);
+    const int want = (int)std::min<size_t>(b, partCount());
     TEST_ASSERT_EQUAL_MESSAGE(want, (int)in.size(),
                               ("request " + std::to_string(b) + " carries parts " + partsText(in)).c_str());
   }
@@ -49,18 +49,18 @@ static void test_a_floor_head_folds_and_says_so() {
       nimbus::orch::headContextBudget("cumulo", "anthropic/claude-sonnet-5-5", true, {}).historyMaxBytes / 2;
   Rig rig({"cumulo", "anthropic/claude-sonnet-5-5"}, half);
   const Result r = rig.run();
-  TEST_ASSERT_EQUAL_MESSAGE(kParts, r.dispatched, "every part was read");
+  TEST_ASSERT_EQUAL_MESSAGE(partCount(), r.dispatched, "every part was read");
   const std::string& last = r.bodies.back();
   TEST_ASSERT_TRUE_MESSAGE(last.size() <= nimbus::orch::kLegacyWireBodyBytes, std::to_string(last.size()).c_str());
   const std::vector<int> in = partsIn(last);
-  TEST_ASSERT_TRUE_MESSAGE((int)in.size() < kParts, partsText(in).c_str());
+  TEST_ASSERT_TRUE_MESSAGE((int)in.size() < partCount(), partsText(in).c_str());
   TEST_ASSERT_TRUE_MESSAGE(last.find("results.get") != std::string::npos, "a folded result is named with results.get");
-  for (int i = 0; i < kParts; i++) {
+  for (int i = 0; i < partCount(); i++) {
     bool carried = false;
     for (int j : in) carried = carried || j == i;
     if (carried) continue;
     // Each folded part's round is named in the request (its call, offset and size).
-    const std::string offset = "offset\\\":" + std::to_string(i * kPartBytes);
+    const std::string offset = "offset\\\":" + std::to_string(plan().offsets[i]);
     TEST_ASSERT_TRUE_MESSAGE(last.find(offset) != std::string::npos, ("part " + std::to_string(i) + " is named").c_str());
   }
 }
@@ -102,7 +102,7 @@ static void test_no_request_carries_less_than_the_v512_replay() {
       const Result r = rig.run();
       for (size_t b = 1; b < r.bodies.size(); b++) {
         requests++;
-        const size_t produced = std::min<size_t>(b, kParts) * kPartBytes;
+        const size_t produced = std::min<size_t>(b, partCount()) * kPartBytes;
         const size_t carried = partsIn(r.bodies[b]).size() * kPartBytes;
         const std::string what = std::string(h.model) + " history " + std::to_string(q) + "/4 request " +
                                  std::to_string(b) + ": carried " + std::to_string(carried) + " of " +

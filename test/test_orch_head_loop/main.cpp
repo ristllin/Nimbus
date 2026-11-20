@@ -974,7 +974,7 @@ static void test_round2_gives_up_the_turns_own_bulk_before_any_context() {
   TEST_ASSERT_TRUE_MESSAGE(seed.find("results.get {\"tag\":\"r1\"}") != std::string::npos, seed.c_str());
   const std::string newest = r.newestCarried();
   TEST_ASSERT_TRUE_MESSAGE(newest.size() < 14000, "the newest result is cut");
-  TEST_ASSERT_TRUE_MESSAGE(newest.find("of 14000; the rest: results.get {\"tag\":\"r2\",\"offset\":") != std::string::npos,
+  TEST_ASSERT_TRUE_MESSAGE(newest.find("of 14000; next part: results.get {\"tag\":\"r2\",\"offset\":") != std::string::npos,
                            newest.substr(newest.size() > 160 ? newest.size() - 160 : 0).c_str());
   TEST_ASSERT_EQUAL(14000, (int)r.kept.back().size());   // the whole result is in the ring
 }

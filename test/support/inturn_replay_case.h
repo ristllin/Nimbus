@@ -1,11 +1,14 @@
 #pragma once
 // inturn_replay_case - lane RB-BGb part 2 (ruling 93 item 3): one owner turn that reads a 40 KB
-// file in parts (five rounds of files_read, 7,800 B each, then the answer) through the real
+// file in parts (RB-TR1's files.read parts of at most 8,000 B, each naming the next offset, then
+// the answer) through the real
 // TurnEngine and the real Anthropic adapter onto a fake transport, with a history about half
 // the head's history max. Shared by the native suite (test_inturn_replay) and nimbusd
 // (tests/test_inturn_replay.cpp), so both build the same requests. Offline, no keys.
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,6 +20,7 @@
 #include "nimbus/harness/providers.h"
 #include "nimbus/orch/budget.h"
 #include "nimbus/orch/episodic.h"
+#include "nimbus/orch/file_aids_e1.h"
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/router_route.h"
 
@@ -24,20 +28,56 @@ namespace inturn_replay {
 
 namespace orch = nimbus::orch;
 
-constexpr int kParts = 5;
-constexpr size_t kPartBytes = 7800;
+constexpr size_t kPartBytes = 8000;   // about one part: the result cap RB-TR1's readPart fills
 constexpr size_t kPromptPad = 30000;
 constexpr uint64_t kNow = 1795113600ull + 15 * 3600;
 
-// Part i of the file: lines that each carry a token "P<i>L<n>." the checks look for.
-inline std::string part(int i) {
-  std::string s;
-  for (int n = 0; s.size() < kPartBytes; n++) s += "P" + std::to_string(i) + "L" + std::to_string(n) + ". row of data\n";
-  s.resize(kPartBytes);
-  return s;
+// The file: about 40 KB of numbered lines.
+inline const std::string& fileText() {
+  static const std::string f = [] {
+    std::string s;
+    for (int n = 0; s.size() < 40000; n++) s += "L" + std::to_string(n) + ". a row of data in the long file\n";
+    return s;
+  }();
+  return f;
 }
-// A token from the back half of part i: a fold line's preview of the result never holds it.
-inline std::string firstToken(int i) { return "P" + std::to_string(i) + "L300."; }
+
+// The file as RB-TR1's files.read gives it (readPart, each result at most kPartBytes): the offset
+// of each part, the part as the tool returns it, and a line token from the back of each part (a
+// fold line's preview of the result never holds it).
+struct MemFile : nimbus::orch::aids::AidSource {
+  bool readAt(uint64_t off, size_t len, char* out, size_t& got) override {
+    const std::string& f = fileText();
+    got = off < f.size() ? std::min(len, (size_t)(f.size() - off)) : 0;
+    if (got) std::memcpy(out, f.data() + off, got);
+    return true;
+  }
+};
+struct Plan {
+  std::vector<uint64_t> offsets;
+  std::vector<std::string> results, tokens;
+};
+inline const Plan& plan() {
+  static const Plan p = [] {
+    Plan q;
+    MemFile src;
+    uint64_t at = 0;
+    for (;;) {
+      std::string out;
+      nimbus::orch::aids::e1::readPart(src, fileText().size(), at, kPartBytes, out);
+      q.offsets.push_back(at);
+      q.results.push_back(out);
+      const size_t back = out.rfind("\nL", out.size() * 3 / 4);
+      q.tokens.push_back(out.substr(back + 1, out.find('.', back) - back));
+      const size_t next = out.find("next part: \"offset\":");
+      if (next == std::string::npos || next > out.find('\n')) break;
+      at = std::strtoull(out.c_str() + next + 20, nullptr, 10);
+    }
+    return q;
+  }();
+  return p;
+}
+inline int partCount() { return (int)plan().offsets.size(); }
 
 inline std::string esc(const std::string& s) {
   std::string o;
@@ -106,8 +146,8 @@ struct Rig {
 
   void script() {
     using harness_test::Exchange;
-    for (int i = 0; i < kParts; i++) {
-      const std::string args = "{\"path\":\"notes/big.txt\",\"offset\":" + std::to_string(i * kPartBytes) + "}";
+    for (int i = 0; i < partCount(); i++) {
+      const std::string args = "{\"path\":\"notes/big.txt\",\"offset\":" + std::to_string(plan().offsets[i]) + "}";
       Exchange e;
       e.status = 200;
       e.body = "{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_" + std::to_string(i) +
@@ -163,8 +203,11 @@ struct Rig {
     d.mcpDispatch = [this](const std::string& req, const orch::Principal&) {
       dispatched++;
       const size_t at = req.find("\"offset\":");
-      const int i = at == std::string::npos ? 0 : (int)(std::strtoul(req.c_str() + at + 9, nullptr, 10) / kPartBytes);
-      return "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + esc(part(i)) +
+      const uint64_t offset = at == std::string::npos ? 0 : std::strtoull(req.c_str() + at + 9, nullptr, 10);
+      MemFile src;
+      std::string out;
+      nimbus::orch::aids::e1::readPart(src, fileText().size(), offset, kPartBytes, out);
+      return "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + esc(out) +
              "\"}]}}";
     };
     d.spillResult = [this](const std::string&, const std::string& text, const std::string&) {
@@ -217,8 +260,8 @@ struct Rig {
 // The parts (0..kParts-1) whose first token the request carries.
 inline std::vector<int> partsIn(const std::string& body) {
   std::vector<int> in;
-  for (int i = 0; i < kParts; i++)
-    if (body.find(firstToken(i)) != std::string::npos) in.push_back(i);
+  for (int i = 0; i < partCount(); i++)
+    if (body.find(plan().tokens[i]) != std::string::npos) in.push_back(i);
   return in;
 }
 

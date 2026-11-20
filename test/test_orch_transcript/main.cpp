@@ -287,7 +287,7 @@ static void test_a_second_cut_names_the_whole_size() {
   std::string cut;
   for (const auto& it : t.entries())
     if (it.kind == TranscriptItem::Kind::ToolResult) cut = it.text;
-  TEST_ASSERT_TRUE_MESSAGE(cut.find(" of 9000; the rest: results.get {\"tag\":\"r1\"") != std::string::npos, cut.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(cut.find(" of 9000; next part: results.get {\"tag\":\"r1\"") != std::string::npos, cut.c_str());
   const size_t shown = cut.find("\n[cut");
   TEST_ASSERT_TRUE_MESSAGE(cut.find("\"offset\":" + std::to_string(shown) + "}") != std::string::npos, cut.c_str());
   TEST_ASSERT_TRUE(t.toolBytes() <= 2000 + 64);

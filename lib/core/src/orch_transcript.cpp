@@ -93,7 +93,7 @@ std::string clipToRoom(const std::string& text, size_t room, const std::string& 
   if (!tag.empty()) {   // RB-BGb: the cut names the bytes shown and the exact read of the rest
     const std::string head = kCutHead;
     const std::string mid = " of " + std::to_string((unsigned)(total ? total : text.size())) +
-                            "; the rest: results.get {\"tag\":\"" + tag + "\",\"offset\":";
+                            "; next part: results.get {\"tag\":\"" + tag + "\",\"offset\":";
     const size_t overhead = head.size() + mid.size() + 2 * 7 + 3;
     const int keep = room > overhead ? utf8CapLen(text.c_str(), (int)text.size(), (int)(room - overhead)) : 0;
     const std::string n = std::to_string(keep);

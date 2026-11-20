@@ -657,7 +657,7 @@ turn and at every clip site:
   in the seeded message under `[EARLIER TOOL ROUNDS OF THIS TURN ...]`, each
   line ending with the `results.get` tag that reads the result back, then the
   newest round's result cut to a part that ends `[cut to fit this request:
-  bytes 0-k of n; the rest: results.get {"tag":...,"offset":k}]`. Only then
+  bytes 0-k of n; next part: results.get {"tag":...,"offset":k}]`. Only then
   does the prompt's context go (recalled memories, skills, older days, and
   today's turns last). Every `tool_use` on the wire keeps its `tool_result`.
   See the cacheable prefix in [turn-anatomy.md](turn-anatomy.md).
