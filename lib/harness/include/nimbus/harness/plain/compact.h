@@ -38,7 +38,8 @@ struct HeadState;
 //   - one rung per idle step; the head host's small model first; after two failures the
 //     keyed-provider ladder (the binding's rungs, in the owner's order), each failure waiting
 //     10 min, 30 min, 2 h, then every 6 h; at most kCompactPaidPerDay attempts (one exchange
-//     each: RB-EX's same-host retries inside kCompactRequestMs; a cut answer is not asked again)
+//     each: RB-EX's same-host retries inside kCompactRequestMs; a cut answer is asked once more
+//     with room, kSummarizerRetryMaxTokens, and never stored cut)
 //     start a day on the device; no pause state: nothing stops it for longer than the longest
 //     wait or the day, and a wait or a day count a clock that ran ahead left behind does not hold;
 //   - owner first: nothing runs while an owner message waits, and an automatic step needs
