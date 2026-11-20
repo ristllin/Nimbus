@@ -687,6 +687,7 @@ inline void tenTurns(txb::Battery& b, size_t lastBytes) {
 
 inline void test_rung_three_omits_only_the_turns_the_request_needs() {
   txb::Battery b;
+  b.compaction = false;   // the ladder alone: since lane RB-C3 compaction comes first
   b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
   tenTurns(b, 27000);
   const auto& reqs = b.model.requests();
@@ -828,6 +829,7 @@ inline void test_a_refused_allocation_after_the_reply_keeps_the_reply() {
 // it would free too little and end with the size line; it fits and answers.
 inline void test_rung_three_sizes_turns_by_what_they_render() {
   txb::Battery b;
+  b.compaction = false;   // the ladder alone: since lane RB-C3 compaction comes first
   b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
   for (int i = 0; i < 65; ++i) {
     b.model.push(sp::say("ok " + std::to_string(i)));
@@ -1120,6 +1122,7 @@ inline void test_rung_three_estimate_never_exceeds_the_rendered_bytes_of_any_ite
 inline void test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows() {
   {
     txb::Battery b;
+    b.compaction = false;   // the ladder alone: since lane RB-C3 compaction comes first
     b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
     shortTurns(b, 65);
     b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));

@@ -565,6 +565,7 @@ void test_a_request_is_rebuilt_byte_for_byte_from_its_reference() {
 void test_a_request_with_an_omission_is_rebuilt_byte_for_byte() {
   TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
   txb::Battery b;
+  b.compaction = false;   // the omission line itself: since lane RB-C3 compaction comes before rung 3
   // Enough stored turns that the battery head's full body (tx::budgetFor; 292,000 B on
   // claude-sonnet-5-5) is passed and rung 3 must omit the oldest of them.
   tx::HeadBudget head;

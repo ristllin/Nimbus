@@ -91,6 +91,24 @@ class Battery {
   std::string hostOverride, modelOverride;
   bool routed = false;
   bool noHead = false;             // the setup names no model (a binding fault; ruling 89 item 3)
+  // Compaction installed (default). A case that measures the arena or the ladder alone turns it off: since
+  // lane RB-C3 the engine compacts first at turn open and before every rung, so the ladder would never act.
+  bool compaction = true;
+  // Compaction answers the engine's own asks at turn open and inside a turn (default). A case written for
+  // the idle step alone turns this off: the driver then runs only from idle steps, as before lane RB-C3.
+  bool compactFirst = true;
+  std::unique_ptr<plain::CompactDriver> idleDriver;
+  void installIdleOnlyCompaction() {
+    idleDriver.reset(new plain::CompactDriver(compactDeps()));
+    plain::CompactDriver* d = idleDriver.get();
+    (void)hooks->idleStep(plain::HookSlot::Compaction, [d](const plain::IdleCtx& ctx) {
+      plain::IdleOutcome o;
+      if (ctx.urgency != plain::Urgency::None) return o;
+      plain::CompactOutcome out;
+      o.worked = d->step(ctx, out).ok() && out.ran;
+      return o;
+    });
+  }
   // The profile every turn asks for: the default, full (ruling 91, blockers/F8). A case that tests an
   // owner's smaller choice names it here.
   tx::Profile profile = tx::kDefaultProfile;
@@ -352,6 +370,7 @@ class Battery {
     // Compaction is installed (install()); with no head named it cannot be (RB-T4's refusal), and the
     // battery names that case rather than let boot refuse it (ruling 91 blockers/F6, RB-H81).
     if (noHead) d.noCompaction = "battery: a turn setup that names no head";
+    if (!compaction) d.noCompaction = "battery: a case that measures the engine with no compaction (RB-C3)";
     d.progress = [this](const plain::ProgressEvent& e) {
       if (progressFn) progressFn(e);
     };
@@ -367,7 +386,8 @@ class Battery {
   void install() {
     (void)plain::installSuppression(*hooks);
     (void)plain::installResume(*hooks, resumeDeps());
-    (void)plain::installCompaction(*hooks, compactDeps());
+    if (compaction && compactFirst) (void)plain::installCompaction(*hooks, compactDeps());
+    if (compaction && !compactFirst) installIdleOnlyCompaction();
     (void)plain::installRails(*hooks, railsDeps);
     if (moreHooks) moreHooks(*hooks);
   }

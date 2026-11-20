@@ -569,6 +569,7 @@ struct ArenaRate {
 };
 ArenaRate measureOnce(const Mix& m) {
   txb::Battery b;
+  b.compaction = false;   // the arena's own fill and drop, with no compaction (lane RB-C3: it runs at turn open)
   seedWorld(b);
   TXB_OK(b.boot());
   TXB_OK(b.arena->init(tx::kActiveChatArenaBytes * 2, b.platform.allocLarge, b.platform.freeLarge));
@@ -616,6 +617,7 @@ void test_the_arena_model_predicts_the_engines_drop() {
     const ArenaRate a = measure(m);
     for (double scale : {1.03, 0.85}) {
       txb::Battery b;
+      b.compaction = false;   // the engine's own drop is what the model predicts
       seedWorld(b);
       TXB_OK(b.boot());
       const size_t cap = (size_t)((a.need(resident) + kTurnOpenReserve) * scale);

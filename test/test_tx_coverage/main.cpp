@@ -226,6 +226,7 @@ std::vector<txb::TurnScript> threeDays(const txb::Battery& b) {
 void test_compaction_covers_every_row() {
   TXB_WAITS_FOR("PENDING RB-C2", "RB-E1a");
   txb::Battery b;
+  b.compactFirst = false;   // the idle step's compaction (the engine's own asks: test_plain_compact, lane RB-C3)
   b.world.files["notes/boat.md"] = "Nereid II";
   TXB_OK(txb::runTurns(b, threeDays(b)));
   answerSummariesWith(b, [] { return sp::say(txb::kDigest); });
@@ -259,6 +260,7 @@ void test_a_failed_compaction_leaves_every_row_covered() {
   TXB_WAITS_FOR("PENDING RB-C2", "RB-E1a");
   for (int mode = 0; mode < 4; ++mode) {
     txb::Battery b;
+    b.compactFirst = false;   // the idle step's compaction (lane RB-C3)
     b.world.files["notes/boat.md"] = "Nereid II";
     TXB_OK(txb::runTurns(b, threeDays(b)));
     if (mode == 0) answerSummariesWith(b, [] { return sp::transportCut(45000); });
@@ -268,11 +270,11 @@ void test_a_failed_compaction_leaves_every_row_covered() {
       answerSummariesWith(b, [] { return sp::say(txb::kDigest); });
       b.files.killAtRename = (long)b.files.renames;
     }
-    const size_t asked = b.model.requests().size();
+    const size_t asked = b.summarizer.requests().size();
     plain::IdleOutcome out;
     const tx::Status st = b.idle(out);
     if (st.notImplemented()) TXB_OK(st);
-    TEST_ASSERT_TRUE_MESSAGE(b.model.requests().size() > asked, "no compaction was attempted");
+    TEST_ASSERT_TRUE_MESSAGE(b.summarizer.requests().size() > asked, "no compaction was attempted");
     if (mode == 3) TEST_ASSERT_TRUE_MESSAGE(b.killed, "the compaction never renamed head.json (temp and rename)");
     if (b.killed) TXB_OK(b.restartAfterCut());
     b.model.respondWith(nullptr);
