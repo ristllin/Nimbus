@@ -245,6 +245,16 @@ inline constexpr char kToolFailed[] = "failed: the tool stopped with an internal
 // call of this turn while that result is still shown whole and nothing was written since.
 inline constexpr char kSameAsEarlier[] =
     "not run again: an earlier call this turn had the same tool and arguments, nothing was written since, and its result above still holds";
+// The rails (lane RB-RL, plain_rails.cpp; PRD section 8.1): a call a turn that read outside content
+// may not make as it is. Facts only: what happened to the call and why.
+inline constexpr char kRailPending[] =
+    "kept for the owner's approval, not run: this turn read outside content, so a change to notes, skills or "
+    "routines waits until the owner approves it";
+inline constexpr char kRailNoPending[] =
+    "not run: this turn read outside content, and the change could not be kept for the owner's approval; nothing "
+    "was changed";
+inline constexpr char kRailRefused[] =
+    "not run: this turn read outside content, and this action needs the owner's own message; nothing was changed";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3): its system text and the

@@ -105,6 +105,7 @@ class Battery {
   size_t arenaBytes = tx::kActiveChatArenaBytes;   // the chat's arena at each boot (RB-X1: a small one)
   std::function<void(plain::PlainHooks&)> moreHooks;   // a test's own handlers, installed at each boot
   size_t dispatches = 0;
+  plain::RailsDeps railsDeps;      // the rails' approval store (RB-RL); none: a pending change is refused
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
   plain::TurnCtx headCtx() const { return turnCtx(0, plain::Trigger::Owner); }
@@ -349,7 +350,7 @@ class Battery {
     (void)plain::installSuppression(*hooks);
     (void)plain::installResume(*hooks, resumeDeps());
     (void)plain::installCompaction(*hooks, compactDeps());
-    (void)plain::installRails(*hooks, plain::RailsDeps{});
+    (void)plain::installRails(*hooks, railsDeps);
     if (moreHooks) moreHooks(*hooks);
   }
 
