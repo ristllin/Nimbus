@@ -548,6 +548,38 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
   return Status::success();
 }
 
+namespace {
+
+// One closed unit's results that render whole, as the tool fold takes them (oldest first) while
+// the transcript is still over `target`; `left` is what it still renders.
+struct FoldScan {
+  const tx::TxArena& arena;
+  uint64_t thru;
+  const ShowState& show;
+  size_t target;
+};
+Status foldUnit(const FoldScan& f, const Unit& u, size_t& left, std::vector<uint64_t>& sup) {
+  const tx::TxArena& arena = f.arena;
+  const uint64_t thru = f.thru;
+  const ShowState& show = f.show;
+  tx::Item it;
+  for (size_t k = u.first; k <= u.last && left > f.target; ++k) {
+    tx::ArenaEntry e;
+    Status s = arena.header(k, e);
+    if (!s.ok()) return s;
+    if (e.q <= thru || e.kind != tx::ItemKind::Result) continue;
+    if (!(s = arena.get(k, it)).ok()) return s;
+    if (!shownWhole(it, show) || it.st.empty()) continue;   // already a stub, or none to show
+    const size_t whole = shownBytes(it, show), stub = kItemFramingBytes + it.id.size() + it.st.size();
+    if (whole <= stub) continue;
+    left -= whole - stub;
+    sup.push_back(it.q);
+  }
+  return Status::success();
+}
+
+}  // namespace
+
 Status planToolFold(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, std::vector<uint64_t>& sup,
                     size_t& saved) {
   sup.clear();
@@ -562,21 +594,10 @@ Status planToolFold(const tx::TxArena& arena, uint64_t thru, const SliceRules& r
   ShowState show;
   if (!(s = showState(arena, show)).ok()) return s;
   const size_t stop = protectedFrom(units, r, localDay(r.now, r.tzMinutes, r.dayStartMin));
-  tx::Item it;
-  for (size_t i = 0; i < stop && rest - saved > r.low; ++i) {
-    if (!units[i].closed) break;   // thru never jumps a turn; nor does a fold
-    for (size_t k = units[i].first; k <= units[i].last && rest - saved > r.low; ++k) {
-      tx::ArenaEntry e;
-      if (!(s = arena.header(k, e)).ok()) return s;
-      if (e.q <= thru || e.kind != tx::ItemKind::Result) continue;
-      if (!(s = arena.get(k, it)).ok()) return s;
-      if (!shownWhole(it, show) || it.st.empty()) continue;   // already a stub, or none to show
-      const size_t whole = shownBytes(it, show), stub = kItemFramingBytes + it.id.size() + it.st.size();
-      if (whole <= stub) continue;
-      saved += whole - stub;
-      sup.push_back(it.q);
-    }
-  }
+  size_t left = rest;
+  for (size_t i = 0; i < stop && left > r.low && units[i].closed; ++i)   // thru never jumps a turn; nor a fold
+    if (!(s = foldUnit(FoldScan{arena, thru, show, r.low}, units[i], left, sup)).ok()) return s;
+  saved = rest - left;
   return Status::success();
 }
 
@@ -751,17 +772,20 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   Status s = planIfDue(ctx, plan, due);
   if (!s.ok() && manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
   if (!s.ok() || !due) return s;
-  if (!plan.thru && plan.textHeld && !manual_) return foldTools(rules_, out);
-  if (!plan.thru) {
-    out.step = CompactStep::Nothing;
-    if (manual_) endManual(manualStored_ ? texts::device_notes::kCompactDone : texts::device_notes::kCompactNothing);
-    return Status::success();
-  }
+  if (!plan.thru) return noSlice(plan, out);
   if (manual_ && manualAsks_ >= kCompactManualRequests) {
     endManual(texts::device_notes::kCompactDone);
     return Status::success();
   }
   return attempt(ctx, plan, out);
+}
+
+// Due, and no slice may go: the tools fold when only the text keep held it (RB-H81), else nothing.
+Status CompactDriver::noSlice(const SlicePlan& plan, CompactOutcome& out) {
+  if (plan.textHeld && !manual_) return foldTools(rules_, out);
+  out.step = CompactStep::Nothing;
+  if (manual_) endManual(manualStored_ ? texts::device_notes::kCompactDone : texts::device_notes::kCompactNothing);
+  return Status::success();
 }
 
 // An automatic step needs quiet and a request left in this idle window. A turn since the last
@@ -775,6 +799,23 @@ bool CompactDriver::automaticMayAsk(const IdleCtx& ctx) {
   return ctx.quietForS >= kCompactQuietS && windowAsks_ < kCompactRequestsPerWindow;
 }
 
+// The slice rules of a step: the head's marks, the text keep at full, the arena's room.
+SliceRules CompactDriver::rulesFor(const IdleCtx& ctx, const tx::HeadBudget& b) const {
+  SliceRules rules;
+  rules.now = ctx.now;
+  rules.tzMinutes = ctx.tzMinutes;
+  rules.dayStartMin = d_.dayStartMin;
+  rules.high = b.marks.high;
+  rules.low = b.marks.low;
+  rules.keepText = b.profile == tx::Profile::Full ? b.releasedKeep : 0;   // an owner's smaller profile is his choice
+  rules.manual = manual_;
+  rules.jobRunning = d_.jobRunning;
+  rules.omittedThru = d_.omittedThru ? d_.omittedThru() : 0;
+  rules.arenaFree = d_.arena->freeBytes();
+  rules.arenaRoom = std::min(kCompactArenaRoomBytes, d_.arena->capacity() / 4);
+  return rules;
+}
+
 Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) {
   // The head's marks at its profile (tx::budgetFor). No head named: nothing is compacted, never a
   // fixed smaller profile in its place (ruling 83 item 4).
@@ -782,44 +823,30 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   tx::HeadBudget b;
   Status s = tx::budgetFor(answeringHead(*d_.arena, d_.headKey), tx::profileOfHead(d_.head()->profile), b);
   if (!s.ok()) return s;
-  const tx::ProfileMarks marks = b.marks;
-  SliceRules rules;
-  rules.now = ctx.now;
-  rules.tzMinutes = ctx.tzMinutes;
-  rules.dayStartMin = d_.dayStartMin;
-  rules.high = marks.high;
-  rules.low = marks.low;
-  rules.keepText = b.profile == tx::Profile::Full ? b.releasedKeep : 0;   // an owner's smaller profile is his choice
-  rules.manual = manual_;
-  rules.jobRunning = d_.jobRunning;
-  rules.omittedThru = d_.omittedThru ? d_.omittedThru() : 0;
-  rules.arenaFree = d_.arena->freeBytes();
-  rules.arenaRoom = std::min(kCompactArenaRoomBytes, d_.arena->capacity() / 4);
-  rules_ = rules;
-  if (!(s = planSlice(*d_.arena, d_.head()->thru, rules, plan)).ok()) return s;
-  const uint64_t omitted = rules.omittedThru;
-  if (omitted > d_.head()->thru) {   // what left RAM is folded first, from the card
+  rules_ = rulesFor(ctx, b);
+  if (!(s = planSlice(*d_.arena, d_.head()->thru, rules_, plan)).ok()) return s;
+  if (rules_.omittedThru > d_.head()->thru) {   // what left RAM is folded first, from the card
     SlicePlan back;
     bool read = false;
-    if (!(s = planDropped(ctx, omitted, back, read)).ok()) return s;
-    if (read) {
-      back.resident = plan.resident;
-      plan = std::move(back);
-      due = true;
-      return Status::success();
-    }
+    if (!(s = planDropped(ctx, rules_.omittedThru, back, read)).ok() || !read) return s.ok() ? dueBy(b, plan, due) : s;
+    back.resident = plan.resident;
+    plan = std::move(back);
+    due = true;
+    return Status::success();
   }
-  // The hot trigger in real tokens: the last request reached the due mark (the aim less the next
-  // request's growth), so the next one would pass the aim.
+  return dueBy(b, plan, due);
+}
+
+// Due by the marks (H), the hot trigger in real tokens (the last request reached the aim less the
+// next request's growth) or the arena's room (ruling 91 table/F1: before the engine would drop
+// whole turns from RAM), never by an hour (owner ruling 81, ruling 83 item 8: no night fold). Once
+// due it runs on down to L (ruling 82 item 4).
+Status CompactDriver::dueBy(const tx::HeadBudget& b, const SlicePlan& plan, bool& due) {
   const bool hot = lastPromptTokens(*d_.arena) >= b.tokens.due;
-  // No hour makes a compaction due (owner ruling 81, ruling 83 item 8): the night fold under H fit no
-  // request. Quiet hours only run one that is due by the marks.
-  // The arena's room is the one real limit besides the request (ruling 91 table/F1): a compaction is
-  // due before the engine would have to drop whole turns from RAM with no digest.
-  const bool room = rules.arenaFree < rules.arenaRoom;
-  if (plan.resident > marks.high || hot || room) cycle_ = true;   // due: run on down to L
+  const bool room = rules_.arenaFree < rules_.arenaRoom;
+  if (plan.resident > b.marks.high || hot || room) cycle_ = true;
   due = manual_ || cycle_;
-  if (cycle_ && !plan.thru && (!plan.textHeld || plan.resident <= marks.low)) cycle_ = false;   // L reached, or nothing more may go
+  if (cycle_ && !plan.thru && (!plan.textHeld || plan.resident <= b.marks.low)) cycle_ = false;   // L reached, or nothing may go
   return Status::success();
 }
 
@@ -829,42 +856,50 @@ namespace {
 // `arena` (at most its capacity; the oldest first): the turns a full arena or the restart fill
 // gave up, so their digest summarizes them (ruling 91 table/F1: never "not loaded" when the card
 // still holds them). False when the card did not answer or nothing was read.
-bool readBack(tx::TxFiles& files, const std::string& chatKey, const tx::HeadState& head, uint64_t upTo,
-              tx::TxArena& arena) {
+// The segment numbers from `from` on, oldest first; false when the card did not answer.
+bool segmentsFrom(tx::TxFiles& files, const std::string& chatKey, uint32_t from, std::vector<uint32_t>& segs) {
   std::string dir;
   std::vector<std::string> names;
   if (!tx::txDir(chatKey, dir).ok() || !files.list(dir, names)) return false;
-  std::vector<uint32_t> segs;
   for (const std::string& n : names) {
     uint32_t k = 0;
-    if (n.size() == 16 && n.compare(0, 4, "seg-") == 0 && n.compare(10, 6, ".jsonl") == 0 &&
-        std::sscanf(n.c_str() + 4, "%6u", &k) == 1 && k >= head.thruSeg)
-      segs.push_back(k);
+    const bool seg = n.size() == 16 && n.compare(0, 4, "seg-") == 0 && n.compare(10, 6, ".jsonl") == 0;
+    if (seg && std::sscanf(n.c_str() + 4, "%6u", &k) == 1 && k >= from) segs.push_back(k);
   }
   std::sort(segs.begin(), segs.end());
+  return true;
+}
+
+// The whole lines of `buf` from its start: thru < q <= upTo go to the arena. Returns where the
+// unread rest starts; `done` when a q past upTo was seen or the arena is full.
+size_t takeLines(const std::string& buf, uint64_t thru, uint64_t upTo, tx::TxArena& arena, bool& done) {
+  size_t at = 0;
+  for (size_t nl; !done && (nl = buf.find('\n', at)) != std::string::npos; at = nl + 1) {
+    tx::LineHeader h;
+    if (!tx::checkLine(buf.data() + at, nl + 1 - at, h).ok() || h.q <= thru) continue;
+    done = h.q > upTo || !arena.appendLine(buf.data() + at, nl + 1 - at).ok();
+  }
+  return at;
+}
+
+bool readBack(tx::TxFiles& files, const std::string& chatKey, const tx::HeadState& head, uint64_t upTo,
+              tx::TxArena& arena) {
+  std::vector<uint32_t> segs;
+  if (!segmentsFrom(files, chatKey, head.thruSeg, segs)) return false;
   std::string buf, chunk(tx::kFillSliceBytes, '\0'), path;
-  for (uint32_t seg : segs) {
-    if (!tx::segmentPath(chatKey, seg, path).ok()) return false;
-    size_t off = seg == head.thruSeg ? head.thruOffset : 0, got = 0;
+  bool done = false;
+  for (size_t i = 0; i < segs.size() && !done; ++i) {
+    if (!tx::segmentPath(chatKey, segs[i], path).ok()) return false;
+    size_t off = segs[i] == head.thruSeg ? head.thruOffset : 0, got = 0;
     buf.clear();
-    for (;;) {
-      if (!files.readAt(path, off, &chunk[0], chunk.size(), got)) return false;
-      if (!got) break;
+    while (!done && files.readAt(path, off, &chunk[0], chunk.size(), got) && got) {
       off += got;
       buf.append(chunk.data(), got);
-      size_t at = 0;
-      for (size_t nl; (nl = buf.find('\n', at)) != std::string::npos; at = nl + 1) {
-        tx::LineHeader h;
-        if (!tx::checkLine(buf.data() + at, nl + 1 - at, h).ok() || h.q <= head.thru) continue;
-        if (h.q > upTo) return arena.count() > 0;
-        if (!arena.appendLine(buf.data() + at, nl + 1 - at).ok()) return arena.count() > 0;
-      }
-      buf.erase(0, at);
+      buf.erase(0, takeLines(buf, head.thru, upTo, arena, done));
     }
   }
   return arena.count() > 0;
 }
-
 }  // namespace
 
 // Turns stored but no longer resident (a full arena's drop, the restart fill's give-up) come first:

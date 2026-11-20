@@ -331,11 +331,15 @@ class TurnRun {
     if (!(st = compose()).ok()) return fail(st);
     if (!t_.wire && !(st = wireFor(t_.ctx.dialect, t_.wire)).ok()) return fail(st);
     if (!t_.wire) return fail(Status::fail(Err::NotFound, "plain::wireFor"));
+    clampLimits();
+    return Status::success();
+  }
+
+  // Whatever the scale, every round has a bound and the last round has time before the hard wall.
+  void clampLimits() {
     if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, t_.limits).ok()) t_.limits = GuardLimits{};
-    // Whatever the scale, every round has a bound and the last round has time before the hard wall.
     t_.limits.rounds = std::max<uint16_t>(1, std::min<uint16_t>(t_.limits.rounds, kMaxRounds));
     t_.limits.softWallMs = std::min<uint32_t>(t_.limits.softWallMs, kHardWallMs - 2 * kMinRequestMs);
-    return Status::success();
   }
 
   // A turn that cannot start (setup, composition or the wire refused) is closed with one
@@ -852,10 +856,7 @@ class TurnRun {
   // line: the limit line when the last allowed round only called tools, the provider's line
   // for an empty answer. A routine's empty text stays its silence.
   void settle() {
-    t_.replyText = !t_.answer.empty()                 ? &t_.answer
-                   : t_.held && !t_.heldText.empty() ? &t_.heldText
-                   : t_.answered && !t_.interim.empty() ? &t_.interim   // the last round said nothing
-                                                        : nullptr;
+    t_.replyText = replyOf();
     t_.reply = t_.replyText != nullptr;   // a pointer: the reply is never copied to go out
     if (t_.reply && t_.trip != GuardTrip::None && personTrigger(t_.ctx.trigger))   // the guard that stopped it
       setStatus(StatusLine::LimitReached, std::string(texts::device_notes::kLimitStopped) + guardTripSlug(t_.trip) +
@@ -866,6 +867,14 @@ class TurnRun {
       setStatus(StatusLine::ProviderError,
                 exchangeLine(t_.emptyRefusal ? ExchangeErr::Other : ExchangeErr::Malformed,
                              providerSlugOf(t_.ctx, t_.setup.head), 0));
+  }
+
+  // The reply in hand: the answer, else the held reply, else the text the model wrote beside its
+  // calls when the last round said nothing (RB-H81).
+  const std::string* replyOf() const {
+    if (!t_.answer.empty()) return &t_.answer;
+    if (t_.held && !t_.heldText.empty()) return &t_.heldText;
+    return t_.answered && !t_.interim.empty() ? &t_.interim : nullptr;
   }
 
   // k, a and c items in the order the model gave them, before any call runs.

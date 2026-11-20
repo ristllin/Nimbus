@@ -98,6 +98,49 @@ size_t cutAt(const std::string& s, size_t cap) {
 // paths and totals may be out of date; the last closes it, or, when not all of it fits (or only
 // one part may be stored), says where the rest is (`path`, the export file; empty: it is closed).
 // Empty when no part can be built.
+// One pass of oldSummaryParts over `text`: the parts, and their bytes in the block (each and its
+// line end). Empty when a part cannot be built.
+struct SummaryForm {
+  const std::string& summary;   // the whole old summary
+  const std::string& day;
+  const std::string& asOf;
+  const std::string& cutClose;  // the close when not all of it fits
+  size_t lead;                  // the day header's bytes
+  bool onePart;
+};
+std::vector<std::string> summaryPass(const std::string& text, const SummaryForm& f, size_t& total) {
+  namespace m = migrate_text;
+  const std::string &summary = f.summary, &day = f.day, &asOf = f.asOf, &cutClose = f.cutClose;
+  const size_t lead = f.lead;
+  const bool onePart = f.onePart;
+  const size_t closeRoom = std::max(cutClose.size(), sizeof(m::kOldClose) - 1);
+  std::vector<std::string> parts;
+  size_t at = 0;
+  total = 0;
+  while (at < text.size()) {
+    const std::string prefix = parts.empty() ? m::kOldOpen + asOf + m::kOldStale : std::string(m::kOldMore);
+    if (lead + prefix.size() + closeRoom + 16 > kDigestMaxBytes) return {};
+    const size_t take = cutAt(text.substr(at), kDigestMaxBytes - lead - prefix.size() - closeRoom);
+    if (!take) return {};
+    std::string body = prefix + text.substr(at, take), out;
+    at += take;
+    const bool last = at >= text.size() || onePart;
+    const bool whole = at >= text.size() && text.size() == summary.size();
+    if (last) body += whole ? std::string(m::kOldClose) : cutClose;
+    if (!digestText(day, body, out).ok()) return {};
+    total += out.size() + 1;
+    parts.push_back(out);
+    if (last) break;
+  }
+  return parts;
+}
+
+// The old summary carried as digest 0 (ruling 84 item 6, lane RB-H81): its first
+// kOldSummaryMaxBytes, verbatim, as digest texts of `day` (each within kDigestMaxBytes) that fit
+// the full digest block together. The first part opens the fence, dated `asOf` and saying its
+// paths and totals may be out of date; the last closes it, or, when not all of it fits (or only
+// one part may be stored), says where the rest is (`path`, the export file; empty: it is closed).
+// Empty when no part can be built.
 std::vector<std::string> oldSummaryParts(const std::string& summary, const std::string& day, const std::string& asOf,
                                          const std::string& path, bool onePart) {
   namespace m = migrate_text;
@@ -106,28 +149,10 @@ std::vector<std::string> oldSummaryParts(const std::string& summary, const std::
   text.resize(cutAt(text, kOldSummaryMaxBytes));
   const size_t lead = header.size() + sizeof(digest_text::kDaySep) - 1;
   const std::string cutClose = path.empty() ? std::string(m::kOldClose) : m::kOldCut + path + m::kOldCutEnd;
-  const size_t closeRoom = std::max(cutClose.size(), sizeof(m::kOldClose) - 1);
-  std::vector<std::string> parts;
   for (int round = 0; round < 16; ++round) {
-    parts.clear();
-    size_t at = 0, total = 0;
-    while (at < text.size()) {
-      const std::string prefix = parts.empty() ? m::kOldOpen + asOf + m::kOldStale : std::string(m::kOldMore);
-      if (lead + prefix.size() + closeRoom + 16 > kDigestMaxBytes) return {};
-      const size_t room = kDigestMaxBytes - lead - prefix.size() - closeRoom;
-      const size_t take = cutAt(text.substr(at), room);
-      if (!take) return {};
-      std::string body = prefix + text.substr(at, take);
-      at += take;
-      const bool last = at >= text.size() || onePart;
-      if (last) body += at >= text.size() && text.size() == summary.size() ? std::string(m::kOldClose) : cutClose;
-      std::string out;
-      if (!digestText(day, body, out).ok()) return {};
-      total += out.size() + 1;
-      parts.push_back(out);
-      if (last) break;
-    }
-    if (total <= blockCapFor(Profile::Full) + 1) return parts;
+    size_t total = 0;
+    std::vector<std::string> parts = summaryPass(text, SummaryForm{summary, day, asOf, cutClose, lead, onePart}, total);
+    if (parts.empty() || total <= blockCapFor(Profile::Full) + 1) return parts;
     const size_t over = total - blockCapFor(Profile::Full) + 64;
     if (text.size() <= over) return {};
     text.resize(cutAt(text, text.size() - over));
@@ -1255,37 +1280,41 @@ struct Run {
     }
     bool overtaken = false, anchorStored = false;
     if (!(s = applyDigest0(overtaken, anchorStored)).ok()) return s;
-    if (overtaken && anchorStored && (m.d0.accepted || m.d0.carried) && head.thru < m.d0.q0) {
-      // the anchor is stored before the other writer's items: digest 0 follows them, covering the
-      // anchor alone (thru stays the anchor's q, so nothing after it is hidden)
-      out.overtaken = true;
-      m.d0.anchorStored = true;
-      m.d0.onePart = m.d0.carried;   // a second part would cover the other writer's items
-      m.d0.sq = nextQ();
-      m.d0.seg = log.segment();
-      m.d0.off = log.segmentBytes();
-      if (!(s = save()).ok()) return s;
-      return digest0Step();
-    }
-    if (overtaken) {   // never a digest over items it did not summarize: the old summary is named
-      out.overtaken = true;
-      m.d0.anchorStored = false;
-      m.d0.accepted = false;
-      if (!d.fold.summary.empty() && !m.d0.exported) {
-        m.d0.path = exportPath(m.d0.at);
-        m.d0.exported = d.exportText && d.exportText(m.d0.path, d.fold.summary);
-      }
-      m.d0.q0 = nextQ();
-      m.d0.sq = m.d0.q0 + 1;
-      m.d0.seg = log.segment();
-      m.d0.off = log.segmentBytes();
-      if (!(s = save()).ok()) return s;
+    if (overtaken) {
+      if (!(s = replanOvertaken(anchorStored)).ok()) return s;
       return digest0Step();
     }
     m.d0Done = m.d0.accepted || m.d0.carried;
     m.step = MigrationStep::Rows;
     return save();
   }
+
+  // Another writer stored items where the digest-0 step's own belonged.
+  Status replanOvertaken(bool anchorStored) {
+    out.overtaken = true;
+    if (anchorStored && (m.d0.accepted || m.d0.carried) && head.thru < m.d0.q0) {
+      // the anchor is stored before the other writer's items: digest 0 follows them, covering the
+      // anchor alone (thru stays the anchor's q, so nothing after it is hidden)
+      m.d0.anchorStored = true;
+      m.d0.onePart = m.d0.carried;   // a second part would cover the other writer's items
+      m.d0.sq = nextQ();
+    } else {   // never a rewrite over items it did not summarize: the old summary itself (RB-H81)
+      m.d0.anchorStored = false;
+      m.d0.accepted = false;
+      if (!d.fold.summary.empty() && !m.d0.exported) {
+        m.d0.path = exportPath(m.d0.at);
+        m.d0.exported = d.exportText && d.exportText(m.d0.path, d.fold.summary);
+      }
+      m.d0.day = dayString(m.d0.at, m.d0.tz, d.dayStartMin);
+      m.d0.carried = m.d0.anchor && !d.fold.summary.empty() && m.d0.at && !carriedParts(m.d0).empty();
+      m.d0.q0 = nextQ();
+      m.d0.sq = m.d0.q0 + 1;
+    }
+    m.d0.seg = log.segment();
+    m.d0.off = log.segmentBytes();
+    return save();
+  }
+
 
   // The newest mirrored owner row in the log and the assistant texts stored after it.
   Status logTail(uint64_t& lastM, std::vector<std::string>& tail) {

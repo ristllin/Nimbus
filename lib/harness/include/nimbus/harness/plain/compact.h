@@ -265,6 +265,9 @@ class CompactDriver {
   bool automaticMayAsk(const IdleCtx& ctx);
   Status planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due);
   Status foldTools(const SliceRules& rules, CompactOutcome& out);
+  Status noSlice(const SlicePlan& plan, CompactOutcome& out);
+  Status dueBy(const nimbus::orch::tx::HeadBudget& b, const SlicePlan& plan, bool& due);
+  SliceRules rulesFor(const IdleCtx& ctx, const nimbus::orch::tx::HeadBudget& b) const;
   Status planDropped(const IdleCtx& ctx, uint64_t omitted, SlicePlan& plan, bool& read);
   SliceRules rules_;   // the last planIfDue's rules (the tool fold reads them)
   // A compaction that became due runs on, slice by slice, until what stays is at L (ruling 82
