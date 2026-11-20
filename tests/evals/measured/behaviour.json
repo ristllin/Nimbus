@@ -7621,5 +7621,97 @@
    "anthropic": 1.1189,
    "zai": 0.7814
   }
+ },
+ "records_rb_rec6_part6": {
+  "lane": "RB-REC6",
+  "generated": "2026-11-20",
+  "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
+  "evidence": "evidence/part6/main",
+  "cells": {
+   "claude-haiku-5-5": {
+    "S": {
+     "episodes": 150,
+     "usd": 0.1377,
+     "total_accuracy": {
+      "k": 147,
+      "n": 150,
+      "rate": 0.98,
+      "lower95": 0.9491
+     },
+     "total_verdicts": {
+      "full": 147,
+      "wrong": 3
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 0,
+     "total_used_calc": 130,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "expenses": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "training": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      }
+     }
+    }
+   },
+   "gpt-5.6-luna": {
+    "S": {
+     "episodes": 150,
+     "usd": 0.0922,
+     "total_accuracy": {
+      "k": 140,
+      "n": 150,
+      "rate": 0.9333,
+      "lower95": 0.8895
+     },
+     "total_verdicts": {
+      "full": 140,
+      "wrong": 10
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 0,
+     "total_used_calc": 149,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 48,
+       "n": 50,
+       "rate": 0.96,
+       "lower95": 0.8794
+      },
+      "expenses": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "training": {
+       "k": 43,
+       "n": 50,
+       "rate": 0.86,
+       "lower95": 0.7531
+      }
+     }
+    }
+   }
+  },
+  "usd": {
+   "openai": 0.0922,
+   "anthropic": 0.1377
+  }
  }
 }
