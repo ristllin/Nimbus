@@ -616,7 +616,9 @@ class WireTest(unittest.TestCase):
         def chat(content, calls=()):
             msg = {"content": content}
             if calls:
-                msg["tool_calls"] = [{"id": f"c{i}", "function": {"name": n, "arguments": "{}"}} for i, n in enumerate(calls)]
+                msg["tool_calls"] = [
+                    {"id": f"c{i}", "function": {"name": n, "arguments": "{}"}} for i, n in enumerate(calls)
+                ]
             return {"choices": [{"message": msg, "finish_reason": "tool_calls" if calls else "stop"}]}
 
         tool_turn = mechanisms.scan_turn(
@@ -1038,7 +1040,6 @@ class MistralWireTest(unittest.TestCase):
         self.assertAlmostEqual(costs.cost_usd("mistral-medium-latest", usage), 9.0)
         self.assertAlmostEqual(costs.cost_usd("mistral-small-latest", usage), 0.8)
         self.assertGreater(costs.cost_usd("mistral-unknown-model", usage), 0.0)
-
 
     def test_the_loop_sends_the_mistral_effort_the_harness_sends(self):
         # RB-Q4b (ruling 104): Large 4 refuses effort "none" and the harness sends "low" (mistralHeadEffort); the
