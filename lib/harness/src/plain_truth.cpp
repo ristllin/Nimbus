@@ -73,7 +73,7 @@ std::string firstLine(const std::string& s) { return s.substr(0, s.find('\n')); 
 void ReceiptScan::add(const tx::Item& it, std::vector<Receipt>& out) {
   if (!open_.empty() && it.turn != open_.front().turn) open_.clear();
   if (it.kind == tx::ItemKind::Call) {
-    open_.push_back(Open{it.turn, it.id, targetOf(it), it.eff});
+    open_.push_back(Open{it.turn, it.id, targetOf(it), it.eff, it.n == nimbus::orch::kMoreTool});
     return;
   }
   if (it.kind != tx::ItemKind::Result || open_.empty()) return;
@@ -87,6 +87,7 @@ void ReceiptScan::add(const tx::Item& it, std::vector<Receipt>& out) {
   r.turn = it.turn;
   r.epoch = it.t;
   r.tool = call.tool;
+  r.routed = call.routed;
   r.ok = it.ok;
   r.text = firstLine(it.x.empty() ? it.st : it.x);
   out.push_back(std::move(r));
@@ -307,12 +308,14 @@ class Binding {
   }
   Truth capped(Truth m) const { return d_.mode == TruthMode::Shadow && m == Truth::Enforce ? Truth::Shadow : m; }
 
-  static truth::TurnEffect effect(const Receipt& r) {
+  // A call through `more` to a name nothing resolves reached no tool: it changed nothing (Read).
+  truth::TurnEffect effect(const Receipt& r) const {
     truth::TurnEffect e;
     e.tool = r.tool;
     e.ok = r.ok;
     e.receipt = r.text;
-    e.kind = receiptKind(r.tool, true);
+    const bool reached = !r.routed || (d_.resolves ? d_.resolves(r.tool) : nimbus::orch::toolClassRow(r.tool) != nullptr);
+    e.kind = receiptKind(r.tool, reached);
     return e;
   }
 

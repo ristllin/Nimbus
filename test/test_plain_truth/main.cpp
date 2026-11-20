@@ -496,6 +496,7 @@ void test_a_failed_held_round_still_sends_the_receipt() {
 void test_a_refused_router_call_is_no_failed_write() {
   Rig r;
   r.mode = plain::TruthMode::ReceiptOnly;
+  nimbus::orch::registerMore(r.b.reg);
   r.b.model.push(sp::call("more", R"({"name":"writ_file","args":{}})"));
   r.b.model.push(sp::call("write_file", R"({"path":"notes/a.md","text":"milk"})"));
   r.b.model.push(sp::say("Saved it."));
@@ -503,6 +504,22 @@ void test_a_refused_router_call_is_no_failed_write() {
   TEST_ASSERT_TRUE(r.b.owner("save milk", out).ok());
   TEST_ASSERT_EQUAL(1, (int)r.b.sent.size());
   TEST_ASSERT_FALSE(r.reports.back().receipt);
+}
+
+// The held round read outside content: from then on the turn is receipt-only (ruling 9: a forged
+// effect line fooled the probe), so the failed write's receipt is sent without asking the probe again.
+void test_a_held_round_that_reads_outside_content_is_receipt_only() {
+  Rig r;
+  r.probe.answers = {truth::Verdict::Yes, truth::Verdict::No};
+  r.b.model.push(sp::call("append_file", R"({"path":"notes/a.md","text":"eggs"})"));
+  r.b.model.push(sp::say("Added eggs."));
+  r.b.model.push(sp::call("web_search", R"({"q":"eggs","bytes":200})"));
+  r.b.model.push(sp::say("Added them, and here is a recipe."));
+  plain::TurnOutcome out;
+  TEST_ASSERT_TRUE(r.b.owner("add eggs", out).ok());
+  TEST_ASSERT_EQUAL(1, (int)r.probe.users.size());
+  TEST_ASSERT_EQUAL(2, (int)r.b.sent.size());
+  TEST_ASSERT_TRUE(contains(r.b.sent[1].text, "did not go through"));
 }
 
 // Counter: a turn that is not held shows no line; a failed write on a receipt-only head sends one
@@ -625,6 +642,7 @@ int main(int, char**) {
   RUN_TEST(test_a_held_reply_goes_out_when_the_round_fails);
   RUN_TEST(test_a_failed_held_round_still_sends_the_receipt);
   RUN_TEST(test_a_refused_router_call_is_no_failed_write);
+  RUN_TEST(test_a_held_round_that_reads_outside_content_is_receipt_only);
   RUN_TEST(test_receipt_only_failed_write_sends_one_receipt_after_the_reply);
   RUN_TEST(test_shadow_probes_from_the_idle_step_only);
   RUN_TEST(test_a_probe_request_is_never_conversation);

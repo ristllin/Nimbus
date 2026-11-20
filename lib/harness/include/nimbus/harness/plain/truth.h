@@ -72,6 +72,7 @@ struct Receipt {
   std::string tool;      // the tool the call reached (a `more` call: its target)
   bool ok = false;
   std::string text;      // the result's first line (the receipt, or the tool's error)
+  bool routed = false;   // the call went through `more` (tool is the name it asked for)
 };
 
 // Receipts stored before the arena's oldest resident item (the card): the newest `want` of them
@@ -111,6 +112,9 @@ struct TruthDeps {
   ProgressReporter* progress = nullptr;   // a hold ticks it (ProgressKind::ProviderWait)
   std::function<uint32_t()> nowMs;        // its clock (null: TurnCtx::startedMs)
   std::function<void(const TruthReport&)> done;   // each closed check (optional)
+  // Does a name reach a tool (the registry's resolveName)? A `more` call to a name it does not reach
+  // ran nothing and earns no receipt. Null: a name with a class row (orch::toolClassRow) reaches one.
+  std::function<bool(const std::string& name)> resolves;
 };
 
 // Registers the three handlers. InvalidArgument (nothing registered) without an arena; Busy when a
@@ -130,7 +134,7 @@ class ReceiptScan {
   struct Open {
     uint32_t turn;
     std::string id, tool;
-    bool effect;
+    bool effect, routed;
   };
   std::vector<Open> open_;
 };
