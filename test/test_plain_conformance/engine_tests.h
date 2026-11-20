@@ -1134,6 +1134,7 @@ inline void test_rung_three_climbs_once_when_sized_and_again_when_the_body_grows
   }
   {
     txb::Battery b;
+    b.compaction = false;   // the ladder alone: since lane RB-C3 compaction comes first
     b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
     shortTurns(b, 80);
     b.model.push(sp::call("big_read", R"({"tag":"one","bytes":40000})"));

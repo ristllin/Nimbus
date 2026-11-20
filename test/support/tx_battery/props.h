@@ -1,4 +1,5 @@
 #pragma once
+#include "nimbus/orch/tx/digest.h"
 #include <ArduinoJson.h>
 
 #include <algorithm>
@@ -353,12 +354,19 @@ inline bool covers(const sp::RequestView& v, const CoverInput& in, std::string& 
 // After compaction: every digest still in the block is in the system text, and every item
 // after the newest digest's thru is covered as above. thru comes from the s items, not
 // from what the engine says.
+// Since lane RB-C3 the newest cumulative summary covers everything before it: it alone must be in the
+// system text (as the block shows it, without its last line end); older summaries and day digests are
+// superseded and archived.
 inline bool compactedCovers(const sp::RequestView& v, CoverInput in, std::string& why) {
-  uint64_t thru = 0;
+  uint64_t thru = 0, summaryQ = 0;
+  for (const tx::Item& it : *in.items)
+    if (it.kind == tx::ItemKind::Digest && tx::isSummaryText(it.x)) summaryQ = it.q;
   for (const tx::Item& it : *in.items)
     if (it.kind == tx::ItemKind::Digest) {
       thru = std::max(thru, it.thru);
-      if (!it.ext && v.system().find(it.x) == std::string::npos) {
+      if (it.q < summaryQ) continue;
+      const std::string shown = tx::isSummaryText(it.x) ? it.x.substr(0, it.x.size() - 1) : it.x;
+      if (!it.ext && v.system().find(shown) == std::string::npos) {
         why = "digest s" + std::to_string(it.q) + " (" + it.day + ") is not in the system text";
         return false;
       }
