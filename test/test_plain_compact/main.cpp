@@ -33,7 +33,9 @@
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/mem_files.h"
 #include "nimbus/harness/plain/compact.h"
+#include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/tool_registry.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/turn_memory.h"
 #include "nimbus/orch/tx/arena.h"
@@ -2660,6 +2662,68 @@ void test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_err
   }
 }
 
+
+// Ruling 105 item 2 (DoD 6): the dynamic part cannot push the fixed part over its ceiling, whatever it
+// is given. Oversized pinned notes, skills index, recent files and a summary at its hard cap compose to
+// at most the system ceiling (core, skills, notes), the summary's hard cap and the recent-files cap;
+// a summary over the cap is never valid, and a day digest run never shows past its block; oversized
+// tool results (a search, a page) never enter the fixed part: the system text of every request is the same.
+void test_the_dynamic_part_never_pushes_the_fixed_part_over_its_ceiling() {
+  nimbus::orch::ToolRegistry reg;
+  nimbus::orch::Principal who = nimbus::orch::principalForRole("1001", nimbus::orch::Role::Admin);
+  plain::TurnCtx turn;
+  turn.model = "claude-sonnet-5-5";
+  turn.who = &who;
+  plain::RequestFacts f;
+  f.turn = &turn;
+  f.reg = &reg;
+  f.admin = true;
+  f.timeZone = std::string(500, 'Z');
+  for (int i = 0; f.pinnedNotes.size() < 100000; ++i) f.pinnedNotes += "note-" + std::to_string(i) + ": " + std::string(300, 'n') + "\n";
+  for (int i = 0; f.skillsIndex.size() < 100000; ++i) f.skillsIndex += "skills/s" + std::to_string(i) + ".md: " + std::string(200, 's') + "\n";
+  std::vector<tx::RecentFile> files;
+  for (int i = 0; i < 2000; ++i) files.push_back({"notes/" + std::string(100, 'f') + std::to_string(i), kNoon + (uint64_t)i});
+  TEST_ASSERT_TRUE(tx::recentFilesList(files, 0, f.recentFiles).ok());
+  TEST_ASSERT_TRUE(f.recentFiles.size() <= tx::kRecentFilesMaxBytes);
+  tx::Summary big;
+  std::string text;
+  for (uint32_t id = 1; tx::encodeSummary(big, text).ok(); ++id) big.lines.push_back({tx::SummarySection::Facts, id, std::string(390, 'a')});
+  big.lines.pop_back();
+  TEST_ASSERT_TRUE(tx::encodeSummary(big, text).ok());
+  std::vector<tx::DigestEntry> live;
+  for (int i = 0; i < 60; ++i) {   // a run of day digests, then the summary at its hard cap
+    tx::DigestEntry d;
+    d.day = "2026-10-01";
+    TEST_ASSERT_TRUE(tx::digestText(d.day, std::string(760, 'd') + std::to_string(i), d.text).ok());
+    d.q = 2 * (uint64_t)i + 2;
+    d.thru = d.q - 1;
+    live.push_back(d);
+  }
+  live.push_back(tx::DigestEntry{"2026-11-01", text, 500, 499});
+  std::vector<tx::DigestEntry> archive;
+  TEST_ASSERT_TRUE(tx::digestBlock(live, tx::Profile::Full, f.digestBlock, archive).ok());
+  TEST_ASSERT_TRUE(f.digestBlock.size() < tx::kSummaryMaxBytes);
+  plain::SystemBlocks sys;
+  TEST_ASSERT_TRUE(plain::composeSystem(f, sys).ok());
+  TEST_ASSERT_TRUE(sys.core.size() + sys.notes.size() <= plain::kSystemBytesCeiling);
+  TEST_ASSERT_TRUE(sys.digests.size() <= tx::kSummaryMaxBytes + tx::kRecentFilesMaxBytes + 128);
+  // Over the cap a summary is not valid: it never reaches a block.
+  live.back().text = text + std::string(tx::kSummaryMaxBytes, 'x') + "\n";
+  TEST_ASSERT_TRUE(tx::digestBlock(live, tx::Profile::Full, f.digestBlock, archive).err == tx::Err::InvalidArgument);
+  TEST_ASSERT_TRUE(f.digestBlock.empty());
+  // Oversized tool results: the request's system text never changes with them.
+  txb::Battery b;
+  TXB_OK(txb::runTurns(b, {txb::withTool(60, "search the web", "web_search", R"({"q":"tides","bytes":200000})", "found"),
+                           txb::withTool(60, "read it all", "big_read", R"({"tag":"r","bytes":200000})", "read"),
+                           txb::chat(60, "and now?", "fine")}));
+  std::string first;
+  for (const sp::Recorded& r : b.model.requests()) {
+    if (first.empty()) first = r.view.system();
+    TEST_ASSERT_TRUE_MESSAGE(r.view.system() == first, "a tool result changed the fixed part");
+  }
+  TEST_ASSERT_TRUE(first.size() <= plain::kSystemBytesCeiling + tx::kSummaryMaxBytes + tx::kRecentFilesMaxBytes);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -2719,5 +2783,6 @@ int main(int, char**) {
   RUN_TEST(test_messages_right_after_the_mark_are_compacted_first_never_left_out);
   RUN_TEST(test_a_failing_summary_at_turn_open_still_answers_the_owner);
   RUN_TEST(test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_error);
+  RUN_TEST(test_the_dynamic_part_never_pushes_the_fixed_part_over_its_ceiling);
   return UNITY_END();
 }
