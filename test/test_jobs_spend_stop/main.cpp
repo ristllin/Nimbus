@@ -466,7 +466,7 @@ static void test_the_stop_list_keeps_the_pump_running() {
   Rig idle;
   TEST_ASSERT_FALSE(idle.eng->hasBackgroundWork());
   TEST_ASSERT_TRUE(has(slurp("nimbusd/src/rig.h"), "jobs_->hasBackgroundWork()"));
-  TEST_ASSERT_TRUE(has(slurp("src/agent/orchestrator.cpp"), "g_jobs->stoppingCount()"));
+  TEST_ASSERT_TRUE(has(slurp("src/agent/orchestrator_e1.cpp"), "g_jobs->stoppingCount()"));
 }
 
 // Round 3 review: a run that keeps answering "running" while its stop keeps failing is

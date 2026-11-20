@@ -1421,7 +1421,7 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   TEST_ASSERT_TRUE(code.find("tgarchive::onInboundPage(", page.first) < code.find("parsePageBody(", page.first));
 
   // 5. No other source file talks to the Telegram send API.
-  const char* others[] = {"src/main.cpp", "src/agent/orchestrator.cpp", "src/agent/files_subsystem.cpp",
+  const char* others[] = {"src/main.cpp", "src/agent/orchestrator_e1.cpp", "src/agent/files_subsystem.cpp",
                           "src/agent/memory_subsystem.cpp", "src/agent/adapters/http_multipart.cpp",
                           "src/agent/provider_verify.cpp", "src/net/webui.cpp", "src/test_console.cpp"};
   for (const char* f : others) {

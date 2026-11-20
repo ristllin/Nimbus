@@ -267,7 +267,7 @@ def test_a_new_file_with_prose_outside_the_catalog_fails(tree, monkeypatch):
 
 def test_text_moved_behind_a_variable_in_a_wiring_file_is_counted(tree):
     before = stats(tree)["device_notes"]
-    path = "src/agent/orchestrator.cpp"
+    path = "src/agent/orchestrator_e1.cpp"
     src = read(tree, path)
     lit = next(x for x in cat.model_literals(path, src) if len(x.text) > 60 and '"' + x.text + '"' in src)
     hidden = 'std::string m = "missing action. You must call device.state first."'

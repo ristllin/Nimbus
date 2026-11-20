@@ -192,7 +192,7 @@ static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
     const size_t p = countOf(s.code, "dream::pumpDrill(");
     if (f) TEST_ASSERT_TRUE_MESSAGE(s.path == "src/main.cpp" || s.path == "src/agent/dream_subsystem.cpp",
                                     s.path.c_str());
-    if (p) TEST_ASSERT_EQUAL_STRING("src/agent/orchestrator.cpp", s.path.c_str());
+    if (p) TEST_ASSERT_EQUAL_STRING("src/agent/orchestrator_e1.cpp", s.path.c_str());
     fires += f;
     pumps += p;
   }
@@ -201,7 +201,7 @@ static void test_the_dream_fires_only_from_the_scheduler_and_the_drill_pump() {
   // main.cpp's one fire is the scheduler hook, and the pump sits in pollJobs (tg_poll).
   TEST_ASSERT_EQUAL(1, countOf(codeOf("src/main.cpp"), "if(agent::dream::isReserved(r.id))returnagent::dream::fire();"));
   const std::string pollJobs =
-      between("src/agent/orchestrator.cpp", "intpollJobs(){", "loops::checkDue(");
+      between("src/agent/orchestrator_e1.cpp", "intpollJobs(){", "loops::checkDue(");
   TEST_ASSERT_EQUAL(1, countOf(pollJobs, "dream::pumpDrill();"));
 }
 

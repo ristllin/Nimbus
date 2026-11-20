@@ -934,7 +934,7 @@ static void test_the_device_notice_path_calls_no_model() {
   for (const char* banned : {"injectScheduledTurn", "injectBoundedTurn", "stageSystemTurn", "handleMessage",
                              "injectMessage", "ownerChat()", "telegram::send("})
     TEST_ASSERT_TRUE_MESSAGE(onValidated.find(banned) == std::string::npos, banned);
-  const std::string orch = readSource("src/agent/orchestrator.cpp");
+  const std::string orch = readSource("src/agent/orchestrator_e1.cpp");
   const std::string drain = between(orch, "static void drainUpdateNotice()", "\n}\n");
   for (const char* needed : {"agent::telegram::ownerChat()", "telegram::send(chat, text", "g_engine->recordNotice(",
                              "loops::hasRoutines()", "/loop grants on"})

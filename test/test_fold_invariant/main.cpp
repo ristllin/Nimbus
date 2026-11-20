@@ -1224,9 +1224,9 @@ static void test_a_capped_index_still_folds_the_serial_backlog() {
   }
 }
 
-// The body of the function in src/agent/orchestrator.cpp that starts with `head`.
+// The body of the function in src/agent/orchestrator_e1.cpp that starts with `head`.
 static std::string deviceFunctionBody(const char* head) {
-  std::ifstream f("src/agent/orchestrator.cpp");
+  std::ifstream f("src/agent/orchestrator_e1.cpp");
   std::stringstream ss;
   ss << f.rdbuf();
   const std::string src = ss.str();

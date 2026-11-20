@@ -666,7 +666,7 @@ static void test_utc_offset_from_broken_down_times() {
 // would pass every test above while its history stayed hour-only (a missing
 // Platform::nowEpoch on the device is exactly that). Pin the device seam.
 static void test_the_device_wires_the_clock_and_the_zone_the_history_reads() {
-  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const std::string src = readFile("src/agent/orchestrator_e1.cpp");
   for (const char* wire : {"d.platform.nowEpoch =", "d.utcOffsetMin =", "d.utcOffsetAt ="})
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(src, wire), wire);
   // The fold input of a chat without the turn-structured history tells the same local days.

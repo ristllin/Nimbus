@@ -229,7 +229,7 @@ static void test_no_code_a_turn_reaches_holds_the_work_slot_by_hand() {
 static void test_the_other_turn_holds_are_scope_guards() {
   const std::string errlog = readFile("src/sys/errlog_fs.cpp");
   TEST_ASSERT_TRUE(errlog.find("~Held() { agent::memory::unlock(); }") != std::string::npos);
-  const std::string orch = readFile("src/agent/orchestrator.cpp");
+  const std::string orch = readFile("src/agent/orchestrator_e1.cpp");
   TEST_ASSERT_TRUE(orch.find("xSemaphoreTake(g_sessMux") == std::string::npos);
   TEST_ASSERT_TRUE(orch.find("xSemaphoreTake(g_resultsMux") == std::string::npos);
   TEST_ASSERT_TRUE(orch.find("MuxHold hold(g_resultsMux)") != std::string::npos);

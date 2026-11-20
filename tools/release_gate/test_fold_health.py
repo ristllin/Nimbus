@@ -75,7 +75,7 @@ def test_clean_tree_passes(tree):
         ("lib/harness/src/fold_driver.cpp", "if (refill) { s.thrashPaused = true; }\n", "sets a pause flag"),
         ("lib/core/src/orch_compact.cpp", "FoldDue g() { return FoldDue::ThrashPaused; }\n", "returns ThrashPaused"),
         ("lib/core/include/nimbus/orch/compact.h", "if (++fails >= 3) { paused = true; return true; }\n", "pauses"),
-        ("src/agent/orchestrator.cpp", 'send("Automatic summaries of this chat are paused.");\n', "paused"),
+        ("src/agent/orchestrator_e1.cpp", 'send("Automatic summaries of this chat are paused.");\n', "paused"),
         ("nimbusd/src/rig.h", 'record(chat, "Summaries keep failing, so they are paused.");\n', "paused"),
     ],
 )

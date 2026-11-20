@@ -88,7 +88,7 @@ E1_SOURCES = {
         "lib/harness/src/turn_contract.cpp",
         "lib/harness/src/turn_memory.cpp",
         "nimbusd/src/rig.h",
-        "src/agent/orchestrator.cpp",
+        "src/agent/orchestrator_e1.cpp",
         "src/main.cpp",
     ),
     "tool_results": (

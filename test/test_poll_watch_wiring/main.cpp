@@ -283,11 +283,11 @@ void test_long_paths_beat() {
       {"src/agent/telegram.cpp", "bool tlsConnect(WiFiClientSecure& sc) {", "nimbus::pollwatch::beat(\"telegram connect\");"},
       {"src/agent/telegram.cpp", nullptr, "else { nimbus::pollwatch::beat(\"media download\"); delay(2); }"},
       // A turn: its start and end, every round, every tool call and result.
-      {"src/agent/orchestrator.cpp", "d.hooks.onTurnStart = [](const TurnStartEv& ev) {", "nimbus::pollwatch::beat(\"turn\");"},
-      {"src/agent/orchestrator.cpp", "d.hooks.onToolCall = [](const orch::HeadToolCall& call) {", "nimbus::pollwatch::beat(\"tool\");"},
-      {"src/agent/orchestrator.cpp", "d.hooks.onToolResult = [](const orch::HeadToolResult& r) {", "nimbus::pollwatch::beat(\"tool done\");"},
-      {"src/agent/orchestrator.cpp", "d.hooks.onTurnProgress = [](const TurnProgressEv& ev) {", "nimbus::pollwatch::beat(\"round\");"},
-      {"src/agent/orchestrator.cpp", "d.hooks.onTurnEnd = [](const TurnEndEv& ev) {", "nimbus::pollwatch::beat(\"turn end\");"},
+      {"src/agent/orchestrator_e1.cpp", "d.hooks.onTurnStart = [](const TurnStartEv& ev) {", "nimbus::pollwatch::beat(\"turn\");"},
+      {"src/agent/orchestrator_e1.cpp", "d.hooks.onToolCall = [](const orch::HeadToolCall& call) {", "nimbus::pollwatch::beat(\"tool\");"},
+      {"src/agent/orchestrator_e1.cpp", "d.hooks.onToolResult = [](const orch::HeadToolResult& r) {", "nimbus::pollwatch::beat(\"tool done\");"},
+      {"src/agent/orchestrator_e1.cpp", "d.hooks.onTurnProgress = [](const TurnProgressEv& ev) {", "nimbus::pollwatch::beat(\"round\");"},
+      {"src/agent/orchestrator_e1.cpp", "d.hooks.onTurnEnd = [](const TurnEndEv& ev) {", "nimbus::pollwatch::beat(\"turn end\");"},
       // Every TLS session any adapter opens or closes.
       {"src/sys/net_util.h", "inline void tlsClose(WiFiClientSecure& c) {", "nimbus::pollwatch::beat(\"close\");"},
   };

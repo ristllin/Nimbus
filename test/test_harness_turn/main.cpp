@@ -4706,7 +4706,7 @@ static void test_cum821_spawn_reads_ignore_a_chat_only_403() {
   TEST_ASSERT_TRUE_MESSAGE(line.find("openai") != std::string::npos, line.c_str());
   // The device wires both reads (a missing wiring would silently change what the prompt says).
   std::string src;
-  FILE* f = std::fopen("src/agent/orchestrator.cpp", "rb");
+  FILE* f = std::fopen("src/agent/orchestrator_e1.cpp", "rb");
   TEST_ASSERT_NOT_NULL(f);
   char buf[4096];
   size_t n;
@@ -5933,7 +5933,7 @@ static void test_the_empty_answer_correction_is_wired_with_its_exclusions() {
 // lists (the same one approvePending uses on the web task).
 static void test_roleofchat_reads_the_owner_rule_from_nvs_not_the_poll_tasks_strings() {
   std::string src;
-  FILE* f = std::fopen("src/agent/orchestrator.cpp", "rb");
+  FILE* f = std::fopen("src/agent/orchestrator_e1.cpp", "rb");
   TEST_ASSERT_NOT_NULL(f);
   char buf[4096];
   size_t n;

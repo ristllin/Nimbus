@@ -469,7 +469,7 @@ gateway cut), clamped to the turn's remaining budget.
 
 Gated by NVS `midFail` (`store::midTurnFailover()`, default **ON**; web toggle
 "Switch providers mid-task if one fails"). The engine
-(`src/agent/orchestrator.cpp`) registers the fabric loop as `ProviderHosts.fabric`
+(`src/agent/orchestrator_e1.cpp`) registers the fabric loop as `ProviderHosts.fabric`
 and routes a loop turn to it whenever the gate is on and tools are present.
 Otherwise the turn runs the single-host loop and relies on the between-turn
 ladder below.

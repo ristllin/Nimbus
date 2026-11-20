@@ -148,7 +148,7 @@ def test_text_to_speech_reads_a_cut_refusal():
 
 
 def test_the_device_recheck_waits_for_the_owner_and_comes_first():
-    text = (_REPO / "src" / "agent" / "orchestrator.cpp").read_text()
+    text = (_REPO / "src" / "agent" / "orchestrator_e1.cpp").read_text()
     body = _function_body(text, "static void compactTick(")
     ask = body.find("recheckParkedHost()")
     gate = body.find("parkRecheckMayStart(")

@@ -1014,7 +1014,7 @@ static void test_device_hand_overs_note_the_spoke() {
   const std::string main = readSource("src/main.cpp");
   TEST_ASSERT_TRUE_MESSAGE(main.find("if (o.notesSent > 0) agent::orchestrator::noteTurnSpoke();") != std::string::npos,
                            "the speak sink's Telegram fallback notes a note that arrived");
-  const std::string orch = readSource("src/agent/orchestrator.cpp");
+  const std::string orch = readSource("src/agent/orchestrator_e1.cpp");
   const size_t played = orch.find("if (!::sfx::awaitReplyStart(");
   const size_t heard = orch.find("noteTurnSpoke();", played);
   TEST_ASSERT_TRUE(played != std::string::npos && heard < orch.find("if (capture) memory::captureMessage", played));

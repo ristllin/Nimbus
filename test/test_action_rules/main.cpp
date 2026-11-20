@@ -672,7 +672,7 @@ static void test_a_chat_without_a_row_follows_the_owner_rule() {
 // The command gate on the device reads the tenant role, never the Telegram owner list
 // alone (a demoted or revoked chat kept /model, /budget, /update and /mcp).
 static void test_owner_commands_follow_the_tenant_role() {
-  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const std::string src = readFile("src/agent/orchestrator_e1.cpp");
   const size_t at = src.find("const bool ownerCmd = nimbus::orch::isOwnerVerb(v);");
   TEST_ASSERT_TRUE(at != std::string::npos);
   const std::string gate = src.substr(at, 700);
@@ -859,7 +859,7 @@ static void test_results_ring_scoped_by_caller_class() {
 // With no principalFor a job engine treats no chat as the owner's (it fails closed), so a
 // product that forgets it would quietly take the owner's connectors and results away.
 static void test_every_product_wires_the_spawn_principal() {
-  const std::string device = readFile("src/agent/orchestrator.cpp");
+  const std::string device = readFile("src/agent/orchestrator_e1.cpp");
   const size_t jd = device.find("static JobEngine::Deps buildJobDeps()");
   TEST_ASSERT_TRUE(jd != std::string::npos);
   const size_t end = device.find("\n}\n", jd);
@@ -903,7 +903,7 @@ static void test_files_send_without_a_chat_resolves_before_the_check() {
 // list); the post-update system turn runs on the owner's chat, not merely the first
 // allow-listed one.
 static void test_device_wiring_of_the_owner_chat_rules() {
-  const std::string orch = readFile("src/agent/orchestrator.cpp");
+  const std::string orch = readFile("src/agent/orchestrator_e1.cpp");
   const size_t role = orch.find("nimbus::orch::Role roleOfChat(const String& chatId) {");
   TEST_ASSERT_TRUE(role != std::string::npos);
   const std::string body = orch.substr(role, orch.find("\n}\n", role) - role);
@@ -937,7 +937,7 @@ static void test_device_wiring_of_the_owner_chat_rules() {
 
 // The turn's [ACTIVE SESSIONS] digest is built from the sessions its chat may see.
 static void test_the_device_digest_shows_only_visible_sessions() {
-  const std::string src = readFile("src/agent/orchestrator.cpp");
+  const std::string src = readFile("src/agent/orchestrator_e1.cpp");
   const size_t at = src.find("in.sessions   =");
   TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, "the digest's sessions line moved: re-pin this test");
   const std::string line = src.substr(at, 200);
