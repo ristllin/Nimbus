@@ -2199,10 +2199,10 @@ inline void test_a_deferred_effect_runs_after_the_turn_is_closed() {
     TXB_OK(f.owner("restart", out));
     TEST_ASSERT_EQUAL(0, (int)out.deferred.mask);
   }
-  // A refused call asks for nothing.
+  // A refused call asks for nothing (a refusing handler in the Policy slot: the rails hold theirs).
   txb::Battery b;
   TXB_OK(b.boot());
-  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Rails, [](const plain::DispatchCtx&) {
+  TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [](const plain::DispatchCtx&) {
     plain::DispatchDecision d;
     d.verdict = plain::DispatchVerdict::Refuse;
     d.text = "refused";

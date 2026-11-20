@@ -48,8 +48,9 @@ enum class RailArgs : uint8_t {
   ThisChat = 2,        // a send to the turn's own chat: no `chat_id` but its own, and only the
                        // keys kind, path, ref, text, caption, chat_id
   ScheduleList = 3,    // schedule op=list
-  FixedReminder = 4,   // schedule kind=reminder, op create or update (absent: create), a non-empty
-                       // text, only the keys op, kind, when, text, id, chat_id, and this chat
+  FixedReminder = 4,   // a new schedule kind=reminder (op create or absent), a non-empty text, only
+                       // the keys op, kind, when, text, chat_id, and this chat (an update names an id
+                       // the rail cannot see: it goes to pending)
   ScheduleChange = 5,  // schedule op create or update (a routine, or a reminder beyond fixed
                        // text), to this chat
 };
@@ -75,7 +76,8 @@ bool itemOutside(const nimbus::orch::tx::Item& it);
 bool inputOutside(Trigger trigger, const std::vector<nimbus::orch::tx::Part>& parts);
 // Is the result of this call outside content because of what it reads: a path (path, name)
 // or a list prefix under a device-written folder whose content came from outside (inbox/*,
-// the files people send; agents/*, the sub-agents' reports; any letter case)?
+// the files people send; agents/*, the sub-agents' reports; any letter case)? Arguments that are
+// not a JSON object read as outside (fail closed).
 bool readsOutsidePath(const std::string& tool, const std::string& argsJson);
 // Is the turn tainted: TurnCtx::tainted, or a sub-agent report turn.
 bool turnTainted(const TurnCtx& turn);
@@ -84,8 +86,9 @@ bool turnTainted(const TurnCtx& turn);
 // The verdict for one call (the tool a `more` call reaches, with its arguments) in `turn`:
 // Allow whenever the turn is not tainted; else the first matching row of the table, Refuse
 // when none matches or the arguments are not a JSON object. `declaredEffect` is the
-// registry's class of the tool: a tool toolUseFor cannot place (Control by default) that the
-// registry declares pure or read reads as Read, as toolUseFor's own contract says. `row`, when
+// registry's class of the tool: a name no static table knows (no action, class or taint row:
+// a tool the device declared at runtime) that the registry declares pure or read reads as
+// Read, as toolUseFor's own contract says; every other name keeps toolUseFor's class. `row`, when
 // given, gets the index of the deciding row (count when none decided).
 Status railFor(const TurnCtx& turn, const ToolCall& call, bool declaredEffect, RailVerdict& out,
                size_t* row = nullptr);

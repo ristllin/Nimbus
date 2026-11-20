@@ -7,6 +7,7 @@
 #include <string>
 
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/action_rules.h"   // actionRuleRow
 #include "nimbus/orch/path_rules.h"
 #include "nimbus/orch/tool_groups.h"   // kMoreTool
 
@@ -29,7 +30,8 @@ const RailRow kTaintExemptions[] = {
     {U::Read, orch::kMoreTool, G::Any, V::Refuse},       // a `more` call whose target is not known
     {U::Read, nullptr, G::Any, V::Allow},                // reads change nothing
     {U::Write, nullptr, G::Any, V::Allow},               // the owner's files; every write says what changed
-    {U::Spend, nullptr, G::Any, V::Allow},               // web search, a sub-agent, an image
+    {U::Spend, "agent_start", G::Any, V::Pending},       // a task written after outside text, run with the owner's connectors
+    {U::Spend, nullptr, G::Any, V::Allow},               // web search, an image
     {U::Ambient, nullptr, G::Any, V::Allow},             // the light and speech on the device
     {U::Send, nullptr, G::ThisChat, V::Allow},           // to this chat only
     {U::Schedule, "schedule", G::ScheduleList, V::Allow},
@@ -71,9 +73,11 @@ bool changeOp(ArduinoJson::JsonObjectConst a) {
   return op == "create" || op == "update";
 }
 
+// A new reminder only: an update names an id whose entry the rail cannot see (it may be a routine).
 bool fixedReminder(ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
-  return str(a, "kind") == "reminder" && changeOp(a) && !str(a, "text").empty() && thisChat(a, turn) &&
-         onlyKeys(a, {"op", "kind", "when", "text", "id", "chat_id"});
+  const bool create = a["op"].isNull() || str(a, "op") == "create";
+  return create && str(a, "kind") == "reminder" && !str(a, "text").empty() && thisChat(a, turn) &&
+         onlyKeys(a, {"op", "kind", "when", "text", "chat_id"});
 }
 
 bool argsMatch(RailArgs rule, ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
@@ -86,6 +90,12 @@ bool argsMatch(RailArgs rule, ArduinoJson::JsonObjectConst a, const TurnCtx& tur
     case G::ScheduleChange: return changeOp(a) && thisChat(a, turn);
   }
   return false;
+}
+
+// A name no static table knows (a tool the device declared at runtime with setClass): toolUseFor
+// read it as Control by default, and its header says such a name reads by its registration class.
+bool unplaced(const std::string& name) {
+  return !orch::actionRuleRow(name) && !orch::toolClassRow(name) && !orch::toolTaintRow(name);
 }
 
 bool rowMatches(const RailRow& r, U use, const ToolCall& call, ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
@@ -139,10 +149,11 @@ bool inputOutside(Trigger trigger, const std::vector<tx::Part>& parts) {
 }
 
 bool readsOutsidePath(const std::string& tool, const std::string& argsJson) {
-  ArduinoJson::JsonDocument doc;
-  if (deserializeJson(doc, argsJson, ArduinoJson::DeserializationOption::NestingLimit(8)) ||
+  if (argsJson.empty()) return false;   // no arguments (a call the loop answered itself)
+  ArduinoJson::JsonDocument doc;   // the engine's own nesting limit (viewOf); what it cannot read is outside
+  if (deserializeJson(doc, argsJson, ArduinoJson::DeserializationOption::NestingLimit(64)) ||
       !doc.is<ArduinoJson::JsonObjectConst>())
-    return false;
+    return true;
   const ArduinoJson::JsonObjectConst a = doc.as<ArduinoJson::JsonObjectConst>();
   return outsideFolder(orch::callPath(tool, a)) || outsideFolder(str(a, "prefix"));
 }
@@ -160,7 +171,7 @@ Status railFor(const TurnCtx& turn, const ToolCall& call, bool declaredEffect, R
     return Status::success();
   const ArduinoJson::JsonObjectConst a = doc.as<ArduinoJson::JsonObjectConst>();
   U use = orch::toolUseFor(call.name, a);
-  if (use == U::Control && !declaredEffect) use = U::Read;   // toolUseFor's contract: no row, a declared read
+  if (use == U::Control && !declaredEffect && unplaced(call.name)) use = U::Read;
   for (size_t i = 0; i < kRowCount; ++i) {
     if (!rowMatches(kTaintExemptions[i], use, call, a, turn)) continue;
     out = kTaintExemptions[i].verdict;

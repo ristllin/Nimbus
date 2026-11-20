@@ -1018,11 +1018,12 @@ no reply for words.
 |---|---|---|---|
 | read | more | a listing | allow |
 | read | more | a call whose target is unknown | refuse |
+| spend | agent_start | any | pending |
 | read, write, spend, ambient | any | any | allow |
 | send | any | this chat only (no other `chat_id`; keys kind, path, ref, text, caption) | allow |
 | schedule | schedule | `op: list` | allow |
-| schedule | schedule | a fixed-text reminder to this chat | allow |
-| schedule | schedule | any other create or update to this chat | pending |
+| schedule | schedule | a new fixed-text reminder to this chat | allow |
+| schedule | schedule | any other create or update to this chat (an update's id may name a routine) | pending |
 | memory, scratch | any | any | pending |
 | control | skill_save | any | pending |
 | anything else | | | refuse |
