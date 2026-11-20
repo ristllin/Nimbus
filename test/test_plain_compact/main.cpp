@@ -77,7 +77,10 @@ struct TestWire : plain::WireCodec {
     body::BodyWriter w(out.body, &out.splices);
     w.beginObject().key("model").str(in.turn->model);
     if (in.maxTokens) w.key("max_tokens").unum(in.maxTokens);
-    w.key("system").beginArray().beginObject().key("type").str("text").key("text").str(in.system->core).endObject().endArray();
+    w.key("system").beginArray().beginObject().key("type").str("text").key("text").str(in.system->core).endObject();
+    if (!in.system->digests.empty())   // the summary so far (lane RB-C3)
+      w.beginObject().key("type").str("text").key("text").str(in.system->digests).endObject();
+    w.endArray();
     w.key("messages").beginArray();
     for (size_t i = 0; i < in.items->count(); ++i) {
       tx::Item it;
@@ -110,9 +113,11 @@ struct ScopeProbe : agent::HttpTransport {
   }
 };
 
+// The summarizer's answer: changes to the summary so far (lane RB-C3), never a summary written anew.
 const char* kSummary =
-    "The person asked about the boat and the plans for the weekend; the assistant answered and wrote a "
-    "file. Nothing is open. He likes short answers.";
+    "+F The person asked about the boat and the plans for the weekend.\n"
+    "+D The assistant answered and wrote a file.\n"
+    "+F He likes short answers.";
 
 // ---- one chat on the fault-injecting file fake -----------------------------------------------
 struct Chat {

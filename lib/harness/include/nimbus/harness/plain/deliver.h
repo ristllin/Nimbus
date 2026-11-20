@@ -176,6 +176,7 @@ enum class ProgressKind : uint8_t {
   ToolRound = 0,      // a tool ran (detail: the tool's name)
   ProviderWait = 1,   // a request to the provider is about to leave, or a retry waits (detail: "")
   SoftGuard = 2,      // a soft guard was reached while the turn still progresses (detail: its slug)
+  Summary = 3,        // the turn waits for the summary of the earlier conversation (lane RB-C3)
 };
 
 struct ProgressEvent {

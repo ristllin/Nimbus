@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/plain/engine.h"   // TurnCeiling (ownerCeiling)
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/harness/plain/wire.h"
@@ -27,11 +28,12 @@ struct HeadState;
 }  // namespace orch
 }  // namespace nimbus
 
-// plain/compact.h - the compaction driver of engine 2 (PRD section 3), lane RB-C2. When the
-// transcript after thru outgrows its budget, the oldest whole turns become one day digest
-// each, swapped in the order of tx/digest.h. The driver decides when, asks the summarizer
-// through one exchange (plain/exchange.h), and swaps; it knows nothing about what a
-// conversation is about.
+// plain/compact.h - the compaction driver of engine 2 (PRD section 3), lanes RB-C2 and RB-C3. When
+// the transcript after thru outgrows its budget, the oldest whole turns are taken into ONE cumulative
+// structured summary (owner rulings 105 and 106; tx/digest.h "the cumulative summary"), swapped in the
+// order of tx/digest.h. The driver decides when, asks the summarizer through one exchange
+// (plain/exchange.h) for the CHANGES the new turns make to the summary, applies them in code, and
+// swaps; it knows nothing about what a conversation is about.
 //
 // It keeps the rules of the fold ladder (docs/architecture/fold-ladder.md) with this
 // section's numbers, and does not run through agent::FoldDriver (bound to engine 1):
@@ -52,21 +54,32 @@ struct HeadState;
 // The decision rule (planSlice): due when the resident bytes after thru are above H, the whole
 // prompt of the last turn's last request (tx::TurnEndFacts::lastPromptTokens) reached the head's
 // due mark in tokens, or a manual run asks; no hour makes it due (no night fold: owner ruling 81,
-// ruling 83 item 8). The slice is whole turns from thru forward, all of one local
-// day (the day starts at dayStartMin), at most kCompactSliceMaxBytes of summarizer input, and
-// only while what stays after it is at least L (a manual run takes all it may). Never in a
-// slice: a turn of the owner's current local day (unless that day alone is above H, then only
-// its oldest half), the newest kNewestOwnerTurnsKept owner turns, a turn with no end (an
-// unanswered message), a turn with an intent and no result, a turn whose agent job runs, and
-// everything after the first of these: thru never jumps over a turn.
+// ruling 83 item 8). The slice is whole turns from thru forward, at most kCompactSliceMaxBytes of
+// summarizer input, and only while what stays after it is at least L, the owner's recent part
+// (a manual run takes all it may); a slice may span days (the input names each day). Never in a
+// slice: the newest kNewestOwnerTurnsKept owner turns while they fit under H, a turn with no end
+// (an unanswered message), a turn with an intent and no result, a turn whose agent job runs, and
+// everything after the first of these: thru never jumps over a turn. The v5.1.2 text keep holds
+// only for an owner's recent part that reaches it (ruling 106 item 2).
 //
-// The summarizer input: owner and assistant text verbatim with the local time; each tool result
-// one bracketed line that names the tool (file writes '[file change]', other file calls
-// '[file work]', outside results '[outside content read]'); never a call's arguments, a
-// result's bytes or a device note. The assistant text of a turn that read outside content goes
-// inside the data frame, and that slice's digest is stored inside the frame, so the block shows
-// it framed. Accepted only when the answer was not cut, holds at least kCompactThinFloor bytes
-// for an input of kCompactThinSlice or more, and makes a digest (tx::digestText). Otherwise
+// Ahead of time (ruling 106 item 3): once the last request reached kPreparePercent of the due mark,
+// an idle step (the same quiet and windows) updates a pending summary over the turns already older
+// than the recent part, in RAM, without swapping it; at the due mark it is swapped in with no
+// request. Urgent steps (IdleCtx::urgency, the engine at turn open and when a request does not fit)
+// skip the quiet and the window: IfDue compacts only when due (the pending summary first), Now
+// compacts what may go; each says before a request that the turn waits (IdleCtx::waiting).
+//
+// The summarizer input: the summary so far (its lines with their ids), then texts::summarizer::kSince,
+// any day digests a chat still holds (dated lines), and the turns: a day line where the day changes,
+// owner and assistant text verbatim with the local time; each tool result one bracketed line that
+// names the tool (file writes '[file change]', other file calls '[file work]', outside results
+// '[outside content read]'); never a call's arguments, a result's bytes or a device note. The
+// assistant text of a turn that read outside content goes inside the data frame, and every line that
+// slice adds to the summary is stored inside the frame. The Files lines are the device's, from the
+// slice's successful file-change calls (their path argument). Accepted only when the answer was not
+// cut and reads as changes (tx::parseSummaryEdits: at least one, or "="); a rewrite or prose is a
+// failed attempt, never a summary rebuilt from nothing. The result is fitted to the head's summary
+// budget (tx::fitSummary); every line that left goes to the archive before the swap. Otherwise
 // nothing changes but the failure count.
 //
 // The swap (RB-C1's order): digestText, digestItem, log.store (the digest joins the live set
@@ -81,18 +94,24 @@ namespace agent {
 namespace plain {
 
 inline constexpr uint32_t kCompactQuietS = 120;
-inline constexpr uint32_t kCompactSliceMaxBytes = 24576;
+// One update's turns (summarizer input): a cycle from the due mark down to the recent part takes one
+// to three updates on a large head (most of a tool result is one line here).
+// The one user message stays under tx::kMaxLineBytes (60,000 B, escapes included) with the day digests a
+// chat may still hold (6,144 B); the summary so far rides in the system text.
+inline constexpr uint32_t kCompactSliceMaxBytes = 40960;
+// The ahead-of-time summary starts once the last request reached this share of the due mark.
+inline constexpr uint32_t kPreparePercent = 80;
 // Sized so one due-to-keep cycle completes (ruling 91 T4-ADV-05; ruling 82 item 5: a cost bound never
 // makes the answer worse): a cycle on Sonnet or luna at full is about four slices, so one quiet spell
 // holds one, and the daily count is a runaway guard over three chats' cycles a few times a day,
 // not a cost cap (failures still wait 10 min, 30 min, 2 h, 6 h).
 inline constexpr uint8_t kCompactRequestsPerWindow = 4;
 inline constexpr uint32_t kCompactRequestMs = 45000;
-// The summarizer's output cap is sized to the digest block at full (6,144 B at 3 B a token), not to
-// one digest line: a head that writes long, or thinks first, has room to finish (ruling 89 item 4).
+// The summarizer's output cap is sized to the summary budget's default (4,000 tokens), not to one
+// line: a head that writes long, or thinks first, has room to finish (ruling 89 item 4).
 // A cut answer is asked once more, in the same attempt, with kSummarizerRetryMaxTokens; a cut is
 // never stored and never asked again at the same cap.
-inline constexpr uint16_t kSummarizerMaxTokens = 2048;
+inline constexpr uint16_t kSummarizerMaxTokens = 4096;   // the changes, at most a whole summary
 inline constexpr uint16_t kSummarizerRetryMaxTokens = 8192;
 inline constexpr uint32_t kCompactPaidPerDay = 48;
 inline constexpr uint32_t kCompactHeadTries = 2;           // failures on rung 1 before the ladder
@@ -181,6 +200,9 @@ struct CompactDeps {
   // InvalidArgument and one log line.
   nimbus::orch::tx::HeadKey headKey;
   uint16_t dayStartMin = kDayStartDefaultMin;
+  // The owner's settings (the recent part and the summary budget, rulings 105 and 106), read at every
+  // step and passed through tx::clampSettings; unset: the defaults.
+  std::function<nimbus::orch::tx::EngineSettings()> settings;
 };
 
 // ---- the decision rule, pure -----------------------------------------------------------
@@ -190,7 +212,8 @@ struct SliceRules {
   int16_t tzMinutes = 0;
   uint16_t dayStartMin = kDayStartDefaultMin;
   uint32_t high = 0, low = 0;    // H and L of the profile
-  uint32_t keepText = 0;         // owner and assistant text a slice leaves at least (the v5.1.2 keep)
+  uint32_t keepText = 0;         // owner and assistant text a slice leaves at least (the v5.1.2 keep,
+                                 // only for an owner's recent part that reaches it)
   bool manual = false;           // take all the rules allow, ignoring L
   std::function<bool(uint32_t turn)> jobRunning;
   uint64_t omittedThru = 0;      // items up to this q are stored but not resident (CompactDeps)
@@ -202,9 +225,15 @@ struct SliceRules {
   // neither the current day nor the newest owner turns protect them (an open turn still does).
   bool readBack = false;
 };
+// A file-change call of a slice, as the device writes it into the summary's Files lines.
+struct FileNote {
+  std::string path;
+  uint64_t at = 0;               // epoch of its result
+  bool deleted = false;
+};
 struct SlicePlan {
   uint64_t thru = 0;             // the last q the slice covers (0: nothing to summarize)
-  std::string day;               // "YYYY-MM-DD", the local day of its turns
+  std::string day;               // "YYYY-MM-DD", the local day of its newest turn
   std::string input;             // the summarizer's user message
   bool tainted = false;          // a turn of the slice read outside content
   uint32_t turns = 0;            // turns with text in the slice
@@ -215,6 +244,7 @@ struct SlicePlan {
   size_t freed = 0;              // arena bytes the slice's items hold (what the swap frees)
   bool textHeld = false;         // the oldest turn may not go only because of keepText
   bool belowKeep = false;        // the slice leaves under L or keepText: the arena's room asked
+  std::vector<FileNote> files;   // its successful file-change calls, oldest first
 };
 // The tool fold (ruling 91 table/F1; owner ruling 81: tools must not eat the dialogue). When a due
 // slice is held only by the text floor, the results of the oldest closed turns (before the
@@ -245,6 +275,8 @@ enum class CompactStep : uint8_t {
   Stored,       // a digest is stored and thru moved
   Refused,      // the answer was taken, but storage refused the digest: thru unmoved
   ToolsFolded,  // no request: the oldest closed turns' results now render as stubs (planToolFold)
+  Prepared,     // ahead of time: the pending summary now covers more turns (nothing swapped)
+  Swapped,      // the pending summary was swapped in at the due mark: no request
 };
 const char* compactStepSlug(CompactStep s);
 
@@ -267,6 +299,9 @@ class CompactDriver {
   bool requestManual();
   bool manualPending() const { return manual_; }
   const CompactCtl& control() const { return ctl_; }
+  // The summary prepared ahead of time, not yet swapped in ("" when none is valid), and the last q it covers.
+  const std::string& pendingSummary() const { return pending_.text; }
+  uint64_t pendingThru() const { return pending_.thru; }
 
  private:
   Status run(const IdleCtx& ctx, CompactOutcome& out);
@@ -289,7 +324,30 @@ class CompactDriver {
     spentHotQ_ = hotQ_;
   }
   bool held(const IdleCtx& ctx, const CompactCtl::Chat& chat);
-  Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out);
+  Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out, bool prepare = false);
+  // The summary ahead of time (ruling 106 item 3), and its swap at the due mark.
+  struct Pending {
+    std::string text;            // the encoded summary
+    uint64_t thru = 0;           // the last q it covers
+    uint64_t baseThru = 0;       // head.thru when it was started: valid only while thru has not moved
+    uint64_t lastRow = 0;
+    uint32_t turns = 0;
+    std::string day;
+  };
+  Pending pending_;
+  nimbus::orch::tx::HeadBudget budget_;   // the last planIfDue's budget (the summary's cap)
+  bool pendingValid() const;
+  Status prepare(const IdleCtx& ctx, CompactOutcome& out);
+  Status swapPending(uint64_t now, CompactOutcome& out);
+  // The summary the next update builds on: the pending one, else the newest in force; the day digests
+  // older than any summary are passed as dated lines.
+  Status baseFor(nimbus::orch::tx::Summary& base, std::string& baseText, std::string& legacy) const;
+  Status merge(const SlicePlan& plan, const std::string& answer, uint64_t now, std::string& text);
+  Status archiveLegacy();
+  void keepPending(const SlicePlan& plan, const std::string& text, CompactOutcome& out);
+  // The summary so far (the request's system text beside the prompt) and the one user message.
+  Status messageFor(const SlicePlan& plan, std::string& sofar, std::string& message) const;
+  int16_t tz_ = 0;   // the step's local offset (the Files lines' times)
   void settle(const SummarizerRung& rung, const SlicePlan& plan, uint32_t fails, uint64_t now, const Status& s,
               CompactOutcome& out);
   struct Asked {
@@ -298,7 +356,7 @@ class CompactDriver {
     bool parked = false;
   };
   Status ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out);
-  Status swap(const SlicePlan& plan, const std::string& summary, uint64_t now, CompactOutcome& out);
+  Status swap(const SlicePlan& plan, const std::string& text, uint64_t now, CompactOutcome& out);
   void loadCtl();
   void saveCtl();
   void endManual(const char* text);
@@ -323,6 +381,36 @@ class CompactDriver {
 Status digest0Answer(const CompactDeps& deps, const nimbus::orch::tx::Digest0Ask& ask,
                      nimbus::orch::tx::Digest0Answer& out);
 nimbus::orch::tx::Digest0Fn digest0Asker(CompactDeps deps);
+
+// ---- the owner's settings beyond compaction (rulings 105 item 4 and 106) -----------------------
+
+// The attended turn's bounds from the owner's max rounds and hard time limit (tx::EngineSettings): the
+// binding sets TurnSetup::ceiling to this on a person's turn. applyCeiling only lowers, so at the
+// defaults (64 rounds, 1,200 s) nothing changes; the time guard keeps the last round's reserve
+// (kLastRoundReserveMs) inside the hard time. Unattended turns keep their own ceilings.
+TurnCeiling ownerCeiling(const nimbus::orch::tx::EngineSettings& settings);
+
+// What /budget and the web page show beside the settings, in tokens (rulings 105 and 106): the system
+// prompt as composed now (core, skills and notes, the recent-files list), the tools, the summary in
+// force and the transcript after it, and the head's marks with the settings it carries. Token figures
+// are on the head's wire ratio (HeadBudget::bodyMilliBytesPerToken): measured on the Anthropic wire,
+// nominal elsewhere (`nominal`).
+struct BudgetView {
+  uint32_t systemTokens = 0;     // core + notes + recent files (the fixed text, without the summary)
+  uint32_t toolsTokens = 0;
+  uint32_t fixedTokens = 0;      // system + tools: the one number ruling 105 item 2 shows
+  uint32_t summaryTokens = 0;    // the summary in force now
+  uint32_t recentTokens = 0;     // the transcript after it now (what a request renders)
+  uint32_t summaryBudgetTokens = 0, recentPartTokens = 0;   // the settings as this head carries them
+  uint32_t dueTokens = 0, aimTokens = 0;
+  uint16_t maxRounds = 0;
+  uint32_t hardTimeS = 0;
+  bool nominal = false;
+};
+Status budgetView(const nimbus::orch::tx::HeadBudget& b, const nimbus::orch::tx::EngineSettings& settings,
+                  const SystemBlocks& system, const std::vector<ToolSpec>& tools,
+                  const std::vector<nimbus::orch::tx::DigestEntry>& live, const nimbus::orch::tx::TxArena& arena,
+                  uint64_t thru, BudgetView& out);
 
 // One step of a driver with fresh RAM state (persisted control only).
 Status compactSlice(const CompactDeps& deps, const IdleCtx& ctx, CompactOutcome& out);

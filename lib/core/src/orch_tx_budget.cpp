@@ -110,7 +110,41 @@ Status profileMarks(Profile p, ProfileMarks& out) {
   return Status::success();
 }
 
-HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile requested) {
+EngineSettings clampSettings(const EngineSettings& s) {
+  auto in = [](uint32_t v, uint32_t def, uint32_t lo, uint32_t hi) { return v == 0 ? def : std::min(std::max(v, lo), hi); };
+  EngineSettings o;
+  o.recentTokens = in(s.recentTokens, kRecentTokensDefault, kRecentTokensMin, kRecentTokensMax);
+  o.summaryTokens = in(s.summaryTokens, kSummaryTokensDefault, kSummaryTokensMin, kSummaryTokensMax);
+  o.maxRounds = (uint16_t)in(s.maxRounds, kMaxRoundsDefault, kMaxRoundsMin, kMaxRoundsMax);
+  o.hardTimeS = in(s.hardTimeS, kHardTimeDefaultS, kHardTimeMinS, kHardTimeMaxS);
+  return o;
+}
+
+namespace {
+// The owner's summary and recent part as this head carries them: together at most half of what its due
+// mark leaves beside the fixed part, so a compaction leaves room for turns before the next one; the
+// summary yields first (down to kSummaryTokensMin), then the recent part (down to kRecentTokensFloor).
+void keepOf(const EngineSettings& set, const WireRatio& w, HeadBudget& b) {
+  const EngineSettings s = clampSettings(set);
+  // The fixed part's ceiling, at most half the due mark (a tiny window cannot carry the whole ceiling).
+  b.fixedTokens = std::min((uint32_t)((uint64_t)(kFixedOverheadCeiling + kRecentFilesMaxBytes) * 1000 / w.milli),
+                           b.tokens.due / 2);
+  const uint32_t room = (b.tokens.due - b.fixedTokens) / 2;
+  uint32_t summary = s.summaryTokens, recent = s.recentTokens;
+  if (room < kSummaryTokensMin + kRecentTokensFloor) {   // a tiny window: a third for the summary
+    summary = room / 3;
+    recent = room - summary;
+  } else if (summary + recent > room)
+    summary = std::max(std::min(summary, room > recent ? room - recent : 0u), std::min(summary, kSummaryTokensMin));
+  if (summary + recent > room) recent = std::max(room > summary ? room - summary : 0u, kRecentTokensFloor);
+  b.summaryTokens = summary;
+  b.recentTokens = recent;
+  b.summaryBytes = (uint32_t)((uint64_t)summary * w.milli / 1000);
+  b.tokens.keep = b.fixedTokens + summary + recent;
+}
+}  // namespace
+
+HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile requested, const EngineSettings& settings) {
   HeadBudget b;
   aimOf(r, b.tokens.aim, b.bound);
   const WireRatio w = wireOf(r, head, b.bound);
@@ -131,7 +165,6 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   b.tokens.aim = std::max(std::min(b.tokens.aim, tokensIn(w, b.bodyCap)), r.targetTokens);
   b.tokens.due = b.tokens.aim - nextRequestReserve(b.tokens.aim);
   const uint32_t around = kFixedOverheadCeiling + kFullDigestAndFilesBytes;
-  b.tokens.keep = (uint32_t)((uint64_t)b.tokens.aim * kKeepPercent / 100);
   // v5.1.2's fold mark: its trigger, which a floor row counts in raw bytes since the last fold (49,152 B).
   // Where that trigger does not fit beside the fixed part and the digest block of the head's own body (a
   // tiny window), what the released window carried stands in for it.
@@ -140,12 +173,16 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
                                 : (uint32_t)std::max(c.historyMaxBytes, c.historySoftBytes);
   ProfileMarks full;
   full.high = std::max(roundDown(bytesAt(w, b.tokens.due) - std::min(around, bytesAt(w, b.tokens.due)), 1000), foldMark);
-  full.low = std::max(roundDown(bytesAt(w, b.tokens.keep) - std::min(around, bytesAt(w, b.tokens.keep)), 1000),
-                      (uint32_t)c.historyKeepBytes);
-  b.marks = full;
   // Where a released floor lifted H above the token due (a floor row's 49,152 B trigger), the token due
   // rises with it, never past the aim, so the two triggers agree (ruling 91, table/F8).
   b.tokens.due = std::max(b.tokens.due, std::min(b.tokens.aim - 1, tokensIn(w, full.high + around)));
+  // The keep (rulings 105 and 106): the summary and the owner's recent part; L is the recent part in the
+  // bytes a request renders (the wire's slope, no intercept: a part of a request, not a body). The
+  // v5.1.2 text keep no longer binds the default (the owner's choice); compaction holds it only for an
+  // owner's recent part that reaches it (plain_compact.cpp rulesFor).
+  keepOf(settings, w, b);
+  full.low = std::min((uint32_t)((uint64_t)b.recentTokens * w.milli / 1000), full.high - 1);
+  b.marks = full;
   b.releasedFold = foldMark;
   b.releasedKeep = (uint32_t)c.historyKeepBytes;
   ProfileMarks chosen;
@@ -156,18 +193,27 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   return b;
 }
 
-Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift, HeadBudget& out) {
+Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift,
+                 const EngineSettings& settings, HeadBudget& out) {
   if (head.host.empty() || head.model.empty()) return Status::fail(Err::InvalidArgument, "tx::budgetFor");
   const HeadKey key = routedKey(head);
-  out = budgetFromRow(turnBudgetFor(key.host, key.model, kToolLoopOn, link, routedLift), key, requested);
+  out = budgetFromRow(turnBudgetFor(key.host, key.model, kToolLoopOn, link, routedLift), key, requested, settings);
   return Status::success();
 }
 
-Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out) {
+Status budgetFor(const HeadKey& head, Profile requested, const EngineSettings& settings, HeadBudget& out) {
   if (head.host.empty() || head.model.empty()) return Status::fail(Err::InvalidArgument, "tx::budgetFor");
   const HeadKey key = routedKey(head);
-  out = budgetFromRow(turnBudgetFor(key.host, key.model, kToolLoopOn), key, requested);
+  out = budgetFromRow(turnBudgetFor(key.host, key.model, kToolLoopOn), key, requested, settings);
   return Status::success();
+}
+
+Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift, HeadBudget& out) {
+  return budgetFor(head, requested, link, routedLift, EngineSettings{}, out);
+}
+
+Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out) {
+  return budgetFor(head, requested, EngineSettings{}, out);
 }
 
 uint32_t arenaBytesFor(const HeadBudget& b) {

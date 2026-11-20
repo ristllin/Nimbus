@@ -387,6 +387,7 @@ std::string ProgressReporter::text(const ProgressEvent& e, uint32_t elapsedMs, u
     case ProgressKind::ToolRound: line += d.empty() ? std::string(texts::device_notes::kProgressRanTool) : texts::device_notes::kProgressRan + d + "."; break;
     case ProgressKind::ProviderWait: line += texts::device_notes::kProgressWaiting; break;
     case ProgressKind::SoftGuard: line += texts::device_notes::kProgressLong; break;
+    case ProgressKind::Summary: line += texts::device_notes::kProgressSummary; break;
   }
   return line;
 }
@@ -415,8 +416,9 @@ bool ProgressReporter::tick(const ProgressEvent& e) {
   bool due = false;
   // A soft guard a progressing turn passed is always shown where the line edits in place (ruling
   // 84 items 2 and 3; lane RB-X3); otherwise it keeps the first-line threshold and the 60 s rule.
-  const bool soft = e.kind == ProgressKind::SoftGuard;
-  if (!lines_) due = since >= kProgressFirstMs;
+  // A wait for the summary is shown at once too (ruling 98 item 1: the turn says it waits for it).
+  const bool soft = e.kind == ProgressKind::SoftGuard || e.kind == ProgressKind::Summary;
+  if (!lines_) due = e.kind == ProgressKind::Summary || since >= kProgressFirstMs;
   else if (haveMsg_) due = soft || since >= kProgressEditMs;
   else due = lines_ < kProgressMaxLines && since >= kProgressNewLineMs;
   if (!due) return false;

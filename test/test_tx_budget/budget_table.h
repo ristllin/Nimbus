@@ -218,15 +218,17 @@ inline std::string headsSection() {
       "its wire or on v5.1.2's nominal one (on Lumi's own content the OpenAI wire measured 4.1 B a token against "
       "the nominal 3.6, so a nominal row may carry about 12% fewer tokens than it says; no OpenAI, Mistral or "
       "Z.ai ratio is measured).\n\n"
-      "| Head class | Aim (tokens) | Due (tokens) | Keep (tokens) | Tokens are | Bound | Body (B) | Due mark H (B) "
-      "| Keep L (B) | Digest block (B) | Message cap (B) | Floor head | v5.1.2 fold / keep (B, text) |\n"
-      "|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+      "| Head class | Aim (tokens) | Due (tokens) | Keep (tokens) | Summary / recent part (tokens) | Tokens are | Bound "
+      "| Body (B) | Due mark H (B) | Recent part L (B) | Summary and recent files (B) | Message cap (B) | Floor head "
+      "| v5.1.2 fold / keep (B, text) |\n"
+      "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n";
   for (const Head& h : heads()) {
     const tx::HeadBudget b = budgetOf(h);
-    o += fmt("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s / %s |\n", h.name, num(b.tokens.aim).c_str(),
-             num(b.tokens.due).c_str(), num(b.tokens.keep).c_str(), ratioLabel(b), boundLabel(b.bound),
+    o += fmt("| %s | %s | %s | %s | %s / %s | %s | %s | %s | %s | %s | %s | %s | %s | %s / %s |\n", h.name,
+             num(b.tokens.aim).c_str(), num(b.tokens.due).c_str(), num(b.tokens.keep).c_str(),
+             num(b.summaryTokens).c_str(), num(b.recentTokens).c_str(), ratioLabel(b), boundLabel(b.bound),
              num(b.bodyCap).c_str(), num(b.marks.high).c_str(), num(b.marks.low).c_str(),
-             num(tx::blockCapFor(b.profile) + tx::kRecentFilesMaxBytes).c_str(), num(b.messageCap).c_str(),
+             num(b.summaryBytes + tx::kRecentFilesMaxBytes).c_str(), num(b.messageCap).c_str(),
              b.floorHead ? "yes" : "no", num(b.releasedFold).c_str(), num(b.releasedKeep).c_str());
   }
   return o + "\n";
@@ -379,15 +381,20 @@ inline std::string intro() {
       "routed floor while the lift is off. It never aims lower than v5.1.2 did. Token figures on a wire with "
       "no measured ratio are nominal and marked so. Compaction is due once a "
       "request reached the aim less the next request's growth (%s tokens: the largest growth in RB-M0b's "
-      "aged replays was %s inside a turn and %s from turn to turn, %s turns), and keeps 70%% of the aim. "
+      "aged replays was %s inside a turn and %s from turn to turn, %s turns). After a compaction the request "
+      "is the system prompt, one cumulative summary (the owner's setting, default %s tokens) and the newest whole "
+      "turns up to the recent part (default %s tokens), never fewer than the newest six owner turns when they "
+      "fit (owner rulings 105 and 106); a head whose due mark is too small for both keeps them to half of what "
+      "the due mark leaves beside the fixed part, the summary yielding first. "
       "Bytes stand beside the tokens only where a device limit is in bytes: the body cap and the stored "
       "marks H and L. They are the token marks on the head's wire: on the Anthropic Messages wire MEASURED "
       "(%s photo-free %s requests: body = %.3f x tokens %s %s B), on every other wire v5.1.2's released "
-      "nominal ratio; less the fixed part (%s B) and the digest block with the recent-files list (%s B). No "
-      "default carries less than the head's v5.1.2 row (owner ruling 81): at every compaction the owner and "
-      "assistant text kept is at least v5.1.2's keep.\n\n",
+      "nominal ratio; H is less the fixed part (%s B) and the digest allowance with the recent-files list "
+      "(%s B), and L is the recent part on the wire's slope. No default carries less than the head's v5.1.2 "
+      "body, fold mark, message cap and tool-result cap (owner ruling 81); v5.1.2's keep binds only an "
+      "owner's recent part that reaches it (ruling 106 item 2).\n\n",
       num(tx::kNextRequestReserveTokens).c_str(), num(g["in_turn_max"] | 0).c_str(), num(g["turn_to_turn_max"] | 0).c_str(),
-      num(g["turns"] | 0).c_str(), num(w["requests"] | 0).c_str(), (const char*)(w["model"] | ""),
+      num(g["turns"] | 0).c_str(), num(tx::kSummaryTokensDefault).c_str(), num(tx::kRecentTokensDefault).c_str(), num(w["requests"] | 0).c_str(), (const char*)(w["model"] | ""),
       (double)(w["milli_bytes_per_token"] | 0) / 1000, (int)(w["intercept_bytes"] | 0) < 0 ? "-" : "+",
       num(std::fabs((double)(w["intercept_bytes"] | 0))).c_str(), num(tx::kFixedOverheadCeiling).c_str(),
       num(tx::kFullDigestAndFilesBytes).c_str());

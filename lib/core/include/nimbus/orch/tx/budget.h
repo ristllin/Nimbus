@@ -11,7 +11,8 @@
 // Tokens are the unit (ruling 82 item 3). A head's request AIMS at about 100,000 tokens once the
 // conversation can fill it, or at the head's own lower limit (the provider's window, its price
 // tier, v5.1.2's read-window fit, the routed floor while the lift is off). Compaction is DUE when
-// the next request would pass the aim, and KEEPS about 70% of it. Bytes appear only where a device
+// the next request would pass the aim, and KEEPS the summary and the owner's recent part (rulings
+// 105 and 106: default 4,000 and 10,000 tokens). Bytes appear only where a device
 // limit is in bytes: the body cap, and the stored marks H and L the transcript is measured in.
 //
 // The default profile is `full` everywhere (rulings 81 and 83 item 2). The smaller profiles exist
@@ -52,7 +53,9 @@ inline constexpr uint32_t kBulkWholeMax = 48000;           // tier 2 shown whole
 
 // ---- the token aim (ruling 82 item 4), and what it is derived from -----------------------------
 inline constexpr uint32_t kAimClampTokens = 100000;        // "around 100k tokens" (owner, 19 Nov)
-inline constexpr uint32_t kKeepPercent = 70;               // compaction keeps about 70% of the aim
+// The room under the aim a tiny window's due mark keeps (nextRequestReserve). Before rulings 105 and 106
+// it was also the keep; the keep is now the owner's recent part and the summary (EngineSettings).
+inline constexpr uint32_t kKeepPercent = 70;
 // The next request's growth past the last one: RB-M0b's aged replays (15 to 17 Nov, 30 Oct and
 // 4 Nov shapes, claude-sonnet-5-5, 244 turns) grew at most 3,774 tokens inside a turn and 3,414
 // from one turn's first request to the next; rounded up to 1,000.
@@ -93,6 +96,38 @@ inline constexpr uint32_t kArenaTextShareFloorPercent = 9;
 inline constexpr uint32_t kTurnOpenArenaReserve = 32 * 1024;   // plain_engine.cpp kTurnArenaReserve
 inline constexpr uint32_t kArenaStep = 64 * 1024;
 
+// ---- the owner's settings of engine 2 (rulings 105 and 106; lane RB-C3) ------------------------
+// After a compaction the request is the system prompt, one cumulative summary of at most
+// summaryTokens and the newest whole turns up to recentTokens (the recent part). Max rounds and the
+// hard time limit bound an attended turn (plain::ownerCeiling turns them into TurnSetup::ceiling).
+// Per device: the binding stores them (the device under the NVS keys, the hosted instance and the web
+// page under the field names below), passes them through clampSettings, and gives them to the engine
+// (budgetFor(..., settings, ...), plain::CompactDeps::settings). Unset reads as the defaults.
+inline constexpr uint32_t kRecentTokensDefault = 10000, kRecentTokensMin = 2000, kRecentTokensMax = 80000;
+inline constexpr uint32_t kSummaryTokensDefault = 4000, kSummaryTokensMin = 1000, kSummaryTokensMax = 8000;
+inline constexpr uint16_t kMaxRoundsDefault = 64, kMaxRoundsMin = 8, kMaxRoundsMax = 64;
+inline constexpr uint32_t kHardTimeDefaultS = 1200, kHardTimeMinS = 120, kHardTimeMaxS = 1200;
+// The web and hosted field names, and the device's NVS keys (frozen once shipped).
+inline constexpr char kSettingRecentTokens[] = "e2_recent_tokens";
+inline constexpr char kSettingSummaryTokens[] = "e2_summary_tokens";
+inline constexpr char kSettingMaxRounds[] = "e2_max_rounds";
+inline constexpr char kSettingHardTimeS[] = "e2_hard_time_s";
+inline constexpr char kNvsRecentTokens[] = "e2RecentTok";
+inline constexpr char kNvsSummaryTokens[] = "e2SummaryTok";
+inline constexpr char kNvsMaxRounds[] = "e2MaxRounds";
+inline constexpr char kNvsHardTimeS[] = "e2HardTimeS";
+// The least recent part a head keeps when its due mark is too small for the owner's figure.
+inline constexpr uint32_t kRecentTokensFloor = 1000;
+
+struct EngineSettings {
+  uint32_t recentTokens = kRecentTokensDefault;
+  uint32_t summaryTokens = kSummaryTokensDefault;
+  uint16_t maxRounds = kMaxRoundsDefault;
+  uint32_t hardTimeS = kHardTimeDefaultS;
+};
+// Each figure inside its bounds; 0 (unset) reads as the default.
+EngineSettings clampSettings(const EngineSettings& s);
+
 struct ProfileMarks {
   uint32_t high = 0;   // H: compaction is due above it (stored bytes since thru)
   uint32_t low = 0;    // L: compaction keeps this much
@@ -100,7 +135,7 @@ struct ProfileMarks {
 struct TokenMarks {
   uint32_t aim = 0;    // the request this head aims at once the conversation fills it
   uint32_t due = 0;    // compaction is due once a request reached this (aim less the next request's growth)
-  uint32_t keep = 0;   // a request just after a compaction (kKeepPercent of the aim)
+  uint32_t keep = 0;   // a request just after a compaction: the fixed part, the summary and the recent part
 };
 
 // Which head a budget is for. Qualification never sizes the window (ruling 83 item 6): it is not
@@ -128,6 +163,13 @@ struct HeadBudget {
   uint32_t releasedKeep = 0;     // v5.1.2's keep: a compaction leaves at least this much text
   uint32_t bodyMilliBytesPerToken = 0;   // the wire ratio the byte marks were derived with (x1000)
   int32_t bodyInterceptBytes = 0;        // and its intercept (0 on a released nominal ratio)
+  // The owner's settings as this head carries them (rulings 105 and 106): summary + recent part at most
+  // half of what the due mark leaves beside the fixed part, the summary yielding first, never under
+  // kSummaryTokensMin and kRecentTokensFloor. L (marks.low) is the recent part in bytes on the wire.
+  uint32_t fixedTokens = 0;              // the fixed part's ceiling and the recent-files list, in tokens
+  uint32_t summaryTokens = 0;
+  uint32_t summaryBytes = 0;             // the summary's budget in bytes on the wire (fitSummary's cap)
+  uint32_t recentTokens = 0;
 };
 
 // The fixed marks of an owner-chosen smaller profile (tight 24,000/12,000 ... wide 100,000/50,000).
@@ -139,9 +181,14 @@ Status profileMarks(Profile p, ProfileMarks& out);
 Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out);
 // The same on an explicit link and routed lift (the generated table and tests).
 Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift, HeadBudget& out);
-// The budget from a released row already in hand (pure; the two above read orch::turnBudgetFor with
+// The same with the owner's settings (the two above use the defaults).
+Status budgetFor(const HeadKey& head, Profile requested, const EngineSettings& settings, HeadBudget& out);
+Status budgetFor(const HeadKey& head, Profile requested, BudgetLink link, bool routedLift,
+                 const EngineSettings& settings, HeadBudget& out);
+// The budget from a released row already in hand (pure; the ones above read orch::turnBudgetFor with
 // the tool loop on).
-HeadBudget budgetFromRow(const RequestBudget& row, const HeadKey& head, Profile requested);
+HeadBudget budgetFromRow(const RequestBudget& row, const HeadKey& head, Profile requested,
+                         const EngineSettings& settings = EngineSettings{});
 
 // Body bytes of a request of `tokens` on the head's wire (the ratio budgetFor used).
 uint32_t bodyBytesFor(const HeadBudget& b, uint32_t tokens);
