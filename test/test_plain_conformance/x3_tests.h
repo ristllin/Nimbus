@@ -132,6 +132,40 @@ inline void test_a_new_error_each_round_is_not_a_loop() {
   TEST_ASSERT_EQUAL_STRING("None of them exist.", out.text.c_str());
 }
 
+// A seam that refuses the same call with a text that carries a changing number (a request id, a
+// counter) fails the same way each time: the loop trips. Counter: a refusal whose words change is
+// a new error each round, and the turn goes on to its reply.
+inline void test_the_same_error_with_a_changing_number_is_still_a_loop() {
+  for (bool words : {false, true}) {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    int n = 0;
+    b.moreHooks = [&n, words](plain::PlainHooks& h) {
+      (void)h.beforeDispatch(plain::HookSlot::Policy, [&n, words](const plain::DispatchCtx&) {
+        static const char* const kWhy[] = {"busy", "locked", "offline", "moved", "renamed", "archived", "hidden", "late"};
+        plain::DispatchDecision d;
+        d.verdict = plain::DispatchVerdict::Refuse;
+        d.text = words ? std::string("refused: ") + kWhy[n % 8] : "refused (request " + std::to_string(1000 + n) + ")";
+        ++n;
+        return d;
+      });
+    };
+    b.model.respondWith([](const sp::Recorded& r, size_t) {
+      if (r.view.toolChoice == "none") return sp::say("Done: the reads so far. Left: the rest.");
+      return r.step < 8 ? sp::call("read_file", R"({"path":"notes/a.md"})") : sp::say("It stayed refused.");
+    });
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read a", out));
+    if (!words) {
+      TEST_ASSERT_EQUAL(kLoopRequests, (int)b.model.requests().size());
+      expectHonestStop(b, out, plain::GuardTrip::Loop, true, "a changing number");
+    } else {
+      TEST_ASSERT_TRUE_MESSAGE(out.trip == plain::GuardTrip::None, plain::guardTripSlug(out.trip));
+      TEST_ASSERT_EQUAL(9, (int)b.model.requests().size());
+    }
+  }
+}
+
 // ---- a progressing turn goes on to the hard guards ------------------------------------------------
 // The head at full (claude-sonnet-5-5 direct): each round's request is the due mark, 90% read from
 // the cache, priced at the head's rates. 40 progressing rounds pass two soft checks and reach the
@@ -299,6 +333,50 @@ inline void test_a_hard_guard_stops_honestly_and_the_owners_yes_continues_from_t
   TEST_ASSERT_TRUE_MESSAGE(bodyHas(c.model.requests()[4], "[stub big_read"), "the counter case kept the bulk whole");
 }
 
+// The stopped turn stays whole until an attended turn finishes: an agent report in between, a
+// restart in between, and a second stop before the yes each keep it (and the second stopped turn)
+// whole in the request the yes opens.
+inline sp::Step bigOrSay(const sp::Recorded& r, int* reads) {
+  if (r.view.toolChoice == "none") return sp::say("Done: the reads so far. Left: the rest.");
+  if (*reads > 0) {
+    --*reads;
+    return bigReadAt(100 + (size_t)r.step);   // every read its own tag: t100, t101, ...
+  }
+  return sp::say("Continuing.");
+}
+inline void test_the_stopped_turn_stays_whole_until_a_turn_finishes() {
+  for (int shape = 0; shape < 3; ++shape) {
+    txb::Battery b;
+    b.cost.inMicroPerM = 10000000;   // 0.20 USD a request: the spend guard after three
+    int reads = 3;
+    b.model.respondWith([&reads](const sp::Recorded& r, size_t) { return bigOrSay(r, &reads); });
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read every part", out));
+    TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Spend);
+    const std::string firstTag = "BULK-t100";   // the first stopped turn's first read
+    if (shape == 0) TXB_OK(b.unattended(plain::Trigger::AgentResult, "report: the helper is done", out));
+    if (shape == 1) TXB_OK(b.boot());
+    if (shape == 2) {   // the continuation stops too
+      reads = 3;
+      TXB_OK(b.owner("go on", out));
+      TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Spend);
+    }
+    const size_t at = b.model.requests().size();
+    plain::TurnOutcome yes;
+    TXB_OK(b.owner("yes", yes));
+    TEST_ASSERT_EQUAL_STRING("Continuing.", yes.text.c_str());
+    const sp::Recorded& first = b.model.requests()[at];
+    char msg[80];
+    std::snprintf(msg, sizeof msg, "shape %d: the stopped turn left the request whole", shape);
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(first, firstTag), msg);
+    TEST_ASSERT_FALSE_MESSAGE(bodyHas(first, "[stub big_read"), msg);
+    // The yes finished: the next turn no longer keeps them whole.
+    plain::TurnOutcome after;
+    TXB_OK(b.owner("thanks", after));
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "[stub big_read"), "a finished continuation still kept the bulk whole");
+  }
+}
+
 // The owner's line after a guard stop, for every guard: one question whether to go on, never an
 // order to ask again.
 inline void test_the_limit_line_asks_one_question() {
@@ -417,6 +495,11 @@ inline void test_the_soft_check_and_the_loop_rule() {
   TEST_ASSERT_TRUE(plain::checkSoftGuards(l, s, m, which) == plain::SoftCheck::GoOn);
   TEST_ASSERT_TRUE(which == plain::GuardTrip::Time);
   TEST_ASSERT_EQUAL(2 * plain::kSoftWallMs, m.nextMs);
+  // One long round past two intervals: the next check is the next interval after now, not now.
+  m.noteCall("read_file", "{\"o\":1}", false, false, "beta");
+  s.elapsedMs = 2 * plain::kSoftWallMs + 30000;
+  TEST_ASSERT_TRUE(plain::checkSoftGuards(l, s, m, which) == plain::SoftCheck::GoOn);
+  TEST_ASSERT_EQUAL(3 * plain::kSoftWallMs, m.nextMs);
   // Unattended: never a soft check.
   plain::GuardLimits u;
   TXB_OK(plain::guardLimitsFor(0, plain::HeadCost{}, false, u));
@@ -440,6 +523,9 @@ inline void test_the_soft_check_and_the_loop_rule() {
     lp.endRound();
   }
   TEST_ASSERT_EQUAL(3, lp.idle);
+  lp.noteText("a new finding");   // new text is progress at a soft check, never for the loop rule
+  TEST_ASSERT_EQUAL(3, lp.idle);
+  TEST_ASSERT_TRUE(lp.progressed);
   plain::GuardState ls;
   ls.idleRounds = lp.idle;
   plain::GuardTrip trip = plain::GuardTrip::None;
@@ -456,11 +542,13 @@ inline void run() {
   RUN_TEST(test_the_soft_check_and_the_loop_rule);
   RUN_TEST(test_a_looping_turn_trips_at_once);
   RUN_TEST(test_a_new_error_each_round_is_not_a_loop);
+  RUN_TEST(test_the_same_error_with_a_changing_number_is_still_a_loop);
   RUN_TEST(test_a_progressing_40_round_turn_does_not_trip_before_64);
   RUN_TEST(test_a_progressing_turn_past_240_s_shows_a_status_line_and_goes_on);
   RUN_TEST(test_a_progressing_turn_ends_honestly_inside_1200_s);
   RUN_TEST(test_a_turn_not_progressing_at_a_soft_check_stops_honestly);
   RUN_TEST(test_a_hard_guard_stops_honestly_and_the_owners_yes_continues_from_the_log);
+  RUN_TEST(test_the_stopped_turn_stays_whole_until_a_turn_finishes);
   RUN_TEST(test_the_limit_line_asks_one_question);
   RUN_TEST(test_an_unattended_turn_keeps_todays_limits);
   RUN_TEST(test_the_guard_table_at_full_per_head_class);

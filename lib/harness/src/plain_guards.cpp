@@ -52,6 +52,19 @@ uint32_t keyHash(const std::string& a, const std::string& b) {
   return fnv(fnv(2166136261u, a) ^ 0x9e3779b9u, b) | 1u;   // never 0
 }
 
+// An error as the loop rule compares it: its first line, at most kErrorKeyBytes, without digits, so
+// a request id, a timestamp or a counter in the text does not make the same failure look new.
+constexpr size_t kErrorKeyBytes = 160;
+uint32_t errorKey(const std::string& text) {
+  std::string k;
+  for (size_t i = 0; i < text.size() && text[i] != '\n' && k.size() < kErrorKeyBytes; ++i)
+    if (text[i] < '0' || text[i] > '9') k += text[i];
+  return keyHash(k, "");
+}
+
+// What one turn remembers is bounded: past it a new call or text is progress, unremembered.
+constexpr size_t kProgressMemory = 512;
+
 }  // namespace
 
 Status guardLimitsFor(int storedRounds, const HeadCost& cost, bool attended, GuardLimits& out) {
@@ -89,7 +102,7 @@ void GuardProgress::noteCall(const std::string& tool, const std::string& args, b
                              const std::string& result) {
   if (suppressed) return;
   const uint32_t key = keyHash(tool, args);
-  const uint32_t outcome = isError ? keyHash(result, "") : 0;
+  const uint32_t outcome = isError ? errorKey(result) : 0;
   for (std::pair<uint32_t, uint32_t>& a : attempts) {
     if (a.first != key) continue;
     const bool same = outcome && a.second == outcome;
@@ -98,7 +111,7 @@ void GuardProgress::noteCall(const std::string& tool, const std::string& args, b
     roundProgressed = progressed = true;
     return;
   }
-  attempts.emplace_back(key, outcome);
+  if (attempts.size() < kProgressMemory) attempts.emplace_back(key, outcome);
   roundProgressed = progressed = true;
 }
 
@@ -106,7 +119,7 @@ void GuardProgress::noteText(const std::string& text) {
   if (text.empty()) return;
   const uint32_t h = keyHash(text, "");
   if (std::find(texts.begin(), texts.end(), h) != texts.end()) return;
-  texts.push_back(h);
+  if (texts.size() < kProgressMemory) texts.push_back(h);
   progressed = true;
 }
 
@@ -127,8 +140,13 @@ SoftCheck checkSoftGuards(const GuardLimits& limits, const GuardState& state, Gu
   which = byRounds ? GuardTrip::Rounds : GuardTrip::Time;
   if (!progress.progressed) return SoftCheck::Stop;
   progress.progressed = false;   // the next check asks for progress since this one
-  if (byRounds) progress.nextRounds = (uint16_t)std::min<uint32_t>((uint32_t)atRounds + limits.rounds, UINT16_MAX);
-  if (byTime) progress.nextMs = (uint32_t)std::min<uint64_t>((uint64_t)atMs + limits.softWallMs, UINT32_MAX);
+  // The next check is the next multiple of the interval past where the turn is now, so one long
+  // round never makes the next boundary due at once.
+  if (byRounds) progress.nextRounds = (uint16_t)std::min<uint32_t>((state.rounds / limits.rounds + 1u) * limits.rounds, UINT16_MAX);
+  if (byTime) {
+    const uint64_t now = (uint64_t)state.elapsedMs + kMinRequestMs;
+    progress.nextMs = (uint32_t)std::min<uint64_t>((now / limits.softWallMs + 1) * limits.softWallMs, UINT32_MAX);
+  }
   return SoftCheck::GoOn;
 }
 

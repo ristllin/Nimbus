@@ -48,8 +48,9 @@ struct PlainEngine::ChatState {
   uint32_t droppedTurns = 0;
   uint64_t droppedFirstAt = 0, droppedLastAt = 0;   // the first item of the first and last dropped turn
   uint32_t lastDroppedTurn = 0;        // the newest turn a drop reached (counted once)
-  // The first item of the last attended turn a guard stopped (0: none): the next attended turn
-  // continues from the log, so the pointer never stubs that turn (lane RB-X3, ruling 84 item 2).
+  // The first item of the oldest attended turn a guard stopped that no later attended turn has
+  // finished (0: none): the turn that continues it reads it from the log, so the pointer never stubs
+  // it, whatever turn opens in between (lane RB-X3, ruling 84 item 2). Rebuilt at boot.
   uint64_t stoppedFrom = 0;
   // The memory line, built at boot: on a refused allocation it goes out with no allocation.
   std::string memoryLine;
@@ -60,6 +61,13 @@ namespace {
 uint32_t fnv1a(uint32_t h, const std::string& s) {
   for (unsigned char ch : s) h = (h ^ ch) * 16777619u;
   return h;
+}
+
+// The continuation rule at an attended turn's close: a stop keeps the oldest stopped turn (or this
+// one), a finish clears it.
+uint64_t stoppedAfter(uint64_t from, bool stopped, uint64_t firstQ) {
+  if (!stopped) return 0;
+  return from ? from : firstQ;
 }
 
 // One turn's state. It lives on the heap so runTurn's frame stays small.
@@ -535,15 +543,14 @@ class TurnRun {
     return st;
   }
 
-  // How far the pointer may move: to the last closed turn, except that an attended turn after one a
-  // guard stopped continues from the log, so that turn stays whole (lane RB-X3, ruling 84 item 2).
+  // How far the pointer may move: to the last closed turn, except that a turn a guard stopped stays
+  // whole until an attended turn finishes without a stop (lane RB-X3, ruling 84 item 2).
   uint64_t pointerLimit() const {
-    const bool continues = c_.stoppedFrom && personTrigger(t_.ctx.trigger);
-    return continues ? std::min(c_.lastClosedQ, c_.stoppedFrom - 1) : c_.lastClosedQ;
+    return c_.stoppedFrom ? std::min(c_.lastClosedQ, c_.stoppedFrom - 1) : c_.lastClosedQ;
   }
-  // At an attended turn's close: whether the next one continues it.
+  // At an attended turn's close: a stop keeps the oldest stopped turn whole, a finish ends it.
   void noteStop() {
-    if (personTrigger(t_.ctx.trigger)) c_.stoppedFrom = t_.trip != GuardTrip::None ? t_.firstQ : 0;
+    if (personTrigger(t_.ctx.trigger)) c_.stoppedFrom = stoppedAfter(c_.stoppedFrom, t_.trip != GuardTrip::None, t_.firstQ);
   }
 
   uint32_t bulkAbove(uint64_t pointer) const {
@@ -1587,6 +1594,32 @@ namespace {
 
 // A turn end stored between turns (the resume seam closes a turn at boot, lane RB-X1): the last
 // closed turn is the newest e item the engine has not seen, wherever it came from.
+// The continuation rule (noteStop) over the arena at boot: the oldest attended turn a guard stopped
+// that no later attended turn finished.
+bool personSlug(const std::string& s) {
+  return s == triggerSlug(Trigger::Owner) || s == triggerSlug(Trigger::Console) || s == triggerSlug(Trigger::Resume);
+}
+uint64_t stoppedFromArena(const tx::TxArena& arena) {
+  uint64_t from = 0, first = 0;
+  uint32_t turn = 0;
+  bool person = false;
+  std::unique_ptr<tx::Item> item(new tx::Item());   // about 0.5 KB: never on the boot frame
+  tx::Item& it = *item;
+  for (size_t i = 0; i < arena.count(); ++i) {
+    tx::ArenaEntry e;
+    if (!arena.header(i, e).ok()) continue;
+    if (e.turn != turn) {
+      turn = e.turn;
+      first = e.q;
+      person = false;
+    }
+    if (e.kind == tx::ItemKind::TurnOpen && arena.get(i, it).ok()) person = personSlug(it.trigger);
+    if (e.kind != tx::ItemKind::TurnEnd || !person || !arena.get(i, it).ok()) continue;
+    from = stoppedAfter(from, it.end.cause.rfind("limit:", 0) == 0, first);
+  }
+  return from;
+}
+
 void syncClosed(PlainEngine::ChatState& c, const tx::TxArena& arena) {
   for (size_t i = arena.count(); i-- > 0;) {
     tx::ArenaEntry e;
@@ -1690,6 +1723,7 @@ Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
     c.lastTurn = std::max(c.lastTurn, e.turn);
     if (e.kind == tx::ItemKind::TurnEnd) c.lastClosedQ = e.q;
   }
+  c.stoppedFrom = stoppedFromArena(*deps.arena);
   if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
     std::string block;
     tx::SettleReport rep;
