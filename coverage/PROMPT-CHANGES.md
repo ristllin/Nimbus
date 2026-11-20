@@ -977,3 +977,19 @@ deleted. Engine 2 has no baseline.
 - lane: RB-BGb
 - prd: section 2 (the transcript), as amended by ruling 93 item 3 (the in-turn replay budget is what the request has free; a fold happens only when the request would otherwise not fit, and what was folded is named and reachable)
 - why: lib/core/src/orch_transcript.cpp: a folded round's line ends with `results.get {"tag":"rN"}` for each result over 200 B kept whole in the results ring (a result the loop's clamp kept names that tag), and the fold heading says so (it said to call the tool again); the newest round's result cut to fit ends with `[cut to fit this request: bytes 0-k of n; next part: results.get {"tag":"rN","offset":k}]`, RB-TR1's part head form (PC-0119) with the results.get pointer. lib/core/src/orch_head_loop.cpp: the refit log names its new rung ("the newest round's results"). Text without a tag (no results ring) is as before. Planned work, not a fix.
+
+### PC-0134: the truth probe on engine 2 (RB-G0's measured prompt, catalogued in the e2 probe class)
+- catalog: e2
+- class: probe
+- kind: spec
+- bytes: 0 -> 1323
+- sha8: e3b0c442 -> 29789b84
+- lane: RB-G1
+- prd: section 8 (rail 8, the truth check: the probe prompt and the device item are in the model-text catalog)
+- why: lib/harness/src/plain_truth.cpp binds the truth check into engine 2, which sends the probe RB-G0 measured
+  and RB-REC6 qualified (precision 1.0, recall 0.990; PC-0094), byte for byte from
+  lib/core/include/nimbus/orch/truth.h, now an e2 extra source of class probe (the prompt 1,296 B, 1,307 B as
+  catalogued with its escapes, and the probe model id). Ruling 33 moves the e2 probe ceiling from 1,024 B to
+  1,536 B for exactly this text. The facts item of a hold and the probe's section frame are the same functions
+  of lib/core/src/orch_truth.cpp the e1 catalog already gates (PC-0012, frozen class device_notes); the binding
+  adds no text of its own. Planned work (ruling 18), not a fix.

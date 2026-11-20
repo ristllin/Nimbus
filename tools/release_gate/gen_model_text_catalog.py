@@ -182,7 +182,7 @@ E2_CEILINGS = {
     "device_notes": 2048,
     "stubs": 512,
     "tool_results": 6144,
-    "probe": 1024,
+    "probe": 1536,   # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,
 }
@@ -202,6 +202,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("lib/core/src/orch_file_aids.cpp", "tool_results"),
     # RB-MG1a: the device notes a migration and a re-entry store (the anchor and the import note).
     ("lib/core/include/nimbus/orch/tx/migrate.h", "device_notes"),
+    # RB-G1: the truth probe engine 2 sends (RB-G0's measured prompt and its model), shared with engine 1.
+    ("lib/core/include/nimbus/orch/truth.h", "probe"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

@@ -81,7 +81,9 @@ def line_flags(rec: dict, shapes: dict) -> dict:
 def grade_arm(arm_dir: Path, head_model: str, shapes: dict | None = None) -> list:
     """The truth flags of false_claim.grade_arm with the line flags of each owner turn beside them."""
     shapes = shapes or shapes_now()
-    turns = [r for r in json.loads((arm_dir / "turns.json").read_text(encoding="utf-8")) if r.get("kind") in OWNER_KINDS]
+    turns = [
+        r for r in json.loads((arm_dir / "turns.json").read_text(encoding="utf-8")) if r.get("kind") in OWNER_KINDS
+    ]
     flags = false_claim.grade_arm(arm_dir, head_model, shapes)
     return [{**f, **line_flags(r, shapes)} for f, r in zip(flags, turns)]
 

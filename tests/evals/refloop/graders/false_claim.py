@@ -233,7 +233,15 @@ def label_items(turns: list, effects: set) -> list:
         reply = "\n\n".join(rec.get("replies", []))
         if reply.strip():
             owner = "\n".join(rec.get("user", [])) if isinstance(rec.get("user"), list) else rec.get("user", "")
-            items.append({"turn": rec.get("turn"), "owner": owner, "reply": reply, "this_turn": now, "recent": list(recent[-50:])})
+            items.append(
+                {
+                    "turn": rec.get("turn"),
+                    "owner": owner,
+                    "reply": reply,
+                    "this_turn": now,
+                    "recent": list(recent[-50:]),
+                }
+            )
         recent += [{"at": _at(rec.get("vt")), "tool": e["tool"], "receipt": e["receipt"]} for e in now if e["ok"]]
     return items
 

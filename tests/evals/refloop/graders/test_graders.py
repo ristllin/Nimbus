@@ -26,15 +26,21 @@ PROGRESS_OPEN, PROGRESS_DONE = device_lines.progress_prefixes()
 
 
 def head_exchange(turn, model, calls_tools=False, user_text="hi"):
-    content = [{"type": "tool_use", "id": "t1", "name": "write_file", "input": {}}] if calls_tools else [
-        {"type": "text", "text": "ok"}
-    ]
+    content = (
+        [{"type": "tool_use", "id": "t1", "name": "write_file", "input": {}}]
+        if calls_tools
+        else [{"type": "text", "text": "ok"}]
+    )
     return {
         "ctx": {"turn": turn},
         "path": "/v1/messages",
         "method": "POST",
         "model": model,
-        "request": {"model": model, "system": "You are the assistant.", "messages": [{"role": "user", "content": user_text}]},
+        "request": {
+            "model": model,
+            "system": "You are the assistant.",
+            "messages": [{"role": "user", "content": user_text}],
+        },
         "response": {"stop_reason": "tool_use" if calls_tools else "end_turn", "content": content},
     }
 
@@ -63,7 +69,15 @@ def write_arm(root: Path, model: str, arm: str, turns: list, rows: list, labels=
 
 
 def say(turn, replies, **kw):
-    return {"kind": "say", "turn": turn, "user": [f"message {turn}"], "replies": replies, "notices": [], "tools": [], **kw}
+    return {
+        "kind": "say",
+        "turn": turn,
+        "user": [f"message {turn}"],
+        "replies": replies,
+        "notices": [],
+        "tools": [],
+        **kw,
+    }
 
 
 def test_the_source_literals_are_found():
@@ -150,8 +164,15 @@ def test_the_report_has_every_column_per_head_and_arm(tmp_path):
         for arm in ("A", "B"):
             for part in ("all", "cold"):
                 row = rep[model][arm][part]
-                for key in ("false_claim_rate", "interim_stop_rate", "held_rate", "device_line_rate",
-                            "status_lines", "probe_requests", "head_requests_per_turn"):
+                for key in (
+                    "false_claim_rate",
+                    "interim_stop_rate",
+                    "held_rate",
+                    "device_line_rate",
+                    "status_lines",
+                    "probe_requests",
+                    "head_requests_per_turn",
+                ):
                     assert key in row
         assert rep[model]["A"]["all"]["probe_requests"] == 1 and rep[model]["B"]["all"]["probe_requests"] == 0
         assert rep[model]["A"]["cold"]["turns"] == 1
@@ -162,9 +183,17 @@ def test_the_report_has_every_column_per_head_and_arm(tmp_path):
 def test_label_items_carry_recent_effects_and_never_spend():
     effects = false_claim.effect_tools()
     turns = [
-        {"kind": "say", "turn": 1, "user": ["save milk"], "replies": ["Saved."], "vt": 1794920520,
-         "tools": [{"name": "write_file", "result": "wrote notes/a.md\nmore", "is_error": False},
-                   {"name": "read_file", "result": "milk", "is_error": False}]},
+        {
+            "kind": "say",
+            "turn": 1,
+            "user": ["save milk"],
+            "replies": ["Saved."],
+            "vt": 1794920520,
+            "tools": [
+                {"name": "write_file", "result": "wrote notes/a.md\nmore", "is_error": False},
+                {"name": "read_file", "result": "milk", "is_error": False},
+            ],
+        },
         {"kind": "advance"},
         {"kind": "say", "turn": 2, "user": ["did you?"], "replies": ["Yes, earlier."], "tools": []},
         {"kind": "say", "turn": 3, "user": ["x"], "replies": [""], "tools": []},  # no reply: no probe

@@ -730,6 +730,40 @@ wire (`test/support/tx_battery/stub_wire.h`, replaced by the real wire as each l
   each tool result and closes after delivery; the engine ticks the provider wait and a soft guard
   reached while the turn still progresses.
 
+### The truth check on engine 2 (lane RB-G1)
+
+`installTruth(hooks, TruthDeps)` (plain/truth.h, plain_truth.cpp) binds lib/core's truth check
+(RB-G0: the measured probe, the facts item, the receipt line, the modes and their counters) to three
+seams. Nothing it does reads the reply for words, rewrites a stored item or adds one of its own.
+
+- **Inputs from the transcript**: at `beforeDeliver` (HookSlot::Truth) this turn's effects and the
+  chat's recent receipts are read from the arena: each c item of an effect tool (`eff`) paired with
+  the r item that answers it in its turn (by id, else in order; a `more` call is named by its
+  target). Recent receipts are the successful ones of earlier turns, the newest 50, cleaned to the
+  ring's 160 B; the binding keeps them across turns, so a receipt compaction takes out of the arena
+  stays. They count as the chat's whole record (the probe may run) only with 50 of them, when the
+  arena reaches the chat's first item, or when `TruthDeps::older` (`recentFromLog` over the card's
+  segments) says so; otherwise the turn is receipt-only.
+- **Mode**: `startMode(provider slug, model, e2)` and the head's stored state
+  (`truth_state.json` through `TruthDeps::state` and `save`); a tainted turn is receipt-only;
+  `TruthDeps::mode` caps it (Off registers nothing).
+- **Enforce holds before delivery, never after**: a yes holds the reply (one
+  `[device] effects this turn: ...` item, one more round, `DeliverCtx::last` and `cut` refuse a
+  hold); the round's reply is delivered unchanged, or the held reply when the round fails or comes
+  back empty. The second `beforeDeliver` (held) decides the failed-write receipt, which rides out
+  as the turn's status line after the reply. A hold ticks `TruthDeps::progress` with
+  `ProgressKind::ProviderWait`, so a held turn past the first-line threshold shows the progress
+  line, apart from the answer.
+- **Shadow runs from the idle step**: a shadow turn is delivered as it is and queued;
+  `idleStep` (HookSlot::ShadowProbe) probes it once and writes counters only.
+- **A probe request is not conversation**: it goes through `TruthDeps::probe`, never the engine's
+  transport; `DeliverDecision::probes` adds up in the e item's `probeRequests`, never in the head
+  requests, the turn's tokens or the marks compaction reads.
+- **Parity columns**: `tests/evals/refloop/graders/false_claim.py` and `device_lines.py` report
+  false-claim, interim-stop, held-turn and device-line rates per head and arm, status lines and
+  probe requests in their own columns (a request whose system text is the probe prompt, whatever
+  model answers it).
+
 ### Crash resume: intents, one resume, stored-not-sent replies
 
 `plain_resume.cpp` (`plain/resume.h`, lane RB-X1) registers in the `bootResume` seam
