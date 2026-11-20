@@ -9,6 +9,10 @@ variant has a recorded baseline (the last measured tree, re-based at release bou
 and a ceiling (the v4.5.15 ELF plus a small allowance) in static_dram_ceilings.json, and
 an image over its ceiling fails.
 
+The engine-2 images (the *-e2 envs, lane RB-I0) have their own table, "engine2", in the same
+file: release.yml ships none of them yet, so they are not shipped variants, but every check here
+covers them the same way (a built e2 image over its ceiling fails).
+
 Raising a ceiling is an owner-visible change: it needs the bench heap A/B (idle and
 request-start free heap, before and after) in the PR, never just "it grew".
 
@@ -78,8 +82,21 @@ def static_dram(blob: bytes) -> int:
 
 
 def load_ceilings(path: str = CEILINGS) -> dict:
+    """The shipped variants (release.yml's loop)."""
     with open(path, encoding="utf-8") as f:
         return json.load(f)["variants"]
+
+
+def load_all_ceilings(path: str = CEILINGS) -> dict:
+    """The shipped variants and the engine-2 images ("engine2"), one table; a name in both fails."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    rows = dict(data["variants"])
+    for name, row in data.get("engine2", {}).items():
+        if name in rows:
+            raise ValueError(f"{name} is both a shipped variant and an engine-2 row")
+        rows[name] = row
+    return rows
 
 
 def judge(variant: str, used: int, ceilings: dict) -> tuple:
@@ -114,7 +131,7 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--ceilings", default=CEILINGS, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     try:
-        ceilings = load_ceilings(args.ceilings)
+        ceilings = load_all_ceilings(args.ceilings)
     except (OSError, ValueError, KeyError) as e:
         print(f"FAIL static DRAM: cannot read {args.ceilings}: {e}")
         return 1

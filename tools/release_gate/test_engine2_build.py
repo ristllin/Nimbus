@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.join(REPO, "tools", "engine"))
 sys.path.insert(0, HERE)
 
 import check_elf_symbols  # noqa: E402
+import check_static_dram  # noqa: E402
 import check_engine_filter  # noqa: E402
 import check_tg_poll_stack  # noqa: E402
 import list_engine1_includes as lister  # noqa: E402
@@ -157,7 +158,7 @@ class EngineOneAbsentTests(unittest.TestCase):
 
     def test_the_committed_list_is_the_engine1_objects_symbols(self):
         listed = check_elf_symbols.read_e1_symbols()
-        self.assertGreater(len(listed), 500)
+        self.assertGreater(len(listed), 300)
         self.assertEqual(listed, sorted(listed))
         self.assertEqual(len(listed), len(set(listed)))
         sources = set(lister.read_engine1_only(REPO))
@@ -261,16 +262,29 @@ class EngineOneListTests(unittest.TestCase):
 
 
 class StaticDramTests(unittest.TestCase):
-    def test_every_engine2_env_has_a_ceiling_row(self):
+    def test_every_engine2_env_has_a_bounded_ceiling_row(self):
         with open(os.path.join(HERE, "static_dram_ceilings.json"), encoding="utf-8") as fh:
-            rows = json.load(fh)["variants"]
-        envs = {r["env"]: (name, r) for name, r in rows.items()}
-        for env, twin in E2_ENVS.items():
-            self.assertIn(env, envs)
-            _name, row = envs[env]
+            data = json.load(fh)
+        rows = data["engine2"]
+        envs = {r["env"]: r for r in rows.values()}
+        self.assertEqual(set(envs), set(E2_ENVS))
+        for row in rows.values():
             self.assertLessEqual(row["baseline"], row["ceiling"])
-            if twin in envs:  # never more internal RAM than the engine-1 twin may take
-                self.assertLessEqual(row["ceiling"], envs[twin][1]["ceiling"])
+            self.assertLessEqual(row["ceiling"], row["baseline"] + 2048)  # the shipped rows' bound
+        # Engine-2 rows never pose as shipped variants (release.yml's loop reads "variants").
+        self.assertFalse(set(rows) & set(data["variants"]))
+        self.assertEqual(set(check_static_dram.load_all_ceilings()), set(rows) | set(data["variants"]))
+
+    def test_a_name_in_both_tables_fails(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "c.json")
+        row = {"env": "x", "baseline": 1, "ceiling": 2}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"variants": {"a": row}, "engine2": {"a": row}}, fh)
+        with self.assertRaises(ValueError):
+            check_static_dram.load_all_ceilings(path)
+        self.assertEqual(check_static_dram.main(["--ceilings", path]), 1)
 
 
 if __name__ == "__main__":

@@ -9,13 +9,16 @@ every symbol an engine1_only object defines with GLOBAL, non-weak binding (nm ty
 the GNU unique u): such a symbol has exactly one strong definition in a link, so finding it in an
 engine-2 ELF means engine-1 code is there. Weak and COMDAT symbols (inline functions, template
 instantiations, vtables of shared classes: nm W, V) and local ones are left out: both engines may
-define those legitimately.
+define those legitimately. The engine seam's interface is left out too: a call of
+src/agent/engine_api.h or engine_tools.h is defined by both seams by design (orchestrator_e1.cpp and
+orchestrator_plain.cpp, tools_e1.cpp and tools_plain.cpp), so every symbol the engine-2 device
+sources (the src/ entries of engine2_only.txt) define in the twin <env>-e2 build is subtracted.
 
 The objects come from the engine-1 builds of this tree (.pio/build/<env>), every env given, so
 the NIMBUS_TEST console's engine-1 symbols are listed too. The check is
 `tools/release_gate/check_elf_symbols.py --engine1-absent --elf <e2 firmware.elf>`.
 
-Usage (after `pio run -e esp32s3-cyd -e test-cyd`):
+Usage (after `pio run -e esp32s3-cyd -e test-cyd -e esp32s3-cyd-e2 -e test-cyd-e2`):
     python3 tools/engine/gen_e1_symbols.py [--env esp32s3-cyd --env test-cyd] [--out PATH]
     python3 tools/engine/gen_e1_symbols.py --check     # exit 1 when the committed list differs
 """
@@ -79,11 +82,33 @@ def strong_globals(nm_text: str) -> Set[str]:
     return out
 
 
+def nm_strong(nm: str, obj: str) -> Set[str]:
+    return strong_globals(subprocess.run([nm, "--defined-only", obj], capture_output=True, text=True, check=True).stdout)
+
+
+def seam_interface(root: str, env: str, nm: str) -> Set[str]:
+    """The symbols the engine-2 device sources define in the twin env `<env>-e2` (the seam's calls)."""
+    build = os.path.join(root, ".pio", "build", env + "-e2")
+    if not os.path.isdir(build):
+        raise GenError(f"env {env}-e2 is not built (pio run -e {env}-e2): the seam interface is read from it")
+    e2 = engine_filter.load_list(os.path.join(root, engine_filter.LIST_DIR, engine_filter.DROP_LIST[1]))
+    out: Set[str] = set()
+    for rel in e2:
+        if rel.startswith("src/"):
+            obj = object_for(build, rel)
+            if obj is None:
+                raise GenError(f"env {env}-e2: no object for {rel}")
+            out |= nm_strong(nm, obj)
+    return out
+
+
 def collect(root: str, envs: Iterable[str], nm: str) -> Dict[str, str]:
-    """symbol -> the engine1_only source that defines it, over every env's objects."""
+    """symbol -> the engine1_only source that defines it, over every env's objects, less the seam interface."""
     sources = engine_filter.load_list(os.path.join(root, engine_filter.LIST_DIR, engine_filter.DROP_LIST[2]))
     found: Dict[str, str] = {}
+    interface: Set[str] = set()
     for env in envs:
+        interface |= seam_interface(root, env, nm)
         build = os.path.join(root, ".pio", "build", env)
         if not os.path.isdir(build):
             raise GenError(f"env {env} is not built (pio run -e {env})")
@@ -95,12 +120,11 @@ def collect(root: str, envs: Iterable[str], nm: str) -> Dict[str, str]:
             if obj is None:
                 missing.append(rel)
                 continue
-            text = subprocess.run([nm, "--defined-only", obj], capture_output=True, text=True, check=True).stdout
-            for sym in strong_globals(text):
+            for sym in nm_strong(nm, obj):
                 found.setdefault(sym, rel)
         if missing:
             raise GenError(f"env {env}: no object for " + ", ".join(missing))
-    return found
+    return {sym: rel for sym, rel in found.items() if sym not in interface}
 
 
 def _engine_of(root: str, env: str) -> int:
