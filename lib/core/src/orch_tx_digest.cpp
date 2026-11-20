@@ -768,32 +768,36 @@ SummaryLine* findLine(Summary& s, uint32_t id) {
   return nullptr;
 }
 
-// One change line: false when it is not one.
-bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
+// A change line without its leading spaces and '*' bullet.
+std::string changeLine(const std::string& raw) {
   size_t at = 0;
   while (at < raw.size() && (raw[at] == ' ' || raw[at] == '\t')) ++at;
   if (at + 1 < raw.size() && raw[at] == '*' && raw[at + 1] == ' ') at += 2;
-  const std::string line = raw.substr(at);
-  if (line.empty()) return false;
-  if (line == "=") {
-    none = true;
-    return false;
-  }
-  const char op = line[0];
+  return raw.substr(at);
+}
+
+// The text after a change's head ("+F", "=Q3"), past an optional ':': false when no space follows.
+bool textAfter(const std::string& line, size_t end, std::string& text) {
+  if (end < line.size() && line[end] == ':') ++end;
+  text = line.substr(end);
+  return line.size() > end && line[end] == ' ';
+}
+
+// One change line: false when it is not one ("=" alone sets `none`).
+bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
+  const std::string line = changeLine(raw);
+  none = line == "=";
+  const char op = line.empty() ? 0 : line[0];
   if ((op != '+' && op != '=' && op != '-') || line.size() < 2 || !sectionOf(line[1], e.section)) return false;
-  size_t end = 2;
   if (op == '+') {
-    if (e.section == SummarySection::Files) return false;   // the device's own section
-    if (end < line.size() && line[end] == ':') ++end;
     e.op = SummaryOp::Add;
-    e.text = line.substr(end);
-    return line.size() > end && line[end] == ' ';
+    return e.section != SummarySection::Files && textAfter(line, 2, e.text);   // Files: the device's own section
   }
+  size_t end = 2;
   if (!idAt(line, 2, e.id, end)) return false;
   e.op = op == '=' ? SummaryOp::Replace : SummaryOp::Drop;
-  if (end < line.size() && line[end] == ':') ++end;
-  e.text = e.op == SummaryOp::Replace ? line.substr(end) : std::string();
-  return e.op == SummaryOp::Drop || (line.size() > end && line[end] == ' ');
+  if (e.op == SummaryOp::Drop) return true;
+  return textAfter(line, end, e.text);
 }
 
 size_t sectionBytes(const Summary& s, size_t section) {
@@ -803,6 +807,25 @@ size_t sectionBytes(const Summary& s, size_t section) {
   return n ? n + std::strlen(kTitles[section]) + 1 : 0;
 }
 
+}  // namespace
+
+namespace {
+// One change on the summary; false when it names no line it may change (unread).
+bool applyOne(Summary& s, const SummaryEdit& e, const std::string& text, uint32_t& next, std::vector<SummaryLine>& left) {
+  if (e.op == SummaryOp::Add) {
+    if (text.empty() || e.section == SummarySection::Files) return false;
+    bool twice = false;
+    for (const SummaryLine& o : s.lines) twice |= o.section == e.section && o.text == text;
+    if (!twice) s.lines.insert(s.lines.begin() + (long)insertAt(s, e.section), SummaryLine{e.section, next++, text});
+    return true;
+  }
+  SummaryLine* l = findLine(s, e.id);
+  if (!l || l->section == SummarySection::Files || (e.op == SummaryOp::Replace && text.empty())) return false;
+  left.push_back(*l);
+  if (e.op == SummaryOp::Replace) l->text = text;
+  else s.lines.erase(s.lines.begin() + (l - s.lines.data()));
+  return true;
+}
 }  // namespace
 
 uint32_t Summary::nextId() const {
@@ -844,29 +867,32 @@ static Status encodeSummaryBody(const Summary& s, std::string& out) {
   return Status::success();
 }
 
+namespace {
+// One stored line into `out`: a title moves `section` on, a device line sets its flag, an id line is a
+// line of the section in force. False for anything encodeSummary does not write.
+bool readStoredLine(const std::string& line, int& section, Summary& out) {
+  for (size_t i = (size_t)(section + 1); i < kSummarySections; ++i)
+    if (line == kTitles[i]) return section = (int)i, true;
+  if (line == digest_text::kNothingYet) return true;
+  if (line == digest_text::kArchived) return out.archived = true;
+  SummaryLine l;
+  size_t end = 0;
+  if (section < 0 || line.empty() || line[0] != kLetters[section] || !idAt(line, 1, l.id, end)) return false;
+  if (end >= line.size() || line[end] != ' ') return false;
+  l.section = (SummarySection)section;
+  l.text = line.substr(end + 1);
+  out.lines.push_back(l);
+  return true;
+}
+}  // namespace
+
 static Status parseSummaryBody(const std::string& text, Summary& out) {
   out = Summary{};
   if (!validSummaryText(text)) return Status::fail(Err::InvalidArgument, "tx::parseSummary");
   int section = -1;
-  for (size_t at = 0, nl; (nl = text.find('\n', at)) != std::string::npos; at = nl + 1) {
-    const std::string line = text.substr(at, nl - at);
-    bool title = false;
-    for (size_t i = 0; i < kSummarySections && !title; ++i)
-      if (line == kTitles[i] && (int)i > section) section = (int)i, title = true;
-    if (title || line == digest_text::kNothingYet) continue;
-    if (line == digest_text::kArchived) {
-      out.archived = true;
-      continue;
-    }
-    SummaryLine l;
-    size_t end = 0;
-    const bool ok = section >= 0 && !line.empty() && line[0] == kLetters[section] && idAt(line, 1, l.id, end) &&
-                    end < line.size() && line[end] == ' ';
-    if (!ok) return out = Summary{}, Status::fail(Err::InvalidArgument, "tx::parseSummary");
-    l.section = (SummarySection)section;
-    l.text = line.substr(end + 1);
-    out.lines.push_back(l);
-  }
+  for (size_t at = 0, nl; (nl = text.find('\n', at)) != std::string::npos; at = nl + 1)
+    if (!readStoredLine(text.substr(at, nl - at), section, out))
+      return out = Summary{}, Status::fail(Err::InvalidArgument, "tx::parseSummary");
   std::string again;
   if (!encodeSummary(out, again).ok() || again != text) return out = Summary{}, Status::fail(Err::InvalidArgument, "tx::parseSummary");
   return Status::success();
@@ -907,25 +933,7 @@ Status applySummaryEdits(Summary& s, const std::vector<SummaryEdit>& edits, Summ
   for (const SummaryEdit& e : edits) {
     std::string text = summaryLineText(e.text, kSummaryLineMaxBytes - frameBytes);
     if (!text.empty() && frame) text = frame(text);
-    SummaryLine* l = e.op == SummaryOp::Add ? nullptr : findLine(s, e.id);
-    const bool device = l && l->section == SummarySection::Files;
-    if ((e.op != SummaryOp::Drop && text.empty()) || (e.op != SummaryOp::Add && (!l || device)) ||
-        (e.op == SummaryOp::Add && e.section == SummarySection::Files)) {
-      ++unread;
-      continue;
-    }
-    if (e.op == SummaryOp::Add) {
-      bool twice = false;
-      for (const SummaryLine& o : s.lines) twice |= o.section == e.section && o.text == text;
-      if (!twice) s.lines.insert(s.lines.begin() + (long)insertAt(s, e.section), SummaryLine{e.section, next++, text});
-      continue;
-    }
-    left.push_back(*l);
-    if (e.op == SummaryOp::Replace) {
-      l->text = text;
-      continue;
-    }
-    s.lines.erase(s.lines.begin() + (l - s.lines.data()));
+    if (!applyOne(s, e, text, next, left)) ++unread;
   }
   return Status::success();
 }

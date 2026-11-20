@@ -377,6 +377,21 @@ void expectCovered(Chat& c, const char* when) {
 // Every stored digest is live or archived: none stored that the request will never show. A cumulative
 // summary (lane RB-C3) that is neither was superseded by the next stored one, and nothing of it left
 // silently: each of its lines is in the next summary or in the archive (rulings 105 and 106).
+// Each line of a superseded summary is in the next one or in the archive.
+void expectNothingLeftSilently(const tx::Item& sd, const tx::Item& next, const std::string& archive, const char* when) {
+  char msg[200];
+  tx::Summary was, now;
+  TEST_ASSERT_TRUE(tx::parseSummary(sd.x, was).ok());
+  TEST_ASSERT_TRUE(tx::parseSummary(next.x, now).ok());
+  for (const tx::SummaryLine& l : was.lines) {
+    bool kept = false;
+    for (const tx::SummaryLine& m : now.lines) kept |= m.id == l.id && m.text == l.text;
+    const std::string asArchived = std::string(1, tx::summaryLetter(l.section)) + std::to_string(l.id) + " " + l.text;
+    std::snprintf(msg, sizeof msg, "%s: line %c%u of s%llu left silently", when, tx::summaryLetter(l.section),
+                  (unsigned)l.id, (unsigned long long)sd.q);
+    TEST_ASSERT_TRUE_MESSAGE(kept || archive.find(asArchived) != std::string::npos, msg);
+  }
+}
 void expectStoredDigestsShown(Chat& c, const std::vector<tx::Item>& digests, const char* when) {
   char msg[200];
   std::string archive;
@@ -393,18 +408,7 @@ void expectStoredDigestsShown(Chat& c, const std::vector<tx::Item>& digests, con
     const bool superseded = tx::isSummaryText(sd.x) && next;
     std::snprintf(msg, sizeof msg, "%s: stored digest s%llu is neither live nor archived", when, (unsigned long long)sd.q);
     TEST_ASSERT_TRUE_MESSAGE(live || archived || superseded, msg);
-    if (!superseded || live) continue;
-    tx::Summary was, now;
-    TEST_ASSERT_TRUE(tx::parseSummary(sd.x, was).ok());
-    TEST_ASSERT_TRUE(tx::parseSummary(next->x, now).ok());
-    for (const tx::SummaryLine& l : was.lines) {
-      bool kept = false;
-      for (const tx::SummaryLine& m : now.lines) kept |= m.id == l.id && m.text == l.text;
-      const std::string asArchived = std::string(1, tx::summaryLetter(l.section)) + std::to_string(l.id) + " " + l.text;
-      std::snprintf(msg, sizeof msg, "%s: line %c%u of s%llu left silently", when, tx::summaryLetter(l.section),
-                    (unsigned)l.id, (unsigned long long)sd.q);
-      TEST_ASSERT_TRUE_MESSAGE(kept || archive.find(asArchived) != std::string::npos, msg);
-    }
+    if (superseded && !live) expectNothingLeftSilently(sd, *next, archive, when);
   }
 }
 void expectCoveredAcrossRestart(Chat& c, const char* when) {
@@ -2539,7 +2543,14 @@ void test_the_budget_view_reports_every_part_in_tokens() {
   tools[0].name = "t";
   tools[0].description = std::string(2992, 'd');
   plain::BudgetView v;
-  TEST_ASSERT_TRUE(plain::budgetView(b, tx::EngineSettings{}, sys, tools, c.live, *c.arena, c.head.thru, v).ok());
+  plain::BudgetViewIn in;
+  in.budget = &b;
+  in.system = &sys;
+  in.tools = &tools;
+  in.live = &c.live;
+  in.arena = c.arena.get();
+  in.thru = c.head.thru;
+  TEST_ASSERT_TRUE(plain::budgetView(in, v).ok());
   TEST_ASSERT_EQUAL_UINT32(3000, v.systemTokens);   // (5,986 + 2,993 + 1) B at 2.993 B a token
   TEST_ASSERT_EQUAL_UINT32(1000, v.toolsTokens);
   TEST_ASSERT_EQUAL_UINT32(4000, v.fixedTokens);
@@ -2550,6 +2561,9 @@ void test_the_budget_view_reports_every_part_in_tokens() {
   TEST_ASSERT_EQUAL_UINT16(64, v.maxRounds);
   TEST_ASSERT_EQUAL_UINT32(1200, v.hardTimeS);
   TEST_ASSERT_FALSE(v.nominal);
+  plain::BudgetView none;
+  in.arena = nullptr;
+  TEST_ASSERT_TRUE(plain::budgetView(in, none).err == tx::Err::InvalidArgument);
 }
 
 // ---- compaction first, in the engine (rulings 98 item 1, 105 item 3, 106 items 3 and 4; lane RB-C3) ----

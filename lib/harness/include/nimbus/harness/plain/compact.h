@@ -343,6 +343,12 @@ class CompactDriver {
   // older than any summary are passed as dated lines.
   Status baseFor(nimbus::orch::tx::Summary& base, std::string& baseText, std::string& legacy) const;
   Status merge(const SlicePlan& plan, const std::string& answer, std::string& text);
+  Status onDue(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out);
+  Status keep(const SlicePlan& plan, const std::string& answer, uint64_t now, bool prepareOnly, CompactOutcome& out);
+  Status takeEdits(const SlicePlan& plan, const std::vector<nimbus::orch::tx::SummaryEdit>& edits,
+                   nimbus::orch::tx::Summary& sum, std::vector<nimbus::orch::tx::SummaryLine>& left, size_t& unread) const;
+  void addFiles(const SlicePlan& plan, nimbus::orch::tx::Summary& sum, std::vector<nimbus::orch::tx::SummaryLine>& left) const;
+  Status archiveLeft(const SlicePlan& plan, const std::vector<nimbus::orch::tx::SummaryLine>& left) const;
   Status archiveLegacy();
   void keepPending(const SlicePlan& plan, const std::string& text, CompactOutcome& out);
   // The summary so far (the request's system text beside the prompt) and the one user message.
@@ -407,10 +413,16 @@ struct BudgetView {
   uint32_t hardTimeS = 0;
   bool nominal = false;
 };
-Status budgetView(const nimbus::orch::tx::HeadBudget& b, const nimbus::orch::tx::EngineSettings& settings,
-                  const SystemBlocks& system, const std::vector<ToolSpec>& tools,
-                  const std::vector<nimbus::orch::tx::DigestEntry>& live, const nimbus::orch::tx::TxArena& arena,
-                  uint64_t thru, BudgetView& out);
+struct BudgetViewIn {
+  const nimbus::orch::tx::HeadBudget* budget = nullptr;        // tx::budgetFor(head, profile, settings)
+  nimbus::orch::tx::EngineSettings settings;
+  const SystemBlocks* system = nullptr;                        // composeSystem's blocks for this chat now
+  const std::vector<ToolSpec>* tools = nullptr;                // toolManifest's array
+  const std::vector<nimbus::orch::tx::DigestEntry>* live = nullptr;   // PlainEngine::digests()
+  const nimbus::orch::tx::TxArena* arena = nullptr;
+  uint64_t thru = 0;                                           // PlainEngine::head()->thru
+};
+Status budgetView(const BudgetViewIn& in, BudgetView& out);   // InvalidArgument for a missing input
 
 // One step of a driver with fresh RAM state (persisted control only).
 Status compactSlice(const CompactDeps& deps, const IdleCtx& ctx, CompactOutcome& out);

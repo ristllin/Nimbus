@@ -568,6 +568,23 @@ void take(const Unit& u, std::string& text, UnitFacts& facts, SlicePlan& out) {
 
 }  // namespace
 
+namespace {
+// Device items alone are never a slice (they go with the next turn); stored items the arena could not
+// hold are named, never silent.
+void finishPlan(const SliceRules& r, uint64_t thru, SlicePlan& out) {
+  if (out.turns) {
+    if (r.omittedThru > thru) out.input.insert(0, std::string(st::kNotLoaded) + "\n");
+    return;
+  }
+  const size_t resident = out.resident, text = out.restText;
+  const bool held = out.textHeld;
+  out = SlicePlan{};
+  out.resident = out.rest = resident;
+  out.restText = text;
+  out.textHeld = held;
+}
+}  // namespace
+
 Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, SlicePlan& out) {
   out = SlicePlan{};
   if (!r.now || !r.high || r.low > r.high) return Status::fail(Err::InvalidArgument, "plain::planSlice");
@@ -592,16 +609,7 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
     if (units[i].content) shownDay = units[i].day;
     take(units[i], text, facts, out);
   }
-  if (!out.turns) {   // device items alone are never a slice: they go with the next turn
-    const size_t resident = out.resident, text = out.restText;
-    const bool held = out.textHeld;
-    out = SlicePlan{};
-    out.resident = out.rest = resident;
-    out.restText = text;
-    out.textHeld = held;
-  } else if (r.omittedThru > thru) {   // stored items the arena could not hold: named, never silent
-    out.input.insert(0, std::string(st::kNotLoaded) + "\n");
-  }
+  finishPlan(r, thru, out);
   return Status::success();
 }
 
@@ -830,11 +838,18 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   SlicePlan plan;
   bool due = false;
   Status s = planIfDue(ctx, plan, due);
-  if (!s.ok() && manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
-  if (s.ok() && ctx.urgency == Urgency::Now) due = cycle_ = true;   // the request does not fit: compact first
-  if (!s.ok()) return s;
+  if (!s.ok()) {
+    if (manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
+    return s;
+  }
+  if (ctx.urgency == Urgency::Now) due = cycle_ = true;   // the request does not fit: compact first
   if (!due) return urgent || manual_ ? s : prepare(ctx, out);
-  if (pendingValid()) return swapPending(ctx.now, out);   // prepared ahead: no request at the mark
+  return onDue(ctx, plan, out);
+}
+
+// Due: the summary prepared ahead is swapped in with no request, else one attempt (or nothing to take).
+Status CompactDriver::onDue(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out) {
+  if (pendingValid()) return swapPending(ctx.now, out);
   if (!plan.thru) return noSlice(plan, out);
   if (manual_ && manualAsks_ >= kCompactManualRequests) {
     endManual(texts::device_notes::kCompactDone);
@@ -1064,13 +1079,7 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   out.requests = asked.requests;
   out.ran = asked.requests > 0;
   if (asked.parked && d_.park) d_.park(rung);
-  if (s.ok() && plan.belowKeep)
-    hlog::logf("compact(%s): the arena has %u B free: this slice leaves under the v5.1.2 text keep (%u B kept)",
-               d_.chatKey.c_str(), (unsigned)d_.arena->freeBytes(), (unsigned)(plan.restText));
-  std::string text;
-  if (s.ok()) s = merge(plan, asked.summary, text);
-  if (s.ok() && prepareOnly) keepPending(plan, text, out);
-  else if (s.ok()) s = swap(plan, text, ctx.now, out);
+  if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
   settle(rung, plan, before.fails, ctx.now, s, out);
   return s.err == Err::TooLarge ? s : Status::success();
 }
@@ -1145,14 +1154,20 @@ struct RungAnswer {
 };
 
 // One summarizer exchange on one rung (the driver's attempt and a migration's digest 0).
-Status askRung(const CompactDeps& d, const SummarizerRung& rung, const std::string& sofar, const std::string& message,
-               size_t thinInput, uint64_t now,
+// The summarizer's request: the summary so far (system text), the one message, and the input size the
+// thin rule reads (0: none).
+struct RungMessage {
+  std::string sofar, message;
+  size_t thinInput = 0;
+};
+
+Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessage& m, uint64_t now,
                RungAnswer& ans) {
   const WireCodec* wire = rung.wire;
   Status s = wire ? Status::success() : wireFor(rung.dialect, wire);
   if (!s.ok() || !wire) return s.ok() ? Status::fail(Err::NotFound, "plain::CompactDriver::ask") : s;
   tx::TxArena arena;
-  if (!(s = messageArena(*d.platform, message, now, arena)).ok()) return s;
+  if (!(s = messageArena(*d.platform, m.message, now, arena)).ok()) return s;
   TurnCtx turn;
   turn.chatKey = d.chatKey;
   turn.chatId = d.chatId;
@@ -1165,7 +1180,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const std::stri
   turn.startedMs = d.platform->nowMs ? d.platform->nowMs() : 0;
   SystemBlocks system;
   system.core = st::kPrompt;
-  system.digests = sofar;   // the summary so far beside the prompt: the one message keeps under a line's cap
+  system.digests = m.sofar;   // the summary so far beside the prompt: the one message keeps under a line's cap
   const std::vector<ToolSpec> tools;
   RenderInput in;
   in.turn = &turn;
@@ -1188,7 +1203,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const std::stri
     ans.parked |= r.parkHost;
     if (!s.ok()) return s;
     const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
-    if (!cut || cap == kSummarizerRetryMaxTokens) return answerOf(r, cut, thinInput, ans.summary);
+    if (!cut || cap == kSummarizerRetryMaxTokens) return answerOf(r, cut, m.thinInput, ans.summary);
   }
   return Status::fail(Err::Io, "plain::CompactDriver::ask");
 }
@@ -1197,9 +1212,9 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const std::stri
 
 Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out) {
   RungAnswer ans;
-  std::string sofar, message;
-  Status s = messageFor(plan, sofar, message);
-  if (s.ok()) s = askRung(d_, rung, sofar, message, 0, now, ans);
+  RungMessage m;
+  Status s = messageFor(plan, m.sofar, m.message);
+  if (s.ok()) s = askRung(d_, rung, m, now, ans);
   out.summary = std::move(ans.summary);
   out.requests = ans.requests;
   out.parked = ans.parked;
@@ -1312,6 +1327,20 @@ Status CompactDriver::messageFor(const SlicePlan& plan, std::string& sofar, std:
 
 // The answer's changes applied to the summary so far in code (never a rewrite), the device's Files
 // lines, the head's budget; every line that left goes to the archive before anything is kept.
+// A taken answer: merged into the summary, then kept ahead of time or swapped in.
+Status CompactDriver::keep(const SlicePlan& plan, const std::string& answer, uint64_t now, bool prepareOnly,
+                           CompactOutcome& out) {
+  if (plan.belowKeep)
+    hlog::logf("compact(%s): the arena has %u B free: this slice leaves under the v5.1.2 text keep (%u B kept)",
+               d_.chatKey.c_str(), (unsigned)d_.arena->freeBytes(), (unsigned)(plan.restText));
+  std::string text;
+  const Status s = merge(plan, answer, text);
+  if (!s.ok()) return s;
+  if (!prepareOnly) return swap(plan, text, now, out);
+  keepPending(plan, text, out);
+  return s;
+}
+
 Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, std::string& text) {
   tx::Summary sum;
   std::string baseText, legacy;
@@ -1324,27 +1353,47 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, st
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver.changes");
   }
   std::vector<tx::SummaryLine> left;
-  size_t unread = 0, held = 0;
-  std::vector<tx::SummaryEdit> taken;
-  for (const tx::SummaryEdit& e : edits.edits)   // a slice that read outside content rewrites only framed lines
-    if (plan.tainted && e.op != tx::SummaryOp::Add && !framedIn(sum, e.id)) ++held;
-    else taken.push_back(e);
-  if (!(s = tx::applySummaryEdits(sum, taken, plan.tainted ? framedLine : inertLine, left, unread)).ok()) return s;
-  unread += held;
-  for (const FileNote& f : plan.files) {
-    if (f.path.find_first_of("<>") != std::string::npos) continue;   // never a frame tag in the system text
-    std::string when;
-    if (!tx::photoWhen(f.at, tz_, when).ok()) when.clear();
-    tx::noteSummaryFile(sum, f.path, when, f.deleted, left);
-  }
+  size_t unread = 0;
+  if (!(s = takeEdits(plan, edits.edits, sum, left, unread)).ok()) return s;
+  addFiles(plan, sum, left);
   const size_t cap = budget_.summaryBytes ? budget_.summaryBytes : tx::kSummaryMaxBytes;
   if (!(s = tx::fitSummary(sum, cap, left)).ok() || !(s = tx::encodeSummary(sum, text)).ok()) return s;
   if (unread + edits.unread)
     hlog::logf("compact(%s): %u lines of the answer were not changes", d_.chatKey.c_str(), (unsigned)(unread + edits.unread));
-  if (!left.empty() && !d_.files)   // no card: nothing can hold them; the conversation itself is not stored either
+  return archiveLeft(plan, left);
+}
+
+// The answer's changes on the summary; a slice that read outside content rewrites or drops only framed lines.
+Status CompactDriver::takeEdits(const SlicePlan& plan, const std::vector<tx::SummaryEdit>& edits, tx::Summary& sum,
+                                std::vector<tx::SummaryLine>& left, size_t& unread) const {
+  size_t held = 0;
+  std::vector<tx::SummaryEdit> taken;
+  for (const tx::SummaryEdit& e : edits)
+    if (plan.tainted && e.op != tx::SummaryOp::Add && !framedIn(sum, e.id)) ++held;
+    else taken.push_back(e);
+  const Status s = tx::applySummaryEdits(sum, taken, plan.tainted ? framedLine : inertLine, left, unread);
+  unread += held;
+  return s;
+}
+
+// The device's Files lines from the slice's file changes; never a frame tag in the system text.
+void CompactDriver::addFiles(const SlicePlan& plan, tx::Summary& sum, std::vector<tx::SummaryLine>& left) const {
+  for (const FileNote& f : plan.files) {
+    if (f.path.find_first_of("<>") != std::string::npos) continue;
+    std::string when;
+    if (!tx::photoWhen(f.at, tz_, when).ok()) when.clear();
+    tx::noteSummaryFile(sum, f.path, when, f.deleted, left);
+  }
+}
+
+// Every line that left goes to the archive before anything is kept (a refusal: the attempt fails).
+Status CompactDriver::archiveLeft(const SlicePlan& plan, const std::vector<tx::SummaryLine>& left) const {
+  if (left.empty()) return Status::success();
+  if (!d_.files) {   // no card: nothing can hold them; the conversation itself is not stored either
     hlog::logf("compact(%s): %u summary lines left with no storage to archive them", d_.chatKey.c_str(), (unsigned)left.size());
-  if (left.empty() || !d_.files) return Status::success();
-  s = tx::archiveSummaryLines(*d_.files, d_.chatKey, plan.day, left);
+    return Status::success();
+  }
+  const Status s = tx::archiveSummaryLines(*d_.files, d_.chatKey, plan.day, left);
   if (!s.ok()) hlog::logf("compact(%s): %u summary lines could not be archived: not taken", d_.chatKey.c_str(), (unsigned)left.size());
   return s;
 }
@@ -1410,11 +1459,17 @@ TurnCeiling ownerCeiling(const tx::EngineSettings& settings) {
   return c;
 }
 
-Status budgetView(const tx::HeadBudget& b, const tx::EngineSettings& settings, const SystemBlocks& system,
-                  const std::vector<ToolSpec>& tools, const std::vector<tx::DigestEntry>& live,
-                  const tx::TxArena& arena, uint64_t thru, BudgetView& out) {
+Status budgetView(const BudgetViewIn& in, BudgetView& out) {
   out = BudgetView{};
-  if (!b.bodyMilliBytesPerToken) return Status::fail(Err::InvalidArgument, "plain::budgetView");
+  if (!in.budget || !in.system || !in.tools || !in.live || !in.arena || !in.budget->bodyMilliBytesPerToken)
+    return Status::fail(Err::InvalidArgument, "plain::budgetView");
+  const tx::HeadBudget& b = *in.budget;
+  const SystemBlocks& system = *in.system;
+  const std::vector<ToolSpec>& tools = *in.tools;
+  const std::vector<tx::DigestEntry>& live = *in.live;
+  const tx::TxArena& arena = *in.arena;
+  const uint64_t thru = in.thru;
+  const tx::EngineSettings settings = in.settings;
   auto tokens = [&](size_t bytes) { return (uint32_t)((uint64_t)bytes * 1000 / b.bodyMilliBytesPerToken); };
   size_t toolBytes = 0;
   for (const ToolSpec& t : tools) toolBytes += t.name.size() + t.description.size() + t.schemaJson.size();
@@ -1496,7 +1551,10 @@ Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0An
   if (!(s = planSlice(arena, 0, rules, plan)).ok()) return s;
   if (!plan.thru) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
   RungAnswer ans;
-  s = askRung(d, rung, std::string(), plan.input, plan.input.size(), ask.now ? ask.now : rules.now, ans);
+  RungMessage m;
+  m.message = plan.input;
+  m.thinInput = plan.input.size();
+  s = askRung(d, rung, m, ask.now ? ask.now : rules.now, ans);
   if (ans.parked && d.park) d.park(rung);
   if (!s.ok()) return s;
   if (!(s = digestFor(plan, ans.summary, out.text)).ok()) return s;
