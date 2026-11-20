@@ -885,20 +885,32 @@ void test_owner_first_quiet_window_and_no_clock_gates() {
   expectCoveredAcrossRestart(big, "after two windows");
 }
 
-void test_nothing_due_under_H_and_the_night_and_prompt_triggers() {
+void test_nothing_due_under_H_at_night_or_by_day_and_the_prompt_trigger() {
   Chat c;
   c.day(-2, 12, 3000, "a");   // 36 KB, under H = 60,000 B and over 0.8 H? no: under 48,000
   c.day(0, 6, 1000, "b");
   c.answer([] { return sp::say(kSummary); });
   TEST_ASSERT_FALSE(c.step().ran);
-  // The night rule: between 03:00 and 05:00 local, resident above 0.8 H is enough.
-  Chat n;
-  n.day(-2, 15, 3000, "a");   // about 50 KB
-  n.day(0, 6, 200, "b");
-  n.answer([] { return sp::say(kSummary); });
-  TEST_ASSERT_FALSE(n.step().ran);
-  n.now = kNoon + 15 * 3600 + 1800;   // 18 Nov 03:30 UTC
-  TEST_ASSERT_TRUE(n.step().ran);
+  // No night rule (owner ruling 81, ruling 83 item 8, RB-H81): at 03:59 local, resident above
+  // 0.8 H and at or under H is not due; quiet hours only schedule a compaction already due. The
+  // counter-case: the same night with resident over H compacts.
+  for (bool over : {false, true}) {
+    Chat n;
+    n.day(-2, over ? 21 : 15, 3000, "a");   // about 50 KB (over 0.8 H, under H) or about 70 KB (over H)
+    n.day(0, 6, 200, "b");
+    tx::HeadBudget nb;
+    TEST_ASSERT_TRUE(tx::budgetFor(n.headKey, tx::profileOf(n.head.profile), nb).ok());
+    const size_t resident = plain::residentBytes(*n.arena, n.head.thru);
+    TEST_ASSERT_TRUE_MESSAGE(resident * 5 > (size_t)nb.marks.high * 4, "the night case must sit above 0.8 H");
+    TEST_ASSERT_EQUAL_MESSAGE(over, resident > nb.marks.high, "the over case must sit above H, the other at or under it");
+    n.answer([] { return sp::say(kSummary); });
+    for (uint64_t at : {kNoon + 15 * 3600 + 1800, kNoon + 15 * 3600 + 3540}) {   // 18 Nov 03:30 and 03:59 UTC
+      n.now = at;
+      gClock += 3600000;
+      TEST_ASSERT_EQUAL_MESSAGE(over, n.step().ran, over ? "a due compaction waits for no hour" : "the night compacted under H");
+      if (over) break;
+    }
+  }
   // The prompt trigger, in real tokens: the last request reached the head's due mark (tx::budgetFor:
   // the aim less the next request's growth). One token under it is not enough.
   tx::HeadBudget b;
@@ -1606,7 +1618,7 @@ int main(int, char**) {
   RUN_TEST(test_failures_walk_the_ladder_with_its_waits_and_never_loop);
   RUN_TEST(test_a_failing_week_spends_at_most_the_cap_a_day_and_recovers_the_next);
   RUN_TEST(test_owner_first_quiet_window_and_no_clock_gates);
-  RUN_TEST(test_nothing_due_under_H_and_the_night_and_prompt_triggers);
+  RUN_TEST(test_nothing_due_under_H_at_night_or_by_day_and_the_prompt_trigger);
   RUN_TEST(test_the_hot_trigger_reads_the_last_request_whole_prompt_never_the_turn_sum);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
   RUN_TEST(test_a_cut_at_every_write_of_a_compaction_loses_nothing_and_shows_nothing_twice);

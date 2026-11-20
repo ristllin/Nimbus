@@ -50,7 +50,8 @@ struct HeadState;
 //
 // The decision rule (planSlice): due when the resident bytes after thru are above H, the whole
 // prompt of the last turn's last request (tx::TurnEndFacts::lastPromptTokens) reached the head's
-// due mark in tokens, or between 03:00 and 05:00 local with resident above 0.8 H. The slice is whole turns from thru forward, all of one local
+// due mark in tokens, or a manual run asks; no hour makes it due (no night fold: owner ruling 81,
+// ruling 83 item 8). The slice is whole turns from thru forward, all of one local
 // day (the day starts at dayStartMin), at most kCompactSliceMaxBytes of summarizer input, and
 // only while what stays after it is at least L (a manual run takes all it may). Never in a
 // slice: a turn of the owner's current local day (unless that day alone is above H, then only

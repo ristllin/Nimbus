@@ -490,12 +490,6 @@ uint32_t lastPromptTokens(const tx::TxArena& arena) {
   return 0;
 }
 
-bool nightHour(uint64_t now, int16_t tz) {
-  const int64_t local = (int64_t)now + (int64_t)tz * 60;
-  const int64_t h = (local - day::calendarDay(now, tz) * 86400) / 3600;
-  return h >= 3 && h < 5;
-}
-
 // The rung's wire with the summarizer's output cap: the exchange picks a cap per request and
 // this wire holds it at kSummarizerMaxTokens.
 class CappedWire : public WireCodec {
@@ -659,8 +653,9 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   // The hot trigger in real tokens: the last request reached the due mark (the aim less the next
   // request's growth), so the next one would pass the aim.
   const bool hot = lastPromptTokens(*d_.arena) >= b.tokens.due;
-  const bool night = nightHour(ctx.now, ctx.tzMinutes) && (uint64_t)plan.resident * 5 > (uint64_t)marks.high * 4;
-  due = manual_ || plan.resident > marks.high || hot || night;
+  // No hour makes a compaction due (owner ruling 81, ruling 83 item 8): the night fold under H fit no
+  // request. Quiet hours only run one that is due by the marks.
+  due = manual_ || plan.resident > marks.high || hot;
   return Status::success();
 }
 
