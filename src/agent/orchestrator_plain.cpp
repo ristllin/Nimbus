@@ -10,14 +10,25 @@
 // asks of a seam is honoured here (begin creates g_sessMux and primes the session snapshot;
 // pollJobs drains the staged terminates and refreshes the snapshot; engineRunning() is false,
 // so the ring arcs and the mid-loop reply note stay off).
+// Owner commands (/update, /clear, ...) get the same line: the stub parses nothing, so the
+// Telegram /update install is not offered on an engine-2 image (a bench board takes its image
+// over USB); RB-I2 binds the command path with the engine.
 #include "orchestrator.h"
 #include "orchestrator_common.h"   // g_fabric, g_sinks, g_sessMux, deliver, the voice flags
 
-#include <time.h>   // localtime_r, gmtime_r - utcOffsetAt
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE != 2
+#error "orchestrator_plain.cpp is the engine-2 seam: build it only in an env with -DNIMBUS_ENGINE=2"
+#endif
+
+#include <string.h>   // memcpy, strncpy - the staged update notice
+#include <time.h>     // localtime_r, gmtime_r - utcOffsetAt
+
+#include <atomic>
 
 #include <freertos/FreeRTOS.h>
 
 #include "../sys/agent_log.h"
+#include "../sys/psram_static.h"   // the notice slot in PSRAM, as on engine 1
 #include "memory_subsystem.h"   // memory::captureMessage - the chat's history rows
 #include "telegram.h"           // telegram::ownerChat, telegram::send - the staged update notice
 
@@ -30,29 +41,34 @@ namespace {
 constexpr const char* kStubLine =
     "This test build runs engine 2, which is not connected yet, so every message gets this one line.";
 
-bool     s_begun = false;
-bool     s_inTurn = false;        // tg_poll only
-uint32_t s_turns = 0;             // messages answered since boot
-String   s_turnChat;              // tg_poll only: the chat of the message being answered
+bool                  s_begun = false;   // tg_poll only (begin runs before the poll task starts)
+std::atomic<bool>     s_inTurn{false};   // written on tg_poll, read by the web task (the spinner)
+std::atomic<uint32_t> s_turns{0};        // messages answered since boot (any task reads it)
+String                s_turnChat;        // turn task only, as engine 1's currentChat()
 
 String (*s_otaInstallHook)() = nullptr;
 
-// The staged post-update notice (stageUpdateNotice may run on any task): one slot, copied under the
-// spinlock, nothing allocated or logged inside it.
-char                 s_noticeText[512] = {};
+// The staged post-update notice (stageUpdateNotice may run on any task): one slot in PSRAM (as on
+// engine 1), copied under the spinlock into a second PSRAM buffer the poll task reads, nothing
+// allocated or logged inside it, nothing large on the tg_poll stack.
+constexpr size_t     kNoticeBytes = 512;
+char                 (&s_noticeText)[kNoticeBytes] = ::nimbus::psramStatic<char[kNoticeBytes]>();
+char                 (&s_noticeOut)[kNoticeBytes] = ::nimbus::psramStatic<char[kNoticeBytes]>();   // tg_poll only
 volatile bool        s_noticePending = false;
 portMUX_TYPE         s_noticeMux = portMUX_INITIALIZER_UNLOCKED;
 
 void drainUpdateNotice() {
   if (!s_noticePending) return;
-  char text[sizeof(s_noticeText)];
   portENTER_CRITICAL(&s_noticeMux);
-  memcpy(text, s_noticeText, sizeof(text));
+  memcpy(s_noticeOut, s_noticeText, kNoticeBytes);
   s_noticePending = false;
   portEXIT_CRITICAL(&s_noticeMux);
   const String chat = telegram::ownerChat();
   if (chat.length() == 0) return;   // nowhere to deliver: dropped, as on engine 1
-  telegram::send(chat, String(text), /*block=*/false);
+  const String text(s_noticeOut);
+  telegram::send(chat, text, /*block=*/false);
+  // Into the chat's history at once (engine_api.h), as engine 1's recordNotice does.
+  memory::captureMessage(chat.c_str(), "system", nimbus::orch::MsgKind::Message, text);
 }
 
 }  // namespace
@@ -78,18 +94,19 @@ void handleMessage(const String& text, const String& fromName, const String& cha
     s_inVoiceMessage = true;
   }
   if (s_begun) {
-    s_inTurn = true;
+    s_inTurn.store(true, std::memory_order_relaxed);
     s_turnChat = chatId;
     String tags;
     if (fromName.length()) tags = "from:" + fromName;
     memory::captureMessage(chatId.c_str(), "user", nimbus::orch::MsgKind::Message, text, "", tags);
     // Device copy (system provenance), like engine 1's command replies: the web sink records it in the
     // web chat's history; no assistant row of the engine's is written (no engine answered).
-    const bool sent = deliver(chatId, String(kStubLine), /*system=*/true);
-    if (voice) s_voiceOk.store(sent, std::memory_order_relaxed);
-    ++s_turns;
+    bool queued = false;
+    const bool sent = deliver(chatId, String(kStubLine), /*system=*/true, &queued);
+    if (voice) s_voiceOk.store(sent && queued, std::memory_order_relaxed);
+    s_turns.fetch_add(1, std::memory_order_relaxed);
     s_turnChat = String();
-    s_inTurn = false;
+    s_inTurn.store(false, std::memory_order_relaxed);
   }
   if (voice) {
     s_inVoiceMessage = false;
@@ -116,16 +133,16 @@ void setOtaInstallHook(String (*fn)()) { s_otaInstallHook = fn; }
 
 void stageUpdateNotice(const String& text) {
   portENTER_CRITICAL(&s_noticeMux);
-  strncpy(s_noticeText, text.c_str(), sizeof(s_noticeText) - 1);
-  s_noticeText[sizeof(s_noticeText) - 1] = 0;
+  strncpy(s_noticeText, text.c_str(), kNoticeBytes - 1);
+  s_noticeText[kNoticeBytes - 1] = 0;
   s_noticePending = true;
   portEXIT_CRITICAL(&s_noticeMux);
 }
 
 // ---- status for the web and the tools ---------------------------------------
 
-bool turnInFlight() { return s_inTurn; }
-uint32_t turnCount() { return s_turns; }
+bool turnInFlight() { return s_inTurn.load(std::memory_order_relaxed); }
+uint32_t turnCount() { return s_turns.load(std::memory_order_relaxed); }
 nimbus::orch::HeadPause providerPause(const std::string&, nimbus::orch::PaidSeam) { return {}; }
 bool toolRidesLoop(const std::string&) { return false; }
 

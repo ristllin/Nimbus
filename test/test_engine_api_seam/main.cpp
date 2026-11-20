@@ -172,6 +172,23 @@ static bool definesFunction(const std::string& src, const std::string& name) {
   return false;
 }
 
+// The body of the namespace-level definition of `name(` (from its '{' to the matching '}'), "" when
+// the source defines none.
+static std::string functionBody(const std::string& src, const std::string& name) {
+  for (size_t at = src.find(name + "("); at != std::string::npos; at = src.find(name + "(", at + 1)) {
+    const size_t sol = src.rfind('\n', at) + 1;   // npos + 1 == 0 on the first line
+    if (src[sol] == ' ' || src[sol] == '\t' || src[sol] == '#') continue;
+    const size_t open = src.find_first_of("{;", at);
+    if (open == std::string::npos || src[open] == ';') continue;
+    int depth = 0;
+    for (size_t i = open; i < src.size(); ++i) {
+      if (src[i] == '{') ++depth;
+      if (src[i] == '}' && --depth == 0) return src.substr(open, i - open + 1);
+    }
+  }
+  return std::string();
+}
+
 static bool includesEngineHeader(const std::string& strippedSrc) {
   return strippedSrc.find(std::string("#include \"") + kEngineHeader + "\"") != std::string::npos ||
          strippedSrc.find(std::string("#include <") + kEngineHeader + ">") != std::string::npos;
@@ -233,6 +250,22 @@ static void test_every_engine_call_is_defined_in_the_engine_seam_only() {
     TEST_ASSERT_FALSE_MESSAGE(definesFunction(common, fn), (fn + " is defined in the common half").c_str());
 }
 
+// What the common half asks of every seam (orchestrator_common.h): begin() creates the session
+// snapshot's mutex and primes the snapshot; pollJobs() drains the staged terminates and refreshes it.
+static void test_every_seam_keeps_the_session_snapshot() {
+  TEST_ASSERT_TRUE(functionBody(stripComments("void f(int a) {\n  if (a) { g(); }\n}\n"), "f").find("g();") !=
+                   std::string::npos);
+  TEST_ASSERT_TRUE(functionBody(stripComments("void f(int a);\n"), "f").empty());   // a declaration has no body
+  for (const char* seam : kSeams) {
+    const std::string src = code(seam);
+    const std::string begin = functionBody(src, "begin"), poll = functionBody(src, "pollJobs");
+    for (const char* need : {"g_sessMux", "xSemaphoreCreateMutex", "refreshSessionSnapshot"})
+      TEST_ASSERT_TRUE_MESSAGE(begin.find(need) != std::string::npos, (std::string(seam) + " begin(): " + need).c_str());
+    for (const char* need : {"drainTerminates", "refreshSessionSnapshot"})
+      TEST_ASSERT_TRUE_MESSAGE(poll.find(need) != std::string::npos, (std::string(seam) + " pollJobs(): " + need).c_str());
+  }
+}
+
 // engine_tools.h's hooks (the tool families an engine registers): each engine's tool file defines
 // every one, so memory::begin and model_refresh::begin link on both engines.
 static void test_every_tool_family_hook_is_defined_for_each_engine() {
@@ -282,6 +315,7 @@ int main(int, char**) {
   RUN_TEST(test_the_include_scanner_ignores_comments);
   RUN_TEST(test_every_engine_call_is_defined_in_the_engine_seam_only);
   RUN_TEST(test_every_tool_family_hook_is_defined_for_each_engine);
+  RUN_TEST(test_every_seam_keeps_the_session_snapshot);
   RUN_TEST(test_every_public_call_is_defined_in_the_common_half_only);
   RUN_TEST(test_only_the_engine_seam_includes_the_old_engine);
   return UNITY_END();

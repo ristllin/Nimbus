@@ -6,8 +6,9 @@ old engine's device code registers its tools there from neutral subsystems (memo
 files::begin, main.cpp, the music player, the connectors). An engine-2 image compiles those
 subsystems too, so every such registration must be absent from it. A registration site is:
 
-  - a call of add() on a registry: `reg.add(`, `g_reg.add(`, `registry().add(` (or `->add(`), or
-    any `.add("x.y", ...)` whose first argument is a dotted tool-name literal;
+  - a call of add() on a registry: a receiver named like one (`reg`, `g_reg`, `registry`, `toolReg`,
+    any identifier containing "reg") or `registry()`, through `.` or `->`; or any `.add("x.y", ...)`
+    whose first argument is a dotted tool-name literal;
   - a call of a registration helper `register...Tool(` / `register...Tools(` (registerCalcTool,
     registerResultTools, files' registerTools, pdf_tool::registerTool, ...); a declaration or a
     definition (`void registerTools() {`) is not a call.
@@ -48,7 +49,9 @@ TAG = "[tool-registrations]"
 # binds a tool adds its *_device.cpp here in the same commit.
 ENGINE2_REGISTRATION_FILES: Tuple[str, ...] = ("src/agent/tools_plain.cpp",)
 
-RECEIVER = re.compile(r"(?:\b(?:g_reg|reg)|\bregistry\(\s*\))\s*$")
+# A registry receiver: any identifier with "reg" in it (reg, g_reg, registry, toolReg, ...) or a
+# registry() call; the fallback below also catches any receiver given a dotted tool-name literal.
+RECEIVER = re.compile(r"(?:\b\w*[Rr]eg\w*|\bregistry\(\s*\))\s*$")
 ANY_ADD = re.compile(r"(?:\.|->)\s*add\s*\(")
 TOOL_NAME_LITERAL = re.compile(r'\s*"[a-z][a-z0-9_]*\.[a-z0-9_.]+"')
 HELPER_CALL = re.compile(r"\b(register\w*Tools?)\s*\(")

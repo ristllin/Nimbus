@@ -2,7 +2,7 @@
 # objects of tools/engine/engine1_only.txt in the engine-1 builds named below; never edit by hand.
 # check_elf_symbols.py --engine1-absent fails when an engine-2 ELF defines any of them.
 # One mangled name per line, then '#' and the engine1_only source that defines it.
-# envs: esp32s3-cyd test-cyd; 419 symbols
+# envs: esp32s3 esp32s3-cyd esp32s3-cyd-35 esp32s3-cyd-40 test test-cyd; 419 symbols
 
 _ZN5agent10FoldDriver10capReachedEmRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE  # lib/harness/src/fold_driver.cpp
 _ZN5agent10FoldDriver10maybeAlertERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPKN6nimbus4orch8ChatFoldEml  # lib/harness/src/fold_driver.cpp

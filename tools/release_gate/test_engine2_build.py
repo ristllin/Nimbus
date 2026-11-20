@@ -67,6 +67,10 @@ class RegistrationSiteTests(unittest.TestCase):
     def test_any_receiver_with_a_dotted_tool_name_literal_is_a_site(self):
         self.assertEqual(statuses('  r->add("media.play", "d", h);\n'), [("add()", False)])
 
+    def test_any_receiver_named_like_a_registry_is_a_site(self):
+        text = "  registry.add(n, d, h);\n  toolReg->add(n, d, h);\n  my_reg.add(n, d, h);\n"
+        self.assertEqual(statuses(text), [("add()", False)] * 3)
+
     def test_an_add_on_something_else_is_not_a_site(self):
         self.assertEqual(statuses("  items.add(x);\n  set.add(\"plain\");\n"), [])
 

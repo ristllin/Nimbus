@@ -148,15 +148,13 @@ else
   failed_labels+=("harness-lab")
 fi
 
-# Image-size gate LAST: every built env's firmware.bin must fit the app
+# Image-size gate after the builds: every built env's firmware.bin must fit the app
 # partition of ITS OWN partition table (lane TESTFIT - the test-console builds
 # overflow the stock 6.5 MB slot while PlatformIO's section report stays
 # green, and the ROM then refuses to boot the image). FAIL on overflow, WARN
 # under 64 KB of headroom; prints every env's headroom, production included.
-echo "== image-size gate (every built env vs its app partition) =="
-python3 tools/release_gate/check_image_size.py || { echo "== image-size gate FAILED ==" >&2; exit 1; }
-
-# The engine gates (lane RB-I0). Each runs bare; a failure fails the matrix.
+# The image-size gate and the engine gates (lane RB-I0). Each runs bare; a failure fails the
+# matrix, and every gate still runs.
 gate() {
   local label=$1; shift
   printf '  [ .. ] %-20s\n' "$label"
@@ -169,10 +167,13 @@ gate() {
     failed_labels+=("$label")
   fi
 }
+echo "== image-size gate (every built env vs its app partition) =="
+gate "image size" python3 tools/release_gate/check_image_size.py
 echo "== engine gates (engine-1 and engine-2 images) =="
 gate "engine-filter maps" python3 tools/release_gate/check_engine_filter.py \
   --require-maps esp32s3 esp32s3-cyd test "${E2_ENVS[@]}"
 gate "e2 tool registrations" python3 tools/engine/list_tool_registrations.py --check
+gate "e1_symbols.txt current" python3 tools/engine/gen_e1_symbols.py --check
 for env in "${E2_ENVS[@]}"; do
   gate "e1-absent $env" python3 tools/release_gate/check_elf_symbols.py --engine1-absent \
     --elf ".pio/build/$env/firmware.elf"
