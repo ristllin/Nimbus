@@ -889,8 +889,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: device_notes
 - kind: spec
-- bytes: 1793 -> 2001
-- sha8: 4da73e69 -> 61b9a56d
+- bytes: 1793 -> 2044
+- sha8: 4da73e69 -> 58ccec10
 - lane: RB-H81
 - prd: section 9 (the migration), as amended by rulings 81 to 84 (ruling 84 item 6: when the rewrite of digest 0 is unset or refused, the old summary is carried verbatim, fenced and dated as the old summary; the fence says its paths and totals may be stale)
-- why: lib/core/include/nimbus/orch/tx/migrate.h migrate_text: the fence of the carried old summary ("[the earlier engine's summary, as of <when>; its file paths and totals may be out of date] ", "[the earlier engine's summary, continued] ", " [end of the earlier engine's summary]", " [the earlier engine's summary goes on in <path>]"). Before, the old summary left the conversation (exported only) and only an anchor note named it, which lowered history by itself (owner ruling 81). Planned work, not a fix.
+- why: lib/core/include/nimbus/orch/tx/migrate.h migrate_text: the fence of the carried old summary ("[the earlier engine's summary, as of <when>; its file paths and totals may be out of date] ", "[the earlier engine's summary, continued] ", " [end of the earlier engine's summary]", " [the earlier engine's summary goes on in <path>]", " [the earlier engine's summary is cut here]"). Before, the old summary left the conversation (exported only) and only an anchor note named it, which lowered history by itself (owner ruling 81). Planned work, not a fix.

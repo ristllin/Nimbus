@@ -38,6 +38,7 @@ struct PlainLab {
     nimbusd::PlainRigConfig cfg;
     cfg.chatKey = "lab";
     cfg.key = [] { return std::string("sk-fake-lab"); };
+    cfg.noCompaction = "harness-lab: one short scripted chat, no compaction bound";   // ruling 91 blockers/F6
     rig.reset(new nimbusd::PlainRig(cfg, nimbusd::PlainRigBindings{&platform, &model, &files,
                                                                     txb::batteryWire(cfg.dialect), nullptr, nullptr}));
     booted = rig->boot().ok();

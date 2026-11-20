@@ -96,7 +96,7 @@ size_t cutAt(const std::string& s, size_t cap) {
 // kOldSummaryMaxBytes, verbatim, as digest texts of `day` (each within kDigestMaxBytes) that fit
 // the full digest block together. The first part opens the fence, dated `asOf` and saying its
 // paths and totals may be out of date; the last closes it, or, when not all of it fits (or only
-// one part may be stored), says where the rest is (`path`, the export file; empty: it is closed).
+// one part may be stored), says where the rest is (`path`, the export file) or that it is cut.
 // Empty when no part can be built.
 // One pass of oldSummaryParts over `text`: the parts, and their bytes in the block (each and its
 // line end). Empty when a part cannot be built.
@@ -139,7 +139,7 @@ std::vector<std::string> summaryPass(const std::string& text, const SummaryForm&
 // kOldSummaryMaxBytes, verbatim, as digest texts of `day` (each within kDigestMaxBytes) that fit
 // the full digest block together. The first part opens the fence, dated `asOf` and saying its
 // paths and totals may be out of date; the last closes it, or, when not all of it fits (or only
-// one part may be stored), says where the rest is (`path`, the export file; empty: it is closed).
+// one part may be stored), says where the rest is (`path`, the export file) or that it is cut.
 // Empty when no part can be built.
 std::vector<std::string> oldSummaryParts(const std::string& summary, const std::string& day, const std::string& asOf,
                                          const std::string& path, bool onePart) {
@@ -148,7 +148,8 @@ std::vector<std::string> oldSummaryParts(const std::string& summary, const std::
   if (!dayHeader(day, header).ok() || summary.empty()) return {};
   text.resize(cutAt(text, kOldSummaryMaxBytes));
   const size_t lead = header.size() + sizeof(digest_text::kDaySep) - 1;
-  const std::string cutClose = path.empty() ? std::string(m::kOldClose) : m::kOldCut + path + m::kOldCutEnd;
+  // A cut is always named: where the rest is, or that it is cut (never the close of a whole summary).
+  const std::string cutClose = path.empty() ? std::string(m::kOldCutHere) : m::kOldCut + path + m::kOldCutEnd;
   for (int round = 0; round < 16; ++round) {
     size_t total = 0;
     std::vector<std::string> parts = summaryPass(text, SummaryForm{summary, day, asOf, cutClose, lead, onePart}, total);

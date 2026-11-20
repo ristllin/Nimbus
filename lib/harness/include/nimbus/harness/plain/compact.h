@@ -273,6 +273,13 @@ class CompactDriver {
   // A compaction that became due runs on, slice by slice, until what stays is at L (ruling 82
   // item 4: due at the aim, keeps about 70% of it), not one slice under H each turn.
   bool cycle_ = false;
+  // The hot trigger reads each e item once: a cycle it started that ended spends it (hotQ_ is the
+  // newest e item's q at the last look), so a stale reading never re-arms an empty cycle.
+  uint64_t hotQ_ = 0, spentHotQ_ = 0;
+  void endCycle() {
+    cycle_ = false;
+    spentHotQ_ = hotQ_;
+  }
   bool held(const IdleCtx& ctx, const CompactCtl::Chat& chat);
   Status attempt(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out);
   void settle(const SummarizerRung& rung, const SlicePlan& plan, uint32_t fails, uint64_t now, const Status& s,

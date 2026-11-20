@@ -222,7 +222,8 @@ void expectCarried(World& w, const char* when) {
   TEST_ASSERT_TRUE_MESSAGE(ds.front().x.find(tx::migrate_text::kOldOpen) != std::string::npos, when);
   TEST_ASSERT_TRUE_MESSAGE(ds.front().x.find("may be out of date") != std::string::npos, when);
   TEST_ASSERT_TRUE_MESSAGE(ds.back().x.find("[end of the earlier engine's summary]") != std::string::npos ||
-                               ds.back().x.find("goes on in") != std::string::npos,
+                               ds.back().x.find("goes on in") != std::string::npos ||
+                               ds.back().x.find("is cut here") != std::string::npos,
                            when);
   // every word of the old summary is there, in order
   const std::string summary = w.deps().fold.summary;
@@ -233,7 +234,8 @@ void expectCarried(World& w, const char* when) {
     from = sp == std::string::npos ? summary.size() : sp + 1;
     if (word.empty()) continue;
     const size_t f = joined.find(word, at);
-    if (f == std::string::npos && joined.find("goes on in") != std::string::npos) break;   // cut, named
+    if (f == std::string::npos && (joined.find("goes on in") != std::string::npos || joined.find("cut here") != std::string::npos))
+      break;   // cut, named
     TEST_ASSERT_TRUE_MESSAGE(f != std::string::npos, (std::string(when) + ": lost the word " + word).c_str());
     at = f + word.size();
   }
@@ -1157,6 +1159,17 @@ void test_a_full_old_summary_is_carried_in_parts_that_fit_the_block() {
   std::string joined;
   for (const tx::Item& d : w.digests()) joined += d.x;
   TEST_ASSERT_TRUE_MESSAGE(joined.find("goes on in export-pre-v2/summary-") != std::string::npos, "the cut is not named");
+  // The export refused: the cut is still named, never closed as a whole summary.
+  World r;
+  r.m = month(r.old, {5, 300, 5, 3, 0, 900});
+  r.old.fold(big, r.m.thru, 0, kMonthStart + kDay);
+  r.answers.fail = {true, true};
+  r.refuseExport = true;
+  TEST_ASSERT_TRUE(r.done("full summary, no export").carried);
+  std::string cut;
+  for (const tx::Item& d : r.digests()) cut += d.x;
+  TEST_ASSERT_TRUE_MESSAGE(cut.find("[the earlier engine's summary is cut here]") != std::string::npos, "an unexported cut is not named");
+  TEST_ASSERT_TRUE(cut.find("[end of the earlier engine's summary]") == std::string::npos);
 }
 
 

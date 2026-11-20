@@ -103,6 +103,7 @@ inline constexpr char kOldMore[] = "[the earlier engine's summary, continued] ";
 inline constexpr char kOldClose[] = " [end of the earlier engine's summary]";
 inline constexpr char kOldCut[] = " [the earlier engine's summary goes on in ";
 inline constexpr char kOldCutEnd[] = "]";
+inline constexpr char kOldCutHere[] = " [the earlier engine's summary is cut here]";
 }  // namespace migrate_text
 
 // ---- the old store, as the binding reads it ---------------------------------------------

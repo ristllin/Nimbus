@@ -397,6 +397,30 @@ std::string inert(const std::string& s) {
   return out;
 }
 
+// Drop a UTF-8 sequence cut at the end of `s`.
+void clipUtf8Tail(std::string& s) {
+  size_t n = s.size(), back = 0;
+  while (n > 0 && back < 4 && ((unsigned char)s[n - 1] & 0xC0) == 0x80) --n, ++back;
+  if (!n) return;
+  const unsigned char lead = (unsigned char)s[n - 1];
+  const size_t want = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+  if (want > 1 && want != back + 1) s.resize(n - 1);
+}
+
+// A photo's note on the summarizer's input: one line, at most kPhotoNoteMax, '[' and ']' as '(' and
+// ')' and control bytes as spaces, so a note (a migrated description, a transcription) cannot open
+// a line of its own or a bracketed marker there.
+std::string noteLine(const std::string& note) {
+  if (note.empty()) return std::string();
+  std::string out = " ";
+  for (size_t i = 0; i < note.size() && i < tx::kPhotoNoteMax; ++i) {
+    const unsigned char c = (unsigned char)note[i];
+    out += c == '[' ? '(' : c == ']' ? ')' : c < 0x20 || c == 0x7f ? ' ' : (char)c;
+  }
+  clipUtf8Tail(out);
+  return out;
+}
+
 void renderItem(const tx::Item& it, bool tainted, int16_t tz, std::string& out) {
   std::string hhmm;
   (void)tx::stubTime(it.t, tz, hhmm);
@@ -404,7 +428,7 @@ void renderItem(const tx::Item& it, bool tainted, int16_t tz, std::string& out) 
     case tx::ItemKind::User:
       out += "[" + hhmm + "]" + st::kOwner + it.x;
       for (const tx::Part& p : it.parts)
-        if (p.kind == tx::PartKind::Image) out += st::kPhoto + (p.note.empty() ? std::string() : " " + p.note);
+        if (p.kind == tx::PartKind::Image) out += st::kPhoto + noteLine(p.note);
       out += "\n";
       break;
     case tx::ItemKind::Assistant:
@@ -642,11 +666,13 @@ tx::HeadKey answeringHead(const tx::TxArena& arena, const tx::HeadKey& installed
 // The whole prompt of the newest turn's last request (its e item's lastPromptTokens), 0 when none
 // is resident. Never the turn's summed promptTokens: a two-request turn on an OpenAI wire would read
 // twice its size, and a cached Anthropic request would read only its uncached part (T4-ADV-01).
-uint32_t lastPromptTokens(const tx::TxArena& arena) {
+uint32_t lastPromptTokens(const tx::TxArena& arena, uint64_t& endQ) {
+  endQ = 0;
   for (size_t i = arena.count(); i-- > 0;) {
     tx::ArenaEntry e;
     if (!arena.header(i, e).ok() || e.kind != tx::ItemKind::TurnEnd) continue;
     tx::Item it;
+    endQ = e.q;
     return arena.get(i, it).ok() ? it.end.lastPromptTokens : 0;
   }
   return 0;
@@ -842,11 +868,13 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
 // whole turns from RAM), never by an hour (owner ruling 81, ruling 83 item 8: no night fold). Once
 // due it runs on down to L (ruling 82 item 4).
 Status CompactDriver::dueBy(const tx::HeadBudget& b, const SlicePlan& plan, bool& due) {
-  const bool hot = lastPromptTokens(*d_.arena) >= b.tokens.due;
+  uint64_t endQ = 0;
+  const bool hot = lastPromptTokens(*d_.arena, endQ) >= b.tokens.due && endQ != spentHotQ_;   // each reading once
   const bool room = rules_.arenaFree < rules_.arenaRoom;
   if (plan.resident > b.marks.high || hot || room) cycle_ = true;
+  hotQ_ = endQ;
   due = manual_ || cycle_;
-  if (cycle_ && !plan.thru && (!plan.textHeld || plan.resident <= b.marks.low)) cycle_ = false;   // L reached, or nothing may go
+  if (cycle_ && !plan.thru && (!plan.textHeld || plan.resident <= b.marks.low)) endCycle();   // L reached, or nothing may go
   return Status::success();
 }
 
@@ -911,7 +939,7 @@ Status CompactDriver::planDropped(const IdleCtx& ctx, uint64_t omitted, SlicePla
   auto alloc = d_.platform->allocLarge ? d_.platform->allocLarge : [](size_t n) { return std::malloc(n); };
   auto release = d_.platform->freeLarge ? d_.platform->freeLarge : [](void* q) { std::free(q); };
   tx::TxArena back;   // the plan keeps only the input text: freed when this returns
-  if (!back.init(kCompactReadBackBytes, alloc, release).ok()) return Status::fail(Err::TooLarge, "plain::planDropped");
+  if (!back.init(kCompactReadBackBytes, alloc, release).ok()) return Status::success();   // short of memory: the RAM plan
   if (!readBack(*d_.files, d_.chatKey, *d_.head(), omitted, back)) return Status::success();
   SliceRules r = rules_;
   r.now = ctx.now;
@@ -933,6 +961,7 @@ Status CompactDriver::foldTools(const SliceRules& rules, CompactOutcome& out) {
   Status s = planToolFold(*d_.arena, head.thru, rules, sup, saved);
   if (!s.ok() || sup.empty()) {
     if (s.ok()) out.step = CompactStep::Nothing;
+    if (s.ok()) endCycle();   // nothing left to fold: the cycle ends until the transcript changes
     return s;
   }
   for (size_t at = 0; at < sup.size(); at += tx::kMaxListItems) {
