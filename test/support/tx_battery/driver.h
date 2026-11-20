@@ -182,6 +182,34 @@ class Battery {
     return deliverInput(lastInput, out);
   }
 
+  // One owner message with the Telegram update ids it came in (RB-TG1: the seen index keys on
+  // them), as the Telegram intake hands it to the engine.
+  tx::Status ownerFrom(std::vector<uint64_t> src, const std::string& text, plain::TurnOutcome& out,
+                       std::vector<tx::Part> parts = {}) {
+    if (!engine) {
+      tx::Status st = boot();
+      if (!st.ok()) return st;
+    }
+    lastInput = plain::TurnInput{};
+    lastInput.ctx = turnCtx(++turnNo, plain::Trigger::Owner);
+    lastInput.text = text;
+    lastInput.parts = std::move(parts);
+    lastInput.src = std::move(src);
+    return deliverInput(lastInput, out);
+  }
+
+  // A power cycle and the boot after it, with nothing redelivered by the battery itself (the
+  // caller's intake decides what Telegram serves again).
+  tx::Status powerCycle() {
+    engine.reset();
+    hooks.reset();
+    log.reset();
+    arena.reset();
+    files.clearFaults();
+    killAtSend = killBeforeSend = killAtDispatch = -1;
+    return boot(true);
+  }
+
   // A turn no person started (a routine fire, an agent report): its text is the turn's device
   // note. Nothing is redelivered after a cut (no Telegram update carries it).
   tx::Status unattended(plain::Trigger trigger, const std::string& text, plain::TurnOutcome& out) {

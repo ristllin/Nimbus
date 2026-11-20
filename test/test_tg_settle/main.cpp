@@ -110,6 +110,17 @@ static void test_growth_restarts_the_window() {
   TEST_ASSERT_EQUAL_INT(5, s.repolls());
 }
 
+// The text window per engine (lane RB-TG1): engine 2 holds a plain text 2 s (RB-M0b's
+// measurement; RB-TG2's round-boundary join catches what follows a running turn), engine 1
+// keeps its 6 s, and a build that names no engine is engine 1. Every other window is shared.
+static void test_the_text_window_is_2000_ms_on_engine_2_only() {
+  TEST_ASSERT_EQUAL_UINT32(2000, nimbus::net::settleQuietTextMsFor(2));
+  TEST_ASSERT_EQUAL_UINT32(6000, nimbus::net::settleQuietTextMsFor(1));
+  TEST_ASSERT_EQUAL_UINT32(6000, nimbus::net::settleQuietTextMsFor(0));   // unnamed: engine 1
+  TEST_ASSERT_EQUAL_INT(1, nimbus::net::kSettleEngine);                  // the native build names none
+  TEST_ASSERT_EQUAL_UINT32(nimbus::net::settleQuietTextMsFor(nimbus::net::kSettleEngine), kSettleQuietTextMs);
+}
+
 // A plain text waits the text window (6 s, the owner's ruling: it joins every text and
 // photo 5 s apart by Telegram's whole-second dates) for what the owner sends next; a lone
 // text is answered at its end.
@@ -417,6 +428,7 @@ int main(int, char**) {
   RUN_TEST(test_no_turn_candidate_dispatches_at_once);
   RUN_TEST(test_full_page_dispatches_at_once);
   RUN_TEST(test_growth_restarts_the_window);
+  RUN_TEST(test_the_text_window_is_2000_ms_on_engine_2_only);
   RUN_TEST(test_lone_text_waits_the_text_window);
   RUN_TEST(test_text_then_photo_inside_the_window);
   RUN_TEST(test_photo_then_text_is_one_page);
