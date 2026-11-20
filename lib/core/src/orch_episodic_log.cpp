@@ -441,6 +441,11 @@ bool AppendLogEpisodicStore::decodeFromBlock(const RecBlock& blk, const IdxRec& 
   return decodeEpisodicLine(blk.buf.data() + ((long)r.offset - blk.start), r.len, out);
 }
 
+// The call's card-read budget: its own tighter cap (MsgQuery.maxReads), else the store's.
+static int indexReadCap(const MsgQuery& q) {
+  return q.maxReads > 0 && q.maxReads < kIndexReadsPerCall ? q.maxReads : kIndexReadsPerCall;
+}
+
 bool AppendLogEpisodicStore::queryIndex(const MsgQuery& q, EpiCollector& col, EpiQueryInfo& info,
                                         uint32_t& examinedDay) const {
   const uint32_t beforeSfx = epiIdSuffix(q.before);
@@ -468,8 +473,7 @@ bool AppendLogEpisodicStore::queryIndex(const MsgQuery& q, EpiCollector& col, Ep
       continue;
     }
     if (!blk.covers(r)) {
-      const int readCap = q.maxReads > 0 && q.maxReads < kIndexReadsPerCall ? q.maxReads : kIndexReadsPerCall;
-      if (reads >= readCap || bytes >= kIndexBytesPerCall) {  // bounded, then paged
+      if (reads >= indexReadCap(q) || bytes >= kIndexBytesPerCall) {  // bounded, then paged
         // Resume in the INDEXED range, not the cold one: a byte cursor would
         // send the next call straight to the cold pass, which is bounded BELOW
         // each day's index floor - the rows in between would vanish. +1 so the
