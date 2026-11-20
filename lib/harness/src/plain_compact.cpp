@@ -454,14 +454,19 @@ void clipUtf8(std::string& s, size_t cap) {
   s.resize(n);
 }
 
-// The path a file-change call names: "path" in its arguments, or in the arguments a `more` call
-// routes ("args": {"path": ...}). Empty when there is none (or the arguments are a long-argument stub).
-std::string callPath(const std::string& args) {
+// A file-change call's path and whether it deletes: "path" in its arguments, or for a `more` call the
+// tool it routes ("name") and that tool's "path" ("args": {"path": ...}). False when the call changes no
+// file or names no path (or its arguments are a long-argument stub).
+bool fileCall(const tx::Item& c, std::string& path, bool& deleted) {
   JsonDocument doc;
-  if (args.empty() || args.size() > tx::kTier1CallArgs || deserializeJson(doc, args)) return std::string();
-  const char* p = doc["path"] | (const char*)nullptr;
-  if (!p) p = doc["args"]["path"] | (const char*)nullptr;
-  return p ? std::string(p) : std::string();
+  if (c.args.empty() || c.args.size() > tx::kTier1CallArgs || deserializeJson(doc, c.args)) return false;
+  const bool more = c.n == "more";
+  const std::string tool = more ? std::string(doc["name"] | "") : c.n;
+  const char* p = more ? (doc["args"]["path"] | (const char*)nullptr) : (doc["path"] | (const char*)nullptr);
+  if (!fileChange(tool) || !p) return false;
+  path = p;
+  deleted = tool == "delete_file";
+  return true;
 }
 
 // What renderUnit reads beside the text: the newest owner row, and the turn's file changes.
@@ -472,15 +477,16 @@ struct UnitFacts {
 
 Status renderUnit(const tx::TxArena& arena, const Unit& u, int16_t tz, std::string& out, UnitFacts& facts) {
   tx::Item it;
-  std::vector<std::pair<std::string, std::string>> paths;   // call id, path
+  std::vector<std::pair<std::string, FileNote>> calls;   // call id, its file change
   for (size_t i = u.first; i <= u.last; ++i) {
     Status s = arena.get(i, it);
     if (!s.ok()) return s;
     if (it.kind == tx::ItemKind::User && it.m > facts.lastRow) facts.lastRow = it.m;
-    if (it.kind == tx::ItemKind::Call && fileChange(it.n)) paths.emplace_back(it.id, callPath(it.args));
-    if (it.kind == tx::ItemKind::Result && it.ok && fileChange(it.n))
-      for (const auto& p : paths)
-        if (p.first == it.id && !p.second.empty()) facts.files.push_back(FileNote{p.second, it.t, it.n == "delete_file"});
+    FileNote f;
+    if (it.kind == tx::ItemKind::Call && fileCall(it, f.path, f.deleted)) calls.emplace_back(it.id, f);
+    for (const auto& c : calls)   // a successful result of such a call: the device's Files line
+      if (it.kind == tx::ItemKind::Result && it.ok && c.first == it.id)
+        facts.files.push_back(FileNote{c.second.path, it.t, c.second.deleted});
     renderItem(it, u.tainted, tz, out);
   }
   return Status::success();
