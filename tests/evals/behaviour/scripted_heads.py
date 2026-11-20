@@ -189,10 +189,11 @@ class Scripted:
                 return self._call("read_file", {"path": c.path, "column": "date", "from": lo, "to": hi, "sum": [col]})
             return self._call("read_file", {"path": c.path})
         text = c.results[-1]["text"]
-        if use_sum:
+        if use_sum and f"sum {col}=" in text:
             v = re.search(rf"sum {col}=(-?[\d.]+)", text).group(1)
-            sk = re.search(r"skipped \d+ \(([^)]*)\)|not in it: ([^;]*?)\)\)", text)
-            return self._say(f"{v} {col}." + (f" Not counted: {sk.group(1) or sk.group(2)})." if sk else ""))
+            return self._say(f"{v} {col}.")
+        if use_sum:  # no figure (ruling 92): the selection's rows, "L<n> " in front of each
+            text = "\n".join([text.split("\n", 1)[0]] + [re.sub(r"^L\d+ ", "", x) for x in text.split("\n")[1:]])
         header, rows = _csv_rows(text)
         total, skipped = _sum_rows(rows, header, col, lo, hi, self.sloppy)
         extra = f" Lines {', '.join(map(str, skipped))} were left out (extra comma)." if skipped else ""
