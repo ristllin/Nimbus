@@ -66,21 +66,24 @@ def shapes_now() -> dict:
     return {**false_claim.shapes_now(), "progress": progress_shape(), "notice": notice_re()}
 
 
+def _kind(text: str, shapes: dict) -> str:
+    """ "status", "device" or "reply" for one chat row of a turn."""
+    t = text or ""
+    if shapes["progress"].match(t):
+        return "status"
+    return "device" if shapes["notice"].match(t) or shapes["receipt"].match(t) else "reply"
+
+
 def line_flags(rec: dict, shapes: dict) -> dict:
     """Device lines and status lines of one owner turn."""
     if "status_line" in rec:
         device = 0 if rec["status_line"] in ("", "none", None) else 1
         status = int(rec.get("progress_lines") or 0)
     else:
-        rows = list(rec.get("notices", [])) + list(rec.get("replies", []))
-        status = sum(1 for t in rows if shapes["progress"].match(t or ""))
-        device = sum(
-            1
-            for t in rows
-            if not shapes["progress"].match(t or "")
-            and (shapes["notice"].match(t or "") or shapes["receipt"].match(t or ""))
-        )
-        device += sum(1 for t in rec.get("device_rows", []) if not shapes["progress"].match(t or ""))
+        kinds = [_kind(t, shapes) for t in list(rec.get("notices", [])) + list(rec.get("replies", []))]
+        stored = [_kind(t, shapes) for t in rec.get("device_rows", [])]
+        status = kinds.count("status") + stored.count("status")
+        device = kinds.count("device") + len(stored) - stored.count("status")
     return {"device_line": device > 0, "device_lines": device, "status_lines": status}
 
 
