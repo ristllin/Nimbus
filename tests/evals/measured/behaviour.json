@@ -7270,5 +7270,182 @@
    "anthropic_judge_usd": 0.019,
    "note": "ruling 92: the never-partial sum, measured on the lane tip cff6ce596 and reverted (adoption rule failed)"
   }
+ },
+ "records_rb_rec6_part4": {
+  "lane": "RB-REC6",
+  "generated": "2026-11-20",
+  "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
+  "evidence": "/Users/roydarnell/Projects/nimbus-project/program-2026-10-18/lanes/RB-REC6/evidence/part4/main",
+  "cells": {
+   "claude-haiku-5-5": {
+    "Sn": {
+     "episodes": 150,
+     "usd": 0.1405,
+     "total_accuracy": {
+      "k": 146,
+      "n": 150,
+      "rate": 0.9733,
+      "lower95": 0.94
+     },
+     "total_verdicts": {
+      "full": 146,
+      "wrong": 4
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 0,
+     "total_used_calc": 122,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "expenses": {
+       "k": 48,
+       "n": 50,
+       "rate": 0.96,
+       "lower95": 0.8794
+      },
+      "training": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      }
+     }
+    }
+   },
+   "gpt-5.6-luna": {
+    "Sn": {
+     "episodes": 150,
+     "usd": 0.1549,
+     "total_accuracy": {
+      "k": 112,
+      "n": 150,
+      "rate": 0.7467,
+      "lower95": 0.6815
+     },
+     "total_verdicts": {
+      "full": 112,
+      "wrong": 29,
+      "partial_silent": 9
+     },
+     "total_partial_judged": 9,
+     "total_used_sum": 0,
+     "total_used_calc": 144,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 38,
+       "n": 50,
+       "rate": 0.76,
+       "lower95": 0.6403
+      },
+      "expenses": {
+       "k": 38,
+       "n": 50,
+       "rate": 0.76,
+       "lower95": 0.6403
+      },
+      "training": {
+       "k": 36,
+       "n": 50,
+       "rate": 0.72,
+       "lower95": 0.5974
+      }
+     }
+    }
+   },
+   "glm-5.3": {
+    "Sn": {
+     "episodes": 54,
+     "usd": 0.8188,
+     "total_accuracy": {
+      "k": 47,
+      "n": 54,
+      "rate": 0.8704,
+      "lower95": 0.7703
+     },
+     "total_verdicts": {
+      "full": 46,
+      "wrong": 7,
+      "partial_named": 1
+     },
+     "total_partial_judged": 1,
+     "total_used_sum": 0,
+     "total_used_calc": 48,
+     "total_with_skipped_rows": 27,
+     "total_by_domain": {
+      "food": {
+       "k": 14,
+       "n": 18,
+       "rate": 0.7778,
+       "lower95": 0.5611
+      },
+      "expenses": {
+       "k": 17,
+       "n": 18,
+       "rate": 0.9444,
+       "lower95": 0.7623
+      },
+      "training": {
+       "k": 16,
+       "n": 18,
+       "rate": 0.8889,
+       "lower95": 0.6897
+      }
+     }
+    }
+   },
+   "claude-sonnet-5-5": {
+    "Sn": {
+     "episodes": 60,
+     "usd": 0.9129,
+     "total_accuracy": {
+      "k": 58,
+      "n": 60,
+      "rate": 0.9667,
+      "lower95": 0.8988
+     },
+     "total_verdicts": {
+      "full": 58,
+      "wrong": 2
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 0,
+     "total_used_calc": 58,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 18,
+       "n": 20,
+       "rate": 0.9,
+       "lower95": 0.7174
+      }
+     }
+    }
+   }
+  },
+  "usd": {
+   "openai_usd": 0.1549,
+   "zai_usd": 0.8188,
+   "anthropic_heads_usd": 1.0534,
+   "anthropic_judge_usd": 0.0235,
+   "note": "ruling 94: arm Sn, the selection without sum, measured on aidserve built with evidence/part4/orch_csv_sum.sn.cpp; not built into firmware (luna worse than plain rows)"
+  }
  }
 }
