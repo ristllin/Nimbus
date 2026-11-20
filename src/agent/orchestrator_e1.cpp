@@ -2530,6 +2530,7 @@ bool engineRunning() { return g_engine != nullptr; }
 bool engineReapStuckTurn(uint32_t nowMs) { return g_engine && g_engine->reapStuckTurn(nowMs); }
 void engineSetHeadArc(bool on) { g_engine->setHeadArc(on); }
 void engineNoteToolReplied(const std::string& text) { g_engine->noteToolReplied(text); }
+int32_t utcOffsetAt(uint32_t unixSec) { return agent::utcOffsetAtUnix(unixSec); }
 
 String memorySnapshot() { return String(g_memEcho); }
 

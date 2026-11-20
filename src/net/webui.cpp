@@ -82,7 +82,9 @@
 #include "../sys/crash_report.h"        // /api/state boot object (reset reason, crash summary)
 #include "../agent/health.h"            // /api/health - device self-diagnosis (P5)
 #include "../agent/fs_atomic.h"         // flashMounted - /api/state fsMounted
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: the dream turn and the old skill store (tools/engine/guard_files.txt)
 #include "../agent/dream_subsystem.h"   // the last night - /api/state dream
+#endif
 #include "../agent/degraded_device.h"   // lane DEGRADE: /api/state degraded
 #include "../agent/spend_ceiling_store.h"   // lane DEF: the monthly spend ceiling (state + setting)
 #include "nimbus/orch/budget_command.h"      // lane BUD: runsWhilePaused (the paused web chat)
@@ -115,7 +117,9 @@
 #include "../agent/connectors.h"           // /api/connectors - known catalog + host
 #include "web_memory.h"
 #include "web_files.h"                   // E1: /api/files* artifact-store routes
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "web_skills.h"
+#endif
 #include "web_prefs.h"   // lane J: the standing-rules routes                  // P2: /api/skills* dynamic-skill CRUD
 #include "errlog_routes.h"               // CUM-401: /api/errlog via the deferred-route registry
 #include "../agent/files_subsystem.h"      // E1: files::stats for /api/state
@@ -752,6 +756,7 @@ static void buildState(String& out) {
   // Whether that file area is mounted at all (settings, routines and the dream state
   // live there): a bench run reads it before and after a DREAM drill.
   d["fsMounted"]  = fsUp && agent::flashMounted();
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   {
     const agent::dream::Status ds = agent::dream::status();   // the last night this boot
     JsonObject dj = d["dream"].to<JsonObject>();
@@ -765,6 +770,7 @@ static void buildState(String& out) {
       dj["stateWhy"] = (const char*)ds.stateWhy;
     }
   }
+#endif
   bool cardBusy = false;
   const CardFacts card = readCardFacts(cardBusy);
   d["cardBusy"]   = cardBusy;   // true: the card figures below are the last ones read
@@ -4558,7 +4564,9 @@ void beginWeb(const WebConfig& wc) {
 
   // Dynamic skills (roadmap P2): /api/skills/list /get /save /delete - token-
   // gated owner CRUD over the SD capsules (the model can read, never write).
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   registerSkillRoutes(s_server);
+#endif
   registerPrefsRoutes(s_server);   // lane J: the standing rules
 
   // CUM-401: bind /api/errlog (and any future self-registered route) from the

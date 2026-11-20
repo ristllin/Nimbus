@@ -17,7 +17,9 @@
 #include "../agent/orchestrator.h"        // toolRidesLoop - /api/tools rides_loop flag (P7)
 #include "../agent/connectors.h"          // provider connector catalog for /api/tools (P7)
 #include "nimbus/orch/connectors_wire.h"   // connectorScope - the orchestrator-direct/subsessions-only/unavailable badge (CUM-159)
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: the old skill store (tools/engine/guard_files.txt)
 #include "../agent/skills.h"              // skill capsules surfaced in /api/tools (P7)
+#endif
 #include "../agent/store.h"
 #include "nimbus/store/persist.h"          // storageFullJson - embedcfg answers 507 on a full NVS (CUM-479)
 #include "../sys/config_nvs.h"             // SaveScope - the scratchpad and memory-config routes answer 507
@@ -636,6 +638,7 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   grp("device", "device.lights", "Turn the ring on (full) or off", "turn action", false, kDirect);
   grp("device", "device.config", "Adjust ring level, brightness, theme, power profile, voice", "turn action", false, kDirect);
   grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false, kDirect);
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // Skill capsules (readable via skill.get; stored skills also inject at spawn).
   // Rendered in their own panel, not the availability-badged tool table.
   const auto skillTag = [](const agent::SkillMeta& c) {
@@ -647,6 +650,7 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   };
   for (const auto& c : agent::skills::list())
     grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), skillTag(c).c_str(), false, nullptr);
+#endif
   addConnectorRows(arr, ps, kUnavail);
   // The same live gate the registry listing uses (CUM-508), so this hint and the
   // web.search row can never disagree.

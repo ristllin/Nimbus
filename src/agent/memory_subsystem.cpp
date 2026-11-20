@@ -30,7 +30,10 @@
 #include "memory_restore.h"               // CUM-406: portable restore parse/apply core
 #include "../sys/ps_json.h"               // CUM-406: PSRAM JsonDocument for a large restore body
 #include "health.h"                       // system.health tool (P5)
+#include "engine_tools.h"                 // the engine's tool families (tools_e1.cpp)
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: the old skill store, the dream turn, session.* (tools/engine/guard_files.txt)
 #include "skills.h"                        // skill.list/get/save/delete tools (P7 + v4)
+#endif
 #include "telegram.h"                      // owner alert on agent skill.save
 #include "agent_config.h"
 #include "../sys/agent_log.h"
@@ -38,7 +41,9 @@
 #include "../sys/tls_arbiter.h"           // the index backfill yields to any open TLS session
 #include "orchestrator.h"
 #include "loops_subsystem.h"   // loop.create/list/cancel tools -> Local Loops
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/harness/dream.h"  // DREAMING: reserved-loop cancel refusal
+#endif
 #include "store.h"
 #include "nimbus/docs_pack.h"             // docs.list/search/read - embedded device docs (W13)
 #include "nimbus/fault.h"                 // resilience: simulated SD/memory faults
@@ -62,7 +67,9 @@
 #include "provider_verify.h"                // the last check's reason (nocredits, router_outdated)
 #include "nimbus/orch/action_rules.h"   // installActionRules - who may call each tool (CUM-813)
 #include "nimbus/orch/result_store.h"   // registerResultTools (results.get/list)
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/orch/session_tools.h"
+#endif
 #include "nimbus/orch/pending_events.h"   // pre-sync events survive a reset (crash forensics F3)
 #include "nimbus/sys/loop_guard.h"        // the loop never waits for the card lock
 #include "nimbus/sys/web_guard.h"         // nor does the web task; no network under it
@@ -1172,11 +1179,10 @@ void begin() {
   };
   g_ctx = ctx;
   nimbus::orch::registerCalcTool(g_reg);   // RB-REC8: calc, always on (ruling 42 item 3)
-  registerMemoryTools(g_reg, ctx);
-  nimbus::orch::registerPrefsTools(g_reg, prefs::context());
-  nimbus::orch::registerOpenQTools(g_reg, prefs::openQContext());   // lane POL2: openq.edit
+  tools::registerMemoryFamilies(g_reg, ctx);   // memory.*, prefs.edit, openq.edit (tools_e1.cpp)
   applyConfig();   // capacity cap (score-based eviction on add); tier-aware (§degraded)
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // session.* tools for external MCP clients. list + terminate are live over the
   // journal/fabric; spawn is model-only (via the turn's session_ops[]/spawn[], which
   // assign an id at dispatch - the synchronous MCP contract can't return one), and
@@ -1197,6 +1203,7 @@ void begin() {
     return true;
   };
   registerSessionTools(g_reg, sh);
+#endif
 
   // results.get / results.list - the recent-results ring (Context Fabric Stage 1:
   // a clipped tool result or overflowed sub-agent result is a VIEW; the full text
@@ -1361,10 +1368,12 @@ void begin() {
                     "only an admin can change this device's routines");
               std::string id = a["id"] | "";
               if (id.empty()) return nimbus::orch::ToolResult::fail("missing 'id'");
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
               // DREAMING: the reserved system loop is pause-only - refuse with
               // the reason (a bare "no loop with that id" would be a lie).
               std::string refusal = agent::dream::cancelRefusal(id);
               if (!refusal.empty()) return nimbus::orch::ToolResult::fail(refusal);
+#endif
               return loops::cancelLoop(String(id.c_str()))
                        ? nimbus::orch::ToolResult::ok("loop cancelled")
                        : nimbus::orch::ToolResult::fail("no loop with that id");
@@ -1449,6 +1458,7 @@ void begin() {
             },
             R"({"type":"object","properties":{"text":{"type":"string"},"chat_id":{"type":"string"},"voice":{"type":"boolean"}},"required":["text"]})");
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // skills (lane I) - task playbooks the model pulls and can edit, over the
   // host-tested portable SkillStore (see src/agent/skills.h for the file layout).
   g_reg.add("skill.list",
@@ -1485,6 +1495,7 @@ void begin() {
               return nimbus::orch::ToolResult::ok(body);
             },
             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
+#endif
   // docs.* (W13) - the device's OWN documentation, embedded in the firmware
   // image (tools/gen_docs_pack.py -> nimbus/docs_pack_data.h), so an OTA update
   // ships matching docs and they can never version-skew. Read-only, no admin
@@ -1565,6 +1576,7 @@ void begin() {
               return nimbus::orch::ToolResult::ok(out);
             },
             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // Lane I: the model edits skills through the portable SkillStore - staged
   // revisions (an approved skill keeps running until the owner approves the
   // edit), the save lint, the pending cap, the owner-origin guard and the
@@ -1633,6 +1645,7 @@ void begin() {
               return nimbus::orch::ToolResult::ok("skill '" + id + "' deleted");
             },
             R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})");
+#endif
 
   // system.health (P5) - the model can query live hardware/subsystem status
   // (a passive snapshot; never actuates hardware, so it is safe on the turn task).

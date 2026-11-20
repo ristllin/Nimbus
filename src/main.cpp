@@ -67,7 +67,9 @@
 #include <esp_random.h>   // esp_random() - the web chat turn-id seed (unique across restarts)
 #include <mutex>          // g_webChatMx
 #include "agent/loops_subsystem.h"   // Local Loops scheduler (hooks wired below)
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: the dream turn (tools/engine/guard_files.txt)
 #include "agent/dream_subsystem.h"   // DREAMING: reserved nightly maintenance loop
+#endif
 #include "agent/store.h"                      // store::theme()
 #include "agent/connectors.h"                 // MCP OAuth pump on the main loop
 #include "nimbus/theme.h"                     // themeAccent - LED colour personality
@@ -2887,7 +2889,9 @@ static void orchestratorBegin() {
         // The reserved dream loop fires the nightly memory upkeep (no model call);
         // r.id rides as "loop:<id>", r.selfWakeup
         // (owner design 9/11 Nov) fires a self-wakeup's one-note turn.
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
         if (agent::dream::isReserved(r.id)) return agent::dream::fire();
+#endif
         return agent::orchestrator::injectScheduledTurn(
             String(r.chatId.c_str()), String(r.prompt.c_str()), String(r.name.c_str()),
             String(r.id.c_str()), /*quietOk=*/false, r.once, r.ownerReminder, r.selfWakeup);
@@ -2905,6 +2909,7 @@ static void orchestratorBegin() {
         if (owner.length()) agent::telegram::send(owner, String(msg.c_str()), /*block=*/false);
       });
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // The reserved nightly memory upkeep (owner-visible "dream", daily 03:30 local):
   // decay, prune and dedup of long-term memories, no model call. Ensured every boot
   // (insert-if-missing; a persisted owner pause survives), reserved (pause-only, never
@@ -2926,6 +2931,7 @@ static void orchestratorBegin() {
   agent::loops::ensureLoop(agent::dream::reservedLoopRecord());
   agent::loops::setFireGate(
       [](const nimbus::orch::LoopRecord& l) { return agent::dream::gateDefer(l); });
+#endif
   // CUM-505: a loop the assistant creates (loop.create / wakeup.set) remembers the
   // chat of the turn that asked for it, so a reminder set in the web chat comes back
   // to the web chat instead of an empty Telegram default.
@@ -4544,6 +4550,7 @@ void setup() {
       emitMenuActionFeedback(nimbus::action::MenuAction(uint8_t(action)),
                              nimbus::action::Outcome(uint8_t(outcome)));
     };
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
     h.dreamNow = [] () -> String {                                           // DREAM
       if (!g_orchMode) return String("ERR dream: Orchestrator mode only");
       // Queued for the turn task (tg_poll), which logs "DREAM fired ok=..." when the
@@ -4554,6 +4561,7 @@ void setup() {
         return String("DREAM already queued (one night runs; its result line follows)");
       return String("DREAM queued (the turn task runs the night; its result line follows)");
     };
+#endif
     h.battFlap = [](int moves, int stepMv) -> String {                       // BATTFLAP (C2)
       nimbus::store::NvsUsage before, after;
       sys::nvsUsage(before);

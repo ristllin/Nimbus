@@ -7,10 +7,10 @@
 #include <mutex>
 
 #include "budget_command.h"   // recordDeviceNote - the Usage page's record
+#include "engine_api.h"       // utcOffsetAt - the local day (RB-SEAM2)
 #include "fs_atomic.h"
 #include "spend_ceiling_store.h"
 #include "store.h"
-#include "nimbus/harness/conversation.h"   // utcOffsetAtUnix
 #include "nimbus/orch/budget_command.h"    // limitsViewFromJson
 #include "nimbus/orch/budget_governor.h"
 #include "nimbus/orch/day_start.h"       // calendarDay
@@ -82,7 +82,7 @@ void headMarks(nimbus::orch::ProfileMarks out[5]) {
 int64_t today() {
   const time_t now = time(nullptr);
   if (now < nimbus::orch::kCeilingClockValid) return 0;
-  return nimbus::orch::day::calendarDay((uint64_t)now, agent::utcOffsetAtUnix((uint32_t)now));
+  return nimbus::orch::day::calendarDay((uint64_t)now, agent::orchestrator::utcOffsetAt((uint32_t)now));
 }
 
 }  // namespace
@@ -114,7 +114,7 @@ bool factsNow(nimbus::orch::GovernorFacts& g) {
   nimbus::orch::LimitsView v;
   if (!nimbus::orch::limitsViewFromJson(state, v) || !v.loaded) return false;
   const nimbus::orch::SpendFacts spend{v.monthKey, v.spentMicro, v.active, v.limitMicro};
-  if (!nimbus::orch::governorFactsAt((uint64_t)now, agent::utcOffsetAtUnix((uint32_t)now),
+  if (!nimbus::orch::governorFactsAt((uint64_t)now, agent::orchestrator::utcOffsetAt((uint32_t)now),
                                      agent::store::dayStartMin(), spend, g))
     return false;
   nimbus::orch::ProfileMarks m[5];

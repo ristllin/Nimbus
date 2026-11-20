@@ -29,8 +29,12 @@
 #include "nimbus/orch/file_append.h"  // files.append + the files.read tail view
 #include "nimbus/orch/file_swap.h"    // whole-file replace without a moment the file is gone
 #include "nimbus/orch/file_edit.h"    // files.edit: its caps, reply head and keyed-CSV report
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: files.read and files.edit (tools/engine/guard_files.txt)
 #include "nimbus/orch/file_aids_e1.h"  // files.read and files.edit on the shared CSV scan and edit (RB-REC4)
+#endif
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/harness/conversation.h"  // utcOffsetAtUnix: the running day's offset
+#endif
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
 #include "nimbus/orch/turn_effects.h"  // kSaveReplacedNote: the save receipt
@@ -872,6 +876,7 @@ static size_t fileBytes(const char* project, const char* name) {
   return n;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // files.read {tail}: the last rows of a text document, read from the END of the
 // file - never the whole file (file_append.h). The window starts one byte early so
 // tailRows can tell a row that starts exactly at the window from a partial one.
@@ -966,6 +971,7 @@ static nimbus::orch::ToolResult readForms(ArduinoJson::JsonObjectConst a, nimbus
   }
   return readTail(project, name, (size_t)a["tail"].as<double>());
 }
+#endif
 
 // The quota refusal of every assistant write that would pass the caller's share.
 static const char kStorageLimit[] =
@@ -1044,10 +1050,12 @@ static bool commitAppend(const std::string& project, const std::string& name, si
   return true;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // The last keyed-CSV rows an edit removed (one file, in RAM only, bounded): a later edit
 // that lands rows for the same file is told which of them were not logged again (RCA
 // 2026-11-01/02 cause 15). A restart forgets it, which is the honest bound.
 static nimbus::orch::aids::e1::RemovedRows g_removedRows;
+#endif
 
 // The first row (the header) of a stored file, bounded: the keyed edit diff's
 // column names. "" when it cannot be read.
@@ -1243,6 +1251,7 @@ struct SdEditSink : nimbus::orch::aids::AidSink {
   std::string refusal() const override { return err; }
 };
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // files.edit: the shared edit (file_aids_e1.h) - the first match by default, the first
 // 'count', 'all', or the whole-line match at 'line' - streamed in two passes under one Lock,
 // into the part file and swapped in. The reply keeps its head ("edited p/n: replaced A of B
@@ -1280,6 +1289,7 @@ static nimbus::orch::ToolResult editDoc(nimbus::orch::aids::e1::EditCall& call, 
   alogf("files: edit %s/%s (%u B -> %u B)", project.c_str(), name.c_str(), (unsigned)size, (unsigned)sink.written);
   return ToolResult::ok(reply);
 }
+#endif
 
 std::string readDocText(const std::string& project, const std::string& name,
                         const nimbus::orch::Principal& who) {
@@ -1324,12 +1334,14 @@ bool wouldExceedQuota(const nimbus::orch::Principal& who, uint32_t bytes) {
   return (uint64_t)g_store.bytesFor(who.ns) + bytes > q.maxBytes;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 bool tableReadNow(const std::string& project, const std::string& name, const nimbus::orch::aids::CsvQuery& q,
                   std::string& out) {
   const nimbus::orch::ToolResult r = readTable(project, name, q);
   out = r.success ? r.output : r.error;
   return r.success;
 }
+#endif
 
 void lastScanStats(uint32_t& reads, uint32_t& longestUs) {
   reads = g_scanReads;
@@ -1705,6 +1717,7 @@ void registerTools() {
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"}},"required":["project","name"]})");
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // v4.0.0: the read half the store never had - the head can finally READ a doc
   // back (a research run's accumulated documents, a report draft). Bounded
   // paginated view mirroring results.get; text documents only.
@@ -1751,6 +1764,7 @@ void registerTools() {
             return nimbus::orch::ToolResult::ok(out);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"offset":{"type":"number"},"tail":{"type":"number"},"column":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}},"required":["project","name"]})");
+#endif
   // Content search: the head asks "which of my saved docs mention X" without
   // knowing exact names. Scans TEXT doc bodies only (readable by the caller),
   // ranks by textMatchScore (the shared lexical.h word rule, CUM-515: how many
@@ -1902,6 +1916,7 @@ void registerTools() {
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"text":{"type":"string"}},"required":["project","name","text"]})");
   reg.alsoReads("files.append", {"key", "sum", "replace"});   // read to be refused by name
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   reg.add("files.edit",
           "Edit a saved TEXT document surgically: find an exact text span (a phrase, or a whole "
           "line's text) and replace it - never read and re-save the whole file. Replaces the "
@@ -1926,6 +1941,7 @@ void registerTools() {
             return editDoc(call, who);
           },
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"find":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"},"count":{"type":"integer"},"line":{"type":"integer"}},"required":["project","name","find"]})");
+#endif
 
   reg.add("files.delete",
           "Delete one of your saved files for good: the bytes and the index entry both go. "

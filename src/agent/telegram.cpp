@@ -23,7 +23,9 @@
 #include "../sys/psram_static.h" // pending-slot buffers live in PSRAM, not internal .bss
 #include <esp_task_wdt.h>       // quiesce() feeds the main-task WDT while it waits
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: histV2 (tools/engine/guard_files.txt)
 #include "nimbus/harness/turn_inbox.h"   // histV2: what the sender sent, for the turn's history row
+#endif
 #include "adapters/image_vision.h"   // R1: a photo goes to the head as an image (a transcription as the fallback)
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
 #include "tg_archive.h"             // lane R: every update and every send is archived on SD
@@ -1918,7 +1920,11 @@ static bool processVoice(int slot, std::string& transcript) {
   // section 4). SD-gated no-op: with no card, nothing is retained. histV2: the
   // transcript is what the sender said, so it lives in the turn's owner row and the
   // audio row keeps the blob only (stored once); the turn names it by its ref.
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   const bool histV2 = agent::history::v2Enabled();
+#else
+  const bool histV2 = false;   // engine 2 has no histV2 switch: the audio row keeps the transcript
+#endif
   std::string ref;
   agent::memory::captureMediaFile(v.chatId, "user", nimbus::orch::MsgKind::Audio,
                                   histV2 ? String() : text, localPath, "ogg", v.date, &ref);
@@ -2060,7 +2066,9 @@ static void bootGuard() {
         g_resetReason, (unsigned)g_guard.tries(), (unsigned)g_guard.dupDrops());
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 static void noteHistory(const nimbus::orch::PsString& text);
+#endif
 
 // The typing indicator while a plain text is held (tg_settle.h HoldTyping: at its first
 // sight, again when Telegram's action lapses), sent on the open keep-alive poll socket:
@@ -2172,7 +2180,9 @@ struct TgIo {
   // loop runs here synchronously. The rendered text lives in PSRAM; one at a time.
   void runTurn(const std::string& from, const std::string& chat, const nimbus::orch::PsString& text, bool) {
     closePollSocket();
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
     noteHistory(text);   // histV2: the turn's source and stored media, for its history row
+#endif
     // R1: the photos this turn attached go to the head as images (the engine takes
     // them with the turn and frees them when it ends; a turn that never took them, a
     // command or a refusal, frees them here).
@@ -2228,6 +2238,7 @@ static uint32_t heldRepollMs(uint32_t normalMs) {
   return ms;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // histV2 (lib/harness turn_inbox.h): what the turn about to run hands its history row -
 // its source (the bucket's newest update id and message count, so a re-served page is
 // captured once), the refs of the media rows its items left (album order) and what the
@@ -2253,6 +2264,7 @@ static void noteHistory(const nimbus::orch::PsString& text) {
   if (in.said.empty() && sent != routed.size()) in.said = routed.substr(0, sent);
   agent::history::noteInbound(in, routed);
 }
+#endif
 
 static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
                             int& retryAfterS) {

@@ -13,7 +13,9 @@
 #include "../sys/errlog_fs.h"         // durableSkipped()/durableBytes() - durable log row (CUM-407/409)
 #include "hw/hal_status.h"
 #include "fs_atomic.h"                // flashMounted() - internal storage row
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: the dream turn (tools/engine/guard_files.txt)
 #include "dream_subsystem.h"          // status() - did the last night save its state
+#endif
 #include "nimbus/fault.h"
 #include "nimbus/orch/provider_park.h"  // the one per-provider park - the Providers row (L19-8)
 #include "nimbus/orch/health_rows.h"     // the Settings storage and Providers rows (portable)
@@ -83,10 +85,12 @@ Row flashRow() {
   if (!agent::flashMounted())
     return {key, label, kDegraded,
             "not mounted: settings, routines and nightly memory upkeep cannot be saved"};
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   const agent::dream::Status ds = agent::dream::status();
   if (ds.known && !ds.stateSaved)
     return {key, label, kDegraded,
             String("mounted; the last nightly upkeep could not save its state (") + ds.stateWhy + ")"};
+#endif
   return {key, label, kOk, "mounted"};
 }
 }  // namespace

@@ -163,5 +163,12 @@ String withTurnTag(const char* base);
 // contentless "Done." (called only while engineRunning()).
 void engineNoteToolReplied(const std::string& text);
 
+// ---- engine-neutral helpers an engine-1 source still holds (RB-SEAM2) -------
+// The UTC offset in minutes at unixSec, the device's local zone (DST-aware). Defined in
+// lib/harness conversation.cpp, which an engine-2 image does not compile; a device file
+// that needs the day (budget_profile_store.cpp) reaches it here, never through
+// nimbus/harness/conversation.h.
+int32_t utcOffsetAt(uint32_t unixSec);
+
 }  // namespace orchestrator
 }  // namespace agent
