@@ -180,9 +180,10 @@ inline constexpr char kCompactNothing[] = "Nothing to compact yet.";
 inline constexpr char kCompactFailed[] = "The summary failed; the device tries again by itself.";
 inline constexpr char kCompactNoClock[] = "The summary waits until the clock is set.";
 // The loop's own lines (lane RB-E1a, plain_engine.cpp). A guard trip's item, which the model
-// sees before its last round: the open, then guardTripSlug, then the close.
+// sees before its last round: the open, then guardTripSlug, then the close. The close asks the
+// honest stop of that round (lane RB-X3, ruling 84 item 2): what is done and what is left.
 inline constexpr char kLimitReached[] = "[device] limit reached (";
-inline constexpr char kLimitReachedEnd[] = ")";
+inline constexpr char kLimitReachedEnd[] = "): this last round runs no tool; say what is done and what is left.";
 // Storage refused an item: the model is told once per episode, the owner once.
 inline constexpr char kNotStored[] =
     "[device] storage refused part of this conversation: it is kept in memory until the device restarts.";
@@ -199,11 +200,12 @@ inline constexpr char kTooManyParts[] = "That message has too many parts for the
 // The last allowed round answered with tool calls and no text.
 // The guard's slug (guardTripSlug) sits between the two (lane RB-E1c, ruling 79).
 inline constexpr char kLimitLine[] = "The turn reached its ";
-inline constexpr char kLimitLineEnd[] = " limit before a reply. Ask again to continue.";
+inline constexpr char kLimitLineEnd[] = " limit before a reply. Go on from where it stopped? Reply yes.";
 // A guard stopped the turn and its last round's text was delivered: the guard, by its slug
-// (guardTripSlug), between these two (lane RB-E1b).
+// (guardTripSlug), between these two (lane RB-E1b). Both lines end in the honest stop's one
+// question; the owner's yes opens a turn that continues from the log (lane RB-X3).
 inline constexpr char kLimitStopped[] = "This turn stopped at its ";
-inline constexpr char kLimitStoppedEnd[] = " limit. Ask again to continue.";
+inline constexpr char kLimitStoppedEnd[] = " limit. Go on from where it stopped? Reply yes.";
 // The tool slug of a long reply's stub ('[stub assistant r<q> ...]').
 inline constexpr char kAssistantSlug[] = "assistant";
 // Progress on a long turn, for the owner only (lane RB-E3, owner ruling 82 item 6;

@@ -48,6 +48,9 @@ struct PlainEngine::ChatState {
   uint32_t droppedTurns = 0;
   uint64_t droppedFirstAt = 0, droppedLastAt = 0;   // the first item of the first and last dropped turn
   uint32_t lastDroppedTurn = 0;        // the newest turn a drop reached (counted once)
+  // The first item of the last attended turn a guard stopped (0: none): the next attended turn
+  // continues from the log, so the pointer never stubs that turn (lane RB-X3, ruling 84 item 2).
+  uint64_t stoppedFrom = 0;
   // The memory line, built at boot: on a refused allocation it goes out with no allocation.
   std::string memoryLine;
 };
@@ -71,7 +74,7 @@ struct Turn {
   uint32_t messageCap = tx::kInlineMessageCap;   // text kept inline (tx::HeadBudget::messageCap)
   uint32_t bulkWholeCap = tx::kBulkWholeMax;     // tier 2 whole in its own turn (tx::HeadBudget::bulkWholeCap)
   GuardLimits limits;
-  uint32_t hardWallMs = kHardWallMs;   // the guard's last round runs to it (a routine's is lower)
+  GuardProgress progress;              // progressing or a loop (ruling 84 item 2; lane RB-X3)
   LadderState ladder;
   RenderInput render;
   ExchangeResult ex;
@@ -152,6 +155,7 @@ class TurnRun {
   // Text the model already wrote in this turn beside its calls: when the last round answers with
   // nothing, it is the reply, never lost behind a provider line (RB-W1b's report, lane RB-H81).
   void keepInterim(const std::string& text) {
+    t_.progress.noteText(text);   // new text is progress (RB-X3)
     if (!t_.interim.empty()) t_.interim += "\n\n";
     t_.interim += text;
   }
@@ -335,12 +339,21 @@ class TurnRun {
   }
 
   // Whatever the scale, every round has a bound and the last round has time before the hard wall.
+  // An attended turn (a person's message started it) has the soft and hard guards; any other keeps
+  // today's limits (ruling 84 items 2 and 9).
   void clampLimits() {
-    if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, t_.limits).ok()) t_.limits = GuardLimits{};
-    applyCeiling(t_.setup.ceiling, t_.limits, t_.hardWallMs);   // an unattended turn's own bounds (RB-U1a)
-    t_.hardWallMs = std::max<uint32_t>(t_.hardWallMs, 3 * kMinRequestMs);
-    t_.limits.rounds = std::max<uint16_t>(1, std::min<uint16_t>(t_.limits.rounds, kMaxRounds));
-    t_.limits.softWallMs = std::min<uint32_t>(t_.limits.softWallMs, t_.hardWallMs - 2 * kMinRequestMs);
+    const bool attended = personTrigger(t_.ctx.trigger);
+    if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, attended, t_.limits).ok()) t_.limits = GuardLimits{};
+    GuardLimits& l = t_.limits;
+    // An unattended turn's own bounds (RB-U1a; a routine's ceiling), applied over the head's limits;
+    // the clamps below only bound them further.
+    applyCeiling(t_.setup.ceiling, l, l.lastRoundWallMs);
+    l.lastRoundWallMs = std::max<uint32_t>(std::min<uint32_t>(l.lastRoundWallMs, attended ? kAttendedHardWallMs : kHardWallMs),
+                                           3 * kMinRequestMs);
+    l.rounds = std::max<uint16_t>(1, std::min<uint16_t>(l.rounds, kMaxRounds));
+    l.hardRounds = std::max<uint16_t>(l.rounds, std::min<uint16_t>(l.hardRounds, kHardRounds));
+    l.timeLimitMs = std::min<uint32_t>(l.timeLimitMs, l.lastRoundWallMs - 2 * kMinRequestMs);
+    l.softWallMs = std::min<uint32_t>(l.softWallMs, l.timeLimitMs);
   }
 
   // A turn that cannot start (setup, composition or the wire refused) is closed with one
@@ -498,7 +511,7 @@ class TurnRun {
     f.lastReqAt = c_.head.lastReqAt;
     f.afterRestart = c_.afterRestart;
     f.pointer = c_.head.stub;
-    f.lastClosedTurnQ = c_.lastClosedQ;
+    f.lastClosedTurnQ = pointerLimit();
     f.wholeBulkAbove = bulkAbove(c_.head.stub);
     f.floorHead = floorHead();
     tx::PointerMove m;
@@ -520,6 +533,17 @@ class TurnRun {
       event("change:pointer");
     }
     return st;
+  }
+
+  // How far the pointer may move: to the last closed turn, except that an attended turn after one a
+  // guard stopped continues from the log, so that turn stays whole (lane RB-X3, ruling 84 item 2).
+  uint64_t pointerLimit() const {
+    const bool continues = c_.stoppedFrom && personTrigger(t_.ctx.trigger);
+    return continues ? std::min(c_.lastClosedQ, c_.stoppedFrom - 1) : c_.lastClosedQ;
+  }
+  // At an attended turn's close: whether the next one continues it.
+  void noteStop() {
+    if (personTrigger(t_.ctx.trigger)) c_.stoppedFrom = t_.trip != GuardTrip::None ? t_.firstQ : 0;
   }
 
   uint32_t bulkAbove(uint64_t pointer) const {
@@ -576,20 +600,52 @@ class TurnRun {
       if (d_.log->append(h, state).ok() && state == tx::StoreState::Stored) c_.noteDue = false;
     }
     if (t_.lastRound) return Status::success();
-    GuardState g;
-    g.rounds = t_.toolRounds;
-    g.elapsedMs = elapsedMs();
-    g.promptTokens = t_.sizeTokens;
-    g.spendMicroUsd = t_.end.microUsd;
-    GuardTrip trip = GuardTrip::None;
-    (void)checkGuards(t_.limits, g, trip);   // the limits are clamped at open: never InvalidArgument
-    if (trip == GuardTrip::None) return Status::success();
+    const GuardTrip trip = guardTrip();
+    if (trip == GuardTrip::None) {
+      report(ProgressKind::ProviderWait, "");
+      return Status::success();
+    }
     t_.trip = trip;
     t_.lastRound = true;
     event(std::string("trip:") + guardTripSlug(trip));
     return note(std::string(texts::device_notes::kLimitReached) + guardTripSlug(trip) +
                     texts::device_notes::kLimitReachedEnd,
                 tx::NoteClass::Limit);
+  }
+
+  GuardState guardState() const {
+    GuardState g;
+    g.rounds = t_.toolRounds;
+    g.elapsedMs = elapsedMs();
+    g.promptTokens = t_.sizeTokens;
+    g.spendMicroUsd = t_.end.microUsd;
+    g.idleRounds = t_.progress.idle;
+    return g;
+  }
+  // The hard guards and the loop first; then, on an attended turn, the soft check: a progressing
+  // turn shows a status line and goes on, one that is not stops at the soft guard it reached.
+  GuardTrip guardTrip() {
+    const GuardState g = guardState();
+    GuardTrip trip = GuardTrip::None;
+    (void)checkGuards(t_.limits, g, trip);   // the limits are clamped at open: never InvalidArgument
+    if (trip != GuardTrip::None) return trip;
+    GuardTrip soft = GuardTrip::None;
+    const SoftCheck c = checkSoftGuards(t_.limits, g, t_.progress, soft);
+    if (c == SoftCheck::Stop) return soft;
+    if (c == SoftCheck::GoOn) {
+      event(std::string("soft:") + guardTripSlug(soft));
+      report(ProgressKind::SoftGuard, guardTripSlug(soft));
+    }
+    return GuardTrip::None;
+  }
+  // Progress the engine reports itself (EngineDeps::progress; RB-E3's status-line class).
+  void report(ProgressKind kind, const char* detail) const {
+    if (!d_.progress) return;
+    ProgressEvent e;
+    e.kind = kind;
+    e.nowMs = d_.platform->nowMs();
+    e.detail = detail;
+    d_.progress(e);
   }
 
   Status ask() {
@@ -605,12 +661,12 @@ class TurnRun {
     r.ladder = &t_.ladder;
     tx::TxLog* log = d_.log;
     r.bulk = [log](const std::string& handle, std::string& out) { return log->readBulk(handle, 0, tx::kBulkMaxBytes, out); };
-    // The soft wall for every round; the guard's last round may run to the hard wall.
-    const uint32_t wall = t_.lastRound ? t_.hardWallMs : t_.limits.softWallMs, used = elapsedMs();
+    // The time limit for every round; the guard's last round may run to the turn's hard wall.
+    const uint32_t wall = t_.lastRound ? t_.limits.lastRoundWallMs : t_.limits.timeLimitMs, used = elapsedMs();
     ExchangeRequest req;
     req.wire = t_.wire;
     req.render = &r;
-    req.deadlineMs = used < wall ? wall - used : 1;
+    req.deadlineMs = std::min<uint32_t>(used < wall ? wall - used : 1, kExchangeMaxMs);
     req.bodyCap = t_.bodyCap;
     req.climb = [this](const ClimbAsk& ask) { return climb(ask); };
     if (r.photo) {   // a photo's file id the provider no longer holds: forgotten, sent once more without it
@@ -1122,15 +1178,16 @@ class TurnRun {
   }
 
   // ---- one call -----------------------------------------------------------------------------
-  // The round's calls in order; past the soft wall no further call starts.
+  // The round's calls in order; past the time limit no further call starts.
   Status runCalls(const ParsedStep& step) {
     Status st = Status::success();
     for (size_t i = 0; st.ok() && i < step.calls.size(); ++i) {
       t_.curCallQ = callQOf(i);
-      st = elapsedMs() < t_.limits.softWallMs ? runCall(step.calls[i])
-                                              : answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
+      st = elapsedMs() < t_.limits.timeLimitMs ? runCall(step.calls[i])
+                                               : answerUnrun(step.calls[i], texts::tool_results::kNotRunLimit);
     }
     ++t_.toolRounds;
+    t_.progress.endRound();
     return st;
   }
 
@@ -1183,6 +1240,8 @@ class TurnRun {
     out.id = call.id;
     out.name = call.name;
     out.outside |= outsideByClass(view);
+    t_.progress.noteCall(view.name, view.args, dd.verdict == DispatchVerdict::Answer && dd.by == HookSlot::Suppression,
+                         out.isError, out.text);
     return storeResult(call, out, view);
   }
 
@@ -1305,6 +1364,7 @@ class TurnRun {
     if (!t_.storeFailed) supersede();
     if (!t_.storeFailed) st = storeEnd();
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
+    noteStop();
     c_.head.nextQ = c_.nextQ;
     if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);   // a cache: Io loses nothing
     return st;

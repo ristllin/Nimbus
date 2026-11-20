@@ -288,6 +288,7 @@ inline void test_a_hard_guard_stops_honestly_and_the_owners_yes_continues_from_t
     const std::string tag = "BULK-t" + std::to_string(i);
     TEST_ASSERT_TRUE_MESSAGE(bodyHas(first, tag), ("the continuation lost the stopped turn's " + tag).c_str());
   }
+  TEST_ASSERT_FALSE_MESSAGE(bodyHas(first, "[stub big_read"), "the continuation shows the stopped turn as stubs");
   // Counter: the same reads in a turn that ended with its reply leave the next request as stubs.
   txb::Battery c;
   c.model.respondWith([](const sp::Recorded& r, size_t) { return r.step < 3 ? bigReadAt(r.step) : sp::say("All read."); });
@@ -295,7 +296,7 @@ inline void test_a_hard_guard_stops_honestly_and_the_owners_yes_continues_from_t
   TXB_OK(c.owner("read every part", done));
   TEST_ASSERT_TRUE(done.trip == plain::GuardTrip::None);
   TXB_OK(c.owner("thanks", next));
-  TEST_ASSERT_FALSE_MESSAGE(bodyHas(c.model.requests()[4], "BULK-t0"), "the counter case kept the bulk whole");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(c.model.requests()[4], "[stub big_read"), "the counter case kept the bulk whole");
 }
 
 // The calls-only last round ends with the limit line, which asks the same one question.

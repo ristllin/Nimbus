@@ -413,8 +413,11 @@ bool ProgressReporter::tick(const ProgressEvent& e) {
   if (e.kind == ProgressKind::ToolRound) ++steps_;
   const uint32_t since = e.nowMs - lastVisibleMs_;
   bool due = false;
+  // A soft guard a progressing turn passed is always shown where the line edits in place (ruling
+  // 84 items 2 and 3; lane RB-X3); otherwise it keeps the first-line threshold and the 60 s rule.
+  const bool soft = e.kind == ProgressKind::SoftGuard;
   if (!lines_) due = since >= kProgressFirstMs;
-  else if (haveMsg_) due = since >= kProgressEditMs;
+  else if (haveMsg_) due = soft || since >= kProgressEditMs;
   else due = lines_ < kProgressMaxLines && since >= kProgressNewLineMs;
   if (!due) return false;
   try {

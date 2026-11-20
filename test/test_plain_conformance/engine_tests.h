@@ -320,6 +320,7 @@ inline sp::Step untilNone(const sp::Recorded& r, uint32_t takesMs) {
   return s;
 }
 
+// An owner turn that keeps progressing reaches the hard round guard (64; ruling 84 item 2).
 inline void test_a_turn_at_the_round_budget_gets_one_note_and_one_last_round() {
   txb::Battery b;
   b.world.files["notes/a.md"] = "alpha";
@@ -327,7 +328,7 @@ inline void test_a_turn_at_the_round_budget_gets_one_note_and_one_last_round() {
   plain::TurnOutcome out;
   TXB_OK(b.owner("keep reading", out));
   const auto& reqs = b.model.requests();
-  TEST_ASSERT_EQUAL(plain::kDefaultRounds + 1, (int)reqs.size());
+  TEST_ASSERT_EQUAL(plain::kHardRounds + 1, (int)reqs.size());
   TEST_ASSERT_EQUAL_STRING("none", reqs.back().view.toolChoice.c_str());
   TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Rounds);
   TEST_ASSERT_EQUAL_STRING("Stopped at the limit.", out.text.c_str());
@@ -338,7 +339,8 @@ inline void test_a_turn_at_the_round_budget_gets_one_note_and_one_last_round() {
 }
 
 inline void test_a_turn_at_the_wall_clock_ends_inside_the_hard_wall() {
-  // Each answer takes 70 s: the 240 s soft wall trips after four rounds.
+  // Each answer takes 70 s: the soft time checks find the turn progressing; the time guard trips
+  // 180 s before the 1,200 s hard wall and the last round ends inside it (ruling 84 item 2).
   txb::Battery b;
   b.world.files["notes/a.md"] = "alpha";
   b.model.respondWith([](const sp::Recorded& r, size_t) { return untilNone(r, 70000); });
@@ -348,12 +350,13 @@ inline void test_a_turn_at_the_wall_clock_ends_inside_the_hard_wall() {
   TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Time);
   TEST_ASSERT_EQUAL_STRING("none", b.model.last().view.toolChoice.c_str());
   TEST_ASSERT_EQUAL_STRING("Stopped at the limit.", out.text.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kHardWallMs, "the turn ran past the hard wall");
+  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kAttendedHardWallMs, "the turn ran past the hard wall");
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[device] limit reached (time)"));
 }
 
 // A provider that never answers (every read hangs its whole window): the turn ends with one
-// plain line inside its soft wall, with no tool run twice and no spin.
+// plain line inside the stall bound (a hung read is a stall, not honest work: ruling 85 item 3),
+// with no tool run twice and no spin.
 inline void test_a_hung_provider_ends_the_turn_inside_its_wall_clock() {
   txb::Battery b;
   b.model.respondWith([](const sp::Recorded&, size_t) { return sp::transportCut(120000); });
@@ -361,7 +364,7 @@ inline void test_a_hung_provider_ends_the_turn_inside_its_wall_clock() {
   plain::TurnOutcome out;
   TXB_OK(b.owner("hello?", out));
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
-  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kSoftWallMs + 10000, "past the soft wall");
+  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kExchangeMaxMs, "past the stall bound");
   TEST_ASSERT_TRUE(b.model.requests().size() <= 3);
 }
 
@@ -574,13 +577,13 @@ inline void test_a_result_lost_to_the_card_is_closed_after_a_restart() {
   TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(b.model.last().view, why), why.c_str());
 }
 
-// Slow tools inside one round: once the soft wall has passed no further call starts; the
-// rest are answered "not run" and the guard's last round follows.
+// Slow tools inside one round: once the time limit has passed no further call starts; the
+// rest are answered "not run" and the guard's last round follows inside the hard wall.
 inline void test_no_call_starts_past_the_soft_wall() {
   txb::Battery b;
   TXB_OK(b.boot());
   TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [&b](const plain::DispatchCtx&) {
-    b.ms += 100000;   // each call takes 100 s
+    b.ms += 350000;   // each call takes 350 s: the fourth would start past the 1,020 s time limit
     return plain::DispatchDecision{};
   }));
   b.world.files["notes/a.md"] = "alpha";
@@ -594,17 +597,17 @@ inline void test_no_call_starts_past_the_soft_wall() {
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), texts::tool_results::kNotRunLimit));
   TEST_ASSERT_TRUE(out.trip == plain::GuardTrip::Time);
   TEST_ASSERT_EQUAL_STRING("none", b.model.last().view.toolChoice.c_str());
-  TEST_ASSERT_TRUE(b.ms - t0 <= plain::kHardWallMs);
+  TEST_ASSERT_TRUE(b.ms - t0 <= plain::kAttendedHardWallMs);
   expectPaired(b);
 }
 
-// A round that starts late (a 200 s tool round first) gets only the wall clock that is left:
-// a provider that then hangs cannot keep the turn past its walls.
+// A round that starts late (a 900 s tool round first) gets only the wall clock that is left:
+// a provider that then hangs cannot keep the turn past its time limit.
 inline void test_a_late_round_gets_only_the_time_left() {
   txb::Battery b;
   TXB_OK(b.boot());
   TXB_OK(b.hooks->beforeDispatch(plain::HookSlot::Policy, [&b](const plain::DispatchCtx&) {
-    b.ms += 200000;
+    b.ms += 900000;
     return plain::DispatchDecision{};
   }));
   b.world.files["notes/a.md"] = "alpha";
@@ -614,7 +617,8 @@ inline void test_a_late_round_gets_only_the_time_left() {
   plain::TurnOutcome out;
   TXB_OK(b.owner("read it", out));
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::ProviderError);
-  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kSoftWallMs + 60000, "the late round ran on a full wall clock");
+  TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kAttendedHardWallMs - plain::kLastRoundReserveMs + 60000,
+                           "the late round ran on a full wall clock");
 }
 
 // Ruling 89 item 3: a turn opened without a head (no model in the setup) is refused loudly: a
@@ -1938,7 +1942,8 @@ inline void expectOneTrip(txb::Battery& b, const plain::TurnOutcome& out, plain:
   for (const tx::Item& it : items)
     if (it.kind == tx::ItemKind::DeviceNote) {
       ++notes;
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(("[device] limit reached (" + slug + ")").c_str(), it.x.c_str(), msg);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE((texts::device_notes::kLimitReached + slug + texts::device_notes::kLimitReachedEnd).c_str(),
+                                       it.x.c_str(), msg);
     }
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)notes, msg);
   size_t none = 0;
@@ -1969,9 +1974,9 @@ inline void test_each_guard_gives_one_item_and_one_last_round() {
       plain::TurnOutcome out;
       TXB_OK(b.owner("keep reading", out));
       expectOneTrip(b, out, plain::GuardTrip::Rounds, plain::dialectSlug(d));
-      TEST_ASSERT_EQUAL(plain::kDefaultRounds + 1, (int)b.model.requests().size());
+      TEST_ASSERT_EQUAL(plain::kHardRounds + 1, (int)b.model.requests().size());   // an owner turn that progresses
     }
-    {   // time: 70 s an answer, the 240 s soft wall
+    {   // time: 70 s an answer, the time limit of an owner turn that progresses
       txb::Battery b(d);
       b.world.files["notes/a.md"] = "alpha";
       b.model.respondWith([](const sp::Recorded& r, size_t) { return untilNone(r, 70000); });
@@ -1994,7 +1999,8 @@ inline void test_each_guard_gives_one_item_and_one_last_round() {
     {   // size: cached tokens count (a request of 100,000 tokens, 99% from the cache)
       txb::Battery b(d);
       b.world.files["notes/a.md"] = "alpha";
-      b.cost.targetTokens = b.cost.requestTokensAtTrigger = 20000;   // cap 320,000 tokens
+      b.cost.targetTokens = 20000;                 // cap max(4 x 20,000, 64 x 5,000) = 320,000 tokens
+      b.cost.requestTokensAtTrigger = 5000;
       sp::Usage u;
       u.input = 1000;
       u.cacheRead = 99000;
@@ -2373,7 +2379,7 @@ inline void test_no_hold_on_the_last_round() {
   b.model.respondWith([](const sp::Recorded& r, size_t) { return untilNone(r, 0); });
   plain::TurnOutcome out;
   TXB_OK(b.owner("keep reading", out));
-  TEST_ASSERT_EQUAL_MESSAGE(plain::kDefaultRounds + 1, (int)b.model.requests().size(), "a hold on the last round sent one more request");
+  TEST_ASSERT_EQUAL_MESSAGE(plain::kHardRounds + 1, (int)b.model.requests().size(), "a hold on the last round sent one more request");
   TEST_ASSERT_EQUAL_STRING("Stopped at the limit.", out.text.c_str());
 }
 
@@ -2500,7 +2506,7 @@ inline void test_guard_inputs_measure_size_and_spend() {
   {
     txb::Battery b;
     b.world.files["notes/a.md"] = "alpha";
-    b.cost.targetTokens = b.cost.requestTokensAtTrigger = 500;   // a size cap of 8,000 tokens
+    b.cost.targetTokens = b.cost.requestTokensAtTrigger = 125;   // a size cap of 64 x 125 = 8,000 tokens
     sp::Step s = sp::call("read_file", R"({"path":"notes/a.md"})");
     s.usage.input = 100;
     s.usage.cacheRead = 9000;

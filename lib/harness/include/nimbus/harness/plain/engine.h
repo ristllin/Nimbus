@@ -84,7 +84,9 @@ inline void applyCeiling(const TurnCeiling& c, GuardLimits& limits, uint32_t& ha
     if (cap && v > cap) v = static_cast<std::remove_reference_t<decltype(v)>>(cap);
   };
   lower(limits.rounds, c.rounds);
+  lower(limits.hardRounds, c.rounds);         // the round guard itself (lane RB-X3's hard rounds)
   lower(limits.softWallMs, c.softWallMs);
+  lower(limits.timeLimitMs, c.softWallMs);    // the time guard itself (lane RB-X3's time limit)
   lower(limits.maxSpendMicroUsd, c.spendMicroUsd);
   lower(hardWallMs, c.hardWallMs);
 }

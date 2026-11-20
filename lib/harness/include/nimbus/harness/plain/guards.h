@@ -29,8 +29,8 @@ struct HeadBudget;
 // Every turn: a loop (kLoopRounds tool rounds in a row with no progressing call) trips at once.
 // Size: prompt tokens at most max(4 x the head's aim, R x its request at the due mark of the
 // profile in force); spend at most max(0.50 USD, R warm requests plus one cold at that size);
-// R is the turn's hard round limit (64 attended, 16 unattended), so a progressing turn is never
-// stopped by a cap sized for a shorter one.
+// R is the attended turn's hard round limit (64), so a progressing turn is never stopped by a cap
+// sized for a shorter one; an unattended turn keeps today's R = 16.
 // On a trip: one '[device] limit reached (<slug>): ...' item that asks the last round to say what
 // is done and what is left, one last round with tool choice none, its text is delivered; an
 // attended turn's owner line asks the one question whether to go on.
@@ -49,6 +49,9 @@ inline constexpr uint32_t kHardWallMs = 420000;  // an unattended turn's last ro
 inline constexpr uint32_t kAttendedHardWallMs = 1200000;   // an attended turn ends inside it
 // The last round's own time: the time guard trips this long before the turn's hard wall.
 inline constexpr uint32_t kLastRoundReserveMs = kHardWallMs - kSoftWallMs;
+// One exchange, its retries included, ends inside this: a hung read is a stall, not honest work,
+// and ends inside 450 s without bytes on any turn (ruling 85 item 3).
+inline constexpr uint32_t kExchangeMaxMs = 450000;
 inline constexpr uint8_t kLoopRounds = 3;        // tool rounds in a row with no progressing call
 inline constexpr uint32_t kGuardOutputTokens = 740;   // a request's output when the guards price one
 inline constexpr uint32_t kMinSpendCapMicroUsd = 500000;   // 0.50 USD
