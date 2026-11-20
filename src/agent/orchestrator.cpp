@@ -11,7 +11,6 @@
 #include "../sys/heap_watch.h"          // heapwatch::psramFirst - the turn's malloc placement
 #include "nimbus/harness/turn_inbox.h"  // histV2 switch (the turn-structured history)
 #include "nimbus/harness/turn_anatomy.h" // the /api/lastturn page head (provider chain, device history)
-#include "nimbus/harness/head_arc.h"    // portable head-arc reconciler (W6)
 #include "store.h"
 #include "store_config.h"               // harnessConfigFromStore - the HarnessConfig view
 #include "../sys/agent_log.h"
@@ -156,10 +155,6 @@ static nimbus::orch::FoldStore  g_folds;
 // An auto fold and the staged system turn wait for the owner (owner_first.h): onTurnEnd
 // and pollJobs feed it, compactTick and drainUpdateNotice ask it, tg_poll only.
 static nimbus::orch::OwnerFirstGate g_ownerFirst;
-// Hold-to-talk message lifecycle (CUM-456) - see voiceMessages() in the header.
-static std::atomic<uint32_t> s_voiceHandled{0};
-static std::atomic<bool>     s_voiceOk{false};
-static bool                  s_inVoiceMessage = false;   // tg_poll only
 // Glass Box turn identity: "turn:<user row id>" - stamped on every trace row and
 // on the turn's assistant reply rows, so the chat UI groups a bubble with its
 // trace by ID instead of chronological adjacency (adjacency mis-bucketed rows
@@ -283,34 +278,6 @@ static void drainStaged() {
     alog("orchestrator: directive reloaded (web)");
   }
 }
-
-// ---- attention-event helpers (the plan §3.6 integration seam) ---------------
-// keyFromTag / ringStatusFor / emitJobState / emitJobCleared live in the portable
-// JobEngine; the head-turn Running/Offline arc + the stuck-turn reaper live in
-// the portable TurnEngine. emitAsk stays: it's turn-application, not job
-// machinery, and rides the device ApplyDeps.
-
-static void emitAsk() {
-  if (!g_sinks.event) return;
-  attn::Event e; e.type = attn::Event::Type::IncomingAsk;
-  g_sinks.event(e);
-}
-
-// Clear a pending "needs you" ask. Nothing used to fire this on the normal path, so
-// an ask latched the Dark/Calm attention LED (and masked every other attention
-// source) until the router's ~6-min backstop aged it out. The owner engaging - a
-// message or a voice reply - IS the answer, so clear it then. (A scheduled loop
-// turn is NOT the owner answering, so it deliberately doesn't call this.)
-void clearAsk() {
-  if (!g_sinks.event) return;
-  attn::Event e; e.type = attn::Event::Type::AskCleared;
-  g_sinks.event(e);
-}
-
-// Error arcs are calls-to-action: hold them for the tunable attention window
-// (Param::AttnHoldMs, fed by main.cpp's applyConfig). Latched here because
-// setAttnHoldMs can fire from applyConfig BEFORE begin() constructs the engine.
-static uint32_t g_attnHoldMs = 300000;  // 5 min default, mirrors the Param preset
 
 // ---- moderation gates (CUM-69) ---------------------------------------------
 // The portable decision core (lib/core/orch_moderation) owns the fail-open/closed
@@ -452,22 +419,6 @@ static bool deliver(const String& chatId, const String& text, bool system = fals
   return true;
 }
 
-// Speak a short confirmation of a job result aloud (opt-in via store::ttsEnabled).
-// LIVE-GATED + BENCH-BROKEN: the audio path is unverified here (no key, broken
-// bench audio). Compile-clean; the sink is nullable and no-ops when unset.
-static void ttsAnnounce(const String& text) {
-  if (!g_sinks.speak || !store::ttsEnabled() || text.length() == 0) return;
-  int end = -1;
-  for (int i = 0; i < (int)text.length() && i < 180; i++) {
-    char c = text[i];
-    if (c == '.' || c == '!' || c == '?' || c == '\n') { end = i + 1; break; }
-  }
-  // No sentence end in reach: the speech cut's rule, never in the middle of a character.
-  String snippet = (end > 0) ? text.substring(0, end)
-                             : String(nimbus::orch::cutForSpeech(std::string(text.c_str()), 180).text.c_str());
-  g_sinks.speak(String(), snippet);   // no chat: the owner chat if the speaker cannot play it
-}
-
 // hostForPrompt moved to the harness (agent::hostForPrompt over ProviderConfig,
 // compose.h) - the composeInputs closure below delegates to it.
 
@@ -481,14 +432,6 @@ static bool providerHasKey(const String& p) {
   return false;
 }
 
-// CUM-523: HarnessConfig::telegramDeliverable on this device - the portable
-// agent::telegramDeliverableFor rule (config.h, host-tested) over the live bot,
-// allowlist and public-mode facts.
-static bool telegramDeliverable(const std::string& chatId) {
-  return agent::telegramDeliverableFor(agent::telegram::enabled(),
-                                       store::telegramAllowlist().length() > 0,
-                                       store::telegramPublic(), chatId);
-}
 
 // CUM-486: the ONE model-choice derivation (nimbus::orch::effectiveModelChoices:
 // the model store's short list first - every verify fetches the provider's list,
@@ -2409,20 +2352,6 @@ bool speakOnDevice(const String& text, bool capture, String* why) {
   return true;
 }
 
-// Is `cid` in the persisted Telegram allowlist? Read from NVS (thread-safe) - NOT
-// telegram's poll-task-owned g_allowlist, since this runs on the turn task.
-static bool chatAllowed(const String& cid) {
-  String al = store::telegramAllowlist();
-  int s = 0;
-  while (s < (int)al.length()) {
-    int e = al.indexOf(',', s); if (e < 0) e = al.length();
-    String t = al.substring(s, e); t.trim();
-    if (t.length() && t == cid) return true;
-    s = e + 1;
-  }
-  return false;
-}
-
 bool sendToChat(const String& chatId, const String& text, bool asVoice, std::string* result) {
   String cur = currentChat();
   String cid = chatId.length() ? chatId : cur;
@@ -2470,13 +2399,6 @@ void noteTurnSpoke() {
 }
 
 // ---- Local Loops: scheduled-turn executor -----------------------------------
-String firstAllowedChat() {
-  String al = store::telegramAllowlist();
-  int e = al.indexOf(','); if (e < 0) e = al.length();
-  String t = al.substring(0, e); t.trim();
-  return t;
-}
-bool isChatAllowed(const String& cid) { return chatAllowed(cid); }
 bool telegramForTurn() {
   if (g_engine && g_engine->turnInFlight()) return g_engine->turnTelegram();
   return telegramDeliverable(std::string());
@@ -3000,67 +2922,11 @@ int pollJobs() {
 }
 
 bool turnInFlight()   { return g_engine && g_engine->turnInFlight(); }
-uint32_t headJobKey() { return keyFromTag("head"); }
 
-// CUM-11 backstop metric: every time a belt-and-braces path (not the primary edge)
-// has to clear a stuck ring arc, this counts it. The 24 h wake-up soak acceptance is
-// this == 0 - the backstops are insurance, never the mechanism. Surfaced in
-// /api/state as ring.backstopFires so the soak can assert it stayed flat.
-static uint32_t s_ringBackstopFires = 0;
-uint32_t ringBackstopFires() { return s_ringBackstopFires; }
-void noteRingBackstopFired() { ++s_ringBackstopFires; }
-
-// Stuck-turn reaper - the decision + the arc-freeing event live in the portable
-// TurnEngine (loop budget + 2 min margin). Called from the always-alive loop().
-bool reapStuckTurn(uint32_t nowMs) {
-  const bool fired = g_engine && g_engine->reapStuckTurn(nowMs);
-  if (fired) ++s_ringBackstopFires;   // a dead turn slipped past the primary clear
-  return fired;
-}
-
-// W6: keep the orchestrator's own "head" ring arc lit while its sub-agents run.
-// A fan-out turn returns (and the TurnGuard would clear the arc) the instant it
-// enqueues the children - long before they finish - so the head arc collapsed
-// before the child arcs appeared. This runs on the always-alive main loop (the
-// same watchdog block as reapStuckTurn), asks the pure tracker whether to light,
-// refresh, or clear, and drives the arc through the engine. Returns true when it
-// changed the arc (so the caller can refreshRing()).
-bool reconcileHeadArc(uint32_t nowMs) {
-  if (!g_engine) return false;
-  static nimbus::harness::HeadArcTracker s_tracker;
-  static uint32_t s_lastTurnCount = 0;
-  // Completion EDGE: turnCount() bumps once per finished turn. A short wake-up turn
-  // can start AND finish between two watchdog ticks, so turnInFlight below never
-  // samples true - the edge is what tells the tracker a (possibly arc-leaving) turn
-  // happened, so the primary clear path fires instead of a backstop (CUM-11).
-  const uint32_t tc = g_engine->turnCount();
-  const bool turnEnded = (tc != s_lastTurnCount);
-  s_lastTurnCount = tc;
-  const bool inTurn = g_engine->turnInFlight();
-  const int children = g_jobs ? g_jobs->activeCount() : 0;
-  const auto action = s_tracker.reconcile(inTurn, children, nowMs, turnEnded);
-  // Fold the tracker's own frozen-children backstop into the aggregate metric.
-  static uint32_t s_lastTrackerBackstops = 0;
-  const uint32_t tb = s_tracker.backstopFires();
-  if (tb != s_lastTrackerBackstops) { s_ringBackstopFires += tb - s_lastTrackerBackstops; s_lastTrackerBackstops = tb; }
-  switch (action) {
-    case nimbus::harness::HeadArcTracker::Action::Light:
-      g_engine->setHeadArc(true);
-      return true;
-    case nimbus::harness::HeadArcTracker::Action::Clear:
-      g_engine->setHeadArc(false);
-      return true;
-    case nimbus::harness::HeadArcTracker::Action::None:
-    default:
-      return false;
-  }
-}
-
-void setAttnHoldMs(uint32_t ms) {   // fed from Param::AttnHoldMs
-  g_attnHoldMs = ms;                // latched: applyConfig can fire before begin()
-  if (g_jobs) g_jobs->setAttnHoldMs(ms);
-}
-
+// The engine seam the common half calls (orchestrator_common.h): ring arcs.
+bool engineRunning() { return g_engine != nullptr; }
+bool engineReapStuckTurn(uint32_t nowMs) { return g_engine && g_engine->reapStuckTurn(nowMs); }
+void engineSetHeadArc(bool on) { g_engine->setHeadArc(on); }
 String memorySnapshot() { return String(g_memEcho); }
 
 String lastInstructions() {
@@ -3163,13 +3029,6 @@ nimbus::orch::TokenUsage lastTurnUsage() {
   return g_engine ? g_engine->lastTurnUsage() : nimbus::orch::TokenUsage{};
 }
 
-// Hold-to-talk (CUM-456): the count is read first (acquire), so a reader that sees
-// a finished message also sees its ok.
-void voiceMessages(uint32_t* handled, bool* lastOk) {
-  const uint32_t n = s_voiceHandled.load(std::memory_order_acquire);
-  if (handled) *handled = n;
-  if (lastOk) *lastOk = s_voiceOk.load(std::memory_order_relaxed);
-}
 
 nimbus::orch::TokenUsage sessionUsage() {
   return g_engine ? g_engine->sessionUsage() : nimbus::orch::TokenUsage{};
