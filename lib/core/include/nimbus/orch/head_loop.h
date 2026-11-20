@@ -244,8 +244,8 @@ struct HeadLoopConfig {
   // round (the reference loop's rule), not a stall that costs a second request only to wrap the
   // same answer in orch_turn. Read by the wires that can tell a normal end from a stop for
   // another reason (Anthropic: stop_reason end_turn or stop_sequence); every other wire keeps
-  // its own rule. The engine sets it on every turn except the nightly dream, whose product is
-  // the end-of-turn fields. False => the stall path, byte-identical to before.
+  // its own rule. The engine sets it on a person's turn only (an unattended turn may have
+  // nothing to send, which only an empty orch_turn says). False => the stall path, byte-identical.
   bool proseIsReply = false;
 };
 

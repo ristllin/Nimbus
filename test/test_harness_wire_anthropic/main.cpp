@@ -452,8 +452,8 @@ static void test_loop_stall_echoed_on_the_unforced_final_round() {
 }
 
 // The final round answered in prose: delivered, never "tool budget reached
-// without a final answer". With HeadLoopConfig::proseIsReply off (the default, and the
-// dream's turn), a prose round on a TOOL round is still a stall (the counter-test for
+// without a final answer". With HeadLoopConfig::proseIsReply off (the default, and every
+// unattended turn), a prose round on a TOOL round is still a stall (the counter-test for
 // RB-Q4's acceptance below).
 static void test_loop_prose_final_accepted_only_on_the_final_round() {
   FakeProviderDeps d;
@@ -473,7 +473,7 @@ static void test_loop_prose_final_accepted_only_on_the_final_round() {
   TEST_ASSERT_TRUE(LogCapture::contains("final round answered in prose"));
 }
 
-// RB-Q4: with HeadLoopConfig::proseIsReply (the engine sets it on every turn but the dream), a
+// RB-Q4: with HeadLoopConfig::proseIsReply (the engine sets it on a person's turn only), a
 // round that ends normally (end_turn) with text and no tool call IS the reply, on every round:
 // requests == tool rounds + 1, never a second request only to wrap the answer in orch_turn.
 // The class, over 0 to 3 tool rounds before the answer: no request carries the nudge or the

@@ -2601,18 +2601,29 @@ static void test_no_prose_check_is_wired() {
 }
 
 // RB-Q4: on an owner's turn a prose answer is the reply on every round (the loop flag is on);
-// on an unattended turn it is not: the nightly dream's product is the end-of-turn fields
-// (mem_write, memory), and a routine or a sub-agent report may have nothing to send, which only
-// an orch_turn's empty reply says. Counter-test in one: the flag is per turn, not sticky.
+// on an unattended turn it is not: a routine (quiet or not), a reminder, a wakeup, a held note or a
+// sub-agent report may have nothing to send, which only an orch_turn's empty reply says. RB-Q2b:
+// the nightly dream is no turn any more; the class over every scheduled kind pins the rest.
+// Counter-test in one: the flag is per turn, not sticky.
 static void test_rbq4_prose_is_the_reply_on_owner_turns_only() {
   Rig r;
   r.scripts["anthropic"] = {Rig::Script{}};
   r.eng->handleMessage("go", "Roy", "1001");
   TEST_ASSERT_FALSE(r.proseIsReply.empty());
   TEST_ASSERT_EQUAL(1, r.proseIsReply.back());
-  const orch::FireOutcome night = r.eng->injectScheduledTurn("1001", "dream", "Dream", "dream", true);
-  TEST_ASSERT_TRUE_MESSAGE(night.ok, night.error.c_str());
+  const orch::FireOutcome quiet = r.eng->injectScheduledTurn("1001", "tidy the notes", "Tidy", "Q1", true);
+  TEST_ASSERT_TRUE_MESSAGE(quiet.ok, quiet.error.c_str());
   TEST_ASSERT_EQUAL(0, r.proseIsReply.back());
+  // Every other scheduled class with a tool loop: reminder and wakeup (a held note is one short
+  // request with no loop at all, so it has no flag to set).
+  struct { bool once, reminder, selfWakeup; const char* what; } kinds[] = {
+      {true, true, false, "reminder"}, {true, false, false, "wakeup"}};
+  for (const auto& k : kinds) {
+    const size_t n0 = r.proseIsReply.size();
+    r.eng->injectScheduledTurn("1001", "check", k.what, "lp9", false, k.once, k.reminder, k.selfWakeup);
+    TEST_ASSERT_TRUE_MESSAGE(r.proseIsReply.size() == n0 + 1, k.what);
+    TEST_ASSERT_EQUAL_MESSAGE(0, r.proseIsReply.back(), k.what);
+  }
   r.eng->handleMessage("and again", "Roy", "1001");
   TEST_ASSERT_EQUAL(1, r.proseIsReply.back());
   const size_t before = r.proseIsReply.size();
