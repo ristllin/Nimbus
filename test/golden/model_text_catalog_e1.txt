@@ -2,7 +2,7 @@
 # Regenerate with --write. Gate: tools/release_gate/check_no_prompt_patch.py (coverage/PROMPT-CHANGES.md).
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class system bytes=43781 ceiling=47989 entries=411 sha8=035ecd2c
-# class device_notes bytes=54725 ceiling=54203 entries=1467 sha8=34c49472
+# class device_notes bytes=54846 ceiling=54203 entries=1472 sha8=92df283f
 # class tool_descriptions bytes=22131 ceiling=23131 entries=99 sha8=56b90134
 # class tool_results bytes=35720 ceiling=41962 entries=1108 sha8=06ea09d5
 # class side_prompts bytes=7395 ceiling=9795 entries=117 sha8=68383f73
@@ -574,9 +574,10 @@ device_notes	lib/core/src/orch_head_loop.cpp	c5970b91	12	" hit trouble"
 device_notes	lib/core/src/orch_head_loop.cpp	cf4c95d7	14	"\u2026[truncated "
 device_notes	lib/core/src/orch_head_loop.cpp	a4282e4b	4	" of "
 device_notes	lib/core/src/orch_head_loop.cpp	5a129706	38	" B - fetch the rest with results.get(\""
+device_notes	lib/core/src/orch_head_loop.cpp	60e81c3e	24	"the replayed tool rounds"
+device_notes	lib/core/src/orch_head_loop.cpp	bc3d69c1	26	"the newest round's results"
 device_notes	lib/core/src/orch_head_loop.cpp	6c14e686	20	"the prompt's context"
 device_notes	lib/core/src/orch_head_loop.cpp	ba65c176	20	"the prompt and input"
-device_notes	lib/core/src/orch_head_loop.cpp	60e81c3e	24	"the replayed tool rounds"
 device_notes	lib/core/src/orch_head_loop.cpp	086e1163	6	" then "
 device_notes	lib/core/src/orch_head_loop.cpp	aee0d057	15	"headloop round="
 device_notes	lib/core/src/orch_head_loop.cpp	f11c18c8	7	" tools="
@@ -693,14 +694,18 @@ device_notes	lib/core/src/orch_spend_ceiling.cpp	c6bfa0ae	25	"x less for the sam
 device_notes	lib/core/src/orch_spend_ceiling.cpp	8f673171	15	" To change it, "
 device_notes	lib/core/src/orch_spend_ceiling.cpp	7e5192a0	183	"Each provider starts on a standard model for the assistant and its cheapest model for helpers, photo captions and routines. Paid AI calls pause once a month's estimated spend reaches "
 device_notes	lib/core/src/orch_spend_ceiling.cpp	066cb7e4	75	". Change models on Assistant > Models and the ceiling on Assistant > Usage."
+device_notes	lib/core/src/orch_transcript.cpp	7abf7ef8	35	"\n[cut to fit this request: bytes 0-"
+device_notes	lib/core/src/orch_transcript.cpp	a4282e4b	4	" of "
+device_notes	lib/core/src/orch_transcript.cpp	15c64779	32	"; the rest: results.get {\"tag\":\""
 device_notes	lib/core/src/orch_transcript.cpp	d549035f	67	"\n[cut: this turn's tool-output budget is spent - showing the first "
 device_notes	lib/core/src/orch_transcript.cpp	a4282e4b	4	" of "
 device_notes	lib/core/src/orch_transcript.cpp	c45cb334	59	" B. Ask for a smaller slice, or finish with what you have.]"
 device_notes	lib/core/src/orch_transcript.cpp	04ed1ec0	53	"[not shown: this turn's tool-output budget is spent ("
 device_notes	lib/core/src/orch_transcript.cpp	629567bb	60	" B). Ask for a smaller slice, or finish with what you have.]"
-device_notes	lib/core/src/orch_transcript.cpp	e7560792	125	"[EARLIER TOOL ROUNDS OF THIS TURN - folded to one line each to save room; call the tool again if you need a full result back]"
+device_notes	lib/core/src/orch_transcript.cpp	947a96dd	127	"[EARLIER TOOL ROUNDS OF THIS TURN - folded to one line each to save room; results.get with a line's tag reads that result back]"
 device_notes	lib/core/src/orch_transcript.cpp	c983f25d	8	"- round "
 device_notes	lib/core/src/orch_transcript.cpp	26293379	9	" -> error"
+device_notes	lib/core/src/orch_transcript.cpp	81982051	22	"; results.get {\"tag\":\""
 device_notes	lib/core/src/orch_transcript.cpp	c983f25d	8	"- round "
 device_notes	lib/core/src/orch_transcript.cpp	338ea5e4	8	": (said)"
 device_notes	lib/core/src/orch_transcript.cpp	2fcc8709	31	" bytes; this call already ran\"}"

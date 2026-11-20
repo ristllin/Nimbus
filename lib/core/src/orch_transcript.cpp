@@ -110,8 +110,8 @@ std::string clipToRoom(const std::string& text, size_t room, const std::string& 
 }  // namespace
 
 const char Transcript::kFoldNote[] =
-    "[EARLIER TOOL ROUNDS OF THIS TURN - folded to one line each to save room; read a full "
-    "result back with results.get and the tag its line names, or call the tool again]";
+    "[EARLIER TOOL ROUNDS OF THIS TURN - folded to one line each to save room; results.get "
+    "with a line's tag reads that result back]";
 
 int Transcript::newestRound() const {
   int newest = -1;
