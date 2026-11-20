@@ -132,12 +132,6 @@ namespace orch = nimbus::orch;
 namespace attn = nimbus::attn;
 
 // ---- Module state -----------------------------------------------------------
-
-static HeavyFabric* g_fabric = nullptr;
-static Sinks        g_sinks;
-// The portable sub-agent job machinery (spawn queue / dispatch gate / round-robin
-// poll / fresh results / reap scheduler) - constructed in begin(), Stage F lift.
-static JobEngine*   g_jobs = nullptr;
 static constexpr const char* kStopListPath = "/data/jobs_stopping.txt";   // lane QW4: the stop list
 // The portable turn orchestration (Stage G lift) - constructed in begin().
 static TurnEngine*  g_engine = nullptr;
@@ -153,7 +147,7 @@ static HarnessConfig g_cfg;
 static orch::OrchMemory      g_mem;
 // PSRAM (psram_static.h): about 1.7 KB that internal RAM no longer holds. Task
 // context only (single-writer on tg_poll), no lock member, so psramObject applies.
-static orch::Journal&        g_journal = ::nimbus::psramObject<orch::Journal>();
+orch::Journal&               g_journal = ::nimbus::psramObject<orch::Journal>();   // shared (orchestrator_common.h)
 static LittleFsMemoryStore   g_memStore;
 // v3.6.0 fold state (plans/compaction-plan.md). All accessed on tg_poll ONLY
 // (capture hooks, onTurnEnd, pollJobs, handleMessage) - no lock needed.
@@ -261,60 +255,6 @@ static void drainStaged() {
     g_mem.begin(&g_memStore, std::string(store::sysPrompt().c_str()));
     syncMemEcho();
     alog("orchestrator: directive reloaded (web)");
-  }
-}
-
-// ---- sub-agent journal: cross-task snapshot + staged terminate (prism F24) ---
-// The sub-agent journal (g_journal) is SINGLE-WRITER on the tg_poll task - pump()
-// update/markSeen/gc it every cycle. External MCP clients reach session.list and
-// session.terminate on the AsyncTCP web task, which must NEVER touch the journal
-// concurrently (a poll firing mid-request could tear a record / corrupt job state).
-// So, mirroring loops:: web-staging and the g_memEcho model:
-//   * READS  (session.list, sessionsJson) go through a snapshot rebuilt on tg_poll
-//     after each pump(), copied out under a short mutex - never the journal;
-//   * WRITES (session.terminate) are STAGED from the web task and drained on
-//     tg_poll (terminate becomes async - the remote cancel is best-effort anyway).
-// The turn's OWN session_ops[] terminate stays synchronous: it runs on tg_poll via
-// d.cancelSession -> cancel(), already the journal's writer task, so it's untouched.
-static SemaphoreHandle_t        g_sessMux = nullptr;   // guards g_sessSnapshot
-// A FreeRTOS mutex held for one scope and given back on every path out, an exception
-// included (a turn catches std::bad_alloc, L24). A null mutex holds nothing.
-struct MuxHold {
-  SemaphoreHandle_t m;
-  explicit MuxHold(SemaphoreHandle_t mux) : m(mux) {
-    if (m) xSemaphoreTake(m, portMAX_DELAY);
-  }
-  ~MuxHold() {
-    if (m) xSemaphoreGive(m);
-  }
-  MuxHold(const MuxHold&) = delete;
-  MuxHold& operator=(const MuxHold&) = delete;
-};
-static std::vector<nimbus::orch::SessionInfo> g_sessSnapshot;
-static portMUX_TYPE             g_termSpin = portMUX_INITIALIZER_UNLOCKED;
-static std::vector<std::string> g_termQueue;           // guarded by g_termSpin
-
-// Rebuild the AsyncTCP-readable snapshot from the journal. Called ONLY on tg_poll
-// (same task as pump), so the sessionInfos() journal read is race-free; the vector
-// is built outside the lock and swapped in (O(1), no alloc while the mutex is held).
-static void refreshSessionSnapshot() {
-  std::vector<nimbus::orch::SessionInfo> fresh =
-      g_jobs ? g_jobs->sessionInfos() : std::vector<nimbus::orch::SessionInfo>{};
-  MuxHold hold(g_sessMux);
-  g_sessSnapshot.swap(fresh);
-}
-
-// Apply web-staged terminates on tg_poll (the journal's single writer). Swap the
-// queue out under the spinlock (O(1)), then cancel() each outside it. A bad/stale
-// id is a harmless no-op (the job already finished between staging and draining).
-static void drainTerminates() {
-  std::vector<std::string> work;
-  portENTER_CRITICAL(&g_termSpin);
-  work.swap(g_termQueue);
-  portEXIT_CRITICAL(&g_termSpin);
-  for (const std::string& id : work) {
-    bool ok = g_jobs && g_jobs->cancel(id.c_str());
-    alogf("orchestrator: staged terminate %s -> %s", id.c_str(), ok ? "cancelled" : "not found");
   }
 }
 
@@ -674,6 +614,15 @@ static bool anyContextOverflow(const TurnEndEv& ev) {
 // Execution-only closures for the portable job machinery - every decision
 // (dispatch gates, backoff, refusal strings, synthesis clock) lives in
 // lib/harness jobs.cpp and is host-tested (test_harness_jobs).
+// The whole principal for a chat (namespace, role and quota) from the tenant table:
+// the one answer to "who is this chat" for the turn (ApplyDeps) and for the
+// sub-agents it starts (JobEngine), so the two can never disagree (CUM-828).
+static nimbus::orch::Principal chatPrincipal(const std::string& chatId) {
+  nimbus::orch::Quota q;
+  tenantQuotaOf(chatId, q);
+  return nimbus::orch::principalForRole(chatId, roleOfChat(String(chatId.c_str())), q);
+}
+
 static JobEngine::Deps buildJobDeps() {
   JobEngine::Deps d;
   d.principalFor = chatPrincipal;   // a sub-agent inherits its chat's principal (CUM-828/830)
@@ -2910,12 +2859,6 @@ int pollJobs() {
   return n + g_jobs->stoppingCount();
 }
 
-bool cancel(const char* tagOrJobId) {
-  return g_jobs && g_jobs->cancel(tagOrJobId);
-}
-
-int  activeJobCount() { return g_journal.count(); }
-int  pendingSpawnCount() { return g_jobs ? g_jobs->pendingCount() : 0; }   // queued, not yet dispatched
 bool turnInFlight()   { return g_engine && g_engine->turnInFlight(); }
 uint32_t headJobKey() { return keyFromTag("head"); }
 
@@ -2976,31 +2919,6 @@ bool reconcileHeadArc(uint32_t nowMs) {
 void setAttnHoldMs(uint32_t ms) {   // fed from Param::AttnHoldMs
   g_attnHoldMs = ms;                // latched: applyConfig can fire before begin()
   if (g_jobs) g_jobs->setAttnHoldMs(ms);
-}
-
-static const char* stateStr(orch::JobState s) {
-  switch (s) {
-    case orch::JobState::Queued:     return "queued";
-    case orch::JobState::Running:    return "running";
-    case orch::JobState::NeedsInput: return "needs_input";
-    case orch::JobState::Done:       return "done";
-    case orch::JobState::Error:      return "error";
-    case orch::JobState::Cancelled:  return "cancelled";
-    default:                         return "unknown";
-  }
-}
-
-String jobsSummary() {
-  int n = g_journal.count();
-  if (n == 0) return "No active jobs.";
-  String s;
-  for (int i = 0; i < n; i++) {
-    orch::JobRecord rec;
-    if (!g_journal.get(i, rec)) continue;
-    s += String(rec.tag) + " (" + rec.backend + "/" + rec.model + ") " +
-         rec.category + " [" + stateStr(rec.state) + "]\n";
-  }
-  return s;
 }
 
 String memorySnapshot() { return String(g_memEcho); }
@@ -3075,27 +2993,6 @@ String sessionsJson() {
   String out; serializeJson(d, out); return out;
 }
 
-// tg_poll ONLY (the journal's writer task) - used by composeInputs on the turn.
-// AsyncTCP/MCP callers must use sessionInfosSnapshot() instead.
-std::vector<nimbus::orch::SessionInfo> sessionInfos() {
-  return g_jobs ? g_jobs->sessionInfos() : std::vector<nimbus::orch::SessionInfo>{};
-}
-
-// Cross-task-safe read of the session snapshot (see refreshSessionSnapshot).
-std::vector<nimbus::orch::SessionInfo> sessionInfosSnapshot() {
-  std::vector<nimbus::orch::SessionInfo> out;
-  MuxHold hold(g_sessMux);   // the copy allocates: given back on every path out (L24)
-  out = g_sessSnapshot;
-  return out;
-}
-
-bool sessionKnown(const std::string& id) {
-  MuxHold hold(g_sessMux);
-  for (const auto& s : g_sessSnapshot)
-    if (s.id == id) return true;
-  return false;
-}
-
 // ---- recent-results ring (results.get/list) ---------------------------------
 // Own mutex (same pattern as g_sessMux): writers are tg_poll (clamp spill /
 // fresh-result overflow), readers include the AsyncTCP /mcp task.
@@ -3117,12 +3014,6 @@ bool resultsGet(const std::string& tag, size_t& offset, size_t maxBytes, std::st
 std::string resultsList(const nimbus::orch::Principal& who) {
   MuxHold hold(g_resultsMux);
   return g_results.list(who);
-}
-
-void stageTerminate(const std::string& id) {
-  portENTER_CRITICAL(&g_termSpin);
-  g_termQueue.push_back(id);   // bounded (kAgentMaxJobs); drained on tg_poll
-  portEXIT_CRITICAL(&g_termSpin);
 }
 
 // Phase 0 token seam: the real provider token usage of the most recently

@@ -10,10 +10,42 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <string>
+#include <vector>
+
+#include "nimbus/harness/jobs.h"   // JobEngine, HeavyFabric
+#include "nimbus/orch/journal.h"    // Journal
 #include "nimbus/orch/rbac.h"   // TenantStore, Principal
 
 namespace agent {
 namespace orchestrator {
+
+// ---- module state (orchestrator_common.cpp, except g_journal) -------------------
+extern HeavyFabric* g_fabric;   // set by begin() (orchestrator.cpp)
+extern Sinks        g_sinks;    // set by begin()
+extern JobEngine*   g_jobs;     // constructed in begin()
+// The sub-agent journal: defined in orchestrator.cpp, in PSRAM (psramObject; its
+// declaration there is pinned by tests/hil/test_psram_statics_host.py).
+extern nimbus::orch::Journal& g_journal;
+
+// ---- job glue (orchestrator_common.cpp) -------------------------------------------
+// A FreeRTOS mutex held for one scope and given back on every path out, an exception
+// included (a turn catches std::bad_alloc, L24). A null mutex holds nothing.
+struct MuxHold {
+  SemaphoreHandle_t m;
+  explicit MuxHold(SemaphoreHandle_t mux) : m(mux) {
+    if (m) xSemaphoreTake(m, portMAX_DELAY);
+  }
+  ~MuxHold() {
+    if (m) xSemaphoreGive(m);
+  }
+  MuxHold(const MuxHold&) = delete;
+  MuxHold& operator=(const MuxHold&) = delete;
+};
+extern SemaphoreHandle_t g_sessMux;   // guards the session snapshot; created in begin()
+// tg_poll only: mirror the journal for cross-task readers; apply web-staged terminates.
+void refreshSessionSnapshot();
+void drainTerminates();
 
 // ---- tenants (orchestrator_common.cpp) ------------------------------------------
 // The tenant table and its recursive mutex. roleOfChat (orchestrator.cpp) reads the
@@ -26,8 +58,6 @@ struct TenantLock {
   TenantLock(const TenantLock&) = delete;
   TenantLock& operator=(const TenantLock&) = delete;
 };
-// The whole principal for a chat (namespace, role and quota) from the tenant table.
-nimbus::orch::Principal chatPrincipal(const std::string& chatId);
 
 }  // namespace orchestrator
 }  // namespace agent
