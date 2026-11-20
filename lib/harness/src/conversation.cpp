@@ -986,6 +986,7 @@ nimbus::orch::MsgQuery earlierQuery(const std::string& chatId, const std::string
   q.textContains = text;
   q.before = before;
   q.limit = kEarlierCandidates;
+  q.maxReads = kEarlierCardReads;   // the RAM ring is free; older indexed rows cost card reads
   return q;
 }
 

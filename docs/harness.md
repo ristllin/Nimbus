@@ -241,7 +241,8 @@ a quiet background turn; the next owner turn says it).
   the night spent; the conversation itself is untouched, and the head's own turns still
   write memories, the running summary and the scratchpad). What the reflection used to copy into memory facts is
   read by code instead (ruling 90): at turn open, beside memory recall, the store's word search (the one
-  `memory.episodic` uses, its index only: no card read, no paid call) finds the owner's own earlier lines of the
+  `memory.episodic` uses: the RAM ring with no read, older indexed rows with at most 16 record-block reads, never
+  the cold pass, and no paid call) finds the owner's own earlier lines of the
   chat for the new message; up to 3 (320 B each) that are older than the history window and not in the summary
   ride the recall block verbatim and dated, inside the recall budget, gated like recall
   (`TurnEngine::earlierRecall`, `agent::earlierBullets`). The night is one pure pipeline,

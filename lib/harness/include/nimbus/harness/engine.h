@@ -313,7 +313,8 @@ class TurnEngine {
     std::function<std::vector<nimbus::orch::EpisodicMessage>(const std::string& chatId, const HistoryQuery& q)>
         historyRows;
     // Ruling 90 (RB-Q2b): the stored conversation searched by words, the search memory.episodic
-    // uses (the store's lexical rule, its index only: no card read, no paid call). Null = the
+    // uses (the store's lexical rule; the RAM ring, then at most kEarlierCardReads card reads; no
+    // paid call). Null = the
     // turn carries no earlier-conversation recall.
     std::function<std::vector<nimbus::orch::EpisodicMessage>(const nimbus::orch::MsgQuery& q)> searchStore;
     // Capture the owner's row (text = what the sender sent, tags = from:, att:,
@@ -960,7 +961,7 @@ class TurnEngine {
   void truthRescue(bool& ok, std::string& outJson);
   void startTruth(const std::string& chatId, const std::string& userText);
   // Ruling 90 (RB-Q2b): this turn's earlier-conversation recall (conversation.h earlierBullets),
-  // appended to `into` after the memory facts. Reads the store's index only; no paid call.
+  // appended to `into` after the memory facts. The store's ring and index (a bounded card read); no paid call.
   void earlierRecall(const std::string& chatId, const std::string& text, const std::string& summary,
                      std::vector<std::string>& into);
   void noteTruthEffect(const std::string& tool, bool isError, const std::string& output);

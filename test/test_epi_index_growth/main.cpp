@@ -17,6 +17,7 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <chrono>
 #include <vector>
 
 #include "nimbus/orch/episodic_log.h"
@@ -43,7 +44,9 @@ struct FakeFs : EpiFs {
     auto it = files.find(p);
     return it == files.end() ? std::string() : it->second;
   }
+  mutable long ranges = 0;   // readRange calls (card reads of record blocks)
   std::string readRange(const std::string& p, long off, long len) const override {
+    ranges++;
     auto it = files.find(p);
     if (it == files.end() || off < 0 || len < 0 || (size_t)(off + len) > it->second.size()) return std::string();
     return it->second.substr((size_t)off, (size_t)len);
@@ -397,6 +400,32 @@ static void test_a_later_step_with_memory_completes_the_index() {
   assertEveryRowFound(st, 4000, "complete after memory returned");
 }
 
+// Ruling 90 (RB-Q2b): a call's own card-read cap. The turn-open conversation recall reads the
+// RAM ring freely and at most maxReads record blocks off the card; 0 keeps the store's budget.
+void test_a_call_can_tighten_its_card_read_budget() {
+  FakeFs fs;
+  writeRows(fs, 0, 3000);
+  AppendLogEpisodicStore st(fs, kDir, 64);
+  st.hydrate(0, 0);
+  MsgQuery q;
+  q.sessionId = "1001";
+  q.textContains = "garden 17";   // ranked: the whole index is a candidate
+  q.limit = 12;
+  q.maxReads = 4;
+  fs.ranges = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  const auto capped = st.query(q);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  const long cappedReads = fs.ranges;
+  std::printf("RBQ2B-RECALL index of 3000 rows, ring 64, maxReads 4: %ld block reads, %.2f ms (host)\n", cappedReads, ms);
+  TEST_ASSERT_TRUE(cappedReads <= 4);
+  TEST_ASSERT_FALSE(capped.empty());   // the ring answered what it could
+  q.maxReads = 0;   // counter-test: the store's own budget reads further
+  fs.ranges = 0;
+  st.query(q);
+  TEST_ASSERT_TRUE(fs.ranges > cappedReads);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_growth_is_at_most_its_size_or_2048_rows);
@@ -409,5 +438,6 @@ int main(int, char**) {
   RUN_TEST(test_at_the_cap_the_backfill_keeps_free_slots);
   RUN_TEST(test_a_refused_reserve_near_the_cap_stalls_with_slots_kept);
   RUN_TEST(test_the_held_row_flush_grows_by_the_step);
+  RUN_TEST(test_a_call_can_tighten_its_card_read_budget);
   return UNITY_END();
 }

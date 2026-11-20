@@ -377,10 +377,13 @@ std::string localTimeLabel(uint32_t unixSec, int32_t utcOffsetMin);
 inline constexpr size_t kEarlierSnippets = 3;
 inline constexpr size_t kEarlierSnippetBytes = 320;
 inline constexpr int kEarlierCandidates = 12;   // rows the search returns, best match first
+inline constexpr int kEarlierCardReads = 16;    // record blocks it may read off the card at turn open
 extern const char kEarlierLabel[];   // "said earlier in this chat"
 // The search for one turn: the chat's own message rows holding any counted word of `text`
 // (the store's lexical rule, the one memory.episodic uses), strictly older than `before`,
-// indexed rows only (no card read). Empty `text`, or one of only common words: no search.
+// indexed rows only: the RAM ring with no read, older indexed rows with at most
+// kEarlierCardReads record-block reads, never the cold pass. Empty `text`, or one of only
+// common words: no search.
 nimbus::orch::MsgQuery earlierQuery(const std::string& chatId, const std::string& text, const std::string& before);
 // The bullets from the search's rows (best match first). Kept: the owner's own message rows
 // (role "user": never a reply, a tool output or a job delivery), newer than the newest /clear

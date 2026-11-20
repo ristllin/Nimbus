@@ -103,6 +103,10 @@ struct MsgQuery {
   // left unindexed, under the cold budget, and names a span the card will not give back
   // (EpiQueryInfo::unreadable).
   std::string after;
+  // A tighter card-read budget for this call (0 = the store's own, kIndexReadsPerCall): the
+  // turn-open conversation recall (ruling 90) reads the RAM ring freely and at most this many
+  // record blocks off the card, then stops with the page it has.
+  int maxReads = 0;
 
   bool kindVisible(MsgKind k) const {
     if (!haveKind) return true;
