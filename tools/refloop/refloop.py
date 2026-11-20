@@ -227,7 +227,74 @@ class OpenAI:
         return items  # an encrypted reasoning item stands on its own
 
 
+def _json_args(raw) -> dict:
+    try:
+        return json.loads(raw or "{}") if isinstance(raw, str) else (raw or {})
+    except ValueError:
+        return {}
+
+
+def _content_text(content) -> str:
+    """A Chat Completions message's text: a string, or the text of its content parts."""
+    if isinstance(content, list):
+        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return content or ""
+
+
+class MistralChat:
+    """A Mistral head over its Chat Completions API (lane RB-R1, ruling 102), stateless like the OpenAI arm: the loop
+    owns the whole history. The wire the harness itself uses for Mistral (lib/harness/src/providers/mistral.cpp:
+    non-streamed /v1/chat/completions with tools); no effort field, as the harness sends none."""
+
+    def __init__(self, model: str, effort: str | None = None, api_key: str | None = None, base_url: str | None = None):
+        import openai  # the Chat Completions client; Mistral's endpoint takes the same body
+
+        self.client = openai.OpenAI(api_key=api_key, base_url=base_url or "https://api.mistral.ai/v1")
+        self.model = model
+
+    def user(self, text: str, images=()) -> list:
+        parts = [{"type": "image_url", "image_url": f"data:{mt};base64,{b64}"} for mt, b64 in images]
+        return [{"role": "user", "content": [*parts, {"type": "text", "text": text}] if parts else text}]
+
+    def step(self, conv, messages=None) -> Step:
+        r = self.client.chat.completions.create(
+            model=self.model,
+            max_tokens=MAX_TOKENS,
+            messages=[{"role": "system", "content": conv.system}, *(conv.messages if messages is None else messages)],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {"name": s["name"], "description": s["description"], "parameters": s["schema"]},
+                }
+                for s in conv.specs
+            ],
+        )
+        msg = r.choices[0].message.to_dict()
+        msg = {k: v for k, v in msg.items() if k in ("role", "content", "tool_calls") and v is not None}
+        calls = [
+            (c["id"], c["function"]["name"], _json_args(c["function"]["arguments"]))
+            for c in msg.get("tool_calls") or []
+        ]
+        text = _content_text(msg.get("content"))
+        if r.choices[0].finish_reason == "length":
+            text += "\n(stopped early: length)"
+        return Step([msg], calls, text, r.usage.prompt_tokens if r.usage else 0)
+
+    def results(self, results: list) -> list:
+        return [{"role": "tool", "tool_call_id": i, "content": text} for i, text, _ in results]
+
+    @staticmethod
+    def is_owner(item: dict) -> bool:
+        return item.get("role") == "user"
+
+    @staticmethod
+    def without_thinking(items: list) -> list:
+        return items
+
+
 def provider_for(model: str, **kw):
+    if model.startswith(("mistral", "magistral")):
+        return MistralChat(model, **kw)
     return (Anthropic if model.startswith("claude") else OpenAI)(model, **kw)
 
 

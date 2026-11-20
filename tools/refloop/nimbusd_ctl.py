@@ -43,13 +43,15 @@ CLOCK_TIMEOUT_S = 630
 IDLE_TICKS_MIN = 2
 IDLE_TICKS_MAX = 60
 # The slug -> env name pairs the daemon reads (nimbusd/src/daemon_config.h).
-PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+PROVIDER_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "mistral": "MISTRAL_API_KEY"}
 
 
 def load_env(path: str | Path) -> dict:
-    """KEY=VALUE lines of a dotenv file. Values stay in memory: never printed, never written."""
+    """KEY=VALUE lines of a dotenv file, or of several joined by commas (a later file wins a name). Values stay in
+    memory: never printed, never written."""
     env = {}
-    for line in Path(path).read_text().splitlines():
+    paths = [Path(p) for p in str(path).split(",") if p]
+    for line in [ln for p in paths for ln in p.read_text().splitlines()]:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

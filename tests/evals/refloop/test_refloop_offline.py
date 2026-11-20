@@ -972,5 +972,43 @@ class TimeTest(unittest.TestCase):
         self.assertIn("[time passes: it is now Wed 18 Nov 2026 04:00]", grade.render_transcript(rec))
 
 
+class MistralWireTest(unittest.TestCase):
+    """Lane RB-R1 (ruling 102): the rig reads the Chat Completions wire the harness uses for Mistral, and prices the
+    firmware's Mistral rows; an unpriced Mistral model must never read as free."""
+
+    def test_tool_calls_and_results_are_read_off_the_chat_wire(self):
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": "files_read", "arguments": "{\"name\": \"a.csv\"}"},
+                            },
+                            {"id": "c2", "type": "function", "function": {"name": "calc", "arguments": "not json"}},
+                        ],
+                    }
+                }
+            ]
+        }
+        self.assertEqual(
+            arms._tool_uses(response), [("c1", "files_read", {"name": "a.csv"}), ("c2", "calc", {"_raw": "not json"})]
+        )
+        request = {
+            "messages": [{"role": "user", "content": "hi"}, {"role": "tool", "tool_call_id": "c1", "content": "rows"}]
+        }
+        self.assertEqual(arms._tool_results(request), [("c1", "rows")])
+        self.assertIn("/v1/chat/completions", arms.HEAD_PATHS)
+
+    def test_mistral_heads_are_priced_from_the_firmware_table(self):
+        usage = {"input": 1_000_000, "cached": 0, "cache_write": 0, "output": 1_000_000}
+        self.assertAlmostEqual(costs.cost_usd("mistral-medium-latest", usage), 9.0)
+        self.assertAlmostEqual(costs.cost_usd("mistral-small-latest", usage), 0.8)
+        self.assertGreater(costs.cost_usd("mistral-unknown-model", usage), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
