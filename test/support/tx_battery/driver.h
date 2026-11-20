@@ -87,6 +87,7 @@ class Battery {
   plain::HeadCost cost;            // what the guards scale from (TurnSetup::cost)
   int storedRounds = 0;            // the stored orchLoopRnds (TurnSetup::storedRounds)
   std::function<void(const plain::ProgressEvent&)> progressFn;   // EngineDeps::progress (RB-X3)
+  plain::TurnCeiling routineCeiling;   // TurnSetup::ceiling for a Routine turn (RB-U1a); none by default
 
   // Process state: gone at a power cut, rebuilt by boot().
   agent::Platform platform;
@@ -308,6 +309,7 @@ class Battery {
     out.head.routed = routed;
     out.cost = cost;
     out.storedRounds = storedRounds;
+    if (t.trigger == plain::Trigger::Routine) out.ceiling = routineCeiling;
     out.head.key = [] { return std::string("sk-fake-battery"); };
     out.wire = batteryWire(dialect);
     return tx::Status::success();

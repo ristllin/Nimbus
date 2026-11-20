@@ -17,6 +17,7 @@
 #include "../support/tx_battery/props.h"
 #include "../test_tx_budget/budget_table.h"
 #include "engine_tests.h"
+#include "nimbus/harness/plain/unattended.h"
 
 namespace x3_tests {
 
@@ -432,6 +433,56 @@ inline void test_an_unattended_turn_keeps_todays_limits() {
   }
 }
 
+// RB-U1a's routine ceiling and these guards together: a routine fire keeps its own ceiling (6
+// rounds, 90 s soft, inside 180 s; applied over today's unattended limits), and an owner turn on the
+// same chat right after it keeps the attended soft and hard limits (40 progressing rounds, no trip).
+inline void test_a_routine_keeps_its_ceiling_and_an_owner_turn_its_soft_guards() {
+  {
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    b.routineCeiling = plain::routineCeiling();
+    b.model.respondWith(progressing(40));
+    plain::TurnOutcome out;
+    TXB_OK(b.unattended(plain::Trigger::Routine, "routine: read it all", out));
+    TEST_ASSERT_EQUAL(plain::kRoutineRounds + 1, (int)b.model.requests().size());
+    expectHonestStop(b, out, plain::GuardTrip::Rounds, false, "routine ceiling rounds");
+    const size_t before = b.model.requests().size();
+    b.model.respondWith(progressing(before + 40));
+    plain::TurnOutcome own;
+    TXB_OK(b.owner("now you read it all", own));
+    TEST_ASSERT_TRUE_MESSAGE(own.trip == plain::GuardTrip::None, plain::guardTripSlug(own.trip));
+    TEST_ASSERT_EQUAL(41, (int)(b.model.requests().size() - before));
+    TEST_ASSERT_EQUAL(2, (int)countEvent(lastEnd(storedOf(b)), "soft:rounds"));
+  }
+  {   // time: 40 s answers; the routine's time guard at 90 s, its last round inside 180 s
+    txb::Battery b;
+    b.world.files["notes/a.md"] = "alpha";
+    b.routineCeiling = plain::routineCeiling();
+    b.model.respondWith(progressing(40, 40000));
+    const uint32_t t0 = b.ms;
+    plain::TurnOutcome out;
+    TXB_OK(b.unattended(plain::Trigger::Routine, "routine: read it slowly", out));
+    expectHonestStop(b, out, plain::GuardTrip::Time, false, "routine ceiling time");
+    TEST_ASSERT_TRUE_MESSAGE(b.ms - t0 <= plain::kRoutineHardMs, "the routine ran past its 180 s");
+  }
+  // The limits themselves: the ceiling lowers the unattended round and time guards; an empty one
+  // leaves an attended turn's soft and hard limits as they are.
+  plain::GuardLimits u, a;
+  TXB_OK(plain::guardLimitsFor(0, plain::HeadCost{}, false, u));
+  TXB_OK(plain::guardLimitsFor(0, plain::HeadCost{}, true, a));
+  const plain::GuardLimits a0 = a;
+  plain::applyCeiling(plain::routineCeiling(), u, u.lastRoundWallMs);
+  TEST_ASSERT_EQUAL(plain::kRoutineRounds, u.hardRounds);
+  TEST_ASSERT_EQUAL(plain::kRoutineSoftMs, u.timeLimitMs);
+  TEST_ASSERT_EQUAL(plain::kRoutineHardMs, u.lastRoundWallMs);
+  TEST_ASSERT_EQUAL(plain::kRoutineMaxMicroUsd, u.maxSpendMicroUsd);
+  plain::applyCeiling(plain::TurnCeiling{}, a, a.lastRoundWallMs);
+  TEST_ASSERT_EQUAL(a0.hardRounds, a.hardRounds);
+  TEST_ASSERT_EQUAL(a0.timeLimitMs, a.timeLimitMs);
+  TEST_ASSERT_EQUAL(a0.lastRoundWallMs, a.lastRoundWallMs);
+  TEST_ASSERT_EQUAL(a0.rounds, a.rounds);
+}
+
 // ---- the guard table at full, per head class ------------------------------------------------------
 // Every head class of RB-T4's table at Profile::Full: the attended and unattended limits follow the
 // formulas, and a progressing attended turn of 40 rounds at the due mark (warm) fits both caps.
@@ -567,6 +618,7 @@ inline void run() {
   RUN_TEST(test_the_stopped_turn_stays_whole_until_a_turn_finishes);
   RUN_TEST(test_the_limit_line_asks_one_question);
   RUN_TEST(test_an_unattended_turn_keeps_todays_limits);
+  RUN_TEST(test_a_routine_keeps_its_ceiling_and_an_owner_turn_its_soft_guards);
   RUN_TEST(test_the_guard_table_at_full_per_head_class);
 }
 
