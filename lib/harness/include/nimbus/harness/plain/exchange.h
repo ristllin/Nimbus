@@ -99,7 +99,7 @@ inline constexpr uint8_t kMaxSameHostRetries = 2;          // transport, 5xx, 42
 // left for the request: a request with less time cannot be answered, it only spends.
 inline constexpr uint32_t kMinRequestMs = 5000;
 // How many rungs one exchange may climb for a body over its cap (the ladder has four).
-inline constexpr uint8_t kMaxCapClimbs = 4;
+inline constexpr uint8_t kMaxCapClimbs = 5;   // and compaction first (lane RB-C3, ruling 105 item 3)
 
 // Why the ladder is asked to climb one rung.
 enum class Climb : uint8_t {

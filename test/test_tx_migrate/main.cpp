@@ -626,7 +626,9 @@ void test_rows_between_the_pointers_come_first_and_are_compacted_first() {
               (unsigned long long)w.m.thru, (unsigned long long)w.m.shift, (unsigned long long)plan.thru,
               (unsigned long long)plan.lastRow, plan.turns, plan.day.c_str(), (unsigned)plan.resident);
   TEST_ASSERT_TRUE(plan.thru > 0);
-  TEST_ASSERT_TRUE(plan.lastRow > w.m.thru && plan.lastRow <= w.m.shift);
+  // The between rows are the oldest after thru, so a slice starts with them; since lane RB-C3 a slice
+  // may span days and go on past the shift pointer (ruling 106: the recent part, not the day, bounds it).
+  TEST_ASSERT_TRUE(plan.lastRow > w.m.thru);
   TEST_ASSERT_TRUE(plan.resident > rules.high);
 }
 

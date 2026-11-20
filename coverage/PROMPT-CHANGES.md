@@ -1070,3 +1070,34 @@ deleted. Engine 2 has no baseline.
 - lane: RB-N1
 - prd: section 4 ("Notes": note returns the stored line and the space used; pinned full is stored unpinned and says so; both full is an error listing the largest keys, nothing evicted; a set from a tainted or unattended turn goes to pending; with no card a member's note is refused in one line)
 - why: lib/core/src/orch_notes.cpp, a new tool of the spec with its own result and error lines (facts only: what was saved, where, the space used; what was kept for approval and why; what was refused and that nothing changed), cataloged as tool_results through E2_EXTRA_SOURCES as the file tools' are; the pending file's own markers ("seq ", "kind=keep ") are file format the catalog lists with them. No prompt text, no instruction. Planned work, not a fix.
+### PC-0140: the summarizer answers changes to one cumulative summary (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: spec
+- bytes: 654 -> 836
+- sha8: 82cd5b54 -> 2ce2aac9
+- lane: RB-C3
+- prd: section 3 (Compaction), as amended by owner rulings 105 and 106 (after a compaction the request is the system prompt, one cumulative structured summary that each compaction updates and never re-summarizes from nothing, and a settable recent part)
+- why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kPrompt now asks for changes to the running summary (+F, +D, +Q, +O add; =<id> replaces a line the person changed; -<id> drops one that is done; = for none) instead of a one-day digest written from nothing; kSince ("Conversation since the summary:") opens the one message after the summary so far, which rides in the system text with its ids. Code applies the changes (tx::applySummaryEdits), so a line no change names stays byte for byte. Planned work (a lane of the plan implementing the owner's design), not a fix; no instruction was added to pass a test.
+
+### PC-0141: the summary's section titles and the block's label (engine 2)
+- catalog: e2
+- class: core
+- kind: spec
+- bytes: 1474 -> 1688
+- sha8: e511c6c4 -> 68e60f2d
+- lane: RB-C3
+- prd: section 3 (Shape), as amended by owner rulings 105 and 106
+- why: lib/core/include/nimbus/orch/tx/digest.h digest_text: the device-written section titles of the cumulative summary (Facts and standing preferences, Decisions, Quantities and dates as stated, Open items, Files changed), its archive line and its empty form; texts.h core::kDigests reads "Summary of the earlier conversation:" (was "Earlier days:") and kOlderDays says earlier turns appear as one summary and search finds their exact words (was "dated digests"). General sections, no use case named (ruling 41).
+
+### PC-0142: the status line of a turn that waits for the summary; the manual answer (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 2040 -> 2044
+- sha8: 9371985c -> 251bb8a3
+- lane: RB-C3
+- prd: section 3 and section 8 item 9 (status lines), as amended by ruling 98 item 1 (the engine compacts first at turn open, with a status line) and ruling 106 item 3 (when a turn must wait for the summary, the status line says so); ruling 98 item 3 (the lane that adds to device_notes frees bytes first)
+- why: lib/harness/include/nimbus/harness/plain/texts.h kProgressSummary "updating the summary first." (owner-facing only: the progress line is never stored or shown to a model); to make room kCompactDone, the owner's answer to /compact, reads "The summary is updated." (was "Summarized the earlier turns into day digests.", -23 B: there are no day digests any more).
+
+PC-0143: not used.

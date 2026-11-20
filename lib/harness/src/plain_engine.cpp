@@ -103,6 +103,7 @@ struct Turn {
   bool sawOutside = false;
   bool sawMeta = false;
   bool longArgs = false;               // a call kept a long argument whole: its stub shows from the close
+  uint8_t compactAsks = 0;             // compaction first, asked once a turn per urgency (lane RB-C3)
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
   GuardTrip trip = GuardTrip::None;
@@ -464,10 +465,38 @@ class TurnRun {
     return t_.wire ? Status::success() : Status::fail(Err::NotFound, "plain::wireFor");
   }
 
-  // After the setup: the day start the wires stamp every message with, then the head's budget.
+  // After the setup: the day start the wires stamp every message with, then the head's budget, then
+  // compaction first when it is due (rulings 98 item 1, 105 item 3, 106 item 3; lane RB-C3): before the
+  // system text is composed, so the request carries the new summary.
   Status sized() {
     t_.ctx.dayStartMin = t_.setup.dayStartMin;
-    return budget();
+    const Status st = budget();
+    if (st.ok()) (void)compactFirst(Urgency::IfDue);
+    return st;
+  }
+
+  // Compaction first: the chat's compaction slot asked by the engine itself (never another idle slot),
+  // at most once a turn. IfDue at turn open (a summary prepared ahead is swapped in with no wait), Now
+  // when a request does not fit; a wait for a request shows the status line. True when thru moved.
+  bool compactFirst(Urgency urgency) {
+    const uint8_t bit = (uint8_t)(1u << (uint8_t)urgency);
+    if (!d_.hooks || (t_.compactAsks & bit)) return false;
+    t_.compactAsks |= bit;
+    IdleCtx ctx;
+    ctx.now = epoch();
+    ctx.nowMs = d_.platform->nowMs();
+    ctx.tzMinutes = t_.tz;
+    ctx.clockSet = ctx.now != 0;
+    ctx.urgency = urgency;
+    ctx.waiting = [this] {
+      event("wait:summary");
+      report(ProgressKind::Summary, "");
+    };
+    if (!d_.hooks->runIdleSlot(HookSlot::Compaction, ctx).worked) return false;
+    // The summary's s item took a q past everything stored: this turn's next items go after it.
+    c_.nextQ = std::max({c_.nextQ, c_.head.nextQ, d_.arena->lastQ() + 1});
+    event("change:compaction");
+    return true;
   }
 
   Status budget() {
@@ -782,6 +811,9 @@ class TurnRun {
   bool climb(const ClimbAsk& ask) {
     LadderState& l = t_.ladder;
     const bool over = ask.why == Climb::OverCap;
+    // Compaction first, once a turn, then the prioritized trim (ruling 105 item 3); on a provider's
+    // "too long" it is the one compaction before the one retry (ruling 106 item 4).
+    if (compactInTurn()) return true;
     bool climbed = false;
     if (over && !l.closedThrough && closedBulkAbovePointer()) {
       l.closedThrough = c_.lastClosedQ;   // (1) every closed turn as stubs
@@ -798,6 +830,13 @@ class TurnRun {
     return climbed;
   }
   static constexpr size_t kOmissionLineRoom = 160;   // the line and its block (under 120 B of text)
+
+  // Inside a turn: compaction first, once, before rung 3 omits turns or a provider's "too long" is
+  // retried; the system text is composed again with the new summary (a change point, logged).
+  bool compactInTurn() {
+    if (!compactFirst(Urgency::Now)) return false;
+    return compose().ok() && wired().ok();
+  }
 
   // Rung 2's line: the item before the newest two rounds of the open turn (0: none yet).
   uint64_t rungTwoThrough() const {

@@ -28,6 +28,9 @@
 
 #include "../../lib/harness/src/providers/plain_body.h"
 #include "../support/scripted_provider/scripted_provider.h"
+#include "../support/tx_battery/driver.h"
+#include "../support/tx_battery/fixtures.h"
+#include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/mem_files.h"
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/texts.h"
@@ -2547,6 +2550,116 @@ void test_the_budget_view_reports_every_part_in_tokens() {
   TEST_ASSERT_FALSE(v.nominal);
 }
 
+// ---- compaction first, in the engine (rulings 98 item 1, 105 item 3, 106 items 3 and 4; lane RB-C3) ----
+
+bool summarizerRequest(const sp::Recorded& r) {
+  return !r.view.systemBlocks.empty() && r.view.systemBlocks[0] == plain::texts::summarizer::kPrompt;
+}
+// Three days of plain turns, 60 s apart within a day, whose rendered transcript passes the battery head's
+// H at full: the owner writes on right after the due mark, never leaving 120 s of quiet for an idle step.
+std::vector<txb::TurnScript> pastTheMark(const txb::Battery& b, int days = 3) {
+  tx::HeadBudget head;
+  TXB_OK(tx::budgetFor(b.headKey(), b.profile, head));
+  const size_t ask = head.marks.high / 25;
+  std::vector<txb::TurnScript> turns;
+  for (int day = 0; day < days; ++day)
+    for (int i = 0; i < 10; ++i) {
+      const std::string k = std::to_string(day) + "." + std::to_string(i);
+      turns.push_back(txb::chat(i == 0 ? 86400 : 60, "ask " + k + std::string(ask, 'a'), "reply " + k));
+    }
+  return turns;
+}
+
+// Ruling 98 item 1 as amended (RB-I1's and RB-I2's check): several owner messages under 120 s apart right
+// after the due mark leave no turn out of a request unsummarized. The engine compacts first at turn open,
+// says the turn waits for the summary, and the request then carries it; rung 3's omission line never shows.
+void test_messages_right_after_the_mark_are_compacted_first_never_left_out() {
+  txb::Battery b;
+  std::vector<plain::ProgressKind> seen;
+  b.progressFn = [&seen](const plain::ProgressEvent& e) { seen.push_back(e.kind); };
+  b.model.respondWith([](const sp::Recorded&, size_t) { return sp::say("ok"); });
+  TXB_OK(txb::runTurns(b, pastTheMark(b, 4)));
+  TEST_ASSERT_TRUE_MESSAGE(!b.summarizer.requests().empty(), "nothing compacted at a turn open");
+  for (const sp::Recorded& r : b.model.requests()) {
+    TEST_ASSERT_FALSE_MESSAGE(summarizerRequest(r), "a summary went to the head's provider");
+    TEST_ASSERT_TRUE_MESSAGE(r.body.find("search finds them]") == std::string::npos, "rung 3 left turns out");
+  }
+  TEST_ASSERT_TRUE(std::count(seen.begin(), seen.end(), plain::ProgressKind::Summary) > 0);
+  // The head request after a compaction carries the summary in its system text.
+  const sp::Recorded& last = b.model.requests().back();
+  TEST_ASSERT_TRUE(last.view.system().find(plain::texts::core::kDigests) != std::string::npos);
+  std::vector<tx::Item> items;
+  TXB_OK(b.stored(items));
+  size_t compacted = 0, waited = 0, summaries = 0;
+  for (const tx::Item& it : items) {
+    summaries += it.kind == tx::ItemKind::Digest;
+    if (it.kind != tx::ItemKind::TurnEnd) continue;
+    for (const std::string& e : it.end.events) {
+      compacted += e == "change:compaction";
+      waited += e == "wait:summary";
+    }
+  }
+  TEST_ASSERT_TRUE(compacted > 0 && waited >= compacted && summaries >= compacted);
+  std::string why;
+  TEST_ASSERT_TRUE_MESSAGE(txb::itemsPaired(items, why), why.c_str());
+}
+
+// Counter-test: a summarizer that fails never holds a turn up for more than its one attempt, and the
+// owner still gets his answer; the failure waits (the ladder's backoff) before the next turn asks again.
+void test_a_failing_summary_at_turn_open_still_answers_the_owner() {
+  txb::Battery b;
+  b.summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::httpError(500); });
+  b.model.respondWith([](const sp::Recorded&, size_t) { return sp::say("ok"); });
+  TXB_OK(txb::runTurns(b, pastTheMark(b)));
+  plain::TurnOutcome out;
+  b.advance(60);
+  TXB_OK(b.owner("one more", out));
+  TEST_ASSERT_TRUE(out.delivered);
+  TEST_ASSERT_EQUAL_STRING("ok", out.text.c_str());
+  // Its failures counted, and the ladder's wait holds the next turns (no retry at every turn open).
+  const plain::CompactCtl ctl = plain::CompactCtl::decode(b.compactCtl);
+  TEST_ASSERT_EQUAL(1, (int)ctl.chats.size());
+  TEST_ASSERT_TRUE(ctl.chats[0].fails >= plain::kCompactHeadTries);
+  TEST_ASSERT_TRUE(ctl.chats[0].next > b.epoch);
+  const size_t asked = b.summarizer.requests().size();
+  b.advance(60);
+  TXB_OK(b.owner("and another", out));
+  TEST_ASSERT_EQUAL_MESSAGE(asked, b.summarizer.requests().size(), "a waiting failure was asked again at a turn open");
+}
+
+// Ruling 106 item 4: a provider's "too long" is answered by one compaction and one retry, then an honest
+// error; with nothing to compact the prioritized trim acts as before.
+void test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_error() {
+  for (int run = 0; run < 3; ++run) {
+    txb::Battery b;
+    b.model.respondWith([](const sp::Recorded&, size_t) { return sp::say("ok"); });
+    if (run < 2) TXB_OK(txb::runTurns(b, pastTheMark(b, 1)));   // past the recent part, under the mark
+    else TXB_OK(txb::runTurns(b, {txb::chat(60, "hello", "hi")}));
+    const size_t asked = b.summarizer.requests().size(), sent = b.model.requests().size();
+    b.model.respondWith(nullptr);
+    const std::string tooLong = R"({"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 250000 tokens > 200000 maximum"}})";
+    b.model.push(sp::httpError(400, tooLong));
+    if (run == 1) b.model.push(sp::httpError(400, tooLong));
+    if (run == 0) b.model.push(sp::say("fine"));
+    plain::TurnOutcome out;
+    b.advance(60);
+    TXB_OK(b.owner("and the plan?", out));
+    const size_t summaries = b.summarizer.requests().size() - asked;
+    const std::string what = "run " + std::to_string(run);
+    TEST_ASSERT_EQUAL_MESSAGE(run < 2 ? 1 : 0, (int)summaries, what.c_str());
+    // One retry after the compaction; with nothing to compact and nothing to trim, no retry at all.
+    TEST_ASSERT_EQUAL_MESSAGE(run < 2 ? 2 : 1, (int)(b.model.requests().size() - sent), (what + ": one retry").c_str());
+    if (run > 0) {
+      TEST_ASSERT_FALSE(out.delivered);
+      TEST_ASSERT_EQUAL((int)plain::StatusLine::ProviderError, (int)out.status);
+      TEST_ASSERT_FALSE(out.statusText.empty());
+      continue;
+    }
+    TEST_ASSERT_TRUE(out.delivered);
+    TEST_ASSERT_EQUAL_STRING("fine", out.text.c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -2603,5 +2716,8 @@ int main(int, char**) {
   RUN_TEST(test_day_digests_are_taken_in_once_and_archived_before_the_swap);
   RUN_TEST(test_the_owner_ceiling_holds_the_attended_limits_and_lowers_them_only_by_choice);
   RUN_TEST(test_the_budget_view_reports_every_part_in_tokens);
+  RUN_TEST(test_messages_right_after_the_mark_are_compacted_first_never_left_out);
+  RUN_TEST(test_a_failing_summary_at_turn_open_still_answers_the_owner);
+  RUN_TEST(test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_error);
   return UNITY_END();
 }

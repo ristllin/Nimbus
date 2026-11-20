@@ -37,6 +37,13 @@ namespace txb {
 
 namespace plain = agent::plain;
 
+// What the battery's summarizer answers unless a case says otherwise: changes to the cumulative
+// summary (lane RB-C3, tx::parseSummaryEdits).
+inline constexpr const char* kSummaryAnswer =
+    "+F The owner asked about the boat, read files and searched the web.\n"
+    "+F He prefers short answers.\n"
+    "+Q The boat Nereid II is 9.5 m long.";
+
 class Battery {
  public:
   explicit Battery(plain::Dialect d = plain::Dialect::AnthropicMessages) : dialect(d) {
@@ -50,12 +57,17 @@ class Battery {
     channel.isAllowed = [](const std::string&) { return true; };
     channel.firstAllowedChat = [this] { return chatKey; };
     model.clock = &ms;
+    summarizer.clock = &ms;
+    summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::say(kSummaryAnswer); });
     registerTools();
   }
 
   plain::Dialect dialect;
   std::string chatKey = "1001";
   sp::ScriptedProvider model;
+  // The summarizer's own provider (lane RB-C3): compaction runs at turn open and inside a turn too, so its
+  // requests never take a step the head's script holds. A case that answers summaries sets its responder.
+  sp::ScriptedProvider summarizer;
   MemFiles files;
   World world;
   std::vector<SentMessage> sent;
@@ -417,7 +429,7 @@ class Battery {
   // runs; one rung, the dialect's wire on the head host; its control record and the chatsum
   // mirror in RAM (they outlive a power cut like storage does).
   plain::CompactDeps compactDeps() {
-    plain::CompactDeps d{&platform, &model, log.get(), arena.get()};
+    plain::CompactDeps d{&platform, &summarizer, log.get(), arena.get()};
     d.files = &files;
     d.chatKey = chatKey;
     d.chatId = chatKey;

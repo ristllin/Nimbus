@@ -202,7 +202,7 @@ void test_a_floor_head_names_what_the_ladder_omits() {
 
 // ---- compaction ------------------------------------------------------------------------
 void answerSummariesWith(txb::Battery& b, std::function<sp::Step()> step) {
-  b.model.respondWith([step](const sp::Recorded&, size_t) { return step(); });
+  b.summarizer.respondWith([step](const sp::Recorded&, size_t) { return step(); });   // its own provider (RB-C3)
 }
 
 // Three days of turns whose stored lines pass the battery head's due mark H at its profile (full
@@ -239,17 +239,15 @@ void test_compaction_covers_every_row() {
   size_t digests = 0;
   for (const tx::Item& it : items) digests += it.kind == tx::ItemKind::Digest;
   TEST_ASSERT_TRUE_MESSAGE(digests > 0, "the compaction stored no digest");
-  // At full every compaction leaves at least the head's v5.1.2 keep of owner and assistant text.
+  // At full every compaction leaves at least the recent part (rulings 105 and 106, lane RB-C3: L, what a
+  // request renders of the newest whole turns; v5.1.2's text keep binds only an owner's larger recent part).
   uint64_t thru = 0;
   for (const tx::Item& it : items)
     if (it.kind == tx::ItemKind::Digest) thru = std::max(thru, it.thru);
-  size_t text = 0;
-  for (const tx::Item& it : items)
-    if (it.q > thru && (it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant)) text += it.x.size();
   tx::HeadBudget head;
   TXB_OK(tx::budgetFor(b.headKey(), b.profile, head));
   TEST_ASSERT_EQUAL((int)tx::Profile::Full, (int)b.profile);
-  TEST_ASSERT_TRUE_MESSAGE(text >= head.releasedKeep, "a compaction at full left less text than v5.1.2's keep");
+  TEST_ASSERT_TRUE_MESSAGE(plain::residentBytes(*b.arena, thru) >= head.marks.low, "a compaction left less than the recent part");
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(txb::itemsPaired(items, why), why.c_str());
   expectLastRequestCovers(b);

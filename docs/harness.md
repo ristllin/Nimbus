@@ -1123,33 +1123,46 @@ no reply for words.
   the call is refused (`kRailNoPending`). A refusal reads `kRailRefused`. An untainted turn
   is never touched by the rails.
 
-### Digests, their archive, recent files and the chatsum mirror
+### The cumulative summary, day digests, the archive and the chatsum mirror
 
-`lib/core/include/nimbus/orch/tx/digest.h` (body `orch_tx_digest.cpp`, lane RB-C1) holds
-what keeps a long conversation in the request without the old summary. A compaction
-writes one digest per local day as an s item, one line of at most 768 B that starts with
-the device's day header (`digestText`: "Tue 17 Nov 2026: ..."). The digest block is the
-newest digests that fit the profile's cap (full, the default, and standard and wide 6,144 B;
-the owner's smaller tight 2,048 and lean 4,096), oldest first, one per line (`digestBlock`). It is a pure function of the
-digests: it stays byte-identical until a compaction appends a digest at its end, and
-only a move to the archive changes its start.
+`lib/core/include/nimbus/orch/tx/digest.h` (body `orch_tx_digest.cpp`, lanes RB-C1 and RB-C3)
+holds what keeps a long conversation in the request. After a compaction the request carries ONE
+cumulative structured summary of everything before thru (owner rulings 105 and 106), stored as an s
+item whose text is several lines ending with a line end (a day digest, the earlier shape, is one
+line and never does). Its sections, each line with an id that is the section's letter and a number:
 
-`settleDigests` moves the oldest digests that no longer fit to
-`/mem/tx/<chatKey>/digests-YYYY-MM.md` (the month of the digest's day), one line each,
-oldest first, and stops at the first refused write; what did not move stays live and
-moves at the next settle. A line is appended only when the month file does not hold it
-yet, and a torn last line is closed before the next one, so a cut at any step leaves
-every digest in the block or in the archive, once. After a restart `loadDigests` reads
-the segments newest first until it reaches the newest archived digest (the first digest
-it meets that is the last whole line of a month file, so a clock set back cannot fool
-it); a chat with no digest reads nothing.
+- Facts and standing preferences (F), Decisions (D), Quantities and dates as stated (Q), Open
+  items (O): written by the summarizer;
+- Files changed (P): the device's own, from the successful file-change calls of the summarized
+  turns (their path argument, plain or routed by `more`; a delete drops the line), never the model's;
+- one device line when older lines were archived.
+
+A compaction UPDATES the summary: the summarizer answers only changes (`+F text` adds, `=Q3 text`
+replaces a line the person changed, `-O4` drops one that is done or no longer true, `=` changes
+nothing; `parseSummaryEdits`) and code applies them (`applySummaryEdits`), so a line no change names
+stays byte for byte and the summary is never rebuilt from nothing. An answer with no change (prose,
+a rewrite) is a failed attempt. Lines added from turns that read outside content are stored inside
+the data frame. Over its budget (the owner's setting, default 4,000 tokens on the head's wire;
+hard cap 32,768 B) lines leave by section share (facts 30%, decisions 20%, quantities 25%, open
+items 15%, files 10%): the section furthest over its share loses its oldest line first
+(`fitSummary`). Every line that leaves, dropped, replaced or over budget, is appended to
+`/mem/tx/<chatKey>/digests-YYYY-MM.md` as "<day header>: <id> <text>" before the summary is kept
+(`archiveSummaryLines`); the verbatim conversation stays in the stored log for search and the recall
+of the owner's earlier lines.
+
+The block the request shows is the newest summary alone (`digestBlock`). Day digests a chat still
+holds (an rb-main chat, a migration's digest 0) are read once by the first update as dated lines,
+archived before the first summary is stored, and `settleDigests` then drops them and every older
+summary from the live list; until a chat has a summary the day digests show as before (the newest
+that fit the profile's cap, oldest first). After a restart `loadDigests` reads the segments newest
+first and stops at the newest summary (or, with none, at the newest archived digest).
 
 The recent-files list (`recentFilesList`, at most 600 B) is the device's own: path and
 last write, newest first. `RecentFilesBlock` rebuilds it at a cold turn open and at the
 close of a turn that moved or deleted a file (`changesFileSet`), and keeps it byte for
 byte otherwise. A rollback to v5.1.1 still has a summary: `mirrorChatsum` writes this
-chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the newest
-digests that fit 4,096 B as its summary, the counters, failure count and pause at 0, and
+chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the summary in force
+in whole lines up to 4,096 B (or the newest day digests that fit it) as its summary, the counters, failure count and pause at 0, and
 a row pointer ("m%08x") that never moves back; other chats' records stay byte for byte.
 
 ### Photo notes in the later-turn stub (lane RB-H81)
@@ -1184,72 +1197,89 @@ line says the rest was not kept. The owner always gets the whole reply.
 
 ### Compaction: when, the summarizer, the swap
 
-`lib/harness/include/nimbus/harness/plain/compact.h` (body `plain_compact.cpp`, lane
-RB-C2) turns the oldest whole turns into day digests when the transcript after thru
-outgrows its budget. `CompactDriver::step` is one unit of idle work (registered on the
-idle seam's Compaction slot by `installCompaction`): at most one summarizer exchange and
-its swap. It never runs while an owner message waits.
+`lib/harness/include/nimbus/harness/plain/compact.h` (body `plain_compact.cpp`, lanes
+RB-C2 and RB-C3) takes the oldest whole turns into the cumulative summary when the transcript
+after thru outgrows its budget. `CompactDriver::step` is one unit of idle work (registered on the
+idle seam's Compaction slot by `installCompaction`): at most one summarizer exchange and its swap.
+An idle step never runs while an owner message waits.
 
 When: the bytes a request renders of the transcript after thru (each owner, assistant, call,
 result and device-note item as it shows, a result whole or as its stub, plus its wire framing;
-not the stored lines, which also hold each result's stub and only a bulk result's handle) are
-above H, the whole prompt of the last turn's last request (the e item's `lp`: input plus cache
-reads and writes in each provider's meaning, never the turn's sum) reached the head's due mark in
-tokens (`tx::budgetFor`: the aim, about 100,000 tokens, less the next request's growth; see
-[transcript budgets](reference/transcript-budgets.md)), or `/compact` asks. No hour makes it due:
-the night fold under H is gone (owner ruling 81, ruling 83 item 8); a quiet hour only runs a
-compaction that is already due. The marks are those of the head that answered the newest turn (its t item, read at every step;
+not the stored lines) are above H, the whole prompt of the last turn's last request (the e item's
+`lp`: input plus cache reads and writes in each provider's meaning, never the turn's sum) reached
+the head's due mark in tokens (`tx::budgetFor`: the aim, about 100,000 tokens, less the next
+request's growth; see [transcript budgets](reference/transcript-budgets.md)), the arena's room is
+short, or `/compact` asks. No hour makes it due (owner ruling 81, ruling 83 item 8). The marks are
+those of the head that answered the newest turn (its t item, read at every step;
 `CompactDeps::headKey` when none is resident) at the stored profile: a smaller profile counts only
-with its pin marker (`pin:<slug>`, written when TurnCtx::profile is the owner's smaller choice;
-`tx::headProfileSlug`, `tx::profileOfHead`), and any other slug, an unmarked `standard` from the
-old default included, reads as full; with no head named nothing is compacted automatically; an automatic step also needs 120 s of
-quiet and a request left in its idle window (four per window; a window ends at a turn or
-after an hour). Once due, it runs on slice by slice until what stays is at L (ruling 82 item 4:
-due at the aim, keeps about 70% of it), so a due-to-keep cycle (about four slices on Sonnet or
-luna at full) completes in one quiet spell (ruling 91 T4-ADV-05). An engine with no compaction
-installed refuses to boot, with one log line, unless its binding names why
-(`EngineDeps::noCompaction`; ruling 91 blockers/F6). What (`planSlice`): whole turns from thru forward, all of one local day
-(the day starts at 04:00 by default), at most 24 KB of summarizer input, and only while
-what stays after the slice is at least L and holds at least the head's v5.1.2 keep of owner
-and assistant text (at full; owner ruling 81). Never a turn of the owner's current day (unless
-that day alone is above H, then only its oldest half), never the newest six owner turns,
-and never a turn after an open turn, an intent with no result or a running agent job: thru
-never jumps over a turn.
+with its pin marker (`pin:<slug>`; `tx::headProfileSlug`, `tx::profileOfHead`); with no head named
+nothing is compacted automatically. An automatic step also needs 120 s of quiet and a request left
+in its idle window (four per window; a window ends at a turn or after an hour). Once due, it runs
+on slice by slice until what stays is the recent part. An engine with no compaction installed
+refuses to boot, with one log line, unless its binding names why (`EngineDeps::noCompaction`).
 
-Tools never eat the dialogue (owner ruling 81, ruling 91 table/F1). When a due slice is held
-only by the text keep (a tool-heavy chat whose text is under v5.1.2's keep), no request is sent:
-the results of the oldest closed turns render as their stubs from then on, oldest first, until
-what a request renders is at L (`planToolFold`; one x item, why `tools`, lists them; each stub
-keeps its view pointer). The arena's room is the one real limit besides the request: while it
-has under 128 KB (or a quarter of it) free, a compaction is due and a slice may leave under L and
-under the text keep, until it has freed twice that room, with one log line naming the text kept;
-so the engine never has to drop whole turns from RAM with no digest. Turns that did leave RAM (a
-full arena's drop while compaction could not run, the restart fill's give-up) are sliced first:
-read back from the card (at most 96 KB a step) and summarized like a manual run, one day and one
-input at a time; only when the card cannot be read does the slice merely name them.
+What it keeps (rulings 105 and 106): the system prompt, the summary and the newest whole turns up
+to the recent part, L, the owner's setting in tokens (default 10,000) as bytes on the head's wire;
+never fewer than the newest six owner turns while they fit under H. A slice (`planSlice`) is whole
+turns from thru forward, at most 40 KB of summarizer input, and only while what stays is at least
+L; it may span days (the input shows a day line where the day changes; the day starts at 04:00 by
+default) and today's turns go like any other. Never a turn after an open turn, an intent with no
+result or a running agent job: thru never jumps over a turn. v5.1.2's text keep binds only an
+owner's recent part that reaches it: then a due slice held only by it folds the tools instead
+(`planToolFold`: the oldest closed turns' results render as their stubs, one x item, why `tools`).
+The arena's room is the one limit besides the request: while it is short a slice may leave under L,
+with one log line. Turns that left RAM are read back from the card and summarized first.
 
-The summarizer gets owner and assistant text verbatim with the local time and one
-bracketed line per tool result that names the tool and nothing else (`[file change]`,
-`[file work]`, `[outside content read]`, `[<tool> done]`); never a call's arguments, a
-result's bytes or a device note. A turn that read outside content has its assistant text
-inside the `<data>` frame, and its digest is stored inside the frame, so the block shows
-it framed. The rungs come from the binding: the head host's small model twice, then each
-other keyed provider in the owner's order, waiting 10 min, 30 min, 2 h, then 6 h after each
-failure; at most 48 attempts start a day on the device (a runaway guard over three chats' cycles,
-not a cost cap: ruling 82 item 5) (`/data/compact_ctl.txt`, written
-before the request), each capped at 2,048 output tokens (the digest block at full, ruling 89
-item 4) and 45 s; a cut answer is asked once more in the same attempt with 8,192 tokens of room,
-and a cut is never stored. An answer is taken only
-when it was not cut and holds at least 120 B for an input of 2 KB or more; otherwise only
-the failure count changes. There is no pause state.
+Ahead of time (ruling 106 item 3): once the last request reached 80% of the due mark, an idle step
+(the same quiet and windows) updates a pending summary in RAM over the turns already older than the
+recent part, without swapping it; at the due mark it is swapped in with no request
+(`CompactStep::Swapped`). A restart forgets it (the next update asks again).
 
-The swap keeps RB-C1's order: the s item is stored first (a refused store leaves thru
-where it was), then thru moves and the arena drops what the digest covers, then
-`settleDigests`, `writeHead` and the chatsum mirror. A cut at any write leaves every item
-either after thru or under exactly one stored digest. `/compact` (`requestManual`) skips
-the quiet wait, the backoff and the cap (it is counted), takes at most eight requests and
-is answered once. The device binding is `src/agent/plain_fold_device.cpp` (engine-2
-images only); the hosted one is `hostedTextIO` in `nimbusd/src/hosted_fold.h`.
+Compaction first (rulings 98 item 1, 105 item 3, 106 item 4): the engine asks the Compaction slot
+itself (`PlainHooks::runIdleSlot`, `IdleCtx::urgency`), at most once a turn each way. At turn open
+(`Urgency::IfDue`, after the budget, before the system text is composed) it compacts when due: the
+pending summary is swapped in, else one update runs while the turn waits, and the status line says
+so (`ProgressKind::Summary`, "updating the summary first", shown at once; the e item names
+`wait:summary` and `change:compaction`). Inside a turn, when a request does not fit its body cap or
+the provider answers "too long" (`Urgency::Now`), compaction comes before every rung of the
+prioritized trim; on "too long" that is one compaction and one retry, then the honest error. Only
+when compaction cannot run or is not enough does the ladder act (stubs, this turn's older bulk,
+the oldest turns as one named line, the size guard).
+
+The summarizer's request carries the summary so far (with its ids) in the system text beside its
+prompt, and one message: the day digests a chat may still hold, then the turns, owner and
+assistant text verbatim with the local time and one bracketed line per tool result that names the
+tool and nothing else (`[file change]`, `[file work]`, `[outside content read]`, `[<tool> done]`);
+never a call's arguments, a result's bytes or a device note. A turn that read outside content has
+its assistant text inside the `<data>` frame. The rungs come from the binding: the head host's
+small model twice, then each other keyed provider in the owner's order, waiting 10 min, 30 min,
+2 h, then 6 h after each failure; at most 48 attempts start a day on the device
+(`/data/compact_ctl.txt`, written before the request), each capped at 4,096 output tokens and 45 s;
+a cut answer is asked once more in the same attempt with 8,192 tokens of room, and a cut is never
+stored. There is no pause state.
+
+The swap keeps RB-C1's order: the day digests the summary took in are archived first, the s item is
+stored (a refused store leaves thru where it was), then thru moves and the arena drops what the
+summary covers, then `settleDigests`, `writeHead` and the chatsum mirror. A cut at any write leaves
+every item either after thru or under exactly one stored summary. `/compact` (`requestManual`)
+skips the quiet wait, the backoff and the cap (it is counted), takes at most eight requests and is
+answered once. The device binding is `src/agent/plain_fold_device.cpp` (engine-2 images only); the
+hosted one is `hostedTextIO` in `nimbusd/src/hosted_fold.h`.
+
+### The owner's settings of engine 2 (rulings 105 and 106)
+
+`tx::EngineSettings` (`tx/budget.h`): the recent part (default 10,000 tokens, 2,000 to 80,000), the
+summary budget (4,000 tokens, 1,000 to 8,000), max rounds (64, 8 to 64) and the hard time limit
+(1,200 s, 120 to 1,200) of an attended turn. Per device: the binding stores them (NVS keys
+`e2RecentTok`, `e2SummaryTok`, `e2MaxRounds`, `e2HardTimeS`; web and hosted fields
+`e2_recent_tokens`, `e2_summary_tokens`, `e2_max_rounds`, `e2_hard_time_s`), reads them through
+`tx::clampSettings`, and passes them to compaction (`CompactDeps::settings`) and to
+`tx::budgetFor(head, profile, settings, out)`. A head whose due mark is too small for both keeps the
+summary and the recent part to half of what its due mark leaves beside the fixed part, the summary
+yielding first. Max rounds and the hard time reach an attended turn as `TurnSetup::ceiling =
+plain::ownerCeiling(settings)` (it only lowers RB-X3's limits; at the defaults nothing changes);
+unattended turns keep their own ceilings. `plain::budgetView` gives /budget and the web page the
+system prompt, the tools, the summary and the recent part in tokens beside the settings.
 
 ### Migration into the transcript and the re-entry rule
 
@@ -1261,7 +1291,8 @@ the chat's FoldStore record (`OldFold`: the summary and its two pointers).
 
 - Under the old summary's pointer (thru): one anchor note, then digest 0 covering it. Digest 0
   is one small-model call through the compaction driver (`plain::digest0Asker`: the old summary
-  as one closed turn, its input built by `planSlice`, the summarizer text, the driver's own
+  as one closed turn; a day digest that the first compaction then takes into the cumulative
+  summary, its input built by `planSlice`, the summarizer text, the driver's own
   acceptance). It is kept only when it holds no path-like token, no figure that a tool row of
   those rows holds and no owner row does, and at most 768 B per day covered. Otherwise (no
   summarizer bound, two failed asks, or an answer refused) the old summary itself is digest 0
