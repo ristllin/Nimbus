@@ -802,6 +802,7 @@ static nimbus::orch::StreamEnd streamFile(const std::string& path, nimbus::orch:
   return end;
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // The shared aids' reads on the card (file_aids.h AidSource). With `perChunk` each read takes
 // the card lock for itself and the file is opened for it: the tool call gave its whole-call
 // lock up (memory::withCardReleased), so no hold spans a scan, only one 4 KB read. The
@@ -876,7 +877,6 @@ static size_t fileBytes(const char* project, const char* name) {
   return n;
 }
 
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // files.read {tail}: the last rows of a text document, read from the END of the
 // file - never the whole file (file_append.h). The window starts one byte early so
 // tailRows can tell a row that starts exactly at the window from a partial one.
@@ -1171,6 +1171,7 @@ static nimbus::orch::ToolResult appendRows(const AppendArgs& a, const nimbus::or
   return appendBytes(a, size, plan, who, note);
 }
 
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // Swap the finished .part in over project/name. The entry keeps its owner and creation
 // time (still the same file); the content hash is unknown until the next whole write,
 // and an uploaded provider copy is stale now.
@@ -1251,7 +1252,6 @@ struct SdEditSink : nimbus::orch::aids::AidSink {
   std::string refusal() const override { return err; }
 };
 
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 // files.edit: the shared edit (file_aids_e1.h) - the first match by default, the first
 // 'count', 'all', or the whole-line match at 'line' - streamed in two passes under one Lock,
 // into the part file and swapped in. The reply keeps its head ("edited p/n: replaced A of B
@@ -1341,12 +1341,12 @@ bool tableReadNow(const std::string& project, const std::string& name, const nim
   out = r.success ? r.output : r.error;
   return r.success;
 }
-#endif
 
 void lastScanStats(uint32_t& reads, uint32_t& longestUs) {
   reads = g_scanReads;
   longestUs = g_scanLongestUs;
 }
+#endif
 
 bool removeFile(const std::string& project, const std::string& name) {
   memory::Lock g;

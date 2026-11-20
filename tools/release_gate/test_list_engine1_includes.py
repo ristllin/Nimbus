@@ -126,6 +126,12 @@ class ScanTests(TreeTestCase):
         rows = self.listing().listing()
         self.assertEqual(rows["src/b.h"], {OLD: "src/a.h"})
 
+    def test_a_chain_through_a_shared_library_header_is_followed(self):
+        self.write("lib/harness/include/nimbus/harness/shared.h", '#include "engine.h"\n')
+        self.write("src/a.cpp", '#include "nimbus/harness/shared.h"\n')
+        rows = self.listing().listing()
+        self.assertEqual(rows, {"src/a.cpp": {OLD: "lib/harness/include/nimbus/harness/shared.h"}})
+
     def test_lib_sources_are_not_device_files(self):
         self.write("lib/harness/src/engine.cpp", '#include "nimbus/harness/engine.h"\n')
         self.assertEqual(self.listing().listing(), {})
@@ -176,12 +182,43 @@ class CheckTests(TreeTestCase):
         self.write("src/net/web.cpp", GUARD + '\n#include "../agent/skills.h"\n#endif\n')
         self.assertEqual(self.problems(lines + "src/net/web.cpp  # guard: x\n"), [])
 
+    def test_main_counts_an_engine1_only_header_as_old(self):
+        for hdr in lister.engine1_headers():
+            self.write(hdr, "#pragma once\n")
+        self.write("src/agent/skills.h", "#pragma once\n")
+        self.write("src/agent/skills.cpp", '#include "skills.h"\n')
+        self.write("src/net/web.cpp", '#include "../agent/skills.h"\n')
+        self.write(
+            lister.GUARD_LIST, "src/agent/skills.h  # engine1_only: x\nsrc/agent/skills.cpp  # engine1_only: x\n"
+        )
+        self.assertEqual(lister.main(["--root", self.root, "--check"]), 1)
+        self.write("src/net/web.cpp", "\n")
+        self.assertEqual(lister.main(["--root", self.root, "--check"]), 0)
+
     def test_an_engine1_only_source_needs_its_header_engine1_only(self):
         self.write("src/agent/skills.h", "#pragma once\n")
         self.write("src/agent/skills.cpp", '#include "skills.h"\n')
         problems = self.problems("src/agent/skills.cpp  # engine1_only: x\n")
         self.assertEqual(len(problems), 1)
         self.assertIn("skills.h", problems[0])
+
+
+class UnfollowedTests(TreeTestCase):
+    def test_a_macro_include_is_a_problem(self):
+        self.write("src/a.cpp", "#define H <x.h>\n#include H\n")
+        problems = self.problems()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("cannot follow line 2", problems[0])
+
+    def test_an_unresolved_nimbus_header_is_a_problem(self):
+        self.write("src/a.cpp", '#include "nimbus/harness/gone.h"\n#include <Arduino.h>\n')
+        problems = self.problems()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("nimbus/harness/gone.h", problems[0])
+
+    def test_an_unfollowable_include_inside_the_guard_is_not(self):
+        self.write("src/a.cpp", GUARD + '\n#include "nimbus/harness/gone.h"\n#endif\n')
+        self.assertEqual(self.problems(), [])
 
 
 class TreePinTests(unittest.TestCase):

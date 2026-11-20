@@ -78,6 +78,7 @@ ENGINE1_HEADERS: Tuple[Tuple[str, str], ...] = (
 # Where an #include "..." or <...> is looked up after the including file's own folder.
 INCLUDE_ROOTS = ("src", "include", "lib/harness/include", "lib/core/include", "lib/harness/src")
 DEVICE_DIRS = ("src", "include")
+LIBRARY_INCLUDE_DIRS = ("lib/harness/include", "lib/core/include")
 SOURCE_EXTS = (".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp")
 GUARD_LIST = "tools/engine/guard_files.txt"
 ENGINE1_ONLY_LIST = "tools/engine/engine1_only.txt"
@@ -85,6 +86,7 @@ DECISIONS = ("guard", "engine1_only", "neutral")
 
 GUARD_EXPR = "!defined(NIMBUS_ENGINE)||NIMBUS_ENGINE==1"
 DIRECTIVE = re.compile(r"^\s*#\s*(\w+)\s*(.*?)\s*$")
+MACRO_INCLUDE = "<macro> "  # an #include whose name a macro supplies: it cannot be followed
 INCLUDE_ARG = re.compile(r'^[<"]([^>"]+)[>"]')
 RAW_OPEN = re.compile(r'R"([^()\\\s]{0,16})\(')
 INCLUDE_LINE = re.compile(r"^\s*#\s*include\s*$")
@@ -196,8 +198,7 @@ def scan_includes(text: str) -> List[Tuple[str, bool, int]]:
                 stack.pop()
         elif word == "include":
             inc = INCLUDE_ARG.match(rest)
-            if inc:
-                out.append((inc.group(1), any(stack), num))
+            out.append((inc.group(1) if inc else MACRO_INCLUDE + rest, any(stack), num))
     return out
 
 
@@ -212,6 +213,17 @@ def device_files(root: str) -> List[str]:
     return out
 
 
+def library_headers(root: str) -> List[str]:
+    out = []
+    for top in LIBRARY_INCLUDE_DIRS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, top)):
+            dirnames.sort()
+            for name in sorted(filenames):
+                if name.endswith((".h", ".hh", ".hpp")):
+                    out.append(os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/"))
+    return out
+
+
 def resolve(root: str, includer: str, name: str) -> Optional[str]:
     for base in (os.path.dirname(includer),) + INCLUDE_ROOTS:
         cand = os.path.normpath(os.path.join(base, name)).replace(os.sep, "/")
@@ -221,21 +233,27 @@ def resolve(root: str, includer: str, name: str) -> Optional[str]:
 
 
 class Scan:
-    """Each device file's include lines, resolved to repo paths (unresolved ones dropped)."""
+    """Each device file's include lines, resolved to repo paths, and the library headers' own, so
+    a chain through a shared library header is followed too (only device files are listed).
+    An unguarded include of a device file that cannot be followed (a macro name, or a nimbus/
+    header that does not resolve) is kept in `unfollowed`: the check fails on it."""
 
     def __init__(self, root: str, headers: Iterable[str]):
         self.root = root
         self.headers = set(headers)
         self.files = device_files(root)
         self.includes: Dict[str, List[Tuple[str, bool]]] = {}
-        for rel in self.files:
+        self.unfollowed: Dict[str, List[str]] = {}
+        for rel in self.files + library_headers(root):
             with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
                 text = fh.read()
             rows = []
-            for name, guarded, _num in scan_includes(text):
-                path = resolve(root, rel, name)
+            for name, guarded, num in scan_includes(text):
+                path = None if name.startswith(MACRO_INCLUDE) else resolve(root, rel, name)
                 if path:
                     rows.append((path, guarded))
+                elif not guarded and (name.startswith((MACRO_INCLUDE, "nimbus/"))) and rel in self.files:
+                    self.unfollowed.setdefault(rel, []).append(f"line {num}: {name}")
             self.includes[rel] = rows
 
     def reached(self, rel: str, guarded_too: bool = False) -> Dict[str, str]:
@@ -332,6 +350,8 @@ def check(root: str, scan: Scan, decisions: Dict[str, str], problems: List[str])
             and stem + ".h" not in e1_only
         ):
             problems.append(f"{rel} is engine1_only but its header {stem}.h is not")
+    for rel, names in sorted(scan.unfollowed.items()):
+        problems.append(f"{rel}: cannot follow {', '.join(names)}")
     for rel, hit in sorted(scan.listing().items()):
         if rel in e1_only:
             continue
