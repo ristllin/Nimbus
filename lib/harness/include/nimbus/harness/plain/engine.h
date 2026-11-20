@@ -128,6 +128,11 @@ struct EngineDeps {
   // full-arena drop would take old turns with no digest. A binding that compacts no chat on
   // purpose (a test of something else, a rig before its compaction lane) says so here, by name.
   const char* noCompaction = nullptr;
+  // Progress the engine itself reports (lane RB-X3, ruling 84 items 2 and 3): a soft guard a
+  // progressing attended turn passed (ProgressKind::SoftGuard, its slug as detail) and a request
+  // about to leave (ProgressKind::ProviderWait). The binding forwards them to its
+  // ProgressReporter (RB-E3's status-line class); null: nothing is reported.
+  std::function<void(const ProgressEvent& e)> progress;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before

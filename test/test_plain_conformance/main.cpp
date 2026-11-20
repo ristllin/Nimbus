@@ -18,6 +18,7 @@
 #include "../support/tx_battery/props.h"
 #include "engine_tests.h"
 #include "h81_tests.h"
+#include "x3_tests.h"
 
 namespace tx = nimbus::orch::tx;
 namespace plain = agent::plain;
@@ -213,5 +214,6 @@ int main(int, char**) {
   RUN_TEST(test_guard_last_round_flat);
   engine_tests::run();
   h81_tests::run();
+  x3_tests::run();
   return UNITY_END();
 }

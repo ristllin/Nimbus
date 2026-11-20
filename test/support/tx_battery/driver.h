@@ -86,6 +86,7 @@ class Battery {
   plain::DeliverFn deliverFn;
   plain::HeadCost cost;            // what the guards scale from (TurnSetup::cost)
   int storedRounds = 0;            // the stored orchLoopRnds (TurnSetup::storedRounds)
+  std::function<void(const plain::ProgressEvent&)> progressFn;   // EngineDeps::progress (RB-X3)
 
   // Process state: gone at a power cut, rebuilt by boot().
   agent::Platform platform;
@@ -337,6 +338,9 @@ class Battery {
     // Compaction is installed (install()); with no head named it cannot be (RB-T4's refusal), and the
     // battery names that case rather than let boot refuse it (ruling 91 blockers/F6, RB-H81).
     if (noHead) d.noCompaction = "battery: a turn setup that names no head";
+    d.progress = [this](const plain::ProgressEvent& e) {
+      if (progressFn) progressFn(e);
+    };
     d.deliver = [this](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
       return deliverFn ? deliverFn(in, out) : plain::deliverTurn(plain::DeliverDeps{&channel, hooks.get(), log.get()}, in, out);
     };

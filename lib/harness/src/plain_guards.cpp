@@ -11,6 +11,7 @@
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/tool_groups.h"
+#include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/item.h"
 
 namespace agent {
@@ -38,6 +39,34 @@ Status guardLimitsFor(int storedRounds, const HeadCost& cost, GuardLimits& out) 
   out.maxSpendMicroUsd =
       clamp32(std::max<uint64_t>(kMinSpendCapMicroUsd, 16ull * cost.warmRequestMicroUsd + cost.coldRequestMicroUsd));
   return Status::success();
+}
+
+Status guardLimitsFor(int storedRounds, const HeadCost& cost, bool attended, GuardLimits& out) {
+  (void)attended;   // RED: the soft guards are not built yet
+  return guardLimitsFor(storedRounds, cost, out);
+}
+
+HeadCost guardCostFor(const nimbus::orch::tx::HeadBudget& budget, const HeadRates& rates) {
+  HeadCost c;
+  c.targetTokens = budget.tokens.aim;
+  c.requestTokensAtTrigger = budget.tokens.due;
+  c.inMicroPerM = rates.in;
+  c.outMicroPerM = rates.out;
+  c.cacheReadMicroPerM = rates.cacheRead;
+  c.cacheWriteMicroPerM = rates.cacheWrite;
+  const uint32_t p = budget.tokens.due;
+  c.warmRequestMicroUsd = requestMicroUsd(c, RequestTokens{p / 10, kGuardOutputTokens, p - p / 10, 0});
+  c.coldRequestMicroUsd = requestMicroUsd(c, RequestTokens{p, kGuardOutputTokens, 0, 0});
+  return c;
+}
+
+void GuardProgress::noteCall(const std::string&, const std::string&, bool, bool, const std::string&) {}
+void GuardProgress::noteText(const std::string&) {}
+void GuardProgress::endRound() {}
+
+SoftCheck checkSoftGuards(const GuardLimits&, const GuardState&, GuardProgress&, GuardTrip& which) {
+  which = GuardTrip::None;
+  return SoftCheck::None;
 }
 
 Status checkGuards(const GuardLimits& limits, const GuardState& state, GuardTrip& out) {
