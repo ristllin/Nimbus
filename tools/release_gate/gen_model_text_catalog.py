@@ -182,7 +182,7 @@ E2_CEILINGS = {
     "device_notes": 2048,
     "stubs": 512,
     "tool_results": 6144,
-    "probe": 1536,   # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
+    "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,
 }
