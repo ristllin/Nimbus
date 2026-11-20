@@ -43,10 +43,5 @@ bool telegramDeliverable(const std::string& chatId);    // HarnessConfig::telegr
 nimbus::orch::ModAction moderateGate(nimbus::orch::ModGate gate, const String& chatId,
                                      const String& text);
 
-// ---- the engine seam: what the common half asks of the engine (orchestrator.cpp) ----
-bool engineRunning();                      // the engine exists (begin() has run)
-bool engineReapStuckTurn(uint32_t nowMs);  // the engine's stuck-turn reaper fired
-void engineSetHeadArc(bool on);            // light or clear the head's ring arc
-
 }  // namespace orchestrator
 }  // namespace agent
