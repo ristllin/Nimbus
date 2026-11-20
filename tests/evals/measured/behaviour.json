@@ -7447,5 +7447,179 @@
    "anthropic_judge_usd": 0.0235,
    "note": "ruling 94: arm Sn, the selection without sum, measured on aidserve built with evidence/part4/orch_csv_sum.sn.cpp; not built into firmware (luna worse than plain rows)"
   }
+ },
+ "records_rb_rec6_part5": {
+  "lane": "RB-REC6",
+  "generated": "2026-11-20",
+  "method": "tests/evals/behaviour/README.md (the general-records arms) and report_records.py's definitions",
+  "evidence": "evidence/part5/main",
+  "cells": {
+   "claude-haiku-5-5": {
+    "S": {
+     "episodes": 150,
+     "usd": 0.1424,
+     "total_accuracy": {
+      "k": 147,
+      "n": 150,
+      "rate": 0.98,
+      "lower95": 0.9491
+     },
+     "total_verdicts": {
+      "full": 147,
+      "wrong": 3
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 0,
+     "total_used_calc": 127,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 50,
+       "n": 50,
+       "rate": 1.0,
+       "lower95": 0.9418
+      },
+      "expenses": {
+       "k": 49,
+       "n": 50,
+       "rate": 0.98,
+       "lower95": 0.9086
+      },
+      "training": {
+       "k": 48,
+       "n": 50,
+       "rate": 0.96,
+       "lower95": 0.8794
+      }
+     }
+    }
+   },
+   "gpt-5.6-luna": {
+    "S": {
+     "episodes": 150,
+     "usd": 0.1212,
+     "total_accuracy": {
+      "k": 133,
+      "n": 150,
+      "rate": 0.8867,
+      "lower95": 0.8349
+     },
+     "total_verdicts": {
+      "full": 133,
+      "wrong": 14,
+      "partial_silent": 3
+     },
+     "total_partial_judged": 3,
+     "total_used_sum": 0,
+     "total_used_calc": 150,
+     "total_with_skipped_rows": 79,
+     "total_by_domain": {
+      "food": {
+       "k": 44,
+       "n": 50,
+       "rate": 0.88,
+       "lower95": 0.7768
+      },
+      "expenses": {
+       "k": 44,
+       "n": 50,
+       "rate": 0.88,
+       "lower95": 0.7768
+      },
+      "training": {
+       "k": 45,
+       "n": 50,
+       "rate": 0.9,
+       "lower95": 0.8012
+      }
+     }
+    }
+   },
+   "glm-5.3": {
+    "S": {
+     "episodes": 60,
+     "usd": 0.7814,
+     "total_accuracy": {
+      "k": 54,
+      "n": 60,
+      "rate": 0.9,
+      "lower95": 0.8121
+     },
+     "total_verdicts": {
+      "full": 54,
+      "wrong": 6
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 0,
+     "total_used_calc": 54,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 17,
+       "n": 20,
+       "rate": 0.85,
+       "lower95": 0.6563
+      },
+      "expenses": {
+       "k": 19,
+       "n": 20,
+       "rate": 0.95,
+       "lower95": 0.7839
+      },
+      "training": {
+       "k": 18,
+       "n": 20,
+       "rate": 0.9,
+       "lower95": 0.7174
+      }
+     }
+    }
+   },
+   "claude-sonnet-5-5": {
+    "S": {
+     "episodes": 60,
+     "usd": 0.9705,
+     "total_accuracy": {
+      "k": 59,
+      "n": 60,
+      "rate": 0.9833,
+      "lower95": 0.9234
+     },
+     "total_verdicts": {
+      "full": 59,
+      "wrong": 1
+     },
+     "total_partial_judged": 0,
+     "total_used_sum": 0,
+     "total_used_calc": 58,
+     "total_with_skipped_rows": 28,
+     "total_by_domain": {
+      "food": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "expenses": {
+       "k": 20,
+       "n": 20,
+       "rate": 1.0,
+       "lower95": 0.8609
+      },
+      "training": {
+       "k": 19,
+       "n": 20,
+       "rate": 0.95,
+       "lower95": 0.7839
+      }
+     }
+    }
+   }
+  },
+  "usd": {
+   "openai": 0.1212,
+   "anthropic": 1.1189,
+   "zai": 0.7814
+  }
  }
 }
