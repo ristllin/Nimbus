@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "nimbus/harness/plain/deliver.h"
@@ -68,6 +69,26 @@ namespace plain {
 // One registry dispatch, with the caller's Principal (TurnCtx::who).
 using ToolDispatchFn = std::function<ToolOutput(const ToolCall& call, const TurnCtx& turn)>;
 
+// An unattended turn's own bounds (plain/unattended.h: a routine's 6 rounds, 90 s soft, 180 s
+// hard, 0.05 USD a fire; ruling 84 item 9). Each nonzero field lowers the limit the head scales
+// to; zero leaves it. Lane RB-U1a.
+struct TurnCeiling {
+  uint16_t rounds = 0;
+  uint32_t softWallMs = 0;
+  uint32_t hardWallMs = 0;
+  uint32_t spendMicroUsd = 0;
+};
+// The limits after a ceiling: the lower of each pair, and the hard wall the last round runs to.
+inline void applyCeiling(const TurnCeiling& c, GuardLimits& limits, uint32_t& hardWallMs) {
+  auto lower = [](auto& v, uint32_t cap) {
+    if (cap && v > cap) v = static_cast<std::remove_reference_t<decltype(v)>>(cap);
+  };
+  lower(limits.rounds, c.rounds);
+  lower(limits.softWallMs, c.softWallMs);
+  lower(limits.maxSpendMicroUsd, c.spendMicroUsd);
+  lower(hardWallMs, c.hardWallMs);
+}
+
 // What the binding gives for one turn, asked once at turn open. The engine sets
 // facts.turn, facts.digestBlock and facts.recentFiles itself (it owns the digests and the
 // recent-files list); the rest is the binding's: the registry (classOf decides effect and
@@ -81,6 +102,7 @@ struct TurnSetup {
   HeadCost cost;                     // what the spend and size guards scale from (RB-E1b)
   bool qualified = false;            // the head is qualified on engine 2 (tx::budgetFor)
   uint16_t dayStartMin = kDayStartDefaultMin;   // the device's day start (TurnCtx::dayStartMin)
+  TurnCeiling ceiling;               // an unattended turn's own bounds (RB-U1a); none by default
 };
 using TurnSetupFn = std::function<Status(const TurnCtx& turn, TurnSetup& out)>;
 // One delivery (plain/deliver.h); unset: deliverTurn over the channel. A test or a host may

@@ -70,6 +70,7 @@ struct Turn {
   uint32_t messageCap = tx::kInlineMessageCap;   // text kept inline (tx::HeadBudget::messageCap)
   uint32_t bulkWholeCap = tx::kBulkWholeMax;     // tier 2 whole in its own turn (tx::HeadBudget::bulkWholeCap)
   GuardLimits limits;
+  uint32_t hardWallMs = kHardWallMs;   // the guard's last round runs to it (a routine's is lower)
   LadderState ladder;
   RenderInput render;
   ExchangeResult ex;
@@ -339,8 +340,10 @@ class TurnRun {
   // Whatever the scale, every round has a bound and the last round has time before the hard wall.
   void clampLimits() {
     if (!guardLimitsFor(t_.setup.storedRounds, t_.setup.cost, t_.limits).ok()) t_.limits = GuardLimits{};
+    applyCeiling(t_.setup.ceiling, t_.limits, t_.hardWallMs);   // an unattended turn's own bounds (RB-U1a)
+    t_.hardWallMs = std::max<uint32_t>(t_.hardWallMs, 3 * kMinRequestMs);
     t_.limits.rounds = std::max<uint16_t>(1, std::min<uint16_t>(t_.limits.rounds, kMaxRounds));
-    t_.limits.softWallMs = std::min<uint32_t>(t_.limits.softWallMs, kHardWallMs - 2 * kMinRequestMs);
+    t_.limits.softWallMs = std::min<uint32_t>(t_.limits.softWallMs, t_.hardWallMs - 2 * kMinRequestMs);
   }
 
   // A turn that cannot start (setup, composition or the wire refused) is closed with one
@@ -579,7 +582,7 @@ class TurnRun {
     tx::TxLog* log = d_.log;
     r.bulk = [log](const std::string& handle, std::string& out) { return log->readBulk(handle, 0, tx::kBulkMaxBytes, out); };
     // The soft wall for every round; the guard's last round may run to the hard wall.
-    const uint32_t wall = t_.lastRound ? kHardWallMs : t_.limits.softWallMs, used = elapsedMs();
+    const uint32_t wall = t_.lastRound ? t_.hardWallMs : t_.limits.softWallMs, used = elapsedMs();
     ExchangeRequest req;
     req.wire = t_.wire;
     req.render = &r;

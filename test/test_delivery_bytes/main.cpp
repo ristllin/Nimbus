@@ -924,7 +924,7 @@ void test_the_progress_reporter_by_itself() {
   e.detail = "rounds";
   e.nowMs += 200000;
   TEST_ASSERT_TRUE(r.tick(e));
-  TEST_ASSERT_EQUAL_STRING("Still working (3 min, step 1): taking longer than usual, still making progress.", sink.current.c_str());
+  TEST_ASSERT_EQUAL_STRING("Still working (3 min, step 1): slower than usual, still making progress.", sink.current.c_str());
   r.close(e.nowMs);
   TEST_ASSERT_EQUAL_STRING("Worked 3 min (1 step).", sink.current.c_str());
   TEST_ASSERT_FALSE(r.tick(e));   // closed

@@ -214,11 +214,15 @@ inline constexpr char kProgressStep[] = ", step ";
 inline constexpr char kProgressRanTool[] = "ran a tool.";
 inline constexpr char kProgressRan[] = "ran ";
 inline constexpr char kProgressWaiting[] = "waiting for the model's answer.";
-inline constexpr char kProgressLong[] = "taking longer than usual, still making progress.";
+inline constexpr char kProgressLong[] = "slower than usual, still making progress.";
 inline constexpr char kProgressDone[] = "Worked ";
 inline constexpr char kProgressSteps[] = " steps)";
 inline constexpr char kProgressOneStep[] = " step)";
 inline constexpr char kProgressMinutes[] = " min";
+// A routine's output as a device note, in the owner's transcript and in the routine's own state
+// (lane RB-U1a, plain_unattended.cpp routineNoteText): this open, the routine's name, the message
+// stamp (tx::messageStamp, with the year), then the text: "[routine Morning brief Tue 17 Nov 2026 06:00] ...".
+inline constexpr char kRoutineNote[] = "[routine ";
 }  // namespace device_notes
 
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).
