@@ -47,6 +47,12 @@ F_ARGS = {
     "read_file": ["path", "offset", "limit"],
     "edit_file": ["path", "old", "new", "all"],
 }
+# Arm Sn (ruling 94): the selection without sum. read_file keeps column/from/to, has no sum; the
+# tool answers through aidserve built with scratch's Sn scan (a row that does not parse is a row of
+# the result). edit_file is S's.
+SN_ARGS = {"read_file": ["path", "offset", "limit", "column", "from", "to"]}
+ARM_ARGS = {"F": F_ARGS, "Sn": SN_ARGS}
+TABLE_ARMS = ("F", "S", "Sp", "Sq", "Spq", "Sn")
 _lock = threading.Lock()
 
 
@@ -153,13 +159,14 @@ class World:
         return f"{name}: done", False
 
     def _arm_f_refusal(self, target: str, targs: dict) -> str:
-        """Arm F declares no column/from/to/sum and no line: the registry's refusal, naming F's arguments."""
-        if self.arm != "F" or target not in F_ARGS:
+        """Arms F and Sn declare fewer arguments: the registry's refusal, naming the arm's arguments."""
+        allowed = ARM_ARGS.get(self.arm, {}).get(target)
+        if allowed is None:
             return ""
-        extra = sorted(k for k in targs if k not in F_ARGS[target])
+        extra = sorted(k for k in targs if k not in allowed)
         if not extra:
             return ""
-        acc, bad = ", ".join(F_ARGS[target]), ", ".join(extra)
+        acc, bad = ", ".join(allowed), ", ".join(extra)
         return f"{target} takes {acc}; not read: {bad}\n(not read: {bad}: this tool has no such argument)"
 
     def _faulted(self, target: str, targs: dict) -> bool:
@@ -214,9 +221,18 @@ class World:
 
 
 # ------------------------------------------------------------------ requests
+def sn_read_file(t: dict) -> dict:
+    """rb-main's read_file declaration with sum taken out (arm Sn)."""
+    schema = json.loads(t["schema"])
+    schema["properties"].pop("sum")
+    desc = t["description"].replace("; sum totals named columns.", ".")
+    assert desc != t["description"]
+    return {"name": "read_file", "description": desc, "schema": schema}
+
+
 def compose(aid: Aid, ep: dict, arm: str, head: str) -> tuple:
     dom = ep["dom"]
-    notes = records.note_lines(dom) if arm in ("F", "S", "Sp", "Sq", "Spq") else records.note_lines(dom)[:2]
+    notes = records.note_lines(dom) if arm in TABLE_ARMS else records.note_lines(dom)[:2]
     skills = ""
     sid = records.DOMAINS[dom]["skill_id"]
     if arm == "K1":
@@ -235,6 +251,8 @@ def compose(aid: Aid, ep: dict, arm: str, head: str) -> tuple:
     for t in c["tools"]:
         if arm == "F" and t["name"] in F_ARGS:
             tools.append(manifest.CORE[t["name"]])
+        elif arm == "Sn" and t["name"] == "read_file":
+            tools.append(sn_read_file(t))
         else:
             tools.append(
                 {
@@ -405,7 +423,7 @@ def run_episode(head: str, arm: str, ep: dict, aid_bin: str, work: Path, prov=No
 
 # ------------------------------------------------------------------ plan and storage
 def cell_plan(arm: str, n_total: int, n_write: int, n_fault: int, n_skill: int) -> list:
-    if arm in ("F", "S", "Sp", "Sq", "Spq"):
+    if arm in TABLE_ARMS:
         return records.plan(n_total, n_write, n_fault if arm == "S" else 0)
     return records.plan_skills(arm, n_skill)
 
@@ -413,7 +431,7 @@ def cell_plan(arm: str, n_total: int, n_write: int, n_fault: int, n_skill: int) 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--head", required=True)
-    ap.add_argument("--arm", required=True, choices=["F", "S", "Sp", "Sq", "Spq", "K0", "K1", "K2", "K3"])
+    ap.add_argument("--arm", required=True, choices=[*TABLE_ARMS, "K0", "K1", "K2", "K3"])
     ap.add_argument("--evidence", required=True)
     ap.add_argument("--env-file", default="")
     ap.add_argument("--aidserve", required=True)

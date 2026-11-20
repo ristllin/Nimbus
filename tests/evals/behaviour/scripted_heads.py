@@ -191,7 +191,8 @@ class Scripted:
         text = c.results[-1]["text"]
         if use_sum and f"sum {col}=" in text:
             v = re.search(rf"sum {col}=(-?[\d.]+)", text).group(1)
-            return self._say(f"{v} {col}.")
+            left = re.search(r"not in it: (.*?\))\)", text)
+            return self._say(f"{v} {col}." + (f" Not counted: {left.group(1)}." if left else ""))
         if use_sum:  # no figure (ruling 92): the selection's rows, "L<n> " in front of each
             text = "\n".join([text.split("\n", 1)[0]] + [re.sub(r"^L\d+ ", "", x) for x in text.split("\n")[1:]])
         header, rows = _csv_rows(text)
