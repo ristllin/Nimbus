@@ -122,9 +122,33 @@ size_t cutAt(const std::string& body, size_t limit) {
 
 // ---- digests ----------------------------------------------------------------------------
 
+// A stored cumulative summary: several clean lines, each ending with '\n', under the hard cap.
+bool validSummaryText(const std::string& text) {
+  if (!isSummaryText(text) || text.size() > kSummaryMaxBytes) return false;
+  for (size_t at = 0, nl; (nl = text.find('\n', at)) != std::string::npos; at = nl + 1)
+    if (!cleanLine(text.substr(at, nl - at))) return false;
+  return true;
+}
+
 bool validDigest(const DigestEntry& d) {
   int y = 0, m = 0, dd = 0;
-  return d.text.size() <= kDigestMaxBytes && cleanLine(d.text) && parseDay(d.day, y, m, dd);
+  if (!parseDay(d.day, y, m, dd)) return false;
+  if (isSummaryText(d.text)) return validSummaryText(d.text);
+  return d.text.size() <= kDigestMaxBytes && cleanLine(d.text);
+}
+
+// The newest cumulative summary of a run (its index), or n when there is none.
+size_t newestSummary(const std::vector<DigestEntry>& digests, size_t n) {
+  for (size_t i = n; i-- > 0;)
+    if (isSummaryText(digests[i].text)) return i;
+  return n;
+}
+
+// The longest run of whole lines of `text` from its start that fits `cap` (no last line end).
+std::string wholeLinesUpTo(const std::string& text, size_t cap) {
+  size_t end = 0, at = 0;
+  for (size_t nl; (nl = text.find('\n', at)) != std::string::npos && nl <= cap; at = nl + 1) end = nl;
+  return text.substr(0, end);
 }
 
 // Every digest valid, thru strictly rising.
@@ -302,6 +326,11 @@ Status scanBack(TxFiles& files, const std::string& chatKey, const std::string& d
     ++scan.segments;
     std::sort(seg.begin(), seg.end(), [](const DigestEntry& a, const DigestEntry& b) { return a.q > b.q; });
     for (const DigestEntry& d : seg) {
+      if (isSummaryText(d.text)) {   // the newest summary covers everything older (the swap archived it)
+        found.push_back(d);
+        scan.reachedArchive = true;
+        return Status::success();
+      }
       if (marks.count(d.text)) {
         scan.reachedArchive = true;
         return Status::success();
@@ -466,6 +495,13 @@ static Status digestBlockBody(const std::vector<DigestEntry>& digests, Profile p
   block.clear();
   archive.clear();
   if (!validRun(digests)) return Status::fail(Err::InvalidArgument, "tx::digestBlock");
+  const size_t k = newestSummary(digests, digests.size());
+  if (k < digests.size()) {   // the newest summary covers everything before it: it alone is shown
+    for (size_t i = 0; i < k; ++i)
+      if (!isSummaryText(digests[i].text)) archive.push_back(digests[i]);   // day digests it took in
+    block = wholeLinesUpTo(digests[k].text, kSummaryMaxBytes);
+    return Status::success();
+  }
   const size_t keep = newestThatFit(digests, digests.size(), blockCapFor(profile));
   const size_t from = digests.size() - keep;
   archive.assign(digests.begin(), digests.begin() + (long)from);
@@ -520,8 +556,21 @@ static Status settleDigestsBody(TxFiles& files, const std::string& chatKey, Prof
     if (!st.ok()) return Status::fail(st.err, "tx::settleDigests");
     ++report.moved;
   }
-  live.erase(live.begin(), live.begin() + (long)report.moved);
   report.pending = over.size() - report.moved;
+  const size_t k = newestSummary(live, live.size());
+  if (k == live.size()) {
+    live.erase(live.begin(), live.begin() + (long)report.moved);
+    return Status::success();
+  }
+  // Before the newest summary: the archived day digests and every older summary (superseded) leave;
+  // a day digest whose move was refused stays live and moves next time. No allocation.
+  size_t seen = 0;
+  auto leaves = [&](const DigestEntry& d) {
+    if (d.q >= live[k].q) return false;
+    if (isSummaryText(d.text)) return true;
+    return seen++ < report.moved;
+  };
+  live.erase(std::remove_if(live.begin(), live.end(), leaves), live.end());
   return Status::success();
 }
 
@@ -575,6 +624,11 @@ static Status chatsumMirrorBody(const std::vector<DigestEntry>& digests, uint64_
   if (!validRun(digests)) return Status::fail(Err::InvalidArgument, "tx::chatsumMirror");
   size_t n = 0;
   while (n < digests.size() && digests[n].thru <= thru) ++n;
+  const size_t k = newestSummary(digests, n);
+  if (k < n) {   // the summary in force, in whole lines from its start
+    out = wholeLinesUpTo(digests[k].text, kChatsumMirrorMaxBytes);
+    return Status::success();
+  }
   const size_t keep = newestThatFit(digests, n, kChatsumMirrorMaxBytes);
   out = joined(digests, n - keep, n);
   return Status::success();
@@ -659,6 +713,268 @@ Status mirrorChatsum(const std::string& blob, const MirrorFacts& facts, const st
   return guarded(
       "tx::mirrorChatsum: memory", [&] { return mirrorChatsumBody(blob, facts, digests, out); },
       [&] { out.clear(); });
+}
+
+// ---- the cumulative summary (lane RB-C3) ------------------------------------------------------
+
+namespace {
+
+const char* const kTitles[kSummarySections] = {digest_text::kFacts, digest_text::kDecisions, digest_text::kQuantities,
+                                               digest_text::kOpen, digest_text::kFiles};
+const char kLetters[kSummarySections + 1] = "FDQOP";
+
+// The section a letter names (either case); false for any other byte.
+bool sectionOf(char c, SummarySection& out) {
+  for (size_t i = 0; i < kSummarySections; ++i)
+    if ((c | 32) == (kLetters[i] | 32)) {
+      out = (SummarySection)i;
+      return true;
+    }
+  return false;
+}
+
+// Digits at s[at..]: the number and where they end; false for none, 0 or more than nine.
+bool idAt(const std::string& s, size_t at, uint32_t& id, size_t& end) {
+  id = 0;
+  end = at;
+  while (end < s.size() && end - at < 9 && s[end] >= '0' && s[end] <= '9') id = id * 10 + (uint32_t)(s[end++] - '0');
+  return end > at && id != 0 && (end == s.size() || s[end] < '0' || s[end] > '9');
+}
+
+bool validLine(const SummaryLine& l) {
+  return l.id != 0 && (size_t)l.section < kSummarySections && l.text.size() <= kSummaryLineMaxBytes &&
+         cleanLine(l.text);
+}
+
+std::string lineText(const SummaryLine& l) { return std::string(1, kLetters[(size_t)l.section]) + std::to_string(l.id) + " " + l.text; }
+
+// Where a new line of `section` goes: after the last line of its section or of any section before it.
+size_t insertAt(const Summary& s, SummarySection section) {
+  size_t at = 0;
+  for (size_t i = 0; i < s.lines.size(); ++i)
+    if ((uint8_t)s.lines[i].section <= (uint8_t)section) at = i + 1;
+  return at;
+}
+
+SummaryLine* findLine(Summary& s, uint32_t id) {
+  for (SummaryLine& l : s.lines)
+    if (l.id == id) return &l;
+  return nullptr;
+}
+
+// One change line: false when it is not one.
+bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
+  size_t at = 0;
+  while (at < raw.size() && (raw[at] == ' ' || raw[at] == '\t')) ++at;
+  if (at + 1 < raw.size() && raw[at] == '*' && raw[at + 1] == ' ') at += 2;
+  const std::string line = raw.substr(at);
+  if (line.empty()) return false;
+  if (line == "=") return none = true, false;
+  const char op = line[0];
+  if ((op != '+' && op != '=' && op != '-') || line.size() < 2 || !sectionOf(line[1], e.section)) return false;
+  size_t end = 2;
+  if (op == '+') {
+    if (e.section == SummarySection::Files) return false;   // the device's own section
+    if (end < line.size() && line[end] == ':') ++end;
+    e.op = SummaryOp::Add;
+    e.text = line.substr(end);
+    return line.size() > end && line[end] == ' ';
+  }
+  if (!idAt(line, 2, e.id, end)) return false;
+  e.op = op == '=' ? SummaryOp::Replace : SummaryOp::Drop;
+  if (end < line.size() && line[end] == ':') ++end;
+  e.text = e.op == SummaryOp::Replace ? line.substr(end) : std::string();
+  return e.op == SummaryOp::Drop || (line.size() > end && line[end] == ' ');
+}
+
+size_t sectionBytes(const Summary& s, size_t section) {
+  size_t n = 0;
+  for (const SummaryLine& l : s.lines)
+    if ((size_t)l.section == section) n += lineText(l).size() + 1;
+  return n ? n + std::strlen(kTitles[section]) + 1 : 0;
+}
+
+}  // namespace
+
+uint32_t Summary::nextId() const {
+  uint32_t top = 0;
+  for (const SummaryLine& l : lines) top = std::max(top, l.id);
+  return top + 1;
+}
+
+char summaryLetter(SummarySection s) { return (size_t)s < kSummarySections ? kLetters[(size_t)s] : '?'; }
+
+bool isSummaryText(const std::string& text) { return !text.empty() && text.back() == '\n'; }
+
+namespace {
+// encodeSummary without its size cap (fitSummary measures with it).
+Status encodeLines(const Summary& s, std::string& out) {
+  out.clear();
+  std::set<uint32_t> ids;
+  int section = -1;
+  for (const SummaryLine& l : s.lines) {
+    if (!validLine(l) || !ids.insert(l.id).second || (int)l.section < section)
+      return Status::fail(Err::InvalidArgument, "tx::encodeSummary");
+    if ((int)l.section != section) out += std::string(kTitles[(size_t)l.section]) + "\n";
+    section = (int)l.section;
+    out += lineText(l) + "\n";
+  }
+  if (s.archived) out += std::string(digest_text::kArchived) + "\n";
+  if (out.empty()) out = std::string(digest_text::kNothingYet) + "\n";
+  return Status::success();
+}
+}  // namespace
+
+Status encodeSummary(const Summary& s, std::string& out) {
+  const Status st = encodeLines(s, out);
+  if (!st.ok()) return st;
+  if (out.size() > kSummaryMaxBytes) {
+    out.clear();
+    return Status::fail(Err::InvalidArgument, "tx::encodeSummary: over its cap");
+  }
+  return Status::success();
+}
+
+Status parseSummary(const std::string& text, Summary& out) {
+  out = Summary{};
+  if (!validSummaryText(text)) return Status::fail(Err::InvalidArgument, "tx::parseSummary");
+  int section = -1;
+  for (size_t at = 0, nl; (nl = text.find('\n', at)) != std::string::npos; at = nl + 1) {
+    const std::string line = text.substr(at, nl - at);
+    bool title = false;
+    for (size_t i = 0; i < kSummarySections && !title; ++i)
+      if (line == kTitles[i] && (int)i > section) section = (int)i, title = true;
+    if (title || line == digest_text::kNothingYet) continue;
+    if (line == digest_text::kArchived) {
+      out.archived = true;
+      continue;
+    }
+    SummaryLine l;
+    size_t end = 0;
+    const bool ok = section >= 0 && !line.empty() && line[0] == kLetters[section] && idAt(line, 1, l.id, end) &&
+                    end < line.size() && line[end] == ' ';
+    if (!ok) return out = Summary{}, Status::fail(Err::InvalidArgument, "tx::parseSummary");
+    l.section = (SummarySection)section;
+    l.text = line.substr(end + 1);
+    out.lines.push_back(l);
+  }
+  std::string again;
+  if (!encodeSummary(out, again).ok() || again != text) return out = Summary{}, Status::fail(Err::InvalidArgument, "tx::parseSummary");
+  return Status::success();
+}
+
+std::string summaryLineText(const std::string& raw, size_t cap) {
+  std::string text = oneLine(raw);
+  if (text.size() > cap) {
+    text.resize(cutAt(text, cap));
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+  }
+  return text;
+}
+
+SummaryEdits parseSummaryEdits(const std::string& answer) {
+  SummaryEdits out;
+  for (size_t at = 0; at <= answer.size();) {
+    size_t nl = answer.find('\n', at);
+    if (nl == std::string::npos) nl = answer.size();
+    std::string line = answer.substr(at, nl - at);
+    at = nl + 1;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (oneLine(line).empty()) continue;
+    SummaryEdit e;
+    bool none = false;
+    if (editOf(line, e, none)) out.edits.push_back(e);
+    else if (none) out.none = true;
+    else ++out.unread;
+  }
+  return out;
+}
+
+Status applySummaryEdits(Summary& s, const std::vector<SummaryEdit>& edits, SummaryFrame frame,
+                         std::vector<SummaryLine>& left, size_t& unread) {
+  unread = 0;
+  const size_t frameBytes = frame ? frame(std::string()).size() : 0;
+  for (const SummaryEdit& e : edits) {
+    std::string text = summaryLineText(e.text, kSummaryLineMaxBytes - frameBytes);
+    if (!text.empty() && frame) text = frame(text);
+    SummaryLine* l = e.op == SummaryOp::Add ? nullptr : findLine(s, e.id);
+    const bool device = l && l->section == SummarySection::Files;
+    if ((e.op != SummaryOp::Drop && text.empty()) || (e.op != SummaryOp::Add && (!l || device)) ||
+        (e.op == SummaryOp::Add && e.section == SummarySection::Files)) {
+      ++unread;
+      continue;
+    }
+    if (e.op == SummaryOp::Add) {
+      bool twice = false;
+      for (const SummaryLine& o : s.lines) twice |= o.section == e.section && o.text == text;
+      if (!twice) s.lines.insert(s.lines.begin() + (long)insertAt(s, e.section), SummaryLine{e.section, s.nextId(), text});
+      continue;
+    }
+    left.push_back(*l);
+    if (e.op == SummaryOp::Replace) {
+      l->text = text;
+      continue;
+    }
+    s.lines.erase(s.lines.begin() + (l - s.lines.data()));
+  }
+  return Status::success();
+}
+
+void noteSummaryFile(Summary& s, const std::string& path, const std::string& when, bool deleted,
+                     std::vector<SummaryLine>& left) {
+  if (path.empty() || path.size() > kRecentPathMaxBytes || !cleanLine(path)) return;
+  uint32_t id = 0;
+  for (size_t i = 0; i < s.lines.size(); ++i) {
+    const SummaryLine& l = s.lines[i];
+    const bool same = l.section == SummarySection::Files &&
+                      (l.text == path || l.text.compare(0, path.size() + 2, path + digest_text::kWhenOpen) == 0);
+    if (!same) continue;
+    id = l.id;
+    left.push_back(l);
+    s.lines.erase(s.lines.begin() + (long)i);
+    break;
+  }
+  if (deleted) return;
+  const std::string text = when.empty() ? path : path + digest_text::kWhenOpen + oneLine(when) + digest_text::kWhenClose;
+  s.lines.insert(s.lines.begin() + (long)insertAt(s, SummarySection::Files),
+                 SummaryLine{SummarySection::Files, id ? id : s.nextId(), text});
+}
+
+Status fitSummary(Summary& s, size_t capBytes, std::vector<SummaryLine>& left) {
+  std::string text;
+  const size_t cap = std::min<size_t>(capBytes, kSummaryMaxBytes);
+  for (;;) {
+    const Status st = encodeLines(s, text);
+    if (!st.ok()) return st;
+    if (text.size() <= cap) return Status::success();
+    if (s.lines.empty()) return Status::fail(Err::InvalidArgument, "tx::fitSummary: cap under one line");
+    size_t worst = kSummarySections;
+    uint64_t worstLoad = 0;
+    for (size_t i = 0; i < kSummarySections; ++i) {
+      const uint64_t load = (uint64_t)sectionBytes(s, i) * 1000 / kSummaryShare[i];
+      if (load > worstLoad) worst = i, worstLoad = load;
+    }
+    for (size_t i = 0; i < s.lines.size(); ++i)
+      if ((size_t)s.lines[i].section == worst) {
+        left.push_back(s.lines[i]);
+        s.lines.erase(s.lines.begin() + (long)i);
+        break;
+      }
+    s.archived = true;
+  }
+}
+
+Status archiveSummaryLines(TxFiles& files, const std::string& chatKey, const std::string& day,
+                           const std::vector<SummaryLine>& left) {
+  for (const SummaryLine& l : left) {
+    DigestEntry d;
+    d.day = day;
+    Status st = digestText(day, lineText(l), d.text);
+    if (!st.ok()) return st;
+    st = archiveDigest(files, chatKey, d);
+    if (!st.ok()) return st;
+  }
+  return Status::success();
 }
 
 uint64_t rowThru(const std::vector<Item>& items, uint64_t thru) {
