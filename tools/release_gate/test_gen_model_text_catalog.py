@@ -157,7 +157,7 @@ def test_e2_ceilings_are_the_prd_figures():
         "device_notes": 2048,
         "stubs": 512,
         "tool_results": 6144,
-        "probe": 1024,
+        "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) byte for byte (RB-G1)
         "summarizer": 1024,
         "tool_descriptions": 10240,
     }
