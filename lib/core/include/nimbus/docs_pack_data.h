@@ -4307,18 +4307,23 @@ history marks (v5.1.1 and earlier logged `budget: ctx=200K sys=32768 res=8192 to
    R"NIMBUSDOC(The research principle (summary + verbatim tail) also applies **inside** a
 turn and at every clip site:
 
-- **In-turn replay** (every loop provider): one transcript-level fold with
-  hysteresis. The replay budget counts every replayed byte (call arguments,
-  prose and results). Under it the replay is append-only: a round already sent
-  keeps its bytes, so each round reads the previous round's request from the
-  provider cache. Over it, the oldest whole rounds (each call with its result,
-  never the newest round) fold into one line each, appended to the seeded
-  message under `[EARLIER TOOL ROUNDS OF THIS TURN ...]`, until the replay is
-  at half the budget, so the request is rewritten about once per half-budget of
-  new results and the newest result always reaches the model. A newest round
-  that alone passes the budget is cut with a visible `[cut: ...]` note (or
-  withheld with `[not shown: ...]`), and every `tool_use` on the wire keeps its
-  `tool_result`. See the cacheable prefix in [turn-anatomy.md](turn-anatomy.md).
+- **In-turn replay** (every loop provider): the replay counts every replayed
+  byte (call arguments, prose and results) and is append-only while the request
+  fits: a round already sent keeps its bytes, so each round reads the previous
+  round's request from the provider cache. Since v5.2.0 (lane RB-BGb, ruling 93
+  item 3) the only bound is the request's own body budget: a turn carries as
+  much of its tool traffic as the body has free after the prompt, the history
+  and the summary, never less than v5.1.2's replay figure for the head. When a
+  round does not fit, the turn's own bulk goes first and only as much as the
+  request needs: call arguments that already ran, then the oldest whole rounds
+  (each call with its result, never the newest round) folded into one line each
+  in the seeded message under `[EARLIER TOOL ROUNDS OF THIS TURN ...]`, each
+  line ending with the `results.get` tag that reads the result back, then the
+  newest round's result cut to a part that ends `[cut to fit this request:
+  bytes 0-k of n; the rest: results.get {"tag":...,"offset":k}]`. Only then
+  does the prompt's context go (recalled memories, skills, older days, and
+  today's turns last). Every `tool_use` on the wire keeps its `tool_result`.
+  See the cacheable prefix in [turn-anatomy.md](turn-anatomy.md).
 - **Tool results**: a clamped result keeps its full text in the recent-results
   ring and the marker says how to get it -
   `…[truncated 8192 of 51234 B - fetch the rest with results.get("r3")]`.
@@ -4567,9 +4572,11 @@ turn:
     block).
 - **Within a turn.** Each tool round's request starts with the previous round's
   request: tool results already sent are never rewritten, so a round reads the
-  last one from the cache. Over the replay budget (16 KB on Anthropic, 24 KB on
-  OpenAI and Mistral) the newest result is cut with a visible `[cut: ...]` note,
-  or withheld with a `[not shown: ...]` note when no room is left.
+  last one from the cache. A round over the request's body budget folds the
+  oldest rounds the model has read, only as many as it needs, each line naming
+  its `results.get` tag, then cuts the newest result to a part that names the
+  read of the rest (`[cut to fit this request: ...]`); the prompt's context goes
+  only after that (lane RB-BGb).
 - **Checked by tests.** `test/test_prompt_layout` composes many turns that differ
   only in per-turn content and asserts the static and shelf parts, and each
   provider's cached request segments, are byte-identical; a counter-test puts a
