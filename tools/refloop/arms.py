@@ -36,8 +36,8 @@ from costs import cold_cost_usd, cost_usd, virtual_costs
 from nimbusd_ctl import PROVIDER_ENV, Nimbusd
 from scenario import RIG_TZ, advance_target, needs_state, parse_advance
 
-HEAD_PATHS = ("/v1/messages", "/v1/responses")
-PROVIDER_HOST = {"anthropic": "api.anthropic.com", "openai": "api.openai.com/v1"}
+HEAD_PATHS = ("/v1/messages", "/v1/responses", "/v1/chat/completions")
+PROVIDER_HOST = {"anthropic": "api.anthropic.com", "openai": "api.openai.com/v1", "mistral": "api.mistral.ai/v1"}
 TURN_TIMEOUT_S = 300
 SETTLE_MAX_S = 90
 SETTLE_POLL_S = 0.25
@@ -87,6 +87,25 @@ def _tool_uses(response) -> list:
             except ValueError:
                 args = {"_raw": item.get("arguments")}
             out.append((item.get("call_id"), item.get("name"), args))
+    return out + _chat_tool_uses(response)
+
+
+def _chat_args(raw):
+    if not isinstance(raw, str):
+        return raw or {}
+    try:
+        return json.loads(raw or "{}")
+    except ValueError:
+        return {"_raw": raw}
+
+
+def _chat_tool_uses(response: dict) -> list:
+    """(call id, name, arguments) of the tool calls in a Chat Completions response (the Mistral wire)."""
+    out = []
+    for choice in response.get("choices") or []:
+        for c in ((choice or {}).get("message") or {}).get("tool_calls") or []:
+            fn = c.get("function") or {}
+            out.append((c.get("id"), fn.get("name"), _chat_args(fn.get("arguments"))))
     return out
 
 
@@ -94,6 +113,15 @@ def _result_text(content) -> str:
     if isinstance(content, str):
         return content
     return "\n".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+
+
+def _chat_tool_results(request: dict) -> list:
+    """(call id, text) of the tool messages a Chat Completions request carries (the Mistral wire)."""
+    return [
+        (m.get("tool_call_id"), _result_text(m.get("content")))
+        for m in request.get("messages") or []
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
 
 
 def _tool_results(request) -> list:
@@ -108,6 +136,7 @@ def _tool_results(request) -> list:
     for item in request.get("input") if isinstance(request.get("input"), list) else []:
         if isinstance(item, dict) and item.get("type") == "function_call_output":
             out.append((item.get("call_id"), _result_text(item.get("output"))))
+    out += _chat_tool_results(request)
     return out
 
 

@@ -35,7 +35,7 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-HEAD_PATHS = ("/v1/messages", "/v1/responses")
+HEAD_PATHS = ("/v1/messages", "/v1/responses", "/v1/chat/completions")
 NUDGE = "Now call orch_turn with your final complete turn"
 FINAL_NOTICE = "This is your FINAL turn for this request"
 TRUNC = "[truncated]"

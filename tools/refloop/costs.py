@@ -26,6 +26,13 @@ PRICES = {
     "gpt-5.6-luna": (0.20, 1.20, 0.02, 0.20),
     "gpt-6-luna": (0.10, 0.50, 0.01, 0.10),
     "text-embedding-3-small": (0.02, 0.0, 0.02, 0.02),
+    # Mistral (lane RB-R1, ruling 102): the FIRMWARE's own price table, not a provider quote
+    # (lib/core/include/nimbus/orch/model_price_defaults.h, kBuiltinPrices, as of 2026-10: mistral-medium
+    # 1.5 / 7.5, mistral-small 0.2 / 0.6, mistral-large 2 / 6 USD per 1M; cache read 0.1x and write 1.25x of the
+    # input rate, that table's default share).
+    "mistral-medium": (1.50, 7.50, 0.15, 1.875),
+    "mistral-small": (0.20, 0.60, 0.02, 0.25),
+    "mistral-large": (2.00, 6.00, 0.20, 2.50),
 }
 # claude-haiku-5-5 bills a request whose prompt is over 100K tokens at its own rates.
 HAIKU_LONG_OVER = 100_000

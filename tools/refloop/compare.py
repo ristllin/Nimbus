@@ -47,6 +47,9 @@ MODELS = {
     "claude-sonnet-5-5": {"head": "anthropic", "effort": "medium", "sub_model": "claude-haiku-5-5"},
     "claude-haiku-5-5": {"head": "anthropic", "effort": "medium", "sub_model": "claude-haiku-5-5"},
     "gpt-5.6-luna": {"head": "openai", "effort": None, "sub_model": ""},
+    # The firmware's Mistral head and sub defaults (lib/core/include/nimbus/orch/model_defaults.h); the harness sends
+    # no effort field on the Mistral wire (lane RB-R1, ruling 102).
+    "mistral-medium-latest": {"head": "mistral", "effort": None, "sub_model": "mistral-small-latest"},
 }
 
 
@@ -265,7 +268,11 @@ def main():
         p = sub.add_parser(name)
         p.add_argument("--evidence", type=Path, required=True)
         if name != "report":
-            p.add_argument("--env-file", required=True, help="dotenv file with ANTHROPIC_API_KEY and OPENAI_API_KEY")
+            p.add_argument(
+                "--env-file",
+                required=True,
+                help="dotenv file(s), comma-separated, a later one winning a name: ANTHROPIC_API_KEY, OPENAI_API_KEY, MISTRAL_API_KEY",
+            )
             p.add_argument("--scenarios", nargs="*", help=f"scenario files or directories (default {SCENARIO_DIR})")
             p.add_argument("--no-judge", action="store_true")
             p.add_argument("--force", action="store_true", help="run or judge again what is already stored")
