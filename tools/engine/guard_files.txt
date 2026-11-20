@@ -1,0 +1,29 @@
+# Every device file that included an old-engine header at RB-SEAM2's base (rb-main 25071b78f), as
+# listed by tools/engine/list_engine1_includes.py, with the decision taken for it:
+#   guard         the include and its uses sit inside
+#                     #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
+#                 (an engine-1 build preprocesses to the same code; engine 2 compiles without them)
+#   engine1_only  the whole file is engine 1; RB-I0 copies it to tools/engine/engine1_only.txt
+#   neutral       reaches what it needed through src/agent/engine_api.h instead
+# One path per line, then '#' and the decision word, a colon and the reason.
+# `list_engine1_includes.py --check` fails on an includer not covered here.
+
+src/agent/orchestrator_e1.cpp      # engine1_only: the old engine's device seam (RB-SEAM1b)
+src/agent/tools_e1.cpp             # engine1_only: the engine-1 tool families' registration calls
+src/agent/dream_subsystem.cpp      # engine1_only: the dream turn (PRD section 10: deleted with engine 1)
+src/agent/dream_subsystem.h        # engine1_only: declares only dream_subsystem.cpp
+src/agent/skills.cpp               # engine1_only: the old skill store's device glue (built-in skills, attach)
+src/agent/skills.h                 # engine1_only: declares only skills.cpp
+src/net/web_skills.cpp             # engine1_only: the Skills page routes over skills.cpp
+src/net/web_skills.h               # engine1_only: declares only web_skills.cpp
+
+src/main.cpp                       # guard: the nightly dream loop wiring and the DREAM console hook
+src/agent/health.cpp               # guard: the health row that reads the last dream night
+src/net/webui.cpp                  # guard: /api/state's dream object and the Skills page routes
+src/net/web_memory.cpp             # guard: the skill rows of the memory page's index
+src/agent/memory_subsystem.cpp     # guard: session.*, skill.* tools and loop.cancel's dream refusal
+src/agent/files_subsystem.cpp      # guard: files.read and files.edit on the engine-1 aids
+src/agent/telegram.cpp             # guard: histV2, the old engine's inbound history note
+src/test_console.cpp               # guard: AIDREAD, TOOLS? and HISTV2 (engine-1 test verbs)
+
+src/agent/budget_profile_store.cpp # neutral: utcOffsetAtUnix through engine_api.h utcOffsetAt
