@@ -22,9 +22,9 @@ int main() {
     const size_t half = orch::headContextBudget("anthropic", "claude-sonnet-5-5", true, {}).historyMaxBytes / 2;
     Rig rig({"anthropic", "claude-sonnet-5-5"}, half);
     const Result r = rig.run();
-    t.eqi(r.dispatched, kParts, "room: every part was read");
+    t.eqi(r.dispatched, partCount(), "room: every part was read");
     for (size_t b = 1; b < r.bodies.size(); b++)
-      t.eqi((long)partsIn(r.bodies[b]).size(), (long)std::min<size_t>(b, kParts),
+      t.eqi((long)partsIn(r.bodies[b]).size(), (long)std::min<size_t>(b, partCount()),
             "room: request " + std::to_string(b) + " carries every part read so far");
   }
   {
@@ -33,10 +33,10 @@ int main() {
         orch::headContextBudget("cumulo", "anthropic/claude-sonnet-5-5", true, {}).historyMaxBytes / 2;
     Rig rig({"cumulo", "anthropic/claude-sonnet-5-5"}, half);
     const Result r = rig.run();
-    t.eqi(r.dispatched, kParts, "floor: every part was read");
+    t.eqi(r.dispatched, partCount(), "floor: every part was read");
     const std::string& last = r.bodies.back();
     t.ok(last.size() <= orch::kLegacyWireBodyBytes, "floor: the answer's request fits 85,000 B");
-    t.ok((int)partsIn(last).size() < kParts, "floor: older parts fold");
+    t.ok((int)partsIn(last).size() < partCount(), "floor: older parts fold");
     t.ok(last.find("results.get") != std::string::npos, "floor: a folded result is named with results.get");
     orch::setRoutedBudgetLiftForTest(-1);
   }
