@@ -1773,6 +1773,22 @@
         "test/test_harness_wire_anthropic/**"
       ],
       "plan_text": "lib/core/src/orch_head_loop.cpp (the prose rule per wire), lib/harness/src/providers/mistral.cpp and the other providers' discard and re-ask paths, lib/harness/src/engine.cpp (the call site RB-Q4 added), their tests, the wire-pinning tests RB-Q4 added"
+    },
+    "RB-C3": {
+      "stage": "S2",
+      "files": [
+        "lib/harness/src/plain_compact.cpp",
+        "lib/harness/include/nimbus/harness/plain/compact.h",
+        "lib/core/src/orch_tx_budget.cpp",
+        "lib/core/include/nimbus/orch/tx/budget.h",
+        "lib/harness/include/nimbus/harness/plain/texts.h",
+        "lib/core/src/orch_tx_digest.cpp",
+        "test/test_plain_compact/**",
+        "test/test_tx_budget/**",
+        "test/test_tx_digest/**",
+        "docs/reference/transcript-budgets.md"
+      ],
+      "plan_text": "lib/harness/src/plain_compact.cpp and its header (what a compaction keeps, the cumulative summary, the ahead-of-time summary), lib/core/src/orch_tx_budget.cpp and include/nimbus/orch/tx/budget.h (the recent part and the summary budget as settings), lib/harness/include/nimbus/harness/plain/texts.h (the summarizer text), lib/core/src/orch_tx_digest.cpp, their tests, docs/reference/transcript-budgets.md (generated)"
     }
   }
 }
