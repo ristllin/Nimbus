@@ -378,6 +378,24 @@ the old one:
 
 `test/test_engine_api_seam` pins the split.
 
+Every other device file that used an old-engine header is fenced off from an engine-2 build
+(lane RB-SEAM2, no behavior change: no build defines `NIMBUS_ENGINE` yet, so every build is
+engine 1):
+
+- `tools/engine/list_engine1_includes.py` lists each device file that includes an
+  old-engine header (the old turn engine, its prompt machinery, the built-in skills, the
+  dream turn and the engine-1-only tool headers), directly or through another header.
+- `tools/engine/guard_files.txt` records the decision per file: `guard` (the include and
+  its uses sit inside `#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1`), `engine1_only`
+  (the whole file is engine 1, such as the seam, the dream subsystem and the old skill
+  store's glue), or `neutral` (it reaches what it needed through `engine_api.h`).
+  `--check` fails on any includer the file does not cover;
+  `tools/release_gate/test_list_engine1_includes.py` runs it on the tree.
+- `src/agent/engine_tools.h` declares the tool families an engine registers on the shared
+  registry; `src/agent/tools_e1.cpp` defines them for the old engine (memory, prefs.edit,
+  openq.edit, models.list). Registrations whose descriptions live in a subsystem file stay
+  there, behind the guard.
+
 ## The contract set
 
 | Contract | Header | Device impl | Test fake |
