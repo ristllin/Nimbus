@@ -151,6 +151,7 @@ HeadBudget budgetFromRow(const RequestBudget& r, const HeadKey& head, Profile re
   ProfileMarks chosen;
   if (profileMarks(b.profile, chosen).ok())   // an owner's smaller profile lowers the marks only
     b.marks = {std::min(chosen.high, full.high), std::min(chosen.low, full.low)};
+  b.bulkWholeCap = std::max(std::min(kBulkWholeMax, b.bodyCap / 8), (uint32_t)c.toolResultBytes);
   b.messageCap = std::max(kInlineMessageCap, (uint32_t)c.historyMessageCap);
   return b;
 }
@@ -171,7 +172,9 @@ Status budgetFor(const HeadKey& head, Profile requested, HeadBudget& out) {
 
 uint32_t arenaBytesFor(const HeadBudget& b) {
   const uint64_t growth = bodyBytesFor(b, kNextRequestReserveTokens + 1000) - bodyBytesFor(b, 1000);
-  const uint64_t need = ((uint64_t)b.marks.high + growth) * kArenaMilliBytesPerResidentByte / 1000 + kTurnOpenArenaReserve;
+  const uint64_t marks = ((uint64_t)b.marks.high + growth) * kArenaMilliBytesPerResidentByte / 1000;
+  const uint64_t text = (uint64_t)b.releasedKeep * kArenaMilliBytesPerTextByte / 1000;
+  const uint64_t need = std::max(marks, text) + kTurnOpenArenaReserve;
   return (uint32_t)((need + kArenaStep - 1) / kArenaStep * kArenaStep);
 }
 

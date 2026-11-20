@@ -290,18 +290,25 @@ inline std::string latencySection() {
 }
 
 // The resident of the largest head after a restart, read from the card (RB-M2's 130 KB sequential read).
-inline std::string restartSection(size_t arenaNeed) {
+inline std::string restartSection(size_t arenaNeed, const std::string& mixRows) {
   const JsonDocument& m = measured();
   const double ms = arenaNeed * (m["link"]["card_read_ms_per_130kb"] | 0.0) / (130.0 * 1024);
   return fmt(
       "## Arena and restart fill at full\n\n"
-      "The arena of the active chat is %s B (tx/arena.h). The largest head at full (gpt-5.6-luna: due mark "
-      "H plus one request's growth) takes up to %s B of it, by turn mix, in test_tx_budget. Read back after "
-      "a restart at RB-M2's measured card rate (%.1f ms per 130 KB in 8 KB slices) that is about %.0f ms of "
-      "card time, inside the 3 s gate: the fill stays one sequential read. With no card, v5.1.2 kept its "
-      "normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.\n\n",
-      num(tx::kActiveChatArenaBytes).c_str(), num(arenaNeed).c_str(), (double)(m["link"]["card_read_ms_per_130kb"] | 0.0),
-      ms);
+      "The arena of a chat is sized by its head (`tx::arenaBytesFor`), at most %s B (tx/arena.h, gpt-5.6-luna). "
+      "Measured on real engine turns in test_tx_budget, for gpt-5.6-luna at full: the arena it takes with its "
+      "due mark H plus one request's growth resident, and the owner and assistant text the largest arena alone "
+      "keeps against the head's v5.1.2 keep (111,072 B). Where text is under %u%% of what renders, the arena, "
+      "not the marks, bounds the text kept: compaction then folds with a summary and a log line (RB-H81's "
+      "arena-room trigger), never a silent drop.\n\n"
+      "| Turn mix | Text share | Arena per rendered byte | Arena per text byte | Arena at H plus growth (B) "
+      "| Text the largest arena alone keeps (B) | Held to the v5.1.2 keep |\n|---|---|---|---|---|---|---|\n%s\n"
+      "Read back after a restart at RB-M2's measured card rate (%.1f ms per 130 KB in 8 KB slices), the largest "
+      "need (%s B) is about %.0f ms of card time, inside the 3 s gate: the fill stays one sequential read. With "
+      "no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the "
+      "same arena.\n\n",
+      num(tx::kActiveChatArenaBytes).c_str(), tx::kArenaTextShareFloorPercent, mixRows.c_str(),
+      (double)(m["link"]["card_read_ms_per_130kb"] | 0.0), num(arenaNeed).c_str(), ms);
 }
 
 inline std::string profilesSection() {
@@ -379,8 +386,8 @@ inline std::string intro() {
       num(tx::kFullDigestAndFilesBytes).c_str());
 }
 
-inline std::string render(size_t arenaNeed) {
-  return intro() + headsSection() + costSection() + latencySection() + restartSection(arenaNeed) + profilesSection() +
+inline std::string render(size_t arenaNeed, const std::string& mixRows) {
+  return intro() + headsSection() + costSection() + latencySection() + restartSection(arenaNeed, mixRows) + profilesSection() +
          everyHeadSection();
 }
 

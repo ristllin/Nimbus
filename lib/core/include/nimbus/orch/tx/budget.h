@@ -76,13 +76,20 @@ inline constexpr uint32_t kFullDigestAndFilesBytes = kFullDigestBlockBytes + 600
 // Tier 1 text kept inline (item.h kTier1OwnerText / kTier1AssistantText).
 inline constexpr uint32_t kInlineMessageCap = 12288;
 
-// The arena a chat needs at a head's budget (ruling 91, T4-ADV-02). Measured in test_tx_budget on real
-// engine turns: every stored item (t, u, calls, intents, results, a, d and a fully populated e) takes
-// arena, only u, a, c, r and device notes count as resident; arena used = rate x resident, at most
-// 2.6272 B a resident byte (a chat of very short turns), 2.4288 with effect calls, 1.6560 with terse tool
-// rounds, 1.4092 for plain chat. The figure here is the worst mix plus 5%, so the full-arena drop cannot
-// fire while the resident is under the due mark H plus one request's growth.
-inline constexpr uint32_t kArenaMilliBytesPerResidentByte = 2760;
+// The arena a chat needs at a head's budget (ruling 91, T4-ADV-02; ruling 98 item 2). Measured in
+// test_tx_budget on real engine turns, after RB-H81: every stored item (t, u, calls, intents, results,
+// a, d and a fully populated e) takes arena; the marks count what a request renders. Two needs:
+// - no full-arena drop under the due mark H plus one request's growth, whatever the mix: arena used per
+//   rendered resident byte is at most 3.6726 (effect calls), 2.8000 (very short turns), 2.7735 (terse
+//   tool rounds), 1.4345 (plain chat), 1.4140 (tool heavy); the worst plus 5% here;
+// - the arena alone never holds less owner and assistant text than the head's v5.1.2 keep in a mix whose
+//   text is at least kArenaTextShareFloorPercent of what renders: the tool-heavy mix (a 2 KB result a
+//   turn, text 9.6%) takes 14.65 B of arena per text byte; plus 5% here. Under that share (terse tool
+//   rounds 1.3%, effect calls 3.2%) the arena, not the marks, bounds the text kept, and compaction then
+//   folds with a summary and a log line (RB-H81's arena-room trigger), never a silent drop.
+inline constexpr uint32_t kArenaMilliBytesPerResidentByte = 3860;
+inline constexpr uint32_t kArenaMilliBytesPerTextByte = 15390;
+inline constexpr uint32_t kArenaTextShareFloorPercent = 9;
 inline constexpr uint32_t kTurnOpenArenaReserve = 32 * 1024;   // plain_engine.cpp kTurnArenaReserve
 inline constexpr uint32_t kArenaStep = 64 * 1024;
 
@@ -115,6 +122,7 @@ struct HeadBudget {
   TokenMarks tokens;             // at full; an owner's smaller profile lowers `marks`, not the aim
   AimBound bound = AimBound::Clamp;
   bool floorHead = false;        // the class: routed with the lift off, custom, a v5.1.2 floor row
+  uint32_t bulkWholeCap = 0;     // a long call argument whole in its open turn (the engine reads it: RB-H81)
   uint32_t messageCap = 0;       // owner and assistant text kept inline, bytes (RB-H81 wires it: ruling 91 item 1)
   uint32_t releasedFold = 0;     // v5.1.2's fold mark for this head (owner and assistant text)
   uint32_t releasedKeep = 0;     // v5.1.2's keep: a compaction leaves at least this much text
@@ -137,10 +145,10 @@ HeadBudget budgetFromRow(const RequestBudget& row, const HeadKey& head, Profile 
 
 // Body bytes of a request of `tokens` on the head's wire (the ratio budgetFor used).
 uint32_t bodyBytesFor(const HeadBudget& b, uint32_t tokens);
-// The arena a chat of this head needs so the full-arena drop never fires under its due mark: the due
-// mark H plus one request's growth, at the measured worst arena rate, plus the turn-open reserve,
-// rounded up to kArenaStep. A binding sizes a chat's arena with it (or with kActiveChatArenaBytes,
-// which holds every default head).
+// The arena a chat of this head needs: the larger of the due mark H plus one request's growth at the
+// worst measured arena rate, and the head's v5.1.2 text keep at the measured arena per text byte, plus
+// the turn-open reserve, rounded up to kArenaStep. A binding sizes a chat's arena with it (or with
+// kActiveChatArenaBytes, which holds every default head).
 uint32_t arenaBytesFor(const HeadBudget& b);
 
 }  // namespace tx

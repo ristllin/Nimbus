@@ -8,7 +8,7 @@
 
 // tx/arena.h - TxArena, the RAM side of one chat's transcript (PRD section 2): one flat
 // PSRAM block of encoded items, each behind a 32-byte header, with no std::string per
-// item. 960 KB for the active chat; the device keeps 3 chats resident, least recently
+// item. 1,728 KB for the active chat at most (tx::arenaBytesFor sizes it by head); chats are kept resident, least recently
 // used first out (TxArenaPool). The arena gets its memory through the allocator it is
 // given, so the same code runs on the host with malloc and on the device with heap_caps
 // PSRAM (Platform::allocLarge).
@@ -30,11 +30,13 @@ namespace tx {
 
 inline constexpr size_t kArenaHeaderBytes = 32;
 inline constexpr size_t kArenaSlotBytes = 4;
-// Sized to the default profile, full, for every default head (ruling 91, T4-ADV-02; lane RB-T4b): the
-// largest, gpt-5.6-luna, needs tx::arenaBytesFor = 983,040 B so the full-arena drop never fires under its
-// due mark (measured with the engine's real items, test_tx_budget). Three resident chats: 2,880 KB of
-// PSRAM; a binding may size each chat by its head (tx::arenaBytesFor: 786,432 B on claude-sonnet-5-5).
-inline constexpr size_t kActiveChatArenaBytes = 960 * 1024;
+// Sized to the default profile, full, for every default head (ruling 91, T4-ADV-02; ruling 98 item 2;
+// lane RB-T4b): the largest, gpt-5.6-luna, needs tx::arenaBytesFor = 1,769,472 B, so neither the
+// full-arena drop fires under its due mark nor does the arena alone keep less than its v5.1.2 text keep
+// in a mix of at least 9% text (measured with the engine's real items, test_tx_budget). A binding sizes
+// each chat by its head (tx::arenaBytesFor: 1,114,112 B on claude-sonnet-5-5) and keeps as many resident
+// as PSRAM holds (ruling 89 item 2: fewer chats, never a smaller window).
+inline constexpr size_t kActiveChatArenaBytes = 1728 * 1024;
 inline constexpr size_t kResidentChats = 3;
 inline constexpr size_t kArenaMinBytes = 64;
 

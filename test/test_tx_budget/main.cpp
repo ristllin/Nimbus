@@ -108,7 +108,8 @@ std::string shortOf(const tx::HeadBudget& b, const V512& v) {
                   {"due mark", b.marks.high, foldMark(v)},
                   {"keep", b.marks.low, v.keep},
                   {"digest block", tx::blockCapFor(b.profile), v.summary},
-                  {"message cap", b.messageCap, v.messageCap}};
+                  {"message cap", b.messageCap, v.messageCap},
+                  {"bulk whole", b.bulkWholeCap, v.toolResult}};
   for (const F& f : fs)
     if (f.have < f.was) return std::string(f.name) + " " + std::to_string(f.have) + " < " + std::to_string(f.was);
   return "";
@@ -161,9 +162,9 @@ void test_the_row_checker_catches_one_byte_short_in_every_field() {
   v.body = 250000, v.summary = 6144, v.messageCap = 12288, v.histMax = 118080, v.soft = 94464, v.keep = 59040,
   v.trigger = 94464, v.toolResult = 8192;
   tx::HeadBudget b;
-  b.bodyCap = 250000, b.marks = {94464, 59040}, b.messageCap = 12288;
+  b.bodyCap = 250000, b.marks = {94464, 59040}, b.messageCap = 12288, b.bulkWholeCap = 8192;
   TEST_ASSERT_EQUAL_STRING("", shortOf(b, v).c_str());
-  uint32_t* fields[] = {&b.bodyCap, &b.marks.high, &b.marks.low, &b.messageCap};
+  uint32_t* fields[] = {&b.bodyCap, &b.marks.high, &b.marks.low, &b.messageCap, &b.bulkWholeCap};
   for (uint32_t* f : fields) {
     *f -= 1;
     TEST_ASSERT_FALSE(shortOf(b, v).empty());
@@ -449,6 +450,12 @@ const std::vector<Mix>& mixes() {
                                 {sp::call("read_file", R"({"path":"notes/a.md"})"), sp::call("read_file", R"({"path":"notes/b.md"})"),
                                  sp::call("read_file", R"({"path":"notes/c.md"})"), sp::say("ok, done")}};
        }},
+      {"tool heavy",   // text about 9% of what it stores: a real reply and question around a 2 KB read
+       [](int i) {
+         return txb::TurnScript{60,
+                                "check " + std::to_string(i) + std::string(80, 'o'),
+                                {sp::call("read_file", R"({"path":"notes/big.md"})"), sp::say(std::string(160, 'r'))}};
+       }},
       {"effects",
        [](int i) {
          return txb::TurnScript{60,
@@ -462,12 +469,27 @@ const std::vector<Mix>& mixes() {
 
 void seedWorld(txb::Battery& b) {
   for (const char* f : {"notes/a.md", "notes/b.md", "notes/c.md"}) b.world.files[f] = std::string(50, 'f');
+  b.world.files["notes/big.md"] = std::string(tx::kTier1Receipt - 64, 'g');   // a receipt just under tier 2
+}
+
+// Owner and assistant text the arena holds (v5.1.2's unit).
+size_t textIn(const tx::TxArena& a) {
+  size_t n = 0;
+  for (size_t i = 0; i < a.count(); ++i) {
+    tx::ArenaEntry e;
+    tx::Item it;
+    if (!a.header(i, e).ok() || (e.kind != tx::ItemKind::User && e.kind != tx::ItemKind::Assistant)) continue;
+    if (a.get(i, it).ok()) n += it.x.size();
+  }
+  return n;
 }
 
 // Arena bytes per resident byte of a mix, measured on real engine turns: (base, rate) with
 // used = base + rate x resident, over turns 10 to 70 of a chat in a large arena.
 struct ArenaRate {
   double base = 0, rate = 0;
+  double perText = 0;     // arena bytes per byte of owner and assistant text
+  double textShare = 0;   // owner and assistant text over resident bytes
   double need(size_t resident) const { return base + rate * resident; }
 };
 ArenaRate measureOnce(const Mix& m) {
@@ -475,16 +497,18 @@ ArenaRate measureOnce(const Mix& m) {
   seedWorld(b);
   TXB_OK(b.boot());
   TXB_OK(b.arena->init(tx::kActiveChatArenaBytes * 2, b.platform.allocLarge, b.platform.freeLarge));
-  size_t u0 = 0, r0 = 0;
+  size_t u0 = 0, r0 = 0, t0 = 0;
   for (int i = 0; i < 70; ++i) {
     TXB_OK(txb::runTurns(b, {m.turn(i)}));
-    if (i == 9) u0 = b.arena->usedBytes(), r0 = agent::plain::residentBytes(*b.arena, 0);
+    if (i == 9) u0 = b.arena->usedBytes(), r0 = agent::plain::residentBytes(*b.arena, 0), t0 = textIn(*b.arena);
   }
-  const size_t u1 = b.arena->usedBytes(), r1 = agent::plain::residentBytes(*b.arena, 0);
+  const size_t u1 = b.arena->usedBytes(), r1 = agent::plain::residentBytes(*b.arena, 0), t1 = textIn(*b.arena);
   TEST_ASSERT_EQUAL_MESSAGE(0, (int)b.engine->omittedThru(), m.name);
   ArenaRate a;
   a.rate = double(u1 - u0) / double(r1 - r0);
   a.base = double(u1) - a.rate * double(r1);
+  a.perText = double(u1 - u0) / double(t1 - t0);
+  a.textShare = double(t1 - t0) / double(r1 - r0);
   return a;
 }
 
@@ -536,9 +560,9 @@ size_t arenaNeedAtFull(bool print) {
   for (const Mix& m : mixes()) {
     const ArenaRate a = measure(m);
     const size_t n = (size_t)std::ceil(a.need(resident)) + kTurnOpenReserve;
-    char line[240];
-    std::snprintf(line, sizeof line, "%s at full (%zu B resident at H plus growth), %s turns: %zu B of arena with the %zu B reserve (rate %.4f)",
-                  who.c_str(), resident, m.name, n, kTurnOpenReserve, a.rate);
+    char line[320];
+    std::snprintf(line, sizeof line, "%s at full (%zu B resident at H plus growth), %s turns: %zu B of arena with the %zu B reserve (rate %.4f, text share %.3f, arena per text byte %.2f)",
+                  who.c_str(), resident, m.name, n, kTurnOpenReserve, a.rate, a.textShare, a.perText);
     if (print) TEST_MESSAGE(line);
     need = std::max(need, n);
   }
@@ -550,21 +574,34 @@ size_t arenaNeedAtFull(bool print) {
 // built-in arena holds every device row's figure.
 void test_the_arena_holds_the_largest_head_at_full_with_a_turn_of_growth() {
   TEST_ASSERT_EQUAL_UINT32(kTurnOpenReserve, tx::kTurnOpenArenaReserve);
-  for (const Mix& m : mixes())
-    TEST_ASSERT_TRUE_MESSAGE(measure(m).rate * 1000 <= tx::kArenaMilliBytesPerResidentByte, m.name);
   const size_t need = arenaNeedAtFull(true);
+  size_t keepNeed = 0;
+  uint32_t largestKeep = 0;
+  for (const V512& v : v512())
+    if (v.link == "device") largestKeep = std::max(largestKeep, full(v).releasedKeep);
+  for (const Mix& m : mixes()) {
+    const ArenaRate a = measure(m);
+    TEST_ASSERT_TRUE_MESSAGE(a.rate * 1000 <= tx::kArenaMilliBytesPerResidentByte, m.name);
+    // The v5.1.2 text keep by the arena alone, in every mix of at least the floor's share of text
+    // (ruling 98 item 2); under it the arena bounds the text, with a summary and a log line (RB-H81).
+    if (a.textShare * 100 < tx::kArenaTextShareFloorPercent) continue;
+    TEST_ASSERT_TRUE_MESSAGE(a.perText * 1000 <= tx::kArenaMilliBytesPerTextByte, m.name);
+    keepNeed = std::max(keepNeed, (size_t)std::ceil(a.perText * largestKeep) + kTurnOpenReserve);
+  }
+  TEST_ASSERT_TRUE(keepNeed > 0);   // at least one mix is held to the keep
   uint32_t most = 0;
   for (const V512& v : v512())
     if (v.link == "device") most = std::max(most, tx::arenaBytesFor(full(v)));
   TEST_ASSERT_TRUE_MESSAGE(need <= most, ("arenaBytesFor is under the measured need " + std::to_string(need)).c_str());
+  TEST_ASSERT_TRUE_MESSAGE(keepNeed <= most, ("arenaBytesFor is under the v5.1.2 keep's need " + std::to_string(keepNeed)).c_str());
   TEST_ASSERT_TRUE_MESSAGE(most <= tx::kActiveChatArenaBytes,
                            ("the arena does not hold the largest head at full: needs " + std::to_string(most)).c_str());
 }
 
 // ---- 5d. no dead field (ruling 91, T4-ADV-06) -------------------------------------------------
-// A HeadBudget field is one the engine reads or none at all: digest block, warm bulk and bulk-whole
-// caps are the engine's own (blockCapFor, kWarmBulkBytes/kWarmBulkBytesFloor by floorHead,
-// kBulkWholeMax), tested against every released row above. messageCap stays: RB-H81 reads it.
+// A HeadBudget field is one the engine reads or none at all: the digest block and the warm bulk are
+// the engine's own (blockCapFor, kWarmBulkBytes/kWarmBulkBytesFloor by floorHead), tested against
+// every released row above. messageCap and bulkWholeCap stay: the engine reads both (RB-H81).
 template <typename T, typename = void>
 struct HasDigestBlock : std::false_type {};
 template <typename T>
@@ -585,7 +622,7 @@ void test_no_head_budget_field_is_dead() {
   TEST_ASSERT_TRUE(HasDigestBlock<AllThree>::value && HasWarmBulk<AllThree>::value && HasBulkWholeCap<AllThree>::value);
   TEST_ASSERT_FALSE(HasDigestBlock<tx::HeadBudget>::value);
   TEST_ASSERT_FALSE(HasWarmBulk<tx::HeadBudget>::value);
-  TEST_ASSERT_FALSE(HasBulkWholeCap<tx::HeadBudget>::value);
+  TEST_ASSERT_TRUE(HasBulkWholeCap<tx::HeadBudget>::value);   // read by the engine (tierArgs)
 }
 
 // ---- 5c. no comment says qualification sizes the window (ruling 91, blockers/F12) -------------
@@ -678,7 +715,16 @@ void test_every_block_is_in_the_sum() {
 }
 
 void test_the_generated_table_is_this_codes_output() {
-  const std::string want = budgettable::render(arenaNeedAtFull(false));
+  std::string mixRows;
+  const size_t resident = largestResident(nullptr);
+  for (const Mix& m : mixes()) {
+    const ArenaRate a = measure(m);
+    const double kept = (tx::kActiveChatArenaBytes - kTurnOpenReserve) / a.perText;
+    mixRows += budgettable::fmt("| %s | %.1f%% | %.2f | %.2f | %s | %s | %s |\n", m.name, a.textShare * 100, a.rate, a.perText,
+                                budgettable::num(std::ceil(a.need(resident)) + kTurnOpenReserve).c_str(),
+                                budgettable::num(kept).c_str(), kept >= 111072 ? "yes" : "no: summary and log line");
+  }
+  const std::string want = budgettable::render(arenaNeedAtFull(false), mixRows);
   const char* path = "docs/reference/transcript-budgets.md";
   if (std::getenv("GOLDEN_UPDATE")) {
     std::ofstream(path) << want;

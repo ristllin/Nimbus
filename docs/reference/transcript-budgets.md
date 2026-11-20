@@ -63,7 +63,17 @@ A request at the due mark on the head's wire, through the production link (conne
 
 ## Arena and restart fill at full
 
-The arena of the active chat is 983,040 B (tx/arena.h). The largest head at full (gpt-5.6-luna: due mark H plus one request's growth) takes up to 911,224 B of it, by turn mix, in test_tx_budget. Read back after a restart at RB-M2's measured card rate (82.5 ms per 130 KB in 8 KB slices) that is about 565 ms of card time, inside the 3 s gate: the fill stays one sequential read. With no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.
+The arena of a chat is sized by its head (`tx::arenaBytesFor`), at most 1,769,472 B (tx/arena.h, gpt-5.6-luna). Measured on real engine turns in test_tx_budget, for gpt-5.6-luna at full: the arena it takes with its due mark H plus one request's growth resident, and the owner and assistant text the largest arena alone keeps against the head's v5.1.2 keep (111,072 B). Where text is under 9% of what renders, the arena, not the marks, bounds the text kept: compaction then folds with a summary and a log line (RB-H81's arena-room trigger), never a silent drop.
+
+| Turn mix | Text share | Arena per rendered byte | Arena per text byte | Arena at H plus growth (B) | Text the largest arena alone keeps (B) | Held to the v5.1.2 keep |
+|---|---|---|---|---|---|---|
+| chat | 88.8% | 1.43 | 1.62 | 512,299 | 1,075,187 | yes |
+| short | 53.9% | 2.80 | 5.19 | 968,932 | 334,560 | yes |
+| terse tools | 1.3% | 2.77 | 218.10 | 959,584 | 7,963 | no: summary and log line |
+| tool heavy | 9.6% | 1.41 | 14.65 | 505,375 | 118,520 | yes |
+| effects | 3.2% | 3.67 | 116.30 | 1,260,803 | 14,933 | no: summary and log line |
+
+Read back after a restart at RB-M2's measured card rate (82.5 ms per 130 KB in 8 KB slices), the largest need (1,260,803 B) is about 781 ms of card time, inside the 3 s gate: the fill stays one sequential read. With no card, v5.1.2 kept its normal marks over a RAM ring (a01ef7fb); engine 2 keeps the same marks in the same arena.
 
 ## The owner's smaller profiles
 
