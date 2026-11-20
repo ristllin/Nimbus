@@ -779,6 +779,38 @@ answer is that resume's own: at most one resume and one boot send per turn, then
   card-only gap note keeps its q), and the engine counts a turn the boot closed as the last
   closed turn at its next open (the cold open moves the stub pointer to it).
 
+### Routines on engine 2: isolated runs and held delivery
+
+`plain_unattended.cpp` (`plain/unattended.h`, lane RB-U1a) runs a routine fire on its own engine and
+its own transcript, `routine-<id>` (a chat key holds `[a-z0-9_-]` only, so not `routine:<id>`).
+
+- **Zero bytes of the owner's chat.** The fire's engine has its own log and arena, no recent-files
+  list, no digests and no recall. Its request is the system core, the person's notes, its last
+  outputs (its state, at most three in 2 KB: `nextRoutineState`, the file the schedule lane binds)
+  and its instruction under the fire's message stamp. Each fire starts from that state alone:
+  before boot its log's `thru` moves to its last item, so earlier fires stay on the card and out
+  of the request.
+- **Only its own tools.** The names its definition lists (default `web_search`, `read_file`,
+  `send`) cut by RB-Q2a's policy row for a routine (`unattendedMayList`): `send` is never offered
+  (its reply is what reaches the owner), `web_search` only with the owner's `/loop grants on`, a
+  write tool only when the definition lists paths. The request's registry is the device's with
+  every other tool removed; every call is checked again with its arguments in `HookSlot::Policy`
+  (`unattendedRefusal`): a write reaches only a listed path, a call to any other name is refused
+  and never runs, and nothing schedules after outside content.
+- **Its own limits** (`TurnSetup::ceiling`, `routineCeiling`): 6 rounds, 90 s soft, 180 s hard,
+  0.05 USD a fire (ruling 84 item 9). A fire that reaches one ends honestly: one last round with
+  no tools, and what reaches the owner carries "This turn stopped at its <limit> limit" after the
+  routine's text (alone when the text is empty), never silence.
+- **Held delivery.** The fire's reply is stored first in the outbox (`HeldStore`, the binding's
+  file), then sent to the owner's chat and appended **whole** to his transcript as one device note,
+  `[routine <name> 2026-11-17 Tue 06:00] <text>` (`appendOwnerNote`; owner ruling 81: isolation
+  bounds what the routine sees, never what the owner's later requests carry). In quiet hours
+  (22:00 to the owner's end, default 09:00) the note is held with an expiry (12 h, or the
+  routine's own) and sent as stored by the owner engine's idle step (`HookSlot::Routines`) when
+  they end; it is dropped unsent when it expired or the same text was already delivered, and a
+  note marked sent before a cut is only appended, never sent again. No second model turn.
+  An empty reply with no limit reached is silence.
+
 ### The Anthropic wire: what a request carries
 
 `providers/plain_wire_anthropic.cpp` renders one Messages API request from the stored
