@@ -94,6 +94,7 @@ const Probe kProbes[] = {
     {"tenant_set_role", R"({"chat":"2002","role":"admin"})", R, -1},
     {"mcp_mail_send", R"({"to":"x@example.test","body":"files"})", R, -1},   // a connector
     {"big_read", R"({"tag":"x"})", R, 1},                               // no use row and an effect: fail closed
+    {"note", "", P, -1},                                                // no arguments: {}
     {"read_file", R"({"path":)", R, -1},                                 // not JSON
     {"read_file", R"(["notes/a.md"])", R, -1},                           // not an object
 };
@@ -237,6 +238,8 @@ void test_a_read_of_inbox_or_agents_is_outside() {
   TEST_ASSERT_FALSE(plain::readsOutsidePath("calc", R"({"expr":"1+1"})"));
   TEST_ASSERT_TRUE(plain::readsOutsidePath("read_file", "not json"));   // what it cannot read is outside
   TEST_ASSERT_FALSE(plain::readsOutsidePath("read_file", ""));          // no arguments at all
+  TEST_ASSERT_TRUE(plain::readsOutsidePath("read_file", "[]"));
+  TEST_ASSERT_TRUE(plain::readsOutsidePath("read_file", "null"));
   std::string deep = R"({"path":"inbox/9001-x.txt","pad":)";
   for (int i = 0; i < 70; ++i) deep += "[";
   for (int i = 0; i < 70; ++i) deep += "]";

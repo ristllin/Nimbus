@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 
 #include <cstring>
+#include <initializer_list>
 #include <string>
 
 #include "nimbus/harness/plain/texts.h"
@@ -18,28 +19,28 @@ namespace {
 
 namespace orch = nimbus::orch;
 namespace tx = nimbus::orch::tx;
-using U = orch::ToolUse;
-using V = RailVerdict;
-using G = RailArgs;
+using Use = orch::ToolUse;
+using Verdict = RailVerdict;
+using Args = RailArgs;
 
 // THE table: what a turn that read outside content may still do. The class of a call is
 // RB-Q2a's toolUseFor (one classification for both rails); the first row that matches decides;
-// a call no row matches is refused. Rows naming a tool come before the rows of their class.
+// a call no row matches is refused. A row naming a tool comes before its class's catch-all row.
 const RailRow kTaintExemptions[] = {
-    {U::Read, orch::kMoreTool, G::Listing, V::Allow},    // a listing of a group's tools
-    {U::Read, orch::kMoreTool, G::Any, V::Refuse},       // a `more` call whose target is not known
-    {U::Read, nullptr, G::Any, V::Allow},                // reads change nothing
-    {U::Write, nullptr, G::Any, V::Allow},               // the owner's files; every write says what changed
-    {U::Spend, "agent_start", G::Any, V::Pending},       // a task written after outside text, run with the owner's connectors
-    {U::Spend, nullptr, G::Any, V::Allow},               // web search, an image
-    {U::Ambient, nullptr, G::Any, V::Allow},             // the light and speech on the device
-    {U::Send, nullptr, G::ThisChat, V::Allow},           // to this chat only
-    {U::Schedule, "schedule", G::ScheduleList, V::Allow},
-    {U::Schedule, "schedule", G::FixedReminder, V::Allow},     // 'look it up and remind me at 7'
-    {U::Schedule, "schedule", G::ScheduleChange, V::Pending},  // a routine create or update
-    {U::Memory, nullptr, G::Any, V::Pending},            // note
-    {U::Scratch, nullptr, G::Any, V::Pending},
-    {U::Control, "skill_save", G::Any, V::Pending},
+    {Use::Read, orch::kMoreTool, Args::Listing, Verdict::Allow},    // a listing of a group's tools
+    {Use::Read, orch::kMoreTool, Args::Any, Verdict::Refuse},       // a `more` call whose target is not known
+    {Use::Read, nullptr, Args::Any, Verdict::Allow},                // reads change nothing
+    {Use::Write, nullptr, Args::Any, Verdict::Allow},               // the owner's files; every write says what changed
+    {Use::Spend, "agent_start", Args::Any, Verdict::Pending},       // a task written after outside text, run with the owner's connectors
+    {Use::Spend, nullptr, Args::Any, Verdict::Allow},               // web search, an image
+    {Use::Ambient, nullptr, Args::Any, Verdict::Allow},             // the light and speech on the device
+    {Use::Send, nullptr, Args::ThisChat, Verdict::Allow},           // to this chat only
+    {Use::Schedule, "schedule", Args::ScheduleList, Verdict::Allow},
+    {Use::Schedule, "schedule", Args::FixedReminder, Verdict::Allow},     // 'look it up and remind me at 7'
+    {Use::Schedule, "schedule", Args::ScheduleChange, Verdict::Pending},  // a routine create or update
+    {Use::Memory, nullptr, Args::Any, Verdict::Pending},            // note
+    {Use::Scratch, nullptr, Args::Any, Verdict::Pending},
+    {Use::Control, "skill_save", Args::Any, Verdict::Pending},
 };
 constexpr size_t kRowCount = sizeof(kTaintExemptions) / sizeof(kTaintExemptions[0]);
 
@@ -61,35 +62,31 @@ bool thisChat(ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
   return false;
 }
 
-std::string str(ArduinoJson::JsonObjectConst a, const char* key) {
+std::string field(ArduinoJson::JsonObjectConst a, const char* key) {
   const char* v = a[key] | "";
   return v;
 }
 
-// create or update (an absent op reads as create)
-bool changeOp(ArduinoJson::JsonObjectConst a) {
-  if (a["op"].isNull()) return true;
-  const std::string op = str(a, "op");
-  return op == "create" || op == "update";
-}
+// An absent op reads as create.
+bool isCreate(ArduinoJson::JsonObjectConst a) { return a["op"].isNull() || field(a, "op") == "create"; }
+bool changeOp(ArduinoJson::JsonObjectConst a) { return isCreate(a) || field(a, "op") == "update"; }
 
 // A new reminder only: an update names an id whose entry the rail cannot see (it may be a routine).
 bool fixedReminder(ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
-  const bool create = a["op"].isNull() || str(a, "op") == "create";
-  return create && str(a, "kind") == "reminder" && !str(a, "text").empty() && thisChat(a, turn) &&
+  return isCreate(a) && field(a, "kind") == "reminder" && !field(a, "text").empty() && thisChat(a, turn) &&
          onlyKeys(a, {"op", "kind", "when", "text", "chat_id"});
 }
 
 bool argsMatch(RailArgs rule, ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
   switch (rule) {
-    case G::Any: return true;
-    case G::Listing: return a["name"].isNull();
-    case G::ThisChat: return thisChat(a, turn) && onlyKeys(a, {"kind", "path", "ref", "text", "caption", "chat_id"});
-    case G::ScheduleList: return str(a, "op") == "list";
-    case G::FixedReminder: return fixedReminder(a, turn);
-    case G::ScheduleChange: return changeOp(a) && thisChat(a, turn);
+    case Args::Any: return true;
+    case Args::Listing: return a["name"].isNull();
+    case Args::ThisChat: return thisChat(a, turn) && onlyKeys(a, {"kind", "path", "ref", "text", "caption", "chat_id"});
+    case Args::ScheduleList: return field(a, "op") == "list";
+    case Args::FixedReminder: return fixedReminder(a, turn);
+    case Args::ScheduleChange: return changeOp(a) && thisChat(a, turn);
   }
-  return false;
+  return false;   // not a RailArgs value
 }
 
 // A name no static table knows (a tool the device declared at runtime with setClass): toolUseFor
@@ -98,7 +95,7 @@ bool unplaced(const std::string& name) {
   return !orch::actionRuleRow(name) && !orch::toolClassRow(name) && !orch::toolTaintRow(name);
 }
 
-bool rowMatches(const RailRow& r, U use, const ToolCall& call, ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
+bool rowMatches(const RailRow& r, Use use, const ToolCall& call, ArduinoJson::JsonObjectConst a, const TurnCtx& turn) {
   if (r.use != use || (r.tool && call.name != r.tool)) return false;
   return argsMatch(r.args, a, turn);
 }
@@ -113,15 +110,22 @@ bool outsideFolder(const std::string& path) {
   return rule.kind == orch::Reserved::Inbox || rule.kind == orch::Reserved::Agents;
 }
 
+// A call's arguments as the engine reads them (viewOf's nesting limit); "" is no arguments.
+bool parseArgs(const std::string& json, ArduinoJson::JsonDocument& doc) {
+  if (json.empty()) return !deserializeJson(doc, "{}");
+  return !deserializeJson(doc, json, ArduinoJson::DeserializationOption::NestingLimit(64)) &&
+         doc.is<ArduinoJson::JsonObjectConst>();
+}
+
 }  // namespace
 
 const char* railVerdictSlug(RailVerdict v) {
   switch (v) {
-    case V::Allow: return "allow";
-    case V::Pending: return "pending";
-    case V::Refuse: return "refuse";
+    case Verdict::Allow: return "allow";
+    case Verdict::Pending: return "pending";
+    case Verdict::Refuse: return "refuse";
   }
-  return "refuse";
+  return "refuse";   // not a RailVerdict value
 }
 
 const RailRow* taintExemptions(size_t& count) {
@@ -149,29 +153,26 @@ bool inputOutside(Trigger trigger, const std::vector<tx::Part>& parts) {
 }
 
 bool readsOutsidePath(const std::string& tool, const std::string& argsJson) {
-  if (argsJson.empty()) return false;   // no arguments (a call the loop answered itself)
-  ArduinoJson::JsonDocument doc;   // the engine's own nesting limit (viewOf); what it cannot read is outside
-  if (deserializeJson(doc, argsJson, ArduinoJson::DeserializationOption::NestingLimit(64)) ||
-      !doc.is<ArduinoJson::JsonObjectConst>())
-    return true;
+  ArduinoJson::JsonDocument doc;
+  if (!parseArgs(argsJson, doc)) return true;   // what the rail cannot read, the tool may: outside
   const ArduinoJson::JsonObjectConst a = doc.as<ArduinoJson::JsonObjectConst>();
-  return outsideFolder(orch::callPath(tool, a)) || outsideFolder(str(a, "prefix"));
+  return outsideFolder(orch::callPath(tool, a)) || outsideFolder(field(a, "prefix"));
 }
 
+// The engine also opens a report turn tainted (inputOutside); the trigger is read here too so a turn
+// context built elsewhere (a test, a binding) cannot leave it out.
 bool turnTainted(const TurnCtx& turn) { return turn.tainted || turn.trigger == Trigger::AgentResult; }
 
 Status railFor(const TurnCtx& turn, const ToolCall& call, bool declaredEffect, RailVerdict& out, size_t* row) {
-  out = V::Allow;
+  out = Verdict::Allow;
   if (row) *row = kRowCount;
   if (!turnTainted(turn)) return Status::success();
-  out = V::Refuse;   // fail closed from here on
+  out = Verdict::Refuse;   // fail closed from here on
   ArduinoJson::JsonDocument doc;
-  if (deserializeJson(doc, call.argsJson, ArduinoJson::DeserializationOption::NestingLimit(64)) ||
-      !doc.is<ArduinoJson::JsonObjectConst>())
-    return Status::success();
+  if (!parseArgs(call.argsJson, doc)) return Status::success();
   const ArduinoJson::JsonObjectConst a = doc.as<ArduinoJson::JsonObjectConst>();
-  U use = orch::toolUseFor(call.name, a);
-  if (use == U::Control && !declaredEffect && unplaced(call.name)) use = U::Read;
+  Use use = orch::toolUseFor(call.name, a);
+  if (use == Use::Control && !declaredEffect && unplaced(call.name)) use = Use::Read;
   for (size_t i = 0; i < kRowCount; ++i) {
     if (!rowMatches(kTaintExemptions[i], use, call, a, turn)) continue;
     out = kTaintExemptions[i].verdict;
@@ -189,10 +190,10 @@ DispatchDecision decide(const RailsDeps& deps, const DispatchCtx& dc) {
   d.text = texts::tool_results::kRailRefused;
   if (!dc.turn || !dc.call) return d;   // the engine always passes both: anything else is refused
   const ToolCall& call = dc.target ? *dc.target : *dc.call;
-  RailVerdict v = V::Refuse;
+  RailVerdict v = Verdict::Refuse;
   if (!railFor(*dc.turn, call, dc.effect, v).ok()) return d;
-  if (v == V::Allow) return DispatchDecision{};
-  if (v == V::Refuse) return d;
+  if (v == Verdict::Allow) return DispatchDecision{};
+  if (v == Verdict::Refuse) return d;
   d.text = texts::tool_results::kRailNoPending;
   if (!deps.pending || !deps.pending(*dc.turn, call).ok()) return d;
   d.verdict = DispatchVerdict::Answer;

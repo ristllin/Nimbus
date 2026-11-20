@@ -17,21 +17,22 @@
 // Outside (the web, a fetched page, a connector, an unknown tool, a device-written path), a
 // document the owner sent (a File part of his message: his own typed text never taints), a
 // sub-agent's report (the Agent device note). A turn is tainted while its request carries
-// such an item whole (TurnCtx::tainted, set by the engine at turn open and when an outside
-// result is stored; a resumed turn keeps it). An outside result shows whole only inside its
-// own turn: from the next turn on the request carries its stub, which names it and how to
-// view it (tx::showResult), never its bytes; owner and assistant text are never removed
-// (ruling 81).
+// such an item whole (TurnCtx::tainted: the engine sets it when it stores the turn's input and
+// when it stores an outside result; a resumed turn keeps it). An outside result shows whole
+// only inside its own turn: from the next turn on the request carries its stub, which names it
+// and how to view it (tx::showResult), never its bytes; owner and assistant text are never
+// removed (ruling 81).
 //
 // In a tainted turn every call is judged by ONE named table, kTaintExemptions (read with
 // taintExemptions): the call's class is RB-Q2a's toolUseFor (a `more` call is the tool it
 // reaches), the first row that matches decides, and a call no row names is refused (fail
-// closed). Note, skill_save and a routine create or update go to pending (the binding keeps
-// them for the owner's approval; the tool does not run); a send to another chat, device
-// configuration, tenant changes, agent_stop and anything unnamed are refused with the
-// reason; a fixed-text reminder to the same chat is allowed. An untainted turn is never
-// touched here (the unattended policy, HookSlot::Policy, and the access rules decide it).
-// Registered in HookSlot::Rails, before Suppression: a rail's answer is never suppressed.
+// closed). Note, skill_save, agent_start and a routine create or update (any schedule update)
+// go to pending (the binding keeps them for the owner's approval; the tool does not run); a
+// send to another chat, device configuration, tenant changes, agent_stop and anything unnamed
+// are refused with the reason; a new fixed-text reminder to the same chat is allowed. An
+// untainted turn is never touched here (the unattended policy, HookSlot::Policy, and the
+// access rules decide it). Registered in HookSlot::Rails, before Suppression: a rail's answer
+// is never suppressed.
 //
 // Seam declared by lane RB-B0a; the body (plain_rails.cpp) is lane RB-RL's.
 namespace agent {
@@ -77,7 +78,7 @@ bool inputOutside(Trigger trigger, const std::vector<nimbus::orch::tx::Part>& pa
 // Is the result of this call outside content because of what it reads: a path (path, name)
 // or a list prefix under a device-written folder whose content came from outside (inbox/*,
 // the files people send; agents/*, the sub-agents' reports; any letter case)? Arguments that are
-// not a JSON object read as outside (fail closed).
+// not a JSON object read as outside (fail closed); an empty string is no arguments.
 bool readsOutsidePath(const std::string& tool, const std::string& argsJson);
 // Is the turn tainted: TurnCtx::tainted, or a sub-agent report turn.
 bool turnTainted(const TurnCtx& turn);
@@ -85,11 +86,12 @@ bool turnTainted(const TurnCtx& turn);
 // ---- the gate ------------------------------------------------------------------------------
 // The verdict for one call (the tool a `more` call reaches, with its arguments) in `turn`:
 // Allow whenever the turn is not tainted; else the first matching row of the table, Refuse
-// when none matches or the arguments are not a JSON object. `declaredEffect` is the
-// registry's class of the tool: a name no static table knows (no action, class or taint row:
-// a tool the device declared at runtime) that the registry declares pure or read reads as
-// Read, as toolUseFor's own contract says; every other name keeps toolUseFor's class. `row`, when
-// given, gets the index of the deciding row (count when none decided).
+// when none matches or the arguments are not a JSON object (an empty string is {}).
+// `declaredEffect` is the registry's class of the tool: a name no static table knows (no
+// action, class or taint row: a tool the device declared at runtime) that the registry
+// declares pure or read reads as Read, as toolUseFor's own contract says; every other name
+// keeps toolUseFor's class. `row`, when given, gets the index of the deciding row (count when
+// none decided).
 Status railFor(const TurnCtx& turn, const ToolCall& call, bool declaredEffect, RailVerdict& out,
                size_t* row = nullptr);
 
