@@ -306,5 +306,17 @@ TokenUsage sentRequestEstimate(size_t bodyChars, size_t images) {
   return u;
 }
 
+// ---- breakers (RED: not built yet) --------------------------------------------------------------
+uint64_t blendedTurnMicro(uint64_t, uint64_t) { return 0; }
+uint64_t spendRateCapMicro(uint64_t, uint64_t) { return kSpendRateFloorMicro; }
+const char* breakerTripSlug(BreakerTrip) { return "none"; }
+BreakerVerdict ChatBreaker::admit(bool, uint32_t) { return BreakerVerdict{}; }
+void ChatBreaker::spent(bool, uint64_t, uint32_t) {}
+bool ChatBreaker::resume() { return false; }
+uint64_t ChatBreaker::windowSpendMicro(uint32_t) const { return 0; }
+uint8_t ChatBreaker::windowTurns(uint32_t) const { return 0; }
+std::string breakerPausedText(BreakerTrip, uint64_t) { return std::string(); }
+std::string breakerResumedText(bool) { return std::string(); }
+
 }  // namespace orch
 }  // namespace nimbus

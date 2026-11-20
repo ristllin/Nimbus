@@ -191,5 +191,78 @@ TokenUsage unansweredEstimate(const UnansweredRequest& r);
 uint32_t bodyOutputCap(const std::string& body);
 bool bodyStartsRun(const std::string& path, const std::string& body);
 
+// ---- breakers in front of the model (PRD section 7; lane RB-X3) ------------------------------
+// Per chat, scaled to the head. They stop runaways (a routine or agent that fires itself in a loop,
+// unattended spend out of bounds), never honest work, and never the owner (ruling 84 item 10):
+// both count only turns that no person's message started, and a person's message is always
+// admitted, also while they are paused. Commands never pass through them (the binding answers a
+// command before any model turn), so /resume and every other command still run.
+//   - turn rate: more than kTurnRateMaxTurns such turns started in kTurnRateWindowMs pauses;
+//   - spend rate: such turns' spend in the rolling kSpendRateWindowMs above
+//     spendRateCapMicro(monthly ceiling, the head's blended cost per turn) pauses.
+// A pause refuses those turns with one line (lineDue once per pause) until /resume (resume()),
+// which also clears both windows. No breaker changes a profile or the window: the blended cost is
+// read at the profile in force (full by default; on engine 1 RB-BG's installedHistoryProfile()),
+// and a pause only holds turns back.
+inline constexpr uint32_t kTurnRateWindowMs = 10u * 60u * 1000u;
+inline constexpr uint8_t kTurnRateMaxTurns = 20;
+inline constexpr uint32_t kSpendRateWindowMs = 60u * 60u * 1000u;
+inline constexpr uint64_t kSpendRateFloorMicro = 1000000;      // 1.00 USD
+inline constexpr uint32_t kSpendRateCeilingPermille = 100;     // 10% of the monthly ceiling
+inline constexpr uint32_t kSpendRateTurns = 15;                // 15 x the head's blended cost per turn
+// The measured full arm (RB-T4, claude-sonnet-5-5 at full: 1.72 requests a turn, 56.55% of turns
+// open cold): a turn is one first request, cold at that share and warm otherwise, plus 0.72 warm.
+inline constexpr uint32_t kRequestsPerTurnMilli = 1720;
+inline constexpr uint32_t kColdTurnPermille = 566;
+
+// The head's blended cost per turn from one warm and one cold request at the profile in force
+// (plain::HeadCost's warm and cold request prices on engine 2).
+uint64_t blendedTurnMicro(uint64_t warmRequestMicro, uint64_t coldRequestMicro);
+// max(1.00 USD, 10% of the monthly ceiling (0: none set), 15 x the blended cost per turn).
+uint64_t spendRateCapMicro(uint64_t monthlyCeilingMicro, uint64_t blendedTurnMicro);
+
+enum class BreakerTrip : uint8_t { None = 0, TurnRate = 1, SpendRate = 2 };
+const char* breakerTripSlug(BreakerTrip t);   // "none", "turn-rate", "spend-rate": frozen
+
+struct BreakerVerdict {
+  bool run = true;          // the model turn may start
+  bool lineDue = false;     // send breakerPausedText now (the pause's one line)
+  BreakerTrip why = BreakerTrip::None;
+};
+
+class ChatBreaker {
+ public:
+  void setSpendCap(uint64_t capMicro) { cap_ = capMicro ? capMicro : kSpendRateFloorMicro; }
+  uint64_t spendCap() const { return cap_; }
+  // A model turn is about to start; `person`: a person's message started it.
+  BreakerVerdict admit(bool person, uint32_t nowMs);
+  // A turn's spend, as it is committed.
+  void spent(bool person, uint64_t micro, uint32_t nowMs);
+  // /resume: lifts a pause and clears both windows; true when a pause was lifted.
+  bool resume();
+  bool paused() const { return why_ != BreakerTrip::None; }
+  BreakerTrip why() const { return why_; }
+  uint64_t windowSpendMicro(uint32_t nowMs) const;   // unattended spend in the rolling hour
+  uint8_t windowTurns(uint32_t nowMs) const;          // unattended turns started in the last 10 min
+
+ private:
+  struct Bucket {
+    uint32_t atMs = 0;
+    uint64_t micro = 0;
+  };
+  static constexpr int kBuckets = 60;   // one a minute
+  uint32_t starts_[kTurnRateMaxTurns] = {};
+  uint8_t nStarts_ = 0, next_ = 0;
+  Bucket spend_[kBuckets];
+  uint64_t cap_ = kSpendRateFloorMicro;
+  BreakerTrip why_ = BreakerTrip::None;
+  bool lineSent_ = false;
+};
+
+// The pause's one line (owner-facing, plain words): what happened and the one next step.
+std::string breakerPausedText(BreakerTrip why, uint64_t capMicro);
+// The answer to /resume.
+std::string breakerResumedText(bool wasPaused);
+
 }  // namespace orch
 }  // namespace nimbus
