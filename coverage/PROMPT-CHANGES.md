@@ -1060,3 +1060,13 @@ deleted. Engine 2 has no baseline.
 - lane: RB-X3
 - prd: section 1 step 5 (the guards), as amended by rulings 81 to 85 (ruling 84 item 2: no guard ends a turn with a silently poorer answer; at a hard guard, the spend guard or a loop the last round's delivered text states what is done and what is left)
 - why: lib/harness/include/nimbus/harness/plain/texts.h kLimitReachedEnd, the close of the guard trip's device item the model sees before its last round: "[device] limit reached (<slug>): no tool runs now; say what is done and what is left." (was "[device] limit reached (<slug>)"). The new slug "loop" (three tool rounds in a row with no progressing call) rides the same item. A routine or agent report that reaches its limit ends the same way, naming what is unfinished (ruling 84 item 9). Planned work, not a fix.
+
+### PC-0144: the note tool's results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 4546 -> 5879
+- sha8: a3248afa -> 2f689ba7
+- lane: RB-N1
+- prd: section 4 ("Notes": note returns the stored line and the space used; pinned full is stored unpinned and says so; both full is an error listing the largest keys, nothing evicted; a set from a tainted or unattended turn goes to pending; with no card a member's note is refused in one line)
+- why: lib/core/src/orch_notes.cpp, a new tool of the spec with its own result and error lines (facts only: what was saved, where, the space used; what was kept for approval and why; what was refused and that nothing changed), cataloged as tool_results through E2_EXTRA_SOURCES as the file tools' are. No prompt text, no instruction. Planned work, not a fix.

@@ -26,7 +26,7 @@ constexpr char kRuleMark[] = " [rule]";
 constexpr size_t kChatIdMax = 24;
 
 // ---- model-facing results (cataloged as engine-2 tool_results) -----------------------------
-constexpr char kArgsTaken[] = "note takes op, key, value, kind and pin; not read: ";
+constexpr char kArgsTaken[] = "the arguments of note are op, key, value, kind and pin; not read: ";
 constexpr char kBadOp[] = "op is set or remove";
 constexpr char kBadKey[] = "key is a slug of a-z, 0-9 and -, 1 to 32 characters";
 constexpr char kBadValue[] = "value is one line of 1 to 300 B of text with no control characters";

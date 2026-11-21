@@ -9,6 +9,7 @@
 
 lib/core/src/orch_file_tools.cpp
 lib/core/src/orch_intents.cpp
+lib/core/src/orch_notes.cpp
 lib/core/src/orch_path_rules.cpp
 lib/core/src/orch_tx_arena.cpp
 lib/core/src/orch_tx_budget.cpp
