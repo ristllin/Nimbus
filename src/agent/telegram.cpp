@@ -2103,7 +2103,7 @@ static void bootGuard() {
 static void noteHistory(const nimbus::orch::PsString& text);
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
 static String ownerIntake(const std::string& chat, const nimbus::orch::PsString& text);
-static void noteTaken(size_t turn);
+static void noteTaken();
 #endif
 
 // The typing indicator while a plain text is held (tg_settle.h HoldTyping: at its first
@@ -2232,7 +2232,7 @@ struct TgIo {
 #endif
     }
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
-    if (polled) noteTaken(g_receiver.currentTurn());   // RB-TG1: a re-served update is acked, not answered
+    if (polled) noteTaken();   // RB-TG1: a re-served update is acked, not answered
 #endif
     s_turnMsgId = 0;
     s_warmedText.clear();   // RB-TS1: the next held text is embedded again, even the same words
@@ -2331,7 +2331,8 @@ static String ownerIntake(const std::string& chat, const nimbus::orch::PsString&
 }
 
 // RB-TG1: every update of the bucket that just ran is noted as taken (its text, media and voice).
-static void noteTaken(size_t turn) {
+static void noteTaken() {
+  const size_t turn = g_receiver.currentTurn();
   if (turn >= g_batch.turnCount()) return;
   const char* chat = g_batch.chatIdAt(turn);
   for (size_t m = 0; m < g_batch.messageCountAt(turn); ++m)
