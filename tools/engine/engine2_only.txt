@@ -11,6 +11,7 @@ lib/core/src/orch_file_tools.cpp
 lib/core/src/orch_intents.cpp
 lib/core/src/orch_notes.cpp
 lib/core/src/orch_path_rules.cpp
+lib/core/src/orch_seen_index.cpp
 lib/core/src/orch_tx_arena.cpp
 lib/core/src/orch_tx_budget.cpp
 lib/core/src/orch_tx_digest.cpp
@@ -18,6 +19,7 @@ lib/core/src/orch_tx_item.cpp
 lib/core/src/orch_tx_log.cpp
 lib/core/src/orch_tx_migrate.cpp
 lib/core/src/orch_tx_rules.cpp
+lib/core/src/tg_inbox.cpp
 
 
 lib/harness/src/plain_agents.cpp
