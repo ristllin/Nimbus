@@ -1584,6 +1584,16 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   return Kept::Full;
 }
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: store the item, then let its label name the inbox path only if the file is there (else
+// the document's name, as engine 1 shows it). True when the file store is full.
+static bool keepInbound(const InboundFile& in, const nimbus::orch::Principal& who, nimbus::orch::MediaLabel& label) {
+  const Kept kept = storeInbound(in, who);
+  if (label.cls == nimbus::orch::MediaClass::Stored && kept != Kept::Stored) label.detail = in.slot.fileName;
+  return kept == Kept::Full;
+}
+#endif
+
 static nimbus::orch::Principal senderOf(const char* chatId) {
   return nimbus::orch::principalForRole(
       std::string(chatId), orchestrator::roleOfChat(String(chatId)),
@@ -1890,10 +1900,7 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   agent::vision::ReadFail fail;
   describeStaged(in, turn, k, n, label, fail);
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
-  // RB-TG1: a document's inbox path is shown only once the file is kept there; else its name.
-  const Kept kept = storeInbound(in, who);
-  if (label.cls == nimbus::orch::MediaClass::Stored && kept != Kept::Stored) label.detail = m.fileName;
-  const bool full = kept == Kept::Full;
+  const bool full = keepInbound(in, who, label);   // RB-TG1: stored before its label names the path
 #endif
   seg = nimbus::orch::mediaSegment(label);
   const std::string row = rowSegment(label);

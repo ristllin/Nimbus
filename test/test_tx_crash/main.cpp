@@ -531,6 +531,7 @@ void test_a_resumed_turn_keeps_its_own_items_when_the_arena_is_short() {
   TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
   txb::Battery b;
   b.arenaBytes = 64 * 1024;
+  b.inboxRefuses = true;   // the long owner text stays in the arena (RB-TG1 would file it)
   sanity(b, "ledger_write", kWrite, kReply);
   const std::string ask = "log it. " + std::string(40000, 'n');
   b.files.killWhen = [](const char* d, size_t n) { return lineIs(d, n, tx::ItemKind::Assistant, nullptr); };
@@ -553,6 +554,7 @@ void test_a_full_arena_at_boot_still_sends_the_stored_reply_once() {
   TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
   txb::Battery b;
   b.arenaBytes = 48 * 1024;
+  b.inboxRefuses = true;   // the long owner text stays in the arena (RB-TG1 would file it)
   sanity(b, "ledger_write", kWrite, kReply);
   b.killBeforeSend = 0;
   runCut(b, {txb::TurnScript{30, "log it. " + std::string(44500, 'n'), {}}});
