@@ -5,7 +5,6 @@
 
 # Ruling 56 (the check of RB-E1a's review fixes): red cases for the lanes that close them.
 56 test_plain_conformance::test_view_fetches_a_long_argument_and_a_long_reply_back
-56 test_plain_conformance::test_a_long_owner_message_goes_to_the_inbox_as_a_file
 56 test_plain_conformance::test_a_routed_head_sends_the_deadline_header
 56 test_plain_conformance::test_the_log_reopens_when_storage_returns
 
