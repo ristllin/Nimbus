@@ -1,5 +1,8 @@
 #pragma once
 #include <Arduino.h>
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+namespace nimbus::orch { class SeenIndex; }   // RB-TG1 (nimbus/orch/seen_index.h)
+#endif
 
 
 // telegram - Telegram Bot API long-poll client for Nimbus, ported from
@@ -282,6 +285,12 @@ bool    turnIsVoiceNote();
 // Lane ECHO fix pass: inside the MessageCallback, the Telegram message_id of the
 // message the turn answers (0 when unknown) - the progress line replies to it.
 int64_t turnMessageId();
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: the updates engine 2 already took. RB-I1's boot rebuilds it per chat
+// (nimbus::orch::rebuildSeen); the receive cycle drops a seen update and notes each turn's.
+nimbus::orch::SeenIndex& seenIndex();
+#endif
 
 }  // namespace telegram
 }  // namespace agent

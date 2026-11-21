@@ -25,6 +25,10 @@
 #include "memory_subsystem.h"   // captureMediaFile - durable voice-note sidecar
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: histV2 (tools/engine/guard_files.txt)
 #include "nimbus/harness/turn_inbox.h"   // histV2: what the sender sent, for the turn's history row
+#else
+#include "nimbus/net/tg_inbox.h"     // RB-TG1: documents and long pastes to inbox/
+#include "nimbus/orch/seen_index.h"  // RB-TG1: the updates engine 2 already took
+#include "nimbus/orch/tx/budget.h"   // RB-TG1: tx::kInlineMessageCap, the paste cap
 #endif
 #include "adapters/image_vision.h"   // R1: a photo goes to the head as an image (a transcription as the fallback)
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
@@ -805,6 +809,23 @@ static bool parsePageBody(const char* body, size_t len, std::vector<nimbus::tg::
   return true;   // a well-formed ok:true body - this poll cycle authenticated
 }
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: the updates engine 2 already took (nimbus/orch/seen_index.h), one PSRAM block made on
+// first use. RB-I1's boot rebuilds it from the chat's owner rows and head.json's hw.
+static nimbus::orch::SeenIndex g_seen;
+nimbus::orch::SeenIndex& seenIndex() {
+  if (!g_seen.ready())
+    (void)g_seen.init([](size_t n) { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM); }, [](void* p) { free(p); });
+  return g_seen;   // not ready (PSRAM short): seen() is false and note() a no-op, as before RB-TG1
+}
+static_assert(nimbus::net::kSettleQuietTextMs == 2000, "RB-TG1: engine 2 holds a text 2 s (tg_settle.h)");
+static bool seenBefore(const nimbus::tg::Update& u) {
+  if (!seenIndex().seen(u.chatId, (uint64_t)u.updateId)) return false;
+  alogf("telegram: update %ld already taken: acked, not answered again", (long)u.updateId);
+  return true;
+}
+#endif
+
 // Classify ONE update and run its inline side effect (take a media slot / hand a file
 // to the files lane / push an unlisted sender for approval / route a caption as text).
 // Returns the drain action. The receive cycle calls this LAZILY, in order, and only for
@@ -825,6 +846,9 @@ static nimbus::orch::ClassifiedUpdate handleUpdate(const nimbus::tg::Update& u, 
           (long)g_cursor.offset());
     return cu;
   }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  if (polled && seenBefore(u)) return cu;   // RB-TG1: taken before a reboot or a refused offset write
+#endif
 
   const String chatId(u.chatId.c_str());
   const String from(u.from.c_str());
@@ -1532,6 +1556,12 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   // the web UI. The hash and in.slot.fileUniqueId are the files store's dedupe keys.
   char proj[48];
   snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  if (!in.photo) {   // RB-TG1: a document is inbox/<update id>-<valid name>, the path its message shows
+    snprintf(proj, sizeof(proj), "inbox");
+    snprintf(fname, sizeof(fname), "%s", nimbus::net::inboxDocName((uint64_t)in.slot.updateId, in.slot.fileName).c_str());
+  }
+#endif
   std::string ferr;
   if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash))
     return Kept::Stored;
@@ -1776,7 +1806,11 @@ static void describeStaged(const InboundFile& in, size_t turn, size_t k, size_t 
       return;
     }
     label.cls = nimbus::orch::MediaClass::Stored;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    label.detail = nimbus::net::documentDetail(nimbus::net::inboxDocPath((uint64_t)m.updateId, m.fileName), m.mime);
+#else
     label.detail = m.fileName;
+#endif
     return;
   }
   label.kind = nimbus::orch::MediaKind::Image;
@@ -2067,6 +2101,10 @@ static void bootGuard() {
 }
 
 static void noteHistory(const nimbus::orch::PsString& text);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+static String ownerIntake(const std::string& chat, const nimbus::orch::PsString& text);
+static void noteTaken(size_t turn);
+#endif
 
 // The typing indicator while a plain text is held (tg_settle.h HoldTyping: at its first
 // sight, again when Telegram's action lapses), sent on the open keep-alive poll socket:
@@ -2187,8 +2225,15 @@ struct TgIo {
     s_turnMsgId = turnMessageId();   // lane ECHO: the progress line replies to this message
     {
       const TurnSendWindow now;   // RB-TS1: the reply goes out when queued
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+      if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), ownerIntake(chat, text));
+#else
       if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
+#endif
     }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    if (polled) noteTaken(g_receiver.currentTurn());   // RB-TG1: a re-served update is acked, not answered
+#endif
     s_turnMsgId = 0;
     s_warmedText.clear();   // RB-TS1: the next held text is embedded again, even the same words
     agent::vision::dropTurnSet();
@@ -2263,6 +2308,36 @@ static void noteHistory(const nimbus::orch::PsString& text) {
   (void)text;   // engine 2 has no histV2 note
 #endif
 }
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// RB-TG1: an owner text over the inline cap is saved whole as inbox/<update id>.txt and the turn
+// gets its head and the pointer (nimbus/net/tg_inbox.h); no card or a refused save: whole.
+static String ownerIntake(const std::string& chat, const nimbus::orch::PsString& text) {
+  if (text.size() <= nimbus::orch::tx::kInlineMessageCap) return String(text.c_str());
+  const size_t i = g_receiver.currentTurn();
+  const uint64_t id = i < g_batch.turnCount() ? (uint64_t)g_batch.firstIdAt(i) : 0;
+  const std::string ns = senderOf(chat.c_str()).ns;
+  const nimbus::net::InboxSave save = [&ns](const std::string& name, const std::string& whole) {
+    if (!agent::memory::haveSd()) return false;
+    std::string err;
+    if (agent::files::saveText("inbox", name, whole, err, ns)) return true;
+    alogf("telegram: paste not kept in the inbox: %s", err.c_str());
+    return false;
+  };
+  const nimbus::net::OwnerText t = nimbus::net::ownerTextIntake(std::string(text.c_str(), text.size()), id,
+                                                                nimbus::orch::tx::kInlineMessageCap, save);
+  if (!t.saved.empty()) alogf("telegram: paste of %u B kept at %s", (unsigned)text.size(), t.saved.c_str());
+  return String(t.text.c_str());
+}
+
+// RB-TG1: every update of the bucket that just ran is noted as taken (its text, media and voice).
+static void noteTaken(size_t turn) {
+  if (turn >= g_batch.turnCount()) return;
+  const char* chat = g_batch.chatIdAt(turn);
+  for (size_t m = 0; m < g_batch.messageCountAt(turn); ++m)
+    seenIndex().note(chat, (uint64_t)g_batch.updateIdAt(turn, m));
+}
+#endif
 
 static int drainAndDispatch(int longPollS, nimbus::net::TgPollOutcome* outcome, bool& yielded,
                             int& retryAfterS) {
