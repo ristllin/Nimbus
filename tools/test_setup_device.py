@@ -570,11 +570,18 @@ def _run_main(argv, board=None, panel="unknown", runner=None, probe="clear"):
     _patch("run_checked", runner)
     _patch("verify_panel_after_flash", _fake_verify)
     _patch("probe_for_freenove", _fake_probe)
+    # The device guard asks this host's USB listing who a port belongs to. The ports named here are made up, and a
+    # bench Mac can hold a real node of the same name (/dev/cu.usbmodem101), which the guard then refuses or accepts
+    # by what is plugged in. The listing is pinned empty so a made-up port is a node the listing does not show, on
+    # every host; the guard's own behaviour is tested in tests/hil/test_bench_guard_host.py.
+    live_listing = SETUP.bench_guard.usb_ports
+    SETUP.bench_guard.usb_ports = lambda: []
     out, err = io.StringIO(), io.StringIO()
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = SETUP.main(argv)
     finally:
+        SETUP.bench_guard.usb_ports = live_listing
         for name, value in saved.items():
             setattr(SETUP, name, value)
     return rc, out.getvalue(), err.getvalue(), runner
