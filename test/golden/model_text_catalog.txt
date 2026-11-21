@@ -3,7 +3,7 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1688 ceiling=3072 entries=30 sha8=68e60f2d
 # class device_notes bytes=2044 ceiling=2048 entries=75 sha8=251bb8a3
-# class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
+# class stubs bytes=31 ceiling=512 entries=1 sha8=2b588162
 # class tool_results bytes=5894 ceiling=6144 entries=402 sha8=6861f37b
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=836 ceiling=1024 entries=14 sha8=2ce2aac9
@@ -113,6 +113,7 @@ device_notes	lib/harness/include/nimbus/harness/plain/texts.h	8f99f6bb	7	" steps
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	7863fbb0	6	" step)"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	2e75737a	4	" min"
 device_notes	lib/harness/include/nimbus/harness/plain/texts.h	dd561b5e	9	"[routine "
+stubs	lib/core/include/nimbus/net/tg_inbox.h	2b588162	31	" (a PDF: it cannot be read yet)"
 tool_results	lib/core/include/nimbus/orch/file_aids.h	b489aa02	48	"not enough memory for this call; nothing changed"
 tool_results	lib/core/include/nimbus/orch/file_aids.h	cba06b57	3	"old"
 tool_results	lib/core/include/nimbus/orch/file_aids.h	cba06b57	3	"old"

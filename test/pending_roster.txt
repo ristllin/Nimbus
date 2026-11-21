@@ -48,7 +48,6 @@ test_plain_conformance::test_guard_last_round_flat RB-W4
 
 # ruling 56 (lane RB-E1a's review checks): red cases for the lanes that close them
 test_plain_conformance::test_view_fetches_a_long_argument_and_a_long_reply_back RB-N3 ruling:56
-test_plain_conformance::test_a_long_owner_message_goes_to_the_inbox_as_a_file RB-TG1 ruling:56
 test_plain_conformance::test_a_routed_head_sends_the_deadline_header RB-W4 ruling:56
 test_plain_conformance::test_the_log_reopens_when_storage_returns RB-I3 ruling:56
 

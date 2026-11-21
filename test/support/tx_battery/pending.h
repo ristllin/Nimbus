@@ -17,6 +17,7 @@
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/resume.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/net/tg_inbox.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/digest.h"
@@ -117,6 +118,13 @@ inline tx::Status probeRails() {
   return plain::installRails(hooks, plain::RailsDeps{});
 }
 
+// RB-TG1: a text over the cap is saved to the inbox (the intake the battery's owner() runs).
+inline tx::Status probeInbox() {
+  const auto keep = [](const std::string&, const std::string&) { return true; };
+  const nimbus::net::OwnerText t = nimbus::net::ownerTextIntake(std::string(16, 'x'), 1, 8, keep);
+  return t.saved.empty() ? tx::Status::fail(tx::Err::NotImplemented, "net::ownerTextIntake") : tx::Status::success();
+}
+
 // One sentinel per lane whose body a battery property needs. A lane missing here is a
 // battery bug: the gate fails rather than guess.
 inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& out) {
@@ -146,7 +154,7 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
       // Lanes with no seam in this tree yet (ruling 56's red cases): the lane replaces its row
       // with a probe of the body it writes when it lands.
       {"RB-N3", [] { return tx::Status::pending("RB-N3 view of a long argument or reply"); }},
-      {"RB-TG1", [] { return tx::Status::pending("RB-TG1 inbox file for a long owner message"); }},
+      {"RB-TG1", probeInbox},
       {"RB-I3", [] { return tx::Status::pending("RB-I3 reopen of the log when storage returns"); }},
   };
   for (const Row& r : rows)

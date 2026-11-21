@@ -1101,3 +1101,12 @@ deleted. Engine 2 has no baseline.
 - why: lib/harness/include/nimbus/harness/plain/texts.h kProgressSummary "updating the summary first." (owner-facing only: the progress line is never stored or shown to a model); to make room kCompactDone, the owner's answer to /compact, reads "The summary is updated." (was "Summarized the earlier turns into day digests.", -23 B: there are no day digests any more).
 
 PC-0143: not used.
+### PC-0147: a stored PDF says it cannot be read yet (engine 2)
+- catalog: e2
+- class: stubs
+- kind: spec
+- bytes: 0 -> 31
+- sha8: e3b0c442 -> 2b588162
+- lane: RB-TG1
+- prd: section 5 (documents: a document lands at inbox/<update id>-<valid name> and the message shows that path; until RB-P2 a PDF is stored and the message says it cannot be read yet)
+- why: lib/core/include/nimbus/net/tg_inbox.h kInboxPdfNotRead, " (a PDF: it cannot be read yet)", appended after the inbox path of a stored PDF in the owner message (nimbus::net::documentDetail). A text type shows its path only (read_file reads it). It is engine 2's only new model text in this lane; the paste pointer reuses tx::longTextHead's line. Planned work, not a fix.

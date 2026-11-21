@@ -17,6 +17,7 @@
 #include "nimbus/harness/plain/rails.h"
 #include "nimbus/harness/plain/resume.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/net/tg_inbox.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/log.h"
@@ -137,6 +138,7 @@ class Battery {
   size_t arenaBytes = tx::kActiveChatArenaBytes;   // the chat's arena at each boot (RB-X1: a small one)
   std::function<void(plain::PlainHooks&)> moreHooks;   // a test's own handlers, installed at each boot
   size_t dispatches = 0;
+  bool inboxRefuses = false;       // no card for the inbox: a long owner text passes whole (RB-TG1)
   plain::RailsDeps railsDeps;      // the rails' approval store (RB-RL); none: a pending change is refused
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
@@ -176,9 +178,9 @@ class Battery {
     }
     lastInput = plain::TurnInput{};
     lastInput.ctx = turnCtx(++turnNo, plain::Trigger::Owner);
-    lastInput.text = text;
-    lastInput.parts = std::move(parts);
     lastInput.src = {9000u + turnNo};
+    lastInput.text = intake(lastInput.src.front(), text);
+    lastInput.parts = std::move(parts);
     return deliverInput(lastInput, out);
   }
 
@@ -192,7 +194,7 @@ class Battery {
     }
     lastInput = plain::TurnInput{};
     lastInput.ctx = turnCtx(++turnNo, plain::Trigger::Owner);
-    lastInput.text = text;
+    lastInput.text = intake(src.empty() ? 0 : src.front(), text);
     lastInput.parts = std::move(parts);
     lastInput.src = std::move(src);
     return deliverInput(lastInput, out);
@@ -540,6 +542,17 @@ class Battery {
       at = nl + 1;
     }
     return tx::Status::success();
+  }
+
+  // The Telegram intake of an owner text (RB-TG1, nimbus/net/tg_inbox.h): over the inline cap it
+  // is saved whole as inbox/<update id>.txt in the file store and the u text points at it.
+  std::string intake(uint64_t updateId, const std::string& text) {
+    const nimbus::net::InboxSave save = [this](const std::string& name, const std::string& whole) {
+      if (inboxRefuses) return false;
+      world.files["inbox/" + name] = whole;
+      return true;
+    };
+    return nimbus::net::ownerTextIntake(text, updateId, tx::kInlineMessageCap, save).text;
   }
 
   tx::Status deliverInput(const plain::TurnInput& in, plain::TurnOutcome& out) {

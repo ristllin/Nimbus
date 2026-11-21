@@ -676,6 +676,7 @@ inline void test_a_turn_without_a_head_fails_loudly() {
 // over the cap by more than one turn and less than two: rung 3 omits the two oldest turns and
 // sends the other eight, never every omissible turn.
 inline void tenTurns(txb::Battery& b, size_t lastBytes) {
+  b.inboxRefuses = true;   // the ladder's input: a 27 KB owner text kept whole (RB-TG1 would file it)
   for (int i = 0; i < 10; ++i) {
     const std::string k = std::to_string(i);
     b.model.push(sp::say("ok " + k));
@@ -1440,6 +1441,7 @@ inline void test_unparsable_long_arguments_are_one_stub() {
 inline void test_an_owner_message_over_the_line_limit_gets_its_own_line() {
   txb::Battery b;
   plain::TurnOutcome out;
+  b.inboxRefuses = true;   // no card for the inbox (RB-TG1 keeps a long text there otherwise)
   const tx::Status st = b.owner(std::string(70000, 'x'), out);
   TEST_ASSERT_FALSE(st.ok());
   TEST_ASSERT_EQUAL(1, (int)b.sent.size());
