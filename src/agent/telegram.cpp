@@ -814,8 +814,12 @@ static bool parsePageBody(const char* body, size_t len, std::vector<nimbus::tg::
 // first use. RB-I1's boot rebuilds it from the chat's owner rows and head.json's hw.
 static nimbus::orch::SeenIndex g_seen;
 nimbus::orch::SeenIndex& seenIndex() {
-  if (!g_seen.ready())
-    (void)g_seen.init([](size_t n) { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM); }, [](void* p) { free(p); });
+  static bool tried = false;   // one try: a PSRAM shortfall is said once, not per update
+  if (!tried) {
+    tried = true;
+    if (!g_seen.init([](size_t n) { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM); }, [](void* p) { free(p); }).ok())
+      alog("telegram: no PSRAM for the seen index: a re-served update may be answered again");
+  }
   return g_seen;   // not ready (PSRAM short): seen() is false and note() a no-op, as before RB-TG1
 }
 static_assert(nimbus::net::kSettleQuietTextMs == 2000, "RB-TG1: engine 2 holds a text 2 s (tg_settle.h)");
@@ -1557,9 +1561,18 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   char proj[48];
   snprintf(proj, sizeof(proj), "chat-%s", in.slot.chatId);
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
-  if (!in.photo) {   // RB-TG1: a document is inbox/<update id>-<valid name>, the path its message shows
+  if (!in.photo) {   // RB-TG1: a document is inbox/<update id>-<valid name>, the path its message shows.
+    // No content hash: the files store would skip bytes it already holds under another name, and
+    // the message names this path.
     snprintf(proj, sizeof(proj), "inbox");
     snprintf(fname, sizeof(fname), "%s", nimbus::net::inboxDocName((uint64_t)in.slot.updateId, in.slot.fileName).c_str());
+    std::string derr;
+    if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, derr, who.ns))
+      return Kept::Stored;
+    alogf("telegram: attach store failed: %s", derr.c_str());
+    if (!agent::files::noteRefusal(derr)) return Kept::Failed;
+    sendFileStoreNotice();
+    return Kept::Full;
   }
 #endif
   std::string ferr;
@@ -1876,6 +1889,12 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   const InboundFile in{m, localPath, contentHash, photo, image};
   agent::vision::ReadFail fail;
   describeStaged(in, turn, k, n, label, fail);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // RB-TG1: a document's inbox path is shown only once the file is kept there; else its name.
+  const Kept kept = storeInbound(in, who);
+  if (label.cls == nimbus::orch::MediaClass::Stored && kept != Kept::Stored) label.detail = m.fileName;
+  const bool full = kept == Kept::Full;
+#endif
   seg = nimbus::orch::mediaSegment(label);
   const std::string row = rowSegment(label);
   noteTurnMedia(slot, label, true);
@@ -1883,7 +1902,9 @@ static bool processMedia(size_t turn, size_t k, size_t n, int slot, std::string&
   // storage limit, and a photo someone sent shows up in Memory & Files like any other
   // file. The episodic row is what the MODEL reads later, stamped with the original
   // send time; the blob sidecar is what it can be re-shown from.
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   const bool full = storeInbound(in, who) == Kept::Full;
+#endif
   g_slots[slot].media.kept = agent::memory::captureMediaFile(
       m.chatId, "user", photo ? nimbus::orch::MsgKind::Image : nimbus::orch::MsgKind::File,
       String(row.c_str()), localPath, photo ? "jpg" : "bin", m.date);
