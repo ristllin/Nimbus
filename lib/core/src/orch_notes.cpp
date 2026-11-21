@@ -24,6 +24,8 @@ namespace {
 
 constexpr char kRuleMark[] = " [rule]";
 constexpr size_t kChatIdMax = 24;
+constexpr char kKindLeftOut[] = "kind=keep ";   // a pending set whose call left kind out
+constexpr char kSeqMark[] = "seq ";             // the pending file's last id given out
 
 // ---- model-facing results (cataloged as engine-2 tool_results) -----------------------------
 constexpr char kArgsTaken[] = "the arguments of note are op, key, value, kind and pin; not read: ";
@@ -70,6 +72,7 @@ Lines splitLines(const std::string& file) {
     if (end == std::string::npos) end = file.size();
     Line l;
     l.raw = file.substr(at, end - at);
+    if (!l.raw.empty() && l.raw.back() == '\r') l.raw.pop_back();   // a hand edit with CRLF
     l.isNote = parseLine(l.raw, l.note);
     if (l.isNote) l.raw = formatLine(l.note);
     if (!l.raw.empty()) out.push_back(std::move(l));
@@ -250,12 +253,32 @@ bool validKey(const std::string& key) {
   return !key.empty() && key.size() <= kKeyMax && std::all_of(key.begin(), key.end(), isSlugChar);
 }
 
-bool validValue(const std::string& value) {
-  if (value.empty() || value.size() > kValueMax || !utf8Valid(value)) return false;
-  return std::none_of(value.begin(), value.end(), [](char c) {
+namespace {
+
+bool hasC0(const std::string& v) {
+  return std::any_of(v.begin(), v.end(), [](char c) {
     const unsigned char u = static_cast<unsigned char>(c);
     return u < 0x20 || u == 0x7f;
   });
+}
+
+// C1 controls are U+0080..U+009F (C2 80..C2 9F); U+2028 and U+2029 are E2 80 A8 and E2 80 A9.
+bool hasC1OrSeparator(const std::string& v) {
+  for (size_t i = 0; i + 1 < v.size(); ++i) {
+    const unsigned char a = static_cast<unsigned char>(v[i]), b = static_cast<unsigned char>(v[i + 1]);
+    if (a == 0xC2 && b >= 0x80 && b <= 0x9F) return true;
+    const unsigned char c = i + 2 < v.size() ? static_cast<unsigned char>(v[i + 2]) : 0;
+    if (a == 0xE2 && b == 0x80 && (c == 0xA8 || c == 0xA9)) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+bool validValue(const std::string& value) {
+  if (value.empty() || value.size() > kValueMax || !utf8Valid(value)) return false;
+  if (value.find_first_not_of(' ') == std::string::npos) return false;   // blank
+  return !hasC0(value) && !hasC1OrSeparator(value);
 }
 
 std::string formatLine(const Note& n) { return n.key + (n.kind == Kind::Rule ? kRuleMark : "") + ": " + n.value; }
@@ -316,41 +339,75 @@ std::string largest(const Lines& a, const Lines& b) {
 
 }  // namespace
 
+namespace {
+
+// Where a set goes: the note as stored, whether the call wants it pinned, the shelf it lands on.
+struct Placement {
+  Note note;
+  bool wantPin = false;
+  bool toPinned = false;
+  bool fits = false;
+  size_t add = 0;   // the line's bytes with its '\n'
+};
+
+size_t bytesWithout(const Lines& lines, const std::string& key) {
+  Lines rest = lines;
+  dropKey(rest, key);
+  return bytesOf(rest);
+}
+
+// A pin left out keeps an existing note on its shelf and pins a new one; a kind left out keeps the
+// old kind. A note kept unpinned with pin left out may go pinned when unpinned is full.
+Placement place(const Note& asked, bool hasKind, int pin, const Lines& pinned, const Lines& more, const Caps& caps) {
+  const int inPinned = findKey(pinned, asked.key), inMore = findKey(more, asked.key);
+  Placement p;
+  p.note = asked;
+  if (!hasKind && inPinned >= 0) p.note.kind = pinned[static_cast<size_t>(inPinned)].note.kind;
+  else if (!hasKind && inMore >= 0) p.note.kind = more[static_cast<size_t>(inMore)].note.kind;
+  p.wantPin = pin >= 0 ? pin == 1 : (inPinned >= 0 || inMore < 0);
+  p.add = formatLine(p.note).size() + 1;
+  const bool pinFits = bytesWithout(pinned, asked.key) + p.add <= caps.pinned;
+  const bool moreFits = bytesWithout(more, asked.key) + p.add <= caps.more;
+  p.toPinned = (p.wantPin && pinFits) || (pin < 0 && !moreFits && pinFits);
+  p.fits = p.toPinned || moreFits;
+  return p;
+}
+
+// Write the target shelf, then the other one when it held the key; a refused second write puts the
+// first back. "" when both landed, else the error text.
+const char* commitMove(NotesIo& io, const std::string& person, bool toPinned, const Lines& pinned, const Lines& more,
+                       bool otherHad) {
+  const Shelf ts = toPinned ? Shelf::Pinned : Shelf::More, os = toPinned ? Shelf::More : Shelf::Pinned;
+  std::string targetOld;
+  if (!io.read(person, ts, targetOld)) return kUnreadable;
+  if (!io.write(person, ts, joinLines(toPinned ? pinned : more))) return kUnwritten;
+  if (otherHad && !io.write(person, os, joinLines(toPinned ? more : pinned))) {
+    (void)io.write(person, ts, targetOld);   // put the first shelf back: nothing changed
+    return kUnwritten;
+  }
+  return "";
+}
+
+}  // namespace
+
 ToolResult Notebook::runSet(const Request& r, const std::string& person, Shelves& s) {
-  const int inPinned = findKey(s.pinned, r.note.key), inMore = findKey(s.more, r.note.key);
-  const Line* old = inPinned >= 0 ? &s.pinned[static_cast<size_t>(inPinned)]
-                                  : inMore >= 0 ? &s.more[static_cast<size_t>(inMore)] : nullptr;
-  Note n = r.note;
-  if (!r.hasKind && old) n.kind = old->note.kind;
-  const bool wantPin = r.pin >= 0 ? r.pin == 1 : (old ? inPinned >= 0 : true);
-  Lines pinned = s.pinned, more = s.more;
-  dropKey(pinned, n.key);
-  dropKey(more, n.key);
-  const size_t add = formatLine(n).size() + 1;
-  const bool pinFits = bytesOf(pinned) + add <= s.caps.pinned, moreFits = bytesOf(more) + add <= s.caps.more;
-  // Pin left out on a note kept unpinned: a full unpinned shelf still leaves the pinned one.
-  const bool toPinned = (wantPin && pinFits) || (r.pin < 0 && !moreFits && pinFits);
-  if (!toPinned && !moreFits)
-    return ToolResult::fail(kNoRoom + groupedBytes(add) + " B (pinned " + used(bytesOf(s.pinned), s.caps.pinned) +
+  const Placement p = place(r.note, r.hasKind, r.pin, s.pinned, s.more, s.caps);
+  if (!p.fits)
+    return ToolResult::fail(kNoRoom + groupedBytes(p.add) + " B (pinned " + used(bytesOf(s.pinned), s.caps.pinned) +
                             ", unpinned " + used(bytesOf(s.more), s.caps.more) + ")" + kLargest +
                             largest(s.pinned, s.more) + kNothingRemoved);
   // The target shelf keeps the old line's place; the other shelf loses its copy.
-  Lines& target = toPinned ? s.pinned : s.more;
-  Lines& other = toPinned ? s.more : s.pinned;
-  putNote(target, n);
-  const bool otherHad = findKey(other, n.key) >= 0;
-  dropKey(other, n.key);
-  const Shelf ts = toPinned ? Shelf::Pinned : Shelf::More, os = toPinned ? Shelf::More : Shelf::Pinned;
-  std::string targetOld;
-  if (!io_.read(person, ts, targetOld)) return ToolResult::fail(kUnreadable);
-  if (!io_.write(person, ts, joinLines(target))) return ToolResult::fail(kUnwritten);
-  if (otherHad && !io_.write(person, os, joinLines(other))) {
-    (void)io_.write(person, ts, targetOld);   // put the first shelf back: nothing changed
-    return ToolResult::fail(kUnwritten);
-  }
-  const char* head = toPinned ? kSavedPinned : wantPin ? kSavedOverflow : kSavedMore;
-  return ToolResult::ok(head + formatLine(n) + " (" + used(bytesOf(target), toPinned ? s.caps.pinned : s.caps.more) +
-                        (toPinned ? "" : " unpinned") + ")");
+  Lines& target = p.toPinned ? s.pinned : s.more;
+  Lines& other = p.toPinned ? s.more : s.pinned;
+  putNote(target, p.note);
+  const bool otherHad = findKey(other, p.note.key) >= 0;
+  dropKey(other, p.note.key);
+  const char* err = commitMove(io_, person, p.toPinned, s.pinned, s.more, otherHad);
+  if (*err) return ToolResult::fail(err);
+  const char* head = p.toPinned ? kSavedPinned : p.wantPin ? kSavedOverflow : kSavedMore;
+  const size_t cap = p.toPinned ? s.caps.pinned : s.caps.more;
+  return ToolResult::ok(head + formatLine(p.note) + " (" + used(bytesOf(target), cap) + (p.toPinned ? "" : " unpinned") +
+                        ")");
 }
 
 ToolResult Notebook::runRemove(const Request& r, const std::string& person, Shelves& s) {
@@ -384,7 +441,7 @@ namespace {
 std::string pendingLine(const PendingNote& p) {
   if (p.remove) return p.id + " " + p.why + " remove " + p.note.key;
   const char* pin = p.pin == 1 ? "pin" : p.pin == 0 ? "more" : "keep";
-  return p.id + " " + p.why + " set " + pin + " " + formatLine(p.note);
+  return p.id + " " + p.why + " set " + pin + " " + (p.kindGiven ? "" : kKindLeftOut) + formatLine(p.note);
 }
 
 bool nextWord(const std::string& line, size_t& at, std::string& word) {
@@ -406,7 +463,9 @@ bool parsePending(const std::string& line, PendingNote& p) {
   }
   if (op != "set" || !nextWord(line, at, pin)) return false;
   p.pin = pin == "pin" ? 1 : pin == "more" ? 0 : -1;
-  return parseLine(line.substr(at), p.note);
+  const size_t mark = sizeof(kKindLeftOut) - 1;
+  p.kindGiven = line.compare(at, mark, kKindLeftOut) != 0;
+  return parseLine(line.substr(p.kindGiven ? at : at + mark), p.note);
 }
 
 std::vector<PendingNote> parsePendingFile(const std::string& file) {
@@ -418,11 +477,24 @@ std::vector<PendingNote> parsePendingFile(const std::string& file) {
   return out;
 }
 
-std::string nextId(const std::vector<PendingNote>& all) {
+// The last id given out, from the file's "seq <n>" line and its entries: an id is never given
+// twice, so an answer to an old id never reaches a newer call.
+unsigned long lastId(const std::string& file, const std::vector<PendingNote>& all) {
   unsigned long top = 0;
   for (const PendingNote& p : all)
     if (p.id.size() > 1 && p.id[0] == 'p') top = std::max(top, std::strtoul(p.id.c_str() + 1, nullptr, 10));
-  return "p" + std::to_string(top + 1);
+  for (const Line& l : splitLines(file))
+    if (l.raw.compare(0, sizeof(kSeqMark) - 1, kSeqMark) == 0)
+      top = std::max(top, std::strtoul(l.raw.c_str() + sizeof(kSeqMark) - 1, nullptr, 10));
+  return top;
+}
+
+// The file with its seq line set to `n` (first line) and `entry` appended.
+std::string withEntry(const std::string& file, unsigned long n, const std::string& entry) {
+  std::string out = kSeqMark + std::to_string(n) + "\n";
+  for (const Line& l : splitLines(file))
+    if (l.raw.compare(0, sizeof(kSeqMark) - 1, kSeqMark) != 0) out += l.raw + "\n";
+  return out + entry + "\n";
 }
 
 }  // namespace
@@ -430,15 +502,16 @@ std::string nextId(const std::vector<PendingNote>& all) {
 ToolResult Notebook::keepRequest(const Request& r, const std::string& person, Origin why) {
   std::string file;
   if (!io_.read(person, Shelf::Pending, file)) return ToolResult::fail(kUnreadable);
-  std::vector<PendingNote> all = parsePendingFile(file);
+  const unsigned long n = lastId(file, parsePendingFile(file)) + 1;
   PendingNote p;
-  p.id = nextId(all);
+  p.id = "p" + std::to_string(n);
   p.remove = r.remove;
   p.pin = r.pin;
   p.note = r.note;
+  p.kindGiven = r.hasKind;
   if (!r.hasKind) p.note.kind = Kind::Fact;
   p.why = why == Origin::Tainted ? "outside" : "unattended";
-  const std::string next = file + (file.empty() || file.back() == '\n' ? "" : "\n") + pendingLine(p) + "\n";
+  const std::string next = withEntry(file, n, pendingLine(p));
   const size_t cap = io_.caps(person).pending;
   if (next.size() > cap) return ToolResult::fail(kPendingFull + used(file.size(), cap) + "); nothing was changed");
   if (!io_.write(person, Shelf::Pending, next)) return ToolResult::fail(kUnwritten);
@@ -553,10 +626,12 @@ ToolResult Notebook::approve(const Principal& who, const std::string& id) {
     Request r;
     r.remove = p.remove;
     r.note = p.note;
-    r.hasKind = !p.remove;
+    r.hasKind = !p.remove && p.kindGiven;
     r.pin = p.pin;
+    // Dropped first, so a cut between the two writes loses the approval, never runs it twice.
+    if (!io_.write(person, Shelf::Pending, rest)) return ToolResult::fail(kUnwritten);
     const ToolResult ran = run(r, person);
-    if (ran.success && !io_.write(person, Shelf::Pending, rest)) return ToolResult::fail(kUnwritten);
+    if (!ran.success) (void)io_.write(person, Shelf::Pending, file);   // refused: it waits again
     return ran;
   } catch (const std::bad_alloc&) {
     return ToolResult::fail(kNoMemory);

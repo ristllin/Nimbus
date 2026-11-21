@@ -1065,8 +1065,8 @@ deleted. Engine 2 has no baseline.
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 4546 -> 5879
-- sha8: a3248afa -> 2f689ba7
+- bytes: 4546 -> 5894
+- sha8: a3248afa -> 6861f37b
 - lane: RB-N1
 - prd: section 4 ("Notes": note returns the stored line and the space used; pinned full is stored unpinned and says so; both full is an error listing the largest keys, nothing evicted; a set from a tainted or unattended turn goes to pending; with no card a member's note is refused in one line)
-- why: lib/core/src/orch_notes.cpp, a new tool of the spec with its own result and error lines (facts only: what was saved, where, the space used; what was kept for approval and why; what was refused and that nothing changed), cataloged as tool_results through E2_EXTRA_SOURCES as the file tools' are. No prompt text, no instruction. Planned work, not a fix.
+- why: lib/core/src/orch_notes.cpp, a new tool of the spec with its own result and error lines (facts only: what was saved, where, the space used; what was kept for approval and why; what was refused and that nothing changed), cataloged as tool_results through E2_EXTRA_SOURCES as the file tools' are; the pending file's own markers ("seq ", "kind=keep ") are file format the catalog lists with them. No prompt text, no instruction. Planned work, not a fix.

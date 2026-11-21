@@ -4,7 +4,7 @@
 # class core bytes=1474 ceiling=3072 entries=23 sha8=e511c6c4
 # class device_notes bytes=2040 ceiling=2048 entries=74 sha8=9371985c
 # class stubs bytes=0 ceiling=512 entries=0 sha8=e3b0c442
-# class tool_results bytes=5879 ceiling=6144 entries=398 sha8=2f689ba7
+# class tool_results bytes=5894 ceiling=6144 entries=402 sha8=6861f37b
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=654 ceiling=1024 entries=13 sha8=82cd5b54
 # class tool_descriptions bytes=4293 ceiling=10240 entries=46 sha8=76f76e0b
@@ -397,6 +397,8 @@ tool_results	lib/core/src/orch_file_tools.cpp	690a7a4a	9	"edit_file"
 tool_results	lib/core/src/orch_file_tools.cpp	a6706d54	10	"list_files"
 tool_results	lib/core/src/orch_file_tools.cpp	a6706d54	10	"list_files"
 tool_results	lib/core/src/orch_notes.cpp	a5c19f1f	7	" [rule]"
+tool_results	lib/core/src/orch_notes.cpp	6adcad7e	10	"kind=keep "
+tool_results	lib/core/src/orch_notes.cpp	932b25cc	4	"seq "
 tool_results	lib/core/src/orch_notes.cpp	777d5ea5	66	"the arguments of note are op, key, value, kind and pin; not read: "
 tool_results	lib/core/src/orch_notes.cpp	fa99ad83	19	"op is set or remove"
 tool_results	lib/core/src/orch_notes.cpp	a5363dd0	51	"key is a slug of a-z, 0-9 and -, 1 to 32 characters"
@@ -458,6 +460,7 @@ tool_results	lib/core/src/orch_notes.cpp	0a07f659	2	", "
 tool_results	lib/core/src/orch_notes.cpp	e3b0c442	0	""
 tool_results	lib/core/src/orch_notes.cpp	36a9e7f1	1	" "
 tool_results	lib/core/src/orch_notes.cpp	c908bbb4	2	" B"
+tool_results	lib/core/src/orch_notes.cpp	e3b0c442	0	""
 tool_results	lib/core/src/orch_notes.cpp	6901dac7	11	" B (pinned "
 tool_results	lib/core/src/orch_notes.cpp	aa473ae6	11	", unpinned "
 tool_results	lib/core/src/orch_notes.cpp	ba5ec51d	1	")"
@@ -477,16 +480,17 @@ tool_results	lib/core/src/orch_notes.cpp	6ca7ea2f	4	"keep"
 tool_results	lib/core/src/orch_notes.cpp	36a9e7f1	1	" "
 tool_results	lib/core/src/orch_notes.cpp	ec145e3a	5	" set "
 tool_results	lib/core/src/orch_notes.cpp	36a9e7f1	1	" "
+tool_results	lib/core/src/orch_notes.cpp	e3b0c442	0	""
 tool_results	lib/core/src/orch_notes.cpp	7e5608ab	6	"remove"
 tool_results	lib/core/src/orch_notes.cpp	6ee0eb49	3	"set"
 tool_results	lib/core/src/orch_notes.cpp	64f46a75	3	"pin"
 tool_results	lib/core/src/orch_notes.cpp	187897ce	4	"more"
+tool_results	lib/core/src/orch_notes.cpp	01ba4719	1	"\n"
+tool_results	lib/core/src/orch_notes.cpp	01ba4719	1	"\n"
+tool_results	lib/core/src/orch_notes.cpp	01ba4719	1	"\n"
 tool_results	lib/core/src/orch_notes.cpp	148de9c5	1	"p"
 tool_results	lib/core/src/orch_notes.cpp	31207a20	7	"outside"
 tool_results	lib/core/src/orch_notes.cpp	e7aca966	10	"unattended"
-tool_results	lib/core/src/orch_notes.cpp	e3b0c442	0	""
-tool_results	lib/core/src/orch_notes.cpp	01ba4719	1	"\n"
-tool_results	lib/core/src/orch_notes.cpp	01ba4719	1	"\n"
 tool_results	lib/core/src/orch_notes.cpp	fc165d2b	22	"); nothing was changed"
 tool_results	lib/core/src/orch_notes.cpp	45822f54	2	": "
 tool_results	lib/core/src/orch_notes.cpp	eba68587	7	"remove "

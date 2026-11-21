@@ -126,14 +126,14 @@ class HostedNotes {
     agent::plain::ToolOutput o;
     o.id = c.id;
     o.name = c.name;
-    if (!reg_ || !t.who) {
-      o.isError = true;
-      o.text = "no registry for " + c.name;
-      return o;
-    }
+    // Before attach the registry is empty (the registry's own unknown-tool error); a turn with no
+    // person reaches the tool as no person (the notes refuse it in one line).
+    static const nimbus::orch::ToolRegistry kNone;
+    static const nimbus::orch::Principal kNobody;
     JsonDocument args;
     (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
-    const nimbus::orch::ToolResult r = reg_->dispatch(c.name, args.as<JsonObjectConst>(), *t.who);
+    const nimbus::orch::ToolResult r =
+        (reg_ ? *reg_ : kNone).dispatch(c.name, args.as<JsonObjectConst>(), t.who ? *t.who : kNobody);
     o.isError = !r.success;
     o.text = r.success ? r.output : r.error;
     return o;

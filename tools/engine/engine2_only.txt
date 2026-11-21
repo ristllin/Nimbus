@@ -39,6 +39,9 @@ lib/harness/src/providers/plain_wire_anthropic.cpp
 # RB-C2: the device binding of the engine-2 compaction driver.
 src/agent/plain_fold_device.cpp
 
+# RB-N1: the device binding of engine 2's notes (the owner on flash, members on the card).
+src/agent/notes_device.cpp
+
 # RB-I0: the engine-2 device seam (a stub until RB-I1/RB-I2) and its tool-family hooks.
 src/agent/orchestrator_plain.cpp
 src/agent/tools_plain.cpp

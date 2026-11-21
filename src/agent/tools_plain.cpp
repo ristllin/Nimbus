@@ -5,11 +5,16 @@
 // guard (tools/engine/list_tool_registrations.py --check). The engine-2 binding lanes register
 // their own tools here or in their *_device.cpp files.
 #include "engine_tools.h"
+#include "notes_device.h"   // lane RB-N1: note
 
 namespace agent {
 namespace tools {
 
-void registerMemoryFamilies(nimbus::orch::ToolRegistry&, const nimbus::orch::MemoryContext&) {}
+// note (lane RB-N1, notes_device.cpp). No origin is bound until the engine runs turns (RB-I2):
+// until then every call is kept for approval (fail closed).
+void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch::MemoryContext&) {
+  notesdev::registerNote(reg, nullptr);
+}
 
 void registerModelsFamily(nimbus::orch::ToolRegistry&, const nimbus::orch::ModelsToolHandlers&) {}
 

@@ -285,6 +285,87 @@ static void test_keep_is_the_rails_pending_store() {
   TEST_ASSERT_FALSE(nb.keep(d.as<JsonObjectConst>(), owner(), Origin::Tainted).success);   // invalid: not kept
 }
 
+// Review fixes (lane RB-N1 four-lens review): an id is never given twice, a kept call that left
+// kind out keeps the old kind when approved, a refused approval waits again, and an approval is
+// dropped before it runs (a cut loses it, never runs it twice).
+static void test_pending_ids_are_never_reused() {
+  MemIo io;
+  Notebook nb(io);
+  std::vector<std::string> given;
+  for (int round = 0; round < 4; ++round) {
+    TEST_ASSERT_TRUE(callJson(nb, setJson("k", "v" + std::to_string(round)), owner(), Origin::Tainted).success);
+    std::vector<PendingNote> kept;
+    TEST_ASSERT_TRUE(nb.pending(owner(), kept));
+    TEST_ASSERT_EQUAL(1, (int)kept.size());
+    for (const std::string& old : given) TEST_ASSERT_TRUE(old != kept[0].id);
+    given.push_back(kept[0].id);
+    TEST_ASSERT_TRUE((round % 2 ? nb.approve(owner(), kept[0].id) : nb.reject(owner(), kept[0].id)).success);
+  }
+  // An answer to an old id reaches nothing.
+  TEST_ASSERT_TRUE(callJson(nb, setJson("other", "new call"), owner(), Origin::Tainted).success);
+  TEST_ASSERT_FALSE(nb.approve(owner(), given.back()).success);
+  TEST_ASSERT_EQUAL(0, (int)countKey(io.files["owner/pinned"], "other"));
+}
+
+static void test_approved_call_that_left_kind_out_keeps_the_old_kind() {
+  for (Kind before : {Kind::Fact, Kind::Rule}) {
+    MemIo io;
+    Notebook nb(io);
+    TEST_ASSERT_TRUE(callJson(nb, setJson("k", "old", 1, before == Kind::Rule ? "rule" : "fact"), owner()).success);
+    TEST_ASSERT_TRUE(callJson(nb, setJson("k", "new"), owner(), Origin::Unattended).success);
+    std::vector<PendingNote> kept;
+    TEST_ASSERT_TRUE(nb.pending(owner(), kept));
+    TEST_ASSERT_EQUAL(1, (int)kept.size());
+    TEST_ASSERT_FALSE(kept[0].kindGiven);
+    TEST_ASSERT_TRUE(nb.approve(owner(), kept[0].id).success);
+    const std::string want = before == Kind::Rule ? "k [rule]: new\n" : "k: new\n";
+    TEST_ASSERT_EQUAL_STRING(want.c_str(), io.files["owner/pinned"].c_str());
+  }
+}
+
+static void test_refused_approval_waits_again_and_a_cut_never_runs_twice() {
+  MemIo io;
+  io.capsFor["owner"] = Caps{16, 16, 512};
+  Notebook nb(io);
+  TEST_ASSERT_TRUE(callJson(nb, setJson("big", "a value too long for either shelf"), owner(), Origin::Tainted).success);
+  std::vector<PendingNote> kept;
+  TEST_ASSERT_TRUE(nb.pending(owner(), kept));
+  TEST_ASSERT_FALSE(nb.approve(owner(), kept[0].id).success);   // no room: refused
+  std::vector<PendingNote> again;
+  TEST_ASSERT_TRUE(nb.pending(owner(), again));
+  TEST_ASSERT_EQUAL(1, (int)again.size());
+  TEST_ASSERT_EQUAL_STRING(kept[0].id.c_str(), again[0].id.c_str());
+  // The pending write is the first write of an approval: when it is refused nothing ran.
+  io.capsFor["owner"] = kOwnerCaps;
+  io.ops.clear();
+  io.failWrites = true;
+  TEST_ASSERT_FALSE(nb.approve(owner(), kept[0].id).success);
+  size_t firstWrite = io.ops.size();
+  for (size_t i = 0; i < io.ops.size(); ++i)
+    if (io.ops[i].rfind("write ", 0) == 0) {
+      firstWrite = i;
+      break;
+    }
+  TEST_ASSERT_TRUE(firstWrite < io.ops.size());
+  TEST_ASSERT_EQUAL_STRING("write owner/pending", io.ops[firstWrite].c_str());
+  TEST_ASSERT_EQUAL(0, (int)io.files["owner/pinned"].size());
+}
+
+static void test_blank_values_c1_controls_and_crlf_lines() {
+  TEST_ASSERT_FALSE(validValue(" "));
+  TEST_ASSERT_FALSE(validValue("   "));
+  TEST_ASSERT_TRUE(validValue(" a "));
+  TEST_ASSERT_FALSE(validValue("a\xc2\x85" "b"));      // U+0085
+  TEST_ASSERT_FALSE(validValue("a\xe2\x80\xa8" "b"));  // U+2028
+  TEST_ASSERT_FALSE(validValue("a\xe2\x80\xa9" "b"));  // U+2029
+  TEST_ASSERT_TRUE(validValue("a\xc2\xa0" "b"));       // U+00A0 is text
+  TEST_ASSERT_TRUE(validValue("a\xe2\x80\x99" "b"));   // U+2019 is text
+  MemIo io;
+  io.files["owner/pinned"] = "tea: green\r\ncoffee: none\r\n";   // a hand edit with CRLF
+  Notebook nb(io);
+  TEST_ASSERT_EQUAL_STRING("tea: green\ncoffee: none\n", nb.pinnedBlock(owner()).c_str());
+}
+
 // ---- per person ---------------------------------------------------------------------------------
 static void test_each_person_reads_and_writes_only_their_own() {
   MemIo io;
@@ -513,5 +594,9 @@ int main(int, char**) {
   RUN_TEST(test_owner_files_take_at_most_80KB_of_flash_with_the_atomic_copy);
   RUN_TEST(test_pinned_block_fits_the_request_ceiling);
   RUN_TEST(test_registered_handler_reads_the_origin);
+  RUN_TEST(test_pending_ids_are_never_reused);
+  RUN_TEST(test_approved_call_that_left_kind_out_keeps_the_old_kind);
+  RUN_TEST(test_refused_approval_waits_again_and_a_cut_never_runs_twice);
+  RUN_TEST(test_blank_values_c1_controls_and_crlf_lines);
   return UNITY_END();
 }

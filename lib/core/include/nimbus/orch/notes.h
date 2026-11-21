@@ -101,16 +101,18 @@ struct Note {
 
 // One kept call, waiting for the owner.
 struct PendingNote {
-  std::string id;          // "p1", "p2", ... unique in the person's pending file
+  std::string id;          // "p1", "p2", ... never reused in the person's pending file
   bool remove = false;     // a remove (else a set)
   int pin = -1;            // a set's pin: 1, 0, or -1 when the call left it out
   Note note;               // a remove carries the key only
+  bool kindGiven = true;   // a set's kind was in the call (else an existing note keeps its kind)
   std::string why;         // "outside" | "unattended"
 };
 
 // ---- pure rules (exposed for the tests) ---------------------------------------------------
 bool validKey(const std::string& key);
-// One line, 1 to kValueMax bytes, valid UTF-8, no control characters.
+// One line, 1 to kValueMax bytes, valid UTF-8, not blank, no control characters (C0, DEL, C1,
+// U+2028, U+2029).
 bool validValue(const std::string& value);
 std::string formatLine(const Note& n);   // "key: value" or "key [rule]: value"
 // false for a line that is not a note (it is kept as it is by every rewrite, never dropped).
@@ -144,8 +146,9 @@ class Notebook {
   bool unpinned(const Principal& who, std::vector<Note>& out);
   // The person's kept calls, oldest first.
   bool pending(const Principal& who, std::vector<PendingNote>& out);
-  // The owner's answer to a kept call: approve runs it as an attended call and drops it from
-  // the pending file once it ran (a refused run keeps it); reject drops it.
+  // The owner's answer to a kept call: approve drops it from the pending file and runs it as an
+  // attended call (a refused run puts it back); reject drops it. Neither checks who answers: the
+  // binding offers them to the owner only.
   ToolResult approve(const Principal& who, const std::string& id);
   ToolResult reject(const Principal& who, const std::string& id);
 
