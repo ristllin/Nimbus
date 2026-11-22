@@ -937,6 +937,36 @@ its own transcript, `routine-<id>` (a chat key holds `[a-z0-9_-]` only, so not `
   note marked sent before a cut is only appended, never sent again. No second model turn.
   An empty reply with no limit reached is silence.
 
+### The schedule tool and loops2.json (lane RB-U1b)
+
+`orch_schedule_tool.cpp` (`nimbus/orch/schedule_tool.h`) is engine 2's `schedule` tool: `op`
+create, update, delete or list; `kind` reminder or routine; `id`, `when` ("YYYY-MM-DD HH:MM",
+local), `text`, `every` ("daily 07:00", "weekly mon,thu 18:30", "every 30 min", "every 2 h"). The
+device binds it in `src/agent/schedule_device.cpp`, nimbusd in `hosted_loops.h`
+(`attachSchedule`, `scheduleDispatch`).
+
+- **Storage.** Every entry is a record of `/data/loops.json`, written and read by v5.1.1's own
+  codec (`dumpLoops`, `loadLoops`; `orch_loops.cpp` is not touched), so engine 1 lists and fires
+  what engine 2 made. What engine 1 does not know lives in `/data/loops2.json`, keyed by loop id:
+  `{"v":1,"loops":[{"id","kind","tools","paths","holdS","outsideAt"}]}`. An id with no entry is an
+  old record: a one-time record the owner made (`/remind`) is a reminder, every other record a
+  routine with the default tools and no paths. A create or update writes loops2.json first, a
+  delete loops.json first; an entry whose record is gone is ignored and dropped by the next write.
+- **Nothing is cut.** A text over 2,048 B is refused with the limit named (owner ruling 81); the
+  name is a label made from the text's first words (24 B).
+- **Who may do what.** A person's own turn may do all four. A turn no person started (and a call
+  with no turn bound yet) may list and set a reminder, nothing else; a tainted turn's change never
+  reaches the tool (the rails keep it). A routine the assistant creates or changes waits for the
+  owner's approval; a reminder is approved at once unless "Wake-ups: ask me first" is on. On
+  engine 2 reminders count against the eight entries, not against engine 1's four armed wakeups.
+- **A reminder's fire makes no model call.** Its stored text goes to the owner byte for byte
+  through the routine delivery (`deliverHeld`), never held for quiet hours, and his transcript
+  gets the routine note. A reminder keeps its wall-clock time across a restart and the clock sync.
+- **A routine's fire** runs through `runRoutine` with its definition from both files and its state
+  at `/mem/routines/<id>.state` (temp and rename; a cut leaves the old file or a whole temp). A fire
+  that read outside content marks its output in `outsideAt`, and the next fire opens tainted while
+  that output is in the state. With no card a routine is skipped (`lastErr` "no card").
+
 ### The Anthropic wire: what a request carries
 
 `providers/plain_wire_anthropic.cpp` renders one Messages API request from the stored
