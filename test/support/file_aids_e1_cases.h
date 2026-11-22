@@ -211,11 +211,17 @@ inline std::string deviceCall(MemCard& card, const std::string& path, const Call
   return aids::e1::edit(card, card, card.file.size(), call, memory, out) ? "ok " + out : "error " + out;
 }
 
-// The transcript: for each call, its reply and the file after it.
+// The transcript: for each call, its reply and the file after it. The call runs in its own
+// statement: the operands of one chain of operator+ are not sequenced, and g++ read the file
+// before the call had seeded it.
 inline std::string transcript(const std::function<std::string(const Call&, const std::string& path)>& run,
                               const std::function<std::string(const std::string& path)>& fileOf) {
   std::string t;
-  for (const Call& c : calls()) t += std::string("== ") + c.name + "\n" + run(c, c.path) + "\n-- " + c.path + "\n" + fileOf(c.path) + "\n";
+  for (const Call& c : calls()) {
+    const std::string reply = run(c, c.path);
+    const std::string after = fileOf(c.path);
+    t += std::string("== ") + c.name + "\n" + reply + "\n-- " + c.path + "\n" + after + "\n";
+  }
   return t;
 }
 
