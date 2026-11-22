@@ -222,6 +222,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("lib/core/src/orch_notes.cpp", "tool_results"),
     # RB-TG1: what a stored PDF's line in the owner message says after its inbox path.
     ("lib/core/include/nimbus/net/tg_inbox.h", "stubs"),
+    # E2-TOOLS: the engine-2 device registrations (web_search over the old web.search: its names and argument).
+    ("src/agent/tools_plain.cpp", "tool_results"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

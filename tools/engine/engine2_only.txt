@@ -48,6 +48,7 @@ src/agent/notes_device.cpp
 # RB-I0: the engine-2 device seam (a stub until RB-I1/RB-I2) and its tool-family hooks.
 src/agent/orchestrator_plain.cpp
 src/agent/tools_plain.cpp
+src/agent/file_tools_device.cpp
 
 # E2-DEV: the transcript store on the card (the RB-I3 minimum).
 src/agent/tx_store_device.cpp

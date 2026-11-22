@@ -255,6 +255,8 @@ inline constexpr char kRailNoPending[] =
     "was changed";
 inline constexpr char kRailRefused[] =
     "not run: this turn read outside content, and this action needs the owner's own message; nothing was changed";
+// web_search on a device that has no search key (lane E2-TOOLS, src/agent/tools_plain.cpp).
+inline constexpr char kWebSearchNoKey[] = "web search is not set up on this device: no search key";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3; lane RB-C3: one cumulative summary,

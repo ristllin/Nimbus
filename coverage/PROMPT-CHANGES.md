@@ -1120,3 +1120,14 @@ PC-0143: not used.
 - lane: RB-N2b
 - prd: section 4 (the file tools), as amended by ruling 112 item 4 (the tools refuse, in one plain line, a name that collides with a host's own files and a project the host evicts as regenerable) and item 6 (up to 256 B of engine-2 tool_results text for the refusal lines)
 - why: nimbusd/src/hosted_file_tools.h HostedFileTools::kReservedName, 135 B, the one refusal of write_file, append_file and edit_file for a name ending in .tmp (the atomic writer's temporary file) or a path in the chat or chat-* folders (evicted as regenerable copies). It is catalogued under e1 because the gate reads nimbusd's sources there; it reaches only engine-2 requests. Written by lane E2-HOST, which carries RB-N2b's hosted binding (ruling 114, the fast engine-2 path). Planned work, not a fix.
+### PC-0174: delete_file's result line and the device's web_search binding (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 5894 -> 6058
+- sha8: 6861f37b -> f10df0de
+- lane: RB-N2b
+- prd: section 4 (the file tools: delete_file behind more, files_admin; web_search, whose results are outside content), and ENGINE2-FASTEST-PATH.md step 2 (file tools over the old engine's file store; web search through the old search function; ruling 114)
+- why: lib/core/src/orch_file_tools.cpp kDeleted "deleted {} ({} B)" with delete_file's one argument name (path), the result of the declared tool behind more (texts.h kBehindMore, unchanged); its refusals reuse the existing file tool lines. lib/harness/include/nimbus/harness/plain/texts.h tool_results::kWebSearchNoKey, the one plain line web_search gives on a device with no search key (facts only, no instruction). src/agent/tools_plain.cpp joins the catalog for its literals: the engine-2 name web_search, the old engine's handler name web.search and argument query that it forwards, and the Tavily budget slug; the search results and errors stay the old engine's own (lib/harness/src/websearch.cpp, unchanged, e1 catalog). Written by lane E2-TOOLS, which carries RB-N2b's device binding of the file tools (ruling 114, the fast engine-2 path). Planned work, not a fix.
+
+PC-0175, PC-0176: not used.

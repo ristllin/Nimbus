@@ -96,6 +96,19 @@ const ActionRuleRow kRows[] = {
     {"image.look", R::TurnOnly, "look at a photo"},
     {"image.note", R::TurnOnly, "note a photo"},   // the head records what a photo showed
     {"calc", R::Open, "calculate"},   // RB-REC8: exact arithmetic on its argument; it writes nothing
+#if !defined(ARDUINO) || (defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2)
+    // ---- engine 2's plain tools (lib/core/src/orch_file_tools.cpp; lanes RB-N2b, E2-TOOLS): the file tools
+    // are open to every caller, the handler's own line decides whose file (a member reads and writes only its
+    // own); web_search is the old web.search under its engine-2 name. Engine-1 images never register them, so
+    // the rows stay out of those images.
+    {"read_file", R::Open, "read a file"},
+    {"write_file", R::Open, "write a file"},
+    {"append_file", R::Open, "add to a file"},
+    {"edit_file", R::Open, "edit a file"},
+    {"list_files", R::Open, "list files"},
+    {"delete_file", R::Open, "delete a file"},
+    {"web_search", R::TurnOnly, "search the web"},
+#endif
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},
     {"docs.read", R::Open, "read the docs"},

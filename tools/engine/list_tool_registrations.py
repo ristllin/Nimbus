@@ -47,7 +47,11 @@ TAG = "[tool-registrations]"
 
 # The engine-2 binding files that may register tools on an engine-2 build. An engine-2 lane that
 # binds a tool adds its *_device.cpp here in the same commit.
-ENGINE2_REGISTRATION_FILES: Tuple[str, ...] = ("src/agent/tools_plain.cpp", "src/agent/notes_device.cpp")
+ENGINE2_REGISTRATION_FILES: Tuple[str, ...] = (
+    "src/agent/tools_plain.cpp",
+    "src/agent/notes_device.cpp",
+    "src/agent/file_tools_device.cpp",
+)
 
 # A registry receiver: any identifier with "reg" in it (reg, g_reg, registry, toolReg, ...) or a
 # registry() call; the fallback below also catches any receiver given a dotted tool-name literal.

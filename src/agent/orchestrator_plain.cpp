@@ -12,12 +12,12 @@
 //   - the transcript on the card (tx_store_device.h, /mem/tx; RAM only with no card);
 //   - a part goes out once: Telegram through telegram::sendPart (no second split), the web and
 //     voice chats through the common deliver();
-//   - the shared registry (memory::registry: the note tool), compaction (plain_fold_device's two
+//   - the shared registry (memory::registry: note, the file tools, calc, web_search, more), compaction (plain_fold_device's two
 //     files), suppression, the money guard and one breaker, the seen-index rebuild at boot.
 // One resident chat (one arena, sized for the head): a message for another chat, another model
 // or another role boots the binding again over the same card (the transcript is refilled).
 // Claude heads only: any other head gets one plain line. Owner commands are not parsed yet (they
-// reach the model as text); routines, agents, files and photos are not bound yet.
+// reach the model as text); routines, agents and photos are not bound yet.
 #include "orchestrator.h"
 #include "orchestrator_common.h"   // g_fabric, g_sinks, g_sessMux, deliver, the voice flags
 
@@ -39,6 +39,7 @@
 #include "../sys/agent_log.h"
 #include "../sys/heap_watch.h"     // heapwatch::psramFirst - the turn's PSRAM-first switch
 #include "../sys/psram_static.h"   // the notice slot in PSRAM, as on engine 1
+#include "files_subsystem.h"    // files::recentFiles - the file tools' recent-files list (E2-TOOLS)
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
@@ -183,6 +184,11 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.chatsum = deviceChatsumIO();
   if (!localChat(chatId)) d.seen = &telegram::seenIndex();
   d.log = [](const char* line) { alog(line); };
+  // Lane E2-TOOLS: web_search reads outside content; the files a person may read, for the request.
+  d.outside = [](const std::string& tool) { return tool == "web_search"; };
+  d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
+    return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
+  };
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();

@@ -34,6 +34,9 @@
 #endif
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/harness/conversation.h"  // utcOffsetAtUnix: the running day's offset
+#else
+#include "agent/engine_api.h"             // orchestrator::utcOffsetAt: the file tools' local time (E2-TOOLS)
+#include "nimbus/orch/file_card_io.h"     // CardFilesIo: engine 2's file tools over this store (E2-TOOLS)
 #endif
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/store_full.h"   // a full store is said once (storm leg g)
@@ -2381,6 +2384,112 @@ void testArmCut(TestCut where, uint32_t at) {   // CUTARM (files_subsystem.h)
   g_cutAt = at;
   g_cutOps = 0;
   g_cutWhere = uint8_t(where);
+}
+#endif
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// ---- engine 2's plain file tools: the SD card under them (lane E2-TOOLS; nimbus/orch/file_card_io.h) ----
+// The library (lib/core orch_file_tools.cpp and orch_file_card_io.cpp) holds every rule and result text. This
+// is the card and the old engine's own parts: g_store (the one index the web upload and the Files panel share),
+// memory::Lock, persistIndex, checkRoomLocked (FSCAP reclaim) and kSwap's backup and note, so a replace a power
+// cut interrupted is repaired at boot by recoverInterruptedSwap as it always was. No repair of its own, no
+// truncate (ruling 112). The tools' part file is their own, never the web upload's kPartPath.
+namespace {
+
+constexpr const char* kToolsPart = "/mem/files/.tools-part";
+
+class SdFileCard : public nimbus::orch::FileCard {
+ public:
+  bool exists(const std::string& p) override { return base_.exists(p); }
+  bool rename(const std::string& a, const std::string& b) override { return base_.rename(a, b); }
+  bool remove(const std::string& p) override { return base_.remove(p); }
+  bool writeText(const std::string& p, const std::string& t) override { return base_.writeText(p, t); }
+  std::string readText(const std::string& p) override { return base_.readText(p); }
+  long long size(const std::string& p) override { return base_.size(p); }
+  bool readAt(const std::string& p, uint64_t offset, size_t len, std::string& out) override {
+    out.clear();
+    if (!memory::dataFs().exists(p.c_str())) return false;
+    File f = memory::dataFs().open(p.c_str(), FILE_READ);
+    if (!f) return false;
+    if (offset && !f.seek(size_t(offset))) {
+      f.close();
+      return false;
+    }
+    out.resize(len);
+    const size_t got = len ? f.read(reinterpret_cast<uint8_t*>(&out[0]), len) : 0;
+    f.close();
+    out.resize(got);
+    return true;
+  }
+  // The old engine's append: open for append, so the bytes land at the size on the card.
+  bool append(const std::string& p, std::string_view bytes, size_t& landed) override {
+    landed = 0;
+    File f = memory::dataFs().open(p.c_str(), FILE_APPEND);
+    if (!f) return false;
+    landed = bytes.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+    f.close();
+    return true;
+  }
+  bool write(const std::string& p, std::string_view bytes, bool first) override {
+    File f = memory::dataFs().open(p.c_str(), first ? FILE_WRITE : FILE_APPEND);
+    if (!f) return false;
+    const size_t n = bytes.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+    f.close();
+    return n == bytes.size();
+  }
+  bool mkdir(const std::string& d) override {
+    fs::FS& fs = memory::dataFs();
+    return fs.exists(d.c_str()) || fs.mkdir(d.c_str());
+  }
+
+ private:
+  SdSwapFs base_;
+};
+
+// The old engine's persistIndex (void, unchanged), then whether the index on the card is the one just written.
+bool persistIndexLanded() {
+  persistIndex();
+  const long long onCard = SdSwapFs().size(kIndexPath);
+  return onCard >= 0 && size_t(onCard) == g_store.dump().size();
+}
+
+nimbus::orch::CardFilesIo& cardIo() {
+  static SdFileCard card;
+  static nimbus::orch::CardFilesIo io(
+      card, g_store, nimbus::orch::CardFilesLayout{kRoot, kToolsPart, {kToolsPart, kSwap.bak, kSwap.note}}, [] {
+        nimbus::orch::CardFilesHost h;
+        h.locked = [](const std::function<void()>& fn) {
+          if (!xPortCanYield()) return false;   // never from a context that cannot wait for the card lock
+          memory::Lock g;
+          if (!available()) return false;
+          fn();
+          return true;
+        };
+        h.persistIndex = [] { return persistIndexLanded(); };
+        h.now = [] { return nowEpoch(); };
+        h.utcOffsetMin = [](uint32_t epoch) { return orchestrator::utcOffsetAt(epoch); };
+        h.roomFor = [](const std::string& p, const std::string& n, uint64_t add, std::string& err) {
+          return !checkRoomLocked(p, n, add, err);
+        };
+        return h;
+      }());
+  return io;
+}
+
+}  // namespace
+
+nimbus::orch::FileToolsIo& toolsIo() { return cardIo(); }
+
+bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out) {
+  out.clear();
+  memory::Lock g;
+  if (!available()) return false;
+  const bool shared = who.owner || who.perms().readShared;
+  for (const nimbus::orch::FileEntry* e : g_store.list()) {
+    if (!g_store.readableBy(*e, who.ns, who.owner, shared)) continue;
+    out.push_back({nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name), e->createdAt});
+  }
+  return true;
 }
 #endif
 

@@ -183,6 +183,14 @@ const Expect kExpect[] = {
     {"image.look", kTurn},
     {"image.note", kTurn},
     {"calc", kOpen},   // RB-REC8
+    // engine 2's plain tools (RB-N2b, E2-TOOLS): the handler's own line decides whose file
+    {"read_file", kOpen},
+    {"write_file", kOpen},
+    {"append_file", kOpen},
+    {"edit_file", kOpen},
+    {"list_files", kOpen},
+    {"delete_file", kOpen},
+    {"web_search", kTurn},
     // docs, routines, replies, skills, people
     {"docs.list", kOpen},
     {"docs.read", kOpen},
@@ -265,12 +273,21 @@ void walk(const std::string& dir, std::vector<std::string>& out) {
   closedir(d);
 }
 
-// Old-engine tools registered under an undotted name (RB-REC8: calc, always on on both
-// engines). Engine-2-only names (read_file, ...) stay out: they have no rows here.
+// Tools registered under an undotted name: calc (RB-REC8, always on on both engines) and every
+// engine-2 snake_case name (read_file, web_search, ...: words joined by '_'; RB-N2b, E2-TOOLS), so a new
+// engine-2 tool with no row fails here too.
 const std::set<std::string> kUndottedTools = {"calc"};
 
+bool snakeName(const std::string& s) {
+  if (s.empty() || s.front() == '_' || s.back() == '_' || s.find('_') == std::string::npos) return false;
+  if (s.find("__") != std::string::npos) return false;
+  for (char c : s)
+    if (!((c >= 'a' && c <= 'z') || c == '_')) return false;
+  return true;
+}
+
 bool toolNameShape(const std::string& s) {
-  if (kUndottedTools.count(s)) return true;
+  if (kUndottedTools.count(s) || snakeName(s)) return true;
   const size_t dot = s.find('.');
   if (dot == std::string::npos || dot == 0 || dot + 1 >= s.size()) return false;
   for (char c : s)

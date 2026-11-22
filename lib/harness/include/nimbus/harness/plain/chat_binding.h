@@ -23,6 +23,7 @@
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/budget.h"
+#include "nimbus/orch/tx/digest.h"   // RecentFilesBlock::Source - the live file store's list
 #include "nimbus/orch/tx/log.h"
 
 // plain/chat_binding.h - one chat on engine 2 on the device (lane E2-DEV). A copy of nimbusd's
@@ -57,6 +58,11 @@ struct ChatBindingDeps {
   TextIO chatsum;                                // unset: no mirror
   nimbus::orch::SeenIndex* seen = nullptr;       // null: no rebuild (not a Telegram chat)
   std::function<void(const char* line)> log;     // one line each; null: silent
+  // Lane E2-TOOLS: a tool whose result is outside content (web search); its outputs taint the turn
+  // (ToolOutput::outside). Null: no tool reads outside content.
+  std::function<bool(const std::string& tool)> outside;
+  // Lane E2-TOOLS: EngineDeps::recentFiles for this chat's person (the device's file store); null: no list.
+  std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
 };
 
 struct ChatBindingConfig {
@@ -267,6 +273,7 @@ class ChatBinding {
     o.name = c.name;
     o.isError = !r.success;
     o.text = r.success ? r.output : r.error;
+    o.outside = d_.outside && d_.outside(c.name);
     return o;
   }
 
@@ -315,6 +322,7 @@ class ChatBinding {
     e.chatKey = cfg_.chatKey;
     e.dispatch = [this](const ToolCall& c, const TurnCtx& t) { return dispatchCall(c, t); };
     e.setup = [this](const TurnCtx& t, TurnSetup& out) { return setup(t, out); };
+    if (d_.recentFiles) e.recentFiles = d_.recentFiles(who_);
     return e;
   }
 

@@ -4,6 +4,10 @@
 
 #include <FS.h>                            // fs::FS - the streaming save source
 #include "nimbus/orch/tool_registry.h"   // Principal - the per-caller data boundary
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "nimbus/orch/file_tools.h"      // FileToolsIo - engine 2's file tools seam (E2-TOOLS)
+#include "nimbus/orch/tx/digest.h"       // tx::RecentFile - the recent-files source
+#endif
 
 #include <string>
 #include <vector>
@@ -225,5 +229,16 @@ struct ListPage {
 };
 String listJson(const String& project, const std::string& ns = "", bool owner = true,
                 bool mayReadShared = true, const ListPage& page = {});
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// ---- engine 2 (lane E2-TOOLS): the plain file tools' card over this store ----
+// The FileToolsIo (nimbus/orch/file_card_io.h CardFilesIo) over g_store and the SD card, under memory::Lock: the
+// old engine's append (at the size on the card), its swap and boot recovery, its index write. A lagging index
+// entry is brought to the card's size; nothing stored is ever cut. file_tools_device.cpp binds the library to it.
+nimbus::orch::FileToolsIo& toolsIo();
+// EngineDeps::recentFiles for one person (tx::RecentFilesBlock::Source): the files `who` may read, with
+// their last write times. False with no card.
+bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out);
+#endif
 
 }  // namespace agent::files
