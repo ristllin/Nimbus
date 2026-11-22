@@ -11,10 +11,13 @@
 
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/http.h"
+#include "nimbus/harness/plain/chat_skills.h"
 #include "nimbus/harness/plain/compact.h"
+#include "nimbus/harness/plain/deliver.h"
 #include "nimbus/harness/plain/engine.h"
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/hooks.h"
+#include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/rbac.h"
@@ -25,6 +28,7 @@
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/digest.h"   // RecentFilesBlock::Source - the live file store's list
 #include "nimbus/orch/tx/log.h"
+#include "nimbus/orch/turn_spend.h"
 
 // plain/chat_binding.h - one chat on engine 2 on the device (lane E2-DEV). A copy of nimbusd's
 // one-chat rig (nimbusd/src/plain_rig.h, PlainRig) with what a device chat needs on top:
@@ -36,6 +40,12 @@
 //     price row; no price row: boot refuses, fail closed) and one ChatBreaker;
 //   - the seen index rebuilt from the filled arena after boot (RB-TG1);
 //   - the shared tool registry, dispatched with the turn's Principal (plain_rig.h's dispatch).
+// Lane E2-CHAT adds the owner's daily chat on top:
+//   - photos: the message's image parts (ChatMessage::parts) and the photo hook (TurnSetup::photo);
+//   - skills: the skills index and the context skills in the pinned block, each one whole or not
+//     at all (skillRefused names one left out; chat_skills.h);
+//   - commands that act on the engine: compactNow (a compaction now) and budgetView (/budget);
+//   - the turn's usage handed to `usage` once per turn; the progress line (installProgress).
 // Only lib headers are included, so a host test drives the same class with a fake platform, a
 // scripted transport and a fake card (test/test_plain_chat_binding). The device seam
 // (src/agent/orchestrator_plain.cpp) gives it the device's parts.
@@ -63,6 +73,14 @@ struct ChatBindingDeps {
   std::function<bool(const std::string& tool)> outside;
   // Lane E2-TOOLS: EngineDeps::recentFiles for this chat's person (the device's file store); null: no list.
   std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
+  // Lane E2-CHAT.
+  PhotoFn photo;                                 // the turn's photo bytes by ref; null: stubs only
+  std::function<ChatSkills(const nimbus::orch::Principal&)> skills;   // null: no skills
+  // A context skill that does not fit the pinned block whole: left out of it (listed instead).
+  std::function<void(const std::string& id, size_t bytes)> skillRefused;
+  // Once per turn, after runTurn: what the turn spent, for the owner's usage view.
+  std::function<void(const TurnOutcome& out)> usage;
+  ProgressDeps progress;                         // send unset: no progress line
 };
 
 struct ChatBindingConfig {
@@ -86,7 +104,24 @@ struct ChatMessage {
   std::vector<uint64_t> src;                     // Telegram update ids
   int16_t tzMinutes = 0;
   uint64_t m = 0;                                // the day-stream row it mirrors
+  std::vector<nimbus::orch::tx::Part> parts;     // its photos (Image parts "p<ref>")
 };
+
+// A turn's spend as the owner's usage view files it (store::recordProviderSpend): one slot of the
+// head's provider and model, in the provider's own counts (Anthropic's input leaves the cache out),
+// one billed response per head request.
+inline nimbus::orch::TurnSpend turnSpendOf(const TurnOutcome& out, const std::string& provider, const std::string& model) {
+  nimbus::orch::TurnSpend s;
+  nimbus::orch::TokenUsage u;
+  u.promptTokens = out.end.promptTokens;
+  u.completionTokens = out.end.outputTokens;
+  u.cacheReadTokens = out.end.cacheReadTokens;
+  u.cacheWriteTokens = out.end.cacheWriteTokens;
+  u.responses = out.headRequests;
+  u.maxRequestIn = out.end.lastPromptTokens;
+  s.add(provider.c_str(), model.c_str(), u);   // files nothing when nothing was billed
+  return s;
+}
 
 class ChatBinding {
  public:
@@ -130,8 +165,15 @@ class ChatBinding {
       log_.reset(new tx::TxLog(*d_.files, cfg_.chatKey));
       hooks_.reset(new PlainHooks());
       (void)installSuppression(*hooks_);
-      st = installCompaction(*hooks_, compactDeps());
+      driver_.reset(new CompactDriver(compactDeps()));
+      st = installCompaction(*hooks_, *driver_);
       if (!st.ok()) return fail(st);
+      if (d_.progress.send) {
+        reporter_.reset(new ProgressReporter(d_.progress));
+        const Platform* clock = p;
+        st = installProgress(*hooks_, *reporter_, [clock] { return clock->nowMs(); });
+        if (!st.ok()) return fail(st);
+      }
       engine_.reset(new PlainEngine(deps()));
       st = engine_->boot(BootCtx{p->nowEpoch(), afterCrash});
     } catch (const std::bad_alloc&) {
@@ -156,6 +198,7 @@ class ChatBinding {
     sent_ = refused_ = 0;
     const uint32_t now = d_.platform->nowMs();
     (void)breaker_.admit(/*person=*/true, now);
+    if (reporter_) reporter_->open(turnCtx(), now);
     TurnInput in;
     in.ctx = turnCtx();
     in.text = msg.text;
@@ -163,6 +206,7 @@ class ChatBinding {
     in.src = msg.src;
     in.tzMinutes = msg.tzMinutes;
     in.m = msg.m;
+    in.parts = msg.parts;
     Status st;
     try {
       st = engine_->runTurn(in, out);
@@ -170,7 +214,58 @@ class ChatBinding {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
     }
     breaker_.spent(/*person=*/true, out.end.microUsd, d_.platform->nowMs());
+    if (reporter_) reporter_->close(d_.platform->nowMs());
+    if (d_.usage) d_.usage(out);
     return st;
+  }
+
+  // A compaction of this chat now (/compact): the driver's manual run, stepped here until it has
+  // answered (the driver tells the chat its one line through sendPart). Busy while one is queued.
+  Status compactNow() {
+    namespace tx = nimbus::orch::tx;
+    if (!engine_ || !driver_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::compactNow");
+    if (busy_ || !driver_->requestManual()) return Status::fail(tx::Err::Busy, "plain::ChatBinding::compactNow");
+    Status st;
+    for (uint32_t i = 0; i < kCompactManualRequests + 2 && driver_->manualPending(); ++i) {
+      IdleCtx ctx;
+      ctx.now = d_.platform->nowEpoch();
+      ctx.nowMs = d_.platform->nowMs();
+      ctx.clockSet = ctx.now != 0;
+      IdleOutcome o;
+      try {
+        st = engine_->idle(ctx, o);
+      } catch (const std::bad_alloc&) {
+        st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::compactNow.memory");
+      }
+      if (!st.ok()) break;
+    }
+    return st;
+  }
+
+  // What /budget shows (rulings 105 and 106): the fixed part as this chat composes it now, the
+  // summary and the transcript after it, the marks and the settings, in tokens.
+  Status budgetView(BudgetView& out) {
+    namespace tx = nimbus::orch::tx;
+    if (!engine_ || !engine_->head() || !engine_->digests())
+      return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::budgetView");
+    tx::HeadBudget b;
+    Status st = tx::budgetFor(headKey(), tx::kDefaultProfile, b);
+    if (!st.ok()) return st;
+    const TurnCtx t = turnCtx();
+    TurnSetup ts;
+    if (!(st = setup(t, ts)).ok()) return st;
+    ts.facts.turn = &t;
+    SystemBlocks sys;
+    std::vector<ToolSpec> tools;
+    if (!(st = composeSystem(ts.facts, sys)).ok() || !(st = toolManifest(ts.facts, tools)).ok()) return st;
+    BudgetViewIn in;
+    in.budget = &b;
+    in.system = &sys;
+    in.tools = &tools;
+    in.live = engine_->digests();
+    in.arena = arena_.get();
+    in.thru = engine_->head()->thru;
+    return plain::budgetView(in, out);
   }
 
   // The head of a message: true when every update id of `src` was already taken into this chat
@@ -202,6 +297,38 @@ class ChatBinding {
   Status fail(const Status& st) {
     engine_.reset();   // a failed boot leaves the binding unbooted, never half-booted
     return st;
+  }
+
+  // Does `block` reach the request whole as the last lines of the pinned notes in `facts`?
+  static bool keptWhole(const RequestFacts& facts, const std::string& block) {
+    SystemBlocks sys;
+    if (!composeSystem(facts, sys).ok()) return false;
+    const std::string tail = "\n" + block;
+    return sys.notes.size() >= tail.size() && sys.notes.compare(sys.notes.size() - tail.size(), tail.size(), tail) == 0;
+  }
+
+  // The skills index and the context skills: each context skill rides the pinned block whole,
+  // after the notes, or is listed in the index and named through skillRefused. Measured against
+  // the index with every context skill listed, so a later one cannot squeeze an earlier one out.
+  void skillFacts(const TurnCtx& t, RequestFacts& facts) {
+    if (!d_.skills) return;
+    const ChatSkills s = d_.skills(who_);
+    std::string worst = s.index;
+    for (const ContextSkill& c : s.context) worst += (worst.empty() ? "" : "\n") + c.indexLine;
+    RequestFacts probe = facts;
+    probe.turn = &t;
+    probe.skillsIndex = worst;
+    std::string index = s.index;
+    for (const ContextSkill& c : s.context) {
+      const std::string before = probe.pinnedNotes;
+      probe.pinnedNotes = before.empty() ? c.block : before + "\n" + c.block;
+      if (keptWhole(probe, c.block)) continue;
+      probe.pinnedNotes = before;
+      index += (index.empty() ? "" : "\n") + c.indexLine;
+      if (d_.skillRefused) d_.skillRefused(c.id, c.block.size());
+    }
+    facts.pinnedNotes = probe.pinnedNotes;
+    facts.skillsIndex = index;
   }
 
   // The head's marks, arena size and guard cost. No price row: refused (money fails closed).
@@ -249,11 +376,13 @@ class ChatBinding {
     return e;
   }
 
-  Status setup(const TurnCtx&, TurnSetup& out) {
+  Status setup(const TurnCtx& t, TurnSetup& out) {
     out.facts.reg = d_.registry;
     out.facts.admin = who_.owner;
     out.facts.timeZone = cfg_.timeZone;
     if (d_.pinnedNotes) out.facts.pinnedNotes = d_.pinnedNotes(who_);
+    skillFacts(t, out.facts);
+    out.photo = d_.photo;
     out.dayStartMin = cfg_.dayStartMin;
     out.head = endpoint();
     out.wire = nullptr;   // wireFor(AnthropicMessages)
@@ -323,6 +452,10 @@ class ChatBinding {
     e.dispatch = [this](const ToolCall& c, const TurnCtx& t) { return dispatchCall(c, t); };
     e.setup = [this](const TurnCtx& t, TurnSetup& out) { return setup(t, out); };
     if (d_.recentFiles) e.recentFiles = d_.recentFiles(who_);
+    if (d_.progress.send)
+      e.progress = [this](const ProgressEvent& ev) {
+        if (reporter_) (void)reporter_->tick(ev);
+      };
     return e;
   }
 
@@ -338,6 +471,8 @@ class ChatBinding {
   std::unique_ptr<nimbus::orch::tx::TxArena> arena_;
   std::unique_ptr<nimbus::orch::tx::TxLog> log_;
   std::unique_ptr<PlainHooks> hooks_;
+  std::unique_ptr<CompactDriver> driver_;        // the hooks call it: it outlives no hook
+  std::unique_ptr<ProgressReporter> reporter_;
   std::unique_ptr<PlainEngine> engine_;
 };
 

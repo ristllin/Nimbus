@@ -52,3 +52,7 @@ src/agent/file_tools_device.cpp
 
 # E2-DEV: the transcript store on the card (the RB-I3 minimum).
 src/agent/tx_store_device.cpp
+
+# E2-CHAT: the owner's slash commands and skill files on engine 2.
+src/agent/commands_plain.cpp
+src/agent/skills_device.cpp

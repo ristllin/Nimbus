@@ -44,6 +44,10 @@
 #include "nimbus/orch/spend_ceiling.h"  // paidCallAllowed - the scan's gate before the download (lane QW4)
 #include "nimbus/orch/tool_registry.h"
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "skills_device.h"   // skillsdev::skillBody - read_file on skills/<id>.md (lane E2-CHAT)
+#endif
+
 namespace agent::files {
 
 namespace {
@@ -2474,6 +2478,7 @@ nimbus::orch::CardFilesIo& cardIo() {
         h.persistIndex = [] { return persistIndexLanded(); };
         h.now = [] { return nowEpoch(); };
         h.utcOffsetMin = [](uint32_t epoch) { return orchestrator::utcOffsetAt(epoch); };
+        h.skillBody = agent::skillsdev::skillBody;   // lane E2-CHAT: the owner's skill files on the card
         h.roomFor = [](const std::string& p, const std::string& n, uint64_t add, std::string& err) {
           return !checkRoomLocked(p, n, add, err);
         };

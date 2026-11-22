@@ -124,6 +124,11 @@ struct Device {
       return true;
     };
     h.now = [] { return uint32_t(1795000000u); };
+    h.skillBody = [](const std::string& id, std::string& out) {   // the device: skillsdev::skillBody (E2-CHAT)
+      if (id != "bench-skill") return false;
+      out = "Use the bench word.";
+      return true;
+    };
     io.reset(new orch::CardFilesIo(card, store, layout(), h));
     tools.reset(new orch::FileTools(*io, orch::FileToolsConfig{}));
     tools->registerInto(reg, [](const char* t) {
@@ -383,12 +388,22 @@ void test_a_replace_is_the_old_engines_swap() {
 
 }  // namespace
 
+// Lane E2-CHAT: read_file on skills/<id>.md answers the skill's approved body through the host's reader.
+static void test_read_file_on_a_skill_reads_the_skill_body() {
+  Device d;
+  const orch::ToolResult r = d.call("read_file", {{"path", "skills/bench-skill.md"}}, owner());
+  TEST_ASSERT_TRUE_MESSAGE(r.success, r.error.c_str());
+  TEST_ASSERT_TRUE(r.output.find("Use the bench word.") != std::string::npos);
+  TEST_ASSERT_FALSE(d.call("read_file", {{"path", "skills/none.md"}}, owner()).success);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_write_read_append_edit_list_delete);
   RUN_TEST(test_a_17_KB_file_reads_in_one_call);
   RUN_TEST(test_the_tools_are_the_daemon_names_and_arguments);
   RUN_TEST(test_a_member_sees_only_its_own_files);
+  RUN_TEST(test_read_file_on_a_skill_reads_the_skill_body);
   RUN_TEST(test_an_append_lands_at_the_real_end_and_loses_nothing);
   RUN_TEST(test_a_torn_tail_gets_a_line_end_first_not_a_cut);
   RUN_TEST(test_read_and_edit_see_every_stored_byte);

@@ -16,8 +16,16 @@
 //     files), suppression, the money guard and one breaker, the seen-index rebuild at boot.
 // One resident chat (one arena, sized for the head): a message for another chat, another model
 // or another role boots the binding again over the same card (the transcript is refilled).
-// Claude heads only: any other head gets one plain line. Owner commands are not parsed yet (they
-// reach the model as text); routines, agents and photos are not bound yet.
+// Claude heads only: any other head gets one plain line. Routines and agents are not bound yet.
+// Lane E2-CHAT adds the owner's daily chat:
+//   - the owner's slash commands never reach the model (commands_plain.cpp): engine 1's handlers
+//     where the command does not depend on the engine; /clear, /compact and /budget act on engine 2;
+//   - photos: the Telegram intake's photo set (agent::vision) as the message's image parts, the
+//     bytes through the photo hook while the turn holds the set (chat_photos.h);
+//   - skills: the skill files on the card (skills_device.h) in the index and, inject: context,
+//     in the pinned block (a skill too large for it is listed instead; the owner is told once);
+//   - usage: each turn filed once where the owner sees usage (store::recordProviderSpend);
+//   - the progress line of a long Telegram turn (installProgress over turnProgressLine).
 #include "orchestrator.h"
 #include "orchestrator_common.h"   // g_fabric, g_sinks, g_sessMux, deliver, the voice flags
 
@@ -32,6 +40,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -40,10 +49,16 @@
 #include "../sys/heap_watch.h"     // heapwatch::psramFirst - the turn's PSRAM-first switch
 #include "../sys/psram_static.h"   // the notice slot in PSRAM, as on engine 1
 #include "files_subsystem.h"    // files::recentFiles - the file tools' recent-files list (E2-TOOLS)
+#include "adapters/image_vision.h"   // the photo set the Telegram intake keeps (R1)
+#include "budget_command.h"     // noteTurnEnd - /model's last reply
+#include "commands_plain.h"     // the owner's slash commands
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "nimbus/harness/plain/chat_binding.h"
+#include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
+#include "nimbus/orch/blob_store.h"        // blobPath - an earlier photo's stored copy
 #include "notes_device.h"       // notesdev::pinnedNotesFor
+#include "skills_device.h"      // skillsdev::chatSkills
 #include "spend_ceiling_store.h"   // spend::frozen, spend::commit, spend::limitMicro
 #include "store.h"              // anthropicKey, orchModel, subModel, resolvedOrchHost
 #include "telegram.h"           // telegram::ownerChat, sendPart, turnUpdateIds, seenIndex
@@ -64,6 +79,10 @@ constexpr const char* kNotClaudeLine =
 constexpr const char* kNoKeyLine = "No Anthropic key is set. Add one in Settings, then send the message again.";
 constexpr const char* kFrozenLine = "The monthly spend limit is reached. Raise it in Settings to continue.";
 constexpr const char* kNoStartLine = "The new engine could not start for this chat. Restart the device and try again.";
+// PC-0178: a context skill the fixed part cannot hold whole (lane E2-CHAT).
+constexpr const char* kSkillTooLargeLine =
+    "Your skill %s is too large to ride every message (%u B; notes and skills share 4,096 B). It is "
+    "listed among your skills instead, and read when a message needs it.";
 
 bool                  s_begun = false;   // tg_poll only (begin runs before the poll task starts)
 std::atomic<bool>     s_inTurn{false};   // written on tg_poll, read by the web task (the spinner)
@@ -148,15 +167,134 @@ bool sendOnePart(const std::string& chat, const std::string& part) {
 
 std::unique_ptr<plain::ChatBinding> s_chat;   // the one resident chat (tg_poll only)
 
+// ---- /clear: a new conversation keeps the stored one --------------------------------
+// The conversation of a chat is the transcript under its key: generation 0 is the chat id itself
+// (what the history import fills), generation n is "<chat>_c<n>". /clear moves the chat to the
+// next generation; every earlier transcript stays on the card as it was. The generation is kept
+// in /mem/tx/<chat>.gen (one decimal number); with no card it is kept in RAM until the restart.
+std::string s_genChat;   // the chat the RAM copy is for (tg_poll only)
+uint32_t s_gen = 0;
+
+std::string genPath(const String& chatId) { return std::string(nimbus::orch::tx::kTxRoot) + "/" + chatId.c_str() + ".gen"; }
+
+uint32_t generationOf(const String& chatId) {
+  if (s_genChat == chatId.c_str()) return s_gen;
+  uint32_t g = 0;
+  char buf[12] = {0};
+  size_t got = 0;
+  if (txdev::cardTxFiles().readAt(genPath(chatId), 0, buf, sizeof(buf) - 1, got) && got) g = (uint32_t)strtoul(buf, nullptr, 10);
+  s_genChat = chatId.c_str();
+  s_gen = g;
+  return g;
+}
+
+std::string txKeyFor(const String& chatId) {
+  const uint32_t g = generationOf(chatId);
+  return g ? std::string(chatId.c_str()) + "_c" + std::to_string(g) : std::string(chatId.c_str());
+}
+
+// ---- the turn's photos ------------------------------------------------------------
+std::unique_ptr<nimbus::orch::TurnImages> s_photos;   // the running turn's set (tg_poll only)
+
+// An earlier photo the engine carries into this turn (tx::visiblePhotos): its stored copy on the
+// card (the intake keeps every photo at /mem/blobs/<ref>.jpg, or .bin for one sent as a file),
+// read into PSRAM once per turn, as engine 1's image.look reads it. Freed after the turn.
+struct CarriedPhoto {
+  std::string ref;
+  uint8_t* bytes = nullptr;
+  size_t len = 0;
+  std::string mime;
+};
+std::vector<CarriedPhoto> s_carried;   // tg_poll only
+
+void dropCarried() {
+  for (CarriedPhoto& c : s_carried) free(c.bytes);
+  s_carried.clear();
+}
+
+plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
+  for (const CarriedPhoto& c : s_carried)
+    if (c.ref == ref) {
+      out.bytes = c.bytes;
+      out.len = c.len;
+      out.mime = c.mime;
+      return plain::Status::success();
+    }
+  CarriedPhoto c;
+  c.ref = ref;
+  const std::string hash = ref.size() > 1 && ref[0] == 'p' ? ref.substr(1) : std::string();
+  for (const char* ext : {"jpg", "bin"}) {
+    if (hash.empty() || !memory::haveSd()) break;
+    const std::string path = nimbus::orch::blobPath("/mem/blobs", hash, ext);
+    const char* why = "";
+    {
+      memory::Lock lk;
+      if (!memory::dataFs().exists(path.c_str())) continue;
+      c.bytes = vision::loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, c.len, why);
+    }
+    if (!c.bytes) alogf("e2: earlier photo %s not read (%s)", ref.c_str(), why);
+    break;
+  }
+  const char* mime = c.bytes ? nimbus::orch::sniffImageMime(c.bytes, c.len) : "";
+  if (!*mime) {
+    free(c.bytes);
+    out = plain::PhotoBytes{};
+    return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "e2.carriedPhoto");
+  }
+  c.mime = mime;
+  out.bytes = c.bytes;
+  out.len = c.len;
+  out.mime = c.mime;
+  alogf("e2: earlier photo %s shown again (%u B)", ref.c_str(), (unsigned)c.len);
+  s_carried.push_back(std::move(c));
+  return plain::Status::success();
+}
+
+// The photo hook: this message's photos, else an earlier one from the card.
+plain::Status photoFor(const std::string& ref, plain::PhotoBytes& out) {
+  if (plain::photoBytesFrom(s_photos.get(), ref, out).ok()) return plain::Status::success();
+  return carriedPhoto(ref, out);
+}
+
+// ---- a context skill too large for the pinned block: told once per boot --------------
+std::vector<std::string> s_skillTold;   // "<id>@<bytes>" already told (tg_poll only)
+std::vector<std::string> s_skillTell;   // to tell after the running turn
+void noteSkillRefused(const std::string& id, size_t bytes) {
+  const std::string key = id + "@" + std::to_string(bytes);
+  for (const std::string& k : s_skillTold)
+    if (k == key) return;
+  s_skillTold.push_back(key);
+  char line[320];
+  snprintf(line, sizeof(line), kSkillTooLargeLine, id.c_str(), (unsigned)bytes);
+  alogf("e2: skill %s (%u B) does not fit the pinned block: listed instead", id.c_str(), (unsigned)bytes);
+  s_skillTell.push_back(line);
+}
+
+// One turn's usage where the owner sees it (the Usage page, /usage: tokens and cost per provider,
+// the month), once per turn; store::recordProviderSpend also counts it against the monthly limits.
+nimbus::orch::TokenUsage s_lastUsage, s_sessUsage;   // the Usage panel's last turn and session (tg_poll writes)
+std::mutex s_usageMx;                                 // the web task reads them
+void recordUsage(const plain::TurnOutcome& out, const std::string& model) {
+  const nimbus::orch::TurnSpend spend = plain::turnSpendOf(out, "anthropic", model);
+  store::recordProviderSpend(spend, "turn");
+  {
+    std::lock_guard<std::mutex> lk(s_usageMx);
+    s_lastUsage = spend.total();
+    s_sessUsage += s_lastUsage;
+  }
+  budget::noteTurnEnd("anthropic", model, "anthropic", "owner", out.delivered);
+}
+
 // The chat's binding for this model and role, booted (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
   if (s_chat) {
     const plain::ChatBindingConfig& c = s_chat->config();
-    if (c.chatId == chatId.c_str() && c.model == model && c.role == role) return s_chat.get();
+    if (c.chatId == chatId.c_str() && c.chatKey == txKeyFor(chatId) && c.model == model && c.role == role)
+      return s_chat.get();
     s_chat.reset();   // another chat, model or role: the arena goes back before the next one
   }
   plain::ChatBindingConfig cfg;
-  cfg.chatKey = chatId.c_str();
+  cfg.chatKey = txKeyFor(chatId);
   cfg.chatId = chatId.c_str();
   cfg.model = model;
   cfg.summarizerModel = store::subModel("anthropic").c_str();
@@ -189,6 +327,15 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
   };
+  d.photo = photoFor;
+  d.skills = [](const nimbus::orch::Principal&) { return skillsdev::chatSkills(); };
+  d.skillRefused = noteSkillRefused;
+  d.usage = [model](const plain::TurnOutcome& out) { recordUsage(out, model); };
+  if (!localChat(chatId))   // the web chat shows its own spinner; Telegram gets the line (RB-E3)
+    d.progress.send = [](const std::string& chat, const std::string& text, int64_t& msgId) {
+      msgId = 0;   // a new line each time: no edit on this path
+      return telegram::turnProgressLine(String(chat.c_str()), String(text.c_str()));
+    };
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();
@@ -300,6 +447,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   }
   const String row = captureOwnerRow(text, fromName, chatId);
   msg.text = std::string(text.c_str(), text.length());
+  msg.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
   msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
   msg.m = rowNumber(row);
   txdev::cardTxFiles().resetHolds();
@@ -312,8 +460,10 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     st = b->turn(msg, out);
   }
   logTurn(*b, out, st, millis() - t0);
-  const spend::Part part{"anthropic", (uint64_t)out.end.microUsd};
-  spend::commit(&part, 1, /*turn=*/true);
+  if (!msg.parts.empty())
+    alogf("e2: photos=%u bytes=%u psramFree=%u psramLargest=%u", (unsigned)msg.parts.size(),
+          (unsigned)s_photos->bytes(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
   if (out.delivered && !out.text.empty())
     memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message,
                            String(out.text.c_str()), "", "e2");
@@ -321,7 +471,69 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message,
                            String(out.statusText.c_str()), "", "e2");
   runDeferred(out.deferred);
-  return b->sentParts() > 0;
+  const bool sent = b->sentParts() > 0;
+  for (const std::string& line : s_skillTell) sayInstead(chatId, line.c_str());
+  s_skillTell.clear();
+  return sent;
+}
+
+// ---- what the owner's commands ask of engine 2 -----------------------------------------
+
+// The chat's binding for its configured head, booted; null when no turn could run for it.
+plain::ChatBinding* bindingFor(const String& chatId) {
+  const String host = store::resolvedOrchHost();
+  if (refusalFor(host)) return nullptr;
+  return chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
+}
+
+bool clearChat(const String& chatId) {
+  const uint32_t next = generationOf(chatId) + 1;
+  const std::string g = std::to_string(next);
+  if (!txdev::cardTxFiles().writeWhole(genPath(chatId), g)) alogf("e2: /clear generation %s kept in RAM only", g.c_str());
+  s_genChat = chatId.c_str();
+  s_gen = next;
+  if (s_chat && s_chat->config().chatId == chatId.c_str()) s_chat.reset();   // the arena goes back first
+  alogf("e2: /clear %s: conversation %s", chatId.c_str(), txKeyFor(chatId).c_str());
+  return bindingFor(chatId) != nullptr;
+}
+
+bool compactChat(const String& chatId) {
+  plain::ChatBinding* b = bindingFor(chatId);
+  if (!b) return false;
+  s_transport.reset();
+  plain::Status st;
+  {
+    PsramFirstScope psramFirst;
+    st = b->compactNow();
+  }
+  alogf("e2: /compact %s: %s@%s reqs=%u", chatId.c_str(), nimbus::orch::tx::errSlug(st.err), st.where ? st.where : "",
+        (unsigned)s_transport.requests);
+  return true;   // the driver answered on the chat (done, nothing to do, or failed)
+}
+
+// PC-0177: the owner's budget view of engine 2 (rulings 105 and 106), in tokens.
+String budgetViewText(const String& chatId) {
+  plain::ChatBinding* b = bindingFor(chatId);
+  plain::BudgetView v;
+  if (!b || !b->budgetView(v).ok()) return String();
+  char line[400];
+  snprintf(line, sizeof(line),
+           "New engine, in tokens: system prompt %u, tools %u, fixed part %u. Summary %u (up to %u), "
+           "recent conversation %u (recent part %u). Compaction at %u, aim %u. Max rounds %u, hard time limit %u s.",
+           (unsigned)v.systemTokens, (unsigned)v.toolsTokens, (unsigned)v.fixedTokens, (unsigned)v.summaryTokens,
+           (unsigned)v.summaryBudgetTokens, (unsigned)v.recentTokens, (unsigned)v.recentPartTokens,
+           (unsigned)v.dueTokens, (unsigned)v.aimTokens, (unsigned)v.maxRounds, (unsigned)v.hardTimeS);
+  return String(line);
+}
+
+const e2cmd::EngineOps& engineOps() {
+  static e2cmd::EngineOps ops;
+  if (!ops.clear) {
+    ops.clear = clearChat;
+    ops.compact = compactChat;
+    ops.budgetView = budgetViewText;
+  }
+  return ops;
 }
 
 // The staged post-update notice (stageUpdateNotice may run on any task): one slot in PSRAM (as on
@@ -383,7 +595,11 @@ void handleMessage(const String& text, const String& fromName, const String& cha
     s_voiceOk.store(false, std::memory_order_relaxed);
     s_inVoiceMessage = true;
   }
-  if (s_begun) {
+  // The photos the intake kept for this message (R1): held for the turn, freed after it.
+  s_photos = nimbus::orch::takeTurnImages(chatId.c_str(), text.c_str());
+  if (s_begun && e2cmd::handle(text, chatId, engineOps())) {
+    if (voice) s_voiceOk.store(true, std::memory_order_relaxed);
+  } else if (s_begun) {
     s_inTurn.store(true, std::memory_order_relaxed);
     s_turnChat = chatId;
     const bool sent = runOne(text, fromName, chatId);
@@ -392,6 +608,8 @@ void handleMessage(const String& text, const String& fromName, const String& cha
     s_turnChat = String();
     s_inTurn.store(false, std::memory_order_relaxed);
   }
+  s_photos.reset();
+  dropCarried();
   if (voice) {
     s_inVoiceMessage = false;
     s_voiceHandled.fetch_add(1, std::memory_order_release);
@@ -415,6 +633,7 @@ int pollJobs() {
 }
 
 void setOtaInstallHook(String (*fn)()) { s_otaInstallHook = fn; }
+String otaInstallReply() { return s_otaInstallHook ? s_otaInstallHook() : String("Updates aren't available on this build."); }
 
 void stageUpdateNotice(const String& text) {
   portENTER_CRITICAL(&s_noticeMux);
@@ -433,8 +652,14 @@ bool toolRidesLoop(const std::string&) { return false; }
 
 // ---- last-turn data ---------------------------------------------------------
 
-nimbus::orch::TokenUsage lastTurnUsage() { return {}; }
-nimbus::orch::TokenUsage sessionUsage() { return {}; }
+nimbus::orch::TokenUsage lastTurnUsage() {
+  std::lock_guard<std::mutex> lk(s_usageMx);
+  return s_lastUsage;
+}
+nimbus::orch::TokenUsage sessionUsage() {
+  std::lock_guard<std::mutex> lk(s_usageMx);
+  return s_sessUsage;
+}
 String lastFailJson() { return String("null"); }
 char* lastTurnDebugPs(size_t& outLen) {
   outLen = 0;

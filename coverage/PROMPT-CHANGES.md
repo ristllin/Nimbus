@@ -207,6 +207,30 @@ deleted. Engine 2 has no baseline.
 - e1 skills: 23264 cef6121d -> 23264 cef6121d (+0 B)
 - why: rb-main took the v5.1.2 release line (main a01ef7fb, lane RB-SYNC, merge 9d26bb84). From v5.1.2: side_prompts only, +421 B in 12 entries, all lane CTXR1 (candidates 2 to 6): eleven fold status and owner-alert fragments in lib/harness/src/fold_driver.cpp (the 'due, not started' causes such as the daily cap, the quiet gate, the retry and read waits, the network being down; the slow-read alert 116 B; 'About ' 6 B) and the fold blob's unreadSince field (13 B) in lib/core/src/orch_compact.cpp; no other class has v5.1.2 text in it. The other figures are rb-main's own since RBL-0001, already logged and superseded here: device_notes -20,147 B (PC-0006 claim checks deleted -17,290, PC-0009 reply guard deleted -3,231, PC-0010 -1, PC-0012 truth check +375), tool_descriptions +76 B (PC-0001), tool_results +693 B (PC-0002), side_prompts +1,296 B (PC-0011 truth probe). system and skills unmoved. The v5.1.2 line predates the rule and is the baseline, as for RBL-0001.
 
+## Device copy and data forms (ledger ids outside the class gate)
+Owner-facing lines and model-facing data forms that the class catalog does not hold, logged under the
+lane's ledger ids so every new line has a record. The gate does not parse this section.
+
+PC-0177 (lane E2-CHAT; owner-facing device copy, outside the model text catalog: src/agent/commands_plain.cpp and
+src/agent/orchestrator_plain.cpp are named in NON_MODEL_FILES): engine 2's command replies. "This command is not
+available on the new engine yet." for /remind, /skill, /mcp and /prefs; /clear asks "Start a new conversation? The
+current one stays stored on the device. Send /clear yes to confirm." and answers "Started a new conversation. The
+earlier one stays stored on the device."; a bare /budget opens with one line of engine 2's figures in tokens (system
+prompt, tools, fixed part, summary and its cap, recent conversation and the recent part, the compaction and aim marks,
+max rounds and the hard time limit; rulings 105 and 106). Every other command reply is engine 1's, reused. Never sent
+to a model.
+
+PC-0178 (lane E2-CHAT; owner-facing device copy, outside the catalog: orchestrator_plain.cpp): a context skill the
+pinned block cannot hold whole is not cut: "Your skill <id> is too large to ride every message (<n> B; notes and skills
+share 4,096 B). It is listed among your skills instead, and read when a message needs it." Told once per boot per
+skill and size, after the turn. Never sent to a model.
+
+PC-0179 (lane E2-CHAT; model-facing data forms, no prose, catalog bytes unchanged): the owner's skills in the request
+(lib/harness/include/nimbus/harness/plain/chat_skills.h). The skills index line is "skills/<id>.md: <the skill's desc>"
+(PRD section 4's form, under the existing texts.h core::kSkills header); a skill marked inject: context rides the pinned
+block after the notes as the line "skills/<id>.md:" followed by the owner's own body lines. The words are the owner's;
+the firmware adds only the path and the colon. No instruction was added.
+
 ## Changes
 
 ### PC-0001: RB-N4's tools groups (more) catalogued: its description

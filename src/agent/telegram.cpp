@@ -2248,13 +2248,20 @@ struct TgIo {
     // R1: the photos this turn attached go to the head as images (the engine takes
     // them with the turn and frees them when it ends; a turn that never took them, a
     // command or a refusal, frees them here).
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    // Lane E2-CHAT: the set is offered under the text engine 2 receives (the intake's), which is
+    // what it takes the set with.
+    const String intake = ownerIntake(chat, text);
+    agent::vision::offerTurnSet(String(chat.c_str()), intake);
+#else
     agent::vision::offerTurnSet(String(chat.c_str()), String(text.c_str()));
+#endif
     noteCrossed(chat, text);
     s_turnMsgId = turnMessageId();   // lane ECHO: the progress line replies to this message
     {
       const TurnSendWindow now;   // RB-TS1: the reply goes out when queued
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
-      if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), ownerIntake(chat, text));
+      if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), intake);
 #else
       if (g_cb) g_cb(String(from.c_str()), String(chat.c_str()), String(text.c_str()));
 #endif

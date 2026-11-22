@@ -9,6 +9,14 @@
 //   - a binding booted again over the same card carries the earlier turns (the restart);
 //   - the seen index is rebuilt from the card at boot: a re-served update is known, a new one not;
 //   - with no card the chat runs in RAM and still answers.
+// Lane E2-CHAT (the owner's daily chat):
+//   - a photo part reaches the request as one image block in its own turn only, and only a head
+//     that takes images gets the part; the next turn shows its stub;
+//   - a context skill rides the pinned block whole; a too-large one is left out of it, listed in
+//     the index and named once per turn to the device (which tells the owner one line);
+//   - the turn's usage is handed over once per turn, in the provider's counts;
+//   - /compact runs the driver now and answers on the chat; /budget's view is in tokens;
+//   - the progress line is bound on the hooks (a turn with it installed still answers once).
 #include <unity.h>
 
 #include <cstdlib>
@@ -19,6 +27,9 @@
 
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/plain/chat_binding.h"
+#include "nimbus/harness/plain/chat_photos.h"
+#include "nimbus/harness/plain/request.h"
+#include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/tx/card_files.h"
 
 namespace plain = agent::plain;
@@ -112,6 +123,19 @@ struct Device {
     d.seen = &seen;
     d.outside = outside;
     d.recentFiles = recentFiles;
+    d.photo = [this](const std::string& ref, plain::PhotoBytes& o) {
+      if (plain::photoBytesFrom(photos, ref, o).ok()) return plain::Status::success();
+      return plain::photoBytesFrom(stored, ref, o);   // the card's copy of an earlier photo
+    };
+    if (!skillFiles.empty()) d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles); };
+    d.skillRefused = [this](const std::string& id, size_t) { refused.push_back(id); };
+    d.usage = [this](const plain::TurnOutcome& o) { usage.push_back(plain::turnSpendOf(o, "anthropic", "claude-haiku-5-5")); };
+    if (progress)
+      d.progress.send = [this](const std::string&, const std::string& t, int64_t& id) {
+        id = 0;
+        progressLines.push_back(t);
+        return true;
+      };
     binding.reset(new plain::ChatBinding(c, d));
     return binding->boot();
   }
@@ -120,6 +144,7 @@ struct Device {
     plain::ChatMessage m;
     m.text = text;
     m.src = std::move(src);
+    m.parts = plain::photoParts(photos, "anthropic", "claude-haiku-5-5");
     out = plain::TurnOutcome{};
     return binding->turn(m, out);
   }
@@ -135,11 +160,49 @@ struct Device {
   nimbus::orch::ToolRegistry reg;
   nimbus::orch::SeenIndex seen;
   std::vector<std::string> sent;
+  nimbus::orch::TurnImages* photos = nullptr;     // the message's photo set (null: none)
+  nimbus::orch::TurnImages* stored = nullptr;     // earlier photos the card still holds (null: none)
+  std::vector<plain::SkillFile> skillFiles;
+  std::vector<std::string> refused;
+  std::vector<nimbus::orch::TurnSpend> usage;
+  bool progress = false;
+  std::vector<std::string> progressLines;
   std::unique_ptr<plain::ChatBinding> binding;
   plain::TurnOutcome out;
 };
 
 bool has(const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; }
+
+size_t count(const std::string& hay, const std::string& needle) {
+  size_t n = 0;
+  for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + needle.size())) n++;
+  return n;
+}
+
+// A JPEG's first bytes are enough for the wire (it splices the bytes as they are).
+const uint8_t kJpeg[] = {0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 'J', 'F', 'I', 'F', 0x00, 0x01, 0x02, 0x03};
+
+void onePhoto(nimbus::orch::TurnImages& set) {
+  nimbus::orch::TurnImage img;
+  img.ref = "0123456789abcdef";
+  img.mime = "image/jpeg";
+  img.bytes = kJpeg;
+  img.len = sizeof(kJpeg);
+  set.items.push_back(img);
+}
+
+// read_file as the registry holds it once the file tools are bound (the index shows only then).
+void addReadFile(nimbus::orch::ToolRegistry& reg) {
+  const auto* d = plain::toolDecl("read_file");
+  TEST_ASSERT_NOT_NULL(d);
+  reg.add(d->name, d->description,
+          [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("x"); },
+          plain::declSchema(*d, false));
+}
+
+std::string skillMd(const std::string& inject, const std::string& body) {
+  return "---\ntitle: Test skill\ndesc: when the bench asks\ninject: " + inject + "\n---\n" + body;
+}
 
 }  // namespace
 
@@ -257,6 +320,130 @@ static void test_with_no_card_the_chat_runs_in_ram() {
   TEST_ASSERT_TRUE(dev.card.files.empty());
 }
 
+static void test_a_photo_reaches_its_own_turn_once_as_an_image() {
+  Device dev;
+  nimbus::orch::TurnImages set;
+  onePhoto(set);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.photos = &set;
+  dev.model.push(sp::say("A small test picture."));
+  TEST_ASSERT_TRUE(dev.say("[image 1/1 ref=0123456789abcdef] what is this?").ok());
+  const std::string& first = dev.model.last().body;
+  TEST_ASSERT_EQUAL(1, (int)count(first, "\"type\":\"image\""));
+  TEST_ASSERT_EQUAL(1, (int)count(first, "\"media_type\":\"image/jpeg\""));
+  dev.photos = nullptr;   // the set is freed with its turn
+  dev.model.push(sp::say("It was a small test picture."));
+  TEST_ASSERT_TRUE(dev.say("what was in the photo?").ok());
+  const std::string& second = dev.model.last().body;
+  TEST_ASSERT_EQUAL(0, (int)count(second, "\"type\":\"image\""));
+  TEST_ASSERT_TRUE(has(second, "[photo p0123456789abcdef"));   // its stub, and the head's own answer
+  TEST_ASSERT_TRUE(has(second, "A small test picture."));
+  TEST_ASSERT_EQUAL(2, (int)dev.sent.size());
+}
+
+static void test_the_next_message_soon_after_still_sees_the_photo_then_its_stub() {
+  Device dev;
+  nimbus::orch::TurnImages set;
+  onePhoto(set);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.photos = &set;
+  dev.model.push(sp::say("A red triangle."));
+  TEST_ASSERT_TRUE(dev.say("[image 1/1 ref=0123456789abcdef] what is this?").ok());
+  dev.photos = nullptr;
+  dev.stored = &set;      // the card keeps the photo
+  dev.ms += 60000;        // the follow-up a minute later: inside the cold gap
+  dev.model.push(sp::say("The background is yellow."));
+  TEST_ASSERT_TRUE(dev.say("what color was the background?").ok());
+  const std::string second = dev.model.last().body;
+  TEST_ASSERT_EQUAL(1, (int)count(second, "\"type\":\"image\""));   // carried once, in its own message
+  dev.ms += 600000;       // ten minutes later: out of the carry, its stub only
+  dev.model.push(sp::say("It was a triangle."));
+  TEST_ASSERT_TRUE(dev.say("and the shape?").ok());
+  const std::string third = dev.model.last().body;
+  TEST_ASSERT_EQUAL(0, (int)count(third, "\"type\":\"image\""));
+  TEST_ASSERT_TRUE(has(third, "[photo p0123456789abcdef"));
+}
+
+static void test_only_a_head_that_takes_images_gets_the_part() {
+  nimbus::orch::TurnImages set;
+  onePhoto(set);
+  TEST_ASSERT_EQUAL(1, (int)plain::photoParts(&set, "anthropic", "claude-haiku-5-5").size());
+  TEST_ASSERT_EQUAL_STRING("p0123456789abcdef", plain::photoParts(&set, "anthropic", "claude-sonnet-5-5")[0].ref.c_str());
+  TEST_ASSERT_EQUAL(0, (int)plain::photoParts(&set, "zai", "glm-5.3").size());
+  TEST_ASSERT_EQUAL(0, (int)plain::photoParts(&set, "mistral", "codestral-latest").size());
+  TEST_ASSERT_EQUAL(0, (int)plain::photoParts(nullptr, "anthropic", "claude-haiku-5-5").size());
+  plain::PhotoBytes px;
+  TEST_ASSERT_TRUE(plain::photoBytesFrom(&set, "p0123456789abcdef", px).ok());
+  TEST_ASSERT_EQUAL(sizeof(kJpeg), px.len);
+  TEST_ASSERT_FALSE(plain::photoBytesFrom(&set, "pffffffffffffffff", px).ok());
+}
+
+static void test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_refused_once() {
+  Device dev;
+  addReadFile(dev.reg);
+  dev.skillFiles.push_back({"bench-ctx", skillMd("context", "The bench word is ZEPHYR-41.\n\nAlways say it.")});
+  dev.skillFiles.push_back({"bench-big", skillMd("context", std::string(5000, 'w'))});
+  dev.skillFiles.push_back({"bench-spawn", skillMd("spawn", "Read only when asked.")});
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::say("ZEPHYR-41"));
+  TEST_ASSERT_TRUE(dev.say("what is the bench word?").ok());
+  const std::string& body = dev.model.last().body;
+  TEST_ASSERT_TRUE(has(body, "skills/bench-ctx.md:\\nThe bench word is ZEPHYR-41.\\nAlways say it."));
+  TEST_ASSERT_FALSE(has(body, "wwwwwwwwww"));                          // not cut: left out whole
+  TEST_ASSERT_TRUE(has(body, "skills/bench-big.md: when the bench asks"));   // listed instead
+  TEST_ASSERT_TRUE(has(body, "skills/bench-spawn.md: when the bench asks"));
+  TEST_ASSERT_FALSE(has(body, "Read only when asked."));
+  TEST_ASSERT_EQUAL(1, (int)dev.refused.size());
+  TEST_ASSERT_EQUAL_STRING("bench-big", dev.refused[0].c_str());
+}
+
+static void test_a_turns_usage_is_handed_over_once() {
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  sp::Step s = sp::say("Counted.");
+  s.usage.input = 120;
+  s.usage.output = 30;
+  s.usage.cacheRead = 900;
+  s.usage.cacheWrite = 40;
+  dev.model.push(s);
+  TEST_ASSERT_TRUE(dev.say("count me").ok());
+  TEST_ASSERT_EQUAL(1, (int)dev.usage.size());
+  const nimbus::orch::TurnSpend& u = dev.usage[0];
+  TEST_ASSERT_EQUAL(1, (int)u.n);
+  TEST_ASSERT_EQUAL_STRING("anthropic", u.slot[0].host);
+  TEST_ASSERT_EQUAL(120u, u.slot[0].in);
+  TEST_ASSERT_EQUAL(30u, u.slot[0].out);
+  TEST_ASSERT_EQUAL(900u, u.slot[0].cacheR);
+  TEST_ASSERT_EQUAL(40u, u.slot[0].cacheW);
+  TEST_ASSERT_EQUAL(1u, u.slot[0].billed);
+  dev.model.push(sp::say("Again."));
+  TEST_ASSERT_TRUE(dev.say("and again").ok());
+  TEST_ASSERT_EQUAL(2, (int)dev.usage.size());   // one per turn, never per part or twice
+}
+
+static void test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens() {
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->compactNow().ok());
+  TEST_ASSERT_EQUAL(1, (int)dev.sent.size());   // nothing to compact yet: one line, no request
+  TEST_ASSERT_EQUAL_STRING((std::string("1001|") + plain::texts::device_notes::kCompactNothing).c_str(), dev.sent[0].c_str());
+  TEST_ASSERT_EQUAL(0, (int)dev.model.requests().size());
+  plain::BudgetView v;
+  TEST_ASSERT_TRUE(dev.binding->budgetView(v).ok());
+  TEST_ASSERT_TRUE(v.systemTokens > 0 && v.fixedTokens >= v.systemTokens);
+  TEST_ASSERT_TRUE(v.dueTokens > 0 && v.maxRounds > 0);
+}
+
+static void test_the_progress_line_is_bound_and_a_short_turn_sends_none() {
+  Device dev;
+  dev.progress = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::say("Quick."));
+  TEST_ASSERT_TRUE(dev.say("quick one").ok());
+  TEST_ASSERT_EQUAL(1, (int)dev.sent.size());
+  TEST_ASSERT_EQUAL(0, (int)dev.progressLines.size());   // under 20 s: no line
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
@@ -265,5 +452,12 @@ int main(int, char**) {
   RUN_TEST(test_a_rebooted_binding_carries_the_earlier_turns);
   RUN_TEST(test_the_seen_index_is_rebuilt_from_the_card);
   RUN_TEST(test_with_no_card_the_chat_runs_in_ram);
+  RUN_TEST(test_a_photo_reaches_its_own_turn_once_as_an_image);
+  RUN_TEST(test_the_next_message_soon_after_still_sees_the_photo_then_its_stub);
+  RUN_TEST(test_only_a_head_that_takes_images_gets_the_part);
+  RUN_TEST(test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_refused_once);
+  RUN_TEST(test_a_turns_usage_is_handed_over_once);
+  RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);
+  RUN_TEST(test_the_progress_line_is_bound_and_a_short_turn_sends_none);
   return UNITY_END();
 }

@@ -523,14 +523,58 @@ class TurnRun {
   }
   bool floorHead() const { return t_.floorHead; }
 
+  // A photo part as a carry candidate, `since` person turns after it arrived.
+  static void photoCandidate(tx::PhotoFacts& f, const tx::Part& p, uint32_t since) {
+    if (p.kind != tx::PartKind::Image) return;
+    f.candidates.push_back(p.ref);
+    f.ownerTurnsSince.push_back(since);
+    f.b64Bytes.push_back((p.bytes + 2) / 3 * 4);
+  }
+
+  // The earlier person turns' photos, newest first, as far back as the carry rule can reach, and
+  // when the newest earlier person turn opened.
+  void earlierPhotos(tx::PhotoFacts& f) const {
+    uint32_t persons = 0;   // person turns opened since the item being read
+    for (size_t i = d_.arena->count(); i-- > 0 && persons <= tx::kPhotoOwnerTurns;) {
+      tx::ArenaEntry e;
+      const bool mine = d_.arena->header(i, e).ok() && e.turn != t_.ctx.turn;
+      if (!mine || (e.kind != tx::ItemKind::TurnOpen && e.kind != tx::ItemKind::User)) continue;
+      tx::Item it;
+      if (!d_.arena->get(i, it).ok()) continue;
+      if (e.kind == tx::ItemKind::User) {
+        for (const tx::Part& p : it.parts) photoCandidate(f, p, persons);
+        continue;
+      }
+      const bool person = it.trigger == triggerSlug(Trigger::Owner) || it.trigger == triggerSlug(Trigger::Console);
+      if (person && persons++ == 0) f.lastOwnerTurnAt = it.t;
+    }
+  }
+
+  // The photos this turn shows as pixels (tx::visiblePhotos, PRD section 5): its own, and those of
+  // the earlier person turns the carry rule keeps (Inline: base64, no provider file ids yet), newest
+  // first. Any other photo renders as its stub line. Lane E2-CHAT.
+  std::vector<std::string> photosAtOpen(const TurnInput& in) const {
+    tx::PhotoFacts f;
+    f.now = epoch();
+    f.afterRestart = c_.afterRestart;
+    f.noCard = !d_.log->isOpen();
+    for (const tx::Part& p : in.parts) photoCandidate(f, p, 0);
+    earlierPhotos(f);
+    std::vector<std::string> out;
+    if (tx::visiblePhotos(f, out).ok()) return out;
+    out.clear();
+    for (const tx::Part& p : in.parts)
+      if (p.kind == tx::PartKind::Image) out.push_back(p.ref);
+    return out;
+  }
+
   Status storeOpen(const TurnInput& in) {
     tx::Item& t = blank(tx::ItemKind::TurnOpen);
     t.trigger = triggerSlug(t_.ctx.trigger);
     t.head = t_.ctx.host + "/" + t_.ctx.model;
     t.profile = tx::headProfileSlug(t_.ctx.profile);   // a smaller profile is the owner's pin (RB-H81)
     t.attempt = t_.ctx.attempt;
-    for (const tx::Part& p : in.parts)
-      if (p.kind == tx::PartKind::Image) t.photos.push_back(p.ref);
+    t.photos = photosAtOpen(in);
     c_.head.openTurn = t_.ctx.turn;
     c_.head.attempts = t_.ctx.attempt;
     c_.head.profile = t.profile;

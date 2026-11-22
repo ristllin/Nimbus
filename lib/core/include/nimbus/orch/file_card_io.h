@@ -54,6 +54,8 @@ struct CardFilesHost {
   std::function<int32_t(uint32_t)> utcOffsetMin;   // minutes east of UTC at an instant; null: UTC
   // Room for addBytes at project/name (err says why not); null: the index's own rule.
   std::function<bool(const std::string&, const std::string&, uint64_t, std::string&)> roomFor;
+  // The approved body of skill `id` (read_file on skills/<id>.md); null: no skill reads (lane E2-CHAT).
+  std::function<bool(const std::string& id, std::string& out)> skillBody;
 };
 
 class CardFilesIo : public FileToolsIo {
@@ -73,6 +75,7 @@ class CardFilesIo : public FileToolsIo {
   bool remove(const std::string& p, const std::string& n) override;
   void sync(const std::string& p, const std::string& n) override;
   uint32_t now() override { return host_.now ? host_.now() : 0; }
+  bool skillBody(const std::string& id, std::string& out) override { return host_.skillBody && host_.skillBody(id, out); }
   std::string timeText(uint32_t epoch) override;
 
   std::string pathOf(const std::string& p, const std::string& n) const;
