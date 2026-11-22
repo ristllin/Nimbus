@@ -580,14 +580,22 @@ the same request, and none of them drops anything without a line that names it.
   later turns through a stub. Every stub is one line of valid UTF-8 of at most 400 B.
   `longArgStub`, `photoStub` and `omissionLine` write the other three shapes; `stubTime`,
   `photoWhen` and `omissionDates` write their times, with the year in every date.
-- **The pointer** moves only at turn open (`decideTurnOpen`), forward, to the last closed
-  turn: on a cold open (over 270 s since the last request, no clock, or after a restart), or
-  on a warm open when whole internal bulk above it passes 24,576 B (8,192 B on 85,000 B
-  heads). At or below it only tier-2 bulk and outside results render as stubs; receipts stay
-  verbatim until compacted (`showResult`).
+- **No default stubbing** (lane E2-VERB, owner rulings 81, 82 and 106): under the head's due
+  mark a request replays every earlier call and result whole, as a simple agent loop does; the
+  bulk payloads are read back from the bulk file at render time. The pointer moves only on the
+  overflow path: compaction (its slice, then its tool fold, which lists the oldest closed turns'
+  results and then their long call arguments in an `x` item, why `tools`) and the ladder (rung 1
+  raises it for one request). At or below it only tier-2 bulk, outside results and long
+  arguments render as stubs; receipts stay verbatim until compacted (`showResult`,
+  `shownArgs`). Outside results still render as their stub once their own turn closes.
+- **A stub names its way back**: a file read's stub ends `(not shown in full to fit the request;
+  read_file path=<p> offset=<o> limit=<n> reads it again)` (`wayBack`), a long argument's says
+  `an argument sent earlier, not content`, and the write tools refuse a stub line as content
+  (`looksLikeStub`).
 - **Superseded reads** (`supersededBy`): a successful file write marks earlier reads of the
   same path stale; no other tool supersedes anything, whatever it stores. Each stale read is
-  listed once, in the `sup` list of an `x` item.
+  listed once, in the `sup` list of an `x` item (why `superseded`): a change point only, the
+  stale read still renders whole (`stubList`).
 - **Photos** (`visiblePhotos`): heads with file references keep the last two photo turns for
   two more owner turns, at most 4, until an hour idle or a restart; inline heads (routed and
   other 85,000 B heads too) carry the newest 2 to the next owner turn only, within 270 s and
@@ -895,7 +903,7 @@ answer is that resume's own: at most one resume and one boot send per turn, then
   `ResumeReport::outcome.deferred` (`ResumeDeps::done`), which the binding runs after boot.
 - The items the boot stores take their q above head.json's next q, the arena and the log (a
   card-only gap note keeps its q), and the engine counts a turn the boot closed as the last
-  closed turn at its next open (the cold open moves the stub pointer to it).
+  closed turn at its next open.
 
 ### Routines on engine 2: isolated runs and held delivery
 
@@ -1178,10 +1186,10 @@ note and the view pointer: `[photo p<ref8> <when>: <note>; not shown: view id=p<
 A call's string argument over 1,024 B is whole while its own turn is open, up to the head's
 bulk-whole bound (`tx::HeadBudget::bulkWholeCap`, 36,500 B on Sonnet): the c item keeps the
 model's arguments and, in `st`, their stub form (each long string as
-`[stub <N>B sha:<sha8>: view id=r<q>]`). From the close of the turn, or at ladder rung 2, every
-wire shows the stub form (`tx::shownArgs`); the turn's e item names the change
-(`change:long-args`). An argument over the bound is its stub form at once. The whole arguments
-go to the bulk file first.
+`[stub <N>B sha:<sha8>: an argument sent earlier, not content; ...]`). Since lane E2-VERB every
+later request shows the arguments whole too; the stub form renders only on the overflow path
+(ladder rung 1 or 2, or a compaction tool fold; `tx::shownArgs`). An argument over the bound is
+its stub form at once. The whole arguments go to the bulk file first.
 
 ### Long replies and pastes (lane RB-H81)
 

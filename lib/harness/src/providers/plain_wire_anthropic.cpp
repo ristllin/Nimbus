@@ -160,7 +160,7 @@ struct Facts {
   std::vector<Row> rows;
   uint64_t thru = 0;                  // the newest s item's thru
   uint64_t pointer = 0;               // max(input pointer, newest x item's)
-  std::vector<uint64_t> superseded;   // every x item's sup, sorted, unique
+  std::vector<uint64_t> superseded;   // the stub lists (tx::stubList x items' sup), sorted, unique
   std::vector<std::string> photos;    // the open turn's visible photo refs (its t item)
   size_t estimate = 0;                // body bytes to reserve once
   std::vector<uint32_t> omitted;      // turns the omission line stands for, oldest first
@@ -190,7 +190,7 @@ void noteFacts(const RenderInput& in, const tx::Item& it, Facts& f) {
   switch (it.kind) {
     case tx::ItemKind::PointerMove:
       f.pointer = std::max(f.pointer, it.stub);
-      f.superseded.insert(f.superseded.end(), it.sup.begin(), it.sup.end());
+      if (tx::stubList(it)) f.superseded.insert(f.superseded.end(), it.sup.begin(), it.sup.end());
       break;
     case tx::ItemKind::Digest:
       f.thru = std::max(f.thru, it.thru);
@@ -528,12 +528,18 @@ std::string wholeText(const Render& r, const tx::Item& it) {
   return it.st;
 }
 
-void resultBlock(Render& r, const tx::Item& it, const Row& row) {
+// The stub rule's facts for this request: the pointer (with ladder rung 1), the stub lists, rung 2.
+tx::ShowFacts showFacts(const Render& r) {
   tx::ShowFacts sf;
   sf.pointer = r.f.pointer;
   sf.openTurn = r.in.turn->turn;
   sf.superseded = &r.f.superseded;
   sf.ladderStubThrough = r.in.ladder ? r.in.ladder->stubThrough : 0;
+  return sf;
+}
+
+void resultBlock(Render& r, const tx::Item& it, const Row& row) {
+  const tx::ShowFacts sf = showFacts(r);
   tx::ShowAs as = tx::ShowAs::Stub;
   if (!tx::showResult(it, sf, as).ok()) as = tx::ShowAs::Stub;
   std::string text;
@@ -550,7 +556,7 @@ void resultBlock(Render& r, const tx::Item& it, const Row& row) {
 void callBlock(Render& r, const tx::Item& it, const Row& row) {
   r.m.block(Role::Assistant, it.turn, true).key("type").str("tool_use").key("id").str(row.wid);
   r.w.key("name").str(wireName(it.n)).key("input");
-  const std::string& args = tx::shownArgs(it, r.in.turn->turn, r.in.ladder ? r.in.ladder->stubThrough : 0);   // RB-H81
+  const std::string& args = tx::shownArgs(it, showFacts(r));   // whole until the overflow path (E2-VERB)
   if (oneObject(args)) r.w.raw(args);
   else r.w.beginObject().endObject();   // a cut or broken call, a long-argument stub
   r.m.close(it.turn, true);

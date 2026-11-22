@@ -186,8 +186,8 @@ constexpr size_t kItemFramingBytes = 64;
 constexpr size_t kStampBytes = 24;           // "[2026-11-17 Tue 13:02] "
 constexpr size_t kPhotoShownBytes = 96;      // '[photo p<ref8> <when> not shown: view id=p<ref8>]'
 
-// The stub rule's facts over the resident items: the pointer (the newest x item's stub) and every x
-// item's superseded list, sorted.
+// The stub rule's facts over the resident items: the pointer (the newest x item's stub) and the stub
+// lists (tx::stubList: the tool fold's, never a superseded-read list), sorted.
 struct ShowState {
   uint64_t pointer = 0;
   std::vector<uint64_t> superseded;
@@ -202,18 +202,21 @@ Status showState(const tx::TxArena& arena, ShowState& out) {
     if (e.kind != tx::ItemKind::PointerMove) continue;
     if (!(s = arena.get(i, it)).ok()) return s;
     out.pointer = std::max(out.pointer, it.stub);
-    out.superseded.insert(out.superseded.end(), it.sup.begin(), it.sup.end());
+    if (tx::stubList(it)) out.superseded.insert(out.superseded.end(), it.sup.begin(), it.sup.end());
   }
   std::sort(out.superseded.begin(), out.superseded.end());
   out.superseded.erase(std::unique(out.superseded.begin(), out.superseded.end()), out.superseded.end());
   return Status::success();
 }
-bool shownWhole(const tx::Item& r, const ShowState& s) {
+tx::ShowFacts showFactsOf(const ShowState& s) {   // between turns: no turn open, no ladder
   tx::ShowFacts f;
   f.pointer = s.pointer;
   f.superseded = &s.superseded;
+  return f;
+}
+bool shownWhole(const tx::Item& r, const ShowState& s) {
   tx::ShowAs as = tx::ShowAs::Stub;
-  return tx::showResult(r, f, as).ok() && as == tx::ShowAs::Whole;
+  return tx::showResult(r, showFactsOf(s), as).ok() && as == tx::ShowAs::Whole;
 }
 // What one decoded item adds to a request between turns (no turn open).
 size_t shownBytes(const tx::Item& it, const ShowState& s) {
@@ -225,7 +228,7 @@ size_t shownBytes(const tx::Item& it, const ShowState& s) {
       return n;
     case tx::ItemKind::Assistant:
     case tx::ItemKind::DeviceNote: return n + it.x.size();
-    case tx::ItemKind::Call: return n + it.id.size() + it.n.size() + tx::shownArgs(it, 0, 0).size();   // between turns
+    case tx::ItemKind::Call: return n + it.id.size() + it.n.size() + tx::shownArgs(it, showFactsOf(s)).size();   // whole (E2-VERB)
     case tx::ItemKind::Result:
       if (!shownWhole(it, s)) return n + it.id.size() + it.st.size();
       return n + it.id.size() + (it.cls == tx::ResultClass::Receipt || it.handle.empty() ? it.x.size() : it.bytes);
@@ -615,27 +618,33 @@ Status planSlice(const tx::TxArena& arena, uint64_t thru, const SliceRules& r, S
 
 namespace {
 
-// One closed unit's results that render whole, as the tool fold takes them (oldest first) while
-// the transcript is still over `target`; `left` is what it still renders.
+// One closed unit's items of one kind that render whole and have a stub form, as the tool fold takes
+// them (oldest first) while the transcript is still over `target`; `left` is what it still renders.
+// Results first, then long call arguments (lane E2-VERB, ruling 106: older and larger results
+// first, then older call arguments).
 struct FoldScan {
   const tx::TxArena& arena;
   uint64_t thru;
   const ShowState& show;
   size_t target;
+  tx::ItemKind kind;
 };
+bool foldable(const tx::Item& it, const ShowState& show) {
+  if (it.st.empty()) return false;   // none to show
+  if (it.kind == tx::ItemKind::Result) return shownWhole(it, show);
+  return &tx::shownArgs(it, showFactsOf(show)) == &it.args;   // a call still showing its arguments
+}
 Status foldUnit(const FoldScan& f, const Unit& u, size_t& left, std::vector<uint64_t>& sup) {
-  const tx::TxArena& arena = f.arena;
-  const uint64_t thru = f.thru;
-  const ShowState& show = f.show;
   tx::Item it;
   for (size_t k = u.first; k <= u.last && left > f.target; ++k) {
     tx::ArenaEntry e;
-    Status s = arena.header(k, e);
+    Status s = f.arena.header(k, e);
     if (!s.ok()) return s;
-    if (e.q <= thru || e.kind != tx::ItemKind::Result) continue;
-    if (!(s = arena.get(k, it)).ok()) return s;
-    if (!shownWhole(it, show) || it.st.empty()) continue;   // already a stub, or none to show
-    const size_t whole = shownBytes(it, show), stub = kItemFramingBytes + it.id.size() + it.st.size();
+    if (e.q <= f.thru || e.kind != f.kind) continue;
+    if (!(s = f.arena.get(k, it)).ok()) return s;
+    if (!foldable(it, f.show)) continue;   // already a stub, or none to show
+    const size_t whole = shownBytes(it, f.show);
+    const size_t stub = kItemFramingBytes + it.id.size() + (it.kind == tx::ItemKind::Call ? it.n.size() : 0) + it.st.size();
     if (whole <= stub) continue;
     left -= whole - stub;
     sup.push_back(it.q);
@@ -660,8 +669,10 @@ Status planToolFold(const tx::TxArena& arena, uint64_t thru, const SliceRules& r
   if (!(s = showState(arena, show)).ok()) return s;
   const size_t stop = protectedFrom(units, r);
   size_t left = rest;
-  for (size_t i = 0; i < stop && left > r.low && units[i].closed; ++i)   // thru never jumps a turn; nor a fold
-    if (!(s = foldUnit(FoldScan{arena, thru, show, r.low}, units[i], left, sup)).ok()) return s;
+  for (tx::ItemKind kind : {tx::ItemKind::Result, tx::ItemKind::Call})   // results, then arguments
+    for (size_t i = 0; i < stop && left > r.low && units[i].closed; ++i)   // thru never jumps a turn; nor a fold
+      if (!(s = foldUnit(FoldScan{arena, thru, show, r.low, kind}, units[i], left, sup)).ok()) return s;
+  std::sort(sup.begin(), sup.end());
   saved = rest - left;
   return Status::success();
 }

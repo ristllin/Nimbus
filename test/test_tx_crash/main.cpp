@@ -423,8 +423,9 @@ void test_a_stored_reply_is_sent_once_across_later_boots() {
   TEST_ASSERT_EQUAL_STRING("resume:sent-stored", e->end.cause.c_str());
 }
 
-// A turn the boot closed counts as closed for the next turn: its cold open moves the stub
-// pointer to that turn's e item, as it would for a turn the loop closed.
+// A turn the boot closed counts as closed for the next turn: the next owner message opens a turn
+// of its own after it. E2-VERB (rulings 81, 82 and 106): no turn open moves the stub pointer any
+// more, so the closed turn is replayed whole in the next request, as a turn the loop closed is.
 void test_a_turn_the_boot_closed_counts_as_closed() {
   TXB_WAITS_FOR("PENDING RB-X1", "RB-E1a");
   txb::Battery b;
@@ -436,14 +437,17 @@ void test_a_turn_the_boot_closed_counts_as_closed() {
   TXB_OK(b.stored(closed));
   const tx::Item* end = lastOf(closed, tx::ItemKind::TurnEnd);
   TEST_ASSERT_NOT_NULL_MESSAGE(end, "the boot never closed the turn");
-  const uint64_t eQ = end->q;
+  const uint32_t closedTurn = end->turn;
   b.model.respondWith([](const sp::Recorded&, size_t) { return sp::say("Morning."); });
   TXB_OK(txb::runTurns(b, {txb::chat(600, "good morning", "Morning.")}));
   std::vector<tx::Item> after;
   TXB_OK(b.stored(after));
-  const tx::Item* x = lastOf(after, tx::ItemKind::PointerMove);
-  TEST_ASSERT_NOT_NULL_MESSAGE(x, "the first turn after the restart did not open cold");
-  TEST_ASSERT_EQUAL_MESSAGE((int)eQ, (int)x->stub, "the pointer did not reach the turn the boot closed");
+  const tx::Item* open = lastOf(after, tx::ItemKind::TurnOpen);
+  TEST_ASSERT_NOT_NULL(open);
+  TEST_ASSERT_TRUE_MESSAGE(open->turn > closedTurn, "the next message did not open a turn after the one the boot closed");
+  TEST_ASSERT_NULL_MESSAGE(lastOf(after, tx::ItemKind::PointerMove), "a turn open moved the stub pointer by default");
+  const std::string& body = b.model.requests().back().body;
+  TEST_ASSERT_TRUE_MESSAGE(body.find("log it") != std::string::npos, "the closed turn is missing from the next request");
 }
 
 // A turn no person started (a routine fire) is closed at boot, never resumed: nobody is in it

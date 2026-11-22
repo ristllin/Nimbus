@@ -22,6 +22,12 @@ namespace {
 // ---- templates (model-text class "stub templates") ----------------------------------------
 constexpr const char kStubOpen[] = "[stub ";
 constexpr const char kViewHintOpen[] = " ... (full: view id=r";
+// E2-VERB: a stub made on the overflow path names the call that brings the bytes back.
+constexpr const char kAgainOpen[] = " ... (not shown in full to fit the request; ";
+constexpr const char kAgainClose[] = " reads it again)";
+constexpr const char kArgMid[] = "B sha:";
+constexpr const char kArgNotContent[] = ": an argument sent earlier, not content; ";
+constexpr const char kArgFile[] = " shows the file";
 constexpr const char kNoCardHint[] = " ... (full result not kept: no storage card)";
 constexpr const char kOutsideMid[] = "B outside content, not shown: ";
 constexpr const char kNoCardOutside[] = "full result not kept: no storage card";
@@ -137,6 +143,13 @@ bool isHex8(const std::string& s) {
   for (char c : s)
     if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) return false;
   return true;
+}
+
+// A model-chosen field on one line, framed so it cannot close a stub.
+std::string oneLineOf(const std::string& src, size_t maxBytes) {
+  std::string out;
+  appendLine(out, src, maxBytes, true);
+  return out;
 }
 
 bool isHhmm(const std::string& s) {
@@ -260,22 +273,6 @@ Status superseded(const Item& writeCall, const Item* writeResult, const std::vec
 
 }  // namespace
 
-// ---- the pointer ----------------------------------------------------------------------------------
-
-Status decideTurnOpen(const OpenFacts& f, PointerMove& out) {
-  out = PointerMove{};
-  const bool cold = f.afterRestart || f.now == 0 || f.lastReqAt == 0 || f.now < f.lastReqAt ||
-                    f.now - f.lastReqAt > kColdGapS;
-  const uint32_t limit = f.floorHead ? kWarmBulkBytesFloor : kWarmBulkBytes;
-  if (f.lastClosedTurnQ <= f.pointer) return Status::success();   // never backwards, never nowhere
-  if (cold) out.why = MoveWhy::ColdOpen;
-  else if (f.wholeBulkAbove > limit) out.why = MoveWhy::WarmBulk;
-  else return Status::success();
-  out.move = true;
-  out.to = f.lastClosedTurnQ;
-  return Status::success();
-}
-
 // ---- stub texts --------------------------------------------------------------------------------------
 
 Status stubText(const StubFacts& f, std::string& out) {
@@ -302,7 +299,9 @@ Status stubText(const StubFacts& f, std::string& out) {
   }
   if (isHex8(f.sha8)) s += " sha8=" + f.sha8;
   s += "] ";
-  const std::string tail = f.noCard ? std::string(kNoCardHint) : kViewHintOpen + q + ")";
+  const std::string tail = f.noCard          ? std::string(kNoCardHint)
+                           : f.again.empty() ? kViewHintOpen + q + ")"
+                                             : kAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kAgainClose;
   const size_t room = kStubMaxBytes > s.size() + tail.size() ? kStubMaxBytes - s.size() - tail.size() : 0;
   appendLine(s, f.preview, std::min(kStubPreviewBytes, room));
   s += tail;
@@ -310,10 +309,11 @@ Status stubText(const StubFacts& f, std::string& out) {
   return Status::success();
 }
 
-Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out) {
+Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out, const std::string& again) {
   out.clear();
   if (q == 0 || !isHex8(sha8)) return Status::fail(Err::InvalidArgument, "tx::longArgStub");
-  out = std::string(kStubOpen) + std::to_string(bytes) + "B sha:" + sha8 + ": view id=r" + std::to_string(q) + "]";
+  out = std::string(kStubOpen) + std::to_string(bytes) + kArgMid + sha8 + kArgNotContent +
+        (again.empty() ? "view id=r" + std::to_string(q) : oneLineOf(again, kStubWayBackMaxBytes) + kArgFile) + "]";
   return Status::success();
 }
 
@@ -420,6 +420,31 @@ Status supersededBy(const Item& writeCall, const Item& writeResult, const std::v
 }
 
 // ---- whole or stub -----------------------------------------------------------------------------------
+
+std::string wayBack(const std::string& tool, const std::string& args) {
+  const bool read = tool == "read_file", write = tool == "write_file" || tool == "append_file" || tool == "edit_file";
+  JsonDocument doc;
+  if ((!read && !write) || !parseArgs(args, doc)) return std::string();
+  const std::string path = topString(doc, "path");
+  if (path.empty()) return std::string();
+  std::string out = "read_file path=" + path;
+  if (!read) return out;
+  for (const char* k : {"offset", "limit", "column", "from", "to"}) {
+    JsonVariantConst v = doc[k];
+    if (v.is<uint64_t>()) out += std::string(" ") + k + "=" + std::to_string(v.as<uint64_t>());
+    else if (v.is<const char*>()) out += std::string(" ") + k + "=" + v.as<const char*>();
+  }
+  return out;
+}
+
+bool looksLikeStub(const std::string& text) {
+  size_t a = 0, b = text.size();
+  while (a < b && (text[a] == ' ' || text[a] == '\n' || text[a] == '\r' || text[a] == '\t')) ++a;
+  while (b > a && (text[b - 1] == ' ' || text[b - 1] == '\n' || text[b - 1] == '\r' || text[b - 1] == '\t')) --b;
+  if (b - a > kStubMaxBytes || text.compare(a, std::strlen(kStubOpen), kStubOpen) != 0) return false;
+  if (std::find(text.begin() + (long)a, text.begin() + (long)b, '\n') != text.begin() + (long)b) return false;
+  return text[b - 1] == ']' || text[b - 1] == ')';
+}
 
 Status showResult(const Item& r, const ShowFacts& f, ShowAs& out) {
   out = ShowAs::Whole;

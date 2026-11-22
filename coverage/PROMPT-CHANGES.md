@@ -1155,3 +1155,13 @@ PC-0143: not used.
 - why: lib/core/src/orch_file_tools.cpp kDeleted "deleted {} ({} B)" with delete_file's one argument name (path), the result of the declared tool behind more (texts.h kBehindMore, unchanged); its refusals reuse the existing file tool lines. lib/harness/include/nimbus/harness/plain/texts.h tool_results::kWebSearchNoKey, the one plain line web_search gives on a device with no search key (facts only, no instruction). src/agent/tools_plain.cpp joins the catalog for its literals: the engine-2 name web_search, the old engine's handler name web.search and argument query that it forwards, and the Tavily budget slug; the search results and errors stay the old engine's own (lib/harness/src/websearch.cpp, unchanged, e1 catalog). Written by lane E2-TOOLS, which carries RB-N2b's device binding of the file tools (ruling 114, the fast engine-2 path). Planned work, not a fix.
 
 PC-0175, PC-0176: not used.
+
+### PC-0171: a stub line is refused as file content (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: build
+- bytes: 6058 -> 6142
+- sha8: f10df0de -> 9d11335c
+- lane: E2-VERB
+- prd: section 2 (the stub rule, as amended by owner rulings 81, 82 and 106: under the due mark the request replays every call and result whole; stubs only on the overflow path) and section 4 (the file tools; delete_file behind more, files_admin)
+- why: lib/core/src/orch_file_tools.cpp kStubText, 70 B: write_file content, append_file text and edit_file new that is a stub line and nothing else ([stub ...], tx::looksLikeStub) is refused with one line that says it is a stub line, not text, and that only real text is stored (a fact, not an order: check_tool_result_imperatives; shortened to fit the class ceiling beside PC-0174). The E2-HOST comparison (evidence/refloop-e2, long-chat) showed models copying their own earlier calls, shown with stubbed arguments, into write_file. delete_file's result and argument are PC-0174's (lane E2-TOOLS' FileTools::remove, which this lane binds on nimbusd). The stub texts themselves (lib/core/src/orch_tx_rules.cpp: a file read's stub names read_file with its path and range, a long argument's stub says it is an argument sent earlier, not content) are not in either catalog's sources; they change with this entry too. Planned work, not a fix.

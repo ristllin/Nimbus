@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "nimbus/orch/rbac.h"   // effectiveQuota - the per-person byte limit
+#include "nimbus/orch/tx/rules.h"   // looksLikeStub - a stub line is never content (E2-VERB)
 #include "nimbus/utf8.h"        // utf8Lead, utf8CapLen - cuts on character boundaries
 
 namespace nimbus::orch {
@@ -53,6 +54,8 @@ const char kEmptyText[] = "text is empty";
 const char kEditTooBig[] = "{} is {} B; edit_file takes files up to {} B";
 const char kChanged[] = "{} changed during the edit; nothing written";
 const char kAfter[] = "after: {} is not listed";
+// E2-VERB: a stub line stands for text the request did not show; it is never the text itself.
+const char kStubText[] = "{} is a stub line, not text; nothing written: only real text is stored";
 // results
 const char kReadHead[] = "{} size={} lines={} sha8={} bytes {}-{}";
 const char kTornNote[] = "; {}";
@@ -72,10 +75,10 @@ const char kListLine[] = "{} {} B {}";
 const char kShared[] = " shared";
 const char kMore[] = "more: {}";
 const char kMoreAfter[] = "more: {} (after={})";
+const char kDeleted[] = "deleted {} ({} B)";
 const char kNoFiles[] = "no files";
 const char kNoFilesUnder[] = "no files under {}";
 const char kTimeUnknown[] = "time?";
-const char kDeleted[] = "deleted {} ({} B)";
 }  // namespace tool_results
 }  // namespace texts
 
@@ -717,10 +720,24 @@ bool writeTarget(const Principal& who, const PathRule& rule, const std::string& 
   return false;
 }
 
+// A stub line as content (E2-VERB): refused, so a model that copied one from its history is told
+// to send the text it meant.
+bool notStub(const char* key, const std::string& text, std::string& err) {
+  if (!tx::looksLikeStub(text)) return true;
+  err = fill(R::kStubText, {key});
+  return false;
+}
+
 bool withinCap(const char* key, size_t size, size_t cap, std::string& err, bool more = false) {
   if (size <= cap) return true;
   err = fill(R::kTooLong, {key, num(size), num(cap)}) + (more ? R::kTooLongMore : "");
   return false;
+}
+
+// edit_file's old and new within the cap, and new not a stub line.
+bool editTextsOk(const aids::EditRequest& e, size_t cap, std::string& err) {
+  return withinCap("old", e.oldText.size(), cap, err) && withinCap("new", e.newText.size(), cap, err) &&
+         notStub("new", e.newText, err);
 }
 
 }  // namespace
@@ -735,7 +752,7 @@ ToolResult FileTools::write(JsonObjectConst args, const Principal& who) {
     return ToolResult::fail(in.err);
   if (ifExists != "fail" && ifExists != "replace") return ToolResult::fail(fill(R::kIfExists, {shown(ifExists)}));
   if (!resolve(args, t, err) || !withinCap("content", content.size(), cfg_.contentCap, err, true) ||
-      !writeTarget(who, t.rule, t.path(), err))
+      !notStub("content", content, err) || !writeTarget(who, t.rule, t.path(), err))
     return ToolResult::fail(err);
   WriteMode m;
   m.replace = ifExists == "replace";
@@ -825,7 +842,8 @@ ToolResult FileTools::append(JsonObjectConst args, const Principal& who) {
   if (!in.str("path", true, path) || !in.str("text", true, text)) return ToolResult::fail(in.err);
   if (!resolve(args, t, err)) return ToolResult::fail(err);
   if (text.empty()) return ToolResult::fail(R::kEmptyText);
-  if (!withinCap("text", text.size(), cfg_.contentCap, err) || !writeTarget(who, t.rule, t.path(), err))
+  if (!withinCap("text", text.size(), cfg_.contentCap, err) || !notStub("text", text, err) ||
+      !writeTarget(who, t.rule, t.path(), err))
     return ToolResult::fail(err);
   return appendText(t, text, who);
 }
@@ -924,9 +942,7 @@ ToolResult FileTools::edit(JsonObjectConst args, const Principal& who) {
   if (!resolve(args, t, err)) return ToolResult::fail(err);
   err = aids::checkEdit(e);
   if (!err.empty()) return ToolResult::fail(err);
-  if (!withinCap("old", e.oldText.size(), cfg_.contentCap, err) ||
-      !withinCap("new", e.newText.size(), cfg_.contentCap, err) || !writeTarget(who, t.rule, t.path(), err))
-    return ToolResult::fail(err);
+  if (!editTextsOk(e, cfg_.contentCap, err) || !writeTarget(who, t.rule, t.path(), err)) return ToolResult::fail(err);
   return editText(t, e, who);
 }
 

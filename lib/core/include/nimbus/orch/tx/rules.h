@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -9,7 +10,7 @@
 #include "nimbus/orch/tx/status.h"
 
 // tx/rules.h - the pure rules of what a request shows (PRD section 2, "The stub rule"):
-// the one monotonic stub pointer and its moves, the stub texts, superseded reads and day
+// the one monotonic stub pointer (moved only on the overflow path), the stub texts, superseded reads and day
 // views, photo visibility, the overflow ladder and the omission line. Pure functions of
 // stored facts: no clock, no I/O, no global state; the same facts always give the same
 // bytes, so a restart renders the same request.
@@ -26,14 +27,13 @@ namespace nimbus {
 namespace orch {
 namespace tx {
 
-inline constexpr uint32_t kColdGapS = 270;            // over this since the last request: cold open
-inline constexpr uint32_t kWarmBulkBytes = 24576;     // whole internal bulk above the pointer
-inline constexpr uint32_t kWarmBulkBytesFloor = 8192; // the same on 85,000 B heads
+inline constexpr uint32_t kColdGapS = 270;            // over this since the last request: cold (photos, files list)
 inline constexpr size_t kStubMaxBytes = 400;
 inline constexpr size_t kStubPreviewBytes = 200;
 inline constexpr size_t kStubArgsPreviewBytes = 120;
 inline constexpr size_t kStubToolMaxBytes = 64;       // a longer tool name is cut (UTF-8 safe)
 inline constexpr size_t kStubPathMaxBytes = 96;       // the store's paths are at most 73 B
+inline constexpr size_t kStubWayBackMaxBytes = 160;   // the call a stub names to bring its bytes back
 inline constexpr uint32_t kNewestOwnerTurnsKept = 6;  // never omitted by the ladder
 inline constexpr uint32_t kPhotoIdleS = 3600;         // file-reference photos leave view after this
 inline constexpr uint32_t kPhotoOwnerTurns = 2;       // photos stay for the next two owner turns
@@ -74,31 +74,17 @@ inline Profile profileOfHead(const std::string& stored) {
 }
 
 // ---- the pointer ---------------------------------------------------------------------
+// No default move (lane E2-VERB, rulings 81, 82 and 106): under the due mark a request replays
+// every earlier call and result whole, as a simple loop does. Stubs come only from the overflow
+// path: compaction (its slice, then its tool fold) and the ladder (rung 1 raises the pointer for one
+// request, rung 2 stubs old bulk of the open turn). The cold and warm opens of the PRD's first
+// draft (rules 1 and 2) moved the pointer to save money and are gone; a pointer an earlier build
+// stored is still honoured (nothing stored is rewritten).
 
-// The facts the turn-open decision reads.
-struct OpenFacts {
-  uint64_t now = 0;              // epoch seconds; 0 = clock not set (reads as cold)
-  uint64_t lastReqAt = 0;        // HeadState::lastReqAt (0 = never: cold)
-  bool afterRestart = false;
-  uint64_t pointer = 0;          // the current stub pointer
-  uint64_t lastClosedTurnQ = 0;  // the q of the last item of the last closed turn
-  uint32_t wholeBulkAbove = 0;   // bytes of internal bulk above the pointer shown whole
-  bool floorHead = false;        // an 85,000 B head (lean profile)
-};
-
-struct PointerMove {
-  bool move = false;
-  uint64_t to = 0;
-  MoveWhy why = MoveWhy::ColdOpen;
-};
-
-// Rules (1) and (2), run once at turn open; the move is stored as an x item before the
-// first request is rendered. Cold (over kColdGapS since the last request, clock not set,
-// a clock behind the last request, never requested, or after a restart): move to the last
-// closed turn. Warm: move there only when whole internal bulk above the pointer exceeds
-// kWarmBulkBytes (kWarmBulkBytesFloor on floor heads). Never backwards and never nowhere:
-// when lastClosedTurnQ is not above the pointer there is no move. Always ok.
-Status decideTurnOpen(const OpenFacts& facts, PointerMove& out);
+// Whether an x item's sup list makes its items render as stubs: the tool fold's lists do
+// (compaction, the overflow path); a superseded-read list (rule 4) does not: a simple loop replays
+// a stale read too, so the read renders whole until the overflow path stubs it (E2-VERB).
+inline bool stubList(const Item& x) { return x.kind == ItemKind::PointerMove && x.why != moveWhySlug(MoveWhy::Superseded); }
 
 // ---- stub texts (computed once at capture, stored on the r line) -----------------------
 
@@ -114,6 +100,7 @@ struct StubFacts {
   std::string args;        // outside results: the call's arguments
   ResultClass cls = ResultClass::Receipt;
   bool noCard = false;     // no storage card: the full result is not kept, no view hint
+  std::string again;       // the call that reads it again (tx::wayBack; E2-VERB), "" = the view hint
 };
 
 // The stub text, one line of valid UTF-8, at most kStubMaxBytes:
@@ -124,6 +111,9 @@ struct StubFacts {
 //  outside: '[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown: view id=r<q>]'
 //   built from the tool, the call's arguments, q and the size: never a byte of the result.
 //  noCard: the view hint becomes 'full result not kept: no storage card' (PRD section 2).
+//  again (lane E2-VERB): the tail is ' ... (not shown in full to fit the request; <again> reads it
+//   again)' instead of the view hint: a stub is made only on the overflow path, and it names a call
+//   of a tool the chat has (for a file read: read_file with its path and range).
 // Every field is one line: control bytes, C1 controls, U+2028 and U+2029 become spaces, bidi
 // controls and invalid bytes '?', a sequence cut at a field's end is dropped. The tool name
 // keeps [A-Za-z0-9_.-] (others '?', at most kStubToolMaxBytes); in the path and the outside
@@ -131,9 +121,21 @@ struct StubFacts {
 // open a '[device]' text inside it. The preview of an internal result is kept as it reads.
 // No clock: <HH:MM> reads '--:--'. InvalidArgument for an empty tool or q 0.
 Status stubText(const StubFacts& facts, std::string& out);
-// A long call argument: '[stub <bytes>B sha:<sha8>: view id=r<q>]'. InvalidArgument for q 0
-// or a sha8 that is not 8 hex characters.
-Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out);
+// A long call argument: '[stub <bytes>B sha:<sha8>: an argument sent earlier, not content; view
+// id=r<q>]', or with `again` (a file write's tx::wayBack, lane E2-VERB) '...; read_file path=<p>
+// shows the file]': plain words for what it stood for, so a model reading its own earlier call
+// never takes the line for the text it sent. InvalidArgument for q 0 or a sha8 that is not 8 hex.
+Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out,
+                   const std::string& again = std::string());
+// The call that brings a stubbed item's bytes back with the file tools (lane E2-VERB), from the tool
+// and its arguments JSON: read_file 'read_file path=<p>[ offset=<n>][ limit=<n>][ column=..]...'
+// (the same range); write_file, append_file, edit_file 'read_file path=<p>'; any other tool, or
+// arguments with no path, "". Pure.
+std::string wayBack(const std::string& tool, const std::string& args);
+// Whether a text is a stub line and nothing else (lane E2-VERB): one line, at most kStubMaxBytes once
+// blanks around it are left out, opening with '[stub ' and closing with ']' or ')'. The write tools
+// refuse such a text as content (it is never the text a model meant to store).
+bool looksLikeStub(const std::string& text);
 // Long text kept inline (owner rulings 81 to 83, PRD section 2 tier 1 as amended; lane RB-H81): an
 // assistant text or a saved owner paste over the inline limit keeps its first `cap` bytes (the
 // head's v5.1.2 message cap at least: tx::HeadBudget::messageCap), cut on a character, then on its
@@ -174,7 +176,8 @@ Status omissionDates(uint64_t firstEpoch, uint64_t lastEpoch, int16_t tzMinutes,
 // Rule (4): the result q's a successful write supersedes, sorted and unique. Only results
 // stored before the write (q below writeCall.q) are read: a read after the write is fresh.
 // The caller passes only a write whose result was ok (the second form checks it), and stores
-// the answer as the sup list of an x item (why "superseded") at the close of the writing turn.
+// the answer as the sup list of an x item (why "superseded") at the close of the writing turn: a
+// change point it logs, not a stub list (stubList; lane E2-VERB): the stale read renders whole.
 //  - write_file, append_file, edit_file, delete_file, move_file (args path, from, to): every
 //    earlier read_file, read_pdf or file_stat result of the same path (exact string).
 //  - any other tool: nothing. No tool is special for what it stores (ruling 41).
@@ -194,7 +197,8 @@ enum class ShowAs : uint8_t { Whole = 0, Stub = 1 };
 struct ShowFacts {
   uint64_t pointer = 0;                   // the stub pointer (newest x item's stub)
   uint32_t openTurn = 0;                  // the turn being answered (0 = none open)
-  const std::vector<uint64_t>* superseded = nullptr;   // every x item's sup, sorted (may be null)
+  const std::vector<uint64_t>* superseded = nullptr;   // the stub lists (stubList x items' sup), sorted
+                                                       // (may be null)
   uint64_t ladderStubThrough = 0;         // ladder rung 2: open-turn tier-2 results at or below
                                           // this q (older than the newest two rounds) are stubs
 };
@@ -204,13 +208,15 @@ struct ShowFacts {
 // an unsorted superseded list.
 Status showResult(const Item& result, const ShowFacts& facts, ShowAs& out);
 
-// A call's arguments as a request shows them (PRD section 2 tier 2 as amended by rulings 81 to 83;
-// lane RB-H81): a string argument over 1,024 B is whole while its own turn is open (the c item
-// keeps the model's arguments in args, bounded like tier-2 bulk) and its stub form (st: each long
-// string as its long-argument stub) from the close of the turn or at ladder rung 2 (the call at or
-// below ladderStubThrough). A call with no stub form shows its args. Pure.
-inline const std::string& shownArgs(const Item& call, uint32_t openTurn, uint64_t ladderStubThrough) {
-  const bool stub = call.turn != openTurn || call.q <= ladderStubThrough;
+// A call's arguments as a request shows them (lane E2-VERB, rulings 81, 82 and 106): the model's own
+// arguments, whole, in every turn, as a simple loop replays them (the c item keeps them in args,
+// bounded like tier-2 bulk). Its stub form (st: each long string as its long-argument stub) only on
+// the overflow path: the call at or below the pointer (ladder rung 1 raises it to the last closed
+// turn), an open-turn call at or below rung 2's line, or a call a compaction tool fold listed (its q
+// in `f.superseded`, the stub lists). A call with no stub form shows its args. Pure.
+inline const std::string& shownArgs(const Item& call, const ShowFacts& f) {
+  const bool folded = f.superseded && std::binary_search(f.superseded->begin(), f.superseded->end(), call.q);
+  const bool stub = folded || call.q <= f.pointer || (call.turn == f.openTurn && call.q <= f.ladderStubThrough);
   return stub && !call.st.empty() ? call.st : call.args;
 }
 

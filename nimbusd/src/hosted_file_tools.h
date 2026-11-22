@@ -16,6 +16,7 @@
 #include "nimbus/harness/plain/request.h"   // toolDecl, declSchema, kWriteContentMax(Short)
 #include "nimbus/orch/file_store.h"
 #include "nimbus/orch/file_tools.h"
+#include "nimbus/orch/tool_groups.h"     // registerMore: delete_file sits behind more (files_admin)
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/digest.h"          // RecentFile, RecentFilesBlock::Source
 #include "posix_files.h"
@@ -125,6 +126,12 @@ class HostedFilesIo : public orch::FileToolsIo {
     return true;
   }
   void partDiscard(const std::string& p, const std::string& n) override { std::remove(part(p, n).c_str()); }
+  // delete_file (lane E2-TOOLS' FileToolsIo::remove, bound here by lane E2-VERB): the bytes at <root>/<project>/<name>; the library removes the index
+  // entry in the same hold and persists the index, as PosixFiles::remove does for engine 1. A file
+  // already gone from the volume is removed from the index too.
+  bool remove(const std::string& p, const std::string& n) override {
+    return ::unlink(files_.toolsPath(p, n).c_str()) == 0 || errno == ENOENT;
+  }
   bool persistIndex() override { return files_.toolsPersistIndex(); }
   bool roomFor(const std::string& p, const std::string& n, uint64_t addBytes, std::string& err) override {
     return files_.toolsRoomFor(p, n, addBytes, err);
@@ -182,7 +189,10 @@ class HostedFileTools {
     HostedFilesIo::OffsetFn utcOffsetMin;   // null: UTC
     HostedFilesIo::SkillFn skillBody;       // skills/<id>.md; null: none
   };
-  static constexpr const char* kNames[] = {"read_file", "write_file", "append_file", "edit_file", "list_files"};
+  // The five tools, then delete_file (lane E2-VERB: declared behind more, files_admin, so the binding
+  // registers more too and the tools index names it).
+  static constexpr const char* kNames[] = {"read_file", "write_file", "append_file", "edit_file", "list_files",
+                                           "delete_file"};
   // The one line for a name the store keeps for itself (ruling 112 item 4).
   static constexpr const char* kReservedName =
       "That name is kept for this instance's own temporary files (a name ending in .tmp, or the chat and chat-* "
@@ -202,9 +212,9 @@ class HostedFileTools {
     return tmp || project == "chat" || project.rfind("chat-", 0) == 0;
   }
 
-  // Register the five tools on a chat's registry, before boot, with the manifest's description and
-  // schema (plain::toolDecl, plain::declSchema with the same shortHost bit as the request facts).
-  // The registry must not outlive this object.
+  // Register the six tools on a chat's registry, before boot, with the manifest's description and
+  // schema (plain::toolDecl, plain::declSchema with the same shortHost bit as the request facts),
+  // and more (delete_file is reached through it). The registry must not outlive this object.
   void attach(orch::ToolRegistry& reg, bool shortHost = false) {
     orch::FileToolsConfig cfg;
     cfg.contentCap = shortHost ? agent::plain::kWriteContentMaxShort : agent::plain::kWriteContentMax;
@@ -228,6 +238,7 @@ class HostedFileTools {
           },
           d.schema);
     }
+    if (!reg.has(orch::kMoreTool)) orch::registerMore(reg);
   }
 
   // EngineDeps::recentFiles for one person: the files that person may read, with their write times.

@@ -248,9 +248,10 @@ struct SlicePlan {
 };
 // The tool fold (ruling 91 table/F1; owner ruling 81: tools must not eat the dialogue). When a due
 // slice is held only by the text floor, the results of the oldest closed turns (before the
-// protected ones) render as their stubs instead, oldest first, until what a request renders of
-// the transcript is at L: an x item (why "tools") lists them in sup, stored like any change point.
-// The owner and assistant text stays verbatim; each stub keeps its view pointer. `sup` empty:
+// protected ones) render as their stubs instead, oldest first, then (lane E2-VERB, ruling 106) their
+// long call arguments, oldest first, until what a request renders of the transcript is at L: an x
+// item (why "tools") lists them in sup (sorted), stored like any change point. The owner and
+// assistant text stays verbatim; each stub keeps its way back. `sup` empty:
 // nothing whole is left to fold. InvalidArgument without a clock or marks.
 Status planToolFold(const nimbus::orch::tx::TxArena& arena, uint64_t thru, const SliceRules& rules,
                     std::vector<uint64_t>& sup, size_t& saved);

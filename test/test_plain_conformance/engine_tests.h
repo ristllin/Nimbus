@@ -778,7 +778,9 @@ inline void test_a_delete_through_more_rebuilds_the_recent_files() {
   TEST_ASSERT_TRUE(bodyHas(reqs.back(), "notes/b.md ("));
 }
 
-// C: a delete through more supersedes the earlier whole read of that path (rule 4).
+// C: a delete through more supersedes the earlier whole read of that path (rule 4): one x item, a
+// change point. E2-VERB (rulings 81, 82 and 106): a superseded read renders whole, as a simple loop
+// replays it; only the overflow path stubs it (before, it became a stub here).
 inline void test_a_write_through_more_supersedes_the_earlier_read() {
   txb::Battery b;
   withMore(b);
@@ -786,7 +788,7 @@ inline void test_a_write_through_more_supersedes_the_earlier_read() {
   TXB_OK(txb::runTurns(b, {txb::withTool(30, "read my plan", "read_file", R"({"path":"notes/plan.md"})", "read"),
                            txb::withTool(30, "delete it", "more", R"({"name":"delete_file","args":{"path":"notes/plan.md"}})", "Deleted."),
                            txb::chat(30, "what now?", "nothing")}));
-  TEST_ASSERT_TRUE_MESSAGE(!bodyHas(b.model.last(), "PLAN-V1-TAIL"), "the read of a deleted file is still shown whole");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "PLAN-V1-TAIL"), "the read of a deleted file became a stub by default");
   size_t sup = 0;
   for (const tx::Item& it : storedOf(b)) sup += it.kind == tx::ItemKind::PointerMove && !it.sup.empty();
   TEST_ASSERT_EQUAL(1, (int)sup);
@@ -870,8 +872,8 @@ inline void test_an_item_the_arena_refuses_ends_the_turn_with_a_true_line() {
 }
 
 // ---- the stack review, second batch (coordinator, 19 Nov): H to L --------------------------------
-// H: the tier rules at capture. A 12 KB argument renders as its stub from the next request on
-// (the call still ran with the whole argument); a 70 KB argument and a 61 KB reply never end the
+// H: the tier rules at capture. A 12 KB argument is stored with its stub form and renders whole in
+// every later request (E2-VERB; the call ran with the whole argument); a 70 KB argument and a 61 KB reply never end the
 // turn as a storage failure, and the reply goes out whole.
 inline void test_a_long_argument_is_stored_as_its_stub() {
   txb::Battery b;
@@ -883,11 +885,19 @@ inline void test_a_long_argument_is_stored_as_its_stub() {
   TEST_ASSERT_EQUAL_STRING(big.c_str(), b.world.files["notes/big.md"].c_str());   // ran whole
   // Amended by rulings 81 to 83 (RB-H81): whole while its own turn is open, its stub from the close.
   TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "-ARG-TAIL"), "the open turn lost its own argument");
+  // E2-VERB (rulings 81, 82 and 106): whole in every later request too; its stub form is stored for
+  // the overflow path only (before, a closed turn showed it as its stub).
   b.model.push(sp::say("ok"));
   TXB_OK(b.owner("next", out));
-  TEST_ASSERT_TRUE_MESSAGE(!bodyHas(b.model.last(), "-ARG-TAIL"), "a closed turn's long argument is re-sent whole");
-  TEST_ASSERT_TRUE(bodyHas(b.model.last(), "[stub 12009B sha:"));
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "-ARG-TAIL"), "a closed turn's long argument became its stub by default");
+  TEST_ASSERT_FALSE(bodyHas(b.model.last(), "[stub 12009B sha:"));
   TEST_ASSERT_TRUE(bodyHas(b.model.last(), "notes/big.md"));   // the short argument stays
+  const tx::Item* call = nullptr;
+  const std::vector<tx::Item> items = storedOf(b);
+  for (const tx::Item& it : items)
+    if (it.kind == tx::ItemKind::Call && it.n == "write_file") call = &it;
+  TEST_ASSERT_NOT_NULL(call);
+  TEST_ASSERT_TRUE_MESSAGE(call->st.find("[stub 12009B sha:") != std::string::npos, "the stub form the overflow path uses was not stored");
 }
 
 inline void test_a_huge_argument_and_a_huge_reply_keep_the_turn() {

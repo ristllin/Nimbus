@@ -187,13 +187,29 @@ void test_file_tool_stub_names_path_and_sha() {
   TEST_ASSERT_TRUE_MESSAGE(s.find("sha8=ab12cd34") != std::string::npos, s.c_str());
   TEST_ASSERT_TRUE_MESSAGE(s.find("view id=r42") != std::string::npos, s.c_str());
   TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
+  // E2-VERB: a file read's stub names the read that brings it back, path and range.
+  f.again = tx::wayBack("read_file", R"({"path":"notes/boat.md","offset":32761,"limit":4000})");
+  TEST_ASSERT_EQUAL_STRING("read_file path=notes/boat.md offset=32761 limit=4000", f.again.c_str());
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.find("(not shown in full to fit the request; read_file path=notes/boat.md offset=32761 limit=4000 reads it again)") != std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  TEST_ASSERT_EQUAL_STRING("", tx::wayBack("calc", R"({"path":"notes/boat.md"})").c_str());
+  TEST_ASSERT_EQUAL_STRING("", tx::wayBack("read_file", "[stub 15204B sha:ab12cd34: view id=r9]").c_str());
 }
 
 void test_long_argument_and_photo_stubs_have_the_prd_shape() {
   TXB_WAITS_FOR("PENDING RB-T3");
   std::string s;
   TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s));
-  TEST_ASSERT_EQUAL_STRING("[stub 15204B sha:ab12cd34: view id=r9]", s.c_str());
+  TEST_ASSERT_EQUAL_STRING("[stub 15204B sha:ab12cd34: an argument sent earlier, not content; view id=r9]", s.c_str());
+  // E2-VERB: a file write's argument names the file it wrote, and every stub is refused as content.
+  TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s, tx::wayBack("write_file", R"({"path":"notes/a.md","content":"x"})")));
+  TEST_ASSERT_EQUAL_STRING("[stub 15204B sha:ab12cd34: an argument sent earlier, not content; read_file path=notes/a.md shows the file]", s.c_str());
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  TEST_ASSERT_TRUE(tx::looksLikeStub("  [stub 1720B sha:c4091c8e: view id=r4]\n"));
+  TEST_ASSERT_FALSE(tx::looksLikeStub("[stub] is how the parser marks a placeholder.\nSecond line."));
+  TEST_ASSERT_FALSE(tx::looksLikeStub("Journal, day 1 [stub 1720B sha:c4091c8e: view id=r4]"));
   TXB_OK(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", s));
   TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 13:02 not shown: view id=pab12cd34]", s.c_str());
   TXB_OK(tx::omissionLine(3, "15-16 Nov", s));
@@ -215,74 +231,18 @@ void test_stub_text_is_a_pure_function() {
 }
 
 // ---- the pointer -------------------------------------------------------------------
-tx::OpenFacts openFacts(uint64_t gapS) {
-  tx::OpenFacts f;
-  f.lastReqAt = txb::kT0;
-  f.now = txb::kT0 + gapS;
-  f.pointer = 10;
-  f.lastClosedTurnQ = 40;
-  return f;
-}
-
-// Rule (1): over 270 s since the last request, no clock, or after a restart, the pointer
-// moves to the last closed turn; rule (2): otherwise it stays.
-void test_cold_open_moves_to_the_last_closed_turn() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  const uint64_t gaps[] = {0, 1, 60, 269, 270, 271, 600, 86400};
-  for (uint64_t gap : gaps)
-    for (int variant = 0; variant < 3; ++variant) {
-      tx::OpenFacts f = openFacts(gap);
-      if (variant == 1) f.now = 0;              // clock not set
-      if (variant == 2) f.afterRestart = true;
-      tx::PointerMove m;
-      TXB_OK(tx::decideTurnOpen(f, m));
-      const bool cold = gap > tx::kColdGapS || variant > 0;
-      char msg[96];
-      std::snprintf(msg, sizeof msg, "gap %llu s variant %d", (unsigned long long)gap, variant);
-      TEST_ASSERT_EQUAL_MESSAGE(cold, m.move, msg);
-      if (cold) {
-        TEST_ASSERT_EQUAL_UINT64_MESSAGE(40, m.to, msg);
-        TEST_ASSERT_TRUE_MESSAGE(m.why == tx::MoveWhy::ColdOpen, msg);
-      }
-    }
-}
-
-void test_warm_open_moves_only_past_the_bulk_threshold() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  struct Row {
-    bool floor;
-    uint32_t bulk;
-    bool move;
-  } rows[] = {{false, 0, false},    {false, 24576, false}, {false, 24577, true},
-              {true, 8192, false},  {true, 8193, true},    {true, 24577, true}};
-  for (const Row& r : rows) {
-    tx::OpenFacts f = openFacts(60);
-    f.floorHead = r.floor;
-    f.wholeBulkAbove = r.bulk;
-    tx::PointerMove m;
-    TXB_OK(tx::decideTurnOpen(f, m));
-    char msg[64];
-    std::snprintf(msg, sizeof msg, "floor %d bulk %u", r.floor, r.bulk);
-    TEST_ASSERT_EQUAL_MESSAGE(r.move, m.move, msg);
-    if (r.move) TEST_ASSERT_TRUE_MESSAGE(m.why == tx::MoveWhy::WarmBulk && m.to == 40, msg);
-  }
-}
-
-// One monotonic pointer: whatever the facts, a move never goes backwards.
-void test_pointer_never_moves_backwards() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  const uint64_t gaps[] = {10, 600};
-  const uint64_t closed[] = {0, 5, 10, 11, 1000};
-  for (uint64_t gap : gaps)
-    for (uint64_t c : closed)
-      for (uint32_t bulk : {0u, 100000u}) {
-        tx::OpenFacts f = openFacts(gap);
-        f.lastClosedTurnQ = c;
-        f.wholeBulkAbove = bulk;
-        tx::PointerMove m;
-        TXB_OK(tx::decideTurnOpen(f, m));
-        if (m.move) TEST_ASSERT_TRUE_MESSAGE(m.to > f.pointer, "the pointer moved backwards or nowhere");
-      }
+// Lane E2-VERB (rulings 81, 82 and 106): the pointer has no default move any more (the cold and warm
+// opens are gone); test_tx_verbatim pins that a request under the due mark replays every earlier
+// call and result whole. What is left here: which x items' lists make stubs.
+void test_only_the_tool_fold_lists_make_stubs() {
+  tx::Item x;
+  x.kind = tx::ItemKind::PointerMove;
+  x.why = tx::moveWhySlug(tx::MoveWhy::Superseded);
+  TEST_ASSERT_FALSE_MESSAGE(tx::stubList(x), "a superseded-read list stubbed the stale read");
+  x.why = tx::moveWhySlug(tx::MoveWhy::ToolFold);
+  TEST_ASSERT_TRUE(tx::stubList(x));
+  x.kind = tx::ItemKind::Result;
+  TEST_ASSERT_FALSE(tx::stubList(x));
 }
 
 // ---- superseded reads ----------------------------------------------------------------
@@ -732,9 +692,6 @@ void test_rules_bad_inputs_are_typed() {
   TEST_ASSERT_EQUAL_STRING("[1 earlier turns, 17 Nov 2026 (device) x, not shown: search finds them]", s.c_str());
   tx::LadderRung r;
   TEST_ASSERT_TRUE(tx::nextRung(tx::LadderFacts{}, r).err == tx::Err::InvalidArgument);
-  tx::PointerMove m;
-  TXB_OK(tx::decideTurnOpen(tx::OpenFacts{}, m));
-  TEST_ASSERT_FALSE(m.move);
   std::vector<std::string> v;
   TXB_OK(tx::visiblePhotos(tx::PhotoFacts{}, v));
   TEST_ASSERT_EQUAL(0, (int)v.size());
@@ -824,21 +781,36 @@ void test_rules_long_text_keeps_the_cap_then_points_at_the_rest() {
 }
 
 
-// RB-H81: a long argument shows whole while its own turn is open, as its stub from the close of the
-// turn or at ladder rung 2; a call with no stub form always shows its arguments.
-void test_rules_long_arguments_are_whole_only_in_their_open_turn() {
+// E2-VERB (rulings 81, 82 and 106): a long argument shows whole in every turn; its stub only on the
+// overflow path: at or below the pointer (ladder rung 1), rung 2's line in its own open turn, or a
+// tool fold's list. A call with no stub form always shows its arguments.
+void test_rules_long_arguments_are_whole_until_the_overflow_path() {
   tx::Item c;
   c.kind = tx::ItemKind::Call;
   c.q = 10;
   c.turn = 3;
   c.args = "{\"text\":\"whole\"}";
   c.st = "{\"text\":\"[stub 5000B sha:0123abcd: view id=r10]\"}";
-  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 3, 0).c_str());
-  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 3, 9).c_str());
-  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, 3, 10).c_str());   // rung 2
-  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, 4, 0).c_str());    // the turn closed
+  tx::ShowFacts f;
+  f.openTurn = 3;
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, f).c_str());
+  f.ladderStubThrough = 9;
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, f).c_str());
+  f.ladderStubThrough = 10;
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, f).c_str());   // rung 2
+  f = tx::ShowFacts{};
+  f.openTurn = 4;
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(c.args.c_str(), tx::shownArgs(c, f).c_str(), "the close of its turn stubbed it");
+  f.ladderStubThrough = 99;
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(c.args.c_str(), tx::shownArgs(c, f).c_str(), "rung 2 reached a closed turn");
+  f.pointer = 10;
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, f).c_str());   // rung 1 (or a stored pointer)
+  f.pointer = 9;
+  const std::vector<uint64_t> folded = {4, 10};
+  f.superseded = &folded;
+  TEST_ASSERT_EQUAL_STRING(c.st.c_str(), tx::shownArgs(c, f).c_str());   // a tool fold
   c.st.clear();
-  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, 4, 99).c_str());
+  TEST_ASSERT_EQUAL_STRING(c.args.c_str(), tx::shownArgs(c, f).c_str());
 }
 
 
@@ -864,7 +836,7 @@ void test_rules_a_photo_stub_carries_its_note_and_its_view_pointer() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rules_long_text_keeps_the_cap_then_points_at_the_rest);
-  RUN_TEST(test_rules_long_arguments_are_whole_only_in_their_open_turn);
+  RUN_TEST(test_rules_long_arguments_are_whole_until_the_overflow_path);
   RUN_TEST(test_rules_a_photo_stub_carries_its_note_and_its_view_pointer);
   RUN_TEST(test_checker_rejects_wrong_internal_stubs);
   RUN_TEST(test_checker_rejects_leaking_outside_stubs);
@@ -874,9 +846,7 @@ int main(int, char**) {
   RUN_TEST(test_file_tool_stub_names_path_and_sha);
   RUN_TEST(test_long_argument_and_photo_stubs_have_the_prd_shape);
   RUN_TEST(test_stub_text_is_a_pure_function);
-  RUN_TEST(test_cold_open_moves_to_the_last_closed_turn);
-  RUN_TEST(test_warm_open_moves_only_past_the_bulk_threshold);
-  RUN_TEST(test_pointer_never_moves_backwards);
+  RUN_TEST(test_only_the_tool_fold_lists_make_stubs);
   RUN_TEST(test_a_write_supersedes_earlier_reads_of_that_path_only);
   RUN_TEST(test_file_reference_photos_follow_the_table);
   RUN_TEST(test_inline_photos_follow_the_table);

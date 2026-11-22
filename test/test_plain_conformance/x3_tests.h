@@ -339,14 +339,16 @@ inline void test_a_hard_guard_stops_honestly_and_the_owners_yes_continues_from_t
     TEST_ASSERT_TRUE_MESSAGE(bodyHas(first, tag), ("the continuation lost the stopped turn's " + tag).c_str());
   }
   TEST_ASSERT_FALSE_MESSAGE(bodyHas(first, "[stub big_read"), "the continuation shows the stopped turn as stubs");
-  // Counter: the same reads in a turn that ended with its reply leave the next request as stubs.
+  // The same reads in a turn that ended with its reply stay whole in the next request too (E2-VERB,
+  // rulings 81, 82 and 106: no default stubbing under the due mark; before, they became stubs).
   txb::Battery c;
   c.model.respondWith([](const sp::Recorded& r, size_t) { return r.step < 3 ? bigReadAt(r.step) : sp::say("All read."); });
   plain::TurnOutcome done, next;
   TXB_OK(c.owner("read every part", done));
   TEST_ASSERT_TRUE(done.trip == plain::GuardTrip::None);
   TXB_OK(c.owner("thanks", next));
-  TEST_ASSERT_TRUE_MESSAGE(bodyHas(c.model.requests()[4], "[stub big_read"), "the counter case kept the bulk whole");
+  TEST_ASSERT_FALSE_MESSAGE(bodyHas(c.model.requests()[4], "[stub big_read"), "a finished turn's bulk became stubs by default");
+  TEST_ASSERT_TRUE_MESSAGE(bodyHas(c.model.requests()[4], "BULK-t0"), "a finished turn's bulk left the next request");
 }
 
 // The stopped turn stays whole until an attended turn finishes: an agent report in between, a
@@ -386,10 +388,12 @@ inline void test_the_stopped_turn_stays_whole_until_a_turn_finishes() {
     std::snprintf(msg, sizeof msg, "shape %d: the stopped turn left the request whole", shape);
     TEST_ASSERT_TRUE_MESSAGE(bodyHas(first, firstTag), msg);
     TEST_ASSERT_FALSE_MESSAGE(bodyHas(first, "[stub big_read"), msg);
-    // The yes finished: the next turn no longer keeps them whole.
+    // The yes finished: the next turn keeps them whole as well (E2-VERB: under the due mark nothing
+    // becomes a stub by default; before, a finished continuation let them go to stubs).
     plain::TurnOutcome after;
     TXB_OK(b.owner("thanks", after));
-    TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), "[stub big_read"), "a finished continuation still kept the bulk whole");
+    TEST_ASSERT_FALSE_MESSAGE(bodyHas(b.model.last(), "[stub big_read"), "a finished continuation's bulk became stubs by default");
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(b.model.last(), firstTag), "a finished continuation's bulk left the next request");
   }
 }
 

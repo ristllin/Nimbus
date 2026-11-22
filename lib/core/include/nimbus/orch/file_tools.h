@@ -12,7 +12,7 @@
 #include "nimbus/orch/tool_registry.h"   // ToolRegistry, ToolResult, Principal
 
 // file_tools - the engine-2 plain file tools (PRD section 4): read_file, write_file,
-// append_file, edit_file and list_files. Each does what its name says:
+// append_file, edit_file and list_files, and delete_file where the binding can remove (E2-VERB). Each does what its name says:
 //   - read_file returns the whole file up to the head's read cap, with exact paging:
 //     following next_offset rebuilds the file byte for byte at every cap, and every cut
 //     falls on a UTF-8 boundary, after a line end when one sits in the page's second half;
@@ -28,7 +28,8 @@
 //   - list_files lists newest first, 40 at a time, with the true remainder;
 //   - delete_file removes one file the caller may write (behind more; lane E2-TOOLS);
 //   - every write returns what changed; an unknown argument is an error naming the
-//     accepted ones; nothing refuses on a heuristic; paths follow path_rules.h.
+//     accepted ones; paths follow path_rules.h; the one content refusal is a stub line
+//     (tx::looksLikeStub, lane E2-VERB), which stands for text the request did not show.
 //
 // The library holds the rules; a binding (the device's file store, nimbusd's) supplies
 // the card through FileToolsIo. Card time is bounded by construction, so no single

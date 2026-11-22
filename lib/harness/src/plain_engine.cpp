@@ -48,10 +48,6 @@ struct PlainEngine::ChatState {
   uint32_t droppedTurns = 0;
   uint64_t droppedFirstAt = 0, droppedLastAt = 0;   // the first item of the first and last dropped turn
   uint32_t lastDroppedTurn = 0;        // the newest turn a drop reached (counted once)
-  // The first item of the oldest attended turn a guard stopped that no later attended turn has
-  // finished (0: none): the turn that continues it reads it from the log, so the pointer never stubs
-  // it, whatever turn opens in between (lane RB-X3, ruling 84 item 2). Rebuilt at boot.
-  uint64_t stoppedFrom = 0;
   // The memory line, built at boot: on a refused allocation it goes out with no allocation.
   std::string memoryLine;
 };
@@ -63,13 +59,6 @@ uint32_t fnv1a(uint32_t h, const std::string& s) {
   return h;
 }
 
-// The continuation rule at an attended turn's close: a stop keeps the oldest stopped turn (or this
-// one), a finish clears it.
-uint64_t stoppedAfter(uint64_t from, bool stopped, uint64_t firstQ) {
-  if (!stopped) return 0;
-  return from ? from : firstQ;
-}
-
 // One turn's state. It lives on the heap so runTurn's frame stays small.
 struct Turn {
   TurnCtx ctx;
@@ -78,7 +67,6 @@ struct Turn {
   std::vector<ToolSpec> tools;
   const WireCodec* wire = nullptr;
   uint32_t bodyCap = 0;                // the head's body cap (budget()); 0 only before it runs
-  bool floorHead = false;              // the head's class (tx::HeadBudget::floorHead)
   uint32_t messageCap = tx::kInlineMessageCap;   // text kept inline (tx::HeadBudget::messageCap)
   uint32_t bulkWholeCap = tx::kBulkWholeMax;     // tier 2 whole in its own turn (tx::HeadBudget::bulkWholeCap)
   GuardLimits limits;
@@ -135,6 +123,7 @@ struct Turn {
   tx::Item item;                       // the item being built and stored
   tx::Item read;                       // an item decoded from the arena
   tx::StubFacts stub;
+  std::string again;                   // the long arguments' way back (tx::wayBack), while tierArgs runs
 };
 
 class TurnRun {
@@ -341,7 +330,7 @@ class TurnRun {
     if (!st.ok()) return st;
     if (!d_.setup) return fail(Status::fail(Err::InvalidArgument, "plain::PlainEngine::runTurn.setup"));
     if (!(st = d_.setup(t_.ctx, t_.setup)).ok() || !(st = sized()).ok()) return fail(st);
-    if (!(st = storeOpen(in)).ok() || !(st = movePointer()).ok()) return st;
+    if (!(st = storeOpen(in)).ok() || !(st = openChanges()).ok()) return st;
     if (!(st = compose()).ok() || !(st = wired()).ok()) return fail(st);
     clampLimits();
     return Status::success();
@@ -515,13 +504,11 @@ class TurnRun {
       agent::hlog::logf("plain(%s): host %s is not a known provider: sized by its dialect as %s", t_.ctx.chatKey.c_str(),
                         (t_.setup.head.host.empty() ? t_.ctx.host : t_.setup.head.host).c_str(), key.host.c_str());
     t_.bodyCap = b.bodyCap;
-    t_.floorHead = b.floorHead;
     t_.messageCap = std::max<uint32_t>(b.messageCap, tx::kInlineMessageCap);
     if (b.bulkWholeCap) t_.bulkWholeCap = b.bulkWholeCap;
     t_.ctx.profile = b.profile;
     return Status::success();
   }
-  bool floorHead() const { return t_.floorHead; }
 
   // A photo part as a carry candidate, `since` person turns after it arrived.
   static void photoCandidate(tx::PhotoFacts& f, const tx::Part& p, uint32_t since) {
@@ -586,18 +573,9 @@ class TurnRun {
     return c_.afterRestart || now == 0 || last == 0 || now < last || now - last > tx::kColdGapS;
   }
 
-  // Rules (1) and (2) of the stub pointer, once, stored before the first request.
-  Status movePointer() {
-    tx::OpenFacts f;
-    f.now = epoch();
-    f.lastReqAt = c_.head.lastReqAt;
-    f.afterRestart = c_.afterRestart;
-    f.pointer = c_.head.stub;
-    f.lastClosedTurnQ = pointerLimit();
-    f.wholeBulkAbove = bulkAbove(c_.head.stub);
-    f.floorHead = floorHead();
-    tx::PointerMove m;
-    (void)tx::decideTurnOpen(f, m);
+  // The turn open's change points, stored before the first request. The stub pointer does not move
+  // here (lane E2-VERB, rulings 81, 82 and 106): only the overflow path makes stubs.
+  Status openChanges() {
     const bool wasCold = cold();
     c_.afterRestart = false;
     if (d_.recentFiles) {
@@ -605,37 +583,7 @@ class TurnRun {
       (void)c_.recent.atOpen(wasCold, d_.recentFiles, t_.tz);
       if (c_.recent.text() != before) event("change:recent-files");
     }
-    if (!m.move) return Status::success();
-    tx::Item& x = blank(tx::ItemKind::PointerMove);
-    x.stub = m.to;
-    x.why = tx::moveWhySlug(m.why);
-    Status st = put(x);
-    if (st.ok()) {
-      c_.head.stub = m.to;
-      event("change:pointer");
-    }
-    return st;
-  }
-
-  // How far the pointer may move: to the last closed turn, except that a turn a guard stopped stays
-  // whole until an attended turn finishes without a stop (lane RB-X3, ruling 84 item 2).
-  uint64_t pointerLimit() const {
-    return c_.stoppedFrom ? std::min(c_.lastClosedQ, c_.stoppedFrom - 1) : c_.lastClosedQ;
-  }
-  // At an attended turn's close: a stop keeps the oldest stopped turn whole, a finish ends it.
-  void noteStop() {
-    if (personTrigger(t_.ctx.trigger)) c_.stoppedFrom = stoppedAfter(c_.stoppedFrom, t_.trip != GuardTrip::None, t_.firstQ);
-  }
-
-  uint32_t bulkAbove(uint64_t pointer) const {
-    uint64_t sum = 0;
-    tx::Item& it = t_.read;
-    for (size_t i = 0; i < d_.arena->count(); ++i) {
-      tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || e.q <= pointer || e.kind != tx::ItemKind::Result) continue;
-      if (d_.arena->get(i, it).ok() && it.cls == tx::ResultClass::Bulk) sum += it.bytes;
-    }
-    return (uint32_t)std::min<uint64_t>(sum, UINT32_MAX);
+    return Status::success();
   }
 
   // The system text and the tools, composed once and kept for every round of the turn.
@@ -902,14 +850,15 @@ class TurnRun {
     return false;
   }
 
-  // Tier-2 bulk of a closed turn shown whole above the pointer: what rung 1 would stub.
+  // Tier-2 bulk or a long call argument of a closed turn shown whole above the pointer: what rung 1
+  // would stub (lane E2-VERB: long arguments stay whole until the overflow path stubs them).
   bool closedBulkAbovePointer() const {
     tx::Item& it = t_.read;
     for (size_t i = 0; i < d_.arena->count(); ++i) {
       tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || e.kind != tx::ItemKind::Result) continue;
-      if (e.q <= c_.head.stub || e.q > c_.lastClosedQ) continue;
-      if (d_.arena->get(i, it).ok() && it.cls == tx::ResultClass::Bulk) return true;
+      if (!d_.arena->header(i, e).ok() || (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call)) continue;
+      if (e.q <= c_.head.stub || e.q > c_.lastClosedQ || !d_.arena->get(i, it).ok()) continue;
+      if (e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk) return true;
     }
     return false;
   }
@@ -926,7 +875,7 @@ class TurnRun {
     tx::Item& it = t_.read;
     if (!d_.arena->get(index, it).ok()) return 0;
     if (e.kind == tx::ItemKind::User) return it.x.size() + stampBytes(it);
-    if (e.kind == tx::ItemKind::Call) return it.id.size() + it.n.size() + tx::shownArgs(it, t_.ctx.turn, t_.ladder.stubThrough).size();
+    if (e.kind == tx::ItemKind::Call) return it.id.size() + it.n.size() + tx::shownArgs(it, showFacts()).size();
     if (e.kind == tx::ItemKind::Result) return shownBytes(it);
     return it.x.size();
   }
@@ -937,6 +886,15 @@ class TurnRun {
   size_t stampBytes(const tx::Item& u) const {
     char stamp[tx::kStampMaxBytes];
     return tx::messageStamp(u.t, u.tzMinutes, t_.ctx.dayStartMin, stamp, sizeof stamp).ok() ? std::strlen(stamp) : 0;
+  }
+  // The stub rule's facts for this request as the ladder stands (the stub lists are not read: a
+  // folded item counts whole, as the results always did here).
+  tx::ShowFacts showFacts() const {
+    tx::ShowFacts f;
+    f.pointer = std::max(c_.head.stub, t_.ladder.closedThrough);
+    f.openTurn = t_.ctx.turn;
+    f.ladderStubThrough = t_.ladder.stubThrough;
+    return f;
   }
   // A result as it shows: its stub when stubbed or outside, else the receipt or the whole bulk.
   size_t shownBytes(const tx::Item& r) const {
@@ -1108,9 +1066,9 @@ class TurnRun {
   uint64_t callQOf(size_t i) const { return i < t_.callQ.size() ? t_.callQ[i] : 0; }
 
   // Tier 2 for a call's arguments (PRD section 2 as amended by rulings 81 to 83): a string argument
-  // over kTier1CallArgs is whole while its own turn is open, bounded like tier-2 bulk (the head's
-  // bulkWholeCap), and shows as its long-argument stub from the close of the turn or at ladder
-  // rung 2 (tx::shownArgs): the c item keeps the model's arguments in `out` and their stub form in
+  // over kTier1CallArgs is whole in every request, bounded like tier-2 bulk (the head's
+  // bulkWholeCap), and shows as its long-argument stub only on the overflow path (lane E2-VERB,
+  // tx::shownArgs): the c item keeps the model's arguments in `out` and their stub form in
   // `stub`. The whole arguments go to the bulk file first (the stub's view pointer). Over the
   // bound, or when the line would not hold both, `out` is the stub form (arguments that do not
   // parse, cut by the output limit, as one stub). When the bulk file refuses, the arguments stay
@@ -1127,6 +1085,7 @@ class TurnRun {
     const bool kept = d_.log->appendBulk(t_.ctx.turn, args, handle).ok();
     if (!kept && args.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();   // inline whole
     std::string stubbed;
+    t_.again = parsed ? tx::wayBack(name, args) : std::string();   // a file write: the file it wrote
     if (!parsed) {
       if (!longStub(name, args, kept, stubbed).ok()) return Status::fail(Err::InvalidArgument, "plain::tierArgs");
     } else {
@@ -1165,7 +1124,7 @@ class TurnRun {
   // A long text's stub: with the bulk file kept, the long-argument stub (view); without it,
   // the internal stub's no-card form, which promises nothing.
   Status longStub(const std::string& name, const std::string& text, bool kept, std::string& out) {
-    if (kept) return tx::longArgStub((uint32_t)text.size(), hex8(text), c_.nextQ, out);
+    if (kept) return tx::longArgStub((uint32_t)text.size(), hex8(text), c_.nextQ, out, t_.again);
     return stubOf(name, text, false, out);
   }
   Status stubOf(const std::string& tool, const std::string& text, bool kept, std::string& out) {
@@ -1420,6 +1379,7 @@ class TurnRun {
     (void)tx::stubTime(epoch(), t_.tz, f.hhmm);
     f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
     f.args = call ? call->argsJson : std::string();
+    if (r.cls != tx::ResultClass::Outside) f.again = tx::wayBack(r.n, f.args);   // a file read: read_file again
     f.cls = r.cls;
     f.noCard = r.cls != tx::ResultClass::Receipt && r.handle.empty();
     if (!tx::stubText(f, r.st).ok()) r.st.clear();
@@ -1455,7 +1415,6 @@ class TurnRun {
     if (!t_.storeFailed) supersede();
     if (!t_.storeFailed) st = storeEnd();
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
-    noteStop();
     c_.head.nextQ = c_.nextQ;
     if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);   // a cache: Io loses nothing
     return st;
@@ -1678,32 +1637,6 @@ namespace {
 
 // A turn end stored between turns (the resume seam closes a turn at boot, lane RB-X1): the last
 // closed turn is the newest e item the engine has not seen, wherever it came from.
-// The continuation rule (noteStop) over the arena at boot: the oldest attended turn a guard stopped
-// that no later attended turn finished.
-bool personSlug(const std::string& s) {
-  return s == triggerSlug(Trigger::Owner) || s == triggerSlug(Trigger::Console) || s == triggerSlug(Trigger::Resume);
-}
-uint64_t stoppedFromArena(const tx::TxArena& arena) {
-  uint64_t from = 0, first = 0;
-  uint32_t turn = 0;
-  bool person = false;
-  std::unique_ptr<tx::Item> item(new tx::Item());   // about 0.5 KB: never on the boot frame
-  tx::Item& it = *item;
-  for (size_t i = 0; i < arena.count(); ++i) {
-    tx::ArenaEntry e;
-    if (!arena.header(i, e).ok()) continue;
-    if (e.turn != turn) {
-      turn = e.turn;
-      first = e.q;
-      person = false;
-    }
-    if (e.kind == tx::ItemKind::TurnOpen && arena.get(i, it).ok()) person = personSlug(it.trigger);
-    if (e.kind != tx::ItemKind::TurnEnd || !person || !arena.get(i, it).ok()) continue;
-    from = stoppedAfter(from, it.end.cause.rfind("limit:", 0) == 0, first);
-  }
-  return from;
-}
-
 void syncClosed(PlainEngine::ChatState& c, const tx::TxArena& arena) {
   for (size_t i = arena.count(); i-- > 0;) {
     tx::ArenaEntry e;
@@ -1807,7 +1740,6 @@ Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
     c.lastTurn = std::max(c.lastTurn, e.turn);
     if (e.kind == tx::ItemKind::TurnEnd) c.lastClosedQ = e.q;
   }
-  c.stoppedFrom = stoppedFromArena(*deps.arena);
   if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
     std::string block;
     tx::SettleReport rep;

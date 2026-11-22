@@ -12,7 +12,9 @@
 //       bytes stay; a name ending in .tmp and the chat folders are refused in one plain line;
 //   (e) /compact on engine 2 queues the driver once;
 //   (f) a head model changed after boot boots the chat again over its transcript; a model engine 2
-//       cannot run is one plain line to the owner and no request.
+//       cannot run is one plain line to the owner and no request;
+//   (g) delete_file (lane E2-VERB): the tools index names it behind more, a call through more
+//       removes the bytes and the index entry of the one shared store, and engine 1 no longer sees it.
 #include <sys/stat.h>
 
 #include <string>
@@ -218,6 +220,28 @@ void caseCompactCommand(ndtest::Ctx& c) {
   ndtest::rmTree(dir);
 }
 
+void caseDelete(ndtest::Ctx& c) {
+  std::printf("  (g) delete_file through more on the shared store\n");
+  const std::string dir = ndtest::scratchDir("e2delete");
+  Host h(dir);
+  h.model.push(sp::call("more", R"({"name":"delete_file","args":{"path":"docs/old.txt"}})"));
+  h.model.push(sp::say("Deleted."));
+  c.eq(h.start(), "", "the host starts");
+  std::string err;
+  c.ok(h.files.put("docs", "old.txt", "old\n", err), "engine 1's store holds docs/old.txt");
+  (void)h.host->say("owner", "delete docs/old.txt", "web");
+  const std::string& first = h.model.requests().front().body;
+  c.ok(first.find("delete_file(path)") != std::string::npos && first.find("\"name\":\"more\"") != std::string::npos,
+       "the request offers more and its index names delete_file");
+  c.ok(h.model.last().body.find("deleted docs/old.txt (4 B)") != std::string::npos, "the result says what was deleted");
+  struct stat st;
+  c.ok(::stat((dir + "/mem/files/docs/old.txt").c_str(), &st) != 0, "the bytes are gone");
+  c.ok(!h.files.has("docs/old.txt"), "...and the shared index no longer lists it");
+  std::string why;
+  c.ok(h.model.verify(why), "every scripted step was asked for: " + why);
+  ndtest::rmTree(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -229,6 +253,7 @@ int main() {
   caseStorageRule(c);
   caseModelChange(c);
   caseCompactCommand(c);
+  caseDelete(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;
 }

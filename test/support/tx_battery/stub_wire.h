@@ -90,7 +90,7 @@ class StubWire : public plain::WireCodec {
     }
     std::vector<uint64_t> sup;
     for (const tx::Item& it : items)
-      if (it.kind == tx::ItemKind::PointerMove) sup.insert(sup.end(), it.sup.begin(), it.sup.end());
+      if (tx::stubList(it)) sup.insert(sup.end(), it.sup.begin(), it.sup.end());   // E2-VERB: not superseded reads
     std::sort(sup.begin(), sup.end());
     const plain::LadderState none;
     const plain::LadderState& lad = in.ladder ? *in.ladder : none;
@@ -183,8 +183,8 @@ class StubWire : public plain::WireCodec {
       case tx::ItemKind::RoundMeta:
         if (it.turn == in.turn->turn && jsonObject(it.x)) out.push_back(Piece{Role::Assistant, 'k', it.x, "", "", "", false});
         return plain::Status::success();
-      case tx::ItemKind::Call: {   // the long-argument rule of the real wires (tx::shownArgs, RB-H81)
-        const std::string& args = tx::shownArgs(it, in.turn->turn, in.ladder ? in.ladder->stubThrough : 0);
+      case tx::ItemKind::Call: {   // the long-argument rule of the real wires (tx::shownArgs, E2-VERB)
+        const std::string& args = tx::shownArgs(it, show);
         out.push_back(Piece{Role::Assistant, 'c', "", it.id, it.n, jsonObject(args) ? args : "{}", false});
         return plain::Status::success();
       }

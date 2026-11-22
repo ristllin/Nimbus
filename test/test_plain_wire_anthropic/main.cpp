@@ -1691,7 +1691,16 @@ void test_pointer_moves_superseded_reads_and_thru_come_from_the_stored_items() {
   c.advance(600);
   c.openTurn();
   c.move(c.q - 1, "cold");                  // the pointer moves to the last closed turn
-  c.move(c.q - 2, "superseded", {readQ});   // and the receipt was superseded
+  // A superseded-read list is a change point, not a stub list (E2-VERB): the stale receipt stays whole.
+  {
+    txb::Convo sup = c;
+    sup.move(sup.q - 2, "superseded", {readQ});
+    sup.owner("ask 2: again");
+    Out whole;
+    RENDER_OK(rig, sup, whole);
+    TEST_ASSERT_TRUE_MESSAGE(whole.body.find("STALE-RECEIPT\"") != std::string::npos, "a superseded read became a stub");
+  }
+  c.move(c.q - 2, "tools", {readQ});   // a compaction tool fold listed the receipt
   c.owner("ask 2: again");
   Out out;
   Out rung1;

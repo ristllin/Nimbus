@@ -202,11 +202,12 @@ void testChatGoesOn(ndtest::Ctx& c) {
   c.eq(t3.stated, "Third answer.", "the rebooted rig answers");
   const std::string& body = h.model.requests()[2].body;
   c.ok(has(body, "first question") && has(body, "Second answer."), "and its request carries the turns before the reboot");
-  // After a restart the loop opens cold and moves the stub pointer over the closed turns (an
-  // x item, RB-E1a's turn open); nothing of the earlier turns is written again.
-  c.eq(h.kinds(), "utadeutadeutxade", "the third turn is appended after a cold open, nothing written twice");
+  // After a restart the turn opens cold, and (lane E2-VERB, rulings 81, 82 and 106) the stub
+  // pointer does not move: no x item, the closed turns are replayed whole; nothing of the earlier
+  // turns is written again.
+  c.eq(h.kinds(), "utadeutadeutade", "the third turn is appended after a cold open, nothing written twice");
   const std::vector<tx::Item> items = h.stored();
-  c.ok(items.size() == 16 && items[12].why == "cold", "the x item is the restart's cold open");
+  c.ok(items.size() == 15, "no pointer move is stored at the restart's cold open");
   c.eqi((long)h.lastEnd().turn, 3, "the rebooted engine numbers the turn 3");
 }
 

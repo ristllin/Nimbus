@@ -32,7 +32,7 @@
 //     <data>/mem/compact_ctl.txt. No v5.1.1 chatsum mirror: engine 1 owns that file.
 //   * notes (hosted_notes.h): <data>/mem/notes/owner.md, the pinned block in every request;
 //   * calc;
-//   * the five file tools (hosted_file_tools.h) over the daemon's one file store.
+//   * the five file tools and delete_file behind more (hosted_file_tools.h) over the daemon's one file store.
 // Replies leave through the host's deliver function (the web chat ring and Telegram), to the
 // chat the running turn came from. Claude heads only: start() refuses any other head in one
 // plain line, and the daemon does not start.

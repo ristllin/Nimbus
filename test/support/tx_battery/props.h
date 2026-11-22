@@ -13,6 +13,7 @@
 
 #include "../scripted_provider/request_view.h"
 #include "nimbus/orch/tx/item.h"
+#include "nimbus/orch/tx/rules.h"   // stubList (E2-VERB)
 
 // tx_battery/props.h - the battery's properties as pure checkers (lane RB-B0b; PRD
 // sections 2, 3, 7 and 11 L1). Each takes what was sent (a RequestView, the bytes) and
@@ -180,7 +181,7 @@ struct CoverInput {
 
 enum class Shown : uint8_t { Whole = 0, Stub = 1 };
 
-// What a result must render as (PRD section 2, the stub rule): stub when superseded, when
+// What a result must render as (PRD section 2, the stub rule): stub when a tool fold listed it, when
 // bulk or outside at or below the pointer, and when outside outside its own open turn;
 // receipts stay verbatim (tier 1) until compacted.
 inline Shown expectedShow(const tx::Item& r, const CoverInput& in, const std::set<uint64_t>& superseded) {
@@ -195,7 +196,7 @@ namespace detail {
 inline std::set<uint64_t> supersededSet(const std::vector<tx::Item>& items) {
   std::set<uint64_t> s;
   for (const tx::Item& it : items)
-    if (it.kind == tx::ItemKind::PointerMove) s.insert(it.sup.begin(), it.sup.end());
+    if (tx::stubList(it)) s.insert(it.sup.begin(), it.sup.end());   // E2-VERB: never a superseded-read list
   return s;
 }
 inline std::vector<const sp::Block*> blocksOf(const sp::RequestView& v, sp::BlockKind k, const std::string& id) {
@@ -255,8 +256,9 @@ inline bool coverResult(const sp::RequestView& v, const tx::Item& r, const Cover
           std::to_string(blocks[0]->text.size()) + " B starting '" + blocks[0]->text.substr(0, 60) + "'";
     return false;
   }
-  if (stub && want.find("view id=r" + std::to_string(r.q)) == std::string::npos) {
-    why = "stub of " + tag + " has no view hint";
+  // Its way back (E2-VERB): the view pointer, or for a file read the read_file call that reads it again.
+  if (stub && want.find("view id=r" + std::to_string(r.q)) == std::string::npos && want.find("read_file path=") == std::string::npos) {
+    why = "stub of " + tag + " has no way back";
     return false;
   }
   return true;

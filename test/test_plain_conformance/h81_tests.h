@@ -122,8 +122,8 @@ inline void test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer()
 
 // DoD item 3 (ruling 83 item 8): a call's long string argument is whole while its own turn is open,
 // bounded like tier-2 bulk, and shows as its stub from the close of the turn. A two-round turn: the
-// second request still carries the first round's 5,000 B argument whole; the next turn's request
-// shows its stub. The counter-case: an argument over the head's bulk-whole bound is a stub at once.
+// second request still carries the first round's 5,000 B argument whole, and so does the next turn's
+// request (E2-VERB). The counter-case: an argument over the head's bulk-whole bound is a stub at once.
 inline void test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after() {
   for (size_t bytes : {(size_t)5000, (size_t)40000}) {
     txb::Battery b;
@@ -148,8 +148,11 @@ inline void test_a_long_call_argument_is_whole_in_its_open_turn_and_a_stub_after
     b.advance(30);
     TXB_OK(b.owner("thanks", out));
     const std::string& next = b.model.requests().back().body;
-    TEST_ASSERT_TRUE_MESSAGE(next.find("TAIL") == std::string::npos, "a closed turn's long argument must show as its stub");
-    TEST_ASSERT_TRUE_MESSAGE(next.find("B sha:") != std::string::npos, "the closed turn's stub is missing");
+    // E2-VERB (rulings 81, 82 and 106): the closed turn's argument stays whole too (before, its stub);
+    // one over the bound was a stub from the start and stays one.
+    TEST_ASSERT_EQUAL_MESSAGE(!overBound, next.find("TAIL") != std::string::npos,
+                              overBound ? "an argument over the bound came back whole" : "a closed turn's long argument became its stub by default");
+    TEST_ASSERT_EQUAL_MESSAGE(overBound, next.find("B sha:") != std::string::npos, "the stub shows where it must not, or not where it must");
   }
 }
 

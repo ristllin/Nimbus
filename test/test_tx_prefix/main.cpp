@@ -245,7 +245,9 @@ void test_outside_content_leaves_at_a_named_point() {
                                                        "outside bytes reached a later turn's request");
 }
 
-// A write to a path supersedes the earlier whole read of it, at a named point.
+// A write to a path supersedes the earlier whole read of it: a named change point is logged, and
+// (E2-VERB, rulings 81, 82 and 106) the read stays whole, as a simple loop replays it, so the prefix
+// does not break at all (before, the read left the request there).
 void test_a_superseded_read_leaves_at_a_named_point() {
   TXB_WAITS_FOR("PENDING RB-E1a");
   txb::Battery b;
@@ -254,9 +256,9 @@ void test_a_superseded_read_leaves_at_a_named_point() {
   TXB_OK(txb::runTurns(b, {txb::withTool(30, "read my plan", "read_file", R"({"path":"notes/plan.md"})", "read"),
                            txb::withTool(60, "replace it", "write_file", R"({"path":"notes/plan.md","text":"V2"})", "done"),
                            txb::chat(60, "what now?", "V2")}));
-  expectPrefix(b, 1);
-  TEST_ASSERT_TRUE_MESSAGE(b.model.last().body.find("PLAN-V1-TAIL") == std::string::npos,
-                           "the superseded read is still shown whole");
+  expectPrefix(b, 0);
+  TEST_ASSERT_TRUE_MESSAGE(b.model.last().body.find("PLAN-V1-TAIL") != std::string::npos,
+                           "the superseded read became a stub by default");
 }
 
 // A whole scripted day with real gaps: every break is a named change point.

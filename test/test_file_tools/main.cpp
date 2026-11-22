@@ -123,6 +123,12 @@ struct FakeIo : FileToolsIo {
     persisted = store.dump();
     return true;
   }
+  bool removable = false;   // delete_file's removal (FileToolsIo::remove; a binding opts in)
+  bool remove(const std::string& p, const std::string& n) override {
+    if (!removable || !op('x', 0)) return false;
+    card.erase(lowerKey(p, n));
+    return true;
+  }
   uint32_t now() override { return clock++; }
   bool skillBody(const std::string& id, std::string& out) override {
     const auto it = skills.find(id);
@@ -1290,6 +1296,63 @@ static void test_shared_fixtures_match_the_golden_transcript() {
   TEST_ASSERT_EQUAL_STRING(want.c_str(), got.c_str());
 }
 
+// ---- E2-VERB: a stub is never content; delete_file -------------------------------------------
+
+// A stub line a model copied from its history (its own earlier call shown as its stub) is refused as
+// write_file content, append_file text and edit_file new, with a line that says to send the real
+// text; nothing is written. Text that only mentions a stub, or holds one among other lines, is text.
+void test_a_stub_line_is_refused_as_content_and_the_refusal_names_the_real_text() {
+  Rig r;
+  seed(r.io, "journal", "day-1", "Journal, day 1, Porto.\n");
+  const char* stubs[] = {"[stub 1720B sha:c4091c8e: view id=r4]",
+                         "[stub 1720B sha:c4091c8e: an argument sent earlier, not content; read_file path=journal/day-1 shows the file]",
+                         "  [stub read_file r43 2221B 3L 20:44] journal/day-1 size=2507 ... (full: view id=r43)\n"};
+  for (const char* st : stubs) {
+    const size_t writes = r.io.writeOps();
+    const ToolResult w = r.call("write_file", R"({"path":"journal/day-2","content":)" + jsonStr(st) + "}");
+    TEST_ASSERT_FALSE_MESSAGE(w.success, st);
+    TEST_ASSERT_TRUE_MESSAGE(w.error.find("stub line, not text") != std::string::npos && w.error.find("only real text is stored") != std::string::npos,
+                             w.error.c_str());
+    TEST_ASSERT_TRUE(r.call("append_file", R"({"path":"journal/day-1","text":)" + jsonStr(st) + "}").error.find("only real text is stored") != std::string::npos);
+    TEST_ASSERT_TRUE(r.call("edit_file", R"({"path":"journal/day-1","old":"Porto","new":)" + jsonStr(st) + "}").error.find("only real text is stored") != std::string::npos);
+    TEST_ASSERT_EQUAL_MESSAGE(int(writes), int(r.io.writeOps()), "a refused stub wrote something");
+  }
+  TEST_ASSERT_EQUAL_STRING("<none>", cardOf(r.io, "journal/day-2").c_str());
+  TEST_ASSERT_EQUAL_STRING("Journal, day 1, Porto.\n", cardOf(r.io, "journal/day-1").c_str());
+  TEST_ASSERT_TRUE(r.call("write_file", R"({"path":"journal/day-2","content":"[stub] marks a placeholder in my notes."})").success);
+  TEST_ASSERT_TRUE(r.call("write_file", R"({"path":"journal/day-3","content":"line one\n[stub 1720B sha:c4091c8e: view id=r4]"})").success);
+}
+
+// delete_file removes the caller's own file, bytes and index entry in one hold, and persists the
+// index; another person's file, a missing file and a reserved path are refused and nothing changes.
+void test_delete_file_removes_only_the_callers_own_file() {
+  Rig r;
+  r.io.removable = true;
+  seed(r.io, "docs", "old.csv", "a,b\n1,2\n");
+  seed(r.io, "docs", "theirs.txt", "not yours", "chat:2002");
+  const ToolResult d = r.call("delete_file", R"({"path":"docs/old.csv"})");
+  TEST_ASSERT_TRUE_MESSAGE(d.success, d.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("deleted docs/old.csv (8 B)", d.output.c_str());
+  TEST_ASSERT_EQUAL_STRING("<none>", cardOf(r.io, "docs/old.csv").c_str());
+  TEST_ASSERT_NULL(r.io.store.find("docs", "old.csv"));
+  TEST_ASSERT_TRUE_MESSAGE(r.io.persisted.find("old.csv") == std::string::npos, "the index was not persisted");
+  TEST_ASSERT_FALSE(r.call("read_file", R"({"path":"docs/old.csv"})").success);
+  TEST_ASSERT_FALSE(r.call("delete_file", R"({"path":"docs/old.csv"})").success);
+  const ToolResult other = r.call("delete_file", R"({"path":"docs/theirs.txt"})", kMemberA);
+  TEST_ASSERT_TRUE(other.success);   // member A owns it
+  seed(r.io, "docs", "theirs.txt", "not yours", "chat:2002");
+  TEST_ASSERT_FALSE(r.call("delete_file", R"({"path":"docs/theirs.txt"})", kMemberB).success);
+  TEST_ASSERT_EQUAL_STRING("not yours", cardOf(r.io, "docs/theirs.txt").c_str());
+  TEST_ASSERT_FALSE(r.call("delete_file", R"({"path":"docs/old.csv","force":true})").success);
+  // A binding that cannot remove says so and changes nothing.
+  r.io.removable = false;
+  seed(r.io, "docs", "kept.txt", "kept");
+  const ToolResult no = r.call("delete_file", R"({"path":"docs/kept.txt"})");
+  TEST_ASSERT_FALSE(no.success);
+  TEST_ASSERT_EQUAL_STRING("kept", cardOf(r.io, "docs/kept.txt").c_str());
+  TEST_ASSERT_NOT_NULL(r.io.store.find("docs", "kept.txt"));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_following_next_offset_rebuilds_every_file_at_every_budget);
@@ -1319,5 +1382,7 @@ int main() {
   RUN_TEST(test_append_file_states_the_fence_and_identical_lines);
   RUN_TEST(test_a_refused_allocation_in_a_filtered_read_or_a_line_edit_changes_nothing);
   RUN_TEST(test_shared_fixtures_match_the_golden_transcript);
+  RUN_TEST(test_a_stub_line_is_refused_as_content_and_the_refusal_names_the_real_text);
+  RUN_TEST(test_delete_file_removes_only_the_callers_own_file);
   return UNITY_END();
 }

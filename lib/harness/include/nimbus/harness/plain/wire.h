@@ -50,7 +50,8 @@ struct HeadEndpoint {
   std::function<std::string()> key;
 };
 
-// A tier-2 payload shown whole in its own turn, read back by the r item's handle.
+// A tier-2 payload shown whole, read back by the r item's handle at render time (lane E2-VERB:
+// every turn's, until the overflow path stubs it; the payload lives in the bulk file only).
 using BulkReadFn = std::function<Status(const std::string& handle, std::string& out)>;
 // A visible photo by ref: its bytes for an inline splice, or a provider file id.
 struct PhotoBytes {
@@ -81,7 +82,7 @@ struct RenderInput {
   uint64_t stubPointer = 0;                           // items at or below render as stubs
   bool toolChoiceNone = false;                        // the last round after a guard trip
   uint32_t maxTokens = 0;                             // the output cap for this request
-  BulkReadFn bulk;                                    // whole bulk results of the open turn
+  BulkReadFn bulk;                                    // whole bulk results (every turn's, E2-VERB)
   PhotoFn photo;                                      // pixels of the visible photos
   const LadderState* ladder = nullptr;                // the overflow ladder (null: no rung)
 };
