@@ -4,29 +4,29 @@
     {
       "function": "^agent::plain::body::BodyWriter::raw(Value|Object|Array)\\(",
       "depth": 32,
-      "_why": "plain_body.h: the raw copy of a JSON value stops at kMaxDepth (32) levels"
+      "why": "plain_body.h: the raw copy of a JSON value stops at kMaxDepth (32) levels"
     },
     {
       "function": "^agent::plain::\\(anonymous namespace\\)::TurnRun::(hasLongString|stubLongStrings)\\(",
       "depth": 64,
-      "_why": "plain_engine.cpp tierArgs: the arguments are parsed with NestingLimit(64), so the walk is at most 64 levels"
+      "why": "plain_engine.cpp tierArgs: the arguments are parsed with NestingLimit(64), so the walk is at most 64 levels"
     }
   ],
   "impossible_cycles": [
     {
       "caller": "^agent::plain::\\(anonymous namespace\\)::CappedWire::(render|parse)\\(",
       "callee": "^agent::plain::\\(anonymous namespace\\)::CappedWire::(render|parse)\\(",
-      "_why": "plain_compact.cpp: a CappedWire wraps the dialect's real wire (wireFor), never another CappedWire"
+      "why": "plain_compact.cpp: a CappedWire wraps the dialect's real wire (wireFor), never another CappedWire"
     },
     {
       "caller": "^std::_Function_handler<bool \\(agent::plain::ClimbAsk const&\\)",
       "callee": "^agent::plain::\\(anonymous namespace\\)::TurnRun::compactFirst\\(",
-      "_why": "the turn's climb asks compaction once per urgency (compactAsks); the summarizer's own exchange carries no climb of the turn, so compaction never re-enters it"
+      "why": "the turn's climb asks compaction once per urgency (compactAsks); the summarizer's own exchange carries no climb of the turn, so compaction never re-enters it"
     },
     {
       "caller": "^std::_Function_handler<bool \\(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&\\)",
       "callee": "^std::function<bool \\(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&\\)>::operator\\(\\)",
-      "_why": "chat_binding.h: the channel's send and the compaction tell call the device's sendPart (orchestrator_plain.cpp sendOnePart), which calls no std::function of that signature"
+      "why": "chat_binding.h: the channel's send and the compaction tell call the device's sendPart (orchestrator_plain.cpp sendOnePart), which calls no std::function of that signature"
     }
   ]
 }
