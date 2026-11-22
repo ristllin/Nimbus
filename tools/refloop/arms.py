@@ -64,6 +64,7 @@ class Job:
     dir: Path
     env: dict = field(repr=False, default_factory=dict)
     loop_note: str = ""  # an experiment: one extra line on the reference loop's system prompt
+    engine: str = "1"  # arm A's engine: "2" starts its nimbusd with NIMBUSD_ENGINE=2 (the owner chat on engine 2)
 
     @property
     def keys(self) -> dict:
@@ -237,12 +238,17 @@ def snapshot_state(d: Nimbusd) -> dict:
     memories = [e.get("content", "") for e in d.get_json("/api/mem/vector?limit=200").get("entries", [])]
     rules, _ = d.call_tool("prefs.edit", {"action": "list"})
     status, scratch = d.call("GET", "/api/mem/scratchpad")
+    # Engine 2 keeps long-term memory as notes (<data>/mem/notes/<person>.md and .more.md); an engine-1
+    # instance has none, so this is "" there.
+    notes_dir = Path(d.data_dir) / "mem" / "notes"
+    notes = "\n".join(p.read_text() for p in sorted(notes_dir.glob("*.md"))) if notes_dir.is_dir() else ""
     return {
         "files": files,
         "loops": d.get_json("/api/loops"),
         "memories": memories,
         "rules": rules,
         "scratchpad": scratch if status == 200 else "",
+        "notes": notes,
     }
 
 
@@ -282,7 +288,10 @@ class Arm:
             shutil.rmtree(self.dir)
         self.proxy.start()
         self.proxy.mark(turn=0, phase="setup")
-        self.d = Nimbusd(self.dir / "data", self.job.keys, self.dir / "nimbusd.log", capture_url=self.proxy.url())
+        keys = dict(self.job.keys)
+        if self.name == "A" and self.job.engine == "2":
+            keys["NIMBUSD_ENGINE"] = "2"
+        self.d = Nimbusd(self.dir / "data", keys, self.dir / "nimbusd.log", capture_url=self.proxy.url())
         self.d.start(self.job.head)
         self.d.configure(self.job.head, self.job.model, self.job.sub_model)
         self.d.wait_verified(self.job.head)

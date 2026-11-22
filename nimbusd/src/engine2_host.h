@@ -80,6 +80,8 @@ class Engine2Host {
     const std::string head = o_.head ? o_.head() : std::string();
     const std::string model = o_.model ? o_.model() : std::string();
     if (!engine2HeadOk(head, model)) return engine2HeadRefusal(head, model);
+    bootModel_ = model;
+    rig_.reset();   // a reboot: the old rig and its hooks go before the driver they point at
     PlainRigConfig c;
     c.chatKey = o_.chatKey;
     c.chatId = o_.chatId;
@@ -88,6 +90,7 @@ class Engine2Host {
     c.model = model;
     c.modelNow = o_.model;
     c.key = o_.key;
+    c.effort = "medium";   // PRD section 3: thinking as today (adaptive, effort medium), as engine 1 sends
     c.timeZone = o_.timeZone;
     c.tzNow = [this] { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); };
     c.dayStartMin = o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin;
@@ -119,7 +122,25 @@ class Engine2Host {
 
   // One owner message from `chat` (the web chat or an owner's Telegram chat). Logs every ending
   // that is not a reply.
+  // A head model the owner changed since boot boots the chat again over its stored transcript, so the
+  // budget and the compaction marks are the new head's; a model engine 2 cannot run is said in one line.
   PlainTurn say(const std::string& chat, const std::string& text, const char* ch) {
+    if (o_.model && o_.model() != bootModel_) {
+      const std::string why = start();
+      if (!why.empty()) {
+        std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
+        if (o_.deliver) o_.deliver(chat, "This assistant runs on Claude models only. Pick a Claude model and try again.");
+        PlainTurn t;
+        t.stated = "plain-rig:failed:head";
+        return t;
+      }
+    }
+    if (!rig_) {
+      PlainTurn t;
+      t.stated = "plain-rig:not-booted";
+      if (o_.deliver) o_.deliver(chat, "The assistant could not start. Check the instance log and restart it.");
+      return t;
+    }
     curChat_ = chat;
     PlainTurn t = rig_->say(text, ch);
     curChat_.clear();
@@ -231,6 +252,7 @@ class Engine2Host {
   std::unique_ptr<plain::CompactDriver> driver_;
   std::unique_ptr<PlainRig> rig_;
   std::string curChat_;
+  std::string bootModel_;
   uint64_t lastTurnEnd_ = 0;
 };
 

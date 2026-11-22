@@ -1066,5 +1066,26 @@ class MistralWireTest(unittest.TestCase):
         self.assertAlmostEqual(costs.cost_usd("mistral-large-latest", usage), 8.0)
 
 
+class Engine2ArmTest(unittest.TestCase):
+    """Arm A on engine 2 (lane E2-HOST): its tool names count as the old engine's, its notes as memory."""
+
+    def test_engine2_file_tool_names_meet_the_checks(self):
+        step = {"tools": [{"name": "read_file"}, {"name": "append_file"}]}
+        self.assertTrue(grade.CHECKS["tool_called"](["files_read"], step, {}, [])[0])
+        self.assertFalse(grade.CHECKS["tool_not_called"](["files_append"], step, {}, [])[0])
+        self.assertFalse(grade.CHECKS["tool_called"](["files_read"], {"tools": [{"name": "list_files"}]}, {}, [])[0])
+
+    def test_engine2_notes_are_memory(self):
+        state = {"memories": [], "rules": "", "scratchpad": "", "notes": "- dentist: 24 December 10:00"}
+        self.assertTrue(grade.CHECKS["memory_regex"]("(?i)dentist.*24", {}, state, [])[0])
+        self.assertFalse(grade.CHECKS["memory_regex"]("(?i)dentist", {}, {**state, "notes": ""}, [])[0])
+
+    def test_engine_flag_reaches_arm_a_only(self):
+        job = arms.Job(model="claude-haiku-5-5", head="anthropic", effort="medium", sub_model="claude-haiku-5-5",
+                       scenario={"id": "x"}, rep=1, dir=Path(tempfile.mkdtemp()), engine="2")
+        self.assertNotIn("NIMBUSD_ENGINE", job.keys)
+        self.assertEqual(job.engine, "2")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

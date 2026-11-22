@@ -49,7 +49,9 @@ def _ints(text: str) -> set:
 
 
 def _memory_text(state: dict) -> str:
-    return "\n".join([*state.get("memories", []), state.get("rules", ""), state.get("scratchpad", "")])
+    return "\n".join(
+        [*state.get("memories", []), state.get("rules", ""), state.get("scratchpad", ""), state.get("notes", "")]
+    )
 
 
 def _difference_from_turn(arg: dict, step: dict, turns: list) -> tuple:
@@ -82,8 +84,19 @@ def _file_matching(arg: dict, state: dict) -> tuple:
     return False, f"no file fits; files: {sorted(state.get('files', {}))}"
 
 
+# Engine 2's file tools by the names the scenarios check (the old engine's): the same act, another name.
+ENGINE2_NAMES = {
+    "read_file": "files_read",
+    "write_file": "artifact_save",
+    "append_file": "files_append",
+    "edit_file": "files_edit",
+    "list_files": "files_list",
+}
+
+
 def _tool_names(step: dict) -> list:
-    return [t["name"].replace(".", "_") for t in step.get("tools") or []]
+    names = [t["name"].replace(".", "_") for t in step.get("tools") or []]
+    return [ENGINE2_NAMES.get(n, n) for n in names]
 
 
 def _one_file(arg: dict, state: dict) -> str | None:

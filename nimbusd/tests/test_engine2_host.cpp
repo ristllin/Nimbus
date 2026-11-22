@@ -10,7 +10,9 @@
 //       whose index is behind lands at the size on disk, keeps every stored byte, and the index
 //       catches up; a write to a path holding bytes the index does not know is refused and the
 //       bytes stay; a name ending in .tmp and the chat folders are refused in one plain line;
-//   (e) /compact on engine 2 queues the driver once.
+//   (e) /compact on engine 2 queues the driver once;
+//   (f) a head model changed after boot boots the chat again over its transcript; a model engine 2
+//       cannot run is one plain line to the owner and no request.
 #include <sys/stat.h>
 
 #include <string>
@@ -183,6 +185,29 @@ void caseStorageRule(ndtest::Ctx& c) {
   ndtest::rmTree(dir);
 }
 
+void caseModelChange(ndtest::Ctx& c) {
+  std::printf("  (f) a model change boots the chat again; a non-Claude model is one line\n");
+  const std::string dir = ndtest::scratchDir("e2model");
+  Host h(dir);
+  h.model.push(sp::say("One."));
+  h.model.push(sp::say("Two."));
+  c.eq(h.start(), "", "the host starts on haiku");
+  (void)h.host->say("owner", "first message", "web");
+  h.modelId = "claude-sonnet-5-5";
+  const nimbusd::PlainTurn t = h.host->say("owner", "second message", "web");
+  c.ok(t.ending == nimbusd::PlainEnding::Reply, "the turn after the change replies");
+  const std::string& body = h.model.last().body;
+  c.ok(body.find("claude-sonnet-5-5") != std::string::npos && body.find("first message") != std::string::npos,
+       "the new model is asked, with the conversation before the change");
+  const size_t asked = h.model.requests().size();
+  h.modelId = "gpt-5.6";
+  (void)h.host->say("owner", "third message", "web");
+  c.ok(h.model.requests().size() == asked, "a non-Claude model sends no request");
+  c.ok(!h.sent.empty() && h.sent.back().text.find("Claude models only") != std::string::npos,
+       "...and the owner is told in one line");
+  ndtest::rmTree(dir);
+}
+
 void caseCompactCommand(ndtest::Ctx& c) {
   std::printf("  (e) /compact queues the driver once\n");
   const std::string dir = ndtest::scratchDir("e2compact");
@@ -202,6 +227,7 @@ int main() {
   caseScriptedTurns(c);
   caseHeadRule(c);
   caseStorageRule(c);
+  caseModelChange(c);
   caseCompactCommand(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;
