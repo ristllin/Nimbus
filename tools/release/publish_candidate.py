@@ -65,6 +65,7 @@ SLUG = re.compile(r"[a-z0-9][a-z0-9-]*")
 IMAGE = re.compile(r"firmware-[a-z0-9][a-z0-9.-]*\.bin")
 REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?")
+GIT_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # what tag_shape.py admits (an image tag)
 ROW_KEYS = {"type", "env", "image", "webflash"}
 CAND_ROW_KEYS = {"type", "env"}
 CAND_KEYS = {"tag", "variants", "hold_line"}
@@ -251,8 +252,12 @@ def _resolve(spec: dict, stable: dict, ini, drams: dict) -> Row:
     env = spec["env"]
     _need(env in ini.device_envs(), f"{env}: not a device env of platformio.ini")
     if env != base["env"]:
+        try:
+            same = hardware(ini, env) == hardware(ini, base["env"])
+        except check_engine_filter.IniError as e:
+            raise Refused(f"{env}: platformio.ini unreadable here: {e}") from e
         _need(
-            hardware(ini, env) == hardware(ini, base["env"]),
+            same,
             f"{spec['type']}: env {env} builds for another board, panel, OTA tag or partition table "
             f"than its stable env {base['env']} (or is a test build)",
         )
@@ -265,7 +270,10 @@ def _resolve(spec: dict, stable: dict, ini, drams: dict) -> Row:
 
 
 def make_plan(table: dict, tag: str, repository: str, ini_path: str = "", ceilings: str = CEILINGS) -> Plan:
-    """The release this tag makes. Refused when the table cannot be built as written."""
+    """The release this tag makes. Refused when the table cannot be built as written.
+
+    tag "" plans the stable rows (what check_config_mapping.py reads); the CLI needs a real tag."""
+    _need(tag == "" or GIT_TAG.fullmatch(tag), f"bad tag {tag!r}")
     _guard_repository(table["releases_repo"], repository)
     ini = check_engine_filter.PioIni(ini_path or os.path.join(REPO, "platformio.ini"))
     drams = dram_rows(ceilings)
@@ -410,6 +418,7 @@ def _print_plan(plan: Plan) -> None:
 
 
 def _run(a) -> None:
+    _need(bool(a.tag), "--tag is empty")
     if a.cmd == "check-target":
         stable = check_target(a.tag, a.target, a.latest_tag)
         print(f"candidate {a.tag} is newer than the latest full release {a.latest_tag} ({stable['version']})")

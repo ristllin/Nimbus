@@ -114,6 +114,28 @@ def test_the_shipped_table_has_no_candidate_and_names_todays_repo():
     assert t["releases_repo"] == TODAY_REPO
 
 
+def test_the_shipped_candidate_entry_plans_when_set():
+    """RB-R2's entry is checked on every push, not first on the tag: when candidate.tag is set,
+    the real table plans as a candidate against the real platformio.ini and DRAM rows."""
+    t = pc.load_table()
+    if t["candidate"]["tag"]:
+        assert pc.make_plan(t, t["candidate"]["tag"], SOURCE).mode == "candidate"
+    p = pc.make_plan(table(CAND), CAND_TAG, SOURCE)  # the same check on an entry like RB-R2's
+    assert p.mode == "candidate"
+
+
+@pytest.mark.parametrize("tag", ["v5.2.0\nREL_MODE=candidate", "v5.2.0 x", "-v5.2.0", "x" * 129])
+def test_a_tag_that_could_break_github_env_is_refused(tag):
+    plan("v5.2.0-rc1.2_x")  # neighbor: every character an image tag may carry
+    with pytest.raises(pc.Refused, match="bad tag"):
+        plan(tag)
+
+
+def test_cli_refuses_an_empty_tag(tmp_path):
+    assert pc.main(["plan", "--tag=", f"--repository={SOURCE}", f"--github-env={tmp_path / 'e'}"]) == 1
+    assert not (tmp_path / "e").exists()
+
+
 def test_releases_repo_defaults_to_todays_value():
     t = copy.deepcopy(pc.load_table())
     del t["releases_repo"]
