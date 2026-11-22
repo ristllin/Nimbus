@@ -993,10 +993,10 @@ nimbus::orch::MsgQuery earlierQuery(const std::string& chatId, const std::string
 namespace {
 // "Mon 26 Oct 2026 18:00" from the row's stored second (at: tag), else its hour.
 std::string earlierWhen(const EpisodicMessage& m, int32_t utcOffsetMin) {
-  uint32_t unix = (uint32_t)strtoul(tagValue(m.tags, kAtTag).c_str(), nullptr, 10);
-  if (!unix) unix = m.tsHours * 3600u;
-  const int64_t local = (int64_t)unix + (int64_t)utcOffsetMin * 60;
-  if (!unix || local < 0) return std::string();
+  uint32_t atSec = (uint32_t)strtoul(tagValue(m.tags, kAtTag).c_str(), nullptr, 10);
+  if (!atSec) atSec = m.tsHours * 3600u;
+  const int64_t local = (int64_t)atSec + (int64_t)utcOffsetMin * 60;
+  if (!atSec || local < 0) return std::string();
   const nimbus::orch::CivilTime c = nimbus::orch::civilFromDays((uint32_t)(local / 86400));
   const int mins = (int)(local % 86400 / 60);
   char buf[40];
