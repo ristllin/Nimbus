@@ -1331,6 +1331,16 @@ the chat's FoldStore record (`OldFold`: the summary and its two pointers).
 - `dryRun` reports counts and anomaly classes only (rows, conversation and tool rows, days,
   rows under the pointer and between the pointers, rows to import and to name), and writes
   and asks nothing.
+- The device binding (lane E2-MIG): `plain::ChatBinding::boot` runs `migrate` at every boot of
+  a chat through its `oldEngine` hook, before the engine opens the log. The rows come from the
+  episodic store's forward query (`tx::EpisodicRowSource`, `tx/old_engine.h`, pages of 64 rows
+  under the card lock), the old summary from `/data/chatsum.txt`, read only. A chat's first
+  start waits until the episodic index is complete (at most 10 minutes after the boot; the
+  person gets one device line meanwhile). A fold pointer at a row engine 2 wrote (its
+  compaction's mirror) is not taken as the old engine's. The fold record as the old engine left
+  it is copied once to `/mem/tx-pre-e2/chatsum.txt`. The old engine's active standing rules
+  become pinned rule notes (`rule-p<id>`) once, recorded in `/data/notes/rules_import.txt`; an
+  edit or removal made on engine 2 stays.
 
 ### Request composition and the text catalog
 

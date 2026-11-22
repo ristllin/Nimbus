@@ -13,7 +13,9 @@
 //   - a part goes out once: Telegram through telegram::sendPart (no second split), the web and
 //     voice chats through the common deliver();
 //   - the shared registry (memory::registry: note, the file tools, calc, web_search, more), compaction (plain_fold_device's two
-//     files), suppression, the money guard and one breaker, the seen-index rebuild at boot.
+//     files), suppression, the money guard and one breaker, the seen-index rebuild at boot;
+//   - the earlier engine's conversation imported at each boot of a chat, and its standing rules
+//     copied into pinned notes once per boot (migrate_device.h, lane E2-MIG).
 // One resident chat (one arena, sized for the head): a message for another chat, another model
 // or another role boots the binding again over the same card (the transcript is refilled).
 // Claude heads only: any other head gets one plain line. Routines and agents are not bound yet.
@@ -53,6 +55,7 @@
 #include "budget_command.h"     // noteTurnEnd - /model's last reply
 #include "commands_plain.h"     // the owner's slash commands
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
+#include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
@@ -78,6 +81,8 @@ constexpr const char* kNotClaudeLine =
     "provider in Settings, then send the message again.";
 constexpr const char* kNoKeyLine = "No Anthropic key is set. Add one in Settings, then send the message again.";
 constexpr const char* kFrozenLine = "The monthly spend limit is reached. Raise it in Settings to continue.";
+constexpr const char* kReadingLine =
+    "The new engine is still reading the earlier conversation. Send the message again in a minute.";
 constexpr const char* kNoStartLine = "The new engine could not start for this chat. Restart the device and try again.";
 // PC-0178: a context skill the fixed part cannot hold whole (lane E2-CHAT).
 constexpr const char* kSkillTooLargeLine =
@@ -285,6 +290,21 @@ void recordUsage(const plain::TurnOutcome& out, const std::string& model) {
   budget::noteTurnEnd("anthropic", model, "anthropic", "owner", out.delivered);
 }
 
+// The boot's import of the earlier engine's conversation, on one line (what the bench reads).
+void logImport(const plain::ChatBinding& b) {
+  if (!b.migrationRan()) return;
+  const nimbus::orch::tx::MigrationOutcome& o = b.migration();
+  alogf("e2: import chat=%s %s@%s step=%s reentry=%d digest0=%d carried=%d verdict=%s exported=%d asks=%u turns=%u "
+        "imported=%u named=%u items=%u hi=m%08x ms=%u queries=%u stackFree=%u intLargest=%u psramFree=%u",
+        b.config().chatId.c_str(), nimbus::orch::tx::errSlug(b.migrationStatus().err),
+        b.migrationStatus().where ? b.migrationStatus().where : "", nimbus::orch::tx::migrationStepSlug(o.step),
+        (int)o.reentry, (int)o.digest0, (int)o.carried, nimbus::orch::tx::digest0VerdictSlug(o.verdict),
+        (int)o.exported, (unsigned)o.asks, (unsigned)o.turns, (unsigned)o.imported, (unsigned)o.named,
+        (unsigned)o.items, (unsigned)o.hi, (unsigned)b.migrationMs(), (unsigned)migratedev::lastQueries(),
+        (unsigned)uxTaskGetStackHighWaterMark(nullptr), (unsigned)internalLargest(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
 // The chat's binding for this model and role, booted (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
   if (s_chat) {
@@ -336,6 +356,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
       msgId = 0;   // a new line each time: no edit on this path
       return telegram::turnProgressLine(String(chat.c_str()), String(text.c_str()));
     };
+  d.oldEngine = migratedev::fill;   // E2-MIG: the earlier engine's conversation, before the log opens
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();
@@ -355,6 +376,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   const nimbus::orch::tx::CardHolds& h = txdev::cardTxFiles().holds();
   alogf("e2: boot holdMs read=%u list=%u whole=%u rename=%u n=%u reads", (unsigned)h.readMs, (unsigned)h.listMs,
         (unsigned)h.wholeMs, (unsigned)h.renameMs, (unsigned)h.reads);
+  logImport(*b);
   if (!st.ok()) return nullptr;
   s_chat = std::move(b);
   return s_chat.get();
@@ -429,6 +451,14 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   if (const char* line = refusalFor(host)) {
     captureOwnerRow(text, fromName, chatId);
     return sayInstead(chatId, line);
+  }
+  // E2-MIG: a chat's first engine-2 start waits until the earlier engine's history is indexed (the
+  // chat's own key only: a conversation /clear started takes no import).
+  const bool resident = s_chat && s_chat->config().chatId == chatId.c_str();
+  const bool baseKey = txKeyFor(chatId) == chatId.c_str();
+  if (!resident && baseKey && !migratedev::historyReady(chatId.c_str())) {
+    captureOwnerRow(text, fromName, chatId);
+    return sayInstead(chatId, kReadingLine);
   }
   const std::string model(store::orchModel(host).c_str());
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
@@ -564,6 +594,7 @@ void drainUpdateNotice() {
 bool s_bootTried = false;
 void bootOwnerChat() {
   if (s_bootTried) return;
+  if (!memory::episodicIndexComplete()) return;   // E2-MIG: tried again once the history is indexed
   s_bootTried = true;
   const String owner = telegram::ownerChat();
   const String host = store::resolvedOrchHost();
@@ -625,6 +656,7 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String&, const String&, cons
 
 int pollJobs() {
   if (!s_begun) return 0;
+  migratedev::importRulesOnce();   // once: the earlier engine's standing rules as pinned notes
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message
   drainTerminates();      // the journal's staged terminates (none can exist without jobs)
   drainUpdateNotice();    // the fixed post-update notice - tg_poll only

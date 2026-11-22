@@ -1,0 +1,174 @@
+// The device side of the earlier engine's import (migrate_device.h), lane E2-MIG.
+#include "migrate_device.h"
+
+#include <Arduino.h>
+#include <LittleFS.h>
+
+#include <memory>
+#include <new>
+#include <vector>
+
+#include "../sys/agent_log.h"
+#include "files_subsystem.h"     // files::saveText - the export of the old summary
+#include "fs_atomic.h"           // writeFileAtomic, flashMounted
+#include "memory_subsystem.h"    // memory::Lock, memory::episodic
+#include "nimbus/harness/turn_memory.h"   // PsramFirstScope
+#include "nimbus/orch/compact.h"          // FoldStore
+#include "nimbus/orch/rbac.h"
+#include "notes_device.h"        // notesdev::notebook
+#include "orchestrator.h"        // orchestrator::utcOffsetAt
+#include "prefs_subsystem.h"     // prefs::withStore
+#include "tx_store_device.h"     // txdev::cardTxFiles - is there a transcript yet
+
+namespace agent::migratedev {
+
+namespace tx = nimbus::orch::tx;
+
+namespace {
+
+const char kChatsumPath[] = "/data/chatsum.txt";
+const char kRulesMarkerPath[] = "/data/notes/rules_import.txt";
+constexpr uint32_t kIndexWaitMs = 10u * 60u * 1000u;   // the longest a first start waits for the index
+
+std::string readFlash(const char* path) {
+  if (!flashMounted()) return std::string();
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) return std::string();
+  String s = f.readString();
+  f.close();
+  return std::string(s.c_str(), s.length());
+}
+
+// The fold record, read only: save is never called by a read of it, and does nothing here.
+class ReadOnlyFoldIO : public nimbus::orch::FoldStoreIO {
+ public:
+  std::string load() override { return readFlash(kChatsumPath); }
+  void save(const std::string&) override {}
+};
+
+std::unique_ptr<tx::EpisodicRowSource> s_rows;   // the last fill's (tg_poll only)
+
+const char kFoldCopyDir[] = "/mem/tx-pre-e2";
+const char kFoldCopyPath[] = "/mem/tx-pre-e2/chatsum.txt";
+
+// The earlier engine's fold record as it stood before engine 2 first ran, kept once on the card:
+// engine 2's compaction later mirrors its own digests into /data/chatsum.txt (the way back reads
+// them), and this copy keeps the earlier engine's own summaries byte for byte. Never overwritten.
+void keepFoldCopy(const std::string& blob) {
+  if (blob.empty() || !memory::haveSd()) return;
+  memory::Lock lk;
+  fs::FS& fs = memory::dataFs();
+  if (fs.exists(kFoldCopyPath)) return;
+  fs.mkdir("/mem");
+  fs.mkdir(kFoldCopyDir);
+  File f = fs.open(kFoldCopyPath, FILE_WRITE);
+  if (!f) return;
+  const size_t w = f.write(reinterpret_cast<const uint8_t*>(blob.data()), blob.size());
+  f.close();
+  if (w != blob.size()) fs.remove(kFoldCopyPath);   // a short copy is no copy: tried again next boot
+}
+
+}  // namespace
+
+bool fill(tx::MigrateDeps& m) {
+  s_rows.reset(new (std::nothrow) tx::EpisodicRowSource(
+      m.chatKey, [](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+        std::vector<nimbus::orch::EpisodicMessage> rows;
+        memory::Lock lk;
+        rows = memory::episodic().query(q, &info);
+        return rows;
+      }));
+  if (!s_rows) return false;
+  {
+    ReadOnlyFoldIO io;
+    keepFoldCopy(io.load());
+    nimbus::orch::FoldStore folds;
+    folds.begin(&io);
+    m.fold = tx::oldFoldOf(folds.get(m.chatKey));
+  }
+  m.rows = s_rows.get();
+  bool mirrored = false;
+  if (tx::dropMirroredPointer(*s_rows, m.fold, mirrored).ok() && mirrored)
+    alogf("e2: import: the fold record of chat %s is engine 2's own mirror; its pointer is not used", m.chatKey.c_str());
+  m.tzMinutes = (int16_t)orchestrator::utcOffsetAt((uint32_t)time(nullptr));
+  m.exportText = [](const std::string& path, const std::string& text) {
+    const size_t slash = path.find('/');
+    if (slash == std::string::npos) return false;
+    std::string err;
+    const bool ok = files::saveText(path.substr(0, slash), path.substr(slash + 1), text, err);
+    if (!ok) {
+      (void)files::noteRefusal(err);   // a full store raises its one owner notice
+      alogf("e2: import: the old summary was not exported (%s)", err.c_str());
+    }
+    return ok;
+  };
+  return true;
+}
+
+bool historyReady(const std::string& chatKey) {
+  if (memory::episodicIndexComplete()) return true;
+  // An index that stopped (its row cap, read errors) never completes: after kIndexWaitMs the import
+  // runs over what the store answers, named in the log.
+  if (millis() > kIndexWaitMs) {
+    alogf("e2: import of chat %s runs over an episodic index that is not complete", chatKey.c_str());
+    return true;
+  }
+  bool reentry = false;
+  if (!tx::isReentry(txdev::cardTxFiles(), chatKey, reentry).ok()) return true;   // no card: nothing to import
+  if (!reentry) alogf("e2: import of chat %s waits for the episodic index", chatKey.c_str());
+  return reentry;
+}
+
+uint32_t lastQueries() { return s_rows ? s_rows->queries() : 0; }
+
+void importRulesOnce() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  if (!flashMounted()) return;
+  const uint32_t t0 = millis();
+  std::vector<tx::OldRule> rules;
+  const bool read = prefs::withStore([&rules](nimbus::orch::OwnerPrefs& p) {
+    for (const nimbus::orch::PrefEntry& e : p.entries())
+      if (!e.pending && !e.moved && !e.evicted) rules.push_back(tx::OldRule{e.id, e.text});
+  });
+  if (!read) return;
+  const std::string marker = readFlash(kRulesMarkerPath);
+  std::string next;
+  tx::RulesImportOutcome out;
+  {
+    const PsramFirstScope psram;
+    const nimbus::orch::Principal owner = nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin);
+    tx::importRules(rules, marker, notesdev::notebook(), owner, next, out);
+  }
+  bool saved = true;
+  if (next != marker) {
+    LittleFS.mkdir("/data");
+    LittleFS.mkdir("/data/notes");
+    saved = writeFileAtomic(kRulesMarkerPath, next, "rules_import");
+  }
+  alogf("e2: rules import: %u rules, added=%u updated=%u kept=%u refused=%u marker=%s %u ms%s%s",
+        (unsigned)rules.size(), (unsigned)out.added, (unsigned)out.updated, (unsigned)out.kept,
+        (unsigned)out.refused, saved ? "ok" : "NOT saved", (unsigned)(millis() - t0),
+        out.firstError.empty() ? "" : " first refusal: ", out.firstError.c_str());
+}
+
+#ifdef NIMBUS_TEST
+std::string setAside(const std::string& chatIn) {
+  std::string chat = chatIn;
+  while (!chat.empty() && (chat.back() == ' ' || chat.back() == '\r' || chat.back() == '\n')) chat.pop_back();
+  if (!tx::chatKeyOk(chat)) return "TXASIDE ERR bad chat key";
+  if (orchestrator::turnInFlight()) return "TXASIDE ERR a turn is running";
+  if (!memory::haveSd()) return "TXASIDE ERR no card";
+  const std::string from = "/mem/tx/" + chat;
+  const std::string to = "/mem/tx-aside/" + chat + "-" + std::to_string((unsigned long)time(nullptr));
+  memory::Lock lk;
+  fs::FS& fs = memory::dataFs();
+  if (!fs.exists(from.c_str())) return "TXASIDE NONE " + from;
+  fs.mkdir("/mem/tx-aside");
+  const bool ok = fs.rename(from.c_str(), to.c_str());
+  return std::string(ok ? "TXASIDE OK " : "TXASIDE ERR rename ") + from + " -> " + to;
+}
+#endif
+
+}  // namespace agent::migratedev

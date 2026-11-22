@@ -86,6 +86,9 @@
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
 #include "nimbus/orch/file_aids_e1.h"     // AIDREAD: the query, as files.read reads it
 #endif
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "agent/migrate_device.h"        // TXASIDE - a chat's engine-2 transcript set aside (E2-MIG bench)
+#endif
 #include "agent/files_subsystem.h"       // CARDTIME replace - the file store's whole-file replace; CUTARM
 #include "nimbus/orch/psram_alloc.h"     // ALLOCREFUSE - the working allocator hooks
 #include "sys/link_time.h"               // LINKX phase marks, LOGMS serial stamps (lane RB-M2)
@@ -2715,6 +2718,11 @@ void dispatch(String line) {
   }
   if (line.startsWith("LINKX ")) { linkTimeCmd(line.substring(6)); return; }
   if (line.startsWith("CARDTIME ")) { cardTimeCmd(line.substring(9)); return; }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // TXASIDE <chat>: the chat's /mem/tx folder renamed into /mem/tx-aside (kept whole), so the next
+  // boot of that chat is a first engine-2 start (E2-MIG bench: a unit an earlier test image ran on).
+  if (line.startsWith("TXASIDE ")) { Serial.println(agent::migratedev::setAside(line.substring(8).c_str()).c_str()); return; }
+#endif
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   if (line.startsWith("AIDREAD ")) { aidReadCmd(line.substring(8)); return; }
 #endif

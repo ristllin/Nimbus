@@ -19,6 +19,7 @@ lib/core/src/orch_tx_digest.cpp
 lib/core/src/orch_tx_item.cpp
 lib/core/src/orch_tx_log.cpp
 lib/core/src/orch_tx_migrate.cpp
+lib/core/src/orch_tx_old_engine.cpp
 lib/core/src/orch_tx_rules.cpp
 lib/core/src/tg_inbox.cpp
 
@@ -56,3 +57,6 @@ src/agent/tx_store_device.cpp
 # E2-CHAT: the owner's slash commands and skill files on engine 2.
 src/agent/commands_plain.cpp
 src/agent/skills_device.cpp
+
+# E2-MIG: the earlier engine's conversation and standing rules, read at engine-2 start.
+src/agent/migrate_device.cpp

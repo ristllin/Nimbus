@@ -168,13 +168,15 @@ NON_MODEL_FILES: dict = {
     "lib/harness/include/nimbus/harness/plain/chat_binding.h": "E2-DEV: the device chat binding's log lines (through "
     "its log callback), never sent to a model or an owner",
     "src/agent/orchestrator_plain.cpp": "E2-DEV: the engine-2 seam's owner-facing refusal lines (not Claude, no key, "
-    "monthly limit, could not start), its fold status line and its no-routines reason, device copy; the model's text "
-    "is the engine's. E2-CHAT: the too-large skill line and the /budget view (coverage/PROMPT-CHANGES.md PC-0177, "
+    "monthly limit, could not start, still reading the earlier conversation), its fold status line and its "
+    "no-routines reason, device copy; the model's text is the engine's. E2-CHAT: the too-large skill line and the /budget view (coverage/PROMPT-CHANGES.md PC-0177, "
     "PC-0178), owner-facing device copy",
     # E2-CHAT: the owner's slash commands on engine 2 answer with device copy before any model turn.
     "src/agent/commands_plain.cpp": "E2-CHAT: the owner's command replies on engine 2 (engine 1's own replies reused, "
     "the not-yet line and /clear's question and answer: PC-0177), delivered with system provenance, never sent to a "
     "model",
+    "src/agent/migrate_device.cpp": "E2-MIG: the earlier engine's import; its literals are log lines and the test "
+    "console's TXASIDE answers (test builds), never sent to a model",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the

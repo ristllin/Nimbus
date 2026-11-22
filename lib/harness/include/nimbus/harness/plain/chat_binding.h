@@ -29,6 +29,7 @@
 #include "nimbus/orch/tx/digest.h"   // RecentFilesBlock::Source - the live file store's list
 #include "nimbus/orch/tx/log.h"
 #include "nimbus/orch/turn_spend.h"
+#include "nimbus/orch/tx/migrate.h"
 
 // plain/chat_binding.h - one chat on engine 2 on the device (lane E2-DEV). A copy of nimbusd's
 // one-chat rig (nimbusd/src/plain_rig.h, PlainRig) with what a device chat needs on top:
@@ -46,6 +47,8 @@
 //     at all (skillRefused names one left out; chat_skills.h);
 //   - commands that act on the engine: compactNow (a compaction now) and budgetView (/budget);
 //   - the turn's usage handed to `usage` once per turn; the progress line (installProgress).
+//   - lane E2-MIG: the earlier engine's conversation imported before the engine opens its log
+//     (tx::migrate), when the device gives an oldEngine hook.
 // Only lib headers are included, so a host test drives the same class with a fake platform, a
 // scripted transport and a fake card (test/test_plain_chat_binding). The device seam
 // (src/agent/orchestrator_plain.cpp) gives it the device's parts.
@@ -81,6 +84,11 @@ struct ChatBindingDeps {
   // Once per turn, after runTurn: what the turn spent, for the owner's usage view.
   std::function<void(const TurnOutcome& out)> usage;
   ProgressDeps progress;                         // send unset: no progress line
+  // The earlier engine's conversation (lane E2-MIG): fills rows, fold, exportText and tzMinutes
+  // of the migration's deps (the binding sets the rest); null, or false: no import. Called at
+  // every boot, before the engine opens the log (tx/migrate.h's contract), and only for the chat's
+  // own key: a key /clear started (<chat>_c<n>) is never filled.
+  std::function<bool(nimbus::orch::tx::MigrateDeps&)> oldEngine;
 };
 
 struct ChatBindingConfig {
@@ -147,6 +155,13 @@ class ChatBinding {
   // Parts the channel took and refused in the last turn.
   uint32_t sentParts() const { return sent_; }
   uint32_t refusedParts() const { return refused_; }
+  // The last boot's import of the earlier engine's conversation (E2-MIG): whether it ran, its
+  // status and its outcome. A refused import does not stop the boot (the owner is answered); the
+  // next boot runs it again, and the library resumes where it stopped.
+  bool migrationRan() const { return migrationRan_; }
+  const Status& migrationStatus() const { return migrationStatus_; }
+  const nimbus::orch::tx::MigrationOutcome& migration() const { return migration_; }
+  uint32_t migrationMs() const { return migrationMs_; }
 
   // Once: the head's budget and price, the arena, the log, the seams, the engine and its boot,
   // then the seen-index rebuild. A refused allocation is a status, never an abort.
@@ -174,6 +189,7 @@ class ChatBinding {
         st = installProgress(*hooks_, *reporter_, [clock] { return clock->nowMs(); });
         if (!st.ok()) return fail(st);
       }
+      migrateOld();
       engine_.reset(new PlainEngine(deps()));
       st = engine_->boot(BootCtx{p->nowEpoch(), afterCrash});
     } catch (const std::bad_alloc&) {
@@ -287,6 +303,31 @@ class ChatBinding {
     const bool clock = p && p->nowMs && p->delayMs && p->nowEpoch;
     const bool memory = p && p->allocLarge && p->freeLarge;
     return clock && memory && d_.transport && d_.files && d_.registry && !cfg_.model.empty();
+  }
+  // E2-MIG: tx::migrate for this chat before the engine opens its log. Digest 0 is asked of the
+  // compaction rung (the summarizer) on the same transport.
+  void migrateOld() {
+    namespace tx = nimbus::orch::tx;
+    migrationRan_ = false;
+    migrationStatus_ = Status::success();
+    migration_ = tx::MigrationOutcome{};
+    // Only the chat's own key (generation 0) takes the earlier engine's history: a conversation
+    // that /clear started (<chat>_c<n>, E2-CHAT) begins empty, and the import never fills it.
+    if (!d_.oldEngine || cfg_.chatKey != cfg_.chatId) return;
+    tx::MigrateDeps m;
+    m.files = d_.files;
+    m.chatKey = cfg_.chatKey;
+    m.head = headKey();
+    m.arena = arena_.get();
+    m.now = d_.platform->nowEpoch();
+    m.dayStartMin = cfg_.dayStartMin;
+    m.digest0 = digest0Asker(compactDeps());
+    if (!d_.oldEngine(m)) return;
+    migrationRan_ = true;
+    const uint32_t t0 = d_.platform->nowMs();
+    migrationStatus_ = tx::migrate(m, migration_);
+    migrationMs_ = d_.platform->nowMs() - t0;
+    if (!migrationStatus_.ok()) say("e2: the earlier engine's conversation was not imported this time");
   }
   // RB-TG1: the chat's taken updates from the filled arena and head.json's high water.
   void rebuildSeen() {
@@ -468,6 +509,10 @@ class ChatBinding {
   nimbus::orch::ChatBreaker breaker_;
   uint32_t sent_ = 0, refused_ = 0;
   bool busy_ = false;
+  bool migrationRan_ = false;
+  uint32_t migrationMs_ = 0;
+  Status migrationStatus_;
+  nimbus::orch::tx::MigrationOutcome migration_;
   std::unique_ptr<nimbus::orch::tx::TxArena> arena_;
   std::unique_ptr<nimbus::orch::tx::TxLog> log_;
   std::unique_ptr<PlainHooks> hooks_;
