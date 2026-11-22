@@ -916,7 +916,7 @@ void test_update_arguments_of_the_wrong_type_or_word_are_refused() {
   TEST_ASSERT_FALSE(run(h, "{\"op\":\"update\",\"id\":\"" + id + "\",\"when\":1800,\"text\":\"coffee\"}").success);
   const ToolResult k = run(h, "{\"op\":\"update\",\"id\":\"" + id + "\",\"kind\":\"alarm\",\"text\":\"coffee\"}");
   TEST_ASSERT_FALSE(k.success);
-  TEST_ASSERT_TRUE(contains(k.error, "reminder or routine"));
+  TEST_ASSERT_TRUE(contains(k.error, "reminder|routine"));
   TEST_ASSERT_EQUAL_STRING(table.c_str(), h.loopsFile.c_str());
   // A moved reminder starts again with its one short retry.
   h.loops[0].consecFails = 1;
