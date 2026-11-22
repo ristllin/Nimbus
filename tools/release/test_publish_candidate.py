@@ -13,6 +13,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -490,13 +491,20 @@ STEP_READS = {
         "$REL_WEBFLASH",
         "${REL_RELEASES_REPO}",
     ],
-    "Candidate - the latest full release and its manifest.json": ["env.REL_MODE == 'candidate'", "check-target"],
+    "Candidate - the latest full release and its manifest.json": [
+        "env.REL_MODE == 'candidate'",
+        'check-target --tag="${GITHUB_REF_NAME}" --target candidate-target --latest-tag "$latest"',
+        'echo "REL_LATEST_TAG=$latest" >> "$GITHUB_ENV"',
+        'echo "REL_STABLE_SHA=${sha%% *}" >> "$GITHUB_ENV"',
+    ],
     "Candidate - attach manifest-candidate.json to the latest full release": [
         "env.REL_MODE == 'candidate'",
+        # The comparisons themselves, each ending the step (the final echo also names the variables).
+        'if [ "$latest" != "$REL_LATEST_TAG" ]; then',
+        'if [ "${sha%% *}" != "$REL_STABLE_SHA" ]; then',
         "gh release upload",
         "--clobber",
         "secrets.RELEASE_PAT",
-        "$REL_STABLE_SHA",
     ],
 }
 
@@ -584,13 +592,16 @@ STUBS = (
 )
 
 
-def run_step(name, p, tmp_path, tag):
-    """The command lines the named step's run: block executes under the plan p (bash -e, as GitHub)."""
+def step_script(name):
     body = dict(release_job_steps(WORKFLOW.read_text(encoding="utf-8")))[name]
     m = re.search(r"^        run: \|\n((?:          .*\n|\s*\n)+)", body, re.M)
-    script = "\n".join(ln[10:] for ln in m.group(1).splitlines())
+    return "\n".join(ln[10:] for ln in m.group(1).splitlines())
+
+
+def exec_step(name, p, tmp_path, tag, stubs=STUBS, extra_env=None):
+    """(exit code, command lines) of the named step's run: block under plan p (bash -e, as GitHub)."""
     env = {
-        "PATH": "/usr/bin:/bin",
+        "PATH": os.path.dirname(sys.executable) + ":/usr/bin:/bin",
         "GITHUB_REF_NAME": tag,
         "GITHUB_REPOSITORY": SOURCE,
         "GITHUB_ENV": str(tmp_path / "ge"),
@@ -598,12 +609,19 @@ def run_step(name, p, tmp_path, tag):
     env.update(
         env_lines(p), OTA_SIGNING_KEY="stub", RELEASE_PAT="stub", REL_LATEST_TAG="v5.2.0", REL_STABLE_SHA="5417d1f4"
     )
-    script = script.replace("/tmp/ota_priv.pem", str(tmp_path / "k"))
-    r = subprocess.run(["bash", "-e", "-c", STUBS + script], cwd=tmp_path, env=env, capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    return [
-        ln.replace(str(tmp_path), "<tmp>") for ln in r.stdout.splitlines() if not ln.startswith(("pip ", "cat ", "ls "))
+    env.update(extra_env or {})
+    script = step_script(name).replace("/tmp/ota_priv.pem", str(tmp_path / "k"))
+    r = subprocess.run(["bash", "-e", "-c", stubs + script], cwd=tmp_path, env=env, capture_output=True, text=True)
+    out = r.stdout.splitlines() + r.stderr.splitlines()
+    return r.returncode, [
+        ln.replace(str(tmp_path), "<tmp>") for ln in out if not ln.startswith(("pip ", "cat ", "ls "))
     ]
+
+
+def run_step(name, p, tmp_path, tag, stubs=STUBS):
+    rc, lines = exec_step(name, p, tmp_path, tag, stubs)
+    assert rc == 0, lines
+    return lines
 
 
 SIGN = "Sign + build typed OTA manifest (schema 2)"
@@ -674,3 +692,83 @@ def test_the_candidate_steps_build_gate_sign_and_attach_only_the_candidate(tmp_p
     attach = run_step("Candidate - attach manifest-candidate.json to the latest full release", p, tmp_path, CAND_TAG)
     assert attach[0] == f"gh release upload v5.2.0 manifest-candidate.json --repo {TODAY_REPO} --clobber"
     assert attach[-1].endswith("its manifest.json is unchanged (sha256 5417d1f4)")
+
+
+# --- the candidate's two guard steps refuse, and the job stops there ---------------------------
+
+ATTACH = "Candidate - attach manifest-candidate.json to the latest full release"
+TARGET = "Candidate - the latest full release and its manifest.json"
+
+
+def gh_stubs(view="v5.2.0", after_sha="5417d1f4"):
+    """STUBS with `gh release view` printing `view` and sha256sum printing `after_sha`."""
+    return (
+        STUBS
+        + f'gh() {{ if [ "$2" = view ]; then echo {view}; else echo "gh $*"; fi; }}\n'
+        + f'sha256sum() {{ echo "{after_sha}  $1"; }}\n'
+    )
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_the_attach_step_stops_when_the_latest_release_moved(tmp_path):
+    p = plan(CAND_TAG, candidate=CAND)
+    rc, lines = exec_step(ATTACH, p, tmp_path, CAND_TAG, gh_stubs(view="v5.3.0"))
+    assert rc != 0
+    assert not any(ln.startswith("gh release upload") for ln in lines), lines  # nothing attached
+    assert any("moved from v5.2.0 to v5.3.0" in ln for ln in lines)
+    rc, lines = exec_step(ATTACH, p, tmp_path, CAND_TAG, gh_stubs())  # the neighbor
+    assert rc == 0 and lines[0].startswith("gh release upload v5.2.0 ")
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_the_attach_step_fails_when_manifest_json_changed(tmp_path):
+    p = plan(CAND_TAG, candidate=CAND)
+    rc, lines = exec_step(ATTACH, p, tmp_path, CAND_TAG, gh_stubs(after_sha="deadbeef"))
+    assert rc != 0
+    assert any("manifest.json of v5.2.0 changed" in ln for ln in lines), lines
+    assert not any("is unchanged" in ln for ln in lines)
+
+
+def target_stubs(stable_version):
+    """The real python3 (check-target runs for real); gh download writes the latest's manifest.json,
+    or nothing when stable_version is empty; every build or upload tool only prints."""
+    write = (
+        f'printf \'{{"schema": 2, "version": "{stable_version}", "variants": {{}}}}\' > candidate-target/manifest.json; '
+        if stable_version
+        else ""
+    )
+    return (
+        'for c in pio pip cp xz git; do eval "$c() { echo \\"$c \\$*\\"; }"; done\n'
+        'gh() { case "$2" in view) echo v5.2.0 ;; download) ' + write + 'echo "gh $*" ;; *) echo "gh $*" ;; esac; }\n'
+        'sha256sum() { echo "5417d1f4  $1"; }\n'
+    )
+
+
+def run_job(steps, p, tmp_path, tag, stubs):
+    """Run steps in order as the job does: the first nonzero step ends it. (last rc, all lines)."""
+    lines = []
+    for name in steps:
+        rc, out = exec_step(name, p, tmp_path, tag, stubs)
+        lines += out
+        if rc != 0:
+            return rc, lines
+    return 0, lines
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+@pytest.mark.parametrize(
+    "stable,ok", [("v5.2.0", True), ("", False), (CAND_TAG, False), (CAND_TAG + "-rc2", False), ("v10.0.0", False)]
+)
+def test_the_candidate_target_step_stops_the_job_before_any_build_or_upload(tmp_path, stable, ok):
+    (tmp_path / "tools").symlink_to(ROOT / "tools")
+    p = plan(CAND_TAG, candidate=CAND)
+    steps = [TARGET, "Build firmware (every image of the plan)", ATTACH]
+    rc, lines = run_job(steps, p, tmp_path, CAND_TAG, target_stubs(stable))
+    built = any(ln.startswith("pio run") for ln in lines)
+    uploaded = any(ln.startswith("gh release upload") for ln in lines)
+    ge = (tmp_path / "ge").read_text() if (tmp_path / "ge").exists() else ""
+    if ok:  # the neighbor: a newer candidate over a full release goes on to build and attach
+        assert rc == 0 and built and uploaded and "REL_LATEST_TAG=v5.2.0" in ge, lines
+    else:
+        assert rc != 0 and not built and not uploaded and "REL_LATEST_TAG" not in ge, lines
+        assert any(ln.startswith("::error::") for ln in lines), lines
