@@ -160,6 +160,9 @@ struct Rig {
     return in;
   }
 
+  // `in.ladder` points into `o`: a temporary Opts would leave it dangling once the call returns.
+  plain::RenderInput input(const txb::Convo&, const tx::TxArena&, const Opts&&, plain::TurnCtx&, uint32_t) const = delete;
+
   tx::Status renderArena(const txb::Convo& c, const tx::TxArena& arena, Out& out, const Opts& o,
                          uint32_t openTurn) const {
     const plain::WireCodec* wire = nullptr;
@@ -1637,7 +1640,8 @@ void test_a_refused_allocation_at_every_site_answers_a_status() {
   TXB_OK(arena.init(1 << 20, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }));
   for (const tx::Item& it : c.items) TXB_OK(arena.append(it));
   plain::TurnCtx turn;
-  const plain::RenderInput in = rig.input(c, arena, Opts(), turn, 0);
+  const Opts opts;   // outlives `in`: in.ladder points into it
+  const plain::RenderInput in = rig.input(c, arena, opts, turn, 0);
   const plain::WireCodec* w = nullptr;
   TXB_OK(plain::renderWireFor(plain::Dialect::AnthropicMessages, w));
   agent::HttpRequest good;
