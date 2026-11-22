@@ -733,7 +733,7 @@ void drainOutboxes() {
     const String chat(h.chatId.c_str());
     const String host = store::resolvedOrchHost();
     plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
-    if (b && plain::drainHeld(*h.store, *b, now, tzNow(), quietNow())) return;
+    if (b && plain::drainHeld(*h.store, b->ownerSink(), now, tzNow(), quietNow(), b->config().dayStartMin)) return;
   }
 }
 

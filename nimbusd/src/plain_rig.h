@@ -12,7 +12,9 @@
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/plain/engine.h"
+#include "nimbus/harness/plain/guards.h"       // installSuppression (a routine fire, lane E2-SCHED)
 #include "nimbus/harness/plain/hooks.h"
+#include "nimbus/harness/plain/unattended.h"   // OwnerSink, RoutineDeps (lane E2-SCHED)
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/rbac.h"
 #include "nimbus/orch/tool_registry.h"
@@ -170,6 +172,39 @@ class PlainRig {
     }
     if (!st.ok()) engine_.reset();   // a failed boot leaves the rig unbooted, never half-booted
     return st;
+  }
+
+  // Lane E2-SCHED: this chat as the sink of a reminder or routine fire (plain::deliverHeld): the
+  // host's channel and a routine note appended between turns. Busy inside a turn.
+  plain::OwnerSink ownerSink() {
+    plain::OwnerSink s;
+    s.chatKey = cfg_.chatKey;
+    s.chatId = cfg_.chatId;
+    s.deliver = [this](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
+      return plain::deliverTurn(plain::DeliverDeps{&channel_, nullptr, nullptr}, in, out);
+    };
+    s.append = [this](const std::string& note, uint64_t at) {
+      if (!engine_ || busy_) return plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::PlainRig::ownerSink");
+      return plain::appendOwnerNote(*engine_, note, at);
+    };
+    return s;
+  }
+  // Lane E2-SCHED: one routine fire over this rig's parts (plain::runRoutine cuts the registry to the
+  // routine's tools); the head `model` ("" = the chat's). The caller sets held, quiet, tz and taint.
+  plain::RoutineDeps routineDeps(const std::string& model) {
+    plain::RoutineDeps r;
+    r.platform = b_.platform;
+    r.transport = b_.transport;
+    r.files = b_.files;
+    r.reg = &reg_;
+    r.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return dispatchCall(c, t); };
+    r.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
+    r.head = turnCtx();
+    r.head.trigger = plain::Trigger::Routine;
+    if (!model.empty()) r.head.model = model;
+    r.moreHooks = [](plain::PlainHooks& h) { (void)plain::installSuppression(h); };
+    r.owner = ownerSink();
+    return r;
   }
 
   // One owner message through the loop: from the u item to the e item.

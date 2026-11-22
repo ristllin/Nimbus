@@ -7,7 +7,11 @@
 //       no engine-2 field), the entry's kind is in loops2.json; a restarted instance lists it;
 //   (c) a turn no person started may set a reminder and list, but not create a routine; a call
 //       with no turn recorded reads as such a turn (fail closed);
-//   (d) engine 1's four tools are still registered with their words (loop.create, wakeup.set).
+//   (d) engine 1's four tools are still registered with their words (loop.create, wakeup.set);
+//   (e) lane E2-SCHED: the daemon's engine-2 owner chat (Engine2Host) with the routines table bound:
+//       the head sets a reminder and a routine through `schedule`; the tick fires the reminder through
+//       Engine2Host::fire with its text and no request, and the routine isolated on the sub-agent model,
+//       its output to the owner and its state file under <data>/mem/routines/.
 // Offline: scripted provider, the test clock (NIMBUSD_TEST_CLOCK=1), UTC, no keys.
 #include <ArduinoJson.h>
 
@@ -20,10 +24,12 @@
 #include "../../test/support/scripted_provider/scripted_provider.h"
 #include "../../test/support/tx_battery/mem_files.h"
 #include "../../test/support/tx_battery/stub_wire.h"
+#include "engine2_host.h"
 #include "hosted_loops.h"
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/plain/deliver.h"
 #include "nimbus/harness/plain/unattended.h"
+#include "nimbus/orch/loop_delivery.h"
 #include "plain_rig.h"
 #include "posix_fs.h"
 #include "test_util.h"
@@ -263,6 +269,77 @@ void testEngineOneToolsUnchanged(ndtest::Ctx& c) {
 
 }  // namespace
 
+// ---- (e) the daemon's engine-2 owner chat fires the entries (lane E2-SCHED) -------------------------
+void testEngine2HostFires(ndtest::Ctx& c) {
+  std::printf("\n-- (e) Engine2Host: a reminder with no request, a routine isolated on the sub model\n");
+  const std::string root = freshRoot("e");
+  orch::setHostedWebChatAlias(true);   // as the hosted composition sets it (rig.h): the web chat is a device channel
+  nimbusd::PosixFiles files(root + "/mem/files");
+  sp::ScriptedProvider model{sp::Dialect::Anthropic};
+  std::vector<std::string> sent;
+  nimbusd::HostedLoops loops;
+  std::unique_ptr<nimbusd::Engine2Host> host;
+  nimbusd::HostedLoopHooks hooks;
+  hooks.world = [] { return orch::deliveryWorld("", "", ""); };
+  hooks.fire = [&host](const orch::LoopFireRequest& r) { return host->fire(r); };
+  loops.begin(root, hooks);
+  nimbusd::Engine2Options o;
+  o.dataDir = root;
+  o.files = &files;
+  o.head = [] { return std::string("anthropic"); };
+  o.model = [] { return std::string("claude-sonnet-5-5"); };
+  o.summarizerModel = [] { return std::string("claude-haiku-5-5"); };
+  o.key = [] { return std::string("sk-fake-e2sched"); };
+  o.utcOffsetMin = [](uint32_t) { return 0; };
+  o.deliver = [&sent](const std::string& chat, const std::string& text) { sent.push_back(chat + "|" + text); };
+  o.transport = &model;
+  o.loops = &loops;
+  o.chatId = orch::kHostedWebChatId;
+  host.reset(new nimbusd::Engine2Host(o));
+  c.eq(host->start(), "", "the engine-2 owner chat starts with the routines table bound");
+  c.ok(host->rig() && host->rig()->registry().has("schedule"), "schedule is on its registry");
+  const std::string text = "stretch your back";
+  model.push(sp::call("schedule", "{\"op\":\"create\",\"kind\":\"reminder\",\"when\":\"" + whenIn(300) +
+                                      "\",\"text\":" + jsonStr(text) + "}"));
+  model.push(sp::call("schedule", R"({"op":"create","kind":"routine","every":"every 5 min","text":"say the word ORBIT"})"));
+  model.push(sp::say("Both set."));
+  host->say(orch::kHostedWebChatId, "remind me to stretch in five minutes, and every five minutes say ORBIT", "web");
+  std::vector<orch::LoopRecord> back;
+  c.ok(orch::loadLoops(fileAt(root + "/loops.json"), back) && back.size() == 2, "both entries are in loops.json");
+  std::string routineId;
+  for (const orch::LoopRecord& l : back)
+    if (l.sched.kind != orch::SchedKind::Once) routineId = l.id;
+  c.ok(!routineId.empty() && loops.approve(routineId), "the owner approves the routine (/loop approve)");
+  const size_t before = model.requests().size();
+  sent.clear();
+  loops.tick(false, nullptr);    // the first sweep: nothing is due
+  nimbusd::vclock::advance(400);
+  loops.tick(false, nullptr);    // one due fire per sweep: the earliest, the reminder
+  c.eqi((int)model.requests().size(), (int)before, "the reminder's fire made no provider request");
+  c.ok(sent.size() == 1 && sent[0] == std::string(orch::kHostedWebChatId) + "|" + text, "the owner chat gets the reminder's text exactly");
+  model.push(sp::say("ORBIT"));
+  nimbusd::vclock::advance(120);
+  loops.tick(false, nullptr);
+  c.eqi((int)model.requests().size(), (int)before + 1, "the routine's fire is one request");
+  c.ok(model.requests().size() == before + 1 && has(model.requests()[before].body, "claude-haiku-5-5"),
+       "...on the sub-agent model");
+  c.ok(model.requests().size() == before + 1 && !has(model.requests()[before].body, "remind me to stretch"),
+       "...with none of the owner's conversation");
+  // The test clock reads 00:02 UTC: quiet hours. The note waits in the outbox, then goes when they end.
+  c.ok(sent.size() == 1, "in quiet hours nothing is sent yet");
+  c.ok(has(fileAt(root + "/mem/routines/held-" + std::string(orch::kHostedWebChatId) + ".json"), "ORBIT"),
+       "the output waits in the outbox on the volume");
+  nimbusd::vclock::advance(9 * 3600);
+  host->idle(false);
+  c.ok(sent.size() == 2 && sent[1] == std::string(orch::kHostedWebChatId) + "|ORBIT",
+       "after quiet hours the idle step sends the output to the owner chat");
+  c.ok(has(fileAt(root + "/mem/routines/" + routineId + ".state"), "ORBIT"), "its state file holds the output");
+  std::string why;
+  c.ok(model.verify(why), "the script was used exactly (" + why + ")");
+  host.reset();
+  ndtest::rmTree(root);
+}
+
 int main() {
   setenv("TZ", "UTC", 1);
   tzset();
@@ -273,6 +350,7 @@ int main() {
   testRestartKeepsTheEntry(c);
   testOrigins(c);
   testEngineOneToolsUnchanged(c);
+  testEngine2HostFires(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   std::printf("%s\n", c.failures ? "FAILED" : "PASSED");
   return c.failures ? 1 : 0;

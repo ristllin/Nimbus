@@ -23,7 +23,9 @@ namespace nimbusd {
 
 class PosixTxFiles : public nimbus::orch::tx::TxFiles {
  public:
-  explicit PosixTxFiles(std::string dataDir) : root_(std::move(dataDir)) {}
+  // `prefix`: the one folder reached (lane E2-SCHED: /mem/routines for routine state and outboxes).
+  explicit PosixTxFiles(std::string dataDir, std::string prefix = nimbus::orch::tx::kTxRoot)
+      : root_(std::move(dataDir)), prefix_(std::move(prefix) + "/") {}
 
   bool append(const std::string& path, const char* data, size_t len) override {
     std::string p;
@@ -96,8 +98,7 @@ class PosixTxFiles : public nimbus::orch::tx::TxFiles {
 
  private:
   bool map(const std::string& path, std::string& out) const {
-    static const std::string kPrefix = std::string(nimbus::orch::tx::kTxRoot) + "/";
-    if (path.rfind(kPrefix, 0) != 0 || path.find("/..") != std::string::npos) return false;
+    if (path.rfind(prefix_, 0) != 0 || path.find("/..") != std::string::npos) return false;
     out = root_ + path;
     return true;
   }
@@ -105,6 +106,7 @@ class PosixTxFiles : public nimbus::orch::tx::TxFiles {
     return map(path, out) && fsutil::mkdirs(fsutil::dirOf(out));
   }
   std::string root_;
+  std::string prefix_;
 };
 
 }  // namespace nimbusd

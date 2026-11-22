@@ -81,12 +81,12 @@ inline nimbus::orch::schedule::FireBinding fireBindingFor(ChatBinding& chat, nim
   return b;
 }
 
-// The outbox's due work for `chat` (a quiet-hours note once they end, an append that was owed):
-// one note per call, oldest first; a note past its expiry, or one already delivered, is dropped.
-// True when it did work.
-inline bool drainHeld(HeldStore& held, ChatBinding& chat, uint64_t now, int16_t tzMinutes, const QuietHours& quiet) {
+// The outbox's due work for the chat of `sink` (a quiet-hours note once they end, an append that
+// was owed): one note per call, oldest first; a note past its expiry, or one already delivered, is
+// dropped. True when it did work. (plain_unattended.cpp's idle step, for a host that steps no idle.)
+inline bool drainHeld(HeldStore& held, const OwnerSink& sink, uint64_t now, int16_t tzMinutes, const QuietHours& quiet,
+                      uint16_t dayStartMin) {
   if (!now) return false;
-  const OwnerSink sink = chat.ownerSink();
   for (const HeldNote& n : held.notes()) {
     if (n.state != HeldState::Sent && (n.expires <= now || held.wasDelivered(n))) {
       (void)held.remove(n.id);
@@ -95,7 +95,7 @@ inline bool drainHeld(HeldStore& held, ChatBinding& chat, uint64_t now, int16_t 
     if (!n.chatId.empty() && n.chatId != sink.chatId) continue;
     if (n.state == HeldState::Sent || !inQuiet(quiet, now, tzMinutes)) {
       const std::string id = n.id;
-      if (deliverHeld(held, sink, id, now, tzMinutes, chat.config().dayStartMin).ok()) return true;
+      if (deliverHeld(held, sink, id, now, tzMinutes, dayStartMin).ok()) return true;
     }
   }
   return false;

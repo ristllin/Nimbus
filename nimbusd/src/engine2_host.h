@@ -8,11 +8,13 @@
 #include "daemon_http.h"
 #include "hosted_file_tools.h"
 #include "hosted_fold.h"   // hostedTextIO
+#include "hosted_loops.h"   // the schedule tool and its fires (lane E2-SCHED)
 #include "hosted_notes.h"
 #include "hosted_tx.h"
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/exchange.h"   // providerSlugOf
 #include "nimbus/harness/plain/guards.h"
+#include "nimbus/harness/plain/schedule_binding.h"   // heldFileOn, heldPathFor, drainHeld (lane E2-SCHED)
 #include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/tx/budget.h"
@@ -32,7 +34,11 @@
 //     <data>/mem/compact_ctl.txt. No v5.1.1 chatsum mirror: engine 1 owns that file.
 //   * notes (hosted_notes.h): <data>/mem/notes/owner.md, the pinned block in every request;
 //   * calc;
-//   * the five file tools and delete_file behind more (hosted_file_tools.h) over the daemon's one file store.
+//   * the five file tools and delete_file behind more (hosted_file_tools.h) over the daemon's one file store;
+//   * lane E2-SCHED: `schedule` over the instance's routines table (hosted_loops.h, loops.json with
+//     loops2.json beside it) when Engine2Options::loops is set, and its fires (fire(), the routines
+//     tick's hook while engine 2 runs): a reminder's text with no model request, a routine isolated on
+//     the sub-agent model through plain::runRoutine, its state and outbox in <data>/mem/routines/.
 // Replies leave through the host's deliver function (the web chat ring and Telegram), to the
 // chat the running turn came from. Claude heads only: start() refuses any other head in one
 // plain line, and the daemon does not start.
@@ -54,6 +60,7 @@ struct Engine2Options {
   agent::HttpTransport* transport = nullptr;         // null: the host's own libcurl transport (tests script one)
   std::string chatKey = "owner";                     // /mem/tx/<chatKey>
   std::string chatId = "owner";                      // the engine's routing chat (the web chat id)
+  HostedLoops* loops = nullptr;                      // lane E2-SCHED: the routines table; null: no schedule tool
 };
 
 // The one plain line a refused switch logs (and the daemon exits on).
@@ -70,7 +77,9 @@ class Engine2Host {
  public:
   explicit Engine2Host(Engine2Options o)
       : o_(std::move(o)), platform_(makePosixPlatform(&mem_)), txFiles_(o_.dataDir), notes_(o_.dataDir + "/mem"),
-        fileTools_(*o_.files, HostedFileTools::Deps{o_.utcOffsetMin, nullptr}) {}
+        fileTools_(*o_.files, HostedFileTools::Deps{o_.utcOffsetMin, nullptr}),
+        routineFiles_(o_.dataDir, nimbus::orch::schedule::kStateDir),
+        held_(plain::heldFileOn(routineFiles_, plain::heldPathFor(o_.chatId))) {}
   Engine2Host(const Engine2Host&) = delete;
   Engine2Host& operator=(const Engine2Host&) = delete;
 
@@ -103,7 +112,7 @@ class Engine2Host {
       if (o_.deliver) o_.deliver(curChat_.empty() ? o_.chatId : curChat_, text);
       return true;
     };
-    b.dispatch = notes_.dispatch();
+    b.dispatch = o_.loops ? o_.loops->scheduleDispatch(notes_.dispatch()) : notes_.dispatch();
     b.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& s) { setupTurn(t, s); };
     b.recentFiles = fileTools_.recentFilesFor(nimbus::orch::principalForRole(o_.chatId, nimbus::orch::Role::Admin));
     b.beforeBoot = [this, model] { return bindCompaction(model); };
@@ -111,6 +120,11 @@ class Engine2Host {
     notes_.attach(rig_->registry());
     nimbus::orch::registerCalcTool(rig_->registry());
     fileTools_.attach(rig_->registry());
+    if (o_.loops) {
+      o_.loops->attachSchedule(rig_->registry());
+      o_.loops->setStateFiles(&routineFiles_);
+    }
+    (void)held_.load();
     const plain::Status st = rig_->boot();
     if (!st.ok()) {
       std::string why = std::string("engine 2 did not start: ") + nimbus::orch::tx::errSlug(st.err) + "@" + st.where;
@@ -160,6 +174,9 @@ class Engine2Host {
   // did work (a paid call may have run).
   bool idle(bool ownerWaiting) {
     if (!rig_ || !rig_->engine()) return false;
+    // Lane E2-SCHED: a routine note held for quiet hours goes once they end (one note a step).
+    if (o_.loops && plain::drainHeld(held_, rig_->ownerSink(), vclock::epoch(), tzNow(), quiet(),
+                                     o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin)) return true;
     plain::IdleCtx ctx;
     ctx.now = vclock::epoch();
     ctx.nowMs = vclock::steadyMs();
@@ -178,6 +195,37 @@ class Engine2Host {
     return out.worked;
   }
 
+  // Lane E2-SCHED: the routines tick's fire hook while engine 2 runs (the engine thread, between
+  // turns). Every entry delivers to this chat's owner conversation, as the hosted owner chat is one.
+  nimbus::orch::FireOutcome fire(const nimbus::orch::LoopFireRequest& req) {
+    nimbus::orch::FireOutcome o;
+    if (!o_.loops || !running()) {
+      o.deferred = true;   // not started: tried again, not counted
+      o.retryAfterSec = 60;
+      return o;
+    }
+    nimbus::orch::schedule::FireBinding b;
+    b.owner = rig_->ownerSink();
+    b.tzMinutes = tzNow();
+    b.dayStartMin = o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin;
+    b.files = &routineFiles_;
+    b.grants = o_.loops->routineGrants();
+    b.run = [this](const plain::RoutineFire& f, bool tainted, plain::FireReport& out) {
+      plain::RoutineDeps r = rig_->routineDeps(o_.summarizerModel ? o_.summarizerModel() : std::string());
+      r.head.tainted = tainted;
+      r.tzMinutes = tzNow();
+      r.held = &held_;
+      r.quiet = quiet();
+      return plain::runRoutine(r, f, out);
+    };
+    nimbus::orch::LoopFireRequest owner = req;
+    owner.chatId = o_.chatId;
+    o = o_.loops->fireE2(owner, b);
+    std::fprintf(stderr, "[nimbusd] engine2: fire %s ok=%d deferred=%d answered=%d\n", req.id.c_str(), int(o.ok),
+                 int(o.deferred), int(o.answered));
+    return o;
+  }
+
   bool running() const { return rig_ && rig_->engine(); }
   PlainRig* rig() { return rig_.get(); }
   HostedNotes& notes() { return notes_; }
@@ -185,6 +233,9 @@ class Engine2Host {
 
  private:
   agent::HttpTransport* transport() { return o_.transport ? o_.transport : &http_; }
+  int16_t tzNow() const { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); }
+  // The instance keeps no quiet-hours end of its own: the default end (09:00), as plain::QuietHours.
+  plain::QuietHours quiet() const { return plain::QuietHours{}; }
   nimbus::orch::tx::HeadKey headKey(const std::string& model) const {
     plain::TurnCtx t;
     t.host = "api.anthropic.com";
@@ -249,6 +300,8 @@ class Engine2Host {
   PosixTxFiles txFiles_;
   HostedNotes notes_;
   HostedFileTools fileTools_;
+  PosixTxFiles routineFiles_;   // <data>/mem/routines: routine state files and the outbox (lane E2-SCHED)
+  plain::HeldStore held_;
   std::unique_ptr<plain::CompactDriver> driver_;
   std::unique_ptr<PlainRig> rig_;
   std::string curChat_;

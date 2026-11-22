@@ -171,10 +171,12 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
                                                       : nimbus::orch::tx::profileOf(cfg.get("NIMBUSD_E2_PROFILE"));
   o.deliver = std::move(deliver);
   o.chatId = nimbusd::kWebChatId;
+  o.loops = &rig.routines();   // lane E2-SCHED: the schedule tool and the routines' fires
   out.reset(new nimbusd::Engine2Host(o));
   const std::string why = out->start();
   if (!why.empty()) return why;
   nimbusd::Engine2Host* host = out.get();
+  rig.setEngine2Fire([host](const nimbus::orch::LoopFireRequest& r) { return host->fire(r); });
   nimbusd::Engine2Route r;
   r.takes = [&rig](const std::string& chat, const std::string& text, bool photos) {
     const nimbus::orch::Command c = nimbus::orch::parseCommand(text);

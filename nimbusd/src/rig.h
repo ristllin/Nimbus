@@ -834,6 +834,9 @@ class NimbusdRig {
     loops_.tick(eng_ && eng_->turnInFlight(), busy);
   }
   HostedLoops& routines() { return loops_; }
+  // Lane E2-SCHED: while engine 2 runs, the routines tick fires through it (Engine2Host::fire);
+  // set before the engine thread starts.
+  void setEngine2Fire(std::function<orch::FireOutcome(const orch::LoopFireRequest&)> fire) { e2Fire_ = std::move(fire); }
   HostedSkills& skills() { return *skills_; }
   // The chat's anchored summary ("" = never folded): diagnostics and the tests.
   orch::ChatFold foldState(const std::string& chat) const { return folds_.get(chat); }
@@ -2097,6 +2100,7 @@ class NimbusdRig {
   // One routine's turn (device: main.cpp's fire hook), never quiet: the routine's message
   // is its point. It delivers between web turns, so the page's watcher shows it.
   orch::FireOutcome fireRoutine(const orch::LoopFireRequest& r) {
+    if (e2Fire_) return e2Fire_(r);   // lane E2-SCHED: engine 2 runs the owner's entries
     cur_ = TurnRecord{};
     cur_.chatId = r.chatId;
     cur_.userText = r.prompt;
@@ -3668,6 +3672,7 @@ class NimbusdRig {
   std::string envTz_;            // the operator's TZ at start ("" = none)
   std::string curUserRowId_;     // the in-flight user row (excluded from the window)
   HostedLoops loops_;            // routines and wake-ups
+  std::function<orch::FireOutcome(const orch::LoopFireRequest&)> e2Fire_;   // lane E2-SCHED
   std::atomic<bool> tzMoved_{false};
   std::unique_ptr<HostedSkills> skills_;
   std::string turnTag_;          // "turn:<row id>" of the turn in flight ("" between turns)
