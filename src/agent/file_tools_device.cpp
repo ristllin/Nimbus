@@ -1,6 +1,9 @@
 #include "file_tools_device.h"
 
-#include "files_subsystem.h"                 // toolsIo - the card seam over the device's file store
+#include <Arduino.h>                         // millis - the per-call figures
+
+#include "../sys/agent_log.h"                // alogf - one figures line per call
+#include "files_subsystem.h"                 // toolsIo, toolsHolds - the card seam over the device's file store
 #include "nimbus/harness/plain/request.h"    // toolDecl, declSchema, kWriteContentMax
 #include "nimbus/harness/turn_memory.h"      // PsramFirstScope
 #include "nimbus/orch/file_tools.h"
@@ -50,9 +53,15 @@ void registerFileTools(orch::ToolRegistry& reg) {
     const Method m = b.call;
     reg.add(
         b.name, decl->description,
-        [m](ArduinoJson::JsonObjectConst args, const orch::Principal& who) {
+        [m, name = b.name](ArduinoJson::JsonObjectConst args, const orch::Principal& who) {
           const PsramFirstScope psram;
-          return (tools().*m)(args, who);
+          (void)files::toolsHolds(true);
+          const uint32_t t0 = millis();
+          orch::ToolResult r = (tools().*m)(args, who);
+          const files::ToolsHolds h = files::toolsHolds(true);
+          alogf("e2: tool %s ok=%d ms=%u holds=%u holdMaxUs=%u holdTotalUs=%u", name, r.success ? 1 : 0,
+                (unsigned)(millis() - t0), (unsigned)h.n, (unsigned)h.maxUs, (unsigned)h.totalUs);
+          return r;
         },
         agent::plain::declSchema(*decl, kShortHost));
   }

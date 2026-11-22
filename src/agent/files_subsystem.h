@@ -236,6 +236,12 @@ String listJson(const String& project, const std::string& ns = "", bool owner = 
 // old engine's append (at the size on the card), its swap and boot recovery, its index write. A lagging index
 // entry is brought to the card's size; nothing stored is ever cut. file_tools_device.cpp binds the library to it.
 nimbus::orch::FileToolsIo& toolsIo();
+// The file tools' card lock holds since the last reset: count, longest and total (microseconds), for the
+// bench's per-tool figures. Turn task only.
+struct ToolsHolds {
+  uint32_t n = 0, maxUs = 0, totalUs = 0;
+};
+ToolsHolds toolsHolds(bool reset);
 // EngineDeps::recentFiles for one person (tx::RecentFilesBlock::Source): the files `who` may read, with
 // their last write times. False with no card.
 bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out);

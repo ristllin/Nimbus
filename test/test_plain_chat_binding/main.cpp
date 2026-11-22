@@ -110,6 +110,8 @@ struct Device {
     };
     d.key = [] { return std::string("sk-fake-binding"); };
     d.seen = &seen;
+    d.outside = outside;
+    d.recentFiles = recentFiles;
     binding.reset(new plain::ChatBinding(c, d));
     return binding->boot();
   }
@@ -124,6 +126,8 @@ struct Device {
 
   agent::Platform platform;
   std::string provider;   // "" = the binding's default (anthropic)
+  std::function<bool(const std::string&)> outside;   // lane E2-TOOLS
+  std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
   uint32_t ms = 1000;
   sp::ScriptedProvider model;
   Card card;
@@ -157,6 +161,39 @@ static void test_a_message_reaches_the_turn_and_the_reply_the_channel_once() {
   TEST_ASSERT_EQUAL(1u, dev.binding->sentParts());
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(dev.model.verify(why), why.c_str());
+}
+
+// Lane E2-TOOLS: a tool the device names as outside content taints the turn (its result is stored as
+// outside); the files a person may read reach the request.
+static void test_an_outside_tool_taints_the_turn_and_recent_files_reach_the_request() {
+  Device dev;
+  dev.reg.add("web_search", "Search the web.", [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return nimbus::orch::ToolResult::ok("a page said hello");
+  }, R"({"type":"object","properties":{"query":{"type":"string"}},"required":["query"]})");
+  dev.reg.add("calc", "Exact decimal arithmetic.", [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    return nimbus::orch::ToolResult::ok("4");
+  }, R"({"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]})");
+  dev.outside = [](const std::string& tool) { return tool == "web_search"; };
+  std::string asked;
+  dev.recentFiles = [&asked](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
+    asked = who.ns;
+    return [](std::vector<nimbus::orch::tx::RecentFile>& out) {
+      out = {{"notes/bench-recent.md", kEpoch0}};
+      return true;
+    };
+  };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_FALSE(asked.empty());
+  dev.model.push(sp::calls({{"calc", R"({"expression":"2+2"})", ""}, {"web_search", R"({"query":"hello"})", ""}}));
+  dev.model.push(sp::say("Done."));
+  TEST_ASSERT_TRUE(dev.say("search for hello").ok());
+  TEST_ASSERT_TRUE_MESSAGE(has(dev.model.requests()[0].body, "notes/bench-recent.md"), "recent files in the request");
+  std::string stored;
+  for (const auto& kv : dev.card.files) stored += kv.second;
+  // One outside result (web_search) and one receipt (calc) on the card.
+  size_t outs = 0;
+  for (size_t p = stored.find("\"out\""); p != std::string::npos; p = stored.find("\"out\"", p + 1)) ++outs;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)outs, stored.c_str());
 }
 
 static void test_the_arena_and_the_cost_follow_the_head() {
@@ -224,6 +261,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
   RUN_TEST(test_the_arena_and_the_cost_follow_the_head);
+  RUN_TEST(test_an_outside_tool_taints_the_turn_and_recent_files_reach_the_request);
   RUN_TEST(test_a_rebooted_binding_carries_the_earlier_turns);
   RUN_TEST(test_the_seen_index_is_rebuilt_from_the_card);
   RUN_TEST(test_with_no_card_the_chat_runs_in_ram);

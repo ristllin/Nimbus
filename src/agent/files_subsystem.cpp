@@ -2397,6 +2397,7 @@ void testArmCut(TestCut where, uint32_t at) {   // CUTARM (files_subsystem.h)
 namespace {
 
 constexpr const char* kToolsPart = "/mem/files/.tools-part";
+ToolsHolds g_toolsHolds;   // the file tools' card lock holds since the last reset (turn task only)
 
 class SdFileCard : public nimbus::orch::FileCard {
  public:
@@ -2462,7 +2463,12 @@ nimbus::orch::CardFilesIo& cardIo() {
           if (!xPortCanYield()) return false;   // never from a context that cannot wait for the card lock
           memory::Lock g;
           if (!available()) return false;
+          const uint32_t t0 = micros();
           fn();
+          const uint32_t us = micros() - t0;
+          ++g_toolsHolds.n;
+          g_toolsHolds.totalUs += us;
+          if (us > g_toolsHolds.maxUs) g_toolsHolds.maxUs = us;
           return true;
         };
         h.persistIndex = [] { return persistIndexLanded(); };
@@ -2479,6 +2485,11 @@ nimbus::orch::CardFilesIo& cardIo() {
 }  // namespace
 
 nimbus::orch::FileToolsIo& toolsIo() { return cardIo(); }
+ToolsHolds toolsHolds(bool reset) {
+  const ToolsHolds h = g_toolsHolds;
+  if (reset) g_toolsHolds = ToolsHolds{};
+  return h;
+}
 
 bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out) {
   out.clear();
