@@ -6,6 +6,11 @@ The first test runs the gate on the real tree. Each counter-test copies what the
 into a temp folder, plants a fault and asserts the gate turns red: a 300 B addition to each
 engine-2 class that composition reads, a figure over each ceiling, a missing role or
 host, a malformed line, a class over its catalog ceiling and a stale catalog.
+
+Every test reads the live plan's lanes from the tree (tools/engine/owners.json), as the gate
+does on GitHub's runner, where the program's PLAN.json does not exist. Before this, the copied
+tree had no owners.json and passed on the Mac only because the gate read PLAN.json from an
+absolute path outside the tree.
 """
 
 import os
@@ -23,8 +28,17 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 PAD = " and this sentence was planted by a test to grow the class by a few hundred bytes" * 4
 
 
+@pytest.fixture(autouse=True)
+def lanes_from_the_tree(tmp_path, monkeypatch):
+    """No plan file off the tree: the gate reads the lanes from owners.json on every machine."""
+    absent = str(tmp_path / "no-plan")
+    monkeypatch.setattr(npp, "PLAN_JSON", os.path.join(absent, "PLAN.json"))
+    monkeypatch.setattr(npp, "PLAN_PENDING_JSON", os.path.join(absent, "PLAN-pending.json"))
+    monkeypatch.setattr(npp, "PLAN_FUTURE_JSON", os.path.join(absent, "PLAN-future.json"))
+
+
 def make_tree(dst):
-    rels = {cat.E2_TEXTS, cat.CATALOGS["e2"]["golden"], gate.GOLDEN, npp.CHANGES}
+    rels = {cat.E2_TEXTS, cat.CATALOGS["e2"]["golden"], gate.GOLDEN, npp.CHANGES, npp.OWNERS}
     rels |= {p for p, _ in cat.E2_EXTRA_SOURCES}
     for rel in sorted(rels):
         os.makedirs(os.path.dirname(os.path.join(dst, rel)), exist_ok=True)
