@@ -1355,7 +1355,9 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   // Lane RB-TS1: the reply queue's one drain (the poll loop and a turn's reply both call it).
   const auto drain = src::bodyOf(code, "static void drainReplyQueue(bool haveToken) {");
   const auto page = src::bodyOf(code, "static void fetchOnePage(");
-  for (auto b : {raw, deliver, wrap, direct, media, send, poll, drain, page, methodTable, upload, now})
+  // Lane E2-DEV: engine 2's one-part send (telegram::sendPart), hooked like sendNow.
+  const auto part = src::bodyOf(code, "bool sendPartImpl(const String& chatId, const std::string& part) {");
+  for (auto b : {raw, deliver, wrap, direct, media, send, poll, drain, page, methodTable, upload, now, part})
     TEST_ASSERT_TRUE(b.second > b.first);
 
   // 1. Every Telegram send method on the wire sits in one of the two wire functions.
@@ -1386,13 +1388,15 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   // Nothing else calls either.
   TEST_ASSERT_EQUAL_INT(2, (int)src::findAll(code, "doSendMessage(").size());
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessage(", drain));
-  TEST_ASSERT_EQUAL_INT(3, (int)src::findAll(code, "doSendMessageImpl(").size());
+  TEST_ASSERT_EQUAL_INT(4, (int)src::findAll(code, "doSendMessageImpl(").size());
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessageImpl(", wrap));
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessageImpl(", direct));
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "doSendMessageImpl(", part));
 
   // 3. One archive hook per outbound entry point, and no other.
   const int hooks = (int)src::findAll(code, "tgarchive::onOutbound").size();
-  TEST_ASSERT_EQUAL_INT(4, hooks);
+  TEST_ASSERT_EQUAL_INT(5, hooks);
+  TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "tgarchive::onOutboundText(", part));
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "tgarchive::onOutboundText(", send));
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "tgarchive::onOutboundText(", direct));
   TEST_ASSERT_EQUAL_INT(1, src::countIn(code, "tgarchive::onOutboundMedia(", media));
@@ -1403,6 +1407,7 @@ static void test_every_outbound_send_site_passes_an_archive_hook() {
   TEST_ASSERT_TRUE(code.find("uploadMedia(", now.first) < code.find("if (r.ok)", now.first));
   TEST_ASSERT_TRUE(code.find("if (r.ok)", now.first) < code.find("tgarchive::onOutboundMedia(", now.first));
   TEST_ASSERT_TRUE(code.find("tgarchive::onOutboundText(", direct.first) < code.find("doSendMessageImpl(", direct.first));
+  TEST_ASSERT_TRUE(code.find("tgarchive::onOutboundText(", part.first) < code.find("doSendMessageImpl(", part.first));
 
   // 4. Inbound: one hook, where the page is read, before the turn path parses it.
   TEST_ASSERT_EQUAL_INT(2, (int)src::findAll(code, "tgarchive::onInboundPage(").size());
