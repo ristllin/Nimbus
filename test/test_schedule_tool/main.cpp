@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <map>
+#include <new>
 #include <random>
 #include <set>
 #include <string>
@@ -65,7 +66,9 @@ struct MemHost : sch::Host {
     loopsFile = dumpLoops(v);
     return true;
   }
+  bool throwOnRead = false;   // a refused allocation inside the call
   bool readSidecar(std::string& out) override {
+    if (throwOnRead) throw std::bad_alloc();
     out = sidecarFile;
     return true;
   }
@@ -828,6 +831,21 @@ void test_a_routine_fire_keeps_the_routine_ceiling() {
   TEST_ASSERT_TRUE(o.tokens.total() > 0);
 }
 
+// ---- ruling 30: a refused allocation is an error result ------------------------------------------
+void test_a_refused_allocation_is_an_error_result_and_changes_nothing() {
+  MemHost h;
+  TEST_ASSERT_TRUE(run(h, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"brief"})").success);
+  const std::string table = h.loopsFile;
+  h.throwOnRead = true;
+  for (const char* op : {R"({"op":"list"})", R"({"op":"create","kind":"routine","every":"daily 09:00","text":"x"})"}) {
+    const ToolResult r = run(h, op);
+    TEST_ASSERT_FALSE(r.success);
+    TEST_ASSERT_FALSE(r.error.empty());
+  }
+  TEST_ASSERT_EQUAL(1, (int)h.loops.size());
+  TEST_ASSERT_EQUAL_STRING(table.c_str(), h.loopsFile.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_loops_json_written_by_the_tool_is_v511_bytes);
@@ -849,5 +867,6 @@ int main(int, char**) {
   RUN_TEST(test_a_fire_after_outside_content_opens_the_next_fire_tainted);
   RUN_TEST(test_a_routine_with_no_card_is_skipped_and_a_reminder_still_goes);
   RUN_TEST(test_a_routine_fire_keeps_the_routine_ceiling);
+  RUN_TEST(test_a_refused_allocation_is_an_error_result_and_changes_nothing);
   return UNITY_END();
 }

@@ -256,11 +256,24 @@ static bool s_memDefer = false;
 // tg_poll, read on tg_poll by the turn-completion wiring (orchestrator.cpp).
 static bool s_firing = false;
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Engine 2 (lane RB-U1b): a one-time record whose next run is a real epoch (a reminder set for a
+// wall-clock moment, schedule_tool.h) keeps it across a restart and the clock sync; engine 1
+// re-arms every one-time record from its delay.
+static bool keepsWallTime(const LoopRecord& l) {
+  return l.sched.kind == orch::SchedKind::Once && l.nextRun > 1000000000ull;
+}
+#endif
+
 static void onClockSynced(uint64_t realNow, uint64_t oldNow) {
   const uint32_t day = curLocalDay(realNow);
   for (auto& l : g_loops) {
     if (l.sched.kind == orch::SchedKind::Interval)
       l.nextRun = realNow + l.sched.intervalSec;      // restart, no retro burst
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    else if (keepsWallTime(l))
+      continue;                                       // engine 2: a reminder keeps its wall time
+#endif
     else if (l.sched.kind == orch::SchedKind::Once)
       l.nextRun = orch::onceRebaseNextRun(l, realNow, oldNow);   // keep the remaining/retry delay
     else
@@ -355,7 +368,12 @@ void begin(FireHook fire, ChatAllowedHook chatAllowed, AlertHook alert) {
   const uint64_t now = (uint64_t)time(nullptr);
   s_wasClockValid = clk;
   // Recompute nextRun at boot: raw millis-based nextRun never survives reboot.
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  for (auto& l : g_loops)
+    if (!keepsWallTime(l)) advanceNextRun(l, now, clk);   // engine 2: a reminder keeps its time
+#else
   for (auto& l : g_loops) advanceNextRun(l, now, clk);
+#endif
   if (clk) { g_dev.dayNumber = curLocalDay(now); }
   g_dev.windowStart = now;
   alogf("loops: begin - %u loop(s), clock=%d", (unsigned)g_loops.size(), (int)clk);
@@ -1074,6 +1092,37 @@ void drainWebMutations() {
     }
   }
 }
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// ---- engine 2: the schedule tool's view of the table (lane RB-U1b, schedule_device.cpp) -------
+void withTable(const std::function<void(std::vector<LoopRecord>&)>& fn) {
+  Lock lk;
+  fn(g_loops);
+}
+bool saveTable(const std::vector<LoopRecord>& loops) {
+  return agent::writeFileAtomic(kLoopPath, orch::dumpLoops(loops), "loops", false);
+}
+uint64_t firstRun(const LoopRecord& l, uint64_t nowEpoch) { return nextRunFor(l, nowEpoch, clockValid()); }
+bool wallClockValid() { return clockValid(); }
+CivilTime localOf(uint64_t epoch) { return nowCivilLocal(epoch); }
+uint64_t epochOfLocal(const CivilTime& c) { return civilToEpoch(c); }
+std::string freshId(const std::vector<LoopRecord>& loops) {
+  for (;;) {
+    const std::string id = genId();
+    bool taken = false;
+    for (const auto& l : loops) taken = taken || l.id == id;
+    if (!taken) return id;
+  }
+}
+int maxCount() {
+  Lock lk;
+  return g_caps.maxCount;
+}
+uint32_t minIntervalSec() {
+  Lock lk;
+  return g_caps.minIntervalSec;
+}
+#endif
 
 }  // namespace loops
 }  // namespace agent

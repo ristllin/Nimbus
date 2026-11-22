@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 #include "nimbus/utf8.h"
 
@@ -44,6 +45,7 @@ constexpr char kNoId[] = "id is empty";
 constexpr char kNothing[] = "nothing to change";
 constexpr char kKindDiffers[] = "kind differs from the entry";
 constexpr char kNoCard[] = "no card";
+constexpr char kNoMemory[] = "out of memory; nothing changed";
 
 const char* kindSlug(Kind k) { return k == Kind::Reminder ? kReminder : kRoutine; }
 
@@ -580,9 +582,13 @@ std::string nameFor(const std::string& text) {
 // ---- the call -----------------------------------------------------------------------------------
 ToolResult call(Host& host, JsonObjectConst args, const CallCtx& ctx) {
   if (!mayRun(args, ctx)) return ToolResult::fail(kNotHere);
-  Call c{host, args, ctx};
-  host.withTable([&c](std::vector<LoopRecord>& t) { c.run(t); });
-  return c.out;
+  try {
+    Call c{host, args, ctx};
+    host.withTable([&c](std::vector<LoopRecord>& t) { c.run(t); });
+    return c.out;
+  } catch (const std::bad_alloc&) {   // ruling 30: a refused allocation is a result (the table is
+    return ToolResult::fail(kNoMemory);   // assigned only after both writes landed)
+  }
 }
 
 // ---- state --------------------------------------------------------------------------------------

@@ -15,6 +15,7 @@
 #include "nimbus/orch/calc_tool.h"          // registerCalcTool (RB-REC8)
 #include "nimbus/orch/tool_groups.h"        // registerMore - delete_file is declared behind more
 #include "notes_device.h"                   // lane RB-N1: note
+#include "schedule_device.h"               // lane RB-U1b, E2-SCHED: schedule
 #include "orchestrator.h"                   // turnInFlight, turnCount - the note tool's origin (lane E2-DEV)
 #include "store.h"                          // providerOverBudget, recordProviderCall
 #include "transport_tls.h"                  // deviceProviderDeps
@@ -71,6 +72,13 @@ void registerWebSearch(orch::ToolRegistry& reg) {
       agent::plain::declSchema(*decl, false));
 }
 
+// The origin of a call: attended inside a person's turn, tainted when that turn ran web_search,
+// unattended outside a turn.
+nimbus::orch::notes::Origin turnOrigin() {
+  if (!orchestrator::turnInFlight()) return nimbus::orch::notes::Origin::Unattended;
+  return outsideThisTurn() ? nimbus::orch::notes::Origin::Tainted : nimbus::orch::notes::Origin::Attended;
+}
+
 }  // namespace
 
 // note (lane RB-N1, notes_device.cpp). Lane E2-DEV binds its origin: on engine 2 only a person's
@@ -78,11 +86,10 @@ void registerWebSearch(orch::ToolRegistry& reg) {
 // unless that turn ran web_search (outside content: tainted, kept for approval); outside a turn it is
 // kept for approval. Lane E2-TOOLS: the file tools over the old engine's store, delete_file behind more,
 // calc, web_search.
+// schedule (lane RB-U1b, schedule_device.cpp; lane E2-SCHED binds it): the same origin as the note tool.
 void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch::MemoryContext&) {
-  notesdev::registerNote(reg, [] {
-    if (!orchestrator::turnInFlight()) return nimbus::orch::notes::Origin::Unattended;
-    return outsideThisTurn() ? nimbus::orch::notes::Origin::Tainted : nimbus::orch::notes::Origin::Attended;
-  });
+  notesdev::registerNote(reg, turnOrigin);
+  scheduledev::registerSchedule(reg, turnOrigin, nullptr);
   filetoolsdev::registerFileTools(reg);
   nimbus::orch::registerCalcTool(reg);
   registerWebSearch(reg);
