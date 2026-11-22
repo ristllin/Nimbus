@@ -30,6 +30,7 @@
 
 #include "../test_unattended/rig.h"
 #include "nimbus/harness/plain/request.h"   // toolDecl("schedule")
+#include "nimbus/harness/schedule_fire.h"
 #include "nimbus/orch/schedule_tool.h"
 #include "nimbus/utf8.h"
 

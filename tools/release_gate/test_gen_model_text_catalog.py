@@ -156,11 +156,16 @@ def test_e2_ceilings_are_the_prd_figures():
         "core": 3072,
         "device_notes": 2048,
         "stubs": 512,
-        "tool_results": 6144,
+        "tool_results": 6615,  # ruling 111: 6,144 plus what RB-U1b's schedule strings use (at most 512 B)
         "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) byte for byte (RB-G1)
         "summarizer": 1024,
         "tool_descriptions": 10240,
     }
+
+
+def test_the_tool_results_ceiling_stays_inside_ruling_111():
+    # Ruling 111 lets the class rise by at most 512 B over 6,144 B, for RB-U1b's schedule strings only.
+    assert 6144 <= cat.E2_CEILINGS["tool_results"] <= 6144 + 512
 
 
 def test_the_goldens_are_fresh(capsys):

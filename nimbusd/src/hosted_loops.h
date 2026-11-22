@@ -18,6 +18,7 @@
 #include "nimbus/orch/spend_ceiling.h"   // isSpendFrozenError
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/harness/plain/request.h"   // toolDecl, declSchema (engine 2's schedule)
+#include "nimbus/harness/schedule_fire.h"     // its fires (RB-U1b)
 #include "nimbus/orch/schedule_tool.h"        // engine 2's schedule tool and loops2.json (RB-U1b)
 #include "hosted_notes.h"                     // originOf: the note tool's origin rule
 #include "hosted_settings.h"             // tzMutex: every local-time read here takes it

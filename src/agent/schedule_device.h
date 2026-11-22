@@ -2,6 +2,7 @@
 #include <functional>
 #include <string>
 
+#include "nimbus/harness/schedule_fire.h"   // FireBinding, fire
 #include "nimbus/orch/schedule_tool.h"
 
 // schedule_device - the device binding of engine 2's schedule tool (lane RB-U1b; PRD sections 4

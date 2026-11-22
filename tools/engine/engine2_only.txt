@@ -39,6 +39,7 @@ lib/harness/src/plain_resume.cpp
 lib/harness/src/plain_truth.cpp
 lib/harness/src/plain_unattended.cpp
 lib/harness/src/plain_wire.cpp
+lib/harness/src/schedule_fire.cpp
 lib/harness/src/providers/plain_wire_anthropic.cpp
 
 # RB-C2: the device binding of the engine-2 compaction driver.
