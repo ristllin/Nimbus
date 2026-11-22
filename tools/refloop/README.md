@@ -31,6 +31,7 @@ ends with a scan of the evidence for key material that must find nothing.
 | `--reps N` | repetitions of every scenario (default 3) |
 | `--only id,id` | only these scenario ids |
 | `--arms A,B` | one arm alone, for a rerun |
+| `--engine 2` | arm A's nimbusd runs the owner chat on engine 2 (`NIMBUSD_ENGINE=2`); default `1` |
 | `--parallel N` | runs at once, each on its own daemon and port (default 4) |
 | `--max-usd N` | the spend ceiling for the evidence dir's ledger |
 | `--no-judge` | deterministic checks only |
@@ -185,6 +186,10 @@ failed`. `meal-log-day` seeds one file so that defect is not what it measures.
   second time with X and Y swapped, and scored on the mean of the two passes. The judge sees
   owner messages, tool calls with results, replies, the daemon's own notices (labelled as the
   system's), and the memories the harness's automatic recall put in front of the model.
+- **Engine 2 on arm A** (`--engine 2`): its file tools count under the old engine's names in
+  `tool_called` checks (`read_file` as `files_read`, `grade.ENGINE2_NAMES`), and its notes
+  (`<data>/mem/notes/*.md`, the state's `notes`) are read as memory by `memory_regex`. A
+  `new_conversation` step clears engine 1's conversation only: engine 2 keeps one transcript.
 - **composite** = half the share of checks passed + half the judge mean scaled to 0..1.
   The harness wins a repetition when its composite is more than 0.05 above the loop's,
   loses when more than 0.05 below, ties otherwise.

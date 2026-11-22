@@ -1081,8 +1081,16 @@ class Engine2ArmTest(unittest.TestCase):
         self.assertFalse(grade.CHECKS["memory_regex"]("(?i)dentist", {}, {**state, "notes": ""}, [])[0])
 
     def test_engine_flag_reaches_arm_a_only(self):
-        job = arms.Job(model="claude-haiku-5-5", head="anthropic", effort="medium", sub_model="claude-haiku-5-5",
-                       scenario={"id": "x"}, rep=1, dir=Path(tempfile.mkdtemp()), engine="2")
+        job = arms.Job(
+            model="claude-haiku-5-5",
+            head="anthropic",
+            effort="medium",
+            sub_model="claude-haiku-5-5",
+            scenario={"id": "x"},
+            rep=1,
+            dir=Path(tempfile.mkdtemp()),
+            engine="2",
+        )
         self.assertNotIn("NIMBUSD_ENGINE", job.keys)
         self.assertEqual(job.engine, "2")
 

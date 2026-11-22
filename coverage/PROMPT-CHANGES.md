@@ -1110,3 +1110,13 @@ PC-0143: not used.
 - lane: RB-TG1
 - prd: section 5 (documents: a document lands at inbox/<update id>-<valid name> and the message shows that path; until RB-P2 a PDF is stored and the message says it cannot be read yet)
 - why: lib/core/include/nimbus/net/tg_inbox.h kInboxPdfNotRead, " (a PDF: it cannot be read yet)", appended after the inbox path of a stored PDF in the owner message (nimbus::net::documentDetail). A text type shows its path only (read_file reads it). It is engine 2's only new model text in this lane; the paste pointer reuses tx::longTextHead's line. Planned work, not a fix.
+
+### PC-0148: the hosted file tools refuse a name the store keeps for itself (engine 2 on nimbusd)
+- catalog: e1
+- class: tool_results
+- kind: spec
+- bytes: 34797 -> 34932
+- sha8: 6811ed04 -> 0e2aff74
+- lane: RB-N2b
+- prd: section 4 (the file tools), as amended by ruling 112 item 4 (the tools refuse, in one plain line, a name that collides with a host's own files and a project the host evicts as regenerable) and item 6 (up to 256 B of engine-2 tool_results text for the refusal lines)
+- why: nimbusd/src/hosted_file_tools.h HostedFileTools::kReservedName, 135 B, the one refusal of write_file, append_file and edit_file for a name ending in .tmp (the atomic writer's temporary file) or a path in the chat or chat-* folders (evicted as regenerable copies). It is catalogued under e1 because the gate reads nimbusd's sources there; it reaches only engine-2 requests. Written by lane E2-HOST, which carries RB-N2b's hosted binding (ruling 114, the fast engine-2 path). Planned work, not a fix.

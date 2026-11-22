@@ -112,6 +112,7 @@ E1_SOURCES = {
         "lib/core/src/orch_unattended_policy.cpp",
         "lib/harness/src/skill_store.cpp",
         "lib/harness/src/websearch.cpp",
+        "nimbusd/src/hosted_file_tools.h",  # E2-HOST: the reserved-name refusal of the hosted file tools (ruling 112)
         "nimbusd/src/hosted_loops.h",
         "nimbusd/src/hosted_photos.h",
         "nimbusd/src/hosted_skills.h",
@@ -139,6 +140,9 @@ E1_SOURCES = {
 # added under SCAN_DIRS with prose literals outside a log call must be in a catalog or here
 # (check_no_prompt_patch.py, with a git base).
 NON_MODEL_FILES: dict = {
+    "nimbusd/src/engine2_host.h": "E2-HOST: the startup switch's refusal line (the daemon log) and two owner-facing "
+    "lines of the hosted engine-2 chat (a non-Claude model picked, a chat that could not start), sent to the owner's "
+    "chat, never to a model",
     "lib/core/include/nimbus/orch/day_start.h": "RB-REC5: the day start setting's error sentence for the web page and "
     "/api/config, never sent to a model (the stamp's own words are in lib/core/src/orch_day_start.cpp, catalogued)",
     "lib/core/src/ota_channel.cpp": "RB-OTA2: the owner's /ota answers and the /api/ota/channel JSON lines, sent to the "

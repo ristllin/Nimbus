@@ -115,7 +115,7 @@ def run_task(job: Job, arm_name: str, args) -> str:
         "rep": job.rep,
         "effort": job.effort,
         "loop_note": job.loop_note,
-        "engine": job.engine if arm_name == "A" else "",
+        "engine": job.engine,  # arm A's engine (arm B is the loop either way)
         "started": utc(),
         "steps": [],
     }

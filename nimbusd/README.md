@@ -37,6 +37,9 @@ New code lives only in this directory:
 | `src/hosted_loops.h` | routines and wake-ups over the shared core (`nimbus/orch/loops.h`, `loop_delivery.h`): the file, the clock, one due fire per sweep, the device's tools |
 | `src/hosted_skills.h` | skills over the shared `SkillStore` on the volume, with the device's `skill.*` tools |
 | `src/hosted_photos.h` | photos to the head as images, the settled row, `image.look` and `image.note`, over the shared `TurnImages` and caption walk |
+| `src/engine2_host.h` | the owner chat on engine 2 when `NIMBUSD_ENGINE=2`: one `PlainRig`, its tools, compaction and the head rule |
+| `src/hosted_tx.h` | engine 2's transcript store: the `TxFiles` seam over `<data>/mem/tx/` |
+| `src/hosted_file_tools.h` | engine 2's five file tools over the daemon's one file store (appends land at the size on disk, ruling 112) |
 | `src/engine_thread.h` | the concurrency layer: one engine thread + request mailbox + a snapshot for lock-free reads |
 | `src/http_control.h` | the 127.0.0.1-only control surface (serves the web app + logo, health, replies, message, MCP, backup; delegates `/api/*` to `WebApi`), web-token gated |
 | `src/web_api.h` | the `/api/*` surface the web app calls, answered with honest Virtual Nimbus semantics (real chat/memory/providers; hardware panels honestly virtual) |
@@ -63,6 +66,9 @@ New code lives only in this directory:
 /data/mem/photos/<ref>.bin   photos by content hash, for image.look (the newest 512)
 /data/mem/rowtext.txt        a photo row's settled text
 /data/mem/files/             file artifacts + .index
+/data/mem/tx/owner/          engine 2 only: the owner chat's transcript (segments, head.json, digests)
+/data/mem/notes/owner*.md    engine 2 only: the owner's notes (pinned, more, pending)
+/data/mem/compact_ctl.txt    engine 2 only: the compaction driver's daily count and failures
 /data/mem/telegram.txt       Telegram allowlist, display names, consumed legacy seed and the
                              RBAC roles + limits, in ONE atomically written file
 /data/tg_offset              Telegram long-poll offset (no re-delivery on restart)
@@ -86,8 +92,16 @@ make check       # compile-only anti-rot gate
 Engine 2 (the plain loop) runs on the host through `src/plain_rig.h`: one
 `PlainRig` per chat over the host's platform, transport and transcript storage.
 `tests/test_plain_rig.cpp` runs one scripted text turn on it and the failure faces.
-The daemon itself still answers every turn on the current engine; the per-turn
-engine choice comes later. Headers in `src/` compile only when a `.cpp` includes
+Engine 1 answers every turn by default. With the startup switch `NIMBUSD_ENGINE=2`
+the owner's chats (the web chat and every Telegram chat whose person is the owner)
+run on engine 2 (`src/engine2_host.h`: one `PlainRig` with its own libcurl transport
+and the Anthropic wire, the transcript under `<data>/mem/tx/owner/` through
+`src/hosted_tx.h`, notes, calc, the compaction driver and the five file tools of
+`src/hosted_file_tools.h` over the daemon's one file store). Member chats, photo
+turns and the slash commands other than `/compact` stay on engine 1. Claude heads
+only: with any other head the daemon logs one line and exits 2. A head model the
+owner changes boots the chat again over its stored transcript.
+`tests/test_engine2_host.cpp` covers it offline. Headers in `src/` compile only when a `.cpp` includes
 them, so a change that adds a `src/` header also adds a `tests/test_<name>.cpp`
 that includes it.
 
@@ -154,6 +168,8 @@ may also live in `<data>/config.env`. Env always wins. Nothing secret is logged
 | `NIMBUSD_TOOL_LOOP` | `1` (default) head tool loop, `0` single-shot head turns (device `orchLoop`) |
 | `NIMBUSD_EMBEDDINGS` | `1` (default) long-term memory embeddings on, `0` off |
 | `NIMBUSD_EMBED_HOST` / `NIMBUSD_EMBED_MODEL` / `NIMBUSD_EMBED_DIMS` | the default embedding provider (`mistral`, `openai` or `cumulo`), model and width; the web app's embedding settings, once saved, win |
+| `NIMBUSD_ENGINE` | `1` (default) the current engine for every chat; `2` the owner's chats on engine 2 (Claude heads only, see Build and test) |
+| `NIMBUSD_E2_PROFILE` | engine 2 only: the owner's pinned history profile (`tight`, `lean`, `standard`, `wide`); unset is `full`, the default |
 | `NIMBUSD_TEST_CLOCK` | `1` exactly: the regression rig's test clock (`/test/clock` below), armed only with a web token and the `127.0.0.1` bind. Never set on a client instance: an advance past a month boundary rolls the monthly spend ceiling. Unset, the route does not exist |
 
 **Embeddings on a one-key instance (CUM-540).** Each embedding call resolves its

@@ -4,7 +4,7 @@
 # class system bytes=43781 ceiling=47989 entries=411 sha8=035ecd2c
 # class device_notes bytes=54884 ceiling=54203 entries=1474 sha8=645e6e2a
 # class tool_descriptions bytes=21789 ceiling=23131 entries=99 sha8=62a30ab5
-# class tool_results bytes=34797 ceiling=41962 entries=1059 sha8=6811ed04
+# class tool_results bytes=34932 ceiling=41962 entries=1060 sha8=0e2aff74
 # class side_prompts bytes=7395 ceiling=9795 entries=117 sha8=68383f73
 # class skills bytes=8251 ceiling=23264 entries=26 sha8=6fae894e
 system	lib/core/include/nimbus/orch/orch_schema.h	955fc9b7	884	"Text to send the owner now; empty string if none. Say only what actually happened this turn and only what you actually saw: a claim that something was saved, written, started, sent, spoken, scheduled, pinned or changed, that it survives a restart, that you checked live data, that a figure or fact came from a source (a label, a receipt, a gauge, an app or website, the owner's watch; what the owner just told you is the owner's, so say so), or that something caused a failure - the owner's phone, app or connection, a damaged file, one of your own subsystems - needs a tool result, a field of this reply or a source text this turn that shows it; quote the real id. If a step only drafted, failed or was refused, say exactly that; if nothing you read names the cause, say the cause is not recorded. Writing 'sent' or 'saved' does not make it so. Never invent ids, links, or successes."
@@ -2594,6 +2594,7 @@ tool_results	lib/harness/src/websearch.cpp	5077c732	54	"web search skipped: Tavi
 tool_results	lib/harness/src/websearch.cpp	3c8276a6	20	"web search skipped: "
 tool_results	lib/harness/src/websearch.cpp	c1dcc1c5	37	"web search is not wired on this build"
 tool_results	lib/harness/src/websearch.cpp	c8ff8a32	19	"web search failed: "
+tool_results	nimbusd/src/hosted_file_tools.h	ca7c40d7	135	"That name is kept for this instance's own temporary files (a name ending in .tmp, or the chat and chat-* folders); choose another name."
 tool_results	nimbusd/src/hosted_loops.h	f4a8e5ce	33	"The assistant wants to schedule '"
 tool_results	nimbusd/src/hosted_loops.h	98d18ede	45	"'. Approve it under Assistant > Routines, or "
 tool_results	nimbusd/src/hosted_loops.h	c0362a93	30	"ignore this and it never runs."
