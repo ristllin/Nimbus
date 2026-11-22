@@ -1,0 +1,329 @@
+#pragma once
+#include <ArduinoJson.h>
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <new>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "nimbus/harness/channel.h"
+#include "nimbus/harness/http.h"
+#include "nimbus/harness/plain/compact.h"
+#include "nimbus/harness/plain/engine.h"
+#include "nimbus/harness/plain/guards.h"
+#include "nimbus/harness/plain/hooks.h"
+#include "nimbus/harness/platform.h"
+#include "nimbus/orch/model_price_defaults.h"
+#include "nimbus/orch/rbac.h"
+#include "nimbus/orch/seen_index.h"
+#include "nimbus/orch/spend_guard.h"
+#include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/tx/arena.h"
+#include "nimbus/orch/tx/budget.h"
+#include "nimbus/orch/tx/log.h"
+
+// plain/chat_binding.h - one chat on engine 2 on the device (lane E2-DEV). A copy of nimbusd's
+// one-chat rig (nimbusd/src/plain_rig.h, PlainRig) with what a device chat needs on top:
+//   - the arena sized for the head (tx::arenaBytesFor of its budget, about 1.1 MB for Sonnet),
+//     not the 1,728 KB constant;
+//   - compaction installed (plain::installCompaction): the summarizer is the head host's small
+//     model on the same transport; the control and chatsum files are the binding's TextIO;
+//   - the suppression seam (installSuppression), the money guard (TurnSetup::cost from the head's
+//     price row; no price row: boot refuses, fail closed) and one ChatBreaker;
+//   - the seen index rebuilt from the filled arena after boot (RB-TG1);
+//   - the shared tool registry, dispatched with the turn's Principal (plain_rig.h's dispatch).
+// Only lib headers are included, so a host test drives the same class with a fake platform, a
+// scripted transport and a fake card (test/test_plain_chat_binding). The device seam
+// (src/agent/orchestrator_plain.cpp) gives it the device's parts.
+//
+// It adds no behavior to the loop: a turn is PlainEngine::runTurn, and what the owner sees is
+// what the engine sent through `sendPart` (one already-made part per call).
+namespace agent {
+namespace plain {
+
+struct ChatBindingDeps {
+  const Platform* platform = nullptr;            // nowMs, delayMs, nowEpoch, allocLarge, freeLarge
+  HttpTransport* transport = nullptr;            // the head and the summarizer (one TLS slot)
+  nimbus::orch::tx::TxFiles* files = nullptr;    // /mem/tx (false everywhere: RAM only)
+  nimbus::orch::ToolRegistry* registry = nullptr;   // the device's shared registry
+  // One part the deliver function already made; true when the channel took it.
+  std::function<bool(const std::string& chatId, const std::string& part)> sendPart;
+  std::function<std::string()> key;              // the head's key, read at render time, never stored
+  std::function<std::string(const nimbus::orch::Principal&)> pinnedNotes;   // null: none
+  TextIO compactCtl;                             // unset: kept in RAM
+  TextIO chatsum;                                // unset: no mirror
+  nimbus::orch::SeenIndex* seen = nullptr;       // null: no rebuild (not a Telegram chat)
+  std::function<void(const char* line)> log;     // one line each; null: silent
+};
+
+struct ChatBindingConfig {
+  std::string chatKey;                           // the transcript key (/mem/tx/<chatKey>)
+  std::string chatId;                            // the routing chat; "" = chatKey
+  std::string host = "api.anthropic.com";        // the head's endpoint host
+  std::string provider = "anthropic";            // its provider slug (budget and price rows)
+  std::string model;                             // the head model
+  std::string summarizerModel;                   // the compaction rung (the provider's small model)
+  nimbus::orch::Role role = nimbus::orch::Role::Admin;
+  std::string timeZone;
+  uint16_t dayStartMin = kDayStartDefaultMin;
+  int storedRounds = 0;                          // the stored orchLoopRnds
+  uint64_t monthlyCeilingMicro = 0;              // the owner's monthly ceiling (0: none set)
+};
+
+// One message in.
+struct ChatMessage {
+  std::string text;
+  std::string ch = "tg";                         // u.ch
+  std::vector<uint64_t> src;                     // Telegram update ids
+  int16_t tzMinutes = 0;
+  uint64_t m = 0;                                // the day-stream row it mirrors
+};
+
+class ChatBinding {
+ public:
+  ChatBinding(ChatBindingConfig cfg, ChatBindingDeps d) : cfg_(std::move(cfg)), d_(std::move(d)) {
+    if (cfg_.chatId.empty()) cfg_.chatId = cfg_.chatKey;
+    who_ = nimbus::orch::principalForRole(cfg_.chatId, cfg_.role);
+    channel_.send = [this](const std::string& chat, const std::string& part) {
+      const bool ok = d_.sendPart && d_.sendPart(chat, part);
+      ++(ok ? sent_ : refused_);
+      return ok;
+    };
+    channel_.isAllowed = [this](const std::string& chat) { return chat == cfg_.chatId; };
+    channel_.firstAllowedChat = [this] { return cfg_.chatId; };
+  }
+  ChatBinding(const ChatBinding&) = delete;
+  ChatBinding& operator=(const ChatBinding&) = delete;
+
+  const ChatBindingConfig& config() const { return cfg_; }
+  PlainEngine* engine() { return engine_.get(); }
+  const nimbus::orch::tx::TxArena* arena() const { return arena_.get(); }
+  const HeadCost& cost() const { return cost_; }
+  nimbus::orch::ChatBreaker& breaker() { return breaker_; }
+  // Parts the channel took and refused in the last turn.
+  uint32_t sentParts() const { return sent_; }
+  uint32_t refusedParts() const { return refused_; }
+
+  // Once: the head's budget and price, the arena, the log, the seams, the engine and its boot,
+  // then the seen-index rebuild. A refused allocation is a status, never an abort.
+  Status boot(bool afterCrash = false) {
+    namespace tx = nimbus::orch::tx;
+    if (engine_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::boot.twice");
+    const Platform* p = d_.platform;
+    if (!p || !p->nowMs || !p->delayMs || !p->nowEpoch || !p->allocLarge || !p->freeLarge || !d_.transport ||
+        !d_.files || !d_.registry || cfg_.model.empty())
+      return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::boot");
+    Status st = headFigures();
+    if (!st.ok()) return st;
+    try {
+      std::unique_ptr<tx::TxArena> arena(new tx::TxArena());
+      st = arena->init(arenaBytes_, p->allocLarge, p->freeLarge);
+      if (!st.ok()) return st;
+      arena_ = std::move(arena);
+      log_.reset(new tx::TxLog(*d_.files, cfg_.chatKey));
+      hooks_.reset(new PlainHooks());
+      (void)installSuppression(*hooks_);
+      st = installCompaction(*hooks_, compactDeps());
+      if (!st.ok()) return fail(st);
+      engine_.reset(new PlainEngine(deps()));
+      st = engine_->boot(BootCtx{p->nowEpoch(), afterCrash});
+    } catch (const std::bad_alloc&) {
+      st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::boot.memory");
+    }
+    if (!st.ok()) return fail(st);
+    if (d_.seen && d_.seen->ready() && engine_->head()) {
+      const Status s = nimbus::orch::rebuildSeen(*d_.seen, cfg_.chatId, *engine_->head(), *arena_);
+      if (!s.ok()) say("e2: seen-index rebuild refused");
+    }
+    return st;
+  }
+
+  // One person's message through the loop. The breaker admits every person's message (it holds
+  // back only turns no person started); the spend is recorded after.
+  Status turn(const ChatMessage& msg, TurnOutcome& out) {
+    namespace tx = nimbus::orch::tx;
+    if (!engine_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::turn.before-boot");
+    if (busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.busy");
+    busy_ = true;
+    struct Idle {
+      bool& busy;
+      ~Idle() { busy = false; }
+    } idle{busy_};
+    sent_ = refused_ = 0;
+    const uint32_t now = d_.platform->nowMs();
+    (void)breaker_.admit(/*person=*/true, now);
+    TurnInput in;
+    in.ctx = turnCtx();
+    in.text = msg.text;
+    in.ch = msg.ch;
+    in.src = msg.src;
+    in.tzMinutes = msg.tzMinutes;
+    in.m = msg.m;
+    Status st;
+    try {
+      st = engine_->runTurn(in, out);
+    } catch (const std::bad_alloc&) {
+      st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
+    }
+    breaker_.spent(/*person=*/true, out.end.microUsd, d_.platform->nowMs());
+    return st;
+  }
+
+  // The head of a message: true when every update id of `src` was already taken into this chat
+  // (a re-served update after a restart: acked, never answered again).
+  bool allSeen(const std::vector<uint64_t>& src) const {
+    if (!d_.seen || !d_.seen->ready() || src.empty()) return false;
+    for (uint64_t id : src)
+      if (!d_.seen->seen(cfg_.chatId, id)) return false;
+    return true;
+  }
+
+ private:
+  void say(const char* line) const {
+    if (d_.log) d_.log(line);
+  }
+  Status fail(const Status& st) {
+    engine_.reset();   // a failed boot leaves the binding unbooted, never half-booted
+    return st;
+  }
+
+  // The head's marks, arena size and guard cost. No price row: refused (money fails closed).
+  Status headFigures() {
+    namespace tx = nimbus::orch::tx;
+    tx::HeadBudget b;
+    Status st = tx::budgetFor(headKey(), tx::kDefaultProfile, b);
+    if (!st.ok()) return st;
+    arenaBytes_ = tx::arenaBytesFor(b);
+    const nimbus::orch::BuiltinPrice* row = nimbus::orch::builtinModelPrice(cfg_.provider.c_str(), cfg_.model.c_str());
+    if (!row) row = nimbus::orch::builtinDefaultPrice(cfg_.provider.c_str(), cfg_.model.c_str());
+    if (!row || !row->microIn || !row->microOut)
+      return Status::fail(tx::Err::NotFound, "plain::ChatBinding::boot.price");
+    HeadRates r;
+    r.in = row->microIn;
+    r.out = row->microOut;
+    r.cacheRead = row->microCacheR ? row->microCacheR : row->microIn / 10;
+    r.cacheWrite = row->microCacheW ? row->microCacheW : row->microIn + row->microIn / 4;
+    cost_ = guardCostFor(b, r);
+    breaker_.setSpendCap(nimbus::orch::spendRateCapMicro(
+        cfg_.monthlyCeilingMicro, nimbus::orch::blendedTurnMicro(cost_.warmRequestMicroUsd, cost_.coldRequestMicroUsd)));
+    return Status::success();
+  }
+
+  nimbus::orch::tx::HeadKey headKey() const { return nimbus::orch::tx::HeadKey{cfg_.provider, cfg_.model, false}; }
+
+  TurnCtx turnCtx() const {
+    TurnCtx c;
+    c.chatKey = cfg_.chatKey;
+    c.chatId = cfg_.chatId;
+    c.turn = 0;   // the engine numbers the turn
+    c.trigger = Trigger::Owner;
+    c.host = cfg_.host;
+    c.model = cfg_.model;
+    c.dialect = Dialect::AnthropicMessages;
+    c.dayStartMin = cfg_.dayStartMin;
+    c.who = &who_;
+    return c;
+  }
+
+  HeadEndpoint endpoint() const {
+    HeadEndpoint e;
+    e.host = cfg_.host;
+    e.key = d_.key ? d_.key : [] { return std::string(); };
+    return e;
+  }
+
+  Status setup(const TurnCtx&, TurnSetup& out) {
+    out.facts.reg = d_.registry;
+    out.facts.admin = who_.owner;
+    out.facts.timeZone = cfg_.timeZone;
+    if (d_.pinnedNotes) out.facts.pinnedNotes = d_.pinnedNotes(who_);
+    out.dayStartMin = cfg_.dayStartMin;
+    out.head = endpoint();
+    out.wire = nullptr;   // wireFor(AnthropicMessages)
+    out.storedRounds = cfg_.storedRounds;
+    out.cost = cost_;
+    return Status::success();
+  }
+
+  // plain_rig.h's dispatch: the registry's answer as the model sees it. Arguments that are not a
+  // JSON object reach the handler as an empty object.
+  ToolOutput dispatchCall(const ToolCall& c, const TurnCtx& turn) {
+    JsonDocument args;
+    (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
+    const nimbus::orch::ToolResult r = d_.registry->dispatch(c.name, args.as<JsonObjectConst>(), turn.who ? *turn.who : who_);
+    ToolOutput o;
+    o.id = c.id;
+    o.name = c.name;
+    o.isError = !r.success;
+    o.text = r.success ? r.output : r.error;
+    return o;
+  }
+
+  CompactDeps compactDeps() {
+    CompactDeps c;
+    c.platform = d_.platform;
+    c.transport = d_.transport;
+    c.log = log_.get();
+    c.arena = arena_.get();
+    c.files = d_.files;
+    c.chatKey = cfg_.chatKey;
+    c.chatId = cfg_.chatId;
+    c.head = [this] { return engine_ ? engine_->head() : nullptr; };
+    c.digests = [this] { return engine_ ? engine_->digests() : nullptr; };
+    c.omittedThru = [this] { return engine_ ? engine_->omittedThru() : uint64_t(0); };
+    c.rungs = [this](std::vector<SummarizerRung>& out) {
+      out.clear();
+      SummarizerRung r;
+      r.endpoint = endpoint();
+      r.host = cfg_.provider;
+      r.model = cfg_.summarizerModel.empty() ? cfg_.model : cfg_.summarizerModel;
+      r.dialect = Dialect::AnthropicMessages;
+      out.push_back(r);
+    };
+    c.jobRunning = [](uint32_t) { return false; };   // no agent jobs on engine 2 yet
+    c.park = [this](const SummarizerRung&) { say("e2: compaction rung refused its key or credit"); };
+    c.tell = [this](const std::string& chat, const std::string& text) {
+      if (d_.sendPart) (void)d_.sendPart(chat, text);
+    };
+    c.ctl = d_.compactCtl;
+    c.chatsum = d_.chatsum;
+    c.headKey = headKey();
+    c.dayStartMin = cfg_.dayStartMin;
+    return c;
+  }
+
+  EngineDeps deps() {
+    EngineDeps e;
+    e.platform = d_.platform;
+    e.transport = d_.transport;
+    e.channel = &channel_;
+    e.hooks = hooks_.get();
+    e.log = log_.get();
+    e.arena = arena_.get();
+    e.files = d_.files;
+    e.chatKey = cfg_.chatKey;
+    e.dispatch = [this](const ToolCall& c, const TurnCtx& t) { return dispatchCall(c, t); };
+    e.setup = [this](const TurnCtx& t, TurnSetup& out) { return setup(t, out); };
+    return e;
+  }
+
+  ChatBindingConfig cfg_;
+  ChatBindingDeps d_;
+  nimbus::orch::Principal who_;
+  Channel channel_;
+  HeadCost cost_;
+  size_t arenaBytes_ = 0;
+  nimbus::orch::ChatBreaker breaker_;
+  uint32_t sent_ = 0, refused_ = 0;
+  bool busy_ = false;
+  std::unique_ptr<nimbus::orch::tx::TxArena> arena_;
+  std::unique_ptr<nimbus::orch::tx::TxLog> log_;
+  std::unique_ptr<PlainHooks> hooks_;
+  std::unique_ptr<PlainEngine> engine_;
+};
+
+}  // namespace plain
+}  // namespace agent

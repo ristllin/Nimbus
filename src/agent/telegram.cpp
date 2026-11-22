@@ -2358,6 +2358,27 @@ static String ownerIntake(const std::string& chat, const nimbus::orch::PsString&
   return String(t.text.c_str());
 }
 
+// Lane E2-DEV: the update ids of the message the running turn handles (TurnInput::src).
+std::vector<uint64_t> turnUpdateIdsImpl(const String& chatId) {
+  std::vector<uint64_t> ids;
+  const size_t turn = g_receiver.currentTurn();
+  if (turn >= g_batch.turnCount() || chatId != g_batch.chatIdAt(turn)) return ids;
+  for (size_t m = 0; m < g_batch.messageCountAt(turn); ++m) {
+    const int64_t id = g_batch.updateIdAt(turn, m);
+    if (id > 0) ids.push_back((uint64_t)id);
+  }
+  return ids;
+}
+
+// Lane E2-DEV: one already-made part, sent now (doSendMessageImpl: HTML, then the plain resend).
+bool sendPartImpl(const String& chatId, const std::string& part) {
+  if (!enabled() || chatId.length() == 0 || part.empty()) return false;
+  agent::tgarchive::onOutboundText(chatId, String(part.c_str()), "send");   // archive hook
+  return doSendMessageImpl(chatId.c_str(), part.c_str(), 0);
+}
+// Lane E2-DEV: the seen index for the seam's boot (the public seenIndex() below).
+nimbus::orch::SeenIndex& seenIndexRef() { return seenIndex(); }
+
 // RB-TG1: every update of the bucket that just ran is noted as taken (its text, media and voice).
 static void noteTaken() {
   const size_t turn = g_receiver.currentTurn();
@@ -2980,6 +3001,13 @@ void pollTask(void*) {
 }
 
 }  // namespace
+
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-DEV: the engine-2 seam's way in (telegram.h); the bodies sit in the file's own namespace.
+nimbus::orch::SeenIndex& seenIndex() { return seenIndexRef(); }
+std::vector<uint64_t> turnUpdateIds(const String& chatId) { return turnUpdateIdsImpl(chatId); }
+bool sendPart(const String& chatId, const std::string& part) { return sendPartImpl(chatId, part); }
+#endif
 
 // ---- lane PROG: the running turn's round-boundary signals --------------------
 // All of this runs on the poll task (the turn's own task) at a round boundary,

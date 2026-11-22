@@ -6,14 +6,19 @@
 // their own tools here or in their *_device.cpp files.
 #include "engine_tools.h"
 #include "notes_device.h"   // lane RB-N1: note
+#include "orchestrator.h"   // turnInFlight - the note tool's origin (lane E2-DEV)
 
 namespace agent {
 namespace tools {
 
-// note (lane RB-N1, notes_device.cpp). No origin is bound until the engine runs turns (RB-I2):
-// until then every call is kept for approval (fail closed).
+// note (lane RB-N1, notes_device.cpp). Lane E2-DEV binds its origin: on engine 2 only a person's
+// message runs a turn (no routine, agent or resume is bound yet) and no tool reads outside
+// content, so a call inside a turn is attended; outside a turn it is kept for approval.
 void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch::MemoryContext&) {
-  notesdev::registerNote(reg, nullptr);
+  notesdev::registerNote(reg, [] {
+    return orchestrator::turnInFlight() ? nimbus::orch::notes::Origin::Attended
+                                        : nimbus::orch::notes::Origin::Unattended;
+  });
 }
 
 void registerModelsFamily(nimbus::orch::ToolRegistry&, const nimbus::orch::ModelsToolHandlers&) {}
