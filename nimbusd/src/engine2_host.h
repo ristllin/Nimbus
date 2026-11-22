@@ -51,6 +51,7 @@ struct Engine2Options {
   nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;   // the owner's pinned profile
   // A reply of the running turn, to the chat it came from (the web ring, Telegram).
   std::function<void(const std::string& chat, const std::string& text)> deliver;
+  agent::HttpTransport* transport = nullptr;         // null: the host's own libcurl transport (tests script one)
   std::string chatKey = "owner";                     // /mem/tx/<chatKey>
   std::string chatId = "owner";                      // the engine's routing chat (the web chat id)
 };
@@ -93,7 +94,7 @@ class Engine2Host {
     c.profile = o_.profile;
     PlainRigBindings b;
     b.platform = &platform_;
-    b.transport = &http_;
+    b.transport = transport();
     b.files = &txFiles_;
     b.send = [this](const std::string&, const std::string& text) {
       if (o_.deliver) o_.deliver(curChat_.empty() ? o_.chatId : curChat_, text);
@@ -162,6 +163,7 @@ class Engine2Host {
   PosixTxFiles& txFiles() { return txFiles_; }
 
  private:
+  agent::HttpTransport* transport() { return o_.transport ? o_.transport : &http_; }
   nimbus::orch::tx::HeadKey headKey(const std::string& model) const {
     plain::TurnCtx t;
     t.host = "api.anthropic.com";
@@ -190,7 +192,7 @@ class Engine2Host {
   plain::Status bindCompaction(const std::string& model) {
     plain::CompactDeps d;
     d.platform = &platform_;
-    d.transport = &http_;
+    d.transport = transport();
     d.log = rig_->log();
     d.arena = rig_->arena();
     d.files = &txFiles_;
