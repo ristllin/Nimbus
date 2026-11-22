@@ -186,6 +186,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();
+  txdev::cardTxFiles().resetHolds();
   std::unique_ptr<plain::ChatBinding> b(new (std::nothrow) plain::ChatBinding(cfg, d));
   if (!b) return nullptr;
   plain::Status st;
@@ -198,6 +199,9 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
         chatId.c_str(), model.c_str(), nimbus::orch::tx::errSlug(st.err), (st.where ? st.where : ""),
         (unsigned)(a ? a->capacity() : 0), (unsigned)spiFree0, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)spiBig0, (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM), (unsigned)(millis() - t0));
+  const nimbus::orch::tx::CardHolds& h = txdev::cardTxFiles().holds();
+  alogf("e2: boot holdMs read=%u list=%u whole=%u rename=%u n=%u reads", (unsigned)h.readMs, (unsigned)h.listMs,
+        (unsigned)h.wholeMs, (unsigned)h.renameMs, (unsigned)h.reads);
   if (!st.ok()) return nullptr;
   s_chat = std::move(b);
   return s_chat.get();
