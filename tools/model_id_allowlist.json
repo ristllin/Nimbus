@@ -14,6 +14,7 @@
     {"id": "gpt-4o", "file": "lib/core/src/orch_model_window.cpp", "why": "context-window family prefix"},
     {"id": "mistral-large-4", "file": "lib/core/src/orch_model_window.cpp", "why": "head-window family prefix (the corrected window table); compared, never sent"},
     {"id": "ministral-3b", "file": "lib/core/src/orch_model_window.cpp", "why": "head-window family prefix (the corrected window table); compared, never sent"},
+    {"id": "mistral-large-4", "file": "lib/core/include/nimbus/orch/model_defaults.h", "why": "the Mistral Head row's price-class prefix (Large 4 rows only, owner ruling 104); compared, never sent"},
     {"id": "mistral-large-4", "file": "lib/core/src/orch_model_family.cpp", "why": "Large 4's family prefix in the one alias table (request budget, caps, connector refusal); compared, never sent"},
     {"id": "gpt-4o", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},
     {"id": "gpt-4.1", "file": "lib/core/src/orch_turn_images.cpp", "why": "image-input family prefix (headTakesImages); compared, never sent"},

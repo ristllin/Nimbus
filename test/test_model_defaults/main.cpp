@@ -12,6 +12,7 @@
 #include "nimbus/harness/output_caps.h"
 #include "nimbus/orch/model_choices.h"
 #include "nimbus/orch/model_defaults.h"
+#include "nimbus/orch/model_family.h"
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/provider_slots.h"
 
@@ -59,7 +60,7 @@ static void test_fallbacks_are_priced_and_in_class() {
 
 // The owner's shape (PRD addendum C2): Anthropic head sonnet (never opus or fable),
 // the rest haiku-5-5; OpenAI head mini class, subs nano class (the cheapest priced
-// OpenAI chat model); Mistral medium head, small subs; Z.ai flash for subs.
+// OpenAI chat model); Mistral Large 4 head, small subs; Z.ai flash for subs.
 static void test_the_owner_shape() {
   TEST_ASSERT_EQUAL_STRING("claude-sonnet-5", roleDefaultRow("anthropic", DefaultRole::Head)->fallback);
   for (DefaultRole r : {DefaultRole::Sub, DefaultRole::Caption, DefaultRole::Background})
@@ -69,7 +70,7 @@ static void test_the_owner_shape() {
     TEST_ASSERT_NULL(std::strstr(r.fallback, "opus"));
     TEST_ASSERT_NULL(std::strstr(r.fallback, "fable"));
   }
-  TEST_ASSERT_EQUAL_STRING("mistral-medium-latest", roleDefaultRow("mistral", DefaultRole::Head)->fallback);
+  TEST_ASSERT_EQUAL_STRING("mistral-large-4-0", roleDefaultRow("mistral", DefaultRole::Head)->fallback);
   TEST_ASSERT_EQUAL_STRING("mistral-small-latest", roleDefaultRow("mistral", DefaultRole::Sub)->fallback);
   TEST_ASSERT_EQUAL_STRING("glm-5.3-flash", roleDefaultRow("zai", DefaultRole::Sub)->fallback);
   // OpenAI: the sub default is the cheapest priced OpenAI chat row; the head is the
@@ -225,12 +226,26 @@ static void test_class_pick_over_the_14_nov_catalog_is_the_named_fallback() {
   }
   TEST_ASSERT_TRUE(csv.find("mistral-large-4") != std::string::npos);    // the canonical row
   TEST_ASSERT_TRUE(csv.find("mistral-large-4-0") == std::string::npos);  // only an alias now
+  // A listed alias is the same model (the head default mistral-large-4-0 is an alias of
+  // mistral-large-4 on this list): the fallback counts as listed when its own id or the
+  // id it aliases is on the list, and the pick may answer that canonical id.
+  auto sameModel = [&doc](const std::string& listed, const std::string& named) {
+    if (listed == named) return true;
+    for (JsonObjectConst m : doc["data"].as<JsonArrayConst>()) {
+      if (listed != (m["id"] | "")) continue;
+      for (JsonVariantConst a : m["aliases"].as<JsonArrayConst>())
+        if (named == (a | "")) return true;
+    }
+    return false;
+  };
   for (int r = 0; r < kDefaultRoleCount; ++r) {
     const RoleDefault* row = roleDefaultRow("mistral", (DefaultRole)r);
-    TEST_ASSERT_TRUE_MESSAGE(modelInChoices(csv, row->fallback), row->fallback);
-    TEST_ASSERT_EQUAL_STRING_MESSAGE(row->fallback,
-                                     roleDefaultModel("mistral", (DefaultRole)r, csv, true).c_str(),
-                                     row->fallback);
+    bool listed = false;
+    for (const std::string& id : choiceItems(csv)) listed = listed || sameModel(id, row->fallback);
+    TEST_ASSERT_TRUE_MESSAGE(listed, row->fallback);
+    const std::string pick = roleDefaultModel("mistral", (DefaultRole)r, csv, true);
+    TEST_ASSERT_TRUE_MESSAGE(sameModel(pick, row->fallback), row->fallback);
+    TEST_ASSERT_TRUE_MESSAGE(isMistralLarge4(pick) == isMistralLarge4(row->fallback), pick.c_str());
   }
 }
 
