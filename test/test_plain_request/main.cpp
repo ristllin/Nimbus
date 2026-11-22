@@ -142,7 +142,11 @@ std::string notesAtCap(size_t cap, unsigned seed = 1) {
   std::mt19937 rng(seed);
   std::string out;
   for (int i = 0;; i++) {
-    std::string line = "fact-" + std::to_string(i) + ": " + repeatTo("synthetic value " + std::to_string(rng() % 97) + " ", 20 + rng() % 120);
+    // Two draws, sequenced: in one expression their order is unspecified (clang and g++ differ),
+    // and these lines feed the golden.
+    const unsigned value = rng() % 97;
+    const size_t len = 20 + rng() % 120;
+    std::string line = "fact-" + std::to_string(i) + ": " + repeatTo("synthetic value " + std::to_string(value) + " ", len);
     const size_t need = (out.empty() ? 0 : 1) + line.size();
     if (out.size() + need > cap) {
       const size_t left = cap - out.size();
