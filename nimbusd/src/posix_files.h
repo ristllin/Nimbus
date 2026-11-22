@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -58,11 +59,13 @@ class PosixFiles {
       "Files on this instance belong to its owner; ask the owner to share what you need.";
 
   // Register one owner-only tool: the handler refuses a non-owner (enforcement) and
-  // the registry leaves it out of a non-owner's list (advertisement), in one place.
-  static void addOwnerOnly(nimbus::orch::ToolRegistry& reg, const char* name, const char* desc,
-                           nimbus::orch::ToolHandler fn, const char* schema) {
+  // the registry leaves it out of a non-owner's list (advertisement), in one place. The
+  // call runs under the store's lock (mutex()).
+  void addOwnerOnly(nimbus::orch::ToolRegistry& reg, const char* name, const char* desc,
+                    nimbus::orch::ToolHandler fn, const char* schema) {
     reg.add(name, desc,
-            [fn](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+            [this, fn](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+              std::lock_guard<std::recursive_mutex> g(mu_);
               return who.owner ? fn(a, who) : nimbus::orch::ToolResult::fail(kOwnerOnly);
             },
             schema);
@@ -259,30 +262,58 @@ class PosixFiles {
 
   // ---- direct access (scenario seeding + assertions) ----
   void seed(const std::string& path, const std::string& text) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     const size_t slash = path.find('/');
     if (slash == std::string::npos) return;
     std::string err;
     save(path.substr(0, slash), path.substr(slash + 1), text, err);
   }
   bool has(const std::string& path) const {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     const size_t slash = path.find('/');
     if (slash == std::string::npos) return false;
     return store_.find(path.substr(0, slash), path.substr(slash + 1)) != nullptr;
   }
   std::string get(const std::string& path) const {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     const size_t slash = path.find('/');
     if (slash == std::string::npos) return std::string();
     std::string body;
     read(path.substr(0, slash), path.substr(slash + 1), body);
     return body;
   }
-  size_t count() const { return store_.count(); }
-  uint64_t totalBytes() const { return store_.totalBytes(); }
+  size_t count() const {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    return store_.count();
+  }
+  uint64_t totalBytes() const {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    return store_.totalBytes();
+  }
   // Lane FSCAP: the byte quota is the store's real space limit (the entry count
   // is uncapped by default); the daemon config / tests set it here, as the device
   // sets it from the real card size at mount.
-  void setLimits(const nimbus::orch::FileStore::Limits& l) { store_.setLimits(l); }
+  void setLimits(const nimbus::orch::FileStore::Limits& l) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
+    store_.setLimits(l);
+  }
   const nimbus::orch::FileStore& store() const { return store_; }
+
+  // ---- engine 2's file tools (hosted_file_tools.h, lane RB-N2b): ONE store and ONE .index ----
+  // The tools' io works on this store, so engine 1's files.*, the web Files panel and engine 2's
+  // tools never load and persist two copies of one .index (each would overwrite the other).
+  // mutex() is the store's one lock: every public entry point above takes it, and so does every
+  // hold of the tools' io. The calls below are for that io and run only while it is held.
+  std::recursive_mutex& mutex() const { return mu_; }
+  nimbus::orch::FileStore& toolsIndex() { return store_; }
+  std::string toolsPath(const std::string& p, const std::string& n) const { return bytesPath(p, n); }
+  const std::string& toolsRoot() const { return root_; }
+  bool toolsPersistIndex() { return fsutil::writeFileAtomic(indexPath(), store_.dump()); }
+  // Room for addBytes at p/n, reclaiming regenerable chat copies first when the byte quota is
+  // the blocker (the same rule as save and append).
+  bool toolsRoomFor(const std::string& p, const std::string& n, uint64_t addBytes, std::string& err) {
+    return roomFor(p, n, addBytes, err);
+  }
 
   // ---- the web app's Files panel (device /api/files/*, CUM-543) ----
   // The listing in the device's shape (web_files.cpp + files_subsystem listJson).
@@ -293,6 +324,7 @@ class PosixFiles {
   static constexpr size_t kListPageChunk = 512;
   size_t listInto(JsonArray arr, const std::string& project, size_t limit = 0,
                   size_t offset = 0) const {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     if (limit == 0 || limit > kListPageMax) limit = kListPageDefault;
     size_t shown = 0;
     for (size_t base = offset; shown < limit; base += kListPageChunk) {
@@ -313,10 +345,13 @@ class PosixFiles {
   }
   // Store an uploaded file (any bytes) under the same traversal gate as the tools.
   bool put(const std::string& p, const std::string& n, const std::string& bytes, std::string& err) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     return save(p, n, bytes, err);
   }
-  bool fetch(const std::string& p, const std::string& n, std::string& out) const { return read(p, n, out); }
+  bool fetch(const std::string& p, const std::string& n, std::string& out) const {
+    std::lock_guard<std::recursive_mutex> g(mu_); return read(p, n, out); }
   bool remove(const std::string& p, const std::string& n) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     if (!store_.find(p, n)) return false;
     ::unlink(bytesPath(p, n).c_str());
     store_.remove(p, n);
@@ -326,6 +361,7 @@ class PosixFiles {
   // Chat photos no turn ever took (the page closed before the message went): gone after
   // a day. `now` is epoch seconds. Runs on each chat photo's upload.
   void sweepChatPhotos(uint32_t now) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     std::vector<std::string> stale;
     for (const auto* e : store_.list(kChatPhotoProject))
       if (isChatPhoto(kChatPhotoProject, e->name) && now - e->createdAt > 86400u)
@@ -334,6 +370,7 @@ class PosixFiles {
   }
   // Delete every file in a project; -1 when the project holds none.
   int removeProject(const std::string& p) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     std::vector<std::string> names;
     for (const auto* e : store_.list(p)) names.push_back(nimbus::orch::plainCopy(e->name));
     if (p.empty() || names.empty()) return -1;
@@ -463,6 +500,7 @@ class PosixFiles {
   // only a short write cuts the file back to its old size.
   bool append(const std::string& p, const std::string& n, const std::string& text,
               std::string& err, std::string& note) {
+    std::lock_guard<std::recursive_mutex> g(mu_);
     try {
       return appendOrThrow(p, n, text, err, note);
     } catch (const std::bad_alloc&) {
@@ -657,6 +695,7 @@ class PosixFiles {
 
   std::string root_;
   nimbus::orch::FileStore store_;
+  mutable std::recursive_mutex mu_;   // the store's one lock (mutex())
   std::function<size_t()> resultCap_;
   nimbus::orch::aids::e1::RemovedRows removed_;
 };

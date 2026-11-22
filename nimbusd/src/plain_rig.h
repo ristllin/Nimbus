@@ -52,6 +52,14 @@ struct PlainRigBindings {
   // A tool call the registry does not answer the way the host wants (a binding that marks
   // outside content); null: every call goes to registry().dispatch with the chat's Principal.
   plain::ToolDispatchFn dispatch;
+  // What the host adds to each turn's setup after the rig's own fields (the pinned notes, the
+  // owner's ceiling, the guard costs); null: nothing.
+  std::function<void(const plain::TurnCtx&, plain::TurnSetup&)> setup;
+  // EngineDeps::recentFiles (the live file store's list); null: no list.
+  nimbus::orch::tx::RecentFilesBlock::Source recentFiles;
+  // Runs in boot once the arena and the log exist, before the engine boots: where a host installs
+  // a seam that needs them (the compaction driver). A failure ends the boot; null: nothing.
+  std::function<plain::Status()> beforeBoot;
 };
 
 struct PlainRigConfig {
@@ -60,6 +68,10 @@ struct PlainRigConfig {
   plain::Dialect dialect = plain::Dialect::AnthropicMessages;
   std::string host = "api.anthropic.com";      // the head's host (HeadEndpoint::host)
   std::string model = "claude-sonnet-5-5";
+  std::function<std::string()> modelNow;       // read at each turn when set (the owner's pick), else model
+  std::function<int16_t()> tzNow;              // read at each turn when set, else tzMinutes
+  // The owner's pinned profile (ruling 83: full unless the owner chose a smaller one).
+  nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;
   std::function<std::string()> key;            // read at render time, never stored
   std::string effort;                          // "" = the provider default
   bool routed = false;                         // through the Cumulo router
@@ -128,6 +140,9 @@ class PlainRig {
   const nimbus::orch::Principal& who() const { return who_; }
   // The engine after boot (null before): head() and digests() for the compaction driver.
   plain::PlainEngine* engine() { return engine_.get(); }
+  // The chat's log and arena once boot made them (null before): a seam installed in beforeBoot.
+  nimbus::orch::tx::TxLog* log() { return log_.get(); }
+  nimbus::orch::tx::TxArena* arena() { return arena_.get(); }
 
   // Once: the arena, the log over the host's files, the engine and its boot (open the log,
   // fill the arena, the resume seam). InvalidArgument without a required binding.
@@ -146,6 +161,8 @@ class PlainRig {
       if (!st.ok()) return st;
       arena_ = std::move(arena);
       log_.reset(new tx::TxLog(*b_.files, cfg_.chatKey));
+      if (b_.beforeBoot) st = b_.beforeBoot();
+      if (!st.ok()) return st;
       engine_.reset(new plain::PlainEngine(deps()));
       st = engine_->boot(plain::BootCtx{p->nowEpoch(), afterCrash});
     } catch (const std::bad_alloc&) {
@@ -157,7 +174,7 @@ class PlainRig {
 
   // One owner message through the loop: from the u item to the e item.
   // One turn at a time: a say from inside a turn (a host send that answers back) is refused.
-  PlainTurn say(const std::string& text) {
+  PlainTurn say(const std::string& text, const char* ch = "rig") {
     PlainTurn t;
     if (busy_) {
       t.status = plain::Status::fail(nimbus::orch::tx::Err::Busy, "nimbusd::PlainRig::say.busy");
@@ -179,8 +196,8 @@ class PlainRig {
     plain::TurnInput in;
     in.ctx = turnCtx();
     in.text = text;
-    in.ch = "rig";
-    in.tzMinutes = cfg_.tzMinutes;
+    in.ch = ch;
+    in.tzMinutes = cfg_.tzNow ? cfg_.tzNow() : cfg_.tzMinutes;
     t.status = engine_->runTurn(in, t.out);
     t.sent.swap(sent_);
     t.unsent.swap(unsent_);
@@ -196,13 +213,14 @@ class PlainRig {
     c.turn = 0;   // the engine numbers the turn
     c.trigger = plain::Trigger::Owner;
     c.host = cfg_.host;
-    c.model = cfg_.model;
+    c.model = cfg_.modelNow ? cfg_.modelNow() : cfg_.model;
     c.dialect = cfg_.dialect;
+    c.profile = cfg_.profile;
     c.who = &who_;
     return c;
   }
 
-  plain::Status setup(const plain::TurnCtx&, plain::TurnSetup& out) {
+  plain::Status setup(const plain::TurnCtx& turn, plain::TurnSetup& out) {
     out.facts.reg = &reg_;
     out.facts.admin = who_.owner;
     out.facts.timeZone = cfg_.timeZone;
@@ -214,6 +232,7 @@ class PlainRig {
     out.wire = b_.wire;
     out.storedRounds = cfg_.storedRounds;
     out.qualified = cfg_.qualified;
+    if (b_.setup) b_.setup(turn, out);
     return plain::Status::success();
   }
 
@@ -245,6 +264,7 @@ class PlainRig {
     d.dispatch = [this](const plain::ToolCall& c, const plain::TurnCtx& t) { return dispatchCall(c, t); };
     d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
     d.noCompaction = cfg_.noCompaction;
+    d.recentFiles = b_.recentFiles;
     return d;
   }
 
