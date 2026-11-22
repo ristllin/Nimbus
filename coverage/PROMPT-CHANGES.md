@@ -1169,8 +1169,8 @@ PC-0175, PC-0176: not used.
 - catalog: e2
 - class: tool_results
 - kind: spec
-- bytes: 5894 -> 6578
-- sha8: 6861f37b -> 7404f412
+- bytes: 5894 -> 6615
+- sha8: 6861f37b -> 6e4e3c85
 - lane: RB-U1b
-- prd: section 4 (tool 11, schedule: create, update, delete or list reminders and routines) and section 6 (a reminder delivers its fixed text with no model call; routines; new fields in /data/loops2.json), ruling 81 (a text over a limit is refused with the limit named, never stored cut), ruling 111 (the class ceiling rises from 6,144 B by what this lane uses: 434 B of the 512 B granted)
+- prd: section 4 (tool 11, schedule: create, update, delete or list reminders and routines) and section 6 (a reminder delivers its fixed text with no model call; routines; new fields in /data/loops2.json), ruling 81 (a text over a limit is refused with the limit named, never stored cut), ruling 111 (the class ceiling rises from 6,144 B by what this lane uses: 471 B of the 512 B granted)
 - why: lib/core/src/orch_schedule_tool.cpp, a new tool of the spec with its own result and error lines, cataloged as tool_results through E2_EXTRA_SOURCES as the note tool's are. Every literal of the file counts: the argument words (op, kind, id, when, text, every and their values), the cadence words, and facts only: what was stored, updated or deleted with its id, kind, time or cadence and whole text, whether it waits for the owner's approval or is paused; what form an argument must take; that a text is over the 2048 B limit; that a turn no person started may list or set reminders only; that the write was refused. No instruction, no prompt text, no engine-1 wording, user noun "routine". Planned work, not a fix. PC-0154 and PC-0155: not used.

@@ -1,6 +1,7 @@
 #pragma once
 #include <ArduinoJson.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <unistd.h>   // access: a missing loops2.json is an empty sidecar
 #include <ctime>
@@ -263,6 +264,9 @@ class HostedLoops {
     return nimbus::orch::schedule::fire(h, req, b, epoch());
   }
   std::string sidecarPath() const { return sidecarPath_; }
+  // Where routine state files live (the instance's transcript storage, FireBinding::files): a
+  // deleted routine's state goes with it. Null: nothing is removed.
+  void setStateFiles(nimbus::orch::tx::TxFiles* files) { stateFiles_ = files; }
 
  private:
   // Engine 2's view of this table for the schedule tool (single engine thread: no lock of its own).
@@ -275,7 +279,8 @@ class HostedLoops {
     }
     bool readSidecar(std::string& out) override {
       out.clear();
-      return access(o_.sidecarPath_.c_str(), F_OK) != 0 || fsutil::readFile(o_.sidecarPath_, out);
+      if (access(o_.sidecarPath_.c_str(), F_OK) != 0) return errno == ENOENT;   // missing: an empty sidecar
+      return fsutil::readFile(o_.sidecarPath_, out);
     }
     bool writeSidecar(const std::string& json) override { return fsutil::writeFileAtomic(o_.sidecarPath_, json); }
     nimbus::orch::schedule::Clock clock() override { return {true, epoch()}; }
@@ -290,6 +295,12 @@ class HostedLoops {
     bool reserved(const std::string&) override { return false; }
     int maxCount() override { return o_.caps_.maxCount; }
     uint32_t minIntervalSec() override { return o_.caps_.minIntervalSec; }
+    void forgetState(const std::string& id) override {
+      if (!o_.stateFiles_) return;
+      const std::string path = nimbus::orch::schedule::statePath(id);
+      (void)o_.stateFiles_->remove(path);
+      (void)o_.stateFiles_->remove(path + nimbus::orch::schedule::store::kTmpExt);
+    }
 
    private:
     HostedLoops& o_;
@@ -547,6 +558,7 @@ class HostedLoops {
   HostedLoopHooks h_;
   std::string path_, modePath_, sidecarPath_;
   nimbus::orch::ToolRegistry* scheduleReg_ = nullptr;
+  nimbus::orch::tx::TxFiles* stateFiles_ = nullptr;
   bool askFirst_ = false;
   bool routineGrants_ = false;
   void persistMode() { fsutil::writeFileAtomic(modePath_, std::string(askFirst_ ? "1" : "0") + (routineGrants_ ? "1" : "0")); }

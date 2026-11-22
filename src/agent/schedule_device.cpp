@@ -8,6 +8,7 @@
 
 #include "fs_atomic.h"                       // agent::writeFileAtomic
 #include "loops_subsystem.h"                 // the table, its lock and its clock math (engine-2 view)
+#include "memory_subsystem.h"                // the card lock, dataFs, haveSd (a deleted routine's state)
 #include "nimbus/harness/plain/request.h"    // toolDecl, declSchema
 #include "nimbus/harness/turn_memory.h"      // PsramFirstScope
 
@@ -51,6 +52,15 @@ class DeviceHost : public sch::Host {
   bool reserved(const std::string& id) override { return loops::isReservedId(String(id.c_str())); }
   int maxCount() override { return loops::maxCount(); }
   uint32_t minIntervalSec() override { return loops::minIntervalSec(); }
+  // The card's state file and its temp, under the card lock (no card: nothing to remove).
+  void forgetState(const std::string& id) override {
+    if (!memory::haveSd()) return;
+    memory::Lock g;
+    fs::FS& fs = memory::dataFs();
+    const std::string path = sch::statePath(id);
+    fs.remove(path.c_str());
+    fs.remove((path + sch::store::kTmpExt).c_str());
+  }
 };
 
 DeviceHost& deviceHost() {
@@ -85,7 +95,8 @@ orch::FireOutcome fire(const orch::LoopFireRequest& req, const sch::FireBinding&
     return sch::fire(deviceHost(), req, b, (uint64_t)time(nullptr));
   } catch (const std::bad_alloc&) {
     orch::FireOutcome o;
-    o.deferred = true;   // never ran: retried on the next tick, not counted
+    o.deferred = true;   // never ran: not counted, tried again soon
+    o.retryAfterSec = orch::kWakeupRetrySec;
     return o;
   }
 }

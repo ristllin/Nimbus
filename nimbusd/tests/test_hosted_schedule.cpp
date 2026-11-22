@@ -198,6 +198,16 @@ void testRestartKeepsTheEntry(ndtest::Ctx& c) {
   again.rig->say("what is scheduled?");
   c.ok(again.model.requests().size() == 2 && has(again.model.requests()[1].body, id + " routine weekly mon,thu 18:30"),
        "the list after a restart names it with its kind and cadence");
+  // Deleting it takes its state file with it (a later entry never inherits it).
+  again.loops.setStateFiles(&again.files);
+  const std::string state = sch::statePath(id);
+  again.files.files[state] = "{\"at\":1,\"text\":\"old\"}\n";
+  again.model.push(sp::call("schedule", "{\"op\":\"delete\",\"id\":\"" + id + "\"}"));
+  again.model.push(sp::say("Deleted."));
+  again.rig->say("stop the downloads routine");
+  c.eqi((int)again.loops.count(), 0, "the routine is gone");
+  c.ok(again.files.files.count(state) == 0, "its state file is gone");
+  c.ok(!has(fileAt(root + "/loops2.json"), id), "its loops2.json entry is gone");
   ndtest::rmTree(root);
 }
 

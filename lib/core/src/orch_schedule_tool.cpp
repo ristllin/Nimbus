@@ -21,7 +21,7 @@ constexpr char kOp[] = "op", kKind[] = "kind", kId[] = "id", kWhen[] = "when", k
 constexpr char kCreate[] = "create", kUpdate[] = "update", kDelete[] = "delete", kList[] = "list";
 constexpr char kReminder[] = "reminder", kRoutine[] = "routine";
 constexpr char kDays[] = "sunmontuewedthufrisat";   // three letters a day, bit 0 = Sunday
-constexpr char kDaily[] = "daily", kWeekly[] = "weekly", kMin[] = "min", kHour[] = "h";
+constexpr char kDaily[] = "daily", kWeekly[] = "weekly", kMin[] = "min", kHour[] = "h", kSec[] = "s";
 using namespace store;   // the sidecar keys and file names (schedule_tool.h; no model reads them)
 
 // results
@@ -34,18 +34,24 @@ constexpr char kNoText[] = "text is empty";
 constexpr char kOverA[] = "text is over the ", kOverB[] = " B limit";
 constexpr char kBadWhen[] = "when must read YYYY-MM-DD HH:MM";
 constexpr char kWhenRange[] = "when must be 2 min to 7 days ahead";
-constexpr char kBadEvery[] = "every must read daily HH:MM, weekly mon,thu HH:MM or every N min|h (5 min or more)";
+constexpr char kBadEveryA[] = "every must read daily HH:MM, weekly mon,thu HH:MM or every N min|h (",
+               kBadEveryB[] = " min or more)";
 constexpr char kWrongKey[] = "a reminder takes when, a routine takes every";
 constexpr char kNoEntry[] = "no entry ";
 constexpr char kFull[] = "full: ", kFullB[] = " entries";
 constexpr char kNoClock[] = "the clock is not set";
 constexpr char kNotHere[] = "a turn no person started may list or set reminders only";
 constexpr char kNotStored[] = "not stored: the write was refused";
+constexpr char kUnreadable[] = "not stored: loops2.json is unreadable";
 constexpr char kNoId[] = "id is empty";
 constexpr char kNothing[] = "nothing to change";
 constexpr char kKindDiffers[] = "kind differs from the entry";
 constexpr char kNoCard[] = "no card";
 constexpr char kNoMemory[] = "out of memory; nothing changed";
+
+// A fire that could not run now is tried again this soon (a deferred fire keeps its advanced slot
+// otherwise: a reminder's is its whole delay).
+constexpr uint32_t kRetrySec = kWakeupRetrySec;
 
 const char* kindSlug(Kind k) { return k == Kind::Reminder ? kReminder : kRoutine; }
 
@@ -220,7 +226,8 @@ struct Call {
 
   std::string setEvery(LoopRecord& l, const std::string& every) {
     SchedSpec s;
-    if (!parseEvery(every, host.minIntervalSec(), s)) return kBadEvery;
+    if (!parseEvery(every, host.minIntervalSec(), s))
+      return kBadEveryA + std::to_string((host.minIntervalSec() + 59) / 60) + kBadEveryB;
     l.sched = s;
     l.nextRun = host.nextRun(l, host.clock().now);
     return std::string();
@@ -253,7 +260,7 @@ struct Call {
     const bool reminder = k == 1;
     const std::string text = str(a, kText), refusal = textRefusal(text);
     if (!refusal.empty()) return void(out = ToolResult::fail(refusal));
-    if (a[reminder ? kEvery : kWhen].is<const char*>()) return void(out = ToolResult::fail(kWrongKey));
+    if (!a[reminder ? kEvery : kWhen].isNull()) return void(out = ToolResult::fail(kWrongKey));
     if ((int)live->size() >= host.maxCount())
       return void(out = ToolResult::fail(kFull + std::to_string(host.maxCount()) + kFullB));
     LoopRecord l;
@@ -267,6 +274,7 @@ struct Call {
     Extra e;
     e.id = l.id;
     e.kind = reminder ? Kind::Reminder : Kind::Routine;
+    extras.erase(std::remove_if(extras.begin(), extras.end(), [&](const Extra& x) { return x.id == e.id; }), extras.end());
     extras.push_back(e);
     std::vector<LoopRecord> next = *live;
     next.push_back(l);
@@ -275,7 +283,7 @@ struct Call {
 
   // The fields an update names, applied to `l`; "" when it may be stored.
   std::string applyUpdate(LoopRecord& l, Kind k) {
-    const bool when = a[kWhen].is<const char*>(), every = a[kEvery].is<const char*>(), text = a[kText].is<const char*>();
+    const bool when = !a[kWhen].isNull(), every = !a[kEvery].isNull(), text = !a[kText].isNull();
     if (!when && !every && !text) return kNothing;
     if ((k == Kind::Reminder && every) || (k == Kind::Routine && when)) return kWrongKey;
     if (text) {
@@ -284,7 +292,9 @@ struct Call {
       setText(l, str(a, kText));
     }
     const std::string bad = when ? setWhen(l, str(a, kWhen)) : every ? setEvery(l, str(a, kEvery)) : std::string();
-    if (bad.empty() && k == Kind::Routine) l.approved = false;   // a changed routine waits for the owner again
+    if (!bad.empty()) return bad;
+    if (when) l.consecFails = 0;                 // a new moment starts with its one short retry
+    if (k == Kind::Routine) l.approved = false;   // a changed routine waits for the owner again
     return bad;
   }
 
@@ -296,7 +306,8 @@ struct Call {
     if (!l) return void(out = ToolResult::fail(kNoEntry + id));
     const Kind k = kindOf(*l, findExtra(extras, id));
     const int named = kindArg(a);
-    if (named < 0 || (named > 0 && (named == 1) != (k == Kind::Reminder))) return void(out = ToolResult::fail(kKindDiffers));
+    if (named < 0) return void(out = ToolResult::fail(kBadKind));
+    if (named > 0 && (named == 1) != (k == Kind::Reminder)) return void(out = ToolResult::fail(kKindDiffers));
     const std::string bad = applyUpdate(*l, k);
     if (!bad.empty()) return void(out = ToolResult::fail(bad));
     const LoopRecord done = *l;
@@ -331,8 +342,12 @@ struct Call {
   void run(std::vector<LoopRecord>& table) {
     live = &table;
     std::string side;
-    if (!host.readSidecar(side) || !loadSidecar(side, extras)) extras.clear();
-    switch (opOf(a)) {
+    const bool readable = host.readSidecar(side) && loadSidecar(side, extras);
+    const Op op = opOf(a);
+    // An unreadable sidecar is never rewritten from nothing: its kinds, tools and marks would go.
+    if (!readable && op != Op::List) return void(out = ToolResult::fail(kUnreadable));
+    if (!readable) extras.clear();
+    switch (op) {
       case Op::Create: return create();
       case Op::Update: return update();
       case Op::Delete: return remove();
@@ -377,14 +392,15 @@ TokenUsage tokensOf(const plain::FireReport& r) {
 
 std::string statusText(const plain::Status& st) { return std::string(tx::errSlug(st.err)) + ' ' + st.where; }
 
-// The entry's outside marks after a fire: this fire's output when it read outside content, and only
-// the marks whose output is still in the state. True when they changed.
-bool markOutside(Extra& e, const std::vector<plain::RoutineOutput>& last, const plain::FireReport& r) {
+// The entry's outside marks after a fire: this fire's output when the fire read outside content or
+// opened tainted (its input held such an output), and only the marks whose output is still in the
+// state. True when they changed.
+bool markOutside(Extra& e, const std::vector<plain::RoutineOutput>& next, bool outside, const plain::RoutineOutput& out) {
   std::vector<uint64_t> marks = e.outsideAt;
-  if (hasOutside(r) && !r.output.text.empty()) marks.push_back(r.output.at);
+  if (outside && !out.text.empty()) marks.push_back(out.at);
   std::vector<uint64_t> kept;
   for (uint64_t at : marks) {
-    const bool inState = std::any_of(last.begin(), last.end(), [at](const plain::RoutineOutput& o) { return o.at == at; });
+    const bool inState = std::any_of(next.begin(), next.end(), [at](const plain::RoutineOutput& o) { return o.at == at; });
     if (inState && std::find(kept.begin(), kept.end(), at) == kept.end()) kept.push_back(at);
   }
   if (kept == e.outsideAt) return false;
@@ -392,37 +408,45 @@ bool markOutside(Extra& e, const std::vector<plain::RoutineOutput>& last, const 
   return true;
 }
 
-// The record and the sidecar as they are now (a copy).
-bool snapshot(Host& host, const std::string& id, LoopRecord& rec, std::vector<Extra>& extras) {
-  bool found = false;
+enum class Found : uint8_t { Yes, NoRecord, Unreadable };
+
+// The record and the sidecar as they are now (a copy). An unreadable sidecar is never guessed past:
+// a reminder would read as a routine.
+Found snapshot(Host& host, const std::string& id, LoopRecord& rec, std::vector<Extra>& extras) {
+  Found f = Found::NoRecord;
   host.withTable([&](std::vector<LoopRecord>& t) {
     for (const LoopRecord& l : t)
-      if (l.id == id) rec = l, found = true;
+      if (l.id == id) rec = l, f = Found::Yes;
     std::string side;
-    if (!host.readSidecar(side) || !loadSidecar(side, extras)) extras.clear();
+    if (f == Found::Yes && (!host.readSidecar(side) || !loadSidecar(side, extras))) f = Found::Unreadable;
   });
-  return found;
+  return f;
 }
 
-// A routine that cannot run now: Skipped with its reason, the fire not counted.
-FireOutcome skipped(Host& host, const std::string& id) {
-  host.withTable([&](std::vector<LoopRecord>& t) {
-    for (LoopRecord& l : t)
-      if (l.id == id) l.lastResult = LastResult::Skipped, l.lastErr = kNoCard;
-    (void)host.saveLoops(t);
-  });
+// A fire that cannot run now: not counted, tried again soon (Skipped with its reason on the record
+// when `mark` is set).
+FireOutcome notNow(Host& host, const std::string& id, const char* why, bool mark) {
+  if (mark)
+    host.withTable([&](std::vector<LoopRecord>& t) {
+      for (LoopRecord& l : t)
+        if (l.id == id) l.lastResult = LastResult::Skipped, l.lastErr = why;
+      (void)host.saveLoops(t);
+    });
   FireOutcome o;
   o.deferred = true;
-  o.error = kNoCard;
+  o.retryAfterSec = kRetrySec;
+  o.error = why;
   return o;
 }
 
-void storeMarks(Host& host, const std::string& id, const std::vector<plain::RoutineOutput>& last,
-                const plain::FireReport& rep) {
+// The outside marks against the state the fire leaves; false when they could not be stored.
+bool storeMarks(Host& host, const std::string& id, const std::vector<plain::RoutineOutput>& next, bool outside,
+                const plain::RoutineOutput& out) {
+  bool ok = false;
   host.withTable([&](std::vector<LoopRecord>& t) {
     std::string side;
     std::vector<Extra> extras;
-    if (!host.readSidecar(side) || !loadSidecar(side, extras)) extras.clear();
+    if (!host.readSidecar(side) || !loadSidecar(side, extras)) return;
     auto it = std::find_if(extras.begin(), extras.end(), [&](const Extra& e) { return e.id == id; });
     if (it == extras.end()) {
       Extra e;
@@ -430,26 +454,36 @@ void storeMarks(Host& host, const std::string& id, const std::vector<plain::Rout
       extras.push_back(e);
       it = extras.end() - 1;
     }
-    if (markOutside(*it, last, rep)) (void)host.writeSidecar(dumpSidecar(prunedSidecar(extras, t)));
+    ok = !markOutside(*it, next, outside, out) || host.writeSidecar(dumpSidecar(prunedSidecar(extras, t)));
   });
+  return ok;
+}
+
+FireOutcome outcomeOf(const plain::Status& st, const plain::FireReport& rep, uint64_t now) {
+  const bool held = rep.result == plain::FireResult::Held;   // in the outbox: it goes when it can
+  FireOutcome o;
+  o.ok = st.ok() && rep.result != plain::FireResult::Failed && (rep.status.ok() || held);
+  o.answered = rep.result == plain::FireResult::Sent || held;
+  // A silent fire is not "the same result again" (the repeat breaker hashes this).
+  o.detail = rep.output.text.empty() ? std::to_string(now) : rep.output.text;
+  o.tokens = tokensOf(rep);
+  if (!o.ok) o.error = statusText(st.ok() ? rep.status : st);
+  return o;
 }
 
 FireOutcome fireRoutine(Host& host, const LoopRecord& rec, const Extra* e, const FireBinding& b, uint64_t now) {
   std::vector<plain::RoutineOutput> last;
-  if (!b.files || !b.run || !loadState(*b.files, rec.id, last)) return skipped(host, rec.id);
+  if (!b.files || !b.run || !loadState(*b.files, rec.id, last)) return notNow(host, rec.id, kNoCard, true);
+  const bool tainted = opensTainted(e, last);
   const plain::RoutineFire f = routineFire(rec, e, last, now, b.grants);
   plain::FireReport rep;
-  const plain::Status st = b.run(f, opensTainted(e, last), rep);
-  FireOutcome o;
-  o.ok = st.ok() && rep.status.ok() && rep.result != plain::FireResult::Failed;
-  o.answered = rep.result == plain::FireResult::Sent || rep.result == plain::FireResult::Held;
-  o.detail = rep.output.text;
-  o.tokens = tokensOf(rep);
-  if (!o.ok) o.error = statusText(st.ok() ? rep.status : st);
+  const plain::Status st = b.run(f, tainted, rep);
+  const FireOutcome o = outcomeOf(st, rep, now);
   if (!st.ok() || rep.result == plain::FireResult::Failed) return o;
   plain::nextRoutineState(last, rep.output);
-  (void)saveState(*b.files, rec.id, last);
-  storeMarks(host, rec.id, last, rep);
+  // The mark first: an output from outside content never sits in the state unmarked.
+  const bool outside = tainted || hasOutside(rep);
+  if (storeMarks(host, rec.id, last, outside, rep.output) || !outside) (void)saveState(*b.files, rec.id, last);
   return o;
 }
 
@@ -553,8 +587,9 @@ bool parseEvery(const std::string& s, uint32_t minIntervalSec, SchedSpec& out) {
 
 std::string everyText(const SchedSpec& s) {
   if (s.kind == SchedKind::Interval || s.kind == SchedKind::Once) {
-    const bool hours = s.intervalSec % 3600 == 0;
-    return std::string(kEvery) + ' ' + std::to_string(s.intervalSec / (hours ? 3600 : 60)) + ' ' + (hours ? kHour : kMin);
+    const uint32_t unit = s.intervalSec % 3600 == 0 ? 3600 : s.intervalSec % 60 == 0 ? 60 : 1;
+    const char* word = unit == 3600 ? kHour : unit == 60 ? kMin : kSec;   // an engine-1 record may hold seconds
+    return std::string(kEvery) + ' ' + std::to_string(s.intervalSec / unit) + ' ' + word;
   }
   if (s.kind == SchedKind::Daily) return std::string(kDaily) + ' ' + hhmm(s.minuteOfDay);
   std::string days;
@@ -569,9 +604,17 @@ std::string everyText(const SchedSpec& s) {
 
 std::string nameFor(const std::string& text) {
   const size_t cap = (size_t)kLoopNameMax;
-  if (text.size() <= cap && text.find('\n') == std::string::npos) return text;
-  std::string head = text.substr(0, std::min(text.find('\n'), cap + 1));
-  if (head.size() <= cap) return head;
+  std::string head;
+  for (char ch : text) {
+    if (head.size() > cap) break;
+    const bool space = ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
+    if (space && (head.empty() || head.back() == ' ')) continue;   // one space between words, none first
+    head += space ? ' ' : ch;
+  }
+  if (head.size() <= cap) {
+    while (!head.empty() && head.back() == ' ') head.pop_back();
+    return head;
+  }
   const size_t sp = head.rfind(' ', cap);
   if (sp != std::string::npos && sp > 0) return head.substr(0, sp);
   head.resize(cap);
@@ -664,7 +707,9 @@ FireOutcome fireReminder(const FireBinding& b, const LoopRecord& l, const std::s
 FireOutcome fire(Host& host, const LoopFireRequest& req, const FireBinding& b, uint64_t now) {
   LoopRecord rec;
   std::vector<Extra> extras;
-  if (!snapshot(host, req.id, rec, extras)) {
+  const Found found = snapshot(host, req.id, rec, extras);
+  if (found == Found::Unreadable) return notNow(host, req.id, kUnreadable, false);
+  if (found == Found::NoRecord) {
     FireOutcome o;
     o.error = kNoEntry + req.id;
     return o;

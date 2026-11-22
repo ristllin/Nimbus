@@ -701,10 +701,19 @@ void test_parse_when_every_and_the_name() {
     const std::string n = sch::nameFor(t);
     TEST_ASSERT_TRUE(n.size() <= (size_t)kLoopNameMax);
     TEST_ASSERT_TRUE(nimbus::utf8Valid(n));
-    TEST_ASSERT_TRUE(t.rfind(n, 0) == 0 || n.empty());
+    std::string flat;   // the text with each run of spaces and line breaks as one space, none first
+    for (char ch : t) {
+      const bool sp = ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t';
+      if (sp && (flat.empty() || flat.back() == ' ')) continue;
+      flat += sp ? ' ' : ch;
+    }
+    TEST_ASSERT_TRUE(flat.rfind(n, 0) == 0);
+    TEST_ASSERT_TRUE(n.find('\n') == std::string::npos);
     TEST_ASSERT_TRUE(t.empty() || !n.empty());
   }
   TEST_ASSERT_EQUAL_STRING("check the train times to", sch::nameFor(kCorpus[1]).c_str());
+  TEST_ASSERT_EQUAL_STRING("call the vet", sch::nameFor("\n\n  call the vet\nabout Rex").substr(0, 12).c_str());
+  TEST_ASSERT_FALSE(sch::nameFor("\ncall").empty());
 }
 
 // ---- the declaration -------------------------------------------------------------------------------
@@ -748,10 +757,26 @@ void test_a_fire_after_outside_content_opens_the_next_fire_tainted() {
   sch::fire(h, req, b, t);   // reads outside content
   outside = false;
   for (int i = 0; i < 4; ++i) sch::fire(h, req, b, t += 86400);
-  // fire 2 opens tainted (fire 1's output is in the state) and so do 3 and 4; fire 5 does not: the
-  // state's three outputs are fires 2 to 4, none from outside content.
-  TEST_ASSERT_TRUE((taint == std::vector<bool>{false, true, true, true, false}));
-  TEST_ASSERT_TRUE(sch::findExtra(h.extras(), req.id)->outsideAt.empty());
+  // Fire 2 opens tainted (fire 1's output is in the state). Its output came from tainted input, so
+  // it is marked too: the taint is never laundered by the outside output ageing out of the state.
+  TEST_ASSERT_TRUE((taint == std::vector<bool>{false, true, true, true, true}));
+  TEST_ASSERT_EQUAL(3, (int)sch::findExtra(h.extras(), req.id)->outsideAt.size());
+  // Counter: a routine that never read outside content never opens tainted.
+  MemHost clean;
+  TEST_ASSERT_TRUE(run(clean, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"tidy"})").success);
+  txb::MemFiles card3;
+  b.files = &card3;
+  taint.clear();
+  b.run = [&](const agent::plain::RoutineFire& f, bool tainted, agent::plain::FireReport& rep) {
+    taint.push_back(tainted);
+    rep.result = agent::plain::FireResult::Sent;
+    rep.output = agent::plain::RoutineOutput{f.fireAt, "done"};
+    return agent::plain::Status::success();
+  };
+  req.id = clean.loops[0].id;
+  for (int i = 0; i < 4; ++i) sch::fire(clean, req, b, kNow + 86400ull * (uint64_t)i);
+  TEST_ASSERT_TRUE((taint == std::vector<bool>{false, false, false, false}));
+  TEST_ASSERT_TRUE(sch::findExtra(clean.extras(), req.id)->outsideAt.empty());
   // Counter: an outside fire with no text (silent) adds nothing to the state and taints nothing.
   MemHost q;
   TEST_ASSERT_TRUE(run(q, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"quiet"})").success);
@@ -765,6 +790,7 @@ void test_a_fire_after_outside_content_opens_the_next_fire_tainted() {
     return agent::plain::Status::success();
   };
   req.id = q.loops[0].id;
+  b.files = &card2;
   sch::fire(q, req, b, kNow);
   sch::fire(q, req, b, kNow + 86400);
   TEST_ASSERT_TRUE((taint == std::vector<bool>{false, false}));
@@ -784,6 +810,7 @@ void test_a_routine_with_no_card_is_skipped_and_a_reminder_still_goes() {
   const FireOutcome o = sch::fire(h, req, b, kNow);
   TEST_ASSERT_EQUAL(0, routines);
   TEST_ASSERT_TRUE(o.deferred);
+  TEST_ASSERT_TRUE(o.retryAfterSec > 0);   // tried again soon, not at its next slot
   TEST_ASSERT_EQUAL((int)LastResult::Skipped, (int)h.loops[0].lastResult);
   TEST_ASSERT_EQUAL_STRING("no card", h.loops[0].lastErr.c_str());
   // Counter: a reminder needs no card.
@@ -831,6 +858,137 @@ void test_a_routine_fire_keeps_the_routine_ceiling() {
   TEST_ASSERT_TRUE(o.tokens.total() > 0);
 }
 
+// ---- review fixes: an unreadable sidecar, an orphan's id, argument types, the outcome ------------
+void test_an_unreadable_sidecar_is_never_rewritten_and_never_guessed_past() {
+  MemHost h;
+  const ToolResult c = run(h, "{\"op\":\"create\",\"kind\":\"reminder\",\"when\":\"" + whenIn(h, 600) + "\",\"text\":\"tea\"}");
+  TEST_ASSERT_TRUE(c.success);
+  h.sidecarFile = "{\"v\":1,\"loops\":[";   // torn by hand, or a newer version
+  const std::string side = h.sidecarFile, table = h.loopsFile;
+  const ToolResult r = run(h, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"x"})");
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_TRUE(contains(r.error, "loops2.json"));
+  TEST_ASSERT_FALSE(run(h, "{\"op\":\"delete\",\"id\":\"" + idIn(c) + "\"}").success);
+  TEST_ASSERT_EQUAL_STRING(side.c_str(), h.sidecarFile.c_str());
+  TEST_ASSERT_EQUAL_STRING(table.c_str(), h.loopsFile.c_str());
+  TEST_ASSERT_TRUE(run(h, R"({"op":"list"})").success);
+  // Its fire: not run as a routine, not delivered, tried again soon.
+  sch::FireBinding b;
+  int routines = 0;
+  b.run = [&](const agent::plain::RoutineFire&, bool, agent::plain::FireReport&) {
+    ++routines;
+    return agent::plain::Status::success();
+  };
+  LoopFireRequest req;
+  req.id = idIn(c);
+  const FireOutcome o = sch::fire(h, req, b, kNow + 600);
+  TEST_ASSERT_EQUAL(0, routines);
+  TEST_ASSERT_TRUE(o.deferred);
+  TEST_ASSERT_TRUE(o.retryAfterSec > 0);
+}
+
+void test_a_new_entry_never_inherits_an_orphan_with_its_id() {
+  MemHost h;
+  char next[10];
+  snprintf(next, sizeof next, "lp%06x", (unsigned)(1u * 0x1f3u & 0xFFFFFFu));   // MemHost's first id
+  sch::Extra orphan;
+  orphan.id = next;
+  orphan.kind = sch::Kind::Routine;
+  orphan.tools = {"write_file"};
+  orphan.paths = {"secrets/"};
+  orphan.outsideAt = {kNow};
+  h.sidecarFile = sch::dumpSidecar({orphan});
+  const ToolResult c = run(h, "{\"op\":\"create\",\"kind\":\"reminder\",\"when\":\"" + whenIn(h, 600) + "\",\"text\":\"tea\"}");
+  TEST_ASSERT_TRUE(c.success);
+  TEST_ASSERT_EQUAL_STRING(next, idIn(c).c_str());
+  const std::vector<sch::Extra> ex = h.extras();
+  TEST_ASSERT_EQUAL(1, (int)ex.size());
+  TEST_ASSERT_EQUAL((int)sch::Kind::Reminder, (int)ex[0].kind);
+  TEST_ASSERT_TRUE(ex[0].tools.empty() && ex[0].paths.empty() && ex[0].outsideAt.empty());
+}
+
+void test_update_arguments_of_the_wrong_type_or_word_are_refused() {
+  MemHost h;
+  const ToolResult c = run(h, "{\"op\":\"create\",\"kind\":\"reminder\",\"when\":\"" + whenIn(h, 600) + "\",\"text\":\"tea\"}");
+  const std::string id = idIn(c);
+  const std::string table = h.loopsFile;
+  TEST_ASSERT_FALSE(run(h, "{\"op\":\"update\",\"id\":\"" + id + "\",\"when\":1800,\"text\":\"coffee\"}").success);
+  const ToolResult k = run(h, "{\"op\":\"update\",\"id\":\"" + id + "\",\"kind\":\"alarm\",\"text\":\"coffee\"}");
+  TEST_ASSERT_FALSE(k.success);
+  TEST_ASSERT_TRUE(contains(k.error, "reminder or routine"));
+  TEST_ASSERT_EQUAL_STRING(table.c_str(), h.loopsFile.c_str());
+  // A moved reminder starts again with its one short retry.
+  h.loops[0].consecFails = 1;
+  TEST_ASSERT_TRUE(run(h, "{\"op\":\"update\",\"id\":\"" + id + "\",\"when\":\"" + whenIn(h, 1200) + "\"}").success);
+  TEST_ASSERT_EQUAL(0, h.loops[0].consecFails);
+}
+
+void test_the_fire_outcome_reads_held_as_ok_and_silence_as_no_repeat() {
+  MemHost h;
+  TEST_ASSERT_TRUE(run(h, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"brief"})").success);
+  txb::MemFiles card;
+  sch::FireBinding b;
+  b.files = &card;
+  agent::plain::FireResult result = agent::plain::FireResult::Held;
+  b.run = [&](const agent::plain::RoutineFire& f, bool, agent::plain::FireReport& rep) {
+    rep.result = result;
+    if (result == agent::plain::FireResult::Held) {
+      rep.output = agent::plain::RoutineOutput{f.fireAt, "held text"};
+      rep.status = agent::plain::Status::fail(nimbus::orch::tx::Err::Io, "plain::deliverHeld.send");
+    }
+    return agent::plain::Status::success();
+  };
+  LoopFireRequest req;
+  req.id = h.loops[0].id;
+  const FireOutcome held = sch::fire(h, req, b, kNow);
+  TEST_ASSERT_TRUE(held.ok);   // in the outbox: it goes when the channel takes it
+  TEST_ASSERT_TRUE(held.answered);
+  result = agent::plain::FireResult::Silent;
+  const FireOutcome s1 = sch::fire(h, req, b, kNow + 86400), s2 = sch::fire(h, req, b, kNow + 2 * 86400);
+  TEST_ASSERT_TRUE(s1.ok && s2.ok);
+  TEST_ASSERT_FALSE(s1.answered);
+  TEST_ASSERT_TRUE(fnv64(s1.detail) != fnv64(s2.detail));   // silence is never "the same result again"
+  // Counter: the same text twice reads as the same result.
+  result = agent::plain::FireResult::Sent;
+  b.run = [&](const agent::plain::RoutineFire& f, bool, agent::plain::FireReport& rep) {
+    rep.result = agent::plain::FireResult::Sent;
+    rep.output = agent::plain::RoutineOutput{f.fireAt, "same"};
+    return agent::plain::Status::success();
+  };
+  TEST_ASSERT_EQUAL(fnv64(sch::fire(h, req, b, kNow + 3 * 86400).detail), fnv64(sch::fire(h, req, b, kNow + 4 * 86400).detail));
+}
+
+void test_an_outside_output_never_enters_the_state_unmarked() {
+  MemHost h;
+  TEST_ASSERT_TRUE(run(h, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"news"})").success);
+  txb::MemFiles card;
+  sch::FireBinding b;
+  b.files = &card;
+  bool outside = false;
+  b.run = [&](const agent::plain::RoutineFire& f, bool, agent::plain::FireReport& rep) {
+    rep.result = agent::plain::FireResult::Sent;
+    rep.output = agent::plain::RoutineOutput{f.fireAt, outside ? "from the page" : "plain"};
+    if (outside) rep.outcome.end.events.push_back("change:outside");
+    return agent::plain::Status::success();
+  };
+  LoopFireRequest req;
+  req.id = h.loops[0].id;
+  sch::fire(h, req, b, kNow);   // a plain output in the state
+  outside = true;
+  h.refuseSidecar = true;       // the mark cannot be stored
+  sch::fire(h, req, b, kNow + 86400);
+  std::vector<agent::plain::RoutineOutput> st;
+  TEST_ASSERT_TRUE(sch::loadState(card, req.id, st));
+  TEST_ASSERT_EQUAL(1, (int)st.size());
+  TEST_ASSERT_EQUAL_STRING("plain", st[0].text.c_str());
+  // Counter: with the mark stored the output joins the state, marked.
+  h.refuseSidecar = false;
+  sch::fire(h, req, b, kNow + 2 * 86400);
+  TEST_ASSERT_TRUE(sch::loadState(card, req.id, st));
+  TEST_ASSERT_EQUAL(2, (int)st.size());
+  TEST_ASSERT_TRUE(sch::opensTainted(sch::findExtra(h.extras(), req.id), st));
+}
+
 // ---- ruling 30: a refused allocation is an error result ------------------------------------------
 void test_a_refused_allocation_is_an_error_result_and_changes_nothing() {
   MemHost h;
@@ -868,5 +1026,10 @@ int main(int, char**) {
   RUN_TEST(test_a_routine_with_no_card_is_skipped_and_a_reminder_still_goes);
   RUN_TEST(test_a_routine_fire_keeps_the_routine_ceiling);
   RUN_TEST(test_a_refused_allocation_is_an_error_result_and_changes_nothing);
+  RUN_TEST(test_an_unreadable_sidecar_is_never_rewritten_and_never_guessed_past);
+  RUN_TEST(test_a_new_entry_never_inherits_an_orphan_with_its_id);
+  RUN_TEST(test_update_arguments_of_the_wrong_type_or_word_are_refused);
+  RUN_TEST(test_the_fire_outcome_reads_held_as_ok_and_silence_as_no_repeat);
+  RUN_TEST(test_an_outside_output_never_enters_the_state_unmarked);
   return UNITY_END();
 }
