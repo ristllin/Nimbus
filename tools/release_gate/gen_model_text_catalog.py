@@ -157,12 +157,15 @@ NON_MODEL_FILES: dict = {
     "governor's owner notice, never system text, a tool or a tool result",
     "src/agent/budget_profile_store.cpp": "RB-BG: the /budget profile reply when the file does not store, owner "
     "copy, never sent to a model",
-    # RB-I0: the engine-2 stub seam answers every message with one fixed line, delivered as device copy
-    # (system provenance) like engine 1's command replies; its other literals are the CTX? status line and
-    # a routine's refusal reason. The stub calls no model; RB-I1/RB-I2 replace the file's text with the
-    # engine's (texts.h).
-    "src/agent/orchestrator_plain.cpp": "RB-I0: the engine-2 stub's fixed owner-facing line, its fold status line "
-    "and its no-routines reason, device copy; the stub calls no model",
+    # E2-DEV: the engine-2 device seam. Every model-facing byte is the engine's (plain/texts.h); the seam's
+    # own literals are owner-facing device copy delivered with system provenance before any model turn
+    # (a head that is not Claude, no key, the monthly limit, a chat that could not start), its fold status
+    # line, a routine's refusal reason and log lines.
+    "lib/harness/include/nimbus/harness/plain/chat_binding.h": "E2-DEV: the device chat binding's log lines (through "
+    "its log callback), never sent to a model or an owner",
+    "src/agent/orchestrator_plain.cpp": "E2-DEV: the engine-2 seam's owner-facing refusal lines (not Claude, no key, "
+    "monthly limit, could not start), its fold status line and its no-routines reason, device copy; the model's text "
+    "is the engine's",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the

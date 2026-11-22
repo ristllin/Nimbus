@@ -112,10 +112,8 @@ class ChatBinding {
   Status boot(bool afterCrash = false) {
     namespace tx = nimbus::orch::tx;
     if (engine_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::boot.twice");
+    if (!bound()) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::boot");
     const Platform* p = d_.platform;
-    if (!p || !p->nowMs || !p->delayMs || !p->nowEpoch || !p->allocLarge || !p->freeLarge || !d_.transport ||
-        !d_.files || !d_.registry || cfg_.model.empty())
-      return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::boot");
     Status st = headFigures();
     if (!st.ok()) return st;
     try {
@@ -134,10 +132,7 @@ class ChatBinding {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::boot.memory");
     }
     if (!st.ok()) return fail(st);
-    if (d_.seen && d_.seen->ready() && engine_->head()) {
-      const Status s = nimbus::orch::rebuildSeen(*d_.seen, cfg_.chatId, *engine_->head(), *arena_);
-      if (!s.ok()) say("e2: seen-index rebuild refused");
-    }
+    rebuildSeen();
     return st;
   }
 
@@ -184,6 +179,19 @@ class ChatBinding {
  private:
   void say(const char* line) const {
     if (d_.log) d_.log(line);
+  }
+  // Every binding boot needs is there.
+  bool bound() const {
+    const Platform* p = d_.platform;
+    const bool clock = p && p->nowMs && p->delayMs && p->nowEpoch;
+    const bool memory = p && p->allocLarge && p->freeLarge;
+    return clock && memory && d_.transport && d_.files && d_.registry && !cfg_.model.empty();
+  }
+  // RB-TG1: the chat's taken updates from the filled arena and head.json's high water.
+  void rebuildSeen() {
+    if (!d_.seen || !d_.seen->ready() || !engine_->head()) return;
+    if (!nimbus::orch::rebuildSeen(*d_.seen, cfg_.chatId, *engine_->head(), *arena_).ok())
+      say("e2: seen-index rebuild refused");
   }
   Status fail(const Status& st) {
     engine_.reset();   // a failed boot leaves the binding unbooted, never half-booted
