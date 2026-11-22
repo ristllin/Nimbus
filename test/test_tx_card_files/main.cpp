@@ -5,7 +5,9 @@
 //   - no card, a task that may not touch a file, or the internal memory floor: every write is
 //     refused (false), nothing is written, and the refusal is counted;
 //   - rename replaces its target (removed first, as the TxFiles contract allows);
-//   - list of a missing folder is true with no names; names are bare and folders are skipped;
+//   - list of a missing folder is true with no names only when its parent listed whole without
+//     it; an exists() or a listing that fails is false (cannot tell), never "empty" (lane
+//     E2-STORE, finding S1); names are bare and folders are skipped;
 //   - nothing outside /mem/tx is read or written;
 //   - the card lock is held for every call and released after it, and each kind's longest hold
 //     is kept;
@@ -35,6 +37,8 @@ class FakeCard : public tx::CardOps {
   uint32_t largest = 64 * 1024;
   uint32_t ms = 0, stepMs = 3;   // every card call takes stepMs of virtual time
   int depth = 0, maxDepth = 0, locks = 0, calls = 0;
+  int failExists = 0;            // the next N exists() calls answer false (a bad read, a refused allocation)
+  bool failListNames = false;    // every listNames() fails
 
   bool present() override { return card; }
   bool mayWrite() override { return task; }
@@ -46,7 +50,11 @@ class FakeCard : public tx::CardOps {
     if (depth > maxDepth) maxDepth = depth;
   }
   void unlock() override { --depth; }
-  bool exists(const std::string& p) override { return step() && (files.count(p) || dirs.count(p)); }
+  bool exists(const std::string& p) override {
+    step();
+    if (failExists > 0) return --failExists, false;
+    return files.count(p) || dirs.count(p);
+  }
   bool isDir(const std::string& p) override { return step() && dirs.count(p); }
   bool mkdir(const std::string& p) override {
     step();
@@ -98,6 +106,19 @@ class FakeCard : public tx::CardOps {
     for (const auto& kv : files)
       if (kv.first.rfind(pre, 0) == 0 && kv.first.find('/', pre.size()) == std::string::npos)
         names.push_back(kv.first.substr(pre.size()));
+    return true;
+  }
+  bool listNames(const std::string& dir, std::vector<std::string>& names) override {
+    step();
+    names.clear();
+    if (failListNames || !dirs.count(dir)) return false;
+    const std::string pre = dir == "/" ? std::string("/") : dir + "/";
+    auto child = [&](const std::string& p) {
+      if (p.size() > pre.size() && p.rfind(pre, 0) == 0 && p.find('/', pre.size()) == std::string::npos)
+        names.push_back(p.substr(pre.size()));
+    };
+    for (const auto& kv : files) child(kv.first);
+    for (const std::string& d : dirs) child(d);
     return true;
   }
 
@@ -247,6 +268,177 @@ static void test_a_log_over_the_card_reopens_with_its_items() {
   TEST_ASSERT_EQUAL_STRING("the cat is called Biscuit", back.x.c_str());
 }
 
+// Lane E2-STORE, finding S1: an exists() that fails once on a chat folder that is there is
+// "cannot tell" (false), not "no files"; the parent's listing is the evidence.
+static void test_a_failed_exists_is_cannot_tell_never_empty() {
+  FakeCard c;
+  tx::CardTxFiles f(c);
+  TEST_ASSERT_TRUE(f.append("/mem/tx/9/seg-000001.jsonl", "a\n", 2));
+  std::vector<std::string> names{"stale"};
+  c.failExists = 1;
+  TEST_ASSERT_FALSE(f.list("/mem/tx/9", names));
+  TEST_ASSERT_TRUE(names.empty());
+  TEST_ASSERT_TRUE(f.list("/mem/tx/9", names));   // the next call reads it whole
+  TEST_ASSERT_EQUAL(1, (int)names.size());
+  // The parent cannot be listed either: cannot tell, at every level.
+  c.failExists = 1000;
+  c.failListNames = true;
+  TEST_ASSERT_FALSE(f.list("/mem/tx/9", names));
+  TEST_ASSERT_FALSE(f.list("/mem/tx/new", names));
+  c.failExists = 0;
+  c.failListNames = false;
+  TEST_ASSERT_EQUAL(0, c.depth);
+}
+
+// A folder that is truly absent: its parent lists without it (or the parent is absent the same
+// way, up to the card's root).
+static void test_an_absent_folder_needs_its_parent_listed() {
+  FakeCard c;
+  tx::CardTxFiles f(c);
+  std::vector<std::string> names;
+  TEST_ASSERT_TRUE(f.list("/mem/tx/1", names));   // an empty card: /, then /mem absent
+  TEST_ASSERT_TRUE(names.empty());
+  TEST_ASSERT_TRUE(f.append("/mem/tx/1/seg-000001.jsonl", "a\n", 2));
+  TEST_ASSERT_TRUE(f.list("/mem/tx/2", names));   // /mem/tx lists without "2"
+  TEST_ASSERT_TRUE(names.empty());
+  c.failListNames = true;
+  TEST_ASSERT_FALSE(f.list("/mem/tx/2", names));   // no listing: no proof
+  c.failListNames = false;
+  c.files["/mem/tx/3"] = "x";   // a file where the folder should be: not a folder, not absent
+  TEST_ASSERT_FALSE(f.list("/mem/tx/3", names));
+}
+
+static tx::Item userItem(uint64_t q, uint32_t turn, const char* text) {
+  tx::Item u;
+  u.q = q;
+  u.kind = tx::ItemKind::User;
+  u.turn = turn;
+  u.t = 1794920520;
+  u.x = text;
+  return u;
+}
+
+// The S1 path end to end: a stored conversation, then one failed exists() at open. open() is
+// Io, nothing is written anywhere (no line, no head file), and the next open gives it all back.
+static void test_a_failed_exists_at_open_writes_nothing_and_the_next_open_has_it_all() {
+  FakeCard c;
+  tx::CardTxFiles f(c);
+  {
+    tx::TxLog log(f, "1001");
+    tx::HeadState h;
+    TEST_ASSERT_TRUE(log.open(h).ok());
+    for (uint64_t q = 1; q <= 3; ++q) {
+      tx::StoreState st = tx::StoreState::NotStored;
+      TEST_ASSERT_TRUE(log.append(userItem(q, (uint32_t)q, "kept"), st).ok());
+      TEST_ASSERT_TRUE(st == tx::StoreState::Stored);
+    }
+    TEST_ASSERT_TRUE(log.writeHead(h).ok());
+  }
+  const std::map<std::string, std::string> before = c.files;
+  tx::TxLog log(f, "1001");
+  tx::HeadState h;
+  c.failExists = 1;
+  const tx::Status st = log.open(h);
+  TEST_ASSERT_TRUE(st.err == tx::Err::Io);
+  TEST_ASSERT_FALSE(log.isOpen());
+  tx::StoreState state = tx::StoreState::Stored;
+  (void)log.append(userItem(1, 1, "lost?"), state);
+  TEST_ASSERT_TRUE(state == tx::StoreState::NotStored);
+  TEST_ASSERT_FALSE(log.writeHead(h).ok());
+  TEST_ASSERT_TRUE(c.files == before);   // not one byte anywhere
+  TEST_ASSERT_TRUE(log.open(h).ok());
+  TEST_ASSERT_EQUAL(4, (int)h.nextQ);
+  tx::TxArena arena;
+  TEST_ASSERT_TRUE(arena.init(64 * 1024, [](size_t n) { return std::malloc(n); }, [](void* q) { std::free(q); }).ok());
+  TEST_ASSERT_TRUE(log.fill(h, arena).ok());
+  TEST_ASSERT_EQUAL(3, (int)arena.count());
+}
+
+// A store whose listing comes back empty although files are there (the S1 shape from any
+// binding): open() still refuses the fresh chat, because a head file or the first segment reads.
+class BlindList : public tx::TxFiles {
+ public:
+  explicit BlindList(tx::TxFiles& f) : f_(f) {}
+  bool append(const std::string& p, const char* d, size_t n) override { return f_.append(p, d, n); }
+  bool readAt(const std::string& p, size_t o, char* b, size_t w, size_t& g) override { return f_.readAt(p, o, b, w, g); }
+  bool size(const std::string& p, size_t& out) override { return f_.size(p, out); }
+  bool writeWhole(const std::string& p, const std::string& d) override { return f_.writeWhole(p, d); }
+  bool rename(const std::string& a, const std::string& b) override { return f_.rename(a, b); }
+  bool remove(const std::string& p) override { return f_.remove(p); }
+  bool list(const std::string&, std::vector<std::string>& names) override {
+    names.clear();
+    return true;
+  }
+
+ private:
+  tx::TxFiles& f_;
+};
+
+static void storeThree(tx::TxFiles& f, bool head) {
+  tx::TxLog log(f, "1001");
+  tx::HeadState h;
+  TEST_ASSERT_TRUE(log.open(h).ok());
+  for (uint64_t q = 1; q <= 3; ++q) {
+    tx::StoreState st = tx::StoreState::NotStored;
+    TEST_ASSERT_TRUE(log.append(userItem(q, (uint32_t)q, "kept"), st).ok());
+  }
+  if (head) TEST_ASSERT_TRUE(log.writeHead(h).ok());
+}
+
+static void test_open_refuses_a_fresh_chat_while_stored_state_reads() {
+  for (int withHead = 0; withHead < 2; ++withHead) {
+    FakeCard c;
+    tx::CardTxFiles f(c);
+    storeThree(f, withHead != 0);
+    if (!withHead) TEST_ASSERT_EQUAL(0, (int)c.files.count("/mem/tx/1001/head.json"));
+    BlindList blind(f);
+    tx::TxLog log(blind, "1001");
+    tx::HeadState h;
+    const std::map<std::string, std::string> before = c.files;
+    TEST_ASSERT_TRUE(log.open(h).err == tx::Err::Io);
+    TEST_ASSERT_FALSE(log.isOpen());
+    TEST_ASSERT_TRUE(c.files == before);
+  }
+  // A head file that names nothing stored (written before the first line) is still a fresh chat.
+  FakeCard c;
+  tx::CardTxFiles f(c);
+  {
+    tx::TxLog log(f, "1001");
+    tx::HeadState h;
+    TEST_ASSERT_TRUE(log.open(h).ok());
+    h.pinned.push_back("pinned before any line");
+    TEST_ASSERT_TRUE(log.writeHead(h).ok());
+  }
+  tx::TxLog log(f, "1001");
+  tx::HeadState h;
+  TEST_ASSERT_TRUE(log.open(h).ok());
+}
+
+// Defect S1 of an earlier build appended a session's lines with restarted numbers to the end of
+// the first segment. No device ran it, but the reader must not trip on such a file: the first
+// line of each q wins, the rest are skipped.
+static void test_a_segment_with_restarted_numbers_reads_without_a_fault() {
+  FakeCard c;
+  tx::CardTxFiles f(c);
+  storeThree(f, true);
+  std::string line;   // what the old fresh branch wrote: lines q 1 and 2 again, at the end
+  for (uint64_t q = 1; q <= 2; ++q) {
+    TEST_ASSERT_TRUE(tx::encodeLine(userItem(q, (uint32_t)q, "restarted"), line).ok());
+    TEST_ASSERT_TRUE(f.append("/mem/tx/1001/seg-000001.jsonl", line.data(), line.size()));
+  }
+  tx::TxLog log(f, "1001");
+  tx::HeadState h;
+  TEST_ASSERT_TRUE(log.open(h).ok());
+  tx::TxArena arena;
+  TEST_ASSERT_TRUE(arena.init(64 * 1024, [](size_t n) { return std::malloc(n); }, [](void* q) { std::free(q); }).ok());
+  TEST_ASSERT_TRUE(log.fill(h, arena).ok());
+  TEST_ASSERT_EQUAL(3, (int)arena.count());
+  tx::Item first;
+  TEST_ASSERT_TRUE(arena.get(0, first).ok());
+  TEST_ASSERT_EQUAL_STRING("kept", first.x.c_str());
+  TEST_ASSERT_TRUE(h.nextQ >= 4);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_write_creates_every_missing_folder);
@@ -256,5 +448,10 @@ int main(int, char**) {
   RUN_TEST(test_nothing_outside_the_root);
   RUN_TEST(test_each_call_holds_the_lock_once_and_the_longest_hold_is_kept);
   RUN_TEST(test_a_log_over_the_card_reopens_with_its_items);
+  RUN_TEST(test_a_failed_exists_is_cannot_tell_never_empty);
+  RUN_TEST(test_an_absent_folder_needs_its_parent_listed);
+  RUN_TEST(test_a_failed_exists_at_open_writes_nothing_and_the_next_open_has_it_all);
+  RUN_TEST(test_open_refuses_a_fresh_chat_while_stored_state_reads);
+  RUN_TEST(test_a_segment_with_restarted_numbers_reads_without_a_fault);
   return UNITY_END();
 }

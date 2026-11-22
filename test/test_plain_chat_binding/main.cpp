@@ -46,16 +46,23 @@ class Card : public tx::CardOps {
   std::map<std::string, std::string> files;
   std::set<std::string> dirs{"/"};
   bool card = true;
+  int failExists = 0;   // the next N exists() calls answer false (lane E2-STORE)
+  int appendsLeft = -1;  // >= 0: appends that still land, then every append is refused
   bool present() override { return card; }
   bool mayWrite() override { return true; }
   uint32_t largestInternal() override { return 64 * 1024; }
   uint32_t nowMs() override { return 0; }
   void lock() override {}
   void unlock() override {}
-  bool exists(const std::string& p) override { return files.count(p) || dirs.count(p); }
+  bool exists(const std::string& p) override {
+    if (failExists > 0) return --failExists, false;
+    return files.count(p) || dirs.count(p);
+  }
   bool isDir(const std::string& p) override { return dirs.count(p) > 0; }
   bool mkdir(const std::string& p) override { return dirs.insert(p).second; }
   size_t append(const std::string& p, const char* d, size_t n) override {
+    if (appendsLeft == 0) return 0;
+    if (appendsLeft > 0) --appendsLeft;
     files[p].append(d, n);
     return n;
   }
@@ -88,6 +95,18 @@ class Card : public tx::CardOps {
     for (const auto& kv : files)
       if (kv.first.rfind(pre, 0) == 0 && kv.first.find('/', pre.size()) == std::string::npos)
         names.push_back(kv.first.substr(pre.size()));
+    return true;
+  }
+  bool listNames(const std::string& dir, std::vector<std::string>& names) override {
+    names.clear();
+    if (!dirs.count(dir)) return false;
+    const std::string pre = dir == "/" ? std::string("/") : dir + "/";
+    auto child = [&](const std::string& p) {
+      if (p.size() > pre.size() && p.rfind(pre, 0) == 0 && p.find('/', pre.size()) == std::string::npos)
+        names.push_back(p.substr(pre.size()));
+    };
+    for (const auto& kv : files) child(kv.first);
+    for (const std::string& d : dirs) child(d);
     return true;
   }
 };
@@ -136,6 +155,7 @@ struct Device {
         progressLines.push_back(t);
         return true;
       };
+    d.noCard = [this] { return noCardFitted; };
     binding.reset(new plain::ChatBinding(c, d));
     return binding->boot();
   }
@@ -153,6 +173,7 @@ struct Device {
   std::string provider;   // "" = the binding's default (anthropic)
   std::function<bool(const std::string&)> outside;   // lane E2-TOOLS
   std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
+  bool noCardFitted = false;   // the device has no card at all (EngineDeps::noCard)
   uint32_t ms = 1000;
   sp::ScriptedProvider model;
   Card card;
@@ -202,6 +223,29 @@ void addReadFile(nimbus::orch::ToolRegistry& reg) {
 
 std::string skillMd(const std::string& inject, const std::string& body) {
   return "---\ntitle: Test skill\ndesc: when the bench asks\ninject: " + inject + "\n---\n" + body;
+}
+
+int sentWith(const std::vector<std::string>& sent, const std::string& needle) {
+  int n = 0;
+  for (const std::string& s : sent) n += has(s, needle) ? 1 : 0;
+  return n;
+}
+
+// The q of every whole line of the chat's segments, in file order.
+std::vector<uint64_t> storedQs(const Card& card, const std::string& chat) {
+  std::vector<uint64_t> qs;
+  const std::string pre = "/mem/tx/" + chat + "/seg-";
+  for (const auto& kv : card.files) {
+    if (kv.first.rfind(pre, 0) != 0) continue;
+    const std::string& f = kv.second;
+    for (size_t at = f.find("\"q\":"); at != std::string::npos; at = f.find("\"q\":", at + 4)) {
+      const size_t lineStart = at == 0 ? 0 : f.rfind('\n', at);
+      const size_t start = lineStart == std::string::npos ? 0 : lineStart + 1;
+      if (f.find("\"q\":", start) != at) continue;   // only the first "q" of a line
+      qs.push_back(std::strtoull(f.c_str() + at + 4, nullptr, 10));
+    }
+  }
+  return qs;
 }
 
 }  // namespace
@@ -310,6 +354,7 @@ static void test_the_seen_index_is_rebuilt_from_the_card() {
 static void test_with_no_card_the_chat_runs_in_ram() {
   Device dev;
   dev.card.card = false;
+  dev.noCardFitted = true;   // no card fitted at all: RAM by design, the existing line only
   TEST_ASSERT_TRUE(dev.boot().ok());
   dev.model.push(sp::say("Still here."));
   TEST_ASSERT_TRUE(dev.say("no card today").ok());
@@ -318,6 +363,179 @@ static void test_with_no_card_the_chat_runs_in_ram() {
   TEST_ASSERT_EQUAL_STRING("1001|Still here.", dev.sent[0].c_str());   // the reply first; the engine's one
                                                                      // not-stored line may follow it
   TEST_ASSERT_TRUE(dev.card.files.empty());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  TEST_ASSERT_EQUAL(0, sentWith(dev.sent, plain::kNotLoadedLine));
+}
+
+// Lane E2-STORE, findings S1 and S5 through the binding.
+static void boot_with_one_turn(Device& dev) {
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::say("Noted, the cat is Biscuit."));
+  TEST_ASSERT_TRUE(dev.say("my cat is called Biscuit").ok());
+  dev.binding.reset();   // the restart
+  dev.ms += 60000;
+  dev.sent.clear();
+}
+
+// One exists() that fails at boot: the chat is not opened empty; the turn that follows loads it
+// first, so the model sees the whole conversation and nothing went to the wrong place.
+static void test_a_failed_exists_at_boot_is_not_an_empty_conversation() {
+  Device dev;
+  boot_with_one_turn(dev);
+  const std::map<std::string, std::string> before = dev.card.files;
+  dev.card.failExists = 1;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->unloaded());
+  TEST_ASSERT_TRUE(dev.card.files == before);   // no line, no head file written anywhere
+  dev.model.push(sp::say("Your cat is Biscuit."));
+  TEST_ASSERT_TRUE(dev.say("what is my cat called?").ok());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  TEST_ASSERT_TRUE(has(dev.model.last().body, "my cat is called Biscuit"));
+  TEST_ASSERT_EQUAL(0, sentWith(dev.sent, plain::kNotLoadedLine));
+  const std::vector<uint64_t> qs = storedQs(dev.card, "1001");
+  for (size_t i = 1; i < qs.size(); ++i) TEST_ASSERT_TRUE_MESSAGE(qs[i] > qs[i - 1], "q only rises in file order");
+}
+
+// The card is lost at boot: every outage turn tells the owner, the card's return reloads the
+// conversation before the next turn, the RAM turns follow it once, and a restart keeps them.
+static void test_an_outage_at_boot_reloads_and_stores_the_ram_turns_once() {
+  Device dev;
+  boot_with_one_turn(dev);
+  dev.card.card = false;   // fitted, but lost (sdLost, FAULT sd, a bad seat)
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->unloaded());
+  dev.model.push(sp::say("Rex, noted."));
+  TEST_ASSERT_TRUE(dev.say("my dog is called Rex").ok());
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "Biscuit"));
+  TEST_ASSERT_EQUAL(1, sentWith(dev.sent, plain::kNotLoadedLine));
+  TEST_ASSERT_EQUAL(0, sentWith(dev.sent, "it is kept until the device restarts"));   // not the no-card line
+  dev.model.push(sp::say("Goldie, noted."));
+  TEST_ASSERT_TRUE(dev.say("my fish is called Goldie").ok());
+  TEST_ASSERT_EQUAL(2, sentWith(dev.sent, plain::kNotLoadedLine));   // on every outage turn
+  dev.card.card = true;   // the card answers again
+  dev.model.push(sp::say("Biscuit, Rex and Goldie."));
+  TEST_ASSERT_TRUE(dev.say("name all my pets").ok());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  const std::string body = dev.model.last().body;
+  TEST_ASSERT_TRUE(has(body, "my cat is called Biscuit"));
+  TEST_ASSERT_TRUE(body.find("my cat is called Biscuit") < body.find("my dog is called Rex"));
+  TEST_ASSERT_TRUE(body.find("my dog is called Rex") < body.find("my fish is called Goldie"));
+  TEST_ASSERT_EQUAL(1, count(body, "my dog is called Rex"));
+  TEST_ASSERT_EQUAL(2, sentWith(dev.sent, plain::kNotLoadedLine));   // none once loaded
+  std::string seg;
+  for (const auto& kv : dev.card.files)
+    if (kv.first.find("/seg-") != std::string::npos) seg += kv.second;
+  TEST_ASSERT_EQUAL(1, count(seg, "my dog is called Rex"));
+  TEST_ASSERT_EQUAL(1, count(seg, "my fish is called Goldie"));
+  TEST_ASSERT_EQUAL(1, count(seg, "name all my pets"));
+  const std::vector<uint64_t> qs = storedQs(dev.card, "1001");
+  TEST_ASSERT_TRUE(qs.size() >= 12);   // four turns of at least three lines each
+  for (size_t i = 1; i < qs.size(); ++i) TEST_ASSERT_TRUE_MESSAGE(qs[i] > qs[i - 1], "q only rises in file order");
+  // A restart: the whole conversation, the outage turns included, each once.
+  dev.binding.reset();
+  dev.ms += 60000;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  dev.model.push(sp::say("Still Biscuit, Rex and Goldie."));
+  TEST_ASSERT_TRUE(dev.say("again?").ok());
+  const std::string again = dev.model.last().body;
+  TEST_ASSERT_EQUAL(1, count(again, "my cat is called Biscuit"));
+  TEST_ASSERT_EQUAL(1, count(again, "my dog is called Rex"));
+  TEST_ASSERT_EQUAL(1, count(again, "my fish is called Goldie"));
+  TEST_ASSERT_EQUAL(1, count(again, "name all my pets"));
+}
+
+// A card that keeps refusing: the chat stays in RAM, every turn is kept there and told, nothing
+// is written; a truly new chat (folder absent, parent listed) still opens empty.
+static void test_a_new_chat_opens_empty_and_an_outage_keeps_ram() {
+  Device fresh;
+  TEST_ASSERT_TRUE(fresh.boot().ok());
+  TEST_ASSERT_FALSE(fresh.binding->unloaded());
+  Device dev;
+  dev.card.card = false;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  for (int i = 0; i < 3; ++i) {
+    dev.model.push(sp::say("Kept."));
+    TEST_ASSERT_TRUE(dev.say("turn " + std::to_string(i)).ok());
+  }
+  TEST_ASSERT_TRUE(dev.binding->unloaded());
+  TEST_ASSERT_EQUAL(3, sentWith(dev.sent, plain::kNotLoadedLine));
+  TEST_ASSERT_TRUE(has(dev.model.last().body, "turn 0") && has(dev.model.last().body, "turn 1"));
+  TEST_ASSERT_TRUE(dev.card.files.empty());
+}
+
+// The card comes back but refuses part way through the merge: what landed stays, the rest stays
+// in RAM, the next turn resumes after it; each line lands once, in order.
+static void test_a_merge_cut_part_way_resumes_without_a_second_copy() {
+  Device dev;
+  boot_with_one_turn(dev);
+  dev.card.card = false;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::say("Rex, noted."));
+  TEST_ASSERT_TRUE(dev.say("my dog is called Rex").ok());
+  dev.model.push(sp::say("Goldie, noted."));
+  TEST_ASSERT_TRUE(dev.say("my fish is called Goldie").ok());
+  dev.card.card = true;
+  dev.card.appendsLeft = 2;   // two RAM lines land, then the card refuses
+  dev.model.push(sp::say("Still held."));
+  TEST_ASSERT_TRUE(dev.say("are you there?").ok());
+  TEST_ASSERT_TRUE(dev.binding->unloaded());
+  TEST_ASSERT_EQUAL(3, sentWith(dev.sent, plain::kNotLoadedLine));
+  dev.card.appendsLeft = -1;
+  dev.model.push(sp::say("Biscuit, Rex and Goldie."));
+  TEST_ASSERT_TRUE(dev.say("name all my pets").ok());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  std::string seg;
+  for (const auto& kv : dev.card.files)
+    if (kv.first.find("/seg-") != std::string::npos) seg += kv.second;
+  for (const char* t : {"my cat is called Biscuit", "my dog is called Rex", "my fish is called Goldie", "are you there?",
+                        "name all my pets"})
+    TEST_ASSERT_EQUAL_MESSAGE(1, count(seg, t), t);
+  TEST_ASSERT_TRUE(seg.find("my dog is called Rex") < seg.find("my fish is called Goldie"));
+  TEST_ASSERT_TRUE(seg.find("my fish is called Goldie") < seg.find("are you there?"));
+  const std::vector<uint64_t> qs = storedQs(dev.card, "1001");
+  for (size_t i = 1; i < qs.size(); ++i) TEST_ASSERT_TRUE_MESSAGE(qs[i] > qs[i - 1], "q only rises in file order");
+  const std::string body = dev.model.last().body;
+  TEST_ASSERT_EQUAL(1, count(body, "my dog is called Rex"));
+  TEST_ASSERT_TRUE(has(body, "my cat is called Biscuit") && has(body, "are you there?"));
+}
+
+// Lane E2-INTEG: E2-STORE's reload with E2-VERB's verbatim history. A result stored before the
+// outage (bulk, on the card) and one held in RAM during it are both in the request after the
+// reload, whole, each once.
+static void test_after_a_reload_earlier_results_are_shown_whole() {
+  std::string before, during;
+  for (int i = 0; i < 400; ++i) before += "BEFORE-ROW-" + std::to_string(i) + ";";
+  for (int i = 0; i < 400; ++i) during += "DURING-ROW-" + std::to_string(i) + ";";
+  TEST_ASSERT_TRUE(before.size() > 4096 && during.size() > 4096);
+  Device dev;
+  int calls = 0;
+  dev.reg.add("calc", "Exact decimal arithmetic.", [&](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+    const bool first = calls == 0;
+    ++calls;
+    return nimbus::orch::ToolResult::ok(first ? before : during);
+  }, R"({"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]})");
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.model.push(sp::calls({{"calc", R"({"expression":"1+1"})", ""}}));
+  dev.model.push(sp::say("Fetched the first."));
+  const plain::Status first = dev.say("fetch the first text");
+  TEST_ASSERT_TRUE_MESSAGE(first.ok(), first.where);
+  dev.binding.reset();   // the restart
+  dev.ms += 60000;
+  dev.card.card = false;   // fitted, but lost at boot
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->unloaded());
+  dev.model.push(sp::calls({{"calc", R"({"expression":"2+2"})", ""}}));
+  dev.model.push(sp::say("Fetched the second."));
+  TEST_ASSERT_TRUE(dev.say("fetch the second text").ok());
+  dev.card.card = true;
+  dev.model.push(sp::say("Both texts are here."));
+  TEST_ASSERT_TRUE(dev.say("compare both texts").ok());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  const std::string body = dev.model.last().body;
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(body, before), "the stored result, whole");
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(body, during), "the RAM-held result, whole");
+  TEST_ASSERT_TRUE(body.find(before) < body.find(during));
 }
 
 static void test_a_photo_reaches_its_own_turn_once_as_an_image() {
@@ -459,5 +677,10 @@ int main(int, char**) {
   RUN_TEST(test_a_turns_usage_is_handed_over_once);
   RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);
   RUN_TEST(test_the_progress_line_is_bound_and_a_short_turn_sends_none);
+  RUN_TEST(test_a_failed_exists_at_boot_is_not_an_empty_conversation);
+  RUN_TEST(test_an_outage_at_boot_reloads_and_stores_the_ram_turns_once);
+  RUN_TEST(test_a_new_chat_opens_empty_and_an_outage_keeps_ram);
+  RUN_TEST(test_a_merge_cut_part_way_resumes_without_a_second_copy);
+  RUN_TEST(test_after_a_reload_earlier_results_are_shown_whole);
   return UNITY_END();
 }

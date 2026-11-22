@@ -135,6 +135,10 @@ struct EngineDeps {
   // about to leave (ProgressKind::ProviderWait). The binding forwards them to its
   // ProgressReporter (RB-E3's status-line class); null: nothing is reported.
   std::function<void(const ProgressEvent& e)> progress;
+  // True when the device has no card fitted at all: an Io from the log's open() then means
+  // the chat runs from RAM by design. Null or false: an Io is an outage, the chat is unloaded
+  // and reopen() loads it when storage answers (lane E2-STORE).
+  std::function<bool()> noCard;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before
@@ -184,6 +188,15 @@ class PlainEngine {
   // Once at boot: open the log (Io: run from RAM), fill the arena after thru, load the
   // digests, then the bootResume seam.
   Status boot(const BootCtx& ctx);
+  // The stored conversation could not be loaded at boot (open() answered Io and a card is
+  // fitted, EngineDeps::noCard): the chat runs from RAM and nothing is written to the log
+  // (lane E2-STORE, finding S5).
+  bool unloaded() const;
+  // While unloaded, before a turn: open the log again, append every item held in RAM after
+  // the stored conversation (in order, renumbered past it, each once), then refill the arena
+  // from the log. Not ok: still unloaded, nothing held in RAM given up (the next call resumes
+  // after the items already appended). Success and no change when the chat is loaded.
+  Status reopen();
 
   const EngineDeps& deps() const { return deps_; }
   // The chat's head state, shared with the compaction driver (RB-C2), which moves thru and

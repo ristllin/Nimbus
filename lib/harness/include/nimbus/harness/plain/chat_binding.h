@@ -92,7 +92,16 @@ struct ChatBindingDeps {
   // every boot, before the engine opens the log (tx/migrate.h's contract), and only for the chat's
   // own key: a key /clear started (<chat>_c<n>) is never filled.
   std::function<bool(nimbus::orch::tx::MigrateDeps&)> oldEngine;
+  // True when no card is fitted at all (the chat runs from RAM by design); null: a card is
+  // fitted, so a log that cannot open is an outage (EngineDeps::noCard, lane E2-STORE).
+  std::function<bool()> noCard;
 };
+
+// The owner's line on every turn while the stored conversation could not be loaded (lane
+// E2-STORE, finding S5). Owner-facing only: sent to the owner's chat after the turn, never
+// stored and never shown to a model.
+inline constexpr char kNotLoadedLine[] =
+    "The stored conversation could not be loaded; what you say now is kept in memory only until the card is back.";
 
 struct ChatBindingConfig {
   std::string chatKey;                           // the transcript key (/mem/tx/<chatKey>)
@@ -199,8 +208,26 @@ class ChatBinding {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::boot.memory");
     }
     if (!st.ok()) return fail(st);
+    if (engine_->unloaded()) say("e2: the stored conversation could not be loaded: held in RAM, retried before each turn");
     rebuildSeen();
     return st;
+  }
+
+  // The stored conversation could not be loaded and is not yet (the owner's line is due).
+  bool unloaded() const { return engine_ && engine_->unloaded(); }
+  // While unloaded: open the log again and store the RAM turns after the conversation
+  // (PlainEngine::reopen), then rebuild the seen index. True when the chat is loaded after it.
+  bool reload() {
+    if (!engine_) return false;
+    if (!engine_->unloaded()) return true;
+    const Status r = engine_->reopen();
+    if (engine_->unloaded()) {
+      if (!r.ok()) say("e2: the stored conversation still cannot be loaded: this turn is held in RAM");
+      return false;
+    }
+    say("e2: the stored conversation is loaded again; the turns held in RAM are stored after it");
+    rebuildSeen();
+    return true;
   }
 
   // One person's message through the loop. The breaker admits every person's message (it holds
@@ -226,12 +253,16 @@ class ChatBinding {
     in.tzMinutes = msg.tzMinutes;
     in.m = msg.m;
     in.parts = msg.parts;
+    // Lane E2-STORE: a chat whose stored conversation could not be loaded tries again before
+    // the turn, so the turn sees the whole conversation as soon as the card answers.
+    reload();
     Status st;
     try {
       st = engine_->runTurn(in, out);
     } catch (const std::bad_alloc&) {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
     }
+    if (engine_->unloaded() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, kNotLoadedLine);
     breaker_.spent(/*person=*/true, out.end.microUsd, d_.platform->nowMs());
     if (reporter_) reporter_->close(d_.platform->nowMs());
     if (d_.usage) d_.usage(out);
@@ -537,6 +568,7 @@ class ChatBinding {
       e.progress = [this](const ProgressEvent& ev) {
         if (reporter_) (void)reporter_->tick(ev);
       };
+    e.noCard = d_.noCard;
     return e;
   }
 

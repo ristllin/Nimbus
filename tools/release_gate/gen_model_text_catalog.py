@@ -166,7 +166,9 @@ NON_MODEL_FILES: dict = {
     # (a head that is not Claude, no key, the monthly limit, a chat that could not start), its fold status
     # line, a routine's refusal reason and log lines.
     "lib/harness/include/nimbus/harness/plain/chat_binding.h": "E2-DEV: the device chat binding's log lines (through "
-    "its log callback), never sent to a model or an owner",
+    "its log callback), never sent to a model or an owner; E2-STORE: kNotLoadedLine, the owner's line on each turn while "
+    "the stored conversation could not be loaded, sent to the owner's chat after the turn, never stored or shown to a "
+    "model",
     "src/agent/orchestrator_plain.cpp": "E2-DEV: the engine-2 seam's owner-facing refusal lines (not Claude, no key, "
     "monthly limit, could not start, still reading the earlier conversation), its fold status line and its "
     "no-routines reason, device copy; the model's text is the engine's. E2-CHAT: the too-large skill line and the /budget view (coverage/PROMPT-CHANGES.md PC-0177, "

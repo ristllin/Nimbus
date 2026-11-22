@@ -726,6 +726,7 @@ Status TxLog::open(HeadState& head) {
   if (!st.ok()) return Status::fail(Err::InvalidArgument, "tx::TxLog::open");
   std::vector<uint32_t> segs;
   if (!(st = segments(segs)).ok()) return st;
+  if (segs.empty() && !(st = provenFresh()).ok()) return st;
   HeadState h;
   bool have = segs.empty();
   // The temp first: a whole one exists only when a cut or a refusal stopped its rename, so
@@ -741,6 +742,25 @@ Status TxLog::open(HeadState& head) {
   h.end = segBytes_;
   head = h;
   if (rebuilt) (void)writeHead(h);   // best effort: the next boot does not rebuild again
+  return Status::success();
+}
+
+// No segment is listed: a fresh chat only when nothing of an earlier one can be read (lane
+// E2-STORE, finding S1). A head file that names stored items, or a first segment that answers
+// a size, means the listing missed them: Io (cannot tell), never an empty conversation. A head
+// file that is missing or torn names nothing; one that names nothing yet (next_q 1, no line,
+// no digest) is a chat that never stored an item.
+Status TxLog::provenFresh() {
+  const Status cannotTell = Status::fail(Err::Io, "tx::TxLog::open: no segment listed, yet the chat has stored state");
+  for (const char* name : {kHeadTmpName, kHeadName}) {
+    HeadState h;
+    const Status st = readHeadFile(dir_ + "/" + name, h);
+    if (st.err == Err::Io) return st;
+    if (st.ok() && (h.nextQ > 1 || h.endQ || h.end || h.seg > 1 || h.thru || h.stub)) return cannotTell;
+  }
+  std::string path;
+  size_t size = 0;
+  if (segmentPath(chatKey_, 1, path).ok() && files_.size(path, size)) return cannotTell;
   return Status::success();
 }
 

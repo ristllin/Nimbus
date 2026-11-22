@@ -4,7 +4,12 @@
 #include <FS.h>
 #include <esp_heap_caps.h>
 
+#include <dirent.h>
+#include <errno.h>
+
+#include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "memory_subsystem.h"   // the card lock, dataFs, haveSd
 #include "nimbus/fault.h"       // FAULT sd_io
@@ -79,16 +84,49 @@ class SdCard : public nimbus::orch::tx::CardOps {
     return memory::dataFs().rename(from.c_str(), to.c_str());
   }
   bool remove(const std::string& path) override { return memory::dataFs().remove(path.c_str()); }
+  // Both listings walk the folder with POSIX readdir (lane E2-STORE): File::openNextFile ends
+  // the walk on a refused allocation or a read error as if the folder ended, so a short
+  // listing could not be told from a whole one. Here errno tells them apart.
   bool listFiles(const std::string& dir, std::vector<std::string>& names) override {
-    File d = memory::dataFs().open(dir.c_str());
-    if (!d || !d.isDirectory()) return false;
-    for (File e = d.openNextFile(); e; e = d.openNextFile()) {
-      if (e.isDirectory()) continue;
-      const char* slash = strrchr(e.path(), '/');   // the bare name, as files_subsystem reads it
-      names.emplace_back(slash ? slash + 1 : e.name());
+    return walk(dir, names, /*withFolders=*/false);
+  }
+  bool listNames(const std::string& dir, std::vector<std::string>& names) override {
+    return walk(dir, names, /*withFolders=*/true);
+  }
+
+ private:
+  static constexpr size_t kVfsPathMax = 160;
+  // The bare names of `dir`'s entries; false on any failure (no partial answer).
+  static bool walk(const std::string& dir, std::vector<std::string>& names, bool withFolders) {
+    names.clear();
+    const char* mp = memory::dataFs().mountpoint();
+    char vp[kVfsPathMax];
+    if (!mp) return false;
+    const int n = snprintf(vp, sizeof(vp), "%s%s", mp, dir.c_str());
+    if (n <= 0 || n >= (int)sizeof(vp)) return false;
+    DIR* d = opendir(vp);
+    if (!d) return false;
+    bool ok = true;
+    for (;;) {
+      errno = 0;
+      struct dirent* e = readdir(d);
+      if (!e) {
+        ok = errno == 0;   // the end of the folder, or a read error
+        break;
+      }
+      if (e->d_name[0] == '.' && (e->d_name[1] == '\0' || (e->d_name[1] == '.' && e->d_name[2] == '\0'))) continue;
+      // Every name counts as present for the absence proof; files are the regular entries.
+      if (!withFolders && e->d_type != DT_REG) continue;
+      try {
+        names.emplace_back(e->d_name);
+      } catch (const std::bad_alloc&) {
+        ok = false;
+        break;
+      }
     }
-    d.close();
-    return true;
+    closedir(d);
+    if (!ok) names.clear();
+    return ok;
   }
 };
 

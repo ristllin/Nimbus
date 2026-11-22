@@ -233,6 +233,7 @@ class PlainRig {
     in.text = text;
     in.ch = ch;
     in.tzMinutes = cfg_.tzNow ? cfg_.tzNow() : cfg_.tzMinutes;
+    (void)engine_->reopen();   // E2-STORE: a log that did not open at boot is opened again first
     t.status = engine_->runTurn(in, t.out);
     t.sent.swap(sent_);
     t.unsent.swap(unsent_);

@@ -62,6 +62,7 @@
 #include "loops_subsystem.h"    // checkDue, routineGrants, quietHoursEndMinute (lane E2-SCHED)
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
+#include "nimbus/fault.h"       // FAULT sd: a card that is fitted but faulted
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
@@ -314,14 +315,31 @@ void logImport(const plain::ChatBinding& b) {
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 }
 
+// The resident binding when it serves this message (`keep`), else it is let go and `keep` is
+// false. E2-STORE: a binding whose turns are held only in RAM (the card did not answer at its
+// boot) is never dropped with them (ruling 81). Its own chat and role keep it, on its model and
+// conversation, until the card is back; another chat or role is refused meanwhile (null, keep true).
+plain::ChatBinding* residentFor(const String& chatId, const std::string& model, nimbus::orch::Role role, bool& keep) {
+  keep = false;
+  if (!s_chat) return nullptr;
+  const plain::ChatBindingConfig& c = s_chat->config();
+  const bool same = c.chatId == chatId.c_str() && c.role == role;
+  keep = same && c.chatKey == txKeyFor(chatId) && c.model == model;
+  if (keep) return s_chat.get();
+  if (!s_chat->reload()) {
+    alogf("e2: chat %s keeps its RAM-only binding until the card is back", c.chatId.c_str());
+    keep = true;
+    return same ? s_chat.get() : nullptr;
+  }
+  s_chat.reset();   // another chat, model or role: the arena goes back before the next one
+  return nullptr;
+}
+
 // The chat's binding for this model and role, booted (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
-  if (s_chat) {
-    const plain::ChatBindingConfig& c = s_chat->config();
-    if (c.chatId == chatId.c_str() && c.chatKey == txKeyFor(chatId) && c.model == model && c.role == role)
-      return s_chat.get();
-    s_chat.reset();   // another chat, model or role: the arena goes back before the next one
-  }
+  bool keep = false;
+  plain::ChatBinding* resident = residentFor(chatId, model, role, keep);
+  if (keep) return resident;
   plain::ChatBindingConfig cfg;
   cfg.chatKey = txKeyFor(chatId);
   cfg.chatId = chatId.c_str();
@@ -366,6 +384,9 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
       return telegram::turnProgressLine(String(chat.c_str()), String(text.c_str()));
     };
   d.oldEngine = migratedev::fill;   // E2-MIG: the earlier engine's conversation, before the log opens
+  // No card fitted at all (none mounted at begin()): the chat runs from RAM by design. A card
+  // that is lost, faulted or not answering is an outage: the binding reloads it (E2-STORE).
+  d.noCard = [] { return !memory::haveSd() && !memory::sdLost() && !nimbus::fault::active(nimbus::fault::SD); };
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();
@@ -530,6 +551,12 @@ plain::ChatBinding* bindingFor(const String& chatId) {
 }
 
 bool clearChat(const String& chatId) {
+  // E2-STORE with E2-CHAT: a binding whose turns are held only in RAM is never dropped with them
+  // (ruling 81). The conversation stays as it is until the card is back.
+  if (s_chat && s_chat->config().chatId == chatId.c_str() && !s_chat->reload()) {
+    alogf("e2: /clear %s refused: the turns held in RAM are not stored yet", chatId.c_str());
+    return false;
+  }
   const uint32_t next = generationOf(chatId) + 1;
   const std::string g = std::to_string(next);
   if (!txdev::cardTxFiles().writeWhole(genPath(chatId), g)) alogf("e2: /clear generation %s kept in RAM only", g.c_str());

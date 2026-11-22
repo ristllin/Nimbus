@@ -81,7 +81,8 @@ inline constexpr size_t kBulkChunkBytes = 32 * 1024;  // one bulk append: about 
 // - writeWhole creates or replaces the file;
 // - rename replaces an existing `to` (a binding whose filesystem cannot, removes `to`
 //   first: a cut between the two leaves only head.json.tmp, which open() reads);
-// - list of a missing folder answers true with no names; names are bare (no folder).
+// - list of a missing folder answers true with no names, only when the folder is known to be
+//   absent; a listing that failed answers false (never "empty"); names are bare (no folder).
 class TxFiles {
  public:
   virtual ~TxFiles() = default;
@@ -141,8 +142,10 @@ class TxLog {
 
   // Find the open segment and the state: head.json (or its temp) when it checks out, with
   // the lines after it caught up; else a rebuild from the segments. A chat with no segment
-  // yet answers a fresh HeadState. InvalidArgument for an unsafe chat key; Io when the
-  // storage refuses (no card): the log stays closed and every append answers NotStored.
+  // yet answers a fresh HeadState, but only when no head file naming stored items and no
+  // first segment can be read (else Io: the listing missed them). InvalidArgument for an
+  // unsafe chat key; Io when the storage refuses or cannot tell (no card, a failed listing):
+  // the log stays closed and every append answers NotStored.
   Status open(HeadState& head);
   // One append of one encoded item to the open segment (rolling at kSegmentRollBytes).
   // NotStored when the storage refused: the caller keeps the item in RAM. TooLarge or
@@ -191,6 +194,9 @@ class TxLog {
 
   const std::string& chatKey() const { return chatKey_; }
   bool isOpen() const { return open_; }
+  // The log stops writing until the next open() (a binding that holds items it has not yet
+  // ordered after the stored ones; lane E2-STORE). Nothing on storage changes.
+  void close() { open_ = false; }
   uint32_t segment() const { return seg_; }
   uint64_t segmentBytes() const { return segBytes_; }
   // The highest q this log has seen stored (open() and successful appends).
@@ -216,6 +222,7 @@ class TxLog {
   Status writeLine(const char* line, size_t len, uint64_t q, StoreState& state);
   Status syncTail();
   Status segments(std::vector<uint32_t>& out);
+  Status provenFresh();
   Status readHeadFile(const std::string& path, HeadState& out);
   Status checkHead(const HeadState& head, const std::vector<uint32_t>& segs);
   bool lastLineOk(const HeadState& head);

@@ -16,7 +16,8 @@
 // bounce buffer and the TLS handshake share that memory).
 //
 // Each call is one card step under the card lock. A refusal answers false and never throws, so
-// the log runs from RAM with no card (TxLog::open answers Io, appends NotStored). Nothing here
+// the log runs from RAM with no card (TxLog::open answers Io, appends NotStored). list() answers
+// "no files" only on positive evidence that the folder is absent; a failure is never "empty". Nothing here
 // cuts, drops or rewrites stored bytes: append only adds at the end, writeWhole replaces one whole
 // file the log names (head.json.tmp), rename replaces its target (FAT cannot rename over a file:
 // the target is removed first, as the TxFiles contract allows; a cut between the two leaves only
@@ -46,8 +47,13 @@ class CardOps {
   virtual size_t writeWhole(const std::string& path, const char* data, size_t len) = 0;   // bytes written
   virtual bool rename(const std::string& from, const std::string& to) = 0;   // `to` must not exist
   virtual bool remove(const std::string& path) = 0;
-  // The bare names of the files (not folders) in an existing folder.
+  // The bare names of the files (not folders) in an existing folder. false on any failure,
+  // never a short listing.
   virtual bool listFiles(const std::string& dir, std::vector<std::string>& names) = 0;
+  // The bare names of every entry (files and folders) of an existing folder. false on any
+  // failure (a missing folder included), never a short listing: a name missing from a true
+  // answer is positive evidence that the folder does not hold it (lane E2-STORE).
+  virtual bool listNames(const std::string& dir, std::vector<std::string>& names) = 0;
 };
 
 // The largest free internal block a card write needs left (DECISION, lane E2-DEV): the SD
@@ -108,13 +114,21 @@ class CardTxFiles : public TxFiles {
     Hold h(card_, holds_.wholeMs);
     return card_.remove(path);
   }
+  // Three answers (lane E2-STORE, finding S1): the folder's files; true with no names only
+  // when the folder is proven absent (its parent listed and does not hold the name, or the
+  // parent is proven absent the same way); false when it cannot tell. An exists() that
+  // answers false is not evidence: a bad read or a refused allocation answers false too.
   bool list(const std::string& dir, std::vector<std::string>& names) override {
     names.clear();
     if (!(inside(dir + "/") || dir + "/" == prefix_) || !card_.present()) return false;   // the root itself lists too
     Hold h(card_, holds_.listMs);
-    if (!card_.exists(dir)) return true;   // no folder yet: no files (a card is there)
-    if (!card_.isDir(dir)) return false;
-    return card_.listFiles(dir, names);
+    if (card_.exists(dir)) {
+      if (!card_.isDir(dir)) return false;
+      if (card_.listFiles(dir, names)) return true;
+      names.clear();
+      return false;
+    }
+    return provenAbsent(dir);
   }
 
   const CardHolds& holds() const { return holds_; }
@@ -148,6 +162,26 @@ class CardTxFiles : public TxFiles {
     if (!card_.mayWrite()) return ++holds_.refusedTask, false;
     if (card_.largestInternal() < floor_) return ++holds_.refusedFloor, false;
     return true;
+  }
+  // `path` is not on the card: its parent listed whole and holds no such name, or the parent
+  // is itself proven absent. Any failure on the way (the root's listing included) answers
+  // false: cannot tell. The card lock held; at most one listing per level.
+  bool provenAbsent(const std::string& path) {
+    std::string at = path;
+    std::vector<std::string> entries;
+    for (;;) {   // a loop, not a recursion: one level up per pass (the tg_poll stack gate)
+      const size_t slash = at.rfind('/');
+      if (slash == std::string::npos || slash + 1 >= at.size()) return false;
+      const std::string parent = slash == 0 ? std::string("/") : at.substr(0, slash);
+      if (card_.listNames(parent, entries)) {
+        const std::string name = at.substr(slash + 1);
+        for (const std::string& e : entries)
+          if (e == name) return false;   // there, yet exists() said no: cannot tell
+        return true;
+      }
+      if (parent == "/" || card_.exists(parent)) return false;   // the parent is there: cannot tell
+      at = parent;
+    }
   }
   // Every folder from /mem down to the file's own (the card lock held).
   bool makeParents(const std::string& path) {

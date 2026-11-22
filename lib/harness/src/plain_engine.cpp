@@ -4,6 +4,7 @@
 #include "nimbus/harness/plain/engine.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -50,6 +51,16 @@ struct PlainEngine::ChatState {
   uint32_t lastDroppedTurn = 0;        // the newest turn a drop reached (counted once)
   // The memory line, built at boot: on a refused allocation it goes out with no allocation.
   std::string memoryLine;
+  // The stored conversation could not be loaded (lane E2-STORE, finding S5): open() answered Io
+  // on a device with a card fitted. The chat runs from RAM, the log stays closed, and reopen()
+  // stores the RAM items after the stored conversation once the card answers. mergedThru is
+  // the newest RAM q already appended; qShift and turnShift move RAM numbers past the stored
+  // ones (set at the first append, kept across retries so a partial merge resumes in order).
+  bool unloaded = false;
+  bool shiftSet = false;
+  uint64_t mergedThru = 0;
+  uint64_t qShift = 0;
+  uint32_t turnShift = 0;
 };
 
 namespace {
@@ -224,6 +235,7 @@ class TurnRun {
   // item of the open turn (q at or above firstQ; before the turn stores anything, every resident
   // item is closed). False when nothing closed is resident.
   bool dropOldestClosed() {
+    if (c_.unloaded) return false;   // RAM is the only copy: nothing leaves it (ruling 81)
     uint32_t through = 0;
     const size_t end = dropEnd(closedPrefix(through), through);
     uint64_t lastQ = 0;
@@ -1424,7 +1436,7 @@ class TurnRun {
   void closingFacts() {
     if (t_.cause.empty()) t_.cause = "stopped";
     if (t_.storeFailed) refusedLine();
-    else if (t_.storageLineDue) setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
+    else if (t_.storageLineDue && !c_.unloaded) setStatus(StatusLine::StorageState, texts::device_notes::kStorageLine);
     if (t_.sawOutside) event("change:outside");
     if (t_.sawMeta) event("change:thinking");   // closed-turn thinking is not replayed (ruling 13)
     if (t_.longArgs) event("change:long-args");   // its long arguments show as stubs from now (RB-H81)
@@ -1651,6 +1663,8 @@ void syncClosed(PlainEngine::ChatState& c, const tx::TxArena& arena) {
 }  // namespace
 
 PlainEngine::PlainEngine(const EngineDeps& deps) : deps_(deps), chat_(new (std::nothrow) ChatState()) {}
+
+bool PlainEngine::unloaded() const { return chat_ && chat_->booted && chat_->unloaded; }
 PlainEngine::~PlainEngine() = default;
 
 tx::HeadState* PlainEngine::head() { return chat_ && chat_->booted ? &chat_->head : nullptr; }
@@ -1715,14 +1729,35 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
 Status PlainEngine::idle(const IdleCtx& ctx, IdleOutcome& out) {
   out = IdleOutcome{};
   if (!chat_ || !chat_->booted) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::idle");
+  if (chat_->unloaded) return Status::success();   // no compaction over RAM-only numbers
   if (deps_.hooks) out = deps_.hooks->runIdleStep(ctx);
   return Status::success();
 }
 
 namespace {
 
-// The chat from storage at boot: the log opened (Io: no card, the chat runs from RAM), the arena
-// filled after thru, the next q and the last turn, the digests in force.
+// What the filled arena says about the chat: the next q, the last turn, the last closed turn
+// and the digests in force.
+void settleLoaded(const EngineDeps& deps, PlainEngine::ChatState& c) {
+  c.nextQ = std::max<uint64_t>(std::max<uint64_t>(c.head.nextQ, deps.arena->lastQ() + 1), 1);
+  for (size_t i = 0; i < deps.arena->count(); ++i) {
+    tx::ArenaEntry e;
+    if (!deps.arena->header(i, e).ok()) continue;
+    c.lastTurn = std::max(c.lastTurn, e.turn);
+    if (e.kind == tx::ItemKind::TurnEnd) c.lastClosedQ = e.q;
+  }
+  c.live.clear();
+  if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
+    std::string block;
+    tx::SettleReport rep;
+    (void)tx::settleDigests(*deps.files, deps.chatKey, tx::profileOfHead(c.head.profile), c.live, block, rep);
+  }
+}
+
+// The chat from storage at boot: the log opened, the arena filled after thru, then
+// settleLoaded. Io: on a device with no card fitted (EngineDeps::noCard) the chat runs from RAM
+// by design; with a card fitted the chat is marked unloaded (the stored conversation exists or
+// cannot be ruled out) and reopen() loads it later.
 Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
   c = PlainEngine::ChatState{};
   c.memoryLine = texts::device_notes::kNoMemory;
@@ -1732,20 +1767,130 @@ Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
     tx::FillReport report;
     if (!(st = deps.log->fill(c.head, *deps.arena, report)).ok()) return st;
     c.droppedThru = report.droppedThru;
+  } else {
+    c.unloaded = !(deps.noCard && deps.noCard());
+    if (c.unloaded) hlog::logf("plain(%s): the stored conversation could not be loaded: held in RAM", deps.chatKey.c_str());
   }
-  c.nextQ = std::max<uint64_t>(std::max<uint64_t>(c.head.nextQ, deps.arena->lastQ() + 1), 1);
-  for (size_t i = 0; i < deps.arena->count(); ++i) {
-    tx::ArenaEntry e;
-    if (!deps.arena->header(i, e).ok()) continue;
-    c.lastTurn = std::max(c.lastTurn, e.turn);
-    if (e.kind == tx::ItemKind::TurnEnd) c.lastClosedQ = e.q;
-  }
-  if (deps.files && deps.log->isOpen() && tx::loadDigests(*deps.files, deps.chatKey, c.head, c.live).ok()) {
-    std::string block;
-    tx::SettleReport rep;
-    (void)tx::settleDigests(*deps.files, deps.chatKey, tx::profileOfHead(c.head.profile), c.live, block, rep);
-  }
+  settleLoaded(deps, c);
   c.booted = true;
+  return Status::success();
+}
+
+// A RAM item's own numbers moved past the stored ones, and the pointers its stub or long-text
+// head wrote ("r<q>", "view id=r<q>") moved with them. Only device-written fields are touched;
+// the owner's and the model's words are never rewritten.
+bool isDigit(char ch) { return ch >= '0' && ch <= '9'; }
+
+// "r<digits>" at `i`, after a space, '=' or '(' and not followed by a digit: its number and end.
+bool pointerAt(const std::string& s, size_t i, size_t& end, uint64_t& q) {
+  if (s[i] != 'r' || i == 0 || (s[i - 1] != ' ' && s[i - 1] != '=' && s[i - 1] != '(')) return false;
+  end = i + 1;
+  while (end < s.size() && isDigit(s[end])) ++end;
+  if (end == i + 1 || end - i > 20) return false;
+  q = std::strtoull(s.substr(i + 1, end - i - 1).c_str(), nullptr, 10);
+  return true;
+}
+
+void shiftPointers(std::string& s, uint64_t lastRamQ, uint64_t shift) {
+  if (!shift || s.empty()) return;
+  std::string out;
+  out.reserve(s.size() + 16);
+  for (size_t i = 0; i < s.size();) {
+    size_t end = 0;
+    uint64_t q = 0;
+    if (pointerAt(s, i, end, q) && q >= 1 && q <= lastRamQ) {
+      out += 'r';
+      out += std::to_string(q + shift);
+      i = end;
+      continue;
+    }
+    out += s[i++];
+  }
+  s.swap(out);
+}
+
+uint32_t turnRoom(uint64_t shift) { return static_cast<uint32_t>(std::min<uint64_t>(shift, UINT32_MAX / 2)); }
+
+// The RAM items after the stored conversation, in order, each once (lane E2-STORE, finding S5).
+// The first append fixes the shifts: q past the stored next q, turn past it too (a turn number
+// is never above its items' q). A refusal stops the merge with what is left still in RAM; the
+// next reopen() resumes after mergedThru.
+Status mergeRam(const EngineDeps& deps, PlainEngine::ChatState& c) {
+  const uint64_t lastRamQ = c.nextQ ? c.nextQ - 1 : 0;
+  for (size_t i = 0; i < deps.arena->count(); ++i) {
+    tx::Item it;
+    Status st = deps.arena->get(i, it);
+    if (!st.ok()) return st;
+    if (it.q <= c.mergedThru) continue;
+    const uint64_t storedNext = deps.log->lastQ() + 1;
+    if (!c.shiftSet) {
+      c.qShift = storedNext > it.q ? storedNext - it.q : 0;
+      c.turnShift = it.turn && storedNext > it.turn ? turnRoom(storedNext - it.turn) : 0;
+      c.shiftSet = true;
+    } else if (it.q + c.qShift < storedNext) {   // a line the log counted that is not ours
+      const uint64_t extra = storedNext - (it.q + c.qShift);
+      c.qShift += extra;
+      c.turnShift = turnRoom(c.turnShift + extra);
+    }
+    const uint64_t ramQ = it.q;
+    it.q += c.qShift;
+    if (it.turn) it.turn += c.turnShift;
+    shiftPointers(it.st, lastRamQ, c.qShift);
+    if (it.kind == tx::ItemKind::Assistant && !it.handle.empty()) shiftPointers(it.x, lastRamQ, c.qShift);
+    tx::StoreState state = tx::StoreState::NotStored;
+    st = deps.log->append(it, state);
+    if (!st.ok()) return st;
+    if (state != tx::StoreState::Stored) return Status::fail(Err::NotStored, "plain::reopen.merge");
+    c.mergedThru = ramQ;
+  }
+  return Status::success();
+}
+
+// reopen(): open the log, merge, refill the arena from the log. Any refusal closes the log again
+// (nothing more is written until the merge can finish) and leaves the chat unloaded.
+Status reopenChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
+  tx::HeadState h;
+  Status st = deps.log->open(h);
+  if (st.ok()) st = mergeRam(deps, c);
+  if (!st.ok()) {
+    deps.log->close();
+    return st;
+  }
+  // Every RAM item is on the card now: the arena is refilled from the log, so it holds the
+  // stored conversation and the merged turns under their stored numbers.
+  const uint32_t lastTurn = c.lastTurn + c.turnShift;
+  h.nextQ = std::max<uint64_t>(h.nextQ, deps.log->lastQ() + 1);
+  deps.arena->clear();
+  tx::FillReport report;
+  try {
+    st = deps.log->fill(h, *deps.arena, report);
+  } catch (const std::bad_alloc&) {
+    st = Status::fail(Err::TooLarge, "plain::reopen.fill");
+  }
+  if (!st.ok()) {
+    // A partial fill: what the arena holds is stored, what it misses is on the card. The chat
+    // stays unloaded (closed log) with every q up to the log's last counted as merged.
+    deps.log->close();
+    c.mergedThru = std::max(deps.log->lastQ(), deps.arena->lastQ());
+    c.qShift = 0;
+    c.turnShift = 0;
+    c.shiftSet = false;
+    c.lastTurn = lastTurn;
+    c.nextQ = std::max<uint64_t>(c.nextQ, c.mergedThru + 1);
+    return st;
+  }
+  const std::string memoryLine = c.memoryLine;
+  tx::RecentFilesBlock recent = c.recent;
+  c = PlainEngine::ChatState{};   // afterRestart: the next turn opens cold over the whole conversation
+  c.memoryLine = memoryLine;
+  c.recent = recent;
+  c.head = h;
+  c.droppedThru = report.droppedThru;
+  settleLoaded(deps, c);
+  c.lastTurn = std::max(c.lastTurn, lastTurn);
+  c.booted = true;
+  (void)deps.log->writeHead(c.head);   // a cache: Io loses nothing
+  hlog::logf("plain(%s): the stored conversation is loaded again; the RAM turns follow it", deps.chatKey.c_str());
   return Status::success();
 }
 
@@ -1766,6 +1911,17 @@ Status PlainEngine::boot(const BootCtx& ctx) {
     return deps_.hooks ? deps_.hooks->runBootResume(ctx) : Status::success();
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "plain::PlainEngine::boot.memory");
+  }
+}
+
+Status PlainEngine::reopen() {
+  if (!depsReady(deps_) || !chat_ || !chat_->booted) return Status::fail(Err::InvalidArgument, "plain::PlainEngine::reopen");
+  if (!chat_->unloaded) return Status::success();
+  try {
+    return reopenChat(deps_, *chat_);
+  } catch (const std::bad_alloc&) {
+    deps_.log->close();   // a refusal before the refill: the arena still holds every RAM item
+    return Status::fail(Err::TooLarge, "plain::PlainEngine::reopen.memory");
   }
 }
 
