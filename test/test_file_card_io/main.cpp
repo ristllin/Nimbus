@@ -7,12 +7,18 @@
 //   - the storage rule (ruling 112): a file longer on the card than its index entry is appended to at its real
 //     end and loses nothing; a read and an edit see the whole stored file; a file on the card with no index
 //     entry is never written over or appended to; nothing is ever cut (the fake card has no truncate);
-//   - a short append keeps what landed in an existing file, and removes a file the call itself created;
-//   - a replace uses the old engine's swap paths and leaves no backup, note or part behind.
+//   - a replace uses the old engine's swap paths and leaves no backup, note or part behind;
+//   - lane E2-FSAFE: a short append is undone in its hold (the file byte-identical, the failure said) and a
+//     failed cut-back says how many bytes landed (S2); a web upload in progress refuses every change (S4);
+//     a power cut before every card operation of write, replace, append, edit and delete leaves the old file
+//     or the new one with the index agreeing after the boot recovery (the swap's, then the journal note's;
+//     S6, S8); an append whose file another writer replaced between its holds decides its fence again (S7).
 #include <unity.h>
 
 #include <ArduinoJson.h>
 
+#include <functional>
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <set>
@@ -30,27 +36,36 @@ void tearDown() {}
 
 namespace {
 
+// The power going off before a card operation (thrown from the fake card; nothing after it runs).
+struct PowerCut {};
+
 // A card: files by absolute path, directories, FAT's rename (never over an existing file).
 struct FakeCard : orch::FileCard {
   std::map<std::string, std::string> files;
   std::set<std::string> dirs;
   long shortAppendAt = -1;   // the next append lands only this many bytes
+  bool truncateFails = false;
   int ops = 0;
+  int cutAt = -1;            // the power goes off before the changing operation with this number (1 = the first)
 
+  void step() {
+    if (++ops == cutAt) throw PowerCut{};
+  }
   bool exists(const std::string& p) override { return files.count(p) || dirs.count(p); }
   bool rename(const std::string& a, const std::string& b) override {
-    ++ops;
+    step();
     if (!files.count(a) || files.count(b)) return false;
     files[b] = files[a];
     files.erase(a);
     return true;
   }
   bool remove(const std::string& p) override {
-    ++ops;
+    if (!files.count(p)) return false;
+    step();
     return files.erase(p) > 0;
   }
   bool writeText(const std::string& p, const std::string& t) override {
-    ++ops;
+    step();
     files[p] = t;
     return true;
   }
@@ -64,14 +79,14 @@ struct FakeCard : orch::FileCard {
     return true;
   }
   bool append(const std::string& p, std::string_view bytes, size_t& landed) override {
-    ++ops;
+    step();
     landed = shortAppendAt >= 0 && size_t(shortAppendAt) < bytes.size() ? size_t(shortAppendAt) : bytes.size();
     shortAppendAt = -1;
     files[p].append(bytes.data(), landed);
     return true;
   }
   bool write(const std::string& p, std::string_view bytes, bool first) override {
-    ++ops;
+    step();
     if (first) files[p].clear();
     files[p].append(bytes.data(), bytes.size());
     return true;
@@ -80,12 +95,19 @@ struct FakeCard : orch::FileCard {
     dirs.insert(d);
     return true;
   }
+  bool truncate(const std::string& p, uint64_t size) override {
+    if (!files.count(p) || truncateFails) return false;
+    step();
+    files[p].resize(size_t(size));
+    return true;
+  }
 };
 
 const char* const kRoot = "/mem/files";
 
 orch::CardFilesLayout layout() {
-  return {kRoot, "/mem/files/.tools-part", {"/mem/files/.tools-part", "/mem/files/.bak", "/mem/files/.swapnote"}};
+  return {kRoot, "/mem/files/.tools-part", {"/mem/files/.tools-part", "/mem/files/.bak", "/mem/files/.swapnote"},
+          "/mem/files/.tools-note"};
 }
 
 const orch::Principal& owner() {
@@ -102,7 +124,8 @@ struct Device {
   FakeCard card;
   orch::FileStore store;
   int holds = 0, persists = 0;
-  bool inHold = false;
+  bool inHold = false, uploading = false;
+  std::function<void(int)> afterHold;   // another writer between two holds
   std::unique_ptr<orch::CardFilesIo> io;
   std::unique_ptr<orch::FileTools> tools;
   orch::ToolRegistry reg;
@@ -115,10 +138,12 @@ struct Device {
       ++holds;
       fn();
       inHold = false;
+      if (afterHold) afterHold(holds);
       return true;
     };
     h.persistIndex = [this] {
-      TEST_ASSERT_TRUE_MESSAGE(inHold, "the index written outside a hold");
+      TEST_ASSERT_TRUE_MESSAGE(inHold || booting, "the index written outside a hold");
+      card.step();   // the index rewrite is a card operation too (the device's tmp and rename: one here)
       ++persists;
       card.files["/mem/files/.index"] = store.dump();
       return true;
@@ -129,6 +154,7 @@ struct Device {
       out = "Use the bench word.";
       return true;
     };
+    h.busy = [this] { return uploading; };
     io.reset(new orch::CardFilesIo(card, store, layout(), h));
     tools.reset(new orch::FileTools(*io, orch::FileToolsConfig{}));
     tools->registerInto(reg, [](const char* t) {
@@ -147,6 +173,19 @@ struct Device {
     for (const auto& p : kv) d[p.first] = p.second;
     return call(tool, d, who);
   }
+  // The next boot over this card: the old engine's swap recovery, the index loaded from the card, then
+  // the journal note's (files_subsystem.cpp begin, engine 2).
+  void bootFrom(const FakeCard& before) {
+    card.files = before.files;
+    card.dirs = before.dirs;
+    orch::recoverSwap(card, layout().swap);
+    const auto it = card.files.find("/mem/files/.index");
+    if (it != card.files.end()) TEST_ASSERT_TRUE(store.load(it->second));
+    booting = true;
+    (void)io->recoverNote();
+    booting = false;
+  }
+  bool booting = false;
   std::string onCard(const std::string& rel) { return card.files[std::string(kRoot) + "/" + rel]; }
   uint32_t indexed(const std::string& project, const std::string& name) {
     const orch::FileEntry* e = store.find(project, name);
@@ -338,18 +377,220 @@ void test_a_file_the_index_does_not_know_is_never_written() {
   TEST_ASSERT_NULL_MESSAGE(d.store.find("old", "kept.md"), "never adopted for whoever wrote first");
 }
 
-void test_a_short_append_keeps_what_landed_and_removes_only_its_own_new_file() {
+bool noTraces(Device& d) {
+  return !d.card.files.count("/mem/files/.tools-note") && !d.card.files.count("/mem/files/.bak") &&
+         !d.card.files.count("/mem/files/.swapnote");
+}
+
+// S2: the card took part of an append. The tool cuts the file back to the size it measured in the same
+// hold (only its own bytes) and says so truthfully; a file the call created goes again.
+void test_a_short_append_leaves_the_file_byte_identical_and_says_it_failed() {
   Device d;
   assertOk(d.call("write_file", {{"path", "logs/d.csv"}, {"content", "h\n"}}, owner()));
   d.card.shortAppendAt = 2;
-  TEST_ASSERT_FALSE(d.call("append_file", {{"path", "logs/d.csv"}, {"text", "1234\n"}}, owner()).success);
-  TEST_ASSERT_EQUAL_STRING("h\n12", d.onCard("logs/d.csv").c_str());   // nothing stored is cut
-  assertOk(d.call("read_file", {{"path", "logs/d.csv"}}, owner()));
-  TEST_ASSERT_EQUAL_UINT32(4, d.indexed("logs", "d.csv"));             // the index follows the card
+  const orch::ToolResult r = d.call("append_file", {{"path", "logs/d.csv"}, {"text", "1234\n"}}, owner());
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_EQUAL_STRING("card write failed; nothing changed", r.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("h\n", d.onCard("logs/d.csv").c_str());   // byte-identical
+  TEST_ASSERT_EQUAL_UINT32(2, d.indexed("logs", "d.csv"));
+  TEST_ASSERT_TRUE(noTraces(d));
+  // The retry lands one clean row, no half row before it.
+  assertOk(d.call("append_file", {{"path", "logs/d.csv"}, {"text", "1234\n"}}, owner()));
+  TEST_ASSERT_EQUAL_STRING("h\n1234\n", d.onCard("logs/d.csv").c_str());
   d.card.shortAppendAt = 1;
   TEST_ASSERT_FALSE(d.call("append_file", {{"path", "logs/new.csv"}, {"text", "abc\n"}}, owner()).success);
   TEST_ASSERT_FALSE(d.card.files.count("/mem/files/logs/new.csv"));
   TEST_ASSERT_NULL(d.store.find("logs", "new.csv"));
+}
+
+// S2: when the card refuses the cut back too, the result states how many bytes landed (never "nothing
+// changed"); the bytes stay and the index follows the card (ruling 112: nothing else is cut). E2-INTEG:
+// the line is the append's own (kAppended) as an error, since the class had no room for a new one.
+void test_a_failed_cut_back_states_the_bytes_that_landed() {
+  Device d;
+  assertOk(d.call("write_file", {{"path", "logs/d.csv"}, {"content", "h\n"}}, owner()));
+  d.card.shortAppendAt = 2;
+  d.card.truncateFails = true;
+  const orch::ToolResult r = d.call("append_file", {{"path", "logs/d.csv"}, {"text", "1234\n"}}, owner());
+  TEST_ASSERT_FALSE(r.success);
+  TEST_ASSERT_EQUAL_STRING("appended 2 B to logs/d.csv; file is 4 B", r.error.c_str());
+  TEST_ASSERT_EQUAL_STRING("h\n12", d.onCard("logs/d.csv").c_str());
+  assertOk(d.call("read_file", {{"path", "logs/d.csv"}}, owner()));
+  TEST_ASSERT_EQUAL_UINT32(4, d.indexed("logs", "d.csv"));
+  TEST_ASSERT_TRUE(noTraces(d));
+}
+
+// S4: while a web upload is in progress no tool changes a file, as the old engine refuses its own writes.
+// E2-INTEG: the refusal is the existing "card write failed; nothing changed" (no room for a new line).
+void test_an_upload_in_progress_refuses_every_change() {
+  Device d;
+  assertOk(d.call("write_file", {{"path", "logs/u.csv"}, {"content", "h\n1\n"}}, owner()));
+  d.uploading = true;
+  const char kBusy[] = "card write failed; nothing changed";
+  ArduinoJson::JsonDocument w;
+  w["path"] = "logs/u.csv";
+  w["content"] = "x\n";
+  w["if_exists"] = "replace";
+  ArduinoJson::JsonDocument e;
+  e["path"] = "logs/u.csv";
+  e["old"] = "1";
+  e["new"] = "2";
+  const orch::ToolResult rs[] = {
+      d.call("append_file", {{"path", "logs/u.csv"}, {"text", "2\n"}}, owner()), d.call("write_file", w, owner()),
+      d.call("write_file", {{"path", "logs/v.csv"}, {"content", "v\n"}}, owner()), d.call("edit_file", e, owner()),
+      d.call("delete_file", {{"path", "logs/u.csv"}}, owner())};
+  for (const orch::ToolResult& r : rs) {
+    TEST_ASSERT_FALSE(r.success);
+    TEST_ASSERT_EQUAL_STRING(kBusy, r.error.c_str());
+  }
+  TEST_ASSERT_EQUAL_STRING("h\n1\n", d.onCard("logs/u.csv").c_str());
+  TEST_ASSERT_FALSE(d.card.files.count("/mem/files/logs/v.csv"));
+  assertOk(d.call("read_file", {{"path", "logs/u.csv"}}, owner()));   // reads go on
+  d.uploading = false;
+  assertOk(d.call("append_file", {{"path", "logs/u.csv"}, {"text", "2\n"}}, owner()));
+}
+
+// S6, S8: one changing call, and the power going off before each of its card operations in turn.
+struct CutCase {
+  const char* label;
+  std::string path;               // project/name
+  const orch::Principal* who;
+  std::function<void(Device&)> setup;
+  std::function<orch::ToolResult(Device&)> run;
+};
+
+std::string projectOf(const std::string& path) { return path.substr(0, path.find('/')); }
+std::string nameOf(const std::string& path) { return path.substr(path.find('/') + 1); }
+
+// After the boot recovery: the file is the old copy or the new one (or absent where that was one of them),
+// the index entry exists exactly when the file does, with its size, a hash that is right or unknown, and
+// the writer as its owner; nothing of the journal or the swap is left; the name takes the next write.
+struct OldNew {
+  bool hadOld = false, hasNew = false;
+  std::string old, now;
+};
+
+void checkOldOrNew(Device& b, const CutCase& c, const OldNew& x, int cut) {
+  const bool hadOld = x.hadOld, hasNew = x.hasNew;
+  const std::string& old = x.old;
+  const std::string& now = x.now;
+  char where[160];
+  snprintf(where, sizeof where, "%s, power off before card op %d", c.label, cut);
+  const std::string full = std::string(kRoot) + "/" + c.path;
+  const bool present = b.card.files.count(full) > 0;
+  const std::string bytes = present ? b.card.files[full] : std::string();
+  const bool isOld = hadOld ? (present && bytes == old) : !present;
+  const bool isNew = hasNew ? (present && bytes == now) : !present;
+  TEST_ASSERT_TRUE_MESSAGE(isOld || isNew, (std::string(where) + ": on the card \"" + bytes + "\"").c_str());
+  const orch::FileEntry* e = b.store.find(projectOf(c.path), nameOf(c.path));
+  TEST_ASSERT_EQUAL_MESSAGE(present, e != nullptr, where);
+  if (e) {
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(bytes.size(), e->bytes, where);
+    TEST_ASSERT_TRUE_MESSAGE(e->hash == 0 || e->hash == orch::fnvContinue(orch::kFnvBasis, bytes), where);
+    TEST_ASSERT_TRUE_MESSAGE(b.store.ownedBy(*e, c.who->ns, false), where);
+  }
+  TEST_ASSERT_TRUE_MESSAGE(noTraces(b), where);
+  // The name is not blocked: the next ordinary call on it succeeds.
+  const orch::ToolResult next = present ? b.call("append_file", {{"path", c.path}, {"text", "z\n"}}, *c.who)
+                                        : b.call("write_file", {{"path", c.path}, {"content", "z\n"}}, *c.who);
+  TEST_ASSERT_TRUE_MESSAGE(next.success, (std::string(where) + ": " + next.error).c_str());
+}
+
+void runCutCase(const CutCase& c) {
+  const std::string full = std::string(kRoot) + "/" + c.path;
+  Device ref;
+  c.setup(ref);
+  OldNew x;
+  x.hadOld = ref.card.files.count(full) > 0;
+  if (x.hadOld) x.old = ref.card.files[full];
+  assertOk(c.run(ref));
+  x.hasNew = ref.card.files.count(full) > 0;
+  if (x.hasNew) x.now = ref.card.files[full];
+  int cuts = 0;
+  for (int k = 1; k < 64; k++) {
+    Device d;
+    c.setup(d);
+    d.card.cutAt = d.card.ops + k;
+    bool cutHappened = false;
+    try {
+      (void)c.run(d);
+    } catch (const PowerCut&) {
+      cutHappened = true;
+    }
+    if (!cutHappened) break;
+    ++cuts;
+    Device b;
+    b.bootFrom(d.card);
+    checkOldOrNew(b, c, x, k);
+  }
+  char line[96];
+  snprintf(line, sizeof line, "%s: %d cut points", c.label, cuts);
+  TEST_MESSAGE(line);
+  TEST_ASSERT_TRUE_MESSAGE(cuts >= 3, line);
+}
+
+ArduinoJson::JsonDocument replaceArgs(const std::string& path, const std::string& content) {
+  ArduinoJson::JsonDocument w;
+  w["path"] = path;
+  w["content"] = content;
+  w["if_exists"] = "replace";
+  return w;
+}
+
+void test_a_power_cut_at_every_card_operation_leaves_old_or_new_with_the_index_agreeing() {
+  const auto seeded = [](const char* path, const char* content, const orch::Principal& who) {
+    return [path, content, &who](Device& d) { assertOk(d.call("write_file", {{"path", path}, {"content", content}}, who)); };
+  };
+  const auto nothing = [](Device&) {};
+  const std::vector<CutCase> cases = {
+      {"write_file new", "notes/n.md", &owner(), nothing,
+       [](Device& d) { return d.call("write_file", {{"path", "notes/n.md"}, {"content", "new note\n"}}, owner()); }},
+      {"write_file new by a member", "mine/m.md", &member(), nothing,
+       [](Device& d) { return d.call("write_file", {{"path", "mine/m.md"}, {"content", "member note\n"}}, member()); }},
+      {"write_file replace", "notes/f.md", &owner(), seeded("notes/f.md", "first copy\n", owner()),
+       [](Device& d) { return d.call("write_file", replaceArgs("notes/f.md", "the second, longer copy\n"), owner()); }},
+      {"write_file replace, same size", "notes/g.md", &owner(), seeded("notes/g.md", "tea,3\n", owner()),
+       [](Device& d) { return d.call("write_file", replaceArgs("notes/g.md", "tea,4\n"), owner()); }},
+      {"append_file", "logs/a.csv", &owner(), seeded("logs/a.csv", "h\n1\n", owner()),
+       [](Device& d) { return d.call("append_file", {{"path", "logs/a.csv"}, {"text", "2\n"}}, owner()); }},
+      {"append_file creating the file", "logs/c.csv", &owner(), nothing,
+       [](Device& d) { return d.call("append_file", {{"path", "logs/c.csv"}, {"text", "h\n"}}, owner()); }},
+      {"edit_file, same size", "logs/e.csv", &owner(), seeded("logs/e.csv", "d,item\n1,tea,3\n", owner()),
+       [](Device& d) {
+         ArduinoJson::JsonDocument e;
+         e["path"] = "logs/e.csv";
+         e["old"] = "tea,3";
+         e["new"] = "tea,4";
+         return d.call("edit_file", e, owner());
+       }},
+      {"delete_file", "logs/x.csv", &owner(), seeded("logs/x.csv", "x\n", owner()),
+       [](Device& d) { return d.call("delete_file", {{"path", "logs/x.csv"}}, owner()); }},
+      {"delete_file by a member", "mine/y.md", &member(), seeded("mine/y.md", "y\n", member()),
+       [](Device& d) { return d.call("delete_file", {{"path", "mine/y.md"}}, member()); }},
+  };
+  for (const CutCase& c : cases) runCutCase(c);
+}
+
+// S7: another writer replaces the file between the append's tail read and its commit (here: a copy whose
+// last line has no newline). The append decides its fence again on the copy now stored: no glued row.
+void test_an_append_decides_its_fence_on_the_file_as_it_is_at_the_commit() {
+  Device d;
+  assertOk(d.call("write_file", {{"path", "logs/s.csv"}, {"content", "h\n1\n"}}, owner()));
+  const int from = d.holds;
+  d.afterHold = [&d, from](int held) {
+    if (held != from + 2) return;   // after the tail read (hold 2 of the append)
+    d.card.files["/mem/files/logs/s.csv"] = "h\n1\nx";   // the other writer's copy, indexed as it writes it
+    orch::FileEntry e = *d.store.find("logs", "s.csv");
+    e.bytes = 5;
+    e.createdAt = 1795000100u;
+    e.hash = orch::fnvContinue(orch::kFnvBasis, "h\n1\nx");
+    std::string err;
+    TEST_ASSERT_TRUE(d.store.add(e, err));
+  };
+  const orch::ToolResult r = d.call("append_file", {{"path", "logs/s.csv"}, {"text", "2\n"}}, owner());
+  assertOk(r);
+  TEST_ASSERT_EQUAL_STRING("h\n1\nx\n2\n", d.onCard("logs/s.csv").c_str());
+  TEST_ASSERT_EQUAL_UINT32(8, d.indexed("logs", "s.csv"));
 }
 
 void test_a_pending_replace_blocks_every_write_to_its_file() {
@@ -408,7 +649,11 @@ int main(int, char**) {
   RUN_TEST(test_a_torn_tail_gets_a_line_end_first_not_a_cut);
   RUN_TEST(test_read_and_edit_see_every_stored_byte);
   RUN_TEST(test_a_file_the_index_does_not_know_is_never_written);
-  RUN_TEST(test_a_short_append_keeps_what_landed_and_removes_only_its_own_new_file);
+  RUN_TEST(test_a_short_append_leaves_the_file_byte_identical_and_says_it_failed);
+  RUN_TEST(test_a_failed_cut_back_states_the_bytes_that_landed);
+  RUN_TEST(test_an_upload_in_progress_refuses_every_change);
+  RUN_TEST(test_a_power_cut_at_every_card_operation_leaves_old_or_new_with_the_index_agreeing);
+  RUN_TEST(test_an_append_decides_its_fence_on_the_file_as_it_is_at_the_commit);
   RUN_TEST(test_a_pending_replace_blocks_every_write_to_its_file);
   RUN_TEST(test_a_replace_is_the_old_engines_swap);
   return UNITY_END();

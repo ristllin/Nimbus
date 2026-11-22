@@ -19,6 +19,7 @@
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/unattended.h"   // OwnerSink, RoutineDeps (lane E2-SCHED)
+#include "nimbus/harness/plain/rails.h"   // installRails - the safety rails (lane E2-FSAFE)
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/rbac.h"
@@ -41,6 +42,9 @@
 //   - the suppression seam (installSuppression), the money guard (TurnSetup::cost from the head's
 //     price row; no price row: boot refuses, fail closed) and one ChatBreaker;
 //   - the seen index rebuilt from the filled arena after boot (RB-TG1);
+//   - the safety rails (plain::installRails, RB-RL; lane E2-FSAFE): in a turn that read outside
+//     content a note change goes to the binding's pending shelf (railPending) and never runs;
+//     with no shelf every pending change is refused (fail closed);
 //   - the shared tool registry, dispatched with the turn's Principal (plain_rig.h's dispatch).
 // Lane E2-CHAT adds the owner's daily chat on top:
 //   - photos: the message's image parts (ChatMessage::parts) and the photo hook (TurnSetup::photo);
@@ -95,6 +99,9 @@ struct ChatBindingDeps {
   // True when no card is fitted at all (the chat runs from RAM by design); null: a card is
   // fitted, so a log that cannot open is an outage (EngineDeps::noCard, lane E2-STORE).
   std::function<bool()> noCard;
+  // Lane E2-FSAFE: RailsDeps::pending, the approval shelf for a tainted turn's pending calls (the
+  // device: the notes' pending shelf). Null: a pending call is refused, nothing kept, nothing run.
+  RailPendingFn railPending;
 };
 
 // The owner's line on every turn while the stored conversation could not be loaded (lane
@@ -192,8 +199,13 @@ class ChatBinding {
       log_.reset(new tx::TxLog(*d_.files, cfg_.chatKey));
       hooks_.reset(new PlainHooks());
       (void)installSuppression(*hooks_);
-      driver_.reset(new CompactDriver(compactDeps()));
-      st = installCompaction(*hooks_, *driver_);
+      RailsDeps rails;
+      rails.pending = d_.railPending;
+      st = installRails(*hooks_, rails);
+      if (st.ok()) {
+        driver_.reset(new CompactDriver(compactDeps()));
+        st = installCompaction(*hooks_, *driver_);
+      }
       if (!st.ok()) return fail(st);
       if (d_.progress.send) {
         reporter_.reset(new ProgressReporter(d_.progress));

@@ -5,6 +5,9 @@
 #include <vector>
 
 #include <cstdlib>
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include <unistd.h>   // truncate - the engine-2 file tools undo a short append (E2-FSAFE)
+#endif
 
 #include "../sys/agent_log.h"
 #include "../sys/web_task.h"   // onWebTask - image.note stays on the turn task
@@ -354,6 +357,10 @@ void registerTools();   // fwd (bottom)
 
 }  // namespace
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+void recoverToolsNote();   // fwd (the engine-2 block): a file-tool change a power cut interrupted (E2-FSAFE)
+#endif
+
 void begin() {
   memory::Lock g;
   if (g_begun) return;
@@ -421,6 +428,9 @@ void begin() {
   }
   reindexRecovered(swapped);
   reindexRecovered(g_keptAside);   // the owner sees it in the Files list
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  recoverToolsNote();   // after the swap recovery and the index: the tools' journal note, if a cut left one
+#endif
   fs.remove(kPartPath);   // stale partial from a crash mid-upload
   alogf("files: ready (%u files, %llu KB)", unsigned(g_store.count()),
         (unsigned long long)(g_store.totalBytes() / 1024));
@@ -2401,6 +2411,7 @@ void testArmCut(TestCut where, uint32_t at) {   // CUTARM (files_subsystem.h)
 namespace {
 
 constexpr const char* kToolsPart = "/mem/files/.tools-part";
+constexpr const char* kToolsNote = "/mem/files/.tools-note";   // the tools' journal note (ruling 112; E2-FSAFE)
 ToolsHolds g_toolsHolds;   // the file tools' card lock holds since the last reset (turn task only)
 
 class SdFileCard : public nimbus::orch::FileCard {
@@ -2446,6 +2457,14 @@ class SdFileCard : public nimbus::orch::FileCard {
     fs::FS& fs = memory::dataFs();
     return fs.exists(d.c_str()) || fs.mkdir(d.c_str());
   }
+  // POSIX truncate on the card's VFS path (FATFS f_truncate): only ever back to a size measured in
+  // the same hold before this call's own write (a short append undone), or a journal note's size.
+  bool truncate(const std::string& p, uint64_t size) override {
+    const char* mp = memory::dataFs().mountpoint();
+    if (!mp) return false;
+    const std::string vp = std::string(mp) + p;
+    return ::truncate(vp.c_str(), off_t(size)) == 0 && base_.size(p) == (long long)size;
+  }
 
  private:
   SdSwapFs base_;
@@ -2461,7 +2480,8 @@ bool persistIndexLanded() {
 nimbus::orch::CardFilesIo& cardIo() {
   static SdFileCard card;
   static nimbus::orch::CardFilesIo io(
-      card, g_store, nimbus::orch::CardFilesLayout{kRoot, kToolsPart, {kToolsPart, kSwap.bak, kSwap.note}}, [] {
+      card, g_store,
+      nimbus::orch::CardFilesLayout{kRoot, kToolsPart, {kToolsPart, kSwap.bak, kSwap.note}, kToolsNote}, [] {
         nimbus::orch::CardFilesHost h;
         h.locked = [](const std::function<void()>& fn) {
           if (!xPortCanYield()) return false;   // never from a context that cannot wait for the card lock
@@ -2482,6 +2502,7 @@ nimbus::orch::CardFilesIo& cardIo() {
         h.roomFor = [](const std::string& p, const std::string& n, uint64_t add, std::string& err) {
           return !checkRoomLocked(p, n, add, err);
         };
+        h.busy = [] { return uploadActiveLocked(); };   // the old engine's gate on its own writes (S4)
         return h;
       }());
   return io;
@@ -2490,6 +2511,10 @@ nimbus::orch::CardFilesIo& cardIo() {
 }  // namespace
 
 nimbus::orch::FileToolsIo& toolsIo() { return cardIo(); }
+void recoverToolsNote() {
+  const std::string did = cardIo().recoverNote();
+  if (!did.empty()) alogf("files: %s", did.c_str());
+}
 ToolsHolds toolsHolds(bool reset) {
   const ToolsHolds h = g_toolsHolds;
   if (reset) g_toolsHolds = ToolsHolds{};
@@ -2506,6 +2531,15 @@ bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::t
     out.push_back({nimbus::orch::plainCopy(e->project) + "/" + nimbus::orch::plainCopy(e->name), e->createdAt});
   }
   return true;
+}
+
+bool readsOthersFile(const nimbus::orch::Principal& who, const std::string& path) {
+  const nimbus::orch::StorePath sp = nimbus::orch::storePathFor(path);
+  if (!sp.ok()) return false;
+  memory::Lock g;
+  if (!available()) return false;
+  const nimbus::orch::FileEntry* e = g_store.find(sp.project, sp.name);
+  return e && !g_store.ownedBy(*e, who.ns, false);
 }
 #endif
 

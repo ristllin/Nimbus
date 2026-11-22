@@ -22,9 +22,21 @@
 //     adopts a longer file, so a read, an edit or a replace sees every stored byte;
 //   - a file on the card with no index entry is never written to, appended to or replaced (the call
 //     is refused, nothing changed): whose it is cannot be derived from the path on this store.
-// A short append (the card took part of the bytes) keeps what landed in a file that existed before
-// the call (the index follows at the next sync, as on the old engine); a file the call itself
-// created is removed again (only its own bytes). Paths are <root>/<project>/<name>.
+// A short append (the card took part of the bytes) is undone in the same hold: the file is cut back
+// to the size measured in that hold before the call wrote (only this call's own bytes), or removed
+// when the call created it; when the card refuses that too, the bytes that stayed are counted for
+// the result (lane E2-FSAFE, finding S2). While a web upload is in progress no change starts
+// (CardFilesHost::busy, the old engine's gate; S4).
+//
+// The journal (ruling 112; lane E2-FSAFE, findings S6 and S8): every change notes itself in
+// layout.toolsNote (the op, the person, project, name, the size before, an append's length) in its
+// commit hold before its first byte; the note leaves in the index-rewrite hold once the index has
+// landed. recoverNote() at boot, after the old engine's swap recovery and the index load, acts
+// only on what a note names: a new file in place is adopted under the noted person, a replace or
+// an edit gets the size on the card and an unknown hash, an append whose call never returned is
+// cut back to the noted size when the extra bytes fit its own length, a delete drops the entry of
+// a file that is gone. So a power cut at any point leaves the old file or the new one with the
+// index agreeing. Paths are <root>/<project>/<name>.
 namespace nimbus::orch {
 
 // The card calls the tools need beyond the swap's. Paths are absolute on the card.
@@ -38,12 +50,16 @@ class FileCard : public SwapFs {
   virtual bool write(const std::string& path, std::string_view bytes, bool first) = 0;
   // Make the directory (one level under the root); true when it exists after.
   virtual bool mkdir(const std::string& dir) = 0;
+  // Cut the file to `size` bytes (only ever back to a size this hold measured before its own
+  // write); true when it is that size after.
+  virtual bool truncate(const std::string& path, uint64_t size) = 0;
 };
 
 struct CardFilesLayout {
   std::string root;        // "/mem/files"
   std::string toolsPart;   // the tools' own part file, never the web upload's
   SwapPaths swap;          // part = toolsPart; bak and note = the old engine's
+  std::string toolsNote;   // the tools' journal note ("" = none)
 };
 
 struct CardFilesHost {
@@ -56,6 +72,7 @@ struct CardFilesHost {
   std::function<bool(const std::string&, const std::string&, uint64_t, std::string&)> roomFor;
   // The approved body of skill `id` (read_file on skills/<id>.md); null: no skill reads (lane E2-CHAT).
   std::function<bool(const std::string& id, std::string& out)> skillBody;
+  std::function<bool()> busy;                  // a web upload holds the store (inside the lock); null: never
 };
 
 class CardFilesIo : public FileToolsIo {
@@ -67,6 +84,9 @@ class CardFilesIo : public FileToolsIo {
   FileStore& index() override { return store_; }
   bool readAt(const std::string& p, const std::string& n, uint64_t offset, size_t len, std::string& out) override;
   bool append(const std::string& p, const std::string& n, std::string_view bytes) override;
+  bool appendCounted(const std::string& p, const std::string& n, std::string_view bytes, uint64_t& landed) override;
+  bool writeBusy() override { return host_.busy && host_.busy(); }
+  bool journal(const Change& c) override;
   bool partWrite(const std::string& p, const std::string& n, std::string_view bytes, bool first) override;
   bool partSwap(const std::string& p, const std::string& n) override;
   void partDiscard(const std::string& p, const std::string& n) override;
@@ -80,15 +100,33 @@ class CardFilesIo : public FileToolsIo {
 
   std::string pathOf(const std::string& p, const std::string& n) const;
 
+  // Boot, before any writer runs and after the swap recovery and the index load: resolve a
+  // journal note a power cut left (see above). What it did, for the log ("" = nothing).
+  std::string recoverNote();
+
  private:
   // A replace of this path the old engine's swap left unfinished (its note names it).
   bool swapNoted(const std::string& path);
+  // The journal: drop the note (false: the card kept it; the next change settles it first), a
+  // note of a change that did not happen, an earlier note settled by an index rewrite that lands.
+  bool dropNote();
+  void unnote();
+  bool settle();
+  // A short append's own bytes undone in its hold; what stayed when the card refused (0: undone).
+  uint64_t undoShort(const std::string& path, long long before, size_t got);
+  // recoverNote's two steps: an unfinished append cut back (what it did, "" = nothing), then the
+  // index entry brought to the card as the note says (true: the index changed).
+  std::string cutUnfinishedAppend(const Change& c, const std::string& path);
+  bool entryAsNoted(const Change& c, const std::string& path, std::string& did);
 
   FileCard& card_;
   FileStore& store_;
   CardFilesLayout layout_;
   CardFilesHost host_;
   bool synced_ = false;   // sync moved an entry inside this hold: the index is written at its end
+  bool noted_ = false;    // this change's note is on the card
+  bool notePending_ = false;   // an earlier change's note is still on the card (its index rewrite failed)
+  char noteOp_ = 0;
 };
 
 }  // namespace nimbus::orch

@@ -245,6 +245,9 @@ ToolsHolds toolsHolds(bool reset);
 // EngineDeps::recentFiles for one person (tx::RecentFilesBlock::Source): the files `who` may read, with
 // their last write times. False with no card.
 bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out);
+// Lane E2-FSAFE: is the stored file at `path` (project/name as the tools read it) another person's than
+// `who` (a member's file the owner reads)? False with no card or no such file.
+bool readsOthersFile(const nimbus::orch::Principal& who, const std::string& path);
 #endif
 
 }  // namespace agent::files

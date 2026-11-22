@@ -79,6 +79,31 @@ class FileToolsIo {
   // Add bytes to the end of the stored file, creating it when it is missing. All or
   // nothing: on false the file is as it was (a torn append is cut back to the old size).
   virtual bool append(const std::string& project, const std::string& name, std::string_view bytes) = 0;
+  // append, and on false how many of the bytes stayed at the file's end because the card
+  // refused the cut back (0: the file is as it was). Default: append's all or nothing.
+  virtual bool appendCounted(const std::string& project, const std::string& name, std::string_view bytes,
+                             uint64_t& landed) {
+    landed = 0;
+    return append(project, name, bytes);
+  }
+  // Another writer of the same store holds it (a web upload in progress): no change starts
+  // (the old engine refuses its own writes the same way). Called inside a hold.
+  virtual bool writeBusy() { return false; }
+  // The change the next raw op of this hold makes (lane E2-FSAFE, ruling 112): called inside
+  // the commit hold right before the change's first byte. A binding with a journal notes it
+  // here and drops the note once the index rewrite has landed. False: nothing was changed and
+  // the change is refused. Default: no journal.
+  struct Change {
+    char op = 'w';            // 'w' write or replace (the part swap), 'a' append, 'd' delete
+    std::string person;       // the caller's namespace (a new file's owner)
+    std::string project, name;
+    int64_t before = -1;      // the stored size before the change; -1: a new file
+    uint64_t bytes = 0;       // an append's length
+  };
+  virtual bool journal(const Change& c) {
+    (void)c;
+    return true;
+  }
   // Write bytes to this file's part file (first: start it empty). The part file is the
   // file tools' own (never the web upload's), outside the index; one write per path runs
   // at a time (the binding serializes file tool calls, or names the part per call).
@@ -158,6 +183,8 @@ class FileTools {
   struct Target;
   struct Page;
   struct WriteMode;
+  struct Stamp;
+  struct AppendPlan;
   bool resolve(ArduinoJson::JsonObjectConst args, Target& t, std::string& err) const;
   bool lookup(Target& t, const Principal& who, int& state);
   bool readSpan(const Target& t, uint64_t from, uint64_t to, std::string& out);
@@ -170,9 +197,8 @@ class FileTools {
   bool writePart(const Target& t, const std::string& bytes);
   ToolResult writeBytes(Target& t, const std::string& bytes, const Principal& who, const WriteMode& m);
   ToolResult appendText(Target& t, const std::string& text, const Principal& who);
-  bool appendRoom(Target& t, const Principal& who, uint64_t add, uint64_t& before, std::string& err);
-  bool appendBytes(Target& t, const Principal& who, const std::string& bytes, bool& fresh, uint64_t& size,
-                   std::string& err);
+  bool appendRoom(Target& t, const Principal& who, uint64_t add, uint64_t& before, Stamp& seen, std::string& err);
+  bool appendBytes(Target& t, const Principal& who, AppendPlan& a, std::string& err);
   ToolResult editText(Target& t, const aids::EditRequest& e, const Principal& who);
   std::string linesNote(const Target& t, uint64_t size);
   std::string persisted();

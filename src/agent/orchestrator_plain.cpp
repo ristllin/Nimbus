@@ -60,6 +60,7 @@
 #include "budget_command.h"     // noteTurnEnd - /model's last reply
 #include "commands_plain.h"     // the owner's slash commands
 #include "loops_subsystem.h"    // checkDue, routineGrants, quietHoursEndMinute (lane E2-SCHED)
+#include "file_tools_device.h"  // tools::takeOutsideCall - the call just dispatched read outside content (E2-FSAFE)
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
 #include "nimbus/fault.h"       // FAULT sd: a card that is fitted but faulted
@@ -69,7 +70,7 @@
 #include "nimbus/orch/spend_ceiling.h"               // kSpendFrozenError - a routine waits while frozen
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
 #include "nimbus/orch/blob_store.h"        // blobPath - an earlier photo's stored copy
-#include "notes_device.h"       // notesdev::pinnedNotesFor
+#include "notes_device.h"       // notesdev::pinnedNotesFor, notebook (the rails' pending shelf)
 #include "schedule_device.h"    // scheduledev::fire, host - the schedule entries (lane E2-SCHED)
 #include "skills_device.h"      // skillsdev::chatSkills
 #include "spend_ceiling_store.h"   // spend::frozen, spend::commit, spend::limitMicro
@@ -369,8 +370,19 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.chatsum = deviceChatsumIO();
   if (!localChat(chatId)) d.seen = &telegram::seenIndex();
   d.log = [](const char* line) { alog(line); };
-  // Lane E2-TOOLS: web_search reads outside content; the files a person may read, for the request.
-  d.outside = [](const std::string& tool) { return tool == "web_search"; };
+  // Lane E2-TOOLS: the files a person may read, for the request. Lane E2-FSAFE: a call that read outside
+  // content (web_search; a file from inbox/, agents/ or another person, as the tool marked it) stores an
+  // outside result, so the turn is tainted; the rails then keep its note changes on the pending shelf.
+  d.outside = [](const std::string&) { return tools::takeOutsideCall(); };
+  d.railPending = [](const plain::TurnCtx& t, const plain::ToolCall& c) {
+    if (c.name != "note" || !t.who) return plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.other");
+    const PsramFirstScope psram;
+    JsonDocument args;
+    (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
+    const nimbus::orch::ToolResult r =
+        notesdev::notebook().keep(args.as<JsonObjectConst>(), *t.who, nimbus::orch::notes::Origin::Tainted);
+    return r.success ? plain::Status::success() : plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.kept");
+  };
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
   };

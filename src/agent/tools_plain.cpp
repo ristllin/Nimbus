@@ -31,8 +31,10 @@ constexpr char kOldSearch[] = "web.search";   // the old engine's handler, reach
 constexpr char kQuery[] = "query";
 constexpr char kTavily[] = "tavily";          // the Tavily budget's provider slug
 
-// turnCount() + 1 of the turn whose web_search ran (tg_poll only): that turn read outside content.
+// turnCount() + 1 of the turn that read outside content (tg_poll only), and the mark of the call that
+// read it (lane E2-FSAFE: web_search, and the file reads file_tools_device.cpp marks).
 uint32_t s_outsideTurn = 0;
+bool s_outsideCall = false;
 
 bool outsideThisTurn() { return orchestrator::turnInFlight() && s_outsideTurn == orchestrator::turnCount() + 1; }
 
@@ -61,13 +63,12 @@ void registerWebSearch(orch::ToolRegistry& reg) {
   reg.add(
       "web_search", decl->description,
       [](ArduinoJson::JsonObjectConst a, const orch::Principal& who) {
+        markOutsideCall();   // marked even on its own refusal (conservative, as E2-TOOLS chose)
         if (!searchKey()) return orch::ToolResult::fail(agent::plain::texts::tool_results::kWebSearchNoKey);
         const PsramFirstScope psram;
         ArduinoJson::JsonDocument args;
         args[kQuery] = a[kQuery];
-        const orch::ToolResult r = inner.dispatch(kOldSearch, args.as<ArduinoJson::JsonObjectConst>(), who);
-        if (orchestrator::turnInFlight()) s_outsideTurn = orchestrator::turnCount() + 1;
-        return r;
+        return inner.dispatch(kOldSearch, args.as<ArduinoJson::JsonObjectConst>(), who);
       },
       agent::plain::declSchema(*decl, false));
 }
@@ -88,9 +89,21 @@ std::string turnChat() {
 
 }  // namespace
 
+void markOutsideCall() {
+  s_outsideCall = true;
+  if (orchestrator::turnInFlight()) s_outsideTurn = orchestrator::turnCount() + 1;
+}
+
+bool takeOutsideCall() {
+  const bool was = s_outsideCall;
+  s_outsideCall = false;
+  return was;
+}
+
 // note (lane RB-N1, notes_device.cpp). Lane E2-DEV binds its origin: on engine 2 only a person's
 // message runs a turn (no routine, agent or resume is bound yet), so a call inside a turn is attended,
-// unless that turn ran web_search (outside content: tainted, kept for approval); outside a turn it is
+// unless that turn read outside content (web_search, a file from inbox/, agents/ or another person: tainted,
+// kept for approval; the rails send such a turn's note to the pending shelf first); outside a turn it is
 // kept for approval. Lane E2-TOOLS: the file tools over the old engine's store, delete_file behind more,
 // calc, web_search.
 // schedule (lane RB-U1b, schedule_device.cpp; lane E2-SCHED binds it): the same origin as the note tool,

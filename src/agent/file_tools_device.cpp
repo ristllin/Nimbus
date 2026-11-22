@@ -4,6 +4,7 @@
 
 #include "../sys/agent_log.h"                // alogf - one figures line per call
 #include "files_subsystem.h"                 // toolsIo, toolsHolds - the card seam over the device's file store
+#include "nimbus/harness/plain/rails.h"      // readsOutsidePath - the rails' rule for device-written folders
 #include "nimbus/harness/plain/request.h"    // toolDecl, declSchema, kWriteContentMax
 #include "nimbus/harness/turn_memory.h"      // PsramFirstScope
 #include "nimbus/orch/file_tools.h"
@@ -44,6 +45,18 @@ const Bound kTools[] = {
     {"list_files", &orch::FileTools::list},   {"delete_file", &orch::FileTools::remove},
 };
 
+// Lane E2-FSAFE: does this read bring in content the owner did not write himself? A path or list
+// prefix under inbox/ or agents/ (the rails' own rule, plain::readsOutsidePath, which the engine also
+// applies to the stored result), or a file of another person (a member's file the owner reads).
+bool readsOutside(const char* name, ArduinoJson::JsonObjectConst args, const orch::Principal& who) {
+  const std::string tool = name;
+  if (tool != "read_file" && tool != "list_files") return false;
+  std::string json;
+  serializeJson(args, json);
+  if (agent::plain::readsOutsidePath(tool, json)) return true;
+  return tool == "read_file" && files::readsOthersFile(who, args["path"].as<std::string>());
+}
+
 }  // namespace
 
 void registerFileTools(orch::ToolRegistry& reg) {
@@ -58,6 +71,7 @@ void registerFileTools(orch::ToolRegistry& reg) {
           (void)files::toolsHolds(true);
           const uint32_t t0 = millis();
           orch::ToolResult r = (tools().*m)(args, who);
+          if (r.success && readsOutside(name, args, who)) tools::markOutsideCall();
           const files::ToolsHolds h = files::toolsHolds(true);
           alogf("e2: tool %s ok=%d ms=%u holds=%u holdMaxUs=%u holdTotalUs=%u", name, r.success ? 1 : 0,
                 (unsigned)(millis() - t0), (unsigned)h.n, (unsigned)h.maxUs, (unsigned)h.totalUs);

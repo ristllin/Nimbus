@@ -13,3 +13,12 @@ namespace agent::filetoolsdev {
 void registerFileTools(nimbus::orch::ToolRegistry& reg);
 
 }  // namespace agent::filetoolsdev
+
+namespace agent::tools {
+// Engine 2 only, defined in tools_plain.cpp (lane E2-FSAFE). The running call read outside content (a web
+// search, a read of inbox/ or agents/, another person's file): its result is marked outside and the turn's
+// note origin is tainted. takeOutsideCall answers for the call just dispatched and clears the mark
+// (ChatBindingDeps::outside). Turn task only. Not in engine_tools.h: that header is both engines' hooks.
+void markOutsideCall();
+bool takeOutsideCall();
+}  // namespace agent::tools
