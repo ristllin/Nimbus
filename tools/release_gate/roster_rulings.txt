@@ -15,3 +15,9 @@
 68 test_tx_overhead::test_wire_overhead_night_responses
 68 test_tx_overhead::test_wire_overhead_night_chat
 68 test_tx_overhead::test_wire_overhead_night_flat
+
+# Ruling 111 (launch of RB-N2b): cases RB-N2b hands on. The unknown-tool fact is RB-I1's; the two summary cases are
+# RB-C3b's (a file change with over 1,024 B of arguments, and the stored path).
+111 test_file_tools_binding::test_an_unknown_tool_name_gets_a_plain_fact_on_engine_2
+111 test_file_tools_binding::test_a_12000_B_write_reaches_the_summary_files_lines
+111 test_file_tools_binding::test_a_renamed_write_records_the_stored_path
