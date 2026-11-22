@@ -445,6 +445,14 @@ bool sayInstead(const String& chatId, const char* line) {
   return sent && queued;
 }
 
+// E2-MIG: a chat's first engine-2 start waits until the earlier engine's history is indexed (the
+// chat's own key only: a conversation /clear started takes no import).
+bool waitsForHistory(const String& chatId) {
+  const bool resident = s_chat && s_chat->config().chatId == chatId.c_str();
+  const bool baseKey = txKeyFor(chatId) == chatId.c_str();
+  return !resident && baseKey && !migratedev::historyReady(chatId.c_str());
+}
+
 // One person's message as one engine-2 turn (tg_poll). Returns whether a reply went out.
 bool runOne(const String& text, const String& fromName, const String& chatId) {
   const String host = store::resolvedOrchHost();
@@ -452,11 +460,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     captureOwnerRow(text, fromName, chatId);
     return sayInstead(chatId, line);
   }
-  // E2-MIG: a chat's first engine-2 start waits until the earlier engine's history is indexed (the
-  // chat's own key only: a conversation /clear started takes no import).
-  const bool resident = s_chat && s_chat->config().chatId == chatId.c_str();
-  const bool baseKey = txKeyFor(chatId) == chatId.c_str();
-  if (!resident && baseKey && !migratedev::historyReady(chatId.c_str())) {
+  if (waitsForHistory(chatId)) {
     captureOwnerRow(text, fromName, chatId);
     return sayInstead(chatId, kReadingLine);
   }
