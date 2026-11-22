@@ -1165,3 +1165,12 @@ PC-0175, PC-0176: not used.
 - lane: E2-VERB
 - prd: section 2 (the stub rule, as amended by owner rulings 81, 82 and 106: under the due mark the request replays every call and result whole; stubs only on the overflow path) and section 4 (the file tools; delete_file behind more, files_admin)
 - why: lib/core/src/orch_file_tools.cpp kStubText, 70 B: write_file content, append_file text and edit_file new that is a stub line and nothing else ([stub ...], tx::looksLikeStub) is refused with one line that says it is a stub line, not text, and that only real text is stored (a fact, not an order: check_tool_result_imperatives; shortened to fit the class ceiling beside PC-0174). The E2-HOST comparison (evidence/refloop-e2, long-chat) showed models copying their own earlier calls, shown with stubbed arguments, into write_file. delete_file's result and argument are PC-0174's (lane E2-TOOLS' FileTools::remove, which this lane binds on nimbusd). The stub texts themselves (lib/core/src/orch_tx_rules.cpp: a file read's stub names read_file with its path and range, a long argument's stub says it is an argument sent earlier, not content) are not in either catalog's sources; they change with this entry too. Planned work, not a fix.
+### PC-0153: the schedule tool's results and errors (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 5894 -> 6548
+- sha8: 6861f37b -> c3381752
+- lane: RB-U1b
+- prd: section 4 (tool 11, schedule: create, update, delete or list reminders and routines) and section 6 (a reminder delivers its fixed text with no model call; routines; new fields in /data/loops2.json), ruling 81 (a text over a limit is refused with the limit named, never stored cut), ruling 111 (the class ceiling rises from 6,144 B by what this lane uses: 404 B of the 512 B granted)
+- why: lib/core/src/orch_schedule_tool.cpp, a new tool of the spec with its own result and error lines, cataloged as tool_results through E2_EXTRA_SOURCES as the note tool's are. Every literal of the file counts: the argument words (op, kind, id, when, text, every and their values), the cadence words, and facts only: what was stored, updated or deleted with its id, kind, time or cadence and whole text, whether it waits for the owner's approval or is paused; what form an argument must take; that a text is over the 2048 B limit; that a turn no person started may list or set reminders only; that the write was refused. No instruction, no prompt text, no engine-1 wording, user noun "routine". Planned work, not a fix. PC-0154 and PC-0155: not used.

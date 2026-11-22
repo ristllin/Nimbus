@@ -202,7 +202,9 @@ E2_CEILINGS = {
     "core": 3072,
     "device_notes": 2048,
     "stubs": 512,
-    "tool_results": 6144,
+    # Ruling 111: raised from 6,144 B for RB-U1b's schedule strings only, by the bytes they use (404 B of
+    # the 512 B granted, after the 250 B the class had left); the unused 108 B went back.
+    "tool_results": 6548,
     "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,
@@ -227,6 +229,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("lib/core/include/nimbus/orch/truth.h", "probe"),
     # RB-N1: the note tool's results and errors (lib/core, beside its rules, as the file tools').
     ("lib/core/src/orch_notes.cpp", "tool_results"),
+    # RB-U1b: the schedule tool's results and errors, its argument words and the loops2 sidecar keys.
+    ("lib/core/src/orch_schedule_tool.cpp", "tool_results"),
     # RB-TG1: what a stored PDF's line in the owner message says after its inbox path.
     ("lib/core/include/nimbus/net/tg_inbox.h", "stubs"),
     # E2-TOOLS: the engine-2 device registrations (web_search over the old web.search: its names and argument).
