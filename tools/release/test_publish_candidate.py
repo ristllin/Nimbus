@@ -40,7 +40,12 @@ pc = _load()
 # --- today's literals (release.yml at rb-main 0363f60de), the stable rows must reproduce them ---
 TODAY_TYPES = ["nimbus-tft", "freenove-28", "freenove-35", "freenove-40"]
 TODAY_ENVS = ["esp32s3", "esp32s3-cyd", "esp32s3-cyd-35", "esp32s3-cyd-40"]
-TODAY_IMAGES = ["firmware-nimbus-tft.bin", "firmware-freenove.bin", "firmware-freenove-35.bin", "firmware-freenove-40.bin"]
+TODAY_IMAGES = [
+    "firmware-nimbus-tft.bin",
+    "firmware-freenove.bin",
+    "firmware-freenove-35.bin",
+    "firmware-freenove-40.bin",
+]
 TODAY_REPO = "ristllin/nimbus-fw-releases"
 SOURCE = "ristllin/Nimbus"
 
@@ -151,8 +156,8 @@ def test_candidate_e2_gate_takes_the_engine2_dram_row():
 def test_hold_heads_only_with_hold_line():
     assert env_lines(plan(CAND_TAG, candidate=CAND))["REL_HOLD_LINE"] == ""
     assert env_lines(plan(CAND_TAG, candidate=dict(CAND, hold_line="e2")))["REL_HOLD_LINE"] == "e2"
-    assert pc.make_manifest_argv(plan(CAND_TAG, candidate=CAND), "k", "", "", "o").count("--hold-line") == 0
-    argv = pc.make_manifest_argv(plan(CAND_TAG, candidate=dict(CAND, hold_line="e1")), "k", "", "", "o")
+    assert pc.make_manifest_argv(plan(CAND_TAG, candidate=CAND), pc.Signing("k"), "o").count("--hold-line") == 0
+    argv = pc.make_manifest_argv(plan(CAND_TAG, candidate=dict(CAND, hold_line="e1")), pc.Signing("k"), "o")
     assert argv[argv.index("--hold-line") + 1] == "e1"
 
 
@@ -273,7 +278,7 @@ def write_stable(d, version="v5.2.0"):
 def test_a_candidate_not_strictly_newer_than_stable_is_refused(tmp_path, stable):
     pc.check_target(CAND_TAG, write_stable(tmp_path / "ok", "v9.8.9"), "v9.8.9")  # neighbor
     with pytest.raises(pc.Refused, match="not newer"):
-        pc.check_target(CAND_TAG, write_stable(tmp_path / "t", stable), stable)
+        pc.check_target(CAND_TAG, write_stable(tmp_path / "t", stable), "v-latest")
 
 
 def test_a_target_without_manifest_json_is_refused(tmp_path):
@@ -306,7 +311,7 @@ def make(tmp_path, out_name="manifest-candidate.json", candidate=CAND, size=1024
     imgs = images(tmp_path / "imgs", size)
     p = plan(tag, candidate=candidate)
     out = target / out_name
-    return pc.make_candidate(p, str(KEY), "", "", str(target), str(out), str(imgs)), target, out
+    return pc.make_candidate(p, pc.Signing(str(KEY)), str(target), str(out), str(imgs)), target, out
 
 
 def test_output_named_manifest_json_is_refused(tmp_path):
@@ -327,13 +332,21 @@ def test_a_missing_image_is_refused(tmp_path):
     target = write_stable(tmp_path / "latest")
     (tmp_path / "imgs").mkdir()
     with pytest.raises(pc.Refused, match="not built"):
-        pc.make_candidate(plan(CAND_TAG, candidate=CAND), str(KEY), "", "", str(target), str(target / "m"), str(tmp_path / "imgs"))
+        pc.make_candidate(
+            plan(CAND_TAG, candidate=CAND),
+            pc.Signing(str(KEY)),
+            str(target),
+            str(target / "manifest-candidate.json"),
+            str(tmp_path / "imgs"),
+        )
 
 
 def test_make_refuses_a_stable_plan(tmp_path):
     target = write_stable(tmp_path / "latest")
     with pytest.raises(pc.Refused, match="no candidate entry"):
-        pc.make_candidate(plan("v5.2.0"), str(KEY), "", "", str(target), str(target / "manifest-candidate.json"), str(tmp_path))
+        pc.make_candidate(
+            plan("v5.2.0"), pc.Signing(str(KEY)), str(target), str(target / "manifest-candidate.json"), str(tmp_path)
+        )
 
 
 def sha(path):
@@ -348,7 +361,9 @@ def test_local_dry_run_signs_with_the_test_key_and_leaves_manifest_json(tmp_path
     before = sha(target / "manifest.json")
     imgs = images(tmp_path / "imgs")
     out = target / "manifest-candidate.json"
-    man = pc.make_candidate(plan(CAND_TAG, candidate=CAND), str(KEY), "", "g1234", str(target), str(out), str(imgs))
+    man = pc.make_candidate(
+        plan(CAND_TAG, candidate=CAND), pc.Signing(str(KEY), "", "g1234"), str(target), str(out), str(imgs)
+    )
     assert sha(target / "manifest.json") == before
     assert json.loads(out.read_text()) == man
     assert man["version"] == CAND_TAG and man["schema"] == 2 and "holdHeads" not in man
@@ -360,11 +375,15 @@ def test_local_dry_run_signs_with_the_test_key_and_leaves_manifest_json(tmp_path
     msg.write_bytes(f"nimbus-ota-v2\n{CAND_TAG}\nfreenove-28\n{v['sha256']}\n".encode())
     sig = tmp_path / "sig.der"
     sig.write_bytes(base64.b64decode(v["sig"]))
-    r = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(PUB), "-signature", str(sig), str(msg)], capture_output=True)
+    r = subprocess.run(
+        ["openssl", "dgst", "-sha256", "-verify", str(PUB), "-signature", str(sig), str(msg)], capture_output=True
+    )
     assert r.returncode == 0, r.stdout + r.stderr
     # Counter: the same signature does not verify for the stable type's neighbor.
     msg.write_bytes(f"nimbus-ota-v2\n{CAND_TAG}\nfreenove-35\n{v['sha256']}\n".encode())
-    r = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(PUB), "-signature", str(sig), str(msg)], capture_output=True)
+    r = subprocess.run(
+        ["openssl", "dgst", "-sha256", "-verify", str(PUB), "-signature", str(sig), str(msg)], capture_output=True
+    )
     assert r.returncode != 0
 
 
@@ -403,7 +422,11 @@ STEP_READS = {
     "Sign + build typed OTA manifest (schema 2)": ["$REL_MANIFEST_PAIRS", "$REL_URL_BASE", "$REL_MANIFEST"],
     "Build per-variant web-flash images + manifests": ["$REL_WEBFLASH", "${REL_RELEASES_REPO}"],
     "Publish release": ["${{ env.REL_RELEASES_REPO }}", "${{ env.REL_ASSETS }}", "${{ env.REL_PRERELEASE }}"],
-    "Publish web-flash latest (webflash branch)": ["env.REL_WEBFLASH_ON == 'true'", "$REL_WEBFLASH", "${REL_RELEASES_REPO}"],
+    "Publish web-flash latest (webflash branch)": [
+        "env.REL_WEBFLASH_ON == 'true'",
+        "$REL_WEBFLASH",
+        "${REL_RELEASES_REPO}",
+    ],
     "Candidate - the latest full release and its manifest.json": ["env.REL_MODE == 'candidate'", "check-target"],
     "Candidate - attach manifest-candidate.json to the latest full release": [
         "env.REL_MODE == 'candidate'",
