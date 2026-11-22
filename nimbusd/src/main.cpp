@@ -147,7 +147,7 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
 
 // The startup switch NIMBUSD_ENGINE=2 (lane E2-HOST): the owner's chats (the web chat and every
 // Telegram chat whose person is the owner) run on engine 2; members, photo turns and the slash
-// commands other than /compact stay on engine 1. "" when engine 2 is off or started, else the
+// commands other than /compact and /clear stay on engine 1. "" when engine 2 is off or started, else the
 // one plain line the daemon exits on.
 std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, nimbusd::EngineThread& eng,
                          std::function<void(const std::string&, const std::string&)> deliver,
@@ -178,7 +178,7 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   nimbusd::Engine2Route r;
   r.takes = [&rig](const std::string& chat, const std::string& text, bool photos) {
     const nimbus::orch::Command c = nimbus::orch::parseCommand(text);
-    if (photos || (c.isCommand && c.verb != "compact")) return false;
+    if (photos || (c.isCommand && c.verb != "compact" && c.verb != "clear")) return false;
     return chat == nimbusd::kWebChatId || rig.telegramAccess().principalFor(chat).owner;
   };
   r.say = [host, deliver = o.deliver](const std::string& chat, const std::string& text) {
@@ -187,9 +187,16 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
       host->say(chat, text, chat == nimbusd::kWebChatId ? "web" : "tg");
       return;
     }
-    if (deliver)
-      deliver(chat, host->requestCompaction() ? "Compacting this conversation. A message follows when it is done."
-                                              : "A compaction is already queued. A message follows when it is done.");
+    if (!deliver) return;
+    // Engine 2 keeps one whole conversation (ruling 81): it has no clear yet, and engine 1's would
+    // clear a conversation this chat no longer uses.
+    if (c.verb == "clear") {
+      deliver(chat, "This conversation is kept whole on this instance, so /clear is not available. Long-term memory "
+                    "and files are unchanged.");
+      return;
+    }
+    deliver(chat, host->requestCompaction() ? "Compacting this conversation. A message follows when it is done."
+                                            : "A compaction is already queued. A message follows when it is done.");
   };
   r.idle = [host](bool waiting) { return host->idle(waiting); };
   eng.setEngine2(r);

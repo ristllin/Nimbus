@@ -98,7 +98,8 @@ run on engine 2 (`src/engine2_host.h`: one `PlainRig` with its own libcurl trans
 and the Anthropic wire, the transcript under `<data>/mem/tx/owner/` through
 `src/hosted_tx.h`, notes, calc, the compaction driver and the five file tools of
 `src/hosted_file_tools.h` over the daemon's one file store). Member chats, photo
-turns and the slash commands other than `/compact` stay on engine 1. Claude heads
+turns and the slash commands other than `/compact` and `/clear` (answered as
+not available: engine 2 keeps one whole conversation) stay on engine 1. Claude heads
 only: with any other head the daemon logs one line and exits 2. A head model the
 owner changes boots the chat again over its stored transcript.
 `tests/test_engine2_host.cpp` covers it offline. Headers in `src/` compile only when a `.cpp` includes
