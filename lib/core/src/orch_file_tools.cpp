@@ -75,6 +75,7 @@ const char kMoreAfter[] = "more: {} (after={})";
 const char kNoFiles[] = "no files";
 const char kNoFilesUnder[] = "no files under {}";
 const char kTimeUnknown[] = "time?";
+const char kDeleted[] = "deleted {} ({} B)";
 }  // namespace tool_results
 }  // namespace texts
 
@@ -89,6 +90,7 @@ const std::vector<const char*> kWriteArgs = {"path", "content", "if_exists"};
 const std::vector<const char*> kAppendArgs = {"path", "text"};
 const std::vector<const char*> kEditArgs = {"path", "old", "new", "all", "line"};
 const std::vector<const char*> kListArgs = {"prefix", "after"};
+const std::vector<const char*> kDeleteArgs = {"path"};
 
 // A template with each "{}" replaced by the next value.
 std::string fill(const char* tpl, std::initializer_list<std::string> vals) {
@@ -335,6 +337,7 @@ bool FileTools::resolve(JsonObjectConst args, Target& t, std::string& err) const
 bool FileTools::lookup(Target& t, const Principal& who, int& state) {
   state = 0;
   return io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
     FileStore& s = io_.index();
     const FileEntry* e = s.find(t.sp.project, t.sp.name);
     if (!e) return;
@@ -601,6 +604,7 @@ FileEntry entryAfter(const FileEntry* cur, const StorePath& sp, const Principal&
 // Inside a hold: may this caller put newBytes at the target now?
 bool FileTools::writeCheck(Target& t, const Principal& who, const WriteMode& m, uint64_t newBytes,
                            std::string& err) {
+  io_.sync(t.sp.project, t.sp.name);
   FileStore& s = io_.index();
   const FileEntry* cur = s.find(t.sp.project, t.sp.name);
   if (!s.writeAllowed(t.sp.project, t.sp.name, who.ns, who.owner)) {
@@ -752,6 +756,7 @@ bool FileTools::appendRoom(Target& t, const Principal& who, uint64_t add, uint64
   m.replace = true;
   bool ok = false;
   const bool card = io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
     const FileEntry* cur = io_.index().find(t.sp.project, t.sp.name);
     before = cur ? cur->bytes : 0;
     std::string why;
@@ -769,6 +774,7 @@ bool FileTools::appendBytes(Target& t, const Principal& who, const std::string& 
   m.replace = true;
   bool ok = false;
   io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
     FileStore& s = io_.index();
     const FileEntry* cur = s.find(t.sp.project, t.sp.name);
     size = uint64_t(cur ? cur->bytes : 0) + bytes.size();
@@ -974,6 +980,37 @@ ToolResult FileTools::list(JsonObjectConst args, const Principal& who) {
   return ToolResult::ok(out);
 }
 
+// ---- delete ----------------------------------------------------------------------------
+
+ToolResult FileTools::remove(JsonObjectConst args, const Principal& who) {
+  std::string err, path;
+  Target t;
+  t.tool = "delete_file";
+  if (!onlyKnown(args, t.tool, kDeleteArgs, err)) return ToolResult::fail(err);
+  ArgReader in{args, t.tool, kDeleteArgs, ""};
+  if (!in.str("path", true, path)) return ToolResult::fail(in.err);
+  if (!resolve(args, t, err) || !writeTarget(who, t.rule, t.path(), err)) return ToolResult::fail(err);
+  // One hold: whose file, then the card and the index entry together.
+  uint64_t bytes = 0;
+  bool ok = false;
+  const bool card = io_.locked([&] {
+    io_.sync(t.sp.project, t.sp.name);
+    FileStore& s = io_.index();
+    const FileEntry* e = s.find(t.sp.project, t.sp.name);
+    if (!e || !s.readableBy(*e, who.ns, who.owner, mayReadShared(who))) return void(err = fill(R::kNoFile, {t.path()}));
+    if (!s.writeAllowed(t.sp.project, t.sp.name, who.ns, who.owner)) return void(err = fill(R::kOthers, {t.path()}));
+    t.sp.project = plainCopy(e->project);   // the stored letter case
+    t.sp.name = plainCopy(e->name);
+    bytes = e->bytes;
+    if (!io_.remove(t.sp.project, t.sp.name)) return void(err = R::kCardWrite);
+    s.remove(t.sp.project, t.sp.name);
+    ok = true;
+  });
+  if (!card) return ToolResult::fail(R::kNoCard);
+  if (!ok) return ToolResult::fail(err);
+  return ToolResult::ok(fill(R::kDeleted, {t.path(), num(bytes)}) + persisted());
+}
+
 // ---- registration ----------------------------------------------------------------------
 
 const std::vector<const char*>& fileToolArgs(const char* tool) {
@@ -984,6 +1021,7 @@ const std::vector<const char*>& fileToolArgs(const char* tool) {
   if (t == "append_file") return kAppendArgs;
   if (t == "edit_file") return kEditArgs;
   if (t == "list_files") return kListArgs;
+  if (t == "delete_file") return kDeleteArgs;
   return none;
 }
 
@@ -999,6 +1037,8 @@ void FileTools::registerInto(ToolRegistry& reg, const FileToolDeclFn& decl) {
   reg.add("edit_file", d.description, [this](A a, const Principal& w) { return edit(a, w); }, d.schema);
   d = decl("list_files");
   reg.add("list_files", d.description, [this](A a, const Principal& w) { return list(a, w); }, d.schema);
+  d = decl("delete_file");
+  reg.add("delete_file", d.description, [this](A a, const Principal& w) { return remove(a, w); }, d.schema);
 }
 
 }  // namespace nimbus::orch

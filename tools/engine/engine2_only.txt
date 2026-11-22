@@ -8,6 +8,7 @@
 # A lane that adds an engine-2 source adds its line here in the same commit.
 
 lib/core/src/orch_file_tools.cpp
+lib/core/src/orch_file_card_io.cpp
 lib/core/src/orch_intents.cpp
 lib/core/src/orch_notes.cpp
 lib/core/src/orch_path_rules.cpp

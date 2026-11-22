@@ -26,6 +26,7 @@
 //   - append_file writes a newline first when the file does not end in one, and names an
 //     appended line identical to one of the file's last 64 lines;
 //   - list_files lists newest first, 40 at a time, with the true remainder;
+//   - delete_file removes one file the caller may write (behind more; lane E2-TOOLS);
 //   - every write returns what changed; an unknown argument is an error naming the
 //     accepted ones; nothing refuses on a heuristic; paths follow path_rules.h.
 //
@@ -95,6 +96,20 @@ class FileToolsIo {
   virtual bool roomFor(const std::string& project, const std::string& name, uint64_t addBytes, std::string& err) {
     return !index().wouldExceed(project, name, addBytes, err);
   }
+  // Remove the stored file (the tools then drop its index entry). False: it is as it was.
+  // Default: no delete on this host.
+  virtual bool remove(const std::string& project, const std::string& name) {
+    (void)project;
+    (void)name;
+    return false;
+  }
+  // Called at the top of every hold that reads the target's index entry. A binding whose
+  // index can lag the bytes another writer stored brings the entry to the size on its card
+  // here (never the bytes to the entry: ruling 112). Default: the index is the truth.
+  virtual void sync(const std::string& project, const std::string& name) {
+    (void)project;
+    (void)name;
+  }
   // Epoch seconds (0 = clock unknown).
   virtual uint32_t now() = 0;
   // The approved version of skill `id` (skills/<id>.md); false when there is none. Not
@@ -129,8 +144,9 @@ class FileTools {
   ToolResult append(ArduinoJson::JsonObjectConst args, const Principal& who);
   ToolResult edit(ArduinoJson::JsonObjectConst args, const Principal& who);
   ToolResult list(ArduinoJson::JsonObjectConst args, const Principal& who);
+  ToolResult remove(ArduinoJson::JsonObjectConst args, const Principal& who);
 
-  // Register the five tools with the description and schema the manifest shows for each
+  // Register the six tools (delete_file is declared behind more) with the description and schema the manifest shows for each
   // (RB-E2's plain::toolDecl and plain::declSchema; contentCap must be the cap that schema
   // states). The registry must not outlive this object.
   void registerInto(ToolRegistry& reg, const FileToolDeclFn& decl);
