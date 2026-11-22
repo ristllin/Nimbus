@@ -199,6 +199,8 @@ FileToolDecl measuredDecl(const char* tool, size_t cap) {
   if (t == "edit_file")
     return {"Exact find and replace in a file.",
             R"({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"all":{"type":"boolean"},"line":{"type":"integer"}},"required":["path","old","new"]})"};
+  if (t == "delete_file")
+    return {"Delete a file by path (project/name).", R"({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]})"};
   return {"List files newest first.", R"({"type":"object","properties":{"prefix":{"type":"string"},"after":{"type":"string"}}})"};
 }
 
