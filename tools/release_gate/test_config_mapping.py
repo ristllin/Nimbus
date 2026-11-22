@@ -66,6 +66,7 @@ def test_a_variant_literal_back_in_the_workflow_fails():
         "pio run -e esp32s3-cyd",
         "freenove-35=firmware-freenove-35.bin",
         "repository: x/firmware-freenove.bin",
+        "repository: ristllin/nimbus-fw-releases",
     ):
         real = m.read_sources()
         real["rel"] = m.parse_release_yml(yml + "\n# " + literal + "\n")

@@ -69,10 +69,10 @@ GIT_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")  # what tag_shape.py 
 ROW_KEYS = {"type", "env", "image", "webflash"}
 CAND_ROW_KEYS = {"type", "env"}
 CAND_KEYS = {"tag", "variants", "hold_line"}
-# The build options that make an image fit one board: a candidate env must match its type's
-# stable env on each (its engine may differ; that is what a candidate is for).
-HW_OPTIONS = ("platform", "board", "board_build.partitions", "build_unflags")
-HW_FLAGS = re.compile(r"-D(SOLIDE_BOARD|NIMBUS_OTA_VARIANT|NIMBUS_PANEL_W|NIMBUS_PANEL_H|NIMBUS_TEST)\b(?:=(\S+))?")
+# A candidate env must build exactly what its type's stable env builds except the engine: every
+# resolved platformio.ini option equal, but for these two (and -DNIMBUS_ENGINE in build_flags).
+ENGINE_ONLY_OPTIONS = {"extends", "custom_nimbus_engine"}
+ENGINE_FLAG = re.compile(r"-DNIMBUS_ENGINE=\S*")
 
 
 class Refused(Exception):
@@ -144,15 +144,22 @@ def load_table(path: str = TABLE) -> dict:
 # --- platformio.ini and the DRAM rows --------------------------------------------------------
 
 
-def hardware(ini, env: str) -> tuple:
-    """What makes env's image fit a board: the board options and the board's -D flags."""
+def build_options(ini, env: str) -> dict:
+    """Every option env resolves to (inherited ones included), as token lists, less the engine.
+
+    Two envs with equal results compile the same board, panel, OTA tag, partition table,
+    flash and PSRAM settings, sources and libraries; only the engine may differ."""
     section = "env:" + env
-    opts = tuple((o, (ini.get(section, o) or "").split()) for o in HW_OPTIONS)
-    flags = HW_FLAGS.findall(ini.get(section, "build_flags") or "")
-    unflags = set((ini.get(section, "build_unflags") or "").split())
-    kept = [f for f in flags if ("-D" + f[0] + ("=" + f[1] if f[1] else "")) not in unflags]
-    last = {name: value for name, value in kept}  # the compiler takes the last definition
-    return opts, tuple(sorted(last.items()))
+    names = set()
+    for cur in ini.walk(section):
+        names |= set(ini.cp.options(cur))
+    out = {}
+    for name in sorted(names - ENGINE_ONLY_OPTIONS):
+        value = ini.get(section, name) or ""
+        if name == "build_flags":
+            value = ENGINE_FLAG.sub("", value)
+        out[name] = value.split()
+    return out
 
 
 def dram_rows(path: str = CEILINGS) -> dict:
@@ -202,7 +209,11 @@ class Plan:
 
     @property
     def prerelease(self) -> bool:
-        return self.candidate or "-rc" in self.tag  # today: contains(github.ref_name, '-rc')
+        return self.candidate or self.rc  # today: contains(github.ref_name, '-rc')
+
+    @property
+    def rc(self) -> bool:
+        return "-rc" in self.tag.lower()  # contains() in a workflow expression ignores case
 
     @property
     def webflash_rows(self) -> tuple:
@@ -223,7 +234,7 @@ class Plan:
             "REL_URL_BASE": self.url_base,
             "REL_HOLD_LINE": self.hold_line,
             "REL_WEBFLASH": " ".join(f"{r.type}:{r.env}" for r in self.webflash_rows),
-            "REL_WEBFLASH_ON": "true" if self.webflash_rows and "-rc" not in self.tag else "false",
+            "REL_WEBFLASH_ON": "true" if self.webflash_rows and not self.rc else "false",
             "REL_PRERELEASE": "true" if self.prerelease else "false",
             "REL_ASSETS": "\n".join(assets),
         }
@@ -253,13 +264,13 @@ def _resolve(spec: dict, stable: dict, ini, drams: dict) -> Row:
     _need(env in ini.device_envs(), f"{env}: not a device env of platformio.ini")
     if env != base["env"]:
         try:
-            same = hardware(ini, env) == hardware(ini, base["env"])
+            same = build_options(ini, env) == build_options(ini, base["env"])
         except check_engine_filter.IniError as e:
             raise Refused(f"{env}: platformio.ini unreadable here: {e}") from e
         _need(
             same,
-            f"{spec['type']}: env {env} builds for another board, panel, OTA tag or partition table "
-            f"than its stable env {base['env']} (or is a test build)",
+            f"{spec['type']}: env {env} builds for another board or another build than its stable env "
+            f"{base['env']} (every platformio.ini option but the engine must be equal)",
         )
     _need(env in drams, f"{env}: no static DRAM row in tools/release_gate/static_dram_ceilings.json")
     try:
@@ -295,11 +306,15 @@ def make_plan(table: dict, tag: str, repository: str, ini_path: str = "", ceilin
 
 
 def parse_version(s: str):
-    """(major, minor, patch) or None, exactly as the device parses it."""
-    m = re.fullmatch(r"[vV]?([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?", s or "", re.S)
+    """(major, minor, patch) or None, exactly as the device parses it (a C string: NUL ends it)."""
+    s = (s or "").split("\0", 1)[0]
+    m = re.fullmatch(r"[vV]?([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?", s, re.S)
     if not m:
         return None
-    parts = tuple(int(p) for p in m.groups()[:3])
+    digits = [p.lstrip("0") or "0" for p in m.groups()[:3]]
+    if any(len(d) > 6 for d in digits):  # the device stops past 100000; never int() a huge string
+        return None
+    parts = tuple(int(d) for d in digits)
     return None if any(p > 100000 for p in parts) else parts
 
 
@@ -328,7 +343,7 @@ def check_target(tag: str, target: str, latest_tag: str) -> dict:
     _need(parse_version(version) is not None, f"stable {version!r}: not a version the device can read")
     _need(
         compare_versions(tag, version) > 0,
-        f"candidate {tag} is not newer than stable {version} by the device's version order "
+        f"candidate {tag} is not newer than stable {version!r} by the device's version order "
         "(suffixes are ignored: number the candidate higher)",
     )
     return stable
@@ -421,7 +436,7 @@ def _run(a) -> None:
     _need(bool(a.tag), "--tag is empty")
     if a.cmd == "check-target":
         stable = check_target(a.tag, a.target, a.latest_tag)
-        print(f"candidate {a.tag} is newer than the latest full release {a.latest_tag} ({stable['version']})")
+        print(f"candidate {a.tag} is newer than the latest full release {a.latest_tag} ({stable['version']!r})")
         return
     plan = make_plan(load_table(), a.tag, a.repository)
     if a.cmd == "plan":

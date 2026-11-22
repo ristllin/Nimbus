@@ -242,7 +242,10 @@ def test_release_workflow_builds_and_gates_the_plan_lists():
         r'read -r -a gates <<< "\$REL_GATES"\n\s*for g in "\$\{gates\[@\]\}"; do\n(?P<body>.*?)\n\s*done', text, re.S
     )
     assert loop and "check_elf_symbols.py" in loop.group("body"), "the per-variant ELF gate loop moved"
-    assert "--engine1-absent" in loop.group("body")
+    assert re.search(
+        r'if \[ "\$engine" = 2 \]; then\n\s*python3 tools/release_gate/check_elf_symbols\.py --engine1-absent --elf "\.pio/build/\$env/firmware\.elf"\n\s*fi',
+        loop.group("body"),
+    ), "an engine-2 image must also get --engine1-absent"
     commands = re.sub(r"\\\n\s*", " ", text).splitlines()  # one line per shell command
     calls = [ln for ln in commands if "check_elf_symbols.py" in ln and not ln.lstrip().startswith("#")]
     assert calls, "no ELF gate call in release.yml"

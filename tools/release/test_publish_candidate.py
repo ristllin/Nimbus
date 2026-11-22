@@ -15,6 +15,7 @@ import importlib.util
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -85,7 +86,10 @@ def env_lines(p):
 # --- the stable plan is today's release ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("tag,pre,webflash_on", [("v5.2.0", "false", "true"), ("v5.2.0-rc1", "true", "false")])
+@pytest.mark.parametrize(
+    "tag,pre,webflash_on",
+    [("v5.2.0", "false", "true"), ("v5.2.0-rc1", "true", "false"), ("v5.2.0-RC1", "true", "false")],
+)
 def test_stable_plan_reproduces_todays_literals(tag, pre, webflash_on):
     p = plan(tag)
     e = env_lines(p)
@@ -238,6 +242,37 @@ def test_an_env_of_another_board_is_refused(env):
         plan(CAND_TAG, candidate=dict(CAND, variants=[{"type": "freenove-28", "env": env}]))
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "board_build.partitions = partitions_test_16MB.csv",
+        "board_build.arduino.memory_type = qio_qspi",
+        "board_build.flash_mode = dio",
+        "lib_deps = somelib",
+        "build_src_filter = +<*>",
+        "build_unflags =",
+        "build_flags = ${env:esp32s3-cyd.build_flags} -DNIMBUS_ENGINE=2 -D BOARD_HAS_PSRAM=0",
+    ],
+)
+def test_any_option_but_the_engine_differing_is_another_build(tmp_path, extra):
+    """The class rule: a candidate env equal to its type's stable env in every resolved option but
+    the engine passes; one more differing option of any kind is refused."""
+    ini = tmp_path / "platformio.ini"
+    twin = "[env:esp32s3-cyd-x]\nextends = env:esp32s3-cyd\ncustom_nimbus_engine = 2\n"
+    twin += "build_flags = ${env:esp32s3-cyd.build_flags} -DNIMBUS_ENGINE=2\n"
+    base_ini = (ROOT / "platformio.ini").read_text()
+    ceil = json.loads((ROOT / "tools" / "release_gate" / "static_dram_ceilings.json").read_text())
+    ceil["engine2"]["freenove-28-x"] = {"env": "esp32s3-cyd-x", "baseline": 1, "ceiling": 2}
+    (tmp_path / "c.json").write_text(json.dumps(ceil))
+    cand = dict(CAND, variants=[{"type": "freenove-28", "env": "esp32s3-cyd-x"}])
+    ini.write_text(base_ini + "\n" + twin)
+    p = pc.make_plan(table(cand), CAND_TAG, SOURCE, ini_path=str(ini), ceilings=str(tmp_path / "c.json"))
+    assert p.rows[0].engine == 2  # the neighbor: only the engine differs
+    ini.write_text(base_ini + "\n" + twin + extra + "\n")
+    with pytest.raises(pc.Refused, match="another board"):
+        pc.make_plan(table(cand), CAND_TAG, SOURCE, ini_path=str(ini), ceilings=str(tmp_path / "c.json"))
+
+
 def test_an_env_without_a_dram_row_is_refused(tmp_path):
     ceil = json.loads((ROOT / "tools" / "release_gate" / "static_dram_ceilings.json").read_text())
     del ceil["engine2"]["freenove-28-e2"]
@@ -281,6 +316,12 @@ def test_a_fork_run_that_would_publish_to_the_public_repo_is_refused():
         ("v1.0", "v1.0.0", -1),
         ("v1.0.0x", "v1.0.0", -1),
         ("v100001.0.0", "v1.0.0", -1),
+        ("v100000.0.0", "v99999.0.0", 1),
+        ("v0005.0.0", "v5.0.0", 0),  # leading zeros read as the number
+        ("v1.0.0\0junk", "v1.0.0", 0),  # a C string ends at NUL
+        ("v" + "9" * 5000 + ".0.0", "v1.0.0", -1),  # refused, never a ValueError
+        ("v1.0.0+build7", "v1.0.0", 0),
+        ("V2.0.0", "v1.0.0", 1),
     ],
 )
 def test_compare_versions_mirrors_the_device(a, b, want):
@@ -484,26 +525,30 @@ def literals(text):
     return found
 
 
-def workflow_errors(text):
+def read_errors(steps):
+    """Each step of STEP_READS exists and reads its variables (comment lines do not count)."""
+    bodies = {n: "\n".join(ln for ln in b.splitlines() if not ln.lstrip().startswith("#")) for n, b in steps}
     errs = []
-    steps = release_job_steps(text)
-    names = [n for n, _ in steps]
     for name, needles in STEP_READS.items():
-        body = next((b for n, b in steps if n == name), None)
-        if body is None:
+        if name not in bodies:
             errs.append(f"step {name!r} is gone")
             continue
-        errs += [f"{name}: does not read {n!r}" for n in needles if n not in body]
+        errs += [f"{name}: does not read {n!r}" for n in needles if n not in bodies[name]]
+    return errs
+
+
+def workflow_errors(text):
+    steps = release_job_steps(text)
+    errs = read_errors(steps)
     if errs:
         return errs
+    names = [n for n, _ in steps]
     order = [names.index(n) for n in STEP_READS]
-    plan_i, target_i, build_i = order[0], order[8], order[1]
-    if not plan_i < target_i < build_i:
+    if not order[0] < order[8] < order[1]:
         errs.append("the plan and the candidate target must come before the build")
     if not names.index("Publish release") < order[9]:
         errs.append("the candidate is attached after its images are published")
-    errs += [f"literal {w!r} left in release.yml" for w in literals(text)]
-    return errs
+    return errs + [f"literal {w!r} left in release.yml" for w in literals(text)]
 
 
 def test_workflow_reads_every_list_from_the_table():
@@ -527,3 +572,105 @@ def test_the_workflow_check_catches_a_literal_or_a_lost_read(old, new):
     text = WORKFLOW.read_text(encoding="utf-8")
     assert text.count(old) >= 1, old
     assert workflow_errors(text.replace(old, new)) != []
+
+
+# --- the step scripts, executed: every tool stubbed to print its command line -------------------
+
+STUBS = (
+    'for c in python3 pio pip cp xz git; do eval "$c() { echo \\"$c \\$*\\"; }"; done\n'
+    "cd() { :; }\n"
+    'gh() { if [ "$2" = view ]; then echo v5.2.0; else echo "gh $*"; fi; }\n'
+    'sha256sum() { echo "5417d1f4  $1"; }\n'
+)
+
+
+def run_step(name, p, tmp_path, tag):
+    """The command lines the named step's run: block executes under the plan p (bash -e, as GitHub)."""
+    body = dict(release_job_steps(WORKFLOW.read_text(encoding="utf-8")))[name]
+    m = re.search(r"^        run: \|\n((?:          .*\n|\s*\n)+)", body, re.M)
+    script = "\n".join(ln[10:] for ln in m.group(1).splitlines())
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "GITHUB_REF_NAME": tag,
+        "GITHUB_REPOSITORY": SOURCE,
+        "GITHUB_ENV": str(tmp_path / "ge"),
+    }
+    env.update(
+        env_lines(p), OTA_SIGNING_KEY="stub", RELEASE_PAT="stub", REL_LATEST_TAG="v5.2.0", REL_STABLE_SHA="5417d1f4"
+    )
+    script = script.replace("/tmp/ota_priv.pem", str(tmp_path / "k"))
+    r = subprocess.run(["bash", "-e", "-c", STUBS + script], cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return [
+        ln.replace(str(tmp_path), "<tmp>") for ln in r.stdout.splitlines() if not ln.startswith(("pip ", "cat ", "ls "))
+    ]
+
+
+SIGN = "Sign + build typed OTA manifest (schema 2)"
+GATE = "Release gate - ELF symbols + identity per variant, stage the ELF archive"
+NOTES_CMD = "python3 tools/release_gate/check_release_notes.py --tag {tag} --print"
+BUILD_CMD = "git describe --tags --always --match v[0-9]*"
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_the_stable_steps_run_todays_command_lines(tmp_path):
+    tag = "v5.2.0"
+    p = plan(tag)
+    build = run_step("Build firmware (every image of the plan)", p, tmp_path, tag)
+    assert build == ["pio run " + " ".join(f"-e {e}" for e in TODAY_ENVS)] + [
+        f"cp .pio/build/{e}/firmware.bin {i}" for e, i in zip(TODAY_ENVS, TODAY_IMAGES)
+    ]
+    gates = [ln for ln in run_step(GATE, p, tmp_path, tag) if ln.startswith("python3")]
+    want = []
+    for t, e in zip(TODAY_TYPES, TODAY_ENVS):
+        elf = f".pio/build/{e}/firmware.elf"
+        want += [
+            f"python3 tools/release_gate/check_elf_symbols.py --elf {elf} --bin .pio/build/{e}/firmware.bin --variant {t} --sha-out elf-archive/elf-sha256.txt",
+            f"python3 tools/release_gate/check_static_dram.py --elf {elf} --variant {t}",
+            f"python3 tools/release_gate/check_tg_poll_stack.py --elf {elf} --quiet",
+        ]
+    assert gates == want
+    sign = run_step(SIGN, p, tmp_path, tag)
+    pairs = " ".join(f"{t}={i}" for t, i in zip(TODAY_TYPES, TODAY_IMAGES))
+    assert sign == [
+        f"python3 tools/make_manifest.py --version {tag} --notes={NOTES_CMD.format(tag=tag)} --build {BUILD_CMD} "
+        f"--key <tmp>/k --url-base https://github.com/{TODAY_REPO}/releases/download/{tag} --out manifest.json {pairs}"
+    ]
+    web = run_step("Build per-variant web-flash images + manifests", p, tmp_path, tag)
+    raw = f"https://raw.githubusercontent.com/{TODAY_REPO}/webflash/latest"
+    assert web == [
+        f"python3 tools/release/make_webflash_manifest.py --variant {t} --build-dir .pio/build/{e} --version {tag} "
+        f"--out-dir webflash --base-url {raw}/{t}"
+        for t, e in zip(TODAY_TYPES, TODAY_ENVS)
+    ]
+    push = run_step("Publish web-flash latest (webflash branch)", p, tmp_path, tag)
+    assert push[-1] == f"git push --force https://x-access-token:stub@github.com/{TODAY_REPO}.git webflash:webflash"
+    assert [ln for ln in push if ln.startswith("cp ")] == [
+        f"cp ../Nimbus/webflash/{t}/{f} latest/{t}/"
+        for t in TODAY_TYPES
+        for f in ("nimbus-webflash.bin", "nimbus-webflash.bin.sha256", "manifest.json")
+    ]
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_the_candidate_steps_build_gate_sign_and_attach_only_the_candidate(tmp_path):
+    p = plan(CAND_TAG, candidate=CAND)
+    assert run_step("Build firmware (every image of the plan)", p, tmp_path, CAND_TAG) == [
+        "pio run -e esp32s3-cyd-e2",
+        "cp .pio/build/esp32s3-cyd-e2/firmware.bin firmware-freenove.bin",
+    ]
+    elf = ".pio/build/esp32s3-cyd-e2/firmware.elf"
+    assert [ln for ln in run_step(GATE, p, tmp_path, CAND_TAG) if ln.startswith("python3")] == [
+        f"python3 tools/release_gate/check_elf_symbols.py --elf {elf} --bin .pio/build/esp32s3-cyd-e2/firmware.bin --variant freenove-28 --sha-out elf-archive/elf-sha256.txt",
+        f"python3 tools/release_gate/check_elf_symbols.py --engine1-absent --elf {elf}",
+        f"python3 tools/release_gate/check_static_dram.py --elf {elf} --variant freenove-28-e2",
+        f"python3 tools/release_gate/check_tg_poll_stack.py --elf {elf} --quiet",
+    ]
+    sign = run_step(SIGN, p, tmp_path, CAND_TAG)
+    assert sign == [
+        f"python3 tools/release/publish_candidate.py make --tag={CAND_TAG} --repository={SOURCE} --key <tmp>/k "
+        f"--notes={NOTES_CMD.format(tag=CAND_TAG)} --build {BUILD_CMD} --target candidate-target --out manifest-candidate.json"
+    ]
+    attach = run_step("Candidate - attach manifest-candidate.json to the latest full release", p, tmp_path, CAND_TAG)
+    assert attach[0] == f"gh release upload v5.2.0 manifest-candidate.json --repo {TODAY_REPO} --clobber"
+    assert attach[-1].endswith("its manifest.json is unchanged (sha256 5417d1f4)")

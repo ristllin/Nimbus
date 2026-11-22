@@ -143,7 +143,7 @@ def parse_release_yml(yml: str, table: "dict | None" = None) -> dict:
       webflash_lists - the web-flash variant lists (build and publish read one list)
       published_assets - the images in the publish step's `files:`
       runs_plan    - release.yml runs the plan into $GITHUB_ENV
-      literals     - every type, env or image name release.yml still spells out
+      literals     - every type, env, image or releases-repository name release.yml still spells out
     """
     pc = _load_publish_candidate()
     plan = pc.make_plan(table if table is not None else pc.load_table(), "", pc.SOURCE_REPO)  # no candidate tag
@@ -151,6 +151,7 @@ def parse_release_yml(yml: str, table: "dict | None" = None) -> dict:
     web = plan.webflash_rows
     names = {getattr(r, k) for r in rows for k in ("type", "env", "image")}
     names |= {getattr(c, k) for c in CONFIG_TABLE for k in ("type_slug", "env", "ota_image")}
+    names |= {pc.PUBLIC_RELEASES_REPO, plan.releases_repo}  # the fork guard reads the repo from the table
     return {
         "built_envs": [r.env for r in rows],
         "image_of_env": {r.env: r.image for r in rows},
