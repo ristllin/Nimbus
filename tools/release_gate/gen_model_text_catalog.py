@@ -171,6 +171,11 @@ NON_MODEL_FILES: dict = {
     "monthly limit, could not start, still reading the earlier conversation), its fold status line and its "
     "no-routines reason, device copy; the model's text is the engine's. E2-CHAT: the too-large skill line and the /budget view (coverage/PROMPT-CHANGES.md PC-0177, "
     "PC-0178), owner-facing device copy",
+    # RB-U1b, E2-SCHED: the schedule tool's storage words (the loops2 keys, the state file's extensions, the
+    # outside event slug and a routine's lastErr "no card" shown on /loops), never sent to a model; the tool's
+    # model text is lib/core/src/orch_schedule_tool.cpp (E2_EXTRA_SOURCES).
+    "lib/core/include/nimbus/orch/schedule_tool.h": "RB-U1b, E2-SCHED: the schedule tool's storage words (loops2 "
+    "keys, state file extensions, the outside event slug, the no-card lastErr on /loops), never sent to a model",
     # E2-CHAT: the owner's slash commands on engine 2 answer with device copy before any model turn.
     "src/agent/commands_plain.cpp": "E2-CHAT: the owner's command replies on engine 2 (engine 1's own replies reused, "
     "the not-yet line and /clear's question and answer: PC-0177), delivered with system provenance, never sent to a "
@@ -202,9 +207,9 @@ E2_CEILINGS = {
     "core": 3072,
     "device_notes": 2048,
     "stubs": 512,
-    # Ruling 111: raised from 6,144 B for RB-U1b's schedule strings only, by the bytes they use (471 B of
-    # the 512 B granted, after the 250 B the class had left); the unused 41 B went back.
-    "tool_results": 6615,
+    # Ruling 111 item 2: raised from 6,144 B to 6,656 B for the schedule tool's own result and error
+    # lines only (lanes RB-U1b and E2-SCHED: 513 B of schedule text on 6,142 B, 6,655 B used).
+    "tool_results": 6656,
     "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,

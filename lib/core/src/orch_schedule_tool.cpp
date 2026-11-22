@@ -17,8 +17,7 @@ namespace schedule {
 // The lines the tool and the fires (nimbus/harness/schedule_fire.h) share.
 namespace words {
 const char kNoEntry[] = "no entry ";
-const char kUnreadable[] = "not stored: loops2.json is unreadable";
-const char kNoCard[] = "no card";
+const char kUnreadable[] = "loops2.json unreadable";
 }  // namespace words
 
 namespace {
@@ -33,26 +32,26 @@ using namespace store;   // the sidecar keys and file names (schedule_tool.h; no
 using namespace words;   // the lines the fires share (defined below)
 
 // results
-constexpr char kStored[] = "stored ", kUpdated[] = "updated ", kDeleted[] = "deleted ", kNoEntries[] = "no entries";
-constexpr char kWaiting[] = " (waiting for approval)", kPaused[] = " (paused)";
+constexpr char kStored[] = "stored ", kUpdated[] = "updated ", kDeleted[] = "deleted ", kNoEntries[] = "none";
+constexpr char kWaiting[] = " (needs approval)", kPaused[] = " (paused)";
 // errors
-constexpr char kBadOp[] = "op must be create, update, delete or list";
-constexpr char kBadKind[] = "kind must be reminder or routine";
-constexpr char kNoText[] = "text is empty";
-constexpr char kOverA[] = "text is over the ", kOverB[] = " B limit";
-constexpr char kBadWhen[] = "when must read YYYY-MM-DD HH:MM";
-constexpr char kWhenRange[] = "when must be 2 min to 7 days ahead";
-constexpr char kBadEveryA[] = "every must read daily HH:MM, weekly mon,thu HH:MM or every N min|h (",
-               kBadEveryB[] = " min or more)";
-constexpr char kWrongKey[] = "a reminder takes when, a routine takes every";
-constexpr char kFull[] = "full: ", kFullB[] = " entries";
-constexpr char kNoClock[] = "the clock is not set";
-constexpr char kNotHere[] = "a turn no person started may list or set reminders only";
-constexpr char kNotStored[] = "not stored: the write was refused";
-constexpr char kNoId[] = "id is empty";
-constexpr char kNothing[] = "nothing to change";
-constexpr char kKindDiffers[] = "kind differs from the entry";
-constexpr char kNoMemory[] = "out of memory; nothing changed";
+constexpr char kBadOp[] = "op: create|update|delete|list";
+constexpr char kBadKind[] = "kind: reminder|routine";
+constexpr char kNoText[] = "text empty";
+constexpr char kOverA[] = "text over ", kOverB[] = " B limit";
+constexpr char kBadWhen[] = "when: YYYY-MM-DD HH:MM";
+constexpr char kWhenRange[] = "when: 2 min to 7 days ahead";
+constexpr char kBadEveryA[] = "every: daily HH:MM|weekly mon,thu HH:MM|every N min|h (",
+               kBadEveryB[] = " min+)";
+constexpr char kWrongKey[] = "reminder: when; routine: every";
+constexpr char kFull[] = "max ", kFullB[] = " entries";
+constexpr char kNoClock[] = "clock not set";
+constexpr char kNotHere[] = "unattended: list or reminder only";
+constexpr char kNotStored[] = "write refused";
+constexpr char kNoId[] = "id missing";
+constexpr char kNothing[] = "no change";
+constexpr char kKindDiffers[] = "kind differs";
+constexpr char kNoMemory[] = "out of memory";
 
 const char* kindSlug(Kind k) { return k == Kind::Reminder ? kReminder : kRoutine; }
 
@@ -280,10 +279,11 @@ struct Call {
     l.id = host.newId(*live);
     setText(l, text);
     l.chatId = ctx.chatId;
-    l.createdBy = CreatedBy::Agent;
+    const bool byOwner = ctx.owner && ctx.origin == notes::Origin::Attended;
+    l.createdBy = byOwner ? CreatedBy::Owner : CreatedBy::Agent;
     const std::string bad = reminder ? setWhen(l, str(a, kWhen)) : setEvery(l, str(a, kEvery));
     if (!bad.empty()) return void(out = ToolResult::fail(bad));
-    l.approved = autoApproved(l.sched.kind, true, host.askFirst());
+    l.approved = autoApproved(l.sched.kind, !byOwner, host.askFirst());
     Extra e;
     e.id = l.id;
     e.kind = reminder ? Kind::Reminder : Kind::Routine;

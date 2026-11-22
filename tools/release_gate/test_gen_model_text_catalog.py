@@ -156,7 +156,7 @@ def test_e2_ceilings_are_the_prd_figures():
         "core": 3072,
         "device_notes": 2048,
         "stubs": 512,
-        "tool_results": 6615,  # ruling 111: 6,144 plus what RB-U1b's schedule strings use (at most 512 B)
+        "tool_results": 6656,  # ruling 111 item 2: 6,144 plus 512 B for the schedule tool's own lines
         "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) byte for byte (RB-G1)
         "summarizer": 1024,
         "tool_descriptions": 10240,

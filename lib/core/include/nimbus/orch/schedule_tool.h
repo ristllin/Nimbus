@@ -45,6 +45,7 @@ inline constexpr char kV[] = "v", kLoops[] = "loops", kTools[] = "tools", kPaths
                       kOutsideAt[] = "outsideAt";
 inline constexpr char kStateExt[] = ".state", kTmpExt[] = ".tmp";
 inline constexpr char kOutsideEvent[] = "change:outside";
+inline constexpr char kNoCard[] = "no card";   // a routine's lastErr when it could not run for want of a card
 }  // namespace store
 
 // One sidecar entry: what engine 2 knows about a loop beyond loops.json.
@@ -114,6 +115,9 @@ class Host {
 struct CallCtx {
   notes::Origin origin = notes::Origin::Unattended;
   std::string chatId;
+  // The owner's own command (/remind, lane E2-SCHED): the record is createdBy Owner and approved,
+  // as engine 1's /remind makes it. Only an attended call may set it.
+  bool owner = false;
 };
 
 // One `schedule` call: op create | update | delete | list; kind reminder | routine; id, when, text,
@@ -128,7 +132,6 @@ std::string statePath(const std::string& id);   // /mem/routines/<id>.state
 namespace words {
 extern const char kNoEntry[];      // "no entry " + id
 extern const char kUnreadable[];   // loops2.json could not be read
-extern const char kNoCard[];       // a routine's lastErr when it could not run for want of a card
 }  // namespace words
 }  // namespace schedule
 }  // namespace orch

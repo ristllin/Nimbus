@@ -15,8 +15,8 @@
 #include "nimbus/orch/calc_tool.h"          // registerCalcTool (RB-REC8)
 #include "nimbus/orch/tool_groups.h"        // registerMore - delete_file is declared behind more
 #include "notes_device.h"                   // lane RB-N1: note
-#include "schedule_device.h"               // lane RB-U1b, E2-SCHED: schedule
 #include "orchestrator.h"                   // turnInFlight, turnCount - the note tool's origin (lane E2-DEV)
+#include "schedule_device.h"                // lane RB-U1b, E2-SCHED: schedule
 #include "store.h"                          // providerOverBudget, recordProviderCall
 #include "transport_tls.h"                  // deviceProviderDeps
 
@@ -79,6 +79,13 @@ nimbus::orch::notes::Origin turnOrigin() {
   return outsideThisTurn() ? nimbus::orch::notes::Origin::Tainted : nimbus::orch::notes::Origin::Attended;
 }
 
+// The chat of the running turn (where an entry it makes delivers); "" outside a turn (the owner default).
+std::string turnChat() {
+  if (!orchestrator::turnInFlight()) return std::string();
+  const String c = orchestrator::currentChat();
+  return std::string(c.c_str(), c.length());
+}
+
 }  // namespace
 
 // note (lane RB-N1, notes_device.cpp). Lane E2-DEV binds its origin: on engine 2 only a person's
@@ -86,10 +93,11 @@ nimbus::orch::notes::Origin turnOrigin() {
 // unless that turn ran web_search (outside content: tainted, kept for approval); outside a turn it is
 // kept for approval. Lane E2-TOOLS: the file tools over the old engine's store, delete_file behind more,
 // calc, web_search.
-// schedule (lane RB-U1b, schedule_device.cpp; lane E2-SCHED binds it): the same origin as the note tool.
+// schedule (lane RB-U1b, schedule_device.cpp; lane E2-SCHED binds it): the same origin as the note tool,
+// and an entry delivers to the chat of the turn that made it.
 void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch::MemoryContext&) {
   notesdev::registerNote(reg, turnOrigin);
-  scheduledev::registerSchedule(reg, turnOrigin, nullptr);
+  scheduledev::registerSchedule(reg, turnOrigin, turnChat);
   filetoolsdev::registerFileTools(reg);
   nimbus::orch::registerCalcTool(reg);
   registerWebSearch(reg);
