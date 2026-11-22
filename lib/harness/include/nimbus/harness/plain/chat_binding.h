@@ -18,6 +18,7 @@
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/request.h"
+#include "nimbus/harness/plain/unattended.h"   // OwnerSink, RoutineDeps (lane E2-SCHED)
 #include "nimbus/harness/platform.h"
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/rbac.h"
@@ -49,6 +50,8 @@
 //   - the turn's usage handed to `usage` once per turn; the progress line (installProgress).
 //   - lane E2-MIG: the earlier engine's conversation imported before the engine opens its log
 //     (tx::migrate), when the device gives an oldEngine hook.
+// Lane E2-SCHED: ownerSink and routineDeps, the parts a reminder or routine fire takes from the chat
+// (nimbus/harness/plain/schedule_binding.h).
 // Only lib headers are included, so a host test drives the same class with a fake platform, a
 // scripted transport and a fake card (test/test_plain_chat_binding). The device seam
 // (src/agent/orchestrator_plain.cpp) gives it the device's parts.
@@ -282,6 +285,43 @@ class ChatBinding {
     in.arena = arena_.get();
     in.thru = engine_->head()->thru;
     return plain::budgetView(in, out);
+  }
+
+  // Lane E2-SCHED: this chat as the sink of a reminder or routine fire (plain::deliverHeld): its
+  // channel's delivery and a routine device note appended to its transcript between its turns.
+  OwnerSink ownerSink() {
+    OwnerSink s;
+    s.chatKey = cfg_.chatKey;
+    s.chatId = cfg_.chatId;
+    s.deliver = [this](const DeliverInput& in, DeliverOutcome& out) {
+      return deliverTurn(DeliverDeps{&channel_, nullptr, nullptr}, in, out);
+    };
+    s.append = [this](const std::string& note, uint64_t at) {
+      if (!engine_ || busy_) return Status::fail(nimbus::orch::tx::Err::Busy, "plain::ChatBinding::ownerSink.append");
+      return appendOwnerNote(*engine_, note, at);
+    };
+    return s;
+  }
+
+  // Lane E2-SCHED: one routine fire over this chat's parts (plain::runRoutine): the platform, the
+  // transport, the card, the shared registry (runRoutine cuts it to the routine's tools), this
+  // chat's dispatch and setup (pinned notes, the money guard's cost), the suppression seam, and
+  // the head `model` on this chat's provider ("" = this chat's head). The caller sets held,
+  // quiet, tzMinutes and head.tainted.
+  RoutineDeps routineDeps(const std::string& model) {
+    RoutineDeps r;
+    r.platform = d_.platform;
+    r.transport = d_.transport;
+    r.files = d_.files;
+    r.reg = d_.registry;
+    r.dispatch = [this](const ToolCall& c, const TurnCtx& t) { return dispatchCall(c, t); };
+    r.setup = [this](const TurnCtx& t, TurnSetup& out) { return setup(t, out); };
+    r.head = turnCtx();
+    r.head.trigger = Trigger::Routine;
+    if (!model.empty()) r.head.model = model;
+    r.moreHooks = [](PlainHooks& h) { (void)installSuppression(h); };
+    r.owner = ownerSink();
+    return r;
   }
 
   // The head of a message: true when every update id of `src` was already taken into this chat

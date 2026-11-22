@@ -9,6 +9,8 @@
 #error "commands_plain.cpp is engine 2's: build it only in an env with -DNIMBUS_ENGINE=2"
 #endif
 
+#include <time.h>
+
 #include <string>
 
 #include "../sfx/music.h"           // /play (CUM-40)
@@ -26,6 +28,7 @@
 #include "nimbus/ota/ota_channel.h"
 #include "orchestrator.h"           // roleOfChat, isChatAllowed, setOtaInstallHook's hook
 #include "orchestrator_common.h"    // deliver
+#include "schedule_device.h"        // /remind through the schedule tool, /loop delete's state (E2-SCHED)
 #include "telegram.h"               // turnMessageDate, turnIsVoiceNote
 #include "version.h"
 
@@ -84,8 +87,12 @@ String loopAction(const String& action, const String& id) {
   const char* none = "No routine with that ID.";
   if (action == "approve") return loops::approveLoop(id) ? "Approved - it will run on schedule." : none;
   if (action == "deny" || action == "kill" || action == "delete")
-    return loops::isReservedId(id) ? "This is a system routine - use /loop off " + id + " to pause it."
-                                   : String(loops::cancelLoop(id) ? "Removed." : none);
+  {
+    if (loops::isReservedId(id)) return "This is a system routine - use /loop off " + id + " to pause it.";
+    if (!loops::cancelLoop(id)) return none;
+    scheduledev::forget(std::string(id.c_str()));   // its state file goes with it (lane E2-SCHED)
+    return "Removed.";
+  }
   if (action == "off" || action == "pause") return loops::setEnabled(id, false) ? "Paused." : none;
   if (action == "on" || action == "resume") return loops::setEnabled(id, true) ? "Resumed." : none;
   return String();
@@ -115,6 +122,49 @@ void loop(const String& chatId, const std::string& args) {
     return;
   }
   say(chatId, selfTag() + "Routine " + id + ": " + msg);
+}
+
+// /remind <when> <what> (lane E2-SCHED): engine 1's words and duration forms; the reminder is made
+// by the schedule tool's own code (schedule::call, kind reminder) as the owner's: approved, and
+// engine 1 reads it as its own /remind record. The moment is rounded up to the minute.
+void remind(const String& chatId, const std::string& args) {
+  String rest = String(args.c_str());
+  rest.trim();
+  const int sp = rest.indexOf(' ');
+  const String dur = (sp < 0) ? rest : rest.substring(0, sp);
+  String note = (sp < 0) ? String("") : rest.substring(sp + 1);
+  note.trim();
+  const long secs = nimbus::orch::parseDurationSecs(std::string(dur.c_str()));
+  if (secs < 0 || note.length() == 0) {
+    say(chatId, selfTag() + "Usage: /remind <when> <what> - e.g. /remind 30m take the cake out. Time is a span like "
+                            "45s, 30m, 2h, or 1d.");
+    return;
+  }
+  const uint64_t at = ((uint64_t)time(nullptr) + (uint64_t)secs + 59) / 60 * 60;
+  const nimbus::orch::CivilTime c = loops::localOf(at);
+  char when[24];
+  snprintf(when, sizeof(when), "%04d-%02d-%02d %02d:%02d", (int)c.year, (int)c.month, (int)c.day, (int)c.hour,
+           (int)c.min);
+  JsonDocument a;
+  a["op"] = "create";
+  a["kind"] = "reminder";
+  a["when"] = when;
+  a["text"] = note.c_str();
+  nimbus::orch::schedule::CallCtx ctx;
+  ctx.origin = nimbus::orch::notes::Origin::Attended;
+  ctx.chatId = chatId.c_str();
+  ctx.owner = true;
+  const nimbus::orch::ToolResult r = nimbus::orch::schedule::call(scheduledev::host(), a.as<JsonObjectConst>(), ctx);
+  if (!r.success) {
+    say(chatId, selfTag() + "Couldn't set that reminder: " + String(r.error.c_str()));
+    return;
+  }
+  // "stored <id> reminder <when>: <text>"
+  const std::string& o = r.output;
+  const size_t idAt = o.find(' ') + 1, idEnd = o.find(' ', idAt);
+  const std::string id = o.substr(idAt, idEnd - idAt);
+  say(chatId, selfTag() + "Reminder set for " + when + ": " + note + "  (cancel with /loop delete " + String(id.c_str()) +
+                  ")");
 }
 
 // /fetch, as engine 1 answers it.
@@ -184,6 +234,7 @@ void shared(const nimbus::orch::Command& cmd, const String& chatId, bool owner, 
   if (v == "fetch") return fetch(chatId, cmd.args);
   if (v == "loops") return say(chatId, selfTag() + loops::loopsText());
   if (v == "loop") return loop(chatId, cmd.args);
+  if (v == "remind") return remind(chatId, cmd.args);
   if (v == "usage" || v == "budget" || v == "model") return say(chatId, selfTag() + spending(cmd, chatId, owner, pseudo));
   alogf("e2: /%s has no shared handler", v.c_str());   // the route table and this list disagree
   say(chatId, selfTag() + kNotYetLine);

@@ -29,4 +29,7 @@ nimbus::orch::FireOutcome fire(const nimbus::orch::LoopFireRequest& req, const n
 // The table and its two files as the core sees them (for RB-I1's due hook and the web routes).
 nimbus::orch::schedule::Host& host();
 
+// A deleted routine's state file goes (lane E2-SCHED: the owner's /loop delete, as the tool's delete).
+void forget(const std::string& id);
+
 }  // namespace agent::scheduledev

@@ -8,6 +8,7 @@
 
 #include "memory_subsystem.h"   // the card lock, dataFs, haveSd
 #include "nimbus/fault.h"       // FAULT sd_io
+#include "nimbus/orch/schedule_tool.h"   // kStateDir - the routine files (lane E2-SCHED)
 
 namespace agent::txdev {
 
@@ -91,11 +92,21 @@ class SdCard : public nimbus::orch::tx::CardOps {
   }
 };
 
+SdCard& sdCard() {
+  static SdCard card;
+  return card;
+}
+
 }  // namespace
 
 nimbus::orch::tx::CardTxFiles& cardTxFiles() {
-  static SdCard card;
-  static nimbus::orch::tx::CardTxFiles files(card);
+  static nimbus::orch::tx::CardTxFiles files(sdCard());
+  return files;
+}
+
+nimbus::orch::tx::CardTxFiles& cardRoutineFiles() {
+  static nimbus::orch::tx::CardTxFiles files(sdCard(), nimbus::orch::tx::kCardWriteInternalFloor,
+                                             nimbus::orch::schedule::kStateDir);
   return files;
 }
 

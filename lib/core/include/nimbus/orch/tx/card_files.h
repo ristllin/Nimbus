@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "nimbus/orch/tx/log.h"
@@ -63,7 +64,10 @@ struct CardHolds {
 
 class CardTxFiles : public TxFiles {
  public:
-  explicit CardTxFiles(CardOps& card, uint32_t floor = kCardWriteInternalFloor) : card_(card), floor_(floor) {}
+  // `root`: the one folder this store reaches (lane E2-SCHED: /mem/routines for the routine state files
+  // and outboxes, beside the transcripts' /mem/tx).
+  explicit CardTxFiles(CardOps& card, uint32_t floor = kCardWriteInternalFloor, std::string root = kTxRoot)
+      : card_(card), floor_(floor), prefix_(std::move(root) + "/") {}
 
   bool append(const std::string& path, const char* data, size_t len) override {
     if (!writable(path)) return false;
@@ -116,10 +120,9 @@ class CardTxFiles : public TxFiles {
   const CardHolds& holds() const { return holds_; }
   void resetHolds() { holds_ = CardHolds{}; }
 
-  // Inside /mem/tx/, no "..", no empty segment.
-  static bool inside(const std::string& path) {
-    static const std::string kPrefix = std::string(kTxRoot) + "/";
-    if (path.rfind(kPrefix, 0) != 0 || path.size() == kPrefix.size()) return false;
+  // Inside the root (/mem/tx/ by default), no "..", no empty segment.
+  bool inside(const std::string& path) const {
+    if (path.rfind(prefix_, 0) != 0 || path.size() == prefix_.size()) return false;
     return path.find("/..") == std::string::npos && path.find("//") == std::string::npos;
   }
 
@@ -137,7 +140,7 @@ class CardTxFiles : public TxFiles {
     uint32_t t0_;
   };
 
-  // A write may run: inside /mem/tx, a card, a task that may touch a file, no injected card
+  // A write may run: inside the root, a card, a task that may touch a file, no injected card
   // fault, and the internal memory floor kept.
   bool writable(const std::string& path) {
     if (!inside(path)) return false;
@@ -163,6 +166,7 @@ class CardTxFiles : public TxFiles {
 
   CardOps& card_;
   uint32_t floor_;
+  std::string prefix_;
   CardHolds holds_;
 };
 

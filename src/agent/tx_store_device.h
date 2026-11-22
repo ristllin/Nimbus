@@ -9,5 +9,8 @@
 namespace agent::txdev {
 
 nimbus::orch::tx::CardTxFiles& cardTxFiles();
+// Lane E2-SCHED: the same card's /mem/routines (each routine's state file, each chat's outbox of
+// routine notes), with the same guards.
+nimbus::orch::tx::CardTxFiles& cardRoutineFiles();
 
 }  // namespace agent::txdev

@@ -7,13 +7,14 @@
 // No command reaches the model. Each verb of nimbus::orch::kCommandVerbs has one route:
 //   Shared      the handler engine 1 calls (it does not depend on the engine): /help, /start,
 //               /update, /ota, /play, /fetch, /loops, /loop, /usage, /model, and /budget with
-//               arguments (a limit change and its confirm);
+//               arguments (a limit change and its confirm); /remind (lane E2-SCHED: a reminder
+//               made through the schedule tool's own code, as the owner's);
 //   Clear       a new conversation on engine 2 (the stored one is kept on the card);
 //   Compact     a compaction of this chat now;
 //   BudgetView  a bare /budget: engine 2's budget view (the system prompt in tokens), then the
 //               spending text a bare /budget gives on engine 1;
-//   NotYet      engine 1 only for now, answered with one plain line: /remind (no routine fires on
-//               engine 2 yet), /skill (the skill store is engine 1's), /mcp (engine 2 reaches no
+//   NotYet      engine 1 only for now, answered with one plain line: /skill (the skill store is
+//               engine 1's), /mcp (engine 2 reaches no
 //               tool server), /prefs (engine 2 reads notes, not standing rules);
 //   Unknown     a verb the table does not know: the same "try /help" answer as engine 1.
 // test_plain_chat_commands walks every verb of the table: a verb added there with no route here
@@ -42,7 +43,7 @@ inline ChatCommandRoute chatCommandRoute(const nimbus::orch::Command& c) {
   if (v == "clear") return ChatCommandRoute::Clear;
   if (v == "compact") return ChatCommandRoute::Compact;
   if (v == "budget") return c.args.empty() ? ChatCommandRoute::BudgetView : ChatCommandRoute::Shared;
-  if (v == "remind" || v == "skill" || v == "mcp" || v == "prefs") return ChatCommandRoute::NotYet;
+  if (v == "skill" || v == "mcp" || v == "prefs") return ChatCommandRoute::NotYet;
   return ChatCommandRoute::Shared;
 }
 

@@ -72,6 +72,8 @@ DeviceHost& deviceHost() {
 
 sch::Host& host() { return deviceHost(); }
 
+void forget(const std::string& id) { deviceHost().forgetState(id); }
+
 void registerSchedule(orch::ToolRegistry& reg, orch::notes::OriginFn origin, ChatFn chat) {
   const auto* decl = agent::plain::toolDecl("schedule");
   if (!decl) return;

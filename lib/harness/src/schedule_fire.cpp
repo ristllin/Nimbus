@@ -212,6 +212,14 @@ FireOutcome fireReminder(const FireBinding& b, const LoopRecord& l, const std::s
   return o;
 }
 
+bool entryKind(Host& host, const std::string& id, Kind& out) {
+  LoopRecord rec;
+  std::vector<Extra> extras;
+  if (snapshot(host, id, rec, extras) != Found::Yes) return false;
+  out = kindOf(rec, findExtra(extras, rec.id));
+  return true;
+}
+
 FireOutcome fire(Host& host, const LoopFireRequest& req, const FireBinding& b, uint64_t now) {
   LoopRecord rec;
   std::vector<Extra> extras;

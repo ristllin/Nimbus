@@ -18,7 +18,7 @@
 //     copied into pinned notes once per boot (migrate_device.h, lane E2-MIG).
 // One resident chat (one arena, sized for the head): a message for another chat, another model
 // or another role boots the binding again over the same card (the transcript is refilled).
-// Claude heads only: any other head gets one plain line. Routines and agents are not bound yet.
+// Claude heads only: any other head gets one plain line. Agents are not bound yet.
 // Lane E2-CHAT adds the owner's daily chat:
 //   - the owner's slash commands never reach the model (commands_plain.cpp): engine 1's handlers
 //     where the command does not depend on the engine; /clear, /compact and /budget act on engine 2;
@@ -28,6 +28,11 @@
 //     in the pinned block (a skill too large for it is listed instead; the owner is told once);
 //   - usage: each turn filed once where the owner sees usage (store::recordProviderSpend);
 //   - the progress line of a long Telegram turn (installProgress over turnProgressLine).
+// Lane E2-SCHED binds the schedule entries (schedule_binding.h): pollJobs runs the loops tick, and
+// its fire hook (injectScheduledTurn) boots the chat an entry delivers to. A reminder sends its
+// stored text with no model request; a routine runs isolated on the small model through
+// plain::runRoutine (its outbox and state on the card's /mem/routines), refused while the monthly
+// limit holds. Engine 1's nightly upkeep record has nothing to run here.
 #include "orchestrator.h"
 #include "orchestrator_common.h"   // g_fabric, g_sinks, g_sessMux, deliver, the voice flags
 
@@ -54,13 +59,17 @@
 #include "adapters/image_vision.h"   // the photo set the Telegram intake keeps (R1)
 #include "budget_command.h"     // noteTurnEnd - /model's last reply
 #include "commands_plain.h"     // the owner's slash commands
+#include "loops_subsystem.h"    // checkDue, routineGrants, quietHoursEndMinute (lane E2-SCHED)
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/chat_photos.h"
+#include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
+#include "nimbus/orch/spend_ceiling.h"               // kSpendFrozenError - a routine waits while frozen
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
 #include "nimbus/orch/blob_store.h"        // blobPath - an earlier photo's stored copy
 #include "notes_device.h"       // notesdev::pinnedNotesFor
+#include "schedule_device.h"    // scheduledev::fire, host - the schedule entries (lane E2-SCHED)
 #include "skills_device.h"      // skillsdev::chatSkills
 #include "spend_ceiling_store.h"   // spend::frozen, spend::commit, spend::limitMicro
 #include "store.h"              // anthropicKey, orchModel, subModel, resolvedOrchHost
@@ -606,6 +615,142 @@ void bootOwnerChat() {
   (void)chatFor(owner, std::string(store::orchModel(host).c_str()), roleOfChat(owner));
 }
 
+// ---- reminders and routines (lane E2-SCHED) ------------------------------------------
+namespace sch = nimbus::orch::schedule;
+
+// Engine 1's nightly upkeep record (lib/harness dream.h kLoopId, an engine-1 file): no model text.
+constexpr char kUpkeepId[] = "dream";
+
+// One outbox of routine notes per chat, on the card (/mem/routines/held-<chat>.json). tg_poll only.
+struct HeldSlot {
+  std::string chatId;
+  std::unique_ptr<plain::HeldStore> store;
+};
+std::vector<HeldSlot> s_held;
+
+plain::HeldStore* heldFor(const std::string& chatId) {
+  if (!memory::haveSd()) return nullptr;   // no card: no outbox, a routine is skipped as "no card"
+  for (HeldSlot& h : s_held)
+    if (h.chatId == chatId) return h.store.get();
+  std::unique_ptr<plain::HeldStore> st(
+      new (std::nothrow) plain::HeldStore(plain::heldFileOn(txdev::cardRoutineFiles(), plain::heldPathFor(chatId))));
+  if (!st) return nullptr;
+  (void)st->load();
+  s_held.push_back(HeldSlot{chatId, std::move(st)});
+  return s_held.back().store.get();
+}
+
+plain::QuietHours quietNow() {
+  plain::QuietHours q;
+  q.endMinute = loops::quietHoursEndMinute();
+  return q;
+}
+
+int16_t tzNow() { return (int16_t)utcOffsetAt((uint32_t)time(nullptr)); }
+
+// The chat a fire delivers to with no binding (a head engine 2 cannot boot): the reminder's text
+// still goes, through the same one-part send; nothing is appended to a transcript.
+plain::OwnerSink bareSink(const std::string& chatId) {
+  static Channel ch;
+  ch.send = sendOnePart;
+  ch.isAllowed = [](const std::string&) { return true; };
+  plain::OwnerSink s;
+  s.chatKey = chatId;
+  s.chatId = chatId;
+  s.deliver = [](const plain::DeliverInput& in, plain::DeliverOutcome& out) {
+    return plain::deliverTurn(plain::DeliverDeps{&ch, nullptr, nullptr}, in, out);
+  };
+  s.append = [chatId](const std::string&, uint64_t) {
+    alogf("e2: reminder to %s sent with no transcript (the chat could not start)", chatId.c_str());
+    return plain::Status::success();
+  };
+  return s;
+}
+
+// One schedule entry's fire (the loops tick, tg_poll, between turns).
+nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
+  nimbus::orch::FireOutcome out;
+  const std::string sid(id.c_str(), id.length());
+  if (sid == kUpkeepId) {   // engine 1's memory upkeep: engine 2 keeps no vector memory to tend
+    out.ok = true;
+    out.detail = std::to_string((unsigned long)time(nullptr));
+    alog("e2: the nightly upkeep record is engine 1's: nothing to run");
+    return out;
+  }
+  sch::Kind kind = sch::Kind::Routine;
+  if (!sch::entryKind(scheduledev::host(), sid, kind)) kind = sch::Kind::Routine;   // fire() answers it
+  if (kind == sch::Kind::Routine && spend::frozen()) {   // the money guard: a routine waits, a reminder goes
+    out.deferred = true;
+    out.error = nimbus::orch::kSpendFrozenError;
+    return out;
+  }
+  const String chat = chatIn.length() ? chatIn : telegram::ownerChat();
+  const std::string chatId(chat.c_str(), chat.length());
+  const String host = store::resolvedOrchHost();
+  plain::ChatBinding* b = nullptr;
+  if (chat.length() && !(kind == sch::Kind::Routine && refusalFor(host)))
+    b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
+  sch::FireBinding fb;
+  const std::string sub(store::subModel("anthropic").c_str());
+  if (b) {
+    plain::ScheduleBindingDeps d;
+    d.held = heldFor(chatId);
+    d.quiet = quietNow();
+    d.grants = loops::routineGrants();
+    d.tzMinutes = tzNow();
+    d.routineModel = sub;
+    d.fired = [sub](const plain::FireReport& rep) {
+      store::recordProviderSpend(plain::turnSpendOf(rep.outcome, "anthropic", sub), "routine");
+    };
+    fb = plain::fireBindingFor(*b, memory::haveSd() ? &txdev::cardRoutineFiles() : nullptr, d);
+  } else {
+    fb.owner = bareSink(chatId);
+    fb.tzMinutes = tzNow();
+    fb.dayStartMin = store::dayStartMin();
+  }
+  txdev::cardTxFiles().resetHolds();
+  s_transport.reset();
+  const uint32_t t0 = millis();
+  {
+    PsramFirstScope psramFirst;
+    out = scheduledev::fire(nimbus::orch::LoopFireRequest{sid, std::string(), chatId, std::string()}, fb);
+  }
+  alogf("e2: fire %s %s chat=%s ok=%d deferred=%d answered=%d reqs=%u ms=%u err=%s", sid.c_str(),
+        kind == sch::Kind::Reminder ? "reminder" : "routine", chatId.c_str(), (int)out.ok, (int)out.deferred,
+        (int)out.answered, (unsigned)s_transport.requests, (unsigned)(millis() - t0), out.error.c_str());
+  return out;
+}
+
+// The outboxes' due work (a quiet-hours note once they end), one note a pass, every 30 s.
+void drainOutboxes() {
+  static uint32_t last = 0;
+  if ((uint32_t)(millis() - last) < 30000) return;
+  last = millis();
+  const uint64_t now = (uint64_t)time(nullptr);
+  if (now < 1000000000) return;   // no clock yet: a note waits for one
+  for (HeldSlot& h : s_held) {
+    if (h.store->notes().empty()) continue;
+    const String chat(h.chatId.c_str());
+    const String host = store::resolvedOrchHost();
+    plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
+    if (b && plain::drainHeld(*h.store, *b, now, tzNow(), quietNow())) return;
+  }
+}
+
+// The outboxes a restart left on the card: loaded once, so their notes go when quiet hours end.
+void loadOutboxes() {
+  static bool done = false;
+  if (done || !memory::haveSd()) return;
+  done = true;
+  std::vector<std::string> names;
+  if (!txdev::cardRoutineFiles().list(sch::kStateDir, names)) return;
+  for (const std::string& n : names) {
+    const std::string pre = "held-", ext = ".json";
+    if (n.size() > pre.size() + ext.size() && n.rfind(pre, 0) == 0 && n.compare(n.size() - ext.size(), ext.size(), ext) == 0)
+      (void)heldFor(n.substr(pre.size(), n.size() - pre.size() - ext.size()));
+  }
+}
+
 }  // namespace
 
 // ---- lifecycle --------------------------------------------------------------
@@ -651,11 +796,11 @@ void handleMessage(const String& text, const String& fromName, const String& cha
   }
 }
 
-nimbus::orch::FireOutcome injectScheduledTurn(const String&, const String&, const String&, const String&,
+// The loops fire hook (main.cpp): lane E2-SCHED's fire of a schedule entry. The record itself is
+// read again by id (its text, kind and state), so the request's prompt and framing flags are unused.
+nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String&, const String&, const String& id,
                                               bool, bool, bool, bool) {
-  nimbus::orch::FireOutcome out;
-  out.error = "engine 2: no scheduled turns yet";
-  return out;
+  return fireEntry(chatId, id);
 }
 
 int pollJobs() {
@@ -664,6 +809,11 @@ int pollJobs() {
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message
   drainTerminates();      // the journal's staged terminates (none can exist without jobs)
   drainUpdateNotice();    // the fixed post-update notice - tg_poll only
+  // Lane E2-SCHED: the loops tick (at most one due entry; 20 s-gated, heap and Wi-Fi guarded inside)
+  // and the outboxes of routine notes. tg_poll, between turns.
+  loadOutboxes();
+  loops::checkDue((uint64_t)time(nullptr), s_inTurn.load(std::memory_order_relaxed), ESP.getFreeHeap());
+  drainOutboxes();
   refreshSessionSnapshot();
   return 0;               // no jobs: the Telegram loop keeps its long poll
 }

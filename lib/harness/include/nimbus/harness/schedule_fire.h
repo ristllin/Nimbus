@@ -47,6 +47,9 @@ FireOutcome fireReminder(const FireBinding& b, const LoopRecord& l, const std::s
 // `b.run`, then its state, its outside mark and its outcome). A routine with no card is not run:
 // it is marked Skipped with lastErr "no card" and the fire reads as deferred (not counted).
 FireOutcome fire(Host& host, const LoopFireRequest& req, const FireBinding& b, uint64_t now);
+// The kind of entry `id` as a fire would read it (lane E2-SCHED: the seam checks the money guard
+// before a routine only). False when there is no such record or loops2.json is unreadable.
+bool entryKind(Host& host, const std::string& id, Kind& out);
 
 }  // namespace schedule
 }  // namespace orch
