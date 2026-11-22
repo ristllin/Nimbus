@@ -8,7 +8,7 @@ installs it when you approve ([how updates work](ota.md)).
 
 ## v5.2.0 (release candidate, not released) - Every log is a plain file, and unattended turns stay in their lane
 
-The release candidate (rb-main 5639d4dc9 and the version commit). Figures are in tokens as the provider counts them,
+The release candidate (rb-main 5639d4dc9 and the version commit) with the Mistral wire fix (lane RB-Q4b) and the Large 4 default. Figures are in tokens as the provider counts them,
 bytes only where a device limit is in bytes. The update line the device shows after "Updated to v5.2.0" is
 docs/release-notes/v5.2.0.txt.
 
@@ -28,7 +28,7 @@ docs/release-notes/v5.2.0.txt.
 - **The day starts when you say.** Every message stamp carries the year and weekday, and between midnight and "day starts at" (Settings, default 04:00) it names the day still running.
 - **Telegram answers sooner.** Model result to Telegram send p50 2.7 s to 0.8 s; a message's wait after the settle hold p50 2.2 s to 0.4 s (bench, 12 turns).
 - **`/ota candidate` and `/ota stable`** switch the update channel from the owner's chat (`/ota` shows it).
-- **Mistral heads stay held for this release.** Measured on 20 Nov with mistral-medium-latest (the default Mistral head) against the simple loop on the same model: 2 wins, 12 ties, 18 losses over 32 repetitions, totals right 38 of 52. A device with a Mistral key is not updated automatically; it can be updated by hand from the web page or with /update.
+- **Mistral answers in one request, and Mistral Large 4 is the default Mistral head.** On a Mistral head, your turn no longer forces the model to call a tool every round: an answer it writes as plain text is the reply as written, as on Claude. Routines, reminders and sub-agent reports work as before. The default Mistral head is now Mistral Large 4 (`mistral-large-4-0`) instead of `mistral-medium-latest`; helpers, captions and background turns stay on `mistral-small-latest`. Measured on Large 4 against the simple loop on the same model (16 scenarios, 2 repetitions each, the same judged repetitions before and after): composite 0.823 to 0.875, requests per turn 1.66 to 1.43, latency per turn 15.5 s to 7.8 s.
 - **Not exercised on the bench: a physical power cut.** The cut legs stop a write at a chosen byte with a console panic (the bench cannot switch USB power), and a host test tears the same writes at every byte offset: an append leaves the old file plus a fenced tail, an edit the old or the new file, never a mix.
 
 ## v5.1.1 - A renamed model keeps your choice, and a gone model says what answers now
