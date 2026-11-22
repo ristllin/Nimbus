@@ -5,6 +5,9 @@
 #                     against include/ota_pubkey.h before flipping firmware), publish a
 #                     GitHub Release (devices poll releases/latest/download/manifest.json
 #                     daily) AND build + push the nimbusd:<tag> Virtual Nimbus image.
+#                     The variants come from tools/release/variants.json; a tag equal
+#                     to its candidate.tag builds only the candidate variants and
+#                     attaches manifest-candidate.json beside the stable manifest.
 #   vn-vX.Y.Z[-N]     Virtual release: ONLY the nimbusd:<tag> image. No firmware, no OTA
 #                     manifest, no web-flash.
 # The tag-shape job decides the channel once (tools/release_gate/tag_shape.py) and every
@@ -49,6 +52,13 @@ jobs:
         run: python3 tools/release_gate/check_release_notes.py --tag="${GITHUB_REF_NAME}"
 
   # Firmware OTA release: OTA tags only. A virtual tag skips this whole job.
+  # Every variant list comes from tools/release/variants.json (the "Release plan" step writes
+  # them to $GITHUB_ENV as REL_*); no step names a device type, env, image or the releases
+  # repository itself. A tag with no candidate entry builds, gates, signs and publishes every
+  # stable row, as before the table existed. A tag equal to the table's candidate.tag builds
+  # only the candidate rows, runs every gate on them, publishes a pre-release (never latest)
+  # with no manifest.json and no web-flash, and attaches manifest-candidate.json to the latest
+  # full release, whose manifest.json stays byte-identical (docs/ota.md, "The candidate channel").
   release:
     needs: tag-shape
     if: needs.tag-shape.outputs.channel == 'ota'
@@ -67,7 +77,7 @@ jobs:
           persist-credentials: false
 
       # solide-drivers is public - plain checkout, pinned to the validated release.
-      # RELEASE_PAT now needs only: nimbus-fw-releases = Contents:write (publish
+      # RELEASE_PAT now needs only: the releases repo = Contents:write (publish
       # the release there); the default github.token is scoped to THIS repo only.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0 (pinned SHA)
         with:
@@ -92,9 +102,10 @@ jobs:
         run: python3 tools/release_gate/check_ota_preserves_nvs.py
 
       # RELEASE GATE (CUM-388 / CUM-392): every supported hardware config maps to
-      # exactly one correct image across the installer, the workflow, the web-flash
-      # builder, the typed device-type slugs, and the platformio envs. Fails on any
-      # drift (a new/renamed config, a wrong board/panel/offset). Fast, no toolchain.
+      # exactly one correct image across the installer, the variant table this job
+      # reads, the web-flash builder, the typed device-type slugs, and the platformio
+      # envs; and this workflow names no variant itself. Fails on any drift (a
+      # new/renamed config, a wrong board/panel/offset). Fast, no toolchain.
       - name: Release gate - config-to-image mapping (CUM-388)
         working-directory: Nimbus
         run: python3 tools/release_gate/check_config_mapping.py
@@ -108,7 +119,33 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Build firmware (every board/panel image)
+      # The one place the variant lists come from. Refuses a malformed table, a candidate
+      # env of another board than its type, and a run from a fork that would publish to the
+      # public releases repository (a fork names its own releases_repo in the table).
+      - name: Release plan (tools/release/variants.json)
+        working-directory: Nimbus
+        run: python3 tools/release/publish_candidate.py plan --tag="${GITHUB_REF_NAME}" --repository="${GITHUB_REPOSITORY}" --github-env="${GITHUB_ENV}"
+
+      # Candidate only, before anything is built: the latest FULL release (releases/latest
+      # skips pre-releases, and a device derives the candidate's URL from it) must carry a
+      # manifest.json, and the candidate must be strictly newer than it by the device's
+      # version order. Its sha256 is kept to prove it unchanged after the attach.
+      - name: Candidate - the latest full release and its manifest.json
+        if: env.REL_MODE == 'candidate'
+        working-directory: Nimbus
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          latest="$(gh release view --repo "$REL_RELEASES_REPO" --json tagName --jq .tagName)"
+          mkdir -p candidate-target
+          gh release download "$latest" --repo "$REL_RELEASES_REPO" --pattern manifest.json --dir candidate-target
+          python3 tools/release/publish_candidate.py check-target --tag="${GITHUB_REF_NAME}" --target candidate-target --latest-tag "$latest"
+          sha="$(sha256sum candidate-target/manifest.json)"
+          echo "REL_LATEST_TAG=$latest" >> "$GITHUB_ENV"
+          echo "REL_STABLE_SHA=${sha%% *}" >> "$GITHUB_ENV"
+
+      - name: Build firmware (every image of the plan)
         working-directory: Nimbus
         run: |
           pip install platformio
@@ -118,26 +155,40 @@ jobs:
           # each is compiled at its own panel resolution (-DNIMBUS_PANEL_W/H via its
           # env), so a 3.5"/4.0" board gets a firmware whose renderer matches its
           # glass, not a 2.8" image re-seeded.
-          pio run -e esp32s3 -e esp32s3-cyd -e esp32s3-cyd-35 -e esp32s3-cyd-40
-          cp .pio/build/esp32s3/firmware.bin firmware-nimbus-tft.bin
-          cp .pio/build/esp32s3-cyd/firmware.bin firmware-freenove.bin
-          cp .pio/build/esp32s3-cyd-35/firmware.bin firmware-freenove-35.bin
-          cp .pio/build/esp32s3-cyd-40/firmware.bin firmware-freenove-40.bin
+          read -r -a envs <<< "$REL_ENVS"
+          pio_args=()
+          for env in "${envs[@]}"; do pio_args+=(-e "$env"); done
+          pio run "${pio_args[@]}"
+          read -r -a copies <<< "$REL_COPIES"
+          for c in "${copies[@]}"; do
+            cp ".pio/build/${c%%:*}/firmware.bin" "${c#*:}"
+          done
 
-      # RELEASE GATE, on EVERY shipped image (all four are color-TFT builds), on the
+      # RELEASE GATE (lanes RB-I0, RB-I0a): every built image links one engine; no map of
+      # an engine-1 image names an engine-2 object, and the reverse.
+      - name: Release gate - every map links one engine
+        working-directory: Nimbus
+        run: |
+          read -r -a envs <<< "$REL_ENVS"
+          python3 tools/release_gate/check_engine_filter.py --require-maps "${envs[@]}"
+
+      # RELEASE GATE, on EVERY shipped image (all are color-TFT builds), on the
       # just-built ELF, before signing/publishing:
       #   - symbols (CUM-174 #6 / CUM-167): zero e-paper (GxEPD2) symbols (the 14.5 KB
       #     internal-SRAM win), the color-TFT plumbing linked, and none of the test
       #     console's crash switches (an image that linked them could be made to crash
       #     on demand). No --identity-only here: it would skip the e-paper and plumbing
       #     checks; the crash-switch scan runs even then;
+      #   - engine 2 (RB-I0): an engine-2 image also defines no engine-1 symbol
+      #     (--engine1-absent, which runs alone, so beside the full call);
       #   - identity (crash forensics): the archived ELF is the ELF that built the image.
       #     The build embeds sha256(firmware.elf) in the image's app descriptor
       #     (app_elf_sha256), and a field core dump records the first hex digits of the
       #     same hash ("elf=" on the device's crash line), so a dump is decoded against
       #     the exact ELF (tools/crash_decode.py);
-      #   - static DRAM: .dram0.bss + .dram0.data at or under the variant's recorded ceiling
-      #     (tools/release_gate/static_dram_ceilings.json), so internal
+      #   - static DRAM: .dram0.bss + .dram0.data at or under the image's recorded ceiling
+      #     (tools/release_gate/static_dram_ceilings.json; the plan resolves the row from
+      #     the env, so an engine-2 image is held to its engine2 row), so internal
       #     RAM growth is a deliberate, measured decision, never a silent one.
       # Writes elf-sha256.txt (variant -> app_elf_sha256), the release record, and
       # stages each ELF xz-compressed for the artifact below.
@@ -155,14 +206,18 @@ jobs:
           set -e
           mkdir -p elf-archive
           : > elf-archive/elf-sha256.txt
-          for pair in nimbus-tft:esp32s3 freenove-28:esp32s3-cyd freenove-35:esp32s3-cyd-35 freenove-40:esp32s3-cyd-40; do
-            v="${pair%%:*}"; env="${pair#*:}"
+          read -r -a gates <<< "$REL_GATES"
+          for g in "${gates[@]}"; do
+            IFS=: read -r v env dram engine <<< "$g"
             python3 tools/release_gate/check_elf_symbols.py \
               --elf ".pio/build/$env/firmware.elf" --bin ".pio/build/$env/firmware.bin" \
               --variant "$v" --sha-out elf-archive/elf-sha256.txt
-            # Static internal RAM under the variant's recorded ceiling.
+            if [ "$engine" = 2 ]; then
+              python3 tools/release_gate/check_elf_symbols.py --engine1-absent --elf ".pio/build/$env/firmware.elf"
+            fi
+            # Static internal RAM under the image's recorded ceiling.
             python3 tools/release_gate/check_static_dram.py \
-              --elf ".pio/build/$env/firmware.elf" --variant "$v"
+              --elf ".pio/build/$env/firmware.elf" --variant "$dram"
             # The Telegram poll task keeps 4 KB of its stack free on every path.
             python3 tools/release_gate/check_tg_poll_stack.py \
               --elf ".pio/build/$env/firmware.elf" --quiet
@@ -190,21 +245,29 @@ jobs:
           # release candidate without one), read
           # before the key touches the disk.
           NOTES="$(python3 tools/release_gate/check_release_notes.py --tag "${GITHUB_REF_NAME}" --print)"
+          BUILD="$(git describe --tags --always --match 'v[0-9]*')"
+          trap 'rm -f /tmp/ota_priv.pem' EXIT
           printf '%s\n' "$OTA_SIGNING_KEY" > /tmp/ota_priv.pem
-          # One typed manifest keyed on the device TYPE. Each Freenove panel size
-          # is its own image, compiled at that panel's resolution, signed over its
-          # own type in the message.
-          python3 tools/make_manifest.py \
-            --version "${GITHUB_REF_NAME}" \
-            --notes="${NOTES}" \
-            --build "$(git describe --tags --always --match 'v[0-9]*')" \
-            --key /tmp/ota_priv.pem \
-            --url-base "https://github.com/ristllin/nimbus-fw-releases/releases/download/${GITHUB_REF_NAME}" \
-            --out manifest.json \
-            nimbus-tft=firmware-nimbus-tft.bin \
-            freenove-28=firmware-freenove.bin \
-            freenove-35=firmware-freenove-35.bin \
-            freenove-40=firmware-freenove-40.bin
+          if [ "$REL_MODE" = candidate ]; then
+            # manifest-candidate.json over the candidate rows only, after every refusal
+            # (newer than the latest full release, images in the app slot, ...).
+            python3 tools/release/publish_candidate.py make --tag="${GITHUB_REF_NAME}" \
+              --repository="${GITHUB_REPOSITORY}" --key /tmp/ota_priv.pem \
+              --notes="${NOTES}" --build "$BUILD" --target candidate-target --out "$REL_MANIFEST"
+          else
+            # One typed manifest keyed on the device TYPE. Each Freenove panel size
+            # is its own image, compiled at that panel's resolution, signed over its
+            # own type in the message.
+            read -r -a pairs <<< "$REL_MANIFEST_PAIRS"
+            python3 tools/make_manifest.py \
+              --version "${GITHUB_REF_NAME}" \
+              --notes="${NOTES}" \
+              --build "$BUILD" \
+              --key /tmp/ota_priv.pem \
+              --url-base "$REL_URL_BASE" \
+              --out "$REL_MANIFEST" \
+              "${pairs[@]}"
+          fi
           rm -f /tmp/ota_priv.pem
 
       # Browser-flasher artifacts (docs site /flash, ESP Web Tools): one merged
@@ -212,52 +275,46 @@ jobs:
       # on the right panel and knows its OTA type. The manifest's part path is the
       # ABSOLUTE raw.githubusercontent.com URL because GitHub release-asset
       # downloads send no Access-Control-Allow-Origin header - the raw host does.
+      # A candidate has no web-flash rows (the /flash page stays on the stable image).
       - name: Build per-variant web-flash images + manifests
+        if: env.REL_WEBFLASH != ''
         working-directory: Nimbus
         run: |
           set -e
-          base="https://raw.githubusercontent.com/ristllin/nimbus-fw-releases/webflash/latest"
-          for v in nimbus-tft freenove-28 freenove-35 freenove-40; do
-            case "$v" in
-              nimbus-tft)  dir=.pio/build/esp32s3 ;;
-              freenove-28) dir=.pio/build/esp32s3-cyd ;;
-              freenove-35) dir=.pio/build/esp32s3-cyd-35 ;;
-              freenove-40) dir=.pio/build/esp32s3-cyd-40 ;;
-            esac
+          base="https://raw.githubusercontent.com/${REL_RELEASES_REPO}/webflash/latest"
+          read -r -a rows <<< "$REL_WEBFLASH"
+          for w in "${rows[@]}"; do
+            v="${w%%:*}"; env="${w#*:}"
             python3 tools/release/make_webflash_manifest.py \
-              --variant "$v" --build-dir "$dir" \
+              --variant "$v" --build-dir ".pio/build/$env" \
               --version "${GITHUB_REF_NAME}" \
               --out-dir webflash \
               --base-url "$base/$v"
           done
 
       # Publish to the PUBLIC releases repo (devices download unauthenticated), not
-      # the private source repo. tag_name creates the tag over there.
+      # the private source repo. tag_name creates the tag over there. A candidate is
+      # always a pre-release: releases/latest skips it, so it never becomes latest.
       - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2 (pin the SHA - a mutable tag runs unreviewed code with secrets in scope)
         with:
-          repository: ristllin/nimbus-fw-releases
+          repository: ${{ env.REL_RELEASES_REPO }}
           token: ${{ secrets.RELEASE_PAT }}
           tag_name: ${{ github.ref_name }}
           # The OTA images + typed manifest are release assets (devices fetch
           # them by version). The web-flash images live on the webflash branch
           # (per-variant subdirs) because their names collide as flat assets.
-          files: |
-            Nimbus/firmware-nimbus-tft.bin
-            Nimbus/firmware-freenove.bin
-            Nimbus/firmware-freenove-35.bin
-            Nimbus/firmware-freenove-40.bin
-            Nimbus/manifest.json
-          prerelease: ${{ contains(github.ref_name, '-rc') }}
+          files: ${{ env.REL_ASSETS }}
+          prerelease: ${{ env.REL_PRERELEASE }}
           generate_release_notes: false
 
       # Fixed-path copies the docs site fetches: webflash branch of the PUBLIC repo,
       # latest/manifest.json + latest/nimbus-webflash.bin, served with CORS via
       # raw.githubusercontent.com. A fresh orphan commit is force-pushed each
       # release so the public repo never accumulates old multi-MB images. -rc tags
-      # are skipped - /flash always points at the latest stable image.
+      # and candidates are skipped - /flash always points at the latest stable image.
       - name: Publish web-flash latest (webflash branch)
-        if: ${{ !contains(github.ref_name, '-rc') }}
+        if: env.REL_WEBFLASH_ON == 'true'
         env:
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
@@ -266,7 +323,9 @@ jobs:
           git config user.name "nimbus-release-bot"
           git config user.email "actions@github.com"
           # One subdir per variant: latest/<variant>/{manifest.json,image,sha256}.
-          for v in nimbus-tft freenove-28 freenove-35 freenove-40; do
+          read -r -a rows <<< "$REL_WEBFLASH"
+          for w in "${rows[@]}"; do
+            v="${w%%:*}"
             mkdir -p "latest/$v"
             cp "../Nimbus/webflash/$v/nimbus-webflash.bin" "latest/$v/"
             cp "../Nimbus/webflash/$v/nimbus-webflash.bin.sha256" "latest/$v/"
@@ -278,8 +337,36 @@ jobs:
           # `set -x` is active, so the token in this URL is not exposed. Kept simple
           # deliberately - an askpass indirection here would be untested CI plumbing.
           git push --force \
-            "https://x-access-token:${RELEASE_PAT}@github.com/ristllin/nimbus-fw-releases.git" \
+            "https://x-access-token:${RELEASE_PAT}@github.com/${REL_RELEASES_REPO}.git" \
             webflash:webflash
+
+      # Candidate only, after its images are published: manifest-candidate.json goes beside
+      # manifest.json on the latest full release (a device on the candidate channel derives its
+      # URL from releases/latest/download/manifest.json; one on a pre-release is never seen).
+      # The latest release must still be the one checked before the build, and its
+      # manifest.json must be byte-identical after the upload. RELEASE_PAT in this step only.
+      # The candidate goes dark when the next stable release becomes latest.
+      - name: Candidate - attach manifest-candidate.json to the latest full release
+        if: env.REL_MODE == 'candidate'
+        working-directory: Nimbus
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          set -e
+          latest="$(gh release view --repo "$REL_RELEASES_REPO" --json tagName --jq .tagName)"
+          if [ "$latest" != "$REL_LATEST_TAG" ]; then
+            echo "::error::the latest full release moved from $REL_LATEST_TAG to $latest during the run; nothing attached"
+            exit 1
+          fi
+          gh release upload "$latest" "$REL_MANIFEST" --repo "$REL_RELEASES_REPO" --clobber
+          mkdir -p candidate-after
+          gh release download "$latest" --repo "$REL_RELEASES_REPO" --pattern manifest.json --dir candidate-after
+          sha="$(sha256sum candidate-after/manifest.json)"
+          if [ "${sha%% *}" != "$REL_STABLE_SHA" ]; then
+            echo "::error::manifest.json of $latest changed during the candidate attach"
+            exit 1
+          fi
+          echo "attached $REL_MANIFEST to $latest; its manifest.json is unchanged (sha256 $REL_STABLE_SHA)"
 
   # nimbusd (Virtual Nimbus) container image, built + pushed as nimbusd:<tag> on BOTH
   # channels (CUM-444): with the firmware on an OTA tag, alone on a virtual tag. The

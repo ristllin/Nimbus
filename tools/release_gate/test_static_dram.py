@@ -5,7 +5,6 @@ Run: python3 -m pytest tools/release_gate
 
 import json
 import os
-import re
 import struct
 
 import check_static_dram as dram
@@ -91,13 +90,13 @@ def test_cli_checks_one_file(tmp_path):
 
 
 def test_every_shipped_variant_has_a_bounded_ceiling():
-    """The class rule: every variant release.yml ships has a recorded baseline and a
+    """The class rule: every variant release.yml ships (the stable rows of
+    tools/release/variants.json, which its gate loop reads) has a recorded baseline and a
     ceiling no more than 2 KB above it; a new shipped variant with none fails here."""
-    with open(os.path.join(REPO, ".github", "workflows", "release.yml"), encoding="utf-8") as f:
-        yml = f.read()
-    loop = re.search(r"for pair in ([^;]+);", yml)
-    assert loop, "release.yml variant loop not found"
-    shipped = {p.split(":")[0]: p.split(":")[1] for p in loop.group(1).split()}
+    with open(os.path.join(REPO, "tools", "release", "variants.json"), encoding="utf-8") as f:
+        rows = json.load(f)["variants"]
+    shipped = {r["type"]: r["env"] for r in rows}
+    assert shipped, "no stable row in tools/release/variants.json"
     ceilings = dram.load_ceilings()
     assert set(shipped) == set(ceilings)
     for variant, env in shipped.items():

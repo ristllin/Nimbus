@@ -203,20 +203,46 @@ def test_identity_only_scans_a_real_elf(tmp_path):
 def test_release_workflow_runs_the_full_elf_gate_on_every_shipped_image():
     """release.yml: every env the release builds is ELF-gated, every variant it signs
     is among them, and no gate call passes --identity-only (which skips the e-paper
-    and plumbing checks)."""
+    and plumbing checks). The lists come from tools/release/variants.json through the
+    release plan, so the class rule is checked on the plan of a stable tag and of a
+    candidate tag (the workflow's use of the plan: the next test)."""
+    import pathlib
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(elf.REPO) / "tools" / "release"))
+    import publish_candidate as pc
+
+    table = pc.load_table()
+    cand = dict(
+        table,
+        candidate={"tag": "v99.0.0", "variants": [{"type": "freenove-28", "env": "esp32s3-cyd-e2"}], "hold_line": ""},
+    )
+    for tag, t in (("v5.2.0", table), ("v99.0.0", pc.validate_table(cand))):
+        env = pc.make_plan(t, tag, pc.SOURCE_REPO).env_vars()
+        built = set(env["REL_ENVS"].split())
+        gated = {g.split(":")[1] for g in env["REL_GATES"].split()}
+        assert built and gated == built, f"{tag}: built {sorted(built)} but ELF-gated {sorted(gated)}"
+        signed = {p.split("=")[0] for p in env["REL_MANIFEST_PAIRS"].split()}
+        assert signed and signed <= {g.split(":")[0] for g in env["REL_GATES"].split()}, tag
+        e2 = {g.split(":")[1] for g in env["REL_GATES"].split() if g.endswith(":2")}
+        assert e2 == {e for e in built if e.endswith("-e2")}, f"{tag}: engine-2 images not marked for --engine1-absent"
+
+
+def test_release_workflow_builds_and_gates_the_plan_lists():
+    """The workflow half of the rule above: the build reads REL_ENVS, the gate loop reads
+    REL_GATES, calls the full ELF gate and adds --engine1-absent, and no call skips checks."""
     import pathlib
     import re
 
     text = (pathlib.Path(elf.REPO) / ".github" / "workflows" / "release.yml").read_text()
-    build = re.search(r"^\s*pio run((?: -e \S+)+)\s*$", text, re.M)
-    assert build, "the release build line (pio run -e ...) moved: update this test"
-    built = set(re.findall(r"-e (\S+)", build.group(1)))
-    loop = re.search(r"for pair in ([^;]+); do\n(?P<body>.*?)\n\s*done", text, re.S)
+    assert re.search(
+        r'^\s*read -r -a envs <<< "\$REL_ENVS"\n(?:.*\n){0,2}\s*pio run "\$\{pio_args\[@\]\}"\s*$', text, re.M
+    ), "the release build (pio run over REL_ENVS) moved: update this test"
+    loop = re.search(
+        r'read -r -a gates <<< "\$REL_GATES"\n\s*for g in "\$\{gates\[@\]\}"; do\n(?P<body>.*?)\n\s*done', text, re.S
+    )
     assert loop and "check_elf_symbols.py" in loop.group("body"), "the per-variant ELF gate loop moved"
-    pairs = dict(pair.split(":") for pair in loop.group(1).split())
-    assert set(pairs.values()) == built, f"built {sorted(built)} but ELF-gated {sorted(pairs.values())}"
-    signed = set(re.findall(r"^\s*([a-z0-9-]+)=firmware-[a-z0-9-]+\.bin", text, re.M))
-    assert signed and signed <= set(pairs), f"signed variants {sorted(signed)} not all ELF-gated"
+    assert "--engine1-absent" in loop.group("body")
     commands = re.sub(r"\\\n\s*", " ", text).splitlines()  # one line per shell command
     calls = [ln for ln in commands if "check_elf_symbols.py" in ln and not ln.lstrip().startswith("#")]
     assert calls, "no ELF gate call in release.yml"
