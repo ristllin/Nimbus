@@ -21,7 +21,7 @@
 //              Sub / Caption / Background claude-haiku-5-5;
 //   openai     Head in the mini class, the rest in the nano class (the current
 //              catalog prices these as gpt-5.6-luna and gpt-6-luna);
-//   mistral    Head mistral-medium-latest, the rest mistral-small-latest;
+//   mistral    Head mistral-large-4-0 (Large 4 only, never Large 3; the id Lumi runs; owner ruling 104), the rest mistral-small-latest;
 //   zai        Head glm-5.3, the rest glm-5.3-flash;
 //   cumulo     Head unchanged (the router's default; the cloud meters it), the rest
 //              the router's cheapest tier.
@@ -52,7 +52,7 @@ inline constexpr RoleDefault kRoleDefaults[] = {
     {"openai", DefaultRole::Sub, "nano", "gpt-6-luna", "gpt-6-luna"},
     {"openai", DefaultRole::Caption, "nano", "gpt-6-luna", "gpt-6-luna"},
     {"openai", DefaultRole::Background, "nano", "gpt-6-luna", "gpt-6-luna"},
-    {"mistral", DefaultRole::Head, "standard", "mistral-medium", "mistral-medium-latest"},
+    {"mistral", DefaultRole::Head, "standard", "mistral-large-4", "mistral-large-4-0"},
     {"mistral", DefaultRole::Sub, "cheapest", "mistral-small", "mistral-small-latest"},
     {"mistral", DefaultRole::Caption, "cheapest", "mistral-small", "mistral-small-latest"},
     {"mistral", DefaultRole::Background, "cheapest", "mistral-small", "mistral-small-latest"},

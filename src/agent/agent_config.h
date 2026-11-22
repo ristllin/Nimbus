@@ -47,7 +47,7 @@
 //   medium, Z.ai glm-5.3, Cumulo the router default (the cloud meters it).
 #define ANT_MODEL     "claude-sonnet-5"
 #define OPENAI_MODEL  "gpt-5.6-luna"
-#define MISTRAL_MODEL "mistral-medium-latest"
+#define MISTRAL_MODEL "mistral-large-4-0"
 #define ZAI_MODEL     "glm-5.3"
 #define CUMULO_MODEL  "gpt-5.6"
 

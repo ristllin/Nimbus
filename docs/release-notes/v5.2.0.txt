@@ -1,0 +1,1 @@
+Plain-file logs, no built-in food help; routines no longer write, send or use your connectors

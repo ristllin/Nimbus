@@ -28,7 +28,8 @@
 // recorded provider lists, and model_price_defaults.h prices every one). The Cumulo
 // list always holds the router default (agent_config.h CUMULO_MODEL, gpt-5.6).
 // src/agent/agent_config.h keeps the historical *_MODEL_CHOICES names as aliases.
-#define NIMBUS_MISTRAL_MODEL_CHOICES "mistral-large-latest,mistral-medium-latest,mistral-small-latest"
+// Mistral: the Large 4 head default (mistral-large-4-0, owner ruling 104) leads the list.
+#define NIMBUS_MISTRAL_MODEL_CHOICES "mistral-large-4-0,mistral-large-latest,mistral-medium-latest,mistral-small-latest"
 // Lane DEF: each list carries its provider's role defaults (model_defaults.h), so a
 // never-verified provider offers and validates the sub default it runs on.
 #define NIMBUS_OPENAI_MODEL_CHOICES \

@@ -234,7 +234,7 @@ model for everything that runs in the background:
 |---|---|---|
 | Anthropic | Claude Sonnet 5 (`claude-sonnet-5`) | Claude Haiku 5.5 (`claude-haiku-5-5`) |
 | OpenAI | the mini class (`gpt-5.6-luna`) | the nano class (`gpt-6-luna`) |
-| Mistral | Mistral Medium (`mistral-medium-latest`) | Mistral Small (`mistral-small-latest`) |
+| Mistral | Mistral Large 4 (`mistral-large-4-0`) | Mistral Small (`mistral-small-latest`) |
 | Z.ai | GLM-5.3 (`glm-5.3`) | GLM-5.3 Flash (`glm-5.3-flash`) |
 | Cumulo Nimbus | the router's default (`gpt-5.6`) | the router's cheapest tier (`gpt-5.6-luna`) |
 

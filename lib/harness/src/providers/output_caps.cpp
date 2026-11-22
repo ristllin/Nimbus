@@ -186,7 +186,7 @@ const char* sameHostNonReasoningModel(const std::string& host, const std::string
   // head runs at "none", so a cut there is a long answer, not reasoning, and the next
   // provider - not a smaller same-provider model - is the right escape.
   if (!nimbus::orch::isMistralLarge4(m)) return "";
-  return "mistral-medium-latest";   // the default Mistral head, at effort "none"
+  return "mistral-medium-latest";   // the same host's non-forced reasoner, at effort "none"
 }
 
 uint32_t slowestTokensPerSecond(const std::string& host, const std::string& model) {
