@@ -315,7 +315,7 @@ def make(tmp_path, out_name="manifest-candidate.json", candidate=CAND, size=1024
 
 
 def test_output_named_manifest_json_is_refused(tmp_path):
-    with pytest.raises(pc.Refused, match="manifest.json"):
+    with pytest.raises(pc.Refused, match="never replaces"):
         make(tmp_path / "a", out_name="manifest.json")
     with pytest.raises(pc.Refused, match="manifest-candidate.json"):
         make(tmp_path / "b", out_name="candidate.json")
