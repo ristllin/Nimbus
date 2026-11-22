@@ -114,6 +114,18 @@ struct World {
   }
 };
 
+// The old engine's owner rows in the chat from index `from` on: each one opens a turn of its own
+// when imported (a photo row and the message after it are two), whatever the random rows were.
+uint32_t ownerRowsSince(const OldStore& old, size_t from) {
+  uint32_t n = 0;
+  for (size_t i = from; i < old.rows.size(); ++i) {
+    const OldRow& r = old.rows[i];
+    const bool ownerKind = r.kind == "message" || r.kind == "image" || r.kind == "audio" || r.kind == "transcript";
+    if (r.session == kChat && r.role == "user" && ownerKind && r.tags.find("e2") == std::string::npos) ++n;
+  }
+  return n;
+}
+
 void firstMigration(World& w, uint32_t seed) {
   w.rng.seed(seed);
   w.m = month(w.old, {seed, 400, 6, 3, 5, 800});
@@ -129,13 +141,17 @@ void test_a_second_migration_is_a_reentry_that_imports_only_the_other_engines_ro
   TEST_ASSERT_TRUE(re);
   const uint32_t notes = w.notes();
   w.engine2("how is the boat");
+  const size_t from = w.old.rows.size();
   w.engine1(5);
+  const uint32_t owners = ownerRowsSince(w.old, from);   // 5 to 10: an exchange may send a photo first
   const tx::MigrationOutcome out = w.engine2("and the garden");   // its start imports the five
   TEST_ASSERT_TRUE(out.reentry);
   TEST_ASSERT_TRUE(out.digest0);   // the first migration's, kept
   TEST_ASSERT_EQUAL(1, w.asks);    // never asked again
   TEST_ASSERT_EQUAL(notes + 1, w.notes());   // one note for the batch
-  TEST_ASSERT_TRUE(out.turns >= 1 && out.turns <= 5);
+  TEST_ASSERT_TRUE(owners >= 5);
+  TEST_ASSERT_TRUE(out.turns >= 1 && out.turns <= owners);   // one turn per imported owner row
+  if (!out.named) TEST_ASSERT_EQUAL(owners, out.turns);       // nothing named: every owner row is a turn
   expectAccounted(w.old, w.files, w.m.thru, out.hi, "reentry");
   // the batch sits after engine 2's items, behind its note, and names the earlier engine
   const std::vector<tx::Item> items = stored(w.files);

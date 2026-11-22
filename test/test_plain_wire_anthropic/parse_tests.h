@@ -494,7 +494,8 @@ void test_a_file_id_rides_later_turns_only_while_the_provider_holds_it() {
     TXB_OK(arena.init(1 << 20, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }));
     for (const tx::Item& it : c.items) TXB_OK(arena.append(it));
     plain::TurnCtx turn;
-    plain::RenderInput in = rig.input(c, arena, Opts(), turn, 0);
+    const Opts opts;   // outlives `in`: in.ladder points into it
+    plain::RenderInput in = rig.input(c, arena, opts, turn, 0);
     in.photo = [&](const std::string& r, plain::PhotoBytes& p) {   // the binding RB-P1 writes
       p.fileId = ip::heldFileId(chat, r, now);
       if (haveBytes) {
