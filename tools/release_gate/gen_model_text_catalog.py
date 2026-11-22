@@ -202,9 +202,9 @@ E2_CEILINGS = {
     "core": 3072,
     "device_notes": 2048,
     "stubs": 512,
-    # Ruling 111: raised from 6,144 B for RB-U1b's schedule strings only, by the bytes they use (404 B of
-    # the 512 B granted, after the 250 B the class had left); the unused 108 B went back.
-    "tool_results": 6548,
+    # Ruling 111: raised from 6,144 B for RB-U1b's schedule strings only, by the bytes they use (434 B of
+    # the 512 B granted, after the 250 B the class had left); the unused 78 B went back.
+    "tool_results": 6578,
     "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,
