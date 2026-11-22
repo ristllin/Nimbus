@@ -173,6 +173,21 @@ release, and no release moves running Virtual Nimbus instances by itself.
 - The tag gate is `tools/release_gate/tag_shape.py`. `python3 -m pytest
   tools/release_gate` tests it and checks that every release job runs only on its
   channel.
+- **One table names what a release builds.** `tools/release/variants.json` lists each
+  device type, the build that makes its image, the image's name and whether it gets a
+  web-flash image, plus the releases repository. The release workflow reads every list
+  from it (`tools/release/publish_candidate.py plan`) and names no variant itself; the
+  config-to-image gate (`tools/release_gate/check_config_mapping.py`) fails a workflow
+  that does. A run from any repository but the source repository is refused when the
+  table still names the public releases repository, so a test run on a fork can never
+  publish where devices download from.
+- **A candidate tag.** When a firmware tag equals the table's `candidate.tag`, the
+  release builds only the candidate's variants (each a device type and the build that
+  makes it, for example the engine-2 build of one board) and runs every gate on them.
+  It publishes them as a pre-release, which never becomes the latest release, with no
+  `manifest.json` and no web-flash images, and attaches `manifest-candidate.json` to the
+  current latest full release (below). Every other tag releases every variant of the
+  table. The Virtual Nimbus image for the tag is still built and pushed.
 - **Every OTA release keeps its ELF files.** A device's crash report can only be
   decoded against the exact ELF that built its image, so the release job stores each
   variant's `firmware.elf` (compressed, with an `elf-sha256.txt` record) as a CI
@@ -283,6 +298,17 @@ could not be read; a candidate that is missing, malformed or fails its signature
 is ignored and the stable manifest decides. A missing or unreadable channel file,
 or any other text in it, means the stable channel. Firmware before this change
 reads neither file, so only devices switched on take a candidate.
+
+A candidate is published by a candidate tag (see "Release tags" above).
+`manifest-candidate.json` is attached to the latest full release, next to its
+`manifest.json`, which is left byte for byte as it was. Each variant URL in it points
+at the candidate's own pre-release. The release refuses a candidate that is not newer
+than that latest release by the device's version order (a difference only in a
+suffix such as `-rc1` counts as the same version), a latest release without a
+`manifest.json`, a device type the table does not ship, a build for another board, and
+an image that does not fit the update slot. A candidate goes dark when the next
+stable release becomes the latest: that release carries no candidate file until a new
+candidate is attached to it.
 
 ### Switching the channel
 

@@ -58,6 +58,8 @@ a generated file.
 | **⚠ `engine_filter.py`** | PlatformIO `extra_scripts` in `[s3]` - a device env builds one engine (`custom_nimbus_engine`, 1 when absent) and drops the other engine's sources listed in `tools/engine/` (`engine2_only.txt` for an engine-1 env, `engine1_only.txt` for the `*-e2` envs). Every new engine-2 source gets its line there; `release_gate/check_engine_filter.py` enforces it. Tests: `test_engine_filter.py`. |
 | **⚠ `make_manifest.py`** | Signs the OTA release manifest (release.yml). Message byte-identical to `nimbus::ota::buildSigMessage()`. |
 | **⚠ `release/make_webflash_manifest.py`** | Builds the web-flasher manifest (release.yml). |
+| **⚠ `release/variants.json`** | The one release variant table release.yml reads: stable rows (type, env, image, web-flash), the candidate entry (shipped empty), the releases repository. |
+| **⚠ `release/publish_candidate.py`** | The release plan from `variants.json` (`plan`, written to `$GITHUB_ENV`), the candidate target check and `manifest-candidate.json` (`check-target`, `make`). Plans and writes locally only. Tests: `release/test_publish_candidate.py` (run in `pytest tools/release_gate`). |
 | **⚠ `release/check_known_patterns.sh`** | Pre-commit leak gate (private `ops/leak_patterns.txt`; warns-and-passes for public contributors). |
 | `release/seed_public_root.sh` | Maintainer gate - builds + verifies the public-repo root cut. Needs the private `ops/leak_patterns.txt`; refuses to run without it. |
 | `release/lizard_whitelist.txt` | Baseline for the pre-commit lizard complexity gate. |
