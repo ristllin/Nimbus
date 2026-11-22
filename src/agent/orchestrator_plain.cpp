@@ -256,31 +256,44 @@ const char* refusalFor(const String& host) {
   return nullptr;
 }
 
+// The person's message into the chat's day stream (the web chat's history, a later migration's
+// rows), tagged e2 so a migration never imports it again (RB-MG1a). Its row id.
+String captureOwnerRow(const String& text, const String& fromName, const String& chatId) {
+  const String tags = fromName.length() ? "from:" + fromName + ",e2" : String("e2");
+  return memory::captureMessage(chatId.c_str(), "user", nimbus::orch::MsgKind::Message, text, "", tags);
+}
+
+// One device line instead of a turn (system provenance, never model text).
+bool sayInstead(const String& chatId, const char* line) {
+  bool queued = false;
+  const bool sent = deliver(chatId, String(line), /*system=*/true, &queued);
+  return sent && queued;
+}
+
 // One person's message as one engine-2 turn (tg_poll). Returns whether a reply went out.
 bool runOne(const String& text, const String& fromName, const String& chatId) {
-  String tags = fromName.length() ? "from:" + fromName + ",e2" : String("e2");
-  const String row = memory::captureMessage(chatId.c_str(), "user", nimbus::orch::MsgKind::Message, text, "", tags);
   const String host = store::resolvedOrchHost();
   if (const char* line = refusalFor(host)) {
-    bool queued = false;
-    const bool sent = deliver(chatId, String(line), /*system=*/true, &queued);
-    return sent && queued;
+    captureOwnerRow(text, fromName, chatId);
+    return sayInstead(chatId, line);
   }
   const std::string model(store::orchModel(host).c_str());
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
   if (!b) {
-    bool queued = false;
-    const bool sent = deliver(chatId, String(kNoStartLine), /*system=*/true, &queued);
-    return sent && queued;
+    captureOwnerRow(text, fromName, chatId);
+    return sayInstead(chatId, kNoStartLine);
   }
   plain::ChatMessage msg;
-  msg.text = std::string(text.c_str(), text.length());
   msg.ch = chatId == "web" ? "web" : chatId == "voice" ? "voice" : chatId == "serial" ? "console" : "tg";
   if (!localChat(chatId)) msg.src = telegram::turnUpdateIds(chatId);
+  // RB-TG1: a message the transcript already holds (re-served after a restart) was stored and
+  // answered then: no second row, no second answer.
   if (b->allSeen(msg.src)) {
     alogf("e2: message to %s already taken before the restart: not answered again", chatId.c_str());
     return true;
   }
+  const String row = captureOwnerRow(text, fromName, chatId);
+  msg.text = std::string(text.c_str(), text.length());
   msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
   msg.m = rowNumber(row);
   txdev::cardTxFiles().resetHolds();

@@ -2374,7 +2374,13 @@ std::vector<uint64_t> turnUpdateIdsImpl(const String& chatId) {
 bool sendPartImpl(const String& chatId, const std::string& part) {
   if (!enabled() || chatId.length() == 0 || part.empty()) return false;
   agent::tgarchive::onOutboundText(chatId, String(part.c_str()), "send");   // archive hook
-  return doSendMessageImpl(chatId.c_str(), part.c_str(), 0);
+  const bool ok = doSendMessageImpl(chatId.c_str(), part.c_str(), 0);
+  // RB-TS1: a part of the running turn's answer is out: its message is recorded as answered now,
+  // so a crash in the rest of the turn does not run it again on the re-served page.
+  const size_t turn = g_receiver.currentTurn();
+  if (ok && s_turnWindow && turn < g_batch.turnCount() && chatId == g_batch.chatIdAt(turn))
+    g_receiver.noteCurrentAnswered(deviceEpoch());
+  return ok;
 }
 // Lane E2-DEV: the seen index for the seam's boot (the public seenIndex() below).
 nimbus::orch::SeenIndex& seenIndexRef() { return seenIndex(); }
