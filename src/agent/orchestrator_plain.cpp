@@ -728,12 +728,18 @@ void drainOutboxes() {
   last = millis();
   const uint64_t now = (uint64_t)time(nullptr);
   if (now < 1000000000) return;   // no clock yet: a note waits for one
+  const plain::QuietHours quiet = quietNow();
+  const bool quietNowFlag = plain::inQuiet(quiet, now, tzNow());
   for (HeldSlot& h : s_held) {
-    if (h.store->notes().empty()) continue;
+    // Only an outbox with work due boots its chat (a held note in quiet hours never moves the resident chat).
+    bool due = false;
+    for (const plain::HeldNote& n : h.store->notes())
+      due = due || !quietNowFlag || n.state == plain::HeldState::Sent || n.expires <= now || h.store->wasDelivered(n);
+    if (!due) continue;
     const String chat(h.chatId.c_str());
     const String host = store::resolvedOrchHost();
     plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
-    if (b && plain::drainHeld(*h.store, b->ownerSink(), now, tzNow(), quietNow(), b->config().dayStartMin)) return;
+    if (b && plain::drainHeld(*h.store, b->ownerSink(), now, tzNow(), quiet, b->config().dayStartMin)) return;
   }
 }
 

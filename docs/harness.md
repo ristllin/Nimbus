@@ -966,6 +966,23 @@ device binds it in `src/agent/schedule_device.cpp`, nimbusd in `hosted_loops.h`
   at `/mem/routines/<id>.state` (temp and rename; a cut leaves the old file or a whole temp). A fire
   that read outside content marks its output in `outsideAt`, and the next fire opens tainted while
   that output is in the state. With no card a routine is skipped (`lastErr` "no card").
+- **Where it fires (lane E2-SCHED).** On an engine-2 device `pollJobs` runs the loops tick
+  (`loops::checkDue`), and its fire hook (`injectScheduledTurn`) boots the chat the entry delivers to
+  and builds the fire with `plain::fireBindingFor` (`nimbus/harness/plain/schedule_binding.h`): the
+  chat binding's channel and transcript, a routine on the small model (`store::subModel`) with the
+  binding's registry, cost and ceiling, its outbox `/mem/routines/held-<chat>.json` (a quiet-hours
+  note goes when they end) and its state beside it. A routine waits while the monthly limit holds; a
+  reminder still goes. Engine 1's nightly upkeep record runs nothing on engine 2. On nimbusd with
+  `NIMBUSD_ENGINE=2`, `Engine2Host` attaches the tool to the owner chat and the routines tick fires
+  through `Engine2Host::fire` (state and outbox in `<data>/mem/routines/`).
+- **Old records.** A routine engine 1 wrote has no loops2.json entry and fires as a routine with the
+  default tools (web_search, read_file; `send` is not registered on engine 2), nothing else: none of
+  engine 1's connectors (calendar, mail), sub-agents, memory or file writes. Firing it rewrites
+  nothing; loops.json changes only by the tick's own counters, which engine 1 reads.
+- **Commands.** `/loops` and `/loop approve|deny|off|on|delete|grants` act on the same table as on
+  engine 1 (`/loop approve <id>` is how a routine the assistant made gets approved on engine 2;
+  `/loop delete` also removes its state file). `/remind <when> <what>` makes the reminder through
+  `schedule::call` as the owner's (`CallCtx::owner`: created by the owner, approved).
 
 ### The Anthropic wire: what a request carries
 
