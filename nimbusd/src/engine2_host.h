@@ -191,7 +191,8 @@ class Engine2Host {
     if (o_.spend) o_.spend(turnSpend(t.out, bootModel_), "turn");
     lastTurnEnd_ = vclock::epoch();
     if (t.ending != PlainEnding::Reply)
-      std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending), t.stated.c_str());
+      std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending),
+                   (t.stated == t.out.statusText ? t.out.statusStored : t.stated).c_str());   // no provider words in the log (E2-FIX11)
     if (t.out.parkHost) std::fprintf(stderr, "[nimbusd] engine2: the head's key or credit was refused\n");
     const nimbus::orch::tx::TurnEndFacts& e = t.out.end;
     std::fprintf(stderr,
