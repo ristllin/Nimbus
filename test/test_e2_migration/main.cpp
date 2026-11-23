@@ -584,6 +584,17 @@ static void test_a_mirrored_fold_record_is_put_back_from_the_kept_copy() {
   // A mirror the copy holds no record of stays as it is: nothing is removed.
   TEST_ASSERT_FALSE(tx::restoreFoldRecord(mirrored, other, kChat, again));
   TEST_ASSERT_TRUE(again.empty());
+  // Lane E2-FIX3, R7: a read of the shared file that came back short puts nothing back, so the file
+  // stays byte-identical; the whole read still does. Before: the put-back took the short read and
+  // the records after the cut were lost.
+  const std::string file = mirrored;
+  for (size_t cut = 0; cut < file.size(); cut += 7) {
+    TEST_ASSERT_FALSE(tx::restoreFoldRecordFrom(file.substr(0, cut), file.size(), original, kChat, again));
+    TEST_ASSERT_TRUE(again.empty());
+  }
+  TEST_ASSERT_TRUE(file == mirrored);
+  TEST_ASSERT_TRUE(tx::restoreFoldRecordFrom(file, file.size(), original, kChat, again));
+  TEST_ASSERT_TRUE(again == restored);
 }
 
 // Lane E2-FIX2B, finding P10: a message answered with a device line (the history wait, a refusal)

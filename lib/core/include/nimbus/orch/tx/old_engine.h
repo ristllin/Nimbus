@@ -62,6 +62,10 @@ Status dropMirroredPointer(RowSource& rows, OldFold& fold, bool& dropped);
 // nothing to put back (no such record, another shape, or the copy has no record of the chat: a
 // record is never removed). Pure.
 bool restoreFoldRecord(const std::string& blob, const std::string& copy, const std::string& chatId, std::string& out);
+// The same, from a read of the shared record file (lane E2-FIX3, finding R7): `blob` must be the
+// file's full `fileSize`, since `out` replaces the whole file; a short read puts nothing back.
+bool restoreFoldRecordFrom(const std::string& blob, size_t fileSize, const std::string& copy, const std::string& chatId,
+                           std::string& out);
 
 // The store's forward query, called under the binding's lock (the device takes the card lock
 // around it).

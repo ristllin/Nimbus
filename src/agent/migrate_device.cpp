@@ -100,10 +100,10 @@ std::string readFoldCopy() {
 
 // P5: a chat's record that an earlier engine-2 build replaced with its mirror is put back from the
 // copy, once (the record then has the earlier engine's shape again). True when it was.
-bool putBackFoldRecord(const std::string& chatId, const std::string& blob) {
+bool putBackFoldRecord(const std::string& chatId, const std::string& blob, size_t fileSize) {
   const std::string copy = readFoldCopy();
   std::string restored;
-  if (copy.empty() || !tx::restoreFoldRecord(blob, copy, chatId, restored)) return false;
+  if (copy.empty() || !tx::restoreFoldRecordFrom(blob, fileSize, copy, chatId, restored)) return false;
   const bool ok = writeFileAtomic(kChatsumPath, restored, "chatsum");
   alogf("e2: import: the fold record of chat %s was engine 2's mirror: %s from %s", chatId.c_str(),
         ok ? "put back" : "NOT put back", kFoldCopyPath);
@@ -135,9 +135,9 @@ bool fill(tx::MigrateDeps& m) {
     std::string blob;
     size_t size = 0;
     // R7: the shared record file is rewritten only from a read of its full length; a short one does nothing.
-    const bool whole = readFlashWhole(kChatsumPath, blob, size);
-    if (!whole) alogf("e2: import: %s read short (%u of %u B): no put-back", kChatsumPath, (unsigned)blob.size(), (unsigned)size);
-    if (whole && putBackFoldRecord(m.chatKey, blob)) {   // the earlier engine's own record, read again
+    if (!readFlashWhole(kChatsumPath, blob, size))
+      alogf("e2: import: %s read short (%u of %u B): no put-back", kChatsumPath, (unsigned)blob.size(), (unsigned)size);
+    if (putBackFoldRecord(m.chatKey, blob, size)) {   // the earlier engine's own record, read again
       nimbus::orch::FoldStore folds;
       folds.begin(&io);
       m.fold = tx::oldFoldOf(folds.get(m.chatKey));

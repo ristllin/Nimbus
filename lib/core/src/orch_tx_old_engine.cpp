@@ -376,6 +376,12 @@ void importRules(const std::vector<OldRule>& rules, const std::string& marker, n
   }
 }
 
+bool restoreFoldRecordFrom(const std::string& blob, size_t fileSize, const std::string& copy, const std::string& chatId,
+                           std::string& out) {
+  out.clear();
+  return blob.size() == fileSize && restoreFoldRecord(blob, copy, chatId, out);
+}
+
 bool oldRulesFrom(const std::string& blob, size_t fileSize, std::vector<OldRule>& rules) {
   rules.clear();
   OwnerPrefs p;
