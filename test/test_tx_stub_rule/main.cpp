@@ -39,10 +39,10 @@ bool validUtf8(const std::string& s) {
   return true;
 }
 
-// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] ... (shown earlier in this conversation;
+// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] ... (shown in full earlier in this conversation;
 // not attached to this request; view id=r<q> shows it again)' (lane E2-FIX9), one line, at most 400 B, valid UTF-8.
 std::string viewTail(uint64_t q) {
-  return " ... (shown earlier in this conversation; not attached to this request; view id=r" + std::to_string(q) +
+  return "(shown in full earlier in this conversation; not attached to this request; view id=r" + std::to_string(q) +
          " shows it again)";
 }
 bool internalStubOk(const tx::StubFacts& f, const std::string& s, std::string& why) {
@@ -144,11 +144,16 @@ void test_internal_stub_has_the_prd_shape() {
     std::string s, why;
     TXB_OK(tx::stubText(f, s));
     TEST_ASSERT_TRUE_MESSAGE(internalStubOk(f, s, why), why.c_str());
-    // The preview is the result's first bytes on one line (at most 200 B of it).
+    // Lane E2-FIX9: a result the card kept carries no preview (a head read the first bytes as all the tool had
+    // returned); with no card the preview is all that is left, and it is the result's first bytes on one line.
     std::string first = p.substr(0, 40);
     for (char& c : first)
       if (c == '\n') c = ' ';
-    TEST_ASSERT_TRUE_MESSAGE(s.find(first) != std::string::npos, "the preview's first bytes are not in the stub");
+    TEST_ASSERT_TRUE_MESSAGE(p.size() < 8 || s.find(first) == std::string::npos, "a kept result's stub carries a preview");
+    tx::StubFacts lost = f;
+    lost.noCard = true;
+    TXB_OK(tx::stubText(lost, s));
+    TEST_ASSERT_TRUE_MESSAGE(s.find(first) != std::string::npos, "the preview's first bytes are not in the no-card stub");
   }
 }
 
@@ -205,7 +210,7 @@ void test_file_tool_stub_names_path_and_sha() {
   TEST_ASSERT_TRUE(tx::looksLikeStub(s));
   f.bound.view = false;   // no view: the file read's call
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.find(" ... (shown earlier in this conversation; not attached to this request; read_file "
+  TEST_ASSERT_TRUE_MESSAGE(s.find("] (shown in full earlier in this conversation; not attached to this request; read_file "
                                   "path=notes/boat.md offset=32761 limit=4000 shows it again)") != std::string::npos, s.c_str());
   TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
   TEST_ASSERT_TRUE(tx::looksLikeStub(s));
@@ -502,7 +507,7 @@ void test_rules_no_card_stub_says_not_kept() {
   f.hhmm = "";
   f.noCard = false;
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.rfind("[stub read_file r42 15204B 310L --:--] abc", 0) == 0, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.rfind("[stub read_file r42 15204B 310L --:--] (shown in full earlier", 0) == 0, s.c_str());
 }
 
 // Every path write supersedes reads of its path; nothing else does.
@@ -798,6 +803,7 @@ void test_rules_fields_cannot_forge_the_frame() {
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)std::count(s.begin(), s.end(), ']'), s.c_str());
   // Line and paragraph separators and bidi controls in a preview; a cut sequence at its end.
   tx::StubFacts u = internalFacts("a\xE2\x80\xA8" "b\xE2\x80\xA9" "c\xC2\x85" "d\xE2\x80\xAE" "e\xE2\x81\xA6" "f\xF0\x9F\x8D");
+  u.noCard = true;   // the one stub that still carries a preview (lane E2-FIX9)
   TXB_OK(tx::stubText(u, s));
   TEST_ASSERT_TRUE_MESSAGE(s.find("] a b c d?e?f ... (shown earlier") != std::string::npos, s.c_str());
   tx::StubFacts longTool = internalFacts("p");

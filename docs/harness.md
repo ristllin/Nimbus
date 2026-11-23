@@ -573,8 +573,11 @@ a pure function of stored facts (no clock, no file, no global state), so a resta
 the same request, and none of them drops anything without a line that names it.
 
 - **Stub texts** are computed once when a result is captured and stored on its `r` line
-  (`stubText`). Internal results: `[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] <first 200 B>
-  ... (full: view id=r<q>)`, with `path=` and `sha8=` for file tools. Outside results (web,
+  (`stubText`). Internal results: `[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] (shown in full
+  earlier in this conversation; not attached to this request; view id=r<q> shows it again)`, with
+  `path=` and `sha8=` for file tools, and no preview of the result (lane E2-FIX9: a head read the first
+  200 B as all the tool had returned); with no storage card the first 200 B stay, since nothing else
+  of the result is kept. Outside results (web,
   fetch, connectors): `[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown:
   view id=r<q>]`, built from the call and the size only, so outside content cannot ride into
   later turns through a stub. Every stub is one line of valid UTF-8 of at most 400 B.
@@ -588,8 +591,10 @@ the same request, and none of them drops anything without a line that names it.
   raises it for one request). At or below it only tier-2 bulk, outside results and long
   arguments render as stubs; receipts stay verbatim until compacted (`showResult`,
   `shownArgs`). Outside results still render as their stub once their own turn closes.
-- **A stub names its way back**: a file read's stub ends `(not shown in full to fit the request;
-  read_file path=<p> offset=<o> limit=<n> reads it again)` (`wayBack`), a long argument's says
+- **A stub says what is true and names its way back** (lane E2-FIX9, the words in `tx/result_text.h`
+  and `tx/photo_text.h`): an internal result's stub ends `(shown in full earlier in this conversation; not
+  attached to this request; view id=r<q> shows it again)` when view is bound, else a file read's
+  `read_file path=<p> offset=<o> limit=<n> shows it again` (`wayBack`), a long argument's says
   `an argument sent earlier, not content`, and the write tools refuse a stub line as content
   (`looksLikeStub`).
 - **Superseded reads** (`supersededBy`): a successful file write marks earlier reads of the
@@ -609,7 +614,8 @@ the same request, and none of them drops anything without a line that names it.
   as `[photo p<ref> <date>: shown earlier in this conversation; not attached to this request]`
   (the words in `tx/photo_text.h`); only when the engine has bound `view` (`photoStub`'s
   `viewBound`) it adds `; view id=p<ref> shows it again`.
-- **The overflow ladder** (`nextRung`, one rung at a time): stub closed turns, stub this
+- **The overflow ladder** (`nextRung`, one rung at a time): stub closed turns' bulk, oldest first and
+  only as far as the body is over its cap (lane E2-FIX9, ruling 81; a later climb goes further), stub this
   turn's older bulk, omit the oldest whole turns as one named line (`omissionSpan` never
   reaches the newest 6 owner turns), then the size guard.
 
@@ -1311,14 +1317,17 @@ prioritized trim; on "too long" that is one compaction and one retry, then the h
 when compaction cannot run or is not enough does the ladder act (stubs, this turn's older bulk,
 the oldest turns as one named line, the size guard).
 
-The summarizer's request carries the summary so far (with its ids) in the system text beside its
-prompt, and one message: the day digests a chat may still hold, then the turns, owner and
+The summarizer's request carries the summary so far (with its ids) in the system text, ahead of its
+prompt (lane E2-FIX9: the prompt ends with its "nothing to change" answer, `=`, and a summary right
+after it was answered as `=Facts and standing preferences:`), and one message: the day digests a chat may still hold, then the turns, owner and
 assistant text verbatim with the local time and one bracketed line per tool result that names the
 tool and nothing else (`[file change]`, `[file work]`, `[outside content read]`, `[<tool> done]`);
 never a call's arguments, a result's bytes or a device note. A turn that read outside content has
 its assistant text inside the `<data>` frame. The rungs come from the binding: the head host's
 small model twice, then each other keyed provider in the owner's order, waiting 10 min, 30 min,
-2 h, then 6 h after each failure; at most 48 attempts start a day on the device
+2 h, then 6 h after each failure for the idle steps (a turn that opens over the due mark, or a
+request that does not fit, tries again at once, inside its 90 s, at every turn until one succeeds:
+lane E2-FIX9); at most 48 attempts start a day on the device
 (`/data/compact_ctl.txt`, written before the request), each capped at 4,096 output tokens and 45 s;
 a cut answer is asked once more in the same attempt with 8,192 tokens of room, and a cut is never
 stored. There is no pause state.

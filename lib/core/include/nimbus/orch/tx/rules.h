@@ -126,18 +126,17 @@ struct StubFacts {
 };
 
 // The stub text, one line of valid UTF-8, at most kStubMaxBytes:
-//  internal (Receipt, Bulk):
-//   '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>[ path=<p> sha8=<s>]] <preview> ... (full: view id=r<q>)'
-//   the preview is the first kStubPreviewBytes of the result on one line (control bytes as
-//   spaces, invalid UTF-8 as '?', cut on a character), shortened further only to fit 400 B.
+//  internal (Receipt, Bulk), lane E2-FIX9 (the words in tx/result_text.h and tx/photo_text.h):
+//   '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>[ path=<p> sha8=<s>]] (shown in full earlier in this conversation;
+//   not attached to this request; view id=r<q> shows it again)', no preview. The way back: view when bound
+//   (E2-FIX5's BoundTools), else `again` (a file read's read_file call, lane E2-VERB: '; <again> shows it again'),
+//   else none.
 //  outside: '[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown: view id=r<q>]'
-//   built from the tool, the call's arguments, q and the size: never a byte of the result.
-//  noCard: the view hint becomes 'full result not kept: no storage card' (PRD section 2).
-//  view not bound (E2-FIX5): no view hint; an internal stub ends ' ...' (or with `again`, below), an
-//   outside one 'outside content, not shown]' (or names `again` when there is one).
-//  again (lane E2-VERB): the tail is ' ... (not shown in full to fit the request; <again> reads it
-//   again)' instead of the view hint: a stub is made only on the overflow path, and it names a call
-//   of a tool the chat has (for a file read: read_file with its path and range).
+//   built from the tool, the call's arguments, q and the size: never a byte of the result; view not
+//   bound: 'outside content, not shown]' (or names `again` when there is one).
+//  noCard: '<preview> ... (shown earlier in this conversation; not attached to this request; full result not kept:
+//   no storage card)' (PRD section 2): the preview is the first kStubPreviewBytes of the result on one line (control
+//   bytes as spaces, invalid UTF-8 as '?', cut on a character), shortened further only to fit 400 B.
 // Every field is one line: control bytes, C1 controls, U+2028 and U+2029 become spaces, bidi
 // controls and invalid bytes '?', a sequence cut at a field's end is dropped. The tool name
 // keeps [A-Za-z0-9_.-] (others '?', at most kStubToolMaxBytes); in the path and the outside

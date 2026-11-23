@@ -3,7 +3,7 @@
 # One entry per line: class, source, sha8, bytes, the text as a JSON string.
 # class core bytes=1686 ceiling=3072 entries=30 sha8=e3d00845
 # class device_notes bytes=2044 ceiling=2048 entries=77 sha8=e673add3
-# class stubs bytes=217 ceiling=512 entries=10 sha8=57e1e5de
+# class stubs bytes=290 ceiling=512 entries=12 sha8=3e277c2a
 # class tool_results bytes=7071 ceiling=7168 entries=496 sha8=ed391636
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=974 ceiling=1024 entries=17 sha8=1855fed2
@@ -119,7 +119,9 @@ stubs	lib/core/include/nimbus/net/tg_inbox.h	2b588162	31	" (a PDF: it cannot be 
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	775c6514	64	"shown earlier in this conversation; not attached to this request"
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	f7faedee	11	"; view id=p"
 stubs	lib/core/include/nimbus/orch/tx/photo_text.h	1c1868da	15	" shows it again"
+stubs	lib/core/include/nimbus/orch/tx/result_text.h	32ebb1ab	1	"("
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	27e11f66	6	" ... ("
+stubs	lib/core/include/nimbus/orch/tx/result_text.h	0376d46c	72	"shown in full earlier in this conversation; not attached to this request"
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	fab6f0b8	11	"; view id=r"
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	0a2d3f8f	2	"; "
 stubs	lib/core/include/nimbus/orch/tx/result_text.h	397a6d90	39	"; full result not kept: no storage card"

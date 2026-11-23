@@ -300,14 +300,20 @@ Status stubText(const StubFacts& f, std::string& out) {
   }
   if (isHex8(f.sha8)) s += " sha8=" + f.sha8;
   s += "] ";
-  // Lane E2-FIX9: the tail says the result was shown earlier and is not attached now (the bench's head read a stub's
-  // preview as all the tool had returned and withdrew its correct answers), then the way back: view when bound
-  // (the bytes the head saw), else a file read's call (E2-VERB), else none (E2-FIX5); no card: not kept.
-  std::string tail = std::string(kResultTailOpen) + kPhotoNotAttached;
-  if (f.noCard) tail += kResultNoCard;
-  else if (f.bound.view) tail += kResultViewOpen + q + kPhotoViewClose;
-  else if (!f.again.empty()) tail += kResultAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kPhotoViewClose;
-  tail += kResultTailClose;
+  // Lane E2-FIX9: a result the card kept says it was shown in full earlier and is not attached now, then the way back:
+  // view when bound (the bytes the head saw), else a file read's call (E2-VERB), else none (E2-FIX5). No preview:
+  // the bench's head read a stub's first 200 B as all the tool had returned and withdrew its correct answers
+  // (lanes/E2-FIX9/evidence/probe-stub.jsonl: 5 of 16 with the preview, 0 of 16 without). With no card the preview
+  // is all that is left of the result, so it stays, with what is true of it.
+  if (!f.noCard) {
+    s += std::string(kResultFactsOpen) + kResultShownInFull;
+    if (f.bound.view) s += kResultViewOpen + q + kPhotoViewClose;
+    else if (!f.again.empty()) s += kResultAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kPhotoViewClose;
+    s += kResultTailClose;
+    out.swap(s);
+    return Status::success();
+  }
+  const std::string tail = std::string(kResultTailOpen) + kPhotoNotAttached + kResultNoCard + kResultTailClose;
   const size_t room = kStubMaxBytes > s.size() + tail.size() ? kStubMaxBytes - s.size() - tail.size() : 0;
   appendLine(s, f.preview, std::min(kStubPreviewBytes, room));
   s += tail;

@@ -1776,9 +1776,7 @@ inline void test_a_message_with_too_many_parts_gets_its_own_line() {
 inline void test_a_chat_that_filled_its_arena_keeps_answering_between_rounds() {
   txb::Battery b;
   TXB_OK(b.boot());
-  // 17 KB (16 KB before lane E2-FIX9): each stored result's stub now says it was shown earlier and is not attached,
-  // about 75 B more, and the open turn's six reads must still fit while the old turns are dropped.
-  TXB_OK(b.arena->init(17 * 1024, b.platform.allocLarge, b.platform.freeLarge));
+  TXB_OK(b.arena->init(16 * 1024, b.platform.allocLarge, b.platform.freeLarge));
   shortTurns(b, 4);
   TEST_ASSERT_EQUAL(0, (int)b.engine->omittedThru());
   for (int i = 0; i < 6; ++i) b.model.push(sp::call("big_read", "{\"tag\":\"m" + std::to_string(i) + "\",\"bytes\":1900}"));
