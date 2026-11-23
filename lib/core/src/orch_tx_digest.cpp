@@ -791,7 +791,11 @@ bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
   if ((op != '+' && op != '=' && op != '-') || line.size() < 2 || !sectionOf(line[1], e.section)) return false;
   if (op == '+') {
     e.op = SummaryOp::Add;
-    return e.section != SummarySection::Files && textAfter(line, 2, e.text);   // Files: the device's own section
+    // An add that names an id ("+F1 text") is an add: the id is the code's to give, so it is skipped.
+    size_t at = 2, end = 2;
+    uint32_t ignored = 0;
+    if (idAt(line, 2, ignored, end)) at = end;
+    return e.section != SummarySection::Files && textAfter(line, at, e.text);   // Files: the device's own section
   }
   size_t end = 2;
   if (!idAt(line, 2, e.id, end)) return false;

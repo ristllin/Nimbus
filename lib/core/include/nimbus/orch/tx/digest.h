@@ -169,7 +169,8 @@ struct SummaryEdits {
 };
 // The summarizer's answer as changes, one per line: "+F <text>", "+D", "+Q", "+O" add; "=Q3 <text>"
 // replaces; "-O4" drops; "=" alone: nothing. Leading spaces and a '*' bullet are skipped, letters may
-// be lower case. Never fails: what it cannot read is counted in `unread`.
+// be lower case; an add that names an id ("+F1 text", lane E2-CMP) is read as an add, the id ignored.
+// Never fails: what it cannot read is counted in `unread`.
 SummaryEdits parseSummaryEdits(const std::string& answer);
 // Apply `edits` in order. An add appends a new line (a text already in its section is not added
 // twice); a replace keeps the id and puts the old line in `left`; a drop moves the line to `left`. An

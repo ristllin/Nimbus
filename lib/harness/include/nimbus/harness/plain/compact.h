@@ -77,8 +77,10 @@ struct HeadState;
 // assistant text of a turn that read outside content goes inside the data frame, and every line that
 // slice adds to the summary is stored inside the frame. The Files lines are the device's, from the
 // slice's successful file-change calls (their path argument). Accepted only when the answer was not
-// cut and reads as changes (tx::parseSummaryEdits: at least one, or "="); a rewrite or prose is a
-// failed attempt, never a summary rebuilt from nothing. The result is fitted to the head's summary
+// cut, not refused, and reads as changes (tx::parseSummaryEdits: at least one, or "="); a rewrite or
+// prose is a failed attempt, never a summary rebuilt from nothing. The answer's form is AnswerForm's:
+// the change lines as a structured list first where the wire has it, then once more as free lines at
+// once; every answer not taken logs its cause and its first bytes. The result is fitted to the head's summary
 // budget (tx::fitSummary); every line that left goes to the archive before the swap. Otherwise
 // nothing changes but the failure count.
 //
@@ -135,6 +137,17 @@ inline size_t compactArenaRoom(size_t capacity) {
 }
 // The most of the stored-but-not-resident turns one step reads back from the card (PSRAM).
 inline constexpr size_t kCompactReadBackBytes = 96 * 1024;
+
+// How an update's answer is asked for (lane E2-CMP). Changes: the change lines as one JSON list
+// (texts::summarizer::kChangesSchema) through the provider's structured output, so the answer is whole
+// by construction and "nothing to change" is an empty list; the first try on a wire that has it
+// (Anthropic). Lines: free text read line by line; every other wire, and the one immediate second try
+// after an answer that was not taken (refused, unreadable, or no change line), before the stated wait.
+enum class AnswerForm : uint8_t { Lines = 0, Changes = 1 };
+AnswerForm firstAnswerForm(Dialect d);
+// A structured answer {"changes":["+F ...", ...]} as the lines tx::parseSummaryEdits reads (each item
+// one line, its line ends made spaces); an empty list is "=". False when the text is not that object.
+bool changeLinesOf(const std::string& json, std::string& lines);
 
 // One rung of the summarizer ladder.
 struct SummarizerRung {
@@ -362,7 +375,9 @@ class CompactDriver {
     uint8_t requests = 0;
     bool parked = false;
   };
-  Status ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out);
+  Status ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, AnswerForm form, Asked& out);
+  Status askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan, bool prepareOnly,
+                    CompactOutcome& out, bool& parked);
   Status swap(const SlicePlan& plan, const std::string& text, uint64_t now, CompactOutcome& out);
   void loadCtl();
   void saveCtl();

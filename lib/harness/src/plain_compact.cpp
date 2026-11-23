@@ -1085,14 +1085,34 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   manualAsks_ += manual_;
   if (ctx.urgency != Urgency::None && ctx.waiting) ctx.waiting();   // the turn waits: its status line says so
   tz_ = ctx.tzMinutes;
-  Asked asked;
-  Status s = ask(rung, plan, ctx.now, asked);
-  out.requests = asked.requests;
-  out.ran = asked.requests > 0;
-  if (asked.parked && d_.park) d_.park(rung);
-  if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
+  bool parked = false;
+  const Status s = askAndKeep(ctx, rung, plan, prepareOnly, out, parked);
+  if (parked && d_.park) d_.park(rung);
   settle(rung, plan, before.fails, ctx.now, s, out);
   return s.err == Err::TooLarge ? s : Status::success();
+}
+
+// The exchange and the merge. An answer that was sent but not taken (refused, not the change list, no
+// change line: InvalidArgument) is asked once more at once as free lines, then the stated wait holds.
+Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan,
+                                 bool prepareOnly, CompactOutcome& out, bool& parked) {
+  AnswerForm form = firstAnswerForm(rung.dialect);
+  Status s;
+  for (int tries = 0; tries < 2; ++tries) {
+    Asked asked;
+    s = ask(rung, plan, ctx.now, form, asked);
+    out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + asked.requests);
+    out.ran = out.ran || asked.requests > 0;
+    parked = parked || asked.parked;
+    if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
+    const bool again = s.err == Err::InvalidArgument && asked.requests && !asked.parked && form == AnswerForm::Changes;
+    if (!again) return s;
+    form = AnswerForm::Lines;
+    ctl_.paid += 1;   // the second request is counted like the first
+    saveCtl();
+    hlog::logf("compact(%s): asking once more as lines", d_.chatKey.c_str());
+  }
+  return s;
 }
 
 // The attempt's outcome into the control record: a stored digest clears the chat's failures,
@@ -1141,10 +1161,27 @@ Status messageArena(const Platform& p, const std::string& message, uint64_t now,
   return s;
 }
 
-// An answer is taken when it is the model's whole text, not cut, and not thin for its input.
+// One line that says why an answer was not taken and how it began (ruling 116: a failure leaves its
+// cause in the log; the answer never did before lane E2-CMP). Line ends show as '|', cut whole.
+void logNotTaken(const std::string& chatKey, const char* why, const std::string& answer) {
+  constexpr size_t kHead = 110;
+  size_t n = std::min(answer.size(), kHead);
+  while (n < answer.size() && n > 0 && ((unsigned char)answer[n] & 0xC0) == 0x80) --n;
+  std::string head = answer.substr(0, n);
+  for (char& c : head)
+    if (c == '\n' || c == '\r' || c == '\t') c = '|';
+  hlog::logf("compact(%s): answer not taken (%s, %u B): %s", chatKey.c_str(), why, (unsigned)answer.size(), head.c_str());
+}
+
+// An answer is taken when it is the model's whole text, not cut, not refused, and not thin for its input.
 // `thinInput`: the input size the thin rule reads (a day digest of migration's digest 0); 0: none (an
-// update's answer is changes, and "=" is a whole answer).
-Status answerOf(const ExchangeResult& r, bool cut, size_t thinInput, std::string& summary) {
+// update's answer is changes, and "=" is a whole answer). A refusal is an answer not taken
+// (InvalidArgument, so the second try runs); a cut or a failed exchange is Io.
+Status answerOf(const std::string& chatKey, const ExchangeResult& r, bool cut, size_t thinInput, std::string& summary) {
+  if (r.err == ExchangeErr::None && r.step.stop == StopReason::Refusal) {
+    logNotTaken(chatKey, "refused", r.step.refusal.empty() ? r.step.text : r.step.refusal);
+    return Status::fail(Err::InvalidArgument, "plain::CompactDriver.refused");
+  }
   if (cut || r.err != ExchangeErr::None || r.step.stop == StopReason::MaxTokens || !r.step.calls.empty())
     return Status::fail(Err::Io, "plain::CompactDriver::ask");
   if (thinInput >= kCompactThinSlice && r.step.text.size() < kCompactThinFloor)
@@ -1170,6 +1207,7 @@ struct RungAnswer {
 struct RungMessage {
   std::string sofar, message;
   size_t thinInput = 0;
+  const char* schema = nullptr;   // the answer's structured form (AnswerForm::Changes); null: free text
 };
 
 Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessage& m, uint64_t now,
@@ -1199,6 +1237,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   in.system = &system;
   in.tools = &tools;
   in.items = &arena;
+  in.answerSchema = m.schema;
   // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut.
   for (uint16_t cap : {kSummarizerMaxTokens, kSummarizerRetryMaxTokens}) {
     in.maxTokens = cap;
@@ -1214,16 +1253,51 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
     ans.parked |= r.parkHost;
     if (!s.ok()) return s;
     const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
-    if (!cut || cap == kSummarizerRetryMaxTokens) return answerOf(r, cut, m.thinInput, ans.summary);
+    if (cut && cap != kSummarizerRetryMaxTokens) continue;
+    if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {   // a provider without the form
+      logNotTaken(d.chatKey, "the form was refused", r.errorLine);
+      return Status::fail(Err::InvalidArgument, "plain::CompactDriver.form");
+    }
+    if (!(s = answerOf(d.chatKey, r, cut, m.thinInput, ans.summary)).ok() || !m.schema) return s;
+    std::string lines;
+    if (changeLinesOf(ans.summary, lines)) {
+      ans.summary = std::move(lines);
+      return s;
+    }
+    logNotTaken(d.chatKey, "not the change list", ans.summary);
+    ans.summary.clear();
+    return Status::fail(Err::InvalidArgument, "plain::CompactDriver.form");
   }
   return Status::fail(Err::Io, "plain::CompactDriver::ask");
 }
 
 }  // namespace
 
-Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, Asked& out) {
+AnswerForm firstAnswerForm(Dialect d) {
+  return d == Dialect::AnthropicMessages ? AnswerForm::Changes : AnswerForm::Lines;
+}
+
+bool changeLinesOf(const std::string& json, std::string& lines) {
+  lines.clear();
+  JsonDocument doc;
+  if (deserializeJson(doc, json) || !doc.is<JsonObjectConst>() || !doc["changes"].is<JsonArrayConst>()) return false;
+  JsonArrayConst list = doc["changes"].as<JsonArrayConst>();
+  for (JsonVariantConst v : list) {
+    if (!v.is<const char*>()) return lines.clear(), false;
+    std::string line = v.as<const char*>();
+    for (char& c : line)
+      if (c == '\n' || c == '\r') c = ' ';
+    lines += line + "\n";
+  }
+  if (list.size() == 0) lines = "=";
+  return true;
+}
+
+Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, AnswerForm form,
+                          Asked& out) {
   RungAnswer ans;
   RungMessage m;
+  m.schema = form == AnswerForm::Changes ? st::kChangesSchema : nullptr;
   Status s = messageFor(plan, m.sofar, m.message);
   if (s.ok()) s = askRung(d_, rung, m, now, ans);
   out.summary = std::move(ans.summary);
@@ -1361,6 +1435,7 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, st
   if (edits.edits.empty() && !edits.none) {   // prose or a rewrite: never taken as the summary
     hlog::logf("compact(%s): the answer held no change (%u lines unread): not taken", d_.chatKey.c_str(),
                (unsigned)edits.unread);
+    logNotTaken(d_.chatKey, "no change line", answer);
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver.changes");
   }
   std::vector<tx::SummaryLine> left;

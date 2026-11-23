@@ -82,6 +82,9 @@ struct RenderInput {
   uint64_t stubPointer = 0;                           // items at or below render as stubs
   bool toolChoiceNone = false;                        // the last round after a guard trip
   uint32_t maxTokens = 0;                             // the output cap for this request
+  // A JSON schema the answer's text must follow (the provider's structured output, lane E2-CMP: the
+  // summarizer's changes). Null: free text. A wire that has no structured output ignores it.
+  const char* answerSchema = nullptr;
   BulkReadFn bulk;                                    // whole bulk results (every turn's, E2-VERB)
   PhotoFn photo;                                      // pixels of the visible photos
   const LadderState* ladder = nullptr;                // the overflow ladder (null: no rung)

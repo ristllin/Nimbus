@@ -5,7 +5,8 @@
 // same bytes on every call (the exchange renders two or more times per request). It
 // writes straight into the request body through the checked body writer (plain_body.h):
 //
-//   {"model", "max_tokens", "output_config":{"effort"} (when set),
+//   {"model", "max_tokens", "output_config":{"effort", "format"} (each when set; the format is
+//    RenderInput::answerSchema as a json_schema, lane E2-CMP),
 //    "system":[core][skills index + pinned notes][digests + recent files],
 //    "tools":[{"name","description","input_schema"}], "tool_choice":{"type":"auto"|"none"},
 //    "messages":[...]}
@@ -645,6 +646,16 @@ void systemBlocks(BodyWriter& w, const std::string& body, const SystemBlocks& s,
   if (shown[2]) points.push_back(Point{closeAt[2], true});
 }
 
+// The effort and the answer's schema, each when set (lane E2-CMP: the summarizer's changes).
+void outputConfig(BodyWriter& w, const RenderInput& in) {
+  const bool effort = !in.head->effort.empty(), schema = in.answerSchema && *in.answerSchema;
+  if (!effort && !schema) return;
+  w.key("output_config").beginObject();
+  if (effort) w.key("effort").str(in.head->effort);
+  if (schema) w.key("format").beginObject().key("type").str("json_schema").key("schema").raw(in.answerSchema).endObject();
+  w.endObject();
+}
+
 Status toolsArray(BodyWriter& w, const RenderInput& in) {
   if (in.tools->empty()) return Status::success();
   w.key("tools").beginArray();
@@ -725,7 +736,7 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   BodyWriter w(out.body, &out.splices);
   std::vector<Point> points;
   w.beginObject().key("model").str(in.turn->model).key("max_tokens").unum(in.maxTokens);
-  if (!in.head->effort.empty()) w.key("output_config").beginObject().key("effort").str(in.head->effort).endObject();
+  outputConfig(w, in);
   systemBlocks(w, out.body, *in.system, points);
   if (!(st = toolsArray(w, in)).ok()) return st;
 
