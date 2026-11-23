@@ -54,11 +54,13 @@ Status dropMirroredPointer(RowSource& rows, OldFold& fold, bool& dropped);
 
 // Lane E2-FIX2B (finding P5): engine 2 no longer writes the earlier engine's fold record. A build
 // before it replaced a chat's record with its mirror (counters 0, the epoch field carrying
-// ";m<row>", its own text). The caller has shown that the record's pointer names a row engine 2
-// wrote (dropMirroredPointer): the shape alone is also the earlier engine's after its own fold.
-// Then `out` is `blob` with that one record put back from `copy` (/mem/tx-pre-e2/chatsum.txt, the
-// record as the earlier engine left it), or without it when the copy has none; every other record
-// stays byte for byte. False, `out` empty: nothing to put back (no such record, other counters). Pure.
+// ";m<row>", its own cumulative summary as the text). The caller has shown that the record's
+// pointer names a row engine 2 wrote (dropMirroredPointer); the counters alone are also the earlier
+// engine's after its own fold, so the text must parse as engine 2's summary (parseSummary). Then
+// `out` is `blob` with that one record put back from `copy` (/mem/tx-pre-e2/chatsum.txt, the record
+// as the earlier engine left it); every other record stays byte for byte. False, `out` empty:
+// nothing to put back (no such record, another shape, or the copy has no record of the chat: a
+// record is never removed). Pure.
 bool restoreFoldRecord(const std::string& blob, const std::string& copy, const std::string& chatId, std::string& out);
 
 // The store's forward query, called under the binding's lock (the device takes the card lock

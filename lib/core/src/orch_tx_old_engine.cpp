@@ -10,6 +10,7 @@
 #include <map>
 
 #include "nimbus/orch/history_rows.h"   // kClockValidHours
+#include "nimbus/orch/tx/digest.h"       // parseSummary - the mirror's text (P5)
 
 namespace nimbus {
 namespace orch {
@@ -107,18 +108,27 @@ size_t recordOf(const std::string& blob, const std::string& chatId, size_t& len)
   return std::string::npos;
 }
 
-// The mirror's shape (orch_tx_digest.cpp mirrorRecord): counters 0 and ";m" in the epoch field.
+// The mirror's shape (orch_tx_digest.cpp mirrorRecord): counters 0, ";m" in the epoch field, and as
+// its text engine 2's own cumulative summary (tx::parseSummary takes it: the earlier engine's
+// summaries are prose with "N. " sections, which it refuses). The earlier engine's record right
+// after its own fold has the same counters, so the text is what tells them apart.
 bool mirrorShape(const std::string& rec) {
   std::vector<std::string> f;
-  for (size_t at = 0;;) {
+  size_t at = 0;
+  for (;;) {
     const size_t sep = rec.find('\x1F', at);
     if (sep == std::string::npos || f.size() == 7) break;
     f.push_back(rec.substr(at, sep - at));
     at = sep + 1;
   }
   if (f.size() < 7) return false;
-  return f[1] == "0" && f[2] == "0" && f[3].find(";m") != std::string::npos && f[4] == "0" && f[5] == "0" &&
-         f[6] == "0";
+  const bool counters = f[1] == "0" && f[2] == "0" && f[3].find(";m") != std::string::npos && f[4] == "0" &&
+                        f[5] == "0" && f[6] == "0";
+  std::string text = rec.substr(at);
+  if (!text.empty() && text.back() == '\x1E') text.pop_back();
+  if (!text.empty() && text.back() != '\n') text += '\n';   // the mirror keeps whole lines without the last end
+  Summary s;
+  return counters && parseSummary(text, s).ok() && !s.lines.empty();
 }
 
 }  // namespace
@@ -129,9 +139,8 @@ bool restoreFoldRecord(const std::string& blob, const std::string& copy, const s
   const size_t at = recordOf(blob, chatId, len);
   if (chatId.empty() || at == std::string::npos || !mirrorShape(blob.substr(at, len))) return false;
   const size_t from = recordOf(copy, chatId, copyLen);
-  out = blob.substr(0, at);
-  if (from != std::string::npos) out += copy.substr(from, copyLen);
-  out += blob.substr(at + len);
+  if (from == std::string::npos) return false;   // never a record removed: nothing to put back
+  out = blob.substr(0, at) + copy.substr(from, copyLen) + blob.substr(at + len);
   return true;
 }
 

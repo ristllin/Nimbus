@@ -483,9 +483,11 @@ static void test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was(
   TEST_ASSERT_EQUAL(0, dev.old.fold.saves);
 }
 
-// P5: a record an earlier engine-2 build replaced with its mirror is put back from the kept copy,
-// once; every other chat's record stays byte for byte, and a record of the earlier engine's own
-// shape is never touched.
+// P5: a record an earlier engine-2 build replaced with its mirror (its cumulative summary as the
+// text) is put back from the kept copy; every other chat's record stays byte for byte. Counter
+// (seen on the bench unit): the earlier engine's own record right after its fold has the same
+// counters and a pointer that may name an engine-2 row; its prose text is never taken for a
+// mirror, and a record the copy does not hold is never removed.
 static void test_a_mirrored_fold_record_is_put_back_from_the_kept_copy() {
   const std::string original = foldBlob(0x100 + 41);
   std::string other;
@@ -493,27 +495,28 @@ static void test_a_mirrored_fold_record_is_put_back_from_the_kept_copy() {
   orch::FoldStore fs;
   fs.begin(&io);
   fs.applyFold("2002", "Another chat's summary.", (uint32_t)(kEpoch0 - 3600), tx::rowIdString(0x105));
-  const std::string copy = original;
+  tx::Summary sum;
+  sum.lines.push_back(tx::SummaryLine{tx::SummarySection::Facts, 1, "The person keeps a blue bike."});
+  std::string sumText;
+  TEST_ASSERT_TRUE(tx::encodeSummary(sum, sumText).ok());
   tx::MirrorFacts f{kChat, 40, 0x100 + 300, (uint32_t)kEpoch0};
-  std::vector<tx::DigestEntry> live{tx::DigestEntry{"2026-11-17", "[2026-11-17] engine two's digest.", 41, 40}};
+  std::vector<tx::DigestEntry> live{tx::DigestEntry{"2026-11-17", sumText, 41, 40}};
   std::string mirrored;
   TEST_ASSERT_TRUE(tx::mirrorChatsum(other, f, live, mirrored).ok());   // what the earlier build wrote
   std::string restored;
-  TEST_ASSERT_TRUE(tx::restoreFoldRecord(mirrored, copy, kChat, restored));
-  TEST_ASSERT_TRUE(restored.find(other) == 0);   // 2002's record, byte for byte
+  TEST_ASSERT_TRUE(tx::restoreFoldRecord(mirrored, original, kChat, restored));
+  TEST_ASSERT_TRUE(restored.find(other) == 0);                    // 2002's record, byte for byte
   TEST_ASSERT_TRUE(restored.substr(other.size()) == original);   // 1001's, as the earlier engine left it
-  // The device calls it only when the record's pointer names a row engine 2 wrote
-  // (dropMirroredPointer), so a put-back record is not put back again; a second call changes nothing.
   std::string again;
-  TEST_ASSERT_TRUE(tx::restoreFoldRecord(restored, copy, kChat, again));
-  TEST_ASSERT_TRUE(again == restored);
-  TEST_ASSERT_FALSE(tx::restoreFoldRecord(other, copy, kChat, again));   // no record of the chat
+  TEST_ASSERT_FALSE(tx::restoreFoldRecord(restored, original, kChat, again));   // once: prose now
   TEST_ASSERT_TRUE(again.empty());
-  // No copy of this chat: the mirror record leaves, the rest stays.
-  TEST_ASSERT_TRUE(tx::restoreFoldRecord(mirrored, other, kChat, restored));
-  TEST_ASSERT_TRUE(restored == other);
+  // The earlier engine's own record after its fold: never taken for a mirror.
+  TEST_ASSERT_FALSE(tx::restoreFoldRecord(original, std::string(), kChat, again));
+  TEST_ASSERT_FALSE(tx::restoreFoldRecord(original, other, kChat, again));
+  // A mirror the copy holds no record of stays as it is: nothing is removed.
+  TEST_ASSERT_FALSE(tx::restoreFoldRecord(mirrored, other, kChat, again));
+  TEST_ASSERT_TRUE(again.empty());
 }
-
 
 // Lane E2-FIX2B, finding P10: a message answered with a device line (the history wait, a refusal)
 // was tagged e2, so neither the import nor engine 2 ever had it. Now only a message an engine-2 turn
