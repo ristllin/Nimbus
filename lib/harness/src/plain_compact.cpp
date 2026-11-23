@@ -1337,8 +1337,8 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   // (evidence/probes.jsonl: 2 of 12 with the summary after the prompt, 0 of 12 with it first). The blocks render in
   // the order core, notes, digests; an empty one is left out.
   SystemBlocks system;
-  system.core = m.sofar;
-  system.digests = st::kPrompt;
+  system.core = m.sofar.empty() ? std::string(st::kPrompt) : m.sofar;   // no summary yet: the prompt alone, as before
+  if (!m.sofar.empty()) system.digests = st::kPrompt;
   const std::vector<ToolSpec> tools;
   RenderInput in;
   in.turn = &turn;

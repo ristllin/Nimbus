@@ -1656,7 +1656,9 @@ class TurnRun {
     (void)tx::stubTime(epoch(), t_.tz, f.hhmm);
     f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
     f.args = call ? call->argsJson : std::string();
-    if (r.cls != tx::ResultClass::Outside) f.again = tx::wayBack(r.n, f.args);   // a file read: read_file again
+    // A file read: read_file again (E2-VERB). Lane E2-FIX9: a write's result is not brought back by reading the file
+    // (it shows the file as it is, not what the write answered), so only a read's result names it.
+    if (r.cls != tx::ResultClass::Outside && r.n == "read_file") f.again = tx::wayBack(r.n, f.args);
     f.cls = r.cls;
     f.noCard = r.cls != tx::ResultClass::Receipt && r.handle.empty();
     f.bound = bound();

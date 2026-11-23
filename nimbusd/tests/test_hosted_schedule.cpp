@@ -288,6 +288,9 @@ void testEngineOneToolsUnchanged(ndtest::Ctx& c) {
 void testEngine2HostFires(ndtest::Ctx& c) {
   std::printf("\n-- (e) Engine2Host: a reminder with no request, a routine isolated on the sub model\n");
   const std::string root = freshRoot("e");
+  // The quiet-hours step below needs the clock at night: from midnight UTC on (it read the wall clock, so the case
+  // failed whenever the suite ran by day; lane E2-FIX9 found it at 11:25Z).
+  nimbusd::vclock::advance(86400 - nimbusd::vclock::epoch() % 86400);
   orch::setHostedWebChatAlias(true);   // as the hosted composition sets it (rig.h): the web chat is a device channel
   nimbusd::PosixFiles files(root + "/mem/files");
   sp::ScriptedProvider model{sp::Dialect::Anthropic};

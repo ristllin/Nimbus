@@ -40,7 +40,7 @@ inline std::string toyResultText(const tx::Item& r, const CoverInput& in, const 
   if (m == Mutation::LeakOutside && r.cls == tx::ResultClass::Outside) return resultWhole(r, in);
   if (m == Mutation::StubOpenBulk && r.cls == tx::ResultClass::Bulk && show == Shown::Whole) return r.st;
   if (show == Shown::Whole) return resultWhole(r, in);
-  if (m == Mutation::StubWithoutHint) return r.st.substr(0, r.st.find(" ... (full:"));
+  if (m == Mutation::StubWithoutHint) return r.st.substr(0, r.st.find("view id="));   // the way back cut off
   return r.st;
 }
 inline void toyItem(sp::RequestView& v, const tx::Item& it, const CoverInput& in, const std::set<uint64_t>& sup,

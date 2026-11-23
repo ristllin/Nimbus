@@ -753,7 +753,8 @@ void test_a_full_arena_sheds_references_before_the_turn_end_item() {
   TXB_WAITS_FOR("PENDING RB-E3", "RB-E1b");
   txb::Battery b;
   TXB_OK(b.boot());
-  TXB_OK(b.arena->init(16 * 1024, b.platform.allocLarge, b.platform.freeLarge));
+  // 15.2 KB (16 KB before lane E2-FIX9, whose kept-result stubs carry no preview): the arena still fills at the e item.
+  TXB_OK(b.arena->init(15 * 1024 + 224, b.platform.allocLarge, b.platform.freeLarge));
   for (int i = 0; i < 4; ++i) {
     b.model.push(sp::say("ok " + std::to_string(i)));
     b.advance(60);
