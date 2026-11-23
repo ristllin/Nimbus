@@ -162,6 +162,11 @@ struct TurnInput {
   std::string ch = "tg";         // u.ch: the channel slug
   int16_t tzMinutes = 0;         // local offset from UTC: the message stamp and stub times
   uint64_t m = 0;                // u.m: the day-stream row the message mirrors
+  // Lane E2-FIX10: the file-store paths the device itself stored for this very message (a
+  // Telegram photo, an album's photos, a document, a long paste kept in the inbox), only those
+  // whose store succeeded. At the open they count as the turn's own change to the recent-files
+  // list (plain/prefix.h): the conversation holds the message that carries them.
+  std::vector<std::string> stored;
 };
 
 struct TurnOutcome {

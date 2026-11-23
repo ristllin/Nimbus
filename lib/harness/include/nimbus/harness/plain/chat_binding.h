@@ -173,6 +173,7 @@ struct ChatMessage {
   int16_t tzMinutes = 0;
   uint64_t m = 0;                                // the day-stream row it mirrors
   std::vector<nimbus::orch::tx::Part> parts;     // its photos (Image parts "p<ref>")
+  std::vector<std::string> stored;               // TurnInput::stored (lane E2-FIX10)
 };
 
 // A turn's spend as the owner's usage view files it (store::recordProviderSpend): one slot of the
@@ -362,6 +363,7 @@ class ChatBinding {
     in.tzMinutes = msg.tzMinutes;
     in.m = msg.m;
     in.parts = msg.parts;
+    in.stored = msg.stored;
     // Lane E2-STORE: a chat whose stored conversation could not be loaded tries again before
     // the turn, so the turn sees the whole conversation as soon as the card answers.
     if (movedTo_.empty()) reload();   // E2-FIX3: held for the new conversation, the caller stores it first

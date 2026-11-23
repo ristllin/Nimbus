@@ -637,6 +637,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   plain::ChatMessage msg;
   msg.ch = chatId == "web" ? "web" : chatId == "voice" ? "voice" : chatId == "serial" ? "console" : "tg";
   if (!localChat(chatId)) msg.src = telegram::turnUpdateIds(chatId);
+  if (!localChat(chatId)) msg.stored = telegram::turnStoredPaths(chatId);   // E2-FIX10
   // RB-TG1: a message the transcript already holds (re-served after a restart) was stored and
   // answered then: no second row, no second answer.
   if (b->allSeen(msg.src)) {

@@ -305,6 +305,9 @@ bool sendPart(const String& chatId, const std::string& part);
 // Lane E2-DEV: inside the MessageCallback, the Telegram update ids of the message being handled
 // when it is `chatId`'s (TurnInput::src); empty for an injected or local message.
 std::vector<uint64_t> turnUpdateIds(const String& chatId);
+// Lane E2-FIX10: inside the MessageCallback, the file-store paths the device stored for the message
+// being handled (its photos, documents, a long paste), when it is `chatId`'s (TurnInput::stored).
+std::vector<std::string> turnStoredPaths(const String& chatId);
 #endif
 
 }  // namespace telegram

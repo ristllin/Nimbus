@@ -119,6 +119,10 @@ struct Turn {
   std::vector<std::string> ownTexts;
   std::vector<std::string> ownPaths;
   bool callRan = false;                // the call being stored ran here (a hook's answer never ran it: not own)
+  // Lane E2-FIX10: the paths the device stored for the message that opens this turn (TurnInput::stored),
+  // kept only once that message is stored; taken as the turn's own at the open, once.
+  std::vector<std::string> inbound;
+  bool inboundSeen = false;
   uint8_t compactAsks = 0;             // compaction first, asked once a turn per urgency (lane RB-C3)
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
@@ -465,8 +469,10 @@ class TurnRun {
     u.src = in.src;
     u.m = in.m;
     u.parts = in.parts;
-    const Status st = put(u);
+    bool stored = false;
+    const Status st = put(u, &stored);
     if (!st.ok()) return st;
+    if (stored) t_.inbound = in.stored;   // a message the card refused carries nothing in (ruling 116)
     for (uint64_t s : in.src) c_.head.hw = std::max(c_.head.hw, s);
     c_.head.mHi = std::max(c_.head.mHi, in.m);
     return st;
@@ -690,6 +696,7 @@ class TurnRun {
   // named as a change point.
   void freeze(const RequestFacts& f, uint32_t manifest) {
     const PrefixNow now = prefixNow(f, manifest);
+    seeInbound(now.files);
     const PrefixRender why = decidePrefix(c_.prefix, now);
     if (why != PrefixRender::None) {
       renderPrefix(c_.prefix, now);
@@ -722,6 +729,26 @@ class TurnRun {
     if (!c_.prefix.ownFrom || t_.firstQ < c_.prefix.ownFrom) c_.prefix.ownFrom = t_.firstQ;
     c_.prefixDirty = true;
     saveFrozen();
+  }
+  // Lane E2-FIX10, at the open: the files the device stored for the message that opens this turn are
+  // the turn's own (the conversation holds that message), by the same path rule as a call's. The seen
+  // list moves and the turn's first item becomes what the blocks lean on (ownFrom); anything else in the
+  // list's change still renders. Once a turn, and only when every item so far was stored.
+  void seeInbound(const std::string& files) {
+    if (!d_.stablePrefix || !c_.prefix.valid || t_.inbound.empty() || t_.inboundSeen) return;
+    t_.inboundSeen = true;
+    if (t_.storeFailed || t_.notStored || files == c_.prefix.seenFiles) return;
+    std::string text;
+    std::vector<ListedFile> listing;
+    const bool own = filesListing(text, listing) && text == files &&
+                     ownFilesChange(c_.prefix.seenFiles, files, listing, t_.inbound, t_.ctx.startedAt);
+    if (!own) {
+      hlog::logf("plain(%s): the file list changed beyond this message's own files: rendered now", d_.chatKey.c_str());
+      return;
+    }
+    c_.prefix.seenFiles = files;
+    if (!c_.prefix.ownFrom || t_.firstQ < c_.prefix.ownFrom) c_.prefix.ownFrom = t_.firstQ;
+    c_.prefixDirty = true;
   }
   // The file list changed only in entries of paths this turn's own calls named (`files`: the list now).
   bool ownFiles(std::string& files) const {

@@ -728,6 +728,11 @@ static size_t s_turnMedia = 0;
 static int64_t s_turnMsgId = 0;
 // histV2: the blob ref (16 hex) of the voice note processVoice just stored ("" = none).
 static char s_voiceRef[17] = {};
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX10: the file-store paths stored for the turn about to run (its photos, documents, a long
+// paste), only those whose store succeeded; cleared with the turn's media (TurnInput::stored).
+static std::vector<std::string> s_turnStored;
+#endif
 
 // Route a text field into cu as a batched turn segment (grouped into one turn per
 // chat by the drain driver). Model sees the full length; a late one carries its send
@@ -1556,7 +1561,7 @@ struct InboundFile {
 // not keep it for another reason.
 enum class Kept : uint8_t { Stored, Full, Failed };
 
-static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& who) {
+static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& who, std::string* path = nullptr) {
   char fname[96];
   if (in.photo || !in.slot.fileName[0])
     snprintf(fname, sizeof(fname), "%s-%ld.%s", in.photo ? "photo" : "file", (long)in.slot.updateId,
@@ -1574,8 +1579,10 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
     snprintf(proj, sizeof(proj), "inbox");
     snprintf(fname, sizeof(fname), "%s", nimbus::net::inboxDocName((uint64_t)in.slot.updateId, in.slot.fileName).c_str());
     std::string derr;
-    if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, derr, who.ns))
+    if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, derr, who.ns)) {
+      if (path) *path = std::string(proj) + "/" + fname;
       return Kept::Stored;
+    }
     alogf("telegram: attach store failed: %s", derr.c_str());
     if (!agent::files::noteRefusal(derr)) return Kept::Failed;
     sendFileStoreNotice();
@@ -1583,8 +1590,10 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   }
 #endif
   std::string ferr;
-  if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash))
+  if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash)) {
+    if (path) *path = std::string(proj) + "/" + fname;   // a copy of bytes already kept adds no entry: no effect
     return Kept::Stored;
+  }
   alogf("telegram: attach store failed: %s", ferr.c_str());
   if (!agent::files::noteRefusal(ferr)) return Kept::Failed;
   sendFileStoreNotice();   // the episode's first refusal: queued before this turn's reply
@@ -1595,7 +1604,9 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
 // RB-TG1: store the item, then let its label name the inbox path only if the file is there (else
 // the document's name, as engine 1 shows it). True when the file store is full.
 static bool keepInbound(const InboundFile& in, const nimbus::orch::Principal& who, nimbus::orch::MediaLabel& label) {
-  const Kept kept = storeInbound(in, who);
+  std::string path;
+  const Kept kept = storeInbound(in, who, &path);
+  if (kept == Kept::Stored && !path.empty()) s_turnStored.push_back(path);   // E2-FIX10
   if (label.cls == nimbus::orch::MediaClass::Stored && kept != Kept::Stored) label.detail = in.slot.fileName;
   return kept == Kept::Full;
 }
@@ -2243,6 +2254,9 @@ struct TgIo {
   void mediaFailed(const std::string& chat, size_t turn) {
     telegram::mediaFailed(chat.c_str(), g_batch.mediaCountAt(turn));
     s_turnMedia = 0;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_turnStored.clear();   // E2-FIX10: they belonged to that turn
+#endif
     agent::vision::dropTurnSet();   // R1: no turn runs, so no photo is shown
   }
   void skipMedia(size_t, size_t k, size_t n, int slot, std::string& seg) { telegram::skipMedia(k, n, slot, seg); }
@@ -2280,12 +2294,18 @@ struct TgIo {
     s_warmedText.clear();   // RB-TS1: the next held text is embedded again, even the same words
     agent::vision::dropTurnSet();
     s_turnMedia = 0;   // the ordered segment list belonged to that turn
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_turnStored.clear();   // E2-FIX10: they belonged to that turn
+#endif
   }
   void notice(const nimbus::net::TgNotice& n) { sendGuardNotice(n); }
   void typing(const std::string& chat) { holdTyping(chat); }
   void checkpoint() { checkpointOffset(); }
   void endPage() {
     s_turnMedia = 0;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_turnStored.clear();   // E2-FIX10: they belonged to that turn
+#endif
     freeSlots();
     publishGuard();
     agent::vision::dropTurnSet();
@@ -2369,6 +2389,7 @@ static String ownerIntake(const std::string& chat, const nimbus::orch::PsString&
   const nimbus::net::OwnerText t = nimbus::net::ownerTextIntake(std::string(text.c_str(), text.size()), id,
                                                                 nimbus::orch::tx::kInlineMessageCap, save);
   if (!t.saved.empty()) alogf("telegram: paste of %u B kept at %s", (unsigned)text.size(), t.saved.c_str());
+  if (!t.saved.empty()) s_turnStored.push_back(t.saved);   // E2-FIX10: part of the turn it opens
   return String(t.text.c_str());
 }
 
@@ -2382,6 +2403,14 @@ std::vector<uint64_t> turnUpdateIdsImpl(const String& chatId) {
     if (id > 0) ids.push_back((uint64_t)id);
   }
   return ids;
+}
+
+// Lane E2-FIX10: the paths stored for the message the running turn handles (TurnInput::stored), when
+// that turn is `chatId`'s; empty otherwise.
+std::vector<std::string> turnStoredPathsImpl(const String& chatId) {
+  const size_t turn = g_receiver.currentTurn();
+  if (turn >= g_batch.turnCount() || chatId != g_batch.chatIdAt(turn)) return {};
+  return s_turnStored;
 }
 
 // Lane E2-DEV: one already-made part, sent now (doSendMessageImpl: HTML, then the plain resend).
@@ -3026,6 +3055,7 @@ void pollTask(void*) {
 // Lane E2-DEV: the engine-2 seam's way in (telegram.h); the bodies sit in the file's own namespace.
 nimbus::orch::SeenIndex& seenIndex() { return seenIndexRef(); }
 std::vector<uint64_t> turnUpdateIds(const String& chatId) { return turnUpdateIdsImpl(chatId); }
+std::vector<std::string> turnStoredPaths(const String& chatId) { return turnStoredPathsImpl(chatId); }
 bool sendPart(const String& chatId, const std::string& part) { return sendPartImpl(chatId, part); }
 #endif
 

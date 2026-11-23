@@ -38,6 +38,12 @@
 #include "nimbus/harness/plain/prefix.h"
 #define E2_CACHE_TREE 1   // the lane's tree; the tree before it runs the rule-A cases only (red)
 #endif
+#if __has_include("nimbus/harness/plain/engine.h")
+#include "nimbus/harness/plain/engine.h"
+#endif
+#ifndef E2_FIX10_BASE
+#define E2_FIX10_TREE 1   // TurnInput::stored exists (built with -DE2_FIX10_BASE on the tree before it: red)
+#endif
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/orch/tx/card_files.h"
 
@@ -225,6 +231,12 @@ struct Device {
       store.push_back(tx::RecentFile{"archive/old-" + std::to_string(i) + ".md", kEpoch0 - 2 * 86400 - (uint64_t)i * 3600});
   }
   uint64_t now() const { return kEpoch0 + ms / 1000u; }
+  // The receive path stores `paths` for the next message to `chat` before its turn opens (a photo, an
+  // album, a document); `own` false: stored for another chat's message (not passed with this one).
+  void arrive(const std::vector<std::string>& paths, bool own = true) {
+    for (const std::string& p : paths) touch(p);
+    if (own) arriving.insert(arriving.end(), paths.begin(), paths.end());
+  }
   void pause(uint32_t s) { ms += s * 1000u; }
 
   plain::Status boot(const std::string& chat) {
@@ -270,6 +282,10 @@ struct Device {
     const size_t before = model.requests().size();
     plain::ChatMessage m;
     m.text = text;
+#ifdef E2_FIX10_TREE
+    m.stored = arriving;   // lane E2-FIX10: what the receive path stored for this message
+#endif
+    arriving.clear();
     plain::TurnOutcome out;
     const plain::Status st = binding->turn(m, out);
     if (!tolerateFaults) TEST_ASSERT_TRUE(st.ok());
@@ -288,6 +304,7 @@ struct Device {
   std::vector<tx::RecentFile> store;
   bool storeDeaf = false;   // the file store does not answer
   bool failFiles = false;   // every file call answers an error and changes nothing
+  std::vector<std::string> arriving;   // paths stored for the next message (TurnInput::stored)
   std::unique_ptr<plain::ChatBinding> binding;
   std::string resident;
   std::vector<Sent> sent;
@@ -355,9 +372,10 @@ std::string ruleA(const Device& dev, const std::string& chat) {
 // One generated day: actions drawn from the list rule A must hold over.
 enum class Act {
   Chat, PinnedNote, UnpinnedNote, WriteFile, Switch, Restart, Pause, RoutineElsewhere,
-  AppendFile, EditFile, OverwriteFile, DeleteFile   // lane E2-FIX8: changes to files that exist
+  AppendFile, EditFile, OverwriteFile, DeleteFile,   // lane E2-FIX8: changes to files that exist
+  PhotoArrives, DocumentArrives                       // lane E2-FIX10: stored for the message that opens the turn
 };
-constexpr uint32_t kActs = 12;
+constexpr uint32_t kActs = 14;
 
 // A file call's arguments as the tool's schema asks for them.
 std::string fileArgs(const std::string& tool, const std::string& path) {
@@ -380,6 +398,17 @@ void changeExisting(Device& dev, std::mt19937& rng, Act a, const std::string& n)
   dev.pause(30 + rng() % 120);
   const char* tool = path.empty() ? "write_file" : kTool[(int)a - (int)Act::AppendFile];
   dev.say("1001", std::string(tool) + " " + n, {sp::call(tool, fileArgs(tool, path.empty() ? "notes/f" + n + ".md" : path))});
+}
+
+// A message arrives with photos (one to three, an album) or a document the device stored for it.
+void arrivalAct(Device& dev, std::mt19937& rng, Act a, const std::string& n) {
+  dev.pause(30 + rng() % 600);
+  std::vector<std::string> paths;
+  if (a == Act::DocumentArrives) paths.push_back("inbox/" + n + "-report.pdf");
+  for (uint32_t k = 0, many = 1 + rng() % 3; a == Act::PhotoArrives && k < many; ++k)
+    paths.push_back("chat-1001/photo-" + n + std::to_string(k) + ".jpg");
+  dev.arrive(paths);
+  dev.say("1001", "[media " + n + "]");
 }
 
 // The head saves a note, pinned or not.
@@ -437,6 +466,7 @@ std::string runGenerated(uint32_t seed, int steps, std::vector<Act>* only = null
     const Act a = only ? (*only)[i % only->size()] : (Act)(rng() % kActs);
     const std::string n = std::to_string(i);
     if (a == Act::PinnedNote || a == Act::UnpinnedNote) noteAct(dev, rng, a == Act::PinnedNote, n);
+    else if (a >= Act::PhotoArrives) arrivalAct(dev, rng, a, n);
     else if (a >= Act::AppendFile) changeExisting(dev, rng, a, n);
     else chatAct(dev, rng, a, n);
   }
@@ -893,6 +923,73 @@ static void test_a_failed_file_call_is_not_the_turns_own() {
   // a failed call that changed nothing leaves nothing to render
   TEST_ASSERT_EQUAL_STRING("", ownChange("append_file", "log/daily.md", false, nullptr, true).c_str());
 }
+// ---- lane E2-FIX10: files the device stored for the message that opens the turn (red on 6ac66b2b0) ----
+// One message carrying `paths` (stored before its turn opens) between two plain turns; `full`: the
+// list is past its 600 B. `before` runs just before that message arrives (an outside change meanwhile).
+std::string arrivalTurn(const std::vector<std::string>& paths, bool full, std::function<void(Device&)> before = nullptr) {
+  Device dev;
+  if (full) dev.fill(30);
+  dev.say("1001", "one");
+  dev.pause(90);
+  if (before) before(dev);
+  dev.arrive(paths);
+  dev.say("1001", "[image 1/1] (attached: the photo itself is in this message)");
+  dev.pause(90);
+  dev.say("1001", "next");
+  return ruleA(dev, "1001");
+}
+static void test_a_photo_an_album_or_a_document_that_opens_the_turn_keeps_the_prefix() {
+  const std::vector<std::vector<std::string>> cases{
+      {"chat-1001/photo-501.jpg"},
+      {"chat-1001/photo-502.jpg", "chat-1001/photo-503.jpg", "chat-1001/photo-504.jpg"},
+      {"inbox/505-quote.pdf"},
+      {"inbox/506.txt"}};   // a long paste kept in the inbox
+  std::string broken;
+  for (bool full : {false, true})
+    for (const auto& c : cases)
+      if (!arrivalTurn(c, full).empty()) broken += " [" + c.front() + (full ? ", full list" : "") + "]";
+  TEST_ASSERT_EQUAL_STRING("", broken.c_str());
+  std::vector<Act> acts{Act::PhotoArrives, Act::Chat, Act::DocumentArrives, Act::PhotoArrives, Act::Restart, Act::AppendFile};
+  TEST_ASSERT_EQUAL_STRING("", runGenerated(13, 12, &acts).c_str());
+}
+// Counter-tests: every outside change still renders afresh (rule A breaks: the system part moved).
+static void test_outside_files_beside_an_arriving_photo_still_render() {
+  const std::vector<std::string> photo{"chat-1001/photo-601.jpg"};
+  auto renders = [](const std::string& why) { return why.find("system part") != std::string::npos; };
+  // the web Files panel between turns
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.touch("uploads/plan.pdf"); })));
+  // another chat's photo or document, stored for that chat's message
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.arrive({"chat-2002/photo-9.jpg"}, false); })));
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.arrive({"inbox/9-x.pdf"}, false); })));
+  // a file a routine wrote, a file another task changed or deleted
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.touch("routines/report.md"); })));
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.touch("log/daily.md"); })));
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.drop("lists/shopping.md"); })));
+  // a stored path whose store did not happen (named, but not in the store) beside an outside file
+  TEST_ASSERT_TRUE(renders(arrivalTurn({"chat-1001/photo-x.jpg"}, false, [](Device& d) {
+    d.touch("uploads/other.pdf");
+    d.arriving.push_back("chat-1001/photo-never.jpg");
+  })));
+  // a message with stored paths whose own item the card refused: nothing moves; after a restart the
+  // photo's line shows
+  {
+    Device dev;
+    dev.say("1001", "one");
+    dev.pause(90);
+    dev.tolerateFaults = true;
+    dev.card.refuseAppends = true;
+    dev.arrive({"chat-1001/photo-701.jpg"});
+    dev.say("1001", "[image 1/1]");
+    dev.card.refuseAppends = false;
+    dev.binding.reset();
+    dev.pause(90);
+    dev.say("1001", "next");
+    TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("chat-1001/photo-701.jpg") != std::string::npos);
+  }
+  // paths passed with a turn that is not the person's message (a routine's or a notice's) count for nothing:
+  // the device passes them only with the message that carries them (turnStoredPaths), and the engine takes
+  // them only from a stored person's item.
+}
 // [fix6-unit-begin]
 // C8: the turn the blocks lean on left out of the request renders them; the own-addition rules.
 static void test_a_left_out_turn_the_blocks_lean_on_renders_them() {
@@ -982,6 +1079,8 @@ int main(int, char**) {
   RUN_TEST(test_own_appends_turn_after_turn_keep_the_prefix);
   RUN_TEST(test_a_file_changed_from_outside_still_renders);
   RUN_TEST(test_a_failed_file_call_is_not_the_turns_own);
+  RUN_TEST(test_a_photo_an_album_or_a_document_that_opens_the_turn_keeps_the_prefix);
+  RUN_TEST(test_outside_files_beside_an_arriving_photo_still_render);
   // [fix6-unit-begin]
   RUN_TEST(test_a_left_out_turn_the_blocks_lean_on_renders_them);
   RUN_TEST(test_the_own_addition_rules);
