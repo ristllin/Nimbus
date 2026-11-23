@@ -65,6 +65,7 @@
 #include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
 #include "nimbus/fault.h"       // FAULT sd: a card that is fitted but faulted
 #include "nimbus/harness/plain/chat_binding.h"
+#include "nimbus/harness/plain/chat_commands.h"   // readGeneration, writeGeneration - /clear (P7)
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
 #include "nimbus/orch/spend_ceiling.h"               // kSpendFrozenError - a routine waits while frozen
@@ -187,25 +188,34 @@ std::unique_ptr<plain::ChatBinding> s_chat;   // the one resident chat (tg_poll 
 // The conversation of a chat is the transcript under its key: generation 0 is the chat id itself
 // (what the history import fills), generation n is "<chat>_c<n>". /clear moves the chat to the
 // next generation; every earlier transcript stays on the card as it was. The generation is kept
-// in /mem/tx/<chat>.gen (one decimal number); with no card it is kept in RAM until the restart.
+// in /mem/tx/<chat>.gen (plain::readGeneration, written by temp and rename); with no card fitted it
+// is kept in RAM until the restart. Lane E2-FIX2B (finding P7): a read that cannot tell is an error
+// for that message (never generation 0) and is not kept; the next message reads again.
 std::string s_genChat;   // the chat the RAM copy is for (tg_poll only)
 uint32_t s_gen = 0;
 
-std::string genPath(const String& chatId) { return std::string(nimbus::orch::tx::kTxRoot) + "/" + chatId.c_str() + ".gen"; }
+bool noCardFitted() { return !memory::haveSd() && !memory::sdLost() && !nimbus::fault::active(nimbus::fault::SD); }
 
-uint32_t generationOf(const String& chatId) {
-  if (s_genChat == chatId.c_str()) return s_gen;
-  uint32_t g = 0;
-  char buf[12] = {0};
-  size_t got = 0;
-  if (txdev::cardTxFiles().readAt(genPath(chatId), 0, buf, sizeof(buf) - 1, got) && got) g = (uint32_t)strtoul(buf, nullptr, 10);
+// The chat's generation; false when the card could not tell.
+bool generationOf(const String& chatId, uint32_t& g) {
+  g = 0;
+  if (s_genChat == chatId.c_str()) return g = s_gen, true;
+  if (!noCardFitted()) {
+    const plain::GenRead r = plain::readGeneration(txdev::cardTxFiles(), chatId.c_str(), g);
+    if (r == plain::GenRead::Unknown) {
+      alogf("e2: the conversation number of chat %s could not be read: tried again with the next message", chatId.c_str());
+      return false;
+    }
+  }
   s_genChat = chatId.c_str();
   s_gen = g;
-  return g;
+  return true;
 }
 
+// The chat's transcript key; "" when its generation could not be read.
 std::string txKeyFor(const String& chatId) {
-  const uint32_t g = generationOf(chatId);
+  uint32_t g = 0;
+  if (!generationOf(chatId, g)) return std::string();
   return g ? std::string(chatId.c_str()) + "_c" + std::to_string(g) : std::string(chatId.c_str());
 }
 
@@ -325,7 +335,8 @@ plain::ChatBinding* residentFor(const String& chatId, const std::string& model, 
   if (!s_chat) return nullptr;
   const plain::ChatBindingConfig& c = s_chat->config();
   const bool same = c.chatId == chatId.c_str() && c.role == role;
-  keep = same && c.chatKey == txKeyFor(chatId) && c.model == model;
+  const std::string key = txKeyFor(chatId);
+  keep = same && (key.empty() || c.chatKey == key) && c.model == model;   // P7: an unread number keeps the resident
   if (keep) return s_chat.get();
   if (!s_chat->reload()) {
     alogf("e2: chat %s keeps its RAM-only binding until the card is back", c.chatId.c_str());
@@ -351,6 +362,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   cfg.dayStartMin = store::dayStartMin();
   cfg.storedRounds = store::orchLoopRounds();
   cfg.monthlyCeilingMicro = spend::limitMicro();
+  if (cfg.chatKey.empty()) return nullptr;   // P7: the conversation number could not be read (logged)
   if (!nimbus::orch::tx::chatKeyOk(cfg.chatKey)) {
     alogf("e2: chat %s has no transcript key", chatId.c_str());
     return nullptr;
@@ -397,7 +409,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.oldEngine = migratedev::fill;   // E2-MIG: the earlier engine's conversation, before the log opens
   // No card fitted at all (none mounted at begin()): the chat runs from RAM by design. A card
   // that is lost, faulted or not answering is an outage: the binding reloads it (E2-STORE).
-  d.noCard = [] { return !memory::haveSd() && !memory::sdLost() && !nimbus::fault::active(nimbus::fault::SD); };
+  d.noCard = noCardFitted;
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();
@@ -568,9 +580,11 @@ bool clearChat(const String& chatId) {
     alogf("e2: /clear %s refused: the turns held in RAM are not stored yet", chatId.c_str());
     return false;
   }
-  const uint32_t next = generationOf(chatId) + 1;
-  const std::string g = std::to_string(next);
-  if (!txdev::cardTxFiles().writeWhole(genPath(chatId), g)) alogf("e2: /clear generation %s kept in RAM only", g.c_str());
+  uint32_t now = 0;
+  if (!generationOf(chatId, now)) return false;   // P7: never a number that may already be used
+  const uint32_t next = now + 1;
+  if (!plain::writeGeneration(txdev::cardTxFiles(), chatId.c_str(), next))
+    alogf("e2: /clear generation %u kept in RAM only", (unsigned)next);
   s_genChat = chatId.c_str();
   s_gen = next;
   if (s_chat && s_chat->config().chatId == chatId.c_str()) s_chat.reset();   // the arena goes back first

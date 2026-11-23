@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "../support/tx_battery/mem_files.h"
 #include "nimbus/harness/plain/chat_commands.h"
 
 namespace plain = agent::plain;
@@ -57,9 +58,81 @@ static void test_arguments_and_spellings() {
   TEST_ASSERT_FALSE(nimbus::orch::parseCommand("clear the table").isCommand);   // plain text is a turn
 }
 
+
+// ---- /clear's generation file (lane E2-FIX2B, finding P7) ---------------------------------------
+namespace {
+
+// The card store with a read that answers nothing (a bad read, a refused allocation) and a listing
+// that may fail as well.
+struct FlakyFiles : txb::MemFiles {
+  bool refuseReads = false, refuseList = false;
+  bool readAt(const std::string& path, size_t offset, char* buf, size_t want, size_t& got) override {
+    got = 0;
+    if (refuseReads) return false;
+    return txb::MemFiles::readAt(path, offset, buf, want, got);
+  }
+  bool list(const std::string& dir, std::vector<std::string>& names) override {
+    names.clear();
+    if (refuseList) return false;
+    return txb::MemFiles::list(dir, names);
+  }
+};
+
+}  // namespace
+
+// Before: the number was rewritten in place and any failed read was generation 0, so a cut or one
+// bad read reopened the oldest conversation and the next /clear reused a number. Now: written whole
+// and renamed; a read that cannot tell is Unknown, never 0.
+static void test_the_generation_survives_a_cut_and_a_bad_read_is_never_zero() {
+  FlakyFiles f;
+  uint32_t g = 7;
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Absent, (int)plain::readGeneration(f, "web", g));   // never cleared
+  TEST_ASSERT_EQUAL(0u, g);
+  TEST_ASSERT_TRUE(plain::writeGeneration(f, "web", 3));
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g));
+  TEST_ASSERT_EQUAL(3u, g);
+  // A cut inside the next write: the temp is torn, the number stays 3.
+  f.files["/mem/tx/web.gen.tmp"] = "";
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g));
+  TEST_ASSERT_EQUAL(3u, g);
+  // A cut between the temp's write and its rename (the target already removed): the temp is whole.
+  f.files.erase("/mem/tx/web.gen");
+  f.files["/mem/tx/web.gen.tmp"] = "4\n";
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g));
+  TEST_ASSERT_EQUAL(4u, g);
+  // A read that answers nothing is Unknown (the file is listed), never 0.
+  f.refuseReads = true;
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Unknown, (int)plain::readGeneration(f, "web", g));
+  f.refuseList = true;
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Unknown, (int)plain::readGeneration(f, "voice", g));   // no proof of absence
+  f.refuseReads = f.refuseList = false;
+  // An empty file (an older build's cut in place) is Unknown, not 0.
+  f.files["/mem/tx/tg.gen"] = "";
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Unknown, (int)plain::readGeneration(f, "tg", g));
+}
+
+// The neighbor: an older build's file ("1", no line end) still reads, and a write refused at the
+// rename leaves a whole temp that the next read takes.
+static void test_an_older_generation_file_reads_and_a_refused_rename_keeps_the_new_number() {
+  FlakyFiles f;
+  f.files["/mem/tx/web.gen"] = "1";
+  uint32_t g = 0;
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g));
+  TEST_ASSERT_EQUAL(1u, g);
+  f.refuseRename = true;
+  TEST_ASSERT_FALSE(plain::writeGeneration(f, "web", 2));
+  f.refuseRename = false;
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g));
+  TEST_ASSERT_EQUAL(2u, g);
+  f.files["/mem/tx/x.gen"] = "12abc";
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Unknown, (int)plain::readGeneration(f, "x", g));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_verb_of_the_table_has_its_route);
   RUN_TEST(test_arguments_and_spellings);
+  RUN_TEST(test_the_generation_survives_a_cut_and_a_bad_read_is_never_zero);
+  RUN_TEST(test_an_older_generation_file_reads_and_a_refused_rename_keeps_the_new_number);
   return UNITY_END();
 }
