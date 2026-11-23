@@ -1014,17 +1014,28 @@ std::vector<std::string> templateTexts(const nimbus::orch::tx::BoundTools& b) {
 }
 }  // namespace
 
+namespace {
+std::vector<std::string> engineTwoToolNames() {
+  std::vector<std::string> names;
+  for (const td::ToolDecl& d : td::kTools) names.push_back(d.name);
+  for (const td::ToolDecl& d : td::kBehindMore) names.push_back(d.name);
+  return names;
+}
+// Every engine-2 tool, less search and/or view.
+void registerAllBut(ToolRegistry& reg, const std::vector<std::string>& names, bool searchOn, bool viewOn) {
+  for (const std::string& n : names) {
+    if ((n == "search" && !searchOn) || (n == "view" && !viewOn)) continue;
+    reg.add(n, "d", okHandler, kObj);
+  }
+}
+}  // namespace
+
 static void test_no_template_names_a_tool_that_is_not_bound() {
+  const std::vector<std::string> names = engineTwoToolNames();
   for (int searchOn = 0; searchOn < 2; ++searchOn)
     for (int viewOn = 0; viewOn < 2; ++viewOn) {
       ToolRegistry reg;
-      std::vector<std::string> names;
-      for (const td::ToolDecl& d : td::kTools) names.push_back(d.name);
-      for (const td::ToolDecl& d : td::kBehindMore) names.push_back(d.name);
-      for (const std::string& n : names) {
-        if ((n == "search" && !searchOn) || (n == "view" && !viewOn)) continue;
-        reg.add(n, "d", okHandler, kObj);
-      }
+      registerAllBut(reg, names, searchOn, viewOn);
       const nimbus::orch::tx::BoundTools b = plain::boundTools(&reg);
       TEST_ASSERT_EQUAL((bool)searchOn, b.search);
       TEST_ASSERT_EQUAL((bool)viewOn, b.view);
