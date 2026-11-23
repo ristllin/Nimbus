@@ -614,7 +614,7 @@ bool viewedPhotoContent(Render& r, const tx::Item& it, const std::string& text) 
   const size_t from = std::min(text.size(), sizeof(texts::tool_results::kViewPhoto) - 1 + ref.size() + 1);
   const size_t to = text.size() - (sizeof(texts::tool_results::kViewPhotoShown) - 1);
   std::string line;
-  if (!tx::photoStub(ref.substr(1), from < to ? text.substr(from, to - from) : std::string(), line, false).ok())
+  if (!tx::photoStub(ref.substr(1), from < to ? text.substr(from, to - from) : std::string(), line, r.in.bound.view).ok())
     return false;
   r.w.key("content").str(line, Over::Clip);
   return true;

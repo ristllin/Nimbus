@@ -23,7 +23,9 @@
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/history.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/harness/plain/request.h"   // boundTools (E2-FIX5)
 #include "nimbus/orch/tx/card_files.h"
+#include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/log.h"
 #include "nimbus/orch/tx/old_engine.h"
 #include "nimbus/orch/vector_memory.h"   // kMcpNs
@@ -608,6 +610,52 @@ static void test_the_excerpt_shows_the_line_that_matched() {
   TEST_ASSERT_TRUE_MESSAGE(has(o.text, "line 200: checked the bucket and the carpet, 3 minutes"), o.text.c_str());
 }
 
+
+bool namesWord(const std::string& text, const std::string& name) {
+  for (size_t at = text.find(name); at != std::string::npos; at = text.find(name, at + 1)) {
+    const bool left = at == 0 || !(std::isalnum((unsigned char)text[at - 1]) || text[at - 1] == '_');
+    const size_t end = at + name.size();
+    const bool right = end >= text.size() || !(std::isalnum((unsigned char)text[end]) || text[end] == '_');
+    if (left && right) return true;
+  }
+  return false;
+}
+
+// The texts E2-FIX5 left naming search or view whatever is registered (they are true only where both
+// are bound): the core's lines and the summary's archive line. With HistoryTools
+// registered (the device's and the daemon's registry) every one names a registered tool and
+// plain::boundTools says both; with neither registered these are exactly the ones that would be
+// untrue, by name.
+static void test_with_search_and_view_registered_every_text_naming_them_is_true() {
+  namespace core = plain::texts::core;
+  const std::vector<std::pair<const char*, std::string>> unconditional = {
+      {"core::kStubs", core::kStubs},
+      {"core::kOlderDays", core::kOlderDays},
+      {"core::kRecall", core::kRecall},
+      {"digest_text::kArchived", tx::digest_text::kArchived},
+  };
+  txb::MemFiles files;
+  plain::HistoryDeps d;
+  d.files = &files;
+  plain::HistoryTools h(d);
+  orch::ToolRegistry bound, unbound;
+  h.registerInto(bound);
+  const nimbus::orch::tx::BoundTools b = plain::boundTools(&bound);
+  TEST_ASSERT_TRUE(b.search && b.view);
+  TEST_ASSERT_FALSE(plain::boundTools(&unbound).search || plain::boundTools(&unbound).view);
+  std::vector<std::string> untrueWithout;
+  for (const auto& t : unconditional) {
+    bool names = false;
+    for (const char* tool : {"search", "view"}) {
+      if (!namesWord(t.second, tool)) continue;
+      names = true;
+      TEST_ASSERT_TRUE_MESSAGE(bound.has(tool), (std::string(t.first) + " names " + tool).c_str());
+    }
+    if (names) untrueWithout.push_back(t.first);
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(4, (int)untrueWithout.size(), "each of the four names search or view");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_D2_red_without_the_tools);
@@ -618,5 +666,6 @@ int main(int, char**) {
   RUN_TEST(test_a_photo_of_this_conversation_is_shown_again_in_the_view_result);
   RUN_TEST(test_notes_scope_finds_unpinned_notes_by_words);
   RUN_TEST(test_the_excerpt_shows_the_line_that_matched);
+  RUN_TEST(test_with_search_and_view_registered_every_text_naming_them_is_true);
   return UNITY_END();
 }
