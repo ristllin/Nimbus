@@ -324,7 +324,11 @@ namespace {
 bool lookReply(const BudgetRequest& req, BudgetAccess access, const String& chatId, Reply& out) {
   switch (req.verb) {
     case BudgetVerb::Show:
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
       out = reply(nimbus::orch::usageText(view()) + "\n" + agent::budgetprofile::statusLine());
+#else
+      out = reply(nimbus::orch::usageText(view()));   // E2-FIX5: the history profile is engine 1's
+#endif
       return true;
     case BudgetVerb::Profile:
       if (!req.target.empty()) return false;
