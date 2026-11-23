@@ -22,6 +22,7 @@ lib/core/src/orch_tx_log.cpp
 lib/core/src/orch_tx_migrate.cpp
 lib/core/src/orch_tx_old_engine.cpp
 lib/core/src/orch_tx_rules.cpp
+lib/core/src/orch_tx_search.cpp
 lib/core/src/tg_inbox.cpp
 
 
