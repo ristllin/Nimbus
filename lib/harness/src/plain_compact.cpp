@@ -1314,6 +1314,18 @@ Status takeAnswer(const std::string& chatKey, const RungMessage& m, const Exchan
   return s;
 }
 
+// The summary so far rides in the system text (the one message keeps under a line's cap), AHEAD of the prompt
+// (lane E2-FIX9): the prompt ends with its "nothing to change" answer, "=", and a summary right after it read as
+// "=Facts and standing preferences:", which the summarizer then wrote as its answer for a slice with nothing new
+// (evidence/probes.jsonl: 2 of 12 with the summary after the prompt, 0 of 12 with it first). The blocks render in
+// the order core, notes, digests; an empty one is left out.
+SystemBlocks summarizerSystem(const std::string& sofar) {
+  SystemBlocks system;
+  system.core = sofar.empty() ? std::string(st::kPrompt) : sofar;   // no summary yet: the prompt alone, as before
+  if (!sofar.empty()) system.digests = st::kPrompt;
+  return system;
+}
+
 Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessage& m, uint64_t now,
                RungAnswer& ans) {
   const WireCodec* wire = rung.wire;
@@ -1331,14 +1343,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   turn.dialect = rung.dialect;
   turn.startedAt = now;
   turn.startedMs = d.platform->nowMs ? d.platform->nowMs() : 0;
-  // The summary so far rides in the system text (the one message keeps under a line's cap), AHEAD of the prompt
-  // (lane E2-FIX9): the prompt ends with its "nothing to change" answer, "=", and a summary right after it read as
-  // "=Facts and standing preferences:", which the summarizer then wrote as its answer for a slice with nothing new
-  // (evidence/probes.jsonl: 2 of 12 with the summary after the prompt, 0 of 12 with it first). The blocks render in
-  // the order core, notes, digests; an empty one is left out.
-  SystemBlocks system;
-  system.core = m.sofar.empty() ? std::string(st::kPrompt) : m.sofar;   // no summary yet: the prompt alone, as before
-  if (!m.sofar.empty()) system.digests = st::kPrompt;
+  const SystemBlocks system = summarizerSystem(m.sofar);
   const std::vector<ToolSpec> tools;
   RenderInput in;
   in.turn = &turn;
