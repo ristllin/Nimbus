@@ -17,6 +17,7 @@
 #include "nimbus/harness/plain/rails.h"   // the item taint rule (RB-RL)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
+#include "nimbus/orch/path_rules.h"   // storePathFor: an own path as the store lists it (E2-FIX8)
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
 #include "nimbus/orch/tx/arena.h"
@@ -721,11 +722,11 @@ class TurnRun {
     c_.prefixDirty = true;
     saveFrozen();
   }
-  // The file list changed only by files this turn's own calls named (`files`: the list now).
+  // The file list changed only in entries of paths this turn's own calls named (`files`: the list now).
   bool ownFiles(std::string& files) const {
-    std::vector<std::pair<std::string, std::string>> listing;
+    std::vector<ListedFile> listing;
     if (!filesListing(files, listing) || files == c_.prefix.seenFiles) return false;
-    const bool own = ownFilesAddition(c_.prefix.seenFiles, files, listing, t_.ownPaths);
+    const bool own = ownFilesChange(c_.prefix.seenFiles, files, listing, t_.ownPaths, t_.ctx.startedAt);
     if (!own)
       hlog::logf("plain(%s): the file list changed beyond this turn's own files: rendered at the next open", d_.chatKey.c_str());
     return own;
@@ -751,9 +752,9 @@ class TurnRun {
       hlog::logf("plain(%s): the notes changed beyond this turn's own additions: rendered at the next open", d_.chatKey.c_str());
     return own;
   }
-  // The recent-files list now and, for each file the store holds, its line and path. False when the
-  // store does not answer (nothing is taken as seen then).
-  bool filesListing(std::string& text, std::vector<std::pair<std::string, std::string>>& listing) const {
+  // The recent-files list now and, for each file the store holds, its line, path and write time.
+  // False when the store does not answer (nothing is taken as seen then).
+  bool filesListing(std::string& text, std::vector<ListedFile>& listing) const {
     text.clear();
     listing.clear();
     if (!d_.recentFiles) return true;
@@ -762,7 +763,7 @@ class TurnRun {
     if (!tx::recentFilesList(all, t_.tz, text).ok()) return false;
     std::string one;
     for (const tx::RecentFile& f : all)
-      if (tx::recentFilesList({f}, t_.tz, one).ok() && !one.empty()) listing.emplace_back(one, f.path);
+      if (tx::recentFilesList({f}, t_.tz, one).ok() && !one.empty()) listing.push_back(ListedFile{one, f.path, f.lastWrite});
     return true;
   }
   // Mid-turn: the ladder or a full arena left out the turn the frozen blocks lean on; the rest of the
@@ -1578,7 +1579,10 @@ class TurnRun {
     ArduinoJson::JsonDocument doc;
     if (deserializeJson(doc, args, ArduinoJson::DeserializationOption::NestingLimit(8))) return;
     const char* path = doc["path"] | (const char*)nullptr;
-    if (path && *path) t_.ownPaths.push_back(path);
+    if (!path || !*path) return;
+    t_.ownPaths.push_back(path);
+    const nimbus::orch::StorePath stored = nimbus::orch::storePathFor(path);   // the path as the store lists it
+    if (stored.ok() && stored.str() != path) t_.ownPaths.push_back(stored.str());
   }
 
   // A successful effect's call and result, kept for the superseded-read rule in the view of

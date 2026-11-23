@@ -34,8 +34,11 @@
 //     edit always renders afresh at the next open, so nothing stays shown as in force that is
 //     not), and a file line that left the list belongs to a file that still exists as it was;
 //   - every added note line is one a successful, stored result of this very turn carries (the
-//     note tool's result holds the stored line), and every added file is a path a successful
-//     call of this turn named.
+//     note tool's result holds the stored line);
+//   - the file list is compared by path (lane E2-FIX8): an entry added, removed, moved or changed
+//     (its write time) belongs to a path a successful, stored call of this turn named (a create,
+//     an append, an edit, an overwrite, a delete); every other entry is unchanged and in the same
+//     order, except entries that left the bottom of the list or came back into it by its size.
 // Anything else leaves the seen marks as they were, so the next open renders afresh, named.
 // The q of the first turn relied on is kept (ownFrom): once the ladder or a full arena leaves
 // that turn out of the request, the blocks render afresh, mid-turn included.
@@ -94,12 +97,22 @@ void renderPrefix(FrozenPrefix& f, const PrefixNow& now);
 // of `ownTexts` (the turn's successful, stored results).
 bool ownNotesAddition(const std::string& frozen, const std::string& seen, const std::string& now,
                       const std::vector<std::string>& ownTexts, const std::vector<std::string>& headers);
-// The same for the recent-files list. `listing` is every file the store holds now as (its line in
-// the list, its path): a seen line that left the list must still be one of them (it fell out of
-// the list's size, the file is there as it was); an added line's path must be in `ownPaths`.
-bool ownFilesAddition(const std::string& seen, const std::string& now,
-                      const std::vector<std::pair<std::string, std::string>>& listing,
-                      const std::vector<std::string>& ownPaths);
+// One file the store holds now: its line in the recent-files list, its path, its write time.
+struct ListedFile {
+  std::string line;
+  std::string path;
+  uint64_t lastWrite = 0;   // epoch seconds; 0: not known
+};
+// Did the recent-files list go from `seen` to `now` only by this turn's own calls (lane E2-FIX8)?
+// Compared by path, not by line: an entry of a path in `ownPaths` (the paths the turn's successful,
+// stored calls named) may be added, removed, moved or changed in any way. Every other entry must
+// keep its line and its order, with two exceptions the list's byte size makes: entries at the
+// bottom of `seen` that left the list while the file is there as it was (a line in `listing`), and
+// entries that came into the bottom of `now` (an own delete made room) whose write time is known
+// and before `openedAt`, the turn's open (an outside write during the turn stamps a later time).
+// `listing` is every file the store holds now.
+bool ownFilesChange(const std::string& seen, const std::string& now, const std::vector<ListedFile>& listing,
+                    const std::vector<std::string>& ownPaths, uint64_t openedAt);
 
 // The record's bytes and back. decode: Torn when the shape or the checksum is wrong.
 Status encodePrefix(const FrozenPrefix& f, std::string& out);

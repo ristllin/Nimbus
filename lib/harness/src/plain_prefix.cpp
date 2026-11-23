@@ -104,8 +104,8 @@ void renderPrefix(FrozenPrefix& f, const PrefixNow& now) {
 
 namespace {
 
-// The lines of a block that hold something.
-std::vector<std::string> linesOf(const std::string& block) {
+// The lines of a block that hold something, in their order.
+std::vector<std::string> linesInOrder(const std::string& block) {
   std::vector<std::string> out;
   size_t at = 0;
   while (at <= block.size()) {
@@ -114,6 +114,11 @@ std::vector<std::string> linesOf(const std::string& block) {
     if (end > at) out.push_back(block.substr(at, end - at));
     at = end + 1;
   }
+  return out;
+}
+// The same, sorted (compared as multisets).
+std::vector<std::string> linesOf(const std::string& block) {
+  std::vector<std::string> out = linesInOrder(block);
   std::sort(out.begin(), out.end());
   return out;
 }
@@ -150,20 +155,47 @@ bool ownNotesAddition(const std::string& frozen, const std::string& seen, const 
   return true;
 }
 
-bool ownFilesAddition(const std::string& seen, const std::string& now,
-                      const std::vector<std::pair<std::string, std::string>>& listing,
-                      const std::vector<std::string>& ownPaths) {
-  const std::vector<std::string> n = linesOf(now), s = linesOf(seen);
+namespace {
+bool named(const std::vector<std::string>& paths, const std::string& path) {
+  return std::find(paths.begin(), paths.end(), path) != paths.end();
+}
+// A list line is "<path>" or "<path> (<when>)", the time holding no parenthesis
+// (tx::recentFilesList). Is `line` an entry of `path`?
+bool lineOf(const std::string& line, const std::string& path) {
+  if (line.compare(0, path.size(), path) != 0) return false;
+  if (line.size() == path.size()) return true;
+  const std::string tail = line.substr(path.size());
+  return tail.size() > 3 && tail.compare(0, 2, " (") == 0 && tail.back() == ')' &&
+         tail.find_first_of("()", 2) == tail.size() - 1;
+}
+}  // namespace
+
+bool ownFilesChange(const std::string& seen, const std::string& now, const std::vector<ListedFile>& listing,
+                    const std::vector<std::string>& ownPaths, uint64_t openedAt) {
   auto entry = [&](const std::string& line) {
-    return std::find_if(listing.begin(), listing.end(), [&](const std::pair<std::string, std::string>& e) {
-      return e.first == line;
-    });
+    return std::find_if(listing.begin(), listing.end(), [&](const ListedFile& f) { return f.line == line; });
   };
-  for (const std::string& line : minus(s, n))   // left the list: only by its size, the file there as it was
-    if (entry(line) == listing.end()) return false;
-  for (const std::string& line : minus(n, s)) {
+  // A seen line is an own entry when a path the turn named is its path; the line may be gone (a
+  // delete) or changed (a write stamps its time), so its path is read from the line itself.
+  auto ownSeen = [&](const std::string& line) {
+    return std::any_of(ownPaths.begin(), ownPaths.end(), [&](const std::string& p) { return lineOf(line, p); });
+  };
+  std::vector<std::string> before, after;   // the other entries, in order
+  for (const std::string& line : linesInOrder(seen))
+    if (!ownSeen(line)) before.push_back(line);
+  for (const std::string& line : linesInOrder(now)) {
     const auto e = entry(line);
-    if (e == listing.end() || std::find(ownPaths.begin(), ownPaths.end(), e->second) == ownPaths.end()) return false;
+    if (e == listing.end()) return false;   // a line the store cannot account for
+    if (!named(ownPaths, e->path)) after.push_back(line);
+  }
+  size_t k = 0;
+  while (k < before.size() && k < after.size() && before[k] == after[k]) ++k;
+  if (k < before.size() && k < after.size()) return false;   // another entry changed or moved
+  for (size_t i = k; i < before.size(); ++i)   // left the bottom: the file is there as it was
+    if (entry(before[i]) == listing.end()) return false;
+  for (size_t i = k; i < after.size(); ++i) {   // came into the bottom: written before the turn opened
+    const auto e = entry(after[i]);
+    if (!e->lastWrite || !openedAt || e->lastWrite >= openedAt) return false;
   }
   return true;
 }

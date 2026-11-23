@@ -915,11 +915,29 @@ static void test_the_own_addition_rules() {
   TEST_ASSERT_FALSE(plain::ownNotesAddition("Pinned notes:\na: 1", "Pinned notes:\na: 1", "Pinned notes:\nb: 2", own, hdr));
   TEST_ASSERT_FALSE(plain::ownNotesAddition("a: 1", "a: 1", "a: 1\nc: 3", own, hdr));   // not this turn's
   TEST_ASSERT_FALSE(plain::ownNotesAddition("a: 1", "a: 1\nb: 2", "a: 1", own, hdr));  // an own addition removed
-  const std::vector<std::pair<std::string, std::string>> listing{{"x.md (t1)", "x.md"}, {"y.md (t2)", "y.md"}};
-  TEST_ASSERT_TRUE(plain::ownFilesAddition("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {"y.md"}));
-  TEST_ASSERT_TRUE(plain::ownFilesAddition("x.md (t1)", "y.md (t2)", listing, {"y.md"}));   // x fell out of the size
-  TEST_ASSERT_FALSE(plain::ownFilesAddition("x.md (t1)\nz.md (t3)", "x.md (t1)", listing, {}));   // z is gone
-  TEST_ASSERT_FALSE(plain::ownFilesAddition("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {}));   // not this turn's
+  // The file list, by path (lane E2-FIX8; replaces E2-FIX6's addition-only rule, whose cases stay here).
+  const std::vector<plain::ListedFile> listing{{"x.md (t1)", "x.md", 100}, {"y.md (t2)", "y.md", 200}};
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {"y.md"}, 300));
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x.md (t1)", "y.md (t2)", listing, {"y.md"}, 300));   // x fell out of the size
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x.md (t1)\nz.md (t3)", "x.md (t1)", listing, {}, 300));   // z is gone
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {}, 300));   // not this turn's
+  // an append moves its entry to the top with a new time; a delete takes it out
+  const std::vector<plain::ListedFile> l2{{"a.md (t9)", "a.md", 900}, {"b.md (t5)", "b.md", 500}, {"c.md (t4)", "c.md", 400}};
+  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (t5)\na.md (t3)\nc.md (t4)", "a.md (t9)\nb.md (t5)\nc.md (t4)", l2, {"a.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\na.md (t3)\nc.md (t4)", "a.md (t9)\nb.md (t5)\nc.md (t4)", l2, {"b.md"}, 800));
+  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (t5)\nd.md (t4)\nc.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\nd.md (t4)\nc.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"a.md"}, 800));
+  // another entry changed beside an own one, or two others swapped: not own
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t1)\nc.md (t4)", "a.md (t9)\nb.md (t5)\nc.md (t4)", l2, {"a.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("c.md (t4)\nb.md (t5)", "b.md (t5)\nc.md (t4)", l2, {}, 800));
+  // came into the bottom after an own delete: only with a write time before the turn opened
+  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (t5)\nd.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\nd.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 400));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\nd.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 0));
+  // a line of another path that merely starts with an own path is not an own entry
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x (t1)\nc.md (t4)", "c.md (t4)", l2, {"x"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x (b) (t1)\nc.md (t4)", "c.md (t4)", l2, {"x"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x.bak (t1)\nc.md (t4)", "c.md (t4)", l2, {"x"}, 800));
 }
 // [fix6-unit-end]
 
