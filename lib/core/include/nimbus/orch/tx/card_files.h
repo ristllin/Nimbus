@@ -110,7 +110,7 @@ class CardTxFiles : public TxFiles {
   }
   bool list(const std::string& dir, std::vector<std::string>& names) override {
     names.clear();
-    if (!inside(dir + "/") || !card_.present()) return false;
+    if (!(inside(dir + "/") || dir + "/" == prefix_) || !card_.present()) return false;   // the root itself lists too
     Hold h(card_, holds_.listMs);
     if (!card_.exists(dir)) return true;   // no folder yet: no files (a card is there)
     if (!card_.isDir(dir)) return false;

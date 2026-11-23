@@ -740,7 +740,11 @@ void drainOutboxes() {
     const String chat(h.chatId.c_str());
     const String host = store::resolvedOrchHost();
     plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
-    if (b && plain::drainHeld(*h.store, b->ownerSink(), now, tzNow(), quiet, b->config().dayStartMin)) return;
+    const size_t held = h.store->notes().size();
+    const bool worked = b && plain::drainHeld(*h.store, b->ownerSink(), now, tzNow(), quiet, b->config().dayStartMin);
+    alogf("e2: outbox %s: %u held, %s (%u left)", h.chatId.c_str(), (unsigned)held,
+          !b ? "chat did not start" : worked ? "one note done" : "nothing went", (unsigned)h.store->notes().size());
+    if (worked) return;
   }
 }
 
@@ -750,7 +754,10 @@ void loadOutboxes() {
   if (done || !memory::haveSd()) return;
   done = true;
   std::vector<std::string> names;
-  if (!txdev::cardRoutineFiles().list(sch::kStateDir, names)) return;
+  if (!txdev::cardRoutineFiles().list(sch::kStateDir, names)) {
+    alog("e2: the outboxes on the card could not be listed");
+    return;
+  }
   for (const std::string& n : names) {
     const std::string pre = "held-", ext = ".json";
     if (n.size() > pre.size() + ext.size() && n.rfind(pre, 0) == 0 && n.compare(n.size() - ext.size(), ext.size(), ext) == 0)
