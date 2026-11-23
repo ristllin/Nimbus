@@ -155,6 +155,8 @@ struct Turn {
   std::string statusText;
   std::string statusStored;            // statusText as it may be kept (no provider words); empty: the same
   const std::string* statusRef = nullptr;   // the line that goes out: statusText or a kept line
+  // The line as it may be stored or reach a model (TurnOutcome::statusStored); statusRef set.
+  const std::string& storedLine() const { return statusStored.empty() || statusRef != &statusText ? *statusRef : statusStored; }
   bool parkHost = false, failOver = false;
   std::string cause;
   tx::TurnEndFacts end;
@@ -2017,8 +2019,10 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   }
   try {
     if (t->replyText) out.text = *t->replyText;
-    if (t->statusRef) out.statusText = *t->statusRef;
-    if (t->statusRef) out.statusStored = t->statusStored.empty() ? out.statusText : t->statusStored;
+    if (t->statusRef) {
+      out.statusText = *t->statusRef;
+      out.statusStored = t->storedLine();
+    }
     out.end = t->end;
     out.end.cause = t->cause;   // also when no e item could be stored
   } catch (const std::bad_alloc&) {
