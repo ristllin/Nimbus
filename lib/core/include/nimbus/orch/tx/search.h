@@ -48,10 +48,13 @@ namespace tx {
 
 inline constexpr size_t kSliceBytes = 8192;              // one readAt: one card hold
 inline constexpr size_t kSearchMaxHits = 12;
-// One window (lane E2-SRCH2): the owner's month is about 1.8 MB of rows; at the card's measured rate
-// (about 1 MB a second in 8 KB reads of under 11 ms each, unit F1) 6 MB is about 6 s of card time.
+// One window (lane E2-SRCH2), measured on unit F1: the transcript reads at about 1 MB a second (8 KB
+// reads of under 11 ms each); the earlier engine's rows through the store's forward query at about
+// 140 KB a second (2,006 rows, 505 KB in 3.6 s, the longest single store query 119 ms). The owner's month
+// is about 1.8 MB of rows: about 13 s. So a window reads up to 6 MB or 20 s of card time, whichever
+// comes first; past it the cursor goes on and the answer says which dates were read.
 inline constexpr size_t kSearchWindowBytes = 6 * 1024 * 1024;
-inline constexpr uint32_t kSearchCardMs = 12000;         // a window's card time, summed: a safety stop
+inline constexpr uint32_t kSearchCardMs = 20000;
 inline constexpr size_t kSearchExcerptBytes = 160;
 inline constexpr size_t kSearchRankedMax = 600;
 inline constexpr size_t kVerbatimFloorScan = 256 * 1024; // verbatimFloor reads at most this much
