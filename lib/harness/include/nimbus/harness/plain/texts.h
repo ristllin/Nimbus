@@ -158,7 +158,7 @@ inline constexpr ToolDecl kBehindMore[] = {
 // ---- device notes (PRD section 8.9: the closed list of harness-written lines) ------------
 namespace device_notes {
 // One exchange's status line per error class (lane RB-EX, plain_exchange.cpp exchangeLine):
-// what happened, then the one next step. A provider's own words never ride in it.
+// what happened, then the one next step. A refused request (class Other) adds the provider's own reason after the status, for the person only (E2-FIX11).
 inline constexpr char kNoReply[] = "No reply: ";
 inline constexpr char kUnreachable[] = " could not be reached. Send the message again.";
 inline constexpr char kServerError[] = " had a server error";
@@ -170,6 +170,7 @@ inline constexpr char kCheckKey[] = ". Check the key and credit.";
 inline constexpr char kUnreadable[] = " sent an answer the device could not read. Try again.";
 inline constexpr char kRefused[] = " refused the request";
 inline constexpr char kHttp[] = " (HTTP ";
+inline constexpr char kReasonSep[] = ": ";   // before the provider's own reason (E2-FIX11)
 inline constexpr char kCut[] = "The reply above was cut at the length limit.";
 inline constexpr char kBlocked[] = "The reply was blocked by moderation.";
 // Who answered, by the qualification table's provider slug.

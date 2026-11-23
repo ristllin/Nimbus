@@ -956,6 +956,69 @@ static void test_every_error_class_has_one_plain_line() {
   TEST_ASSERT_TRUE(plain::exchangeLine(ExchangeErr::None, "anthropic", 200).empty());
 }
 
+// Lane E2-FIX11: a refusal's line carries the provider's own reason (the person cannot act on "HTTP 400"
+// alone), bounded, on one line, and never a key. One class test over the provider's known error types.
+static std::string anthropicError(const char* type, const std::string& message) {
+  JsonDocument d;
+  d["type"] = "error";
+  d["error"]["type"] = type;
+  d["error"]["message"] = message;
+  std::string out;
+  serializeJson(d, out);
+  return out;
+}
+
+static std::string refusedLine(int status, const std::string& body) {
+  Rig rig;
+  for (int i = 0; i < 8; ++i) rig.model.push(sp::httpError(status, body));
+  expectOk(rig.run());
+  TEST_ASSERT_TRUE(rig.out.err != ExchangeErr::None);
+  expectOnePlainLine(rig.out);
+  const std::string& l = rig.out.errorLine;
+  TEST_ASSERT_TRUE_MESSAGE(l.size() <= 330, l.c_str());   // the status words, and a reason of at most 160 bytes
+  TEST_ASSERT_TRUE_MESSAGE(l.find("sk-") == std::string::npos, l.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(l.find("test-key") == std::string::npos, l.c_str());
+  for (unsigned char c : l) TEST_ASSERT_TRUE_MESSAGE(c >= 0x20 && c != 0x7f, l.c_str());
+  return l;
+}
+
+static void test_a_refusal_line_names_the_providers_reason() {
+  const char* limit = "You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.";
+  TEST_ASSERT_EQUAL_STRING(
+      (std::string("No reply: Anthropic refused the request (HTTP 400): ") + limit).c_str(),
+      refusedLine(400, anthropicError("invalid_request_error", limit)).c_str());
+  // The other known types: each line stays true for its class and carries no key.
+  const std::string auth = refusedLine(401, anthropicError("authentication_error", "invalid x-api-key"));
+  TEST_ASSERT_TRUE(auth.find("refused the key") != std::string::npos);
+  const std::string perm = refusedLine(403, anthropicError("permission_error", "Your API key does not have permission."));
+  TEST_ASSERT_TRUE(perm.find("refused the key") != std::string::npos);
+  const std::string rate = refusedLine(429, anthropicError("rate_limit_error", "Number of request tokens has exceeded."));
+  TEST_ASSERT_TRUE(rate.find("limiting requests") != std::string::npos);
+  const std::string over = refusedLine(529, anthropicError("overloaded_error", "Overloaded"));
+  TEST_ASSERT_TRUE(over.find("server error") != std::string::npos);
+  // No readable message: the line is what it was.
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400).", refusedLine(400, "<html>Bad Request</html>").c_str());
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400).", refusedLine(400, "{}").c_str());
+  TEST_ASSERT_TRUE(plain::refusalReason("").empty());   // an empty body names nothing
+  TEST_ASSERT_TRUE(plain::refusalReason(std::string(20000, ' ')).empty());
+  // A 5,000-byte message is cut to about 160 bytes on a character boundary (here every char is two bytes).
+  std::string wide;
+  for (int i = 0; i < 2500; ++i) wide += "\xC3\xA9";
+  const std::string big = refusedLine(400, anthropicError("invalid_request_error", wide));
+  TEST_ASSERT_TRUE_MESSAGE(big.size() < 230, big.c_str());
+  TEST_ASSERT_TRUE(big.find("...") != std::string::npos);
+  const std::string longAscii = refusedLine(400, anthropicError("invalid_request_error", std::string(5000, 'a')));
+  TEST_ASSERT_TRUE_MESSAGE(longAscii.size() < 230, longAscii.c_str());
+  // Control characters become single spaces: one line.
+  const std::string ctl = refusedLine(400, anthropicError("invalid_request_error", "first\nsecond\r\n\tthird\x01 end"));
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400): first second third end.", ctl.c_str());
+  // A key-like string, or an echoed header: the reason is dropped whole.
+  for (const char* m : {"Invalid x-api-key sk-ant-api03-AbCdEf0123456789", "bad header Authorization: Bearer abc",
+                        "token 9f8e7d6c5b4a39281706f5e4d3c2b1a0 rejected"})
+    TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400).",
+                             refusedLine(400, anthropicError("invalid_request_error", m)).c_str());
+}
+
 static void test_provider_slug_of_a_head() {
   plain::TurnCtx t;
   plain::HeadEndpoint h;
@@ -1162,6 +1225,7 @@ int main(int, char**) {
   RUN_TEST(test_no_body_string_over_the_guard_is_sent);
   RUN_TEST(test_a_routed_head_follows_the_refusal_contract);
   RUN_TEST(test_every_error_class_has_one_plain_line);
+  RUN_TEST(test_a_refusal_line_names_the_providers_reason);
   RUN_TEST(test_provider_slug_of_a_head);
   RUN_TEST(test_the_dialect_decides_an_unknown_host_and_nothing_named_is_nothing);
   RUN_TEST(test_a_fallback_the_table_does_not_qualify_is_skipped);

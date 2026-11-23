@@ -204,8 +204,15 @@ std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDi
 // The provider an owner's line names: headSlugOf, but "custom" where only the dialect named it (a
 // proxy is not the provider).
 std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head);
-// The owner's plain line for an exchange that ended with `err` (empty for None).
-std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus);
+// The provider's own reason from a refusal body, fit for the person's line (lane E2-FIX11): the message
+// of its JSON error body as one line (control characters removed), at most 160 bytes cut on a character
+// boundary. Empty when the body is not JSON, names no message, is over 16 KB, or the text looks like it
+// carries a key or token (then no reason is shown at all).
+std::string refusalReason(const std::string& body);
+// The owner's plain line for an exchange that ended with `err` (empty for None). `reason` is read only
+// for ExchangeErr::Other with a status: "<who> refused the request (HTTP n): <reason>".
+std::string exchangeLine(ExchangeErr err, const std::string& providerSlug, int httpStatus,
+                         const std::string& reason = std::string());
 
 }  // namespace plain
 }  // namespace agent

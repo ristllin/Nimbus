@@ -13,6 +13,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/billing_refusal.h"
 #include "nimbus/orch/compact.h"   // isContextOverflowError: each provider's words for a size refusal
+#include "nimbus/orch/provider_error.h"   // providerErrorText: the message of a provider's error body
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/router_refusals.h"
 #include "nimbus/orch/router_route.h"
@@ -267,7 +268,10 @@ class Exchange {
     httpStatus_ = answered ? resp.status : 0;
     verdict_ = classify(httpStatus_, resp.body, routed_);
     if (verdict_.err == ExchangeErr::None) read(resp);
-    else if (verdict_.err == ExchangeErr::Other) refusedBody_ = resp.body.substr(0, 4096);
+    else if (verdict_.err == ExchangeErr::Other) {
+      refusedBody_ = resp.body.substr(0, 4096);
+      refusedReason_ = refusalReason(resp.body);   // from the whole body: a long message still parses
+    }
   }
 
   void read(const HttpResponse& resp) {
@@ -378,7 +382,7 @@ class Exchange {
     out_.status = err == ExchangeErr::Cut       ? StatusLine::CutAnswer
                   : err == ExchangeErr::Blocked ? StatusLine::ModerationBlock
                                                 : StatusLine::ProviderError;
-    out_.errorLine = exchangeLine(err, slug_, httpStatus_);
+    out_.errorLine = exchangeLine(err, slug_, httpStatus_, err == ExchangeErr::Other ? refusedReason_ : std::string());
     if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
     return Status::success();
   }
@@ -400,7 +404,7 @@ class Exchange {
   nimbus::orch::TokenUsage usage_;
   uint8_t sameHost_ = 0, capClimbs_ = 0;
   bool cutRetried_ = false, refusedClimbed_ = false, routerResent_ = false, refResent_ = false;
-  std::string refusedBody_;
+  std::string refusedBody_, refusedReason_;
   uint32_t routerCap_ = 0;
   uint32_t cutSentTokens_ = 0;
   std::string cutSentEffort_;
@@ -456,9 +460,62 @@ std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) {
   return byDialect ? "custom" : s;   // a line never names a provider the endpoint is not
 }
 
+namespace {
+// A run of key characters that mixes letters and digits and is this long reads as a key or a token.
+constexpr size_t kKeyRun = 20;
+bool keyChar(unsigned char c) { return std::isalnum(c) || c == '_' || c == '-' || c == '.' || c == '+' || c == '/' || c == '='; }
+
+// True when `s` could carry a credential: a key's own markers, or a long run that mixes letters and digits.
+bool looksLikeSecret(const std::string& s) {
+  const std::string low = lower(s);
+  for (const char* m : {"sk-", "bearer ", "x-api-key", "api_key", "api-key", "apikey", "authorization", "password", "secret"})
+    if (low.find(m) != std::string::npos) return true;
+  size_t run = 0;
+  bool letter = false, digit = false;
+  for (size_t i = 0; i <= s.size(); ++i) {
+    if (i < s.size() && keyChar((unsigned char)s[i])) {
+      ++run;
+      letter |= std::isalpha((unsigned char)s[i]) != 0;
+      digit |= std::isdigit((unsigned char)s[i]) != 0;
+      continue;
+    }
+    if (run >= kKeyRun && letter && digit) return true;
+    run = 0;
+    letter = digit = false;
+  }
+  return false;
+}
+}  // namespace
+
+std::string refusalReason(const std::string& body) {
+  constexpr size_t kBodyMax = 16384;   // a larger body is not parsed: the device keeps its memory
+  constexpr size_t kReasonMax = 160;
+  if (body.empty() || body.size() > kBodyMax) return std::string();
+  std::string raw = orch::providerErrorText(body);
+  if (raw.empty() || !nimbus::utf8Valid(raw)) return std::string();
+  std::string text;   // one line: every control character and run of white space is one space
+  for (char c : raw) {
+    const bool space = (unsigned char)c < 0x20 || c == 0x7f || c == ' ';
+    if (space) {
+      if (!text.empty() && text.back() != ' ') text += ' ';
+    } else {
+      text += c;
+    }
+  }
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  if (text.empty() || looksLikeSecret(text)) return std::string();
+  if (text.size() > kReasonMax) {
+    text.resize((size_t)nimbus::utf8CapLen(text.data(), (int)text.size(), (int)(kReasonMax - 3)));
+    while (!text.empty() && text.back() == ' ') text.pop_back();
+    text += "...";
+  }
+  return text;
+}
+
 // The owner's line for a failed exchange (texts.h device_notes): what happened, then the
-// one next step; no provider text (a provider's message is outside content and stays in the log).
-std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatus) {
+// one next step. `reason` (refusalReason of the provider's body; Other only) rides after the
+// status, for the person alone: it is never stored as the model's words.
+std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatus, const std::string& reason) {
   namespace n = texts::device_notes;
   const std::string who = std::string(n::kNoReply) + providerName(slug);
   const std::string code = httpStatus > 0 ? n::kHttp + std::to_string(httpStatus) + ")" : "";
@@ -474,7 +531,9 @@ std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatu
     case ExchangeErr::Blocked: return n::kBlocked;
     case ExchangeErr::Other: break;
   }
-  return who + n::kRefused + code + ".";
+  if (reason.empty() || httpStatus <= 0) return who + n::kRefused + code + ".";
+  const char last = reason.back();
+  return who + n::kRefused + code + n::kReasonSep + reason + (last == '.' || last == '!' || last == '?' ? "" : ".");
 }
 
 bool targetQualified(const HeadTarget& t, hq::Line line) {
