@@ -13,7 +13,7 @@ namespace {
 
 namespace tx = nimbus::orch::tx;
 
-constexpr char kMagic[] = "nimbus-prefix 1\n";
+constexpr char kMagic[] = "nbpx/1";   // the record format, version 1 (then a line end)
 constexpr char kName[] = "prefix.txt";
 constexpr char kTmpName[] = "prefix.txt.tmp";
 
@@ -104,6 +104,7 @@ Status encodePrefix(const FrozenPrefix& f, std::string& out) {
   if (!f.valid) return Status::fail(Err::InvalidArgument, "plain::encodePrefix");
   try {
     out = kMagic;
+    out += '\n';
     putField(out, "core", f.blocks.core);
     putField(out, "notes", f.blocks.notes);
     putField(out, "digests", f.blocks.digests);
@@ -127,8 +128,8 @@ Status encodePrefix(const FrozenPrefix& f, std::string& out) {
 
 Status decodePrefix(const std::string& in, FrozenPrefix& out) {
   out = FrozenPrefix{};
-  const size_t magic = sizeof kMagic - 1;
-  if (in.compare(0, magic, kMagic) != 0) return Status::fail(Err::Torn, "plain::decodePrefix");
+  const size_t magic = sizeof kMagic;   // the format and its line end
+  if (in.size() < magic || in.compare(0, magic - 1, kMagic) != 0 || in[magic - 1] != '\n') return Status::fail(Err::Torn, "plain::decodePrefix");
   FrozenPrefix f;
   size_t at = magic;
   uint64_t manifest = 0, z = 0;
