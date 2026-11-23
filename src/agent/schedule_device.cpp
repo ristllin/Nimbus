@@ -20,6 +20,7 @@ namespace sch = nimbus::orch::schedule;
 namespace {
 
 constexpr char kSidecarPath[] = "/data/loops2.json";
+constexpr char kUpkeepId[] = "dream";   // lib/harness dream.h kLoopId (an engine-1 file)
 
 class DeviceHost : public sch::Host {
  public:
@@ -49,7 +50,9 @@ class DeviceHost : public sch::Host {
   uint64_t nextRun(const orch::LoopRecord& l, uint64_t now) override { return loops::firstRun(l, now); }
   std::string newId(const std::vector<orch::LoopRecord>& v) override { return loops::freshId(v); }
   bool askFirst() override { return loops::wakeupsAskFirst(); }
-  bool reserved(const std::string& id) override { return loops::isReservedId(String(id.c_str())); }
+  // Engine 1's nightly upkeep record is engine 1's own on engine 2 too (lane E2-SCHED): never listed or changed
+  // by the tool, though engine 2 does not ensure (reserve) it at boot.
+  bool reserved(const std::string& id) override { return id == kUpkeepId || loops::isReservedId(String(id.c_str())); }
   int maxCount() override { return loops::maxCount(); }
   uint32_t minIntervalSec() override { return loops::minIntervalSec(); }
   // The card's state file and its temp, under the card lock (no card: nothing to remove).
