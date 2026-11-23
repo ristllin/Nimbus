@@ -2363,7 +2363,11 @@ void beginWeb(const WebConfig& wc) {
     }
     String out; serializeJson(d, out);
     agent::loops::stageWebMutation(out);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2   // E2-FIX5: staged, applied by tg_poll's next tick
+    r->send(200, "application/json", "{\"ok\":true,\"queued\":true}");
+#else
     r->send(200, "application/json", "{\"ok\":true}");
+#endif
   });
 
   // --- Wake-ups (CUM-27; the Once-loop view, contract shared with lane N1) ---

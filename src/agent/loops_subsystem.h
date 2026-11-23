@@ -140,6 +140,9 @@ void stageWebMutation(const String& json);
 void drainWebMutations();
 
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX5: a staged web mutation waits for drainWebMutations (any task; it ends tg_poll's idle
+// wait, so the change is applied within about a second unless a turn is running).
+bool webMutationsWaiting();
 // --- engine 2: the schedule tool's view (lane RB-U1b, schedule_device.cpp) -------------------
 // Run `fn` over the live table with the loops lock held (recursive; tg_poll or the turn task).
 void withTable(const std::function<void(std::vector<nimbus::orch::LoopRecord>&)>& fn);

@@ -34,6 +34,9 @@
 #include "files_subsystem.h"        // per-sender storage limit, checked pre-download
 #include "tg_archive.h"             // lane R: every update and every send is archived on SD
 #include "orchestrator.h"           // roleOfChat / tenantQuotaOf - who is sending
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "loops_subsystem.h"        // webMutationsWaiting - a staged routine change ends the idle wait (E2-FIX5)
+#endif
 #include "nimbus/mem_cap.h"         // utf8CapLen - never sever a character
 
 #include "nimbus/telegram_offset.h"   // nimbus::core::TgOffsetCursor (host-tested)
@@ -422,7 +425,11 @@ static bool idleWaitEnds() {
 #if defined(NIMBUS_TEST)
   if (settleInjectFresh()) return true;
 #endif
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  return nimbus::net::tgIdleEnds(localTurnWaiting(), stagedWorkWaiting(), loops::webMutationsWaiting(), g_running);
+#else
   return localTurnWaiting() || stagedWorkWaiting() || !g_running;
+#endif
 }
 
 // Sleep an idle pause (the inter-cycle pause, a poll-error backoff) in short

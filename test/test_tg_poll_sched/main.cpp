@@ -266,6 +266,22 @@ static void test_telegram_outage_backoff_never_holds_a_local_turn() {
   }
 }
 
+// Lane E2-FIX5 (bench, unit F1): a routine change staged from the web page ends an idle long-poll and an
+// idle pause, as a waiting local turn does, so the loops tick applies it within a cycle; a response in
+// progress and a Check still win. Before: a delete waited out the whole 30 s long-poll.
+static void test_a_staged_routine_change_ends_an_idle_wait() {
+  using namespace nimbus::net;
+  const bool ends = tgIdleEnds(false, false, /*routineChange=*/true, /*running=*/true);
+  TEST_ASSERT_TRUE(ends);
+  TEST_ASSERT_EQUAL((int)TgWait::Yield, (int)tgWaitStep(false, true, false, ends, 30));
+  TEST_ASSERT_EQUAL(0u, tgIdleSleepMs(ends, 0, 5000));
+  TEST_ASSERT_EQUAL((int)TgWait::Keep, (int)tgWaitStep(false, true, false, tgIdleEnds(false, false, false, true), 30));
+  TEST_ASSERT_TRUE(tgIdleEnds(true, false, false, true) && tgIdleEnds(false, true, false, true) &&
+                   tgIdleEnds(false, false, false, false));
+  TEST_ASSERT_NOT_EQUAL((int)TgWait::Yield, (int)tgWaitStep(true, true, false, ends, 30));   // bytes win
+  TEST_ASSERT_NOT_EQUAL((int)TgWait::Yield, (int)tgWaitStep(false, true, false, ends, 0));   // a Check is never cut
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_wait_step_over_every_input);
@@ -279,5 +295,6 @@ int main() {
   RUN_TEST(test_steady_local_stream_never_starves_telegram);
   RUN_TEST(test_telegram_racing_a_local_turn_is_served_once);
   RUN_TEST(test_telegram_outage_backoff_never_holds_a_local_turn);
+  RUN_TEST(test_a_staged_routine_change_ends_an_idle_wait);
   return UNITY_END();
 }

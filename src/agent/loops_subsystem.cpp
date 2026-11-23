@@ -1105,6 +1105,13 @@ void drainWebMutations() {
 }
 
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+bool webMutationsWaiting() {
+  portENTER_CRITICAL(&s_mux);
+  const bool waiting = !s_pending.empty();
+  portEXIT_CRITICAL(&s_mux);
+  return waiting;
+}
+
 // ---- engine 2: the schedule tool's view of the table (lane RB-U1b, schedule_device.cpp) -------
 void withTable(const std::function<void(std::vector<LoopRecord>&)>& fn) {
   Lock lk;
