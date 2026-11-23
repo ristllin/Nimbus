@@ -866,14 +866,14 @@ Status CompactDriver::step(const IdleCtx& ctx, CompactOutcome& out) {
 
 // Lane E2-FIX9: a turn's attempt that cannot run says why in the log, every time (an idle step stays quiet: the
 // next turn asks again), so a conversation never grows past its due mark without a line.
-void CompactDriver::turnNote(const IdleCtx& ctx, const char* why) const {
-  if (ctx.urgency != Urgency::None) hlog::logf("compact(%s): not compacted at this turn: %s", d_.chatKey.c_str(), why);
-}
+// (The reasons are whole log formats, never separate literals: the model-text catalog reads a plain engine file's
+// string literals.)
+bool CompactDriver::turnAsks(const IdleCtx& ctx) const { return ctx.urgency != Urgency::None; }
 
 Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   out.thru = d_.head()->thru;
   if (!ctx.clockSet || !ctx.now) {   // the day rule cannot be applied without a clock
-    turnNote(ctx, "the clock is not set");
+    if (turnAsks(ctx)) hlog::logf("compact(%s): not compacted at this turn: the clock is not set", d_.chatKey.c_str());
     if (manual_) endManual(texts::device_notes::kCompactNoClock);
     return Status::success();
   }
@@ -883,7 +883,8 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   bool due = false;
   Status s = planIfDue(ctx, plan, due);
   if (!s.ok()) {
-    turnNote(ctx, "the slice could not be planned");
+    if (turnAsks(ctx))
+      hlog::logf("compact(%s): not compacted at this turn: the slice could not be planned", d_.chatKey.c_str());
     if (manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
     return s;
   }
@@ -896,7 +897,9 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
 Status CompactDriver::onDue(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out) {
   if (pendingValid()) return swapPending(ctx.now, out);
   if (!plan.thru) {
-    turnNote(ctx, "no turn may go (the newest six owner turns, an open turn or a running job hold them)");
+    if (turnAsks(ctx))
+      hlog::logf("compact(%s): not compacted at this turn: no turn may go (the newest six owner turns, an open turn or a "
+                 "running job hold them)", d_.chatKey.c_str());
     return noSlice(plan, out);
   }
   if (manual_ && manualAsks_ >= kCompactManualRequests) {
@@ -1122,7 +1125,7 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   std::vector<SummarizerRung> rungs;
   if (d_.rungs) d_.rungs(rungs);
   if (rungs.empty()) {
-    turnNote(ctx, "no summarizer is set up");
+    if (turnAsks(ctx)) hlog::logf("compact(%s): not compacted at this turn: no summarizer is set up", d_.chatKey.c_str());
     if (manual_) endManual(texts::device_notes::kCompactFailed);
     return Status::success();
   }
