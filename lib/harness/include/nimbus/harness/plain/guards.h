@@ -138,8 +138,10 @@ struct GuardProgress {
 enum class SoftCheck : uint8_t { None = 0, GoOn = 1, Stop = 2 };
 
 // One request's tokens as the exchange reports them (prompt is the uncached part on every wire).
+// cacheWrite1h is the part of cacheWrite written with the 1-hour lifetime (Anthropic's
+// cache_creation.ephemeral_1h_input_tokens): billed at twice the input rate (lane E2-CACHE).
 struct RequestTokens {
-  uint32_t prompt = 0, output = 0, cacheRead = 0, cacheWrite = 0;
+  uint32_t prompt = 0, output = 0, cacheRead = 0, cacheWrite = 0, cacheWrite1h = 0;
 };
 
 // An unattended turn's limits (today's).
@@ -154,7 +156,8 @@ Status checkGuards(const GuardLimits& limits, const GuardState& state, GuardTrip
 // one that is not progressing answers Stop with the guard reached in `which`.
 SoftCheck checkSoftGuards(const GuardLimits& limits, const GuardState& state, GuardProgress& progress,
                           GuardTrip& which);
-// One request's spend at the head's rates (0 for a head with no price).
+// One request's spend at the head's rates (0 for a head with no price): the 5-minute writes at the
+// head's write rate, the 1-hour writes at twice its input rate (the provider's published rate).
 uint32_t requestMicroUsd(const HeadCost& cost, const RequestTokens& tokens);
 // Declared pure: suppression may answer a repeat from the earlier result.
 Status isPureTool(const std::string& name, bool& out);

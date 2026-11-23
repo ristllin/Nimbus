@@ -85,6 +85,10 @@ struct RenderInput {
   BulkReadFn bulk;                                    // whole bulk results (every turn's, E2-VERB)
   PhotoFn photo;                                      // pixels of the visible photos
   const LadderState* ladder = nullptr;                // the overflow ladder (null: no rung)
+  // Lane E2-CACHE: the cache points on the stable prefix (the system blocks and the end of the
+  // previous turn) carry the provider's 1-hour lifetime; the moving last block keeps 5 minutes.
+  // False: every point has the 5-minute lifetime (what the request carried before).
+  bool longCache = false;
 };
 
 // Why the model stopped.

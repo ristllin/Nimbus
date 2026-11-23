@@ -88,6 +88,9 @@ struct PlainRigConfig {
   // Boot refuses a chat with no compaction installed on hooks() (ruling 91 blockers/F6) unless this
   // names why (plain::EngineDeps::noCompaction). RB-I2 installs the hosted compaction here.
   const char* noCompaction = nullptr;
+  // plain::EngineDeps::stablePrefix (lane E2-CACHE): the owner's conversation keeps its system blocks
+  // frozen between the listed events and its stable cache points for 1 hour. Off by default.
+  bool stablePrefix = false;
 };
 
 // How a turn ended, from the host's side. The engine decides every owner-facing byte; the
@@ -301,6 +304,7 @@ class PlainRig {
     d.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& out) { return setup(t, out); };
     d.noCompaction = cfg_.noCompaction;
     d.recentFiles = b_.recentFiles;
+    d.stablePrefix = cfg_.stablePrefix;
     return d;
   }
 

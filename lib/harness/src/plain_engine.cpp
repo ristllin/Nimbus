@@ -13,6 +13,7 @@
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/exchange.h"
+#include "nimbus/harness/plain/prefix.h"   // the frozen system part (lane E2-CACHE)
 #include "nimbus/harness/plain/rails.h"   // the item taint rule (RB-RL)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
@@ -57,6 +58,13 @@ struct PlainEngine::ChatState {
   // the newest RAM q already appended; qShift and turnShift move RAM numbers past the stored
   // ones (set at the first append, kept across retries so a partial merge resumes in order).
   bool unloaded = false;
+  // The frozen system part (lane E2-CACHE, EngineDeps::stablePrefix): what the requests send and what
+  // was last seen of its parts; its record beside the transcript. prefixStore: Untried (not read yet),
+  // Known (read, or listed as absent: it may be written), Unread (the card did not answer: never
+  // written over, read again at the next turn open). prefixDirty: RAM is ahead of the record.
+  FrozenPrefix prefix;
+  enum class PrefixStore : uint8_t { Untried = 0, Known = 1, Unread = 2 } prefixStore = PrefixStore::Untried;
+  bool prefixDirty = false;
   bool shiftSet = false;
   uint64_t mergedThru = 0;
   uint64_t qShift = 0;
@@ -590,7 +598,7 @@ class TurnRun {
   Status openChanges() {
     const bool wasCold = cold();
     c_.afterRestart = false;
-    if (d_.recentFiles) {
+    if (d_.recentFiles && !d_.stablePrefix) {   // stablePrefix: compose() reads the list itself
       const std::string before = c_.recent.text();
       (void)c_.recent.atOpen(wasCold, d_.recentFiles, t_.tz);
       if (c_.recent.text() != before) event("change:recent-files");
@@ -605,16 +613,96 @@ class TurnRun {
     std::vector<tx::DigestEntry> archive;
     f.digestBlock.clear();
     if (!c_.live.empty()) (void)tx::digestBlock(c_.live, t_.ctx.profile, f.digestBlock, archive);
-    f.recentFiles = c_.recent.text();
+    f.recentFiles = d_.stablePrefix ? filesNow() : c_.recent.text();
     Status st = composeSystem(f, t_.system);
     if (st.ok()) st = toolManifest(f, t_.tools);
     if (!st.ok()) return st;
     t_.wire = t_.setup.wire;
-    t_.end.promptHash = fnv1a(fnv1a(fnv1a(2166136261u, t_.system.core), t_.system.notes), t_.system.digests);
     uint32_t h = 2166136261u;
     for (const ToolSpec& s : t_.tools) h = fnv1a(fnv1a(fnv1a(h, s.name), s.description), s.schemaJson);
     t_.end.manifestHash = h;
+    if (d_.stablePrefix) freeze(f, h);
+    t_.end.promptHash = fnv1a(fnv1a(fnv1a(2166136261u, t_.system.core), t_.system.notes), t_.system.digests);
     return Status::success();
+  }
+
+  // ---- the frozen system part (lane E2-CACHE, plain/prefix.h) -------------------------
+  // The recent-files list as the store holds it now ("" with no list or no answer).
+  std::string filesNow() const {
+    if (!d_.recentFiles) return std::string();
+    tx::RecentFilesBlock b;
+    (void)b.atOpen(true, d_.recentFiles, t_.tz);
+    return b.text();
+  }
+  PrefixNow prefixNow(const RequestFacts& f, uint32_t manifest) const {
+    PrefixNow n;
+    n.blocks = t_.system;
+    n.manifestHash = manifest;
+    n.digestText = f.digestBlock;
+    n.files = f.recentFiles;
+    n.stub = c_.head.stub;
+    n.dropped = c_.droppedThru;
+    n.now = epoch();
+    n.lastReqAt = c_.head.lastReqAt;
+    n.lifetimeS = kCacheLongS;
+    return n;
+  }
+  bool prefixStorable() const { return d_.files && d_.log->isOpen() && !c_.unloaded; }
+  // The record, read once it can be: a record read back is what was sent before a chat switch or a
+  // restart; one that does not decode is a torn write, replaced; an unanswered read is never "absent".
+  void loadFrozen() {
+    if (c_.prefixStore == PlainEngine::ChatState::PrefixStore::Known || !prefixStorable()) return;
+    FrozenPrefix stored;
+    const Status st = loadPrefix(*d_.files, d_.chatKey, stored);
+    if (st.err == Err::Io) {
+      if (c_.prefixStore != PlainEngine::ChatState::PrefixStore::Unread)
+        hlog::logf("plain(%s): the prefix record could not be read (%s): not written until it can be", d_.chatKey.c_str(),
+                   st.where);
+      c_.prefixStore = PlainEngine::ChatState::PrefixStore::Unread;
+      return;
+    }
+    if (st.err == Err::Torn) hlog::logf("plain(%s): the prefix record does not decode: rendered afresh", d_.chatKey.c_str());
+    c_.prefixStore = PlainEngine::ChatState::PrefixStore::Known;
+    if (c_.prefix.valid) c_.prefixDirty = true;   // RAM went out after it: RAM is what the provider holds
+    else if (st.ok()) c_.prefix = std::move(stored);
+  }
+  void saveFrozen() {
+    if (!c_.prefixDirty || c_.prefixStore != PlainEngine::ChatState::PrefixStore::Known || !prefixStorable()) return;
+    const Status st = savePrefix(*d_.files, d_.chatKey, c_.prefix);
+    if (st.ok()) c_.prefixDirty = false;   // else kept dirty: written again at the next turn open
+    else hlog::logf("plain(%s): the prefix record was not written (%s): tried again next turn", d_.chatKey.c_str(), st.where);
+  }
+  // The turn sends the frozen blocks unless a listed event happened; then they are rendered afresh,
+  // named as a change point.
+  void freeze(const RequestFacts& f, uint32_t manifest) {
+    loadFrozen();
+    const PrefixNow now = prefixNow(f, manifest);
+    const PrefixRender why = decidePrefix(c_.prefix, now);
+    if (why != PrefixRender::None) {
+      renderPrefix(c_.prefix, now);
+      c_.prefixDirty = true;
+      event(std::string("change:") + prefixRenderSlug(why));
+    }
+    t_.system = c_.prefix.blocks;
+    saveFrozen();
+  }
+  // At the close of a turn that ran calls: what the turn itself changed (a pinned note, a new file)
+  // is seen now, so the next open does not take it for an outside change. The blocks stay as sent.
+  void seeOwnChanges() {
+    if (!d_.stablePrefix || !c_.prefix.valid || !t_.end.tools || !d_.setup) return;
+    std::unique_ptr<TurnSetup> s(new (std::nothrow) TurnSetup());
+    if (!s || !d_.setup(t_.ctx, *s).ok()) return;
+    s->facts.turn = &t_.ctx;
+    s->facts.digestBlock.clear();
+    s->facts.recentFiles.clear();
+    SystemBlocks b;
+    if (!composeSystem(s->facts, b).ok()) return;
+    const std::string files = filesNow();
+    if (b.notes == c_.prefix.seenNotes && files == c_.prefix.seenFiles) return;
+    c_.prefix.seenNotes = b.notes;
+    c_.prefix.seenFiles = files;
+    c_.prefixDirty = true;
+    saveFrozen();
   }
 
   // ---- one request ----------------------------------------------------------------------
@@ -700,6 +788,7 @@ class TurnRun {
     r.toolChoiceNone = t_.lastRound;
     r.photo = t_.setup.photo;
     r.ladder = &t_.ladder;
+    r.longCache = d_.stablePrefix;   // the stable points keep 1 hour (lane E2-CACHE)
     tx::TxLog* log = d_.log;
     r.bulk = [log](const std::string& handle, std::string& out) { return log->readBulk(handle, 0, tx::kBulkMaxBytes, out); };
     // The time limit for every round; the guard's last round may run to the turn's hard wall.
@@ -733,14 +822,19 @@ class TurnRun {
       t_.end.exchanges.push_back(exchangeFacts(ex));   // with the request by reference (RB-E3)
     }
     const orch::TokenUsage& u = ex.step.usage;
+    if (ex.requests)   // one line per answered request: the cache split as the provider billed it (E2-CACHE)
+      hlog::logf("plain(%s): usage in=%u cacheR=%u cacheW=%u cacheW1h=%u out=%u", d_.chatKey.c_str(), (unsigned)u.promptTokens,
+                 (unsigned)u.cacheReadTokens, (unsigned)u.cacheWriteTokens, (unsigned)u.cacheWrite1hTokens,
+                 (unsigned)u.completionTokens);
     t_.end.promptTokens += u.promptTokens;
     t_.end.outputTokens += u.completionTokens;
     t_.end.cacheReadTokens += u.cacheReadTokens;
     t_.end.cacheWriteTokens += u.cacheWriteTokens;
+    t_.end.cacheWrite1hTokens += std::min(u.cacheWrite1hTokens, u.cacheWriteTokens);
     // The guards' inputs: size counts every prompt token (cached ones too); spend prices them. An
     // answer that reports no usage at all still counts: a floor from the request's bytes (about 3.5 B
     // a token, kDefaultRequestTokens' rule) at the input rate, named by an event (ruling 79 item 1).
-    RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens};
+    RequestTokens rt{u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens, u.cacheWrite1hTokens};
     const bool answered = ex.requests && (ex.err == ExchangeErr::None || ex.err == ExchangeErr::Cut);
     // Compaction's hot trigger reads the last answered request's whole prompt, never the turn's sum
     // (ruling 91 T4-ADV-01): maxRequestIn is input plus cache in every provider's meaning; a wire
@@ -1426,6 +1520,7 @@ class TurnRun {
     afterDeliver();
     if (!t_.storeFailed) supersede();
     if (!t_.storeFailed) st = storeEnd();
+    seeOwnChanges();   // after delivery: it reads the notes and the file list once more
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
     c_.head.nextQ = c_.nextQ;
     if (d_.log->isOpen()) (void)d_.log->writeHead(c_.head);   // a cache: Io loses nothing
@@ -1440,7 +1535,7 @@ class TurnRun {
     if (t_.sawOutside) event("change:outside");
     if (t_.sawMeta) event("change:thinking");   // closed-turn thinking is not replayed (ruling 13)
     if (t_.longArgs) event("change:long-args");   // its long arguments show as stubs from now (RB-H81)
-    if (d_.recentFiles && t_.fileSetChanged) {
+    if (d_.recentFiles && t_.fileSetChanged && !d_.stablePrefix) {
       const std::string before = c_.recent.text();
       (void)c_.recent.atClose(true, d_.recentFiles, t_.tz);
       if (c_.recent.text() != before) event("change:recent-files");

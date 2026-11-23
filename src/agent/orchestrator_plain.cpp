@@ -485,12 +485,12 @@ void logTurn(const plain::ChatBinding& b, const plain::TurnOutcome& out, const p
   for (const auto& x : e.exchanges) reqBytes = x.requestBytes > reqBytes ? x.requestBytes : reqBytes;
   const nimbus::orch::tx::CardHolds& h = txdev::cardTxFiles().holds();
   alogf("e2: turn chat=%s model=%s %s@%s cause=%s ms=%u rounds=%u tools=%u req=%u maxReqB=%u prompt=%u out=%u "
-        "cacheR=%u cacheW=%u lastPrompt=%u uUSD=%u parts=%u/%u",
+        "cacheR=%u cacheW=%u lastPrompt=%u uUSD=%u parts=%u/%u cacheW1h=%u",
         b.config().chatId.c_str(), b.config().model.c_str(), nimbus::orch::tx::errSlug(st.err), (st.where ? st.where : ""),
         e.cause.c_str(), (unsigned)ms, (unsigned)out.rounds, (unsigned)out.toolCalls, (unsigned)out.headRequests,
         (unsigned)reqBytes, (unsigned)e.promptTokens, (unsigned)e.outputTokens, (unsigned)e.cacheReadTokens,
         (unsigned)e.cacheWriteTokens, (unsigned)e.lastPromptTokens, (unsigned)e.microUsd, (unsigned)b.sentParts(),
-        (unsigned)(b.sentParts() + b.refusedParts()));
+        (unsigned)(b.sentParts() + b.refusedParts()), (unsigned)e.cacheWrite1hTokens);
   alogf("e2: mem stackFree=%u intLargestMin=%u intLargestNow=%u psramFree=%u psramLargest=%u reqs=%u "
         "holdMs append=%u whole=%u rename=%u read=%u list=%u n=%u/%u/%u/%u refused=%u/%u/%u readTotalMs=%u readB=%u",
         (unsigned)uxTaskGetStackHighWaterMark(nullptr), (unsigned)s_transport.minLargest, (unsigned)internalLargest(),

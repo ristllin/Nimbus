@@ -856,7 +856,7 @@ void clearItem(Item& it) {
   TurnEndFacts& e = it.end;
   e.cause.clear(), e.exchanges.clear(), e.events.clear();
   e.rounds = e.tools = e.headRequests = e.probeRequests = 0;
-  e.promptTokens = e.outputTokens = e.cacheReadTokens = e.cacheWriteTokens = 0;
+  e.promptTokens = e.outputTokens = e.cacheReadTokens = e.cacheWriteTokens = e.cacheWrite1hTokens = 0;
   e.microUsd = e.ms = e.promptHash = e.manifestHash = e.lastPromptTokens = 0;
 }
 

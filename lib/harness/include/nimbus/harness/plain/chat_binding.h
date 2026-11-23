@@ -165,6 +165,7 @@ inline nimbus::orch::TurnSpend turnSpendOf(const TurnOutcome& out, const std::st
   u.completionTokens = out.end.outputTokens;
   u.cacheReadTokens = out.end.cacheReadTokens;
   u.cacheWriteTokens = out.end.cacheWriteTokens;
+  u.cacheWrite1hTokens = out.end.cacheWrite1hTokens;   // the ledger prices it at 2x (R3; lane E2-CACHE)
   u.responses = out.headRequests;
   u.maxRequestIn = out.end.lastPromptTokens;
   s.add(provider.c_str(), model.c_str(), u);   // files nothing when nothing was billed
@@ -673,6 +674,7 @@ class ChatBinding {
     e.dispatch = [this](const ToolCall& c, const TurnCtx& t) { return dispatchCall(c, t); };
     e.setup = [this](const TurnCtx& t, TurnSetup& out) { return setup(t, out); };
     if (d_.recentFiles) e.recentFiles = d_.recentFiles(who_);
+    e.stablePrefix = true;   // lane E2-CACHE: a person's chat keeps its system part across switches
     if (d_.progress.send)
       e.progress = [this](const ProgressEvent& ev) {
         if (reporter_) (void)reporter_->tick(ev);

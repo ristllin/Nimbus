@@ -43,6 +43,7 @@ TokenUsage tokensOf(const plain::FireReport& r) {
   t.completionTokens = r.outcome.end.outputTokens;
   t.cacheReadTokens = r.outcome.end.cacheReadTokens;
   t.cacheWriteTokens = r.outcome.end.cacheWriteTokens;
+  t.cacheWrite1hTokens = r.outcome.end.cacheWrite1hTokens;
   return t;
 }
 

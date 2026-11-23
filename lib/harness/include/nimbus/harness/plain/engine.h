@@ -91,7 +91,8 @@ inline void applyCeiling(const TurnCeiling& c, GuardLimits& limits, uint32_t& ha
   lower(hardWallMs, c.hardWallMs);
 }
 
-// What the binding gives for one turn, asked once at turn open. The engine sets
+// What the binding gives for one turn, asked at turn open (and, with EngineDeps::stablePrefix, once
+// more at the close of a turn that ran calls, to see what the turn itself changed). The engine sets
 // facts.turn, facts.digestBlock and facts.recentFiles itself (it owns the digests and the
 // recent-files list); the rest is the binding's: the registry (classOf decides effect and
 // pure), notes, skills, the time zone, the person's flags.
@@ -143,6 +144,11 @@ struct EngineDeps {
   // import has not answered Done, tx/migrate.h's contract): boot does not open the log and the
   // chat runs unloaded, as after an Io. Null or false: boot opens the log.
   std::function<bool()> holdUnloaded;
+  // Lane E2-CACHE (plain/prefix.h): a person's conversation keeps its system blocks frozen between the
+  // listed events (a record beside the transcript, so a chat switch or a restart sends the same bytes)
+  // and its stable cache points carry the 1-hour lifetime. False (a routine's own run, the battery by
+  // default): the blocks are composed afresh at every turn open and every point has 5 minutes.
+  bool stablePrefix = false;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before

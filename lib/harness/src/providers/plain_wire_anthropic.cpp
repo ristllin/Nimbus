@@ -36,6 +36,9 @@
 // are no notes), the end of the system (the digests block), the last block of the
 // previous turn and the moving last block. Thinking blocks never carry one. A point is a
 // marker only: the bytes before it do not change when a later item is appended.
+// RenderInput::longCache (lane E2-CACHE): the first three carry "ttl":"1h" and the moving
+// last block keeps the 5-minute lifetime. The API wants a longer lifetime before a shorter
+// one in request order (tools, system, messages): the moving point is always the last.
 //
 // The ladder (RenderInput::ladder, the engine's LadderState): rung 1 closedThrough raises the
 // pointer (with stubPointer and the newest x item's), rung 2 stubThrough is
@@ -73,6 +76,14 @@ constexpr const char* kDefaultHost = "api.anthropic.com";
 constexpr const char* kVersion = "2023-06-01";
 constexpr const char* kFilesBeta = "files-api-2025-04-14";
 constexpr const char* kCacheMark = ",\"cache_control\":{\"type\":\"ephemeral\"}";
+constexpr const char* kCacheMarkLong = ",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}";
+
+// A cache point: the offset its marker goes in front of, and whether it is a stable one (the
+// 1-hour lifetime under RenderInput::longCache).
+struct Point {
+  size_t at = 0;
+  bool stable = false;
+};
 
 // ---- small rules ---------------------------------------------------------------------
 
@@ -614,7 +625,7 @@ void omissionBlock(Render& r) {
 }
 
 // The system blocks; the offsets of their two points.
-void systemBlocks(BodyWriter& w, const std::string& body, const SystemBlocks& s, std::vector<size_t>& points) {
+void systemBlocks(BodyWriter& w, const std::string& body, const SystemBlocks& s, std::vector<Point>& points) {
   const std::string* blocks[] = {&s.core, &s.notes, &s.digests};
   size_t closeAt[3] = {0, 0, 0};
   bool any = false;
@@ -630,8 +641,8 @@ void systemBlocks(BodyWriter& w, const std::string& body, const SystemBlocks& s,
   }
   w.endArray();
   const size_t stable = shown[1] ? closeAt[1] : closeAt[0];
-  if (stable) points.push_back(stable);
-  if (shown[2]) points.push_back(closeAt[2]);
+  if (stable) points.push_back(Point{stable, true});
+  if (shown[2]) points.push_back(Point{closeAt[2], true});
 }
 
 Status toolsArray(BodyWriter& w, const RenderInput& in) {
@@ -649,26 +660,30 @@ Status toolsArray(BodyWriter& w, const RenderInput& in) {
 }
 
 // The two message points: the last block of the previous turn and the moving last block.
-void messagePoints(const std::vector<Mark>& marks, uint32_t openTurn, std::vector<size_t>& points) {
+void messagePoints(const std::vector<Mark>& marks, uint32_t openTurn, std::vector<Point>& points) {
   if (marks.empty()) return;
   for (size_t i = marks.size(); i-- > 0;)
     if (marks[i].turn < openTurn) {
-      if (i + 1 != marks.size()) points.push_back(marks[i].closeAt);
+      if (i + 1 != marks.size()) points.push_back(Point{marks[i].closeAt, true});
       break;
     }
-  points.push_back(marks.back().closeAt);
+  points.push_back(Point{marks.back().closeAt, false});
 }
 
 // Each point is the marker written before its block's closing brace; the photo splices
-// after it move with the bytes.
-void placePoints(std::vector<size_t> points, HttpRequest& out) {
-  std::sort(points.begin(), points.end());
-  points.erase(std::unique(points.begin(), points.end()), points.end());
-  const size_t len = std::strlen(kCacheMark);
+// after it move with the bytes. Two points on one block are one (the stable lifetime wins).
+void placePoints(std::vector<Point> points, bool longCache, HttpRequest& out) {
+  std::sort(points.begin(), points.end(), [](const Point& a, const Point& b) {
+    return a.at != b.at ? a.at < b.at : a.stable > b.stable;
+  });
+  points.erase(std::unique(points.begin(), points.end(), [](const Point& a, const Point& b) { return a.at == b.at; }),
+               points.end());
   for (size_t i = points.size(); i-- > 0;) {
-    out.body.insert(points[i], kCacheMark, len);
+    const char* mark = longCache && points[i].stable ? kCacheMarkLong : kCacheMark;
+    const size_t len = std::strlen(mark);
+    out.body.insert(points[i].at, mark, len);
     for (BodySplice& sp : out.splices)
-      if (sp.at > points[i]) sp.at += len;
+      if (sp.at > points[i].at) sp.at += len;
   }
 }
 
@@ -708,7 +723,7 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   out.body.reserve(reserveFor(in, f));
 
   BodyWriter w(out.body, &out.splices);
-  std::vector<size_t> points;
+  std::vector<Point> points;
   w.beginObject().key("model").str(in.turn->model).key("max_tokens").unum(in.maxTokens);
   if (!in.head->effort.empty()) w.key("output_config").beginObject().key("effort").str(in.head->effort).endObject();
   systemBlocks(w, out.body, *in.system, points);
@@ -727,7 +742,7 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   if (!m.any()) return Status::fail(Err::InvalidArgument, "plain::anthropic.render.noMessages");
 
   messagePoints(m.marks(), in.turn->turn, points);
-  placePoints(points, out);
+  placePoints(points, in.longCache, out);
 
   coordinates(in, r.fileRef, out);
   return Status::success();

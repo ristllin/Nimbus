@@ -104,6 +104,7 @@ class Engine2Host {
     c.tzNow = [this] { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); };
     c.dayStartMin = o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin;
     c.profile = o_.profile;
+    c.stablePrefix = true;   // lane E2-CACHE: one long conversation, written to in clusters
     PlainRigBindings b;
     b.platform = &platform_;
     b.transport = transport();
@@ -162,8 +163,13 @@ class Engine2Host {
     if (t.ending != PlainEnding::Reply)
       std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending), t.stated.c_str());
     if (t.out.parkHost) std::fprintf(stderr, "[nimbusd] engine2: the head's key or credit was refused\n");
-    std::fprintf(stderr, "[nimbusd] engine2: turn rounds=%u calls=%u requests=%u\n", unsigned(t.out.rounds),
-                 unsigned(t.out.toolCalls), unsigned(t.out.headRequests));
+    const nimbus::orch::tx::TurnEndFacts& e = t.out.end;
+    std::fprintf(stderr,
+                 "[nimbusd] engine2: turn rounds=%u calls=%u requests=%u in=%u cacheR=%u cacheW=%u cacheW1h=%u out=%u "
+                 "uUSD=%u\n",
+                 unsigned(t.out.rounds), unsigned(t.out.toolCalls), unsigned(t.out.headRequests), unsigned(e.promptTokens),
+                 unsigned(e.cacheReadTokens), unsigned(e.cacheWriteTokens), unsigned(e.cacheWrite1hTokens),
+                 unsigned(e.outputTokens), unsigned(e.microUsd));
     return t;
   }
 

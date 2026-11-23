@@ -165,8 +165,10 @@ Status checkGuards(const GuardLimits& limits, const GuardState& state, GuardTrip
 uint32_t requestMicroUsd(const HeadCost& cost, const RequestTokens& t) {
   const uint64_t cacheR = cost.cacheReadMicroPerM ? cost.cacheReadMicroPerM : cost.inMicroPerM / 10;
   const uint64_t cacheW = cost.cacheWriteMicroPerM ? cost.cacheWriteMicroPerM : cost.inMicroPerM * 5 / 4;
+  const uint32_t long1h = std::min(t.cacheWrite1h, t.cacheWrite);
   const uint64_t sum = costOf(t.prompt, cost.inMicroPerM) + costOf(t.output, cost.outMicroPerM) +
-                       costOf(t.cacheRead, cacheR) + costOf(t.cacheWrite, cacheW);
+                       costOf(t.cacheRead, cacheR) + costOf(t.cacheWrite - long1h, cacheW) +
+                       costOf(long1h, cost.inMicroPerM * 2);
   return clamp32(sum);
 }
 
