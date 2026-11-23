@@ -398,6 +398,9 @@ class CompactDriver {
              Asked& out);
   Status askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan, bool prepareOnly,
                     CompactOutcome& out, bool& parked);
+  AnswerForm formFor(const SummarizerRung& rung) const;
+  void noteForm(const SummarizerRung& rung, const Status& s);
+  bool secondTry(const Status& s, const Asked& asked, AnswerForm form, uint32_t untilMs) const;
   Status swap(const SlicePlan& plan, const std::string& text, uint64_t now, CompactOutcome& out);
   void loadCtl();
   void saveCtl();

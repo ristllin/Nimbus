@@ -45,6 +45,10 @@ uint32_t msLeft(const Platform& p, uint32_t untilMs) {
   const int32_t left = (int32_t)(untilMs - (p.nowMs ? p.nowMs() : untilMs));
   return left > 0 ? (uint32_t)left : 0;
 }
+// One request's window: its own 45 s, or less inside an urgent attempt (what is left of its time).
+uint32_t requestWindow(const Platform& p, uint32_t untilMs) {
+  return untilMs ? std::min(kCompactRequestMs, msLeft(p, untilMs)) : kCompactRequestMs;
+}
 bool answerNotTaken(const Status& s) {
   return s.err == Err::InvalidArgument && s.where &&
          (s.where == kNotTakenRefused || s.where == kNotTakenForm || s.where == kNotTakenHttp400 ||
@@ -1115,13 +1119,39 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   return s.err == Err::TooLarge ? s : Status::success();
 }
 
-// The exchange and the merge. An answer that was sent but not taken (refused, not the change list, no
-// change line: InvalidArgument) is asked once more at once as free lines, then the stated wait holds.
+// The form a rung is asked in first: lines for a model whose provider refused the structured form by name.
+AnswerForm CompactDriver::formFor(const SummarizerRung& rung) const {
+  const std::string key = rung.host + "/" + rung.model;
+  return std::find(noForm_.begin(), noForm_.end(), key) != noForm_.end() ? AnswerForm::Lines : firstAnswerForm(rung);
+}
+
+// A provider that refused the form by name: its model is asked in lines from now on (until a restart).
+void CompactDriver::noteForm(const SummarizerRung& rung, const Status& s) {
+  const std::string key = rung.host + "/" + rung.model;
+  if (s.where != kNotTakenForm || noForm_.size() >= kNoFormModels ||
+      std::find(noForm_.begin(), noForm_.end(), key) != noForm_.end())
+    return;
+  noForm_.push_back(key);
+  hlog::logf("compact(%s): %s takes no structured form: lines from now on", d_.chatKey.c_str(), key.c_str());
+}
+
+// The second try: only for an answer sent and not taken, never after a refusal (the same content goes to the same
+// model), never past an urgent attempt's time.
+bool CompactDriver::secondTry(const Status& s, const Asked& asked, AnswerForm form, uint32_t untilMs) const {
+  if (!answerNotTaken(s) || s.where == kNotTakenRefused || !asked.requests || asked.parked || form != AnswerForm::Changes)
+    return false;
+  if (untilMs && msLeft(*d_.platform, untilMs) < kCompactMinRequestMs) {
+    hlog::logf("compact(%s): no time left in this turn for a second try", d_.chatKey.c_str());
+    return false;
+  }
+  return true;
+}
+
+// The exchange and the merge. An answer that was sent but not taken (secondTry) is asked once more at once as free
+// lines, then the stated wait holds.
 Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan,
                                  bool prepareOnly, CompactOutcome& out, bool& parked) {
-  const std::string formKey = rung.host + "/" + rung.model;
-  AnswerForm form = firstAnswerForm(rung);
-  if (std::find(noForm_.begin(), noForm_.end(), formKey) != noForm_.end()) form = AnswerForm::Lines;
+  AnswerForm form = formFor(rung);
   const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
   const uint32_t untilMs = urgent ? d_.platform->nowMs() + kCompactUrgentMs : 0;
   Status s;
@@ -1131,20 +1161,9 @@ Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung,
     out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + asked.requests);
     out.ran = out.ran || asked.requests > 0;
     parked = parked || asked.parked;
-    if (s.where == kNotTakenForm && noForm_.size() < kNoFormModels &&
-        std::find(noForm_.begin(), noForm_.end(), formKey) == noForm_.end()) {
-      noForm_.push_back(formKey);   // this model is asked in lines from now on (until a restart)
-      hlog::logf("compact(%s): %s takes no structured form: lines from now on", d_.chatKey.c_str(), formKey.c_str());
-    }
+    noteForm(rung, s);
     if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
-    // Never after a refusal (the same content goes to the same model), never past an urgent attempt's time.
-    const bool again = answerNotTaken(s) && s.where != kNotTakenRefused && asked.requests && !asked.parked &&
-                       form == AnswerForm::Changes;
-    if (!again) return s;
-    if (untilMs && msLeft(*d_.platform, untilMs) < kCompactMinRequestMs) {
-      hlog::logf("compact(%s): no time left in this turn for a second try", d_.chatKey.c_str());
-      return s;
-    }
+    if (!secondTry(s, asked, form, untilMs)) return s;
     form = AnswerForm::Lines;
     ctl_.paid += 1;   // the second request is counted like the first
     saveCtl();
@@ -1321,11 +1340,8 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   in.answerSchema = m.schema;
   // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut.
   for (uint16_t cap : {kSummarizerMaxTokens, kSummarizerRetryMaxTokens}) {
-    uint32_t window = kCompactRequestMs;
-    if (m.untilMs) {   // an urgent attempt: each request inside what is left of its time
-      window = std::min(window, msLeft(*d.platform, m.untilMs));
-      if (window < kCompactMinRequestMs) return Status::fail(Err::Io, "plain::CompactDriver.time");
-    }
+    const uint32_t window = requestWindow(*d.platform, m.untilMs);
+    if (window < kCompactMinRequestMs) return Status::fail(Err::Io, "plain::CompactDriver.time");
     in.maxTokens = cap;
     CappedWire capped(*wire, cap);
     ExchangeRequest req;

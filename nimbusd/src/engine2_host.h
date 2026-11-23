@@ -205,6 +205,13 @@ class Engine2Host {
   bool requestCompaction() { return driver_ && driver_->requestManual(); }
   // Lane E2-FIX7: the instance's ceiling is reached (no paid engine-2 request runs).
   bool paused() const { return o_.paused && o_.paused(); }
+  // The answer to the owner's /compact: queued (or already queued), or the pause line while paused (no summary
+  // runs past the ceiling, so none is promised).
+  std::string compactCommand() {
+    if (paused()) return kPausedLine;
+    return requestCompaction() ? "Compacting this conversation. A message follows when it is done."
+                               : "A compaction is already queued. A message follows when it is done.";
+  }
 
   // One unit of idle work (the compaction) between turns, on the engine thread. True when it
   // did work (a paid call may have run).

@@ -783,31 +783,33 @@ bool textAfter(const std::string& line, size_t end, std::string& text) {
   return line.size() > end && line[end] == ' ';
 }
 
+// An add's text. Digits right after the letter ("+Q12 eggs", "+F2026-11-04 ...", "+F1 text") stay in the text:
+// only an answer that numbers all its adds makes them ids (parseSummaryEdits), and then only the number and its
+// separator are left out. Lane E2-FIX7 (M2): a quantity or a date is never read as an id by itself.
+bool addOf(const std::string& line, SummaryEdit& e) {
+  e.op = SummaryOp::Add;
+  if (e.section == SummarySection::Files) return false;   // Files: the device's own section
+  if (line.size() < 3 || line[2] < '0' || line[2] > '9') return textAfter(line, 2, e.text);
+  size_t end = 2;
+  uint32_t n = 0;
+  size_t sep = idAt(line, 2, n, end) ? end : 2;
+  if (sep > 2 && sep < line.size() && line[sep] == ':') ++sep;
+  if (sep > 2 && sep < line.size() && line[sep] == ' ') {
+    e.named = n;
+    e.namedLen = (uint8_t)(sep - 2);
+  }
+  e.text = line.substr(2);
+  // Digits and nothing else ("+Q7") say no fact: unread, as before, never a line that reads "7".
+  return e.text.find_first_not_of("0123456789: \t") != std::string::npos;
+}
+
 // One change line: false when it is not one ("=" alone sets `none`).
 bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
   const std::string line = changeLine(raw);
   none = line == "=";
   const char op = line.empty() ? 0 : line[0];
   if ((op != '+' && op != '=' && op != '-') || line.size() < 2 || !sectionOf(line[1], e.section)) return false;
-  if (op == '+') {
-    e.op = SummaryOp::Add;
-    if (e.section == SummarySection::Files) return false;   // Files: the device's own section
-    // Digits right after the letter ("+Q12 eggs", "+F2026-11-04 ...", "+F1 text") stay in the text: only an
-    // answer that numbers all its adds makes them ids (parseSummaryEdits), and then only the number and its
-    // separator are left out. Lane E2-FIX7 (M2): a quantity or a date is never read as an id by itself.
-    if (line.size() < 3 || line[2] < '0' || line[2] > '9') return textAfter(line, 2, e.text);
-    size_t end = 2;
-    uint32_t n = 0;
-    size_t sep = idAt(line, 2, n, end) ? end : 2;
-    if (sep > 2 && sep < line.size() && line[sep] == ':') ++sep;
-    if (sep > 2 && sep < line.size() && line[sep] == ' ') {
-      e.named = n;
-      e.namedLen = (uint8_t)(sep - 2);
-    }
-    e.text = line.substr(2);
-    // Digits and nothing else ("+Q7") say no fact: unread, as before, never a line that reads "7".
-    return e.text.find_first_not_of("0123456789: \t") != std::string::npos;
-  }
+  if (op == '+') return addOf(line, e);
   size_t end = 2;
   if (!idAt(line, 2, e.id, end)) return false;
   e.op = op == '=' ? SummaryOp::Replace : SummaryOp::Drop;
