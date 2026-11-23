@@ -23,6 +23,7 @@
 
 #include <ArduinoJson.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <map>
@@ -141,6 +142,8 @@ struct Device {
     tools();
     pinned["rule-units"] = "metric units";
     store.push_back(tx::RecentFile{"journal/start.md", kEpoch0 - 86400});
+    store.push_back(tx::RecentFile{"lists/shopping.md", kEpoch0 - 2 * 3600});
+    store.push_back(tx::RecentFile{"log/daily.md", kEpoch0 - 3 * 3600});
   }
 
   // The head's own tools: note (pinned or not) and write_file change the stores they name.
@@ -168,10 +171,30 @@ struct Device {
         [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
           if (during) during();
           const std::string path = a["path"] | "";
-          store.push_back(tx::RecentFile{path, now()});
+          if (failFiles) return nimbus::orch::ToolResult::fail("not stored " + path);
+          touch(path);
           return nimbus::orch::ToolResult::ok("stored " + path);
         },
         plain::declSchema(*w, false));
+    // Lane E2-FIX8: an append, an edit and a delete of an existing file (a write to an existing path is an
+    // overwrite). Each stamps the path's write time (the store's createdAt) or takes the path out; with
+    // failFiles set each answers an error and changes nothing.
+    for (const char* name : {"append_file", "edit_file", "delete_file"}) {
+      const auto* d = plain::toolDecl(name);
+      TEST_ASSERT_NOT_NULL(d);
+      const bool del = std::string(name) == "delete_file";
+      reg.add(
+          d->name, d->description,
+          [this, del](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+            if (during) during();
+            const std::string path = a["path"] | "";
+            if (failFiles || !has(path)) return nimbus::orch::ToolResult::fail("no change to " + path);
+            if (del) drop(path);
+            else touch(path);
+            return nimbus::orch::ToolResult::ok((del ? "deleted " : "changed ") + path);
+          },
+          plain::declSchema(*d, false));
+    }
     const auto* r = plain::toolDecl("read_file");   // a read: shows what is there, never the head's own change
     reg.add(
         r->name, r->description,
@@ -184,6 +207,23 @@ struct Device {
         plain::declSchema(*r, false));
   }
 
+  bool has(const std::string& path) const {
+    return std::any_of(store.begin(), store.end(), [&](const tx::RecentFile& f) { return f.path == path; });
+  }
+  void drop(const std::string& path) {
+    store.erase(std::remove_if(store.begin(), store.end(), [&](const tx::RecentFile& f) { return f.path == path; }),
+                store.end());
+  }
+  // A write to `path` now: created, or its write time stamped (the store keeps one entry per path).
+  void touch(const std::string& path) {
+    drop(path);
+    store.push_back(tx::RecentFile{path, now()});
+  }
+  // Fills the store past the list's 600 B with files written a day or more ago, oldest last.
+  void fill(int n) {
+    for (int i = 0; i < n; ++i)
+      store.push_back(tx::RecentFile{"archive/old-" + std::to_string(i) + ".md", kEpoch0 - 2 * 86400 - (uint64_t)i * 3600});
+  }
   uint64_t now() const { return kEpoch0 + ms / 1000u; }
   void pause(uint32_t s) { ms += s * 1000u; }
 
@@ -247,6 +287,7 @@ struct Device {
   std::map<std::string, std::string> pinned, unpinned;
   std::vector<tx::RecentFile> store;
   bool storeDeaf = false;   // the file store does not answer
+  bool failFiles = false;   // every file call answers an error and changes nothing
   std::unique_ptr<plain::ChatBinding> binding;
   std::string resident;
   std::vector<Sent> sent;
@@ -312,14 +353,33 @@ std::string ruleA(const Device& dev, const std::string& chat) {
 }
 
 // One generated day: actions drawn from the list rule A must hold over.
-enum class Act { Chat, PinnedNote, UnpinnedNote, WriteFile, Switch, Restart, Pause, RoutineElsewhere };
+enum class Act {
+  Chat, PinnedNote, UnpinnedNote, WriteFile, Switch, Restart, Pause, RoutineElsewhere,
+  AppendFile, EditFile, OverwriteFile, DeleteFile   // lane E2-FIX8: changes to files that exist
+};
+constexpr uint32_t kActs = 12;
+
+// A file call's arguments as the tool's schema asks for them.
+std::string fileArgs(const std::string& tool, const std::string& path) {
+  const std::string p = "{\"path\":\"" + path + "\"";
+  if (tool == "append_file") return p + ",\"text\":\"one more line\"}";
+  if (tool == "edit_file") return p + ",\"old\":\"a\",\"new\":\"b\"}";
+  if (tool == "write_file") return p + ",\"content\":\"x\"}";
+  return p + "}";
+}
+
+// A file the store holds now, drawn by `r` ("" when it holds none).
+std::string existing(const Device& dev, uint32_t r) {
+  return dev.store.empty() ? std::string() : dev.store[r % dev.store.size()].path;
+}
 
 std::string runGenerated(uint32_t seed, int steps, std::vector<Act>* only = nullptr) {
   Device dev;
   std::mt19937 rng(seed);
+  if (seed % 2) dev.fill(30);   // half the days with a full list: a create pushes a line out, a delete lets one in
   dev.say("1001", "hello");
   for (int i = 0; i < steps; ++i) {
-    const Act a = only ? (*only)[i % only->size()] : (Act)(rng() % 8);
+    const Act a = only ? (*only)[i % only->size()] : (Act)(rng() % kActs);
     const std::string n = std::to_string(i);
     switch (a) {
       case Act::Chat:
@@ -355,6 +415,21 @@ std::string runGenerated(uint32_t seed, int steps, std::vector<Act>* only = null
         static const uint32_t kGaps[] = {200, 280, 600, 1200, 2400, 3500, 3700, 7200, 4 * 3600};
         dev.pause(kGaps[rng() % 9]);
         dev.say("1001", "after a pause " + n);
+        break;
+      }
+      case Act::AppendFile:
+      case Act::EditFile:
+      case Act::OverwriteFile:
+      case Act::DeleteFile: {
+        static const char* const kTool[] = {"append_file", "edit_file", "write_file", "delete_file"};
+        const std::string path = existing(dev, rng());
+        dev.pause(30 + rng() % 120);
+        if (path.empty()) {
+          dev.say("1001", "save file " + n, {sp::call("write_file", "{\"path\":\"notes/f" + n + ".md\",\"content\":\"x\"}")});
+          break;
+        }
+        const char* tool = kTool[(int)a - (int)Act::AppendFile];
+        dev.say("1001", std::string(tool) + " " + n, {sp::call(tool, fileArgs(tool, path))});
         break;
       }
       case Act::RoutineElsewhere:   // a routine's small request in another chat
@@ -455,7 +530,7 @@ static void test_a_note_saved_in_another_chat_reaches_this_one() {
 static void test_a_new_tool_changes_the_prefix() {
   Device dev;
   dev.say("1001", "one");
-  const auto* d = plain::toolDecl("append_file");
+  const auto* d = plain::toolDecl("list_files");
   dev.reg.add(d->name, d->description,
               [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("x"); },
               plain::declSchema(*d, false));
@@ -730,6 +805,94 @@ static void test_a_record_left_only_as_its_temporary_copy_is_read() {
   card.files["/mem/tx/1001/prefix.txt.tmp"].resize(10);   // a torn temporary copy: absent
   TEST_ASSERT_EQUAL((int)tx::Err::NotFound, (int)plain::loadPrefix(files, "1001", back).err);
 }
+// ---- lane E2-FIX8: a change to existing files by the turn's own successful calls (red on 970a707e9) ----
+// One turn whose only call is `tool` on `path`, between two plain turns; `full`: the store holds more
+// files than the list's 600 B shows. `during` runs inside the call (an outside change meanwhile).
+std::string ownChange(const char* tool, const std::string& path, bool full, std::function<void(Device&)> during = nullptr,
+                      bool fail = false) {
+  Device dev;
+  if (full) dev.fill(30);
+  dev.say("1001", "one");
+  dev.pause(90);
+  if (during) dev.during = [&dev, during] { during(dev); };
+  dev.failFiles = fail;
+  dev.say("1001", std::string("please ") + tool, {sp::call(tool, fileArgs(tool, path))});
+  dev.during = nullptr;
+  dev.failFiles = false;
+  dev.pause(90);
+  dev.say("1001", "next");
+  return ruleA(dev, "1001");
+}
+struct OwnCase {
+  const char* tool;
+  const char* path;
+  const char* what;
+};
+const OwnCase kOwnCases[] = {
+    {"write_file", "notes/new.md", "create"},        {"append_file", "log/daily.md", "append"},
+    {"edit_file", "lists/shopping.md", "edit"},      {"write_file", "journal/start.md", "overwrite"},
+    {"delete_file", "journal/start.md", "delete"},   {"append_file", "journal/start.md", "append to the oldest"},
+};
+static void test_create_append_edit_overwrite_delete_by_the_heads_own_call_keep_the_prefix() {
+  std::string broken;   // every case that rewrote, named
+  for (bool full : {false, true})
+    for (const OwnCase& c : kOwnCases) {
+      const std::string why = ownChange(c.tool, c.path, full);
+      if (!why.empty()) broken += std::string(" [") + c.what + (full ? ", full list" : "") + "]";
+    }
+  TEST_ASSERT_EQUAL_STRING("", broken.c_str());
+}
+// Several own changes in one turn, and own appends over several turns in a row (the bench's photo case).
+static void test_own_appends_turn_after_turn_keep_the_prefix() {
+  Device dev;
+  dev.fill(30);
+  dev.say("1001", "one");
+  for (int i = 0; i < 4; ++i) {
+    dev.pause(70);
+    dev.say("1001", "photo " + std::to_string(i),
+            {sp::call("append_file", fileArgs("append_file", "log/daily.md")),
+             sp::call("edit_file", fileArgs("edit_file", "lists/shopping.md"))});
+  }
+  dev.pause(70);
+  dev.say("1001", "next");
+  TEST_ASSERT_EQUAL_STRING("", ruleA(dev, "1001").c_str());
+  std::vector<Act> acts{Act::AppendFile, Act::Chat, Act::DeleteFile, Act::EditFile, Act::OverwriteFile, Act::Restart};
+  TEST_ASSERT_EQUAL_STRING("", runGenerated(11, 12, &acts).c_str());
+}
+// Counter-tests: the same changes made from outside, by a failed call, or to a path the turn did not
+// name, render afresh at the next open (rule A breaks with no listed event: the system part moved).
+static void test_a_file_changed_from_outside_still_renders() {
+  // between turns: the web page appends to a listed file
+  {
+    Device dev;
+    dev.say("1001", "one");
+    dev.pause(90);
+    dev.touch("log/daily.md");
+    dev.say("1001", "two");
+    TEST_ASSERT_TRUE(ruleA(dev, "1001").find("system part") != std::string::npos);
+  }
+  // during a turn whose own call appended to another file
+  TEST_ASSERT_TRUE(ownChange("append_file", "log/daily.md", false, [](Device& d) { d.touch("lists/shopping.md"); })
+                       .find("system part") != std::string::npos);
+  // during a turn whose own call deleted a file: an outside delete of another listed file
+  TEST_ASSERT_TRUE(ownChange("delete_file", "journal/start.md", false, [](Device& d) { d.drop("lists/shopping.md"); })
+                       .find("system part") != std::string::npos);
+  // a full list: the head deletes a file while a file below the list's size is written from outside
+  TEST_ASSERT_TRUE(ownChange("delete_file", "journal/start.md", true, [](Device& d) { d.touch("archive/old-25.md"); })
+                       .find("system part") != std::string::npos);
+  // a full list: the head deletes a file while a file below the list's size is deleted from outside
+  // (nothing listed changes but the reappearing line: it renders only if that line is the wrong one)
+  TEST_ASSERT_EQUAL_STRING("", ownChange("delete_file", "journal/start.md", true, [](Device& d) { d.drop("archive/old-29.md"); }).c_str());
+}
+static void test_a_failed_file_call_is_not_the_turns_own() {
+  // the call failed; the same path changed meanwhile from outside
+  TEST_ASSERT_TRUE(ownChange("append_file", "log/daily.md", false, [](Device& d) { d.touch("log/daily.md"); }, true)
+                       .find("system part") != std::string::npos);
+  TEST_ASSERT_TRUE(ownChange("delete_file", "journal/start.md", false, [](Device& d) { d.drop("journal/start.md"); }, true)
+                       .find("system part") != std::string::npos);
+  // a failed call that changed nothing leaves nothing to render
+  TEST_ASSERT_EQUAL_STRING("", ownChange("append_file", "log/daily.md", false, nullptr, true).c_str());
+}
 // [fix6-unit-begin]
 // C8: the turn the blocks lean on left out of the request renders them; the own-addition rules.
 static void test_a_left_out_turn_the_blocks_lean_on_renders_them() {
@@ -793,6 +956,10 @@ int main(int, char**) {
   RUN_TEST(test_a_note_saved_while_the_card_refused_the_turn_shows_after_a_restart);
   RUN_TEST(test_own_additions_still_keep_the_prefix);
   RUN_TEST(test_a_record_left_only_as_its_temporary_copy_is_read);
+  RUN_TEST(test_create_append_edit_overwrite_delete_by_the_heads_own_call_keep_the_prefix);
+  RUN_TEST(test_own_appends_turn_after_turn_keep_the_prefix);
+  RUN_TEST(test_a_file_changed_from_outside_still_renders);
+  RUN_TEST(test_a_failed_file_call_is_not_the_turns_own);
   // [fix6-unit-begin]
   RUN_TEST(test_a_left_out_turn_the_blocks_lean_on_renders_them);
   RUN_TEST(test_the_own_addition_rules);
