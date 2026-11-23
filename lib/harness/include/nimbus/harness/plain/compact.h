@@ -110,6 +110,14 @@ inline constexpr uint32_t kPreparePercent = 80;
 // not a cost cap (failures still wait 10 min, 30 min, 2 h, 6 h).
 inline constexpr uint8_t kCompactRequestsPerWindow = 4;
 inline constexpr uint32_t kCompactRequestMs = 45000;
+// Lane E2-FIX7 (M5): what one attempt may keep a person's turn waiting (an urgent step: turn open, or a
+// request that does not fit), every request of it together: two requests' worth, what one ask with its
+// cut retry could take before lane E2-CMP added the second try. A turn makes at most two urgent attempts
+// (IfDue at its open, Now inside it), so it waits at most 180 s for compaction, as before. The second try
+// runs only inside what is left of it, and never after a refusal (the same content is refused again).
+inline constexpr uint32_t kCompactUrgentMs = 2 * kCompactRequestMs;
+// A request is not started with less than this left of an urgent attempt's time.
+inline constexpr uint32_t kCompactMinRequestMs = 10000;
 // The summarizer's output cap is sized to the summary budget's default (4,000 tokens), not to one
 // line: a head that writes long, or thinks first, has room to finish (ruling 89 item 4).
 // A cut answer is asked once more, in the same attempt, with kSummarizerRetryMaxTokens; a cut is
@@ -385,7 +393,9 @@ class CompactDriver {
     uint8_t requests = 0;
     bool parked = false;
   };
-  Status ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, AnswerForm form, Asked& out);
+  // `untilMs`: the platform clock (nowMs) by which an urgent attempt ends; 0: no bound beyond each request's own.
+  Status ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, AnswerForm form, uint32_t untilMs,
+             Asked& out);
   Status askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan, bool prepareOnly,
                     CompactOutcome& out, bool& parked);
   Status swap(const SlicePlan& plan, const std::string& text, uint64_t now, CompactOutcome& out);

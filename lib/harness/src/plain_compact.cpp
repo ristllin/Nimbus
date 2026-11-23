@@ -38,6 +38,11 @@ namespace {
 const char kNotTakenRefused[] = "plain::CompactDriver.refused";
 const char kNotTakenForm[] = "plain::CompactDriver.form";
 const char kNotTakenChanges[] = "plain::CompactDriver.changes";
+// Milliseconds left until `untilMs` on the platform clock (0 when past it; the clock may wrap).
+uint32_t msLeft(const Platform& p, uint32_t untilMs) {
+  const int32_t left = (int32_t)(untilMs - (p.nowMs ? p.nowMs() : untilMs));
+  return left > 0 ? (uint32_t)left : 0;
+}
 bool answerNotTaken(const Status& s) {
   return s.err == Err::InvalidArgument && s.where &&
          (s.where == kNotTakenRefused || s.where == kNotTakenForm || s.where == kNotTakenChanges);
@@ -1112,16 +1117,24 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
 Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan,
                                  bool prepareOnly, CompactOutcome& out, bool& parked) {
   AnswerForm form = firstAnswerForm(rung);
+  const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
+  const uint32_t untilMs = urgent ? d_.platform->nowMs() + kCompactUrgentMs : 0;
   Status s;
   for (int tries = 0; tries < 2; ++tries) {
     Asked asked;
-    s = ask(rung, plan, ctx.now, form, asked);
+    s = ask(rung, plan, ctx.now, form, untilMs, asked);
     out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + asked.requests);
     out.ran = out.ran || asked.requests > 0;
     parked = parked || asked.parked;
     if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
-    const bool again = answerNotTaken(s) && asked.requests && !asked.parked && form == AnswerForm::Changes;
+    // Never after a refusal (the same content goes to the same model), never past an urgent attempt's time.
+    const bool again = answerNotTaken(s) && s.where != kNotTakenRefused && asked.requests && !asked.parked &&
+                       form == AnswerForm::Changes;
     if (!again) return s;
+    if (untilMs && msLeft(*d_.platform, untilMs) < kCompactMinRequestMs) {
+      hlog::logf("compact(%s): no time left in this turn for a second try", d_.chatKey.c_str());
+      return s;
+    }
     form = AnswerForm::Lines;
     ctl_.paid += 1;   // the second request is counted like the first
     saveCtl();
@@ -1225,6 +1238,7 @@ struct RungMessage {
   std::string sofar, message;
   size_t thinInput = 0;
   const char* schema = nullptr;   // the answer's structured form (AnswerForm::Changes); null: free text
+  uint32_t untilMs = 0;           // an urgent attempt's end on the platform clock; 0: none (lane E2-FIX7)
 };
 
 // One exchange's answer, taken or not (answerOf), and the structured form read back as lines.
@@ -1273,13 +1287,18 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   in.answerSchema = m.schema;
   // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut.
   for (uint16_t cap : {kSummarizerMaxTokens, kSummarizerRetryMaxTokens}) {
+    uint32_t window = kCompactRequestMs;
+    if (m.untilMs) {   // an urgent attempt: each request inside what is left of its time
+      window = std::min(window, msLeft(*d.platform, m.untilMs));
+      if (window < kCompactMinRequestMs) return Status::fail(Err::Io, "plain::CompactDriver.time");
+    }
     in.maxTokens = cap;
     CappedWire capped(*wire, cap);
     ExchangeRequest req;
     req.wire = &capped;
     req.render = &in;
-    req.timeoutMs = kCompactRequestMs;
-    req.deadlineMs = kCompactRequestMs;
+    req.timeoutMs = window;
+    req.deadlineMs = window;
     ExchangeResult r;
     s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
     ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);
@@ -1316,10 +1335,11 @@ bool changeLinesOf(const std::string& json, std::string& lines) {
 }
 
 Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uint64_t now, AnswerForm form,
-                          Asked& out) {
+                          uint32_t untilMs, Asked& out) {
   RungAnswer ans;
   RungMessage m;
   m.schema = form == AnswerForm::Changes ? st::kChangesSchema : nullptr;
+  m.untilMs = untilMs;
   Status s = messageFor(plan, m.sofar, m.message);
   if (s.ok()) s = askRung(d_, rung, m, now, ans);
   if (ans.usage.responses && d_.spent) d_.spent(rung, ans.usage);   // every paid request is counted

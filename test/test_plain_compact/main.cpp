@@ -2897,27 +2897,69 @@ void test_two_answers_not_taken_fail_once_and_wait() {
 // A refusal (stop_reason refusal, the provider's classifier) is an answer not taken: its cause is logged as
 // a refusal, never read as an empty change list, and the second try runs. Red before: a refusal reached the
 // parser and was logged as "held no change (0 lines unread)".
-void test_a_refused_answer_is_logged_as_a_refusal_and_asked_once_more() {
+void test_a_refused_answer_is_logged_as_a_refusal_and_not_asked_again() {
   agent::hlog::setSink(recordLog);
   gLogLines.clear();
   Chat c;
   threeDays(c);
-  int asked = 0;
   c.model.respondWith([&](const sp::Recorded&, size_t) {
-    ++asked;
-    if (asked > 1) return sp::say(kSummary);
     sp::Step s;
     s.finish = sp::Finish::Refusal;
     return s;
   });
   const plain::CompactOutcome out = c.step();
-  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
-  TEST_ASSERT_EQUAL(2, (int)out.requests);
+  TEST_ASSERT_EQUAL(plain::CompactStep::Failed, out.step);
+  TEST_ASSERT_EQUAL(1, (int)out.requests);   // lane E2-FIX7 (M5): the same content to the same model is refused again
   TEST_ASSERT_TRUE(logged("answer not taken (refused"));
   TEST_ASSERT_FALSE(logged("held no change"));
-  TEST_ASSERT_TRUE(c.model.requests()[0].answerSchema);
-  TEST_ASSERT_FALSE(c.model.requests()[1].answerSchema);
-  TEST_ASSERT_EQUAL(2, (int)plain::CompactCtl::decode(c.ctlText).paid);
+  TEST_ASSERT_FALSE(logged("asking once more"));
+  TEST_ASSERT_EQUAL(1, (int)plain::CompactCtl::decode(c.ctlText).paid);
+  agent::hlog::setSink(nullptr);
+}
+
+// Lane E2-FIX7 (M5, red on 88bfbe826): an urgent attempt (a person's turn waits) keeps every request of it inside
+// kCompactUrgentMs, what one ask with its cut retry could take before the second try existed. A slow first answer
+// that is not taken leaves no time for the second try; an idle step still gets it.
+void test_an_urgent_attempt_never_waits_longer_than_one_ask_did() {
+  agent::hlog::setSink(recordLog);
+  for (bool urgent : {true, false}) {
+    gLogLines.clear();
+    Chat c;
+    threeDays(c);
+    int asked = 0;
+    c.model.respondWith([&](const sp::Recorded&, size_t) {
+      sp::Step s = sp::say(++asked == 1 ? kNothingProse : kSummary);
+      s.takesMs = asked == 1 ? plain::kCompactUrgentMs - plain::kCompactMinRequestMs / 2 : 1000;
+      return s;
+    });
+    plain::IdleCtx ctx = c.idle();
+    if (urgent) ctx.urgency = plain::Urgency::IfDue;
+    const uint32_t started = gClock;
+    plain::CompactOutcome out;
+    TEST_ASSERT_TRUE(c.driver->step(ctx, out).ok());
+    TEST_ASSERT_EQUAL(urgent ? 1 : 2, (int)c.model.requests().size());
+    TEST_ASSERT_EQUAL(urgent ? plain::CompactStep::Failed : plain::CompactStep::Stored, out.step);
+    if (urgent) {
+      TEST_ASSERT_TRUE(gClock - started <= plain::kCompactUrgentMs);
+      TEST_ASSERT_TRUE(logged("no time left in this turn for a second try"));
+    }
+  }
+  // A quick first answer leaves time: the second try runs inside the bound.
+  gLogLines.clear();
+  Chat c;
+  threeDays(c);
+  int asked = 0;
+  c.model.respondWith([&](const sp::Recorded&, size_t) {
+    sp::Step s = sp::say(++asked == 1 ? kNothingProse : kSummary);
+    s.takesMs = 3000;
+    return s;
+  });
+  plain::IdleCtx ctx = c.idle();
+  ctx.urgency = plain::Urgency::IfDue;
+  plain::CompactOutcome out;
+  TEST_ASSERT_TRUE(c.driver->step(ctx, out).ok());
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
+  TEST_ASSERT_EQUAL(2, (int)c.model.requests().size());
   agent::hlog::setSink(nullptr);
 }
 
@@ -3105,7 +3147,8 @@ int main(int, char**) {
   RUN_TEST(test_nothing_to_change_is_a_whole_answer_in_the_structured_form);
   RUN_TEST(test_an_answer_not_taken_is_asked_once_more_as_lines_and_logged);
   RUN_TEST(test_two_answers_not_taken_fail_once_and_wait);
-  RUN_TEST(test_a_refused_answer_is_logged_as_a_refusal_and_asked_once_more);
+  RUN_TEST(test_a_refused_answer_is_logged_as_a_refusal_and_not_asked_again);
+  RUN_TEST(test_an_urgent_attempt_never_waits_longer_than_one_ask_did);
   RUN_TEST(test_adds_that_name_an_id_are_taken_as_adds);
   RUN_TEST(test_the_change_list_reads_back_as_lines);
   RUN_TEST(test_the_form_refused_or_ignored_and_storage_failures);
