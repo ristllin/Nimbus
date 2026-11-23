@@ -1096,27 +1096,42 @@ class TurnRun {
     if (ask.bodyBytes <= ask.bodyCap) return c_.lastClosedQ;
     const size_t need = ask.bodyBytes - ask.bodyCap + kMargin;
     const uint64_t from = std::max(c_.head.stub, t_.ladder.closedThrough);
+    const std::vector<uint64_t> listed = foldListed();
+    size_t freed = 0;
+    uint64_t to = from;
+    for (size_t i = 0; i < d_.arena->count() && freed < need; ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || e.q <= from || e.q > c_.lastClosedQ) continue;
+      const size_t frees = stubFrees(i, e, listed);
+      if (frees == kNotBulk) continue;
+      freed += frees;
+      to = e.q;
+    }
+    return to;
+  }
+  static constexpr size_t kNotBulk = std::numeric_limits<size_t>::max();
+  // The items a tool fold's list already shows as stubs, sorted: stubbing them again frees nothing.
+  std::vector<uint64_t> foldListed() const {
+    std::vector<uint64_t> listed;
     tx::Item& it = t_.read;
-    std::vector<uint64_t> listed;   // what a tool fold's list already shows as a stub frees nothing more
     for (size_t i = 0; i < d_.arena->count(); ++i) {
       tx::ArenaEntry e;
       if (d_.arena->header(i, e).ok() && e.kind == tx::ItemKind::PointerMove && d_.arena->get(i, it).ok() && tx::stubList(it))
         listed.insert(listed.end(), it.sup.begin(), it.sup.end());
     }
     std::sort(listed.begin(), listed.end());
-    size_t freed = 0;
-    uint64_t to = from;
-    for (size_t i = 0; i < d_.arena->count() && freed < need; ++i) {
-      tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call)) continue;
-      if (e.q <= from || e.q > c_.lastClosedQ || !d_.arena->get(i, it).ok()) continue;
-      const bool bulk = e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk;
-      if (!bulk || std::binary_search(listed.begin(), listed.end(), e.q)) continue;
-      const size_t whole = e.kind == tx::ItemKind::Call ? it.args.size() : shownBytes(it);
-      freed += whole > it.st.size() ? whole - it.st.size() : 0;
-      to = e.q;
-    }
-    return to;
+    return listed;
+  }
+  // What rendering one closed item as its stub frees (its whole text less the stub); kNotBulk for an item rung 1 does
+  // not stub (no bulk result, no long argument, or one a fold already lists).
+  size_t stubFrees(size_t index, const tx::ArenaEntry& e, const std::vector<uint64_t>& listed) const {
+    if (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call) return kNotBulk;
+    tx::Item& it = t_.read;
+    if (!d_.arena->get(index, it).ok() || std::binary_search(listed.begin(), listed.end(), e.q)) return kNotBulk;
+    const bool bulk = e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk;
+    if (!bulk) return kNotBulk;
+    const size_t whole = e.kind == tx::ItemKind::Call ? it.args.size() : shownBytes(it);
+    return whole > it.st.size() ? whole - it.st.size() : 0;
   }
 
   // What one stored item adds to the request, at least: the text it shows, with no wire's

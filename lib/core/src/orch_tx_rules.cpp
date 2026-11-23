@@ -273,6 +273,20 @@ Status superseded(const Item& writeCall, const Item* writeResult, const std::vec
 
 // ---- stub texts --------------------------------------------------------------------------------------
 
+// A kept result's stub after its frame (lane E2-FIX9): what is true of it, then the way back (view when bound, else a
+// file read's call cut to keep the stub within kStubMaxBytes, else none).
+void keptTail(const StubFacts& f, const std::string& q, std::string& s) {
+  s += std::string(kResultFactsOpen) + kResultShownInFull;
+  if (f.bound.view) {
+    s += kResultViewOpen + q + kPhotoViewClose;
+  } else if (!f.again.empty()) {
+    const size_t fixed = s.size() + std::strlen(kResultAgainOpen) + std::strlen(kPhotoViewClose) + std::strlen(kResultTailClose);
+    const size_t room = kStubMaxBytes > fixed ? std::min(kStubWayBackMaxBytes, kStubMaxBytes - fixed) : 0;
+    if (room) s += kResultAgainOpen + oneLineOf(f.again, room) + kPhotoViewClose;
+  }
+  s += kResultTailClose;
+}
+
 Status stubText(const StubFacts& f, std::string& out) {
   out.clear();
   if (f.tool.empty() || f.q == 0) return Status::fail(Err::InvalidArgument, "tx::stubText");
@@ -306,15 +320,7 @@ Status stubText(const StubFacts& f, std::string& out) {
   // (lanes/E2-FIX9/evidence/probe-stub.jsonl: 5 of 16 with the preview, 0 of 16 without). With no card the preview
   // is all that is left of the result, so it stays, with what is true of it.
   if (!f.noCard) {
-    s += std::string(kResultFactsOpen) + kResultShownInFull;
-    if (f.bound.view) {
-      s += kResultViewOpen + q + kPhotoViewClose;
-    } else if (!f.again.empty()) {   // a long tool, path and range: the call is cut to keep the stub within 400 B
-      const size_t fixed = s.size() + std::strlen(kResultAgainOpen) + std::strlen(kPhotoViewClose) + std::strlen(kResultTailClose);
-      const size_t room = kStubMaxBytes > fixed ? std::min(kStubWayBackMaxBytes, kStubMaxBytes - fixed) : 0;
-      if (room) s += kResultAgainOpen + oneLineOf(f.again, room) + kPhotoViewClose;
-    }
-    s += kResultTailClose;
+    keptTail(f, q, s);
     out.swap(s);
     return Status::success();
   }

@@ -818,24 +818,33 @@ bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
   return textAfter(line, end, e.text);
 }
 
-// A line of the summary's own frame, alone (lane E2-FIX9): a section title or a device line, after at most one
-// change sign, with or without its ':' and in any case. It holds no fact and names no line.
-bool frameLine(const std::string& raw) {
+// A change line with at most one change sign, the ':' after it and the blanks around it left out (lane E2-FIX9).
+std::string bareFrame(const std::string& raw) {
   std::string line = oneLine(changeLine(raw));
   if (!line.empty() && (line[0] == '=' || line[0] == '+' || line[0] == '-')) line.erase(0, 1);
   while (!line.empty() && (line.back() == ' ' || line.back() == ':')) line.pop_back();
   while (!line.empty() && line[0] == ' ') line.erase(0, 1);
-  auto same = [&line](const char* frame) {
-    size_t n = std::strlen(frame);
-    while (n && frame[n - 1] == ':') --n;
-    if (line.size() != n) return false;
-    for (size_t i = 0; i < n; ++i)
-      if (std::tolower((unsigned char)line[i]) != std::tolower((unsigned char)frame[i])) return false;
-    return true;
-  };
+  return line;
+}
+
+// `line` is `frame` without its ':', in any case.
+bool sameFrame(const std::string& line, const char* frame) {
+  size_t n = std::strlen(frame);
+  while (n && frame[n - 1] == ':') --n;
+  if (line.size() != n) return false;
+  for (size_t i = 0; i < n; ++i)
+    if (std::tolower((unsigned char)line[i]) != std::tolower((unsigned char)frame[i])) return false;
+  return true;
+}
+
+// A line of the summary's own frame, alone (lane E2-FIX9): a section title or a device line, after at most one
+// change sign, with or without its ':' and in any case. It holds no fact and names no line.
+bool frameLine(const std::string& raw) {
+  const std::string line = bareFrame(raw);
+  if (line.empty()) return false;
   for (const char* t : kTitles)
-    if (same(t)) return true;
-  return !line.empty() && (same(digest_text::kArchived) || same(digest_text::kNothingYet));
+    if (sameFrame(line, t)) return true;
+  return sameFrame(line, digest_text::kArchived) || sameFrame(line, digest_text::kNothingYet);
 }
 
 size_t sectionBytes(const Summary& s, size_t section) {
