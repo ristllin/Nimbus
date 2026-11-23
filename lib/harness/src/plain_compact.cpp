@@ -1461,6 +1461,9 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, st
     hlog::logf("compact(%s): answer not taken (no change line, %u B): %s", d_.chatKey.c_str(), (unsigned)answer.size(), answerHead(answer).c_str());
     return Status::fail(Err::InvalidArgument, kNotTakenChanges);
   }
+  if (edits.numbered)
+    hlog::logf("compact(%s): %u adds numbered from 1: the numbers were read as ids", d_.chatKey.c_str(),
+               (unsigned)edits.numbered);
   std::vector<tx::SummaryLine> left;
   size_t unread = 0;
   if (!(s = takeEdits(plan, edits.edits, sum, left, unread)).ok()) return s;

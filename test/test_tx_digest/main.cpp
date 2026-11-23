@@ -1370,24 +1370,78 @@ void test_ids_are_not_reused_in_a_pass_and_files_match_exactly() {
 }  // namespace
 
 
-// Lane E2-CMP: an add that names an id ("+F1 text", what Haiku wrote for every add in 1 of 3 probes at the
-// bench's size) is an add with the code's own id; the named id is never used to find or replace a line.
-void test_an_add_that_names_an_id_is_an_add() {
+// Lane E2-FIX7 (M2, red on 88bfbe826): digits right after an add's letter are the text's own (a quantity, a
+// date) unless the answer numbers all its adds from 1, the shape E2-CMP's probes saw ("+F1 ...", "+F2 ...",
+// "+D1 ..."); then the numbers are ids and left out. A number never finds or replaces a line.
+void test_digits_after_an_adds_letter_are_kept_unless_the_answer_numbers_its_adds() {
+  auto texts = [](const std::string& answer) {
+    std::vector<std::string> out;
+    for (const tx::SummaryEdit& e : tx::parseSummaryEdits(answer).edits) out.push_back(tx::summaryLineText(e.text, 400));
+    return out;
+  };
+  std::vector<std::string> t = texts("+Q12 eggs bought on 22 Nov\n+F2026-11-04 the boiler was serviced\n+F The boat is Tern.\n");
+  TEST_ASSERT_EQUAL(3u, t.size());
+  TEST_ASSERT_EQUAL_STRING("12 eggs bought on 22 Nov", t[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("2026-11-04 the boiler was serviced", t[1].c_str());
+  t = texts("+Q3 kg of flour on 21 Nov\n+Q12 eggs\n");   // numbers, but not a run from 1: quantities
+  TEST_ASSERT_EQUAL_STRING("3 kg of flour on 21 Nov", t[0].c_str());
+  TEST_ASSERT_EQUAL_STRING("12 eggs", t[1].c_str());
+  t = texts("+Q07:30 alarm on weekdays\n");
+  TEST_ASSERT_EQUAL_STRING("07:30 alarm on weekdays", t[0].c_str());
+  // The numbered shape: per section from 1, or across the answer from 1.
+  tx::SummaryEdits e = tx::parseSummaryEdits("+F1 The water meter read 3,412.7 m3.\n+F2 Talbot quoted 4,870 GBP.\n+D1 Go by train.\n");
+  TEST_ASSERT_EQUAL(3u, e.numbered);
+  TEST_ASSERT_EQUAL_STRING("The water meter read 3,412.7 m3.", tx::summaryLineText(e.edits[0].text, 400).c_str());
+  TEST_ASSERT_EQUAL_STRING("Go by train.", tx::summaryLineText(e.edits[2].text, 400).c_str());
+  e = tx::parseSummaryEdits("+F1: a\n+D2 b\n+Q3 12 eggs\n");
+  TEST_ASSERT_EQUAL(3u, e.numbered);
+  TEST_ASSERT_EQUAL_STRING("12 eggs", tx::summaryLineText(e.edits[2].text, 400).c_str());
+  // One numbered add among plain ones: the digits stay.
+  t = texts("+F1 The water meter read 3,412.7 m3.\n+D Go by train.\n");
+  TEST_ASSERT_EQUAL_STRING("1 The water meter read 3,412.7 m3.", t[0].c_str());
+  // Applied: a number never reaches an existing line.
   tx::Summary s = sampleSummary();
-  const size_t n = s.lines.size();
-  const tx::SummaryEdits e = tx::parseSummaryEdits("+F1 The water meter read 3,412.7 cubic metres.\n+d12: Go by train.\n+Q7\n");
-  TEST_ASSERT_EQUAL(2u, e.edits.size());
-  TEST_ASSERT_EQUAL(1u, e.unread);   // "+Q7" holds no text
-  TEST_ASSERT_TRUE(e.edits[0].op == tx::SummaryOp::Add);
-  TEST_ASSERT_TRUE(e.edits[0].text == " The water meter read 3,412.7 cubic metres.");
-  TEST_ASSERT_TRUE(e.edits[1].section == tx::SummarySection::Decisions);
+  const std::string first = lineOf(s, 1)->text;
   std::vector<tx::SummaryLine> left;
   size_t unread = 0;
-  const std::string first = lineOf(s, 1)->text;
-  TXB_OK(tx::applySummaryEdits(s, e.edits, nullptr, left, unread));
-  TEST_ASSERT_EQUAL(n + 2, s.lines.size());
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("+F1 a fact\n+F2 another\n").edits, nullptr, left, unread));
   TEST_ASSERT_TRUE(left.empty());
-  TEST_ASSERT_TRUE(lineOf(s, 1)->text == first);   // F1 unchanged: the add did not reach it
+  TEST_ASSERT_TRUE(lineOf(s, 1)->text == first);
+}
+
+// The class rule for M2: for generated add lines in answers that are not numbered from 1, every character of the
+// text after the section letter reaches the stored line (as one clean line); in numbered answers, every
+// character after the number and its separator does.
+void test_every_character_of_an_add_after_its_letter_is_stored() {
+  std::mt19937 rng(2026);
+  const char letters[] = "FDQO";
+  const char* words[] = {"eggs", "kg", "2026-11-04", "07:30", "12", "1,250.5", "m3", "the", "boat", "x"};
+  for (int round = 0; round < 2000; ++round) {
+    const int n = 1 + (int)(rng() % 4);
+    const bool numbered = n >= 2 && rng() % 3 == 0;
+    std::vector<std::string> body(n);
+    std::string answer;
+    for (int i = 0; i < n; ++i) {
+      std::string text;
+      for (int w = 0, k = 1 + (int)(rng() % 5); w < k; ++w) text += (w ? " " : "") + std::string(words[rng() % 10]);
+      std::string head;
+      if (numbered) head = std::to_string(i + 1) + (rng() % 2 ? ": " : " ");
+      else if (rng() % 2) head = std::to_string(rng() % 100) + (rng() % 2 ? "" : " ");
+      else head = " ";
+      body[i] = numbered ? text : head + text;
+      answer += std::string("+") + letters[rng() % 4] + head + text + "\n";
+    }
+    tx::Summary s;
+    std::vector<tx::SummaryLine> left;
+    size_t unread = 0;
+    TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits(answer).edits, nullptr, left, unread));
+    for (int i = 0; i < n; ++i) {
+      const std::string want = tx::summaryLineText(body[i], tx::kSummaryLineMaxBytes);
+      bool found = false;
+      for (const tx::SummaryLine& l : s.lines) found |= l.text == want;
+      TEST_ASSERT_TRUE_MESSAGE(found, ("round " + std::to_string(round) + ": lost text of " + answer).c_str());
+    }
+  }
 }
 
 // The class rule for every path (lane E2-CMP, D5): over random answers (adds, replaces, drops of known and
@@ -1481,7 +1535,8 @@ int main(int, char**) {
   RUN_TEST(test_a_restart_stops_at_the_newest_summary);
   RUN_TEST(test_the_mirror_carries_the_summary_in_whole_lines);
   RUN_TEST(test_ids_are_not_reused_in_a_pass_and_files_match_exactly);
-  RUN_TEST(test_an_add_that_names_an_id_is_an_add);
+  RUN_TEST(test_digits_after_an_adds_letter_are_kept_unless_the_answer_numbers_its_adds);
+  RUN_TEST(test_every_character_of_an_add_after_its_letter_is_stored);
   RUN_TEST(test_no_line_leaves_a_summary_without_going_to_the_archive);
   return UNITY_END();
 }

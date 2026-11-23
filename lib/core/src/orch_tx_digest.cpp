@@ -791,11 +791,21 @@ bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
   if ((op != '+' && op != '=' && op != '-') || line.size() < 2 || !sectionOf(line[1], e.section)) return false;
   if (op == '+') {
     e.op = SummaryOp::Add;
-    // An add that names an id ("+F1 text") is an add: the id is the code's to give, so it is skipped.
-    size_t at = 2, end = 2;
-    uint32_t ignored = 0;
-    if (idAt(line, 2, ignored, end)) at = end;
-    return e.section != SummarySection::Files && textAfter(line, at, e.text);   // Files: the device's own section
+    if (e.section == SummarySection::Files) return false;   // Files: the device's own section
+    // Digits right after the letter ("+Q12 eggs", "+F2026-11-04 ...", "+F1 text") stay in the text: only an
+    // answer that numbers all its adds makes them ids (parseSummaryEdits), and then only the number and its
+    // separator are left out. Lane E2-FIX7 (M2): a quantity or a date is never read as an id by itself.
+    if (line.size() < 3 || line[2] < '0' || line[2] > '9') return textAfter(line, 2, e.text);
+    size_t end = 2;
+    uint32_t n = 0;
+    size_t sep = idAt(line, 2, n, end) ? end : 2;
+    if (sep > 2 && sep < line.size() && line[sep] == ':') ++sep;
+    if (sep > 2 && sep < line.size() && line[sep] == ' ') {
+      e.named = n;
+      e.namedLen = (uint8_t)(sep - 2);
+    }
+    e.text = line.substr(2);
+    return true;
   }
   size_t end = 2;
   if (!idAt(line, 2, e.id, end)) return false;
@@ -911,6 +921,37 @@ std::string summaryLineText(const std::string& raw, size_t cap) {
   return text;
 }
 
+namespace {
+// Do the adds' numbers run 1, 2, 3 ... in answer order, across the answer or in every section by itself?
+bool numberedRun(const std::vector<const SummaryEdit*>& adds) {
+  bool across = true, perSection = true;
+  uint32_t next = 1, nextIn[kSummarySections] = {1, 1, 1, 1, 1};
+  for (const SummaryEdit* e : adds) {
+    across = across && e->named == next++;
+    perSection = perSection && e->named == nextIn[(size_t)e->section]++;
+  }
+  return across || perSection;
+}
+
+// The answer numbers its adds (lane E2-CMP's probes: "+F1 ...", "+F2 ...", "+D1 ..."): at least two adds, every
+// add carries a number and a separator, and the numbers run from 1. Only then are the numbers ids and left out;
+// in every other answer the digits are the text's own (a quantity, a date), and they stay.
+void takeNumbering(SummaryEdits& out) {
+  std::vector<const SummaryEdit*> adds;
+  for (const SummaryEdit& e : out.edits)
+    if (e.op == SummaryOp::Add) adds.push_back(&e);
+  if (adds.size() < 2) return;
+  for (const SummaryEdit* e : adds)
+    if (!e->named) return;
+  if (!numberedRun(adds)) return;
+  for (SummaryEdit& e : out.edits) {
+    if (e.op != SummaryOp::Add) continue;
+    e.text.erase(0, e.namedLen);
+    ++out.numbered;
+  }
+}
+}  // namespace
+
 SummaryEdits parseSummaryEdits(const std::string& answer) {
   SummaryEdits out;
   for (size_t at = 0; at <= answer.size();) {
@@ -926,6 +967,7 @@ SummaryEdits parseSummaryEdits(const std::string& answer) {
     else if (none) out.none = true;
     else ++out.unread;
   }
+  takeNumbering(out);
   return out;
 }
 
