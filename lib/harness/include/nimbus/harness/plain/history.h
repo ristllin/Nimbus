@@ -74,6 +74,9 @@ class HistoryTools {
 
  private:
   ToolOutput search(const ToolCall& call, const TurnCtx& turn, ArduinoJson::JsonObjectConst a);
+  bool askOf(const TurnCtx& turn, ArduinoJson::JsonObjectConst a, nimbus::orch::tx::SearchAsk& ask) const;
+  std::string answerText(const nimbus::orch::tx::SearchOutcome& o, const nimbus::orch::tx::Status& st,
+                         const std::vector<std::string>& words) const;
   ToolOutput searchNotes(const TurnCtx& turn, ArduinoJson::JsonObjectConst a, const std::string& query);
   ToolOutput view(const ToolCall& call, const TurnCtx& turn, ArduinoJson::JsonObjectConst a);
   ToolOutput viewItem(const TurnCtx& turn, uint64_t q, size_t offset, size_t limit);

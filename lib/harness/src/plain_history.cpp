@@ -47,19 +47,28 @@ std::string str(JsonObjectConst a, const char* k) {
   return a[k].is<const char*>() ? std::string(a[k].as<const char*>()) : std::string();
 }
 
-// "YYYY-MM-DD" (or "YYYY-MM-DD HH:MM") as local time: the first second of that day (or minute), or
-// with `end` its last second. false: not that form.
-bool parseLocal(const std::string& s, bool end, int16_t tzMin, uint64_t& out) {
-  int y = 0, m = 0, d = 0, hh = -1, mm = -1;
+// A local date "YYYY-MM-DD" or date and time "YYYY-MM-DD HH:MM" as its parts; false: not that form.
+struct LocalTime {
+  int y = 0, m = 0, d = 0, hh = 0, mm = 0;
+  bool withTime = false;
+};
+bool parseParts(const std::string& s, LocalTime& t) {
   char tail = 0;
-  const int n = std::sscanf(s.c_str(), "%4d-%2d-%2d %2d:%2d%c", &y, &m, &d, &hh, &mm, &tail);
-  const bool dateOnly = n == 3 && s.size() == 10;
-  const bool withTime = n == 5 && s.size() == 16;
-  if (!(dateOnly || withTime) || y < 2000 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) return false;
-  if (withTime && (hh < 0 || hh > 23 || mm < 0 || mm > 59)) return false;
-  const int64_t day = int64_t(nimbus::orch::daysFromCivil(y, unsigned(m), unsigned(d))) * 86400;
-  int64_t local = day + (withTime ? hh * 3600 + mm * 60 : 0);
-  if (end) local += withTime ? 59 : 86399;
+  const int n = std::sscanf(s.c_str(), "%4d-%2d-%2d %2d:%2d%c", &t.y, &t.m, &t.d, &t.hh, &t.mm, &tail);
+  t.withTime = n == 5 && s.size() == 16;
+  if (!(n == 3 && s.size() == 10) && !t.withTime) return false;
+  if (!t.withTime) t.hh = t.mm = 0;
+  const bool date = t.y >= 2000 && t.y <= 2100 && t.m >= 1 && t.m <= 12 && t.d >= 1 && t.d <= 31;
+  return date && t.hh >= 0 && t.hh <= 23 && t.mm >= 0 && t.mm <= 59;
+}
+
+// That local time in epoch seconds: the first second of the day (or minute), or with `end` its last.
+bool parseLocal(const std::string& s, bool end, int16_t tzMin, uint64_t& out) {
+  LocalTime t;
+  if (!parseParts(s, t)) return false;
+  int64_t local = int64_t(nimbus::orch::daysFromCivil(t.y, unsigned(t.m), unsigned(t.d))) * 86400 + t.hh * 3600 +
+                  t.mm * 60;
+  if (end) local += t.withTime ? 59 : 86399;
   const int64_t utc = local - int64_t(tzMin) * 60;
   if (utc <= 0) return false;
   out = uint64_t(utc);
@@ -133,11 +142,32 @@ std::string label(const std::string& id, const std::string& when, tx::HitSource 
 
 // One device-log line per call: what it read off the card and what it answered. `what` is the id
 // viewed or the scope searched, `hits` the hits (or 1 for a view that answered), `more` a remainder.
-void logCall(const char* tool, const TurnCtx& t, const tx::ReadStats& c, size_t outBytes, const std::string& what,
-             size_t hits, bool more, const char* st) {
-  hlog::logf("e2: %s chat=%s %s hits=%u more=%d st=%s reads=%u bytes=%u cardMs=%u longestMs=%u out=%u", tool,
-             t.chatKey.c_str(), what.c_str(), (unsigned)hits, int(more), st, (unsigned)c.reads, (unsigned)c.bytes,
-             (unsigned)c.totalMs, (unsigned)c.longestMs, (unsigned)outBytes);
+struct CallLog {
+  const char* tool;
+  std::string what;
+  size_t hits;
+  bool more;
+  const char* st;
+};
+void logCall(const TurnCtx& t, const tx::ReadStats& c, size_t outBytes, const CallLog& l) {
+  hlog::logf("e2: %s chat=%s %s hits=%u more=%d st=%s reads=%u bytes=%u cardMs=%u longestMs=%u out=%u", l.tool,
+             t.chatKey.c_str(), l.what.c_str(), (unsigned)l.hits, int(l.more), l.st, (unsigned)c.reads,
+             (unsigned)c.bytes, (unsigned)c.totalMs, (unsigned)c.longestMs, (unsigned)outBytes);
+}
+
+// What a stored item is, as a hit or a view names it; whether view opens it (it holds text).
+tx::HitSource sourceOfItem(tx::ItemKind k) {
+  switch (k) {
+    case tx::ItemKind::User: return tx::HitSource::Person;
+    case tx::ItemKind::Assistant: return tx::HitSource::Assistant;
+    case tx::ItemKind::DeviceNote: return tx::HitSource::Device;
+    case tx::ItemKind::Digest: return tx::HitSource::Summary;
+    default: return tx::HitSource::Tool;
+  }
+}
+bool opensAsText(tx::ItemKind k) {
+  return k == tx::ItemKind::User || k == tx::ItemKind::Assistant || k == tx::ItemKind::DeviceNote ||
+         k == tx::ItemKind::Digest || k == tx::ItemKind::Result || k == tx::ItemKind::Call;
 }
 
 // limit as read_file takes it: the floor and the cap (ruling 95).
@@ -214,22 +244,40 @@ tx::OldRows* HistoryTools::oldFor(const TurnCtx& turn) const {
   return d_.oldRows(turn.chatId);
 }
 
+// The history query of a search call; false: an argument is not valid.
+bool HistoryTools::askOf(const TurnCtx& turn, JsonObjectConst a, tx::SearchAsk& ask) const {
+  ask.query = str(a, "query");
+  ask.before = str(a, "before");
+  ask.openTurn = turn.turn;
+  const int16_t zone = tz(turn.startedAt);
+  const std::string from = str(a, "from"), to = str(a, "to");
+  if (!from.empty() && !parseLocal(from, false, zone, ask.fromT)) return false;
+  if (!to.empty() && !parseLocal(to, true, zone, ask.toT)) return false;
+  return tx::cursorOk(ask.before) && !(ask.fromT && ask.toT && ask.fromT > ask.toT);
+}
+
+// The hits, then the remainder: where the reading stopped and the cursor, or that it reached the start.
+std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Status& st,
+                                     const std::vector<std::string>& words) const {
+  std::string text;
+  for (const tx::SearchHit& h : o.hits) {
+    const std::string when = whenOf(h.t, h.hasTz ? h.tzMinutes : tz(h.t));
+    text += label(h.id, when, h.source, h.tool, h.outside) + ": " + excerpt(h.text, words) + "\n";
+  }
+  if (o.hits.empty()) text += std::string(R::kSearchNone) + "\n";
+  if (o.unreadBulk) text += std::to_string(o.unreadBulk) + R::kSearchUnread + "\n";
+  if (!st.ok()) return text + R::kCardStopped + o.next;
+  if (o.more) return text + R::kSearchMore + whenOf(o.oldestT, tz(o.oldestT)) + R::kSearchBefore + o.next;
+  return text + R::kSearchEnd;
+}
+
 ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObjectConst a) {
   const std::string query = str(a, "query");
   if (tx::queryWords(query).empty()) return fail(R::kSearchNoWords);
   const std::string scope = str(a, "scope");
   if (scope == kNotes) return searchNotes(turn, a, query);
-  if (!scope.empty() && scope != kHistory) return fail(R::kSearchBadArgs);
   tx::SearchAsk ask;
-  ask.query = query;
-  ask.before = str(a, "before");
-  ask.openTurn = turn.turn;
-  const uint64_t now = turn.startedAt;
-  const std::string from = str(a, "from"), to = str(a, "to");
-  if ((!from.empty() && !parseLocal(from, false, tz(now), ask.fromT)) ||
-      (!to.empty() && !parseLocal(to, true, tz(now), ask.toT)) || !tx::cursorOk(ask.before) ||
-      (ask.fromT && ask.toT && ask.fromT > ask.toT))
-    return fail(R::kSearchBadArgs);
+  if ((!scope.empty() && scope != kHistory) || !askOf(turn, a, ask)) return fail(R::kSearchBadArgs);
   tx::SearchDeps sd;
   sd.files = d_.files;
   sd.chatKey = turn.chatKey;
@@ -239,24 +287,12 @@ ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObject
   tx::SearchOutcome o;
   const tx::Status st = tx::search(sd, ask, o);
   card_ = o.card;
-  const std::vector<std::string> words = tx::queryWords(query);
-  std::string text;
-  bool outside = false;
-  for (const tx::SearchHit& h : o.hits) {
-    const std::string when = whenOf(h.t, h.hasTz ? h.tzMinutes : tz(h.t));
-    text += label(h.id, when, h.source, h.tool, h.outside) + ": " + excerpt(h.text, words) + "\n";
-    outside = outside || h.outside;
-  }
-  if (o.hits.empty()) text += std::string(R::kSearchNone) + "\n";
-  if (o.unreadBulk) text += std::to_string(o.unreadBulk) + R::kSearchUnread + "\n";
-  if (!st.ok()) text += R::kCardStopped + o.next;
-  else if (o.more) text += R::kSearchMore + whenOf(o.oldestT, tz(o.oldestT)) + R::kSearchBefore + o.next;
-  else text += R::kSearchEnd;
-  logCall(kSearch, turn, card_, text.size(), o.oldRead ? "history+old" : kHistory, o.hits.size(), o.more,
-          tx::errSlug(st.err));
-  ToolOutput out = ok(std::move(text));
+  ToolOutput out = ok(answerText(o, st, tx::queryWords(query)));
   out.isError = !st.ok() && o.hits.empty();
-  out.outside = outside;   // an excerpt of outside content is outside content
+  // An excerpt of outside content is outside content.
+  out.outside = std::any_of(o.hits.begin(), o.hits.end(), [](const tx::SearchHit& h) { return h.outside; });
+  logCall(turn, card_, out.text.size(),
+          CallLog{kSearch, o.oldRead ? "history+old" : kHistory, o.hits.size(), o.more, tx::errSlug(st.err)});
   return out;
 }
 
@@ -285,7 +321,7 @@ ToolOutput HistoryTools::searchNotes(const TurnCtx& turn, JsonObjectConst a, con
   for (size_t j = i; j < notes.size() && !more; ++j)
     more = tx::matchesAll(nimbus::orch::notes::formatLine(notes[j]), words);
   text += more ? std::string(R::kNotesMore) + "n" + std::to_string(i) : std::string(R::kSearchEnd);
-  logCall(kSearch, turn, card_, text.size(), kNotes, shown, more, "ok");
+  logCall(turn, card_, text.size(), CallLog{kSearch, kNotes, shown, more, "ok"});
   return ok(std::move(text));
 }
 
@@ -306,27 +342,19 @@ ToolOutput HistoryTools::viewItem(const TurnCtx& turn, uint64_t q, size_t offset
   tx::ReadOnlyCounted files(*d_.files, d_.nowMs, card_);
   tx::Item it;
   tx::Status st = q ? tx::findItem(files, turn.chatKey, q, it) : tx::Status::fail(tx::Err::NotFound, "view");
-  const bool text = it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant ||
-                    it.kind == tx::ItemKind::DeviceNote || it.kind == tx::ItemKind::Digest ||
-                    it.kind == tx::ItemKind::Result || it.kind == tx::ItemKind::Call;
-  if (st.err == tx::Err::NotFound || (st.ok() && !text)) return fail(R::kViewNoItem);
-  if (!st.ok()) return fail(std::string(R::kCardStopped));
+  if (st.err == tx::Err::NotFound || (st.ok() && !opensAsText(it.kind))) return fail(R::kViewNoItem);
   std::string body;
   size_t total = 0;
-  st = tx::itemText(files, turn.chatKey, it, offset, limit, body, total);
+  if (st.ok()) st = tx::itemText(files, turn.chatKey, it, tx::TextPage{offset, limit}, body, total);
   if (st.err == tx::Err::NotFound) return fail(R::kViewGone);
   if (!st.ok()) return fail(std::string(R::kCardStopped));
-  tx::HitSource src = tx::HitSource::Tool;
-  if (it.kind == tx::ItemKind::User) src = tx::HitSource::Person;
-  else if (it.kind == tx::ItemKind::Assistant) src = tx::HitSource::Assistant;
-  else if (it.kind == tx::ItemKind::DeviceNote) src = tx::HitSource::Device;
-  else if (it.kind == tx::ItemKind::Digest) src = tx::HitSource::Summary;
   const bool outside = it.kind == tx::ItemKind::Result && it.cls == tx::ResultClass::Outside;
   const std::string when = whenOf(it.t, it.kind == tx::ItemKind::User ? it.tzMinutes : tz(it.t));
-  const std::string head = label("r" + std::to_string(q), when, src, it.n, outside) + " " + std::to_string(total);
-  ToolOutput out = ok(page(head, body, offset, total));
+  const std::string id = "r" + std::to_string(q);
+  ToolOutput out = ok(page(label(id, when, sourceOfItem(it.kind), it.n, outside) + " " + std::to_string(total), body,
+                           offset, total));
   out.outside = outside;   // outside content keeps its class when it comes back
-  logCall(kView, turn, card_, out.text.size(), "r" + std::to_string(q), 1, offset + body.size() < total, "ok");
+  logCall(turn, card_, out.text.size(), CallLog{kView, id, 1, offset + body.size() < total, "ok"});
   return out;
 }
 
@@ -343,7 +371,7 @@ ToolOutput HistoryTools::viewOld(const TurnCtx& turn, uint64_t row, size_t offse
   const std::string head = label(tx::rowIdString(row), whenOf(r.t, tz(r.t)), src, "", false) + " " +
                            std::to_string(r.text.size());
   ToolOutput out = ok(page(head, body, offset, r.text.size()));
-  logCall(kView, turn, card_, out.text.size(), tx::rowIdString(row), 1, offset + body.size() < r.text.size(), "ok");
+  logCall(turn, card_, out.text.size(), CallLog{kView, tx::rowIdString(row), 1, offset + body.size() < r.text.size(), "ok"});
   return out;
 }
 
@@ -359,7 +387,7 @@ ToolOutput HistoryTools::viewPhoto(const TurnCtx& turn, const std::string& ref) 
   const std::string when = whenOf(owner.t, owner.tzMinutes);
   const std::string head = R::kViewPhoto + ref + (when.empty() ? std::string() : " " + when);
   const bool shown = d_.photoReadable && d_.photoReadable(ref);
-  logCall(kView, turn, card_, head.size(), ref, shown ? 1 : 0, false, shown ? "ok" : "unread");
+  logCall(turn, card_, head.size(), CallLog{kView, ref, shown ? size_t(1) : size_t(0), false, shown ? "ok" : "unread"});
   return shown ? ok(head + R::kViewPhotoShown) : fail(head + R::kViewPhotoUnread);
 }
 

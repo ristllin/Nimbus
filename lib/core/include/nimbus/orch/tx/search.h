@@ -177,8 +177,12 @@ Status findItem(TxFiles& files, const std::string& chatKey, uint64_t q, Item& ou
 // The whole text an item stands for: a result's bulk payload or inline text, a message's or a
 // note's text, a call's arguments. `total` is its size; `out` holds [offset, offset + limit) of it.
 // NotFound when a bulk payload is no longer stored (retention); Io when it could not be read.
-Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, size_t offset, size_t limit,
-                std::string& out, size_t& total);
+struct TextPage {
+  size_t offset = 0;
+  size_t limit = 0;
+};
+Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, const TextPage& page, std::string& out,
+                size_t& total);
 
 // An owner message of this conversation that carries the photo `ref` ("p<ref8>"), newest first.
 // found false: none in the conversation. Io when a read was refused; TooLarge past kPhotoScanBytes.

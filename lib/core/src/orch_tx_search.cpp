@@ -257,7 +257,7 @@ bool parseU64(const std::string& s, size_t from, size_t to, uint64_t& v) {
   return true;
 }
 
-// "t<seg>.<off>" -> the transcript part; "o" or "o<store cursor>" -> the old rows.
+// "t<seg>.<off>" -> the transcript part; "o" or "o<store cursor>[~<k>]" -> the old rows.
 struct Cursor {
   bool old = false;
   uint32_t seg = 0;
@@ -265,25 +265,20 @@ struct Cursor {
   std::string token;
   size_t skip = 0;   // rows of the old page at `token` already considered
 };
-bool parseCursor(const std::string& c, Cursor& out) {
-  out = Cursor{};
-  if (c.empty()) return true;
-  if (c[0] == 'o') {
-    out.old = true;
-    out.token = c.substr(1);
-    const size_t tilde = out.token.find('~');
-    if (tilde != std::string::npos) {
-      uint64_t k = 0;
-      if (!parseU64(out.token, tilde + 1, out.token.size(), k) || k == 0 || k > 4096) return false;
-      out.skip = size_t(k);
-      out.token.resize(tilde);
-    }
-    if (out.token.size() > 32) return false;
-    for (char ch : out.token)
-      if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == 'm' || ch == ':')) return false;
-    return true;
+bool oldTokenByte(char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == 'm' || ch == ':'; }
+bool parseOldCursor(const std::string& c, Cursor& out) {
+  out.old = true;
+  out.token = c.substr(1);
+  const size_t tilde = out.token.find('~');
+  if (tilde != std::string::npos) {
+    uint64_t k = 0;
+    if (!parseU64(out.token, tilde + 1, out.token.size(), k) || k == 0 || k > 4096) return false;
+    out.skip = size_t(k);
+    out.token.resize(tilde);
   }
-  if (c[0] != 't') return false;
+  return out.token.size() <= 32 && std::all_of(out.token.begin(), out.token.end(), oldTokenByte);
+}
+bool parseTranscriptCursor(const std::string& c, Cursor& out) {
   const size_t dot = c.find('.');
   uint64_t seg = 0, off = 0;
   if (dot == std::string::npos || !parseU64(c, 1, dot, seg) || !parseU64(c, dot + 1, c.size(), off)) return false;
@@ -291,6 +286,12 @@ bool parseCursor(const std::string& c, Cursor& out) {
   out.seg = uint32_t(seg);
   out.off = off;
   return true;
+}
+bool parseCursor(const std::string& c, Cursor& out) {
+  out = Cursor{};
+  if (c.empty()) return true;
+  if (c[0] == 'o') return parseOldCursor(c, out);
+  return c[0] == 't' && parseTranscriptCursor(c, out);
 }
 std::string tCursor(uint32_t seg, uint64_t off) { return "t" + std::to_string(seg) + "." + std::to_string(off); }
 
@@ -316,71 +317,105 @@ bool inRange(uint64_t t, const SearchAsk& a) {
   return (!a.fromT || t >= a.fromT) && (!a.toT || t <= a.toT);
 }
 
-struct Budget {
-  const SearchDeps& d;
-  const ReadStats& st;
-  bool over() const {
-    if (st.bytes >= d.limits.cardBytes) return true;
-    return d.nowMs && st.totalMs >= d.limits.cardMs;
-  }
-};
+void noteOldest(uint64_t t, SearchOutcome& out) {
+  if (t && (!out.oldestT || t < out.oldestT)) out.oldestT = t;
+}
 
-// One line of the transcript considered; true when it is a hit (out filled).
-Status considerLine(const SearchDeps& d, TxFiles& files, const SearchAsk& a, const std::vector<std::string>& words,
-                    const Line& ln, Item& it, SearchHit& hit, bool& isHit, SearchOutcome& out) {
-  isHit = false;
-  LineHeader h;
-  if (!checkLine(ln.data, ln.len, h).ok()) return Status::success();   // torn or garbage: never stored
-  if (!searchedKind(h.kind) || (a.openTurn && h.turn == a.openTurn)) return Status::success();
-  if (h.t && (!out.oldestT || h.t < out.oldestT)) out.oldestT = h.t;
-  if (!inRange(h.t, a)) return Status::success();
-  // A result's payload, or the rest of an assistant text over the message cap, lives in the bulk file.
-  const bool bulk = (h.kind == ItemKind::Result || h.kind == ItemKind::Assistant) &&
-                    containsFolded(ln.data, ln.len, "\"hdl\":");
-  if (!bulk && !allIn(ln.data, ln.len, words)) return Status::success();   // a word missing: no decode
-  if (!decodeLine(ln.data, ln.len, it).ok()) return Status::success();
-  if (it.kind == ItemKind::Result && ownResult(it.n)) return Status::success();
-  std::string text;
-  if (bulk && !it.handle.empty()) {
+// One search call: what it reads, what it asks and what it has found so far.
+struct Scan {
+  const SearchDeps& d;
+  TxFiles& files;   // counted into out.card
+  const SearchAsk& a;
+  const std::vector<std::string>& words;
+  SearchOutcome& out;
+  Item it;   // reused per line
+
+  bool full() const { return out.hits.size() >= d.limits.maxHits; }
+  bool overBudget() const {
+    if (out.card.bytes >= d.limits.cardBytes) return true;
+    return d.nowMs && out.card.totalMs >= d.limits.cardMs;
+  }
+  // Stop here: the next call starts at `next`.
+  Status pause(std::string next) {
+    out.more = true;
+    out.next = std::move(next);
+    return Status::success();
+  }
+  Status stopAt(std::string next, const Status& st) {
+    out.next = std::move(next);
+    return st;
+  }
+
+  // Whether the header lets the line be a hit at all (kind, the open turn, the dates).
+  bool headerPasses(const LineHeader& h) {
+    if (!searchedKind(h.kind) || (a.openTurn && h.turn == a.openTurn)) return false;
+    noteOldest(h.t, out);
+    return inRange(h.t, a);
+  }
+
+  // The text of a decoded line: inline, or its bulk payload. `searched` false: nothing to search (a
+  // payload gone after 30 days is counted); not ok: the card refused (the call stops at this line).
+  Status textOf(bool bulk, std::string& text, bool& searched) {
+    searched = true;
+    if (!bulk || it.handle.empty()) {
+      text = std::move(it.x);
+      return Status::success();
+    }
     TxLog log(files, d.chatKey);
     const Status st = log.readBulk(it.handle, 0, kBulkMaxBytes, text);
     if (st.err == Err::NotFound || st.err == Err::InvalidArgument) {
-      ++out.unreadBulk;   // gone (30 days): not searched, counted for the answer
+      ++out.unreadBulk;
+      searched = false;
       return Status::success();
     }
-    if (!st.ok()) return st;   // the card refused: the call stops here, this line is read again next time
-  } else {
-    text = std::move(it.x);
+    return st;
   }
-  if (!matchesAll(text, words)) return Status::success();
-  hit = SearchHit{};
-  hit.id = "r" + std::to_string(it.q);
-  hit.t = it.t;
-  hit.source = sourceOf(it.kind);
-  if (it.kind == ItemKind::User) {
-    hit.tzMinutes = it.tzMinutes;
-    hit.hasTz = true;
+
+  void addHit(std::string text) {
+    SearchHit hit;
+    hit.id = "r" + std::to_string(it.q);
+    hit.t = it.t;
+    hit.source = sourceOf(it.kind);
+    hit.hasTz = it.kind == ItemKind::User;
+    if (hit.hasTz) hit.tzMinutes = it.tzMinutes;
+    if (it.kind == ItemKind::Result) {
+      hit.tool = it.n;
+      hit.outside = it.cls == ResultClass::Outside;
+    }
+    hit.text = std::move(text);
+    out.hits.push_back(std::move(hit));
   }
-  if (it.kind == ItemKind::Result) {
-    hit.tool = it.n;
-    hit.outside = it.cls == ResultClass::Outside;
+
+  // One line of the transcript considered; a hit is added to out.hits.
+  Status line(const Line& ln) {
+    LineHeader h;
+    if (!checkLine(ln.data, ln.len, h).ok() || !headerPasses(h)) return Status::success();   // torn: never stored
+    // A result's payload, or the rest of an assistant text over the message cap, lives in the bulk file.
+    const bool bulk = (h.kind == ItemKind::Result || h.kind == ItemKind::Assistant) &&
+                      containsFolded(ln.data, ln.len, "\"hdl\":");
+    if (!bulk && !allIn(ln.data, ln.len, words)) return Status::success();   // a word missing: no decode
+    if (!decodeLine(ln.data, ln.len, it).ok()) return Status::success();
+    if (it.kind == ItemKind::Result && ownResult(it.n)) return Status::success();
+    std::string text;
+    bool searched = false;
+    const Status st = textOf(bulk, text, searched);
+    if (st.ok() && searched && matchesAll(text, words)) addHit(std::move(text));
+    return st;
   }
-  hit.text = std::move(text);
-  isHit = true;
-  return Status::success();
-}
+
+  Status transcript(const Cursor& c, bool& finished);
+  Status oldRows(std::string token, size_t skip);
+  Status oldPage(OldPage& page, size_t skip, const std::string& token, bool& stopped);
+};
 
 // A date range on a fresh query: the segments that cannot hold it are not read. Lines are stored in
 // time order, so a segment whose first line is stamped after `to` holds nothing at or before it, and
 // once a segment whose first line is before `from` has been read, every older one is older still.
 // Segment 1 is always read (the history import's own items open it, stamped with their rows' times),
 // and a first line with no clock decides nothing.
-Status rangeSegments(TxFiles& files, const std::string& chatKey, const std::vector<uint32_t>& segs, const SearchAsk& a,
-                     uint32_t& startSeg, uint32_t& stopBelow) {
-  startSeg = 0;
-  stopBelow = 0;
-  if (segs.size() < 2) return Status::success();
-  std::vector<uint64_t> first(segs.size(), 0);
+Status firstStamps(TxFiles& files, const std::string& chatKey, const std::vector<uint32_t>& segs,
+                   std::vector<uint64_t>& first) {
+  first.assign(segs.size(), 0);
   for (size_t i = 1; i < segs.size(); ++i) {
     std::string path;
     if (!segmentPath(chatKey, segs[i], path).ok()) continue;
@@ -392,75 +427,64 @@ Status rangeSegments(TxFiles& files, const std::string& chatKey, const std::vect
     });
     if (!st.ok()) return st;
   }
+  return Status::success();
+}
+Status rangeSegments(TxFiles& files, const std::string& chatKey, const std::vector<uint32_t>& segs, const SearchAsk& a,
+                     uint32_t& startSeg, uint32_t& stopBelow) {
+  startSeg = 0;
+  stopBelow = 0;
+  if (segs.size() < 2) return Status::success();
+  std::vector<uint64_t> first;
+  const Status st = firstStamps(files, chatKey, segs, first);
+  if (!st.ok()) return st;
   size_t start = segs.size() - 1;
   while (a.toT && start > 0 && first[start] && first[start] > a.toT) --start;
   if (start != segs.size() - 1) startSeg = segs[start];
-  for (size_t i = start; a.fromT && i > 0; --i)
-    if (first[i] && first[i] < a.fromT) {
-      stopBelow = segs[i];
-      break;
-    }
+  for (size_t i = start; a.fromT && i > 0 && !stopBelow; --i)
+    if (first[i] && first[i] < a.fromT) stopBelow = segs[i];
   return Status::success();
 }
 
-// The transcript part. `finished` when its start was reached.
-Status searchTranscript(const SearchDeps& d, TxFiles& files, const SearchAsk& a, const std::vector<std::string>& words,
-                        const Cursor& c, SearchOutcome& out, bool& finished) {
-  finished = false;
+// Where a transcript read starts: the segments, the first line's cursor, and the range's oldest segment.
+struct StartPlan {
   std::vector<uint32_t> segs;
-  Status st = segmentsOf(files, d.chatKey, segs);
-  if (!st.ok()) {
-    out.next = c.seg ? tCursor(c.seg, c.off) : std::string();
-    return st;
-  }
-  uint32_t startSeg = c.seg;
-  uint64_t startOff = c.off;
+  uint32_t seg = 0;         // 0: the newest line
+  uint64_t off = 0;
   uint32_t stopBelow = 0;   // segments below this one are older than the range (0: none)
-  if (!c.seg && (a.toT || a.fromT) && !(st = rangeSegments(files, d.chatKey, segs, a, startSeg, stopBelow)).ok())
-    return st;
-  if (startSeg && !c.seg) startOff = UINT64_MAX;   // from the end of the first segment the range can reach
-  Backward rd(files, d.chatKey, segs);
-  st = rd.start(startSeg, startOff);
-  if (!st.ok()) {
-    out.next = c.seg ? tCursor(c.seg, c.off) : std::string();
-    return st;
-  }
-  Budget budget{d, out.card};
-  Item it;
+};
+Status planStart(TxFiles& files, const std::string& chatKey, const SearchAsk& a, const Cursor& c, StartPlan& p) {
+  p.seg = c.seg;
+  p.off = c.off;
+  Status st = segmentsOf(files, chatKey, p.segs);
+  if (!st.ok() || c.seg || (!a.toT && !a.fromT)) return st;
+  st = rangeSegments(files, chatKey, p.segs, a, p.seg, p.stopBelow);
+  if (p.seg) p.off = UINT64_MAX;   // from the end of the first segment the range can reach
+  return st;
+}
+
+// The transcript part. `finished` when its start (or the range's oldest segment) was reached.
+Status Scan::transcript(const Cursor& c, bool& finished) {
+  finished = false;
+  StartPlan plan;
+  Status st = planStart(files, d.chatKey, a, c, plan);
+  Backward rd(files, d.chatKey, plan.segs);
+  if (st.ok()) st = rd.start(plan.seg, plan.off);
+  if (!st.ok()) return stopAt(c.seg ? tCursor(c.seg, c.off) : std::string(), st);
   while (true) {
     uint32_t seg = 0;
     uint64_t off = 0;
     rd.pos(seg, off);
-    if (rd.atStart() || (stopBelow && seg < stopBelow)) {
-      finished = true;
-      return Status::success();
-    }
-    // Before each line: a line's own bulk read counts toward the budget too.
-    if (out.hits.size() >= d.limits.maxHits || budget.over()) {
-      out.more = true;
-      out.next = tCursor(seg, off);
-      return Status::success();
-    }
+    if (rd.atStart() || (plan.stopBelow && seg < plan.stopBelow)) break;
+    if (full() || overBudget()) return pause(tCursor(seg, off));   // a line's own bulk read counts too
     Line ln;
     bool none = false;
     st = rd.next(ln, none);
-    if (!st.ok()) {
-      out.next = tCursor(seg, off);
-      return st;
-    }
-    if (none) {
-      finished = true;
-      return Status::success();
-    }
-    SearchHit hit;
-    bool isHit = false;
-    st = considerLine(d, files, a, words, ln, it, hit, isHit, out);
-    if (!st.ok()) {
-      out.next = tCursor(seg, off);
-      return st;
-    }
-    if (isHit) out.hits.push_back(std::move(hit));
+    if (st.ok() && none) break;
+    if (st.ok()) st = line(ln);
+    if (!st.ok()) return stopAt(tCursor(seg, off), st);   // this line is read again by the next call
   }
+  finished = true;
+  return Status::success();
 }
 
 bool oldConversation(const DayRow& r) {
@@ -474,50 +498,56 @@ std::string oldCursor(const std::string& token, size_t skip) {
   return "o" + token + (skip ? "~" + std::to_string(skip) : std::string());
 }
 
+// The rows of one page from `skip`; `stopped` when the hits filled up inside it.
+Status Scan::oldPage(OldPage& page, size_t skip, const std::string& token, bool& stopped) {
+  stopped = false;
+  for (size_t i = skip; i < page.rows.size(); ++i) {
+    if (full()) {   // the rest of this page stays for the next call
+      stopped = true;
+      return pause(oldCursor(token, i));
+    }
+    DayRow& r = page.rows[i];
+    noteOldest(r.t, out);
+    if (!oldConversation(r) || !inRange(r.t, a) || !matchesAll(r.text, words)) continue;
+    SearchHit hit;
+    hit.id = rowIdString(r.id);
+    hit.t = r.t;
+    hit.source = r.role == RowRole::Owner ? HitSource::OldPerson : HitSource::OldAssistant;
+    hit.text = std::move(r.text);
+    out.hits.push_back(std::move(hit));
+  }
+  return Status::success();
+}
+
 // The earlier engine's rows, from `token` (the store's cursor: rows strictly older), the first
 // `skip` rows of its page already considered.
-Status searchOld(const SearchDeps& d, const SearchAsk& a, const std::vector<std::string>& words, std::string token,
-                 size_t skip, SearchOutcome& out) {
+Status Scan::oldRows(std::string token, size_t skip) {
   out.oldRead = true;
-  Budget budget{d, out.card};
   OldPage page;
   while (true) {
-    if (out.hits.size() >= d.limits.maxHits || budget.over()) {
-      out.more = true;
-      out.next = oldCursor(token, skip);
-      return Status::success();
-    }
+    if (full() || overBudget()) return pause(oldCursor(token, skip));
     OldPageAsk ask;
     ask.before = token;
     ask.fromT = a.fromT;
     ask.toT = a.toT;
     page = OldPage{};
-    const Status st = d.old->page(ask, page, out.card);
-    if (!st.ok()) {
-      out.next = oldCursor(token, skip);
-      return st;
-    }
-    for (size_t i = skip; i < page.rows.size(); ++i) {
-      if (out.hits.size() >= d.limits.maxHits) {   // the rest of this page stays for the next call
-        out.more = true;
-        out.next = oldCursor(token, i);
-        return Status::success();
-      }
-      DayRow& r = page.rows[i];
-      if (r.t && (!out.oldestT || r.t < out.oldestT)) out.oldestT = r.t;
-      if (!oldConversation(r) || !inRange(r.t, a) || !matchesAll(r.text, words)) continue;
-      SearchHit hit;
-      hit.id = rowIdString(r.id);
-      hit.t = r.t;
-      hit.source = r.role == RowRole::Owner ? HitSource::OldPerson : HitSource::OldAssistant;
-      hit.text = std::move(r.text);
-      out.hits.push_back(std::move(hit));
-    }
-    skip = 0;
-    if (!page.older) return Status::success();
+    Status st = d.old->page(ask, page, out.card);
+    if (!st.ok()) return stopAt(oldCursor(token, skip), st);
+    bool stopped = false;
+    st = oldPage(page, skip, token, stopped);
+    if (stopped || !page.older) return st;
     if (page.next.empty() || page.next == ask.before) return Status::fail(Err::Io, "tx::search.old-cursor");
     token = page.next;
+    skip = 0;
   }
+}
+
+// The cursor the old part starts from: the import's verbatim floor (rows below it only).
+Status floorCursor(TxFiles& files, const std::string& chatKey, std::string& token) {
+  uint64_t floor = 0;
+  const Status st = verbatimFloor(files, chatKey, floor);
+  token = floor ? rowIdString(floor) : std::string();
+  return st;
 }
 
 }  // namespace
@@ -532,15 +562,15 @@ bool ReadOnlyCounted::readAt(const std::string& path, size_t offset, char* buf, 
 std::vector<std::string> queryWords(const std::string& query) {
   std::vector<std::string> out;
   std::string w;
-  for (char c : query) {
-    if (wordByte((unsigned char)c)) {
-      w += lower(c);
-      continue;
-    }
+  auto flush = [&] {
     if (!w.empty() && std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
     w.clear();
+  };
+  for (char c : query) {
+    if (wordByte((unsigned char)c)) w += lower(c);
+    else flush();
   }
-  if (!w.empty() && std::find(out.begin(), out.end(), w) == out.end()) out.push_back(w);
+  flush();
   return out;
 }
 
@@ -562,21 +592,16 @@ Status search(const SearchDeps& d, const SearchAsk& a, SearchOutcome& out) {
   if (words.empty()) return Status::success();
   try {
     ReadOnlyCounted files(*d.files, d.nowMs, out.card);
+    Scan scan{d, files, a, words, out, Item{}};
     if (!c.old) {
       bool finished = false;
-      Status st = searchTranscript(d, files, a, words, c, out, finished);
-      if (!st.ok() || !finished) return st;
-      if (!d.old) return Status::success();
-      uint64_t floor = 0;
-      st = verbatimFloor(files, d.chatKey, floor);
-      if (!st.ok()) {   // the transcript is read; the next call starts at its start and looks again
-        out.next = tCursor(1, 0);
-        return st;
-      }
-      c.token = floor ? rowIdString(floor) : std::string();
+      Status st = scan.transcript(c, finished);
+      if (!st.ok() || !finished || !d.old) return st;
+      st = floorCursor(files, d.chatKey, c.token);
+      if (!st.ok()) return scan.stopAt(tCursor(1, 0), st);   // the next call reads the start and looks again
     }
     if (!d.old) return Status::success();   // an old cursor with no old rows: nothing below
-    return searchOld(d, a, words, c.token, c.skip, out);
+    return scan.oldRows(c.token, c.skip);
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "tx::search.memory");
   }
@@ -599,64 +624,88 @@ Status verbatimFloor(TxFiles& files, const std::string& chatKey, uint64_t& floor
   });
 }
 
-Status findItem(TxFiles& counted, const std::string& chatKey, uint64_t q, Item& out) {
-  if (!chatKeyOk(chatKey) || q == 0) return Status::fail(Err::InvalidArgument, "tx::findItem");
-  std::vector<uint32_t> segs;
-  Status st = segmentsOf(counted, chatKey, segs);
-  if (!st.ok()) return st;
-  // The last segment whose first line is at or below q holds it (segments roll in q order).
-  size_t pick = segs.size();
-  for (size_t i = 0; i < segs.size(); ++i) {
-    std::string path;
-    if (!segmentPath(chatKey, segs[i], path).ok()) continue;
-    uint64_t firstQ = 0;
-    st = forwardLines(counted, path, kWindowMax, [&](const char* p, size_t n) {
-      LineHeader h;
-      if (!checkLine(p, n, h).ok()) return true;
-      firstQ = h.q;
-      return false;
-    });
-    if (!st.ok()) return st;
-    if (firstQ && firstQ <= q) pick = i;
-    if (firstQ > q) break;
-  }
-  if (pick == segs.size()) return Status::fail(Err::NotFound, "tx::findItem");
-  bool found = false;
-  for (size_t i = pick; i < segs.size() && !found; ++i) {
-    std::string path;
-    if (!segmentPath(chatKey, segs[i], path).ok()) continue;
-    st = forwardLines(counted, path, SIZE_MAX, [&](const char* p, size_t n) {
-      LineHeader h;
-      if (!checkLine(p, n, h).ok() || h.q != q) return true;
-      found = decodeLine(p, n, out).ok();
-      return !found;
-    });
-    if (!st.ok()) return st;
-  }
-  return found ? Status::success() : Status::fail(Err::NotFound, "tx::findItem");
+namespace {
+
+// The q of a segment's first whole line (0: none).
+Status firstQ(TxFiles& files, const std::string& path, uint64_t& q) {
+  q = 0;
+  return forwardLines(files, path, kWindowMax, [&](const char* p, size_t n) {
+    LineHeader h;
+    if (!checkLine(p, n, h).ok()) return true;
+    q = h.q;
+    return false;
+  });
 }
 
-namespace {
+// The index of the last segment whose first line is at or below q (segments roll in q order); segs.size()
+// when none is.
+Status segmentOf(TxFiles& files, const std::string& chatKey, const std::vector<uint32_t>& segs, uint64_t q,
+                 size_t& pick) {
+  pick = segs.size();
+  for (size_t i = 0; i < segs.size(); ++i) {
+    std::string path;
+    uint64_t first = 0;
+    if (!segmentPath(chatKey, segs[i], path).ok()) continue;
+    const Status st = firstQ(files, path, first);
+    if (!st.ok()) return st;
+    if (first > q) break;
+    if (first) pick = i;
+  }
+  return Status::success();
+}
+
 // "b/<turn>.txb@<off>+<len>": the payload's length (0 when the handle has none).
 uint64_t handleLen(const std::string& h) {
   const size_t plus = h.rfind('+');
   uint64_t v = 0;
   return plus != std::string::npos && parseU64(h, plus + 1, h.size(), v) ? v : 0;
 }
+
+// The owner message `ln` carries the photo `ref` (decoded into `owner`).
+bool carriesPhoto(const Line& ln, const std::string& quoted, const std::string& ref, Item& owner) {
+  LineHeader h;
+  if (!checkLine(ln.data, ln.len, h).ok() || h.kind != ItemKind::User) return false;
+  if (!containsFolded(ln.data, ln.len, quoted) || !decodeLine(ln.data, ln.len, owner).ok()) return false;
+  return std::any_of(owner.parts.begin(), owner.parts.end(),
+                     [&](const Part& p) { return p.kind == PartKind::Image && p.ref == ref; });
+}
+
 }  // namespace
 
-Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, size_t offset, size_t limit,
-                std::string& out, size_t& total) {
+Status findItem(TxFiles& files, const std::string& chatKey, uint64_t q, Item& out) {
+  if (!chatKeyOk(chatKey) || q == 0) return Status::fail(Err::InvalidArgument, "tx::findItem");
+  std::vector<uint32_t> segs;
+  size_t pick = 0;
+  Status st = segmentsOf(files, chatKey, segs);
+  if (st.ok()) st = segmentOf(files, chatKey, segs, q, pick);
+  if (!st.ok()) return st;
+  bool found = false;
+  for (size_t i = pick; i < segs.size() && !found && st.ok(); ++i) {
+    std::string path;
+    if (!segmentPath(chatKey, segs[i], path).ok()) continue;
+    st = forwardLines(files, path, SIZE_MAX, [&](const char* p, size_t n) {
+      LineHeader h;
+      if (!checkLine(p, n, h).ok() || h.q != q) return true;
+      found = decodeLine(p, n, out).ok();
+      return !found;
+    });
+  }
+  if (!st.ok()) return st;
+  return found ? Status::success() : Status::fail(Err::NotFound, "tx::findItem");
+}
+
+Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, const TextPage& page, std::string& out,
+                size_t& total) {
   out.clear();
   total = 0;
   if (!it.handle.empty() && (it.kind == ItemKind::Result || it.kind == ItemKind::Assistant)) {
     total = size_t(handleLen(it.handle));
     TxLog log(files, chatKey);
-    return log.readBulk(it.handle, offset, limit, out);
+    return log.readBulk(it.handle, page.offset, page.limit, out);
   }
   const std::string& whole = it.kind == ItemKind::Call ? it.args : it.x;
   total = whole.size();
-  if (offset < whole.size()) out = whole.substr(offset, limit);
+  if (page.offset < whole.size()) out = whole.substr(page.offset, page.limit);
   return Status::success();
 }
 
@@ -668,26 +717,18 @@ Status findPhoto(TxFiles& files, const std::string& chatKey, const std::string& 
     ReadOnlyCounted counted(files, nullptr, stats);
     std::vector<uint32_t> segs;
     Status st = segmentsOf(counted, chatKey, segs);
-    if (!st.ok()) return st;
     Backward rd(counted, chatKey, segs);
-    if (!(st = rd.start(0, 0)).ok()) return st;
+    if (st.ok()) st = rd.start(0, 0);
     const std::string quoted = "\"" + ref + "\"";
-    while (true) {
-      Line ln;
-      bool none = false;
-      if (!(st = rd.next(ln, none)).ok()) return st;
-      if (none) return Status::success();
-      LineHeader h;
-      if (!checkLine(ln.data, ln.len, h).ok() || h.kind != ItemKind::User) continue;
-      if (!containsFolded(ln.data, ln.len, quoted)) continue;
+    bool none = false;
+    while (st.ok() && !found) {
       if (stats.bytes > kPhotoScanBytes) return Status::fail(Err::TooLarge, "tx::findPhoto.budget");
-      if (!decodeLine(ln.data, ln.len, owner).ok()) continue;
-      for (const Part& p : owner.parts)
-        if (p.kind == PartKind::Image && p.ref == ref) {
-          found = true;
-          return Status::success();
-        }
+      Line ln;
+      st = rd.next(ln, none);
+      if (!st.ok() || none) break;
+      found = carriesPhoto(ln, quoted, ref, owner);
     }
+    return st;
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "tx::findPhoto.memory");
   }

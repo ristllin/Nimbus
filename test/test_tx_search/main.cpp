@@ -383,7 +383,7 @@ static void test_view_finds_an_item_and_pages_its_whole_text() {
   std::string all, page;
   size_t total = 0;
   for (size_t off = 0; off < big.size(); off += page.size()) {
-    TEST_ASSERT_TRUE(tx::itemText(c.files, kChat, it, off, 4096, page, total).ok());
+    TEST_ASSERT_TRUE(tx::itemText(c.files, kChat, it, tx::TextPage{off, 4096}, page, total).ok());
     TEST_ASSERT_EQUAL((int)big.size(), (int)total);
     TEST_ASSERT_TRUE(!page.empty());
     all += page;
