@@ -233,6 +233,15 @@ bool inQuiet(const QuietHours& q, uint64_t now, int16_t tzMinutes) {
   return orch::inQuietHours(minute, q.endMinute);
 }
 
+uint64_t quietEndAfter(const QuietHours& q, uint64_t now, int16_t tzMinutes) {
+  if (!now || !inQuiet(q, now, tzMinutes)) return now;
+  const int64_t local = static_cast<int64_t>(now) + static_cast<int64_t>(tzMinutes) * 60;
+  const int64_t sec = ((local % 86400) + 86400) % 86400;
+  const int64_t end = static_cast<int64_t>(q.endMinute % 1440) * 60;
+  const int64_t wait = ((end - sec) % 86400 + 86400) % 86400;
+  return now + static_cast<uint64_t>(wait ? wait : 86400);
+}
+
 // ---- the outbox -------------------------------------------------------------------------
 uint64_t HeldNote::key() const { return fnv64(routine + '\n' + stop + '\n' + text); }
 
@@ -422,12 +431,19 @@ Status deliverHeld(HeldStore& held, const OwnerSink& owner, const std::string& i
       in.status = StatusLine::LimitReached;
       in.statusText = &line;
     }
+    // P14 (lane E2-FIX2B): Sent is stored before the send, so a cut right after it never sends the
+    // note twice; what is owed then is only the append (the note still reaches his transcript).
+    HeldNote sending = n;
+    sending.state = HeldState::Sent;
+    (void)held.put(sending);
     DeliverOutcome o;
     (void)owner.deliver(in, o);
     // The text is the note: it must have gone (a stop line alone, when there is no text). Stays; tried again.
-    if (n.text.empty() ? !o.statusSent : !o.sent) return Status::fail(Err::Io, "plain::deliverHeld.send");
-    n.state = HeldState::Sent;   // never sent twice: what is owed now is the append
-    (void)held.put(n);
+    if (n.text.empty() ? !o.statusSent : !o.sent) {
+      (void)held.put(n);   // back to its state before: tried again
+      return Status::fail(Err::Io, "plain::deliverHeld.send");
+    }
+    n.state = HeldState::Sent;
   }
   const Status st = owner.append(heldNoteText(n, tzMinutes, dayStartMin), n.at);
   if (!st.ok() && st.err != Err::TooLarge) return st;   // owed: the idle step appends it later
@@ -572,6 +588,9 @@ FireResult finish(Fire& f, const TurnOutcome& o, uint64_t now, FireReport& out) 
   if (tripped) f.note.stop = guardTripSlug(o.trip);
   f.note.outside = std::find(o.end.events.begin(), o.end.events.end(), "change:outside") != o.end.events.end();
   f.note.state = HeldState::Ready;
+  // P8: held for quiet hours, it lives its whole hold after they end.
+  const uint64_t hold = f.fire.def.holdS ? f.fire.def.holdS : kHeldNoteExpiryS;
+  f.note.expires = std::max(f.note.expires, quietEndAfter(f.deps.quiet, now, f.deps.tzMinutes) + hold);
   out.noteId = f.note.id;
   (void)f.deps.held->dropExpired(now);   // room for this one before the outbox counts as full
   const Status put = f.deps.held->put(f.note);

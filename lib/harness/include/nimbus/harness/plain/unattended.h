@@ -205,6 +205,10 @@ struct QuietHours {
 };
 // Is `now` (local offset tzMinutes) inside quiet hours? No clock (0): yes (a note waits for one).
 bool inQuiet(const QuietHours& q, uint64_t now, int16_t tzMinutes);
+// The first moment after `now` at which quiet hours end (local minute endMinute); `now` when not
+// quiet or no clock. Lane E2-FIX2B (finding P8): a note held for quiet hours expires no earlier than
+// its hold after this, so quiet hours longer than the hold never drop it.
+uint64_t quietEndAfter(const QuietHours& q, uint64_t now, int16_t tzMinutes);
 
 // ---- one fire ------------------------------------------------------------------------
 // What the binding gives a fire. The routine's engine is built for the fire on `files` under its
