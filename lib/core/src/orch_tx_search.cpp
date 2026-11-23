@@ -563,6 +563,7 @@ struct Scan {
   }
 
   Status transcript(const Pos& from, bool& finished);
+  Status step(const Line& ln, const Pos& here);
   Status oldRows(const Pos& from, bool& finished);
 };
 
@@ -603,41 +604,61 @@ Status rangeSegments(TxFiles& files, const std::string& chatKey, const std::vect
   return Status::success();
 }
 
-// The transcript from `from` (T; seg 0: a fresh search, from its newest line or the range's newest
-// segment). `finished` when its start (or the range's oldest segment) was reached inside the window.
+// Where the transcript part starts and where a date range stops it: a fresh search (seg 0) from its
+// newest line or the newest segment the range can reach; a range's oldest segment on every call.
+struct TranscriptPlan {
+  std::vector<uint32_t> segs;
+  uint32_t seg = 0;
+  uint64_t off = 0;
+  uint32_t stopBelow = 0;   // segments below this one are older than the range (0: none)
+};
+Status planTranscript(TxFiles& files, const std::string& chatKey, const SearchAsk& a, const Pos& from,
+                      TranscriptPlan& p) {
+  p.seg = from.seg;
+  p.off = from.off;
+  Status st = segmentsOf(files, chatKey, p.segs);
+  if (!st.ok() || (!a.toT && !a.fromT)) return st;
+  uint32_t newest = 0;
+  st = rangeSegments(files, chatKey, p.segs, a, newest, p.stopBelow);
+  if (!from.seg && newest) {
+    p.seg = newest;
+    p.off = UINT64_MAX;   // from the end of that segment
+  }
+  return st;
+}
+
+// The transcript from `from` (T; seg 0: a fresh search). `finished` when its start (or the range's
+// oldest segment) was reached inside the window.
 Status Scan::transcript(const Pos& from, bool& finished) {
   finished = false;
-  std::vector<uint32_t> segs;
-  Status st = segmentsOf(files, d.chatKey, segs);
-  uint32_t seg0 = from.seg, stopBelow = 0;
-  uint64_t off0 = from.off;
-  if (st.ok() && !from.seg && (a.toT || a.fromT)) st = rangeSegments(files, d.chatKey, segs, a, seg0, stopBelow);
-  if (st.ok() && !from.seg && seg0) off0 = UINT64_MAX;   // from the end of the newest segment the range can reach
-  if (st.ok() && from.seg && (a.toT || a.fromT)) {       // the same oldest segment on every call of the range
-    uint32_t unused = 0;
-    st = rangeSegments(files, d.chatKey, segs, a, unused, stopBelow);
-  }
-  Backward rd(files, d.chatKey, segs);
-  if (st.ok()) st = rd.start(seg0, off0);
-  while (st.ok()) {
+  TranscriptPlan plan;
+  Status st = planTranscript(files, d.chatKey, a, from, plan);
+  Backward rd(files, d.chatKey, plan.segs);
+  if (st.ok()) st = rd.start(plan.seg, plan.off);
+  bool none = false;
+  while (st.ok() && !none) {
     uint32_t seg = 0;
     uint64_t off = 0;
     rd.pos(seg, off);
-    if (rd.atStart() || (stopBelow && seg < stopBelow)) break;
+    if (rd.atStart() || (plan.stopBelow && seg < plan.stopBelow)) break;
     const Pos here = tPos(seg, off);
     if (haveStart && endsAt(here)) return Status::success();
     Line ln;
-    bool none = false;
-    if (!(st = rd.next(ln, none)).ok() || none) break;
-    LineHeader h;
-    if (!checkLine(ln.data, ln.len, h).ok()) continue;   // torn or garbage: never stored
-    if (!haveStart && a.openTurn && h.turn == a.openTurn) continue;   // the question's own turn
-    at(here);
-    consumed += ln.len;
-    st = line(ln, h);
+    st = rd.next(ln, none);
+    if (st.ok() && !none) st = step(ln, here);
   }
   finished = st.ok();
   return st;
+}
+
+// One line of the transcript: the open turn's lines are passed before the window starts.
+Status Scan::step(const Line& ln, const Pos& here) {
+  LineHeader h;
+  if (!checkLine(ln.data, ln.len, h).ok()) return Status::success();   // torn or garbage: never stored
+  if (!haveStart && a.openTurn && h.turn == a.openTurn) return Status::success();   // the question's own turn
+  at(here);
+  consumed += ln.len;
+  return line(ln, h);
 }
 
 bool oldConversation(const DayRow& r) {

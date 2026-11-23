@@ -16,8 +16,10 @@
 //   search {query, scope?: history|notes, from?, to?, before?}
 //     history (default): this conversation's stored transcript and, for a chat's first conversation,
 //     the earlier engine's rows the import did not bring over verbatim (tx/search.h), all words,
-//     newest first, at most five hits, each "id when who: excerpt", then where the reading stopped and
-//     the cursor that goes on (before=...), or that it read to the start;
+//     the whole range in one window when it fits (lane E2-SRCH2), ranked (the phrase, then one line,
+//     then two lines; newest first among equals), at most twelve hits, each "id when who: excerpt",
+//     then how many more matches and their dates, or how far the reading went, with the cursor
+//     (before=...), or that it read to the start;
 //     notes: the person's unpinned notes, all words, five at a time (before=n<index>).
 //   view {id, offset?, limit?}
 //     r<q>: any stored message, note, summary, call or result of this conversation, its whole text
@@ -33,13 +35,12 @@
 // a direct dispatch with no turn). A result taken from outside content is outside again
 // (ToolOutput::outside), so the rails see it as they saw it first.
 //
-// Reads only; each read is one short card hold. The result is a few KB at most (five excerpts of
-// kExcerptBytes; a view page of at most the read_file cap). One line per call goes to the log with the
+// Reads only; each read is one short card hold. The result is a few KB at most (twelve excerpts of
+// tx::kSearchExcerptBytes; a view page of at most the read_file cap). One line per call goes to the log with the
 // card time and bytes.
 namespace agent {
 namespace plain {
 
-inline constexpr size_t kExcerptBytes = 240;
 inline constexpr size_t kViewPageMax = 32768;    // read_file's cap
 inline constexpr size_t kViewPageFloor = 2048;   // read_file's floor (ruling 95)
 inline constexpr size_t kNotesPerPage = 5;
@@ -75,8 +76,7 @@ class HistoryTools {
  private:
   ToolOutput search(const ToolCall& call, const TurnCtx& turn, ArduinoJson::JsonObjectConst a);
   bool askOf(const TurnCtx& turn, ArduinoJson::JsonObjectConst a, nimbus::orch::tx::SearchAsk& ask) const;
-  std::string answerText(const nimbus::orch::tx::SearchOutcome& o, const nimbus::orch::tx::Status& st,
-                         const std::vector<std::string>& words) const;
+  std::string answerText(const nimbus::orch::tx::SearchOutcome& o, const nimbus::orch::tx::Status& st) const;
   ToolOutput searchNotes(const TurnCtx& turn, ArduinoJson::JsonObjectConst a, const std::string& query);
   ToolOutput view(const ToolCall& call, const TurnCtx& turn, ArduinoJson::JsonObjectConst a);
   ToolOutput viewItem(const TurnCtx& turn, uint64_t q, size_t offset, size_t limit);

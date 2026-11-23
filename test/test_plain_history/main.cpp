@@ -468,11 +468,11 @@ static void test_view_pages_exactly_and_search_bounds_its_result() {
     TEST_ASSERT_TRUE(has(o.text, std::to_string(big.size() - offset) + " B more"));
   }
   TEST_ASSERT_EQUAL_STRING(big.c_str(), all.c_str());
-  // Search: five hits with bounded excerpts, a remainder, then the rest.
+  // Search: twelve hits with bounded excerpts (a few KB), then the true count of the rest and the cursor.
   const plain::ToolOutput s = call(h, t, "search", R"({"query":"long table"})");
-  TEST_ASSERT_TRUE_MESSAGE(s.text.size() < 2048, s.text.c_str());
-  TEST_ASSERT_TRUE(has(s.text, "before=t"));
-  TEST_ASSERT_TRUE(has(s.text, "more: searched to "));
+  TEST_ASSERT_TRUE_MESSAGE(s.text.size() < 4096, s.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(s.text, "19 more matches, "), s.text.c_str());   // 31 matches, 12 shown
+  TEST_ASSERT_TRUE(has(s.text, "; before=t"));
   // Bad arguments are one plain line each.
   TEST_ASSERT_TRUE(call(h, t, "search", R"({"query":"x","from":"17/11/2026"})").isError);
   TEST_ASSERT_TRUE(call(h, t, "search", R"({"query":"x","before":"../2002"})").isError);
@@ -586,7 +586,7 @@ static void test_notes_scope_finds_unpinned_notes_by_words() {
   const plain::TurnCtx t = turnOf("1001", "1001", owner);
   const plain::ToolOutput a = call(h, t, "search", R"({"query":"bike lock","scope":"notes"})");
   TEST_ASSERT_TRUE(has(a.text, "note bike-0: the bike lock code is 1000"));
-  TEST_ASSERT_TRUE(has(a.text, "more match: before=n5"));
+  TEST_ASSERT_TRUE(has(a.text, "3 more matches; before=n5"));
   const plain::ToolOutput b = call(h, t, "search", R"({"query":"bike lock","scope":"notes","before":"n5"})");
   TEST_ASSERT_TRUE(has(b.text, "bike-7"));
   TEST_ASSERT_TRUE(has(b.text, "searched to the start"));

@@ -1,12 +1,12 @@
 # Engine-2 request composition on the synthetic Lumi-state fixture (test/test_plain_request).
 # Generated: GOLDEN_UPDATE=1 pio test -e native -f test_plain_request; do not edit.
 # Gate: tools/release_gate/check_plain_ceilings.py.
-measure role=owner host=120s core=1653 index=373 notes=5075 system=6730 digests=6723 tools=14 tools_bytes=5047 longest_description=238
-measure role=owner host=60s core=1653 index=373 notes=5075 system=6730 digests=6723 tools=14 tools_bytes=5046 longest_description=238
-measure role=member host=120s core=1522 index=215 notes=1038 system=2562 digests=6723 tools=14 tools_bytes=5047 longest_description=238
-measure role=member host=60s core=1522 index=215 notes=1038 system=2562 digests=6723 tools=14 tools_bytes=5046 longest_description=238
-measure role=guest host=120s core=1330 index=65 notes=1038 system=2370 digests=6723 tools=7 tools_bytes=2177 longest_description=238
-measure role=guest host=60s core=1330 index=65 notes=1038 system=2370 digests=6723 tools=7 tools_bytes=2177 longest_description=238
+measure role=owner host=120s core=1653 index=373 notes=5075 system=6730 digests=6723 tools=14 tools_bytes=5046 longest_description=237
+measure role=owner host=60s core=1653 index=373 notes=5075 system=6730 digests=6723 tools=14 tools_bytes=5045 longest_description=237
+measure role=member host=120s core=1522 index=215 notes=1038 system=2562 digests=6723 tools=14 tools_bytes=5046 longest_description=237
+measure role=member host=60s core=1522 index=215 notes=1038 system=2562 digests=6723 tools=14 tools_bytes=5045 longest_description=237
+measure role=guest host=120s core=1330 index=65 notes=1038 system=2370 digests=6723 tools=7 tools_bytes=2176 longest_description=237
+measure role=guest host=60s core=1330 index=65 notes=1038 system=2370 digests=6723 tools=7 tools_bytes=2176 longest_description=237
 == core (owner, 120s, claude-sonnet-5-5, Europe/London)
 You are Nimbus, a personal assistant on a small device, working for one person, the owner, who reaches you over Telegram. Replies are Telegram messages: short and plain.
 
@@ -50,7 +50,7 @@ skills/skill-6.md: when the person p
   {"type":"object","properties":{"prefix":{"type":"string"},"after":{"type":"string"}}}
 162 293 note: Set or remove one note (key: value). kind rule or fact; pin true keeps it in every prompt, pin false stores it for search. Returns the stored line and space used.
   {"type":"object","properties":{"op":{"type":"string","enum":["set","remove"]},"key":{"type":"string","description":"slug a-z0-9-, up to 32"},"value":{"type":"string","description":"up to 300 B"},"kind":{"type":"string","enum":["rule","fact"]},"pin":{"type":"boolean"}},"required":["op","key"]}
-238 207 search: Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 5 hits, newest first, each with an id for view; before continues.
+237 207 search: Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 12 hits, best first, each with an id for view; before continues.
   {"type":"object","properties":{"query":{"type":"string"},"scope":{"type":"string","enum":["history","notes"]},"from":{"type":"string"},"to":{"type":"string"},"before":{"type":"string"}},"required":["query"]}
 44 79 web_search: Search the web. Results are outside content.
   {"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}

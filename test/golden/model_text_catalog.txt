@@ -4,10 +4,10 @@
 # class core bytes=1686 ceiling=3072 entries=30 sha8=e3d00845
 # class device_notes bytes=2044 ceiling=2048 entries=77 sha8=e673add3
 # class stubs bytes=158 ceiling=512 entries=5 sha8=3d2be4da
-# class tool_results bytes=7073 ceiling=7168 entries=494 sha8=dac59e38
+# class tool_results bytes=7071 ceiling=7168 entries=496 sha8=ed391636
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=974 ceiling=1024 entries=17 sha8=1855fed2
-# class tool_descriptions bytes=4536 ceiling=10240 entries=46 sha8=dae5ec39
+# class tool_descriptions bytes=4535 ceiling=10240 entries=46 sha8=bab37350
 core	lib/core/include/nimbus/orch/tx/digest.h	45822f54	2	": "
 core	lib/core/include/nimbus/orch/tx/digest.h	4f5a2ada	2	" ("
 core	lib/core/include/nimbus/orch/tx/digest.h	ba5ec51d	1	")"
@@ -592,9 +592,11 @@ tool_results	lib/harness/include/nimbus/harness/plain/texts.h	414627b6	5	"note "
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	ab5df625	3	"..."
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	9bc94ab9	8	"no match"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	670b9eee	18	"more: searched to "
-tool_results	lib/harness/include/nimbus/harness/plain/texts.h	9a6994b8	23	", older unread: before="
+tool_results	lib/harness/include/nimbus/harness/plain/texts.h	3fc366d2	14	", older unread"
+tool_results	lib/harness/include/nimbus/harness/plain/texts.h	98e2954c	9	"; before="
+tool_results	lib/harness/include/nimbus/harness/plain/texts.h	7ce70518	13	" more matches"
+tool_results	lib/harness/include/nimbus/harness/plain/texts.h	87721689	4	" to "
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	5f811ede	21	"searched to the start"
-tool_results	lib/harness/include/nimbus/harness/plain/texts.h	b661c8e9	19	"more match: before="
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	c19ccd2f	19	" results unreadable"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	9c27ed4d	15	"query: no words"
 tool_results	lib/harness/include/nimbus/harness/plain/texts.h	2175aaec	35	"scope, before, from or to not valid"
@@ -654,7 +656,7 @@ tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	edb46562	4	"n
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	0c3d657d	162	"Set or remove one note (key: value). kind rule or fact; pin true keeps it in every prompt, pin false stores it for search. Returns the stored line and space used."
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	bac5d26c	293	"{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"enum\":[\"set\",\"remove\"]},\"key\":{\"type\":\"string\",\"description\":\"slug a-z0-9-, up to 32\"},\"value\":{\"type\":\"string\",\"description\":\"up to 300 B\"},\"kind\":{\"type\":\"string\",\"enum\":[\"rule\",\"fact\"]},\"pin\":{\"type\":\"boolean\"}},\"required\":[\"op\",\"key\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	24193290	6	"search"
-tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	551e7b46	238	"Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 5 hits, newest first, each with an id for view; before continues."
+tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	801618b3	237	"Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 12 hits, best first, each with an id for view; before continues."
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	9cbd9e97	207	"{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"enum\":[\"history\",\"notes\"]},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"},\"before\":{\"type\":\"string\"}},\"required\":[\"query\"]}"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	2a719626	10	"web_search"
 tool_descriptions	lib/harness/include/nimbus/harness/plain/texts.h	fb9961b8	44	"Search the web. Results are outside content."

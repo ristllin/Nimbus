@@ -110,7 +110,7 @@ inline constexpr ToolDecl kTools[] = {
     // Lane E2-SRCH binds it (plain/history.h): this conversation's history and the person's unpinned notes.
     {"search",
      "Search this conversation's history (scope history, the default) or your unpinned notes (scope notes) by "
-     "words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 5 hits, newest first, each with an id "
+     "words; all must appear. from, to (YYYY-MM-DD) bound the dates. Up to 12 hits, best first, each with an id "
      "for view; before continues.",
      R"({"type":"object","properties":{"query":{"type":"string"},"scope":{"type":"string","enum":["history","notes"]},"from":{"type":"string"},"to":{"type":"string"},"before":{"type":"string"}},"required":["query"]})",
      nullptr},
@@ -279,9 +279,11 @@ inline constexpr char kSrcNote[] = "note ";
 inline constexpr char kCutMark[] = "...";
 inline constexpr char kSearchNone[] = "no match";
 inline constexpr char kSearchMore[] = "more: searched to ";
-inline constexpr char kSearchBefore[] = ", older unread: before=";
+inline constexpr char kSearchBefore[] = ", older unread";
+inline constexpr char kBeforeEq[] = "; before=";
+inline constexpr char kSearchFurther[] = " more matches";
+inline constexpr char kSearchTo[] = " to ";
 inline constexpr char kSearchEnd[] = "searched to the start";
-inline constexpr char kNotesMore[] = "more match: before=";
 inline constexpr char kSearchUnread[] = " results unreadable";
 inline constexpr char kSearchNoWords[] = "query: no words";
 inline constexpr char kSearchBadArgs[] = "scope, before, from or to not valid";

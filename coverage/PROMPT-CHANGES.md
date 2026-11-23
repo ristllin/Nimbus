@@ -1258,3 +1258,23 @@ PC-0175, PC-0176: not used.
 - lane: RB-N3
 - prd: section 4 (the system core's "what you see" line: stubs and view, older days as digests, search)
 - why: lib/harness/include/nimbus/harness/plain/texts.h core::kOlderDays: "search finds their exact words, files and notes" becomes "search finds their exact words and your notes": search on engine 2 reads this conversation and the person's notes, not files (read_file and list_files do), so the line now says only what is true. Written by lane E2-SRCH. Planned work, not a fix.
+
+### PC-0209: search's rest line names the count and dates of further matches (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7073 -> 7071
+- sha8: dac59e38 -> ed391636
+- lane: RB-N3
+- prd: section 4 (tool 7, search: results with source and time), ruling 116 (cannot read is never absent), ruling 117 (the class ceiling 7,168 B for search's and view's lines)
+- why: lib/harness/include/nimbus/harness/plain/texts.h tool_results: search now ranks every match of a whole window (lane E2-SRCH2: the exact phrase, then every word in one line, then in two lines in a row; newest first among equals) and returns twelve, so its rest line says "<N> more matches, <date> to <date>; before=<cursor>" (new " more matches", " to ", "; before=") or, when the window did not reach the start of the range, "more: searched to <date>, older unread; before=<cursor>" (kSearchBefore loses its ": before=" to the shared "; before="). The notes scope says the same count ("<N> more matches; before=n<i>") and its own "more match: before=" goes. Facts only (check_tool_result_imperatives). Written by lane E2-SRCH2 on the orchestrator's order after the bench showed Haiku stopping at search's first page of five newest hits. Planned work, not a fix: the class ends 2 B smaller.
+
+### PC-0210: search's declaration says twelve hits, best first (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4536 -> 4535
+- sha8: dae5ec39 -> bab37350
+- lane: RB-N3
+- prd: section 4 (tool 7)
+- why: lib/harness/include/nimbus/harness/plain/texts.h: search's description "Up to 5 hits, newest first" becomes "Up to 12 hits, best first", as lane E2-SRCH2 binds it. Planned work, not a fix.

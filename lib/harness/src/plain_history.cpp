@@ -95,60 +95,6 @@ const char* sourceWord(tx::HitSource s) {
 }
 
 // The start of a UTF-8 character at or before `i`.
-size_t charStart(const std::string& s, size_t i) {
-  while (i > 0 && i < s.size() && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) --i;
-  return i;
-}
-
-// Where `w` (lower case) first occurs in [from, to) of `text`, case-insensitive; npos when it does not.
-size_t findFolded(const std::string& text, size_t from, size_t to, const std::string& w) {
-  for (size_t i = from; i + w.size() <= to; ++i) {
-    size_t j = 0;
-    while (j < w.size() && std::tolower(static_cast<unsigned char>(text[i + j])) == static_cast<unsigned char>(w[j])) ++j;
-    if (j == w.size()) return i;
-  }
-  return std::string::npos;
-}
-
-// The line of `text` holding the most of the words (the first such), and where its first word
-// begins: a result of many lines shows the line that matched, not the first mention of one word.
-size_t bestSpot(const std::string& text, const std::vector<std::string>& words) {
-  size_t best = 0, bestCount = 0;
-  for (size_t start = 0; start < text.size() && bestCount < words.size();) {
-    size_t end = text.find('\n', start);
-    if (end == std::string::npos) end = text.size();
-    size_t count = 0, first = std::string::npos;
-    for (const std::string& w : words) {
-      const size_t at = findFolded(text, start, end, w);
-      if (at == std::string::npos) continue;
-      ++count;
-      first = std::min(first, at);
-    }
-    if (count > bestCount) {
-      bestCount = count;
-      best = first;
-    }
-    start = end + 1;
-  }
-  return best;
-}
-
-// A bounded excerpt on one line around the best matching line.
-std::string excerpt(const std::string& text, const std::vector<std::string>& words) {
-  const size_t at = bestSpot(text, words);
-  size_t from = at > kExcerptBytes / 4 ? charStart(text, at - kExcerptBytes / 4) : 0;
-  size_t to = std::min(text.size(), from + kExcerptBytes);
-  if (to < text.size()) to = charStart(text, to);
-  std::string out;
-  if (from > 0) out += R::kCutMark;
-  for (size_t i = from; i < to; ++i) {
-    const char c = text[i];
-    out += (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
-  }
-  if (to < text.size()) out += R::kCutMark;
-  return out;
-}
-
 // "r12 Tue 17 Nov 2026 13:02 web_search result, outside content"
 std::string label(const std::string& id, const std::string& when, tx::HitSource src, const std::string& tool,
                   bool outside) {
@@ -278,18 +224,28 @@ bool HistoryTools::askOf(const TurnCtx& turn, JsonObjectConst a, tx::SearchAsk& 
   return tx::cursorOk(ask.before) && !(ask.fromT && ask.toT && ask.fromT > ask.toT);
 }
 
-// The hits, then the remainder: where the reading stopped and the cursor, or that it reached the start.
-std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Status& st,
-                                     const std::vector<std::string>& words) const {
+// The hits, best first, then the rest: how many more matches the window holds and their dates, or
+// how far the reading went and that older parts were not read, with the cursor; or that it reached
+// the start of the range.
+std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Status& st) const {
   std::string text;
   for (const tx::SearchHit& h : o.hits) {
     const std::string when = whenOf(h.t, h.hasTz ? h.tzMinutes : tz(h.t));
-    text += label(h.id, when, h.source, h.tool, h.outside) + ": " + excerpt(h.text, words) + "\n";
+    text += label(h.id, when, h.source, h.tool, h.outside) + ": " + (h.cutBefore ? R::kCutMark : "") + h.excerpt +
+            (h.cutAfter ? R::kCutMark : "") + "\n";
   }
   if (o.hits.empty()) text += std::string(R::kSearchNone) + "\n";
   if (o.unreadBulk) text += std::to_string(o.unreadBulk) + R::kSearchUnread + "\n";
   if (!st.ok()) return text + R::kCardStopped + o.next;
-  if (o.more) return text + R::kSearchMore + whenOf(o.oldestT, tz(o.oldestT)) + R::kSearchBefore + o.next;
+  const std::string readTo = R::kSearchMore + whenOf(o.readFromT, tz(o.readFromT)) + R::kSearchBefore;
+  if (o.further) {
+    text += std::to_string(o.further) + R::kSearchFurther;
+    if (o.furtherFromT)
+      text += ", " + whenOf(o.furtherFromT, tz(o.furtherFromT)) + R::kSearchTo + whenOf(o.furtherToT, tz(o.furtherToT));
+    if (!o.complete) text += "\n" + readTo;   // the cursor below reaches the older part after these
+    return text + R::kBeforeEq + o.next;
+  }
+  if (!o.complete) return text + readTo + R::kBeforeEq + o.next;
   return text + R::kSearchEnd;
 }
 
@@ -309,12 +265,12 @@ ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObject
   tx::SearchOutcome o;
   const tx::Status st = tx::search(sd, ask, o);
   card_ = o.card;
-  ToolOutput out = ok(answerText(o, st, tx::queryWords(query)));
+  ToolOutput out = ok(answerText(o, st));
   out.isError = !st.ok() && o.hits.empty();
   // An excerpt of outside content is outside content.
   out.outside = std::any_of(o.hits.begin(), o.hits.end(), [](const tx::SearchHit& h) { return h.outside; });
   logCall(turn, card_, out.text.size(),
-          CallLog{kSearch, o.oldRead ? "history+old" : kHistory, o.hits.size(), o.more, tx::errSlug(st.err)});
+          CallLog{kSearch, o.oldRead ? "history+old" : kHistory, o.hits.size(), !o.next.empty(), tx::errSlug(st.err)});
   return out;
 }
 
@@ -339,10 +295,11 @@ ToolOutput HistoryTools::searchNotes(const TurnCtx& turn, JsonObjectConst a, con
     ++shown;
   }
   if (!shown) text += std::string(R::kSearchNone) + "\n";
-  bool more = false;
-  for (size_t j = i; j < notes.size() && !more; ++j)
-    more = tx::matchesAll(nimbus::orch::notes::formatLine(notes[j]), words);
-  text += more ? std::string(R::kNotesMore) + "n" + std::to_string(i) : std::string(R::kSearchEnd);
+  size_t rest = 0;
+  for (size_t j = i; j < notes.size(); ++j) rest += tx::matchesAll(nimbus::orch::notes::formatLine(notes[j]), words);
+  const bool more = rest > 0;
+  text += more ? std::to_string(rest) + R::kSearchFurther + R::kBeforeEq + "n" + std::to_string(i)
+               : std::string(R::kSearchEnd);
   logCall(turn, card_, text.size(), CallLog{kSearch, kNotes, shown, more, "ok"});
   return ok(std::move(text));
 }
