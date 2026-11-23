@@ -211,7 +211,10 @@ E2_CEILINGS = {
     "stubs": 512,
     # Ruling 111 item 2: raised from 6,144 B to 6,656 B for the schedule tool's own result and error
     # lines only (lanes RB-U1b and E2-SCHED: 510 B of schedule text on 6,142 B, 6,652 B used).
-    "tool_results": 6656,
+    # E2-SRCH asks the orchestrator for 512 B more, to 7,168 B, for search's and view's own result and
+    # error lines only (421 B of them: PC-0195; the class had 4 B left). Until a ruling says so, this one
+    # line and the two pins in test_gen_model_text_catalog.py are the whole of the ask.
+    "tool_results": 7168,
     "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,

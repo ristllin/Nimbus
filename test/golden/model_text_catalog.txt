@@ -4,7 +4,7 @@
 # class core bytes=1686 ceiling=3072 entries=30 sha8=e3d00845
 # class device_notes bytes=2044 ceiling=2048 entries=77 sha8=e673add3
 # class stubs bytes=158 ceiling=512 entries=5 sha8=3d2be4da
-# class tool_results bytes=7073 ceiling=6656 entries=494 sha8=dac59e38
+# class tool_results bytes=7073 ceiling=7168 entries=494 sha8=dac59e38
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=974 ceiling=1024 entries=17 sha8=1855fed2
 # class tool_descriptions bytes=4536 ceiling=10240 entries=46 sha8=dae5ec39
