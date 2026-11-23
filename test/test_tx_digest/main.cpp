@@ -1388,6 +1388,9 @@ void test_digits_after_an_adds_letter_are_kept_unless_the_answer_numbers_its_add
   TEST_ASSERT_EQUAL_STRING("12 eggs", t[1].c_str());
   t = texts("+Q07:30 alarm on weekdays\n");
   TEST_ASSERT_EQUAL_STRING("07:30 alarm on weekdays", t[0].c_str());
+  const tx::SummaryEdits bare = tx::parseSummaryEdits("+Q7\n+F12:\n");   // digits alone say no fact: unread
+  TEST_ASSERT_EQUAL(0u, bare.edits.size());
+  TEST_ASSERT_EQUAL(2u, bare.unread);
   // The numbered shape: per section from 1, or across the answer from 1.
   tx::SummaryEdits e = tx::parseSummaryEdits("+F1 The water meter read 3,412.7 m3.\n+F2 Talbot quoted 4,870 GBP.\n+D1 Go by train.\n");
   TEST_ASSERT_EQUAL(3u, e.numbered);
@@ -1428,6 +1431,7 @@ void test_every_character_of_an_add_after_its_letter_is_stored() {
       if (numbered) head = std::to_string(i + 1) + (rng() % 2 ? ": " : " ");
       else if (rng() % 2) head = std::to_string(rng() % 100) + (rng() % 2 ? "" : " ");
       else head = " ";
+      text += " x";   // every add says something besides digits (digits alone are unread by design)
       body[i] = numbered ? text : head + text;
       answer += std::string("+") + letters[rng() % 4] + head + text + "\n";
     }

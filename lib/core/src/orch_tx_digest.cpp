@@ -805,7 +805,8 @@ bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
       e.namedLen = (uint8_t)(sep - 2);
     }
     e.text = line.substr(2);
-    return true;
+    // Digits and nothing else ("+Q7") say no fact: unread, as before, never a line that reads "7".
+    return e.text.find_first_not_of("0123456789: \t") != std::string::npos;
   }
   size_t end = 2;
   if (!idAt(line, 2, e.id, end)) return false;

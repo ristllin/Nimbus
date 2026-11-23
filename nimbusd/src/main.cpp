@@ -202,6 +202,10 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
                     "and files are unchanged.");
       return;
     }
+    if (host->paused()) {   // lane E2-FIX7: no summary runs past the ceiling, so none is promised
+      deliver(chat, nimbusd::kPausedLine);
+      return;
+    }
     deliver(chat, host->requestCompaction() ? "Compacting this conversation. A message follows when it is done."
                                             : "A compaction is already queued. A message follows when it is done.");
   };

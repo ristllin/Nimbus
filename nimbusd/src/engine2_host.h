@@ -203,6 +203,8 @@ class Engine2Host {
 
   // The owner's /compact: queued on the driver, answered by it on this chat.
   bool requestCompaction() { return driver_ && driver_->requestManual(); }
+  // Lane E2-FIX7: the instance's ceiling is reached (no paid engine-2 request runs).
+  bool paused() const { return o_.paused && o_.paused(); }
 
   // One unit of idle work (the compaction) between turns, on the engine thread. True when it
   // did work (a paid call may have run).
@@ -299,7 +301,6 @@ class Engine2Host {
   }
 
   // A turn's spend in the provider's own counts (plain::turnSpendOf's shape): one slot of the head.
-  bool paused() const { return o_.paused && o_.paused(); }
   nimbus::orch::TurnSpend turnSpend(const plain::TurnOutcome& out, const std::string& model) const {
     nimbus::orch::TurnSpend s;
     nimbus::orch::TokenUsage u;

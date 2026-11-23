@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
@@ -37,6 +38,7 @@ namespace {
 // or summary-in-force refusal, which a second request could not change).
 const char kNotTakenRefused[] = "plain::CompactDriver.refused";
 const char kNotTakenForm[] = "plain::CompactDriver.form";
+const char kNotTakenHttp400[] = "plain::CompactDriver.http400";
 const char kNotTakenChanges[] = "plain::CompactDriver.changes";
 // Milliseconds left until `untilMs` on the platform clock (0 when past it; the clock may wrap).
 uint32_t msLeft(const Platform& p, uint32_t untilMs) {
@@ -45,7 +47,8 @@ uint32_t msLeft(const Platform& p, uint32_t untilMs) {
 }
 bool answerNotTaken(const Status& s) {
   return s.err == Err::InvalidArgument && s.where &&
-         (s.where == kNotTakenRefused || s.where == kNotTakenForm || s.where == kNotTakenChanges);
+         (s.where == kNotTakenRefused || s.where == kNotTakenForm || s.where == kNotTakenHttp400 ||
+          s.where == kNotTakenChanges);
 }
 
 }  // namespace
@@ -1257,16 +1260,19 @@ std::string providerWords(const std::string& body) {
 
 // A provider's refusal body that names the structured form (its field or its type).
 bool namesTheForm(const std::string& body) {
-  for (const char* w : {"output_config", "json_schema"})
-    if (body.find(w) != std::string::npos) return true;
+  std::string low = body;
+  for (char& c : low) c = (char)std::tolower((unsigned char)c);
+  for (const char* w : {"output_config", "output_format", "json_schema", "structured"})
+    if (low.find(w) != std::string::npos) return true;
   return false;
 }
 
 // One exchange's answer, taken or not (answerOf), and the structured form read back as lines.
 Status takeAnswer(const std::string& chatKey, const RungMessage& m, const ExchangeResult& r, bool cut, std::string& summary) {
   if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {
-    // Lane E2-FIX7 (M6): the form is named as the cause only when the provider's own words name it; any other
-    // HTTP 400 is logged as what it is, with the provider's words, and is no answer not taken.
+    // Lane E2-FIX7 (M6): the form is named as the cause only when the provider's own words name it (and then the
+    // model is asked in lines from then on); any other HTTP 400 is logged as what it is, with the provider's words,
+    // and asked once more in lines without marking the model.
     if (namesTheForm(r.providerBody)) {
       hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", chatKey.c_str(),
                  (unsigned)r.providerBody.size(), answerHead(providerWords(r.providerBody)).c_str());
@@ -1274,7 +1280,7 @@ Status takeAnswer(const std::string& chatKey, const RungMessage& m, const Exchan
     }
     hlog::logf("compact(%s): the summarizer request was refused (HTTP 400, %u B): %s", chatKey.c_str(),
                (unsigned)r.providerBody.size(), answerHead(providerWords(r.providerBody)).c_str());
-    return Status::fail(Err::Io, "plain::CompactDriver::ask");
+    return Status::fail(Err::InvalidArgument, kNotTakenHttp400);   // lines once more; the model is not marked
   }
   const Status s = answerOf(chatKey, r, cut, m.thinInput, summary);
   if (!s.ok() || !m.schema) return s;

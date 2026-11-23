@@ -3034,8 +3034,10 @@ void test_a_model_that_refuses_the_form_is_asked_in_lines_from_then_on() {
     c.model.respondWith([&](const sp::Recorded&, size_t) { return sp::httpError(400, other); });
     const plain::CompactOutcome out = c.step();
     TEST_ASSERT_EQUAL(plain::CompactStep::Failed, out.step);
-    TEST_ASSERT_EQUAL(1, (int)c.model.requests().size());
+    TEST_ASSERT_EQUAL(2, (int)c.model.requests().size());   // asked once more in lines, the model not marked
+    TEST_ASSERT_FALSE(c.model.requests()[1].answerSchema);
     TEST_ASSERT_FALSE(logged("the form was refused"));
+    TEST_ASSERT_FALSE(logged("takes no structured form"));
     TEST_ASSERT_TRUE(logged("the summarizer request was refused (HTTP 400"));
     TEST_ASSERT_TRUE(logged("text content blocks must be non-empty"));
     c.model.respondWith([&](const sp::Recorded&, size_t) { return sp::say(kSummary); });
