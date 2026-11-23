@@ -79,8 +79,9 @@ jobs:
     runs-on: ubuntu-latest
     # Warm-cache runs finish well inside this; the bound exists so a hung
     # toolchain download fails loudly instead of idling to the 6 h default.
-    # Lane RB-I0 added seven device builds (esp32s3-cyd and the six engine-2 envs).
-    timeout-minutes: 180
+    # Lane RB-I0 added seven device builds (esp32s3-cyd and the six engine-2 envs); the three
+    # other engine-1 twins the symbols check reads make it seventeen rows, about 140 minutes warm.
+    timeout-minutes: 210
     steps:
       # The native row and harness-lab consume ../solide-drivers as a sibling
       # checkout - recreate that layout inside the workspace (same shape as

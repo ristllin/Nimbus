@@ -19,7 +19,9 @@
 #                                       default - this is the ONLY thing that
 #                                       compiles it)
 #   test  (esp32s3 + -DNIMBUS_TEST)     the HIL serial test-affordances layer
-#   esp32s3-cyd                         the Freenove CYD product image (engine 1)
+#   esp32s3-cyd, esp32s3-cyd-35,        the Freenove CYD product images (engine 1) and the CYD
+#   esp32s3-cyd-40, test-cyd            test console: gen_e1_symbols.py --check reads all six
+#                                       engine-1 envs and their -e2 twins
 #   esp32s3-e2, esp32s3-cyd-e2,         the engine-2 images (lane RB-I0): each is its
 #   esp32s3-cyd-35-e2, esp32s3-cyd-40-e2, engine-1 twin built with custom_nimbus_engine = 2
 #   test-e2, test-cyd-e2                and -DNIMBUS_ENGINE=2 (never both engines in one image)
@@ -59,15 +61,23 @@ python3 tools/check_param_consumers.py || { echo "== param-consumer gate FAILED 
 python3 tools/webui_concat_check.py    || { echo "== webui concat check FAILED =="  >&2; exit 1; }
 
 # Each row: "<label>|<env>|<extra build flags>". Empty flags => plain env build.
+# The flag rows come first: PlatformIO removes the WHOLE build directory (every env) when the
+# project configuration changes, and PLATFORMIO_BUILD_FLAGS is part of it. With the flag rows
+# after the plain ones, the plain esp32s3, notifierdbg and provision builds were gone before the
+# gates below read them (the engine gates need the plain esp32s3 map and ELF). Every row after
+# the last flag row is a plain build and stays on disk.
 MATRIX=(
   "native|native|"
+  "esp32s3+fuelgauge|esp32s3|-DNIMBUS_HAS_FUEL_GAUGE"
+  "esp32s3+battadc|esp32s3|-DNIMBUS_HAS_BATTERY_ADC"
   "esp32s3|esp32s3|"
   "notifierdbg|notifierdbg|"
   "provision|provision|"
-  "esp32s3+fuelgauge|esp32s3|-DNIMBUS_HAS_FUEL_GAUGE"
-  "esp32s3+battadc|esp32s3|-DNIMBUS_HAS_BATTERY_ADC"
   "esp32s3+test|test|"
+  "test-cyd|test-cyd|"
   "esp32s3-cyd|esp32s3-cyd|"
+  "esp32s3-cyd-35|esp32s3-cyd-35|"
+  "esp32s3-cyd-40|esp32s3-cyd-40|"
   "esp32s3-e2|esp32s3-e2|"
   "esp32s3-cyd-e2|esp32s3-cyd-e2|"
   "esp32s3-cyd-35-e2|esp32s3-cyd-35-e2|"
