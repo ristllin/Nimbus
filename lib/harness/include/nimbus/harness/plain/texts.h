@@ -226,7 +226,11 @@ inline constexpr char kRoutineNote[] = "[routine ";
 }  // namespace device_notes
 
 // The classes other lanes fill (each starts empty; PRD section 4 ceilings).
-namespace stubs {}
+namespace stubs {
+// A result shown whole whose bulk file is missing or short (lane E2-FIX2A, finding P11): this line
+// stands in its place, then its stored stub when it has one; never less sent without a word.
+inline constexpr char kResultUnread[] = "[the stored result could not be read]";
+}  // namespace stubs
 namespace tool_results {
 // The results the loop itself gives a call that did not run (lane RB-E1a, plain_engine.cpp).
 inline constexpr char kNotRunCut[] = "not run: the answer was cut";

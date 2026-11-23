@@ -39,6 +39,7 @@
 #include "../support/tx_battery/pending.h"
 #include "../support/tx_battery/props.h"
 #include "../support/tx_battery/render.h"
+#include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
@@ -1810,6 +1811,41 @@ void test_outside_content_without_a_stub_is_never_sent_whole() {
   TEST_ASSERT_TRUE(out.body.find("OUTSIDE-SECRET") == std::string::npos);
 }
 
+// Lane E2-FIX2A, finding P11: a result shown whole whose bulk file is gone or short never goes out as less
+// without a word. Its place holds the marker and then its stub, and the device log says so once per turn.
+std::vector<std::string> g_wireLog;
+void recordWireLog(const char* line) { g_wireLog.push_back(line); }
+
+void test_a_missing_bulk_file_sends_a_marker_and_logs_once_per_turn() {
+  Rig rig;
+  txb::Convo c;
+  c.openTurn();
+  c.owner("ask 1: read the log");
+  const std::string id = c.call("read_file", R"({"path":"logs/a.csv"})");
+  c.bulkResult(id, "read_file", txb::payload("ROWS", 3000));
+  const tx::Item stored = c.items.back();
+  c.bulk.erase(stored.handle);   // the bulk file is gone (or short: the reader answers the same)
+  c.nextRound();
+  c.say("read it");
+  c.close();
+  c.openTurn();
+  c.owner("ask 2: and the total?");
+  g_wireLog.clear();
+  agent::hlog::setSink(recordWireLog);
+  Out out, again;
+  Opts o;
+  RENDER_OK(rig, c, out, o);
+  RENDER_OK(rig, c, again, o);   // the next round of the same turn
+  agent::hlog::setSink(nullptr);
+  EXPECT_API_OK(out, "bulk missing");
+  const auto blocks = txb::detail::blocksOf(out.view, sp::BlockKind::ToolResult, id);
+  TEST_ASSERT_EQUAL(1, (int)blocks.size());
+  const std::string want = std::string(plain::texts::stubs::kResultUnread) + "\n" + stored.st;
+  TEST_ASSERT_EQUAL_STRING(want.c_str(), blocks[0]->text.c_str());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)g_wireLog.size(), "logged once per turn");
+  TEST_ASSERT_TRUE(g_wireLog[0].find(stored.handle) != std::string::npos);
+}
+
 // What the API refuses is never sent, whatever was stored.
 void test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes() {
   Rig rig;
@@ -2130,6 +2166,7 @@ int main(int, char**) {
   RUN_TEST(test_a_new_turn_never_rewrites_the_message_a_turn_ended_with);
   RUN_TEST(test_an_owner_message_is_its_stamp_and_its_text);
   RUN_TEST(test_outside_content_without_a_stub_is_never_sent_whole);
+  RUN_TEST(test_a_missing_bulk_file_sends_a_marker_and_logs_once_per_turn);
   RUN_TEST(test_stored_states_the_api_refuses_are_rendered_into_ones_it_takes);
   RUN_TEST(test_a_ladder_rung_between_rounds_of_a_turn_with_signed_thinking_is_accepted_by_the_provider);
   RUN_TEST(test_the_measured_framing_per_block_is_inside_the_battery_allowances);

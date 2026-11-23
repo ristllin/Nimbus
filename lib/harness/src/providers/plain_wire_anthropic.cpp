@@ -51,6 +51,8 @@
 #include <string>
 #include <vector>
 
+#include "nimbus/harness/log.h"
+#include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
@@ -520,12 +522,28 @@ void ownerMessage(Render& r, const tx::Item& u) {
     if (p.kind == tx::PartKind::Image && photoBlock(r, u, p, !first)) first = false;
 }
 
-// The whole text of a result: inline, or its bulk payload (the stub when it cannot be read).
+// A bulk file that could not be read, in the device log once per turn (the request is rendered
+// again each round and on each ladder rung).
+void logUnread(const Render& r, const tx::Item& it) {
+  static std::string s_logged;
+  const std::string key = r.in.turn->chatKey + "#" + std::to_string(r.in.turn->turn);
+  if (key == s_logged) return;
+  s_logged = key;
+  hlog::logf("wire(%s): the bulk result %s could not be read; its place says so", r.in.turn->chatKey.c_str(),
+             it.handle.c_str());
+}
+
+// The whole text of a result: inline, or its bulk payload. A bulk file that is missing or short is
+// never sent as less without a word (finding P11): the marker stands in its place, then the stub.
 std::string wholeText(const Render& r, const tx::Item& it) {
   if (it.handle.empty()) return it.x;
   std::string out;
-  if (r.in.bulk && r.in.bulk(it.handle, out).ok()) return out;
-  return it.st;
+  if (!r.in.bulk) return it.st;   // a render with no bulk reader (stubs by design)
+  if (r.in.bulk(it.handle, out).ok()) return out;
+  logUnread(r, it);
+  std::string text = texts::stubs::kResultUnread;
+  if (!it.st.empty()) text += "\n" + it.st;
+  return text;
 }
 
 // The stub rule's facts for this request: the pointer (with ladder rung 1), the stub lists, rung 2.
