@@ -74,6 +74,14 @@ static void rollTo(ProviderBudget* e, uint32_t periodKey) {
   e->tokensOut = 0;
   e->cacheRead = 0;
   e->cacheWrite = 0;
+  e->cacheWrite1h = 0;   // E2-FIX6: kept past a roll it outgrew cacheWrite (estCents wrapped)
+}
+
+// The 1-hour part of a provider's writes, added and kept within its writes (E2-FIX6).
+static void addLongWrites(ProviderBudget* e, uint64_t n) {
+  if (!e || !n) return;
+  const uint64_t sum = e->cacheWrite1h + n < e->cacheWrite1h ? UINT64_MAX : e->cacheWrite1h + n;
+  e->cacheWrite1h = sum < e->cacheWrite ? sum : e->cacheWrite;
 }
 
 void UsageLedger::recordTokens(const std::string& name, uint64_t n, uint32_t periodKey) {
@@ -181,10 +189,7 @@ void UsageLedger::recordTokens(const std::string& name, const TokenDelta& d,
   if (model && *model && !models_.tracking()) startTracking();
   const char* key = models_.spendKey(model);
   recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, tag);
-  if (d.cacheW1h) {   // R3: the 1-hour-TTL part, priced at 2x at estimate time
-    ProviderBudget* e = ensure(name);
-    if (e) e->cacheWrite1h += d.cacheW1h;
-  }
+  if (d.cacheW1h) addLongWrites(ensure(name), d.cacheW1h);   // R3: the 1-hour-TTL part, priced at 2x
   // Every row follows its own provider's period: a provider that rolled zeroes its
   // rows' period counters, one that first synced carries its pre-sync rows along.
   models_.syncPeriods(&UsageLedger::periodOf, this);
@@ -1015,6 +1020,7 @@ void UsageLedger::addLost(const ProviderBudget& e, const TokenDelta& gap) {
   t->lost.out = addSat(t->lost.out, gap.out, sat);
   t->lost.cacheR = addSat(t->lost.cacheR, gap.cacheR, sat);
   t->lost.cacheW = addSat(t->lost.cacheW, gap.cacheW, sat);
+  t->lost.cacheW1h = minU(addSat(t->lost.cacheW1h, gap.cacheW1h, sat), t->lost.cacheW);   // E2-FIX6
 }
 
 // The usgLedger blob carries a folded provider's period input with its cache tokens
@@ -1114,6 +1120,7 @@ HistTotals historyFor(const UsageHistory& h, const std::string& prov, uint8_t re
     t.d.out = addSat(t.d.out, b.tokOut, sat);
     t.d.cacheR = addSat(t.d.cacheR, b.cacheR, sat);
     t.d.cacheW = addSat(t.d.cacheW, b.cacheW, sat);
+    t.d.cacheW1h = addSat(t.d.cacheW1h, b.cacheW1h, sat);
     t.calls = addSat(t.calls, b.calls, sat);
   }
   return t;
@@ -1124,6 +1131,7 @@ void UsageLedger::addSpend(const std::string& name, const TokenDelta& d, uint32_
                            uint32_t periodKey) {
   if (!d.empty()) {
     recordTokens(name, d.in, d.out, d.cacheR, d.cacheW, periodKey, std::string());
+    if (d.cacheW1h) addLongWrites(ensure(name), d.cacheW1h);   // E2-FIX6
     const ProviderBudget* e = find(name);
     if (e && models_.tracking()) addLost(*e, d);
   }
@@ -1150,6 +1158,8 @@ UsageLedger::HistoryGap gapFor(const std::string& prov, const ProviderBudget* e,
     g.d.in = gapOf(t.d.in, current ? e->tokensIn : 0);
     g.d.cacheR = gapOf(t.d.cacheR, current ? e->cacheRead : 0);
     g.d.cacheW = gapOf(t.d.cacheW, current ? e->cacheWrite : 0);
+    const uint64_t longGap = gapOf(t.d.cacheW1h, current ? e->cacheWrite1h : 0);
+    g.d.cacheW1h = longGap < g.d.cacheW ? longGap : g.d.cacheW;   // E2-FIX6
   }
   g.d.out = gapOf(t.d.out, current ? e->tokensOut : 0);
   g.calls = (uint32_t)gapOf(t.calls, current ? e->calls : 0);
@@ -1198,6 +1208,7 @@ void UsageLedger::mergeSpendSince(const UsageLedger& base, const UsageLedger& no
       d.in = gapOf(e.tokensIn, same ? b->tokensIn : 0);
       d.cacheR = gapOf(e.cacheRead, same ? b->cacheRead : 0);
       d.cacheW = gapOf(e.cacheWrite, same ? b->cacheWrite : 0);
+      d.cacheW1h = minU(gapOf(e.cacheWrite1h, same ? b->cacheWrite1h : 0), d.cacheW);   // E2-FIX6
     }
     d.out = gapOf(e.tokensOut, same ? b->tokensOut : 0);
     const uint32_t calls = (uint32_t)gapOf(e.calls, same ? b->calls : 0);

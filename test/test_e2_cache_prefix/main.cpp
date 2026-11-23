@@ -172,6 +172,16 @@ struct Device {
           return nimbus::orch::ToolResult::ok("stored " + path);
         },
         plain::declSchema(*w, false));
+    const auto* r = plain::toolDecl("read_file");   // a read: shows what is there, never the head's own change
+    reg.add(
+        r->name, r->description,
+        [this](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+          if (during) during();
+          std::string out;
+          for (const auto& kv : pinned) out += kv.first + ": " + kv.second + " ";
+          return nimbus::orch::ToolResult::ok(out);
+        },
+        plain::declSchema(*r, false));
   }
 
   uint64_t now() const { return kEpoch0 + ms / 1000u; }
@@ -445,7 +455,7 @@ static void test_a_note_saved_in_another_chat_reaches_this_one() {
 static void test_a_new_tool_changes_the_prefix() {
   Device dev;
   dev.say("1001", "one");
-  const auto* d = plain::toolDecl("read_file");
+  const auto* d = plain::toolDecl("append_file");
   dev.reg.add(d->name, d->description,
               [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::ok("x"); },
               plain::declSchema(*d, false));
@@ -653,6 +663,17 @@ static void test_an_outside_file_during_a_tool_turn_reaches_the_next_request() {
   dev.say("1001", "next");
   TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("inbox/upload.csv") != std::string::npos);
 }
+// The reviewer's case: a read in the turn shows the outside line; a read is never the head's own.
+static void test_an_outside_note_a_read_shows_is_still_not_the_heads_own() {
+  Device dev;
+  dev.say("1001", "one");
+  dev.during = [&dev] { dev.pinned["rule-web"] = "added meanwhile"; };
+  dev.say("1001", "read it", {sp::call("read_file", R"({"path":"notes/a.md"})")});
+  dev.during = nullptr;
+  dev.pause(30);
+  dev.say("1001", "next");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("added meanwhile") != std::string::npos);
+}
 // C6: a note the head removes or edits does not stay in the system part as in force.
 static void test_a_note_the_head_removes_leaves_the_next_request() {
   Device dev;
@@ -766,6 +787,7 @@ int main(int, char**) {
   RUN_TEST(test_an_outside_note_added_during_a_tool_turn_reaches_the_next_request);
   RUN_TEST(test_an_outside_rule_removed_during_a_tool_turn_leaves_the_next_request);
   RUN_TEST(test_an_outside_file_during_a_tool_turn_reaches_the_next_request);
+  RUN_TEST(test_an_outside_note_a_read_shows_is_still_not_the_heads_own);
   RUN_TEST(test_a_note_the_head_removes_leaves_the_next_request);
   RUN_TEST(test_a_note_the_head_edits_shows_only_its_new_value);
   RUN_TEST(test_a_note_saved_while_the_card_refused_the_turn_shows_after_a_restart);

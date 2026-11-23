@@ -133,8 +133,26 @@ static void test_every_anthropic_row_costs_the_same_on_every_path() {
   TEST_ASSERT_TRUE(rows >= 3);
 }
 
+// A period roll: the 1-hour part rolls with the writes (it was kept, outgrew them and wrapped estCents).
+static void test_the_one_hour_part_rolls_with_its_period() {
+  orch::UsageLedger L;
+  orch::TokenDelta d;
+  d.cacheW = 1000;
+  d.cacheW1h = 800;
+  L.recordTokens("anthropic", d, kPeriod, "turn", nullptr, kDay);
+  orch::TokenDelta e;
+  e.in = 10;
+  L.recordTokens("anthropic", e, kPeriod + 1, "turn", nullptr, kDay + 31);   // the next period
+  const orch::ProviderBudget* p = L.find("anthropic");
+  TEST_ASSERT_NOT_NULL(p);
+  TEST_ASSERT_EQUAL(0, (int)p->cacheWrite);
+  TEST_ASSERT_EQUAL(0, (int)p->cacheWrite1h);
+  TEST_ASSERT_TRUE(p->estCents() < 1000);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_anthropic_row_costs_the_same_on_every_path);
+  RUN_TEST(test_the_one_hour_part_rolls_with_its_period);
   return UNITY_END();
 }

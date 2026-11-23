@@ -1511,7 +1511,7 @@ class TurnRun {
       t_.ctx.tainted = true;   // the request now carries an outside result whole
     }
     if (r.ok && orch::tx::changesFileSet(view.name)) t_.fileSetChanged = true;
-    if (r.ok && stored) keepOwn(out.text, view.args);
+    if (r.ok && stored && view.cls.effect == orch::EffectClass::Effect) keepOwn(out.text, view.args);
     if (r.ok && stored && out.deferred != Deferred::None) {   // a stored success only; run once the turn is closed
       const size_t kind = static_cast<size_t>(out.deferred);
       if (kind < kDeferredKinds) {
@@ -1562,8 +1562,9 @@ class TurnRun {
     return put(r, stored);
   }
 
-  // A successful, stored call's evidence for the frozen system part (seeOwnChanges): its result when
-  // short (a note's stored line; a long result is never a note line) and the path it named.
+  // A successful, stored effect call's evidence for the frozen system part (seeOwnChanges): its result
+  // when short (a note's stored line; a long result is never a note line) and the path it wrote. A read
+  // or a listing is never evidence: it can show what another writer added.
   static constexpr size_t kOwnTextMax = 1024;
   void keepOwn(const std::string& text, const std::string& args) {
     if (!d_.stablePrefix) return;

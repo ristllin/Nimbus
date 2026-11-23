@@ -126,14 +126,25 @@ std::vector<std::string> minus(const std::vector<std::string>& small, const std:
 
 }  // namespace
 
+namespace {
+// `text` holds `line` as a whole: at its start or after a space, and at its end or before a space
+// (the note tool's result: "saved, pinned (...): <line> (12 of 4096 B)").
+bool holdsLine(const std::string& text, const std::string& line) {
+  for (size_t at = text.find(line); at != std::string::npos; at = text.find(line, at + 1)) {
+    const size_t end = at + line.size();
+    if ((at == 0 || text[at - 1] == ' ') && (end == text.size() || text[end] == ' ')) return true;
+  }
+  return false;
+}
+}  // namespace
+
 bool ownNotesAddition(const std::string& frozen, const std::string& seen, const std::string& now,
                       const std::vector<std::string>& ownTexts, const std::vector<std::string>& headers) {
   const std::vector<std::string> n = linesOf(now), s = linesOf(seen);
   if (!minus(linesOf(frozen), n).empty() || !minus(s, n).empty()) return false;   // a line removed or edited
   for (const std::string& line : minus(n, s)) {
     if (std::find(headers.begin(), headers.end(), line) != headers.end()) continue;
-    const bool own = std::any_of(ownTexts.begin(), ownTexts.end(),
-                                 [&](const std::string& t) { return t.find(line) != std::string::npos; });
+    const bool own = std::any_of(ownTexts.begin(), ownTexts.end(), [&](const std::string& t) { return holdsLine(t, line); });
     if (!own) return false;
   }
   return true;
