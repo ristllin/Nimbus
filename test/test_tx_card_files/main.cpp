@@ -238,6 +238,28 @@ static void test_each_call_holds_the_lock_once_and_the_longest_hold_is_kept() {
   TEST_ASSERT_EQUAL(0u, f.holds().appendMs);
 }
 
+// Lane E2-BENCH: the read calls' hold times and bytes add up (the card time a turn's requests spend
+// re-reading earlier results), beside the longest one; a reset clears them.
+static void test_read_holds_add_up_their_time_and_bytes() {
+  FakeCard c;
+  tx::CardTxFiles f(c);
+  TEST_ASSERT_TRUE(f.append("/mem/tx/1/b/1.txb", "abcdefgh", 8));
+  f.resetHolds();
+  char buf[8];
+  size_t got = 0, sz = 0;
+  TEST_ASSERT_TRUE(f.size("/mem/tx/1/b/1.txb", sz));
+  TEST_ASSERT_TRUE(f.readAt("/mem/tx/1/b/1.txb", 0, buf, 5, got));
+  TEST_ASSERT_TRUE(f.readAt("/mem/tx/1/b/1.txb", 5, buf, 5, got));
+  TEST_ASSERT_EQUAL(2u, f.holds().reads);
+  TEST_ASSERT_EQUAL(8u, f.holds().readBytes);
+  TEST_ASSERT_TRUE(f.holds().readTotalMs >= 3u * c.stepMs);
+  TEST_ASSERT_TRUE(f.holds().readTotalMs >= f.holds().readMs);
+  TEST_ASSERT_TRUE(f.holds().readTotalMs < 3u * f.holds().readMs + 1u);
+  f.resetHolds();
+  TEST_ASSERT_EQUAL(0u, f.holds().readTotalMs);
+  TEST_ASSERT_EQUAL(0u, f.holds().readBytes);
+}
+
 // The restart the bench proves, on the fake: what the log stored comes back after a reopen.
 static void test_a_log_over_the_card_reopens_with_its_items() {
   FakeCard c;
@@ -447,6 +469,7 @@ int main(int, char**) {
   RUN_TEST(test_list_is_bare_names_and_a_missing_folder_is_empty);
   RUN_TEST(test_nothing_outside_the_root);
   RUN_TEST(test_each_call_holds_the_lock_once_and_the_longest_hold_is_kept);
+  RUN_TEST(test_read_holds_add_up_their_time_and_bytes);
   RUN_TEST(test_a_log_over_the_card_reopens_with_its_items);
   RUN_TEST(test_a_failed_exists_is_cannot_tell_never_empty);
   RUN_TEST(test_an_absent_folder_needs_its_parent_listed);

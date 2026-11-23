@@ -61,11 +61,14 @@ class CardOps {
 // clear of the TLS handshake's own floor, which the turn admission checks separately.
 inline constexpr uint32_t kCardWriteInternalFloor = 8192;
 
-// The longest card-lock hold of each kind of call, and how many calls were refused.
+// The longest card-lock hold of each kind of call, and how many calls were refused. readTotalMs and
+// readBytes add up every read and size call (lane E2-BENCH: the card time a turn's requests spend
+// re-reading earlier results, which the longest hold alone does not show).
 struct CardHolds {
   uint32_t appendMs = 0, wholeMs = 0, renameMs = 0, readMs = 0, listMs = 0;
   uint32_t appends = 0, wholes = 0, renames = 0, reads = 0;
   uint32_t refusedNoCard = 0, refusedFloor = 0, refusedTask = 0;
+  uint32_t readTotalMs = 0, readBytes = 0;
 };
 
 class CardTxFiles : public TxFiles {
@@ -85,13 +88,15 @@ class CardTxFiles : public TxFiles {
   bool readAt(const std::string& path, size_t offset, char* buf, size_t want, size_t& got) override {
     got = 0;
     if (!inside(path) || !card_.present()) return false;
-    Hold h(card_, holds_.readMs);
+    Hold h(card_, holds_.readMs, &holds_.readTotalMs);
     ++holds_.reads;
-    return card_.readAt(path, offset, buf, want, got);
+    const bool ok = card_.readAt(path, offset, buf, want, got);
+    holds_.readBytes += static_cast<uint32_t>(got);
+    return ok;
   }
   bool size(const std::string& path, size_t& out) override {
     if (!inside(path) || !card_.present()) return false;
-    Hold h(card_, holds_.readMs);
+    Hold h(card_, holds_.readMs, &holds_.readTotalMs);
     return card_.fileSize(path, out);
   }
   bool writeWhole(const std::string& path, const std::string& data) override {
@@ -143,14 +148,17 @@ class CardTxFiles : public TxFiles {
  private:
   // The lock for one call, and its hold time into the kind's maximum.
   struct Hold {
-    Hold(CardOps& c, uint32_t& maxMs) : c_(c), max_(maxMs), t0_(c.nowMs()) { c_.lock(); }
+    Hold(CardOps& c, uint32_t& maxMs, uint32_t* totalMs = nullptr)
+        : c_(c), max_(maxMs), total_(totalMs), t0_(c.nowMs()) { c_.lock(); }
     ~Hold() {
       c_.unlock();
       const uint32_t ms = c_.nowMs() - t0_;
       if (ms > max_) max_ = ms;
+      if (total_) *total_ += ms;
     }
     CardOps& c_;
     uint32_t& max_;
+    uint32_t* total_;
     uint32_t t0_;
   };
 

@@ -449,8 +449,9 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
         (unsigned)(a ? a->capacity() : 0), (unsigned)spiFree0, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
         (unsigned)spiBig0, (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM), (unsigned)(millis() - t0));
   const nimbus::orch::tx::CardHolds& h = txdev::cardTxFiles().holds();
-  alogf("e2: boot holdMs read=%u list=%u whole=%u rename=%u n=%u reads", (unsigned)h.readMs, (unsigned)h.listMs,
-        (unsigned)h.wholeMs, (unsigned)h.renameMs, (unsigned)h.reads);
+  alogf("e2: boot holdMs read=%u list=%u whole=%u rename=%u n=%u reads readTotalMs=%u readB=%u", (unsigned)h.readMs,
+        (unsigned)h.listMs, (unsigned)h.wholeMs, (unsigned)h.renameMs, (unsigned)h.reads, (unsigned)h.readTotalMs,
+        (unsigned)h.readBytes);
   logImport(*b);
   if (!st.ok()) return nullptr;
   s_chat = std::move(b);
@@ -490,12 +491,13 @@ void logTurn(const plain::ChatBinding& b, const plain::TurnOutcome& out, const p
         (unsigned)e.cacheWriteTokens, (unsigned)e.lastPromptTokens, (unsigned)e.microUsd, (unsigned)b.sentParts(),
         (unsigned)(b.sentParts() + b.refusedParts()));
   alogf("e2: mem stackFree=%u intLargestMin=%u intLargestNow=%u psramFree=%u psramLargest=%u reqs=%u "
-        "holdMs append=%u whole=%u rename=%u read=%u list=%u n=%u/%u/%u/%u refused=%u/%u/%u",
+        "holdMs append=%u whole=%u rename=%u read=%u list=%u n=%u/%u/%u/%u refused=%u/%u/%u readTotalMs=%u readB=%u",
         (unsigned)uxTaskGetStackHighWaterMark(nullptr), (unsigned)s_transport.minLargest, (unsigned)internalLargest(),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
         (unsigned)s_transport.requests, (unsigned)h.appendMs, (unsigned)h.wholeMs, (unsigned)h.renameMs,
         (unsigned)h.readMs, (unsigned)h.listMs, (unsigned)h.appends, (unsigned)h.wholes, (unsigned)h.renames,
-        (unsigned)h.reads, (unsigned)h.refusedNoCard, (unsigned)h.refusedFloor, (unsigned)h.refusedTask);
+        (unsigned)h.reads, (unsigned)h.refusedNoCard, (unsigned)h.refusedFloor, (unsigned)h.refusedTask,
+        (unsigned)h.readTotalMs, (unsigned)h.readBytes);
 }
 
 // The line a message gets when no engine-2 turn can run for it; empty: a turn can run.
