@@ -217,7 +217,7 @@ Status decodePrefix(const std::string& in, FrozenPrefix& out) {
   size_t at = sizeof kMagic;
   uint64_t manifest = 0, z = 0;
   bool shaped = fieldsOf(in, at, f, manifest);
-  if (shaped && in.compare(at, 9, "own-from ") == 0) shaped = getNum(in, at, "own-from", f.ownFrom);   // E2-FIX6
+  if (shaped && in.compare(at, 8, "own-from") == 0) shaped = getNum(in, at, "own-from", f.ownFrom);   // E2-FIX6
   const size_t body = at;
   if (!shaped || !getNum(in, at, "z", z) || at != in.size() || manifest > UINT32_MAX || z != fnv1a(in.data(), body))
     return Status::fail(Err::Torn, "plain::decodePrefix");
