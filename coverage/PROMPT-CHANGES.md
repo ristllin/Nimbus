@@ -1278,7 +1278,7 @@ PC-0175, PC-0176: not used.
 - lane: RB-N3
 - prd: section 4 (tool 7)
 - why: lib/harness/include/nimbus/harness/plain/texts.h: search's description "Up to 5 hits, newest first" becomes "Up to 12 hits, best first", as lane E2-SRCH2 binds it. Planned work, not a fix.
-### PC-0212: a result's stub says it was shown earlier and is not attached, then the call that reads it again (engine 2)
+
 ### PC-0212: a result's stub says it was shown in full earlier and is not attached, then the call that reads it again (engine 2)
 - catalog: e2
 - class: stubs
