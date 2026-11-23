@@ -250,7 +250,7 @@ std::unique_ptr<nimbus::orch::TurnImages> s_photos;   // the running turn's set 
 
 // An earlier photo still in view on this turn (tx::visiblePhotos, lane E2-FIX4): its stored copy on the
 // card (the intake keeps every photo at /mem/blobs/<ref>.jpg, or .bin for one sent as a file),
-// read into PSRAM once per turn, as engine 1's image.look reads it. Freed after the turn.
+// read into PSRAM once per turn in slices (readPhotoSliced). Freed after the turn.
 struct CarriedPhoto {
   std::string ref;
   uint8_t* bytes = nullptr;
@@ -262,6 +262,54 @@ std::vector<CarriedPhoto> s_carried;   // tg_poll only
 void dropCarried() {
   for (CarriedPhoto& c : s_carried) free(c.bytes);
   s_carried.clear();
+}
+
+// An earlier photo's stored copy into PSRAM in slices of kPhotoSliceBytes, the card lock held for one
+// slice at a time (lane E2-FIX4: a 200 KB photo read whole held it about 100 ms, a 512 KB one would
+// hold it about 260 ms). Null with `why` when it is missing, too large or cannot be read whole.
+constexpr size_t kPhotoSliceBytes = 32 * 1024;
+uint8_t* readPhotoSliced(const std::string& path, size_t& len, uint32_t& longestMs, const char*& why) {
+  len = 0;
+  longestMs = 0;
+  why = "could not be fetched";
+  size_t size = 0;
+  {
+    memory::Lock lk;
+    File f = memory::dataFs().open(path.c_str(), FILE_READ);
+    if (!f) return nullptr;
+    size = f.size();
+    f.close();
+  }
+  if (!size || size > nimbus::orch::kImagePartBytes) {
+    if (size) why = "too large";
+    return nullptr;
+  }
+  uint8_t* buf = (uint8_t*)heap_caps_malloc(size, MALLOC_CAP_SPIRAM);   // PSRAM only, as loadToPsram
+  if (!buf) {
+    why = "device low on memory";
+    return nullptr;
+  }
+  for (size_t at = 0; at < size;) {
+    const size_t want = size - at < kPhotoSliceBytes ? size - at : kPhotoSliceBytes;
+    size_t got = 0;
+    const uint32_t t0 = millis();
+    {
+      memory::Lock lk;
+      File f = memory::dataFs().open(path.c_str(), FILE_READ);
+      if (f && f.size() == size && f.seek(at)) got = f.read(buf + at, want);
+      if (f) f.close();
+    }
+    const uint32_t ms = millis() - t0;
+    if (ms > longestMs) longestMs = ms;
+    if (got != want) {   // changed or cut under us: never shown as less than it is
+      free(buf);
+      return nullptr;
+    }
+    at += got;
+  }
+  len = size;
+  why = "";
+  return buf;
 }
 
 plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
@@ -278,7 +326,7 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
     }
   CarriedPhoto c;
   c.ref = ref;
-  uint32_t readMs = 0;
+  uint32_t readMs = 0, longestMs = 0;
   const std::string hash = ref.size() > 1 && ref[0] == 'p' ? ref.substr(1) : std::string();
   for (const char* ext : {"jpg", "bin"}) {
     if (hash.empty() || !memory::haveSd()) break;
@@ -287,10 +335,10 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
     {
       memory::Lock lk;
       if (!memory::dataFs().exists(path.c_str())) continue;
-      readMs = millis();
-      c.bytes = vision::loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, c.len, why);
-      readMs = millis() - readMs;
     }
+    readMs = millis();
+    c.bytes = readPhotoSliced(path, c.len, longestMs, why);
+    readMs = millis() - readMs;
     if (!c.bytes) alogf("e2: earlier photo %s not read (%s)", ref.c_str(), why);
     break;
   }
@@ -307,7 +355,8 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
   out.bytes = c.bytes;
   out.len = c.len;
   out.mime = c.mime;
-  alogf("e2: earlier photo %s shown again (%u B, card read %u ms)", ref.c_str(), (unsigned)c.len, (unsigned)readMs);
+  alogf("e2: earlier photo %s shown again (%u B, card read %u ms, longest hold %u ms)", ref.c_str(), (unsigned)c.len,
+        (unsigned)readMs, (unsigned)longestMs);
   s_carried.push_back(std::move(c));
   return plain::Status::success();
 }

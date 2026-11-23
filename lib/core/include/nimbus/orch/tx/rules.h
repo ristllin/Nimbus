@@ -36,13 +36,18 @@ inline constexpr size_t kStubPathMaxBytes = 96;       // the store's paths are a
 inline constexpr size_t kStubWayBackMaxBytes = 160;   // the call a stub names to bring its bytes back
 inline constexpr uint32_t kNewestOwnerTurnsKept = 6;  // never omitted by the ladder
 // Photos in view (lane E2-FIX4, tx::visiblePhotos): caps that protect the device, never a clock.
-// Inline: every request carries the photos' base64 (4/3 of the stored bytes) and the device reads
-// each from the card once per turn into PSRAM. FileRef: a request names each photo by a provider file
-// id (about 100 B); the bytes go up once per photo. Measured on the bench (lanes/E2-FIX4/PR_BODY.md).
-inline constexpr size_t kInlinePhotosInViewMax = 4;            // inline heads: at most 4 photos in view
-inline constexpr size_t kInlinePhotoBytesInViewMax = 1000000;  // and at most this many stored bytes
-inline constexpr size_t kFileRefPhotosInViewMax = 8;           // file-reference heads: at most 8
-inline constexpr size_t kFileRefPhotoBytesInViewMax = 2000000; // and at most this many stored bytes
+// Inline (every engine-2 head on the device today): each request carries the photos' base64 (4/3 of
+// the stored bytes) and the device reads each from the card once per turn into PSRAM. Measured on
+// unit F1 (Haiku, Telegram-sized 1280x960 JPEGs; lanes/E2-FIX4/PR_BODY.md), added to a request
+// over the same conversation without photos: four of 60 KB 1.0 s, four of 120 KB 2.4 s, three of
+// 200 KB 3.3 s, four of 200 KB 4.2 s; PSRAM about 1 MB of 5.5 MB free at most; the internal heap
+// did not move. So: four photos and 600,000 stored bytes, about 3 s at most. FileRef (a provider file
+// id per photo, about 100 B a request): no engine-2 head uses it yet (no uploader is bound); its
+// caps equal the inline ones until one is measured.
+inline constexpr size_t kInlinePhotosInViewMax = 4;
+inline constexpr size_t kInlinePhotoBytesInViewMax = 600000;
+inline constexpr size_t kFileRefPhotosInViewMax = 4;
+inline constexpr size_t kFileRefPhotoBytesInViewMax = 600000;
 inline constexpr size_t kArrivalPhotosMax = 4;        // the arrival turn (ladder rung 2's photo bound)
 // What one photo counts for against a head's body cap (plain_exchange.cpp capLength): the text its
 // tokens would be. Anthropic bills a photo at about (width x height) / 750 tokens, at most about
