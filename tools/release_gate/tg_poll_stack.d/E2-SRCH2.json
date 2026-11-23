@@ -1,0 +1,10 @@
+{
+  "about": "Lane E2-SRCH2: search reads the earlier engine's rows through tx::RowSourceRows over the import's EpisodicRowSource.",
+  "impossible_cycles": [
+    {
+      "caller": "^nimbus::orch::tx::RowSourceRows::read\\(",
+      "callee": "^nimbus::orch::tx::RowSourceRows::read\\(",
+      "why": "tx/search.h: a RowSourceRows wraps a tx::RowSource (EpisodicRowSource on the device), never another OldRows; the virtual call it makes is RowSource::read"
+    }
+  ]
+}
