@@ -1369,6 +1369,74 @@ void test_ids_are_not_reused_in_a_pass_and_files_match_exactly() {
 
 }  // namespace
 
+
+// Lane E2-CMP: an add that names an id ("+F1 text", what Haiku wrote for every add in 1 of 3 probes at the
+// bench's size) is an add with the code's own id; the named id is never used to find or replace a line.
+void test_an_add_that_names_an_id_is_an_add() {
+  tx::Summary s = sampleSummary();
+  const size_t n = s.lines.size();
+  const tx::SummaryEdits e = tx::parseSummaryEdits("+F1 The water meter read 3,412.7 cubic metres.\n+d12: Go by train.\n+Q7\n");
+  TEST_ASSERT_EQUAL(2u, e.edits.size());
+  TEST_ASSERT_EQUAL(1u, e.unread);   // "+Q7" holds no text
+  TEST_ASSERT_TRUE(e.edits[0].op == tx::SummaryOp::Add);
+  TEST_ASSERT_TRUE(e.edits[0].text == " The water meter read 3,412.7 cubic metres.");
+  TEST_ASSERT_TRUE(e.edits[1].section == tx::SummarySection::Decisions);
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  const std::string first = lineOf(s, 1)->text;
+  TXB_OK(tx::applySummaryEdits(s, e.edits, nullptr, left, unread));
+  TEST_ASSERT_EQUAL(n + 2, s.lines.size());
+  TEST_ASSERT_TRUE(left.empty());
+  TEST_ASSERT_TRUE(lineOf(s, 1)->text == first);   // F1 unchanged: the add did not reach it
+}
+
+// The class rule for every path (lane E2-CMP, D5): over random answers (adds, replaces, drops of known and
+// unknown ids, Files lines, empty texts, prose, rewrites), the device's file notes and budget fits, every line
+// the summary held before a pass is, after it, either in the summary with the same id and the same text or in
+// `left` (what goes to the archive) with its id and text. Nothing leaves silently.
+void test_no_line_leaves_a_summary_without_going_to_the_archive() {
+  std::mt19937 rng(2401);
+  const char ops[] = "+=-";
+  const char letters[] = "FDQOPx";
+  tx::Summary s = sampleSummary();
+  for (int round = 0; round < 1500; ++round) {
+    const tx::Summary before = s;
+    std::string answer;
+    const int lines = (int)(rng() % 9);
+    for (int k = 0; k < lines; ++k) {
+      const int form = (int)(rng() % 10);
+      const uint32_t id = 1 + (uint32_t)(rng() % (s.nextId() + 4));
+      const char op = ops[rng() % 3], letter = letters[rng() % 6];
+      if (form == 0) answer += "Nothing to change.\n";
+      else if (form == 1) answer += "=Facts and standing preferences:\n";
+      else if (form == 2) answer += std::string(1, op) + letter + "\n";   // no id, no text
+      else answer += std::string(1, op) + letter + (op == '+' && rng() % 2 ? "" : std::to_string(id)) +
+                     (op == '-' ? "" : " r" + std::to_string(round) + " " + std::string(rng() % 300, 'w')) + "\n";
+    }
+    std::vector<tx::SummaryLine> left;
+    size_t unread = 0;
+    TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits(answer).edits, rng() % 2 ? framed : nullptr, left, unread));
+    if (rng() % 3 == 0)
+      tx::noteSummaryFile(s, "notes/f" + std::to_string(rng() % 4) + ".md", "Mon 23 Nov 2026 10:0" + std::to_string(rng() % 10),
+                          rng() % 4 == 0, left);
+    TXB_OK(tx::fitSummary(s, 600 + rng() % 6000, left));
+    for (const tx::SummaryLine& was : before.lines) {
+      const tx::SummaryLine* now = lineOf(s, was.id);
+      const bool kept = now && now->text == was.text && now->section == was.section;
+      bool archived = false;
+      for (const tx::SummaryLine& l : left) archived |= l.id == was.id && l.text == was.text;
+      TEST_ASSERT_TRUE_MESSAGE(kept || archived, ("round " + std::to_string(round) + ": line " + std::to_string(was.id) +
+                                                  " left without the archive").c_str());
+    }
+    std::string text;
+    TXB_OK(tx::encodeSummary(s, text));
+    tx::Summary back;
+    TXB_OK(tx::parseSummary(text, back));
+    s = back;
+    if (s.lines.size() < 3) s = sampleSummary();
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_day_header_carries_the_year);
@@ -1405,5 +1473,7 @@ int main(int, char**) {
   RUN_TEST(test_a_restart_stops_at_the_newest_summary);
   RUN_TEST(test_the_mirror_carries_the_summary_in_whole_lines);
   RUN_TEST(test_ids_are_not_reused_in_a_pass_and_files_match_exactly);
+  RUN_TEST(test_an_add_that_names_an_id_is_an_add);
+  RUN_TEST(test_no_line_leaves_a_summary_without_going_to_the_archive);
   return UNITY_END();
 }

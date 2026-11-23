@@ -93,6 +93,9 @@ struct TestWire : plain::WireCodec {
       w.beginObject().key("role").str("user").key("content").str(it.x).endObject();
     }
     w.endArray();
+    if (in.answerSchema)   // the structured form (lane E2-CMP): ScriptedProvider answers it as the API would
+      w.key("output_config").beginObject().key("format").beginObject().key("type").str("json_schema").key("schema")
+          .raw(in.answerSchema).endObject().endObject();
     w.endObject();
     return w.status();
   }
@@ -103,7 +106,9 @@ struct TestWire : plain::WireCodec {
     for (JsonObjectConst b : doc["content"].as<JsonArrayConst>())
       if (std::string(b["type"] | "") == "text") out.text += b["text"] | "";
     const std::string stop = doc["stop_reason"] | "";
-    out.stop = stop == "max_tokens" ? plain::StopReason::MaxTokens : plain::StopReason::EndTurn;
+    out.stop = stop == "max_tokens" ? plain::StopReason::MaxTokens
+               : stop == "refusal"  ? plain::StopReason::Refusal
+                                    : plain::StopReason::EndTurn;
     return plain::Status::success();
   }
 };
@@ -2791,6 +2796,147 @@ void test_outside_content_cannot_rewrite_the_owners_lines() {
   TEST_ASSERT_EQUAL(0, (int)p.turns);
 }
 
+
+// ---- lane E2-CMP: the answer's form at the bench's size ------------------------------------------------
+// The bench (lanes/E2-BENCH/RESULT.md, problem 2) failed /compact twice on a 55k to 74k token chat: the
+// answer was one line that is neither a change nor "=". Probes on the same request shape
+// (lanes/E2-CMP/evidence/probes.jsonl) gave the free-text form's answers "Nothing to change.",
+// "No changes. The new messages are only pleasantries ...", "+F1 <text>" for every add, and a rewrite
+// that opens "=Facts and standing preferences:". Each is scripted here as the provider answered it.
+
+const char* kNothingProse = "Nothing to change.";
+
+// The captured shape, red before: the first request asks for the change list (the provider's structured
+// output), so "nothing to change" is an empty list and the compaction completes: thru moves, the summary
+// keeps every line, and one request was paid. Before lane E2-CMP the answer was free text and this
+// slice failed with a 7,200 s wait.
+void test_nothing_to_change_is_a_whole_answer_in_the_structured_form() {
+  Chat c;
+  threeDays(c);
+  int asked = 0;
+  c.model.respondWith([&](const sp::Recorded& r, size_t) {
+    ++asked;
+    TEST_ASSERT_TRUE_MESSAGE(r.answerSchema, "the first request asks for the change list");
+    return sp::say(asked == 1 ? kSummary : "=");   // the second slice: nothing new, an empty list
+  });
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
+  const uint64_t first = c.head.thru;
+  const tx::Summary before = summaryOf(c);
+  for (int d = 1; d <= 3; ++d) c.day(d, 12, 3000, "e" + std::to_string(d));
+  c.now += 2 * kDay;
+  const size_t sent = c.model.requests().size();
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, compactNow(c));
+  TEST_ASSERT_EQUAL(1, (int)(c.model.requests().size() - sent));
+  TEST_ASSERT_TRUE(c.head.thru > first);
+  const tx::Summary after = summaryOf(c);
+  TEST_ASSERT_EQUAL(before.lines.size(), after.lines.size());
+  for (size_t i = 0; i < before.lines.size(); ++i) TEST_ASSERT_EQUAL_STRING(before.lines[i].text.c_str(), after.lines[i].text.c_str());
+  expectCoveredAcrossRestart(c, "after an empty change list");
+}
+
+// A structured answer that holds no change line (the prose, or a rewrite's first line) is not taken, its
+// cause and first bytes are logged, and it is asked once more AT ONCE as free lines; that answer is taken.
+void test_an_answer_not_taken_is_asked_once_more_as_lines_and_logged() {
+  agent::hlog::setSink(recordLog);
+  for (const char* bad : {kNothingProse, "=Facts and standing preferences:", "Summary: a boat and paint."}) {
+    gLogLines.clear();
+    Chat c;
+    threeDays(c);
+      int asked = 0;
+    c.model.respondWith([&](const sp::Recorded&, size_t) {
+      ++asked;
+      return sp::say(asked == 1 ? std::string(bad) : std::string(kSummary));
+    });
+    const plain::CompactOutcome out = c.step();
+    TEST_ASSERT_EQUAL_MESSAGE(plain::CompactStep::Stored, out.step, bad);
+    TEST_ASSERT_EQUAL(2, (int)out.requests);
+    TEST_ASSERT_EQUAL(2, (int)c.model.requests().size());
+    TEST_ASSERT_TRUE(c.model.requests()[0].answerSchema);
+    TEST_ASSERT_FALSE_MESSAGE(c.model.requests()[1].answerSchema, "the second try asks for free lines");
+    TEST_ASSERT_TRUE_MESSAGE(logged("answer not taken (no change line"), bad);
+    TEST_ASSERT_TRUE_MESSAGE(logged(std::string(bad).substr(0, 12).c_str()), "the answer's first bytes are logged");
+    TEST_ASSERT_TRUE(logged("asking once more as lines"));
+    TEST_ASSERT_EQUAL(0, (int)plain::CompactCtl::decode(c.ctlText).chat(c.chatKey).fails);
+    TEST_ASSERT_EQUAL(2, (int)plain::CompactCtl::decode(c.ctlText).paid);   // both requests are counted
+  }
+  agent::hlog::setSink(nullptr);
+}
+
+// The retry policy: when the second try is not taken either, the attempt fails ONCE (one failure, the
+// stated wait), with exactly two requests, both logged; nothing is asked again inside the wait.
+void test_two_answers_not_taken_fail_once_and_wait() {
+  agent::hlog::setSink(recordLog);
+  gLogLines.clear();
+  Chat c;
+  threeDays(c);
+  c.answer([] { return sp::say(kNothingProse); });
+  const plain::CompactOutcome out = c.step();
+  TEST_ASSERT_EQUAL(plain::CompactStep::Failed, out.step);
+  TEST_ASSERT_EQUAL(2, (int)out.requests);
+  TEST_ASSERT_EQUAL(2, (int)c.model.requests().size());
+  const plain::CompactCtl ctl = plain::CompactCtl::decode(c.ctlText);
+  TEST_ASSERT_EQUAL(1, (int)ctl.chats[0].fails);
+  TEST_ASSERT_EQUAL_UINT64(c.now + plain::compactWaitS(1), ctl.chats[0].next);
+  size_t taken = 0;
+  for (const std::string& l : gLogLines) taken += l.find("answer not taken") != std::string::npos;
+  TEST_ASSERT_EQUAL(2, (int)taken);
+  TEST_ASSERT_EQUAL(0, (int)c.head.thru);
+  c.now += 60;
+  c.step();
+  TEST_ASSERT_TRUE_MESSAGE(c.model.requests().size() == 2 || plain::compactWaitS(1) == 0, "asked again inside the wait");
+  expectCoveredAcrossRestart(c, "after two answers not taken");
+  agent::hlog::setSink(nullptr);
+}
+
+// A refusal (stop_reason refusal, the provider's classifier) is an answer not taken: its cause is logged as
+// a refusal, never read as an empty change list, and the second try runs. Red before: a refusal reached the
+// parser and was logged as "held no change (0 lines unread)".
+void test_a_refused_answer_is_logged_as_a_refusal_and_asked_once_more() {
+  agent::hlog::setSink(recordLog);
+  gLogLines.clear();
+  Chat c;
+  threeDays(c);
+  int asked = 0;
+  c.model.respondWith([&](const sp::Recorded&, size_t) {
+    ++asked;
+    if (asked > 1) return sp::say(kSummary);
+    sp::Step s;
+    s.finish = sp::Finish::Refusal;
+    return s;
+  });
+  const plain::CompactOutcome out = c.step();
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
+  TEST_ASSERT_EQUAL(2, (int)out.requests);
+  TEST_ASSERT_TRUE(logged("answer not taken (refused"));
+  TEST_ASSERT_FALSE(logged("held no change"));
+  agent::hlog::setSink(nullptr);
+}
+
+// An add that names an id ("+F1 text", 1 of 3 probes at the bench's size) is an add; nothing else changes.
+void test_adds_that_name_an_id_are_taken_as_adds() {
+  Chat c;
+  threeDays(c);
+  c.answer([] { return sp::say("+F1 The water meter read 3,412.7 cubic metres on 3 November.\n+D2 Go by train."); });
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
+  const tx::Summary sum = summaryOf(c);
+  TEST_ASSERT_NOT_NULL(lineWith(sum, "The water meter read 3,412.7 cubic metres on 3 November."));
+  TEST_ASSERT_NOT_NULL(lineWith(sum, "Go by train."));
+}
+
+// The structured answer read back: each item one line, an empty list "=", anything else refused.
+void test_the_change_list_reads_back_as_lines() {
+  std::string lines;
+  TEST_ASSERT_TRUE(plain::changeLinesOf("{\"changes\":[]}", lines));
+  TEST_ASSERT_EQUAL_STRING("=", lines.c_str());
+  TEST_ASSERT_TRUE(plain::changeLinesOf("{\"changes\":[\"+F a\",\"=Q3 b\\nc\",\"-O4\"]}", lines));
+  TEST_ASSERT_EQUAL_STRING("+F a\n=Q3 b c\n-O4\n", lines.c_str());
+  for (const char* bad : {"", "Nothing to change.", "{\"changes\":\"+F a\"}", "{\"changes\":[1]}", "[\"+F a\"]", "{}"})
+    TEST_ASSERT_FALSE_MESSAGE(plain::changeLinesOf(bad, lines), bad);
+  TEST_ASSERT_TRUE(lines.empty());
+  TEST_ASSERT_EQUAL((int)plain::AnswerForm::Changes, (int)plain::firstAnswerForm(plain::Dialect::AnthropicMessages));
+  TEST_ASSERT_EQUAL((int)plain::AnswerForm::Lines, (int)plain::firstAnswerForm(plain::Dialect::ChatCompletions));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -2852,5 +2998,11 @@ int main(int, char**) {
   RUN_TEST(test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_error);
   RUN_TEST(test_the_dynamic_part_never_pushes_the_fixed_part_over_its_ceiling);
   RUN_TEST(test_outside_content_cannot_rewrite_the_owners_lines);
+  RUN_TEST(test_nothing_to_change_is_a_whole_answer_in_the_structured_form);
+  RUN_TEST(test_an_answer_not_taken_is_asked_once_more_as_lines_and_logged);
+  RUN_TEST(test_two_answers_not_taken_fail_once_and_wait);
+  RUN_TEST(test_a_refused_answer_is_logged_as_a_refusal_and_asked_once_more);
+  RUN_TEST(test_adds_that_name_an_id_are_taken_as_adds);
+  RUN_TEST(test_the_change_list_reads_back_as_lines);
   return UNITY_END();
 }

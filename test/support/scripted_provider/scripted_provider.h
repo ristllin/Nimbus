@@ -44,6 +44,7 @@ struct Recorded {
   Dialect dialect = Dialect::Anthropic;
   RequestView view;
   size_t step = 0;          // the request's index: call ids are derived from it
+  bool answerSchema = false;   // an Anthropic output_config.format: the answer comes back structured
 };
 
 class ScriptedProvider : public agent::HttpTransport {
@@ -153,6 +154,7 @@ class ScriptedProvider : public agent::HttpTransport {
     if (!fixed_) dialectOfPath(req.path, rec.dialect);
     rec.step = seen_.size();
     parseRequest(rec.dialect, rec.body, rec.view);
+    rec.answerSchema = asksSchema(rec.dialect, rec.body);
     return rec;
   }
 
@@ -185,8 +187,37 @@ class ScriptedProvider : public agent::HttpTransport {
     out.headers = s.headers;
     if (!s.rawBody.empty()) out.body = s.rawBody;
     else if (s.status < 200 || s.status >= 300) out.body = s.errorBody.empty() ? renderError(rec.dialect, s.status) : s.errorBody;
-    else out.body = renderAnswer(rec.dialect, s, rec.step);
+    else out.body = renderAnswer(rec.dialect, rec.answerSchema ? structured(s) : s, rec.step);
     return true;
+  }
+
+  // Lane E2-CMP: an Anthropic request with output_config.format (a json_schema) gets its answer the way
+  // the provider's structured output returns it. A step scripted as change lines becomes {"changes":[...]}
+  // (each non-empty line one item, "=" alone an empty list); a step already JSON, blank, cut or refused
+  // is served as scripted.
+  static Step structured(const Step& s) {
+    if (finishOf(s) != Finish::End || s.text.empty() || s.text[0] == '{' ||
+        s.text.find_first_not_of(" \t\r\n") == std::string::npos)
+      return s;
+    JsonDocument list;
+    JsonArray items = list["changes"].to<JsonArray>();
+    for (size_t at = 0; at <= s.text.size();) {
+      size_t nl = s.text.find('\n', at);
+      if (nl == std::string::npos) nl = s.text.size();
+      const std::string line = s.text.substr(at, nl - at);
+      if (!line.empty() && line != "=") items.add(line);
+      at = nl + 1;
+    }
+    Step out = s;
+    out.text.clear();
+    serializeJson(list, out.text);
+    return out;
+  }
+  static bool asksSchema(Dialect d, const std::string& body) {
+    if (d != Dialect::Anthropic) return false;
+    JsonDocument doc;
+    if (deserializeJson(doc, body)) return false;
+    return std::string(doc["output_config"]["format"]["type"] | "") == "json_schema";
   }
 
   bool fixed_ = false;
