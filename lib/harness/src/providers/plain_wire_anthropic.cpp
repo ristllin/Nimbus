@@ -478,6 +478,10 @@ struct Render {
   BodySplices& splices;
   Messages& m;
   bool fileRef = false;   // a block names a provider file (the Files beta header)
+  // Photos attached to this request so far and their stored bytes (E2-FIX4's caps also bound the
+  // photos a view result brings back, lane E2-SRCH).
+  size_t photosAttached = 0;
+  size_t photoBytesAttached = 0;
 };
 
 
@@ -500,6 +504,7 @@ bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
       r.w.key("type").str("file").key("file_id").str(px.fileId).endObject();
       r.m.close(u.turn, true);
       r.fileRef = true;
+      ++r.photosAttached;
       return true;
     }
     if (px.bytes && px.len && imageMime(px.mime)) {
@@ -507,6 +512,8 @@ bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
       r.w.key("type").str("base64").key("media_type").str(px.mime).key("data");
       r.w.beginStr().splice(px.bytes, px.len).endStr().endObject();
       r.m.close(u.turn, true);
+      ++r.photosAttached;
+      r.photoBytesAttached += px.len;
       return true;
     }
   }
@@ -570,16 +577,20 @@ tx::ShowFacts showFacts(const Render& r) {
   return sf;
 }
 
-// Lane E2-SRCH: a view result that names a photo of this conversation, while its turn is open, carries
-// that photo's pixels after its line (by file id, else inline base64), as an owner message's photo does.
-// False when it does not (another result, a closed turn, a photo the hook cannot give).
-bool viewedPhotoContent(Render& r, const tx::Item& it, const std::string& text) {
-  if (!it.ok || it.turn != r.in.turn->turn || !r.in.photo) return false;
-  const std::string ref = viewedPhoto(it.n, text);
+// Lane E2-SRCH: a view result that names a photo of this conversation. While its turn is open it carries
+// the photo's pixels after its line (by file id, else inline base64), as an owner message's photo does,
+// inside E2-FIX4's caps (kInlinePhotosInViewMax photos and kInlinePhotoBytesInViewMax stored bytes for
+// the whole request, the photos already attached counted). Otherwise (a closed turn, the caps, a photo
+// the hook cannot give) its content is the photo's line (tx::photoStub), so it never says "shown" when
+// nothing is attached. False when the result is not a viewed photo.
+bool attachViewed(Render& r, const std::string& ref, const std::string& text) {
   PhotoBytes px;
-  if (ref.empty() || !r.in.photo(ref, px).ok()) return false;
+  if (!r.in.photo || !r.in.photo(ref, px).ok()) return false;
   const bool file = !px.fileId.empty(), inline64 = px.bytes && px.len && imageMime(px.mime);
-  if (!file && !inline64) return false;
+  const size_t bytes = file ? 0 : px.len;
+  if ((!file && !inline64) || r.photosAttached + 1 > tx::kInlinePhotosInViewMax ||
+      r.photoBytesAttached + bytes > tx::kInlinePhotoBytesInViewMax)
+    return false;
   r.w.key("content").beginArray().beginObject().key("type").str("text").key("text").str(text, Over::Clip).endObject();
   r.w.beginObject().key("type").str("image").key("source").beginObject();
   if (file) {
@@ -590,6 +601,22 @@ bool viewedPhotoContent(Render& r, const tx::Item& it, const std::string& text) 
     r.w.beginStr().splice(px.bytes, px.len).endStr().endObject();
   }
   r.w.endObject().endArray();
+  ++r.photosAttached;
+  r.photoBytesAttached += bytes;
+  return true;
+}
+
+bool viewedPhotoContent(Render& r, const tx::Item& it, const std::string& text) {
+  const std::string ref = it.ok ? viewedPhoto(it.n, text) : std::string();
+  if (ref.empty()) return false;
+  if (it.turn == r.in.turn->turn && attachViewed(r, ref, text)) return true;
+  // "photo p<ref> <when>: shown here": the line with the same time, the photo not attached.
+  const size_t from = std::min(text.size(), sizeof(texts::tool_results::kViewPhoto) - 1 + ref.size() + 1);
+  const size_t to = text.size() - (sizeof(texts::tool_results::kViewPhotoShown) - 1);
+  std::string line;
+  if (!tx::photoStub(ref.substr(1), from < to ? text.substr(from, to - from) : std::string(), line, false).ok())
+    return false;
+  r.w.key("content").str(line, Over::Clip);
   return true;
 }
 

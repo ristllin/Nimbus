@@ -504,10 +504,12 @@ static void test_a_photo_of_this_conversation_is_shown_again_in_the_view_result(
   bd.registry = &dev.reg;
   bd.sendPart = [](const std::string&, const std::string&) { return true; };
   bd.key = [] { return std::string("sk-fake-history"); };
+  static std::vector<uint8_t> big;   // a photo over E2-FIX4's 600,000 B cap when filled
+  big.clear();
   bd.photo = [](const std::string& ref, plain::PhotoBytes& o) {
     if (ref != "p0123456789abcdef") return plain::Status::fail(tx::Err::NotFound, "photo");
-    o.bytes = jpeg;
-    o.len = sizeof jpeg;
+    o.bytes = big.empty() ? jpeg : big.data();
+    o.len = big.empty() ? sizeof jpeg : big.size();
     o.mime = "image/jpeg";
     return plain::Status::success();
   };
@@ -525,6 +527,31 @@ static void test_a_photo_of_this_conversation_is_shown_again_in_the_view_result(
   const size_t at = body.find("photo p0123456789abcdef");
   TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, body.c_str());
   TEST_ASSERT_TRUE_MESSAGE(body.find("\"type\":\"image\"", at) != std::string::npos, "the pixels ride the view result");
+  auto images = [](const std::string& b) {
+    size_t n = 0;
+    for (size_t p = b.find("\"type\":\"image\""); p != std::string::npos; p = b.find("\"type\":\"image\"", p + 1)) ++n;
+    return n;
+  };
+  const size_t withView = images(body);
+  // The next turn: the view result's turn is closed, so it is the photo's line and carries no pixels.
+  dev.model.push(sp::say("You're welcome."));
+  TEST_ASSERT_TRUE(dev.say("thanks").ok());
+  const std::string next = dev.model.requests().back().body;
+  TEST_ASSERT_EQUAL_MESSAGE((int)withView - 1, (int)images(next), "a closed turn's view result carries no pixels");
+  TEST_ASSERT_TRUE(has(next, "shown earlier in this conversation; not attached to this request"));
+  TEST_ASSERT_FALSE(has(next, ": shown here"));
+  // Over E2-FIX4's byte cap the view result in its own open turn is the photo's line too, no pixels.
+  big.assign(700000, 0);
+  big[0] = 0xFF, big[1] = 0xD8, big[2] = 0xFF, big[3] = 0xE0;
+  dev.model.push(sp::call("view", R"({"id":"p0123456789abcdef"})"));
+  dev.model.push(sp::say("Too large to show."));
+  TEST_ASSERT_TRUE(dev.say("show it again").ok());
+  const std::string capped = dev.model.requests().back().body;
+  TEST_ASSERT_FALSE_MESSAGE(has(capped, ": shown here"), "a view result over the cap is never 'shown here'");
+  const size_t lastCall = capped.rfind("p0123456789abcdef\"}");
+  TEST_ASSERT_TRUE(lastCall != std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(capped.find("\"type\":\"image\"", lastCall) == std::string::npos, "no pixels after the call");
+  big.clear();
   // A photo of another conversation is not found.
   const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
   const plain::TurnCtx other = turnOf("1001_c1", "1001", owner);
