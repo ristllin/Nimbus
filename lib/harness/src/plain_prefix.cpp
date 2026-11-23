@@ -161,13 +161,14 @@ bool named(const std::vector<std::string>& paths, const std::string& path) {
 }
 // tx::photoWhen's shape: "Tue 17 Nov 2026 13:02" (the day of the month one or two digits).
 bool whenShaped(const std::string& w) {
-  static const char kShape[] = "aaa 99 aaa 9999 99:99";   // a: a letter, 9: a digit, else itself
+  static const char kShape[] = "aaa_99_aaa_9999_99:99";   // a: a letter, 9: a digit, _: a space, else itself
   std::string s = w;
   if (s.size() == sizeof kShape - 2 && s.size() > 5 && s[5] == ' ') s.insert(4, "0");   // "Tue 7 Nov ..."
   if (s.size() != sizeof kShape - 1) return false;
   for (size_t i = 0; i < s.size(); ++i) {
     const char k = kShape[i], c = s[i];
-    const bool ok = k == 'a' ? ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) : k == '9' ? (c >= '0' && c <= '9') : c == k;
+    const bool ok = k == 'a' ? ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) : k == '9' ? (c >= '0' && c <= '9')
+                                                                                      : c == (k == '_' ? ' ' : k);
     if (!ok) return false;
   }
   return true;
