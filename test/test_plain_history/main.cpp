@@ -591,6 +591,23 @@ static void test_notes_scope_finds_unpinned_notes_by_words() {
   TEST_ASSERT_FALSE(has(b.text, "wifi"));
 }
 
+
+// The excerpt of a long result shows the line holding every word, not the first mention of one.
+static void test_the_excerpt_shows_the_line_that_matched() {
+  txb::MemFiles files;
+  Past p(files, "1001");
+  std::string big;
+  for (int i = 0; i < 400; ++i)
+    big += "line " + std::to_string(i) + ": checked the bucket and the " + (i == 200 ? "carpet, 3 minutes" : "fence, 9 minutes") + "\n";
+  p.bigResult(big, kNow - 100);
+  plain::HistoryDeps d;
+  d.files = &files;
+  plain::HistoryTools h(d);
+  const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
+  const plain::ToolOutput o = call(h, turnOf("1001", "1001", owner), "search", R"({"query":"bucket carpet 3 minutes"})");
+  TEST_ASSERT_TRUE_MESSAGE(has(o.text, "line 200: checked the bucket and the carpet, 3 minutes"), o.text.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_D2_red_without_the_tools);
@@ -600,5 +617,6 @@ int main(int, char**) {
   RUN_TEST(test_view_pages_exactly_and_search_bounds_its_result);
   RUN_TEST(test_a_photo_of_this_conversation_is_shown_again_in_the_view_result);
   RUN_TEST(test_notes_scope_finds_unpinned_notes_by_words);
+  RUN_TEST(test_the_excerpt_shows_the_line_that_matched);
   return UNITY_END();
 }

@@ -100,20 +100,42 @@ size_t charStart(const std::string& s, size_t i) {
   return i;
 }
 
-// A bounded excerpt on one line around the first word's first occurrence.
-std::string excerpt(const std::string& text, const std::vector<std::string>& words) {
-  size_t at = 0;
-  if (!words.empty()) {
-    const std::string& w = words.front();
-    for (size_t i = 0; i + w.size() <= text.size(); ++i) {
-      size_t j = 0;
-      while (j < w.size() && std::tolower(static_cast<unsigned char>(text[i + j])) == static_cast<unsigned char>(w[j])) ++j;
-      if (j == w.size()) {
-        at = i;
-        break;
-      }
-    }
+// Where `w` (lower case) first occurs in [from, to) of `text`, case-insensitive; npos when it does not.
+size_t findFolded(const std::string& text, size_t from, size_t to, const std::string& w) {
+  for (size_t i = from; i + w.size() <= to; ++i) {
+    size_t j = 0;
+    while (j < w.size() && std::tolower(static_cast<unsigned char>(text[i + j])) == static_cast<unsigned char>(w[j])) ++j;
+    if (j == w.size()) return i;
   }
+  return std::string::npos;
+}
+
+// The line of `text` holding the most of the words (the first such), and where its first word
+// begins: a result of many lines shows the line that matched, not the first mention of one word.
+size_t bestSpot(const std::string& text, const std::vector<std::string>& words) {
+  size_t best = 0, bestCount = 0;
+  for (size_t start = 0; start < text.size() && bestCount < words.size();) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    size_t count = 0, first = std::string::npos;
+    for (const std::string& w : words) {
+      const size_t at = findFolded(text, start, end, w);
+      if (at == std::string::npos) continue;
+      ++count;
+      first = std::min(first, at);
+    }
+    if (count > bestCount) {
+      bestCount = count;
+      best = first;
+    }
+    start = end + 1;
+  }
+  return best;
+}
+
+// A bounded excerpt on one line around the best matching line.
+std::string excerpt(const std::string& text, const std::vector<std::string>& words) {
+  const size_t at = bestSpot(text, words);
   size_t from = at > kExcerptBytes / 4 ? charStart(text, at - kExcerptBytes / 4) : 0;
   size_t to = std::min(text.size(), from + kExcerptBytes);
   if (to < text.size()) to = charStart(text, to);
