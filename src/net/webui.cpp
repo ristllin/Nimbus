@@ -3299,8 +3299,13 @@ void beginWeb(const WebConfig& wc) {
     if (!s_wc.chatSend) { r->send(501, "application/json", "{\"error\":\"unsupported\"}"); return; }
     const String turn = s_wc.chatSend(text);
     if (!turn.length()) {
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2   // E2-FIX5: before the turn task's queue opens, nothing is busy
+      r->send(503, "application/json",
+              agent::chatRefusalJson(agent::telegram::inboxOpen() ? agent::ChatRefusal::Busy : agent::ChatRefusal::Starting));
+#else
       r->send(503, "application/json",
               "{\"error\":\"busy - the device is finishing a reply; send that again in a moment\"}");
+#endif
       return;
     }
     // CUM-482: the client polls GET /api/chat?turn=<turn> for THIS message's reply.

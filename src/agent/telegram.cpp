@@ -3280,6 +3280,10 @@ String injectRawPage(const String& body) {
 }
 #endif  // NIMBUS_TEST
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+bool inboxOpen() { return g_inboundQ != nullptr; }
+#endif
+
 bool injectMessage(const String& chatId, const String& text) {
   if (!g_inboundQ) return false;
   PsramItem<InboundMsg> item;   // ~4.1 KB the queue copies: PSRAM, not the caller's stack

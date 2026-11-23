@@ -135,6 +135,10 @@ GuardStatus guardStatus();
 // channels and the test seams). Returns FALSE when the inbound queue is full -
 // the caller must tell the sender rather than let the message vanish.
 bool injectMessage(const String& chatId, const String& text);
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+// Lane E2-FIX5: the turn task's inbound queue exists (false in the first seconds after a start).
+bool inboxOpen();
+#endif
 bool enabled();
 
 // ---- lane PROG: the running turn's round-boundary signals -------------------
