@@ -33,6 +33,7 @@ lib/harness/src/plain_docs.cpp
 lib/harness/src/plain_engine.cpp
 lib/harness/src/plain_exchange.cpp
 lib/harness/src/plain_guards.cpp
+lib/harness/src/plain_history.cpp
 lib/harness/src/plain_media.cpp
 lib/harness/src/plain_prefix.cpp
 lib/harness/src/plain_rails.cpp

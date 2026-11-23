@@ -109,6 +109,9 @@ struct ChatBindingDeps {
   // Lane E2-FSAFE: RailsDeps::pending, the approval shelf for a tainted turn's pending calls (the
   // device: the notes' pending shelf). Null: a pending call is refused, nothing kept, nothing run.
   RailPendingFn railPending;
+  // Lane E2-SRCH: a call the turn itself answers (search and view read the turn's own conversation,
+  // plain/history.h HistoryTools::answer); true when it answered. Null: every call goes to the registry.
+  std::function<bool(const ToolCall&, const TurnCtx&, ToolOutput&)> turnTool;
 };
 
 // The owner's line on every turn while the stored conversation could not be loaded (lane
@@ -634,6 +637,8 @@ class ChatBinding {
   // plain_rig.h's dispatch: the registry's answer as the model sees it. Arguments that are not a
   // JSON object reach the handler as an empty object.
   ToolOutput dispatchCall(const ToolCall& c, const TurnCtx& turn) {
+    ToolOutput own;
+    if (d_.turnTool && d_.turnTool(c, turn, own)) return own;   // E2-SRCH: search, view
     JsonDocument args;
     (void)deserializeJson(args, c.argsJson, DeserializationOption::NestingLimit(64));
     const nimbus::orch::ToolResult r = d_.registry->dispatch(c.name, args.as<JsonObjectConst>(), turn.who ? *turn.who : who_);

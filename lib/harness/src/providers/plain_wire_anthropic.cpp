@@ -56,6 +56,7 @@
 #include <vector>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/plain/history.h"   // viewedPhoto (lane E2-SRCH)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
@@ -569,6 +570,29 @@ tx::ShowFacts showFacts(const Render& r) {
   return sf;
 }
 
+// Lane E2-SRCH: a view result that names a photo of this conversation, while its turn is open, carries
+// that photo's pixels after its line (by file id, else inline base64), as an owner message's photo does.
+// False when it does not (another result, a closed turn, a photo the hook cannot give).
+bool viewedPhotoContent(Render& r, const tx::Item& it, const std::string& text) {
+  if (!it.ok || it.turn != r.in.turn->turn || !r.in.photo) return false;
+  const std::string ref = viewedPhoto(it.n, text);
+  PhotoBytes px;
+  if (ref.empty() || !r.in.photo(ref, px).ok()) return false;
+  const bool file = !px.fileId.empty(), inline64 = px.bytes && px.len && imageMime(px.mime);
+  if (!file && !inline64) return false;
+  r.w.key("content").beginArray().beginObject().key("type").str("text").key("text").str(text, Over::Clip).endObject();
+  r.w.beginObject().key("type").str("image").key("source").beginObject();
+  if (file) {
+    r.w.key("type").str("file").key("file_id").str(px.fileId).endObject();
+    r.fileRef = true;
+  } else {
+    r.w.key("type").str("base64").key("media_type").str(px.mime).key("data");
+    r.w.beginStr().splice(px.bytes, px.len).endStr().endObject();
+  }
+  r.w.endObject().endArray();
+  return true;
+}
+
 void resultBlock(Render& r, const tx::Item& it, const Row& row) {
   const tx::ShowFacts sf = showFacts(r);
   tx::ShowAs as = tx::ShowAs::Stub;
@@ -578,7 +602,7 @@ void resultBlock(Render& r, const tx::Item& it, const Row& row) {
   else if (!it.st.empty()) text = it.st;
   else if (it.cls != tx::ResultClass::Outside) text = wholeText(r, it);   // no stub stored: never outside content
   r.m.block(Role::User, it.turn, r.m.resultsOpen()).key("type").str("tool_result").key("tool_use_id").str(row.wid);
-  if (!text.empty()) r.w.key("content").str(text, Over::Clip);
+  if (!text.empty() && !viewedPhotoContent(r, it, text)) r.w.key("content").str(text, Over::Clip);
   if (!it.ok && !text.empty()) r.w.key("is_error").boolean(true);   // the API refuses an empty error
   r.m.close(it.turn, true);
   r.m.setResults(true);
