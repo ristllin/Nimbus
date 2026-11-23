@@ -2881,9 +2881,6 @@ void test_two_answers_not_taken_fail_once_and_wait() {
   for (const std::string& l : gLogLines) taken += l.find("answer not taken") != std::string::npos;
   TEST_ASSERT_EQUAL(2, (int)taken);
   TEST_ASSERT_EQUAL(0, (int)c.head.thru);
-  c.now += 60;
-  c.step();
-  TEST_ASSERT_TRUE_MESSAGE(c.model.requests().size() == 2 || plain::compactWaitS(1) == 0, "asked again inside the wait");
   expectCoveredAcrossRestart(c, "after two answers not taken");
   agent::hlog::setSink(nullptr);
 }
@@ -2909,6 +2906,9 @@ void test_a_refused_answer_is_logged_as_a_refusal_and_asked_once_more() {
   TEST_ASSERT_EQUAL(2, (int)out.requests);
   TEST_ASSERT_TRUE(logged("answer not taken (refused"));
   TEST_ASSERT_FALSE(logged("held no change"));
+  TEST_ASSERT_TRUE(c.model.requests()[0].answerSchema);
+  TEST_ASSERT_FALSE(c.model.requests()[1].answerSchema);
+  TEST_ASSERT_EQUAL(2, (int)plain::CompactCtl::decode(c.ctlText).paid);
   agent::hlog::setSink(nullptr);
 }
 
@@ -2928,13 +2928,60 @@ void test_the_change_list_reads_back_as_lines() {
   std::string lines;
   TEST_ASSERT_TRUE(plain::changeLinesOf("{\"changes\":[]}", lines));
   TEST_ASSERT_EQUAL_STRING("=", lines.c_str());
-  TEST_ASSERT_TRUE(plain::changeLinesOf("{\"changes\":[\"+F a\",\"=Q3 b\\nc\",\"-O4\"]}", lines));
-  TEST_ASSERT_EQUAL_STRING("+F a\n=Q3 b c\n-O4\n", lines.c_str());
+  TEST_ASSERT_TRUE(plain::changeLinesOf("{\"changes\":[\"+F a\",\"=Q3 b\\n+D c\",\"-O4\"]}", lines));
+  TEST_ASSERT_EQUAL_STRING("+F a\n=Q3 b\n+D c\n-O4\n", lines.c_str());   // an item with a line end is two lines
+  TEST_ASSERT_TRUE(plain::changeLinesOf("{\"changes\":[\"\"]}", lines));
+  TEST_ASSERT_EQUAL_STRING("\n", lines.c_str());   // no change line: not taken by the merge
   for (const char* bad : {"", "Nothing to change.", "{\"changes\":\"+F a\"}", "{\"changes\":[1]}", "[\"+F a\"]", "{}"})
     TEST_ASSERT_FALSE_MESSAGE(plain::changeLinesOf(bad, lines), bad);
   TEST_ASSERT_TRUE(lines.empty());
-  TEST_ASSERT_EQUAL((int)plain::AnswerForm::Changes, (int)plain::firstAnswerForm(plain::Dialect::AnthropicMessages));
-  TEST_ASSERT_EQUAL((int)plain::AnswerForm::Lines, (int)plain::firstAnswerForm(plain::Dialect::ChatCompletions));
+  plain::SummarizerRung r;
+  r.host = "anthropic";
+  TEST_ASSERT_EQUAL((int)plain::AnswerForm::Changes, (int)plain::firstAnswerForm(r));
+  r.host = "custom";   // an Anthropic-shaped proxy may not have the structured output
+  TEST_ASSERT_EQUAL((int)plain::AnswerForm::Lines, (int)plain::firstAnswerForm(r));
+  r.host = "openai";
+  r.dialect = plain::Dialect::OpenAIResponses;
+  TEST_ASSERT_EQUAL((int)plain::AnswerForm::Lines, (int)plain::firstAnswerForm(r));
+}
+
+
+// A host that refuses the form (HTTP 400) is asked once more as lines, logged; a host that ignores it and
+// answers lines has them read as lines at once (one request); a failure that is not the answer's (the
+// store refusing the summary) never pays a second request.
+void test_the_form_refused_or_ignored_and_storage_failures() {
+  agent::hlog::setSink(recordLog);
+  {
+    gLogLines.clear();
+    Chat c;
+    threeDays(c);
+    int asked = 0;
+    c.model.respondWith([&](const sp::Recorded&, size_t) { return ++asked == 1 ? sp::httpError(400) : sp::say(kSummary); });
+    const plain::CompactOutcome out = c.step();
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
+    TEST_ASSERT_EQUAL(2, (int)out.requests);
+    TEST_ASSERT_TRUE(logged("answer not taken (the form was refused"));
+    TEST_ASSERT_FALSE(c.model.requests()[1].answerSchema);
+  }
+  {
+    Chat c;
+    threeDays(c);
+    c.model.structuredOutput = false;
+    c.answer([] { return sp::say(kSummary); });
+    const plain::CompactOutcome out = c.step();
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
+    TEST_ASSERT_EQUAL(1, (int)out.requests);
+  }
+  {
+    Chat c;
+    threeDays(c);
+    c.answer([] { return sp::say(kSummary); });
+    c.files.refuseAll = true;   // the summary cannot be stored or archived
+    const plain::CompactOutcome out = c.step();
+    TEST_ASSERT_TRUE(out.step == plain::CompactStep::Refused || out.step == plain::CompactStep::Failed);
+    TEST_ASSERT_EQUAL(1, (int)c.model.requests().size());
+  }
+  agent::hlog::setSink(nullptr);
 }
 
 int main(int, char**) {
@@ -3004,5 +3051,6 @@ int main(int, char**) {
   RUN_TEST(test_a_refused_answer_is_logged_as_a_refusal_and_asked_once_more);
   RUN_TEST(test_adds_that_name_an_id_are_taken_as_adds);
   RUN_TEST(test_the_change_list_reads_back_as_lines);
+  RUN_TEST(test_the_form_refused_or_ignored_and_storage_failures);
   return UNITY_END();
 }

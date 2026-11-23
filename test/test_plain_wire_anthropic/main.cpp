@@ -97,6 +97,7 @@ struct Opts {
   uint32_t maxTokens = 4096;
   bool inlinePhotos = false;
   std::string mime = "image/jpeg";
+  const char* answerSchema = nullptr;   // lane E2-CMP: the summarizer's structured form
 };
 
 struct Out {
@@ -138,6 +139,7 @@ struct Rig {
     in.stubPointer = o.pointer;
     in.ladder = &o.ladder;
     in.toolChoiceNone = o.none;
+    in.answerSchema = o.answerSchema;
     in.maxTokens = o.maxTokens;
     const auto* bulk = &c.bulk;
     in.bulk = [bulk](const std::string& handle, std::string& s) {
@@ -489,9 +491,17 @@ bool envelope(JsonObjectConst root, C& c) {
   if (std::string(root["model"] | "").empty()) return c.fail("model missing");
   if (!root["max_tokens"].is<unsigned>() || (root["max_tokens"] | 0u) < 1) return c.fail("max_tokens missing or 0");
   if (root["output_config"].isNull()) return true;
-  const std::string e = root["output_config"]["effort"] | "";
-  if (e != "low" && e != "medium" && e != "high" && e != "max") return c.fail("effort '" + e + "'");
-  return onlyKeys(root["output_config"], {"effort"}, c, "output_config");
+  JsonVariantConst oc = root["output_config"];
+  if (oc["effort"].isNull() && oc["format"].isNull()) return c.fail("output_config holds neither effort nor format");
+  const std::string e = oc["effort"] | "";
+  if (!oc["effort"].isNull() && e != "low" && e != "medium" && e != "high" && e != "max") return c.fail("effort '" + e + "'");
+  // Lane E2-CMP: structured output is {"type":"json_schema","schema":{an object schema}}.
+  if (!oc["format"].isNull()) {
+    if (std::string(oc["format"]["type"] | "") != "json_schema" || !oc["format"]["schema"].is<JsonObjectConst>())
+      return c.fail("output_config.format is not a json_schema");
+    if (!onlyKeys(oc["format"], {"type", "schema"}, c, "output_config.format")) return false;
+  }
+  return onlyKeys(oc, {"effort", "format"}, c, "output_config");
 }
 
 // The whole request. `body` is the materialized body (photos spliced in).
@@ -1579,12 +1589,27 @@ void test_the_envelope_carries_the_facts_and_no_orch_turn() {
   TEST_ASSERT_EQUAL_STRING("none", last.view.toolChoice.c_str());
   TEST_ASSERT_TRUE(last.view.toolsJson == out.view.toolsJson && last.view.systemBlocks == out.view.systemBlocks);
   TEST_ASSERT_EQUAL(777, (int)last.view.maxTokens);
+  // Lane E2-CMP: the summarizer's structured form rides beside the effort, the same bytes at every render,
+  // and nothing else of the request changes.
+  Opts form;
+  form.answerSchema = plain::texts::summarizer::kChangesSchema;
+  Out a, b;
+  RENDER_OK(rig, c, a, form);
+  RENDER_OK(rig, c, b, form);
+  EXPECT_API_OK(a, "the structured form");
+  TEST_ASSERT_EQUAL_STRING(a.body.c_str(), b.body.c_str());
+  TEST_ASSERT_TRUE(a.body.find(std::string(R"("output_config":{"effort":"medium","format":{"type":"json_schema","schema":)") +
+                               plain::texts::summarizer::kChangesSchema + "}}") != std::string::npos);
+  TEST_ASSERT_TRUE(a.view.systemBlocks == out.view.systemBlocks && a.view.toolsJson == out.view.toolsJson);
   // No effort when the head sets none; no tools array when there are no tools.
   rig.fx.head.effort.clear();
   rig.fx.tools.clear();
   RENDER_OK(rig, c, out);
   EXPECT_API_OK(out, "no tools");
   TEST_ASSERT_TRUE(out.body.find("output_config") == std::string::npos && out.body.find("\"tools\"") == std::string::npos);
+  RENDER_OK(rig, c, a, form);   // the form alone
+  EXPECT_API_OK(a, "the structured form without effort");
+  TEST_ASSERT_TRUE(a.body.find(R"("output_config":{"format":{"type":"json_schema")") != std::string::npos);
   // The key: x-api-key direct, a bearer token routed, none on a cleartext socket.
   auto header = [](const agent::HttpRequest& r, const char* k) {
     for (const auto& h : r.headers)

@@ -32,6 +32,19 @@ namespace tx = nimbus::orch::tx;
 namespace day = nimbus::orch::day;
 namespace st = texts::summarizer;
 
+namespace {
+// The causes of an answer that was sent but not taken: only these earn the second try (never a storage
+// or summary-in-force refusal, which a second request could not change).
+const char kNotTakenRefused[] = "plain::CompactDriver.refused";
+const char kNotTakenForm[] = "plain::CompactDriver.form";
+const char kNotTakenChanges[] = "plain::CompactDriver.changes";
+bool answerNotTaken(const Status& s) {
+  return s.err == Err::InvalidArgument && s.where &&
+         (s.where == kNotTakenRefused || s.where == kNotTakenForm || s.where == kNotTakenChanges);
+}
+
+}  // namespace
+
 // ---- the control record -------------------------------------------------------------------
 
 // One line per fact, space-separated tokens: "compact v1", "day <day> <paid>", "chat <key> <fails>
@@ -1096,7 +1109,7 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
 // change line: InvalidArgument) is asked once more at once as free lines, then the stated wait holds.
 Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan,
                                  bool prepareOnly, CompactOutcome& out, bool& parked) {
-  AnswerForm form = firstAnswerForm(rung.dialect);
+  AnswerForm form = firstAnswerForm(rung);
   Status s;
   for (int tries = 0; tries < 2; ++tries) {
     Asked asked;
@@ -1105,7 +1118,7 @@ Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung,
     out.ran = out.ran || asked.requests > 0;
     parked = parked || asked.parked;
     if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
-    const bool again = s.err == Err::InvalidArgument && asked.requests && !asked.parked && form == AnswerForm::Changes;
+    const bool again = answerNotTaken(s) && asked.requests && !asked.parked && form == AnswerForm::Changes;
     if (!again) return s;
     form = AnswerForm::Lines;
     ctl_.paid += 1;   // the second request is counted like the first
@@ -1164,7 +1177,7 @@ Status messageArena(const Platform& p, const std::string& message, uint64_t now,
 // How an answer not taken began, for its log line (ruling 116: a failure leaves its cause in the log; the
 // answer never did before lane E2-CMP): the first bytes, cut whole, line ends shown as '|'.
 std::string answerHead(const std::string& answer) {
-  constexpr size_t kHead = 110;
+  constexpr size_t kHead = 80;   // the whole line stays under hlog's 192 B with a long chat key
   size_t n = std::min(answer.size(), kHead);
   while (n < answer.size() && n > 0 && ((unsigned char)answer[n] & 0xC0) == 0x80) --n;
   std::string head = answer.substr(0, n);
@@ -1181,7 +1194,7 @@ Status answerOf(const std::string& chatKey, const ExchangeResult& r, bool cut, s
   if (r.err == ExchangeErr::None && r.step.stop == StopReason::Refusal) {
     const std::string& said = r.step.refusal.empty() ? r.step.text : r.step.refusal;
     hlog::logf("compact(%s): answer not taken (refused, %u B): %s", chatKey.c_str(), (unsigned)said.size(), answerHead(said).c_str());
-    return Status::fail(Err::InvalidArgument, "plain::CompactDriver.refused");
+    return Status::fail(Err::InvalidArgument, kNotTakenRefused);
   }
   if (cut || r.err != ExchangeErr::None || r.step.stop == StopReason::MaxTokens || !r.step.calls.empty())
     return Status::fail(Err::Io, "plain::CompactDriver::ask");
@@ -1257,25 +1270,22 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
     if (cut && cap != kSummarizerRetryMaxTokens) continue;
     if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {   // a provider without the form
       hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", d.chatKey.c_str(), (unsigned)r.errorLine.size(), answerHead(r.errorLine).c_str());
-      return Status::fail(Err::InvalidArgument, "plain::CompactDriver.form");
+      return Status::fail(Err::InvalidArgument, kNotTakenForm);
     }
     if (!(s = answerOf(d.chatKey, r, cut, m.thinInput, ans.summary)).ok() || !m.schema) return s;
+    // The change list read back as lines. A text that is not that object (a host that ignored the form)
+    // is read as lines as it stands: the parser decides, and no request is paid twice for it.
     std::string lines;
-    if (changeLinesOf(ans.summary, lines)) {
-      ans.summary = std::move(lines);
-      return s;
-    }
-    hlog::logf("compact(%s): answer not taken (not the change list, %u B): %s", d.chatKey.c_str(), (unsigned)ans.summary.size(), answerHead(ans.summary).c_str());
-    ans.summary.clear();
-    return Status::fail(Err::InvalidArgument, "plain::CompactDriver.form");
+    if (changeLinesOf(ans.summary, lines)) ans.summary = std::move(lines);
+    return s;
   }
   return Status::fail(Err::Io, "plain::CompactDriver::ask");
 }
 
 }  // namespace
 
-AnswerForm firstAnswerForm(Dialect d) {
-  return d == Dialect::AnthropicMessages ? AnswerForm::Changes : AnswerForm::Lines;
+AnswerForm firstAnswerForm(const SummarizerRung& rung) {
+  return rung.dialect == Dialect::AnthropicMessages && rung.host == "anthropic" ? AnswerForm::Changes : AnswerForm::Lines;
 }
 
 bool changeLinesOf(const std::string& json, std::string& lines) {
@@ -1285,10 +1295,10 @@ bool changeLinesOf(const std::string& json, std::string& lines) {
   JsonArrayConst list = doc["changes"].as<JsonArrayConst>();
   for (JsonVariantConst v : list) {
     if (!v.is<const char*>()) return lines.clear(), false;
-    std::string line = v.as<const char*>();
-    for (char& c : line)
-      if (c == '\n' || c == '\r') c = ' ';
-    lines += line + "\n";
+    std::string item = v.as<const char*>();
+    for (char& c : item)
+      if (c == '\r') c = '\n';
+    lines += item + "\n";   // an item holding line ends is several lines, as free text would be
   }
   if (list.size() == 0) lines = "=";
   return true;
@@ -1437,7 +1447,7 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, st
     hlog::logf("compact(%s): the answer held no change (%u lines unread): not taken", d_.chatKey.c_str(),
                (unsigned)edits.unread);
     hlog::logf("compact(%s): answer not taken (no change line, %u B): %s", d_.chatKey.c_str(), (unsigned)answer.size(), answerHead(answer).c_str());
-    return Status::fail(Err::InvalidArgument, "plain::CompactDriver.changes");
+    return Status::fail(Err::InvalidArgument, kNotTakenChanges);
   }
   std::vector<tx::SummaryLine> left;
   size_t unread = 0;

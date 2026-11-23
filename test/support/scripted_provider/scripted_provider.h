@@ -99,7 +99,7 @@ class ScriptedProvider : public agent::HttpTransport {
     }
     seen_.push_back(std::move(rec));
     if (clock) *clock += s.takesMs;
-    return answer(seen_.back(), s, out, err);
+    return answer(seen_.back(), structuredOutput && seen_.back().answerSchema ? structured(s) : s, out, err);
   }
 
   const std::vector<Recorded>& requests() const { return seen_; }
@@ -141,6 +141,9 @@ class ScriptedProvider : public agent::HttpTransport {
   }
 
   uint32_t* clock = nullptr;   // advanced by each step's takesMs
+  // Lane E2-CMP: answer a request that asks for a json_schema form as the provider's structured output
+  // does (see structured()); false: a host that ignores the form and answers the step as scripted.
+  bool structuredOutput = true;
 
  private:
   Recorded record(const agent::HttpRequest& req) const {
@@ -187,7 +190,7 @@ class ScriptedProvider : public agent::HttpTransport {
     out.headers = s.headers;
     if (!s.rawBody.empty()) out.body = s.rawBody;
     else if (s.status < 200 || s.status >= 300) out.body = s.errorBody.empty() ? renderError(rec.dialect, s.status) : s.errorBody;
-    else out.body = renderAnswer(rec.dialect, rec.answerSchema ? structured(s) : s, rec.step);
+    else out.body = renderAnswer(rec.dialect, s, rec.step);
     return true;
   }
 

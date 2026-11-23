@@ -79,8 +79,9 @@ struct HeadState;
 // slice's successful file-change calls (their path argument). Accepted only when the answer was not
 // cut, not refused, and reads as changes (tx::parseSummaryEdits: at least one, or "="); a rewrite or
 // prose is a failed attempt, never a summary rebuilt from nothing. The answer's form is AnswerForm's:
-// the change lines as a structured list first where the wire has it, then once more as free lines at
-// once; every answer not taken logs its cause and its first bytes. The result is fitted to the head's summary
+// the change lines as a structured list first on the Anthropic host, then, for an answer not taken
+// (refused, the form refused, no change line), once more as free lines at once; every answer not
+// taken logs its cause and its first bytes. The result is fitted to the head's summary
 // budget (tx::fitSummary); every line that left goes to the archive before the swap. Otherwise
 // nothing changes but the failure count.
 //
@@ -144,9 +145,9 @@ inline constexpr size_t kCompactReadBackBytes = 96 * 1024;
 // (Anthropic). Lines: free text read line by line; every other wire, and the one immediate second try
 // after an answer that was not taken (refused, unreadable, or no change line), before the stated wait.
 enum class AnswerForm : uint8_t { Lines = 0, Changes = 1 };
-AnswerForm firstAnswerForm(Dialect d);
-// A structured answer {"changes":["+F ...", ...]} as the lines tx::parseSummaryEdits reads (each item
-// one line, its line ends made spaces); an empty list is "=". False when the text is not that object.
+// A structured answer {"changes":["+F ...", ...]} as the lines tx::parseSummaryEdits reads (each item a
+// line; an item holding line ends is several, as free text would be); an empty list is "=". False when
+// the text is not that object: the driver then reads the text as lines as it stands.
 bool changeLinesOf(const std::string& json, std::string& lines);
 
 // One rung of the summarizer ladder.
@@ -157,6 +158,9 @@ struct SummarizerRung {
   std::string model;
   Dialect dialect = Dialect::AnthropicMessages;
 };
+// The first form a rung is asked in: Changes on the Anthropic host's own wire, Lines on any other (an
+// Anthropic-shaped proxy may not have the structured output).
+AnswerForm firstAnswerForm(const SummarizerRung& rung);
 
 // A small text file the binding keeps (load "" when missing; save false when refused).
 struct TextIO {
