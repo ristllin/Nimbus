@@ -70,6 +70,7 @@
 #include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
 #include "nimbus/orch/spend_ceiling.h"               // kSpendFrozenError - a routine waits while frozen
 #include "nimbus/harness/turn_memory.h"   // PsramFirstScope
+#include "nimbus/harness/log.h"           // hlog::setSink - the harness lines into alog
 #include "nimbus/orch/blob_store.h"        // blobPath - an earlier photo's stored copy
 #include "notes_device.h"       // notesdev::pinnedNotesFor, notebook (the rails' pending shelf)
 #include "schedule_device.h"    // scheduledev::fire, host - the schedule entries (lane E2-SCHED)
@@ -921,6 +922,9 @@ void begin(HeavyFabric* fabric, const Sinks& sinks) {
   refreshSessionSnapshot();                               // no jobs: an empty snapshot
   // L24 (turn_memory.h): a turn keeps its small blocks in PSRAM, as on engine 1.
   setPsramFirstSwitch([](bool on) { nimbus::heapwatch::psramFirst(on); });
+  // The harness library's log seam (compaction, the wire, the summarizer) into the device log, as engine 1
+  // installs it: without a sink every such line is dropped (lane E2-BENCH: a failed /compact left no cause).
+  hlog::setSink([](const char* line) { alog(line); });
   s_begun = true;
   alog("orchestrator: engine 2 ready (Claude heads)");
 }
