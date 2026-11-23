@@ -1761,6 +1761,13 @@ void settleLoaded(const EngineDeps& deps, PlainEngine::ChatState& c) {
 Status loadChat(const EngineDeps& deps, PlainEngine::ChatState& c) {
   c = PlainEngine::ChatState{};
   c.memoryLine = texts::device_notes::kNoMemory;
+  if (deps.holdUnloaded && deps.holdUnloaded()) {   // P3: nothing is stored before the import's Done
+    c.unloaded = true;
+    hlog::logf("plain(%s): the earlier conversation is not imported yet: held in RAM", deps.chatKey.c_str());
+    settleLoaded(deps, c);
+    c.booted = true;
+    return Status::success();
+  }
   Status st = deps.log->open(c.head);
   if (!st.ok() && st.err != Err::Io) return st;
   if (st.ok()) {

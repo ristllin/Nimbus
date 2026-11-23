@@ -60,7 +60,9 @@ class Card : public tx::CardOps {
  public:
   std::map<std::string, std::string> files;
   std::set<std::string> dirs{"/"};
-  bool present() override { return true; }
+  bool down = false;            // the card is fitted but does not answer (lane E2-FIX2B, P3)
+  bool refuseMarker = false;    // the migration marker's save is refused (P3, sequence B)
+  bool present() override { return !down; }
   bool mayWrite() override { return true; }
   uint32_t largestInternal() override { return 64 * 1024; }
   uint32_t nowMs() override { return 0; }
@@ -87,6 +89,7 @@ class Card : public tx::CardOps {
     return true;
   }
   size_t writeWhole(const std::string& p, const char* d, size_t n) override {
+    if (refuseMarker && p.find("migrated.json") != std::string::npos) return 0;
     files[p].assign(d, n);
     return n;
   }
@@ -252,6 +255,7 @@ struct Device {
     d.key = [] { return std::string("sk-fake-migration"); };
     d.pinnedNotes = [this](const orch::Principal& who) { return notebook.pinnedBlock(who); };
     d.oldEngine = [this](tx::MigrateDeps& m) { return fill(m); };
+    if (noCard) d.noCard = [] { return true; };
     binding.reset();
     binding.reset(new plain::ChatBinding(c, d));
     return binding->boot();
@@ -270,6 +274,7 @@ struct Device {
   sp::ScriptedProvider model;
   std::string answer = "Your locker code is 4417.";
   int digestAsks = 0;
+  bool noCard = false;
   Card card;
   tx::CardTxFiles files;
   orch::ToolRegistry reg;
@@ -374,6 +379,83 @@ static void test_an_old_history_imports_once_and_an_early_row_is_answerable() {
   TEST_ASSERT_TRUE(storeBefore == dev.old.store.serialize());
   TEST_ASSERT_TRUE(foldBefore == dev.old.fold.blob);
   TEST_ASSERT_EQUAL(0, dev.old.fold.saves);
+}
+
+
+// Lane E2-FIX2B, finding P3 (sequence A): the card does not answer at the first engine-2 boot. Before:
+// the owner's turns of the outage were stored when the card came back, and the earlier conversation
+// never arrived. Now nothing is stored before the import answered Done: the chat runs in RAM with
+// the owner told, the import runs before the next turn, and the RAM turn follows the imported
+// history once, in order, also after a restart.
+static void test_a_card_out_at_the_first_boot_imports_before_anything_is_stored() {
+  Device dev;
+  seed(dev);
+  dev.card.down = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->migrationRan());
+  TEST_ASSERT_FALSE(dev.binding->migrationStatus().ok());
+  TEST_ASSERT_TRUE(dev.binding->importPending());
+  TEST_ASSERT_TRUE(dev.binding->unloaded());
+  dev.answer = "Noted: 9911.";
+  TEST_ASSERT_TRUE(dev.say("my bike lock code is 9911").ok());
+  TEST_ASSERT_EQUAL_STRING(plain::kNotLoadedLine, dev.sent.back().c_str());
+  TEST_ASSERT_FALSE(has(dev.lastBody(), "my locker code is 4417"));
+
+  dev.card.down = false;
+  dev.answer = "4417 and 9911.";
+  TEST_ASSERT_TRUE(dev.say("what are my locker and bike lock codes?").ok());
+  TEST_ASSERT_FALSE(dev.binding->importPending());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  std::string body = dev.lastBody();
+  TEST_ASSERT_EQUAL_MESSAGE(1u, count(body, "my locker code is 4417"), "the earlier conversation arrived");
+  TEST_ASSERT_TRUE(has(body, "bike is blue"));
+  TEST_ASSERT_EQUAL(1u, count(body, "my bike lock code is 9911"));
+  TEST_ASSERT_TRUE(body.find("my locker code is 4417") < body.find("my bike lock code is 9911"));
+
+  dev.ms += 3600 * 1000;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->migration().reentry);
+  TEST_ASSERT_EQUAL(0u, dev.binding->migration().imported);
+  TEST_ASSERT_TRUE(dev.say("and again?").ok());
+  body = dev.lastBody();
+  TEST_ASSERT_EQUAL(1u, count(body, "my locker code is 4417"));
+  TEST_ASSERT_EQUAL(1u, count(body, "my bike lock code is 9911"));
+  TEST_ASSERT_EQUAL(1u, count(body, "what are my locker and bike lock codes?"));
+}
+
+// P3 sequence B: the card answers but the import fails before its first marker (the marker save is
+// refused). Nothing of the chat is stored meanwhile; the import is tried again before the next turn.
+static void test_an_import_refused_before_its_marker_stores_nothing_until_done() {
+  Device dev;
+  seed(dev);
+  dev.card.refuseMarker = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->importPending());
+  TEST_ASSERT_TRUE(dev.say("my bike lock code is 9911").ok());
+  TEST_ASSERT_TRUE(dev.say("and the shed key is in the red tin").ok());
+  for (const auto& kv : dev.card.files)
+    TEST_ASSERT_TRUE_MESSAGE(kv.first.find("/" + std::string(kChat) + "/seg-") == std::string::npos, kv.first.c_str());
+  dev.card.refuseMarker = false;
+  TEST_ASSERT_TRUE(dev.say("what do you know?").ok());
+  TEST_ASSERT_FALSE(dev.binding->importPending());
+  const std::string body = dev.lastBody();
+  TEST_ASSERT_EQUAL(1u, count(body, "my locker code is 4417"));
+  TEST_ASSERT_EQUAL(1u, count(body, "my bike lock code is 9911"));
+  TEST_ASSERT_EQUAL(1u, count(body, "and the shed key is in the red tin"));
+  TEST_ASSERT_TRUE(body.find("my bike lock code is 9911") < body.find("and the shed key is in the red tin"));
+}
+
+// The neighbor: no card fitted at all (noCard) runs from RAM by design; a refused import is not held for.
+static void test_with_no_card_fitted_the_import_holds_nothing() {
+  Device dev;
+  seed(dev);
+  dev.card.down = true;
+  dev.noCard = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_FALSE(dev.binding->importPending());
+  TEST_ASSERT_FALSE(dev.binding->unloaded());
+  TEST_ASSERT_TRUE(dev.say("hello").ok());
+  for (const std::string& part : dev.sent) TEST_ASSERT_TRUE(part != plain::kNotLoadedLine);
 }
 
 static void test_a_second_boot_imports_only_what_the_earlier_engine_wrote_since() {
@@ -657,6 +739,9 @@ static void test_the_updater_leaves_an_engine_two_image_on_its_version() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_an_old_history_imports_once_and_an_early_row_is_answerable);
+  RUN_TEST(test_a_card_out_at_the_first_boot_imports_before_anything_is_stored);
+  RUN_TEST(test_an_import_refused_before_its_marker_stores_nothing_until_done);
+  RUN_TEST(test_with_no_card_fitted_the_import_holds_nothing);
   RUN_TEST(test_a_second_boot_imports_only_what_the_earlier_engine_wrote_since);
   RUN_TEST(test_the_import_fills_only_the_chats_own_key);
   RUN_TEST(test_a_mirrored_fold_pointer_is_not_taken_as_the_earlier_summary);

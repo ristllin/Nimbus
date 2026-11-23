@@ -6,6 +6,7 @@
 #include <unity.h>
 
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <random>
 
@@ -272,26 +273,71 @@ void test_a_batch_overtaken_by_the_engine_loses_and_doubles_nothing() {
   }
 }
 
-void test_items_without_a_marker_are_a_reentry_from_the_newest_mirrored_row() {
+// The u and a texts a restart fill shows (above head.thru), each with how often it is there.
+std::map<std::string, int> visible(txb::MemFiles& files) {
+  tx::TxLog log(files, kChatKey);
+  tx::HeadState head;
+  TEST_ASSERT_TRUE(log.open(head).ok());
+  std::map<std::string, int> n;
+  for (const tx::Item& it : stored(files))
+    if (it.q > head.thru && (it.kind == tx::ItemKind::User || it.kind == tx::ItemKind::Assistant)) ++n[it.x];
+  return n;
+}
+
+// Lane E2-FIX2B, finding P3: engine 2 stored a turn before any import (an earlier build broke the
+// contract). Before: the start took it as a re-entry from engine 2's own row, so the old messages
+// never came. Now the first migration runs in full after the stored items; every message is shown
+// once. Without an old summary the engine-2 turn stays where it is and the old rows follow it.
+void test_engine2_items_without_a_marker_take_the_whole_first_migration() {
   World w;
-  w.engine1(0);
   w.old.add(kChat, w.clock, "user", "message", "an old message");
+  w.old.add(kChat, w.clock, "assistant", "message", "an old reply");
   w.engine2("engine 2 ran here without a migration", false);
-  bool re = false;
+  bool re = true;
   TEST_ASSERT_TRUE(tx::isReentry(w.files, kChatKey, re).ok());
-  TEST_ASSERT_TRUE(re);
+  TEST_ASSERT_FALSE(re);
   w.engine1(3);
   const tx::MigrationOutcome out = w.done("no marker");
-  TEST_ASSERT_TRUE(out.reentry);
-  TEST_ASSERT_EQUAL(0, w.asks);
-  // the message before engine 2's own row is not imported (it is older than what engine 2 mirrored)
-  for (const tx::Item& it : stored(w.files)) TEST_ASSERT_TRUE(it.x != "an old message");
-  TEST_ASSERT_TRUE(out.imported >= 3);
+  TEST_ASSERT_FALSE(out.reentry);
+  TEST_ASSERT_TRUE(out.imported >= 2 + 3);
+  std::map<std::string, int> v = visible(w.files);
+  TEST_ASSERT_EQUAL(1, v["an old message"]);
+  TEST_ASSERT_EQUAL(1, v["an old reply"]);
+  TEST_ASSERT_EQUAL(1, v["E2 engine 2 ran here without a migration"]);
+  TEST_ASSERT_EQUAL(1, v["E2 reply to engine 2 ran here without a migration"]);
+  // Done: the next start is a re-entry that imports nothing again.
+  TEST_ASSERT_TRUE(tx::isReentry(w.files, kChatKey, re).ok());
+  TEST_ASSERT_TRUE(re);
+  TEST_ASSERT_EQUAL(0u, w.done("again").items);
   // isReentry on an empty chat folder
   txb::MemFiles empty;
   TEST_ASSERT_TRUE(tx::isReentry(empty, kChatKey, re).ok());
   TEST_ASSERT_FALSE(re);
   TEST_ASSERT_EQUAL((int)tx::Err::InvalidArgument, (int)tx::isReentry(empty, "Bad/Key", re).err);
+}
+
+// The same with an old summary: digest 0 follows the engine-2 items and its thru hides them, so the
+// batch brings engine 2's own rows of those items too, in time order: still once each. A turn held
+// in RAM meanwhile (its rows are engine 2's, newer than what the log holds) is not imported: the
+// engine stores it after the import (PlainEngine::reopen).
+void test_engine2_items_under_digest0_are_shown_once_and_ram_turns_are_left_to_the_engine() {
+  World w;
+  w.rng.seed(12);
+  w.m = month(w.old, {12, 120, 3, 2, 0, 600});
+  w.clock = w.m.lastT + kHour;
+  w.old.add(kChat, w.clock, "user", "message", "an old message after the summary");
+  w.engine2("stored before the import", false);
+  w.clock += 600;
+  w.old.add(kChat, w.clock, "user", "message", "E2 held in RAM", "e2");   // a turn the engine still holds
+  const tx::MigrationOutcome out = w.done("no marker, digest 0");
+  TEST_ASSERT_FALSE(out.reentry);
+  TEST_ASSERT_TRUE(out.digest0);
+  std::map<std::string, int> v = visible(w.files);
+  TEST_ASSERT_EQUAL(1, v["an old message after the summary"]);
+  TEST_ASSERT_EQUAL(1, v["E2 stored before the import"]);
+  TEST_ASSERT_EQUAL(1, v["E2 reply to stored before the import"]);
+  TEST_ASSERT_EQUAL(0, v["E2 held in RAM"]);
+  TEST_ASSERT_EQUAL(0u, w.done("again").items);
 }
 
 // The marker lost after a finished migration (card damage, a manual delete): the log says how far
@@ -432,7 +478,8 @@ int main(int, char**) {
   RUN_TEST(test_a_cut_at_every_write_of_a_reentry_resumes_exactly_once);
   RUN_TEST(test_a_long_absence_is_imported_within_the_budget_and_the_rest_named);
   RUN_TEST(test_a_batch_overtaken_by_the_engine_loses_and_doubles_nothing);
-  RUN_TEST(test_items_without_a_marker_are_a_reentry_from_the_newest_mirrored_row);
+  RUN_TEST(test_engine2_items_without_a_marker_take_the_whole_first_migration);
+  RUN_TEST(test_engine2_items_under_digest0_are_shown_once_and_ram_turns_are_left_to_the_engine);
   RUN_TEST(test_a_lost_marker_never_imports_a_row_twice);
   RUN_TEST(test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing);
   RUN_TEST(test_an_overtaken_batch_closes_its_open_turn_once);

@@ -332,8 +332,10 @@ const char* migrationStepSlug(MigrationStep s) {
 
 namespace {
 
-bool importable(const DayRow& r) {
-  return !r.ours && (r.role == RowRole::Owner || r.role == RowRole::Assistant) && !r.text.empty();
+// A row a batch imports: an owner or assistant row with text the earlier engine wrote, or one of
+// engine 2's own at or below `oursUpTo` (the P3 repair: those items are hidden under digest 0).
+bool importable(const DayRow& r, uint64_t oursUpTo) {
+  return (!r.ours || r.id <= oursUpTo) && (r.role == RowRole::Owner || r.role == RowRole::Assistant) && !r.text.empty();
 }
 
 // The u or a item a row becomes (q and turn are the caller's).
@@ -419,7 +421,7 @@ bool BatchBuilder::note(const Emit& emit) {
 
 // One row: an owner row (or the first row) opens a turn, closing the one before.
 bool BatchBuilder::row(const DayRow& r, const Emit& emit) {
-  if (r.id <= plan_.cut || r.id > plan_.hi || !importable(r)) return true;
+  if (r.id <= plan_.cut || r.id > plan_.hi || !importable(r, plan_.oursUpTo)) return true;
   if (r.role == RowRole::Owner || !open_) {
     if (open_ && !closeTurn(emit)) return false;
     ++turn_;
@@ -466,6 +468,7 @@ struct D0Plan {
 struct Marker {
   MigrationStep step = MigrationStep::NotStarted;
   bool reentry = false;   // the first migration is complete
+  bool repair = false;    // the first migration runs over engine-2 items stored with no marker (P3)
   uint32_t tries = 0;     // digest-0 asks so far
   uint64_t hi = 0;        // the newest row accounted for
   bool d0Done = false;    // digest 0 stored (outcome)
@@ -511,6 +514,7 @@ std::string encodeMarker(const Marker& m) {
   std::string s = "{\"v\":1";
   num(s, "st", (uint64_t)m.step);
   num(s, "re", m.reentry);
+  if (m.repair) num(s, "rep", 1);
   num(s, "tries", m.tries);
   num(s, "hi", m.hi);
   num(s, "d0done", m.d0Done);
@@ -547,6 +551,7 @@ std::string encodeMarker(const Marker& m) {
     num(s, "blt", p.lastT);
     num(s, "bnamed", p.named);
     num(s, "bnlt", p.namedLastT);
+    if (p.oursUpTo) num(s, "bou", p.oursUpTo);
     num(s, "btz", (uint64_t)(int64_t)p.tzMinutes);
     num(s, "bseg", m.seg);
     num(s, "boff", m.off);
@@ -574,6 +579,7 @@ bool decodeMarker(const std::string& text, Marker& m) {
   if (st > (uint64_t)MigrationStep::Done) return false;
   m.step = (MigrationStep)st;
   m.reentry = u("re") != 0;
+  m.repair = u("rep") != 0;
   m.tries = (uint32_t)u("tries");
   m.hi = u("hi");
   m.d0Done = u("d0done") != 0;
@@ -611,6 +617,7 @@ bool decodeMarker(const std::string& text, Marker& m) {
     p.lastT = u("blt");
     p.named = (uint32_t)u("bnamed");
     p.namedLastT = u("bnlt");
+    p.oursUpTo = u("bou");
     p.tzMinutes = (int16_t)(int64_t)u("btz");
     m.seg = (uint32_t)u("bseg");
     m.off = u("boff");
@@ -743,7 +750,7 @@ struct Run {
 
   uint64_t nextQ() const {
     uint64_t q = std::max<uint64_t>(head.nextQ, log.lastQ() + 1);
-    if (d.arena) q = std::max<uint64_t>(q, d.arena->lastQ() + 1);
+    if (d.arena && !d.ramFollows) q = std::max<uint64_t>(q, d.arena->lastQ() + 1);
     return std::max<uint64_t>(q, 1);
   }
   Status save() { return writeMarker(*d.files, d.chatKey, m); }
@@ -1003,7 +1010,7 @@ struct Run {
       a.result = Applied::Overtaken;
       return false;
     }
-    if (log.lastQ() >= a.q || (d.arena && d.arena->lastQ() >= a.q)) {   // another writer took this q
+    if (log.lastQ() >= a.q || (d.arena && !d.ramFollows && d.arena->lastQ() >= a.q)) {   // another writer took this q
       a.result = Applied::Overtaken;
       return false;
     }
@@ -1055,7 +1062,7 @@ struct Run {
     for (bool have = true; s.ok() && have;)
       if ((s = cur.next(line, h, have)).ok() && have) t = std::max(t, h.turn);
     if (!s.ok()) return s;
-    if (d.arena)
+    if (d.arena && !d.ramFollows)
       for (size_t i = 0; i < d.arena->count(); ++i) {
         ArenaEntry e;
         if (d.arena->header(i, e).ok()) t = std::max(t, e.turn);
@@ -1078,9 +1085,9 @@ struct Run {
   struct Totals {
     uint64_t bytes = 0, rows = 0, lastOwner = 0, lastRow = 0;
   };
-  Status totals(uint64_t lo, uint64_t hi, Totals& t) {
+  Status totals(uint64_t lo, uint64_t hi, uint64_t oursUpTo, Totals& t) {
     return eachRow(lo, hi, [&](const DayRow& r) {
-      if (!importable(r)) return;
+      if (!importable(r, oursUpTo)) return;
       t.bytes += rowCost(r);
       ++t.rows;
       t.lastRow = r.id;
@@ -1126,13 +1133,15 @@ struct Run {
     p.lo = p.cut = lo;
     p.hi = hi;
     p.tzMinutes = d.tzMinutes;
+    Status s;
+    if (m.repair && !m.reentry && m.d0Done && !(s = oursBound(hi, p.oursUpTo)).ok()) return s;
     Totals t;
-    Status s = totals(lo, hi, t);
+    s = totals(lo, hi, p.oursUpTo, t);
     any = s.ok() && t.rows > 0;
     if (!any) return s;
     Cutter cut{t, budget()};
     s = eachRow(lo, hi, [&](const DayRow& r) {
-      if (importable(r)) count(p, r, cut.imports(r, rowCost(r)));
+      if (importable(r, p.oursUpTo)) count(p, r, cut.imports(r, rowCost(r)));
     });
     if (!s.ok()) return s;
     p.q0 = nextQ();
@@ -1359,7 +1368,7 @@ struct Run {
       if (!(s = d.rows->read(from, 0, kRowPage, page, end)).ok()) return s;
       for (const DayRow& r : page) {
         from = r.id;
-        if (!importable(r)) continue;
+        if (!importable(r, 0)) continue;
         Item it;
         rowItem(r, 1, 1, d.tzMinutes, it);
         if (r.role == RowRole::Owner || j >= tail.size() || tail[j] != it.x) return Status::success();
@@ -1370,17 +1379,69 @@ struct Run {
     }
   }
 
+  // Items with no marker (P3): true when they came from a migration whose marker was lost (the
+  // log's first mirrored owner row is the earlier engine's, an imported u item), false when
+  // engine 2 stored them before any import (its first is one of engine 2's own rows). No u item
+  // naming a row (a digest-only import) or a row the source cannot find counts as imported:
+  // nothing is imported twice.
+  Status importedBefore(bool& imported) {
+    imported = true;
+    std::vector<uint32_t> segs;
+    Status s = segmentList(*d.files, d.chatKey, segs);
+    if (!s.ok() || segs.empty()) return s;
+    LineCursor cur(*d.files, d.chatKey);
+    if (!(s = cur.start(segs.front(), 0)).ok()) return s;
+    std::string line;
+    LineHeader h;
+    Item it;
+    for (bool have = true; have;) {
+      if (!(s = cur.next(line, h, have)).ok()) return s;
+      if (!have || h.kind != ItemKind::User || !decodeLine(line.data(), line.size(), it).ok() || !it.m) continue;
+      std::vector<DayRow> page;
+      bool end = false;
+      if (!(s = d.rows->read(it.m - 1, it.m, 1, page, end)).ok()) return s;
+      imported = page.empty() || page.front().id != it.m || !page.front().ours;
+      return Status::success();
+    }
+    return Status::success();
+  }
+
+  // The P3 repair under digest 0: engine 2's own rows that the stored items hold (up to the
+  // newest mirrored owner row and its reply, so before the next owner row of engine 2's), never
+  // the rows of turns still in RAM, which reopen() stores after the import. With no mirrored row
+  // in the log every row up to `hi` counts.
+  Status oursBound(uint64_t hi, uint64_t& upTo) {
+    uint64_t lastM = 0;
+    std::vector<std::string> tail;
+    Status s = logTail(lastM, tail);
+    if (!s.ok()) return s;
+    upTo = hi;
+    if (!lastM) return Status::success();
+    bool found = false;
+    return eachRow(lastM, hi, [&](const DayRow& r) {
+      if (found || !r.ours || r.role != RowRole::Owner) return;
+      found = true;
+      upTo = r.id - 1;
+    });
+  }
+
   Status go() {
     const bool had = readMarker(*d.files, d.chatKey, m);
     Status s = log.open(head);
     if (!s.ok()) return s;
-    if (!had) {
+    if (!had && log.lastQ() > 0) {   // items without a marker
+      bool imported = false;
+      if (!(s = importedBefore(imported)).ok()) return s;
       m = Marker{};
-      if (log.lastQ() > 0) {   // items without a marker: only rows since are new
+      if (imported) {   // a lost marker: only rows since the newest mirrored one are new
         m.reentry = true;
         m.step = MigrationStep::Done;
         if (!(s = fallbackHi(m.hi)).ok()) return s;
+      } else {
+        m.repair = true;   // P3: engine 2 stored before the import: the first migration in full
       }
+    } else if (!had) {
+      m = Marker{};
     }
     out.reentry = m.reentry;
     if (!m.reentry && (m.step == MigrationStep::NotStarted || m.step == MigrationStep::Digest0)) {
@@ -1429,21 +1490,8 @@ Status isReentry(TxFiles& files, const std::string& chatKey, bool& out) {
   if (!chatKeyOk(chatKey)) return Status::fail(Err::InvalidArgument, "tx::isReentry");
   try {
     Marker m;
-    if (readMarker(files, chatKey, m)) {
-      out = m.reentry;
-      return Status::success();
-    }
-    std::vector<uint32_t> segs;
-    Status s = segmentList(files, chatKey, segs);
-    if (!s.ok()) return s;
-    LineCursor cur(files, chatKey);
-    if (!segs.empty() && (s = cur.start(segs.front(), 0)).ok()) {
-      std::string line;
-      LineHeader h;
-      bool have = false;
-      if ((s = cur.next(line, h, have)).ok()) out = have;
-    }
-    return s;
+    if (readMarker(files, chatKey, m)) out = m.reentry;
+    return Status::success();
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "tx::isReentry");
   }
@@ -1515,8 +1563,7 @@ Status dryRun(const MigrateDeps& d, MigrationReport& r) {
     Status s = isReentry(*d.files, d.chatKey, re);
     if (!s.ok()) return s;
     r.reentry = re;
-    const bool marked = readMarker(*d.files, d.chatKey, run.m);
-    if (re && !marked && !(s = run.fallbackHi(run.m.hi)).ok()) return s;
+    (void)readMarker(*d.files, d.chatKey, run.m);
     uint64_t newest = 0;
     if (!(s = d.rows->newest(newest)).ok()) return s;
     foldAnomalies(d.fold, newest, r);

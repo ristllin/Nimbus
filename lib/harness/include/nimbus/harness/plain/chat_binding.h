@@ -181,6 +181,10 @@ class ChatBinding {
   const Status& migrationStatus() const { return migrationStatus_; }
   const nimbus::orch::tx::MigrationOutcome& migration() const { return migration_; }
   uint32_t migrationMs() const { return migrationMs_; }
+  // Lane E2-FIX2B (finding P3, tx/migrate.h's contract): the import ran and has not answered Done,
+  // so nothing is stored for this chat; it runs unloaded and the import is tried again before
+  // each turn (reload). A refusal it can never get past (InvalidArgument) does not hold the chat.
+  bool importPending() const { return importPending_; }
 
   // Once: the head's budget and price, the arena, the log, the seams, the engine and its boot,
   // then the seen-index rebuild. A refused allocation is a status, never an abort.
@@ -232,6 +236,14 @@ class ChatBinding {
   bool reload() {
     if (!engine_) return false;
     if (!engine_->unloaded()) return true;
+    if (importPending_) {   // P3: the import first; the RAM turns follow what it stored, once, in order
+      migrateOld();
+      if (importPending_) {
+        say("e2: the earlier engine's conversation is still not imported: this turn is held in RAM");
+        return false;
+      }
+      say("e2: the earlier engine's conversation is imported now");
+    }
     const Status r = engine_->reopen();
     if (engine_->unloaded()) {
       if (!r.ok()) say("e2: the stored conversation still cannot be loaded: this turn is held in RAM");
@@ -392,6 +404,7 @@ class ChatBinding {
   void migrateOld() {
     namespace tx = nimbus::orch::tx;
     migrationRan_ = false;
+    importPending_ = false;
     migrationStatus_ = Status::success();
     migration_ = tx::MigrationOutcome{};
     // Only the chat's own key (generation 0) takes the earlier engine's history: a conversation
@@ -402,6 +415,7 @@ class ChatBinding {
     m.chatKey = cfg_.chatKey;
     m.head = headKey();
     m.arena = arena_.get();
+    m.ramFollows = true;   // RAM turns are stored after the import (PlainEngine::reopen renumbers them)
     m.now = d_.platform->nowEpoch();
     m.dayStartMin = cfg_.dayStartMin;
     m.digest0 = digest0Asker(compactDeps());
@@ -410,7 +424,10 @@ class ChatBinding {
     const uint32_t t0 = d_.platform->nowMs();
     migrationStatus_ = tx::migrate(m, migration_);
     migrationMs_ = d_.platform->nowMs() - t0;
-    if (!migrationStatus_.ok()) say("e2: the earlier engine's conversation was not imported this time");
+    if (migrationStatus_.ok()) return;
+    say("e2: the earlier engine's conversation was not imported this time");
+    const bool noCard = d_.noCard && d_.noCard();   // no card at all: RAM by design, nothing to hold for
+    importPending_ = !noCard && migrationStatus_.err != tx::Err::InvalidArgument;
   }
   // RB-TG1: the chat's taken updates from the filled arena and head.json's high water.
   void rebuildSeen() {
@@ -581,6 +598,7 @@ class ChatBinding {
         if (reporter_) (void)reporter_->tick(ev);
       };
     e.noCard = d_.noCard;
+    e.holdUnloaded = [this] { return importPending_; };
     return e;
   }
 
@@ -594,6 +612,7 @@ class ChatBinding {
   uint32_t sent_ = 0, refused_ = 0;
   bool busy_ = false;
   bool migrationRan_ = false;
+  bool importPending_ = false;
   uint32_t migrationMs_ = 0;
   Status migrationStatus_;
   nimbus::orch::tx::MigrationOutcome migration_;

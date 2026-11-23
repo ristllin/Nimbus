@@ -139,6 +139,10 @@ struct EngineDeps {
   // the chat runs from RAM by design. Null or false: an Io is an outage, the chat is unloaded
   // and reopen() loads it when storage answers (lane E2-STORE).
   std::function<bool()> noCard;
+  // True when nothing may be stored for this chat yet (lane E2-FIX2B, finding P3: the history
+  // import has not answered Done, tx/migrate.h's contract): boot does not open the log and the
+  // chat runs unloaded, as after an Io. Null or false: boot opens the log.
+  std::function<bool()> holdUnloaded;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before
