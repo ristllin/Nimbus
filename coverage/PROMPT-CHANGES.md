@@ -1302,7 +1302,7 @@ PC-0175, PC-0176: not used.
 ### PC-0214: a refused request's line to the person carries the provider's reason after a colon (engine 2)
 - catalog: e2
 - class: device_notes
-- kind: spec
+- kind: build
 - bytes: 2044 -> 2046
 - sha8: e673add3 -> 2204d611
 - lane: E2-FIX11
