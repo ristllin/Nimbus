@@ -151,7 +151,6 @@ class Backward {
     seg = segs_[idx_];
     off = spanAt_ > 0 ? spans_[spanAt_ - 1].second : end_;
   }
-  bool buffered() const { return spanAt_ > 0; }
   bool atStart() const {
     if (done_ || segs_.empty()) return true;
     return spanAt_ == 0 && end_ == 0 && idx_ == 0;
@@ -335,7 +334,9 @@ Status considerLine(const SearchDeps& d, TxFiles& files, const SearchAsk& a, con
   if (!searchedKind(h.kind) || (a.openTurn && h.turn == a.openTurn)) return Status::success();
   if (h.t && (!out.oldestT || h.t < out.oldestT)) out.oldestT = h.t;
   if (!inRange(h.t, a)) return Status::success();
-  const bool bulk = h.kind == ItemKind::Result && containsFolded(ln.data, ln.len, "\"hdl\":");
+  // A result's payload, or the rest of an assistant text over the message cap, lives in the bulk file.
+  const bool bulk = (h.kind == ItemKind::Result || h.kind == ItemKind::Assistant) &&
+                    containsFolded(ln.data, ln.len, "\"hdl\":");
   if (!bulk && !allIn(ln.data, ln.len, words)) return Status::success();   // a word missing: no decode
   if (!decodeLine(ln.data, ln.len, it).ok()) return Status::success();
   if (it.kind == ItemKind::Result && ownResult(it.n)) return Status::success();
@@ -343,10 +344,11 @@ Status considerLine(const SearchDeps& d, TxFiles& files, const SearchAsk& a, con
   if (bulk && !it.handle.empty()) {
     TxLog log(files, d.chatKey);
     const Status st = log.readBulk(it.handle, 0, kBulkMaxBytes, text);
-    if (!st.ok()) {
-      ++out.unreadBulk;   // gone (30 days) or unreadable: not searched, counted for the answer
+    if (st.err == Err::NotFound || st.err == Err::InvalidArgument) {
+      ++out.unreadBulk;   // gone (30 days): not searched, counted for the answer
       return Status::success();
     }
+    if (!st.ok()) return st;   // the card refused: the call stops here, this line is read again next time
   } else {
     text = std::move(it.x);
   }
@@ -433,8 +435,8 @@ Status searchTranscript(const SearchDeps& d, TxFiles& files, const SearchAsk& a,
       finished = true;
       return Status::success();
     }
-    // The budget is looked at between windows: a window read is considered whole.
-    if (out.hits.size() >= d.limits.maxHits || (!rd.buffered() && budget.over())) {
+    // Before each line: a line's own bulk read counts toward the budget too.
+    if (out.hits.size() >= d.limits.maxHits || budget.over()) {
       out.more = true;
       out.next = tCursor(seg, off);
       return Status::success();
@@ -658,10 +660,12 @@ Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, size
   return Status::success();
 }
 
-Status findPhoto(TxFiles& counted, const std::string& chatKey, const std::string& ref, Item& owner, bool& found) {
+Status findPhoto(TxFiles& files, const std::string& chatKey, const std::string& ref, Item& owner, bool& found) {
   found = false;
   if (!chatKeyOk(chatKey) || ref.size() < 2 || ref[0] != 'p') return Status::fail(Err::InvalidArgument, "tx::findPhoto");
   try {
+    ReadStats stats;
+    ReadOnlyCounted counted(files, nullptr, stats);
     std::vector<uint32_t> segs;
     Status st = segmentsOf(counted, chatKey, segs);
     if (!st.ok()) return st;
@@ -675,7 +679,8 @@ Status findPhoto(TxFiles& counted, const std::string& chatKey, const std::string
       if (none) return Status::success();
       LineHeader h;
       if (!checkLine(ln.data, ln.len, h).ok() || h.kind != ItemKind::User) continue;
-      if (std::string(ln.data, ln.len).find(quoted) == std::string::npos) continue;
+      if (!containsFolded(ln.data, ln.len, quoted)) continue;
+      if (stats.bytes > kPhotoScanBytes) return Status::fail(Err::TooLarge, "tx::findPhoto.budget");
       if (!decodeLine(ln.data, ln.len, owner).ok()) continue;
       for (const Part& p : owner.parts)
         if (p.kind == PartKind::Image && p.ref == ref) {

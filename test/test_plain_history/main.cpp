@@ -532,6 +532,7 @@ static void test_a_photo_of_this_conversation_is_shown_again_in_the_view_result(
   TEST_ASSERT_EQUAL_STRING("p0123456789abcdef",
                            plain::viewedPhoto("view", "photo p0123456789abcdef Tue 17 Nov 2026 12:02: shown here").c_str());
   TEST_ASSERT_TRUE(plain::viewedPhoto("read_file", "photo p01: shown here").empty());
+  TEST_ASSERT_EQUAL_STRING("p01", plain::viewedPhoto("view", "photo p01: shown here").c_str());   // no clock
 }
 
 static void test_notes_scope_finds_unpinned_notes_by_words() {

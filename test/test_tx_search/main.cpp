@@ -415,6 +415,67 @@ static void test_a_photo_is_found_only_in_its_own_conversation() {
   TEST_ASSERT_FALSE(found);
 }
 
+
+// A long assistant text keeps its rest in the bulk file: a word only there is found. A bulk read the
+// card refuses stops the call with Io (never "searched to the start"), and the next call reads that
+// line again.
+static void test_a_long_reply_is_searched_whole_and_a_refused_bulk_read_is_io() {
+  Chat c;
+  c.owner("write me a long story", kNow - 100);
+  const std::string whole = std::string(13000, 'a') + " the hidden word zanzibar at the end";
+  tx::Item a;
+  a.kind = tx::ItemKind::Assistant;
+  a.t = kNow - 90;
+  a.x = whole.substr(0, 12288);
+  TEST_ASSERT_TRUE(c.log.appendBulk(c.turn, whole, a.handle).ok());
+  c.put(a);
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  tx::SearchAsk q;
+  q.query = "zanzibar";
+  tx::SearchOutcome o;
+  TEST_ASSERT_TRUE(tx::search(d, q, o).ok());
+  TEST_ASSERT_EQUAL(1, (int)o.hits.size());
+  TEST_ASSERT_TRUE(o.hits[0].source == tx::HitSource::Assistant);
+  // The bulk file is cut short (pruned): counted as unreadable, the search goes on.
+  txb::MemFiles& f = c.files;
+  std::string saved;
+  for (auto& kv : f.files)
+    if (kv.first.find("/b/") != std::string::npos) saved = kv.first;
+  TEST_ASSERT_FALSE(saved.empty());
+  const std::string bytes = f.files[saved];
+  f.files[saved] = bytes.substr(0, 10);
+  TEST_ASSERT_TRUE(tx::search(d, q, o).ok());
+  TEST_ASSERT_EQUAL(1, (int)o.unreadBulk);
+  TEST_ASSERT_FALSE(o.more);
+  f.files[saved] = bytes;
+  // The card refuses the bulk read: Io, no "to the start", and the cursor reads that line again.
+  struct Refusing : tx::TxFiles {
+    tx::TxFiles& in;
+    explicit Refusing(tx::TxFiles& i) : in(i) {}
+    bool append(const std::string&, const char*, size_t) override { return false; }
+    bool readAt(const std::string& p, size_t off, char* b, size_t w, size_t& g) override {
+      if (p.find("/b/") != std::string::npos) return false;
+      return in.readAt(p, off, b, w, g);
+    }
+    bool size(const std::string& p, size_t& n) override { return in.size(p, n); }
+    bool writeWhole(const std::string&, const std::string&) override { return false; }
+    bool rename(const std::string&, const std::string&) override { return false; }
+    bool remove(const std::string&) override { return false; }
+    bool list(const std::string& dir, std::vector<std::string>& n) override { return in.list(dir, n); }
+  } refusing(c.files);
+  d.files = &refusing;
+  const tx::Status st = tx::search(d, q, o);
+  TEST_ASSERT_TRUE(st.err == tx::Err::Io);
+  TEST_ASSERT_EQUAL(0, (int)o.hits.size());
+  TEST_ASSERT_TRUE(tx::cursorOk(o.next) && !o.next.empty());
+  d.files = &c.files;
+  q.before = o.next;
+  TEST_ASSERT_TRUE(tx::search(d, q, o).ok());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)o.hits.size(), "the refused line is read again from the cursor");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_words_match_all_case_insensitive);
@@ -425,5 +486,6 @@ int main(int, char**) {
   RUN_TEST(test_a_search_writes_nothing_and_a_refused_read_is_io);
   RUN_TEST(test_view_finds_an_item_and_pages_its_whole_text);
   RUN_TEST(test_a_photo_is_found_only_in_its_own_conversation);
+  RUN_TEST(test_a_long_reply_is_searched_whole_and_a_refused_bulk_read_is_io);
   return UNITY_END();
 }

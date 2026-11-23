@@ -181,7 +181,7 @@ std::string viewedPhoto(const std::string& toolName, const std::string& text) {
   if (toolName != kView || text.size() < pre + 2 + suf || text.compare(0, pre, R::kViewPhoto) != 0 ||
       text.compare(text.size() - suf, suf, R::kViewPhotoShown) != 0)
     return std::string();
-  const std::string ref = text.substr(pre, text.find(' ', pre) - pre);   // "p<ref>", then its time
+  const std::string ref = text.substr(pre, text.find_first_of(" :", pre) - pre);   // "p<ref>", then its time or ':'
   return ref.size() > 1 && ref[0] == 'p' ? ref : std::string();
 }
 

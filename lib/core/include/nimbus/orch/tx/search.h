@@ -48,6 +48,7 @@ inline constexpr size_t kSearchCardBytes = 1280 * 1024;  // per call: a whole se
 inline constexpr uint32_t kSearchCardMs = 2500;          // per call, card time summed
 inline constexpr size_t kVerbatimFloorScan = 256 * 1024; // verbatimFloor reads at most this much
 inline constexpr size_t kOldPageRows = 32;
+inline constexpr size_t kPhotoScanBytes = 8 * 1024 * 1024;   // findPhoto reads at most this much (TooLarge)
 
 // What the card cost a call (the bench's measure).
 struct ReadStats {
@@ -180,7 +181,7 @@ Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, size
                 std::string& out, size_t& total);
 
 // An owner message of this conversation that carries the photo `ref` ("p<ref8>"), newest first.
-// found false: none in the conversation. Io when a read was refused.
+// found false: none in the conversation. Io when a read was refused; TooLarge past kPhotoScanBytes.
 Status findPhoto(TxFiles& files, const std::string& chatKey, const std::string& ref, Item& owner, bool& found);
 
 }  // namespace tx
