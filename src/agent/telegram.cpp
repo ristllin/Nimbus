@@ -1561,7 +1561,11 @@ struct InboundFile {
 // not keep it for another reason.
 enum class Kept : uint8_t { Stored, Full, Failed };
 
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
 static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& who, std::string* path = nullptr) {
+#else
+static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& who) {
+#endif
   char fname[96];
   if (in.photo || !in.slot.fileName[0])
     snprintf(fname, sizeof(fname), "%s-%ld.%s", in.photo ? "photo" : "file", (long)in.slot.updateId,
@@ -1591,7 +1595,9 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
 #endif
   std::string ferr;
   if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash)) {
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
     if (path) *path = std::string(proj) + "/" + fname;   // a copy of bytes already kept adds no entry: no effect
+#endif
     return Kept::Stored;
   }
   alogf("telegram: attach store failed: %s", ferr.c_str());
@@ -2303,10 +2309,10 @@ struct TgIo {
   void checkpoint() { checkpointOffset(); }
   void endPage() {
     s_turnMedia = 0;
-#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
-    s_turnStored.clear();   // E2-FIX10: they belonged to that turn
-#endif
     freeSlots();
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    s_turnStored.clear();   // E2-FIX10: they belonged to that page's turns
+#endif
     publishGuard();
     agent::vision::dropTurnSet();
     agent::vision::endPage();   // the next page's photos walk the providers from the top
