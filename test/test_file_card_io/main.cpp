@@ -45,6 +45,9 @@ struct FakeCard : orch::FileCard {
   std::set<std::string> dirs;
   long shortAppendAt = -1;   // the next append lands only this many bytes
   bool truncateFails = false;
+  bool tornCut = false;      // a cut that falls on an append lands the first half of its bytes, then the power goes
+  std::set<std::string> refuseRemove;      // paths whose remove the card refuses
+  std::set<std::string> refuseOverwrite;   // paths whose writeText the card refuses while the file exists
   int ops = 0;
   int cutAt = -1;            // the power goes off before the changing operation with this number (1 = the first)
 
@@ -60,11 +63,12 @@ struct FakeCard : orch::FileCard {
     return true;
   }
   bool remove(const std::string& p) override {
-    if (!files.count(p)) return false;
+    if (!files.count(p) || refuseRemove.count(p)) return false;
     step();
     return files.erase(p) > 0;
   }
   bool writeText(const std::string& p, const std::string& t) override {
+    if (refuseOverwrite.count(p) && files.count(p)) return false;
     step();
     files[p] = t;
     return true;
@@ -79,6 +83,11 @@ struct FakeCard : orch::FileCard {
     return true;
   }
   bool append(const std::string& p, std::string_view bytes, size_t& landed) override {
+    if (tornCut && ops + 1 == cutAt) {   // the power goes mid-write: part of the row is on the card
+      ++ops;
+      files[p].append(bytes.data(), bytes.size() / 2);
+      throw PowerCut{};
+    }
     step();
     landed = shortAppendAt >= 0 && size_t(shortAppendAt) < bytes.size() ? size_t(shortAppendAt) : bytes.size();
     shortAppendAt = -1;
@@ -118,6 +127,9 @@ const orch::Principal& member() {
   static const orch::Principal p = orch::principalForRole("2002", orch::Role::User);
   return p;
 }
+
+std::string projectOf(const std::string& path) { return path.substr(0, path.find('/')); }
+std::string nameOf(const std::string& path) { return path.substr(path.find('/') + 1); }
 
 // The device: one index (g_store), the card, the hooks files_subsystem.cpp gives, the tools as registered.
 struct Device {
@@ -175,15 +187,41 @@ struct Device {
   }
   // The next boot over this card: the old engine's swap recovery, the index loaded from the card, then
   // the journal note's (files_subsystem.cpp begin, engine 2).
-  void bootFrom(const FakeCard& before) {
+  // Ruling 115 item 1, asserted at every boot: the note's recovery leaves every owner file it found at least
+  // as long, starting with the same bytes (at most one line end added), no file missing, and no entry it found
+  // under another person.
+  std::string bootFrom(const FakeCard& before) {
     card.files = before.files;
     card.dirs = before.dirs;
     orch::recoverSwap(card, layout().swap);
     const auto it = card.files.find("/mem/files/.index");
     if (it != card.files.end()) TEST_ASSERT_TRUE(store.load(it->second));
+    const std::map<std::string, std::string> held = ownerFiles();
+    std::map<std::string, std::string> whose;
+    for (const orch::FileEntry* e : store.list()) whose[std::string(e->project) + "/" + std::string(e->name)] = e->owner;
     booting = true;
-    (void)io->recoverNote();
+    const std::string did = io->recoverNote();
     booting = false;
+    for (const auto& f : held) {
+      const auto now = card.files.find(f.first);
+      TEST_ASSERT_TRUE_MESSAGE(now != card.files.end(), ("the boot removed " + f.first).c_str());
+      const bool same = now->second == f.second || now->second == f.second + "\n";
+      TEST_ASSERT_TRUE_MESSAGE(same, ("the boot changed the stored bytes of " + f.first).c_str());
+    }
+    for (const auto& w : whose) {
+      const orch::FileEntry* e = store.find(projectOf(w.first), nameOf(w.first));
+      if (e) TEST_ASSERT_EQUAL_STRING_MESSAGE(w.second.c_str(), std::string(e->owner).c_str(), w.first.c_str());
+    }
+    return did;
+  }
+  // The owner's files on the card: <root>/<project>/<name> (the card's own files sit at the root).
+  std::map<std::string, std::string> ownerFiles() const {
+    std::map<std::string, std::string> out;
+    const std::string root = std::string(kRoot) + "/";
+    for (const auto& f : card.files) {
+      if (f.first.rfind(root, 0) == 0 && f.first.find('/', root.size()) != std::string::npos) out.insert(f);
+    }
+    return out;
   }
   bool booting = false;
   std::string onCard(const std::string& rel) { return card.files[std::string(kRoot) + "/" + rel]; }
@@ -459,8 +497,6 @@ struct CutCase {
   std::function<orch::ToolResult(Device&)> run;
 };
 
-std::string projectOf(const std::string& path) { return path.substr(0, path.find('/')); }
-std::string nameOf(const std::string& path) { return path.substr(path.find('/') + 1); }
 
 // After the boot recovery: the file is the old copy or the new one (or absent where that was one of them),
 // the index entry exists exactly when the file does, with its size, a hash that is right or unknown, and
@@ -627,6 +663,177 @@ void test_a_replace_is_the_old_engines_swap() {
   TEST_ASSERT_FALSE(d.card.files.count("/mem/files/.swapnote"));
 }
 
+
+// ---- ruling 115: the boot recovery never removes, cuts or re-assigns a stored byte ----------
+
+const char* const kNote = "/mem/files/.tools-note";
+
+std::string noteText(char op, const std::string& person, const std::string& rel, long long before,
+                     unsigned long long bytes) {
+  return std::string(1, op) + "\n" + person + "\n" + projectOf(rel) + "\n" + nameOf(rel) + "\n" +
+         std::to_string(before) + "\n" + std::to_string(bytes) + "\n";
+}
+
+// Another writer that keeps the index (the web panel, v5.2.0): the file and its entry at the new size.
+void indexedWrite(Device& d, const std::string& rel, const std::string& bytes) {
+  d.card.files[std::string(kRoot) + "/" + rel] = bytes;
+  orch::FileEntry e = *d.store.find(projectOf(rel), nameOf(rel));
+  e.bytes = uint32_t(bytes.size());
+  e.hash = orch::fnvContinue(orch::kFnvBasis, bytes);
+  std::string err;
+  TEST_ASSERT_TRUE(d.store.add(e, err));
+  d.card.files["/mem/files/.index"] = d.store.dump();
+}
+
+// P1: an append completed and was reported; its note stayed (the card refused its removal). The next boot
+// leaves the row, and the file an append created stays with its entry.
+void test_a_stale_append_note_after_a_completed_append_leaves_the_row() {
+  Device d;
+  assertOk(d.call("write_file", {{"path", "logs/a.csv"}, {"content", "h\n1\n"}}, owner()));
+  assertOk(d.call("append_file", {{"path", "logs/a.csv"}, {"text", "2\n"}}, owner()));
+  d.card.files[kNote] = noteText('a', owner().ns, "logs/a.csv", 4, 2);
+  Device b;
+  b.bootFrom(d.card);
+  TEST_ASSERT_EQUAL_STRING("h\n1\n2\n", b.onCard("logs/a.csv").c_str());
+  TEST_ASSERT_EQUAL_UINT32(6, b.indexed("logs", "a.csv"));
+  TEST_ASSERT_FALSE(b.card.files.count(kNote));
+
+  Device n;
+  assertOk(n.call("append_file", {{"path", "logs/n.csv"}, {"text", "h\n"}}, owner()));
+  n.card.files[kNote] = noteText('a', owner().ns, "logs/n.csv", -1, 2);
+  Device c;
+  c.bootFrom(n.card);
+  TEST_ASSERT_EQUAL_STRING("h\n", c.onCard("logs/n.csv").c_str());
+  TEST_ASSERT_EQUAL_UINT32(2, c.indexed("logs", "n.csv"));
+  TEST_ASSERT_FALSE(c.card.files.count(kNote));
+}
+
+// P2, P4: a note older than other writers. Engine 2's append of 600 B was cut before its bytes landed; then
+// v5.2.0 (after a flash back) appended rows and kept its index, and one row the index never saw. The boot keeps
+// every row and the index holds the full size. The same for a web upload over the file, and for a note of a new
+// file whose name another person's upload took: nothing cut, removed or re-assigned.
+void test_a_stale_note_and_rows_of_a_writer_that_does_not_journal_leave_every_row() {
+  Device d;
+  assertOk(d.call("write_file", {{"path", "logs/l.csv"}, {"content", "h\n"}}, owner()));
+  d.card.files[kNote] = noteText('a', owner().ns, "logs/l.csv", 2, 600);
+  std::string rows = "h\n";
+  for (int i = 0; i < 5; i++) {
+    rows += "2026-11-2" + std::to_string(i) + ",row\n";
+    indexedWrite(d, "logs/l.csv", rows);
+  }
+  behind(d, "logs/l.csv", "2026-11-25,row\n");
+  rows += "2026-11-25,row\n";
+  Device b;
+  b.bootFrom(d.card);
+  TEST_ASSERT_EQUAL_STRING(rows.c_str(), b.onCard("logs/l.csv").c_str());
+  TEST_ASSERT_EQUAL_UINT32(rows.size(), b.indexed("logs", "l.csv"));
+  TEST_ASSERT_FALSE(b.card.files.count(kNote));
+
+  Device u;   // a web upload of U bytes, B < U <= B + L
+  assertOk(u.call("write_file", {{"path", "logs/u.csv"}, {"content", "h\n1\n"}}, owner()));
+  u.card.files[kNote] = noteText('a', owner().ns, "logs/u.csv", 4, 600);
+  indexedWrite(u, "logs/u.csv", "another,file\nwith,rows\n");
+  Device c;
+  c.bootFrom(u.card);
+  TEST_ASSERT_EQUAL_STRING("another,file\nwith,rows\n", c.onCard("logs/u.csv").c_str());
+  TEST_ASSERT_EQUAL_UINT32(23, c.indexed("logs", "u.csv"));
+
+  Device m;   // a note of the owner's new file; the member's own file now holds that name
+  assertOk(m.call("write_file", {{"path", "mine/m.md"}, {"content", "member's\n"}}, member()));
+  m.card.files[kNote] = noteText('a', owner().ns, "mine/m.md", -1, 600);
+  Device e;
+  e.bootFrom(m.card);
+  TEST_ASSERT_EQUAL_STRING("member's\n", e.onCard("mine/m.md").c_str());
+  TEST_ASSERT_TRUE(e.store.ownedBy(*e.store.find("mine", "m.md"), member().ns, false));
+}
+
+// P9: a short append whose cut-back the card refused said "2 of 5 B landed"; the note stayed as well (the card
+// refused its removal, the marker and the cut to empty). The next boot keeps those bytes.
+void test_a_failed_cut_back_keeps_its_bytes_over_a_note_the_card_kept() {
+  Device d;
+  assertOk(d.call("write_file", {{"path", "logs/d.csv"}, {"content", "h\n"}}, owner()));
+  d.card.shortAppendAt = 2;
+  d.card.truncateFails = true;
+  d.card.refuseRemove.insert(kNote);
+  d.card.refuseOverwrite.insert(kNote);
+  const orch::ToolResult r = d.call("append_file", {{"path", "logs/d.csv"}, {"text", "1234\n"}}, owner());
+  TEST_ASSERT_EQUAL_STRING("appended 2 B to logs/d.csv; file is 4 B", r.error.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(d.card.files[kNote], "logs"), "the card kept the live note");
+  Device b;
+  b.bootFrom(d.card);
+  const std::string now = b.onCard("logs/d.csv");
+  TEST_ASSERT_TRUE_MESSAGE(now == "h\n12" || now == "h\n12\n", now.c_str());
+  TEST_ASSERT_EQUAL_UINT32(now.size(), b.indexed("logs", "d.csv"));
+}
+
+// Rule 2: a note whose clear the card refuses is overwritten by a marker (or cut to empty), so it causes no
+// action at the next two boots: here, no re-adding of a file whose entry another writer dropped since.
+void test_a_note_whose_clear_fails_causes_no_action_at_the_next_two_boots() {
+  const auto refusing = [](Device& x, bool overwrite) {
+    x.card.refuseRemove.insert(kNote);
+    if (overwrite) x.card.refuseOverwrite.insert(kNote);
+  };
+  const auto dropEntry = [](Device& x, const char* project, const char* name) {
+    TEST_ASSERT_TRUE(x.store.remove(project, name));
+    x.card.files["/mem/files/.index"] = x.store.dump();
+  };
+  Device d;   // at runtime: the index landed, the removal refused
+  refusing(d, false);
+  assertOk(d.call("write_file", {{"path", "notes/k.md"}, {"content", "kept\n"}}, owner()));
+  TEST_ASSERT_FALSE_MESSAGE(has(d.card.files[kNote], "notes"), "the note is no longer readable as a change");
+  dropEntry(d, "notes", "k.md");
+  Device b, c;
+  refusing(b, false);
+  refusing(c, false);
+  TEST_ASSERT_EQUAL_STRING("", b.bootFrom(d.card).c_str());
+  TEST_ASSERT_NULL(b.store.find("notes", "k.md"));
+  TEST_ASSERT_EQUAL_STRING("", c.bootFrom(b.card).c_str());
+  TEST_ASSERT_NULL(c.store.find("notes", "k.md"));
+
+  Device e;   // at boot: a cut left a new file and its note; the boot adopts it once, then cannot clear the note
+  e.card.files["/mem/files/notes/q.md"] = "new note\n";
+  e.card.dirs.insert("/mem/files/notes");
+  e.card.files[kNote] = noteText('w', member().ns, "notes/q.md", -1, 9);
+  Device f, g, h;
+  refusing(f, true);
+  refusing(g, true);
+  refusing(h, true);
+  TEST_ASSERT_FALSE(f.bootFrom(e.card).empty());
+  TEST_ASSERT_TRUE(f.store.ownedBy(*f.store.find("notes", "q.md"), member().ns, false));
+  dropEntry(f, "notes", "q.md");
+  TEST_ASSERT_EQUAL_STRING("", g.bootFrom(f.card).c_str());
+  TEST_ASSERT_NULL(g.store.find("notes", "q.md"));
+  TEST_ASSERT_EQUAL_STRING("", h.bootFrom(g.card).c_str());
+  TEST_ASSERT_NULL(h.store.find("notes", "q.md"));
+  TEST_ASSERT_EQUAL_STRING("new note\n", h.onCard("notes/q.md").c_str());
+}
+
+// Rule 1: an append the power cut mid-write leaves its part of the row; the boot ends it with a line end, so
+// the next row starts cleanly, and the index holds it.
+void test_a_torn_append_gets_its_line_end_at_boot() {
+  bool torn = false;
+  for (int k = 1; k < 16 && !torn; k++) {
+    Device d;
+    assertOk(d.call("write_file", {{"path", "logs/t.csv"}, {"content", "h\n1\n"}}, owner()));
+    d.card.tornCut = true;
+    d.card.cutAt = d.card.ops + k;
+    try {
+      (void)d.call("append_file", {{"path", "logs/t.csv"}, {"text", "22,tea\n"}}, owner());
+    } catch (const PowerCut&) {
+    }
+    if (d.onCard("logs/t.csv") != "h\n1\n22,") continue;
+    torn = true;
+    Device b;
+    b.bootFrom(d.card);
+    TEST_ASSERT_EQUAL_STRING("h\n1\n22,\n", b.onCard("logs/t.csv").c_str());
+    TEST_ASSERT_EQUAL_UINT32(8, b.indexed("logs", "t.csv"));
+    TEST_ASSERT_FALSE(b.card.files.count(kNote));
+    assertOk(b.call("append_file", {{"path", "logs/t.csv"}, {"text", "3,tea\n"}}, owner()));
+    TEST_ASSERT_EQUAL_STRING("h\n1\n22,\n3,tea\n", b.onCard("logs/t.csv").c_str());
+  }
+  TEST_ASSERT_TRUE_MESSAGE(torn, "no cut fell inside the append");
+}
+
 }  // namespace
 
 // Lane E2-CHAT: read_file on skills/<id>.md answers the skill's approved body through the host's reader.
@@ -656,5 +863,10 @@ int main(int, char**) {
   RUN_TEST(test_an_append_decides_its_fence_on_the_file_as_it_is_at_the_commit);
   RUN_TEST(test_a_pending_replace_blocks_every_write_to_its_file);
   RUN_TEST(test_a_replace_is_the_old_engines_swap);
+  RUN_TEST(test_a_stale_append_note_after_a_completed_append_leaves_the_row);
+  RUN_TEST(test_a_stale_note_and_rows_of_a_writer_that_does_not_journal_leave_every_row);
+  RUN_TEST(test_a_failed_cut_back_keeps_its_bytes_over_a_note_the_card_kept);
+  RUN_TEST(test_a_note_whose_clear_fails_causes_no_action_at_the_next_two_boots);
+  RUN_TEST(test_a_torn_append_gets_its_line_end_at_boot);
   return UNITY_END();
 }
