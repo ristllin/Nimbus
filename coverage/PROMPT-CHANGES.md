@@ -1298,3 +1298,13 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX9
 - prd: section 3 (compaction: the summarizer answers changes to the summary so far), AGENTS.md rule 9
 - why: lib/harness/src/plain_compact.cpp askRung (no catalogued text changes; logged for the record): the summary so far is now the system block before the prompt, not after it. The prompt ends with its "nothing to change" answer, "=", and a summary whose first title came right after it read "=Facts and standing preferences:"; the summarizer wrote exactly that as its answer for a slice with nothing new, and it was never taken (the closing bench, lanes/E2-BENCH2/RESULT.md problem 2: four failures in a row, the conversation grew to 138.5k tokens). Probes on a captured second-compaction request (lanes/E2-FIX9/evidence/probes.jsonl, claude-haiku-5-5, structured form): with the summary after the prompt a slice of file work with nothing new was answered with the title in 2 of 12, with the summary first in 0 of 12 (every answer "=" or a change); slices with new facts were answered with the same changes either way. The parser also reads a title alone as no change (tx::SummaryEdits::frame). PC-0214: not used.
+
+### PC-0214: a refused request's line to the person carries the provider's reason after a colon (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: spec
+- bytes: 2044 -> 2046
+- sha8: e673add3 -> 2204d611
+- lane: E2-FIX11
+- prd: section 8.9 (the closed list of harness-written lines), ruling 116, AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h kReasonSep, the two bytes ": " between "refused the request (HTTP n)" and the provider's own message in the owner's status line (plain_exchange.cpp exchangeLine). The line goes to the person only and is never stored as the model's words; no text a model reads changes.

@@ -468,7 +468,7 @@ bool keyChar(unsigned char c) { return std::isalnum(c) || c == '_' || c == '-' |
 // True when `s` could carry a credential: a key's own markers, or a long run that mixes letters and digits.
 bool looksLikeSecret(const std::string& s) {
   const std::string low = lower(s);
-  for (const char* m : {"sk-", "bearer ", "x-api-key", "api_key", "api-key", "apikey", "authorization", "password", "secret"})
+  for (const char* m : {"sk-", "bearer", "x-api-key", "api_key", "api-key", "apikey", "authorization", "password", "secret"})
     if (low.find(m) != std::string::npos) return true;
   size_t run = 0;
   bool letter = false, digit = false;
