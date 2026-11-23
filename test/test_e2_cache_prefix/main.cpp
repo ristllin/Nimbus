@@ -965,6 +965,9 @@ static void test_outside_files_beside_an_arriving_photo_still_render() {
   TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.touch("routines/report.md"); })));
   TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.touch("log/daily.md"); })));
   TEST_ASSERT_TRUE(renders(arrivalTurn(photo, false, [](Device& d) { d.drop("lists/shopping.md"); })));
+  // the same with a full list: an outside write, and an outside delete of the bottom listed file
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, true, [](Device& d) { d.touch("archive/old-27.md"); })));
+  TEST_ASSERT_TRUE(renders(arrivalTurn(photo, true, [](Device& d) { d.drop("archive/old-0.md"); })));
   // a stored path whose store did not happen (named, but not in the store) beside an outside file
   TEST_ASSERT_TRUE(renders(arrivalTurn({"chat-1001/photo-x.jpg"}, false, [](Device& d) {
     d.touch("uploads/other.pdf");
@@ -985,6 +988,22 @@ static void test_outside_files_beside_an_arriving_photo_still_render() {
     dev.pause(90);
     dev.say("1001", "next");
     TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("chat-1001/photo-701.jpg") != std::string::npos);
+  }
+  // the message is stored but a later item of its turn is refused: the open's move is undone, so the next
+  // turn (no restart) renders the list with the photo
+  {
+    Device dev;
+    dev.say("1001", "one");
+    dev.pause(90);
+    dev.tolerateFaults = true;
+    dev.arrive({"chat-1001/photo-702.jpg"});
+    dev.during = [&dev] { dev.card.refuseAppends = true; };
+    dev.say("1001", "[image 1/1] look", {sp::call("read_file", R"({"path":"notes/a.md"})")});   // changes no file
+    dev.during = nullptr;
+    dev.card.refuseAppends = false;
+    dev.pause(90);
+    dev.say("1001", "next");
+    TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("chat-1001/photo-702.jpg") != std::string::npos);
   }
   // paths passed with a turn that is not the person's message (a routine's or a notice's) count for nothing:
   // the device passes them only with the message that carries them (turnStoredPaths), and the engine takes

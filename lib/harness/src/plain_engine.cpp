@@ -123,6 +123,9 @@ struct Turn {
   // kept only once that message is stored; taken as the turn's own at the open, once.
   std::vector<std::string> inbound;
   bool inboundSeen = false;
+  bool inboundMoved = false;           // the open moved the seen list: undone at the close if an item was refused
+  std::string inboundSeenBefore;       // the seen list before that move
+  uint64_t inboundOwnFromBefore = 0;
   uint8_t compactAsks = 0;             // compaction first, asked once a turn per urgency (lane RB-C3)
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
@@ -735,8 +738,9 @@ class TurnRun {
   // list moves and the turn's first item becomes what the blocks lean on (ownFrom); anything else in the
   // list's change still renders. Once a turn, and only when every item so far was stored.
   void seeInbound(const std::string& files) {
-    if (!d_.stablePrefix || !c_.prefix.valid || t_.inbound.empty() || t_.inboundSeen) return;
+    if (t_.inboundSeen) return;   // the turn's first composition only (later ones are mid-turn)
     t_.inboundSeen = true;
+    if (!d_.stablePrefix || !c_.prefix.valid || t_.inbound.empty()) return;
     if (t_.storeFailed || t_.notStored || files == c_.prefix.seenFiles) return;
     std::string text;
     std::vector<ListedFile> listing;
@@ -746,9 +750,21 @@ class TurnRun {
       hlog::logf("plain(%s): the file list changed beyond this message's own files: rendered now", d_.chatKey.c_str());
       return;
     }
+    t_.inboundMoved = true;
+    t_.inboundSeenBefore = c_.prefix.seenFiles;
+    t_.inboundOwnFromBefore = c_.prefix.ownFrom;
     c_.prefix.seenFiles = files;
     if (!c_.prefix.ownFrom || t_.firstQ < c_.prefix.ownFrom) c_.prefix.ownFrom = t_.firstQ;
     c_.prefixDirty = true;
+  }
+  // At the close: a turn with an item the card refused moves nothing (ruling 116), the open's move
+  // included; the next open renders the list afresh.
+  void undoInboundIfRefused() {
+    if (!t_.inboundMoved || !(t_.storeFailed || t_.notStored)) return;
+    c_.prefix.seenFiles = t_.inboundSeenBefore;
+    c_.prefix.ownFrom = t_.inboundOwnFromBefore;
+    c_.prefixDirty = true;
+    saveFrozen();
   }
   // The file list changed only in entries of paths this turn's own calls named (`files`: the list now).
   bool ownFiles(std::string& files) const {
@@ -1643,6 +1659,7 @@ class TurnRun {
     afterDeliver();
     if (!t_.storeFailed) supersede();
     if (!t_.storeFailed) st = storeEnd();
+    undoInboundIfRefused();
     seeOwnChanges();   // after delivery: it reads the notes and the file list once more
     if (!t_.storeFailed) c_.head.openTurn = 0;   // a turn with no e item stays open
     c_.head.nextQ = c_.nextQ;
