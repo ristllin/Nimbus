@@ -2,6 +2,7 @@
 #include "nimbus/harness/plain/prefix.h"
 
 #include <algorithm>
+#include <iterator>
 #include <cstdlib>
 #include <new>
 #include <vector>
@@ -81,6 +82,7 @@ PrefixRender decidePrefix(const FrozenPrefix& f, const PrefixNow& now) {
   if (!f.valid) return PrefixRender::First;
   if (f.blocks.core != now.blocks.core || f.manifestHash != now.manifestHash) return PrefixRender::Connector;
   if (f.digestText != now.digestText || f.stub != now.stub || f.dropped != now.dropped) return PrefixRender::Compaction;
+  if (f.ownFrom && now.omitted >= f.ownFrom) return PrefixRender::Compaction;   // the turn relied on is left out
   if (f.seenNotes != now.blocks.notes) return PrefixRender::Notes;
   if (f.seenFiles != now.files) return PrefixRender::Files;
   if (expired(now) && (f.blocks.notes != now.blocks.notes || f.blocks.digests != now.blocks.digests))
@@ -97,6 +99,62 @@ void renderPrefix(FrozenPrefix& f, const PrefixNow& now) {
   f.seenFiles = now.files;
   f.stub = now.stub;
   f.dropped = now.dropped;
+  f.ownFrom = 0;
+}
+
+namespace {
+
+// The lines of a block that hold something.
+std::vector<std::string> linesOf(const std::string& block) {
+  std::vector<std::string> out;
+  size_t at = 0;
+  while (at <= block.size()) {
+    size_t end = block.find('\n', at);
+    if (end == std::string::npos) end = block.size();
+    if (end > at) out.push_back(block.substr(at, end - at));
+    at = end + 1;
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+// `small` minus `big` as multisets (both sorted): what `small` has that `big` lacks.
+std::vector<std::string> minus(const std::vector<std::string>& small, const std::vector<std::string>& big) {
+  std::vector<std::string> out;
+  std::set_difference(small.begin(), small.end(), big.begin(), big.end(), std::back_inserter(out));
+  return out;
+}
+
+}  // namespace
+
+bool ownNotesAddition(const std::string& frozen, const std::string& seen, const std::string& now,
+                      const std::vector<std::string>& ownTexts, const std::vector<std::string>& headers) {
+  const std::vector<std::string> n = linesOf(now), s = linesOf(seen);
+  if (!minus(linesOf(frozen), n).empty() || !minus(s, n).empty()) return false;   // a line removed or edited
+  for (const std::string& line : minus(n, s)) {
+    if (std::find(headers.begin(), headers.end(), line) != headers.end()) continue;
+    const bool own = std::any_of(ownTexts.begin(), ownTexts.end(),
+                                 [&](const std::string& t) { return t.find(line) != std::string::npos; });
+    if (!own) return false;
+  }
+  return true;
+}
+
+bool ownFilesAddition(const std::string& seen, const std::string& now,
+                      const std::vector<std::pair<std::string, std::string>>& listing,
+                      const std::vector<std::string>& ownPaths) {
+  const std::vector<std::string> n = linesOf(now), s = linesOf(seen);
+  auto entry = [&](const std::string& line) {
+    return std::find_if(listing.begin(), listing.end(), [&](const std::pair<std::string, std::string>& e) {
+      return e.first == line;
+    });
+  };
+  for (const std::string& line : minus(s, n))   // left the list: only by its size, the file there as it was
+    if (entry(line) == listing.end()) return false;
+  for (const std::string& line : minus(n, s)) {
+    const auto e = entry(line);
+    if (e == listing.end() || std::find(ownPaths.begin(), ownPaths.end(), e->second) == ownPaths.end()) return false;
+  }
+  return true;
 }
 
 Status encodePrefix(const FrozenPrefix& f, std::string& out) {
@@ -114,6 +172,7 @@ Status encodePrefix(const FrozenPrefix& f, std::string& out) {
     putField(out, "seen-files", f.seenFiles);
     putNum(out, "stub", f.stub);
     putNum(out, "dropped", f.dropped);
+    putNum(out, "own-from", f.ownFrom);
     putNum(out, "z", fnv1a(out.data(), out.size()));
   } catch (const std::bad_alloc&) {
     out.clear();
@@ -146,7 +205,8 @@ Status decodePrefix(const std::string& in, FrozenPrefix& out) {
   FrozenPrefix f;
   size_t at = sizeof kMagic;
   uint64_t manifest = 0, z = 0;
-  const bool shaped = fieldsOf(in, at, f, manifest);
+  bool shaped = fieldsOf(in, at, f, manifest);
+  if (shaped && in.compare(at, 9, "own-from ") == 0) shaped = getNum(in, at, "own-from", f.ownFrom);   // E2-FIX6
   const size_t body = at;
   if (!shaped || !getNum(in, at, "z", z) || at != in.size() || manifest > UINT32_MAX || z != fnv1a(in.data(), body))
     return Status::fail(Err::Torn, "plain::decodePrefix");
@@ -156,14 +216,9 @@ Status decodePrefix(const std::string& in, FrozenPrefix& out) {
   return Status::success();
 }
 
-Status loadPrefix(tx::TxFiles& files, const std::string& chatKey, FrozenPrefix& out) {
-  out = FrozenPrefix{};
-  std::string dir;
-  if (!tx::txDir(chatKey, dir).ok()) return Status::fail(Err::InvalidArgument, "plain::loadPrefix");
-  std::vector<std::string> names;
-  if (!files.list(dir, names)) return Status::fail(Err::Io, "plain::loadPrefix.list");
-  if (std::find(names.begin(), names.end(), kName) == names.end()) return Status::fail(Err::NotFound, "plain::loadPrefix");
-  const std::string path = dir + "/" + kName;
+namespace {
+// One whole file read and decoded: Io when it could not be read, Torn when it does not decode.
+Status readRecord(tx::TxFiles& files, const std::string& path, FrozenPrefix& out) {
   size_t n = 0;
   if (!files.size(path, n)) return Status::fail(Err::Io, "plain::loadPrefix.size");
   if (n > kPrefixRecordMax) return Status::fail(Err::Torn, "plain::loadPrefix");
@@ -171,6 +226,27 @@ Status loadPrefix(tx::TxFiles& files, const std::string& chatKey, FrozenPrefix& 
   size_t got = 0;
   if (n && (!files.readAt(path, 0, &text[0], n, got) || got != n)) return Status::fail(Err::Io, "plain::loadPrefix.read");
   return decodePrefix(text, out);
+}
+}  // namespace
+
+Status loadPrefix(tx::TxFiles& files, const std::string& chatKey, FrozenPrefix& out) {
+  out = FrozenPrefix{};
+  std::string dir;
+  if (!tx::txDir(chatKey, dir).ok()) return Status::fail(Err::InvalidArgument, "plain::loadPrefix");
+  try {
+    std::vector<std::string> names;
+    if (!files.list(dir, names)) return Status::fail(Err::Io, "plain::loadPrefix.list");
+    const bool main = std::find(names.begin(), names.end(), kName) != names.end();
+    const bool tmp = std::find(names.begin(), names.end(), kTmpName) != names.end();
+    if (main) return readRecord(files, dir + "/" + kName, out);
+    if (!tmp) return Status::fail(Err::NotFound, "plain::loadPrefix");
+    // The replace was cut after the old record left: the temporary copy is the newest whole one.
+    const Status st = readRecord(files, dir + "/" + kTmpName, out);
+    return st.err == Err::Torn ? Status::fail(Err::NotFound, "plain::loadPrefix.tmp") : st;
+  } catch (const std::bad_alloc&) {
+    out = FrozenPrefix{};
+    return Status::fail(Err::Io, "plain::loadPrefix.memory");   // never "absent": the record stays for a later read
+  }
 }
 
 Status savePrefix(tx::TxFiles& files, const std::string& chatKey, const FrozenPrefix& f) {

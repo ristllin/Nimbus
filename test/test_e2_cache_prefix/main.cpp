@@ -24,6 +24,7 @@
 #include <ArduinoJson.h>
 
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <random>
 #include <set>
@@ -57,6 +58,7 @@ class Card : public tx::CardOps {
   std::map<std::string, std::string> files;
   std::set<std::string> dirs{"/"};
   bool deaf = false;   // every list and read answers false (the card did not answer)
+  bool refuseAppends = false;   // every append is refused (the transcript's items stay in RAM only)
   bool present() override { return true; }
   bool mayWrite() override { return true; }
   uint32_t largestInternal() override { return 64 * 1024; }
@@ -67,6 +69,7 @@ class Card : public tx::CardOps {
   bool isDir(const std::string& p) override { return dirs.count(p) > 0; }
   bool mkdir(const std::string& p) override { return dirs.insert(p).second; }
   size_t append(const std::string& p, const char* d, size_t n) override {
+    if (refuseAppends) return 0;
     files[p].append(d, n);
     return n;
   }
@@ -149,14 +152,21 @@ struct Device {
     reg.add(
         n->name, n->description,
         [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
-          const std::string key = a["key"] | "", value = a["value"] | "";
+          if (during) during();
+          const std::string key = a["key"] | "", value = a["value"] | "", op = a["op"] | "set";
+          if (op == "remove") {
+            pinned.erase(key);
+            unpinned.erase(key);
+            return nimbus::orch::ToolResult::ok("removed " + key);
+          }
           (a["pin"] | false ? pinned : unpinned)[key] = value;
-          return nimbus::orch::ToolResult::ok(key + ": " + value);
+          return nimbus::orch::ToolResult::ok("saved: " + key + ": " + value + " (12 of 4096 B)");
         },
         plain::declSchema(*n, false));
     reg.add(
         w->name, w->description,
         [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+          if (during) during();
           const std::string path = a["path"] | "";
           store.push_back(tx::RecentFile{path, now()});
           return nimbus::orch::ToolResult::ok("stored " + path);
@@ -211,7 +221,8 @@ struct Device {
     plain::ChatMessage m;
     m.text = text;
     plain::TurnOutcome out;
-    TEST_ASSERT_TRUE(binding->turn(m, out).ok());
+    const plain::Status st = binding->turn(m, out);
+    if (!tolerateFaults) TEST_ASSERT_TRUE(st.ok());
     TEST_ASSERT_EQUAL_MESSAGE(0, (int)model.remaining(), "a turn left scripted steps unused");
     for (size_t i = before; i < model.requests().size(); ++i)
       sent.push_back(Sent{model.requests()[i].body, chat, now(), listed});
@@ -230,6 +241,8 @@ struct Device {
   std::string resident;
   std::vector<Sent> sent;
   int listed = 0;   // bumped by the test at every listed event it makes
+  bool tolerateFaults = false;     // a card fault may end the turn with an error status
+  std::function<void()> during;   // runs inside the head's tool call (an edit on the web page meanwhile)
 };
 
 size_t countOf(const std::string& hay, const std::string& needle) {
@@ -607,6 +620,124 @@ static void test_a_compaction_renders_the_blocks_afresh_once_then_they_hold() {
                              "the bytes ahead of the closed turns changed after the compaction");
   }
 }
+// ---- lane E2-FIX6: what may be taken as the turn's own (red on a4f9c0621) ------------------
+// C2/C5: an edit on the web page while a turn with calls runs is never the head's own.
+static void test_an_outside_note_added_during_a_tool_turn_reaches_the_next_request() {
+  Device dev;
+  dev.say("1001", "one");
+  dev.during = [&dev] { dev.pinned["rule-web"] = "added on the web page meanwhile"; };
+  dev.say("1001", "save a file", {sp::call("write_file", R"({"path":"notes/a.md","content":"x"})")});
+  dev.during = nullptr;
+  dev.pause(30);
+  dev.say("1001", "next");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("added on the web page meanwhile") != std::string::npos);
+}
+static void test_an_outside_rule_removed_during_a_tool_turn_leaves_the_next_request() {
+  Device dev;
+  dev.say("1001", "one");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("metric units") != std::string::npos);
+  dev.during = [&dev] { dev.pinned.erase("rule-units"); };
+  dev.say("1001", "remember", {sp::call("note", R"({"op":"set","key":"k1","value":"v1","pin":true})")});
+  dev.during = nullptr;
+  dev.pause(30);
+  dev.say("1001", "next");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("metric units") == std::string::npos);
+}
+static void test_an_outside_file_during_a_tool_turn_reaches_the_next_request() {
+  Device dev;
+  dev.say("1001", "one");
+  dev.during = [&dev] { dev.store.push_back(tx::RecentFile{"inbox/upload.csv", dev.now()}); };
+  dev.say("1001", "save", {sp::call("write_file", R"({"path":"notes/b.md","content":"x"})")});
+  dev.during = nullptr;
+  dev.pause(30);
+  dev.say("1001", "next");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("inbox/upload.csv") != std::string::npos);
+}
+// C6: a note the head removes or edits does not stay in the system part as in force.
+static void test_a_note_the_head_removes_leaves_the_next_request() {
+  Device dev;
+  dev.say("1001", "one");
+  dev.say("1001", "forget the units rule", {sp::call("note", R"({"op":"remove","key":"rule-units"})")});
+  dev.pause(30);
+  dev.say("1001", "next");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("metric units") == std::string::npos);
+}
+static void test_a_note_the_head_edits_shows_only_its_new_value() {
+  Device dev;
+  dev.say("1001", "one");
+  dev.say("1001", "change it", {sp::call("note", R"({"op":"set","key":"rule-units","value":"imperial units","pin":true})")});
+  dev.pause(30);
+  dev.say("1001", "next");
+  const std::string sys = systemOf(dev.sent.back().body);
+  TEST_ASSERT_TRUE(sys.find("metric units") == std::string::npos);
+  TEST_ASSERT_TRUE(sys.find("imperial units") != std::string::npos);
+}
+// C1/C7: a note saved in a turn whose items the card refused, then a restart: the note shows.
+static void test_a_note_saved_while_the_card_refused_the_turn_shows_after_a_restart() {
+  Device dev;
+  dev.say("1001", "one");
+  dev.tolerateFaults = true;
+  dev.during = [&dev] { dev.card.refuseAppends = true; };   // the call is stored, its result and the rest are not
+  dev.say("1001", "remember", {sp::call("note", R"({"op":"set","key":"k-unstored","value":"kept in notes","pin":true})")});
+  dev.during = nullptr;
+  dev.card.refuseAppends = false;
+  TEST_ASSERT_TRUE_MESSAGE(dev.pinned.count("k-unstored") == 1, "the note call did not run");
+  dev.binding.reset();   // a restart: the RAM-only items are gone
+  dev.pause(30);
+  dev.say("1001", "next");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("kept in notes") != std::string::npos);
+}
+// The cache benefit stays: a note the head adds and a file it writes do not rewrite the prefix.
+static void test_own_additions_still_keep_the_prefix() {
+  std::vector<Act> acts{Act::PinnedNote, Act::WriteFile, Act::Chat, Act::Switch, Act::Restart};
+  TEST_ASSERT_EQUAL_STRING("", runGenerated(9, 10, &acts).c_str());
+}
+// C3: a replace cut after the old record left: the temporary copy is read, not taken as absent.
+static void test_a_record_left_only_as_its_temporary_copy_is_read() {
+  plain::FrozenPrefix f;
+  f.valid = true;
+  f.blocks.core = "core";
+  Card card;
+  tx::CardTxFiles files(card);
+  for (const char* d : {"/mem", "/mem/tx", "/mem/tx/1001"}) card.dirs.insert(d);
+  TEST_ASSERT_TRUE(plain::savePrefix(files, "1001", f).ok());
+  card.files["/mem/tx/1001/prefix.txt.tmp"] = card.files["/mem/tx/1001/prefix.txt"];
+  card.files.erase("/mem/tx/1001/prefix.txt");
+  plain::FrozenPrefix back;
+  TEST_ASSERT_TRUE(plain::loadPrefix(files, "1001", back).ok());
+  TEST_ASSERT_EQUAL_STRING("core", back.blocks.core.c_str());
+  card.files["/mem/tx/1001/prefix.txt.tmp"].resize(10);   // a torn temporary copy: absent
+  TEST_ASSERT_EQUAL((int)tx::Err::NotFound, (int)plain::loadPrefix(files, "1001", back).err);
+}
+// [fix6-unit-begin]
+// C8: the turn the blocks lean on left out of the request renders them; the own-addition rules.
+static void test_a_left_out_turn_the_blocks_lean_on_renders_them() {
+  plain::FrozenPrefix f;
+  plain::PrefixNow n;
+  n.blocks.notes = "Pinned notes:\na: 1";
+  plain::renderPrefix(f, n);
+  f.ownFrom = 40;
+  n.omitted = 39;
+  TEST_ASSERT_EQUAL((int)plain::PrefixRender::None, (int)plain::decidePrefix(f, n));
+  n.omitted = 40;
+  TEST_ASSERT_EQUAL((int)plain::PrefixRender::Compaction, (int)plain::decidePrefix(f, n));
+  plain::renderPrefix(f, n);
+  TEST_ASSERT_EQUAL(0, (int)f.ownFrom);
+}
+static void test_the_own_addition_rules() {
+  const std::vector<std::string> own{"saved: b: 2 (12 of 4096 B)"}, hdr{"Pinned notes:"};
+  TEST_ASSERT_TRUE(plain::ownNotesAddition("Pinned notes:\na: 1", "Pinned notes:\na: 1", "Pinned notes:\na: 1\nb: 2", own, hdr));
+  TEST_ASSERT_TRUE(plain::ownNotesAddition("", "", "Pinned notes:\nb: 2", own, hdr));
+  TEST_ASSERT_FALSE(plain::ownNotesAddition("Pinned notes:\na: 1", "Pinned notes:\na: 1", "Pinned notes:\nb: 2", own, hdr));
+  TEST_ASSERT_FALSE(plain::ownNotesAddition("a: 1", "a: 1", "a: 1\nc: 3", own, hdr));   // not this turn's
+  TEST_ASSERT_FALSE(plain::ownNotesAddition("a: 1", "a: 1\nb: 2", "a: 1", own, hdr));  // an own addition removed
+  const std::vector<std::pair<std::string, std::string>> listing{{"x.md (t1)", "x.md"}, {"y.md (t2)", "y.md"}};
+  TEST_ASSERT_TRUE(plain::ownFilesAddition("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {"y.md"}));
+  TEST_ASSERT_TRUE(plain::ownFilesAddition("x.md (t1)", "y.md (t2)", listing, {"y.md"}));   // x fell out of the size
+  TEST_ASSERT_FALSE(plain::ownFilesAddition("x.md (t1)\nz.md (t3)", "x.md (t1)", listing, {}));   // z is gone
+  TEST_ASSERT_FALSE(plain::ownFilesAddition("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {}));   // not this turn's
+}
+// [fix6-unit-end]
 
 int main(int, char**) {
   UNITY_BEGIN();
@@ -632,6 +763,18 @@ int main(int, char**) {
   RUN_TEST(test_an_unreadable_card_is_never_absent);
   RUN_TEST(test_the_record_round_trips_any_bytes);
   RUN_TEST(test_a_compaction_renders_the_blocks_afresh_once_then_they_hold);
+  RUN_TEST(test_an_outside_note_added_during_a_tool_turn_reaches_the_next_request);
+  RUN_TEST(test_an_outside_rule_removed_during_a_tool_turn_leaves_the_next_request);
+  RUN_TEST(test_an_outside_file_during_a_tool_turn_reaches_the_next_request);
+  RUN_TEST(test_a_note_the_head_removes_leaves_the_next_request);
+  RUN_TEST(test_a_note_the_head_edits_shows_only_its_new_value);
+  RUN_TEST(test_a_note_saved_while_the_card_refused_the_turn_shows_after_a_restart);
+  RUN_TEST(test_own_additions_still_keep_the_prefix);
+  RUN_TEST(test_a_record_left_only_as_its_temporary_copy_is_read);
+  // [fix6-unit-begin]
+  RUN_TEST(test_a_left_out_turn_the_blocks_lean_on_renders_them);
+  RUN_TEST(test_the_own_addition_rules);
+  // [fix6-unit-end]
 #endif
   return UNITY_END();
 }

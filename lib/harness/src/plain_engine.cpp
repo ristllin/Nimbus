@@ -110,6 +110,13 @@ struct Turn {
   bool sawOutside = false;
   bool sawMeta = false;
   bool longArgs = false;               // a call kept a long argument whole: its stub shows from the close
+  // Lane E2-FIX6: what this turn's own calls did, for the frozen system part (seeOwnChanges). notStored:
+  // an item of this turn did not reach the card (its own changes are not taken as held by the
+  // conversation). ownTexts: the successful, stored results (short ones: a note's stored line);
+  // ownPaths: the paths their calls named; ownFromQ: the turn's first item.
+  bool notStored = false;
+  std::vector<std::string> ownTexts;
+  std::vector<std::string> ownPaths;
   uint8_t compactAsks = 0;             // compaction first, asked once a turn per urgency (lane RB-C3)
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
@@ -211,6 +218,7 @@ class TurnRun {
     }
     const bool ok = state == tx::StoreState::Stored;
     if (stored) *stored = ok;
+    if (!ok) t_.notStored = true;
     if (!ok && !c_.storageEpisode) {
       c_.storageEpisode = c_.noteDue = t_.storageLineDue = true;
       c_.noteShown = false;
@@ -644,6 +652,7 @@ class TurnRun {
     n.files = f.recentFiles;
     n.stub = c_.head.stub;
     n.dropped = c_.droppedThru;
+    n.omitted = std::max(c_.droppedThru, t_.ladder.omitThrough);
     n.now = epoch();
     n.lastReqAt = c_.head.lastReqAt;
     n.lifetimeS = kCacheLongS;
@@ -687,13 +696,19 @@ class TurnRun {
     t_.system = c_.prefix.blocks;
     saveFrozen();
   }
-  // At the close of a turn that ran calls: what the turn itself changed (a pinned note, a new file)
-  // is seen now, so the next open does not take it for an outside change. The blocks stay as sent.
-  // Notes changed in a turn whose long arguments show as stubs from now are not taken as seen: the
-  // conversation may not hold the note's words whole, so the next open renders the notes afresh
-  // (ruling 81). A file list is: a stubbed write keeps its path, the only thing the list shows of it.
+  // At the close of a turn that ran calls: a change the turn's own calls made (a pinned note added, a
+  // new file) is seen now, so the next open does not take it for an outside change; the blocks stay
+  // as sent. Only a pure addition that this turn's own stored results account for is taken
+  // (plain/prefix.h, lane E2-FIX6); anything else leaves the seen marks, and the next open renders.
+  // Notes changed in a turn whose long arguments show as stubs from now are not taken either: the
+  // conversation may not hold the note's words whole (ruling 81).
   void seeOwnChanges() {
     if (!d_.stablePrefix || !c_.prefix.valid || !t_.end.tools || !d_.setup) return;
+    if (t_.storeFailed || t_.notStored) {   // ruling 116: what did not land moves nothing
+      hlog::logf("plain(%s): an item of this turn was not stored: its own changes render at the next open",
+                 d_.chatKey.c_str());
+      return;
+    }
     std::unique_ptr<TurnSetup> s(new (std::nothrow) TurnSetup());
     if (!s || !d_.setup(t_.ctx, *s).ok()) return;
     s->facts.turn = &t_.ctx;
@@ -701,13 +716,43 @@ class TurnRun {
     s->facts.recentFiles.clear();
     SystemBlocks b;
     if (!composeSystem(s->facts, b).ok()) return;
-    const std::string files = filesNow();
-    const bool notes = b.notes != c_.prefix.seenNotes && !t_.longArgs;
-    if (!notes && files == c_.prefix.seenFiles) return;
+    const bool notes = b.notes != c_.prefix.seenNotes && !t_.longArgs &&
+                       ownNotesAddition(c_.prefix.blocks.notes, c_.prefix.seenNotes, b.notes, t_.ownTexts,
+                                        {texts::core::kNotes, texts::core::kSkills});
+    std::string files;
+    std::vector<std::pair<std::string, std::string>> listing;
+    const bool filesRead = filesListing(files, listing);
+    const bool filesOwn = filesRead && files != c_.prefix.seenFiles &&
+                          ownFilesAddition(c_.prefix.seenFiles, files, listing, t_.ownPaths);
+    if (b.notes != c_.prefix.seenNotes && !notes) hlog::logf("plain(%s): the notes changed beyond this turn's own additions: rendered at the next open", d_.chatKey.c_str());
+    if (filesRead && files != c_.prefix.seenFiles && !filesOwn) hlog::logf("plain(%s): the file list changed beyond this turn's own files: rendered at the next open", d_.chatKey.c_str());
+    if (!notes && !filesOwn) return;
     if (notes) c_.prefix.seenNotes = b.notes;
-    c_.prefix.seenFiles = files;
+    if (filesOwn) c_.prefix.seenFiles = files;
+    if (!c_.prefix.ownFrom || t_.firstQ < c_.prefix.ownFrom) c_.prefix.ownFrom = t_.firstQ;
     c_.prefixDirty = true;
     saveFrozen();
+  }
+  // The recent-files list now and, for each file the store holds, its line and path. False when the
+  // store does not answer (nothing is taken as seen then).
+  bool filesListing(std::string& text, std::vector<std::pair<std::string, std::string>>& listing) const {
+    text.clear();
+    listing.clear();
+    if (!d_.recentFiles) return true;
+    std::vector<tx::RecentFile> all;
+    if (!d_.recentFiles(all)) return false;
+    if (!tx::recentFilesList(all, t_.tz, text).ok()) return false;
+    std::string one;
+    for (const tx::RecentFile& f : all)
+      if (tx::recentFilesList({f}, t_.tz, one).ok() && !one.empty()) listing.emplace_back(one, f.path);
+    return true;
+  }
+  // Mid-turn: the ladder or a full arena left out the turn the frozen blocks lean on; the rest of the
+  // turn goes with blocks rendered afresh (lane E2-FIX6, plain/prefix.h ownFrom).
+  void refreezeIfOmitted() {
+    if (!d_.stablePrefix || !c_.prefix.valid || !c_.prefix.ownFrom) return;
+    if (std::max(c_.droppedThru, t_.ladder.omitThrough) < c_.prefix.ownFrom) return;
+    (void)(compose().ok() && wired().ok());
   }
 
   // ---- one request ----------------------------------------------------------------------
@@ -715,6 +760,7 @@ class TurnRun {
   // round with tool choice none on a trip).
   Status boundary() {
     t_.ctx.roundNo = t_.rounds;
+    refreezeIfOmitted();   // a full arena let the turn the frozen blocks lean on go (E2-FIX6)
     // The gap note: shown once when an episode starts, and owed until one is stored, so the
     // stored transcript names the hole once storage is back.
     if (c_.noteDue && !c_.noteShown) {   // the model sees it once, in RAM if need be
@@ -929,6 +975,7 @@ class TurnRun {
       const size_t need = over && ask.bodyBytes > ask.bodyCap ? ask.bodyBytes - ask.bodyCap + kOmissionLineRoom
                                                              : std::numeric_limits<size_t>::max();
       climbed = omitOldest(need);   // (3) one omission line, never the newest 6 owner turns
+      if (climbed) refreezeIfOmitted();
     }
     if (climbed) event("change:ladder");
     return climbed;
@@ -1447,6 +1494,7 @@ class TurnRun {
       t_.ctx.tainted = true;   // the request now carries an outside result whole
     }
     if (r.ok && orch::tx::changesFileSet(view.name)) t_.fileSetChanged = true;
+    if (r.ok && stored) keepOwn(out.text, view.args);
     if (r.ok && stored && out.deferred != Deferred::None) {   // a stored success only; run once the turn is closed
       const size_t kind = static_cast<size_t>(out.deferred);
       if (kind < kDeferredKinds) {
@@ -1495,6 +1543,18 @@ class TurnRun {
     f.noCard = r.cls != tx::ResultClass::Receipt && r.handle.empty();
     if (!tx::stubText(f, r.st).ok()) r.st.clear();
     return put(r, stored);
+  }
+
+  // A successful, stored call's evidence for the frozen system part (seeOwnChanges): its result when
+  // short (a note's stored line; a long result is never a note line) and the path it named.
+  static constexpr size_t kOwnTextMax = 1024;
+  void keepOwn(const std::string& text, const std::string& args) {
+    if (!d_.stablePrefix) return;
+    if (text.size() <= kOwnTextMax) t_.ownTexts.push_back(text);
+    ArduinoJson::JsonDocument doc;
+    if (deserializeJson(doc, args, ArduinoJson::DeserializationOption::NestingLimit(8))) return;
+    const char* path = doc["path"] | (const char*)nullptr;
+    if (path && *path) t_.ownPaths.push_back(path);
   }
 
   // A successful effect's call and result, kept for the superseded-read rule in the view of
