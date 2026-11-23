@@ -347,7 +347,7 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
     free(c.bytes);
     c.bytes = nullptr;
     c.len = 0;
-    s_carried.push_back(std::move(c));   // remembered for the turn: every render asks again
+    s_carried.push_back(std::move(c));   // remembered: the turn's next render does not read the card again
     out = plain::PhotoBytes{};
     return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "e2.carriedPhoto");
   }
