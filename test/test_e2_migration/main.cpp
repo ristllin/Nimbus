@@ -30,6 +30,7 @@
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/tx/card_files.h"
+#include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/old_engine.h"
 #include "nimbus/ota/ota_logic.h"
 
@@ -214,7 +215,7 @@ struct Device {
     model.respondWith([this](const sp::Recorded& r, size_t) {
       if (r.body.find(kSummarizer) != std::string::npos) {
         ++digestAsks;
-        return sp::say(kDigest);
+        return sp::say(summarized);
       }
       return sp::say(answer);
     });
@@ -274,6 +275,7 @@ struct Device {
   sp::ScriptedProvider model;
   std::string answer = "Your locker code is 4417.";
   int digestAsks = 0;
+  std::string summarized = kDigest;   // the summarizer's answer (digest 0, then compaction's changes)
   bool noCard = false;
   Card card;
   tx::CardTxFiles files;
@@ -456,6 +458,60 @@ static void test_with_no_card_fitted_the_import_holds_nothing() {
   TEST_ASSERT_FALSE(dev.binding->unloaded());
   TEST_ASSERT_TRUE(dev.say("hello").ok());
   for (const std::string& part : dev.sent) TEST_ASSERT_TRUE(part != plain::kNotLoadedLine);
+}
+
+// Lane E2-FIX2B, finding P5 (ruling 115 item 3), the way back: engine-2 turns and a compaction leave
+// the earlier engine's fold record and its pointer byte-identical, never saved (the binding has no
+// path to it any more; the device binds none).
+static void test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was() {
+  Device dev;
+  seed(dev);
+  for (int i = 0; i < 60; ++i) {   // enough conversation past the recent part for a compaction
+    const std::string pad(1500, (char)('a' + i % 26));
+    dev.old.row("user", orch::MsgKind::Message, "long owner line " + std::to_string(i) + " " + pad, kHour0 + 27, "from:Owner");
+    dev.old.row("assistant", orch::MsgKind::Message, "long reply " + std::to_string(i) + " " + pad, kHour0 + 27);
+  }
+  const std::string foldBefore = dev.old.fold.blob;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  for (int i = 0; i < 3; ++i) TEST_ASSERT_TRUE(dev.say("turn " + std::to_string(i) + " on engine 2").ok());
+  const uint64_t thru0 = dev.binding->engine()->head()->thru;
+  dev.summarized = "+F The person keeps long owner lines.\n+D The assistant answered each one.";
+  TEST_ASSERT_TRUE(dev.binding->compactNow().ok());
+  TEST_ASSERT_TRUE_MESSAGE(dev.binding->engine()->head()->thru > thru0, dev.sent.back().c_str());
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(foldBefore == dev.old.fold.blob);
+  TEST_ASSERT_EQUAL(0, dev.old.fold.saves);
+}
+
+// P5: a record an earlier engine-2 build replaced with its mirror is put back from the kept copy,
+// once; every other chat's record stays byte for byte, and a record of the earlier engine's own
+// shape is never touched.
+static void test_a_mirrored_fold_record_is_put_back_from_the_kept_copy() {
+  const std::string original = foldBlob(0x100 + 41);
+  std::string other;
+  SavingFold io(&other);
+  orch::FoldStore fs;
+  fs.begin(&io);
+  fs.applyFold("2002", "Another chat's summary.", (uint32_t)(kEpoch0 - 3600), tx::rowIdString(0x105));
+  const std::string copy = original;
+  tx::MirrorFacts f{kChat, 40, 0x100 + 300, (uint32_t)kEpoch0};
+  std::vector<tx::DigestEntry> live{tx::DigestEntry{"2026-11-17", "[2026-11-17] engine two's digest.", 41, 40}};
+  std::string mirrored;
+  TEST_ASSERT_TRUE(tx::mirrorChatsum(other, f, live, mirrored).ok());   // what the earlier build wrote
+  std::string restored;
+  TEST_ASSERT_TRUE(tx::restoreFoldRecord(mirrored, copy, kChat, restored));
+  TEST_ASSERT_TRUE(restored.find(other) == 0);   // 2002's record, byte for byte
+  TEST_ASSERT_TRUE(restored.substr(other.size()) == original);   // 1001's, as the earlier engine left it
+  // The device calls it only when the record's pointer names a row engine 2 wrote
+  // (dropMirroredPointer), so a put-back record is not put back again; a second call changes nothing.
+  std::string again;
+  TEST_ASSERT_TRUE(tx::restoreFoldRecord(restored, copy, kChat, again));
+  TEST_ASSERT_TRUE(again == restored);
+  TEST_ASSERT_FALSE(tx::restoreFoldRecord(other, copy, kChat, again));   // no record of the chat
+  TEST_ASSERT_TRUE(again.empty());
+  // No copy of this chat: the mirror record leaves, the rest stays.
+  TEST_ASSERT_TRUE(tx::restoreFoldRecord(mirrored, other, kChat, restored));
+  TEST_ASSERT_TRUE(restored == other);
 }
 
 static void test_a_second_boot_imports_only_what_the_earlier_engine_wrote_since() {
@@ -742,6 +798,8 @@ int main(int, char**) {
   RUN_TEST(test_a_card_out_at_the_first_boot_imports_before_anything_is_stored);
   RUN_TEST(test_an_import_refused_before_its_marker_stores_nothing_until_done);
   RUN_TEST(test_with_no_card_fitted_the_import_holds_nothing);
+  RUN_TEST(test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was);
+  RUN_TEST(test_a_mirrored_fold_record_is_put_back_from_the_kept_copy);
   RUN_TEST(test_a_second_boot_imports_only_what_the_earlier_engine_wrote_since);
   RUN_TEST(test_the_import_fills_only_the_chats_own_key);
   RUN_TEST(test_a_mirrored_fold_pointer_is_not_taken_as_the_earlier_summary);

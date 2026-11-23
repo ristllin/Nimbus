@@ -1215,10 +1215,10 @@ first and stops at the newest summary (or, with none, at the newest archived dig
 The recent-files list (`recentFilesList`, at most 600 B) is the device's own: path and
 last write, newest first. `RecentFilesBlock` rebuilds it at a cold turn open and at the
 close of a turn that moved or deleted a file (`changesFileSet`), and keeps it byte for
-byte otherwise. A rollback to v5.1.1 still has a summary: `mirrorChatsum` writes this
-chat's record of `/data/chatsum.txt` in the v5.1.1 FoldStore format, with the summary in force
-in whole lines up to 4,096 B (or the newest day digests that fit it) as its summary, the counters, failure count and pause at 0, and
-a row pointer ("m%08x") that never moves back; other chats' records stay byte for byte.
+byte otherwise. `mirrorChatsum` (the v5.1.1 FoldStore format) stays in the library, but no device
+binding calls it: engine 2 never writes the earlier engine's `/data/chatsum.txt` (lane E2-FIX2B,
+finding P5, ruling 115 item 3). A flash back to v5.2.0 finds its own summary and pointer as it left
+them.
 
 ### Photo notes in the later-turn stub (lane RB-H81)
 
@@ -1315,7 +1315,7 @@ stored. There is no pause state.
 
 The swap keeps RB-C1's order: the day digests the summary took in are archived first, the s item is
 stored (a refused store leaves thru where it was), then thru moves and the arena drops what the
-summary covers, then `settleDigests`, `writeHead` and the chatsum mirror. A cut at any write leaves
+summary covers, then `settleDigests` and `writeHead` (the chatsum mirror only where a host binds one). A cut at any write leaves
 every item either after thru or under exactly one stored summary. `/compact` (`requestManual`)
 skips the quiet wait, the backoff and the cap (it is counted), takes at most eight requests and is
 answered once. The device binding is `src/agent/plain_fold_device.cpp` (engine-2 images only); the
@@ -1383,9 +1383,13 @@ the chat's FoldStore record (`OldFold`: the summary and its two pointers).
   episodic store's forward query (`tx::EpisodicRowSource`, `tx/old_engine.h`, pages of 64 rows
   under the card lock), the old summary from `/data/chatsum.txt`, read only. A chat's first
   start waits until the episodic index is complete (at most 10 minutes after the boot; the
-  person gets one device line meanwhile). A fold pointer at a row engine 2 wrote (its
-  compaction's mirror) is not taken as the old engine's. The fold record as the old engine left
-  it is copied once to `/mem/tx-pre-e2/chatsum.txt`. The old engine's active standing rules
+  person gets one device line meanwhile). Nothing is stored for the chat until the import
+  answered Done: until then it runs from RAM (the person is told each turn) and the import is
+  tried again before each turn; the RAM turns follow the imported history once, in order. A
+  transcript an earlier build stored with no marker gets the whole first import after its items
+  (lane E2-FIX2B, P3). A fold pointer at a row engine 2 wrote (an earlier build's mirror) is not
+  taken as the old engine's, and that record is put back once from the copy at
+  `/mem/tx-pre-e2/chatsum.txt`, made once from the record as the old engine left it. The old engine's active standing rules
   become pinned rule notes (`rule-p<id>`) once, recorded in `/data/notes/rules_import.txt`; an
   edit or removal made on engine 2 stays.
 

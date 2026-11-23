@@ -51,9 +51,10 @@ std::unique_ptr<tx::EpisodicRowSource> s_rows;   // the last fill's (tg_poll onl
 const char kFoldCopyDir[] = "/mem/tx-pre-e2";
 const char kFoldCopyPath[] = "/mem/tx-pre-e2/chatsum.txt";
 
-// The earlier engine's fold record as it stood before engine 2 first ran, kept once on the card:
-// engine 2's compaction later mirrors its own digests into /data/chatsum.txt (the way back reads
-// them), and this copy keeps the earlier engine's own summaries byte for byte. Never overwritten.
+// The earlier engine's fold record as it stood before engine 2 first ran, kept once on the card,
+// byte for byte. Never overwritten. Engine 2 no longer writes /data/chatsum.txt (lane E2-FIX2B,
+// finding P5); an earlier engine-2 build mirrored its digests into it, and this copy is what
+// putBackFoldRecord restores from.
 void keepFoldCopy(const std::string& blob) {
   if (blob.empty() || !memory::haveSd()) return;
   memory::Lock lk;
@@ -66,6 +67,31 @@ void keepFoldCopy(const std::string& blob) {
   const size_t w = f.write(reinterpret_cast<const uint8_t*>(blob.data()), blob.size());
   f.close();
   if (w != blob.size()) fs.remove(kFoldCopyPath);   // a short copy is no copy: tried again next boot
+}
+
+// The copy above, whole ("" when absent or unreadable).
+std::string readFoldCopy() {
+  if (!memory::haveSd()) return std::string();
+  memory::Lock lk;
+  fs::FS& fs = memory::dataFs();
+  File f = fs.open(kFoldCopyPath, FILE_READ);
+  if (!f) return std::string();
+  String s = f.readString();
+  const size_t want = f.size();
+  f.close();
+  return s.length() == want ? std::string(s.c_str(), s.length()) : std::string();
+}
+
+// P5: a chat's record that an earlier engine-2 build replaced with its mirror is put back from the
+// copy, once (the record then has the earlier engine's shape again). True when it was.
+bool putBackFoldRecord(const std::string& chatId, const std::string& blob) {
+  const std::string copy = readFoldCopy();
+  std::string restored;
+  if (copy.empty() || !tx::restoreFoldRecord(blob, copy, chatId, restored)) return false;
+  const bool ok = writeFileAtomic(kChatsumPath, restored, "chatsum");
+  alogf("e2: import: the fold record of chat %s was engine 2's mirror: %s from %s", chatId.c_str(),
+        ok ? "put back" : "NOT put back", kFoldCopyPath);
+  return ok;
 }
 
 }  // namespace
@@ -88,8 +114,18 @@ bool fill(tx::MigrateDeps& m) {
   }
   m.rows = s_rows.get();
   bool mirrored = false;
-  if (tx::dropMirroredPointer(*s_rows, m.fold, mirrored).ok() && mirrored)
-    alogf("e2: import: the fold record of chat %s is engine 2's own mirror; its pointer is not used", m.chatKey.c_str());
+  if (tx::dropMirroredPointer(*s_rows, m.fold, mirrored).ok() && mirrored) {
+    ReadOnlyFoldIO io;
+    if (putBackFoldRecord(m.chatKey, io.load())) {   // the earlier engine's own record, read again
+      nimbus::orch::FoldStore folds;
+      folds.begin(&io);
+      m.fold = tx::oldFoldOf(folds.get(m.chatKey));
+      mirrored = false;
+      (void)tx::dropMirroredPointer(*s_rows, m.fold, mirrored);
+    }
+    if (mirrored)
+      alogf("e2: import: the fold record of chat %s is engine 2's own mirror; its pointer is not used", m.chatKey.c_str());
+  }
   m.tzMinutes = (int16_t)orchestrator::utcOffsetAt((uint32_t)time(nullptr));
   m.exportText = [](const std::string& path, const std::string& text) {
     const size_t slash = path.find('/');

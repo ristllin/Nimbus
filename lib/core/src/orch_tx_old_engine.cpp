@@ -94,6 +94,47 @@ Status dropMirroredPointer(RowSource& rows, OldFold& fold, bool& dropped) {
   return Status::success();
 }
 
+namespace {
+
+// The whole record of `chatId` in a fold blob (its fields, the 0x1E end included); npos when none.
+size_t recordOf(const std::string& blob, const std::string& chatId, size_t& len) {
+  for (size_t at = 0, end; (end = blob.find('\x1E', at)) != std::string::npos; at = end + 1) {
+    if (blob.compare(at, chatId.size(), chatId) == 0 && blob.size() > at + chatId.size() && blob[at + chatId.size()] == '\x1F') {
+      len = end - at + 1;
+      return at;
+    }
+  }
+  return std::string::npos;
+}
+
+// The mirror's shape (orch_tx_digest.cpp mirrorRecord): counters 0 and ";m" in the epoch field.
+bool mirrorShape(const std::string& rec) {
+  std::vector<std::string> f;
+  for (size_t at = 0;;) {
+    const size_t sep = rec.find('\x1F', at);
+    if (sep == std::string::npos || f.size() == 7) break;
+    f.push_back(rec.substr(at, sep - at));
+    at = sep + 1;
+  }
+  if (f.size() < 7) return false;
+  return f[1] == "0" && f[2] == "0" && f[3].find(";m") != std::string::npos && f[4] == "0" && f[5] == "0" &&
+         f[6] == "0";
+}
+
+}  // namespace
+
+bool restoreFoldRecord(const std::string& blob, const std::string& copy, const std::string& chatId, std::string& out) {
+  out.clear();
+  size_t len = 0, copyLen = 0;
+  const size_t at = recordOf(blob, chatId, len);
+  if (chatId.empty() || at == std::string::npos || !mirrorShape(blob.substr(at, len))) return false;
+  const size_t from = recordOf(copy, chatId, copyLen);
+  out = blob.substr(0, at);
+  if (from != std::string::npos) out += copy.substr(from, copyLen);
+  out += blob.substr(at + len);
+  return true;
+}
+
 // ---- EpisodicRowSource ----------------------------------------------------------------------
 
 namespace {

@@ -14,7 +14,8 @@
 //     (export-pre-v2/). The binding then runs tx::migrate before the engine opens the log, at
 //     every boot of the chat: the first imports the history, a later one only what the earlier
 //     engine wrote since. The fold record as the earlier engine left it is copied once to
-//     /mem/tx-pre-e2/chatsum.txt (engine 2's compaction later mirrors its digests into the file).
+//     /mem/tx-pre-e2/chatsum.txt. Engine 2 never writes /data/chatsum.txt (lane E2-FIX2B, P5); a
+//     record an earlier engine-2 build replaced with its mirror is put back from that copy once.
 //   - importRulesOnce(): the earlier engine's active standing rules into the owner's notes as
 //     pinned rules (tx::importRules), once per boot; /data/notes/rules_import.txt records what was
 //     copied, so a second run adds nothing and an edit made on engine 2 is kept.

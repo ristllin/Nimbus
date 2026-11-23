@@ -10,7 +10,6 @@ namespace agent {
 namespace {
 
 const char kCompactCtlPath[] = "/data/compact_ctl.txt";
-const char kChatsumPath[] = "/data/chatsum.txt";
 
 std::string readWhole(const char* path) {
   File f = LittleFS.open(path, FILE_READ);
@@ -30,6 +29,5 @@ plain::TextIO textIO(const char* path, const char* tag) {
 }  // namespace
 
 plain::TextIO deviceCompactCtlIO() { return textIO(kCompactCtlPath, "compact_ctl"); }
-plain::TextIO deviceChatsumIO() { return textIO(kChatsumPath, "chatsum"); }
 
 }  // namespace agent

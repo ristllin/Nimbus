@@ -38,7 +38,8 @@
 //   - the arena sized for the head (tx::arenaBytesFor of its budget, about 1.1 MB for Sonnet),
 //     not the 1,728 KB constant;
 //   - compaction installed (plain::installCompaction): the summarizer is the head host's small
-//     model on the same transport; the control and chatsum files are the binding's TextIO;
+//     model on the same transport; the control file is the binding's TextIO (no chatsum mirror:
+//     engine 2 never writes the earlier engine's fold record, lane E2-FIX2B finding P5);
 //   - the suppression seam (installSuppression), the money guard (TurnSetup::cost from the head's
 //     price row; no price row: boot refuses, fail closed) and one ChatBreaker;
 //   - the seen index rebuilt from the filled arena after boot (RB-TG1);
@@ -75,7 +76,6 @@ struct ChatBindingDeps {
   std::function<std::string()> key;              // the head's key, read at render time, never stored
   std::function<std::string(const nimbus::orch::Principal&)> pinnedNotes;   // null: none
   TextIO compactCtl;                             // unset: kept in RAM
-  TextIO chatsum;                                // unset: no mirror
   nimbus::orch::SeenIndex* seen = nullptr;       // null: no rebuild (not a Telegram chat)
   std::function<void(const char* line)> log;     // one line each; null: silent
   // Lane E2-TOOLS: a tool whose result is outside content (web search); its outputs taint the turn
@@ -574,7 +574,6 @@ class ChatBinding {
       if (d_.sendPart) (void)d_.sendPart(chat, text);
     };
     c.ctl = d_.compactCtl;
-    c.chatsum = d_.chatsum;
     c.headKey = headKey();
     c.dayStartMin = cfg_.dayStartMin;
     return c;

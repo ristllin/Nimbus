@@ -367,7 +367,6 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   };
   d.pinnedNotes = [](const nimbus::orch::Principal& who) { return notesdev::pinnedNotesFor(who); };
   d.compactCtl = deviceCompactCtlIO();
-  d.chatsum = deviceChatsumIO();
   if (!localChat(chatId)) d.seen = &telegram::seenIndex();
   d.log = [](const char* line) { alog(line); };
   // Lane E2-TOOLS: the files a person may read, for the request. Lane E2-FSAFE: a call that read outside
