@@ -6,6 +6,7 @@
 
 #include "nimbus/orch/day_start.h"
 #include "nimbus/orch/tx/photo_text.h"
+#include "nimbus/orch/tx/result_text.h"
 
 #include <ArduinoJson.h>
 
@@ -22,14 +23,9 @@ namespace {
 
 // ---- templates (model-text class "stub templates") ----------------------------------------
 constexpr const char kStubOpen[] = "[stub ";
-constexpr const char kViewHintOpen[] = " ... (full: view id=r";
-// E2-VERB: a stub made on the overflow path names the call that brings the bytes back.
-constexpr const char kAgainOpen[] = " ... (not shown in full to fit the request; ";
-constexpr const char kAgainClose[] = " reads it again)";
 constexpr const char kArgMid[] = "B sha:";
 constexpr const char kArgNotContent[] = ": an argument sent earlier, not content; ";
 constexpr const char kArgFile[] = " shows the file";
-constexpr const char kNoCardHint[] = " ... (full result not kept: no storage card)";
 constexpr const char kOutsideMid[] = "B outside content, not shown: ";
 constexpr const char kNoCardOutside[] = "full result not kept: no storage card";
 constexpr const char kNoClock[] = "--:--";
@@ -304,10 +300,14 @@ Status stubText(const StubFacts& f, std::string& out) {
   }
   if (isHex8(f.sha8)) s += " sha8=" + f.sha8;
   s += "] ";
-  const std::string tail = f.noCard            ? std::string(kNoCardHint)
-                           : !f.again.empty()  ? kAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kAgainClose
-                           : f.bound.view      ? kViewHintOpen + q + ")"
-                                               : std::string(" ...");   // E2-FIX5: no call reads it again
+  // Lane E2-FIX9: the tail says the result was shown earlier and is not attached now (the bench's head read a stub's
+  // preview as all the tool had returned and withdrew its correct answers), then the way back: view when bound
+  // (the bytes the head saw), else a file read's call (E2-VERB), else none (E2-FIX5); no card: not kept.
+  std::string tail = std::string(kResultTailOpen) + kPhotoNotAttached;
+  if (f.noCard) tail += kResultNoCard;
+  else if (f.bound.view) tail += kResultViewOpen + q + kPhotoViewClose;
+  else if (!f.again.empty()) tail += kResultAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kPhotoViewClose;
+  tail += kResultTailClose;
   const size_t room = kStubMaxBytes > s.size() + tail.size() ? kStubMaxBytes - s.size() - tail.size() : 0;
   appendLine(s, f.preview, std::min(kStubPreviewBytes, room));
   s += tail;

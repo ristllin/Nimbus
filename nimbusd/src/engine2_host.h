@@ -58,6 +58,7 @@ struct Engine2Options {
   std::function<uint16_t()> dayStartMin;
   std::string timeZone;                              // IANA name for the system block ("" = none)
   nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;   // the owner's pinned profile
+  uint32_t bodyCapLimit = 0;   // lane E2-FIX9: a test rig's smaller request body cap (NIMBUSD_E2_BODY_CAP); 0: none
   // A reply of the running turn, to the chat it came from (the web ring, Telegram).
   std::function<void(const std::string& chat, const std::string& text)> deliver;
   agent::HttpTransport* transport = nullptr;         // null: the host's own libcurl transport (tests script one)
@@ -119,6 +120,7 @@ class Engine2Host {
     c.tzNow = [this] { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); };
     c.dayStartMin = o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin;
     c.profile = o_.profile;
+    c.bodyCapLimit = o_.bodyCapLimit;
     c.stablePrefix = true;   // lane E2-CACHE: one long conversation, written to in clusters
     PlainRigBindings b;
     b.platform = &platform_;

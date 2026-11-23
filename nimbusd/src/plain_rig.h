@@ -91,6 +91,7 @@ struct PlainRigConfig {
   // plain::EngineDeps::stablePrefix (lane E2-CACHE): the owner's conversation keeps its system blocks
   // frozen between the listed events and its stable cache points for 1 hour. Off by default.
   bool stablePrefix = false;
+  uint32_t bodyCapLimit = 0;                   // plain::TurnSetup::bodyCapLimit (test rigs only; 0: the head's)
 };
 
 // How a turn ended, from the host's side. The engine decides every owner-facing byte; the
@@ -271,6 +272,7 @@ class PlainRig {
     out.wire = b_.wire;
     out.storedRounds = cfg_.storedRounds;
     out.qualified = cfg_.qualified;
+    out.bodyCapLimit = cfg_.bodyCapLimit;
     if (b_.setup) b_.setup(turn, out);
     return plain::Status::success();
   }

@@ -155,13 +155,15 @@ struct Convo {
       if (c == '\n') ++n;
     return n;
   }
-  // The PRD's internal stub, '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] <first 200 B> ... (full: view id=r<q>)'.
+  // The PRD's internal stub, '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] <first 200 B> ... (shown earlier in this
+  // conversation; not attached to this request; view id=r<q> shows it again)' (lane E2-FIX9).
   static std::string internalStub(const std::string& tool, uint64_t q, const std::string& payload) {
     std::string first = payload.substr(0, 200);
     for (char& c : first)
       if (c == '\n') c = ' ';
     return "[stub " + tool + " r" + std::to_string(q) + " " + std::to_string(payload.size()) + "B " +
-           std::to_string(lineCount(payload)) + "L 13:02] " + first + " ... (full: view id=r" + std::to_string(q) + ")";
+           std::to_string(lineCount(payload)) + "L 13:02] " + first + " ... (shown earlier in this conversation; not attached to this request; view id=r" + std::to_string(q) +
+           " shows it again)";
   }
 };
 

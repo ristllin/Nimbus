@@ -106,6 +106,9 @@ struct TurnSetup {
   bool qualified = false;            // qualified on engine 2: routing and truth mode only, never the window
   uint16_t dayStartMin = kDayStartDefaultMin;   // the device's day start (TurnCtx::dayStartMin)
   TurnCeiling ceiling;               // an unattended turn's own bounds (RB-U1a); none by default
+  // A test rig's smaller request body cap, bytes (lane E2-FIX9: the overflow ladder on a real provider at a
+  // small cost); 0: the head's own (tx::HeadBudget::bodyCap). Never larger than the head's.
+  uint32_t bodyCapLimit = 0;
 };
 using TurnSetupFn = std::function<Status(const TurnCtx& turn, TurnSetup& out)>;
 // One delivery (plain/deliver.h); unset: deliverTurn over the channel. A test or a host may

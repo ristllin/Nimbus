@@ -542,7 +542,7 @@ class TurnRun {
     if (byDialect)
       agent::hlog::logf("plain(%s): host %s is not a known provider: sized by its dialect as %s", t_.ctx.chatKey.c_str(),
                         (t_.setup.head.host.empty() ? t_.ctx.host : t_.setup.head.host).c_str(), key.host.c_str());
-    t_.bodyCap = b.bodyCap;
+    t_.bodyCap = t_.setup.bodyCapLimit ? std::min(b.bodyCap, t_.setup.bodyCapLimit) : b.bodyCap;
     t_.messageCap = std::max<uint32_t>(b.messageCap, tx::kInlineMessageCap);
     if (b.bulkWholeCap) t_.bulkWholeCap = b.bulkWholeCap;
     t_.ctx.profile = b.profile;
@@ -1029,8 +1029,9 @@ class TurnRun {
     // "too long" it is the one compaction before the one retry (ruling 106 item 4).
     if (compactInTurn()) return true;
     bool climbed = false;
-    if (over && !l.closedThrough && closedBulkAbovePointer()) {
-      l.closedThrough = c_.lastClosedQ;   // (1) every closed turn as stubs
+    const uint64_t closedTo = over && closedBulkAbovePointer() ? closedStubThrough(ask) : 0;
+    if (closedTo > l.closedThrough) {
+      l.closedThrough = closedTo;   // (1) the closed turns' bulk as stubs, oldest first, as far as needed
       climbed = true;
     } else if (over && openBulkBelow(rungTwoThrough())) {
       l.stubThrough = rungTwoThrough();   // (2) this turn's bulk older than the newest two rounds
@@ -1072,17 +1073,43 @@ class TurnRun {
     return false;
   }
 
-  // Tier-2 bulk or a long call argument of a closed turn shown whole above the pointer: what rung 1
-  // would stub (lane E2-VERB: long arguments stay whole until the overflow path stubs them).
+  // Tier-2 bulk or a long call argument of a closed turn shown whole above the pointer and rung 1's line: what
+  // rung 1 would stub (lane E2-VERB: long arguments stay whole until the overflow path stubs them).
   bool closedBulkAbovePointer() const {
     tx::Item& it = t_.read;
+    const uint64_t from = std::max(c_.head.stub, t_.ladder.closedThrough);
     for (size_t i = 0; i < d_.arena->count(); ++i) {
       tx::ArenaEntry e;
       if (!d_.arena->header(i, e).ok() || (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call)) continue;
-      if (e.q <= c_.head.stub || e.q > c_.lastClosedQ || !d_.arena->get(i, it).ok()) continue;
+      if (e.q <= from || e.q > c_.lastClosedQ || !d_.arena->get(i, it).ok()) continue;
       if (e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk) return true;
     }
     return false;
+  }
+
+  // Rung 1's line (lane E2-FIX9, ruling 81: nothing leaves the request that does not have to): the closed turns'
+  // bulk results and long arguments become stubs oldest first, only until what they free covers what the body is
+  // over its cap (each counted as its text, a lower bound of what the wire frees: escapes only add), with a
+  // margin; the next climb goes further when that was not enough. The last closed item when the size is not known.
+  uint64_t closedStubThrough(const ClimbAsk& ask) const {
+    static constexpr size_t kMargin = 1024;
+    if (ask.bodyBytes <= ask.bodyCap) return c_.lastClosedQ;
+    const size_t need = ask.bodyBytes - ask.bodyCap + kMargin;
+    const uint64_t from = std::max(c_.head.stub, t_.ladder.closedThrough);
+    tx::Item& it = t_.read;
+    size_t freed = 0;
+    uint64_t to = from;
+    for (size_t i = 0; i < d_.arena->count() && freed < need; ++i) {
+      tx::ArenaEntry e;
+      if (!d_.arena->header(i, e).ok() || (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call)) continue;
+      if (e.q <= from || e.q > c_.lastClosedQ || !d_.arena->get(i, it).ok()) continue;
+      const bool bulk = e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk;
+      if (!bulk) continue;
+      const size_t whole = e.kind == tx::ItemKind::Call ? it.args.size() : shownBytes(it);
+      freed += whole > it.st.size() ? whole - it.st.size() : 0;
+      to = e.q;
+    }
+    return to;
   }
 
   // What one stored item adds to the request, at least: the text it shows, with no wire's

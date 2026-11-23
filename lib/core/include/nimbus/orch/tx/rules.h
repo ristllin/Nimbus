@@ -284,7 +284,7 @@ Status visiblePhotos(const PhotoFacts& facts, std::vector<std::string>& out);
 
 enum class LadderRung : uint8_t {
   None = 0,
-  StubClosedTurns = 1,   // (1) stub all closed turns
+  StubClosedTurns = 1,   // (1) closed turns' bulk as stubs, oldest first, as far as the cap needs (E2-FIX9)
   StubOldBulk = 2,       // (2) this turn's bulk older than the newest two rounds; photos past 4
   OmitOldTurns = 3,      // (3) one omission line, never the newest 6 owner turns
   SizeGuard = 4,         // (4) the size guard trips

@@ -1047,7 +1047,9 @@ static void test_no_template_names_a_tool_that_is_not_bound() {
         searchSeen += namesWord(t, "search");
       }
       // The neighbor: a bound tool is still named (the way back turns on by itself).
-      TEST_ASSERT_EQUAL(viewOn ? 7u : 0u, viewSeen);   // internal, two outside, long argument, long text, two photos
+      // Two internal (a file read's names view too when bound, lane E2-FIX9), two outside, long argument, long text,
+      // two photos.
+      TEST_ASSERT_EQUAL(viewOn ? 8u : 0u, viewSeen);
       TEST_ASSERT_EQUAL(searchOn ? 4u : 0u, searchSeen);   // two omission lines, the import note, kNotLoaded
     }
   TEST_ASSERT_FALSE(plain::boundTools(nullptr).search || plain::boundTools(nullptr).view);

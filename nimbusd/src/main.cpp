@@ -24,11 +24,14 @@
 //   NIMBUSD_SUB_PRIORITY, NIMBUSD_ORCH_HOST, NIMBUSD_TOOL_LOOP (1),
 //   TELEGRAM_BOT_TOKEN, OPENAI_API_KEY / ANTHROPIC_API_KEY / MISTRAL_API_KEY,
 //   TAVILY_API_KEY, TZ, NIMBUSD_ENGINE (1; 2 runs the owner chat on engine 2, Claude heads
-//   only), NIMBUSD_E2_PROFILE (the owner's pinned engine-2 profile, "" = full).
+//   only), NIMBUSD_E2_PROFILE (the owner's pinned engine-2 profile, "" = full), NIMBUSD_E2_BODY_CAP
+//   (with NIMBUSD_TEST_CLOCK=1 only: a smaller request body cap in bytes, so a test reaches the overflow
+//   ladder at a small cost).
 //   NIMBUSD_TG_CHAT_ID is LEGACY: an optional one-time seed of
 //   the Telegram allowlist, which the owner manages in the web app (CUM-459).
 #include <atomic>
 #include <csignal>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -169,6 +172,8 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   o.timeZone = tz.empty() ? cfg.get("TZ") : tz;
   o.profile = cfg.get("NIMBUSD_E2_PROFILE").empty() ? nimbus::orch::tx::kDefaultProfile
                                                       : nimbus::orch::tx::profileOf(cfg.get("NIMBUSD_E2_PROFILE"));
+  if (cfg.get("NIMBUSD_TEST_CLOCK") == "1")   // lane E2-FIX9: test rigs only
+    o.bodyCapLimit = (uint32_t)std::strtoul(cfg.get("NIMBUSD_E2_BODY_CAP").c_str(), nullptr, 10);
   o.deliver = std::move(deliver);
   o.chatId = nimbusd::kWebChatId;
   o.loops = &rig.routines();   // lane E2-SCHED: the schedule tool and the routines' fires

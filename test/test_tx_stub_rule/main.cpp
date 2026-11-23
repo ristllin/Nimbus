@@ -39,12 +39,16 @@ bool validUtf8(const std::string& s) {
   return true;
 }
 
-// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] ... (full: view id=r<q>)',
-// one line, at most 400 B, valid UTF-8.
+// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] ... (shown earlier in this conversation;
+// not attached to this request; view id=r<q> shows it again)' (lane E2-FIX9), one line, at most 400 B, valid UTF-8.
+std::string viewTail(uint64_t q) {
+  return " ... (shown earlier in this conversation; not attached to this request; view id=r" + std::to_string(q) +
+         " shows it again)";
+}
 bool internalStubOk(const tx::StubFacts& f, const std::string& s, std::string& why) {
   const std::string head = "[stub " + f.tool + " r" + std::to_string(f.q) + " " + std::to_string(f.bytes) + "B " +
                            std::to_string(f.lines) + "L " + f.hhmm + "] ";
-  const std::string tail = " ... (full: view id=r" + std::to_string(f.q) + ")";
+  const std::string tail = viewTail(f.q);
   if (s.rfind(head, 0) != 0) why = "does not start with '" + head + "': " + s.substr(0, 80);
   else if (s.size() < tail.size() || s.compare(s.size() - tail.size(), tail.size(), tail) != 0)
     why = "does not end with the view hint '" + tail + "'";
@@ -102,20 +106,20 @@ std::vector<std::string> previews() {
 void test_checker_rejects_wrong_internal_stubs() {
   const tx::StubFacts f = internalFacts("hello");
   std::string why;
-  TEST_ASSERT_TRUE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] hello ... (full: view id=r42)", why));
-  const char* bad[] = {
+  TEST_ASSERT_TRUE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] hello" + viewTail(42), why));
+  const std::string bad[] = {
       "[stub read_file r42 15204B 310L 13:02] hello",                                  // no view hint
-      "[stub read_file r43 15204B 310L 13:02] hello ... (full: view id=r42)",          // wrong q
-      "[stub read_file r42 15204B 310L 13:02] hel\nlo ... (full: view id=r42)",        // two lines
-      "[stub read_file r42 15204B 310L 13:02] \xC3 ... (full: view id=r42)",           // cut UTF-8
+      "[stub read_file r43 15204B 310L 13:02] hello" + viewTail(42),                   // wrong q
+      "[stub read_file r42 15204B 310L 13:02] hel\nlo" + viewTail(42),                 // two lines
+      "[stub read_file r42 15204B 310L 13:02] \xC3" + viewTail(42),                    // cut UTF-8
+      "[stub read_file r42 15204B 310L 13:02] hello ... (full: view id=r42)",          // the old tail (E2-FIX9)
   };
-  for (const char* s : bad) {
+  for (const std::string& s : bad) {
     why.clear();
-    TEST_ASSERT_FALSE_MESSAGE(internalStubOk(f, s, why), s);
+    TEST_ASSERT_FALSE_MESSAGE(internalStubOk(f, s, why), s.c_str());
   }
   why.clear();
-  TEST_ASSERT_FALSE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] " + std::string(400, 'z') +
-                                         " ... (full: view id=r42)", why));
+  TEST_ASSERT_FALSE(internalStubOk(f, "[stub read_file r42 15204B 310L 13:02] " + std::string(400, 'z') + viewTail(42), why));
 }
 
 void test_checker_rejects_leaking_outside_stubs() {
@@ -195,7 +199,14 @@ void test_file_tool_stub_names_path_and_sha() {
   f.again = tx::wayBack("read_file", R"({"path":"notes/boat.md","offset":32761,"limit":4000})");
   TEST_ASSERT_EQUAL_STRING("read_file path=notes/boat.md offset=32761 limit=4000", f.again.c_str());
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.find("(not shown in full to fit the request; read_file path=notes/boat.md offset=32761 limit=4000 reads it again)") != std::string::npos, s.c_str());
+  // Lane E2-FIX9: with view bound the stub names view (the bytes the head was shown, not the file as it is now).
+  TEST_ASSERT_TRUE_MESSAGE(s.find(viewTail(42)) != std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  f.bound.view = false;   // no view: the file read's call
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.find(" ... (shown earlier in this conversation; not attached to this request; read_file "
+                                  "path=notes/boat.md offset=32761 limit=4000 shows it again)") != std::string::npos, s.c_str());
   TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
   TEST_ASSERT_TRUE(tx::looksLikeStub(s));
   TEST_ASSERT_EQUAL_STRING("", tx::wayBack("calc", R"({"path":"notes/boat.md"})").c_str());
@@ -485,7 +496,8 @@ void test_rules_no_card_stub_says_not_kept() {
   f.noCard = true;
   std::string s;
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_EQUAL_STRING("[stub read_file r42 15204B 310L 13:02] abc ... (full result not kept: no storage card)",
+  TEST_ASSERT_EQUAL_STRING("[stub read_file r42 15204B 310L 13:02] abc ... (shown earlier in this conversation; not "
+                           "attached to this request; full result not kept: no storage card)",
                            s.c_str());
   f.hhmm = "";
   f.noCard = false;
@@ -787,7 +799,7 @@ void test_rules_fields_cannot_forge_the_frame() {
   // Line and paragraph separators and bidi controls in a preview; a cut sequence at its end.
   tx::StubFacts u = internalFacts("a\xE2\x80\xA8" "b\xE2\x80\xA9" "c\xC2\x85" "d\xE2\x80\xAE" "e\xE2\x81\xA6" "f\xF0\x9F\x8D");
   TXB_OK(tx::stubText(u, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.find("] a b c d?e?f ... (full") != std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find("] a b c d?e?f ... (shown earlier") != std::string::npos, s.c_str());
   tx::StubFacts longTool = internalFacts("p");
   longTool.tool = std::string(80, 'k');
   TXB_OK(tx::stubText(longTool, s));

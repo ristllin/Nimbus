@@ -1278,3 +1278,22 @@ PC-0175, PC-0176: not used.
 - lane: RB-N3
 - prd: section 4 (tool 7)
 - why: lib/harness/include/nimbus/harness/plain/texts.h: search's description "Up to 5 hits, newest first" becomes "Up to 12 hits, best first", as lane E2-SRCH2 binds it. Planned work, not a fix.
+### PC-0212: a result's stub says it was shown earlier and is not attached, then the call that reads it again (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 158 -> 217
+- sha8: 3d2be4da -> 57e1e5de
+- lane: E2-FIX9
+- prd: section 2 (the stub rule: a stub names the call that brings its bytes back), AGENTS.md rule 9
+- why: lib/core/include/nimbus/orch/tx/result_text.h, the words tx::stubText (lib/core/src/orch_tx_rules.cpp) ends an internal result's stub with, moved out of orch_tx_rules.cpp (which neither catalog reads) so the catalog reads them: ' ... (' then photo_text.h's "shown earlier in this conversation; not attached to this request" (E2-FIX4's words, PC-0189), then "; view id=r" <q> " shows it again" when the engine bound view, else "; " <a file read's read_file call> " shows it again", else nothing; with no card "; full result not kept: no storage card"; then ')'. The old tails were " ... (full: view id=r<q>)" and " ... (not shown in full to fit the request; <read_file call> reads it again)". On the closing bench (lanes/E2-BENCH2/RESULT.md problem 2, evidence/bench/M-u2) the head read the stubs of its earlier file reads as "truncated previews" the tool had returned and told the person twelve correct answers were "not supported by the data". The new line is a fact: the result was shown earlier, it is not in this request. View is now named before read_file when both exist: it shows the bytes the head was shown, read_file the file as it is now. Red first, real model on the daemon (lanes/E2-FIX9/evidence/disown/): six files read, the last data row of each answered right, the request cut by the overflow ladder, then "Read data/log-6.csv in full again and tell me only the first data row." Sonnet withdrew its five earlier correct answers in 5 of 5 runs before the change (Haiku 0 of 5). Stubs are stored at capture: a stub stored before this change keeps its words.
+
+### PC-0213: the summarizer sees the summary so far ahead of its prompt (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 974 -> 974
+- sha8: 1855fed2 -> 1855fed2
+- lane: E2-FIX9
+- prd: section 3 (compaction: the summarizer answers changes to the summary so far), AGENTS.md rule 9
+- why: lib/harness/src/plain_compact.cpp askRung (no catalogued text changes; logged for the record): the summary so far is now the system block before the prompt, not after it. The prompt ends with its "nothing to change" answer, "=", and a summary whose first title came right after it read "=Facts and standing preferences:"; the summarizer wrote exactly that as its answer for a slice with nothing new, and it was never taken (the closing bench, lanes/E2-BENCH2/RESULT.md problem 2: four failures in a row, the conversation grew to 138.5k tokens). Probes on a captured second-compaction request (lanes/E2-FIX9/evidence/probes.jsonl, claude-haiku-5-5, structured form): with the summary after the prompt a slice of file work with nothing new was answered with the title in 2 of 12, with the summary first in 0 of 12 (every answer "=" or a change); slices with new facts were answered with the same changes either way. The parser also reads a title alone as no change (tx::SummaryEdits::frame). PC-0214: not used.
