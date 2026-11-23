@@ -169,12 +169,21 @@ struct SummaryEdits {
   size_t unread = 0;     // lines that are no change (prose, a rewrite, a Files line, an unknown op)
   bool none = false;     // the answer says "=": nothing to change
   size_t numbered = 0;   // adds whose numbers were read as the answer's own numbering and left out
+  // Lines that repeat a line of the summary's own frame and hold no fact (lane E2-FIX9): a section title
+  // or a device line, alone, with or without one leading change sign or its ':' ("=Facts and standing
+  // preferences:", the shape a summarizer writes for "nothing to change" when the summary follows the
+  // prompt's last "="). Neither a change nor unread: they name no line, so they change nothing.
+  size_t frame = 0;
+  // The answer is taken: some change, or "=", or only frame lines (nothing unread). Anything else (prose,
+  // a rewrite) is never taken as the summary.
+  bool taken() const { return !edits.empty() || none || (frame && !unread); }
 };
 // The summarizer's answer as changes, one per line: "+F <text>", "+D", "+Q", "+O" add; "=Q3 <text>"
 // replaces; "-O4" drops; "=" alone: nothing. Leading spaces and a '*' bullet are skipped, letters may
 // be lower case. Digits right after an add's letter are its text ("+Q12 eggs", "+F2026-11-04 ..."), except
 // in an answer that numbers all its adds from 1 ("+F1 a", "+F2 b", "+D1 c"; lane E2-CMP's probes): there the
 // number and its separator are left out and counted in `numbered` (lane E2-FIX7).
+// A line of the summary's frame (a title, kArchived, kNothingYet) is counted in `frame` and changes nothing.
 // Never fails: what it cannot read is counted in `unread`.
 SummaryEdits parseSummaryEdits(const std::string& answer);
 // Apply `edits` in order. An add appends a new line (a text already in its section is not added

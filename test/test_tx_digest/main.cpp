@@ -1457,13 +1457,14 @@ void test_every_character_of_an_add_after_its_letter_is_stored() {
 std::string randomAnswer(std::mt19937& rng, const tx::Summary& s, int round) {
   const char ops[] = "+=-";
   const char letters[] = "FDQOPx";
-  const char* fixed[] = {"Nothing to change.\n", "=Facts and standing preferences:\n"};
+  const char* fixed[] = {"Nothing to change.\n", "=Facts and standing preferences:\n", "Decisions:\n",
+                         "+Open items\n", "* -Files changed:\n", "=quantities and dates as stated:\n"};
   std::string answer;
   for (int k = (int)(rng() % 9); k > 0; --k) {
     const int form = (int)(rng() % 10);
     const uint32_t id = 1 + (uint32_t)(rng() % (s.nextId() + 4));
     const char op = ops[rng() % 3], letter = letters[rng() % 6];
-    if (form < 2) answer += fixed[form];
+    if (form < 2) answer += fixed[form == 1 ? 1 + rng() % 5 : 0];
     else if (form == 2) answer += std::string(1, op) + letter + "\n";
     else answer += std::string(1, op) + letter + (op == '+' && rng() % 2 ? "" : std::to_string(id)) +
                    (op == '-' ? "" : " r" + std::to_string(round) + " " + std::string(rng() % 300, 'w')) + "\n";
@@ -1481,6 +1482,45 @@ void expectKeptOrArchived(const tx::Summary& before, const tx::Summary& now, con
   }
 }
 
+// Lane E2-FIX9: a line of the summary's own frame (a title or a device line, alone, after at most one change sign,
+// with or without ':', any case) is no change and names no line; with nothing else it is a whole answer, beside
+// changes it is ignored, beside a rewrite's lines the answer is still not taken. The bench's answer, red before.
+void test_a_frame_line_is_no_change_and_never_a_line() {
+  for (const char* a : {"=Facts and standing preferences:", "=Facts and standing preferences", "Decisions:", "+Open items",
+                        "* -Files changed:", "=QUANTITIES AND DATES AS STATED:", "  =Decisions:  ",
+                        "=Older lines of this summary were archived; search finds what was said.", "Nothing to keep yet."}) {
+    const tx::SummaryEdits e = tx::parseSummaryEdits(a);
+    TEST_ASSERT_TRUE_MESSAGE(e.taken(), a);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)e.edits.size(), a);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)e.frame, a);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)e.unread, a);
+  }
+  const tx::SummaryEdits both = tx::parseSummaryEdits("=Facts and standing preferences:\n+F The boat is named Tern.\nDecisions:");
+  TEST_ASSERT_TRUE(both.taken());
+  TEST_ASSERT_EQUAL(1, (int)both.edits.size());
+  TEST_ASSERT_EQUAL(2, (int)both.frame);
+  TEST_ASSERT_EQUAL(0, (int)both.unread);
+  // A rewrite that opens with a title is still never taken: its other lines are unread.
+  const tx::SummaryEdits rewrite = tx::parseSummaryEdits("=Facts and standing preferences:\nF1 The boat is named Tern.");
+  TEST_ASSERT_FALSE(rewrite.taken());
+  // Not a frame line: a title with text after it, a title cut short, or an unknown title.
+  for (const char* a : {"=Facts and standing preferences: the boat is red", "=Facts", "Notes:", "==Decisions:"}) {
+    const tx::SummaryEdits e = tx::parseSummaryEdits(a);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)e.frame, a);
+    TEST_ASSERT_FALSE_MESSAGE(e.taken(), a);
+  }
+  // Applied, a title-only answer changes nothing: every line byte for byte, nothing to the archive.
+  tx::Summary s = sampleSummary();
+  std::string before, after;
+  TXB_OK(tx::encodeSummary(s, before));
+  std::vector<tx::SummaryLine> left;
+  size_t unread = 0;
+  TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits("=Facts and standing preferences:").edits, nullptr, left, unread));
+  TXB_OK(tx::encodeSummary(s, after));
+  TEST_ASSERT_EQUAL_STRING(before.c_str(), after.c_str());
+  TEST_ASSERT_TRUE(left.empty());
+}
+
 void test_no_line_leaves_a_summary_without_going_to_the_archive() {
   std::mt19937 rng(2401);
   tx::Summary s = sampleSummary();
@@ -1488,8 +1528,10 @@ void test_no_line_leaves_a_summary_without_going_to_the_archive() {
     const tx::Summary before = s;
     std::vector<tx::SummaryLine> left;
     size_t unread = 0;
-    TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits(randomAnswer(rng, s, round)).edits, rng() % 2 ? framed : nullptr,
-                                 left, unread));
+    const tx::SummaryEdits edits = tx::parseSummaryEdits(randomAnswer(rng, s, round));
+    TXB_OK(tx::applySummaryEdits(s, edits.edits, rng() % 2 ? framed : nullptr, left, unread));
+    // Lane E2-FIX9: an answer taken with no change (titles alone, "=") leaves every line where it was.
+    if (edits.taken() && edits.edits.empty()) TEST_ASSERT_TRUE(left.empty() && s.lines.size() == before.lines.size());
     if (rng() % 3 == 0)
       tx::noteSummaryFile(s, "notes/f" + std::to_string(rng() % 4) + ".md", "Mon 23 Nov 2026 10:0" + std::to_string(rng() % 10),
                           rng() % 4 == 0, left);
@@ -1541,6 +1583,7 @@ int main(int, char**) {
   RUN_TEST(test_ids_are_not_reused_in_a_pass_and_files_match_exactly);
   RUN_TEST(test_digits_after_an_adds_letter_are_kept_unless_the_answer_numbers_its_adds);
   RUN_TEST(test_every_character_of_an_add_after_its_letter_is_stored);
+  RUN_TEST(test_a_frame_line_is_no_change_and_never_a_line);
   RUN_TEST(test_no_line_leaves_a_summary_without_going_to_the_archive);
   return UNITY_END();
 }

@@ -1088,8 +1088,12 @@ bool CompactDriver::held(const IdleCtx& ctx, const CompactCtl::Chat& chat) {
     endManual(texts::device_notes::kCompactFailed);
     return true;
   }
-  // A wait longer than the longest one was set by a clock that ran ahead: it does not hold.
-  const bool waits = chat.next > ctx.now && chat.next <= ctx.now + compactWaitS(UINT32_MAX);
+  // A wait longer than the longest one was set by a clock that ran ahead: it does not hold. Lane E2-FIX9: nor does
+  // any wait for a turn that opens over the due mark (or a request that does not fit): it tries again, inside
+  // kCompactUrgentMs, at every turn until one succeeds, instead of growing for hours; idle steps keep the waits,
+  // and the daily count holds for both.
+  const bool urgent = ctx.urgency != Urgency::None;
+  const bool waits = !urgent && chat.next > ctx.now && chat.next <= ctx.now + compactWaitS(UINT32_MAX);
   return waits || ctl_.paid >= kCompactPaidPerDay;
 }
 
@@ -1327,9 +1331,14 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   turn.dialect = rung.dialect;
   turn.startedAt = now;
   turn.startedMs = d.platform->nowMs ? d.platform->nowMs() : 0;
+  // The summary so far rides in the system text (the one message keeps under a line's cap), AHEAD of the prompt
+  // (lane E2-FIX9): the prompt ends with its "nothing to change" answer, "=", and a summary right after it read as
+  // "=Facts and standing preferences:", which the summarizer then wrote as its answer for a slice with nothing new
+  // (evidence/probes.jsonl: 2 of 12 with the summary after the prompt, 0 of 12 with it first). The blocks render in
+  // the order core, notes, digests; an empty one is left out.
   SystemBlocks system;
-  system.core = st::kPrompt;
-  system.digests = m.sofar;   // the summary so far beside the prompt: the one message keeps under a line's cap
+  system.core = m.sofar;
+  system.digests = st::kPrompt;
   const std::vector<ToolSpec> tools;
   RenderInput in;
   in.turn = &turn;
@@ -1525,12 +1534,15 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, st
   Status s = baseFor(sum, baseText, legacy);
   if (!s.ok()) return s;
   const tx::SummaryEdits edits = tx::parseSummaryEdits(answer);
-  if (edits.edits.empty() && !edits.none) {   // prose or a rewrite: never taken as the summary
+  if (!edits.taken()) {   // prose or a rewrite: never taken as the summary
     hlog::logf("compact(%s): the answer held no change (%u lines unread): not taken", d_.chatKey.c_str(),
                (unsigned)edits.unread);
     hlog::logf("compact(%s): answer not taken (no change line, %u B): %s", d_.chatKey.c_str(), (unsigned)answer.size(), answerHead(answer).c_str());
     return Status::fail(Err::InvalidArgument, kNotTakenChanges);
   }
+  if (edits.frame && edits.edits.empty() && !edits.none)   // lane E2-FIX9: "=Facts and standing preferences:"
+    hlog::logf("compact(%s): the answer named %u summary titles and no change: nothing to change", d_.chatKey.c_str(),
+               (unsigned)edits.frame);
   if (edits.numbered)
     hlog::logf("compact(%s): %u adds numbered from 1: the numbers were read as ids", d_.chatKey.c_str(),
                (unsigned)edits.numbered);

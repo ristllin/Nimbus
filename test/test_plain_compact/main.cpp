@@ -82,9 +82,9 @@ struct TestWire : plain::WireCodec {
     body::BodyWriter w(out.body, &out.splices);
     w.beginObject().key("model").str(in.turn->model);
     if (in.maxTokens) w.key("max_tokens").unum(in.maxTokens);
-    w.key("system").beginArray().beginObject().key("type").str("text").key("text").str(in.system->core).endObject();
-    if (!in.system->digests.empty())   // the summary so far (lane RB-C3)
-      w.beginObject().key("type").str("text").key("text").str(in.system->digests).endObject();
+    w.key("system").beginArray();
+    for (const std::string* b : {&in.system->core, &in.system->digests})   // an empty block is left out, as the wires do
+      if (!b->empty()) w.beginObject().key("type").str("text").key("text").str(*b).endObject();
     w.endArray();
     w.key("messages").beginArray();
     for (size_t i = 0; i < in.items->count(); ++i) {
@@ -787,7 +787,7 @@ void test_the_request_is_the_summarizer_text_capped_at_its_block_under_the_psram
   TEST_ASSERT_EQUAL(0, agent::PsramFirstScope::depth());
   const sp::RequestView& v = c.model.last().view;
   TEST_ASSERT_EQUAL_UINT32(plain::kSummarizerMaxTokens, v.maxTokens);
-  TEST_ASSERT_EQUAL_STRING(plain::texts::summarizer::kPrompt, v.system().c_str());
+  TEST_ASSERT_EQUAL_STRING(plain::texts::summarizer::kPrompt, v.system().c_str());   // no summary yet: the prompt alone
   TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", v.model.c_str());
   TEST_ASSERT_EQUAL(1, (int)v.messages.size());
   TEST_ASSERT_TRUE(v.tools.empty());
@@ -2201,6 +2201,12 @@ const tx::SummaryLine* lineWith(const tx::Summary& s, const std::string& text) {
   return nullptr;
 }
 // The id of the line holding `text` in a request's summary so far (the system text), 0 when none.
+// The summary so far a summarizer request carried: the system block ahead of the prompt (lane E2-FIX9), "" when none.
+std::string sofarOf(const sp::Recorded& r) {
+  const std::vector<std::string>& b = r.view.systemBlocks;
+  return b.size() > 1 && b.back() == plain::texts::summarizer::kPrompt ? b[b.size() - 2] : std::string();
+}
+
 uint32_t idIn(const std::string& sofar, const std::string& text) {
   const size_t at = sofar.find(" " + text + "\n");
   if (at == std::string::npos) return 0;
@@ -2237,7 +2243,7 @@ void test_a_fact_survives_five_further_compactions_unless_the_owner_changed_it()
   int round = 0;
   std::vector<std::string> sofar, sent;
   c.model.respondWith([&](const sp::Recorded& r, size_t) {
-    sofar.push_back(r.view.systemBlocks.size() > 1 ? r.view.systemBlocks[1] : std::string());
+    sofar.push_back(sofarOf(r));
     sent.push_back(r.body);
     ++round;
     if (round == 1) return sp::say("+Q Paint: 3 liters bought on Sun 15 Nov 2026.\n+F The boat is named Tern.");
@@ -2289,7 +2295,7 @@ void test_a_line_no_answer_names_survives_every_compaction() {
       first = false;
       return sp::say("+O Renew the boat insurance before Mon 1 Feb 2027.");
     }
-    const std::string sofar = r.view.systemBlocks.size() > 1 ? r.view.systemBlocks[1] : std::string();
+    const std::string sofar = sofarOf(r);
     const uint32_t keep = idIn(sofar, "Renew the boat insurance before Mon 1 Feb 2027.");
     std::string a;
     for (int k = 0; k < 8; ++k) {
@@ -2583,7 +2589,7 @@ void test_the_budget_view_reports_every_part_in_tokens() {
 // ---- compaction first, in the engine (rulings 98 item 1, 105 item 3, 106 items 3 and 4; lane RB-C3) ----
 
 bool summarizerRequest(const sp::Recorded& r) {
-  return !r.view.systemBlocks.empty() && r.view.systemBlocks[0] == plain::texts::summarizer::kPrompt;
+  return !r.view.systemBlocks.empty() && r.view.systemBlocks.back() == plain::texts::summarizer::kPrompt;
 }
 // Three days of plain turns, 60 s apart within a day, whose rendered transcript passes the battery head's
 // H at full: the owner writes on right after the due mark, never leaving 120 s of quiet for an idle step.
@@ -2637,7 +2643,8 @@ void test_messages_right_after_the_mark_are_compacted_first_never_left_out() {
 }
 
 // Counter-test: a summarizer that fails never holds a turn up for more than its one attempt, and the
-// owner still gets his answer; the failure waits (the ladder's backoff) before the next turn asks again.
+// owner still gets his answer. Lane E2-FIX9: a conversation over the due mark tries again at EVERY turn open
+// (the bench's grew for hours behind the 10 min to 6 h waits), while the idle steps keep the ladder's wait.
 void test_a_failing_summary_at_turn_open_still_answers_the_owner() {
   txb::Battery b;
   b.summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::httpError(500); });
@@ -2648,15 +2655,30 @@ void test_a_failing_summary_at_turn_open_still_answers_the_owner() {
   TXB_OK(b.owner("one more", out));
   TEST_ASSERT_TRUE(out.delivered);
   TEST_ASSERT_EQUAL_STRING("ok", out.text.c_str());
-  // Its failures counted, and the ladder's wait holds the next turns (no retry at every turn open).
+  // Its failures counted and a wait set; the idle steps keep it, every turn open asks again.
   const plain::CompactCtl ctl = plain::CompactCtl::decode(b.compactCtl);
   TEST_ASSERT_EQUAL(1, (int)ctl.chats.size());
   TEST_ASSERT_TRUE(ctl.chats[0].fails >= plain::kCompactHeadTries);
   TEST_ASSERT_TRUE(ctl.chats[0].next > b.epoch);
-  const size_t asked = b.summarizer.requests().size();
+  size_t asked = b.summarizer.requests().size();
+  plain::IdleOutcome idle;
+  b.advance(200);
+  TXB_OK(b.idle(idle));
+  TEST_ASSERT_EQUAL_MESSAGE(asked, b.summarizer.requests().size(), "an idle step asked inside the ladder's wait");
+  for (int turn = 0; turn < 3; ++turn) {
+    b.advance(60);
+    TXB_OK(b.owner("and another", out));
+    TEST_ASSERT_TRUE(out.delivered);
+    TEST_ASSERT_TRUE_MESSAGE(b.summarizer.requests().size() > asked, "a turn over the due mark did not try again");
+    asked = b.summarizer.requests().size();
+  }
+  // Once the summarizer answers, the next turn open compacts and the conversation is back under the mark.
+  b.summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::say("+F The person keeps writing."); });
   b.advance(60);
-  TXB_OK(b.owner("and another", out));
-  TEST_ASSERT_EQUAL_MESSAGE(asked, b.summarizer.requests().size(), "a waiting failure was asked again at a turn open");
+  TXB_OK(b.owner("last one", out));
+  TEST_ASSERT_TRUE(out.delivered);
+  const plain::CompactCtl after = plain::CompactCtl::decode(b.compactCtl);
+  TEST_ASSERT_EQUAL_MESSAGE(0, (int)after.chats[0].fails, "the turn open after the summarizer answered compacted");
 }
 
 // Ruling 106 item 4: a provider's "too long" is answered by one compaction and one retry, then an honest
@@ -2806,6 +2828,48 @@ void test_outside_content_cannot_rewrite_the_owners_lines() {
 }
 
 
+// ---- lane E2-FIX9: the second and later compaction ------------------------------------------------------
+// The closing bench (lanes/E2-BENCH2/RESULT.md, problem 2): after the first compaction stored a summary with
+// sections, the summarizer answered "=Facts and standing preferences:" four times in a row (evidence: its
+// errlog-tail.txt lines 229 to 258), each answer not taken, and the conversation grew from 55k to 138.5k tokens.
+// The prompt ends with its "nothing to change" answer "=" and the summary's first title followed it; probes
+// (lanes/E2-FIX9/evidence/probes.jsonl) gave that shape for a slice with nothing new in 2 of 12, and never with
+// the summary ahead of the prompt. Red before: the answer is taken as "nothing to change" at the first request
+// (the summary byte for byte, thru moved), and the summarizer sees the summary ahead of the prompt.
+void test_a_title_alone_is_nothing_to_change_at_the_second_compaction() {
+  for (const char* answer : {"=Facts and standing preferences:", "=Facts and standing preferences", "Decisions:",
+                             "=quantities and dates as stated:\n=Open items:", "* =Files changed:"}) {
+    Chat c;
+    c.profile = c.head.profile = "full";
+    int round = 0;
+    std::vector<std::vector<std::string>> blocks;
+    c.model.respondWith([&](const sp::Recorded& r, size_t) {
+      blocks.push_back(r.view.systemBlocks);
+      ++round;
+      return sp::say(round == 1 ? std::string("+F The boat is named Tern.\n+D Paint the hull green.") : std::string(answer));
+    });
+    for (int d = 0; d < 4; ++d) c.day(-30 + d, 10, 3000, "a" + std::to_string(d));
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, compactNow(c));
+    std::string before;
+    TEST_ASSERT_TRUE(tx::encodeSummary(summaryOf(c), before).ok());
+    const uint64_t thru = c.head.thru;
+    for (int d = 0; d < 4; ++d) c.day(-20 + d, 10, 3000, "b" + std::to_string(d));
+    const size_t sent = c.model.requests().size();
+    TEST_ASSERT_EQUAL_MESSAGE(plain::CompactStep::Stored, compactNow(c), answer);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)(c.model.requests().size() - sent), "one request: the answer was taken");
+    TEST_ASSERT_TRUE(c.head.thru > thru);
+    std::string after;
+    TEST_ASSERT_TRUE(tx::encodeSummary(summaryOf(c), after).ok());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(before.c_str(), after.c_str(), "nothing to change: the summary byte for byte");
+    // The second request carried the summary so far ahead of the prompt; the first had only the prompt.
+    TEST_ASSERT_EQUAL(1, (int)blocks[0].size());
+    TEST_ASSERT_EQUAL(2, (int)blocks[1].size());
+    TEST_ASSERT_EQUAL_STRING(before.c_str(), blocks[1][0].c_str());
+    TEST_ASSERT_EQUAL_STRING(plain::texts::summarizer::kPrompt, blocks[1][1].c_str());
+    expectCovered(c, answer);
+  }
+}
+
 // ---- lane E2-CMP: the answer's form at the bench's size ------------------------------------------------
 // The bench (lanes/E2-BENCH/RESULT.md, problem 2) failed /compact twice on a 55k to 74k token chat: the
 // answer was one line that is neither a change nor "=". Probes on the same request shape
@@ -2847,7 +2911,7 @@ void test_nothing_to_change_is_a_whole_answer_in_the_structured_form() {
 // cause and first bytes are logged, and it is asked once more AT ONCE as free lines; that answer is taken.
 void test_an_answer_not_taken_is_asked_once_more_as_lines_and_logged() {
   agent::hlog::setSink(recordLog);
-  for (const char* bad : {kNothingProse, "=Facts and standing preferences:", "Summary: a boat and paint."}) {
+  for (const char* bad : {kNothingProse, "=Facts and standing preferences:\nF1 a boat and paint.", "Summary: a boat and paint."}) {
     gLogLines.clear();
     Chat c;
     threeDays(c);
@@ -3193,6 +3257,7 @@ int main(int, char**) {
   RUN_TEST(test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_error);
   RUN_TEST(test_the_dynamic_part_never_pushes_the_fixed_part_over_its_ceiling);
   RUN_TEST(test_outside_content_cannot_rewrite_the_owners_lines);
+  RUN_TEST(test_a_title_alone_is_nothing_to_change_at_the_second_compaction);
   RUN_TEST(test_nothing_to_change_is_a_whole_answer_in_the_structured_form);
   RUN_TEST(test_an_answer_not_taken_is_asked_once_more_as_lines_and_logged);
   RUN_TEST(test_two_answers_not_taken_fail_once_and_wait);

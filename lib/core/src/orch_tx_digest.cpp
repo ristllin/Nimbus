@@ -5,6 +5,7 @@
 #include "nimbus/orch/tx/digest.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -817,6 +818,26 @@ bool editOf(const std::string& raw, SummaryEdit& e, bool& none) {
   return textAfter(line, end, e.text);
 }
 
+// A line of the summary's own frame, alone (lane E2-FIX9): a section title or a device line, after at most one
+// change sign, with or without its ':' and in any case. It holds no fact and names no line.
+bool frameLine(const std::string& raw) {
+  std::string line = oneLine(changeLine(raw));
+  if (!line.empty() && (line[0] == '=' || line[0] == '+' || line[0] == '-')) line.erase(0, 1);
+  while (!line.empty() && (line.back() == ' ' || line.back() == ':')) line.pop_back();
+  while (!line.empty() && line[0] == ' ') line.erase(0, 1);
+  auto same = [&line](const char* frame) {
+    size_t n = std::strlen(frame);
+    while (n && frame[n - 1] == ':') --n;
+    if (line.size() != n) return false;
+    for (size_t i = 0; i < n; ++i)
+      if (std::tolower((unsigned char)line[i]) != std::tolower((unsigned char)frame[i])) return false;
+    return true;
+  };
+  for (const char* t : kTitles)
+    if (same(t)) return true;
+  return !line.empty() && (same(digest_text::kArchived) || same(digest_text::kNothingYet));
+}
+
 size_t sectionBytes(const Summary& s, size_t section) {
   size_t n = 0;
   for (const SummaryLine& l : s.lines)
@@ -968,6 +989,7 @@ SummaryEdits parseSummaryEdits(const std::string& answer) {
     bool none = false;
     if (editOf(line, e, none)) out.edits.push_back(e);
     else if (none) out.none = true;
+    else if (frameLine(line)) ++out.frame;
     else ++out.unread;
   }
   takeNumbering(out);
