@@ -256,8 +256,11 @@ bool CardFilesIo::adoptNoted(const Change& c, long long size, const std::string&
 
 // The index brought to the card for the noted file, nothing else (ruling 115 item 1): an entry whose
 // file is gone is dropped, an entry whose size or hash differs takes the card's size and an unknown
-// hash, a noted new file is adopted (adoptNoted). True when the index changed.
+// hash, a noted new file is adopted (adoptNoted). True when the index changed. Lane E2-FIX3 (finding
+// R3): nothing while the swap note still names the file (its restore from the backup failed this
+// boot): the entry keeps its person for the boot whose swap recovery puts the file back (as sync()).
 bool CardFilesIo::indexAsCard(const Change& c, const std::string& path, std::string& did) {
+  if (swapNoted(path)) return false;
   const long long now = card_.size(path);
   const FileEntry* e = store_.find(c.project, c.name);
   if (now < 0) return e && !card_.exists(path) && store_.remove(c.project, c.name);

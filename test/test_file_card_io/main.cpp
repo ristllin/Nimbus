@@ -55,9 +55,10 @@ struct FakeCard : orch::FileCard {
     if (++ops == cutAt) throw PowerCut{};
   }
   bool exists(const std::string& p) override { return files.count(p) || dirs.count(p); }
+  std::set<std::string> refuseRenameTo;   // targets whose rename the card refuses (E2-FIX3, R3)
   bool rename(const std::string& a, const std::string& b) override {
     step();
-    if (!files.count(a) || files.count(b)) return false;
+    if (!files.count(a) || files.count(b) || refuseRenameTo.count(b)) return false;
     files[b] = files[a];
     files.erase(a);
     return true;
@@ -845,6 +846,48 @@ static void test_read_file_on_a_skill_reads_the_skill_body() {
   TEST_ASSERT_FALSE(d.call("read_file", {{"path", "skills/none.md"}}, owner()).success);
 }
 
+// Lane E2-FIX3, finding R3 (ruling 116 item 4): a member's replace cut after his file went to the
+// backup and before the new copy took its name, and the card refusing the backup's restore at the
+// next boot. Before: that boot's note recovery dropped his entry (the file was gone), and the boot
+// after, which restored the file, adopted it with no owner: the device owner's. Now nothing moves
+// the entry while the swap note still names the file: it keeps its person through both boots.
+static void test_a_replace_whose_restore_failed_keeps_the_entry_with_its_person() {
+  const std::string full = std::string(kRoot) + "/mine/r.md";
+  int found = 0;
+  for (int k = 1; k < 64; k++) {
+    Device d;
+    assertOk(d.call("write_file", {{"path", "mine/r.md"}, {"content", "member's first copy\n"}}, member()));
+    d.card.cutAt = d.card.ops + k;
+    bool cut = false;
+    try {
+      (void)d.call("write_file", replaceArgs("mine/r.md", "member's second, longer copy\n"), member());
+    } catch (const PowerCut&) {
+      cut = true;
+    }
+    if (!cut) break;
+    const bool midSwap = !d.card.files.count(full) && d.card.files.count("/mem/files/.bak") &&
+                         d.card.files.count("/mem/files/.swapnote");
+    if (!midSwap) continue;
+    ++found;
+    d.card.cutAt = -1;
+    Device b;
+    b.card.refuseRenameTo.insert(full);   // the restore is refused at this boot
+    (void)b.bootFrom(d.card);
+    const orch::FileEntry* e = b.store.find("mine", "r.md");
+    TEST_ASSERT_NOT_NULL_MESSAGE(e, "the boot dropped the member's entry");
+    TEST_ASSERT_TRUE(b.store.ownedBy(*e, member().ns, false));
+    Device c;   // the next boot restores the file
+    (void)c.bootFrom(b.card);
+    TEST_ASSERT_EQUAL_STRING("member's first copy\n", c.onCard("mine/r.md").c_str());
+    e = c.store.find("mine", "r.md");
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_TRUE(c.store.ownedBy(*e, member().ns, false));
+    TEST_ASSERT_FALSE(c.store.ownedBy(*e, owner().ns, false));
+    TEST_ASSERT_TRUE(c.call("read_file", {{"path", "mine/r.md"}}, member()).success);
+  }
+  TEST_ASSERT_TRUE_MESSAGE(found > 0, "no cut point between the two renames");
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_write_read_append_edit_list_delete);
@@ -868,5 +911,6 @@ int main(int, char**) {
   RUN_TEST(test_a_failed_cut_back_keeps_its_bytes_over_a_note_the_card_kept);
   RUN_TEST(test_a_note_whose_clear_fails_causes_no_action_at_the_next_two_boots);
   RUN_TEST(test_a_torn_append_gets_its_line_end_at_boot);
+  RUN_TEST(test_a_replace_whose_restore_failed_keeps_the_entry_with_its_person);
   return UNITY_END();
 }
