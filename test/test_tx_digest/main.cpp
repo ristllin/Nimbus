@@ -1394,46 +1394,54 @@ void test_an_add_that_names_an_id_is_an_add() {
 // unknown ids, Files lines, empty texts, prose, rewrites), the device's file notes and budget fits, every line
 // the summary held before a pass is, after it, either in the summary with the same id and the same text or in
 // `left` (what goes to the archive) with its id and text. Nothing leaves silently.
-void test_no_line_leaves_a_summary_without_going_to_the_archive() {
-  std::mt19937 rng(2401);
+// One random answer: prose, a rewrite's first line, heads with no id or text, adds (with and without an id),
+// replaces and drops of known and unknown ids.
+std::string randomAnswer(std::mt19937& rng, const tx::Summary& s, int round) {
   const char ops[] = "+=-";
   const char letters[] = "FDQOPx";
+  const char* fixed[] = {"Nothing to change.\n", "=Facts and standing preferences:\n"};
+  std::string answer;
+  for (int k = (int)(rng() % 9); k > 0; --k) {
+    const int form = (int)(rng() % 10);
+    const uint32_t id = 1 + (uint32_t)(rng() % (s.nextId() + 4));
+    const char op = ops[rng() % 3], letter = letters[rng() % 6];
+    if (form < 2) answer += fixed[form];
+    else if (form == 2) answer += std::string(1, op) + letter + "\n";
+    else answer += std::string(1, op) + letter + (op == '+' && rng() % 2 ? "" : std::to_string(id)) +
+                   (op == '-' ? "" : " r" + std::to_string(round) + " " + std::string(rng() % 300, 'w')) + "\n";
+  }
+  return answer;
+}
+
+// Every line of `before` is in `now` with its id, section and text, or in `left` with its id and text.
+void expectKeptOrArchived(const tx::Summary& before, const tx::Summary& now, const std::vector<tx::SummaryLine>& left, int round) {
+  for (const tx::SummaryLine& was : before.lines) {
+    const tx::SummaryLine* is = lineOf(now, was.id);
+    bool ok = is && is->text == was.text && is->section == was.section;
+    for (const tx::SummaryLine& l : left) ok |= l.id == was.id && l.text == was.text;
+    TEST_ASSERT_TRUE_MESSAGE(ok, ("round " + std::to_string(round) + ": line " + std::to_string(was.id) + " left without the archive").c_str());
+  }
+}
+
+void test_no_line_leaves_a_summary_without_going_to_the_archive() {
+  std::mt19937 rng(2401);
   tx::Summary s = sampleSummary();
   for (int round = 0; round < 1500; ++round) {
     const tx::Summary before = s;
-    std::string answer;
-    const int lines = (int)(rng() % 9);
-    for (int k = 0; k < lines; ++k) {
-      const int form = (int)(rng() % 10);
-      const uint32_t id = 1 + (uint32_t)(rng() % (s.nextId() + 4));
-      const char op = ops[rng() % 3], letter = letters[rng() % 6];
-      if (form == 0) answer += "Nothing to change.\n";
-      else if (form == 1) answer += "=Facts and standing preferences:\n";
-      else if (form == 2) answer += std::string(1, op) + letter + "\n";   // no id, no text
-      else answer += std::string(1, op) + letter + (op == '+' && rng() % 2 ? "" : std::to_string(id)) +
-                     (op == '-' ? "" : " r" + std::to_string(round) + " " + std::string(rng() % 300, 'w')) + "\n";
-    }
     std::vector<tx::SummaryLine> left;
     size_t unread = 0;
-    TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits(answer).edits, rng() % 2 ? framed : nullptr, left, unread));
+    TXB_OK(tx::applySummaryEdits(s, tx::parseSummaryEdits(randomAnswer(rng, s, round)).edits, rng() % 2 ? framed : nullptr,
+                                 left, unread));
     if (rng() % 3 == 0)
       tx::noteSummaryFile(s, "notes/f" + std::to_string(rng() % 4) + ".md", "Mon 23 Nov 2026 10:0" + std::to_string(rng() % 10),
                           rng() % 4 == 0, left);
     TXB_OK(tx::fitSummary(s, 600 + rng() % 6000, left));
-    for (const tx::SummaryLine& was : before.lines) {
-      const tx::SummaryLine* now = lineOf(s, was.id);
-      const bool kept = now && now->text == was.text && now->section == was.section;
-      bool archived = false;
-      for (const tx::SummaryLine& l : left) archived |= l.id == was.id && l.text == was.text;
-      TEST_ASSERT_TRUE_MESSAGE(kept || archived, ("round " + std::to_string(round) + ": line " + std::to_string(was.id) +
-                                                  " left without the archive").c_str());
-    }
+    expectKeptOrArchived(before, s, left, round);
     std::string text;
     TXB_OK(tx::encodeSummary(s, text));
     tx::Summary back;
     TXB_OK(tx::parseSummary(text, back));
-    s = back;
-    if (s.lines.size() < 3) s = sampleSummary();
+    s = back.lines.size() < 3 ? sampleSummary() : back;
   }
 }
 

@@ -484,24 +484,27 @@ bool bytesOk(const agent::HttpRequest& r, const std::string& body, C& c) {
   return true;
 }
 
-bool envelope(JsonObjectConst root, C& c) {
-  if (root.isNull()) return c.fail("the body is not an object");
-  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "messages", "output_config"}, c, "body"))
-    return false;
-  if (std::string(root["model"] | "").empty()) return c.fail("model missing");
-  if (!root["max_tokens"].is<unsigned>() || (root["max_tokens"] | 0u) < 1) return c.fail("max_tokens missing or 0");
-  if (root["output_config"].isNull()) return true;
-  JsonVariantConst oc = root["output_config"];
+// output_config: an effort the API knows and/or (lane E2-CMP) a structured form
+// {"type":"json_schema","schema":{...}}, nothing else.
+bool outputConfigOk(JsonObjectConst oc, C& c) {
   if (oc["effort"].isNull() && oc["format"].isNull()) return c.fail("output_config holds neither effort nor format");
   const std::string e = oc["effort"] | "";
   if (!oc["effort"].isNull() && e != "low" && e != "medium" && e != "high" && e != "max") return c.fail("effort '" + e + "'");
-  // Lane E2-CMP: structured output is {"type":"json_schema","schema":{an object schema}}.
   if (!oc["format"].isNull()) {
     if (std::string(oc["format"]["type"] | "") != "json_schema" || !oc["format"]["schema"].is<JsonObjectConst>())
       return c.fail("output_config.format is not a json_schema");
     if (!onlyKeys(oc["format"], {"type", "schema"}, c, "output_config.format")) return false;
   }
   return onlyKeys(oc, {"effort", "format"}, c, "output_config");
+}
+
+bool envelope(JsonObjectConst root, C& c) {
+  if (root.isNull()) return c.fail("the body is not an object");
+  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "messages", "output_config"}, c, "body"))
+    return false;
+  if (std::string(root["model"] | "").empty()) return c.fail("model missing");
+  if (!root["max_tokens"].is<unsigned>() || (root["max_tokens"] | 0u) < 1) return c.fail("max_tokens missing or 0");
+  return root["output_config"].isNull() || outputConfigOk(root["output_config"], c);
 }
 
 // The whole request. `body` is the materialized body (photos spliced in).

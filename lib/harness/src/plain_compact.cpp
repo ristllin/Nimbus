@@ -1224,6 +1224,22 @@ struct RungMessage {
   const char* schema = nullptr;   // the answer's structured form (AnswerForm::Changes); null: free text
 };
 
+// One exchange's answer, taken or not (answerOf), and the structured form read back as lines.
+Status takeAnswer(const std::string& chatKey, const RungMessage& m, const ExchangeResult& r, bool cut, std::string& summary) {
+  if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {   // a provider without the form
+    hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", chatKey.c_str(),
+               (unsigned)r.errorLine.size(), answerHead(r.errorLine).c_str());
+    return Status::fail(Err::InvalidArgument, kNotTakenForm);
+  }
+  const Status s = answerOf(chatKey, r, cut, m.thinInput, summary);
+  if (!s.ok() || !m.schema) return s;
+  // The change list read back as lines. A text that is not that object (a host that ignored the form)
+  // is read as lines as it stands: the parser decides, and no request is paid twice for it.
+  std::string lines;
+  if (changeLinesOf(summary, lines)) summary = std::move(lines);
+  return s;
+}
+
 Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessage& m, uint64_t now,
                RungAnswer& ans) {
   const WireCodec* wire = rung.wire;
@@ -1268,16 +1284,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
     if (!s.ok()) return s;
     const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
     if (cut && cap != kSummarizerRetryMaxTokens) continue;
-    if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {   // a provider without the form
-      hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", d.chatKey.c_str(), (unsigned)r.errorLine.size(), answerHead(r.errorLine).c_str());
-      return Status::fail(Err::InvalidArgument, kNotTakenForm);
-    }
-    if (!(s = answerOf(d.chatKey, r, cut, m.thinInput, ans.summary)).ok() || !m.schema) return s;
-    // The change list read back as lines. A text that is not that object (a host that ignored the form)
-    // is read as lines as it stands: the parser decides, and no request is paid twice for it.
-    std::string lines;
-    if (changeLinesOf(ans.summary, lines)) ans.summary = std::move(lines);
-    return s;
+    return takeAnswer(d.chatKey, m, r, cut, ans.summary);
   }
   return Status::fail(Err::Io, "plain::CompactDriver::ask");
 }
