@@ -373,6 +373,61 @@ std::string existing(const Device& dev, uint32_t r) {
   return dev.store.empty() ? std::string() : dev.store[r % dev.store.size()].path;
 }
 
+// The head appends to, edits, overwrites or deletes a file the store holds (writes a new one if none).
+void changeExisting(Device& dev, std::mt19937& rng, Act a, const std::string& n) {
+  static const char* const kTool[] = {"append_file", "edit_file", "write_file", "delete_file"};
+  const std::string path = existing(dev, rng());
+  dev.pause(30 + rng() % 120);
+  const char* tool = path.empty() ? "write_file" : kTool[(int)a - (int)Act::AppendFile];
+  dev.say("1001", std::string(tool) + " " + n, {sp::call(tool, fileArgs(tool, path.empty() ? "notes/f" + n + ".md" : path))});
+}
+
+// The head saves a note, pinned or not.
+void noteAct(Device& dev, std::mt19937& rng, bool pin, const std::string& n) {
+  const std::string key = (pin ? "pin-" : "fact-") + n, flag = pin ? "true" : "false";
+  dev.pause(30 + rng() % 120);
+  dev.say("1001", (pin ? "remember pinned " : "remember ") + n,
+          {sp::call("note", "{\"op\":\"set\",\"key\":\"" + key + "\",\"value\":\"v" + n + "\",\"kind\":\"fact\",\"pin\":" + flag + "}")});
+}
+
+// One step that is not a change to the stores: a question, a write, a switch, a restart, a pause, a
+// routine elsewhere.
+void chatAct(Device& dev, std::mt19937& rng, Act a, const std::string& n) {
+  switch (a) {
+    case Act::Chat:
+      dev.pause(20 + rng() % 200);
+      dev.say("1001", "question " + n);
+      break;
+    case Act::WriteFile:
+      dev.pause(30 + rng() % 120);
+      dev.say("1001", "save file " + n, {sp::call("write_file", "{\"path\":\"notes/f" + n + ".md\",\"content\":\"x\"}")});
+      break;
+    case Act::Switch:   // the other chat becomes resident, answers, then this one comes back
+      dev.pause(10 + rng() % 60);
+      dev.say("2002", "telegram " + n);
+      dev.pause(10 + rng() % 60);
+      dev.say("1001", "back on the web " + n);
+      break;
+    case Act::Restart:
+      dev.pause(5 + rng() % 60);
+      dev.binding.reset();
+      dev.say("1001", "after a restart " + n);
+      break;
+    case Act::Pause: {   // any length: seconds to hours
+      static const uint32_t kGaps[] = {200, 280, 600, 1200, 2400, 3500, 3700, 7200, 4 * 3600};
+      dev.pause(kGaps[rng() % 9]);
+      dev.say("1001", "after a pause " + n);
+      break;
+    }
+    default:   // RoutineElsewhere: a routine's small request in another chat
+      dev.pause(60 + rng() % 600);
+      dev.say("3003", "routine fire " + n);
+      dev.pause(30);
+      dev.say("1001", "after the routine " + n);
+      break;
+  }
+}
+
 std::string runGenerated(uint32_t seed, int steps, std::vector<Act>* only = nullptr) {
   Device dev;
   std::mt19937 rng(seed);
@@ -381,64 +436,9 @@ std::string runGenerated(uint32_t seed, int steps, std::vector<Act>* only = null
   for (int i = 0; i < steps; ++i) {
     const Act a = only ? (*only)[i % only->size()] : (Act)(rng() % kActs);
     const std::string n = std::to_string(i);
-    switch (a) {
-      case Act::Chat:
-        dev.pause(20 + rng() % 200);
-        dev.say("1001", "question " + n);
-        break;
-      case Act::PinnedNote:
-        dev.pause(30 + rng() % 120);
-        dev.say("1001", "remember pinned " + n,
-                {sp::call("note", "{\"op\":\"set\",\"key\":\"pin-" + n + "\",\"value\":\"v" + n + "\",\"kind\":\"fact\",\"pin\":true}")});
-        break;
-      case Act::UnpinnedNote:
-        dev.pause(30 + rng() % 120);
-        dev.say("1001", "remember " + n,
-                {sp::call("note", "{\"op\":\"set\",\"key\":\"fact-" + n + "\",\"value\":\"v" + n + "\",\"kind\":\"fact\",\"pin\":false}")});
-        break;
-      case Act::WriteFile:
-        dev.pause(30 + rng() % 120);
-        dev.say("1001", "save file " + n, {sp::call("write_file", "{\"path\":\"notes/f" + n + ".md\",\"content\":\"x\"}")});
-        break;
-      case Act::Switch:   // the other chat becomes resident, answers, then this one comes back
-        dev.pause(10 + rng() % 60);
-        dev.say("2002", "telegram " + n);
-        dev.pause(10 + rng() % 60);
-        dev.say("1001", "back on the web " + n);
-        break;
-      case Act::Restart:
-        dev.pause(5 + rng() % 60);
-        dev.binding.reset();
-        dev.say("1001", "after a restart " + n);
-        break;
-      case Act::Pause: {   // any length: seconds to hours
-        static const uint32_t kGaps[] = {200, 280, 600, 1200, 2400, 3500, 3700, 7200, 4 * 3600};
-        dev.pause(kGaps[rng() % 9]);
-        dev.say("1001", "after a pause " + n);
-        break;
-      }
-      case Act::AppendFile:
-      case Act::EditFile:
-      case Act::OverwriteFile:
-      case Act::DeleteFile: {
-        static const char* const kTool[] = {"append_file", "edit_file", "write_file", "delete_file"};
-        const std::string path = existing(dev, rng());
-        dev.pause(30 + rng() % 120);
-        if (path.empty()) {
-          dev.say("1001", "save file " + n, {sp::call("write_file", "{\"path\":\"notes/f" + n + ".md\",\"content\":\"x\"}")});
-          break;
-        }
-        const char* tool = kTool[(int)a - (int)Act::AppendFile];
-        dev.say("1001", std::string(tool) + " " + n, {sp::call(tool, fileArgs(tool, path))});
-        break;
-      }
-      case Act::RoutineElsewhere:   // a routine's small request in another chat
-        dev.pause(60 + rng() % 600);
-        dev.say("3003", "routine fire " + n);
-        dev.pause(30);
-        dev.say("1001", "after the routine " + n);
-        break;
-    }
+    if (a == Act::PinnedNote || a == Act::UnpinnedNote) noteAct(dev, rng, a == Act::PinnedNote, n);
+    else if (a >= Act::AppendFile) changeExisting(dev, rng, a, n);
+    else chatAct(dev, rng, a, n);
   }
   return ruleA(dev, "1001");
 }

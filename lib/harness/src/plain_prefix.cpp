@@ -170,32 +170,43 @@ bool lineOf(const std::string& line, const std::string& path) {
 }
 }  // namespace
 
-bool ownFilesChange(const std::string& seen, const std::string& now, const std::vector<ListedFile>& listing,
-                    const std::vector<std::string>& ownPaths, uint64_t openedAt) {
-  auto entry = [&](const std::string& line) {
-    return std::find_if(listing.begin(), listing.end(), [&](const ListedFile& f) { return f.line == line; });
-  };
-  // A seen line is an own entry when a path the turn named is its path; the line may be gone (a
-  // delete) or changed (a write stamps its time), so its path is read from the line itself.
-  auto ownSeen = [&](const std::string& line) {
-    return std::any_of(ownPaths.begin(), ownPaths.end(), [&](const std::string& p) { return lineOf(line, p); });
-  };
-  std::vector<std::string> before, after;   // the other entries, in order
-  for (const std::string& line : linesInOrder(seen))
-    if (!ownSeen(line)) before.push_back(line);
+namespace {
+const ListedFile* listed(const std::vector<ListedFile>& listing, const std::string& line) {
+  const auto e = std::find_if(listing.begin(), listing.end(), [&](const ListedFile& f) { return f.line == line; });
+  return e == listing.end() ? nullptr : &*e;
+}
+// The entries of `seen` and of `now` whose path the turn did not name, each in its order. A seen line
+// is an own entry when a named path is its path: the line may be gone (a delete) or changed (a write
+// stamps its time), so its path is read from the line itself. False: a line of `now` the store cannot
+// account for.
+bool otherEntries(const std::string& seen, const std::string& now, const std::vector<ListedFile>& listing,
+                  const std::vector<std::string>& ownPaths, std::vector<std::string>& before,
+                  std::vector<std::string>& after) {
+  for (const std::string& line : linesInOrder(seen)) {
+    const bool own = std::any_of(ownPaths.begin(), ownPaths.end(), [&](const std::string& p) { return lineOf(line, p); });
+    if (!own) before.push_back(line);
+  }
   for (const std::string& line : linesInOrder(now)) {
-    const auto e = entry(line);
-    if (e == listing.end()) return false;   // a line the store cannot account for
+    const ListedFile* e = listed(listing, line);
+    if (!e) return false;
     if (!named(ownPaths, e->path)) after.push_back(line);
   }
+  return true;
+}
+}  // namespace
+
+bool ownFilesChange(const std::string& seen, const std::string& now, const std::vector<ListedFile>& listing,
+                    const std::vector<std::string>& ownPaths, uint64_t openedAt) {
+  std::vector<std::string> before, after;
+  if (!otherEntries(seen, now, listing, ownPaths, before, after)) return false;
   size_t k = 0;
   while (k < before.size() && k < after.size() && before[k] == after[k]) ++k;
   if (k < before.size() && k < after.size()) return false;   // another entry changed or moved
   for (size_t i = k; i < before.size(); ++i)   // left the bottom: the file is there as it was
-    if (entry(before[i]) == listing.end()) return false;
+    if (!listed(listing, before[i])) return false;
   for (size_t i = k; i < after.size(); ++i) {   // came into the bottom: written before the turn opened
-    const auto e = entry(after[i]);
-    if (!e->lastWrite || !openedAt || e->lastWrite >= openedAt) return false;
+    const uint64_t at = listed(listing, after[i])->lastWrite;
+    if (!at || !openedAt || at >= openedAt) return false;
   }
   return true;
 }
