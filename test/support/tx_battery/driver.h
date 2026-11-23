@@ -296,6 +296,7 @@ class Battery {
     CoverInput in;
     in.items = &items;
     in.openTurn = turnNo;
+    in.bound = plain::boundTools(&reg);   // E2-FIX5: as the engine reads it
     for (const tx::Item& it : items)
       if (it.kind == tx::ItemKind::PointerMove) in.pointer = std::max(in.pointer, it.stub);
     in.readBulk = [this](const tx::Item& r, std::string& o) {

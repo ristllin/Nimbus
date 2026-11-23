@@ -27,6 +27,14 @@ namespace nimbus {
 namespace orch {
 namespace tx {
 
+// Lane E2-FIX5: the tools a model-facing text may name. A stub, an omission line or an import note
+// names `view` or `search` only when that tool is registered for the turn (the engine reads its
+// registry); without it the text says what is not shown and names no call. All false: nothing named.
+struct BoundTools {
+  bool search = false;
+  bool view = false;
+};
+
 inline constexpr uint32_t kColdGapS = 270;            // over this since the last request: cold (the files list)
 inline constexpr size_t kStubMaxBytes = 400;
 inline constexpr size_t kStubPreviewBytes = 200;
@@ -114,6 +122,7 @@ struct StubFacts {
   ResultClass cls = ResultClass::Receipt;
   bool noCard = false;     // no storage card: the full result is not kept, no view hint
   std::string again;       // the call that reads it again (tx::wayBack; E2-VERB), "" = the view hint
+  BoundTools bound;        // E2-FIX5: the view hint only when view is bound
 };
 
 // The stub text, one line of valid UTF-8, at most kStubMaxBytes:
@@ -124,6 +133,8 @@ struct StubFacts {
 //  outside: '[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown: view id=r<q>]'
 //   built from the tool, the call's arguments, q and the size: never a byte of the result.
 //  noCard: the view hint becomes 'full result not kept: no storage card' (PRD section 2).
+//  view not bound (E2-FIX5): no view hint; an internal stub ends ' ...' (or with `again`, below), an
+//   outside one 'outside content, not shown]' (or names `again` when there is one).
 //  again (lane E2-VERB): the tail is ' ... (not shown in full to fit the request; <again> reads it
 //   again)' instead of the view hint: a stub is made only on the overflow path, and it names a call
 //   of a tool the chat has (for a file read: read_file with its path and range).
@@ -138,8 +149,9 @@ Status stubText(const StubFacts& facts, std::string& out);
 // id=r<q>]', or with `again` (a file write's tx::wayBack, lane E2-VERB) '...; read_file path=<p>
 // shows the file]': plain words for what it stood for, so a model reading its own earlier call
 // never takes the line for the text it sent. InvalidArgument for q 0 or a sha8 that is not 8 hex.
+// View not bound and no `again` (E2-FIX5): '...; not content]'.
 Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out,
-                   const std::string& again = std::string());
+                   const std::string& again = std::string(), const BoundTools& bound = BoundTools());
 // The call that brings a stubbed item's bytes back with the file tools (lane E2-VERB), from the tool
 // and its arguments JSON: read_file 'read_file path=<p>[ offset=<n>][ limit=<n>][ column=..]...'
 // (the same range); write_file, append_file, edit_file 'read_file path=<p>'; any other tool, or
@@ -155,10 +167,12 @@ bool looksLikeStub(const std::string& text);
 // own line '[text continues: <rest>B more: <where>]'. `where` is the pointer to the saved whole:
 // 'view id=r<q>' for a text in the bulk file, 'read_file path=<path>' for a saved paste; empty, the
 // whole was not kept: 'not kept: no storage card'. Text at or under `cap` is returned whole.
-// InvalidArgument for a cap of 0.
-Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out);
-// The pointers longTextHead names.
-inline std::string viewPointer(uint64_t q) { return "view id=r" + std::to_string(q); }
+// InvalidArgument for a cap of 0. E2-FIX5: `kept` with an empty `where` (the whole is kept but no
+// bound tool reads it): '[text continues: <rest>B more]'.
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out,
+                    bool kept = false);
+// The pointers longTextHead names (viewPointer: "" when view is not bound, E2-FIX5).
+inline std::string viewPointer(uint64_t q, const BoundTools& b) { return b.view ? "view id=r" + std::to_string(q) : ""; }
 inline std::string pathPointer(const std::string& path) { return "read_file path=" + path; }
 
 // A photo not attached to this request (lane E2-FIX4; the words are tx/photo_text.h):
@@ -301,8 +315,8 @@ Status omissionSpan(const std::vector<TurnSpan>& turns, size_t needBytes, uint32
 // '[N earlier turns, <dates>, not shown: search finds them]' ("turns" for every N: the
 // battery's parsers read that literal); with no dates (clock never set) '[N earlier turns,
 // not shown: search finds them]'. '[' and ']' in dates become '(' and ')'. InvalidArgument
-// for 0 turns.
-Status omissionLine(uint32_t turns, const std::string& dates, std::string& out);
+// for 0 turns. Search not bound (E2-FIX5): the line ends ', not shown]'.
+Status omissionLine(uint32_t turns, const std::string& dates, std::string& out, const BoundTools& bound = BoundTools());
 
 }  // namespace tx
 }  // namespace orch

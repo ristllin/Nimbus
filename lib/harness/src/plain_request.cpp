@@ -356,5 +356,12 @@ std::vector<std::string> uncallableNames(const std::string& text, const std::vec
   return out;
 }
 
+nimbus::orch::tx::BoundTools boundTools(const nimbus::orch::ToolRegistry* reg) {
+  nimbus::orch::tx::BoundTools b;
+  b.search = reg && reg->has("search");
+  b.view = reg && reg->has("view");
+  return b;
+}
+
 }  // namespace plain
 }  // namespace agent

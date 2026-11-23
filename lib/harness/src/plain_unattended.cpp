@@ -380,7 +380,8 @@ Status noteBody(tx::TxLog& log, tx::Item& it, const std::string& note) {
   }
   Status st = log.appendBulk(it.turn, note, it.handle);
   if (!st.ok()) return st;
-  return tx::longTextHead(note, tx::kInlineMessageCap, tx::viewPointer(it.q), it.x);
+  // E2-FIX5: no turn (and so no registry) here: the head names no view call until one is bound.
+  return tx::longTextHead(note, tx::kInlineMessageCap, tx::viewPointer(it.q, tx::BoundTools()), it.x, true);
 }
 
 }  // namespace

@@ -35,6 +35,7 @@ constexpr const char kNoCardOutside[] = "full result not kept: no storage card";
 constexpr const char kNoClock[] = "--:--";
 constexpr const char kOmissionMid[] = " earlier turns, ";
 constexpr const char kOmissionTail[] = ", not shown: search finds them]";
+constexpr const char kOmissionPlain[] = ", not shown]";   // E2-FIX5: search not bound
 constexpr const char kTextContinues[] = "\n[text continues: ";
 constexpr const char kTextMore[] = "B more: ";
 constexpr const char kTextNotKept[] = "not kept: no storage card";
@@ -287,7 +288,10 @@ Status stubText(const StubFacts& f, std::string& out) {
     s += '(';
     appendLine(s, f.args, kStubArgsPreviewBytes, true);
     s += ") r" + q + " " + std::to_string(f.bytes) + kOutsideMid;
-    s += f.noCard ? std::string(kNoCardOutside) : "view id=r" + q;
+    if (f.noCard) s += kNoCardOutside;
+    else if (f.bound.view) s += "view id=r" + q;
+    else if (!f.again.empty()) s += oneLineOf(f.again, kStubWayBackMaxBytes);
+    else s.resize(s.size() - 2);   // E2-FIX5: no call reads it again: "..., not shown]"
     s += ']';
     out.swap(s);
     return Status::success();
@@ -300,9 +304,10 @@ Status stubText(const StubFacts& f, std::string& out) {
   }
   if (isHex8(f.sha8)) s += " sha8=" + f.sha8;
   s += "] ";
-  const std::string tail = f.noCard          ? std::string(kNoCardHint)
-                           : f.again.empty() ? kViewHintOpen + q + ")"
-                                             : kAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kAgainClose;
+  const std::string tail = f.noCard            ? std::string(kNoCardHint)
+                           : !f.again.empty()  ? kAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kAgainClose
+                           : f.bound.view      ? kViewHintOpen + q + ")"
+                                               : std::string(" ...");   // E2-FIX5: no call reads it again
   const size_t room = kStubMaxBytes > s.size() + tail.size() ? kStubMaxBytes - s.size() - tail.size() : 0;
   appendLine(s, f.preview, std::min(kStubPreviewBytes, room));
   s += tail;
@@ -310,11 +315,15 @@ Status stubText(const StubFacts& f, std::string& out) {
   return Status::success();
 }
 
-Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out, const std::string& again) {
+Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::string& out, const std::string& again,
+                   const BoundTools& bound) {
   out.clear();
   if (q == 0 || !isHex8(sha8)) return Status::fail(Err::InvalidArgument, "tx::longArgStub");
-  out = std::string(kStubOpen) + std::to_string(bytes) + kArgMid + sha8 + kArgNotContent +
-        (again.empty() ? "view id=r" + std::to_string(q) : oneLineOf(again, kStubWayBackMaxBytes) + kArgFile) + "]";
+  out = std::string(kStubOpen) + std::to_string(bytes) + kArgMid + sha8 + kArgNotContent;
+  if (!again.empty()) out += oneLineOf(again, kStubWayBackMaxBytes) + kArgFile;
+  else if (bound.view) out += "view id=r" + std::to_string(q);
+  else out.resize(out.size() - 2);   // E2-FIX5: '...; not content]'
+  out += ']';
   return Status::success();
 }
 
@@ -345,7 +354,7 @@ Status photoStub(const std::string& ref8, const std::string& when, const std::st
   return Status::success();
 }
 
-Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out) {
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out, bool kept) {
   if (!cap) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::longTextHead");
@@ -359,8 +368,8 @@ Status longTextHead(const std::string& text, size_t cap, const std::string& wher
   std::string s = text.substr(0, n);
   s += kTextContinues;
   s += std::to_string(text.size() - n);
-  s += kTextMore;
-  s += where.empty() ? std::string(kTextNotKept) : where;
+  if (where.empty() && kept) s += "B more";   // E2-FIX5: kept, no bound tool reads it
+  else s += kTextMore + (where.empty() ? std::string(kTextNotKept) : where);
   s += ']';
   out.swap(s);
   return Status::success();
@@ -523,14 +532,15 @@ Status omissionSpan(const std::vector<TurnSpan>& turns, size_t needBytes, uint32
   return Status::success();
 }
 
-Status omissionLine(uint32_t turns, const std::string& dates, std::string& out) {
+Status omissionLine(uint32_t turns, const std::string& dates, std::string& out, const BoundTools& bound) {
   if (turns == 0) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::omissionLine");
   }
   std::string s = "[" + std::to_string(turns) + kOmissionMid;   // built apart: `dates` may be `out`
   appendLine(s, dates, kOmissionDatesMaxBytes, true);
-  s += dates.empty() ? kOmissionTail + 2 : kOmissionTail;   // no dates: "..., not shown: ..."
+  const char* tail = bound.search ? kOmissionTail : kOmissionPlain;
+  s += dates.empty() ? tail + 2 : tail;   // no dates: "..., not shown: ..."
   out.swap(s);
   return Status::success();
 }

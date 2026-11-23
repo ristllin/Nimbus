@@ -1201,3 +1201,30 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX4
 - prd: section 5 (photos on the transcript: pixels while in view, then the photo's line), section 2 (the stub rule: no stub names a tool the chat does not have), rulings 81 and 82 (nothing leaves a request without a named line), ruling 116 item 2 ("cannot read" is never "absent")
 - why: lib/core/include/nimbus/orch/tx/photo_text.h, 90 B, the words tx::photoStub (lib/core/src/orch_tx_rules.cpp) writes after '[photo p<ref> <when>: ' (and the photo's note): "shown earlier in this conversation; not attached to this request", and only when the engine has bound the view tool (the viewBound switch, off until lane E2-SRCH binds view) "; view id=p" <ref> " shows it again". The old line, '[photo p<ref> <when> not shown: view id=p<ref>]' (in orch_tx_rules.cpp, which neither catalog reads), named view, which engine 2 has not bound; on the bench (lanes/E2-BENCH/RESULT.md part 2, d-t02 and d-t13) the head read "not shown" as never having seen the photo and disowned its own correct description. The new line is a fact: the photo was shown earlier, it is not in this request. The words moved to a file of their own so the catalog reads them (E2_EXTRA_SOURCES, class stubs). Red first: test_plain_conformance photo_tests (evidence/red-first-D2.log at 70d198b24). With lane E2-FIX4's rule change a photo stays in view until compaction's pointer or a cap, so the line is rare. PC-0190 and PC-0191: not used by E2-FIX4 (PC-0191 was already E2-FIX2A's).
+### PC-0192: the import's notes name search only when it is bound (engine 2)
+- catalog: e2
+- class: device_notes
+- kind: build
+- bytes: 2044 -> 2044
+- sha8: 251bb8a3 -> e673add3
+- lane: E2-FIX5
+- prd: section 2 (what a request shows; no line names a call the model cannot make), AGENTS.md rule 9, ruling 116 item 1 (a true line)
+- why: lib/core/include/nimbus/orch/tx/migrate.h: the anchor note's " was kept by the earlier engine; search finds it." and the named rows' " not shown: search finds them." are each split in two, the tool-naming tail ("; search finds it." / ": search finds them.") added only when tx::MigrateDeps::bound.search says the device registered a tool named search, else the note ends with kEnd ("."). Engine 2 binds no search today, so the model was told to call a tool it does not have. The anchor note is still recognised by kEarlierKept alone (lib/core/src/orch_tx_migrate.cpp importItem), so notes stored before this change still mark the import as done. No byte added. Notes already stored on a card were rendered at import time and keep their old words. Pinned by test_e2_migration test_the_import_notes_name_search_only_when_it_is_bound (red before: the stored anchor note named search with no search registered) and test_plain_request test_no_template_names_a_tool_that_is_not_bound.
+### PC-0193: a slice's not-loaded line names search only when it is bound (engine 2)
+- catalog: e2
+- class: summarizer
+- kind: build
+- bytes: 973 -> 974
+- sha8: edb8c9ad -> 1855fed2
+- lane: E2-FIX5
+- prd: section 2 (what a request shows), section 3 (compaction: a slice names what it could not read), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h summarizer::kNotLoaded is split into "[earlier turns not loaded after a restart", then ": search finds them]" when search is bound (CompactDeps::searchBound, from the registry) or "]" otherwise (1 B more). The summarizer read "search finds them" and could carry it into a digest the head reads, where search is not bound. Pinned by test_plain_compact (the line is still named; its tail by the registry) and test_plain_request test_no_template_names_a_tool_that_is_not_bound.
+### PC-0194: stubs, long texts and the omission line name view or search only when bound (engine 2)
+- catalog: e2
+- class: stubs
+- kind: build
+- bytes: 68 -> 68
+- sha8: af7ac59a -> af7ac59a
+- lane: E2-FIX5
+- prd: section 2 (the stub rule: a stub names the call that brings its bytes back), AGENTS.md rule 9
+- why: lib/core/src/orch_tx_rules.cpp (not a catalogued source; logged here for the record, no class changes): tx::BoundTools (lib/core/include/nimbus/orch/tx/rules.h) is filled by the engine from its registry each turn (plain::boundTools). Without view: an internal stub ends " ..." (or names E2-VERB's read_file call when one exists), an outside stub ends "outside content, not shown]", a long argument "...; not content]", a long text "[text continues: <n>B more]". Without search the omission line ends ", not shown]". With the tool bound each text is as before, so they turn on by themselves when lane E2-SRCH binds the tools. Stubs are stored at capture: a stub stored earlier keeps its words. Pinned by test_plain_request test_no_template_names_a_tool_that_is_not_bound (every template over the four registries), test_tx_stub_rule, test_plain_rails (red before: the next turn's outside stub named view), test_plain_conformance and the battery's coverResult (a stub never names an unbound view).

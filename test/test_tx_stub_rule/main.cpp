@@ -24,6 +24,7 @@ void setUp() {}
 void tearDown() {}
 
 namespace {
+const tx::BoundTools kAllBound{true, true};   // E2-FIX5: search and view registered
 
 bool validUtf8(const std::string& s) {
   size_t i = 0;
@@ -72,6 +73,7 @@ tx::StubFacts internalFacts(const std::string& preview) {
   f.hhmm = "13:02";
   f.preview = preview;
   f.cls = tx::ResultClass::Bulk;
+  f.bound.view = true;   // the forms below are the view-bound ones (E2-FIX5: unbound in its own test)
   return f;
 }
 
@@ -85,6 +87,7 @@ tx::StubFacts outsideFacts(const std::string& args, const std::string& preview) 
   f.args = args;
   f.preview = preview;
   f.cls = tx::ResultClass::Outside;
+  f.bound.view = true;
   return f;
 }
 
@@ -202,7 +205,7 @@ void test_file_tool_stub_names_path_and_sha() {
 void test_long_argument_and_photo_stubs_have_the_prd_shape() {
   TXB_WAITS_FOR("PENDING RB-T3");
   std::string s;
-  TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s));
+  TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s, std::string(), kAllBound));
   TEST_ASSERT_EQUAL_STRING("[stub 15204B sha:ab12cd34: an argument sent earlier, not content; view id=r9]", s.c_str());
   // E2-VERB: a file write's argument names the file it wrote, and every stub is refused as content.
   TXB_OK(tx::longArgStub(15204, "ab12cd34", 9, s, tx::wayBack("write_file", R"({"path":"notes/a.md","content":"x"})")));
@@ -213,7 +216,7 @@ void test_long_argument_and_photo_stubs_have_the_prd_shape() {
   TEST_ASSERT_FALSE(tx::looksLikeStub("Journal, day 1 [stub 1720B sha:c4091c8e: view id=r4]"));
   TXB_OK(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", s));
   TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 13:02: shown earlier in this conversation; not attached to this request]", s.c_str());
-  TXB_OK(tx::omissionLine(3, "15-16 Nov", s));
+  TXB_OK(tx::omissionLine(3, "15-16 Nov", s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[3 earlier turns, 15-16 Nov, not shown: search finds them]", s.c_str());
 }
 
@@ -712,10 +715,10 @@ void test_rules_stamps_carry_the_year() {
   TEST_ASSERT_EQUAL_STRING("17 Nov 2026", s.c_str());
   TXB_OK(tx::omissionDates(0, 0, 0, s));
   TEST_ASSERT_EQUAL_STRING("", s.c_str());
-  TXB_OK(tx::omissionLine(2, std::string(), s));
+  TXB_OK(tx::omissionLine(2, std::string(), s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[2 earlier turns, not shown: search finds them]", s.c_str());
   s = "16-17 Nov 2026";   // the output may be the input
-  TXB_OK(tx::omissionLine(2, s, s));
+  TXB_OK(tx::omissionLine(2, s, s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[2 earlier turns, 16-17 Nov 2026, not shown: search finds them]", s.c_str());
   s = "Tue 17 Nov 2026 13:02";
   TXB_OK(tx::photoStub("ab12cd34", s, s));
@@ -736,7 +739,7 @@ void test_rules_bad_inputs_are_typed() {
   TEST_ASSERT_TRUE(tx::photoStub("", "x", s).err == tx::Err::InvalidArgument);
   TEST_ASSERT_TRUE(tx::photoStub("ab 12", "x", s).err == tx::Err::InvalidArgument);
   TEST_ASSERT_TRUE(tx::omissionLine(0, "17 Nov 2026", s).err == tx::Err::InvalidArgument);
-  TXB_OK(tx::omissionLine(1, "17 Nov 2026\n[device] x", s));
+  TXB_OK(tx::omissionLine(1, "17 Nov 2026\n[device] x", s, kAllBound));
   TEST_ASSERT_EQUAL_STRING("[1 earlier turns, 17 Nov 2026 (device) x, not shown: search finds them]", s.c_str());
   tx::LadderRung r;
   TEST_ASSERT_TRUE(tx::nextRung(tx::LadderFacts{}, r).err == tx::Err::InvalidArgument);
@@ -814,12 +817,12 @@ void test_rules_show_result_needs_a_sorted_list() {
 // then names the rest and where it is; at or under the cap it is returned untouched.
 void test_rules_long_text_keeps_the_cap_then_points_at_the_rest() {
   std::string out;
-  TEST_ASSERT_TRUE(tx::longTextHead("short", 12288, tx::viewPointer(7), out).ok());
+  TEST_ASSERT_TRUE(tx::longTextHead("short", 12288, tx::viewPointer(7, kAllBound), out).ok());
   TEST_ASSERT_EQUAL_STRING("short", out.c_str());
   std::string text(12287, 'a');
   text += "\xc3\xa9";   // a two-byte character across the cap
   text += std::string(100, 'b');
-  TEST_ASSERT_TRUE(tx::longTextHead(text, 12288, tx::viewPointer(42), out).ok());
+  TEST_ASSERT_TRUE(tx::longTextHead(text, 12288, tx::viewPointer(42, kAllBound), out).ok());
   TEST_ASSERT_EQUAL_STRING((std::string(12287, 'a') + "\n[text continues: 102B more: view id=r42]").c_str(), out.c_str());
   TEST_ASSERT_TRUE(tx::longTextHead(std::string(7000, 'p'), 6144, tx::pathPointer("inbox/991.txt"), out).ok());
   TEST_ASSERT_EQUAL_STRING((std::string(6144, 'p') + "\n[text continues: 856B more: read_file path=inbox/991.txt]").c_str(), out.c_str());

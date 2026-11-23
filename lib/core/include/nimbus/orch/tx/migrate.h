@@ -9,6 +9,7 @@
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/item.h"
 #include "nimbus/orch/tx/log.h"
+#include "nimbus/orch/tx/rules.h"   // BoundTools (E2-FIX5)
 #include "nimbus/orch/tx/status.h"
 
 // tx/migrate.h - the conversation's move into /mem/tx and the re-entry rule (PRD section 9,
@@ -86,7 +87,10 @@ namespace migrate_text {
 inline constexpr char kDevice[] = "[device] ";
 inline constexpr char kEarlierThrough[] = "The conversation through ";
 inline constexpr char kEarlierUndated[] = "The earlier conversation";
-inline constexpr char kEarlierKept[] = " was kept by the earlier engine; search finds it.";
+// E2-FIX5: the anchor note is recognised by kEarlierKept alone (a note stored before or after this
+// lane); kSearchFindsIt follows it only when search is bound.
+inline constexpr char kEarlierKept[] = " was kept by the earlier engine";
+inline constexpr char kSearchFindsIt[] = "; search finds it.";
 inline constexpr char kSummarySaved[] = " Its old summary is saved in ";
 inline constexpr char kSummaryNotSaved[] = " Its old summary was not saved.";
 inline constexpr char kEnd[] = ".";
@@ -101,7 +105,9 @@ inline constexpr char kNamedThe[] = " The ";
 inline constexpr char kNamedOne[] = " earlier message";
 inline constexpr char kNamedMany[] = " earlier messages";
 inline constexpr char kNamedBefore[] = " before ";
-inline constexpr char kNamedNotShown[] = " not shown: search finds them.";
+// E2-FIX5: kSearchFindsThem only when search is bound, else kEnd.
+inline constexpr char kNamedNotShown[] = " not shown";
+inline constexpr char kSearchFindsThem[] = ": search finds them.";
 inline constexpr char kIs[] = " is";
 inline constexpr char kAre[] = " are";
 // The fence of the old summary carried as digest 0 (RB-H81, ruling 84 item 6).
@@ -213,6 +219,7 @@ struct MigrateDeps {
   // The RAM items are stored after the import, renumbered past it (PlainEngine::reopen, lane
   // E2-FIX2B): their q and turn numbers do not bound the import's. The arena still sizes it.
   bool ramFollows = false;
+  BoundTools bound;   // E2-FIX5: the notes name search only when it is bound
 };
 
 // The import budget of a head (owner ruling 81, ruling 83 item 8): its full due mark H
@@ -281,6 +288,7 @@ struct ImportPlan {
   uint64_t namedLastT = 0;    // the newest named row (0: none or no clock)
   uint64_t oursUpTo = 0;      // engine 2's own rows up to this id are imported too (0: none; P3 repair)
   int16_t tzMinutes = 0;
+  bool searchBound = false;   // E2-FIX5: the named rows' line names search only when it is bound
 };
 // The batch's note text (the PRD's line, and the named rows when there are any).
 std::string importNote(const ImportPlan& plan);

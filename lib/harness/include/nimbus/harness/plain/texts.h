@@ -295,7 +295,10 @@ inline constexpr char kOutsideRead[] = "[outside content read]";
 inline constexpr char kToolDone[] = " done]";
 inline constexpr char kToolFailed[] = " failed]";
 inline constexpr char kCut[] = " [cut]";
-inline constexpr char kNotLoaded[] = "[earlier turns not loaded after a restart: search finds them]";
+// E2-FIX5: kNotLoaded, then kNotLoadedSearch when search is bound, else kNotLoadedEnd.
+inline constexpr char kNotLoaded[] = "[earlier turns not loaded after a restart";
+inline constexpr char kNotLoadedSearch[] = ": search finds them]";
+inline constexpr char kNotLoadedEnd[] = "]";
 }  // namespace summarizer
 
 }  // namespace texts

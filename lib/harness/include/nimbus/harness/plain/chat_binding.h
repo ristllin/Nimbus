@@ -515,6 +515,7 @@ class ChatBinding {
     m.now = d_.platform->nowEpoch();
     m.dayStartMin = cfg_.dayStartMin;
     m.digest0 = digest0Asker(compactDeps());
+    m.bound = boundTools();
     if (!d_.oldEngine(m)) return;
     migrationRan_ = true;
     const uint32_t t0 = d_.platform->nowMs();
@@ -645,6 +646,8 @@ class ChatBinding {
     return o;
   }
 
+  // E2-FIX5: the tools a stub, an omission line or an import note may name (registered now).
+  nimbus::orch::tx::BoundTools boundTools() const { return plain::boundTools(d_.registry); }
   CompactDeps compactDeps() {
     CompactDeps c;
     c.platform = d_.platform;
@@ -677,6 +680,7 @@ class ChatBinding {
     c.ctl = d_.compactCtl;
     c.headKey = headKey();
     c.dayStartMin = cfg_.dayStartMin;
+    c.searchBound = boundTools().search;
     return c;
   }
 

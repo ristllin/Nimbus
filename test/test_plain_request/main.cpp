@@ -41,6 +41,8 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tool_registry.h"
+#include "nimbus/orch/tx/migrate.h"   // importNote (E2-FIX5)
+#include "nimbus/orch/tx/rules.h"     // the stub texts (E2-FIX5)
 
 using namespace nimbus::orch;
 namespace plain = agent::plain;
@@ -947,11 +949,105 @@ static void test_golden_records_every_role_and_host() {
   TEST_ASSERT_TRUE_MESSAGE(cur == g, "plain_prompt_core.txt is stale (see .out); read the diff, then GOLDEN_UPDATE=1");
 }
 
+// Lane E2-FIX5: no text a model reads names a tool that is not bound. Over the class: a registry
+// holding every engine-2 tool but search, view, both or neither; the fact read from it
+// (plain::boundTools, as the engine reads it for each turn) renders every stub, long-text, omission and
+// import-note template, and every tool name in the result is registered there. Before: "view id=r<q>"
+// and "search finds them" whatever the registry held.
+namespace {
+bool namesWord(const std::string& text, const std::string& name) {
+  for (size_t at = text.find(name); at != std::string::npos; at = text.find(name, at + 1)) {
+    const bool left = at == 0 || !(std::isalnum((unsigned char)text[at - 1]) || text[at - 1] == '_');
+    const size_t end = at + name.size();
+    const bool right = end >= text.size() || !(std::isalnum((unsigned char)text[end]) || text[end] == '_');
+    if (left && right) return true;
+  }
+  return false;
+}
+std::vector<std::string> templateTexts(const nimbus::orch::tx::BoundTools& b) {
+  namespace tx = nimbus::orch::tx;
+  std::vector<std::string> out;
+  std::string s;
+  tx::StubFacts f;
+  f.tool = "read_file";
+  f.q = 42;
+  f.bytes = 15204;
+  f.lines = 310;
+  f.hhmm = "13:02";
+  f.preview = "hello";
+  f.cls = tx::ResultClass::Bulk;
+  f.bound = b;
+  for (int noCard = 0; noCard < 2; ++noCard)
+    for (int again = 0; again < 2; ++again)
+      for (int outside = 0; outside < 2; ++outside) {
+        tx::StubFacts g = f;
+        g.noCard = noCard;
+        g.again = again ? tx::wayBack("read_file", R"({"path":"notes/a.md"})") : std::string();
+        if (outside) {
+          g.tool = "web_search";
+          g.args = R"({"q":"tide"})";
+          g.cls = tx::ResultClass::Outside;
+        }
+        TEST_ASSERT_TRUE(tx::stubText(g, s).ok());
+        out.push_back(s);
+      }
+  TEST_ASSERT_TRUE(tx::longArgStub(15204, "ab12cd34", 9, s, std::string(), b).ok());
+  out.push_back(s);
+  TEST_ASSERT_TRUE(tx::longTextHead(std::string(200, 'x'), 100, tx::viewPointer(7, b), s, true).ok());
+  out.push_back(s);
+  TEST_ASSERT_TRUE(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", s, b.view).ok());   // E2-FIX4's, fed b.view
+  out.push_back(s);
+  TEST_ASSERT_TRUE(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", "a red car", s, b.view).ok());
+  out.push_back(s);
+  for (const char* dates : {"", "15-16 Nov"}) {
+    TEST_ASSERT_TRUE(tx::omissionLine(3, dates, s, b).ok());
+    out.push_back(s);
+  }
+  tx::ImportPlan p;
+  p.turns = 3;
+  p.named = 12;
+  p.searchBound = b.search;   // as the import fills it from MigrateDeps::bound
+  out.push_back(tx::importNote(p));
+  namespace sm = plain::texts::summarizer;
+  out.push_back(std::string(sm::kNotLoaded) + (b.search ? sm::kNotLoadedSearch : sm::kNotLoadedEnd));
+  return out;
+}
+}  // namespace
+
+static void test_no_template_names_a_tool_that_is_not_bound() {
+  for (int searchOn = 0; searchOn < 2; ++searchOn)
+    for (int viewOn = 0; viewOn < 2; ++viewOn) {
+      ToolRegistry reg;
+      std::vector<std::string> names;
+      for (const td::ToolDecl& d : td::kTools) names.push_back(d.name);
+      for (const td::ToolDecl& d : td::kBehindMore) names.push_back(d.name);
+      for (const std::string& n : names) {
+        if ((n == "search" && !searchOn) || (n == "view" && !viewOn)) continue;
+        reg.add(n, "d", okHandler, kObj);
+      }
+      const nimbus::orch::tx::BoundTools b = plain::boundTools(&reg);
+      TEST_ASSERT_EQUAL((bool)searchOn, b.search);
+      TEST_ASSERT_EQUAL((bool)viewOn, b.view);
+      size_t viewSeen = 0, searchSeen = 0;
+      for (const std::string& t : templateTexts(b)) {
+        for (const std::string& n : names)
+          TEST_ASSERT_TRUE_MESSAGE(!namesWord(t, n) || reg.has(n), (n + " not bound, named in: " + t).c_str());
+        viewSeen += namesWord(t, "view");
+        searchSeen += namesWord(t, "search");
+      }
+      // The neighbor: a bound tool is still named (the way back turns on by itself).
+      TEST_ASSERT_EQUAL(viewOn ? 7u : 0u, viewSeen);   // internal, two outside, long argument, long text, two photos
+      TEST_ASSERT_EQUAL(searchOn ? 4u : 0u, searchSeen);   // two omission lines, the import note, kNotLoaded
+    }
+  TEST_ASSERT_FALSE(plain::boundTools(nullptr).search || plain::boundTools(nullptr).view);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_role_and_host_fits_the_ceilings);
   RUN_TEST(test_every_declaration_fits);
   RUN_TEST(test_every_tool_like_name_is_callable);
+  RUN_TEST(test_no_template_names_a_tool_that_is_not_bound);
   RUN_TEST(test_the_checker_catches_an_uncallable_name);
   RUN_TEST(test_registry_and_manifest_agree);
   RUN_TEST(test_one_fixed_pack_in_a_fixed_order);

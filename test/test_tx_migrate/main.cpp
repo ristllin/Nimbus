@@ -183,11 +183,18 @@ void test_the_note_names_turns_and_omitted_rows() {
       "engine; their tool work is not shown.",
       tx::importNote(p).c_str());
   p.named = 12;
+  p.searchBound = true;
   TEST_ASSERT_EQUAL_STRING(
       "[device] 3 turns between Sat 17 Oct 2026 09:00 and Sun 18 Oct 2026 13:00 were answered by the earlier "
       "engine; their tool work is not shown. The 12 earlier messages before Sat 17 Oct 2026 09:00 are not shown: "
       "search finds them.",
       tx::importNote(p).c_str());
+  p.searchBound = false;   // E2-FIX5: search not bound, the note names no call
+  TEST_ASSERT_EQUAL_STRING(
+      "[device] 3 turns between Sat 17 Oct 2026 09:00 and Sun 18 Oct 2026 13:00 were answered by the earlier "
+      "engine; their tool work is not shown. The 12 earlier messages before Sat 17 Oct 2026 09:00 are not shown.",
+      tx::importNote(p).c_str());
+  p.searchBound = true;
   p.turns = 1;
   p.named = 1;
   p.firstT = p.lastT = 0;

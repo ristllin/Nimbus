@@ -322,7 +322,7 @@ class TurnRun {
     }
     std::string dates;
     (void)tx::omissionDates(first, lastAt, t_.tz, dates);
-    if (!n || !tx::omissionLine(n, dates, t_.ladder.omissionLine).ok()) return false;
+    if (!n || !tx::omissionLine(n, dates, t_.ladder.omissionLine, bound()).ok()) return false;
     t_.ladder.omitThrough = through;
     return true;
   }
@@ -856,6 +856,7 @@ class TurnRun {
     r.stubPointer = c_.head.stub;
     r.toolChoiceNone = t_.lastRound;
     r.photo = t_.setup.photo;
+    r.bound = bound();
     r.ladder = &t_.ladder;
     r.longCache = d_.stablePrefix;   // the stable points keep 1 hour (lane E2-CACHE)
     tx::TxLog* log = d_.log;
@@ -1300,7 +1301,7 @@ class TurnRun {
   // A long text's stub: with the bulk file kept, the long-argument stub (view); without it,
   // the internal stub's no-card form, which promises nothing.
   Status longStub(const std::string& name, const std::string& text, bool kept, std::string& out) {
-    if (kept) return tx::longArgStub((uint32_t)text.size(), hex8(text), c_.nextQ, out, t_.again);
+    if (kept) return tx::longArgStub((uint32_t)text.size(), hex8(text), c_.nextQ, out, t_.again, bound());
     return stubOf(name, text, false, out);
   }
   Status stubOf(const std::string& tool, const std::string& text, bool kept, std::string& out) {
@@ -1313,6 +1314,7 @@ class TurnRun {
     f.preview = text.substr(0, tx::kStubPreviewBytes + 4);
     f.cls = tx::ResultClass::Bulk;
     f.noCard = !kept;
+    f.bound = bound();
     return tx::stubText(f, out);
   }
   static std::string hex8(const std::string& s) {
@@ -1336,7 +1338,7 @@ class TurnRun {
     const bool kept = d_.log->appendBulk(t_.ctx.turn, text, a.handle).ok();
     if (!kept) a.handle.clear();
     if (!kept && text.size() + kLineRoom <= tx::kMaxLineBytes) return Status::success();
-    return tx::longTextHead(text, cap, kept ? tx::viewPointer(c_.nextQ) : std::string(), a.x);
+    return tx::longTextHead(text, cap, kept ? tx::viewPointer(c_.nextQ, bound()) : std::string(), a.x, kept);
   }
 
   Status meta(const ParsedStep& step, uint16_t beforeCall) {
@@ -1362,6 +1364,8 @@ class TurnRun {
     orch::ToolClass cls;   // its class; a router that reaches nothing knowable: the fail-closed default
     bool unresolved = false;   // a router call with no target (a listing, an unknown or refused name)
   };
+  // E2-FIX5: the tools this turn's texts may name: registered for the turn (none without a registry).
+  tx::BoundTools bound() const { return boundTools(t_.setup.facts.reg); }
   CallView viewOf(const std::string& name, const std::string& argsJson) const {
     CallView v;
     v.name = name;
@@ -1559,6 +1563,7 @@ class TurnRun {
     if (r.cls != tx::ResultClass::Outside) f.again = tx::wayBack(r.n, f.args);   // a file read: read_file again
     f.cls = r.cls;
     f.noCard = r.cls != tx::ResultClass::Receipt && r.handle.empty();
+    f.bound = bound();
     if (!tx::stubText(f, r.st).ok()) r.st.clear();
     return put(r, stored);
   }

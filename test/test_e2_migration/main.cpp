@@ -429,6 +429,27 @@ static void test_a_card_out_at_the_first_boot_imports_before_anything_is_stored(
 
 // P3 sequence B: the card answers but the import fails before its first marker (the marker save is
 // refused). Nothing of the chat is stored meanwhile; the import is tried again before the next turn.
+// Lane E2-FIX5: the import's notes name search only when the device registered it. Before: the anchor
+// note told the model "search finds it" on engine 2, where search is not bound.
+static void test_the_import_notes_name_search_only_when_it_is_bound() {
+  for (int bound = 0; bound < 2; ++bound) {
+    Device dev;
+    seed(dev);
+    if (bound)
+      dev.reg.add("search", "d", [](JsonObjectConst, const orch::Principal&) { return orch::ToolResult::ok("none"); },
+                  R"({"type":"object","properties":{}})");
+    TEST_ASSERT_TRUE(dev.boot().ok());
+    TEST_ASSERT_TRUE(dev.binding->migration().digest0);
+    std::string stored;   // the notes as the card holds them (the request shows them until a digest covers them)
+    for (const auto& kv : dev.card.files)
+      if (kv.first.find("/seg-") != std::string::npos) stored += kv.second;
+    TEST_ASSERT_TRUE_MESSAGE(has(stored, "was kept by the earlier engine"), "the anchor note is there");
+    TEST_ASSERT_EQUAL_MESSAGE(bound, has(stored, "search finds"), bound ? "bound: named" : "not bound: never named");
+    TEST_ASSERT_TRUE(dev.boot().ok());   // the shorter note is still the import's own: a re-entry
+    TEST_ASSERT_TRUE(dev.binding->migration().reentry);
+  }
+}
+
 static void test_an_import_refused_before_its_marker_stores_nothing_until_done() {
   Device dev;
   seed(dev);
@@ -1117,6 +1138,7 @@ int main(int, char**) {
   RUN_TEST(test_with_no_card_fitted_the_import_holds_nothing);
   RUN_TEST(test_an_import_that_never_finishes_offers_clear_and_clear_keeps_the_held_turns);
   RUN_TEST(test_an_import_that_fails_once_is_not_stuck);
+  RUN_TEST(test_the_import_notes_name_search_only_when_it_is_bound);
   RUN_TEST(test_another_chat_is_never_told_to_restart_while_turns_are_held);
   RUN_TEST(test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was);
   RUN_TEST(test_a_mirrored_fold_record_is_put_back_from_the_kept_copy);

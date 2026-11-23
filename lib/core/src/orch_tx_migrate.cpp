@@ -386,6 +386,7 @@ std::string importNote(const ImportPlan& p) {
     if (!c.empty() && p.turns) s += std::string(mt::kNamedBefore) + c;
     s += p.named == 1 ? mt::kIs : mt::kAre;
     s += mt::kNamedNotShown;
+    s += p.searchBound ? mt::kSearchFindsThem : mt::kEnd;
   }
   return s;
 }
@@ -834,6 +835,7 @@ struct Run {
     const std::string w = when(m.d0.at, m.d0.tz);
     s += w.empty() ? std::string(mt::kEarlierUndated) : std::string(mt::kEarlierThrough) + w;
     s += mt::kEarlierKept;
+    s += d.bound.search ? mt::kSearchFindsIt : mt::kEnd;
     if (!m.d0.accepted && !d.fold.summary.empty() && m.d0.exported) s += std::string(mt::kSummarySaved) + m.d0.path + mt::kEnd;
     else if (!m.d0.accepted && !m.d0.carried && !d.fold.summary.empty()) s += mt::kSummaryNotSaved;
     return s;
@@ -1134,6 +1136,7 @@ struct Run {
     p.lo = p.cut = lo;
     p.hi = hi;
     p.tzMinutes = d.tzMinutes;
+    p.searchBound = d.bound.search;
     Status s;
     if (m.repair && !m.reentry && m.d0Done && !(s = oursBound(hi, p.oursUpTo)).ok()) return s;
     Totals t;

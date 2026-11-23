@@ -6,6 +6,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/tx/rules.h"   // BoundTools (E2-FIX5)
 
 namespace nimbus {
 namespace orch {
@@ -64,6 +65,9 @@ Status composeSystem(const RequestFacts& facts, SystemBlocks& out);
 // kToolsBytesCeiling, or when an allocation is refused (`out` is left empty: no partial
 // array is ever sent).
 Status toolManifest(const RequestFacts& facts, std::vector<ToolSpec>& out);
+// Lane E2-FIX5: the tools a stub, an omission line or an import note may name: `search` and `view`
+// when the registry holds a tool of that name (none without a registry).
+nimbus::orch::tx::BoundTools boundTools(const nimbus::orch::ToolRegistry* reg);
 
 // The declaration of an always-on tool (description and schema as the manifest shows
 // them) or of a tool declared here for its group behind more (kBehindMore), or nullptr. A

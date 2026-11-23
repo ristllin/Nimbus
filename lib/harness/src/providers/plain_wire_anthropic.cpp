@@ -512,9 +512,8 @@ bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
   if (p.ref.size() < 2 || p.ref[0] != 'p') return false;
   std::string when, stub;
   if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
-  // Its note kept (RB-H81). viewBound false: engine 2 has not bound view yet (E2-FIX4; the lane that
-  // binds it passes the registry's fact, tx::BoundTools::view of E2-FIX5, here).
-  if (!tx::photoStub(p.ref.substr(1), when, p.note, stub, false).ok()) return false;
+  // Its note kept (RB-H81). E2-FIX5: names view only when the turn's registry binds it.
+  if (!tx::photoStub(p.ref.substr(1), when, p.note, stub, r.in.bound.view).ok()) return false;
   textBlock(r, Role::User, u.turn, join, stub, Over::Refuse);
   return true;
 }

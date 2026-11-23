@@ -105,7 +105,9 @@ inline void test_a_long_reply_keeps_the_message_cap_inline_then_a_view_pointer()
       char why[160];
       std::snprintf(why, sizeof why, "%s %zu B: the stored reply keeps %zu B", floor ? "floor" : "sonnet", bytes, a->x.size());
       TEST_ASSERT_TRUE_MESSAGE(a->x.compare(0, hb.messageCap - 3, reply, 0, hb.messageCap - 3) == 0, why);
-      TEST_ASSERT_TRUE_MESSAGE(a->x.find(tx::viewPointer(a->q)) != std::string::npos, "no view pointer to the rest");
+      // E2-FIX5: view is not bound in this rig: the line says how much more, and names no call.
+      TEST_ASSERT_TRUE_MESSAGE(a->x.find("B more]") != std::string::npos, "no line for the rest");
+      TEST_ASSERT_TRUE_MESSAGE(a->x.find("view id=") == std::string::npos, "names view, which is not bound");
       TEST_ASSERT_FALSE_MESSAGE(a->handle.empty(), "the a item does not name where the whole is");
       std::string whole;
       tx::TxLog reader(b.files, b.chatKey);

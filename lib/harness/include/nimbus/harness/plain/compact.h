@@ -224,6 +224,7 @@ struct CompactDeps {
   // The owner's settings (the recent part and the summary budget, rulings 105 and 106), read at every
   // step and passed through tx::clampSettings; unset: the defaults.
   std::function<nimbus::orch::tx::EngineSettings()> settings;
+  bool searchBound = false;   // E2-FIX5: a slice's input names search only when it is bound
 };
 
 // ---- the decision rule, pure -----------------------------------------------------------
@@ -245,6 +246,7 @@ struct SliceRules {
   // The arena holds turns RAM gave up, read back from the card: older than every resident turn, so
   // neither the current day nor the newest owner turns protect them (an open turn still does).
   bool readBack = false;
+  bool searchBound = false;      // E2-FIX5 (CompactDeps::searchBound)
 };
 // A file-change call of a slice, as the device writes it into the summary's Files lines.
 struct FileNote {

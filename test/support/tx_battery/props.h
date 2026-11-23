@@ -177,6 +177,9 @@ struct CoverInput {
   uint64_t thru = 0;        // the newest q a digest covers: older items are the digests' job
   uint32_t openTurn = 0;    // the turn the request belongs to (0 = none open)
   uint16_t dayStartMin = 240;   // the running day's start (TurnCtx::dayStartMin): the stamps' night clause
+  // E2-FIX5: the tools the registry held (view: a stub's way back). The toy fixtures (items.h) stand for
+  // a device with both bound; the engine battery sets its registry's (Battery::coverOf).
+  tx::BoundTools bound{true, true};
 };
 
 enum class Shown : uint8_t { Whole = 0, Stub = 1 };
@@ -226,12 +229,14 @@ inline std::string resultWhole(const tx::Item& r, const CoverInput& in) {
   auto it = in.bulk->find(r.handle);
   return it == in.bulk->end() ? "<bulk " + r.handle + " not stored>" : it->second;
 }
-// "[N earlier turns, <dates>, not shown: search finds them]": N, or -1 when absent.
+// "[N earlier turns, <dates>, not shown: search finds them]" (search bound) or "[N earlier turns, <dates>,
+// not shown]" (E2-FIX5): N, or -1 when absent.
 inline long omittedTurnsNamed(const sp::RequestView& v) {
   for (const sp::Message& m : v.messages)
     for (const sp::Block& b : m.blocks) {
       const size_t at = b.text.find(" earlier turns, ");
-      if (b.kind != sp::BlockKind::Text || at == std::string::npos || b.text.find("search finds them]") == std::string::npos)
+      if (b.kind != sp::BlockKind::Text || at == std::string::npos ||
+          (b.text.find("search finds them]") == std::string::npos && b.text.find("not shown]") == std::string::npos))
         continue;
       size_t s = b.text.rfind('[', at);
       if (s != std::string::npos) return std::strtol(b.text.c_str() + s + 1, nullptr, 10);
@@ -257,7 +262,14 @@ inline bool coverResult(const sp::RequestView& v, const tx::Item& r, const Cover
     return false;
   }
   // Its way back (E2-VERB): the view pointer, or for a file read the read_file call that reads it again.
-  if (stub && want.find("view id=r" + std::to_string(r.q)) == std::string::npos && want.find("read_file path=") == std::string::npos) {
+  // E2-FIX5: the view pointer only while view is bound; unbound, a stub never names it.
+  const bool viewNamed = want.find("view id=") != std::string::npos;
+  if (stub && viewNamed && !in.bound.view) {
+    why = "stub of " + tag + " names view, which is not bound";
+    return false;
+  }
+  if (stub && in.bound.view && want.find("view id=r" + std::to_string(r.q)) == std::string::npos &&
+      want.find("read_file path=") == std::string::npos) {
     why = "stub of " + tag + " has no way back";
     return false;
   }
@@ -467,7 +479,7 @@ inline void takeOutOmission(std::string& from) {
   const size_t at = from.find(" earlier turns, ");
   if (at == std::string::npos) return;
   const size_t open = from.rfind('[', at);
-  const char* close = "search finds them]";
+  const char* close = from.find("search finds them]", at) != std::string::npos ? "search finds them]" : "not shown]";
   const size_t end = from.find(close, at);
   if (open != std::string::npos && end != std::string::npos)
     from.erase(open, end - open + std::char_traits<char>::length(close));

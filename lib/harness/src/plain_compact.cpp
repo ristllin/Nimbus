@@ -589,7 +589,8 @@ namespace {
 // hold are named, never silent.
 void finishPlan(const SliceRules& r, uint64_t thru, SlicePlan& out) {
   if (out.turns) {
-    if (r.omittedThru > thru) out.input.insert(0, std::string(st::kNotLoaded) + "\n");
+    if (r.omittedThru > thru)
+      out.input.insert(0, std::string(st::kNotLoaded) + (r.searchBound ? st::kNotLoadedSearch : st::kNotLoadedEnd) + "\n");
     return;
   }
   const size_t resident = out.resident, text = out.restText;
@@ -917,6 +918,7 @@ SliceRules CompactDriver::rulesFor(const IdleCtx& ctx, const tx::HeadBudget& b) 
   rules.omittedThru = d_.omittedThru ? d_.omittedThru() : 0;
   rules.arenaFree = d_.arena->freeBytes();
   rules.arenaRoom = compactArenaRoom(d_.arena->capacity());
+  rules.searchBound = d_.searchBound;
   return rules;
 }
 

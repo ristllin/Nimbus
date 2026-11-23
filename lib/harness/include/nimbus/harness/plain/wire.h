@@ -8,6 +8,7 @@
 #include "nimbus/harness/http.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/orch/token_usage.h"
+#include "nimbus/orch/tx/rules.h"   // BoundTools (E2-FIX5)
 
 namespace nimbus {
 namespace orch {
@@ -87,6 +88,7 @@ struct RenderInput {
   const char* answerSchema = nullptr;
   BulkReadFn bulk;                                    // whole bulk results (every turn's, E2-VERB)
   PhotoFn photo;                                      // pixels of the visible photos
+  nimbus::orch::tx::BoundTools bound;                 // E2-FIX5: the photo stub names view only when bound
   const LadderState* ladder = nullptr;                // the overflow ladder (null: no rung)
   // Lane E2-CACHE: the cache points on the stable prefix (the system blocks and the end of the
   // previous turn) carry the provider's 1-hour lifetime; the moving last block keeps 5 minutes.
