@@ -709,29 +709,46 @@ class TurnRun {
                  d_.chatKey.c_str());
       return;
     }
-    std::unique_ptr<TurnSetup> s(new (std::nothrow) TurnSetup());
-    if (!s || !d_.setup(t_.ctx, *s).ok()) return;
-    s->facts.turn = &t_.ctx;
-    s->facts.digestBlock.clear();
-    s->facts.recentFiles.clear();
-    SystemBlocks b;
-    if (!composeSystem(s->facts, b).ok()) return;
-    const bool notes = b.notes != c_.prefix.seenNotes && !t_.longArgs &&
-                       ownNotesAddition(c_.prefix.blocks.notes, c_.prefix.seenNotes, b.notes, t_.ownTexts,
-                                        {texts::core::kNotes, texts::core::kSkills});
-    std::string files;
-    std::vector<std::pair<std::string, std::string>> listing;
-    const bool filesRead = filesListing(files, listing);
-    const bool filesOwn = filesRead && files != c_.prefix.seenFiles &&
-                          ownFilesAddition(c_.prefix.seenFiles, files, listing, t_.ownPaths);
-    if (b.notes != c_.prefix.seenNotes && !notes) hlog::logf("plain(%s): the notes changed beyond this turn's own additions: rendered at the next open", d_.chatKey.c_str());
-    if (filesRead && files != c_.prefix.seenFiles && !filesOwn) hlog::logf("plain(%s): the file list changed beyond this turn's own files: rendered at the next open", d_.chatKey.c_str());
+    std::string notesNow, files;
+    if (!notesBlockNow(notesNow)) return;
+    const bool notes = ownNotes(notesNow);
+    const bool filesOwn = ownFiles(files);
     if (!notes && !filesOwn) return;
-    if (notes) c_.prefix.seenNotes = b.notes;
+    if (notes) c_.prefix.seenNotes = notesNow;
     if (filesOwn) c_.prefix.seenFiles = files;
     if (!c_.prefix.ownFrom || t_.firstQ < c_.prefix.ownFrom) c_.prefix.ownFrom = t_.firstQ;
     c_.prefixDirty = true;
     saveFrozen();
+  }
+  // The file list changed only by files this turn's own calls named (`files`: the list now).
+  bool ownFiles(std::string& files) const {
+    std::vector<std::pair<std::string, std::string>> listing;
+    if (!filesListing(files, listing) || files == c_.prefix.seenFiles) return false;
+    const bool own = ownFilesAddition(c_.prefix.seenFiles, files, listing, t_.ownPaths);
+    if (!own)
+      hlog::logf("plain(%s): the file list changed beyond this turn's own files: rendered at the next open", d_.chatKey.c_str());
+    return own;
+  }
+  // The notes block as the binding composes it now (false when it cannot be read).
+  bool notesBlockNow(std::string& out) const {
+    std::unique_ptr<TurnSetup> s(new (std::nothrow) TurnSetup());
+    if (!s || !d_.setup(t_.ctx, *s).ok()) return false;
+    s->facts.turn = &t_.ctx;
+    s->facts.digestBlock.clear();
+    s->facts.recentFiles.clear();
+    SystemBlocks b;
+    if (!composeSystem(s->facts, b).ok()) return false;
+    out = b.notes;
+    return true;
+  }
+  // The notes changed only by this turn's own additions (and none of its long arguments became a stub).
+  bool ownNotes(const std::string& now) const {
+    if (now == c_.prefix.seenNotes) return false;
+    const bool own = !t_.longArgs && ownNotesAddition(c_.prefix.blocks.notes, c_.prefix.seenNotes, now, t_.ownTexts,
+                                                       {texts::core::kNotes, texts::core::kSkills});
+    if (!own)
+      hlog::logf("plain(%s): the notes changed beyond this turn's own additions: rendered at the next open", d_.chatKey.c_str());
+    return own;
   }
   // The recent-files list now and, for each file the store holds, its line and path. False when the
   // store does not answer (nothing is taken as seen then).

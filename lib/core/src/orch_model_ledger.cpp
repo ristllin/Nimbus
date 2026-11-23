@@ -498,6 +498,23 @@ void ModelLedger::parseTrack(const std::string& group) {
   if (t->lost.cacheW1h > t->lost.cacheW) t->lost.cacheW1h = t->lost.cacheW;
 }
 
+namespace {
+// One spend row from its '|' fields (the text form above; a missing tail field reads 0).
+ModelSpend spendRowOf(const std::string* p, int np) {
+  ModelSpend r;
+  copyField(r.prov, sizeof(r.prov), p[0].c_str());
+  copyField(r.model, sizeof(r.model), p[1].c_str());
+  uint64_t* u64[] = {&r.tokIn, &r.tokOut, &r.cacheR, &r.cacheW, &r.totIn, &r.totOut};
+  if (np > 2) r.periodKey = (uint32_t)parseSat(p[2], UINT32_MAX);
+  for (int k = 0; k < 6; ++k)
+    if (np > 3 + k) *u64[k] = parseSat(p[3 + k], UINT64_MAX);
+  if (np > 9) r.lastDay = (uint32_t)parseSat(p[9], UINT32_MAX);
+  if (np > 10) r.cacheW1h = parseSat(p[10], UINT64_MAX);
+  if (r.cacheW1h > r.cacheW) r.cacheW1h = r.cacheW;   // never a negative 5-minute part
+  return r;
+}
+}  // namespace
+
 void ModelLedger::deserializeSpend(const std::string& s) {
   reserveAll();
   rows_.clear();
@@ -516,17 +533,7 @@ void ModelLedger::deserializeSpend(const std::string& s) {
     const int np = splitBars(group, p, 11);
     if (np < 2 || !provKeySafe(p[0].c_str()) || !acceptModel(p[1].c_str())) return true;
     if (findRow(p[0].c_str(), p[1].c_str())) return true;   // a duplicate key: first wins
-    ModelSpend r;
-    copyField(r.prov, sizeof(r.prov), p[0].c_str());
-    copyField(r.model, sizeof(r.model), p[1].c_str());
-    uint64_t* u64[] = {&r.tokIn, &r.tokOut, &r.cacheR, &r.cacheW, &r.totIn, &r.totOut};
-    if (np > 2) r.periodKey = (uint32_t)parseSat(p[2], UINT32_MAX);
-    for (int k = 0; k < 6; ++k)
-      if (np > 3 + k) *u64[k] = parseSat(p[3 + k], UINT64_MAX);
-    if (np > 9) r.lastDay = (uint32_t)parseSat(p[9], UINT32_MAX);
-    if (np > 10) r.cacheW1h = parseSat(p[10], UINT64_MAX);
-    if (r.cacheW1h > r.cacheW) r.cacheW1h = r.cacheW;
-    rows_.push_back(r);
+    rows_.push_back(spendRowOf(p, np));
     tracking_ = true;   // a row means tracking had started (a file without "!t")
     return true;
   });
