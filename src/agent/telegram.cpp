@@ -732,6 +732,7 @@ static char s_voiceRef[17] = {};
 // Lane E2-FIX10: the file-store paths stored for the turn about to run (its photos, documents, a long
 // paste), only those whose store succeeded; cleared with the turn's media (TurnInput::stored).
 static std::vector<std::string> s_turnStored;
+static std::string s_storedPath;   // the path storeInbound just stored ("" when it stored none)
 #endif
 
 // Route a text field into cu as a batched turn segment (grouped into one turn per
@@ -1561,11 +1562,7 @@ struct InboundFile {
 // not keep it for another reason.
 enum class Kept : uint8_t { Stored, Full, Failed };
 
-#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
-static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& who, std::string* path = nullptr) {
-#else
 static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& who) {
-#endif
   char fname[96];
   if (in.photo || !in.slot.fileName[0])
     snprintf(fname, sizeof(fname), "%s-%ld.%s", in.photo ? "photo" : "file", (long)in.slot.updateId,
@@ -1584,7 +1581,7 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
     snprintf(fname, sizeof(fname), "%s", nimbus::net::inboxDocName((uint64_t)in.slot.updateId, in.slot.fileName).c_str());
     std::string derr;
     if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, derr, who.ns)) {
-      if (path) *path = std::string(proj) + "/" + fname;
+      s_storedPath = std::string(proj) + "/" + fname;
       return Kept::Stored;
     }
     alogf("telegram: attach store failed: %s", derr.c_str());
@@ -1596,7 +1593,7 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
   std::string ferr;
   if (agent::files::saveStream(proj, fname, agent::files::StagedFile{LittleFS, in.lfsPath}, ferr, who.ns, in.hash)) {
 #if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
-    if (path) *path = std::string(proj) + "/" + fname;   // a copy of bytes already kept adds no entry: no effect
+    s_storedPath = std::string(proj) + "/" + fname;   // a copy of bytes already kept adds no entry: no effect
 #endif
     return Kept::Stored;
   }
@@ -1610,9 +1607,9 @@ static Kept storeInbound(const InboundFile& in, const nimbus::orch::Principal& w
 // RB-TG1: store the item, then let its label name the inbox path only if the file is there (else
 // the document's name, as engine 1 shows it). True when the file store is full.
 static bool keepInbound(const InboundFile& in, const nimbus::orch::Principal& who, nimbus::orch::MediaLabel& label) {
-  std::string path;
-  const Kept kept = storeInbound(in, who, &path);
-  if (kept == Kept::Stored && !path.empty()) s_turnStored.push_back(path);   // E2-FIX10
+  s_storedPath.clear();
+  const Kept kept = storeInbound(in, who);
+  if (kept == Kept::Stored && !s_storedPath.empty()) s_turnStored.push_back(s_storedPath);   // E2-FIX10
   if (label.cls == nimbus::orch::MediaClass::Stored && kept != Kept::Stored) label.detail = in.slot.fileName;
   return kept == Kept::Full;
 }
