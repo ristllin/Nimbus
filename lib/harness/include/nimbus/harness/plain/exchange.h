@@ -155,6 +155,7 @@ struct ExchangeResult {
   bool parkHost = false;       // billing or key refused: the caller parks the host
   StatusLine status = StatusLine::None;   // CutAnswer or ProviderError when err != None
   std::string errorLine;       // the one plain line for the owner when err != None
+  std::string errorLineStored; // errorLine as it may be stored or reach a model: without the provider's reason
   std::string providerBody;    // the provider's own refusal body (first 4 KB) when err is Other (lane E2-FIX7)
   nimbus::orch::tx::ExchangeFacts ref;   // the last request sent, by reference (RB-E3, recordRequest)
 };
@@ -205,9 +206,10 @@ std::string headSlugOf(const TurnCtx& turn, const HeadEndpoint& head, bool* byDi
 // proxy is not the provider).
 std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head);
 // The provider's own reason from a refusal body, fit for the person's line (lane E2-FIX11): the message
-// of its JSON error body as one line (control characters removed), at most 160 bytes cut on a character
-// boundary. Empty when the body is not JSON, names no message, is over 16 KB, or the text looks like it
-// carries a key or token (then no reason is shown at all).
+// of its JSON error body reduced to printable ASCII on one line (a control or line-breaking character is
+// a space, any other non-ASCII character a '?'), with the characters Telegram's and the web chat's
+// Markdown would read as markup replaced, at most 160 bytes. Empty when the body is not JSON, names no
+// message, is over 16 KB, or the text looks like it carries a key or token (then no reason at all).
 std::string refusalReason(const std::string& body);
 // The owner's plain line for an exchange that ended with `err` (empty for None). `reason` is read only
 // for ExchangeErr::Other with a status: "<who> refused the request (HTTP n): <reason>".

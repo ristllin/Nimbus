@@ -181,6 +181,9 @@ struct TurnOutcome {
   GuardTrip trip = GuardTrip::None;
   StatusLine status = StatusLine::None;   // the one harness-written line, when one went out
   std::string statusText;
+  // statusText as it may be stored or reach a model (the chat's history row): without a provider's own
+  // reason, which rides only in the line the person gets (E2-FIX11). Equal to statusText otherwise.
+  std::string statusStored;
   bool parkHost = false;         // the head's key or credit was refused: the binding parks it
   bool failOver = false;         // routed: the router said fail over to the next target
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the

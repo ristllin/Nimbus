@@ -153,6 +153,7 @@ struct Turn {
   tx::ItemKind refusedKind = tx::ItemKind::User;
   StatusLine status = StatusLine::None;
   std::string statusText;
+  std::string statusStored;            // statusText as it may be kept (no provider words); empty: the same
   const std::string* statusRef = nullptr;   // the line that goes out: statusText or a kept line
   bool parkHost = false, failOver = false;
   std::string cause;
@@ -982,9 +983,8 @@ class TurnRun {
       return st;
     }
     t_.cause = std::string("provider:") + exchangeErrSlug(err);   // a held reply goes out: settle()
-    setStatus(StatusLine::ProviderError, t_.ex.errorLine.empty()
-                                             ? exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0)
-                                             : t_.ex.errorLine);
+    if (t_.ex.errorLine.empty()) setStatus(StatusLine::ProviderError, exchangeLine(err, providerSlugOf(t_.ctx, t_.setup.head), 0));
+    else setStatus(StatusLine::ProviderError, t_.ex.errorLine, &t_.ex.errorLineStored);
     if (err != t_.ex.err) t_.ex.err = err;
     return st;
   }
@@ -1006,7 +1006,7 @@ class TurnRun {
     ++t_.rounds;
     t_.answer.swap(t_.ex.step.text);   // in hand before anything is stored, never copied
     t_.cause = "cut";
-    setStatus(t_.ex.status, t_.ex.errorLine);
+    setStatus(t_.ex.status, t_.ex.errorLine, &t_.ex.errorLineStored);
     if (d_.hooks) {   // the truth seam sees a cut answer too; it cannot hold one
       DeliverCtx dc;
       dc.turn = &t_.ctx;
@@ -1265,9 +1265,13 @@ class TurnRun {
       default: return 2;
     }
   }
-  void setStatus(StatusLine s, const std::string& text) {
+  // `stored`: the line as it may be kept or reach a model when it differs from `text` (a provider's
+  // reason rides only in the sent line, E2-FIX11).
+  void setStatus(StatusLine s, const std::string& text, const std::string* stored = nullptr) {
     if (rank(s) <= rank(t_.status)) return;
+    std::string kept = stored && *stored != text ? *stored : std::string();
     t_.statusText = text;   // copied first: a refused copy leaves the earlier line whole
+    t_.statusStored.swap(kept);
     t_.status = s;
     t_.statusRef = &t_.statusText;
   }
@@ -1275,6 +1279,7 @@ class TurnRun {
   void setStatusRef(StatusLine s, const std::string& kept) noexcept {
     if (rank(s) <= rank(t_.status)) return;
     t_.status = s;
+    t_.statusStored.clear();
     t_.statusRef = &kept;
   }
   void takeStatus(const DeliverDecision& dd) {
@@ -2013,6 +2018,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   try {
     if (t->replyText) out.text = *t->replyText;
     if (t->statusRef) out.statusText = *t->statusRef;
+    if (t->statusRef) out.statusStored = t->statusStored.empty() ? out.statusText : t->statusStored;
     out.end = t->end;
     out.end.cause = t->cause;   // also when no e item could be stored
   } catch (const std::bad_alloc&) {

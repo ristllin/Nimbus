@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/orch/wire_limits.h"
+#include "nimbus/tg_html.h"
 #include "nimbus/utf8.h"
 
 namespace sp = harness_test::scripted;
@@ -982,11 +984,15 @@ static std::string refusedLine(int status, const std::string& body) {
   return l;
 }
 
+static const char* const kRefused400 = "No reply: Anthropic refused the request (HTTP 400).";
+
+static std::string reasonLine(const std::string& reason) {
+  return std::string("No reply: Anthropic refused the request (HTTP 400): ") + reason;
+}
+
 static void test_a_refusal_line_names_the_providers_reason() {
   const char* limit = "You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.";
-  TEST_ASSERT_EQUAL_STRING(
-      (std::string("No reply: Anthropic refused the request (HTTP 400): ") + limit).c_str(),
-      refusedLine(400, anthropicError("invalid_request_error", limit)).c_str());
+  TEST_ASSERT_EQUAL_STRING(reasonLine(limit).c_str(), refusedLine(400, anthropicError("invalid_request_error", limit)).c_str());
   // The other known types: each line stays true for its class and carries no key.
   const std::string auth = refusedLine(401, anthropicError("authentication_error", "invalid x-api-key"));
   TEST_ASSERT_TRUE(auth.find("refused the key") != std::string::npos);
@@ -997,26 +1003,197 @@ static void test_a_refusal_line_names_the_providers_reason() {
   const std::string over = refusedLine(529, anthropicError("overloaded_error", "Overloaded"));
   TEST_ASSERT_TRUE(over.find("server error") != std::string::npos);
   // No readable message: the line is what it was.
-  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400).", refusedLine(400, "<html>Bad Request</html>").c_str());
-  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400).", refusedLine(400, "{}").c_str());
+  TEST_ASSERT_EQUAL_STRING(kRefused400, refusedLine(400, "<html>Bad Request</html>").c_str());
+  TEST_ASSERT_EQUAL_STRING(kRefused400, refusedLine(400, "{}").c_str());
   TEST_ASSERT_TRUE(plain::refusalReason("").empty());   // an empty body names nothing
   TEST_ASSERT_TRUE(plain::refusalReason(std::string(20000, ' ')).empty());
-  // A 5,000-byte message is cut to about 160 bytes on a character boundary (here every char is two bytes).
+  // A 5,000-byte message is cut to 160 bytes with the cut marker (each two-byte character is one '?').
   std::string wide;
   for (int i = 0; i < 2500; ++i) wide += "\xC3\xA9";
   const std::string big = refusedLine(400, anthropicError("invalid_request_error", wide));
-  TEST_ASSERT_TRUE_MESSAGE(big.size() < 230, big.c_str());
-  TEST_ASSERT_TRUE(big.find("...") != std::string::npos);
-  const std::string longAscii = refusedLine(400, anthropicError("invalid_request_error", std::string(5000, 'a')));
-  TEST_ASSERT_TRUE_MESSAGE(longAscii.size() < 230, longAscii.c_str());
+  TEST_ASSERT_EQUAL_STRING(reasonLine(std::string(157, '?') + "...").c_str(), big.c_str());
+  const std::string longAscii = refusedLine(400, anthropicError("invalid_request_error", std::string(5000, 'a') + " b"));
+  TEST_ASSERT_TRUE_MESSAGE(longAscii == kRefused400, longAscii.c_str());   // a 5,000-letter word reads as a token
+  std::string words;
+  while (words.size() < 5000) words += "word ";
+  const std::string longWords = refusedLine(400, anthropicError("invalid_request_error", words));
+  TEST_ASSERT_EQUAL_MESSAGE(52 + 160, (int)longWords.size(), longWords.c_str());   // 157 bytes, then "..."
+  TEST_ASSERT_TRUE(longWords.compare(longWords.size() - 5, 5, "wo...") == 0);
   // Control characters become single spaces: one line.
   const std::string ctl = refusedLine(400, anthropicError("invalid_request_error", "first\nsecond\r\n\tthird\x01 end"));
-  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400): first second third end.", ctl.c_str());
-  // A key-like string, or an echoed header: the reason is dropped whole.
-  for (const char* m : {"Invalid x-api-key sk-ant-api03-AbCdEf0123456789", "bad header Authorization: Bearer abc",
-                        "token 9f8e7d6c5b4a39281706f5e4d3c2b1a0 rejected"})
-    TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 400).",
-                             refusedLine(400, anthropicError("invalid_request_error", m)).c_str());
+  TEST_ASSERT_EQUAL_STRING(reasonLine("first second third end.").c_str(), ctl.c_str());
+  // The stored form never carries the reason (F4).
+  Rig rig;
+  rig.model.push(sp::httpError(400, anthropicError("invalid_request_error", limit)));
+  expectOk(rig.run());
+  TEST_ASSERT_EQUAL_STRING(reasonLine(limit).c_str(), rig.out.errorLine.c_str());
+  TEST_ASSERT_EQUAL_STRING(kRefused400, rig.out.errorLineStored.c_str());
+}
+
+// F2, F6: only printable ASCII reaches the line. Line separators, NEL and C1 controls are a space;
+// bidi controls, zero-width and every other non-ASCII code point one '?'.
+static void test_a_refusal_reason_is_printable_ascii_on_one_line() {
+  struct Case {
+    const char* message;
+    const char* reason;
+  } cases[] = {
+      {"Bad request\xE2\x80\xA8No reply: Anthropic is out of credit.", "Bad request No reply: Anthropic is out of credit."},
+      {"one\xE2\x80\xA9two\xC2\x85three\xC2\x80" "four", "one two three four."},
+      {"see \xE2\x80\xAE" "004 PTTH\xE2\x80\xAC here", "see ?004 PTTH? here."},
+      {"zero\xE2\x80\x8Bwidth \xE2\x81\xA6isolate\xE2\x81\xA9", "zero?width ?isolate?"},   // ends in '?': no '.'
+
+      {"caf\xC3\xA9 \xF0\x9F\x98\x80 ok", "caf? ? ok."},
+      {"\xE2\x80\xA8\xE2\x80\xA8 trimmed \xC2\x85", "trimmed."},
+  };
+  for (const Case& c : cases) {
+    const std::string l = refusedLine(400, anthropicError("invalid_request_error", c.message));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(reasonLine(c.reason).c_str(), l.c_str(), c.reason);
+    for (unsigned char ch : l) TEST_ASSERT_TRUE_MESSAGE(ch >= 0x20 && ch < 0x7f, l.c_str());
+  }
+}
+
+// Fake credentials from split literals: no key-shaped literal sits in the repository.
+static std::string fake(std::initializer_list<const char*> parts) {
+  std::string s;
+  for (const char* p : parts) s += p;
+  return s;
+}
+
+// F3, F5: ordinary refusals show their reason; anything key-like drops the whole reason.
+static void test_the_key_rule_keeps_ordinary_reasons_and_drops_keys() {
+  const char* shown[] = {
+      "model: claude-sonnet-4-5-20250929",
+      "max_tokens: 64001 > 64000, which is the maximum allowed number of output tokens for claude-sonnet-4-5-20250929",
+      "messages.1.content.0.tool_result.tool_use_id: String should match pattern",
+      "This task-level risk-free check failed",
+  };
+  for (const char* m : shown)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(reasonLine(std::string(m) + ".").c_str(),
+                                     refusedLine(400, anthropicError("invalid_request_error", m)).c_str(), m);
+  // Backticks are shown as plain quotes (item F1), and the dated model id stays.
+  TEST_ASSERT_EQUAL_STRING(reasonLine("The model 'gpt-4o-mini-2024-07-18' does not exist.").c_str(),
+                           refusedLine(400, anthropicError("invalid_request_error", "The model `gpt-4o-mini-2024-07-18` does not exist")).c_str());
+  const std::string dropped[] = {
+      "Invalid key " + fake({"sk", "-ant-", "api03-", "Xq7pL2mN", "9vB4kR8t", "Y1wE5zA3", "sD6fG0hJ", "-", "u8iO2pK4", "lM6nB9vC", "1xZ3_qW5", "eR7tY9uA"}),
+      fake({"bad header Author", "ization: Bea", "rer abc"}),
+      "token " + fake({"9f8e7d6c", "5b4a3928", "1706f5e4", "d3c2b1a0"}) + " rejected",
+      "token " + fake({"abcdefab", "cdefabcd", "efabcdef", "abcdefab"}) + " rejected",   // 32 letters, no digit
+      "jwt " + fake({"eyJhbGci", "OiJIUzI1", "NiJ9", ".", "eyJzdWIi", "OiIxMjM0", "NTY3ODkw", "In0", ".", "dozjgNry", "P4J3jVmN", "Hl0w5N_X", "gL0n3I9P", "lFUP0THs", "R8U"}),
+      "bot " + fake({"123456789", ":", "AAHdqTcv", "CH1vGWJx", "fSeofSAs", "0K5PALDs", "-aw"}),
+      fake({"the sk", "-proj-abc key"}),
+  };
+  for (const std::string& m : dropped)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(kRefused400, refusedLine(400, anthropicError("invalid_request_error", m)).c_str(), m.c_str());
+}
+
+// F1: no markup of the reason is read. Each row is one construct nimbus::tgHtml maps (lib/core/src/tg_html.cpp)
+// and the tag it would emit; the first check proves the row is live against the real mapper, so the
+// table cannot drift from it silently. Then the finished line through tgHtml carries no tag at all.
+static void test_no_markup_in_a_reason_is_read() {
+  struct Construct {
+    const char* sample;
+    const char* tag;
+  } table[] = {
+      {"[Renew here](https://evil.example/pay)", "<a href"},
+      {"**bold**", "<b>"},
+      {"say *this* now", "<i>"},
+      {"say _this_ now", "<i>"},
+      {"`code`", "<code>"},
+      {"```\nblock\n```", "<pre>"},
+      {"# heading", "<b>"},
+      {"- bullet", "\xE2\x80\xA2"},
+  };
+  const char* noTag[] = {"<a", "<b", "<i", "<code", "<pre", "<s", "<u", "<blockquote", "<tg-", "<span", "\xE2\x80\xA2"};
+  auto expectLiteral = [&](const std::string& message) {
+    const std::string line = refusedLine(400, anthropicError("invalid_request_error", message));
+    const std::string html = nimbus::tgHtml(line);
+    for (const char* t : noTag) TEST_ASSERT_TRUE_MESSAGE(html.find(t) == std::string::npos, html.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(html.find('<') == std::string::npos, html.c_str());   // any tag tgHtml may emit later
+  };
+  for (const Construct& c : table) {
+    TEST_ASSERT_TRUE_MESSAGE(nimbus::tgHtml(c.sample).find(c.tag) != std::string::npos, c.sample);
+    expectLiteral(c.sample);
+    expectLiteral(std::string("Your plan lapsed. ") + c.sample + " now");
+  }
+  // Every pair of ASCII punctuation as opener and closer, around a word, doubled, and before a URL:
+  // a construct tgHtml learns later (~~strike~~, ||spoiler||) fails here until the reason neutralizes it.
+  const std::string punct = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+  for (char a : punct)
+    for (char b : punct) {
+      std::string m = "w ";
+      m += a; m += "word"; m += b; m += ' ';
+      m += a; m += a; m += "word"; m += b; m += b; m += ' ';
+      m += a; m += "word"; m += b; m += "(https://e.example/p) end";
+      expectLiteral(m);
+    }
+  // '<', '>' and '&' from the reason arrive escaped.
+  const std::string html = nimbus::tgHtml(refusedLine(400, anthropicError("invalid_request_error", "a <b>x</b> & <a href=\"u\">y</a>")));
+  TEST_ASSERT_TRUE_MESSAGE(html.find("a &lt;b&gt;x&lt;/b&gt; &amp; &lt;a href=\"u\"&gt;y&lt;/a&gt;") != std::string::npos, html.c_str());
+  // A bare visible URL may stay.
+  TEST_ASSERT_EQUAL_STRING(reasonLine("See https://e.example/docs.").c_str(),
+                           refusedLine(400, anthropicError("invalid_request_error", "See https://e.example/docs")).c_str());
+}
+
+// The reason rides class Other only: every other class's line is byte-identical with and without a
+// message in the body; and each body shape providerErrorText reads yields the reason.
+static void test_a_reason_rides_no_other_class_and_every_body_shape_yields_it() {
+  const std::string body = anthropicError("invalid_request_error", "Distinct provider words");
+  const int statuses[] = {401, 402, 403, 408, 413, 429, 500, 502, 503, 529};
+  for (int st : statuses) {
+    Rig a, b;
+    for (int i = 0; i < 8; ++i) {
+      a.model.push(sp::httpError(st, body));
+      b.model.push(sp::httpError(st));
+    }
+    expectOk(a.run());
+    expectOk(b.run());
+    TEST_ASSERT_TRUE_MESSAGE(a.out.err != ExchangeErr::Other && a.out.err != ExchangeErr::None, std::to_string(st).c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(b.out.errorLine.c_str(), a.out.errorLine.c_str(), std::to_string(st).c_str());
+    TEST_ASSERT_TRUE(a.out.errorLine.find("Distinct") == std::string::npos);
+  }
+  const ExchangeErr classes[] = {ExchangeErr::Transport, ExchangeErr::Server, ExchangeErr::RateLimited, ExchangeErr::ContextRefused,
+                                 ExchangeErr::KeyRefused, ExchangeErr::Cut, ExchangeErr::Malformed, ExchangeErr::Blocked};
+  for (ExchangeErr e : classes)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(plain::exchangeLine(e, "anthropic", 400).c_str(),
+                                     plain::exchangeLine(e, "anthropic", 400, "Distinct provider words").c_str(),
+                                     plain::exchangeErrSlug(e));
+  const char* shapes[] = {
+      R"({"type":"error","error":{"type":"invalid_request_error","message":"Distinct provider words"}})",   // Anthropic
+      R"({"error":{"message":"Distinct provider words","type":"invalid_request_error","code":null}})",     // OpenAI
+      R"({"error":"Distinct provider words"})",
+      R"({"message":"Distinct provider words"})",
+      R"({"message":{"detail":"Distinct provider words"}})",
+      R"({"detail":"Distinct provider words"})",
+      R"({"detail":[{"msg":"Distinct provider words"}]})",
+  };
+  for (const char* sh : shapes)
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("Distinct provider words", plain::refusalReason(sh).c_str(), sh);
+}
+
+// F7: the reason belongs to the answer that ends the exchange. A 400 with a reason (a refused file
+// reference, sent again), then a 500 (sent again), then a render that fails: the line never joins
+// "HTTP 500" to the 400's words.
+static void test_a_stale_reason_never_joins_a_later_status() {
+  Rig rig;
+  rig.req.refusedRef = [](int, const std::string&) { return true; };
+  rig.model.push(sp::httpError(400, anthropicError("invalid_request_error", "File not found: stale words")));
+  rig.model.push(sp::httpError(500));
+  rig.model.push(sp::say("never asked"));
+  int perRequest = 0;
+  {
+    Rig one;
+    one.wire.failFromRender = 1000;   // counts renders without failing
+    one.model.push(sp::say("ok"));
+    expectOk(one.run());
+    perRequest = one.wire.renders;
+  }
+  rig.wire.failFromRender = 2 * perRequest + 1;
+  expectOk(rig.run());
+  TEST_ASSERT_EQUAL(2, (int)rig.model.requests().size());
+  TEST_ASSERT_TRUE(rig.out.err == ExchangeErr::Other);
+  TEST_ASSERT_EQUAL(500, rig.out.httpStatus);
+  TEST_ASSERT_TRUE_MESSAGE(rig.out.errorLine.find("stale") == std::string::npos, rig.out.errorLine.c_str());
+  TEST_ASSERT_EQUAL_STRING("No reply: Anthropic refused the request (HTTP 500).", rig.out.errorLine.c_str());
 }
 
 static void test_provider_slug_of_a_head() {
@@ -1226,6 +1403,11 @@ int main(int, char**) {
   RUN_TEST(test_a_routed_head_follows_the_refusal_contract);
   RUN_TEST(test_every_error_class_has_one_plain_line);
   RUN_TEST(test_a_refusal_line_names_the_providers_reason);
+  RUN_TEST(test_a_refusal_reason_is_printable_ascii_on_one_line);
+  RUN_TEST(test_the_key_rule_keeps_ordinary_reasons_and_drops_keys);
+  RUN_TEST(test_no_markup_in_a_reason_is_read);
+  RUN_TEST(test_a_reason_rides_no_other_class_and_every_body_shape_yields_it);
+  RUN_TEST(test_a_stale_reason_never_joins_a_later_status);
   RUN_TEST(test_provider_slug_of_a_head);
   RUN_TEST(test_the_dialect_decides_an_unknown_host_and_nothing_named_is_nothing);
   RUN_TEST(test_a_fallback_the_table_does_not_qualify_is_skipped);

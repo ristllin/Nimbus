@@ -268,10 +268,11 @@ class Exchange {
     httpStatus_ = answered ? resp.status : 0;
     verdict_ = classify(httpStatus_, resp.body, routed_);
     if (verdict_.err == ExchangeErr::None) read(resp);
-    else if (verdict_.err == ExchangeErr::Other) {
-      refusedBody_ = resp.body.substr(0, 4096);
-      refusedReason_ = refusalReason(resp.body);   // from the whole body: a long message still parses
-    }
+    else if (verdict_.err == ExchangeErr::Other) refusedBody_ = resp.body.substr(0, 4096);
+    // The reason belongs to this answer only (F7): a later answer of another class clears it, so a
+    // line never joins one status to an earlier status's words. From the whole body: a long message
+    // still parses.
+    refusedReason_ = verdict_.err == ExchangeErr::Other ? refusalReason(resp.body) : std::string();
   }
 
   void read(const HttpResponse& resp) {
@@ -383,6 +384,7 @@ class Exchange {
                   : err == ExchangeErr::Blocked ? StatusLine::ModerationBlock
                                                 : StatusLine::ProviderError;
     out_.errorLine = exchangeLine(err, slug_, httpStatus_, err == ExchangeErr::Other ? refusedReason_ : std::string());
+    out_.errorLineStored = exchangeLine(err, slug_, httpStatus_);   // what may be kept: no provider words (F4)
     if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
     return Status::success();
   }
@@ -461,47 +463,81 @@ std::string providerSlugOf(const TurnCtx& turn, const HeadEndpoint& head) {
 }
 
 namespace {
-// A run of key characters that mixes letters and digits and is this long reads as a key or a token.
-constexpr size_t kKeyRun = 20;
-bool keyChar(unsigned char c) { return std::isalnum(c) || c == '_' || c == '-' || c == '.' || c == '+' || c == '/' || c == '='; }
+// A word of letters and digits this long that mixes both, or any word this long, reads as a key or
+// a token (words split on every other character, so a dated model id or a JSON path is not one).
+constexpr size_t kKeyMixed = 16, kKeyAny = 32;
+bool alnum(char c) { return std::isalnum((unsigned char)c) != 0; }
 
-// True when `s` could carry a credential: a key's own markers, or a long run that mixes letters and digits.
+// True when `s` could carry a credential: a key's own markers ("sk-" at the start of a word only),
+// or a key-like word.
 bool looksLikeSecret(const std::string& s) {
   const std::string low = lower(s);
-  for (const char* m : {"sk-", "bearer", "x-api-key", "api_key", "api-key", "apikey", "authorization", "password", "secret"})
+  for (const char* m : {"bearer", "x-api-key", "api_key", "api-key", "apikey", "authorization", "password", "secret"})
     if (low.find(m) != std::string::npos) return true;
+  for (size_t at = low.find("sk-"); at != std::string::npos; at = low.find("sk-", at + 1))
+    if (at == 0 || !alnum(low[at - 1])) return true;
   size_t run = 0;
   bool letter = false, digit = false;
   for (size_t i = 0; i <= s.size(); ++i) {
-    if (i < s.size() && keyChar((unsigned char)s[i])) {
+    if (i < s.size() && alnum(s[i])) {
       ++run;
       letter |= std::isalpha((unsigned char)s[i]) != 0;
       digit |= std::isdigit((unsigned char)s[i]) != 0;
       continue;
     }
-    if (run >= kKeyRun && letter && digit) return true;
+    if (run >= kKeyAny || (run >= kKeyMixed && letter && digit)) return true;
     run = 0;
     letter = digit = false;
   }
   return false;
 }
 
-// The text as one line: every control character and run of white space is one space, the ends trimmed.
-std::string oneLineOf(const std::string& raw) {
+// The code point at s[i] (valid UTF-8, checked before), and its length in `len`.
+uint32_t codePointAt(const std::string& s, size_t i, size_t& len) {
+  const unsigned char c = (unsigned char)s[i];
+  len = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+  uint32_t cp = len == 1 ? c : len == 2 ? (c & 0x1Fu) : len == 3 ? (c & 0x0Fu) : (c & 0x07u);
+  for (size_t k = 1; k < len && i + k < s.size(); ++k) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3Fu);
+  return cp;
+}
+
+// The text as one line of printable ASCII (F2, F6): every control character (C0, DEL, C1, NEL) and
+// U+2028 / U+2029 is a space, runs of spaces are one, the ends trimmed; any other non-ASCII code
+// point (bidi controls, zero-width, letters) is one '?'. One line by construction.
+std::string asciiLineOf(const std::string& raw) {
   std::string text;
-  for (char c : raw) {
-    const bool space = (unsigned char)c < 0x20 || c == 0x7f || c == ' ';
-    if (!space) text += c;
-    else if (!text.empty() && text.back() != ' ') text += ' ';
+  for (size_t i = 0, len = 1; i < raw.size(); i += len) {
+    const uint32_t cp = codePointAt(raw, i, len);
+    const bool space = cp <= 0x20 || (cp >= 0x7F && cp <= 0x9F) || cp == 0x2028 || cp == 0x2029;
+    if (space) {
+      if (!text.empty() && text.back() != ' ') text += ' ';
+    } else {
+      text += cp < 0x7F ? (char)cp : '?';
+    }
   }
   while (!text.empty() && text.back() == ' ') text.pop_back();
   return text;
 }
 
-// At most `max` bytes, cut on a character boundary, with "..." where it was cut.
+// No markup of the reason is read (F1). The line goes out through Telegram's Markdown-to-HTML mapping
+// (nimbus::tgHtml) and the web chat's Markdown (ui_js.h _mdInline): a [text](url) link, `code` and
+// ``` blocks, **bold**, *italic* and _italic_. Headings, bullets and fences need a line start, which a
+// reason never has (the line begins with the device's words). '<', '>' and '&' are escaped there.
+std::string literalOf(std::string text) {
+  for (size_t i = 0; i < text.size(); ++i) {
+    char& c = text[i];
+    if (c == '[') c = '(';
+    else if (c == ']') c = ')';
+    else if (c == '`' || c == '*') c = '\'';
+    else if (c == '_' && (i == 0 || text[i - 1] == ' ')) c = '\'';   // _italic_ opens only there
+  }
+  return text;
+}
+
+// At most `max` bytes (ASCII by now), with "..." where it was cut.
 std::string cutTo(std::string text, size_t max) {
   if (text.size() <= max) return text;
-  text.resize((size_t)nimbus::utf8CapLen(text.data(), (int)text.size(), (int)(max - 3)));
+  text.resize(max - 3);
   while (!text.empty() && text.back() == ' ') text.pop_back();
   return text + "...";
 }
@@ -513,9 +549,9 @@ std::string refusalReason(const std::string& body) {
   if (body.empty() || body.size() > kBodyMax) return std::string();
   const std::string raw = orch::providerErrorText(body);
   if (raw.empty() || !nimbus::utf8Valid(raw)) return std::string();
-  const std::string text = oneLineOf(raw);
+  const std::string text = asciiLineOf(raw);
   if (text.empty() || looksLikeSecret(text)) return std::string();
-  return cutTo(text, kReasonMax);
+  return cutTo(literalOf(text), kReasonMax);
 }
 
 namespace {

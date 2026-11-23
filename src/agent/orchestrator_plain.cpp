@@ -668,9 +668,9 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   if (out.delivered && !out.text.empty())
     memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message,
                            String(out.text.c_str()), "", "e2");
-  else if (!out.statusText.empty())
+  else if (!out.statusStored.empty())   // the line without a provider's reason (E2-FIX11): a model may read this row
     memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message,
-                           String(out.statusText.c_str()), "", "e2");
+                           String(out.statusStored.c_str()), "", "e2");
   runDeferred(out.deferred);
   const bool sent = b->sentParts() > 0;
   for (const std::string& line : s_skillTell) sayInstead(chatId, line.c_str());
