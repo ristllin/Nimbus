@@ -977,10 +977,12 @@ static std::string refusedLine(int status, const std::string& body) {
   TEST_ASSERT_TRUE(rig.out.err != ExchangeErr::None);
   expectOnePlainLine(rig.out);
   const std::string& l = rig.out.errorLine;
-  TEST_ASSERT_TRUE_MESSAGE(l.size() <= 330, l.c_str());   // the status words, and a reason of at most 160 bytes
-  TEST_ASSERT_TRUE_MESSAGE(l.find("sk-") == std::string::npos, l.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(l.size() <= 60 + 160, l.c_str());   // the status words, and a reason of at most 160 bytes
+  TEST_ASSERT_TRUE_MESSAGE(l.find(" sk-") == std::string::npos, l.c_str());
   TEST_ASSERT_TRUE_MESSAGE(l.find("test-key") == std::string::npos, l.c_str());
-  for (unsigned char c : l) TEST_ASSERT_TRUE_MESSAGE(c >= 0x20 && c != 0x7f, l.c_str());
+  for (unsigned char c : l) TEST_ASSERT_TRUE_MESSAGE(c >= 0x20 && c < 0x7f, l.c_str());   // printable ASCII only
+  // What may be kept is the line without the provider's words (F4).
+  TEST_ASSERT_EQUAL_STRING(plain::exchangeLine(rig.out.err, "anthropic", rig.out.httpStatus).c_str(), rig.out.errorLineStored.c_str());
   return l;
 }
 

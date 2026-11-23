@@ -566,7 +566,7 @@ std::string refusedLine(const std::string& who, const std::string& code, const s
 
 // The owner's line for a failed exchange (texts.h device_notes): what happened, then the
 // one next step. `reason` (refusalReason of the provider's body; Other only) rides after the
-// status, for the person alone: it is never stored as the model's words.
+// status, for the person alone: every kept copy is errorLineStored, the line without it (F4).
 std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatus, const std::string& reason) {
   namespace n = texts::device_notes;
   const std::string who = std::string(n::kNoReply) + providerName(slug);
