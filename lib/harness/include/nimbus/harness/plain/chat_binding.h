@@ -77,7 +77,10 @@ struct ChatBindingDeps {
   std::function<std::string(const nimbus::orch::Principal&)> pinnedNotes;   // null: none
   TextIO compactCtl;                             // unset: kept in RAM
   nimbus::orch::SeenIndex* seen = nullptr;       // null: no rebuild (not a Telegram chat)
-  std::function<void(const char* line)> log;     // one line each; null: silent
+  // One line each; null: silent. A std::string, not a const char*: the tg_poll stack gate resolves
+  // a std::function call to every handler of its exact signature, and the card listings' name
+  // callbacks are void(const char*) (lane E2-FIX2B).
+  std::function<void(const std::string& line)> log;
   // Lane E2-TOOLS: a tool whose result is outside content (web search); its outputs taint the turn
   // (ToolOutput::outside). Null: no tool reads outside content.
   std::function<bool(const std::string& tool)> outside;
@@ -163,7 +166,8 @@ inline nimbus::orch::TurnSpend turnSpendOf(const TurnOutcome& out, const std::st
 
 class ChatBinding {
  public:
-  ChatBinding(ChatBindingConfig cfg, ChatBindingDeps d) : cfg_(std::move(cfg)), d_(std::move(d)) {
+  // By reference: a caller that keeps both on the heap leaves no copy on its stack (E2-FIX2B).
+  ChatBinding(const ChatBindingConfig& cfg, const ChatBindingDeps& d) : cfg_(cfg), d_(d) {
     if (cfg_.chatId.empty()) cfg_.chatId = cfg_.chatKey;
     who_ = nimbus::orch::principalForRole(cfg_.chatId, cfg_.role);
     channel_.send = [this](const std::string& chat, const std::string& part) {
@@ -225,7 +229,7 @@ class ChatBinding {
       if (d_.progress.send) {
         reporter_.reset(new ProgressReporter(d_.progress));
         const Platform* clock = p;
-        st = installProgress(*hooks_, *reporter_, [clock] { return clock->nowMs(); });
+        st = installProgress(*hooks_, *reporter_, clock->nowMs);   // a copy: no lambda of the same signature wrapping it
         if (!st.ok()) return fail(st);
       }
       migrateOld();
@@ -401,7 +405,7 @@ class ChatBinding {
 
  private:
   void say(const char* line) const {
-    if (d_.log) d_.log(line);
+    if (d_.log) d_.log(std::string(line));
   }
   // Every binding boot needs is there.
   bool bound() const {
@@ -421,7 +425,15 @@ class ChatBinding {
     // Only the chat's own key (generation 0) takes the earlier engine's history: a conversation
     // that /clear started (<chat>_c<n>, E2-CHAT) begins empty, and the import never fills it.
     if (!d_.oldEngine || cfg_.chatKey != cfg_.chatId) return;
-    tx::MigrateDeps m;
+    // On the heap: the import runs deep on the device's poll task (the tg_poll stack gate, E2-FIX2B).
+    std::unique_ptr<tx::MigrateDeps> mp(new (std::nothrow) tx::MigrateDeps());
+    if (!mp) {
+      migrationRan_ = true;
+      migrationStatus_ = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::migrateOld.memory");
+      importPending_ = !(d_.noCard && d_.noCard());
+      return;
+    }
+    tx::MigrateDeps& m = *mp;
     m.files = d_.files;
     m.chatKey = cfg_.chatKey;
     m.head = headKey();

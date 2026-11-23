@@ -676,10 +676,12 @@ constexpr uint16_t U = bit(ItemKind::User), T = bit(ItemKind::TurnOpen), A = bit
                    X = bit(ItemKind::PointerMove), D = bit(ItemKind::Delivery), E = bit(ItemKind::TurnEnd);
 
 using FieldFn = bool (*)(Cursor&, Decoding&);
+// The member is not named `read`: the tg_poll stack gate ties a call through a pointer member to
+// the virtual methods of that name at the same offset (tx::RowSource::read), an edge that cannot run.
 struct FieldRule {
   const char* key;
   uint16_t kinds;
-  FieldFn read;
+  FieldFn decodeField;
 };
 
 bool readPart(Cursor& c, Part& p) {
@@ -834,7 +836,7 @@ bool readItemField(const char* key, bool fits, Cursor& c, Decoding& d) {
   if (fits && !std::strcmp(key, "k")) return false;   // one k
   const uint16_t mine = bit(d.it.kind);
   for (const FieldRule& r : kFields)
-    if (fits && (r.kinds & mine) && !std::strcmp(key, r.key)) return r.read(c, d);
+    if (fits && (r.kinds & mine) && !std::strcmp(key, r.key)) return r.decodeField(c, d);
   return skipValue(c);
 }
 

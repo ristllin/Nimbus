@@ -483,6 +483,7 @@ struct Fire {
   std::unique_ptr<PlainEngine> engine;
   HeldNote note;
   bool captured = false;
+  TurnInput input;   // the fire's turn, here and not on the tg_poll stack (lane E2-FIX2B)
 
   std::string noteId() const { return fire.def.id + "-" + std::to_string(fire.fireAt); }
 
@@ -627,7 +628,7 @@ Status runRoutine(const RoutineDeps& deps, const RoutineFire& fire, FireReport& 
       out.result = FireResult::Failed;
       return out.status = st;
     }
-    TurnInput in;
+    TurnInput& in = f->input;
     in.ctx = deps.head;
     in.ctx.chatKey = f->key;
     in.ctx.chatId = deps.owner.chatId;

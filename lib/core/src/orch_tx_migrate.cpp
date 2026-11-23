@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <new>
 
 #include "nimbus/orch/tx/digest.h"
@@ -1244,59 +1245,65 @@ struct Run {
     return save();
   }
 
+  // A loop, not a recursion (the tg_poll stack gate): an overtaken batch is planned again after
+  // what is stored.
   Status rowsStep() {
-    if (!m.batch) {
-      uint64_t newest = 0;
-      Status s = d.rows->newest(newest);
-      if (!s.ok()) return s;
-      const uint64_t lo = m.reentry ? m.hi : std::max(m.hi, d.fold.thru);
-      bool any = false;
-      if (newest > lo && !(s = planBatch(lo, newest, m.plan, any)).ok()) return s;
-      if (!any) {   // nothing to import: account for what was looked at
-        const uint64_t hi = std::max(m.hi, std::max(lo, newest));
-        if (m.reentry && hi == m.hi && m.step == MigrationStep::Done) return Status::success();
-        m.hi = hi;
-        m.step = MigrationStep::Done;
-        m.reentry = true;
-        return save();
+    for (;;) {
+      if (!m.batch) {
+        uint64_t newest = 0;
+        Status s = d.rows->newest(newest);
+        if (!s.ok()) return s;
+        const uint64_t lo = m.reentry ? m.hi : std::max(m.hi, d.fold.thru);
+        bool any = false;
+        if (newest > lo && !(s = planBatch(lo, newest, m.plan, any)).ok()) return s;
+        if (!any) {   // nothing to import: account for what was looked at
+          const uint64_t hi = std::max(m.hi, std::max(lo, newest));
+          if (m.reentry && hi == m.hi && m.step == MigrationStep::Done) return Status::success();
+          m.hi = hi;
+          m.step = MigrationStep::Done;
+          m.reentry = true;
+          return save();
+        }
+        m.batch = true;
+        m.seg = log.segment();
+        m.off = log.segmentBytes();
+        m.step = MigrationStep::Rows;
+        if (!(s = save()).ok()) return s;
       }
-      m.batch = true;
-      m.seg = log.segment();
-      m.off = log.segmentBytes();
-      m.step = MigrationStep::Rows;
-      if (!(s = save()).ok()) return s;
+      bool overtaken = false;
+      Matched got;
+      Status s = applyBatch(overtaken, got);
+      if (!s.ok()) return s;
+      if (overtaken) {
+        if (!(s = settleOvertaken(got)).ok()) return s;
+        continue;   // plan the rest after what is stored
+      }
+      out.named += m.plan.named;
+      m.hi = std::max(m.hi, m.plan.hi);
+      m.batch = false;
+      m.step = MigrationStep::Done;
+      m.reentry = true;
+      return save();
     }
-    bool overtaken = false;
-    Matched got;
-    Status s = applyBatch(overtaken, got);
-    if (!s.ok()) return s;
-    if (overtaken) {
-      if (!(s = settleOvertaken(got)).ok()) return s;
-      return rowsStep();   // plan the rest after what is stored
-    }
-    out.named += m.plan.named;
-    m.hi = std::max(m.hi, m.plan.hi);
-    m.batch = false;
-    m.step = MigrationStep::Done;
-    m.reentry = true;
-    return save();
   }
 
   Status digest0Step() {
-    Status s;
-    if (!m.d0.have) {
-      m.step = MigrationStep::Digest0;
-      if (!(s = planDigest0()).ok()) return s;
+    for (;;) {
+      Status s;
+      if (!m.d0.have) {
+        m.step = MigrationStep::Digest0;
+        if (!(s = planDigest0()).ok()) return s;
+      }
+      bool overtaken = false, anchorStored = false;
+      if (!(s = applyDigest0(overtaken, anchorStored)).ok()) return s;
+      if (overtaken) {
+        if (!(s = replanOvertaken(anchorStored)).ok()) return s;
+        continue;
+      }
+      m.d0Done = m.d0.accepted || m.d0.carried;
+      m.step = MigrationStep::Rows;
+      return save();
     }
-    bool overtaken = false, anchorStored = false;
-    if (!(s = applyDigest0(overtaken, anchorStored)).ok()) return s;
-    if (overtaken) {
-      if (!(s = replanOvertaken(anchorStored)).ok()) return s;
-      return digest0Step();
-    }
-    m.d0Done = m.d0.accepted || m.d0.carried;
-    m.step = MigrationStep::Rows;
-    return save();
   }
 
   // Another writer stored items where the digest-0 step's own belonged.
@@ -1475,9 +1482,9 @@ Status migrate(const MigrateDeps& deps, MigrationOutcome& out) {
   out = MigrationOutcome{};
   if (!depsOk(deps)) return Status::fail(Err::InvalidArgument, "tx::migrate");
   try {
-    Run run(deps, out);
-    const Status s = run.go();
-    if (!s.ok()) out.step = run.m.step;
+    std::unique_ptr<Run> run(new Run(deps, out));   // off the caller's stack (the tg_poll gate, E2-FIX2B)
+    const Status s = run->go();
+    if (!s.ok()) out.step = run->m.step;
     return s;
   } catch (const std::bad_alloc&) {
     out.step = MigrationStep::NotStarted;

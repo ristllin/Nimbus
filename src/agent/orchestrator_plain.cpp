@@ -352,7 +352,15 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   bool keep = false;
   plain::ChatBinding* resident = residentFor(chatId, model, role, keep);
   if (keep) return resident;
-  plain::ChatBindingConfig cfg;
+  // The binding's parts on the heap, off the tg_poll stack: a routine fire boots a chat from deep in
+  // the loops tick (lane E2-FIX2B; tools/release_gate/check_tg_poll_stack.py).
+  struct Parts {
+    plain::ChatBindingConfig cfg;
+    plain::ChatBindingDeps d;
+  };
+  std::unique_ptr<Parts> parts(new (std::nothrow) Parts());
+  if (!parts) return nullptr;
+  plain::ChatBindingConfig& cfg = parts->cfg;
   cfg.chatKey = txKeyFor(chatId);
   cfg.chatId = chatId.c_str();
   cfg.model = model;
@@ -367,7 +375,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
     alogf("e2: chat %s has no transcript key", chatId.c_str());
     return nullptr;
   }
-  plain::ChatBindingDeps d;
+  plain::ChatBindingDeps& d = parts->d;
   d.platform = &devicePlatform();
   d.transport = &s_transport;
   d.files = &txdev::cardTxFiles();
@@ -380,7 +388,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.pinnedNotes = [](const nimbus::orch::Principal& who) { return notesdev::pinnedNotesFor(who); };
   d.compactCtl = deviceCompactCtlIO();
   if (!localChat(chatId)) d.seen = &telegram::seenIndex();
-  d.log = [](const char* line) { alog(line); };
+  d.log = [](const std::string& line) { alog(line.c_str()); };
   // Lane E2-TOOLS: the files a person may read, for the request. Lane E2-FSAFE: a call that read outside
   // content (web_search; a file from inbox/, agents/ or another person, as the tool marked it) stores an
   // outside result, so the turn is tainted; the rails then keep its note changes on the pending shelf.
@@ -750,10 +758,22 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   plain::ChatBinding* b = nullptr;
   if (chat.length() && !(kind == sch::Kind::Routine && refusalFor(host)))
     b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
-  sch::FireBinding fb;
+  // The binding of the fire on the heap, off the tg_poll stack (lane E2-FIX2B: the routine path is
+  // the deepest the poll task runs).
+  struct FireParts {
+    sch::FireBinding fb;
+    plain::ScheduleBindingDeps d;
+  };
+  std::unique_ptr<FireParts> parts(new (std::nothrow) FireParts());
+  if (!parts) {
+    out.deferred = true;   // no error text: the loops tick counts it as a memory deferral
+    out.retryAfterSec = 60;
+    return out;
+  }
+  sch::FireBinding& fb = parts->fb;
   const std::string sub(store::subModel("anthropic").c_str());
   if (b) {
-    plain::ScheduleBindingDeps d;
+    plain::ScheduleBindingDeps& d = parts->d;
     d.held = heldFor(chatId);
     d.quiet = quietNow();
     d.grants = loops::routineGrants();

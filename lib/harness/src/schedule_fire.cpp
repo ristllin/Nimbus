@@ -5,6 +5,8 @@
 #include "nimbus/harness/schedule_fire.h"
 
 #include <algorithm>
+#include <memory>
+#include <new>
 
 namespace nimbus {
 namespace orch {
@@ -130,9 +132,13 @@ FireOutcome fireRoutine(Host& host, const LoopRecord& rec, const Extra* e, const
   if (!b.files || !loadState(*b.files, rec.id, last)) return notNow(host, rec.id, kNoCard, true);
   if (!b.run) return notNow(host, rec.id, kNoChat, true);   // P15: its real reason, not "no card"
   const bool tainted = opensTainted(e, last);
-  const plain::RoutineFire f = routineFire(rec, e, last, now, b.grants);
-  plain::FireReport rep;
-  const plain::Status st = b.run(f, tainted, rep);
+  // The fire and its report on the heap (lane E2-FIX2B): the tg_poll stack keeps its floor on the
+  // routine path (tools/release_gate/check_tg_poll_stack.py). A refused allocation waits, as no card.
+  std::unique_ptr<plain::RoutineFire> fp(new (std::nothrow) plain::RoutineFire(routineFire(rec, e, last, now, b.grants)));
+  std::unique_ptr<plain::FireReport> rp(new (std::nothrow) plain::FireReport());
+  if (!fp || !rp) return notNow(host, rec.id, kNoCard, false);
+  plain::FireReport& rep = *rp;
+  const plain::Status st = b.run(*fp, tainted, rep);
   const FireOutcome o = outcomeOf(st, rep, now);
   if (!st.ok() || rep.result == plain::FireResult::Failed) return o;
   std::vector<plain::RoutineOutput> both = last;   // the state on the card until the save lands
@@ -227,7 +233,9 @@ bool entryKind(Host& host, const std::string& id, Kind& out) {
 }
 
 FireOutcome fire(Host& host, const LoopFireRequest& req, const FireBinding& b, uint64_t now) {
-  LoopRecord rec;
+  std::unique_ptr<LoopRecord> rp(new (std::nothrow) LoopRecord());   // off the tg_poll stack (E2-FIX2B)
+  if (!rp) return notNow(host, req.id, kNoCard, false);
+  LoopRecord& rec = *rp;
   std::vector<Extra> extras;
   const Found found = snapshot(host, req.id, rec, extras);
   if (found == Found::Unreadable) return notNow(host, req.id, kUnreadable, false);

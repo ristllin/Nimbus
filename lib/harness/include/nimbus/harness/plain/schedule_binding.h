@@ -69,7 +69,10 @@ inline nimbus::orch::schedule::FireBinding fireBindingFor(ChatBinding& chat, nim
   if (!d.held) return b;   // no outbox: a routine is skipped (no runner), a reminder still goes
   ChatBinding* c = &chat;
   b.run = [c, d](const RoutineFire& f, bool tainted, FireReport& out) {
-    RoutineDeps r = c->routineDeps(d.routineModel);
+    // On the heap: the routine fire runs deep on the tg_poll stack (lane E2-FIX2B).
+    std::unique_ptr<RoutineDeps> rp(new (std::nothrow) RoutineDeps(c->routineDeps(d.routineModel)));
+    if (!rp) return Status::fail(nimbus::orch::tx::Err::TooLarge, "plain::fireBindingFor.memory");
+    RoutineDeps& r = *rp;
     r.head.tainted = tainted;
     r.tzMinutes = d.tzMinutes;
     r.held = d.held;
