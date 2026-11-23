@@ -2,7 +2,7 @@
   "about": "Lane E2-SRCH: search and view on engine 2 (lib/core orch_tx_search.cpp, lib/harness plain_history.cpp, src/agent/history_tools_device.cpp), reached from the turn on tg_poll.",
   "recursion": [
     {
-      "function": "^nimbus::orch::tx::ReadOnlyCounted::readAt\\(",
+      "function": "^nimbus::orch::tx::ReadOnlyCounted::(readAt|size|list)\\(",
       "depth": 2,
       "why": "tx/search.h: a ReadOnlyCounted wraps the card store, and at most one more ReadOnlyCounted wraps it (plain_history.cpp counts the call, tx::findPhoto counts its own budget); nothing wraps deeper"
     }
