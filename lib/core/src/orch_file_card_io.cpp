@@ -276,6 +276,13 @@ bool CardFilesIo::indexAsCard(const Change& c, const std::string& path, std::str
   return store_.add(next, err);
 }
 
+// The marker, an empty note or a part of one: nothing to act on, only cleared.
+std::string CardFilesIo::clearUnreadable(const std::string& text) {
+  const bool cleared = clearNote();
+  if (text.empty() || text == kToolsNoteCleared) return cleared ? std::string() : "the tools note could not be cleared";
+  return cleared ? "ignored an unreadable tools note" : "ignored an unreadable tools note it could not clear";
+}
+
 std::string CardFilesIo::recoverNote() {
   if (layout_.toolsNote.empty() || !card_.exists(layout_.toolsNote)) return std::string();
   const std::string text = card_.readText(layout_.toolsNote);
@@ -283,12 +290,7 @@ std::string CardFilesIo::recoverNote() {
   const size_t maxP = store_.limits().maxProjectLen, maxN = store_.limits().maxNameLen;
   const bool readable = parseNote(text, c) && FileStore::validSegment(c.project, maxP) &&
                         FileStore::validSegment(c.name, maxN);
-  if (!readable) {   // the marker, an empty note or a part of one: nothing to act on
-    const bool cleared = clearNote();
-    const bool quiet = text.empty() || text == kToolsNoteCleared;
-    if (quiet) return cleared ? std::string() : "the tools note could not be cleared";
-    return cleared ? "ignored an unreadable tools note" : "ignored an unreadable tools note it could not clear";
-  }
+  if (!readable) return clearUnreadable(text);
   const std::string path = pathOf(c.project, c.name);
   std::string did = endTornAppend(c, path);
   const bool changed = indexAsCard(c, path, did);

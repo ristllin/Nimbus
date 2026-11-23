@@ -129,6 +129,7 @@ class CardFilesIo : public FileToolsIo {
   bool indexAsCard(const Change& c, const std::string& path, std::string& did);
   bool adoptNoted(const Change& c, long long size, const std::string& path, std::string& did);
   bool hashOnCard(const std::string& path, uint64_t size, uint64_t& hash);
+  std::string clearUnreadable(const std::string& text);
 
   FileCard& card_;
   FileStore& store_;
