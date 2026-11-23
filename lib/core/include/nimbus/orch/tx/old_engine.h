@@ -126,16 +126,21 @@ std::string ruleNoteKey(uint32_t id);
 // note away when the note still holds the copied text, and leaves the record (it comes back as new
 // if it is active again); a note the owner edited on engine 2 stays, his. A note he removed on
 // engine 2 is never put back.
-// Lane E2-FIX3 (finding R5, ruling 116 item 2): `whole` is false when `rules` may not be the whole
-// store (a read that was short, refused or dropped a line): then nothing changes and the record is
-// kept as it is. Only a whole read can show a rule gone (and a cut line would read as a change).
 void importRules(const std::vector<OldRule>& rules, const std::string& marker, notes::Notebook& nb,
-                 const Principal& owner, std::string& markerOut, RulesImportOutcome& out, bool whole = true);
+                 const Principal& owner, std::string& markerOut, RulesImportOutcome& out);
 
-// The earlier engine's active rules from its file `blob` (/data/prefs.txt, the store's own parser),
-// and whether the read is whole: `blob` is the file's full `fileSize`, within the store's cap, and
-// every rule line in it parsed (E2-FIX3, R5). The answer is importRules' `whole`.
-bool oldRulesFrom(const std::string& blob, size_t fileSize, std::vector<OldRule>& rules);
+// Lane E2-FIX3 (finding R5, ruling 116 item 2): the earlier engine's active rules as read from its
+// file (/data/prefs.txt, the store's own parser), and whether the read is whole: the blob is the
+// file's full length, within the store's cap, and every rule line in it parsed.
+struct RulesRead {
+  std::vector<OldRule> rules;
+  bool whole = false;
+};
+RulesRead oldRulesFrom(const std::string& blob, size_t fileSize);
+// importRules over a read: one that is not whole changes nothing and keeps the record as it is,
+// since only a whole read can show a rule gone (and a cut line would read as a changed rule).
+void importRules(const RulesRead& read, const std::string& marker, notes::Notebook& nb, const Principal& owner,
+                 std::string& markerOut, RulesImportOutcome& out);
 
 }  // namespace tx
 }  // namespace orch

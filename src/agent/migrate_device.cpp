@@ -185,8 +185,7 @@ void importRulesOnce() {
   if (!flashMounted()) return;
   const uint32_t t0 = millis();
   // R5: the rules from the file itself, read under the store's lock and checked whole; a read that
-  // is not whole removes no note (an unopened file is not read at all).
-  std::vector<tx::OldRule> rules;
+  // is not whole changes no note (an unopened file is not read at all).
   std::string blob;
   size_t size = 0;
   bool opened = false;
@@ -195,16 +194,17 @@ void importRulesOnce() {
     opened = readFlashWhole(nimbus::orch::kPrefsPath, blob, size) || size > 0;
   }
   if (!opened) return;
-  const bool whole = tx::oldRulesFrom(blob, size, rules);
-  if (!whole) alogf("e2: rules import: %s not read whole (%u of %u B): no rule note removed", nimbus::orch::kPrefsPath,
-                    (unsigned)blob.size(), (unsigned)size);
+  const tx::RulesRead read = tx::oldRulesFrom(blob, size);
+  if (!read.whole)
+    alogf("e2: rules import: %s not read whole (%u of %u B): no rule note changed", nimbus::orch::kPrefsPath,
+          (unsigned)blob.size(), (unsigned)size);
   const std::string marker = readFlash(kRulesMarkerPath);
   std::string next;
   tx::RulesImportOutcome out;
   {
     const PsramFirstScope psram;
     const nimbus::orch::Principal owner = nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin);
-    tx::importRules(rules, marker, notesdev::notebook(), owner, next, out, whole);
+    tx::importRules(read, marker, notesdev::notebook(), owner, next, out);
   }
   bool saved = true;
   if (next != marker) {
@@ -213,7 +213,7 @@ void importRulesOnce() {
     saved = writeFileAtomic(kRulesMarkerPath, next, "rules_import");
   }
   alogf("e2: rules import: %u rules, added=%u updated=%u kept=%u removed=%u refused=%u marker=%s %u ms%s%s",
-        (unsigned)rules.size(), (unsigned)out.added, (unsigned)out.updated, (unsigned)out.kept,
+        (unsigned)read.rules.size(), (unsigned)out.added, (unsigned)out.updated, (unsigned)out.kept,
         (unsigned)out.removed, (unsigned)out.refused, saved ? "ok" : "NOT saved", (unsigned)(millis() - t0),
         out.firstError.empty() ? "" : " first refusal: ", out.firstError.c_str());
 }

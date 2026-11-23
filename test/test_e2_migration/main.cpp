@@ -950,15 +950,15 @@ static void test_a_rules_file_not_read_whole_removes_no_rule_note() {
   for (const char* t : {"Answer in short sentences.", "Use metric units.", "Never use em dashes."})
     TEST_ASSERT_EQUAL((int)orch::PrefErr::Ok, (int)p.add(t, orch::PrefOrigin::Chat, 1000, false, nullptr));
   const std::string file = io.blob;
-  std::vector<tx::OldRule> rules;
-  TEST_ASSERT_TRUE(tx::oldRulesFrom(file, file.size(), rules));   // whole
-  TEST_ASSERT_EQUAL(3u, rules.size());
+  tx::RulesRead read = tx::oldRulesFrom(file, file.size());
+  TEST_ASSERT_TRUE(read.whole);
+  TEST_ASSERT_EQUAL(3u, read.rules.size());
 
   Device dev;
   const orch::Principal owner = orch::principalForRole("owner", orch::Role::Admin);
   std::string marker, next;
   tx::RulesImportOutcome o;
-  tx::importRules(rules, marker, dev.notebook, owner, marker, o, true);
+  tx::importRules(read, marker, dev.notebook, owner, marker, o);
   TEST_ASSERT_EQUAL(3u, o.added);
   const std::string block = dev.notebook.pinnedBlock(owner);
   // Every read that is not whole: empty (a refused open read as nothing), short, a damaged line.
@@ -966,17 +966,18 @@ static void test_a_rules_file_not_read_whole_removes_no_rule_note() {
   const std::pair<std::string, size_t> reads[] = {
       {std::string(), file.size()}, {file.substr(0, file.size() / 2), file.size()}, {damaged, damaged.size()}};
   for (const auto& r : reads) {
-    const bool whole = tx::oldRulesFrom(r.first, r.second, rules);
-    TEST_ASSERT_FALSE(whole);
-    tx::importRules(rules, marker, dev.notebook, owner, next, o, whole);
-    TEST_ASSERT_EQUAL(0u, o.removed);
+    read = tx::oldRulesFrom(r.first, r.second);
+    TEST_ASSERT_FALSE(read.whole);
+    tx::importRules(read, marker, dev.notebook, owner, next, o);
+    TEST_ASSERT_EQUAL(0u, o.added + o.updated + o.removed);
     TEST_ASSERT_TRUE(block == dev.notebook.pinnedBlock(owner));
     TEST_ASSERT_TRUE(next == marker);   // every copied rule stays recorded
   }
   // The neighbor: a whole read that shows a rule gone removes its untouched note.
   TEST_ASSERT_EQUAL((int)orch::PrefErr::Ok, (int)p.remove(p.entries()[1].id));
-  TEST_ASSERT_TRUE(tx::oldRulesFrom(io.blob, io.blob.size(), rules));
-  tx::importRules(rules, marker, dev.notebook, owner, next, o, true);
+  read = tx::oldRulesFrom(io.blob, io.blob.size());
+  TEST_ASSERT_TRUE(read.whole);
+  tx::importRules(read, marker, dev.notebook, owner, next, o);
   TEST_ASSERT_EQUAL(1u, o.removed);
 }
 

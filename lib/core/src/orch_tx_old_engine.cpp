@@ -332,12 +332,8 @@ void reconcileRemoved(const std::vector<OldRule>& rules, std::map<uint32_t, uint
 std::string ruleNoteKey(uint32_t id) { return "rule-p" + std::to_string(id); }
 
 void importRules(const std::vector<OldRule>& rules, const std::string& marker, notes::Notebook& nb,
-                 const Principal& owner, std::string& markerOut, RulesImportOutcome& out, bool whole) {
+                 const Principal& owner, std::string& markerOut, RulesImportOutcome& out) {
   out = RulesImportOutcome{};
-  if (!whole) {   // R5: a read that is not whole is no evidence: a cut line would read as a changed rule
-    markerOut = marker;
-    return;
-  }
   std::map<uint32_t, uint32_t> copied = parseMarker(marker);
   const std::map<std::string, std::string> have = notesByKey(nb, owner);
   for (const OldRule& rule : rules) {
@@ -382,12 +378,12 @@ bool restoreFoldRecordFrom(const std::string& blob, size_t fileSize, const std::
   return blob.size() == fileSize && restoreFoldRecord(blob, copy, chatId, out);
 }
 
-bool oldRulesFrom(const std::string& blob, size_t fileSize, std::vector<OldRule>& rules) {
-  rules.clear();
+RulesRead oldRulesFrom(const std::string& blob, size_t fileSize) {
+  RulesRead r;
   OwnerPrefs p;
   const size_t kept = p.parse(blob);
   for (const PrefEntry& e : p.entries())
-    if (!e.pending && !e.moved && !e.evicted) rules.push_back(OldRule{e.id, e.text});
+    if (!e.pending && !e.moved && !e.evicted) r.rules.push_back(OldRule{e.id, e.text});
   size_t lines = 0;   // every line that is not empty and not the header is a rule the parser must keep
   for (size_t pos = 0; pos < blob.size();) {
     size_t nl = blob.find('\n', pos);
@@ -396,7 +392,15 @@ bool oldRulesFrom(const std::string& blob, size_t fileSize, std::vector<OldRule>
     if (len && blob[pos] != '#') ++lines;
     pos = nl + 1;
   }
-  return blob.size() == fileSize && fileSize <= kPrefsFileMax && kept == lines;
+  r.whole = blob.size() == fileSize && fileSize <= kPrefsFileMax && kept == lines;
+  return r;
+}
+
+void importRules(const RulesRead& read, const std::string& marker, notes::Notebook& nb, const Principal& owner,
+                 std::string& markerOut, RulesImportOutcome& out) {
+  if (read.whole) return importRules(read.rules, marker, nb, owner, markerOut, out);
+  out = RulesImportOutcome{};   // R5: cannot read is never "gone", nor "changed"
+  markerOut = marker;
 }
 
 }  // namespace tx

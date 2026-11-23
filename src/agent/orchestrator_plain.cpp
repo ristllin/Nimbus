@@ -603,6 +603,28 @@ plain::ChatBinding* bindingFor(const String& chatId) {
   return chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
 }
 
+// /clear's next number, stored before anything uses it (P7; E2-FIX3, R2 and R4): never a number a
+// transcript holds; an unreadable number is left by writing a fresh one; a write the card did not
+// take did not happen, here or in RAM. False: the chat stays on its number.
+bool advanceGeneration(const String& chatId) {
+  uint32_t now = 0;
+  const bool read = generationOf(chatId, now);
+  uint32_t next = now + 1;
+  if (!noCardFitted()) {
+    nimbus::orch::tx::TxFiles& files = txdev::cardTxFiles();
+    if (!plain::freeGeneration(files, chatId.c_str(), read ? now : 0, next) ||
+        !plain::storeGeneration(files, chatId.c_str(), next)) {
+      alogf("e2: /clear %s refused: conversation number %u not stored", chatId.c_str(), (unsigned)next);
+      return false;
+    }
+  } else if (!read) {
+    return false;
+  }
+  s_genChat = chatId.c_str();
+  s_gen = next;
+  return true;
+}
+
 bool clearChat(const String& chatId, String& why) {
   why = String();
   // E2-STORE with E2-CHAT: a binding whose turns are held only in RAM is never dropped with them
@@ -616,24 +638,10 @@ bool clearChat(const String& chatId, String& why) {
     why = kClearNotStoredLine;
     return false;
   }
-  // P7, E2-FIX3 (R2, R4): never a number a transcript holds; an unreadable number is left by writing
-  // a fresh one; a write the card did not take did not happen, here or in RAM.
-  uint32_t now = 0;
-  const bool read = generationOf(chatId, now);
-  uint32_t next = now + 1;
-  if (!noCardFitted()) {
-    nimbus::orch::tx::TxFiles& files = txdev::cardTxFiles();
-    if (!plain::freeGeneration(files, chatId.c_str(), read ? now : 0, next) ||
-        !plain::storeGeneration(files, chatId.c_str(), next)) {
-      alogf("e2: /clear %s refused: conversation number %u not stored", chatId.c_str(), (unsigned)next);
-      why = kClearNotStoredLine;
-      return false;
-    }
-  } else if (!read) {
+  if (!advanceGeneration(chatId)) {
+    why = kClearNotStoredLine;
     return false;
   }
-  s_genChat = chatId.c_str();
-  s_gen = next;
   const std::string key = txKeyFor(chatId);
   bool keepHeld = false;
   if (moveHeld) {
