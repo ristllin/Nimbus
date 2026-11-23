@@ -201,6 +201,12 @@ class PlainEngine {
   // from the log. Not ok: still unloaded, nothing held in RAM given up (the next call resumes
   // after the items already appended). Success and no change when the chat is loaded.
   Status reopen();
+  // Lane E2-FIX3 (finding R1): reopen() into another transcript (`log`, under `chatKey`): the RAM
+  // items are stored there, in order, each once, and nothing is written to this chat's own log.
+  // /clear on a chat held by a history import that cannot finish. After success the engine is
+  // done (its log is not `log`): the caller boots a binding on `chatKey`. Not ok: still unloaded,
+  // the next call into the same log resumes after the items already stored there.
+  Status reopenAs(nimbus::orch::tx::TxLog& log, const std::string& chatKey);
 
   const EngineDeps& deps() const { return deps_; }
   // The chat's head state, shared with the compaction driver (RB-C2), which moves thru and

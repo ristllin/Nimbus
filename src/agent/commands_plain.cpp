@@ -250,9 +250,10 @@ void clear(const nimbus::orch::Command& cmd, const String& chatId, const EngineO
                             "confirm.");
     return;
   }
-  say(chatId, selfTag() + (ops.clear && ops.clear(chatId) ? "Started a new conversation. The earlier one stays stored on "
-                                                            "the device."
-                                                          : kNoStartLine));
+  String why;
+  const bool started = ops.clear && ops.clear(chatId, why);
+  if (!started && why.isEmpty()) why = kNoStartLine;
+  say(chatId, selfTag() + (started ? String("Started a new conversation. The earlier one stays stored on the device.") : why));
 }
 
 void routed(plain::ChatCommandRoute route, const nimbus::orch::Command& cmd, const String& chatId, const EngineOps& ops,

@@ -1932,5 +1932,20 @@ Status PlainEngine::reopen() {
   }
 }
 
+Status PlainEngine::reopenAs(tx::TxLog& log, const std::string& chatKey) {
+  if (!depsReady(deps_) || !chat_ || !chat_->booted || !chat_->unloaded || !tx::chatKeyOk(chatKey) || chatKey == deps_.chatKey)
+    return Status::fail(Err::InvalidArgument, "plain::PlainEngine::reopenAs");
+  std::unique_ptr<EngineDeps> d(new (std::nothrow) EngineDeps(deps_));   // off the poll task's stack
+  if (!d) return Status::fail(Err::TooLarge, "plain::PlainEngine::reopenAs.memory");
+  d->log = &log;
+  d->chatKey = chatKey;
+  try {
+    return reopenChat(*d, *chat_);
+  } catch (const std::bad_alloc&) {
+    log.close();
+    return Status::fail(Err::TooLarge, "plain::PlainEngine::reopenAs.memory");
+  }
+}
+
 }  // namespace plain
 }  // namespace agent

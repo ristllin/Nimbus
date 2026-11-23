@@ -128,11 +128,106 @@ static void test_an_older_generation_file_reads_and_a_refused_rename_keeps_the_n
   TEST_ASSERT_EQUAL((int)plain::GenRead::Unknown, (int)plain::readGeneration(f, "x", g));
 }
 
+// ---- lane E2-FIX3 (findings R2 and R4) ------------------------------------------------------------
+namespace {
+
+constexpr const char* kTmp = "/mem/tx/web.gen.tmp";
+constexpr const char* kMain = "/mem/tx/web.gen";
+
+// What a cut, an older build or a bad card can leave in each of the two files. nullptr: absent.
+constexpr const char* kTmpStates[] = {nullptr, "", "1", "12", "x\n", "9\n"};
+constexpr const char* kMainStates[] = {nullptr, "", "4", "4\n", "abc", "4x\n"};
+
+bool mainParses(const char* m) { return m && (std::string(m) == "4" || std::string(m) == "4\n"); }
+
+}  // namespace
+
+// Every pair of temp and main file a cut or an older build can leave: the next message is answered
+// (a number is read) unless the main file itself does not read as a number; then /clear moves the
+// chat to a number no transcript on the card holds, the number reads back, and the next message is
+// answered. Before: a torn temp beside an absent main file refused every message, and /clear too.
+static void test_every_torn_state_of_the_generation_files_lets_the_chat_go_on() {
+  for (const char* t : kTmpStates)
+    for (const char* m : kMainStates) {
+      FlakyFiles f;
+      if (t) f.files[kTmp] = t;
+      if (m) f.files[kMain] = m;
+      f.files["/mem/tx/web_c1/seg-00001.jsonl"] = "x\n";   // conversations already used
+      f.files["/mem/tx/web_c4/seg-00001.jsonl"] = "x\n";
+      f.files["/mem/tx/web_c5/seg-00001.jsonl"] = "x\n";
+      const std::string what = std::string("tmp=") + (t ? t : "(none)") + " main=" + (m ? m : "(none)");
+      uint32_t g = 77;
+      const plain::GenRead r = plain::readGeneration(f, "web", g);
+      const bool tmpWhole = t && std::string(t) == "9\n";
+      if (tmpWhole) {
+        TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Value, (int)r, what.c_str());
+        TEST_ASSERT_EQUAL_MESSAGE(9u, g, what.c_str());
+      } else if (mainParses(m)) {
+        TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Value, (int)r, what.c_str());
+        TEST_ASSERT_EQUAL_MESSAGE(4u, g, what.c_str());
+      } else if (!m) {
+        TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Absent, (int)r, what.c_str());   // a chat never cleared
+        TEST_ASSERT_EQUAL_MESSAGE(0u, g, what.c_str());
+        TEST_ASSERT_TRUE_MESSAGE(f.files.find(kTmp) == f.files.end(), what.c_str());   // the leftover is cleared
+      } else {
+        TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Unknown, (int)r, what.c_str());   // the one "cannot tell"
+      }
+      // /clear: never a number a transcript holds, and above the number read.
+      uint32_t next = 0;
+      TEST_ASSERT_TRUE_MESSAGE(plain::freeGeneration(f, "web", r == plain::GenRead::Unknown ? 0 : g, next), what.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(next != 1 && next != 4 && next != 5, what.c_str());
+      if (r != plain::GenRead::Unknown) TEST_ASSERT_TRUE_MESSAGE(next > g, what.c_str());
+      TEST_ASSERT_TRUE_MESSAGE(plain::storeGeneration(f, "web", next), what.c_str());
+      uint32_t back = 0;
+      TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", back), what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(next, back, what.c_str());
+    }
+}
+
+// A folder that cannot be listed cannot be ruled out: no number is handed out.
+static void test_a_folder_that_cannot_be_told_hands_out_no_number() {
+  FlakyFiles f;
+  f.refuseList = true;
+  uint32_t next = 0;
+  TEST_ASSERT_FALSE(plain::freeGeneration(f, "web", 2, next));
+  f.refuseList = false;
+  TEST_ASSERT_TRUE(plain::freeGeneration(f, "web", 2, next));
+  TEST_ASSERT_EQUAL(3u, next);
+}
+
+// R4: a /clear whose write the card refused did not happen: the card still holds the old number,
+// so the device keeps it too. Before: the device moved to the next number in RAM only, and after a
+// restart the same number was handed out again over the turns stored under it.
+static void test_a_refused_clear_write_keeps_the_number() {
+  FlakyFiles f;
+  TEST_ASSERT_TRUE(plain::writeGeneration(f, "web", 2));
+  f.refuseWholeWrites = true;
+  TEST_ASSERT_FALSE(plain::storeGeneration(f, "web", 3));
+  f.refuseWholeWrites = false;
+  uint32_t g = 0;
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g));
+  TEST_ASSERT_EQUAL(2u, g);
+  // A torn temp (a cut inside the write) did not happen either.
+  f.files[kTmp] = "3";
+  f.refuseRename = true;
+  f.refuseWholeWrites = true;
+  TEST_ASSERT_FALSE(plain::storeGeneration(f, "web", 3));
+  f.refuseWholeWrites = false;
+  // A refused rename over a whole temp did happen: the temp is the number in force.
+  TEST_ASSERT_TRUE(plain::storeGeneration(f, "web", 3));
+  f.refuseRename = false;
+  TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g));
+  TEST_ASSERT_EQUAL(3u, g);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_verb_of_the_table_has_its_route);
   RUN_TEST(test_arguments_and_spellings);
   RUN_TEST(test_the_generation_survives_a_cut_and_a_bad_read_is_never_zero);
   RUN_TEST(test_an_older_generation_file_reads_and_a_refused_rename_keeps_the_new_number);
+  RUN_TEST(test_every_torn_state_of_the_generation_files_lets_the_chat_go_on);
+  RUN_TEST(test_a_folder_that_cannot_be_told_hands_out_no_number);
+  RUN_TEST(test_a_refused_clear_write_keeps_the_number);
   return UNITY_END();
 }

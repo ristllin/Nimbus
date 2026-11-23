@@ -96,6 +96,16 @@ constexpr const char* kFrozenLine = "The monthly spend limit is reached. Raise i
 constexpr const char* kReadingLine =
     "The new engine is still reading the earlier conversation. Send the message again in a minute.";
 constexpr const char* kNoStartLine = "The new engine could not start for this chat. Restart the device and try again.";
+// Lane E2-FIX3 (ruling 116): the true cause and the owner's way out of each refusal below.
+constexpr const char* kNumberUnreadLine =
+    "The number of this chat's conversation could not be read from the card. Send /clear to start a new "
+    "conversation; the earlier ones stay stored on the device.";
+constexpr const char* kHeldElsewhereLine =
+    "This chat cannot start while another conversation is held in memory because its earlier history could "
+    "not be imported. Send /clear in that chat to store it and go on.";
+constexpr const char* kClearNotStoredLine =
+    "The new conversation was not started: the card did not store it. This conversation goes on; send /clear "
+    "again later.";
 // PC-0178: a context skill the fixed part cannot hold whole (lane E2-CHAT).
 constexpr const char* kSkillTooLargeLine =
     "Your skill %s is too large to ride every message (%u B; notes and skills share 4,096 B). It is "
@@ -193,6 +203,7 @@ std::unique_ptr<plain::ChatBinding> s_chat;   // the one resident chat (tg_poll 
 // for that message (never generation 0) and is not kept; the next message reads again.
 std::string s_genChat;   // the chat the RAM copy is for (tg_poll only)
 uint32_t s_gen = 0;
+const char* s_noStartWhy = nullptr;   // the owner's line when chatFor answered null (tg_poll only; E2-FIX3)
 
 bool noCardFitted() { return !memory::haveSd() && !memory::sdLost() && !nimbus::fault::active(nimbus::fault::SD); }
 
@@ -204,6 +215,7 @@ bool generationOf(const String& chatId, uint32_t& g) {
     const plain::GenRead r = plain::readGeneration(txdev::cardTxFiles(), chatId.c_str(), g);
     if (r == plain::GenRead::Unknown) {
       alogf("e2: the conversation number of chat %s could not be read: tried again with the next message", chatId.c_str());
+      s_noStartWhy = kNumberUnreadLine;
       return false;
     }
   }
@@ -341,6 +353,7 @@ plain::ChatBinding* residentFor(const String& chatId, const std::string& model, 
   if (!s_chat->reload()) {
     alogf("e2: chat %s keeps its RAM-only binding until the card is back", c.chatId.c_str());
     keep = true;
+    if (!same && s_chat->importStuck()) s_noStartWhy = kHeldElsewhereLine;   // E2-FIX3: its /clear lets it go
     return same ? s_chat.get() : nullptr;
   }
   s_chat.reset();   // another chat, model or role: the arena goes back before the next one
@@ -349,6 +362,7 @@ plain::ChatBinding* residentFor(const String& chatId, const std::string& model, 
 
 // The chat's binding for this model and role, booted (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
+  s_noStartWhy = nullptr;
   bool keep = false;
   plain::ChatBinding* resident = residentFor(chatId, model, role, keep);
   if (keep) return resident;
@@ -537,7 +551,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
   if (!b) {
     captureOwnerRow(text, fromName, chatId, false);
-    return sayInstead(chatId, kNoStartLine);
+    return sayInstead(chatId, s_noStartWhy ? s_noStartWhy : kNoStartLine);
   }
   plain::ChatMessage msg;
   msg.ch = chatId == "web" ? "web" : chatId == "voice" ? "voice" : chatId == "serial" ? "console" : "tg";
@@ -589,22 +603,47 @@ plain::ChatBinding* bindingFor(const String& chatId) {
   return chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
 }
 
-bool clearChat(const String& chatId) {
+bool clearChat(const String& chatId, String& why) {
+  why = String();
   // E2-STORE with E2-CHAT: a binding whose turns are held only in RAM is never dropped with them
-  // (ruling 81). The conversation stays as it is until the card is back.
-  if (s_chat && s_chat->config().chatId == chatId.c_str() && !s_chat->reload()) {
+  // (ruling 81). The conversation stays as it is until the card is back. E2-FIX3 (finding R1): when
+  // a history import that cannot finish is all that holds it, /clear stores those turns in the new
+  // conversation (the earlier history stays on the card as it is).
+  plain::ChatBinding* held = s_chat && s_chat->config().chatId == chatId.c_str() ? s_chat.get() : nullptr;
+  const bool moveHeld = held && !held->reload();
+  if (moveHeld && !held->importStuck()) {
     alogf("e2: /clear %s refused: the turns held in RAM are not stored yet", chatId.c_str());
+    why = kClearNotStoredLine;
     return false;
   }
+  // P7, E2-FIX3 (R2, R4): never a number a transcript holds; an unreadable number is left by writing
+  // a fresh one; a write the card did not take did not happen, here or in RAM.
   uint32_t now = 0;
-  if (!generationOf(chatId, now)) return false;   // P7: never a number that may already be used
-  const uint32_t next = now + 1;
-  if (!plain::writeGeneration(txdev::cardTxFiles(), chatId.c_str(), next))
-    alogf("e2: /clear generation %u kept in RAM only", (unsigned)next);
+  const bool read = generationOf(chatId, now);
+  uint32_t next = now + 1;
+  if (!noCardFitted()) {
+    nimbus::orch::tx::TxFiles& files = txdev::cardTxFiles();
+    if (!plain::freeGeneration(files, chatId.c_str(), read ? now : 0, next) ||
+        !plain::storeGeneration(files, chatId.c_str(), next)) {
+      alogf("e2: /clear %s refused: conversation number %u not stored", chatId.c_str(), (unsigned)next);
+      why = kClearNotStoredLine;
+      return false;
+    }
+  } else if (!read) {
+    return false;
+  }
   s_genChat = chatId.c_str();
   s_gen = next;
-  if (s_chat && s_chat->config().chatId == chatId.c_str()) s_chat.reset();   // the arena goes back first
-  alogf("e2: /clear %s: conversation %s", chatId.c_str(), txKeyFor(chatId).c_str());
+  const std::string key = txKeyFor(chatId);
+  bool keepHeld = false;
+  if (moveHeld) {
+    const plain::Status st = held->storeHeldAs(key);
+    keepHeld = !st.ok();   // the card refused the turns: still held, stored in `key` before the next message
+    alogf("e2: /clear %s: the turns held in RAM %s %s (%s)", chatId.c_str(), keepHeld ? "not yet stored in" : "stored in",
+          key.c_str(), nimbus::orch::tx::errSlug(st.err));
+  }
+  if (held && !keepHeld) s_chat.reset();   // the arena goes back first
+  alogf("e2: /clear %s: conversation %s", chatId.c_str(), key.c_str());
   return bindingFor(chatId) != nullptr;
 }
 

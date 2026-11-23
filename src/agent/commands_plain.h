@@ -14,8 +14,9 @@ namespace orchestrator {
 namespace e2cmd {
 
 struct EngineOps {
-  // A new conversation for `chatId` (the stored one is kept). False when it could not start.
-  std::function<bool(const String& chatId)> clear;
+  // A new conversation for `chatId` (the stored one is kept). False when it could not start, with
+  // `why` the owner's line naming the cause ("" for the could-not-start line).
+  std::function<bool(const String& chatId, String& why)> clear;
   // A compaction of `chatId` now; the engine answers it on the chat. False: no chat to compact.
   std::function<bool(const String& chatId)> compact;
   // engine 2's budget view for `chatId` in the owner's words ("" when no chat is running).

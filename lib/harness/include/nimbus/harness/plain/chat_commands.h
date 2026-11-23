@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -55,8 +56,12 @@ inline ChatCommandRoute chatCommandRoute(const nimbus::orch::Command& c) {
 // "<chat>_c<n>". The number is kept in /mem/tx/<chat>.gen as one decimal line, written whole to
 // <chat>.gen.tmp and renamed, so a cut leaves either number whole. Reading it has three answers: a
 // value; Absent, only when /mem/tx listed whole and holds neither name (a chat never cleared:
-// generation 0); Unknown otherwise (a refused read, a file there that does not read as a number),
-// which the device treats as an error for that turn, never as generation 0.
+// generation 0); Unknown otherwise (a refused read, a main file there that does not read as a
+// number), which the device treats as an error for that turn, never as generation 0. Lane E2-FIX3
+// (finding R2): a temp that does not read as a whole line is the leftover of a write that never
+// committed (a cut inside it): it is removed (or, if the card refuses, ignored) and the main file,
+// or its absence, decides. Only an unreadable main file cannot tell, and /clear still gets out of it
+// (freeGeneration).
 enum class GenRead : uint8_t { Value = 0, Absent = 1, Unknown = 2 };
 
 inline std::string generationPath(const std::string& chatId) {
@@ -82,21 +87,53 @@ inline GenRead readGeneration(nimbus::orch::tx::TxFiles& f, const std::string& c
   char buf[16];
   size_t got = 0;
   // The temp holds a whole line only when a cut stopped its rename: then it is the newer number.
-  if (f.readAt(tmp, 0, buf, sizeof buf, got) && parseGeneration(buf, got, true, g)) return GenRead::Value;
+  const bool tmpRead = f.readAt(tmp, 0, buf, sizeof buf, got);
+  if (tmpRead && parseGeneration(buf, got, true, g)) return GenRead::Value;
   got = 0;
   if (f.readAt(path, 0, buf, sizeof buf, got) && parseGeneration(buf, got, false, g)) return GenRead::Value;
   g = 0;
   std::vector<std::string> names;
   if (!f.list(nimbus::orch::tx::kTxRoot, names)) return GenRead::Unknown;
   const std::string base = chatId + ".gen", baseTmp = base + ".tmp";
-  for (const std::string& n : names)
-    if (n == base || n == baseTmp) return GenRead::Unknown;   // there, and not a number
+  bool torn = false;
+  for (const std::string& n : names) {
+    if (n == base) return GenRead::Unknown;   // there, and not a number
+    if (n == baseTmp && !tmpRead) return GenRead::Unknown;   // there, and not read: it may be whole
+    torn = torn || n == baseTmp;
+  }
+  if (torn) (void)f.remove(tmp);   // read, not whole, never renamed: its number was never in force
   return GenRead::Absent;
+}
+
+// The number /clear moves a chat to (lane E2-FIX3, findings R2 and R4): the first n above `from`
+// (the number read; 0 when it could not be read) whose transcript "<chat>_c<n>" holds no file, so
+// no conversation is ever reused, also after a number that was lost or never stored. False when a
+// folder cannot be told (the caller refuses the /clear and says so).
+inline constexpr uint32_t kGenerationProbe = 256;
+inline bool freeGeneration(nimbus::orch::tx::TxFiles& f, const std::string& chatId, uint32_t from, uint32_t& next) {
+  const uint64_t last = std::min<uint64_t>(UINT32_MAX, (uint64_t)from + kGenerationProbe);
+  for (uint64_t n = (uint64_t)from + 1; n <= last; ++n) {
+    std::vector<std::string> names;
+    if (!f.list(std::string(nimbus::orch::tx::kTxRoot) + "/" + chatId + "_c" + std::to_string(n), names)) return false;
+    if (names.empty()) {
+      next = (uint32_t)n;
+      return true;
+    }
+  }
+  return false;
 }
 
 inline bool writeGeneration(nimbus::orch::tx::TxFiles& f, const std::string& chatId, uint32_t g) {
   const std::string path = generationPath(chatId), tmp = path + ".tmp";
   return f.writeWhole(tmp, std::to_string(g) + "\n") && f.rename(tmp, path);
+}
+
+// /clear's write (lane E2-FIX3, finding R4): true only when the card holds `g` now. A refused
+// rename can leave the whole temp, which reads as `g`: that counts. Anything else did not happen.
+inline bool storeGeneration(nimbus::orch::tx::TxFiles& f, const std::string& chatId, uint32_t g) {
+  if (writeGeneration(f, chatId, g)) return true;
+  uint32_t back = 0;
+  return readGeneration(f, chatId, back) == GenRead::Value && back == g;
 }
 
 }  // namespace plain

@@ -26,6 +26,7 @@
 
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/plain/chat_binding.h"
+#include "nimbus/harness/plain/chat_commands.h"   // /clear's number (E2-FIX3)
 #include "nimbus/orch/compact.h"
 #include "nimbus/orch/episodic.h"
 #include "nimbus/orch/episodic_log.h"
@@ -445,6 +446,72 @@ static void test_an_import_refused_before_its_marker_stores_nothing_until_done()
   TEST_ASSERT_EQUAL(1u, count(body, "my bike lock code is 9911"));
   TEST_ASSERT_EQUAL(1u, count(body, "and the shed key is in the red tin"));
   TEST_ASSERT_TRUE(body.find("my bike lock code is 9911") < body.find("and the shed key is in the red tin"));
+}
+
+// Lane E2-FIX3, finding R1 (ruling 116 item 1): an import that fails the same way every time (here
+// its marker is always refused while the card answers). Before: the owner was told every turn to wait
+// for the card (which was in), /clear was refused, and every held turn was lost at each restart.
+// Now: the owner's line names the import and offers /clear; /clear stores the held turns in the new
+// conversation, in order, once; a restart keeps them; the earlier history is left as it was.
+static void test_an_import_that_never_finishes_offers_clear_and_clear_keeps_the_held_turns() {
+  Device dev;
+  seed(dev);
+  const std::string storeBefore = dev.old.store.serialize();
+  dev.card.refuseMarker = true;   // forever
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_TRUE(dev.binding->importPending());
+  TEST_ASSERT_TRUE(dev.say("my bike lock code is 9911").ok());
+  TEST_ASSERT_TRUE(dev.binding->importStuck());
+  TEST_ASSERT_EQUAL_STRING(plain::kImportStuckLine, dev.sent.back().c_str());
+  TEST_ASSERT_TRUE(dev.say("and the shed key is in the red tin").ok());
+  TEST_ASSERT_EQUAL_STRING(plain::kImportStuckLine, dev.sent.back().c_str());
+  TEST_ASSERT_FALSE(dev.binding->reload());   // what the device's /clear asks first: still held
+
+  // /clear: the number first, then the held turns into its transcript.
+  uint32_t next = 0;
+  TEST_ASSERT_TRUE(plain::freeGeneration(dev.files, kChat, 0, next));
+  TEST_ASSERT_EQUAL(1u, next);
+  TEST_ASSERT_TRUE(plain::storeGeneration(dev.files, kChat, next));
+  const std::string key = std::string(kChat) + "_c1";
+  const plain::Status st = dev.binding->storeHeldAs(key);
+  TEST_ASSERT_TRUE_MESSAGE(st.ok(), st.where);
+  TEST_ASSERT_TRUE(dev.binding->moved());
+  TEST_ASSERT_TRUE(dev.binding->reload());   // done: the caller lets it go
+  for (const auto& kv : dev.card.files)       // nothing under the chat's own key
+    TEST_ASSERT_TRUE_MESSAGE(kv.first.find("/" + std::string(kChat) + "/seg-") == std::string::npos, kv.first.c_str());
+
+  for (int restart = 0; restart < 2; ++restart) {
+    uint32_t g = 0;
+    TEST_ASSERT_EQUAL((int)plain::GenRead::Value, (int)plain::readGeneration(dev.files, kChat, g));
+    TEST_ASSERT_EQUAL(1u, g);
+    TEST_ASSERT_TRUE(dev.boot(key).ok());
+    TEST_ASSERT_FALSE(dev.binding->unloaded());
+    TEST_ASSERT_FALSE(dev.binding->migrationRan());
+    dev.sent.clear();
+    TEST_ASSERT_TRUE(dev.say(restart ? "and again?" : "what do you know?").ok());
+    for (const std::string& part : dev.sent) TEST_ASSERT_TRUE(part != plain::kImportStuckLine && part != plain::kNotLoadedLine);
+    const std::string body = dev.lastBody();
+    TEST_ASSERT_EQUAL(1u, count(body, "my bike lock code is 9911"));
+    TEST_ASSERT_EQUAL(1u, count(body, "and the shed key is in the red tin"));
+    TEST_ASSERT_TRUE(body.find("my bike lock code is 9911") < body.find("and the shed key is in the red tin"));
+    TEST_ASSERT_FALSE_MESSAGE(has(body, "my locker code is 4417"), "a new conversation starts empty");
+    dev.ms += 3600 * 1000;
+  }
+  TEST_ASSERT_TRUE(storeBefore == dev.old.store.serialize());   // the earlier history, as it was
+}
+
+// The neighbor: the card answers but the import fails only once: the owner is told it is not
+// imported yet (not the card), and the next turn's import ends it.
+static void test_an_import_that_fails_once_is_not_stuck() {
+  Device dev;
+  seed(dev);
+  dev.card.refuseMarker = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_FALSE(dev.binding->importStuck());   // one failure
+  dev.card.refuseMarker = false;
+  TEST_ASSERT_TRUE(dev.say("my bike lock code is 9911").ok());
+  TEST_ASSERT_FALSE(dev.binding->importPending());
+  for (const std::string& part : dev.sent) TEST_ASSERT_TRUE(part != plain::kImportStuckLine);
 }
 
 // The neighbor: no card fitted at all (noCard) runs from RAM by design; a refused import is not held for.
@@ -871,6 +938,8 @@ int main(int, char**) {
   RUN_TEST(test_a_card_out_at_the_first_boot_imports_before_anything_is_stored);
   RUN_TEST(test_an_import_refused_before_its_marker_stores_nothing_until_done);
   RUN_TEST(test_with_no_card_fitted_the_import_holds_nothing);
+  RUN_TEST(test_an_import_that_never_finishes_offers_clear_and_clear_keeps_the_held_turns);
+  RUN_TEST(test_an_import_that_fails_once_is_not_stuck);
   RUN_TEST(test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was);
   RUN_TEST(test_a_mirrored_fold_record_is_put_back_from_the_kept_copy);
   RUN_TEST(test_a_message_answered_with_a_device_line_joins_the_conversation_once);

@@ -112,6 +112,13 @@ struct ChatBindingDeps {
 // stored and never shown to a model.
 inline constexpr char kNotLoadedLine[] =
     "The stored conversation could not be loaded; what you say now is kept in memory only until the card is back.";
+// Lane E2-FIX3 (finding R1, ruling 116): the owner's line on each turn while the history import holds
+// the chat (owner-facing only, as kNotLoadedLine). Stuck: it failed the same way twice in a row.
+inline constexpr char kImportStuckLine[] =
+    "The earlier conversation could not be imported, so what you say now is kept in memory only. Send /clear "
+    "to keep it in a new conversation; the earlier one stays stored on the device.";
+inline constexpr char kImportPendingLine[] =
+    "The earlier conversation is not imported yet; what you say now is kept in memory only until it is.";
 
 // The tags of the person's day-stream row for a message (the web chat's history, the import's
 // rows). "e2" only when an engine-2 turn stores the message itself (it is then engine 2's: never
@@ -200,6 +207,14 @@ class ChatBinding {
   // so nothing is stored for this chat; it runs unloaded and the import is tried again before
   // each turn (reload). A refusal it can never get past (InvalidArgument) does not hold the chat.
   bool importPending() const { return importPending_; }
+  // Lane E2-FIX3 (finding R1): the import failed the same way (error and place) on its last two
+  // tries, so trying again before each turn is not likely to get past it (a marker over 8 KB, a
+  // page that never decodes, a read the card always refuses). The tries go on (it ends by itself
+  // when the cause is gone); the owner is told the import is the cause and that /clear gets out.
+  // A card that does not answer is the card's cause (kNotLoadedLine), never the import's.
+  bool importStuck() const { return importPending_ && movedTo_.empty() && cardAnswered_ && sameFailures_ >= 2; }
+  // The key storeHeldAs is storing the held turns into ("" before it was asked).
+  const std::string& movedTo() const { return movedTo_; }
 
   // Once: the head's budget and price, the arena, the log, the seams, the engine and its boot,
   // then the seen-index rebuild. A refused allocation is a status, never an abort.
@@ -249,7 +264,8 @@ class ChatBinding {
   // While unloaded: open the log again and store the RAM turns after the conversation
   // (PlainEngine::reopen), then rebuild the seen index. True when the chat is loaded after it.
   bool reload() {
-    if (!engine_) return false;
+    if (!engine_ || moved_) return !!engine_;
+    if (!movedTo_.empty()) return storeHeldAs(movedTo_).ok();   // E2-FIX3: only into the new conversation
     if (!engine_->unloaded()) return true;
     if (importPending_) {   // P3: the import first; the RAM turns follow what it stored, once, in order
       migrateOld();
@@ -269,11 +285,38 @@ class ChatBinding {
     return true;
   }
 
+  // Lane E2-FIX3 (finding R1): /clear on a chat the history import holds. The turns held in RAM are
+  // stored, in order, each once, as the start of the transcript `key` (the new conversation), and
+  // nothing is written under this chat's key: its earlier history stays on the card as it is, for a
+  // later import. Success: this binding is done (moved), the caller boots one on `key`. Not ok:
+  // still held, and every later reload() stores into `key` only (resuming after what landed).
+  Status storeHeldAs(const std::string& key) {
+    namespace tx = nimbus::orch::tx;
+    if (moved_ || !engine_ || !engine_->unloaded() || (!importPending_ && movedTo_.empty()) ||
+        (!movedTo_.empty() && key != movedTo_))
+      return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::storeHeldAs");
+    std::unique_ptr<tx::TxLog> log(new (std::nothrow) tx::TxLog(*d_.files, key));
+    if (!log) return Status::fail(tx::Err::TooLarge, "plain::ChatBinding::storeHeldAs.memory");
+    movedTo_ = key;
+    importPending_ = false;   // the import of this key is left to a later boot; nothing more runs here
+    const Status st = engine_->reopenAs(*log, key);
+    if (!st.ok()) {
+      say("e2: the turns held in RAM are not stored in the new conversation yet: tried again before the next turn");
+      return st;
+    }
+    log->close();
+    moved_ = true;
+    say("e2: the turns held in RAM are stored in the new conversation");
+    return st;
+  }
+  // storeHeldAs succeeded: nothing more runs on this binding.
+  bool moved() const { return moved_; }
+
   // One person's message through the loop. The breaker admits every person's message (it holds
   // back only turns no person started); the spend is recorded after.
   Status turn(const ChatMessage& msg, TurnOutcome& out) {
     namespace tx = nimbus::orch::tx;
-    if (!engine_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::turn.before-boot");
+    if (!engine_ || moved_) return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::turn.before-boot");
     if (busy_) return Status::fail(tx::Err::Busy, "plain::ChatBinding::turn.busy");
     busy_ = true;
     struct Idle {
@@ -294,14 +337,14 @@ class ChatBinding {
     in.parts = msg.parts;
     // Lane E2-STORE: a chat whose stored conversation could not be loaded tries again before
     // the turn, so the turn sees the whole conversation as soon as the card answers.
-    reload();
+    if (movedTo_.empty()) reload();   // E2-FIX3: held for the new conversation, the caller stores it first
     Status st;
     try {
       st = engine_->runTurn(in, out);
     } catch (const std::bad_alloc&) {
       st = Status::fail(tx::Err::TooLarge, "plain::ChatBinding::turn.memory");
     }
-    if (engine_->unloaded() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, kNotLoadedLine);
+    if (engine_->unloaded() && d_.sendPart) (void)d_.sendPart(cfg_.chatId, unloadedLine());
     breaker_.spent(/*person=*/true, out.end.microUsd, d_.platform->nowMs());
     if (reporter_) reporter_->close(d_.platform->nowMs());
     if (d_.usage) d_.usage(out);
@@ -407,6 +450,11 @@ class ChatBinding {
   void say(const char* line) const {
     if (d_.log) d_.log(std::string(line));
   }
+  // The owner's line for an unloaded turn, naming the true cause (E2-FIX3, ruling 116).
+  const char* unloadedLine() const {
+    if (importStuck()) return kImportStuckLine;
+    return importPending_ && cardAnswered_ ? kImportPendingLine : kNotLoadedLine;
+  }
   // Every binding boot needs is there.
   bool bound() const {
     const Platform* p = d_.platform;
@@ -418,6 +466,7 @@ class ChatBinding {
   // compaction rung (the summarizer) on the same transport.
   void migrateOld() {
     namespace tx = nimbus::orch::tx;
+    const Status before = migrationStatus_;
     migrationRan_ = false;
     importPending_ = false;
     migrationStatus_ = Status::success();
@@ -447,10 +496,19 @@ class ChatBinding {
     const uint32_t t0 = d_.platform->nowMs();
     migrationStatus_ = tx::migrate(m, migration_);
     migrationMs_ = d_.platform->nowMs() - t0;
-    if (migrationStatus_.ok()) return;
+    if (migrationStatus_.ok()) {
+      sameFailures_ = 0;
+      return;
+    }
     say("e2: the earlier engine's conversation was not imported this time");
     const bool noCard = d_.noCard && d_.noCard();   // no card at all: RAM by design, nothing to hold for
     importPending_ = !noCard && migrationStatus_.err != tx::Err::InvalidArgument;
+    const bool same = !before.ok() && before.err == migrationStatus_.err &&
+                      std::string(before.where ? before.where : "") == (migrationStatus_.where ? migrationStatus_.where : "");
+    sameFailures_ = same ? sameFailures_ + 1 : 1;
+    std::vector<std::string> names;
+    cardAnswered_ = d_.files->list(tx::kTxRoot, names);   // the card answers: the cause is the import
+    if (importStuck()) say("e2: the earlier engine's conversation fails to import the same way: the owner is offered /clear");
   }
   // RB-TG1: the chat's taken updates from the filled arena and head.json's high water.
   void rebuildSeen() {
@@ -635,6 +693,10 @@ class ChatBinding {
   bool busy_ = false;
   bool migrationRan_ = false;
   bool importPending_ = false;
+  uint32_t sameFailures_ = 0;   // the import's failures in a row with the same error and place (E2-FIX3)
+  bool cardAnswered_ = false;   // the card listed /mem/tx after the import's last failure
+  std::string movedTo_;         // storeHeldAs's key: the held turns go there only
+  bool moved_ = false;          // storeHeldAs succeeded: the binding is done
   uint32_t migrationMs_ = 0;
   Status migrationStatus_;
   nimbus::orch::tx::MigrationOutcome migration_;
