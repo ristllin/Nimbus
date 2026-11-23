@@ -108,7 +108,7 @@ struct ListedFile {
 // stored calls named) may be added, removed, moved or changed in any way. Every other entry must
 // keep its line and its order, with two exceptions the list's byte size makes: entries at the
 // bottom of `seen` that left the list while the file is there as it was (a line in `listing`), and
-// entries that came into the bottom of `now` (an own delete made room) whose write time is known
+// entries that came into the bottom of `now` (room the own entries left) whose write time is known
 // and before `openedAt`, the turn's open (an outside write during the turn stamps a later time).
 // `listing` is every file the store holds now.
 bool ownFilesChange(const std::string& seen, const std::string& now, const std::vector<ListedFile>& listing,

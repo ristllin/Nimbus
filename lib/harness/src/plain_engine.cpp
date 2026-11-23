@@ -118,6 +118,7 @@ struct Turn {
   bool notStored = false;
   std::vector<std::string> ownTexts;
   std::vector<std::string> ownPaths;
+  bool callRan = false;                // the call being stored ran here (a hook's answer never ran it: not own)
   uint8_t compactAsks = 0;             // compaction first, asked once a turn per urgency (lane RB-C3)
   uint32_t sizeTokens = 0;             // the size guard's input: request sizes summed, cache included
   DeferredEffects deferred;            // effects to run after the turn (TurnOutcome::deferred)
@@ -1445,6 +1446,7 @@ class TurnRun {
       dd = d_.hooks->runBeforeDispatch(dc);
     }
     ToolOutput out;
+    t_.callRan = false;
     if (dd.verdict != DispatchVerdict::Run) {
       out.text = dd.text;
       out.isError = dd.verdict == DispatchVerdict::Refuse;
@@ -1462,6 +1464,7 @@ class TurnRun {
       }
       if (recorded) {
         dispatchOne(call, out);
+        t_.callRan = true;
         ++t_.end.tools;
       } else {
         out.text = texts::tool_results::kNotRunUnrecorded;
@@ -1517,7 +1520,7 @@ class TurnRun {
       t_.ctx.tainted = true;   // the request now carries an outside result whole
     }
     if (r.ok && orch::tx::changesFileSet(view.name)) t_.fileSetChanged = true;
-    if (r.ok && stored && view.cls.effect == orch::EffectClass::Effect) keepOwn(out.text, view.args);
+    if (r.ok && stored && t_.callRan && view.cls.effect == orch::EffectClass::Effect) keepOwn(out.text, view.args);
     if (r.ok && stored && out.deferred != Deferred::None) {   // a stored success only; run once the turn is closed
       const size_t kind = static_cast<size_t>(out.deferred);
       if (kind < kDeferredKinds) {

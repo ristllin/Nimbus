@@ -831,7 +831,7 @@ struct OwnCase {
 const OwnCase kOwnCases[] = {
     {"write_file", "notes/new.md", "create"},        {"append_file", "log/daily.md", "append"},
     {"edit_file", "lists/shopping.md", "edit"},      {"write_file", "journal/start.md", "overwrite"},
-    {"delete_file", "journal/start.md", "delete"},   {"append_file", "journal/start.md", "append to the oldest"},
+    {"delete_file", "journal/start.md", "delete"},   {"append_file", "journal/start.md", "append to the last listed of the three"},
 };
 static void test_create_append_edit_overwrite_delete_by_the_heads_own_call_keep_the_prefix() {
   std::string broken;   // every case that rewrote, named
@@ -880,8 +880,8 @@ static void test_a_file_changed_from_outside_still_renders() {
   // a full list: the head deletes a file while a file below the list's size is written from outside
   TEST_ASSERT_TRUE(ownChange("delete_file", "journal/start.md", true, [](Device& d) { d.touch("archive/old-25.md"); })
                        .find("system part") != std::string::npos);
-  // a full list: the head deletes a file while a file below the list's size is deleted from outside
-  // (nothing listed changes but the reappearing line: it renders only if that line is the wrong one)
+  // a full list: the head deletes a file while the oldest file, below the list's size, is deleted from
+  // outside: no listed line changes but the one the delete lets in, so nothing is hidden and nothing renders
   TEST_ASSERT_EQUAL_STRING("", ownChange("delete_file", "journal/start.md", true, [](Device& d) { d.drop("archive/old-29.md"); }).c_str());
 }
 static void test_a_failed_file_call_is_not_the_turns_own() {
@@ -916,28 +916,32 @@ static void test_the_own_addition_rules() {
   TEST_ASSERT_FALSE(plain::ownNotesAddition("a: 1", "a: 1", "a: 1\nc: 3", own, hdr));   // not this turn's
   TEST_ASSERT_FALSE(plain::ownNotesAddition("a: 1", "a: 1\nb: 2", "a: 1", own, hdr));  // an own addition removed
   // The file list, by path (lane E2-FIX8; replaces E2-FIX6's addition-only rule, whose cases stay here).
-  const std::vector<plain::ListedFile> listing{{"x.md (t1)", "x.md", 100}, {"y.md (t2)", "y.md", 200}};
-  TEST_ASSERT_TRUE(plain::ownFilesChange("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {"y.md"}, 300));
-  TEST_ASSERT_TRUE(plain::ownFilesChange("x.md (t1)", "y.md (t2)", listing, {"y.md"}, 300));   // x fell out of the size
-  TEST_ASSERT_FALSE(plain::ownFilesChange("x.md (t1)\nz.md (t3)", "x.md (t1)", listing, {}, 300));   // z is gone
-  TEST_ASSERT_FALSE(plain::ownFilesChange("x.md (t1)", "y.md (t2)\nx.md (t1)", listing, {}, 300));   // not this turn's
+  const std::vector<plain::ListedFile> listing{{"x.md (Mon 11 Nov 2026 10:01)", "x.md", 100}, {"y.md (Mon 12 Nov 2026 10:02)", "y.md", 200}};
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x.md (Mon 11 Nov 2026 10:01)", "y.md (Mon 12 Nov 2026 10:02)\nx.md (Mon 11 Nov 2026 10:01)", listing, {"y.md"}, 300));
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x.md (Mon 11 Nov 2026 10:01)", "y.md (Mon 12 Nov 2026 10:02)", listing, {"y.md"}, 300));   // x fell out of the size
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x.md (Mon 11 Nov 2026 10:01)\nz.md (Mon 13 Nov 2026 10:03)", "x.md (Mon 11 Nov 2026 10:01)", listing, {}, 300));   // z is gone
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x.md (Mon 11 Nov 2026 10:01)", "y.md (Mon 12 Nov 2026 10:02)\nx.md (Mon 11 Nov 2026 10:01)", listing, {}, 300));   // not this turn's
   // an append moves its entry to the top with a new time; a delete takes it out
-  const std::vector<plain::ListedFile> l2{{"a.md (t9)", "a.md", 900}, {"b.md (t5)", "b.md", 500}, {"c.md (t4)", "c.md", 400}};
-  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (t5)\na.md (t3)\nc.md (t4)", "a.md (t9)\nb.md (t5)\nc.md (t4)", l2, {"a.md"}, 800));
-  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\na.md (t3)\nc.md (t4)", "a.md (t9)\nb.md (t5)\nc.md (t4)", l2, {"b.md"}, 800));
-  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (t5)\nd.md (t4)\nc.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 800));
-  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\nd.md (t4)\nc.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"a.md"}, 800));
+  const std::vector<plain::ListedFile> l2{{"a.md (Mon 19 Nov 2026 10:09)", "a.md", 900}, {"b.md (Mon 15 Nov 2026 10:05)", "b.md", 500}, {"c.md (Mon 14 Nov 2026 10:04)", "c.md", 400}};
+  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (Mon 15 Nov 2026 10:05)\na.md (Mon 13 Nov 2026 10:03)\nc.md (Mon 14 Nov 2026 10:04)", "a.md (Mon 19 Nov 2026 10:09)\nb.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"a.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (Mon 15 Nov 2026 10:05)\na.md (Mon 13 Nov 2026 10:03)\nc.md (Mon 14 Nov 2026 10:04)", "a.md (Mon 19 Nov 2026 10:09)\nb.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"b.md"}, 800));
+  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (Mon 15 Nov 2026 10:05)\nd.md (Mon 14 Nov 2026 10:04)\nc.md (Mon 14 Nov 2026 10:04)", "b.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"d.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (Mon 15 Nov 2026 10:05)\nd.md (Mon 14 Nov 2026 10:04)\nc.md (Mon 14 Nov 2026 10:04)", "b.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"a.md"}, 800));
   // another entry changed beside an own one, or two others swapped: not own
-  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t1)\nc.md (t4)", "a.md (t9)\nb.md (t5)\nc.md (t4)", l2, {"a.md"}, 800));
-  TEST_ASSERT_FALSE(plain::ownFilesChange("c.md (t4)\nb.md (t5)", "b.md (t5)\nc.md (t4)", l2, {}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (Mon 11 Nov 2026 10:01)\nc.md (Mon 14 Nov 2026 10:04)", "a.md (Mon 19 Nov 2026 10:09)\nb.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"a.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("c.md (Mon 14 Nov 2026 10:04)\nb.md (Mon 15 Nov 2026 10:05)", "b.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {}, 800));
   // came into the bottom after an own delete: only with a write time before the turn opened
-  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (t5)\nd.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 800));
-  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\nd.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 400));
-  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (t5)\nd.md (t4)", "b.md (t5)\nc.md (t4)", l2, {"d.md"}, 0));
+  TEST_ASSERT_TRUE(plain::ownFilesChange("b.md (Mon 15 Nov 2026 10:05)\nd.md (Mon 14 Nov 2026 10:04)", "b.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"d.md"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (Mon 15 Nov 2026 10:05)\nd.md (Mon 14 Nov 2026 10:04)", "b.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"d.md"}, 400));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("b.md (Mon 15 Nov 2026 10:05)\nd.md (Mon 14 Nov 2026 10:04)", "b.md (Mon 15 Nov 2026 10:05)\nc.md (Mon 14 Nov 2026 10:04)", l2, {"d.md"}, 0));
   // a line of another path that merely starts with an own path is not an own entry
-  TEST_ASSERT_TRUE(plain::ownFilesChange("x (t1)\nc.md (t4)", "c.md (t4)", l2, {"x"}, 800));
-  TEST_ASSERT_FALSE(plain::ownFilesChange("x (b) (t1)\nc.md (t4)", "c.md (t4)", l2, {"x"}, 800));
-  TEST_ASSERT_FALSE(plain::ownFilesChange("x.bak (t1)\nc.md (t4)", "c.md (t4)", l2, {"x"}, 800));
+  const std::string w = " (Tue 17 Nov 2026 13:02)", w1 = " (Sun 1 Nov 2026 09:00)";
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x" + w + "\nc.md (Mon 14 Nov 2026 10:04)", "c.md (Mon 14 Nov 2026 10:04)", l2, {"x"}, 800));
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x" + w1 + "\nc.md (Mon 14 Nov 2026 10:04)", "c.md (Mon 14 Nov 2026 10:04)", l2, {"x"}, 800));
+  TEST_ASSERT_TRUE(plain::ownFilesChange("x\nc.md (Mon 14 Nov 2026 10:04)", "c.md (Mon 14 Nov 2026 10:04)", l2, {"x"}, 800));   // no time shown
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x (b)" + w + "\nc.md (Mon 14 Nov 2026 10:04)", "c.md (Mon 14 Nov 2026 10:04)", l2, {"x"}, 800));
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x (1)\nc.md (Mon 14 Nov 2026 10:04)", "c.md (Mon 14 Nov 2026 10:04)", l2, {"x"}, 800));   // "x (1)", no time
+  TEST_ASSERT_FALSE(plain::ownFilesChange("x.bak" + w + "\nc.md (Mon 14 Nov 2026 10:04)", "c.md (Mon 14 Nov 2026 10:04)", l2, {"x"}, 800));
 }
 // [fix6-unit-end]
 

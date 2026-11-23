@@ -159,14 +159,26 @@ namespace {
 bool named(const std::vector<std::string>& paths, const std::string& path) {
   return std::find(paths.begin(), paths.end(), path) != paths.end();
 }
-// A list line is "<path>" or "<path> (<when>)", the time holding no parenthesis
-// (tx::recentFilesList). Is `line` an entry of `path`?
+// tx::photoWhen's shape: "Tue 17 Nov 2026 13:02" (the day of the month one or two digits).
+bool whenShaped(const std::string& w) {
+  static const char kShape[] = "aaa 99 aaa 9999 99:99";   // a: a letter, 9: a digit, else itself
+  std::string s = w;
+  if (s.size() == sizeof kShape - 2 && s.size() > 5 && s[5] == ' ') s.insert(4, "0");   // "Tue 7 Nov ..."
+  if (s.size() != sizeof kShape - 1) return false;
+  for (size_t i = 0; i < s.size(); ++i) {
+    const char k = kShape[i], c = s[i];
+    const bool ok = k == 'a' ? ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) : k == '9' ? (c >= '0' && c <= '9') : c == k;
+    if (!ok) return false;
+  }
+  return true;
+}
+// A list line is "<path>" or "<path> (<when>)" (tx::recentFilesList). Is `line` an entry of `path`?
 bool lineOf(const std::string& line, const std::string& path) {
   if (line.compare(0, path.size(), path) != 0) return false;
   if (line.size() == path.size()) return true;
   const std::string tail = line.substr(path.size());
   return tail.size() > 3 && tail.compare(0, 2, " (") == 0 && tail.back() == ')' &&
-         tail.find_first_of("()", 2) == tail.size() - 1;
+         whenShaped(tail.substr(2, tail.size() - 3));
 }
 }  // namespace
 
@@ -204,7 +216,7 @@ bool ownFilesChange(const std::string& seen, const std::string& now, const std::
   if (k < before.size() && k < after.size()) return false;   // another entry changed or moved
   for (size_t i = k; i < before.size(); ++i)   // left the bottom: the file is there as it was
     if (!listed(listing, before[i])) return false;
-  for (size_t i = k; i < after.size(); ++i) {   // came into the bottom: written before the turn opened
+  for (size_t i = k; i < after.size(); ++i) {   // came into the bottom (room the own entries left): written before the open
     const uint64_t at = listed(listing, after[i])->lastWrite;
     if (!at || !openedAt || at >= openedAt) return false;
   }
