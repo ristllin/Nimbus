@@ -579,6 +579,35 @@ static void test_the_record_round_trips_any_bytes() {
 
 #endif
 
+
+// Lane E2-CMP: a compaction renders the frozen system blocks afresh exactly once (the summary is new in them),
+// and from the next turn on the requests are byte-stable again ahead of their closed turns (rule A).
+static void test_a_compaction_renders_the_blocks_afresh_once_then_they_hold() {
+  Device dev;
+  for (int i = 0; i < 9; ++i) {
+    dev.pause(30);
+    dev.say("1001", "message " + std::to_string(i) + " about the garden");
+  }
+  const std::string before = systemOf(dev.sent.back().body);
+  dev.model.push(sp::say("+F The person writes about the garden."));
+  TEST_ASSERT_TRUE(dev.binding->compactNow().ok());
+  const size_t first = dev.sent.size();
+  for (int i = 0; i < 3; ++i) {
+    dev.pause(30);
+    dev.say("1001", "after the summary " + std::to_string(i));
+  }
+  TEST_ASSERT_EQUAL(first + 3, dev.sent.size());
+  const std::string after = systemOf(dev.sent[first].body);
+  TEST_ASSERT_TRUE_MESSAGE(after != before, "the compaction rendered the blocks afresh");
+  TEST_ASSERT_TRUE(after.find("The person writes about the garden.") != std::string::npos);
+  for (size_t i = first + 1; i < dev.sent.size(); ++i) {
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(after.c_str(), systemOf(dev.sent[i].body).c_str(), "rendered again after the compaction");
+    const std::string ahead = aheadOfClosed(dev.sent[i - 1].body);
+    TEST_ASSERT_TRUE_MESSAGE(stripMarks(dev.sent[i].body).compare(0, ahead.size(), ahead) == 0,
+                             "the bytes ahead of the closed turns changed after the compaction");
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_the_checker_catches_a_silent_rewrite_and_the_oracle_excuses_a_listed_one);
@@ -602,6 +631,7 @@ int main(int, char**) {
   RUN_TEST(test_a_torn_record_is_rendered_afresh_and_replaced);
   RUN_TEST(test_an_unreadable_card_is_never_absent);
   RUN_TEST(test_the_record_round_trips_any_bytes);
+  RUN_TEST(test_a_compaction_renders_the_blocks_afresh_once_then_they_hold);
 #endif
   return UNITY_END();
 }

@@ -264,6 +264,7 @@ class Engine2Host {
     u.completionTokens = out.end.outputTokens;
     u.cacheReadTokens = out.end.cacheReadTokens;
     u.cacheWriteTokens = out.end.cacheWriteTokens;
+    u.cacheWrite1hTokens = out.end.cacheWrite1hTokens;   // priced at 2x the input rate (lane E2-CACHE)
     u.responses = out.headRequests;
     u.maxRequestIn = out.end.lastPromptTokens;
     s.add("anthropic", bootModel_.c_str(), u);   // files nothing when nothing was billed
