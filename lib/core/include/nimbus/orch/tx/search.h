@@ -34,7 +34,9 @@
 // not consider: following the cursors reaches the start of the conversation, every line once.
 //
 // Matching: every word of the query (a run of letters and digits, ASCII case folded; bytes over
-// 0x7f count as letters) occurs in the text as a substring, case-insensitive. A query with no word
+// 0x7f count as letters) occurs as a substring, case-insensitive, within one line of the text or a
+// line and the one before it (matchesNear: in a long result of many lines the words are near each
+// other). A query with no word
 // matches nothing. Results the search and view tools returned earlier are never searched (their
 // text repeats what they found), nor the items of the open turn (the question itself).
 // Engine 2 only (tools/engine/engine2_only.txt). Portable, host-tested (test_tx_search).
@@ -155,6 +157,9 @@ struct SearchOutcome {
 std::vector<std::string> queryWords(const std::string& query);
 // Every word occurs in `text` (case-insensitive substring). Pure.
 bool matchesAll(const std::string& text, const std::vector<std::string>& words);
+// Every word occurs within one line, or within a line and the one before it: in a long result of
+// many lines the words must be near each other (a text of one line is matchesAll). What a hit is.
+bool matchesNear(const std::string& text, const std::vector<std::string>& words);
 // Is `cursor` one this module hands out ("" included)? Pure.
 bool cursorOk(const std::string& cursor);
 

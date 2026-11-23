@@ -399,7 +399,7 @@ struct Scan {
     std::string text;
     bool searched = false;
     const Status st = textOf(bulk, text, searched);
-    if (st.ok() && searched && matchesAll(text, words)) addHit(std::move(text));
+    if (st.ok() && searched && matchesNear(text, words)) addHit(std::move(text));
     return st;
   }
 
@@ -508,7 +508,7 @@ Status Scan::oldPage(OldPage& page, size_t skip, const std::string& token, bool&
     }
     DayRow& r = page.rows[i];
     noteOldest(r.t, out);
-    if (!oldConversation(r) || !inRange(r.t, a) || !matchesAll(r.text, words)) continue;
+    if (!oldConversation(r) || !inRange(r.t, a) || !matchesNear(r.text, words)) continue;
     SearchHit hit;
     hit.id = rowIdString(r.id);
     hit.t = r.t;
@@ -576,6 +576,20 @@ std::vector<std::string> queryWords(const std::string& query) {
 
 bool matchesAll(const std::string& text, const std::vector<std::string>& words) {
   return allIn(text.data(), text.size(), words);
+}
+
+bool matchesNear(const std::string& text, const std::vector<std::string>& words) {
+  if (words.empty()) return false;
+  size_t prev = 0;   // the start of the line before the current one
+  for (size_t start = 0; start <= text.size();) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    if (allIn(text.data() + prev, end - prev, words)) return true;   // this line with the one before it
+    if (end == text.size()) return false;
+    prev = start;
+    start = end + 1;
+  }
+  return false;
 }
 
 bool cursorOk(const std::string& cursor) {

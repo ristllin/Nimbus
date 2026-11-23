@@ -191,6 +191,14 @@ static void test_words_match_all_case_insensitive() {
   TEST_ASSERT_FALSE(tx::matchesAll("Mira's train EZ8123", w));
   TEST_ASSERT_FALSE(tx::matchesAll("anything", tx::queryWords("  ,.; ")));   // no word: nothing
   TEST_ASSERT_TRUE(tx::matchesAll("Café Zürich", tx::queryWords("café")));    // bytes over 0x7f are letters
+  // A hit needs the words near each other: one line, or two lines in a row.
+  const auto near = tx::queryWords("kettle hedge 18");
+  TEST_ASSERT_TRUE(tx::matchesNear("a\nchecked the kettle and the hedge, 18 minutes\nb", near));
+  TEST_ASSERT_TRUE(tx::matchesNear("Mira's flight:\nthe kettle hedge 18", near));
+  TEST_ASSERT_TRUE(tx::matchesNear("kettle\nhedge 18", near));
+  TEST_ASSERT_FALSE(tx::matchesNear("kettle\nx\nhedge 18", near));   // three lines apart
+  TEST_ASSERT_TRUE(tx::matchesAll("kettle\nx\nhedge 18", near));
+  TEST_ASSERT_TRUE(tx::matchesNear("one long line with kettle then hedge then 18", near));
 }
 
 static void test_a_fact_three_weeks_and_600_turns_back_is_found_without_and_with_a_range() {
