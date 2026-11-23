@@ -126,18 +126,27 @@ Status encodePrefix(const FrozenPrefix& f, std::string& out) {
   return Status::success();
 }
 
+namespace {
+bool headerOk(const std::string& in) {
+  const size_t magic = sizeof kMagic;   // the format and its line end
+  return in.size() >= magic && in.compare(0, magic - 1, kMagic) == 0 && in[magic - 1] == '\n';
+}
+bool fieldsOf(const std::string& in, size_t& at, FrozenPrefix& f, uint64_t& manifest) {
+  return getField(in, at, "core", f.blocks.core) && getField(in, at, "notes", f.blocks.notes) &&
+         getField(in, at, "digests", f.blocks.digests) && getNum(in, at, "manifest", manifest) &&
+         getField(in, at, "digest-text", f.digestText) && getField(in, at, "seen-notes", f.seenNotes) &&
+         getField(in, at, "seen-files", f.seenFiles) && getNum(in, at, "stub", f.stub) &&
+         getNum(in, at, "dropped", f.dropped);
+}
+}  // namespace
+
 Status decodePrefix(const std::string& in, FrozenPrefix& out) {
   out = FrozenPrefix{};
-  const size_t magic = sizeof kMagic;   // the format and its line end
-  if (in.size() < magic || in.compare(0, magic - 1, kMagic) != 0 || in[magic - 1] != '\n') return Status::fail(Err::Torn, "plain::decodePrefix");
+  if (!headerOk(in)) return Status::fail(Err::Torn, "plain::decodePrefix");
   FrozenPrefix f;
-  size_t at = magic;
+  size_t at = sizeof kMagic;
   uint64_t manifest = 0, z = 0;
-  const bool shaped = getField(in, at, "core", f.blocks.core) && getField(in, at, "notes", f.blocks.notes) &&
-                      getField(in, at, "digests", f.blocks.digests) && getNum(in, at, "manifest", manifest) &&
-                      getField(in, at, "digest-text", f.digestText) && getField(in, at, "seen-notes", f.seenNotes) &&
-                      getField(in, at, "seen-files", f.seenFiles) && getNum(in, at, "stub", f.stub) &&
-                      getNum(in, at, "dropped", f.dropped);
+  const bool shaped = fieldsOf(in, at, f, manifest);
   const size_t body = at;
   if (!shaped || !getNum(in, at, "z", z) || at != in.size() || manifest > UINT32_MAX || z != fnv1a(in.data(), body))
     return Status::fail(Err::Torn, "plain::decodePrefix");
