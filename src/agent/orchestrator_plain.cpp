@@ -485,10 +485,17 @@ const char* refusalFor(const String& host) {
 }
 
 // The person's message into the chat's day stream (the web chat's history, a later migration's
-// rows), tagged e2 so a migration never imports it again (RB-MG1a). Its row id.
-String captureOwnerRow(const String& text, const String& fromName, const String& chatId) {
-  const String tags = fromName.length() ? "from:" + fromName + ",e2" : String("e2");
-  return memory::captureMessage(chatId.c_str(), "user", nimbus::orch::MsgKind::Message, text, "", tags);
+// rows). `turn`: an engine-2 turn stores it, so it is tagged e2 and never imported (RB-MG1a);
+// otherwise (a device line answered it) the import brings it in once (plain::ownerRowTags, P10).
+String captureOwnerRow(const String& text, const String& fromName, const String& chatId, bool turn) {
+  const std::string tags = plain::ownerRowTags(std::string(fromName.c_str(), fromName.length()), turn);
+  return memory::captureMessage(chatId.c_str(), "user", nimbus::orch::MsgKind::Message, text, "", String(tags.c_str()));
+}
+
+// P10: a message a device line answered reaches the conversation through the import at the chat's
+// next boot, so a resident binding that holds nothing in RAM only is let go (the next message boots it).
+void leaveToImport(const String& chatId) {
+  if (s_chat && s_chat->config().chatId == chatId.c_str() && !s_chat->unloaded()) s_chat.reset();
 }
 
 // One device line instead of a turn (system provenance, never model text).
@@ -510,17 +517,18 @@ bool waitsForHistory(const String& chatId) {
 bool runOne(const String& text, const String& fromName, const String& chatId) {
   const String host = store::resolvedOrchHost();
   if (const char* line = refusalFor(host)) {
-    captureOwnerRow(text, fromName, chatId);
+    captureOwnerRow(text, fromName, chatId, false);
+    leaveToImport(chatId);
     return sayInstead(chatId, line);
   }
   if (waitsForHistory(chatId)) {
-    captureOwnerRow(text, fromName, chatId);
+    captureOwnerRow(text, fromName, chatId, false);
     return sayInstead(chatId, kReadingLine);
   }
   const std::string model(store::orchModel(host).c_str());
   plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
   if (!b) {
-    captureOwnerRow(text, fromName, chatId);
+    captureOwnerRow(text, fromName, chatId, false);
     return sayInstead(chatId, kNoStartLine);
   }
   plain::ChatMessage msg;
@@ -532,7 +540,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
     alogf("e2: message to %s already taken before the restart: not answered again", chatId.c_str());
     return true;
   }
-  const String row = captureOwnerRow(text, fromName, chatId);
+  const String row = captureOwnerRow(text, fromName, chatId, true);
   msg.text = std::string(text.c_str(), text.length());
   msg.parts = plain::photoParts(s_photos.get(), host.c_str(), model);
   msg.tzMinutes = (int16_t)(utcOffsetAt((uint32_t)time(nullptr)));
@@ -802,15 +810,21 @@ void drainOutboxes() {
 }
 
 // The outboxes a restart left on the card: loaded once, so their notes go when quiet hours end.
+// Lane E2-FIX2B (finding P12): a listing that fails is tried again every 30 s until one answers.
 void loadOutboxes() {
   static bool done = false;
+  static uint32_t lastTry = 0;
+  static bool tried = false;
   if (done || !memory::haveSd()) return;
-  done = true;
+  if (tried && (uint32_t)(millis() - lastTry) < 30000) return;
+  tried = true;
+  lastTry = millis();
   std::vector<std::string> names;
   if (!txdev::cardRoutineFiles().list(sch::kStateDir, names)) {
-    alog("e2: the outboxes on the card could not be listed");
+    alog("e2: the outboxes on the card could not be listed: tried again in 30 s");
     return;
   }
+  done = true;
   for (const std::string& n : names) {
     const std::string pre = "held-", ext = ".json";
     if (n.size() > pre.size() + ext.size() && n.rfind(pre, 0) == 0 && n.compare(n.size() - ext.size(), ext.size(), ext) == 0)

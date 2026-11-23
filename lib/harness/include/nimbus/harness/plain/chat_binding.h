@@ -110,6 +110,17 @@ struct ChatBindingDeps {
 inline constexpr char kNotLoadedLine[] =
     "The stored conversation could not be loaded; what you say now is kept in memory only until the card is back.";
 
+// The tags of the person's day-stream row for a message (the web chat's history, the import's
+// rows). "e2" only when an engine-2 turn stores the message itself (it is then engine 2's: never
+// imported). A message answered with a device line instead (the history wait, a refusal, a chat
+// that could not start) is left untagged, so the import brings it into the conversation once
+// at the chat's next boot (lane E2-FIX2B, finding P10).
+inline std::string ownerRowTags(const std::string& fromName, bool turnStoresIt) {
+  std::string t = fromName.empty() ? std::string() : "from:" + fromName;
+  if (turnStoresIt) t += t.empty() ? "e2" : ",e2";
+  return t;
+}
+
 struct ChatBindingConfig {
   std::string chatKey;                           // the transcript key (/mem/tx/<chatKey>)
   std::string chatId;                            // the routing chat; "" = chatKey

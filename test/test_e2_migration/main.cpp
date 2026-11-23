@@ -514,6 +514,38 @@ static void test_a_mirrored_fold_record_is_put_back_from_the_kept_copy() {
   TEST_ASSERT_TRUE(restored == other);
 }
 
+
+// Lane E2-FIX2B, finding P10: a message answered with a device line (the history wait, a refusal)
+// was tagged e2, so neither the import nor engine 2 ever had it. Now only a message an engine-2 turn
+// stores is tagged; the others come in through the import once.
+static void test_a_message_answered_with_a_device_line_joins_the_conversation_once() {
+  Device dev;
+  seed(dev);
+  const uint32_t h = kHour0 + 28;
+  // During the history wait (the first start waits for the index): answered with the reading line.
+  dev.old.row("user", orch::MsgKind::Message, "log 2 coffees today", h, plain::ownerRowTags("Owner", false));
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.answer = "Two coffees, noted.";
+  // A turn: its row is engine 2's (the turn stores the message itself).
+  dev.old.row("user", orch::MsgKind::Message, "how many coffees today?", h, plain::ownerRowTags("Owner", true));
+  TEST_ASSERT_TRUE(dev.say("how many coffees today?").ok());
+  std::string body = dev.lastBody();
+  TEST_ASSERT_EQUAL(1u, count(body, "log 2 coffees today"));
+  TEST_ASSERT_EQUAL(1u, count(body, "how many coffees today?"));
+  // Refused (no key, the monthly limit): the next boot of the chat imports it, once.
+  dev.old.row("user", orch::MsgKind::Message, "and one tea", h + 1, plain::ownerRowTags("Owner", false));
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_EQUAL(1u, dev.binding->migration().imported);
+  TEST_ASSERT_TRUE(dev.say("what did I drink?").ok());
+  body = dev.lastBody();
+  TEST_ASSERT_EQUAL(1u, count(body, "and one tea"));
+  TEST_ASSERT_EQUAL(1u, count(body, "log 2 coffees today"));
+  TEST_ASSERT_EQUAL(1u, count(body, "how many coffees today?"));
+  TEST_ASSERT_EQUAL_STRING("from:Owner,e2", plain::ownerRowTags("Owner", true).c_str());
+  TEST_ASSERT_EQUAL_STRING("e2", plain::ownerRowTags("", true).c_str());
+  TEST_ASSERT_EQUAL_STRING("from:Owner", plain::ownerRowTags("Owner", false).c_str());
+}
+
 static void test_a_second_boot_imports_only_what_the_earlier_engine_wrote_since() {
   Device dev;
   seed(dev);
@@ -838,6 +870,7 @@ int main(int, char**) {
   RUN_TEST(test_with_no_card_fitted_the_import_holds_nothing);
   RUN_TEST(test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was);
   RUN_TEST(test_a_mirrored_fold_record_is_put_back_from_the_kept_copy);
+  RUN_TEST(test_a_message_answered_with_a_device_line_joins_the_conversation_once);
   RUN_TEST(test_a_second_boot_imports_only_what_the_earlier_engine_wrote_since);
   RUN_TEST(test_the_import_fills_only_the_chats_own_key);
   RUN_TEST(test_a_mirrored_fold_pointer_is_not_taken_as_the_earlier_summary);
