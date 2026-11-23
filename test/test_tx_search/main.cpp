@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -173,7 +174,7 @@ std::vector<tx::SearchOutcome> allPages(const tx::SearchDeps& d, tx::SearchAsk a
     const tx::Status st = tx::search(d, a, o);
     TEST_ASSERT_TRUE_MESSAGE(st.ok(), st.where);
     pages.push_back(o);
-    if (!o.more) break;
+    if (o.next.empty()) break;
     TEST_ASSERT_FALSE(o.next.empty());
     TEST_ASSERT_TRUE(tx::cursorOk(o.next));
     a.before = o.next;
@@ -220,13 +221,9 @@ static void test_a_fact_three_weeks_and_600_turns_back_is_found_without_and_with
       ++found;
     }
   TEST_ASSERT_EQUAL(1, (int)found);
-  TEST_ASSERT_FALSE(pages.back().more);
-  size_t total = 0;
-  for (const auto& kv : c.files.files) total += kv.second.size();
-  char msg[96];
-  snprintf(msg, sizeof msg, "%u pages over %u B: %u %u %u", (unsigned)pages.size(), (unsigned)total,
-           (unsigned)pages[0].card.bytes, (unsigned)pages[1].card.bytes, (unsigned)pages.back().card.bytes);
-  TEST_ASSERT_TRUE_MESSAGE(pages.size() <= 2, msg);   // about 1.25 MB of card reads a call
+  TEST_ASSERT_TRUE(pages.back().next.empty());
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)pages.size(), "one call reads the whole conversation (1.3 MB)");
+  TEST_ASSERT_TRUE(pages[0].complete);
   // A range that holds the day: found in one call.
   tx::SearchAsk r = a;
   r.fromT = kStart - kDay;
@@ -234,24 +231,25 @@ static void test_a_fact_three_weeks_and_600_turns_back_is_found_without_and_with
   tx::SearchOutcome o;
   TEST_ASSERT_TRUE(tx::search(d, r, o).ok());
   TEST_ASSERT_EQUAL(1, (int)o.hits.size());
-  TEST_ASSERT_FALSE(o.more);
+  TEST_ASSERT_TRUE(o.next.empty());
   // A range that does not hold it: nothing, and the whole conversation was read.
   r.fromT = kNow - 3 * kDay;
   r.toT = kNow;
   TEST_ASSERT_TRUE(tx::search(d, r, o).ok());
   TEST_ASSERT_EQUAL(0, (int)o.hits.size());
-  TEST_ASSERT_FALSE(o.more);
+  TEST_ASSERT_TRUE(o.next.empty() && o.complete);
 }
 
-// The remainder is true at any budget: the pages together hold every match once, in order.
+// The remainder is true at any window size: the pages together hold every match exactly once.
 static void test_the_remainder_is_true_and_every_match_is_found_once() {
   Chat c;
   threeWeeks(c, 300);
-  for (size_t budget : {size_t(8192), size_t(20000), size_t(70000), tx::kSearchCardBytes}) {
+  for (size_t budget : {size_t(8192), size_t(20000), size_t(70000), tx::kSearchWindowBytes}) {
     tx::SearchDeps d;
     d.files = &c.files;
     d.chatKey = kChat;
-    d.limits.cardBytes = budget;
+    d.limits.windowBytes = budget;
+    d.limits.maxHits = 5;
     tx::SearchAsk a;
     a.query = "garden";
     const auto pages = allPages(d, a);
@@ -262,8 +260,6 @@ static void test_the_remainder_is_true_and_every_match_is_found_once() {
     std::vector<std::string> uniq = ids;
     std::sort(uniq.begin(), uniq.end());
     TEST_ASSERT_TRUE(std::unique(uniq.begin(), uniq.end()) == uniq.end());
-    for (size_t i = 1; i < ids.size(); ++i)   // newest first across pages
-      TEST_ASSERT_TRUE(std::stoull(ids[i - 1].substr(1)) > std::stoull(ids[i].substr(1)));
     TEST_ASSERT_TRUE(pages.size() >= 60);   // five hits a page at most
   }
 }
@@ -337,7 +333,7 @@ static void test_outside_content_keeps_its_class_and_own_results_and_the_open_tu
     if (h.outside) {
       ++outside;
       TEST_ASSERT_EQUAL_STRING("web_search", h.tool.c_str());
-      TEST_ASSERT_TRUE(h.text.find("09:30") != std::string::npos);
+      TEST_ASSERT_TRUE(h.excerpt.find("09:30") != std::string::npos);
     }
     TEST_ASSERT_TRUE(h.tool != "search");
   }
@@ -369,8 +365,8 @@ static void test_a_search_writes_nothing_and_a_refused_read_is_io() {
   a.query = "message 12";
   const tx::Status st = tx::search(d, a, o);
   TEST_ASSERT_TRUE(st.err == tx::Err::Io);
-  TEST_ASSERT_EQUAL(1, (int)o.hits.size());   // what was found stays
-  TEST_ASSERT_EQUAL_STRING("o", o.next.c_str());   // and the call that tries the old rows again
+  TEST_ASSERT_EQUAL(0, (int)o.hits.size());   // a window is never returned half-ranked
+  TEST_ASSERT_EQUAL_STRING("", o.next.c_str());   // the same call again
 }
 
 static void test_view_finds_an_item_and_pages_its_whole_text() {
@@ -456,7 +452,7 @@ static void test_a_long_reply_is_searched_whole_and_a_refused_bulk_read_is_io() 
   f.files[saved] = bytes.substr(0, 10);
   TEST_ASSERT_TRUE(tx::search(d, q, o).ok());
   TEST_ASSERT_EQUAL(1, (int)o.unreadBulk);
-  TEST_ASSERT_FALSE(o.more);
+  TEST_ASSERT_TRUE(o.complete && o.next.empty());
   f.files[saved] = bytes;
   // The card refuses the bulk read: Io, no "to the start", and the cursor reads that line again.
   struct Refusing : tx::TxFiles {
@@ -477,16 +473,69 @@ static void test_a_long_reply_is_searched_whole_and_a_refused_bulk_read_is_io() 
   const tx::Status st = tx::search(d, q, o);
   TEST_ASSERT_TRUE(st.err == tx::Err::Io);
   TEST_ASSERT_EQUAL(0, (int)o.hits.size());
-  TEST_ASSERT_TRUE(tx::cursorOk(o.next) && !o.next.empty());
+  TEST_ASSERT_TRUE(o.next.empty());   // the same (fresh) call again
   d.files = &c.files;
   q.before = o.next;
   TEST_ASSERT_TRUE(tx::search(d, q, o).ok());
   TEST_ASSERT_EQUAL_MESSAGE(1, (int)o.hits.size(), "the refused line is read again from the cursor");
 }
 
+
+// Lane E2-SRCH2 (red on 4f776c621, where the five newest matches came first): a fact stated once 600
+// turns back, whose words are also in ten newer rows as scattered words, is the first hit of the first
+// call; with the exact phrase it is hit one whatever the number of newer partial matches.
+static void test_the_best_match_is_first_whatever_its_age() {
+  Chat c;
+  const uint64_t start = kNow - 21 * kDay;
+  uint64_t factQ = 0;
+  for (uint32_t i = 0; i < 600; ++i) {
+    const uint64_t t = start + i * (20 * kDay / 600);
+    if (i == 0) factQ = c.owner("the spare key hangs behind the blue watering can in the shed", t);
+    else if (i % 50 == 0)   // ten newer rows with every word, over two lines (a weaker match)
+      c.owner("the spare blue key ring\nby the watering can", t);
+    else if (i % 25 == 0)   // and more, scattered over lines (not a match)
+      c.owner("the blue paint\nis in the shed\nnext to the watering can\nwith the spare\nbrush and the key ring", t);
+    else if (i % 7 == 0) c.owner("the spare blue key", t);   // two of the words in one line
+    else c.owner("ordinary message " + std::to_string(i), t);
+    c.reply("ok", t + 5);
+  }
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  tx::SearchAsk a;
+  a.query = "spare key blue watering can";
+  tx::SearchOutcome o;
+  TEST_ASSERT_TRUE(tx::search(d, a, o).ok());
+  TEST_ASSERT_TRUE(o.complete);
+  TEST_ASSERT_FALSE(o.hits.empty());
+  TEST_ASSERT_EQUAL_STRING(("r" + std::to_string(factQ)).c_str(), o.hits[0].id.c_str());
+  TEST_ASSERT_TRUE(o.hits[0].rank == tx::MatchRank::Line);
+  // The exact phrase: hit one over every newer partial match.
+  for (uint32_t i = 0; i < 40; ++i) c.owner("behind the shed: the blue can, the watering hose", kNow - 1000 + i);
+  a.query = "behind the blue watering can";
+  TEST_ASSERT_TRUE(tx::search(d, a, o).ok());
+  TEST_ASSERT_EQUAL_STRING(("r" + std::to_string(factQ)).c_str(), o.hits[0].id.c_str());
+  TEST_ASSERT_TRUE(o.hits[0].rank == tx::MatchRank::Phrase);
+  TEST_ASSERT_TRUE(o.hits[0].excerpt.find("behind the blue watering can") != std::string::npos);
+  // The count of the rest is true, and the cursor reaches each of them once.
+  std::set<std::string> seen;
+  uint32_t total = o.matches;
+  tx::SearchOutcome cur = o;
+  for (int guard = 0; guard < 100; ++guard) {
+    for (const auto& h : cur.hits) TEST_ASSERT_TRUE(seen.insert(h.id).second);
+    TEST_ASSERT_EQUAL(total, cur.matches);
+    TEST_ASSERT_EQUAL((int)total - (int)seen.size(), (int)cur.further);
+    if (cur.next.empty()) break;
+    a.before = cur.next;
+    TEST_ASSERT_TRUE(tx::search(d, a, cur).ok());
+  }
+  TEST_ASSERT_EQUAL((int)total, (int)seen.size());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_words_match_all_case_insensitive);
+  RUN_TEST(test_the_best_match_is_first_whatever_its_age);
   RUN_TEST(test_a_fact_three_weeks_and_600_turns_back_is_found_without_and_with_a_range);
   RUN_TEST(test_the_remainder_is_true_and_every_match_is_found_once);
   RUN_TEST(test_old_rows_below_the_import_floor_are_searched_after_the_transcript);

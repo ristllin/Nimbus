@@ -28,10 +28,10 @@
 // list. Nothing is written, moved or rebuilt. A slice the card refuses ends the call with Io, and
 // the caller says so ("cannot read" is never "absent", ruling 116).
 //
-// Order: newest first. The transcript is read backward in slices from the cursor, then the old rows
-// through their own newest-first cursor. Each call stops at maxHits hits or at its card budget
-// (bytes or milliseconds) and hands back the exact cursor that continues from the first line it did
-// not consider: following the cursors reaches the start of the conversation, every line once.
+// Order of reading: newest first. The transcript is read backward in slices, then the old rows
+// through their own newest-first cursor. Order of the hits (lane E2-SRCH2): by how well they match
+// (MatchRank), newest first among equals, over a whole window (SearchOutcome); the cursor
+// continues inside the window, then into the next one: every match of the range exactly once.
 //
 // Matching: every word of the query (a run of letters and digits, ASCII case folded; bytes over
 // 0x7f count as letters) occurs as a substring, case-insensitive, within one line of the text or a
@@ -45,9 +45,13 @@ namespace orch {
 namespace tx {
 
 inline constexpr size_t kSliceBytes = 8192;              // one readAt: one card hold
-inline constexpr size_t kSearchMaxHits = 5;
-inline constexpr size_t kSearchCardBytes = 1280 * 1024;  // per call: a whole segment (a range inside it) and a bulk payload
-inline constexpr uint32_t kSearchCardMs = 2500;          // per call, card time summed
+inline constexpr size_t kSearchMaxHits = 12;
+// One window (lane E2-SRCH2): the owner's month is about 1.8 MB of rows; at the card's measured rate
+// (about 1 MB a second in 8 KB reads of under 11 ms each, unit F1) 6 MB is about 6 s of card time.
+inline constexpr size_t kSearchWindowBytes = 6 * 1024 * 1024;
+inline constexpr uint32_t kSearchCardMs = 12000;         // a window's card time, summed: a safety stop
+inline constexpr size_t kSearchExcerptBytes = 160;
+inline constexpr size_t kSearchRankedMax = 600;
 inline constexpr size_t kVerbatimFloorScan = 256 * 1024; // verbatimFloor reads at most this much
 inline constexpr size_t kOldPageRows = 32;
 inline constexpr size_t kPhotoScanBytes = 8 * 1024 * 1024;   // findPhoto reads at most this much (TooLarge)
@@ -112,11 +116,15 @@ struct SearchAsk {
   std::string query;
   uint64_t fromT = 0;        // inclusive, epoch seconds (0 = none)
   uint64_t toT = 0;          // inclusive (0 = none)
-  std::string before;        // a cursor a previous call handed back ("" = the newest)
+  std::string before;        // a cursor a previous call handed back ("" = a new search)
   uint32_t openTurn = 0;     // its items are not searched (0 = none)
 };
 
 enum class HitSource : uint8_t { Person = 0, Assistant, Device, Summary, Tool, OldPerson, OldAssistant };
+
+// How well a text matches (lane E2-SRCH2): the query's words as one phrase, every word in one line,
+// every word in a line and the one before it. Anything less is not a hit.
+enum class MatchRank : uint8_t { None = 0, Near = 1, Line = 2, Phrase = 3 };
 
 struct SearchHit {
   std::string id;            // "r<q>" (an item of the transcript) or "m<row>" (an earlier-engine row)
@@ -125,31 +133,48 @@ struct SearchHit {
   bool hasTz = false;
   HitSource source = HitSource::Person;
   std::string tool;          // a result: its tool
-  std::string text;          // the text matched (whole; the caller cuts the excerpt)
+  MatchRank rank = MatchRank::None;
+  std::string excerpt;       // the best spot on one line, at most SearchLimits::excerptBytes
+  bool cutBefore = false;    // the excerpt starts inside the text
+  bool cutAfter = false;     // ... ends inside it
   bool outside = false;      // taken from outside content (a result stored as outside)
 };
 
 struct SearchLimits {
-  size_t maxHits = kSearchMaxHits;
-  size_t cardBytes = kSearchCardBytes;
-  uint32_t cardMs = kSearchCardMs;
+  size_t maxHits = kSearchMaxHits;            // hits a call returns
+  size_t windowBytes = kSearchWindowBytes;    // what one window may read (lines, bulk payloads, old rows)
+  uint32_t cardMs = kSearchCardMs;            // card time one window may spend (a safety stop)
+  size_t excerptBytes = kSearchExcerptBytes;
+  size_t rankedMax = kSearchRankedMax;        // the deepest rank a cursor reaches inside one window
 };
 
 struct SearchDeps {
   TxFiles* files = nullptr;
   std::string chatKey;
   OldRows* old = nullptr;          // null: the transcript only (a /clear generation, the daemon)
-  std::function<uint32_t()> nowMs; // monotonic, the card budget; null: bytes only
+  std::function<uint32_t()> nowMs; // monotonic, the card time; null: none
   SearchLimits limits;
 };
 
+// One call reads a WINDOW of the conversation, newest first, from its start to its end: normally the
+// whole range (the conversation, or the dates asked), else up to windowBytes (or cardMs), and ranks
+// every match in it: Phrase, then Line, then Near, newest first among equals. It returns the ranks
+// [k, k + maxHits). The cursor names the window (its start and end) and the next rank, so following
+// cursors gives every match of a window once, then moves to the next window: every match of the range
+// exactly once.
 struct SearchOutcome {
-  std::vector<SearchHit> hits;     // newest first
-  bool more = false;               // an older part was not read: `next` continues there
-  std::string next;
-  uint64_t oldestT = 0;            // the oldest stamped line read (0 = none)
+  std::vector<SearchHit> hits;     // ranked: the best first
+  uint32_t rankFrom = 0;           // the rank of hits[0] in its window (0: the first call of it)
+  uint32_t matches = 0;            // every match in the window
+  uint32_t further = 0;            // matches of the window ranked after the hits returned
+  uint64_t furtherFromT = 0;       // the dates they span (0: unknown or none)
+  uint64_t furtherToT = 0;
+  uint64_t readFromT = 0;          // the oldest and newest stamped line the window read
+  uint64_t readToT = 0;
+  bool complete = false;           // the window reached the start of the range
+  std::string next;                // the cursor of the next call ("" = nothing more)
   bool oldRead = false;            // the earlier engine's rows were reached
-  uint32_t unreadBulk = 0;         // results whose stored text was gone or unreadable (not searched)
+  uint32_t unreadBulk = 0;         // results whose stored text was gone (not searched)
   ReadStats card;
 };
 
@@ -160,6 +185,9 @@ bool matchesAll(const std::string& text, const std::vector<std::string>& words);
 // Every word occurs within one line, or within a line and the one before it: in a long result of
 // many lines the words must be near each other (a text of one line is matchesAll). What a hit is.
 bool matchesNear(const std::string& text, const std::vector<std::string>& words);
+// How `text` matches, and where its best spot begins (the phrase, else the line holding the most
+// words). Pure.
+MatchRank rankOf(const std::string& text, const std::vector<std::string>& words, size_t& spot);
 // Is `cursor` one this module hands out ("" included)? Pure.
 bool cursorOk(const std::string& cursor);
 

@@ -257,43 +257,91 @@ bool parseU64(const std::string& s, size_t from, size_t to, uint64_t& v) {
   return true;
 }
 
-// "t<seg>.<off>" -> the transcript part; "o" or "o<store cursor>[~<k>]" -> the old rows.
-struct Cursor {
-  bool old = false;
+// ---- positions and cursors ------------------------------------------------------------------
+// A position in the range, newest first: "t<seg>.<off>" (the transcript: the lines that end at or
+// before off in seg, and every older segment), "o<token>~<k>" (the earlier engine's rows: the store's
+// page at token, its first k rows considered), "z" (the start of the range: nothing older).
+struct Pos {
+  enum Kind : uint8_t { T = 0, O = 1, Z = 2 };
+  Kind kind = Z;
   uint32_t seg = 0;
   uint64_t off = 0;
   std::string token;
-  size_t skip = 0;   // rows of the old page at `token` already considered
+  size_t skip = 0;
 };
+bool samePos(const Pos& a, const Pos& b) {
+  if (a.kind != b.kind) return false;
+  if (a.kind == Pos::T) return a.seg == b.seg && a.off == b.off;
+  if (a.kind == Pos::O) return a.token == b.token && a.skip == b.skip;
+  return true;
+}
+std::string posText(const Pos& p) {
+  if (p.kind == Pos::T) return "t" + std::to_string(p.seg) + "." + std::to_string(p.off);
+  if (p.kind == Pos::O) return "o" + p.token + "~" + std::to_string(p.skip);
+  return "z";
+}
+Pos tPos(uint32_t seg, uint64_t off) {
+  Pos p;
+  p.kind = Pos::T;
+  p.seg = seg;
+  p.off = off;
+  return p;
+}
+Pos oPos(const std::string& token, size_t skip) {
+  Pos p;
+  p.kind = Pos::O;
+  p.token = token;
+  p.skip = skip;
+  return p;
+}
 bool oldTokenByte(char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == 'm' || ch == ':'; }
-bool parseOldCursor(const std::string& c, Cursor& out) {
-  out.old = true;
-  out.token = c.substr(1);
-  const size_t tilde = out.token.find('~');
-  if (tilde != std::string::npos) {
-    uint64_t k = 0;
-    if (!parseU64(out.token, tilde + 1, out.token.size(), k) || k == 0 || k > 4096) return false;
-    out.skip = size_t(k);
-    out.token.resize(tilde);
-  }
+bool parseOldPos(const std::string& c, Pos& out) {
+  const size_t tilde = c.find('~');
+  uint64_t k = 0;
+  if (tilde == std::string::npos || !parseU64(c, tilde + 1, c.size(), k) || k > 4096) return false;
+  out = oPos(c.substr(1, tilde - 1), size_t(k));
   return out.token.size() <= 32 && std::all_of(out.token.begin(), out.token.end(), oldTokenByte);
 }
-bool parseTranscriptCursor(const std::string& c, Cursor& out) {
+bool parseTPos(const std::string& c, Pos& out) {
   const size_t dot = c.find('.');
   uint64_t seg = 0, off = 0;
   if (dot == std::string::npos || !parseU64(c, 1, dot, seg) || !parseU64(c, dot + 1, c.size(), off)) return false;
   if (seg < 1 || seg > kMaxSegment) return false;
-  out.seg = uint32_t(seg);
-  out.off = off;
+  out = tPos(uint32_t(seg), off);
   return true;
 }
+bool parsePos(const std::string& c, Pos& out) {
+  if (c == "z") return out = Pos{}, true;
+  if (c.empty()) return false;
+  if (c[0] == 'o') return parseOldPos(c, out);
+  return c[0] == 't' && parseTPos(c, out);
+}
+
+// A cursor: "<window start>,<window end>,<rank>"; the end is empty when it is not known yet (the
+// next window: read until the window's budget).
+struct Cursor {
+  bool fresh = true;
+  Pos start;
+  bool haveEnd = false;
+  Pos end;
+  uint32_t rank = 0;
+};
 bool parseCursor(const std::string& c, Cursor& out) {
   out = Cursor{};
   if (c.empty()) return true;
-  if (c[0] == 'o') return parseOldCursor(c, out);
-  return c[0] == 't' && parseTranscriptCursor(c, out);
+  const size_t a = c.find(','), b = a == std::string::npos ? a : c.find(',', a + 1);
+  uint64_t rank = 0;
+  if (b == std::string::npos || !parsePos(c.substr(0, a), out.start) ||
+      !parseU64(c, b + 1, c.size(), rank) || rank > kSearchRankedMax)
+    return false;
+  out.fresh = false;
+  out.rank = uint32_t(rank);
+  out.haveEnd = b > a + 1;
+  return !out.haveEnd || parsePos(c.substr(a + 1, b - a - 1), out.end);
 }
-std::string tCursor(uint32_t seg, uint64_t off) { return "t" + std::to_string(seg) + "." + std::to_string(off); }
+std::string cursorText(const Pos& start, const Pos* end, uint32_t rank) {
+  return posText(start) + "," + (end ? posText(*end) : std::string()) + "," + std::to_string(rank);
+}
 
 bool searchedKind(ItemKind k) {
   return k == ItemKind::User || k == ItemKind::Assistant || k == ItemKind::DeviceNote || k == ItemKind::Digest ||
@@ -317,44 +365,156 @@ bool inRange(uint64_t t, const SearchAsk& a) {
   return (!a.fromT || t >= a.fromT) && (!a.toT || t <= a.toT);
 }
 
-void noteOldest(uint64_t t, SearchOutcome& out) {
-  if (t && (!out.oldestT || t < out.oldestT)) out.oldestT = t;
+void span(uint64_t t, uint64_t& from, uint64_t& to) {
+  if (!t) return;
+  if (!from || t < from) from = t;
+  if (t > to) to = t;
 }
 
-// One search call: what it reads, what it asks and what it has found so far.
+// ---- matching and the excerpt ------------------------------------------------------------------
+// Where `w` (lower case) first occurs in [from, to) of `text`, case-insensitive; npos when not.
+size_t findFolded(const std::string& text, size_t from, size_t to, const std::string& w) {
+  for (size_t i = from; i + w.size() <= to; ++i) {
+    size_t j = 0;
+    while (j < w.size() && lower(text[i + j]) == w[j]) ++j;
+    if (j == w.size()) return i;
+  }
+  return std::string::npos;
+}
+// The words as one phrase: each after the one before with only non-word bytes between (at least one).
+size_t phraseAt(const std::string& text, const std::vector<std::string>& words) {
+  for (size_t at = findFolded(text, 0, text.size(), words[0]); at != std::string::npos;
+       at = findFolded(text, at + 1, text.size(), words[0])) {
+    size_t j = at + words[0].size();
+    bool all = true;
+    for (size_t w = 1; w < words.size() && all; ++w) {
+      const size_t gap = j;
+      while (j < text.size() && !wordByte((unsigned char)text[j])) ++j;
+      all = j > gap && findFolded(text, j, std::min(text.size(), j + words[w].size()), words[w]) == j;
+      j += words[w].size();
+    }
+    if (all) return at;
+  }
+  return std::string::npos;
+}
+// The line holding the most words (the first such) and where its first word begins.
+size_t bestLine(const std::string& text, const std::vector<std::string>& words, size_t& count) {
+  size_t best = 0;
+  count = 0;
+  for (size_t start = 0; start < text.size() && count < words.size();) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    size_t n = 0, first = std::string::npos;
+    for (const std::string& w : words) {
+      const size_t at = findFolded(text, start, end, w);
+      if (at == std::string::npos) continue;
+      ++n;
+      first = std::min(first, at);
+    }
+    if (n > count) {
+      count = n;
+      best = first;
+    }
+    start = end + 1;
+  }
+  return best;
+}
+
+size_t charStart(const std::string& s, size_t i) {
+  while (i > 0 && i < s.size() && (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) --i;
+  return i;
+}
+
+// The excerpt around `spot`, on one line, at most `cap` bytes.
+void excerptOf(const std::string& text, size_t spot, size_t cap, SearchHit& h) {
+  const size_t from = spot > cap / 4 ? charStart(text, spot - cap / 4) : 0;
+  size_t to = std::min(text.size(), from + cap);
+  if (to < text.size()) to = charStart(text, to);
+  h.excerpt.clear();
+  for (size_t i = from; i < to; ++i) {
+    const char c = text[i];
+    h.excerpt += (c == '\n' || c == '\r' || c == '\t') ? ' ' : c;
+  }
+  h.cutBefore = from > 0;
+  h.cutAfter = to < text.size();
+}
+
+// ---- the ranked hits of one window, in bounded memory ------------------------------------------
+// The best `keep` matches by (rank, then the order read: newest first), and the dates of every match
+// not kept (ranked after them).
+struct Ranked {
+  size_t keep = 0;
+  std::vector<std::pair<uint32_t, SearchHit>> top;   // (the order read, the hit), best first
+  uint32_t matches = 0;
+  uint64_t restFrom = 0, restTo = 0;
+  static bool better(const std::pair<uint32_t, SearchHit>& x, const std::pair<uint32_t, SearchHit>& y) {
+    return x.second.rank != y.second.rank ? x.second.rank > y.second.rank : x.first < y.first;
+  }
+  // A cheap test before the excerpt is cut: would a match of this rank be kept?
+  bool wants(MatchRank r) const { return top.size() < keep || (keep && r > top.back().second.rank); }
+  void offer(uint32_t order, SearchHit&& h) {
+    ++matches;
+    if (!wants(h.rank)) {
+      span(h.t, restFrom, restTo);
+      return;
+    }
+    std::pair<uint32_t, SearchHit> e(order, std::move(h));
+    top.insert(std::upper_bound(top.begin(), top.end(), e, better), std::move(e));
+    if (top.size() > keep) {
+      span(top.back().second.t, restFrom, restTo);
+      top.pop_back();
+    }
+  }
+  void count(uint64_t t) {   // a match too low to be kept: counted and dated only
+    ++matches;
+    span(t, restFrom, restTo);
+  }
+};
+
+// ---- one window ------------------------------------------------------------------------------
 struct Scan {
   const SearchDeps& d;
   TxFiles& files;   // counted into out.card
   const SearchAsk& a;
   const std::vector<std::string>& words;
   SearchOutcome& out;
-  Item it;   // reused per line
+  Ranked ranked;
+  Item it;                 // reused per line
+  uint32_t order = 0;      // the order read
+  uint64_t consumed = 0;   // what the window has read (lines, payloads, rows): its budget
+  bool haveStart = false;  // the window's start is known (a fresh search sets it past the open turn)
+  Pos start;
+  bool haveEnd = false;
+  Pos end;
 
-  bool full() const { return out.hits.size() >= d.limits.maxHits; }
-  bool overBudget() const {
-    if (out.card.bytes >= d.limits.cardBytes) return true;
-    return d.nowMs && out.card.totalMs >= d.limits.cardMs;
+  // Does the window end at `p`? Its known end, else its budget (the first call of a window).
+  bool endsAt(const Pos& p) {
+    if (haveEnd) return samePos(p, end);
+    const bool over = consumed >= d.limits.windowBytes || (d.nowMs && out.card.totalMs >= d.limits.cardMs);
+    if (over) {
+      end = p;
+      haveEnd = true;
+    }
+    return over;
   }
-  // Stop here: the next call starts at `next`.
-  Status pause(std::string next) {
-    out.more = true;
-    out.next = std::move(next);
-    return Status::success();
-  }
-  Status stopAt(std::string next, const Status& st) {
-    out.next = std::move(next);
-    return st;
-  }
-
-  // Whether the header lets the line be a hit at all (kind, the open turn, the dates).
-  bool headerPasses(const LineHeader& h) {
-    if (!searchedKind(h.kind) || (a.openTurn && h.turn == a.openTurn)) return false;
-    noteOldest(h.t, out);
-    return inRange(h.t, a);
+  void at(const Pos& p) {   // the first position a fresh search considers is its window's start
+    if (haveStart) return;
+    start = p;
+    haveStart = true;
   }
 
-  // The text of a decoded line: inline, or its bulk payload. `searched` false: nothing to search (a
-  // payload gone after 30 days is counted); not ok: the card refused (the call stops at this line).
+  // One match: kept with its excerpt when it ranks high enough, else counted.
+  void match(const std::string& text, SearchHit&& h) {
+    size_t spot = 0;
+    h.rank = rankOf(text, words, spot);
+    if (h.rank == MatchRank::None) return;
+    if (!ranked.wants(h.rank)) return ranked.count(h.t);
+    excerptOf(text, spot, d.limits.excerptBytes, h);
+    ranked.offer(order++, std::move(h));
+  }
+
+  // The text of a decoded line: inline, or its bulk payload. `searched` false: a payload gone after 30
+  // days (counted); not ok: the card refused.
   Status textOf(bool bulk, std::string& text, bool& searched) {
     searched = true;
     if (!bulk || it.handle.empty()) {
@@ -363,6 +523,7 @@ struct Scan {
     }
     TxLog log(files, d.chatKey);
     const Status st = log.readBulk(it.handle, 0, kBulkMaxBytes, text);
+    consumed += text.size();
     if (st.err == Err::NotFound || st.err == Err::InvalidArgument) {
       ++out.unreadBulk;
       searched = false;
@@ -371,7 +532,7 @@ struct Scan {
     return st;
   }
 
-  void addHit(std::string text) {
+  SearchHit hitOfItem() const {
     SearchHit hit;
     hit.id = "r" + std::to_string(it.q);
     hit.t = it.t;
@@ -382,14 +543,12 @@ struct Scan {
       hit.tool = it.n;
       hit.outside = it.cls == ResultClass::Outside;
     }
-    hit.text = std::move(text);
-    out.hits.push_back(std::move(hit));
+    return hit;
   }
 
-  // One line of the transcript considered; a hit is added to out.hits.
-  Status line(const Line& ln) {
-    LineHeader h;
-    if (!checkLine(ln.data, ln.len, h).ok() || !headerPasses(h)) return Status::success();   // torn: never stored
+  Status line(const Line& ln, const LineHeader& h) {
+    span(h.t, out.readFromT, out.readToT);
+    if (!searchedKind(h.kind) || !inRange(h.t, a)) return Status::success();
     // A result's payload, or the rest of an assistant text over the message cap, lives in the bulk file.
     const bool bulk = (h.kind == ItemKind::Result || h.kind == ItemKind::Assistant) &&
                       containsFolded(ln.data, ln.len, "\"hdl\":");
@@ -399,13 +558,12 @@ struct Scan {
     std::string text;
     bool searched = false;
     const Status st = textOf(bulk, text, searched);
-    if (st.ok() && searched && matchesNear(text, words)) addHit(std::move(text));
+    if (st.ok() && searched) match(text, hitOfItem());
     return st;
   }
 
-  Status transcript(const Cursor& c, bool& finished);
-  Status oldRows(std::string token, size_t skip);
-  Status oldPage(OldPage& page, size_t skip, const std::string& token, bool& stopped);
+  Status transcript(const Pos& from, bool& finished);
+  Status oldRows(const Pos& from, bool& finished);
 };
 
 // A date range on a fresh query: the segments that cannot hold it are not read. Lines are stored in
@@ -445,109 +603,129 @@ Status rangeSegments(TxFiles& files, const std::string& chatKey, const std::vect
   return Status::success();
 }
 
-// Where a transcript read starts: the segments, the first line's cursor, and the range's oldest segment.
-struct StartPlan {
-  std::vector<uint32_t> segs;
-  uint32_t seg = 0;         // 0: the newest line
-  uint64_t off = 0;
-  uint32_t stopBelow = 0;   // segments below this one are older than the range (0: none)
-};
-Status planStart(TxFiles& files, const std::string& chatKey, const SearchAsk& a, const Cursor& c, StartPlan& p) {
-  p.seg = c.seg;
-  p.off = c.off;
-  Status st = segmentsOf(files, chatKey, p.segs);
-  if (!st.ok() || c.seg || (!a.toT && !a.fromT)) return st;
-  st = rangeSegments(files, chatKey, p.segs, a, p.seg, p.stopBelow);
-  if (p.seg) p.off = UINT64_MAX;   // from the end of the first segment the range can reach
-  return st;
-}
-
-// The transcript part. `finished` when its start (or the range's oldest segment) was reached.
-Status Scan::transcript(const Cursor& c, bool& finished) {
+// The transcript from `from` (T; seg 0: a fresh search, from its newest line or the range's newest
+// segment). `finished` when its start (or the range's oldest segment) was reached inside the window.
+Status Scan::transcript(const Pos& from, bool& finished) {
   finished = false;
-  StartPlan plan;
-  Status st = planStart(files, d.chatKey, a, c, plan);
-  Backward rd(files, d.chatKey, plan.segs);
-  if (st.ok()) st = rd.start(plan.seg, plan.off);
-  if (!st.ok()) return stopAt(c.seg ? tCursor(c.seg, c.off) : std::string(), st);
-  while (true) {
+  std::vector<uint32_t> segs;
+  Status st = segmentsOf(files, d.chatKey, segs);
+  uint32_t seg0 = from.seg, stopBelow = 0;
+  uint64_t off0 = from.off;
+  if (st.ok() && !from.seg && (a.toT || a.fromT)) st = rangeSegments(files, d.chatKey, segs, a, seg0, stopBelow);
+  if (st.ok() && !from.seg && seg0) off0 = UINT64_MAX;   // from the end of the newest segment the range can reach
+  if (st.ok() && from.seg && (a.toT || a.fromT)) {       // the same oldest segment on every call of the range
+    uint32_t unused = 0;
+    st = rangeSegments(files, d.chatKey, segs, a, unused, stopBelow);
+  }
+  Backward rd(files, d.chatKey, segs);
+  if (st.ok()) st = rd.start(seg0, off0);
+  while (st.ok()) {
     uint32_t seg = 0;
     uint64_t off = 0;
     rd.pos(seg, off);
-    if (rd.atStart() || (plan.stopBelow && seg < plan.stopBelow)) break;
-    if (full() || overBudget()) return pause(tCursor(seg, off));   // a line's own bulk read counts too
+    if (rd.atStart() || (stopBelow && seg < stopBelow)) break;
+    const Pos here = tPos(seg, off);
+    if (haveStart && endsAt(here)) return Status::success();
     Line ln;
     bool none = false;
-    st = rd.next(ln, none);
-    if (st.ok() && none) break;
-    if (st.ok()) st = line(ln);
-    if (!st.ok()) return stopAt(tCursor(seg, off), st);   // this line is read again by the next call
+    if (!(st = rd.next(ln, none)).ok() || none) break;
+    LineHeader h;
+    if (!checkLine(ln.data, ln.len, h).ok()) continue;   // torn or garbage: never stored
+    if (!haveStart && a.openTurn && h.turn == a.openTurn) continue;   // the question's own turn
+    at(here);
+    consumed += ln.len;
+    st = line(ln, h);
   }
-  finished = true;
-  return Status::success();
+  finished = st.ok();
+  return st;
 }
 
 bool oldConversation(const DayRow& r) {
   return !r.ours && (r.role == RowRole::Owner || r.role == RowRole::Assistant);
 }
 
-// "<store cursor>~<k>": the page at that cursor with its first k rows already considered. The store
-// answers the same page for the same cursor, so a stop inside a page loses no row and repeats none,
-// whatever order the store keeps inside it.
-std::string oldCursor(const std::string& token, size_t skip) {
-  return "o" + token + (skip ? "~" + std::to_string(skip) : std::string());
-}
-
-// The rows of one page from `skip`; `stopped` when the hits filled up inside it.
-Status Scan::oldPage(OldPage& page, size_t skip, const std::string& token, bool& stopped) {
-  stopped = false;
-  for (size_t i = skip; i < page.rows.size(); ++i) {
-    if (full()) {   // the rest of this page stays for the next call
-      stopped = true;
-      return pause(oldCursor(token, i));
-    }
-    DayRow& r = page.rows[i];
-    noteOldest(r.t, out);
-    if (!oldConversation(r) || !inRange(r.t, a) || !matchesNear(r.text, words)) continue;
-    SearchHit hit;
-    hit.id = rowIdString(r.id);
-    hit.t = r.t;
-    hit.source = r.role == RowRole::Owner ? HitSource::OldPerson : HitSource::OldAssistant;
-    hit.text = std::move(r.text);
-    out.hits.push_back(std::move(hit));
-  }
-  return Status::success();
-}
-
-// The earlier engine's rows, from `token` (the store's cursor: rows strictly older), the first
-// `skip` rows of its page already considered.
-Status Scan::oldRows(std::string token, size_t skip) {
+// The earlier engine's rows from `from` (O). `finished` when the store's oldest row was reached.
+Status Scan::oldRows(const Pos& from, bool& finished) {
+  finished = false;
   out.oldRead = true;
+  std::string token = from.token;
+  size_t skip = from.skip;
   OldPage page;
   while (true) {
-    if (full() || overBudget()) return pause(oldCursor(token, skip));
     OldPageAsk ask;
     ask.before = token;
     ask.fromT = a.fromT;
     ask.toT = a.toT;
     page = OldPage{};
-    Status st = d.old->page(ask, page, out.card);
-    if (!st.ok()) return stopAt(oldCursor(token, skip), st);
-    bool stopped = false;
-    st = oldPage(page, skip, token, stopped);
-    if (stopped || !page.older) return st;
+    const Status st = d.old->page(ask, page, out.card);
+    if (!st.ok()) return st;
+    for (size_t i = skip; i < page.rows.size(); ++i) {
+      const Pos here = oPos(token, i);
+      at(here);
+      if (endsAt(here)) return Status::success();
+      DayRow& r = page.rows[i];
+      consumed += r.text.size() + 64;
+      span(r.t, out.readFromT, out.readToT);
+      if (!oldConversation(r) || !inRange(r.t, a)) continue;
+      SearchHit hit;
+      hit.id = rowIdString(r.id);
+      hit.t = r.t;
+      hit.source = r.role == RowRole::Owner ? HitSource::OldPerson : HitSource::OldAssistant;
+      match(r.text, std::move(hit));
+    }
+    if (!page.older) break;
     if (page.next.empty() || page.next == ask.before) return Status::fail(Err::Io, "tx::search.old-cursor");
     token = page.next;
     skip = 0;
   }
+  finished = true;
+  return Status::success();
 }
 
-// The cursor the old part starts from: the import's verbatim floor (rows below it only).
-Status floorCursor(TxFiles& files, const std::string& chatKey, std::string& token) {
+// The position the old part starts from: the import's verbatim floor (rows below it only).
+Status floorPos(TxFiles& files, const std::string& chatKey, Pos& p) {
   uint64_t floor = 0;
   const Status st = verbatimFloor(files, chatKey, floor);
-  token = floor ? rowIdString(floor) : std::string();
+  p = oPos(floor ? rowIdString(floor) : std::string(), 0);
   return st;
+}
+
+// The window from `from` to its end: the transcript, then the old rows.
+Status scanWindow(Scan& scan, const Pos& from) {
+  Pos p = from;
+  bool finished = false;
+  Status st;
+  if (p.kind == Pos::T) {
+    st = scan.transcript(p, finished);
+    if (!st.ok() || !finished) return st;
+    if (!scan.d.old) p = Pos{};
+    else if (!(st = floorPos(scan.files, scan.d.chatKey, p)).ok()) return st;
+  }
+  if (p.kind == Pos::O && scan.d.old) {
+    st = scan.oldRows(p, finished);
+    if (!st.ok() || !finished) return st;
+  }
+  scan.at(Pos{});
+  scan.end = Pos{};   // the start of the range: the window is complete
+  scan.haveEnd = true;
+  return Status::success();
+}
+
+// The returned page of a scanned window: ranks [rank, rank + maxHits), the count and dates of the
+// rest, and the next cursor.
+void finish(Scan& scan, uint32_t rank) {
+  SearchOutcome& out = scan.out;
+  Ranked& r = scan.ranked;
+  out.matches = r.matches;
+  out.rankFrom = rank;
+  for (size_t i = rank; i < r.top.size(); ++i) out.hits.push_back(std::move(r.top[i].second));
+  const uint32_t through = rank + uint32_t(out.hits.size());
+  out.further = r.matches > through ? r.matches - through : 0;
+  out.furtherFromT = r.restFrom;
+  out.furtherToT = r.restTo;
+  out.complete = scan.end.kind == Pos::Z;
+  if (out.further && through < scan.d.limits.rankedMax) out.next = cursorText(scan.start, &scan.end, through);
+  else if (!out.complete) out.next = cursorText(scan.end, nullptr, 0);
 }
 
 }  // namespace
@@ -597,25 +775,45 @@ bool cursorOk(const std::string& cursor) {
   return parseCursor(cursor, c);
 }
 
+MatchRank rankOf(const std::string& text, const std::vector<std::string>& words, size_t& spot) {
+  spot = 0;
+  if (words.empty() || !allIn(text.data(), text.size(), words)) return MatchRank::None;
+  const size_t phrase = phraseAt(text, words);
+  if (phrase != std::string::npos) {
+    spot = phrase;
+    return MatchRank::Phrase;
+  }
+  size_t count = 0;
+  spot = bestLine(text, words, count);
+  if (count == words.size()) return MatchRank::Line;
+  return matchesNear(text, words) ? MatchRank::Near : MatchRank::None;
+}
+
 Status search(const SearchDeps& d, const SearchAsk& a, SearchOutcome& out) {
   out = SearchOutcome{};
   Cursor c;
-  if (!d.files || !chatKeyOk(d.chatKey) || !parseCursor(a.before, c))
+  if (!d.files || !chatKeyOk(d.chatKey) || !parseCursor(a.before, c) || (!c.fresh && c.start.kind == Pos::Z))
     return Status::fail(Err::InvalidArgument, "tx::search");
   const std::vector<std::string> words = queryWords(a.query);
   if (words.empty()) return Status::success();
   try {
     ReadOnlyCounted files(*d.files, d.nowMs, out.card);
-    Scan scan{d, files, a, words, out, Item{}};
-    if (!c.old) {
-      bool finished = false;
-      Status st = scan.transcript(c, finished);
-      if (!st.ok() || !finished || !d.old) return st;
-      st = floorCursor(files, d.chatKey, c.token);
-      if (!st.ok()) return scan.stopAt(tCursor(1, 0), st);   // the next call reads the start and looks again
+    Scan scan{d, files, a, words, out, Ranked{}, Item{}};
+    scan.ranked.keep = std::min<size_t>(c.rank + d.limits.maxHits, d.limits.rankedMax + d.limits.maxHits);
+    if (!c.fresh) {
+      scan.start = c.start;
+      scan.haveStart = true;
+      scan.haveEnd = c.haveEnd;
+      scan.end = c.end;
     }
-    if (!d.old) return Status::success();   // an old cursor with no old rows: nothing below
-    return scan.oldRows(c.token, c.skip);
+    const Pos from = c.fresh ? tPos(0, 0) : c.start;
+    const Status st = (from.kind == Pos::O && !d.old) ? Status::success() : scanWindow(scan, from);
+    if (!st.ok()) {
+      out.next = a.before;   // the same call again: nothing of a window is returned half-ranked
+      return st;
+    }
+    finish(scan, c.rank);
+    return Status::success();
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "tx::search.memory");
   }
