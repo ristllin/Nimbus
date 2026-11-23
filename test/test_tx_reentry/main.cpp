@@ -372,6 +372,59 @@ void test_a_lost_marker_never_imports_a_row_twice() {
   }
 }
 
+// Lane E2-FIX3, finding R6 (ruling 116 item 2): a marker lost on a chat whose first log items are
+// engine 2's own. (a) A chat the P3 repair imported after engine-2 items; (b) a chat whose first
+// import was digest 0 alone (every old row under the old summary), with engine-2 turns after it.
+// Before: both were taken for engine 2 storing before any import, and the first migration ran again
+// (a second digest 0, the old rows twice). Now the transcript's own import items say it was done:
+// a re-entry from the newest mirrored row, no old turn twice.
+void lostMarker(World& w) {
+  std::string path;
+  TEST_ASSERT_TRUE(tx::migratedPath(kChatKey, path).ok());
+  w.files.files.erase(path);
+  w.files.files.erase(path + ".tmp");
+}
+
+void test_a_lost_marker_on_a_repaired_chat_imports_nothing_twice() {
+  World w;
+  w.old.add(kChat, w.clock, "user", "message", "an old message");
+  w.old.add(kChat, w.clock, "assistant", "message", "an old reply");
+  w.engine2("engine 2 ran here without a migration", false);
+  w.done("the repair");
+  w.engine2("a later turn");
+  lostMarker(w);
+  w.engine1(2);
+  const tx::MigrationOutcome out = w.done("marker lost after the repair");
+  TEST_ASSERT_TRUE(out.reentry);
+  std::map<std::string, int> v = visible(w.files);
+  TEST_ASSERT_EQUAL(1, v["an old message"]);
+  TEST_ASSERT_EQUAL(1, v["an old reply"]);
+  TEST_ASSERT_EQUAL(1, v["E2 engine 2 ran here without a migration"]);
+  TEST_ASSERT_EQUAL(1, v["E2 a later turn"]);
+  for (const auto& kv : v) TEST_ASSERT_EQUAL_MESSAGE(1, kv.second, kv.first.c_str());
+}
+
+void test_a_lost_marker_after_a_digest_only_import_imports_nothing_twice() {
+  World w;
+  w.rng.seed(8);
+  w.m = month(w.old, {8, 400, 6, 6, 0, 800});   // every row under the old pointer: digest 0 alone
+  w.clock = w.m.lastT + kHour;
+  const tx::MigrationOutcome first = w.resume("first");
+  TEST_ASSERT_TRUE(first.digest0);
+  const int asks = w.asks;
+  const size_t items = stored(w.files).size();
+  w.engine2("a turn after the digest-only import");
+  w.engine2("and another");
+  lostMarker(w);
+  const tx::MigrationOutcome out = w.done("marker lost after digest 0 alone");
+  TEST_ASSERT_TRUE(out.reentry);
+  TEST_ASSERT_FALSE(out.digest0);
+  TEST_ASSERT_EQUAL(asks, w.asks);                  // no second digest 0
+  TEST_ASSERT_EQUAL(items + 6, stored(w.files).size());   // only the two engine-2 turns were added
+  std::map<std::string, int> v = visible(w.files);
+  for (const auto& kv : v) TEST_ASSERT_EQUAL_MESSAGE(1, kv.second, kv.first.c_str());
+}
+
 // Digest 0's anchor stored, its s item not, and the engine stored before the migration went on:
 // digest 0 follows the engine's items covering the anchor alone; one anchor, nothing hidden.
 void test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing() {
@@ -481,6 +534,8 @@ int main(int, char**) {
   RUN_TEST(test_engine2_items_without_a_marker_take_the_whole_first_migration);
   RUN_TEST(test_engine2_items_under_digest0_are_shown_once_and_ram_turns_are_left_to_the_engine);
   RUN_TEST(test_a_lost_marker_never_imports_a_row_twice);
+  RUN_TEST(test_a_lost_marker_on_a_repaired_chat_imports_nothing_twice);
+  RUN_TEST(test_a_lost_marker_after_a_digest_only_import_imports_nothing_twice);
   RUN_TEST(test_an_overtaken_digest0_keeps_one_anchor_and_hides_nothing);
   RUN_TEST(test_an_overtaken_batch_closes_its_open_turn_once);
   RUN_TEST(test_engines_taking_turns_never_lose_double_or_reorder_a_row);

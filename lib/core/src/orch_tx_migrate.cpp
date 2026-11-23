@@ -1386,11 +1386,19 @@ struct Run {
     }
   }
 
-  // Items with no marker (P3): true when they came from a migration whose marker was lost (the
-  // log's first mirrored owner row is the earlier engine's, an imported u item), false when
-  // engine 2 stored them before any import (its first is one of engine 2's own rows). No u item
-  // naming a row (a digest-only import) or a row the source cannot find counts as imported:
-  // nothing is imported twice.
+  // Items with no marker (P3): true when they came from a migration whose marker was lost, false
+  // when engine 2 stored them before any import. Lane E2-FIX3 (finding R6): the import's own items
+  // anywhere in the log say it ran (digest 0's anchor note, a turn the import closed), also when
+  // engine 2's items come first (the P3 repair appends after them; a digest-only import has no
+  // imported u item). Else the first mirrored owner row decides: the earlier engine's is an imported
+  // u item. No u item naming a row, or a row the source cannot find, counts as imported: nothing is
+  // imported twice.
+  static bool importItem(const LineHeader& h, const std::string& line) {
+    if (h.kind != ItemKind::DeviceNote && h.kind != ItemKind::TurnEnd) return false;
+    Item it;
+    if (!decodeLine(line.data(), line.size(), it).ok()) return false;
+    return h.kind == ItemKind::TurnEnd ? it.end.cause == "import" : it.x.find(mt::kEarlierKept) != std::string::npos;
+  }
   Status importedBefore(bool& imported) {
     imported = true;
     std::vector<uint32_t> segs;
@@ -1400,16 +1408,19 @@ struct Run {
     if (!(s = cur.start(segs.front(), 0)).ok()) return s;
     std::string line;
     LineHeader h;
-    Item it;
+    uint64_t firstM = 0;
     for (bool have = true; have;) {
       if (!(s = cur.next(line, h, have)).ok()) return s;
-      if (!have || h.kind != ItemKind::User || !decodeLine(line.data(), line.size(), it).ok() || !it.m) continue;
-      std::vector<DayRow> page;
-      bool end = false;
-      if (!(s = d.rows->read(it.m - 1, it.m, 1, page, end)).ok()) return s;
-      imported = page.empty() || page.front().id != it.m || !page.front().ours;
-      return Status::success();
+      if (!have) break;
+      if (importItem(h, line)) return Status::success();
+      Item it;
+      if (!firstM && h.kind == ItemKind::User && decodeLine(line.data(), line.size(), it).ok()) firstM = it.m;
     }
+    if (!firstM) return Status::success();
+    std::vector<DayRow> page;
+    bool end = false;
+    if (!(s = d.rows->read(firstM - 1, firstM, 1, page, end)).ok()) return s;
+    imported = page.empty() || page.front().id != firstM || !page.front().ours;
     return Status::success();
   }
 
