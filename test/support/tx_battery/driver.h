@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -140,6 +141,9 @@ class Battery {
   size_t dispatches = 0;
   bool inboxRefuses = false;       // no card for the inbox: a long owner text passes whole (RB-TG1)
   plain::RailsDeps railsDeps;      // the rails' approval store (RB-RL); none: a pending change is refused
+  // The binding's photo hook (TurnSetup::photo; lane E2-FIX4): the stored bytes of a photo by ref, as the
+  // device reads them back from the card. Empty: no hook (every photo renders as its line).
+  std::map<std::string, std::string> photoStore;
 
   // The head a turn of this battery names (host and model), for a test that builds its own TurnInput.
   plain::TurnCtx headCtx() const { return turnCtx(0, plain::Trigger::Owner); }
@@ -372,6 +376,16 @@ class Battery {
     if (t.trigger == plain::Trigger::Routine) out.ceiling = routineCeiling;
     out.head.key = [] { return std::string("sk-fake-battery"); };
     out.wire = batteryWire(dialect);
+    if (!photoStore.empty())
+      out.photo = [this](const std::string& ref, plain::PhotoBytes& o) {
+        o = plain::PhotoBytes{};
+        auto it = photoStore.find(ref);
+        if (it == photoStore.end()) return tx::Status::fail(tx::Err::NotFound, "txb photo");
+        o.bytes = reinterpret_cast<const uint8_t*>(it->second.data());
+        o.len = it->second.size();
+        o.mime = "image/jpeg";
+        return tx::Status::success();
+      };
     return tx::Status::success();
   }
   static const char* hostFor(plain::Dialect d) {
