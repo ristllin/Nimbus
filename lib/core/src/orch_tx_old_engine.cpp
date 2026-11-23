@@ -121,14 +121,14 @@ bool mirrorShape(const std::string& rec) {
     f.push_back(rec.substr(at, sep - at));
     at = sep + 1;
   }
-  if (f.size() < 7) return false;
-  const bool counters = f[1] == "0" && f[2] == "0" && f[3].find(";m") != std::string::npos && f[4] == "0" &&
-                        f[5] == "0" && f[6] == "0";
+  if (f.size() < 7 || f[3].find(";m") == std::string::npos) return false;
+  for (size_t i : {1u, 2u, 4u, 5u, 6u})
+    if (f[i] != "0") return false;
   std::string text = rec.substr(at);
   if (!text.empty() && text.back() == '\x1E') text.pop_back();
   if (!text.empty() && text.back() != '\n') text += '\n';   // the mirror keeps whole lines without the last end
   Summary s;
-  return counters && parseSummary(text, s).ok() && !s.lines.empty();
+  return parseSummary(text, s).ok() && !s.lines.empty();
 }
 
 }  // namespace
