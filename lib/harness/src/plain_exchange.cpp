@@ -485,32 +485,48 @@ bool looksLikeSecret(const std::string& s) {
   }
   return false;
 }
+
+// The text as one line: every control character and run of white space is one space, the ends trimmed.
+std::string oneLineOf(const std::string& raw) {
+  std::string text;
+  for (char c : raw) {
+    const bool space = (unsigned char)c < 0x20 || c == 0x7f || c == ' ';
+    if (!space) text += c;
+    else if (!text.empty() && text.back() != ' ') text += ' ';
+  }
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  return text;
+}
+
+// At most `max` bytes, cut on a character boundary, with "..." where it was cut.
+std::string cutTo(std::string text, size_t max) {
+  if (text.size() <= max) return text;
+  text.resize((size_t)nimbus::utf8CapLen(text.data(), (int)text.size(), (int)(max - 3)));
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  return text + "...";
+}
 }  // namespace
 
 std::string refusalReason(const std::string& body) {
   constexpr size_t kBodyMax = 16384;   // a larger body is not parsed: the device keeps its memory
   constexpr size_t kReasonMax = 160;
   if (body.empty() || body.size() > kBodyMax) return std::string();
-  std::string raw = orch::providerErrorText(body);
+  const std::string raw = orch::providerErrorText(body);
   if (raw.empty() || !nimbus::utf8Valid(raw)) return std::string();
-  std::string text;   // one line: every control character and run of white space is one space
-  for (char c : raw) {
-    const bool space = (unsigned char)c < 0x20 || c == 0x7f || c == ' ';
-    if (space) {
-      if (!text.empty() && text.back() != ' ') text += ' ';
-    } else {
-      text += c;
-    }
-  }
-  while (!text.empty() && text.back() == ' ') text.pop_back();
+  const std::string text = oneLineOf(raw);
   if (text.empty() || looksLikeSecret(text)) return std::string();
-  if (text.size() > kReasonMax) {
-    text.resize((size_t)nimbus::utf8CapLen(text.data(), (int)text.size(), (int)(kReasonMax - 3)));
-    while (!text.empty() && text.back() == ' ') text.pop_back();
-    text += "...";
-  }
-  return text;
+  return cutTo(text, kReasonMax);
 }
+
+namespace {
+// "<who> refused the request (HTTP n)", then the provider's reason when there is one.
+std::string refusedLine(const std::string& who, const std::string& code, const std::string& reason) {
+  namespace n = texts::device_notes;
+  if (reason.empty() || code.empty()) return who + n::kRefused + code + ".";
+  const char last = reason.back();
+  return who + n::kRefused + code + n::kReasonSep + reason + (last == '.' || last == '!' || last == '?' ? "" : ".");
+}
+}  // namespace
 
 // The owner's line for a failed exchange (texts.h device_notes): what happened, then the
 // one next step. `reason` (refusalReason of the provider's body; Other only) rides after the
@@ -531,9 +547,7 @@ std::string exchangeLine(ExchangeErr err, const std::string& slug, int httpStatu
     case ExchangeErr::Blocked: return n::kBlocked;
     case ExchangeErr::Other: break;
   }
-  if (reason.empty() || httpStatus <= 0) return who + n::kRefused + code + ".";
-  const char last = reason.back();
-  return who + n::kRefused + code + n::kReasonSep + reason + (last == '.' || last == '!' || last == '?' ? "" : ".");
+  return refusedLine(who, code, reason);
 }
 
 bool targetQualified(const HeadTarget& t, hq::Line line) {
