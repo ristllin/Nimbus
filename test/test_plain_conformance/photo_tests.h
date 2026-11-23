@@ -172,12 +172,86 @@ inline void test_a_photo_the_card_cannot_give_back_renders_as_its_line() {
   TEST_ASSERT_FALSE(has(lastBody(b), "\"type\":\"image\""));
 }
 
+// With lane E2-CACHE's byte-stable prefix (rule A): the bytes of a request ahead of its last closed
+// turn (cache markers left out) open the next request. A photo in view sits inside that cached part
+// as the same base64 on every request, so it keeps rule A turn after turn; the only change it makes
+// is the one turn the cap pushes it out (its pixels become its line), and that change starts at its
+// own message: everything before that message stays byte for byte.
+inline std::string stripCacheMarks(std::string s) {
+  for (const char* m : {",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}", ",\"cache_control\":{\"type\":\"ephemeral\"}"}) {
+    const std::string mark = m;
+    for (size_t at = s.find(mark); at != std::string::npos; at = s.find(mark, at)) s.erase(at, mark.size());
+  }
+  return s;
+}
+// As test_e2_cache_prefix reads it, from "system" on: max_tokens (the load-aware output cap, which a
+// photo's upload time lowers) is not part of the provider's cached prefix (tools, system, messages).
+inline std::string fromSystem(const std::string& body) {
+  const size_t sys = body.find("\"system\":[");
+  TEST_ASSERT_TRUE(sys != std::string::npos);
+  return body.substr(sys);
+}
+inline std::string aheadOfClosed(const std::string& whole) {
+  const std::string body = fromSystem(whole);
+  const size_t msgs = body.find("\"messages\":[");
+  TEST_ASSERT_TRUE(msgs != std::string::npos);
+  std::vector<size_t> marks;
+  for (size_t at = body.find(",\"cache_control\":", msgs); at != std::string::npos; at = body.find(",\"cache_control\":", at + 1))
+    marks.push_back(at);
+  return stripCacheMarks(body.substr(0, marks.size() >= 2 ? marks.front() : msgs));
+}
+
+inline void test_a_photo_in_view_keeps_the_cached_prefix_byte_for_byte() {
+  txb::Battery b;
+  const char fills[] = {'a', 'b', 'c', 'd', 'e'};
+  plain::TurnOutcome out;
+  std::string prev;
+  int photos = 0, pairs = 0;
+  for (int turn = 0; turn < 14; ++turn) {
+    b.advance(120);
+    const bool photoTurn = turn % 3 == 0 && photos < 5;
+    std::vector<tx::Part> parts;
+    if (photoTurn) {
+      const std::string ref = "p" + std::string(7, '0') + std::to_string(photos + 1);
+      b.photoStore[ref] = jpeg(fills[photos], 60000);
+      parts.push_back(photoPart(ref, 60000));
+      ++photos;
+    }
+    b.model.push(sp::say("ok " + std::to_string(turn)));
+    TXB_OK(b.owner("message " + std::to_string(turn), out, parts));
+    const std::string body = lastBody(b);
+    if (!prev.empty()) {
+      const std::string ahead = aheadOfClosed(prev), next = stripCacheMarks(fromSystem(body));
+      char msg[96];
+      if (photos <= (int)tx::kInlinePhotosInViewMax || !photoTurn) {   // nothing fell out this turn
+        std::snprintf(msg, sizeof msg, "turn %d: a photo in view rewrote the bytes ahead of the closed turns", turn);
+        TEST_ASSERT_TRUE_MESSAGE(next.compare(0, ahead.size(), ahead) == 0, msg);
+        ++pairs;
+      } else {   // the fifth photo pushed the first out: the change starts at the first photo's message
+        const size_t at = ahead.find(pixelsOf('a'));
+        TEST_ASSERT_TRUE(at != std::string::npos);
+        const size_t open = ahead.rfind("{\"role\":\"user\"", at);
+        TEST_ASSERT_TRUE(open != std::string::npos);
+        std::snprintf(msg, sizeof msg, "turn %d: bytes before the photo that fell out changed", turn);
+        TEST_ASSERT_TRUE_MESSAGE(next.compare(0, open, ahead, 0, open) == 0, msg);
+        TEST_ASSERT_FALSE(has(body, pixelsOf('a')));
+      }
+      if (photos >= 2 && photos <= (int)tx::kInlinePhotosInViewMax)   // the first photo's turn is closed and in view
+        TEST_ASSERT_TRUE_MESSAGE(has(aheadOfClosed(body), pixelsOf('a')), "the photo is not inside the cached part");
+    }
+    prev = body;
+  }
+  TEST_ASSERT_EQUAL(5, photos);
+  TEST_ASSERT_TRUE(pairs >= 12);
+}
+
 inline void run() {
   RUN_TEST(test_a_photo_stays_in_view_across_turns_time_and_a_restart);
   RUN_TEST(test_a_photo_past_the_caps_gets_a_true_line_and_names_no_unbound_tool);
   RUN_TEST(test_no_gap_and_no_restart_takes_a_photo_out_of_view);
   RUN_TEST(test_a_photo_stays_until_compaction_passes_its_turn);
   RUN_TEST(test_a_photo_the_card_cannot_give_back_renders_as_its_line);
+  RUN_TEST(test_a_photo_in_view_keeps_the_cached_prefix_byte_for_byte);
 }
 
 }  // namespace photo_tests
