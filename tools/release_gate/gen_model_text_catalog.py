@@ -240,6 +240,8 @@ E2_EXTRA_SOURCES: tuple = (
     ("lib/core/src/orch_schedule_tool.cpp", "tool_results"),
     # RB-TG1: what a stored PDF's line in the owner message says after its inbox path.
     ("lib/core/include/nimbus/net/tg_inbox.h", "stubs"),
+    # E2-FIX4: the words of a photo's line when it is not attached to a request (tx::photoStub).
+    ("lib/core/include/nimbus/orch/tx/photo_text.h", "stubs"),
     # E2-TOOLS: the engine-2 device registrations (web_search over the old web.search: its names and argument).
     ("src/agent/tools_plain.cpp", "tool_results"),
 )

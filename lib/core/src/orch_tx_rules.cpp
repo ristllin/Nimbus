@@ -5,6 +5,7 @@
 #include "nimbus/orch/tx/rules.h"
 
 #include "nimbus/orch/day_start.h"
+#include "nimbus/orch/tx/photo_text.h"
 
 #include <ArduinoJson.h>
 
@@ -317,8 +318,16 @@ Status longArgStub(uint32_t bytes, const std::string& sha8, uint64_t q, std::str
   return Status::success();
 }
 
-Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out) {
-  if (note.empty()) return photoStub(ref8, when, out);
+// The tail of a photo's line: what is true of it in this request, and the way back when view is bound.
+void photoTail(std::string& s, const std::string& ref8, bool viewBound) {
+  s += kPhotoNotAttached;
+  if (viewBound) s += kPhotoViewOpen + ref8 + kPhotoViewClose;
+  s += ']';
+}
+
+Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out,
+                 bool viewBound) {
+  if (note.empty()) return photoStub(ref8, when, out, viewBound);
   if (!isRef(ref8)) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::photoStub");
@@ -330,7 +339,8 @@ Status photoStub(const std::string& ref8, const std::string& when, const std::st
   }
   s += ": ";
   appendLine(s, note, kPhotoNoteMax, true);
-  s += "; not shown: view id=p" + ref8 + "]";
+  s += "; ";
+  photoTail(s, ref8, viewBound);
   out.swap(s);
   return Status::success();
 }
@@ -356,17 +366,18 @@ Status longTextHead(const std::string& text, size_t cap, const std::string& wher
   return Status::success();
 }
 
-Status photoStub(const std::string& ref8, const std::string& when, std::string& out) {
+Status photoStub(const std::string& ref8, const std::string& when, std::string& out, bool viewBound) {
   if (!isRef(ref8)) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::photoStub");
   }
-  std::string s = "[photo p" + ref8 + " ";   // built apart: `when` may be `out`
+  std::string s = "[photo p" + ref8;   // built apart: `when` may be `out`
   if (!when.empty()) {
-    appendLine(s, when, 40, true);
     s += ' ';
+    appendLine(s, when, 40, true);
   }
-  s += "not shown: view id=p" + ref8 + "]";
+  s += ": ";
+  photoTail(s, ref8, viewBound);
   out.swap(s);
   return Status::success();
 }
@@ -460,68 +471,26 @@ Status showResult(const Item& r, const ShowFacts& f, ShowAs& out) {
 
 // ---- photos ------------------------------------------------------------------------------------------
 
-namespace {
-
-// How far photos from earlier owner turns are carried on this head.
-struct CarryRule {
-  bool carry = false;
-  uint32_t maxSince = 0;
-  size_t max = 0;
-};
-CarryRule carryRuleFor(const PhotoFacts& f) {
-  CarryRule c;
-  const bool clockOk = f.now != 0 && f.lastOwnerTurnAt != 0 && f.now >= f.lastOwnerTurnAt;
-  const uint64_t idle = clockOk ? f.now - f.lastOwnerTurnAt : 0;
-  const bool fileRef = f.mode == PhotoMode::FileRef;
-  c.carry = clockOk && !f.afterRestart && !f.noCard && idle <= (fileRef ? kPhotoIdleS : kColdGapS);
-  c.maxSince = fileRef ? kPhotoOwnerTurns : 1;
-  c.max = fileRef ? kFileRefPhotosMax : kInlinePhotosMax;
-  return c;
-}
-
-// File-reference heads keep the last two photo-carrying owner turns: the two smallest
-// distinct ages present.
-std::set<uint32_t> keptAgesOf(const PhotoFacts& f) {
-  std::set<uint32_t> kept;
-  for (uint32_t a : std::set<uint32_t>(f.ownerTurnsSince.begin(), f.ownerTurnsSince.end()))
-    if (kept.size() < kPhotoOwnerTurns) kept.insert(a);
-  return kept;
-}
-
-// Whether candidate i (from an earlier owner turn) may be carried, given what is already shown.
-bool mayCarry(const PhotoFacts& f, const CarryRule& rule, const std::set<uint32_t>& keptAges, size_t i,
-              size_t shown, size_t carried) {
-  const uint32_t since = f.ownerTurnsSince[i];
-  if (!rule.carry || since > rule.maxSince || carried >= rule.max) return false;
-  if (f.mode != PhotoMode::FileRef) return true;
-  return keptAges.count(since) && shown < kFileRefPhotosMax;
-}
-
-}  // namespace
-
 Status visiblePhotos(const PhotoFacts& f, std::vector<std::string>& out) {
   out.clear();
   const size_t n = f.candidates.size();
-  if (f.ownerTurnsSince.size() != n || (!f.b64Bytes.empty() && f.b64Bytes.size() != n))
+  if (f.ownerTurnsSince.size() != n || (!f.bytes.empty() && f.bytes.size() != n))
     return Status::fail(Err::InvalidArgument, "tx::visiblePhotos");
   if (f.mode == PhotoMode::None) return Status::success();
-  const CarryRule rule = carryRuleFor(f);
-  const std::set<uint32_t> keptAges = keptAgesOf(f);
-  const bool fileRef = f.mode == PhotoMode::FileRef;
-  size_t arrival = 0, carried = 0, b64 = 0;
-  for (size_t i = 0; i < n; ++i) {
-    const uint32_t since = f.ownerTurnsSince[i];
-    if (since == 0) {
-      if (arrival < kArrivalPhotosMax) out.push_back(f.candidates[i]);
-      arrival += arrival < kArrivalPhotosMax;
-      continue;
-    }
-    if (!mayCarry(f, rule, keptAges, i, out.size(), carried)) continue;
-    const uint32_t size = f.b64Bytes.empty() || fileRef ? 0 : f.b64Bytes[i];
-    if (b64 + size > kInlinePhotoB64Max) break;   // newest first: stop at the first misfit
-    b64 += size;
+  const size_t maxCount = photosInViewMax(f.mode), maxBytes = photoBytesInViewMax(f.mode);
+  size_t bytes = 0;
+  for (size_t i = 0; i < n; ++i) {   // the arrival turn's own photos first, whatever their place
+    if (f.ownerTurnsSince[i] != 0 || out.size() >= kArrivalPhotosMax) continue;
     out.push_back(f.candidates[i]);
-    ++carried;
+    bytes += f.bytes.empty() ? 0 : f.bytes[i];
+  }
+  if (f.noCard) return Status::success();   // an earlier photo cannot be read back
+  for (size_t i = 0; i < n; ++i) {          // then the earlier ones, newest first
+    if (f.ownerTurnsSince[i] == 0) continue;
+    const size_t size = f.bytes.empty() ? 0 : f.bytes[i];
+    if (out.size() >= maxCount || bytes + size > maxBytes) break;   // the oldest fall out first
+    bytes += size;
+    out.push_back(f.candidates[i]);
   }
   return Status::success();
 }

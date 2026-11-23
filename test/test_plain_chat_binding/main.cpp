@@ -601,7 +601,9 @@ static void test_a_photo_reaches_its_own_turn_once_as_an_image() {
   TEST_ASSERT_EQUAL(2, (int)dev.sent.size());
 }
 
-static void test_the_next_message_soon_after_still_sees_the_photo_then_its_stub() {
+// Lane E2-FIX4: the photo stays in view as the rest of the conversation does (it was the next turn
+// inside 270 s only, then its stub).
+static void test_later_messages_still_see_the_photo_from_the_card() {
   Device dev;
   nimbus::orch::TurnImages set;
   onePhoto(set);
@@ -616,12 +618,12 @@ static void test_the_next_message_soon_after_still_sees_the_photo_then_its_stub(
   TEST_ASSERT_TRUE(dev.say("what color was the background?").ok());
   const std::string second = dev.model.last().body;
   TEST_ASSERT_EQUAL(1, (int)count(second, "\"type\":\"image\""));   // carried once, in its own message
-  dev.ms += 600000;       // ten minutes later: out of the carry, its stub only
+  dev.ms += 600000;       // ten minutes later: still in view, read again from the card
   dev.model.push(sp::say("It was a triangle."));
   TEST_ASSERT_TRUE(dev.say("and the shape?").ok());
   const std::string third = dev.model.last().body;
-  TEST_ASSERT_EQUAL(0, (int)count(third, "\"type\":\"image\""));
-  TEST_ASSERT_TRUE(has(third, "[photo p0123456789abcdef"));
+  TEST_ASSERT_EQUAL(1, (int)count(third, "\"type\":\"image\""));
+  TEST_ASSERT_FALSE(has(third, "[photo p0123456789abcdef"));
 }
 
 static void test_only_a_head_that_takes_images_gets_the_part() {
@@ -747,7 +749,7 @@ int main(int, char**) {
   RUN_TEST(test_the_seen_index_is_rebuilt_from_the_card);
   RUN_TEST(test_with_no_card_the_chat_runs_in_ram);
   RUN_TEST(test_a_photo_reaches_its_own_turn_once_as_an_image);
-  RUN_TEST(test_the_next_message_soon_after_still_sees_the_photo_then_its_stub);
+  RUN_TEST(test_later_messages_still_see_the_photo_from_the_card);
   RUN_TEST(test_only_a_head_that_takes_images_gets_the_part);
   RUN_TEST(test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_refused_once);
   RUN_TEST(test_a_turns_usage_is_handed_over_once);

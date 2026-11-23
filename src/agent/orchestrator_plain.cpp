@@ -153,9 +153,11 @@ class MeasuredTransport : public HttpTransport {
  public:
   bool exec(const HttpRequest& req, HttpResponse& out, std::string& err) override {
     note(internalLargest());
+    const uint32_t t0 = millis();
     const bool ok = deviceTransport().exec(req, out, err);
     note(internalLargest());
     ++requests;
+    logRequest(req, out.status, millis() - t0);
     return ok;
   }
   int execJson(const HttpRequest& req, JsonDocument& doc, const JsonDocument& filter, std::string& err) override {
@@ -166,15 +168,26 @@ class MeasuredTransport : public HttpTransport {
     return st;
   }
   void reset() {
-    minLargest = UINT32_MAX;
+    minLargest = minPsram = UINT32_MAX;
     requests = 0;
   }
   uint32_t minLargest = UINT32_MAX;
+  uint32_t minPsram = UINT32_MAX;   // PSRAM free low water across the turn's requests (lane E2-FIX4)
   uint32_t requests = 0;
 
  private:
   void note(uint32_t v) {
     if (v < minLargest) minLargest = v;
+    const uint32_t ps = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    if (ps < minPsram) minPsram = ps;
+  }
+  // One request on one line (lane E2-FIX4, the photo measurement): its bytes on the wire, the photos
+  // spliced into it and their base64 bytes, and how long the exchange took.
+  static void logRequest(const HttpRequest& req, int status, uint32_t ms) {
+    size_t photoB = 0;
+    for (const auto& sp : req.splices) photoB += spliceLen(sp);
+    alogf("e2: req bodyB=%u photos=%u photoB64=%u ms=%u status=%d", (unsigned)bodyLength(req), (unsigned)req.splices.size(),
+          (unsigned)photoB, (unsigned)ms, status);
   }
 };
 MeasuredTransport s_transport;
@@ -235,7 +248,7 @@ std::string txKeyFor(const String& chatId) {
 // ---- the turn's photos ------------------------------------------------------------
 std::unique_ptr<nimbus::orch::TurnImages> s_photos;   // the running turn's set (tg_poll only)
 
-// An earlier photo the engine carries into this turn (tx::visiblePhotos): its stored copy on the
+// An earlier photo still in view on this turn (tx::visiblePhotos, lane E2-FIX4): its stored copy on the
 // card (the intake keeps every photo at /mem/blobs/<ref>.jpg, or .bin for one sent as a file),
 // read into PSRAM once per turn, as engine 1's image.look reads it. Freed after the turn.
 struct CarriedPhoto {
@@ -261,6 +274,7 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
     }
   CarriedPhoto c;
   c.ref = ref;
+  uint32_t readMs = 0;
   const std::string hash = ref.size() > 1 && ref[0] == 'p' ? ref.substr(1) : std::string();
   for (const char* ext : {"jpg", "bin"}) {
     if (hash.empty() || !memory::haveSd()) break;
@@ -269,7 +283,9 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
     {
       memory::Lock lk;
       if (!memory::dataFs().exists(path.c_str())) continue;
+      readMs = millis();
       c.bytes = vision::loadToPsram(path.c_str(), memory::dataFs(), nimbus::orch::kImagePartBytes, c.len, why);
+      readMs = millis() - readMs;
     }
     if (!c.bytes) alogf("e2: earlier photo %s not read (%s)", ref.c_str(), why);
     break;
@@ -284,7 +300,7 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
   out.bytes = c.bytes;
   out.len = c.len;
   out.mime = c.mime;
-  alogf("e2: earlier photo %s shown again (%u B)", ref.c_str(), (unsigned)c.len);
+  alogf("e2: earlier photo %s shown again (%u B, card read %u ms)", ref.c_str(), (unsigned)c.len, (unsigned)readMs);
   s_carried.push_back(std::move(c));
   return plain::Status::success();
 }
@@ -497,10 +513,11 @@ void logTurn(const plain::ChatBinding& b, const plain::TurnOutcome& out, const p
         (unsigned)reqBytes, (unsigned)e.promptTokens, (unsigned)e.outputTokens, (unsigned)e.cacheReadTokens,
         (unsigned)e.cacheWriteTokens, (unsigned)e.lastPromptTokens, (unsigned)e.microUsd, (unsigned)b.sentParts(),
         (unsigned)(b.sentParts() + b.refusedParts()), (unsigned)e.cacheWrite1hTokens);
-  alogf("e2: mem stackFree=%u intLargestMin=%u intLargestNow=%u psramFree=%u psramLargest=%u reqs=%u "
+  alogf("e2: mem stackFree=%u intLargestMin=%u intLargestNow=%u psramFree=%u psramMin=%u psramLargest=%u reqs=%u "
         "holdMs append=%u whole=%u rename=%u read=%u list=%u n=%u/%u/%u/%u refused=%u/%u/%u readTotalMs=%u readB=%u",
         (unsigned)uxTaskGetStackHighWaterMark(nullptr), (unsigned)s_transport.minLargest, (unsigned)internalLargest(),
-        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), (unsigned)s_transport.minPsram,
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
         (unsigned)s_transport.requests, (unsigned)h.appendMs, (unsigned)h.wholeMs, (unsigned)h.renameMs,
         (unsigned)h.readMs, (unsigned)h.listMs, (unsigned)h.appends, (unsigned)h.wholes, (unsigned)h.renames,
         (unsigned)h.reads, (unsigned)h.refusedNoCard, (unsigned)h.refusedFloor, (unsigned)h.refusedTask,

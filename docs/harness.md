@@ -596,10 +596,17 @@ the same request, and none of them drops anything without a line that names it.
   same path stale; no other tool supersedes anything, whatever it stores. Each stale read is
   listed once, in the `sup` list of an `x` item (why `superseded`): a change point only, the
   stale read still renders whole (`stubList`).
-- **Photos** (`visiblePhotos`): heads with file references keep the last two photo turns for
-  two more owner turns, at most 4, until an hour idle or a restart; inline heads (routed and
-  other 85,000 B heads too) carry the newest 2 to the next owner turn only, within 270 s and
-  200,000 B of base64. The rest render as `[photo p<ref> <date> not shown: view id=p<ref>]`.
+- **Photos** (`visiblePhotos`, lane E2-FIX4): a photo the head was shown stays shown as pixels
+  on every later request, as the rest of the conversation does, until compaction's pointer
+  passes its turn or the caps push it out: the arrival turn's own (at most 4) first, then the
+  earlier ones newest first while the count and the stored bytes stay within the head's caps
+  (inline: `kInlinePhotosInViewMax`, `kInlinePhotoBytesInViewMax`; file reference:
+  `kFileRefPhotosInViewMax`, `kFileRefPhotoBytesInViewMax`). The oldest falls out first. No
+  clock, idle time or restart takes part. Against the head's body cap a photo counts as the
+  text its tokens would be (`kPhotoCapBytes`), never its base64. A photo out of view renders
+  as `[photo p<ref> <date>: shown earlier in this conversation; not attached to this request]`
+  (the words in `tx/photo_text.h`); only when the engine has bound `view` (`photoStub`'s
+  `viewBound`) it adds `; view id=p<ref> shows it again`.
 - **The overflow ladder** (`nextRung`, one rung at a time): stub closed turns, stub this
   turn's older bulk, omit the oldest whole turns as one named line (`omissionSpan` never
   reaches the newest 6 owner turns), then the size guard.
@@ -1224,9 +1231,10 @@ them.
 
 No note-writing tool comes back on engine 2. A photo part may carry a note (`tx::Part::note`, at
 most 270 B): the head's note a migration carried over (a photo row whose ref the binding gives,
-`DayRow::photoRef`) or a blind host's transcription. Once the photo leaves view its stub keeps the
-note and the view pointer: `[photo p<ref8> <when>: <note>; not shown: view id=p<ref8>]`
-(`tx::photoStub` with a note). The summarizer sees the note beside the photo marker.
+`DayRow::photoRef`) or a blind host's transcription. Once the photo leaves view its line keeps the
+note: `[photo p<ref8> <when>: <note>; shown earlier in this conversation; not attached to this
+request]` (`tx::photoStub` with a note; the view pointer only when `view` is bound). The
+summarizer sees the note beside the photo marker.
 
 ### Long call arguments (lane RB-H81)
 

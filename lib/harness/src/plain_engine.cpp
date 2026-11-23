@@ -538,40 +538,43 @@ class TurnRun {
     return Status::success();
   }
 
-  // A photo part as a carry candidate, `since` person turns after it arrived.
+  // A photo part as a candidate, `since` person turns after it arrived (each ref once).
   static void photoCandidate(tx::PhotoFacts& f, const tx::Part& p, uint32_t since) {
-    if (p.kind != tx::PartKind::Image) return;
+    if (p.kind != tx::PartKind::Image || std::find(f.candidates.begin(), f.candidates.end(), p.ref) != f.candidates.end())
+      return;
     f.candidates.push_back(p.ref);
     f.ownerTurnsSince.push_back(since);
-    f.b64Bytes.push_back((p.bytes + 2) / 3 * 4);
+    f.bytes.push_back(p.bytes);
   }
 
-  // The earlier person turns' photos, newest first, as far back as the carry rule can reach, and
-  // when the newest earlier person turn opened.
+  // The earlier person turns' photos the request shows (resident, after compaction's pointer, as the
+  // wire renders them), newest first, until the caps could take no more (lane E2-FIX4). A resumed
+  // turn's own stored message counts as this turn's.
   void earlierPhotos(tx::PhotoFacts& f) const {
+    const size_t enough = f.candidates.size() + tx::photosInViewMax(f.mode);
+    uint64_t thru = c_.head.thru;
     uint32_t persons = 0;   // person turns opened since the item being read
-    for (size_t i = d_.arena->count(); i-- > 0 && persons <= tx::kPhotoOwnerTurns;) {
+    for (size_t i = d_.arena->count(); i-- > 0 && f.candidates.size() < enough;) {
       tx::ArenaEntry e;
-      const bool mine = d_.arena->header(i, e).ok() && e.turn != t_.ctx.turn;
-      if (!mine || (e.kind != tx::ItemKind::TurnOpen && e.kind != tx::ItemKind::User)) continue;
+      if (!d_.arena->header(i, e).ok() || (e.turn == t_.ctx.turn && e.kind == tx::ItemKind::TurnOpen)) continue;
+      const bool digest = e.kind == tx::ItemKind::Digest;
+      if (!digest && e.kind != tx::ItemKind::TurnOpen && e.kind != tx::ItemKind::User) continue;
+      if (!digest && e.q <= thru) break;   // a digest covers it and everything before it
       tx::Item it;
       if (!d_.arena->get(i, it).ok()) continue;
-      if (e.kind == tx::ItemKind::User) {
-        for (const tx::Part& p : it.parts) photoCandidate(f, p, persons);
-        continue;
-      }
-      const bool person = it.trigger == triggerSlug(Trigger::Owner) || it.trigger == triggerSlug(Trigger::Console);
-      if (person && persons++ == 0) f.lastOwnerTurnAt = it.t;
+      if (digest) thru = std::max(thru, it.thru);
+      else if (e.kind == tx::ItemKind::User)
+        for (const tx::Part& p : it.parts) photoCandidate(f, p, e.turn == t_.ctx.turn ? 0 : persons);
+      else persons += it.trigger == triggerSlug(Trigger::Owner) || it.trigger == triggerSlug(Trigger::Console);
     }
   }
 
   // The photos this turn shows as pixels (tx::visiblePhotos, PRD section 5): its own, and those of
-  // the earlier person turns the carry rule keeps (Inline: base64, no provider file ids yet), newest
-  // first. Any other photo renders as its stub line. Lane E2-CHAT.
+  // the earlier person turns still in the conversation the request shows, newest first, within the
+  // caps (Inline: base64, no provider file ids yet). No clock and no restart take part (lane
+  // E2-FIX4). Any other photo renders as its line.
   std::vector<std::string> photosAtOpen(const TurnInput& in) const {
     tx::PhotoFacts f;
-    f.now = epoch();
-    f.afterRestart = c_.afterRestart;
     f.noCard = !d_.log->isOpen();
     for (const tx::Part& p : in.parts) photoCandidate(f, p, 0);
     earlierPhotos(f);

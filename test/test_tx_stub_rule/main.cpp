@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -211,7 +212,7 @@ void test_long_argument_and_photo_stubs_have_the_prd_shape() {
   TEST_ASSERT_FALSE(tx::looksLikeStub("[stub] is how the parser marks a placeholder.\nSecond line."));
   TEST_ASSERT_FALSE(tx::looksLikeStub("Journal, day 1 [stub 1720B sha:c4091c8e: view id=r4]"));
   TXB_OK(tx::photoStub("ab12cd34", "Tue 17 Nov 13:02", s));
-  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 13:02 not shown: view id=pab12cd34]", s.c_str());
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 13:02: shown earlier in this conversation; not attached to this request]", s.c_str());
   TXB_OK(tx::omissionLine(3, "15-16 Nov", s));
   TEST_ASSERT_EQUAL_STRING("[3 earlier turns, 15-16 Nov, not shown: search finds them]", s.c_str());
 }
@@ -268,15 +269,16 @@ void test_a_write_supersedes_earlier_reads_of_that_path_only() {
   TEST_ASSERT_EQUAL_UINT64(ra2, sup[1]);
 }
 
-// ---- photos ----------------------------------------------------------------------------
-tx::PhotoFacts photoFacts(tx::PhotoMode mode, size_t n, uint32_t since, uint64_t idleS) {
+// ---- photos (lane E2-FIX4: in view until compaction's pointer or a cap, never by the clock) ----
+// n candidates, newest first: `arrivals` of them this turn's, then one per earlier person turn, each
+// of `size` stored bytes.
+tx::PhotoFacts photoFacts(tx::PhotoMode mode, size_t n, size_t arrivals = 0, uint32_t size = 60000) {
   tx::PhotoFacts f;
   f.mode = mode;
-  f.lastOwnerTurnAt = txb::kT0;
-  f.now = txb::kT0 + idleS;
   for (size_t i = 0; i < n; ++i) {
     f.candidates.push_back("p0000000" + std::to_string(i));
-    f.ownerTurnsSince.push_back(since);
+    f.ownerTurnsSince.push_back(i < arrivals ? 0 : (uint32_t)(i - arrivals + 1));
+    f.bytes.push_back(size);
   }
   return f;
 }
@@ -288,30 +290,105 @@ void expectVisible(const tx::PhotoFacts& f, size_t want, const char* msg) {
   for (size_t i = 0; i < v.size(); ++i) TEST_ASSERT_EQUAL_STRING_MESSAGE(f.candidates[i].c_str(), v[i].c_str(), msg);
 }
 
-// File-reference heads: the photos stay for the next two owner turns, at most 4 (newest
-// first), until 60 minutes idle or a restart.
-void test_file_reference_photos_follow_the_table() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 0, 0), 3, "the arrival turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 1, 60), 3, "next owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 2, 600), 3, "second owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 3, 60), 0, "third owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 1, 60), 4, "at most 4");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 3, 1, 3601), 0, "60 minutes idle");
-  tx::PhotoFacts r = photoFacts(tx::PhotoMode::FileRef, 3, 1, 60);
-  r.afterRestart = true;
-  expectVisible(r, 0, "after a restart");
+// D1 over the class: for every head mode with vision, every number of earlier photos, every photo
+// size and every person-turn distance, the visible set is exactly the newest prefix that fits both
+// caps: a photo stays on every later turn until a cap pushes it out, the oldest falls out first, and
+// nothing else (no distance in turns) takes part. None shows nothing.
+void test_photos_stay_in_view_until_a_cap_pushes_the_oldest_out() {
+  size_t cases = 0;
+  for (tx::PhotoMode mode : {tx::PhotoMode::Inline, tx::PhotoMode::FileRef, tx::PhotoMode::None})
+    for (size_t n = 0; n <= tx::kFileRefPhotosInViewMax + 3; ++n)
+      for (uint32_t size : {1000u, 60000u, 120000u, 200000u, 400000u, 700000u})
+        for (uint32_t gap : {1u, 2u, 13u, 400u}) {   // person turns between two photos
+          tx::PhotoFacts f = photoFacts(mode, n, 0, size);
+          for (size_t i = 0; i < n; ++i) f.ownerTurnsSince[i] = 1 + (uint32_t)i * gap;
+          size_t want = 0, bytes = 0;
+          while (want < n && want < tx::photosInViewMax(mode) && bytes + size <= tx::photoBytesInViewMax(mode)) {
+            bytes += size;
+            ++want;
+          }
+          char msg[96];
+          std::snprintf(msg, sizeof msg, "mode %d n %u size %u gap %u", (int)mode, (unsigned)n, (unsigned)size, (unsigned)gap);
+          expectVisible(f, want, msg);
+          ++cases;
+        }
+  TEST_ASSERT_TRUE(cases > 500);
+  // The caps hold: never more than the count, never more than the bytes, on any head.
+  TEST_ASSERT_EQUAL(0, (int)tx::photosInViewMax(tx::PhotoMode::None));
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 9), tx::kInlinePhotosInViewMax, "inline count cap");
+  expectVisible(photoFacts(tx::PhotoMode::FileRef, 12), tx::kFileRefPhotosInViewMax, "file-reference count cap");
+  // An older, smaller photo never takes the place of a newer one that does not fit.
+  tx::PhotoFacts mixed = photoFacts(tx::PhotoMode::Inline, 3);
+  mixed.bytes = {200000, (uint32_t)tx::kInlinePhotoBytesInViewMax, 1000};
+  expectVisible(mixed, 1, "the second does not fit: the third stays out too");
 }
 
-// Inline heads (routed included): the next owner turn only, inside 270 s, newest 2.
-void test_inline_photos_follow_the_table() {
-  TXB_WAITS_FOR("PENDING RB-T3");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 2, 0, 0), 2, "the arrival turn");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 1, 270), 1, "next turn inside 270 s");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 1, 271), 0, "next turn after 270 s");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 1, 2, 30), 0, "second owner turn");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 3, 1, 30), 2, "newest 2");
-  expectVisible(photoFacts(tx::PhotoMode::None, 2, 1, 30), 0, "a head without vision");
+// Photo after photo, turn after turn: a photo once shown stays shown until a cap pushes it out, and
+// once out it never comes back (no oscillation: the line, then pixels, then the line again).
+void test_a_photo_leaves_view_once_and_in_arrival_order() {
+  for (tx::PhotoMode mode : {tx::PhotoMode::Inline, tx::PhotoMode::FileRef}) {
+    std::vector<std::string> refs;   // newest first
+    std::vector<uint32_t> since;
+    std::map<std::string, int> changes;
+    std::map<std::string, bool> was;
+    for (int turn = 0; turn < 30; ++turn) {
+      for (uint32_t& k : since) ++k;
+      if (turn % 3 == 0) {   // a photo every third turn
+        refs.insert(refs.begin(), "p" + std::to_string(10000000 + turn));
+        since.insert(since.begin(), 0);
+      }
+      tx::PhotoFacts f;
+      f.mode = mode;
+      f.candidates = refs;
+      f.ownerTurnsSince = since;
+      f.bytes.assign(refs.size(), 120000);
+      std::vector<std::string> v;
+      TXB_OK(tx::visiblePhotos(f, v));
+      for (const std::string& r : refs) {
+        const bool shown = std::find(v.begin(), v.end(), r) != v.end();
+        if (was.count(r) && was[r] != shown) ++changes[r];
+        was[r] = shown;
+      }
+      for (size_t i = 1; i < v.size(); ++i) TEST_ASSERT_TRUE(v[i - 1] > v[i]);   // newest first, a prefix
+    }
+    for (const auto& c : changes) TEST_ASSERT_TRUE_MESSAGE(c.second <= 1, c.first.c_str());
+  }
+}
+
+// The arrival turn and the device facts the rule still reads: the arrival shows at most 4 and
+// counts first against the caps; no card carries nothing earlier; a head without vision sees nothing.
+void test_rules_photo_table_edges() {
+  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 6), 4, "arrival at most 4");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 6), 4, "inline arrival at most 4");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 2), tx::kInlinePhotosInViewMax, "two arrivals, then the newest earlier");
+  expectVisible(photoFacts(tx::PhotoMode::Inline, 3, 1, (uint32_t)(tx::kInlinePhotoBytesInViewMax / 2 + 1)), 1,
+                "the arrival's bytes count first");
+  expectVisible(photoFacts(tx::PhotoMode::None, 2, 2), 0, "no vision: not even on arrival");
+  expectVisible(photoFacts(tx::PhotoMode::None, 2), 0, "no vision: nothing earlier");
+  tx::PhotoFacts noCard = photoFacts(tx::PhotoMode::FileRef, 3, 1);
+  noCard.noCard = true;
+  expectVisible(noCard, 1, "no card: the arrival turn only");
+  tx::PhotoFacts unknown = photoFacts(tx::PhotoMode::Inline, 3);
+  unknown.bytes.clear();
+  expectVisible(unknown, 3, "sizes unknown: the count cap alone");
+  tx::PhotoFacts bad = photoFacts(tx::PhotoMode::FileRef, 2);
+  bad.ownerTurnsSince.pop_back();
+  std::vector<std::string> v;
+  TEST_ASSERT_TRUE(tx::visiblePhotos(bad, v).err == tx::Err::InvalidArgument);
+  bad = photoFacts(tx::PhotoMode::FileRef, 2);
+  bad.bytes.pop_back();
+  TEST_ASSERT_TRUE(tx::visiblePhotos(bad, v).err == tx::Err::InvalidArgument);
+}
+
+// Counter-test, rule side: the rule's facts are the mode, the card and the per-photo lists, nothing
+// else (no clock, idle time or restart flag; written as an aggregate so a field added in front of
+// these fails to compile here). The engine side (test_plain_conformance, photo_tests) renders one
+// conversation at every gap around the old 270 s and 3,600 s marks and across restarts.
+void test_the_photo_rule_reads_no_clock() {
+  const tx::PhotoFacts f{tx::PhotoMode::Inline, false, {"p00000001"}, {5}, {60000}};
+  std::vector<std::string> v;
+  TXB_OK(tx::visiblePhotos(f, v));
+  TEST_ASSERT_EQUAL(1, (int)v.size());
 }
 
 // ---- the ladder --------------------------------------------------------------------------
@@ -561,37 +638,6 @@ void test_rules_show_result_table() {
   TEST_ASSERT_TRUE(tx::showResult(tx::Item{}, tx::ShowFacts{}, got).err == tx::Err::InvalidArgument);
 }
 
-// The rest of the photo table: floor heads are inline heads with the base64 bound; no card
-// and no clock carry nothing; a file-reference head keeps the last two photo turns; the
-// arrival turn shows at most 4.
-void test_rules_photo_table_edges() {
-  tx::PhotoFacts floor = photoFacts(tx::PhotoMode::Inline, 2, 1, 30);
-  floor.b64Bytes = {150000, 150000};
-  expectVisible(floor, 1, "floor head: base64 bound");
-  floor.b64Bytes = {90000, 90000};
-  expectVisible(floor, 2, "floor head: both fit");
-  floor.b64Bytes = {250000, 1000};
-  expectVisible(floor, 0, "floor head: the newest does not fit");
-  tx::PhotoFacts noCard = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
-  noCard.noCard = true;
-  expectVisible(noCard, 0, "no card: carried photos");
-  noCard.ownerTurnsSince = {0, 0};
-  expectVisible(noCard, 2, "no card: the arrival turn");
-  tx::PhotoFacts noClock = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
-  noClock.now = 0;
-  expectVisible(noClock, 0, "clock not set");
-  tx::PhotoFacts ages = photoFacts(tx::PhotoMode::FileRef, 3, 1, 60);
-  ages.ownerTurnsSince = {0, 1, 2};
-  expectVisible(ages, 2, "the last two photo turns");
-  expectVisible(photoFacts(tx::PhotoMode::FileRef, 6, 0, 0), 4, "arrival at most 4");
-  expectVisible(photoFacts(tx::PhotoMode::Inline, 6, 0, 0), 4, "inline arrival at most 4");
-  expectVisible(photoFacts(tx::PhotoMode::None, 2, 0, 0), 0, "no vision: not even on arrival");
-  tx::PhotoFacts bad = photoFacts(tx::PhotoMode::FileRef, 2, 1, 60);
-  bad.ownerTurnsSince.pop_back();
-  std::vector<std::string> v;
-  TEST_ASSERT_TRUE(tx::visiblePhotos(bad, v).err == tx::Err::InvalidArgument);
-}
-
 // Rung 3 over its class: the omitted prefix never reaches the newest 6 owner turns, frees
 // enough when it can, and omits no more turns than it needs.
 void test_rules_omission_span_keeps_the_newest_six_owner_turns() {
@@ -673,9 +719,11 @@ void test_rules_stamps_carry_the_year() {
   TEST_ASSERT_EQUAL_STRING("[2 earlier turns, 16-17 Nov 2026, not shown: search finds them]", s.c_str());
   s = "Tue 17 Nov 2026 13:02";
   TXB_OK(tx::photoStub("ab12cd34", s, s));
-  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 2026 13:02 not shown: view id=pab12cd34]", s.c_str());
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 Tue 17 Nov 2026 13:02: shown earlier in this conversation; not attached to this request]", s.c_str());
   TXB_OK(tx::photoStub("ab12cd34", "", s));
-  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34 not shown: view id=pab12cd34]", s.c_str());
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34: shown earlier in this conversation; not attached to this request]", s.c_str());
+  TXB_OK(tx::photoStub("ab12cd34", "", s, true));   // only when the engine has bound view (E2-SRCH)
+  TEST_ASSERT_EQUAL_STRING("[photo pab12cd34: shown earlier in this conversation; not attached to this request; view id=pab12cd34 shows it again]", s.c_str());
 }
 
 // The bodies answer typed errors for inputs the contract rules out, never crash (the
@@ -814,30 +862,41 @@ void test_rules_long_arguments_are_whole_until_the_overflow_path() {
 }
 
 
-// RB-H81 (DoD 5, ruling 84 item 5): a photo stub keeps its view pointer, and carries the photo's note
+// RB-H81 (DoD 5, ruling 84 item 5) as lane E2-FIX4 left it: a photo's line carries the photo's note
 // (a migrated v5.1.2 note or a blind host's transcription, at most kPhotoNoteMax) on one line that
-// cannot close the stub; with no note it is the plain stub.
-void test_rules_a_photo_stub_carries_its_note_and_its_view_pointer() {
+// cannot close it, says the photo was shown earlier and is not attached to this request, and names
+// the view tool only when the engine has bound it; with no note it is the plain line.
+void test_rules_a_photo_stub_carries_its_note_and_names_view_only_when_bound() {
   std::string out;
   TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", "", out).ok());
   std::string plain;
   TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", plain).ok());
   TEST_ASSERT_EQUAL_STRING(plain.c_str(), out.c_str());
   TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "Tue 17 Nov 2026 13:02", "A receipt: [total] 12.40\nfor bread", out).ok());
-  TEST_ASSERT_EQUAL_STRING("[photo pa1b2c3d4 Tue 17 Nov 2026 13:02: A receipt: (total) 12.40 for bread; not shown: view id=pa1b2c3d4]",
+  TEST_ASSERT_EQUAL_STRING("[photo pa1b2c3d4 Tue 17 Nov 2026 13:02: A receipt: (total) 12.40 for bread; shown earlier in this "
+                           "conversation; not attached to this request]",
                            out.c_str());
   const std::string longNote(600, 'n');
-  TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "", longNote, out).ok());
-  TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax, 'n')) != std::string::npos);
-  TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax + 1, 'n')) == std::string::npos);
-  TEST_ASSERT_TRUE(out.find("view id=pa1b2c3d4]") != std::string::npos);
+  for (bool bound : {false, true})
+    for (const std::string& note : {std::string(), longNote}) {
+      TEST_ASSERT_TRUE(tx::photoStub("a1b2c3d4", "", note, out, bound).ok());
+      TEST_ASSERT_EQUAL_MESSAGE(!note.empty(), out.find(std::string(tx::kPhotoNoteMax, 'n')) != std::string::npos, out.c_str());
+      TEST_ASSERT_TRUE(out.find(std::string(tx::kPhotoNoteMax + 1, 'n')) == std::string::npos);
+      TEST_ASSERT_TRUE_MESSAGE(out.find("shown earlier in this conversation; not attached to this request") != std::string::npos,
+                               out.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(bound, out.find("view") != std::string::npos, "view named while unbound, or not when bound");
+      if (bound) TEST_ASSERT_TRUE(out.find("; view id=pa1b2c3d4 shows it again]") != std::string::npos);
+      TEST_ASSERT_TRUE(out.find('\n') == std::string::npos && out.back() == ']');
+      TEST_ASSERT_TRUE_MESSAGE(out.find("not shown") == std::string::npos && out.find("cannot") == std::string::npos,
+                               "the line reads as if the head never saw the photo");
+    }
 }
 
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_rules_long_text_keeps_the_cap_then_points_at_the_rest);
   RUN_TEST(test_rules_long_arguments_are_whole_until_the_overflow_path);
-  RUN_TEST(test_rules_a_photo_stub_carries_its_note_and_its_view_pointer);
+  RUN_TEST(test_rules_a_photo_stub_carries_its_note_and_names_view_only_when_bound);
   RUN_TEST(test_checker_rejects_wrong_internal_stubs);
   RUN_TEST(test_checker_rejects_leaking_outside_stubs);
   RUN_TEST(test_internal_stub_has_the_prd_shape);
@@ -848,8 +907,9 @@ int main(int, char**) {
   RUN_TEST(test_stub_text_is_a_pure_function);
   RUN_TEST(test_only_the_tool_fold_lists_make_stubs);
   RUN_TEST(test_a_write_supersedes_earlier_reads_of_that_path_only);
-  RUN_TEST(test_file_reference_photos_follow_the_table);
-  RUN_TEST(test_inline_photos_follow_the_table);
+  RUN_TEST(test_photos_stay_in_view_until_a_cap_pushes_the_oldest_out);
+  RUN_TEST(test_a_photo_leaves_view_once_and_in_arrival_order);
+  RUN_TEST(test_the_photo_rule_reads_no_clock);
   RUN_TEST(test_ladder_climbs_one_rung_at_a_time);
   RUN_TEST(test_rules_stub_survives_a_restart);
   RUN_TEST(test_rules_outside_stub_never_carries_result_bytes);

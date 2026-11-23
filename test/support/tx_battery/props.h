@@ -388,14 +388,15 @@ inline std::string stampOf(const tx::Item& u, uint16_t dayStartMin) {
 
 // What a request may carry beyond the stored text it shows (PRD section 2, test_tx_overhead:
 // 96 B per owner message with the plain stamp, that is 74 B of framing plus the message's own
-// stamp in whichever of RB-REC5's three forms it takes, and 64 B per photo label). The stored text is counted as the JSON
+// stamp in whichever of RB-REC5's three forms it takes, and 104 B per photo label: the PRD's 64 B
+// plus the 40 B lane E2-FIX4's true line adds over the old one). The stored text is counted as the JSON
 // string bytes of each rendered text (owner and assistant text, device notes, call ids,
 // names and arguments, the result text shown, open-turn meta), so a line format's own keys
 // never hide anything. Wire framing of a tool call, a result and an extra text block has its
 // own fixed allowance, and the envelope (model, max_tokens, thinking, tool_choice, cache
 // marks, the system and tools arrays) is 512 B once.
 inline constexpr size_t kOverheadPerOwnerMessage = 74;   // beside the stamp's own bytes (stampBytes)
-inline constexpr size_t kOverheadPerPhotoLabel = 64;
+inline constexpr size_t kOverheadPerPhotoLabel = 104;
 inline constexpr size_t kOverheadPerCall = 96;
 inline constexpr size_t kOverheadPerResult = 80;
 inline constexpr size_t kOverheadPerTextBlock = 48;   // an assistant text, a device note, open-turn meta

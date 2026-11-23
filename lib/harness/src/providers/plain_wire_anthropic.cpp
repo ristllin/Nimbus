@@ -14,8 +14,8 @@
 // Messages, from the stored items after thru (the digests cover the rest), in q order:
 //   u  a user message of its own: one text block '[Tue 17 Nov 2026 13:02] <text>', then
 //      each photo: an image by file id or inline base64 when the open turn's t item lists
-//      it as visible (tx::visiblePhotos decided that at turn open), else its stub line
-//      (tx::photoStub) as a text block;
+//      it as visible (tx::visiblePhotos decided that at turn open), else its line
+//      (tx::photoStub: shown earlier, not attached to this request) as a text block;
 //   a  an assistant text block (whitespace-only text is not sent: the API refuses it);
 //   k  the open turn's signed thinking, written as stored (raw); closed turns' is dropped;
 //   c  a tool_use block; arguments that are not one JSON object (a cut or broken call, a
@@ -512,7 +512,9 @@ bool photoBlock(Render& r, const tx::Item& u, const tx::Part& p, bool join) {
   if (p.ref.size() < 2 || p.ref[0] != 'p') return false;
   std::string when, stub;
   if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
-  if (!tx::photoStub(p.ref.substr(1), when, p.note, stub).ok()) return false;   // its note kept (RB-H81)
+  // Its note kept (RB-H81). viewBound false: engine 2 has not bound view yet (E2-FIX4; the lane that
+  // binds it passes the registry's fact, tx::BoundTools::view of E2-FIX5, here).
+  if (!tx::photoStub(p.ref.substr(1), when, p.note, stub, false).ok()) return false;
   textBlock(r, Role::User, u.turn, join, stub, Over::Refuse);
   return true;
 }

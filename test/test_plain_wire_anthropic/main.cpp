@@ -1432,10 +1432,11 @@ void photoTurns(Rig& rig, bool inl) {
     }
     tx::PhotoFacts pf;
     pf.mode = inl ? tx::PhotoMode::Inline : tx::PhotoMode::FileRef;
-    pf.now = c.t;
-    pf.lastOwnerTurnAt = c.t - 120;
     pf.candidates = candidates;
     pf.ownerTurnsSince = since;
+    // Stored sizes over half the head's byte cap (lane E2-FIX4): once both photos are in, the older
+    // falls out, so the run renders both pixels and the line.
+    pf.bytes.assign(candidates.size(), (uint32_t)(tx::photoBytesInViewMax(pf.mode) / 2 + 1));
     std::vector<std::string> vis;
     TXB_OK(tx::visiblePhotos(pf, vis));
     c.items.back().photos = vis;

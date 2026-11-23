@@ -207,9 +207,9 @@ inline void test_an_engine_with_no_compaction_installed_refuses_to_boot() {
 
 // DoD 5 (ruling 84 item 5): no note-writing tool comes back; a photo's note (a migrated v5.1.2 note
 // or a blind host's transcription, on the owner message's part) survives in the later-turn photo
-// stub with its working view pointer. The photo arrives with its note; two turns later its request
-// shows the stub with the note and the pointer. The counter-case: a photo with no note shows the
-// plain stub.
+// line (lane E2-FIX4: shown earlier, not attached to this request, no view pointer while view is not
+// bound). The photo arrives with its note; later requests with no pixels to show (no photo hook) show
+// the line with the note. The counter-case: a photo with no note shows the plain line.
 inline void test_a_photo_note_survives_in_the_later_turn_stub() {
   for (bool noted : {true, false}) {
     txb::Battery b;
@@ -224,7 +224,11 @@ inline void test_a_photo_note_survives_in_the_later_turn_stub() {
       TXB_OK(b.owner("and now " + std::to_string(k), out));
     }
     const std::string& body = b.model.requests().back().body;
-    TEST_ASSERT_TRUE_MESSAGE(body.find("view id=pa1b2c3d4") != std::string::npos, "the photo stub lost its view pointer");
+    // No photo hook here: the photo renders as its line (lane E2-FIX4: true, and naming no unbound tool).
+    TEST_ASSERT_TRUE_MESSAGE(body.find("[photo pa1b2c3d4") != std::string::npos &&
+                                 body.find("not attached to this request") != std::string::npos,
+                             "the photo's line is missing");
+    TEST_ASSERT_TRUE_MESSAGE(body.find("view id=pa1b2c3d4") == std::string::npos, "the line names view, which is not bound");
     TEST_ASSERT_EQUAL_MESSAGE(noted, body.find("two lemons") != std::string::npos,
                               noted ? "the photo's note did not survive in its stub" : "a note appeared from nowhere");
   }

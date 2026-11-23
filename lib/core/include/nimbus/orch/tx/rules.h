@@ -27,7 +27,7 @@ namespace nimbus {
 namespace orch {
 namespace tx {
 
-inline constexpr uint32_t kColdGapS = 270;            // over this since the last request: cold (photos, files list)
+inline constexpr uint32_t kColdGapS = 270;            // over this since the last request: cold (the files list)
 inline constexpr size_t kStubMaxBytes = 400;
 inline constexpr size_t kStubPreviewBytes = 200;
 inline constexpr size_t kStubArgsPreviewBytes = 120;
@@ -35,12 +35,20 @@ inline constexpr size_t kStubToolMaxBytes = 64;       // a longer tool name is c
 inline constexpr size_t kStubPathMaxBytes = 96;       // the store's paths are at most 73 B
 inline constexpr size_t kStubWayBackMaxBytes = 160;   // the call a stub names to bring its bytes back
 inline constexpr uint32_t kNewestOwnerTurnsKept = 6;  // never omitted by the ladder
-inline constexpr uint32_t kPhotoIdleS = 3600;         // file-reference photos leave view after this
-inline constexpr uint32_t kPhotoOwnerTurns = 2;       // photos stay for the next two owner turns
-inline constexpr size_t kFileRefPhotosMax = 4;        // file-reference heads: at most 4 in view
-inline constexpr size_t kInlinePhotosMax = 2;         // inline heads: newest 2 carried one turn
-inline constexpr size_t kInlinePhotoB64Max = 200000;  // inline heads: carried base64 at most this
+// Photos in view (lane E2-FIX4, tx::visiblePhotos): caps that protect the device, never a clock.
+// Inline: every request carries the photos' base64 (4/3 of the stored bytes) and the device reads
+// each from the card once per turn into PSRAM. FileRef: a request names each photo by a provider file
+// id (about 100 B); the bytes go up once per photo. Measured on the bench (lanes/E2-FIX4/PR_BODY.md).
+inline constexpr size_t kInlinePhotosInViewMax = 4;            // inline heads: at most 4 photos in view
+inline constexpr size_t kInlinePhotoBytesInViewMax = 1000000;  // and at most this many stored bytes
+inline constexpr size_t kFileRefPhotosInViewMax = 8;           // file-reference heads: at most 8
+inline constexpr size_t kFileRefPhotoBytesInViewMax = 2000000; // and at most this many stored bytes
 inline constexpr size_t kArrivalPhotosMax = 4;        // the arrival turn (ladder rung 2's photo bound)
+// What one photo counts for against a head's body cap (plain_exchange.cpp capLength): the text its
+// tokens would be. Anthropic bills a photo at about (width x height) / 750 tokens, at most about
+// 1,600 for the sizes it keeps (1.15 megapixels); at the wire's dense ratio of about 3.6 B a token
+// that is about 5,800 B.
+inline constexpr size_t kPhotoCapBytes = 6000;
 inline constexpr size_t kOmissionDatesMaxBytes = 64;
 
 // Why the pointer moved (x.why). Slugs frozen: stored and counted as change points.
@@ -148,15 +156,19 @@ Status longTextHead(const std::string& text, size_t cap, const std::string& wher
 inline std::string viewPointer(uint64_t q) { return "view id=r" + std::to_string(q); }
 inline std::string pathPointer(const std::string& path) { return "read_file path=" + path; }
 
-// A photo out of view: '[photo p<ref8> <when> not shown: view id=p<ref8>]'. ref8 is the
-// photo ref without its 'p' (1 to 16 letters or digits); when is photoWhen's text (empty when
-// the clock was not set: the field is left out). InvalidArgument for a bad ref.
-Status photoStub(const std::string& ref8, const std::string& when, std::string& out);
+// A photo not attached to this request (lane E2-FIX4; the words are tx/photo_text.h):
+// '[photo p<ref8> <when>: shown earlier in this conversation; not attached to this request]'.
+// ref8 is the photo ref without its 'p' (1 to 16 letters or digits); when is photoWhen's text
+// (empty when the clock was not set: the field is left out). `viewBound`: the engine has bound the
+// view tool (E2-SRCH; the caller reads it from the tool registry), and only then the line ends
+// '; view id=p<ref8> shows it again]'. No line names a tool the engine has not bound.
+// InvalidArgument for a bad ref.
+Status photoStub(const std::string& ref8, const std::string& when, std::string& out, bool viewBound = false);
 // The same with the photo's note (tx::Part::note, lane RB-H81, ruling 84 item 5): '[photo
-// p<ref8> <when>: <note>; not shown: view id=p<ref8>]', the note on one line, at most
-// kPhotoNoteMax, '[' and ']' as '(' and ')' so it cannot close the stub. An empty note gives the
-// stub above.
-Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out);
+// p<ref8> <when>: <note>; shown earlier ...]', the note on one line, at most kPhotoNoteMax, '['
+// and ']' as '(' and ')' so it cannot close the line. An empty note gives the line above.
+Status photoStub(const std::string& ref8, const std::string& when, const std::string& note, std::string& out,
+                 bool viewBound = false);
 
 // Ruling 11 (the year in every stamp) for the rules' time texts, from stored epochs:
 // An epoch from before the clock was set (under day_start.h kClockValidEpoch, 0 included)
@@ -226,24 +238,26 @@ inline const std::string& shownArgs(const Item& call, const ShowFacts& f) {
 enum class PhotoMode : uint8_t { FileRef = 0, Inline = 1, None = 2 };
 struct PhotoFacts {
   PhotoMode mode = PhotoMode::Inline;
-  uint64_t now = 0;                      // 0 = clock not set: no photo is carried
-  uint64_t lastOwnerTurnAt = 0;          // when the previous owner turn started
-  bool afterRestart = false;
-  bool noCard = false;                   // no storage card: the arrival turn only
-  std::vector<std::string> candidates;   // refs of recent photo-carrying owner turns, newest first
-  std::vector<uint32_t> ownerTurnsSince; // per candidate: owner turns since it arrived (0 = this turn)
-  std::vector<uint32_t> b64Bytes;        // per candidate base64 size (Inline cap); empty = unknown
+  bool noCard = false;                   // no storage card: an earlier photo cannot be read back
+  std::vector<std::string> candidates;   // refs of the photos of the conversation the request shows
+                                         // (after compaction's pointer), newest first
+  std::vector<uint32_t> ownerTurnsSince; // per candidate: person turns since it arrived (0 = this turn)
+  std::vector<uint32_t> bytes;           // per candidate stored size; empty = unknown (counts 0)
 };
-// The photo refs this request shows as pixels, newest first; the rest render as photoStub.
-//  arrival (ownerTurnsSince 0): shown on every head with vision, at most kArrivalPhotosMax.
-//  FileRef: the photos of the last two photo-carrying owner turns stay for the next
-//    kPhotoOwnerTurns owner turns, at most kFileRefPhotosMax in all, until over kPhotoIdleS
-//    idle, a restart or no clock.
-//  Inline (floor and routed heads included): carried to the next owner turn only, if it
-//    starts within kColdGapS, newest kInlinePhotosMax, at most kInlinePhotoB64Max of base64
-//    (the bound needs b64Bytes: with sizes unknown it is not applied, so the photo lane passes
-//    them).
-//  None, or no card: nothing carried (None shows nothing at all).
+inline size_t photosInViewMax(PhotoMode m) {
+  return m == PhotoMode::FileRef ? kFileRefPhotosInViewMax : m == PhotoMode::Inline ? kInlinePhotosInViewMax : 0;
+}
+inline size_t photoBytesInViewMax(PhotoMode m) {
+  return m == PhotoMode::FileRef ? kFileRefPhotoBytesInViewMax : m == PhotoMode::Inline ? kInlinePhotoBytesInViewMax : 0;
+}
+// The photo refs this request shows as pixels, newest first; the rest render as photoStub (lane
+// E2-FIX4). A photo the head was shown stays shown on every later request, as the rest of the
+// conversation does, until compaction's pointer passes its turn (the caller offers only the photos
+// after it) or the caps push it out: the arrival turn's own photos first (at most kArrivalPhotosMax),
+// then the earlier ones newest first while the count stays within photosInViewMax and the stored
+// bytes within photoBytesInViewMax; the first earlier photo that does not fit ends the carry, so
+// the oldest falls out first and an older photo never takes a newer one's place. No clock, no
+// restart, no idle time takes part. None shows nothing; with no card only the arrival turn's own.
 // InvalidArgument when the per-candidate lists do not match the candidates.
 Status visiblePhotos(const PhotoFacts& facts, std::vector<std::string>& out);
 

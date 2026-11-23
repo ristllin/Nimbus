@@ -17,6 +17,7 @@
 #include "nimbus/orch/router_refusals.h"
 #include "nimbus/orch/router_route.h"
 #include "nimbus/orch/tx/budget.h"
+#include "nimbus/orch/tx/rules.h"   // kPhotoCapBytes: a photo against the body cap
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/utf8.h"
 #include "providers/plain_body.h"   // the body check counts strings as the writer does
@@ -218,6 +219,13 @@ class Exchange {
     return st;
   }
 
+  // What the body cap measures (lane E2-FIX4): the text of the body, and each photo spliced into it
+  // as the text its tokens would be (tx::kPhotoCapBytes), never its base64. The cap sizes the
+  // conversation in tokens; a photo's base64 is about a hundred times its tokens, and the photo caps
+  // (tx::visiblePhotos) bound the pixels a request carries. Counted as base64, four photos in view
+  // would push the conversation out of the request.
+  static size_t capLength(const HttpRequest& r) { return r.body.size() + r.splices.size() * orch::tx::kPhotoCapBytes; }
+
   // Render until the body fits its cap (the ladder climbs a rung each time), then check it.
   // `sendable` false: nothing fits and nothing was sent.
   Status prepare(bool& sendable) {
@@ -230,8 +238,9 @@ class Exchange {
         verdict_.err = ExchangeErr::Transport;
         return Status::success();
       }
-      if (bodyLength(http_) <= bodyCap_) break;
-      if (!req_.climb || capClimbs_ >= kMaxCapClimbs || !req_.climb(ClimbAsk{Climb::OverCap, bodyLength(http_), bodyCap_})) {
+      const size_t capped = capLength(http_);
+      if (capped <= bodyCap_) break;
+      if (!req_.climb || capClimbs_ >= kMaxCapClimbs || !req_.climb(ClimbAsk{Climb::OverCap, capped, bodyCap_})) {
         verdict_ = Verdict{};
         verdict_.err = ExchangeErr::ContextRefused;
         httpStatus_ = 0;

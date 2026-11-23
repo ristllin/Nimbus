@@ -5,6 +5,7 @@
 // a scripted provider and the binding's photo hook (txb::Battery::photoStore, the card's copy).
 #include <unity.h>
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -93,9 +94,33 @@ inline void test_a_photo_past_the_caps_gets_a_true_line_and_names_no_unbound_too
   TEST_ASSERT_FALSE_MESSAGE(has(body, "view id=p"), "the line names the view tool, which this engine has not bound");
 }
 
+// Counter-test: a time or restart rule cannot come back. One photo, then three person turns at each
+// gap around the old marks (270 s inline, 3,600 s by file reference) and far past them, with and
+// without a restart in between: every later request carries the pixels.
+inline void test_no_gap_and_no_restart_takes_a_photo_out_of_view() {
+  for (uint32_t gap : {0u, 269u, 271u, 3599u, 3601u, 3u * 86400u})
+    for (bool restart : {false, true}) {
+      txb::Battery b;
+      b.photoStore["pa1b2c3d4"] = jpeg('j', 120000);
+      b.model.push(sp::say("A red car."));
+      plain::TurnOutcome out;
+      TXB_OK(b.owner("look", out, {photoPart("pa1b2c3d4", 120000)}));
+      for (int k = 0; k < 3; ++k) {
+        b.advance(gap);
+        if (restart) TXB_OK(b.powerCycle());
+        b.model.push(sp::say("ok"));
+        TXB_OK(b.owner("next " + std::to_string(k), out));
+        char msg[80];
+        std::snprintf(msg, sizeof msg, "gap %u s, restart %d, turn %d: the photo left view", gap, (int)restart, k);
+        TEST_ASSERT_TRUE_MESSAGE(has(lastBody(b), pixelsOf('j')), msg);
+      }
+    }
+}
+
 inline void run() {
   RUN_TEST(test_a_photo_stays_in_view_across_turns_time_and_a_restart);
   RUN_TEST(test_a_photo_past_the_caps_gets_a_true_line_and_names_no_unbound_tool);
+  RUN_TEST(test_no_gap_and_no_restart_takes_a_photo_out_of_view);
 }
 
 }  // namespace photo_tests
