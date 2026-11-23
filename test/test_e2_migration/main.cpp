@@ -32,6 +32,7 @@
 #include "nimbus/orch/episodic_log.h"
 #include "nimbus/orch/tx/card_files.h"
 #include "nimbus/orch/tx/digest.h"
+#include "nimbus/orch/owner_prefs.h"
 #include "nimbus/orch/tx/old_engine.h"
 #include "nimbus/ota/ota_logic.h"
 
@@ -913,6 +914,61 @@ static void test_a_rule_removed_on_the_earlier_engine_leaves_unless_edited_on_en
   TEST_ASSERT_TRUE(next == marker);
 }
 
+// Lane E2-FIX3, finding R5 (ruling 116 item 2): the earlier engine's rules file as the device reads
+// it. Before: a read that came back short or empty (a refused open, a short read) was taken as every
+// rule removed, and the untouched pinned rule notes were deleted. Now a read that is not whole changes
+// nothing; only a whole read removes.
+namespace {
+struct BlobIO : orch::PrefsStoreIO {
+  std::string blob;
+  bool load(std::string& out) override {
+    out = blob;
+    return true;
+  }
+  bool saveChecked(const std::string& b) override {
+    blob = b;
+    return true;
+  }
+};
+}  // namespace
+
+static void test_a_rules_file_not_read_whole_removes_no_rule_note() {
+  BlobIO io;
+  orch::OwnerPrefs p;
+  p.begin(&io);
+  for (const char* t : {"Answer in short sentences.", "Use metric units.", "Never use em dashes."})
+    TEST_ASSERT_EQUAL((int)orch::PrefErr::Ok, (int)p.add(t, orch::PrefOrigin::Chat, 1000, false, nullptr));
+  const std::string file = io.blob;
+  std::vector<tx::OldRule> rules;
+  TEST_ASSERT_TRUE(tx::oldRulesFrom(file, file.size(), rules));   // whole
+  TEST_ASSERT_EQUAL(3u, rules.size());
+
+  Device dev;
+  const orch::Principal owner = orch::principalForRole("owner", orch::Role::Admin);
+  std::string marker, next;
+  tx::RulesImportOutcome o;
+  tx::importRules(rules, marker, dev.notebook, owner, marker, o, true);
+  TEST_ASSERT_EQUAL(3u, o.added);
+  const std::string block = dev.notebook.pinnedBlock(owner);
+  // Every read that is not whole: empty (a refused open read as nothing), short, a damaged line.
+  const std::string damaged = file.substr(0, file.rfind('\n', file.size() - 2) + 1) + "\x01garbage\n";
+  const std::pair<std::string, size_t> reads[] = {
+      {std::string(), file.size()}, {file.substr(0, file.size() / 2), file.size()}, {damaged, damaged.size()}};
+  for (const auto& r : reads) {
+    const bool whole = tx::oldRulesFrom(r.first, r.second, rules);
+    TEST_ASSERT_FALSE(whole);
+    tx::importRules(rules, marker, dev.notebook, owner, next, o, whole);
+    TEST_ASSERT_EQUAL(0u, o.removed);
+    TEST_ASSERT_TRUE(block == dev.notebook.pinnedBlock(owner));
+    TEST_ASSERT_TRUE(next == marker);   // every copied rule stays recorded
+  }
+  // The neighbor: a whole read that shows a rule gone removes its untouched note.
+  TEST_ASSERT_EQUAL((int)orch::PrefErr::Ok, (int)p.remove(p.entries()[1].id));
+  TEST_ASSERT_TRUE(tx::oldRulesFrom(io.blob, io.blob.size(), rules));
+  tx::importRules(rules, marker, dev.notebook, owner, next, o, true);
+  TEST_ASSERT_EQUAL(1u, o.removed);
+}
+
 static void test_the_updater_leaves_an_engine_two_image_on_its_version() {
   TEST_ASSERT_EQUAL_STRING("v5.9.0", NIMBUS_FW_VERSION);
   TEST_ASSERT_EQUAL_STRING(NIMBUS_FW_VERSION_ENGINE2, NIMBUS_FW_VERSION);
@@ -951,6 +1007,7 @@ int main(int, char**) {
   RUN_TEST(test_the_rules_arrive_once_as_pinned_notes_and_reach_the_request);
   RUN_TEST(test_an_edit_on_engine_two_is_kept_and_an_untouched_rule_follows_the_earlier_engine);
   RUN_TEST(test_a_rule_removed_on_the_earlier_engine_leaves_unless_edited_on_engine_two);
+  RUN_TEST(test_a_rules_file_not_read_whole_removes_no_rule_note);
   RUN_TEST(test_the_updater_leaves_an_engine_two_image_on_its_version);
   return UNITY_END();
 }

@@ -10,6 +10,7 @@
 #include <map>
 
 #include "nimbus/orch/history_rows.h"   // kClockValidHours
+#include "nimbus/orch/owner_prefs.h"    // OwnerPrefs::parse - the earlier engine's rules file (R5)
 #include "nimbus/orch/tx/digest.h"       // parseSummary - the mirror's text (P5)
 
 namespace nimbus {
@@ -331,8 +332,12 @@ void reconcileRemoved(const std::vector<OldRule>& rules, std::map<uint32_t, uint
 std::string ruleNoteKey(uint32_t id) { return "rule-p" + std::to_string(id); }
 
 void importRules(const std::vector<OldRule>& rules, const std::string& marker, notes::Notebook& nb,
-                 const Principal& owner, std::string& markerOut, RulesImportOutcome& out) {
+                 const Principal& owner, std::string& markerOut, RulesImportOutcome& out, bool whole) {
   out = RulesImportOutcome{};
+  if (!whole) {   // R5: a read that is not whole is no evidence: a cut line would read as a changed rule
+    markerOut = marker;
+    return;
+  }
   std::map<uint32_t, uint32_t> copied = parseMarker(marker);
   const std::map<std::string, std::string> have = notesByKey(nb, owner);
   for (const OldRule& rule : rules) {
@@ -369,6 +374,23 @@ void importRules(const std::vector<OldRule>& rules, const std::string& marker, n
     std::snprintf(line, sizeof(line), "p%u %08x\n", (unsigned)kv.first, (unsigned)kv.second);
     markerOut += line;
   }
+}
+
+bool oldRulesFrom(const std::string& blob, size_t fileSize, std::vector<OldRule>& rules) {
+  rules.clear();
+  OwnerPrefs p;
+  const size_t kept = p.parse(blob);
+  for (const PrefEntry& e : p.entries())
+    if (!e.pending && !e.moved && !e.evicted) rules.push_back(OldRule{e.id, e.text});
+  size_t lines = 0;   // every line that is not empty and not the header is a rule the parser must keep
+  for (size_t pos = 0; pos < blob.size();) {
+    size_t nl = blob.find('\n', pos);
+    if (nl == std::string::npos) nl = blob.size();
+    const size_t len = nl > pos && blob[nl - 1] == '\r' ? nl - pos - 1 : nl - pos;
+    if (len && blob[pos] != '#') ++lines;
+    pos = nl + 1;
+  }
+  return blob.size() == fileSize && fileSize <= kPrefsFileMax && kept == lines;
 }
 
 }  // namespace tx

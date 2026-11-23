@@ -17,7 +17,7 @@
 #include "nimbus/orch/rbac.h"
 #include "notes_device.h"        // notesdev::notebook
 #include "orchestrator.h"        // orchestrator::utcOffsetAt
-#include "prefs_subsystem.h"     // prefs::withStore
+#include "nimbus/orch/owner_prefs.h"   // kPrefsPath - the earlier engine's rules file
 #include "tx_store_device.h"     // txdev::cardTxFiles - is there a transcript yet
 
 namespace agent::migratedev {
@@ -37,6 +37,22 @@ std::string readFlash(const char* path) {
   String s = f.readString();
   f.close();
   return std::string(s.c_str(), s.length());
+}
+
+// A flash file read whole (lane E2-FIX3, findings R5 and R7): false when it cannot be opened or the
+// read came back shorter than the file (a refused allocation inside readString). `size` is the
+// file's own length, also on false when it was open.
+bool readFlashWhole(const char* path, std::string& out, size_t& size) {
+  out.clear();
+  size = 0;
+  if (!flashMounted()) return false;
+  File f = LittleFS.open(path, FILE_READ);
+  if (!f) return false;
+  size = f.size();
+  String s = f.readString();
+  f.close();
+  out.assign(s.c_str(), s.length());
+  return out.size() == size;
 }
 
 // The fold record, read only: save is never called by a read of it, and does nothing here.
@@ -116,7 +132,12 @@ bool fill(tx::MigrateDeps& m) {
   bool mirrored = false;
   if (tx::dropMirroredPointer(*s_rows, m.fold, mirrored).ok() && mirrored) {
     ReadOnlyFoldIO io;
-    if (putBackFoldRecord(m.chatKey, io.load())) {   // the earlier engine's own record, read again
+    std::string blob;
+    size_t size = 0;
+    // R7: the shared record file is rewritten only from a read of its full length; a short one does nothing.
+    const bool whole = readFlashWhole(kChatsumPath, blob, size);
+    if (!whole) alogf("e2: import: %s read short (%u of %u B): no put-back", kChatsumPath, (unsigned)blob.size(), (unsigned)size);
+    if (whole && putBackFoldRecord(m.chatKey, blob)) {   // the earlier engine's own record, read again
       nimbus::orch::FoldStore folds;
       folds.begin(&io);
       m.fold = tx::oldFoldOf(folds.get(m.chatKey));
@@ -163,19 +184,27 @@ void importRulesOnce() {
   done = true;
   if (!flashMounted()) return;
   const uint32_t t0 = millis();
+  // R5: the rules from the file itself, read under the store's lock and checked whole; a read that
+  // is not whole removes no note (an unopened file is not read at all).
   std::vector<tx::OldRule> rules;
-  const bool read = prefs::withStore([&rules](nimbus::orch::OwnerPrefs& p) {
-    for (const nimbus::orch::PrefEntry& e : p.entries())
-      if (!e.pending && !e.moved && !e.evicted) rules.push_back(tx::OldRule{e.id, e.text});
-  });
-  if (!read) return;
+  std::string blob;
+  size_t size = 0;
+  bool opened = false;
+  {
+    memory::Lock lk;
+    opened = readFlashWhole(nimbus::orch::kPrefsPath, blob, size) || size > 0;
+  }
+  if (!opened) return;
+  const bool whole = tx::oldRulesFrom(blob, size, rules);
+  if (!whole) alogf("e2: rules import: %s not read whole (%u of %u B): no rule note removed", nimbus::orch::kPrefsPath,
+                    (unsigned)blob.size(), (unsigned)size);
   const std::string marker = readFlash(kRulesMarkerPath);
   std::string next;
   tx::RulesImportOutcome out;
   {
     const PsramFirstScope psram;
     const nimbus::orch::Principal owner = nimbus::orch::principalForRole("owner", nimbus::orch::Role::Admin);
-    tx::importRules(rules, marker, notesdev::notebook(), owner, next, out);
+    tx::importRules(rules, marker, notesdev::notebook(), owner, next, out, whole);
   }
   bool saved = true;
   if (next != marker) {
