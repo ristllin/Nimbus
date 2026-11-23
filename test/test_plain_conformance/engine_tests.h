@@ -1350,6 +1350,42 @@ inline void test_a_failed_write_receipt_is_never_replaced_by_a_weaker_line() {
   TEST_ASSERT_TRUE(out.status == plain::StatusLine::FailedWrite);
 }
 
+// Lane E2-FIX9 (ruling 81: nothing leaves the request that does not have to): rung 1 stubs the closed turns' bulk
+// oldest first and only as far as the body is over its cap. The bench went from 138.5k to 17.5k tokens in one step
+// (every closed turn stubbed); here the newest closed reads stay whole, the oldest are stubs, the body fits, and
+// a turn that later grows past the cap again moves the line further on, never back.
+inline void test_rung_one_stubs_the_oldest_closed_bulk_only_as_far_as_needed() {
+  txb::Battery b;
+  TXB_OK(b.boot());
+  for (int i = 0; i < 5; ++i) {   // five closed turns, one 6,000 B read each (fewer than six owner turns: none compacts)
+    b.model.push(sp::call("big_read", "{\"tag\":\"c" + std::to_string(i) + "\",\"bytes\":6000}"));
+    b.model.push(sp::say("read " + std::to_string(i)));
+    b.advance(60);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read closed " + std::to_string(i), out));
+  }
+  const size_t whole = b.model.last().body.size();   // the last request: every read whole
+  b.bodyCapLimit = (uint32_t)(whole - 9000);         // over by about one and a half reads once the new message is in
+  b.model.push(sp::say("fits"));
+  b.advance(60);
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("one more", out));
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("fits", out.text.c_str(), out.statusText.c_str());
+  const std::string& sent = b.model.last().body;
+  TEST_ASSERT_TRUE(sent.size() <= b.bodyCapLimit);
+  // The oldest reads are stubs, the newest closed reads are whole: only what had to go went.
+  auto shownWhole = [&sent](int i) { return sent.find("row 150 of BULK-c" + std::to_string(i) + " ") != std::string::npos; };
+  TEST_ASSERT_FALSE_MESSAGE(shownWhole(0), "the oldest closed read is still whole");
+  TEST_ASSERT_TRUE_MESSAGE(shownWhole(4) && shownWhole(3), "a newer closed read was stubbed although the oldest freed enough");
+  int stubbed = 0;
+  for (int i = 0; i < 5; ++i) stubbed += !shownWhole(i);
+  TEST_ASSERT_TRUE_MESSAGE(stubbed >= 1 && stubbed <= 3, ("stubbed " + std::to_string(stubbed) + " of 5 closed reads").c_str());
+  for (int i = 0; i + 1 < 5; ++i)   // oldest first: never a whole read older than a stubbed one
+    TEST_ASSERT_TRUE_MESSAGE(!shownWhole(i) || shownWhole(i + 1), "rung 1 skipped an older read");
+  TEST_ASSERT_TRUE(ladderEvents(b) >= 1);
+  TEST_ASSERT_TRUE_MESSAGE(txb::detail::omittedTurnsNamed(b.model.last().view) < 0, "history omitted while closed bulk could be stubbed");
+}
+
 // 4. Rung 2 follows the rounds of the open turn before rung 3 omits any history.
 inline void test_rung_two_advances_before_history_is_omitted() {
   txb::Battery b;
@@ -2709,6 +2745,7 @@ inline void run() {
   RUN_TEST(test_the_last_round_with_only_calls_ends_with_the_limit_line);
   RUN_TEST(test_a_held_reply_survives_a_cut_or_empty_extra_round);
   RUN_TEST(test_a_failed_write_receipt_is_never_replaced_by_a_weaker_line);
+  RUN_TEST(test_rung_one_stubs_the_oldest_closed_bulk_only_as_far_as_needed);
   RUN_TEST(test_rung_two_advances_before_history_is_omitted);
   RUN_TEST(test_a_refused_bulk_write_never_promises_view);
   RUN_TEST(test_nested_long_strings_are_stubbed_and_the_bulk_holds_the_whole);

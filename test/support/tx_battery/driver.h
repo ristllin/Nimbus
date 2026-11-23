@@ -120,6 +120,7 @@ class Battery {
   int storedRounds = 0;            // the stored orchLoopRnds (TurnSetup::storedRounds)
   std::function<void(const plain::ProgressEvent&)> progressFn;   // EngineDeps::progress (RB-X3)
   plain::TurnCeiling routineCeiling;   // TurnSetup::ceiling for a Routine turn (RB-U1a); none by default
+  uint32_t bodyCapLimit = 0;       // TurnSetup::bodyCapLimit (lane E2-FIX9): a smaller body cap; 0: the head's
 
   // Process state: gone at a power cut, rebuilt by boot().
   agent::Platform platform;
@@ -374,6 +375,7 @@ class Battery {
     out.head.routed = routed;
     out.cost = cost;
     out.storedRounds = storedRounds;
+    out.bodyCapLimit = bodyCapLimit;
     if (t.trigger == plain::Trigger::Routine) out.ceiling = routineCeiling;
     out.head.key = [] { return std::string("sk-fake-battery"); };
     out.wire = batteryWire(dialect);
