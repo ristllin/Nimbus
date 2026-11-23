@@ -1432,24 +1432,27 @@ struct Run {
     });
   }
 
+  // No marker: a fresh chat, a lost marker after an import, or engine-2 items stored before one.
+  Status startWithoutMarker() {
+    m = Marker{};
+    if (log.lastQ() == 0) return Status::success();
+    bool imported = false;
+    Status s = importedBefore(imported);
+    if (!s.ok()) return s;
+    if (!imported) {
+      m.repair = true;   // P3: engine 2 stored before the import: the first migration in full
+      return Status::success();
+    }
+    m.reentry = true;   // a lost marker: only rows since the newest mirrored one are new
+    m.step = MigrationStep::Done;
+    return fallbackHi(m.hi);
+  }
+
   Status go() {
     const bool had = readMarker(*d.files, d.chatKey, m);
     Status s = log.open(head);
     if (!s.ok()) return s;
-    if (!had && log.lastQ() > 0) {   // items without a marker
-      bool imported = false;
-      if (!(s = importedBefore(imported)).ok()) return s;
-      m = Marker{};
-      if (imported) {   // a lost marker: only rows since the newest mirrored one are new
-        m.reentry = true;
-        m.step = MigrationStep::Done;
-        if (!(s = fallbackHi(m.hi)).ok()) return s;
-      } else {
-        m.repair = true;   // P3: engine 2 stored before the import: the first migration in full
-      }
-    } else if (!had) {
-      m = Marker{};
-    }
+    if (!had && !(s = startWithoutMarker()).ok()) return s;
     out.reentry = m.reentry;
     if (!m.reentry && (m.step == MigrationStep::NotStarted || m.step == MigrationStep::Digest0)) {
       if (!(s = digest0Step()).ok()) return s;

@@ -735,6 +735,15 @@ plain::OwnerSink bareSink(const std::string& chatId) {
   return s;
 }
 
+// A fire with no chat binding (a head engine 2 cannot boot): the reminder's text still goes; a
+// routine waits as "chat could not start" (P15: the card is there, so not "no card").
+void bareBinding(sch::FireBinding& fb, const std::string& chatId) {
+  fb.owner = bareSink(chatId);
+  if (memory::haveSd()) fb.files = &txdev::cardRoutineFiles();
+  fb.tzMinutes = tzNow();
+  fb.dayStartMin = store::dayStartMin();
+}
+
 // One schedule entry's fire (the loops tick, tg_poll, between turns).
 nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   nimbus::orch::FireOutcome out;
@@ -784,10 +793,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     };
     fb = plain::fireBindingFor(*b, memory::haveSd() ? &txdev::cardRoutineFiles() : nullptr, d);
   } else {
-    fb.owner = bareSink(chatId);
-    fb.files = memory::haveSd() ? &txdev::cardRoutineFiles() : nullptr;   // P15: a routine waits as "chat could not start"
-    fb.tzMinutes = tzNow();
-    fb.dayStartMin = store::dayStartMin();
+    bareBinding(fb, chatId);
   }
   txdev::cardTxFiles().resetHolds();
   s_transport.reset();
