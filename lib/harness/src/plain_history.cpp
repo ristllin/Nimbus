@@ -273,7 +273,7 @@ std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Statu
     if (o.furtherFromT)
       text += ", " + whenOf(o.furtherFromT, tz(o.furtherFromT)) + R::kSearchTo + whenOf(o.furtherToT, tz(o.furtherToT));
     if (!o.complete) text += "\n" + readTo;   // the cursor below reaches the older part after these
-    return text + R::kBeforeEq + o.next;
+    return o.next.empty() ? text : text + R::kBeforeEq + o.next;
   }
   if (!o.complete) return text + readTo + R::kBeforeEq + o.next;
   return text + R::kSearchEnd;
@@ -388,11 +388,14 @@ tx::Status clearedAfter(tx::OldRows& old, uint64_t id, bool& cleared, tx::ReadSt
   std::vector<tx::DayRow> rows;
   bool end = false;
   tx::Status st;
+  const uint64_t bytes0 = stats.bytes;
   for (uint64_t after = id; st.ok() && !end && !cleared;) {
     rows.clear();
     st = old.read(after, tx::kOldPageRows, rows, end, stats);
     for (const tx::DayRow& n : rows) cleared = cleared || n.clearBoundary;
     if (rows.empty()) break;
+    if (rows.back().id <= after || stats.bytes - bytes0 > tx::kSearchWindowBytes || stats.totalMs > tx::kSearchCardMs)
+      return tx::Status::fail(tx::Err::Io, "plain::clearedAfter.bound");   // not read through: never "not cleared"
     after = rows.back().id;
   }
   return st;

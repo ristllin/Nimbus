@@ -476,6 +476,24 @@ struct Ranked {
   }
 };
 
+// The day rows the stored owner messages mirror (u.m), every segment read forward.
+Status mirroredOf(TxFiles& files, const std::string& chatKey, std::vector<uint64_t>& out) {
+  out.clear();
+  std::vector<uint32_t> segs;
+  Status st = segmentsOf(files, chatKey, segs);
+  Item it;
+  for (size_t i = 0; st.ok() && i < segs.size(); ++i) {
+    std::string path;
+    if (!segmentPath(chatKey, segs[i], path).ok()) continue;
+    st = forwardLines(files, path, SIZE_MAX, [&](const char* p, size_t n) {
+      LineHeader h;
+      if (checkLine(p, n, h).ok() && h.kind == ItemKind::User && decodeLine(p, n, it).ok() && it.m) out.push_back(it.m);
+      return true;
+    });
+  }
+  return st;
+}
+
 // ---- one window ------------------------------------------------------------------------------
 struct Scan {
   const SearchDeps& d;
@@ -496,6 +514,9 @@ struct Scan {
   std::vector<uint64_t> mirrored;   // the day rows stored owner messages mirror (u.m): in the transcript
   std::vector<uint32_t> taintedTurns;   // turns holding an outside item
   uint32_t oldestTurn = 0;          // the oldest turn the window read a line of
+  uint32_t newestTurn = 0;          // ... the newest (a window that starts inside a turn reads part of it)
+  bool wholeTranscript = false;     // this window read every line of the transcript (mirrored is whole)
+  bool freshStart = true;           // the window starts at the conversation's newest line
 
   // Does the window end at `p`? Its known end, else its budget (the first call of a window).
   bool endsAt(const Pos& p) {
@@ -564,6 +585,7 @@ struct Scan {
   void note(const Line& ln, const LineHeader& h, bool& decoded) {
     span(h.t, out.readFromT, out.readToT);
     if (h.turn && (!oldestTurn || h.turn < oldestTurn)) oldestTurn = h.turn;
+    if (h.turn > newestTurn) newestTurn = h.turn;
     decoded = false;
     if (h.kind != ItemKind::Result && h.kind != ItemKind::DeviceNote && h.kind != ItemKind::User) return;
     if (!(decoded = decodeLine(ln.data, ln.len, it).ok())) return;
@@ -626,6 +648,7 @@ struct Scan {
   Status transcript(const Pos& from, bool& finished);
   Status step(const Line& ln, const Pos& here);
   Status oldRows(const Pos& from, bool& finished);
+  Status clearedLater(uint64_t after);
 };
 
 // A date range on a fresh query: the segments that cannot hold it are not read. Lines are stored in
@@ -709,6 +732,7 @@ Status Scan::transcript(const Pos& from, bool& finished) {
     if (st.ok() && !none) st = step(ln, here);
   }
   finished = st.ok();
+  wholeTranscript = finished && !from.seg && !a.fromT && !a.toT;
   return st;
 }
 
@@ -727,19 +751,21 @@ Status Scan::step(const Line& ln, const Pos& here) {
 Status Scan::oldRows(const Pos& from, bool& finished) {
   finished = false;
   out.oldRead = true;
+  Status st = wholeTranscript ? Status::success() : mirroredOf(files, d.chatKey, mirrored);
+  if (!st.ok()) return st;
   std::sort(mirrored.begin(), mirrored.end());
   uint64_t after = from.token.empty() ? 0 : rowIdNumber(from.token);
-  bool answered = false;
+  bool answered = std::binary_search(mirrored.begin(), mirrored.end(), after);   // the row before the window
   std::vector<DayRow> rows;
   while (true) {
     bool end = false;
     rows.clear();
-    const Status st = d.old->read(after, kOldPageRows, rows, end, out.card);
-    if (!st.ok()) return st;
+    if (!(st = d.old->read(after, kOldPageRows, rows, end, out.card)).ok()) return st;
     for (DayRow& r : rows) {
+      if (r.id <= after) return Status::fail(Err::Io, "tx::search.old-order");   // the store went back
       const Pos here = oPos(after ? rowIdString(after) : std::string(), 0);
       at(here);
-      if (endsAt(here)) return Status::success();
+      if (endsAt(here)) return clearedLater(after);
       consumed += r.text.size() + 64;
       after = r.id;
       oldRow(r, answered);
@@ -747,6 +773,32 @@ Status Scan::oldRows(const Pos& from, bool& finished) {
     if (end || rows.empty()) break;
   }
   finished = true;
+  return Status::success();
+}
+
+// A window that ends inside the old rows: a /clear row after its end clears every row it read, so the
+// rest of the store is looked through for one (rows only, bounded) before its hits are kept.
+Status Scan::clearedLater(uint64_t after) {
+  std::vector<DayRow> rows;
+  uint64_t read = 0;
+  bool end = false;
+  while (!end) {
+    rows.clear();
+    const Status st = d.old->read(after, kOldPageRows, rows, end, out.card);
+    if (!st.ok()) return st;
+    if (rows.empty()) break;
+    for (const DayRow& r : rows) {
+      if (r.id <= after) return Status::fail(Err::Io, "tx::search.old-order");
+      read += r.text.size() + 64;
+      after = r.id;
+      if (r.clearBoundary) {
+        bool answered = false;
+        clearedBefore(answered);
+        return Status::success();
+      }
+    }
+    if (read > 4 * kSearchWindowBytes) return Status::fail(Err::TooLarge, "tx::search.clear-scan");
+  }
   return Status::success();
 }
 
@@ -793,8 +845,9 @@ void markTaintedReplies(Scan& scan, std::vector<SearchHit>& hits) {
   std::sort(scan.taintedTurns.begin(), scan.taintedTurns.end());
   for (SearchHit& h : hits) {
     if (h.source != HitSource::Assistant || h.outside) continue;
-    h.outside = std::binary_search(scan.taintedTurns.begin(), scan.taintedTurns.end(), h.turn) ||
-                (scan.end.kind != Pos::Z && h.turn == scan.oldestTurn);
+    const bool partial = (scan.end.kind != Pos::Z && h.turn == scan.oldestTurn) ||   // its older lines unread
+                         (!scan.freshStart && h.turn == scan.newestTurn);              // its newer lines unread
+    h.outside = std::binary_search(scan.taintedTurns.begin(), scan.taintedTurns.end(), h.turn) || partial;
   }
 }
 
@@ -904,6 +957,7 @@ Status search(const SearchDeps& d, const SearchAsk& a, SearchOutcome& out) {
     scan.ranked.keep = std::min<size_t>(c.rank + d.limits.maxHits, d.limits.rankedMax + d.limits.maxHits);
     scan.oldRanked.keep = scan.ranked.keep;
     if (!c.fresh) {
+      scan.freshStart = false;
       scan.start = c.start;
       scan.haveStart = true;
       scan.haveEnd = c.haveEnd;

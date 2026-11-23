@@ -684,6 +684,42 @@ static void test_an_hour_stamped_row_is_kept_by_a_minute_bound() {
   TEST_ASSERT_TRUE(o.hits[0].hourOnly);
 }
 
+
+// Windows smaller than the range: every match once across pages even when a window starts inside the
+// old rows (the imported rows are still known, not counted twice), and a /clear row in a later window
+// drops the rows before it from every page.
+static void test_small_windows_keep_the_old_rows_true() {
+  Chat c;
+  FakeOld old;
+  for (uint64_t id = 1; id <= 300; ++id)
+    old.rows.push_back(oldRow(id, kStart + id * 600, id % 2 ? tx::RowRole::Owner : tx::RowRole::Assistant,
+                              "kettle note " + std::to_string(id)));
+  for (uint64_t id = 201; id <= 299; id += 2) c.owner("kettle note " + std::to_string(id), kStart + id * 600, id);
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  d.old = &old;
+  d.limits.windowBytes = 4000;
+  d.limits.maxHits = 7;
+  tx::SearchAsk a;
+  a.query = "kettle note";
+  std::vector<std::string> ids;
+  for (const auto& p : allPages(d, a))
+    for (const auto& h : p.hits) ids.push_back(h.id);
+  TEST_ASSERT_EQUAL(250, (int)ids.size());   // 50 in the transcript, rows 1..200 of the store
+  std::sort(ids.begin(), ids.end());
+  TEST_ASSERT_TRUE(std::unique(ids.begin(), ids.end()) == ids.end());
+  // A /clear at row 260: nothing before it in any page, however the windows fall.
+  tx::DayRow clear = oldRow(260, kStart + 260 * 600, tx::RowRole::Other, "cleared");
+  clear.clearBoundary = true;
+  for (auto& r : old.rows)
+    if (r.id == 260) r = clear;
+  ids.clear();
+  for (const auto& p : allPages(d, a))
+    for (const auto& h : p.hits) ids.push_back(h.id);
+  for (const std::string& id : ids) TEST_ASSERT_TRUE_MESSAGE(id[0] == 'r', id.c_str());   // the store's are all before it
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_words_match_all_case_insensitive);
@@ -693,6 +729,7 @@ int main(int, char**) {
   RUN_TEST(test_rows_a_reentry_named_are_searched);
   RUN_TEST(test_an_unreadable_old_span_is_io);
   RUN_TEST(test_an_hour_stamped_row_is_kept_by_a_minute_bound);
+  RUN_TEST(test_small_windows_keep_the_old_rows_true);
   RUN_TEST(test_a_fact_three_weeks_and_600_turns_back_is_found_without_and_with_a_range);
   RUN_TEST(test_the_remainder_is_true_and_every_match_is_found_once);
   RUN_TEST(test_old_rows_below_the_import_floor_are_searched_after_the_transcript);
