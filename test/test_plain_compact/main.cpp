@@ -2999,6 +2999,53 @@ void test_the_change_list_reads_back_as_lines() {
 
 // A host that refuses the form (HTTP 400) is asked once more as lines, logged; a host that ignores it and
 // answers lines has them read as lines at once (one request); a failure that is not the answer's (the
+
+const char* kFormRefusedBody =
+    R"({"type":"error","error":{"type":"invalid_request_error","message":"output_config.format: this model does not support structured outputs"}})";
+
+// Lane E2-FIX7 (M6, red on 88bfbe826): a summarizer whose provider refuses the structured form by name is asked in
+// lines from then on (until a restart or another model); an HTTP 400 for another reason is logged with the
+// provider's own words, not as the form, and does not mark the model.
+void test_a_model_that_refuses_the_form_is_asked_in_lines_from_then_on() {
+  agent::hlog::setSink(recordLog);
+  {
+    gLogLines.clear();
+    Chat c;
+    threeDays(c);
+    int asked = 0;
+    c.model.respondWith([&](const sp::Recorded&, size_t) {
+      return ++asked == 1 ? sp::httpError(400, kFormRefusedBody) : sp::say(kSummary);
+    });
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
+    TEST_ASSERT_TRUE(logged("takes no structured form"));
+    TEST_ASSERT_TRUE(logged("does not support structured outputs"));   // the provider's words, not the device line
+    for (int d = 1; d <= 3; ++d) c.day(d, 12, 3000, "more" + std::to_string(d));
+    c.now += 2 * kDay;
+    const size_t sent = c.model.requests().size();
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, compactNow(c));
+    TEST_ASSERT_EQUAL(sent + 1, c.model.requests().size());   // one request, no doomed form first
+    TEST_ASSERT_FALSE(c.model.requests().back().answerSchema);
+  }
+  {
+    gLogLines.clear();
+    Chat c;
+    threeDays(c);
+    const char* other = R"({"type":"error","error":{"type":"invalid_request_error","message":"messages: text content blocks must be non-empty"}})";
+    c.model.respondWith([&](const sp::Recorded&, size_t) { return sp::httpError(400, other); });
+    const plain::CompactOutcome out = c.step();
+    TEST_ASSERT_EQUAL(plain::CompactStep::Failed, out.step);
+    TEST_ASSERT_EQUAL(1, (int)c.model.requests().size());
+    TEST_ASSERT_FALSE(logged("the form was refused"));
+    TEST_ASSERT_TRUE(logged("the summarizer request was refused (HTTP 400"));
+    TEST_ASSERT_TRUE(logged("text content blocks must be non-empty"));
+    c.model.respondWith([&](const sp::Recorded&, size_t) { return sp::say(kSummary); });
+    TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
+    TEST_ASSERT_TRUE(c.model.requests().back().answerSchema);   // the model was not marked
+  }
+  agent::hlog::setSink(nullptr);
+}
+
+
 // store refusing the summary) never pays a second request.
 void test_the_form_refused_or_ignored_and_storage_failures() {
   agent::hlog::setSink(recordLog);
@@ -3007,7 +3054,7 @@ void test_the_form_refused_or_ignored_and_storage_failures() {
     Chat c;
     threeDays(c);
     int asked = 0;
-    c.model.respondWith([&](const sp::Recorded&, size_t) { return ++asked == 1 ? sp::httpError(400) : sp::say(kSummary); });
+    c.model.respondWith([&](const sp::Recorded&, size_t) { return ++asked == 1 ? sp::httpError(400, kFormRefusedBody) : sp::say(kSummary); });
     const plain::CompactOutcome out = c.step();
     TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
     TEST_ASSERT_EQUAL(2, (int)out.requests);
@@ -3152,6 +3199,7 @@ int main(int, char**) {
   RUN_TEST(test_adds_that_name_an_id_are_taken_as_adds);
   RUN_TEST(test_the_change_list_reads_back_as_lines);
   RUN_TEST(test_the_form_refused_or_ignored_and_storage_failures);
+  RUN_TEST(test_a_model_that_refuses_the_form_is_asked_in_lines_from_then_on);
   RUN_TEST(test_every_summarizer_request_is_counted);
   return UNITY_END();
 }

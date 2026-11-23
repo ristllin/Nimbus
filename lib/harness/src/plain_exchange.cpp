@@ -379,6 +379,7 @@ class Exchange {
                   : err == ExchangeErr::Blocked ? StatusLine::ModerationBlock
                                                 : StatusLine::ProviderError;
     out_.errorLine = exchangeLine(err, slug_, httpStatus_);
+    if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
     return Status::success();
   }
 

@@ -1116,7 +1116,9 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
 // change line: InvalidArgument) is asked once more at once as free lines, then the stated wait holds.
 Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung, const SlicePlan& plan,
                                  bool prepareOnly, CompactOutcome& out, bool& parked) {
+  const std::string formKey = rung.host + "/" + rung.model;
   AnswerForm form = firstAnswerForm(rung);
+  if (std::find(noForm_.begin(), noForm_.end(), formKey) != noForm_.end()) form = AnswerForm::Lines;
   const bool urgent = ctx.urgency != Urgency::None && d_.platform->nowMs;
   const uint32_t untilMs = urgent ? d_.platform->nowMs() + kCompactUrgentMs : 0;
   Status s;
@@ -1126,6 +1128,11 @@ Status CompactDriver::askAndKeep(const IdleCtx& ctx, const SummarizerRung& rung,
     out.requests = (uint8_t)std::min<uint32_t>(255, out.requests + asked.requests);
     out.ran = out.ran || asked.requests > 0;
     parked = parked || asked.parked;
+    if (s.where == kNotTakenForm && noForm_.size() < kNoFormModels &&
+        std::find(noForm_.begin(), noForm_.end(), formKey) == noForm_.end()) {
+      noForm_.push_back(formKey);   // this model is asked in lines from now on (until a restart)
+      hlog::logf("compact(%s): %s takes no structured form: lines from now on", d_.chatKey.c_str(), formKey.c_str());
+    }
     if (s.ok()) s = keep(plan, asked.summary, ctx.now, prepareOnly, out);
     // Never after a refusal (the same content goes to the same model), never past an urgent attempt's time.
     const bool again = answerNotTaken(s) && s.where != kNotTakenRefused && asked.requests && !asked.parked &&
@@ -1241,12 +1248,33 @@ struct RungMessage {
   uint32_t untilMs = 0;           // an urgent attempt's end on the platform clock; 0: none (lane E2-FIX7)
 };
 
+// The provider's own words in a refusal body: its "message" when it has one, else the body.
+std::string providerWords(const std::string& body) {
+  static const char kKey[] = "\"message\":\"";
+  const size_t at = body.find(kKey);
+  return at == std::string::npos ? body : body.substr(at + sizeof(kKey) - 1);
+}
+
+// A provider's refusal body that names the structured form (its field or its type).
+bool namesTheForm(const std::string& body) {
+  for (const char* w : {"output_config", "json_schema"})
+    if (body.find(w) != std::string::npos) return true;
+  return false;
+}
+
 // One exchange's answer, taken or not (answerOf), and the structured form read back as lines.
 Status takeAnswer(const std::string& chatKey, const RungMessage& m, const ExchangeResult& r, bool cut, std::string& summary) {
-  if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {   // a provider without the form
-    hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", chatKey.c_str(),
-               (unsigned)r.errorLine.size(), answerHead(r.errorLine).c_str());
-    return Status::fail(Err::InvalidArgument, kNotTakenForm);
+  if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {
+    // Lane E2-FIX7 (M6): the form is named as the cause only when the provider's own words name it; any other
+    // HTTP 400 is logged as what it is, with the provider's words, and is no answer not taken.
+    if (namesTheForm(r.providerBody)) {
+      hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", chatKey.c_str(),
+                 (unsigned)r.providerBody.size(), answerHead(providerWords(r.providerBody)).c_str());
+      return Status::fail(Err::InvalidArgument, kNotTakenForm);
+    }
+    hlog::logf("compact(%s): the summarizer request was refused (HTTP 400, %u B): %s", chatKey.c_str(),
+               (unsigned)r.providerBody.size(), answerHead(providerWords(r.providerBody)).c_str());
+    return Status::fail(Err::Io, "plain::CompactDriver::ask");
   }
   const Status s = answerOf(chatKey, r, cut, m.thinInput, summary);
   if (!s.ok() || !m.schema) return s;

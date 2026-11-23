@@ -403,6 +403,10 @@ class CompactDriver {
   void saveCtl();
   void endManual(const char* text);
 
+  // Lane E2-FIX7 (M6): "host/model" of summarizers whose provider refused the structured form by name; they
+  // are asked in lines until a restart (a model change is another key). At most kNoFormModels.
+  static constexpr size_t kNoFormModels = 8;
+  std::vector<std::string> noForm_;
   CompactDeps d_;
   CompactCtl ctl_;
   bool manual_ = false;
