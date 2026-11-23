@@ -307,8 +307,13 @@ Status stubText(const StubFacts& f, std::string& out) {
   // is all that is left of the result, so it stays, with what is true of it.
   if (!f.noCard) {
     s += std::string(kResultFactsOpen) + kResultShownInFull;
-    if (f.bound.view) s += kResultViewOpen + q + kPhotoViewClose;
-    else if (!f.again.empty()) s += kResultAgainOpen + oneLineOf(f.again, kStubWayBackMaxBytes) + kPhotoViewClose;
+    if (f.bound.view) {
+      s += kResultViewOpen + q + kPhotoViewClose;
+    } else if (!f.again.empty()) {   // a long tool, path and range: the call is cut to keep the stub within 400 B
+      const size_t fixed = s.size() + std::strlen(kResultAgainOpen) + std::strlen(kPhotoViewClose) + std::strlen(kResultTailClose);
+      const size_t room = kStubMaxBytes > fixed ? std::min(kStubWayBackMaxBytes, kStubMaxBytes - fixed) : 0;
+      if (room) s += kResultAgainOpen + oneLineOf(f.again, room) + kPhotoViewClose;
+    }
     s += kResultTailClose;
     out.swap(s);
     return Status::success();

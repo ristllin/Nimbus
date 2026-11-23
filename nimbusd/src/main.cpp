@@ -172,8 +172,11 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   o.timeZone = tz.empty() ? cfg.get("TZ") : tz;
   o.profile = cfg.get("NIMBUSD_E2_PROFILE").empty() ? nimbus::orch::tx::kDefaultProfile
                                                       : nimbus::orch::tx::profileOf(cfg.get("NIMBUSD_E2_PROFILE"));
-  if (cfg.get("NIMBUSD_TEST_CLOCK") == "1")   // lane E2-FIX9: test rigs only
-    o.bodyCapLimit = (uint32_t)std::strtoul(cfg.get("NIMBUSD_E2_BODY_CAP").c_str(), nullptr, 10);
+  // Lane E2-FIX9: test rigs only, behind the test clock's own gate (the flag, a web token, a loopback bind).
+  if (nimbusd::HttpControl::testClockArmed(cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1"), cfg.get("NIMBUSD_WEB_TOKEN"))) {
+    const unsigned long long cap = std::strtoull(cfg.get("NIMBUSD_E2_BODY_CAP").c_str(), nullptr, 10);
+    o.bodyCapLimit = cap <= 0xFFFFFFFFull ? (uint32_t)cap : 0;
+  }
   o.deliver = std::move(deliver);
   o.chatId = nimbusd::kWebChatId;
   o.loops = &rig.routines();   // lane E2-SCHED: the schedule tool and the routines' fires

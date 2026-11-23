@@ -214,6 +214,20 @@ void test_file_tool_stub_names_path_and_sha() {
                                   "path=notes/boat.md offset=32761 limit=4000 shows it again)") != std::string::npos, s.c_str());
   TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
   TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  // Lane E2-FIX9: the longest tool, path and range with no view still make a stub within 400 B that reads as one.
+  tx::StubFacts worst = internalFacts("p");
+  worst.tool = std::string(tx::kStubToolMaxBytes, 't');
+  worst.q = 18446744073709551615ULL;
+  worst.bytes = worst.lines = 4294967295u;
+  worst.path = std::string(tx::kStubPathMaxBytes, 'p');
+  worst.sha8 = "ab12cd34";
+  worst.bound.view = false;
+  worst.again = tx::wayBack("read_file", "{\"path\":\"" + std::string(90, 'p') + "\",\"offset\":18446744073709551615,"
+                                         "\"limit\":18446744073709551615,\"from\":\"" + std::string(60, 'f') + "\"}");
+  TXB_OK(tx::stubText(worst, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.size() <= tx::kStubMaxBytes, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(tx::looksLikeStub(s), s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find("shown in full earlier in this conversation; not attached to this request") != std::string::npos, s.c_str());
   TEST_ASSERT_EQUAL_STRING("", tx::wayBack("calc", R"({"path":"notes/boat.md"})").c_str());
   TEST_ASSERT_EQUAL_STRING("", tx::wayBack("read_file", "[stub 15204B sha:ab12cd34: view id=r9]").c_str());
 }

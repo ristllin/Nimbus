@@ -1097,6 +1097,13 @@ class TurnRun {
     const size_t need = ask.bodyBytes - ask.bodyCap + kMargin;
     const uint64_t from = std::max(c_.head.stub, t_.ladder.closedThrough);
     tx::Item& it = t_.read;
+    std::vector<uint64_t> listed;   // what a tool fold's list already shows as a stub frees nothing more
+    for (size_t i = 0; i < d_.arena->count(); ++i) {
+      tx::ArenaEntry e;
+      if (d_.arena->header(i, e).ok() && e.kind == tx::ItemKind::PointerMove && d_.arena->get(i, it).ok() && tx::stubList(it))
+        listed.insert(listed.end(), it.sup.begin(), it.sup.end());
+    }
+    std::sort(listed.begin(), listed.end());
     size_t freed = 0;
     uint64_t to = from;
     for (size_t i = 0; i < d_.arena->count() && freed < need; ++i) {
@@ -1104,7 +1111,7 @@ class TurnRun {
       if (!d_.arena->header(i, e).ok() || (e.kind != tx::ItemKind::Result && e.kind != tx::ItemKind::Call)) continue;
       if (e.q <= from || e.q > c_.lastClosedQ || !d_.arena->get(i, it).ok()) continue;
       const bool bulk = e.kind == tx::ItemKind::Call ? !it.st.empty() : it.cls == tx::ResultClass::Bulk;
-      if (!bulk) continue;
+      if (!bulk || std::binary_search(listed.begin(), listed.end(), e.q)) continue;
       const size_t whole = e.kind == tx::ItemKind::Call ? it.args.size() : shownBytes(it);
       freed += whole > it.st.size() ? whole - it.st.size() : 0;
       to = e.q;

@@ -78,7 +78,8 @@ struct HeadState;
 // assistant text of a turn that read outside content goes inside the data frame, and every line that
 // slice adds to the summary is stored inside the frame. The Files lines are the device's, from the
 // slice's successful file-change calls (their path argument). Accepted only when the answer was not
-// cut, not refused, and reads as changes (tx::parseSummaryEdits: at least one, or "="); a rewrite or
+// cut, not refused, and reads as changes (tx::parseSummaryEdits: at least one, or "=", or only lines of
+// the summary's own frame such as a title alone: SummaryEdits::taken, lane E2-FIX9); a rewrite or
 // prose is a failed attempt, never a summary rebuilt from nothing. The answer's form is AnswerForm's:
 // the change lines as a structured list first on the Anthropic host, then, for an answer not taken
 // (refused, the form refused, no change line), once more as free lines at once; every answer not
