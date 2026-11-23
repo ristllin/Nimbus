@@ -220,6 +220,54 @@ static void test_a_refused_clear_write_keeps_the_number() {
   TEST_ASSERT_EQUAL(3u, g);
 }
 
+// Lane E2-FIX5, finding L1: the newest whole number always wins. Every state a refused or cut rename
+// can leave (the main file only; the whole temp only, after the card's rename removed the main file
+// and then refused; the whole temp beside an older main file), then the next /clear's temp write cut
+// at every length, or the next rename refused: the number read afterwards is the one in force before
+// or the new one, never a lower one. Before: the temp-only state lost its number (Absent, 0) when the
+// next temp write was cut, which would bring back the first conversation.
+namespace {
+struct CutFiles : FlakyFiles {
+  long cutAt = -1;   // the next whole write lands this many bytes, then the power is cut (false)
+  bool writeWhole(const std::string& path, const std::string& data) override {
+    if (cutAt < 0) return FlakyFiles::writeWhole(path, data);
+    files[path] = data.substr(0, (size_t)cutAt);
+    cutAt = -1;
+    return false;
+  }
+};
+}  // namespace
+
+static void test_the_newest_whole_generation_wins_after_any_cut_of_the_next_clear() {
+  struct Start {
+    const char* main;
+    const char* tmp;
+  };
+  const Start starts[] = {{"5\n", nullptr}, {nullptr, "5\n"}, {"4\n", "5\n"}};
+  for (const Start& st : starts)
+    for (long cut = -2; cut <= 2; ++cut) {   // -2: the rename refused; -1: no fault; 0..2: a cut write
+      CutFiles f;
+      if (st.main) f.files[kMain] = st.main;
+      if (st.tmp) f.files[kTmp] = st.tmp;
+      const std::string what = std::string("main=") + (st.main ? st.main : "-") + " tmp=" + (st.tmp ? st.tmp : "-") +
+                               " cut=" + std::to_string(cut);
+      uint32_t g = 0;
+      TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g), what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(5u, g, what.c_str());
+      f.cutAt = cut >= 0 ? cut : -1;
+      f.refuseRename = cut == -2;
+      const bool stored = plain::storeGeneration(f, "web", 6);
+      f.refuseRename = false;
+      uint32_t back = 0;
+      TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", back), what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(stored ? 6u : 5u, back, what.c_str());
+      // And the /clear after that (no fault) moves on from there.
+      TEST_ASSERT_TRUE_MESSAGE(plain::storeGeneration(f, "web", back + 1), what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE((int)plain::GenRead::Value, (int)plain::readGeneration(f, "web", g), what.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(back + 1, g, what.c_str());
+    }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_every_verb_of_the_table_has_its_route);
@@ -229,5 +277,6 @@ int main(int, char**) {
   RUN_TEST(test_every_torn_state_of_the_generation_files_lets_the_chat_go_on);
   RUN_TEST(test_a_folder_that_cannot_be_told_hands_out_no_number);
   RUN_TEST(test_a_refused_clear_write_keeps_the_number);
+  RUN_TEST(test_the_newest_whole_generation_wins_after_any_cut_of_the_next_clear);
   return UNITY_END();
 }

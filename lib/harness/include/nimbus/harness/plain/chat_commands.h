@@ -123,8 +123,16 @@ inline bool freeGeneration(nimbus::orch::tx::TxFiles& f, const std::string& chat
   return false;
 }
 
+// Lane E2-FIX5 (finding L1): a whole temp is the newest number (a rename that was refused or cut,
+// perhaps after the main file was already removed), so it is renamed into place before the temp is
+// written again: a cut inside the new write then leaves the main file, never no number at all.
 inline bool writeGeneration(nimbus::orch::tx::TxFiles& f, const std::string& chatId, uint32_t g) {
   const std::string path = generationPath(chatId), tmp = path + ".tmp";
+  char buf[16];
+  size_t got = 0;
+  uint32_t was = 0;
+  if (f.readAt(tmp, 0, buf, sizeof buf, got) && parseGeneration(buf, got, true, was) && !f.rename(tmp, path))
+    return false;
   return f.writeWhole(tmp, std::to_string(g) + "\n") && f.rename(tmp, path);
 }
 
