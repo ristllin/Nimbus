@@ -183,9 +183,9 @@ void importRulesOnce() {
     LittleFS.mkdir("/data/notes");
     saved = writeFileAtomic(kRulesMarkerPath, next, "rules_import");
   }
-  alogf("e2: rules import: %u rules, added=%u updated=%u kept=%u refused=%u marker=%s %u ms%s%s",
+  alogf("e2: rules import: %u rules, added=%u updated=%u kept=%u removed=%u refused=%u marker=%s %u ms%s%s",
         (unsigned)rules.size(), (unsigned)out.added, (unsigned)out.updated, (unsigned)out.kept,
-        (unsigned)out.refused, saved ? "ok" : "NOT saved", (unsigned)(millis() - t0),
+        (unsigned)out.removed, (unsigned)out.refused, saved ? "ok" : "NOT saved", (unsigned)(millis() - t0),
         out.firstError.empty() ? "" : " first refusal: ", out.firstError.c_str());
 }
 

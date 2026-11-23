@@ -100,6 +100,7 @@ struct RulesImportOutcome {
   uint32_t added = 0;      // new pinned rule notes
   uint32_t updated = 0;    // a rule the earlier engine changed, the note untouched on engine 2
   uint32_t kept = 0;       // already copied, or the owner's note on engine 2 left as it is
+  uint32_t removed = 0;    // the earlier engine no longer has the rule, the note untouched: removed (P6)
   uint32_t refused = 0;    // the notebook refused it (named in the log; tried again next start)
   std::string firstError;
 };
@@ -114,7 +115,11 @@ std::string ruleNoteKey(uint32_t id);
 //   - the earlier engine changed its text: the note is set to the new text only when it still
 //     holds the text that was copied (an edit or a removal on engine 2 is the owner's and stays);
 //   - never copied: set as a pinned rule note unless a note with its key is there already.
-// A refused set is not recorded, so the next start tries it again. Nothing is removed.
+// A refused set is not recorded, so the next start tries it again. Lane E2-FIX2B (finding P6): a
+// copied rule the earlier engine no longer has active (deleted, retired, moved, evicted) takes its
+// note away when the note still holds the copied text, and leaves the record (it comes back as new
+// if it is active again); a note the owner edited on engine 2 stays, his. A note he removed on
+// engine 2 is never put back.
 void importRules(const std::vector<OldRule>& rules, const std::string& marker, notes::Notebook& nb,
                  const Principal& owner, std::string& markerOut, RulesImportOutcome& out);
 

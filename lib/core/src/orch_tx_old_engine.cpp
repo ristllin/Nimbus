@@ -287,6 +287,36 @@ bool setRule(notes::Notebook& nb, const Principal& owner, const std::string& key
   return false;
 }
 
+bool removeRule(notes::Notebook& nb, const Principal& owner, const std::string& key, RulesImportOutcome& out) {
+  JsonDocument args;
+  args["op"] = "remove";
+  args["key"] = key;
+  const ToolResult r = nb.call(args.as<JsonObjectConst>(), owner, notes::Origin::Attended);
+  if (r.success) return true;
+  ++out.refused;
+  if (out.firstError.empty()) out.firstError = key + ": " + r.error;
+  return false;
+}
+
+// P6: the copied rules the earlier engine no longer has active. An untouched note leaves with its
+// record; an edited one stays (the owner's); a note already gone keeps the record (never put back).
+void reconcileRemoved(const std::vector<OldRule>& rules, std::map<uint32_t, uint32_t>& copied,
+                      const std::map<std::string, std::string>& have, notes::Notebook& nb, const Principal& owner,
+                      RulesImportOutcome& out) {
+  for (auto it = copied.begin(); it != copied.end();) {
+    const uint32_t id = it->first;
+    const bool active = std::any_of(rules.begin(), rules.end(), [id](const OldRule& r) { return r.id == id; });
+    const auto note = have.find(ruleNoteKey(id));
+    const bool untouched = note != have.end() && fnv1a(note->second) == it->second;
+    if (active || !untouched || !removeRule(nb, owner, note->first, out)) {
+      ++it;
+      continue;
+    }
+    ++out.removed;
+    it = copied.erase(it);
+  }
+}
+
 }  // namespace
 
 std::string ruleNoteKey(uint32_t id) { return "rule-p" + std::to_string(id); }
@@ -323,6 +353,7 @@ void importRules(const std::vector<OldRule>& rules, const std::string& marker, n
     ++out.added;
     copied[rule.id] = h;
   }
+  reconcileRemoved(rules, copied, have, nb, owner, out);
   markerOut.clear();
   for (const auto& kv : copied) {
     char line[32];

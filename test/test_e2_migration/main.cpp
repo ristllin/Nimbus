@@ -773,6 +773,44 @@ static void test_an_edit_on_engine_two_is_kept_and_an_untouched_rule_follows_the
   TEST_ASSERT_TRUE(block == dev.notebook.pinnedBlock(owner));
 }
 
+
+// Lane E2-FIX2B, finding P6: rules the owner deleted or retired on the earlier engine leave engine 2
+// too, unless he edited the note on engine 2 (then it is his and stays). Before: the note stayed
+// pinned and engine 2 kept following a rule he had removed.
+static void test_a_rule_removed_on_the_earlier_engine_leaves_unless_edited_on_engine_two() {
+  Device dev;
+  const orch::Principal owner = orch::principalForRole("owner", orch::Role::Admin);
+  std::string marker, next;
+  tx::RulesImportOutcome o;
+  tx::importRules(fiveRules(), marker, dev.notebook, owner, marker, o);
+  JsonDocument edit;   // the owner edits rule-p2 on engine 2
+  edit["op"] = "set";
+  edit["key"] = "rule-p2";
+  edit["value"] = "Use metric units, and Celsius.";
+  TEST_ASSERT_TRUE(dev.notebook.call(edit.as<JsonObjectConst>(), owner, orch::notes::Origin::Attended).success);
+  // On the earlier engine he deletes p2 and p3 and retires p7 (no longer active); p1 and p5 stay.
+  std::vector<tx::OldRule> left;
+  for (const tx::OldRule& r : fiveRules())
+    if (r.id != 2 && r.id != 3 && r.id != 7) left.push_back(r);
+  tx::importRules(left, marker, dev.notebook, owner, next, o);
+  TEST_ASSERT_EQUAL(2u, o.removed);   // p3, p7
+  TEST_ASSERT_EQUAL(0u, o.refused);
+  const std::string block = dev.notebook.pinnedBlock(owner);
+  TEST_ASSERT_FALSE(has(block, "rule-p3"));
+  TEST_ASSERT_FALSE(has(block, "rule-p7"));
+  TEST_ASSERT_TRUE(has(block, "rule-p2 [rule]: Use metric units, and Celsius."));   // his edit stays
+  TEST_ASSERT_TRUE(has(block, "rule-p1 [rule]"));
+  TEST_ASSERT_TRUE(has(block, "rule-p5 [rule]"));
+  TEST_ASSERT_FALSE(has(next, "p3 "));
+  TEST_ASSERT_FALSE(has(next, "p7 "));
+  // Once more: nothing changes.
+  marker = next;
+  tx::importRules(left, marker, dev.notebook, owner, next, o);
+  TEST_ASSERT_EQUAL(0u, o.added + o.updated + o.removed);
+  TEST_ASSERT_TRUE(block == dev.notebook.pinnedBlock(owner));
+  TEST_ASSERT_TRUE(next == marker);
+}
+
 static void test_the_updater_leaves_an_engine_two_image_on_its_version() {
   TEST_ASSERT_EQUAL_STRING("v5.9.0", NIMBUS_FW_VERSION);
   TEST_ASSERT_EQUAL_STRING(NIMBUS_FW_VERSION_ENGINE2, NIMBUS_FW_VERSION);
@@ -807,6 +845,7 @@ int main(int, char**) {
   RUN_TEST(test_the_row_source_over_the_card_store_after_a_restart);
   RUN_TEST(test_the_rules_arrive_once_as_pinned_notes_and_reach_the_request);
   RUN_TEST(test_an_edit_on_engine_two_is_kept_and_an_untouched_rule_follows_the_earlier_engine);
+  RUN_TEST(test_a_rule_removed_on_the_earlier_engine_leaves_unless_edited_on_engine_two);
   RUN_TEST(test_the_updater_leaves_an_engine_two_image_on_its_version);
   return UNITY_END();
 }
