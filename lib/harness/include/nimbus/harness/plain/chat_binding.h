@@ -123,6 +123,19 @@ inline constexpr char kImportStuckLine[] =
     "to keep it in a new conversation; the earlier one stays stored on the device.";
 inline constexpr char kImportPendingLine[] =
     "The earlier conversation is not imported yet; what you say now is kept in memory only until it is.";
+// Another chat (or role) refused while this binding holds turns in RAM. Stuck import: /clear in the
+// held chat gets out (E2-FIX3).
+inline constexpr char kHeldElsewhereLine[] =
+    "This chat cannot start while another conversation is held in memory because its earlier history could "
+    "not be imported. Send /clear in that chat to store it and go on.";
+// Lane E2-FIX5 (finding L2): the other held states. A restart would lose the held turns, so neither
+// line advises one; each ends by itself (the card answers again, the import's next try succeeds).
+inline constexpr char kHeldWaitingLine[] =
+    "This chat cannot start yet: another conversation is kept in memory because the card is not storing it "
+    "now. It is stored by itself when the card answers again. Send the message again later.";
+inline constexpr char kHeldImportingLine[] =
+    "This chat cannot start yet: another conversation is kept in memory until its earlier history is "
+    "imported. Send the message again in a minute.";
 
 // The tags of the person's day-stream row for a message (the web chat's history, the import's
 // rows). "e2" only when an engine-2 turn stores the message itself (it is then engine 2's: never
@@ -218,6 +231,12 @@ class ChatBinding {
   // when the cause is gone); the owner is told the import is the cause and that /clear gets out.
   // A card that does not answer is the card's cause (kNotLoadedLine), never the import's.
   bool importStuck() const { return importPending_ && movedTo_.empty() && cardAnswered_ && sameFailures_ >= 2; }
+  // The owner's line for another chat or role refused while this binding holds turns in RAM: the
+  // true cause, never a restart (E2-FIX5, L2).
+  const char* elsewhereLine() const {
+    if (importStuck()) return kHeldElsewhereLine;
+    return importPending_ && movedTo_.empty() && cardAnswered_ ? kHeldImportingLine : kHeldWaitingLine;
+  }
   // The key storeHeldAs is storing the held turns into ("" before it was asked).
   const std::string& movedTo() const { return movedTo_; }
 

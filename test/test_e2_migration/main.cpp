@@ -501,6 +501,47 @@ static void test_an_import_that_never_finishes_offers_clear_and_clear_keeps_the_
   TEST_ASSERT_TRUE(storeBefore == dev.old.store.serialize());   // the earlier history, as it was
 }
 
+// Lane E2-FIX5, finding L2 (ruling 116 item 1): another chat refused while a binding holds turns in
+// RAM is told the true cause and never to restart the device (a restart loses the held turns). Every
+// held state: the card not answering, the import failed once, the import stuck, and /clear's held
+// turns waiting for the card to store them in the new conversation. Before: all but the stuck import
+// got the device's "Restart the device and try again."
+static void test_another_chat_is_never_told_to_restart_while_turns_are_held() {
+  auto check = [](Device& dev, const char* what) {
+    TEST_ASSERT_FALSE_MESSAGE(dev.binding->reload(), what);   // still held: another chat is refused
+    const char* line = dev.binding->elsewhereLine();
+    TEST_ASSERT_NOT_NULL_MESSAGE(line, what);
+    TEST_ASSERT_FALSE_MESSAGE(has(line, "estart"), what);
+  };
+  {
+    Device dev;
+    seed(dev);
+    dev.card.down = true;
+    TEST_ASSERT_TRUE(dev.boot().ok());
+    TEST_ASSERT_TRUE(dev.say("my bike lock code is 9911").ok());
+    check(dev, "card down");
+  }
+  {
+    Device dev;
+    seed(dev);
+    dev.card.refuseMarker = true;
+    TEST_ASSERT_TRUE(dev.boot().ok());
+    TEST_ASSERT_FALSE(dev.binding->importStuck());
+    check(dev, "import failed once");   // its reload is the second failure: stuck from here
+    TEST_ASSERT_TRUE(dev.binding->importStuck());
+    check(dev, "import stuck");
+    TEST_ASSERT_EQUAL_STRING(plain::kHeldElsewhereLine, dev.binding->elsewhereLine());
+    TEST_ASSERT_TRUE(dev.say("my bike lock code is 9911").ok());
+    dev.card.down = true;   // /clear's store of the held turns refused by the card
+    TEST_ASSERT_FALSE(dev.binding->storeHeldAs(std::string(kChat) + "_c1").ok());
+    TEST_ASSERT_FALSE(dev.binding->importStuck());
+    check(dev, "held turns waiting for the new conversation");
+    TEST_ASSERT_TRUE(has(dev.binding->elsewhereLine(), "stored by itself"));
+    dev.card.down = false;
+    TEST_ASSERT_TRUE(dev.binding->reload());   // it ends by itself when the card answers
+  }
+}
+
 // The neighbor: the card answers but the import fails only once: the owner is told it is not
 // imported yet (not the card), and the next turn's import ends it.
 static void test_an_import_that_fails_once_is_not_stuck() {
@@ -1076,6 +1117,7 @@ int main(int, char**) {
   RUN_TEST(test_with_no_card_fitted_the_import_holds_nothing);
   RUN_TEST(test_an_import_that_never_finishes_offers_clear_and_clear_keeps_the_held_turns);
   RUN_TEST(test_an_import_that_fails_once_is_not_stuck);
+  RUN_TEST(test_another_chat_is_never_told_to_restart_while_turns_are_held);
   RUN_TEST(test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was);
   RUN_TEST(test_a_mirrored_fold_record_is_put_back_from_the_kept_copy);
   RUN_TEST(test_a_message_answered_with_a_device_line_joins_the_conversation_once);

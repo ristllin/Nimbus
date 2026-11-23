@@ -101,9 +101,6 @@ constexpr const char* kNoStartLine = "The new engine could not start for this ch
 constexpr const char* kNumberUnreadLine =
     "The number of this chat's conversation could not be read from the card. Send /clear to start a new "
     "conversation; the earlier ones stay stored on the device.";
-constexpr const char* kHeldElsewhereLine =
-    "This chat cannot start while another conversation is held in memory because its earlier history could "
-    "not be imported. Send /clear in that chat to store it and go on.";
 constexpr const char* kClearNotStoredLine =
     "The new conversation was not started: the card did not store it. This conversation goes on; send /clear "
     "again later.";
@@ -426,7 +423,7 @@ plain::ChatBinding* residentFor(const String& chatId, const std::string& model, 
   if (!s_chat->reload()) {
     alogf("e2: chat %s keeps its RAM-only binding until the card is back", c.chatId.c_str());
     keep = true;
-    if (!same && s_chat->importStuck()) s_noStartWhy = kHeldElsewhereLine;   // E2-FIX3: its /clear lets it go
+    if (!same) s_noStartWhy = s_chat->elsewhereLine();   // E2-FIX3, E2-FIX5: the true cause, never a restart
     return same ? s_chat.get() : nullptr;
   }
   s_chat.reset();   // another chat, model or role: the arena goes back before the next one
