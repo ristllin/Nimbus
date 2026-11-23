@@ -208,7 +208,7 @@ E2_CEILINGS = {
     "device_notes": 2048,
     "stubs": 512,
     # Ruling 111 item 2: raised from 6,144 B to 6,656 B for the schedule tool's own result and error
-    # lines only (lanes RB-U1b and E2-SCHED: 513 B of schedule text on 6,142 B, 6,655 B used).
+    # lines only (lanes RB-U1b and E2-SCHED: 510 B of schedule text on 6,142 B, 6,652 B used).
     "tool_results": 6656,
     "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
