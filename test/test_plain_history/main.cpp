@@ -470,7 +470,7 @@ static void test_view_pages_exactly_and_search_bounds_its_result() {
   const plain::ToolOutput s = call(h, t, "search", R"({"query":"long table"})");
   TEST_ASSERT_TRUE_MESSAGE(s.text.size() < 2048, s.text.c_str());
   TEST_ASSERT_TRUE(has(s.text, "before=t"));
-  TEST_ASSERT_TRUE(has(s.text, "more: read back to "));
+  TEST_ASSERT_TRUE(has(s.text, "more: searched to "));
   // Bad arguments are one plain line each.
   TEST_ASSERT_TRUE(call(h, t, "search", R"({"query":"x","from":"17/11/2026"})").isError);
   TEST_ASSERT_TRUE(call(h, t, "search", R"({"query":"x","before":"../2002"})").isError);
@@ -530,8 +530,8 @@ static void test_a_photo_of_this_conversation_is_shown_again_in_the_view_result(
   const plain::TurnCtx other = turnOf("1001_c1", "1001", owner);
   TEST_ASSERT_TRUE(call(dev.history, other, "view", R"({"id":"p0123456789abcdef"})").isError);
   TEST_ASSERT_EQUAL_STRING("p0123456789abcdef",
-                           plain::viewedPhoto("view", "photo p0123456789abcdef Tue 17 Nov 2026 12:02: shown in this result").c_str());
-  TEST_ASSERT_TRUE(plain::viewedPhoto("read_file", "photo p01: shown in this result").empty());
+                           plain::viewedPhoto("view", "photo p0123456789abcdef Tue 17 Nov 2026 12:02: shown here").c_str());
+  TEST_ASSERT_TRUE(plain::viewedPhoto("read_file", "photo p01: shown here").empty());
 }
 
 static void test_notes_scope_finds_unpinned_notes_by_words() {
@@ -556,10 +556,10 @@ static void test_notes_scope_finds_unpinned_notes_by_words() {
   const plain::TurnCtx t = turnOf("1001", "1001", owner);
   const plain::ToolOutput a = call(h, t, "search", R"({"query":"bike lock","scope":"notes"})");
   TEST_ASSERT_TRUE(has(a.text, "note bike-0: the bike lock code is 1000"));
-  TEST_ASSERT_TRUE(has(a.text, "more notes match: before=n5"));
+  TEST_ASSERT_TRUE(has(a.text, "more match: before=n5"));
   const plain::ToolOutput b = call(h, t, "search", R"({"query":"bike lock","scope":"notes","before":"n5"})");
   TEST_ASSERT_TRUE(has(b.text, "bike-7"));
-  TEST_ASSERT_TRUE(has(b.text, "read to the start"));
+  TEST_ASSERT_TRUE(has(b.text, "searched to the start"));
   TEST_ASSERT_FALSE(has(b.text, "wifi"));
 }
 

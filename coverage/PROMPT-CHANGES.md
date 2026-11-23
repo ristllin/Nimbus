@@ -1228,3 +1228,33 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX5
 - prd: section 2 (the stub rule: a stub names the call that brings its bytes back), AGENTS.md rule 9
 - why: lib/core/src/orch_tx_rules.cpp (not a catalogued source; logged here for the record, no class changes): tx::BoundTools (lib/core/include/nimbus/orch/tx/rules.h) is filled by the engine from its registry each turn (plain::boundTools). Without view: an internal stub ends " ..." (or names E2-VERB's read_file call when one exists), an outside stub ends "outside content, not shown]", a long argument "...; not content]", a long text "[text continues: <n>B more]". Without search the omission line ends ", not shown]". With the tool bound each text is as before, so they turn on by themselves when lane E2-SRCH binds the tools. Stubs are stored at capture: a stub stored earlier keeps its words. The photo stub (E2-FIX4's texts, PC-0189) is fed BoundTools::view at its one call site (plain_wire_anthropic.cpp, RenderInput::bound). Pinned by test_plain_request test_no_template_names_a_tool_that_is_not_bound (every template, the photo stubs included, over the four registries), test_tx_stub_rule, test_plain_rails (red before: the next turn's outside stub named view), test_plain_conformance and the battery's coverResult (a stub never names an unbound view).
+
+### PC-0195: search's and view's result and error lines (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 6652 -> 7073
+- sha8: 5878ac87 -> dac59e38
+- lane: RB-N3
+- prd: section 4 (tools 7 and 9: search over this conversation's history and the person's notes, view of a stored result, message or photo by id), section 2 (the stub and omission lines that name them), ruling 116 (cannot read is never absent)
+- why: lib/harness/include/nimbus/harness/plain/texts.h tool_results: the words a hit carries (person, assistant, device, summary, " result", ", outside content", " (earlier engine)", "note "), the excerpt's cut mark, "no match", the remainder ("more: searched to <when>, older unread: before=<cursor>", "more match: before=", "searched to the start"), " results unreadable" for stored results the card no longer gives back, view's page tail ("\nnext_offset=N (M B more)"), the photo line and its two endings, and the refusals (no words; a scope, cursor or date that is not valid; a read the card refused, with the cursor that goes on; not this conversation; not in this conversation; stored text gone after 30 days; the id forms). Facts only, no instruction (check_tool_result_imperatives). Written by lane E2-SRCH (ruling 114, the fast engine-2 path), which binds RB-N3's tools on the device and the daemon (lib/harness/src/plain_history.cpp): the lines were cut short to fit (the class had 4 B left before it). Planned work, not a fix.
+
+### PC-0196: search's and view's declarations match what is bound (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 4293 -> 4536
+- sha8: 76f76e0b -> dae5ec39
+- lane: RB-N3
+- prd: section 4 (tools 7 and 9), as this lane binds them
+- why: lib/harness/include/nimbus/harness/plain/texts.h: search says what it reads (this conversation's history, the default, or the person's unpinned notes), that every word must appear, from and to as YYYY-MM-DD, up to 5 hits newest first with an id for view, and before to go on; its schema drops the files and memories scopes (not bound on engine 2; the PRD's files and memories scopes are left to a later lane) and makes scope optional, with before added. view says which ids it opens (r..., m..., p...) and that offset and limit page a long text; its schema gains offset and limit. Written by lane E2-SRCH. Planned work, not a fix.
+
+### PC-0197: the summary line names what search finds on engine 2 (engine 2)
+- catalog: e2
+- class: core
+- kind: spec
+- bytes: 1688 -> 1686
+- sha8: 68e60f2d -> e3d00845
+- lane: RB-N3
+- prd: section 4 (the system core's "what you see" line: stubs and view, older days as digests, search)
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kOlderDays: "search finds their exact words, files and notes" becomes "search finds their exact words and your notes": search on engine 2 reads this conversation and the person's notes, not files (read_file and list_files do), so the line now says only what is true. Written by lane E2-SRCH. Planned work, not a fix.

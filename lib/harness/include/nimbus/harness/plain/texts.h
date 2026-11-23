@@ -278,26 +278,26 @@ inline constexpr char kSrcEarlier[] = " (earlier engine)";
 inline constexpr char kSrcNote[] = "note ";
 inline constexpr char kCutMark[] = "...";
 inline constexpr char kSearchNone[] = "no match";
-inline constexpr char kSearchMore[] = "more: read back to ";
-inline constexpr char kSearchBefore[] = ", older not read yet: before=";
-inline constexpr char kSearchEnd[] = "read to the start";
-inline constexpr char kNotesMore[] = "more notes match: before=";
-inline constexpr char kSearchUnread[] = " stored results could not be read";
+inline constexpr char kSearchMore[] = "more: searched to ";
+inline constexpr char kSearchBefore[] = ", older unread: before=";
+inline constexpr char kSearchEnd[] = "searched to the start";
+inline constexpr char kNotesMore[] = "more match: before=";
+inline constexpr char kSearchUnread[] = " results unreadable";
 inline constexpr char kSearchNoWords[] = "query: no words";
-inline constexpr char kSearchBadArgs[] = "before: only a value search gave; from, to: YYYY-MM-DD";
-inline constexpr char kCardStopped[] = "the card did not answer; before=";
-inline constexpr char kNotInTurn[] = "only inside a conversation's turn";
-inline constexpr char kViewNoItem[] = "no such item in this conversation";
-inline constexpr char kViewGone[] = "its stored text is gone (kept 30 days)";
-inline constexpr char kViewBadId[] = "id: r<number>, m<row> or p<photo>";
+inline constexpr char kSearchBadArgs[] = "scope, before, from or to not valid";
+inline constexpr char kCardStopped[] = "card read failed; before=";
+inline constexpr char kNotInTurn[] = "not this conversation";
+inline constexpr char kViewNoItem[] = "not in this conversation";
+inline constexpr char kViewGone[] = "stored text gone (30 days)";
+inline constexpr char kViewBadId[] = "id: r<n>, m<row> or p<ref>";
 inline constexpr char kViewNext[] = "\nnext_offset=";
 inline constexpr char kViewMore[] = " B more";
 inline constexpr char kBytes[] = " B";
 // The photo line view answers; the request shows the photo's pixels with it while its turn is open
 // (plain_wire_anthropic.cpp viewedPhoto reads the ref after kViewPhoto).
 inline constexpr char kViewPhoto[] = "photo ";
-inline constexpr char kViewPhotoShown[] = ": shown in this result";
-inline constexpr char kViewPhotoUnread[] = ": its stored copy could not be read";
+inline constexpr char kViewPhotoShown[] = ": shown here";
+inline constexpr char kViewPhotoUnread[] = ": stored copy unreadable";
 }  // namespace tool_results
 namespace probe {}
 // The summarizer (lane RB-C2, plain_compact.cpp; PRD section 3; lane RB-C3: one cumulative summary,

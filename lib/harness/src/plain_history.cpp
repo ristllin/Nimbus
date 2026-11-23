@@ -131,10 +131,13 @@ std::string label(const std::string& id, const std::string& when, tx::HitSource 
   return s;
 }
 
-void logCall(const char* tool, const TurnCtx& t, const tx::ReadStats& c, size_t outBytes, const std::string& extra) {
-  hlog::logf("e2: %s chat=%s reads=%u bytes=%u cardMs=%u longestMs=%u out=%u %s", tool, t.chatKey.c_str(),
-             (unsigned)c.reads, (unsigned)c.bytes, (unsigned)c.totalMs, (unsigned)c.longestMs, (unsigned)outBytes,
-             extra.c_str());
+// One device-log line per call: what it read off the card and what it answered. `what` is the id
+// viewed or the scope searched, `hits` the hits (or 1 for a view that answered), `more` a remainder.
+void logCall(const char* tool, const TurnCtx& t, const tx::ReadStats& c, size_t outBytes, const std::string& what,
+             size_t hits, bool more, const char* st) {
+  hlog::logf("e2: %s chat=%s %s hits=%u more=%d st=%s reads=%u bytes=%u cardMs=%u longestMs=%u out=%u", tool,
+             t.chatKey.c_str(), what.c_str(), (unsigned)hits, int(more), st, (unsigned)c.reads, (unsigned)c.bytes,
+             (unsigned)c.totalMs, (unsigned)c.longestMs, (unsigned)outBytes);
 }
 
 // limit as read_file takes it: the floor and the cap (ruling 95).
@@ -249,9 +252,8 @@ ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObject
   if (!st.ok()) text += R::kCardStopped + o.next;
   else if (o.more) text += R::kSearchMore + whenOf(o.oldestT, tz(o.oldestT)) + R::kSearchBefore + o.next;
   else text += R::kSearchEnd;
-  logCall(kSearch, turn, card_, text.size(),
-          "hits=" + std::to_string(o.hits.size()) + " more=" + std::to_string(int(o.more)) + " old=" +
-              std::to_string(int(o.oldRead)) + " st=" + tx::errSlug(st.err));
+  logCall(kSearch, turn, card_, text.size(), o.oldRead ? "history+old" : kHistory, o.hits.size(), o.more,
+          tx::errSlug(st.err));
   ToolOutput out = ok(std::move(text));
   out.isError = !st.ok() && o.hits.empty();
   out.outside = outside;   // an excerpt of outside content is outside content
@@ -283,7 +285,7 @@ ToolOutput HistoryTools::searchNotes(const TurnCtx& turn, JsonObjectConst a, con
   for (size_t j = i; j < notes.size() && !more; ++j)
     more = tx::matchesAll(nimbus::orch::notes::formatLine(notes[j]), words);
   text += more ? std::string(R::kNotesMore) + "n" + std::to_string(i) : std::string(R::kSearchEnd);
-  logCall(kSearch, turn, card_, text.size(), "scope=notes hits=" + std::to_string(shown));
+  logCall(kSearch, turn, card_, text.size(), kNotes, shown, more, "ok");
   return ok(std::move(text));
 }
 
@@ -324,7 +326,7 @@ ToolOutput HistoryTools::viewItem(const TurnCtx& turn, uint64_t q, size_t offset
   const std::string head = label("r" + std::to_string(q), when, src, it.n, outside) + " " + std::to_string(total);
   ToolOutput out = ok(page(head, body, offset, total));
   out.outside = outside;   // outside content keeps its class when it comes back
-  logCall(kView, turn, card_, out.text.size(), "id=r" + std::to_string(q));
+  logCall(kView, turn, card_, out.text.size(), "r" + std::to_string(q), 1, offset + body.size() < total, "ok");
   return out;
 }
 
@@ -341,7 +343,7 @@ ToolOutput HistoryTools::viewOld(const TurnCtx& turn, uint64_t row, size_t offse
   const std::string head = label(tx::rowIdString(row), whenOf(r.t, tz(r.t)), src, "", false) + " " +
                            std::to_string(r.text.size());
   ToolOutput out = ok(page(head, body, offset, r.text.size()));
-  logCall(kView, turn, card_, out.text.size(), "id=" + tx::rowIdString(row));
+  logCall(kView, turn, card_, out.text.size(), tx::rowIdString(row), 1, offset + body.size() < r.text.size(), "ok");
   return out;
 }
 
@@ -357,7 +359,7 @@ ToolOutput HistoryTools::viewPhoto(const TurnCtx& turn, const std::string& ref) 
   const std::string when = whenOf(owner.t, owner.tzMinutes);
   const std::string head = R::kViewPhoto + ref + (when.empty() ? std::string() : " " + when);
   const bool shown = d_.photoReadable && d_.photoReadable(ref);
-  logCall(kView, turn, card_, head.size(), "id=" + ref + (shown ? " shown" : " unread"));
+  logCall(kView, turn, card_, head.size(), ref, shown ? 1 : 0, false, shown ? "ok" : "unread");
   return shown ? ok(head + R::kViewPhotoShown) : fail(head + R::kViewPhotoUnread);
 }
 
