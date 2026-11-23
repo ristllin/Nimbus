@@ -149,6 +149,11 @@ struct Device {
     if (!skillFiles.empty()) d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles); };
     d.skillRefused = [this](const std::string& id, size_t) { refused.push_back(id); };
     d.usage = [this](const plain::TurnOutcome& o) { usage.push_back(plain::turnSpendOf(o, "anthropic", "claude-haiku-5-5")); };
+    d.compactUsage = [this](const std::string& p, const std::string& m, const nimbus::orch::TokenUsage& u) {
+      nimbus::orch::TurnSpend t;
+      t.add(p.c_str(), m.c_str(), u);
+      compactUsage.push_back(t);
+    };
     if (progress)
       d.progress.send = [this](const std::string&, const std::string& t, int64_t& id) {
         id = 0;
@@ -188,6 +193,7 @@ struct Device {
   std::vector<plain::SkillFile> skillFiles;
   std::vector<std::string> refused;
   std::vector<nimbus::orch::TurnSpend> usage;
+  std::vector<nimbus::orch::TurnSpend> compactUsage;   // lane E2-CMP: the summarizer's requests
   bool progress = false;
   std::vector<std::string> progressLines;
   std::unique_ptr<plain::ChatBinding> binding;
@@ -698,6 +704,39 @@ static void test_the_progress_line_is_bound_and_a_short_turn_sends_none() {
   TEST_ASSERT_EQUAL(0, (int)dev.progressLines.size());   // under 20 s: no line
 }
 
+
+// Lane E2-CMP: a compaction's summarizer request is filed where a turn's spend is (ChatBindingDeps::compactUsage,
+// the device's store::recordProviderSpend under "compact": the usage view and the monthly ceiling), with its
+// provider, model and every token kind; the turns before it are filed once each as before.
+static void test_a_compaction_files_its_summarizer_spend_like_a_turn() {
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  for (int i = 0; i < 9; ++i) {
+    dev.model.push(sp::say("Reply " + std::to_string(i) + "."));
+    TEST_ASSERT_TRUE(dev.say("Message " + std::to_string(i) + " about the garden.").ok());
+  }
+  sp::Step s = sp::say("+F The person talks about the garden.");
+  s.usage.input = 4000;
+  s.usage.output = 120;
+  s.usage.cacheRead = 0;
+  s.usage.cacheWrite = 3000;
+  s.usage.cacheWrite1h = 1000;
+  dev.model.push(s);
+  const size_t turns = dev.usage.size();
+  TEST_ASSERT_TRUE(dev.binding->compactNow().ok());
+  TEST_ASSERT_EQUAL(turns, dev.usage.size());           // no turn was filed for it
+  TEST_ASSERT_EQUAL(1, (int)dev.compactUsage.size());
+  const nimbus::orch::SpendSlot& u = dev.compactUsage[0].slot[0];
+  TEST_ASSERT_EQUAL_STRING("anthropic", u.host);
+  TEST_ASSERT_TRUE(u.model[0] != 0);   // the model the provider answered with (TurnSpend::add)
+  TEST_ASSERT_EQUAL(4000u, u.in);
+  TEST_ASSERT_EQUAL(120u, u.out);
+  TEST_ASSERT_EQUAL(3000u, u.cacheW);
+  TEST_ASSERT_EQUAL(1000u, u.cacheW1h);
+  TEST_ASSERT_EQUAL(1u, u.billed);
+  TEST_ASSERT_TRUE(dev.model.last().body.find("\"output_config\"") != std::string::npos);   // the structured form went out
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
@@ -713,6 +752,7 @@ int main(int, char**) {
   RUN_TEST(test_a_context_skill_rides_the_fixed_part_and_a_too_large_one_is_refused_once);
   RUN_TEST(test_a_turns_usage_is_handed_over_once);
   RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);
+  RUN_TEST(test_a_compaction_files_its_summarizer_spend_like_a_turn);
   RUN_TEST(test_the_progress_line_is_bound_and_a_short_turn_sends_none);
   RUN_TEST(test_a_failed_exists_at_boot_is_not_an_empty_conversation);
   RUN_TEST(test_an_outage_at_boot_reloads_and_stores_the_ram_turns_once);

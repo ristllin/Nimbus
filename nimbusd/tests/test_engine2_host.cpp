@@ -22,6 +22,10 @@
 
 #include "../../test/support/scripted_provider/scripted_provider.h"
 #include "engine2_host.h"
+#include <algorithm>
+#include <cstdlib>
+
+#include "spend_ceiling_vn.h"
 #include "test_util.h"
 
 namespace sp = harness_test::scripted;
@@ -40,6 +44,7 @@ struct Host {
   std::vector<Out> sent;
   std::unique_ptr<nimbusd::Engine2Host> host;
   std::string headSlug = "anthropic", modelId = "claude-haiku-5-5";
+  std::function<void(const nimbus::orch::TurnSpend&, const std::string&)> spend;   // lane E2-CMP
 
   explicit Host(const std::string& d) : dir(d), files(d + "/mem/files") {}
 
@@ -56,6 +61,7 @@ struct Host {
     o.timeZone = "Europe/London";
     o.deliver = [this](const std::string& chat, const std::string& text) { sent.push_back({chat, text}); };
     o.transport = &model;
+    o.spend = spend;
     host.reset(new nimbusd::Engine2Host(o));
     return host->start();
   }
@@ -220,6 +226,45 @@ void caseCompactCommand(ndtest::Ctx& c) {
   ndtest::rmTree(dir);
 }
 
+// Lane E2-CMP: the instance's monthly ceiling counts engine 2's turns ("turn") and every summarizer request of
+// its compaction ("compact"), each priced at its model's row with every token kind.
+void caseCompactionSpend(ndtest::Ctx& c) {
+  std::printf("  (h) the ceiling counts engine 2's turns and the summarizer's requests\n");
+  const std::string dir = ndtest::scratchDir("e2spend");
+  Host h(dir);
+  nimbusd::SpendCeilingVn ceiling(dir + "/spend_ceiling.txt", false, false);
+  std::vector<std::string> tags;
+  h.spend = [&](const nimbus::orch::TurnSpend& s, const std::string& tag) {
+    tags.push_back(tag);
+    ceiling.commit(s, tag != "compact");
+  };
+  for (int i = 0; i < 9; ++i) h.model.push(sp::say("Reply " + std::to_string(i) + "."));
+  c.eq(h.start(), "", "the host starts");
+  for (int i = 0; i < 9; ++i) (void)h.host->say("owner", "Message " + std::to_string(i) + " about the garden.", "web");
+  size_t turns = 0;
+  for (const std::string& t : tags) turns += t == "turn";
+  c.ok(turns == 9, "each turn is counted once");
+  const std::string before = ceiling.stateJson();
+  sp::Step s = sp::say("+F The person talks about the garden.");
+  s.usage.input = 3000000;   // priced well over a cent at the summarizer's row
+  s.usage.output = 1000;
+  s.usage.cacheWrite = 2000;
+  s.usage.cacheWrite1h = 1000;
+  s.model = "claude-haiku-5-5";   // the model the provider answers with: the price row
+  h.model.push(s);
+  c.ok(h.host->requestCompaction(), "/compact is queued");
+  for (int i = 0; i < 4 && std::count(tags.begin(), tags.end(), std::string("compact")) == 0; ++i) (void)h.host->idle(false);
+  c.ok(std::count(tags.begin(), tags.end(), std::string("compact")) == 1, "the summarizer's request is counted once");
+  c.ok(h.model.last().body.find("\"output_config\"") != std::string::npos, "...and it asked for the structured form");
+  const std::string after = ceiling.stateJson();
+  auto cents = [](const std::string& j) {
+    const size_t at = j.find("\"spentCents\":");
+    return at == std::string::npos ? -1L : std::strtol(j.c_str() + at + 13, nullptr, 10);
+  };
+  c.ok(cents(after) > cents(before), "the ceiling moved: " + before + " -> " + after);
+  ndtest::rmTree(dir);
+}
+
 void caseDelete(ndtest::Ctx& c) {
   std::printf("  (g) delete_file through more on the shared store\n");
   const std::string dir = ndtest::scratchDir("e2delete");
@@ -253,6 +298,7 @@ int main() {
   caseStorageRule(c);
   caseModelChange(c);
   caseCompactCommand(c);
+  caseCompactionSpend(c);
   caseDelete(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;

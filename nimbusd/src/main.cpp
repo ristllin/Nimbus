@@ -172,6 +172,10 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   o.deliver = std::move(deliver);
   o.chatId = nimbusd::kWebChatId;
   o.loops = &rig.routines();   // lane E2-SCHED: the schedule tool and the routines' fires
+  // Lane E2-CMP: engine 2's turns and its summarizer requests count toward the monthly ceiling, as engine 1's do.
+  o.spend = [&rig](const nimbus::orch::TurnSpend& spend, const std::string& tag) {
+    rig.spendCeiling().commit(spend, tag != "compact");
+  };
   out.reset(new nimbusd::Engine2Host(o));
   const std::string why = out->start();
   if (!why.empty()) return why;

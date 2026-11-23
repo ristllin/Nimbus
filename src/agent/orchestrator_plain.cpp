@@ -424,6 +424,12 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.skills = [](const nimbus::orch::Principal&) { return skillsdev::chatSkills(); };
   d.skillRefused = noteSkillRefused;
   d.usage = [model](const plain::TurnOutcome& out) { recordUsage(out, model); };
+  // Lane E2-CMP: the summarizer's requests count where a turn's do (the usage view and the monthly ceiling).
+  d.compactUsage = [](const std::string& provider, const std::string& m, const nimbus::orch::TokenUsage& u) {
+    nimbus::orch::TurnSpend spend;
+    spend.add(provider.c_str(), m.c_str(), u);
+    store::recordProviderSpend(spend, "compact");
+  };
   if (!localChat(chatId))   // the web chat shows its own spinner; Telegram gets the line (RB-E3)
     d.progress.send = [](const std::string& chat, const std::string& text, int64_t& msgId) {
       msgId = 0;   // a new line each time: no edit on this path

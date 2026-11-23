@@ -18,6 +18,7 @@
 #include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/tx/budget.h"
+#include "nimbus/orch/turn_spend.h"   // TurnSpend (lane E2-CMP)
 #include "plain_rig.h"
 #include "posix_files.h"
 #include "posix_platform.h"
@@ -61,6 +62,9 @@ struct Engine2Options {
   std::string chatKey = "owner";                     // /mem/tx/<chatKey>
   std::string chatId = "owner";                      // the engine's routing chat (the web chat id)
   HostedLoops* loops = nullptr;                      // lane E2-SCHED: the routines table; null: no schedule tool
+  // Lane E2-CMP: every paid request for the instance's monthly ceiling: each turn's spend ("turn") and
+  // each summarizer request of the compaction ("compact"). Null: not counted.
+  std::function<void(const nimbus::orch::TurnSpend& spend, const std::string& tag)> spend;
 };
 
 // The one plain line a refused switch logs (and the daemon exits on).
@@ -159,6 +163,7 @@ class Engine2Host {
     curChat_ = chat;
     PlainTurn t = rig_->say(text, ch);
     curChat_.clear();
+    if (o_.spend) o_.spend(turnSpend(t.out), "turn");
     lastTurnEnd_ = vclock::epoch();
     if (t.ending != PlainEnding::Reply)
       std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending), t.stated.c_str());
@@ -251,6 +256,20 @@ class Engine2Host {
     return nimbus::orch::tx::HeadKey{plain::providerSlugOf(t, e), model, false};
   }
 
+  // A turn's spend in the provider's own counts (plain::turnSpendOf's shape): one slot of the head.
+  nimbus::orch::TurnSpend turnSpend(const plain::TurnOutcome& out) const {
+    nimbus::orch::TurnSpend s;
+    nimbus::orch::TokenUsage u;
+    u.promptTokens = out.end.promptTokens;
+    u.completionTokens = out.end.outputTokens;
+    u.cacheReadTokens = out.end.cacheReadTokens;
+    u.cacheWriteTokens = out.end.cacheWriteTokens;
+    u.responses = out.headRequests;
+    u.maxRequestIn = out.end.lastPromptTokens;
+    s.add("anthropic", bootModel_.c_str(), u);   // files nothing when nothing was billed
+    return s;
+  }
+
   // The pinned notes, the recent files and the guard costs of this turn's head.
   void setupTurn(const plain::TurnCtx& t, plain::TurnSetup& s) {
     if (t.who) s.facts.pinnedNotes = notes_.pinnedBlock(*t.who);
@@ -293,6 +312,12 @@ class Engine2Host {
     };
     d.tell = [this](const std::string& chat, const std::string& text) {
       if (o_.deliver) o_.deliver(chat, text);
+    };
+    d.spent = [this](const plain::SummarizerRung& r, const nimbus::orch::TokenUsage& u) {
+      if (!o_.spend) return;
+      nimbus::orch::TurnSpend s;
+      s.add(r.host.c_str(), r.model.c_str(), u);
+      o_.spend(s, "compact");
     };
     d.ctl = hostedTextIO(o_.dataDir + "/mem/compact_ctl.txt");
     driver_.reset(new plain::CompactDriver(d));

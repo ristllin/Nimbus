@@ -93,6 +93,10 @@ struct ChatBindingDeps {
   std::function<void(const std::string& id, size_t bytes)> skillRefused;
   // Once per turn, after runTurn: what the turn spent, for the owner's usage view.
   std::function<void(const TurnOutcome& out)> usage;
+  // Lane E2-CMP: each paid summarizer request of this chat's compaction, for the same usage view and
+  // monthly ceiling (provider slug, model, its tokens). Null: not counted.
+  std::function<void(const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u)>
+      compactUsage;
   ProgressDeps progress;                         // send unset: no progress line
   // The earlier engine's conversation (lane E2-MIG): fills rows, fold, exportText and tzMinutes
   // of the migration's deps (the binding sets the rest); null, or false: no import. Called at
@@ -652,6 +656,9 @@ class ChatBinding {
     };
     c.jobRunning = [](uint32_t) { return false; };   // no agent jobs on engine 2 yet
     c.park = [this](const SummarizerRung&) { say("e2: compaction rung refused its key or credit"); };
+    c.spent = [this](const SummarizerRung& r, const nimbus::orch::TokenUsage& u) {
+      if (d_.compactUsage) d_.compactUsage(r.host, r.model, u);
+    };
     c.tell = [this](const std::string& chat, const std::string& text) {
       if (d_.sendPart) (void)d_.sendPart(chat, text);
     };

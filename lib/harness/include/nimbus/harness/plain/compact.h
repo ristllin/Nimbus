@@ -206,6 +206,10 @@ struct CompactDeps {
   std::function<void(std::vector<SummarizerRung>&)> rungs;
   std::function<bool(uint32_t turn)> jobRunning;   // a turn whose agent job still runs
   std::function<void(const SummarizerRung&)> park; // a rung's key or credit was refused
+  // Every paid summarizer request (lane E2-CMP): the tokens a rung billed for one ask (its cut retry
+  // and same-host retries summed; an answer not taken was still paid), for the owner's usage and the
+  // monthly ceiling, the path a turn's requests take. Unset: not counted.
+  std::function<void(const SummarizerRung&, const nimbus::orch::TokenUsage&)> spent;
   std::function<void(const std::string& chatId, const std::string& text)> tell;   // manual answers
   TextIO ctl;        // the control record (unset: kept in RAM)
   TextIO chatsum;    // /data/chatsum.txt, the v5.1.1 mirror (unset: no mirror)

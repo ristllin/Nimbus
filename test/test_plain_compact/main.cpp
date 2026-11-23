@@ -109,6 +109,13 @@ struct TestWire : plain::WireCodec {
     out.stop = stop == "max_tokens" ? plain::StopReason::MaxTokens
                : stop == "refusal"  ? plain::StopReason::Refusal
                                     : plain::StopReason::EndTurn;
+    JsonObjectConst u = doc["usage"];   // the billed tokens, as the real wire reads them (lane E2-CMP)
+    out.usage.promptTokens = u["input_tokens"] | 0u;
+    out.usage.completionTokens = u["output_tokens"] | 0u;
+    out.usage.cacheReadTokens = u["cache_read_input_tokens"] | 0u;
+    out.usage.cacheWriteTokens = u["cache_creation_input_tokens"] | 0u;
+    out.usage.cacheWrite1hTokens = u["cache_creation"]["ephemeral_1h_input_tokens"] | 0u;
+    out.usage.responses = 1;
     return plain::Status::success();
   }
 };
@@ -184,8 +191,10 @@ struct Chat {
     d.chatsum.save = [this](const std::string& t) { chatsumText = t; return true; };
     d.headKey = headKey;
     d.settings = [this] { return settings; };
+    d.spent = [this](const plain::SummarizerRung& r, const nimbus::orch::TokenUsage& u) { spent.push_back({r.model, u}); };
     return d;
   }
+  std::vector<std::pair<std::string, nimbus::orch::TokenUsage>> spent;   // every counted summarizer ask (lane E2-CMP)
   // A process start over the same storage: the engine's boot order (RB-C1).
   void boot() {
     arena.reset(new tx::TxArena());
@@ -2984,6 +2993,54 @@ void test_the_form_refused_or_ignored_and_storage_failures() {
   agent::hlog::setSink(nullptr);
 }
 
+
+// Every paid summarizer request is counted (lane E2-CMP, found by E2-CACHE): each ask hands its billed tokens
+// (input, output, cache read and write, the 1-hour part) to CompactDeps::spent, the path the binding files a turn's
+// spend through; an answer not taken was paid too and is counted; a request that never left is not.
+void test_every_summarizer_request_is_counted() {
+  Chat c;
+  threeDays(c);
+  int asked = 0;
+  c.model.respondWith([&](const sp::Recorded&, size_t) {
+    sp::Step s = sp::say(++asked == 1 ? kNothingProse : kSummary);
+    s.usage.input = 1000u * (uint32_t)asked;
+    s.usage.output = 50;
+    s.usage.cacheRead = 200;
+    s.usage.cacheWrite = 300;
+    s.usage.cacheWrite1h = 100;
+    return s;
+  });
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, c.step().step);
+  TEST_ASSERT_EQUAL(2, (int)c.spent.size());   // the answer not taken, then the one taken
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", c.spent[0].first.c_str());
+  TEST_ASSERT_EQUAL(1000u, c.spent[0].second.promptTokens);
+  TEST_ASSERT_EQUAL(2000u, c.spent[1].second.promptTokens);
+  TEST_ASSERT_EQUAL(50u, c.spent[1].second.completionTokens);
+  TEST_ASSERT_EQUAL(200u, c.spent[1].second.cacheReadTokens);
+  TEST_ASSERT_EQUAL(300u, c.spent[1].second.cacheWriteTokens);
+  TEST_ASSERT_EQUAL(100u, c.spent[1].second.cacheWrite1hTokens);
+  TEST_ASSERT_EQUAL(1, (int)c.spent[1].second.responses);
+  // A cut answer asked again with room: one ask, both responses summed.
+  Chat d;
+  threeDays(d);
+  int n = 0;
+  d.model.respondWith([&](const sp::Recorded&, size_t) {
+    sp::Step s = ++n == 1 ? sp::cut("+F half") : sp::say(kSummary);
+    s.usage.input = 500;
+    return s;
+  });
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, d.step().step);
+  TEST_ASSERT_EQUAL(1, (int)d.spent.size());
+  TEST_ASSERT_EQUAL(1000u, d.spent[0].second.promptTokens);
+  TEST_ASSERT_EQUAL(2, (int)d.spent[0].second.responses);
+  // A transport that never answered bills nothing.
+  Chat e;
+  threeDays(e);
+  e.answer([] { return sp::transportCut(45000); });
+  TEST_ASSERT_EQUAL(plain::CompactStep::Failed, e.step().step);
+  TEST_ASSERT_TRUE(e.spent.empty());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_control_record_round_trips_and_reads_damage_as_fresh);
@@ -3052,5 +3109,6 @@ int main(int, char**) {
   RUN_TEST(test_adds_that_name_an_id_are_taken_as_adds);
   RUN_TEST(test_the_change_list_reads_back_as_lines);
   RUN_TEST(test_the_form_refused_or_ignored_and_storage_failures);
+  RUN_TEST(test_every_summarizer_request_is_counted);
   return UNITY_END();
 }

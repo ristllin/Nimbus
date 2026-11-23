@@ -1213,6 +1213,7 @@ struct RungAnswer {
   std::string summary;
   uint8_t requests = 0;
   bool parked = false;
+  nimbus::orch::TokenUsage usage;   // every billed response of the rung's requests (lane E2-CMP)
 };
 
 // One summarizer exchange on one rung (the driver's attempt and a migration's digest 0).
@@ -1280,6 +1281,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
     ExchangeResult r;
     s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
     ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);
+    if (r.step.usage.responses) ans.usage += r.step.usage;   // paid whether or not the answer is taken
     ans.parked |= r.parkHost;
     if (!s.ok()) return s;
     const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
@@ -1318,6 +1320,7 @@ Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uin
   m.schema = form == AnswerForm::Changes ? st::kChangesSchema : nullptr;
   Status s = messageFor(plan, m.sofar, m.message);
   if (s.ok()) s = askRung(d_, rung, m, now, ans);
+  if (ans.usage.responses && d_.spent) d_.spent(rung, ans.usage);   // every paid request is counted
   out.summary = std::move(ans.summary);
   out.requests = ans.requests;
   out.parked = ans.parked;
@@ -1659,6 +1662,7 @@ Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0An
   m.message = plan.input;
   m.thinInput = plan.input.size();
   s = askRung(d, rung, m, ask.now ? ask.now : rules.now, ans);
+  if (ans.usage.responses && d.spent) d.spent(rung, ans.usage);
   if (ans.parked && d.park) d.park(rung);
   if (!s.ok()) return s;
   if (!(s = digestFor(plan, ans.summary, out.text)).ok()) return s;
