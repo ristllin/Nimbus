@@ -1161,16 +1161,16 @@ Status messageArena(const Platform& p, const std::string& message, uint64_t now,
   return s;
 }
 
-// One line that says why an answer was not taken and how it began (ruling 116: a failure leaves its
-// cause in the log; the answer never did before lane E2-CMP). Line ends show as '|', cut whole.
-void logNotTaken(const std::string& chatKey, const char* why, const std::string& answer) {
+// How an answer not taken began, for its log line (ruling 116: a failure leaves its cause in the log; the
+// answer never did before lane E2-CMP): the first bytes, cut whole, line ends shown as '|'.
+std::string answerHead(const std::string& answer) {
   constexpr size_t kHead = 110;
   size_t n = std::min(answer.size(), kHead);
   while (n < answer.size() && n > 0 && ((unsigned char)answer[n] & 0xC0) == 0x80) --n;
   std::string head = answer.substr(0, n);
   for (char& c : head)
     if (c == '\n' || c == '\r' || c == '\t') c = '|';
-  hlog::logf("compact(%s): answer not taken (%s, %u B): %s", chatKey.c_str(), why, (unsigned)answer.size(), head.c_str());
+  return head;
 }
 
 // An answer is taken when it is the model's whole text, not cut, not refused, and not thin for its input.
@@ -1179,7 +1179,8 @@ void logNotTaken(const std::string& chatKey, const char* why, const std::string&
 // (InvalidArgument, so the second try runs); a cut or a failed exchange is Io.
 Status answerOf(const std::string& chatKey, const ExchangeResult& r, bool cut, size_t thinInput, std::string& summary) {
   if (r.err == ExchangeErr::None && r.step.stop == StopReason::Refusal) {
-    logNotTaken(chatKey, "refused", r.step.refusal.empty() ? r.step.text : r.step.refusal);
+    const std::string& said = r.step.refusal.empty() ? r.step.text : r.step.refusal;
+    hlog::logf("compact(%s): answer not taken (refused, %u B): %s", chatKey.c_str(), (unsigned)said.size(), answerHead(said).c_str());
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver.refused");
   }
   if (cut || r.err != ExchangeErr::None || r.step.stop == StopReason::MaxTokens || !r.step.calls.empty())
@@ -1255,7 +1256,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
     const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
     if (cut && cap != kSummarizerRetryMaxTokens) continue;
     if (m.schema && r.err == ExchangeErr::Other && r.httpStatus == 400) {   // a provider without the form
-      logNotTaken(d.chatKey, "the form was refused", r.errorLine);
+      hlog::logf("compact(%s): answer not taken (the form was refused, %u B): %s", d.chatKey.c_str(), (unsigned)r.errorLine.size(), answerHead(r.errorLine).c_str());
       return Status::fail(Err::InvalidArgument, "plain::CompactDriver.form");
     }
     if (!(s = answerOf(d.chatKey, r, cut, m.thinInput, ans.summary)).ok() || !m.schema) return s;
@@ -1264,7 +1265,7 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
       ans.summary = std::move(lines);
       return s;
     }
-    logNotTaken(d.chatKey, "not the change list", ans.summary);
+    hlog::logf("compact(%s): answer not taken (not the change list, %u B): %s", d.chatKey.c_str(), (unsigned)ans.summary.size(), answerHead(ans.summary).c_str());
     ans.summary.clear();
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver.form");
   }
@@ -1435,7 +1436,7 @@ Status CompactDriver::merge(const SlicePlan& plan, const std::string& answer, st
   if (edits.edits.empty() && !edits.none) {   // prose or a rewrite: never taken as the summary
     hlog::logf("compact(%s): the answer held no change (%u lines unread): not taken", d_.chatKey.c_str(),
                (unsigned)edits.unread);
-    logNotTaken(d_.chatKey, "no change line", answer);
+    hlog::logf("compact(%s): answer not taken (no change line, %u B): %s", d_.chatKey.c_str(), (unsigned)answer.size(), answerHead(answer).c_str());
     return Status::fail(Err::InvalidArgument, "plain::CompactDriver.changes");
   }
   std::vector<tx::SummaryLine> left;
