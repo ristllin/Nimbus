@@ -63,6 +63,7 @@
 #include "file_tools_device.h"  // tools::takeOutsideCall - the call just dispatched read outside content (E2-FSAFE)
 #include "memory_subsystem.h"   // memory::captureMessage, memory::registry
 #include "migrate_device.h"     // migratedev::fill, importRulesOnce - the earlier engine's history and rules
+#include "history_tools_device.h"   // E2-SRCH: search and view
 #include "nimbus/fault.h"       // FAULT sd: a card that is fitted but faulted
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/chat_commands.h"   // readGeneration, writeGeneration - /clear (P7)
@@ -490,6 +491,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
   };
   d.photo = photoFor;
+  d.turnTool = historydev::answer;   // E2-SRCH: search and view read this turn's own conversation
   d.skills = [](const nimbus::orch::Principal&) { return skillsdev::chatSkills(); };
   d.skillRefused = noteSkillRefused;
   d.usage = [model](const plain::TurnOutcome& out) { recordUsage(out, model); };

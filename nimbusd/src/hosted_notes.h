@@ -165,6 +165,11 @@ class HostedNotes {
     std::lock_guard<std::mutex> g(mu_);
     return book_.pinnedBlock(who);
   }
+  // The person's unpinned notes (search scope=notes, lane E2-SRCH), under the same lock as the tool.
+  bool unpinned(const nimbus::orch::Principal& who, std::vector<notes::Note>& out) {
+    std::lock_guard<std::mutex> g(mu_);
+    return book_.unpinned(who, out);
+  }
   // The person's kept calls and the owner's answers (notes.h), under the same lock as the tool.
   bool pending(const nimbus::orch::Principal& who, std::vector<notes::PendingNote>& out) {
     std::lock_guard<std::mutex> g(mu_);

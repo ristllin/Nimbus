@@ -108,6 +108,9 @@ const ActionRuleRow kRows[] = {
     {"list_files", R::Open, "list files"},
     {"delete_file", R::Open, "delete a file"},
     {"web_search", R::TurnOnly, "search the web"},
+    // E2-SRCH: search and view read the turn's own conversation only (plain/history.h decides which).
+    {"search", R::TurnOnly, "search this conversation"},
+    {"view", R::TurnOnly, "open a stored item"},
 #endif
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},

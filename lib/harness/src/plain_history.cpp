@@ -11,6 +11,7 @@
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/request.h"   // toolDecl, declSchema
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/action_rules.h"     // actionRefusal - the tools' rows
 #include "nimbus/orch/loops.h"              // daysFromCivil
 #include "nimbus/orch/tx/old_engine.h"      // rowIdNumber, rowIdString
 #include "nimbus/orch/tx/rules.h"           // photoWhen
@@ -158,11 +159,16 @@ std::string page(const std::string& head, const std::string& body, size_t offset
   return s;
 }
 
-// The members' rule: a person who is not the owner reads only the chat their namespace names.
-bool turnMayRead(const TurnCtx& t) {
-  if (!t.who || !tx::chatKeyOk(t.chatKey)) return false;
-  if (t.who->owner) return true;
-  return t.who->ns == "chat:" + t.chatId;
+// Who may read the turn's conversation: the action rules' row for the tool (an approved caller, never
+// the LAN), and a person who is not the owner reads only the chat their namespace names. "" when the
+// turn may read, else the one line that says why not.
+std::string refusalFor(const std::string& tool, const TurnCtx& t) {
+  if (!t.who || !tx::chatKeyOk(t.chatKey)) return R::kNotInTurn;
+  const bool unattended = t.trigger != Trigger::Owner && t.trigger != Trigger::Console;
+  const std::string why = nimbus::orch::actionRefusal(tool, nimbus::orch::actionCaller(*t.who, unattended, t.chatId));
+  if (!why.empty()) return why;
+  if (t.who->owner || t.who->ns == "chat:" + t.chatId) return std::string();
+  return R::kNotInTurn;
 }
 
 }  // namespace
@@ -177,14 +183,12 @@ std::string viewedPhoto(const std::string& toolName, const std::string& text) {
 }
 
 void HistoryTools::registerInto(nimbus::orch::ToolRegistry& reg) const {
-  for (const char* name : {kSearch, kView}) {
-    const auto* decl = toolDecl(name);
-    if (!decl) continue;
-    reg.add(
-        name, decl->description,
-        [](JsonObjectConst, const nimbus::orch::Principal&) { return nimbus::orch::ToolResult::fail(R::kNotInTurn); },
-        declSchema(*decl, false));
-  }
+  // Reached only through answer(): any other route (the LAN, a direct dispatch) has no turn.
+  const auto refuse = [](JsonObjectConst, const nimbus::orch::Principal&) {
+    return nimbus::orch::ToolResult::fail(R::kNotInTurn);
+  };
+  if (const auto* d = toolDecl(kSearch)) reg.add("search", d->description, refuse, declSchema(*d, false));
+  if (const auto* d = toolDecl(kView)) reg.add("view", d->description, refuse, declSchema(*d, false));
 }
 
 bool HistoryTools::answer(const ToolCall& call, const TurnCtx& turn, ToolOutput& out) {
@@ -193,7 +197,8 @@ bool HistoryTools::answer(const ToolCall& call, const TurnCtx& turn, ToolOutput&
   ArduinoJson::JsonDocument args;
   (void)deserializeJson(args, call.argsJson, ArduinoJson::DeserializationOption::NestingLimit(8));
   const JsonObjectConst a = args.as<JsonObjectConst>();
-  if (!d_.files || !turnMayRead(turn)) out = fail(R::kNotInTurn);
+  const std::string why = d_.files ? refusalFor(call.name, turn) : std::string(R::kNotInTurn);
+  if (!why.empty()) out = fail(why);
   else out = call.name == kSearch ? search(call, turn, a) : view(call, turn, a);
   out.id = call.id;
   out.name = call.name;

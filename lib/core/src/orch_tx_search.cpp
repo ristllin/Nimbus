@@ -264,6 +264,7 @@ struct Cursor {
   uint32_t seg = 0;
   uint64_t off = 0;
   std::string token;
+  size_t skip = 0;   // rows of the old page at `token` already considered
 };
 bool parseCursor(const std::string& c, Cursor& out) {
   out = Cursor{};
@@ -271,6 +272,13 @@ bool parseCursor(const std::string& c, Cursor& out) {
   if (c[0] == 'o') {
     out.old = true;
     out.token = c.substr(1);
+    const size_t tilde = out.token.find('~');
+    if (tilde != std::string::npos) {
+      uint64_t k = 0;
+      if (!parseU64(out.token, tilde + 1, out.token.size(), k) || k == 0 || k > 4096) return false;
+      out.skip = size_t(k);
+      out.token.resize(tilde);
+    }
     if (out.token.size() > 32) return false;
     for (char ch : out.token)
       if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == 'm' || ch == ':')) return false;
@@ -457,16 +465,24 @@ bool oldConversation(const DayRow& r) {
   return !r.ours && (r.role == RowRole::Owner || r.role == RowRole::Assistant);
 }
 
-// The earlier engine's rows, from `token` (the store's cursor: rows strictly older).
+// "<store cursor>~<k>": the page at that cursor with its first k rows already considered. The store
+// answers the same page for the same cursor, so a stop inside a page loses no row and repeats none,
+// whatever order the store keeps inside it.
+std::string oldCursor(const std::string& token, size_t skip) {
+  return "o" + token + (skip ? "~" + std::to_string(skip) : std::string());
+}
+
+// The earlier engine's rows, from `token` (the store's cursor: rows strictly older), the first
+// `skip` rows of its page already considered.
 Status searchOld(const SearchDeps& d, const SearchAsk& a, const std::vector<std::string>& words, std::string token,
-                 SearchOutcome& out) {
+                 size_t skip, SearchOutcome& out) {
   out.oldRead = true;
   Budget budget{d, out.card};
   OldPage page;
   while (true) {
     if (out.hits.size() >= d.limits.maxHits || budget.over()) {
       out.more = true;
-      out.next = "o" + token;
+      out.next = oldCursor(token, skip);
       return Status::success();
     }
     OldPageAsk ask;
@@ -476,16 +492,16 @@ Status searchOld(const SearchDeps& d, const SearchAsk& a, const std::vector<std:
     page = OldPage{};
     const Status st = d.old->page(ask, page, out.card);
     if (!st.ok()) {
-      out.next = "o" + token;
+      out.next = oldCursor(token, skip);
       return st;
     }
-    for (DayRow& r : page.rows) {
-      if (out.hits.size() >= d.limits.maxHits) {   // the rows below the last one considered stay
+    for (size_t i = skip; i < page.rows.size(); ++i) {
+      if (out.hits.size() >= d.limits.maxHits) {   // the rest of this page stays for the next call
         out.more = true;
-        out.next = "o" + token;
+        out.next = oldCursor(token, i);
         return Status::success();
       }
-      token = rowIdString(r.id);
+      DayRow& r = page.rows[i];
       if (r.t && (!out.oldestT || r.t < out.oldestT)) out.oldestT = r.t;
       if (!oldConversation(r) || !inRange(r.t, a) || !matchesAll(r.text, words)) continue;
       SearchHit hit;
@@ -495,6 +511,7 @@ Status searchOld(const SearchDeps& d, const SearchAsk& a, const std::vector<std:
       hit.text = std::move(r.text);
       out.hits.push_back(std::move(hit));
     }
+    skip = 0;
     if (!page.older) return Status::success();
     if (page.next.empty() || page.next == ask.before) return Status::fail(Err::Io, "tx::search.old-cursor");
     token = page.next;
@@ -557,7 +574,7 @@ Status search(const SearchDeps& d, const SearchAsk& a, SearchOutcome& out) {
       c.token = floor ? rowIdString(floor) : std::string();
     }
     if (!d.old) return Status::success();   // an old cursor with no old rows: nothing below
-    return searchOld(d, a, words, c.token, out);
+    return searchOld(d, a, words, c.token, c.skip, out);
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "tx::search.memory");
   }

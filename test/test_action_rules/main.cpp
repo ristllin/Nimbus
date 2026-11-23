@@ -191,6 +191,8 @@ const Expect kExpect[] = {
     {"list_files", kOpen},
     {"delete_file", kOpen},
     {"web_search", kTurn},
+    {"search", kTurn},   // E2-SRCH: the turn's own conversation
+    {"view", kTurn},
     // docs, routines, replies, skills, people
     {"docs.list", kOpen},
     {"docs.read", kOpen},
@@ -276,7 +278,7 @@ void walk(const std::string& dir, std::vector<std::string>& out) {
 // Tools registered under an undotted name: calc (RB-REC8, always on on both engines) and every
 // engine-2 snake_case name (read_file, web_search, ...: words joined by '_'; RB-N2b, E2-TOOLS), so a new
 // engine-2 tool with no row fails here too.
-const std::set<std::string> kUndottedTools = {"calc"};
+const std::set<std::string> kUndottedTools = {"calc", "search", "view"};   // E2-SRCH: one-word engine-2 names
 
 bool snakeName(const std::string& s) {
   if (s.empty() || s.front() == '_' || s.back() == '_' || s.find('_') == std::string::npos) return false;

@@ -15,6 +15,8 @@
 //       cannot run is one plain line to the owner and no request;
 //   (g) delete_file (lane E2-VERB): the tools index names it behind more, a call through more
 //       removes the bytes and the index entry of the one shared store, and engine 1 no longer sees it.
+//   (h) search and view (lane E2-SRCH) are bound: the request offers both; search finds an earlier
+//       turn of the owner chat by its words and names its id; view of that id brings its text whole.
 #include <sys/stat.h>
 
 #include <string>
@@ -287,6 +289,38 @@ void caseDelete(ndtest::Ctx& c) {
   ndtest::rmTree(dir);
 }
 
+void caseHistory(ndtest::Ctx& c) {
+  std::printf("  (h) search and view on the owner chat\n");
+  const std::string dir = ndtest::scratchDir("e2history");
+  Host h(dir);
+  h.model.push(sp::say("Noted."));
+  h.model.push(sp::call("search", R"({"query":"allotment tap"})"));
+  h.model.push(sp::say("Found it."));
+  c.eq(h.start(), "", "the host starts");
+  (void)h.host->say("owner", "The allotment plot is 47B and the tap code is 2580.", "web");
+  (void)h.host->say("owner", "What was the allotment tap code?", "web");
+  const std::string& first = h.model.requests()[1].body;
+  c.ok(first.find("\"name\":\"search\"") != std::string::npos && first.find("\"name\":\"view\"") != std::string::npos,
+       "the request offers search and view");
+  const std::string& found = h.model.last().body;
+  const size_t at = found.find("person: The allotment plot is 47B");
+  c.ok(at != std::string::npos, "search finds the earlier turn by its words");
+  const size_t idAt = found.rfind("\"content\":\"r", at);
+  std::string id;
+  for (size_t i = idAt + 11; idAt != std::string::npos && i < found.size() && (found[i] == 'r' || isdigit((unsigned char)found[i])); ++i)
+    id += found[i];
+  c.ok(id.size() > 1, "...and names its id: " + id);
+  h.model.push(sp::call("view", "{\"id\":\"" + id + "\"}"));
+  h.model.push(sp::say("47B, 2580."));
+  (void)h.host->say("owner", "Open it.", "web");
+  c.ok(h.model.last().body.find(id + " ") != std::string::npos &&
+           h.model.last().body.find("The allotment plot is 47B and the tap code is 2580.") != std::string::npos,
+       "view brings the stored text back whole");
+  std::string why;
+  c.ok(h.model.verify(why), "every scripted step was asked for: " + why);
+  ndtest::rmTree(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -300,6 +334,7 @@ int main() {
   caseCompactCommand(c);
   caseCompactionSpend(c);
   caseDelete(c);
+  caseHistory(c);
   std::printf("\n%d checks, %d failures\n", c.checks, c.failures);
   return c.failures ? 1 : 0;
 }

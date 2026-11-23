@@ -378,8 +378,11 @@ static void test_D1_nothing_from_another_person_or_a_cleared_conversation() {
   std::vector<Case> cases;
   cases.push_back({"owner in 1001", "1001", "1001", orch::principalForRole("1001", orch::Role::Admin), {"alpha", "delta"}});
   cases.push_back({"owner after /clear", "1001_c1", "1001", orch::principalForRole("1001", orch::Role::Admin), {"charlie"}});
+  // A chat not approved yet (Unknown) reads nothing, not even its own (the rules' TurnOnly row).
+  cases.push_back({"unapproved in its chat", "2002", "2002", orch::principalForRole("2002", orch::Role::Unknown), {}});
   for (orch::Role role : {orch::Role::Unknown, orch::Role::Guest, orch::Role::User}) {
-    cases.push_back({"member in its chat", "2002", "2002", orch::principalForRole("2002", role), {"bravo"}});
+    if (role != orch::Role::Unknown)
+      cases.push_back({"member in its chat", "2002", "2002", orch::principalForRole("2002", role), {"bravo"}});
     cases.push_back({"member naming the owner's chat", "1001", "1001", orch::principalForRole("2002", role), {}});
     cases.push_back({"member's key on another chat", "2002", "1001", orch::principalForRole("2002", role), {}});
   }

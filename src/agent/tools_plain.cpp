@@ -7,6 +7,7 @@
 #include "engine_tools.h"
 #include "adapters/tavily.h"                // tavily::available, tavily::search - the old engine's search
 #include "file_tools_device.h"              // lanes RB-N2b, E2-TOOLS: the plain file tools
+#include "history_tools_device.h"           // lane E2-SRCH: search and view
 #include "nimbus/harness/plain/request.h"   // toolDecl, declSchema
 #include "nimbus/harness/plain/texts.h"     // tool_results::kWebSearchNoKey
 #include "nimbus/harness/providers.h"       // hostedWebSearch(Available) - the provider's own search
@@ -114,6 +115,7 @@ void registerMemoryFamilies(nimbus::orch::ToolRegistry& reg, const nimbus::orch:
   filetoolsdev::registerFileTools(reg);
   nimbus::orch::registerCalcTool(reg);
   registerWebSearch(reg);
+  historydev::registerHistory(reg);   // E2-SRCH: answered through the turn (ChatBindingDeps::turnTool)
   nimbus::orch::registerMore(reg);
 }
 

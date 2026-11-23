@@ -66,3 +66,6 @@ src/agent/skills_device.cpp
 
 # E2-MIG: the earlier engine's conversation and standing rules, read at engine-2 start.
 src/agent/migrate_device.cpp
+
+# E2-SRCH: the device binding of search and view.
+src/agent/history_tools_device.cpp

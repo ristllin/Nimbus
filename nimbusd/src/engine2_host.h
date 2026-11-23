@@ -14,6 +14,7 @@
 #include "nimbus/harness/plain/compact.h"
 #include "nimbus/harness/plain/exchange.h"   // providerSlugOf
 #include "nimbus/harness/plain/guards.h"
+#include "nimbus/harness/plain/history.h"   // search and view (lane E2-SRCH)
 #include "nimbus/harness/plain/schedule_binding.h"   // heldFileOn, heldPathFor, drainHeld (lane E2-SCHED)
 #include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/model_catalog.h"
@@ -83,7 +84,7 @@ class Engine2Host {
       : o_(std::move(o)), platform_(makePosixPlatform(&mem_)), txFiles_(o_.dataDir), notes_(o_.dataDir + "/mem"),
         fileTools_(*o_.files, HostedFileTools::Deps{o_.utcOffsetMin, nullptr}),
         routineFiles_(o_.dataDir, nimbus::orch::schedule::kStateDir),
-        held_(plain::heldFileOn(routineFiles_, plain::heldPathFor(o_.chatId))) {}
+        held_(plain::heldFileOn(routineFiles_, plain::heldPathFor(o_.chatId))), history_(historyDeps()) {}
   Engine2Host(const Engine2Host&) = delete;
   Engine2Host& operator=(const Engine2Host&) = delete;
 
@@ -117,7 +118,12 @@ class Engine2Host {
       if (o_.deliver) o_.deliver(curChat_.empty() ? o_.chatId : curChat_, text);
       return true;
     };
-    b.dispatch = o_.loops ? o_.loops->scheduleDispatch(notes_.dispatch()) : notes_.dispatch();
+    // Lane E2-SRCH: search and view read the turn's own conversation (no earlier-engine rows here).
+    plain::ToolDispatchFn inner = o_.loops ? o_.loops->scheduleDispatch(notes_.dispatch()) : notes_.dispatch();
+    b.dispatch = [this, inner](const plain::ToolCall& c, const plain::TurnCtx& t) {
+      plain::ToolOutput out;
+      return history_.answer(c, t, out) ? out : inner(c, t);
+    };
     b.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& s) { setupTurn(t, s); };
     b.recentFiles = fileTools_.recentFilesFor(nimbus::orch::principalForRole(o_.chatId, nimbus::orch::Role::Admin));
     b.beforeBoot = [this, model] { return bindCompaction(model); };
@@ -125,6 +131,7 @@ class Engine2Host {
     notes_.attach(rig_->registry());
     nimbus::orch::registerCalcTool(rig_->registry());
     fileTools_.attach(rig_->registry());
+    history_.registerInto(rig_->registry());
     if (o_.loops) {
       o_.loops->attachSchedule(rig_->registry());
       o_.loops->setStateFiles(&routineFiles_);
@@ -244,6 +251,17 @@ class Engine2Host {
 
  private:
   agent::HttpTransport* transport() { return o_.transport ? o_.transport : &http_; }
+  // Lane E2-SRCH: the transcripts and the owner's unpinned notes; no earlier-engine rows, no photos.
+  plain::HistoryDeps historyDeps() {
+    plain::HistoryDeps d;
+    d.files = &txFiles_;
+    d.notes = [this](const nimbus::orch::Principal& who, std::vector<nimbus::orch::notes::Note>& out) {
+      return notes_.unpinned(who, out);
+    };
+    d.tzAt = [this](uint64_t t) { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(uint32_t(t)) : 0); };
+    d.nowMs = [] { return uint32_t(vclock::steadyMs()); };
+    return d;
+  }
   int16_t tzNow() const { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); }
   // The instance keeps no quiet-hours end of its own: the default end (09:00), as plain::QuietHours.
   plain::QuietHours quiet() const { return plain::QuietHours{}; }
@@ -336,6 +354,7 @@ class Engine2Host {
   HostedFileTools fileTools_;
   PosixTxFiles routineFiles_;   // <data>/mem/routines: routine state files and the outbox (lane E2-SCHED)
   plain::HeldStore held_;
+  plain::HistoryTools history_;   // after txFiles_ and notes_, which it reads
   std::unique_ptr<plain::CompactDriver> driver_;
   std::unique_ptr<PlainRig> rig_;
   std::string curChat_;
