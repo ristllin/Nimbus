@@ -106,6 +106,9 @@ std::string prefKey(const std::string& text);
 uint32_t filtersForRule(const std::string& text);
 // "p3" / "P3" / "3" -> 3; 0 when it is not an id.
 uint32_t parsePrefId(const std::string& s);
+// Lane E2-FIX5 (finding L3): one rule line of the file as the parser reads it, false when the line is
+// not a well-formed rule (the file's shape; OwnerPrefs::parse also drops a repeated id or key).
+bool parsePrefRuleLine(const std::string& line, PrefEntry& e);
 
 // Lane CTX: what a text reads as when it is a dated one-off fact rather than a
 // rule - a calendar date or a day word beside a reported event (today, yesterday,

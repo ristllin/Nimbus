@@ -981,6 +981,74 @@ static void test_a_rules_file_not_read_whole_removes_no_rule_note() {
   TEST_ASSERT_EQUAL(1u, o.removed);
 }
 
+// Lane E2-FIX5, finding L3: "whole" is decided by the shape of the lines, not by how many the parser
+// kept. Before: an active rule and a retired (or moved) rule with the same wording read as "not whole"
+// (the parser keeps one key once), so no rule change made on the earlier engine was carried over.
+// Over the class: every mix of one to three lines in states A, E, M with equal or different wording
+// reads as whole, and the active rules read are exactly the active lines (first of a key wins).
+static void test_every_mix_of_active_and_retired_rules_reads_whole() {
+  const char* const states[] = {"A", "E", "M"};
+  const char* const texts[] = {"Answer in short sentences.", "answer in  SHORT sentences.", "Use metric units."};
+  size_t mixes = 0;
+  for (int n = 1; n <= 3; ++n) {
+    int combos = 1;
+    for (int i = 0; i < n; ++i) combos *= 9;
+    for (int c = 0; c < combos; ++c) {
+      std::string file = "#nimbus-prefs v1 seeded=1 listed=0 next=9\n";
+      std::vector<std::pair<uint32_t, std::string>> want;
+      int v = c;
+      for (int i = 0; i < n; ++i, v /= 9) {
+        const char* st = states[v % 9 / 3];
+        const std::string t = texts[v % 3];
+        file += "p" + std::to_string(i + 1) + "\t" + st + "\t1000\tchat\t-\t" + t + "\n";
+        bool dup = false;
+        for (const auto& w : want) dup = dup || orch::prefKey(w.second) == orch::prefKey(t);
+        if (std::string(st) == "A" && !dup) want.emplace_back((uint32_t)(i + 1), orch::sanitizePrefText(t));
+      }
+      const tx::RulesRead read = tx::oldRulesFrom(file, file.size());
+      TEST_ASSERT_TRUE_MESSAGE(read.whole, file.c_str());
+      TEST_ASSERT_EQUAL_MESSAGE(want.size(), read.rules.size(), file.c_str());
+      for (size_t i = 0; i < want.size(); ++i) {
+        TEST_ASSERT_EQUAL(want[i].first, read.rules[i].id);
+        TEST_ASSERT_TRUE(want[i].second == read.rules[i].text);
+      }
+      ++mixes;
+    }
+  }
+  TEST_ASSERT_EQUAL(9u + 81u + 729u, mixes);
+  // A truly damaged line is still not whole (ruling 116: cannot read is never absent).
+  const std::string ok = "#nimbus-prefs v1 seeded=1 listed=0 next=9\np1\tA\t1000\tchat\t-\tUse metric units.\n";
+  for (const char* bad : {"p2\tX\t1000\tchat\t-\tx\n", "p2\tA\t1000\tchat\n", "garbage\n", "p0\tA\t1\tchat\t-\tx\n",
+                          "p2\tA\t1000\tchat\t-\t\n"}) {
+    const std::string f = ok + bad;
+    TEST_ASSERT_FALSE_MESSAGE(tx::oldRulesFrom(f, f.size()).whole, bad);
+  }
+}
+
+// The finding's own scenario: active rule A edited (on the earlier engine) to the wording of retired
+// rule B, and rule C removed in the same stay. Both changes are carried over.
+static void test_an_active_rule_worded_as_a_retired_one_still_carries_the_changes() {
+  const std::string head = "#nimbus-prefs v1 seeded=1 listed=0 next=9\n";
+  const std::string before = head + "p1\tA\t1000\tchat\t-\tAnswer briefly.\n" +
+                             "p2\tE\t900\tchat\t-\tUse metric units.\n" + "p3\tA\t1000\tchat\t-\tGreet me by name.\n";
+  Device dev;
+  const orch::Principal owner = orch::principalForRole("owner", orch::Role::Admin);
+  std::string marker, next;
+  tx::RulesImportOutcome o;
+  tx::importRules(tx::oldRulesFrom(before, before.size()), marker, dev.notebook, owner, marker, o);
+  TEST_ASSERT_EQUAL(2u, o.added);
+  // Retired B's line comes first here, so a parse that keeps one key once would keep B and drop A.
+  const std::string after = head + "p2\tE\t900\tchat\t-\tUse metric units.\n" + "p1\tA\t1000\tchat\t-\tuse metric units.\n";
+  const tx::RulesRead read = tx::oldRulesFrom(after, after.size());
+  TEST_ASSERT_TRUE(read.whole);
+  tx::importRules(read, marker, dev.notebook, owner, next, o);
+  TEST_ASSERT_EQUAL(1u, o.updated);
+  TEST_ASSERT_EQUAL(1u, o.removed);
+  const std::string block = dev.notebook.pinnedBlock(owner);
+  TEST_ASSERT_TRUE(block.find("use metric units.") != std::string::npos);
+  TEST_ASSERT_TRUE(block.find("Greet me by name.") == std::string::npos);
+}
+
 static void test_the_updater_leaves_an_engine_two_image_on_its_version() {
   TEST_ASSERT_EQUAL_STRING("v5.9.0", NIMBUS_FW_VERSION);
   TEST_ASSERT_EQUAL_STRING(NIMBUS_FW_VERSION_ENGINE2, NIMBUS_FW_VERSION);
@@ -1020,6 +1088,8 @@ int main(int, char**) {
   RUN_TEST(test_an_edit_on_engine_two_is_kept_and_an_untouched_rule_follows_the_earlier_engine);
   RUN_TEST(test_a_rule_removed_on_the_earlier_engine_leaves_unless_edited_on_engine_two);
   RUN_TEST(test_a_rules_file_not_read_whole_removes_no_rule_note);
+  RUN_TEST(test_every_mix_of_active_and_retired_rules_reads_whole);
+  RUN_TEST(test_an_active_rule_worded_as_a_retired_one_still_carries_the_changes);
   RUN_TEST(test_the_updater_leaves_an_engine_two_image_on_its_version);
   return UNITY_END();
 }

@@ -379,20 +379,27 @@ bool restoreFoldRecordFrom(const std::string& blob, size_t fileSize, const std::
 }
 
 RulesRead oldRulesFrom(const std::string& blob, size_t fileSize) {
+  // Lane E2-FIX5 (L3): whole is the file's shape: every line that is not empty and not a '#' line is a
+  // well-formed rule. The active rules are parsed alone, so a retired or moved rule of the same wording
+  // (the parser keeps one key once) never hides an active one.
   RulesRead r;
-  OwnerPrefs p;
-  const size_t kept = p.parse(blob);
-  for (const PrefEntry& e : p.entries())
-    if (!e.pending && !e.moved && !e.evicted) r.rules.push_back(OldRule{e.id, e.text});
-  size_t lines = 0;   // every line that is not empty and not the header is a rule the parser must keep
+  std::string active;
+  bool shaped = true;
   for (size_t pos = 0; pos < blob.size();) {
     size_t nl = blob.find('\n', pos);
     if (nl == std::string::npos) nl = blob.size();
-    const size_t len = nl > pos && blob[nl - 1] == '\r' ? nl - pos - 1 : nl - pos;
-    if (len && blob[pos] != '#') ++lines;
+    std::string line = blob.substr(pos, nl - pos);
     pos = nl + 1;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty() || line[0] == '#') continue;
+    PrefEntry e;
+    if (!parsePrefRuleLine(line, e)) shaped = false;
+    else if (!e.pending && !e.moved && !e.evicted) active += line + "\n";
   }
-  r.whole = blob.size() == fileSize && fileSize <= kPrefsFileMax && kept == lines;
+  OwnerPrefs p;
+  p.parse(active);
+  for (const PrefEntry& e : p.entries()) r.rules.push_back(OldRule{e.id, e.text});
+  r.whole = shaped && blob.size() == fileSize && fileSize <= kPrefsFileMax;
   return r;
 }
 

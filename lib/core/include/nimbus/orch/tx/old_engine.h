@@ -131,7 +131,8 @@ void importRules(const std::vector<OldRule>& rules, const std::string& marker, n
 
 // Lane E2-FIX3 (finding R5, ruling 116 item 2): the earlier engine's active rules as read from its
 // file (/data/prefs.txt, the store's own parser), and whether the read is whole: the blob is the
-// file's full length, within the store's cap, and every rule line in it parsed.
+// file's full length, within the store's cap, and every rule line in it is well formed (E2-FIX5: the
+// lines' shape, not how many the parser kept; an active rule is never hidden by a retired one).
 struct RulesRead {
   std::vector<OldRule> rules;
   bool whole = false;
