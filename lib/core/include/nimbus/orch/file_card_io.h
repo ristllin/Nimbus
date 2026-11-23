@@ -29,14 +29,19 @@
 // (CardFilesHost::busy, the old engine's gate; S4).
 //
 // The journal (ruling 112; lane E2-FSAFE, findings S6 and S8): every change notes itself in
-// layout.toolsNote (the op, the person, project, name, the size before, an append's length) in its
-// commit hold before its first byte; the note leaves in the index-rewrite hold once the index has
-// landed. recoverNote() at boot, after the old engine's swap recovery and the index load, acts
-// only on what a note names: a new file in place is adopted under the noted person, a replace or
-// an edit gets the size on the card and an unknown hash, an append whose call never returned is
-// cut back to the noted size when the extra bytes fit its own length, a delete drops the entry of
-// a file that is gone. So a power cut at any point leaves the old file or the new one with the
-// index agreeing. Paths are <root>/<project>/<name>.
+// layout.toolsNote (the op, the person, project, name, the size before, an append's length or a
+// write's size) in its commit hold before its first byte; the note leaves in the index-rewrite hold
+// once the index has landed. recoverNote() at boot, after the old engine's swap recovery and the
+// index load, only brings the INDEX to what the card holds for the noted file (ruling 115 item 1,
+// lane E2-FIX2A): it never cuts a file back, removes one or re-assigns one. An entry whose file is
+// gone is dropped; an entry whose size or hash differs takes the card's size and an unknown hash; a
+// file the note says was new, in place with no entry, is adopted under the person the note names
+// (never the device owner by default; when the note names nobody readable, or the size does not fit
+// the note, the file stays unindexed and untouched); an append the power cut mid-row gets one line
+// end so the next row starts cleanly. A partly written row stays on the card. A note whose index
+// already agrees is simply cleared. Clearing is remove, else overwrite with kToolsNoteCleared, else
+// cut to empty; the reader ignores both, so a note the card would not remove causes no later action.
+// Paths are <root>/<project>/<name>.
 namespace nimbus::orch {
 
 // The card calls the tools need beyond the swap's. Paths are absolute on the card.
@@ -50,10 +55,13 @@ class FileCard : public SwapFs {
   virtual bool write(const std::string& path, std::string_view bytes, bool first) = 0;
   // Make the directory (one level under the root); true when it exists after.
   virtual bool mkdir(const std::string& dir) = 0;
-  // Cut the file to `size` bytes (only ever back to a size this hold measured before its own
-  // write); true when it is that size after.
+  // Cut the file to `size` bytes (only ever a short append's own bytes, back to the size this hold
+  // measured before its write, or the tools' own note to empty); true when it is that size after.
   virtual bool truncate(const std::string& path, uint64_t size) = 0;
 };
+
+// What a cleared journal note holds when the card would not remove it: never read as a change.
+inline constexpr char kToolsNoteCleared[] = "done\n";
 
 struct CardFilesLayout {
   std::string root;        // "/mem/files"
@@ -110,14 +118,17 @@ class CardFilesIo : public FileToolsIo {
   // The journal: drop the note (false: the card kept it; the next change settles it first), a
   // note of a change that did not happen, an earlier note settled by an index rewrite that lands.
   bool dropNote();
+  bool clearNote();   // removed, else the marker, else empty; false when the card refused all three
   void unnote();
   bool settle();
   // A short append's own bytes undone in its hold; what stayed when the card refused (0: undone).
   uint64_t undoShort(const std::string& path, long long before, size_t got);
-  // recoverNote's two steps: an unfinished append cut back (what it did, "" = nothing), then the
-  // index entry brought to the card as the note says (true: the index changed).
-  std::string cutUnfinishedAppend(const Change& c, const std::string& path);
-  bool entryAsNoted(const Change& c, const std::string& path, std::string& did);
+  // recoverNote's steps (ruling 115 item 1): a torn append's line end (what it did, "" = nothing),
+  // then the index entry brought to the card (true: the index changed). Nothing is cut or removed.
+  std::string endTornAppend(const Change& c, const std::string& path);
+  bool indexAsCard(const Change& c, const std::string& path, std::string& did);
+  bool adoptNoted(const Change& c, long long size, const std::string& path, std::string& did);
+  bool hashOnCard(const std::string& path, uint64_t size, uint64_t& hash);
 
   FileCard& card_;
   FileStore& store_;

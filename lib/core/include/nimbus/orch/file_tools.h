@@ -98,7 +98,7 @@ class FileToolsIo {
     std::string person;       // the caller's namespace (a new file's owner)
     std::string project, name;
     int64_t before = -1;      // the stored size before the change; -1: a new file
-    uint64_t bytes = 0;       // an append's length
+    uint64_t bytes = 0;       // an append's length; a write's or an edit's new size
   };
   virtual bool journal(const Change& c) {
     (void)c;

@@ -2442,6 +2442,14 @@ class SdFileCard : public nimbus::orch::FileCard {
     landed = 0;
     File f = memory::dataFs().open(p.c_str(), FILE_APPEND);
     if (!f) return false;
+#ifdef NIMBUS_TEST
+    if (testCutArmed(TestCut::Append)) {   // CUTARM append: only the first `at` bytes reach the card (E2-FIX2A)
+      const size_t k = std::min<size_t>(g_cutAt, bytes.size());
+      f.write(reinterpret_cast<const uint8_t*>(bytes.data()), k);
+      f.close();
+      testCutNow("append", uint32_t(k));
+    }
+#endif
     landed = bytes.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
     f.close();
     return true;
@@ -2458,7 +2466,8 @@ class SdFileCard : public nimbus::orch::FileCard {
     return fs.exists(d.c_str()) || fs.mkdir(d.c_str());
   }
   // POSIX truncate on the card's VFS path (FATFS f_truncate): only ever back to a size measured in
-  // the same hold before this call's own write (a short append undone), or a journal note's size.
+  // the same hold before this call's own write (a short append undone), or the tools' own note to
+  // empty when the card would neither remove nor overwrite it (the boot never cuts a file; ruling 115).
   bool truncate(const std::string& p, uint64_t size) override {
     const char* mp = memory::dataFs().mountpoint();
     if (!mp) return false;

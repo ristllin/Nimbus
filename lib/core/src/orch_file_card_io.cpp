@@ -102,9 +102,17 @@ bool CardFilesIo::persistIndex() {
 
 bool CardFilesIo::dropNote() {
   noted_ = false;
-  const bool gone = card_.remove(layout_.toolsNote) || !card_.exists(layout_.toolsNote);
+  const bool gone = clearNote();
   notePending_ = !gone;
   return gone;
+}
+
+// The note off the card, or made unreadable as a change: removed, else overwritten by the marker,
+// else cut to empty (ruling 115 item 2). False only when the card refused all three.
+bool CardFilesIo::clearNote() {
+  const std::string& note = layout_.toolsNote;
+  if (card_.remove(note) || !card_.exists(note)) return true;
+  return card_.writeText(note, kToolsNoteCleared) || card_.truncate(note, 0);
 }
 
 void CardFilesIo::unnote() {
@@ -120,7 +128,7 @@ bool CardFilesIo::journal(const Change& c) {
   text += "\n" + c.person + "\n" + c.project + "\n" + c.name + "\n" + std::to_string(c.before) + "\n" +
           std::to_string(c.bytes) + "\n";
   if (!card_.writeText(layout_.toolsNote, text)) {
-    card_.remove(layout_.toolsNote);
+    notePending_ = !clearNote();   // a part of a note never parses as a change; a kept one is settled first
     return false;
   }
   noted_ = true;
@@ -166,6 +174,16 @@ namespace {
 
 constexpr long long kMaxEntryBytes = static_cast<long long>(UINT32_MAX);
 
+// A Principal namespace an index owner field can hold: 1..64 printable ASCII, no '|' (the field's
+// "|shared" grant). Empty is the legacy owner, which a note never names on its own.
+bool readablePerson(const std::string& ns) {
+  if (ns.empty() || ns.size() > 64) return false;
+  for (const char ch : ns) {
+    if (ch < 0x21 || ch > 0x7e || ch == '|') return false;
+  }
+  return true;
+}
+
 // A journal note's six lines: op, person, project, name, size before, an append's length.
 bool parseNote(const std::string& text, FileToolsIo::Change& c) {
   std::vector<std::string> f;
@@ -190,65 +208,98 @@ bool parseNote(const std::string& text, FileToolsIo::Change& c) {
 
 }  // namespace
 
-std::string CardFilesIo::cutUnfinishedAppend(const Change& c, const std::string& path) {
-  const long long size = card_.size(path);
-  if (c.op != 'a' || size < 0) return std::string();
-  if (c.before < 0) {   // the file the append created
-    if (uint64_t(size) <= c.bytes && card_.remove(path)) return "removed the new file of an unfinished append " + path;
-    return std::string();
+// The FNV-1a 64 of the file on the card, read in 4 KB steps (false: a read fault).
+bool CardFilesIo::hashOnCard(const std::string& path, uint64_t size, uint64_t& hash) {
+  hash = kFnvBasis;
+  std::string part;
+  for (uint64_t at = 0; at < size; at += part.size()) {
+    if (!card_.readAt(path, at, 4096, part) || part.empty()) return false;
+    hash = fnvContinue(hash, part);
   }
-  const bool own = size > c.before && uint64_t(size - c.before) <= c.bytes;   // only the call's own bytes
-  if (own && card_.truncate(path, uint64_t(c.before))) return "cut an unfinished append back in " + path;
-  return std::string();
+  return true;
 }
 
-bool CardFilesIo::entryAsNoted(const Change& c, const std::string& path, std::string& did) {
-  const long long now = card_.size(path);
+// An append the power cut mid-write: its part of a row stays, and one line end lets the next row start
+// cleanly. Only while the note still describes the card: the index at the noted size (none for a new
+// file) and the card strictly inside the call's own length.
+std::string CardFilesIo::endTornAppend(const Change& c, const std::string& path) {
+  if (c.op != 'a') return std::string();
+  const long long size = card_.size(path);
+  const long long base = c.before < 0 ? 0 : c.before;
   const FileEntry* e = store_.find(c.project, c.name);
-  std::string err;
-  if (now < 0) {   // gone: deleted, or a new file never in place
-    const bool drop = e && (c.op == 'd' || c.op == 'a' || c.before < 0);
-    return drop && store_.remove(c.project, c.name);
-  }
-  if (now > kMaxEntryBytes) return false;
-  if (e && (c.op == 'w' || e->bytes != uint64_t(now))) {
-    FileEntry next = *e;   // the bytes on the card, whichever copy the swap recovery kept: hash unknown
-    next.bytes = uint32_t(now);
-    next.hash = 0;
-    next.providerTag.clear();
-    next.providerFileId.clear();
-    return store_.add(next, err);
-  }
-  if (e || c.op != 'w' || c.before >= 0) return false;
-  FileEntry next;   // a new file in place: its writer's, as the note names
+  const bool indexAsNoted = c.before < 0 ? e == nullptr : (e && e->bytes == uint64_t(c.before));
+  if (!indexAsNoted || size <= base || uint64_t(size - base) >= c.bytes) return std::string();
+  std::string last;
+  if (!card_.readAt(path, uint64_t(size - 1), 1, last) || last.empty() || last[0] == '\n') return std::string();
+  size_t landed = 0;
+  if (!card_.append(path, "\n", landed) || landed != 1) return std::string();
+  return "ended a torn append with a line end in " + path;
+}
+
+// A file the note says was new, in place with no entry: adopted under the person the note names, never
+// the device owner by default, and only when its size fits the note.
+bool CardFilesIo::adoptNoted(const Change& c, long long size, const std::string& path, std::string& did) {
+  const bool fits = c.op == 'w' ? uint64_t(size) == c.bytes : (c.op == 'a' && uint64_t(size) <= c.bytes);
+  if (c.before >= 0 || !fits || !readablePerson(c.person)) return false;   // unindexed and untouched
+  FileEntry next;
   next.project = c.project;
   next.name = c.name;
   next.owner = c.person;
-  next.bytes = uint32_t(now);
+  next.bytes = uint32_t(size);
   next.kind = fileKindForName(c.name);
   next.createdAt = this->now();
+  std::string err;
   if (!store_.add(next, err)) return false;
   did = "adopted the new file " + path;
   return true;
 }
 
+// The index brought to the card for the noted file, nothing else (ruling 115 item 1): an entry whose
+// file is gone is dropped, an entry whose size or hash differs takes the card's size and an unknown
+// hash, a noted new file is adopted (adoptNoted). True when the index changed.
+bool CardFilesIo::indexAsCard(const Change& c, const std::string& path, std::string& did) {
+  const long long now = card_.size(path);
+  const FileEntry* e = store_.find(c.project, c.name);
+  if (now < 0) return e && !card_.exists(path) && store_.remove(c.project, c.name);
+  if (now > kMaxEntryBytes) return false;
+  if (!e) return adoptNoted(c, now, path, did);
+  uint64_t hash = 0;
+  const bool agrees = e->bytes == uint64_t(now) &&
+                      (e->hash == 0 || (hashOnCard(path, uint64_t(now), hash) && hash == e->hash));
+  if (agrees) return false;
+  FileEntry next = *e;   // the bytes on the card, whichever copy the swap recovery kept: hash unknown
+  next.bytes = uint32_t(now);
+  next.hash = 0;
+  next.providerTag.clear();
+  next.providerFileId.clear();
+  std::string err;
+  return store_.add(next, err);
+}
+
 std::string CardFilesIo::recoverNote() {
   if (layout_.toolsNote.empty() || !card_.exists(layout_.toolsNote)) return std::string();
+  const std::string text = card_.readText(layout_.toolsNote);
   Change c;
   const size_t maxP = store_.limits().maxProjectLen, maxN = store_.limits().maxNameLen;
-  if (!parseNote(card_.readText(layout_.toolsNote), c) || !FileStore::validSegment(c.project, maxP) ||
-      !FileStore::validSegment(c.name, maxN)) {
-    card_.remove(layout_.toolsNote);
-    return "ignored an unreadable tools note";
+  const bool readable = parseNote(text, c) && FileStore::validSegment(c.project, maxP) &&
+                        FileStore::validSegment(c.name, maxN);
+  if (!readable) {   // the marker, an empty note or a part of one: nothing to act on
+    const bool cleared = clearNote();
+    const bool quiet = text.empty() || text == kToolsNoteCleared;
+    if (quiet) return cleared ? std::string() : "the tools note could not be cleared";
+    return cleared ? "ignored an unreadable tools note" : "ignored an unreadable tools note it could not clear";
   }
   const std::string path = pathOf(c.project, c.name);
-  std::string did = cutUnfinishedAppend(c, path);
-  const bool changed = entryAsNoted(c, path, did);
+  std::string did = endTornAppend(c, path);
+  const bool changed = indexAsCard(c, path, did);
   if (changed && !(host_.persistIndex && host_.persistIndex())) {
-    notePending_ = true;   // the note stays: the next change, or the next boot, settles it
+    notePending_ = true;   // the note stays: its work only ever brings the index to the card again
     return did.empty() ? "the index after a tools note was not saved" : did + "; the index was not saved";
   }
-  card_.remove(layout_.toolsNote);
+  if (!clearNote()) {
+    notePending_ = true;
+    return did.empty() ? "the tools note could not be cleared" : did + "; the tools note could not be cleared";
+  }
   return did;
 }
 
