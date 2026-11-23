@@ -1433,6 +1433,30 @@ inline void test_rung_one_moves_in_rare_steps_so_turns_share_one_prefix() {
   TEST_MESSAGE(msg);
 }
 
+// Lane E2-FIX9: the daemon's case of a summarizer that cannot answer (every compaction fails) with turns of one or two
+// 9 KB reads past a small cap: every turn is answered (the ladder fits it), never "too large".
+inline void test_past_the_cap_with_compaction_failing_every_turn_is_answered() {
+  txb::Battery b;
+  b.summarizer.respondWith([](const sp::Recorded&, size_t) { return sp::httpError(404); });
+  TXB_OK(b.boot());
+  int refused = 0;
+  for (int i = 0; i < 18; ++i) {
+    if (i == 6) b.bodyCapLimit = (uint32_t)b.model.last().body.size() + 2000;
+    b.model.push(sp::call("big_read", "{\"tag\":\"a" + std::to_string(i) + "\",\"bytes\":9000}"));
+    if (i % 3 == 1) b.model.push(sp::call("big_read", "{\"tag\":\"b" + std::to_string(i) + "\",\"bytes\":9000}"));
+    b.model.push(sp::say("read " + std::to_string(i)));
+    b.advance(60);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read number " + std::to_string(i), out));
+    if (out.text != "read " + std::to_string(i)) {
+      ++refused;
+      TEST_MESSAGE(("turn " + std::to_string(i) + ": " + out.text + out.statusText).c_str());
+      break;   // the script is out of step after a refused turn
+    }
+  }
+  TEST_ASSERT_EQUAL_MESSAGE(0, refused, "a turn past the cap was not answered");
+}
+
 // 4. Rung 2 follows the rounds of the open turn before rung 3 omits any history.
 inline void test_rung_two_advances_before_history_is_omitted() {
   txb::Battery b;
@@ -2792,6 +2816,7 @@ inline void run() {
   RUN_TEST(test_a_failed_write_receipt_is_never_replaced_by_a_weaker_line);
   RUN_TEST(test_rung_one_stubs_the_oldest_closed_bulk_only_as_far_as_needed);
   RUN_TEST(test_rung_one_moves_in_rare_steps_so_turns_share_one_prefix);
+  RUN_TEST(test_past_the_cap_with_compaction_failing_every_turn_is_answered);
   RUN_TEST(test_rung_two_advances_before_history_is_omitted);
   RUN_TEST(test_a_refused_bulk_write_never_promises_view);
   RUN_TEST(test_nested_long_strings_are_stubbed_and_the_bulk_holds_the_whole);
