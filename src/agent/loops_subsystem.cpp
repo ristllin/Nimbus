@@ -692,6 +692,17 @@ void checkDue(uint64_t nowEpoch, bool turnInFlight, uint32_t heap) {
         ceilingSkip(*l, nowEpoch);
         return;
       }
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+      // Lane E2-FIX2B (finding P15): engine 2's fire names why it waits (no card, the chat could not
+      // start): that is not working memory, and the log says the real reason.
+      if (!o.error.empty()) {
+        if (o.retryAfterSec) l->nextRun = nowEpoch + o.retryAfterSec;
+        persist();
+        alogf("loops: '%s' fire deferred (%s) - not counted, retries %s", l->name.c_str(), o.error.c_str(),
+              o.retryAfterSec ? "soon" : "next slot");
+        return;
+      }
+#endif
       s_memDefer = true;
       // A fire whose pre-work is idempotent (the dream runs maintenance once per local
       // day) asks for a same-night retry instead of waiting for its next slot; so does a

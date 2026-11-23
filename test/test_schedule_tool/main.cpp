@@ -797,6 +797,53 @@ void test_a_fire_after_outside_content_opens_the_next_fire_tainted() {
   TEST_ASSERT_TRUE((taint == std::vector<bool>{false, false}));
 }
 
+
+// Lane E2-FIX2B, finding P13: the state on the card holds an output from outside content and the
+// next state's save is refused (or cut). Before: its mark was pruned against the state that never
+// landed, so the next fire opened unmarked with that output in its input. Now the marks of the
+// state on the card stay until the new one lands.
+void test_a_refused_state_save_never_unmarks_an_outside_output() {
+  MemHost h;
+  TEST_ASSERT_TRUE(run(h, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"news brief"})").success);
+  txb::MemFiles card;
+  sch::FireBinding b;
+  b.files = &card;
+  std::vector<bool> taint;
+  bool outside = true;
+  b.run = [&](const agent::plain::RoutineFire& f, bool tainted, agent::plain::FireReport& rep) {
+    taint.push_back(tainted);
+    rep.result = agent::plain::FireResult::Sent;
+    rep.output = agent::plain::RoutineOutput{f.fireAt, "out " + std::to_string(taint.size())};
+    if (outside) rep.outcome.end.events.push_back("change:outside");
+    return agent::plain::Status::success();
+  };
+  LoopFireRequest req;
+  req.id = h.loops[0].id;
+  sch::fire(h, req, b, kNow);   // A: read outside content, marked
+  outside = false;
+  // The state as an older run left it: A, then two outputs B and C with no mark.
+  std::vector<agent::plain::RoutineOutput> st;
+  TEST_ASSERT_TRUE(sch::loadState(card, req.id, st));
+  TEST_ASSERT_EQUAL(1, (int)st.size());
+  st.push_back(agent::plain::RoutineOutput{kNow + 3600, "B"});
+  st.push_back(agent::plain::RoutineOutput{kNow + 7200, "C"});
+  TEST_ASSERT_TRUE(sch::saveState(card, req.id, st));
+  card.refuseWholeWrites = true;   // the next state is refused: A, B, C stay on the card
+  sch::fire(h, req, b, kNow + 86400);
+  card.refuseWholeWrites = false;
+  sch::fire(h, req, b, kNow + 2 * 86400);
+  TEST_ASSERT_TRUE((taint == std::vector<bool>{false, true, true}));
+  // The neighbor: once the new state landed, marks are pruned to it (A's mark leaves with A).
+  TEST_ASSERT_TRUE(sch::loadState(card, req.id, st));
+  const std::vector<uint64_t> marks = sch::findExtra(h.extras(), req.id)->outsideAt;
+  for (uint64_t at : marks) {
+    bool inState = false;
+    for (const agent::plain::RoutineOutput& o : st) inState = inState || o.at == at;
+    TEST_ASSERT_TRUE(inState);
+  }
+  TEST_ASSERT_TRUE(std::find(marks.begin(), marks.end(), kNow) == marks.end());
+}
+
 void test_a_routine_with_no_card_is_skipped_and_a_reminder_still_goes() {
   MemHost h;
   TEST_ASSERT_TRUE(run(h, R"({"op":"create","kind":"routine","every":"daily 07:00","text":"brief"})").success);
@@ -814,6 +861,14 @@ void test_a_routine_with_no_card_is_skipped_and_a_reminder_still_goes() {
   TEST_ASSERT_TRUE(o.retryAfterSec > 0);   // tried again soon, not at its next slot
   TEST_ASSERT_EQUAL((int)LastResult::Skipped, (int)h.loops[0].lastResult);
   TEST_ASSERT_EQUAL_STRING("no card", h.loops[0].lastErr.c_str());
+  // Lane E2-FIX2B, finding P15: a card but no chat to run it (no Claude head): its own reason.
+  txb::MemFiles card;
+  sch::FireBinding nb;
+  nb.files = &card;
+  const FireOutcome n = sch::fire(h, req, nb, kNow + 60);
+  TEST_ASSERT_TRUE(n.deferred);
+  TEST_ASSERT_EQUAL_STRING("chat could not start", h.loops[0].lastErr.c_str());
+  TEST_ASSERT_EQUAL_STRING("chat could not start", n.error.c_str());
   // Counter: a reminder needs no card.
   Rig rig;
   TEST_ASSERT_TRUE(rig.boot().ok());
@@ -1024,6 +1079,7 @@ int main(int, char**) {
   RUN_TEST(test_parse_when_every_and_the_name);
   RUN_TEST(test_the_schema_offers_exactly_the_arguments_read);
   RUN_TEST(test_a_fire_after_outside_content_opens_the_next_fire_tainted);
+  RUN_TEST(test_a_refused_state_save_never_unmarks_an_outside_output);
   RUN_TEST(test_a_routine_with_no_card_is_skipped_and_a_reminder_still_goes);
   RUN_TEST(test_a_routine_fire_keeps_the_routine_ceiling);
   RUN_TEST(test_a_refused_allocation_is_an_error_result_and_changes_nothing);

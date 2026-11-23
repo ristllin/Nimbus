@@ -46,6 +46,8 @@ inline constexpr char kV[] = "v", kLoops[] = "loops", kTools[] = "tools", kPaths
 inline constexpr char kStateExt[] = ".state", kTmpExt[] = ".tmp";
 inline constexpr char kOutsideEvent[] = "change:outside";
 inline constexpr char kNoCard[] = "no card";   // a routine's lastErr when it could not run for want of a card
+// A routine's lastErr when its chat could not start (no Claude head or key, lane E2-FIX2B finding P15).
+inline constexpr char kNoChat[] = "chat could not start";
 }  // namespace store
 
 // One sidecar entry: what engine 2 knows about a loop beyond loops.json.

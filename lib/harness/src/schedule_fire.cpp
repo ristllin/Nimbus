@@ -127,17 +127,23 @@ FireOutcome outcomeOf(const plain::Status& st, const plain::FireReport& rep, uin
 
 FireOutcome fireRoutine(Host& host, const LoopRecord& rec, const Extra* e, const FireBinding& b, uint64_t now) {
   std::vector<plain::RoutineOutput> last;
-  if (!b.files || !b.run || !loadState(*b.files, rec.id, last)) return notNow(host, rec.id, kNoCard, true);
+  if (!b.files || !loadState(*b.files, rec.id, last)) return notNow(host, rec.id, kNoCard, true);
+  if (!b.run) return notNow(host, rec.id, kNoChat, true);   // P15: its real reason, not "no card"
   const bool tainted = opensTainted(e, last);
   const plain::RoutineFire f = routineFire(rec, e, last, now, b.grants);
   plain::FireReport rep;
   const plain::Status st = b.run(f, tainted, rep);
   const FireOutcome o = outcomeOf(st, rep, now);
   if (!st.ok() || rep.result == plain::FireResult::Failed) return o;
+  std::vector<plain::RoutineOutput> both = last;   // the state on the card until the save lands
   plain::nextRoutineState(last, rep.output);
-  // The mark first: an output from outside content never sits in the state unmarked.
+  both.insert(both.end(), last.begin(), last.end());
+  // The mark first: an output from outside content never sits in the state unmarked. Lane E2-FIX2B
+  // (finding P13): the marks of the state still on the card stay until the new state has landed,
+  // then they are pruned to it; a refused save or a cut never leaves a marked output unmarked.
   const bool outside = tainted || hasOutside(rep);
-  if (storeMarks(host, rec.id, last, outside, rep.output) || !outside) (void)saveState(*b.files, rec.id, last);
+  if ((storeMarks(host, rec.id, both, outside, rep.output) || !outside) && saveState(*b.files, rec.id, last))
+    (void)storeMarks(host, rec.id, last, outside, rep.output);
   return o;
 }
 

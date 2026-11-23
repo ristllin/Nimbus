@@ -757,6 +757,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     fb = plain::fireBindingFor(*b, memory::haveSd() ? &txdev::cardRoutineFiles() : nullptr, d);
   } else {
     fb.owner = bareSink(chatId);
+    fb.files = memory::haveSd() ? &txdev::cardRoutineFiles() : nullptr;   // P15: a routine waits as "chat could not start"
     fb.tzMinutes = tzNow();
     fb.dayStartMin = store::dayStartMin();
   }
