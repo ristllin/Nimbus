@@ -169,8 +169,8 @@ bool looksLikeStub(const std::string& text);
 // whole was not kept: 'not kept: no storage card'. Text at or under `cap` is returned whole.
 // InvalidArgument for a cap of 0. E2-FIX5: `kept` with an empty `where` (the whole is kept but no
 // bound tool reads it): '[text continues: <rest>B more]'.
-Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out,
-                    bool kept = false);
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out);
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out, bool kept);
 // The pointers longTextHead names (viewPointer: "" when view is not bound, E2-FIX5).
 inline std::string viewPointer(uint64_t q, const BoundTools& b) { return b.view ? "view id=r" + std::to_string(q) : ""; }
 inline std::string pathPointer(const std::string& path) { return "read_file path=" + path; }

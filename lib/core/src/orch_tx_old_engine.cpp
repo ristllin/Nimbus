@@ -378,6 +378,10 @@ bool restoreFoldRecordFrom(const std::string& blob, size_t fileSize, const std::
   return blob.size() == fileSize && restoreFoldRecord(blob, copy, chatId, out);
 }
 
+namespace {
+bool isActiveEntry(const PrefEntry& e) { return !e.pending && !e.moved && !e.evicted; }
+}  // namespace
+
 RulesRead oldRulesFrom(const std::string& blob, size_t fileSize) {
   // Lane E2-FIX5 (L3): whole is the file's shape: every line that is not empty and not a '#' line is a
   // well-formed rule. The active rules are parsed alone, so a retired or moved rule of the same wording
@@ -392,13 +396,13 @@ RulesRead oldRulesFrom(const std::string& blob, size_t fileSize) {
     pos = nl + 1;
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.empty() || line[0] == '#') continue;
-    PrefEntry e;
-    if (!parsePrefRuleLine(line, e)) shaped = false;
-    else if (!e.pending && !e.moved && !e.evicted) active += line + "\n";
+    OwnerPrefs one;   // the store's own parser over this line alone: one entry when it is well formed
+    if (one.parse(line) != 1) shaped = false;
+    else if (isActiveEntry(one.entries()[0])) active += line + "\n";
   }
   OwnerPrefs p;
   p.parse(active);
-  for (const PrefEntry& e : p.entries()) r.rules.push_back(OldRule{e.id, e.text});
+  for (const PrefEntry& e : p.entries()) r.rules.push_back(OldRule{e.id, e.text});   // every one is active
   r.whole = shaped && blob.size() == fileSize && fileSize <= kPrefsFileMax;
   return r;
 }

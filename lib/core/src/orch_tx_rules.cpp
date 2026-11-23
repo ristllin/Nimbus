@@ -354,7 +354,7 @@ Status photoStub(const std::string& ref8, const std::string& when, const std::st
   return Status::success();
 }
 
-Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out, bool kept) {
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out) {
   if (!cap) {
     out.clear();
     return Status::fail(Err::InvalidArgument, "tx::longTextHead");
@@ -368,11 +368,22 @@ Status longTextHead(const std::string& text, size_t cap, const std::string& wher
   std::string s = text.substr(0, n);
   s += kTextContinues;
   s += std::to_string(text.size() - n);
-  if (where.empty() && kept) s += "B more";   // E2-FIX5: kept, no bound tool reads it
-  else s += kTextMore + (where.empty() ? std::string(kTextNotKept) : where);
+  s += kTextMore;
+  s += where.empty() ? std::string(kTextNotKept) : where;
   s += ']';
   out.swap(s);
   return Status::success();
+}
+
+// E2-FIX5: kept with no bound tool to read it: the line ends '<rest>B more]'. A separate body, so the
+// four-argument form (engine 1's inbox calls it) stays as it was.
+Status longTextHead(const std::string& text, size_t cap, const std::string& where, std::string& out, bool kept) {
+  const Status st = longTextHead(text, cap, where, out);
+  const std::string notKept = std::string(kTextMore) + kTextNotKept + "]";
+  if (st.ok() && kept && where.empty() && text.size() > cap && out.size() >= notKept.size() &&
+      out.compare(out.size() - notKept.size(), notKept.size(), notKept) == 0)
+    out.replace(out.size() - notKept.size(), notKept.size(), "B more]");
+  return st;
 }
 
 Status photoStub(const std::string& ref8, const std::string& when, std::string& out, bool viewBound) {

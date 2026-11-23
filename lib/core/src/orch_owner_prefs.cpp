@@ -245,8 +245,6 @@ bool knownIdOrKey(const std::vector<PrefEntry>& kept, const PrefEntry& e) {
 
 // ---- words -------------------------------------------------------------------
 
-bool parsePrefRuleLine(const std::string& line, PrefEntry& e) { return parseRuleLine(line, e); }
-
 const char* prefOriginSlug(PrefOrigin o) {
   for (const OriginSlug& e : kOrigins)
     if (e.o == o) return e.slug;
