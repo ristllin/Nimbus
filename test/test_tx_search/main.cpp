@@ -21,6 +21,7 @@
 #include "../support/tx_battery/mem_files.h"
 #include "nimbus/orch/tx/log.h"
 #include "nimbus/orch/tx/old_engine.h"
+#include "nimbus/orch/episodic.h"
 #include "nimbus/orch/tx/search.h"
 
 namespace tx = nimbus::orch::tx;
@@ -113,31 +114,25 @@ struct Chat {
 class FakeOld : public tx::OldRows {
  public:
   std::vector<tx::DayRow> rows;   // any order
-  uint32_t pages = 0;
+  uint32_t reads = 0;
   bool refuse = false;
-  tx::Status page(const tx::OldPageAsk& a, tx::OldPage& out, tx::ReadStats& st) override {
+  tx::Status read(uint64_t after, size_t max, std::vector<tx::DayRow>& out, bool& end, tx::ReadStats& st) override {
     if (refuse) return tx::Status::fail(tx::Err::Io, "fake.old");
-    ++pages;
+    ++reads;
     std::vector<tx::DayRow> sorted = rows;
-    std::sort(sorted.begin(), sorted.end(), [](const tx::DayRow& x, const tx::DayRow& y) { return x.id > y.id; });
-    const uint64_t below = a.before.empty() ? UINT64_MAX : tx::rowIdNumber(a.before);
-    out = tx::OldPage{};
+    std::sort(sorted.begin(), sorted.end(), [](const tx::DayRow& x, const tx::DayRow& y) { return x.id < y.id; });
+    out.clear();
+    end = true;
     for (const tx::DayRow& r : sorted) {
-      if (r.id >= below) continue;
-      if (out.rows.size() == a.max) {
-        out.older = true;
+      if (r.id <= after) continue;
+      if (out.size() == max) {
+        end = false;
         break;
       }
-      out.rows.push_back(r);
+      out.push_back(r);
     }
-    if (!out.rows.empty()) out.next = tx::rowIdString(out.rows.back().id);
-    st.add(1, 64 * out.rows.size());
+    st.add(1, 64 * out.size());
     return tx::Status::success();
-  }
-  tx::Status row(uint64_t id, tx::DayRow& out, tx::ReadStats&) override {
-    for (const tx::DayRow& r : rows)
-      if (r.id == id) return out = r, tx::Status::success();
-    return tx::Status::fail(tx::Err::NotFound, "fake.row");
   }
 };
 
@@ -410,12 +405,13 @@ static void test_a_photo_is_found_only_in_its_own_conversation() {
   other.owner("no photos here", kNow);
   tx::Item owner;
   bool found = false;
-  TEST_ASSERT_TRUE(tx::findPhoto(c.files, kChat, "p0123abcd", owner, found).ok());
+  tx::PhotoScan scan;
+  TEST_ASSERT_TRUE(tx::findPhoto(c.files, kChat, "p0123abcd", owner, found, scan).ok());
   TEST_ASSERT_TRUE(found);
   TEST_ASSERT_EQUAL((int)(kNow - 100), (int)owner.t);
-  TEST_ASSERT_TRUE(tx::findPhoto(other.files, kChat, "p0123abcd", owner, found).ok());
+  TEST_ASSERT_TRUE(tx::findPhoto(other.files, kChat, "p0123abcd", owner, found, scan).ok());
   TEST_ASSERT_FALSE(found);
-  TEST_ASSERT_TRUE(tx::findPhoto(c.files, kChat, "p0123", owner, found).ok());   // a prefix is not the photo
+  TEST_ASSERT_TRUE(tx::findPhoto(c.files, kChat, "p0123", owner, found, scan).ok());   // a prefix is not the photo
   TEST_ASSERT_FALSE(found);
 }
 
@@ -532,10 +528,171 @@ static void test_the_best_match_is_first_whatever_its_age() {
   TEST_ASSERT_EQUAL((int)total, (int)seen.size());
 }
 
+
+// ---- lane E2-SRCH2: the second read's findings (each red on 4f776c621) ---------------------------
+
+// The earlier engine's store as the device reads it: rows of one chat by id, hour stamps.
+struct OldStore {
+  nimbus::orch::InMemoryEpisodicStore store{8000};
+  uint32_t next = 0x100;
+  uint64_t row(const char* role, const std::string& text, uint32_t hours, const std::string& tags = std::string()) {
+    nimbus::orch::EpisodicMessage m;
+    m.id = tx::rowIdString(next++);
+    m.sessionId = kChat;
+    m.tsHours = hours;
+    m.role = role;
+    m.kind = nimbus::orch::MsgKind::Message;
+    m.text = text;
+    m.tags = tags;
+    store.addMessage(m);
+    return tx::rowIdNumber(m.id);
+  }
+};
+
+// Finding 1 (high): every row of the earlier engine's store below the import is read, through the same
+// forward reader the import uses; a fact more than 500 rows below the floor is the first hit.
+static void test_every_earlier_row_below_the_import_is_read() {
+  OldStore os;
+  const uint32_t h0 = 491000;   // 2026-01-05, hours since 1970
+  uint64_t fact = 0;
+  for (int i = 0; i < 2000; ++i) {
+    const std::string text = i == 100 ? "the locker code at the pool is 4417" : "ordinary row " + std::to_string(i);
+    const uint64_t id = os.row(i % 2 ? "assistant" : "user", text, h0 + uint32_t(i / 10));
+    if (i == 100) fact = id;
+  }
+  // The import brought the newest 400 rows over (owner rows mirrored by u.m).
+  Chat c;
+  for (int i = 1600; i < 2000; i += 2) c.owner("ordinary row " + std::to_string(i), (h0 + i / 10) * 3600ULL, 0x100 + i);
+  tx::EpisodicRowSource src(kChat, [&os](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+    return os.store.query(q, &info);
+  });
+  tx::RowSourceRows old(src, nullptr, [&src] { return src.unreadable().size(); });
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  d.old = &old;
+  tx::SearchAsk a;
+  a.query = "locker code 4417";
+  tx::SearchOutcome o;
+  TEST_ASSERT_TRUE(tx::search(d, a, o).ok());
+  TEST_ASSERT_TRUE(o.complete && o.oldRead);
+  TEST_ASSERT_FALSE(o.hits.empty());
+  TEST_ASSERT_EQUAL_STRING(tx::rowIdString(fact).c_str(), o.hits[0].id.c_str());
+  TEST_ASSERT_TRUE(o.hits[0].hourOnly);
+  // Imported rows are not counted twice: "ordinary row 1800" is in the transcript once.
+  a.query = "ordinary row 1800";
+  TEST_ASSERT_TRUE(tx::search(d, a, o).ok());
+  TEST_ASSERT_EQUAL(1, (int)o.matches);
+}
+
+// Finding 2: rows before the chat's earlier-engine /clear are never returned; rows after it are.
+static void test_rows_before_an_earlier_clear_are_never_read() {
+  OldStore os;
+  os.row("user", "the gate code before the clear is 1111", 491000);
+  os.row("system", "conversation cleared", 491001, "ev:clear");
+  os.row("user", "the gate code after the clear is 2222", 491002);
+  Chat c;
+  tx::EpisodicRowSource src(kChat, [&os](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+    return os.store.query(q, &info);
+  });
+  tx::RowSourceRows old(src, nullptr);
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  d.old = &old;
+  tx::SearchAsk a;
+  a.query = "gate code";
+  tx::SearchOutcome o;
+  TEST_ASSERT_TRUE(tx::search(d, a, o).ok());
+  TEST_ASSERT_EQUAL(1, (int)o.matches);
+  TEST_ASSERT_TRUE(o.hits[0].excerpt.find("2222") != std::string::npos);
+}
+
+// Finding 4: the rows a later (re-entry) import named, newer than the first import's rows and not in the
+// transcript, are searched.
+static void test_rows_a_reentry_named_are_searched() {
+  Chat c;
+  FakeOld old;
+  for (uint64_t id = 1; id <= 60; ++id)
+    old.rows.push_back(oldRow(id, kStart + id * 3600, id % 2 ? tx::RowRole::Owner : tx::RowRole::Assistant,
+                              id == 45 ? "the bike lock is 3390" : "row " + std::to_string(id)));
+  for (uint64_t id = 21; id <= 39; id += 2) c.owner("row " + std::to_string(id), kStart + id * 3600, id);   // first import
+  for (uint64_t id = 51; id <= 59; id += 2) c.owner("row " + std::to_string(id), kStart + id * 3600, id);   // re-entry: 41..50 named
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  d.old = &old;
+  tx::SearchAsk a;
+  a.query = "bike lock";
+  tx::SearchOutcome o;
+  TEST_ASSERT_TRUE(tx::search(d, a, o).ok());
+  TEST_ASSERT_EQUAL(1, (int)o.hits.size());
+  TEST_ASSERT_EQUAL_STRING("m0000002d", o.hits[0].id.c_str());
+}
+
+// Finding 7: a store that reports a span it could not read is a failed read, not fewer rows.
+static void test_an_unreadable_old_span_is_io() {
+  struct Src : tx::RowSource {
+    size_t bad = 0;
+    tx::Status read(uint64_t, uint64_t, size_t, std::vector<tx::DayRow>& out, bool& end) override {
+      out.clear();
+      end = true;
+      ++bad;   // the store skipped a span it would not give back
+      return tx::Status::success();
+    }
+    tx::Status newest(uint64_t& id) override { return id = 0, tx::Status::success(); }
+  } src;
+  tx::RowSourceRows old(src, nullptr, [&src] { return src.bad; });
+  Chat c;
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  d.old = &old;
+  tx::SearchAsk a;
+  a.query = "anything";
+  tx::SearchOutcome o;
+  TEST_ASSERT_TRUE(tx::search(d, a, o).err == tx::Err::Io);
+  // A bulk file the card cannot stat, in a folder it cannot list, is Io, not "gone".
+  struct NoStat : txb::MemFiles {
+    bool size(const std::string&, size_t&) override { return false; }
+    bool list(const std::string&, std::vector<std::string>&) override { return false; }
+  } ns;
+  tx::TxLog log(ns, kChat);
+  std::string out;
+  TEST_ASSERT_TRUE(log.readBulk("b/3.txb@0+10", 0, 10, out).err == tx::Err::Io);
+  txb::MemFiles empty;
+  tx::TxLog gone(empty, kChat);
+  TEST_ASSERT_TRUE(gone.readBulk("b/3.txb@0+10", 0, 10, out).err == tx::Err::NotFound);   // truly gone
+}
+
+// Finding 8: an earlier row is stamped to the hour; a minute bound inside that hour keeps it.
+static void test_an_hour_stamped_row_is_kept_by_a_minute_bound() {
+  Chat c;
+  FakeOld old;
+  old.rows.push_back(oldRow(1, 1794920400ULL /* 13:00 */, tx::RowRole::Owner, "tea at the market"));
+  tx::SearchDeps d;
+  d.files = &c.files;
+  d.chatKey = kChat;
+  d.old = &old;
+  tx::SearchAsk a;
+  a.query = "tea market";
+  a.fromT = 1794920400ULL + 30 * 60;   // 13:30
+  a.toT = 1794920400ULL + 50 * 60;
+  tx::SearchOutcome o;
+  TEST_ASSERT_TRUE(tx::search(d, a, o).ok());
+  TEST_ASSERT_EQUAL(1, (int)o.hits.size());
+  TEST_ASSERT_TRUE(o.hits[0].hourOnly);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_words_match_all_case_insensitive);
   RUN_TEST(test_the_best_match_is_first_whatever_its_age);
+  RUN_TEST(test_every_earlier_row_below_the_import_is_read);
+  RUN_TEST(test_rows_before_an_earlier_clear_are_never_read);
+  RUN_TEST(test_rows_a_reentry_named_are_searched);
+  RUN_TEST(test_an_unreadable_old_span_is_io);
+  RUN_TEST(test_an_hour_stamped_row_is_kept_by_a_minute_bound);
   RUN_TEST(test_a_fact_three_weeks_and_600_turns_back_is_found_without_and_with_a_range);
   RUN_TEST(test_the_remainder_is_true_and_every_match_is_found_once);
   RUN_TEST(test_old_rows_below_the_import_floor_are_searched_after_the_transcript);

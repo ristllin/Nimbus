@@ -450,11 +450,16 @@ struct Ranked {
   static bool better(const std::pair<uint32_t, SearchHit>& x, const std::pair<uint32_t, SearchHit>& y) {
     return x.second.rank != y.second.rank ? x.second.rank > y.second.rank : x.first < y.first;
   }
-  // A cheap test before the excerpt is cut: would a match of this rank be kept?
-  bool wants(MatchRank r) const { return top.size() < keep || (keep && r > top.back().second.rank); }
+  // A cheap test before the excerpt is cut: would a match of this rank, read in this order, be kept?
+  bool wants(MatchRank r, uint32_t order) const {
+    if (top.size() < keep) return true;
+    if (!keep) return false;
+    const auto& worst = top.back();
+    return r != worst.second.rank ? r > worst.second.rank : order < worst.first;
+  }
   void offer(uint32_t order, SearchHit&& h) {
     ++matches;
-    if (!wants(h.rank)) {
+    if (!wants(h.rank, order)) {
       span(h.t, restFrom, restTo);
       return;
     }
@@ -478,14 +483,19 @@ struct Scan {
   const SearchAsk& a;
   const std::vector<std::string>& words;
   SearchOutcome& out;
-  Ranked ranked;
+  Ranked ranked;           // the transcript's matches
+  Ranked oldRanked;        // the earlier engine's (kept apart: a /clear row found later drops them all)
   Item it;                 // reused per line
-  uint32_t order = 0;      // the order read
+  uint32_t order = 0;      // the order read (the transcript: newest first)
+  uint32_t oldOrder = UINT32_MAX;   // the old rows are read oldest first: a later one is newer
   uint64_t consumed = 0;   // what the window has read (lines, payloads, rows): its budget
   bool haveStart = false;  // the window's start is known (a fresh search sets it past the open turn)
   Pos start;
   bool haveEnd = false;
   Pos end;
+  std::vector<uint64_t> mirrored;   // the day rows stored owner messages mirror (u.m): in the transcript
+  std::vector<uint32_t> taintedTurns;   // turns holding an outside item
+  uint32_t oldestTurn = 0;          // the oldest turn the window read a line of
 
   // Does the window end at `p`? Its known end, else its budget (the first call of a window).
   bool endsAt(const Pos& p) {
@@ -503,14 +513,14 @@ struct Scan {
     haveStart = true;
   }
 
-  // One match: kept with its excerpt when it ranks high enough, else counted.
-  void match(const std::string& text, SearchHit&& h) {
+  // One match into `into`: kept with its excerpt when it ranks high enough, else counted.
+  void match(Ranked& into, uint32_t ord, const std::string& text, SearchHit&& h) {
     size_t spot = 0;
     h.rank = rankOf(text, words, spot);
     if (h.rank == MatchRank::None) return;
-    if (!ranked.wants(h.rank)) return ranked.count(h.t);
+    if (!into.wants(h.rank, ord)) return into.count(h.t);
     excerptOf(text, spot, d.limits.excerptBytes, h);
-    ranked.offer(order++, std::move(h));
+    into.offer(ord, std::move(h));
   }
 
   // The text of a decoded line: inline, or its bulk payload. `searched` false: a payload gone after 30
@@ -532,34 +542,85 @@ struct Scan {
     return st;
   }
 
+  bool outsideItem() const {
+    return d.itemOutside ? d.itemOutside(it) : (it.kind == ItemKind::Result && it.cls == ResultClass::Outside);
+  }
+
   SearchHit hitOfItem() const {
     SearchHit hit;
     hit.id = "r" + std::to_string(it.q);
     hit.t = it.t;
+    hit.turn = it.turn;
     hit.source = sourceOf(it.kind);
     hit.hasTz = it.kind == ItemKind::User;
     if (hit.hasTz) hit.tzMinutes = it.tzMinutes;
-    if (it.kind == ItemKind::Result) {
-      hit.tool = it.n;
-      hit.outside = it.cls == ResultClass::Outside;
-    }
+    if (it.kind == ItemKind::Result) hit.tool = it.n;
+    hit.outside = outsideItem();
     return hit;
   }
 
-  Status line(const Line& ln, const LineHeader& h) {
+  // The facts every line gives, matched or not: its date, its turn, whether it makes its turn outside,
+  // the day row it mirrors. `decoded`: `it` holds the line.
+  void note(const Line& ln, const LineHeader& h, bool& decoded) {
     span(h.t, out.readFromT, out.readToT);
+    if (h.turn && (!oldestTurn || h.turn < oldestTurn)) oldestTurn = h.turn;
+    decoded = false;
+    if (h.kind != ItemKind::Result && h.kind != ItemKind::DeviceNote && h.kind != ItemKind::User) return;
+    if (!(decoded = decodeLine(ln.data, ln.len, it).ok())) return;
+    if (outsideItem()) taintedTurns.push_back(h.turn);
+    if (it.kind == ItemKind::User && it.m) mirrored.push_back(it.m);
+  }
+
+  Status line(const Line& ln, const LineHeader& h) {
+    bool decoded = false;
+    note(ln, h, decoded);
     if (!searchedKind(h.kind) || !inRange(h.t, a)) return Status::success();
     // A result's payload, or the rest of an assistant text over the message cap, lives in the bulk file.
     const bool bulk = (h.kind == ItemKind::Result || h.kind == ItemKind::Assistant) &&
                       containsFolded(ln.data, ln.len, "\"hdl\":");
     if (!bulk && !allIn(ln.data, ln.len, words)) return Status::success();   // a word missing: no decode
-    if (!decodeLine(ln.data, ln.len, it).ok()) return Status::success();
+    if (!decoded && !decodeLine(ln.data, ln.len, it).ok()) return Status::success();
     if (it.kind == ItemKind::Result && ownResult(it.n)) return Status::success();
+    SearchHit hit = hitOfItem();   // before textOf takes the item's text
     std::string text;
     bool searched = false;
     const Status st = textOf(bulk, text, searched);
-    if (st.ok() && searched) match(text, hitOfItem());
+    if (st.ok() && searched) match(ranked, order++, text, std::move(hit));
     return st;
+  }
+
+  // One earlier-engine row, read oldest first. `answered`: the owner row this assistant row answers is in
+  // the transcript (the import brought both over).
+  void oldRow(DayRow& r, bool& answered) {
+    span(r.t, out.readFromT, out.readToT);
+    if (r.clearBoundary) return clearedBefore(answered);   // the person cleared everything before it
+    if (r.ours || (r.role != RowRole::Owner && r.role != RowRole::Assistant) || imported(r, answered)) return;
+    if (!hourInRange(r.t)) return;
+    SearchHit hit;
+    hit.id = rowIdString(r.id);
+    hit.t = r.t;
+    hit.hourOnly = true;
+    hit.source = r.role == RowRole::Owner ? HitSource::OldPerson : HitSource::OldAssistant;
+    hit.outside = r.role == RowRole::Assistant || r.photo;   // its class is not known: fail closed
+    match(oldRanked, oldOrder--, r.text, std::move(hit));
+  }
+  void clearedBefore(bool& answered) {
+    const size_t keep = oldRanked.keep;
+    oldRanked = Ranked{};
+    oldRanked.keep = keep;
+    answered = false;
+  }
+  // In the transcript already: an owner row a stored owner message mirrors, and the answer to it.
+  bool imported(const DayRow& r, bool& answered) const {
+    if (r.role != RowRole::Owner) return answered;
+    answered = std::binary_search(mirrored.begin(), mirrored.end(), r.id);
+    return answered;
+  }
+  // A row's time is known to the hour: it is in range when that hour overlaps the range.
+  bool hourInRange(uint64_t t) const {
+    if (!a.fromT && !a.toT) return true;
+    if (!t || (a.fromT && t + 3599 < a.fromT)) return false;
+    return !a.toT || t <= a.toT;
   }
 
   Status transcript(const Pos& from, bool& finished);
@@ -661,54 +722,32 @@ Status Scan::step(const Line& ln, const Pos& here) {
   return line(ln, h);
 }
 
-bool oldConversation(const DayRow& r) {
-  return !r.ours && (r.role == RowRole::Owner || r.role == RowRole::Assistant);
-}
-
-// The earlier engine's rows from `from` (O). `finished` when the store's oldest row was reached.
+// The earlier engine's rows from `from` (O: rows after its token, "" for every row of the chat),
+// oldest first. `finished` when the store's newest row was reached.
 Status Scan::oldRows(const Pos& from, bool& finished) {
   finished = false;
   out.oldRead = true;
-  std::string token = from.token;
-  size_t skip = from.skip;
-  OldPage page;
+  std::sort(mirrored.begin(), mirrored.end());
+  uint64_t after = from.token.empty() ? 0 : rowIdNumber(from.token);
+  bool answered = false;
+  std::vector<DayRow> rows;
   while (true) {
-    OldPageAsk ask;
-    ask.before = token;
-    ask.fromT = a.fromT;
-    ask.toT = a.toT;
-    page = OldPage{};
-    const Status st = d.old->page(ask, page, out.card);
+    bool end = false;
+    rows.clear();
+    const Status st = d.old->read(after, kOldPageRows, rows, end, out.card);
     if (!st.ok()) return st;
-    for (size_t i = skip; i < page.rows.size(); ++i) {
-      const Pos here = oPos(token, i);
+    for (DayRow& r : rows) {
+      const Pos here = oPos(after ? rowIdString(after) : std::string(), 0);
       at(here);
       if (endsAt(here)) return Status::success();
-      DayRow& r = page.rows[i];
       consumed += r.text.size() + 64;
-      span(r.t, out.readFromT, out.readToT);
-      if (!oldConversation(r) || !inRange(r.t, a)) continue;
-      SearchHit hit;
-      hit.id = rowIdString(r.id);
-      hit.t = r.t;
-      hit.source = r.role == RowRole::Owner ? HitSource::OldPerson : HitSource::OldAssistant;
-      match(r.text, std::move(hit));
+      after = r.id;
+      oldRow(r, answered);
     }
-    if (!page.older) break;
-    if (page.next.empty() || page.next == ask.before) return Status::fail(Err::Io, "tx::search.old-cursor");
-    token = page.next;
-    skip = 0;
+    if (end || rows.empty()) break;
   }
   finished = true;
   return Status::success();
-}
-
-// The position the old part starts from: the import's verbatim floor (rows below it only).
-Status floorPos(TxFiles& files, const std::string& chatKey, Pos& p) {
-  uint64_t floor = 0;
-  const Status st = verbatimFloor(files, chatKey, floor);
-  p = oPos(floor ? rowIdString(floor) : std::string(), 0);
-  return st;
 }
 
 // The window from `from` to its end: the transcript, then the old rows.
@@ -719,8 +758,7 @@ Status scanWindow(Scan& scan, const Pos& from) {
   if (p.kind == Pos::T) {
     st = scan.transcript(p, finished);
     if (!st.ok() || !finished) return st;
-    if (!scan.d.old) p = Pos{};
-    else if (!(st = floorPos(scan.files, scan.d.chatKey, p)).ok()) return st;
+    p = scan.d.old ? oPos(std::string(), 0) : Pos{};
   }
   if (p.kind == Pos::O && scan.d.old) {
     st = scan.oldRows(p, finished);
@@ -732,14 +770,45 @@ Status scanWindow(Scan& scan, const Pos& from) {
   return Status::success();
 }
 
+// Both parts' matches as one ranking: by rank, the transcript before the old rows among equals (it is
+// newer), each part in its own order.
+void merge(Ranked& t, Ranked& o, Ranked& into) {
+  into.matches = t.matches + o.matches;
+  into.restFrom = t.restFrom;
+  into.restTo = t.restTo;
+  span(o.restFrom, into.restFrom, into.restTo);
+  span(o.restTo, into.restFrom, into.restTo);
+  size_t i = 0, j = 0;
+  while (i < t.top.size() || j < o.top.size()) {
+    const bool takeT = j >= o.top.size() || (i < t.top.size() && t.top[i].second.rank >= o.top[j].second.rank);
+    auto& e = takeT ? t.top[i++] : o.top[j++];
+    if (into.top.size() < into.keep) into.top.push_back(std::move(e));
+    else span(e.second.t, into.restFrom, into.restTo);
+  }
+}
+
+// An assistant text of a turn that holds outside content is outside; a turn the window did not read
+// whole (its oldest, when the window stopped inside the range) counts as one.
+void markTaintedReplies(Scan& scan, std::vector<SearchHit>& hits) {
+  std::sort(scan.taintedTurns.begin(), scan.taintedTurns.end());
+  for (SearchHit& h : hits) {
+    if (h.source != HitSource::Assistant || h.outside) continue;
+    h.outside = std::binary_search(scan.taintedTurns.begin(), scan.taintedTurns.end(), h.turn) ||
+                (scan.end.kind != Pos::Z && h.turn == scan.oldestTurn);
+  }
+}
+
 // The returned page of a scanned window: ranks [rank, rank + maxHits), the count and dates of the
 // rest, and the next cursor.
 void finish(Scan& scan, uint32_t rank) {
   SearchOutcome& out = scan.out;
-  Ranked& r = scan.ranked;
+  Ranked r;
+  r.keep = scan.ranked.keep;
+  merge(scan.ranked, scan.oldRanked, r);
   out.matches = r.matches;
   out.rankFrom = rank;
   for (size_t i = rank; i < r.top.size(); ++i) out.hits.push_back(std::move(r.top[i].second));
+  markTaintedReplies(scan, out.hits);
   const uint32_t through = rank + uint32_t(out.hits.size());
   out.further = r.matches > through ? r.matches - through : 0;
   out.furtherFromT = r.restFrom;
@@ -750,6 +819,18 @@ void finish(Scan& scan, uint32_t rank) {
 }
 
 }  // namespace
+
+Status RowSourceRows::read(uint64_t after, size_t max, std::vector<DayRow>& out, bool& end, ReadStats& stats) {
+  const size_t badBefore = unreadable_ ? unreadable_() : 0;
+  const uint32_t t0 = now_ ? now_() : 0;
+  const Status st = src_.read(after, 0, max, out, end);
+  uint64_t bytes = 0;
+  for (const DayRow& r : out) bytes += r.text.size();
+  stats.add(now_ ? now_() - t0 : 0, bytes);
+  if (!st.ok()) return st;
+  if (unreadable_ && unreadable_() != badBefore) return Status::fail(Err::Io, "tx::RowSourceRows.unreadable");
+  return Status::success();
+}
 
 bool ReadOnlyCounted::readAt(const std::string& path, size_t offset, char* buf, size_t want, size_t& got) {
   const uint32_t t0 = now_ ? now_() : 0;
@@ -819,8 +900,9 @@ Status search(const SearchDeps& d, const SearchAsk& a, SearchOutcome& out) {
   if (words.empty()) return Status::success();
   try {
     ReadOnlyCounted files(*d.files, d.nowMs, out.card);
-    Scan scan{d, files, a, words, out, Ranked{}, Item{}};
+    Scan scan{d, files, a, words, out, Ranked{}, Ranked{}, Item{}};
     scan.ranked.keep = std::min<size_t>(c.rank + d.limits.maxHits, d.limits.rankedMax + d.limits.maxHits);
+    scan.oldRanked.keep = scan.ranked.keep;
     if (!c.fresh) {
       scan.start = c.start;
       scan.haveStart = true;
@@ -942,28 +1024,69 @@ Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, cons
   return Status::success();
 }
 
-Status findPhoto(TxFiles& files, const std::string& chatKey, const std::string& ref, Item& owner, bool& found) {
+Status findPhoto(TxFiles& files, const std::string& chatKey, const std::string& ref, Item& owner, bool& found,
+                 PhotoScan& scan) {
   found = false;
   if (!chatKeyOk(chatKey) || ref.size() < 2 || ref[0] != 'p') return Status::fail(Err::InvalidArgument, "tx::findPhoto");
   try {
     ReadStats stats;
-    ReadOnlyCounted counted(files, nullptr, stats);
+    ReadOnlyCounted counted(files, scan.nowMs, stats);
     std::vector<uint32_t> segs;
     Status st = segmentsOf(counted, chatKey, segs);
     Backward rd(counted, chatKey, segs);
     if (st.ok()) st = rd.start(0, 0);
     const std::string quoted = "\"" + ref + "\"";
     bool none = false;
+    uint64_t newest = 0;
     while (st.ok() && !found) {
-      if (stats.bytes > kPhotoScanBytes) return Status::fail(Err::TooLarge, "tx::findPhoto.budget");
+      if (stats.bytes > kPhotoScanBytes || (scan.nowMs && stats.totalMs > scan.cardMs))
+        return Status::fail(Err::TooLarge, "tx::findPhoto.budget");
       Line ln;
       st = rd.next(ln, none);
       if (!st.ok() || none) break;
+      LineHeader h;
+      if (checkLine(ln.data, ln.len, h).ok()) span(h.t, scan.readFromT, newest);
       found = carriesPhoto(ln, quoted, ref, owner);
     }
     return st;
   } catch (const std::bad_alloc&) {
     return Status::fail(Err::TooLarge, "tx::findPhoto.memory");
+  }
+}
+
+namespace {
+// One line read back while looking for turn `turn`: `past` once a line older than the turn follows it.
+bool lineOfTurnOutside(const Line& ln, uint32_t turn, const std::function<bool(const Item& it)>& outside, Item& it,
+                       bool& seen, bool& past) {
+  LineHeader h;
+  if (!checkLine(ln.data, ln.len, h).ok() || (h.turn != turn && !seen)) return false;
+  past = h.turn != turn;
+  seen = true;
+  if (past || (h.kind != ItemKind::Result && h.kind != ItemKind::DeviceNote && h.kind != ItemKind::User)) return false;
+  return decodeLine(ln.data, ln.len, it).ok() && outside(it);
+}
+}  // namespace
+
+Status turnHoldsOutside(TxFiles& files, const std::string& chatKey, uint32_t turn,
+                        const std::function<bool(const Item& it)>& outside, bool& holds) {
+  holds = false;
+  if (!chatKeyOk(chatKey) || !turn || !outside) return Status::fail(Err::InvalidArgument, "tx::turnHoldsOutside");
+  try {
+    std::vector<uint32_t> segs;
+    Status st = segmentsOf(files, chatKey, segs);
+    Backward rd(files, chatKey, segs);
+    if (st.ok()) st = rd.start(0, 0);
+    Item it;
+    bool none = false, seen = false, past = false;
+    while (st.ok() && !holds && !past) {
+      Line ln;
+      st = rd.next(ln, none);
+      if (!st.ok() || none) break;
+      holds = lineOfTurnOutside(ln, turn, outside, it, seen, past);
+    }
+    return st;
+  } catch (const std::bad_alloc&) {
+    return Status::fail(Err::TooLarge, "tx::turnHoldsOutside.memory");
   }
 }
 

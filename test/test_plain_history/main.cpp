@@ -20,6 +20,7 @@
 
 #include "../support/scripted_provider/scripted_provider.h"
 #include "../support/tx_battery/mem_files.h"
+#include "nimbus/harness/jobs.h"   // kOutsideContentOpen
 #include "nimbus/harness/plain/chat_binding.h"
 #include "nimbus/harness/plain/history.h"
 #include "nimbus/harness/plain/texts.h"
@@ -55,10 +56,14 @@ struct Past {
   uint32_t turn = 0;
   uint64_t factQ = 0;
   Past(tx::TxFiles& f, std::string k) : files(f), key(std::move(k)) {}
+  std::unique_ptr<tx::TxLog> log_;   // opened once: one writer for the whole past
   uint64_t put(tx::Item it) {
-    tx::TxLog log(files, key);
-    tx::HeadState h;
-    TEST_ASSERT_TRUE(log.open(h).ok());
+    if (!log_) {
+      log_.reset(new tx::TxLog(files, key));
+      tx::HeadState h;
+      TEST_ASSERT_TRUE(log_->open(h).ok());
+    }
+    tx::TxLog& log = *log_;
     it.q = q++;
     if (!it.turn) it.turn = turn;
     tx::StoreState s;
@@ -329,19 +334,21 @@ plain::ToolOutput call(plain::HistoryTools& h, const plain::TurnCtx& t, const st
 // The earlier engine's rows of one chat (newest first by id).
 class FakeOld : public tx::OldRows {
  public:
-  std::vector<tx::DayRow> rows;
-  tx::Status page(const tx::OldPageAsk& a, tx::OldPage& out, tx::ReadStats&) override {
-    const uint64_t below = a.before.empty() ? UINT64_MAX : tx::rowIdNumber(a.before);
-    out = tx::OldPage{};
-    for (auto it = rows.rbegin(); it != rows.rend(); ++it)
-      if (it->id < below && out.rows.size() < a.max) out.rows.push_back(*it);
-    if (!out.rows.empty()) out.next = tx::rowIdString(out.rows.back().id);
+  std::vector<tx::DayRow> rows;   // id order
+  bool refuse = false;
+  tx::Status read(uint64_t after, size_t max, std::vector<tx::DayRow>& out, bool& end, tx::ReadStats&) override {
+    if (refuse) return tx::Status::fail(tx::Err::Io, "fake.old");
+    out.clear();
+    end = true;
+    for (const tx::DayRow& r : rows) {
+      if (r.id <= after) continue;
+      if (out.size() == max) {
+        end = false;
+        break;
+      }
+      out.push_back(r);
+    }
     return tx::Status::success();
-  }
-  tx::Status row(uint64_t id, tx::DayRow& out, tx::ReadStats&) override {
-    for (const tx::DayRow& r : rows)
-      if (r.id == id) return out = r, tx::Status::success();
-    return tx::Status::fail(tx::Err::NotFound, "fake.row");
   }
 };
 
@@ -656,6 +663,132 @@ static void test_with_search_and_view_registered_every_text_naming_them_is_true(
   TEST_ASSERT_EQUAL_MESSAGE(4, (int)untrueWithout.size(), "each of the four names search or view");
 }
 
+
+// ---- lane E2-SRCH2: the second read's findings (each red on 4f776c621) ---------------------------
+
+// Finding 3: whatever was outside content when stored comes back marked outside and inside the data
+// frame, through search and through view (any page), over every stored kind: an outside result, a
+// sub-agent's report, a routine's fenced reply, a summary written in a frame, and an assistant text of a
+// turn that read outside content. The person's own words do not.
+static void test_outside_content_keeps_its_class_over_every_kind() {
+  txb::MemFiles files;
+  Past p(files, "1001");
+  const std::string body = std::string(3000, 'x') + " the harbour ferry leaves at 07:15 " + std::string(3000, 'y');
+  auto note = [&](tx::NoteClass cls, const std::string& x) {
+    tx::Item h;
+    h.kind = tx::ItemKind::DeviceNote;
+    h.note = cls;
+    h.x = x;
+    h.t = kNow - 500;
+    return p.put(h);
+  };
+  const uint64_t agent = note(tx::NoteClass::Agent, "[agent report] " + body);
+  const uint64_t routine = note(tx::NoteClass::Routine, std::string("[routine Morning] ") + agent::kOutsideContentOpen +
+                                                          "\n" + body + "\n[end outside content]");
+  tx::Item s;
+  s.kind = tx::ItemKind::Digest;
+  s.day = "2026-11-16";
+  s.x = std::string("2026-11-16: ") + plain::texts::summarizer::kFrameOpen + body + plain::texts::summarizer::kFrameClose;
+  s.thru = 1;
+  const uint64_t digest = p.put(s);
+  // A turn that read a web page and answered from it.
+  p.turn++;
+  tx::Item c;
+  c.kind = tx::ItemKind::Call;
+  c.id = "w9";
+  c.n = "web_search";
+  c.args = "{}";
+  p.put(c);
+  tx::Item r;
+  r.kind = tx::ItemKind::Result;
+  r.id = "w9";
+  r.n = "web_search";
+  r.cls = tx::ResultClass::Outside;
+  r.x = "page text";
+  p.put(r);
+  tx::Item a;
+  a.kind = tx::ItemKind::Assistant;
+  a.x = body;
+  a.fin = true;
+  const uint64_t reply = p.put(a);
+  p.turnOf("the harbour ferry leaves at 07:15, I wrote that", "ok", kNow - 100);   // the person's own words
+  plain::HistoryDeps d;
+  d.files = &files;
+  plain::HistoryTools h(d);
+  const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
+  const plain::TurnCtx t = turnOf("1001", "1001", owner);
+  const plain::ToolOutput found = call(h, t, "search", R"({"query":"harbour ferry 07:15"})");
+  TEST_ASSERT_TRUE(found.outside);
+  for (uint64_t q : {agent, routine, digest, reply}) {
+    const std::string id = "r" + std::to_string(q);
+    const size_t at = found.text.find(id + " ");
+    TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, (id + " in " + found.text).c_str());
+    const std::string line = found.text.substr(at, found.text.find('\n', at) - at);
+    TEST_ASSERT_TRUE_MESSAGE(has(line, ", outside content") && has(line, "<data>") && has(line, "</data>"), line.c_str());
+    for (const char* offset : {"0", "2048"}) {
+      const plain::ToolOutput v = call(h, t, "view", "{\"id\":\"" + id + "\",\"offset\":" + offset + "}");
+      TEST_ASSERT_TRUE_MESSAGE(v.outside && has(v.text, "<data>"), (id + " view " + offset).c_str());
+    }
+  }
+  // The person's message alone is not outside.
+  const plain::ToolOutput own = call(h, t, "search", R"({"query":"I wrote that"})");
+  TEST_ASSERT_FALSE(own.outside);
+}
+
+// Findings 5 and 2: view m<row> opens an earlier-engine row by id (the forward read reaches every
+// region of the store), and never a row from before the chat's earlier-engine /clear.
+static void test_view_opens_an_earlier_row_and_never_a_cleared_one() {
+  txb::MemFiles files;
+  FakeOld old;
+  auto row = [&](uint64_t id, tx::RowRole role, const std::string& text, bool clear = false) {
+    tx::DayRow r;
+    r.id = id;
+    r.t = kNow - 90 * kDay + id * 3600;
+    r.role = role;
+    r.text = text;
+    r.clearBoundary = clear;
+    old.rows.push_back(r);
+  };
+  row(10, tx::RowRole::Owner, "before the clear: code 1111");
+  row(11, tx::RowRole::Other, "cleared", true);
+  for (uint64_t id = 12; id < 700; ++id) row(id, tx::RowRole::Owner, "row " + std::to_string(id));
+  plain::HistoryDeps d;
+  d.files = &files;
+  d.oldRows = [&old](const std::string&) -> tx::OldRows* { return &old; };
+  plain::HistoryTools h(d);
+  const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
+  const plain::TurnCtx t = turnOf("1001", "1001", owner);
+  const plain::ToolOutput v = call(h, t, "view", "{\"id\":\"" + tx::rowIdString(500) + "\"}");
+  TEST_ASSERT_FALSE_MESSAGE(v.isError, v.text.c_str());
+  TEST_ASSERT_TRUE(has(v.text, "row 500"));
+  TEST_ASSERT_TRUE(has(v.text, ":xx"));   // an hour-only time (finding 8)
+  TEST_ASSERT_TRUE(call(h, t, "view", "{\"id\":\"" + tx::rowIdString(10) + "\"}").isError);
+  TEST_ASSERT_FALSE(has(call(h, t, "search", R"({"query":"code 1111"})").text, "1111"));
+  // Finding 7: the store refuses: the read failed, never "no match".
+  old.refuse = true;
+  const plain::ToolOutput failed = call(h, t, "search", R"({"query":"row 500"})");
+  TEST_ASSERT_TRUE(failed.isError);
+  TEST_ASSERT_FALSE(has(failed.text, "no match"));
+  TEST_ASSERT_TRUE(has(failed.text, "card read failed"));
+}
+
+// Finding 6: a photo the bounded scan did not reach says how far back it read, not "card read failed".
+static void test_a_photo_beyond_the_scan_says_how_far_it_read() {
+  txb::MemFiles files;
+  Past p(files, "1001");
+  p.photo("p0123456789abcdef", kNow - 30 * kDay);
+  const std::string big(11000, 'z');
+  for (int i = 0; i < 800; ++i) p.turnOf("filler " + big, "ok", kNow - 29 * kDay + i * 60);   // past 8 MB
+  plain::HistoryDeps d;
+  d.files = &files;
+  plain::HistoryTools h(d);
+  const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
+  const plain::ToolOutput v = call(h, turnOf("1001", "1001", owner), "view", R"({"id":"p0123456789abcdef"})");
+  TEST_ASSERT_TRUE(v.isError);
+  TEST_ASSERT_FALSE_MESSAGE(has(v.text, "card read failed"), v.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(v.text, "more: searched to ") && has(v.text, ", older unread"), v.text.c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_D2_red_without_the_tools);
@@ -667,5 +800,8 @@ int main(int, char**) {
   RUN_TEST(test_notes_scope_finds_unpinned_notes_by_words);
   RUN_TEST(test_the_excerpt_shows_the_line_that_matched);
   RUN_TEST(test_with_search_and_view_registered_every_text_naming_them_is_true);
+  RUN_TEST(test_outside_content_keeps_its_class_over_every_kind);
+  RUN_TEST(test_view_opens_an_earlier_row_and_never_a_cleared_one);
+  RUN_TEST(test_a_photo_beyond_the_scan_says_how_far_it_read);
   return UNITY_END();
 }

@@ -9,6 +9,7 @@
 #include <new>
 
 #include "nimbus/harness/log.h"
+#include "nimbus/harness/plain/rails.h"     // itemOutside - the rails' item rule
 #include "nimbus/harness/plain/request.h"   // toolDecl, declSchema
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/action_rules.h"     // actionRefusal - the tools' rows
@@ -79,6 +80,33 @@ std::string whenOf(uint64_t t, int16_t tz) {
   std::string w;
   if (!t || !tx::photoWhen(t, tz, w).ok()) w.clear();
   return w;
+}
+// An earlier-engine row's time, known to the hour only: "Tue 17 Nov 2026 13:xx".
+std::string hourOf(uint64_t t, int16_t tz) {
+  std::string w = whenOf(t, tz);
+  if (w.size() > 3 && w[w.size() - 3] == ':') w.replace(w.size() - 2, 2, "xx");
+  return w;
+}
+
+// What was outside content when it was stored: the rails' item rule, and a summary written inside a
+// data frame (a summary of a turn that read outside content).
+bool storedOutside(const tx::Item& it) {
+  namespace S = texts::summarizer;
+  return itemOutside(it) || (it.kind == tx::ItemKind::Digest && it.x.find(S::kFrameOpen) != std::string::npos);
+}
+
+// Text from outside content, shown inside the data frame; text inside it cannot open or close it ('<'
+// before "data" or "/data" becomes '(', as plain_compact.cpp's summary lines).
+std::string framed(const std::string& s) {
+  namespace S = texts::summarizer;
+  std::string out = s;
+  for (size_t i = 0; i < out.size(); ++i) {
+    if (out[i] != '<') continue;
+    size_t j = i + 1;
+    while (j < out.size() && (out[j] == '/' || out[j] == ' ')) ++j;
+    if (j + 4 <= out.size() && (out.compare(j, 4, "data") == 0 || out.compare(j, 4, "DATA") == 0)) out[i] = '(';
+  }
+  return std::string(S::kFrameOpen) + out + S::kFrameClose;
 }
 
 const char* sourceWord(tx::HitSource s) {
@@ -152,10 +180,11 @@ bool pageOffset(JsonObjectConst a, size_t& off) {
   return true;
 }
 
-// The page of a text and its remainder line.
-std::string page(const std::string& head, const std::string& body, size_t offset, size_t total) {
-  std::string s = head + R::kBytes + "\n" + body;
-  const size_t end = offset + body.size();
+// The page of a text and its remainder line; `bodyLen` is the page's own length in the text (the shown
+// body may be framed).
+std::string page(const std::string& head, const std::string& shown, size_t offset, size_t total, size_t bodyLen) {
+  std::string s = head + R::kBytes + "\n" + shown;
+  const size_t end = offset + bodyLen;
   if (end < total) s += R::kViewNext + std::to_string(end) + " (" + std::to_string(total - end) + R::kViewMore + ")";
   return s;
 }
@@ -229,14 +258,15 @@ bool HistoryTools::askOf(const TurnCtx& turn, JsonObjectConst a, tx::SearchAsk& 
 // the start of the range.
 std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Status& st) const {
   std::string text;
+  if (!st.ok()) return R::kCardStopped + o.next;   // nothing above it claims absence (ruling 116)
   for (const tx::SearchHit& h : o.hits) {
-    const std::string when = whenOf(h.t, h.hasTz ? h.tzMinutes : tz(h.t));
-    text += label(h.id, when, h.source, h.tool, h.outside) + ": " + (h.cutBefore ? R::kCutMark : "") + h.excerpt +
-            (h.cutAfter ? R::kCutMark : "") + "\n";
+    const int16_t zone = h.hasTz ? h.tzMinutes : tz(h.t);
+    const std::string when = h.hourOnly ? hourOf(h.t, zone) : whenOf(h.t, zone);
+    const std::string ex = (h.cutBefore ? R::kCutMark : "") + h.excerpt + (h.cutAfter ? R::kCutMark : "");
+    text += label(h.id, when, h.source, h.tool, h.outside) + ": " + (h.outside ? framed(ex) : ex) + "\n";
   }
   if (o.hits.empty()) text += std::string(R::kSearchNone) + "\n";
   if (o.unreadBulk) text += std::to_string(o.unreadBulk) + R::kSearchUnread + "\n";
-  if (!st.ok()) return text + R::kCardStopped + o.next;
   const std::string readTo = R::kSearchMore + whenOf(o.readFromT, tz(o.readFromT)) + R::kSearchBefore;
   if (o.further) {
     text += std::to_string(o.further) + R::kSearchFurther;
@@ -262,6 +292,7 @@ ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObject
   sd.old = oldFor(turn);
   sd.nowMs = d_.nowMs;
   sd.limits = d_.limits;
+  sd.itemOutside = storedOutside;
   tx::SearchOutcome o;
   const tx::Status st = tx::search(sd, ask, o);
   card_ = o.card;
@@ -326,30 +357,67 @@ ToolOutput HistoryTools::viewItem(const TurnCtx& turn, uint64_t q, size_t offset
   size_t total = 0;
   if (st.ok()) st = tx::itemText(files, turn.chatKey, it, tx::TextPage{offset, limit}, body, total);
   if (st.err == tx::Err::NotFound) return fail(R::kViewGone);
+  // Outside when stored, whatever page is asked: the item's own class, or an assistant text of a turn
+  // that holds outside content.
+  bool outside = storedOutside(it);
+  if (st.ok() && !outside && it.kind == tx::ItemKind::Assistant)
+    st = tx::turnHoldsOutside(files, turn.chatKey, it.turn, storedOutside, outside);
   if (!st.ok()) return fail(std::string(R::kCardStopped));
-  const bool outside = it.kind == tx::ItemKind::Result && it.cls == tx::ResultClass::Outside;
   const std::string when = whenOf(it.t, it.kind == tx::ItemKind::User ? it.tzMinutes : tz(it.t));
   const std::string id = "r" + std::to_string(q);
-  ToolOutput out = ok(page(label(id, when, sourceOfItem(it.kind), it.n, outside) + " " + std::to_string(total), body,
-                           offset, total));
+  ToolOutput out = ok(page(label(id, when, sourceOfItem(it.kind), it.n, outside) + " " + std::to_string(total),
+                           outside ? framed(body) : body, offset, total, body.size()));
   out.outside = outside;   // outside content keeps its class when it comes back
   logCall(turn, card_, out.text.size(), CallLog{kView, id, 1, offset + body.size() < total, "ok"});
   return out;
 }
 
+namespace {
+// An earlier-engine row by id (the forward read, which reaches the cold region too); `found` false: none.
+tx::Status rowById(tx::OldRows& old, uint64_t id, tx::DayRow& out, bool& found, tx::ReadStats& stats) {
+  std::vector<tx::DayRow> rows;
+  bool end = false;
+  const tx::Status st = old.read(id - 1, 1, rows, end, stats);
+  found = st.ok() && !rows.empty() && rows[0].id == id;
+  if (found) out = rows[0];
+  return st;
+}
+// A /clear row (ev:clear) after `id`: the person cleared that row.
+tx::Status clearedAfter(tx::OldRows& old, uint64_t id, bool& cleared, tx::ReadStats& stats) {
+  cleared = false;
+  std::vector<tx::DayRow> rows;
+  bool end = false;
+  tx::Status st;
+  for (uint64_t after = id; st.ok() && !end && !cleared;) {
+    rows.clear();
+    st = old.read(after, tx::kOldPageRows, rows, end, stats);
+    for (const tx::DayRow& n : rows) cleared = cleared || n.clearBoundary;
+    if (rows.empty()) break;
+    after = rows.back().id;
+  }
+  return st;
+}
+}  // namespace
+
+// An earlier-engine row of this chat by id, and none from before the chat's newest earlier-engine
+// /clear: a row tagged ev:clear after it means the person cleared it.
 ToolOutput HistoryTools::viewOld(const TurnCtx& turn, uint64_t row, size_t offset, size_t limit) {
   tx::OldRows* old = oldFor(turn);
   if (!old) return fail(R::kViewNoItem);
   tx::DayRow r;
-  const tx::Status st = old->row(row, r, card_);
-  if (st.err == tx::Err::NotFound || (st.ok() && (r.ours || (r.role != tx::RowRole::Owner && r.role != tx::RowRole::Assistant))))
-    return fail(R::kViewNoItem);
+  bool found = false, cleared = false;
+  tx::Status st = rowById(*old, row, r, found, card_);
+  if (st.ok() && found) st = clearedAfter(*old, row, cleared, card_);
   if (!st.ok()) return fail(std::string(R::kCardStopped));
+  const bool conversation = r.role == tx::RowRole::Owner || r.role == tx::RowRole::Assistant;
+  if (!found || cleared || r.ours || !conversation) return fail(R::kViewNoItem);
+  const bool outside = r.role == tx::RowRole::Assistant || r.photo;   // its class is not known: fail closed
   const tx::HitSource src = r.role == tx::RowRole::Owner ? tx::HitSource::OldPerson : tx::HitSource::OldAssistant;
   const std::string body = offset < r.text.size() ? r.text.substr(offset, limit) : std::string();
-  const std::string head = label(tx::rowIdString(row), whenOf(r.t, tz(r.t)), src, "", false) + " " +
+  const std::string head = label(tx::rowIdString(row), hourOf(r.t, tz(r.t)), src, "", outside) + " " +
                            std::to_string(r.text.size());
-  ToolOutput out = ok(page(head, body, offset, r.text.size()));
+  ToolOutput out = ok(page(head, outside ? framed(body) : body, offset, r.text.size(), body.size()));
+  out.outside = outside;
   logCall(turn, card_, out.text.size(), CallLog{kView, tx::rowIdString(row), 1, offset + body.size() < r.text.size(), "ok"});
   return out;
 }
@@ -360,7 +428,12 @@ ToolOutput HistoryTools::viewPhoto(const TurnCtx& turn, const std::string& ref) 
   tx::ReadOnlyCounted files(*d_.files, d_.nowMs, card_);
   tx::Item owner;
   bool found = false;
-  const tx::Status st = tx::findPhoto(files, turn.chatKey, ref, owner, found);
+  tx::PhotoScan scan;
+  scan.nowMs = d_.nowMs;
+  const tx::Status st = tx::findPhoto(files, turn.chatKey, ref, owner, found, scan);
+  if (st.err == tx::Err::TooLarge && std::string(st.where) == "tx::findPhoto.budget")   // the true reason
+    return fail(R::kViewPhoto + ref + " " + R::kSearchMore + whenOf(scan.readFromT, tz(scan.readFromT)) +
+                R::kSearchBefore);
   if (!st.ok()) return fail(std::string(R::kCardStopped));
   if (!found) return fail(R::kViewNoItem);
   const std::string when = whenOf(owner.t, owner.tzMinutes);

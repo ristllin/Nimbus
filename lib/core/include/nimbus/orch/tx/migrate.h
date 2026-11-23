@@ -137,6 +137,7 @@ struct DayRow {
   // so the later-turn stub carries it with a view pointer (ruling 84 item 5).
   std::string photoRef;
   bool ours = false;      // engine 2 wrote it (tag "e2"): never imported
+  bool clearBoundary = false;   // the earlier engine's /clear row (tag "ev:clear"): older rows were cleared
   std::string text;
 };
 

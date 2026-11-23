@@ -17,10 +17,12 @@
 //   - the chat's transcript segments (/mem/tx/<chatKey>/seg-*.jsonl): every item engine 2 ever
 //     stored for that conversation, the spans compaction has summarized included (segments are
 //     append-only, nothing leaves them), and the bulk payload of a result (TxLog::readBulk);
-//   - optionally the earlier engine's day rows of the same chat (OldRows) older than the oldest row
-//     the history import brought over verbatim: verbatimFloor() finds it (the first owner message of
-//     the log that mirrors a day row). The import imports the newest rows and leaves the older ones
-//     to its digest and to the line "... not shown: search finds them": those are the rows below it.
+//   - optionally the earlier engine's day rows of the same chat (OldRows), every one in the range that
+//     the import did not bring over word for word (lane E2-SRCH2): an owner row whose id a stored
+//     owner message mirrors (u.m) is in the transcript, and so is the assistant row that answered it;
+//     every other owner or assistant row is searched (the rows below the first import, the named rows
+//     of a later re-entry batch). Rows engine 2 wrote ("e2") never; rows before the chat's newest
+//     earlier-engine /clear (a row tagged ev:clear) never: the person cleared them.
 // Which conversation is read is the caller's: chatKey and the OldRows of that chat. No argument a
 // model writes picks one (a cursor only positions inside it, and is checked).
 //
@@ -53,7 +55,7 @@ inline constexpr uint32_t kSearchCardMs = 12000;         // a window's card time
 inline constexpr size_t kSearchExcerptBytes = 160;
 inline constexpr size_t kSearchRankedMax = 600;
 inline constexpr size_t kVerbatimFloorScan = 256 * 1024; // verbatimFloor reads at most this much
-inline constexpr size_t kOldPageRows = 32;
+inline constexpr size_t kOldPageRows = 64;
 inline constexpr size_t kPhotoScanBytes = 8 * 1024 * 1024;   // findPhoto reads at most this much (TooLarge)
 
 // What the card cost a call (the bench's measure).
@@ -91,24 +93,30 @@ class ReadOnlyCounted : public TxFiles {
 };
 
 // ---- the earlier engine's rows of the chat ---------------------------------------------------
-struct OldPageAsk {
-  std::string before;        // the store's cursor: rows strictly older ("" = from the newest)
-  uint64_t fromT = 0;        // epoch seconds, inclusive (0 = no bound)
-  uint64_t toT = 0;          // epoch seconds, inclusive (0 = no bound)
-  size_t max = kOldPageRows;
-};
-struct OldPage {
-  std::vector<DayRow> rows;  // newest first
-  std::string next;          // the cursor that continues below the page
-  bool older = false;        // rows remain below the page
-};
+// Read forward (the store's `after` query, the path the history import reads every row through,
+// ring and cold regions alike; lane E2-SRCH2): the newest-first page query stopped after one page on
+// a ring-resident store.
 class OldRows {
  public:
   virtual ~OldRows() = default;
-  // One page of this chat's rows, newest first. Io when the store did not answer.
-  virtual Status page(const OldPageAsk& ask, OldPage& out, ReadStats& stats) = 0;
-  // One row of this chat by id. NotFound when it has none; Io when the store did not answer.
-  virtual Status row(uint64_t id, DayRow& out, ReadStats& stats) = 0;
+  // At most `max` rows of this chat with id > after, oldest first; `end` when none follows. Io when the
+  // store did not answer or a span of it would not read ("cannot read" is never "no rows").
+  virtual Status read(uint64_t after, size_t max, std::vector<DayRow>& out, bool& end, ReadStats& stats) = 0;
+};
+
+// The binding over the import's row source (tx::RowSource; on the device EpisodicRowSource over the
+// day streams): its reads timed into `stats`, and a span the store reports it could not read
+// (`unreadable`, counted before and after) is Io, never fewer rows.
+class RowSourceRows : public OldRows {
+ public:
+  RowSourceRows(RowSource& src, std::function<uint32_t()> nowMs, std::function<size_t()> unreadable = nullptr)
+      : src_(src), now_(std::move(nowMs)), unreadable_(std::move(unreadable)) {}
+  Status read(uint64_t after, size_t max, std::vector<DayRow>& out, bool& end, ReadStats& stats) override;
+
+ private:
+  RowSource& src_;
+  std::function<uint32_t()> now_;
+  std::function<size_t()> unreadable_;
 };
 
 // ---- search ----------------------------------------------------------------------------------
@@ -137,7 +145,9 @@ struct SearchHit {
   std::string excerpt;       // the best spot on one line, at most SearchLimits::excerptBytes
   bool cutBefore = false;    // the excerpt starts inside the text
   bool cutAfter = false;     // ... ends inside it
-  bool outside = false;      // taken from outside content (a result stored as outside)
+  bool outside = false;      // taken from outside content (see SearchDeps::itemOutside)
+  bool hourOnly = false;     // an earlier-engine row: its time is known to the hour only
+  uint32_t turn = 0;         // its turn (an item of the transcript)
 };
 
 struct SearchLimits {
@@ -152,6 +162,11 @@ struct SearchDeps {
   TxFiles* files = nullptr;
   std::string chatKey;
   OldRows* old = nullptr;          // null: the transcript only (a /clear generation, the daemon)
+  // The rails' item rule (plain::itemOutside): a stored item that was outside content when stored.
+  // Null: results of class Outside only. A hit from such an item, from a summary that holds a data
+  // frame, from an assistant text of a turn that holds one, or from an earlier engine's assistant or
+  // photo row (its class is not known: fail closed) is outside.
+  std::function<bool(const Item& it)> itemOutside;
   std::function<uint32_t()> nowMs; // monotonic, the card time; null: none
   SearchLimits limits;
 };
@@ -219,7 +234,21 @@ Status itemText(TxFiles& files, const std::string& chatKey, const Item& it, cons
 
 // An owner message of this conversation that carries the photo `ref` ("p<ref8>"), newest first.
 // found false: none in the conversation. Io when a read was refused; TooLarge past kPhotoScanBytes.
-Status findPhoto(TxFiles& files, const std::string& chatKey, const std::string& ref, Item& owner, bool& found);
+// TooLarge ("tx::findPhoto.budget") when kPhotoScanBytes or `cardMs` of card time (with `nowMs`) were
+// read without finding it: `readFromT` then says how far back the reading went.
+struct PhotoScan {
+  std::function<uint32_t()> nowMs;   // null: bytes only
+  uint32_t cardMs = kSearchCardMs;
+  uint64_t readFromT = 0;            // out: the oldest stamped line read
+};
+Status findPhoto(TxFiles& files, const std::string& chatKey, const std::string& ref, Item& owner, bool& found,
+                 PhotoScan& scan);
+
+// Whether turn `turn` of this conversation holds an item `outside` says was outside content (its
+// assistant texts are then outside too): read back from the newest line to that turn. Io when a read
+// was refused.
+Status turnHoldsOutside(TxFiles& files, const std::string& chatKey, uint32_t turn,
+                        const std::function<bool(const Item& it)>& outside, bool& holds);
 
 }  // namespace tx
 }  // namespace orch

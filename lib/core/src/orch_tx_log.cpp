@@ -937,7 +937,16 @@ Status TxLog::readBulk(const std::string& handle, size_t offset, size_t limit, s
   if (offset >= len || limit == 0) return Status::success();
   const size_t want = static_cast<size_t>(std::min<uint64_t>(limit, len - offset));
   size_t size = 0;
-  if (!files_.size(path, size) || size < at + len) return Status::fail(Err::NotFound, "tx::TxLog::readBulk");
+  if (!files_.size(path, size)) {
+    // A file that is gone (30-day retention) is NotFound only when the folder's listing says so; a
+    // listing that fails, or that names the file, is a read that failed (ruling 116: never "absent").
+    std::vector<std::string> names;
+    const size_t slash = path.rfind('/');
+    const bool listed = files_.list(path.substr(0, slash), names);
+    const bool there = listed && std::find(names.begin(), names.end(), path.substr(slash + 1)) != names.end();
+    return Status::fail(listed && !there ? Err::NotFound : Err::Io, "tx::TxLog::readBulk");
+  }
+  if (size < at + len) return Status::fail(Err::NotFound, "tx::TxLog::readBulk");
   out.resize(want);
   size_t done = 0;
   while (done < want) {

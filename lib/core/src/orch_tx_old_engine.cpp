@@ -69,6 +69,7 @@ DayRow dayRowOf(const EpisodicMessage& m) {
   r.role = roleOf(m);
   r.photo = m.kind == MsgKind::Image;
   r.ours = hasTag(m.tags, "e2");
+  r.clearBoundary = hasTag(m.tags, "ev:clear");   // harness conversation.h kClearBoundaryTag
   r.text = m.text;
   return r;
 }
