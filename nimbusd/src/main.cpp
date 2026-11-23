@@ -176,6 +176,7 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
   o.spend = [&rig](const nimbus::orch::TurnSpend& spend, const std::string& tag) {
     rig.spendCeiling().commit(spend, tag != "compact");
   };
+  o.paused = [] { return nimbus::orch::spendFrozen(); };   // lane E2-FIX7: engine 2 fails closed at the ceiling
   out.reset(new nimbusd::Engine2Host(o));
   const std::string why = out->start();
   if (!why.empty()) return why;

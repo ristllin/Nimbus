@@ -264,6 +264,13 @@ class HostedLoops {
     ScheduleHost h(*this);
     return nimbus::orch::schedule::fire(h, req, b, epoch());
   }
+  // Lane E2-FIX7: does entry `id` fire as a routine (a model call)? An entry that cannot be read counts as one,
+  // so the money guard fails closed.
+  bool firesAsRoutine(const std::string& id) {
+    ScheduleHost h(*this);
+    nimbus::orch::schedule::Kind k = nimbus::orch::schedule::Kind::Routine;
+    return !nimbus::orch::schedule::entryKind(h, id, k) || k == nimbus::orch::schedule::Kind::Routine;
+  }
   std::string sidecarPath() const { return sidecarPath_; }
   // Where routine state files live (the instance's transcript storage, FireBinding::files): a
   // deleted routine's state goes with it. Null: nothing is removed.

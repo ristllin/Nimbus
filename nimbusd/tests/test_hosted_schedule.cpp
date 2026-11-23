@@ -25,6 +25,8 @@
 #include "../../test/support/tx_battery/mem_files.h"
 #include "../../test/support/tx_battery/stub_wire.h"
 #include "engine2_host.h"
+#include <algorithm>
+
 #include "hosted_loops.h"
 #include "nimbus/harness/channel.h"
 #include "nimbus/harness/plain/deliver.h"
@@ -295,6 +297,12 @@ void testEngine2HostFires(ndtest::Ctx& c) {
   o.transport = &model;
   o.loops = &loops;
   o.chatId = orch::kHostedWebChatId;
+  std::vector<std::string> tags;   // lane E2-FIX7: what reaches the instance's ceiling
+  bool paused = false;
+  o.spend = [&tags](const orch::TurnSpend& s, const std::string& tag) {
+    if (!s.empty()) tags.push_back(tag);
+  };
+  o.paused = [&paused] { return paused; };
   host.reset(new nimbusd::Engine2Host(o));
   c.eq(host->start(), "", "the engine-2 owner chat starts with the routines table bound");
   c.ok(host->rig() && host->rig()->registry().has("schedule"), "schedule is on its registry");
@@ -334,6 +342,22 @@ void testEngine2HostFires(ndtest::Ctx& c) {
   c.ok(sent.size() == 2 && sent[1] == std::string(orch::kHostedWebChatId) + "|ORBIT",
        "after quiet hours the idle step sends the output to the owner chat");
   c.ok(has(fileAt(root + "/mem/routines/" + routineId + ".state"), "ORBIT"), "its state file holds the output");
+  // Lane E2-FIX7 (M3, M4, M7; red on 88bfbe826): the routine's spend reaches the ceiling, and once it is reached no
+  // engine-2 path makes a paid request: the routine waits, a Telegram turn gets the pause line, an idle step runs
+  // no compaction.
+  c.ok(std::count(tags.begin(), tags.end(), std::string("routine")) == 1, "the routine's spend is counted for the ceiling");
+  paused = true;
+  const size_t frozenAt = model.requests().size();
+  nimbusd::vclock::advance(400);
+  loops.tick(false, nullptr);
+  c.eqi((int)model.requests().size(), (int)frozenAt, "paused: the due routine waits, no request");
+  sent.clear();
+  host->say("12345", "hello from telegram", "tg");
+  c.eqi((int)model.requests().size(), (int)frozenAt, "paused: a Telegram turn sends no request");
+  c.ok(sent.size() == 1 && sent[0] == std::string("12345|") + nimbusd::kPausedLine, "...and the person gets the pause line");
+  c.ok(host->requestCompaction(), "a /compact is queued");
+  host->idle(false);
+  c.eqi((int)model.requests().size(), (int)frozenAt, "paused: the idle step runs no compaction");
   std::string why;
   c.ok(model.verify(why), "the script was used exactly (" + why + ")");
   host.reset();

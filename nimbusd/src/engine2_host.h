@@ -19,6 +19,7 @@
 #include "nimbus/orch/calc_tool.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/tx/budget.h"
+#include "nimbus/orch/spend_ceiling.h"   // kSpendFrozenError (lane E2-FIX7)
 #include "nimbus/orch/turn_spend.h"   // TurnSpend (lane E2-CMP)
 #include "plain_rig.h"
 #include "posix_files.h"
@@ -66,7 +67,16 @@ struct Engine2Options {
   // Lane E2-CMP: every paid request for the instance's monthly ceiling: each turn's spend ("turn") and
   // each summarizer request of the compaction ("compact"). Null: not counted.
   std::function<void(const nimbus::orch::TurnSpend& spend, const std::string& tag)> spend;
+  // Lane E2-FIX7: the instance's monthly ceiling is reached. Then no engine-2 path makes a paid request: a
+  // person's turn on any channel gets kPausedLine, routines wait (reminders still go), and the idle step runs
+  // no compaction. Null: never paused.
+  std::function<bool()> paused;
 };
+
+// What a person's message gets while paid calls are paused (the web chat's own refusal, lane DEF).
+inline constexpr char kPausedLine[] =
+    "Paid AI calls are paused: this month's spend ceiling is reached. Raise it on Assistant > Usage, or send the "
+    "/budget command from the pause message.";
 
 // The one plain line a refused switch logs (and the daemon exits on).
 inline std::string engine2HeadRefusal(const std::string& head, const std::string& model) {
@@ -161,6 +171,12 @@ class Engine2Host {
         return t;
       }
     }
+    if (paused()) {   // fail closed: no head or summarizer request past the ceiling, on any channel
+      if (o_.deliver) o_.deliver(chat, kPausedLine);
+      PlainTurn t;
+      t.stated = "plain-rig:paused";
+      return t;
+    }
     if (!rig_) {
       PlainTurn t;
       t.stated = "plain-rig:not-booted";
@@ -170,7 +186,7 @@ class Engine2Host {
     curChat_ = chat;
     PlainTurn t = rig_->say(text, ch);
     curChat_.clear();
-    if (o_.spend) o_.spend(turnSpend(t.out), "turn");
+    if (o_.spend) o_.spend(turnSpend(t.out, bootModel_), "turn");
     lastTurnEnd_ = vclock::epoch();
     if (t.ending != PlainEnding::Reply)
       std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending), t.stated.c_str());
@@ -195,6 +211,7 @@ class Engine2Host {
     // Lane E2-SCHED: a routine note held for quiet hours goes once they end (one note a step).
     if (o_.loops && plain::drainHeld(held_, rig_->ownerSink(), vclock::epoch(), tzNow(), quiet(),
                                      o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin)) return true;
+    if (paused()) return false;   // no summarizer request past the ceiling (an attempt in flight has finished)
     plain::IdleCtx ctx;
     ctx.now = vclock::epoch();
     ctx.nowMs = vclock::steadyMs();
@@ -222,6 +239,11 @@ class Engine2Host {
       o.retryAfterSec = 60;
       return o;
     }
+    if (paused() && o_.loops->firesAsRoutine(req.id)) {   // a routine waits while paused; a reminder still goes
+      o.deferred = true;
+      o.error = nimbus::orch::kSpendFrozenError;
+      return o;
+    }
     nimbus::orch::schedule::FireBinding b;
     b.owner = rig_->ownerSink();
     b.tzMinutes = tzNow();
@@ -234,7 +256,9 @@ class Engine2Host {
       r.tzMinutes = tzNow();
       r.held = &held_;
       r.quiet = quiet();
-      return plain::runRoutine(r, f, out);
+      const plain::Status st = plain::runRoutine(r, f, out);
+      if (o_.spend) o_.spend(turnSpend(out.outcome, r.head.model), "routine");   // counted like a turn
+      return st;
     };
     nimbus::orch::LoopFireRequest owner = req;
     owner.chatId = o_.chatId;
@@ -275,7 +299,8 @@ class Engine2Host {
   }
 
   // A turn's spend in the provider's own counts (plain::turnSpendOf's shape): one slot of the head.
-  nimbus::orch::TurnSpend turnSpend(const plain::TurnOutcome& out) const {
+  bool paused() const { return o_.paused && o_.paused(); }
+  nimbus::orch::TurnSpend turnSpend(const plain::TurnOutcome& out, const std::string& model) const {
     nimbus::orch::TurnSpend s;
     nimbus::orch::TokenUsage u;
     u.promptTokens = out.end.promptTokens;
@@ -285,7 +310,7 @@ class Engine2Host {
     u.cacheWrite1hTokens = out.end.cacheWrite1hTokens;   // priced at 2x the input rate (lane E2-CACHE)
     u.responses = out.headRequests;
     u.maxRequestIn = out.end.lastPromptTokens;
-    s.add("anthropic", bootModel_.c_str(), u);   // files nothing when nothing was billed
+    s.add("anthropic", model.c_str(), u);   // files nothing when nothing was billed
     return s;
   }
 
