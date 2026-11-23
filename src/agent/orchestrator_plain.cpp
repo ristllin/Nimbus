@@ -652,6 +652,7 @@ bool clearChat(const String& chatId, String& why) {
   }
   if (held && !keepHeld) s_chat.reset();   // the arena goes back first
   alogf("e2: /clear %s: conversation %s", chatId.c_str(), key.c_str());
+  s_noStartWhy = nullptr;
   if (bindingFor(chatId)) return true;
   if (s_noStartWhy) why = s_noStartWhy;
   return false;
