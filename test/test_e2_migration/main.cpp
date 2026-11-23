@@ -104,6 +104,18 @@ class Card : public tx::CardOps {
         names.push_back(kv.first.substr(pre.size()));
     return true;
   }
+  bool listNames(const std::string& dir, std::vector<std::string>& names) override {   // E2-STORE's CardOps
+    names.clear();
+    if (!dirs.count(dir)) return false;
+    const std::string pre = dir == "/" ? std::string("/") : dir + "/";
+    auto child = [&](const std::string& p) {
+      if (p.size() > pre.size() && p.rfind(pre, 0) == 0 && p.find('/', pre.size()) == std::string::npos)
+        names.push_back(p.substr(pre.size()));
+    };
+    for (const auto& kv : files) child(kv.first);
+    for (const std::string& d : dirs) child(d);
+    return true;
+  }
 };
 
 // The fold record as the earlier engine left it; a save would be a write to the old store.
