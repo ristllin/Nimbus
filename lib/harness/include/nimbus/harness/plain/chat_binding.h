@@ -565,15 +565,8 @@ class ChatBinding {
     Status st = tx::budgetFor(headKey(), tx::kDefaultProfile, b);
     if (!st.ok()) return st;
     arenaBytes_ = tx::arenaBytesFor(b);
-    const nimbus::orch::BuiltinPrice* row = nimbus::orch::builtinModelPrice(cfg_.provider.c_str(), cfg_.model.c_str());
-    if (!row) row = nimbus::orch::builtinDefaultPrice(cfg_.provider.c_str(), cfg_.model.c_str());
-    if (!row || !row->microIn || !row->microOut)
-      return Status::fail(tx::Err::NotFound, "plain::ChatBinding::boot.price");
-    HeadRates r;
-    r.in = row->microIn;
-    r.out = row->microOut;
-    r.cacheRead = row->microCacheR ? row->microCacheR : row->microIn / 10;
-    r.cacheWrite = row->microCacheW ? row->microCacheW : row->microIn + row->microIn / 4;
+    HeadRates r;   // the ledger's own rows, the long-prompt tier included (E2-FIX6)
+    if (!headRatesFor(cfg_.provider, cfg_.model, r)) return Status::fail(tx::Err::NotFound, "plain::ChatBinding::boot.price");
     cost_ = guardCostFor(b, r);
     breaker_.setSpendCap(nimbus::orch::spendRateCapMicro(
         cfg_.monthlyCeilingMicro, nimbus::orch::blendedTurnMicro(cost_.warmRequestMicroUsd, cost_.coldRequestMicroUsd)));

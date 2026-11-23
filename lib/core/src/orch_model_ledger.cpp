@@ -45,7 +45,7 @@ void rollTo(ModelSpend& r, uint32_t periodKey) {
   if (r.periodKey == periodKey || periodKey == 0) return;
   if (r.periodKey == 0) { r.periodKey = periodKey; return; }
   r.periodKey = periodKey;
-  r.tokIn = r.tokOut = r.cacheR = r.cacheW = 0;
+  r.tokIn = r.tokOut = r.cacheR = r.cacheW = r.cacheW1h = 0;
 }
 
 uint64_t satAdd(uint64_t a, uint64_t b) { return (UINT64_MAX - a < b) ? UINT64_MAX : a + b; }
@@ -68,6 +68,7 @@ void mergeRow(ModelSpend& into, const ModelSpend& from) {
     into.tokOut = satAdd(into.tokOut, from.tokOut);
     into.cacheR = satAdd(into.cacheR, from.cacheR);
     into.cacheW = satAdd(into.cacheW, from.cacheW);
+    into.cacheW1h = satAdd(into.cacheW1h, from.cacheW1h);
   }
   foldTotals(into, from);
 }
@@ -275,7 +276,7 @@ void ModelLedger::syncPeriods(PeriodOf periodOf, const void* ctx) {
 void ModelLedger::clearPeriodSpend(size_t i) {
   if (i >= rows_.size()) return;
   ModelSpend& r = rows_[i];
-  r.tokIn = r.tokOut = r.cacheR = r.cacheW = 0;
+  r.tokIn = r.tokOut = r.cacheR = r.cacheW = r.cacheW1h = 0;
 }
 
 void ModelLedger::dropAttribution(size_t i) {
@@ -365,6 +366,7 @@ void ModelLedger::record(const char* prov, const char* model, const TokenDelta& 
   r->tokOut = satAdd(r->tokOut, d.out);
   r->cacheR = satAdd(r->cacheR, d.cacheR);
   r->cacheW = satAdd(r->cacheW, d.cacheW);
+  r->cacheW1h = satAdd(r->cacheW1h, d.cacheW1h < d.cacheW ? d.cacheW1h : d.cacheW);
   r->totIn = satAdd(r->totIn, d.in);
   if (cacheInTotal) r->totIn = satAdd(satAdd(r->totIn, d.cacheR), d.cacheW);
   r->totOut = satAdd(r->totOut, d.out);
@@ -436,11 +438,12 @@ void ModelLedger::replaceRouterRates(const std::vector<ModelRate>& rows) {
 }
 
 // ---- text forms ------------------------------------------------------------------
-// spend row:  prov|model|periodKey|tokIn|tokOut|cacheR|cacheW|totIn|totOut|lastDay
+// spend row:  prov|model|periodKey|tokIn|tokOut|cacheR|cacheW|totIn|totOut|lastDay|cacheW1h
 // tracking:   !t   (tracking started)
 // behind:     !n   (the provider counters' latest store did not land)
 // track:      !p|prov|periodKey|preIn|preOut|preCr|preCw|lostIn|lostOut|lostCr|lostCw|
-//             preTotIn|preTotOut|storedTotIn|storedTotOut|storedBeforeIn|storedBeforeOut
+//             preTotIn|preTotOut|storedTotIn|storedTotOut|storedBeforeIn|storedBeforeOut|preCw1h|lostCw1h
+// (the 1-hour fields are E2-FIX6 tails: a file without them reads 0)
 // price row:  prov|model|microIn|microOut
 
 std::string ModelLedger::serializeSpend() const {
@@ -453,10 +456,11 @@ std::string ModelLedger::serializeSpend() const {
     const uint64_t f[] = {t.periodKey, t.pre.in,  t.pre.out,  t.pre.cacheR,  t.pre.cacheW,
                           t.lost.in,   t.lost.out, t.lost.cacheR, t.lost.cacheW,
                           t.preTotIn,  t.preTotOut, t.storedTotIn, t.storedTotOut,
-                          t.storedBeforeIn, t.storedBeforeOut};
-    for (uint64_t v : f) {
+                          t.storedBeforeIn, t.storedBeforeOut, t.pre.cacheW1h, t.lost.cacheW1h};
+    const size_t n = (t.pre.cacheW1h || t.lost.cacheW1h) ? 17 : 15;   // the 1-hour tail only when set
+    for (size_t k = 0; k < n; ++k) {
       out.push_back('|');
-      appendU64(out, v);
+      appendU64(out, f[k]);
     }
   }
   for (const auto& r : rows_) {
@@ -471,24 +475,27 @@ std::string ModelLedger::serializeSpend() const {
     out.push_back('|'); appendU64(out, r.totIn);
     out.push_back('|'); appendU64(out, r.totOut);
     out.push_back('|'); appendU64(out, r.lastDay);
+    if (r.cacheW1h) { out.push_back('|'); appendU64(out, r.cacheW1h); }
   }
   return out;
 }
 
 void ModelLedger::parseTrack(const std::string& group) {
   tracking_ = true;
-  std::string p[17];
-  const int np = splitBars(group, p, 17);
+  std::string p[19];
+  const int np = splitBars(group, p, 19);
   if (np < 2 || !provKeySafe(p[1].c_str()) || track(p[1].c_str())) return;
   ProvTrack* t = trackFor(p[1].c_str());
   if (!t) return;
   uint64_t* u64[] = {&t->pre.in,   &t->pre.out,   &t->pre.cacheR,  &t->pre.cacheW,
                      &t->lost.in,  &t->lost.out,  &t->lost.cacheR, &t->lost.cacheW,
                      &t->preTotIn, &t->preTotOut, &t->storedTotIn, &t->storedTotOut,
-                     &t->storedBeforeIn, &t->storedBeforeOut};
+                     &t->storedBeforeIn, &t->storedBeforeOut, &t->pre.cacheW1h, &t->lost.cacheW1h};
   if (np > 2) t->periodKey = (uint32_t)parseSat(p[2], UINT32_MAX);
-  for (int k = 0; k < 14; ++k)
+  for (int k = 0; k < 16; ++k)
     if (np > 3 + k) *u64[k] = parseSat(p[3 + k], UINT64_MAX);
+  if (t->pre.cacheW1h > t->pre.cacheW) t->pre.cacheW1h = t->pre.cacheW;   // never a negative 5-minute part
+  if (t->lost.cacheW1h > t->lost.cacheW) t->lost.cacheW1h = t->lost.cacheW;
 }
 
 void ModelLedger::deserializeSpend(const std::string& s) {
@@ -505,8 +512,8 @@ void ModelLedger::deserializeSpend(const std::string& s) {
       return true;   // the header, or a group a newer build added
     }
     if (rows_.size() >= kMaxRows) return false;   // the cap (tracks are written first)
-    std::string p[10];
-    const int np = splitBars(group, p, 10);
+    std::string p[11];
+    const int np = splitBars(group, p, 11);
     if (np < 2 || !provKeySafe(p[0].c_str()) || !acceptModel(p[1].c_str())) return true;
     if (findRow(p[0].c_str(), p[1].c_str())) return true;   // a duplicate key: first wins
     ModelSpend r;
@@ -517,6 +524,8 @@ void ModelLedger::deserializeSpend(const std::string& s) {
     for (int k = 0; k < 6; ++k)
       if (np > 3 + k) *u64[k] = parseSat(p[3 + k], UINT64_MAX);
     if (np > 9) r.lastDay = (uint32_t)parseSat(p[9], UINT32_MAX);
+    if (np > 10) r.cacheW1h = parseSat(p[10], UINT64_MAX);
+    if (r.cacheW1h > r.cacheW) r.cacheW1h = r.cacheW;
     rows_.push_back(r);
     tracking_ = true;   // a row means tracking had started (a file without "!t")
     return true;

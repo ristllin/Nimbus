@@ -375,6 +375,7 @@ TokenDelta periodTokens(const ProviderBudget& e) {
   t.out = e.tokensOut;
   t.cacheR = e.cacheRead;
   t.cacheW = e.cacheWrite;
+  t.cacheW1h = e.cacheWrite1h < e.cacheWrite ? e.cacheWrite1h : e.cacheWrite;   // E2-FIX6: priced at 2x
   return t;
 }
 
@@ -387,6 +388,7 @@ TokenDelta minus(const TokenDelta& a, const TokenDelta& b) {
   t.out = a.out > b.out ? a.out - b.out : 0;
   t.cacheR = a.cacheR > b.cacheR ? a.cacheR - b.cacheR : 0;
   t.cacheW = a.cacheW > b.cacheW ? a.cacheW - b.cacheW : 0;
+  t.cacheW1h = minU(a.cacheW1h > b.cacheW1h ? a.cacheW1h - b.cacheW1h : 0, t.cacheW);
   return t;
 }
 
@@ -401,10 +403,12 @@ TokenDelta claim(const ModelSpend& r, TokenDelta& rem) {
   t.out = minU(r.tokOut, rem.out);
   t.cacheR = minU(r.cacheR, rem.cacheR);
   t.cacheW = minU(r.cacheW, rem.cacheW);
+  t.cacheW1h = minU(minU(r.cacheW1h, rem.cacheW1h), t.cacheW);   // E2-FIX6: the row's 1-hour part
   rem.in -= t.in;
   rem.out -= t.out;
   rem.cacheR -= t.cacheR;
   rem.cacheW -= t.cacheW;
+  rem.cacheW1h = minU(rem.cacheW1h - t.cacheW1h, rem.cacheW);   // never more than the writes left
   return t;
 }
 
@@ -571,6 +575,7 @@ TokenDelta UsageLedger::earlierUsage(const ProviderBudget& e) const {
   pre.out = minU(t->pre.out, all.out);
   pre.cacheR = minU(t->pre.cacheR, all.cacheR);
   pre.cacheW = minU(t->pre.cacheW, all.cacheW);
+  pre.cacheW1h = minU(minU(t->pre.cacheW1h, all.cacheW1h), pre.cacheW);
   return pre;
 }
 
@@ -751,6 +756,7 @@ void addBucket(const UsageLedger& L, MicroSum& m, const DayUsage& e) {
   t.out = e.tokOut;
   t.cacheR = e.cacheR;
   t.cacheW = e.cacheW;
+  t.cacheW1h = minU(e.cacheW1h, e.cacheW);   // E2-FIX6
   m.addTokens(t, e.model[0] ? L.rowRate(e.prov, e.model) : L.residualRate(e.prov));
   if (e.calls) m.addCalls(e.calls, L.callRate(e.prov));
 }
@@ -1338,8 +1344,10 @@ void UsageLedger::deserialize(const std::string& s) {
       tags_.push_back(std::move(t));
       continue;
     }
-    std::string parts[18];
-    int np = splitBars(group, parts, 18);
+    // 19 fields since R3's 1-hour tail (field 18): an array of 18 never read it, so the 1-hour part
+    // was lost at every load and priced at the 5-minute rate after a restart (lane E2-FIX6).
+    std::string parts[19];
+    int np = splitBars(group, parts, 19);
     if (np < 7 || parts[0].empty()) continue;   // malformed group -> skip
     if (entries_.size() >= kMaxProviders) break;
     ProviderBudget e;
@@ -1389,6 +1397,7 @@ void mergeInto(DayUsage& dst, const DayUsage& src) {
   dst.calls += src.calls;
   dst.cacheR += src.cacheR;
   dst.cacheW += src.cacheW;
+  dst.cacheW1h += src.cacheW1h;
 }
 void setModel(DayUsage& e, const char* m) {
   const size_t n = std::strlen(m);
@@ -1514,6 +1523,7 @@ void UsageHistory::record(const std::string& prov, const char* model, uint32_t d
   e->calls += calls;
   e->cacheR += d.cacheR;
   e->cacheW += d.cacheW;
+  e->cacheW1h += d.cacheW1h < d.cacheW ? d.cacheW1h : d.cacheW;
 }
 
 int UsageHistory::prune(uint32_t todayKey, uint32_t keepDays) {
@@ -1538,11 +1548,13 @@ std::string UsageHistory::serialize() const {
     out.push_back('|'); appendU64(out, e.tokIn);
     out.push_back('|'); appendU64(out, e.tokOut);
     out.push_back('|'); appendU64(out, e.calls);
-    // 2026-10 tail (fields 6-8), each present only when it or a later one is set.
-    const int tail = e.cacheW ? 3 : e.cacheR ? 2 : e.model[0] ? 1 : 0;
+    // 2026-10 tail (fields 6-8), each present only when it or a later one is set; field 9 the
+    // 1-hour part of the writes (E2-FIX6).
+    const int tail = e.cacheW1h ? 4 : e.cacheW ? 3 : e.cacheR ? 2 : e.model[0] ? 1 : 0;
     if (tail >= 1) { out.push_back('|'); out += e.model; }
     if (tail >= 2) { out.push_back('|'); appendU64(out, e.cacheR); }
     if (tail >= 3) { out.push_back('|'); appendU64(out, e.cacheW); }
+    if (tail >= 4) { out.push_back('|'); appendU64(out, e.cacheW1h); }
   }
   return out;
 }
@@ -1557,8 +1569,8 @@ void UsageHistory::deserialize(const std::string& s) {
     std::string group = s.substr(i, semi - i);
     i = semi + 1;
     if (group.empty()) continue;
-    std::string parts[8];
-    int np = splitBars(group, parts, 8);
+    std::string parts[9];
+    int np = splitBars(group, parts, 9);
     if (np < 5 || parts[1].empty()) continue;   // malformed group -> skip
     if (entries_.size() >= kMaxEntries) break;
     DayUsage d;
@@ -1570,6 +1582,8 @@ void UsageHistory::deserialize(const std::string& s) {
     if (np > 5 && histModelOk(parts[5].c_str())) setModel(d, parts[5].c_str());
     if (np > 6) d.cacheR = (uint64_t)strtoull(parts[6].c_str(), nullptr, 10);
     if (np > 7) d.cacheW = (uint64_t)strtoull(parts[7].c_str(), nullptr, 10);
+    if (np > 8) d.cacheW1h = (uint64_t)strtoull(parts[8].c_str(), nullptr, 10);
+    if (d.cacheW1h > d.cacheW) d.cacheW1h = d.cacheW;
     if (d.dayKey == 0) continue;
     entries_.push_back(std::move(d));
   }

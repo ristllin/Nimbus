@@ -10,6 +10,7 @@
 
 #include "nimbus/harness/plain/exchange.h"
 #include "nimbus/harness/plain/texts.h"
+#include "nimbus/orch/model_price_defaults.h"   // headRatesFor: the ledger's own price rows (E2-FIX6)
 #include "nimbus/orch/tool_groups.h"
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/item.h"
@@ -91,6 +92,11 @@ HeadCost guardCostFor(const nimbus::orch::tx::HeadBudget& budget, const HeadRate
   c.outMicroPerM = rates.out;
   c.cacheReadMicroPerM = rates.cacheRead;
   c.cacheWriteMicroPerM = rates.cacheWrite;
+  c.longOver = rates.longOver;
+  c.longInMicroPerM = rates.longIn;
+  c.longOutMicroPerM = rates.longOut;
+  c.longCacheReadMicroPerM = rates.longCacheRead;
+  c.longCacheWriteMicroPerM = rates.longCacheWrite;
   const uint32_t p = budget.tokens.due;
   c.warmRequestMicroUsd = requestMicroUsd(c, RequestTokens{p / 10, kGuardOutputTokens, p - p / 10, 0});
   c.coldRequestMicroUsd = requestMicroUsd(c, RequestTokens{p, kGuardOutputTokens, 0, 0});
@@ -163,13 +169,41 @@ Status checkGuards(const GuardLimits& limits, const GuardState& state, GuardTrip
 }
 
 uint32_t requestMicroUsd(const HeadCost& cost, const RequestTokens& t) {
-  const uint64_t cacheR = cost.cacheReadMicroPerM ? cost.cacheReadMicroPerM : cost.inMicroPerM / 10;
-  const uint64_t cacheW = cost.cacheWriteMicroPerM ? cost.cacheWriteMicroPerM : cost.inMicroPerM * 5 / 4;
+  // A request over the long-prompt threshold is billed at the long tier, every term (E2-FIX6).
+  const uint64_t whole = (uint64_t)t.prompt + t.cacheRead + t.cacheWrite;
+  const bool tier = cost.longOver && cost.longInMicroPerM && whole > cost.longOver;
+  const uint64_t in = tier ? cost.longInMicroPerM : cost.inMicroPerM;
+  const uint64_t out = tier ? cost.longOutMicroPerM : cost.outMicroPerM;
+  const uint64_t readRate = tier ? cost.longCacheReadMicroPerM : cost.cacheReadMicroPerM;
+  const uint64_t writeRate = tier ? cost.longCacheWriteMicroPerM : cost.cacheWriteMicroPerM;
+  const uint64_t cacheR = readRate ? readRate : in / 10;
+  const uint64_t cacheW = writeRate ? writeRate : in * 5 / 4;
   const uint32_t long1h = std::min(t.cacheWrite1h, t.cacheWrite);
-  const uint64_t sum = costOf(t.prompt, cost.inMicroPerM) + costOf(t.output, cost.outMicroPerM) +
-                       costOf(t.cacheRead, cacheR) + costOf(t.cacheWrite - long1h, cacheW) +
-                       costOf(long1h, cost.inMicroPerM * 2);
+  const uint64_t sum = costOf(t.prompt, in) + costOf(t.output, out) + costOf(t.cacheRead, cacheR) +
+                       costOf(t.cacheWrite - long1h, cacheW) + costOf(long1h, in * 2);
   return clamp32(sum);
+}
+
+bool headRatesFor(const std::string& provider, const std::string& model, HeadRates& out) {
+  out = HeadRates{};
+  namespace orch = nimbus::orch;
+  const orch::BuiltinPrice* row = orch::builtinModelPrice(provider.c_str(), model.c_str());
+  if (!row) row = orch::builtinDefaultPrice(provider.c_str(), model.c_str());
+  if (!row || !row->microIn || !row->microOut) return false;
+  out.in = row->microIn;
+  out.out = row->microOut;
+  out.cacheRead = row->microCacheR ? row->microCacheR : row->microIn / 10;
+  out.cacheWrite = row->microCacheW ? row->microCacheW : row->microIn + row->microIn / 4;
+  char key[orch::kModelKeyCap];
+  if (!row->longOver || !orch::builtinLongTierKey(provider.c_str(), model.c_str(), row->longOver + 1, key)) return true;
+  const orch::BuiltinPrice* lr = orch::builtinModelPrice(provider.c_str(), key);
+  if (!lr || !lr->microIn || !lr->microOut) return true;
+  out.longOver = row->longOver;
+  out.longIn = lr->microIn;
+  out.longOut = lr->microOut;
+  out.longCacheRead = lr->microCacheR ? lr->microCacheR : lr->microIn / 10;
+  out.longCacheWrite = lr->microCacheW ? lr->microCacheW : lr->microIn + lr->microIn / 4;
+  return true;
 }
 
 Status isPureTool(const std::string& name, bool& out) {

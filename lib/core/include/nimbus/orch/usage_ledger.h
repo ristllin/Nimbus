@@ -548,6 +548,7 @@ struct DayUsage {
   uint32_t    calls = 0;
   char        model[kModelKeyCap] = {0};   // "" = unattributed (or recorded before 2026-10)
   uint64_t    cacheR = 0, cacheW = 0;
+  uint64_t    cacheW1h = 0;   // the 1-hour-TTL part of cacheW (2x input; lane E2-FIX6)
 };
 
 class UsageHistory {

@@ -82,12 +82,23 @@ struct HeadCost {
   uint32_t warmRequestMicroUsd = 0;
   uint32_t coldRequestMicroUsd = 0;
   uint64_t inMicroPerM = 0, outMicroPerM = 0, cacheReadMicroPerM = 0, cacheWriteMicroPerM = 0;
+  // The head's long-prompt tier (lane E2-FIX6): a request whose whole prompt (input plus cache reads
+  // and writes) is over longOver tokens is billed at these rates, as the ledger's ":long" row does
+  // (TurnSpend). longOver 0: no tier.
+  uint32_t longOver = 0;
+  uint64_t longInMicroPerM = 0, longOutMicroPerM = 0, longCacheReadMicroPerM = 0, longCacheWriteMicroPerM = 0;
 };
 
 // The rates a head is billed at (micro-USD per 1M tokens; a cache rate of 0 as in HeadCost).
 struct HeadRates {
   uint64_t in = 0, out = 0, cacheRead = 0, cacheWrite = 0;
+  uint32_t longOver = 0;                                        // 0: no long-prompt tier
+  uint64_t longIn = 0, longOut = 0, longCacheRead = 0, longCacheWrite = 0;
 };
+// The rates a built-in price row bills a head at, its long-prompt tier included (the ledger's own
+// rows: builtinModelPrice, else the provider default; the "<model>:long" row past longOver). False
+// when no row prices the head's input and output (money fails closed).
+bool headRatesFor(const std::string& provider, const std::string& model, HeadRates& out);
 // HeadCost for a head at the profile in force (the binding's one call): the aim is the target,
 // the due mark the request at the trigger, a warm request reads 90% of it from the cache, a cold
 // one none, each with kGuardOutputTokens of output.

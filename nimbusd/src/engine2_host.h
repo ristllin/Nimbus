@@ -276,14 +276,16 @@ class Engine2Host {
     if (t.who) s.facts.pinnedNotes = notes_.pinnedBlock(*t.who);
     nimbus::orch::tx::HeadBudget budget;
     if (!nimbus::orch::tx::budgetFor(headKey(t.model), t.profile, budget).ok()) return;
-    nimbus::orch::ModelInfo m;
-    m.id = t.model;
-    const nimbus::orch::ModelPrice p = nimbus::orch::modelPrice("anthropic", m);
-    plain::HeadRates r;
-    r.in = p.in;
-    r.out = p.out;
-    r.cacheRead = p.in / 10;          // the provider's cache read: a tenth of the input rate
-    r.cacheWrite = p.in * 125 / 100;  // a five-minute write: 1.25 times the input rate
+    plain::HeadRates r;   // the ledger's own price rows, cache and long-prompt tier included (E2-FIX6)
+    if (!plain::headRatesFor("anthropic", t.model, r)) {
+      nimbus::orch::ModelInfo m;
+      m.id = t.model;
+      const nimbus::orch::ModelPrice p = nimbus::orch::modelPrice("anthropic", m);
+      r.in = p.in;
+      r.out = p.out;
+      r.cacheRead = p.in / 10;
+      r.cacheWrite = p.in * 125 / 100;
+    }
     s.cost = plain::guardCostFor(budget, r);
   }
 
