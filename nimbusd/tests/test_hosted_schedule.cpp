@@ -68,6 +68,19 @@ std::string whenIn(uint64_t s) {
   return b;
 }
 
+// Lane E2-FIXT: the test clock is the host's real clock plus an offset, so what hour it reads depends on when the suite
+// runs. A check that needs quiet hours (22:00 to 09:00 by default) must put the clock at a known time of day first.
+// Moves the test clock forward to the next `hh:mm:00` UTC (today's if still ahead, else tomorrow's).
+// NIMBUSD_TEST_SHIFT_HOURS (a test-only knob, default 0) first moves it that many hours, so a run can stand in for any
+// hour of the real day.
+void alignClockTo(int hh, int mm) {
+  if (const char* sh = std::getenv("NIMBUSD_TEST_SHIFT_HOURS")) nimbusd::vclock::advance((uint64_t)std::atoll(sh) * 3600);
+  const uint64_t now = nimbusd::vclock::epoch();
+  const uint64_t want = (uint64_t)(hh * 3600 + mm * 60);
+  const uint64_t have = now % 86400;
+  nimbusd::vclock::advance(want >= have ? want - have : 86400 - (have - want));
+}
+
 std::string jsonStr(const std::string& s) {
   JsonDocument d;
   d.set(s);
@@ -306,6 +319,7 @@ void testEngine2HostFires(ndtest::Ctx& c) {
   host.reset(new nimbusd::Engine2Host(o));
   c.eq(host->start(), "", "the engine-2 owner chat starts with the routines table bound");
   c.ok(host->rig() && host->rig()->registry().has("schedule"), "schedule is on its registry");
+  alignClockTo(23, 54);   // quiet hours (22:00 to 09:00) are on for the whole routine fire below, at any real hour
   const std::string text = "stretch your back";
   model.push(sp::call("schedule", "{\"op\":\"create\",\"kind\":\"reminder\",\"when\":\"" + whenIn(300) +
                                       "\",\"text\":" + jsonStr(text) + "}"));
@@ -333,7 +347,7 @@ void testEngine2HostFires(ndtest::Ctx& c) {
        "...on the sub-agent model");
   c.ok(model.requests().size() == before + 1 && !has(model.requests()[before].body, "remind me to stretch"),
        "...with none of the owner's conversation");
-  // The test clock reads 00:02 UTC: quiet hours. The note waits in the outbox, then goes when they end.
+  // The test clock reads 00:02:40 UTC (aligned above): quiet hours. The note waits in the outbox, then goes when they end.
   c.ok(sent.size() == 1, "in quiet hours nothing is sent yet");
   c.ok(has(fileAt(root + "/mem/routines/held-" + std::string(orch::kHostedWebChatId) + ".json"), "ORBIT"),
        "the output waits in the outbox on the volume");
