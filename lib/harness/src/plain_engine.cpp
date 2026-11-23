@@ -39,6 +39,10 @@ struct PlainEngine::ChatState {
   tx::RecentFilesBlock recent;
   uint64_t nextQ = 1;                  // the next item's q (also given to items not stored)
   uint64_t lastClosedQ = 0;            // the last item of the last closed turn (its e item)
+  // Overflow ladder rung 1's line, kept from turn to turn (lane E2-FIX9): the closed bulk at or below it renders as
+  // stubs until a compaction stores (or a restart), so the turns after it share one cached prefix; it moves only
+  // when a request is over its cap again, and then down to kLadderLowPercent of the cap.
+  uint64_t ladderLine = 0;
   uint32_t lastTurn = 0;
   bool booted = false;
   bool afterRestart = true;            // the first turn after boot opens cold
@@ -498,6 +502,7 @@ class TurnRun {
   // system text is composed, so the request carries the new summary.
   Status sized() {
     t_.ctx.dayStartMin = t_.setup.dayStartMin;
+    t_.ladder.closedThrough = c_.ladderLine;   // rung 1's line from the turns before (lane E2-FIX9)
     const Status st = budget();
     if (st.ok()) (void)compactFirst(Urgency::IfDue);
     return st;
@@ -521,6 +526,7 @@ class TurnRun {
       report(ProgressKind::Summary, "");
     };
     if (!d_.hooks->runIdleSlot(HookSlot::Compaction, ctx).worked) return false;
+    c_.ladderLine = t_.ladder.closedThrough = 0;   // a new summary: the request is rebuilt, nothing stays stubbed for it
     // The summary's s item took a q past everything stored: this turn's next items go after it.
     c_.nextQ = std::max({c_.nextQ, c_.head.nextQ, d_.arena->lastQ() + 1});
     event("change:compaction");
@@ -1031,7 +1037,7 @@ class TurnRun {
     bool climbed = false;
     const uint64_t closedTo = over && closedBulkAbovePointer() ? closedStubThrough(ask) : 0;
     if (closedTo > l.closedThrough) {
-      l.closedThrough = closedTo;   // (1) the closed turns' bulk as stubs, oldest first, as far as needed
+      l.closedThrough = c_.ladderLine = closedTo;   // (1) the closed turns' bulk as stubs, oldest first, as far as needed
       climbed = true;
     } else if (over && openBulkBelow(rungTwoThrough())) {
       l.stubThrough = rungTwoThrough();   // (2) this turn's bulk older than the newest two rounds
@@ -1088,13 +1094,15 @@ class TurnRun {
   }
 
   // Rung 1's line (lane E2-FIX9, ruling 81: nothing leaves the request that does not have to): the closed turns'
-  // bulk results and long arguments become stubs oldest first, only until what they free covers what the body is
-  // over its cap (each counted as its text, a lower bound of what the wire frees: escapes only add), with a
-  // margin; the next climb goes further when that was not enough. The last closed item when the size is not known.
+  // bulk results and long arguments become stubs oldest first, only until what they free brings the body down to
+  // kLadderLowPercent of its cap (each counted as its text, a lower bound of what the wire frees: escapes only add);
+  // the next climb goes further when that was not enough. The line then stays (ChatState::ladderLine) while the
+  // turns after it grow back to the cap, so they share one cached prefix instead of a line that moves every turn.
+  // The last closed item when the size is not known.
+  static constexpr size_t kLadderLowPercent = 75;
   uint64_t closedStubThrough(const ClimbAsk& ask) const {
-    static constexpr size_t kMargin = 1024;
     if (ask.bodyBytes <= ask.bodyCap) return c_.lastClosedQ;
-    const size_t need = ask.bodyBytes - ask.bodyCap + kMargin;
+    const size_t need = ask.bodyBytes - ask.bodyCap * kLadderLowPercent / 100;
     const uint64_t from = std::max(c_.head.stub, t_.ladder.closedThrough);
     const std::vector<uint64_t> listed = foldListed();
     size_t freed = 0;

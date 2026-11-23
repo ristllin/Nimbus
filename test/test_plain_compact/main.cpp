@@ -2847,6 +2847,20 @@ void test_a_turn_over_the_due_mark_asks_past_the_daily_count() {
   TEST_ASSERT_TRUE(out.ran);
   TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
   TEST_ASSERT_TRUE(logged("past the daily"));
+  // A turn whose attempt cannot run says why, every time: here no turn may go (fewer than six owner turns).
+  Chat few;
+  few.day(-3, 4, 100, "few");
+  plain::IdleCtx now = few.idle();
+  now.urgency = plain::Urgency::Now;
+  for (int i = 0; i < 2; ++i) {
+    gLogLines.clear();
+    TEST_ASSERT_TRUE(few.driver->step(now, out).ok());
+    TEST_ASSERT_FALSE(out.ran);
+    TEST_ASSERT_TRUE(logged("not compacted at this turn: no turn may go"));
+  }
+  gLogLines.clear();
+  TEST_ASSERT_TRUE(few.driver->step(few.idle(), out).ok());   // an idle step stays quiet
+  TEST_ASSERT_FALSE(logged("not compacted at this turn"));
   agent::hlog::setSink(nullptr);
 }
 

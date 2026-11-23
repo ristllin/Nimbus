@@ -864,9 +864,16 @@ Status CompactDriver::step(const IdleCtx& ctx, CompactOutcome& out) {
   return Status::fail(Err::TooLarge, "plain::CompactDriver::step");
 }
 
+// Lane E2-FIX9: a turn's attempt that cannot run says why in the log, every time (an idle step stays quiet: the
+// next turn asks again), so a conversation never grows past its due mark without a line.
+void CompactDriver::turnNote(const IdleCtx& ctx, const char* why) const {
+  if (ctx.urgency != Urgency::None) hlog::logf("compact(%s): not compacted at this turn: %s", d_.chatKey.c_str(), why);
+}
+
 Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   out.thru = d_.head()->thru;
   if (!ctx.clockSet || !ctx.now) {   // the day rule cannot be applied without a clock
+    turnNote(ctx, "the clock is not set");
     if (manual_) endManual(texts::device_notes::kCompactNoClock);
     return Status::success();
   }
@@ -876,6 +883,7 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
   bool due = false;
   Status s = planIfDue(ctx, plan, due);
   if (!s.ok()) {
+    turnNote(ctx, "the slice could not be planned");
     if (manual_) endManual(texts::device_notes::kCompactFailed);   // answered, never left waiting
     return s;
   }
@@ -887,7 +895,10 @@ Status CompactDriver::run(const IdleCtx& ctx, CompactOutcome& out) {
 // Due: the summary prepared ahead is swapped in with no request, else one attempt (or nothing to take).
 Status CompactDriver::onDue(const IdleCtx& ctx, const SlicePlan& plan, CompactOutcome& out) {
   if (pendingValid()) return swapPending(ctx.now, out);
-  if (!plan.thru) return noSlice(plan, out);
+  if (!plan.thru) {
+    turnNote(ctx, "no turn may go (the newest six owner turns, an open turn or a running job hold them)");
+    return noSlice(plan, out);
+  }
   if (manual_ && manualAsks_ >= kCompactManualRequests) {
     endManual(texts::device_notes::kCompactDone);
     return Status::success();
@@ -1111,7 +1122,7 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   std::vector<SummarizerRung> rungs;
   if (d_.rungs) d_.rungs(rungs);
   if (rungs.empty()) {
-    if (ctx.urgency != Urgency::None) hlog::logf("compact(%s): no summarizer is set up: not compacted", d_.chatKey.c_str());
+    turnNote(ctx, "no summarizer is set up");
     if (manual_) endManual(texts::device_notes::kCompactFailed);
     return Status::success();
   }

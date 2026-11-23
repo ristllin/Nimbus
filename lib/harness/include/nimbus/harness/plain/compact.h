@@ -338,6 +338,7 @@ class CompactDriver {
   uint64_t pendingThru() const { return pending_.thru; }
 
  private:
+  void turnNote(const IdleCtx& ctx, const char* why) const;   // lane E2-FIX9: a turn's attempt that cannot run says why
   Status run(const IdleCtx& ctx, CompactOutcome& out);
   bool automaticMayAsk(const IdleCtx& ctx);
   Status planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due);

@@ -155,7 +155,8 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
 // Lane E2-FIX9: a smaller request body cap for test rigs only, behind the test clock's own gate (the flag, a web token
 // and a loopback bind), so a test reaches the overflow ladder at a small cost; 0 (none) otherwise.
 uint32_t testBodyCap(const nimbusd::Config& cfg) {
-  if (!nimbusd::HttpControl::testClockArmed(cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1"), cfg.get("NIMBUSD_WEB_TOKEN")))
+  if (!nimbusd::vclock::testClockEnabled() || cfg.get("NIMBUSD_WEB_TOKEN").empty() ||
+      cfg.get("NIMBUSD_CONTROL_ADDR", "127.0.0.1") != "127.0.0.1")
     return 0;
   const unsigned long long cap = std::strtoull(cfg.get("NIMBUSD_E2_BODY_CAP").c_str(), nullptr, 10);
   return cap <= 0xFFFFFFFFull ? (uint32_t)cap : 0;

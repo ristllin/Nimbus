@@ -1112,6 +1112,9 @@ inline void test_rung_three_estimate_never_exceeds_the_rendered_bytes_of_any_ite
   for (const Kind& k : kinds) {
     txb::Battery b;
     b.hostOverride = "custom";   // an 85,000 B head: a floor class (tx::budgetFor)
+    // The ladder alone: since lane E2-FIX9 a turn over the due mark compacts first past the day's count, which
+    // would leave this ladder nothing to do (compaction first has its own tests).
+    b.compaction = false;
     b.world.files["notes/r.md"] = std::string(900, 'r');
     // History up to just under the cap, so no request before the big read climbs.
     for (int i = 0; i < 400 && (b.model.requests().empty() || b.model.last().body.size() < 80000); ++i) {
@@ -1384,6 +1387,50 @@ inline void test_rung_one_stubs_the_oldest_closed_bulk_only_as_far_as_needed() {
     TEST_ASSERT_TRUE_MESSAGE(!shownWhole(i) || shownWhole(i + 1), "rung 1 skipped an older read");
   TEST_ASSERT_TRUE(ladderEvents(b) >= 1);
   TEST_ASSERT_TRUE_MESSAGE(txb::detail::omittedTurnsNamed(b.model.last().view) < 0, "history omitted while closed bulk could be stubbed");
+}
+
+// Lane E2-FIX9 (the orchestrator's cache question): over a run of 20 turns past the cap, rung 1's line moves in
+// large, rare steps (down to 75% of the cap, then kept while the turns grow back), so a turn's first request keeps
+// the bytes of the turn before it ahead of everything new on most turns: the cached prefix is written again only
+// when the line moves. Red with a line chosen afresh each turn only as far as needed (it moved every turn).
+inline void test_rung_one_moves_in_rare_steps_so_turns_share_one_prefix() {
+  txb::Battery b;
+  b.compaction = false;   // the ladder alone (compaction first is its own test)
+  TXB_OK(b.boot());
+  auto turn = [&b](int i) {
+    b.model.push(sp::call("big_read", "{\"tag\":\"t" + std::to_string(i) + "\",\"bytes\":3000}"));   // tier 2
+    b.model.push(sp::say("read " + std::to_string(i)));
+    b.advance(60);
+    plain::TurnOutcome out;
+    TXB_OK(b.owner("read number " + std::to_string(i), out));
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(("read " + std::to_string(i)).c_str(), out.text.c_str(), out.statusText.c_str());
+  };
+  int i = 0;
+  for (; i < 12; ++i) turn(i);
+  b.bodyCapLimit = (uint32_t)b.model.last().body.size() + 2000;   // the next turns pass it
+  std::vector<std::string> firsts;
+  for (int k = 0; k < 20; ++k, ++i) {
+    const size_t before = b.model.requests().size();
+    turn(i);
+    const std::string& body = b.model.requests()[before].body;   // each turn's first request, from its cached part on
+    firsts.push_back(body.substr(std::min(body.size(), body.find("\"system\""))));   // (max_tokens is not cached)
+    TEST_ASSERT_TRUE(b.model.last().body.size() <= b.bodyCapLimit);
+  }
+  int moved = 0;
+  for (size_t k = 1; k < firsts.size(); ++k) {
+    const std::string& a = firsts[k - 1];
+    const std::string& c = firsts[k];
+    size_t same = 0;
+    while (same < a.size() && same < c.size() && a[same] == c[same]) ++same;
+    moved += same + 1500 < a.size();   // the turn's bytes changed well before the previous request's end
+    if (k < 4) TEST_MESSAGE(("diverge " + std::to_string(same) + " of " + std::to_string(a.size()) + ": " +
+                             a.substr(same > 60 ? same - 60 : 0, 160) + " || " + c.substr(same > 60 ? same - 60 : 0, 160)).c_str());
+  }
+  char msg[96];
+  std::snprintf(msg, sizeof msg, "the prefix changed early on %d of 19 turns", moved);
+  TEST_ASSERT_TRUE_MESSAGE(moved >= 1, msg);   // the ladder did act
+  TEST_ASSERT_TRUE_MESSAGE(moved <= 5, msg);   // at most once per four turns
+  TEST_MESSAGE(msg);
 }
 
 // 4. Rung 2 follows the rounds of the open turn before rung 3 omits any history.
@@ -2744,6 +2791,7 @@ inline void run() {
   RUN_TEST(test_a_held_reply_survives_a_cut_or_empty_extra_round);
   RUN_TEST(test_a_failed_write_receipt_is_never_replaced_by_a_weaker_line);
   RUN_TEST(test_rung_one_stubs_the_oldest_closed_bulk_only_as_far_as_needed);
+  RUN_TEST(test_rung_one_moves_in_rare_steps_so_turns_share_one_prefix);
   RUN_TEST(test_rung_two_advances_before_history_is_omitted);
   RUN_TEST(test_a_refused_bulk_write_never_promises_view);
   RUN_TEST(test_nested_long_strings_are_stubbed_and_the_bulk_holds_the_whole);
