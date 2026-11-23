@@ -710,14 +710,15 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   }
   txdev::cardTxFiles().resetHolds();
   s_transport.reset();
-  const uint32_t t0 = millis();
+  const uint32_t t0 = millis(), parts0 = b ? b->sentParts() : 0;
   {
     PsramFirstScope psramFirst;
     out = scheduledev::fire(nimbus::orch::LoopFireRequest{sid, std::string(), chatId, std::string()}, fb);
   }
-  alogf("e2: fire %s %s chat=%s ok=%d deferred=%d answered=%d reqs=%u ms=%u err=%s", sid.c_str(),
+  alogf("e2: fire %s %s chat=%s ok=%d deferred=%d answered=%d parts=%u reqs=%u ms=%u err=%s", sid.c_str(),
         kind == sch::Kind::Reminder ? "reminder" : "routine", chatId.c_str(), (int)out.ok, (int)out.deferred,
-        (int)out.answered, (unsigned)s_transport.requests, (unsigned)(millis() - t0), out.error.c_str());
+        (int)out.answered, (unsigned)(b ? b->sentParts() - parts0 : 0), (unsigned)s_transport.requests,
+        (unsigned)(millis() - t0), out.error.c_str());
   return out;
 }
 

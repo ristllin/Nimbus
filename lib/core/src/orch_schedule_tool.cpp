@@ -46,7 +46,7 @@ constexpr char kBadEveryA[] = "every: daily HH:MM|weekly mon,thu HH:MM|every N m
 constexpr char kWrongKey[] = "reminder: when; routine: every";
 constexpr char kFull[] = "max ", kFullB[] = " entries";
 constexpr char kNoClock[] = "clock not set";
-constexpr char kNotHere[] = "unattended: list or reminder only";
+constexpr char kNotHere[] = "unattended: list/reminder only";
 constexpr char kNotStored[] = "write refused";
 constexpr char kNoId[] = "id missing";
 constexpr char kNothing[] = "no change";

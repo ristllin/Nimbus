@@ -4,7 +4,7 @@
 # class core bytes=1688 ceiling=3072 entries=30 sha8=68e60f2d
 # class device_notes bytes=2044 ceiling=2048 entries=75 sha8=251bb8a3
 # class stubs bytes=31 ceiling=512 entries=1 sha8=2b588162
-# class tool_results bytes=6655 ceiling=6656 entries=466 sha8=3a808dd7
+# class tool_results bytes=6652 ceiling=6656 entries=466 sha8=5878ac87
 # class probe bytes=1323 ceiling=1536 entries=3 sha8=29789b84
 # class summarizer bytes=836 ceiling=1024 entries=14 sha8=2ce2aac9
 # class tool_descriptions bytes=4293 ceiling=10240 entries=46 sha8=76f76e0b
@@ -557,7 +557,7 @@ tool_results	lib/core/src/orch_schedule_tool.cpp	2548ade6	30	"reminder: when; ro
 tool_results	lib/core/src/orch_schedule_tool.cpp	1eed76ee	4	"max "
 tool_results	lib/core/src/orch_schedule_tool.cpp	3b3d53ef	8	" entries"
 tool_results	lib/core/src/orch_schedule_tool.cpp	e1fe9d82	13	"clock not set"
-tool_results	lib/core/src/orch_schedule_tool.cpp	58beb824	33	"unattended: list or reminder only"
+tool_results	lib/core/src/orch_schedule_tool.cpp	d88e31b5	30	"unattended: list/reminder only"
 tool_results	lib/core/src/orch_schedule_tool.cpp	40a4cf2b	13	"write refused"
 tool_results	lib/core/src/orch_schedule_tool.cpp	a2d9324a	10	"id missing"
 tool_results	lib/core/src/orch_schedule_tool.cpp	5d69f9da	9	"no change"
