@@ -1089,12 +1089,17 @@ bool CompactDriver::held(const IdleCtx& ctx, const CompactCtl::Chat& chat) {
     return true;
   }
   // A wait longer than the longest one was set by a clock that ran ahead: it does not hold. Lane E2-FIX9: nor does
-  // any wait for a turn that opens over the due mark (or a request that does not fit): it tries again, inside
-  // kCompactUrgentMs, at every turn until one succeeds, instead of growing for hours; idle steps keep the waits,
-  // and the daily count holds for both.
+  // any wait for a turn that opens over the due mark (or a request that does not fit), nor the daily count: it tries
+  // again, inside kCompactUrgentMs, at every turn until one succeeds, instead of growing for hours (on the bench unit
+  // a conversation grew from 36k to 169k tokens with no attempt and no line); idle steps keep both, and a turn's
+  // attempt past the count says so.
   const bool urgent = ctx.urgency != Urgency::None;
   const bool waits = !urgent && chat.next > ctx.now && chat.next <= ctx.now + compactWaitS(UINT32_MAX);
-  return waits || ctl_.paid >= kCompactPaidPerDay;
+  const bool capped = ctl_.paid >= kCompactPaidPerDay;
+  if (urgent && capped)
+    hlog::logf("compact(%s): %u attempts today, past the daily %u: a turn over the due mark asks anyway", d_.chatKey.c_str(),
+               (unsigned)ctl_.paid, (unsigned)kCompactPaidPerDay);
+  return waits || (capped && !urgent);
 }
 
 // One attempt: the daily cap and this chat's wait, one rung, one exchange, the swap.
@@ -1106,6 +1111,7 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   std::vector<SummarizerRung> rungs;
   if (d_.rungs) d_.rungs(rungs);
   if (rungs.empty()) {
+    if (ctx.urgency != Urgency::None) hlog::logf("compact(%s): no summarizer is set up: not compacted", d_.chatKey.c_str());
     if (manual_) endManual(texts::device_notes::kCompactFailed);
     return Status::success();
   }

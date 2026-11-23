@@ -1327,7 +1327,7 @@ its assistant text inside the `<data>` frame. The rungs come from the binding: t
 small model twice, then each other keyed provider in the owner's order, waiting 10 min, 30 min,
 2 h, then 6 h after each failure for the idle steps (a turn that opens over the due mark, or a
 request that does not fit, tries again at once, inside its 90 s, at every turn until one succeeds:
-lane E2-FIX9); at most 48 attempts start a day on the device
+lane E2-FIX9, past the daily count too, with a log line); at most 48 attempts start a day on the device
 (`/data/compact_ctl.txt`, written before the request), each capped at 4,096 output tokens and 45 s;
 a cut answer is asked once more in the same attempt with 8,192 tokens of room, and a cut is never
 stored. There is no pause state.

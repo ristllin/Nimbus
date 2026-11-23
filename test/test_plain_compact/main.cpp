@@ -2828,6 +2828,28 @@ void test_outside_content_cannot_rewrite_the_owners_lines() {
 }
 
 
+// Lane E2-FIX9 (3a): with the day's attempts spent (the device-wide count of 48), an idle step is held, but a turn
+// that opens over the due mark still asks, says so in the log, and compacts. On the bench unit a conversation grew
+// from 36k to 169k tokens with no attempt and no line.
+void test_a_turn_over_the_due_mark_asks_past_the_daily_count() {
+  agent::hlog::setSink(recordLog);
+  gLogLines.clear();
+  Chat c;
+  threeDays(c);
+  c.answer([] { return sp::say(kSummary); });
+  c.ctlText = "compact v1\nday " + std::to_string(c.now / kDay) + " " + std::to_string(plain::kCompactPaidPerDay) + "\n";
+  plain::CompactOutcome out;
+  TEST_ASSERT_TRUE(c.driver->step(c.idle(), out).ok());
+  TEST_ASSERT_FALSE_MESSAGE(out.ran, "an idle step asked past the daily count");
+  plain::IdleCtx turn = c.idle();
+  turn.urgency = plain::Urgency::IfDue;
+  TEST_ASSERT_TRUE(c.driver->step(turn, out).ok());
+  TEST_ASSERT_TRUE(out.ran);
+  TEST_ASSERT_EQUAL(plain::CompactStep::Stored, out.step);
+  TEST_ASSERT_TRUE(logged("past the daily"));
+  agent::hlog::setSink(nullptr);
+}
+
 // ---- lane E2-FIX9: the second and later compaction ------------------------------------------------------
 // The closing bench (lanes/E2-BENCH2/RESULT.md, problem 2): after the first compaction stored a summary with
 // sections, the summarizer answered "=Facts and standing preferences:" four times in a row (evidence: its
@@ -3257,6 +3279,7 @@ int main(int, char**) {
   RUN_TEST(test_a_too_long_answer_gets_one_compaction_and_one_retry_then_an_honest_error);
   RUN_TEST(test_the_dynamic_part_never_pushes_the_fixed_part_over_its_ceiling);
   RUN_TEST(test_outside_content_cannot_rewrite_the_owners_lines);
+  RUN_TEST(test_a_turn_over_the_due_mark_asks_past_the_daily_count);
   RUN_TEST(test_a_title_alone_is_nothing_to_change_at_the_second_compaction);
   RUN_TEST(test_nothing_to_change_is_a_whole_answer_in_the_structured_form);
   RUN_TEST(test_an_answer_not_taken_is_asked_once_more_as_lines_and_logged);
