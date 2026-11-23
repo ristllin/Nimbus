@@ -613,6 +613,7 @@ class TurnRun {
     std::vector<tx::DigestEntry> archive;
     f.digestBlock.clear();
     if (!c_.live.empty()) (void)tx::digestBlock(c_.live, t_.ctx.profile, f.digestBlock, archive);
+    if (d_.stablePrefix) loadFrozen();   // first: an unanswered file list falls back to what it saw
     f.recentFiles = d_.stablePrefix ? filesNow() : c_.recent.text();
     Status st = composeSystem(f, t_.system);
     if (st.ok()) st = toolManifest(f, t_.tools);
@@ -627,11 +628,12 @@ class TurnRun {
   }
 
   // ---- the frozen system part (lane E2-CACHE, plain/prefix.h) -------------------------
-  // The recent-files list as the store holds it now ("" with no list or no answer).
+  // The recent-files list as the store holds it now ("" with no list). A store that does not answer is
+  // never an empty list: the list last seen stands for it (ruling 116 item 2).
   std::string filesNow() const {
     if (!d_.recentFiles) return std::string();
     tx::RecentFilesBlock b;
-    (void)b.atOpen(true, d_.recentFiles, t_.tz);
+    if (!b.atOpen(true, d_.recentFiles, t_.tz).ok()) return c_.prefix.valid ? c_.prefix.seenFiles : c_.recent.text();
     return b.text();
   }
   PrefixNow prefixNow(const RequestFacts& f, uint32_t manifest) const {
@@ -675,7 +677,6 @@ class TurnRun {
   // The turn sends the frozen blocks unless a listed event happened; then they are rendered afresh,
   // named as a change point.
   void freeze(const RequestFacts& f, uint32_t manifest) {
-    loadFrozen();
     const PrefixNow now = prefixNow(f, manifest);
     const PrefixRender why = decidePrefix(c_.prefix, now);
     if (why != PrefixRender::None) {
@@ -688,6 +689,9 @@ class TurnRun {
   }
   // At the close of a turn that ran calls: what the turn itself changed (a pinned note, a new file)
   // is seen now, so the next open does not take it for an outside change. The blocks stay as sent.
+  // Notes changed in a turn whose long arguments show as stubs from now are not taken as seen: the
+  // conversation may not hold the note's words whole, so the next open renders the notes afresh
+  // (ruling 81). A file list is: a stubbed write keeps its path, the only thing the list shows of it.
   void seeOwnChanges() {
     if (!d_.stablePrefix || !c_.prefix.valid || !t_.end.tools || !d_.setup) return;
     std::unique_ptr<TurnSetup> s(new (std::nothrow) TurnSetup());
@@ -698,8 +702,9 @@ class TurnRun {
     SystemBlocks b;
     if (!composeSystem(s->facts, b).ok()) return;
     const std::string files = filesNow();
-    if (b.notes == c_.prefix.seenNotes && files == c_.prefix.seenFiles) return;
-    c_.prefix.seenNotes = b.notes;
+    const bool notes = b.notes != c_.prefix.seenNotes && !t_.longArgs;
+    if (!notes && files == c_.prefix.seenFiles) return;
+    if (notes) c_.prefix.seenNotes = b.notes;
     c_.prefix.seenFiles = files;
     c_.prefixDirty = true;
     saveFrozen();

@@ -189,7 +189,7 @@ struct Device {
     d.recentFiles = [this](const nimbus::orch::Principal&) -> tx::RecentFilesBlock::Source {
       return [this](std::vector<tx::RecentFile>& out) {
         out = store;
-        return true;
+        return !storeDeaf;
       };
     };
     binding.reset();   // the device lets the resident chat go before the next one boots
@@ -225,6 +225,7 @@ struct Device {
   nimbus::orch::ToolRegistry reg;
   std::map<std::string, std::string> pinned, unpinned;
   std::vector<tx::RecentFile> store;
+  bool storeDeaf = false;   // the file store does not answer
   std::unique_ptr<plain::ChatBinding> binding;
   std::string resident;
   std::vector<Sent> sent;
@@ -452,6 +453,18 @@ static void test_an_expired_cache_brings_the_blocks_up_to_date() {
   dev.say("1001", "three");
   TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("saved by the head") != std::string::npos);
 }
+static void test_a_file_store_that_does_not_answer_is_not_an_empty_list() {
+  Device dev;
+  dev.say("1001", "one");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("journal/start.md") != std::string::npos);
+  dev.storeDeaf = true;
+  dev.pause(30);
+  dev.say("1001", "two", {sp::call("write_file", R"({"path":"notes/x.md","content":"x"})")});
+  dev.pause(30);
+  dev.say("1001", "three");
+  TEST_ASSERT_TRUE(systemOf(dev.sent.back().body).find("journal/start.md") != std::string::npos);
+  TEST_ASSERT_EQUAL_STRING("", ruleA(dev, "1001").c_str());
+}
 static void test_clear_starts_a_new_record() {
   Device dev;
   dev.say("1001", "one", {sp::call("note", R"({"op":"set","key":"own-pin","value":"saved by the head","pin":true})")});
@@ -582,6 +595,7 @@ int main(int, char**) {
   RUN_TEST(test_a_new_tool_changes_the_prefix);
 #ifdef E2_CACHE_TREE
   RUN_TEST(test_an_expired_cache_brings_the_blocks_up_to_date);
+  RUN_TEST(test_a_file_store_that_does_not_answer_is_not_an_empty_list);
   RUN_TEST(test_clear_starts_a_new_record);
   RUN_TEST(test_the_decision_names_every_listed_event);
   RUN_TEST(test_the_stable_points_keep_an_hour_and_the_moving_one_five_minutes);
