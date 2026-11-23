@@ -5,6 +5,7 @@
 // a scripted provider and the binding's photo hook (txb::Battery::photoStore, the card's copy).
 #include <unity.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -117,10 +118,66 @@ inline void test_no_gap_and_no_restart_takes_a_photo_out_of_view() {
     }
 }
 
+// The other bound of the rule: compaction. A photo, then long turns until the head's due mark makes
+// the engine compact at a turn open: while no digest covers the photo's turn every request carries
+// its pixels; once a digest's thru passes it, the request carries neither the pixels nor a line (the
+// summary stands for that part of the conversation, as for any other turn).
+inline void test_a_photo_stays_until_compaction_passes_its_turn() {
+  txb::Battery b;
+  tx::HeadBudget hb;
+  TEST_ASSERT_TRUE(tx::budgetFor(b.headKey(), tx::Profile::Full, hb).ok());
+  b.photoStore["pa1b2c3d4"] = jpeg('j', 120000);
+  b.model.push(sp::say("A red car."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("look", out, {photoPart("pa1b2c3d4", 120000)}));
+  uint64_t photoQ = 0;
+  for (const tx::Item& it : engine_tests::storedOf(b))
+    if (it.kind == tx::ItemKind::User && !it.parts.empty()) photoQ = it.q;
+  TEST_ASSERT_TRUE(photoQ > 0);
+  bool covered = false;
+  for (int k = 0; k < 120 && !covered; ++k) {
+    b.advance(300);
+    sp::Step s = sp::say("reply " + std::to_string(k) + " " + std::string(3000, 'r'));
+    s.usage.input = 100;
+    s.usage.cacheRead = k % 10 == 9 ? hb.tokens.due : 1000;   // every tenth answer reaches the due mark
+    b.model.push(s);
+    TXB_OK(b.owner("turn " + std::to_string(k) + " " + std::string(1500, 'q'), out));
+    uint64_t thru = 0;
+    for (const tx::Item& it : engine_tests::storedOf(b))
+      if (it.kind == tx::ItemKind::Digest) thru = std::max(thru, it.thru);
+    covered = thru >= photoQ;
+    char msg[96];
+    std::snprintf(msg, sizeof msg, "turn %d, thru %llu, photo at q%llu", k, (unsigned long long)thru, (unsigned long long)photoQ);
+    // The turn's head request is the last one the head got (the summarizer has its own provider).
+    TEST_ASSERT_EQUAL_MESSAGE(!covered, has(lastBody(b), pixelsOf('j')), msg);
+    if (covered) TEST_ASSERT_FALSE_MESSAGE(has(lastBody(b), "[photo pa1b2c3d4"), msg);
+  }
+  TEST_ASSERT_TRUE_MESSAGE(covered, "compaction never passed the photo's turn: the case proves nothing");
+}
+
+// A photo whose stored copy cannot be read back (gone from the card) renders as its true line, never
+// as an empty image or nothing.
+inline void test_a_photo_the_card_cannot_give_back_renders_as_its_line() {
+  txb::Battery b;
+  b.photoStore["pa1b2c3d4"] = jpeg('j', 120000);
+  b.model.push(sp::say("A red car."));
+  plain::TurnOutcome out;
+  TXB_OK(b.owner("look", out, {photoPart("pa1b2c3d4", 120000)}));
+  b.photoStore.erase("pa1b2c3d4");
+  b.photoStore["pother000"] = jpeg('k', 1000);   // the hook stays installed
+  b.model.push(sp::say("ok"));
+  TXB_OK(b.owner("next", out));
+  TEST_ASSERT_FALSE(has(lastBody(b), pixelsOf('j')));
+  TEST_ASSERT_TRUE(has(lastBody(b), "[photo pa1b2c3d4") && has(lastBody(b), "not attached to this request"));
+  TEST_ASSERT_FALSE(has(lastBody(b), "\"type\":\"image\""));
+}
+
 inline void run() {
   RUN_TEST(test_a_photo_stays_in_view_across_turns_time_and_a_restart);
   RUN_TEST(test_a_photo_past_the_caps_gets_a_true_line_and_names_no_unbound_tool);
   RUN_TEST(test_no_gap_and_no_restart_takes_a_photo_out_of_view);
+  RUN_TEST(test_a_photo_stays_until_compaction_passes_its_turn);
+  RUN_TEST(test_a_photo_the_card_cannot_give_back_renders_as_its_line);
 }
 
 }  // namespace photo_tests

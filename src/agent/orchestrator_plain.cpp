@@ -267,6 +267,10 @@ void dropCarried() {
 plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
   for (const CarriedPhoto& c : s_carried)
     if (c.ref == ref) {
+      if (!c.bytes) {   // read once this turn and not there: its line, no second card read
+        out = plain::PhotoBytes{};
+        return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "e2.carriedPhoto");
+      }
       out.bytes = c.bytes;
       out.len = c.len;
       out.mime = c.mime;
@@ -293,6 +297,9 @@ plain::Status carriedPhoto(const std::string& ref, plain::PhotoBytes& out) {
   const char* mime = c.bytes ? nimbus::orch::sniffImageMime(c.bytes, c.len) : "";
   if (!*mime) {
     free(c.bytes);
+    c.bytes = nullptr;
+    c.len = 0;
+    s_carried.push_back(std::move(c));   // remembered for the turn: every render asks again
     out = plain::PhotoBytes{};
     return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "e2.carriedPhoto");
   }

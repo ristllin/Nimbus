@@ -241,7 +241,7 @@ struct PhotoFacts {
   bool noCard = false;                   // no storage card: an earlier photo cannot be read back
   std::vector<std::string> candidates;   // refs of the photos of the conversation the request shows
                                          // (after compaction's pointer), newest first
-  std::vector<uint32_t> ownerTurnsSince; // per candidate: person turns since it arrived (0 = this turn)
+  std::vector<uint32_t> ownerTurnsSince; // per candidate: 0 = this turn's own; any other = an earlier message
   std::vector<uint32_t> bytes;           // per candidate stored size; empty = unknown (counts 0)
 };
 inline size_t photosInViewMax(PhotoMode m) {

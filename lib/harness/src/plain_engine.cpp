@@ -547,25 +547,23 @@ class TurnRun {
     f.bytes.push_back(p.bytes);
   }
 
-  // The earlier person turns' photos the request shows (resident, after compaction's pointer, as the
-  // wire renders them), newest first, until the caps could take no more (lane E2-FIX4). A resumed
-  // turn's own stored message counts as this turn's.
+  // The earlier messages' photos the request shows (resident, after compaction's pointer, as the
+  // wire renders them), newest first, until the caps could take no more (lane E2-FIX4). Only user
+  // items are read; a resumed turn's own stored message counts as this turn's (since 0).
   void earlierPhotos(tx::PhotoFacts& f) const {
     const size_t enough = f.candidates.size() + tx::photosInViewMax(f.mode);
     uint64_t thru = c_.head.thru;
-    uint32_t persons = 0;   // person turns opened since the item being read
     for (size_t i = d_.arena->count(); i-- > 0 && f.candidates.size() < enough;) {
       tx::ArenaEntry e;
-      if (!d_.arena->header(i, e).ok() || (e.turn == t_.ctx.turn && e.kind == tx::ItemKind::TurnOpen)) continue;
+      if (!d_.arena->header(i, e).ok()) continue;
       const bool digest = e.kind == tx::ItemKind::Digest;
-      if (!digest && e.kind != tx::ItemKind::TurnOpen && e.kind != tx::ItemKind::User) continue;
+      if (!digest && e.kind != tx::ItemKind::User) continue;
       if (!digest && e.q <= thru) break;   // a digest covers it and everything before it
       tx::Item it;
       if (!d_.arena->get(i, it).ok()) continue;
       if (digest) thru = std::max(thru, it.thru);
-      else if (e.kind == tx::ItemKind::User)
-        for (const tx::Part& p : it.parts) photoCandidate(f, p, e.turn == t_.ctx.turn ? 0 : persons);
-      else persons += it.trigger == triggerSlug(Trigger::Owner) || it.trigger == triggerSlug(Trigger::Console);
+      else
+        for (const tx::Part& p : it.parts) photoCandidate(f, p, e.turn == t_.ctx.turn ? 0 : 1);
     }
   }
 
