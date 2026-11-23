@@ -600,9 +600,11 @@ the same request, and none of them drops anything without a line that names it.
   on every later request, as the rest of the conversation does, until compaction's pointer
   passes its turn or the caps push it out: the arrival turn's own (at most 4) first, then the
   earlier ones newest first while the count and the stored bytes stay within the head's caps
-  (inline: `kInlinePhotosInViewMax`, `kInlinePhotoBytesInViewMax`; file reference:
-  `kFileRefPhotosInViewMax`, `kFileRefPhotoBytesInViewMax`). The oldest falls out first. No
-  clock, idle time or restart takes part. Against the head's body cap a photo counts as the
+  (4 photos and 600,000 stored bytes on every head: measured on the bench, four 120 KB photos
+  add about 2.4 s to a request and three of 200 KB about 3.3 s; every engine-2 head is inline
+  today, no uploader is bound). The oldest falls out first. No clock, idle time or restart takes
+  part. The device reads an earlier photo back from the card once per turn, in 32 KB slices of
+  the card lock. Against the head's body cap a photo counts as the
   text its tokens would be (`kPhotoCapBytes`), never its base64. A photo out of view renders
   as `[photo p<ref> <date>: shown earlier in this conversation; not attached to this request]`
   (the words in `tx/photo_text.h`); only when the engine has bound `view` (`photoStub`'s
