@@ -584,7 +584,7 @@ void onResumed(const std::string& chat, const plain::ResumeReport& r);   // E2-F
 // Lane E2-P-SURF: a call the rails refused or put on the shelf is an entry on the Safety tab.
 void noteRail(const plain::TurnCtx& t, const plain::ToolCall& c, bool kept) {
   agent::safety::record(kept ? nimbus::orch::SafetyVerdict::Suspected : nimbus::orch::SafetyVerdict::Blocked,
-                        "outside-content-rail", localChat(String(t.chatId.c_str())) ? "web" : "telegram", t.chatId,
+                        nimbus::orch::kRailSource, localChat(String(t.chatId.c_str())) ? "web" : "telegram", t.chatId,
                         kept ? "rails: kept for approval" : "rails: refused", c.name + " " + c.argsJson);
 }
 

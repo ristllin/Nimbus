@@ -321,6 +321,15 @@ static void test_content_class_not_approvable_for_coarse_rule() {
   TEST_ASSERT_TRUE(contentClassApprovable("system prompt"));
 }
 
+// E2-REP2: an entry the new engine's outside-content rails wrote has no effect when approved (the rails never
+// read the allowlist), so approving it is refused with one true line; every other gate's entry is approvable.
+static void test_a_rails_entry_is_not_approvable_because_the_rails_do_not_read_the_allowlist() {
+  TEST_ASSERT_FALSE(allowRulesApply(kRailSource));
+  TEST_ASSERT_TRUE(allowRulesApply("inbound"));
+  TEST_ASSERT_TRUE(allowRulesApply(""));
+  TEST_ASSERT_TRUE(std::string(kRailApprovalLine).find("Rules page") != std::string::npos);
+}
+
 // The injection rule the device stores is the SPECIFIC matched pattern, so a
 // content-class allow trusts one pattern, not the whole scan.
 static void test_injection_pattern_is_specific() {
@@ -676,6 +685,7 @@ int main(int, char**) {
   RUN_TEST(test_pattern_trim_symmetry);
   RUN_TEST(test_allow_gate_binding_by_source);
   RUN_TEST(test_content_class_not_approvable_for_coarse_rule);
+  RUN_TEST(test_a_rails_entry_is_not_approvable_because_the_rails_do_not_read_the_allowlist);
   RUN_TEST(test_injection_pattern_is_specific);
   RUN_TEST(test_allow_add_find_revoke_dedup);
   RUN_TEST(test_allow_bounded);
