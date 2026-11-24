@@ -492,7 +492,8 @@ static std::string readSource(const char* path) {
   return out;
 }
 // The concatenated string literals from `from` up to the first '[' outside a
-// literal (the handler lambda's capture list).
+// literal (the handler lambda's capture list), or the ';' that ends the call when
+// the handler is a named function (files.share since E2-P-OUT2).
 static std::string literalsUntilLambda(const std::string& src, size_t from) {
   std::string text;
   bool in = false;
@@ -504,7 +505,7 @@ static std::string literalsUntilLambda(const std::string& src, size_t from) {
       text += c;
     } else if (c == '"') {
       in = true;
-    } else if (c == '[') {
+    } else if (c == '[' || c == ';') {
       break;
     }
   }
