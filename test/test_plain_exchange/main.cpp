@@ -638,6 +638,44 @@ static void test_a_key_or_billing_refusal_parks_and_is_never_retried() {
   }
 }
 
+// The router's error order (lane E2-R5, ROUTER-DESIGN.md section 9) reaches the exchange with
+// the head's own marker rows: billing words in a code field park before 429, an error object in
+// a 2xx is retried as the provider's class, a refusal or unknown model is never retried, and the
+// router reasons engine 1 lacks are read from the cloud contract.
+static void test_the_provider_markers_decide_the_class() {
+  struct Case {
+    const char* host;
+    const char* model;
+    int status;
+    const char* body;
+    ExchangeErr err;
+    int sent;
+  };
+  const Case cases[] = {
+      {"openai", "gpt-5.6-sol", 429, R"({"error":{"message":"Project spend limit exceeded.","code":"project_spend_limit_exceeded"}})",
+       ExchangeErr::KeyRefused, 1},
+      {"anthropic", "claude-sonnet-5-5", 200, R"({"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}})",
+       ExchangeErr::Server, 3},
+      {"openai", "gpt-0.0-nope", 404, R"({"error":{"message":"The model does not exist","code":"model_not_found"}})",
+       ExchangeErr::Other, 1},
+      {"zai", "glm-5.3-flash", 400, R"({"error":{"code":"1301","message":"unsafe or sensitive content"}})",
+       ExchangeErr::Other, 1},
+      {"zai", "glm-5.3-flash", 429, R"({"error":{"code":"1113","message":"Your account is in arrears"}})",
+       ExchangeErr::KeyRefused, 1},
+  };
+  for (const Case& c : cases) {
+    Rig rig(c.host, c.model);
+    for (int i = 0; i < 3; ++i) rig.model.push(sp::raw(c.status, c.body));
+    expectOk(rig.run());
+    TEST_ASSERT_TRUE_MESSAGE(rig.out.err == c.err, c.body);
+    TEST_ASSERT_EQUAL_MESSAGE(c.sent, (int)rig.model.requests().size(), c.body);
+  }
+  TEST_ASSERT_TRUE(plain::classifyAnswer(413, R"({"reason":"large_body_busy","retryable":true,"retryAfterMs":2000})",
+                                         true) == ExchangeErr::RateLimited);
+  TEST_ASSERT_TRUE(plain::classifyAnswer(504, R"({"reason":"deadline_too_short","retryable":false})", true) ==
+                   ExchangeErr::Other);
+}
+
 // A refused file reference (an expired or unknown photo id, lane RB-W1b): the caller forgets it
 // and the exchange renders and sends once more; anything else stays one request and one line.
 static void test_a_refused_file_reference_is_forgotten_and_sent_once_more() {
@@ -1480,5 +1518,6 @@ int main(int, char**) {
   RUN_TEST(test_a_cut_retry_always_has_more_room);
   RUN_TEST(test_a_late_cut_with_no_room_is_not_asked_again);
   RUN_TEST(test_a_failed_render_after_a_cut_delivers_the_cut);
+  RUN_TEST(test_the_provider_markers_decide_the_class);
   return UNITY_END();
 }

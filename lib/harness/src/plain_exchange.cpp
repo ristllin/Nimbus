@@ -19,6 +19,7 @@
 #include "nimbus/orch/router_route.h"
 #include "nimbus/orch/tx/budget.h"
 #include "nimbus/orch/tx/rules.h"   // kPhotoCapBytes: a photo against the body cap
+#include "nimbus/orch/wire_errors.h"   // classifyProvider: the router's one error order
 #include "nimbus/orch/wire_limits.h"
 #include "nimbus/utf8.h"
 #include "providers/plain_body.h"   // the body check counts strings as the writer does
@@ -50,7 +51,7 @@ struct Verdict {
 
 // A routed refusal that names a reason the contract knows: decided by the reason.
 bool routerVerdict(const std::string& body, Verdict& v) {
-  const orch::RouterAnswer a = orch::readRouterAnswer(body);
+  const orch::RouterAnswer a = orch::wire::readRouterAnswerE2(body);
   if (!a.row) {
     if (a.reason.empty()) return false;
     v.err = ExchangeErr::Other;   // a reason this image does not know: a per-call failure
@@ -70,27 +71,27 @@ bool routerVerdict(const std::string& body, Verdict& v) {
   return true;
 }
 
-// A direct head's answer, by its status and the provider's words.
-ExchangeErr statusErr(int status, const std::string& body) {
-  if (status == 401 || status == 402 || status == 403 || orch::isBillingRefusal(status, body))
-    return ExchangeErr::KeyRefused;
-  if (status == 413 || ((status == 400 || status == 422) && orch::isContextOverflowError(body.substr(0, 4096)))) return ExchangeErr::ContextRefused;
-  if (status == 429) return ExchangeErr::RateLimited;
-  if (status == 408) return ExchangeErr::Transport;
-  return status >= 500 ? ExchangeErr::Server : ExchangeErr::Other;
-}
-
-Verdict classify(int status, const std::string& body, bool routed) {
+// By the order of ROUTER-DESIGN.md section 9 (nimbus/orch/wire_errors.h), with the marker rows
+// of `provider` (a routed head's upstream; "" = the generic rules alone, as before the router).
+Verdict classify(int status, const std::string& body, bool routed, const std::string& provider) {
+  namespace w = orch::wire;
+  using E = ExchangeErr;
+  // By orch::caps::ErrClass: a refused field, an unknown model, a bad request and a refusal are Other.
+  static constexpr ExchangeErr kByClass[] = {E::Transport,  E::RateLimited, E::Server, E::KeyRefused,
+                                             E::KeyRefused, E::KeyRefused,  E::ContextRefused, E::Other,
+                                             E::Other,      E::Other,       E::Other};
+  static_assert(sizeof(kByClass) / sizeof(kByClass[0]) == (size_t)orch::caps::ErrClass::Refusal + 1, "one per class");
   Verdict v;
-  if (status >= 200 && status < 300) return v;
-  if (status <= 0) {
-    v.err = ExchangeErr::Transport;
-    return v;
-  }
-  if (routed && routerVerdict(body, v)) return v;
+  const bool ok = status >= 200 && status < 300;
+  if (!ok && status > 0 && routed && routerVerdict(body, v)) return v;
   // The contract parks the router only by its reason: a routed 401, 402 or 403 that names
   // none (a proxy, a balancer) is a per-call failure.
-  v.err = routed && status >= 401 && status <= 403 ? ExchangeErr::Other : statusErr(status, body);
+  if (routed && status >= 401 && status <= 403) {
+    v.err = ExchangeErr::Other;
+    return v;
+  }
+  const w::Classified c = w::classifyProvider(w::markerSetFor(provider), status, body);
+  if (c.error) v.err = kByClass[(size_t)c.cls];
   return v;
 }
 
@@ -266,7 +267,7 @@ class Exchange {
     recordRequest(in_, http_, out_.ref);   // the dossier keeps this request by reference (RB-E3)
     const bool answered = deps_.transport->exec(http_, resp, err) && resp.status > 0;
     httpStatus_ = answered ? resp.status : 0;
-    verdict_ = classify(httpStatus_, resp.body, routed_);
+    verdict_ = classify(httpStatus_, resp.body, routed_, capHost_);
     if (verdict_.err == ExchangeErr::None) read(resp);
     else if (verdict_.err == ExchangeErr::Other) refusedBody_ = resp.body.substr(0, 4096);
     // The reason belongs to this answer only (F7): a later answer of another class clears it, so a
@@ -422,7 +423,7 @@ Status runExchange(const ExchangeDeps& deps, const ExchangeRequest& req, Exchang
 }
 
 ExchangeErr classifyAnswer(int status, const std::string& body, bool routed) {
-  return classify(status, body, routed).err;
+  return classify(status, body, routed, std::string()).err;
 }
 
 namespace {

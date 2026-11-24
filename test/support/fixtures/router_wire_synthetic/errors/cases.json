@@ -1,0 +1,40 @@
+{
+ "provider": "cumulo",
+ "written": "2026-11-24",
+ "by": "lane E2-R5",
+ "verified": "synthetic, from the source named on each case; replaced from recorded bodies by lane R10",
+ "cases": [
+  {
+   "row": "router",
+   "status": 413,
+   "body": "{\"error\":\"large_body_busy\",\"reason\":\"large_body_busy\",\"retryable\":true,\"retryAfterMs\":2000,\"charged\":false}",
+   "expect": "retry_later",
+   "source": "tools/router_contract/router-refusal-contract-cloud.md (cumulo-nimbus 0fea1e1)",
+   "routed": true
+  },
+  {
+   "row": "router",
+   "status": 504,
+   "body": "{\"error\":\"deadline_too_short\",\"reason\":\"deadline_too_short\",\"retryable\":false,\"charged\":false}",
+   "expect": "fix_request",
+   "source": "tools/router_contract/router-refusal-contract-cloud.md (cumulo-nimbus 0fea1e1)",
+   "routed": true
+  },
+  {
+   "row": "router",
+   "status": 400,
+   "body": "{\"error\":\"model_no_image_input\",\"reason\":\"model_no_image_input\",\"retryable\":false,\"charged\":false}",
+   "expect": "fix_request",
+   "source": "tools/router_contract/router-refusal-contract-cloud.md (cumulo-nimbus 0fea1e1)",
+   "routed": true
+  },
+  {
+   "row": "router",
+   "status": 402,
+   "body": "{\"error\":\"insufficient_credits\",\"reason\":\"insufficient_credits\",\"retryable\":false,\"charged\":false}",
+   "expect": "park_billing",
+   "source": "tools/router_contract/router-refusal-contract-cloud.md (cumulo-nimbus 0fea1e1)",
+   "routed": true
+  }
+ ]
+}
