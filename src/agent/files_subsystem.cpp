@@ -1371,6 +1371,23 @@ void lastScanStats(uint32_t& reads, uint32_t& longestUs) {
 }
 #endif
 
+// Lane E2-REP4: a file fetch_url saved is outside content (FileEntry::outside), so a later read of it
+// marks the turn as having read outside content, in a person's own folder too. A refused index write
+// leaves the entry unmarked in the index on the card (logged); RAM keeps the mark for this boot.
+static void markFetched(const std::string& project, const std::string& name) {
+  memory::Lock g;
+  const nimbus::orch::FileEntry* fe = g_store.find(project, name);
+  if (!fe) return;
+  nimbus::orch::FileEntry e = *fe;
+  e.outside = true;
+  std::string err;
+  if (!g_store.add(e, err)) {
+    alogf("fetch: %s/%s not marked as outside content (%s)", project.c_str(), name.c_str(), err.c_str());
+    return;
+  }
+  persistIndex();
+}
+
 bool removeFile(const std::string& project, const std::string& name) {
   memory::Lock g;
   if (!available() || !g_store.find(project, name)) return false;
@@ -1630,6 +1647,7 @@ void runScanFetch(nimbus::orch::FetchReq req) {
     }
     { memory::Lock g; if (rf) rf.close(); }
     if (!ok || !finishWrite(true, err)) { abortWrite(); saved = 0; noteRefusal(err); if (err.empty()) err = "promote failed"; }
+    else markFetched(req.project, req.name);   // E2-REP4: outside content wherever it is kept
   }
   { memory::Lock g; memory::dataFs().remove(kFetchTmp); }
 
@@ -2610,7 +2628,7 @@ bool readsOthersFile(const nimbus::orch::Principal& who, const std::string& path
   memory::Lock g;
   if (!available()) return false;
   const nimbus::orch::FileEntry* e = g_store.find(sp.project, sp.name);
-  return e && !g_store.ownedBy(*e, who.ns, false);
+  return e && (e->outside || !g_store.ownedBy(*e, who.ns, false));
 }
 #endif
 

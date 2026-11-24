@@ -259,7 +259,8 @@ ToolsHolds toolsHolds(bool reset);
 // their last write times. False with no card.
 bool recentFiles(const nimbus::orch::Principal& who, std::vector<nimbus::orch::tx::RecentFile>& out);
 // Lane E2-FSAFE: is the stored file at `path` (project/name as the tools read it) another person's than
-// `who` (a member's file the owner reads)? False with no card or no such file.
+// `who` (a member's file the owner reads), or (lane E2-REP4) one fetch_url downloaded (FileEntry::outside)?
+// False with no card or no such file.
 bool readsOthersFile(const nimbus::orch::Principal& who, const std::string& path);
 #endif
 
