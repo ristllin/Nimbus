@@ -1020,9 +1020,11 @@ std::vector<mc::ToolDef> described(const String& slug, const std::vector<mc::Too
 void registerToolsLocked(ToolRegistry& reg, const String& slug, const std::vector<mc::ToolDef>& tools) {
   reg.removeByPrefix(prefixOf(slug));   // clear any stale set before re-adding
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
-  mc::registerServerTools(reg, std::string(slug.c_str()), described(slug, tools), callTool);
+  mc::registerServerTools(reg, std::string(slug.c_str()), described(slug, tools),
+                          [](const std::string& s, const std::string& tn, ArduinoJson::JsonObjectConst a,
+                             const Principal& who) { return callTool(s, tn, a, who); });
 #else
-  agent::tools::connectorsdev::addServer(reg, std::string(slug.c_str()), described(slug, tools), callTool);   // E2-P-CONN1
+  agent::tools::connectorsdev::addServer(reg, std::string(slug.c_str()), described(slug, tools));   // E2-P-CONN1
 #endif
 }
 

@@ -4,7 +4,7 @@
 
 // Forward declaration so the outbound-MCP sync() can take the registry by
 // reference without this widely-included header pulling the whole registry TU.
-namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; struct PdfRoute; } }
+namespace nimbus { namespace orch { class ToolRegistry; struct ConnectorInfo; struct PdfRoute; struct ToolResult; struct Principal; } }
 
 // connectors - per-provider external-tool wiring (Phase C). The OWNER configures
 // connectors once (web UI -> one NVS JSON blob, store::connectorsJson); the
@@ -192,6 +192,12 @@ void sync(nimbus::orch::ToolRegistry& reg);
 // are ready (with a tool count), pending owner approval, or cooling down after
 // failures - appended to catalog() so the model plans around real state.
 std::string catalogSection();
+
+// One call of a discovered tool on its server (registered as mcp.<slug>.<tool>): write access, an
+// enabled, device-dialed, approved server, the per-server breaker, then one tools/call exchange
+// under the work slot. The turn task only.
+nimbus::orch::ToolResult callTool(const std::string& slug, const std::string& toolName,
+                                  ArduinoJson::JsonObjectConst args, const nimbus::orch::Principal& who);
 
 // The owner's /mcp approve|deny <name> (CUM-33): flips the `appr` bit of the named mcp entry in
 // the connectors blob (the same NVS rail as the /api/connectors write) and answers the owner's

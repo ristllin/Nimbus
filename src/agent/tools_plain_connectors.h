@@ -19,9 +19,10 @@
 // Engine 2 only (tools/engine/engine2_only.txt).
 namespace agent::tools::connectorsdev {
 
-// Called by connectors.cpp's registration on engine 2 with engine 1's call (mcp::callTool).
+// Called by connectors.cpp's registration on engine 2; each handler calls engine 1's
+// connectors::mcp::callTool directly (so the tg_poll stack gate follows it).
 void addServer(nimbus::orch::ToolRegistry& reg, const std::string& slug,
-               const std::vector<nimbus::orch::mcp::ToolDef>& tools, const nimbus::orch::mcp::RemoteCall& call);
+               const std::vector<nimbus::orch::mcp::ToolDef>& tools);
 
 // Engine 1's reconcile and discovery over the device registry: at most one server is dialed per
 // call, and only one not yet discovered. tg_poll, before a person's turn (no turn in flight).

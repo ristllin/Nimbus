@@ -13,13 +13,13 @@
 namespace agent::tools::connectorsdev {
 
 void addServer(nimbus::orch::ToolRegistry& reg, const std::string& slug,
-               const std::vector<nimbus::orch::mcp::ToolDef>& tools, const nimbus::orch::mcp::RemoteCall& call) {
+               const std::vector<nimbus::orch::mcp::ToolDef>& tools) {
   nimbus::orch::mcp::registerServerTools(
       reg, slug, tools,
-      [call](const std::string& s, const std::string& tool, ArduinoJson::JsonObjectConst a,
-             const nimbus::orch::Principal& who) {
+      [](const std::string& s, const std::string& tool, ArduinoJson::JsonObjectConst a,
+         const nimbus::orch::Principal& who) {
         markOutsideCall();   // marked even when refused, as web_search (conservative)
-        return call(s, tool, a, who);
+        return connectors::mcp::callTool(s, tool, a, who);
       });
 }
 
