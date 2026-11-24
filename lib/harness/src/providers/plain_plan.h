@@ -14,7 +14,10 @@
 // result, a result only after its one call, each id once), the send order (a round's results
 // before anything stored between a call and its result), whole or stubbed results and call
 // arguments (the stub rule and the ladder), which photos go as pixels and which as their line,
-// the open turn's stored reasoning, the omission line, and the four neutral cache marks. A codec
+// the stored reasoning, the omission line, and the four neutral cache marks. Lane E2-R4b: it reads the
+// request's table row (RenderInput::route; none: the Anthropic Messages facts) for the replay tag and
+// scope of stored reasoning, the call id rule, text-mode history on a row without tools, the order
+// rules, and the route's real-byte limit (the oldest photos sent as their line). A codec
 // only spells the Plan in its JSON and reads its own answers; it decides nothing about what is
 // sent. The planner names no provider and reads or writes no JSON (the codec says whether a stored
 // fragment can be sent as it is). Pure apart from the RenderInput hooks it calls (photo, bulk) and one device log

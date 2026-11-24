@@ -1,5 +1,6 @@
 // test_router_conformance - the battery over provider table rows (lane E2-R3a; router design section 11,
-// layer L3, properties 1 to 7 and 10 to 11 that need no new engine code).
+// layer L3, properties 1 to 7 and 10 to 11 that need no new engine code; property 9 and the planner's row
+// cases, lane E2-R4b).
 //
 // Every property runs once per row of txb::tableRows() (each provider of the capability table, direct,
 // and through the Cumulo router where the table says the router carries it). A row whose codec has not
@@ -16,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "../../lib/harness/src/providers/plain_plan.h"   // property 9 reads the shared planner (codec-neutral)
 #include "../support/scripted_provider/wire_fixture.h"
 #include "../support/tx_battery/fixtures.h"
 #include "../support/tx_battery/pending.h"
@@ -336,6 +338,241 @@ void test_p10_history_never_shrinks() {
   });
 }
 
+// ---- 9. handoff and replay scope (lane E2-R4b) ------------------------------------------------------------------
+// Read on the shared planner, which decides for every codec what a request carries, so it runs on every row
+// whether or not the row's codec has landed.
+namespace {
+
+struct PlanRun {
+  plain::plan::Plan plan;
+  tx::TxArena arena;
+  std::vector<std::string> meta;    // the k items' text the plan sends, in order
+  std::vector<std::string> lines;   // the Line pieces' text
+};
+
+// What a plan run may add: a ladder, the body cap, the photos' bytes.
+struct PlanOpts {
+  const plain::LadderState* ladder = nullptr;
+  uint32_t bodyCap = 0;
+  const std::map<std::string, std::string>* photoBytes = nullptr;
+};
+
+// Plan `c` for row `r` with the request's model `model` (its route resolved as the exchange does), open turn
+// `open`.
+void planFor(const txb::Row& r, const txb::Convo& c, const std::string& model, uint32_t open, PlanRun& out,
+             const PlanOpts& opt = PlanOpts{}) {
+  const std::map<std::string, std::string>* photoBytes = opt.photoBytes;
+  txb::RenderFixture fx(r);
+  fx.turn.model = model;
+  fx.turn.turn = open;
+  TXB_OK(out.arena.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* p) { std::free(p); }));
+  for (const tx::Item& it : c.items) TXB_OK(out.arena.append(it));
+  plain::Route route;
+  (void)plain::resolveRoute(fx.head, fx.turn, route);   // a host no slot names keeps the wire's defaults
+  plain::RenderInput in;
+  in.turn = &fx.turn;
+  in.head = &fx.head;
+  in.system = &fx.system;
+  in.tools = &fx.tools;
+  in.items = &out.arena;
+  in.route = &route;
+  in.ladder = opt.ladder;
+  in.bodyCap = opt.bodyCap;
+  if (photoBytes)
+    in.photo = [photoBytes](const std::string& ref, plain::PhotoBytes& o) {
+      auto it = photoBytes->find(ref);
+      if (it == photoBytes->end()) return tx::Status::fail(tx::Err::NotFound, "p9 photo");
+      o.bytes = (const uint8_t*)it->second.data();
+      o.len = it->second.size();
+      o.mime = "image/jpeg";
+      return tx::Status::success();
+    };
+  TXB_OK(plain::plan::plan(in, [](const std::string&) { return true; }, out.plan));
+  tx::Item it;
+  for (const plain::plan::Piece& pc : out.plan.pieces) {
+    if (pc.kind == plain::plan::PieceKind::Meta && out.arena.get(pc.item, it).ok()) out.meta.push_back(it.x);
+    if (pc.kind == plain::plan::PieceKind::Line) out.lines.push_back(out.plan.lines[pc.line]);
+  }
+}
+
+// Three turns, each with one stored k item ("sig-<turn>" under `tag`, "" = stored before the tag) before a
+// call, its result and the text after them.
+txb::Convo replayConvo(const std::string& tag) {
+  txb::Convo c;
+  for (int t = 1; t <= 3; ++t) {
+    c.openTurn();
+    c.owner("question " + std::to_string(t));
+    tx::Item& k = c.add(tx::ItemKind::RoundMeta);
+    k.x = "{\"type\":\"thinking\",\"sig\":\"sig-" + std::to_string(t) + "\"}";
+    k.wr = tag;
+    const std::string id = c.call("read_file", "{\"path\":\"a.txt\"}");
+    c.receipt(id, "read_file", "hello");
+    c.say("answer " + std::to_string(t));
+  }
+  return c;
+}
+
+// The row the planner reads for `r` (its route as the exchange resolves it); null: the wire's defaults.
+const caps::ModelRow* rowOf(const txb::Row& r) {
+  static plain::Route route;
+  txb::RenderFixture fx(r);
+  route = plain::Route{};
+  const bool ok = plain::resolveRoute(fx.head, fx.turn, route).ok();
+  return ok && route.caps.provider ? &route.caps.row : nullptr;
+}
+
+size_t sigsOf(const PlanRun& p, const std::string& sig) {
+  size_t n = 0;
+  for (const std::string& m : p.meta) n += m.find(sig) != std::string::npos;
+  return n;
+}
+
+}  // namespace
+
+void test_p9_reasoning_replays_only_to_its_writer() {
+  size_t rows = 0;
+  for (const txb::Row& r : txb::tableRows()) {
+    ++rows;
+    plain::Route route;
+    txb::RenderFixture fx(r);
+    const bool table = plain::resolveRoute(fx.head, fx.turn, route).ok() && route.caps.provider;
+    const caps::ReplayScope scope = table ? route.caps.row.replayScope : caps::ReplayScope::OpenTurn;
+    const bool dropUnderRung = table ? (route.caps.row.flags & caps::flag::kDropUnderRung) : true;
+    const std::string mine = plain::replayTag(r.dialect, r.routed, r.model);
+    const bool all = scope == caps::ReplayScope::AllTurns;
+    // Its own tag: the open turn's, and every turn's on an allTurns row; closed turn 2 the same at turns 3 and 4.
+    const txb::Convo own = replayConvo(mine);
+    PlanRun a, b;
+    planFor(r, own, r.model, 3, a);
+    TEST_ASSERT_EQUAL_MESSAGE(all ? 3 : 1, (int)a.meta.size(), msgOf(r, "own tag").c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)sigsOf(a, "sig-3"), msgOf(r, "the open turn").c_str());
+    txb::Convo four = own;
+    four.openTurn();
+    four.owner("question 4");
+    planFor(r, four, r.model, 4, b);
+    TEST_ASSERT_EQUAL_MESSAGE(all ? 1 : 0, (int)sigsOf(b, "sig-2"), msgOf(r, "closed turn 2 at turn 4").c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(sigsOf(a, "sig-2"), sigsOf(b, "sig-2"), msgOf(r, "closed turn 2 moved").c_str());
+    // Another model, the other route kind, another dialect: never; back to the writer: the same bytes again.
+    const plain::Dialect other = r.dialect == plain::Dialect::AnthropicMessages ? plain::Dialect::ChatCompletions
+                                                                                 : plain::Dialect::AnthropicMessages;
+    for (const std::string& tag : {plain::replayTag(r.dialect, r.routed, "another-model"),
+                                   plain::replayTag(r.dialect, !r.routed, r.model), plain::replayTag(other, r.routed, r.model)}) {
+      PlanRun x;
+      planFor(r, replayConvo(tag), r.model, 3, x);
+      TEST_ASSERT_EQUAL_MESSAGE(0, (int)x.meta.size(), msgOf(r, "foreign tag " + tag).c_str());
+    }
+    PlanRun away, back;
+    planFor(r, own, "another-model", 3, away);
+    planFor(r, own, r.model, 3, back);
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)away.meta.size(), msgOf(r, "switched away").c_str());
+    TEST_ASSERT_TRUE_MESSAGE(back.meta == a.meta, msgOf(r, "switched back").c_str());
+    // Stored before the tag: Anthropic, direct, its turn's model (the t items name claude-sonnet-5-5).
+    PlanRun untagged;
+    planFor(r, replayConvo(""), r.model, 3, untagged);
+    const bool anthropicDirect = r.dialect == plain::Dialect::AnthropicMessages && !r.routed && r.model == "claude-sonnet-5-5";
+    TEST_ASSERT_EQUAL_MESSAGE(anthropicDirect ? 1 : 0, (int)sigsOf(untagged, "sig-3"), msgOf(r, "untagged").c_str());
+    // A ladder rung drops reasoning only where the row says so.
+    plain::LadderState rung;
+    rung.stubThrough = 1;
+    PlanRun under;
+    PlanOpts withRung;
+    withRung.ladder = &rung;
+    planFor(r, own, r.model, 3, under, withRung);
+    TEST_ASSERT_EQUAL_MESSAGE(dropUnderRung ? 0 : (int)a.meta.size(), (int)under.meta.size(), msgOf(r, "under a rung").c_str());
+    ++g_ran;
+    if (r.slot == caps::Slot::Anthropic) ++g_ranAnthropic;
+  }
+  std::printf("p9 replay scope: %zu rows ran, 0 waiting\n", rows);
+}
+
+// The planner's row cases (lane E2-R4b): ids mapped by the row's rule at render time (storage keeps the
+// native id); a row without tools sees earlier tool work as text in its place.
+void test_ids_are_mapped_by_the_row_and_a_row_without_tools_reads_them_as_text() {
+  txb::Convo c;
+  c.openTurn();
+  c.owner("look it up");
+  const std::string id = c.call("read_file", "{\"path\":\"a.txt\"}");
+  c.receipt(id, "read_file", "the file says hello");
+  c.say("done");
+  c.openTurn();
+  c.owner("and now?");
+  for (const txb::Row& r : txb::tableRows()) {
+    if (r.routed) continue;
+    const caps::ModelRow* row = rowOf(r);
+    PlanRun p;
+    planFor(r, c, r.model, 2, p);
+    // a request that offers tools keeps them in its history whatever the row (the custom rows' tools bit
+    // waits for the verify step)
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)p.plan.ids.size(), msgOf(r, "ids").c_str());
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(p.plan.ids[0].c_str(), p.plan.ids[1].c_str(), msgOf(r, "call and result").c_str());
+    if (row && row->idRule == caps::IdRule::Mistral9) TEST_ASSERT_EQUAL_MESSAGE(9, (int)p.plan.ids[0].size(), r.name.c_str());
+    else TEST_ASSERT_EQUAL_STRING_MESSAGE(id.c_str(), p.plan.ids[0].c_str(), r.name.c_str());
+  }
+  TEST_ASSERT_EQUAL_STRING("toolu_0001", c.items[2].id.c_str());   // storage keeps the native id
+  // A row without tools (the custom chat '*' row) and a request that offers none: the history as text.
+  const caps::Caps blind = caps::capsFor(caps::Slot::CustomChat, "battery-model", false);
+  TEST_ASSERT_FALSE(blind.row.flags & caps::flag::kTools);
+  const std::vector<plain::ToolSpec> none;
+  txb::RenderFixture fx(plain::Dialect::ChatCompletions);
+  fx.turn.turn = 2;
+  plain::Route route;
+  route.caps = blind;
+  PlanRun p;
+  TXB_OK(p.arena.init(tx::kActiveChatArenaBytes, [](size_t n) { return std::malloc(n); }, [](void* q) { std::free(q); }));
+  for (const tx::Item& it : c.items) TXB_OK(p.arena.append(it));
+  plain::RenderInput in;
+  in.turn = &fx.turn;
+  in.head = &fx.head;
+  in.system = &fx.system;
+  in.tools = &none;
+  in.items = &p.arena;
+  in.route = &route;
+  TXB_OK(plain::plan::plan(in, [](const std::string&) { return true; }, p.plan));
+  TEST_ASSERT_EQUAL(0, (int)p.plan.ids.size());
+  bool said = false;
+  for (const plain::plan::Piece& pc : p.plan.pieces)
+    said = said || (pc.kind == plain::plan::PieceKind::Line &&
+                    p.plan.lines[pc.line] == "[device] earlier I ran read_file: the file says hello");
+  TEST_ASSERT_TRUE_MESSAGE(said, "the text-mode line");
+}
+
+// The routed real-byte check (lane E2-R4b, design section 7): over 4,194,304 B with base64, the oldest photos
+// go as their line (with a stored caption), never the one that arrived this turn; direct, all go as pixels.
+void test_a_routed_request_over_its_real_bytes_stubs_the_oldest_photos_first() {
+  std::map<std::string, std::string> photos;
+  txb::Convo c;
+  for (int t = 1; t <= 3; ++t) {
+    const std::string ref = "p0000000" + std::to_string(t);
+    photos[ref] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(1100000, 'j');   // about 1.47 MB as base64
+    c.openTurn();
+    c.owner("photo " + std::to_string(t), {ref});
+    c.items.back().parts[0].cap = "a boat at the dock";
+    c.say("seen");
+  }
+  c.openTurn();
+  c.owner("and this one", {"p00000004"});
+  photos["p00000004"] = photos["p00000001"];
+  // the t item of turn 4 keeps every photo in view
+  for (tx::Item& it : c.items)
+    if (it.kind == tx::ItemKind::TurnOpen && it.turn == 4) it.photos = {"p00000001", "p00000002", "p00000003", "p00000004"};
+  for (const txb::Row& r : txb::tableRows()) {
+    if (r.slot != caps::Slot::Anthropic) continue;
+    PlanRun p;
+    PlanOpts opt;
+    opt.bodyCap = 85000;
+    opt.photoBytes = &photos;
+    planFor(r, c, r.model, 4, p, opt);
+    size_t pixels = 0;
+    for (const plain::plan::Piece& pc : p.plan.pieces) pixels += pc.kind == plain::plan::PieceKind::Photo;
+    TEST_ASSERT_EQUAL_MESSAGE(r.routed ? 2 : 4, (int)pixels, r.name.c_str());
+    if (!r.routed) continue;
+    TEST_ASSERT_EQUAL(2, (int)p.lines.size());
+    TEST_ASSERT_TRUE_MESSAGE(p.lines[0].find("p00000001") != std::string::npos, p.lines[0].c_str());
+    TEST_ASSERT_TRUE_MESSAGE(p.lines[1].find("p00000002") != std::string::npos, p.lines[1].c_str());
+    TEST_ASSERT_TRUE_MESSAGE(p.lines[0].find("a boat at the dock") != std::string::npos, p.lines[0].c_str());
+  }
+}
+
 // ---- 11. limits: string size, UTF-8, nesting on every render; a routed request declares its deadline and cap ----------
 void test_p11_limits() {
   forEachRow("p11 limits", {"RB-T1"}, [](const txb::Row& r) {
@@ -473,6 +710,9 @@ int main(int, char**) {
   RUN_TEST(test_p5_cut_answer_calls_never_run);
   RUN_TEST(test_p6_no_retry_on_billing_auth_or_unknown_model);
   RUN_TEST(test_p7_usage_arithmetic);
+  RUN_TEST(test_p9_reasoning_replays_only_to_its_writer);
+  RUN_TEST(test_ids_are_mapped_by_the_row_and_a_row_without_tools_reads_them_as_text);
+  RUN_TEST(test_a_routed_request_over_its_real_bytes_stubs_the_oldest_photos_first);
   RUN_TEST(test_p10_history_never_shrinks);
   RUN_TEST(test_p11_limits);
   RUN_TEST(test_p11_routed_request_declares_deadline_and_cap);

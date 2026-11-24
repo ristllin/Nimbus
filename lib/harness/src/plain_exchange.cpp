@@ -448,7 +448,7 @@ class Exchange {
     out_.errorLine = exchangeLine(err, slug_, httpStatus_, err == ExchangeErr::Other ? refusedReason_ : std::string());
     out_.errorLineStored = exchangeLine(err, slug_, httpStatus_);   // what may be kept: no provider words (F4)
     if (out_.modelUnusable)   // lane E2-R4b: the provider does not know the model, said as that (PC-0259)
-      out_.errorLine = out_.errorLineStored = model_ + texts::device_notes::kNotAvailableOn + providerName(capHost_) + ".";
+      out_.errorLine = out_.errorLineStored = model_ + texts::stubs::kNotAvailableOn + providerName(capHost_) + ".";
     if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
     if (out_.parkHost) out_.parkBody = parkBody_;
     return Status::success();

@@ -1512,3 +1512,12 @@ PC-0175, PC-0176: not used.
 - lane: E2-P-CONN1
 - prd: inventory parity-autonomy-memory-safety row C1 and parity-tools-commands-surfaces row /mcp (engine 2 binds engine 1's remote tool servers and /mcp)
 - why: the seven /mcp replies ("Usage: /mcp approve <name>  |  /mcp deny <name>", "No MCP server named ...", "Approved MCP server ...", "Removed approval for MCP server ...") left src/agent/orchestrator_e1.cpp's /mcp branch unchanged into src/agent/connectors_approval.cpp (connectors::mcp::approvalCommand), which engine 1's /mcp and engine 2's (commands_plain.cpp) both call. They are owner-facing replies of a slash command, never sent to a model; the catalog had them under device_notes only because orchestrator_e1.cpp is listed whole. No text a model reads changed: the class shrinks by those 221 B. The registration of a server's tools moved to the shared mcp::registerServerTools; the fallback description "<slug> tool" stays in src/agent/connectors.cpp (same bytes, same class). The rails' new connector row (plain_rails.cpp) adds no text. PC-0253, PC-0254: not used.
+### PC-0257: the text-mode history line and the unknown-model line (engine 2)
+- catalog: e2
+- class: stubs
+- kind: spec
+- bytes: 414 -> 458
+- sha8: e548380a -> 887cd2b2
+- lane: RB-R4 (lane E2-R4b)
+- prd: router design (P/analysis-2026-11-24/ROUTER-DESIGN.md) section 5 item 7 (text-mode history), section 7 (captions in the photo stub), section 14 lane R4b; AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h stubs. kEarlierRan (PC-0257): a head whose table row has no tools sees each stored call and its result in their place as one line, "[device] earlier I ran <tool>: <result or its stub>" (the separator is device_notes::kReasonSep), so a switch to a text-mode head still sees what happened; nothing is stored differently. kNotAvailableOn (PC-0259): the exchange's line when the provider does not know the model, "<model> is not available on <provider>.", in place of the generic refusal line; kept in stubs because device_notes is at its ceiling. PC-0258: a photo's stored caption (the image part's new `cap` key) rides the existing photo line where its note would ("[photo p<ref8> <when>: <caption>]"); no new text. Planned work, not a fix (CUM-999).

@@ -125,7 +125,9 @@ RowRules rowRules(const RenderInput& in) {
   r.idRule = row.idRule;
   r.replayScope = row.replayScope;
   r.dropUnderRung = row.flags & caps::flag::kDropUnderRung;
-  r.tools = row.flags & caps::flag::kTools;
+  // Text-mode history only for a request that offers no tools: a row without tools whose codec or pre-flight
+  // sends none (a custom Messages head keeps its tools array until the verify step, lane R8).
+  r.tools = (row.flags & caps::flag::kTools) || (in.tools && !in.tools->empty());
   r.order = row.orderRules;
   return r;
 }
@@ -633,7 +635,7 @@ void resultPiece(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
   else if (it.cls != tx::ResultClass::Outside) src = wholeText(b.in, it, own);   // no stub stored: never outside content
   const std::string& text = src == Src::X ? it.x : src == Src::St ? it.st : own;
   if (!b.f.rules.tools) {   // a row without tools: the call and its result as one line in their place
-    linePiece(b, idx, it.turn, true, texts::stubs::kEarlierRan + it.n + texts::stubs::kEarlierRanSep + text);
+    linePiece(b, idx, it.turn, true, texts::stubs::kEarlierRan + it.n + texts::device_notes::kReasonSep + text);
     return;
   }
   const uint32_t wid = b.id(row.wid);

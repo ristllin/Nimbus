@@ -237,8 +237,6 @@ inline constexpr char kHttp[] = " (HTTP ";
 inline constexpr char kReasonSep[] = ": ";   // before the provider's own reason (E2-FIX11)
 inline constexpr char kCut[] = "The reply above was cut at the length limit.";
 inline constexpr char kBlocked[] = "The reply was blocked by moderation.";
-// A model the provider does not know (lane E2-R4b; PC-0259): "<model> is not available on <provider>."
-inline constexpr char kNotAvailableOn[] = " is not available on ";
 // Who answered, by the qualification table's provider slug.
 inline constexpr char kAnthropic[] = "Anthropic";
 inline constexpr char kOpenAI[] = "OpenAI";
@@ -311,8 +309,10 @@ inline constexpr char kAgentFailed[] = " failed";
 inline constexpr char kAgentSaved[] = " saved whole as ";
 // A head whose row has no tools (lane E2-R4b, router design section 5 item 7; PC-0257): each stored call and
 // its result render in their place as one line, "[device] earlier I ran <tool>: <result or its stub>".
-inline constexpr char kEarlierRan[] = "[device] earlier I ran ";
-inline constexpr char kEarlierRanSep[] = ": ";
+inline constexpr char kEarlierRan[] = "[device] earlier I ran ";   // then the tool, device_notes::kReasonSep, the text
+// A model the provider does not know (lane E2-R4b; PC-0259): "<model> is not available on <provider>.", the
+// exchange's line in place of the refusal (here, not in device_notes, whose ceiling it would pass).
+inline constexpr char kNotAvailableOn[] = " is not available on ";
 }  // namespace stubs
 namespace tool_results {
 // The results the loop itself gives a call that did not run (lane RB-E1a, plain_engine.cpp).

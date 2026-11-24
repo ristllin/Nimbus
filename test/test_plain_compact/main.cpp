@@ -2114,6 +2114,35 @@ void test_compaction_reads_the_answering_head_at_every_step() {
   }
 }
 
+// Lane E2-R4b (router design section 6 item 6, the 1M, 32K, 1M test): the owner switches a chat from a large
+// head to a small one and back. The small head's turn adds no digest (its requests leave older turns out at render
+// time, by the ladder), so the large head, back, renders every stored turn the first one could.
+void test_a_switch_to_a_small_head_and_back_adds_no_digest() {
+  const tx::HeadKey large{"anthropic", "claude-sonnet-5-5", false}, small{"custom", "lan-model-32k", false};
+  tx::HeadBudget lb, sb;
+  TEST_ASSERT_TRUE(tx::budgetFor(large, tx::Profile::Full, lb).ok());
+  TEST_ASSERT_TRUE(tx::budgetFor(small, tx::Profile::Full, sb).ok());
+  TEST_ASSERT_TRUE(sb.marks.high < lb.marks.high);
+  Chat c;
+  c.profile = c.head.profile = "full";
+  c.headKey = large;
+  c.tHead = "anthropic/claude-sonnet-5-5";
+  c.driver.reset(new plain::CompactDriver(c.deps()));
+  for (int d = -40; plain::residentBytes(*c.arena, c.head.thru) <= sb.marks.high + 4000; ++d) c.day(d, 3, 3000, "d" + std::to_string(d));
+  TEST_ASSERT_TRUE(plain::residentBytes(*c.arena, c.head.thru) < lb.marks.high);
+  c.answer([] { return sp::say(kSummary); });
+  for (const tx::HeadKey& k : {small, large}) {   // the small head answers a turn, then the large one again
+    c.headKey = k;
+    c.tHead = k.host + "/" + k.model;
+    c.driver.reset(new plain::CompactDriver(c.deps()));
+    c.day(1, 1, 400, "turn on " + k.model);
+    c.now += 3600;
+    TEST_ASSERT_FALSE_MESSAGE(c.step().ran, k.model.c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(0, (int)c.digestsStored(), k.model.c_str());
+    TEST_ASSERT_EQUAL_UINT64(0, c.head.thru);   // nothing is cut out of what the large head renders
+  }
+}
+
 // Ruling 91 T4-ADV-05 (ruling 82 item 5: a cost bound never makes the answer worse): the
 // throughput limits are sized so a due compaction completes. Two busy Sonnet chats at full on one
 // device (one shared control record), each past its due mark by a whole due-to-keep cycle: within
@@ -3353,6 +3382,7 @@ int main(int, char**) {
   RUN_TEST(test_turns_that_left_ram_are_summarized_from_the_card);
   RUN_TEST(test_only_a_pinned_slug_is_an_owners_smaller_profile);
   RUN_TEST(test_compaction_reads_the_answering_head_at_every_step);
+  RUN_TEST(test_a_switch_to_a_small_head_and_back_adds_no_digest);
   RUN_TEST(test_two_busy_chats_each_complete_a_due_to_keep_cycle_in_a_day);
   RUN_TEST(test_a_photo_note_is_one_framed_line_and_a_hot_reading_counts_once);
   RUN_TEST(test_every_compaction_keeps_at_least_the_v5_1_2_text_on_every_head_class);
