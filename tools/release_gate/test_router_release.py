@@ -95,11 +95,12 @@ def test_a_new_file_in_a_waived_class_is_listed_not_failed(tree):
 
 
 def test_marking_a_provider_releasable_without_recordings_fails(tree):
-    rec = copy.deepcopy(RECORD)
-    rec["providers"]["openai"]["direct"]["releasable"] = True
+    rec = copy.deepcopy(RECORD)   # lane E2-R10 recorded Z.ai direct without marking it releasable
+    rec["providers"]["zai"]["direct"]["releasable"] = True
+    del rec["providers"]["zai"]["direct"]["recorded"]["id_rule"]
     f = fails(tree, rec)
-    assert f and all(x.startswith("openai direct: releasable") for x in f)
-    assert any("openai_wire_synthetic" in x for x in f) and any("id_rule" in x for x in f)
+    assert f and all(x.startswith("zai direct: releasable") for x in f)
+    assert any("zai_wire_synthetic" in x for x in f) and any("id_rule" in x for x in f)
 
 
 def test_a_dropped_recording_fails(tree):
@@ -132,4 +133,4 @@ def test_a_slot_or_route_missing_from_the_record_fails(tree):
 
 
 def test_the_scope_gate_reads_releasable_routes():
-    assert rr.releasable_routes(RECORD) == {"anthropic-direct"}
+    assert rr.releasable_routes(RECORD) == {"anthropic-direct", "openai-direct", "mistral-direct"}   # lane E2-R10

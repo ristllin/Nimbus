@@ -1,5 +1,5 @@
 {
-  "about": "What each provider slot has recorded against the real service, per route (router design section 11, release gate; lanes E2-R3b, E2-R3c; ruling 125 item 2). tools/release_gate/check_router_release.py reads it with tools/model_caps/models.toml: a route marked releasable fails while a synthetic wire fixture is left for it or a request-shape feature its rows allow has no recorded 2xx. A citation is a repo path or 'P:<path>' (a program evidence file outside the repo). A waiver is {why, until}; its key is one item, a folder ending in '/' or a glob, and every item it covers is printed. Ruling 125 item 2: Anthropic direct is releasable with waivers until R10 (design section 12) records each item; every routed route is not releasable until R10.",
+  "about": "What each provider slot has recorded against the real service, per route (router design section 11, release gate; lanes E2-R3b, E2-R3c; ruling 125 item 2). tools/release_gate/check_router_release.py reads it with tools/model_caps/models.toml: a route marked releasable fails while a synthetic wire fixture is left for it or a request-shape feature its rows allow has no recorded 2xx. A citation is a repo path or 'P:<path>' (a program evidence file outside the repo). A waiver is {why, until}; its key is one item, a folder ending in '/' or a glob, and every item it covers is printed. Ruling 125 item 2: Anthropic direct is releasable with waivers until R10 (design section 12) records each item; every routed route is not releasable until R10. Lane E2-R10 (24 Nov 2026) recorded the direct routes; Z.ai direct stays not releasable (its default head glm-5.3 is blind until P-CAP, router design section 7); no routed route was recorded (no Cumulo test key).",
   "schema": 2,
   "providers": {
     "anthropic": {
@@ -7,35 +7,99 @@
         "releasable": true,
         "recorded": {
           "id_rule": "P:lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md (shapes-t1-r1 and shapes-t3-r1: the round after tool results, toolu_ ids sent back, 200, 19 Nov 2026)",
-          "replay_scope": "P:lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md (b0 to b5: open-turn thinking replayed and left out under a rung, 200, 19 Nov 2026)"
+          "replay_scope": "P:lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md (b0 to b5: open-turn thinking replayed and left out under a rung, 200, 19 Nov 2026)",
+          "structured_summary": "P:lanes/E2-R10/evidence/run2/anthropic/12-summarizer_structured.resp.json (output_config json_schema on claude-haiku-5-5, the changes object, 200, 24 Nov 2026)",
+          "image_in_tool_result": "P:lanes/E2-R10/evidence/run2/anthropic/08-near_cap_photo_turn.req.json (three images inside tool_result blocks, 200, 24 Nov 2026)",
+          "tool_choice_none": "test/support/fixtures/anthropic_wire_2026-11/guard_round_thinking_only.json (the guard round, 200; Haiku and Sonnet answered it with thinking alone, see lanes/E2-R10/RESULT.md)"
         },
         "waived": {
-          "test/support/fixtures/anthropic_wire_2026-11/synthetic_*": {"why": "answer shapes not produced on demand (refusal, interleaved thinking, empty end_turn), pinned from the documented shape by lane RB-W1b; ruling 125 item 2", "until": "R10"},
-          "test/support/fixtures/anthropic_wire_synthetic/": {"why": "error and answer bodies written from Anthropic's documentation, each with its source line (lanes E2-R3a, E2-R5); ruling 125 item 2", "until": "R10"},
-          "structured_summary": {"why": "in use on the released engine 2 (the Changes form), but no recorded 2xx is committed; ruling 125 item 2", "until": "R10"},
-          "image_in_tool_result": {"why": "no recorded 2xx of an image inside a tool_result is committed; ruling 125 item 2", "until": "R10"},
-          "tool_choice_none": {"why": "no recorded 2xx of tool_choice none (the guard round) is committed; ruling 125 item 2", "until": "R10"}
+          "test/support/fixtures/anthropic_wire_2026-11/synthetic_*": {
+            "why": "answer shapes not produced on demand (refusal, interleaved thinking, empty end_turn), pinned from the documented shape by lane RB-W1b; ruling 125 item 2",
+            "until": "a recorded body (not producible on demand)"
+          },
+          "test/support/fixtures/anthropic_wire_synthetic/": {
+            "why": "error and answer bodies written from Anthropic's documentation, each with its source line (lanes E2-R3a, E2-R5); ruling 125 item 2",
+            "until": "a recorded body (not producible on demand)"
+          }
         }
       },
-      "routed": {"releasable": false, "recorded": {}, "waived": {}}
+      "routed": {
+        "releasable": false,
+        "recorded": {},
+        "waived": {}
+      }
     },
     "openai": {
-      "direct": {"releasable": false, "recorded": {}, "waived": {}},
-      "routed": {"releasable": false, "recorded": {}, "waived": {}}
+      "direct": {
+        "releasable": true,
+        "recorded": {
+          "id_rule": "test/support/fixtures/openai_wire_2026-11/function_call_two_ids.txt (the call_id sent back with no item id under store:false, 200; lane E2-R10 S2, 24 Nov 2026)",
+          "replay_scope": "test/support/fixtures/openai_wire_2026-11/reasoning_encrypted_then_text.txt (open-turn and closed-turn reasoning items replayed, 200; S2 and S3)",
+          "structured_summary": "test/support/fixtures/openai_wire_2026-11/summarizer_structured.txt (text.format json_schema, the changes object, 200; S8)",
+          "tool_choice_none": "test/support/fixtures/openai_wire_2026-11/guard_round_none.txt (the guard round, text and no call, 200; S4)"
+        },
+        "waived": {
+          "test/support/fixtures/openai_wire_synthetic/": {
+            "why": "answer and error shapes the services do not produce on demand (rate limits, credit, context, server faults, refusals, a cut inside a call), written from the provider's documentation with a source line each; lane E2-R10 replaced every one it could record",
+            "until": "a recorded body"
+          }
+        }
+      },
+      "routed": {
+        "releasable": false,
+        "recorded": {},
+        "waived": {}
+      }
     },
     "mistral": {
-      "direct": {"releasable": false, "recorded": {}, "waived": {}},
-      "routed": {"releasable": false, "recorded": {}, "waived": {}}
+      "direct": {
+        "releasable": true,
+        "recorded": {
+          "id_rule": "test/support/fixtures/mistral_wire_2026-11/tool_calls.txt (served ids sent back, and foreign toolu_ ids mapped to 9 alphanumerics, 200; lane E2-R10 S2 and S9, 24 Nov 2026)",
+          "replay_scope": "test/support/fixtures/mistral_wire_2026-11/thinking_chunks.txt (thinking chunks replayed on closed turns and beside tool_calls, 200; S3 and the manual body in lanes/E2-R10/evidence/run2/mistral-manual)",
+          "tool_choice_none": "test/support/fixtures/mistral_wire_2026-11/guard_round_none.txt (the guard round, text and no call, 200; S4)"
+        },
+        "waived": {
+          "test/support/fixtures/mistral_wire_synthetic/": {
+            "why": "answer and error shapes the services do not produce on demand (rate limits, credit, context, server faults, refusals, a cut inside a call), written from the provider's documentation with a source line each; lane E2-R10 replaced every one it could record",
+            "until": "a recorded body"
+          }
+        }
+      },
+      "routed": {
+        "releasable": false,
+        "recorded": {},
+        "waived": {}
+      }
     },
     "zai": {
-      "direct": {"releasable": false, "recorded": {}, "waived": {}},
-      "routed": {"releasable": false, "recorded": {}, "waived": {}}
+      "direct": {
+        "releasable": false,
+        "recorded": {
+          "id_rule": "test/support/fixtures/zai_wire_2026-11/tool_call_args_string.txt (served ids and foreign toolu_ ids sent back, 200; lane E2-R10 S2 and S9, 24 Nov 2026)",
+          "replay_scope": "P:lanes/E2-R10/evidence/run3/zai/ (served reasoning_content replayed on a closed turn, 200; S3 plus one turn)"
+        },
+        "waived": {}
+      },
+      "routed": {
+        "releasable": false,
+        "recorded": {},
+        "waived": {}
+      }
     },
     "custom_chat": {
-      "direct": {"releasable": false, "recorded": {}, "waived": {}}
+      "direct": {
+        "releasable": false,
+        "recorded": {},
+        "waived": {}
+      }
     },
     "custom_messages": {
-      "direct": {"releasable": false, "recorded": {}, "waived": {}}
+      "direct": {
+        "releasable": false,
+        "recorded": {},
+        "waived": {}
+      }
     }
   }
 }
