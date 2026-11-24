@@ -78,6 +78,7 @@ a generated file.
 | `test_device_http_auth.py` | Every tool that calls the device API signs in with the `X-Nimbus-Token` header, never a URL token (fake device, no network). |
 | `test_tcal_wizard.py` | Unit tests for `tcal_wizard.py`. |
 | **⚠ `release_gate/tag_shape.py`** | Release channel gate (release.yml): OTA tag vs virtual vn- tag, version.h coherence. |
+| `release_gate/image_projection.py` | Flash bytes per object, folder and feature group from two `firmware.map` files: the engine-1 feature code not yet in the engine-2 image and the projected parity image (groups in `release_gate/parity_groups.json`); a parity lane runs it before and after. Tests: `release_gate/test_image_projection.py`. |
 | **⚠ `release_gate/check_release_notes.py`** | Release notes gate (release.yml, run_gate.py): the one-line `docs/release-notes/<tag>.txt` the manifest carries, at most 95 bytes, ASCII, plain words. |
 
 Bench-only and board-specific scripts (a live connector-QA harness, the quality

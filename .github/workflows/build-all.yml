@@ -39,6 +39,12 @@ on:
       - 'tools/release_gate/tg_poll_stack.json'
       - 'tools/release_gate/tg_poll_stack.d/**'
       - 'tools/release_gate/static_dram_ceilings.json'
+      - 'tools/release_gate/check_static_dram.py'
+      - 'tools/release_gate/check_image_size.py'
+      - 'tools/release_gate/image_baseline.json'
+      - 'tools/release_gate/image_budget.d/**'
+      - 'tools/release_gate/image_projection.py'
+      - 'tools/release_gate/parity_groups.json'
       - '.github/workflows/build-all.yml'
   push:
     branches: [main]
@@ -57,6 +63,12 @@ on:
       - 'tools/release_gate/tg_poll_stack.json'
       - 'tools/release_gate/tg_poll_stack.d/**'
       - 'tools/release_gate/static_dram_ceilings.json'
+      - 'tools/release_gate/check_static_dram.py'
+      - 'tools/release_gate/check_image_size.py'
+      - 'tools/release_gate/image_baseline.json'
+      - 'tools/release_gate/image_budget.d/**'
+      - 'tools/release_gate/image_projection.py'
+      - 'tools/release_gate/parity_groups.json'
       - '.github/workflows/build-all.yml'
   schedule:
     # Weekly anti-rot sweep on main. Not at the top of the hour - that is when

@@ -30,7 +30,8 @@
 # links one engine (check_engine_filter.py), no engine-2 ELF defines an engine-1 symbol
 # (check_elf_symbols.py --engine1-absent), no old-engine tool registers on engine 2
 # (list_tool_registrations.py --check), and the engine-2 images keep the tg_poll stack floor
-# and their static-DRAM ceilings.
+# and their static-DRAM ceilings (undeclared engine-2 growth fails on a lane branch), and the
+# image projection prints what engine-2 parity would add.
 #
 # The two flag-only targets reuse an existing env and inject the extra define via
 # PLATFORMIO_BUILD_FLAGS (appended to that env's build_flags for this run only),
@@ -161,8 +162,10 @@ fi
 # Image-size gate after the builds: every built env's firmware.bin must fit the app
 # partition of ITS OWN partition table (lane TESTFIT - the test-console builds
 # overflow the stock 6.5 MB slot while PlatformIO's section report stays
-# green, and the ROM then refuses to boot the image). FAIL on overflow, WARN
-# under 64 KB of headroom; prints every env's headroom, production included.
+# green, and the ROM then refuses to boot the image). FAIL on overflow and on a product
+# image under 200,000 B free (the release floor, lane E2-GATE), WARN under 300,000 B on a
+# product image and under 64 KB elsewhere; one table per env: image, free, the code change
+# against image_baseline.json and the allowance that explains it.
 # The image-size gate and the engine gates (lane RB-I0). Each runs bare; a failure fails the
 # matrix, and every gate still runs.
 gate() {
@@ -190,6 +193,12 @@ for env in "${E2_ENVS[@]}"; do
 done
 gate "tg_poll stack" python3 tools/release_gate/check_tg_poll_stack.py --quiet
 gate "static DRAM" python3 tools/release_gate/check_static_dram.py
+# Report only (exit 0 unless a map cannot be read): the engine-1 feature code not yet in the
+# engine-2 image, by group, and the engine-2 image with every returning group at engine-1 size.
+echo "== image projection (engine 1 against engine 2, Freenove 2.8 inch) =="
+gate "image projection" python3 tools/release_gate/image_projection.py \
+  .pio/build/esp32s3-cyd/firmware.map .pio/build/esp32s3-cyd-e2/firmware.map \
+  --bin .pio/build/esp32s3-cyd-e2/firmware.bin --top 15
 
 echo "== matrix: $pass passed, $fail failed =="
 if [ $fail -ne 0 ]; then
