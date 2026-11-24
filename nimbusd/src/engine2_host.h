@@ -2,9 +2,14 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
+
+#include <dirent.h>
+
+#include <map>
+#include <set>
+#include <vector>
 
 #include "daemon_http.h"
 #include "hosted_file_tools.h"
@@ -12,36 +17,54 @@
 #include "hosted_loops.h"   // the schedule tool and its fires (lane E2-SCHED)
 #include "hosted_notes.h"
 #include "hosted_tx.h"
-#include "nimbus/harness/plain/chat_photos.h"   // photoParts, photoBytesFrom (lane E2-P-PHOTO)
-#include "nimbus/harness/plain/compact.h"
-#include "nimbus/harness/plain/exchange.h"   // providerSlugOf
-#include "nimbus/harness/plain/guards.h"
+#include "nimbus/harness/plain/chat_binding.h"   // the device's binding (lane E2-P-HOST1)
+#include "nimbus/harness/plain/chat_commands.h"   // /clear's generation
+#include "nimbus/harness/plain/chat_photos.h"
+#include "nimbus/harness/plain/chat_skills.h"
 #include "nimbus/harness/plain/history.h"   // search and view (lane E2-SRCH)
 #include "nimbus/harness/plain/schedule_binding.h"   // heldFileOn, heldPathFor, drainHeld (lane E2-SCHED)
-#include "nimbus/orch/blob_store.h"   // blobPath (lane E2-P-PHOTO)
+#include "nimbus/harness/plain/texts.h"
+#include "nimbus/harness/websearch.h"
+#include "nimbus/orch/blob_store.h"
 #include "nimbus/orch/calc_tool.h"
-#include "nimbus/orch/model_catalog.h"
-#include "nimbus/orch/tx/budget.h"
+#include "nimbus/orch/episodic.h"
+#include "nimbus/orch/media_label.h"   // validRef
 #include "nimbus/orch/spend_ceiling.h"   // kSpendFrozenError (lane E2-FIX7)
+#include "nimbus/orch/turn_images.h"
 #include "nimbus/orch/turn_spend.h"   // TurnSpend (lane E2-CMP)
-#include "plain_rig.h"
+#include "nimbus/orch/tx/old_engine.h"   // EpisodicRowSource, oldFoldOf (the history import)
+#include "plain_rig.h"   // PlainTurn, settleEnding
 #include "posix_files.h"
-#include "posix_fs.h"   // fsutil::readFile (lane E2-P-PHOTO)
+#include "posix_fs.h"   // fsutil::readFile
 #include "posix_platform.h"
 
 // engine2_host - the owner chat of a Virtual Nimbus on engine 2 (lane E2-HOST). Started once at
 // boot when the instance's startup switch says engine 2 (NIMBUSD_ENGINE=2); engine 1 stays the
 // default and is untouched when the switch is off.
 //
-// One PlainRig for the owner's conversation (transcript key "owner", <data>/mem/tx/owner/),
-// over the daemon's own platform and a libcurl transport of its own (the engine thread is the
-// only caller), the Anthropic wire, and the bindings the engine already has:
-//   * compaction: one CompactDriver for the chat, installed before boot; the engine runs it at
-//     turn open and from the daemon's idle step (idle()); its control record is
-//     <data>/mem/compact_ctl.txt. No v5.1.1 chatsum mirror: engine 1 owns that file.
-//   * notes (hosted_notes.h): <data>/mem/notes/owner.md, the pinned block in every request;
-//   * calc;
-//   * the five file tools and delete_file behind more (hosted_file_tools.h) over the daemon's one file store;
+// Lane E2-P-HOST1: the owner's conversation runs through the device's own binding
+// (plain::ChatBinding, chat_binding.h), so what the device's engine 2 does a hosted owner turn does:
+// the arena sized for the head, compaction, the suppression seam, the safety rails, the money guard,
+// the crash resume at boot, the progress line, the earlier engine's conversation imported before the
+// log opens, photos and skills. The transcript key is "owner" (<data>/mem/tx/owner/), or "owner_c<n>"
+// after /clear (the number in <data>/mem/tx/owner.gen). The host gives the binding the daemon's
+// platform, a libcurl transport of its own (the engine thread is the only caller), its one tool
+// registry and these parts:
+//   * compaction's control record <data>/mem/compact_ctl.txt (no v5.1.1 chatsum mirror);
+//   * notes (hosted_notes.h): <data>/mem/notes/owner.md, the pinned block in every request; a tainted
+//     turn's note change goes to the pending shelf (the rails);
+//   * calc; the five file tools and delete_file behind more (hosted_file_tools.h) over the daemon's
+//     one file store, skills/<id>.md read from the skill store;
+//   * search and view over the turn's own conversation (lane E2-SRCH);
+//   * web_search over the old engine's web.search handler (Tavily, else the provider's own), whose
+//     results are outside content;
+//   * the owner's approved skills from <data>/mem/skills/<id>/SKILL.md;
+//   * photos (lane E2-P-PHOTO, folded in here): the set engine 1's channel offered under the turn's
+//     text (hosted_photos.h offerTurn: each photo kept by its hash in Engine2Options::photoDir, its row
+//     written, an album of up to ten whole) becomes the message's image parts, as on the device; a head
+//     that cannot see gets each photo's one description (the set's caption walk) and a blind turn; an
+//     earlier photo in view is read back from photoDir;
+//   * the earlier engine's owner rows (Engine2Options::oldRows) and fold record for the import;
 //   * lane E2-SCHED: `schedule` over the instance's routines table (hosted_loops.h, loops.json with
 //     loops2.json beside it) when Engine2Options::loops is set, and its fires (fire(), the routines
 //     tick's hook while engine 2 runs): a reminder's text with no model request, a routine isolated on
@@ -79,7 +102,29 @@ struct Engine2Options {
   // person's turn on any channel gets kPausedLine, routines wait (reminders still go), and the idle step runs
   // no compaction. Null: never paused.
   std::function<bool()> paused;
+  // Lane E2-P-HOST1. The earlier engine's rows of the owner's conversation (every owner chat, never a
+  // member's), the store's forward query; null: no import. Its fold record of the owner chat.
+  std::function<std::vector<nimbus::orch::EpisodicMessage>(const nimbus::orch::MsgQuery&, nimbus::orch::EpiQueryInfo&)>
+      oldRows;
+  std::function<nimbus::orch::ChatFold()> oldFold;
+  // web_search: the old engine's handler deps (search unset: no web_search), and whether a search key is there
+  // now (null: always).
+  agent::websearch::WebSearchToolDeps webSearch;
+  std::function<bool()> webSearchOpen;
+  // A running turn's round signals on its chat: a typing keep-alive (keepAlive) or the one progress line (line).
+  // Called for a Telegram chat only (the web chat shows its own spinner). Null: none.
+  std::function<void(const std::string& chat, bool keepAlive, const std::string& line)> turnProgress;
+  std::string deviceName;   // the plain crash notice's name ("": Nimbus)
 };
+
+// The owner's lines of /clear and of a skill left out of the pinned block (owner-facing only).
+inline constexpr char kClearAskLine[] =
+    "Start a new conversation? The current one stays stored on this instance. Send /clear yes to confirm.";
+inline constexpr char kClearDoneLine[] = "Started a new conversation. The earlier one stays stored on this instance.";
+inline constexpr char kClearNotStoredLine[] =
+    "The new conversation was not started: the volume did not store it. This conversation goes on; send /clear "
+    "again later.";
+inline constexpr char kNoStartLine[] = "The assistant could not start. Check the instance log and restart it.";
 
 // What a person's message gets while paid calls are paused (the web chat's own refusal, lane DEF).
 inline constexpr char kPausedLine[] =
@@ -100,73 +145,62 @@ class Engine2Host {
  public:
   explicit Engine2Host(Engine2Options o)
       : o_(std::move(o)), platform_(makePosixPlatform(&mem_)), txFiles_(o_.dataDir), notes_(o_.dataDir + "/mem"),
-        fileTools_(*o_.files, HostedFileTools::Deps{o_.utcOffsetMin, nullptr}),
+        fileTools_(*o_.files, HostedFileTools::Deps{o_.utcOffsetMin,
+                                                    [this](const std::string& id, std::string& out) {
+                                                      return plain::skillBody(skillFiles(), id, out);
+                                                    }}),
         routineFiles_(o_.dataDir, nimbus::orch::schedule::kStateDir),
-        held_(plain::heldFileOn(routineFiles_, plain::heldPathFor(o_.chatId))), history_(historyDeps()) {}
+        held_(plain::heldFileOn(routineFiles_, plain::heldPathFor(o_.chatId))), history_(historyDeps()) {
+    notes_.attach(reg_);
+    nimbus::orch::registerCalcTool(reg_);
+    fileTools_.attach(reg_);
+    history_.registerInto(reg_);
+    registerWebSearch();
+    if (o_.loops) {
+      o_.loops->attachSchedule(reg_);
+      o_.loops->setStateFiles(&routineFiles_);
+    }
+  }
   Engine2Host(const Engine2Host&) = delete;
   Engine2Host& operator=(const Engine2Host&) = delete;
 
-  // Builds the rig, binds the tools and compaction, boots over the stored transcript. "" on
+  // Boots the owner's binding over the stored transcript of the conversation /clear last started
+  // (the earlier engine's conversation imported first, a turn a restart cut resumed). "" on
   // success, else the one plain line that says why engine 2 cannot run.
   std::string start() {
     const std::string head = o_.head ? o_.head() : std::string();
     const std::string model = o_.model ? o_.model() : std::string();
     if (!engine2HeadOk(head, model)) return engine2HeadRefusal(head, model);
     bootModel_ = model;
-    rig_.reset();   // a reboot: the old rig and its hooks go before the driver they point at
-    PlainRigConfig c;
-    c.chatKey = o_.chatKey;
+    binding_.reset();   // a reboot: the old arena goes back before the new one is taken
+    std::string key;
+    if (!conversationKey(key))
+      return "engine 2 did not start: the number of the owner's conversation (mem/tx/" + o_.chatKey +
+             ".gen) could not be read";
+    plain::ChatBindingConfig c;
+    c.chatKey = key;
     c.chatId = o_.chatId;
-    c.dialect = plain::Dialect::AnthropicMessages;
     c.host = "api.anthropic.com";
+    c.provider = "anthropic";
     c.model = model;
-    c.modelNow = o_.model;
-    c.key = o_.key;
-    c.effort = "medium";   // PRD section 3: thinking as today (adaptive, effort medium), as engine 1 sends
+    c.summarizerModel = o_.summarizerModel ? o_.summarizerModel() : std::string("claude-haiku-5-5");
+    c.role = nimbus::orch::Role::Admin;
     c.timeZone = o_.timeZone;
-    c.tzNow = [this] { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); };
-    c.dayStartMin = o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin;
+    c.dayStartMin = dayStart();
     c.profile = o_.profile;
-    c.bodyCapLimit = o_.bodyCapLimit;
-    c.stablePrefix = true;   // lane E2-CACHE: one long conversation, written to in clusters
-    PlainRigBindings b;
-    b.platform = &platform_;
-    b.transport = transport();
-    b.files = &txFiles_;
-    b.send = [this](const std::string&, const std::string& text) {
-      if (o_.deliver) o_.deliver(curChat_.empty() ? o_.chatId : curChat_, text);
-      return true;
-    };
-    // Lane E2-SRCH: search and view read the turn's own conversation (no earlier-engine rows here).
-    plain::ToolDispatchFn inner = o_.loops ? o_.loops->scheduleDispatch(notes_.dispatch()) : notes_.dispatch();
-    b.dispatch = [this, inner](const plain::ToolCall& c, const plain::TurnCtx& t) {
-      plain::ToolOutput out;
-      return history_.answer(c, t, out) ? out : inner(c, t);
-    };
-    b.setup = [this](const plain::TurnCtx& t, plain::TurnSetup& s) { setupTurn(t, s); };
-    b.recentFiles = fileTools_.recentFilesFor(nimbus::orch::principalForRole(o_.chatId, nimbus::orch::Role::Admin));
-    b.beforeBoot = [this, model] { return bindCompaction(model); };
-    rig_.reset(new PlainRig(c, b));
-    notes_.attach(rig_->registry());
-    nimbus::orch::registerCalcTool(rig_->registry());
-    fileTools_.attach(rig_->registry());
-    history_.registerInto(rig_->registry());
-    if (o_.loops) {
-      o_.loops->attachSchedule(rig_->registry());
-      o_.loops->setStateFiles(&routineFiles_);
-    }
-    (void)held_.load();
-    const plain::Status st = rig_->boot();
-    if (!st.ok()) {
-      std::string why = std::string("engine 2 did not start: ") + nimbus::orch::tx::errSlug(st.err) + "@" + st.where;
-      rig_.reset();
-      return why;
-    }
+    std::unique_ptr<plain::ChatBinding> b(new plain::ChatBinding(c, bindingDeps()));
+    held_.load();
+    const plain::Status st = b->boot();
+    if (b->migrationRan()) logImport(*b);
+    if (!st.ok())
+      return std::string("engine 2 did not start: ") + nimbus::orch::tx::errSlug(st.err) + "@" + (st.where ? st.where : "");
+    binding_ = std::move(b);
     return std::string();
   }
 
-  // One owner message from `chat` (the web chat or an owner's Telegram chat). Logs every ending
-  // that is not a reply.
+  // One owner message from `chat` (the web chat or an owner's Telegram chat). Its photos, when it has any,
+  // are the set engine 1's channel offered under `text` (NimbusdRig::offerPhotoTurn), taken here.
+  // Logs every ending that is not a reply.
   // A head model the owner changed since boot boots the chat again over its stored transcript, so the
   // budget and the compaction marks are the new head's; a model engine 2 cannot run is said in one line.
   PlainTurn say(const std::string& chat, const std::string& text, const char* ch) {
@@ -174,7 +208,9 @@ class Engine2Host {
       const std::string why = start();
       if (!why.empty()) {
         std::fprintf(stderr, "[nimbusd] engine2: %s\n", why.c_str());
-        if (o_.deliver) o_.deliver(chat, "This assistant runs on Claude models only. Pick a Claude model and try again.");
+        const bool head = engine2HeadOk(o_.head ? o_.head() : std::string(), o_.model());
+        if (o_.deliver)
+          o_.deliver(chat, head ? kNoStartLine : "This assistant runs on Claude models only. Pick a Claude model and try again.");
         PlainTurn t;
         t.stated = "plain-rig:failed:head";
         return t;
@@ -186,22 +222,32 @@ class Engine2Host {
       t.stated = "plain-rig:paused";
       return t;
     }
-    if (!rig_) {
+    if (!binding_) {
       PlainTurn t;
       t.stated = "plain-rig:not-booted";
-      if (o_.deliver) o_.deliver(chat, "The assistant could not start. Check the instance log and restart it.");
+      if (o_.deliver) o_.deliver(chat, kNoStartLine);
       return t;
     }
+    plain::ChatMessage msg;
+    msg.ch = ch;
+    msg.tzMinutes = tzNow();
+    // The device's photo path (orchestrator_plain.cpp): parts for every photo, and for a head that cannot
+    // see, each one's description and the text without the "attached" words.
+    photoSet_ = nimbus::orch::takeTurnImages(chat, text);
+    msg.photosBlind = photoSet_ && !nimbus::orch::headTakesImages("anthropic", bootModel_);
+    msg.text = plain::photoText(photoSet_.get(), "anthropic", bootModel_, text);
+    msg.parts = plain::photoParts(photoSet_.get(), "anthropic", bootModel_);
     curChat_ = chat;
-    // E2-P-PHOTO: the photos the channel offered under this text (hosted_photos.h offerTurn), held for the
-    // turn; their bytes reach the head through the photo hook (setupTurn). Claude heads only: every one sees.
-    turnPhotos_ = nimbus::orch::takeTurnImages(chat, text);
-    std::vector<nimbus::orch::tx::Part> parts = plain::photoParts(turnPhotos_.get(), "anthropic", bootModel_);
-    PlainTurn t = rig_->say(text, ch, std::move(parts));
-    turnPhotos_.reset();   // its release hook settles the photo rows and frees the bytes
-    earlierPhotos_.clear();
+    sent_.clear();
+    unsent_.clear();
+    PlainTurn t;
+    t.status = binding_->turn(msg, t.out);
     curChat_.clear();
-    if (o_.spend) o_.spend(turnSpend(t.out, bootModel_), "turn");
+    dropPhotos();
+    t.sent.swap(sent_);
+    t.unsent.swap(unsent_);
+    settleEnding(t);
+    tellSkillsLeftOut(chat);
     lastTurnEnd_ = vclock::epoch();
     if (t.ending != PlainEnding::Reply)
       std::fprintf(stderr, "[nimbusd] engine2: turn ended %s: %s\n", plainEndingSlug(t.ending),
@@ -210,15 +256,46 @@ class Engine2Host {
     const nimbus::orch::tx::TurnEndFacts& e = t.out.end;
     std::fprintf(stderr,
                  "[nimbusd] engine2: turn rounds=%u calls=%u requests=%u in=%u cacheR=%u cacheW=%u cacheW1h=%u out=%u "
-                 "uUSD=%u\n",
+                 "uUSD=%u photos=%u\n",
                  unsigned(t.out.rounds), unsigned(t.out.toolCalls), unsigned(t.out.headRequests), unsigned(e.promptTokens),
                  unsigned(e.cacheReadTokens), unsigned(e.cacheWriteTokens), unsigned(e.cacheWrite1hTokens),
-                 unsigned(e.outputTokens), unsigned(e.microUsd));
+                 unsigned(e.outputTokens), unsigned(e.microUsd), unsigned(msg.parts.size()));
     return t;
   }
 
-  // The owner's /compact: queued on the driver, answered by it on this chat.
-  bool requestCompaction() { return driver_ && driver_->requestManual(); }
+  // The owner's /clear (the device's two steps): "yes" or "confirm" starts a new conversation under the
+  // next free number; the stored one stays as it is. Returns the owner's one line.
+  std::string clearCommand(const std::string& args) {
+    std::string a = args;
+    a.erase(0, a.find_first_not_of(" \t"));
+    a.erase(a.find_last_not_of(" \t") + 1);
+    for (char& ch : a) ch = char(std::tolower((unsigned char)ch));
+    if (a != "yes" && a != "confirm") return kClearAskLine;
+    // A binding whose turns are held only in RAM keeps them (ruling 81): only a history import that
+    // cannot finish lets /clear store them as the start of the new conversation (E2-FIX3).
+    const bool held = binding_ && binding_->unloaded() && !binding_->reload();
+    if (held && !binding_->importStuck()) return kClearNotStoredLine;
+    uint32_t now = 0, next = 0;
+    const bool read = plain::readGeneration(txFiles_, o_.chatKey, now) != plain::GenRead::Unknown;
+    if (!plain::freeGeneration(txFiles_, o_.chatKey, read ? now : 0, next) ||
+        !plain::storeGeneration(txFiles_, o_.chatKey, next)) {
+      std::fprintf(stderr, "[nimbusd] engine2: /clear refused: conversation number %u not stored\n", unsigned(next));
+      return kClearNotStoredLine;
+    }
+    const std::string key = o_.chatKey + "_c" + std::to_string(next);
+    if (held && !binding_->storeHeldAs(key).ok()) {
+      // Still held: every later turn stores them into `key` first (ChatBinding::reload).
+      std::fprintf(stderr, "[nimbusd] engine2: /clear: the turns held in RAM are not stored in %s yet\n", key.c_str());
+      return kClearDoneLine;
+    }
+    const std::string why = start();
+    std::fprintf(stderr, "[nimbusd] engine2: /clear: conversation %s%s%s\n", key.c_str(), why.empty() ? "" : ": ",
+                 why.c_str());
+    return why.empty() ? kClearDoneLine : kNoStartLine;
+  }
+
+  // The owner's /compact: queued on the binding's driver, answered by it on this chat.
+  bool requestCompaction() { return binding_ && binding_->requestCompaction(); }
   // Lane E2-FIX7: the instance's ceiling is reached (no paid engine-2 request runs).
   bool paused() const { return o_.paused && o_.paused(); }
   // The answer to the owner's /compact: queued (or already queued), or the pause line while paused (no summary
@@ -232,26 +309,26 @@ class Engine2Host {
   // One unit of idle work (the compaction) between turns, on the engine thread. True when it
   // did work (a paid call may have run).
   bool idle(bool ownerWaiting) {
-    if (!rig_ || !rig_->engine()) return false;
+    if (!running()) return false;
     // Lane E2-SCHED: a routine note held for quiet hours goes once they end (one note a step).
-    if (o_.loops && plain::drainHeld(held_, rig_->ownerSink(), vclock::epoch(), tzNow(), quiet(),
-                                     o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin)) return true;
+    if (o_.loops && plain::drainHeld(held_, binding_->ownerSink(), vclock::epoch(), tzNow(), quiet(), dayStart()))
+      return true;
     if (paused()) return false;   // no summarizer request past the ceiling (an attempt in flight has finished)
     plain::IdleCtx ctx;
     ctx.now = vclock::epoch();
     ctx.nowMs = vclock::steadyMs();
     ctx.ownerWaiting = ownerWaiting;
     ctx.quietForS = lastTurnEnd_ && ctx.now > lastTurnEnd_ ? uint32_t(ctx.now - lastTurnEnd_) : 0;
-    ctx.tzMinutes = int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(uint32_t(ctx.now)) : 0);
+    ctx.tzMinutes = tzNow();
     ctx.clockSet = true;
     plain::IdleOutcome out;
-    const plain::Status st = rig_->engine()->idle(ctx, out);
+    const plain::Status st = binding_->engine()->idle(ctx, out);
     if (!st.ok())
       std::fprintf(stderr, "[nimbusd] engine2: idle step failed %s@%s\n", nimbus::orch::tx::errSlug(st.err),
                    st.where);
-    if (out.worked && driver_)
+    if (out.worked)
       std::fprintf(stderr, "[nimbusd] engine2: compaction step (thru %llu)\n",
-                   (unsigned long long)(rig_->engine()->head() ? rig_->engine()->head()->thru : 0));
+                   (unsigned long long)(binding_->engine()->head() ? binding_->engine()->head()->thru : 0));
     return out.worked;
   }
 
@@ -270,19 +347,19 @@ class Engine2Host {
       return o;
     }
     nimbus::orch::schedule::FireBinding b;
-    b.owner = rig_->ownerSink();
+    b.owner = binding_->ownerSink();
     b.tzMinutes = tzNow();
-    b.dayStartMin = o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin;
+    b.dayStartMin = dayStart();
     b.files = &routineFiles_;
     b.grants = o_.loops->routineGrants();
     b.run = [this](const plain::RoutineFire& f, bool tainted, plain::FireReport& out) {
-      plain::RoutineDeps r = rig_->routineDeps(o_.summarizerModel ? o_.summarizerModel() : std::string());
+      plain::RoutineDeps r = binding_->routineDeps(o_.summarizerModel ? o_.summarizerModel() : std::string());
       r.head.tainted = tainted;
       r.tzMinutes = tzNow();
       r.held = &held_;
       r.quiet = quiet();
       const plain::Status st = plain::runRoutine(r, f, out);
-      if (o_.spend) o_.spend(turnSpend(out.outcome, r.head.model), "routine");   // counted like a turn
+      if (o_.spend) o_.spend(plain::turnSpendOf(out.outcome, "anthropic", r.head.model), "routine");   // counted like a turn
       return st;
     };
     nimbus::orch::LoopFireRequest owner = req;
@@ -293,14 +370,188 @@ class Engine2Host {
     return o;
   }
 
-  bool running() const { return rig_ && rig_->engine(); }
-  PlainRig* rig() { return rig_.get(); }
+  bool running() const { return binding_ && binding_->engine(); }
+  plain::ChatBinding* binding() { return binding_.get(); }
+  nimbus::orch::ToolRegistry& registry() { return reg_; }
   HostedNotes& notes() { return notes_; }
   PosixTxFiles& txFiles() { return txFiles_; }
 
  private:
   agent::HttpTransport* transport() { return o_.transport ? o_.transport : &http_; }
-  // Lane E2-SRCH: the transcripts and the owner's unpinned notes; no earlier-engine rows, no photos.
+  uint16_t dayStart() const { return o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin; }
+  std::string skillsDir() const { return o_.dataDir + "/mem/skills"; }   // engine 1's HostedSkills store
+
+  // The transcript key of the owner's conversation: the base key, or "<key>_c<n>" after /clear. False
+  // when the number could not be read (never taken as generation 0).
+  bool conversationKey(std::string& key) {
+    uint32_t g = 0;
+    if (plain::readGeneration(txFiles_, o_.chatKey, g) == plain::GenRead::Unknown) return false;
+    key = g ? o_.chatKey + "_c" + std::to_string(g) : o_.chatKey;
+    return true;
+  }
+
+  plain::ChatBindingDeps bindingDeps() {
+    plain::ChatBindingDeps d;
+    d.platform = &platform_;
+    d.transport = transport();
+    d.files = &txFiles_;
+    d.registry = &reg_;
+    d.sendPart = [this](const std::string&, const std::string& part) { return deliverPart(part); };
+    d.key = o_.key;
+    d.pinnedNotes = [this](const nimbus::orch::Principal& who) { return notes_.pinnedBlock(who); };
+    d.compactCtl = hostedTextIO(o_.dataDir + "/mem/compact_ctl.txt");
+    d.log = [](const std::string& line) { std::fprintf(stderr, "[nimbusd] engine2: %s\n", line.c_str()); };
+    d.recentFiles = [this](const nimbus::orch::Principal& who) { return fileTools_.recentFilesFor(who); };
+    d.photo = [this](const std::string& ref, plain::PhotoBytes& out) { return photoFor(ref, out); };
+    d.skills = [this](const nimbus::orch::Principal&) { return plain::chatSkillsOf(skillFiles()); };
+    d.skillRefused = [this](const std::string& id, size_t bytes) {
+      if (skillsTold_.insert(id).second) skillsLeftOut_.push_back({id, bytes});
+    };
+    d.usage = [this](const plain::TurnOutcome& out) {
+      if (o_.spend) o_.spend(plain::turnSpendOf(out, "anthropic", bootModel_), "turn");
+    };
+    d.compactUsage = [this](const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u) {
+      if (!o_.spend) return;
+      nimbus::orch::TurnSpend s;
+      s.add(provider.c_str(), model.c_str(), u);
+      o_.spend(s, "compact");
+    };
+    // The progress line and the typing keep-alive go to the running turn's Telegram chat only.
+    d.progress.send = [this](const std::string&, const std::string& text, int64_t& msgId) {
+      msgId = 0;   // a new line each time: no edit on this path
+      if (!telegramTurn()) return false;
+      o_.turnProgress(curChat_, false, text);
+      return true;
+    };
+    d.onProgress = [this](const plain::ProgressEvent&) {
+      if (telegramTurn()) o_.turnProgress(curChat_, true, std::string());
+    };
+    if (o_.oldRows) d.oldEngine = [this](nimbus::orch::tx::MigrateDeps& m) { return fillOld(m); };
+    d.railPending = notes_.railPending();
+    d.deviceName = o_.deviceName;
+    // The notes' origin and the schedule's call context on every call; search and view read the turn's
+    // own conversation; web_search's result is outside content (it taints the turn).
+    plain::ToolDispatchFn inner = o_.loops ? o_.loops->scheduleDispatch(notes_.dispatch()) : notes_.dispatch();
+    d.turnTool = [this, inner](const plain::ToolCall& c, const plain::TurnCtx& t, plain::ToolOutput& out) {
+      if (history_.answer(c, t, out)) return true;
+      out = inner(c, t);
+      out.outside = c.name == "web_search";
+      return true;
+    };
+    d.moreSetup = [this](const plain::TurnCtx&, plain::TurnSetup& s) {
+      s.head.effort = "medium";   // PRD section 3: thinking as today (adaptive, effort medium), as engine 1 sends
+      s.bodyCapLimit = o_.bodyCapLimit;
+    };
+    return d;
+  }
+
+  // One part of the running turn to the chat it came from (a boot's resume or a fire: the owner chat).
+  bool deliverPart(const std::string& part) {
+    if (!o_.deliver) {
+      unsent_.push_back(part);
+      return false;
+    }
+    o_.deliver(curChat_.empty() ? o_.chatId : curChat_, part);
+    sent_.push_back(part);
+    return true;
+  }
+  bool telegramTurn() const { return o_.turnProgress && !curChat_.empty() && curChat_ != o_.chatId; }
+
+  // web_search (lane E2-TOOLS on the device): the old engine's web.search handler on a private registry,
+  // reached with the engine-2 name and arguments ({query}). No search key: one plain line.
+  void registerWebSearch() {
+    const auto* decl = plain::toolDecl("web_search");
+    if (!decl || !o_.webSearch.search) return;
+    agent::websearch::registerWebSearchTool(webInner_, o_.webSearch);
+    reg_.add(
+        "web_search", decl->description,
+        [this](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+          if (o_.webSearchOpen && !o_.webSearchOpen())
+            return nimbus::orch::ToolResult::fail(plain::texts::tool_results::kWebSearchNoKey);
+          ArduinoJson::JsonDocument args;
+          args["query"] = a["query"];
+          return webInner_.dispatch("web.search", args.as<ArduinoJson::JsonObjectConst>(), who);
+        },
+        plain::declSchema(*decl, false));
+  }
+
+  // The skill store's files: <data>/mem/skills/<id>/SKILL.md (chatSkillsOf keeps the approved ones).
+  std::vector<plain::SkillFile> skillFiles() const {
+    std::vector<plain::SkillFile> out;
+    DIR* d = opendir(skillsDir().c_str());
+    if (!d) return out;
+    while (struct dirent* e = readdir(d)) {
+      plain::SkillFile f;
+      f.id = e->d_name;
+      if (!plain::chatSkillIdOk(f.id)) continue;
+      if (fsutil::readFile(skillsDir() + "/" + f.id + "/SKILL.md", f.md)) out.push_back(std::move(f));
+    }
+    closedir(d);
+    return out;
+  }
+  // A context skill the pinned block cannot hold whole, told to the owner once (it is listed instead).
+  void tellSkillsLeftOut(const std::string& chat) {
+    for (const auto& s : skillsLeftOut_) {
+      std::fprintf(stderr, "[nimbusd] engine2: skill %s (%u B) left out of the pinned block\n", s.first.c_str(),
+                   unsigned(s.second));
+      if (o_.deliver)
+        o_.deliver(chat, "Your skill " + s.first + " is too large to ride every message (" + std::to_string(s.second) +
+                             " B; notes and skills share 4,096 B). It is listed among your skills instead, and read "
+                             "when a message needs it.");
+    }
+    skillsLeftOut_.clear();
+  }
+
+  void dropPhotos() {
+    photoSet_.reset();   // its release hook settles the photo rows and frees the bytes
+    carried_.clear();
+  }
+  // The photo hook: this message's photos, else an earlier one in view, read back from the volume.
+  plain::Status photoFor(const std::string& ref, plain::PhotoBytes& out) {
+    namespace tx = nimbus::orch::tx;
+    if (plain::photoBytesFrom(photoSet_.get(), ref, out).ok()) return plain::Status::success();
+    out = plain::PhotoBytes{};
+    const std::string hash = ref.size() > 1 && ref[0] == 'p' ? ref.substr(1) : std::string();
+    if (o_.photoDir.empty() || !nimbus::orch::validRef(hash))
+      return plain::Status::fail(tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
+    auto it = carried_.find(hash);
+    if (it == carried_.end()) {
+      std::string bytes;
+      if (!fsutil::readFile(nimbus::orch::blobPath(o_.photoDir, hash, "bin"), bytes) || bytes.empty())
+        return plain::Status::fail(tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
+      it = carried_.emplace(hash, std::move(bytes)).first;
+    }
+    const char* mime = nimbus::orch::sniffImageMime((const uint8_t*)it->second.data(), it->second.size());
+    if (!*mime) return plain::Status::fail(tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
+    out.bytes = (const uint8_t*)it->second.data();
+    out.len = it->second.size();
+    out.mime = mime;
+    return plain::Status::success();
+  }
+
+  // The history import's deps from the earlier engine (ChatBindingDeps::oldEngine): its owner rows, its
+  // fold record, and the old summary's export to the file store.
+  bool fillOld(nimbus::orch::tx::MigrateDeps& m) {
+    oldRows_.reset(new nimbus::orch::tx::EpisodicRowSource(m.chatKey, o_.oldRows));
+    m.rows = oldRows_.get();
+    if (o_.oldFold) m.fold = nimbus::orch::tx::oldFoldOf(o_.oldFold());
+    m.tzMinutes = tzNow();
+    m.exportText = [this](const std::string& path, const std::string& text) {
+      const size_t slash = path.find('/');
+      std::string err;
+      return slash != std::string::npos && o_.files->put(path.substr(0, slash), path.substr(slash + 1), text, err);
+    };
+    return true;
+  }
+  static void logImport(const plain::ChatBinding& b) {
+    const nimbus::orch::tx::MigrationOutcome& o = b.migration();
+    std::fprintf(stderr, "[nimbusd] engine2: import %s@%s step=%s turns=%u imported=%u items=%u ms=%u\n",
+                 nimbus::orch::tx::errSlug(b.migrationStatus().err),
+                 b.migrationStatus().where ? b.migrationStatus().where : "", nimbus::orch::tx::migrationStepSlug(o.step),
+                 unsigned(o.turns), unsigned(o.imported), unsigned(o.items), unsigned(b.migrationMs()));
+  }
+
+  // Lane E2-SRCH: the transcripts and the owner's unpinned notes; no earlier-engine rows.
   plain::HistoryDeps historyDeps() {
     plain::HistoryDeps d;
     d.files = &txFiles_;
@@ -314,109 +565,6 @@ class Engine2Host {
   int16_t tzNow() const { return int16_t(o_.utcOffsetMin ? o_.utcOffsetMin(vclock::epoch32()) : 0); }
   // The instance keeps no quiet-hours end of its own: the default end (09:00), as plain::QuietHours.
   plain::QuietHours quiet() const { return plain::QuietHours{}; }
-  nimbus::orch::tx::HeadKey headKey(const std::string& model) const {
-    plain::TurnCtx t;
-    t.host = "api.anthropic.com";
-    t.model = model;
-    plain::HeadEndpoint e;
-    e.host = t.host;
-    return nimbus::orch::tx::HeadKey{plain::providerSlugOf(t, e), model, false};
-  }
-
-  // A turn's spend in the provider's own counts (plain::turnSpendOf's shape): one slot of the head.
-  nimbus::orch::TurnSpend turnSpend(const plain::TurnOutcome& out, const std::string& model) const {
-    nimbus::orch::TurnSpend s;
-    nimbus::orch::TokenUsage u;
-    u.promptTokens = out.end.promptTokens;
-    u.completionTokens = out.end.outputTokens;
-    u.cacheReadTokens = out.end.cacheReadTokens;
-    u.cacheWriteTokens = out.end.cacheWriteTokens;
-    u.cacheWrite1hTokens = out.end.cacheWrite1hTokens;   // priced at 2x the input rate (lane E2-CACHE)
-    u.responses = out.headRequests;
-    u.maxRequestIn = out.end.lastPromptTokens;
-    s.add("anthropic", model.c_str(), u);   // files nothing when nothing was billed
-    return s;
-  }
-
-  // The pinned notes, the recent files and the guard costs of this turn's head.
-  void setupTurn(const plain::TurnCtx& t, plain::TurnSetup& s) {
-    if (t.who) s.facts.pinnedNotes = notes_.pinnedBlock(*t.who);
-    s.photo = [this](const std::string& ref, plain::PhotoBytes& out) { return photoFor(ref, out); };
-    nimbus::orch::tx::HeadBudget budget;
-    if (!nimbus::orch::tx::budgetFor(headKey(t.model), t.profile, budget).ok()) return;
-    plain::HeadRates r;   // the ledger's own price rows, cache and long-prompt tier included (E2-FIX6)
-    if (!plain::headRatesFor("anthropic", t.model, r)) {
-      nimbus::orch::ModelInfo m;
-      m.id = t.model;
-      const nimbus::orch::ModelPrice p = nimbus::orch::modelPrice("anthropic", m);
-      r.in = p.in;
-      r.out = p.out;
-      r.cacheRead = p.in / 10;
-      r.cacheWrite = p.in * 125 / 100;
-    }
-    s.cost = plain::guardCostFor(budget, r);
-  }
-
-  plain::Status bindCompaction(const std::string& model) {
-    plain::CompactDeps d;
-    d.platform = &platform_;
-    d.transport = transport();
-    d.log = rig_->log();
-    d.arena = rig_->arena();
-    d.files = &txFiles_;
-    d.chatKey = o_.chatKey;
-    d.chatId = o_.chatId;
-    d.headKey = headKey(model);
-    d.dayStartMin = o_.dayStartMin ? o_.dayStartMin() : plain::kDayStartDefaultMin;
-    PlainRig* rig = rig_.get();
-    d.head = [rig] { return rig->engine() ? rig->engine()->head() : nullptr; };
-    d.digests = [rig] { return rig->engine() ? rig->engine()->digests() : nullptr; };
-    d.omittedThru = [rig] { return rig->engine() ? rig->engine()->omittedThru() : uint64_t(0); };
-    d.rungs = [this](std::vector<plain::SummarizerRung>& out) {
-      plain::SummarizerRung r;
-      r.dialect = plain::Dialect::AnthropicMessages;
-      r.host = "anthropic";
-      r.model = o_.summarizerModel ? o_.summarizerModel() : std::string("claude-haiku-5-5");
-      r.endpoint.host = "api.anthropic.com";
-      r.endpoint.key = o_.key;
-      out.assign(1, r);
-    };
-    d.tell = [this](const std::string& chat, const std::string& text) {
-      if (o_.deliver) o_.deliver(chat, text);
-    };
-    d.spent = [this](const plain::SummarizerRung& r, const nimbus::orch::TokenUsage& u) {
-      if (!o_.spend) return;
-      nimbus::orch::TurnSpend s;
-      s.add(r.host.c_str(), r.model.c_str(), u);
-      o_.spend(s, "compact");
-    };
-    d.ctl = hostedTextIO(o_.dataDir + "/mem/compact_ctl.txt");
-    driver_.reset(new plain::CompactDriver(d));
-    return plain::installCompaction(rig_->hooks(), *driver_);
-  }
-
-  // E2-P-PHOTO: the photo hook: this message's photo from its set, else an earlier one's stored copy, read
-  // once per turn and held until the turn ends. NotFound: the photo renders as its line.
-  plain::Status photoFor(const std::string& ref, plain::PhotoBytes& out) {
-    if (plain::photoBytesFrom(turnPhotos_.get(), ref, out).ok()) return plain::Status::success();
-    out = plain::PhotoBytes{};
-    const std::string hash = ref.size() > 1 && ref[0] == 'p' ? ref.substr(1) : std::string();
-    if (o_.photoDir.empty() || hash.empty() || hash.find('/') != std::string::npos || hash.find('.') != std::string::npos)
-      return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
-    auto it = earlierPhotos_.find(ref);
-    if (it == earlierPhotos_.end()) {
-      std::string bytes;
-      if (!fsutil::readFile(nimbus::orch::blobPath(o_.photoDir, hash, "bin"), bytes) || bytes.empty())
-        return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
-      it = earlierPhotos_.emplace(ref, std::move(bytes)).first;
-    }
-    const char* mime = nimbus::orch::sniffImageMime((const uint8_t*)it->second.data(), it->second.size());
-    if (!*mime) return plain::Status::fail(nimbus::orch::tx::Err::NotFound, "nimbusd::Engine2Host::photoFor");
-    out.bytes = (const uint8_t*)it->second.data();
-    out.len = it->second.size();
-    out.mime = mime;
-    return plain::Status::success();
-  }
 
   Engine2Options o_;
   CgroupMemory mem_;
@@ -428,11 +576,16 @@ class Engine2Host {
   PosixTxFiles routineFiles_;   // <data>/mem/routines: routine state files and the outbox (lane E2-SCHED)
   plain::HeldStore held_;
   plain::HistoryTools history_;   // after txFiles_ and notes_, which it reads
-  std::unique_ptr<plain::CompactDriver> driver_;
-  std::unique_ptr<PlainRig> rig_;
+  nimbus::orch::ToolRegistry reg_;        // the owner chat's tools (the binding dispatches it)
+  nimbus::orch::ToolRegistry webInner_;   // the old engine's web.search, reached by web_search only
+  std::unique_ptr<nimbus::orch::tx::EpisodicRowSource> oldRows_;   // the last import's row source
+  std::unique_ptr<plain::ChatBinding> binding_;
+  std::unique_ptr<nimbus::orch::TurnImages> photoSet_;   // the running turn's photos (E2-P-PHOTO)
+  std::map<std::string, std::string> carried_;           // earlier photos read back this turn, by hash
+  std::vector<std::pair<std::string, size_t>> skillsLeftOut_;
+  std::set<std::string> skillsTold_;
+  std::vector<std::string> sent_, unsent_;
   std::string curChat_;
-  std::unique_ptr<nimbus::orch::TurnImages> turnPhotos_;    // the running turn's photos (E2-P-PHOTO)
-  std::map<std::string, std::string> earlierPhotos_;        // earlier photos read back this turn
   std::string bootModel_;
   uint64_t lastTurnEnd_ = 0;
 };

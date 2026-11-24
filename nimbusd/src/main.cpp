@@ -117,20 +117,10 @@ std::function<void(const std::string&, const std::string&)> replyDelivery(
   };
 }
 
-// Wire the engine's reply delivery: record every reply in the ring that backs
-// the web chat page, and forward it to Telegram when a bot sender is configured.
-// `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
-// validated, without re-installing the hook.
-void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
-                          nimbusd::EngineThread& eng,
-                          std::atomic<nimbusd::TelegramChannel*>* sender) {
-  // Runs on the engine thread. `sender` is atomic because the main thread fills
-  // it in (below) after the bot is validated, concurrently with the first turns.
-  // Lane PROG: the running turn's round-boundary signals (engine thread, the
-  // same transport the delivery hook uses): a typing keep-alive between every
-  // provider request and the turn's ONE plain progress line, so a long turn
-  // never looks frozen on the chat it is answering.
-  rig.setTurnProgress([sender](const std::string& chat, bool keepAlive, const std::string& line) {
+// A running turn's round signals to its Telegram chat (engine 1 and, lane E2-P-HOST1, engine 2).
+std::function<void(const std::string&, bool, const std::string&)> turnProgressTo(
+    std::atomic<nimbusd::TelegramChannel*>* sender) {
+  return [sender](const std::string& chat, bool keepAlive, const std::string& line) {
     nimbusd::TelegramChannel* s = sender->load(std::memory_order_acquire);
     if (!s || chat == nimbusd::kWebChatId) return;
     std::string e;
@@ -144,13 +134,30 @@ void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replie
       s->sendMessage(chat, line, e);
       agent::hlog::logf("turnprog: line to %s: %s", chat.c_str(), line.c_str());
     }
-  });
+  };
+}
+
+// Wire the engine's reply delivery: record every reply in the ring that backs
+// the web chat page, and forward it to Telegram when a bot sender is configured.
+// `sender` is a pointer-to-pointer so the daemon can fill it in after the bot is
+// validated, without re-installing the hook.
+void installReplyDelivery(nimbusd::NimbusdRig& rig, nimbusd::ReplyBuffer& replies,
+                          nimbusd::EngineThread& eng,
+                          std::atomic<nimbusd::TelegramChannel*>* sender) {
+  // Runs on the engine thread. `sender` is atomic because the main thread fills
+  // it in (below) after the bot is validated, concurrently with the first turns.
+  // Lane PROG: the running turn's round-boundary signals (engine thread, the
+  // same transport the delivery hook uses): a typing keep-alive between every
+  // provider request and the turn's ONE plain progress line, so a long turn
+  // never looks frozen on the chat it is answering.
+  rig.setTurnProgress(turnProgressTo(sender));
   rig.setDeliver(replyDelivery(replies, eng, sender));
 }
 
 // The startup switch NIMBUSD_ENGINE=2 (lane E2-HOST): the owner's chats (the web chat and every
-// Telegram chat whose person is the owner) run on engine 2, photo turns included (lane E2-P-PHOTO); members
-// and the slash commands other than /compact and /clear stay on engine 1. "" when engine 2 is off or started, else the
+// Telegram chat whose person is the owner) run on engine 2 through the device's ChatBinding, photo turns included
+// (lanes E2-P-PHOTO, E2-P-HOST1); members and the slash commands other than /compact and /clear stay on engine 1.
+// "" when engine 2 is off or started, else the
 // one plain line the daemon exits on.
 // Lane E2-FIX9: a smaller request body cap for test rigs only, behind the test clock's own gate (the flag, a web token
 // and a loopback bind), so a test reaches the overflow ladder at a small cost; 0 (none) otherwise.
@@ -164,7 +171,7 @@ uint32_t testBodyCap(const nimbusd::Config& cfg) {
 
 std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, nimbusd::EngineThread& eng,
                          std::function<void(const std::string&, const std::string&)> deliver,
-                         std::unique_ptr<nimbusd::Engine2Host>& out) {
+                         std::atomic<nimbusd::TelegramChannel*>* sender, std::unique_ptr<nimbusd::Engine2Host>& out) {
   if (cfg.get("NIMBUSD_ENGINE", "1") != "2") return std::string();
   nimbusd::Engine2Options o;
   o.dataDir = cfg.get("NIMBUSD_DATA_DIR", "/data");
@@ -192,6 +199,21 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
     rig.spendCeiling().commit(spend, tag != "compact");
   };
   o.paused = [] { return nimbus::orch::spendFrozen(); };   // lane E2-FIX7: engine 2 fails closed at the ceiling
+  // Lane E2-P-HOST1: the earlier engine's owner conversation (the web chat and every owner Telegram chat,
+  // never a member's) for the import, its fold record, web search, the progress signals, the device name.
+  o.oldRows = [&rig](const nimbus::orch::MsgQuery& q, nimbus::orch::EpiQueryInfo& info) {
+    nimbus::orch::MsgQuery owner = q;
+    owner.sessionId.clear();
+    owner.sessionAllow = {nimbusd::kWebChatId};
+    for (const auto& m : rig.telegramAccess().members())
+      if (m.owner) owner.sessionAllow.push_back(m.id);
+    return rig.episodic().query(owner, &info);
+  };
+  o.oldFold = [&rig] { return rig.foldState(nimbusd::kWebChatId); };
+  o.webSearch = rig.webSearchDeps();
+  o.webSearchOpen = [&rig] { return rig.webSearchOpen(); };
+  o.turnProgress = turnProgressTo(sender);
+  o.deviceName = rig.settings().devName;
   out.reset(new nimbusd::Engine2Host(o));
   const std::string why = out->start();
   if (!why.empty()) return why;
@@ -218,14 +240,8 @@ std::string startEngine2(const nimbusd::Config& cfg, nimbusd::NimbusdRig& rig, n
       return;
     }
     if (!deliver) return;
-    // Engine 2 keeps one whole conversation (ruling 81): it has no clear yet, and engine 1's would
-    // clear a conversation this chat no longer uses.
-    if (c.verb == "clear") {
-      deliver(chat, "This conversation is kept whole on this instance, so /clear is not available. Long-term memory "
-                    "and files are unchanged.");
-      return;
-    }
-    deliver(chat, host->compactCommand());
+    // /clear starts a new conversation; the stored one stays (the device's two steps, lane E2-P-HOST1).
+    deliver(chat, c.verb == "clear" ? host->clearCommand(c.args) : host->compactCommand());
   };
   r.idle = [host](bool waiting) { return host->idle(waiting); };
   eng.setEngine2(r);
@@ -300,7 +316,7 @@ int runDaemon(nimbusd::Config& cfg) {
   std::atomic<nimbusd::TelegramChannel*> sender{nullptr};
   installReplyDelivery(rig, replies, eng, &sender);
   std::unique_ptr<nimbusd::Engine2Host> engine2;
-  const std::string e2Refused = startEngine2(cfg, rig, eng, replyDelivery(replies, eng, &sender), engine2);
+  const std::string e2Refused = startEngine2(cfg, rig, eng, replyDelivery(replies, eng, &sender), &sender, engine2);
   if (!e2Refused.empty()) {
     logLine(e2Refused);
     return 2;

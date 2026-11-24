@@ -123,6 +123,28 @@ struct PlainTurn {
   std::string stated;
 };
 
+// How a turn ended, from what the engine returned and what the host's channel took (lane
+// E2-P-HOST1: Engine2Host states its ChatBinding turns the same way).
+inline void settleEnding(PlainTurn& t) {
+  const bool replied = t.out.delivered && !t.out.text.empty();
+  if (replied) {
+    t.ending = PlainEnding::Reply;
+    t.stated = t.out.text;
+  } else if (!t.sent.empty()) {
+    t.ending = PlainEnding::Status;
+    t.stated = t.sent.back();
+  } else if (!t.unsent.empty()) {
+    t.ending = PlainEnding::Failed;
+    t.stated = "plain-rig:channel-refused:" + std::to_string(t.unsent.size());
+  } else if (t.status.ok()) {
+    t.ending = PlainEnding::Silent;
+    t.stated = "plain-rig:silent:" + t.out.end.cause;
+  } else {
+    t.ending = PlainEnding::Failed;
+    t.stated = std::string("plain-rig:failed:") + nimbus::orch::tx::errSlug(t.status.err) + "@" + t.status.where;
+  }
+}
+
 class PlainRig {
  public:
   PlainRig(PlainRigConfig cfg, PlainRigBindings b) : cfg_(std::move(cfg)), b_(std::move(b)) {
@@ -313,25 +335,7 @@ class PlainRig {
     return d;
   }
 
-  void state(PlainTurn& t) const {
-    const bool replied = t.out.delivered && !t.out.text.empty();
-    if (replied) {
-      t.ending = PlainEnding::Reply;
-      t.stated = t.out.text;
-    } else if (!t.sent.empty()) {
-      t.ending = PlainEnding::Status;
-      t.stated = t.sent.back();
-    } else if (!t.unsent.empty()) {
-      t.ending = PlainEnding::Failed;
-      t.stated = "plain-rig:channel-refused:" + std::to_string(t.unsent.size());
-    } else if (t.status.ok()) {
-      t.ending = PlainEnding::Silent;
-      t.stated = "plain-rig:silent:" + t.out.end.cause;
-    } else {
-      t.ending = PlainEnding::Failed;
-      t.stated = std::string("plain-rig:failed:") + nimbus::orch::tx::errSlug(t.status.err) + "@" + t.status.where;
-    }
-  }
+  void state(PlainTurn& t) const { settleEnding(t); }
 
   PlainRigConfig cfg_;
   PlainRigBindings b_;

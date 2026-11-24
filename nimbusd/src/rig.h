@@ -760,6 +760,17 @@ class NimbusdRig {
   // spawns while EVERY chat still ran turns as the owner): an unapproved chat now
   // never reaches a turn at all, and an approved one runs as its real role.
   TelegramAccess& telegramAccess() { return *access_; }
+  // web.search's handler deps (Tavily when the instance holds its key, else the provider's own search,
+  // CUM-823) and whether one of them can run now. Engine 2's web_search reaches the same handler (lane E2-P-HOST1).
+  agent::websearch::WebSearchToolDeps webSearchDeps() {
+    agent::websearch::WebSearchToolDeps wd;
+    wd.search = [this](const std::string& q, int k) {
+      if (!tavilyKey_.empty()) return agent::websearch::search(*http_, tavilyKey_, q, k);
+      return agent::providers::hostedWebSearch(providerDeps(), q, k);
+    };
+    return wd;
+  }
+  bool webSearchOpen() const { return !tavilyKey_.empty() || providerSearchOpen(); }
   const TelegramAccess& telegramAccess() const { return *access_; }
 
   // ---- one person's background work at a time -----------------------------------
@@ -2137,15 +2148,9 @@ class NimbusdRig {
     tavilyKey_ = cfg_.get("TAVILY_API_KEY");
     // Tavily when the instance holds its key, else the provider's own search (CUM-823).
     // Listed exactly while one of them can run: a key added in-app counts at once.
-    agent::websearch::WebSearchToolDeps wd;
-    wd.search = [this](const std::string& q, int k) {
-      if (!tavilyKey_.empty()) return agent::websearch::search(*http_, tavilyKey_, q, k);
-      return agent::providers::hostedWebSearch(providerDeps(), q, k);
-    };
-    agent::websearch::registerWebSearchTool(reg_, wd);
+    agent::websearch::registerWebSearchTool(reg_, webSearchDeps());
     nimbus::orch::applyToolGates(reg_, [this](nimbus::orch::ToolGate g) {
-      if (g == nimbus::orch::ToolGate::WebSearchKey)
-        return !tavilyKey_.empty() || providerSearchOpen();
+      if (g == nimbus::orch::ToolGate::WebSearchKey) return webSearchOpen();
       return true;   // image.generate is not registered on a hosted instance
     });
   }

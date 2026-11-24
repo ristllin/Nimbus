@@ -122,6 +122,11 @@ struct ChatBindingDeps {
   // Lane E2-SRCH: a call the turn itself answers (search and view read the turn's own conversation,
   // plain/history.h HistoryTools::answer); true when it answered. Null: every call goes to the registry.
   std::function<bool(const ToolCall&, const TurnCtx&, ToolOutput&)> turnTool;
+  // Lane E2-P-HOST1 (the hosted daemon): what a host adds to each turn's setup after the binding's own
+  // fields (the head's effort, a test rig's body cap); null: nothing. Every progress event of a turn, before
+  // the progress line's own rule (the Telegram typing keep-alive); null: none. The device sets neither.
+  std::function<void(const TurnCtx&, TurnSetup&)> moreSetup;
+  std::function<void(const ProgressEvent&)> onProgress;
 };
 
 // The owner's line on every turn while the stored conversation could not be loaded (lane
@@ -173,6 +178,8 @@ struct ChatBindingConfig {
   uint16_t dayStartMin = kDayStartDefaultMin;
   int storedRounds = 0;                          // the stored orchLoopRnds
   uint64_t monthlyCeilingMicro = 0;              // the owner's monthly ceiling (0: none set)
+  // The owner's pinned history profile (ruling 83: full unless the owner chose a smaller one).
+  nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;
 };
 
 // One message in.
@@ -413,6 +420,10 @@ class ChatBinding {
     return st;
   }
 
+  // Lane E2-P-HOST1: a compaction queued for the host's idle step (engine()->idle runs it); false while
+  // one is queued or before boot. compactNow() is the device's form, stepped at once.
+  bool requestCompaction() { return engine_ && driver_ && driver_->requestManual(); }
+
   // What /budget shows (rulings 105 and 106): the fixed part as this chat composes it now, the
   // summary and the transcript after it, the marks and the settings, in tokens.
   Status budgetView(BudgetView& out) {
@@ -420,7 +431,7 @@ class ChatBinding {
     if (!engine_ || !engine_->head() || !engine_->digests())
       return Status::fail(tx::Err::InvalidArgument, "plain::ChatBinding::budgetView");
     tx::HeadBudget b;
-    Status st = tx::budgetFor(headKey(), tx::kDefaultProfile, b);
+    Status st = tx::budgetFor(headKey(), cfg_.profile, b);
     if (!st.ok()) return st;
     const TurnCtx t = turnCtx();
     TurnSetup ts;
@@ -681,7 +692,7 @@ class ChatBinding {
   Status headFigures() {
     namespace tx = nimbus::orch::tx;
     tx::HeadBudget b;
-    Status st = tx::budgetFor(headKey(), tx::kDefaultProfile, b);
+    Status st = tx::budgetFor(headKey(), cfg_.profile, b);
     if (!st.ok()) return st;
     arenaBytes_ = tx::arenaBytesFor(b);
     HeadRates r;   // the ledger's own rows, the long-prompt tier included (E2-FIX6)
@@ -704,6 +715,7 @@ class ChatBinding {
     c.model = cfg_.model;
     c.dialect = Dialect::AnthropicMessages;
     c.dayStartMin = cfg_.dayStartMin;
+    c.profile = cfg_.profile;
     c.who = &who_;
     return c;
   }
@@ -727,6 +739,7 @@ class ChatBinding {
     out.wire = nullptr;   // wireFor(AnthropicMessages)
     out.storedRounds = cfg_.storedRounds;
     out.cost = cost_;
+    if (d_.moreSetup) d_.moreSetup(t, out);
     return Status::success();
   }
 
@@ -799,8 +812,9 @@ class ChatBinding {
     e.setup = [this](const TurnCtx& t, TurnSetup& out) { return setup(t, out); };
     if (d_.recentFiles) e.recentFiles = d_.recentFiles(who_);
     e.stablePrefix = true;   // lane E2-CACHE: a person's chat keeps its system part across switches
-    if (d_.progress.send)
+    if (d_.progress.send || d_.onProgress)
       e.progress = [this](const ProgressEvent& ev) {
+        if (d_.onProgress) d_.onProgress(ev);
         if (reporter_) (void)reporter_->tick(ev);
       };
     e.noCard = d_.noCard;

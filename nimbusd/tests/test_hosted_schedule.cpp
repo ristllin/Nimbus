@@ -321,7 +321,7 @@ void testEngine2HostFires(ndtest::Ctx& c) {
   o.paused = [&paused] { return paused; };
   host.reset(new nimbusd::Engine2Host(o));
   c.eq(host->start(), "", "the engine-2 owner chat starts with the routines table bound");
-  c.ok(host->rig() && host->rig()->registry().has("schedule"), "schedule is on its registry");
+  c.ok(host->running() && host->registry().has("schedule"), "schedule is on its registry");
   alignClockTo(23, 54);   // quiet hours (22:00 to 09:00) are on for the whole routine fire below, at any real hour
   const std::string text = "stretch your back";
   model.push(sp::call("schedule", "{\"op\":\"create\",\"kind\":\"reminder\",\"when\":\"" + whenIn(300) +

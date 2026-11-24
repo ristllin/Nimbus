@@ -56,7 +56,7 @@ struct StateSnapshot {
 // it takes, the turn itself, and its idle step. Unset (the default): every turn runs on engine 1.
 struct Engine2Route {
   std::function<bool(const std::string& chat, const std::string& text, bool photos)> takes;
-  // The message's photos ride with it (lane E2-P-PHOTO: engine 2 takes photo turns too).
+  // The message's photos ride the turn (lane E2-P-HOST1: engine 2 takes a photo message too).
   std::function<void(const std::string& chat, const std::string& text, const std::vector<PhotoIn>& photos)> say;
   std::function<bool(bool ownerWaiting)> idle;   // true when it did work
 };
