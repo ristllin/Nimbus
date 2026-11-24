@@ -176,8 +176,12 @@ inline bool sentinelFor(const std::string& lane, std::function<tx::Status()>& ou
       // Router design lane R8 (bindings and routed): the device's bindings ask resolveRoute per provider.
       {"RB-R8", [] { return tx::Status::pending("RB-R8 engine-2 bindings per provider"); }},
       // Router design lane R4b (storage, planner cases): the id rule (Mistral's 9 alphanumerics) and
-      // text-mode history (stored calls and results as text). Lane R4b replaces this row with a probe.
-      {"RB-R4b", [] { return tx::Status::pending("RB-R4b id mapping and text-mode history in the planner"); }},
+      // text-mode history (stored calls and results as text); landed on rb-main 3c60d8f96.
+      {"RB-R4b", [] { return tx::Status::success(); }},
+      // Text mode in the battery (lane E2-R6 hands it on): the dialect-level property checkers (prefix, coverage,
+      // overhead) and the engine's tool-loop tests read a call as a call, not as R4b's text-mode history line, so
+      // the Flat dialect keeps the toy wire and its property tests wait until a lane teaches them that line.
+      {"RB-TXT", [] { return tx::Status::pending("RB-TXT battery checkers for text-mode history"); }},
   };
   for (const Row& r : rows)
     if (lane == r.lane) {

@@ -138,7 +138,7 @@ void test_wire_coverage_chat() {
   wireCoverage(plain::Dialect::ChatCompletions);
 }
 void test_wire_coverage_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-R4b");   // text-mode history (E2-R6)
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   wireCoverage(plain::Dialect::Flat);
 }
 
@@ -190,7 +190,7 @@ void test_a_direct_head_never_omits() {
 // An 85,000 B head (chat completions, unqualified): when the ladder omits, the request
 // names exactly what it left out and keeps the newest 6 owner turns.
 void test_a_floor_head_names_what_the_ladder_omits() {
-  TXB_WAITS_FOR("PENDING RB-W3", "RB-E1a", "RB-R4b");   // a custom head is text mode until its verify (E2-R6)
+  TXB_WAITS_FOR("PENDING RB-W3", "RB-E1a", "RB-TXT");   // a custom head is text mode until its verify (E2-R6)
   txb::Battery b(plain::Dialect::ChatCompletions);
   b.hostOverride = "custom";   // a floor head by its class (tx::budgetFor), never by a default (RB-T4)
   TXB_OK(txb::runTurns(b, longChat(40, 4000)));

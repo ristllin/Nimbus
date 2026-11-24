@@ -40,8 +40,8 @@ size_t g_ran = 0, g_ranAnthropic = 0;
 
 // Run `body` on every row; a row still waiting for `extra` lanes or its codec is logged, not run.
 // An engine turn on a routed row also waits for `routedLane` (the route of a routed head, design lane R4a);
-// a case on a row whose table row offers no tools (text mode) waits for `toolsOffLane` when one is named
-// (lane E2-R6: text-mode history is lane R4b's, a custom endpoint's tools R8's verify step).
+// a case on a chat row whose table row offers no tools (text mode) waits for `toolsOffLane` when one is
+// named (lane E2-R6: a tool round trip needs a custom endpoint's tools, R8's verify step).
 void forEachRow(const char* property, std::initializer_list<const char*> extra,
                 const std::function<void(const txb::Row&)>& body, const char* routedLane = nullptr,
                 bool routedOnly = false, const char* toolsOffLane = nullptr) {
@@ -72,6 +72,7 @@ std::string msgOf(const txb::Row& r, const std::string& what) { return r.name + 
 // The guard round's tool choice: none, or auto on a known row that does not take none (design section 7:
 // the same tools array, auto, and every call of that answer stored not complete).
 const char* guardChoice(const txb::Row& r) {
+  if (r.dialect == plain::Dialect::ChatCompletions && !txb::rowTools(r)) return "";   // text mode: no tools at all
   const caps::Caps c = caps::capsFor(r.slot, r.model.c_str(), r.routed);
   return c.known && !(c.row.toolChoice & caps::choice::kNone) ? "auto" : "none";
 }
@@ -184,7 +185,7 @@ void test_p1_same_input_same_bytes() {
       TEST_ASSERT_TRUE_MESSAGE(rc::sameBytes(a.body, b.body, s.name + " twice", why), msgOf(r, why).c_str());
       TEST_ASSERT_TRUE_MESSAGE(rc::sameBytes(a.body, c.body, s.name + " reloaded", why), msgOf(r, why).c_str());
     }
-  }, nullptr, false, "RB-R4b");
+  });
 }
 
 // ---- 2. stable prefix after appending a turn; the tools array is identical every round, guard round too -----------
@@ -207,7 +208,7 @@ void test_p2_stable_prefix_and_tools() {
     TEST_ASSERT_EQUAL_STRING_MESSAGE(guardChoice(r), guard.view.toolChoice.c_str(), msgOf(r, "guard round").c_str());
     std::string why;
     TEST_ASSERT_TRUE_MESSAGE(rc::toolsSame(out[0].view, guard.view, why), msgOf(r, "guard round: " + why).c_str());
-  }, nullptr, false, "RB-R4b");
+  });
 }
 
 // ---- 3. pairing: every call has exactly one result after it, at every stub pointer ----------------------------------
@@ -222,7 +223,7 @@ void test_p3_every_call_has_one_result() {
         TEST_ASSERT_TRUE_MESSAGE(txb::viewPaired(out.view, why),
                                  msgOf(r, s.name + " pointer " + std::to_string(p) + ": " + why).c_str());
       }
-  }, nullptr, false, "RB-R4b");
+  });
 }
 
 // ---- 4. tool round trip through the engine ------------------------------------------------------------------------------
@@ -357,7 +358,7 @@ void test_p10_history_never_shrinks() {
       if (i) TEST_ASSERT_TRUE_MESSAGE(rc::historyKept(prev.view, cur.view, why), msgOf(r, snaps[i].name + ": " + why).c_str());
       prev = cur;
     }
-  }, nullptr, false, "RB-R4b");
+  });
 }
 
 // ---- 9. handoff and replay scope (lane E2-R4b) ------------------------------------------------------------------
@@ -460,38 +461,39 @@ void test_p9_reasoning_replays_only_to_its_writer() {
     const bool table = plain::resolveRoute(fx.head, fx.turn, route).ok() && route.caps.provider;
     const caps::ReplayScope scope = table ? route.caps.row.replayScope : caps::ReplayScope::OpenTurn;
     const bool dropUnderRung = table ? (route.caps.row.flags & caps::flag::kDropUnderRung) : true;
-    const std::string mine = plain::replayTag(r.dialect, r.routed, r.model);
+    const std::string model = txb::turnModel(r);   // a routed chat row names its upstream (E2-R6)
+    const std::string mine = plain::replayTag(r.dialect, r.routed, model);
     const bool all = scope == caps::ReplayScope::AllTurns;
     // Its own tag: the open turn's, and every turn's on an allTurns row; closed turn 2 the same at turns 3 and 4.
     const txb::Convo own = replayConvo(mine);
     PlanRun a, b;
-    planFor(r, own, r.model, 3, a);
+    planFor(r, own, model, 3, a);
     TEST_ASSERT_EQUAL_MESSAGE(all ? 3 : 1, (int)a.meta.size(), msgOf(r, "own tag").c_str());
     TEST_ASSERT_EQUAL_MESSAGE(1, (int)sigsOf(a, "sig-3"), msgOf(r, "the open turn").c_str());
     txb::Convo four = own;
     four.openTurn();
     four.owner("question 4");
-    planFor(r, four, r.model, 4, b);
+    planFor(r, four, model, 4, b);
     TEST_ASSERT_EQUAL_MESSAGE(all ? 1 : 0, (int)sigsOf(b, "sig-2"), msgOf(r, "closed turn 2 at turn 4").c_str());
     TEST_ASSERT_EQUAL_MESSAGE(sigsOf(a, "sig-2"), sigsOf(b, "sig-2"), msgOf(r, "closed turn 2 moved").c_str());
     // Another model, the other route kind, another dialect: never; back to the writer: the same bytes again.
     const plain::Dialect other = r.dialect == plain::Dialect::AnthropicMessages ? plain::Dialect::ChatCompletions
                                                                                  : plain::Dialect::AnthropicMessages;
     for (const std::string& tag : {plain::replayTag(r.dialect, r.routed, "another-model"),
-                                   plain::replayTag(r.dialect, !r.routed, r.model), plain::replayTag(other, r.routed, r.model)}) {
+                                   plain::replayTag(r.dialect, !r.routed, model), plain::replayTag(other, r.routed, model)}) {
       PlanRun x;
-      planFor(r, replayConvo(tag), r.model, 3, x);
+      planFor(r, replayConvo(tag), model, 3, x);
       TEST_ASSERT_EQUAL_MESSAGE(0, (int)x.meta.size(), msgOf(r, "foreign tag " + tag).c_str());
     }
     PlanRun away, back;
     planFor(r, own, "another-model", 3, away);
-    planFor(r, own, r.model, 3, back);
+    planFor(r, own, model, 3, back);
     TEST_ASSERT_EQUAL_MESSAGE(0, (int)away.meta.size(), msgOf(r, "switched away").c_str());
     TEST_ASSERT_TRUE_MESSAGE(back.meta == a.meta, msgOf(r, "switched back").c_str());
     // Stored before the tag: Anthropic, direct, its turn's model (the t items name claude-sonnet-5-5).
     PlanRun untagged;
-    planFor(r, replayConvo(""), r.model, 3, untagged);
-    const bool anthropicDirect = r.dialect == plain::Dialect::AnthropicMessages && !r.routed && r.model == "claude-sonnet-5-5";
+    planFor(r, replayConvo(""), model, 3, untagged);
+    const bool anthropicDirect = r.dialect == plain::Dialect::AnthropicMessages && !r.routed && model == "claude-sonnet-5-5";
     TEST_ASSERT_EQUAL_MESSAGE(anthropicDirect ? 1 : 0, (int)sigsOf(untagged, "sig-3"), msgOf(r, "untagged").c_str());
     // A ladder rung drops reasoning only where the row says so.
     plain::LadderState rung;
@@ -499,7 +501,7 @@ void test_p9_reasoning_replays_only_to_its_writer() {
     PlanRun under;
     PlanOpts withRung;
     withRung.ladder = &rung;
-    planFor(r, own, r.model, 3, under, withRung);
+    planFor(r, own, model, 3, under, withRung);
     TEST_ASSERT_EQUAL_MESSAGE(dropUnderRung ? 0 : (int)a.meta.size(), (int)under.meta.size(), msgOf(r, "under a rung").c_str());
     ++g_ran;
     if (r.slot == caps::Slot::Anthropic) ++g_ranAnthropic;
@@ -607,7 +609,7 @@ void test_p11_limits() {
         TEST_ASSERT_TRUE_MESSAGE(rc::limitsHold(out.body, why), msgOf(r, s.name + ": " + why).c_str());
         TEST_ASSERT_TRUE_MESSAGE(out.view.maxTokens > 0 || capOmitted(r), msgOf(r, s.name + ": no output cap").c_str());
       }
-  }, nullptr, false, "RB-R4b");
+  });
 }
 
 void test_p11_routed_request_declares_deadline_and_cap() {
@@ -622,8 +624,8 @@ void test_p11_routed_request_declares_deadline_and_cap() {
 }
 
 // ---- 12. every rendered chat body passes the Chat shape checker (lane E2-R6; design section 11, L2) --------------------
-// Each snapshot of the day at two stub pointers, and the guard round, through the row's route and pre-flight. A Mistral
-// row waits for the planner's id rule and a text-mode row for its text history (lane R4b).
+// Each snapshot of the day at two stub pointers, and the guard round, through the row's route and pre-flight
+// (Mistral's ids and a text-mode row's history come from the planner, lane R4b).
 wire_shape::ChatFlavor flavorOf(caps::Slot s) {
   return s == caps::Slot::Mistral ? wire_shape::ChatFlavor::Mistral
          : s == caps::Slot::Zai   ? wire_shape::ChatFlavor::Zai
@@ -646,8 +648,6 @@ void test_p12_chat_bodies_pass_the_shape_checker() {
   for (const txb::Row& r : txb::tableRows()) {
     if (r.dialect != plain::Dialect::ChatCompletions) continue;
     std::string lane = txb::rowWaitsFor(r, {"RB-T1"});
-    const bool needsPlanner = !txb::rowTools(r) || caps::capsFor(r.slot, r.model.c_str(), r.routed).row.idRule == caps::IdRule::Mistral9;
-    if (lane.empty() && needsPlanner) lane = txb::rowWaitsFor(r, {"RB-R4b"});
     if (!lane.empty()) {
       txb::waitLog().note("p12 chat shape", r, lane);
       std::printf("WAITING p12 chat shape | %s | %s\n", r.name.c_str(), lane.c_str());

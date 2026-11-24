@@ -112,7 +112,7 @@ void test_wire_pairing_chat() {
   wirePairing(plain::Dialect::ChatCompletions);
 }
 void test_wire_pairing_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-R4b");   // text-mode history (E2-R6)
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   wirePairing(plain::Dialect::Flat);
 }
 

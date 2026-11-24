@@ -421,9 +421,9 @@ class StubWire : public plain::WireCodec {
 inline const plain::WireCodec* batteryWire(plain::Dialect d) {
   const plain::WireCodec* w = nullptr;
   // Flat is the Chat codec in text mode (lane E2-R6): the battery's tool loops keep the toy for it
-  // until text-mode history lands in the planner (lane R4b's sentinel).
-  std::function<tx::Status()> r4b;
-  const bool textHistory = sentinelFor("RB-R4b", r4b) && !r4b().notImplemented();
+  // until its checkers read text-mode history (sentinel RB-TXT).
+  std::function<tx::Status()> txt;
+  const bool textHistory = sentinelFor("RB-TXT", txt) && !txt().notImplemented();
   if ((d != plain::Dialect::Flat || textHistory) && plain::wireFor(d, w).ok() && w) return w;
   static const StubWire stubs[] = {StubWire(plain::Dialect::AnthropicMessages), StubWire(plain::Dialect::OpenAIResponses),
                                    StubWire(plain::Dialect::ChatCompletions), StubWire(plain::Dialect::Flat)};

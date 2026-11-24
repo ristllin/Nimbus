@@ -166,6 +166,8 @@ struct Grouper {
       return;
     }
     flushViewed();
+    // A piece that opens a message keeps it, even after a user message (text-mode history follows the owner's
+    // message): joining it would change a message an earlier request sent (the stable prefix).
     const bool join = !msgs.empty() && msgs.back().role == role && msgs.back().turn == pc.turn &&
                       !(role == Role::User && (pc.flags & plan::kOpens));
     if (!join) {
@@ -432,8 +434,8 @@ Status groupPieces(const plan::Plan& p, bool text, std::vector<Msg>& out) {
   Grouper g;
   for (uint32_t i = 0; i < p.pieces.size(); ++i) {
     const plan::PieceKind k = p.pieces[i].kind;
-    // Text-mode history (calls and results as text) is the planner's (lane E2-R4b): until it lands a
-    // text-mode request over a stored call is refused, never sent with the round left out.
+    // Text-mode history (calls and results as text) is the planner's (lane E2-R4b); a call it still hands
+    // a text-mode request (Flat with no route) is refused, never sent with the round left out.
     if (text && (k == plan::PieceKind::Call || k == plan::PieceKind::Result))
       return Status::fail(Err::InvalidArgument, "plain::chat.render.textModeCalls");
     g.add(p.pieces[i], i);
@@ -444,11 +446,15 @@ Status groupPieces(const plan::Plan& p, bool text, std::vector<Msg>& out) {
 }
 
 Status renderBody(const RenderInput& in, HttpRequest& out) {
+  // Text mode offers no tools, so the planner renders stored calls and results as text (lane E2-R4b).
+  const bool text = textMode(in);
+  static const std::vector<ToolSpec> kNoTools;
+  RenderInput planned = in;
+  if (text) planned.tools = &kNoTools;
   plan::Plan p;
-  Status st = plan::plan(in, oneObject, p);
+  Status st = plan::plan(planned, oneObject, p);
   if (!st.ok()) return st;
   if (!p.anyBlock) return Status::fail(Err::InvalidArgument, "plain::chat.render.noMessages");
-  const bool text = textMode(in);
   std::vector<Msg> msgs;
   if (!(st = groupPieces(p, text, msgs)).ok()) return st;
   if (!text && in.tools->empty())

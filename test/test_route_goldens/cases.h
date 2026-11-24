@@ -312,12 +312,24 @@ inline Tx restartMidTurn() {
 }
 
 // Lane E2-R6: reasoning as the chat rows store it, in the open turn: a Mistral thinking chunk before the
-// round's text, and Z.ai's reasoning_content (each row replays only its own kind).
-inline Tx chatReasoning(const char* meta) {
+// round's text, and Z.ai's reasoning_content, each tagged as written on `sig`'s row (the planner sends a
+// k item only to its writer's tag; the codec then sends only its row's kind). A closed turn's as well:
+// the chat rows replay every rendered turn (replayScope allTurns).
+inline Tx chatReasoning(const char* meta, const char* sig) {
+  const RowFacts row = rowOf(sig, false);
+  const std::string tag = plain::replayTag(row.dialect, row.routed, row.model);
   Tx t;
   t.open();
-  t.owner("Which bed gets the most sun? Check the note.");
+  t.owner("Which bed gets the most sun?");
   t.meta(meta);
+  t.items.back().wr = tag;
+  t.say("Bed 2.");
+  t.close();
+  t.advance(200);
+  t.open();
+  t.owner("Check the note for bed 2.");
+  t.meta(meta);
+  t.items.back().wr = tag;
   t.say("Reading the note.", false);
   t.call("toolu_12A", "read_note", R"({"path":"notes/bed2.md"})");
   t.receipt("toolu_12A", "read_note", "bed 2: empty, full sun");
@@ -329,7 +341,7 @@ inline constexpr const char* kMistralThinking =
 inline constexpr const char* kZaiReasoning = R"({"reasoning_content":"The note says which bed."})";
 
 // The chat rows' requests (lane E2-R6): the common fixtures on each direct row, two on each routed
-// row, and the tool-free ones on a custom endpoint (text mode).
+// row, and a custom endpoint in text mode (its stored calls and results as text).
 inline void chatCases(std::vector<Case>& out) {
   for (const char* sig : {kMistral, kZai}) {
     Facts f;
@@ -341,8 +353,8 @@ inline void chatCases(std::vector<Case>& out) {
     out.push_back(make("stub_and_bulk_result", stubAndBulk(), f, sig));
     out.push_back(make("foreign_k_item", foreignMeta(), f, sig));
     out.push_back(make("open_turn_thinking", openTurnThinking(), f, sig));
-    out.push_back(make("mistral_thinking_chunk", chatReasoning(kMistralThinking), f, sig));
-    out.push_back(make("zai_reasoning_content", chatReasoning(kZaiReasoning), f, sig));
+    out.push_back(make("mistral_thinking_chunk", chatReasoning(kMistralThinking, sig), f, sig));
+    out.push_back(make("zai_reasoning_content", chatReasoning(kZaiReasoning, sig), f, sig));
     f.toolChoiceNone = true;
     out.push_back(make("guard_round", guardRound(), f, sig));
     f = Facts();
@@ -361,6 +373,7 @@ inline void chatCases(std::vector<Case>& out) {
   Facts f;
   f.effort = "";
   out.push_back(make("text_only", firstMessage(), f, kCustomChat));
+  out.push_back(make("second_turn_after_tools", secondTurnAfterTools(), f, kCustomChat));   // calls as text (R4b)
   f.system = Sys::Summarizer;
   f.noTools = true;
   out.push_back(make("summarizer_lines", summarizerSlice(), f, kCustomChat));

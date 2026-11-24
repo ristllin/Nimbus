@@ -1,4 +1,5 @@
 # route goldens: every file under test/support/goldens/wire/, written by test_route_goldens
+chat-custom_chat-direct/second_turn_after_tools.req
 chat-custom_chat-direct/summarizer_lines.req
 chat-custom_chat-direct/text_only.req
 chat-mistral-direct/error_3051_effort_refused.parse

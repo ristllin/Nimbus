@@ -190,7 +190,7 @@ void test_wire_overhead_chat() {
   wireOverhead(plain::Dialect::ChatCompletions);
 }
 void test_wire_overhead_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-R4b");   // text-mode history (E2-R6)
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   wireOverhead(plain::Dialect::Flat);
 }
 
@@ -208,7 +208,7 @@ void test_wire_overhead_night_chat() {
   wireOverheadAtNight(plain::Dialect::ChatCompletions);
 }
 void test_wire_overhead_night_flat() {
-  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-R4b");   // text-mode history (E2-R6)
+  TXB_WAITS_FOR("PENDING RB-W4", "RB-T1", "RB-TXT");   // text-mode history in the checkers (E2-R6)
   wireOverheadAtNight(plain::Dialect::Flat);
 }
 

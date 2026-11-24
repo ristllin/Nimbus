@@ -55,11 +55,11 @@ struct RenderFixture {
              {"web_search", "Search the web.", R"({"type":"object","properties":{"q":{"type":"string"}}})"}};
     photoBytes["pab12cd34"] = std::string("\xFF\xD8\xFF\xE0", 4) + std::string(996, 'j');
     // Lane E2-R6: a chat dialect renders as a head of that dialect, through its route and pre-flight:
-    // Mistral for chat (it sees photos), a custom endpoint for text mode.
+    // Z.ai for chat (its ids pass through, so the checkers find the stored ids), a custom endpoint for text mode.
     if (d == plain::Dialect::ChatCompletions || d == plain::Dialect::Flat) {
       const bool chat = d == plain::Dialect::ChatCompletions;
-      turn.host = head.host = chat ? "api.mistral.ai" : "custom.example.test";
-      turn.model = chat ? "mistral-large-4-0" : "battery-model";
+      turn.host = head.host = chat ? "api.z.ai" : "custom.example.test";
+      turn.model = chat ? "glm-5.3" : "battery-model";
       routeAndPreflight = true;
     }
   }

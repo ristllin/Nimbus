@@ -53,13 +53,16 @@ txb::Row rowOf(caps::Slot slot) {
 }
 
 // One open turn: the owner's ask, a stored reasoning item, the round's text and one call with its result.
-txb::Convo reasoningTurn(const std::string& meta) {
+// The k item carries the tag of the row it is rendered on (lane R4b's planner sends only those), so what
+// is tested here is the codec's own rule: only the row's replay kind goes back.
+txb::Convo reasoningTurn(const std::string& meta, caps::Slot slot) {
   txb::Convo c;
   c.callPrefix = "call";
   c.openTurn();
   c.owner("Which bed gets the most sun?");
   tx::Item& k = c.add(tx::ItemKind::RoundMeta);
   k.x = meta;
+  k.wr = plain::replayTag(plain::Dialect::ChatCompletions, false, rowOf(slot).model);
   c.say("Reading the note.", false);
   const std::string id = c.call("read_file", R"({"path":"notes/bed2.md"})");
   c.receipt(id, "read_file", "bed 2: full sun");
@@ -152,10 +155,10 @@ void test_reasoning_replays_only_to_its_own_kind() {
   const std::string chunk = R"({"type":"thinking","thinking":[{"type":"text","text":"Read the note."}]})";
   const std::string zai = R"({"reasoning_content":"Read the note."})";
   const std::string signed_ = R"({"type":"thinking","thinking":"Read the note.","signature":"c2ln"})";
-  TEST_ASSERT_TRUE(renderOn(caps::Slot::Mistral, reasoningTurn(chunk)).find(R"("content":[{"type":"thinking")") != std::string::npos);
-  TEST_ASSERT_TRUE(renderOn(caps::Slot::Zai, reasoningTurn(zai)).find(R"("reasoning_content":"Read the note.")") != std::string::npos);
-  for (const std::string& b : {renderOn(caps::Slot::Mistral, reasoningTurn(zai)), renderOn(caps::Slot::Mistral, reasoningTurn(signed_)),
-                               renderOn(caps::Slot::Zai, reasoningTurn(chunk)), renderOn(caps::Slot::Zai, reasoningTurn(signed_))}) {
+  TEST_ASSERT_TRUE(renderOn(caps::Slot::Mistral, reasoningTurn(chunk, caps::Slot::Mistral)).find(R"("content":[{"type":"thinking")") != std::string::npos);
+  TEST_ASSERT_TRUE(renderOn(caps::Slot::Zai, reasoningTurn(zai, caps::Slot::Zai)).find(R"("reasoning_content":"Read the note.")") != std::string::npos);
+  for (const std::string& b : {renderOn(caps::Slot::Mistral, reasoningTurn(zai, caps::Slot::Mistral)), renderOn(caps::Slot::Mistral, reasoningTurn(signed_, caps::Slot::Mistral)),
+                               renderOn(caps::Slot::Zai, reasoningTurn(chunk, caps::Slot::Zai)), renderOn(caps::Slot::Zai, reasoningTurn(signed_, caps::Slot::Zai))}) {
     TEST_ASSERT_TRUE_MESSAGE(b.find("Read the note.") == std::string::npos, b.c_str());
     TEST_ASSERT_TRUE(b.find("Reading the note.") != std::string::npos);   // the round itself is sent
   }
@@ -169,8 +172,8 @@ void test_reasoning_replays_only_to_its_own_kind() {
   TEST_ASSERT_EQUAL_STRING(zai.c_str(), z.meta[0].bytes.c_str());
 }
 
-// Text mode (Flat, or a row with the tools bit off): no tools and no tool_choice; a stored call is
-// refused until the planner renders history as text (lane R4b), never sent with the round left out.
+// Text mode (Flat, or a row with the tools bit off): no tools and no tool_choice; a stored call and its
+// result go as text in their place (the planner's text-mode history, lane R4b), never left out.
 void test_text_mode_sends_no_tools() {
   txb::RenderFixture fx(rowOf(caps::Slot::CustomChat));
   txb::Convo c;
@@ -187,10 +190,17 @@ void test_text_mode_sends_no_tools() {
   std::string why;
   TEST_ASSERT_TRUE_MESSAGE(wire_shape::chatRequest(q, wire_shape::ChatFlavor::Custom, why), why.c_str());
   const std::string id = c.call("read_file", "{}");
-  c.receipt(id, "read_file", "x");
-  const tx::Status st = txb::renderItems(fx, c, 0, out, c.turn);
-  TEST_ASSERT_FALSE(st.ok());
-  TEST_ASSERT_EQUAL_STRING("plain::chat.render.textModeCalls", st.where);
+  c.receipt(id, "read_file", "bed 2: full sun");
+  c.say("Bed 2.");
+  c.close();
+  c.openTurn();
+  c.owner("And bed 3?");
+  TXB_OK(txb::renderItems(fx, c, 0, out, c.turn));
+  TEST_ASSERT_TRUE(out.body.find("\"tools\"") == std::string::npos);
+  TEST_ASSERT_TRUE_MESSAGE(out.body.find("read_file") != std::string::npos && out.body.find("bed 2: full sun") != std::string::npos,
+                           out.body.c_str());
+  q.body = out.body;
+  TEST_ASSERT_TRUE_MESSAGE(wire_shape::chatRequest(q, wire_shape::ChatFlavor::Custom, why), why.c_str());
 }
 
 // Design D2: the codec reads the route; it names no provider host, window, cap or price.
