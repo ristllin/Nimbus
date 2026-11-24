@@ -279,6 +279,9 @@ E2_EXTRA_SOURCES: tuple = (
     ("nimbusd/src/hosted_web_search.h", "tool_results"),
     # E2-P-OUT1: send and speak (their argument and kind words; the result lines are texts.h).
     ("src/agent/tools_plain_send.h", "tool_results"),
+    # E2-P-OUT2: the files_admin and media tools over engine 1's handlers: their descriptions (namespace
+    # tool_descriptions), their path lines and engine-2 tool names, and the argument names they map.
+    ("src/agent/tools_plain_files.cpp", "tool_results"),
 )
 # The engine-2 files that may hold no model text of their own once texts.h exists.
 E2_ENGINE_GLOBS = (r"lib/harness/src/plain_[^/]*\.(cpp|h)$", r"lib/harness/src/providers/plain_wire_[^/]*\.(cpp|h)$")

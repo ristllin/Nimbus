@@ -1801,27 +1801,7 @@ void registerTools() {
 
   reg.add("files.stat",
           "Metadata for one stored file: size, kind, created time, provider file id.",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
-            memory::Lock g;
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-            const std::string project = argStr(a, "project"), name = argStr(a, "name");
-            // (find validates nothing itself; unknown names just miss.)
-            for (const auto* e : g_store.list(project))
-              if (std::string_view(e->name) == name) {
-                // Another principal's artifact is INVISIBLE, not "forbidden":
-                // a distinguishable refusal would confirm the file exists.
-                if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) break;
-                char b[160];
-                snprintf(b, sizeof b, "%s/%s: %u bytes, kind=%s, createdAt=%u%s%s",
-                         e->project.c_str(), e->name.c_str(), unsigned(e->bytes),
-                         nimbus::orch::fileKindName(e->kind), unsigned(e->createdAt),
-                         e->providerFileId.empty() ? "" : ", provider file_id=",
-                         e->providerFileId.c_str());
-                return nimbus::orch::ToolResult::ok(b);
-              }
-            return nimbus::orch::ToolResult::fail("not found");
-          },
+          statTool,
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"}},"required":["project","name"]})");
 
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
@@ -2033,29 +2013,7 @@ void registerTools() {
           "Share one of your saved files with everyone who can talk to this "
           "device, or stop sharing it (set share false). Sharing is read-only: "
           "only you (or an admin) can change or delete it.",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who)
-              -> nimbus::orch::ToolResult {
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
-            if (!who.perms().shareOwn)
-              return nimbus::orch::ToolResult::fail("this conversation can't share files");
-            const std::string project = argStr(a, "project"), name = argStr(a, "name");
-            const bool on = a["share"].is<bool>() ? (bool)a["share"] : true;
-            memory::Lock g;
-            const nimbus::orch::FileEntry* fe = g_store.find(project, name);
-            // Only the file's OWNER may change its sharing - an admin may too,
-            // but a reader of a shared file never can.
-            if (!fe || !g_store.ownedBy(*fe, who.ns, who.owner))
-              return nimbus::orch::ToolResult::fail("not found");
-            nimbus::orch::FileEntry e = *fe;
-            e.shared = on;
-            std::string err;
-            if (!g_store.add(e, err)) return nimbus::orch::ToolResult::fail(err);
-            persistIndex();
-            return nimbus::orch::ToolResult::ok(
-                project + "/" + name + (on ? " is now shared with everyone"
-                                           : " is no longer shared"));
-          },
+          shareTool,
           R"({"type":"object","properties":{"project":{"type":"string"},"name":{"type":"string"},"share":{"type":"boolean"}},"required":["project","name"]})");
 
   reg.add("files.fetch",
@@ -2066,67 +2024,7 @@ void registerTools() {
           "status this tool returns; NEVER claim the file exists until "
           "files.list shows it. Per-file size cap applies (device.status "
           "files.maxMB).",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who)
-              -> nimbus::orch::ToolResult {
-            std::string url = a["url"].is<const char*>() ? a["url"].as<const char*>() : "";
-            std::string project = a["project"].is<const char*>() ? a["project"].as<const char*>() : "";
-            std::string name = a["name"].is<const char*>() ? a["name"].as<const char*>() : "";
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - the file store is absent");
-            // Path safety BEFORE the queue (the same gate every save runs).
-            std::string perr;
-            if (g_store.relPath(project, name).empty())
-              return nimbus::orch::ToolResult::fail("invalid project or name");
-            if (!nimbus::orch::parseHttpsUrl(url).ok)
-              return nimbus::orch::ToolResult::fail(
-                  "only https:// URLs can be downloaded (http is refused)");
-            // prism: the SAME write rails every other save path enforces, at
-            // REQUEST time - a fetch must not be a back door around ownership
-            // (silently replacing another principal's artifact) or quota.
-            {
-              memory::Lock g;
-              if (!g_store.writeAllowed(project, name, who.ns, who.owner)) {
-                return nimbus::orch::ToolResult::fail(
-                    "that project/name belongs to someone else");
-              }
-            }
-            const auto pol = nimbus::orch::fetchPolicyFromInt(agent::store::fetchPolicy());
-            std::string err;
-            uint32_t id = 0;
-            bool pending = false;
-            {
-              std::lock_guard<std::mutex> lk(g_fetchMx);
-              id = g_fetchQ.request(pol, url, project, name,
-                                    std::string(who.ns.c_str() ? who.ns.c_str() : ""), err);
-              if (id && pol == nimbus::orch::FetchPolicy::Approve) {
-                g_fetchAlert = true;
-                pending = true;
-              }
-            }
-            if (!id) return nimbus::orch::ToolResult::fail(err);
-            if (pending) {
-              // Honest about the CHANNEL: with no allowlisted Telegram chat the
-              // prompt cannot be sent - the web Downloads card is then the only
-              // approval surface, and the reply must say so instead of promising
-              // a prompt that will never arrive.
-              const bool tgOwner =
-                  agent::orchestrator::firstAllowedChat().length() > 0;
-              return nimbus::orch::ToolResult::ok(
-                  "queued for OWNER APPROVAL (request " + std::to_string(id) +
-                  "). " +
-                  (tgOwner
-                       ? std::string("The owner gets a Telegram prompt; ")
-                       : std::string("The owner approves it on the web page "
-                                     "(Usage -> Downloads); ")) +
-                  "the download runs only if they approve. Tell the owner it is "
-                  "waiting on them - do not claim the file exists.");
-            }
-            return nimbus::orch::ToolResult::ok(
-                "queued for download (request " + std::to_string(id) + ", policy " +
-                nimbus::orch::fetchPolicyName(pol) +
-                "). It runs in the background - check files.list shortly; only "
-                "claim success once the file is listed.");
-          },
+          fetchTool,
           R"({"type":"object","properties":{"url":{"type":"string"},"project":{"type":"string"},"name":{"type":"string"}},"required":["url","project","name"]})");
 
   reg.add("files.send",
@@ -2229,95 +2127,207 @@ void registerTools() {
           "Returns the saved project/name, which says how the owner gets it. Set describe "
           "true to also get a vision read-back of the result (an extra provider call). Needs "
           "an OpenAI key and an SD card.",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) -> nimbus::orch::ToolResult {
-            // Turn-only (like files.send): generation blocks on TLS up to ~2 min, so it
-            // must run on the turn task (tg_poll), NEVER the AsyncTCP /mcp path - a long
-            // block there starves the web server and drops the connection.
-            if (!agent::orchestrator::turnInFlight())
-              return nimbus::orch::ToolResult::fail("image.generate is only available during a turn");
-            const std::string prompt = argStr(a, "prompt");
-            if (prompt.empty()) return nimbus::orch::ToolResult::fail("need 'prompt'");
-            if (!available())
-              return nimbus::orch::ToolResult::fail("no SD card - image store absent");
-            if (!agent::imagegen::available())
-              return nimbus::orch::ToolResult::fail("no image provider - set an OpenAI key");
-            std::string project = argStr(a, "project");
-            if (project.empty()) project = "images";
-            // Name: a sanitized stem (from the caller or the prompt) + a boot-unique
-            // counter so repeated generations don't silently overwrite each other
-            // (add() REPLACES same project+name), always ending .png so the store
-            // classifies it as an Image.
-            std::string stem = argStr(a, "name");
-            if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
-              stem = stem.substr(0, stem.size() - 4);
-            if (stem.empty()) stem = prompt;
-            std::string safe;
-            for (char ch : stem) {
-              if (safe.size() >= 40) break;
-              if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) safe += ch;
-              else if (ch >= 'A' && ch <= 'Z') safe += (char)(ch - 'A' + 'a');
-              else if ((ch == ' ' || ch == '-' || ch == '_') && !safe.empty() && safe.back() != '-') safe += '-';
-            }
-            while (!safe.empty() && safe.back() == '-') safe.pop_back();
-            if (safe.empty()) safe = "image";
-
-            const std::string modl = argStr(a, "model"), size = argStr(a, "size"),
-                              qual = argStr(a, "quality");
-            // Decode the whole image into PSRAM during the long TLS read (image.generate
-            // dispatches OUTSIDE the engine Lock so the 90-120 s wait can't stall the
-            // main loop's watchdog). Touches no SD here - the buffer lands under a BRIEF
-            // Lock below, which is what serializes the non-re-entrant SD bus against a
-            // concurrent probe. Both were proven live: a lock-free SD stream corrupted
-            // every image; a Lock-held stream rebooted the device.
-            String err;
-            size_t n = 0;
-            uint8_t* buf = agent::imagegen::generateToBuffer(
-                String(prompt.c_str()),
-                modl.empty() ? nullptr : modl.c_str(),
-                size.empty() ? nullptr : size.c_str(),
-                qual.empty() ? nullptr : qual.c_str(), n, err);
-            if (!buf)
-              return nimbus::orch::ToolResult::fail(
-                  "couldn't generate image: " + std::string(err.c_str()));
-            std::string serr, name;
-            bool saved;
-            {
-              memory::Lock g;
-              // Pick a name that isn't already taken: add() REPLACES same project+name,
-              // so without this a new generation could silently overwrite an earlier
-              // artifact (a boot-static counter would reset to 0 every reboot).
-              int seq = 0;
-              do {
-                name = safe + (seq ? "-" + std::to_string(seq) : "") + ".png";
-                ++seq;
-              } while (g_store.find(project, name));
-              saved = saveBytes(project, name, buf, n, serr, who.ns);
-            }
-            free(buf);
-            if (!saved)
-              return nimbus::orch::ToolResult::fail("generated but couldn't save: " + refusalForHead(serr));
-
-            std::string out = "saved " + project + "/" + name + " (" +
-                              std::to_string((unsigned)n) + " bytes)";
-            const bool wantDesc = a["describe"].is<bool>() ? (bool)a["describe"] : false;
-            if (wantDesc && agent::vision::available()) {
-              String d = agent::vision::describeImage(absPath(project, name).c_str(),
-                                                      "image/png", &memory::dataFs(),
-                                                      String(prompt.c_str()));
-              if (d.length()) out += "\n" + std::string(d.c_str());
-            }
-            // CUM-523: name files.send only on a turn that was offered it.
-            out += agent::orchestrator::fileSendForTurn()
-                       ? "\nSend it to the owner with files.send."
-                       : "\nThe owner opens it from the Files list on the device web page.";
-            return nimbus::orch::ToolResult::ok(out);
-          },
+          imageTool,
           R"({"type":"object","properties":{"prompt":{"type":"string"},"project":{"type":"string"},"name":{"type":"string"},"size":{"type":"string"},"quality":{"type":"string","enum":["low","medium","high"]},"model":{"type":"string"},"describe":{"type":"boolean"}},"required":["prompt"]})");
 }
 #endif
 
 }  // namespace
 
+
+// ---- the handlers engine 2 binds too (lane E2-P-OUT2): files.stat, files.share, files.fetch and
+// image.generate, moved unchanged out of engine 1's registration so both engines run one copy
+// (src/agent/tools_plain_files.cpp maps engine 2's path arguments onto these).
+
+nimbus::orch::ToolResult statTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  memory::Lock g;
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+  const std::string project = argStr(a, "project"), name = argStr(a, "name");
+  // (find validates nothing itself; unknown names just miss.)
+  for (const auto* e : g_store.list(project))
+    if (std::string_view(e->name) == name) {
+      // Another principal's artifact is INVISIBLE, not "forbidden":
+      // a distinguishable refusal would confirm the file exists.
+      if (!g_store.readableBy(*e, who.ns, who.owner, who.perms().readShared)) break;
+      char b[160];
+      snprintf(b, sizeof b, "%s/%s: %u bytes, kind=%s, createdAt=%u%s%s",
+               e->project.c_str(), e->name.c_str(), unsigned(e->bytes),
+               nimbus::orch::fileKindName(e->kind), unsigned(e->createdAt),
+               e->providerFileId.empty() ? "" : ", provider file_id=",
+               e->providerFileId.c_str());
+      return nimbus::orch::ToolResult::ok(b);
+    }
+  return nimbus::orch::ToolResult::fail("not found");
+}
+
+nimbus::orch::ToolResult shareTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - artifact store absent");
+  if (!who.perms().shareOwn)
+    return nimbus::orch::ToolResult::fail("this conversation can't share files");
+  const std::string project = argStr(a, "project"), name = argStr(a, "name");
+  const bool on = a["share"].is<bool>() ? (bool)a["share"] : true;
+  memory::Lock g;
+  const nimbus::orch::FileEntry* fe = g_store.find(project, name);
+  // Only the file's OWNER may change its sharing - an admin may too,
+  // but a reader of a shared file never can.
+  if (!fe || !g_store.ownedBy(*fe, who.ns, who.owner))
+    return nimbus::orch::ToolResult::fail("not found");
+  nimbus::orch::FileEntry e = *fe;
+  e.shared = on;
+  std::string err;
+  if (!g_store.add(e, err)) return nimbus::orch::ToolResult::fail(err);
+  persistIndex();
+  return nimbus::orch::ToolResult::ok(
+      project + "/" + name + (on ? " is now shared with everyone"
+                                 : " is no longer shared"));
+}
+
+nimbus::orch::ToolResult fetchTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  std::string url = a["url"].is<const char*>() ? a["url"].as<const char*>() : "";
+  std::string project = a["project"].is<const char*>() ? a["project"].as<const char*>() : "";
+  std::string name = a["name"].is<const char*>() ? a["name"].as<const char*>() : "";
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - the file store is absent");
+  // Path safety BEFORE the queue (the same gate every save runs).
+  std::string perr;
+  if (g_store.relPath(project, name).empty())
+    return nimbus::orch::ToolResult::fail("invalid project or name");
+  if (!nimbus::orch::parseHttpsUrl(url).ok)
+    return nimbus::orch::ToolResult::fail(
+        "only https:// URLs can be downloaded (http is refused)");
+  // prism: the SAME write rails every other save path enforces, at
+  // REQUEST time - a fetch must not be a back door around ownership
+  // (silently replacing another principal's artifact) or quota.
+  {
+    memory::Lock g;
+    if (!g_store.writeAllowed(project, name, who.ns, who.owner)) {
+      return nimbus::orch::ToolResult::fail(
+          "that project/name belongs to someone else");
+    }
+  }
+  const auto pol = nimbus::orch::fetchPolicyFromInt(agent::store::fetchPolicy());
+  std::string err;
+  uint32_t id = 0;
+  bool pending = false;
+  {
+    std::lock_guard<std::mutex> lk(g_fetchMx);
+    id = g_fetchQ.request(pol, url, project, name,
+                          std::string(who.ns.c_str() ? who.ns.c_str() : ""), err);
+    if (id && pol == nimbus::orch::FetchPolicy::Approve) {
+      g_fetchAlert = true;
+      pending = true;
+    }
+  }
+  if (!id) return nimbus::orch::ToolResult::fail(err);
+  if (pending) {
+    // Honest about the CHANNEL: with no allowlisted Telegram chat the
+    // prompt cannot be sent - the web Downloads card is then the only
+    // approval surface, and the reply must say so instead of promising
+    // a prompt that will never arrive.
+    const bool tgOwner =
+        agent::orchestrator::firstAllowedChat().length() > 0;
+    return nimbus::orch::ToolResult::ok(
+        "queued for OWNER APPROVAL (request " + std::to_string(id) +
+        "). " +
+        (tgOwner
+             ? std::string("The owner gets a Telegram prompt; ")
+             : std::string("The owner approves it on the web page "
+                           "(Usage -> Downloads); ")) +
+        "the download runs only if they approve. Tell the owner it is "
+        "waiting on them - do not claim the file exists.");
+  }
+  return nimbus::orch::ToolResult::ok(
+      "queued for download (request " + std::to_string(id) + ", policy " +
+      nimbus::orch::fetchPolicyName(pol) +
+      "). It runs in the background - check files.list shortly; only "
+      "claim success once the file is listed.");
+}
+
+nimbus::orch::ToolResult imageTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
+  // Turn-only (like files.send): generation blocks on TLS up to ~2 min, so it
+  // must run on the turn task (tg_poll), NEVER the AsyncTCP /mcp path - a long
+  // block there starves the web server and drops the connection.
+  if (!agent::orchestrator::turnInFlight())
+    return nimbus::orch::ToolResult::fail("image.generate is only available during a turn");
+  const std::string prompt = argStr(a, "prompt");
+  if (prompt.empty()) return nimbus::orch::ToolResult::fail("need 'prompt'");
+  if (!available())
+    return nimbus::orch::ToolResult::fail("no SD card - image store absent");
+  if (!agent::imagegen::available())
+    return nimbus::orch::ToolResult::fail("no image provider - set an OpenAI key");
+  std::string project = argStr(a, "project");
+  if (project.empty()) project = "images";
+  // Name: a sanitized stem (from the caller or the prompt) + a boot-unique
+  // counter so repeated generations don't silently overwrite each other
+  // (add() REPLACES same project+name), always ending .png so the store
+  // classifies it as an Image.
+  std::string stem = argStr(a, "name");
+  if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png")
+    stem = stem.substr(0, stem.size() - 4);
+  if (stem.empty()) stem = prompt;
+  std::string safe;
+  for (char ch : stem) {
+    if (safe.size() >= 40) break;
+    if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) safe += ch;
+    else if (ch >= 'A' && ch <= 'Z') safe += (char)(ch - 'A' + 'a');
+    else if ((ch == ' ' || ch == '-' || ch == '_') && !safe.empty() && safe.back() != '-') safe += '-';
+  }
+  while (!safe.empty() && safe.back() == '-') safe.pop_back();
+  if (safe.empty()) safe = "image";
+
+  const std::string modl = argStr(a, "model"), size = argStr(a, "size"),
+                    qual = argStr(a, "quality");
+  // Decode the whole image into PSRAM during the long TLS read (image.generate
+  // dispatches OUTSIDE the engine Lock so the 90-120 s wait can't stall the
+  // main loop's watchdog). Touches no SD here - the buffer lands under a BRIEF
+  // Lock below, which is what serializes the non-re-entrant SD bus against a
+  // concurrent probe. Both were proven live: a lock-free SD stream corrupted
+  // every image; a Lock-held stream rebooted the device.
+  String err;
+  size_t n = 0;
+  uint8_t* buf = agent::imagegen::generateToBuffer(
+      String(prompt.c_str()),
+      modl.empty() ? nullptr : modl.c_str(),
+      size.empty() ? nullptr : size.c_str(),
+      qual.empty() ? nullptr : qual.c_str(), n, err);
+  if (!buf)
+    return nimbus::orch::ToolResult::fail(
+        "couldn't generate image: " + std::string(err.c_str()));
+  std::string serr, name;
+  bool saved;
+  {
+    memory::Lock g;
+    // Pick a name that isn't already taken: add() REPLACES same project+name,
+    // so without this a new generation could silently overwrite an earlier
+    // artifact (a boot-static counter would reset to 0 every reboot).
+    int seq = 0;
+    do {
+      name = safe + (seq ? "-" + std::to_string(seq) : "") + ".png";
+      ++seq;
+    } while (g_store.find(project, name));
+    saved = saveBytes(project, name, buf, n, serr, who.ns);
+  }
+  free(buf);
+  if (!saved)
+    return nimbus::orch::ToolResult::fail("generated but couldn't save: " + refusalForHead(serr));
+
+  std::string out = "saved " + project + "/" + name + " (" +
+                    std::to_string((unsigned)n) + " bytes)";
+  const bool wantDesc = a["describe"].is<bool>() ? (bool)a["describe"] : false;
+  if (wantDesc && agent::vision::available()) {
+    String d = agent::vision::describeImage(absPath(project, name).c_str(),
+                                            "image/png", &memory::dataFs(),
+                                            String(prompt.c_str()));
+    if (d.length()) out += "\n" + std::string(d.c_str());
+  }
+  // CUM-523: name files.send only on a turn that was offered it.
+  out += agent::orchestrator::fileSendForTurn()
+             ? "\nSend it to the owner with files.send."
+             : "\nThe owner opens it from the Files list on the device web page.";
+  return nimbus::orch::ToolResult::ok(out);
+}
 
 // ---- W18 public seams (must sit OUTSIDE the big anonymous namespace above:
 // everything between it and here has internal linkage) ----

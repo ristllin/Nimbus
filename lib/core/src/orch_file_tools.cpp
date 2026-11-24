@@ -47,8 +47,8 @@ const char kTooLongMore[] = "; append_file adds more";
 const char kQuota[] = "{} B of files would pass your {} B";
 const char kRoom[] = "file store full: {}";
 const char kPastEnd[] = "offset {} is past the end (size={})";
-const char kNotText[] = "{} is not text ({})";
-const char kPdf[] = "{} is a PDF; its text is not readable yet";
+const char kNotText[] = "{} is not text ({}, {} B)";
+const char kPdf[] = "{} is a PDF ({} B); its text is not readable yet";
 const char kBinary[] = "binary data";
 const char kEmptyText[] = "text is empty";
 const char kEditTooBig[] = "{} is {} B; edit_file takes files up to {} B";
@@ -493,12 +493,13 @@ bool FileTools::textFile(Target& t, const Principal& who, std::string& err) {
   if (!lookup(t, who, state)) return (err = R::kNoCard).empty();
   if (state != 1) return (err = fill(R::kNoFile, {t.path()})).empty();
   const FileKind kind = fileKindForName(t.sp.name);
-  if (isPdf(t.sp.name)) return (err = fill(R::kPdf, {t.path()})).empty();
+  const std::string size = num(t.entry.bytes);
+  if (isPdf(t.sp.name)) return (err = fill(R::kPdf, {t.path(), size})).empty();
   if (kind == FileKind::Image || kind == FileKind::Audio)
-    return (err = fill(R::kNotText, {t.path(), fileKindName(kind)})).empty();
+    return (err = fill(R::kNotText, {t.path(), fileKindName(kind), size})).empty();
   std::string head;
   if (!readSpan(t, 0, std::min<uint64_t>(t.entry.bytes, kTextSniffBytes), head)) return (err = R::kCardRead).empty();
-  if (!fileReadableAsText(t.sp.name, head)) return (err = fill(R::kNotText, {t.path(), R::kBinary})).empty();
+  if (!fileReadableAsText(t.sp.name, head)) return (err = fill(R::kNotText, {t.path(), R::kBinary, size})).empty();
   return true;
 }
 
@@ -509,6 +510,8 @@ ToolResult FileTools::readStored(Target& t, const Principal& who, uint64_t offse
   const uint64_t size = t.entry.bytes;
   if (offset > size) return ToolResult::fail(fill(R::kPastEnd, {num(offset), num(size)}));
   if (!readSpan(t, offset, std::min<uint64_t>(size, offset + limit), window)) return ToolResult::fail(R::kCardRead);
+  // E2-P-OUT2: binary bytes past the sniffed head are never sent as text; the one line says what the file is.
+  if (window.find('\0') != std::string::npos) return ToolResult::fail(fill(R::kNotText, {t.path(), R::kBinary, num(size)}));
   const bool atEnd = offset + window.size() >= size;
   if (atEnd && !window.empty()) last = window.substr(window.size() - 1);
   else if (size && !readSpan(t, size - 1, size, last)) return ToolResult::fail(R::kCardRead);

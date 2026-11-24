@@ -69,6 +69,9 @@ const ToolClassRow kRows[] = {
     {"pdf_write", "files_admin", EC::Effect},
     {"image_generate", "media", EC::Effect},
     {"speak", "media", EC::Effect},
+    {"media_play", "media", EC::Effect},    // E2-P-OUT2: the music player (src/sfx/music.cpp)
+    {"media_pause", "media", EC::Effect},
+    {"media_stop", "media", EC::Effect},
     {"skill_list", "skills", EC::Read},
     {"skill_save", "skills", EC::Effect},
     {"skill_delete", "skills", EC::Effect},

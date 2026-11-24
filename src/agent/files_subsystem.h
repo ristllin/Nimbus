@@ -171,6 +171,13 @@ bool saveText(const std::string& project, const std::string& name,
 // or quarantine+scan+promote under policy scan). Mutex-guarded queue - the web
 // approve/deny runs on the AsyncTCP task.
 void tickFetch();
+// The handlers of files.stat, files.share, files.fetch and image.generate with engine 1's arguments
+// ({project, name, ...}): engine 1 registers them, engine 2 reaches them through its own names
+// (lane E2-P-OUT2, tools_plain_files.cpp). One copy for both engines.
+nimbus::orch::ToolResult statTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult shareTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult fetchTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult imageTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
 std::string fetchQueueJson();     // [{id,url,project,name,state,by,err,bytes}]
 bool fetchApprove(uint32_t id);
 bool fetchDeny(uint32_t id);

@@ -111,6 +111,16 @@ const ActionRuleRow kRows[] = {
     // E2-SRCH: search and view read the turn's own conversation only (plain/history.h decides which).
     {"search", R::TurnOnly, "search this conversation"},
     {"view", R::TurnOnly, "open a stored item"},
+    // E2-P-OUT2: engine 1's files.*, image.generate and media.* handlers under their engine-2 names, the rules
+    // of their engine-1 rows (the handler's own line decides whose file).
+    {"file_stat", R::Open, "look up a file"},
+    {"share_file", R::Open, "share a file"},
+    {"fetch_url", R::Open, "download a file"},
+    {"pdf_write", R::Open, "make a PDF"},
+    {"image_generate", R::TurnOnly, "make an image"},
+    {"media_play", R::Owner, "play music on the speaker"},
+    {"media_pause", R::Owner, "pause the music"},
+    {"media_stop", R::Owner, "stop the music"},
 #endif
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},

@@ -502,14 +502,42 @@ static std::string withVolumeCue(std::string status) {
   return status;
 }
 
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 // ---- media.* tools ---------------------------------------------------------
+// The handlers are both engines' (lane E2-P-OUT2: engine 2 reaches them as media_play, media_pause and
+// media_stop, src/agent/tools_plain_files.cpp); only engine 1 registers them under these names.
 
 static std::string argStr(ArduinoJson::JsonObjectConst a, const char* k) {
   const char* v = a[k] | (const char*)nullptr;
   return v ? std::string(v) : std::string();
 }
 
+nimbus::orch::ToolResult playTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) {
+  const std::string path = argStr(a, "path");
+  const bool queue = a["queue"] | false;
+  if (path.empty()) {
+    int n = playAll();
+    return nimbus::orch::ToolResult::ok(
+        n ? withVolumeCue(std::string(statusJson().c_str()))
+          : std::string("{\"error\":\"no tracks in /music\"}"));
+  }
+  if (!nimbus::orch::validMusicName(path.c_str()))
+    return nimbus::orch::ToolResult::fail("invalid track name (SD /music, .wav or .mp3)");
+  if (queue) { enqueue(path); resume(); }
+  else       { playNow({path}); }
+  return nimbus::orch::ToolResult::ok(withVolumeCue(std::string(statusJson().c_str())));
+}
+
+nimbus::orch::ToolResult pauseTool(ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+  pause();
+  return nimbus::orch::ToolResult::ok(std::string(statusJson().c_str()));
+}
+
+nimbus::orch::ToolResult stopTool(ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) {
+  stop();
+  return nimbus::orch::ToolResult::ok(std::string(statusJson().c_str()));
+}
+
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTools() {
   auto& reg = agent::memory::registry();
 
@@ -517,34 +545,14 @@ void registerTools() {
           "Play music from the device's SD /music folder on the speaker. With no "
           "argument, plays every track. 'path' plays one track now; add 'queue':true "
           "to append it instead of replacing. WAV plays today; MP3 needs the decoder.",
-          [](ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            const std::string path = argStr(a, "path");
-            const bool queue = a["queue"] | false;
-            if (path.empty()) {
-              int n = playAll();
-              return nimbus::orch::ToolResult::ok(
-                  n ? withVolumeCue(std::string(statusJson().c_str()))
-                    : std::string("{\"error\":\"no tracks in /music\"}"));
-            }
-            if (!nimbus::orch::validMusicName(path.c_str()))
-              return nimbus::orch::ToolResult::fail("invalid track name (SD /music, .wav or .mp3)");
-            if (queue) { enqueue(path); resume(); }
-            else       { playNow({path}); }
-            return nimbus::orch::ToolResult::ok(withVolumeCue(std::string(statusJson().c_str())));
-          },
+          playTool,
           R"({"type":"object","properties":{"path":{"type":"string"},"queue":{"type":"boolean"}}})");
 
-  reg.add("media.pause", "Pause music playback (resume with media.play).",
-          [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            pause();
-            return nimbus::orch::ToolResult::ok(std::string(statusJson().c_str()));
-          }, R"({"type":"object","properties":{}})");
+  reg.add("media.pause", "Pause music playback (resume with media.play).", pauseTool,
+          R"({"type":"object","properties":{}})");
 
-  reg.add("media.stop", "Stop music playback and clear the queue.",
-          [](ArduinoJson::JsonObjectConst, const nimbus::orch::Principal&) -> nimbus::orch::ToolResult {
-            stop();
-            return nimbus::orch::ToolResult::ok(std::string(statusJson().c_str()));
-          }, R"({"type":"object","properties":{}})");
+  reg.add("media.stop", "Stop music playback and clear the queue.", stopTool,
+          R"({"type":"object","properties":{}})");
 
   reg.add("media.list",
           "List the tracks in SD /music and the current playback state.",

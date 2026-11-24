@@ -1355,8 +1355,27 @@ void test_delete_file_removes_only_the_callers_own_file() {
   TEST_ASSERT_NOT_NULL(r.io.store.find("docs", "kept.txt"));
 }
 
+// E2-P-OUT2: a binary file read answers one true line, what it is and its size, never its bytes; a file whose
+// first 4 KB pass as text and whose page further on holds a NUL is the same line.
+void test_a_binary_read_is_one_line_with_kind_and_size() {
+  Rig r;
+  seed(r.io, "photos", "cat.jpg", std::string("\xff\xd8\xff\xe0\0\x10 jpeg", 11));
+  seed(r.io, "inbox", "1-report.pdf", "%PDF-1.4 ...");
+  const std::string late = std::string(5000, 'a') + std::string("\0\x01\x02", 3) + std::string(100, 'b');
+  seed(r.io, "notes", "late.dat", late);
+  const ToolResult img = r.call("read_file", R"({"path":"photos/cat.jpg"})");
+  TEST_ASSERT_EQUAL_STRING("photos/cat.jpg is not text (image, 11 B)", img.error.c_str());
+  const ToolResult pdf = r.call("read_file", R"({"path":"inbox/1-report.pdf"})");
+  TEST_ASSERT_EQUAL_STRING("inbox/1-report.pdf is a PDF (12 B); its text is not readable yet", pdf.error.c_str());
+  const ToolResult page = r.call("read_file", R"({"path":"notes/late.dat","offset":4096})");
+  TEST_ASSERT_FALSE(page.success);
+  TEST_ASSERT_EQUAL_STRING("notes/late.dat is not text (binary data, 5103 B)", page.error.c_str());
+  TEST_ASSERT_TRUE(page.output.find('\0') == std::string::npos);
+}
+
 int main() {
   UNITY_BEGIN();
+  RUN_TEST(test_a_binary_read_is_one_line_with_kind_and_size);
   RUN_TEST(test_following_next_offset_rebuilds_every_file_at_every_budget);
   RUN_TEST(test_page_cut_rule);
   RUN_TEST(test_read_states_size_lines_and_sha8);

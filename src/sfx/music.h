@@ -1,9 +1,12 @@
 #pragma once
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <FS.h>
 
 #include <string>
 #include <vector>
+
+#include "nimbus/orch/tool_registry.h"   // ToolResult, Principal (the media.* handlers)
 
 // music - the device music player: WAV (and MP3 via the vendored minimp3 decoder)
 // from the SD card's /music folder, driven by the portable nimbus::orch::MediaQueue state
@@ -75,6 +78,12 @@ void stopForSpeech();
 // Register the media.play / media.pause / media.stop / media.list tools on the
 // orchestrator registry (call from the tool-registration phase).
 void registerTools();
+
+// The handlers of media.play ({path, queue}), media.pause and media.stop: engine 1 registers them,
+// engine 2 reaches them as media_play, media_pause and media_stop (lane E2-P-OUT2).
+nimbus::orch::ToolResult playTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult pauseTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
+nimbus::orch::ToolResult stopTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who);
 
 // List the /music directory (validated names only), sorted. Device-side (SD).
 std::vector<std::string> listMusicDir();

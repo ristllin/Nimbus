@@ -1444,3 +1444,22 @@ PC-0175, PC-0176: not used.
 - lane: RB-SND
 - prd: section 4 (files.send becomes send), inventory parity-modalities-media row 12
 - why: src/agent/files_subsystem.cpp: files.send's lookup, access check, allowlist check and media-lane send move into files::sendStored, which engine 2's send calls too; the handler maps its answer to the same words as before, so its two "file not found" literals (missing entry, missing path) become one. What engine 1's model reads is unchanged. Written by lane E2-P-OUT1, which binds RB-SND on the device. Planned work, not a fix (CUM-1002).
+
+### PC-0240: engine 1's image, PDF, share, stat, fetch and music tools bound on engine 2; read_file's binary line states the size (engine 2)
+- catalog: e2
+- class: tool_results
+- kind: spec
+- bytes: 7807 -> 8125
+- sha8: 024fb7f0 -> 2b214ae3
+- lane: RB-I2
+- prd: section 4 (files_admin and media behind more), inventory parity-modalities-media rows 13, 14, 19, 20, 21, 28 and parity-tools-commands-surfaces (files.fetch, files.share, files.stat, files.pdf, image.generate, media.*)
+- why: src/agent/tools_plain_files.cpp registers image_generate, pdf_write, share_file, file_stat, fetch_url, media_play, media_pause and media_stop over engine 1's own handlers (files_subsystem.cpp, pdf_tool.cpp, music.cpp, moved out of their lambdas unchanged). Its result-class literals: the tool names, the argument names it maps (path to project and name), two path lines (" is not a path (project/name)", " is read-only here" for a write under inbox/, skills/, agents/ or the archive) and the four engine-1 tool names an engine-1 answer may carry with their engine-2 names (files.list, files.pdf, files.send, image.generate). Read_file's refusal of a file that is not text now says its size: "{} is not text ({}, {} B)" and "{} is a PDF ({} B); its text is not readable yet"; a page holding a NUL byte past the sniffed head answers the same line instead of the bytes. Written by lane E2-P-OUT2 (RB-I2, the device binding on engine 2). Planned work, not a fix (CUM-1002).
+### PC-0241: the descriptions and schemas of the engine-2 files_admin and media tools bound over engine 1 (engine 2)
+- catalog: e2
+- class: tool_descriptions
+- kind: spec
+- bytes: 5093 -> 6618
+- sha8: c26a048f -> 810a26e5
+- lane: RB-I2
+- prd: section 4 (files_admin and media behind more)
+- why: src/agent/tools_plain_files.cpp namespace tool_descriptions: one description and one schema per tool (image_generate, pdf_write, share_file, file_stat, fetch_url, media_play, media_pause, media_stop), shown only in `more`'s group listing, never in the always-on array or the cached start of a request. Engine 1's facts each restates: what the handler does, its arguments in engine 2's path form, what it returns. Written by lane E2-P-OUT2 (RB-I2, the device binding on engine 2). Planned work, not a fix (CUM-1002). PC-0242: not used.

@@ -193,6 +193,15 @@ const Expect kExpect[] = {
     {"web_search", kTurn},
     {"search", kTurn},   // E2-SRCH: the turn's own conversation
     {"view", kTurn},
+    // E2-P-OUT2: engine 1's handlers under engine-2 names, their engine-1 rules
+    {"file_stat", kOpen},
+    {"share_file", kOpen},
+    {"fetch_url", kOpen},
+    {"pdf_write", kOpen},
+    {"image_generate", kTurn},
+    {"media_play", kOwner},
+    {"media_pause", kOwner},
+    {"media_stop", kOwner},
     // docs, routines, replies, skills, people
     {"docs.list", kOpen},
     {"docs.read", kOpen},

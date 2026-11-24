@@ -150,6 +150,7 @@ class Battery {
   bool refuseSends = false;            // the channel refuses every send (no network at boot; RB-X1)
   size_t arenaBytes = tx::kActiveChatArenaBytes;   // the chat's arena at each boot (RB-X1: a small one)
   std::function<void(plain::PlainHooks&)> moreHooks;   // a test's own handlers, installed at each boot
+  bool registryDispatch = false;   // E2-P-OUT2: calls run on `reg` as the device binding runs them (dispatchCall)
   size_t dispatches = 0;
   bool inboxRefuses = false;       // no card for the inbox: a long owner text passes whole (RB-TG1)
   plain::RailsDeps railsDeps;      // the rails' approval store (RB-RL); none: a pending change is refused
@@ -475,6 +476,17 @@ class Battery {
   // world file, and throw_tool throws (a handler's own exception).
   plain::ToolOutput dispatch(const plain::ToolCall& c, const plain::TurnCtx& t) {
     if ((long)dispatches++ == killAtDispatch) throw Killed{"dispatch " + std::to_string(dispatches - 1) + " " + c.name};
+    if (registryDispatch) {
+      JsonDocument a;
+      (void)deserializeJson(a, c.argsJson);
+      const nimbus::orch::ToolResult r = reg.dispatch(c.name, a.as<JsonObjectConst>(), t.who ? *t.who : who);
+      plain::ToolOutput o;
+      o.id = c.id;
+      o.name = c.name;
+      o.isError = !r.success;
+      o.text = r.success ? r.output : r.error;
+      return o;
+    }
     if (c.name == "more") {
       JsonDocument a;
       if (deserializeJson(a, c.argsJson) || !a["name"].is<const char*>()) return world.dispatch(c, t);

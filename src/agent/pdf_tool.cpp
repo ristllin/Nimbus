@@ -13,7 +13,6 @@
 namespace agent {
 namespace pdf_tool {
 
-#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 namespace {
 
 std::string arg(ArduinoJson::JsonObjectConst a, const char* k) {
@@ -28,6 +27,8 @@ std::string pdfName(std::string name) {
     name += ".pdf";
   return name;
 }
+
+}  // namespace
 
 nimbus::orch::ToolResult writeTool(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who) {
   using nimbus::orch::ToolResult;
@@ -56,8 +57,7 @@ nimbus::orch::ToolResult writeTool(ArduinoJson::JsonObjectConst a, const nimbus:
                         " page" + (r.pages == 1 ? "" : "s") + ")");
 }
 
-}  // namespace
-
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 1: no old-engine tool registers on engine 2 (RB-I0)
 void registerTool(nimbus::orch::ToolRegistry& reg) {
   reg.add("files.pdf",
           "Write a PDF into the file store with the device's own PDF writer: a title plus "

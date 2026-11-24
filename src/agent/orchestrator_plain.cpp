@@ -1705,6 +1705,7 @@ int pollJobs() {
   loadOutboxes();
   loops::checkDue((uint64_t)time(nullptr), s_inTurn.load(std::memory_order_relaxed), ESP.getFreeHeap());
   drainOutboxes();
+  if (!s_inTurn.load(std::memory_order_relaxed)) files::tickFetch();   // E2-P-OUT2: fetch_url, as engine 1 pumps it
   const int n = pumpJobs();
   refreshSessionSnapshot();
   return n;
