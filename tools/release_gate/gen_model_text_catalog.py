@@ -140,6 +140,10 @@ E1_SOURCES = {
 # added under SCAN_DIRS with prose literals outside a log call must be in a catalog or here
 # (check_no_prompt_patch.py, with a git base).
 NON_MODEL_FILES: dict = {
+    "lib/harness/include/nimbus/harness/plain/surface.h": "E2-P-SURF: the summary card's note and the busy lines of "
+    "the engine-2 web pages, text for the person at the page, never sent to a model",
+    "src/net/web_engine2.cpp": "E2-P-SURF: the one busy line of the engine-2 web pages, for the person at the page, "
+    "never sent to a model",
     "lib/harness/src/plain_surface.cpp": "E2-P-SURF (PC-0250, PC-0251): the web pages of an engine-2 chat (the turn "
     "inspector, the turn log, the summary card): text and JSON for the person at the page, never sent to a model",
     "nimbusd/src/engine2_host.h": "E2-HOST: the startup switch's refusal line (the daemon log) and two owner-facing "
