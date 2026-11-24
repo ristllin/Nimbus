@@ -206,6 +206,7 @@ void encodeUser(Writer& w, const Item& it) {
     fieldStr(w, "mime", p.mime);
     fieldU64(w, "b", p.bytes);
     fieldStr(w, "n", p.note);   // a photo's note (RB-H81)
+    fieldStr(w, "cap", p.cap);  // a photo's caption (E2-R4b)
     w.put('}');
   });
 }
@@ -308,6 +309,7 @@ void encodeRoundKinds(Writer& w, const Item& it) {
     case ItemKind::RoundMeta:
       fieldStr(w, "x", it.x);
       fieldU64(w, "rd", it.rd);
+      fieldStr(w, "wr", it.wr);   // the replay tag (E2-R4b)
       return;
     default:
       return;
@@ -699,6 +701,7 @@ bool readPart(Cursor& c, Part& p) {
            if (!std::strcmp(key, "mime")) return readStr(cc, p.mime);
            if (!std::strcmp(key, "b")) return readUnsigned(cc, p.bytes);
            if (!std::strcmp(key, "n")) return readStr(cc, p.note);
+           if (!std::strcmp(key, "cap")) return readStr(cc, p.cap);
            return skipValue(cc);
          }) &&
          haveKind;
@@ -794,6 +797,7 @@ const FieldRule kFields[] = {
     TX_LIST("ph", T, photos, readStr),
     TX_NUM("rd", A | C | K, rd),
     TX_BOOL("fin", A, fin),
+    TX_STR("wr", K, wr),
     TX_STR("id", C | I | R, id),
     TX_STR("n", C | I | R, n),
     TX_STR("args", C, args),
@@ -852,7 +856,7 @@ void clearItem(Item& it) {
   it.x.clear(), it.ch.clear(), it.src.clear(), it.parts.clear();
   it.tzMinutes = 0, it.m = 0;
   it.trigger.clear(), it.head.clear(), it.profile.clear(), it.photos.clear();
-  it.attempt = 0, it.rd = 0, it.fin = false;
+  it.attempt = 0, it.rd = 0, it.fin = false, it.wr.clear();
   it.id.clear(), it.n.clear(), it.args.clear(), it.handle.clear(), it.st.clear();
   it.eff = false, it.ok = true, it.cls = ResultClass::Receipt, it.bytes = 0, it.lines = 0;
   it.note = NoteClass::Unknown;

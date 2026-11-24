@@ -800,7 +800,8 @@ void test_the_request_is_the_summarizer_text_capped_at_its_block_under_the_psram
   TEST_ASSERT_TRUE_MESSAGE(gScopeDepthAtSend > 0, "the request was not sent under the PSRAM-first scope");
   TEST_ASSERT_EQUAL(0, agent::PsramFirstScope::depth());
   const sp::RequestView& v = c.model.last().view;
-  TEST_ASSERT_EQUAL_UINT32(plain::kSummarizerMaxTokens, v.maxTokens);
+  // Lane E2-R4b: a ceiling, inside the time fit (the cap rule of any request), not a cap forced over it.
+  TEST_ASSERT_TRUE(v.maxTokens > 0 && v.maxTokens <= plain::kSummarizerMaxTokens);
   TEST_ASSERT_EQUAL_STRING(plain::texts::summarizer::kPrompt, v.system().c_str());   // no summary yet: the prompt alone
   TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", v.model.c_str());
   TEST_ASSERT_EQUAL(1, (int)v.messages.size());
@@ -1582,8 +1583,10 @@ void test_a_cut_answer_is_asked_once_more_with_room_and_never_stored_cut() {
   TEST_ASSERT_EQUAL(plain::CompactStep::Failed, out.step);
   TEST_ASSERT_EQUAL(2, (int)out.requests);
   TEST_ASSERT_EQUAL(2, (int)c.model.requests().size());
-  TEST_ASSERT_EQUAL_UINT32(plain::kSummarizerMaxTokens, c.model.requests()[0].view.maxTokens);
-  TEST_ASSERT_EQUAL_UINT32(plain::kSummarizerRetryMaxTokens, c.model.requests()[1].view.maxTokens);
+  // Lane E2-R4b: the rungs are ceilings; the retry has more room than the cut request, at most the second's.
+  const uint32_t first = c.model.requests()[0].view.maxTokens, second = c.model.requests()[1].view.maxTokens;
+  TEST_ASSERT_TRUE(first <= plain::kSummarizerMaxTokens);
+  TEST_ASSERT_TRUE(second >= first + 400 && second <= plain::kSummarizerRetryMaxTokens);
   TEST_ASSERT_EQUAL(0, (int)c.digestsStored());
 }
 
@@ -3178,6 +3181,7 @@ void test_the_change_list_reads_back_as_lines() {
   TEST_ASSERT_TRUE(lines.empty());
   plain::SummarizerRung r;
   r.host = "anthropic";
+  r.model = "claude-haiku-5-5";   // lane E2-R4b: the row's summarizerStructured decides
   TEST_ASSERT_EQUAL((int)plain::AnswerForm::Changes, (int)plain::firstAnswerForm(r));
   r.host = "custom";   // an Anthropic-shaped proxy may not have the structured output
   TEST_ASSERT_EQUAL((int)plain::AnswerForm::Lines, (int)plain::firstAnswerForm(r));

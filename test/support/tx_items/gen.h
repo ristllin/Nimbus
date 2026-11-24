@@ -66,7 +66,7 @@ inline tx::Item fullItem(tx::ItemKind kind, uint64_t q, Rng& r, size_t textMax =
   it.ch = word(r, 8);
   it.src = {r.nonzero(UINT64_MAX - 1), r.nonzero(1000)};
   it.m = r.nonzero(UINT64_MAX - 1);
-  it.parts = {tx::Part{tx::PartKind::Image, "p" + word(r, 8), "image/jpeg", static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu)), anyBytes(r, 40)},
+  it.parts = {tx::Part{tx::PartKind::Image, "p" + word(r, 8), "image/jpeg", static_cast<uint32_t>(r.nonzero(0xFFFFFFFFu)), anyBytes(r, 40), anyBytes(r, 40)},
               tx::Part{tx::PartKind::File, anyBytes(r, 20), "", 0},
               tx::Part{tx::PartKind::Voice, "", anyBytes(r, 10), 7}};
   it.trigger = word(r, 10);
@@ -76,6 +76,7 @@ inline tx::Item fullItem(tx::ItemKind kind, uint64_t q, Rng& r, size_t textMax =
   it.photos = {"p" + word(r, 8), anyBytes(r, 12)};
   it.rd = static_cast<uint8_t>(r.nonzero(255));
   it.fin = true;
+  it.wr = anyBytes(r, 40);   // lane E2-R4b: the k item's replay tag
   it.id = anyBytes(r, 30);
   it.n = word(r, 16);
   it.args = anyBytes(r, textMax);
@@ -150,7 +151,7 @@ inline tx::Item project(const tx::Item& in) {
       o.id = in.id, o.n = in.n, o.ok = in.ok, o.cls = in.cls, o.x = in.x, o.handle = in.handle, o.bytes = in.bytes,
       o.lines = in.lines, o.st = in.st;
       break;
-    case tx::ItemKind::RoundMeta: o.x = in.x, o.rd = in.rd; break;
+    case tx::ItemKind::RoundMeta: o.x = in.x, o.rd = in.rd, o.wr = in.wr; break;
     case tx::ItemKind::DeviceNote: o.x = in.x, o.note = in.note; break;
     case tx::ItemKind::Digest: o.x = in.x, o.day = in.day, o.thru = in.thru, o.ext = in.ext; break;
     case tx::ItemKind::PointerMove: o.stub = in.stub, o.why = in.why, o.sup = in.sup; break;
@@ -173,7 +174,7 @@ inline std::string firstDifference(const tx::Item& a, const tx::Item& b) {
   if (!(a.f == b.f)) return #f;
   TXGEN_SAME(q) TXGEN_SAME(kind) TXGEN_SAME(turn) TXGEN_SAME(t) TXGEN_SAME(x) TXGEN_SAME(tzMinutes)
   TXGEN_SAME(ch) TXGEN_SAME(src) TXGEN_SAME(m) TXGEN_SAME(trigger) TXGEN_SAME(head) TXGEN_SAME(profile)
-  TXGEN_SAME(attempt) TXGEN_SAME(photos) TXGEN_SAME(rd) TXGEN_SAME(fin) TXGEN_SAME(id) TXGEN_SAME(n)
+  TXGEN_SAME(attempt) TXGEN_SAME(photos) TXGEN_SAME(rd) TXGEN_SAME(wr) TXGEN_SAME(fin) TXGEN_SAME(id) TXGEN_SAME(n)
   TXGEN_SAME(args) TXGEN_SAME(eff) TXGEN_SAME(ok) TXGEN_SAME(cls) TXGEN_SAME(handle) TXGEN_SAME(bytes)
   TXGEN_SAME(lines) TXGEN_SAME(st) TXGEN_SAME(note) TXGEN_SAME(day) TXGEN_SAME(thru) TXGEN_SAME(ext)
   TXGEN_SAME(stub) TXGEN_SAME(why) TXGEN_SAME(sup) TXGEN_SAME(msgIds) TXGEN_SAME(end.cause)
@@ -185,7 +186,8 @@ inline std::string firstDifference(const tx::Item& a, const tx::Item& b) {
   if (a.parts.size() != b.parts.size()) return "parts";
   for (size_t i = 0; i < a.parts.size(); ++i) {
     const tx::Part &p = a.parts[i], &o = b.parts[i];
-    if (p.kind != o.kind || p.ref != o.ref || p.mime != o.mime || p.bytes != o.bytes || p.note != o.note) return "parts[" + std::to_string(i) + "]";
+    if (p.kind != o.kind || p.ref != o.ref || p.mime != o.mime || p.bytes != o.bytes || p.note != o.note ||
+        p.cap != o.cap) return "parts[" + std::to_string(i) + "]";
   }
   if (a.end.exchanges.size() != b.end.exchanges.size()) return "end.exchanges";
   for (size_t i = 0; i < a.end.exchanges.size(); ++i) {

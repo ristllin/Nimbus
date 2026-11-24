@@ -21,6 +21,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/platform.h"
 #include "nimbus/harness/turn_memory.h"
+#include "nimbus/orch/model_caps.h"   // the summarizer's structured form by row (lane E2-R4b)
 #include "nimbus/orch/day_start.h"   // RB-REC5: the one day rule
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/log.h"
@@ -40,6 +41,7 @@ const char kNotTakenRefused[] = "plain::CompactDriver.refused";
 const char kNotTakenForm[] = "plain::CompactDriver.form";
 const char kNotTakenHttp400[] = "plain::CompactDriver.http400";
 const char kNotTakenChanges[] = "plain::CompactDriver.changes";
+const char kNotTakenEmpty[] = "plain::CompactDriver.empty";
 // Milliseconds left until `untilMs` on the platform clock (0 when past it; the clock may wrap).
 uint32_t msLeft(const Platform& p, uint32_t untilMs) {
   const int32_t left = (int32_t)(untilMs - (p.nowMs ? p.nowMs() : untilMs));
@@ -52,7 +54,7 @@ uint32_t requestWindow(const Platform& p, uint32_t untilMs) {
 bool answerNotTaken(const Status& s) {
   return s.err == Err::InvalidArgument && s.where &&
          (s.where == kNotTakenRefused || s.where == kNotTakenForm || s.where == kNotTakenHttp400 ||
-          s.where == kNotTakenChanges);
+          s.where == kNotTakenChanges || s.where == kNotTakenEmpty);
 }
 
 }  // namespace
@@ -722,23 +724,47 @@ uint32_t calendarDay(uint64_t now, int16_t tz) { return (uint32_t)dayNumber(now,
 // host is read as the engine reads it (providerSlugOf: a slug, or an endpoint host such as
 // api.anthropic.com); the installed head stands when no t item is resident or the t item names its
 // model (its routing is known only there).
-tx::HeadKey answeringHead(const tx::TxArena& arena, const tx::HeadKey& installed) {
+tx::HeadKey headOfTurn(const tx::Item& it, const tx::HeadKey& installed) {
+  const size_t slash = it.head.find('/');
+  if (slash == std::string::npos || slash == 0 || slash + 1 >= it.head.size()) return installed;
+  TurnCtx t;
+  t.host = it.head.substr(0, slash);
+  HeadEndpoint ep;
+  ep.host = t.host;
+  tx::HeadKey k{providerSlugOf(t, ep), it.head.substr(slash + 1), false};
+  if (k.model == installed.model && (k.host == installed.host || k.host == "custom")) return installed;
+  k.routed = k.host == "cumulo";
+  return k;
+}
+
+// Lane E2-R4b (router design section 6 item 6): the heads whose marks compaction keeps, the installed head
+// first, then every head a resident t item names (each read as above, once). Its marks are the largest of
+// theirs, so a switch to a smaller window adds no digest for the small head (the ladder leaves older turns
+// out of its requests at render time) and a switch back renders every stored turn again.
+std::vector<tx::HeadKey> markHeads(const tx::TxArena& arena, const tx::HeadKey& installed) {
+  std::vector<tx::HeadKey> heads{installed};
   tx::Item it;
   for (size_t i = arena.count(); i-- > 0;) {
     tx::ArenaEntry e;
     if (!arena.header(i, e).ok() || e.kind != tx::ItemKind::TurnOpen || !arena.get(i, it).ok()) continue;
-    const size_t slash = it.head.find('/');
-    if (slash == std::string::npos || slash == 0 || slash + 1 >= it.head.size()) return installed;
-    TurnCtx t;
-    t.host = it.head.substr(0, slash);
-    HeadEndpoint ep;
-    ep.host = t.host;
-    tx::HeadKey k{providerSlugOf(t, ep), it.head.substr(slash + 1), false};
-    if (k.model == installed.model && (k.host == installed.host || k.host == "custom")) return installed;
-    k.routed = k.host == "cumulo";
-    return k;
+    const tx::HeadKey k = headOfTurn(it, installed);
+    const bool seen = std::any_of(heads.begin(), heads.end(), [&k](const tx::HeadKey& h) {
+      return h.host == k.host && h.model == k.model && h.routed == k.routed;
+    });
+    if (!seen) heads.push_back(k);
   }
-  return installed;
+  return heads;
+}
+
+// The budget with the largest marks among markHeads; the installed head's failure is the answer's.
+Status largestMarks(const tx::TxArena& arena, const tx::HeadKey& installed, tx::Profile profile,
+                    const tx::EngineSettings& set, tx::HeadBudget& out) {
+  Status s = tx::budgetFor(installed, profile, set, out);
+  if (!s.ok()) return s;
+  tx::HeadBudget b;
+  for (const tx::HeadKey& k : markHeads(arena, installed))
+    if (tx::budgetFor(k, profile, set, b).ok() && b.marks.high > out.marks.high) out = b;
+  return Status::success();
 }
 
 // The whole prompt of the newest turn's last request (its e item's lastPromptTokens), 0 when none
@@ -755,35 +781,6 @@ uint32_t lastPromptTokens(const tx::TxArena& arena, uint64_t& endQ) {
   }
   return 0;
 }
-
-// The rung's wire with the summarizer's output cap: the exchange picks a cap per request and
-// this wire holds it at `cap` (kSummarizerMaxTokens, then kSummarizerRetryMaxTokens).
-class CappedWire : public WireCodec {
- public:
-  CappedWire(const WireCodec& inner, uint16_t cap) : inner_(inner), cap_(cap) {}
-  Dialect dialect() const override { return inner_.dialect(); }
-  Status render(const RenderInput& in, HttpRequest& out) const override {
-    RenderInput capped = in;
-    capped.maxTokens = cap_;
-    return inner_.render(capped, out);
-  }
-  // A cut answer is read as a plain stop and remembered: the exchange would ask again at its own
-  // retry cap, which this wire holds at the same cap, so the retry could only be cut again; the
-  // driver asks once more itself, with more room.
-  Status parse(const HttpResponse& in, ParsedStep& out) const override {
-    const Status s = inner_.parse(in, out);
-    if (s.ok() && out.stop == StopReason::MaxTokens) {
-      cut = true;
-      out.stop = StopReason::Other;
-    }
-    return s;
-  }
-  mutable bool cut = false;
-
- private:
-  const WireCodec& inner_;
-  uint16_t cap_;
-};
 
 // The digest body: the summary, framed when its slice read outside content, made to fit
 // kDigestMaxBytes with its day header so the frame is never cut.
@@ -955,7 +952,7 @@ Status CompactDriver::planIfDue(const IdleCtx& ctx, SlicePlan& plan, bool& due) 
   if (!headNamed(d_)) return noHead(d_, "plain::CompactDriver.headKey");
   tx::HeadBudget& b = budget_;
   const tx::EngineSettings set = d_.settings ? d_.settings() : tx::EngineSettings{};
-  Status s = tx::budgetFor(answeringHead(*d_.arena, d_.headKey), tx::profileOfHead(d_.head()->profile), set, b);
+  Status s = largestMarks(*d_.arena, d_.headKey, tx::profileOfHead(d_.head()->profile), set, b);
   if (!s.ok()) return s;
   rules_ = rulesFor(ctx, b);
   if (!(s = planSlice(*d_.arena, d_.head()->thru, rules_, plan)).ok()) return s;
@@ -1293,6 +1290,9 @@ struct RungMessage {
   std::string sofar, message;
   size_t thinInput = 0;
   const char* schema = nullptr;   // the answer's structured form (AnswerForm::Changes); null: free text
+  // An empty change list over this slice is a whole answer: true on a row whose structured summary is
+  // recorded working (Anthropic's); false elsewhere, where it is asked once more as lines (lane E2-R4b).
+  bool emptyListTaken = true;
   uint32_t untilMs = 0;           // an urgent attempt's end on the platform clock; 0: none (lane E2-FIX7)
 };
 
@@ -1332,7 +1332,13 @@ Status takeAnswer(const std::string& chatKey, const RungMessage& m, const Exchan
   // The change list read back as lines. A text that is not that object (a host that ignored the form)
   // is read as lines as it stands: the parser decides, and no request is paid twice for it.
   std::string lines;
-  if (changeLinesOf(summary, lines)) summary = std::move(lines);
+  if (!changeLinesOf(summary, lines)) return s;
+  if (lines == "=" && !m.emptyListTaken && !m.message.empty()) {
+    hlog::logf("compact(%s): answer not taken (an empty change list on a row without a recorded structured summary)",
+               chatKey.c_str());
+    return Status::fail(Err::InvalidArgument, kNotTakenEmpty);
+  }
+  summary = std::move(lines);
   return s;
 }
 
@@ -1374,34 +1380,44 @@ Status askRung(const CompactDeps& d, const SummarizerRung& rung, const RungMessa
   in.tools = &tools;
   in.items = &arena;
   in.answerSchema = m.schema;
-  // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut.
-  for (uint16_t cap : {kSummarizerMaxTokens, kSummarizerRetryMaxTokens}) {
-    const uint32_t window = requestWindow(*d.platform, m.untilMs);
-    if (window < kCompactMinRequestMs) return Status::fail(Err::Io, "plain::CompactDriver.time");
-    in.maxTokens = cap;
-    CappedWire capped(*wire, cap);
-    ExchangeRequest req;
-    req.wire = &capped;
-    req.render = &in;
-    req.timeoutMs = window;
-    req.deadlineMs = window;
-    ExchangeResult r;
-    s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
-    ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);
-    if (r.step.usage.responses) ans.usage += r.step.usage;   // paid whether or not the answer is taken
-    ans.parked |= r.parkHost;
-    if (!s.ok()) return s;
-    const bool cut = capped.cut || r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
-    if (cut && cap != kSummarizerRetryMaxTokens) continue;
-    return takeAnswer(d.chatKey, m, r, cut, ans.summary);
-  }
-  return Status::fail(Err::Io, "plain::CompactDriver::ask");
+  // Ruling 89 item 4: a cut answer is asked once more with room to finish; never stored cut. Lane E2-R4b
+  // (router design section 6 item 8): the two rungs are cap CEILINGS the exchange applies inside its own cap
+  // rule and time fit (pre-flight), so an uncapped row sends none, a slow model is asked for what fits, and
+  // the second rung is the exchange's cut retry, sent only when it gives more room (the retry-gain rule).
+  const uint32_t window = requestWindow(*d.platform, m.untilMs);
+  if (window < kCompactMinRequestMs) return Status::fail(Err::Io, "plain::CompactDriver.time");
+  ExchangeRequest req;
+  req.wire = wire;
+  req.render = &in;
+  req.timeoutMs = window;
+  req.deadlineMs = window;
+  req.capCeiling = kSummarizerMaxTokens;
+  req.retryCeiling = kSummarizerRetryMaxTokens;
+  ExchangeResult r;
+  s = runExchange(ExchangeDeps{d.transport, d.platform}, req, r);
+  ans.requests = (uint8_t)std::min<uint32_t>(255, ans.requests + r.requests);
+  if (r.step.usage.responses) ans.usage += r.step.usage;   // paid whether or not the answer is taken
+  ans.parked |= r.parkHost;
+  if (!s.ok()) return s;
+  const bool cut = r.step.stop == StopReason::MaxTokens || r.err == ExchangeErr::Cut;
+  return takeAnswer(d.chatKey, m, r, cut, ans.summary);
 }
 
 }  // namespace
 
+// The row's structured summary (lane E2-R4b, router design section 5 item 8): none for a host no table
+// slot names (a routed or custom head: an Anthropic-shaped proxy may not have the form).
+namespace {
+nimbus::orch::caps::Structured summarizerStructuredOf(const SummarizerRung& rung) {
+  namespace caps = nimbus::orch::caps;
+  caps::Slot slot;
+  if (!caps::slotFromHost(rung.host.c_str(), &slot) || rung.endpoint.routed) return caps::Structured::None;
+  return caps::capsFor(slot, rung.model.c_str(), false).row.summarizerStructured;
+}
+}  // namespace
+
 AnswerForm firstAnswerForm(const SummarizerRung& rung) {
-  return rung.dialect == Dialect::AnthropicMessages && rung.host == "anthropic" ? AnswerForm::Changes : AnswerForm::Lines;
+  return summarizerStructuredOf(rung) == nimbus::orch::caps::Structured::None ? AnswerForm::Lines : AnswerForm::Changes;
 }
 
 bool changeLinesOf(const std::string& json, std::string& lines) {
@@ -1425,6 +1441,7 @@ Status CompactDriver::ask(const SummarizerRung& rung, const SlicePlan& plan, uin
   RungAnswer ans;
   RungMessage m;
   m.schema = form == AnswerForm::Changes ? st::kChangesSchema : nullptr;
+  m.emptyListTaken = summarizerStructuredOf(rung) == nimbus::orch::caps::Structured::AnthropicOutputConfig;
   m.untilMs = untilMs;
   Status s = messageFor(plan, m.sofar, m.message);
   if (s.ok()) s = askRung(d_, rung, m, now, ans);

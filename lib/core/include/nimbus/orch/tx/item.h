@@ -21,10 +21,10 @@
 // Strings are stored byte for byte (renderers repair UTF-8; capture never rewrites);
 // '"', '\\' and control bytes are escaped, so a line never holds a raw newline.
 // Keys (short, per kind):
-//   all  k q turn t            u  x tz ch src m parts[{k img|file|voice, ref, mime, b, n}]
+//   all  k q turn t            u  x tz ch src m parts[{k img|file|voice, ref, mime, b, n, cap}]
 //   t  tr hd pf at ph          a  x rd fin hdl        c  id n args eff rd st
 //   i  id n                    r  id n ok cls x hdl b l st
-//   k  x rd                    h  x cls (note class)  s  x day thru ext
+//   k  x rd wr                 h  x cls (note class)  s  x day thru ext
 //   x  stub why sup            d  ids                 e  cause rds tools hr pr pt ot cr cw usd ms
 //                                                        ex[[b,ms,st]] ev[] ph mh lp
 // Decoding skips keys it does not know and keys another kind writes (the format only
@@ -111,6 +111,9 @@ struct Part {
   // migration carried over (v5.1.2's kImageNoteMax) or a blind host's transcription. The later-turn
   // photo stub shows it; no tool writes it.
   std::string note;
+  // A photo's caption (lane E2-R4b, router design section 7): one description made at intake by the
+  // owner's vision provider; the stub of a head that cannot see shows it. "" = none stored.
+  std::string cap;
 };
 inline constexpr size_t kPhotoNoteMax = 270;
 
@@ -191,6 +194,10 @@ struct Item {
 
   // a
   uint8_t rd = 0;                  // round
+
+  // k (lane E2-R4b): the replay tag of the request that wrote it, "<dialect slug>/<d or r>/<model>"
+  // (plain::replayTag). "" (every line stored before the tag): Anthropic, direct, the turn's model.
+  std::string wr;
   bool fin = false;                // the turn's final text
 
   // c, i, r (id and n are shared: the call id and the tool name)

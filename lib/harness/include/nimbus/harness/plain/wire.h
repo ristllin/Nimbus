@@ -129,6 +129,14 @@ inline const char* stopSlug(StopReason s) {
   return "other";
 }
 
+// The replay tag of a request (lane E2-R4b, router design section 5 item 4): "<dialect slug>/<d or r>/<model>",
+// d direct, r routed. The engine stamps it on every k item it writes (the item's `wr`); the planner sends a
+// stored k item only to a request with the same tag. A k item stored without one reads as
+// replayTag(AnthropicMessages, false, <the model its turn's t item names>).
+inline std::string replayTag(Dialect d, bool routed, const std::string& model) {
+  return std::string(dialectSlug(d)) + (routed ? "/r/" : "/d/") + model;
+}
+
 // One opaque piece of round meta (signed thinking, a reasoning item), kept where it sat
 // so a resume renders the same bytes: it came before call `beforeCall` (calls.size() =
 // after the last call).

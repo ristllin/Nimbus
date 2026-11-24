@@ -194,7 +194,7 @@ class Exchange {
     in_ = base_;
     in_.maxTokens = tokens;
     in_.bodyCap = bodyCap_;
-    dropped_ = preflight(route_, req_.capCeiling, pre_, in_);
+    dropped_ = preflight(route_, ceiling(), pre_, in_);
     http_ = HttpRequest{};
     const Status st = req_.wire->render(in_, http_);
     dropped_ |= pre_.lateDropped;
@@ -215,6 +215,7 @@ class Exchange {
     load.routed = routed_;
     load.fragmented = deps_.platform->largestFreeBlock && providers::heapFragmented(deps_.platform->largestFreeBlock());
     cap_ = providers::outputCapFor(tableHost_, model_, kind(), minU(window_, remaining()), load);
+    if (req_.capCeiling) ceilCaps(load);
     // the cut retry takes the retry cap of this request's own fit (the time left now)
     uint32_t tokens = cutRetried_ ? cap_.retryTokens : cap_.maxTokens;
     if (routerCap_ && (!tokens || routerCap_ < tokens)) tokens = routerCap_;
@@ -223,6 +224,19 @@ class Exchange {
     if (tokens != asked_) st = renderAt(tokens);
     http_.cappedResend = routerCap_ != 0 && tokens == routerCap_;
     return st;
+  }
+
+  // Lane E2-R4b (router design section 6 item 8): the caller's ceilings (the summarizer's two rungs). The
+  // first request carries at most capCeiling; the cut retry at most retryCeiling, inside the time fit, and
+  // only when it gives kRetryGainTokens more (the shared retry-gain rule), at the same effort.
+  uint32_t ceiling() const { return cutRetried_ && req_.retryCeiling ? req_.retryCeiling : req_.capCeiling; }
+  void ceilCaps(const providers::RoundLoad& load) {
+    if (!cap_.maxTokens) return;   // an uncapped row sends no cap, the summarizer's included
+    cap_.maxTokens = minU(cap_.maxTokens, req_.capCeiling);
+    const uint32_t fit = providers::roundFitTokens(tableHost_, model_, minU(window_, remaining()), load);
+    const uint32_t retry = minU(fit, req_.retryCeiling ? req_.retryCeiling : req_.capCeiling);
+    cap_.retryTokens = retry >= cap_.maxTokens + providers::kRetryGainTokens ? retry : 0;
+    cap_.retryEffort = "";
   }
 
   // What the body cap measures (lane E2-FIX4): the text of the body, and each photo spliced into it
@@ -433,6 +447,8 @@ class Exchange {
                                                 : StatusLine::ProviderError;
     out_.errorLine = exchangeLine(err, slug_, httpStatus_, err == ExchangeErr::Other ? refusedReason_ : std::string());
     out_.errorLineStored = exchangeLine(err, slug_, httpStatus_);   // what may be kept: no provider words (F4)
+    if (out_.modelUnusable)   // lane E2-R4b: the provider does not know the model, said as that (PC-0259)
+      out_.errorLine = out_.errorLineStored = model_ + texts::device_notes::kNotAvailableOn + providerName(capHost_) + ".";
     if (err == ExchangeErr::Other) out_.providerBody = refusedBody_;
     if (out_.parkHost) out_.parkBody = parkBody_;
     return Status::success();

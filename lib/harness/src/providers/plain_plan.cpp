@@ -10,6 +10,7 @@
 
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/history.h"   // viewedPhoto (lane E2-SRCH)
+#include "nimbus/harness/plain/route.h"     // the request's row (lane E2-R4b)
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
@@ -22,6 +23,7 @@ namespace plan {
 namespace {
 
 namespace tx = nimbus::orch::tx;
+namespace caps = nimbus::orch::caps;
 
 // ---- small rules ---------------------------------------------------------------------
 
@@ -70,6 +72,64 @@ std::string wireId(const std::string& id) {
   return out;
 }
 
+// Mistral's rule: exactly 9 alphanumerics; another id is a deterministic 9-character digest
+// (engine 1's mistralCallId, the same digest).
+std::string nineId(const std::string& id) {
+  bool ok = id.size() == 9;
+  for (char c : id) ok = ok && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'));
+  if (ok) return id;
+  static const char kAl[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+  uint32_t h = 2166136261u;   // FNV-1a
+  for (char c : id) {
+    h ^= (uint8_t)c;
+    h *= 16777619u;
+  }
+  std::string out(9, 'a');
+  for (int i = 0; i < 9; i++) {
+    out[i] = kAl[h % 36];
+    h /= 36;
+    h = h * 31 + 7;
+  }
+  return out;
+}
+
+// A stored call id as the request's row takes it (lane E2-R4b, router design section 5 item 5): mapped at
+// render time, identically for the call and its result; storage keeps the provider's own id.
+std::string mappedId(caps::IdRule rule, const std::string& id) {
+  switch (rule) {
+    case caps::IdRule::Passthrough: return id.empty() ? wireId(id) : id;
+    case caps::IdRule::Mistral9: return nineId(id);
+    case caps::IdRule::AnthropicPattern: break;
+  }
+  return wireId(id);
+}
+
+// What the request's row says about the planner's choices (lane E2-R4b). No route, or a host no table
+// slot names: the Anthropic Messages facts every request had before the router.
+struct RowRules {
+  caps::IdRule idRule = caps::IdRule::AnthropicPattern;
+  caps::ReplayScope replayScope = caps::ReplayScope::OpenTurn;
+  bool dropUnderRung = true;
+  bool tools = true;
+  uint8_t order = caps::order::kEndsOnUser | caps::order::kResultsFirstInUser | caps::order::kNoEmptyText |
+                  caps::order::kMergeUsers | caps::order::kNotOnlySystem;
+  uint32_t realBytesMax = 0;   // the route's real-byte limit (0 = none)
+};
+
+RowRules rowRules(const RenderInput& in) {
+  RowRules r;
+  if (!in.route) return r;
+  r.realBytesMax = in.route->realBytesMax;
+  if (!in.route->caps.provider) return r;
+  const caps::ModelRow& row = in.route->caps.row;
+  r.idRule = row.idRule;
+  r.replayScope = row.replayScope;
+  r.dropUnderRung = row.flags & caps::flag::kDropUnderRung;
+  r.tools = row.flags & caps::flag::kTools;
+  r.order = row.orderRules;
+  return r;
+}
+
 bool imageMime(const std::string& m) {
   return m == "image/jpeg" || m == "image/png" || m == "image/gif" || m == "image/webp";
 }
@@ -85,6 +145,7 @@ struct Row {
   bool emits = true;       // writes a block (a blank text or a broken meta item does not)
   std::string id;          // c and r: the stored call id
   std::string wid;         // c: the id as sent
+  std::string tag;         // k: its replay tag ("" = stored before the tag)
   size_t est = 0;          // the body bytes it may take
 };
 
@@ -97,10 +158,13 @@ struct Facts {
   size_t estimate = 0;                // body bytes the rows after thru not left out may take
   FragmentOk sendable = nullptr;      // the codec's test of a stored fragment
   std::vector<uint32_t> omitted;      // turns the omission line stands for, oldest first
+  RowRules rules;                     // the request's row
+  std::string tag;                    // the request's replay tag
+  std::vector<std::pair<uint32_t, std::string>> turnModel;   // each resident t item's model
 };
 
 // Whether a stored item writes a block at all (a blank text or a broken meta item does not).
-bool emitsBlock(const tx::Item& it, uint16_t dayStartMin, FragmentOk sendable) {
+bool emitsBlock(const tx::Item& it, uint16_t dayStartMin, FragmentOk sendable, bool blankOut) {
   switch (it.kind) {
     case tx::ItemKind::User: {
       char stamp[tx::kStampMaxBytes];
@@ -110,7 +174,7 @@ bool emitsBlock(const tx::Item& it, uint16_t dayStartMin, FragmentOk sendable) {
     }
     case tx::ItemKind::Assistant:
     case tx::ItemKind::DeviceNote:
-      return visible(it.x);
+      return !blankOut || visible(it.x);
     case tx::ItemKind::RoundMeta:
       return sendable(it.x);
     default:
@@ -129,9 +193,12 @@ size_t noteFacts(const RenderInput& in, const tx::Item& it, Facts& f) {
     case tx::ItemKind::Digest:
       f.thru = std::max(f.thru, it.thru);
       break;
-    case tx::ItemKind::TurnOpen:
+    case tx::ItemKind::TurnOpen: {
       if (it.turn == in.turn->turn) f.photos = it.photos;
+      const size_t slash = it.head.find('/');   // "host/model"
+      if (slash != std::string::npos) f.turnModel.push_back({it.turn, it.head.substr(slash + 1)});
       break;
+    }
     default:
       break;
   }
@@ -157,7 +224,8 @@ Status readFacts(const RenderInput& in, const tx::TxArena& arena, Facts& f) {
     row.turn = it.turn;
     row.kind = it.kind;
     if (it.kind == tx::ItemKind::Call || it.kind == tx::ItemKind::Result) row.id = it.id;
-    row.emits = emitsBlock(it, in.turn->dayStartMin, f.sendable);
+    if (it.kind == tx::ItemKind::RoundMeta) row.tag = it.wr;
+    row.emits = emitsBlock(it, in.turn->dayStartMin, f.sendable, f.rules.order & caps::order::kNoEmptyText);
     row.est = noteFacts(in, it, f);
     f.rows.push_back(std::move(row));
   }
@@ -201,13 +269,17 @@ struct Pairs {
   };
   std::vector<Open> calls;
   std::vector<std::string> sent;   // wire ids already used
+  caps::IdRule rule = caps::IdRule::AnthropicPattern;
 
   bool used(const std::string& wid) const { return std::find(sent.begin(), sent.end(), wid) != sent.end(); }
   // Every call gets a wire id of its own: a stored id used again (a dialect that numbers its
   // calls per answer, an empty id) is told apart by the call's q.
   void call(Row& r, size_t row) {
-    r.wid = wireId(r.id);
-    while (used(r.wid)) r.wid += "-" + std::to_string(r.q);
+    r.wid = mappedId(rule, r.id);
+    for (std::string again = r.id; used(r.wid);) {   // Mistral's 9 characters: a digest of the id and its q
+      again += "-" + std::to_string(r.q);
+      r.wid = rule == caps::IdRule::Mistral9 ? nineId(again) : r.wid + "-" + std::to_string(r.q);
+    }
     sent.push_back(r.wid);
     calls.push_back(Open{r.id, r.turn, row, false});
   }
@@ -245,11 +317,31 @@ bool sendOpenTurnThinking(const RenderInput& in) {
   return !l || (!l->closedThrough && !l->stubThrough && !omissionNamed(in));
 }
 
+// The tag a k item was written under: its own, else (stored before the tag) Anthropic, direct, its
+// turn's model; a turn whose t item is not resident reads as the request's model.
+std::string storedTag(const Facts& f, const Row& r, const std::string& requestModel) {
+  if (!r.tag.empty()) return r.tag;
+  std::string model = requestModel;
+  for (const auto& tm : f.turnModel)
+    if (tm.first == r.turn) model = tm.second;
+  return replayTag(Dialect::AnthropicMessages, false, model);
+}
+
+// Lane E2-R4b (router design section 5 item 4): a stored k item goes back only to the request whose tag
+// equals the one it was written under, in the turns the row's replay scope covers, and under a ladder rung
+// only on a row that keeps it there. Anything else is left out at render time; storage is never rewritten.
+bool replays(const RenderInput& in, const Facts& f, const Row& r) {
+  if (f.rules.replayScope == caps::ReplayScope::OpenTurn && r.turn != in.turn->turn) return false;
+  if (f.rules.dropUnderRung && !sendOpenTurnThinking(in)) return false;
+  return storedTag(f, r, in.turn->model) == f.tag;
+}
+
 // What is rendered, and the pairing: a call with its one result. Assistant items before the
 // first user item after thru (a turn cut by compaction) are not sent: the request opens with
 // the user's turn.
 void chooseRows(const RenderInput& in, Facts& f) {
   Pairs pairs;
+  pairs.rule = f.rules.idRule;
   bool userSeen = omissionNamed(in);   // the omission line opens the request
   for (size_t i = 0; i < f.rows.size(); ++i) {
     Row& r = f.rows[i];
@@ -259,7 +351,7 @@ void chooseRows(const RenderInput& in, Facts& f) {
     if (assistantKind(r.kind) && !userSeen) continue;
     if (userKind(r.kind)) r.keep = userSeen = true;
     else if (r.kind == tx::ItemKind::Assistant) r.keep = true;
-    else if (r.kind == tx::ItemKind::RoundMeta) r.keep = r.turn == in.turn->turn && sendOpenTurnThinking(in);
+    else if (r.kind == tx::ItemKind::RoundMeta) r.keep = replays(in, f, r);
     else if (r.kind == tx::ItemKind::Call) pairs.call(r, i);
     else if (r.kind == tx::ItemKind::Result) pairs.result(r, f.rows);
   }
@@ -338,7 +430,8 @@ std::vector<size_t> sendOrder(const Facts& f) {
   dropThinkingAlone(f, order);
   // The request ends with the user's turn (a provider takes no assistant prefill): assistant
   // text or meta left last by a round whose calls were all left out is not sent.
-  while (!order.empty() && assistantKind(f.rows[order.back()].kind)) order.pop_back();
+  if (f.rules.order & caps::order::kEndsOnUser)
+    while (!order.empty() && assistantKind(f.rows[order.back()].kind)) order.pop_back();
   return order;
 }
 
@@ -352,6 +445,7 @@ struct Builder {
   // photos a view result brings back, lane E2-SRCH).
   size_t photosAttached = 0;
   size_t photoBytesAttached = 0;
+  std::vector<std::string> refs;   // the ref of each photo attached, one to one with out.photos
 
   Piece& add(PieceKind kind, uint32_t item, uint32_t turn) {
     Piece p;
@@ -369,8 +463,9 @@ struct Builder {
     out.ids.push_back(wid);
     return (uint32_t)(out.ids.size() - 1);
   }
-  uint16_t photo(const PhotoBytes& px) {
+  uint16_t photo(const PhotoBytes& px, const std::string& ref) {
     ++photosAttached;
+    refs.push_back(ref);
     Photo ph;
     if (px.fileId.empty()) {
       photoBytesAttached += px.len;
@@ -404,6 +499,16 @@ bool photoAbsent(const RenderInput& in, const std::string& ref, tx::PhotoAbsent&
   return in.turn && in.turn->photosBlind;
 }
 
+// The line of an owner message's photo sent without its pixels. Its note kept (RB-H81), else its stored
+// caption (lane E2-R4b, design section 7). E2-FIX5: names view only when the turn's registry binds it.
+bool photoLine(const Builder& b, const tx::Item& u, const tx::Part& p, bool absent, tx::PhotoAbsent why, std::string& stub) {
+  std::string when;
+  if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
+  const std::string& note = p.note.empty() ? p.cap : p.note;
+  return absent ? tx::photoAbsentLine(p.ref.substr(1), when, note, why, stub).ok()
+                : tx::photoStub(p.ref.substr(1), when, note, stub, b.in.bound.view).ok();
+}
+
 // A photo of an owner message: pixels when the open turn shows it (by file id, else inline bytes
 // spliced at send time), else its stub line. False when nothing is sent (a part whose ref is not a
 // photo ref has nothing to name).
@@ -414,19 +519,15 @@ bool photoPiece(Builder& b, const tx::Item& u, uint32_t idx, const tx::Part& p, 
   PhotoBytes px;
   if (shown && b.in.photo && b.in.photo(p.ref, px).ok() &&
       (!px.fileId.empty() || (px.bytes && px.len && imageMime(px.mime)))) {
-    const uint16_t at = b.photo(px);
+    const uint16_t at = b.photo(px, p.ref);
     Piece& pc = b.add(PieceKind::Photo, idx, u.turn);
     pc.photo = at;
     if (opens) pc.flags |= kOpens;
     return true;
   }
   if (p.ref.size() < 2 || p.ref[0] != 'p') return false;
-  std::string when, stub;
-  if (!tx::photoWhen(u.t, u.tzMinutes, when).ok()) when.clear();
-  // Its note kept (RB-H81). E2-FIX5: names view only when the turn's registry binds it.
-  if (absent ? !tx::photoAbsentLine(p.ref.substr(1), when, p.note, why, stub).ok()
-             : !tx::photoStub(p.ref.substr(1), when, p.note, stub, b.in.bound.view).ok())
-    return false;
+  std::string stub;
+  if (!photoLine(b, u, p, absent, why, stub)) return false;
   linePiece(b, idx, u.turn, opens, std::move(stub));
   return true;
 }
@@ -494,7 +595,7 @@ bool attachViewed(Builder& b, const std::string& ref, Piece& p) {
   if ((!file && !inline64) || b.photosAttached + 1 > tx::kInlinePhotosInViewMax ||
       b.photoBytesAttached + bytes > tx::kInlinePhotoBytesInViewMax)
     return false;
-  p.photo = b.photo(px);
+  p.photo = b.photo(px, ref);
   p.flags |= kViewed;
   return true;
 }
@@ -531,6 +632,10 @@ void resultPiece(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
   else if (!it.st.empty()) src = Src::St;
   else if (it.cls != tx::ResultClass::Outside) src = wholeText(b.in, it, own);   // no stub stored: never outside content
   const std::string& text = src == Src::X ? it.x : src == Src::St ? it.st : own;
+  if (!b.f.rules.tools) {   // a row without tools: the call and its result as one line in their place
+    linePiece(b, idx, it.turn, true, texts::stubs::kEarlierRan + it.n + texts::stubs::kEarlierRanSep + text);
+    return;
+  }
   const uint32_t wid = b.id(row.wid);
   Piece p;
   p.kind = PieceKind::Result;
@@ -569,14 +674,45 @@ void itemPieces(Builder& b, const tx::Item& it, uint32_t idx, const Row& row) {
     case tx::ItemKind::RoundMeta:   // the open turn's signed thinking, as stored; never a mark
       if (b.f.sendable(it.x)) b.add(PieceKind::Meta, idx, it.turn).src = Src::X;
       return;
-    case tx::ItemKind::Call:
-      callPiece(b, it, idx, row);
+    case tx::ItemKind::Call:   // a row without tools: its result's line says it (resultPiece)
+      if (b.f.rules.tools) callPiece(b, it, idx, row);
       return;
     case tx::ItemKind::Result:
       resultPiece(b, it, idx, row);
       return;
     default:
       return;
+  }
+}
+
+size_t base64Of(size_t n) { return (n + 2) / 3 * 4; }
+
+// Lane E2-R4b (router design section 7): a route's real-byte limit (the router's 4,194,304 B, base64
+// included), kept apart from the body cap, which counts a photo as kPhotoCapBytes and climbs the ladder.
+// The text of the body is at most its body cap; while text and photos pass the limit, an owner message's
+// photo is sent as its line instead of its pixels, oldest first, never one of the open turn (the photo
+// that just arrived). The bytes stay stored, and the ladder never climbs for this.
+void fitRealBytes(Builder& b) {
+  const uint32_t limit = b.f.rules.realBytesMax;
+  if (!limit) return;
+  const SystemBlocks& sys = *b.in.system;
+  const size_t text = b.in.bodyCap ? b.in.bodyCap : b.out.estimate + sys.core.size() + sys.notes.size() + sys.digests.size();
+  size_t photos = 0;
+  for (const Piece& p : b.out.pieces)
+    if (p.kind == PieceKind::Photo || (p.flags & kViewed)) photos += base64Of(b.out.photos[p.photo].len);
+  tx::Item u;
+  for (Piece& p : b.out.pieces) {
+    if (text + photos <= limit) return;
+    if (p.kind != PieceKind::Photo || p.turn == b.in.turn->turn || !b.in.items->get(p.item, u).ok()) continue;
+    const std::string& ref = b.refs[p.photo];
+    auto part = std::find_if(u.parts.begin(), u.parts.end(), [&ref](const tx::Part& x) { return x.ref == ref; });
+    std::string stub;
+    if (part == u.parts.end() || !photoLine(b, u, *part, false, tx::PhotoAbsent::Blind, stub)) continue;
+    photos -= base64Of(b.out.photos[p.photo].len);
+    p.kind = PieceKind::Line;
+    p.src = Src::Line;
+    p.line = b.line(std::move(stub));
+    p.flags &= kOpens;
   }
 }
 
@@ -617,6 +753,8 @@ Status plan(const RenderInput& in, FragmentOk sendable, Plan& out) {
   if (!in.turn || !in.system || !in.items || !sendable) return Status::fail(Err::InvalidArgument, "plain::plan");
   Facts f;
   f.sendable = sendable;
+  f.rules = rowRules(in);
+  f.tag = replayTag(in.turn->dialect, in.head && in.head->routed, in.turn->model);
   Status st = readFacts(in, *in.items, f);
   if (!st.ok()) return st;
   chooseOmitted(in, f);
@@ -630,6 +768,7 @@ Status plan(const RenderInput& in, FragmentOk sendable, Plan& out) {
   tx::Item it;
   for (size_t idx : order)
     if (in.items->get(idx, it).ok()) itemPieces(b, it, (uint32_t)idx, f.rows[idx]);
+  fitRealBytes(b);
   messageMarks(out, in.turn->turn);
   return Status::success();
 }

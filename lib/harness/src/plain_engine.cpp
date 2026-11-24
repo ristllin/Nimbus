@@ -1505,6 +1505,7 @@ class TurnRun {
       tx::Item& k = blank(tx::ItemKind::RoundMeta);
       k.x = m.bytes;
       k.rd = a_round();
+      k.wr = replayTag(t_.ctx.dialect, t_.setup.head.routed, t_.ctx.model);   // replayed only to its writer (E2-R4b)
       t_.sawMeta = true;
       Status st = put(k);
       if (!st.ok()) return st;

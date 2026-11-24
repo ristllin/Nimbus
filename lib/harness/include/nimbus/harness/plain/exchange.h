@@ -149,6 +149,7 @@ struct ExchangeRequest {
   ClimbFn climb;               // the overflow ladder; empty = no rung to climb
   RefusedRefFn refusedRef;     // a refused file reference, once per exchange; empty = none
   uint32_t capCeiling = 0;     // the caller's output cap ceiling (the summarizer's rungs); 0 = none
+  uint32_t retryCeiling = 0;   // E2-R4b: the cut retry's ceiling under capCeiling (the summarizer's second rung); 0 = capCeiling
 };
 
 struct ExchangeResult {
