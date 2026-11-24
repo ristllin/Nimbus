@@ -222,7 +222,9 @@ E2_CEILINGS = {
     # lines only (lanes RB-U1b and E2-SCHED: 510 B of schedule text on 6,142 B, 6,652 B used).
     # Ruling 117: 7,168 B from lane E2-SRCH on, for search's and view's own result and error lines only
     # (PC-0195; the class had 4 B left). No other lane may use the room.
-    "tool_results": 7168,
+    # Ruling 124: 9,216 B from lanes E2-P-MEM and E2-P-SUB on, for the parity tools' result lines (read only
+    # when their tool runs, never part of a request's cached start). device_notes stays 2,048 B.
+    "tool_results": 9216,
     "probe": 1536,  # ruling 33: the qualified probe prompt (1,296 B) is used byte for byte
     "summarizer": 1024,
     "tool_descriptions": 10240,
