@@ -74,6 +74,14 @@ inline bool thinkingChunk(JsonObjectConst p, C& c, const std::string& w) {
   return onlyKeys(p, {"type", "thinking", "signature"}, c, w);
 }
 
+inline bool part(JsonObjectConst p, const std::string& role, const F& f, C& c, const std::string& w) {
+  const std::string type = str(p["type"]);
+  if (type == "text") return textPart(p, c, w);
+  if (type == "image_url" && role == "user") return imagePart(p, f, c, w);
+  if (type == "thinking" && role == "assistant" && f.mistral()) return thinkingChunk(p, c, w);
+  return c.fail(w + ": part '" + type + "' in a message of role " + role);
+}
+
 // A content: a non-empty visible string, or a list of parts the role may carry.
 inline bool content(JsonVariantConst v, const std::string& role, const F& f, C& c, const std::string& w) {
   if (v.is<const char*>()) return visible(str(v)) || c.fail(w + ": content empty or whitespace only");
@@ -81,15 +89,8 @@ inline bool content(JsonVariantConst v, const std::string& role, const F& f, C& 
   size_t k = 0;
   bool text = false;
   for (JsonObjectConst p : v.as<JsonArrayConst>()) {
-    const std::string pw = w + ".content[" + std::to_string(k++) + "]";
-    const std::string type = str(p["type"]);
-    bool ok;
-    text = text || type == "text";
-    if (type == "text") ok = textPart(p, c, pw);
-    else if (type == "image_url" && role == "user") ok = imagePart(p, f, c, pw);
-    else if (type == "thinking" && role == "assistant" && f.mistral()) ok = thinkingChunk(p, c, pw);
-    else return c.fail(pw + ": part '" + type + "' in a message of role " + role);
-    if (!ok) return false;
+    text = text || str(p["type"]) == "text";
+    if (!part(p, role, f, c, w + ".content[" + std::to_string(k++) + "]")) return false;
   }
   return role != "assistant" || text || c.fail(w + ": an assistant content of thinking alone");
 }
@@ -178,23 +179,24 @@ inline bool messages(JsonObjectConst root, const F& f, State& s, C& c) {
   return true;
 }
 
+inline bool toolEntry(JsonObjectConst t, const F& f, std::set<std::string>& names, C& c, const std::string& w) {
+  JsonObjectConst fn = t["function"];
+  if (str(t["type"]) != "function" || fn.isNull()) return c.fail(w + ": not {type:function, function:{...}}");
+  if (!pattern(str(fn["name"]), 64, ".")) return c.fail(w + ": name pattern");
+  if (!names.insert(str(fn["name"])).second) return c.fail(w + ": name repeated");
+  if (!fn["description"].isNull() && !fn["description"].is<const char*>()) return c.fail(w + ": description");
+  if (!objectSchema(fn["parameters"])) return c.fail(w + ": parameters is not an object schema");
+  if (!fn["strict"].isNull() && (f.zai() || !fn["strict"].is<bool>())) return c.fail(w + ": strict");
+  return onlyKeys(fn, {"name", "description", "parameters", "strict"}, c, w + ".function") && onlyKeys(t, {"type", "function"}, c, w);
+}
+
 inline bool toolList(JsonObjectConst root, const F& f, std::set<std::string>& names, C& c) {
   JsonVariantConst ts = root["tools"];
   if (!ts.is<JsonArrayConst>() || ts.size() == 0) return c.fail("tools is not a non-empty list");
   if (f.zai() && ts.size() > 128) return c.fail("more than 128 tools");
   size_t i = 0;
-  for (JsonObjectConst t : ts.as<JsonArrayConst>()) {
-    const std::string w = "tools[" + std::to_string(i++) + "]";
-    JsonObjectConst fn = t["function"];
-    if (str(t["type"]) != "function" || fn.isNull()) return c.fail(w + ": not {type:function, function:{...}}");
-    if (!pattern(str(fn["name"]), 64, ".")) return c.fail(w + ": name pattern");
-    if (!names.insert(str(fn["name"])).second) return c.fail(w + ": name repeated");
-    if (!fn["description"].isNull() && !fn["description"].is<const char*>()) return c.fail(w + ": description");
-    if (!objectSchema(fn["parameters"])) return c.fail(w + ": parameters is not an object schema");
-    if (!fn["strict"].isNull() && (f.zai() || !fn["strict"].is<bool>())) return c.fail(w + ": strict");
-    if (!onlyKeys(fn, {"name", "description", "parameters", "strict"}, c, w + ".function") || !onlyKeys(t, {"type", "function"}, c, w))
-      return false;
-  }
+  for (JsonObjectConst t : ts.as<JsonArrayConst>())
+    if (!toolEntry(t, f, names, c, "tools[" + std::to_string(i++) + "]")) return false;
   return true;
 }
 
@@ -235,34 +237,43 @@ inline bool responseFormat(JsonObjectConst rf, const F& f, C& c) {
          onlyKeys(rf, {"type", "json_schema"}, c, "response_format");
 }
 
+inline bool keysOk(JsonObjectConst root, const F& f, C& c) {
+  if (f.mistral())
+    return onlyKeys(root, {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "max_tokens", "reasoning_effort",
+                           "response_format", "prompt_cache_key"},
+                    c, "body");
+  if (f.zai())
+    return onlyKeys(root, {"model", "messages", "tools", "tool_choice", "max_tokens", "reasoning_effort", "thinking", "response_format"},
+                    c, "body");
+  return onlyKeys(root, {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "max_tokens", "reasoning_effort",
+                         "response_format"},
+                  c, "body");
+}
+
+inline bool effortOk(JsonVariantConst e, const F& f, C& c) {
+  if (e.isNull()) return true;
+  const std::string v = str(e);
+  const bool known = f.zai() ? oneOf(v, {"none", "minimal", "low", "high", "max"})
+                             : oneOf(v, {"none", "minimal", "low", "medium", "high", "xhigh"});
+  return known || c.fail("reasoning_effort '" + v + "'");
+}
+
+// Z.ai's thinking switch (keysOk keeps it off the other flavors).
+inline bool thinkingOk(JsonVariantConst v, C& c) {
+  if (v.isNull()) return true;
+  JsonObjectConst th = v;
+  if (!oneOf(str(th["type"]), {"enabled", "disabled"})) return c.fail("thinking.type '" + str(th["type"]) + "'");
+  if (!th["clear_thinking"].isNull() && !th["clear_thinking"].is<bool>()) return c.fail("thinking.clear_thinking is not a bool");
+  return onlyKeys(th, {"type", "clear_thinking"}, c, "thinking");
+}
+
 inline bool envelope(JsonObjectConst root, const F& f, C& c) {
-  const bool ok = f.mistral() ? onlyKeys(root, {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "max_tokens",
-                                                "reasoning_effort", "response_format", "prompt_cache_key"},
-                                         c, "body")
-                  : f.zai() ? onlyKeys(root, {"model", "messages", "tools", "tool_choice", "max_tokens", "reasoning_effort",
-                                              "thinking", "response_format"},
-                                       c, "body")
-                            : onlyKeys(root, {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "max_tokens",
-                                              "reasoning_effort", "response_format"},
-                                       c, "body");
-  if (!ok) return false;
+  if (!keysOk(root, f, c)) return false;
   if (str(root["model"]).empty()) return c.fail("model missing");
-  if (!root["max_tokens"].isNull()) {
-    const unsigned mt = root["max_tokens"] | 0u;
-    if (!root["max_tokens"].is<unsigned>() || mt < 1 || (f.zai() && mt > 131072)) return c.fail("max_tokens out of range");
-  }
-  if (!root["reasoning_effort"].isNull()) {
-    const std::string e = str(root["reasoning_effort"]);
-    const bool known = f.zai() ? oneOf(e, {"none", "minimal", "low", "high", "max"})
-                               : oneOf(e, {"none", "minimal", "low", "medium", "high", "xhigh"});
-    if (!known) return c.fail("reasoning_effort '" + e + "'");
-  }
-  if (!root["thinking"].isNull()) {
-    JsonObjectConst th = root["thinking"];
-    if (!oneOf(str(th["type"]), {"enabled", "disabled"})) return c.fail("thinking.type '" + str(th["type"]) + "'");
-    if (!th["clear_thinking"].isNull() && !th["clear_thinking"].is<bool>()) return c.fail("thinking.clear_thinking is not a bool");
-    if (!onlyKeys(th, {"type", "clear_thinking"}, c, "thinking")) return false;
-  }
+  JsonVariantConst cap = root["max_tokens"];
+  if (!cap.isNull() && (!cap.is<unsigned>() || cap.as<unsigned>() < 1 || (f.zai() && cap.as<unsigned>() > 131072)))
+    return c.fail("max_tokens out of range");
+  if (!effortOk(root["reasoning_effort"], f, c) || !thinkingOk(root["thinking"], c)) return false;
   if (!root["prompt_cache_key"].isNull() && str(root["prompt_cache_key"]).empty()) return c.fail("empty prompt_cache_key");
   return root["response_format"].isNull() || responseFormat(root["response_format"], f, c);
 }

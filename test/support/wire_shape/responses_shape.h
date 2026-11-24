@@ -119,57 +119,67 @@ inline bool reasoning(JsonObjectConst m, bool replayOn, Calls& s, C& c, const st
   return onlyKeys(m, {"type", "id", "encrypted_content", "summary"}, c, w);
 }
 
+// Reasoning may be replayed only with store:false and include "reasoning.encrypted_content".
+inline bool replayOn(JsonObjectConst root) {
+  if (!root["store"].is<bool>() || root["store"].as<bool>()) return false;
+  for (JsonVariantConst x : root["include"].as<JsonArrayConst>())
+    if (str(x) == "reasoning.encrypted_content") return true;
+  return false;
+}
+
+inline bool item(JsonObjectConst m, const std::string& type, bool replay, Calls& s, C& c, const std::string& w) {
+  if (type == "message") return message(m, s, c, w);
+  if (type == "function_call") return functionCall(m, s, c, w);
+  if (type == "function_call_output") return callOutput(m, s, c, w);
+  if (type == "reasoning") return reasoning(m, replay, s, c, w);
+  return c.fail(w + ": item type '" + type + "'");
+}
+
 inline bool input(JsonObjectConst root, Calls& s, C& c) {
   JsonArrayConst in = root["input"];
   if (in.isNull() || in.size() == 0) return c.fail("input missing or empty");
-  bool replayOn = root["store"].is<bool>() && !root["store"].as<bool>();
-  bool include = false;
-  for (JsonVariantConst x : root["include"].as<JsonArrayConst>()) include = include || str(x) == "reasoning.encrypted_content";
-  replayOn = replayOn && include;
+  const bool replay = replayOn(root);
   size_t i = 0;
   for (JsonObjectConst m : in) {
     const std::string w = "input[" + std::to_string(i) + "]";
     const std::string type = m["type"].isNull() ? "message" : str(m["type"]);
     if (i++ == 0 && !(type == "message" && oneOf(str(m["role"]), {"user", "developer", "system"})))
       return c.fail(w + ": the first item is not a user, developer or system message");
-    bool ok = false;
-    if (type == "message") ok = message(m, s, c, w);
-    else if (type == "function_call") ok = functionCall(m, s, c, w);
-    else if (type == "function_call_output") ok = callOutput(m, s, c, w);
-    else if (type == "reasoning") ok = reasoning(m, replayOn, s, c, w);
-    else return c.fail(w + ": item type '" + type + "'");
-    if (!ok) return false;
+    if (!item(m, type, replay, s, c, w)) return false;
   }
   if (!s.open.empty()) return c.fail("call " + *s.open.begin() + " has no output after it");
   return !s.reasoningPending || c.fail("the input ends on a reasoning item");
 }
 
-inline bool tools(JsonObjectConst root, bool anyCall, C& c) {
-  JsonVariantConst ts = root["tools"];
-  std::set<std::string> names;
-  if (!ts.isNull()) {
-    if (!ts.is<JsonArrayConst>()) return c.fail("tools is not a list");
-    size_t i = 0;
-    for (JsonObjectConst t : ts.as<JsonArrayConst>()) {
-      const std::string w = "tools[" + std::to_string(i++) + "]";
-      if (str(t["type"]) != "function") return c.fail(w + ": type is not function");
-      if (!t["function"].isNull()) return c.fail(w + ": a nested Chat-style function object (Responses tools are flat)");
-      if (!pattern(str(t["name"]), 64)) return c.fail(w + ": name pattern");
-      if (!names.insert(str(t["name"])).second) return c.fail(w + ": name repeated");
-      if (!t["description"].isNull() && !t["description"].is<const char*>()) return c.fail(w + ": description");
-      if (!objectSchema(t["parameters"])) return c.fail(w + ": parameters is not an object schema");
-      if (!t["strict"].isNull() && !t["strict"].is<bool>()) return c.fail(w + ": strict is not a bool");
-      if (!onlyKeys(t, {"type", "name", "description", "parameters", "strict"}, c, w)) return false;
-    }
-  } else if (anyCall) {
-    return c.fail("function_call items without tools");
-  }
-  JsonVariantConst tc = root["tool_choice"];
-  if (tc.isNull()) return true;
-  if (ts.isNull()) return c.fail("tool_choice without tools");
+inline bool toolEntry(JsonObjectConst t, std::set<std::string>& names, C& c, const std::string& w) {
+  if (str(t["type"]) != "function") return c.fail(w + ": type is not function");
+  if (!t["function"].isNull()) return c.fail(w + ": a nested Chat-style function object (Responses tools are flat)");
+  if (!pattern(str(t["name"]), 64)) return c.fail(w + ": name pattern");
+  if (!names.insert(str(t["name"])).second) return c.fail(w + ": name repeated");
+  if (!t["description"].isNull() && !t["description"].is<const char*>()) return c.fail(w + ": description");
+  if (!objectSchema(t["parameters"])) return c.fail(w + ": parameters is not an object schema");
+  if (!t["strict"].isNull() && !t["strict"].is<bool>()) return c.fail(w + ": strict is not a bool");
+  return onlyKeys(t, {"type", "name", "description", "parameters", "strict"}, c, w);
+}
+
+inline bool toolChoice(JsonVariantConst tc, const std::set<std::string>& names, C& c) {
   if (tc.is<const char*>()) return oneOf(str(tc), {"none", "auto", "required"}) || c.fail("tool_choice '" + str(tc) + "'");
   if (str(tc["type"]) != "function" || !names.count(str(tc["name"]))) return c.fail("tool_choice names no tool");
   return onlyKeys(tc, {"type", "name"}, c, "tool_choice");
+}
+
+inline bool tools(JsonObjectConst root, bool anyCall, C& c) {
+  JsonVariantConst ts = root["tools"];
+  if (ts.isNull()) {
+    if (anyCall) return c.fail("function_call items without tools");
+    return root["tool_choice"].isNull() || c.fail("tool_choice without tools");
+  }
+  if (!ts.is<JsonArrayConst>()) return c.fail("tools is not a list");
+  std::set<std::string> names;
+  size_t i = 0;
+  for (JsonObjectConst t : ts.as<JsonArrayConst>())
+    if (!toolEntry(t, names, c, "tools[" + std::to_string(i++) + "]")) return false;
+  return root["tool_choice"].isNull() || toolChoice(root["tool_choice"], names, c);
 }
 
 inline bool reasoningConfig(JsonObjectConst r, C& c) {
@@ -192,23 +202,30 @@ inline bool textConfig(JsonObjectConst t, C& c) {
   return onlyKeys(f, {"type", "name", "schema", "strict", "description"}, c, "text.format") && onlyKeys(t, {"format"}, c, "text");
 }
 
+inline bool scalars(JsonObjectConst root, C& c) {
+  if (str(root["model"]).empty()) return c.fail("model missing");
+  if (!root["instructions"].isNull() && !visible(str(root["instructions"]))) return c.fail("instructions empty or not a string");
+  JsonVariantConst cap = root["max_output_tokens"];
+  if (!cap.isNull() && (!cap.is<unsigned>() || cap.as<unsigned>() < 16)) return c.fail("max_output_tokens below 16 or not a number");
+  if (!root["parallel_tool_calls"].isNull() && !root["parallel_tool_calls"].is<bool>()) return c.fail("parallel_tool_calls is not a bool");
+  if (!root["store"].isNull() && !root["store"].is<bool>()) return c.fail("store is not a bool");
+  return root["prompt_cache_key"].isNull() || !str(root["prompt_cache_key"]).empty() || c.fail("empty prompt_cache_key");
+}
+
+inline bool includeOk(JsonVariantConst inc, C& c) {
+  if (inc.isNull()) return true;
+  if (!inc.is<JsonArrayConst>()) return c.fail("include is not a list");
+  for (JsonVariantConst x : inc.as<JsonArrayConst>())
+    if (str(x) != "reasoning.encrypted_content") return c.fail("include '" + str(x) + "'");
+  return true;
+}
+
 inline bool envelope(JsonObjectConst root, C& c) {
   if (!onlyKeys(root, {"model", "instructions", "input", "tools", "tool_choice", "parallel_tool_calls", "max_output_tokens",
                        "reasoning", "store", "include", "text", "prompt_cache_key"},
                 c, "body"))
     return false;
-  if (str(root["model"]).empty()) return c.fail("model missing");
-  if (!root["instructions"].isNull() && !visible(str(root["instructions"]))) return c.fail("instructions empty or not a string");
-  if (!root["max_output_tokens"].isNull() && (!root["max_output_tokens"].is<unsigned>() || root["max_output_tokens"].as<unsigned>() < 16))
-    return c.fail("max_output_tokens below 16 or not a number");
-  if (!root["parallel_tool_calls"].isNull() && !root["parallel_tool_calls"].is<bool>()) return c.fail("parallel_tool_calls is not a bool");
-  if (!root["store"].isNull() && !root["store"].is<bool>()) return c.fail("store is not a bool");
-  if (!root["include"].isNull()) {
-    if (!root["include"].is<JsonArrayConst>()) return c.fail("include is not a list");
-    for (JsonVariantConst x : root["include"].as<JsonArrayConst>())
-      if (str(x) != "reasoning.encrypted_content") return c.fail("include '" + str(x) + "'");
-  }
-  if (!root["prompt_cache_key"].isNull() && str(root["prompt_cache_key"]).empty()) return c.fail("empty prompt_cache_key");
+  if (!scalars(root, c) || !includeOk(root["include"], c)) return false;
   if (!root["reasoning"].isNull() && !reasoningConfig(root["reasoning"], c)) return false;
   return root["text"].isNull() || textConfig(root["text"], c);
 }

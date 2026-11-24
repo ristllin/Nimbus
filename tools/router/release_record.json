@@ -1,0 +1,27 @@
+{
+  "about": "What each provider slot has recorded against the real service (router design section 11, release gate; lane E2-R3b). tools/release_gate/check_router_release.py reads it with tools/model_caps/models.toml: a slot marked releasable fails while a synthetic wire fixture is left for it or a request-shape feature its rows allow has no recorded 2xx. A citation is a repo path or 'P:<path>' (a program evidence file outside the repo). A waiver names an item and why it is accepted; the gate prints every waiver and fails on one that no longer matches anything. R10 (design section 12) replaces waivers with recordings.",
+  "schema": 1,
+  "providers": {
+    "anthropic": {
+      "releasable": true,
+      "recorded": {
+        "id_rule": "P:lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md (shapes-t1-r1 and shapes-t3-r1: the round after tool results, toolu_ ids sent back, 200, 19 Nov 2026)",
+        "replay_scope": "P:lanes/RB-W1b/evidence/LIVE-CONFORMANCE.md (b0 to b5: open-turn thinking replayed and left out under a rung, 200, 19 Nov 2026)"
+      },
+      "waived": {
+        "test/support/fixtures/anthropic_wire_2026-11/synthetic_refusal.json": "a refusal stop cannot be provoked on demand; the parse is pinned from the documented shape (lane RB-W1b). Needs an orchestrator ruling to stay.",
+        "test/support/fixtures/anthropic_wire_2026-11/synthetic_interleaved.json": "interleaved thinking between two calls is not produced on demand; documented shape (lane RB-W1b). Needs an orchestrator ruling to stay.",
+        "test/support/fixtures/anthropic_wire_2026-11/synthetic_empty_content.json": "an empty end_turn after tool results is documented but not produced on demand (lane RB-W1b). Needs an orchestrator ruling to stay.",
+        "structured_summary": "in use on the released engine 2 (the Changes form), but no recorded 2xx is committed; R10 records it.",
+        "image_in_tool_result": "no recorded 2xx of an image inside a tool_result is committed; R10 records it.",
+        "routed_path": "no recorded 2xx through /router/anthropic/v1/messages on engine 2 is committed; R10 records it.",
+        "tool_choice_none": "no recorded 2xx of tool_choice none (the guard round) is committed; R10 records it."
+      }
+    },
+    "openai": {"releasable": false, "recorded": {}, "waived": {}},
+    "mistral": {"releasable": false, "recorded": {}, "waived": {}},
+    "zai": {"releasable": false, "recorded": {}, "waived": {}},
+    "custom_chat": {"releasable": false, "recorded": {}, "waived": {}},
+    "custom_messages": {"releasable": false, "recorded": {}, "waived": {}}
+  }
+}

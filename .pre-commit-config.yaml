@@ -63,6 +63,21 @@ repos:
         # Every compiled-in model id must have a row, so any source that can hold one triggers it.
         files: '^(tools/model_caps/|tools/model_id_|lib/core/|lib/harness/|src/|include/|nimbusd/src/|nimbusd/scenarios/|tools/harness-lab/src/)'
 
+      - id: golden-scope
+        name: route goldens move only for the providers the change names (tools/router/check_golden_scope.py)
+        # Names come from models.toml rows, the codec file, or GOLDEN_SCOPE / GOLDEN_RULING for this commit.
+        entry: python3 tools/router/check_golden_scope.py
+        language: system
+        pass_filenames: false
+        files: '^(test/support/goldens/wire/|tools/model_caps/models\.toml|lib/harness/src/providers/plain_wire_|tools/router/)'
+
+      - id: router-release
+        name: no releasable provider rests on synthetic fixtures (tools/release_gate/check_router_release.py)
+        entry: python3 tools/release_gate/check_router_release.py
+        language: system
+        pass_filenames: false
+        files: '^(test/support/fixtures/[a-z]+_wire|tools/model_caps/models\.toml|tools/router/release_record\.json|tools/release_gate/check_router_release\.py)'
+
       - id: docs-pack-fresh
         name: docs pack header matches its generator
         entry: python3 tools/gen_docs_pack.py --check

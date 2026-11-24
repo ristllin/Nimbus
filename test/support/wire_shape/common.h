@@ -36,19 +36,32 @@ struct C {
 
 inline constexpr size_t kStrGuard = 60000;   // nimbus::orch::kJsonStrGuard (wire_limits.h)
 
+// The length of the UTF-8 sequence a lead byte opens; 0 for a byte no sequence starts with.
+inline size_t utf8Len(unsigned char c) {
+  if (c < 0x80) return 1;
+  if (c >= 0xC2 && c <= 0xDF) return 2;
+  if ((c >> 4) == 0xE) return 3;
+  return c >= 0xF0 && c <= 0xF4 ? 4 : 0;
+}
+
+// The second byte's range for a lead byte: no overlong form, no surrogate, nothing over U+10FFFF.
+inline bool utf8Second(unsigned char c, unsigned char b) {
+  if (c == 0xE0) return b >= 0xA0;
+  if (c == 0xED) return b < 0xA0;
+  if (c == 0xF0) return b >= 0x90;
+  if (c == 0xF4) return b < 0x90;
+  return true;
+}
+
 inline bool utf8Ok(const std::string& s) {
   const unsigned char* p = (const unsigned char*)s.data();
   const size_t n = s.size();
   for (size_t i = 0; i < n;) {
-    const unsigned char c = p[i];
-    size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 0;
-    if (!len || i + len > n || (len == 2 && c < 0xC2) || (len == 4 && c > 0xF4)) return false;
+    const size_t len = utf8Len(p[i]);
+    if (!len || i + len > n) return false;
     for (size_t k = 1; k < len; ++k)
       if ((p[i + k] & 0xC0) != 0x80) return false;
-    if (len == 3 && c == 0xE0 && p[i + 1] < 0xA0) return false;   // overlong
-    if (len == 3 && c == 0xED && p[i + 1] >= 0xA0) return false;  // surrogate
-    if (len == 4 && c == 0xF0 && p[i + 1] < 0x90) return false;   // overlong
-    if (len == 4 && c == 0xF4 && p[i + 1] >= 0x90) return false;  // over U+10FFFF
+    if (len > 1 && !utf8Second(p[i], p[i + 1])) return false;
     i += len;
   }
   return true;

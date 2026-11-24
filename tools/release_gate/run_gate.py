@@ -40,6 +40,7 @@ import check_owner_regressions
 import check_plain_ceilings
 import check_prompt_ceiling
 import check_release_notes
+import check_router_release
 import check_sram_staging
 import check_static_dram
 import check_storm_evidence
@@ -197,6 +198,10 @@ def run_host_checks() -> bool:
         ("fold health: the summary never pauses for good (v5.1.2)", check_fold_health.main),
         ("request budget table: bounds, rounds, no field below v5.1.2", check_budget_table.main),
         ("no use case named in the core: the domain-words lint (RB-REC1)", lambda argv: check_no_domain_words.main([])),
+        (
+            "router release: no releasable provider on synthetic fixtures or unrecorded shapes (E2-R3b)",
+            check_router_release.main,
+        ),
     ):
         rc = fn([])
         results.append((name, rc == 0))
