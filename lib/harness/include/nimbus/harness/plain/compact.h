@@ -219,6 +219,10 @@ struct CompactDeps {
   std::function<void(std::vector<SummarizerRung>&)> rungs;
   std::function<bool(uint32_t turn)> jobRunning;   // a turn whose agent job still runs
   std::function<void(const SummarizerRung&)> park; // a rung's key or credit was refused
+  // Lane E2-REP1: the rung's provider is held (parked, paused or over its monthly limit), asked before
+  // anything is sent, as a turn's gate is: a held rung is skipped; with every rung held nothing is sent,
+  // nothing is counted and the step waits for a later one. Unset: none held.
+  std::function<bool(const SummarizerRung&)> held;
   // Every paid summarizer request (lane E2-CMP): the tokens a rung billed for one ask (its cut retry
   // and same-host retries summed; an answer not taken was still paid), for the owner's usage and the
   // monthly ceiling, the path a turn's requests take. Unset: not counted.

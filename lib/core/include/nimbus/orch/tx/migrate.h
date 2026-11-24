@@ -176,7 +176,9 @@ struct Digest0Answer {
   std::string day;          // "YYYY-MM-DD"
 };
 // One small-model call. Not ok: the answer was not taken (the driver's rule: cut, thin, a
-// failed exchange); the migration counts the try.
+// failed exchange); the migration counts the try. Err::Busy: nothing was sent (every rung's
+// provider is held, lane E2-REP1): the try is not counted and the migration stops with it, to
+// run again later (the binding's import is pending until then).
 using Digest0Fn = std::function<Status(const Digest0Ask&, Digest0Answer&)>;
 // Write a file into the owner's file store (replace); false when refused.
 using ExportFn = std::function<bool(const std::string& path, const std::string& text)>;

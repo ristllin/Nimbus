@@ -1118,6 +1118,31 @@ static void test_a_compaction_files_its_summarizer_spend_like_a_turn() {
   TEST_ASSERT_TRUE(dev.model.last().body.find("\"output_config\"") != std::string::npos);   // the structured form went out
 }
 
+// Lane E2-REP1 (E2-FIX14's "not gated"): the summarizer asks engine 1's gates before it sends, as a turn
+// does. With its provider parked a /compact sends nothing and is answered with the device's line (it
+// tries again by itself); when the provider is back the same /compact sends its one request.
+static void test_a_compaction_sends_nothing_while_its_provider_is_parked() {
+  Device dev;
+  dev.parkHead = true;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  for (int i = 0; i < 9; ++i) {
+    dev.model.push(sp::say("Reply " + std::to_string(i) + "."));
+    TEST_ASSERT_TRUE(dev.say("Message " + std::to_string(i) + " about the garden.").ok());
+  }
+  const size_t asked = dev.model.requests().size();
+  nimbus::orch::providerPark().park("anthropic", nimbus::orch::PaidSeam::Chat, 0, nimbus::orch::ParkKind::Billing, 400, dev.ms);
+  dev.sent.clear();
+  TEST_ASSERT_TRUE(dev.binding->compactNow().ok());
+  TEST_ASSERT_EQUAL(asked, dev.model.requests().size());   // nothing sent
+  TEST_ASSERT_EQUAL(0, (int)dev.compactUsage.size());
+  TEST_ASSERT_EQUAL(1, sentWith(dev.sent, plain::texts::device_notes::kCompactFailed));
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().noteSuccess("anthropic", nimbus::orch::PaidSeam::Chat));
+  dev.model.push(sp::say("+F The person talks about the garden."));
+  TEST_ASSERT_TRUE(dev.binding->compactNow().ok());
+  TEST_ASSERT_EQUAL(asked + 1, dev.model.requests().size());
+  TEST_ASSERT_EQUAL(1, (int)dev.compactUsage.size());
+}
+
 // Lane E2-FIX12 (the bench's lost answer): a person's message that appended a row, cut after the
 // append's intent and result were stored and before the final answer. The next boot of the chat
 // resumes the turn once through the engine (the request carries the stored result; the append is
@@ -2240,6 +2265,7 @@ int main(int, char**) {
   RUN_TEST(test_a_turns_usage_is_handed_over_once);
   RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);
   RUN_TEST(test_a_compaction_files_its_summarizer_spend_like_a_turn);
+  RUN_TEST(test_a_compaction_sends_nothing_while_its_provider_is_parked);
   RUN_TEST(test_the_progress_line_is_bound_and_a_short_turn_sends_none);
   RUN_TEST(test_a_step_of_the_turn_reaches_the_progress_hook_that_acknowledges_a_second_message);
   RUN_TEST(test_a_failed_exists_at_boot_is_not_an_empty_conversation);

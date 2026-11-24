@@ -156,6 +156,14 @@ uint32_t compactWaitS(uint32_t fails) {
   return kCompactWaitS[i < n ? i : n - 1];
 }
 
+// Lane E2-REP1: the rungs whose provider is not held (CompactDeps::held); true when one was held.
+static bool dropHeld(const CompactDeps& d, std::vector<SummarizerRung>& rungs) {
+  if (!d.held) return false;
+  const size_t before = rungs.size();
+  rungs.erase(std::remove_if(rungs.begin(), rungs.end(), [&d](const SummarizerRung& r) { return d.held(r); }), rungs.end());
+  return rungs.size() != before;
+}
+
 size_t rungFor(uint32_t fails, size_t rungs) {
   if (rungs == 0 || fails < kCompactHeadTries) return 0;
   return (1 + (fails - kCompactHeadTries)) % rungs;
@@ -1122,6 +1130,11 @@ Status CompactDriver::attempt(const IdleCtx& ctx, const SlicePlan& plan, Compact
   if (held(ctx, before)) return Status::success();
   std::vector<SummarizerRung> rungs;
   if (d_.rungs) d_.rungs(rungs);
+  if (dropHeld(d_, rungs) && rungs.empty()) {   // E2-REP1: nothing sent or counted; a later step asks again
+    hlog::logf("compact(%s): every summarizer's provider is held: no request", d_.chatKey.c_str());
+    if (manual_) endManual(texts::device_notes::kCompactFailed);
+    return Status::success();
+  }
   if (rungs.empty()) {
     if (turnAsks(ctx)) hlog::logf("compact(%s): not compacted at this turn: no summarizer is set up", d_.chatKey.c_str());
     if (manual_) endManual(texts::device_notes::kCompactFailed);
@@ -1838,6 +1851,7 @@ Status summaryArena(const Platform& p, const tx::Digest0Ask& ask, tx::TxArena& a
 Status digest0Run(const CompactDeps& d, const tx::Digest0Ask& ask, tx::Digest0Answer& out) {
   std::vector<SummarizerRung> rungs;
   if (d.rungs) d.rungs(rungs);
+  if (dropHeld(d, rungs) && rungs.empty()) return Status::fail(Err::Busy, "plain::digest0Answer.held");   // E2-REP1
   if (rungs.empty()) return Status::fail(Err::NotFound, "plain::digest0Answer");
   if (ask.summary.empty() || !ask.at) return Status::fail(Err::InvalidArgument, "plain::digest0Answer");
   const SummarizerRung& rung = rungs[std::min<size_t>(ask.attempt, rungs.size() - 1)];

@@ -34,6 +34,7 @@
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/owner_prefs.h"
 #include "nimbus/orch/tx/old_engine.h"
+#include "nimbus/orch/provider_park.h"   // E2-REP1
 #include "nimbus/ota/ota_logic.h"
 
 // The version an engine-2 image reports (include/version.h under -DNIMBUS_ENGINE=2).
@@ -261,6 +262,7 @@ struct Device {
     d.pinnedNotes = [this](const orch::Principal& who) { return notebook.pinnedBlock(who); };
     d.oldEngine = [this](tx::MigrateDeps& m) { return fill(m); };
     if (noCard) d.noCard = [] { return true; };
+    d.parkHead = parkHead;   // E2-REP1: engine 1's gates on the summarizer too
     binding.reset();
     binding.reset(new plain::ChatBinding(c, d));
     return binding->boot();
@@ -281,6 +283,7 @@ struct Device {
   int digestAsks = 0;
   std::string summarized = kDigest;   // the summarizer's answer (digest 0, then compaction's changes)
   bool noCard = false;
+  bool parkHead = false;
   Card card;
   tx::CardTxFiles files;
   orch::ToolRegistry reg;
@@ -577,6 +580,29 @@ static void test_an_import_that_fails_once_is_not_stuck() {
   TEST_ASSERT_TRUE(dev.say("my bike lock code is 9911").ok());
   TEST_ASSERT_FALSE(dev.binding->importPending());
   for (const std::string& part : dev.sent) TEST_ASSERT_TRUE(part != plain::kImportStuckLine);
+}
+
+// Lane E2-REP1 (E2-FIX14's "not gated"): the first boot's import asks the provider park before its digest-0
+// request, as a turn does. Parked: nothing is sent, no try is spent and the import waits (pending, never
+// "stuck"); when the provider is back the next message imports first and is answered over the history.
+static void test_an_import_waits_while_its_summarizers_provider_is_parked() {
+  orch::providerPark().clear();
+  Device dev;
+  dev.parkHead = true;
+  seed(dev);
+  orch::providerPark().park("anthropic", orch::PaidSeam::Chat, 0, orch::ParkKind::Billing, 400, dev.ms);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  TEST_ASSERT_EQUAL(0, (int)dev.model.requests().size());   // nothing sent
+  TEST_ASSERT_TRUE(dev.binding->importPending());
+  TEST_ASSERT_FALSE(dev.binding->importStuck());
+  TEST_ASSERT_EQUAL(0u, dev.binding->migration().asks);
+  TEST_ASSERT_TRUE(orch::providerPark().noteSuccess("anthropic", orch::PaidSeam::Chat));   // the provider is back
+  TEST_ASSERT_TRUE(dev.say("what is my locker code?").ok());
+  TEST_ASSERT_FALSE(dev.binding->importPending());
+  TEST_ASSERT_TRUE(dev.binding->migration().digest0);
+  TEST_ASSERT_EQUAL(1u, dev.binding->migration().asks);   // the held boot spent no try
+  TEST_ASSERT_TRUE(has(dev.lastBody(), "my locker code is 4417"));
+  orch::providerPark().clear();
 }
 
 // The neighbor: no card fitted at all (noCard) runs from RAM by design; a refused import is not held for.
@@ -1140,6 +1166,7 @@ int main(int, char**) {
   RUN_TEST(test_with_no_card_fitted_the_import_holds_nothing);
   RUN_TEST(test_an_import_that_never_finishes_offers_clear_and_clear_keeps_the_held_turns);
   RUN_TEST(test_an_import_that_fails_once_is_not_stuck);
+  RUN_TEST(test_an_import_waits_while_its_summarizers_provider_is_parked);
   RUN_TEST(test_the_import_notes_name_search_only_when_it_is_bound);
   RUN_TEST(test_another_chat_is_never_told_to_restart_while_turns_are_held);
   RUN_TEST(test_turns_and_a_compaction_leave_the_earlier_fold_record_as_it_was);

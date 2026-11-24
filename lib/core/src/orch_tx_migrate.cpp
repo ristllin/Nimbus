@@ -882,7 +882,14 @@ struct Run {
       if (!s.ok()) return s;
       Digest0Answer a;
       ++out.asks;
-      if (!d.digest0(ask, a).ok()) continue;
+      const Status asked = d.digest0(ask, a);
+      if (asked.err == Err::Busy) {   // E2-REP1: held, nothing sent: not a try; the import waits for a later run
+        --m.tries;
+        --out.asks;
+        s = save();
+        return s.ok() ? asked : s;
+      }
+      if (!asked.ok()) continue;
       if (!(s = judge(a, days, p.verdict)).ok()) return s;
       p.accepted = p.verdict == Digest0Verdict::Accepted;
       if (p.accepted) {

@@ -769,9 +769,12 @@ class ChatBinding {
       sameFailures_ = 0;
       return;
     }
-    say("e2: the earlier engine's conversation was not imported this time");
+    const bool held = migrationStatus_.err == tx::Err::Busy;   // E2-REP1: the summarizer's provider is held
+    say(held ? "e2: the earlier engine's conversation waits for its summarizer's provider: nothing sent"
+             : "e2: the earlier engine's conversation was not imported this time");
     const bool noCard = d_.noCard && d_.noCard();   // no card at all: RAM by design, nothing to hold for
     importPending_ = !noCard && migrationStatus_.err != tx::Err::InvalidArgument;
+    if (held) return;   // the provider's cause, never the import's: not counted toward importStuck
     const bool same = !before.ok() && before.err == migrationStatus_.err &&
                       std::string(before.where ? before.where : "") == (migrationStatus_.where ? migrationStatus_.where : "");
     sameFailures_ = same ? sameFailures_ + 1 : 1;
@@ -1026,6 +1029,17 @@ class ChatBinding {
     };
     c.jobRunning = [](uint32_t) { return false; };   // no agent jobs on engine 2 yet
     c.park = [this](const SummarizerRung&) { say("e2: compaction rung refused its key or credit"); };
+    // E2-REP1: the summarizer asks engine 1's gates as a turn does (parkHead): a rung whose provider is
+    // parked, paused or over its monthly limit sends nothing. The park is read only (never the re-check);
+    // the head's own key is the one the park knows, another rung's is not compared (fingerprint 0).
+    if (d_.parkHead)
+      c.held = [this](const SummarizerRung& r) {
+        const std::string key = r.host == cfg_.provider && d_.key ? d_.key() : std::string();
+        std::string why;
+        if (!headHeld(r.host, key, d_.overBudget && d_.overBudget(r.host), d_.platform->nowMs(), why)) return false;
+        say(("e2: summarizer " + r.host + " held, no request: " + why).c_str());
+        return true;
+      };
     c.spent = [this](const SummarizerRung& r, const nimbus::orch::TokenUsage& u) {
       if (d_.compactUsage) d_.compactUsage(r.host, r.model, ledgerUsage(r.host, r.model, u));
     };
