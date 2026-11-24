@@ -48,6 +48,7 @@ struct PlainEngine::ChatState {
   // restart a refused photo is tried once more and refused once more).
   std::vector<std::string> refusedPhotos;
   uint32_t lastTurn = 0;
+  std::unique_ptr<LastTurn> last;      // the last closed turn, for the turn inspector (lane E2-P-SURF)
   bool booted = false;
   bool afterRestart = true;            // the first turn after boot opens cold
   bool storageEpisode = false;         // storage refused an item and has stored none since
@@ -993,6 +994,7 @@ class TurnRun {
     t_.end.cacheReadTokens += u.cacheReadTokens;
     t_.end.cacheWriteTokens += u.cacheWriteTokens;
     t_.end.cacheWrite1hTokens += std::min(u.cacheWrite1hTokens, u.cacheWriteTokens);
+    if (!u.servedModel.empty()) t_.end.servedModel = u.servedModel;   // E2-P-SURF: the usage rows name it
     // The guards' inputs: size counts every prompt token (cached ones too); spend prices them. An
     // answer that reports no usage at all still counts: a floor from the request's bytes (about 3.5 B
     // a token, kDefaultRequestTokens' rule) at the input rate, named by an event (ruling 79 item 1).
@@ -1920,7 +1922,35 @@ class TurnRun {
     Status st = put(e);
     if (st.ok()) c_.lastClosedQ = e.q;
     t_.endStored = st.ok();
+    if (st.ok()) keepForInspector(e);
     return st;
+  }
+
+  // Lane E2-P-SURF: what a render of this turn's requests needs, kept until the next turn closes. A
+  // refused allocation keeps nothing (the inspector then says there is no turn): never a failed turn.
+  void keepForInspector(const tx::Item& e) {
+    c_.last.reset();
+    try {
+      std::unique_ptr<LastTurn> l(new LastTurn());
+      l->ctx = t_.ctx;
+      l->ctx.who = nullptr;
+      l->system = t_.system;
+      l->tools = t_.tools;
+      l->head = t_.setup.head;
+      l->head.key = [] { return std::string(); };   // the key is never copied
+      l->wire = t_.wire;
+      l->end = e.end;
+      l->end.promptHash = t_.end.promptHash;
+      l->end.manifestHash = t_.end.manifestHash;
+      l->endQ = e.q;
+      l->bound = bound();
+      l->photo = t_.setup.photo;
+      l->longCache = d_.stablePrefix;
+      l->refusedPhotos = c_.refusedPhotos;
+      c_.last = std::move(l);
+    } catch (const std::bad_alloc&) {
+      c_.last.reset();
+    }
   }
 
  public:
@@ -2013,6 +2043,31 @@ PlainEngine::~PlainEngine() = default;
 tx::HeadState* PlainEngine::head() { return chat_ && chat_->booted ? &chat_->head : nullptr; }
 std::vector<tx::DigestEntry>* PlainEngine::digests() { return chat_ && chat_->booted ? &chat_->live : nullptr; }
 uint64_t PlainEngine::omittedThru() const { return chat_ && chat_->booted ? chat_->droppedThru : 0; }
+
+const LastTurn* PlainEngine::lastTurn() const { return chat_ && chat_->booted ? chat_->last.get() : nullptr; }
+
+Status PlainEngine::rebuildLast(size_t exchange, HttpRequest& out, tx::ArenaAllocFn alloc, tx::ArenaFreeFn release) const {
+  const LastTurn* l = lastTurn();
+  if (!l || !l->wire || !deps_.arena || !deps_.log) return Status::fail(Err::NotFound, "plain::PlainEngine::rebuildLast");
+  RebuildInput in;
+  in.end = &l->end;
+  in.exchange = exchange;
+  in.turn = &l->ctx;
+  in.head = &l->head;
+  in.wire = l->wire;
+  in.system = &l->system;
+  in.tools = &l->tools;
+  in.items = deps_.arena;
+  tx::TxLog* log = deps_.log;
+  in.bulk = [log](const std::string& handle, std::string& o) { return log->readBulk(handle, 0, tx::kBulkMaxBytes, o); };
+  in.photo = l->photo;
+  in.bound = l->bound;
+  in.longCache = l->longCache;
+  in.refusedPhotos = &l->refusedPhotos;
+  in.alloc = alloc;
+  in.release = release;
+  return rebuildRequest(in, out);
+}
 
 Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out = TurnOutcome{};

@@ -40,6 +40,7 @@ lib/harness/src/plain_prefix.cpp
 lib/harness/src/plain_rails.cpp
 lib/harness/src/plain_request.cpp
 lib/harness/src/plain_resume.cpp
+lib/harness/src/plain_surface.cpp
 lib/harness/src/plain_truth.cpp
 lib/harness/src/plain_unattended.cpp
 lib/harness/src/plain_waiting.cpp
@@ -52,6 +53,7 @@ lib/harness/src/providers/plain_plan.cpp
 
 # RB-C2: the device binding of the engine-2 compaction driver.
 src/agent/plain_fold_device.cpp
+src/net/web_engine2.cpp
 
 # RB-N1: the device binding of engine 2's notes (the owner on flash, members on the card).
 src/agent/notes_device.cpp

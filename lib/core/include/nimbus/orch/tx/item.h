@@ -150,6 +150,9 @@ struct TurnEndFacts {
   uint32_t cacheWriteTokens = 0;
   uint32_t cacheWrite1hTokens = 0;   // the 1-hour part of cacheWriteTokens (RAM only, not stored; E2-CACHE)
   uint32_t microUsd = 0;        // spend in millionths of a USD
+  // The model the provider named in its answers (RAM only, not stored; lane E2-P-SURF): the usage rows
+  // file the turn under it (TurnSpend::add), so a dated alias is told from the model asked for.
+  std::string servedModel;
   // The whole prompt of the turn's last answered request (orch::TokenUsage::maxRequestIn: input
   // plus cache reads and writes, whatever each provider leaves in or out of its input count);
   // 0 when no request was answered or the line predates it. Compaction's hot trigger reads this,

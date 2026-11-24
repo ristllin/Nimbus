@@ -353,6 +353,9 @@ Status rebuildRequest(const RebuildInput& in, HttpRequest& out) {
   r.maxTokens = ref.maxTokens;
   r.bulk = in.bulk;
   r.photo = in.photo;
+  r.bound = in.bound;
+  r.longCache = in.longCache;
+  r.refusedPhotos = in.refusedPhotos;
   r.ladder = &ladder;
   out = HttpRequest{};
   if (!(st = in.wire->render(r, out)).ok()) return st;

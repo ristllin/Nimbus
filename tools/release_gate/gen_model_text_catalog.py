@@ -140,6 +140,8 @@ E1_SOURCES = {
 # added under SCAN_DIRS with prose literals outside a log call must be in a catalog or here
 # (check_no_prompt_patch.py, with a git base).
 NON_MODEL_FILES: dict = {
+    "lib/harness/src/plain_surface.cpp": "E2-P-SURF (PC-0250, PC-0251): the web pages of an engine-2 chat (the turn "
+    "inspector, the turn log, the summary card): text and JSON for the person at the page, never sent to a model",
     "nimbusd/src/engine2_host.h": "E2-HOST: the startup switch's refusal line (the daemon log) and two owner-facing "
     "lines of the hosted engine-2 chat (a non-Claude model picked, a chat that could not start), sent to the owner's "
     "chat, never to a model",
@@ -667,7 +669,8 @@ def _scan_files(root: str):
 
 
 def _is_e2_engine_file(rel: str) -> bool:
-    return any(re.match(g, rel) for g in E2_ENGINE_GLOBS)
+    # A plain file that says in NON_MODEL_FILES that its prose is for a person, not a model, is not scanned.
+    return rel not in NON_MODEL_FILES and any(re.match(g, rel) for g in E2_ENGINE_GLOBS)
 
 
 def uncatalogued_tool_files(root: str) -> list:

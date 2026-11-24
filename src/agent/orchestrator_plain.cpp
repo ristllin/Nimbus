@@ -85,6 +85,8 @@
 #include "nimbus/harness/plain/chat_photos.h"
 #include "nimbus/harness/plain/head_gate.h"   // engine 1's gates: inbound screen, provider limit, park (E2-FIX14)
 #include "nimbus/harness/plain/schedule_binding.h"   // reminder and routine fires (lane E2-SCHED)
+#include "nimbus/harness/plain/surface.h"           // the web pages' asks, answered here (lane E2-P-SURF)
+#include "safety_activity_store.h"   // safety::record - a call the rails refused (lane E2-P-SURF)
 #include "nimbus/harness/plain/waiting.h"            // the messages kept during the read-in (E2-FIX13)
 #include "nimbus/orch/turn_journal.h"              // kTurnSourceOwner - the crash journal (E2-FIX12)
 #include "nimbus/orch/spend_ceiling.h"               // kSpendFrozenError - a routine waits while frozen
@@ -526,6 +528,12 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
         notesdev::notebook().keep(args.as<JsonObjectConst>(), *t.who, nimbus::orch::notes::Origin::Tainted);
     return r.success ? plain::Status::success() : plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.kept");
   };
+  // Lane E2-P-SURF: a call the rails refused or put on the shelf is an entry on the Safety tab.
+  d.railNoted = [](const plain::TurnCtx& t, const plain::ToolCall& c, bool kept) {
+    agent::safety::record(kept ? nimbus::orch::SafetyVerdict::Suspected : nimbus::orch::SafetyVerdict::Blocked,
+                          "outside-content-rail", localChat(String(t.chatId.c_str())) ? "web" : "telegram", t.chatId,
+                          kept ? "rails: kept for approval" : "rails: refused", c.name + " " + c.argsJson);
+  };
   d.recentFiles = [](const nimbus::orch::Principal& who) -> nimbus::orch::tx::RecentFilesBlock::Source {
     return [who](std::vector<nimbus::orch::tx::RecentFile>& out) { return files::recentFiles(who, out); };
   };
@@ -726,6 +734,15 @@ String historyText(const plain::ChatBinding& b, const plain::TurnOutcome& out) {
   return String((b.shownReply().empty() ? out.text : b.shownReply()).c_str());
 }
 
+// Lane E2-P-SURF: the tags of a turn's answer row: e2, and "turn:m<row>" (the message's row), the id the chat's
+// Turn anatomy button asks /api/trace for.
+String turnTags(uint64_t row) {
+  if (!row) return String("e2");
+  char b[32];
+  snprintf(b, sizeof b, "e2,turn:m%08x", (unsigned)row);
+  return String(b);
+}
+
 // One turn of `b` for `msg` (its day-stream row already written) and what follows it: the figures,
 // the answer's history row, the deferred effects, the skill lines. Returns whether a part went out;
 // `status` (optional) is the binding's answer (Busy: the turn did not start, nothing stored).
@@ -751,7 +768,8 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
           (unsigned)(s_photos ? s_photos->bytes() : 0), (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
   if (out.delivered && !out.text.empty())   // E2-FIX14: the reply as it left (after the owner's output rules)
-    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message, historyText(b, out), "", "e2");
+    memory::captureMessage(chatId.c_str(), "assistant", nimbus::orch::MsgKind::Message, historyText(b, out), "",
+                           turnTags(msg.m));
   else if (!out.statusStored.empty())   // the line without a provider's reason (E2-FIX11): a model may read this row
     memory::captureMessage(chatId.c_str(), "system", nimbus::orch::MsgKind::Message,
                            String(out.statusStored.c_str()), "", "e2");
@@ -1651,8 +1669,27 @@ nimbus::orch::FireOutcome injectScheduledTurn(const String& chatId, const String
   return fireEntry(chatId, id);
 }
 
+// Lane E2-P-SURF: the web pages' asks (/api/lastturn, /api/trace, /api/fold/status). The engine's arena is
+// this task's, so a page stages its ask and this answers it between turns (plain/surface.h).
+void serveWebAsks() {
+  plain::surface::AskReq q;
+  if (!plain::surface::askBox().pending(q)) return;
+  std::string body;
+  {
+    const PsramFirstScope psramFirst;   // a rendered request is large: it goes to PSRAM
+    plain::PlainEngine* e = s_chat ? s_chat->engine() : nullptr;
+    const std::string chat = s_chat ? s_chat->config().chatId : std::string();
+    body = plain::surface::answerAsk(
+        q, e, chat, (uint64_t)time(nullptr),
+        [](size_t n) -> void* { return heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); },
+        [](void* p) { heap_caps_free(p); });
+  }
+  plain::surface::askBox().answer(q.id, std::move(body));
+}
+
 int pollJobs() {
   if (!s_begun) return 0;
+  serveWebAsks();         // E2-P-SURF: the web pages' asks, between turns
   migratedev::importRulesOnce();   // once: the earlier engine's standing rules as pinned notes
   bootLostChat();         // once: a person's message a restart cut is resumed (E2-FIX12)
   bootOwnerChat();        // once: the owner chat's transcript and seen index before its next message

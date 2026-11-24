@@ -140,6 +140,10 @@ struct RebuildInput {
                                                       // filled from the card); more is fine
   BulkReadFn bulk;                          // the bulk payloads, by handle
   PhotoFn photo;                            // the visible photos, by ref
+  // What the request carried beside those (lane E2-P-SURF; the engine sets them, a test leaves the defaults).
+  nimbus::orch::tx::BoundTools bound;
+  bool longCache = false;
+  const std::vector<std::string>* refusedPhotos = nullptr;
   nimbus::orch::tx::ArenaAllocFn alloc;     // the range's own block (PSRAM on the device);
   nimbus::orch::tx::ArenaFreeFn release;    // empty: malloc and free
 };

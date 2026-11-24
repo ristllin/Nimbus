@@ -86,6 +86,9 @@
 #include "../agent/dream_subsystem.h"   // the last night - /api/state dream
 #endif
 #include "../agent/degraded_device.h"   // lane DEGRADE: /api/state degraded
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+#include "web_engine2.h"               // lane E2-P-SURF: the turn inspector, the turn log
+#endif
 #include "../agent/spend_ceiling_store.h"   // lane DEF: the monthly spend ceiling (state + setting)
 #include "nimbus/orch/budget_command.h"      // lane BUD: runsWhilePaused (the paused web chat)
 #include "../agent/budget_command.h"         // lane BUD: the /budget changes the Usage page lists
@@ -1380,6 +1383,23 @@ static void buildOrchState(String& out) {
   // status line (the PdfRoute slugs in connectors_wire.h).
   d["pdfRoute"] = agent::connectors::pdfRouteSlug();
   d["orchTrace"] = agent::store::orchTrace();   // glass-box trace capture (A4)
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+  // Lane E2-P-SURF: the settings engine 2 does not read; the page hides each and says so in one line
+  // ([control id, the line, how many label and hint rows above it go too]).
+  d["engine"] = 2;
+  {
+    JsonArray inert = d["inert"].to<JsonArray>();
+    auto add = [&](const char* id, const char* line, int up) {
+      JsonArray a = inert.add<JsonArray>();
+      a.add(id); a.add(line); a.add(up);
+    };
+    add("midFail", "Switching providers mid-task is not used by the new engine: it runs on one provider.", 0);
+    add("codeSbx", "The code sandbox is not part of the new engine.", 0);
+    add("orchTrace", "The new engine always keeps the record of each turn; this switch does nothing there.", 0);
+    add("provPrioList", "The fallback order is not used by the new engine: it runs on one provider.", 2);
+    add("subPrioList", "The session fallback order is not used by the new engine.", 2);
+  }
+#endif
   d["ttsOn"]    = agent::store::ttsEnabled();   // "Voice replies" toggle (P2.5)
   d["tgLive"]   = agent::telegram::enabled();   // poll task actually running with a
                                                 // token (false + hasTg => reboot needed)
@@ -2747,6 +2767,9 @@ void beginWeb(const WebConfig& wc) {
   // can be tens of KB - same rule as the usage history below).
   s_server.on("/api/lastturn", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    return nimbus::net::e2web::lastTurn(r);   // engine 2: the request rendered again from the stored turn
+#endif
     size_t len = 0;
     char* raw = agent::orchestrator::lastTurnDebugPs(len);
     if (!raw) { r->send(404, "text/plain", "no turn has run yet"); return; }
@@ -2770,6 +2793,9 @@ void beginWeb(const WebConfig& wc) {
   // chat can be honest instead of showing a blank panel.
   s_server.on("/api/trace", HTTP_GET, [](AsyncWebServerRequest* r) {
     if (authBlocked(r)) return;
+#if defined(NIMBUS_ENGINE) && NIMBUS_ENGINE == 2
+    return nimbus::net::e2web::trace(r);   // engine 2: the turn log of the stored turn
+#endif
     agent::memory::WebLock card;   // the trace file is on the card: tried (web_guard.h)
     if (!card) return admission::sendCardBusy(r);
     if (!r->hasParam("turn")) { r->send(400, "text/plain", "turn required"); return; }

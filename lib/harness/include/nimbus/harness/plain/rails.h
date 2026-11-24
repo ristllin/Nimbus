@@ -104,8 +104,13 @@ Status railFor(const TurnCtx& turn, const ToolCall& call, bool declaredEffect, R
 // nothing was kept and the call is refused.
 using RailPendingFn = std::function<Status(const TurnCtx& turn, const ToolCall& call)>;
 
+// Lane E2-P-SURF: told once for each call the gate did not run: `kept` true when the call went to the
+// approval shelf (Pending answered), false when it was refused. The device files it on the Safety tab.
+using RailNotedFn = std::function<void(const TurnCtx& turn, const ToolCall& call, bool kept)>;
+
 struct RailsDeps {
   RailPendingFn pending;   // null: a Pending verdict is refused (nothing is kept, nothing runs)
+  RailNotedFn noted;       // null: nothing is told
 };
 
 // Registers the gate in HookSlot::Rails on beforeDispatch: Allow is Run, Pending is Answer

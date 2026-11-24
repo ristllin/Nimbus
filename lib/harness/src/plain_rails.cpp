@@ -196,11 +196,18 @@ DispatchDecision decide(const RailsDeps& deps, const DispatchCtx& dc) {
   RailVerdict v = Verdict::Refuse;
   if (!railFor(*dc.turn, call, dc.effect, v).ok()) return d;
   if (v == Verdict::Allow) return DispatchDecision{};
-  if (v == Verdict::Refuse) return d;
+  if (v == Verdict::Refuse) {
+    if (deps.noted) deps.noted(*dc.turn, call, false);
+    return d;
+  }
   d.text = texts::tool_results::kRailNoPending;
-  if (!deps.pending || !deps.pending(*dc.turn, call).ok()) return d;
+  if (!deps.pending || !deps.pending(*dc.turn, call).ok()) {
+    if (deps.noted) deps.noted(*dc.turn, call, false);
+    return d;
+  }
   d.verdict = DispatchVerdict::Answer;
   d.text = texts::tool_results::kRailPending;
+  if (deps.noted) deps.noted(*dc.turn, call, true);
   return d;
 }
 

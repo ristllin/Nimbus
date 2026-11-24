@@ -12,6 +12,7 @@
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/turn.h"
 #include "nimbus/harness/plain/wire.h"
+#include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/digest.h"
 #include "nimbus/orch/tx/item.h"
 
@@ -195,6 +196,24 @@ struct TurnOutcome {
   nimbus::orch::tx::TurnEndFacts end;
 };
 
+// Lane E2-P-SURF: the last closed turn, kept for the turn inspector. Not the request (that is a
+// reference, plain/deliver.h): the system blocks, the tools and the facts a render needs, so
+// PlainEngine::rebuildLast renders the request again from the stored items. RAM only; the head's key
+// is never copied into it.
+struct LastTurn {
+  TurnCtx ctx;                    // `who` is null
+  SystemBlocks system;
+  std::vector<ToolSpec> tools;
+  HeadEndpoint head;              // key empty
+  const WireCodec* wire = nullptr;
+  nimbus::orch::tx::TurnEndFacts end;
+  uint64_t endQ = 0;              // the e item's q
+  nimbus::orch::tx::BoundTools bound;
+  PhotoFn photo;
+  bool longCache = false;
+  std::vector<std::string> refusedPhotos;
+};
+
 class PlainEngine {
  public:
   explicit PlainEngine(const EngineDeps& deps);
@@ -226,6 +245,15 @@ class PlainEngine {
   // done (its log is not `log`): the caller boots a binding on `chatKey`. Not ok: still unloaded,
   // the next call into the same log resumes after the items already stored there.
   Status reopenAs(nimbus::orch::tx::TxLog& log, const std::string& chatKey);
+
+  // Lane E2-P-SURF: the last closed turn since boot (null: none yet), and request `exchange` of it
+  // rendered again from the stored items (plain::rebuildRequest: byte for byte, or a status that says why
+  // not: NotFound when compaction took items of the range, Torn when a photo's pixels are gone).
+  // `alloc` and `release` give the range's own block (PSRAM on the device; empty: malloc). Read and call
+  // only where the engine runs its turns: the web side asks the turn task (src/net/web_engine2.cpp).
+  const LastTurn* lastTurn() const;
+  Status rebuildLast(size_t exchange, HttpRequest& out, nimbus::orch::tx::ArenaAllocFn alloc = nullptr,
+                     nimbus::orch::tx::ArenaFreeFn release = nullptr) const;
 
   const EngineDeps& deps() const { return deps_; }
   // The chat's head state, shared with the compaction driver (RB-C2), which moves thru and

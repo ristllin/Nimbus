@@ -633,11 +633,13 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   // One authoritative doc row generated from the ORCH_D_DEVICE macro - the same
   // string the model's schema carries, so this list can never drift from the wire
   // (the four rows below are just friendly headings).
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 2 has no turn contract: its tools are the registry's (E2-P-SURF)
   grp("device", "device.*", ORCH_D_DEVICE, "turn contract", false, kDirect);
   grp("device", "device.led", "Ring pattern: solid/spinner/pulse/flash/rainbow + RGB + brightness", "turn action", false, kDirect);
   grp("device", "device.lights", "Turn the ring on (full) or off", "turn action", false, kDirect);
   grp("device", "device.config", "Adjust ring level, brightness, theme, power profile, voice", "turn action", false, kDirect);
   grp("device", "device.tts", "Speak text to the owner (Telegram voice / desk speaker)", "turn action", false, kDirect);
+#endif
 #if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1
   // Skill capsules (readable via skill.get; stored skills also inject at spawn).
   // Rendered in their own panel, not the availability-badged tool table.
@@ -651,12 +653,18 @@ void handleToolsGet(AsyncWebServerRequest* r) {
   for (const auto& c : agent::skills::list())
     grp("skill", ("skill:" + c.id).c_str(), c.title.c_str(), skillTag(c).c_str(), false, nullptr);
 #endif
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 2 registers no connector tool (E2-P-SURF)
   addConnectorRows(arr, ps, kUnavail);
+#else
+  (void)kUnavail;
+#endif
   // The same live gate the registry listing uses (CUM-508), so this hint and the
   // web.search row can never disagree.
+#if !defined(NIMBUS_ENGINE) || NIMBUS_ENGINE == 1   // engine 2 names its search tool web_search and lists it above
   if (!mem::registry().gateOpen("web.search"))
     grp("connector", "web.search (Tavily)", "Live web search - add a Tavily key to enable.",
         "needs Tavily key", false, kUnavail);
+#endif
   d["count"] = d["tools"].as<JsonArray>().size();
   String out; serializeJson(d, out); sendJson(r, 200, out);
 }

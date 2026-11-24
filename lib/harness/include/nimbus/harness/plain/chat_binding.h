@@ -114,6 +114,8 @@ struct ChatBindingDeps {
   // Lane E2-FSAFE: RailsDeps::pending, the approval shelf for a tainted turn's pending calls (the
   // device: the notes' pending shelf). Null: a pending call is refused, nothing kept, nothing run.
   RailPendingFn railPending;
+  // Lane E2-P-SURF: RailsDeps::noted, a call the rails refused or put on the shelf (the device: the Safety tab).
+  RailNotedFn railNoted;
   // Lane E2-FIX12: the plain crash notice's device name ("": Nimbus), and what the boot's crash
   // resume did when it acted (lastResume(); null: not told). Called once boot returned, never from
   // inside the seam: the device files the resumed answer or the notice where the chat's history
@@ -225,6 +227,7 @@ inline nimbus::orch::TurnSpend turnSpendOf(const TurnOutcome& out, const std::st
   u.cacheWriteTokens = out.end.cacheWriteTokens;
   u.cacheWrite1hTokens = out.end.cacheWrite1hTokens;   // the ledger prices it at 2x (R3; lane E2-CACHE)
   u.responses = out.headRequests;
+  u.servedModel = out.end.servedModel;   // E2-P-SURF: the row is the model that answered, not only the one asked
   u.maxRequestIn = out.end.lastPromptTokens;
   s.add(provider.c_str(), model.c_str(), u);   // files nothing when nothing was billed
   return s;
@@ -620,6 +623,7 @@ class ChatBinding {
     (void)installSuppression(*hooks_);
     RailsDeps rails;
     rails.pending = d_.railPending;
+    rails.noted = d_.railNoted;
     Status st = installRails(*hooks_, rails);
     if (st.ok()) {
       driver_.reset(new CompactDriver(compactDeps()));
