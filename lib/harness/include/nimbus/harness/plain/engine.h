@@ -187,6 +187,12 @@ struct EngineDeps {
   bool stablePrefix = false;
   // Lane E2-P-FO: the heads a failed round may move to (FailoverFn). Null: no fail-over.
   FailoverFn failover;
+  // Lane E2-REP1 (review F): the monthly limits inside a turn, as engine 1's wire keeps them. pendingSpend:
+  // each answered exchange's usage on its head (slot, model), counted toward the limits at once (the turn's
+  // own booking at its end replaces it). paidHeld: asked before each further request of the turn; a line
+  // ("" = go on) ends the turn there with that line (StatusLine::PausedSpend), keeping what it already did.
+  std::function<void(const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u)> pendingSpend;
+  std::function<std::string(const std::string& provider)> paidHeld;
 };
 
 // What a turn starts from. A person's message (Owner, Console) is stored as a u item before

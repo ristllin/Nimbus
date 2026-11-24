@@ -233,6 +233,8 @@ struct Device {
         return true;
       };
     d.noCard = [this] { return noCardFitted; };
+    d.pendingSpend = pendingSpend;
+    d.paidHeld = paidHeld;
     d.railPending = railPending;
     if (!fallbacks.empty())   // lane E2-P-FO: as the device's fallbacksFor, by the shipped rule set
       d.fallbacks = [this](const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) {
@@ -281,6 +283,9 @@ struct Device {
   std::function<bool(const std::string&)> outside;   // lane E2-TOOLS
   std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
   bool noCardFitted = false;   // the device has no card at all (EngineDeps::noCard)
+  // E2-REP1 (review F): the limits inside a turn (ChatBindingDeps::pendingSpend, paidHeld); null: none.
+  std::function<void(const std::string&, const std::string&, const nimbus::orch::TokenUsage&)> pendingSpend;
+  std::function<std::string(const std::string&)> paidHeld;
   plain::RailPendingFn railPending;   // lane E2-FSAFE
   nimbus::orch::Role role = nimbus::orch::Role::Admin;   // the chat's person (E2-P-CONN2: whose connectors ride)
   std::function<std::vector<nimbus::orch::ConnectorInfo>()> connectors;   // lane E2-P-CONN2
@@ -1237,6 +1242,47 @@ static void test_a_second_cut_inside_the_resume_gives_the_plain_notice() {
   TEST_ASSERT_TRUE(dev.boot().ok());
   TEST_ASSERT_TRUE(dev.sent.empty());
   TEST_ASSERT_EQUAL(asked, dev.model.requests().size());
+}
+
+// E2-REP1 (review F): the monthly limits inside a turn, as engine 1's wire keeps them. Each answered request's
+// spend is counted at once (in the ledger's counts); the turn's next request asks first and, once the limit is
+// crossed, is never sent: the turn ends with the device's true line and keeps the call it already ran.
+static void test_a_limit_crossed_inside_a_turn_stops_its_next_request() {
+  appendRuns = 0;
+  Device dev;
+  addAppend(dev.reg);
+  uint32_t pendingIn = 0;
+  int asked = 0;
+  dev.pendingSpend = [&](const std::string& p, const std::string&, const nimbus::orch::TokenUsage& u) {
+    TEST_ASSERT_EQUAL_STRING("anthropic", p.c_str());
+    pendingIn += u.promptTokens;
+  };
+  dev.paidHeld = [&](const std::string&) -> std::string {
+    ++asked;
+    return pendingIn >= 1000 ? "The monthly spend limit is reached. Raise it in Settings to continue." : "";
+  };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  sp::Step first = sp::call("append_file", R"({"path":"budget/week47.csv","text":"2026-11-24,market,5.55\n"})");
+  first.usage.input = 1200;
+  first.usage.output = 30;
+  dev.model.push(first);
+  (void)dev.say("Add the market to the budget.");
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());   // the second request never left
+  TEST_ASSERT_EQUAL(1200u, pendingIn);
+  TEST_ASSERT_EQUAL(1, asked);
+  TEST_ASSERT_EQUAL(1, appendRuns);                          // what it did stays
+  TEST_ASSERT_EQUAL((int)plain::StatusLine::PausedSpend, (int)dev.out.status);
+  TEST_ASSERT_EQUAL(1, sentWith(dev.sent, "The monthly spend limit is reached."));
+  // Below the limit the same turn runs on: one question per further request.
+  Device ok;
+  addAppend(ok.reg);
+  ok.paidHeld = [&](const std::string&) -> std::string { ++asked; return ""; };
+  TEST_ASSERT_TRUE(ok.boot().ok());
+  ok.model.push(first);
+  ok.model.push(sp::say("Added."));
+  TEST_ASSERT_TRUE(ok.say("Add the market to the budget.").ok());
+  TEST_ASSERT_EQUAL(2, (int)ok.model.requests().size());
+  TEST_ASSERT_EQUAL(2, asked);
 }
 
 // ---- lane E2-FIX14: engine 1's money gates and delivery rules -------------------------------------
@@ -2372,6 +2418,7 @@ int main(int, char**) {
   RUN_TEST(test_compact_now_answers_on_the_chat_and_the_budget_view_is_in_tokens);
   RUN_TEST(test_a_compaction_files_its_summarizer_spend_like_a_turn);
   RUN_TEST(test_a_compaction_sends_nothing_while_its_provider_is_parked);
+  RUN_TEST(test_a_limit_crossed_inside_a_turn_stops_its_next_request);
   RUN_TEST(test_the_progress_line_is_bound_and_a_short_turn_sends_none);
   RUN_TEST(test_a_step_of_the_turn_reaches_the_progress_hook_that_acknowledges_a_second_message);
   RUN_TEST(test_a_failed_exists_at_boot_is_not_an_empty_conversation);

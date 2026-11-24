@@ -148,6 +148,10 @@ struct ChatBindingDeps {
   std::function<void(const FailoverAsk& ask, std::vector<HeadSlot>& out)> fallbacks;
   // The owner chose `provider` for vision: a fallback head there sees photos as pixels. Null: none did.
   std::function<bool(const std::string& provider)> visionChosen;
+  // Lane E2-REP1 (review F): EngineDeps::pendingSpend (here in the ledger's counts, as the turn's own booking)
+  // and EngineDeps::paidHeld. Null: the limits are read between turns only.
+  std::function<void(const std::string& provider, const std::string& model, const nimbus::orch::TokenUsage& u)> pendingSpend;
+  std::function<std::string(const std::string& provider)> paidHeld;
   // Lane E2-FIX14: what engine 1's deliver() does to a model's reply before it leaves
   // (src/agent/orchestrator_common.cpp), each the shared code engine 1 calls. replyFilter: the owner's
   // output rules for this chat (prefs::filtersForRole, orch::applyOutputFilters: the no-dash rule);
@@ -518,8 +522,7 @@ class ChatBinding {
     sent_ = refused_ = 0;
     shown_.clear();
     withheld_ = false;
-    probeTurn_ = msg.probe && d_.parkHead;   // E2-REP1: the re-check's own line waits for its answer
-    heldStatus_.clear();
+    openProbe(msg);
     if (reporter_) reporter_->open(turnCtx(), now);
     TurnInput in;
     in.ctx = turnCtx();
@@ -1101,6 +1104,11 @@ class ChatBinding {
       };
     e.noCard = d_.noCard;
     e.holdUnloaded = [this] { return importPending_; };
+    if (d_.pendingSpend)
+      e.pendingSpend = [this](const std::string& p, const std::string& m, const nimbus::orch::TokenUsage& u) {
+        d_.pendingSpend(p, m, ledgerUsage(p, m, u));
+      };
+    e.paidHeld = d_.paidHeld;
     if (d_.fallbacks)
       e.failover = [this](const FailoverAsk& ask, std::vector<FailoverTarget>& out) { failoverTargets(ask, out); };
     if (d_.replyFilter || d_.replyScreen || d_.parkHead)
@@ -1137,6 +1145,11 @@ class ChatBinding {
   // whole reply, then the outbound screen, once per reply (a resend after a refused allocation, from
   // a later part, keeps the first verdict), then the portable deliver function over the channel. A
   // withheld reply sends nothing of itself; the status line, the harness's own words, still goes.
+  // E2-REP1: this turn is the park's re-check: its own line waits for its answer.
+  void openProbe(const ChatMessage& msg) {
+    probeTurn_ = msg.probe && d_.parkHead;
+    heldStatus_.clear();
+  }
   // E2-REP1: a re-check's status line waits for its answer (noteHead sends it, or the park's words).
   void holdProbeStatus(DeliverInput& go, DeliverOutcome& out) {
     if (!probeTurn_ || !go.statusText || out.statusSent) return;

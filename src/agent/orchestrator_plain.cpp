@@ -634,6 +634,20 @@ void tellTextMode(const String& chatId, const plain::HeadSlot& head) {
   sayInstead(chatId, kTextModeLine);
 }
 
+// E2-REP1 (review F): engine 1's wire inside a turn: each answered request's spend is pending at once
+// (store::recordProviderSpend's turn booking clears it), and each further request asks paidCallAllowed and
+// the provider's own limit first.
+void limitsInTurn(plain::ChatBindingDeps& d) {
+  d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };   // E2-FIX14: the resume
+  d.pendingSpend = [](const std::string& p, const std::string& m, const nimbus::orch::TokenUsage& u) {
+    nimbus::orch::notePendingUsage(p.c_str(), m.c_str(), nimbus::orch::TokenUsage{}, u);
+  };
+  d.paidHeld = [](const std::string& p) -> std::string {
+    if (!nimbus::orch::paidCallAllowed(nimbus::orch::SpendSeam::Wire)) return kFrozenLine;
+    return store::providerOverBudget(String(p.c_str())) ? plain::overBudgetLine(p) : std::string();
+  };
+}
+
 // The chat's binding for the configured head (its provider slot and model) and this role, booted
 // (null when it could not start).
 plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
@@ -728,8 +742,8 @@ plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
     return moderateGate(nimbus::orch::ModGate::OutboundReply, String(chat.c_str()), String(text.c_str())) !=
            nimbus::orch::ModAction::Block;
   };
-  d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };   // E2-FIX14: the resume
   d.fallbacks = [set](const plain::FailoverAsk& ask, std::vector<plain::HeadSlot>& out) { fallbacksFor(set, ask, out); };   // E2-P-FO
+  limitsInTurn(d);   // E2-REP1 (review F)
   const uint32_t spiFree0 = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
   const uint32_t spiBig0 = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
   const uint32_t t0 = millis();

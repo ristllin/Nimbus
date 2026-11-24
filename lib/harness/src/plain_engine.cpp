@@ -936,6 +936,7 @@ class TurnRun {
   }
 
   Status ask() {
+    if (paidStopped()) return Status::success();
     RenderInput& r = t_.render;
     r.turn = &t_.ctx;
     r.head = &t_.setup.head;
@@ -979,6 +980,21 @@ class TurnRun {
     if (t_.ex.err != ExchangeErr::None) return failed(t_.ex.err, Status::success());
     ++t_.rounds;
     return Status::success();
+  }
+
+  // Lane E2-REP1 (review F): a monthly limit crossed by this turn's own answered requests (or reached
+  // meanwhile) stops the turn before its next request, with the device's true line; what it did stays.
+  bool paidStopped() {
+    if (!d_.paidHeld || !t_.end.headRequests) return false;   // the turn's first request: the message gate asked
+    const std::string line = d_.paidHeld(slotNow());
+    if (line.empty()) return false;
+    heldRoundFailed();
+    t_.ex = ExchangeResult{};
+    t_.ex.err = ExchangeErr::Other;
+    t_.cause = "paused";
+    event("paused:" + slotNow());
+    setStatus(StatusLine::PausedSpend, line);
+    return true;
   }
 
   // ---- fail-over at the round boundary (lane E2-P-FO, router design section 9) ------------------
@@ -1113,8 +1129,16 @@ class TurnRun {
     t_.sizeTokens = (uint32_t)std::min<uint64_t>(size, UINT32_MAX);
     t_.end.microUsd = (uint32_t)std::min<uint64_t>((uint64_t)t_.end.microUsd + requestMicroUsd(t_.setup.cost, rt), UINT32_MAX);
     takePark(ex);
+    notePending(ex);
     t_.failOver |= ex.failOver;
     t_.modelUnusable |= ex.modelUnusable;
+  }
+
+  // E2-REP1 (review F): an answered exchange's spend counts toward the limits now (EngineDeps::pendingSpend).
+  void notePending(const ExchangeResult& ex) {
+    const orch::TokenUsage& u = ex.step.usage;
+    if (!d_.pendingSpend || !ex.requests || (u.empty() && !u.cacheReadTokens && !u.cacheWriteTokens)) return;
+    d_.pendingSpend(slotNow(), t_.ctx.model, u);
   }
 
   // E2-FIX14: the refusal the binding hands the shared park. E2-P-FO: the first head's in parkHost;
