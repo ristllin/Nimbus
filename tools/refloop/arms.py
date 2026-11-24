@@ -193,10 +193,24 @@ def harness_calls(exchanges: list) -> tuple:
 
 
 RECALL_HEAD = "## RELEVANT MEMORIES"
+# Engine 2's notes reach the model as a pinned block in the system part (lib/harness texts.h core::kNotes).
+PINNED_HEAD = "Pinned notes:"
+
+
+def _pinned_notes(request: dict) -> list:
+    """Engine 2's pinned notes block, one entry per line, or [] when the request has none."""
+    system = request.get("system") or ""
+    texts = [system] if isinstance(system, str) else [b.get("text", "") for b in system if isinstance(b, dict)]
+    for text in texts:
+        if PINNED_HEAD in text:
+            block = text.split(PINNED_HEAD, 1)[1].lstrip("\n").split("\n\n", 1)[0]
+            return [line.strip() for line in block.splitlines() if line.strip()]
+    return []
 
 
 def recalled_memories(exchanges: list) -> list:
-    """The long-term memories the harness itself put into the turn's context (its automatic recall).
+    """The long-term memories the harness itself put into the turn's context (its automatic recall,
+    or engine 2's pinned notes).
 
     They reach the model with no tool call, so without this the record (and the judge) could not
     tell an answer from memory apart from a guess.
@@ -208,7 +222,7 @@ def recalled_memories(exchanges: list) -> list:
         if RECALL_HEAD in (text or ""):
             block = text.split(RECALL_HEAD, 1)[1].split("\n\n", 1)[0]
             return [line[2:].strip() for line in block.splitlines() if line.startswith("- ")]
-    return []
+    return _pinned_notes(request or {})
 
 
 def spawned(exchanges: list) -> bool:
@@ -517,6 +531,28 @@ class ArmA(Arm):
 
     def new_conversation(self):
         self.d.post_form("/api/orch", {"clearConv": "1"})
+        if self.job.engine == "2":
+            self._engine2_new_conversation()
+
+    def _engine2_new_conversation(self):
+        """Engine 2 on nimbusd has no clear: clearConv clears engine 1's conversation only, and /clear is
+        answered as not available (nimbusd/src/main.cpp). Left alone, engine 2 would keep the earlier chat in
+        view across a new_conversation step while engine 1 and the loop start empty (lane E2-H2H). So the rig
+        gives it the same start: the daemon stops, its transcript store (<data>/mem/tx) and compaction record
+        move aside into this arm's folder (kept as evidence), and it starts again. Notes (long-term memory),
+        files and routines stay, as they do for the other arms."""
+        mem = Path(self.d.data_dir) / "mem"
+        aside = self.dir / f"engine2-cleared-c{self.conversations}"
+
+        def move_aside():
+            aside.mkdir(parents=True, exist_ok=True)
+            for name in ("tx", "compact_ctl.txt"):
+                if (mem / name).exists():
+                    shutil.move(str(mem / name), str(aside / name))
+
+        self.proxy.mark(turn=self.turn, phase="new_conversation")
+        self.d.restart(while_stopped=move_aside)
+        self._settle()
 
     def close(self):
         if self.d and self.d.proc:

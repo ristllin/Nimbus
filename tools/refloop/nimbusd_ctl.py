@@ -144,13 +144,16 @@ class Nimbusd:
             self.proc.wait(timeout=10)
         self.proc = None
 
-    def restart(self):
+    def restart(self, while_stopped=None):
         """Stop cleanly and start again on the same data dir, as a container restart does.
 
         The new process starts at the host clock, so the offset the scenario had reached is put
-        back before anything else runs on it (one idle step, like any advance)."""
+        back before anything else runs on it (one idle step, like any advance). `while_stopped`,
+        when given, runs between the stop and the start (the rig's engine-2 new conversation)."""
         offset = self.offset_s
         self.stop()
+        if while_stopped:
+            while_stopped()
         self.start(self.head)
         self.offset_s = 0
         while self.offset_s < offset:  # one POST moves at most MAX_ADVANCE_S
