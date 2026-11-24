@@ -1073,6 +1073,15 @@ the e item.
 `test/test_plain_wire_anthropic` checks every body against a strict local model of the
 API's request shape (counter-tested), over random transcripts with stored faults.
 
+`test/test_route_goldens` pins the wire's bytes as they are, before the provider router moves
+its generic half into a shared planner (the prompt cache holds only while request bytes do not
+move). Fixed stored transcripts, with their own small system text and two tools rather than the
+live prompt, render to the request goldens in `test/support/goldens/wire/<signature>/*.req`;
+every recorded answer reads to a parse golden (`*.parse`: the parsed step, then what the
+exchange makes of it). A difference names the golden and its first differing byte offset.
+`python3 tools/router/refresh_goldens.py` rewrites them and prints what moved; a change that
+moves a golden names each moved file in its PR.
+
 ### The battery's property suites (layer L1)
 
 Nine suites state what the plain engine must keep true before it exists:

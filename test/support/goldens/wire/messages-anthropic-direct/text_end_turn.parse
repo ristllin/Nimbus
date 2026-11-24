@@ -1,0 +1,20 @@
+# route golden parse messages-anthropic-direct/text_end_turn.json served at HTTP 200
+parse ok
+parse stop end
+parse text 33 B fnv64=aca0b02433e7c904 head="You should bring the blue folder."
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 1224 B fnv64=ed323fb891778c1e head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+parse usage prompt=4 completion=89 cacheRead=8145 cacheWrite=81 cacheWrite1h=0 responses=1 maxRequestIn=8230 served="claude-haiku-5-5"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=6664 requestBytes=917 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 917 B fnv64=0a672e6e0a2d09ce
+exchange step stop end
+exchange step text 33 B fnv64=aca0b02433e7c904 head="You should bring the blue folder."
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 1224 B fnv64=ed323fb891778c1e head="{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"CA"
+exchange step usage prompt=4 completion=89 cacheRead=8145 cacheWrite=81 cacheWrite1h=0 responses=1 maxRequestIn=8230 served="claude-haiku-5-5"
