@@ -60,6 +60,10 @@ bool slotRatesFor(const std::string& provider, const std::string& model, HeadRat
 // router unless it bills an Anthropic upstream split) gets the cache tokens added back.
 nimbus::orch::TokenUsage ledgerUsage(const std::string& provider, const std::string& model, nimbus::orch::TokenUsage u);
 
+// The owner's custom base, "http[s]://host[:port][/prefix]" or a bare host (https), as an endpoint:
+// host, port, tls and the path prefix. False: no host. Reads no table (engine 1's verify links it).
+bool customEndpointOf(const std::string& base, HeadEndpoint& out);
+
 // The custom endpoint's verify step (design section 3.3; src/agent/provider_verify.cpp sends it).
 // The window a server publishes for `model` on its /v1/models answer (the row whose id is `model`,
 // or the only row): max_model_len (vLLM), context_length, context_window or max_context_length; 0

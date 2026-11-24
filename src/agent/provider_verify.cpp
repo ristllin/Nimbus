@@ -975,7 +975,7 @@ static void closeClient(WiFiClient& c) { c.stop(); }
 // GET the model list and send the one tool probe over `client` (plain TCP or TLS by the base).
 template <class C>
 static int8_t customRound(C& client, const agent::plain::HeadSlot& slot, const String& key, uint32_t& window,
-                          bool& tools) {
+                          bool& tools) {   // slot: the endpoint and model only (no table is read here)
   const String host(slot.endpoint.host.c_str());
   const String base(slot.endpoint.basePath.empty() ? "/v1" : slot.endpoint.basePath.c_str());
   const String auth = key.length() ? String("Authorization: Bearer ") + key + "\r\n" : String();
@@ -1004,11 +1004,10 @@ static int8_t customRound(C& client, const agent::plain::HeadSlot& slot, const S
 // tool call; kept as the model's one row in the custom model store (the listed window the budget reads,
 // CapTools for the binding's tools). With no window the head runs in text mode (orchestrator_plain.cpp).
 static void runCustomVerify(bool refreshOnly) {
-  agent::plain::SlotSettings set;
-  set.customBase = store::customBase().c_str();
   agent::plain::HeadSlot slot;
+  slot.model = store::customModel().c_str();
   const String key = store::customKey();
-  if (!agent::plain::headSlotFor(set, "custom", std::string(store::customModel().c_str()), slot).ok()) {
+  if (slot.model.empty() || !agent::plain::customEndpointOf(std::string(store::customBase().c_str()), slot.endpoint)) {
     alog("verify: custom endpoint has no base or model - not verified");
     return;
   }

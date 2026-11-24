@@ -37,8 +37,9 @@ Dialect dialectOf(caps::Slot slot) {
   }
 }
 
-// "http[s]://host[:port][/prefix]" (or a bare host, https) into the endpoint. False: no host.
-bool parseBase(const std::string& base, HeadEndpoint& e) {
+}  // namespace
+
+bool customEndpointOf(const std::string& base, HeadEndpoint& e) {
   std::string rest = base;
   e.tls = true;
   e.port = 443;
@@ -63,10 +64,12 @@ bool parseBase(const std::string& base, HeadEndpoint& e) {
   return !e.host.empty();
 }
 
+namespace {
+
 // The router's host from its base URL or bare host.
 std::string hostOf(const std::string& base) {
   HeadEndpoint e;
-  return parseBase(base, e) ? e.host : std::string();
+  return customEndpointOf(base, e) ? e.host : std::string();
 }
 
 Status bad(const char* where) { return Status::fail(Err::InvalidArgument, where); }
@@ -91,7 +94,7 @@ Status headSlotFor(const SlotSettings& s, const std::string& provider, const std
     return out.endpoint.host.empty() ? bad("plain::headSlotFor.router") : Status::success();
   }
   if (provider == "custom") {   // the owner's endpoint (design section 3.3)
-    if (!parseBase(s.customBase, out.endpoint)) return bad("plain::headSlotFor.custom");
+    if (!customEndpointOf(s.customBase, out.endpoint)) return bad("plain::headSlotFor.custom");
     const bool messages = s.customConv == "anthropic";
     out.dialect = messages ? Dialect::AnthropicMessages : s.customTools ? Dialect::ChatCompletions : Dialect::Flat;
     out.endpoint.toolsVerified = !messages && s.customTools;
