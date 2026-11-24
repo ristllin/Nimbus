@@ -170,6 +170,7 @@ struct Turn {
   // The line as it may be stored or reach a model (TurnOutcome::statusStored); statusRef set.
   const std::string& storedLine() const { return statusStored.empty() || statusRef != &statusText ? *statusRef : statusStored; }
   bool parkHost = false, failOver = false;
+  bool modelUnusable = false;          // the provider does not know the model (E2-R8a: the store marks it)
   int parkStatus = 0;                  // the park's refusal: its status and body (E2-FIX14)
   std::string parkText;
   std::string cause;
@@ -1022,6 +1023,7 @@ class TurnRun {
       t_.parkText = ex.parkBody;
     }
     t_.failOver |= ex.failOver;
+    t_.modelUnusable |= ex.modelUnusable;
   }
 
   // Nothing came from the model: the exchange's one plain line ends the turn.
@@ -2112,6 +2114,7 @@ Status PlainEngine::runTurn(const TurnInput& in, TurnOutcome& out) {
   out.parkHost = t->parkHost;
   out.parkStatus = t->parkStatus;
   out.failOver = t->failOver;
+  out.modelUnusable = t->modelUnusable;
   // A deferred effect's bit is set only once its argument is copied: never a head switch without its head.
   for (size_t k = 0; k < kDeferredKinds; ++k) {
     if (!((t->deferred.mask >> k) & 1u)) continue;

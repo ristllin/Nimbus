@@ -30,6 +30,7 @@
 //   - the head request carries the effort nimbusd sends for the same model.
 #include <unity.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -38,6 +39,9 @@
 
 #include "../support/scripted_provider/scripted_provider.h"
 #include "nimbus/harness/plain/chat_binding.h"
+#include "nimbus/harness/plain/head_slot.h"
+#include "nimbus/orch/model_catalog.h"
+#include "nimbus/orch/request_budget.h"
 #include "nimbus/harness/plain/chat_commands.h"
 #include "nimbus/harness/plain/chat_skill_tools.h"
 #include "nimbus/orch/tool_groups.h"
@@ -167,9 +171,22 @@ struct Device {
   plain::Status boot(const std::string& model = "claude-haiku-5-5", const std::string& chat = "1001") {
     plain::ChatBindingConfig c;
     c.chatKey = chat;
-    c.model = model;
-    c.summarizerModel = "claude-haiku-5-5";
-    if (!provider.empty()) c.provider = provider;
+    // Lane E2-R8a: the head on its provider slot, as the device builds it (plain/head_slot.h).
+    plain::HeadSlot slot;
+    const std::string p = provider.empty() ? "anthropic" : provider;
+    if (plain::headSlotFor(slots(), p, model, slot).ok()) {
+      plain::useSlot(slot, c);
+    } else {   // a provider no slot names (the price row test)
+      c.provider = p;
+      c.host = "api.example.test";
+      c.model = model;
+    }
+    c.summarizerModel = summarizerModel;
+    for (const auto& r : rungs) {
+      plain::HeadSlot rs;
+      TEST_ASSERT_TRUE(plain::headSlotFor(slots(), r.first, r.second, rs).ok());
+      c.summarizers.push_back(plain::rungOf(rs));
+    }
     c.timeZone = "Europe/London";
     plain::ChatBindingDeps d;
     d.platform = &platform;
@@ -195,7 +212,9 @@ struct Device {
     if (skills) d.skills = [this](const nimbus::orch::Principal&) { return skills(); };   // E2-P-SKILL: the store
     if (pinnedNotes) d.pinnedNotes = pinnedNotes;                                         // E2-P-SKILL: the notebook
     d.skillRefused = [this](const std::string& id, size_t) { refused.push_back(id); };
-    d.usage = [this](const plain::TurnOutcome& o) { usage.push_back(plain::turnSpendOf(o, "anthropic", "claude-haiku-5-5")); };
+    d.usage = [this](const plain::TurnOutcome& o) {
+      usage.push_back(plain::turnSpendOf(o, binding->config().provider, binding->config().model));
+    };
     d.compactUsage = [this](const std::string& p, const std::string& m, const nimbus::orch::TokenUsage& u) {
       nimbus::orch::TurnSpend t;
       t.add(p.c_str(), m.c_str(), u);
@@ -213,6 +232,16 @@ struct Device {
     return binding->boot();
   }
   agent::HttpTransport& model_() { return model; }
+  // The device's slot settings (lane E2-R8a): one key for every slot, a LAN custom endpoint.
+  plain::SlotSettings slots() {
+    plain::SlotSettings s;
+    s.key = [this](const std::string&) { return key; };
+    s.customBase = "http://192.168.1.50:8080/v1";
+    s.customConv = customConv;
+    s.customTools = customTools;
+    s.routerHost = "https://app.cumulo-nimbus.ai";
+    return s;
+  }
   plain::Status say(const std::string& text, std::vector<uint64_t> src = {}) {
     plain::ChatMessage m;
     m.src = std::move(src);
@@ -226,7 +255,11 @@ struct Device {
   }
 
   agent::Platform platform;
-  std::string provider;   // "" = the binding's default (anthropic)
+  std::string provider;   // "" = anthropic
+  std::string summarizerModel = "claude-haiku-5-5";
+  std::vector<std::pair<std::string, std::string>> rungs;   // the compaction ladder (provider, model); empty: one rung
+  std::string customConv = "openai";                         // the custom endpoint's convention
+  bool customTools = true;                                   // its verify accepted a tool call (E2-R8a)
   std::function<bool(const std::string&)> outside;   // lane E2-TOOLS
   std::function<nimbus::orch::tx::RecentFilesBlock::Source(const nimbus::orch::Principal&)> recentFiles;
   bool noCardFitted = false;   // the device has no card at all (EngineDeps::noCard)
@@ -1012,6 +1045,7 @@ namespace {
 // (plain::gateMessage over the shared park), then the turn when they let it run. The gate's verdict.
 plain::MessageGate message(Device& dev, const std::string& text, const std::string& chat = "1001") {
   plain::MessageGateDeps g;
+  g.provider = "anthropic";
   g.key = [&dev] { return dev.key; };
   g.nowMs = [&dev] { return dev.ms; };
   g.inbound = dev.inbound;
@@ -1275,6 +1309,7 @@ static void test_a_kept_messages_turn_is_refused_by_a_parked_provider_with_the_s
   f.taken = [](const plain::WaitingMessage&) { return false; };
   f.answer = [&dev, &lines](const plain::WaitingMessage& m) {
     plain::MessageGateDeps g;   // the seam's gates without the inbound screen (it ran when the message came)
+    g.provider = "anthropic";
     g.key = [&dev] { return dev.key; };
     g.nowMs = [&dev] { return dev.ms; };
     g.overBudget = [&dev](const std::string&) { return dev.overBudget; };
@@ -1580,6 +1615,188 @@ static void test_a_held_note_is_listed_and_approved_or_denied_by_the_owner() {
   TEST_ASSERT_FALSE(has(o.prefsCmd("list"), "Notes waiting"));
 }
 
+
+// ---- lane E2-R8a: every provider slot of the released engine -------------------------------------
+namespace {
+
+struct SlotCase {
+  const char* provider;
+  const char* model;       // the head (cumulo: the router selector)
+  const char* small;       // the summarizer's and the routine's model
+  const char* host;        // where each request goes
+  const char* path;        // the head's request path
+};
+
+const SlotCase kSlotCases[] = {
+    {"anthropic", "claude-haiku-5-5", "claude-haiku-5-5", "api.anthropic.com", "/v1/messages"},
+    {"openai", "gpt-5.6-luna", "gpt-5.6-luna", "api.openai.com", "/v1/responses"},
+    {"mistral", "mistral-large-4-0", "mistral-large-4-0", "api.mistral.ai", "/v1/chat/completions"},
+    {"zai", "glm-5.3", "glm-5.3", "api.z.ai", "/api/paas/v4/chat/completions"},
+    {"custom", "qwen3-32b", "qwen3-32b", "192.168.1.50", "/v1/chat/completions"},
+    {"cumulo", "openai/gpt-5.6-luna", "mistral/mistral-large-4-0", "app.cumulo-nimbus.ai", "/router/openai/v1/responses"},
+};
+
+// The one slot of a spend, filed under `provider`.
+void spentOn(const nimbus::orch::TurnSpend& t, const char* provider, const char* what) {
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)t.billedSlots(), what);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(provider, t.slot[0].host, what);
+  TEST_ASSERT_TRUE_MESSAGE(t.slot[0].billed >= 1, what);
+}
+
+}  // namespace
+
+// D1: each slot runs a turn with a tool call, a summarizer pass and a routine against the scripted
+// provider, each request on the slot's own host and wire, each spend booked to the slot's provider.
+static void test_every_slot_runs_a_turn_a_summary_and_a_routine() {
+  for (const SlotCase& k : kSlotCases) {
+    Device dev;
+    dev.provider = k.provider;
+    dev.rungs = {{k.provider, k.small}};
+    addAppend(dev.reg);
+    const plain::Status booted = dev.boot(k.model);
+    TEST_ASSERT_TRUE_MESSAGE(booted.ok(), k.provider);
+    // A turn with a tool call.
+    dev.model.push(sp::call("append_file", R"({"path":"budget/week47.csv","text":"2026-11-24,market,5.55\n"})"));
+    dev.model.push(sp::say("It is added."));
+    const plain::Status st = dev.say("Append the market line.");
+    TEST_ASSERT_TRUE_MESSAGE(st.ok(), (std::string(k.provider) + " " + (st.where ? st.where : "")).c_str());
+    TEST_ASSERT_EQUAL_MESSAGE(2, (int)dev.model.requests().size(), k.provider);
+    for (const sp::Recorded& r : dev.model.requests()) {
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(k.host, r.req.host.c_str(), k.provider);
+      TEST_ASSERT_EQUAL_STRING_MESSAGE(k.path, r.req.path.c_str(), k.provider);
+    }
+    TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "appended 23 B"), k.provider);   // the tool's result went back
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)dev.out.toolCalls, k.provider);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("1001|It is added.", dev.sent.back().c_str(), k.provider);
+    spentOn(dev.usage.back(), k.provider, k.provider);
+    // A summarizer pass on the slot's small model.
+    for (int i = 0; i < 8; ++i) {
+      dev.model.push(sp::say("Reply " + std::to_string(i) + "."));
+      TEST_ASSERT_TRUE_MESSAGE(dev.say("Message " + std::to_string(i) + " about the garden.").ok(), k.provider);
+    }
+    dev.model.push(sp::say("+F The person talks about the garden."));
+    const size_t before = dev.model.requests().size();
+    TEST_ASSERT_TRUE_MESSAGE(dev.binding->compactNow().ok(), k.provider);
+    TEST_ASSERT_EQUAL_MESSAGE(before + 1, dev.model.requests().size(), k.provider);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(k.host, dev.model.last().req.host.c_str(), k.provider);
+    const std::string small(k.small), bare = small.substr(small.find('/') + 1);   // a selector's model goes bare
+    TEST_ASSERT_TRUE_MESSAGE(has(dev.model.last().body, "\"" + bare + "\""), k.provider);
+    TEST_ASSERT_EQUAL_MESSAGE(1, (int)dev.compactUsage.size(), k.provider);
+    spentOn(dev.compactUsage[0], k.provider, k.provider);
+    // A routine on the slot's small model.
+    std::string heldText;
+    plain::HeldStore held(plain::HeldFile{[&heldText] { return heldText; }, [&heldText](const std::string& t) {
+                                            heldText = t;
+                                            return true;
+                                          }});
+    plain::RoutineDeps rd = dev.binding->routineDeps(k.small);
+    rd.held = &held;
+    plain::RoutineFire fire;
+    fire.def.id = "lp00a1";
+    fire.def.name = "Morning";
+    fire.def.instruction = "Say good morning.";
+    fire.fireAt = kEpoch0 + dev.ms / 1000u;
+    dev.model.push(sp::say("Good morning."));
+    plain::FireReport rep;
+    const size_t beforeRoutine = dev.model.requests().size();
+    const plain::Status rs = plain::runRoutine(rd, fire, rep);
+    TEST_ASSERT_TRUE_MESSAGE(rs.ok(), k.provider);
+    TEST_ASSERT_EQUAL_MESSAGE((int)plain::FireResult::Sent, (int)rep.result, k.provider);
+    TEST_ASSERT_EQUAL_MESSAGE(beforeRoutine + 1, dev.model.requests().size(), k.provider);
+    TEST_ASSERT_EQUAL_STRING_MESSAGE(k.host, dev.model.last().req.host.c_str(), k.provider);
+    spentOn(plain::turnSpendOf(rep.outcome, k.provider, k.small), k.provider, k.provider);
+    std::string why;
+    TEST_ASSERT_TRUE_MESSAGE(dev.model.verify(why), why.c_str());
+  }
+}
+
+// The ledger reads OpenAI, Mistral, Z.ai, a custom endpoint and the router (unlifted) with the cache
+// inside the input count; engine 2 reports it outside, so the binding adds it back (not for Anthropic).
+static void test_spend_is_booked_in_each_providers_counts() {
+  nimbus::orch::TokenUsage u;
+  u.promptTokens = 1000;
+  u.cacheReadTokens = 600;
+  u.cacheWriteTokens = 400;
+  TEST_ASSERT_EQUAL(1000u, (unsigned)plain::ledgerUsage("anthropic", "claude-haiku-5-5", u).promptTokens);
+  for (const char* p : {"openai", "mistral", "zai", "custom"})
+    TEST_ASSERT_EQUAL_MESSAGE(2000u, (unsigned)plain::ledgerUsage(p, "m", u).promptTokens, p);
+  TEST_ASSERT_EQUAL(2000u, (unsigned)plain::ledgerUsage("cumulo", "anthropic/claude-haiku-5-5", u).promptTokens);
+  nimbus::orch::setRoutedBudgetLiftForTest(1);   // the router splits an Anthropic upstream's cache once lifted
+  TEST_ASSERT_EQUAL(1000u, (unsigned)plain::ledgerUsage("cumulo", "anthropic/claude-haiku-5-5", u).promptTokens);
+  TEST_ASSERT_EQUAL(2000u, (unsigned)plain::ledgerUsage("cumulo", "openai/gpt-5.6-luna", u).promptTokens);
+  nimbus::orch::setRoutedBudgetLiftForTest(-1);
+}
+
+// D1: no engine-2 binding names a provider itself (the router design's "Deleted" list).
+static void test_no_binding_names_a_provider() {
+  const char* const files[] = {"lib/harness/include/nimbus/harness/plain/chat_binding.h", "lib/harness/src/plain_compact.cpp",
+                               "lib/harness/src/plain_unattended.cpp", "src/agent/orchestrator_plain.cpp",
+                               "src/agent/tools_plain_device.cpp"};
+  for (const char* f : files) {
+    FILE* fp = std::fopen(f, "rb");
+    TEST_ASSERT_NOT_NULL_MESSAGE(fp, f);
+    std::string text;
+    char buf[4096];
+    for (size_t n; (n = std::fread(buf, 1, sizeof buf, fp)) > 0;) text.append(buf, n);
+    std::fclose(fp);
+    TEST_ASSERT_FALSE_MESSAGE(has(text, "\"anthropic\""), f);
+    TEST_ASSERT_FALSE_MESSAGE(has(text, "\"api.anthropic.com\""), f);
+  }
+}
+
+// The custom endpoint (design section 3.3): a LAN base is plain HTTP on its port; without a verified tool
+// call it runs in text mode; its window and tool call come from the verify step.
+static void test_the_custom_endpoint_follows_its_verify() {
+  plain::SlotSettings s;
+  s.customBase = "http://192.168.1.50:8080/v1/";
+  plain::HeadSlot h;
+  TEST_ASSERT_TRUE(plain::headSlotFor(s, "custom", "qwen3-32b", h).ok());
+  TEST_ASSERT_FALSE(h.endpoint.tls);
+  TEST_ASSERT_EQUAL(8080, h.endpoint.port);
+  TEST_ASSERT_EQUAL_STRING("/v1", h.endpoint.basePath.c_str());
+  TEST_ASSERT_EQUAL((int)plain::Dialect::Flat, (int)h.dialect);   // no verified tool call: text mode
+  s.customTools = true;
+  TEST_ASSERT_TRUE(plain::headSlotFor(s, "custom", "qwen3-32b", h).ok());
+  TEST_ASSERT_EQUAL((int)plain::Dialect::ChatCompletions, (int)h.dialect);
+  s.customConv = "anthropic";
+  TEST_ASSERT_TRUE(plain::headSlotFor(s, "custom", "qwen3-32b", h).ok());
+  TEST_ASSERT_EQUAL((int)plain::Dialect::AnthropicMessages, (int)h.dialect);
+  s.customBase = "";
+  TEST_ASSERT_FALSE(plain::headSlotFor(s, "custom", "qwen3-32b", h).ok());
+  // The verify step's reading.
+  TEST_ASSERT_EQUAL(32768u, plain::servedWindowOf(R"({"data":[{"id":"qwen3-32b","max_model_len":32768}]})", "qwen3-32b"));
+  TEST_ASSERT_EQUAL(8192u, plain::servedWindowOf(R"({"data":[{"id":"a","context_length":8192}]})", "qwen3-32b"));   // the only row
+  TEST_ASSERT_EQUAL(0u, plain::servedWindowOf(R"({"data":[{"id":"a"},{"id":"b","context_length":8192}]})", "qwen3-32b"));
+  TEST_ASSERT_TRUE(has(plain::toolProbeBody("qwen3-32b"), "\"tool_choice\":\"required\""));
+  TEST_ASSERT_TRUE(plain::answerCalledTool(
+      R"({"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"ping","arguments":"{}"}}]}}]})"));
+  TEST_ASSERT_FALSE(plain::answerCalledTool(R"({"choices":[{"message":{"role":"assistant","content":"pong"}}]})"));
+  auto store = [](uint32_t window, bool tools) {
+    nimbus::orch::ModelInfo row;
+    row.id = "qwen3-32b";
+    row.roles = nimbus::orch::RoleOrchestrator;
+    row.apiCaps = true;
+    row.ctxTokens = window;
+    if (tools) row.caps |= nimbus::orch::CapTools;
+    return nimbus::orch::serializeModelStore(nimbus::orch::ModelStoreMeta{}, {row});
+  };
+  TEST_ASSERT_TRUE(plain::customToolsFrom(store(32768, true), "qwen3-32b"));
+  TEST_ASSERT_FALSE(plain::customToolsFrom(store(0, true), "qwen3-32b"));       // no window known
+  TEST_ASSERT_FALSE(plain::customToolsFrom(store(4096, true), "qwen3-32b"));    // too small for the fixed part
+  TEST_ASSERT_FALSE(plain::customToolsFrom(store(32768, false), "qwen3-32b"));  // the probe was not taken
+  // Text mode on the binding: one request, no tools offered.
+  Device dev;
+  dev.provider = "custom";
+  dev.customTools = false;
+  addAppend(dev.reg);
+  TEST_ASSERT_TRUE(dev.boot("qwen3-32b").ok());
+  dev.model.push(sp::say("Hello."));
+  TEST_ASSERT_TRUE(dev.say("hi").ok());
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "\"tools\""));
+  TEST_ASSERT_EQUAL_STRING("192.168.1.50", dev.model.last().req.host.c_str());
+  TEST_ASSERT_FALSE(dev.model.last().req.tls);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
@@ -1621,5 +1838,9 @@ int main(int, char**) {
   RUN_TEST(test_a_skill_past_the_size_limit_is_told_what_to_do_with_engine_twos_tools);
   RUN_TEST(test_a_rule_added_or_removed_by_prefs_applies_to_the_next_turn);
   RUN_TEST(test_a_held_note_is_listed_and_approved_or_denied_by_the_owner);
+  RUN_TEST(test_every_slot_runs_a_turn_a_summary_and_a_routine);
+  RUN_TEST(test_spend_is_booked_in_each_providers_counts);
+  RUN_TEST(test_no_binding_names_a_provider);
+  RUN_TEST(test_the_custom_endpoint_follows_its_verify);
   return UNITY_END();
 }

@@ -3216,7 +3216,7 @@ void beginWeb(const WebConfig& wc) {
     // and a provider stuck low-memory-"deferred" had no manual way back (CUM-451).
     // They are already in kRetryProv and provider_verify handles them, so accept them.
     if (p != "openai" && p != "anthropic" && p != "mistral" && p != "cumulo" &&
-        p != "zai" && p != "telegram" && p != "tavily") {
+        p != "zai" && p != "telegram" && p != "tavily" && p != "custom") {   // custom: E2-R8a
       r->send(400, "application/json", "{\"error\":\"unknown provider\"}");
       return;
     }

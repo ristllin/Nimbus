@@ -188,6 +188,7 @@ struct TurnOutcome {
   bool parkHost = false;         // the head's key or credit was refused: the binding parks it
   int parkStatus = 0;            // that refusal's HTTP status and its body (first 4 KB): the shared park reads
   std::string parkText;          // its kind from them (lane E2-FIX14); never stored, never shown
+  bool modelUnusable = false;    // the provider does not know the head model (E2-R8a: the device marks it)
   bool failOver = false;         // routed: the router said fail over to the next target
   // Effects the turn's tools asked for after the turn (a stored, successful result each): the
   // binding runs them in Deferred order once runTurn returns, the reply and the turn's items

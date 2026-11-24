@@ -185,6 +185,7 @@ struct HeadTarget {
   std::string model;
   nimbus::orch::headqual::Wire wire = nimbus::orch::headqual::Wire::Any;
   bool parked = false;         // the provider park holds this host
+  bool routed = false;         // through the Cumulo router (its body budget is the routed one)
 };
 
 // True when the table qualifies `t` on `line` (assumed and held rows do not).
@@ -196,9 +197,14 @@ struct FallbackFacts {
   bool headParked = false;     // the turn's head is parked
   nimbus::orch::headqual::Line line = nimbus::orch::headqual::Line::E2;
   const std::vector<HeadTarget>* order = nullptr;   // the fallback order after the head
+  // The body of the request a target would replace, in bytes (0: none sent yet). Router design section
+  // 6 item 7 (lane E2-R8a): no automatic switch moves a conversation to a smaller body, so a target
+  // qualifies only when tx::budgetFor(target).bodyCap holds it.
+  uint32_t capLength = 0;
 };
 // The fallback host that answers instead of a parked head: only a fresh attempt with no
-// effect run, only a target that is not parked and that the table qualifies on `line`;
+// effect run, only a target that is not parked, whose body budget holds capLength and that the table
+// qualifies on `line`;
 // index -1 when none may (the owner gets one plain line and no model is called).
 Status pickFallback(const FallbackFacts& facts, int& index);
 

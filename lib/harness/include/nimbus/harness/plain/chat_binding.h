@@ -17,6 +17,7 @@
 #include "nimbus/harness/plain/engine.h"
 #include "nimbus/harness/plain/guards.h"
 #include "nimbus/harness/plain/head_gate.h"   // noteHeadOutcome: the shared park after a turn (E2-FIX14)
+#include "nimbus/harness/plain/head_slot.h"   // slotRatesFor, ledgerUsage (lane E2-R8a)
 #include "nimbus/harness/plain/hooks.h"
 #include "nimbus/harness/plain/request.h"
 #include "nimbus/harness/plain/resume.h"   // installResume - the crash resume (lane E2-FIX12)
@@ -186,10 +187,20 @@ inline std::string ownerRowTags(const std::string& fromName, bool turnStoresIt) 
 struct ChatBindingConfig {
   std::string chatKey;                           // the transcript key (/mem/tx/<chatKey>)
   std::string chatId;                            // the routing chat; "" = chatKey
-  std::string host = "api.anthropic.com";        // the head's endpoint host
-  std::string provider = "anthropic";            // its provider slug (budget and price rows)
-  std::string model;                             // the head model
+  // Lane E2-R8a: the head on its provider slot (plain/head_slot.h; useSlot fills these). No default:
+  // a binding with no provider or host does not boot.
+  std::string host;                              // the head's endpoint host
+  std::string provider;                          // its provider slot (budget, price, spend and park)
+  std::string model;                             // the head model (cumulo: the router selector)
+  Dialect dialect = Dialect::AnthropicMessages;  // the head's wire
+  uint16_t port = 443;
+  bool tls = true;
+  std::string basePath;                          // "" = the slot's own
+  bool routed = false;                           // through the Cumulo router
   std::string summarizerModel;                   // the compaction rung (the provider's small model)
+  // The compaction ladder in order, each rung with its own endpoint and key (the released engine's
+  // ladder across providers). Empty: one rung, the head's endpoint on summarizerModel.
+  std::vector<SummarizerRung> summarizers;
   nimbus::orch::Role role = nimbus::orch::Role::Admin;
   std::string timeZone;
   uint16_t dayStartMin = kDayStartDefaultMin;
@@ -198,6 +209,28 @@ struct ChatBindingConfig {
   // The owner's pinned history profile (ruling 83: full unless the owner chose a smaller one).
   nimbus::orch::tx::Profile profile = nimbus::orch::tx::kDefaultProfile;
 };
+
+// The head `slot` into `cfg` (lane E2-R8a): the provider, model, wire and endpoint (its key is the
+// binding's ChatBindingDeps::key).
+inline void useSlot(const HeadSlot& slot, ChatBindingConfig& cfg) {
+  cfg.provider = slot.provider;
+  cfg.model = slot.model;
+  cfg.dialect = slot.dialect;
+  cfg.host = slot.endpoint.host;
+  cfg.port = slot.endpoint.port;
+  cfg.tls = slot.endpoint.tls;
+  cfg.basePath = slot.endpoint.basePath;
+  cfg.routed = slot.endpoint.routed;
+}
+// A summarizer rung on `slot` (its endpoint and key are the slot's).
+inline SummarizerRung rungOf(const HeadSlot& slot) {
+  SummarizerRung r;
+  r.endpoint = slot.endpoint;
+  r.host = slot.provider;   // the slot's name: caps, spend and the compaction lines
+  r.model = slot.model;
+  r.dialect = slot.dialect;
+  return r;
+}
 
 // One message in.
 struct ChatMessage {
@@ -216,8 +249,9 @@ struct ChatMessage {
 };
 
 // A turn's spend as the owner's usage view files it (store::recordProviderSpend): one slot of the
-// head's provider and model, in the provider's own counts (Anthropic's input leaves the cache out),
-// one billed response per head request.
+// head's provider and model, in the counts the ledger reads for that provider (ledgerUsage: engine 2
+// reports the uncached input, a provider whose input holds its cache gets it added back; lane
+// E2-R8a), one billed response per head request.
 inline nimbus::orch::TurnSpend turnSpendOf(const TurnOutcome& out, const std::string& provider, const std::string& model) {
   nimbus::orch::TurnSpend s;
   nimbus::orch::TokenUsage u;
@@ -229,6 +263,7 @@ inline nimbus::orch::TurnSpend turnSpendOf(const TurnOutcome& out, const std::st
   u.responses = out.headRequests;
   u.servedModel = out.end.servedModel;   // E2-P-SURF: the row is the model that answered, not only the one asked
   u.maxRequestIn = out.end.lastPromptTokens;
+  u = ledgerUsage(provider, model, u);
   s.add(provider.c_str(), model.c_str(), u);   // files nothing when nothing was billed
   return s;
 }
@@ -507,7 +542,10 @@ class ChatBinding {
     r.setup = [this](const TurnCtx& t, TurnSetup& out) { return setup(t, out); };
     r.head = turnCtx();
     r.head.trigger = Trigger::Routine;
-    if (!model.empty()) r.head.model = model;
+    if (!model.empty()) {
+      r.head.model = model;
+      r.head.dialect = slotDialect(cfg_.provider, model, cfg_.dialect);   // E2-R8a: a selector's own upstream
+    }
     r.moreHooks = [](PlainHooks& h) { (void)installSuppression(h); };
     r.owner = ownerSink();
     return r;
@@ -560,7 +598,8 @@ class ChatBinding {
     const Platform* p = d_.platform;
     const bool clock = p && p->nowMs && p->delayMs && p->nowEpoch;
     const bool memory = p && p->allocLarge && p->freeLarge;
-    return clock && memory && d_.transport && d_.files && d_.registry && !cfg_.model.empty();
+    return clock && memory && d_.transport && d_.files && d_.registry && !cfg_.model.empty() && !cfg_.provider.empty() &&
+           !cfg_.host.empty();
   }
   // E2-MIG: tx::migrate for this chat before the engine opens its log. Digest 0 is asked of the
   // compaction rung (the summarizer) on the same transport.
@@ -751,14 +790,18 @@ class ChatBinding {
     if (!st.ok()) return st;
     arenaBytes_ = tx::arenaBytesFor(b);
     HeadRates r;   // the ledger's own rows, the long-prompt tier included (E2-FIX6)
-    if (!headRatesFor(cfg_.provider, cfg_.model, r)) return Status::fail(tx::Err::NotFound, "plain::ChatBinding::boot.price");
+    if (!slotRatesFor(cfg_.provider, cfg_.model, r)) return Status::fail(tx::Err::NotFound, "plain::ChatBinding::boot.price");
     cost_ = guardCostFor(b, r);
     breaker_.setSpendCap(nimbus::orch::spendRateCapMicro(
         cfg_.monthlyCeilingMicro, nimbus::orch::blendedTurnMicro(cost_.warmRequestMicroUsd, cost_.coldRequestMicroUsd)));
     return Status::success();
   }
 
-  nimbus::orch::tx::HeadKey headKey() const { return nimbus::orch::tx::HeadKey{cfg_.provider, cfg_.model, false}; }
+  nimbus::orch::tx::HeadKey headKey() const { return nimbus::orch::tx::HeadKey{cfg_.provider, cfg_.model, cfg_.routed}; }
+  // TurnCtx::host: a direct slot's API host, else the slot's name (HeadSlot::turnHost).
+  std::string turnHost() const {
+    return cfg_.provider == "custom" || cfg_.provider == "cumulo" ? cfg_.provider : cfg_.host;
+  }
 
   TurnCtx turnCtx() const {
     TurnCtx c;
@@ -766,9 +809,9 @@ class ChatBinding {
     c.chatId = cfg_.chatId;
     c.turn = 0;   // the engine numbers the turn
     c.trigger = Trigger::Owner;
-    c.host = cfg_.host;
+    c.host = turnHost();
     c.model = cfg_.model;
-    c.dialect = Dialect::AnthropicMessages;
+    c.dialect = cfg_.dialect;
     c.dayStartMin = cfg_.dayStartMin;
     c.profile = cfg_.profile;
     c.who = &who_;
@@ -778,6 +821,10 @@ class ChatBinding {
   HeadEndpoint endpoint() const {
     HeadEndpoint e;
     e.host = cfg_.host;
+    e.port = cfg_.port;
+    e.tls = cfg_.tls;
+    e.basePath = cfg_.basePath;
+    e.routed = cfg_.routed;
     e.key = d_.key ? d_.key : [] { return std::string(); };
     return e;
   }
@@ -792,7 +839,7 @@ class ChatBinding {
     out.dayStartMin = cfg_.dayStartMin;
     out.head = endpoint();
     out.head.effort = headEffortFor(cfg_.provider, t.model);   // E2-FIX14: as nimbusd sends for the same model
-    out.wire = nullptr;   // wireFor(AnthropicMessages)
+    out.wire = nullptr;   // wireFor(the head's dialect)
     out.storedRounds = cfg_.storedRounds;
     out.cost = cost_;
     if (d_.moreSetup) d_.moreSetup(t, out);
@@ -832,18 +879,19 @@ class ChatBinding {
     c.digests = [this] { return engine_ ? engine_->digests() : nullptr; };
     c.omittedThru = [this] { return engine_ ? engine_->omittedThru() : uint64_t(0); };
     c.rungs = [this](std::vector<SummarizerRung>& out) {
-      out.clear();
+      out = cfg_.summarizers;
+      if (!out.empty()) return;
       SummarizerRung r;
       r.endpoint = endpoint();
       r.host = cfg_.provider;
       r.model = cfg_.summarizerModel.empty() ? cfg_.model : cfg_.summarizerModel;
-      r.dialect = Dialect::AnthropicMessages;
+      r.dialect = slotDialect(cfg_.provider, r.model, cfg_.dialect);
       out.push_back(r);
     };
     c.jobRunning = [](uint32_t) { return false; };   // no agent jobs on engine 2 yet
     c.park = [this](const SummarizerRung&) { say("e2: compaction rung refused its key or credit"); };
     c.spent = [this](const SummarizerRung& r, const nimbus::orch::TokenUsage& u) {
-      if (d_.compactUsage) d_.compactUsage(r.host, r.model, u);
+      if (d_.compactUsage) d_.compactUsage(r.host, r.model, ledgerUsage(r.host, r.model, u));
     };
     c.tell = [this](const std::string& chat, const std::string& text) {
       if (d_.sendPart) (void)d_.sendPart(chat, text);

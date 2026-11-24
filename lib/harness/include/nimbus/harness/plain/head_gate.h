@@ -37,7 +37,7 @@ enum class GateVerdict : uint8_t {
 };
 
 struct MessageGateDeps {
-  std::string provider = "anthropic";   // the head's provider slug (the park's and the limit's name)
+  std::string provider;                 // the head's provider slot (the park's and the limit's name; E2-R8a: every slot)
   std::function<std::string()> key;      // the key a request would carry (its fingerprint only)
   std::function<uint32_t()> nowMs;       // the park's clock (device: millis)
   // The inbound gate for `chat` and `text`: the person's line when it blocks, "" when the message may

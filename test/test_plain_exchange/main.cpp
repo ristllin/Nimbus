@@ -1511,6 +1511,18 @@ static void test_a_fallback_the_table_does_not_qualify_is_skipped() {
   int idx = 9;
   expectOk(plain::pickFallback(f, idx));
   TEST_ASSERT_EQUAL(3, idx);   // mistral held, sonnet parked, glm assumed
+  // Lane E2-R8a (design section 6 item 7): never to a smaller body. Haiku's body budget holds a request of
+  // exactly its size, not one byte more.
+  nimbus::orch::tx::HeadBudget haiku;
+  expectOk(nimbus::orch::tx::budgetFor(nimbus::orch::tx::HeadKey{"anthropic", "claude-haiku-5-5", false},
+                                       nimbus::orch::tx::kDefaultProfile, haiku));
+  f.capLength = haiku.bodyCap;
+  expectOk(plain::pickFallback(f, idx));
+  TEST_ASSERT_EQUAL(3, idx);
+  f.capLength = haiku.bodyCap + 1;
+  expectOk(plain::pickFallback(f, idx));
+  TEST_ASSERT_EQUAL(-1, idx);
+  f.capLength = 0;
   f.line = hq::Line::E2;       // nothing is qualified on engine 2 yet
   expectOk(plain::pickFallback(f, idx));
   TEST_ASSERT_EQUAL(-1, idx);

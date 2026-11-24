@@ -5,9 +5,12 @@
 // device_apply.cpp), never engine 1's turn machinery.
 #include "tools_plain_device.h"
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 
 #include "device_log_tool.h"           // devicelog::run - device.log
+#include "nimbus/harness/plain/head_slot.h"   // kHeadSlots - the switch follows the slots (E2-R8a)
 #include "nimbus/orch/models_tool.h"   // registerModelsTool - models.list on a private registry
 #include "orchestrator.h"              // fillDeviceApplyDeps, inScheduledTurn, currentChat, turnInFlight
 #include "store.h"                     // ttsEnabled - the voice-replies switch, read at call time
@@ -17,17 +20,17 @@ namespace tools {
 
 namespace {
 
-constexpr char kClaude[] = "anthropic";   // the one head engine 2 answers with (refusalFor)
-
 // The executors as engine 1 builds them, read when the call runs (the voice switch is live). A
-// head switch is held to Claude: engine 2 answers no other provider yet, so a switch elsewhere
-// would leave every later message refused.
+// head switch goes to any provider slot engine 2 runs on (lane E2-R8a, plain/head_slot.h).
 DeviceApplyDeps controlDeps() {
   DeviceApplyDeps d;
   orchestrator::fillDeviceApplyDeps(d);
   d.ttsEnabled = store::ttsEnabled();
   const auto valid = d.modelIsValid;
-  d.modelIsValid = [valid](const std::string& p, const std::string& m) { return p == kClaude && valid && valid(p, m); };
+  d.modelIsValid = [valid](const std::string& p, const std::string& m) {
+    const bool slot = std::find(std::begin(plain::kHeadSlots), std::end(plain::kHeadSlots), p) != std::end(plain::kHeadSlots);
+    return slot && valid && valid(p, m);
+  };
   return d;
 }
 

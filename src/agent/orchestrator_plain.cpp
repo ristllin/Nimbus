@@ -7,8 +7,9 @@
 //   - the platform hooks of orchestrator_e1.cpp's buildTurnDeps, plus PSRAM allocLarge/freeLarge;
 //   - the shared TLS transport (transport_tls.h deviceTransport), wrapped only to read the memory
 //     figures around each request;
-//   - the Claude key (store::anthropicKey), the configured model (store::orchModel), the
-//     summarizer (store::subModel), the person's role (roleOfChat), the day start and rounds;
+//   - the head on its provider slot (lane E2-R8a, plain/head_slot.h: store::resolvedOrchHost, its key,
+//     store::orchModel), the summarizer ladder (store::subModel of the head's provider, then of each
+//     keyed provider of store::subPriority), the person's role (roleOfChat), the day start and rounds;
 //   - the transcript on the card (tx_store_device.h, /mem/tx; RAM only with no card);
 //   - a part goes out once: Telegram through telegram::sendPart (no second split), the web and
 //     voice chats through the common deliver();
@@ -18,7 +19,8 @@
 //     copied into pinned notes once per boot (migrate_device.h, lane E2-MIG).
 // One resident chat (one arena, sized for the head): a message for another chat, another model
 // or another role boots the binding again over the same card (the transcript is refilled).
-// Claude heads only: any other head gets one plain line.
+// Every provider slot the released engine has: Anthropic, OpenAI, Mistral, Z.ai, a custom endpoint and
+// the Cumulo router (lane E2-R8a); spend, park and price on the head's own provider.
 // Lane E2-P-SUB binds sub-agents (plain/agents.h) over engine 1's job fabric: the shared journal on
 // flash (orch_persist.h FlashJournalStore, g_journal) and the portable JobEngine with this engine's
 // closures; agent_start, agent_list and agent_stop on the shared registry; pollJobs pumps the jobs
@@ -104,7 +106,10 @@
 #include "schedule_device.h"    // scheduledev::fire, host - the schedule entries (lane E2-SCHED)
 #include "skills_device.h"      // skillsdev::chatSkills
 #include "spend_ceiling_store.h"   // spend::frozen, spend::commit, spend::limitMicro
-#include "store.h"              // anthropicKey, orchModel, subModel, resolvedOrchHost
+#include "store.h"              // the slot keys, orchModel, subModel, resolvedOrchHost
+#include "provider_verify.h"    // customToolsVerified - a custom endpoint's tools (E2-R8a)
+#include "nimbus/harness/plain/head_slot.h"   // headSlotFor - the head on its provider slot (E2-R8a)
+#include "nimbus/orch/model_catalog.h"        // parseModelStore - an unknown model marked unusable (E2-R8a)
 #include "telegram.h"           // telegram::ownerChat, sendPart, turnUpdateIds, seenIndex
 #include "transport_tls.h"      // deviceTransport
 #include "tx_store_device.h"    // txdev::cardTxFiles
@@ -119,10 +124,9 @@ namespace {
 namespace plain = agent::plain;
 
 // Device copy (owner-facing, never model text), sent with system provenance.
-constexpr const char* kNotClaudeLine =
-    "This test build runs the new engine, which answers with a Claude model only. Choose Anthropic as the "
-    "provider in Settings, then send the message again.";
-constexpr const char* kNoKeyLine = "No Anthropic key is set. Add one in Settings, then send the message again.";
+constexpr const char* kNoKeyLine = "No key is set for the chosen provider. Add one in Settings, then send the message again.";
+constexpr const char* kTextModeLine =
+    "The custom endpoint answers without tools: its window or tool support is not known. Verify it in Settings.";
 constexpr const char* kFrozenLine = "The monthly spend limit is reached. Raise it in Settings to continue.";
 // Lane E2-P-TOOLS: after a head switch the owner asked for, the model that answers from now on.
 constexpr const char* kHeadSwitchedLine = "Now answering with ";
@@ -424,19 +428,81 @@ void noteSkillRefused(const std::string& id, size_t bytes) {
   s_skillTell.push_back(line);
 }
 
+// ---- the head on its provider slot (lane E2-R8a) -----------------------------------------
+// A slot's key, read when a request is rendered (never stored by the engine): the device's one
+// slug-to-key reader, the one engine 1's providers and the provider park read.
+std::string keyOf(const std::string& p) {
+  static const providers::ProviderDeps deps = deviceProviderDeps();
+  return deps.key(p.c_str());
+}
+
+// What the device knows about its slots (plain/head_slot.h).
+plain::SlotSettings slotSettings() {
+  plain::SlotSettings set;
+  set.key = keyOf;
+  set.customBase = store::customBase().c_str();
+  set.customConv = store::customConv().c_str();
+  set.customTools = provider_verify::customToolsVerified();
+  set.zaiHost = store::zaiBase().c_str();
+  const String router = store::cumuloBase();
+  set.routerHost = router.length() ? router.c_str() : CUMULO_HOST_DEFAULT;
+  return set;
+}
+
+// The compaction ladder (the released engine's: the head's provider first, then each keyed provider
+// of the sub-agent priority), each rung its provider's small model, at most three.
+std::vector<plain::SummarizerRung> summarizerLadder(const std::string& head, const plain::SlotSettings& set) {
+  std::vector<std::string> order{head};
+  const std::string pri(store::subPriority().c_str());
+  for (size_t at = 0; at <= pri.size();) {
+    size_t end = pri.find(',', at);
+    if (end == std::string::npos) end = pri.size();
+    std::string p = pri.substr(at, end - at);
+    while (!p.empty() && p.front() == ' ') p.erase(0, 1);
+    while (!p.empty() && p.back() == ' ') p.pop_back();
+    if (!p.empty() && std::find(order.begin(), order.end(), p) == order.end() && store::providerHasKey(String(p.c_str())))
+      order.push_back(p);
+    at = end + 1;
+  }
+  std::vector<plain::SummarizerRung> rungs;
+  for (const std::string& p : order) {
+    plain::HeadSlot slot;
+    if (rungs.size() < 3 && plain::headSlotFor(set, p, std::string(store::subModel(String(p.c_str())).c_str()), slot).ok())
+      rungs.push_back(plain::rungOf(slot));
+  }
+  return rungs;
+}
+
+// The provider said it does not know the model (lane E2-R8a, design section 9): its row in the provider's
+// model store is marked unusable, so the pickers stop offering it (as the verify's usability probe does).
+void markUnusable(const std::string& provider, const std::string& model) {
+  const String p(provider.c_str());
+  nimbus::orch::ModelStoreMeta meta;
+  std::vector<nimbus::orch::ModelInfo> rows;
+  if (!nimbus::orch::parseModelStore(provider.c_str(), store::modelStoreText(p), meta, &rows)) return;
+  for (nimbus::orch::ModelInfo& m : rows) {
+    if (m.id != model || !m.usable) continue;
+    m.usable = false;
+    m.probed = true;
+    const bool kept = store::setModelStoreText(p, nimbus::orch::serializeModelStore(meta, rows));
+    alogf("e2: %s does not know %s: marked unusable%s", provider.c_str(), model.c_str(), kept ? "" : " (not stored)");
+    return;
+  }
+}
+
 // One turn's usage where the owner sees it (the Usage page, /usage: tokens and cost per provider,
 // the month), once per turn; store::recordProviderSpend also counts it against the monthly limits.
 nimbus::orch::TokenUsage s_lastUsage, s_sessUsage;   // the Usage panel's last turn and session (tg_poll writes)
 std::mutex s_usageMx;                                 // the web task reads them
-void recordUsage(const plain::TurnOutcome& out, const std::string& model) {
-  const nimbus::orch::TurnSpend spend = plain::turnSpendOf(out, "anthropic", model);
+void recordUsage(const plain::TurnOutcome& out, const std::string& provider, const std::string& model) {
+  const nimbus::orch::TurnSpend spend = plain::turnSpendOf(out, provider, model);
   store::recordProviderSpend(spend, "turn");
   {
     std::lock_guard<std::mutex> lk(s_usageMx);
     s_lastUsage = spend.total();
     s_sessUsage += s_lastUsage;
   }
-  budget::noteTurnEnd("anthropic", model, "anthropic", "owner", out.delivered);
+  budget::noteTurnEnd(provider, model, provider, "owner", out.delivered);
 }
 
 // The boot's import of the earlier engine's conversation, on one line (what the bench reads).
@@ -458,13 +524,14 @@ void logImport(const plain::ChatBinding& b) {
 // false. E2-STORE: a binding whose turns are held only in RAM (the card did not answer at its
 // boot) is never dropped with them (ruling 81). Its own chat and role keep it, on its model and
 // conversation, until the card is back; another chat or role is refused meanwhile (null, keep true).
-plain::ChatBinding* residentFor(const String& chatId, const std::string& model, nimbus::orch::Role role, bool& keep) {
+plain::ChatBinding* residentFor(const String& chatId, const plain::HeadSlot& head, nimbus::orch::Role role, bool& keep) {
   keep = false;
   if (!s_chat) return nullptr;
   const plain::ChatBindingConfig& c = s_chat->config();
   const bool same = c.chatId == chatId.c_str() && c.role == role;
   const std::string key = txKeyFor(chatId);
-  keep = same && (key.empty() || c.chatKey == key) && c.model == model;   // P7: an unread number keeps the resident
+  keep = same && (key.empty() || c.chatKey == key) && c.model == head.model && c.provider == head.provider &&
+         c.host == head.endpoint.host && c.dialect == head.dialect;   // P7: an unread number keeps the resident
   if (keep) return s_chat.get();
   if (!s_chat->reload()) {
     alogf("e2: chat %s keeps its RAM-only binding until the card is back", c.chatId.c_str());
@@ -499,11 +566,23 @@ plain::Status railKeep(const plain::TurnCtx& t, const plain::ToolCall& c) {
   return r.success ? plain::Status::success() : plain::Status::fail(nimbus::orch::tx::Err::InvalidArgument, "e2.rails.kept");
 }
 
-// The chat's binding for this model and role, booted (null when it could not start).
-plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimbus::orch::Role role) {
+bool sayInstead(const String& chatId, const char* line);   // below
+
+// The chat's binding for the configured head (its provider slot and model) and this role, booted
+// (null when it could not start).
+plain::ChatBinding* chatFor(const String& chatId, nimbus::orch::Role role) {
   s_noStartWhy = nullptr;
+  const String host = store::resolvedOrchHost();
+  const std::string provider(host.c_str());
+  const std::string model(store::orchModel(host).c_str());
+  const plain::SlotSettings set = slotSettings();
+  plain::HeadSlot head;
+  if (!plain::headSlotFor(set, provider, model, head).ok()) {
+    alogf("e2: the head %s/%s names no provider slot engine 2 can reach", provider.c_str(), model.c_str());
+    return nullptr;
+  }
   bool keep = false;
-  plain::ChatBinding* resident = residentFor(chatId, model, role, keep);
+  plain::ChatBinding* resident = residentFor(chatId, head, role, keep);
   if (keep) return resident;
   // The binding's parts on the heap, off the tg_poll stack: a routine fire boots a chat from deep in
   // the loops tick (lane E2-FIX2B; tools/release_gate/check_tg_poll_stack.py).
@@ -516,8 +595,8 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   plain::ChatBindingConfig& cfg = parts->cfg;
   cfg.chatKey = txKeyFor(chatId);
   cfg.chatId = chatId.c_str();
-  cfg.model = model;
-  cfg.summarizerModel = store::subModel("anthropic").c_str();
+  plain::useSlot(head, cfg);
+  cfg.summarizers = summarizerLadder(provider, set);
   cfg.role = role;
   cfg.timeZone = store::deviceTz().c_str();
   cfg.dayStartMin = store::dayStartMin();
@@ -534,10 +613,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.files = &txdev::cardTxFiles();
   d.registry = &memory::registry();
   d.sendPart = sendOnePart;
-  d.key = [] {
-    const String k = store::anthropicKey();
-    return std::string(k.c_str(), k.length());
-  };
+  d.key = [provider] { return keyOf(provider); };
   d.pinnedNotes = [](const nimbus::orch::Principal& who) { return notesdev::pinnedNotesFor(who); };
   d.compactCtl = deviceCompactCtlIO();
   if (!localChat(chatId)) d.seen = &telegram::seenIndex();
@@ -555,7 +631,7 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   d.turnTool = historydev::answer;   // E2-SRCH: search and view read this turn's own conversation
   d.skills = [](const nimbus::orch::Principal&) { return skillsdev::chatSkills(); };
   d.skillRefused = noteSkillRefused;
-  d.usage = [model](const plain::TurnOutcome& out) { recordUsage(out, model); };
+  d.usage = [provider, model](const plain::TurnOutcome& out) { recordUsage(out, provider, model); };
   // Lane E2-CMP: the summarizer's requests count where a turn's do (the usage view and the monthly ceiling).
   d.compactUsage = [](const std::string& provider, const std::string& m, const nimbus::orch::TokenUsage& u) {
     nimbus::orch::TurnSpend spend;
@@ -613,6 +689,12 @@ plain::ChatBinding* chatFor(const String& chatId, const std::string& model, nimb
   logImport(*b);
   if (!st.ok()) return nullptr;
   s_chat = std::move(b);
+  // A custom chat endpoint whose verify found no window or no tool call runs in text mode: told once a boot.
+  static bool textTold = false;
+  if (head.dialect == plain::Dialect::Flat && !textTold) {
+    textTold = true;
+    sayInstead(chatId, kTextModeLine);
+  }
   return s_chat.get();
 }
 
@@ -625,8 +707,6 @@ uint64_t rowNumber(const String& id) {
 // Effects a turn's tools asked for, after the turn: a head switch device_control accepted (lane
 // E2-P-TOOLS: the head setting written by engine 1's executor, the chat told which model answers
 // now), an install through the hook the web route set, a restart.
-bool sayInstead(const String& chatId, const char* line);   // below
-
 void runDeferred(const plain::DeferredEffects& d, const String& chatId) {
   if (!d.mask) return;
   if (d.has(plain::Deferred::HeadSwitch)) {
@@ -669,8 +749,7 @@ void logTurn(const plain::ChatBinding& b, const plain::TurnOutcome& out, const p
 
 // The line a message gets when no engine-2 turn can run for it; empty: a turn can run.
 const char* refusalFor(const String& host) {
-  if (host != "anthropic") return kNotClaudeLine;
-  if (!store::hasAnthropicKey()) return kNoKeyLine;
+  if (!store::providerHasKey(host)) return kNoKeyLine;
   if (spend::frozen()) return kFrozenLine;
   return nullptr;
 }
@@ -724,14 +803,12 @@ void journalTurn(const String& chatId, const plain::ChatMessage& msg) {
 // calls: the inbound screen (moderateGate, InboundText; engine 1's line), the provider's own monthly
 // limit (store::providerOverBudget) and the shared provider park (its flash file is registered by
 // provider_gate.cpp).
-std::string anthropicKeyText() {
-  const String k = store::anthropicKey();
-  return std::string(k.c_str(), k.length());
-}
+std::string headKeyText() { return keyOf(std::string(store::resolvedOrchHost().c_str())); }
 
 plain::MessageGateDeps gateDeps() {
   plain::MessageGateDeps g;
-  g.key = anthropicKeyText;
+  g.provider = store::resolvedOrchHost().c_str();
+  g.key = headKeyText;
   g.nowMs = [] { return (uint32_t)millis(); };
   g.inbound = [](const std::string& chat, const std::string& text) -> std::string {
     if (moderateGate(nimbus::orch::ModGate::InboundText, String(chat.c_str()), String(text.c_str())) !=
@@ -746,7 +823,7 @@ plain::MessageGateDeps gateDeps() {
 
 // The park's re-check handed to a message that then sent nothing goes back (E2-FIX14).
 void handBack(bool probe) {
-  if (probe) nimbus::orch::providerPark().releaseProbe("anthropic");
+  if (probe) nimbus::orch::providerPark().releaseProbe(store::resolvedOrchHost().c_str());
 }
 
 // After the turn: a turn refused before its first request hands the re-check back (E2-FIX14).
@@ -788,6 +865,7 @@ bool turnFor(plain::ChatBinding& b, const String& chatId, const plain::ChatMessa
   engineSetHeadArc(false);
   nimbus::crash::turnEnded();
   if (status) *status = st;
+  if (out.modelUnusable) markUnusable(b.config().provider, b.config().model);
   afterTurn(msg.probe, st, out);   // E2-FIX14: a turn refused before its first request gives the re-check back
   logTurn(b, out, st, millis() - t0);
   if (!msg.parts.empty())
@@ -905,7 +983,7 @@ plain::ChatBinding* keptBinding(const String& chatId, const char*& line, bool& s
   line = refusalFor(host);
   setting = line != nullptr;
   if (line) return nullptr;
-  plain::ChatBinding* b = chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
+  plain::ChatBinding* b = chatFor(chatId, roleOfChat(chatId));
   if (!b) line = s_noStartWhy ? s_noStartWhy : kNoStartLine;
   return b;
 }
@@ -1044,7 +1122,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
   }
   tools::connectorsdev::beforeTurn();   // E2-P-CONN1: engine 1's MCP reconcile and discovery, before the turn
   const std::string model(store::orchModel(host).c_str());
-  plain::ChatBinding* b = chatFor(chatId, model, roleOfChat(chatId));
+  plain::ChatBinding* b = chatFor(chatId, roleOfChat(chatId));
   if (!b) {
     handBack(gate.probe);
     captureOwnerRow(text, fromName, chatId, false);
@@ -1081,7 +1159,7 @@ bool runOne(const String& text, const String& fromName, const String& chatId) {
 plain::ChatBinding* bindingFor(const String& chatId) {
   const String host = store::resolvedOrchHost();
   if (refusalFor(host)) return nullptr;
-  return chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
+  return chatFor(chatId, roleOfChat(chatId));
 }
 
 // /clear's next number, stored before anything uses it (P7; E2-FIX3, R2 and R4): never a number a
@@ -1224,7 +1302,7 @@ void bootOwnerChat() {
   const String owner = telegram::ownerChat();
   const String host = store::resolvedOrchHost();
   if (owner.length() == 0 || refusalFor(host)) return;
-  (void)chatFor(owner, std::string(store::orchModel(host).c_str()), roleOfChat(owner));
+  (void)chatFor(owner, roleOfChat(owner));
 }
 
 // Lane E2-FIX12: what the boot's crash resume sent goes where a turn's reply goes in the chat's
@@ -1274,7 +1352,7 @@ void bootLostChat() {
   nimbus::crash::turnStarted(kind == "console" ? nimbus::orch::kTurnSourceSerial : nimbus::orch::kTurnSourceOwner,
                              chat, kind == "photo" ? "[image]" : kind == "file" ? "[file]" : "");
   s_inTurn.store(true, std::memory_order_relaxed);
-  plain::ChatBinding* b = chatFor(chatId, std::string(store::orchModel(host).c_str()), roleOfChat(chatId));
+  plain::ChatBinding* b = chatFor(chatId, roleOfChat(chatId));
   s_inTurn.store(false, std::memory_order_relaxed);
   nimbus::crash::turnEnded();
   // Dropped only when the engine sent the person a line (the answer, the stored answer or its
@@ -1366,8 +1444,8 @@ bool routineHeld(sch::Kind kind, const String& host, nimbus::orch::FireOutcome& 
     return true;
   }
   std::string held;
-  if (host != "anthropic" ||
-      !plain::headHeld("anthropic", anthropicKeyText(), store::providerOverBudget(host), (uint32_t)millis(), held))
+  const std::string provider(host.c_str());
+  if (!plain::headHeld(provider, keyOf(provider), store::providerOverBudget(host), (uint32_t)millis(), held))
     return false;
   out.deferred = true;
   out.error = "paid requests are held: " + held;
@@ -1392,7 +1470,7 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
   if (routineHeld(kind, host, out)) return out;   // the money guard: a routine or wake-up waits, a reminder goes
   plain::ChatBinding* b = nullptr;
   if (chat.length() && !(kind != sch::Kind::Reminder && refusalFor(host)))
-    b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
+    b = chatFor(chat, roleOfChat(chat));
   // The binding of the fire on the heap, off the tg_poll stack (lane E2-FIX2B: the routine path is
   // the deepest the poll task runs).
   struct FireParts {
@@ -1406,7 +1484,9 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     return out;
   }
   sch::FireBinding& fb = parts->fb;
-  const std::string sub(store::subModel("anthropic").c_str());
+  // The routine runs on the head provider's small model; its spend and park are that provider's.
+  const std::string provider(host.c_str());
+  const std::string sub(store::subModel(host).c_str());
   if (b) {
     plain::ScheduleBindingDeps& d = parts->d;
     d.held = heldFor(chatId);
@@ -1414,11 +1494,11 @@ nimbus::orch::FireOutcome fireEntry(const String& chatIn, const String& id) {
     d.grants = loops::routineGrants();
     d.tzMinutes = tzNow();
     d.routineModel = sub;
-    d.fired = [sub](const plain::FireReport& rep) {
-      store::recordProviderSpend(plain::turnSpendOf(rep.outcome, "anthropic", sub), "routine");
+    d.fired = [provider, sub](const plain::FireReport& rep) {
+      store::recordProviderSpend(plain::turnSpendOf(rep.outcome, provider, sub), "routine");
       // E2-FIX14: the park learns what the routine's head answered; nobody was told, so the owner's next
       // message still gets the episode's notice (engine 1: a routine may carry it, never take it).
-      plain::noteHeadOutcome("anthropic", anthropicKeyText(), rep.outcome, /*probe=*/false, /*told=*/false,
+      plain::noteHeadOutcome(provider, keyOf(provider), rep.outcome, /*probe=*/false, /*told=*/false,
                              (uint32_t)millis());
     };
     fb = plain::fireBindingFor(*b, memory::haveSd() ? &txdev::cardRoutineFiles() : nullptr, d);
@@ -1456,7 +1536,7 @@ void drainOutboxes() {
     if (!due) continue;
     const String chat(h.chatId.c_str());
     const String host = store::resolvedOrchHost();
-    plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
+    plain::ChatBinding* b = chatFor(chat, roleOfChat(chat));
     const size_t held = h.store->notes().size();
     const bool worked = b && plain::drainHeld(*h.store, b->ownerSink(), now, tzNow(), quiet, b->config().dayStartMin);
     alogf("e2: outbox %s: %u held, %s (%u left)", h.chatId.c_str(), (unsigned)held,
@@ -1504,12 +1584,11 @@ plain::Status reportTurnIn(const std::string& chatId, const std::string& note) {
   // E2-FIX14: a report turn sends no request while the head is over its limit, parked or paused: the report
   // waits in the JobEngine (it never takes the park's re-check; a person's message does).
   std::string held;
-  if (host == "anthropic" &&
-      plain::headHeld("anthropic", anthropicKeyText(), store::providerOverBudget(host), (uint32_t)millis(), held)) {
+  if (plain::headHeld(host.c_str(), keyOf(host.c_str()), store::providerOverBudget(host), (uint32_t)millis(), held)) {
     alogf("e2: an agent report for %s waits: %s", chatId.c_str(), held.c_str());
     return busy;
   }
-  plain::ChatBinding* b = chatFor(chat, std::string(store::orchModel(host).c_str()), roleOfChat(chat));
+  plain::ChatBinding* b = chatFor(chat, roleOfChat(chat));
   if (!b) return busy;
   plain::ChatMessage msg;
   msg.trigger = plain::Trigger::AgentResult;
@@ -1534,7 +1613,7 @@ nimbus::orch::Principal chatPrincipal(const std::string& chatId) {
 
 // The job engine's model and key reads (engine 1's buildJobDeps, the same store calls).
 void jobModelDeps(JobEngine::Deps& d) {
-  d.subPriority = [] { return std::string("anthropic"); };   // engine 2 runs its jobs on Anthropic only
+  d.subPriority = [] { return std::string(store::subPriority().c_str()); };   // engine 1's order (E2-R8a)
   d.providerHasKey = [](const std::string& p) { return store::providerHasKey(String(p.c_str())); };
   d.overBudget = [](const std::string& p) { return store::providerOverBudget(String(p.c_str())); };
   d.subModel = [](const std::string& p) { return std::string(store::subModel(String(p.c_str())).c_str()); };

@@ -53,6 +53,10 @@ void setOwnerWaiting(bool (*waiting)());
 // True while a verify is queued or running.
 bool pending();
 
+// Lane E2-R8a: the custom endpoint's last verify accepted a tool call and found a window that holds
+// the fixed part (plain::customToolsFrom over the custom model store). False: text mode.
+bool customToolsVerified();
+
 // The machine-readable reason for `provider`'s LAST verify outcome, for the web
 // UI badge (CUM-77 x1 §4; contract in lanes/L1/PROGRESS.md). One of:
 //   nocredits | router_outdated | low-memory | connectfail | tlsbusy | "" (none)

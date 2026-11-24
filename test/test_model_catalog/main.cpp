@@ -296,6 +296,22 @@ static void test_cumulo_size_class_metadata_overrides_heuristic() {
   TEST_ASSERT_FALSE(opus->apiCaps);
 }
 
+// Lane E2-R8a: a router row's own "vision" field is stored (a narrowing or a widening of the id
+// heuristic); a row without it keeps the heuristic.
+static void test_cumulo_vision_field_is_stored() {
+  std::string body =
+      "{\"data\":["
+      "{\"id\":\"openai/gpt-5.6-luna\",\"size_class\":\"small\",\"vision\":false},"
+      "{\"id\":\"mistral/mistral-large-4-0\",\"size_class\":\"large\",\"vision\":true},"
+      "{\"id\":\"anthropic/claude-opus-5\",\"size_class\":\"large\"}]}";
+  std::vector<ModelInfo> v;
+  TEST_ASSERT_EQUAL_UINT(3, parseModelsList("cumulo", body, v));
+  TEST_ASSERT_FALSE(find(v, "gpt-5.6-luna")->hasCap(CapVision));   // the heuristic says vision; the row says not
+  TEST_ASSERT_TRUE(find(v, "mistral-large-4-0")->hasCap(CapVision));
+  TEST_ASSERT_TRUE(find(v, "mistral-large-4-0")->hasRole(RoleVision));
+  TEST_ASSERT_TRUE(find(v, "claude-opus-5")->hasCap(CapVision));   // no field: the heuristic stands
+}
+
 // CUM-242 x1 item 5: the harvest cap (8) is an ORDERING for the choices CSV, NOT
 // a truncation of the routable catalog. parseModelsList (which feeds mcat_<prov>
 // / GET /api/models) keeps EVERY routable id - here a 14-model multi-upstream
@@ -1014,6 +1030,7 @@ int main(int, char**) {
   RUN_TEST(test_cumulo_upstream_split);
   RUN_TEST(test_cumulo_catalog_is_uncapped_not_truncated);
   RUN_TEST(test_cumulo_size_class_metadata_overrides_heuristic);
+  RUN_TEST(test_cumulo_vision_field_is_stored);
   RUN_TEST(test_classify_catalog_entry_from_bare_ids);
   RUN_TEST(test_models_to_json_shape_and_usable_filter);
   RUN_TEST(test_parse_tolerates_http_headers);

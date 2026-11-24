@@ -662,13 +662,24 @@ bool targetQualified(const HeadTarget& t, hq::Line line) {
   return hq::lookup(t.host.c_str(), t.model.c_str(), line, t.wire).state == hq::State::Qualified;
 }
 
+namespace {
+// Design section 6 item 7: a target's body budget holds the request it replaces.
+bool bodyHolds(const HeadTarget& t, uint32_t capLength) {
+  if (!capLength) return true;
+  nimbus::orch::tx::HeadBudget b;
+  return nimbus::orch::tx::budgetFor(nimbus::orch::tx::HeadKey{t.host, t.model, t.routed}, nimbus::orch::tx::kDefaultProfile, b)
+             .ok() &&
+         b.bodyCap >= capLength;
+}
+}  // namespace
+
 Status pickFallback(const FallbackFacts& facts, int& index) {
   index = -1;
   if (!facts.order) return Status::fail(Err::InvalidArgument, "plain::pickFallback");
   if (!facts.freshAttempt || facts.effectRun || !facts.headParked) return Status::success();
   for (size_t i = 0; i < facts.order->size(); ++i) {
     const HeadTarget& t = (*facts.order)[i];
-    if (!t.parked && targetQualified(t, facts.line)) {
+    if (!t.parked && bodyHolds(t, facts.capLength) && targetQualified(t, facts.line)) {
       index = (int)i;
       break;
     }
