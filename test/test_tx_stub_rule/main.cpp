@@ -16,6 +16,7 @@
 
 #include "../support/tx_battery/items.h"
 #include "../support/tx_battery/pending.h"
+#include "nimbus/orch/tx/result_text.h"
 #include "nimbus/orch/tx/rules.h"
 
 namespace tx = nimbus::orch::tx;
@@ -39,11 +40,11 @@ bool validUtf8(const std::string& s) {
   return true;
 }
 
-// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] ... (shown in full earlier in this conversation;
-// not attached to this request; view id=r<q> shows it again)' (lane E2-FIX9), one line, at most 400 B, valid UTF-8.
+// The internal stub's frame: '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] (removed from this history after you read
+// it in full and replied; view id=r<q> shows it again)' (lanes E2-FIX9, E2-BFIX3), one line, at most 400 B, valid UTF-8.
+const std::string kKept = tx::kResultShownInFull;
 std::string viewTail(uint64_t q) {
-  return "(shown in full earlier in this conversation; not attached to this request; view id=r" + std::to_string(q) +
-         " shows it again)";
+  return "(" + kKept + "; view id=r" + std::to_string(q) + " shows it again)";
 }
 bool internalStubOk(const tx::StubFacts& f, const std::string& s, std::string& why) {
   const std::string head = "[stub " + f.tool + " r" + std::to_string(f.q) + " " + std::to_string(f.bytes) + "B " +
@@ -58,11 +59,11 @@ bool internalStubOk(const tx::StubFacts& f, const std::string& s, std::string& w
   return why.empty();
 }
 
-// The outside stub: the call and its size only, never a byte of the result.
+// The outside stub: what is true of it first, then the call only (no size, never a byte of the result; E2-BFIX3).
 bool outsideStubOk(const tx::StubFacts& f, const std::string& marker, const std::string& s, std::string& why) {
-  const std::string want = "[stub " + f.tool + "(" + f.args.substr(0, tx::kStubArgsPreviewBytes) + ") r" +
-                           std::to_string(f.q) + " " + std::to_string(f.bytes) +
-                           "B outside content, not shown: view id=r" + std::to_string(f.q) + "]";
+  const std::string want = "[stub " + kKept + ": " + f.tool + "(" + f.args.substr(0, tx::kStubArgsPreviewBytes) +
+                           ") r" + std::to_string(f.q) + " outside content; view id=r" + std::to_string(f.q) +
+                           " shows it again]";
   if (s.find(marker) != std::string::npos) why = "outside stub carries outside bytes ('" + marker + "')";
   else if (s != want) why = "outside stub is '" + s + "', want '" + want + "'";
   return why.empty();
@@ -127,13 +128,46 @@ void test_checker_rejects_leaking_outside_stubs() {
   std::string why;
   TEST_ASSERT_TRUE(outsideStubOk(
       f, "OUTSIDE-SECRET",
-      R"([stub web_search({"q":"train times"}) r7 3000B outside content, not shown: view id=r7])", why));
+      "[stub " + kKept + R"(: web_search({"q":"train times"}) r7 outside content; view id=r7 shows it again])", why));
   why.clear();
   TEST_ASSERT_FALSE(outsideStubOk(
       f, "OUTSIDE-SECRET",
       R"([stub web_search({"q":"train times"}) r7 3000B OUTSIDE-SECRET page: view id=r7])", why));
   why.clear();
   TEST_ASSERT_FALSE(outsideStubOk(f, "OUTSIDE-SECRET", "[stub web_search r7 3000B]", why));
+}
+
+// Lane E2-BFIX3: an outside result's stub says first that the head read it in full and replied, and gives no byte
+// count. "<n>B outside content, not shown: view id=r<q>" read on Haiku as a call that returned nothing, and the count
+// (the tool's whole output) differed from the size its answer had quoted, so it called its right answer made up.
+void test_outside_stub_says_it_was_read_in_full_and_gives_no_size() {
+  tx::StubFacts f = outsideFacts(R"({"path":"inbox/memo.md"})", "Memo: the code is 4417");
+  f.tool = "read_file";
+  std::string s;
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_EQUAL_STRING(("[stub " + kKept + R"(: read_file({"path":"inbox/memo.md"}) r7 outside content; view id=r7 )"
+                            "shows it again]").c_str(), s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find("not shown") == std::string::npos && s.find("3000") == std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE(tx::looksLikeStub(s));
+  f.bound.view = false;   // no way back (E2-FIX5): the facts and the call
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_EQUAL_STRING(("[stub " + kKept + R"(: read_file({"path":"inbox/memo.md"}) r7 outside content])").c_str(),
+                           s.c_str());
+  f.noCard = true;   // kept inline up to a cap: "shown earlier", not "in full"
+  TXB_OK(tx::stubText(f, s));
+  TEST_ASSERT_EQUAL_STRING(R"([stub shown earlier in this conversation; not attached to this request: read_file({"path":)"
+                           R"("inbox/memo.md"}) r7 outside content; full result not kept: no storage card])",
+                           s.c_str());
+  // The longest tool, arguments, q and way back still make one stub line within 400 B.
+  tx::StubFacts w = outsideFacts(std::string(400, 'a'), "x");
+  w.tool = std::string(tx::kStubToolMaxBytes, 't');
+  w.q = 18446744073709551615ULL;
+  w.bound.view = false;
+  w.again = std::string(400, 'g');
+  TXB_OK(tx::stubText(w, s));
+  TEST_ASSERT_TRUE_MESSAGE(s.size() <= tx::kStubMaxBytes, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(tx::looksLikeStub(s), s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find(" shows it again]") != std::string::npos, s.c_str());
 }
 
 // ---- stub texts ------------------------------------------------------------------
@@ -210,8 +244,9 @@ void test_file_tool_stub_names_path_and_sha() {
   TEST_ASSERT_TRUE(tx::looksLikeStub(s));
   f.bound.view = false;   // no view: the file read's call
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.find("] (shown in full earlier in this conversation; not attached to this request; read_file "
-                                  "path=notes/boat.md offset=32761 limit=4000 shows it again)") != std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find("] (" + kKept + "; read_file path=notes/boat.md offset=32761 limit=4000 shows it again)") !=
+                               std::string::npos,
+                           s.c_str());
   TEST_ASSERT_TRUE(s.size() <= tx::kStubMaxBytes);
   TEST_ASSERT_TRUE(tx::looksLikeStub(s));
   // Lane E2-FIX9: the longest tool, path and range with no view still make a stub within 400 B that reads as one.
@@ -227,7 +262,7 @@ void test_file_tool_stub_names_path_and_sha() {
   TXB_OK(tx::stubText(worst, s));
   TEST_ASSERT_TRUE_MESSAGE(s.size() <= tx::kStubMaxBytes, s.c_str());
   TEST_ASSERT_TRUE_MESSAGE(tx::looksLikeStub(s), s.c_str());
-  TEST_ASSERT_TRUE_MESSAGE(s.find("shown in full earlier in this conversation; not attached to this request") != std::string::npos, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.find(kKept) != std::string::npos, s.c_str());
   TEST_ASSERT_EQUAL_STRING("", tx::wayBack("calc", R"({"path":"notes/boat.md"})").c_str());
   TEST_ASSERT_EQUAL_STRING("", tx::wayBack("read_file", "[stub 15204B sha:ab12cd34: view id=r9]").c_str());
 }
@@ -529,7 +564,7 @@ void test_rules_no_card_stub_says_not_kept() {
   f.hhmm = "";
   f.noCard = false;
   TXB_OK(tx::stubText(f, s));
-  TEST_ASSERT_TRUE_MESSAGE(s.rfind("[stub read_file r42 15204B 310L --:--] (shown in full earlier", 0) == 0, s.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(s.rfind("[stub read_file r42 15204B 310L --:--] (" + kKept, 0) == 0, s.c_str());
 }
 
 // Every path write supersedes reads of its path; nothing else does.
@@ -942,6 +977,7 @@ int main(int, char**) {
   RUN_TEST(test_rules_a_photo_stub_carries_its_note_and_names_view_only_when_bound);
   RUN_TEST(test_checker_rejects_wrong_internal_stubs);
   RUN_TEST(test_checker_rejects_leaking_outside_stubs);
+  RUN_TEST(test_outside_stub_says_it_was_read_in_full_and_gives_no_size);
   RUN_TEST(test_internal_stub_has_the_prd_shape);
   RUN_TEST(test_stub_text_is_bounded_for_every_tool_and_size);
   RUN_TEST(test_outside_stub_holds_no_outside_bytes);

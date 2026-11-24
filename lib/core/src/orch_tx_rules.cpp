@@ -26,8 +26,8 @@ constexpr const char kStubOpen[] = "[stub ";
 constexpr const char kArgMid[] = "B sha:";
 constexpr const char kArgNotContent[] = ": an argument sent earlier, not content; ";
 constexpr const char kArgFile[] = " shows the file";
-constexpr const char kOutsideMid[] = "B outside content, not shown: ";
-constexpr const char kNoCardOutside[] = "full result not kept: no storage card";
+constexpr const char kOutsideFrame[] = ": ";
+constexpr const char kOutsideMid[] = " outside content";
 constexpr const char kNoClock[] = "--:--";
 constexpr const char kOmissionMid[] = " earlier turns, ";
 constexpr const char kOmissionTail[] = ", not shown: search finds them]";
@@ -294,14 +294,24 @@ Status stubText(const StubFacts& f, std::string& out) {
   std::string s = kStubOpen;
   appendTool(s, f.tool);
   if (f.cls == ResultClass::Outside) {
-    // The call and the size only: no byte of the result is read.
-    s += '(';
-    appendLine(s, f.args, kStubArgsPreviewBytes, true);
-    s += ") r" + q + " " + std::to_string(f.bytes) + kOutsideMid;
-    if (f.noCard) s += kNoCardOutside;
-    else if (f.bound.view) s += "view id=r" + q;
-    else if (!f.again.empty()) s += oneLineOf(f.again, kStubWayBackMaxBytes);
-    else s.resize(s.size() - 2);   // E2-FIX5: no call reads it again: "..., not shown]"
+    // The call only: no byte of the result is read. Lane E2-BFIX3: what is true of it comes first and there is no
+    // byte count. "<n>B outside content, not shown" read on Haiku as a call that returned nothing, and the count (the
+    // tool's whole output) differed from the size the answer had quoted, so the head called its right answer made up
+    // (10 of 10 runs; lanes/E2-BFIX3/PR_BODY.md). With no card the result was kept inline up to a cap: "shown earlier".
+    std::string call = s.substr(std::strlen(kStubOpen));   // the tool
+    call += '(';
+    appendLine(call, f.args, kStubArgsPreviewBytes, true);
+    call += ") r" + q + kOutsideMid;
+    s = std::string(kStubOpen) + (f.noCard ? kPhotoNotAttached : kResultShownInFull) + kOutsideFrame + call;
+    if (f.noCard) {
+      s += kResultNoCard;
+    } else if (f.bound.view) {
+      s += kResultViewOpen + q + kPhotoViewClose;
+    } else if (!f.again.empty()) {
+      const size_t fixed = s.size() + std::strlen(kResultAgainOpen) + std::strlen(kPhotoViewClose) + 1;
+      const size_t room = kStubMaxBytes > fixed ? std::min(kStubWayBackMaxBytes, kStubMaxBytes - fixed) : 0;
+      if (room) s += kResultAgainOpen + oneLineOf(f.again, room) + kPhotoViewClose;
+    }
     s += ']';
     out.swap(s);
     return Status::success();

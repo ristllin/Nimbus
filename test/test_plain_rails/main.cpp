@@ -536,7 +536,7 @@ void test_tainted_result_bytes_are_absent_from_the_next_request() {
     const sp::Recorded& next = reqs[reqs.size() - 2];   // the next turn's first request
     TEST_ASSERT_FALSE_MESSAGE(bodyHas(next, s.marker), s.marker);
     TEST_ASSERT_FALSE_MESSAGE(bodyHas(r.b.model.last(), s.marker), s.marker);
-    TEST_ASSERT_TRUE_MESSAGE(bodyHas(next, "outside content, not shown]"), "the stub does not name what left");
+    TEST_ASSERT_TRUE_MESSAGE(bodyHas(next, "outside content]"), "the stub does not name what left");
     TEST_ASSERT_FALSE_MESSAGE(bodyHas(next, "view id="), "the stub names view, which is not bound (E2-FIX5)");
     for (const char* kept : {"OWNERMARK", "ASSISTANTMARK", "INTERNALMARK"})
       TEST_ASSERT_TRUE_MESSAGE(bodyHas(next, kept), kept);

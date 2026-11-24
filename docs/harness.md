@@ -573,14 +573,16 @@ a pure function of stored facts (no clock, no file, no global state), so a resta
 the same request, and none of them drops anything without a line that names it.
 
 - **Stub texts** are computed once when a result is captured and stored on its `r` line
-  (`stubText`). Internal results: `[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] (shown in full
-  earlier in this conversation; not attached to this request; view id=r<q> shows it again)`, with
+  (`stubText`). Internal results: `[stub <tool> r<q> <bytes>B <lines>L <HH:MM>] (removed from this
+  history after you read it in full and replied; view id=r<q> shows it again)`, with
   `path=` and `sha8=` for file tools, and no preview of the result (lane E2-FIX9: a head read the first
   200 B as all the tool had returned); with no storage card the first 200 B stay, since nothing else
   of the result is kept. Outside results (web,
-  fetch, connectors): `[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown:
-  view id=r<q>]`, built from the call and the size only, so outside content cannot ride into
-  later turns through a stub. Every stub is one line of valid UTF-8 of at most 400 B.
+  fetch, connectors): `[stub removed from this history after you read it in full and replied:
+  <tool>(<args, 120 B>) r<q> outside content; view id=r<q> shows it again]`, built from the call
+  only, so outside content cannot ride into later turns through a stub. The facts come first and
+  there is no byte count (lane E2-BFIX3: Haiku read "<n>B outside content, not shown" as a call that
+  had returned nothing, and the count, the tool's whole output, as proof its quoted answer was made up). Every stub is one line of valid UTF-8 of at most 400 B.
   `longArgStub`, `photoStub` and `omissionLine` write the other three shapes; `stubTime`,
   `photoWhen` and `omissionDates` write their times, with the year in every date.
 - **No default stubbing** (lane E2-VERB, owner rulings 81, 82 and 106): under the head's due

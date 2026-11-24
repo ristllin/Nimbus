@@ -130,14 +130,16 @@ struct StubFacts {
 };
 
 // The stub text, one line of valid UTF-8, at most kStubMaxBytes:
-//  internal (Receipt, Bulk), lane E2-FIX9 (the words in tx/result_text.h and tx/photo_text.h):
-//   '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>[ path=<p> sha8=<s>]] (shown in full earlier in this conversation;
-//   not attached to this request; view id=r<q> shows it again)', no preview. The way back: view when bound
+//  internal (Receipt, Bulk), lanes E2-FIX9 and E2-BFIX3 (the words in tx/result_text.h and tx/photo_text.h):
+//   '[stub <tool> r<q> <bytes>B <lines>L <HH:MM>[ path=<p> sha8=<s>]] (removed from this history after you read it
+//   in full and replied; view id=r<q> shows it again)', no preview. The way back: view when bound
 //   (E2-FIX5's BoundTools), else `again` (a file read's read_file call, lane E2-VERB: '; <again> shows it again'),
 //   else none.
-//  outside: '[stub <tool>(<args, 120 B>) r<q> <bytes>B outside content, not shown: view id=r<q>]'
-//   built from the tool, the call's arguments, q and the size: never a byte of the result; view not
-//   bound: 'outside content, not shown]' (or names `again` when there is one).
+//  outside (lane E2-BFIX3): '[stub removed from this history after you read it in full and replied: <tool>(<args,
+//   120 B>) r<q> outside content; view id=r<q> shows it again]' built from the tool, the call's arguments and q:
+//   never a byte of the result, and no size; view not bound: '... outside content]' (or names `again`); no card:
+//   '[stub shown earlier in this conversation; not attached to this request: ... outside content; full result not
+//   kept: no storage card]'.
 //  noCard: '<preview> ... (shown earlier in this conversation; not attached to this request; full result not kept:
 //   no storage card)' (PRD section 2): the preview is the first kStubPreviewBytes of the result on one line (control
 //   bytes as spaces, invalid UTF-8 as '?', cut on a character), shortened further only to fit 400 B.
