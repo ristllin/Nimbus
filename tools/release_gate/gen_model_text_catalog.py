@@ -191,6 +191,8 @@ NON_MODEL_FILES: dict = {
     "(mistral.cpp) and nothing reads it until the Chat codec (lane E2-R6), which catalogues it then",
     "src/agent/migrate_device.cpp": "E2-MIG: the earlier engine's import; its literals are log lines and the test "
     "console's TXASIDE answers (test builds), never sent to a model",
+    "lib/core/src/orch_wire_errors.cpp": "E2-R5: the engine-2 error classifier; its literals are field names and "
+    "refusal words matched against provider error bodies, never sent to a model or a person",
 }
 
 # The engine-1 baseline: each class's bytes and sha8 when the gate was introduced. It is the
