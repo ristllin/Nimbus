@@ -220,20 +220,20 @@ image_max_kib = { v = 3072, src = "design", read = "2026-11-24", ver = "default"
 images_max = { v = 1500, src = "oai-vision", read = "2026-11-24", ver = "docs" }
 image_in_tool_result = { v = false, src = "lib/harness/src/providers/image_parts.cpp:213-224", read = "2026-11-24", ver = "code", note = "engine 1 sends a looked photo in one user message after the outputs (O13)" }
 tools = { v = true, src = "oai-fc", read = "2026-11-24", ver = "docs" }
-tool_choice = { v = ["auto", "none", "required", "named"], src = "oai-responses", read = "2026-11-24", ver = "docs" }
+tool_choice = { v = ["auto", "none", "required", "named"], src = "test/support/fixtures/openai_wire_2026-11/guard_round_none.txt:4", read = "2026-11-24", ver = "recorded", note = "none recorded on the guard round (R10 S4: text, no call); the rest from oai-responses" }
 id_rule = { v = "anthropic_pattern", src = "oai-fc", read = "2026-11-24", ver = "default", note = "the docs name no call_id pattern; a foreign id outside [A-Za-z0-9_-] (another engine's dotted id) is sent by the one-to-one hex rule, never as is (lane E2-R7)" }
 structured = { v = "responses_text_format", src = "oai-responses", read = "2026-11-24", ver = "docs" }
-summarizer_structured = { v = "none", src = "design", read = "2026-11-24", ver = "default", note = "Lines form until a structured summary is recorded working (R10 S8)" }
+summarizer_structured = { v = "responses_text_format", src = "test/support/fixtures/openai_wire_2026-11/summarizer_structured.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S8: text.format json_schema answered the changes object on gpt-5.6-luna" }
 thinking = { v = "off", src = "oai-reasoning", read = "2026-11-24", ver = "docs", note = "OpenAI has no thinking field; reasoning is set by effort" }
 effort = { v = ["none", "minimal", "low", "medium", "high", "xhigh", "max"], src = "oai-reasoning", read = "2026-11-24", ver = "docs" }
-replay = { v = "encrypted_items", src = "oai-reasoning", read = "2026-11-24", ver = "docs" }
-replay_scope = { v = "all_turns", src = "design", read = "2026-11-24", ver = "none", note = "chosen for byte stability; no document says it is required (design risk 10; R10 S3 and S9)" }
+replay = { v = "encrypted_items", src = "test/support/fixtures/openai_wire_2026-11/function_call_two_ids.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S2: the reasoning item replayed under store:false with the function_call carrying no item id, 200" }
+replay_scope = { v = "all_turns", src = "test/support/fixtures/openai_wire_2026-11/reasoning_encrypted_then_text.txt:4", read = "2026-11-24", ver = "recorded", note = "chosen for byte stability; R10 S3: closed-turn items replayed, 200, 1,362 of 1,406 prompt tokens read from the cache" }
 drop_under_rung = { v = false, src = "design", read = "2026-11-24", ver = "none", note = "no binding documented; a refusal takes the refused-field resend" }
 cache_style = { v = "openai_breakpoints", src = "oai-cache", read = "2026-11-24", ver = "docs" }
 cache_min_tok = { v = 1024, src = "oai-cache", read = "2026-11-24", ver = "docs" }
 long_cache_ok = { v = false, src = "design", read = "2026-11-24", ver = "default", note = "the 12-hour cache is left out (design section 15)" }
 usage_mode = { v = "input_includes_cache", src = "lib/core/src/orch_usage_ledger.cpp:106-111", read = "2026-11-24", ver = "code" }
-order_rules = { v = ["ends_on_user", "results_first_in_user", "no_empty_text", "merge_users", "user_after_tool_ok", "not_only_system"], src = "lib/harness/src/providers/image_parts.cpp:213-224", read = "2026-11-24", ver = "code", note = "a user message after the outputs is what engine 1 sends today" }
+order_rules = { v = ["ends_on_user", "results_first_in_user", "no_empty_text", "merge_users", "user_after_tool_ok", "not_only_system"], src = "lib/harness/src/providers/image_parts.cpp:213-224", read = "2026-11-24", ver = "recorded", note = "a user message after the outputs is what engine 1 sends today; R10 S10 recorded it (a photo after each view result, 200)" }
 
 # ---- Mistral on chat completions ------------------------------------------------------------
 [template.mistral]
@@ -246,14 +246,14 @@ image_max_kib = { v = 20480, src = "mis-limits", read = "2026-11-24", ver = "doc
 images_max = { v = 8, src = "router-images", read = "2026-11-24", ver = "probe", note = "measured by the router: small, medium and ministral answer 400 above 8" }
 image_in_tool_result = { v = false, src = "lib/harness/src/providers/mistral.cpp:292-296", read = "2026-11-24", ver = "probe", note = "a user message after the tool messages is accepted (M12)" }
 tools = { v = true, src = "mis-fc", read = "2026-11-24", ver = "docs" }
-tool_choice = { v = ["auto", "none", "any", "required", "named"], src = "mis-chat", read = "2026-11-24", ver = "docs" }
+tool_choice = { v = ["auto", "none", "any", "required", "named"], src = "test/support/fixtures/mistral_wire_2026-11/guard_round_none.txt:4", read = "2026-11-24", ver = "recorded", note = "none recorded on the guard round (R10 S4: text, no call); the rest from mis-chat" }
 id_rule = { v = "mistral9", src = "lib/harness/src/providers/mistral.cpp:252-270", read = "2026-11-24", ver = "code", note = "the docs give no id rule; the project maps foreign ids to 9 alphanumerics" }
 structured = { v = "chat_json_schema", src = "mis-chat", read = "2026-11-24", ver = "docs" }
-summarizer_structured = { v = "none", src = "lib/harness/src/providers/mistral.cpp:963-967", read = "2026-11-24", ver = "recorded", note = "the strict schema left the reply empty (CUM-890, M19)" }
+summarizer_structured = { v = "none", src = "lib/harness/src/providers/mistral.cpp:963-967", read = "2026-11-24", ver = "recorded", note = "the strict schema left the reply empty (CUM-890, M19); R10 S8 got one good answer on a one-line slice (test/support/fixtures/mistral_wire_2026-11/summarizer_structured.txt), not enough against the recorded empty replies, so Lines stays" }
 thinking = { v = "off", src = "mis-reasoning", read = "2026-11-24", ver = "docs", note = "Mistral has no thinking field; reasoning is set by effort" }
 effort = { v = ["none"], src = "lib/harness/src/providers/output_caps.cpp:173-180", read = "2026-11-24", ver = "recorded", note = "the reference lists none to xhigh; the project recorded (1 Nov) that every reasoning model but the forced ones refuses low, so only none is entered" }
-replay = { v = "think_chunks", src = "mis-reasoning", read = "2026-11-24", ver = "docs" }
-replay_scope = { v = "all_turns", src = "mis-reasoning", read = "2026-11-24", ver = "docs" }
+replay = { v = "think_chunks", src = "test/support/fixtures/mistral_wire_2026-11/tool_calls.txt:4", read = "2026-11-24", ver = "recorded", note = "R10: a call round is served as a thinking chunk beside tool_calls with no text, and taken back so; the served chunk carries closed:true" }
+replay_scope = { v = "all_turns", src = "test/support/fixtures/mistral_wire_2026-11/thinking_chunks.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S3: closed-turn chunks replayed, 200, 2,048 of 2,155 prompt tokens read from the cache" }
 drop_under_rung = { v = false, src = "design", read = "2026-11-24", ver = "none" }
 cache_style = { v = "key_hint", src = "mis-cache", read = "2026-11-24", ver = "docs" }
 cache_min_tok = { v = 64, src = "mis-cache", read = "2026-11-24", ver = "docs" }
@@ -270,7 +270,7 @@ input = { v = ["text"], src = "zai-glm-5-3", read = "2026-11-24", ver = "docs" }
 image_formats = { v = ["jpeg", "png"], src = "zai-chat", read = "2026-11-24", ver = "docs" }
 image_max_kib = { v = 4882, src = "zai-chat", read = "2026-11-24", ver = "docs", note = "under 5 MB" }
 tools = { v = true, src = "zai-fc", read = "2026-11-24", ver = "docs" }
-tool_choice = { v = ["auto", "required"], src = "lib/harness/src/providers/custom.cpp:347-351", read = "2026-11-24", ver = "probe", note = "the docs list only auto; required was probed working on 1 Nov; none is not recorded (R10 S4)" }
+tool_choice = { v = ["auto", "required"], src = "test/support/fixtures/zai_wire_2026-11/tool_choice_none_ignored.txt:4", read = "2026-11-24", ver = "recorded", note = "the docs list only auto; required was probed working on 1 Nov (custom.cpp:347-351); R10 S4: none is accepted (200) but not honoured (glm-5.3 answered a tool call), so it stays out and the guard round sends auto with its calls never run" }
 id_rule = { v = "passthrough", src = "lib/harness/src/providers/custom.cpp:347-351", read = "2026-11-24", ver = "probe", note = "foreign call ids accepted (probed 1 Nov)" }
 structured = { v = "none", src = "lib/harness/src/providers/custom.cpp:749-750", read = "2026-11-24", ver = "recorded", note = "Z.ai ignores json_schema (CUM-495)" }
 summarizer_structured = { v = "none", src = "lib/harness/src/providers/custom.cpp:749-750", read = "2026-11-24", ver = "recorded" }
@@ -573,7 +573,7 @@ slot = "zai"
 kind = "exact"
 match = "glm-5.3-flash"
 inherit = "glm"
-input = { v = ["text"], src = "lib/core/src/orch_turn_images.cpp:122-124", read = "2026-11-24", ver = "code", note = "the docs say glm-5.3-flash takes images; the project treats every GLM as blind (Z11), so text is entered until R10 S6 records an image turn" }
+input = { v = ["text", "image"], src = "test/support/fixtures/zai_wire_2026-11/image_flash_png.txt:4", read = "2026-11-24", ver = "recorded", note = "R10 S6: a PNG in an image_url part was read (the answer named its red circle and checkerboard); engine 1 still treats every GLM as blind (Z11, orch_turn_images.cpp:122-124)" }
 refused_choices = { v = ["any", "named"], src = "lib/harness/src/providers/custom.cpp:347-351", read = "2026-11-24", ver = "probe", note = "named is ignored, any is a 400" }
 
 [[model]]
@@ -618,9 +618,9 @@ kind = "type"
 text = "authentication_error"
 status = 401
 class = "key_auth"
-src = "ant-errors"
+src = "test/support/fixtures/anthropic_wire_2026-11/error_authentication.json:1"
 read = "2026-11-24"
-ver = "docs"
+ver = "recorded"
 
 [[marker]]
 slot = "anthropic"

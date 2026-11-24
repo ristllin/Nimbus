@@ -3,10 +3,12 @@ chat-custom_chat-direct/second_turn_after_tools.req
 chat-custom_chat-direct/summarizer_lines.req
 chat-custom_chat-direct/text_only.req
 chat-mistral-direct/error_3051_effort_refused.parse
+chat-mistral-direct/error_401_detail.parse
 chat-mistral-direct/error_invalid_model.parse
 chat-mistral-direct/foreign_k_item.req
 chat-mistral-direct/guard_round.req
 chat-mistral-direct/length_cut_call.parse
+chat-mistral-direct/length_cut_thinking_only.parse
 chat-mistral-direct/mistral_thinking_chunk.req
 chat-mistral-direct/model_length.parse
 chat-mistral-direct/one_call.req
@@ -25,6 +27,7 @@ chat-mistral-routed/one_call.req
 chat-mistral-routed/text_only.req
 chat-zai-direct/error_1113_no_balance.parse
 chat-zai-direct/error_1301_unsafe_content.parse
+chat-zai-direct/error_401_token.parse
 chat-zai-direct/foreign_k_item.req
 chat-zai-direct/guard_round.req
 chat-zai-direct/length_cut.parse
@@ -42,16 +45,19 @@ chat-zai-direct/text_only.req
 chat-zai-direct/three_rounds.req
 chat-zai-direct/tool_call_args_object.parse
 chat-zai-direct/tool_call_args_string.parse
+chat-zai-direct/tool_choice_none_ignored.parse
 chat-zai-direct/two_parallel_calls.req
 chat-zai-direct/zai_reasoning_content.req
 chat-zai-routed/one_call.req
 chat-zai-routed/text_only.req
 messages-anthropic-direct/day_change.req
 messages-anthropic-direct/digest_covers_earlier_turns.req
+messages-anthropic-direct/error_authentication.parse
 messages-anthropic-direct/error_not_found.parse
 messages-anthropic-direct/foreign_ids.req
 messages-anthropic-direct/foreign_k_item.req
 messages-anthropic-direct/guard_round.req
+messages-anthropic-direct/guard_round_thinking_only.parse
 messages-anthropic-direct/input_transformations_dropped.parse
 messages-anthropic-direct/ladder_none.req
 messages-anthropic-direct/ladder_rung1_closed_through.req
@@ -92,6 +98,8 @@ messages-anthropic-routed/text_only.req
 responses-openai-direct/digest_covers_earlier_turns.req
 responses-openai-direct/error_context_length_exceeded.parse
 responses-openai-direct/error_insufficient_quota.parse
+responses-openai-direct/error_invalid_api_key.parse
+responses-openai-direct/error_model_not_found.parse
 responses-openai-direct/failed_server_error.parse
 responses-openai-direct/foreign_ids.req
 responses-openai-direct/foreign_k_item.req
@@ -116,6 +124,7 @@ responses-openai-direct/stored_cut_answer.req
 responses-openai-direct/stub_and_bulk_result.req
 responses-openai-direct/summarizer_lines.req
 responses-openai-direct/summarizer_structured.req
+responses-openai-direct/text_completed.parse
 responses-openai-direct/text_only.req
 responses-openai-direct/text_only_no_effort.req
 responses-openai-direct/three_rounds.req

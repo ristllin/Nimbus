@@ -1,4 +1,0 @@
-synthetic: https://developers.openai.com/api/docs/guides/reasoning, read 2026-11-24
-status: 200
-expect: stop=cut complete=false calls=0
-{"id":"resp_syn_06","object":"response","created_at":1763980000,"status":"incomplete","error":null,"incomplete_details":{"reason":"max_output_tokens"},"model":"gpt-5.6","output":[{"type":"reasoning","id":"rs_syn_01","summary":[],"encrypted_content":"gAAAAABsynthetic-encrypted-reasoning-01"}],"usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":1024},"output_tokens":4096,"output_tokens_details":{"reasoning_tokens":4096},"total_tokens":5296}}

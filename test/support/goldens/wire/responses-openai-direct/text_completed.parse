@@ -1,0 +1,18 @@
+# route golden parse responses-openai-direct/text_completed.txt served at HTTP 200
+parse ok
+parse stop end
+parse text 21 B fnv64=783271277986f1bb head="Two plus two is four."
+parse refusal ""
+parse calls 0
+parse meta 0
+parse usage prompt=3 completion=10 cacheRead=0 cacheWrite=1206 cacheWrite1h=0 responses=1 maxRequestIn=1209 served="gpt-5.6-luna"
+exchange err=ok http=200 requests=1 retries=0 climbs=0 cutRetried=0 failOver=0 parkHost=0 maxTokens=0 requestBytes=1129 ms=0 waitedMs=0 statusLine=0
+exchange line ""
+exchange line stored ""
+exchange request 0 1129 B fnv64=aa6f4f795f9866d9
+exchange step stop end
+exchange step text 21 B fnv64=783271277986f1bb head="Two plus two is four."
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 0
+exchange step usage prompt=3 completion=10 cacheRead=0 cacheWrite=1206 cacheWrite1h=0 responses=1 maxRequestIn=1209 served="gpt-5.6-luna"

@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (10-guard_round), read 2026-11-24
+status: 200
+expect: stop=end complete=true calls=0
+{"id":"scrubbed","created":1795548491,"model":"mistral-large-4-0","usage":{"prompt_tokens":134,"total_tokens":157,"completion_tokens":23,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":2},"service_tier":"standard"},"object":"chat.completion","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","tool_calls":null,"content":[{"type":"thinking","thinking":[{"type":"text","text":"Continue."}],"closed":true},{"type":"text","text":"I checked n1–n3 and none contain the seed list. Reading more notes."}]}}]}

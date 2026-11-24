@@ -1,0 +1,21 @@
+# route golden parse chat-mistral-direct/length_cut_thinking_only.txt served at HTTP 200
+parse ok
+parse stop cut
+parse text 0 B fnv64=14650fb0739d0383 head=""
+parse refusal ""
+parse calls 0
+parse meta 1
+parse   meta 0 beforeCall=0 343 B fnv64=cacf63d451f427f3 head="{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"t"
+parse usage prompt=197 completion=64 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=1 maxRequestIn=197 served="mistral-large-4-0"
+exchange err=cut http=200 requests=2 retries=1 climbs=0 cutRetried=1 failOver=0 parkHost=0 maxTokens=2923 requestBytes=814 ms=0 waitedMs=0 statusLine=4
+exchange line "The reply above was cut at the length limit."
+exchange line stored "The reply above was cut at the length limit."
+exchange request 0 817 B fnv64=c1f5c67edb0ee48b
+exchange request 1 814 B fnv64=3826a6cb4f4f6190
+exchange step stop cut
+exchange step text 0 B fnv64=14650fb0739d0383 head=""
+exchange step refusal ""
+exchange step calls 0
+exchange step meta 1
+exchange step   meta 0 beforeCall=0 343 B fnv64=cacf63d451f427f3 head="{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"t"
+exchange step usage prompt=394 completion=128 cacheRead=0 cacheWrite=0 cacheWrite1h=0 responses=2 maxRequestIn=197 served="mistral-large-4-0"

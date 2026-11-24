@@ -1,4 +1,0 @@
-synthetic: https://docs.mistral.ai/resources/known-limitations, read 2026-11-24
-status: 401
-expect: class=key_auth retry=no
-{"message":"Unauthorized","request_id":"syn-mistral-401"}

@@ -129,6 +129,11 @@ std::vector<sp::WireFixture> fixturesFor(const txb::Row& r) {
     default: break;   // custom chat: no provider of its own; covered by the shared chat fixtures' rows
   }
   if (dir) TEST_ASSERT_TRUE_MESSAGE(sp::loadWireFixtures(dir, out, err), err.c_str());
+  if (dir) {   // lane E2-R10: the recorded answers beside the synthetic ones (<slot>_wire_2026-11)
+    std::string rec = dir;
+    rec.replace(rec.find("_wire_synthetic"), 15, "_wire_2026-11");
+    TEST_ASSERT_TRUE_MESSAGE(sp::loadWireFixtures(rec, out, err), err.c_str());
+  }
   if (r.routed) TEST_ASSERT_TRUE_MESSAGE(sp::loadWireFixtures("test/support/fixtures/router_wire_synthetic", out, err), err.c_str());
   return out;
 }
@@ -753,14 +758,18 @@ void test_counter_each_property_catches_its_break() {
 // Every synthetic fixture loads with its source line, and the replay serves it byte for byte.
 void test_fixtures_carry_their_source_and_replay_verbatim() {
   size_t n = 0;
+  // Lane E2-R10: the recorded folders beside the synthetic ones; a file's first line says which it is.
   for (const char* dir : {"test/support/fixtures/openai_wire_synthetic", "test/support/fixtures/mistral_wire_synthetic",
-                          "test/support/fixtures/zai_wire_synthetic", "test/support/fixtures/router_wire_synthetic"}) {
+                          "test/support/fixtures/zai_wire_synthetic", "test/support/fixtures/router_wire_synthetic",
+                          "test/support/fixtures/openai_wire_2026-11", "test/support/fixtures/mistral_wire_2026-11",
+                          "test/support/fixtures/zai_wire_2026-11"}) {
     std::vector<sp::WireFixture> fs;
     std::string err;
     TEST_ASSERT_TRUE_MESSAGE(sp::loadWireFixtures(dir, fs, err), err.c_str());
-    TEST_ASSERT_TRUE_MESSAGE(fs.size() >= 9, dir);
+    TEST_ASSERT_TRUE_MESSAGE(fs.size() >= 5, dir);
+    const char* kind = std::string(dir).find("_synthetic") != std::string::npos ? "synthetic: " : "recorded: ";
     for (const sp::WireFixture& f : fs) {
-      TEST_ASSERT_TRUE_MESSAGE(f.source.rfind("synthetic: ", 0) == 0 && f.source.find(", read 2026-11-24") != std::string::npos,
+      TEST_ASSERT_TRUE_MESSAGE(f.source.rfind(kind, 0) == 0 && f.source.find(", read 2026-11-24") != std::string::npos,
                                f.file.c_str());
       TEST_ASSERT_TRUE_MESSAGE(!f.expected("stop").empty() || !f.expected("class").empty(), f.file.c_str());
       JsonDocument doc;
@@ -782,7 +791,7 @@ void test_fixtures_carry_their_source_and_replay_verbatim() {
   std::string err;
   TEST_ASSERT_FALSE(sp::parseWireFixture("status: 200\nexpect: stop=end\n{}\n", bad, err));
   TEST_ASSERT_FALSE(sp::parseWireFixture("synthetic: https://x, read 2026-11-24\nexpect: stop=end\n{}\n", bad, err));
-  std::printf("synthetic fixtures: %zu\n", n);
+  std::printf("wire fixtures: %zu\n", n);
 }
 
 void test_zz_waiting_cases_are_counted() {

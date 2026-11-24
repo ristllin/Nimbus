@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (02-S2-tool), read 2026-11-24
+status: 200
+expect: stop=tool complete=true calls=1
+{"id":"scrubbed","created":1795548435,"model":"mistral-large-4-0","usage":{"prompt_tokens":1996,"total_tokens":2045,"completion_tokens":49,"prompt_tokens_details":{"cached_tokens":1536},"completion_tokens_details":{"reasoning_tokens":33},"service_tier":"standard"},"object":"chat.completion","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"B4igTotYT","type":"function","function":{"name":"read_file","arguments":"{\"path\": \"notes/seeds.txt\"}"},"index":0}],"content":[{"type":"thinking","thinking":[{"type":"text","text":"The user wants me to read the file notes/seeds.txt and tell them the first seed it lists. I should use the read_file tool to read this file."}],"closed":true}]}}]}

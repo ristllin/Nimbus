@@ -1,0 +1,4 @@
+recorded: lane E2-R10 tools/harness-lab r10 (16-S7-unknown-model), read 2026-11-24
+status: 400
+expect: class=unknown_model retry=no
+{"object":"error","message":"Invalid model: r10-no-such-model","type":"invalid_model","param":null,"code":"1500","raw_status_code":400}

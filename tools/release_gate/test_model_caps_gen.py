@@ -160,5 +160,7 @@ def test_the_report_lists_unverified_values(data):
     _, rows, _ = gen.lint(data, TODAY, tree=False)
     lines = gen.unverified(data, rows)
     assert any("context_length_exceeded" in ln for ln in lines)
-    assert any("replay_scope" in ln and "gpt-5.6-luna" in ln for ln in lines)
+    # E2-R10 recorded replay_scope on OpenAI (S3); drop_under_rung is still unverified there
+    assert not any("replay_scope" in ln and "gpt-5.6-luna" in ln for ln in lines)
+    assert any("drop_under_rung" in ln and "gpt-5.6-luna" in ln for ln in lines)
     assert not any("claude-sonnet-5-5 thinking" in ln for ln in lines)

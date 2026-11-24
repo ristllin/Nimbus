@@ -1,4 +1,0 @@
-synthetic: https://developers.openai.com/api/docs/guides/error-codes, read 2026-11-24
-status: 401
-expect: class=key_auth retry=no
-{"error":{"message":"Incorrect API key provided.","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}

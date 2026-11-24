@@ -3229,8 +3229,11 @@ void test_the_change_list_reads_back_as_lines() {
 void test_an_empty_change_list_is_taken_only_from_an_anthropic_structured_row() {
   namespace caps = nimbus::orch::caps;
   for (const caps::ModelRow& r : caps::kCapsModels)
+    // Lane E2-R10: OpenAI's structured summary is recorded working (S8), but no empty list from it is: its empty
+    // list stays not taken (asked again in lines), as plain_compact.cpp emptyListTaken reads Anthropic's row only.
     TEST_ASSERT_TRUE_MESSAGE(r.summarizerStructured == caps::Structured::None ||
-                                 r.summarizerStructured == caps::Structured::AnthropicOutputConfig,
+                                 r.summarizerStructured == caps::Structured::AnthropicOutputConfig ||
+                                 r.summarizerStructured == caps::Structured::ResponsesTextFormat,
                              "a row records a structured summary that is not Anthropic's: test its empty list here");
   agent::hlog::setSink(recordLog);
   gLogLines.clear();

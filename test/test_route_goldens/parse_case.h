@@ -22,6 +22,10 @@ inline constexpr const char* kAnswers = "test/support/fixtures/anthropic_wire_20
 inline constexpr const char* kMistralAnswers = "test/support/fixtures/mistral_wire_synthetic/";
 inline constexpr const char* kZaiAnswers = "test/support/fixtures/zai_wire_synthetic/";
 inline constexpr const char* kOpenAIAnswers = "test/support/fixtures/openai_wire_synthetic/";
+// Lane E2-R10: the answers recorded from the real services (24 Nov 2026), each in place of the synthetic one.
+inline constexpr const char* kMistralRecorded = "test/support/fixtures/mistral_wire_2026-11/";
+inline constexpr const char* kZaiRecorded = "test/support/fixtures/zai_wire_2026-11/";
+inline constexpr const char* kOpenAIRecorded = "test/support/fixtures/openai_wire_2026-11/";
 
 struct Answer {
   const char* file;   // under dir
@@ -40,30 +44,40 @@ inline std::vector<Answer> answers() {
           {"thinking_near_the_line_call.json", 200},   {"thinking_over_the_line_cut.json", 200},
           {"error_not_found.json", 404},
           // Lane E2-R6: the chat rows' synthetic answers (written from the providers' documentation).
-          {"tool_calls.txt", 200, kMistral, kMistralAnswers},
-          {"thinking_chunks.txt", 200, kMistral, kMistralAnswers},
+          {"tool_calls.txt", 200, kMistral, kMistralRecorded},
+          {"thinking_chunks.txt", 200, kMistral, kMistralRecorded},
           {"length_cut_call.txt", 200, kMistral, kMistralAnswers},
           {"model_length.txt", 200, kMistral, kMistralAnswers},
           {"error_3051_effort_refused.txt", 400, kMistral, kMistralAnswers},
-          {"error_invalid_model.txt", 400, kMistral, kMistralAnswers},
-          {"reasoning_content_text.txt", 200, kZai, kZaiAnswers},
+          {"error_invalid_model.txt", 400, kMistral, kMistralRecorded},
+          {"reasoning_content_text.txt", 200, kZai, kZaiRecorded},
           {"tool_call_args_object.txt", 200, kZai, kZaiAnswers},
-          {"tool_call_args_string.txt", 200, kZai, kZaiAnswers},
-          {"length_cut.txt", 200, kZai, kZaiAnswers},
+          {"tool_call_args_string.txt", 200, kZai, kZaiRecorded},
+          {"length_cut.txt", 200, kZai, kZaiRecorded},
           {"sensitive.txt", 200, kZai, kZaiAnswers},
           {"model_context_window_exceeded.txt", 200, kZai, kZaiAnswers},
           {"error_1113_no_balance.txt", 429, kZai, kZaiAnswers},
           {"error_1301_unsafe_content.txt", 400, kZai, kZaiAnswers},
           // Lane E2-R7: the synthetic Responses answers.
-          {"reasoning_encrypted_then_text.txt", 200, kResponsesDirect, kOpenAIAnswers},
-          {"function_call_two_ids.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"reasoning_encrypted_then_text.txt", 200, kResponsesDirect, kOpenAIRecorded},
+          {"function_call_two_ids.txt", 200, kResponsesDirect, kOpenAIRecorded},
           {"incomplete_max_output_tokens.txt", 200, kResponsesDirect, kOpenAIAnswers},
           {"incomplete_cut_call.txt", 200, kResponsesDirect, kOpenAIAnswers},
-          {"incomplete_reasoning_only.txt", 200, kResponsesDirect, kOpenAIAnswers},
+          {"incomplete_reasoning_only.txt", 200, kResponsesDirect, kOpenAIRecorded},
           {"incomplete_content_filter.txt", 200, kResponsesDirect, kOpenAIAnswers},
           {"failed_server_error.txt", 200, kResponsesDirect, kOpenAIAnswers},
           {"error_insufficient_quota.txt", 429, kResponsesDirect, kOpenAIAnswers},
-          {"error_context_length_exceeded.txt", 400, kResponsesDirect, kOpenAIAnswers}};
+          {"error_context_length_exceeded.txt", 400, kResponsesDirect, kOpenAIAnswers},
+          // Lane E2-R10: recorded answers with no synthetic forerunner.
+          {"guard_round_thinking_only.json", 200},
+          {"error_authentication.json", 401},
+          {"length_cut_thinking_only.txt", 200, kMistral, kMistralRecorded},
+          {"error_401_detail.txt", 401, kMistral, kMistralRecorded},
+          {"error_401_token.txt", 401, kZai, kZaiRecorded},
+          {"tool_choice_none_ignored.txt", 200, kZai, kZaiRecorded},
+          {"text_completed.txt", 200, kResponsesDirect, kOpenAIRecorded},
+          {"error_invalid_api_key.txt", 401, kResponsesDirect, kOpenAIRecorded},
+          {"error_model_not_found.txt", 404, kResponsesDirect, kOpenAIRecorded}};
 }
 
 // The answer as the transport serves it (the parse suite's own reading: trailing newlines off).

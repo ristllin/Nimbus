@@ -1,0 +1,141 @@
+recorded: lane E2-R10 tools/harness-lab r10 (21-S5-cap64), read 2026-11-24
+status: 200
+expect: stop=cut complete=false calls=0
+{
+  "access_programs": null,
+  "background": false,
+  "billing": {
+    "payer": "developer"
+  },
+  "completed_at": null,
+  "created_at": 1795548415,
+  "error": null,
+  "frequency_penalty": 0.0,
+  "id": "resp_scrubbed",
+  "image": {
+    "context_compression": "disabled"
+  },
+  "incomplete_details": {
+    "reason": "max_output_tokens"
+  },
+  "input_transformations": [],
+  "instructions": "You are a test assistant for the route goldens. Answer briefly.",
+  "max_output_tokens": 64,
+  "max_tool_calls": null,
+  "model": "gpt-5.6-luna",
+  "moderation": null,
+  "object": "response",
+  "output": [
+    {
+      "content": [],
+      "encrypted_content": "gAAAAABrBeUADrHhJBhhrs9anlU-wSDMGy-fPbseucGt1gvU9DCBIgyN2SAAQ94pyQBm9wY2lRN4SMHFzvp8H8Uv9h0Fgl1IdReAR5sUVfiTdWTq5eWbqCmfwTiTktB-CteiKH_IzzbpFQakjSXgssJiOf1F1UFh_48QU9uxtK6abvBXoHwU4nAUO9pOgoklcW9s-lgbPtUD-ZCxR6pauQSs5RJqouepQ3DZELxzlt1yfTGy8i4K6As0tgGRly7RbDAHSz0-f6Q-mZDproBbT81E8t0iOGuT-_wV-Ql2hOuUtjqgy3uSM3b6wKfJgrPiMf_8OB6sD6FKEuKCpLxvRP6VYRUPKeG04vdj7f60T1gJ-ydJB0IJcjC21USYXimoHUPydm4vEbz7H7I4YomDY-SXYKB7gHb_pvgRh9n3fqzcMAc8Jz80tuFEG12DUuMhgCTomI0fJjEH_rGPufZU714qZp-sOFwIztSh3pFXiJ3vgx8pM5XSWDtKcN40fj0wHuIKz6qLZkaTy7Grm1xDgb1-JdZTMmN5t2C7aWpI2niw-h8zoEXnJtxkTSLMLRQ4NnoAnXRVYwG8_1W2rN_Bwm2T0j8cR1NKwILdKaJ2suIGbN9JXeq974BD_sn129C8aGqAjpYgDQG79rJO17aldyl_jBCiXZwS5J43UMXD77WA9UP2M_TnsTwjRQRc6vTWYwcEpxGXZNAr5AUvCqmy5z4zVXRAPj0PY0beMr8vj-xxNlOkhX_7_gSz3BPJNK5y5PQBhH06mBK9M0Jmlb9EUFVtbL8WQgJrlfwsFdEzMK-Nthwes2iutiffR4lIZ7u5tpR60PNMiGY7UAgSj_ki3E6FGA-lYx3cWJkLX1qXJwvqwxbASmK1RLRmA3lsve0xGSYsYrlkOtYV1KK0uewbPtQ5V4HcF4Z53sxGaXzOIN5VD8BJWTEmtTdWHt_kY7kD4-wyelrL6WlDYj6K_Nk_VvOBvDg10ecvKyqHr7nZ5a-YDJ9FnsAzbY7nojazZKaGGoi1YKd8Xm9CFyctLRTxKblYXf1Rxh0_ZCCglUFKKVTER96p9PKvG6d5NNRR7tFecz0y4UF6FuAoMRV6wEZTd_TpCxAm3He8oy5jNQgGBUZRF_1-LAaXsEoaRCuVDKrKx4w9lmhaKFZB340Xlz9t7vbYn4Xh1NEWogUnzzgAzF9ovsiXGehQZovdymdFRls-1dicAdHCZjXiBae_Igy2kSD2Knf-jGcLbBhuyhsVVB31iaHZuqfSaaBI0U9gggxNrU4Yoexcr9ooXgbeK70mX_taweOjo2oNV0IUKwtPB1NavpPS2_kfxBTdwb79PxmzXKES5toq5Zem15aO5skQj9HrKNMXOIiXnwumxrkz2_TsNRf_a8rPf-rUg79RbtiTFwv05maBjGoAmD5TFol8vrk-e7oOyTXzI4RFMhWZkqzhdBi6NUsLORDZrycb5dpeU4R8ho1rIk1zIyP0mv5nILLeMrY4ojuufaEct4dqp-oo7DFwlYeyZD33SP37mT6hlirCgGBExyb83sLtQdJK1WqEyJQ07pHlbQb5N6-8PUUtv7k0DCG9yw__sGZe57CS6MatRRR7Nc8I5_hpNKDSv44uc027Ars4MfjWMuGlIJGGbXxdvJ6CYU94ETapeP1oxasK__TIwY_8TSGw5a_Ts3iu5aecpDKswH40jBudJlekwtzqL6t2M8DaC1t2ryGntJyQcFmeHd1WGtAsLzWweGedZ_kQ416djlDO1IuQQy4ZDpxP-XDejCqRdxuxUmHaZP9v8589VrgyYvjXKHoKZkosuZFmiIeJpA==",
+      "id": "rs_scrubbed",
+      "summary": [],
+      "type": "reasoning"
+    }
+  ],
+  "parallel_tool_calls": true,
+  "presence_penalty": 0.0,
+  "previous_response_id": null,
+  "prompt_cache_key": "nb-8fefae20ef9b4bcb",
+  "prompt_cache_options": {
+    "mode": "implicit",
+    "ttl": "30m"
+  },
+  "prompt_cache_retention": "24h",
+  "reasoning": {
+    "context": "all_turns",
+    "effort": "medium",
+    "mode": "standard",
+    "summary": null
+  },
+  "safety_identifier": null,
+  "service_tier": "default",
+  "status": "incomplete",
+  "store": false,
+  "temperature": 1.0,
+  "text": {
+    "format": {
+      "type": "text"
+    },
+    "verbosity": "medium"
+  },
+  "tool_choice": "auto",
+  "tool_usage": {
+    "image_gen": {
+      "input_tokens": 0,
+      "input_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "image_tokens": 0,
+        "text_tokens": 0
+      },
+      "total_tokens": 0
+    },
+    "web_search": {
+      "num_requests": 0
+    }
+  },
+  "tools": [
+    {
+      "description": "Read one note by its path.",
+      "name": "read_note",
+      "output_schema": null,
+      "parameters": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    {
+      "description": "Show an earlier result or photo again by its id.",
+      "name": "view",
+      "output_schema": null,
+      "parameters": {
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  ],
+  "top_logprobs": 0,
+  "top_p": 0.98,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 138,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cache_write_tokens_details": {
+        "ttl_12h_tokens": 0,
+        "ttl_30m_tokens": 0
+      },
+      "cached_tokens": 0
+    },
+    "output_tokens": 64,
+    "output_tokens_details": {
+      "reasoning_tokens": 64
+    },
+    "total_tokens": 202
+  },
+  "user": null,
+  "metadata": {}
+}

@@ -45,6 +45,7 @@ std::vector<sp::WireFixture> fixtures() {
   std::vector<sp::WireFixture> out;
   std::string err;
   TEST_ASSERT_TRUE_MESSAGE(sp::loadWireFixtures("test/support/fixtures/openai_wire_synthetic", out, err), err.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(sp::loadWireFixtures("test/support/fixtures/openai_wire_2026-11", out, err), err.c_str());   // E2-R10
   return out;
 }
 
@@ -136,12 +137,15 @@ void test_a_call_keeps_its_call_id_and_the_reasoning_its_own_id() {
   plain::ParsedStep step;
   TEST_ASSERT_TRUE(parse(fixture(fs, "function_call_two_ids").body, step).ok());
   TEST_ASSERT_EQUAL(1, (int)step.calls.size());
-  TEST_ASSERT_EQUAL_STRING("call_syn01", step.calls[0].id.c_str());
+  // Lane E2-R10: the recorded answer (gpt-5.6-luna, 24 Nov 2026; item ids scrubbed). The item is stored in the
+  // codec's fixed key order, whatever order and spacing the service served it in.
+  TEST_ASSERT_EQUAL_STRING("call_42aef2563875462f9c98701fcbbf0c5b", step.calls[0].id.c_str());
   TEST_ASSERT_EQUAL(1, (int)step.meta.size());
   TEST_ASSERT_EQUAL(0, (int)step.meta[0].beforeCall);
-  TEST_ASSERT_EQUAL_STRING(
-      R"({"type":"reasoning","id":"rs_syn_01","summary":[],"encrypted_content":"gAAAAABsynthetic-encrypted-reasoning-01"})",
-      step.meta[0].bytes.c_str());
+  const std::string& item = step.meta[0].bytes;
+  TEST_ASSERT_TRUE_MESSAGE(item.rfind(R"({"type":"reasoning","id":"rs_scrubbed","summary":[],"encrypted_content":"gAAAAAB)", 0) == 0,
+                           item.substr(0, 120).c_str());
+  TEST_ASSERT_TRUE(item.size() > 1500 && item.back() == '}');
   for (const plain::MetaPart& m : step.meta) TEST_ASSERT_TRUE(m.bytes.find("fc_") == std::string::npos);
 }
 
