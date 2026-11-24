@@ -122,6 +122,11 @@ const ActionRuleRow kRows[] = {
     {"media_pause", R::Owner, "pause the music"},
     {"media_stop", R::Owner, "stop the music"},
     {"media_list", R::Open, "list the music"},
+    // E2-REP1: engine 1's reply.telegram and files.send (send) and session.spawn (agent_start) rows: an
+    // approved member sends to their own chat and starts a job; another chat stays the owner's.
+    {"send", R::TurnOnly, "send a message or a file"},
+    {"send.other_chat", R::OwnerAttended, "send to another chat"},
+    {"agent_start", R::TurnOnly, "start a sub-agent"},
 #endif
     // ---- docs, routines, replies, skills, people (src/agent/memory_subsystem.cpp) ----
     {"docs.list", R::Open, "browse the docs"},
@@ -301,6 +306,10 @@ std::string toolActionKey(const std::string& name, ArduinoJson::JsonObjectConst 
     return changeKey(name, a, "openq.edit.change", {"add", "remove"});
   if (name == "reply.telegram" || name == "files.send") return sendKey(name, a, c);
   if (name == "files.share") return shareKey(a, c);
+  if (name == "send") {   // E2-REP1: engine 2's send names its chat `chat`; none from a device channel goes elsewhere
+    const std::string to = str(a, "chat");
+    return (!to.empty() && to != c.chat) || (to.empty() && deviceChannel(c.chat)) ? "send.other_chat" : name;
+  }
   return name;
 }
 

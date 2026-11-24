@@ -79,6 +79,7 @@ const UseRow kUses[] = {
     {"files.send", U::Send},
     {"files.send.other_chat", U::Send},
     {"send", U::Send},
+    {"send.other_chat", U::Send},   // E2-REP1: send's narrowed key (action_rules.cpp) stays a send
     // paid work beyond the turn
     {"session.spawn", U::Spend},
     {"session.tell", U::Spend},

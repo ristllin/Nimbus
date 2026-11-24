@@ -193,6 +193,9 @@ const Expect kExpect[] = {
     {"web_search", kTurn},
     {"search", kTurn},   // E2-SRCH: the turn's own conversation
     {"view", kTurn},
+    {"send", kTurn},                   // E2-REP1: engine 1's reply.telegram and files.send
+    {"send.other_chat", kOwnerNow},
+    {"agent_start", kTurn},            // E2-REP1: engine 1's session.spawn
     // E2-P-OUT2: engine 1's handlers under engine-2 names, their engine-1 rules
     {"file_stat", kOpen},
     {"share_file", kOpen},
@@ -246,7 +249,7 @@ const Expect* expectFor(const std::string& key) {
 bool argumentKey(const std::string& key) {
   static const char* const kKeys[] = {"memory.config.update", "models.list.refresh", "device.selftest.audible",
                                       "prefs.edit.change",    "reply.telegram.other_chat", "files.send.other_chat",
-                                      "files.share.owner",    "openq.edit.change"};
+                                      "files.share.owner",    "openq.edit.change", "send.other_chat"};
   for (const char* k : kKeys)
     if (key == k) return true;
   return false;
@@ -435,6 +438,9 @@ static void test_every_registered_tool_has_a_rule() {
   for (size_t i = 0; i < count; i++) {
     const std::string k = rows[i].key;
     if (deviceOrTurnKey(k) || argumentKey(k)) continue;
+    // Engine 2's send and agent_start register through bindDeclared and a local add() (tools_plain_send,
+    // plain_agents.cpp), which the ".add(" scan does not see.
+    if (k == "send" || k == "agent_start") continue;
     TEST_ASSERT_TRUE_MESSAGE(names.count(k) == 1, ("rule for a tool nothing registers: " + k).c_str());
   }
   TEST_MESSAGE(("property: " + std::to_string(names.size()) + " registered tools, each with an access rule").c_str());
@@ -989,6 +995,24 @@ static void test_the_device_registry_installs_the_rule_table() {
   TEST_ASSERT_TRUE_MESSAGE(between.find("\n}\n") == std::string::npos, "the install left the setup function");
 }
 
+// E2-REP1 (review D): engine 2's send and agent_start follow engine 1's reply.telegram, files.send and
+// session.spawn rows: a member sends to their own chat and starts a job; another chat stays the owner's.
+static void test_engine2_send_and_agent_start_follow_the_released_rows() {
+  const ActionCaller member = actionCaller(principalForRole("2002", Role::User), false);
+  const ActionCaller owner = actionCaller(principalForRole("1001", Role::Admin), false, "1001");
+  JsonDocument own, other, none;
+  own["chat"] = "2002";
+  other["chat"] = "1001";
+  none["text"] = "hi";
+  auto key = [](const JsonDocument& a, const ActionCaller& c) { return toolActionKey("send", a.as<ArduinoJson::JsonObjectConst>(), c); };
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal(key(own, member), member).c_str());
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal(key(none, member), member).c_str());
+  TEST_ASSERT_EQUAL_STRING("send.other_chat", key(other, member).c_str());
+  TEST_ASSERT_FALSE(actionRefusal(key(other, member), member).empty());
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal(key(own, owner), owner).c_str());   // the owner may send to another chat
+  TEST_ASSERT_EQUAL_STRING("", actionRefusal("agent_start", member).c_str());
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_class_table_matches_every_cell);
@@ -1013,5 +1037,6 @@ int main(int, char**) {
   RUN_TEST(test_session_tools_hide_other_chats_sub_agents);
   RUN_TEST(test_results_ring_scoped_by_caller_class);
   RUN_TEST(test_every_product_wires_the_spawn_principal);
+  RUN_TEST(test_engine2_send_and_agent_start_follow_the_released_rows);
   return UNITY_END();
 }
