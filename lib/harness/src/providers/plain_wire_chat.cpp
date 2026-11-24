@@ -296,8 +296,13 @@ Status readAssistant(Render& r, const Msg& m, AssistantParts& a) {
 }
 
 void assistantContent(Render& r, const AssistantParts& a) {
-  if (a.texts.empty()) return;   // a call-only message carries no content
   r.w.key("content");
+  // A call-only message carries an empty content, as engine 1 sent it to Mistral and Z.ai (mistral.cpp:330;
+  // lane E2-REP5, review F): a server that wants the key never sees it missing.
+  if (a.texts.empty()) {
+    r.w.str(std::string());
+    return;
+  }
   const bool one = a.chunks.empty() && a.texts.size() == 1;
   if (!one) r.w.beginArray();
   for (const std::string& c : a.chunks) r.w.raw(c);

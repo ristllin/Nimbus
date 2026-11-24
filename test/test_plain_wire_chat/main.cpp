@@ -211,6 +211,23 @@ void test_text_mode_sends_no_tools() {
                               out.body.c_str());
 }
 
+// E2-REP5 (review F): a call-only assistant message carries an empty content, as engine 1 sent it to Mistral and
+// Z.ai (mistral.cpp:330); the key is never missing.
+void test_a_call_only_message_carries_an_empty_content() {
+  for (caps::Slot slot : {caps::Slot::Zai, caps::Slot::Mistral}) {
+    txb::RenderFixture fx(rowOf(slot));
+    txb::Convo c;
+    c.openTurn();
+    c.owner("What is in bed 2?");
+    const std::string id = c.call("read_file", "{}");
+    c.receipt(id, "read_file", "bed 2: leeks");
+    txb::Rendered out;
+    TXB_OK(txb::renderItems(fx, c, 0, out, c.turn));
+    TEST_ASSERT_TRUE_MESSAGE(out.body.find("{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\"") != std::string::npos,
+                             out.body.c_str());
+  }
+}
+
 // Design D2: the codec reads the route; it names no provider host, window, cap or price.
 void test_the_codec_names_no_host() {
   std::ifstream f("lib/harness/src/providers/plain_wire_chat.cpp");
@@ -230,6 +247,7 @@ int main(int, char**) {
   RUN_TEST(test_usage_is_the_uncached_part_plus_the_cache_reads);
   RUN_TEST(test_reasoning_replays_only_to_its_own_kind);
   RUN_TEST(test_text_mode_sends_no_tools);
+  RUN_TEST(test_a_call_only_message_carries_an_empty_content);
   RUN_TEST(test_the_codec_names_no_host);
   return UNITY_END();
 }
