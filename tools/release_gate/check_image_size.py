@@ -17,14 +17,31 @@ WARN (still exit 0): headroom under --warn-bytes (default 64 KB). Every env is
 printed with its partition table, app slot size, image size and headroom,
 production envs included.
 
+Release floor (lane E2-GATE, 24 Nov 2026): a product image (PRODUCT_ENVS: esp32s3,
+esp32s3-cyd, -35, -40 and their -e2 twins) with less than RELEASE_FLOOR_BYTES (200,000 B)
+free in its slot fails, and one under RELEASE_WARN_BYTES (300,000 B) warns: engine 2 must
+carry every feature of the released engine in the same slot, and a full slot found at
+release time is found too late.
+
+One table: env, partitions, slot, image bytes, free bytes, the code change against
+image_baseline.json (docs pack apart; "~" marks a whole-image change when the ELF is
+missing) and the allowance that explains it, then the status. Without --lane the lane is
+read from the branch (lane/<LANE>): on a lane branch with a fresh baseline, growth over
+the lane's allowance fails as with --lane (without --lane's build id and completeness
+checks), and with a stale baseline it only warns. On any other branch the change is
+reported with the allowance files committed since the baseline's sha.
+
 Per-lane allowance (lane RB-GATE0, PRD section 10): with --lane, every built env that has
 a row in image_baseline.json is also measured as code bytes plus docs pack bytes. The docs
 pack is read from firmware.elf (the pack's tables and every string they point at, merged
 literals counted once) and counted apart; code bytes are firmware.bin minus the pack. The
 code delta against the baseline must be at most the lane's allowance in
-image_budget.d/<lane>.json (no file: 0 B; a negative allowance is a promised deletion).
-FAIL: over the allowance, a malformed budget file, a bin without its ELF, no built image
-with a baseline row, or a baseline whose sha is not an ancestor of HEAD. The baseline is
+image_budget.d/<lane>.json (no file: 0 B, or E2_GRACE_BYTES, 8,192 B, on an engine-2 env
+(*-e2), so a lane that grows an engine-2 image by more than that names itself and its bytes
+in a file; a negative allowance is a promised deletion).
+FAIL: over the allowance, a malformed budget file, a bin without its ELF, a required env
+(the baseline's required_envs; every baseline env when it names none) not built, or a
+baseline whose sha is not an ancestor of HEAD. Other baseline envs are judged when built. The baseline is
 re-recorded with --record-baseline after each merge into the integration branch.
 
 Usage:
@@ -49,6 +66,19 @@ import subprocess
 import sys
 
 WARN_BYTES = 64 * 1024
+RELEASE_FLOOR_BYTES = 200_000
+RELEASE_WARN_BYTES = 300_000
+PRODUCT_ENVS = (
+    "esp32s3",
+    "esp32s3-cyd",
+    "esp32s3-cyd-35",
+    "esp32s3-cyd-40",
+    "esp32s3-e2",
+    "esp32s3-cyd-e2",
+    "esp32s3-cyd-35-e2",
+    "esp32s3-cyd-40-e2",
+)
+E2_GRACE_BYTES = 8 * 1024
 DEFAULT_BUILD_DIR = os.path.join(".pio", "build")
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASELINE = os.path.join(HERE, "image_baseline.json")
@@ -132,6 +162,26 @@ def app_rows(rows: "list[dict[str, object]]") -> "list[dict[str, object]]":
     return [r for r in rows if r["type"] == "app"]
 
 
+def headroom_verdict(env: str, headroom: int, warn_bytes: int) -> "tuple[str, str]":
+    """(OK/WARN/FAIL, detail) for an image that fits: the release floor on a product env, else the WARN line."""
+    if env in PRODUCT_ENVS and headroom < RELEASE_FLOOR_BYTES:
+        return "FAIL", (
+            f"{env}: {headroom} B free in the slot, under the release floor of {RELEASE_FLOOR_BYTES} B: "
+            "a product image keeps that room for the features still to come; cut bytes before this lands"
+        )
+    if env in PRODUCT_ENVS and headroom < RELEASE_WARN_BYTES:
+        return "WARN", (
+            f"{env}: {headroom} B free in the slot, under {RELEASE_WARN_BYTES} B; "
+            f"{headroom - RELEASE_FLOOR_BYTES} B above the release floor of {RELEASE_FLOOR_BYTES} B"
+        )
+    if headroom < warn_bytes:
+        return "WARN", f"{env}: headroom {headroom} B is under {warn_bytes} B ({warn_bytes // 1024} KB)"
+    return "OK", ""
+
+
+ROW_COLUMNS = 86  # width of the env .. free columns, where the baseline columns go
+
+
 def check_env(
     root: str, build_dir: str, env: str, opts: "dict[str, str]", framework_dirs: "list[str]", warn_bytes: int
 ) -> "tuple[str, str, str]":
@@ -158,23 +208,28 @@ def check_env(
             f"({slot} B, {os.path.basename(csv)}) - the ROM refuses to boot it"
         )
         return "FAIL", row + "FAIL", detail
-    if headroom < warn_bytes:
-        return "WARN", row + "WARN", f"{env}: headroom {headroom} B is under {warn_bytes} B ({warn_bytes // 1024} KB)"
-    return "OK", row + "OK", ""
+    status, detail = headroom_verdict(env, headroom, warn_bytes)
+    return status, row + status, detail
 
 
 def check(
-    root: str, build_dir: str, warn_bytes: int, framework_dirs: "list[str]"
+    root: str, build_dir: str, warn_bytes: int, framework_dirs: "list[str]", extras: "dict[str, str] | None" = None
 ) -> "tuple[bool, list[str], list[str], list[str]]":
-    """(ok, table lines, fail details, warn details) over every env in platformio.ini."""
+    """(ok, table lines, fail details, warn details) over every env in platformio.ini.
+    extras: env -> its baseline columns (code change, allowance); None leaves them out."""
     cp = parse_ini(os.path.join(root, "platformio.ini"))
-    lines = [f"{'env':<18} {'partitions':<24} {'app slot(s)':<12} {'slot B':>8} {'image B':>8} {'headroom':>9}  status"]
+    head = f"{'env':<18} {'partitions':<24} {'app slot(s)':<12} {'slot B':>8} {'image B':>8} {'free B':>9}  "
+    if extras is not None:
+        head += f"{'code vs base':>12} {'allowance':<34} "
+    lines = [head + "status"]
     fails: "list[str]" = []
     warns: "list[str]" = []
     built = 0
     for env in env_names(cp):
         opts = merged_options(cp, f"env:{env}")
         status, row, detail = check_env(root, build_dir, env, opts, framework_dirs, warn_bytes)
+        if extras is not None:
+            row = row[:ROW_COLUMNS].ljust(ROW_COLUMNS) + extras.get(env, f"{'-':>12} {'-':<34} ") + row[ROW_COLUMNS:]
         lines.append(row)
         if status == "NOTBUILT":
             continue
@@ -277,9 +332,13 @@ def measure(env_dir: str, tables: "list[dict]") -> "dict[str, int]":
     return {"image_bytes": image, "docs_pack_bytes": docs, "code_bytes": image - docs}
 
 
-def record_baseline(build_dir: str, sha: str, path: str, tables: "list[dict]", about: str = "") -> "dict":
+def record_baseline(
+    build_dir: str, sha: str, path: str, tables: "list[dict]", about: str = "", required: "list[str] | None" = None
+) -> "dict":
     envs = {env: measure(os.path.join(build_dir, env), tables) for env in built_envs(build_dir)}
     row = {"about": about, "sha": sha, "docs_pack_tables": tables, "envs": envs}
+    if required is not None:
+        row["required_envs"] = required
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(row, fh, indent=2)
         fh.write("\n")
@@ -313,13 +372,21 @@ def load_budget(budget_dir: str, lane: str) -> "tuple[dict | None, list[str]]":
     return row, errs
 
 
+def is_engine2(env: str) -> bool:
+    """An engine-2 env: the *-e2 twins (test_image_size.py checks this against platformio.ini)."""
+    return env.endswith("-e2")
+
+
 def env_allowance(env: str, budget: "dict | None") -> int:
+    """The lane's allowance on env: its file's figure; with no file 0 B, or E2_GRACE_BYTES on an engine-2 env."""
     if budget is None:
-        return 0
+        return E2_GRACE_BYTES if is_engine2(env) else 0
     return int(dict(budget.get("envs") or {}).get(env, budget["allowance_bytes"]))
 
 
-def judge_env(env: str, now: "dict[str, int]", base: "dict[str, int]", allow: int) -> "tuple[str, str | None]":
+def judge_env(
+    env: str, now: "dict[str, int]", base: "dict[str, int]", allow: int, lane: str = "", has_file: bool = True
+) -> "tuple[str, str | None]":
     delta = now["code_bytes"] - base["code_bytes"]
     ddelta = now["docs_pack_bytes"] - base["docs_pack_bytes"]
     line = (
@@ -328,7 +395,13 @@ def judge_env(env: str, now: "dict[str, int]", base: "dict[str, int]", allow: in
     )
     if delta <= allow:
         return line, None
-    return line, f"{env}: code grew {delta:+d} B against the baseline, {delta - allow} B over the allowance {allow} B"
+    fail = f"{env}: code grew {delta:+d} B against the baseline, {delta - allow} B over the allowance {allow} B"
+    if not has_file:
+        fail += (
+            f" (no image_budget.d/{lane or '<lane>'}.json: a lane that grows this image by more than "
+            f"{allow} B declares its lane and bytes in that file)"
+        )
+    return line, fail
 
 
 def built_from(env_dir: str, build_id: "str | None") -> "str | None":
@@ -348,24 +421,35 @@ def built_from(env_dir: str, build_id: "str | None") -> "str | None":
 
 
 def check_allowance(
-    build_dir: str, lane: str, baseline_path: str, budget_dir: str, baseline_problems=None, build_id=None
+    build_dir: str,
+    lane: str,
+    baseline_path: str,
+    budget_dir: str,
+    baseline_problems=None,
+    build_id=None,
 ):
     """(ok, report lines, failures) for one lane's images against the recorded baseline.
 
     baseline_problems(sha) -> list of problems with the recorded baseline (git: ancestry, staleness);
-    build_id, when given, must be inside every measured firmware.bin.
+    build_id, when given, must be inside every measured firmware.bin. The baseline's required_envs
+    must be built (every baseline env when it names none); the others are judged when built.
     """
     with open(baseline_path, encoding="utf-8") as fh:
         baseline = json.load(fh)
+    required = baseline.get("required_envs")
     budget, fails = load_budget(budget_dir, lane)
     usable = None if fails else budget  # a malformed file grants nothing
-    lines = [f"{lane}: " + ("no budget file: allowance 0 B" if budget is None else f"budget {lane}.json")]
+    none = f"no budget file: allowance 0 B, {E2_GRACE_BYTES} B on an engine-2 env"
+    lines = [f"{lane}: " + (none if budget is None else f"budget {lane}.json")]
     if baseline_problems is not None:
         fails += baseline_problems(baseline["sha"])
     for env, base in sorted(baseline["envs"].items()):
         env_dir = os.path.join(build_dir, env)
         if not os.path.isfile(os.path.join(env_dir, "firmware.bin")):
-            fails.append(f"{env} has a baseline row but is not built: build every baseline env (pio run -e {env})")
+            if required is None or env in required:
+                fails.append(f"{env} has a baseline row but is not built: build every required env (pio run -e {env})")
+            else:
+                lines.append(f"{env}: not built, not judged (not in the baseline's required_envs)")
             continue
         try:
             stale = built_from(env_dir, build_id)
@@ -375,7 +459,7 @@ def check_allowance(
         except (OSError, ValueError) as e:
             fails.append(f"{env}: {e}")
             continue
-        line, fail = judge_env(env, now, base, env_allowance(env, usable))
+        line, fail = judge_env(env, now, base, env_allowance(env, usable), lane, budget is not None)
         lines.append(line)
         if fail:
             fails.append(fail)
@@ -444,6 +528,95 @@ def git_build_id(root: str) -> "str | None":
     return out if rc == 0 and out else None
 
 
+def infer_lane(root: str) -> "str | None":
+    """The lane of a lane/<LANE> branch, else None (rb-main, a detached CI checkout, no git)."""
+    rc, out = git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    return out[len("lane/") :] if rc == 0 and out.startswith("lane/") and len(out) > len("lane/") else None
+
+
+def allowances_since(root: str, sha: str, budget_dir: str) -> "dict[str, dict]":
+    """Lane -> budget row for every image_budget.d file added or changed since the baseline's sha:
+    the allowances that explain the growth of a branch that merged lanes after the record."""
+    rel = os.path.relpath(budget_dir, root)
+    rc, out = git(root, "diff", "--name-only", "--diff-filter=AM", sha, "HEAD", "--", rel)
+    rows: "dict[str, dict]" = {}
+    for path in out.splitlines() if rc == 0 else []:
+        lane = os.path.basename(path)[: -len(".json")] if path.endswith(".json") else None
+        row, errs = load_budget(budget_dir, lane) if lane else (None, ["not a budget file"])
+        if row is not None and not errs:
+            rows[lane] = row
+    return rows
+
+
+def env_change(build_dir: str, env: str, base: "dict[str, int]", tables: "list[dict]") -> "tuple[int, str]":
+    """(code change in B, shown text): code bytes from the ELF, or the whole image ("~") without it."""
+    try:
+        now = measure(os.path.join(build_dir, env), tables)
+        delta = now["code_bytes"] - base["code_bytes"]
+        return delta, f"{delta:+d}"
+    except (OSError, ValueError, struct.error):
+        delta = os.path.getsize(os.path.join(build_dir, env, "firmware.bin")) - base["image_bytes"]
+        return delta, f"~{delta:+d}"
+
+
+def lane_context(args, root: str, baseline: dict) -> dict:
+    """The lane (--lane, else the branch), its budget, the allowance files since the baseline,
+    whether this run judges (a lane read from the branch) and the baseline's staleness."""
+    lane = args.lane or (None if args.no_infer_lane else infer_lane(root))
+    budget, berrs = load_budget(args.budget_dir, lane) if lane else (None, [])
+    since = allowances_since(root, baseline["sha"], args.budget_dir)
+    since.pop(lane or "", None)
+    judge = lane is not None and not args.lane
+    stale = git_baseline_problems(root, args.base_ref)(baseline["sha"]) if judge else []
+    return {"lane": lane, "budget": budget, "berrs": berrs, "since": since, "judge": judge, "stale": stale}
+
+
+def env_view(env: str, delta: int, base: "dict[str, int]", ctx: dict) -> "tuple[str, str | None, str | None]":
+    """(allowance column, fail, warn) for one built env with a baseline row."""
+    lane, budget = ctx["lane"], ctx["budget"]
+    own = env_allowance(env, None if ctx["berrs"] else budget) if lane else 0
+    merged = sum(env_allowance(env, r) for r in ctx["since"].values())
+    label = f"{lane} {own}" + (" (no file)" if budget is None else "") if lane else "none"
+    label += f", since base {merged}" if merged else ""
+    if ctx["judge"] and not ctx["stale"] and not ctx["berrs"] and delta > own:
+        now = {**base, "code_bytes": base["code_bytes"] + delta}
+        return label, judge_env(env, now, base, own, lane, budget is not None)[1], None
+    if not lane and delta > merged + (E2_GRACE_BYTES if is_engine2(env) else 0):
+        return label, None, f"{env}: code {delta:+d} B against the baseline, {merged} B explained by allowance files"
+    return label, None, None
+
+
+def baseline_view(args, root: str, build_dir: str) -> "tuple[dict | None, list[str], list[str], list[str]]":
+    """(extras for the table, notes, fails, warns): each built env's code change against the
+    baseline and the allowance that explains it. On a lane branch (no --lane) with a fresh
+    baseline, growth over the lane's allowance fails; with a stale one it warns."""
+    try:
+        with open(args.baseline, encoding="utf-8") as fh:
+            baseline = json.load(fh)
+        rows = baseline["envs"]
+        ctx = lane_context(args, root, baseline)
+    except (OSError, ValueError, KeyError) as e:
+        return None, [f"no baseline columns: {args.baseline}: {e}"], [], []
+    lane = ctx["lane"]
+    notes = [f"baseline {baseline['sha'][:12]}; " + (f"lane {lane}" if lane else "no lane (not a lane/<LANE> branch)")]
+    notes += [
+        f"allowance committed since the baseline: {k} ({v['allowance_bytes']} B)" for k, v in ctx["since"].items()
+    ]
+    fails = [f"{lane}: {e}" for e in ctx["berrs"]] if ctx["judge"] else []
+    warns = [f"allowance not judged, the baseline is stale: {p}" for p in ctx["stale"]]
+    extras: "dict[str, str]" = {}
+    for env in built_envs(build_dir):
+        if env not in rows:
+            extras[env] = f"{'-':>12} {'no baseline row':<34} "
+            continue
+        delta, shown = env_change(build_dir, env, rows[env], baseline["docs_pack_tables"])
+        label, fail, warn = env_view(env, delta, rows[env], ctx)
+        extras[env] = f"{shown:>12} {label:<34} "
+        fails += [fail] if fail else []
+        warns += [warn] if warn else []
+    return extras, notes, fails, warns
+
+
 def run_allowance(args, root: str, build_dir: str) -> int:
     probe = None if args.no_ancestry else git_baseline_problems(root, args.base_ref)
     want = None if args.no_ancestry else git_build_id(root)
@@ -474,7 +647,9 @@ def run_record(args, root: str, build_dir: str) -> int:
         stale = [env for env in built_envs(build_dir) if built_from(os.path.join(build_dir, env), want)]
         if rc != 0 or not want or stale:
             raise ValueError(f"not every built image is this commit's ({', '.join(stale) or 'no git id'}): build first")
-        row = record_baseline(build_dir, sha, args.baseline, old["docs_pack_tables"], old.get("about", ""))
+        row = record_baseline(
+            build_dir, sha, args.baseline, old["docs_pack_tables"], old.get("about", ""), old.get("required_envs")
+        )
     except (OSError, ValueError, KeyError, struct.error) as e:
         print(f"{ATAG} FAIL: cannot record the baseline: {e}")
         return 1
@@ -501,6 +676,7 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--record-baseline", action="store_true", help="re-record the baseline from the built images")
     ap.add_argument("--base-ref", default="rb-main", help="integration branch for the baseline freshness check")
     ap.add_argument("--no-ancestry", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--no-infer-lane", action="store_true", help="do not read the lane from a lane/<LANE> branch")
     args = ap.parse_args(argv)
 
     root = os.path.abspath(args.root)
@@ -508,15 +684,20 @@ def main(argv: "list[str] | None" = None) -> int:
     if args.record_baseline:
         return run_record(args, root, build_dir)
     framework_dirs = args.framework_partitions or default_framework_dirs()
-    ok, lines, fails, warns = check(root, build_dir, args.warn_bytes, framework_dirs)
-    for line in lines:
+    extras, notes, bfails, bwarns = baseline_view(args, root, build_dir)
+    ok, lines, fails, warns = check(root, build_dir, args.warn_bytes, framework_dirs, extras)
+    ok, fails, warns = ok and not bfails, fails + bfails, warns + bwarns
+    for line in lines + notes:
         print(f"[gate:image-size] {line}")
     for detail in fails:
         print(f"[gate:image-size] FAIL: {detail}")
     for detail in warns:
         print(f"[gate:image-size] WARN: {detail}")
     if ok:
-        print(f"[gate:image-size] PASS: every built image fits its app partition (WARN threshold {args.warn_bytes} B)")
+        print(
+            f"[gate:image-size] PASS: every built image fits its app partition, every product image keeps "
+            f"{RELEASE_FLOOR_BYTES} B free (WARN under {RELEASE_WARN_BYTES} B; other envs under {args.warn_bytes} B)"
+        )
     else:
         print("[gate:image-size] FAIL: see above")
     if args.lane:

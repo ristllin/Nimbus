@@ -86,14 +86,15 @@ def test_overflow_fails_with_the_over_amount(tmp_path):
 
 
 def test_headroom_under_64kb_warns_but_passes(tmp_path):
-    root, fw = make_root(tmp_path, images={"esp32s3": SLOT - 1000})
+    # A test env (no release floor): only the 64 KB line applies.
+    root, fw = make_root(tmp_path, images={"test": BIG_SLOT - 1000})
     ok, _, fails, warns = run_gate(root, fw)
     assert ok and not fails
     assert any("headroom 1000 B" in w for w in warns)
 
 
 def test_comfortable_headroom_passes_quietly(tmp_path):
-    root, fw = make_root(tmp_path, images={"esp32s3": SLOT - 200000})
+    root, fw = make_root(tmp_path, images={"esp32s3": SLOT - gate.RELEASE_WARN_BYTES})
     ok, _, fails, warns = run_gate(root, fw)
     assert ok and not fails and not warns
 
@@ -565,3 +566,197 @@ def test_real_tree_baseline_and_budget_files_are_well_formed():
             lane = name[: -len(".json")]
             _, errs = gate.load_budget(bdir, lane)
             assert errs == [], errs
+
+
+# --- the release floor and the engine-2 allowance (lane E2-GATE) -----------------------
+#
+# A product image keeps RELEASE_FLOOR_BYTES free in its slot (fail) and warns under
+# RELEASE_WARN_BYTES; a lane that grows an engine-2 image by more than E2_GRACE_BYTES must
+# carry an allowance file. Each rule has its counter-test one byte past the line.
+
+PRODUCT_INI = INI + "".join(f"\n[env:{e}]\nextends = s3\n" for e in gate.PRODUCT_ENVS if e != "esp32s3")
+
+
+@pytest.mark.parametrize("env", gate.PRODUCT_ENVS)
+def test_counter_a_product_image_under_the_release_floor_fails(tmp_path, env):
+    root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={env: SLOT - gate.RELEASE_FLOOR_BYTES + 1})
+    ok, _, fails, _ = run_gate(root, fw)
+    assert not ok
+    assert any(env in f and "release floor" in f for f in fails)
+
+
+def test_a_product_image_at_the_floor_passes_with_a_warning_that_says_the_margin(tmp_path):
+    root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={"esp32s3-cyd": SLOT - 213_520})
+    ok, lines, fails, warns = run_gate(root, fw)
+    assert ok and not fails
+    assert any("213520 B free" in w and "13520 B above the release floor" in w for w in warns)
+    assert any(ln.startswith("esp32s3-cyd ") and ln.endswith("WARN") for ln in lines)
+
+
+def test_the_warn_line_ends_at_300000_free(tmp_path):
+    root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={"esp32s3-cyd-e2": SLOT - gate.RELEASE_WARN_BYTES + 1})
+    assert run_gate(root, fw)[3]
+    root, fw = make_root(tmp_path / "b", ini=PRODUCT_INI, images={"esp32s3-cyd-e2": SLOT - gate.RELEASE_WARN_BYTES})
+    assert not run_gate(root, fw)[3]
+
+
+def test_counter_a_test_image_has_no_release_floor(tmp_path):
+    # The test console images ride a larger table and never ship: only the slot and 64 KB rules.
+    root, fw = make_root(tmp_path, images={"test": BIG_SLOT - 100_000})
+    ok, _, fails, warns = run_gate(root, fw)
+    assert ok and not fails and not warns
+
+
+def test_real_tree_product_envs_and_engine2_names_match_platformio_ini():
+    import check_engine_filter
+
+    ini = check_engine_filter.PioIni(os.path.join(REPO, "platformio.ini"))
+    devices = set(ini.device_envs())
+    assert set(gate.PRODUCT_ENVS) <= devices
+    for env in devices:
+        assert gate.is_engine2(env) == (ini.engine(env) == 2), env
+
+
+E2 = "esp32s3-cyd-e2"
+
+
+def e2_root(tmp_path, budgets=None, required=None):
+    """A baseline with an engine-1 and an engine-2 env."""
+    root, baseline, bdir = allowance_root(tmp_path, budgets)
+    build_image(root, E2, 5_000_000)
+    gate.record_baseline(os.path.join(root, ".pio", "build"), "a" * 40, baseline, TABLES, "", required)
+    return root, baseline, bdir
+
+
+def test_an_engine2_lane_without_a_file_may_grow_8_kb(tmp_path):
+    root, baseline, bdir = e2_root(tmp_path)
+    build_image(root, E2, 5_000_000 + gate.E2_GRACE_BYTES)
+    ok, lines, fails = allowance(root, baseline, bdir, "E2-X")
+    assert ok, fails
+    assert any("no budget file" in ln and "8192 B on an engine-2 env" in ln for ln in lines)
+
+
+def test_counter_an_engine2_lane_without_a_file_growing_past_8_kb_fails(tmp_path):
+    root, baseline, bdir = e2_root(tmp_path)
+    build_image(root, E2, 5_000_000 + gate.E2_GRACE_BYTES + 1)
+    ok, _, fails = allowance(root, baseline, bdir, "E2-X")
+    assert not ok
+    assert any(E2 in f and "1 B over" in f and "no image_budget.d/E2-X.json" in f for f in fails)
+
+
+def test_counter_the_grace_never_reaches_an_engine1_image(tmp_path):
+    root, baseline, bdir = e2_root(tmp_path)
+    build_image(root, "esp32s3-cyd", 6_000_000 + 1)
+    ok, _, fails = allowance(root, baseline, bdir, "E2-X")
+    assert not ok and any(f.startswith("esp32s3-cyd:") for f in fails)
+
+
+def test_counter_a_file_replaces_the_grace(tmp_path):
+    # A lane that declares 4 KB is held to 4 KB, even under the no-file grace.
+    root, baseline, bdir = e2_root(tmp_path, {"E2-X": budget("E2-X", 4096)})
+    build_image(root, E2, 5_000_000 + 6000)
+    ok, _, fails = allowance(root, baseline, bdir, "E2-X")
+    assert not ok and any(E2 in f and "allowance 4096 B" in f for f in fails)
+
+
+def test_a_file_names_the_lane_and_the_bytes_for_a_bigger_engine2_change(tmp_path):
+    root, baseline, bdir = e2_root(tmp_path, {"E2-X": budget("E2-X", 0, **{E2: 40960})})
+    build_image(root, E2, 5_000_000 + 40960)
+    ok, _, fails = allowance(root, baseline, bdir, "E2-X")
+    assert ok, fails
+
+
+def test_required_envs_must_be_built_and_the_others_are_judged_when_built(tmp_path):
+    root, baseline, bdir = e2_root(tmp_path, required=["esp32s3-cyd"])
+    shutil.rmtree(os.path.join(root, ".pio", "build", E2))
+    ok, lines, fails = gate.check_allowance(os.path.join(root, ".pio", "build"), "E2-X", baseline, bdir)
+    assert ok, fails
+    assert any(E2 in ln and "not judged" in ln for ln in lines)
+    build_image(root, E2, 5_000_000 + gate.E2_GRACE_BYTES + 1)  # built: judged
+    ok, _, fails = gate.check_allowance(os.path.join(root, ".pio", "build"), "E2-X", baseline, bdir)
+    assert not ok and any(E2 in f for f in fails)
+
+
+def test_counter_a_required_env_not_built_fails(tmp_path):
+    root, baseline, bdir = e2_root(tmp_path, required=["esp32s3-cyd", E2])
+    shutil.rmtree(os.path.join(root, ".pio", "build", E2))
+    ok, _, fails = gate.check_allowance(os.path.join(root, ".pio", "build"), "E2-X", baseline, bdir)
+    assert not ok and any(f"{E2} has a baseline row but is not built" in f for f in fails)
+
+
+def test_record_keeps_the_required_envs(tmp_path):
+    root, baseline, _ = e2_root(tmp_path, required=["esp32s3-cyd"])
+    with open(baseline, encoding="utf-8") as f:
+        assert json.load(f)["required_envs"] == ["esp32s3-cyd"]
+
+
+def test_real_tree_required_envs_are_baseline_envs():
+    with open(os.path.join(HERE, "image_baseline.json"), encoding="utf-8") as f:
+        row = json.load(f)
+    assert set(row["required_envs"]) <= set(row["envs"])
+    assert {"esp32s3-cyd", "esp32s3-cyd-e2", "test-cyd-e2"} <= set(row["required_envs"])
+    assert set(gate.PRODUCT_ENVS) <= set(row["envs"])
+
+
+# --- the table and the lane read from the branch ----------------------------------------
+
+
+def lane_repo(tmp_path, branch="lane/E2-X"):
+    """A git repo on rb-main with a recorded baseline at its first commit, then `branch`."""
+    root, fw = make_root(tmp_path, ini=PRODUCT_INI, images={})
+    git_out(root, "init", "-q", "-b", "rb-main")
+    git_out(root, "config", "user.email", "t@example.invalid")
+    git_out(root, "config", "user.name", "t")
+    with open(os.path.join(root, ".gitignore"), "w", encoding="utf-8") as f:
+        f.write(".pio/\n")
+    sha = commit_file(root, "src/main.cpp", "int main() {}\n")
+    build_image(root, "esp32s3-cyd", 6_000_000)
+    build_image(root, E2, 5_000_000)
+    baseline = os.path.join(root, "tools", "release_gate", "image_baseline.json")
+    os.makedirs(os.path.dirname(baseline))
+    gate.record_baseline(os.path.join(root, ".pio", "build"), sha, baseline, TABLES)
+    bdir = os.path.join(root, "tools", "release_gate", "image_budget.d")
+    os.makedirs(bdir)
+    commit_file(root, "tools/release_gate/image_baseline.json", open(baseline, encoding="utf-8").read())
+    if branch != "rb-main":
+        git_out(root, "checkout", "-q", "-b", branch)
+    args = ["--root", root, "--framework-partitions", fw[0], "--baseline", baseline, "--budget-dir", bdir]
+    return root, args, bdir
+
+
+def test_the_table_shows_the_change_and_the_allowance(tmp_path, capsys):
+    root, args, _ = lane_repo(tmp_path)
+    build_image(root, E2, 5_000_000 + 1234)
+    assert gate.main(args) == 0
+    out = capsys.readouterr().out
+    row = next(ln for ln in out.splitlines() if f"] {E2} " in ln)
+    assert "+1234" in row and "E2-X 8192 (no file)" in row and str(SLOT - 5_001_234) in row
+    assert "code vs base" in out and "lane E2-X" in out
+
+
+def test_counter_on_a_lane_branch_growth_past_the_grace_fails_without_a_flag(tmp_path, capsys):
+    root, args, _ = lane_repo(tmp_path)
+    build_image(root, E2, 5_000_000 + gate.E2_GRACE_BYTES + 1)
+    assert gate.main(args) == 1
+    assert "no image_budget.d/E2-X.json" in capsys.readouterr().out
+
+
+def test_on_a_lane_branch_a_stale_baseline_only_warns(tmp_path, capsys):
+    root, args, _ = lane_repo(tmp_path, branch="rb-main")
+    commit_file(root, "src/other.cpp", "int x;\n")  # firmware merged after the record
+    git_out(root, "checkout", "-q", "-b", "lane/E2-X")
+    build_image(root, E2, 5_000_000 + gate.E2_GRACE_BYTES + 1)
+    assert gate.main(args) == 0
+    assert "allowance not judged, the baseline is stale" in capsys.readouterr().out
+
+
+def test_off_a_lane_branch_the_change_is_reported_with_the_files_since_the_baseline(tmp_path, capsys):
+    root, args, bdir = lane_repo(tmp_path, branch="rb-main")
+    commit_file(root, "tools/release_gate/image_budget.d/E2-Y.json", json.dumps(budget("E2-Y", 20000)))
+    build_image(root, E2, 5_000_000 + 20000)
+    build_image(root, "esp32s3-cyd", 6_000_000 + 30000)
+    assert gate.main(args) == 0
+    out = capsys.readouterr().out
+    assert "allowance committed since the baseline: E2-Y (20000 B)" in out
+    assert "since base 20000" in out
+    assert "esp32s3-cyd: code +30000 B against the baseline, 20000 B explained" in out
