@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "nimbus/harness/plain/route.h"
+#include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/model_caps.h"
 #include "nimbus/orch/tx/arena.h"
@@ -368,7 +369,9 @@ R7_NOINLINE void envelope(BodyWriter& w, const RenderInput& in, const caps::Caps
     put(put(w.key("text").beginObject().key("format").beginObject(), "type", "json_schema"), "name", "answer");
     w.key("schema").raw(in.answerSchema).endObject().endObject();
   }
-  if (p.system.shown[0] && !in.system->core.empty()) putText(w, "instructions", in.system->core, Over::Refuse);
+  // E2-CFIX2 (PC-0288): the core and the one line that keeps the stamp out of the reply.
+  if (p.system.shown[0] && !in.system->core.empty())
+    putText(w, "instructions", in.system->core + texts::core::kStampNotRepeated, Over::Refuse);
 }
 
 // The breakpoints, last first so the earlier offsets hold; the photo splices after each move with it.

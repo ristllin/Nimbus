@@ -4,8 +4,9 @@
 //     carries the stored text in full. Without the tools (the binding before this lane) the same
 //     script leaves the request without it.
 //   - D1, the class over principals: every role, the owner's chats, a member's own chat, a member
-//     naming another chat, a cleared conversation, the LAN route: nothing from another person, another
-//     chat or a cleared conversation appears, and the routes that are not a turn are refused.
+//     naming another chat, a cleared conversation, the LAN route: nothing from another person or another
+//     chat appears (a cleared conversation of the same chat does, E2-CFIX2), and the routes that are not
+//     a turn are refused.
 //   - outside content keeps its class through search (the hit and the result) and view (the result).
 //   - view pages a long stored result exactly (next_offset and the bytes left), a photo of this
 //     conversation answers its photo line and the wire shows its pixels in that result while the
@@ -391,7 +392,9 @@ static void test_D1_nothing_from_another_person_or_a_cleared_conversation() {
   };
   std::vector<Case> cases;
   cases.push_back({"owner in 1001", "1001", "1001", orch::principalForRole("1001", orch::Role::Admin), {"alpha", "delta"}});
-  cases.push_back({"owner after /clear", "1001_c1", "1001", orch::principalForRole("1001", orch::Role::Admin), {"charlie"}});
+  // E2-CFIX2: after /clear the cleared conversation (and the earlier engine's rows) are searched too.
+  cases.push_back({"owner after /clear", "1001_c1", "1001", orch::principalForRole("1001", orch::Role::Admin),
+                   {"alpha", "charlie", "delta"}});
   // A chat not approved yet (Unknown) reads nothing, not even its own (the rules' TurnOnly row).
   cases.push_back({"unapproved in its chat", "2002", "2002", orch::principalForRole("2002", orch::Role::Unknown), {}});
   for (orch::Role role : {orch::Role::Unknown, orch::Role::Guest, orch::Role::User}) {
@@ -411,9 +414,10 @@ static void test_D1_nothing_from_another_person_or_a_cleared_conversation() {
       TEST_ASSERT_EQUAL_MESSAGE(c.may.count(s) > 0, found, (std::string(c.name) + ": " + s + " -> " + o.text).c_str());
       if (c.may.empty()) TEST_ASSERT_TRUE_MESSAGE(o.isError, c.name);
     }
-    // view by id: the member and the LAN never open the owner's items, the cleared conversation's
-    // items are not the new conversation's.
-    const plain::ToolOutput v = call(h, t, "view", "{\"id\":\"r" + std::to_string(owner.factQ) + "\"}");
+    // view by id: the member and the LAN never open the owner's items; the cleared conversation's
+    // items are opened by their own id (c0r<q>), never as the new conversation's r<q>.
+    const std::string vid = (c.key == c.chat ? "r" : "c0r") + std::to_string(owner.factQ);
+    const plain::ToolOutput v = call(h, t, "view", "{\"id\":\"" + vid + "\"}");
     const bool opened = has(v.text, "owner secret alpha");
     TEST_ASSERT_EQUAL_MESSAGE(c.may.count("alpha") > 0, opened, c.name);
     const plain::ToolOutput m = call(h, t, "view", R"({"id":"m00000005"})");
@@ -428,6 +432,55 @@ static void test_D1_nothing_from_another_person_or_a_cleared_conversation() {
                                            orch::principalForRole("1001", orch::Role::Admin));
   TEST_ASSERT_FALSE(rr.success);
   TEST_ASSERT_FALSE(has(rr.output + rr.error, "alpha"));
+}
+
+// E2-CFIX2 (bench 24 Nov, defect 4): after /clear yes, "what did I say about my library card?" found 0 hits
+// (the new conversation only). Search reaches every stored conversation of the chat, newest first and the
+// cleared ones included; a hit from one says so, and view opens it by the id the hit gives.
+static void test_search_after_clear_finds_the_cleared_conversations_and_view_opens_the_hit() {
+  txb::MemFiles files;
+  Past c0(files, "1001"), c1(files, "1001_c1"), c2(files, "1001_c2");
+  c0.weeks(8, "my library card number is 7713");
+  c1.weeks(8, "the bike lock code is 4412");
+  c2.turnOf("hello again", "Hello.", kNow - 60);
+  plain::HistoryDeps d;
+  d.files = &files;
+  plain::HistoryTools h(d);
+  const orch::Principal owner = orch::principalForRole("1001", orch::Role::Admin);
+  const plain::TurnCtx t = turnOf("1001_c2", "1001", owner);
+  const plain::ToolOutput s = call(h, t, "search", R"({"query":"library card"})");
+  const std::string id = "c0r" + std::to_string(c0.factQ);
+  TEST_ASSERT_TRUE_MESSAGE(has(s.text, id + " "), s.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(s.text, std::string(plain::texts::tool_results::kSrcCleared) + ": remember: my library"),
+                           s.text.c_str());
+  const plain::ToolOutput v = call(h, t, "view", "{\"id\":\"" + id + "\"}");
+  TEST_ASSERT_FALSE_MESSAGE(v.isError, v.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(v.text, "card number is 7713"), v.text.c_str());
+  TEST_ASSERT_TRUE_MESSAGE(has(v.text, plain::texts::tool_results::kSrcCleared), v.text.c_str());
+  // The newer cleared conversation too, and the new conversation's own items keep their plain ids.
+  const plain::ToolOutput b = call(h, t, "search", R"({"query":"bike lock"})");
+  TEST_ASSERT_TRUE_MESSAGE(has(b.text, "c1r" + std::to_string(c1.factQ) + " "), b.text.c_str());
+  const plain::ToolOutput own = call(h, t, "search", R"({"query":"hello again"})");
+  TEST_ASSERT_TRUE_MESSAGE(has(own.text, "\nr") || own.text.rfind("r", 0) == 0, own.text.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(own.text.substr(0, own.text.find(':')), "/clear"), own.text.c_str());
+  // A page that stops between conversations hands a cursor that reaches the older ones.
+  plain::HistoryDeps small = d;
+  small.limits.maxHits = 1;
+  plain::HistoryTools hs(small);
+  const plain::ToolOutput p1 = call(hs, t, "search", R"({"query":"ordinary message"})");
+  const size_t at = p1.text.find("before=");
+  TEST_ASSERT_TRUE_MESSAGE(at != std::string::npos, p1.text.c_str());
+  std::string cur = p1.text.substr(at + 7);
+  cur = cur.substr(0, cur.find_first_of("\n "));
+  bool reached0 = false;
+  for (int i = 0; i < 40 && !cur.empty() && !reached0; ++i) {
+    const plain::ToolOutput p = call(hs, t, "search", "{\"query\":\"ordinary message\",\"before\":\"" + cur + "\"}");
+    TEST_ASSERT_FALSE_MESSAGE(p.isError, p.text.c_str());
+    reached0 = p.text.rfind("c0r", 0) == 0;
+    const size_t k = p.text.find("before=");
+    cur = k == std::string::npos ? std::string() : p.text.substr(k + 7, p.text.find_first_of("\n ", k + 7) - k - 7);
+  }
+  TEST_ASSERT_TRUE_MESSAGE(reached0, "the cursor reaches the first conversation");
 }
 
 static void test_outside_content_keeps_its_class_through_search_and_view() {
@@ -1090,6 +1143,7 @@ int main(int, char**) {
   RUN_TEST(test_D2_red_without_the_tools);
   RUN_TEST(test_D2_search_then_view_brings_a_compacted_turn_back_whole);
   RUN_TEST(test_D1_nothing_from_another_person_or_a_cleared_conversation);
+  RUN_TEST(test_search_after_clear_finds_the_cleared_conversations_and_view_opens_the_hit);
   RUN_TEST(test_outside_content_keeps_its_class_through_search_and_view);
   RUN_TEST(test_view_pages_exactly_and_search_bounds_its_result);
   RUN_TEST(test_a_photo_of_this_conversation_is_shown_again_in_the_view_result);

@@ -38,6 +38,9 @@ inline constexpr char kReplyForm[] = "Replies are Telegram messages: short and p
 inline constexpr char kTimeZone[] = "Time zone: ";
 inline constexpr char kStamped[] =
     "Every message starts with the time it was sent; before the day start it also names the day still running.";
+// E2-CFIX2 (PC-0288): the Responses and Chat codecs send this line after the core (an OpenAI head began every
+// reply with the stamp's time); the Messages codec does not, so no Anthropic request byte moves.
+inline constexpr char kStampNotRepeated[] = "\n\nA reply never starts with the time a message was sent.";
 inline constexpr char kHowToWork[] =
     "How to work: when asked for something a tool can do, do it in this reply. Say that "
     "something happened only when a tool result in this conversation shows it. When a tool fails, say so.";
@@ -379,6 +382,7 @@ inline constexpr char kSrcSummary[] = "summary";
 inline constexpr char kSrcResult[] = " result";
 inline constexpr char kSrcOutside[] = ", outside content";
 inline constexpr char kSrcEarlier[] = " (earlier engine)";
+inline constexpr char kSrcCleared[] = ", before /clear";   // E2-CFIX2 (PC-0289): a cleared conversation's hit
 inline constexpr char kSrcNote[] = "note ";
 inline constexpr char kSrcFile[] = "file ";   // scope files (lane E2-P-MEM)
 inline constexpr char kCutMark[] = "...";

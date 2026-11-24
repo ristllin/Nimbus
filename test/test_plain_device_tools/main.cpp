@@ -293,6 +293,27 @@ static void test_an_unknown_device_control_key_is_not_applied_and_the_answer_nam
   TEST_ASSERT_FALSE_MESSAGE(has(ok.substr(ok.rfind("\"tool_result\"")), "action keys"), ok.c_str());   // its own result
 }
 
+// E2-CFIX2 (bench 24 Nov, defect 5): "Set the speaker volume to 1" sent {"type":"config","key":"volume",
+// "value":1} and read "applied: protected-BLOCKED" (the field "key" ends in "key", a credential's shape)
+// with no key list. The key and value form names one knob; "volume" is the speaker volume engine 1's
+// own volume command sets (sfxVol); every refusal of a key names the keys the tool takes.
+static void test_device_control_takes_volume_in_key_value_form_and_a_refusal_names_the_keys() {
+  Device dev;
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  const std::string r =
+      moreCall(dev, R"({"name":"device_control","args":{"action":{"type":"config","key":"volume","value":1}}})");
+  TEST_ASSERT_EQUAL_MESSAGE(1, dev.exec.sfxVol, r.c_str());
+  TEST_ASSERT_FALSE_MESSAGE(has(r, "protected-BLOCKED"), r.c_str());
+  const std::string f = moreCall(dev, R"({"name":"device_control","args":{"action":{"type":"config","volume":30}}})");
+  TEST_ASSERT_EQUAL_MESSAGE(30, dev.exec.sfxVol, f.c_str());
+  const std::string p = moreCall(dev, R"({"name":"device_control","args":{"action":{"type":"config","tgToken":"x"}}})");
+  TEST_ASSERT_TRUE_MESSAGE(has(p, "not applied: protected-BLOCKED; action keys: type config: sfxVol"), p.c_str());
+  const std::string k =
+      moreCall(dev, R"({"name":"device_control","args":{"action":{"config":{"key":"antKey","value":"x"}}}})");
+  TEST_ASSERT_TRUE_MESSAGE(has(k, "not applied: protected-BLOCKED; action keys: "), k.c_str());
+  TEST_ASSERT_EQUAL(30, dev.exec.sfxVol);
+}
+
 // E2-REP1 (E2-INT1's finding): the switch after the turn reports what the store did. A refused write
 // is not a switch, so the chat is never told a model answers now that does not.
 static void test_a_head_switch_the_store_refuses_is_not_reported_done() {
@@ -372,6 +393,7 @@ int main(int, char**) {
   RUN_TEST(test_device_control_applies_now_and_defers_restart_and_switch);
   RUN_TEST(test_device_control_refuses_a_member);
   RUN_TEST(test_an_unknown_device_control_key_is_not_applied_and_the_answer_names_the_keys);
+  RUN_TEST(test_device_control_takes_volume_in_key_value_form_and_a_refusal_names_the_keys);
   RUN_TEST(test_people_family_is_admin_only);
   RUN_TEST(test_models_family_reaches_models_list);
   RUN_TEST(test_docs_family_reaches_search_and_read);

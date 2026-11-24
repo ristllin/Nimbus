@@ -96,6 +96,26 @@ inline std::string controlKeys() {
   return s["properties"]["action"]["description"] | "";
 }
 
+// E2-CFIX2 (bench 24 Nov): a config object as its knobs read it. {"key":K,"value":V} names the knob K (the field
+// "key" alone reads as a credential and refuses the action), and "volume" is the speaker volume, sfxVol, the
+// knob engine 1's own volume command sets (test_console "volume", the menu's Volume row).
+inline constexpr char kKnobKey[] = "key", kKnobValue[] = "value", kVolume[] = "volume", kSfxVol[] = "sfxVol",
+                      kConfig[] = "config";
+inline void knobForm(ArduinoJson::JsonObject o) {
+  if (o[kKnobKey].is<const char*>() && !o[kKnobValue].isNull()) {
+    const std::string k = o[kKnobKey].as<const char*>();
+    ArduinoJson::JsonDocument v;
+    v.set(o[kKnobValue]);
+    o.remove(kKnobKey);
+    o.remove(kKnobValue);
+    o[k] = v.as<ArduinoJson::JsonVariantConst>();
+  }
+  if (!o[kVolume].isNull() && o[kSfxVol].isNull()) {
+    o[kSfxVol] = o[kVolume];
+    o.remove(kVolume);
+  }
+}
+
 // One device action now, by the shared applier (engine 1's device.control, the same caller rules
 // and summary); a restart or a model switch it accepts is recorded and asked of the turn instead.
 inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, const nimbus::orch::Principal& who,
@@ -105,11 +125,17 @@ inline nimbus::orch::ToolResult deviceControl(ArduinoJson::JsonObjectConst a, co
   const std::string refused =
       nimbus::orch::actionRefusal(kControlName, nimbus::orch::actionCaller(who, unattended));
   if (!refused.empty()) return ToolResult::fail(refused);
-  const ArduinoJson::JsonVariantConst action = a["action"];
-  if (!action.is<ArduinoJson::JsonObjectConst>()) return ToolResult::fail(tr::kControlNoAction);
-  // A key no action reads is never "applied": the answer names what the tool takes (E2-BFIX4).
+  const ArduinoJson::JsonVariantConst given = a["action"];
+  if (!given.is<ArduinoJson::JsonObjectConst>()) return ToolResult::fail(tr::kControlNoAction);
+  ArduinoJson::JsonDocument doc;
+  doc.set(given);
+  if (doc[kConfig].is<ArduinoJson::JsonObject>()) knobForm(doc[kConfig].as<ArduinoJson::JsonObject>());
+  else if (doc["type"] == kConfig) knobForm(doc.as<ArduinoJson::JsonObject>());
+  const ArduinoJson::JsonVariantConst action = doc.as<ArduinoJson::JsonVariantConst>();
+  // A key no action reads, or one only the owner may set, is never "applied": the answer names what the
+  // tool takes (E2-BFIX4; E2-CFIX2 for the refused key, which was answered "applied: protected-BLOCKED").
   const nimbus::orch::ValidatedAction va = nimbus::orch::validateAction(action);
-  if (va.kind == nimbus::orch::ActionKind::Unknown)
+  if (va.kind == nimbus::orch::ActionKind::Unknown || (va.kind == nimbus::orch::ActionKind::Config && !va.allowed))
     return ToolResult::fail(tr::kControlNotApplied + va.reason + tr::kControlKeys + controlKeys());
   const std::string unknown =
       va.kind == nimbus::orch::ActionKind::Config && va.allowed ? nimbus::orch::unknownConfigKeys(action) : std::string();

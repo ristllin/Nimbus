@@ -12,6 +12,7 @@
 #include <string>
 
 #include "../support/tx_battery/render.h"
+#include "nimbus/harness/plain/texts.h"
 #include "../support/tx_battery/rows.h"
 #include "../support/wire_shape/chat_shape.h"
 
@@ -259,6 +260,25 @@ void test_the_codec_names_no_host() {
     TEST_ASSERT_TRUE_MESSAGE(src.find(host) == std::string::npos, host);
 }
 
+// E2-CFIX2 (bench 24 Nov, defect 6): on an OpenAI head every reply began with the message's time ("23:24
+// Sam, ..."), copied from the stamp in front of the person's messages. The Responses and Chat codecs send
+// one line after the core system text saying the time is not repeated; the Messages codec sends the core
+// as it was (no Anthropic request byte moves).
+void test_the_openai_and_chat_codecs_say_the_stamp_is_not_repeated_and_anthropic_is_unchanged() {
+  const std::string line = std::string(plain::texts::core::kStampNotRepeated).substr(2);   // after its "\n\n"
+  for (caps::Slot slot : {caps::Slot::OpenAI, caps::Slot::CustomChat, caps::Slot::Mistral, caps::Slot::Anthropic}) {
+    txb::RenderFixture fx(rowOf(slot));
+    txb::Convo c;
+    c.openTurn();
+    c.owner("Hello.");
+    txb::Rendered out;
+    TXB_OK(txb::renderItems(fx, c, 0, out, c.turn));
+    const bool wanted = slot != caps::Slot::Anthropic;
+    TEST_ASSERT_EQUAL_MESSAGE(wanted, out.body.find(line) != std::string::npos, out.body.c_str());
+    TEST_ASSERT_TRUE_MESSAGE(out.body.find(fx.system.core) != std::string::npos, out.body.c_str());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_wire_for_chat_and_flat_give_the_codec);
@@ -270,5 +290,6 @@ int main(int, char**) {
   RUN_TEST(test_text_mode_sends_no_tools);
   RUN_TEST(test_a_call_only_message_carries_an_empty_content);
   RUN_TEST(test_the_codec_names_no_host);
+  RUN_TEST(test_the_openai_and_chat_codecs_say_the_stamp_is_not_repeated_and_anthropic_is_unchanged);
   return UNITY_END();
 }

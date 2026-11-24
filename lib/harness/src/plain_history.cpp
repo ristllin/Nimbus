@@ -127,13 +127,14 @@ const char* sourceWord(tx::HitSource s) {
 // The start of a UTF-8 character at or before `i`.
 // "r12 Tue 17 Nov 2026 13:02 web_search result, outside content"
 std::string label(const std::string& id, const std::string& when, tx::HitSource src, const std::string& tool,
-                  bool outside) {
+                  bool outside, bool cleared = false) {
   std::string s = id;
   if (!when.empty()) s += " " + when;
   s += " ";
   if (src == tx::HitSource::Tool) s += tool + R::kSrcResult;
   else s += sourceWord(src);
   if (src == tx::HitSource::OldPerson || src == tx::HitSource::OldAssistant) s += R::kSrcEarlier;
+  if (cleared) s += R::kSrcCleared;
   if (outside) s += R::kSrcOutside;
   return s;
 }
@@ -203,6 +204,35 @@ std::string refusalFor(const std::string& tool, const TurnCtx& t) {
   return R::kNotInTurn;
 }
 
+// E2-CFIX2: the conversations of one chat. /clear moves the chat to "<chat>_c<g>" and keeps every
+// earlier one ("<chat>" is 0); search reads them all, newest first, and an earlier one's ids and cursors
+// carry its number ("c<g>r<q>", "c<g>:<cursor>"). The turn's own number; false: a key of another form.
+bool generationOf(const TurnCtx& t, uint32_t& g) {
+  g = 0;
+  if (t.chatKey == t.chatId) return true;
+  const std::string pre = t.chatId + "_c";
+  if (t.chatId.empty() || t.chatKey.compare(0, pre.size(), pre) != 0) return false;
+  const std::string n = t.chatKey.substr(pre.size());
+  if (n.empty() || n.size() > 9 || n.find_first_not_of("0123456789") != std::string::npos) return false;
+  g = uint32_t(std::stoul(n));
+  return g > 0;
+}
+std::string keyOfGeneration(const TurnCtx& t, uint32_t g) {
+  return g ? t.chatId + "_c" + std::to_string(g) : t.chatId;
+}
+// "c<g>" then `sep` at `at`: the number (below the turn's own) and the text after it; false: not that form.
+bool earlierRef(const TurnCtx& t, const std::string& s, char sep, uint32_t& g, std::string& rest) {
+  uint32_t cur = 0;
+  const size_t end = s.find(sep);
+  if (s.size() < 3 || s[0] != 'c' || end == std::string::npos || end < 2 || end > 10 || !generationOf(t, cur))
+    return false;
+  const std::string n = s.substr(1, end - 1);
+  if (n.find_first_not_of("0123456789") != std::string::npos) return false;
+  g = uint32_t(std::stoul(n));
+  rest = s.substr(sep == ':' ? end + 1 : end);
+  return g < cur;
+}
+
 }  // namespace
 
 std::string viewedPhoto(const std::string& toolName, const std::string& text) {
@@ -238,8 +268,10 @@ bool HistoryTools::answer(const ToolCall& call, const TurnCtx& turn, ToolOutput&
 }
 
 tx::OldRows* HistoryTools::oldFor(const TurnCtx& turn) const {
-  // Only a chat's first conversation (its own key) holds what the import left behind.
-  if (!d_.oldRows || turn.chatKey != turn.chatId) return nullptr;
+  // A chat's first conversation (its own key) holds what the import left behind; a later one reads
+  // them as part of that cleared conversation (E2-CFIX2).
+  uint32_t g = 0;
+  if (!d_.oldRows || !generationOf(turn, g)) return nullptr;
   return d_.oldRows(turn.chatId);
 }
 
@@ -247,25 +279,30 @@ tx::OldRows* HistoryTools::oldFor(const TurnCtx& turn) const {
 bool HistoryTools::askOf(const TurnCtx& turn, JsonObjectConst a, tx::SearchAsk& ask) const {
   ask.query = str(a, "query");
   ask.before = str(a, "before");
+  uint32_t g = 0;
+  std::string inner;   // an earlier conversation's cursor is checked without its "c<g>:" (E2-CFIX2)
+  const std::string own = earlierRef(turn, ask.before, ':', g, inner) ? inner : ask.before;
   ask.openTurn = turn.turn;
   const int16_t zone = tz(turn.startedAt);
   const std::string from = str(a, "from"), to = str(a, "to");
   if (!from.empty() && !parseLocal(from, false, zone, ask.fromT)) return false;
   if (!to.empty() && !parseLocal(to, true, zone, ask.toT)) return false;
-  return tx::cursorOk(ask.before) && !(ask.fromT && ask.toT && ask.fromT > ask.toT);
+  return tx::cursorOk(own) && !(ask.fromT && ask.toT && ask.fromT > ask.toT);
 }
 
 // The hits, best first, then the rest: how many more matches the window holds and their dates, or
 // how far the reading went and that older parts were not read, with the cursor; or that it reached
 // the start of the range.
-std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Status& st) const {
+// `afterClear`: the turn runs after a /clear, so the earlier engine's rows are of a cleared conversation.
+std::string HistoryTools::answerText(const tx::SearchOutcome& o, const tx::Status& st, bool afterClear) const {
   std::string text;
   if (!st.ok()) return R::kCardStopped + o.next;   // nothing above it claims absence (ruling 116)
   for (const tx::SearchHit& h : o.hits) {
     const int16_t zone = h.hasTz ? h.tzMinutes : tz(h.t);
     const std::string when = h.hourOnly ? hourOf(h.t, zone) : whenOf(h.t, zone);
     const std::string ex = (h.cutBefore ? R::kCutMark : "") + h.excerpt + (h.cutAfter ? R::kCutMark : "");
-    text += label(h.id, when, h.source, h.tool, h.outside) + ": " + (h.outside ? framed(ex) : ex) + "\n";
+    const bool old = h.source == tx::HitSource::OldPerson || h.source == tx::HitSource::OldAssistant;
+    text += label(h.id, when, h.source, h.tool, h.outside, h.id[0] == 'c' || (old && afterClear)) + ": " + (h.outside ? framed(ex) : ex) + "\n";
   }
   if (o.hits.empty()) text += std::string(R::kSearchNone) + "\n";
   if (o.unreadBulk) text += std::to_string(o.unreadBulk) + R::kSearchUnread + "\n";
@@ -290,23 +327,72 @@ ToolOutput HistoryTools::search(const ToolCall&, const TurnCtx& turn, JsonObject
   if (scope == kMemories && d_.memories) return searchMemories(turn, query);
   tx::SearchAsk ask;
   if ((!scope.empty() && scope != kHistory) || !askOf(turn, a, ask)) return fail(R::kSearchBadArgs);
-  tx::SearchDeps sd;
-  sd.files = d_.files;
-  sd.chatKey = turn.chatKey;
-  sd.old = oldFor(turn);
-  sd.nowMs = d_.nowMs;
-  sd.limits = d_.limits;
-  sd.itemOutside = storedOutside;
+  uint32_t g = 0;
+  const bool chained = generationOf(turn, g);
+  std::string inner;
+  if (earlierRef(turn, ask.before, ':', g, inner)) ask.before = inner;
   tx::SearchOutcome o;
-  const tx::Status st = tx::search(sd, ask, o);
+  const tx::Status st = searchFrom(turn, chained, g, ask, o);
   card_ = o.card;
-  ToolOutput out = ok(answerText(o, st));
+  ToolOutput out = ok(answerText(o, st, turn.chatKey != turn.chatId));
   out.isError = !st.ok() && o.hits.empty();
   // An excerpt of outside content is outside content.
   out.outside = std::any_of(o.hits.begin(), o.hits.end(), [](const tx::SearchHit& h) { return h.outside; });
   logCall(turn, card_, out.text.size(),
           CallLog{kSearch, o.oldRead ? "history+old" : kHistory, o.hits.size(), !o.next.empty(), tx::errSlug(st.err)});
   return out;
+}
+
+// The history scope from conversation `g` (with `ask.before` its own cursor) to the chat's first one,
+// newest first: each conversation's hits fill the page in turn; a page that stops inside a conversation
+// or between two hands a cursor that names where (E2-CFIX2). `chained` false: the turn's key alone.
+tx::Status HistoryTools::searchFrom(const TurnCtx& turn, bool chained, uint32_t g, tx::SearchAsk ask,
+                                    tx::SearchOutcome& all) {
+  uint32_t cur = 0;
+  if (chained) (void)generationOf(turn, cur);
+  const size_t maxHits = d_.limits.maxHits;
+  all = tx::SearchOutcome{};
+  for (;;) {
+    const bool own = !chained || g == cur;
+    tx::SearchDeps sd;
+    sd.files = d_.files;
+    sd.chatKey = own ? turn.chatKey : keyOfGeneration(turn, g);
+    sd.old = (own && turn.chatKey == turn.chatId) || (!own && g == 0) ? oldFor(turn) : nullptr;
+    sd.nowMs = d_.nowMs;
+    sd.limits = d_.limits;
+    sd.limits.maxHits = maxHits - all.hits.size();
+    sd.itemOutside = storedOutside;
+    if (!own) ask.openTurn = 0;   // the open turn is the new conversation's
+    tx::SearchOutcome o;
+    const tx::Status st = tx::search(sd, ask, o);
+    const std::string pre = own ? std::string() : "c" + std::to_string(g);
+    for (tx::SearchHit& h : o.hits) {
+      if (!own && h.id[0] == 'r') h.id = pre + h.id;
+      all.hits.push_back(std::move(h));
+    }
+    all.card.reads += o.card.reads;
+    all.card.bytes += o.card.bytes;
+    all.card.totalMs += o.card.totalMs;
+    all.card.longestMs = std::max(all.card.longestMs, o.card.longestMs);
+    all.oldRead = all.oldRead || o.oldRead;
+    all.unreadBulk += o.unreadBulk;
+    all.further = o.further;
+    all.furtherFromT = o.furtherFromT;
+    all.furtherToT = o.furtherToT;
+    all.readFromT = o.readFromT;
+    all.readToT = o.readToT;
+    all.complete = o.complete;
+    all.next = o.next.empty() ? std::string() : (own ? o.next : pre + ":" + o.next);
+    if (!st.ok() || !o.next.empty() || !chained || g == 0) return st;
+    --g;
+    ask.before.clear();
+    const bool spent = all.card.bytes >= d_.limits.windowBytes || all.card.totalMs >= d_.limits.cardMs;
+    if (all.hits.size() >= maxHits || spent) {
+      all.complete = false;
+      all.next = "c" + std::to_string(g) + ":";
+      return st;
+    }
+  }
 }
 
 ToolOutput HistoryTools::searchNotes(const TurnCtx& turn, JsonObjectConst a, const std::string& query) {
@@ -392,10 +478,19 @@ ToolOutput HistoryTools::view(const ToolCall&, const TurnCtx& turn, JsonObjectCo
   const bool num = digits.size() <= 19 && digits.find_first_not_of("0123456789") == std::string::npos;
   if (id[0] == 'r' && num) return viewItem(turn, std::stoull(digits), offset, limit);
   if (id[0] == 'm' && tx::rowIdNumber(id)) return viewOld(turn, tx::rowIdNumber(id), offset, limit);
+  uint32_t g = 0;
+  std::string rest;
+  if (earlierRef(turn, id, 'r', g, rest) && rest.size() > 1 && rest.size() <= 20 &&
+      rest.find_first_not_of("0123456789", 1) == std::string::npos) {
+    TurnCtx earlier = turn;
+    earlier.chatKey = keyOfGeneration(turn, g);
+    return viewItem(earlier, std::stoull(rest.substr(1)), offset, limit, "c" + std::to_string(g));
+  }
   return fail(R::kViewBadId);
 }
 
-ToolOutput HistoryTools::viewItem(const TurnCtx& turn, uint64_t q, size_t offset, size_t limit) {
+ToolOutput HistoryTools::viewItem(const TurnCtx& turn, uint64_t q, size_t offset, size_t limit,
+                                  const std::string& cleared) {
   tx::ReadOnlyCounted files(*d_.files, d_.nowMs, card_);
   tx::Item it;
   tx::Status st = q ? tx::findItem(files, turn.chatKey, q, it) : tx::Status::fail(tx::Err::NotFound, "view");
@@ -411,8 +506,9 @@ ToolOutput HistoryTools::viewItem(const TurnCtx& turn, uint64_t q, size_t offset
     st = tx::turnHoldsOutside(files, turn.chatKey, it.turn, storedOutside, outside);
   if (!st.ok()) return fail(std::string(R::kCardStopped));
   const std::string when = whenOf(it.t, it.kind == tx::ItemKind::User ? it.tzMinutes : tz(it.t));
-  const std::string id = "r" + std::to_string(q);
-  ToolOutput out = ok(page(label(id, when, sourceOfItem(it.kind), it.n, outside) + " " + std::to_string(total),
+  const std::string id = cleared + "r" + std::to_string(q);
+  ToolOutput out = ok(page(label(id, when, sourceOfItem(it.kind), it.n, outside, !cleared.empty()) + " " +
+                               std::to_string(total),
                            outside ? framed(body) : body, offset, total, body.size()));
   out.outside = outside;   // outside content keeps its class when it comes back
   logCall(turn, card_, out.text.size(), CallLog{kView, id, 1, offset + body.size() < total, "ok"});
@@ -464,7 +560,8 @@ ToolOutput HistoryTools::viewOld(const TurnCtx& turn, uint64_t row, size_t offse
   const bool outside = r.role == tx::RowRole::Assistant || r.photo;   // its class is not known: fail closed
   const tx::HitSource src = r.role == tx::RowRole::Owner ? tx::HitSource::OldPerson : tx::HitSource::OldAssistant;
   const std::string body = offset < r.text.size() ? r.text.substr(offset, limit) : std::string();
-  const std::string head = label(tx::rowIdString(row), hourOf(r.t, tz(r.t)), src, "", outside) + " " +
+  const bool afterClear = turn.chatKey != turn.chatId;   // the rows belong to the chat's first conversation
+  const std::string head = label(tx::rowIdString(row), hourOf(r.t, tz(r.t)), src, "", outside, afterClear) + " " +
                            std::to_string(r.text.size());
   ToolOutput out = ok(page(head, outside ? framed(body) : body, offset, r.text.size(), body.size()));
   out.outside = outside;

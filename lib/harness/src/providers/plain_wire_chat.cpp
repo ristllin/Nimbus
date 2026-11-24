@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "nimbus/harness/plain/route.h"
+#include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/tx/arena.h"
 #include "nimbus/orch/tx/item.h"
@@ -367,6 +368,7 @@ void systemMessage(BodyWriter& w, const SystemBlocks& s, const plan::SystemPlan&
     if (!sp.shown[i]) continue;
     if (!first) w.part(kSystemJoin);
     w.part(*blocks[i]);
+    if (i == 0) w.part(texts::core::kStampNotRepeated);   // E2-CFIX2 (PC-0288): the stamp stays out of the reply
     first = false;
   }
   w.endStr().endObject();
