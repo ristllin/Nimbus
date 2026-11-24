@@ -9,7 +9,8 @@
 // writes straight into the request body through the checked body writer (plain_body.h):
 //
 //   {"model", "max_tokens", "output_config":{"effort", "format"} (each when set; the format is
-//    RenderInput::answerSchema as a json_schema, lane E2-CMP),
+//    RenderInput::answerSchema as a json_schema, lane E2-CMP), "thinking" (the guard round only,
+//    by the row: lane E2-REP7, guardThinking below),
 //    "system":[core][skills index + pinned notes][digests + recent files],
 //    "tools":[{"name","description","input_schema"}], "tool_choice":{"type":"auto"|"none"},
 //    "messages":[...]}
@@ -286,6 +287,22 @@ void outputConfig(BodyWriter& w, const RenderInput& in) {
   w.endObject();
 }
 
+// Lane E2-REP7: the guard round's last request (tool choice none) with thinking off where the row's
+// thinking value says how. With no thinking field, Claude 5 models think by default, and on the guard
+// round (its last user block a tool result, no call allowed) Haiku 5.5 and Sonnet 5.5 answered thinking
+// alone, no text (R10 S4, fixtures/anthropic_wire_2026-11/guard_round_thinking_only.json). adaptive
+// rows take "disabled", between_tools rows "between_tools", both only at effort high or below; an
+// always-on row and a row the boot narrowed to off send nothing. Ordinary rounds never carry it.
+void guardThinking(BodyWriter& w, const RenderInput& in) {
+  namespace caps = nimbus::orch::caps;
+  if (!in.toolChoiceNone || !in.route || !in.route->caps.provider) return;
+  const std::string& e = in.head->effort;
+  if (e == "xhigh" || e == "max") return;
+  const caps::Thinking t = in.route->caps.row.thinking;
+  const char* type = t == caps::Thinking::Adaptive ? "disabled" : t == caps::Thinking::BetweenTools ? "between_tools" : nullptr;
+  if (type) w.key("thinking").beginObject().key("type").str(type).endObject();
+}
+
 Status toolsArray(BodyWriter& w, const RenderInput& in, const plan::ProviderTools& pt) {
   if (in.tools->empty()) return Status::success();
   w.key("tools").beginArray();
@@ -390,6 +407,7 @@ Status renderBody(const RenderInput& in, HttpRequest& out) {
   // The route's model: a routed selector's bare id (the router prices it); else the turn's.
   w.beginObject().key("model").str(in.route ? in.route->model : in.turn->model).key("max_tokens").unum(in.maxTokens);
   outputConfig(w, in);
+  guardThinking(w, in);
   systemBlocks(w, out.body, *in.system, p.system, points);
   if (!(st = toolsArray(w, in, pt)).ok()) return st;
 

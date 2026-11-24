@@ -41,6 +41,7 @@
 #include "../support/tx_battery/render.h"
 #include "nimbus/harness/log.h"
 #include "nimbus/harness/plain/request.h"
+#include "nimbus/harness/plain/route.h"
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/harness/plain/wire.h"
 #include "nimbus/orch/connector_grant.h"   // lane E2-P-CONN2
@@ -101,6 +102,7 @@ struct Opts {
   bool inlinePhotos = false;
   std::string mime = "image/jpeg";
   const char* answerSchema = nullptr;   // lane E2-CMP: the summarizer's structured form
+  const plain::Route* route = nullptr;  // lane E2-REP7: the head's route (the table row the wire reads)
 };
 
 struct Out {
@@ -144,6 +146,7 @@ struct Rig {
     in.toolChoiceNone = o.none;
     in.answerSchema = o.answerSchema;
     in.maxTokens = o.maxTokens;
+    in.route = o.route;
     const auto* bulk = &c.bulk;
     in.bulk = [bulk](const std::string& handle, std::string& s) {
       auto it = bulk->find(handle);
@@ -534,10 +537,20 @@ bool outputConfigOk(JsonObjectConst oc, C& c) {
   return onlyKeys(oc, {"effort", "format"}, c, "output_config");
 }
 
+// Lane E2-REP7: thinking off on the guard round, {"type":"disabled"} or {"type":"between_tools"} alone.
+bool thinkingOk(JsonVariantConst t, C& c) {
+  if (t.isNull()) return true;
+  const std::string type = t["type"] | "";
+  if (type != "disabled" && type != "between_tools") return c.fail("thinking type '" + type + "'");
+  return onlyKeys(t.as<JsonObjectConst>(), {"type"}, c, "thinking");
+}
+
 bool envelope(JsonObjectConst root, C& c) {
   if (root.isNull()) return c.fail("the body is not an object");
-  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "mcp_servers", "messages", "output_config"}, c, "body"))
+  if (!onlyKeys(root, {"model", "max_tokens", "system", "tools", "tool_choice", "mcp_servers", "messages", "output_config", "thinking"},
+                c, "body"))
     return false;
+  if (!thinkingOk(root["thinking"], c)) return false;
   if (std::string(root["model"] | "").empty()) return c.fail("model missing");
   if (!root["max_tokens"].is<unsigned>() || (root["max_tokens"] | 0u) < 1) return c.fail("max_tokens missing or 0");
   return root["output_config"].isNull() || outputConfigOk(root["output_config"], c);
