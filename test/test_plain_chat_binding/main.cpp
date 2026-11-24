@@ -42,6 +42,7 @@
 #include "nimbus/harness/plain/head_slot.h"
 #include "nimbus/orch/model_catalog.h"
 #include "nimbus/orch/request_budget.h"
+#include "nimbus/orch/usage_ledger.h"   // ledgerDelta (E2-REP1)
 #include "nimbus/harness/plain/chat_commands.h"
 #include "nimbus/harness/plain/chat_skill_tools.h"
 #include "nimbus/orch/tool_groups.h"
@@ -2030,6 +2031,28 @@ static void test_spend_is_booked_in_each_providers_counts() {
   nimbus::orch::setRoutedBudgetLiftForTest(-1);
 }
 
+// E2-REP1 (E2-R8a's note): with the routed lift on, a router echo that names another upstream than the
+// selector is read in the shape the ledger files it under (the echo's key), so the ledger's split gives
+// back the cache the provider billed and the input it billed, not a part of one counted as the other.
+static void test_a_routed_echo_of_another_upstream_is_counted_in_its_own_shape() {
+  nimbus::orch::setRoutedBudgetLiftForTest(1);
+  nimbus::orch::TokenUsage u;
+  u.promptTokens = 1000;   // engine 2's codecs: the uncached part
+  u.cacheReadTokens = 600;
+  u.cacheWriteTokens = 400;
+  u.responses = 1;
+  u.servedModel = "openai/gpt-5.6-luna";   // the selector named an Anthropic upstream
+  nimbus::orch::TurnSpend s;
+  s.add("cumulo", "anthropic/claude-haiku-5-5", plain::ledgerUsage("cumulo", "anthropic/claude-haiku-5-5", u));
+  TEST_ASSERT_EQUAL(1, (int)s.billedSlots());
+  const nimbus::orch::TokenDelta d = nimbus::orch::ledgerDelta(s.slot[0], true);
+  nimbus::orch::setRoutedBudgetLiftForTest(-1);
+  TEST_ASSERT_EQUAL_STRING("openai/gpt-5.6-luna", s.slot[0].model);
+  TEST_ASSERT_EQUAL(1000u, (unsigned)d.in);
+  TEST_ASSERT_EQUAL(600u, (unsigned)d.cacheR);
+  TEST_ASSERT_EQUAL(400u, (unsigned)d.cacheW);
+}
+
 // D1: no engine-2 binding names a provider itself (the router design's "Deleted" list).
 static void test_no_binding_names_a_provider() {
   const char* const files[] = {"lib/harness/include/nimbus/harness/plain/chat_binding.h", "lib/harness/src/plain_compact.cpp",
@@ -2131,6 +2154,72 @@ static void test_the_custom_endpoint_follows_its_verify() {
   TEST_ASSERT_FALSE(dev.model.last().req.tls);
 }
 
+// E2-REP1 (E2-R8a's note): the custom endpoint's verify step on the scripted provider. The window is read
+// from the model list; the tool probe (tool_choice required) accepted gives tools, refused or answered with
+// text gives none; a Messages endpoint is not probed; a refused key and an unanswered list are told apart.
+static void test_the_custom_verify_reads_the_window_and_the_tool_probe() {
+  plain::SlotSettings s;
+  s.customBase = "http://192.168.1.50:8080/v1";
+  plain::HeadSlot h;
+  TEST_ASSERT_TRUE(plain::headSlotFor(s, "custom", "qwen3-32b", h).ok());
+  const std::string list = R"({"data":[{"id":"qwen3-32b","max_model_len":32768}]})";
+  auto run = [&h](sp::ScriptedProvider& model, bool messagesConv) {
+    return plain::customVerify(h, "sk-fake-local", messagesConv, [&model](const agent::HttpRequest& req, std::string& body) {
+      agent::HttpResponse r;
+      std::string err;
+      (void)model.exec(req, r, err);
+      body = r.body;
+      return r.status;
+    });
+  };
+  {   // the probe is taken
+    sp::ScriptedProvider model(sp::Dialect::Chat);
+    model.push(sp::raw(200, list));
+    model.push(sp::call(plain::texts::probe::kToolProbeName));
+    const plain::CustomVerify v = run(model, false);
+    TEST_ASSERT_EQUAL(1, v.result);
+    TEST_ASSERT_EQUAL(32768u, v.window);
+    TEST_ASSERT_TRUE(v.tools);
+    TEST_ASSERT_EQUAL(2, (int)model.requests().size());
+    const sp::Recorded& get = model.requests()[0];
+    TEST_ASSERT_EQUAL_STRING("GET", get.req.method.c_str());
+    TEST_ASSERT_EQUAL_STRING("/v1/models", get.req.path.c_str());
+    TEST_ASSERT_EQUAL_STRING("192.168.1.50", get.req.host.c_str());
+    TEST_ASSERT_EQUAL(8080, get.req.port);
+    TEST_ASSERT_FALSE(get.req.tls);
+    TEST_ASSERT_EQUAL_STRING("/v1/chat/completions", model.last().req.path.c_str());
+    TEST_ASSERT_TRUE(has(model.last().body, "\"tool_choice\":\"required\""));
+    TEST_ASSERT_TRUE(has(model.last().body, "\"model\":\"qwen3-32b\""));
+  }
+  {   // the probe is refused, then answered with text: no tools, the window still read
+    for (const sp::Step& probe : {sp::httpError(400), sp::say("pong")}) {
+      sp::ScriptedProvider model(sp::Dialect::Chat);
+      model.push(sp::raw(200, list));
+      model.push(probe);
+      const plain::CustomVerify v = run(model, false);
+      TEST_ASSERT_EQUAL(1, v.result);
+      TEST_ASSERT_EQUAL(32768u, v.window);
+      TEST_ASSERT_FALSE(v.tools);
+      TEST_ASSERT_EQUAL(2, (int)model.requests().size());
+    }
+  }
+  {   // a Messages endpoint keeps its tools: no probe
+    sp::ScriptedProvider model(sp::Dialect::Chat);
+    model.push(sp::raw(200, list));
+    const plain::CustomVerify v = run(model, true);
+    TEST_ASSERT_EQUAL(1, v.result);
+    TEST_ASSERT_EQUAL(1, (int)model.requests().size());
+  }
+  {   // a refused key; then no answer at all
+    sp::ScriptedProvider model(sp::Dialect::Chat);
+    model.push(sp::httpError(401));
+    model.push(sp::transportCut());
+    TEST_ASSERT_EQUAL(0, run(model, false).result);
+    TEST_ASSERT_EQUAL(-1, run(model, false).result);
+    TEST_ASSERT_EQUAL(2, (int)model.requests().size());
+  }
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_a_message_reaches_the_turn_and_the_reply_the_channel_once);
@@ -2177,8 +2266,10 @@ int main(int, char**) {
   RUN_TEST(test_a_held_note_is_listed_and_approved_or_denied_by_the_owner);
   RUN_TEST(test_every_slot_runs_a_turn_a_summary_and_a_routine);
   RUN_TEST(test_spend_is_booked_in_each_providers_counts);
+  RUN_TEST(test_a_routed_echo_of_another_upstream_is_counted_in_its_own_shape);
   RUN_TEST(test_no_binding_names_a_provider);
   RUN_TEST(test_the_custom_endpoint_follows_its_verify);
+  RUN_TEST(test_the_custom_verify_reads_the_window_and_the_tool_probe);
   RUN_TEST(test_a_server_error_moves_the_round_to_the_next_provider);
   RUN_TEST(test_a_cut_answer_moves_the_round_to_the_next_provider);
   RUN_TEST(test_two_switches_then_the_plain_failure_line);

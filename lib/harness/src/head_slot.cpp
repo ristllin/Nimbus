@@ -9,6 +9,7 @@
 #include "nimbus/harness/plain/texts.h"
 #include "nimbus/orch/model_caps.h"
 #include "nimbus/orch/model_catalog.h"
+#include "nimbus/orch/model_key.h"   // usageModelKey: the key the ledger files a routed spend under
 #include "nimbus/orch/model_price_defaults.h"
 #include "nimbus/orch/request_budget.h"
 #include "nimbus/orch/router_route.h"
@@ -129,7 +130,14 @@ bool slotRatesFor(const std::string& provider, const std::string& model, HeadRat
 
 nimbus::orch::TokenUsage ledgerUsage(const std::string& provider, const std::string& model, nimbus::orch::TokenUsage u) {
   std::string billed = provider;
-  if (provider == "cumulo" && nimbus::orch::routedBudgetLift()) billed = nimbus::orch::resolveRouterRoute(model).upstream;
+  if (provider == "cumulo" && nimbus::orch::routedBudgetLift()) {
+    // E2-REP1: by the key the ledger files it under (usageModelKey: a router echo naming another
+    // upstream than the selector files under the echo), so the two read the same cache shape.
+    char key[nimbus::orch::kModelKeyCap];
+    const std::string sel =
+        nimbus::orch::usageModelKey("cumulo", model.c_str(), u.servedModel.c_str(), key) ? std::string(key) : model;
+    billed = nimbus::orch::resolveRouterRoute(sel).upstream;
+  }
   if (billed == "anthropic") return u;   // the Excluded shape: the uncached part is the input count
   u.promptTokens += u.cacheReadTokens + u.cacheWriteTokens;
   return u;
@@ -175,6 +183,32 @@ bool answerCalledTool(const std::string& chatBody) {
   if (deserializeJson(doc, chatBody, DeserializationOption::NestingLimit(10))) return false;
   JsonArrayConst calls = doc["choices"][0]["message"]["tool_calls"];
   return calls.size() > 0 && std::string((const char*)(calls[0]["function"]["name"] | "")) == texts::probe::kToolProbeName;
+}
+
+CustomVerify customVerify(const HeadSlot& slot, const std::string& key, bool messagesConv, const CustomExchangeFn& exchange) {
+  CustomVerify v;
+  HttpRequest req;
+  req.method = "GET";
+  req.host = slot.endpoint.host;
+  req.port = slot.endpoint.port;
+  req.tls = slot.endpoint.tls;
+  const std::string base = slot.endpoint.basePath.empty() ? "/v1" : slot.endpoint.basePath;
+  req.path = base + "/models";
+  if (!key.empty()) req.headers.push_back({"Authorization", "Bearer " + key});
+  std::string body;
+  const int code = exchange(req, body);
+  if (code == 401 || code == 403) v.result = 0;
+  if (code != 200) return v;
+  v.result = 1;
+  v.window = servedWindowOf(body, slot.model);
+  if (messagesConv) return v;   // a Messages endpoint keeps its tools (no chat probe)
+  req.method = "POST";
+  req.path = base + "/chat/completions";
+  req.headers.push_back({"Content-Type", "application/json"});
+  req.body = toolProbeBody(slot.model);
+  body.clear();
+  v.tools = exchange(req, body) == 200 && answerCalledTool(body);
+  return v;
 }
 
 bool customToolsFrom(const std::string& storeText, const std::string& model) {

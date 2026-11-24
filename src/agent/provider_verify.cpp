@@ -972,32 +972,28 @@ static int customExchange(C& client, const String& req, std::string& body, size_
 static void closeClient(WiFiClientSecure& c) { tlsClose(c); }
 static void closeClient(WiFiClient& c) { c.stop(); }
 
-// GET the model list and send the one tool probe over `client` (plain TCP or TLS by the base).
+// The verify's requests (plain::customVerify) over `client` (plain TCP or TLS by the base), one
+// connection each; a connection that does not open answers 0.
 template <class C>
 static int8_t customRound(C& client, const agent::plain::HeadSlot& slot, const String& key, uint32_t& window,
                           bool& tools) {   // slot: the endpoint and model only (no table is read here)
   const String host(slot.endpoint.host.c_str());
-  const String base(slot.endpoint.basePath.empty() ? "/v1" : slot.endpoint.basePath.c_str());
-  const String auth = key.length() ? String("Authorization: Bearer ") + key + "\r\n" : String();
   const String tail = "Accept-Encoding: identity\r\nUser-Agent: Nimbus\r\nConnection: close\r\n\r\n";
-  if (!connectHost(client, host.c_str(), slot.endpoint.port)) return -1;
-  std::string body;
-  const int code = customExchange(client, "GET " + base + "/models HTTP/1.0\r\nHost: " + host + "\r\n" + auth + tail,
-                                  body, 64 * 1024);
-  closeClient(client);
-  if (code == 401 || code == 403) return 0;
-  if (code != 200) return -1;
-  window = agent::plain::servedWindowOf(body, slot.model);
-  if (store::customConv() == "anthropic") return 1;   // a Messages endpoint keeps its tools (no chat probe)
-  const std::string probe = agent::plain::toolProbeBody(slot.model);
-  if (!connectHost(client, host.c_str(), slot.endpoint.port)) return 1;
-  body.clear();
-  const String req = "POST " + base + "/chat/completions HTTP/1.0\r\nHost: " + host + "\r\n" + auth +
-                     "Content-Type: application/json\r\nContent-Length: " + String((unsigned)probe.size()) + "\r\n" +
-                     tail + probe.c_str();
-  tools = customExchange(client, req, body, 16 * 1024) == 200 && agent::plain::answerCalledTool(body);
-  closeClient(client);
-  return 1;
+  auto exchange = [&](const agent::HttpRequest& req, std::string& body) {
+    if (!connectHost(client, host.c_str(), slot.endpoint.port)) return 0;
+    String text = String(req.method.c_str()) + " " + req.path.c_str() + " HTTP/1.0\r\nHost: " + host + "\r\n";
+    for (const auto& h : req.headers) text += String(h.first.c_str()) + ": " + h.second.c_str() + "\r\n";
+    if (!req.body.empty()) text += "Content-Length: " + String((unsigned)req.body.size()) + "\r\n";
+    text += tail + req.body.c_str();
+    const int code = customExchange(client, text, body, req.body.empty() ? 64 * 1024 : 16 * 1024);
+    closeClient(client);
+    return code;
+  };
+  const agent::plain::CustomVerify v =
+      agent::plain::customVerify(slot, std::string(key.c_str()), store::customConv() == "anthropic", exchange);
+  window = v.window;
+  tools = v.tools;
+  return v.result;
 }
 
 // The custom endpoint: its key at /models, the window it serves for the model, and whether it takes a

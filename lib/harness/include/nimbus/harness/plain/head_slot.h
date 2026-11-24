@@ -75,6 +75,18 @@ std::string toolProbeBody(const std::string& model);
 bool answerCalledTool(const std::string& chatBody);
 // The smallest window tools are offered on: the fixed overhead (about 6,000 tokens) at most half full.
 inline constexpr uint32_t kCustomToolsMinWindow = 12000;
+// The verify step's two requests (lane E2-REP1: src/agent/provider_verify.cpp sends them over its own
+// client): GET <base>/models for the served window, then, on a chat-convention endpoint (not
+// `messagesConv`), the one tool probe POSTed to <base>/chat/completions. `exchange` sends one request and
+// returns its HTTP status (0: no answer) with the body. result: 1 verified, 0 the key was refused (401,
+// 403), -1 no usable answer to the model list. A probe with no answer leaves tools false.
+struct CustomVerify {
+  int8_t result = -1;
+  uint32_t window = 0;
+  bool tools = false;
+};
+using CustomExchangeFn = std::function<int(const HttpRequest& req, std::string& body)>;
+CustomVerify customVerify(const HeadSlot& slot, const std::string& key, bool messagesConv, const CustomExchangeFn& exchange);
 // What a stored verify says: tools for `model` only when its probe was accepted and its window is
 // known and holds kCustomToolsMinWindow (the custom model store text, model_catalog.h).
 bool customToolsFrom(const std::string& storeText, const std::string& model);
