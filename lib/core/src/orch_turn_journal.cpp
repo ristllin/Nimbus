@@ -162,4 +162,13 @@ std::string stallNotice(const std::string& deviceName, const TurnJournal* j, con
   return stopped + " during a background task" + from + ", so it restarted itself. That task did not finish.";
 }
 
+std::string restartCutNotice(const std::string& deviceName, const TurnJournal& j, const std::string& hhmm,
+                             const StallReplay& r) {
+  const char* noun = requestNoun(j.kind);
+  if (!noun[0] || lostTurnRunsAgain(j, r)) return std::string();
+  const std::string name = deviceName.empty() ? std::string("Nimbus") : deviceName;
+  const std::string from = hhmm.empty() ? std::string() : " from " + hhmm;
+  return name + " restarted before it could take your " + noun + from + ", so it was not kept. Please send it again.";
+}
+
 }  // namespace nimbus::orch

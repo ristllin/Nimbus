@@ -351,6 +351,26 @@ void test_guard_restart_counts_a_poison_try() {
 // app uses the same page), an on-device voice turn and a console turn waited in the RAM
 // inbound queue, which the restart emptied: the owner must be told the reply was lost and
 // to send it again, or they wait for a reply that never comes.
+// Lane E2-REP4: a person's request a software restart cut before the engine stored it gets one true
+// line when nothing runs it again (the web page, voice, the console, Telegram with no poll or skipped);
+// none when its Telegram page is served again (it is answered), and none for the device's own work.
+void test_a_request_cut_by_a_software_restart_gets_one_true_line() {
+  using nimbus::orch::StallReplay;
+  nimbus::orch::TurnJournal j;
+  j.chat = "web";
+  j.kind = "message";
+  std::string line = nimbus::orch::restartCutNotice("Lumi", j, "14:02", StallReplay{true, 0});
+  TEST_ASSERT_EQUAL_STRING("Lumi restarted before it could take your message from 14:02, so it was not kept. "
+                           "Please send it again.", line.c_str());
+  j.chat = "123456789";
+  TEST_ASSERT_TRUE(nimbus::orch::restartCutNotice("Lumi", j, "14:02", StallReplay{true, 0}).empty());
+  TEST_ASSERT_FALSE(nimbus::orch::restartCutNotice("Lumi", j, "", StallReplay{false, 0}).empty());
+  j.kind = "photo";
+  TEST_ASSERT_TRUE(nimbus::orch::restartCutNotice("", j, "", StallReplay{true, 9}).find("your photo, so") != std::string::npos);
+  j.kind = "routine";
+  TEST_ASSERT_TRUE(nimbus::orch::restartCutNotice("Lumi", j, "14:02", StallReplay{false, 0}).empty());
+}
+
 void test_stall_notice_promises_a_retry_only_when_telegram_serves_it_again() {
   using nimbus::orch::StallReplay;
   struct Case {
@@ -480,6 +500,7 @@ int main(int, char**) {
   RUN_TEST(test_reason_is_bounded_and_names_the_stall);
   RUN_TEST(test_guard_restart_counts_a_poison_try);
   RUN_TEST(test_stall_notice_promises_a_retry_only_when_telegram_serves_it_again);
+  RUN_TEST(test_a_request_cut_by_a_software_restart_gets_one_true_line);
   RUN_TEST(test_owner_notice_plain_and_once_per_streak);
   return UNITY_END();
 }

@@ -511,7 +511,21 @@ void releaseOwnerNotice() {
   g_ownerTurn = OwnerTurn::Released;
   text.swap(g_keptOwnerNotice);
   portEXIT_CRITICAL(&g_noticeMux);
-  sendRestartNotice(std::move(text), "the engine could not resume the turn");
+  if (!text.empty() || crashBoot() || !g_lostTurnFound) {
+    sendRestartNotice(std::move(text), "the engine could not resume the turn");
+    return;
+  }
+  // E2-REP4: a software restart (no crash notice) cut a person's request before the engine stored
+  // it: one true line, unless its Telegram page is served again and answered.
+  const agent::telegram::GuardStatus gs = agent::telegram::guardStatus();
+  const nimbus::orch::StallReplay replay{agent::telegram::enabled() && gs.booted, gs.tries};
+  const std::string line = nimbus::orch::restartCutNotice(std::string(sys::deviceName().c_str()), g_lostTurn,
+                                                          localHhmm(g_lostTurn.at), replay);
+  if (line.empty()) return;
+  const String to = nimbus::orch::isTelegramChatId(g_lostTurn.chat) ? String(g_lostTurn.chat.c_str())
+                                                                    : agent::orchestrator::firstAllowedChat();
+  const bool queued = to.length() && agent::telegram::send(to, String(line.c_str()), /*block=*/false);
+  agent::alogcf(errlog::cat::kBoot, "crash: cut request line %s (software restart)", queued ? "queued" : "not queued");
 }
 
 void dropOwnerNotice() {
