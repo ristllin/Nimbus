@@ -539,7 +539,14 @@ static void test_a_cut_between_the_remove_and_the_rename_loses_no_kept_message()
     TEST_ASSERT_TRUE(in.load().ok());
     TEST_ASSERT_EQUAL((int)plain::HoldVerdict::Kept, (int)in.hold(tgMessage("first", 1001, 0x70)));
     dev.card.refuseRename = true;   // the second hold: remove landed, rename refused
-    TEST_ASSERT_EQUAL((int)plain::HoldVerdict::KeptInRam, (int)in.hold(tgMessage("second", 1002, 0x71)));
+    plain::WaitingMessage photo = tgMessage("second", 1002, 0x71);   // with E2-REP4's photo fields
+    tx::Part p;
+    p.kind = tx::PartKind::Image;
+    p.ref = "p0123456789abcdef";
+    p.note = "a red bicycle against a brick wall";
+    photo.parts.push_back(p);
+    photo.photosBlind = true;
+    TEST_ASSERT_EQUAL((int)plain::HoldVerdict::KeptInRam, (int)in.hold(photo));
   }
   dev.card.refuseRename = false;
   TEST_ASSERT_EQUAL(0, (int)dev.card.files.count(kWaitPath));       // the old list is gone
@@ -549,6 +556,8 @@ static void test_a_cut_between_the_remove_and_the_rename_loses_no_kept_message()
   TEST_ASSERT_EQUAL(2, (int)after.messages().size());
   TEST_ASSERT_EQUAL_STRING("first", after.messages()[0].text.c_str());
   TEST_ASSERT_EQUAL_STRING("second", after.messages()[1].text.c_str());
+  TEST_ASSERT_TRUE(after.messages()[1].photosBlind && after.messages()[1].parts.size() == 1 &&
+                   after.messages()[1].parts[0].note == "a red bicycle against a brick wall");
   TEST_ASSERT_EQUAL(1, (int)dev.card.files.count(kWaitPath));       // put back in place
   TEST_ASSERT_EQUAL(0, (int)dev.card.files.count(kWaitPath + ".tmp"));
   std::string chat;
