@@ -250,6 +250,12 @@ struct TurnOutcome {
   nimbus::orch::tx::TurnEndFacts end;
 };
 
+// Lane E2-CFIX1: the model that answered the turn: the last head's share after a switch, else `head`
+// (the turn's log line names it, as the usage rows do).
+inline std::string answeringModel(const TurnOutcome& out, const std::string& head) {
+  return out.switches && !out.shares.empty() ? out.shares.back().model : head;
+}
+
 // Lane E2-P-SURF: the last closed turn, kept for the turn inspector. Not the request (that is a
 // reference, plain/deliver.h): the system blocks, the tools and the facts a render needs, so
 // PlainEngine::rebuildLast renders the request again from the stored items. RAM only; the head's key

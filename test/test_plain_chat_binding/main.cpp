@@ -1380,6 +1380,39 @@ static void test_a_refused_key_parks_the_head_and_the_next_message_sends_no_requ
   TEST_ASSERT_TRUE_MESSAGE(dev.model.verify(why), why.c_str());
 }
 
+// E2-CFIX1 (bench 24 Nov, defect 7): the provider's own dollar limit reached inside a turn pauses it in the
+// park (the limits store's freeze notice is the pause's one line): the turn stops before its next request
+// with no line of its own, never the token-budget line. The next message sends nothing and gets the short
+// pause line once; the one after it gets nothing.
+static void test_a_dollar_limit_pause_is_told_once_and_never_as_a_token_budget() {
+  appendRuns = 0;
+  Device dev;
+  addAppend(dev.reg);
+  dev.pendingSpend = [&](const std::string&, const std::string&, const nimbus::orch::TokenUsage&) {
+    nimbus::orch::providerPark().pause("anthropic", nimbus::orch::kPauseProviderLimit);   // the limits store
+    dev.overBudget = true;
+  };
+  dev.paidHeld = [&](const std::string& p) { return dev.overBudget ? plain::overBudgetLine(p) : std::string(); };
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  sp::Step first = sp::call("append_file", R"({"path":"budget/week47.csv","text":"2026-11-24,market,5.55\n"})");
+  first.usage.input = 1200;
+  dev.model.push(first);
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Run, (int)message(dev, "Add the market to the budget.").verdict);
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+  TEST_ASSERT_EQUAL(1, appendRuns);
+  TEST_ASSERT_EQUAL(0, sentWith(dev.sent, "token budget"));
+  TEST_ASSERT_EQUAL_STRING("", dev.out.statusText.c_str());
+  const plain::MessageGate second = message(dev, "Reply with the single word OK.");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)second.verdict);
+  TEST_ASSERT_EQUAL_STRING(
+      "Your message was not answered: paid requests to Anthropic are paused: its monthly limit is reached.",
+      second.line.c_str());
+  const plain::MessageGate third = message(dev, "Still there?");
+  TEST_ASSERT_EQUAL((int)plain::GateVerdict::Held, (int)third.verdict);
+  TEST_ASSERT_EQUAL_STRING("", third.line.c_str());
+  TEST_ASSERT_EQUAL(1, (int)dev.model.requests().size());
+}
+
 // D1: an empty credit parks the head as billing (the provider's own words decide the kind). The next
 // message gets engine 1's billing short answer and sends nothing. After the park's re-check wait one
 // message goes as the probe; its answer ends the episode, and the turns after it run.
@@ -2205,6 +2238,45 @@ static void test_no_switch_to_a_smaller_body() {
   TEST_ASSERT_TRUE(has(dev.out.statusText, "server error"));
 }
 
+// E2-CFIX1 (bench 24 Nov, defect 1): the key's own usage limit (HTTP 400, the provider's own words) is a
+// billing refusal: the head is parked as for no credit, the round moves to the fall-back, a fall-back
+// whose row takes images gets the photo as pixels, and the switch line names the true reason in plain
+// words with the provider's reason for the person alone; the log and the usage row name the answering model.
+static void test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_reason() {
+  Device dev;
+  dev.parkHead = true;
+  dev.fallbacks = {{"openai", "gpt-5.6-luna"}};
+  nimbus::orch::TurnImages set;
+  onePhoto(set);
+  TEST_ASSERT_TRUE(dev.boot().ok());
+  dev.photos = &set;
+  const std::string limit =
+      R"({"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-12-01 at 00:00 UTC."}})";
+  answerByHost(dev, {{"api.anthropic.com", sp::httpError(400, limit)}, {"api.openai.com", sp::say("A red triangle.")}});
+  TEST_ASSERT_TRUE(dev.say("[image 1/1 ref=0123456789abcdef] what is this?").ok());
+  dev.photos = nullptr;
+  TEST_ASSERT_EQUAL_STRING("api.openai.com", dev.model.last().req.host.c_str());
+  TEST_ASSERT_EQUAL(1, (int)dev.out.switches);
+  TEST_ASSERT_EQUAL_MESSAGE(1, (int)count(dev.model.last().body, "\"input_image\""), "the fall-back saw no pixels");
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "[photo p0123456789abcdef"));
+  TEST_ASSERT_FALSE(has(dev.model.last().body, "file_"));   // no Anthropic file id crosses over
+  TEST_ASSERT_EQUAL_STRING(
+      "Anthropic failed (out of credit or over its usage limit: You have reached your specified API usage limits. You "
+      "will regain access on 2026-12-01 at 00:00 UTC); this answer came from gpt-5.6-luna.",
+      dev.out.statusText.c_str());
+  TEST_ASSERT_EQUAL_STRING("Anthropic failed (out of credit or over its usage limit); this answer came from gpt-5.6-luna.",
+                           dev.out.statusStored.c_str());
+  TEST_ASSERT_TRUE(nimbus::orch::providerPark().isParked("anthropic"));
+  nimbus::orch::ParkEntry e[nimbus::orch::ProviderPark::kMaxProviders];
+  TEST_ASSERT_EQUAL(1, (int)nimbus::orch::providerPark().snapshot(e, nimbus::orch::ProviderPark::kMaxProviders, dev.ms));
+  TEST_ASSERT_EQUAL((int)nimbus::orch::ParkKind::Billing, (int)e[0].kind);
+  TEST_ASSERT_EQUAL_STRING("gpt-5.6-luna", plain::answeringModel(dev.out, "claude-haiku-5-5").c_str());
+  TEST_ASSERT_EQUAL_STRING("claude-haiku-5-5", plain::answeringModel(plain::TurnOutcome{}, "claude-haiku-5-5").c_str());
+  const nimbus::orch::TurnSpend& u = dev.usage.back();
+  TEST_ASSERT_EQUAL_STRING("openai", u.slot[1].host);
+  TEST_ASSERT_TRUE(has(u.slot[1].model, "gpt-5.6-luna"));
+}
+
 // D1: with midTurnFailover off the failed round is the turn's end, on the head only.
 static void test_no_switch_with_the_setting_off() {
   Device dev;
@@ -2516,5 +2588,7 @@ int main(int, char**) {
   RUN_TEST(test_a_fallback_that_refuses_its_key_is_parked);
   RUN_TEST(test_no_switch_to_a_smaller_body);
   RUN_TEST(test_no_switch_with_the_setting_off);
+  RUN_TEST(test_a_usage_limit_refusal_fails_over_with_the_photos_and_the_true_reason);
+  RUN_TEST(test_a_dollar_limit_pause_is_told_once_and_never_as_a_token_budget);
   return UNITY_END();
 }
