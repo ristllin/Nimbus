@@ -1328,3 +1328,13 @@ PC-0175, PC-0176: not used.
 - lane: E2-FIX16
 - prd: section 4 (System prompt, how to work), AGENTS.md rule 9
 - why: lib/harness/include/nimbus/harness/plain/texts.h core::kHowToWork loses "Totals, sums and counts come from a tool result, not your own arithmetic." (PC-0025). It sent every figure through calc: in the head-to-head of 902391f7f (lanes/E2-H2H) Sonnet called calc for "What's 12 times 12?" and three more one-step sums in memory-20-turns (lost 2 of 3 to v5.2.0 on that), for a 9-mile gap in recent-compare-plain, and for a one-number estimate in recent-compare-food, where it computed 557, said "about 560", and later took the gap from 557 (the run's only two failed checks, difference_from_turn). The line also drove the running totals added to 16 long-chat replies. Replays of the captured requests (lanes/E2-FIX16/scratch/probe.py): Haiku called calc for 12 times 12 in 10 of 10 with the line and 0 of 10 without it. The reference loop has no such line and passed 291 of 291 checks. calc and its description stay. 74 bytes fewer.
+
+### PC-0227: the no-promise line keeps the word schedule, so a caller who cannot schedule is not shown it (engine 2)
+- catalog: e2
+- class: core
+- kind: build
+- bytes: 1600 -> 1595
+- sha8: 29889990 -> 6bf20834
+- lane: E2-FIX16
+- prd: section 4 (System prompt; a sentence that names a tool is shown only to a caller who can call it), AGENTS.md rule 9
+- why: lib/harness/include/nimbus/harness/plain/texts.h core::kNoLater "Promise nothing for later that you have not scheduled." (PC-0225) becomes "Promise nothing for later unless you schedule it.": composeSystem leaves out a sentence that names a tool its caller cannot call, and "scheduled" is not the tool's name, so PC-0225's words reached a guest, who cannot schedule (test_plain_request test_the_checker_catches_an_uncallable_name went red). With the tool's word the guest's core is as before. Replay of the captured first long-chat request on Haiku (lanes/E2-FIX16/scratch/probe.py, variant C1b): an unasked reminder in 1 of 10 (5 of 10 with the old line, 0 of 10 with none). 5 bytes fewer.
